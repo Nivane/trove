@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trove-agent"
+version = "0.1.0"
+description = "Trove — Intelligent Data Agent: natural language to SQL with an evolvable knowledge base"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.12"
+authors = [
+    {name = "Trove Contributors"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "aiosqlite>=0.20.0",
+    "litellm>=1.50.0",
+    "sqlglot>=25.0.0",
+    "prompt-toolkit>=3.0.0",
+    "rich>=13.0.0",
+    "tiktoken>=0.7.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.29.0"]
+duckdb = ["duckdb>=1.0.0"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+trove = "trove.main:main_repl"
+trove-cli = "trove.main:main_cli"
+
+[tool.setuptools.packages.find]
+include = ["trove*"]
+
+[tool.uv]
+package = true
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short", "--strict-markers"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests (requires real services)",
+]
