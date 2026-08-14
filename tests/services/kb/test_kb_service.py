@@ -342,3 +342,53 @@ class TestInitSchemaNotes:
         schema = SchemaInfo(tables=[])
         assert kb.init_schema_notes(schema, "demo") is False
         assert "行政区划表" in (kb_dir / "demo" / "schema_notes.yml").read_text(encoding="utf-8")
+
+
+class TestInitThreeWay:
+    """LLM-assisted initialization writes: notes + terms + examples."""
+
+    def test_init_notes_writes_annotated_tables(self, kb, kb_dir):
+        tables = [{
+            "name": "students",
+            "description": "学生表",
+            "columns": [{"name": "grade", "description": "成绩", "enums": []}],
+            "metrics": [],
+        }]
+        assert kb.init_notes(tables, "demo") is True
+        text = (kb_dir / "demo" / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "学生表" in text
+
+    def test_init_terms_writes_terms(self, kb, kb_dir):
+        terms = [{
+            "term": "学生数",
+            "aliases": [],
+            "mapping": "COUNT(students.id)",
+            "tables": ["students"],
+            "definition": "学生记录数",
+        }]
+        assert kb.init_terms(terms, "demo") is True
+        text = (kb_dir / "demo" / "semantics.yml").read_text(encoding="utf-8")
+        assert "学生数" in text
+
+    def test_init_examples_writes_templates(self, kb, kb_dir):
+        examples = [{
+            "template": True,
+            "question": "学生总数是多少",
+            "sql": "SELECT COUNT(*) FROM students",
+            "tags": ["学生"],
+        }]
+        assert kb.init_examples(examples, "demo") is True
+        text = (kb_dir / "demo" / "examples.yml").read_text(encoding="utf-8")
+        assert "学生总数是多少" in text
+
+    def test_init_three_way_refuses_overwrite(self, kb, kb_dir):
+        write_kb(kb_dir)
+        assert kb.init_notes([], "demo") is False
+        assert kb.init_terms([], "demo") is False
+        assert kb.init_examples([], "demo") is False
+
+    def test_init_exists_lists_existing_files(self, kb, kb_dir):
+        assert kb.init_exists("demo") == []
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "semantics.yml").write_text("terms: []\n", encoding="utf-8")
+        assert kb.init_exists("demo") == ["semantics.yml"]

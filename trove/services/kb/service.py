@@ -403,6 +403,34 @@ class KbService:
 
     # ── Initialization ────────────────────────────────────
 
+    def init_exists(self, datasource: str) -> list[str]:
+        """Which of the three KB files already exist for a datasource."""
+        ds_dir = self.kb_dir / datasource
+        return [
+            name for name in ("schema_notes.yml", "semantics.yml", "examples.yml")
+            if (ds_dir / name).exists()
+        ]
+
+    def _init_file(
+        self, filename: str, section: str, items: list[dict], datasource: str,
+        overwrite: bool = False,
+    ) -> bool:
+        """Write a KB file, refusing to overwrite an existing one."""
+        ds_dir = self.kb_dir / datasource
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        path = ds_dir / filename
+        if path.exists() and not overwrite:
+            logger.info("%s/%s already exists; refusing to overwrite", datasource, filename)
+            return False
+        path.write_text(
+            yaml.safe_dump(
+                {section: items},
+                default_flow_style=False, allow_unicode=True, sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return True
+
     def init_schema_notes(
         self, schema: SchemaInfo, datasource: str, overwrite: bool = False,
     ) -> bool:
@@ -411,13 +439,6 @@ class KbService:
         Returns:
             True if created, False if the file already exists (refusing to overwrite).
         """
-        ds_dir = self.kb_dir / datasource
-        ds_dir.mkdir(parents=True, exist_ok=True)
-        path = ds_dir / "schema_notes.yml"
-        if path.exists() and not overwrite:
-            logger.info("%s/schema_notes.yml already exists; refusing to overwrite", datasource)
-            return False
-
         tables = []
         for table in schema.tables:
             tables.append({
@@ -429,11 +450,22 @@ class KbService:
                 ],
                 "metrics": [],
             })
-        path.write_text(
-            yaml.safe_dump(
-                {"tables": tables},
-                default_flow_style=False, allow_unicode=True, sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
-        return True
+        return self._init_file("schema_notes.yml", "tables", tables, datasource, overwrite)
+
+    def init_notes(
+        self, tables: list[dict], datasource: str, overwrite: bool = False,
+    ) -> bool:
+        """Write an annotated schema_notes.yml (LLM-assisted /kb init)."""
+        return self._init_file("schema_notes.yml", "tables", tables, datasource, overwrite)
+
+    def init_terms(
+        self, terms: list[dict], datasource: str, overwrite: bool = False,
+    ) -> bool:
+        """Write a semantics.yml (LLM-assisted /kb init)."""
+        return self._init_file("semantics.yml", "terms", terms, datasource, overwrite)
+
+    def init_examples(
+        self, examples: list[dict], datasource: str, overwrite: bool = False,
+    ) -> bool:
+        """Write an examples.yml (LLM-assisted /kb init)."""
+        return self._init_file("examples.yml", "examples", examples, datasource, overwrite)

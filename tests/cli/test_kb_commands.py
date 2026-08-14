@@ -67,6 +67,194 @@ class TestKbInit:
         assert (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
 
 
+THREE_DOC = """tables:
+- name: students
+  description: 学生表
+  columns:
+  - name: grade
+    description: 成绩
+    enums: []
+  metrics: []
+---
+terms:
+- term: 学生数
+  aliases: []
+  mapping: COUNT(students.id)
+  tables: [students]
+  definition: 学生记录数
+---
+examples:
+- template: true
+  question: 学生总数是多少
+  sql: SELECT COUNT(*) FROM students
+  tags: [学生]
+"""
+
+# 真实 LLM（DeepSeek）的自然输出：忽略 '---' 分隔，单文档三顶层键
+MERGED_DOC = """tables:
+- name: students
+  description: 学生表
+  columns:
+  - name: grade
+    description: 成绩
+    enums: []
+  metrics: []
+terms:
+- term: 学生数
+  aliases: []
+  mapping: COUNT(students.id)
+  tables: [students]
+  definition: 学生记录数
+examples:
+- template: true
+  question: 学生总数是多少
+  sql: SELECT COUNT(*) FROM students
+  tags: [学生]
+"""
+
+
+class TestKbInitLLM:
+    def _reg(self, kb, sqlite_registry, llm):
+        reg = SlashRegistry()
+        register_kb_commands(reg, {
+            "kb": kb,
+            "connector_registry": sqlite_registry,
+            "llm_gateway": llm,
+            "config": AgentConfig(target="mock/model"),
+        })
+        return reg
+
+    async def test_init_generates_three_files_with_llm(self, kb, sqlite_registry):
+        """有 LLM 时 /kb init 生成 schema_notes + semantics + examples 三份初稿。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=THREE_DOC))
+        result = await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        assert "Initialized" in result
+        assert (kb.kb_dir / ds / "schema_notes.yml").exists()
+        assert (kb.kb_dir / ds / "semantics.yml").exists()
+        assert (kb.kb_dir / ds / "examples.yml").exists()
+        assert "学生表" in (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "学生数" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+
+    async def test_init_with_llm_repairs_broken_draft(self, kb, sqlite_registry):
+        class ScriptedLLM:
+            def __init__(self):
+                self.responses = iter(["bad: [yaml", THREE_DOC])
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                return next(self.responses)
+
+        llm = ScriptedLLM()
+        reg = self._reg(kb, sqlite_registry, llm)
+        result = await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        assert (kb.kb_dir / ds / "semantics.yml").exists()
+        assert len(llm.calls) == 2  # draft + repair
+
+    async def test_init_with_llm_refuses_when_any_exists(self, kb, sqlite_registry):
+        ds = sqlite_registry.default_name
+        (kb.kb_dir / ds).mkdir(parents=True)
+        (kb.kb_dir / ds / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
+
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=THREE_DOC))
+        result = await reg.get("kb").handler("init")
+
+        assert "refusing" in result
+        assert not (kb.kb_dir / ds / "semantics.yml").exists()
+        assert not (kb.kb_dir / ds / "examples.yml").exists()
+
+    async def test_init_llm_parse_failure_after_repair(self, kb, sqlite_registry):
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response="still not yaml"))
+        result = await reg.get("kb").handler("init")
+
+        assert "parse" in result.lower()
+        ds = sqlite_registry.default_name
+        assert not (kb.kb_dir / ds / "schema_notes.yml").exists()
+
+    async def test_init_accepts_merged_single_document(self, kb, sqlite_registry):
+        """回归：真实 LLM 常输出单文档三顶层键（无 --- 分隔）。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=MERGED_DOC))
+        result = await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        assert "Initialized" in result
+        assert (kb.kb_dir / ds / "schema_notes.yml").exists()
+        assert (kb.kb_dir / ds / "semantics.yml").exists()
+        assert (kb.kb_dir / ds / "examples.yml").exists()
+        assert "学生数" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+
+    def test_parse_init_docs_accepts_both_formats(self):
+        from trove.cli.commands.kb_cmds import _parse_init_docs
+
+        tables, terms, examples = _parse_init_docs(THREE_DOC)
+        assert len(tables) == 1 and len(terms) == 1 and len(examples) == 1
+
+        tables, terms, examples = _parse_init_docs(MERGED_DOC)
+        assert len(tables) == 1 and len(terms) == 1 and len(examples) == 1
+        assert tables[0]["name"] == "students"
+
+    def test_parse_init_docs_tolerates_extra_top_level_key(self):
+        from trove.cli.commands.kb_cmds import _parse_init_docs
+
+        doc = MERGED_DOC + "notes: 初稿，人工审阅\n"
+        tables, terms, examples = _parse_init_docs(doc)
+        assert len(tables) == 1
+
+    async def test_init_chunks_large_schema_and_merges(self, kb, sqlite_registry, monkeypatch):
+        """大 schema 分块调用（每块 1 表）→ 多次 LLM 调用 → 结果合并。"""
+        from trove.core.types import SchemaInfo, TableInfo, ColumnInfo
+        from trove.cli.commands import kb_cmds
+
+        monkeypatch.setattr(kb_cmds, "INIT_CHUNK_TABLES", 1)
+
+        class FakeRegistry:
+            default_name = "test_db"
+
+            async def get_schema(self):
+                return SchemaInfo(tables=[
+                    TableInfo(name="students", columns=[ColumnInfo(name="grade", type="int")]),
+                    TableInfo(name="courses", columns=[ColumnInfo(name="title", type="varchar")]),
+                ])
+
+        class ScriptedLLM:
+            def __init__(self):
+                docs = [
+                    MERGED_DOC,  # students
+                    MERGED_DOC.replace("students", "courses").replace("学生", "课程"),  # courses
+                ]
+                self.responses = iter(docs)
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append((messages, kwargs))
+                return next(self.responses)
+
+        llm = ScriptedLLM()
+        reg = SlashRegistry()
+        register_kb_commands(reg, {
+            "kb": kb,
+            "connector_registry": FakeRegistry(),
+            "llm_gateway": llm,
+            "config": AgentConfig(target="mock/model"),
+        })
+
+        result = await reg.get("kb").handler("init")
+        assert "Initialized" in result
+        assert len(llm.calls) == 2
+        # 每块调用都带更大的 max_tokens（防止 4096 截断大 schema）
+        assert all(kwargs.get("max_tokens") == 8192 for _, kwargs in llm.calls)
+
+        ds = sqlite_registry.default_name
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "students" in notes and "courses" in notes  # 两块合并
+        semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "学生数" in semantics and "课程数" in semantics
+
+
 class TestKbList:
     async def test_list_empty(self, kb):
         reg = make_reg(kb)
