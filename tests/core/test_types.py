@@ -1,14 +1,10 @@
 """Core type definitions tests."""
 
-import asyncio
 import uuid
 
 from trove.core.types import (
     Message,
     Session,
-    WorkflowContext,
-    WorkflowResult,
-    NodeStatus,
     QueryResult,
     SchemaInfo,
     TableInfo,
@@ -57,25 +53,6 @@ class TestSession:
         s1 = Session()
         s2 = Session()
         assert s1.session_id != s2.session_id
-
-
-class TestWorkflowContext:
-    def test_context_creation(self):
-        session = Session()
-        msg = Message(role="user", content="query")
-        ctx = WorkflowContext(session=session, user_message=msg, config=None)
-        assert ctx.session is session
-        assert ctx.user_message is msg
-        assert ctx.cancellation_event is not None
-        assert isinstance(ctx.cancellation_event, asyncio.Event)
-
-    def test_context_trace_id(self):
-        ctx = WorkflowContext(
-            session=Session(),
-            user_message=Message(role="user", content="q"),
-            config=None,
-        )
-        assert isinstance(ctx.trace_id, str)
 
 
 class TestQueryResult:

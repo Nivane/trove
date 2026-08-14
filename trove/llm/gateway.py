@@ -14,6 +14,7 @@ from typing import Any, AsyncIterator
 
 from trove.core.errors import LLMError
 from trove.core.logging import get_logger
+from trove.core.config import ProviderConfig
 
 logger = get_logger(__name__)
 
@@ -42,6 +43,7 @@ class LLMGateway:
         mock_stream_chunks: list[str] | None = None,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
+        providers: list[ProviderConfig] | None = None,
     ):
         """Initialize the LLM gateway.
 
@@ -50,11 +52,15 @@ class LLMGateway:
             mock_stream_chunks: If set, chat_stream() yields these chunks.
             max_retries: Maximum retry attempts on failure.
             retry_base_delay: Base delay in seconds for exponential backoff.
+            providers: Provider configs from agent.yml; litellm_params are
+                merged into every litellm call whose model matches the
+                provider name prefix (explicit api_key/api_base args win).
         """
         self._mock_response = mock_response
         self._mock_stream_chunks = mock_stream_chunks
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        self._providers = providers or []
 
     # ── Public API ───────────────────────────────────────
 
@@ -167,6 +173,39 @@ class LLMGateway:
 
     # ── LiteLLM integration ──────────────────────────────
 
+    def _provider_kwargs(self, model: str) -> dict[str, Any]:
+        """litellm_params for the provider matching the model prefix."""
+        provider_name = model.split("/", 1)[0]
+        for provider in self._providers:
+            if provider.name == provider_name and provider.litellm_params:
+                return dict(provider.litellm_params)
+        return {}
+
+    def _build_kwargs(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        api_key: str | None,
+        api_base: str | None,
+        stream: bool,
+    ) -> dict[str, Any]:
+        """Assemble litellm kwargs: provider params, then explicit overrides."""
+        kwargs: dict[str, Any] = self._provider_kwargs(model)
+        kwargs.update({
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        })
+        if api_key:
+            kwargs["api_key"] = api_key
+        if api_base:
+            kwargs["api_base"] = api_base
+        return kwargs
+
     async def _call_litellm(
         self,
         model: str,
@@ -180,17 +219,9 @@ class LLMGateway:
         """Make a blocking call via litellm.acompletion."""
         import litellm
 
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": stream,
-        }
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_base:
-            kwargs["api_base"] = api_base
+        kwargs = self._build_kwargs(
+            model, messages, temperature, max_tokens, api_key, api_base, stream,
+        )
 
         # litellm.acompletion is async
         response = await litellm.acompletion(**kwargs)
@@ -208,17 +239,9 @@ class LLMGateway:
         """Make a streaming call via litellm.acompletion."""
         import litellm
 
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-        if api_key:
-            kwargs["api_key"] = api_key
-        if api_base:
-            kwargs["api_base"] = api_base
+        kwargs = self._build_kwargs(
+            model, messages, temperature, max_tokens, api_key, api_base, stream=True,
+        )
 
         response = await litellm.acompletion(**kwargs)
         async for part in response:

@@ -2,60 +2,56 @@
 
 This is the high-level orchestrator that:
 1. Loads or creates a session
-2. Runs the workflow engine
+2. Runs a compiled LangGraph workflow (thread_id = session_id)
 3. Saves results back to the session
 4. Handles compaction
 
-It ties together SessionStore, WorkflowEngine, LLMGateway,
-and ConnectorRegistry into a single coherent API.
+It ties together SessionStore, compiled graphs, and LLMGateway
+into a single coherent API.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, AsyncIterator
 
 from trove.core.types import (
     Message,
     Session,
-    WorkflowContext,
-    WorkflowResult,
 )
 from trove.core.config import AgentConfig
 from trove.core.errors import SessionError
 from trove.core.logging import get_logger
 from trove.storage.session_store import SessionStore
-from trove.workflow.engine import WorkflowEngine, WorkflowDefinition
 from trove.llm.gateway import LLMGateway
 from trove.llm.token_counter import TokenCounter
+from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
+
+DEFAULT_WORKFLOW = "reflection"
 
 
 class SessionManager:
     """High-level orchestration of conversations and queries.
 
     Usage:
-        manager = SessionManager(config, store, engine, llm)
+        manager = SessionManager(config, store, graphs, llm)
         session = await manager.start_session()
-        result = await manager.ask(session, "How many users?")
+        state = await manager.ask(session, "How many users?")
     """
 
     def __init__(
         self,
         config: AgentConfig,
         session_store: SessionStore,
-        workflow_engine: WorkflowEngine,
+        graphs: dict[str, Any],
         llm_gateway: LLMGateway,
-        catalog_service: Any = None,
-        connector_registry: Any = None,
     ):
         self.config = config
         self._store = session_store
-        self._engine = workflow_engine
+        self._graphs = graphs
         self._llm = llm_gateway
-        self._catalog = catalog_service
-        self._registry = connector_registry
         self._token_counter = TokenCounter()
 
     # ── Session lifecycle ────────────────────────────────
@@ -165,24 +161,44 @@ class SessionManager:
 
     # ── Query ────────────────────────────────────────────
 
+    def _get_graph(self, workflow_name: str):
+        """Look up a compiled graph by workflow name.
+
+        Raises:
+            KeyError: If the workflow is unknown.
+        """
+        if workflow_name not in self._graphs:
+            raise KeyError(
+                f"Workflow '{workflow_name}' not found. "
+                f"Available: {list(self._graphs.keys())}"
+            )
+        return self._graphs[workflow_name]
+
+    def _thread_config(self, session: Session) -> dict[str, Any]:
+        """RunnableConfig mapping session_id → checkpointer thread_id."""
+        return {"configurable": {"thread_id": session.session_id}}
+
     async def ask(
         self,
         session: Session,
         question: str,
-        workflow_name: str = "reflection",
-        stream_callback: Any = None,
-    ) -> tuple[str, WorkflowResult]:
-        """Process a natural language question through the workflow.
+        workflow_name: str = DEFAULT_WORKFLOW,
+    ) -> WorkflowState:
+        """Process a natural language question through a compiled graph.
 
         Args:
             session: Current session.
             question: The user's natural language question.
-            workflow_name: Which workflow to run ("reflection" or "fixed").
-            stream_callback: Optional async callback(Message) for streaming.
+            workflow_name: Which graph to run ("reflection", "fixed", "empty").
 
         Returns:
-            Tuple of (final_response_text, WorkflowResult).
+            The final WorkflowState (final_response, sql, row_count, verdict, ...).
+
+        Raises:
+            KeyError: If the workflow is unknown.
         """
+        graph = self._get_graph(workflow_name)
+
         # Create user message
         user_msg = Message(
             role="user",
@@ -191,80 +207,110 @@ class SessionManager:
         )
         session.messages.append(user_msg)
 
-        # Build workflow context
-        ctx = WorkflowContext(
-            session=session,
-            user_message=user_msg,
-            config=self.config,
-            trace_id=session.session_id,
+        state = WorkflowState(session_id=session.session_id, question=question)
+        final = WorkflowState.model_validate(
+            await graph.ainvoke(state, self._thread_config(session))
         )
 
-        # Inject services into config for node access
-        self.config._llm_gateway = self._llm  # type: ignore[attr-defined]
-        self.config._catalog_service = self._catalog  # type: ignore[attr-defined]
-        self.config._connector_registry = self._registry  # type: ignore[attr-defined]
-
-        # Run workflow
-        result = await self._engine.run(workflow_name, ctx)
-
-        # Create assistant message
-        assistant_msg = Message(
-            role="assistant",
-            content=result.final_output,
-            metadata={
-                "trace_id": result.trace_id,
-                "workflow": workflow_name,
-                "node_count": len(result.nodes),
-            },
-        )
-        session.messages.append(assistant_msg)
-
-        # Persist
-        await self._store.save_session(session)
-
-        return result.final_output, result
+        await self._record_exchange(session, workflow_name, final)
+        return final
 
     async def ask_stream(
         self,
         session: Session,
         question: str,
-        workflow_name: str = "reflection",
-    ):
-        """Stream a query response via async generator.
+        workflow_name: str = DEFAULT_WORKFLOW,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a query response as graph events.
 
-        Yields events: {"type": "thought"|"sql"|"result"|"done"|"error", "content": ...}
-
-        Args:
-            session: Current session.
-            question: The user's question.
-            workflow_name: Which workflow to run.
-
-        Yields:
-            Event dicts for each stage of the response.
+        Yields events:
+          {"type": "thought"|"sql"|"result"|"done"|"error", "node": ..., ...}
+        The terminal event (done or error) carries a "summary" dict with
+        the final state essentials (sql, row_count, verdict, error,
+        final_response, ...) for non-streaming consumers like --print.
         """
-        yield {"type": "thought", "content": f"Processing: {question[:80]}..."}
+        yield {"type": "thought", "node": "start", "content": f"Processing: {question[:80]}..."}
 
         try:
-            response, wf_result = await self.ask(
-                session=session,
-                question=question,
-                workflow_name=workflow_name,
-            )
+            graph = self._get_graph(workflow_name)
+        except KeyError as e:
+            yield {"type": "error", "node": "workflow", "content": str(e)}
+            return
 
-            # Extract and yield SQL if available
-            for node in wf_result.nodes:
-                if node.node_name == "gen_sql" and "sql" in node.data:
-                    yield {"type": "sql", "content": node.data["sql"]}
-                elif node.node_name == "execute_sql" and "row_count" in node.data:
-                    yield {
-                        "type": "result",
-                        "content": f"Returned {node.data['row_count']} rows",
-                    }
+        user_msg = Message(
+            role="user",
+            content=question,
+            metadata={"workflow": workflow_name},
+        )
+        session.messages.append(user_msg)
 
-            yield {"type": "done", "content": response}
+        state = WorkflowState(session_id=session.session_id, question=question)
+        merged: dict[str, Any] = state.model_dump()
 
+        try:
+            async for update in graph.astream(
+                state, self._thread_config(session), stream_mode="updates",
+            ):
+                for node_name, delta in update.items():
+                    if not delta:  # guard nodes returning {} surface as None
+                        continue
+                    merged.update(delta)
+                    if node_name == "gen_sql" and delta.get("sql"):
+                        yield {"type": "sql", "node": "gen_sql", "content": delta["sql"]}
+                    elif node_name == "execute_sql" and "row_count" in delta:
+                        yield {"type": "result", "node": "execute_sql", "row_count": delta["row_count"]}
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            yield {"type": "error", "content": str(e)}
+            yield {"type": "error", "node": "workflow", "content": str(e)}
+            return
+
+        final = WorkflowState.model_validate(merged)
+        await self._record_exchange(session, workflow_name, final)
+
+        summary = self._state_summary(final)
+        if final.error:
+            yield {"type": "error", "node": "output", "content": final.final_response, "summary": summary}
+        else:
+            yield {"type": "done", "content": final.final_response, "summary": summary}
+
+    # ── Internal helpers ─────────────────────────────────
+
+    async def _record_exchange(
+        self,
+        session: Session,
+        workflow_name: str,
+        final: WorkflowState,
+    ) -> None:
+        """Append the assistant message and persist the session."""
+        assistant_msg = Message(
+            role="assistant",
+            content=final.final_response,
+            metadata={
+                "trace_id": session.session_id,
+                "workflow": workflow_name,
+                "sql": final.sql,
+                "row_count": final.row_count,
+                "verdict": final.verdict,
+                "error": final.error,
+            },
+        )
+        session.messages.append(assistant_msg)
+        await self._store.save_session(session)
+
+    @staticmethod
+    def _state_summary(final: WorkflowState) -> dict[str, Any]:
+        """Essentials of the final state for event consumers (e.g. --print)."""
+        return {
+            "session_id": final.session_id,
+            "question": final.question,
+            "sql": final.sql,
+            "row_count": final.row_count,
+            "verdict": final.verdict,
+            "reason": final.reason,
+            "error": final.error,
+            "final_response": final.final_response,
+        }
 
     # ── Token usage ──────────────────────────────────────
 

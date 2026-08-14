@@ -1,21 +1,24 @@
-"""GenSQL node — generates SQL from natural language.
+"""GenSQL nodes — generate SQL from natural language with a validate-retry loop.
 
-An AgenticNode that:
-1. Builds a prompt with schema context + user question
-2. Calls the LLM to generate SQL
-3. Validates the SQL via SQLGlot
-4. Retries on validation failure (up to max_retries)
+The loop is composed as a subgraph (see workflow/graphs.py) from two node
+functions built here:
+  - generate: builds the prompt (initial or fix), calls the LLM, extracts SQL
+  - validate: validates via SQLGlot; routes back to generate on failure
+
+Pure helpers (prompt builders, SQL extraction, validation) live at module
+level for direct unit testing.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from trove.core.types import NodeStatus, WorkflowContext
-from trove.core.errors import SQLGenerationError
+from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
-from trove.workflow.node import AgenticNode, NodeResult, LLMLoopConfig
-from trove.workflow.node_type import NodeType
+from trove.llm.gateway import LLMGateway
+from trove.workflow.state import GenSQLState
 
 logger = get_logger(__name__)
 
@@ -55,201 +58,165 @@ SELECT ...
 """
 
 
-class GenSQLNode(AgenticNode):
-    """Generate SQL from a natural language question.
-
-    Internal loop:
-      1. Build prompt (system + schema + user question)
-      2. Call LLM → extract SQL
-      3. Validate SQL (SQLGlot)
-      4. If invalid → add errors to prompt → goto 2 (max max_retries times)
-    """
-
-    node_type = NodeType.GEN_SQL
-
-    def __init__(
-        self,
-        name: str = "gen_sql",
-        max_retries: int = 3,
-        dialect: str = "sqlite",
-    ):
-        config = LLMLoopConfig(
-            max_rounds=max_retries,
-            system_prompt=SQL_GENERATION_SYSTEM_PROMPT,
-        )
-        super().__init__(name, config)
-        self.max_retries = max_retries
-        self.dialect = dialect
-
-    async def execute(self, ctx: WorkflowContext) -> NodeResult:
-        """Generate SQL with retry-on-failure.
-
-        Uses the schema context from the upstream schema_linking node.
-        """
-        # Get schema context from previous node
-        schema_context = ""
-        if hasattr(ctx, '_node_data'):
-            sl_data = ctx._node_data.get("schema_linking", {})  # type: ignore[attr-defined]
-            schema_context = sl_data.get("schema_context", "")
-
-        # Detect dialect from config
-        datasource_default = getattr(ctx.config, '_datasource_default', '')
-        if datasource_default:
-            registry = getattr(ctx.config, '_connector_registry', None)
-            if registry:
-                try:
-                    adapter = await registry.get()
-                    self.dialect = adapter.dialect()
-                except Exception:
-                    pass
-
-        question = ctx.user_message.content
-
-        # Build initial prompt
-        prompt = self._build_sql_prompt(question, schema_context, self.dialect)
-
-        # Retry loop
-        sql = ""
-        last_errors: list[str] = []
-
-        for attempt in range(self.max_retries):
-            # Build prompt (include fix instructions on retry)
-            if attempt == 0:
-                final_prompt = prompt
-            else:
-                final_prompt = self._build_fix_prompt(sql, last_errors)
-
-            try:
-                response = await self._call_llm(ctx, final_prompt)
-                sql = self._extract_sql(response)
-
-                if not sql:
-                    last_errors = ["LLM returned empty SQL"]
-                    continue
-
-                # Validate
-                valid, errors = await self._validate_sql(sql, ctx)
-                if valid:
-                    return NodeResult(
-                        node_name=self.name,
-                        status=NodeStatus.SUCCESS,
-                        data={
-                            "sql": sql,
-                            "attempts": attempt + 1,
-                            "dialect": self.dialect,
-                        },
-                        metadata={"token_usage_prompt": self._count_tokens(final_prompt)},
-                    )
-
-                last_errors = errors
-                logger.debug("SQL validation failed (attempt %d): %s", attempt + 1, errors)
-
-            except Exception as e:
-                last_errors = [str(e)]
-                logger.warning("SQL generation attempt %d error: %s", attempt + 1, e)
-
-        return NodeResult(
-            node_name=self.name,
-            status=NodeStatus.ERROR,
-            error=SQLGenerationError(
-                message=f"SQL generation failed after {self.max_retries} attempts",
-                sql=sql,
-                validation_errors=last_errors,
-            ),
-            data={"sql": sql, "errors": last_errors, "attempts": self.max_retries},
-        )
-
-    # ── Prompt builders ───────────────────────────────────
-
-    def _build_sql_prompt(self, question: str, schema_context: str, dialect: str) -> str:
-        """Build the initial SQL generation prompt."""
-        parts = [
-            f"Target SQL dialect: {dialect}",
+def build_sql_prompt(
+    question: str,
+    schema_context: str,
+    dialect: str,
+    reflect_reason: str = "",
+) -> str:
+    """Build the initial SQL generation prompt."""
+    parts = [
+        f"Target SQL dialect: {dialect}",
+        "",
+        "Database schema:",
+        schema_context or "(No schema information available - generate a best-effort query)",
+        "",
+        "Question:",
+        question,
+        "",
+    ]
+    if reflect_reason:
+        parts += [
+            f"Note: a previous version of this query was rejected with: "
+            f"{reflect_reason}. Please correct it.",
             "",
-            "Database schema:",
-            schema_context or "(No schema information available - generate a best-effort query)",
-            "",
-            "Question:",
-            question,
-            "",
-            "Generate the SQL query to answer this question:",
         ]
-        return "\n".join(parts)
+    parts.append("Generate the SQL query to answer this question:")
+    return "\n".join(parts)
 
-    def _build_fix_prompt(self, sql: str, errors: list[str]) -> str:
-        """Build a fix prompt when validation fails."""
-        return SQL_FIX_PROMPT.format(
-            sql=sql,
-            errors="\n".join(f"- {e}" for e in errors),
-        )
 
-    # ── SQL extraction ───────────────────────────────────
+def build_fix_prompt(sql: str, errors: list[str]) -> str:
+    """Build a fix prompt when validation fails."""
+    return SQL_FIX_PROMPT.format(
+        sql=sql,
+        errors="\n".join(f"- {e}" for e in errors),
+    )
 
-    def _extract_sql(self, response: str) -> str:
-        """Extract SQL from LLM response (handles markdown code blocks)."""
-        # Try ```sql ... ``` block first
-        match = re.search(r'```sql\s*\n(.*?)\n```', response, re.DOTALL | re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
 
-        # Try generic ``` ... ``` block
-        match = re.search(r'```\s*\n(.*?)\n```', response, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+def extract_sql(response: str) -> str:
+    """Extract SQL from LLM response (handles markdown code blocks)."""
+    # Try ```sql ... ``` block first
+    match = re.search(r'```sql\s*\n(.*?)\n```', response, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
 
-        # If no code block, return the raw response (strip common prefixes)
-        text = response.strip()
-        for prefix in ["SELECT", "WITH", "select", "with"]:
-            idx = text.find(prefix)
-            if idx >= 0:
-                return text[idx:]
+    # Try generic ``` ... ``` block
+    match = re.search(r'```\s*\n(.*?)\n```', response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
 
-        return text
+    # If no code block, return the raw response (strip common prefixes)
+    text = response.strip()
+    for prefix in ["SELECT", "WITH", "select", "with"]:
+        idx = text.find(prefix)
+        if idx >= 0:
+            return text[idx:]
 
-    # ── Validation ───────────────────────────────────────
+    return text
 
-    async def _validate_sql(
-        self,
-        sql: str,
-        ctx: WorkflowContext,
-    ) -> tuple[bool, list[str]]:
-        """Validate SQL using SQLGlot.
 
-        Returns:
-            (is_valid, list_of_error_strings)
-        """
+def validate_sql(sql: str, dialect: str) -> tuple[bool, list[str]]:
+    """Validate SQL using SQLGlot.
+
+    Returns:
+        (is_valid, list_of_error_strings)
+    """
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        errors = []
+
         try:
-            import sqlglot
-            from sqlglot import exp
+            parsed = sqlglot.parse(
+                sql, dialect=dialect,
+                error_level=sqlglot.ErrorLevel.RAISE,
+            )
+            statements = [p for p in parsed if p is not None]
+            if not statements:
+                errors.append("SQL could not be parsed (empty result)")
+            elif len(statements) > 1:
+                errors.append("Multiple SQL statements are not allowed")
+            elif not isinstance(statements[0], exp.Query):
+                # e.g. "SELEC * FORM t" parses into an Alias, not a query
+                errors.append("Not a valid SQL query")
+        except Exception as e:
+            errors.append(f"Parse error: {e}")
 
-            errors = []
+        return len(errors) == 0, errors
 
-            try:
-                # Pass the dialect as a string — resolving it via
-                # getattr(sqlglot.dialects, ...) yields a module object
-                # (only once submodules are loaded), which parse() rejects.
-                parsed = sqlglot.parse(
-                    sql, dialect=self.dialect,
-                    error_level=sqlglot.ErrorLevel.RAISE,
-                )
-                statements = [p for p in parsed if p is not None]
-                if not statements:
-                    errors.append("SQL could not be parsed (empty result)")
-                elif len(statements) > 1:
-                    errors.append("Multiple SQL statements are not allowed")
-                elif not isinstance(statements[0], exp.Query):
-                    # e.g. "SELEC * FORM t" parses into an Alias, not a query
-                    errors.append("Not a valid SQL query")
-            except Exception as e:
-                errors.append(f"Parse error: {e}")
+    except ImportError:
+        # sqlglot not installed — skip validation
+        logger.warning("sqlglot not available; skipping SQL validation")
+        return True, []
 
-            return len(errors) == 0, errors
 
-        except ImportError:
-            # sqlglot not installed — skip validation
-            logger.warning("sqlglot not available; skipping SQL validation")
-            return True, []
+# ── Subgraph nodes ───────────────────────────────────────
 
-    def _count_tokens(self, text: str) -> int:
-        """Rough token count."""
-        return len(text) // 4
+
+def make_generate(
+    llm: LLMGateway,
+    config: AgentConfig,
+) -> Callable[[GenSQLState], Awaitable[dict[str, Any]]]:
+    """Build the generate node: prompt → LLM → extract SQL."""
+
+    async def generate(state: GenSQLState) -> dict[str, Any]:
+        if state.error:
+            return {}
+
+        if state.validation_errors:
+            prompt = build_fix_prompt(state.sql, state.validation_errors)
+        else:
+            prompt = build_sql_prompt(
+                question=state.question,
+                schema_context=state.schema_context,
+                dialect=state.dialect,
+                reflect_reason=state.reflect_reason,
+            )
+
+        model = config.target or "openai/gpt-4o"
+        response = await llm.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": SQL_GENERATION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        sql = extract_sql(response)
+
+        return {
+            "sql": sql,
+            "attempts": state.attempts + 1,
+            "validation_errors": [],
+        }
+
+    return generate
+
+
+def make_validate(
+    max_retries: int = 3,
+) -> Callable[[GenSQLState], Awaitable[dict[str, Any]]]:
+    """Build the validate node: SQLGlot check, error bookkeeping, exhaustion."""
+
+    async def validate(state: GenSQLState) -> dict[str, Any]:
+        if state.error:
+            return {}
+
+        if not state.sql:
+            errors = ["LLM returned empty SQL"]
+        else:
+            valid, errors = validate_sql(state.sql, state.dialect)
+            if valid:
+                return {"validation_errors": []}
+
+        if state.attempts >= max_retries:
+            return {
+                "error": (
+                    f"SQL generation failed after {state.attempts} attempts: "
+                    + "; ".join(errors)
+                ),
+                "validation_errors": errors,
+            }
+        return {"validation_errors": errors}
+
+    return validate

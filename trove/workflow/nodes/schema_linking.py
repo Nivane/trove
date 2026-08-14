@@ -3,62 +3,51 @@
 In MVP (no RAG), this node queries the datasource catalog
 to find tables whose names/columns match the user's question.
 The matched schema is passed downstream to gen_sql.
+
+Node shape: `async def schema_linking(state: WorkflowState) -> dict`
+returns a partial state update.
 """
 
 from __future__ import annotations
 
-from trove.core.types import NodeStatus, WorkflowContext
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from trove.services.datasource.catalog import CatalogService
 from trove.core.logging import get_logger
-from trove.workflow.node import Node, NodeResult
-from trove.workflow.node_type import NodeType
+from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
 
-class SchemaLinkingNode(Node):
-    """Match user query to relevant database tables.
+def make_schema_linking(
+    catalog: CatalogService | None = None,
+    max_tables: int = 5,
+) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
+    """Build the schema_linking node bound to a catalog service.
 
-    MVP implementation: searches table/column names against
-    the user query and the datasource catalog.
+    Args:
+        catalog: Metadata catalog for table search (None → pass through empty).
+        max_tables: Maximum tables to match per query.
 
-    Future (v0.2): uses RAG knowledge base for semantic matching.
+    Returns:
+        Async node function taking WorkflowState and returning a partial update.
     """
 
-    node_type = NodeType.SCHEMA_LINKING
+    async def schema_linking(state: WorkflowState) -> dict[str, Any]:
+        # Upstream node failed — pass through without running
+        if state.error:
+            return {}
 
-    def __init__(self, name: str = "schema_linking", max_tables: int = 5):
-        super().__init__(name)
-        self.max_tables = max_tables
-
-    async def execute(self, ctx: WorkflowContext) -> NodeResult:
-        """Identify relevant tables from the datasource catalog.
-
-        Args:
-            ctx: Workflow context with config and user message.
-
-        Returns:
-            NodeResult with matched tables in data["matched_tables"].
-        """
-        query = ctx.user_message.content
+        if catalog is None:
+            return {
+                "matched_tables": [],
+                "schema_context": "No schema information available.",
+            }
 
         try:
-            # Access the catalog service from context config
-            catalog = getattr(ctx.config, "_catalog_service", None)
-            if catalog is None:
-                # No catalog available — pass through empty schema
-                return NodeResult(
-                    node_name=self.name,
-                    status=NodeStatus.SUCCESS,
-                    data={
-                        "matched_tables": [],
-                        "schema_context": "No schema information available.",
-                    },
-                )
+            matches = await catalog.search_tables(state.question, limit=max_tables)
 
-            # Search for relevant tables
-            matches = await catalog.search_tables(query, limit=self.max_tables)
-
-            # Build schema context for the matched tables
             schema_parts = []
             for match in matches:
                 detail = await catalog.table_detail(match["name"])
@@ -79,24 +68,16 @@ class SchemaLinkingNode(Node):
 
             logger.debug(
                 "Schema linking matched %d tables for query: %s",
-                len(matches), query[:80],
+                len(matches), state.question[:80],
             )
 
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.SUCCESS,
-                data={
-                    "matched_tables": [m["name"] for m in matches],
-                    "schema_context": schema_context,
-                    "match_details": matches,
-                },
-            )
+            return {
+                "matched_tables": [m["name"] for m in matches],
+                "schema_context": schema_context,
+            }
 
         except Exception as e:
             logger.error("Schema linking failed: %s", e)
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.ERROR,
-                error=e,
-                data={"schema_context": "Schema linking failed."},
-            )
+            return {"error": f"Schema linking failed: {e}"}
+
+    return schema_linking

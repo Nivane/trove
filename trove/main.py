@@ -11,17 +11,18 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 from trove.core.config import ConfigLoader, AgentConfig
 from trove.core.logging import get_logger
 from trove.core.types import DatasourceConfig
 from trove.storage.session_store import SessionStore
+from trove.storage.checkpoint_store import build_checkpointer
 from trove.llm.gateway import LLMGateway
 from trove.services.datasource.registry import ConnectorRegistry, register_adapter
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 from trove.services.datasource.catalog import CatalogService
-from trove.workflow.engine import WorkflowEngine
-from trove.workflow.registry import WorkflowRegistry
+from trove.workflow.graphs import GraphServices, build_graphs
 from trove.agent.session import SessionManager
 
 logger = get_logger(__name__)
@@ -97,25 +98,26 @@ async def setup_demo_datasource(registry: ConnectorRegistry) -> None:
     await registry.register(config, set_default=True)
 
 
-async def create_app_components(args) -> dict:
+async def create_app_components(
+    args,
+    config: AgentConfig,
+    checkpointer=None,
+) -> dict:
     """Create and wire together all application components.
 
     Args:
         args: Parsed command-line arguments.
+        config: Loaded AgentConfig.
+        checkpointer: Optional LangGraph checkpointer (from build_checkpointer).
 
     Returns:
         Dict with all initialized components.
     """
-    # ── Config ────────────────────────────────────────────
-    config = ConfigLoader.load_agent_config(args.config)
-    if args.model:
-        config.target = args.model
-
-    # ── Storage ───────────────────────────────────────────
+    # ── Storage ────────────────────────────────────────────
     session_store = SessionStore(home_dir=config.home)
 
     # ── LLM Gateway ───────────────────────────────────────
-    llm_gateway = LLMGateway()
+    llm_gateway = LLMGateway(providers=config.providers)
 
     # ── Datasource ────────────────────────────────────────
     connector_registry = ConnectorRegistry()
@@ -143,20 +145,21 @@ async def create_app_components(args) -> dict:
     # ── Catalog ───────────────────────────────────────────
     catalog_service = CatalogService(connector_registry)
 
-    # ── Workflow Engine ───────────────────────────────────
-    engine = WorkflowEngine()
-    for wf_name in WorkflowRegistry.list_available():
-        wf = WorkflowRegistry.create(wf_name)
-        engine.register(wf)
+    # ── Graphs ────────────────────────────────────────────
+    services = GraphServices(
+        llm=llm_gateway,
+        catalog=catalog_service,
+        connectors=connector_registry,
+        config=config,
+    )
+    graphs = build_graphs(services, checkpointer=checkpointer)
 
     # ── Session Manager ───────────────────────────────────
     session_manager = SessionManager(
         config=config,
         session_store=session_store,
-        workflow_engine=engine,
+        graphs=graphs,
         llm_gateway=llm_gateway,
-        catalog_service=catalog_service,
-        connector_registry=connector_registry,
     )
 
     return {
@@ -165,12 +168,50 @@ async def create_app_components(args) -> dict:
         "llm_gateway": llm_gateway,
         "connector_registry": connector_registry,
         "catalog_service": catalog_service,
-        "engine": engine,
+        "graphs": graphs,
         "session_manager": session_manager,
     }
 
 
+def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the --print JSON payload from the stream summary and events.
+
+    Args:
+        summary: Terminal event summary (final state essentials).
+        events: All stream events collected during the run.
+
+    Returns:
+        JSON-serializable payload.
+    """
+    printable_events = [
+        {k: v for k, v in event.items() if k in ("type", "node", "content", "row_count")}
+        for event in events
+    ]
+    return {
+        "session_id": summary.get("session_id", ""),
+        "response": summary.get("final_response", ""),
+        "sql": summary.get("sql", ""),
+        "row_count": summary.get("row_count", -1),
+        "verdict": summary.get("verdict", ""),
+        "error": summary.get("error", ""),
+        "events": printable_events,
+    }
+
+
 # ── Entry Points ──────────────────────────────────────────
+
+
+async def _load_config(args) -> AgentConfig:
+    """Load .env and config with CLI overrides applied."""
+    from dotenv import load_dotenv
+
+    # Explicitly anchor on cwd (load_dotenv() defaults to searching from
+    # this file's location, which is wrong for a CLI invoked from a project).
+    load_dotenv(Path.cwd() / ".env")
+    config = ConfigLoader.load_agent_config(args.config)
+    if args.model:
+        config.target = args.model
+    return config
 
 
 async def async_main_repl():
@@ -182,31 +223,34 @@ async def async_main_repl():
         print(f"Trove v{__version__}")
         return
 
-    components = await create_app_components(args)
+    config = await _load_config(args)
 
-    # Create or load a session
-    session_manager = components["session_manager"]
-    session = await session_manager.start_session(
-        project_cwd=".",
-        user_id="local",
-    )
+    async with build_checkpointer(config.home) as checkpointer:
+        components = await create_app_components(args, config, checkpointer)
 
-    # Launch REPL
-    from trove.cli.app import TroveREPL
-    repl = TroveREPL(
-        session_manager=session_manager,
-        config=components["config"],
-        catalog_service=components["catalog_service"],
-        connector_registry=components["connector_registry"],
-        session_store=components["session_store"],
-        current_session=session,
-    )
+        # Create or load a session
+        session_manager = components["session_manager"]
+        session = await session_manager.start_session(
+            project_cwd=".",
+            user_id="local",
+        )
 
-    try:
-        await repl.run()
-    finally:
-        await repl.cleanup()
-        await components["connector_registry"].close_all()
+        # Launch REPL
+        from trove.cli.app import TroveREPL
+        repl = TroveREPL(
+            session_manager=session_manager,
+            config=components["config"],
+            catalog_service=components["catalog_service"],
+            connector_registry=components["connector_registry"],
+            session_store=components["session_store"],
+            current_session=session,
+        )
+
+        try:
+            await repl.run()
+        finally:
+            await repl.cleanup()
+            await components["connector_registry"].close_all()
 
 
 def main_repl():
@@ -224,26 +268,31 @@ async def async_main_cli():
 
     if args.print_mode:
         # Non-interactive: read from stdin, print JSON
-        components = await create_app_components(args)
-        session_manager = components["session_manager"]
-        session = await session_manager.start_session()
+        config = await _load_config(args)
 
-        user_input = sys.stdin.read().strip()
-        if user_input:
-            response, result = await session_manager.ask(
-                session=session,
-                question=user_input,
-                workflow_name=args.workflow,
-            )
-            import json
-            print(json.dumps({
-                "response": response,
-                "trace_id": result.trace_id,
-                "nodes": [
-                    {"name": n.node_name, "status": n.status.value, "data": n.data}
-                    for n in result.nodes
-                ],
-            }, ensure_ascii=False, indent=2))
+        async with build_checkpointer(config.home) as checkpointer:
+            components = await create_app_components(args, config, checkpointer)
+            session_manager = components["session_manager"]
+            session = await session_manager.start_session()
+
+            user_input = sys.stdin.read().strip()
+            if user_input:
+                events = []
+                summary = {}
+                async for event in session_manager.ask_stream(
+                    session=session,
+                    question=user_input,
+                    workflow_name=args.workflow,
+                ):
+                    events.append(event)
+                    if "summary" in event:
+                        summary = event["summary"]
+
+                import json
+                print(json.dumps(
+                    format_print_payload(summary, events),
+                    ensure_ascii=False, indent=2,
+                ))
         return
 
     # Default: launch REPL

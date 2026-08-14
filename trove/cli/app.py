@@ -14,6 +14,7 @@ Supports:
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Any
 
 from prompt_toolkit import PromptSession
@@ -162,7 +163,7 @@ class TroveREPL:
     async def _handle_query(self, text: str) -> None:
         """Handle a natural language query.
 
-        Sends the query through the session manager's workflow
+        Sends the query through the session manager's graph
         and displays results with streaming where possible.
 
         Args:
@@ -174,8 +175,22 @@ class TroveREPL:
 
         self._tui.print_separator()
 
+        # Run the stream in a task so Ctrl+C can cancel the query
+        # (asyncio cancellation propagates through the graph run).
+        task = asyncio.create_task(self._consume_stream(text))
         try:
-            # Stream the response
+            await task
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            self._tui.print_info("Query cancelled.")
+
+        self._tui.print_separator()
+
+    async def _consume_stream(self, text: str) -> None:
+        """Consume graph-native stream events and render them."""
+        try:
             async for event in self._manager.ask_stream(
                 session=self._session,
                 question=text,
@@ -194,12 +209,11 @@ class TroveREPL:
                     self._tui.print_markdown(content)
                 elif event_type == "error":
                     self._tui.print_error(content)
-
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             self._tui.print_error(f"Query failed: {e}")
             logger.exception("Query error")
-
-        self._tui.print_separator()
 
     async def _display_detailed_results(self) -> None:
         """Display detailed results from the last workflow run."""
@@ -208,7 +222,7 @@ class TroveREPL:
 
         # The latest assistant message contains the result data
         for msg in reversed(self._session.messages):
-            if msg.role == "assistant" and msg.metadata.get("sql_generated"):
+            if msg.role == "assistant" and msg.metadata.get("sql"):
                 # SQL was already displayed via streaming
                 pass
 

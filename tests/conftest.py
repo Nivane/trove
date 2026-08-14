@@ -10,7 +10,6 @@ All LLM calls are mocked; all databases are in-memory SQLite.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 
@@ -27,9 +26,6 @@ from trove.llm.gateway import LLMGateway
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.catalog import CatalogService
 from trove.storage.session_store import SessionStore
-from trove.workflow.engine import WorkflowEngine
-from trove.workflow.registry import WorkflowRegistry
-from trove.agent.session import SessionManager
 
 
 # ── Fixtures ─────────────────────────────────────────────
@@ -119,39 +115,48 @@ def catalog(sqlite_registry):
 
 
 @pytest.fixture
-def engine():
-    """Workflow engine with all built-in workflows registered."""
-    eng = WorkflowEngine()
-    for name in WorkflowRegistry.list_available():
-        eng.register(WorkflowRegistry.create(name))
-    return eng
-
-
-@pytest.fixture
 def agent_config(tmp_home):
-    """AgentConfig with test values and injected services."""
+    """AgentConfig with test values."""
     config = AgentConfig(home=str(tmp_home), target="mock/model")
     return config
 
 
+class ScriptedGateway:
+    """LLM gateway mock: scripted responses; StopIteration if called too often."""
+
+    def __init__(self, responses):
+        self._responses = iter(responses)
+
+    async def chat(self, model, messages, **kwargs):
+        return next(self._responses)
+
+
 @pytest.fixture
-async def session_manager(
-    tmp_home,
-    agent_config,
-    engine,
-    sqlite_registry,
-):
+def graphs(sqlite_registry, agent_config):
+    """Compiled LangGraph graphs (reflection/fixed/empty) with mock LLM."""
+    from trove.workflow.graphs import GraphServices, build_graphs
+
+    services = GraphServices(
+        llm=ScriptedGateway(["```sql\nSELECT name FROM students;\n```", "OK"]),
+        catalog=CatalogService(sqlite_registry),
+        connectors=sqlite_registry,
+        config=agent_config,
+    )
+    return build_graphs(services)
+
+
+@pytest.fixture
+async def session_manager(tmp_home, agent_config, graphs):
     """Fully wired SessionManager for integration tests."""
+    from trove.agent.session import SessionManager
+
     store = SessionStore(home_dir=str(tmp_home))
-    catalog = CatalogService(sqlite_registry)
-    llm = LLMGateway(mock_response="```sql\nSELECT name FROM students;\n```")
+    llm = ScriptedGateway(["```sql\nSELECT name FROM students;\n```", "OK"])
 
     manager = SessionManager(
         config=agent_config,
         session_store=store,
-        workflow_engine=engine,
+        graphs=graphs,
         llm_gateway=llm,
-        catalog_service=catalog,
-        connector_registry=sqlite_registry,
     )
     return manager

@@ -30,6 +30,8 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
 ]
 
 [project.optional-dependencies]

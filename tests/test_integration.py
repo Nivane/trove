@@ -1,4 +1,4 @@
-"""End-to-end integration tests.
+"""End-to-end integration tests (LangGraph era).
 
 The core MVP closed loop:
   Natural language question → schema_linking → gen_sql → execute_sql
@@ -9,17 +9,13 @@ All LLM calls are scripted mocks (zero network, zero API keys).
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from trove.core.config import AgentConfig
 from trove.core.types import Message
-from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
 from trove.storage.session_store import SessionStore
-from trove.workflow.engine import WorkflowEngine
-from trove.workflow.registry import WorkflowRegistry
+from trove.workflow.graphs import GraphServices, build_graphs
 from trove.agent.session import SessionManager
 
 
@@ -49,7 +45,7 @@ class ScriptedLLM:
             return self.summarize_response
         if "Does this result correctly answer" in last_content:
             return self.reflect_response
-        if "Fix the following SQL" in last_content or "failed validation" in last_content:
+        if "failed validation" in last_content:
             return f"```sql\n{self.sql}\n```"
         # Default: SQL generation prompt
         return f"```sql\n{self.sql}\n```"
@@ -61,10 +57,6 @@ async def full_stack(tmp_path, demo_registry):
     store = SessionStore(home_dir=str(tmp_path / "home"))
     catalog = CatalogService(demo_registry)
 
-    engine = WorkflowEngine()
-    for name in WorkflowRegistry.list_available():
-        engine.register(WorkflowRegistry.create(name))
-
     config = AgentConfig(home=str(tmp_path / "home"), target="mock/model")
 
     llm = ScriptedLLM(
@@ -75,13 +67,17 @@ async def full_stack(tmp_path, demo_registry):
             "GROUP BY d.A2 ORDER BY avg_loan DESC",
     )
 
+    services = GraphServices(
+        llm=llm,
+        catalog=catalog,
+        connectors=demo_registry,
+        config=config,
+    )
     manager = SessionManager(
         config=config,
         session_store=store,
-        workflow_engine=engine,
+        graphs=build_graphs(services),
         llm_gateway=llm,
-        catalog_service=catalog,
-        connector_registry=demo_registry,
     )
     return manager
 
@@ -91,43 +87,32 @@ class TestEndToEnd:
         """The complete MVP loop: question → SQL → result → formatted answer."""
         session = await full_stack.start_session(project_cwd="/tmp/integration")
 
-        response, result = await full_stack.ask(
+        state = await full_stack.ask(
             session=session,
             question="哪个地区的平均贷款金额最高？",
             workflow_name="reflection",
         )
 
-        # Workflow completed
-        assert result.workflow_name == "reflection"
-        assert len(result.nodes) == 5  # all 5 nodes ran
-
-        # Check each node succeeded
-        node_statuses = {n.node_name: n.status.value for n in result.nodes}
-        assert node_statuses["schema_linking"] == "success"
-        assert node_statuses["gen_sql"] == "success"
-        assert node_statuses["execute_sql"] == "success"
-        assert node_statuses["reflect"] == "success"
-        assert node_statuses["output"] == "success"
-
-        # SQL contains the expected joins
-        sql = next(
-            n.data["sql"] for n in result.nodes
-            if n.node_name == "gen_sql" and "sql" in n.data
-        )
-        assert "loan" in sql
-        assert "district" in sql
+        # All pipeline stages produced their artifacts.
+        # NOTE: matched_tables is empty for Chinese questions — search_tables
+        # tokenizes with ASCII \w only (pre-existing; semantic matching is
+        # the v0.2 RAG roadmap).
+        assert "loan" in state.sql
+        assert "district" in state.sql
+        assert state.row_count == 3
+        assert state.verdict == "OK"
+        assert state.error == ""
 
         # Execute returned the right answer (Benesov has the highest avg loan)
-        exec_data = next(
-            n.data for n in result.nodes
-            if n.node_name == "execute_sql"
-        )
-        assert exec_data["row_count"] == 3
-        assert "Benesov" in str(exec_data["rows"])
+        assert "Benesov" in str(state.rows)
 
         # Final output contains the result
-        assert "Benesov" in response
-        assert "Question" in response
+        assert "Benesov" in state.final_response
+        assert "Question" in state.final_response
+
+        # The exchange was recorded with graph metadata
+        assert session.messages[-1].metadata["sql"] == state.sql
+        assert session.messages[-1].metadata["verdict"] == "OK"
 
     async def test_multi_turn_conversation(self, full_stack):
         """Multiple questions in the same session accumulate history."""
@@ -146,17 +131,16 @@ class TestEndToEnd:
         assert loaded.messages[5].content != ""  # last assistant message non-empty
 
     async def test_fixed_workflow(self, full_stack):
-        """The 'fixed' workflow skips reflection (4 nodes)."""
+        """The 'fixed' workflow skips reflection."""
         session = await full_stack.start_session(project_cwd="/tmp/integration")
 
-        _, result = await full_stack.ask(
+        state = await full_stack.ask(
             session=session,
             question="test",
             workflow_name="fixed",
         )
-        assert len(result.nodes) == 4
-        node_names = [n.node_name for n in result.nodes]
-        assert "reflect" not in node_names
+        assert state.verdict == ""  # reflect never ran
+        assert state.row_count == 3
 
     async def test_session_compaction_flow(self, full_stack):
         """Full compaction flow: many messages → compact → still usable."""
@@ -172,36 +156,32 @@ class TestEndToEnd:
         assert compacted.messages[0].role == "system"
 
         # Session still usable after compaction
-        _, result = await full_stack.ask(
+        state = await full_stack.ask(
             session=compacted,
             question="压缩后的新问题",
             workflow_name="reflection",
         )
-        assert result.final_output
+        assert state.final_response
 
     async def test_question_with_no_matching_tables(self, full_stack):
         """Schema linking gracefully handles unmatched questions."""
         session = await full_stack.start_session(project_cwd="/tmp/integration")
 
-        response, result = await full_stack.ask(
+        state = await full_stack.ask(
             session=session,
             question="zzz 不存在的表名 zzz",
             workflow_name="reflection",
         )
-        # Workflow still completes (LLM scripted response is used)
-        assert result.nodes[0].node_name == "schema_linking"
-        # No tables matched
-        assert result.nodes[0].data["matched_tables"] == []
+        # No tables matched, but the loop still completed (scripted LLM)
+        assert state.matched_tables == []
+        assert state.final_response
 
 
 class TestWorkflowEdgeCases:
     async def test_scripted_llm_retry(self, tmp_path, demo_registry):
-        """gen_sql retries when the first response is invalid."""
+        """gen_sql subgraph retries when the first response is invalid."""
         store = SessionStore(home_dir=str(tmp_path / "home"))
         catalog = CatalogService(demo_registry)
-
-        engine = WorkflowEngine()
-        engine.register(WorkflowRegistry.create("fixed"))
 
         config = AgentConfig(home=str(tmp_path / "home"))
 
@@ -221,24 +201,26 @@ class TestWorkflowEdgeCases:
         manager = SessionManager(
             config=config,
             session_store=store,
-            workflow_engine=engine,
+            graphs=build_graphs(GraphServices(
+                llm=llm,
+                catalog=catalog,
+                connectors=demo_registry,
+                config=config,
+            )),
             llm_gateway=llm,
-            catalog_service=catalog,
-            connector_registry=demo_registry,
         )
 
         session = await manager.start_session(project_cwd="/tmp/retry")
-        _, result = await manager.ask(
+        state = await manager.ask(
             session=session,
             question="有多少个客户？",
             workflow_name="fixed",
         )
 
-        # gen_sql succeeded on second attempt
-        gen_node = next(n for n in result.nodes if n.node_name == "gen_sql")
-        assert gen_node.status.value == "success"
-        assert gen_node.data["attempts"] == 2
+        # gen_sql succeeded on the second attempt
+        assert llm.calls == 2
+        assert state.sql == "SELECT COUNT(*) FROM client;"
+        assert state.error == ""
 
-        # Execution returned school count
-        exec_node = next(n for n in result.nodes if n.node_name == "execute_sql")
-        assert exec_node.data["row_count"] == 1
+        # Execution returned the row count
+        assert state.row_count == 1

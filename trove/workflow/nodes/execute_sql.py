@@ -1,123 +1,67 @@
 """ExecuteSQL node — runs generated SQL against the datasource.
 
-Checks cancellation before executing and supports
-interruption of long-running queries.
+Cancellation is handled by asyncio task cancellation (CancelledError
+propagates through the graph); no explicit cancellation-event checks.
+
+Node shape: `async def execute_sql(state: WorkflowState) -> dict`
+returns a partial state update.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from trove.core.types import NodeStatus, QueryResult, WorkflowContext
-from trove.core.errors import SQLExecutionError, CancelledError
 from trove.core.logging import get_logger
-from trove.workflow.node import Node, NodeResult
-from trove.workflow.node_type import NodeType
+from trove.services.datasource.registry import ConnectorRegistry
+from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
 
-class ExecuteSQLNode(Node):
-    """Execute a SQL query against the active datasource.
+def make_execute_sql(
+    connectors: ConnectorRegistry | None = None,
+    timeout_ms: int = 30000,
+) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
+    """Build the execute_sql node bound to a connector registry.
 
-    Requires gen_sql to have run first (reads sql from context).
-    Supports cancellation via ctx.cancellation_event.
+    Args:
+        connectors: Registry used to run SQL (None → error update).
+        timeout_ms: Query timeout in milliseconds.
+
+    Returns:
+        Async node function taking WorkflowState and returning a partial update.
     """
 
-    node_type = NodeType.EXECUTE_SQL
+    async def execute_sql(state: WorkflowState) -> dict[str, Any]:
+        # Upstream node failed — pass through without running
+        if state.error:
+            return {}
 
-    def __init__(self, name: str = "execute_sql", timeout_ms: int = 30000):
-        super().__init__(name)
-        self.timeout_ms = timeout_ms
+        if not state.sql:
+            return {"error": "No SQL to execute — SQL generation did not produce a query."}
 
-    async def execute(self, ctx: WorkflowContext) -> NodeResult:
-        """Execute the SQL from the gen_sql node result.
+        if connectors is None:
+            return {"error": "No datasource registry available."}
 
-        Args:
-            ctx: Workflow context (reads sql from _node_data["gen_sql"]).
-
-        Returns:
-            NodeResult with query result data.
-        """
-        # Get SQL from upstream gen_sql node
-        sql = ""
-        if hasattr(ctx, '_node_data'):
-            gen_data = ctx._node_data.get("gen_sql", {})  # type: ignore[attr-defined]
-            sql = gen_data.get("sql", "")
-
-        if not sql:
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.ERROR,
-                error=SQLExecutionError(
-                    message="No SQL to execute — gen_sql node must run first",
-                ),
-            )
-
-        # Check for cancellation
-        if ctx.cancellation_event.is_set():
-            raise CancelledError("Execution cancelled before start")
-
-        # Get the connector registry from config
-        registry = getattr(ctx.config, '_connector_registry', None)
-        if registry is None:
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.ERROR,
-                error=SQLExecutionError(
-                    message="No datasource registry available",
-                    sql=sql,
-                ),
-            )
-
-        # Execute with timeout
         try:
-            result: QueryResult = await asyncio.wait_for(
-                registry.execute(sql),
-                timeout=self.timeout_ms / 1000.0,
+            result = await asyncio.wait_for(
+                connectors.execute(state.sql),
+                timeout=timeout_ms / 1000.0,
             )
-
-            # Check for cancellation during execution
-            if ctx.cancellation_event.is_set():
-                return NodeResult(
-                    node_name=self.name,
-                    status=NodeStatus.ERROR,
-                    error=CancelledError("Execution cancelled during query"),
-                    data={"sql": sql, "partial_result": result},
-                )
-
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.SUCCESS,
-                data={
-                    "sql": sql,
-                    "columns": result.columns,
-                    "rows": result.rows,
-                    "row_count": result.row_count,
-                    "execution_time_ms": result.execution_time_ms,
-                },
-            )
-
         except asyncio.TimeoutError:
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.ERROR,
-                error=SQLExecutionError(
-                    message=f"Query timed out after {self.timeout_ms}ms",
-                    sql=sql,
-                ),
-                data={"sql": sql},
-            )
-        except CancelledError:
+            return {"error": f"Query timed out after {timeout_ms}ms"}
+        except asyncio.CancelledError:
             raise
         except Exception as e:
-            return NodeResult(
-                node_name=self.name,
-                status=NodeStatus.ERROR,
-                error=SQLExecutionError(
-                    message=str(e),
-                    sql=sql,
-                    db_error=str(e),
-                ),
-                data={"sql": sql},
-            )
+            return {"error": str(e)}
+
+        return {
+            "columns": result.columns,
+            "rows": result.rows,
+            "row_count": result.row_count,
+            "execution_time_ms": result.execution_time_ms,
+        }
+
+    return execute_sql
