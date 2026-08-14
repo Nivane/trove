@@ -63,14 +63,37 @@ def build_sql_prompt(
     schema_context: str,
     dialect: str,
     reflect_reason: str = "",
+    few_shots: list[dict[str, Any]] | None = None,
+    term_notes: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Build the initial SQL generation prompt."""
+    """Build the initial SQL generation prompt.
+
+    Knowledge base material (optional) is injected as:
+      - Terminology: standard formulations for matched business terms
+      - Reference examples: top-K similar questions with their SQL
+    """
     parts = [
         f"Target SQL dialect: {dialect}",
         "",
         "Database schema:",
         schema_context or "(No schema information available - generate a best-effort query)",
         "",
+    ]
+    if term_notes:
+        parts.append("Terminology (standard formulations):")
+        for note in term_notes:
+            line = f"- {note.get('term', '')} → {note.get('mapping', '')}"
+            if note.get("definition"):
+                line += f" — {note['definition']}"
+            parts.append(line)
+        parts.append("")
+    if few_shots:
+        parts.append("Reference examples (standard formulations for this data):")
+        for shot in few_shots:
+            parts.append(f"Q: {shot.get('question', '')}")
+            parts.append(f"SQL: {shot.get('sql', '')}")
+        parts.append("")
+    parts += [
         "Question:",
         question,
         "",
@@ -172,6 +195,8 @@ def make_generate(
                 schema_context=state.schema_context,
                 dialect=state.dialect,
                 reflect_reason=state.reflect_reason,
+                few_shots=state.few_shots or None,
+                term_notes=state.term_notes or None,
             )
 
         model = config.target or "openai/gpt-4o"

@@ -145,12 +145,17 @@ async def create_app_components(
     # ── Catalog ───────────────────────────────────────────
     catalog_service = CatalogService(connector_registry)
 
+    # ── Knowledge base (optional: .trove/kb/) ─────────────
+    from trove.services.kb.service import KbService
+    kb = KbService(Path.cwd())
+
     # ── Graphs ────────────────────────────────────────────
     services = GraphServices(
         llm=llm_gateway,
         catalog=catalog_service,
         connectors=connector_registry,
         config=config,
+        kb=kb,
     )
     graphs = build_graphs(services, checkpointer=checkpointer)
 
@@ -168,6 +173,7 @@ async def create_app_components(
         "llm_gateway": llm_gateway,
         "connector_registry": connector_registry,
         "catalog_service": catalog_service,
+        "kb": kb,
         "graphs": graphs,
         "session_manager": session_manager,
     }
@@ -194,6 +200,7 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
         "row_count": summary.get("row_count", -1),
         "verdict": summary.get("verdict", ""),
         "error": summary.get("error", ""),
+        "kb_hits": summary.get("kb_hits", []),
         "events": printable_events,
     }
 
@@ -244,6 +251,8 @@ async def async_main_repl():
             connector_registry=components["connector_registry"],
             session_store=components["session_store"],
             current_session=session,
+            kb_service=components["kb"],
+            llm_gateway=components["llm_gateway"],
         )
 
         try:

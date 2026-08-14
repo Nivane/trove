@@ -26,6 +26,7 @@ from trove.cli.slash_registry import SlashRegistry
 from trove.cli.commands.session_cmds import register_session_commands
 from trove.cli.commands.metadata_cmds import register_metadata_commands
 from trove.cli.commands.system_cmds import register_system_commands
+from trove.cli.commands.kb_cmds import register_kb_commands
 
 from trove.core.logging import get_logger
 
@@ -49,6 +50,8 @@ class TroveREPL:
         connector_registry: Any = None,
         session_store: Any = None,
         current_session: Any = None,
+        kb_service: Any = None,
+        llm_gateway: Any = None,
     ):
         self._manager = session_manager
         self._config = config
@@ -68,12 +71,15 @@ class TroveREPL:
             "connector_registry": self._registry,
             "session_store": self._store,
             "current_session": self._session,
+            "kb": kb_service,
+            "llm_gateway": llm_gateway,
         }
 
         # Register all slash commands
         register_session_commands(self._slash_registry, self._context)
         register_metadata_commands(self._slash_registry, self._context)
         register_system_commands(self._slash_registry, self._context)
+        register_kb_commands(self._slash_registry, self._context)
 
         # prompt_toolkit session with history
         self._prompt_session = PromptSession(

@@ -309,6 +309,7 @@ class SessionManager:
             "verdict": final.verdict,
             "reason": final.reason,
             "error": final.error,
+            "kb_hits": final.kb_hits,
             "final_response": final.final_response,
         }
 

@@ -69,6 +69,22 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     if state.execution_time_ms:
         parts.append(f"\n---\n*Execution time: {state.execution_time_ms:.0f}ms*")
 
+    # Knowledge base usage
+    if state.kb_hits:
+        term_parts = [
+            f"{h['term']} → {h['mapping']}"
+            for h in state.kb_hits
+            if h.get("kind") == "term"
+        ]
+        example_count = sum(1 for h in state.kb_hits if h.get("kind") == "example")
+        segments = []
+        if term_parts:
+            segments.append(", ".join(term_parts))
+        if example_count:
+            label = "example" if example_count == 1 else "examples"
+            segments.append(f"{example_count} {label} used")
+        parts.append(f"\n*Knowledge base: {' | '.join(segments)}*\n")
+
     response = "\n".join(parts)
 
     return {"final_response": response}

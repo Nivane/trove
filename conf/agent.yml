@@ -1,0 +1,6 @@
+# Trove 全局配置（搜索顺序: ./conf/agent.yml → ~/.trove/conf/agent.yml）
+agent:
+  # DeepSeek 的 OpenAI 兼容 API，litellm 原生支持
+  target: deepseek/deepseek-chat
+  # 想用推理模型可以改成:
+  # target: deepseek/deepseek-reasoner

@@ -43,6 +43,16 @@ class ScriptedLLM:
         return next(self._responses)
 
 
+@pytest.fixture
+def kb_service(tmp_path):
+    """KbService with an existing (empty) kb directory."""
+    from trove.services.kb.service import KbService
+
+    kb = KbService(tmp_path / "proj")
+    kb.kb_dir.mkdir(parents=True)
+    return kb
+
+
 # ── Schema Linking ───────────────────────────────────────
 
 
@@ -75,6 +85,56 @@ class TestSchemaLinking:
         assert update == {}
 
 
+class TestSchemaLinkingWithKB:
+    def _kb_with_terms(self, kb_service):
+        (kb_service.kb_dir / "semantics.yml").write_text(
+            """
+terms:
+  - term: 平均成绩
+    aliases: [平均分]
+    mapping: AVG(students.grade)
+    tables: [students]
+    definition: 学生平均分
+""",
+            encoding="utf-8",
+        )
+        return kb_service
+
+    async def test_chinese_question_matches_via_terms(self, catalog, kb_service):
+        """中文问题无 ASCII 分词，靠语义术语命中表（中文匹配修复）。"""
+        node = make_schema_linking(catalog=catalog, kb=self._kb_with_terms(kb_service))
+        update = await node(make_state(question="学生们的平均成绩是多少"))
+        assert "students" in update["matched_tables"]
+        assert any(h["term"] == "平均成绩" for h in update["kb_hits"])
+
+    async def test_notes_included_in_schema_context(self, catalog, kb_service):
+        self._kb_with_terms(kb_service)
+        (kb_service.kb_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: 学生成绩表
+    columns:
+      - name: grade
+        description: 考试成绩
+    metrics:
+      - name: avg_grade
+        definition: 平均成绩
+""",
+            encoding="utf-8",
+        )
+        node = make_schema_linking(catalog=catalog, kb=kb_service)
+        update = await node(make_state(question="学生们的平均成绩是多少"))
+        assert "学生成绩表" in update["schema_context"]
+        assert "考试成绩" in update["schema_context"]
+
+    async def test_no_kb_unchanged(self, catalog):
+        """kb=None 时行为与现状一致（无 kb_hits 键）。"""
+        node = make_schema_linking(catalog=catalog, kb=None)
+        update = await node(make_state())
+        assert "kb_hits" not in update
+
+
 # ── gen_sql: prompt builders and extraction ──────────────
 
 
@@ -98,6 +158,19 @@ class TestSQLHelpers:
         prompt = build_sql_prompt("q", "schema", "sqlite", reflect_reason="wrong grouping")
         assert "wrong grouping" in prompt
         assert "rejected" in prompt
+
+    def test_build_sql_prompt_includes_few_shots_and_terms(self):
+        few_shots = [{"question": "各地区平均成绩", "sql": "SELECT 1", "template": False}]
+        term_notes = [{"term": "平均成绩", "mapping": "AVG(students.grade)", "definition": "学生平均分"}]
+        prompt = build_sql_prompt("q", "schema", "sqlite", few_shots=few_shots, term_notes=term_notes)
+        assert "Reference examples" in prompt
+        assert "SELECT 1" in prompt
+        assert "AVG(students.grade)" in prompt
+
+    def test_build_sql_prompt_without_kb_has_no_sections(self):
+        prompt = build_sql_prompt("q", "schema", "sqlite")
+        assert "Reference examples" not in prompt
+        assert "Terminology" not in prompt
 
     def test_build_fix_prompt_lists_errors(self):
         prompt = build_fix_prompt("SELEC 1", ["Parse error: bad"])
@@ -324,3 +397,20 @@ class TestOutput:
         response = update["final_response"]
         assert "**Error**" in response
         assert "3 attempts" in response
+
+    async def test_kb_hits_rendered(self):
+        state = make_state(
+            row_count=0,
+            kb_hits=[
+                {"kind": "term", "term": "平均成绩", "mapping": "AVG(students.grade)"},
+                {"kind": "example", "question": "各地区平均成绩"},
+            ],
+        )
+        response = (await output(state))["final_response"]
+        assert "Knowledge base" in response
+        assert "平均成绩 → AVG(students.grade)" in response
+        assert "1 example used" in response
+
+    async def test_no_kb_hits_no_kb_line(self):
+        response = (await output(make_state(row_count=0)))["final_response"]
+        assert "Knowledge base" not in response

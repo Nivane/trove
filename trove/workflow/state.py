@@ -11,7 +11,8 @@ in the LangGraph checkpointer.
 
 from __future__ import annotations
 
-from typing import Any
+import operator
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,10 @@ class WorkflowState(BaseModel):
 
     session_id: str
     question: str
+
+    # Knowledge base hits (term matches + example matches).
+    # operator.add: updates from different nodes accumulate.
+    kb_hits: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
 
     # schema_linking artifacts
     matched_tables: list[str] = Field(default_factory=list)
@@ -61,3 +66,7 @@ class GenSQLState(BaseModel):
     attempts: int = 0
     validation_errors: list[str] = Field(default_factory=list)
     error: str = ""
+
+    # Knowledge base material for prompt injection
+    few_shots: list[dict[str, Any]] = Field(default_factory=list)   # reference examples/templates
+    term_notes: list[dict[str, Any]] = Field(default_factory=list)  # terminology definitions

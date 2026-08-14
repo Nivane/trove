@@ -41,3 +41,10 @@ class TestFormatPrintPayload:
         summary = {**SUMMARY, "error": "boom"}
         payload = format_print_payload(summary, [])
         assert payload["error"] == "boom"
+
+    def test_kb_hits_included_when_present(self):
+        hits = [{"kind": "term", "term": "平均成绩", "mapping": "AVG(grade)"}]
+        payload = format_print_payload({**SUMMARY, "kb_hits": hits}, [])
+        assert payload["kb_hits"] == hits
+        # absent → empty list, still serializable
+        assert format_print_payload(SUMMARY, [])["kb_hits"] == []

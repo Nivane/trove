@@ -16,6 +16,7 @@ class TestWorkflowState:
         assert state.retry_count == 0
         assert state.error == ""
         assert state.final_response == ""
+        assert state.kb_hits == []
 
     def test_session_id_and_question_required(self):
         with pytest.raises(ValidationError):

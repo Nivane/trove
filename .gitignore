@@ -16,3 +16,8 @@ htmlcov/
 
 # Misc (OS files, transient cert bundle)
 .DS_Store
+
+# Secrets & local state
+.env
+.trove_history
+.trove
