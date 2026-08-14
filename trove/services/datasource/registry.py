@@ -13,19 +13,23 @@ from trove.core.errors import DatasourceError
 from trove.core.logging import get_logger
 from trove.services.datasource.adapters.base import DatabaseAdapter
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
+from trove.services.datasource.adapters.mysql import MySQLAdapter
+from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
+from trove.services.datasource.adapters.duckdb import DuckDBAdapter
 
 logger = get_logger(__name__)
 
 # ── Adapter factory mapping ──────────────────────────────
+# Adapter modules import their drivers lazily, so importing them here
+# never requires the optional extras to be installed.
 
 _ADAPTER_REGISTRY: dict[str, type[DatabaseAdapter]] = {
     "sqlite": SQLiteAdapter,
-    # More adapters registered as they're implemented:
-    # "duckdb": DuckDBAdapter,
+    "mysql": MySQLAdapter,
+    "clickhouse": ClickHouseAdapter,
+    "duckdb": DuckDBAdapter,
     # "postgres": PostgresAdapter,
-    # "mysql": MySQLAdapter,
     # "snowflake": SnowflakeAdapter,
-    # "clickhouse": ClickHouseAdapter,
 }
 
 

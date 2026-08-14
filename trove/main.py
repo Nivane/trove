@@ -98,6 +98,36 @@ async def setup_demo_datasource(registry: ConnectorRegistry) -> None:
     await registry.register(config, set_default=True)
 
 
+async def setup_datasource(args, registry: ConnectorRegistry) -> None:
+    """Register the --datasource target.
+
+    Accepts:
+      - "demo": the built-in BIRD financial demo database
+      - scheme:// URLs: sqlite://, mysql://, clickhouse://, duckdb://
+
+    Raises:
+        DatasourceError: Unknown target, malformed URL, or connection failure.
+    """
+    from trove.core.errors import DatasourceError
+    from trove.services.datasource.urls import parse_datasource_url
+
+    target = args.datasource
+    if target == "demo":
+        await setup_demo_datasource(registry)
+    elif "://" in target:
+        adapter_config = parse_datasource_url(target)
+        await registry.register(adapter_config, set_default=True)
+    else:
+        raise DatasourceError(
+            message=(
+                f"Unknown datasource: {target}. "
+                f"Use --datasource demo or a scheme:// URL "
+                f"(sqlite/mysql/clickhouse/duckdb)."
+            ),
+            datasource=target,
+        )
+
+
 async def create_app_components(
     args,
     config: AgentConfig,
@@ -122,24 +152,12 @@ async def create_app_components(
     # ── Datasource ────────────────────────────────────────
     connector_registry = ConnectorRegistry()
 
-    # Set up the requested datasource
-    datasource_name = args.datasource
-    if datasource_name == "demo":
-        await setup_demo_datasource(connector_registry)
-    elif datasource_name.startswith("sqlite://"):
-        db_path = datasource_name.replace("sqlite://", "")
-        adapter_config = DatasourceConfig(
-            name="sqlite",
-            type="sqlite",
-            connection_params={"path": db_path},
-            default=True,
-        )
-        await connector_registry.register(adapter_config, set_default=True)
-    else:
-        logger.warning(
-            "Unknown datasource: %s. Use --datasource demo for the built-in demo.",
-            datasource_name,
-        )
+    # Set up the requested datasource; on failure fall back to demo
+    # so the REPL stays usable (with a clear warning).
+    try:
+        await setup_datasource(args, connector_registry)
+    except Exception as e:
+        logger.warning("Datasource setup failed (%s); falling back to demo.", e)
         await setup_demo_datasource(connector_registry)
 
     # ── Catalog ───────────────────────────────────────────

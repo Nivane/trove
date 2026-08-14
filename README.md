@@ -63,9 +63,29 @@ agent:
 
 ## 数据源
 
-当前实现：**SQLite**（内置 demo + `--datasource sqlite:///path/to.db`）。
+| 数据源 | 连接方式 | 安装 |
+|---|---|---|
+| SQLite | `--datasource demo` / `sqlite:///path/to.db` / `sqlite://:memory:` | 内置 |
+| MySQL | `mysql://user:pass@host:3306/database`（端口可省略，默认 3306） | `uv sync --extra mysql` |
+| ClickHouse | `clickhouse://user:pass@host:8123/database`（默认 8123） | `uv sync --extra clickhouse` |
+| DuckDB | `duckdb:///path/to.duckdb` / `duckdb://:memory:` | `uv sync --extra duckdb` |
 
-PostgreSQL（asyncpg）/ DuckDB 的依赖 extras 已声明，但适配器尚未实现。新增适配器：实现 `DatabaseAdapter` 五个抽象方法（`trove/services/datasource/adapters/base.py`），用 `register_adapter(dialect, cls)` 注册即可。
+- 数据源名 = **数据库名**（知识库目录 `.trove/kb/<数据库名>/` 与之对应，每个库各自演化）
+- 驱动按需惰性导入：未安装对应 extra 时给出明确提示，不影响其他数据源
+- 连接失败时回退到 demo 并输出警告
+- 新增适配器：实现 `DatabaseAdapter` 五个抽象方法（`trove/services/datasource/adapters/base.py`），在 `registry.py` 的 `_ADAPTER_REGISTRY` 注册
+
+**真实服务集成测试**（未设置环境变量时自动跳过，CI 零网络约束不变）：
+
+```bash
+MYSQL_TEST_URL="mysql://user:pass@host:3306/anydb" \
+  uv run pytest tests/services/test_mysql_adapter.py -m integration
+
+CLICKHOUSE_TEST_URL="clickhouse://default:pass@host:8123/default" \
+  uv run pytest tests/services/test_clickhouse_adapter.py -m integration
+```
+
+（DuckDB 集成测试用内存库，无需外部服务，常开。）
 
 ## 开发
 
