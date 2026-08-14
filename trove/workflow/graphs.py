@@ -103,20 +103,28 @@ def _make_gen_sql_node(
             except Exception:
                 pass
 
-        # Knowledge base: reference examples + terminology for the prompt
+        # Knowledge base: reference examples + terminology for the prompt.
+        # Scoped to the active datasource; without a datasource context the
+        # KB is not consulted.
+        datasource = ""
+        if services.connectors is not None:
+            datasource = services.connectors.default_name or ""
+
         few_shots: list[dict[str, Any]] = []
         term_notes: list[dict[str, Any]] = []
         example_hits = []
-        if services.kb is not None:
-            await services.kb.ensure_synced()
-            example_hits = await services.kb.search_examples(state.question, limit=3)
+        if services.kb is not None and datasource:
+            await services.kb.ensure_synced(default_datasource=datasource)
+            example_hits = await services.kb.search_examples(
+                state.question, datasource, limit=3,
+            )
             few_shots = [
                 {"question": h.question, "sql": h.sql, "template": h.template}
                 for h in example_hits
             ]
             term_notes = [
                 {"term": h.term, "mapping": h.mapping, "definition": h.definition}
-                for h in await services.kb.search_terms(state.question)
+                for h in await services.kb.search_terms(state.question, datasource)
             ]
 
         sub_state = GenSQLState(
@@ -185,7 +193,9 @@ def _build_reflection(
     subgraph: CompiledStateGraph,
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
-    g.add_node("schema_linking", make_schema_linking(services.catalog, kb=services.kb))
+    g.add_node("schema_linking", make_schema_linking(
+        services.catalog, kb=services.kb, connectors=services.connectors,
+    ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph))
     g.add_node("execute_sql", make_execute_sql(services.connectors))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig()))
@@ -209,7 +219,9 @@ def _build_fixed(
     subgraph: CompiledStateGraph,
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
-    g.add_node("schema_linking", make_schema_linking(services.catalog, kb=services.kb))
+    g.add_node("schema_linking", make_schema_linking(
+        services.catalog, kb=services.kb, connectors=services.connectors,
+    ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph))
     g.add_node("execute_sql", make_execute_sql(services.connectors))
     g.add_node("output", output)

@@ -61,7 +61,18 @@ def _parse_draft(response: str) -> dict:
 
 
 def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
-    """Register the /kb command (subcommands: init, list, reload, learn)."""
+    """Register the /kb command (subcommands: init, list, reload, learn).
+
+    All operations are scoped to the active datasource
+    (connector_registry.default_name): each datasource owns its own
+    .trove/kb/<datasource>/ knowledge files.
+    """
+
+    def _datasource() -> str:
+        registry_svc = context.get("connector_registry")
+        if registry_svc is None:
+            return ""
+        return registry_svc.default_name or ""
 
     async def _cmd_learn(args: str) -> str:
         kb = context.get("kb")
@@ -70,13 +81,16 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             draft = kb.pending_draft
             if not draft:
                 return "No pending draft. Run /kb learn first."
+            datasource = _datasource()
+            if not datasource:
+                return "No active datasource to write into. Connect a datasource first."
             kb.pending_draft = None
-            await kb.append_example(draft["example"])
+            await kb.append_example(draft["example"], datasource)
             for term in draft["terms"]:
-                await kb.append_term(term)
+                await kb.append_term(term, datasource)
             return (
                 f"Learned: 1 example + {len(draft['terms'])} term(s) "
-                f"written to .trove/kb/."
+                f"written to .trove/kb/{datasource}/."
             )
 
         session = context.get("current_session")
@@ -145,41 +159,45 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         kb = context.get("kb")
         if not kb:
             return "Knowledge base not available."
+        datasource = _datasource()
 
         if sub == "init":
             registry_svc = context.get("connector_registry")
             if not registry_svc:
                 return "No datasource connected."
             schema = await registry_svc.get_schema()
-            if kb.init_schema_notes(schema):
+            if kb.init_schema_notes(schema, datasource):
                 return (
-                    "Created .trove/kb/schema_notes.yml skeleton. "
-                    "Fill in table/column descriptions, then /kb reload."
+                    f"Created .trove/kb/{datasource}/schema_notes.yml skeleton. "
+                    f"Fill in table/column descriptions, then /kb reload."
                 )
-            return "schema_notes.yml already exists — refusing to overwrite."
+            return f".trove/kb/{datasource}/schema_notes.yml already exists — refusing to overwrite."
 
         if sub == "list":
-            await kb.ensure_synced()
-            counts = await kb.list_items()
-            if not counts:
+            await kb.ensure_synced(datasource or None)
+            grouped = await kb.list_items()
+            if not grouped:
                 return "Knowledge base is empty. Run /kb init to create the schema skeleton."
             lines = ["Knowledge base items:"]
-            for kind in sorted(counts):
-                lines.append(f"  {kind}: {counts[kind]}")
+            for ds in sorted(grouped):
+                lines.append(f"  {ds}:")
+                for kind in sorted(grouped[ds]):
+                    lines.append(f"    {kind}: {grouped[ds][kind]}")
             return "\n".join(lines)
 
         if sub == "reload":
-            await kb.force_sync()
-            counts = await kb.list_items()
-            return f"Knowledge base reloaded ({sum(counts.values())} items)."
+            await kb.force_sync(datasource or None)
+            grouped = await kb.list_items()
+            total = sum(sum(kinds.values()) for kinds in grouped.values())
+            return f"Knowledge base reloaded ({total} items)."
 
         if sub == "learn":
             return await _cmd_learn(args)
 
         return (
             "Usage: /kb init | /kb list | /kb reload | /kb learn [--yes]\n"
-            "  init    generate schema_notes.yml skeleton from the datasource\n"
-            "  list    show knowledge base item counts\n"
+            "  init    generate schema_notes.yml skeleton for the active datasource\n"
+            "  list    show knowledge base item counts per datasource\n"
             "  reload  re-sync YAML files immediately\n"
             "  learn   draft an example+terms from the last exchange; --yes saves it"
         )

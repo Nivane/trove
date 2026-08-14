@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trove-agent"
 version = "0.1.0"
-description = "Trove — Intelligent Data Agent: natural language to SQL with an evolvable knowledge base"
+description = "Trove — Ask your data, answered by a knowledge base that grows"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.12"

@@ -53,15 +53,18 @@ class TestKbInit:
         reg = make_reg(kb, connector_registry=sqlite_registry)
         result = await reg.get("kb").handler("init")
         assert "schema_notes.yml" in result
-        assert (kb.kb_dir / "schema_notes.yml").exists()
-        assert "students" in (kb.kb_dir / "schema_notes.yml").read_text(encoding="utf-8")
+        ds = sqlite_registry.default_name
+        assert (kb.kb_dir / ds / "schema_notes.yml").exists()
+        assert "students" in (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
 
     async def test_init_refuses_overwrite(self, kb, sqlite_registry):
-        (kb.kb_dir / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
+        ds = sqlite_registry.default_name
+        (kb.kb_dir / ds).mkdir(parents=True)
+        (kb.kb_dir / ds / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
         reg = make_reg(kb, connector_registry=sqlite_registry)
         result = await reg.get("kb").handler("init")
         assert "refusing" in result
-        assert (kb.kb_dir / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
+        assert (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
 
 
 class TestKbList:
@@ -70,26 +73,31 @@ class TestKbList:
         result = await reg.get("kb").handler("list")
         assert "empty" in result.lower()
 
-    async def test_list_shows_counts(self, kb):
-        (kb.kb_dir / "semantics.yml").write_text(
+    async def test_list_shows_counts_grouped_by_datasource(self, kb, sqlite_registry):
+        ds = sqlite_registry.default_name
+        (kb.kb_dir / ds).mkdir(parents=True)
+        (kb.kb_dir / ds / "semantics.yml").write_text(
             "terms:\n  - term: 平均成绩\n    mapping: AVG(grade)\n    tables: [students]\n",
             encoding="utf-8",
         )
-        reg = make_reg(kb)
+        reg = make_reg(kb, connector_registry=sqlite_registry)
         result = await reg.get("kb").handler("list")
+        assert ds in result
         assert "term: 1" in result
 
 
 class TestKbReload:
-    async def test_reload_purges_deleted_files(self, kb):
-        (kb.kb_dir / "examples.yml").write_text(
+    async def test_reload_purges_deleted_files(self, kb, sqlite_registry):
+        ds = sqlite_registry.default_name
+        (kb.kb_dir / ds).mkdir(parents=True)
+        (kb.kb_dir / ds / "examples.yml").write_text(
             "examples:\n  - question: q\n    sql: SELECT 1\n    tags: [x]\n",
             encoding="utf-8",
         )
-        reg = make_reg(kb)
+        reg = make_reg(kb, connector_registry=sqlite_registry)
         await reg.get("kb").handler("list")  # syncs
 
-        (kb.kb_dir / "examples.yml").unlink()
+        (kb.kb_dir / ds / "examples.yml").unlink()
         result = await reg.get("kb").handler("reload")
         assert "reloaded" in result
         listed = await reg.get("kb").handler("list")
@@ -109,28 +117,42 @@ class TestKbLearn:
         ]
         return session
 
-    async def test_learn_drafts_and_confirms(self, kb):
+    async def test_learn_drafts_and_confirms(self, kb, sqlite_registry):
         llm = LLMGateway(mock_response=DRAFT_YAML)
-        reg = make_reg(kb, llm_gateway=llm, current_session=self._session_with_exchange())
+        reg = make_reg(
+            kb,
+            llm_gateway=llm,
+            current_session=self._session_with_exchange(),
+            connector_registry=sqlite_registry,
+        )
 
         result = await reg.get("kb").handler("learn")
         assert "yes" in result  # asks for confirmation
         assert kb.pending_draft is not None
-        assert not (kb.kb_dir / "examples.yml").exists()  # nothing written yet
+        ds = sqlite_registry.default_name
+        assert not (kb.kb_dir / ds / "examples.yml").exists()  # nothing written yet
 
         result2 = await reg.get("kb").handler("learn --yes")
-        assert (kb.kb_dir / "examples.yml").exists()
-        assert (kb.kb_dir / "semantics.yml").exists()
+        assert (kb.kb_dir / ds / "examples.yml").exists()
+        assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert kb.pending_draft is None
 
-        await kb.ensure_synced()
-        hits = await kb.search_examples("平均成绩")
+        await kb.ensure_synced(ds)
+        hits = await kb.search_examples("平均成绩", ds)
         assert any(h.question == "学生们的平均成绩是多少" for h in hits)
 
     async def test_learn_yes_without_draft(self, kb):
         reg = make_reg(kb)
         result = await reg.get("kb").handler("learn --yes")
         assert "draft" in result.lower()
+
+    async def test_learn_yes_requires_datasource(self, kb):
+        """确认写入需要数据源上下文（写入目标目录由数据源名决定）。"""
+        kb.pending_draft = {"example": {"question": "q", "sql": "SELECT 1"}, "terms": []}
+        reg = make_reg(kb)  # no connector_registry
+        result = await reg.get("kb").handler("learn --yes")
+        assert "datasource" in result.lower()
+        assert kb.pending_draft is not None  # draft kept for retry
 
     async def test_learn_requires_completed_query(self, kb):
         session = Session()  # no messages

@@ -44,13 +44,18 @@ class ScriptedLLM:
 
 
 @pytest.fixture
-def kb_service(tmp_path):
-    """KbService with an existing (empty) kb directory."""
+def kb_service(tmp_path, sqlite_registry):
+    """KbService with an existing kb directory; datasource = sqlite_registry name."""
     from trove.services.kb.service import KbService
 
     kb = KbService(tmp_path / "proj")
-    kb.kb_dir.mkdir(parents=True)
+    (kb.kb_dir / sqlite_registry.default_name).mkdir(parents=True)
     return kb
+
+
+@pytest.fixture
+def kb_ds_dir(kb_service, sqlite_registry):
+    return kb_service.kb_dir / sqlite_registry.default_name
 
 
 # ── Schema Linking ───────────────────────────────────────
@@ -86,8 +91,8 @@ class TestSchemaLinking:
 
 
 class TestSchemaLinkingWithKB:
-    def _kb_with_terms(self, kb_service):
-        (kb_service.kb_dir / "semantics.yml").write_text(
+    def _kb_with_terms(self, kb_service, kb_ds_dir):
+        (kb_ds_dir / "semantics.yml").write_text(
             """
 terms:
   - term: 平均成绩
@@ -100,16 +105,24 @@ terms:
         )
         return kb_service
 
-    async def test_chinese_question_matches_via_terms(self, catalog, kb_service):
+    async def test_chinese_question_matches_via_terms(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
         """中文问题无 ASCII 分词，靠语义术语命中表（中文匹配修复）。"""
-        node = make_schema_linking(catalog=catalog, kb=self._kb_with_terms(kb_service))
+        node = make_schema_linking(
+            catalog=catalog,
+            kb=self._kb_with_terms(kb_service, kb_ds_dir),
+            connectors=sqlite_registry,
+        )
         update = await node(make_state(question="学生们的平均成绩是多少"))
         assert "students" in update["matched_tables"]
         assert any(h["term"] == "平均成绩" for h in update["kb_hits"])
 
-    async def test_notes_included_in_schema_context(self, catalog, kb_service):
-        self._kb_with_terms(kb_service)
-        (kb_service.kb_dir / "schema_notes.yml").write_text(
+    async def test_notes_included_in_schema_context(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        self._kb_with_terms(kb_service, kb_ds_dir)
+        (kb_ds_dir / "schema_notes.yml").write_text(
             """
 tables:
   - name: students
@@ -123,10 +136,29 @@ tables:
 """,
             encoding="utf-8",
         )
-        node = make_schema_linking(catalog=catalog, kb=kb_service)
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+        )
         update = await node(make_state(question="学生们的平均成绩是多少"))
         assert "学生成绩表" in update["schema_context"]
         assert "考试成绩" in update["schema_context"]
+
+    async def test_other_datasource_kb_not_visible(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """知识按数据源隔离：另一个数据源目录的术语不可见。"""
+        self._kb_with_terms(kb_service, kb_ds_dir)
+        other = kb_service.kb_dir / "other_db"
+        other.mkdir()
+        (other / "semantics.yml").write_text(
+            "terms:\n  - term: 别的术语\n    tables: [ghost]\n",
+            encoding="utf-8",
+        )
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+        )
+        update = await node(make_state(question="别的术语查询"))
+        assert "ghost" not in update["matched_tables"]
 
     async def test_no_kb_unchanged(self, catalog):
         """kb=None 时行为与现状一致（无 kb_hits 键）。"""

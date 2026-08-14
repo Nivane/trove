@@ -169,12 +169,13 @@ class TestEmptyGraph:
 
 
 class TestKnowledgeBaseGraph:
-    def _kb(self, tmp_path):
+    def _kb(self, tmp_path, datasource):
         from trove.services.kb.service import KbService
 
         kb = KbService(tmp_path / "proj")
-        kb.kb_dir.mkdir(parents=True)
-        (kb.kb_dir / "semantics.yml").write_text(
+        ds_dir = kb.kb_dir / datasource
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "semantics.yml").write_text(
             """
 terms:
   - term: 平均成绩
@@ -185,7 +186,7 @@ terms:
 """,
             encoding="utf-8",
         )
-        (kb.kb_dir / "schema_notes.yml").write_text(
+        (ds_dir / "schema_notes.yml").write_text(
             """
 tables:
   - name: students
@@ -196,7 +197,7 @@ tables:
 """,
             encoding="utf-8",
         )
-        (kb.kb_dir / "examples.yml").write_text(
+        (ds_dir / "examples.yml").write_text(
             """
 examples:
   - question: 各地区平均成绩是多少
@@ -209,7 +210,7 @@ examples:
 
     async def test_chinese_question_end_to_end(self, sqlite_registry, catalog, tmp_path):
         """中文问题：术语命中表 + 示例注入 prompt + kb_hits 贯穿状态。"""
-        kb = self._kb(tmp_path)
+        kb = self._kb(tmp_path, sqlite_registry.default_name)
         llm = RecordingLLM([
             "```sql\nSELECT county, AVG(grade) FROM students GROUP BY county;\n```",
             "OK",

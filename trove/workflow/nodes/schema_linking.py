@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.services.datasource.catalog import CatalogService
+from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService, TableNotes, TermHit
 from trove.core.logging import get_logger
 from trove.workflow.state import WorkflowState
@@ -45,6 +46,7 @@ def make_schema_linking(
     catalog: CatalogService | None = None,
     max_tables: int = 5,
     kb: KbService | None = None,
+    connectors: ConnectorRegistry | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the schema_linking node bound to catalog and knowledge base.
 
@@ -52,6 +54,8 @@ def make_schema_linking(
         catalog: Metadata catalog for table search (None → pass through empty).
         max_tables: Maximum tables to match per query.
         kb: Optional knowledge base for term matching and annotations.
+        connectors: Registry providing the active datasource name (KB scope).
+            KB is only consulted when a datasource context exists.
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -62,11 +66,14 @@ def make_schema_linking(
         if state.error:
             return {}
 
+        # Knowledge base is scoped to the active datasource
+        datasource = connectors.default_name if connectors is not None else ""
+
         # 1. Knowledge base term matching (substring, works for Chinese)
         term_hits: list[TermHit] = []
-        if kb is not None:
-            await kb.ensure_synced()
-            term_hits = await kb.search_terms(state.question)
+        if kb is not None and datasource:
+            await kb.ensure_synced(default_datasource=datasource)
+            term_hits = await kb.search_terms(state.question, datasource)
 
         update: dict[str, Any]
 
@@ -90,7 +97,10 @@ def make_schema_linking(
                     matched_names.append(table)
 
             # 3. Human annotations merged into the schema context
-            notes = await kb.table_notes(matched_names) if kb is not None else {}
+            notes = (
+                await kb.table_notes(matched_names, datasource)
+                if (kb is not None and datasource) else {}
+            )
             schema_parts = []
             for name in matched_names:
                 detail = await catalog.table_detail(name)

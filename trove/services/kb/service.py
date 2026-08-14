@@ -1,21 +1,23 @@
-"""Knowledge base service — YAML source of truth, SQLite retrieval mirror.
+"""Knowledge base service — per-datasource YAML source, SQLite retrieval mirror.
 
 Files (human-editable, single source of truth):
-  .trove/kb/schema_notes.yml   table/column descriptions, metrics
-  .trove/kb/semantics.yml      business terms → physical mappings
-  .trove/kb/examples.yml       reference SQL + templates (few-shot material)
+  .trove/kb/<datasource>/schema_notes.yml   table/column descriptions, metrics
+  .trove/kb/<datasource>/semantics.yml      business terms → physical mappings
+  .trove/kb/<datasource>/examples.yml       reference SQL + templates (few-shot)
 
 Mirror (agent reads only this):
   .trove/kb/kb.sqlite          kb_items + kb_sync tables
 
 Sync is lazy: ensure_synced() compares per-file mtime and reloads only
 changed files. Broken YAML keeps the previous mirror (queries never
-block on KB health).
+block on KB health). Legacy flat YAML files (kb root, pre-datasource
+layout) are auto-migrated into a datasource subdirectory.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,9 +31,11 @@ from trove.core.types import SchemaInfo
 logger = get_logger(__name__)
 
 KB_DIR_NAME = "kb"
+LEGACY_DIR_NAME = "legacy"
 
 _CREATE_ITEMS = """CREATE TABLE IF NOT EXISTS kb_items (
     id INTEGER PRIMARY KEY,
+    datasource TEXT NOT NULL,
     kind TEXT NOT NULL,
     item_key TEXT NOT NULL,
     payload TEXT NOT NULL,
@@ -149,7 +153,7 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
 
 
 class KbService:
-    """Knowledge base: YAML source → SQLite mirror → retrieval API.
+    """Knowledge base: per-datasource YAML source → SQLite mirror → retrieval.
 
     The knowledge base is optional: when the .trove/kb directory does
     not exist, every query returns empty and the pipeline behaves
@@ -168,22 +172,31 @@ class KbService:
 
     # ── Sync ──────────────────────────────────────────────
 
-    async def ensure_synced(self) -> None:
-        """Lazy sync: reload only YAML files whose mtime changed."""
+    async def ensure_synced(self, default_datasource: str | None = None) -> None:
+        """Lazy sync: reload only YAML files whose mtime changed.
+
+        Args:
+            default_datasource: Target subdirectory for migrating legacy
+                flat YAML files left at the kb root (pre-datasource layout).
+        """
         if not self.enabled:
             return
         self.kb_dir.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(_CREATE_ITEMS)
-            await db.execute(_CREATE_SYNC)
-            await db.commit()
-            for yml in sorted(self.kb_dir.glob("*.yml")):
-                await self._sync_file(db, yml)
+        self._migrate_legacy_files(default_datasource)
 
-    async def _sync_file(self, db: aiosqlite.Connection, yml: Path) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await self._ensure_mirror_schema(db)
+            for ds_dir in sorted(self._datasource_dirs()):
+                for yml in sorted(ds_dir.glob("*.yml")):
+                    await self._sync_file(db, yml, ds_dir.name)
+
+    async def _sync_file(
+        self, db: aiosqlite.Connection, yml: Path, datasource: str,
+    ) -> None:
+        rel_path = f"{datasource}/{yml.name}"
         mtime = yml.stat().st_mtime
         cursor = await db.execute(
-            "SELECT mtime FROM kb_sync WHERE file_path = ?", (yml.name,),
+            "SELECT mtime FROM kb_sync WHERE file_path = ?", (rel_path,),
         )
         row = await cursor.fetchone()
         if row is not None and row[0] == mtime:
@@ -198,20 +211,23 @@ class KbService:
             )
             return
 
-        await db.execute("DELETE FROM kb_items WHERE source_file = ?", (yml.name,))
+        await db.execute(
+            "DELETE FROM kb_items WHERE datasource = ? AND source_file = ?",
+            (datasource, yml.name),
+        )
         for kind, item_key, payload in entries:
             await db.execute(
-                "INSERT INTO kb_items (kind, item_key, payload, source_file) "
-                "VALUES (?, ?, ?, ?)",
-                (kind, item_key, json.dumps(payload, ensure_ascii=False), yml.name),
+                "INSERT INTO kb_items (datasource, kind, item_key, payload, source_file) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (datasource, kind, item_key, json.dumps(payload, ensure_ascii=False), yml.name),
             )
         await db.execute(
             "INSERT OR REPLACE INTO kb_sync (file_path, mtime) VALUES (?, ?)",
-            (yml.name, mtime),
+            (rel_path, mtime),
         )
         await db.commit()
 
-    async def force_sync(self) -> None:
+    async def force_sync(self, default_datasource: str | None = None) -> None:
         """Reload every YAML file unconditionally (/kb reload).
 
         Also purges mirror items whose source file was deleted from disk.
@@ -219,21 +235,63 @@ class KbService:
         if not self.enabled:
             return
         self.kb_dir.mkdir(parents=True, exist_ok=True)
+        self._migrate_legacy_files(default_datasource)
+
+        current_files = {
+            f"{ds_dir.name}/{yml.name}"
+            for ds_dir in self._datasource_dirs()
+            for yml in ds_dir.glob("*.yml")
+        }
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(_CREATE_ITEMS)
-            await db.execute(_CREATE_SYNC)
+            await self._ensure_mirror_schema(db)
             await db.execute("DELETE FROM kb_sync")
-            yml_names = [p.name for p in self.kb_dir.glob("*.yml")]
-            if yml_names:
-                placeholders = ",".join("?" * len(yml_names))
+            if current_files:
+                rows = await (await db.execute(
+                    "SELECT file_path FROM kb_sync"
+                )).fetchall()  # placeholder to keep structure clear
+                placeholders = ",".join("?" * len(current_files))
                 await db.execute(
                     f"DELETE FROM kb_items WHERE source_file NOT IN ({placeholders})",
-                    yml_names,
+                    [f.split("/", 1)[1] for f in current_files],
                 )
             else:
                 await db.execute("DELETE FROM kb_items")
             await db.commit()
-        await self.ensure_synced()
+        await self.ensure_synced(default_datasource)
+
+    def _datasource_dirs(self) -> list[Path]:
+        """Subdirectories of kb_dir (each named after a datasource)."""
+        return [p for p in sorted(self.kb_dir.iterdir()) if p.is_dir()]
+
+    def _migrate_legacy_files(self, default_datasource: str | None) -> None:
+        """Move pre-datasource flat YAML files into a datasource subdirectory."""
+        target = default_datasource or LEGACY_DIR_NAME
+        for yml in sorted(self.kb_dir.glob("*.yml")):
+            dest_dir = self.kb_dir / target
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / yml.name
+            if dest.exists():
+                logger.warning(
+                    "KB migration: %s exists in %s/; leaving legacy file in place",
+                    yml.name, target,
+                )
+                continue
+            shutil.move(str(yml), str(dest))
+            logger.info("KB migrated %s → %s/", yml.name, target)
+
+    async def _ensure_mirror_schema(self, db: aiosqlite.Connection) -> None:
+        """Create mirror tables; rebuild if the schema predates the datasource column."""
+        cursor = await db.execute("PRAGMA table_info(kb_items)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if columns and "datasource" not in columns:
+            logger.info("Rebuilding KB mirror (missing datasource column)")
+            await db.execute("DROP TABLE kb_items")
+            await db.execute("DROP TABLE IF EXISTS kb_sync")
+            columns = set()
+        if not columns:
+            await db.execute(_CREATE_ITEMS)
+            await db.execute(_CREATE_SYNC)
+            await db.commit()
 
     # ── Retrieval ─────────────────────────────────────────
 
@@ -243,11 +301,14 @@ class KbService:
             cursor = await db.execute(sql, params)
             return await cursor.fetchall()
 
-    async def search_terms(self, question: str) -> list[TermHit]:
+    async def search_terms(self, question: str, datasource: str) -> list[TermHit]:
         """Terms whose term/alias is a substring of the question."""
         if not self.enabled:
             return []
-        rows = await self._rows("SELECT payload FROM kb_items WHERE kind = 'term'")
+        rows = await self._rows(
+            "SELECT payload FROM kb_items WHERE kind = 'term' AND datasource = ?",
+            (datasource,),
+        )
         hits = []
         for row in rows:
             payload = json.loads(row["payload"])
@@ -257,30 +318,36 @@ class KbService:
                 hits.append(TermHit(**payload))
         return hits
 
-    async def table_notes(self, table_names: list[str]) -> dict[str, TableNotes]:
+    async def table_notes(
+        self, table_names: list[str], datasource: str,
+    ) -> dict[str, TableNotes]:
         """Annotations for the given tables (empty descriptions are skipped)."""
         if not self.enabled or not table_names:
             return {}
         placeholders = ",".join("?" * len(table_names))
         rows = await self._rows(
             f"SELECT item_key, payload FROM kb_items "
-            f"WHERE kind = 'table' AND item_key IN ({placeholders})",
-            tuple(table_names),
+            f"WHERE kind = 'table' AND datasource = ? "
+            f"AND item_key IN ({placeholders})",
+            (datasource, *table_names),
         )
         return {
             row["item_key"]: TableNotes(**json.loads(row["payload"]))
             for row in rows
         }
 
-    async def search_examples(self, question: str, limit: int = 3) -> list[ExampleHit]:
+    async def search_examples(
+        self, question: str, datasource: str, limit: int = 3,
+    ) -> list[ExampleHit]:
         """Top-K reference examples/templates by relevance score."""
         if not self.enabled:
             return []
-        term_hits = await self.search_terms(question)
+        term_hits = await self.search_terms(question, datasource)
         matched_terms = {h.term for h in term_hits}
         rows = await self._rows(
             "SELECT payload FROM kb_items "
-            "WHERE kind IN ('example', 'template') ORDER BY id",
+            "WHERE kind IN ('example', 'template') AND datasource = ? ORDER BY id",
+            (datasource,),
         )
         scored = []
         for row in rows:
@@ -291,28 +358,35 @@ class KbService:
         scored.sort(key=lambda h: h.score, reverse=True)
         return scored[:limit]
 
-    async def list_items(self) -> dict[str, int]:
-        """Item counts per kind (/kb list)."""
+    async def list_items(self) -> dict[str, dict[str, int]]:
+        """Item counts per kind, grouped by datasource (/kb list)."""
         if not self.enabled:
             return {}
         rows = await self._rows(
-            "SELECT kind, COUNT(*) AS n FROM kb_items GROUP BY kind",
+            "SELECT datasource, kind, COUNT(*) AS n FROM kb_items "
+            "GROUP BY datasource, kind",
         )
-        return {row["kind"]: row["n"] for row in rows}
+        grouped: dict[str, dict[str, int]] = {}
+        for row in rows:
+            grouped.setdefault(row["datasource"], {})[row["kind"]] = row["n"]
+        return grouped
 
     # ── Evolution (human-confirmed writes) ────────────────
 
-    async def append_example(self, entry: dict[str, Any]) -> None:
-        """Append a reference-SQL/template entry to examples.yml and re-sync."""
-        await self._append_entry("examples.yml", "examples", entry)
+    async def append_example(self, entry: dict[str, Any], datasource: str) -> None:
+        """Append a reference-SQL/template entry to the datasource's examples.yml."""
+        await self._append_entry("examples.yml", "examples", entry, datasource)
 
-    async def append_term(self, entry: dict[str, Any]) -> None:
-        """Append a business term to semantics.yml and re-sync."""
-        await self._append_entry("semantics.yml", "terms", entry)
+    async def append_term(self, entry: dict[str, Any], datasource: str) -> None:
+        """Append a business term to the datasource's semantics.yml."""
+        await self._append_entry("semantics.yml", "terms", entry, datasource)
 
-    async def _append_entry(self, filename: str, section: str, entry: dict) -> None:
-        self.kb_dir.mkdir(parents=True, exist_ok=True)
-        path = self.kb_dir / filename
+    async def _append_entry(
+        self, filename: str, section: str, entry: dict, datasource: str,
+    ) -> None:
+        ds_dir = self.kb_dir / datasource
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        path = ds_dir / filename
         data = {}
         if path.exists():
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -329,16 +403,19 @@ class KbService:
 
     # ── Initialization ────────────────────────────────────
 
-    def init_schema_notes(self, schema: SchemaInfo, overwrite: bool = False) -> bool:
-        """Generate a schema_notes.yml skeleton from the datasource schema.
+    def init_schema_notes(
+        self, schema: SchemaInfo, datasource: str, overwrite: bool = False,
+    ) -> bool:
+        """Generate a schema_notes.yml skeleton for the given datasource.
 
         Returns:
             True if created, False if the file already exists (refusing to overwrite).
         """
-        self.kb_dir.mkdir(parents=True, exist_ok=True)
-        path = self.kb_dir / "schema_notes.yml"
+        ds_dir = self.kb_dir / datasource
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        path = ds_dir / "schema_notes.yml"
         if path.exists() and not overwrite:
-            logger.info("schema_notes.yml already exists; refusing to overwrite")
+            logger.info("%s/schema_notes.yml already exists; refusing to overwrite", datasource)
             return False
 
         tables = []
