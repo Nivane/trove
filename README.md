@@ -51,6 +51,25 @@ agent:
 - **API key**：写入项目根 `.env`（启动时自动加载，已 gitignore），或直接 export 环境变量（如 `DEEPSEEK_API_KEY`）
 - `~/.trove/conf/agent.yml` 为全局用户级配置；`agent.yml` 里的 `providers[].litellm_params` 会按模型前缀透传给 litellm
 
+**可观测性（Langfuse）**：
+
+```yaml
+# conf/agent.yml
+agent:
+  observability:
+    tracing:
+      enabled: true
+```
+
+```bash
+# .env 提供 Langfuse 凭证
+LANGFUSE_PUBLIC_KEY=pk-...
+LANGFUSE_SECRET_KEY=sk-...
+LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
+```
+
+启用后每个 LLM 调用（planner 计划 / gen_sql 生成与修正 / reflect 裁决）都会进入 Langfuse，prompt 与输出全程可见，并按 `session_id`、`node`、`question` 元数据分组——CoT 每一步可回溯。
+
 ## 知识库使用
 
 1. 启动 REPL 后 `/kb init` —— 从当前数据源 schema 生成注释骨架到 `.trove/kb/<数据源名>/schema_notes.yml`
