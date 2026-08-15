@@ -20,6 +20,14 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     """Format results into Markdown from the workflow state."""
     question = state.question
 
+    if state.clarification_question:
+        response = (
+            "## Clarification\n\n"
+            f"**Question**: {question}\n\n"
+            f"{state.clarification_question}\n"
+        )
+        return {"final_response": response}
+
     if state.error:
         response = (
             "## Answer\n\n"
@@ -68,6 +76,10 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     # Metadata
     if state.execution_time_ms:
         parts.append(f"\n---\n*Execution time: {state.execution_time_ms:.0f}ms*")
+
+    # Multi-candidate disagreement → low-confidence note
+    if not state.consensus:
+        parts.append("\n*Confidence: low (candidate SQLs disagreed)*\n")
 
     # Knowledge base usage
     if state.kb_hits:

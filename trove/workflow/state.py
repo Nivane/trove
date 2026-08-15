@@ -26,6 +26,21 @@ class WorkflowState(BaseModel):
     # Compact conversation history (prior exchanges) for follow-up questions
     history: str = ""
 
+    # Alternative candidate SQLs (multi-candidate generation, reflection
+    # workflow only) — consumed by the consensus select node
+    candidates: list[str] = Field(default_factory=list)
+
+    # When set, the pipeline asks the user for clarification instead of
+    # generating SQL (e.g. no tables matched the question)
+    clarification_question: str = ""
+
+    # LLM query plan (planner node) injected into SQL generation
+    plan: str = ""
+
+    # Multi-candidate agreement; False = candidates disagreed and the
+    # answer is delivered with a low-confidence note
+    consensus: bool = True
+
     # Knowledge base hits (term matches + example matches).
     # operator.add: updates from different nodes accumulate.
     kb_hits: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
@@ -65,6 +80,7 @@ class GenSQLState(BaseModel):
     """State for the gen_sql subgraph (generate → validate retry loop)."""
 
     question: str
+    session_id: str = ""  # for trace metadata
     schema_context: str = ""
     dialect: str = "sqlite"
     reflect_reason: str = ""  # reason from a previous reflect RETRY (empty on first pass)
@@ -79,6 +95,9 @@ class GenSQLState(BaseModel):
 
     # conversation history for follow-up questions
     history: str = ""
+
+    # LLM query plan (planner node) injected into the generation prompt
+    plan: str = ""
 
     # Knowledge base material for prompt injection
     few_shots: list[dict[str, Any]] = Field(default_factory=list)   # reference examples/templates

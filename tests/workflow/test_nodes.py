@@ -310,6 +310,16 @@ class TestSQLHelpers:
         prompt = build_sql_prompt("q", "schema", "sqlite")
         assert "Conversation history" not in prompt
 
+    def test_build_sql_prompt_includes_plan(self):
+        plan = "Join account with district; aggregate by district"
+        prompt = build_sql_prompt("q", "schema", "sqlite", plan=plan)
+        assert "Query plan" in prompt
+        assert "Join account with district" in prompt
+
+    def test_build_sql_prompt_without_plan_has_no_section(self):
+        prompt = build_sql_prompt("q", "schema", "sqlite")
+        assert "Query plan" not in prompt
+
     def test_build_fix_prompt_lists_errors(self):
         prompt = build_fix_prompt("SELEC 1", ["Parse error: bad"])
         assert "SELEC 1" in prompt
@@ -366,6 +376,25 @@ class TestGenerate:
         from trove.workflow.state import GenSQLState
         state = GenSQLState(question="q", schema_context="", dialect="sqlite", error="upstream")
         assert await generate(state) == {}
+
+    async def test_passes_trace_metadata(self):
+        """gen_sql 的 trace metadata 含 node/session。"""
+        from trove.workflow.state import GenSQLState
+
+        captured = {}
+
+        class CapturingLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(kwargs)
+                return "```sql\nSELECT 1;\n```"
+
+        generate = make_generate(CapturingLLM(), self._config())
+        state = GenSQLState(
+            question="q", schema_context="", dialect="sqlite", session_id="s9",
+        )
+        await generate(state)
+        assert captured["metadata"]["node"] == "gen_sql"
+        assert captured["metadata"]["session_id"] == "s9"
 
     async def test_includes_reflect_reason_on_first_pass(self):
         llm = ScriptedLLM(["```sql\nSELECT 1;\n```"])
@@ -433,6 +462,40 @@ class TestExecuteSQL:
         assert update["columns"] == ["name"]
         assert update["error_feedback"] == ""  # 成功执行清空反馈
 
+    async def test_execute_records_tool_span(self, sqlite_registry, monkeypatch):
+        """SQL 执行作为 tool span 记录（轨迹里的工具调用可见）。"""
+        import trove.workflow.nodes.execute_sql as execute_module
+
+        spans = []
+
+        class FakeSpan:
+            def __init__(self):
+                self.output = None
+
+            def update(self, **kwargs):
+                self.output = kwargs
+
+        class FakeCM:
+            def __init__(self, name, input):
+                spans.append({"name": name, "input": input, "span": FakeSpan()})
+
+            def __enter__(self):
+                return spans[-1]["span"]
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(
+            execute_module, "record_span",
+            lambda name, input=None: FakeCM(name, input),
+        )
+        node = make_execute_sql(sqlite_registry)
+        await node(make_state(sql="SELECT name FROM students ORDER BY name"))
+
+        assert spans[0]["name"] == "tool.execute_sql"
+        assert "SELECT name" in spans[0]["input"]
+        assert spans[0]["span"].output["output"]["row_count"] == 5
+
     async def test_execute_error_gives_feedback_for_retry(self, sqlite_registry):
         """第一次执行失败 → 反馈修正（不降级），消耗一轮修正预算。"""
         node = make_execute_sql(sqlite_registry)
@@ -444,7 +507,7 @@ class TestExecuteSQL:
     async def test_execute_error_with_budget_exhausted_degrades(self, sqlite_registry):
         """修正预算耗尽后，执行失败才优雅降级。"""
         node = make_execute_sql(sqlite_registry)
-        update = await node(make_state(sql="SELECT * FROM nonexistent", retry_count=2))
+        update = await node(make_state(sql="SELECT * FROM nonexistent", retry_count=10))
         assert update["error"]
         assert "error_feedback" not in update
 
@@ -452,6 +515,138 @@ class TestExecuteSQL:
         node = make_execute_sql(sqlite_registry)
         update = await node(make_state(sql="SELECT 1", error="upstream failed"))
         assert update == {}
+
+
+# ── Planner ──────────────────────────────────────────────
+
+
+class TestPlanner:
+    async def test_planner_writes_plan(self):
+        from trove.workflow.nodes.planner import make_planner
+
+        llm = ScriptedLLM(["Use students, aggregate grade by county."])
+        node = make_planner(llm, AgentConfig(target="mock/model"))
+        update = await node(make_state(schema_context="Table: students"))
+        assert "students" in update["plan"]
+        # planner prompt 带 schema 与问题
+        prompt_text = " ".join(m["content"] for m in llm.last_messages)
+        assert "students" in prompt_text
+
+    async def test_planner_llm_failure_is_silent(self):
+        from trove.workflow.nodes.planner import make_planner
+
+        class BrokenLLM:
+            async def chat(self, *a, **k):
+                raise RuntimeError("llm down")
+
+        node = make_planner(BrokenLLM(), AgentConfig(target="mock/model"))
+        assert await node(make_state()) == {}
+
+    async def test_planner_error_passthrough(self):
+        from trove.workflow.nodes.planner import make_planner
+
+        node = make_planner(ScriptedLLM(["x"]), AgentConfig(target="mock/model"))
+        assert await node(make_state(error="upstream")) == {}
+
+    async def test_planner_passes_trace_metadata(self):
+        """trace metadata（node/session/question）随 LLM 调用上报。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        captured = {}
+
+        class CapturingLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(kwargs)
+                return "plan text"
+
+        node = make_planner(CapturingLLM(), AgentConfig(target="mock/model"))
+        await node(make_state(question="average grade by county"))
+        assert captured["metadata"]["node"] == "planner"
+        assert captured["metadata"]["session_id"] == "s1"
+
+
+# ── Clarify ──────────────────────────────────────────────
+
+
+class TestClarify:
+    async def test_matched_tables_pass(self):
+        from trove.workflow.nodes.clarify import make_clarify
+
+        node = make_clarify()
+        update = await node(make_state(matched_tables=["students"]))
+        assert update == {}
+
+    async def test_no_tables_sets_clarification(self):
+        """无表匹配 → 反问用户，而不是生成 SQL。"""
+        from trove.workflow.nodes.clarify import make_clarify
+
+        node = make_clarify()
+        update = await node(make_state(matched_tables=[], question="那个数据是多少"))
+        assert update["clarification_question"]
+        assert "匹配" in update["clarification_question"]
+
+    async def test_error_passthrough(self):
+        from trove.workflow.nodes.clarify import make_clarify
+
+        node = make_clarify()
+        update = await node(make_state(matched_tables=[], error="upstream"))
+        assert update == {}
+
+
+# ── Validate rules ───────────────────────────────────────
+
+
+class TestValidateRules:
+    async def test_rule_failure_gives_feedback(self):
+        """count 问题返回多行 → 确定性规则失败 → 反馈修正。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = make_state(
+            question="how many students",
+            sql="SELECT name FROM students",
+            columns=["name"],
+            rows=[["a"], ["b"]],
+            row_count=2,
+        )
+        update = await node(state)
+        assert "error" not in update
+        assert "single number" in update["error_feedback"]
+        assert update["retry_count"] == 1
+
+    async def test_rule_failure_budget_exhausted_degrades(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = make_state(
+            question="how many students",
+            sql="SELECT name FROM students",
+            columns=["name"],
+            rows=[["a"], ["b"]],
+            row_count=2,
+            retry_count=10,
+        )
+        update = await node(state)
+        assert update["error"]
+
+    async def test_pass_returns_empty_update(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(make_state(question="average grade", row_count=0))
+        assert update == {}
+
+    async def test_pending_feedback_passes_through(self):
+        """execute 已挂起反馈时，校验节点不覆盖。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = make_state(
+            question="how many students",
+            error_feedback="pending execution error",
+            row_count=-1,
+        )
+        assert await node(state) == {}
 
 
 # ── Reflect ──────────────────────────────────────────────
@@ -487,7 +682,7 @@ class TestReflect:
         """At the retry cap a RETRY verdict is forced to OK."""
         node = self._make("RETRY: still wrong")
         update = await node(
-            make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]], retry_count=2)
+            make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]], retry_count=10)
         )
         assert update["verdict"] == "OK"
         assert update.get("forced") is True
@@ -563,3 +758,21 @@ class TestOutput:
     async def test_no_kb_hits_no_kb_line(self):
         response = (await output(make_state(row_count=0)))["final_response"]
         assert "Knowledge base" not in response
+
+    async def test_low_confidence_rendered(self):
+        """多候选不一致耗尽 → 输出主候选 + 低置信标注。"""
+        state = make_state(row_count=0, consensus=False)
+        response = (await output(state))["final_response"]
+        assert "Confidence" in response
+        assert "low" in response.lower()
+
+    async def test_high_confidence_no_note(self):
+        response = (await output(make_state(row_count=0)))["final_response"]
+        assert "Confidence" not in response
+
+    async def test_clarification_rendered(self):
+        """需要澄清时输出反问，而非答案。"""
+        state = make_state(clarification_question="请说明你想查询哪张表的数据")
+        response = (await output(state))["final_response"]
+        assert "Clarification" in response
+        assert "请说明你想查询哪张表的数据" in response

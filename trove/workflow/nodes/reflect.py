@@ -37,14 +37,20 @@ Respond with ONE of:
 - "EMPTY" — the result is empty but the SQL looks correct (data might not exist)
 """
 
-MAX_TOTAL_RETRIES = 2
+MAX_TOTAL_RETRIES = 10
 
 
 def make_reflect(
     llm: LLMGateway,
     config: AgentConfig,
+    max_retries: int = MAX_TOTAL_RETRIES,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
-    """Build the reflect node bound to an LLM gateway."""
+    """Build the reflect node bound to an LLM gateway.
+
+    Args:
+        max_retries: Shared correction budget (RETRY verdicts are only
+            issued while retry_count < max_retries).
+    """
 
     async def reflect(state: WorkflowState) -> dict[str, Any]:
         # Upstream node failed — pass through without running
@@ -70,6 +76,11 @@ def make_reflect(
                     {"role": "system", "content": REFLECT_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
+                metadata={
+                    "node": "reflect",
+                    "session_id": state.session_id,
+                    "question": state.question[:80],
+                },
             )
             verdict = response.strip().upper()
 
@@ -77,10 +88,10 @@ def make_reflect(
                 return {"verdict": "OK"}
             elif verdict.startswith("RETRY"):
                 reason = response.replace("RETRY:", "").replace("RETRY", "").strip()
-                if state.retry_count >= MAX_TOTAL_RETRIES:
+                if state.retry_count >= max_retries:
                     logger.warning(
                         "Max retries (%d) exceeded; accepting result despite issues",
-                        MAX_TOTAL_RETRIES,
+                        max_retries,
                     )
                     return {"verdict": "OK", "forced": True, "reason": reason}
 

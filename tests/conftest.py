@@ -142,7 +142,7 @@ def graphs(sqlite_registry, agent_config):
         connectors=sqlite_registry,
         config=agent_config,
     )
-    return build_graphs(services)
+    return build_graphs(services, multi_candidate=False, planner=False)
 
 
 @pytest.fixture

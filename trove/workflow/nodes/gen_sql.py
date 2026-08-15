@@ -65,6 +65,7 @@ def build_sql_prompt(
     reflect_reason: str = "",
     error_feedback: str = "",
     history: str = "",
+    plan: str = "",
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -85,6 +86,12 @@ def build_sql_prompt(
         parts += [
             "Conversation history (previous exchanges, oldest first):",
             history,
+            "",
+        ]
+    if plan:
+        parts += [
+            "Query plan (follow it unless it conflicts with the question):",
+            plan,
             "",
         ]
     if term_notes:
@@ -194,8 +201,14 @@ def validate_sql(sql: str, dialect: str) -> tuple[bool, list[str]]:
 def make_generate(
     llm: LLMGateway,
     config: AgentConfig,
+    temperature: float = 0.0,
 ) -> Callable[[GenSQLState], Awaitable[dict[str, Any]]]:
-    """Build the generate node: prompt → LLM → extract SQL."""
+    """Build the generate node: prompt → LLM → extract SQL.
+
+    Args:
+        temperature: Sampling temperature (0.0 deterministic; the
+            alternative multi-candidate subgraph uses a higher value).
+    """
 
     async def generate(state: GenSQLState) -> dict[str, Any]:
         if state.error:
@@ -211,6 +224,7 @@ def make_generate(
                 reflect_reason=state.reflect_reason,
                 error_feedback=state.error_feedback,
                 history=state.history,
+                plan=state.plan,
                 few_shots=state.few_shots or None,
                 term_notes=state.term_notes or None,
             )
@@ -222,6 +236,12 @@ def make_generate(
                 {"role": "system", "content": SQL_GENERATION_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
+            temperature=temperature,
+            metadata={
+                "node": "gen_sql",
+                "session_id": state.session_id,
+                "question": state.question[:80],
+            },
         )
         sql = extract_sql(response)
 

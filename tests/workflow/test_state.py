@@ -19,6 +19,10 @@ class TestWorkflowState:
         assert state.final_response == ""
         assert state.kb_hits == []
         assert state.history == ""
+        assert state.candidates == []
+        assert state.clarification_question == ""
+        assert state.plan == ""
+        assert state.consensus is True
 
     def test_session_id_and_question_required(self):
         with pytest.raises(ValidationError):

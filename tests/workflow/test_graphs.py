@@ -4,6 +4,7 @@ import pytest
 
 from trove.core.config import AgentConfig
 from trove.workflow.state import WorkflowState, GenSQLState
+from trove.workflow import graphs as graphs_module
 from trove.workflow.graphs import GraphServices, build_graphs, build_gen_sql_subgraph
 
 VALID_SQL = "```sql\nSELECT name FROM students;\n```"
@@ -36,6 +37,11 @@ def make_state(**kwargs):
     defaults = {"session_id": "s1", "question": "Average grade by county"}
     defaults.update(kwargs)
     return WorkflowState(**defaults)
+
+
+def build(services, multi_candidate=False, planner=False, clarify=False):
+    """Build graphs with single-candidate generation (scripted-response tests)."""
+    return build_graphs(services, multi_candidate=multi_candidate, planner=planner, clarify=clarify)
 
 
 # ── gen_sql subgraph ─────────────────────────────────────
@@ -86,7 +92,7 @@ class TestGenSQLSubgraph:
 class TestReflectionGraph:
     async def test_happy_path(self, sqlite_registry, catalog):
         llm = RecordingLLM([VALID_SQL, "OK"])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "OK"
         assert final["retry_count"] == 0
@@ -98,7 +104,7 @@ class TestReflectionGraph:
 
     async def test_retry_loop_regenerates_with_reason(self, sqlite_registry, catalog):
         llm = RecordingLLM([VALID_SQL, "RETRY: wrong grouping", VALID_SQL, "OK"])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "OK"
         assert final["retry_count"] == 1
@@ -106,11 +112,12 @@ class TestReflectionGraph:
         # The regenerated SQL prompt carried the reflect reason
         assert "wrong grouping" in llm.calls[2][-1]["content"]
 
-    async def test_retry_cap_forces_accept(self, sqlite_registry, catalog):
+    async def test_retry_cap_forces_accept(self, sqlite_registry, catalog, monkeypatch):
+        monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
         llm = RecordingLLM([
             VALID_SQL, "RETRY: a", VALID_SQL, "RETRY: b", VALID_SQL, "RETRY: c",
         ])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["retry_count"] == 2
         assert final["verdict"] == "OK"
@@ -120,18 +127,19 @@ class TestReflectionGraph:
     async def test_gen_sql_exhaustion_degrades_to_output(self, sqlite_registry, catalog):
         """gen_sql subgraph exhausts retries → execute/reflect skipped → error section."""
         llm = RecordingLLM([INVALID_SQL] * 3)
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert "3 attempts" in final["error"]
         assert final["row_count"] == -1  # execute_sql never ran
         assert "**Error**" in final["final_response"]
         assert len(llm.calls) == 3  # reflect never called
 
-    async def test_execute_failure_degrades_to_output(self, sqlite_registry, catalog):
+    async def test_execute_failure_degrades_to_output(self, sqlite_registry, catalog, monkeypatch):
         """执行失败 → 修正预算内重生成 → 耗尽后优雅降级（不再首错即降级）。"""
+        monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
         bad_sql = "```sql\nSELECT * FROM nonexistent;\n```"
         llm = RecordingLLM([bad_sql, bad_sql, bad_sql])  # 初稿 + 2 轮修正
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"]
         assert final["retry_count"] == 2
@@ -145,7 +153,7 @@ class TestReflectionGraph:
             "```sql\nSELECT name FROM students;\n```",           # 修正稿
             "OK",                                                # reflect
         ])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["error_feedback"] == ""
@@ -156,7 +164,7 @@ class TestReflectionGraph:
         assert "nonexistent" in llm.calls[1][-1]["content"]
 
     async def test_preexisting_error_passes_straight_to_output(self, sqlite_registry, catalog):
-        graphs = build_graphs(make_services(RecordingLLM([]), catalog, sqlite_registry))
+        graphs = build(make_services(RecordingLLM([]), catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(error="upstream failed"))
         assert "upstream failed" in final["final_response"]
         assert final["row_count"] == -1
@@ -164,16 +172,50 @@ class TestReflectionGraph:
     async def test_empty_result_reflect_short_circuits(self, sqlite_registry, catalog):
         """Zero rows → EMPTY verdict, no reflect LLM call."""
         llm = RecordingLLM(["```sql\nSELECT name FROM students WHERE 0;\n```"])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "EMPTY"
         assert len(llm.calls) == 1  # only gen_sql
 
 
+class TestClarifyRouting:
+    async def test_no_table_match_asks_user(self, sqlite_registry, catalog):
+        """clarify 开启时：无表匹配 → 反问用户，不调用 LLM 生成。"""
+        llm = RecordingLLM([])  # 任何调用都会 IndexError
+        graphs = build(make_services(llm, catalog, sqlite_registry), clarify=True)
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="zzz 完全不相关的数据")
+        )
+        assert final["clarification_question"]
+        assert "Clarification" in final["final_response"]
+        assert final["sql"] == ""
+
+    async def test_default_is_permissive_without_match(self, sqlite_registry, catalog):
+        """默认（clarify 关闭）：无表匹配也照常生成，不拦截。"""
+        llm = RecordingLLM([VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="zzz 完全不相关的数据")
+        )
+        assert final["clarification_question"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        assert final["row_count"] == 5
+
+    async def test_matched_tables_proceed_normally(self, sqlite_registry, catalog):
+        """有表匹配 → 正常走生成流程。"""
+        llm = RecordingLLM(["plan: use students", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["clarification_question"] == ""
+        assert final["row_count"] == 5
+        # 查询计划到达了 gen_sql 的生成 prompt
+        assert "Query plan" in llm.calls[1][-1]["content"]
+
+
 class TestFixedGraph:
     async def test_no_reflection(self, sqlite_registry, catalog):
         llm = RecordingLLM([VALID_SQL])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["fixed"].ainvoke(make_state())
         assert final["verdict"] == ""  # reflect never ran
         assert final["row_count"] == 5
@@ -186,7 +228,7 @@ class TestFixedGraph:
             "```sql\nSELECT * FROM nonexistent;\n```",
             "```sql\nSELECT name FROM students;\n```",
         ])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["fixed"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["row_count"] == 5
@@ -195,7 +237,7 @@ class TestFixedGraph:
 
 class TestEmptyGraph:
     async def test_pass_through(self):
-        graphs = build_graphs(make_services(RecordingLLM([])))
+        graphs = build(make_services(RecordingLLM([])))
         final = await graphs["empty"].ainvoke(make_state())
         assert "(No query executed)" in final["final_response"]
 
@@ -247,7 +289,7 @@ examples:
             "```sql\nSELECT county, AVG(grade) FROM students GROUP BY county;\n```",
             "OK",
         ])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry, kb=kb))
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
         final = await graphs["reflection"].ainvoke(
             make_state(question="学生们的平均成绩是多少")
         )
@@ -269,7 +311,7 @@ examples:
     async def test_no_kb_has_no_kb_hits(self, sqlite_registry, catalog):
         """kb 未配置时状态与行为不变（回归）。"""
         llm = RecordingLLM([VALID_SQL, "OK"])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["kb_hits"] == []
         assert "Knowledge base" not in final["final_response"]
@@ -277,8 +319,70 @@ examples:
     async def test_history_reaches_generation_prompt(self, sqlite_registry, catalog):
         """会话历史注入 gen_sql 的生成 prompt。"""
         llm = RecordingLLM([VALID_SQL, "OK"])
-        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        graphs = build(make_services(llm, catalog, sqlite_registry))
         await graphs["reflection"].ainvoke(
             make_state(history="user: 平均成绩是多少\nassistant: 85 分")
         )
         assert "平均成绩是多少" in llm.calls[0][-1]["content"]
+
+    async def test_validation_rule_fixes_count_question(self, sqlite_registry, catalog):
+        """count 问题先返回多行 → 规则失败 → 带理由重新生成 → 修正成功。"""
+        llm = RecordingLLM([
+            "```sql\nSELECT name FROM students;\n```",   # 多行（规则失败）
+            "```sql\nSELECT COUNT(*) FROM students;\n```",  # 修正：单值
+            "OK",                                        # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="how many students are there")
+        )
+        assert final["error"] == ""
+        assert final["row_count"] == 1
+        assert final["retry_count"] == 1
+        assert "Validation rule" in llm.calls[1][-1]["content"]
+
+    async def test_validation_rule_fixes_empty_list_question(self, sqlite_registry, catalog):
+        """list 问题返回 0 行 → 规则触发重新生成 → 非空结果。"""
+        llm = RecordingLLM([
+            "```sql\nSELECT name FROM students WHERE 0;\n```",
+            "```sql\nSELECT name FROM students;\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="list all students")
+        )
+        assert final["row_count"] == 5
+        assert final["retry_count"] == 1
+
+    async def test_two_candidates_consensus_passes(self, sqlite_registry, catalog):
+        """两个候选结果一致 → 高置信放行（无需修正）。"""
+        llm = RecordingLLM([
+            VALID_SQL,                                             # 主候选
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",  # 副候选（同结果）
+            "OK",                                                  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["retry_count"] == 0
+        assert final["row_count"] == 5
+        assert len(final["candidates"]) == 1
+        assert len(llm.calls) == 3  # 主 + 副 + reflect
+
+    async def test_candidate_disagreement_regenerates(self, sqlite_registry, catalog):
+        """候选结果不一致 → 反馈重生成 → 一致后放行。"""
+        llm = RecordingLLM([
+            VALID_SQL,                                             # pass1 主
+            "```sql\nSELECT name FROM students WHERE 0;\n```",     # pass1 副（0 行）
+            VALID_SQL,                                             # pass2 主
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",  # pass2 副
+            "OK",                                                  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["retry_count"] == 1
+        assert final["row_count"] == 5
+        # pass2 的生成 prompt 带了一致性失败理由
+        assert "different results" in llm.calls[2][-1]["content"]

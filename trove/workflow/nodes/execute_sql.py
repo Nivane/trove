@@ -15,6 +15,7 @@ from typing import Any
 
 from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
+from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -23,7 +24,7 @@ logger = get_logger(__name__)
 def make_execute_sql(
     connectors: ConnectorRegistry | None = None,
     timeout_ms: int = 30000,
-    max_retries: int = 2,
+    max_retries: int = 10,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -50,10 +51,13 @@ def make_execute_sql(
             return {"error": "No datasource registry available."}
 
         try:
-            result = await asyncio.wait_for(
-                connectors.execute(state.sql),
-                timeout=timeout_ms / 1000.0,
-            )
+            with record_span("tool.execute_sql", input=state.sql) as span:
+                result = await asyncio.wait_for(
+                    connectors.execute(state.sql),
+                    timeout=timeout_ms / 1000.0,
+                )
+                if span is not None:
+                    span.update(output={"row_count": result.row_count})
         except asyncio.TimeoutError:
             return _execution_failure(
                 state, f"Query timed out after {timeout_ms}ms", max_retries,

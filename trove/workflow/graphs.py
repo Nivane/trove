@@ -29,14 +29,18 @@ from trove.services.kb.service import KbService
 from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
+from trove.workflow.nodes.clarify import make_clarify
+from trove.workflow.nodes.planner import make_planner
 from trove.workflow.nodes.gen_sql import make_generate, make_validate
 from trove.workflow.nodes.execute_sql import make_execute_sql
+from trove.workflow.nodes.select import make_select_consensus
+from trove.workflow.nodes.validate import make_validate_rules
 from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
 
 logger = get_logger(__name__)
 
-MAX_REFLECT_RETRIES = 2
+MAX_REFLECT_RETRIES = 10  # 修正轮上限（执行错误/规则/一致性/裁决共享）
 DEFAULT_GEN_SQL_RETRIES = 3
 
 WORKFLOW_NAMES = ("reflection", "fixed", "empty")
@@ -59,8 +63,14 @@ class GraphServices:
 def build_gen_sql_subgraph(
     services: GraphServices,
     max_retries: int = DEFAULT_GEN_SQL_RETRIES,
+    temperature: float = 0.0,
 ) -> CompiledStateGraph:
-    """Build the gen_sql subgraph: generate → validate retry loop."""
+    """Build the gen_sql subgraph: generate → validate retry loop.
+
+    Args:
+        temperature: Sampling temperature (alternative candidates use
+            a higher value for diversity).
+    """
     config = services.config or AgentConfig()
 
     def route_after_validate(state: GenSQLState) -> str:
@@ -69,7 +79,7 @@ def build_gen_sql_subgraph(
         return "generate"
 
     g = StateGraph(GenSQLState)
-    g.add_node("generate", make_generate(services.llm, config))
+    g.add_node("generate", make_generate(services.llm, config, temperature=temperature))
     g.add_node("validate", make_validate(max_retries=max_retries))
     g.add_edge(START, "generate")
     g.add_edge("generate", "validate")
@@ -87,8 +97,14 @@ def build_gen_sql_subgraph(
 def _make_gen_sql_node(
     services: GraphServices,
     subgraph: CompiledStateGraph,
+    subgraph_alt: CompiledStateGraph | None = None,
 ):
-    """Main-graph wrapper around the gen_sql subgraph."""
+    """Main-graph wrapper around the gen_sql subgraph.
+
+    With subgraph_alt given (multi-candidate mode), a second candidate
+    is generated at a higher temperature and stored in state.candidates
+    for the consensus select node.
+    """
 
     async def gen_sql(state: WorkflowState) -> dict[str, Any]:
         if state.error:
@@ -129,21 +145,36 @@ def _make_gen_sql_node(
 
         sub_state = GenSQLState(
             question=state.question,
+            session_id=state.session_id,
             schema_context=state.schema_context,
             dialect=dialect,
             reflect_reason=state.reason,
             error_feedback=state.error_feedback,
             history=state.history,
+            plan=state.plan,
             few_shots=few_shots,
             term_notes=term_notes,
         )
         out = await subgraph.ainvoke(sub_state)
 
-        update: dict[str, Any] = {"dialect": dialect}
+        update: dict[str, Any] = {"dialect": dialect, "candidates": []}
         if out["sql"]:
             update["sql"] = out["sql"]
+        if out.get("attempts"):
+            update["attempts"] = out["attempts"]  # 子图内校验重试次数
         if out["error"]:
             update["error"] = out["error"]
+
+        # Multi-candidate: a second generation at higher temperature;
+        # failures fall back to the single-candidate path silently.
+        if subgraph_alt is not None and out["sql"] and not out["error"]:
+            try:
+                out_alt = await subgraph_alt.ainvoke(sub_state.model_copy(deep=True))
+            except Exception:
+                out_alt = {}
+            alt_sql = out_alt.get("sql", "")
+            if alt_sql and not out_alt.get("error") and alt_sql != out["sql"]:
+                update["candidates"] = [alt_sql]
         if example_hits:
             update["kb_hits"] = [
                 {"kind": "example", "question": h.question, "sql": h.sql, "tags": h.tags}
@@ -160,24 +191,36 @@ def _make_gen_sql_node(
 def build_graphs(
     services: GraphServices,
     checkpointer: Any = None,
+    multi_candidate: bool = True,
+    planner: bool = True,
+    clarify: bool = False,
 ) -> dict[str, CompiledStateGraph]:
     """Build and compile the reflection / fixed / empty graphs.
 
     Args:
         services: Service bundle bound into node closures.
         checkpointer: Optional LangGraph checkpointer (None = in-memory only).
+        multi_candidate: Reflection generates a second candidate at higher
+            temperature for consensus selection (off = single candidate).
+        planner: Reflection drafts an LLM query plan before generation.
+        clarify: Ask the user instead of generating when no tables match
+            (off by default — generation proceeds permissively).
 
     Returns:
         Mapping of workflow name → compiled graph.
     """
     subgraph = build_gen_sql_subgraph(services)
+    subgraph_alt = (
+        build_gen_sql_subgraph(services, temperature=0.3)
+        if multi_candidate else None
+    )
 
     def compile(g: StateGraph) -> CompiledStateGraph:
         return g.compile(checkpointer=checkpointer) if checkpointer else g.compile()
 
     return {
-        "reflection": compile(_build_reflection(services, subgraph)),
-        "fixed": compile(_build_fixed(services, subgraph)),
+        "reflection": compile(_build_reflection(services, subgraph, subgraph_alt, planner, clarify)),
+        "fixed": compile(_build_fixed(services, subgraph, clarify)),
         "empty": compile(_build_empty()),
     }
 
@@ -186,6 +229,20 @@ def _route_after_reflect(state: WorkflowState) -> Literal["gen_sql", "output"]:
     # Termination is guaranteed by reflect itself: it only returns RETRY
     # while retry_count < MAX_REFLECT_RETRIES (then forces OK).
     if state.error or state.verdict != "RETRY":
+        return "output"
+    return "gen_sql"
+
+
+def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "output"]:
+    """Clarification needed → ask the user; otherwise proceed to planning."""
+    if state.error or state.clarification_question:
+        return "output"
+    return "planner"
+
+
+def _route_after_clarify_gen_sql(state: WorkflowState) -> Literal["gen_sql", "output"]:
+    """Clarification needed → ask the user; otherwise proceed to generation."""
+    if state.error or state.clarification_question:
         return "output"
     return "gen_sql"
 
@@ -207,21 +264,51 @@ def _route_after_execute(state: WorkflowState) -> Literal["gen_sql", "reflect", 
 def _build_reflection(
     services: GraphServices,
     subgraph: CompiledStateGraph,
+    subgraph_alt: CompiledStateGraph | None = None,
+    planner: bool = True,
+    clarify: bool = False,
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
     ))
-    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph))
-    g.add_node("execute_sql", make_execute_sql(services.connectors))
-    g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig()))
+    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, subgraph_alt))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
     g.add_node("output", output)
 
     g.add_edge(START, "schema_linking")
-    g.add_edge("schema_linking", "gen_sql")
+    if clarify:
+        g.add_node("clarify", make_clarify())
+        g.add_edge("schema_linking", "clarify")
+        if planner:
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig()))
+            g.add_conditional_edges(
+                "clarify",
+                _route_after_clarify_planner,
+                {"planner": "planner", "output": "output"},
+            )
+            g.add_edge("planner", "gen_sql")
+        else:
+            g.add_conditional_edges(
+                "clarify",
+                _route_after_clarify_gen_sql,
+                {"gen_sql": "gen_sql", "output": "output"},
+            )
+    else:
+        if planner:
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig()))
+            g.add_edge("schema_linking", "planner")
+            g.add_edge("planner", "gen_sql")
+        else:
+            g.add_edge("schema_linking", "gen_sql")
     g.add_edge("gen_sql", "execute_sql")
+    g.add_edge("execute_sql", "select")
+    g.add_edge("select", "validate")
     g.add_conditional_edges(
-        "execute_sql",
+        "validate",
         _route_after_execute,
         {"gen_sql": "gen_sql", "reflect": "reflect", "output": "output"},
     )
@@ -237,20 +324,32 @@ def _build_reflection(
 def _build_fixed(
     services: GraphServices,
     subgraph: CompiledStateGraph,
+    clarify: bool = False,
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph))
-    g.add_node("execute_sql", make_execute_sql(services.connectors))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("output", output)
 
     g.add_edge(START, "schema_linking")
-    g.add_edge("schema_linking", "gen_sql")
+    if clarify:
+        g.add_node("clarify", make_clarify())
+        g.add_edge("schema_linking", "clarify")
+        g.add_conditional_edges(
+            "clarify",
+            _route_after_clarify_gen_sql,
+            {"gen_sql": "gen_sql", "output": "output"},
+        )
+    else:
+        g.add_edge("schema_linking", "gen_sql")
     g.add_edge("gen_sql", "execute_sql")
+    g.add_edge("execute_sql", "validate")
     g.add_conditional_edges(
-        "execute_sql",
+        "validate",
         _route_after_execute_fixed,
         {"gen_sql": "gen_sql", "output": "output"},
     )

@@ -67,11 +67,26 @@ async def full_stack(tmp_path, demo_registry):
             "GROUP BY d.A2 ORDER BY avg_loan DESC",
     )
 
+    # KB 术语解决中文问题匹配（真实使用路径：/kb init + 术语）
+    from trove.services.kb.service import KbService
+    kb = KbService(tmp_path / "proj")
+    (kb.kb_dir / demo_registry.default_name).mkdir(parents=True, exist_ok=True)
+    (kb.kb_dir / demo_registry.default_name / "semantics.yml").write_text(
+        "terms:\n"
+        "  - term: 平均贷款金额\n"
+        "    aliases: [平均贷款]\n"
+        "    mapping: AVG(loan.amount)\n"
+        "    tables: [loan, account, district]\n"
+        "    definition: 按地区分组的贷款金额均值\n",
+        encoding="utf-8",
+    )
+
     services = GraphServices(
         llm=llm,
         catalog=catalog,
         connectors=demo_registry,
         config=config,
+        kb=kb,
     )
     manager = SessionManager(
         config=config,
@@ -136,7 +151,7 @@ class TestEndToEnd:
 
         state = await full_stack.ask(
             session=session,
-            question="test",
+            question="List the loans per district",
             workflow_name="fixed",
         )
         assert state.verdict == ""  # reflect never ran
@@ -206,14 +221,14 @@ class TestWorkflowEdgeCases:
                 catalog=catalog,
                 connectors=demo_registry,
                 config=config,
-            )),
+            ), multi_candidate=False),
             llm_gateway=llm,
         )
 
         session = await manager.start_session(project_cwd="/tmp/retry")
         state = await manager.ask(
             session=session,
-            question="有多少个客户？",
+            question="How many client records are there",
             workflow_name="fixed",
         )
 
