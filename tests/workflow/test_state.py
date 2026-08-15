@@ -15,6 +15,7 @@ class TestWorkflowState:
         assert state.verdict == ""
         assert state.retry_count == 0
         assert state.error == ""
+        assert state.error_feedback == ""
         assert state.final_response == ""
         assert state.kb_hits == []
 
@@ -46,6 +47,7 @@ class TestGenSQLState:
         assert state.attempts == 0
         assert state.validation_errors == []
         assert state.error == ""
+        assert state.error_feedback == ""
 
     def test_attempts_are_ints(self):
         state = GenSQLState(question="q", schema_context="", dialect="sqlite", attempts=2)

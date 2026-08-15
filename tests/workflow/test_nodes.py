@@ -204,6 +204,11 @@ class TestSQLHelpers:
         assert "Reference examples" not in prompt
         assert "Terminology" not in prompt
 
+    def test_build_sql_prompt_includes_error_feedback(self):
+        prompt = build_sql_prompt("q", "schema", "sqlite", error_feedback="no such table: loans")
+        assert "no such table: loans" in prompt
+        assert "failed during execution" in prompt
+
     def test_build_fix_prompt_lists_errors(self):
         prompt = build_fix_prompt("SELEC 1", ["Parse error: bad"])
         assert "SELEC 1" in prompt
@@ -325,11 +330,22 @@ class TestExecuteSQL:
         update = await node(state)
         assert update["row_count"] == 5
         assert update["columns"] == ["name"]
+        assert update["error_feedback"] == ""  # 成功执行清空反馈
 
-    async def test_execute_error_sql(self, sqlite_registry):
+    async def test_execute_error_gives_feedback_for_retry(self, sqlite_registry):
+        """第一次执行失败 → 反馈修正（不降级），消耗一轮修正预算。"""
         node = make_execute_sql(sqlite_registry)
         update = await node(make_state(sql="SELECT * FROM nonexistent"))
+        assert "error" not in update
+        assert "nonexistent" in update["error_feedback"]
+        assert update["retry_count"] == 1
+
+    async def test_execute_error_with_budget_exhausted_degrades(self, sqlite_registry):
+        """修正预算耗尽后，执行失败才优雅降级。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(make_state(sql="SELECT * FROM nonexistent", retry_count=2))
         assert update["error"]
+        assert "error_feedback" not in update
 
     async def test_error_passthrough(self, sqlite_registry):
         node = make_execute_sql(sqlite_registry)

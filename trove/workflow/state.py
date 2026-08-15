@@ -50,6 +50,10 @@ class WorkflowState(BaseModel):
     # graceful degradation channel: first node failure message wins
     error: str = ""
 
+    # execution-error feedback: execute_sql failures route back to gen_sql
+    # with this message (shared retry budget); cleared on success
+    error_feedback: str = ""
+
     # output artifact
     final_response: str = ""
 
@@ -66,6 +70,9 @@ class GenSQLState(BaseModel):
     attempts: int = 0
     validation_errors: list[str] = Field(default_factory=list)
     error: str = ""
+
+    # execution-error feedback from a previous pass (injected into the prompt)
+    error_feedback: str = ""
 
     # Knowledge base material for prompt injection
     few_shots: list[dict[str, Any]] = Field(default_factory=list)   # reference examples/templates

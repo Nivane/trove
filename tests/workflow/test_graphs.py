@@ -128,12 +128,32 @@ class TestReflectionGraph:
         assert len(llm.calls) == 3  # reflect never called
 
     async def test_execute_failure_degrades_to_output(self, sqlite_registry, catalog):
-        llm = RecordingLLM(["```sql\nSELECT * FROM nonexistent;\n```"])
+        """执行失败 → 修正预算内重生成 → 耗尽后优雅降级（不再首错即降级）。"""
+        bad_sql = "```sql\nSELECT * FROM nonexistent;\n```"
+        llm = RecordingLLM([bad_sql, bad_sql, bad_sql])  # 初稿 + 2 轮修正
         graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"]
+        assert final["retry_count"] == 2
         assert "**Error**" in final["final_response"]
         assert final["verdict"] == ""  # reflect skipped
+
+    async def test_execute_error_feedback_fixes_sql(self, sqlite_registry, catalog):
+        """执行错误反馈给 gen_sql → 修正后成功（修正闭环）。"""
+        llm = RecordingLLM([
+            "```sql\nSELECT * FROM nonexistent;\n```",           # 初稿（运行时错误）
+            "```sql\nSELECT name FROM students;\n```",           # 修正稿
+            "OK",                                                # reflect
+        ])
+        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["error_feedback"] == ""
+        assert final["retry_count"] == 1
+        assert final["row_count"] == 5
+        assert final["verdict"] == "OK"
+        # 修正 prompt 携带了执行错误信息
+        assert "nonexistent" in llm.calls[1][-1]["content"]
 
     async def test_preexisting_error_passes_straight_to_output(self, sqlite_registry, catalog):
         graphs = build_graphs(make_services(RecordingLLM([]), catalog, sqlite_registry))
@@ -159,6 +179,18 @@ class TestFixedGraph:
         assert final["row_count"] == 5
         assert "## Answer" in final["final_response"]
         assert len(llm.calls) == 1
+
+    async def test_execute_error_feedback_retries(self, sqlite_registry, catalog):
+        """fixed 图同样带执行错误修正闭环。"""
+        llm = RecordingLLM([
+            "```sql\nSELECT * FROM nonexistent;\n```",
+            "```sql\nSELECT name FROM students;\n```",
+        ])
+        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["fixed"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        assert len(llm.calls) == 2
 
 
 class TestEmptyGraph:

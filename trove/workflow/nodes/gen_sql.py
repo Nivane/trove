@@ -63,6 +63,7 @@ def build_sql_prompt(
     schema_context: str,
     dialect: str,
     reflect_reason: str = "",
+    error_feedback: str = "",
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -102,6 +103,12 @@ def build_sql_prompt(
         parts += [
             f"Note: a previous version of this query was rejected with: "
             f"{reflect_reason}. Please correct it.",
+            "",
+        ]
+    if error_feedback:
+        parts += [
+            f"Note: the previous query failed during execution with: "
+            f"{error_feedback}. Please correct the SQL.",
             "",
         ]
     parts.append("Generate the SQL query to answer this question:")
@@ -195,6 +202,7 @@ def make_generate(
                 schema_context=state.schema_context,
                 dialect=state.dialect,
                 reflect_reason=state.reflect_reason,
+                error_feedback=state.error_feedback,
                 few_shots=state.few_shots or None,
                 term_notes=state.term_notes or None,
             )

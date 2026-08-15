@@ -132,6 +132,7 @@ def _make_gen_sql_node(
             schema_context=state.schema_context,
             dialect=dialect,
             reflect_reason=state.reason,
+            error_feedback=state.error_feedback,
             few_shots=few_shots,
             term_notes=term_notes,
         )
@@ -188,6 +189,20 @@ def _route_after_reflect(state: WorkflowState) -> Literal["gen_sql", "output"]:
     return "gen_sql"
 
 
+def _route_after_execute(state: WorkflowState) -> Literal["gen_sql", "reflect", "output"]:
+    """Execution failure feeds back to gen_sql.
+
+    execute_sql enforces the budget itself (degrades via state.error when
+    exhausted, clears feedback on success), so the loop always terminates:
+    error_feedback set ⇒ regenerate; next failure either clears or degrades.
+    """
+    if state.error:
+        return "output"
+    if state.error_feedback:
+        return "gen_sql"
+    return "reflect"
+
+
 def _build_reflection(
     services: GraphServices,
     subgraph: CompiledStateGraph,
@@ -204,7 +219,11 @@ def _build_reflection(
     g.add_edge(START, "schema_linking")
     g.add_edge("schema_linking", "gen_sql")
     g.add_edge("gen_sql", "execute_sql")
-    g.add_edge("execute_sql", "reflect")
+    g.add_conditional_edges(
+        "execute_sql",
+        _route_after_execute,
+        {"gen_sql": "gen_sql", "reflect": "reflect", "output": "output"},
+    )
     g.add_conditional_edges(
         "reflect",
         _route_after_reflect,
@@ -229,9 +248,22 @@ def _build_fixed(
     g.add_edge(START, "schema_linking")
     g.add_edge("schema_linking", "gen_sql")
     g.add_edge("gen_sql", "execute_sql")
-    g.add_edge("execute_sql", "output")
+    g.add_conditional_edges(
+        "execute_sql",
+        _route_after_execute_fixed,
+        {"gen_sql": "gen_sql", "output": "output"},
+    )
     g.add_edge("output", END)
     return g
+
+
+def _route_after_execute_fixed(state: WorkflowState) -> Literal["gen_sql", "output"]:
+    """Fixed graph: execution failure regenerates (budget enforced in execute)."""
+    if state.error:
+        return "output"
+    if state.error_feedback:
+        return "gen_sql"
+    return "output"
 
 
 def _build_empty() -> StateGraph:
