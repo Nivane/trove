@@ -41,12 +41,19 @@ from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
 from trove.workflow.nodes.answer import make_answer_metadata
 from trove.workflow.nodes.metadata_check import make_metadata_check
-from trove.workflow.intent import INTENT_PROMPT, Intent, classify_intent, has_weak_signal, parse_llm_intent
+from trove.workflow.nodes.analyze_error import make_analyze_error
+from trove.core.i18n import L, detect_language
+from trove.workflow.intent import INTENT_PROMPT, INTENT_PROMPT_ZH, Intent, classify_intent, has_weak_signal, parse_llm_intent
 
 logger = get_logger(__name__)
 
 MAX_REFLECT_RETRIES = 10  # 修正轮上限（执行错误/规则/一致性/裁决共享）
 CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计划/历史）的预算
+
+
+def generation_temperature(retry_count: int) -> float:
+    """修正轮升温：温度 0 的确定性生成会让重试产出相同 SQL。"""
+    return min(0.3, retry_count * 0.1)
 DEFAULT_GEN_SQL_RETRIES = 3
 
 WORKFLOW_NAMES = ("reflection", "fixed", "empty")
@@ -229,10 +236,11 @@ def _make_gen_sql_node(
                         },
                     },
                 }],
-                    tool_handlers={"validate_sql": validate_tool},
-                    max_rounds=6,
-                    metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
-                )
+                tool_handlers={"validate_sql": validate_tool},
+                max_rounds=6,
+                metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
+                temperature=generation_temperature(state.retry_count),
+            )
             except Exception as e:
                 logger.warning("Agentic gen_sql failed (%s); falling back to classic", e)
                 result = None
@@ -349,11 +357,16 @@ def make_route_intent(llm: LLMGateway | None = None, config: AgentConfig | None 
         if intent is None and has_weak_signal(state.question) and llm is not None:
             try:
                 model = (config.target if config else "") or "openai/gpt-4o"
+                intent_prompt = L(
+                    detect_language(state.question),
+                    INTENT_PROMPT_ZH,
+                    INTENT_PROMPT,
+                )
                 response = await llm.chat(
                     model=model,
                     max_tokens=16,
                     messages=[
-                        {"role": "system", "content": INTENT_PROMPT},
+                        {"role": "system", "content": intent_prompt},
                         {"role": "user", "content": state.question},
                     ],
                     metadata={
@@ -414,6 +427,7 @@ def _build_gen_prompt(sub_state: GenSQLState) -> str:
         dialect=sub_state.dialect,
         reflect_reason=sub_state.reflect_reason,
         error_feedback=sub_state.error_feedback,
+        error_analysis=sub_state.error_analysis,
         history=sub_state.history,
         plan=sub_state.plan,
         evidence=sub_state.evidence,
@@ -463,17 +477,18 @@ def _route_after_clarify_gen_sql(state: WorkflowState) -> Literal["gen_sql", "ou
     return "gen_sql"
 
 
-def _route_after_execute(state: WorkflowState) -> Literal["gen_sql", "reflect", "output"]:
-    """Execution failure feeds back to gen_sql.
+def _route_after_execute(state: WorkflowState) -> Literal["analyze_error", "reflect", "output"]:
+    """Execution failure → error diagnosis → regeneration.
 
     execute_sql enforces the budget itself (degrades via state.error when
     exhausted, clears feedback on success), so the loop always terminates:
-    error_feedback set ⇒ regenerate; next failure either clears or degrades.
+    error_feedback set ⇒ analyze then regenerate; next failure either
+    clears or degrades.
     """
     if state.error:
         return "output"
     if state.error_feedback:
-        return "gen_sql"
+        return "analyze_error"
     return "reflect"
 
 
@@ -524,10 +539,12 @@ def _build_reflection(
     g.add_edge("gen_sql", "execute_sql")
     g.add_edge("execute_sql", "select")
     g.add_edge("select", "validate")
+    g.add_node("analyze_error", make_analyze_error(services.llm, services.config or AgentConfig()))
+    g.add_edge("analyze_error", "gen_sql")
     g.add_conditional_edges(
         "validate",
         _route_after_execute,
-        {"gen_sql": "gen_sql", "reflect": "reflect", "output": "output"},
+        {"analyze_error": "analyze_error", "reflect": "reflect", "output": "output"},
     )
     g.add_conditional_edges(
         "reflect",

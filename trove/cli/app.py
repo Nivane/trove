@@ -255,6 +255,9 @@ class TroveREPL:
             if llm.get("output_preview"):
                 self._tui.print_info(f"      out: {llm['output_preview'][:160]}")
 
+        if node == "analyze_error" and detail.get("analysis"):
+            self._tui.print_info(f"    analysis: {detail['analysis'][:300]}")
+
         if node == "gen_sql" and detail.get("sql"):
             self._tui.print_sql(detail["sql"])
         elif node == "planner" and detail.get("plan"):

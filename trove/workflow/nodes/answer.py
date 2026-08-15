@@ -27,6 +27,8 @@ from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
+ANSWER_SYSTEM_PROMPT_ZH = """你是数据知识助手。只依据下方元数据上下文回答用户的问题。用户问什么就答什么——问关系就答关系，问含义就答含义，问多件事就逐件回答。不要堆砌无关信息。回答保持简洁、结构化。"""
+
 ANSWER_SYSTEM_PROMPT = """You are a data knowledge assistant. Answer the user's question using ONLY the metadata context below. Answer exactly what was asked — if the user asks about relationships, answer relationships; if they ask about meanings, explain meanings; if they ask several things, answer each in turn. Do not dump unrelated information. Keep answers concise and structured."""
 
 _RELATIONS_RE = re.compile(r"关系|关联|关连|连接|相连|怎么连|血缘|来源|从哪")
@@ -146,6 +148,11 @@ def make_answer_metadata(
 
         if llm is not None:
             try:
+                system_prompt = L(
+                    detect_language(state.question),
+                    ANSWER_SYSTEM_PROMPT_ZH,
+                    ANSWER_SYSTEM_PROMPT,
+                )
                 model = (config.target if config else "") or "openai/gpt-4o"
                 feedback_note = (
                     f"\n\n注意：上一次回答未通过校验（{state.error_feedback}），请修正。"
@@ -154,7 +161,7 @@ def make_answer_metadata(
                 response = await llm.chat(
                     model=model,
                     messages=[
-                        {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Metadata context:\n{context}\n\nQuestion: {state.question}{feedback_note}"},
                     ],
                     metadata={

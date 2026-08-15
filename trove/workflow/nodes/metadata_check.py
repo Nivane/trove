@@ -15,6 +15,7 @@ from typing import Any
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
+from trove.core.i18n import L, detect_language
 from trove.llm.gateway import LLMGateway
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.state import WorkflowState
@@ -22,6 +23,12 @@ from trove.workflow.state import WorkflowState
 logger = get_logger(__name__)
 
 _REF_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
+
+JUDGE_SYSTEM_PROMPT_ZH = """你是元数据答案评审员。给定用户问题和已生成的答案，检查：
+1. 答案是否完整回答了问题的每个部分？
+2. 答案是否只引用了元数据上下文中存在的信息？
+
+只回答 "OK" 或 "ISSUE: <理由>"。"""
 
 JUDGE_SYSTEM_PROMPT = """You are a metadata answer reviewer. Given the user question and the generated answer, check:
 1. Does the answer fully address every part of the question?
@@ -75,11 +82,16 @@ def make_metadata_check(
         if llm is not None:
             try:
                 model = (config.target if config else "") or "openai/gpt-4o"
+                judge_prompt = L(
+                    detect_language(state.question),
+                    JUDGE_SYSTEM_PROMPT_ZH,
+                    JUDGE_SYSTEM_PROMPT,
+                )
                 verdict = await llm.chat(
                     model=model,
                     max_tokens=64,
                     messages=[
-                        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                        {"role": "system", "content": judge_prompt},
                         {"role": "user", "content": (
                             f"Question: {state.question}\n"
                             f"Answer: {state.intent_answer}\n"

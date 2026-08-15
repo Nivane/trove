@@ -58,6 +58,13 @@ def has_weak_signal(question: str) -> bool:
     return any(p.search(question) for p in _WEAK_COMPILED)
 
 
+INTENT_PROMPT_ZH = """把用户输入分类为以下之一：query | metadata。
+
+- query: 数据问题，需要用 SQL 回答
+- metadata: 关于数据本身的问题（表、字段、业务术语定义、表关系、知识库内容）
+
+只回答单个词。"""
+
 INTENT_PROMPT = """Classify the user input into ONE of: query | metadata.
 
 - query: a data question to be answered with SQL

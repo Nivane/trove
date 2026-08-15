@@ -92,6 +92,9 @@ class WorkflowState(BaseModel):
     # with this message (shared retry budget); cleared on success
     error_feedback: str = ""
 
+    # LLM diagnosis of the failed SQL (error type / judgment / fix plan)
+    error_analysis: str = ""
+
     # output artifact
     final_response: str = ""
 
@@ -113,6 +116,9 @@ class GenSQLState(BaseModel):
 
     # execution-error feedback from a previous pass (injected into the prompt)
     error_feedback: str = ""
+
+    # LLM diagnosis of the failed SQL (error type / judgment / fix plan)
+    error_analysis: str = ""
 
     # conversation history for follow-up questions
     history: str = ""

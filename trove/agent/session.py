@@ -378,6 +378,9 @@ class SessionManager:
             detail["execution_time_ms"] = delta.get("execution_time_ms", 0)
             detail["retry"] = retry
             detail["reason"] = reason
+        elif node_name == "analyze_error":
+            detail["error"] = reason
+            detail["analysis"] = delta.get("error_analysis", "")
         elif node_name == "select":
             detail["consensus"] = delta.get("consensus", True)
         elif node_name == "validate":

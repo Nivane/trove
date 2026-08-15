@@ -63,6 +63,7 @@ class TestSelectNode:
         assert "error" not in update
         assert "different results" in update["error_feedback"]
         assert update["retry_count"] == 1
+        assert update["consensus"] is False  # 分歧即标记，不只耗尽时
 
     async def test_disagreement_budget_exhausted_marks_low_confidence(self):
         """预算耗尽不再硬降级：放行主候选 + 低置信标记。"""

@@ -148,7 +148,8 @@ class TestReflectionGraph:
         """执行失败 → 修正预算内重生成 → 耗尽后优雅降级（不再首错即降级）。"""
         monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
         bad_sql = "```sql\nSELECT * FROM nonexistent;\n```"
-        llm = RecordingLLM([bad_sql, bad_sql, bad_sql])  # 初稿 + 2 轮修正
+        # 每轮修正：gen → analyze（诊断）→ gen…
+        llm = RecordingLLM([bad_sql, "diag", bad_sql, "diag", bad_sql])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"]
@@ -160,6 +161,7 @@ class TestReflectionGraph:
         """执行错误反馈给 gen_sql → 修正后成功（修正闭环）。"""
         llm = RecordingLLM([
             "```sql\nSELECT * FROM nonexistent;\n```",           # 初稿（运行时错误）
+            "diag: 表名错误",                                      # 错误诊断
             "```sql\nSELECT name FROM students;\n```",           # 修正稿
             "OK",                                                # reflect
         ])
@@ -361,6 +363,15 @@ class TestIntentLLMFallback:
         assert "students" in final["intent_answer"]
         assert "courses" in final["intent_answer"]
         assert "students_id" in final["intent_answer"]
+
+
+class TestGenerationTemperature:
+    def test_temperature_rises_with_retries(self):
+        from trove.workflow.graphs import generation_temperature
+        assert generation_temperature(0) == 0.0
+        assert generation_temperature(1) == 0.1
+        assert generation_temperature(3) == 0.3
+        assert generation_temperature(10) == 0.3  # 封顶
 
 
 class AgenticLLM:
@@ -597,6 +608,7 @@ examples:
         """count 问题先返回多行 → 规则失败 → 带理由重新生成 → 修正成功。"""
         llm = RecordingLLM([
             "```sql\nSELECT name FROM students;\n```",   # 多行（规则失败）
+            "diag: count 应单值",                          # 错误诊断
             "```sql\nSELECT COUNT(*) FROM students;\n```",  # 修正：单值
             "OK",                                        # reflect
         ])
@@ -613,6 +625,7 @@ examples:
         """list 问题返回 0 行 → 规则触发重新生成 → 非空结果。"""
         llm = RecordingLLM([
             "```sql\nSELECT name FROM students WHERE 0;\n```",
+            "diag: 空结果可疑",
             "```sql\nSELECT name FROM students;\n```",
             "OK",
         ])

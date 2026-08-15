@@ -70,6 +70,7 @@ def make_select_consensus(
             "error_feedback": feedback,
             "retry_count": state.retry_count + 1,
             "correction_history": [feedback],
+            "consensus": False,
         }
 
     return select

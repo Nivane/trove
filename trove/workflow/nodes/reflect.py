@@ -18,12 +18,30 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.config import AgentConfig
+from trove.core.i18n import L, detect_language
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.llm.agent_loop import run_agent_loop
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
+
+REFLECT_SYSTEM_PROMPT_ZH = """你是严格的 SQL 结果评估器。检查查询结果是否正确回答了用户的问题。
+
+严格一点：静默的错误结果比可见的错误更糟。不确定时返回 RETRY 并给出具体理由。
+
+评估要点：
+1. 结果是否符合问题的逻辑？
+2. 行数是否符合问题形态：计数/百分比类问题 → 单个数值；列表/Top-N 类问题 → 多行。
+3. 空结果可疑：判断是 SQL 写错（join/过滤/表列名错误）还是数据确实没有匹配。只有 SQL 本身正确时才回答 EMPTY。
+4. 列名是否符合问题所问？
+5. 数值的量级、单位、业务逻辑是否合理（如年龄小于 120、百分比在 0-100）？
+
+只回答以下之一：
+- "OK" — 结果满意
+- "RETRY: <理由>" — 结果错误，需要重新生成（说明哪里错了）
+- "EMPTY" — 结果为空但 SQL 正确（数据确实无匹配）
+"""
 
 REFLECT_SYSTEM_PROMPT = """You are a SQL result evaluator. Your task is to check whether the query results correctly answer the user's question.
 
@@ -74,6 +92,11 @@ def make_reflect(
 
         try:
             model = config.target or "openai/gpt-4o"
+            system_prompt = L(
+                detect_language(state.question),
+                REFLECT_SYSTEM_PROMPT_ZH,
+                REFLECT_SYSTEM_PROMPT,
+            )
             if agentic and connectors is not None:
                 from trove.workflow.rules import validate as run_rules
 
@@ -93,7 +116,7 @@ def make_reflect(
 
                 result = await run_agent_loop(
                     llm, model,
-                    system=REFLECT_SYSTEM_PROMPT,
+                    system=system_prompt,
                     user=prompt,
                     tools=[{
                         "type": "function",
@@ -119,7 +142,7 @@ def make_reflect(
                 response = await llm.chat(
                 model=model,
                 messages=[
-                    {"role": "system", "content": REFLECT_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 metadata={

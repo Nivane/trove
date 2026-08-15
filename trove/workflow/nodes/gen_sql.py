@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.config import AgentConfig
+from trove.core.i18n import L, detect_language
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.workflow.state import GenSQLState
@@ -37,6 +38,23 @@ Guidelines:
 7. If you cannot generate a valid SQL query, explain why.
 
 Output format:
+```sql
+SELECT ...
+```
+"""
+
+SQL_GENERATION_SYSTEM_PROMPT_ZH = """你是 SQL 生成助手，负责把自然语言问题翻译成准确的 SQL 查询。
+
+规则：
+1. 只输出 SQL 查询，不要输出其他内容。
+2. 严格使用提供的表结构。
+3. 使用符合目标方言的标准 SQL 语法。
+4. 问题有歧义时做合理假设并在 SQL 注释中说明。
+5. 禁止 INSERT、UPDATE、DELETE、DROP 等写操作。
+6. 需要时正确引用表名和列名。
+7. 无法生成合法 SQL 时，说明原因。
+
+输出格式：
 ```sql
 SELECT ...
 ```
@@ -68,6 +86,7 @@ def build_sql_prompt(
     history: str = "",
     plan: str = "",
     evidence: str = "",
+    error_analysis: str = "",
     rules: list[str] | None = None,
     lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
@@ -143,6 +162,12 @@ def build_sql_prompt(
         parts += [
             f"Note: the previous query failed during execution with: "
             f"{error_feedback}. Please correct the SQL.",
+            "",
+        ]
+    if error_analysis:
+        parts += [
+            "Error analysis (diagnosis and fix plan from the expert):",
+            error_analysis,
             "",
         ]
     parts.append("Generate the SQL query to answer this question:")
@@ -246,6 +271,7 @@ def make_generate(
                 history=state.history,
                 plan=state.plan,
                 evidence=state.evidence,
+                error_analysis=state.error_analysis,
                 rules=state.rules or None,
                 lessons=state.lessons or None,
                 few_shots=state.few_shots or None,
@@ -254,10 +280,15 @@ def make_generate(
 
         model = config.target or "openai/gpt-4o"
         start = time.monotonic()
+        system_prompt = L(
+            detect_language(state.question),
+            SQL_GENERATION_SYSTEM_PROMPT_ZH,
+            SQL_GENERATION_SYSTEM_PROMPT,
+        )
         response = await llm.chat(
             model=model,
             messages=[
-                {"role": "system", "content": SQL_GENERATION_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             temperature=temperature,

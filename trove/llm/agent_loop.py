@@ -27,6 +27,7 @@ async def run_agent_loop(
     tool_handlers: dict[str, ToolHandler],
     max_rounds: int = 8,
     metadata: dict[str, Any] | None = None,
+    temperature: float = 0.0,
 ) -> dict[str, Any]:
     """Run a tool-calling loop until the model returns content without calls.
 
@@ -55,6 +56,7 @@ async def run_agent_loop(
     for round_no in range(1, max_rounds + 1):
         response = await llm.chat_full(
             model=model, messages=messages, tools=tools, metadata=metadata,
+            temperature=temperature,
         )
         content = response.get("content") or ""
         tool_calls = response.get("tool_calls") or []

@@ -532,6 +532,58 @@ class TestExecuteSQL:
 # ── Planner ──────────────────────────────────────────────
 
 
+class TestBilingualPrompts:
+    async def test_gen_system_prompt_follows_language(self):
+        """中文问题 → 中文 system prompt；英文问题 → 英文。"""
+        from trove.workflow.state import GenSQLState
+        from trove.workflow.nodes.gen_sql import make_generate
+
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages)
+                return "```sql\nSELECT 1;\n```"
+
+        generate = make_generate(LLM(), AgentConfig(target="m"))
+        await generate(GenSQLState(question="平均成绩是多少", schema_context="", dialect="sqlite"))
+        assert "生成" in captured["messages"][0]["content"]  # 中文 system
+
+        await generate(GenSQLState(question="average grade", schema_context="", dialect="sqlite"))
+        assert "SQL generation assistant" in captured["messages"][0]["content"]
+
+    async def test_planner_prompt_follows_language(self):
+        from trove.workflow.nodes.planner import make_planner
+
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages)
+                return "plan"
+
+        node = make_planner(LLM(), AgentConfig(target="m"))
+        await node(make_state(question="平均成绩是多少"))
+        assert "规划" in captured["messages"][0]["content"]
+
+        await node(make_state(question="average grade"))
+        assert "query planner" in captured["messages"][0]["content"]
+
+    async def test_reflect_prompt_follows_language(self):
+        from trove.workflow.nodes.reflect import make_reflect
+
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages)
+                return "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        await node(make_state(question="平均成绩是多少", row_count=3, columns=["x"], rows=[[1], [2], [3]]))
+        assert "评估" in captured["messages"][0]["content"]
+
+
 class TestPlanner:
     async def test_planner_writes_plan(self):
         from trove.workflow.nodes.planner import make_planner
