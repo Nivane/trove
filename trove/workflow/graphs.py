@@ -38,10 +38,8 @@ from trove.workflow.nodes.select import make_select_consensus
 from trove.workflow.nodes.validate import make_validate_rules
 from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
-from trove.workflow.nodes.answer import (
-    make_answer_schema, make_answer_semantic, make_answer_knowledge, make_answer_lineage,
-)
-from trove.workflow.intent import Intent, classify_intent
+from trove.workflow.nodes.answer import make_answer_metadata
+from trove.workflow.intent import INTENT_PROMPT, Intent, classify_intent, has_weak_signal, parse_llm_intent
 
 logger = get_logger(__name__)
 
@@ -270,13 +268,35 @@ def _route_after_reflect(state: WorkflowState) -> Literal["gen_sql", "output"]:
     return "gen_sql"
 
 
-def make_route_intent():
-    """Intent router: classify the user input before the SQL pipeline."""
+def make_route_intent(llm: LLMGateway | None = None, config: AgentConfig | None = None):
+    """Intent router: strong signals first, LLM confirms weak signals."""
 
     async def route_intent(state: WorkflowState) -> dict[str, Any]:
         if state.error:
             return {}
-        return {"intent": classify_intent(state.question).value}
+        intent = classify_intent(state.question)
+        if intent is None and has_weak_signal(state.question) and llm is not None:
+            try:
+                model = (config.target if config else "") or "openai/gpt-4o"
+                response = await llm.chat(
+                    model=model,
+                    max_tokens=16,
+                    messages=[
+                        {"role": "system", "content": INTENT_PROMPT},
+                        {"role": "user", "content": state.question},
+                    ],
+                    metadata={
+                        "node": "route_intent",
+                        "session_id": state.session_id,
+                        "question": state.question[:80],
+                    },
+                )
+                intent = parse_llm_intent(response)
+            except Exception:
+                intent = None
+        if intent is None:
+            intent = Intent.QUERY  # permissive default
+        return {"intent": intent.value}
 
     return route_intent
 
@@ -288,18 +308,9 @@ def _route_after_intent(state: WorkflowState) -> str:
 
 def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     """Shared wiring: START → route_intent → query pipeline or answer nodes."""
-    g.add_node("route_intent", make_route_intent())
-    g.add_node("answer_schema", make_answer_schema(
+    g.add_node("route_intent", make_route_intent(services.llm, services.config))
+    g.add_node("answer_metadata", make_answer_metadata(
         services.catalog, kb=services.kb, connectors=services.connectors,
-    ))
-    g.add_node("answer_semantic", make_answer_semantic(
-        kb=services.kb, connectors=services.connectors,
-    ))
-    g.add_node("answer_knowledge", make_answer_knowledge(
-        kb=services.kb, connectors=services.connectors,
-    ))
-    g.add_node("answer_lineage", make_answer_lineage(
-        services.catalog, connectors=services.connectors,
     ))
     g.add_edge(START, "route_intent")
     g.add_conditional_edges(
@@ -307,14 +318,10 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
         _route_after_intent,
         {
             "query": "schema_linking",
-            "schema": "answer_schema",
-            "semantic": "answer_semantic",
-            "knowledge": "answer_knowledge",
-            "lineage": "answer_lineage",
+            "metadata": "answer_metadata",
         },
     )
-    for node in ("answer_schema", "answer_semantic", "answer_knowledge", "answer_lineage"):
-        g.add_edge(node, "output")
+    g.add_edge("answer_metadata", "output")
 
 
 def _render_shots(shots: list[dict[str, Any]]) -> str:

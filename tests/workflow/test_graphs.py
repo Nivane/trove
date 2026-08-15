@@ -184,7 +184,7 @@ class TestIntentRouting:
         llm = RecordingLLM([])  # 任何调用都会 IndexError
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(question="有哪些表"))
-        assert final["intent"] == "schema"
+        assert final["intent"] == "metadata"
         assert "students" in final["intent_answer"]
         assert final["sql"] == ""
 
@@ -202,7 +202,7 @@ class TestIntentRouting:
         final = await graphs["reflection"].ainvoke(
             make_state(question="city 表的血缘")
         )
-        assert final["intent"] == "lineage"
+        assert final["intent"] == "metadata"
         assert "city.district_id → district.district_id" in final["intent_answer"]
 
     async def test_semantic_intent_uses_kb(self, sqlite_registry, catalog, tmp_path):
@@ -222,7 +222,7 @@ class TestIntentRouting:
         final = await graphs["reflection"].ainvoke(
             make_state(question="平均成绩的定义")
         )
-        assert final["intent"] == "semantic"
+        assert final["intent"] == "metadata"
         assert "AVG(students.grade)" in final["intent_answer"]
 
     async def test_query_intent_still_runs_pipeline(self, sqlite_registry, catalog):
@@ -238,9 +238,49 @@ class TestIntentRouting:
         llm = RecordingLLM([])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(question="list tables"))
-        assert final["intent"] == "schema"
+        assert final["intent"] == "metadata"
         assert "tables" in final["intent_answer"].lower()
         assert "数据源" not in final["intent_answer"]
+
+
+class TestIntentLLMFallback:
+    async def test_weak_signal_llm_classifies_metadata(self, sqlite_registry, catalog):
+        """弱信号（裸「表」字）→ LLM 二分类确认 metadata → 表详情。"""
+        llm = RecordingLLM(["metadata"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="students 表有什么")
+        )
+        assert final["intent"] == "metadata"
+        assert "id" in final["intent_answer"]
+        assert "INTEGER" in final["intent_answer"]
+        assert len(llm.calls) == 1  # 仅意图分类，无生成
+
+    async def test_weak_signal_llm_garbage_falls_back_to_query(self, sqlite_registry, catalog):
+        """LLM 分类不可解析 → query 兜底，正常走生成流水线。"""
+        llm = RecordingLLM(["blah blah", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="students 表有什么")
+        )
+        assert final["intent"] == "query"
+        assert final["row_count"] == 5
+
+    async def test_composite_metadata_question(self, sqlite_registry, catalog):
+        """复合问题（含义 + 关系）→ 表详情与关联关系同时输出。"""
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE courses (course_id INTEGER PRIMARY KEY, students_id INTEGER, title TEXT)"
+        )
+        llm = RecordingLLM([])  # 强信号（含义/关系），不调 LLM
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="students 和 courses 表分别什么含义？有什么关系")
+        )
+        assert final["intent"] == "metadata"
+        assert "students" in final["intent_answer"]
+        assert "courses" in final["intent_answer"]          # 两张表详情都有
+        assert "courses.students_id → students.id" in final["intent_answer"]  # 关系段
 
 
 class TestClarifyRouting:
