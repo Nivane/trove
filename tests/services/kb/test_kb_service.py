@@ -312,6 +312,57 @@ class TestListing:
         assert any("平均贷款金额" in q for q in questions)
 
 
+class TestLessons:
+    LESSONS = """
+lessons:
+  - pattern: "no such table: loans"
+    note: 表名是 loan 不是 loans
+    sql_snippet: SELECT * FROM loan
+    confirmed: true
+  - pattern: Unknown column salary
+    note: 工资列是 A11
+    sql_snippet: SELECT A11 FROM district
+    confirmed: false
+"""
+
+    async def test_lessons_parsed_and_confirmed_filter(self, kb, kb_dir):
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "lessons.yml").write_text(self.LESSONS, encoding="utf-8")
+        await kb.ensure_synced("demo")
+        confirmed = await kb.list_lessons("demo")
+        assert len(confirmed) == 1
+        assert confirmed[0]["pattern"] == "no such table: loans"
+
+    async def test_append_lesson_writes_pending(self, kb, kb_dir):
+        await kb.append_lesson({"pattern": "x", "note": "y", "sql_snippet": "z"}, "demo")
+        assert await kb.list_lessons("demo") == []  # pending 不注入
+        assert (kb_dir / "demo" / "lessons.yml").exists()
+
+    async def test_confirm_pending_lessons(self, kb, kb_dir):
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "lessons.yml").write_text(self.LESSONS, encoding="utf-8")
+        await kb.ensure_synced("demo")
+        await kb.confirm_pending_lessons("demo")
+        confirmed = await kb.list_lessons("demo")
+        assert len(confirmed) == 2
+
+
+class TestRules:
+    async def test_rules_parsed(self, kb, kb_dir):
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "rules.yml").write_text(
+            "rules:\n"
+            "  - rule: '年龄 = 1998 - YEAR(birth_date)'\n"
+            "  - rule: '金额保留两位小数'\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+        rules = await kb.list_rules("demo")
+        assert "年龄 = 1998 - YEAR(birth_date)" in rules
+        assert len(rules) == 2
+        assert await kb.list_rules("other") == []
+
+
 class TestEvolution:
     async def test_append_example_rewrites_yaml_and_syncs(self, kb, kb_dir):
         write_kb(kb_dir)

@@ -40,9 +40,11 @@ def make_validate_rules(
 
         if state.retry_count >= max_retries:
             return {"error": reason}
+        feedback = f"Validation rule: {reason}"
         return {
-            "error_feedback": f"Validation rule: {reason}",
+            "error_feedback": feedback,
             "retry_count": state.retry_count + 1,
+            "correction_history": [feedback],
         }
 
     return validate

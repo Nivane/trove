@@ -66,6 +66,8 @@ def build_sql_prompt(
     error_feedback: str = "",
     history: str = "",
     plan: str = "",
+    rules: list[str] | None = None,
+    lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -94,6 +96,16 @@ def build_sql_prompt(
             plan,
             "",
         ]
+    if rules:
+        parts.append("Data source rules (must follow):")
+        for rule in rules:
+            parts.append(f"- {rule}")
+        parts.append("")
+    if lessons:
+        parts.append("Known pitfalls (learned from past corrections — avoid these):")
+        for lesson in lessons:
+            parts.append(f"- {lesson.get('pattern', '')}: {lesson.get('note', '')}")
+        parts.append("")
     if term_notes:
         parts.append("Terminology (standard formulations):")
         for note in term_notes:
@@ -225,6 +237,8 @@ def make_generate(
                 error_feedback=state.error_feedback,
                 history=state.history,
                 plan=state.plan,
+                rules=state.rules or None,
+                lessons=state.lessons or None,
                 few_shots=state.few_shots or None,
                 term_notes=state.term_notes or None,
             )

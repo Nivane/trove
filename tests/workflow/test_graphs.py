@@ -381,6 +381,37 @@ examples:
         assert final["kb_hits"] == []
         assert "Knowledge base" not in final["final_response"]
 
+    async def test_data_source_rules_reach_prompt(self, sqlite_registry, catalog, tmp_path):
+        """rules.yml 的业务规则注入生成 prompt。"""
+        from trove.services.kb.service import KbService
+
+        kb = KbService(tmp_path / "proj")
+        ds_dir = kb.kb_dir / sqlite_registry.default_name
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "rules.yml").write_text(
+            "rules:\n  - rule: '年龄 = 1998 - YEAR(birth_date)'\n",
+            encoding="utf-8",
+        )
+        llm = RecordingLLM([VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        await graphs["reflection"].ainvoke(make_state())
+        assert "Data source rules" in llm.calls[0][-1]["content"]
+
+    async def test_context_budget_drops_low_priority_blocks(self, sqlite_registry, catalog, monkeypatch):
+        """预算不足时低优先级块（history）被排除，核心 schema 保留。"""
+        monkeypatch.setattr(graphs_module, "CONTEXT_BUDGET_TOKENS", 5)
+        llm = RecordingLLM([VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(history="user: 平均成绩是多少\nassistant: 85 分")
+        )
+        assert final["error"] == ""
+        gen_prompt = llm.calls[0][-1]["content"]
+        assert "Conversation history" not in gen_prompt  # 低优先级被预算排除
+        assert "Database schema" in gen_prompt                 # 核心保留
+        usage = final["context_usage"]
+        assert any(u["name"] == "history" and not u["included"] for u in usage)
+
     async def test_history_reaches_generation_prompt(self, sqlite_registry, catalog):
         """会话历史注入 gen_sql 的生成 prompt。"""
         llm = RecordingLLM([VALID_SQL, "OK"])

@@ -47,6 +47,12 @@ class WorkflowState(BaseModel):
     # Direct answer for non-query intents (metadata/lineage questions)
     intent_answer: str = ""
 
+    # Correction reasons accumulated across the run (Hint Bank capture)
+    correction_history: Annotated[list[str], operator.add] = Field(default_factory=list)
+
+    # Context budget usage of the last gen pass (observability)
+    context_usage: list[dict[str, Any]] = Field(default_factory=list)
+
     # Knowledge base hits (term matches + example matches).
     # operator.add: updates from different nodes accumulate.
     kb_hits: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
@@ -108,3 +114,5 @@ class GenSQLState(BaseModel):
     # Knowledge base material for prompt injection
     few_shots: list[dict[str, Any]] = Field(default_factory=list)   # reference examples/templates
     term_notes: list[dict[str, Any]] = Field(default_factory=list)  # terminology definitions
+    lessons: list[dict[str, Any]] = Field(default_factory=list)     # known pitfalls (Hint Bank)
+    rules: list[str] = Field(default_factory=list)                    # data source business rules

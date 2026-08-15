@@ -26,6 +26,7 @@ from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService
+from trove.workflow.context_budget import assemble_blocks
 from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
@@ -45,6 +46,7 @@ from trove.workflow.intent import Intent, classify_intent
 logger = get_logger(__name__)
 
 MAX_REFLECT_RETRIES = 10  # 修正轮上限（执行错误/规则/一致性/裁决共享）
+CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计划/历史）的预算
 DEFAULT_GEN_SQL_RETRIES = 3
 
 WORKFLOW_NAMES = ("reflection", "fixed", "empty")
@@ -133,11 +135,20 @@ def _make_gen_sql_node(
         few_shots: list[dict[str, Any]] = []
         term_notes: list[dict[str, Any]] = []
         example_hits = []
+        lessons: list[dict[str, Any]] = []
+        rules: list[str] = []
         if services.kb is not None and datasource:
             await services.kb.ensure_synced(default_datasource=datasource)
             example_hits = await services.kb.search_examples(
                 state.question, datasource, limit=3,
             )
+            rules = await services.kb.list_rules(datasource)
+            all_lessons = await services.kb.list_lessons(datasource)
+            haystack = (state.question + " " + state.error_feedback).lower()
+            lessons = [
+                l for l in all_lessons
+                if l.get("pattern", "").lower() in haystack
+            ][:3]
             few_shots = [
                 {"question": h.question, "sql": h.sql, "template": h.template}
                 for h in example_hits
@@ -147,6 +158,22 @@ def _make_gen_sql_node(
                 for h in await services.kb.search_terms(state.question, datasource)
             ]
 
+        # Context budget: optional blocks filled by priority, usage
+        # reported for observability (what the model actually saw).
+        optional_blocks = {
+            "few_shots": _render_shots(few_shots),
+            "rules": "\n".join(rules),
+            "term_notes": _render_terms(term_notes),
+            "lessons": _render_lessons(lessons),
+            "plan": state.plan,
+            "history": state.history,
+        }
+        included, context_usage = assemble_blocks(
+            optional_blocks,
+            {"few_shots": 1, "rules": 2, "term_notes": 3, "lessons": 4, "plan": 5, "history": 6},
+            CONTEXT_BUDGET_TOKENS,
+        )
+
         sub_state = GenSQLState(
             question=state.question,
             session_id=state.session_id,
@@ -154,14 +181,20 @@ def _make_gen_sql_node(
             dialect=dialect,
             reflect_reason=state.reason,
             error_feedback=state.error_feedback,
-            history=state.history,
-            plan=state.plan,
-            few_shots=few_shots,
-            term_notes=term_notes,
+            history=state.history if "history" in included else "",
+            plan=state.plan if "plan" in included else "",
+            few_shots=few_shots if "few_shots" in included else None,
+            term_notes=term_notes if "term_notes" in included else None,
+            lessons=lessons if "lessons" in included else None,
+            rules=rules if "rules" in included else None,
         )
         out = await subgraph.ainvoke(sub_state)
 
-        update: dict[str, Any] = {"dialect": dialect, "candidates": []}
+        update: dict[str, Any] = {
+            "dialect": dialect,
+            "candidates": [],
+            "context_usage": context_usage,
+        }
         if out["sql"]:
             update["sql"] = out["sql"]
         if out.get("attempts"):
@@ -282,6 +315,24 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     )
     for node in ("answer_schema", "answer_semantic", "answer_knowledge", "answer_lineage"):
         g.add_edge(node, "output")
+
+
+def _render_shots(shots: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        f"Q: {s.get('question', '')}\nSQL: {s.get('sql', '')}" for s in shots
+    )
+
+
+def _render_terms(terms: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        f"- {t.get('term', '')} → {t.get('mapping', '')}" for t in terms
+    )
+
+
+def _render_lessons(lessons: list[dict[str, Any]]) -> str:
+    return "\n".join(
+        f"- {l.get('pattern', '')}: {l.get('note', '')}" for l in lessons
+    )
 
 
 def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "output"]:

@@ -87,4 +87,5 @@ def _execution_failure(
     return {
         "error_feedback": message,
         "retry_count": state.retry_count + 1,
+        "correction_history": [message],
     }

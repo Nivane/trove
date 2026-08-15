@@ -316,6 +316,18 @@ class TestSQLHelpers:
         assert "Query plan" in prompt
         assert "Join account with district" in prompt
 
+    def test_build_sql_prompt_includes_rules(self):
+        rules = ["年龄 = 1998 - YEAR(birth_date)"]
+        prompt = build_sql_prompt("q", "schema", "sqlite", rules=rules)
+        assert "Data source rules" in prompt
+        assert "1998 - YEAR(birth_date)" in prompt
+
+    def test_build_sql_prompt_includes_lessons(self):
+        lessons = [{"pattern": "loans", "note": "表名是 loan 不是 loans"}]
+        prompt = build_sql_prompt("q", "schema", "sqlite", lessons=lessons)
+        assert "Known pitfalls" in prompt
+        assert "表名是 loan 不是 loans" in prompt
+
     def test_build_sql_prompt_without_plan_has_no_section(self):
         prompt = build_sql_prompt("q", "schema", "sqlite")
         assert "Query plan" not in prompt

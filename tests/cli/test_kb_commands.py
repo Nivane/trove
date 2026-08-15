@@ -292,6 +292,21 @@ class TestKbReload:
         assert "empty" in listed.lower()
 
 
+class TestKbLessons:
+    async def test_lessons_list_and_confirm(self, kb, sqlite_registry):
+        reg = make_reg(kb, connector_registry=sqlite_registry)
+        ds = sqlite_registry.default_name
+        await kb.append_lesson({"pattern": "p1", "note": "n", "sql_snippet": "s"}, ds)
+
+        listed = await reg.get("kb").handler("lessons")
+        assert "1 pending" in listed
+        assert "p1" in listed
+
+        confirmed = await reg.get("kb").handler("lessons --yes")
+        assert "1 lesson" in confirmed
+        assert len(await kb.list_lessons(ds)) == 1
+
+
 class TestKbLearn:
     def _session_with_exchange(self):
         session = Session()

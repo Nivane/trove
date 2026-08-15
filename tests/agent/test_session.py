@@ -378,6 +378,109 @@ class TestTrajectoryEvents:
         assert "Validation rule" in correction["content"]
 
 
+class TestHistorySummaryFusion:
+    async def test_history_prefers_summary_over_old_turns(self, tmp_home):
+        """有 compaction summary 时：历史 = 摘要 + 最近 1 轮原文。"""
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(state)
+                return {**state.model_dump(), "final_response": "answer"}
+
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        session.summary = "早期摘要：用户关心贷款数据"
+        session.messages = [
+            Message(role="user", content="旧问题1"),
+            Message(role="assistant", content="旧答案1"),
+            Message(role="user", content="旧问题2"),
+            Message(role="assistant", content="旧答案2"),
+        ]
+        await manager.ask(session=session, question="新问题")
+
+        history = captured[0].history
+        assert "早期摘要" in history
+        assert "旧答案2" in history          # 最近一轮保留原文
+        assert "旧答案1" not in history      # 更早轮次由摘要替代
+        assert "新问题" not in history
+
+    async def test_history_without_summary_keeps_two_turns(self, tmp_home):
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(state)
+                return {**state.model_dump(), "final_response": "answer"}
+
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        session.messages = [
+            Message(role="user", content="旧问题1"),
+            Message(role="assistant", content="旧答案1"),
+        ]
+        await manager.ask(session=session, question="新问题")
+        assert "旧问题1" in captured[0].history  # 无摘要 → 保留全部轮次
+
+
+class TestLessonCapture:
+    async def test_correction_captures_pending_lesson(self, tmp_home, sqlite_registry):
+        """修正成功后，修正理由自动沉淀为待确认 lesson。"""
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+        from trove.services.kb.service import KbService
+
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(state)
+                return {
+                    **state.model_dump(),
+                    "sql": "SELECT * FROM loan",
+                    "error": "",
+                    "correction_history": ["no such table: loans"],
+                    "final_response": "answer",
+                }
+
+        kb = KbService(tmp_home / "proj")
+        kb.kb_dir.mkdir(parents=True)
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+            kb=kb,
+            connectors=sqlite_registry,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager.ask(session=session, question="q")
+
+        ds = sqlite_registry.default_name
+        assert await kb.list_lessons(ds) == []  # 待确认，不注入
+        all_lessons = await kb.list_lessons(ds, confirmed_only=False)
+        assert any("loans" in l["pattern"] for l in all_lessons)
+
+
 class TestTracingCallbacks:
     async def test_callbacks_forwarded_to_graph_config(self, tmp_home):
         """Langfuse CallbackHandler 通过 config["callbacks"] 传给图执行。"""

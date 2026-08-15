@@ -49,6 +49,8 @@ class SessionManager:
         graphs: dict[str, Any],
         llm_gateway: LLMGateway,
         callbacks: list[Any] | None = None,
+        kb=None,
+        connectors=None,
     ):
         self.config = config
         self._store = session_store
@@ -56,6 +58,8 @@ class SessionManager:
         self._llm = llm_gateway
         self._token_counter = TokenCounter()
         self._callbacks = callbacks or []
+        self._kb = kb
+        self._connectors = connectors
 
     # ── Session lifecycle ────────────────────────────────
 
@@ -350,6 +354,8 @@ class SessionManager:
         elif node_name == "gen_sql":
             detail["sql"] = delta.get("sql", "")
             detail["attempts"] = delta.get("attempts", 1)
+            if delta.get("context_usage"):
+                detail["context_usage"] = delta["context_usage"]
             detail["retry"] = retry
             detail["reason"] = reason
         elif node_name == "execute_sql":
@@ -377,11 +383,42 @@ class SessionManager:
             "detail": detail,
         }
 
+    async def _capture_lessons(self, final: WorkflowState) -> None:
+        """修正闭环成功后，把修正理由沉淀为待确认的经验教训（Hint Bank）。"""
+        if self._kb is None or self._connectors is None:
+            return
+        if final.error or not final.correction_history or not final.sql:
+            return
+        datasource = self._connectors.default_name or ""
+        if not datasource:
+            return
+        for reason in final.correction_history[-2:]:
+            try:
+                await self._kb.append_lesson(
+                    {
+                        "pattern": reason[:120],
+                        "note": reason[:200],
+                        "sql_snippet": final.sql[:200],
+                    },
+                    datasource,
+                )
+            except Exception as e:
+                logger.debug("Lesson capture failed: %s", e)
+
     @staticmethod
     def _conversation_history(session: Session, max_turns: int = 2) -> str:
-        """Compact prior exchanges (before the current question) for follow-ups."""
+        """Compact prior exchanges (before the current question) for follow-ups.
+
+        When a compaction summary exists, older turns are replaced by the
+        summary and only the most recent turn keeps its verbatim text.
+        """
         lines = []
-        for m in session.messages[-max_turns * 2 :]:
+        if session.summary:
+            lines.append(f"[summary] {session.summary}")
+            recent = session.messages[-2:]  # 最近一轮原文
+        else:
+            recent = session.messages[-max_turns * 2 :]
+        for m in recent:
             if m.content == "":
                 continue
             role = "user" if m.role == "user" else "assistant"
@@ -409,6 +446,7 @@ class SessionManager:
         )
         session.messages.append(assistant_msg)
         await self._store.save_session(session)
+        await self._capture_lessons(final)
 
     @staticmethod
     def _state_summary(final: WorkflowState) -> dict[str, Any]:

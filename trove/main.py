@@ -186,6 +186,8 @@ async def create_app_components(
         graphs=graphs,
         llm_gateway=llm_gateway,
         callbacks=[tracing_handler] if tracing_handler else None,
+        kb=kb,
+        connectors=connector_registry,
     )
 
     return {

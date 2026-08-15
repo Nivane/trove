@@ -240,6 +240,29 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             lines.append(f"  term: {term.get('term', '')} → {term.get('mapping', '')}")
         return "\n".join(lines)
 
+    async def _cmd_lessons(args: str) -> str:
+        kb = context.get("kb")
+        datasource = _datasource()
+        if not datasource:
+            return "No active datasource."
+
+        if args.strip().endswith("--yes"):
+            confirmed = await kb.confirm_pending_lessons(datasource)
+            return f"Confirmed {confirmed} lesson(s) into the Hint Bank."
+
+        await kb.ensure_synced(datasource)
+        all_lessons = await kb.list_lessons(datasource, confirmed_only=False)
+        confirmed = [l for l in all_lessons if l.get("confirmed")]
+        pending = [l for l in all_lessons if not l.get("confirmed")]
+        lines = [f"Hint Bank ({datasource}): {len(confirmed)} confirmed, {len(pending)} pending"]
+        for l in confirmed[:10]:
+            lines.append(f"  ✓ {l.get('pattern', '')}")
+        for l in pending[:10]:
+            lines.append(f"  ? {l.get('pattern', '')}  （/kb lessons --yes 确认）")
+        if pending:
+            lines.append("Pending lessons were auto-captured from successful corrections.")
+        return "\n".join(lines)
+
     async def _cmd_init(kb, registry_svc, datasource) -> str:
         """LLM-assisted three-file initialization; skeleton fallback without LLM."""
         schema = await registry_svc.get_schema()
@@ -318,15 +341,19 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             total = sum(sum(kinds.values()) for kinds in grouped.values())
             return f"Knowledge base reloaded ({total} items)."
 
+        if sub == "lessons":
+            return await _cmd_lessons(args)
+
         if sub == "learn":
             return await _cmd_learn(args)
 
         return (
-            "Usage: /kb init | /kb list | /kb reload | /kb learn [--yes]\n"
-            "  init    generate schema_notes.yml skeleton for the active datasource\n"
-            "  list    show knowledge base item counts per datasource\n"
-            "  reload  re-sync YAML files immediately\n"
-            "  learn   draft an example+terms from the last exchange; --yes saves it"
+            "Usage: /kb init | list | reload | learn [--yes] | lessons [--yes]\n"
+            "  init     generate schema_notes.yml skeleton for the active datasource\n"
+            "  list     show knowledge base item counts per datasource\n"
+            "  reload   re-sync YAML files immediately\n"
+            "  learn    draft an example+terms from the last exchange; --yes saves it\n"
+            "  lessons  show/confirm Hint Bank lessons from past corrections"
         )
 
     registry.register(SlashCommand(

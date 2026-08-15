@@ -61,13 +61,15 @@ def make_select_consensus(
             # Budget exhausted: deliver the primary with a low-confidence
             # mark instead of degrading to an error.
             return {"consensus": False}
+        feedback = (
+            f"Candidate SQL variants returned different results "
+            f"({state.row_count} vs {alt_result.row_count} rows) — "
+            f"the query logic is unstable; verify and regenerate."
+        )
         return {
-            "error_feedback": (
-                f"Candidate SQL variants returned different results "
-                f"({state.row_count} vs {alt_result.row_count} rows) — "
-                f"the query logic is unstable; verify and regenerate."
-            ),
+            "error_feedback": feedback,
             "retry_count": state.retry_count + 1,
+            "correction_history": [feedback],
         }
 
     return select

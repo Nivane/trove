@@ -158,6 +158,21 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
                 "definition": str(term.get("definition", "")),
             }))
 
+    elif path.name == "rules.yml":
+        for rule in data.get("rules", []):
+            text = str(rule.get("rule", "")).strip()
+            if text:
+                entries.append(("rule", text, {"rule": text}))
+
+    elif path.name == "lessons.yml":
+        for lesson in data.get("lessons", []):
+            entries.append(("lesson", str(lesson.get("pattern", "")), {
+                "pattern": str(lesson.get("pattern", "")),
+                "note": str(lesson.get("note", "")),
+                "sql_snippet": str(lesson.get("sql_snippet", "")),
+                "confirmed": bool(lesson.get("confirmed", False)),
+            }))
+
     elif path.name == "examples.yml":
         for example in data.get("examples", []):
             kind = "template" if example.get("template") else "example"
@@ -379,6 +394,52 @@ class KbService:
                 scored.append(ExampleHit(**payload, score=score))
         scored.sort(key=lambda h: h.score, reverse=True)
         return scored[:limit]
+
+    async def list_rules(self, datasource: str) -> list[str]:
+        """Business rules of one datasource (injected into generation)."""
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT item_key FROM kb_items WHERE kind = 'rule' AND datasource = ? ORDER BY id",
+            (datasource,),
+        )
+        return [row["item_key"] for row in rows]
+
+    async def list_lessons(self, datasource: str, confirmed_only: bool = True) -> list[dict]:
+        """Known pitfalls (Hint Bank); pending ones excluded by default."""
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT payload FROM kb_items WHERE kind = 'lesson' AND datasource = ? ORDER BY id",
+            (datasource,),
+        )
+        lessons = [json.loads(row["payload"]) for row in rows]
+        if confirmed_only:
+            lessons = [l for l in lessons if l.get("confirmed")]
+        return lessons
+
+    async def append_lesson(self, entry: dict, datasource: str) -> None:
+        """Record a lesson candidate (pending until confirmed)."""
+        entry.setdefault("confirmed", False)
+        await self._append_entry("lessons.yml", "lessons", entry, datasource)
+
+    async def confirm_pending_lessons(self, datasource: str) -> int:
+        """Mark all pending lessons as confirmed (rewrites the YAML)."""
+        path = self.kb_dir / datasource / "lessons.yml"
+        if not path.exists():
+            return 0
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        confirmed = 0
+        for lesson in data.get("lessons", []):
+            if not lesson.get("confirmed"):
+                lesson["confirmed"] = True
+                confirmed += 1
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        await self.force_sync(datasource)
+        return confirmed
 
     async def list_term_names(self, datasource: str) -> list[str]:
         """Term names of one datasource (knowledge intent answers)."""
