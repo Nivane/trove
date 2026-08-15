@@ -233,6 +233,15 @@ class TestIntentRouting:
         assert final["intent"] == "query"
         assert final["row_count"] == 5
 
+    async def test_schema_intent_answers_in_english(self, sqlite_registry, catalog):
+        """英文问题 → 英文答案。"""
+        llm = RecordingLLM([])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state(question="list tables"))
+        assert final["intent"] == "schema"
+        assert "tables" in final["intent_answer"].lower()
+        assert "数据源" not in final["intent_answer"]
+
 
 class TestClarifyRouting:
     async def test_no_table_match_asks_user(self, sqlite_registry, catalog):

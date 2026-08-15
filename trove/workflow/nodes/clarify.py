@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.core.i18n import L, detect_language
 from trove.workflow.state import WorkflowState
 
 CLARIFY_NO_MATCH = (
@@ -30,7 +31,14 @@ def make_clarify() -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
             return {}
         # No tables matched → ask rather than guess
         if not state.matched_tables:
-            return {"clarification_question": CLARIFY_NO_MATCH}
+            lang = detect_language(state.question)
+            return {"clarification_question": L(
+                lang,
+                CLARIFY_NO_MATCH,
+                "Your question did not match any table or business term. "
+                "Please specify the data scope (table name, metric, or term), "
+                'e.g. "total loan amount in the loan table".',
+            )}
         return {}
 
     return clarify

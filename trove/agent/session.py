@@ -25,6 +25,7 @@ from trove.core.logging import get_logger
 from trove.storage.session_store import SessionStore
 from trove.llm.gateway import LLMGateway
 from trove.llm.token_counter import TokenCounter
+from trove.core.i18n import L, detect_language
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -300,7 +301,7 @@ class SessionManager:
                     if node_name == "select" and "consensus" in delta and not delta["consensus"]:
                         yield {
                             "type": "correction", "node": "select",
-                            "content": "候选 SQL 结果不一致——本答案置信度低",
+                            "content": L(lang, "候选 SQL 结果不一致——本答案置信度低", "Candidate SQLs disagreed — low confidence answer"),
                         }
                     if delta.get("error_feedback"):
                         yield {
@@ -332,7 +333,7 @@ class SessionManager:
     @staticmethod
     def _step_event(
         seq: int, node_name: str, delta: dict[str, Any],
-        elapsed_ms: int, reason: str, retry: int,
+        elapsed_ms: int, reason: str, retry: int, lang: str = "zh",
     ) -> dict[str, Any]:
         """Structured trajectory step for REPL rendering / --print."""
         detail: dict[str, Any] = {}
@@ -372,6 +373,7 @@ class SessionManager:
             "seq": seq,
             "node": node_name,
             "elapsed_ms": elapsed_ms,
+            "lang": lang,
             "detail": detail,
         }
 

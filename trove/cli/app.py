@@ -29,6 +29,7 @@ from trove.cli.commands.system_cmds import register_system_commands
 from trove.cli.commands.kb_cmds import register_kb_commands
 
 from trove.core.logging import get_logger
+from trove.core.i18n import L
 
 logger = get_logger(__name__)
 
@@ -230,12 +231,13 @@ class TroveREPL:
         retry = detail.get("retry", 0)
         reason = detail.get("reason", "")
 
+        lang = event.get("lang", "zh")
         head = f"[{seq}] {node}"
         if retry:
-            head += f" · 重试#{retry}"
+            head += L(lang, f" · 重试#{retry}", f" · retry#{retry}")
         head += f" · {elapsed}ms"
 
-        summary = self._step_summary(node, detail)
+        summary = self._step_summary(node, detail, lang)
         line = head + (f" → {summary}" if summary else "")
         if reason:
             line += f" · {reason[:120]}"
@@ -247,31 +249,33 @@ class TroveREPL:
             self._tui.print_thought(detail["plan"])
 
     @staticmethod
-    def _step_summary(node: str, detail: dict) -> str:
+    def _step_summary(node: str, detail: dict, lang: str = "zh") -> str:
+        if node == "route_intent":
+            return L(lang, f"意图：{detail.get('intent', 'query')}", f"intent: {detail.get('intent', 'query')}")
         if node == "schema_linking":
             tables = detail.get("matched_tables", [])
             terms = detail.get("kb_terms", 0)
-            parts = [f"匹配 {len(tables)} 表"]
+            parts = [L(lang, f"匹配 {len(tables)} 表", f"matched {len(tables)} tables")]
             if terms:
-                parts.append(f"{terms} 术语")
+                parts.append(L(lang, f"{terms} 术语", f"{terms} terms"))
             return ", ".join(parts)
         if node == "planner":
-            return "生成查询计划"
+            return L(lang, "生成查询计划", "drafting query plan")
         if node == "gen_sql":
             attempts = detail.get("attempts", 1)
-            return f"生成 SQL（校验 {attempts} 次）"
+            return L(lang, f"生成 SQL（校验 {attempts} 次）", f"generating SQL ({attempts} validation passes)")
         if node == "execute_sql":
-            return f"{detail.get('row_count', -1)} 行"
+            return L(lang, f"{detail.get('row_count', -1)} 行", f"{detail.get('row_count', -1)} rows")
         if node == "select":
-            return "候选一致" if detail.get("consensus", True) else "候选不一致（低置信）"
+            return L(lang, "候选一致", "candidates agree") if detail.get("consensus", True) else L(lang, "候选不一致（低置信）", "candidates disagree (low confidence)")
         if node == "validate":
-            return "通过" if not detail.get("reason") else "规则失败"
+            return L(lang, "通过", "passed") if not detail.get("reason") else L(lang, "规则失败", "rule failed")
         if node == "reflect":
             verdict = detail.get("verdict", "")
             r = detail.get("reason", "")
-            return f"裁决 {verdict}" + (f"：{r}" if r and verdict == "RETRY" else "")
+            return L(lang, f"裁决 {verdict}", f"verdict {verdict}") + (f"：{r}" if r and verdict == "RETRY" else "")
         if node == "output":
-            return "生成答案"
+            return L(lang, "生成答案", "composing answer")
         return ""
 
     async def _display_detailed_results(self) -> None:

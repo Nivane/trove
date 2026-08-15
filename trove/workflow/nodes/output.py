@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from trove.core.i18n import L, detect_language
 from trove.workflow.state import WorkflowState
 
 
@@ -31,27 +32,29 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     if state.intent_answer:
         return {"final_response": state.intent_answer}
 
+    lang = detect_language(question)
+
     if state.error:
         response = (
-            "## Answer\n\n"
-            f"**Question**: {question}\n\n"
-            f"**Error**: {state.error}\n"
+            f"## {L(lang, 'Answer', 'Answer')}\n\n"
+            f"**{L(lang, 'Question', 'Question')}**: {question}\n\n"
+            f"**{L(lang, 'Error', 'Error')}**: {state.error}\n"
         )
         return {"final_response": response}
 
-    parts = [f"## Answer\n"]
+    parts = [f"## {L(lang, 'Answer', 'Answer')}\n"]
 
     # Question
-    parts.append(f"**Question**: {question}\n")
+    parts.append(f"**{L(lang, 'Question', 'Question')}**: {question}\n")
 
     # SQL
     if state.sql:
-        parts.append("### Generated SQL\n")
+        parts.append(f"### {L(lang, 'Generated SQL', 'Generated SQL')}\n")
         parts.append(f"```sql\n{state.sql}\n```\n")
 
     # Results
     if state.columns:
-        parts.append(f"### Results ({state.row_count} rows)\n")
+        parts.append(L(lang, f"### Results ({state.row_count} rows)\n", f"### Results ({state.row_count} rows)\n"))
 
         # Build a markdown table
         parts.append("| " + " | ".join(state.columns) + " |")
@@ -64,10 +67,10 @@ async def output(state: WorkflowState) -> dict[str, Any]:
             parts.append(f"\n*... and {state.row_count - 20} more rows*\n")
 
     elif state.row_count == 0:
-        parts.append("**Result**: Query returned zero rows.\n")
+        parts.append(L(lang, "**Result**: Query returned zero rows.\n", "**Result**: Query returned zero rows.\n"))
     else:
         # No execution data — this is the "empty" workflow case
-        parts.append("(No query executed)\n")
+        parts.append(L(lang, "(No query executed)\n", "(No query executed)\n"))
 
     # Reflection
     if state.verdict and state.verdict != "OK":
@@ -82,7 +85,7 @@ async def output(state: WorkflowState) -> dict[str, Any]:
 
     # Multi-candidate disagreement → low-confidence note
     if not state.consensus:
-        parts.append("\n*Confidence: low (candidate SQLs disagreed)*\n")
+        parts.append(L(lang, "\n*Confidence: low (candidate SQLs disagreed)*\n", "\n*Confidence: low (candidate SQLs disagreed)*\n"))
 
     # Knowledge base usage
     if state.kb_hits:
@@ -98,7 +101,7 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         if example_count:
             label = "example" if example_count == 1 else "examples"
             segments.append(f"{example_count} {label} used")
-        parts.append(f"\n*Knowledge base: {' | '.join(segments)}*\n")
+        parts.append(L(lang, f"\n*Knowledge base: {' | '.join(segments)}*\n", f"\n*Knowledge base: {' | '.join(segments)}*\n"))
 
     response = "\n".join(parts)
 
