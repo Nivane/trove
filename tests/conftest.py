@@ -130,6 +130,9 @@ class ScriptedGateway:
     async def chat(self, model, messages, **kwargs):
         return next(self._responses)
 
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        return {"content": next(self._responses), "tool_calls": []}
+
 
 @pytest.fixture
 def graphs(sqlite_registry, agent_config):
@@ -142,7 +145,7 @@ def graphs(sqlite_registry, agent_config):
         connectors=sqlite_registry,
         config=agent_config,
     )
-    return build_graphs(services, multi_candidate=False, planner=False)
+    return build_graphs(services, multi_candidate=False, planner=False, agentic=False)
 
 
 @pytest.fixture

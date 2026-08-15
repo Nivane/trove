@@ -13,12 +13,14 @@ returns a partial state update.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
+from trove.llm.agent_loop import run_agent_loop
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -44,6 +46,8 @@ def make_reflect(
     llm: LLMGateway,
     config: AgentConfig,
     max_retries: int = MAX_TOTAL_RETRIES,
+    agentic: bool = True,
+    connectors=None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the reflect node bound to an LLM gateway.
 
@@ -70,7 +74,49 @@ def make_reflect(
 
         try:
             model = config.target or "openai/gpt-4o"
-            response = await llm.chat(
+            if agentic and connectors is not None:
+                from trove.workflow.rules import validate as run_rules
+
+                async def re_execute(arguments: dict) -> str:
+                    sql = arguments.get("sql", "")
+                    try:
+                        result = await connectors.execute(sql)
+                    except Exception as e:
+                        return f"ERROR: {e}"
+                    observation = f"rows={result.row_count}, columns={result.columns}"
+                    warning = run_rules(
+                        state.question, sql, result.columns, result.rows, result.row_count,
+                    )
+                    if warning:
+                        observation += f"\nRule warning: {warning}"
+                    return observation
+
+                result = await run_agent_loop(
+                    llm, model,
+                    system=REFLECT_SYSTEM_PROMPT,
+                    user=prompt,
+                    tools=[{
+                        "type": "function",
+                        "function": {
+                            "name": "execute_sql",
+                            "description": "Re-execute a SQL query to verify results.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"sql": {"type": "string"}},
+                                "required": ["sql"],
+                            },
+                        },
+                    }],
+                    tool_handlers={"execute_sql": re_execute},
+                    max_rounds=5,
+                    metadata={"node": "reflect", "session_id": state.session_id, "run_id": state.run_id},
+                )
+                start = time.monotonic()
+                response = result["content"]  # 供下游 llm_detail/verdict 处理
+                verdict = result["content"].strip().upper()
+            else:
+                start = time.monotonic()
+                response = await llm.chat(
                 model=model,
                 messages=[
                     {"role": "system", "content": REFLECT_SYSTEM_PROMPT},
@@ -79,13 +125,20 @@ def make_reflect(
                 metadata={
                     "node": "reflect",
                     "session_id": state.session_id,
+                    "run_id": state.run_id,
                     "question": state.question[:80],
                 },
             )
             verdict = response.strip().upper()
+            llm_detail = {
+                "model": model,
+                "elapsed_ms": int((time.monotonic() - start) * 1000),
+                "input_preview": prompt[:200],
+                "output_preview": response[:200],
+            }
 
             if verdict.startswith("OK"):
-                return {"verdict": "OK"}
+                return {"verdict": "OK", "llm": llm_detail}
             elif verdict.startswith("RETRY"):
                 reason = response.replace("RETRY:", "").replace("RETRY", "").strip()
                 if state.retry_count >= max_retries:
@@ -93,15 +146,16 @@ def make_reflect(
                         "Max retries (%d) exceeded; accepting result despite issues",
                         max_retries,
                     )
-                    return {"verdict": "OK", "forced": True, "reason": reason}
+                    return {"verdict": "OK", "forced": True, "reason": reason, "llm": llm_detail}
 
                 return {
                     "verdict": "RETRY",
                     "reason": reason,
                     "retry_count": state.retry_count + 1,
+                    "llm": llm_detail,
                 }
             else:  # EMPTY or unknown
-                return {"verdict": verdict}
+                return {"verdict": verdict, "llm": llm_detail}
 
         except Exception as e:
             # If reflection fails, assume OK (don't block on reflection)

@@ -25,12 +25,19 @@ from trove.core.logging import get_logger
 from trove.storage.session_store import SessionStore
 from trove.llm.gateway import LLMGateway
 from trove.llm.token_counter import TokenCounter
+import uuid
+
 from trove.core.i18n import L, detect_language
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
 DEFAULT_WORKFLOW = "reflection"
+
+
+def _time_now() -> float:
+    import time
+    return time.time()
 
 
 class SessionManager:
@@ -218,16 +225,20 @@ class SessionManager:
         )
         session.messages.append(user_msg)
 
+        run_id = str(uuid.uuid4())
         state = WorkflowState(
             session_id=session.session_id,
             question=question,
+            run_id=run_id,
             history=history,
         )
+        self._trace_run_start(state)
         final = WorkflowState.model_validate(
             await graph.ainvoke(state, self._thread_config(session))
         )
 
         await self._record_exchange(session, workflow_name, final)
+        self._trace_run_finish(run_id, final)
         return final
 
     async def ask_stream(
@@ -260,11 +271,14 @@ class SessionManager:
         )
         session.messages.append(user_msg)
 
+        run_id = str(uuid.uuid4())
         state = WorkflowState(
             session_id=session.session_id,
             question=question,
+            run_id=run_id,
             history=history,
         )
+        self._trace_run_start(state)
         merged: dict[str, Any] = state.model_dump()
 
         try:
@@ -326,6 +340,7 @@ class SessionManager:
         final = WorkflowState.model_validate(merged)
         await self._record_exchange(session, workflow_name, final)
 
+        self._trace_run_finish(run_id, final)
         summary = self._state_summary(final)
         if final.error:
             yield {"type": "error", "node": "output", "content": final.final_response, "summary": summary}
@@ -354,10 +369,10 @@ class SessionManager:
         elif node_name == "gen_sql":
             detail["sql"] = delta.get("sql", "")
             detail["attempts"] = delta.get("attempts", 1)
-            if delta.get("context_usage"):
-                detail["context_usage"] = delta["context_usage"]
             detail["retry"] = retry
             detail["reason"] = reason
+            if delta.get("context_usage"):
+                detail["context_usage"] = delta["context_usage"]
         elif node_name == "execute_sql":
             detail["row_count"] = delta.get("row_count", -1)
             detail["execution_time_ms"] = delta.get("execution_time_ms", 0)
@@ -374,6 +389,10 @@ class SessionManager:
         elif node_name == "output":
             detail["final"] = True
 
+        # LLM call detail (independent of the node chain above)
+        if node_name in ("gen_sql", "planner", "reflect") and delta.get("llm"):
+            detail["llm"] = delta["llm"]
+
         return {
             "type": "step",
             "seq": seq,
@@ -382,6 +401,38 @@ class SessionManager:
             "lang": lang,
             "detail": detail,
         }
+
+    @staticmethod
+    def _trace_run_start(state: WorkflowState) -> None:
+        try:
+            from trove.tracing.local import add_event
+            add_event(state.run_id, {
+                "kind": "run",
+                "session_id": state.session_id,
+                "question": state.question,
+                "ts": _time_now(),
+            })
+        except Exception:
+            pass
+
+    @staticmethod
+    def _trace_step(state: WorkflowState, step_event: dict[str, Any]) -> None:
+        try:
+            from trove.tracing.local import add_event
+            add_event(state.run_id, {"kind": "step", **step_event})
+        except Exception:
+            pass
+
+    @staticmethod
+    def _trace_run_finish(run_id: str, final: WorkflowState) -> None:
+        try:
+            from trove.tracing.local import add_event
+            add_event(run_id, {
+                "kind": "finish",
+                "summary": SessionManager._state_summary(final),
+            })
+        except Exception:
+            pass
 
     async def _capture_lessons(self, final: WorkflowState) -> None:
         """修正闭环成功后，把修正理由沉淀为待确认的经验教训（Hint Bank）。"""

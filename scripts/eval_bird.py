@@ -82,10 +82,11 @@ async def main() -> None:
 
     for i, q in enumerate(questions, 1):
         question = q["question"]
-        if not args.no_evidence and q.get("evidence"):
-            question = f"{question}\nEvidence: {q['evidence']}"
+        evidence = q.get("evidence", "") if not args.no_evidence else ""
         gold_sql = q["SQL"]
-        state = WorkflowState(session_id=f"eval-{i}", question=question)
+        state = WorkflowState(
+            session_id=f"eval-{i}", question=question, evidence=evidence,
+        )
         final = await graph.ainvoke(state)
         total_retries += final["retry_count"]
 
@@ -100,6 +101,11 @@ async def main() -> None:
             kind = "generation" if "generation" in final["error"].lower() else "execution"
             failures[kind] += 1
             print(f"[{i}/{len(questions)}] ✗ {final['error'][:70]}")
+            continue
+
+        if not final["sql"]:
+            failures["execution"] += 1
+            print(f"[{i}/{len(questions)}] ✗ 空 SQL（意图可能误路由）")
             continue
 
         pred_rows = (await adapter.execute(final["sql"])).rows

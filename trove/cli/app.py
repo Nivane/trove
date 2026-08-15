@@ -27,6 +27,7 @@ from trove.cli.commands.session_cmds import register_session_commands
 from trove.cli.commands.metadata_cmds import register_metadata_commands
 from trove.cli.commands.system_cmds import register_system_commands
 from trove.cli.commands.kb_cmds import register_kb_commands
+from trove.cli.commands.trace_cmds import register_trace_commands
 
 from trove.core.logging import get_logger
 from trove.core.i18n import L
@@ -81,6 +82,7 @@ class TroveREPL:
         register_metadata_commands(self._slash_registry, self._context)
         register_system_commands(self._slash_registry, self._context)
         register_kb_commands(self._slash_registry, self._context)
+        register_trace_commands(self._slash_registry, self._context)
 
         # prompt_toolkit session with history
         self._prompt_session = PromptSession(
@@ -242,6 +244,16 @@ class TroveREPL:
         if reason:
             line += f" · {reason[:120]}"
         self._tui.print_info(line)
+
+        llm = detail.get("llm")
+        if llm:
+            self._tui.print_info(
+                f"    llm: {llm.get('model', '')} · {llm.get('elapsed_ms', 0)}ms"
+            )
+            if llm.get("input_preview"):
+                self._tui.print_thought(f"      in: {llm['input_preview'][:160]}")
+            if llm.get("output_preview"):
+                self._tui.print_info(f"      out: {llm['output_preview'][:160]}")
 
         if node == "gen_sql" and detail.get("sql"):
             self._tui.print_sql(detail["sql"])

@@ -10,12 +10,14 @@ Supports:
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, AsyncIterator
 
 from trove.core.errors import LLMError
 from trove.core.logging import get_logger
 from trove.core.config import ProviderConfig
 from trove.llm.observability import get_client
+from trove.llm.call_log import record_call
 
 logger = get_logger(__name__)
 
@@ -123,6 +125,55 @@ class LLMGateway:
             message=f"LLM call failed after {self.max_retries} attempts: {last_error}",
             model=model,
         )
+
+    async def chat_full(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Chat with tool-calling support; returns the full message.
+
+        Returns:
+            {"content": str, "tool_calls": [{"id", "name", "arguments"}]}
+        """
+        if self._mock_response is not None:
+            return {"content": self._mock_response, "tool_calls": []}
+
+        import litellm
+        start = time.monotonic()
+        try:
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False,
+            }
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            if metadata:
+                kwargs["metadata"] = metadata
+
+            response = await litellm.acompletion(**kwargs)
+            message = response.choices[0].message
+            tool_calls = []
+            for tc in getattr(message, "tool_calls", None) or []:
+                tool_calls.append({
+                    "id": getattr(tc, "id", ""),
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments or "{}",
+                })
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            _record_generation(model, messages, response, metadata)
+            _record_local_call(model, messages, message.content or "", metadata, elapsed_ms)
+            return {"content": message.content or "", "tool_calls": tool_calls}
+        except Exception as e:
+            raise LLMError(message=f"LLM call failed: {e}", model=model) from e
 
     async def chat_stream(
         self,
@@ -233,9 +284,15 @@ class LLMGateway:
             metadata,
         )
 
+        start = time.monotonic()
+
         # litellm.acompletion is async
         response = await litellm.acompletion(**kwargs)
         _record_generation(model, messages, response, metadata)
+        _record_local_call(
+            model, messages, response.choices[0].message.content or "",
+            metadata, int((time.monotonic() - start) * 1000),
+        )
         return response.choices[0].message.content or ""
 
     async def _call_litellm_stream(
@@ -260,6 +317,34 @@ class LLMGateway:
         async for part in response:
             if part.choices and part.choices[0].delta.content:
                 yield part.choices[0].delta.content
+
+
+def _record_local_call(
+    model: str,
+    messages: list[dict[str, str]],
+    output: str,
+    metadata: dict[str, Any] | None,
+    elapsed_ms: int,
+) -> None:
+    """Zero-config local trace: one llm event into the run-trace store.
+
+    Only recorded when the call carries a run_id (pipeline calls do);
+    library users without a run stay silent."""
+    run_id = (metadata or {}).get("run_id", "")
+    if not run_id:
+        return
+    try:
+        from trove.tracing.local import add_event
+        add_event(run_id, {
+            "kind": "llm",
+            "node": (metadata or {}).get("node", ""),
+            "model": model,
+            "messages": messages,
+            "output": output,
+            "elapsed_ms": elapsed_ms,
+        })
+    except Exception:
+        pass
 
 
 def _record_generation(

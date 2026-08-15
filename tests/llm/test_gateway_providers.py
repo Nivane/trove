@@ -186,3 +186,47 @@ class TestProviderParams:
 
         response = await gateway.chat(model="openai/gpt-4o", messages=[])
         assert response == "SELECT 1"
+
+    async def test_chat_full_returns_message_with_tool_calls(self, mocker):
+        """chat_full 返回完整 message（content + tool_calls），tools 透传。"""
+        from types import SimpleNamespace
+
+        captured = {}
+
+        async def fake_acompletion(**kwargs):
+            captured.update(kwargs)
+            tool_call = SimpleNamespace(
+                id="call_1",
+                type="function",
+                function=SimpleNamespace(name="execute_sql", arguments='{"sql": "SELECT 1"}'),
+            )
+            message = SimpleNamespace(content=None, tool_calls=[tool_call])
+            message.reasoning_content = None
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+
+        full = await gateway.chat_full(
+            model="openai/gpt-4o",
+            messages=[],
+            tools=[{"type": "function", "function": {"name": "execute_sql", "parameters": {}}}],
+        )
+        assert captured["tools"][0]["function"]["name"] == "execute_sql"
+        assert full["tool_calls"][0]["name"] == "execute_sql"
+        assert full["tool_calls"][0]["arguments"] == '{"sql": "SELECT 1"}'
+
+    async def test_chat_full_content_only(self, mocker):
+        from types import SimpleNamespace
+
+        async def fake_acompletion(**kwargs):
+            message = SimpleNamespace(content="final answer", tool_calls=None)
+            message.reasoning_content = None
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+
+        full = await gateway.chat_full(model="m", messages=[])
+        assert full["content"] == "final answer"
+        assert full["tool_calls"] == []

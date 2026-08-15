@@ -12,7 +12,12 @@ INVALID_SQL = "```sql\nSELEC * FROM students;\n```"
 
 
 class RecordingLLM:
-    """Returns scripted responses; IndexError (→ graph error) if called too often."""
+    """Returns scripted responses; IndexError (→ graph error) if called too often.
+
+    chat_full consumes the same queue and returns a content-only message
+    (no tool calls) — the agentic nodes then behave like classic
+    single-shot generation for existing scripted tests.
+    """
 
     def __init__(self, responses):
         self._responses = list(responses)
@@ -21,6 +26,10 @@ class RecordingLLM:
     async def chat(self, model, messages, **kwargs):
         self.calls.append(messages)
         return self._responses.pop(0)
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append(messages)
+        return {"content": self._responses.pop(0), "tool_calls": []}
 
 
 def make_services(llm, catalog=None, connectors=None, kb=None):
@@ -39,9 +48,10 @@ def make_state(**kwargs):
     return WorkflowState(**defaults)
 
 
-def build(services, multi_candidate=False, planner=False, clarify=False):
-    """Build graphs with single-candidate generation (scripted-response tests)."""
-    return build_graphs(services, multi_candidate=multi_candidate, planner=planner, clarify=clarify)
+def build(services, multi_candidate=False, planner=False, clarify=False, agentic=False):
+    """Build graphs with single-candidate classic generation (scripted-response tests)."""
+    return build_graphs(services, multi_candidate=multi_candidate, planner=planner,
+                        clarify=clarify, agentic=agentic)
 
 
 # ── gen_sql subgraph ─────────────────────────────────────
@@ -179,17 +189,18 @@ class TestReflectionGraph:
 
 
 class TestIntentRouting:
-    async def test_schema_intent_answers_without_llm(self, sqlite_registry, catalog):
-        """「有哪些表」→ 直接给表清单，不调 LLM 生成。"""
-        llm = RecordingLLM([])  # 任何调用都会 IndexError
+    async def test_schema_intent_llm_answer(self, sqlite_registry, catalog):
+        """「有哪些表」→ 强信号直路由，答案由 LLM 组织。"""
+        llm = RecordingLLM(["数据源共 1 张表：students（4 列）", "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(question="有哪些表"))
         assert final["intent"] == "metadata"
         assert "students" in final["intent_answer"]
         assert final["sql"] == ""
+        assert len(llm.calls) == 2  # 答案 + 裁决
 
-    async def test_lineage_intent_lists_joins(self, sqlite_registry, catalog):
-        """血缘意图 → 关联关系清单。"""
+    async def test_lineage_intent_llm_answer(self, sqlite_registry, catalog):
+        """血缘意图 → LLM 组织关联答案。"""
         adapter = await sqlite_registry.get()
         await adapter.execute(
             "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
@@ -197,16 +208,16 @@ class TestIntentRouting:
         await adapter.execute(
             "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
         )
-        llm = RecordingLLM([])
+        llm = RecordingLLM(["city 与 district 通过 city.district_id 关联"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(question="city 表的血缘")
         )
         assert final["intent"] == "metadata"
-        assert "city.district_id → district.district_id" in final["intent_answer"]
+        assert "city.district_id" in final["intent_answer"]
 
-    async def test_semantic_intent_uses_kb(self, sqlite_registry, catalog, tmp_path):
-        """语义意图 → 术语口径查询知识库。"""
+    async def test_semantic_intent_llm_answer(self, sqlite_registry, catalog, tmp_path):
+        """语义意图 → 术语材料进上下文，LLM 组织答案。"""
         from trove.services.kb.service import KbService
 
         kb = KbService(tmp_path / "proj")
@@ -217,7 +228,7 @@ class TestIntentRouting:
             "    tables: [students]\n    definition: 学生平均分\n",
             encoding="utf-8",
         )
-        llm = RecordingLLM([])
+        llm = RecordingLLM(["平均成绩 → AVG(students.grade)，即学生平均分"])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
         final = await graphs["reflection"].ainvoke(
             make_state(question="平均成绩的定义")
@@ -235,26 +246,91 @@ class TestIntentRouting:
 
     async def test_schema_intent_answers_in_english(self, sqlite_registry, catalog):
         """英文问题 → 英文答案。"""
-        llm = RecordingLLM([])
+        llm = RecordingLLM(["The datasource has 1 table: students (4 columns)"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(question="list tables"))
         assert final["intent"] == "metadata"
-        assert "tables" in final["intent_answer"].lower()
+        assert "table" in final["intent_answer"].lower()
         assert "数据源" not in final["intent_answer"]
+
+    async def test_answer_llm_failure_falls_back_to_template(self, sqlite_registry, catalog):
+        """答案 LLM 失败 → 模板兜底（管线不中断）。"""
+        class RaisingLLM:
+            async def chat(self, model, messages, **kwargs):
+                raise RuntimeError("down")
+
+        graphs = build(make_services(RaisingLLM(), catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state(question="有哪些表"))
+        assert final["intent"] == "metadata"
+        assert "students" in final["intent_answer"]  # 模板清单
+
+
+class TestMetadataFocus:
+    async def _make(self, sqlite_registry):
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        await adapter.execute(
+            "CREATE TABLE loan (loan_id INTEGER PRIMARY KEY, account_id INTEGER)"
+        )
+        await adapter.execute(
+            "CREATE TABLE order_t (order_id INTEGER PRIMARY KEY, account_id INTEGER)"
+        )
+
+    async def test_relation_only_question_llm_answer(self, sqlite_registry, catalog):
+        """只问关联字段 → LLM 聚焦回答（用户案例）。"""
+        await self._make(sqlite_registry)
+        llm = RecordingLLM([
+            "metadata",
+            "account 通过 district_id 关联 district；\n"
+            "loan 通过 account_id 关联 account；\n"
+            "order 通过 account_id 关联 account。\n"
+            "loan 与 order 之间无直接关联，均通过 account 间接关联。",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="district 与 account 通过什么字段关连？loan 和 order 呢？")
+        )
+        assert final["intent"] == "metadata"
+        answer = final["intent_answer"]
+        assert "district_id" in answer
+        assert "account_id" in answer
+        assert "数据源共" not in answer  # LLM 聚焦，不堆清单
+
+    async def test_relation_variants(self, sqlite_registry, catalog):
+        """变体问法（怎么连/相连）→ 弱信号 → LLM 确认 + 聚焦回答。"""
+        await self._make(sqlite_registry)
+        llm = RecordingLLM(["metadata", "account 与 loan 通过 account_id 相连"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="account 与 loan 怎么连接")
+        )
+        assert final["intent"] == "metadata"
+        assert "account_id" in final["intent_answer"]
+
+    async def test_indirect_relation_answer(self, sqlite_registry, catalog):
+        """无直接关联的两表 → LLM 答案提示经共同表。"""
+        await self._make(sqlite_registry)
+        llm = RecordingLLM(["metadata", "loan 与 order 均通过 account 关联"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="loan 和 order 有什么关系")
+        )
+        assert "account" in final["intent_answer"]
 
 
 class TestIntentLLMFallback:
     async def test_weak_signal_llm_classifies_metadata(self, sqlite_registry, catalog):
-        """弱信号（裸「表」字）→ LLM 二分类确认 metadata → 表详情。"""
-        llm = RecordingLLM(["metadata"])
+        """弱信号（裸「表」字）→ LLM 二分类确认 + 答案组织（2 次调用）。"""
+        llm = RecordingLLM(["metadata", "students 表包含 id、name、grade、county 列", "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(question="students 表有什么")
         )
         assert final["intent"] == "metadata"
         assert "id" in final["intent_answer"]
-        assert "INTEGER" in final["intent_answer"]
-        assert len(llm.calls) == 1  # 仅意图分类，无生成
+        assert len(llm.calls) == 3  # 分类 + 答案 + 裁决
 
     async def test_weak_signal_llm_garbage_falls_back_to_query(self, sqlite_registry, catalog):
         """LLM 分类不可解析 → query 兜底，正常走生成流水线。"""
@@ -267,20 +343,76 @@ class TestIntentLLMFallback:
         assert final["row_count"] == 5
 
     async def test_composite_metadata_question(self, sqlite_registry, catalog):
-        """复合问题（含义 + 关系）→ 表详情与关联关系同时输出。"""
+        """复合问题（含义 + 关系）→ LLM 逐件回答。"""
         adapter = await sqlite_registry.get()
         await adapter.execute(
             "CREATE TABLE courses (course_id INTEGER PRIMARY KEY, students_id INTEGER, title TEXT)"
         )
-        llm = RecordingLLM([])  # 强信号（含义/关系），不调 LLM
+        llm = RecordingLLM([
+            "metadata",
+            "students 是学生表；courses 是课程表。\n"
+            "两者通过 courses.students_id 与 students.id 关联。",
+        ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(question="students 和 courses 表分别什么含义？有什么关系")
         )
         assert final["intent"] == "metadata"
         assert "students" in final["intent_answer"]
-        assert "courses" in final["intent_answer"]          # 两张表详情都有
-        assert "courses.students_id → students.id" in final["intent_answer"]  # 关系段
+        assert "courses" in final["intent_answer"]
+        assert "students_id" in final["intent_answer"]
+
+
+class AgenticLLM:
+    """chat_full 脚本化：dict 响应（content/tool_calls）。"""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append(messages)
+        return self._responses.pop(0)
+
+    async def chat(self, model, messages, **kwargs):
+        raise AssertionError("agentic tests should only use chat_full")
+
+
+class TestAgenticNodes:
+    async def test_gen_sql_tool_validation_round(self, sqlite_registry, catalog):
+        """gen_sql ReAct：模型先调 validate_sql 工具自检，再交最终 SQL。"""
+        llm = AgenticLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "validate_sql",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect（agentic 内容型）
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        assert len(llm.calls) == 3  # 工具轮 + 最终轮 + reflect
+        assert final["row_count"] == 5
+
+    async def test_reflect_reexecutes_tool(self, sqlite_registry, catalog):
+        """reflect ReAct：模型调 execute_sql 工具复核结果，再裁决。"""
+        llm = AgenticLLM([
+            {"content": VALID_SQL, "tool_calls": []},  # gen 内容型单轮
+            {"content": None, "tool_calls": [
+                {"id": "c2", "name": "execute_sql",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "OK", "tool_calls": []},  # 复核后裁决
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["verdict"] == "OK"
+        assert final["row_count"] == 5
+        # 工具观测回传给了模型
+        tool_messages = [m for call in llm.calls for m in call if m.get("role") == "tool"]
+        assert any("rows=5" in m["content"] for m in tool_messages)
 
 
 class TestClarifyRouting:

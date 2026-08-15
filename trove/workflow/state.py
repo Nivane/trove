@@ -22,9 +22,14 @@ class WorkflowState(BaseModel):
 
     session_id: str
     question: str
+    run_id: str = ""  # trace identity of this run (set by SessionManager)
 
     # Compact conversation history (prior exchanges) for follow-up questions
     history: str = ""
+
+    # Official hint for the question (evaluation/reference use); kept
+    # separate so classification and rules see the pure question only
+    evidence: str = ""
 
     # Alternative candidate SQLs (multi-candidate generation, reflection
     # workflow only) — consumed by the consensus select node
@@ -52,6 +57,9 @@ class WorkflowState(BaseModel):
 
     # Context budget usage of the last gen pass (observability)
     context_usage: list[dict[str, Any]] = Field(default_factory=list)
+
+    # LLM call detail of the last LLM node (model/elapsed/io previews)
+    llm: dict[str, Any] | None = None
 
     # Knowledge base hits (term matches + example matches).
     # operator.add: updates from different nodes accumulate.
@@ -93,6 +101,7 @@ class GenSQLState(BaseModel):
 
     question: str
     session_id: str = ""  # for trace metadata
+    run_id: str = ""      # for trace metadata
     schema_context: str = ""
     dialect: str = "sqlite"
     reflect_reason: str = ""  # reason from a previous reflect RETRY (empty on first pass)
@@ -108,6 +117,9 @@ class GenSQLState(BaseModel):
     # conversation history for follow-up questions
     history: str = ""
 
+    # official hint for the question (injected as its own prompt section)
+    evidence: str = ""
+
     # LLM query plan (planner node) injected into the generation prompt
     plan: str = ""
 
@@ -116,3 +128,4 @@ class GenSQLState(BaseModel):
     term_notes: list[dict[str, Any]] = Field(default_factory=list)  # terminology definitions
     lessons: list[dict[str, Any]] = Field(default_factory=list)     # known pitfalls (Hint Bank)
     rules: list[str] = Field(default_factory=list)                    # data source business rules
+    llm: dict[str, Any] | None = None                                    # last generate call detail

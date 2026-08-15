@@ -241,6 +241,8 @@ async def _load_config(args) -> AgentConfig:
     config = ConfigLoader.load_agent_config(args.config)
     from trove.llm.tracing import configure_tracing
     configure_tracing(config.tracing)
+    from trove.tracing.local import configure_trace_store
+    configure_trace_store(config.home)
     if args.model:
         config.target = args.model
     return config

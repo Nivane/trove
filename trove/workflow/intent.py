@@ -23,18 +23,23 @@ class Intent(str, Enum):
     METADATA = "metadata"
 
 
-# 强信号：几乎总是"问数据本身"
+# 强信号：高置信直接路由（零成本）
 _STRONG_METADATA: list[str] = [
     r"有哪些表", r"表结构", r"几张表", r"\blist\s+tables\b", r"\btables\b",
-    r"字段", r"\bcolumn\b", r"\bschema\b",
-    r"口径", r"定义", r"含义", r"是什么意思", r"指标", r"\bmetric\b", r"\bterm\b",
-    r"知识库", r"参考\s*SQL", r"模板", r"示例",
-    r"血缘", r"关联关系", r"数据来源", r"从哪.{0,6}(?:来|得到)",
-    r"关系", r"关联", r"\blineage\b",
+    r"知识库", r"参考\s*SQL",
+    r"血缘", r"数据来源",
+    r"口径", r"定义", r"是什么意思",
 ]
 
-# 弱信号：裸"表"字——可能是数据问题（"loan 表的数据"）
-_WEAK: list[str] = [r"表", r"\btable\b"]
+# 弱信号：任何"元数据倾向词"→ 触发 LLM 二分类确认（不追求精确命中，
+# 只保证不遗漏——精确的答案组织交给 LLM）
+_WEAK: list[str] = [
+    r"表", r"关系", r"关联", r"关连", r"连接", r"相连", r"怎么连",
+    r"字段", r"列", r"指标", r"含义", r"意思", r"啥意思", r"干什么",
+    r"模板", r"示例", r"结构", r"来源", r"术语", r"口径", r"定义",
+    r"\btable\b", r"\bcolumn\b", r"\bschema\b", r"\bmetric\b",
+    r"\bterm\b", r"\blineage\b", r"\bjoin\b", r"\blink\b",
+]
 
 _STRONG_COMPILED: list[re.Pattern] = [re.compile(p, re.I) for p in _STRONG_METADATA]
 _WEAK_COMPILED: list[re.Pattern] = [re.compile(p, re.I) for p in _WEAK]

@@ -146,6 +146,9 @@ class TestAskStream:
             async def chat(self, model, messages, **kwargs):
                 return "```sql\nSELEC * FROM students;\n```"  # always invalid
 
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                return {"content": "```sql\nSELEC * FROM students;\n```", "tool_calls": []}
+
         config = AgentConfig(home=str(tmp_home), target="mock/model")
         services = GraphServices(
             llm=ScriptedLLM(),
@@ -155,7 +158,7 @@ class TestAskStream:
         manager = SessionManager(
             config=config,
             session_store=SessionStore(home_dir=str(tmp_home)),
-            graphs=build_graphs(services),
+            graphs=build_graphs(services, agentic=False),
             llm_gateway=ScriptedLLM(),
         )
         session = await manager.start_session(project_cwd="/tmp/p1")
@@ -220,6 +223,9 @@ class TestStructuredSteps:
 
             async def chat(self, model, messages, **kwargs):
                 return next(self._it)
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                return {"content": next(self._it), "tool_calls": []}
 
         config = AgentConfig(home=str(tmp_home), target="mock/model")
         llm = Scripted()
@@ -315,6 +321,9 @@ class TestTrajectoryEvents:
 
             async def chat(self, model, messages, **kwargs):
                 return next(self._it)
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                return {"content": next(self._it), "tool_calls": []}
 
         config = AgentConfig(home=str(tmp_home), target="mock/model")
         llm = Scripted()

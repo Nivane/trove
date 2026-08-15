@@ -560,6 +560,18 @@ class TestPlanner:
         node = make_planner(ScriptedLLM(["x"]), AgentConfig(target="mock/model"))
         assert await node(make_state(error="upstream")) == {}
 
+    async def test_planner_carries_llm_detail(self):
+        from trove.workflow.nodes.planner import make_planner
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "plan text"
+
+        node = make_planner(LLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state())
+        assert update["llm"]["model"] == "mock/model"
+        assert update["llm"]["output_preview"] == "plan text"
+
     async def test_planner_passes_trace_metadata(self):
         """trace metadata（node/session/question）随 LLM 调用上报。"""
         from trove.workflow.nodes.planner import make_planner

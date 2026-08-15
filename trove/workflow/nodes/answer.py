@@ -1,17 +1,12 @@
-"""Metadata answer node — composite answers for "about the data" questions.
+"""Metadata answer node — LLM-composed answers from metadata context.
 
-Instead of routing metadata questions into single-purpose buckets, the
-node combines every signal found in the question:
+The route node decides query vs metadata; HERE the LLM decides what the
+user actually asked (relationships? table meanings? calibers? several
+things at once?) and composes a focused answer from the assembled
+metadata context — no unbounded signal-word matching.
 
-  - mentioned table names → per-table details (columns + annotations)
-  - relationship signals (关系/关联/血缘/来源) → join relationships
-  - term signals (口径/定义/含义/指标) → matching business terms
-  - KB signals (知识库/模板/示例) → knowledge base contents
-  - inventory signals (有哪些表/表结构/tables/schema/字段) or nothing
-    else fired → full table inventory
-
-Multi-signal questions (e.g. "loan 和 order 表分别什么含义？有什么关系")
-get all matching sections — nothing is dropped.
+Fallback (no LLM or LLM failure): the template-based composite answer
+below keeps the pipeline responsive.
 """
 
 from __future__ import annotations
@@ -20,17 +15,24 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.core.config import AgentConfig
 from trove.core.i18n import L, detect_language
+from trove.core.logging import get_logger
+from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService
 from trove.workflow.nodes.schema_linking import _join_hints
 from trove.workflow.state import WorkflowState
 
-_RELATIONS_RE = re.compile(r"关系|关联|血缘|来源|从哪")
+logger = get_logger(__name__)
+
+ANSWER_SYSTEM_PROMPT = """You are a data knowledge assistant. Answer the user's question using ONLY the metadata context below. Answer exactly what was asked — if the user asks about relationships, answer relationships; if they ask about meanings, explain meanings; if they ask several things, answer each in turn. Do not dump unrelated information. Keep answers concise and structured."""
+
+_RELATIONS_RE = re.compile(r"关系|关联|关连|连接|相连|怎么连|血缘|来源|从哪")
 _TERMS_RE = re.compile(r"口径|定义|含义|是什么意思|指标")
 _KB_RE = re.compile(r"知识库|模板|示例|参考")
-_INVENTORY_RE = re.compile(r"有哪些表|表结构|list\s+tables|\btables\b|\bschema\b|字段|\bcolumn\b")
+_INVENTORY_RE = re.compile(r"有哪些表|表结构|list\\s+tables|\\btables\\b|\\bschema\\b")
 
 
 def _datasource(connectors: ConnectorRegistry | None) -> str:
@@ -39,84 +41,135 @@ def _datasource(connectors: ConnectorRegistry | None) -> str:
     return connectors.default_name or ""
 
 
+async def _build_metadata_context(
+    state: WorkflowState, catalog, kb, connectors,
+) -> str:
+    """All metadata material the LLM may need (bounded)."""
+    sections: list[str] = []
+    ds = _datasource(connectors)
+    tables = await catalog.list_tables() if catalog else []
+    mentioned = [t for t in tables if t["name"].lower() in state.question.lower()]
+
+    # 提及表详情
+    if mentioned and catalog:
+        for t in mentioned[:5]:
+            detail = await catalog.table_detail(t["name"])
+            cols = ", ".join(f"{c['name']} {c['type']}" for c in (detail or {}).get("columns", []))
+            sections.append(f"Table {t['name']}: {cols}")
+
+    # 全库关联总览
+    if connectors:
+        schema = await connectors.get_schema()
+        table_columns = {t.name: [c.name for c in t.columns] for t in schema.tables}
+        rel_lines = []
+        for table, cols in table_columns.items():
+            for hint in _join_hints(table, cols, table_columns):
+                rel_lines.append(hint)
+        if rel_lines:
+            sections.append("Relationships: " + "; ".join(rel_lines))
+
+    # 术语
+    if kb is not None and ds:
+        await kb.ensure_synced(ds)
+        terms = await kb.list_term_names(ds)
+        if terms:
+            sections.append("Business terms: " + ", ".join(terms[:30]))
+
+    # 表清单
+    if tables:
+        sections.append("All tables: " + ", ".join(t["name"] for t in tables))
+
+    return "\n".join(sections)[:6000]
+
+
+async def _fallback_answer(state: WorkflowState, catalog, kb, connectors) -> str:
+    """Template composite answer (no LLM / LLM failure)."""
+    lang = detect_language(state.question)
+    q = state.question
+    sections: list[str] = []
+    tables = await catalog.list_tables() if catalog else []
+    mentioned = [t for t in tables if t["name"].lower() in q.lower()]
+    ds = _datasource(connectors)
+
+    if mentioned and catalog:
+        notes = {}
+        if kb is not None and ds:
+            notes = await kb.table_notes([t["name"] for t in mentioned], ds)
+        for t in mentioned[:5]:
+            lines = [L(lang, f"表 {t['name']}（{t['columns']} 列）：", f"Table {t['name']} ({t['columns']} columns):")]
+            detail = await catalog.table_detail(t["name"])
+            for col in (detail or {}).get("columns", []):
+                lines.append(f"  • {col['name']} ({col['type']})")
+            sections.append("\n".join(lines))
+
+    if _RELATIONS_RE.search(q) and connectors:
+        schema = await connectors.get_schema()
+        table_columns = {t.name: [c.name for c in t.columns] for t in schema.tables}
+        targets = [t["name"] for t in mentioned] or list(table_columns)
+        rel_lines: list[str] = []
+        for table in targets[:8]:
+            for hint in _join_hints(table, table_columns.get(table, []), table_columns):
+                rel_lines.append(f"  • {hint}")
+        if rel_lines:
+            sections.append(L(lang, "关联关系：", "Relationships:") + "\n" + "\n".join(rel_lines))
+
+    if _TERMS_RE.search(q) and kb is not None and ds:
+        await kb.ensure_synced(ds)
+        hits = await kb.search_terms(q, ds)
+        if hits:
+            sections.append("\n".join(f"  • {h.term} → {h.mapping}" for h in hits))
+
+    if _KB_RE.search(q) and kb is not None and ds:
+        await kb.ensure_synced(ds)
+        counts = (await kb.list_items()).get(ds, {})
+        if counts:
+            sections.append(L(lang, f"知识库：表注释 {counts.get('table', 0)} / 术语 {counts.get('term', 0)} / 示例 {counts.get('example', 0) + counts.get('template', 0)}", f"Knowledge base: tables {counts.get('table', 0)} / terms {counts.get('term', 0)} / examples {counts.get('example', 0) + counts.get('template', 0)}"))
+
+    if _INVENTORY_RE.search(q) or not sections:
+        if catalog:
+            inv = [L(lang, f"数据源共 {len(tables)} 张表：", f"The datasource has {len(tables)} tables:")]
+            inv.extend(f"  • {t['name']}（{t['columns']} 列）" if lang == "zh" else f"  • {t['name']} ({t['columns']} columns)" for t in tables)
+            sections.append("\n".join(inv))
+
+    return "\n\n".join(sections) if sections else L(lang, "当前没有可用的数据源目录。", "No datasource catalog available.")
+
+
 def make_answer_metadata(
     catalog: CatalogService | None = None,
     kb: KbService | None = None,
     connectors: ConnectorRegistry | None = None,
+    llm: LLMGateway | None = None,
+    config: AgentConfig | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     async def answer_metadata(state: WorkflowState) -> dict[str, Any]:
-        lang = detect_language(state.question)
-        q = state.question
-        sections: list[str] = []
+        context = await _build_metadata_context(state, catalog, kb, connectors)
 
-        tables = await catalog.list_tables() if catalog else []
-        mentioned = [t for t in tables if t["name"].lower() in q.lower()]
-        ds = _datasource(connectors)
+        if llm is not None:
+            try:
+                model = (config.target if config else "") or "openai/gpt-4o"
+                feedback_note = (
+                    f"\n\n注意：上一次回答未通过校验（{state.error_feedback}），请修正。"
+                    if state.error_feedback else ""
+                )
+                response = await llm.chat(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"Metadata context:\n{context}\n\nQuestion: {state.question}{feedback_note}"},
+                    ],
+                    metadata={
+                        "node": "answer_metadata",
+                        "session_id": state.session_id,
+                        "run_id": state.run_id,
+                        "question": state.question[:80],
+                    },
+                )
+                answer = response.strip()
+                if answer:
+                    return {"intent_answer": answer}
+            except Exception as e:
+                logger.warning("Metadata LLM answer failed, using fallback: %s", e)
 
-        # 1. mentioned tables → details
-        if mentioned and catalog:
-            notes = {}
-            if kb is not None and ds:
-                notes = await kb.table_notes([t["name"] for t in mentioned], ds)
-            for t in mentioned:
-                lines = [L(lang, f"表 {t['name']}（{t['columns']} 列）：", f"Table {t['name']} ({t['columns']} columns):")]
-                detail = await catalog.table_detail(t["name"])
-                table_notes = notes.get(t["name"])
-                for col in (detail or {}).get("columns", []):
-                    desc = (table_notes.columns.get(col["name"]) if table_notes else None) or ""
-                    line = f"  • {col['name']} ({col['type']})"
-                    if desc:
-                        line += f" — {desc}"
-                    lines.append(line)
-                if table_notes and table_notes.description:
-                    lines.append(L(lang, f"  描述：{table_notes.description}", f"  Description: {table_notes.description}"))
-                sections.append("\n".join(lines))
-
-        # 2. relationships
-        if _RELATIONS_RE.search(q) and connectors:
-            schema = await connectors.get_schema()
-            table_columns = {t.name: [c.name for c in t.columns] for t in schema.tables}
-            targets = [t["name"] for t in mentioned] or list(table_columns)
-            rel_lines: list[str] = []
-            for table in targets:
-                hints = _join_hints(table, table_columns.get(table, []), table_columns)
-                if hints:
-                    rel_lines.append(L(lang, f"{table} 的关联：", f"Relationships of {table}:"))
-                    rel_lines.extend(f"  • {h}" for h in hints)
-            if rel_lines:
-                sections.append("\n".join(rel_lines))
-
-        # 3. business terms
-        if _TERMS_RE.search(q) and kb is not None and ds:
-            await kb.ensure_synced(ds)
-            hits = await kb.search_terms(q, ds)
-            if hits:
-                term_lines = [L(lang, "术语口径：", "Term definitions:")]
-                for h in hits:
-                    term_lines.append(f"  • {h.term} → {h.mapping}")
-                    if h.definition:
-                        term_lines.append(L(lang, f"    {h.definition}", f"    {h.definition}"))
-                sections.append("\n".join(term_lines))
-
-        # 4. knowledge base contents
-        if _KB_RE.search(q) and kb is not None and ds:
-            await kb.ensure_synced(ds)
-            counts = (await kb.list_items()).get(ds, {})
-            if counts:
-                lines = [L(lang, f"知识库（{ds}）：", f"Knowledge base ({ds}):")]
-                lines.append(L(lang, f"  • 表注释 {counts.get('table', 0)} / 术语 {counts.get('term', 0)} / 示例模板 {counts.get('example', 0) + counts.get('template', 0)} / 教训 {counts.get('lesson', 0)}", f"  • tables {counts.get('table', 0)} / terms {counts.get('term', 0)} / examples {counts.get('example', 0) + counts.get('template', 0)} / lessons {counts.get('lesson', 0)}"))
-                sections.append("\n".join(lines))
-
-        # 5. inventory (explicit signal, or nothing else fired)
-        if _INVENTORY_RE.search(q) or not sections:
-            if catalog:
-                inv_lines = [L(lang, f"数据源共 {len(tables)} 张表：", f"The datasource has {len(tables)} tables:")]
-                for t in tables:
-                    inv_lines.append(f"  • {t['name']}（{t['columns']} 列）" if lang == "zh" else f"  • {t['name']} ({t['columns']} columns)")
-                sections.append("\n".join(inv_lines))
-
-        if not sections:
-            return {"intent_answer": L(lang, "当前没有可用的数据源目录。", "No datasource catalog available.")}
-        return {"intent_answer": "\n\n".join(sections)}
+        return {"intent_answer": await _fallback_answer(state, catalog, kb, connectors)}
 
     return answer_metadata

@@ -15,17 +15,26 @@ class TestStrongSignals:
             "有哪些表",
             "list tables",
             "表结构",
-            "loan 表有哪些字段",
             "平均贷款金额是什么口径",
             "客户数的定义是什么",
             "知识库里有哪些内容",
             "有哪些参考 SQL",
             "account 的血缘",
             "loan 表的数据来源",
-            "loan 和 order 表分别什么含义？有什么关系",
-            "表之间的关系",
         ]:
             assert classify_intent(q) == Intent.METADATA, q
+
+    def test_metadata_weak_signals_trigger_llm_confirm(self):
+        """变体/模糊问法 → 弱信号（LLM 二分类确认），不再强路由。"""
+        for q in [
+            "loan 表有哪些字段",
+            "loan 和 order 表分别什么含义？有什么关系",
+            "表之间的关系",
+            "district 与 account 通过什么字段关连",
+            "account 与 loan 怎么连接",
+        ]:
+            assert classify_intent(q) is None, q
+            assert has_weak_signal(q), q
 
 
 class TestWeakSignals:

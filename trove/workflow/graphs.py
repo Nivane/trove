@@ -26,19 +26,21 @@ from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService
+from trove.llm.agent_loop import run_agent_loop
 from trove.workflow.context_budget import assemble_blocks
 from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
 from trove.workflow.nodes.clarify import make_clarify
 from trove.workflow.nodes.planner import make_planner
-from trove.workflow.nodes.gen_sql import make_generate, make_validate
+from trove.workflow.nodes.gen_sql import SQL_GENERATION_SYSTEM_PROMPT, build_sql_prompt, make_generate, make_validate
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.nodes.select import make_select_consensus
 from trove.workflow.nodes.validate import make_validate_rules
 from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
 from trove.workflow.nodes.answer import make_answer_metadata
+from trove.workflow.nodes.metadata_check import make_metadata_check
 from trove.workflow.intent import INTENT_PROMPT, Intent, classify_intent, has_weak_signal, parse_llm_intent
 
 logger = get_logger(__name__)
@@ -102,8 +104,12 @@ def _make_gen_sql_node(
     services: GraphServices,
     subgraph: CompiledStateGraph,
     subgraph_alt: CompiledStateGraph | None = None,
+    agentic: bool = True,
 ):
-    """Main-graph wrapper around the gen_sql subgraph.
+    """gen_sql node — agentic by default: a ReAct loop where the model
+    validates SQL via the validate_sql tool and ends when IT judges the
+    SQL ready (model-driven termination). Content-only first response
+    behaves exactly like the classic single-shot generation.
 
     With subgraph_alt given (multi-candidate mode), a second candidate
     is generated at a higher temperature and stored in state.candidates
@@ -175,40 +181,101 @@ def _make_gen_sql_node(
         sub_state = GenSQLState(
             question=state.question,
             session_id=state.session_id,
+            run_id=state.run_id,
             schema_context=state.schema_context,
             dialect=dialect,
             reflect_reason=state.reason,
             error_feedback=state.error_feedback,
             history=state.history if "history" in included else "",
             plan=state.plan if "plan" in included else "",
+            evidence=state.evidence,
             few_shots=few_shots if "few_shots" in included else None,
             term_notes=term_notes if "term_notes" in included else None,
             lessons=lessons if "lessons" in included else None,
             rules=rules if "rules" in included else None,
         )
-        out = await subgraph.ainvoke(sub_state)
-
         update: dict[str, Any] = {
             "dialect": dialect,
             "candidates": [],
             "context_usage": context_usage,
         }
-        if out["sql"]:
-            update["sql"] = out["sql"]
-        if out.get("attempts"):
-            update["attempts"] = out["attempts"]  # 子图内校验重试次数
-        if out["error"]:
-            update["error"] = out["error"]
 
+        if agentic:
+            from trove.workflow.nodes.gen_sql import extract_sql, validate_sql as validate_sql_fn
+
+            async def validate_tool(arguments: dict) -> str:
+                valid, errors = validate_sql_fn(arguments.get("sql", ""), dialect)
+                if valid:
+                    return "valid"
+                return "ERRORS: " + "; ".join(errors)
+
+            prompt = _build_gen_prompt(sub_state)
+            model = (services.config.target if services.config else "") or "openai/gpt-4o"
+            result = None
+            try:
+                result = await run_agent_loop(
+                services.llm, model,
+                system=SQL_GENERATION_SYSTEM_PROMPT,
+                user=prompt,
+                tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "validate_sql",
+                        "description": "Validate a SQL query for syntax. Returns 'valid' or a list of errors.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"sql": {"type": "string", "description": "The SQL to validate"}},
+                            "required": ["sql"],
+                        },
+                    },
+                }],
+                    tool_handlers={"validate_sql": validate_tool},
+                    max_rounds=6,
+                    metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
+                )
+            except Exception as e:
+                logger.warning("Agentic gen_sql failed (%s); falling back to classic", e)
+                result = None
+            sql = extract_sql(result["content"]) if result else ""
+            if not sql:
+                # 模型可能只在工具里给出 SQL，最终 content 无 SQL 回显
+                for entry in reversed(result["tool_history"]):
+                    if entry["name"] == "validate_sql" and entry["arguments"].get("sql"):
+                        sql = entry["arguments"]["sql"]
+                        break
+            if result is not None:
+                update["attempts"] = result["rounds"]
+                if sql:
+                    update["sql"] = sql
+                elif result["guard_hit"]:
+                    update["error"] = "SQL generation loop hit the round guard without producing SQL"
+            else:
+                out = await subgraph.ainvoke(sub_state)
+                if out["sql"]:
+                    update["sql"] = out["sql"]
+                if out.get("attempts"):
+                    update["attempts"] = out["attempts"]
+                if out["error"]:
+                    update["error"] = out["error"]
+        else:
+            out = await subgraph.ainvoke(sub_state)
+            if out["sql"]:
+                update["sql"] = out["sql"]
+            if out.get("attempts"):
+                update["attempts"] = out["attempts"]  # 子图内校验重试次数
+            if out.get("llm"):
+                update["llm"] = out["llm"]
+            if out["error"]:
+                update["error"] = out["error"]
         # Multi-candidate: a second generation at higher temperature;
         # failures fall back to the single-candidate path silently.
-        if subgraph_alt is not None and out["sql"] and not out["error"]:
+        if subgraph_alt is not None and update.get("sql") and not update.get("error"):
             try:
                 out_alt = await subgraph_alt.ainvoke(sub_state.model_copy(deep=True))
             except Exception:
                 out_alt = {}
             alt_sql = out_alt.get("sql", "")
-            if alt_sql and not out_alt.get("error") and alt_sql != out["sql"]:
+            if alt_sql and not out_alt.get("error") and alt_sql != update.get("sql"):
                 update["candidates"] = [alt_sql]
         if example_hits:
             update["kb_hits"] = [
@@ -229,6 +296,7 @@ def build_graphs(
     multi_candidate: bool = True,
     planner: bool = True,
     clarify: bool = False,
+    agentic: bool = True,
 ) -> dict[str, CompiledStateGraph]:
     """Build and compile the reflection / fixed / empty graphs.
 
@@ -240,6 +308,9 @@ def build_graphs(
         planner: Reflection drafts an LLM query plan before generation.
         clarify: Ask the user instead of generating when no tables match
             (off by default — generation proceeds permissively).
+        agentic: gen_sql runs a ReAct loop (model validates via the
+            validate_sql tool and self-terminates); off = classic
+            single-shot subgraph generation.
 
     Returns:
         Mapping of workflow name → compiled graph.
@@ -254,8 +325,8 @@ def build_graphs(
         return g.compile(checkpointer=checkpointer) if checkpointer else g.compile()
 
     return {
-        "reflection": compile(_build_reflection(services, subgraph, subgraph_alt, planner, clarify)),
-        "fixed": compile(_build_fixed(services, subgraph, clarify)),
+        "reflection": compile(_build_reflection(services, subgraph, subgraph_alt, planner, clarify, agentic)),
+        "fixed": compile(_build_fixed(services, subgraph, clarify, agentic)),
         "empty": compile(_build_empty()),
     }
 
@@ -288,6 +359,7 @@ def make_route_intent(llm: LLMGateway | None = None, config: AgentConfig | None 
                     metadata={
                         "node": "route_intent",
                         "session_id": state.session_id,
+                        "run_id": state.run_id,
                         "question": state.question[:80],
                     },
                 )
@@ -311,6 +383,11 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     g.add_node("route_intent", make_route_intent(services.llm, services.config))
     g.add_node("answer_metadata", make_answer_metadata(
         services.catalog, kb=services.kb, connectors=services.connectors,
+        llm=services.llm, config=services.config,
+    ))
+    g.add_node("metadata_check", make_metadata_check(
+        services.connectors, llm=services.llm, config=services.config,
+        max_retries=MAX_REFLECT_RETRIES,
     ))
     g.add_edge(START, "route_intent")
     g.add_conditional_edges(
@@ -321,7 +398,30 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
             "metadata": "answer_metadata",
         },
     )
-    g.add_edge("answer_metadata", "output")
+    g.add_edge("answer_metadata", "metadata_check")
+    g.add_conditional_edges(
+        "metadata_check",
+        _route_after_metadata_check,
+        {"answer_metadata": "answer_metadata", "output": "output"},
+    )
+
+
+def _build_gen_prompt(sub_state: GenSQLState) -> str:
+    """Assemble the generation user prompt from the prepared sub-state."""
+    return build_sql_prompt(
+        question=sub_state.question,
+        schema_context=sub_state.schema_context,
+        dialect=sub_state.dialect,
+        reflect_reason=sub_state.reflect_reason,
+        error_feedback=sub_state.error_feedback,
+        history=sub_state.history,
+        plan=sub_state.plan,
+        evidence=sub_state.evidence,
+        rules=sub_state.rules or None,
+        lessons=sub_state.lessons or None,
+        few_shots=sub_state.few_shots or None,
+        term_notes=sub_state.term_notes or None,
+    )
 
 
 def _render_shots(shots: list[dict[str, Any]]) -> str:
@@ -340,6 +440,13 @@ def _render_lessons(lessons: list[dict[str, Any]]) -> str:
     return "\n".join(
         f"- {l.get('pattern', '')}: {l.get('note', '')}" for l in lessons
     )
+
+
+def _route_after_metadata_check(state: WorkflowState) -> Literal["answer_metadata", "output"]:
+    """Judge/rule failure feeds back to the metadata answer; otherwise output."""
+    if state.error or state.error_feedback:
+        return "answer_metadata"
+    return "output"
 
 
 def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "output"]:
@@ -376,16 +483,17 @@ def _build_reflection(
     subgraph_alt: CompiledStateGraph | None = None,
     planner: bool = True,
     clarify: bool = False,
+    agentic: bool = True,
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
     ))
-    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, subgraph_alt))
+    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, subgraph_alt, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
-    g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES, agentic=agentic, connectors=services.connectors))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -393,7 +501,7 @@ def _build_reflection(
         g.add_node("clarify", make_clarify())
         g.add_edge("schema_linking", "clarify")
         if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig()))
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors))
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_planner,
@@ -408,7 +516,7 @@ def _build_reflection(
             )
     else:
         if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig()))
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors))
             g.add_edge("schema_linking", "planner")
             g.add_edge("planner", "gen_sql")
         else:
@@ -434,12 +542,13 @@ def _build_fixed(
     services: GraphServices,
     subgraph: CompiledStateGraph,
     clarify: bool = False,
+    agentic: bool = True,
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
     ))
-    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph))
+    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("output", output)

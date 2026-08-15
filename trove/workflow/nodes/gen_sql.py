@@ -12,6 +12,7 @@ level for direct unit testing.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -66,6 +67,7 @@ def build_sql_prompt(
     error_feedback: str = "",
     history: str = "",
     plan: str = "",
+    evidence: str = "",
     rules: list[str] | None = None,
     lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
@@ -94,6 +96,12 @@ def build_sql_prompt(
         parts += [
             "Query plan (follow it unless it conflicts with the question):",
             plan,
+            "",
+        ]
+    if evidence:
+        parts += [
+            "Evidence (official hint for this question):",
+            evidence,
             "",
         ]
     if rules:
@@ -237,6 +245,7 @@ def make_generate(
                 error_feedback=state.error_feedback,
                 history=state.history,
                 plan=state.plan,
+                evidence=state.evidence,
                 rules=state.rules or None,
                 lessons=state.lessons or None,
                 few_shots=state.few_shots or None,
@@ -244,6 +253,7 @@ def make_generate(
             )
 
         model = config.target or "openai/gpt-4o"
+        start = time.monotonic()
         response = await llm.chat(
             model=model,
             messages=[
@@ -254,6 +264,7 @@ def make_generate(
             metadata={
                 "node": "gen_sql",
                 "session_id": state.session_id,
+                "run_id": state.run_id,
                 "question": state.question[:80],
             },
         )
@@ -263,6 +274,12 @@ def make_generate(
             "sql": sql,
             "attempts": state.attempts + 1,
             "validation_errors": [],
+            "llm": {
+                "model": model,
+                "elapsed_ms": int((time.monotonic() - start) * 1000),
+                "input_preview": prompt[:200],
+                "output_preview": response[:200],
+            },
         }
 
     return generate

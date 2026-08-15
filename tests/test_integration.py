@@ -32,8 +32,16 @@ class ScriptedLLM:
         self.summarize_response = summarize_response
         self.call_count = 0
 
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.call_count += 1
+        content = self._content(messages)
+        return {"content": content, "tool_calls": []}
+
     async def chat(self, model: str, messages: list[dict], **kwargs) -> str:
         self.call_count += 1
+        return self._content(messages)
+
+    def _content(self, messages):
         # Inspect the last user message to decide which canned response to return
         last_content = ""
         for msg in reversed(messages):
@@ -91,7 +99,7 @@ async def full_stack(tmp_path, demo_registry):
     manager = SessionManager(
         config=config,
         session_store=store,
-        graphs=build_graphs(services),
+        graphs=build_graphs(services, agentic=False),
         llm_gateway=llm,
     )
     return manager
@@ -212,6 +220,10 @@ class TestWorkflowEdgeCases:
                 self.calls += 1
                 return next(self.responses)
 
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self.calls += 1
+                return {"content": next(self.responses), "tool_calls": []}
+
         llm = RetryLLM()
         manager = SessionManager(
             config=config,
@@ -221,7 +233,7 @@ class TestWorkflowEdgeCases:
                 catalog=catalog,
                 connectors=demo_registry,
                 config=config,
-            ), multi_candidate=False),
+            ), multi_candidate=False, agentic=False),
             llm_gateway=llm,
         )
 
