@@ -168,6 +168,38 @@ class TestAskStream:
         assert session.messages[-1].content == events[-1]["summary"]["final_response"]
 
 
+class TestConversationHistory:
+    async def test_ask_injects_prior_exchange_into_state(self, tmp_home):
+        """第二次提问时，图收到的初始 state.history 含上一轮问答。"""
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+        from trove.workflow.state import WorkflowState
+
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(state)
+                return {**state.model_dump(), "final_response": "answer"}
+
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+
+        await manager.ask(session=session, question="第一问")
+        await manager.ask(session=session, question="第二问")
+
+        assert captured[0].history == ""  # 第一轮无历史
+        assert "第一问" in captured[1].history
+        assert "answer" in captured[1].history  # 含上一轮答案
+        assert "第二问" not in captured[1].history  # 当前问题不混入历史
+
+
 class TestCompaction:
     async def test_compact_short_session_noop(self, session_manager):
         session = await session_manager.start_session(project_cwd="/tmp/p1")

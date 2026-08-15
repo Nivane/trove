@@ -23,6 +23,9 @@ class WorkflowState(BaseModel):
     session_id: str
     question: str
 
+    # Compact conversation history (prior exchanges) for follow-up questions
+    history: str = ""
+
     # Knowledge base hits (term matches + example matches).
     # operator.add: updates from different nodes accumulate.
     kb_hits: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
@@ -73,6 +76,9 @@ class GenSQLState(BaseModel):
 
     # execution-error feedback from a previous pass (injected into the prompt)
     error_feedback: str = ""
+
+    # conversation history for follow-up questions
+    history: str = ""
 
     # Knowledge base material for prompt injection
     few_shots: list[dict[str, Any]] = Field(default_factory=list)   # reference examples/templates

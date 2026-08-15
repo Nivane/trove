@@ -276,6 +276,25 @@ class TestPureHelpers:
         # + bigram×1 (贷款 shared by both questions)
         assert score == 2 * 1 + 1 + 1
 
+    def test_score_example_english_word_overlap(self):
+        """英文问题用词级重叠评分（char-bigram 对英文无效）。"""
+        question = "how many accounts have running contracts"
+        example = {
+            "question": "how many accounts are running",
+            "tags": ["loan"],  # 不是问题子串，tag 不命中
+        }
+        score = _score_example(question, set(), example)
+        # 词级重叠: how / many / accounts / running = 4
+        assert score == 4
+
+    def test_score_example_english_no_overlap_zero(self):
+        """英文问题与无关示例 → 词级无重叠 → 0 分。"""
+        score = _score_example(
+            "how many accounts are running", set(),
+            {"question": "top districts by loan amount", "tags": []},
+        )
+        assert score == 0
+
 
 class TestEvolution:
     async def test_append_example_rewrites_yaml_and_syncs(self, kb, kb_dir):

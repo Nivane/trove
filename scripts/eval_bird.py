@@ -37,6 +37,8 @@ def parse_args():
     parser.add_argument("--db-id", default="financial")
     parser.add_argument("--datasource", default="mysql://root:root@127.0.0.1:3306/financial")
     parser.add_argument("--limit", type=int, default=0, help="Only evaluate the first N questions (0 = all)")
+    parser.add_argument("--start", type=int, default=0,
+                        help="Skip the first N questions (half-split: evaluate the held-out set)")
     parser.add_argument("--no-evidence", action="store_true",
                         help="Don't append the official evidence hint to the question")
     return parser.parse_args()
@@ -57,6 +59,8 @@ async def main() -> None:
         sys.exit(1)
     if args.limit:
         questions = questions[: args.limit]
+    if args.start:
+        questions = questions[args.start:]
     print(f"评估 {args.db_id}: {len(questions)} 题")
 
     config = ConfigLoader.load_agent_config("conf/agent.yml")

@@ -199,7 +199,8 @@ class SessionManager:
         """
         graph = self._get_graph(workflow_name)
 
-        # Create user message
+        # History is built BEFORE appending the current question
+        history = self._conversation_history(session)
         user_msg = Message(
             role="user",
             content=question,
@@ -207,7 +208,11 @@ class SessionManager:
         )
         session.messages.append(user_msg)
 
-        state = WorkflowState(session_id=session.session_id, question=question)
+        state = WorkflowState(
+            session_id=session.session_id,
+            question=question,
+            history=history,
+        )
         final = WorkflowState.model_validate(
             await graph.ainvoke(state, self._thread_config(session))
         )
@@ -237,6 +242,7 @@ class SessionManager:
             yield {"type": "error", "node": "workflow", "content": str(e)}
             return
 
+        history = self._conversation_history(session)
         user_msg = Message(
             role="user",
             content=question,
@@ -244,7 +250,11 @@ class SessionManager:
         )
         session.messages.append(user_msg)
 
-        state = WorkflowState(session_id=session.session_id, question=question)
+        state = WorkflowState(
+            session_id=session.session_id,
+            question=question,
+            history=history,
+        )
         merged: dict[str, Any] = state.model_dump()
 
         try:
@@ -275,6 +285,17 @@ class SessionManager:
             yield {"type": "done", "content": final.final_response, "summary": summary}
 
     # ── Internal helpers ─────────────────────────────────
+
+    @staticmethod
+    def _conversation_history(session: Session, max_turns: int = 2) -> str:
+        """Compact prior exchanges (before the current question) for follow-ups."""
+        lines = []
+        for m in session.messages[-max_turns * 2 :]:
+            if m.content == "":
+                continue
+            role = "user" if m.role == "user" else "assistant"
+            lines.append(f"{role}: {m.content[:300]}")
+        return "\n".join(lines)
 
     async def _record_exchange(
         self,

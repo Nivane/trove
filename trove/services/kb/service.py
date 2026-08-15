@@ -17,6 +17,7 @@ layout) are auto-migrated into a datasource subdirectory.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,14 +91,35 @@ def _bigrams(text: str) -> set[str]:
     return {text[i : i + 2] for i in range(len(text) - 1)}
 
 
+def _word_tokens(text: str) -> set[str]:
+    """Lowercased ASCII word tokens (empty for pure-Chinese text)."""
+    return set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+
+
 def _score_example(question: str, matched_terms: set[str], example: dict) -> int:
-    """Score = 2×term hits + tag hits + bigram overlap with the question."""
+    """Score = 2×term hits + tag hits + overlap with the question.
+
+    Overlap is word-level for English questions (char-bigrams are
+    meaningless there) and char-bigram for Chinese; the max of the two
+    covers mixed-language questions.
+    """
     tags = [str(t) for t in example.get("tags", [])]
     ex_text = " ".join([str(example.get("question", "")), *tags])
     tag_hits = sum(1 for t in tags if t and t in question)
     term_hits = sum(1 for t in matched_terms if t and t in ex_text)
-    bigram_overlap = len(_bigrams(question) & _bigrams(str(example.get("question", ""))))
-    return 2 * term_hits + tag_hits + bigram_overlap
+
+    example_question = str(example.get("question", ""))
+    q_words = _word_tokens(question)
+    ex_words = _word_tokens(example_question)
+    if q_words and ex_words:
+        # English (or mixed) questions: word-level overlap only —
+        # char bigrams are noise on space-separated text.
+        overlap = len(q_words & ex_words)
+    else:
+        # Pure-Chinese questions: character bigram overlap.
+        overlap = len(_bigrams(question) & _bigrams(example_question))
+
+    return 2 * term_hits + tag_hits + overlap
 
 
 # ── YAML parsing ─────────────────────────────────────────

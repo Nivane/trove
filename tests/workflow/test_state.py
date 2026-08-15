@@ -18,6 +18,7 @@ class TestWorkflowState:
         assert state.error_feedback == ""
         assert state.final_response == ""
         assert state.kb_hits == []
+        assert state.history == ""
 
     def test_session_id_and_question_required(self):
         with pytest.raises(ValidationError):

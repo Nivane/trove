@@ -166,6 +166,97 @@ tables:
         update = await node(make_state())
         assert "kb_hits" not in update
 
+    async def test_join_hints_in_schema_context(self, catalog, sqlite_registry):
+        """*_id 列名启发式：schema_context 带 Join 路径提示。"""
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        await adapter.execute(
+            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
+        )
+        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
+        update = await node(make_state(question="city and district info"))
+        assert "city.district_id → district.district_id" in update["schema_context"]
+
+
+# ── Value linking ────────────────────────────────────────
+
+
+class TestValueCandidates:
+    def test_quoted_and_capitalized_words(self):
+        from trove.workflow.nodes.schema_linking import _extract_value_candidates
+
+        q = "账户 'POPLATEK' 在 Benesov 地区的贷款"
+        assert "POPLATEK" in _extract_value_candidates(q)
+        assert "Benesov" in _extract_value_candidates(q)
+
+    def test_no_candidates_for_plain_question(self):
+        from trove.workflow.nodes.schema_linking import _extract_value_candidates
+
+        assert _extract_value_candidates("哪个地区的平均贷款金额最高?") == []
+
+    def test_candidates_deduplicated_and_limited(self):
+        from trove.workflow.nodes.schema_linking import _extract_value_candidates
+
+        q = "'XX' 'XX' " + " ".join(f"Word{i}" for i in range(8))
+        result = _extract_value_candidates(q)
+        assert result.count("XX") == 1
+        assert len(result) <= 5
+
+
+class TestValueLinkingInSchemaContext:
+    async def test_value_hints_for_matched_tables(self, catalog, sqlite_registry):
+        """问题中的实体在匹配表的列值中命中 → schema_context 带 Value hints。"""
+        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
+        update = await node(make_state(question="Alameda 县学生的平均 grade 成绩"))
+        assert "Value hints" in update["schema_context"]
+        assert "Alameda" in update["schema_context"]
+        assert "students.county" in update["schema_context"]
+
+    async def test_no_value_hints_without_hits(self, catalog, sqlite_registry):
+        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
+        update = await node(make_state(question="学生的平均成绩"))
+        assert "Value hints" not in update["schema_context"]
+
+
+# ── Join hints ───────────────────────────────────────────
+
+
+class TestJoinHints:
+    def test_infer_from_id_suffix(self):
+        """account.district_id 且存在 district 表 → 生成 Join 提示。"""
+        from trove.workflow.nodes.schema_linking import _join_hints
+
+        hints = _join_hints(
+            "account", ["account_id", "district_id", "frequency"],
+            {"district": ["district_id", "A2"]},
+        )
+        assert hints == ["account.district_id → district.district_id"]
+
+    def test_target_column_falls_back_to_id(self):
+        from trove.workflow.nodes.schema_linking import _join_hints
+
+        hints = _join_hints(
+            "loan", ["loan_id", "account_id"],
+            {"account": ["account_id"]},
+        )
+        assert hints == ["loan.account_id → account.account_id"]
+
+    def test_no_matching_table_no_hint(self):
+        from trove.workflow.nodes.schema_linking import _join_hints
+
+        assert _join_hints(
+            "account", ["account_id", "frequency"], {"district": ["district_id"]},
+        ) == []
+
+    def test_self_and_unknown_targets_skipped(self):
+        from trove.workflow.nodes.schema_linking import _join_hints
+
+        # 无对应表 / 无对应列 → 不产生提示
+        assert _join_hints("account", ["ghost_id"], {"account": ["account_id"]}) == []
+        assert _join_hints("account", ["account_id"], {"account": ["account_id"]}) == []
+
 
 # ── gen_sql: prompt builders and extraction ──────────────
 
@@ -208,6 +299,16 @@ class TestSQLHelpers:
         prompt = build_sql_prompt("q", "schema", "sqlite", error_feedback="no such table: loans")
         assert "no such table: loans" in prompt
         assert "failed during execution" in prompt
+
+    def test_build_sql_prompt_includes_history(self):
+        history = "user: 平均成绩是多少\nassistant: 平均成绩是 85 分"
+        prompt = build_sql_prompt("q", "schema", "sqlite", history=history)
+        assert "Conversation history" in prompt
+        assert "平均成绩是 85 分" in prompt
+
+    def test_build_sql_prompt_without_history_has_no_section(self):
+        prompt = build_sql_prompt("q", "schema", "sqlite")
+        assert "Conversation history" not in prompt
 
     def test_build_fix_prompt_lists_errors(self):
         prompt = build_fix_prompt("SELEC 1", ["Parse error: bad"])

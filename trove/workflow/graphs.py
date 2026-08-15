@@ -133,6 +133,7 @@ def _make_gen_sql_node(
             dialect=dialect,
             reflect_reason=state.reason,
             error_feedback=state.error_feedback,
+            history=state.history,
             few_shots=few_shots,
             term_notes=term_notes,
         )

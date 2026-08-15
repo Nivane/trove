@@ -273,3 +273,12 @@ examples:
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["kb_hits"] == []
         assert "Knowledge base" not in final["final_response"]
+
+    async def test_history_reaches_generation_prompt(self, sqlite_registry, catalog):
+        """会话历史注入 gen_sql 的生成 prompt。"""
+        llm = RecordingLLM([VALID_SQL, "OK"])
+        graphs = build_graphs(make_services(llm, catalog, sqlite_registry))
+        await graphs["reflection"].ainvoke(
+            make_state(history="user: 平均成绩是多少\nassistant: 85 分")
+        )
+        assert "平均成绩是多少" in llm.calls[0][-1]["content"]

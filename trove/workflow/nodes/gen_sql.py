@@ -64,6 +64,7 @@ def build_sql_prompt(
     dialect: str,
     reflect_reason: str = "",
     error_feedback: str = "",
+    history: str = "",
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -80,6 +81,12 @@ def build_sql_prompt(
         schema_context or "(No schema information available - generate a best-effort query)",
         "",
     ]
+    if history:
+        parts += [
+            "Conversation history (previous exchanges, oldest first):",
+            history,
+            "",
+        ]
     if term_notes:
         parts.append("Terminology (standard formulations):")
         for note in term_notes:
@@ -203,6 +210,7 @@ def make_generate(
                 dialect=state.dialect,
                 reflect_reason=state.reflect_reason,
                 error_feedback=state.error_feedback,
+                history=state.history,
                 few_shots=state.few_shots or None,
                 term_notes=state.term_notes or None,
             )
