@@ -380,6 +380,29 @@ class KbService:
         scored.sort(key=lambda h: h.score, reverse=True)
         return scored[:limit]
 
+    async def list_term_names(self, datasource: str) -> list[str]:
+        """Term names of one datasource (knowledge intent answers)."""
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT item_key FROM kb_items WHERE kind = 'term' AND datasource = ? "
+            "ORDER BY item_key",
+            (datasource,),
+        )
+        return [row["item_key"] for row in rows]
+
+    async def list_example_questions(self, datasource: str) -> list[str]:
+        """Example/template questions of one datasource."""
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT item_key FROM kb_items "
+            "WHERE kind IN ('example', 'template') AND datasource = ? "
+            "ORDER BY id",
+            (datasource,),
+        )
+        return [row["item_key"] for row in rows]
+
     async def list_items(self) -> dict[str, dict[str, int]]:
         """Item counts per kind, grouped by datasource (/kb list)."""
         if not self.enabled:

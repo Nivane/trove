@@ -178,6 +178,62 @@ class TestReflectionGraph:
         assert len(llm.calls) == 1  # only gen_sql
 
 
+class TestIntentRouting:
+    async def test_schema_intent_answers_without_llm(self, sqlite_registry, catalog):
+        """「有哪些表」→ 直接给表清单，不调 LLM 生成。"""
+        llm = RecordingLLM([])  # 任何调用都会 IndexError
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state(question="有哪些表"))
+        assert final["intent"] == "schema"
+        assert "students" in final["intent_answer"]
+        assert final["sql"] == ""
+
+    async def test_lineage_intent_lists_joins(self, sqlite_registry, catalog):
+        """血缘意图 → 关联关系清单。"""
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        await adapter.execute(
+            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
+        )
+        llm = RecordingLLM([])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="city 表的血缘")
+        )
+        assert final["intent"] == "lineage"
+        assert "city.district_id → district.district_id" in final["intent_answer"]
+
+    async def test_semantic_intent_uses_kb(self, sqlite_registry, catalog, tmp_path):
+        """语义意图 → 术语口径查询知识库。"""
+        from trove.services.kb.service import KbService
+
+        kb = KbService(tmp_path / "proj")
+        ds_dir = kb.kb_dir / sqlite_registry.default_name
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "semantics.yml").write_text(
+            "terms:\n  - term: 平均成绩\n    mapping: AVG(students.grade)\n"
+            "    tables: [students]\n    definition: 学生平均分\n",
+            encoding="utf-8",
+        )
+        llm = RecordingLLM([])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="平均成绩的定义")
+        )
+        assert final["intent"] == "semantic"
+        assert "AVG(students.grade)" in final["intent_answer"]
+
+    async def test_query_intent_still_runs_pipeline(self, sqlite_registry, catalog):
+        """普通查询问题照常走生成流水线。"""
+        llm = RecordingLLM([VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["intent"] == "query"
+        assert final["row_count"] == 5
+
+
 class TestClarifyRouting:
     async def test_no_table_match_asks_user(self, sqlite_registry, catalog):
         """clarify 开启时：无表匹配 → 反问用户，不调用 LLM 生成。"""

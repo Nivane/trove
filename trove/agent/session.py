@@ -337,7 +337,9 @@ class SessionManager:
         """Structured trajectory step for REPL rendering / --print."""
         detail: dict[str, Any] = {}
 
-        if node_name == "schema_linking":
+        if node_name == "route_intent":
+            detail["intent"] = delta.get("intent", "query")
+        elif node_name == "schema_linking":
             detail["matched_tables"] = delta.get("matched_tables", [])
             detail["kb_terms"] = sum(
                 1 for h in delta.get("kb_hits", []) if h.get("kind") == "term"

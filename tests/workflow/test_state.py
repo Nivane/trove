@@ -23,6 +23,8 @@ class TestWorkflowState:
         assert state.clarification_question == ""
         assert state.plan == ""
         assert state.consensus is True
+        assert state.intent == "query"
+        assert state.intent_answer == ""
 
     def test_session_id_and_question_required(self):
         with pytest.raises(ValidationError):

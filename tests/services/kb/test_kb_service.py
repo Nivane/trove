@@ -296,6 +296,22 @@ class TestPureHelpers:
         assert score == 0
 
 
+class TestListing:
+    async def test_list_term_names(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        names = await kb.list_term_names("demo")
+        assert "平均贷款金额" in names
+        assert "客户数量" in names
+        assert await kb.list_term_names("other") == []
+
+    async def test_list_example_questions(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        questions = await kb.list_example_questions("demo")
+        assert any("平均贷款金额" in q for q in questions)
+
+
 class TestEvolution:
     async def test_append_example_rewrites_yaml_and_syncs(self, kb, kb_dir):
         write_kb(kb_dir)

@@ -28,6 +28,9 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         )
         return {"final_response": response}
 
+    if state.intent_answer:
+        return {"final_response": state.intent_answer}
+
     if state.error:
         response = (
             "## Answer\n\n"

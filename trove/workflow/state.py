@@ -41,6 +41,12 @@ class WorkflowState(BaseModel):
     # answer is delivered with a low-confidence note
     consensus: bool = True
 
+    # User intent (route_intent node): query/schema/semantic/knowledge/lineage
+    intent: str = "query"
+
+    # Direct answer for non-query intents (metadata/lineage questions)
+    intent_answer: str = ""
+
     # Knowledge base hits (term matches + example matches).
     # operator.add: updates from different nodes accumulate.
     kb_hits: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
