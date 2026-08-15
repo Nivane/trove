@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator
 from trove.core.errors import LLMError
 from trove.core.logging import get_logger
 from trove.core.config import ProviderConfig
+from trove.llm.observability import get_client
 
 logger = get_logger(__name__)
 
@@ -72,6 +73,7 @@ class LLMGateway:
         max_tokens: int = 4096,
         api_key: str | None = None,
         api_base: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Send a chat request and return the full response text.
 
@@ -105,6 +107,7 @@ class LLMGateway:
                     api_key=api_key,
                     api_base=api_base,
                     stream=False,
+                    metadata=metadata,
                 )
             except Exception as e:
                 last_error = e
@@ -129,6 +132,7 @@ class LLMGateway:
         max_tokens: int = 4096,
         api_key: str | None = None,
         api_base: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Send a chat request and stream response tokens.
 
@@ -163,6 +167,7 @@ class LLMGateway:
                 max_tokens=max_tokens,
                 api_key=api_key,
                 api_base=api_base,
+                metadata=metadata,
             ):
                 yield chunk
         except Exception as e:
@@ -190,6 +195,7 @@ class LLMGateway:
         api_key: str | None,
         api_base: str | None,
         stream: bool,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble litellm kwargs: provider params, then explicit overrides."""
         kwargs: dict[str, Any] = self._provider_kwargs(model)
@@ -204,6 +210,8 @@ class LLMGateway:
             kwargs["api_key"] = api_key
         if api_base:
             kwargs["api_base"] = api_base
+        if metadata:
+            kwargs["metadata"] = metadata
         return kwargs
 
     async def _call_litellm(
@@ -215,16 +223,19 @@ class LLMGateway:
         api_key: str | None,
         api_base: str | None,
         stream: bool,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Make a blocking call via litellm.acompletion."""
         import litellm
 
         kwargs = self._build_kwargs(
             model, messages, temperature, max_tokens, api_key, api_base, stream,
+            metadata,
         )
 
         # litellm.acompletion is async
         response = await litellm.acompletion(**kwargs)
+        _record_generation(model, messages, response, metadata)
         return response.choices[0].message.content or ""
 
     async def _call_litellm_stream(
@@ -235,15 +246,47 @@ class LLMGateway:
         max_tokens: int,
         api_key: str | None,
         api_base: str | None,
+        metadata: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """Make a streaming call via litellm.acompletion."""
         import litellm
 
         kwargs = self._build_kwargs(
-            model, messages, temperature, max_tokens, api_key, api_base, stream=True,
+            model, messages, temperature, max_tokens, api_key, api_base,
+            stream=True, metadata=metadata,
         )
 
         response = await litellm.acompletion(**kwargs)
         async for part in response:
             if part.choices and part.choices[0].delta.content:
                 yield part.choices[0].delta.content
+
+
+def _record_generation(
+    model: str,
+    messages: list[dict[str, str]],
+    response: Any,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record the LLM completion as a Langfuse generation (nested in the
+    current node span via context propagation). Silent no-op when
+    Langfuse is disabled."""
+    client = get_client()
+    if client is None:
+        return
+    try:
+        message = response.choices[0].message
+        output: dict[str, Any] = {"content": message.content or ""}
+        reasoning = getattr(message, "reasoning_content", None)
+        if reasoning:
+            output["reasoning"] = reasoning
+        with client.start_as_current_generation(
+            name="llm",
+            model=model,
+            input={"messages": messages},
+            output=output,
+            metadata=metadata or {},
+        ):
+            pass
+    except Exception as e:
+        logger.debug("Generation recording failed: %s", e)

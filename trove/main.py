@@ -178,11 +178,14 @@ async def create_app_components(
     graphs = build_graphs(services, checkpointer=checkpointer)
 
     # ── Session Manager ───────────────────────────────────
+    from trove.llm.observability import build_callback_handler
+    tracing_handler = build_callback_handler()
     session_manager = SessionManager(
         config=config,
         session_store=session_store,
         graphs=graphs,
         llm_gateway=llm_gateway,
+        callbacks=[tracing_handler] if tracing_handler else None,
     )
 
     return {
@@ -234,6 +237,8 @@ async def _load_config(args) -> AgentConfig:
     # this file's location, which is wrong for a CLI invoked from a project).
     load_dotenv(Path.cwd() / ".env")
     config = ConfigLoader.load_agent_config(args.config)
+    from trove.llm.tracing import configure_tracing
+    configure_tracing(config.tracing)
     if args.model:
         config.target = args.model
     return config

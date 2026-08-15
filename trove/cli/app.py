@@ -206,11 +206,11 @@ class TroveREPL:
 
                 if event_type == "thought":
                     self._tui.print_thought(content)
-                elif event_type == "sql":
-                    self._tui.print_sql(content)
-                elif event_type == "result":
-                    # Extract structured result from the workflow nodes
-                    await self._display_detailed_results()
+                elif event_type == "step":
+                    self._render_step(event)
+                elif event_type in ("plan", "verdict", "correction", "sql", "result"):
+                    # 已由结构化 step 渲染覆盖（--print 中仍保留这些事件）
+                    pass
                 elif event_type == "done":
                     self._tui.print_markdown(content)
                 elif event_type == "error":
@@ -220,6 +220,59 @@ class TroveREPL:
         except Exception as e:
             self._tui.print_error(f"Query failed: {e}")
             logger.exception("Query error")
+
+    def _render_step(self, event: dict) -> None:
+        """Render a structured trajectory step (序号 · 节点 · 耗时 · 摘要)."""
+        detail = event.get("detail", {})
+        node = event.get("node", "")
+        seq = event.get("seq", 0)
+        elapsed = event.get("elapsed_ms", 0)
+        retry = detail.get("retry", 0)
+        reason = detail.get("reason", "")
+
+        head = f"[{seq}] {node}"
+        if retry:
+            head += f" · 重试#{retry}"
+        head += f" · {elapsed}ms"
+
+        summary = self._step_summary(node, detail)
+        line = head + (f" → {summary}" if summary else "")
+        if reason:
+            line += f" · {reason[:120]}"
+        self._tui.print_info(line)
+
+        if node == "gen_sql" and detail.get("sql"):
+            self._tui.print_sql(detail["sql"])
+        elif node == "planner" and detail.get("plan"):
+            self._tui.print_thought(detail["plan"])
+
+    @staticmethod
+    def _step_summary(node: str, detail: dict) -> str:
+        if node == "schema_linking":
+            tables = detail.get("matched_tables", [])
+            terms = detail.get("kb_terms", 0)
+            parts = [f"匹配 {len(tables)} 表"]
+            if terms:
+                parts.append(f"{terms} 术语")
+            return ", ".join(parts)
+        if node == "planner":
+            return "生成查询计划"
+        if node == "gen_sql":
+            attempts = detail.get("attempts", 1)
+            return f"生成 SQL（校验 {attempts} 次）"
+        if node == "execute_sql":
+            return f"{detail.get('row_count', -1)} 行"
+        if node == "select":
+            return "候选一致" if detail.get("consensus", True) else "候选不一致（低置信）"
+        if node == "validate":
+            return "通过" if not detail.get("reason") else "规则失败"
+        if node == "reflect":
+            verdict = detail.get("verdict", "")
+            r = detail.get("reason", "")
+            return f"裁决 {verdict}" + (f"：{r}" if r and verdict == "RETRY" else "")
+        if node == "output":
+            return "生成答案"
+        return ""
 
     async def _display_detailed_results(self) -> None:
         """Display detailed results from the last workflow run."""

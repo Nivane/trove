@@ -112,3 +112,77 @@ class TestProviderParams:
         response = await gateway.chat(model="openai/gpt-4o", messages=[])
         assert response == "SELECT 1"
         assert "api_key" not in captured
+
+    async def test_metadata_passed_to_litellm(self, mocker):
+        """trace metadata（session/node）进入 litellm 调用。"""
+        captured = {}
+
+        async def fake_acompletion(**kwargs):
+            captured.update(kwargs)
+            return fake_completion()
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+
+        await gateway.chat(
+            model="openai/gpt-4o",
+            messages=[],
+            metadata={"node": "gen_sql", "session_id": "s1"},
+        )
+        assert captured["metadata"] == {"node": "gen_sql", "session_id": "s1"}
+
+    async def test_generation_recorded_when_tracing_enabled(self, mocker):
+        """SDK 轨迹：litellm 响应后记录 generation（含 reasoning_content/CoT）。"""
+        captured = {}
+
+        class FakeGeneration:
+            def __init__(self, name, model, input, output, metadata):
+                captured.update(
+                    {"name": name, "model": model, "input": input,
+                     "output": output, "metadata": metadata},
+                )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class FakeClient:
+            def start_as_current_generation(self, **kwargs):
+                return FakeGeneration(**kwargs)
+
+        import trove.llm.gateway as gateway_module
+        mocker.patch.object(gateway_module, "get_client", return_value=FakeClient())
+
+        async def fake_acompletion(**kwargs):
+            resp = fake_completion()
+            resp.choices[0].message.reasoning_content = "step by step reasoning"
+            return resp
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+
+        await gateway.chat(
+            model="deepseek/deepseek-reasoner",
+            messages=[{"role": "user", "content": "q"}],
+            metadata={"node": "planner"},
+        )
+        assert captured["name"] == "llm"
+        assert captured["model"] == "deepseek/deepseek-reasoner"
+        assert "step by step reasoning" in captured["output"]["reasoning"]
+        assert captured["metadata"] == {"node": "planner"}
+
+    async def test_no_generation_when_disabled(self, mocker):
+        """未配置 Langfuse 时，SDK 记录静默跳过。"""
+        import trove.llm.gateway as gateway_module
+        mocker.patch.object(gateway_module, "get_client", return_value=None)
+
+        async def fake_acompletion(**kwargs):
+            return fake_completion()
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+
+        response = await gateway.chat(model="openai/gpt-4o", messages=[])
+        assert response == "SELECT 1"

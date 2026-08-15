@@ -61,7 +61,7 @@ class TestAsk:
         session = await session_manager.start_session(project_cwd="/tmp/p1")
         await session_manager.ask(
             session=session,
-            question="question one",
+            question="What students are in Alameda county?",
             workflow_name="reflection",
         )
         assert len(session.messages) == 2  # user + assistant
@@ -98,7 +98,7 @@ class TestAskStream:
         events = []
         async for event in session_manager.ask_stream(
             session=session,
-            question="test question",
+            question="What students are in Alameda county?",
             workflow_name="reflection",
         ):
             events.append(event)
@@ -134,7 +134,7 @@ class TestAskStream:
 
         assert any(e["type"] == "error" for e in events)
 
-    async def test_stream_degradation_emits_error_event(self, tmp_home):
+    async def test_stream_degradation_emits_error_event(self, tmp_home, sqlite_registry):
         """Graceful degradation: error event replaces done, with the final state."""
         from trove.services.datasource.catalog import CatalogService
         from trove.storage.session_store import SessionStore
@@ -147,7 +147,11 @@ class TestAskStream:
                 return "```sql\nSELEC * FROM students;\n```"  # always invalid
 
         config = AgentConfig(home=str(tmp_home), target="mock/model")
-        services = GraphServices(llm=ScriptedLLM())
+        services = GraphServices(
+            llm=ScriptedLLM(),
+            catalog=CatalogService(sqlite_registry),
+            connectors=sqlite_registry,
+        )
         manager = SessionManager(
             config=config,
             session_store=SessionStore(home_dir=str(tmp_home)),
@@ -157,7 +161,9 @@ class TestAskStream:
         session = await manager.start_session(project_cwd="/tmp/p1")
         events = []
         async for event in manager.ask_stream(
-            session=session, question="q", workflow_name="reflection",
+            session=session,
+            question="What students are in Alameda county?",
+            workflow_name="reflection",
         ):
             events.append(event)
 
@@ -198,6 +204,206 @@ class TestConversationHistory:
         assert "第一问" in captured[1].history
         assert "answer" in captured[1].history  # 含上一轮答案
         assert "第二问" not in captured[1].history  # 当前问题不混入历史
+
+
+class TestStructuredSteps:
+    def _manager(self, tmp_home, sqlite_registry, responses, **build_kwargs):
+        from trove.core.config import AgentConfig
+        from trove.services.datasource.catalog import CatalogService
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.agent.session import SessionManager
+
+        class Scripted:
+            def __init__(self):
+                self._it = iter(responses)
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._it)
+
+        config = AgentConfig(home=str(tmp_home), target="mock/model")
+        llm = Scripted()
+        services = GraphServices(
+            llm=llm,
+            catalog=CatalogService(sqlite_registry),
+            connectors=sqlite_registry,
+            config=config,
+        )
+        return SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=build_graphs(services, multi_candidate=False, **build_kwargs),
+            llm_gateway=llm,
+        )
+
+    async def test_steps_are_numbered_and_timed(self, tmp_home, sqlite_registry):
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["```sql\nSELECT name FROM students;\n```", "OK"],
+            planner=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        steps = []
+        async for event in manager.ask_stream(
+            session=session, question="What students are in Alameda county?",
+        ):
+            if event["type"] == "step":
+                steps.append(event)
+
+        # 序号连续递增 + 每步有耗时字段
+        assert [s["seq"] for s in steps] == list(range(1, len(steps) + 1))
+        assert all(s["elapsed_ms"] >= 0 for s in steps)
+        nodes = [s["node"] for s in steps]
+        assert "schema_linking" in nodes
+        assert "execute_sql" in nodes
+
+    async def test_step_details_carry_artifacts(self, tmp_home, sqlite_registry):
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["```sql\nSELECT name FROM students;\n```", "OK"],
+            planner=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        steps = {}
+        async for event in manager.ask_stream(
+            session=session, question="What students are in Alameda county?",
+        ):
+            if event["type"] == "step":
+                steps[event["node"]] = event
+
+        assert steps["execute_sql"]["detail"]["row_count"] == 5
+        assert "SELECT name" in steps["gen_sql"]["detail"]["sql"]
+        assert steps["reflect"]["detail"]["verdict"] == "OK"
+        assert steps["schema_linking"]["detail"]["matched_tables"]
+
+    async def test_correction_step_marks_retry(self, tmp_home, sqlite_registry):
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            [
+                "```sql\nSELECT name FROM students;\n```",
+                "```sql\nSELECT COUNT(*) FROM students;\n```",
+                "OK",
+            ],
+            planner=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        steps = []
+        async for event in manager.ask_stream(
+            session=session, question="how many students are there",
+        ):
+            if event["type"] == "step":
+                steps.append(event)
+
+        # 第二次 gen_sql 带 retry 标记与修正原因
+        gen_steps = [s for s in steps if s["node"] == "gen_sql"]
+        assert len(gen_steps) == 2
+        assert gen_steps[1]["detail"]["retry"] == 1
+        assert "Validation rule" in gen_steps[1]["detail"]["reason"]
+
+
+class TestTrajectoryEvents:
+    def _manager(self, tmp_home, sqlite_registry, responses, **build_kwargs):
+        from trove.core.config import AgentConfig
+        from trove.services.datasource.catalog import CatalogService
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.agent.session import SessionManager
+
+        class Scripted:
+            def __init__(self):
+                self._it = iter(responses)
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._it)
+
+        config = AgentConfig(home=str(tmp_home), target="mock/model")
+        llm = Scripted()
+        services = GraphServices(
+            llm=llm,
+            catalog=CatalogService(sqlite_registry),
+            connectors=sqlite_registry,
+            config=config,
+        )
+        return SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=build_graphs(services, multi_candidate=False, **build_kwargs),
+            llm_gateway=llm,
+        )
+
+    async def test_plan_and_verdict_events(self, tmp_home, sqlite_registry):
+        """planner 计划与 reflect 裁决作为轨迹事件实时可见。"""
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["plan: use students, group by county", "```sql\nSELECT name FROM students;\n```", "OK"],
+            planner=True,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        events = []
+        async for event in manager.ask_stream(
+            session=session,
+            question="What students are in Alameda county?",
+        ):
+            events.append(event)
+
+        types = [e["type"] for e in events]
+        assert "plan" in types
+        assert "verdict" in types
+        plan_event = next(e for e in events if e["type"] == "plan")
+        assert "use students" in plan_event["content"]
+        verdict_event = next(e for e in events if e["type"] == "verdict")
+        assert verdict_event["verdict"] == "OK"
+
+    async def test_correction_event_on_rule_failure(self, tmp_home, sqlite_registry):
+        """规则失败触发修正 → correction 事件实时可见。"""
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            [
+                "```sql\nSELECT name FROM students;\n```",   # count 问题返回多行 → 规则失败
+                "```sql\nSELECT COUNT(*) FROM students;\n```",  # 修正
+                "OK",
+            ],
+            planner=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        events = []
+        async for event in manager.ask_stream(
+            session=session, question="how many students are there",
+        ):
+            events.append(event)
+
+        types = [e["type"] for e in events]
+        assert "correction" in types
+        correction = next(e for e in events if e["type"] == "correction")
+        assert "Validation rule" in correction["content"]
+
+
+class TestTracingCallbacks:
+    async def test_callbacks_forwarded_to_graph_config(self, tmp_home):
+        """Langfuse CallbackHandler 通过 config["callbacks"] 传给图执行。"""
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(config)
+                return {**state.model_dump(), "final_response": "answer"}
+
+        handler = object()
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+            callbacks=[handler],
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager.ask(session=session, question="q")
+
+        assert captured[0]["callbacks"] == [handler]
 
 
 class TestCompaction:

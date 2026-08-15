@@ -47,12 +47,14 @@ class SessionManager:
         session_store: SessionStore,
         graphs: dict[str, Any],
         llm_gateway: LLMGateway,
+        callbacks: list[Any] | None = None,
     ):
         self.config = config
         self._store = session_store
         self._graphs = graphs
         self._llm = llm_gateway
         self._token_counter = TokenCounter()
+        self._callbacks = callbacks or []
 
     # ── Session lifecycle ────────────────────────────────
 
@@ -176,7 +178,10 @@ class SessionManager:
 
     def _thread_config(self, session: Session) -> dict[str, Any]:
         """RunnableConfig mapping session_id → checkpointer thread_id."""
-        return {"configurable": {"thread_id": session.session_id}}
+        config: dict[str, Any] = {"configurable": {"thread_id": session.session_id}}
+        if self._callbacks:
+            config["callbacks"] = self._callbacks
+        return config
 
     async def ask(
         self,
@@ -258,13 +263,51 @@ class SessionManager:
         merged: dict[str, Any] = state.model_dump()
 
         try:
+            import time as _time
+            seq = 0
+            last_ts = _time.monotonic()
             async for update in graph.astream(
                 state, self._thread_config(session), stream_mode="updates",
             ):
                 for node_name, delta in update.items():
                     if not delta:  # guard nodes returning {} surface as None
                         continue
+
+                    # 上一节点阶段耗时（更新到达间隔）
+                    now = _time.monotonic()
+                    elapsed_ms = int((now - last_ts) * 1000)
+                    last_ts = now
+                    seq += 1
+
+                    # 修正上下文：本次节点执行前挂起的反馈与轮次
+                    reason = merged.get("error_feedback", "")
+                    retry = merged.get("retry_count", 0)
+
                     merged.update(delta)
+
+                    # ── Structured step (REPL renders; also in --print) ──
+                    yield self._step_event(seq, node_name, delta, elapsed_ms, reason, retry)
+
+                    # ── Legacy trajectory events (--print compatibility) ──
+                    if node_name == "planner" and delta.get("plan"):
+                        yield {"type": "plan", "node": "planner", "content": delta["plan"]}
+                    if node_name == "reflect" and delta.get("verdict"):
+                        yield {
+                            "type": "verdict", "node": "reflect",
+                            "verdict": delta["verdict"],
+                            "reason": delta.get("reason", ""),
+                        }
+                    if node_name == "select" and "consensus" in delta and not delta["consensus"]:
+                        yield {
+                            "type": "correction", "node": "select",
+                            "content": "候选 SQL 结果不一致——本答案置信度低",
+                        }
+                    if delta.get("error_feedback"):
+                        yield {
+                            "type": "correction", "node": node_name,
+                            "content": delta["error_feedback"],
+                        }
+
                     if node_name == "gen_sql" and delta.get("sql"):
                         yield {"type": "sql", "node": "gen_sql", "content": delta["sql"]}
                     elif node_name == "execute_sql" and "row_count" in delta:
@@ -285,6 +328,50 @@ class SessionManager:
             yield {"type": "done", "content": final.final_response, "summary": summary}
 
     # ── Internal helpers ─────────────────────────────────
+
+    @staticmethod
+    def _step_event(
+        seq: int, node_name: str, delta: dict[str, Any],
+        elapsed_ms: int, reason: str, retry: int,
+    ) -> dict[str, Any]:
+        """Structured trajectory step for REPL rendering / --print."""
+        detail: dict[str, Any] = {}
+
+        if node_name == "schema_linking":
+            detail["matched_tables"] = delta.get("matched_tables", [])
+            detail["kb_terms"] = sum(
+                1 for h in delta.get("kb_hits", []) if h.get("kind") == "term"
+            )
+        elif node_name == "planner":
+            detail["plan"] = delta.get("plan", "")
+        elif node_name == "gen_sql":
+            detail["sql"] = delta.get("sql", "")
+            detail["attempts"] = delta.get("attempts", 1)
+            detail["retry"] = retry
+            detail["reason"] = reason
+        elif node_name == "execute_sql":
+            detail["row_count"] = delta.get("row_count", -1)
+            detail["execution_time_ms"] = delta.get("execution_time_ms", 0)
+            detail["retry"] = retry
+            detail["reason"] = reason
+        elif node_name == "select":
+            detail["consensus"] = delta.get("consensus", True)
+        elif node_name == "validate":
+            detail["reason"] = reason
+            detail["retry"] = retry
+        elif node_name == "reflect":
+            detail["verdict"] = delta.get("verdict", "")
+            detail["reason"] = delta.get("reason", "")
+        elif node_name == "output":
+            detail["final"] = True
+
+        return {
+            "type": "step",
+            "seq": seq,
+            "node": node_name,
+            "elapsed_ms": elapsed_ms,
+            "detail": detail,
+        }
 
     @staticmethod
     def _conversation_history(session: Session, max_turns: int = 2) -> str:
