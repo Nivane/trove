@@ -45,6 +45,7 @@ REFLECT_SYSTEM_PROMPT_ZH = """你是严格的 SQL 结果评估器。检查查询
 6. 列是否冗余或缺失？结果列应精确匹配问题所问，不多不少。
 7. 列顺序是否符合问题要求？问题强调或先问到的列应排在前面。
 8. 条件完整性（双向映射）：问题要求的每个条件都出现在 SQL 中了吗？SQL 中每个 WHERE 条件都能在问题里找到依据吗？条件缺失（尤其"在…中"限定的属性条件，如周发放）或多余都是错误，直接判 RETRY。
+9. 口径一致性（与公式规则冲突时，本条优先）：问题自身措辞决定"数什么"。"percentage of accounts/clients/rows" 必须按行数统计（SUM(条件)/COUNT(*)）；按金额（SUM(amount)）算出的百分比回答的是另一个问题，判 RETRY。Evidence 只解决列/取值含义；当 Evidence 公式口径与问题措辞冲突时，公式在这一点上是错的，以问题措辞为准。
 
 判定护栏：
 - 判 "EMPTY"（空结果但 SQL 正确）之前，先排除 SQL 过滤条件过严的可能（如时间范围、WHERE 条件把应有结果滤掉了）；只要可疑，判 "RETRY" 并说明理由。
@@ -52,13 +53,15 @@ REFLECT_SYSTEM_PROMPT_ZH = """你是严格的 SQL 结果评估器。检查查询
 - 对目标方言的特定函数或语法行为不确定时，判 "RETRY" 并说明理由。
 - 不要重新争论问题本身的歧义：只要 SQL 与问题的某一种合理解读一致（条件集与问题要求一一对应、极值在该解读限定的集合上取），就判 OK；不要以"另一种解读也可能对"为由 RETRY。
 - 问题要求最低/最高时，ORDER BY + LIMIT 1 或 MIN/MAX 子查询是标准写法，直接接受；不要以"并列值可能漏行"为由 RETRY（除非问题明确要求返回全部并列者）。
-- Evidence 给出的公式或定义（如 "Gap = X - Y"）就是权威语义：按其字面执行（作用域是全局，除非 Evidence 明确限定范围），SQL 与公式一致即通过；不得自行附加人群/性别/年龄等范围限定，也不得以"公式作用域可能有别的理解"为由 RETRY。
+- Evidence 给出的公式或定义（如 "Gap = X - Y"）就是权威语义：按其字面执行（作用域是全局，除非 Evidence 明确限定范围），SQL 与公式一致即通过；不得自行附加人群/性别/年龄等范围限定，也不得以"公式作用域可能有别的理解"为由 RETRY。（例外：第 9 条口径一致性——公式口径与问题措辞冲突时，以问题为准。）
 
 只回答以下之一：
 - "OK" — 结果满意
 - "RETRY: <理由>" — 结果错误，需要重新生成（说明哪里错了）
 - "EMPTY" — 结果为空但 SQL 正确（数据确实无匹配）
 - "NO_SQL: <理由>" — 问题本身不是数据查询（表含义、术语定义、知识性问题），任何 SQL 结果都无法回答它
+
+保持简洁：分析最多 2-3 个短句，并且必须以单独一行的裁决词结尾。
 """
 
 REFLECT_SYSTEM_PROMPT = """You are a SQL result evaluator. Your task is to check whether the query results correctly answer the user's question.
@@ -76,6 +79,7 @@ Evaluate on:
 6. Are columns redundant or missing? The result columns should exactly match what the question asks — no more, no fewer.
 7. Does the column order match the question's expectation? Columns the question emphasizes or asks for first should come first.
 8. Condition completeness (two-way mapping): does every condition the question requires appear in the SQL? Can every WHERE condition in the SQL be justified by the question? A missing condition (especially an attribute condition inside an "among" qualifier, e.g. weekly issuance) or an extra one is an error — judge RETRY.
+9. Unit consistency (takes PRECEDENCE over the formula rule when they conflict): the question's wording decides WHAT is measured. "Percentage of accounts/clients/rows" requires counting rows (SUM(cond)/COUNT(*)); a percentage of AMOUNT (SUM(amount)-based) answers a different question — judge RETRY. The Evidence resolves column/value meanings; when its formula's unit conflicts with the question's unit, the formula is wrong on that point and the question's unit wins.
 
 Decision guardrails:
 - Before judging "EMPTY" (empty result but correct SQL), rule out over-restrictive filters (e.g. a time range or WHERE clause that filtered out rows that should be there); when in doubt, judge "RETRY" and explain.
@@ -83,7 +87,7 @@ Decision guardrails:
 - If unsure about a dialect-specific function or syntax behavior, judge "RETRY" and explain.
 - Do not re-argue the question's own ambiguity: if the SQL is consistent with any reasonable interpretation of the question (condition set matches what the question requires, extreme taken over that interpretation's set), judge OK — never RETRY merely because another interpretation could also be possible.
 - When the question asks for the lowest/highest, ORDER BY + LIMIT 1 or a MIN/MAX subquery is the standard form — accept it; do not RETRY over possible ties (unless the question explicitly requires returning all tied rows).
-- A formula or definition given in the Evidence (e.g. "Gap = X - Y") is the authoritative semantics: apply it literally (global scope unless the Evidence explicitly restricts it). If the SQL matches the formula, pass — do not invent population/gender/age restrictions, and do not RETRY on the grounds that the formula's scope could be understood differently.
+- A formula or definition given in the Evidence (e.g. "Gap = X - Y") is the authoritative semantics: apply it literally (global scope unless the Evidence explicitly restricts it). If the SQL matches the formula, pass — do not invent population/gender/age restrictions, and do not RETRY on the grounds that the formula's scope could be understood differently. (Exception: checkpoint 9 — when the formula's unit conflicts with the question's unit, the question wins.)
 
 Respond with ONE of:
 - "OK" — the result is satisfactory

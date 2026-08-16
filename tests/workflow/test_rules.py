@@ -140,6 +140,22 @@ class TestValidate:
             ["pct"], [[45.5]], 1,
         ) is None
 
+    def test_percent_integer_division_fails(self):
+        """percentage 题的除法未显式 CAST DOUBLE → 整数除法截断,必须拦截。"""
+        reason = validate(
+            "what percentage of clients",
+            "SELECT (COUNT(CASE WHEN gender='M' THEN 1 END) / COUNT(*)) * 100",
+            ["pct"], [[44.2623]], 1,
+        )
+        assert reason and "DOUBLE" in reason
+
+    def test_percent_with_double_cast_passes(self):
+        assert validate(
+            "what percentage of clients",
+            "SELECT CAST(SUM(gender='M') AS DOUBLE) * 100 / COUNT(*)",
+            ["pct"], [[44.26229508196721]], 1,
+        ) is None
+
     def test_percent_none_value_fails(self):
         reason = validate(
             "what percentage of clients", "SELECT NULL",

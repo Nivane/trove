@@ -36,6 +36,9 @@ Guidelines:
 5. Do NOT use INSERT, UPDATE, DELETE, DROP, or any write operations.
 6. Always use proper quoting for table and column names when needed.
 7. If you cannot generate a valid SQL query, explain why.
+8. When the Evidence defines a formula (e.g. "Gap = X - Y" or "rate = (A - B) / B * 100"), apply it at the scope the formula states. Unless the Evidence explicitly restricts the scope, the formula's terms ("highest/lowest/average X") are computed GLOBALLY over the whole table — do not anchor a global term to one specific row or entity mentioned elsewhere in the question.
+9. For percentage/ratio calculations over counts, use CAST(SUM(cond) AS DOUBLE) * 100 / COUNT(...) — cast to floating point BEFORE dividing, and return the full-precision result. Integer division in MySQL truncates to 4 decimal places (27/61*100 yields 44.2623 instead of 44.26229508196721), which breaks exact result matching.
+10. Unit consistency: the question's own wording decides WHAT is being measured. "Percentage of accounts/clients/rows" → count rows (SUM(cond) / COUNT(*)); "percentage of amount/total amount" → sum amounts (SUM(CASE cond THEN amount) / SUM(amount)). When the Evidence formula's unit conflicts with the question's unit, the question's unit wins — Evidence resolves column/value meanings, not what is counted.
 
 Output format:
 ```sql
@@ -53,6 +56,9 @@ SQL_GENERATION_SYSTEM_PROMPT_ZH = """你是 SQL 生成助手，负责把自然�
 5. 禁止 INSERT、UPDATE、DELETE、DROP 等写操作。
 6. 需要时正确引用表名和列名。
 7. 无法生成合法 SQL 时，说明原因。
+8. 当 Evidence 给出公式定义（如 "Gap = X - Y" 或 "rate = (A - B) / B * 100"）时，按其字面作用域执行：除非 Evidence 明确限定范围，公式中的"最高/最低/平均 X"都在整表全局计算，不要把全局项锚定到问题中提到的某个具体行或实体上。
+9. 百分比/比例计算遵循 BIRD 惯例：CAST(SUM(条件) AS DOUBLE) * 100 / COUNT(...) —— 先转浮点再除，返回全精度结果。MySQL 整数除法会截断到 4 位小数（27/61*100 = 44.2623，而不是 44.26229508196721），导致结果无法精确匹配。
+10. 口径一致性：问题自身措辞决定"数什么"。"percentage of accounts/clients/rows" → 按行数统计（SUM(条件) / COUNT(*)）；"percentage of amount/total amount" → 按金额求和（SUM(CASE 条件 THEN amount) / SUM(amount)）。当 Evidence 公式的口径与问题措辞冲突时，以问题措辞为准——Evidence 只解决列/取值含义，不决定统计对象。
 
 输出格式：
 ```sql

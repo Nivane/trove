@@ -236,6 +236,36 @@ def validate(
         if not 0 <= numeric <= 100:
             return L(lang, "百分比结果超出 0-100 范围", "percentage result out of 0-100 range")
 
+    # 3b. 比率题(percentage / "… rate")的整数除法陷阱:MySQL 对整数/聚合
+    # 结果相除会截断到 4 位小数(如 27/61*100=44.2623 而非
+    # 44.26229508196721),与金标准全精度结果无法精确一致。
+    # 含除法时必须显式 CAST 成 DOUBLE。
+    ratio_question = is_percent_question(question) or bool(
+        re.search(r"\brate\b", question, re.I)
+    )
+    if ratio_question and "/" in sql and not re.search(r"\b(?:DOUBLE|FLOAT|DECIMAL)\b", sql, re.I):
+        return L(
+            lang,
+            "比率计算疑似整数除法(MySQL 会截断到 4 位小数,如 44.2623 而非 "
+            "44.26229508196721)。请改为 CAST(SUM(...) AS DOUBLE) * 100 / COUNT(...),"
+            "显式转成浮点再除。",
+            "Ratio calculation appears to use integer division (MySQL truncates "
+            "to 4 decimal places, e.g. 44.2623 instead of 44.26229508196721). "
+            "Rewrite as CAST(SUM(...) AS DOUBLE) * 100 / COUNT(...) — cast to "
+            "floating point BEFORE dividing.",
+        )
+
+    # 3c. "what is the increase/growth rate" 问的是单一比率值(单行单列)。
+    # 多列结果(如附带两个余额)不符合问题所问。
+    if re.search(r"\bwhat (?:is|was) the (?:increase|growth) rate\b", question, re.I) \
+            and (row_count != 1 or len(columns) != 1):
+        return L(
+            lang,
+            "问题问的是单一比率值——结果应为单行单列,不要附带中间值列。",
+            "The question asks for a single rate value — the result must be one "
+            "row and one column; drop any intermediate value columns.",
+        )
+
     # 4. top-N/ranking questions with LIMIT need ORDER BY
     if (
         is_ordered_question(question)
