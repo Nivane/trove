@@ -1,6 +1,11 @@
 """Intent classification tests — query vs metadata (two-way) design."""
 
-from trove.workflow.intent import Intent, classify_intent, has_weak_signal
+from trove.workflow.intent import (
+    Intent,
+    classify_intent,
+    has_weak_signal,
+    verify_intent,
+)
 
 
 class TestStrongSignals:
@@ -56,3 +61,25 @@ class TestParseLLMIntent:
         assert parse_llm_intent("  METADATA\n") == Intent.METADATA
         assert parse_llm_intent("The intent is schema") is None
         assert parse_llm_intent("") is None
+
+
+class TestVerifyIntent:
+    """LLM 裁决的确定性验证。"""
+
+    def test_metadata_with_evidence_passes(self):
+        """metadata 裁决有任一实质证据（强信号/已知表/术语命中）→ 通过。"""
+        assert verify_intent(Intent.METADATA, strong_match=True, mentioned_table=False, term_hit=False, data_signal=False) == Intent.METADATA
+        assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=True, term_hit=False, data_signal=False) == Intent.METADATA
+        assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=False, term_hit=True, data_signal=False) == Intent.METADATA
+
+    def test_metadata_without_evidence_falls_back_to_query(self):
+        """metadata 裁决无实质 → 宽容回退 query（防幻觉方向）。"""
+        assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=False, term_hit=False, data_signal=False) == Intent.QUERY
+
+    def test_query_overridden_by_strong_signal(self):
+        """LLM 说 query 但强 metadata 信号且无数据问题信号 → 覆写 metadata。"""
+        assert verify_intent(Intent.QUERY, strong_match=True, mentioned_table=False, term_hit=False, data_signal=False) == Intent.METADATA
+
+    def test_query_with_data_signal_or_no_strong_stays(self):
+        assert verify_intent(Intent.QUERY, strong_match=True, mentioned_table=False, term_hit=False, data_signal=True) == Intent.QUERY
+        assert verify_intent(Intent.QUERY, strong_match=False, mentioned_table=False, term_hit=False, data_signal=False) == Intent.QUERY

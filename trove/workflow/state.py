@@ -24,12 +24,18 @@ class WorkflowState(BaseModel):
     question: str
     run_id: str = ""  # trace identity of this run (set by SessionManager)
 
+    # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
+    lang: str = "zh"
+
     # Compact conversation history (prior exchanges) for follow-up questions
     history: str = ""
 
     # Official hint for the question (evaluation/reference use); kept
     # separate so classification and rules see the pure question only
     evidence: str = ""
+
+    # parse_date 节点产物:解析出的时间范围 "YYYY-MM-DD ~ YYYY-MM-DD"(未命中为空)
+    time_context: str = ""
 
     # Alternative candidate SQLs (multi-candidate generation, reflection
     # workflow only) — consumed by the consensus select node
@@ -46,14 +52,22 @@ class WorkflowState(BaseModel):
     # answer is delivered with a low-confidence note
     consensus: bool = True
 
-    # User intent (route_intent node): query/schema/semantic/knowledge/lineage
+    # User intent (route_intent node): query / metadata (two-way)
     intent: str = "query"
+
+    # 意图判定的证据链(route_intent 观测):strong/table/term/data_signal
+    # 命中与 LLM 原始判定/失败原因,供日志与诊断还原路由决策
+    intent_evidence: dict[str, Any] = Field(default_factory=dict)
 
     # Direct answer for non-query intents (metadata/lineage questions)
     intent_answer: str = ""
 
     # Correction reasons accumulated across the run (Hint Bank capture)
     correction_history: Annotated[list[str], operator.add] = Field(default_factory=list)
+
+    # LLM 思考痕迹(节点 → 紧凑轨迹:模型文本+工具调用+观测/推理),
+    # 回退修正时注入诊断与重生成 prompt。operator.add 累积。
+    reasoning_history: Annotated[list[dict[str, str]], operator.add] = Field(default_factory=list)
 
     # Context budget usage of the last gen pass (observability)
     context_usage: list[dict[str, Any]] = Field(default_factory=list)
@@ -80,10 +94,19 @@ class WorkflowState(BaseModel):
     execution_time_ms: float = 0.0
 
     # reflect artifacts + retry loop counter
-    verdict: str = ""  # OK / RETRY / EMPTY
+    verdict: str = ""  # OK / RETRY / EMPTY / NO_SQL
     reason: str = ""
-    retry_count: int = 0  # reflect → gen_sql loop count (cap 2)
+    retry_count: int = 0  # shared correction budget (reflect → gen_sql loop)
     forced: bool = False  # reflect accepted a RETRY at the retry cap
+
+    # reflect/analyze_error verdict: the question is not answerable by SQL
+    # (table meaning / term definition) → route to answer_metadata
+    no_sql: bool = False
+
+    # LLM-judged rollback (analyze_error): which upstream step to rerun.
+    # last_rollback_target feeds the deterministic anti-loop escalation.
+    rollback_target: str = ""   # gen_sql / planner / schema_linking
+    last_rollback_target: str = ""
 
     # graceful degradation channel: first node failure message wins
     error: str = ""
@@ -120,11 +143,20 @@ class GenSQLState(BaseModel):
     # LLM diagnosis of the failed SQL (error type / judgment / fix plan)
     error_analysis: str = ""
 
+    # 上一轮思考痕迹(诊断方/生成方轨迹),注入重生成 prompt
+    reasoning_context: str = ""
+
+    # 交互语言(由外层 WorkflowState 注入)
+    lang: str = "zh"
+
     # conversation history for follow-up questions
     history: str = ""
 
     # official hint for the question (injected as its own prompt section)
     evidence: str = ""
+
+    # parse_date 节点产物:解析出的时间范围 "YYYY-MM-DD ~ YYYY-MM-DD"(未命中为空)
+    time_context: str = ""
 
     # LLM query plan (planner node) injected into the generation prompt
     plan: str = ""

@@ -74,7 +74,8 @@ class AgentConfig:
 
     home: str = "~/.trove"
     target: str = ""  # default model e.g. "openai/gpt-4o"
-    language: str = "en"
+    language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
+    date_parser: bool = True  # 时间解析节点:确定性规则解析相对时间(zh/en),未命中静默透传
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -220,7 +221,8 @@ class ConfigLoader:
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
-            language=agent_section.get("language", "en"),
+            language=agent_section.get("language", "zh"),
+            date_parser=agent_section.get("date_parser", True),
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

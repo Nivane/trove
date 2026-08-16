@@ -3,7 +3,8 @@
 Composition:
   - gen_sql subgraph: generate → validate retry loop (max_retries attempts)
   - reflection main graph: schema_linking → gen_sql[subgraph] → execute_sql
-    → reflect → (conditional) back to gen_sql (≤2 times) or output
+    → reflect → (conditional) failure → analyze_error → LLM-judged rollback
+    (gen_sql / planner / schema_linking, anti-loop guarded) or output
   - fixed main graph: same pipeline without the reflect loop
   - empty main graph: pass-through output
 
@@ -14,6 +15,7 @@ which formats a readable error section.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -31,6 +33,7 @@ from trove.workflow.context_budget import assemble_blocks
 from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
+from trove.workflow.nodes.parse_date import make_parse_date
 from trove.workflow.nodes.clarify import make_clarify
 from trove.workflow.nodes.planner import make_planner
 from trove.workflow.nodes.gen_sql import SQL_GENERATION_SYSTEM_PROMPT, build_sql_prompt, make_generate, make_validate
@@ -41,9 +44,22 @@ from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
 from trove.workflow.nodes.answer import make_answer_metadata
 from trove.workflow.nodes.metadata_check import make_metadata_check
-from trove.workflow.nodes.analyze_error import make_analyze_error
-from trove.core.i18n import L, detect_language
-from trove.workflow.intent import INTENT_PROMPT, INTENT_PROMPT_ZH, Intent, classify_intent, has_weak_signal, parse_llm_intent
+from trove.workflow.nodes.analyze_error import make_analyze_error, render_reasoning_context
+from trove.core.i18n import L
+from trove.workflow.intent import (
+    INTENT_PROMPT,
+    INTENT_PROMPT_ZH,
+    Intent,
+    classify_intent,
+    parse_llm_intent,
+    verify_intent,
+)
+from trove.workflow.rules import (
+    is_count_question,
+    is_list_question,
+    is_ordered_question,
+    is_percent_question,
+)
 
 logger = get_logger(__name__)
 
@@ -54,6 +70,19 @@ CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计�
 def generation_temperature(retry_count: int) -> float:
     """修正轮升温：温度 0 的确定性生成会让重试产出相同 SQL。"""
     return min(0.3, retry_count * 0.1)
+
+
+def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) -> bool:
+    """Hint Bank 经验按表锚过滤：提到未匹配表的教训与当前问题无关。"""
+    if not matched or not all_tables:
+        return True
+    text = " ".join([
+        str(lesson.get("pattern", "")),
+        str(lesson.get("note", "")),
+        str(lesson.get("sql_snippet", "")),
+    ])
+    mentioned = [t for t in all_tables if t and t in text]
+    return not mentioned or any(t in matched for t in mentioned)
 DEFAULT_GEN_SQL_RETRIES = 3
 
 WORKFLOW_NAMES = ("reflection", "fixed", "empty")
@@ -150,8 +179,19 @@ def _make_gen_sql_node(
         rules: list[str] = []
         if services.kb is not None and datasource:
             await services.kb.ensure_synced(default_datasource=datasource)
+            # 证据层：以 schema linking 的 matched_tables 为锚做确定性过滤
+            matched = list(state.matched_tables or [])
+            all_table_names: list[str] = []
+            if services.catalog is not None and matched:
+                try:
+                    all_table_names = [
+                        t["name"] for t in await services.catalog.list_tables(datasource)
+                    ]
+                except Exception:
+                    all_table_names = []
             example_hits = await services.kb.search_examples(
                 state.question, datasource, limit=3,
+                tables=matched or None, all_tables=all_table_names or None,
             )
             rules = await services.kb.list_rules(datasource)
             all_lessons = await services.kb.list_lessons(datasource)
@@ -159,6 +199,7 @@ def _make_gen_sql_node(
             lessons = [
                 l for l in all_lessons
                 if l.get("pattern", "").lower() in haystack
+                and _lesson_table_ok(l, matched, all_table_names)
             ][:3]
             few_shots = [
                 {"question": h.question, "sql": h.sql, "template": h.template}
@@ -166,7 +207,10 @@ def _make_gen_sql_node(
             ]
             term_notes = [
                 {"term": h.term, "mapping": h.mapping, "definition": h.definition}
-                for h in await services.kb.search_terms(state.question, datasource)
+                for h in await services.kb.search_terms(
+                    state.question, datasource,
+                    tables=matched or None, all_tables=all_table_names or None,
+                )
             ]
 
         # Context budget: optional blocks filled by priority, usage
@@ -191,8 +235,14 @@ def _make_gen_sql_node(
             run_id=state.run_id,
             schema_context=state.schema_context,
             dialect=dialect,
+            lang=state.lang,
+            time_context=state.time_context,
             reflect_reason=state.reason,
             error_feedback=state.error_feedback,
+            error_analysis=state.error_analysis,
+            reasoning_context=render_reasoning_context(
+                state.reasoning_history, ("gen_sql",),
+            ),
             history=state.history if "history" in included else "",
             plan=state.plan if "plan" in included else "",
             evidence=state.evidence,
@@ -244,15 +294,20 @@ def _make_gen_sql_node(
             except Exception as e:
                 logger.warning("Agentic gen_sql failed (%s); falling back to classic", e)
                 result = None
-            sql = extract_sql(result["content"]) if result else ""
-            if not sql:
-                # 模型可能只在工具里给出 SQL，最终 content 无 SQL 回显
-                for entry in reversed(result["tool_history"]):
-                    if entry["name"] == "validate_sql" and entry["arguments"].get("sql"):
-                        sql = entry["arguments"]["sql"]
-                        break
             if result is not None:
+                sql = extract_sql(result["content"])
+                if not sql:
+                    # 模型可能只在工具里给出 SQL，最终 content 无 SQL 回显
+                    for entry in reversed(result.get("tool_history") or []):
+                        if entry["name"] == "validate_sql" and entry["arguments"].get("sql"):
+                            sql = entry["arguments"]["sql"]
+                            break
                 update["attempts"] = result["rounds"]
+                trail = " ".join(
+                    p for p in (result.get("reasoning", ""), result.get("transcript", "")) if p
+                )
+                if trail:
+                    update["reasoning_history"] = [{"node": "gen_sql", "text": trail[:800]}]
                 if sql:
                     update["sql"] = sql
                 elif result["guard_hit"]:
@@ -339,29 +394,81 @@ def build_graphs(
     }
 
 
-def _route_after_reflect(state: WorkflowState) -> Literal["gen_sql", "output"]:
+def _route_after_reflect(state: WorkflowState) -> Literal["analyze_error", "answer_metadata", "output"]:
     # Termination is guaranteed by reflect itself: it only returns RETRY
     # while retry_count < MAX_REFLECT_RETRIES (then forces OK).
-    if state.error or state.verdict != "RETRY":
+    if state.error:
         return "output"
-    return "gen_sql"
+    if state.no_sql:
+        return "answer_metadata"
+    if state.verdict != "RETRY":
+        return "output"
+    # RETRY goes through the diagnose-and-decide node: the LLM judges the
+    # failure root cause and picks the rollback target.
+    return "analyze_error"
 
 
-def make_route_intent(llm: LLMGateway | None = None, config: AgentConfig | None = None):
-    """Intent router: strong signals first, LLM confirms weak signals."""
+def _make_route_after_analyze_error(targets: dict[str, str]):
+    """Route by the LLM-judged rollback target (or the NO_SQL decision).
+
+    The anti-loop escalation happens inside the analyze_error node; here
+    unknown targets fall back to gen_sql so the graph always terminates.
+    """
+
+    def route_after_analyze_error(state: WorkflowState) -> str:
+        if state.error:
+            return "output"
+        if state.no_sql:
+            return "answer_metadata"
+        target = state.rollback_target or "gen_sql"
+        return target if target in targets else "gen_sql"
+
+    return route_after_analyze_error
+
+
+def make_route_intent(
+    llm: LLMGateway | None = None,
+    config: AgentConfig | None = None,
+    catalog: CatalogService | None = None,
+    kb: KbService | None = None,
+    connectors: ConnectorRegistry | None = None,
+):
+    """Intent router: LLM classifies, deterministic evidence verifies.
+
+    The LLM always judges (a tiny two-way call); its verdict is then
+    verified against evidence: a METADATA verdict needs substance (strong
+    signal / known table / known term), a QUERY verdict is overridden by
+    a strong metadata signal without a data-question signal. Regex
+    classification remains as the fallback when the LLM is unavailable
+    or its reply is unparseable.
+    """
 
     async def route_intent(state: WorkflowState) -> dict[str, Any]:
         if state.error:
             return {}
-        intent = classify_intent(state.question)
-        if intent is None and has_weak_signal(state.question) and llm is not None:
+        strong = classify_intent(state.question)
+        data_signal = any(
+            f(state.question)
+            for f in (
+                is_count_question,
+                is_list_question,
+                is_percent_question,
+                is_ordered_question,
+            )
+        )
+        llm_intent: Intent | None = None
+        llm_detail: dict[str, Any] | None = None
+        llm_error = ""
+        mentioned_table = term_hit = False
+        if llm is not None:
+            model = (config.target if config else "") or "openai/gpt-4o"
+            intent_prompt = L(
+                state.lang,
+                INTENT_PROMPT_ZH,
+                INTENT_PROMPT,
+            )
+            start = time.monotonic()
             try:
-                model = (config.target if config else "") or "openai/gpt-4o"
-                intent_prompt = L(
-                    detect_language(state.question),
-                    INTENT_PROMPT_ZH,
-                    INTENT_PROMPT,
-                )
                 response = await llm.chat(
                     model=model,
                     max_tokens=16,
@@ -376,12 +483,59 @@ def make_route_intent(llm: LLMGateway | None = None, config: AgentConfig | None 
                         "question": state.question[:80],
                     },
                 )
-                intent = parse_llm_intent(response)
-            except Exception:
-                intent = None
-        if intent is None:
-            intent = Intent.QUERY  # permissive default
-        return {"intent": intent.value}
+                llm_intent = parse_llm_intent(response)
+                llm_detail = {
+                    "model": model,
+                    "elapsed_ms": int((time.monotonic() - start) * 1000),
+                    "input_preview": intent_prompt[:200],
+                    "output_preview": (response or "").strip()[:200],
+                }
+            except Exception as e:
+                llm_error = str(e)[:120]
+                llm_intent = None
+
+        if llm_intent is not None:
+            if llm_intent == Intent.METADATA:
+                # Evidence for the metadata verdict: a known table or a
+                # known business term mentioned in the question.
+                if catalog is not None:
+                    try:
+                        mentioned_table = bool(
+                            await catalog.search_tables(state.question, limit=3)
+                        )
+                    except Exception:
+                        pass
+                if kb is not None and connectors is not None:
+                    try:
+                        ds = connectors.default_name or ""
+                        if ds:
+                            await kb.ensure_synced(ds)
+                            term_hit = bool(
+                                await kb.search_terms(state.question, ds)
+                            )
+                    except Exception:
+                        pass
+            intent = verify_intent(
+                llm_intent,
+                strong_match=strong is not None,
+                mentioned_table=mentioned_table,
+                term_hit=term_hit,
+                data_signal=data_signal,
+            )
+        else:
+            intent = strong if strong is not None else Intent.QUERY
+        return {
+            "intent": intent.value,
+            "llm": llm_detail,
+            "intent_evidence": {
+                "strong_match": strong is not None,
+                "data_signal": data_signal,
+                "llm_verdict": llm_intent.value if llm_intent else None,
+                "llm_error": llm_error,
+                "mentioned_table": mentioned_table,
+                "term_hit": term_hit,
+            },
+        }
 
     return route_intent
 
@@ -393,7 +547,12 @@ def _route_after_intent(state: WorkflowState) -> str:
 
 def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     """Shared wiring: START → route_intent → query pipeline or answer nodes."""
-    g.add_node("route_intent", make_route_intent(services.llm, services.config))
+    g.add_node("route_intent", make_route_intent(
+        services.llm, services.config, services.catalog, services.kb, services.connectors,
+    ))
+    # Deterministic time-expression resolution ("最近7天" → absolute range);
+    # silently passes through when nothing matches or date_parser is off.
+    g.add_node("parse_date", make_parse_date(services.config))
     g.add_node("answer_metadata", make_answer_metadata(
         services.catalog, kb=services.kb, connectors=services.connectors,
         llm=services.llm, config=services.config,
@@ -407,10 +566,11 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
         "route_intent",
         _route_after_intent,
         {
-            "query": "schema_linking",
+            "query": "parse_date",
             "metadata": "answer_metadata",
         },
     )
+    g.add_edge("parse_date", "schema_linking")
     g.add_edge("answer_metadata", "metadata_check")
     g.add_conditional_edges(
         "metadata_check",
@@ -428,9 +588,11 @@ def _build_gen_prompt(sub_state: GenSQLState) -> str:
         reflect_reason=sub_state.reflect_reason,
         error_feedback=sub_state.error_feedback,
         error_analysis=sub_state.error_analysis,
+        reasoning_context=sub_state.reasoning_context,
         history=sub_state.history,
         plan=sub_state.plan,
         evidence=sub_state.evidence,
+        time_context=sub_state.time_context,
         rules=sub_state.rules or None,
         lessons=sub_state.lessons or None,
         few_shots=sub_state.few_shots or None,
@@ -503,12 +665,13 @@ def _build_reflection(
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
+        fallback_all=not clarify,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, subgraph_alt, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
-    g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES, agentic=agentic, connectors=services.connectors))
+    g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -539,8 +702,28 @@ def _build_reflection(
     g.add_edge("gen_sql", "execute_sql")
     g.add_edge("execute_sql", "select")
     g.add_edge("select", "validate")
-    g.add_node("analyze_error", make_analyze_error(services.llm, services.config or AgentConfig()))
-    g.add_edge("analyze_error", "gen_sql")
+    # Rollback ladder mirrors the graph topology: without the planner node,
+    # the judge can never escalate to it.
+    rollback_ladder = (
+        ("gen_sql", "planner", "schema_linking") if planner
+        else ("gen_sql", "schema_linking")
+    )
+    g.add_node("analyze_error", make_analyze_error(
+        services.llm, services.config or AgentConfig(), rollback_ladder=rollback_ladder,
+    ))
+    analyze_targets = {
+        "gen_sql": "gen_sql",
+        "answer_metadata": "answer_metadata",
+        "output": "output",
+    }
+    if planner:
+        analyze_targets["planner"] = "planner"
+    analyze_targets["schema_linking"] = "schema_linking"
+    g.add_conditional_edges(
+        "analyze_error",
+        _make_route_after_analyze_error(analyze_targets),
+        analyze_targets,
+    )
     g.add_conditional_edges(
         "validate",
         _route_after_execute,
@@ -549,7 +732,7 @@ def _build_reflection(
     g.add_conditional_edges(
         "reflect",
         _route_after_reflect,
-        {"gen_sql": "gen_sql", "output": "output"},
+        {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "output": "output"},
     )
     g.add_edge("output", END)
     return g
@@ -564,6 +747,7 @@ def _build_fixed(
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
+        fallback_all=not clarify,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
