@@ -27,7 +27,7 @@ from trove.llm.gateway import LLMGateway
 from trove.llm.token_counter import TokenCounter
 import uuid
 
-from trove.core.i18n import L, detect_language
+from trove.core.i18n import L
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -152,12 +152,21 @@ class SessionManager:
             f"[{m.role}]: {m.content[:500]}" for m in old_messages
         )
 
-        prompt = (
-            "Summarize this conversation, preserving key facts, "
-            "SQL queries generated, data insights discovered, and "
-            "any important decisions or corrections made.\n\n"
-            f"{conversation}\n\n"
-            "Summary:"
+        prompt = L(
+            self.config.language,
+            (
+                "请压缩这段对话，保留关键事实、生成的 SQL 查询、发现的数据洞察，"
+                "以及任何重要的决定或修正。\n\n"
+                f"{conversation}\n\n"
+                "摘要："
+            ),
+            (
+                "Summarize this conversation, preserving key facts, "
+                "SQL queries generated, data insights discovered, and "
+                "any important decisions or corrections made.\n\n"
+                f"{conversation}\n\n"
+                "Summary:"
+            ),
         )
 
         try:
@@ -231,10 +240,14 @@ class SessionManager:
             question=question,
             run_id=run_id,
             history=history,
+            lang=self.config.language,
         )
+        self._begin_trace(state)
         self._trace_run_start(state)
+        config = dict(self._thread_config(session))
+        config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
         final = WorkflowState.model_validate(
-            await graph.ainvoke(state, self._thread_config(session))
+            await graph.ainvoke(state, config)
         )
 
         await self._record_exchange(session, workflow_name, final)
@@ -277,16 +290,21 @@ class SessionManager:
             question=question,
             run_id=run_id,
             history=history,
+            lang=self.config.language,
         )
+        self._begin_trace(state)
         self._trace_run_start(state)
         merged: dict[str, Any] = state.model_dump()
 
         try:
             import time as _time
+            lang = state.lang
             seq = 0
             last_ts = _time.monotonic()
+            config = dict(self._thread_config(session))
+            config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
             async for update in graph.astream(
-                state, self._thread_config(session), stream_mode="updates",
+                state, config, stream_mode="updates",
             ):
                 for node_name, delta in update.items():
                     if not delta:  # guard nodes returning {} surface as None
@@ -305,7 +323,7 @@ class SessionManager:
                     merged.update(delta)
 
                     # ── Structured step (REPL renders; also in --print) ──
-                    yield self._step_event(seq, node_name, delta, elapsed_ms, reason, retry)
+                    yield self._step_event(seq, node_name, delta, elapsed_ms, reason, retry, lang)
 
                     # ── Legacy trajectory events (--print compatibility) ──
                     if node_name == "planner" and delta.get("plan"):
@@ -359,6 +377,8 @@ class SessionManager:
 
         if node_name == "route_intent":
             detail["intent"] = delta.get("intent", "query")
+            detail["llm"] = delta.get("llm")
+            detail["intent_evidence"] = delta.get("intent_evidence")
         elif node_name == "schema_linking":
             detail["matched_tables"] = delta.get("matched_tables", [])
             detail["kb_terms"] = sum(
@@ -381,6 +401,7 @@ class SessionManager:
         elif node_name == "analyze_error":
             detail["error"] = reason
             detail["analysis"] = delta.get("error_analysis", "")
+            detail["rollback"] = delta.get("rollback_target", "")
         elif node_name == "select":
             detail["consensus"] = delta.get("consensus", True)
         elif node_name == "validate":
@@ -407,6 +428,16 @@ class SessionManager:
 
     @staticmethod
     def _trace_run_start(state: WorkflowState) -> None:
+        """run 事件:活跃 RunTracer 优先(span 树 + run 日志),否则旧扁平事件。"""
+        from trove.tracing.runlog import get_tracer
+        tracer = get_tracer(state.run_id)
+        if tracer is not None:
+            tracer.start_run({
+                "session_id": state.session_id,
+                "question": state.question,
+                "lang": state.lang,
+            })
+            return
         try:
             from trove.tracing.local import add_event
             add_event(state.run_id, {
@@ -420,6 +451,11 @@ class SessionManager:
 
     @staticmethod
     def _trace_step(state: WorkflowState, step_event: dict[str, Any]) -> None:
+        from trove.tracing.runlog import get_tracer
+        tracer = get_tracer(state.run_id)
+        if tracer is not None:
+            tracer.step(step_event)
+            return
         try:
             from trove.tracing.local import add_event
             add_event(state.run_id, {"kind": "step", **step_event})
@@ -428,6 +464,11 @@ class SessionManager:
 
     @staticmethod
     def _trace_run_finish(run_id: str, final: WorkflowState) -> None:
+        from trove.tracing.runlog import get_tracer
+        tracer = get_tracer(run_id)
+        if tracer is not None:
+            tracer.finish(SessionManager._state_summary(final))
+            return
         try:
             from trove.tracing.local import add_event
             add_event(run_id, {
@@ -436,6 +477,22 @@ class SessionManager:
             })
         except Exception:
             pass
+
+    @staticmethod
+    def _begin_trace(state: WorkflowState):
+        """Create the per-run tracer when the local store is configured."""
+        from trove.tracing.local import is_configured
+        if not is_configured():
+            return
+        from trove.tracing.runlog import create_tracer
+        create_tracer(state.run_id)
+
+    @staticmethod
+    def _trace_callbacks(run_id: str) -> list[Any]:
+        """LangGraph callback handlers of the active tracer (node spans)."""
+        from trove.tracing.runlog import get_tracer
+        tracer = get_tracer(run_id)
+        return [tracer.callback()] if tracer is not None else []
 
     async def _capture_lessons(self, final: WorkflowState) -> None:
         """修正闭环成功后，把修正理由沉淀为待确认的经验教训（Hint Bank）。"""

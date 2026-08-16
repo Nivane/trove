@@ -52,6 +52,9 @@ async def run_agent_loop(
     final_content = ""
     guard_hit = False
     tool_history: list[dict[str, Any]] = []
+    # 思考痕迹:每轮的模型文本+工具调用+观测,供回退修正上下文使用
+    transcript_parts: list[str] = []
+    reasoning_parts: list[str] = []
 
     for round_no in range(1, max_rounds + 1):
         response = await llm.chat_full(
@@ -60,15 +63,25 @@ async def run_agent_loop(
         )
         content = response.get("content") or ""
         tool_calls = response.get("tool_calls") or []
+        reasoning = response.get("reasoning") or ""
+        if reasoning:
+            reasoning_parts.append(reasoning)
+
+        # 每轮累积非空文本：模型常在同一回复里既给 content 又调工具
+        # （如 DeepSeek）。护栏命中时，最后说过的话比空串有用得多。
+        if content:
+            final_content = content
+            transcript_parts.append(f"[assistant] {content[:300]}")
 
         if not tool_calls:
             # 模型不再调用工具 = 模型认为任务完成
-            final_content = content
             return {
-                "content": final_content,
+                "content": content,
                 "rounds": round_no,
                 "guard_hit": False,
                 "tool_history": tool_history,
+                "transcript": "\n".join(transcript_parts),
+                "reasoning": "\n".join(reasoning_parts)[:1000],
             }
 
         messages.append({
@@ -98,6 +111,17 @@ async def run_agent_loop(
                 except Exception as e:
                     observation = f"Tool error: {e}"
             tool_history.append({"name": tc["name"], "arguments": arguments, "observation": observation})
+            transcript_parts.append(
+                f"[tool:{tc['name']}] {str(arguments)[:150]} -> {observation[:150]}"
+            )
+            # 观测痕迹:工具调用 + 结果挂到当前节点 span 下(详尽日志/诊断)
+            try:
+                from trove.tracing.runlog import get_tracer
+                tracer = get_tracer((metadata or {}).get("run_id", ""))
+                if tracer is not None:
+                    tracer.tool(tc["name"], arguments, observation)
+            except Exception:
+                pass
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
@@ -112,4 +136,6 @@ async def run_agent_loop(
         "rounds": max_rounds,
         "guard_hit": True,
         "tool_history": tool_history,
+        "transcript": "\n".join(transcript_parts),
+        "reasoning": "\n".join(reasoning_parts)[:1000],
     }

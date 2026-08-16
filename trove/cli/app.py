@@ -285,10 +285,15 @@ class TroveREPL:
             return L(lang, "候选一致", "candidates agree") if detail.get("consensus", True) else L(lang, "候选不一致（低置信）", "candidates disagree (low confidence)")
         if node == "validate":
             return L(lang, "通过", "passed") if not detail.get("reason") else L(lang, "规则失败", "rule failed")
+        if node == "analyze_error":
+            target = detail.get("rollback", "")
+            return L(lang, "诊断", "diagnosis") + (
+                L(lang, f" · 回退 → {target}", f" · rollback → {target}") if target else ""
+            )
         if node == "reflect":
             verdict = detail.get("verdict", "")
             r = detail.get("reason", "")
-            return L(lang, f"裁决 {verdict}", f"verdict {verdict}") + (f"：{r}" if r and verdict == "RETRY" else "")
+            return L(lang, f"裁决 {verdict}", f"verdict {verdict}") + (f"：{r}" if r and verdict in ("RETRY", "NO_SQL") else "")
         if node == "output":
             return L(lang, "生成答案", "composing answer")
         return ""

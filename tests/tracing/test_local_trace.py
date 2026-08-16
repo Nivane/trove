@@ -43,3 +43,28 @@ class TestTraceStore:
     def test_missing_run_returns_empty(self, tmp_path):
         _configure(tmp_path)
         assert get_run("nope") == {"events": []}
+
+    def test_corrupt_line_does_not_block_new_events(self, tmp_path):
+        """历史文件里出现非 utf-8 坏行时,新事件仍能写入(追加而非整体重写)。"""
+        _configure(tmp_path)
+        (tmp_path / "traces.jsonl").write_bytes(b'\x93\xb6\xe8\xa1\x8c\n')  # 损坏行
+        add_event("r1", {"kind": "run", "question": "q1"})
+        add_event("r1", {"kind": "finish", "summary": {}})
+
+        run = get_run("r1")
+        assert run["question"] == "q1"
+        assert [e["kind"] for e in run["events"]] == ["run", "finish"]
+
+    def test_bad_lines_dropped_on_trim(self, tmp_path):
+        """裁剪时坏行被丢弃,好行按最近 MAX_LINES 保留。"""
+        from trove.tracing.local import MAX_LINES
+        _configure(tmp_path)
+        lines = [b'{"x": 1}\n' for _ in range(MAX_LINES)]
+        (tmp_path / "traces.jsonl").write_bytes(b"".join(lines) + b'\x93\xb6\n')
+        add_event("r1", {"kind": "run", "question": "after-trim"})
+
+        run = get_run("r1")
+        assert run["question"] == "after-trim"
+        # 坏行被丢弃,不再阻塞后续写入
+        add_event("r1", {"kind": "finish", "summary": {}})
+        assert [e["kind"] for e in get_run("r1")["events"]] == ["run", "finish"]

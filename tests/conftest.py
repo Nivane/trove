@@ -31,6 +31,15 @@ from trove.storage.session_store import SessionStore
 # ── Fixtures ─────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _reset_trace_store():
+    """trace store 是进程级全局;每个测试从"未配置"状态开始,
+    避免其它测试文件 configure_trace_store 的残留(如激活 RunTracer)。"""
+    from trove.tracing.local import configure_trace_store
+    configure_trace_store(None)
+    yield
+
+
 @pytest.fixture
 def tmp_home(tmp_path):
     """A temporary trove home directory."""
@@ -140,7 +149,7 @@ def graphs(sqlite_registry, agent_config):
     from trove.workflow.graphs import GraphServices, build_graphs
 
     services = GraphServices(
-        llm=ScriptedGateway(["```sql\nSELECT name FROM students;\n```", "OK"]),
+        llm=ScriptedGateway(["query", "```sql\nSELECT name FROM students;\n```", "OK"]),
         catalog=CatalogService(sqlite_registry),
         connectors=sqlite_registry,
         config=agent_config,
@@ -154,7 +163,7 @@ async def session_manager(tmp_home, agent_config, graphs):
     from trove.agent.session import SessionManager
 
     store = SessionStore(home_dir=str(tmp_home))
-    llm = ScriptedGateway(["```sql\nSELECT name FROM students;\n```", "OK"])
+    llm = ScriptedGateway(["query", "```sql\nSELECT name FROM students;\n```", "OK"])
 
     manager = SessionManager(
         config=agent_config,

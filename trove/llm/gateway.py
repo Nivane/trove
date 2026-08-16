@@ -170,8 +170,16 @@ class LLMGateway:
                 })
             elapsed_ms = int((time.monotonic() - start) * 1000)
             _record_generation(model, messages, response, metadata)
-            _record_local_call(model, messages, message.content or "", metadata, elapsed_ms)
-            return {"content": message.content or "", "tool_calls": tool_calls}
+            _record_local_call(
+                model, messages, message.content or "", metadata, elapsed_ms,
+                temperature=temperature,
+                reasoning=getattr(message, "reasoning_content", "") or "",
+            )
+            return {
+                "content": message.content or "",
+                "tool_calls": tool_calls,
+                "reasoning": getattr(message, "reasoning_content", "") or "",
+            }
         except Exception as e:
             raise LLMError(message=f"LLM call failed: {e}", model=model) from e
 
@@ -289,11 +297,14 @@ class LLMGateway:
         # litellm.acompletion is async
         response = await litellm.acompletion(**kwargs)
         _record_generation(model, messages, response, metadata)
+        message = response.choices[0].message
+        reasoning = getattr(message, "reasoning_content", "") or ""
         _record_local_call(
-            model, messages, response.choices[0].message.content or "",
+            model, messages, message.content or "",
             metadata, int((time.monotonic() - start) * 1000),
+            temperature=temperature, reasoning=reasoning,
         )
-        return response.choices[0].message.content or ""
+        return message.content or ""
 
     async def _call_litellm_stream(
         self,
@@ -325,15 +336,33 @@ def _record_local_call(
     output: str,
     metadata: dict[str, Any] | None,
     elapsed_ms: int,
+    temperature: float = 0.0,
+    reasoning: str = "",
 ) -> None:
     """Zero-config local trace: one llm event into the run-trace store.
 
     Only recorded when the call carries a run_id (pipeline calls do);
-    library users without a run stay silent."""
+    library users without a run stay silent. When an active RunTracer
+    owns the run, the event routes through it (span parent linkage +
+    run log + optional verbose echo); otherwise the flat llm event is
+    written directly."""
     run_id = (metadata or {}).get("run_id", "")
     if not run_id:
         return
     try:
+        from trove.tracing.runlog import get_tracer
+        tracer = get_tracer(run_id)
+        if tracer is not None:
+            tracer.llm(
+                node=(metadata or {}).get("node", ""),
+                model=model,
+                messages=messages,
+                output=output,
+                elapsed_ms=elapsed_ms,
+                temperature=temperature,
+                reasoning=reasoning,
+            )
+            return
         from trove.tracing.local import add_event
         add_event(run_id, {
             "kind": "llm",
@@ -365,7 +394,9 @@ def _record_generation(
         reasoning = getattr(message, "reasoning_content", None)
         if reasoning:
             output["reasoning"] = reasoning
-        with client.start_as_current_generation(
+        # Langfuse SDK v4: generations are observations with an explicit type
+        with client.start_as_current_observation(
+            as_type="generation",
             name="llm",
             model=model,
             input={"messages": messages},

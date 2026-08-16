@@ -245,7 +245,7 @@ class TestStructuredSteps:
     async def test_steps_are_numbered_and_timed(self, tmp_home, sqlite_registry):
         manager = self._manager(
             tmp_home, sqlite_registry,
-            ["```sql\nSELECT name FROM students;\n```", "OK"],
+            ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
             planner=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
@@ -266,7 +266,7 @@ class TestStructuredSteps:
     async def test_step_details_carry_artifacts(self, tmp_home, sqlite_registry):
         manager = self._manager(
             tmp_home, sqlite_registry,
-            ["```sql\nSELECT name FROM students;\n```", "OK"],
+            ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
             planner=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
@@ -286,6 +286,7 @@ class TestStructuredSteps:
         manager = self._manager(
             tmp_home, sqlite_registry,
             [
+                "query",
                 "```sql\nSELECT name FROM students;\n```",
                 "```sql\nSELECT COUNT(*) FROM students;\n```",
                 "OK",
@@ -304,7 +305,7 @@ class TestStructuredSteps:
         gen_steps = [s for s in steps if s["node"] == "gen_sql"]
         assert len(gen_steps) == 2
         assert gen_steps[1]["detail"]["retry"] == 1
-        assert "Validation rule" in gen_steps[1]["detail"]["reason"]
+        assert "校验规则" in gen_steps[1]["detail"]["reason"]
 
 
 class TestTrajectoryEvents:
@@ -344,7 +345,7 @@ class TestTrajectoryEvents:
         """planner 计划与 reflect 裁决作为轨迹事件实时可见。"""
         manager = self._manager(
             tmp_home, sqlite_registry,
-            ["plan: use students, group by county", "```sql\nSELECT name FROM students;\n```", "OK"],
+            ["query", "plan: use students, group by county", "```sql\nSELECT name FROM students;\n```", "OK"],
             planner=True,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
@@ -368,6 +369,7 @@ class TestTrajectoryEvents:
         manager = self._manager(
             tmp_home, sqlite_registry,
             [
+                "query",
                 "```sql\nSELECT name FROM students;\n```",   # count 问题返回多行 → 规则失败
                 "```sql\nSELECT COUNT(*) FROM students;\n```",  # 修正
                 "OK",
@@ -384,7 +386,51 @@ class TestTrajectoryEvents:
         types = [e["type"] for e in events]
         assert "correction" in types
         correction = next(e for e in events if e["type"] == "correction")
-        assert "Validation rule" in correction["content"]
+        assert "校验规则" in correction["content"]
+
+
+class TestSelectCorrectionEvent:
+    async def _manager(self, tmp_home, language="zh"):
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        class StubGraph:
+            async def astream(self, state, config=None, stream_mode=None):
+                yield {"select": {"consensus": False}}
+
+        return SessionManager(
+            config=AgentConfig(home=str(tmp_home), language=language),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+        )
+
+    async def test_correction_follows_config_language(self, tmp_home):
+        """correction 事件语言跟随配置(默认中文),不按问题语言检测,且不 NameError 中止。"""
+        manager = await self._manager(tmp_home)
+        session = await manager.start_session(project_cwd="/tmp/p")
+
+        # 默认中文配置:即使英文问题,correction 也是中文
+        events = []
+        async for event in manager.ask_stream(
+            session=session, question="Who traded the most?",
+        ):
+            events.append(event)
+        assert events[-1]["type"] == "done"
+        correction = next(e for e in events if e["type"] == "correction")
+        assert "候选 SQL 结果不一致" in correction["content"]
+
+        # lang=en 配置:中文问题也出英文 correction
+        en_manager = await self._manager(tmp_home, language="en")
+        session = await en_manager.start_session(project_cwd="/tmp/p")
+        events = []
+        async for event in en_manager.ask_stream(
+            session=session, question="交易最多的账号是谁",
+        ):
+            events.append(event)
+        correction = next(e for e in events if e["type"] == "correction")
+        assert "Candidate SQLs disagreed" in correction["content"]
 
 
 class TestHistorySummaryFusion:
@@ -540,6 +586,43 @@ class TestCompaction:
         assert compacted.messages[0].role == "system"
         assert compacted.messages[1].content == "q3"
         assert compacted.messages[2].content == "a3"
+
+    async def test_compact_prompt_follows_config_language(self, tmp_home):
+        """压缩提示词语言跟随配置:zh 中文 / en 英文(与 select correction 同模式)。"""
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        captured = {}
+
+        class CapturingLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["messages"] = messages
+                captured["kwargs"] = kwargs
+                return "SUMMARY"
+
+        async def make_manager(language):
+            return SessionManager(
+                config=AgentConfig(home=str(tmp_home), language=language),
+                session_store=SessionStore(home_dir=str(tmp_home)),
+                graphs={},
+                llm_gateway=CapturingLLM(),
+            )
+
+        async def fill_and_compact(manager):
+            session = await manager.start_session(project_cwd="/tmp/p")
+            for i in range(4):
+                session.messages.append(Message(role="user", content=f"q{i}"))
+                session.messages.append(Message(role="assistant", content=f"a{i}"))
+            await manager.compact_session(session, keep_recent=1)
+
+        await fill_and_compact(await make_manager("zh"))
+        assert "请压缩这段对话" in captured["messages"][0]["content"]
+        assert "摘要：" in captured["messages"][0]["content"]
+
+        await fill_and_compact(await make_manager("en"))
+        assert "Summarize this conversation" in captured["messages"][0]["content"]
+        assert "Summary:" in captured["messages"][0]["content"]
 
 
 class TestTokenUsage:

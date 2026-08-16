@@ -136,7 +136,7 @@ class TestProviderParams:
         captured = {}
 
         class FakeGeneration:
-            def __init__(self, name, model, input, output, metadata):
+            def __init__(self, as_type, name, model, input, output, metadata):
                 captured.update(
                     {"name": name, "model": model, "input": input,
                      "output": output, "metadata": metadata},
@@ -149,7 +149,7 @@ class TestProviderParams:
                 return False
 
         class FakeClient:
-            def start_as_current_generation(self, **kwargs):
+            def start_as_current_observation(self, **kwargs):
                 return FakeGeneration(**kwargs)
 
         import trove.llm.gateway as gateway_module
@@ -230,3 +230,74 @@ class TestProviderParams:
         full = await gateway.chat_full(model="m", messages=[])
         assert full["content"] == "final answer"
         assert full["tool_calls"] == []
+
+    async def test_chat_full_carries_reasoning_content(self, mocker):
+        """reasoning_content(思考模型)必须随返回一起带出,供回退上下文使用。"""
+        from types import SimpleNamespace
+
+        async def fake_acompletion(**kwargs):
+            message = SimpleNamespace(content="final answer", tool_calls=None)
+            message.reasoning_content = "让我先分析表结构…"
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+
+        full = await gateway.chat_full(model="m", messages=[])
+        assert full["reasoning"] == "让我先分析表结构…"
+
+
+class TestLocalTraceRouting:
+    async def test_llm_call_routes_through_active_tracer(self, mocker, tmp_path):
+        """活跃 RunTracer 存在时:llm 事件带 parent_id/temperature/reasoning
+        挂到当前节点 span 下,并写入 run 日志文件。"""
+        from trove.tracing.local import configure_trace_store, get_run
+        from trove.tracing.runlog import create_tracer
+
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("r-gw")
+        tracer.start_run({"question": "q"})
+        sid = tracer.node_start("gen_sql", {})
+
+        async def fake_acompletion(**kwargs):
+            resp = fake_completion(content="SELECT 1")
+            resp.choices[0].message.reasoning_content = "think step by step"
+            return resp
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+        await gateway.chat(
+            model="deepseek/deepseek-chat",
+            messages=[{"role": "user", "content": "q"}],
+            metadata={"node": "gen_sql", "run_id": "r-gw"},
+        )
+
+        llm_ev = next(e for e in get_run("r-gw")["events"] if e["kind"] == "llm")
+        assert llm_ev["parent_id"] == sid
+        assert llm_ev["temperature"] == 0.0
+        assert "think step by step" in llm_ev["reasoning"]
+        log_text = (tmp_path / "runs" / "r-gw.log").read_text(encoding="utf-8")
+        assert "SELECT 1" in log_text
+        tracer.node_end(sid, {})
+        tracer.finish({})
+
+    async def test_flat_llm_event_without_tracer(self, mocker, tmp_path):
+        """无 tracer(如纯库调用)时保持旧的扁平 llm 事件。"""
+        from trove.tracing.local import configure_trace_store, get_run
+
+        configure_trace_store(tmp_path)
+
+        async def fake_acompletion(**kwargs):
+            return fake_completion(content="SELECT 2")
+
+        mocker.patch("litellm.acompletion", fake_acompletion)
+        gateway = LLMGateway()
+        await gateway.chat(
+            model="deepseek/deepseek-chat",
+            messages=[{"role": "user", "content": "q"}],
+            metadata={"node": "gen_sql", "run_id": "r-flat"},
+        )
+
+        llm_ev = next(e for e in get_run("r-flat")["events"] if e["kind"] == "llm")
+        assert llm_ev["node"] == "gen_sql"
+        assert llm_ev["output"] == "SELECT 2"

@@ -67,14 +67,35 @@ def record_span(name: str, input: Any = None):
     """Open a nested span (no-op without Langfuse); yields the span or None.
 
     Callers may update the yielded span: `if span: span.update(output=...)`.
+
+    Langfuse SDK v4 removed start_as_current_span/generation — observations
+    with an explicit type are the current API.
+
+    Body exceptions always pass through untouched — span recording must
+    never mask the wrapped operation's real error (a second yield inside
+    except would make contextlib raise "generator didn't stop after
+    throw()" and hide the original exception).
     """
+    import sys as _sys
+
     client = get_client()
     if client is None:
         yield None
         return
     try:
-        with client.start_as_current_span(name=name, input=input) as span:
-            yield span
+        cm = client.start_as_current_observation(
+            as_type="span", name=name, input=input,
+        )
+        span = cm.__enter__()
     except Exception as e:
         logger.debug("Span recording failed (%s): %s", name, e)
         yield None
+        return
+    try:
+        yield span
+    finally:
+        # 收尾只在 finally 里做:body 异常原样穿透,teardown 失败静默
+        try:
+            cm.__exit__(*_sys.exc_info())
+        except Exception as e:
+            logger.debug("Span teardown failed (%s): %s", name, e)
