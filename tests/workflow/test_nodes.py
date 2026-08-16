@@ -811,8 +811,9 @@ class TestBilingualPrompts:
         assert "over-restrictive" in en_system
         assert "extra cautious" in en_system
 
-    async def test_reflect_empty_verdict_treated_as_retry(self):
-        """空输出/不可解析裁决不得静默放行——语义检查没有发生,按 RETRY 修正。"""
+    async def test_reflect_empty_verdict_reask_then_deliver(self):
+        """主裁决不可解析 → 极简 prompt 再问一次;仍不可解析 → 强制放行
+        (不能把正确结果推入升温重生成的搅动)。"""
         from trove.workflow.nodes.reflect import make_reflect
 
         class EmptyLLM:
@@ -824,25 +825,32 @@ class TestBilingualPrompts:
             question="what is the increase rate", row_count=1,
             columns=["a", "b", "c"], rows=[[1, 2, 3]],
         ))
-        assert update["verdict"] == "RETRY"
-        assert "unparseable" in update["reason"]
-        assert update["retry_count"] == 1
-
-    async def test_reflect_unparseable_verdict_forced_ok_at_cap(self):
-        """空裁决连续打回达语义上限 → 强制接受,保证收敛。"""
-        from trove.workflow.nodes.reflect import make_reflect
-
-        class EmptyLLM:
-            async def chat(self, model, messages, **kwargs):
-                return "  \n"
-
-        node = make_reflect(EmptyLLM(), AgentConfig(target="m"))
-        update = await node(make_state(
-            question="what is the increase rate", row_count=1,
-            columns=["x"], rows=[[1]], semantic_retries=2,
-        ))
         assert update["verdict"] == "OK"
         assert update["forced"] is True
+        assert "unparseable" in update["reason"]
+
+    async def test_reflect_reask_recovers_verdict(self):
+        """再问一次拿到真实裁决(RETRY) → 走正常语义修正路径。"""
+        from trove.workflow.nodes.reflect import make_reflect
+
+        class LLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls += 1
+                return "" if self.calls == 1 else "RETRY: columns look wrong"
+
+        llm = LLM()
+        node = make_reflect(llm, AgentConfig(target="m"))
+        update = await node(make_state(
+            question="what is the increase rate", row_count=1,
+            columns=["a", "b", "c"], rows=[[1, 2, 3]],
+        ))
+        assert update["verdict"] == "RETRY"
+        assert "columns look wrong" in update["reason"]
+        assert update["retry_count"] == 1
+        assert llm.calls == 2
 
 
 class TestPlanner:

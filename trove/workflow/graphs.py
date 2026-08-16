@@ -15,6 +15,7 @@ which formats a readable error section.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -83,6 +84,18 @@ def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) ->
     ])
     mentioned = [t for t in all_tables if t and t in text]
     return not mentioned or any(t in matched for t in mentioned)
+
+
+def _word_overlap(q1: str, q2: str) -> float:
+    """两个问题的词重叠率(min 侧归一):KB 示例精确命中的判定依据。"""
+    w1 = set(re.findall(r"[a-z0-9_]+", (q1 or "").lower()))
+    w2 = set(re.findall(r"[a-z0-9_]+", (q2 or "").lower()))
+    if not w1 or not w2:
+        return 0.0
+    return len(w1 & w2) / min(len(w1), len(w2))
+
+
+KB_EXACT_OVERLAP = 0.95  # KB 示例与问题几乎逐词一致 → 直接用示例 SQL
 DEFAULT_GEN_SQL_RETRIES = 3
 
 WORKFLOW_NAMES = ("reflection", "fixed", "empty")
@@ -213,6 +226,17 @@ def _make_gen_sql_node(
                 )
             ]
 
+        # KB 精确命中:示例问题与当前问题几乎逐词一致 → 直接采用示例 SQL。
+        # KB 保存的是该数据源的标准写法;对已收录的问题让模型"再解释一遍"
+        # 只会产出歧义变体(实测:disp vs client 口径摇摆 5 轮)。SQL 仍会
+        # 走 execute → validate → reflect,确定性规则与裁决不受影响。
+        kb_exact_match: dict[str, Any] | None = None
+        if example_hits:
+            for h in example_hits:
+                if _word_overlap(state.question, h.question) >= KB_EXACT_OVERLAP and h.sql:
+                    kb_exact_match = {"question": h.question, "sql": h.sql}
+                    break
+
         # Context budget: optional blocks filled by priority, usage
         # reported for observability (what the model actually saw).
         optional_blocks = {
@@ -257,7 +281,14 @@ def _make_gen_sql_node(
             "context_usage": context_usage,
         }
 
-        if agentic:
+        if kb_exact_match is not None:
+            # KB 精确命中:直接用标准 SQL,跳过模型生成(避免歧义变体)
+            update["sql"] = kb_exact_match["sql"]
+            update["kb_exact_match"] = True
+            logger.info(
+                "KB exact match used: %r", kb_exact_match["question"][:80],
+            )
+        elif agentic:
             from trove.workflow.nodes.gen_sql import extract_sql, validate_sql as validate_sql_fn
 
             async def validate_tool(arguments: dict) -> str:
@@ -345,7 +376,13 @@ def _make_gen_sql_node(
                 update["error"] = out["error"]
         # Multi-candidate: a second generation at higher temperature;
         # failures fall back to the single-candidate path silently.
-        if subgraph_alt is not None and update.get("sql") and not update.get("error"):
+        # KB 精确命中时跳过备选生成——备选的"另一种解释"只会引发
+        # 无谓的一致性拉锯。
+        if (
+            subgraph_alt is not None
+            and update.get("sql") and not update.get("error")
+            and not update.get("kb_exact_match")
+        ):
             try:
                 out_alt = await subgraph_alt.ainvoke(sub_state.model_copy(deep=True))
             except Exception:

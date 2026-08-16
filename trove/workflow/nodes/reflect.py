@@ -120,6 +120,48 @@ def _extract_verdict(response: str) -> str:
     return (response or "").strip()
 
 
+async def _reask_verdict(llm: LLMGateway, model: str, state: WorkflowState) -> str:
+    """极简二次裁决:主裁决不可解析时,用最短 prompt 再问一次。
+
+    短 prompt 让推理模型的 reasoning 在预算内收敛,content 才能带出
+    裁决词。仍不可解析时返回空串(调用方强制放行)。
+    """
+    sample = "\n".join(str(row) for row in state.rows[:3])
+    prompt = (
+        f"Question: {state.question}\n"
+        f"Result columns: {state.columns}\n"
+        f"Sample rows (first 3):\n{sample}\n\n"
+        f"Does this result correctly answer the question?\n"
+        f"Answer with EXACTLY one of: OK / RETRY: <reason> / EMPTY / NO_SQL: <reason>."
+    )
+    try:
+        response = await llm.chat(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You check whether a SQL result answers the user's question. "
+                        "Reply with exactly one line: OK, RETRY: <reason>, EMPTY, or "
+                        "NO_SQL: <reason>. No other text."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=200,
+            metadata={
+                "node": "reflect_reask",
+                "session_id": state.session_id,
+                "run_id": state.run_id,
+                "question": state.question[:80],
+            },
+        )
+        return _extract_verdict(response)
+    except Exception as e:
+        logger.warning("Reflect re-ask failed: %s", e)
+        return ""
+
+
 def make_reflect(
     llm: LLMGateway,
     config: AgentConfig,
@@ -188,33 +230,22 @@ def make_reflect(
             }
 
             if verdict == "" or verdict == "NONE" or not re.match(r"^(OK|RETRY|NO_SQL|EMPTY)\b", verdict):
-                # 空输出/不可解析 = 语义检查没有发生。静默放行会把错误结果
-                # 直接交付(实测:3 列结果回答单值问题被空裁决放行)。
-                # 保守处理:按 RETRY 走修正循环,语义重试上限保证收敛。
-                logger.warning(
-                    "Reflect judge returned unparseable verdict (%r); treating as RETRY",
-                    response[:80],
-                )
+                # 空输出/不可解析 = 语义检查没有发生(推理模型常把预算花在
+                # reasoning 上,content 为空)。用极简 prompt 再问一次,给
+                # 法官一次真正的裁决机会;仍不可解析就强制放行——语义安全
+                # 由确定性规则兜底,而不是让一个失效的法官反复把正确结果
+                # 推入升温重生成(实测:正确答案被无谓 RETRY 改坏)。
+                verdict = await _reask_verdict(llm, model, state)
+            if verdict == "" or verdict == "NONE" or not re.match(r"^(OK|RETRY|NO_SQL|EMPTY)\b", verdict):
                 reason = (
                     "the judge could not verify the result (empty or unparseable "
-                    "verdict) — re-check that the result columns and values exactly "
-                    "answer the question"
+                    "verdict) — result delivered as-is; deterministic rules already "
+                    "checked the structural properties"
                 )
-                semantic_retries = state.semantic_retries + 1
-                if (
-                    state.retry_count >= max_retries
-                    or semantic_retries >= MAX_SEMANTIC_RETRIES
-                ):
-                    return {
-                        "verdict": "OK", "forced": True, "reason": reason,
-                        "semantic_retries": 0, "llm": llm_detail,
-                    }
+                logger.warning("Reflect judge unparseable after re-ask; delivering result")
                 return {
-                    "verdict": "RETRY",
-                    "reason": reason,
-                    "retry_count": state.retry_count + 1,
-                    "semantic_retries": semantic_retries,
-                    "llm": llm_detail,
+                    "verdict": "OK", "forced": True, "reason": reason,
+                    "semantic_retries": 0, "llm": llm_detail,
                 }
 
             if verdict.startswith("OK"):
@@ -287,7 +318,9 @@ def _build_reflect_prompt(
 
     schema_block = ""
     if schema_context:
-        schema_block = f"Schema context:\n{schema_context[:1200]}\n\n"
+        # 截到 600 字符:推理模型的 reasoning 预算有限,过长的 schema
+        # 会让它在裁决前耗尽预算(content 为空,裁决从未产出)
+        schema_block = f"Schema context:\n{schema_context[:600]}\n\n"
 
     sql_block = ""
     if sql:
