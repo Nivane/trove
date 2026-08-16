@@ -52,6 +52,7 @@ REFLECT_SYSTEM_PROMPT_ZH = """你是严格的 SQL 结果评估器。检查查询
 - 对目标方言的特定函数或语法行为不确定时，判 "RETRY" 并说明理由。
 - 不要重新争论问题本身的歧义：只要 SQL 与问题的某一种合理解读一致（条件集与问题要求一一对应、极值在该解读限定的集合上取），就判 OK；不要以"另一种解读也可能对"为由 RETRY。
 - 问题要求最低/最高时，ORDER BY + LIMIT 1 或 MIN/MAX 子查询是标准写法，直接接受；不要以"并列值可能漏行"为由 RETRY（除非问题明确要求返回全部并列者）。
+- Evidence 给出的公式或定义（如 "Gap = X - Y"）就是权威语义：按其字面执行（作用域是全局，除非 Evidence 明确限定范围），SQL 与公式一致即通过；不得自行附加人群/性别/年龄等范围限定，也不得以"公式作用域可能有别的理解"为由 RETRY。
 
 只回答以下之一：
 - "OK" — 结果满意
@@ -82,6 +83,7 @@ Decision guardrails:
 - If unsure about a dialect-specific function or syntax behavior, judge "RETRY" and explain.
 - Do not re-argue the question's own ambiguity: if the SQL is consistent with any reasonable interpretation of the question (condition set matches what the question requires, extreme taken over that interpretation's set), judge OK — never RETRY merely because another interpretation could also be possible.
 - When the question asks for the lowest/highest, ORDER BY + LIMIT 1 or a MIN/MAX subquery is the standard form — accept it; do not RETRY over possible ties (unless the question explicitly requires returning all tied rows).
+- A formula or definition given in the Evidence (e.g. "Gap = X - Y") is the authoritative semantics: apply it literally (global scope unless the Evidence explicitly restricts it). If the SQL matches the formula, pass — do not invent population/gender/age restrictions, and do not RETRY on the grounds that the formula's scope could be understood differently.
 
 Respond with ONE of:
 - "OK" — the result is satisfactory
@@ -91,6 +93,7 @@ Respond with ONE of:
 """
 
 MAX_TOTAL_RETRIES = 10
+MAX_SEMANTIC_RETRIES = 3  # 连续纯语义 RETRY 上限(执行成功后仍被连续打回)
 
 
 def make_reflect(
@@ -159,20 +162,32 @@ def make_reflect(
             }
 
             if verdict.startswith("OK"):
-                return {"verdict": "OK", "llm": llm_detail}
+                return {"verdict": "OK", "semantic_retries": 0, "llm": llm_detail}
             elif verdict.startswith("RETRY"):
                 reason = response.replace("RETRY:", "").replace("RETRY", "").strip()
-                if state.retry_count >= max_retries:
+                # 纯语义 RETRY(上一次执行成功、无执行错误):欠定问题法官
+                # 可能无限重审,连续打回超过上限即强制接受——预算花在
+                # 执行错误/规则违反上,不花在语义拉锯上。
+                semantic = not state.error_feedback
+                semantic_retries = state.semantic_retries + 1 if semantic else 0
+                if (
+                    state.retry_count >= max_retries
+                    or semantic_retries >= MAX_SEMANTIC_RETRIES
+                ):
                     logger.warning(
-                        "Max retries (%d) exceeded; accepting result despite issues",
-                        max_retries,
+                        "Retry cap reached (total=%d, semantic=%d); accepting result despite issues",
+                        state.retry_count, semantic_retries,
                     )
-                    return {"verdict": "OK", "forced": True, "reason": reason, "llm": llm_detail}
+                    return {
+                        "verdict": "OK", "forced": True, "reason": reason,
+                        "semantic_retries": 0, "llm": llm_detail,
+                    }
 
                 return {
                     "verdict": "RETRY",
                     "reason": reason,
                     "retry_count": state.retry_count + 1,
+                    "semantic_retries": semantic_retries,
                     "llm": llm_detail,
                 }
             elif verdict.startswith("NO_SQL"):

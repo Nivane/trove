@@ -98,6 +98,7 @@ class WorkflowState(BaseModel):
     reason: str = ""
     retry_count: int = 0  # shared correction budget (reflect → gen_sql loop)
     forced: bool = False  # reflect accepted a RETRY at the retry cap
+    semantic_retries: int = 0  # 连续纯语义 RETRY 计数(执行成功仍被打回)
 
     # reflect/analyze_error verdict: the question is not answerable by SQL
     # (table meaning / term definition) → route to answer_metadata

@@ -1131,6 +1131,29 @@ class TestReflect:
 
 # ── Output ───────────────────────────────────────────────
 
+    async def test_semantic_retry_cap_forces_ok(self):
+        """连续纯语义 RETRY(执行成功、无执行错误)达到上限 → 强制接受,
+        防止欠定问题被法官无限重审烧光预算。"""
+        node = make_reflect(LLMGateway(mock_response="RETRY: gap semantics"), AgentConfig(target="m"))
+        state = make_state(row_count=1, columns=["x"], rows=[[1]])
+        for _ in range(2):
+            update = await node(state)
+            assert update["verdict"] == "RETRY"
+            state = make_state(**{**state.model_dump(), **update})
+        update = await node(state)  # 第 3 次连续语义 RETRY(达到上限) → forced OK
+        assert update["verdict"] == "OK"
+        assert update["forced"] is True
+
+    async def test_execution_error_resets_semantic_counter(self):
+        """执行错误后的 RETRY 是修执行问题,不算语义重审,计数器归零。"""
+        node = make_reflect(LLMGateway(mock_response="RETRY: fix it"), AgentConfig(target="m"))
+        state = make_state(row_count=1, columns=["x"], rows=[[1]])
+        u1 = await node(state)
+        assert u1["semantic_retries"] == 1
+        state = make_state(**{**state.model_dump(), **u1})
+        state = make_state(**{**state.model_dump(), "error_feedback": "SQL execution error"})
+        u2 = await node(state)
+        assert u2["semantic_retries"] == 0
 
 class TestOutput:
     async def test_format_with_full_data(self):
@@ -1233,6 +1256,8 @@ class TestSemanticPromptGuards:
         assert "LIMIT 1" in REFLECT_SYSTEM_PROMPT
         assert "合理解读" in REFLECT_SYSTEM_PROMPT_ZH
         assert "并列" in REFLECT_SYSTEM_PROMPT_ZH
+        assert "formula" in REFLECT_SYSTEM_PROMPT
+        assert "公式" in REFLECT_SYSTEM_PROMPT_ZH
 
 
 class TestStructuredPlan:
@@ -1302,4 +1327,3 @@ class TestStructuredPlan:
         node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
         update = await node(make_state())
         assert update["plan"] == "先筛选1997年贷款，再取最低金额。"
-
