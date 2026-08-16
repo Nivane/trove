@@ -294,6 +294,17 @@ def _make_gen_sql_node(
             except Exception as e:
                 logger.warning("Agentic gen_sql failed (%s); falling back to classic", e)
                 result = None
+
+            async def _classic_fallback() -> None:
+                """经典单发子图生成(异常或 agent loop 空手而归时兜底)。"""
+                out = await subgraph.ainvoke(sub_state)
+                if out["sql"]:
+                    update["sql"] = out["sql"]
+                if out.get("attempts"):
+                    update["attempts"] = out["attempts"]
+                if out["error"]:
+                    update["error"] = out["error"]
+
             if result is not None:
                 sql = extract_sql(result["content"])
                 if not sql:
@@ -312,14 +323,16 @@ def _make_gen_sql_node(
                     update["sql"] = sql
                 elif result["guard_hit"]:
                     update["error"] = "SQL generation loop hit the round guard without producing SQL"
+                else:
+                    # loop 正常结束但没产出 SQL(如最后一轮只有 reasoning、
+                    # content 为空且未调工具)——兜底到经典生成,不静默空转
+                    logger.warning(
+                        "Agentic gen_sql produced no SQL (%d rounds); falling back to classic",
+                        result["rounds"],
+                    )
+                    await _classic_fallback()
             else:
-                out = await subgraph.ainvoke(sub_state)
-                if out["sql"]:
-                    update["sql"] = out["sql"]
-                if out.get("attempts"):
-                    update["attempts"] = out["attempts"]
-                if out["error"]:
-                    update["error"] = out["error"]
+                await _classic_fallback()
         else:
             out = await subgraph.ainvoke(sub_state)
             if out["sql"]:

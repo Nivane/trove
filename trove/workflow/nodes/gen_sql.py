@@ -295,9 +295,11 @@ def make_generate(
         if state.error:
             return {}
 
-        if state.validation_errors:
+        if state.validation_errors and state.sql:
             prompt = build_fix_prompt(state.sql, state.validation_errors, lang=state.lang)
         else:
+            # 上一轮产出为空(SQL 为空):没有可"修复"的对象,
+            # 回到原始生成提示词重试,而不是让模型去修一条空 SQL。
             prompt = build_sql_prompt(
                 question=state.question,
                 schema_context=state.schema_context,
