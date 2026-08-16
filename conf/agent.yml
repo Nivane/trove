@@ -4,3 +4,12 @@ agent:
   target: deepseek/deepseek-chat
   # 想用推理模型可以改成:
   # target: deepseek/deepseek-reasoner
+  # 交互语言: en(默认) / zh — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
+  # 不按问题的中英文自动检测
+  language: en
+  # 时间解析:确定性规则解析相对时间表达(zh/en),未命中静默透传
+  date_parser: true
+  # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
+  observability:
+    tracing:
+      enabled: true
