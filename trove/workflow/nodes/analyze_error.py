@@ -56,6 +56,53 @@ ROLLBACK_TARGET_RE = re.compile(r"TARGET\s*[:：]\s*(\w+)", re.I)
 DEFAULT_ROLLBACK_LADDER = ("gen_sql", "planner", "schema_linking")
 
 
+def _fallback_analysis(error_text: str, lang: str) -> str:
+    """LLM 诊断空输出时的确定性兜底:按失败类型给出可执行检查项。
+
+    修正循环里诊断为空 = 生成方下一轮只看到原始错误,容易反复产出
+    同一错误解释(实测:0 行列表问题 10 轮重试全部重蹈覆辙)。兜底
+    诊断按错误文本的模式给出最可能的修正方向。
+    """
+    low = (error_text or "").lower()
+    if "no rows" in low or "zero rows" in low or "零行" in low:
+        return L(
+            lang,
+            "空结果通常意味着过滤条件过严或 join 键错误。逐个检查 WHERE 条件:"
+            "与问题关系最弱的条件先放宽或去掉;同时核对 join 列是否用对。",
+            "An empty result usually means a filter is too strict or a join key is "
+            "wrong. Re-check every WHERE condition; relax or drop the least certain "
+            "one first, and verify the join columns are correct.",
+        )
+    if "syntax" in low or "1064" in low:
+        return L(
+            lang,
+            "语法错误。简化写法:避免 CTE/UNION/复杂嵌套,改用直白的 SELECT+JOIN。",
+            "Syntax error. Simplify the SQL: avoid CTEs, UNION, or deep nesting; "
+            "prefer a plain SELECT with JOINs.",
+        )
+    if "timed out" in low or "timeout" in low:
+        return L(
+            lang,
+            "查询超时。减少参与的表或缩小过滤范围,避免笛卡尔积。",
+            "Query timed out. Reduce the number of tables joined or narrow the "
+            "filters; avoid cartesian products.",
+        )
+    if "differ" in low or "不一致" in low:
+        return L(
+            lang,
+            "多个候选结果不一致。选择与问题措辞最吻合的解释,重新生成。",
+            "Candidate results disagree. Pick the interpretation that best matches "
+            "the question wording and regenerate.",
+        )
+    return L(
+        lang,
+        "上一次查询未达到要求。重新对照问题的每个条件,逐一检查 SQL 的 "
+        "WHERE/JOIN/聚合是否正确。",
+        "The previous query did not meet requirements. Re-check each condition of "
+        "the question against the SQL's WHERE/JOIN/aggregation.",
+    )
+
+
 def render_reasoning_context(
     history: list[dict[str, str]],
     nodes: tuple[str, ...] = ("gen_sql", "planner"),
@@ -151,7 +198,8 @@ def make_analyze_error(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=300,
+                # 推理模型 reasoning 占用预算,300 会导致诊断文本被截断/为空
+                max_tokens=800,
                 metadata={
                     "node": "analyze_error",
                     "session_id": state.session_id,
@@ -167,7 +215,9 @@ def make_analyze_error(
                 # (and metadata_check actually runs).
                 return {"no_sql": True, "error_feedback": "", "error_analysis": analysis}
             if not analysis:
-                return {}
+                # LLM 调用成功但输出为空:确定性兜底诊断替代静默放行,
+                # 生成方下一轮仍能得到可执行的修正方向(而非空诊断)。
+                analysis = _fallback_analysis(error_text, state.lang)
 
             match = ROLLBACK_TARGET_RE.search(analysis)
             parsed = match.group(1).lower() if match else ""

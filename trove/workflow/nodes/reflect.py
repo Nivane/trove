@@ -90,10 +90,30 @@ Respond with ONE of:
 - "RETRY: <reason>" — the result is wrong and needs regenerating
 - "EMPTY" — the result is empty but the SQL looks correct (data might not exist)
 - "NO_SQL: <reason>" — the question is not a data query (table meaning, term definition, knowledge question); no SQL result can answer it
+
+Be concise: at most 2-3 short sentences of analysis, and ALWAYS end your response with the verdict line alone.
 """
 
 MAX_TOTAL_RETRIES = 10
 MAX_SEMANTIC_RETRIES = 3  # 连续纯语义 RETRY 上限(执行成功后仍被连续打回)
+
+
+def _extract_verdict(response: str) -> str:
+    """从回复中提取裁决词:逐行从末尾向前找 OK/EMPTY/RETRY:/NO_SQL: 行。
+
+    推理模型(DeepSeek)常把整段 reasoning 放在 content 里、裁决词单列
+    在末尾行。行首精确匹配避免把正文中提到的 "OK" 误当裁决。
+    找不到时返回原文(调用方按不可解析处理)。
+    """
+    for line in reversed((response or "").splitlines()):
+        m = re.match(r"^\s*(OK|EMPTY)\s*$", line, re.I)
+        if m:
+            return m.group(1).upper()
+        m = re.match(r"^\s*(RETRY|NO_SQL)\s*:?\s*(.*)$", line, re.I)
+        if m:
+            suffix = m.group(2).strip()
+            return f"{m.group(1).upper()}: {suffix}" if suffix else m.group(1).upper()
+    return (response or "").strip()
 
 
 def make_reflect(
@@ -145,7 +165,9 @@ def make_reflect(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=300,
+                # 推理模型会把预算花在 reasoning 上(实测 300 导致 content 为空、
+                # 裁决从未产出);800 给 reasoning+裁决行都留出空间
+                max_tokens=800,
                 metadata={
                     "node": "reflect",
                     "session_id": state.session_id,
@@ -153,7 +175,7 @@ def make_reflect(
                     "question": state.question[:80],
                 },
             )
-            verdict = response.strip().upper()
+            verdict = _extract_verdict(response)
             llm_detail = {
                 "model": model,
                 "elapsed_ms": int((time.monotonic() - start) * 1000),
@@ -161,10 +183,40 @@ def make_reflect(
                 "output_preview": response[:200],
             }
 
+            if verdict == "" or verdict == "NONE" or not re.match(r"^(OK|RETRY|NO_SQL|EMPTY)\b", verdict):
+                # 空输出/不可解析 = 语义检查没有发生。静默放行会把错误结果
+                # 直接交付(实测:3 列结果回答单值问题被空裁决放行)。
+                # 保守处理:按 RETRY 走修正循环,语义重试上限保证收敛。
+                logger.warning(
+                    "Reflect judge returned unparseable verdict (%r); treating as RETRY",
+                    response[:80],
+                )
+                reason = (
+                    "the judge could not verify the result (empty or unparseable "
+                    "verdict) — re-check that the result columns and values exactly "
+                    "answer the question"
+                )
+                semantic_retries = state.semantic_retries + 1
+                if (
+                    state.retry_count >= max_retries
+                    or semantic_retries >= MAX_SEMANTIC_RETRIES
+                ):
+                    return {
+                        "verdict": "OK", "forced": True, "reason": reason,
+                        "semantic_retries": 0, "llm": llm_detail,
+                    }
+                return {
+                    "verdict": "RETRY",
+                    "reason": reason,
+                    "retry_count": state.retry_count + 1,
+                    "semantic_retries": semantic_retries,
+                    "llm": llm_detail,
+                }
+
             if verdict.startswith("OK"):
                 return {"verdict": "OK", "semantic_retries": 0, "llm": llm_detail}
             elif verdict.startswith("RETRY"):
-                reason = response.replace("RETRY:", "").replace("RETRY", "").strip()
+                reason = re.sub(r"(?i)^retry\s*:?\s*", "", verdict).strip()
                 # 纯语义 RETRY(上一次执行成功、无执行错误):欠定问题法官
                 # 可能无限重审,连续打回超过上限即强制接受——预算花在
                 # 执行错误/规则违反上,不花在语义拉锯上。
@@ -194,7 +246,7 @@ def make_reflect(
                 # The question is not answerable by SQL — route to the
                 # metadata answer path instead of regenerating. Not a
                 # retry: no retry_count increment, no forced-OK at cap.
-                reason = re.sub(r"(?i)no_sql\s*:?\s*", "", response).strip()
+                reason = re.sub(r"(?i)no_sql\s*:?\s*", "", verdict).strip()
                 return {
                     "verdict": "NO_SQL",
                     "reason": reason,

@@ -811,6 +811,39 @@ class TestBilingualPrompts:
         assert "over-restrictive" in en_system
         assert "extra cautious" in en_system
 
+    async def test_reflect_empty_verdict_treated_as_retry(self):
+        """空输出/不可解析裁决不得静默放行——语义检查没有发生,按 RETRY 修正。"""
+        from trove.workflow.nodes.reflect import make_reflect
+
+        class EmptyLLM:
+            async def chat(self, model, messages, **kwargs):
+                return ""
+
+        node = make_reflect(EmptyLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            question="what is the increase rate", row_count=1,
+            columns=["a", "b", "c"], rows=[[1, 2, 3]],
+        ))
+        assert update["verdict"] == "RETRY"
+        assert "unparseable" in update["reason"]
+        assert update["retry_count"] == 1
+
+    async def test_reflect_unparseable_verdict_forced_ok_at_cap(self):
+        """空裁决连续打回达语义上限 → 强制接受,保证收敛。"""
+        from trove.workflow.nodes.reflect import make_reflect
+
+        class EmptyLLM:
+            async def chat(self, model, messages, **kwargs):
+                return "  \n"
+
+        node = make_reflect(EmptyLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            question="what is the increase rate", row_count=1,
+            columns=["x"], rows=[[1]], semantic_retries=2,
+        ))
+        assert update["verdict"] == "OK"
+        assert update["forced"] is True
+
 
 class TestPlanner:
     async def test_planner_writes_plan(self):

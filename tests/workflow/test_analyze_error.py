@@ -94,6 +94,33 @@ class TestAnalyzeError:
         node = make_analyze_error(BrokenLLM(), AgentConfig(target="m"))
         assert await node(make_state(error_feedback="boom")) == {}
 
+    async def test_empty_output_gets_deterministic_fallback(self):
+        """LLM 调用成功但输出为空 → 按错误模式给出确定性兜底诊断,不静默放行。"""
+        class EmptyLLM:
+            async def chat(self, model, messages, **kwargs):
+                return ""
+
+        node = make_analyze_error(EmptyLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            error_feedback="Validation rule: list question returned no rows",
+            lang="en",
+        ))
+        assert "empty result" in update["error_analysis"].lower()
+        assert "filter" in update["error_analysis"].lower()
+        assert update["rollback_target"] == "gen_sql"
+
+    async def test_empty_output_fallback_syntax_pattern(self):
+        class EmptyLLM:
+            async def chat(self, model, messages, **kwargs):
+                return ""
+
+        node = make_analyze_error(EmptyLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            error_feedback="MySQL execution error: (1064, syntax error",
+            lang="en",
+        ))
+        assert "syntax" in update["error_analysis"].lower()
+
     async def test_no_sql_verdict(self):
         """诊断判定问题本身不是 SQL 问题 → no_sql 出口 + 清掉陈旧反馈。"""
         class LLM:
