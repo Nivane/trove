@@ -26,6 +26,7 @@ from trove.services.kb.lesson_distill import (
     DISTILL_SYSTEM,
     build_distill_prompt,
     dedupe_by_pattern,
+    is_noise_lesson,
     parse_lesson,
 )
 from trove.services.kb.service import KbService
@@ -71,6 +72,9 @@ async def main() -> None:
         lesson = parse_lesson(response)
         if lesson is None:
             print(f"✗ 解析失败跳过: {f.get('question', '')[:60]}")
+            continue
+        if is_noise_lesson(f.get("question", ""), lesson):
+            print(f"✗ 管线噪声跳过: {lesson['pattern'][:60]}")
             continue
         lessons.append(lesson)
         print(f"· {lesson['pattern']} → {lesson['note'][:90]}")

@@ -3,6 +3,7 @@
 from trove.services.kb.lesson_distill import (
     build_distill_prompt,
     dedupe_by_pattern,
+    is_noise_lesson,
     parse_lesson,
 )
 
@@ -72,3 +73,50 @@ class TestPrompt:
         assert FAILURE["gold_sql"] in prompt
         assert FAILURE["pred_sql"] in prompt
         assert "mismatch" in prompt
+
+
+class TestNoiseGate:
+    """管线噪声过滤:一致性拉锯/语法错误记录不是可复用教训。"""
+
+    def test_accepts_verbatim_question_phrase(self):
+        assert not is_noise_lesson(
+            FAILURE["question"],
+            {"pattern": "lowest approved amount", "note": "ORDER BY amount ASC LIMIT 1"},
+        )
+
+    def test_rejects_pattern_not_in_question(self):
+        """pattern 必须是问题原文子串(蒸馏提示词的合约)。"""
+        assert is_noise_lesson(
+            FAILURE["question"],
+            {
+                "pattern": "Candidate SQL variants returned different results "
+                "(1 vs 1 rows) — the query logic is unstable; verify and regenerate.",
+                "note": "同上",
+            },
+        )
+
+    def test_rejects_error_message_patterns(self):
+        assert is_noise_lesson(
+            FAILURE["question"],
+            {
+                "pattern": '[SQL_003] MySQL execution error: (1064, "You have '
+                "an error in your SQL syntax",
+                "note": "SQL 语法错误",
+            },
+        )
+
+    def test_rejects_note_duplicating_pattern(self):
+        """note 与 pattern 相同 = 没有提炼出教训。"""
+        assert is_noise_lesson(
+            FAILURE["question"],
+            {"pattern": "lowest approved amount", "note": "Lowest approved amount"},
+        )
+
+    def test_rejects_overlong_pattern(self):
+        assert is_noise_lesson(
+            FAILURE["question"],
+            {"pattern": "x" * 41, "note": "有内容的教训"},
+        )
+
+    def test_rejects_empty_pattern(self):
+        assert is_noise_lesson(FAILURE["question"], {"pattern": "", "note": "有内容的教训"})

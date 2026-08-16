@@ -75,3 +75,36 @@ def dedupe_by_pattern(
             fresh.append(e)
             seen.add(p)
     return fresh
+
+
+# 管线噪声句式:一致性拉锯、语法错误、引擎报错——不是可复用教训
+_ERROR_PATTERN_RE = re.compile(
+    r"(\[sql_|sql syntax|syntax error|execution error|candidate sql variants"
+    r"|mysql|sqlite|unstable)",
+    re.IGNORECASE,
+)
+
+MAX_PATTERN_LEN = 40
+
+
+def is_noise_lesson(question: str, lesson: dict[str, Any]) -> bool:
+    """管线噪声判断:pattern 必须是问题原文中的短判别短语。
+
+    蒸馏提示词约定 pattern 取问题里 2-6 词的原文短语;一致性拉锯
+    ("variants returned different results")与语法错误记录会把整句错误
+    文本写成 pattern,永远命中不了新问题,还占 Hint Bank 配额。
+    """
+    pattern = str(lesson.get("pattern", "") or "").strip()
+    note = str(lesson.get("note", "") or "").strip()
+    p = pattern.lower()
+    if not p:
+        return True
+    if len(p) > MAX_PATTERN_LEN:
+        return True
+    if _ERROR_PATTERN_RE.search(p):
+        return True
+    if p not in (question or "").lower():
+        return True
+    if note.lower() == p:
+        return True
+    return False
