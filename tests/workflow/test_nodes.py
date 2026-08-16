@@ -1281,6 +1281,21 @@ class TestSemanticPromptGuards:
         assert "作用域" in PLANNER_SYSTEM_PROMPT_ZH
         assert "最低" in PLANNER_SYSTEM_PROMPT_ZH
 
+    def test_gen_prompt_carries_generalized_lessons(self):
+        """Hint Bank 通用教训升入 system prompt(跨数据集生效):
+        极值 ORDER BY LIMIT 1 / 多重最高级单排序 / 直接 FK join / 按点名实体选择。"""
+        from trove.workflow.nodes.gen_sql import (
+            SQL_GENERATION_SYSTEM_PROMPT, SQL_GENERATION_SYSTEM_PROMPT_ZH,
+        )
+        assert "CTE" in SQL_GENERATION_SYSTEM_PROMPT  # 极值:不用 CTE/嵌套子查询
+        assert "breaks ties" in SQL_GENERATION_SYSTEM_PROMPT  # 多重最高级:次级条件只裁决平局
+        assert "row granularity" in SQL_GENERATION_SYSTEM_PROMPT  # 直接 FK join
+        assert "entity column" in SQL_GENERATION_SYSTEM_PROMPT  # 按点名实体分组/选择
+        assert "CTE" in SQL_GENERATION_SYSTEM_PROMPT_ZH
+        assert "平局" in SQL_GENERATION_SYSTEM_PROMPT_ZH
+        assert "行粒度" in SQL_GENERATION_SYSTEM_PROMPT_ZH
+        assert "实体列" in SQL_GENERATION_SYSTEM_PROMPT_ZH
+
     def test_reflect_prompt_carries_condition_completeness(self):
         from trove.workflow.nodes.reflect import (
             REFLECT_SYSTEM_PROMPT, REFLECT_SYSTEM_PROMPT_ZH,
