@@ -471,7 +471,9 @@ def make_route_intent(
             try:
                 response = await llm.chat(
                     model=model,
-                    max_tokens=16,
+                    # 推理模型 reasoning 占用预算,16 会导致 content 为空、
+                    # 意图判定永远回退 regex;100 给 reasoning+单词留出空间
+                    max_tokens=100,
                     messages=[
                         {"role": "system", "content": intent_prompt},
                         {"role": "user", "content": state.question},

@@ -169,16 +169,20 @@ class LLMGateway:
                     "arguments": tc.function.arguments or "{}",
                 })
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            reasoning = getattr(message, "reasoning_content", "") or ""
+            content = message.content or ""
             _record_generation(model, messages, response, metadata)
             _record_local_call(
-                model, messages, message.content or "", metadata, elapsed_ms,
-                temperature=temperature,
-                reasoning=getattr(message, "reasoning_content", "") or "",
+                model, messages, content, metadata, elapsed_ms,
+                temperature=temperature, reasoning=reasoning,
             )
+            if not content and reasoning:
+                # 与 _call_litellm 同策略:纯推理输出回退到 reasoning 正文
+                content = reasoning
             return {
-                "content": message.content or "",
+                "content": content,
                 "tool_calls": tool_calls,
-                "reasoning": getattr(message, "reasoning_content", "") or "",
+                "reasoning": reasoning,
             }
         except Exception as e:
             raise LLMError(message=f"LLM call failed: {e}", model=model) from e
@@ -299,12 +303,23 @@ class LLMGateway:
         _record_generation(model, messages, response, metadata)
         message = response.choices[0].message
         reasoning = getattr(message, "reasoning_content", "") or ""
+        content = message.content or ""
         _record_local_call(
-            model, messages, message.content or "",
+            model, messages, content,
             metadata, int((time.monotonic() - start) * 1000),
             temperature=temperature, reasoning=reasoning,
         )
-        return message.content or ""
+        # 推理模型可能把全部输出放进 reasoning_content、content 为空
+        # (DeepSeek 实测:38s 思考后 content="" 而 reasoning 有正文)。
+        # content 为空时回退到 reasoning,否则调用方拿到空串,SQL 提取/
+        # 裁决解析全部落空。
+        if not content and reasoning:
+            logger.info(
+                "LLM returned empty content with reasoning (%d chars); "
+                "falling back to reasoning text", len(reasoning),
+            )
+            return reasoning
+        return content
 
     async def _call_litellm_stream(
         self,
