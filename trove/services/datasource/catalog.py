@@ -15,6 +15,39 @@ from trove.services.datasource.registry import ConnectorRegistry
 
 logger = get_logger(__name__)
 
+# 停用词:子串匹配会把 "to" 命中 bank_to/account_to、"an" 命中 balance 等,
+# 产生假阳性表匹配(实测 BIRD 题 "…statements to be issued" 误中 order 表)。
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "for", "nor", "so", "yet",
+    "to", "of", "in", "on", "at", "by", "with", "from", "into", "over",
+    "is", "are", "was", "were", "be", "been", "being", "am", "do", "does",
+    "did", "has", "have", "had", "will", "would", "can", "could", "shall",
+    "should", "may", "might", "must", "not", "no", "if", "then", "than",
+    "that", "this", "these", "those", "it", "its", "as", "we", "you",
+    "they", "them", "their", "he", "she", "him", "her", "his", "who",
+    "whom", "which", "what", "when", "where", "how", "why", "all", "any",
+    "each", "both", "few", "more", "most", "some", "such", "there",
+    "also", "only", "very", "just", "about", "between", "during",
+    "because", "while", "after", "before", "until", "above", "below",
+    "per", "via", "due", "out", "up", "down", "off",
+}
+
+
+def _token_variants(token: str) -> list[str]:
+    """轻量词形归一:复数/过去式也参与子串匹配。
+
+    "clients"→"client"、"issued"→"issue" 才能命中表/列名;不改变子串
+    语义(变体只是额外的候选,原 token 始终保留)。
+    """
+    variants = [token]
+    if token.endswith("ies") and len(token) > 4:
+        variants.append(token[:-3] + "y")
+    elif token.endswith("s") and len(token) > 3:
+        variants.append(token[:-1])
+    if token.endswith("ed") and len(token) > 4:
+        variants.append(token[:-1])
+    return variants
+
 
 class CatalogService:
     """Browsing and search service for database metadata."""
@@ -125,17 +158,25 @@ class CatalogService:
 
         # Tokenize the query and match individual words against table and
         # column names (the whole query string almost never is a substring
-        # of a table/column name).
-        tokens = {t.lower() for t in re.findall(r"\w+", query) if len(t) >= 2}
+        # of a table/column name). Stopwords are dropped ("to" would
+        # spuriously hit bank_to/account_to) and plural/past forms are
+        # normalized ("clients" → "client").
+        tokens = {
+            t.lower() for t in re.findall(r"\w+", query)
+            if len(t) >= 2 and t.lower() not in _STOPWORDS
+        }
+        variants: set[str] = set()
+        for tok in tokens:
+            variants.update(_token_variants(tok))
 
         results = []
         for table in schema.tables:
             # Match on table name or column names
-            name_match = any(tok in table.name.lower() for tok in tokens)
+            name_match = any(v in table.name.lower() for v in variants)
             col_match = any(
-                tok in c.name.lower()
+                v in c.name.lower()
                 for c in table.columns
-                for tok in tokens
+                for v in variants
             )
 
             if name_match or col_match:
