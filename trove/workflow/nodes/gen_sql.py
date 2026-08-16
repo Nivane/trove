@@ -41,6 +41,7 @@ Guidelines:
 10. Unit consistency: the question's own wording decides WHAT is being measured. "Percentage of accounts/clients/rows" → count rows (SUM(cond) / COUNT(*)); "percentage of amount/total amount" → sum amounts (SUM(CASE cond THEN amount) / SUM(amount)). When the Evidence formula's unit conflicts with the question's unit, the question's unit wins — Evidence resolves column/value meanings, not what is counted.
 11. Reference examples are authoritative: when a Reference example's question closely matches the current question, treat its SQL as the standard formulation — reproduce its joins, filters, grouping, and result columns exactly. Do not "improve" or reinterpret it.
 12. Result granularity: a plain "list the X ..." question (no ranking words like "top N") returns ONE ROW PER MATCHING RECORD — do NOT add SELECT DISTINCT or DISTINCT inside aggregate functions (e.g. AVG(DISTINCT x), SUM(DISTINCT x)) to collapse duplicates unless the question explicitly asks for unique/unduplicated values (e.g. "unique", "distinct", "different X"). COUNT(DISTINCT) is allowed when the question asks for the NUMBER of distinct entities ("number of districts", "how many different X"). Only ranking questions ("top ten X by Y") may deduplicate to one row per Y.
+13. Answer columns: output ONLY the columns the question asks for. For a "list all the X" question that does not name columns, output just the identifying column of X (its ID — e.g. trans_id, account_id) or the attribute the question names; do NOT dump the full record (dates, amounts, symbols, statuses) unless the question explicitly names them.
 
 Output format:
 ```sql
@@ -63,6 +64,7 @@ SQL_GENERATION_SYSTEM_PROMPT_ZH = """你是 SQL 生成助手，负责把自然�
 10. 口径一致性：问题自身措辞决定"数什么"。"percentage of accounts/clients/rows" → 按行数统计（SUM(条件) / COUNT(*)）；"percentage of amount/total amount" → 按金额求和（SUM(CASE 条件 THEN amount) / SUM(amount)）。当 Evidence 公式的口径与问题措辞冲突时，以问题措辞为准——Evidence 只解决列/取值含义，不决定统计对象。
 11. 参考示例是权威的：当某个 Reference example 的问题与当前问题高度相似时，把它的 SQL 视为标准写法——精确复刻其 join、过滤、分组和结果列，不要"改进"或重新解读它。
 12. 结果粒度：普通 "list the X ..." 问题（不含 "top N" 等排序词）应每个匹配记录返回一行——不要加 SELECT DISTINCT，也不要在聚合函数内加 DISTINCT（如 AVG(DISTINCT x)、SUM(DISTINCT x)）去重，除非问题明确要求唯一/去重值（如 "unique"、"distinct"、"different X"）。问题询问"不同实体的数量"（"number of districts"、"how many different X"）时允许 COUNT(DISTINCT)。只有排序类问题（"top ten X by Y"）才按 Y 去重为一行。
+13. 答案列：只输出问题要求的列。"list all the X" 类问题若未指明列，只输出 X 的标识列（其 ID，如 trans_id、account_id）或问题点名的属性列；不要输出整条记录的日期、金额、符号、状态等额外列，除非问题明确点名这些列。
 
 输出格式：
 ```sql

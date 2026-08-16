@@ -79,6 +79,11 @@ class WorkflowState(BaseModel):
     # operator.add: updates from different nodes accumulate.
     kb_hits: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
 
+    # KB 精确命中:gen_sql 直接采用了与问题几乎逐词一致的示例 SQL
+    # (未经过模型生成)。reflect 对这类答案跳过语义裁决(执行与
+    # 确定性规则已通过,KB 是标准写法)。
+    kb_exact_match: bool = False
+
     # schema_linking artifacts
     matched_tables: list[str] = Field(default_factory=list)
     schema_context: str = ""

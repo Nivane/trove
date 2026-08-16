@@ -178,6 +178,15 @@ def make_reflect(
         if state.error:
             return {}
 
+        # KB 精确命中:SQL 直接取自 KB 标准写法(未经过模型生成),
+        # 执行与确定性规则都已通过——跳过语义裁决,避免法官对
+        # 金标准答案做无谓的语义拉锯(实测:gold SQL 被连打回 2 轮)。
+        if state.kb_exact_match and state.sql:
+            return {
+                "verdict": "OK",
+                "reason": "KB exact match (canonical answer from the knowledge base)",
+            }
+
         # Fast path: empty result is acceptable (no data matches).
         # List questions returning no rows are already intercepted by
         # deterministic rules before this node. Questions with a metadata
