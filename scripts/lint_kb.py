@@ -27,6 +27,7 @@ from trove.services.kb.lint import (
     lint_lessons,
     lint_tables,
     lint_terms,
+    parse_enum_values,
 )
 from trove.services.kb.service import KbService, _parse_file, resolve_kb_root
 
@@ -46,17 +47,18 @@ async def check_enums(adapter, table_payloads: dict[str, dict]) -> list[str]:
     issues = []
     for table_name, payload in table_payloads.items():
         for col, enum_text in (payload.get("enums") or {}).items():
-            known = {
-                e.split("=", 1)[0].strip()
-                for e in enum_text.split(";") if e.strip()
-            }
+            known = parse_enum_values(enum_text)
             if not known:
                 continue
             try:
                 rows = (await adapter.execute(
                     f"SELECT DISTINCT `{col}` FROM `{table_name}`"
                 )).rows
-                actual = {str(r[0]) for r in rows if r[0] is not None}
+                # 空串/空白取值是数据噪声,写不出含义,不计入缺口
+                actual = {
+                    str(r[0]) for r in rows
+                    if r[0] is not None and str(r[0]).strip()
+                }
             except Exception as e:
                 issues.append(f"枚举探测失败 {table_name}.{col}: {e}")
                 continue

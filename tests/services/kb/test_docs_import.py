@@ -64,3 +64,44 @@ class TestLoadDocsTables:
         )
         docs = load_docs_tables(tmp_path)
         assert len(docs["students"]) == 1
+
+
+class TestBirdCsvEdgeCases:
+    """BIRD 官方 CSV 的真实形态:column_name 兜底、非文本列的单位/格式说明、全角冒号。"""
+
+    def test_column_name_falls_back_when_description_empty(self, tmp_path):
+        """district.csv 的 A4:描述只写在 column_name 列,column_description 为空。"""
+        (tmp_path / "district.csv").write_text(
+            "original_column_name,column_name,column_description,data_format,value_description\n"
+            "A4,number of inhabitants,,text,\n"
+            "A11,average salary,average salary,integer,\n",
+            encoding="utf-8",
+        )
+        docs = load_docs_tables(tmp_path)
+        assert docs["district"]["A4"]["description"] == "number of inhabitants"
+        assert docs["district"]["A11"]["description"] == "average salary"
+
+    def test_unit_and_format_notes_are_not_enums(self, tmp_path):
+        """数值/日期列的 value_description 是单位或格式说明(unit：US dollar、
+        in the form YYMMDD),不是枚举——只有文本列的才作枚举导入。"""
+        (tmp_path / "loan.csv").write_text(
+            "original_column_name,column_description,data_format,value_description\n"
+            "amount,approved amount,integer,unit：US dollar\n"
+            "date,approval date,date,in the form YYMMDD\n"
+            "status,repayment status,text,'A' stands for contract finished\n",
+            encoding="utf-8",
+        )
+        docs = load_docs_tables(tmp_path)
+        assert docs["loan"]["amount"]["enums"] == []
+        assert docs["loan"]["date"]["enums"] == []
+        assert docs["loan"]["status"]["enums"] == ["'A' stands for contract finished"]
+
+    def test_full_width_colon_normalized_to_eq(self, tmp_path):
+        """client.gender 的 value_description 用全角冒号(F：female),归一成 = 便于解析。"""
+        (tmp_path / "client.csv").write_text(
+            "original_column_name,column_description,data_format,value_description\n"
+            'gender,gender,text,"F：female \nM：male"\n',
+            encoding="utf-8",
+        )
+        docs = load_docs_tables(tmp_path)
+        assert docs["client"]["gender"]["enums"] == ["F=female\nM=male"]

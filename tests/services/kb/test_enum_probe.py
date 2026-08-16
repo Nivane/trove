@@ -11,13 +11,33 @@ class TestMergeIntoNotes:
         merged = merge_into_notes(notes, {"account": {"frequency": "A; B; C"}})
         assert merged["tables"][0]["columns"][0]["enums"] == ["A", "B", "C"]
 
-    def test_existing_enums_not_clobbered_without_overwrite(self):
-        """人工已写的枚举含义(如 A=周发放)是宝贵注释,默认探测不得覆盖。"""
+    def test_existing_meanings_kept_and_missing_values_appended(self):
+        """已有枚举含义不覆盖,但探测到的缺失取值要补齐(裸值,无含义)。"""
         notes = {"tables": [{"name": "account", "columns": [
             {"name": "frequency", "description": "x", "enums": ["A=周发放"]},
         ]}]}
-        merged = merge_into_notes(notes, {"account": {"frequency": "X; Y"}})
+        merged = merge_into_notes(notes, {"account": {"frequency": "A; X; Y"}})
+        assert merged["tables"][0]["columns"][0]["enums"] == ["A=周发放", "X", "Y"]
+
+    def test_known_values_not_duplicated(self):
+        """探测值已出现在现有枚举里(A=周发放)→ 不重复追加裸值。"""
+        notes = {"tables": [{"name": "account", "columns": [
+            {"name": "frequency", "description": "x", "enums": ["A=周发放"]},
+        ]}]}
+        merged = merge_into_notes(notes, {"account": {"frequency": "A"}})
         assert merged["tables"][0]["columns"][0]["enums"] == ["A=周发放"]
+
+    def test_bird_quoted_enums_parsed_for_known_values(self):
+        """BIRD 格式("'A' stands for ...")里的取值也算已知,只补真正缺的。"""
+        notes = {"tables": [{"name": "loan", "columns": [
+            {"name": "status", "description": "x",
+             "enums": ["'A' stands for contract finished, no problems;\n'C' stands for running contract"]},
+        ]}]}
+        merged = merge_into_notes(notes, {"loan": {"status": "A; B; C; D"}})
+        assert merged["tables"][0]["columns"][0]["enums"] == [
+            "'A' stands for contract finished, no problems;\n'C' stands for running contract",
+            "B", "D",
+        ]
 
     def test_overwrite_replaces_existing(self):
         notes = {"tables": [{"name": "account", "columns": [

@@ -13,6 +13,8 @@ import asyncio
 import copy
 from typing import Any
 
+from trove.services.kb.lint import parse_enum_values
+
 PROBE_LIMIT = 20            # distinct 取值 ≤ 此数才记入枚举
 DEFAULT_MAX_ROWS = 2_000_000  # 行数护栏:超大表(如 1M 交易表)也允许探测
 DEFAULT_TIMEOUT_S = 20        # 单列探测超时(慢列静默跳过)
@@ -67,7 +69,9 @@ def merge_into_notes(
     """Fill probed enum values into a schema_notes.yml structure.
 
     Non-destructive by default: columns that already carry enum notes
-    (人工写好的取值含义) are left untouched unless overwrite=True.
+    (人工写好的取值含义) keep their entries, and only probed values
+    NOT already mentioned are appended as bare values (含义未知也好过
+    取值在 KB 里不存在——BIRD 官方 value_description 常漏取值)。
     Returns a new dict; the caller's structure is not mutated.
     """
     merged = copy.deepcopy(notes)
@@ -87,7 +91,13 @@ def merge_into_notes(
             existing = [
                 str(e).strip() for e in (col.get("enums") or []) if str(e).strip()
             ]
-            if existing and not overwrite:
+            if overwrite or not existing:
+                col["enums"] = values.split("; ")
                 continue
-            col["enums"] = values.split("; ")
+            known = set()
+            for entry in existing:
+                known |= parse_enum_values(entry)
+            missing = [v for v in values.split("; ") if v and v not in known]
+            if missing:
+                col["enums"] = existing + missing
     return merged

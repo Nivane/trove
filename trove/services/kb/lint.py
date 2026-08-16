@@ -24,6 +24,28 @@ from trove.services.kb.lesson_distill import MAX_PATTERN_LEN
 _ID_LIKE_SUFFIXES = ("_id", "_to", "_from", "_code", "id")
 
 
+def parse_enum_values(enum_text: str) -> set[str]:
+    """枚举文本 → 取值集合(兼容三种来源格式):
+
+    - "A=含义" 分号列表(LLM 草稿/人工;全角冒号 "F：female" 同义)
+    - "'A' stands for ..." BIRD value_description 原文(多行)
+    - "VALUE1; VALUE2" 探测原始值(无 "=" 无引号 → 整段为值)
+    """
+    values: set[str] = set()
+    for part in re.split(r"[;\n]", enum_text):
+        entry = part.strip()
+        if not entry:
+            continue
+        if "=" in entry or "：" in entry:
+            key = entry.split("=" if "=" in entry else "：", 1)[0].strip()
+        else:
+            m = re.match(r"""['"]([^'"]+)['"]""", entry)
+            key = m.group(1).strip() if m else entry
+        if key:
+            values.add(key)
+    return values
+
+
 def _parse(sql: str, dialect: str = "mysql") -> exp.Expression | None:
     """严格解析:语法错误返回 None(宽松模式下 "SELEC broken" 会被
     解析成 Alias 而非报错);调用方按需再判是否为查询语句。

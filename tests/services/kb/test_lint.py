@@ -14,6 +14,7 @@ from trove.services.kb.lint import (
     lint_lessons,
     lint_terms,
     lint_tables,
+    parse_enum_values,
 )
 
 SCHEMA = {
@@ -153,3 +154,20 @@ class TestLintLessons:
             {"pattern": "weekly statements", "note": "用 frequency 过滤", "confirmed": True},
         ])
         assert issues == []
+
+
+class TestParseEnumValues:
+    def test_eq_format(self):
+        assert parse_enum_values("A=合同已结清; B=合同结束") == {"A", "B"}
+
+    def test_bird_quoted_format(self):
+        text = ("'A' stands for contract finished, no problems;\n"
+                "'B' stands for running contract, client in debt")
+        assert parse_enum_values(text) == {"A", "B"}
+
+    def test_raw_probe_values(self):
+        assert parse_enum_values("POPLATEK MESICNE; POPLATEK TYDNE") == {
+            "POPLATEK MESICNE", "POPLATEK TYDNE"}
+
+    def test_full_width_colon_format(self):
+        assert parse_enum_values("F：female\nM：male") == {"F", "M"}

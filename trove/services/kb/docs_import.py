@@ -23,7 +23,15 @@ _HEADER_ALIASES = {
     "name": ("original_column_name", "column_name", "name"),
     "description": ("column_description", "description", "comment", "desc"),
     "enums": ("value_description", "enums", "values", "value"),
+    "format": ("data_format", "type", "format"),
+    "alias": ("column_name",),
 }
+
+# 数值/日期列的 value_description 是单位或格式说明,不是枚举
+_NON_TEXT_FORMATS = (
+    "integer", "int", "bigint", "smallint", "tinyint", "real", "double",
+    "float", "decimal", "numeric", "date", "datetime", "timestamp", "time",
+)
 
 
 def _resolve_headers(fieldnames: list[str]) -> dict[str, str | None]:
@@ -47,7 +55,18 @@ def _read_csv(path: Path) -> dict[str, dict[str, Any]]:
             if not name:
                 continue
             desc = (row.get(headers["description"] or "", "") or "").strip()
+            alias_header = headers.get("alias")
+            if not desc and alias_header:
+                # BIRD CSV 的描述有时只写在 column_name 列(如 district A4)
+                desc = (row.get(alias_header, "") or "").strip()
             enums_raw = (row.get(headers["enums"] or "", "") or "").strip()
+            fmt = (row.get(headers["format"] or "", "") or "").strip().lower()
+            if fmt in _NON_TEXT_FORMATS:
+                enums_raw = ""  # 单位/格式说明不是枚举
+            enums_raw = enums_raw.replace("：", "=")
+            enums_raw = "\n".join(
+                line.strip() for line in enums_raw.splitlines()
+            ).strip()
             cols[name] = {"description": desc, "enums": [enums_raw] if enums_raw else []}
     return cols
 

@@ -6,7 +6,7 @@ Usage:
     # 可选: --overwrite 覆盖已有枚举含义; --max-rows 行数护栏(默认 2M)
 
 Writes <cwd>/.trove/kb/<datasource>/schema_notes.yml in place.
-已有人工枚举含义的列默认不动(除非 --overwrite)。
+已有枚举含义的列保留含义、补齐缺失的探测值(除非 --overwrite)。
 """
 
 import argparse
