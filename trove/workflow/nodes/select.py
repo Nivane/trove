@@ -14,6 +14,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.core.i18n import L
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.state import WorkflowState
 
@@ -21,6 +22,20 @@ from trove.workflow.state import WorkflowState
 def _normalize_rows(rows: list[list[Any]]) -> list[tuple[str, ...]]:
     """Set comparison: sorted, stringified rows (order/type insensitive)."""
     return sorted(tuple(str(v) for v in row) for row in rows)
+
+
+def _compact_sql(sql: str, limit: int = 200) -> str:
+    """Collapse whitespace and bound length — feedback embeds in prompts."""
+    one = " ".join(sql.split())
+    return one if len(one) <= limit else one[:limit] + "…"
+
+
+def _preview_rows(rows: list[list[Any]], limit: int = 2, width: int = 40) -> str:
+    """First rows' values, bounded — the concrete difference the model needs."""
+    if not rows:
+        return "[]"
+    shown = [[str(v)[:width] for v in row] for row in rows[:limit]]
+    return "[" + "; ".join(", ".join(r) for r in shown) + "]"
 
 
 def make_select_consensus(
@@ -61,10 +76,21 @@ def make_select_consensus(
             # Budget exhausted: deliver the primary with a low-confidence
             # mark instead of degrading to an error.
             return {"consensus": False}
-        feedback = (
-            f"Candidate SQL variants returned different results "
-            f"({state.row_count} vs {alt_result.row_count} rows) — "
-            f"the query logic is unstable; verify and regenerate."
+        feedback = L(
+            state.lang,
+            (
+                f"候选 SQL 结果不一致（{state.row_count} vs {alt_result.row_count} 行）："
+                f"主候选 [{_compact_sql(state.sql)}] → {_preview_rows(state.rows)}；"
+                f"备选 [{_compact_sql(alt_sql)}] → {_preview_rows(alt_result.rows)}。"
+                f"选择最符合问题的解释并重新生成。"
+            ),
+            (
+                f"Candidate SQL variants returned different results "
+                f"({state.row_count} vs {alt_result.row_count} rows): "
+                f"primary [{_compact_sql(state.sql)}] → {_preview_rows(state.rows)}; "
+                f"alternative [{_compact_sql(alt_sql)}] → {_preview_rows(alt_result.rows)}. "
+                f"Choose the interpretation that best matches the question and regenerate."
+            ),
         )
         return {
             "error_feedback": feedback,

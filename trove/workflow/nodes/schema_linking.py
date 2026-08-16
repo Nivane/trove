@@ -27,6 +27,9 @@ from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
+# 零匹配兜底的全量表数量上限(金融 dev 集 8 张表;防超长 context)
+FALLBACK_TABLES_LIMIT = 8
+
 _QUOTED_RE = re.compile(r"['\"]([^'\"]{2,30})['\"]")
 _CAPITALIZED_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 _ALL_CAPS_RE = re.compile(r"\b[A-Z]{2,}\b")
@@ -44,7 +47,10 @@ def _dedup_tables(hits: list[TermHit]) -> list[str]:
 
 def _column_line(col: dict[str, Any], notes: TableNotes | None) -> str:
     desc = notes.columns.get(col["name"]) if notes else None
+    enums = notes.enums.get(col["name"]) if notes else ""
     base = f"{col['name']} ({col['type']})"
+    if enums:
+        base += f" — values: {enums}"
     return f"{base} — {desc}" if desc else base
 
 
@@ -148,6 +154,7 @@ def make_schema_linking(
     max_tables: int = 5,
     kb: KbService | None = None,
     connectors: ConnectorRegistry | None = None,
+    fallback_all: bool = True,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the schema_linking node bound to catalog and knowledge base.
 
@@ -157,6 +164,9 @@ def make_schema_linking(
         kb: Optional knowledge base for term matching and annotations.
         connectors: Registry providing the active datasource name (KB scope).
             KB is only consulted when a datasource context exists.
+        fallback_all: When nothing matched, fall back to the full table list
+            (bounded) so generation stays anchored to the real schema.
+            Disable in clarify mode, where zero matches should ask the user.
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -170,11 +180,17 @@ def make_schema_linking(
         # Knowledge base is scoped to the active datasource
         datasource = connectors.default_name if connectors is not None else ""
 
+        # 带上下文重跑：诊断文本参与检索，诊断中提到的表/术语可重新进入匹配
+        search_query = (
+            (state.question + "\n" + state.error_analysis).strip()
+            if state.error_analysis else state.question
+        )
+
         # 1. Knowledge base term matching (substring, works for Chinese)
         term_hits: list[TermHit] = []
         if kb is not None and datasource:
             await kb.ensure_synced(default_datasource=datasource)
-            term_hits = await kb.search_terms(state.question, datasource)
+            term_hits = await kb.search_terms(search_query, datasource)
 
         update: dict[str, Any]
 
@@ -186,7 +202,7 @@ def make_schema_linking(
         else:
             # 2. Catalog table search (existing behavior)
             try:
-                matches = await catalog.search_tables(state.question, limit=max_tables)
+                matches = await catalog.search_tables(search_query, limit=max_tables)
             except Exception as e:
                 logger.error("Schema linking failed: %s", e)
                 return {"error": f"Schema linking failed: {e}"}
@@ -196,6 +212,22 @@ def make_schema_linking(
             for table in _dedup_tables(term_hits):
                 if table not in matched_names:
                     matched_names.append(table)
+
+            # 回退重跑:上一轮已匹配的表保留(并集),修"漏表"不丢旧匹配
+            if state.error_feedback or state.error_analysis or state.retry_count:
+                for table in state.matched_tables:
+                    if table not in matched_names:
+                        matched_names.append(table)
+
+            # 兜底:分词/复数/缩写匹配不到任何表时(典型英文 BIRD 题),
+            # 退回全量表清单,保证生成锚定在真实 schema 上。
+            # clarify 模式不需要兜底——0 匹配应当触发反问用户。
+            if not matched_names and fallback_all:
+                try:
+                    all_tables = await catalog.list_tables(datasource or None)
+                    matched_names = [t["name"] for t in all_tables][:FALLBACK_TABLES_LIMIT]
+                except Exception:
+                    matched_names = []
 
             # 3. Human annotations merged into the schema context
             notes = (

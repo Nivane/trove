@@ -19,12 +19,14 @@ class TestWorkflowState:
         assert state.final_response == ""
         assert state.kb_hits == []
         assert state.history == ""
+        assert state.time_context == ""
         assert state.candidates == []
         assert state.clarification_question == ""
         assert state.plan == ""
         assert state.consensus is True
         assert state.intent == "query"
         assert state.intent_answer == ""
+        assert state.no_sql is False
 
     def test_session_id_and_question_required(self):
         with pytest.raises(ValidationError):
@@ -55,6 +57,7 @@ class TestGenSQLState:
         assert state.validation_errors == []
         assert state.error == ""
         assert state.error_feedback == ""
+        assert state.time_context == ""
 
     def test_attempts_are_ints(self):
         state = GenSQLState(question="q", schema_context="", dialect="sqlite", attempts=2)

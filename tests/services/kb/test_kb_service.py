@@ -85,6 +85,60 @@ def write_kb(kb_dir, ds="demo"):
     (d / "examples.yml").write_text(EXAMPLES, encoding="utf-8")
 
 
+class TestTableAnchoredRetrieval:
+    """Evidence layer: runtime deterministic filtering by matched tables."""
+
+    ALL_TABLES = ["loan", "account", "district", "client"]
+
+    async def test_terms_filtered_by_matched_tables(self, kb, kb_dir):
+        """问题命中两个术语；只匹配 loan 时，绑定 district/client 的术语被过滤。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+
+        hits = await kb.search_terms(
+            "平均贷款金额 客户数量", "demo",
+            tables=["loan", "account"], all_tables=self.ALL_TABLES,
+        )
+        assert [h.term for h in hits] == ["平均贷款金额"]
+
+    async def test_table_agnostic_terms_survive(self, kb, kb_dir):
+        """不绑定任何表的术语（无 tables 字段）不过滤。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        # 手动补一个无表绑定的术语
+        import yaml as _yaml
+        sem = kb_dir / "demo" / "semantics.yml"
+        doc = _yaml.safe_load(sem.read_text(encoding="utf-8"))
+        doc["terms"].append({"term": "金卡", "mapping": "card_type='gold'", "definition": "黄金卡"})
+        sem.write_text(_yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        hits = await kb.search_terms(
+            "金卡 客户数量", "demo",
+            tables=["loan"], all_tables=self.ALL_TABLES,
+        )
+        terms = [h.term for h in hits]
+        assert "金卡" in terms          # 无表绑定 → 保留
+        assert "客户数量" not in terms  # 绑定 client（未匹配）→ 过滤
+
+    async def test_examples_filtered_and_boosted_by_tables(self, kb, kb_dir):
+        """提到未匹配表（client）的示例被过滤；提到匹配表（loan）的保留并加分。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+
+        hits = await kb.search_examples(
+            "地区 贷款", "demo",
+            tables=["loan"], all_tables=self.ALL_TABLES,
+        )
+        # client 示例被过滤
+        assert all("client" not in (h.question + h.sql).lower() for h in hits)
+        # loan 示例保留
+        assert any("loan" in h.sql.lower() for h in hits)
+        # 表锚是加分项：loan 示例得分更高
+        loan_hit = next(h for h in hits if "loan" in h.sql.lower())
+        assert loan_hit.score >= 3
+
+
 class TestEnablement:
     async def test_disabled_when_kb_dir_missing(self, kb):
         assert kb.enabled is False

@@ -15,7 +15,7 @@ from typing import Any
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
-from trove.core.i18n import L, detect_language
+from trove.core.i18n import L
 from trove.llm.gateway import LLMGateway
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.state import WorkflowState
@@ -83,7 +83,7 @@ def make_metadata_check(
             try:
                 model = (config.target if config else "") or "openai/gpt-4o"
                 judge_prompt = L(
-                    detect_language(state.question),
+                    state.lang,
                     JUDGE_SYSTEM_PROMPT_ZH,
                     JUDGE_SYSTEM_PROMPT,
                 )

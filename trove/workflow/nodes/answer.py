@@ -16,7 +16,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.config import AgentConfig
-from trove.core.i18n import L, detect_language
+from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
@@ -86,7 +86,7 @@ async def _build_metadata_context(
 
 async def _fallback_answer(state: WorkflowState, catalog, kb, connectors) -> str:
     """Template composite answer (no LLM / LLM failure)."""
-    lang = detect_language(state.question)
+    lang = state.lang
     q = state.question
     sections: list[str] = []
     tables = await catalog.list_tables() if catalog else []
@@ -149,7 +149,7 @@ def make_answer_metadata(
         if llm is not None:
             try:
                 system_prompt = L(
-                    detect_language(state.question),
+                    state.lang,
                     ANSWER_SYSTEM_PROMPT_ZH,
                     ANSWER_SYSTEM_PROMPT,
                 )

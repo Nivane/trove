@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.config import AgentConfig
-from trove.core.i18n import L, detect_language
+from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.workflow.state import GenSQLState
@@ -69,7 +69,23 @@ SQL_FIX_PROMPT = """The following SQL query failed validation:
 Validation errors:
 {errors}
 
-Please fix the SQL query. Generate ONLY the corrected SQL.
+Please fix the SQL query. Keep the original query intent — fix syntax errors only, do not change the business semantics. Generate ONLY the corrected SQL.
+
+```sql
+SELECT ...
+```
+"""
+
+SQL_FIX_PROMPT_ZH = """以下 SQL 查询未通过校验：
+
+```sql
+{sql}
+```
+
+校验错误：
+{errors}
+
+请修复该 SQL。保持原始查询意图不变，只修正语法错误，不要改变问题的业务语义。只输出修正后的 SQL，不要输出其他内容。
 
 ```sql
 SELECT ...
@@ -86,7 +102,9 @@ def build_sql_prompt(
     history: str = "",
     plan: str = "",
     evidence: str = "",
+    time_context: str = "",
     error_analysis: str = "",
+    reasoning_context: str = "",
     rules: list[str] | None = None,
     lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
@@ -117,12 +135,6 @@ def build_sql_prompt(
             plan,
             "",
         ]
-    if evidence:
-        parts += [
-            "Evidence (official hint for this question):",
-            evidence,
-            "",
-        ]
     if rules:
         parts.append("Data source rules (must follow):")
         for rule in rules:
@@ -147,6 +159,22 @@ def build_sql_prompt(
             parts.append(f"Q: {shot.get('question', '')}")
             parts.append(f"SQL: {shot.get('sql', '')}")
         parts.append("")
+    # Evidence and the resolved time range sit right before the question —
+    # the last things the model reads before generating, and authoritative
+    # over its own assumptions (a wrong assumption here is silent, not
+    # visible).
+    if evidence:
+        parts += [
+            "Evidence (official hint for this question — authoritative, must follow):",
+            evidence,
+            "",
+        ]
+    if time_context:
+        parts += [
+            "Resolved time range (authoritative — derived from the question's relative time expression; use it for date filters):",
+            time_context,
+            "",
+        ]
     parts += [
         "Question:",
         question,
@@ -170,13 +198,21 @@ def build_sql_prompt(
             error_analysis,
             "",
         ]
+    if reasoning_context:
+        parts += [
+            "Prior reasoning trail (your previous thinking; avoid repeating the same mistake):",
+            reasoning_context,
+            "",
+        ]
     parts.append("Generate the SQL query to answer this question:")
     return "\n".join(parts)
 
 
-def build_fix_prompt(sql: str, errors: list[str]) -> str:
-    """Build a fix prompt when validation fails."""
-    return SQL_FIX_PROMPT.format(
+def build_fix_prompt(sql: str, errors: list[str], lang: str = "en") -> str:
+    """Build a fix prompt when validation fails (bilingual; default en keeps
+    the pure-helper behavior for direct callers)."""
+    template = L(lang, SQL_FIX_PROMPT_ZH, SQL_FIX_PROMPT)
+    return template.format(
         sql=sql,
         errors="\n".join(f"- {e}" for e in errors),
     )
@@ -260,7 +296,7 @@ def make_generate(
             return {}
 
         if state.validation_errors:
-            prompt = build_fix_prompt(state.sql, state.validation_errors)
+            prompt = build_fix_prompt(state.sql, state.validation_errors, lang=state.lang)
         else:
             prompt = build_sql_prompt(
                 question=state.question,
@@ -271,7 +307,9 @@ def make_generate(
                 history=state.history,
                 plan=state.plan,
                 evidence=state.evidence,
+                time_context=state.time_context,
                 error_analysis=state.error_analysis,
+                reasoning_context=state.reasoning_context,
                 rules=state.rules or None,
                 lessons=state.lessons or None,
                 few_shots=state.few_shots or None,
@@ -281,7 +319,7 @@ def make_generate(
         model = config.target or "openai/gpt-4o"
         start = time.monotonic()
         system_prompt = L(
-            detect_language(state.question),
+            state.lang,
             SQL_GENERATION_SYSTEM_PROMPT_ZH,
             SQL_GENERATION_SYSTEM_PROMPT,
         )

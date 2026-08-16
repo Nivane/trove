@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from trove.core.i18n import L, detect_language
+from trove.core.i18n import L
 from trove.workflow.state import WorkflowState
 
 
@@ -32,7 +32,7 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     if state.intent_answer:
         return {"final_response": state.intent_answer}
 
-    lang = detect_language(question)
+    lang = state.lang
 
     if state.error:
         response = (

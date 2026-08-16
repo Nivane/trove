@@ -13,6 +13,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.llm.observability import record_span
@@ -60,7 +61,13 @@ def make_execute_sql(
                     span.update(output={"row_count": result.row_count})
         except asyncio.TimeoutError:
             return _execution_failure(
-                state, f"Query timed out after {timeout_ms}ms", max_retries,
+                state,
+                L(
+                    state.lang,
+                    f"查询超时（{timeout_ms}ms）",
+                    f"Query timed out after {timeout_ms}ms",
+                ),
+                max_retries,
             )
         except asyncio.CancelledError:
             raise

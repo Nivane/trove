@@ -57,13 +57,31 @@ class TestSelectNode:
         node = make_select_consensus(connectors)
         state = make_state(
             sql="SELECT v FROM t", rows=[[1], [2]], row_count=2,
-            candidates=["SELECT v FROM t WHERE 0"],
+            candidates=["SELECT v FROM t WHERE 0"], lang="en",
         )
         update = await node(state)
         assert "error" not in update
         assert "different results" in update["error_feedback"]
         assert update["retry_count"] == 1
         assert update["consensus"] is False  # 分歧即标记，不只耗尽时
+
+    async def test_disagreement_feedback_carries_candidates_and_values(self):
+        """反馈必须给出双方 SQL 与结果值,让重试有据可依(而非一句 unstable)。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[33]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT COUNT(*) FROM account a WHERE a.frequency = 'POPLATEK PO OBRATU'",
+            rows=[[45]], row_count=1,
+            candidates=["SELECT COUNT(*) FROM account a JOIN card c ON a.account_id = c.account_id WHERE c.issued > a.date"],
+        )
+        update = await node(state)
+        fb = update["error_feedback"]
+        assert "POPLATEK PO OBRATU" in fb  # 主候选 SQL
+        assert "c.issued" in fb           # 备选 SQL
+        assert "45" in fb and "33" in fb  # 双方结果值
+        assert "候选 SQL 结果不一致" in fb  # 默认中文反馈
 
     async def test_disagreement_budget_exhausted_marks_low_confidence(self):
         """预算耗尽不再硬降级：放行主候选 + 低置信标记。"""

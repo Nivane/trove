@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.core.i18n import L
 from trove.workflow.rules import validate as run_rules
 from trove.workflow.state import WorkflowState
 
@@ -34,13 +35,18 @@ def make_validate_rules(
 
         reason = run_rules(
             state.question, state.sql, state.columns, state.rows, state.row_count,
+            lang=state.lang,
         )
         if reason is None:
             return {}
 
         if state.retry_count >= max_retries:
             return {"error": reason}
-        feedback = f"Validation rule: {reason}"
+        feedback = L(
+            state.lang,
+            f"校验规则: {reason}",
+            f"Validation rule: {reason}",
+        )
         return {
             "error_feedback": feedback,
             "retry_count": state.retry_count + 1,

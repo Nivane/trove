@@ -49,11 +49,11 @@ class ScriptedLLM:
                 last_content = msg.get("content", "")
                 break
 
-        if "Summarize this conversation" in last_content:
+        if "Summarize this conversation" in last_content or "请压缩这段对话" in last_content:
             return self.summarize_response
         if "Does this result correctly answer" in last_content:
             return self.reflect_response
-        if "failed validation" in last_content:
+        if "failed validation" in last_content or "校验错误" in last_content:
             return f"```sql\n{self.sql}\n```"
         # Default: SQL generation prompt
         return f"```sql\n{self.sql}\n```"
@@ -187,7 +187,7 @@ class TestEndToEnd:
         assert state.final_response
 
     async def test_question_with_no_matching_tables(self, full_stack):
-        """Schema linking gracefully handles unmatched questions."""
+        """无匹配问题:clarify 关闭时全量表兜底,流程照常完成。"""
         session = await full_stack.start_session(project_cwd="/tmp/integration")
 
         state = await full_stack.ask(
@@ -195,8 +195,8 @@ class TestEndToEnd:
             question="zzz 不存在的表名 zzz",
             workflow_name="reflection",
         )
-        # No tables matched, but the loop still completed (scripted LLM)
-        assert state.matched_tables == []
+        # 0 匹配 → 全量表兜底(clarify 关闭),生成锚定在真实 schema 上
+        assert state.matched_tables
         assert state.final_response
 
 
@@ -211,6 +211,7 @@ class TestWorkflowEdgeCases:
         class RetryLLM:
             def __init__(self):
                 self.responses = iter([
+                    "query",  # route_intent 意图分类
                     "```sql\nSELEC broken sql;\n```",  # 1st: invalid
                     "```sql\nSELECT COUNT(*) FROM client;\n```",  # 2nd: valid
                 ])
@@ -245,7 +246,7 @@ class TestWorkflowEdgeCases:
         )
 
         # gen_sql succeeded on the second attempt
-        assert llm.calls == 2
+        assert llm.calls == 3  # 意图 + 初稿（非法）+ 修正稿
         assert state.sql == "SELECT COUNT(*) FROM client;"
         assert state.error == ""
 

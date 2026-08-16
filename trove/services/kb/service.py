@@ -70,6 +70,7 @@ class TableNotes:
     description: str = ""
     columns: dict[str, str] = field(default_factory=dict)  # col name → description
     metrics: dict[str, str] = field(default_factory=dict)  # metric name → definition
+    enums: dict[str, str] = field(default_factory=dict)  # col name → enum value description
 
 
 @dataclass
@@ -96,12 +97,23 @@ def _word_tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
 
 
-def _score_example(question: str, matched_terms: set[str], example: dict) -> int:
-    """Score = 2×term hits + tag hits + overlap with the question.
+def _mentions_any(text: str, names: list[str]) -> bool:
+    """Deterministic lexical check: does text mention any of the names."""
+    return any(n and n in text for n in names)
+
+
+def _score_example(
+    question: str,
+    matched_terms: set[str],
+    example: dict,
+    tables: list[str] | None = None,
+) -> int:
+    """Score = 2×term hits + tag hits + overlap with the question + table anchor.
 
     Overlap is word-level for English questions (char-bigrams are
     meaningless there) and char-bigram for Chinese; the max of the two
-    covers mixed-language questions.
+    covers mixed-language questions. A matched-table mention adds a
+    strong +3 anchor per table (evidence-graph scoring).
     """
     tags = [str(t) for t in example.get("tags", [])]
     ex_text = " ".join([str(example.get("question", "")), *tags])
@@ -119,7 +131,12 @@ def _score_example(question: str, matched_terms: set[str], example: dict) -> int
         # Pure-Chinese questions: character bigram overlap.
         overlap = len(_bigrams(question) & _bigrams(example_question))
 
-    return 2 * term_hits + tag_hits + overlap
+    table_anchor = 0
+    if tables:
+        full_text = " ".join([example_question, str(example.get("sql", "")), *tags])
+        table_anchor = 3 * sum(1 for t in tables if t and t in full_text)
+
+    return 2 * term_hits + tag_hits + overlap + table_anchor
 
 
 # ── YAML parsing ─────────────────────────────────────────
@@ -133,10 +150,17 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
     if path.name == "schema_notes.yml":
         for table in data.get("tables", []):
             columns = {}
+            enums = {}
             for col in table.get("columns", []):
                 desc = str(col.get("description", "") or "").strip()
                 if desc:
                     columns[str(col["name"])] = desc
+                enum_text = "; ".join(
+                    str(e).strip() for e in (col.get("enums") or [])
+                    if str(e).strip()
+                )
+                if enum_text:
+                    enums[str(col["name"])] = enum_text
             metrics = {}
             for metric in table.get("metrics", []):
                 definition = str(metric.get("definition", "") or "").strip()
@@ -146,6 +170,7 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
                 "description": str(table.get("description", "") or "").strip(),
                 "columns": columns,
                 "metrics": metrics,
+                "enums": enums,
             }))
 
     elif path.name == "semantics.yml":
@@ -338,8 +363,19 @@ class KbService:
             cursor = await db.execute(sql, params)
             return await cursor.fetchall()
 
-    async def search_terms(self, question: str, datasource: str) -> list[TermHit]:
-        """Terms whose term/alias is a substring of the question."""
+    async def search_terms(
+        self,
+        question: str,
+        datasource: str,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+    ) -> list[TermHit]:
+        """Terms whose term/alias is a substring of the question.
+
+        With `tables` given (schema-linked tables), terms bound to other
+        tables are dropped; terms bound to no table at all are kept
+        (table-agnostic business semantics).
+        """
         if not self.enabled:
             return []
         rows = await self._rows(
@@ -349,10 +385,22 @@ class KbService:
         hits = []
         for row in rows:
             payload = json.loads(row["payload"])
-            if payload["term"] in question or any(
-                a and a in question for a in payload.get("aliases", [])
+            if not (
+                payload["term"] in question
+                or any(a and a in question for a in payload.get("aliases", []))
             ):
-                hits.append(TermHit(**payload))
+                continue
+            if tables is not None:
+                bound = payload.get("tables", []) or []
+                if bound and not any(t in tables for t in bound):
+                    continue  # 术语绑定到未匹配的表 → 与当前问题无关
+                payload_text = " ".join(
+                    [payload.get("term", ""), payload.get("mapping", ""),
+                     payload.get("definition", ""), " ".join(bound)]
+                )
+                if all_tables and _mentions_any(payload_text, all_tables) and not _mentions_any(payload_text, tables):
+                    continue  # 文本提到其他表 → 过滤
+            hits.append(TermHit(**payload))
         return hits
 
     async def table_notes(
@@ -374,9 +422,19 @@ class KbService:
         }
 
     async def search_examples(
-        self, question: str, datasource: str, limit: int = 3,
+        self,
+        question: str,
+        datasource: str,
+        limit: int = 3,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
     ) -> list[ExampleHit]:
-        """Top-K reference examples/templates by relevance score."""
+        """Top-K reference examples/templates by relevance score.
+
+        With `tables` given, examples that mention OTHER tables are
+        dropped (deterministic evidence filtering); examples mentioning
+        the matched tables get a score anchor.
+        """
         if not self.enabled:
             return []
         term_hits = await self.search_terms(question, datasource)
@@ -389,7 +447,16 @@ class KbService:
         scored = []
         for row in rows:
             payload = json.loads(row["payload"])
-            score = _score_example(question, matched_terms, payload)
+            full_text = " ".join([
+                str(payload.get("question", "")),
+                str(payload.get("sql", "")),
+                *[str(t) for t in payload.get("tags", [])],
+            ])
+            if tables is not None and all_tables:
+                mentioned = [t for t in all_tables if t and t in full_text]
+                if mentioned and not any(t in tables for t in mentioned):
+                    continue  # 示例绑定到未匹配的表 → 与当前问题无关
+            score = _score_example(question, matched_terms, payload, tables=tables)
             if score > 0:
                 scored.append(ExampleHit(**payload, score=score))
         scored.sort(key=lambda h: h.score, reverse=True)
