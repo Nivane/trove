@@ -68,6 +68,31 @@ class TestSchemaLinking:
         assert update["matched_tables"] == []
         assert "No schema" in update["schema_context"]
 
+    async def test_rollback_rerun_keeps_previous_matches(self):
+        """回退重跑 schema_linking 时,旧匹配表必须保留(并集),修漏表不丢旧表。"""
+        class Catalog:
+            async def search_tables(self, query, datasource=None, limit=10):
+                return [{"name": "trans", "columns": 8, "row_count": 100}]
+
+            async def list_tables(self, datasource=None):
+                return [{"name": "trans", "columns": 8, "row_count": 100}]
+
+            async def table_detail(self, name):
+                return {
+                    "name": name,
+                    "columns": [{"name": "account_id", "type": "int"}],
+                    "row_count": 100,
+                }
+
+        node = make_schema_linking(catalog=Catalog())
+        update = await node(make_state(
+            question="q",
+            matched_tables=["account"],   # 上一轮已匹配的表
+            error_feedback="missing trans table",  # 回退重跑信号
+        ))
+        assert "account" in update["matched_tables"]  # 旧匹配保留
+        assert "trans" in update["matched_tables"]    # 新匹配并入
+
     async def test_with_catalog(self, catalog):
         node = make_schema_linking(catalog=catalog)
         update = await node(make_state())
@@ -88,6 +113,58 @@ class TestSchemaLinking:
         node = make_schema_linking(catalog=catalog)
         update = await node(make_state(error="upstream failed"))
         assert update == {}
+
+    async def test_zero_matches_falls_back_to_all_tables(self):
+        """英文题复数/缩写匹配不到任何表时,兜底为全量表清单,保证 schema 锚定。"""
+        class EmptySearchCatalog:
+            async def search_tables(self, query, datasource=None, limit=10):
+                return []
+
+            async def list_tables(self, datasource=None):
+                return [
+                    {"name": "account", "columns": 4, "row_count": 4500},
+                    {"name": "trans", "columns": 8, "row_count": 1056320},
+                ]
+
+            async def table_detail(self, name):
+                return {
+                    "name": name,
+                    "columns": [{"name": "account_id", "type": "int"}],
+                    "row_count": 100,
+                }
+
+        node = make_schema_linking(catalog=EmptySearchCatalog())
+        update = await node(make_state(
+            question="How many accounts choose issuance after transaction",
+        ))
+        assert "account" in update["matched_tables"]
+        assert "trans" in update["matched_tables"]
+        assert "account" in update["schema_context"]
+        assert "No matching tables" not in update["schema_context"]
+
+
+class TestPlannerRollbackRevision:
+    async def test_rollback_revision_includes_prior_plan(self):
+        """回退重跑规划时,上一版计划必须进 prompt(增量修订,非从零重写)。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages, **kwargs)
+                return "new plan"
+
+        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        state = make_state(
+            plan="旧计划: join account 与 district 按地区聚合",
+            error_feedback="wrong aggregation",
+        )
+        update = await node(state)
+        assert update["plan"] == "new plan"
+        prompt = " ".join(m["content"] for m in captured["messages"])
+        assert "旧计划" in prompt          # 上一版计划原文
+        assert "wrong aggregation" in prompt  # 失败原因
 
 
 class TestSchemaLinkingWithKB:
@@ -142,6 +219,29 @@ tables:
         update = await node(make_state(question="学生们的平均成绩是多少"))
         assert "学生成绩表" in update["schema_context"]
         assert "考试成绩" in update["schema_context"]
+
+    async def test_enum_translations_reach_schema_context(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """列枚举值说明（如 BIRD value_description）渲染进 schema 上下文。"""
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: 学生成绩表
+    columns:
+      - name: grade
+        description: ""
+        enums: ["'POPLATEK PO OBRATU' stands for issuance after transaction"]
+""",
+            encoding="utf-8",
+        )
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+        )
+        update = await node(make_state(question="学生们的平均成绩是多少"))
+        assert "POPLATEK PO OBRATU" in update["schema_context"]
+        assert "issuance after transaction" in update["schema_context"]
 
     async def test_other_datasource_kb_not_visible(
         self, catalog, sqlite_registry, kb_service, kb_ds_dir,
@@ -261,6 +361,54 @@ class TestJoinHints:
 # ── gen_sql: prompt builders and extraction ──────────────
 
 
+class TestCorrectionContextInjection:
+    """回退重跑时把失败上下文带回上游步骤。"""
+
+    async def test_schema_linking_search_includes_error_analysis(self, catalog):
+        """schema_linking 重跑时，诊断文本进入目录搜索输入。"""
+        class RecordingCatalog:
+            def __init__(self):
+                self.queries = []
+
+            async def search_tables(self, query, limit=10):
+                self.queries.append(query)
+                return []
+
+            async def table_detail(self, name):
+                return None
+
+        from trove.workflow.nodes.schema_linking import make_schema_linking
+
+        rec = RecordingCatalog()
+        node = make_schema_linking(catalog=rec, kb=None, connectors=None, fallback_all=False)
+        await node(make_state(
+            question="学生的平均成绩",
+            error_analysis="判断: 漏了 nonexistent 表",
+        ))
+        assert rec.queries
+        assert "nonexistent" in rec.queries[0]
+
+    async def test_planner_prompt_includes_correction_context(self):
+        """planner 重跑时，提示词携带上一次失败与诊断。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "plan: ok"
+
+        from trove.core.config import AgentConfig
+        from trove.workflow.nodes.planner import make_planner
+
+        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        await node(make_state(
+            error_feedback="no such table: loans",
+            error_analysis="判断: loans 表不存在",
+        ))
+        assert "no such table" in captured["prompt"]
+        assert "loans 表不存在" in captured["prompt"]
+
+
 class TestSQLHelpers:
     def test_extract_sql_from_code_block(self):
         response = "Here is the query:\n```sql\nSELECT * FROM students;\n```\nHope it helps!"
@@ -294,6 +442,39 @@ class TestSQLHelpers:
         prompt = build_sql_prompt("q", "schema", "sqlite")
         assert "Reference examples" not in prompt
         assert "Terminology" not in prompt
+
+    def test_build_sql_prompt_renders_reasoning_context(self):
+        prompt = build_sql_prompt(
+            "q", "schema", "sqlite",
+            reasoning_context="[gen_sql] 上一轮先试 validate_sql 再决定解释",
+        )
+        assert "validate_sql" in prompt
+
+    def test_build_sql_prompt_evidence_sits_right_before_question(self):
+        """证据提权：Evidence 区块紧贴 Question，是模型生成前最后读到的内容。"""
+        prompt = build_sql_prompt(
+            "q", "schema", "sqlite",
+            evidence="Frequency = 'POPLATEK PO OBRATU' stands for issuance after transaction",
+            few_shots=[{"question": "某示例", "sql": "SELECT 1", "template": False}],
+        )
+        assert "authoritative, must follow" in prompt
+        assert "POPLATEK PO OBRATU" in prompt
+        # 证据在示例之后、问题之前
+        assert prompt.index("Reference examples") < prompt.index("Evidence")
+        assert prompt.index("Evidence") < prompt.index("Question:")
+
+    def test_build_sql_prompt_time_context_sits_before_question(self):
+        """时间范围与证据同为权威块:Evidence 之后、Question 之前;未解析时不注入。"""
+        prompt = build_sql_prompt(
+            "q", "schema", "sqlite",
+            evidence="official hint",
+            time_context="2025-01-01 ~ 2025-01-15",
+        )
+        assert "Resolved time range" in prompt
+        assert prompt.index("Evidence") < prompt.index("Resolved time range")
+        assert prompt.index("Resolved time range") < prompt.index("Question:")
+
+        assert "Resolved time range" not in build_sql_prompt("q", "schema", "sqlite")
 
     def test_build_sql_prompt_includes_error_feedback(self):
         prompt = build_sql_prompt("q", "schema", "sqlite", error_feedback="no such table: loans")
@@ -337,6 +518,16 @@ class TestSQLHelpers:
         assert "SELEC 1" in prompt
         assert "Parse error: bad" in prompt
 
+    def test_build_fix_prompt_chinese(self):
+        """中文修复提示词:保持原意图、只修语法(默认 en 的纯助手调用不受影响)。"""
+        prompt = build_fix_prompt("SELEC 1", ["语法错误"], lang="zh")
+        assert "SELEC 1" in prompt
+        assert "语法错误" in prompt
+        assert "保持原始查询意图" in prompt
+        assert "只修正语法错误" in prompt
+        # 默认仍是英文
+        assert "failed validation" in build_fix_prompt("SELEC 1", ["e"])
+
     def test_validate_sql_valid(self):
         valid, errors = validate_sql("SELECT * FROM t", "sqlite")
         assert valid is True
@@ -377,6 +568,17 @@ class TestGenerate:
         )
         update = await generate(state)
         assert update["attempts"] == 2
+        assert "校验错误" in llm.last_messages[-1]["content"]  # 默认 zh
+
+    async def test_fix_prompt_follows_language(self):
+        llm = ScriptedLLM(["```sql\nSELECT 1;\n```", "```sql\nSELECT 1;\n```"])
+        generate = make_generate(llm, self._config())
+        from trove.workflow.state import GenSQLState
+        state = GenSQLState(
+            question="q", schema_context="", dialect="sqlite", lang="en",
+            sql="SELEC 1", attempts=1, validation_errors=["Parse error"],
+        )
+        await generate(state)
         assert "failed validation" in llm.last_messages[-1]["content"]
 
     async def test_skips_when_error_present(self):
@@ -547,9 +749,10 @@ class TestBilingualPrompts:
 
         generate = make_generate(LLM(), AgentConfig(target="m"))
         await generate(GenSQLState(question="平均成绩是多少", schema_context="", dialect="sqlite"))
-        assert "生成" in captured["messages"][0]["content"]  # 中文 system
+        assert "生成" in captured["messages"][0]["content"]  # 默认中文 system
 
-        await generate(GenSQLState(question="average grade", schema_context="", dialect="sqlite"))
+        # 语言跟随 state.lang(配置),不按问题语言检测
+        await generate(GenSQLState(question="average grade", schema_context="", dialect="sqlite", lang="en"))
         assert "SQL generation assistant" in captured["messages"][0]["content"]
 
     async def test_planner_prompt_follows_language(self):
@@ -566,7 +769,8 @@ class TestBilingualPrompts:
         await node(make_state(question="平均成绩是多少"))
         assert "规划" in captured["messages"][0]["content"]
 
-        await node(make_state(question="average grade"))
+        # 语言跟随 state.lang(配置),不按问题语言检测
+        await node(make_state(question="average grade", lang="en"))
         assert "query planner" in captured["messages"][0]["content"]
 
     async def test_reflect_prompt_follows_language(self):
@@ -582,6 +786,30 @@ class TestBilingualPrompts:
         node = make_reflect(LLM(), AgentConfig(target="m"))
         await node(make_state(question="平均成绩是多少", row_count=3, columns=["x"], rows=[[1], [2], [3]]))
         assert "评估" in captured["messages"][0]["content"]
+
+    async def test_reflect_prompt_has_checkpoints_and_guardrails(self):
+        """reflect 细化:列冗余/缺失、列顺序检查点 + 决策护栏(双语)。"""
+        from trove.workflow.nodes.reflect import make_reflect
+
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages)
+                return "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        await node(make_state(question="平均成绩是多少", row_count=3, columns=["x"], rows=[[1], [2], [3]]))
+        zh_system = captured["messages"][0]["content"]
+        assert "列是否冗余或缺失" in zh_system
+        assert "列顺序是否符合问题要求" in zh_system
+        assert "过滤条件过严" in zh_system
+
+        await node(make_state(question="average grade", row_count=3, columns=["x"], rows=[[1], [2], [3]], lang="en"))
+        en_system = captured["messages"][0]["content"]
+        assert "redundant or missing" in en_system
+        assert "over-restrictive" in en_system
+        assert "extra cautious" in en_system
 
 
 class TestPlanner:
@@ -640,6 +868,24 @@ class TestPlanner:
         assert captured["metadata"]["node"] == "planner"
         assert captured["metadata"]["session_id"] == "s1"
 
+    async def test_planner_sees_resolved_time_range(self):
+        """planner 起草过滤条件时能看到解析出的时间范围;未解析时不注入。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        captured = {}
+
+        class CapturingLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["user"] = messages[1]["content"]
+                return "plan text"
+
+        node = make_planner(CapturingLLM(), AgentConfig(target="mock/model"))
+        await node(make_state(time_context="2025-01-01 ~ 2025-01-15"))
+        assert "Resolved time range: 2025-01-01 ~ 2025-01-15" in captured["user"]
+
+        await node(make_state())
+        assert "Resolved time range" not in captured["user"]
+
 
 # ── Clarify ──────────────────────────────────────────────
 
@@ -687,7 +933,7 @@ class TestValidateRules:
         )
         update = await node(state)
         assert "error" not in update
-        assert "single number" in update["error_feedback"]
+        assert "计数问题应返回单个数字" in update["error_feedback"]  # 默认中文
         assert update["retry_count"] == 1
 
     async def test_rule_failure_budget_exhausted_degrades(self):
@@ -742,6 +988,42 @@ class TestReflect:
         update = await node(make_state(row_count=0))
         assert update["verdict"] == "EMPTY"
 
+    async def test_prompt_includes_schema_context(self):
+        """裁决 prompt 带 schema 上下文，模型不必用工具去猜表结构。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages)
+                return "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        await node(make_state(
+            row_count=2, columns=["name"], rows=[["a"], ["b"]],
+            schema_context="Table: students(id, name)",
+        ))
+        user_msg = captured["messages"][1]["content"]
+        assert "students(id, name)" in user_msg
+
+    async def test_single_shot_judge_without_tools(self):
+        """裁决是单次 LLM 判断：不调 chat_full、不给工具（确定性规则已在前置拦截）。"""
+        class OnlyChatLLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls += 1
+                return "OK"
+
+            async def chat_full(self, *a, **k):
+                raise AssertionError("single-shot judge must not use chat_full")
+
+        llm = OnlyChatLLM()
+        node = make_reflect(llm, AgentConfig(target="m"))
+        update = await node(make_state(row_count=2, columns=["name"], rows=[["a"], ["b"]]))
+        assert update["verdict"] == "OK"
+        assert llm.calls == 1
+
     async def test_ok_verdict(self):
         node = self._make("OK")
         update = await node(make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]]))
@@ -762,6 +1044,75 @@ class TestReflect:
         )
         assert update["verdict"] == "OK"
         assert update.get("forced") is True
+
+    async def test_no_sql_verdict(self):
+        """NO_SQL 裁决：不是 SQL 问题 → 置 no_sql 标志，不消耗重试预算。"""
+        node = self._make("NO_SQL: 这是表含义问题，不是数据查询")
+        update = await node(make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]]))
+        assert update["verdict"] == "NO_SQL"
+        assert update["reason"] == "这是表含义问题，不是数据查询"
+        assert update["no_sql"] is True
+        assert "retry_count" not in update  # 不是重试，不消耗共享修正预算
+
+    async def test_no_sql_not_forced_at_retry_cap(self):
+        """重试上限处 NO_SQL 裁决不被强制为 OK（大小写前缀均可解析）。"""
+        node = self._make("no_sql: definitional question")
+        update = await node(
+            make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]], retry_count=10)
+        )
+        assert update["verdict"] == "NO_SQL"
+        assert update["reason"] == "definitional question"
+        assert update.get("forced") is None
+
+    async def test_empty_result_with_weak_signal_still_judges(self):
+        """0 行 + 元数据倾向问题 → 不短路，仍由 LLM 裁决（可给出 NO_SQL）。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "EMPTY"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(row_count=0, question="disp 表是啥"))
+        assert update["verdict"] == "EMPTY"  # 来自 LLM 裁决，而非 0 行短路
+
+    async def test_prompt_includes_sql_and_evidence(self):
+        """裁决 prompt 带 SQL 与官方证据：judge 能对照语义发现实现漂移。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["user"] = messages[1]["content"]
+                return "RETRY: SQL 用日期比较偷换了枚举过滤语义"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            row_count=1, columns=["n"], rows=[[0]],
+            sql="SELECT COUNT(DISTINCT a.account_id) FROM account a "
+                "JOIN trans t ON a.account_id = t.account_id WHERE l.date > t.date",
+            evidence="Frequency = 'POPLATEK PO OBRATU' stands for issuance after transaction",
+        ))
+        assert update["verdict"] == "RETRY"
+        assert "l.date > t.date" in captured["user"]
+        assert "POPLATEK PO OBRATU" in captured["user"]
+
+    async def test_prompt_includes_resolved_time_range(self):
+        """评审输入带解析出的时间范围,便于核对 SQL 的时间过滤;无解析结果时不注入。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["user"] = messages[1]["content"]
+                return "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        await node(make_state(
+            row_count=1, columns=["n"], rows=[[0]],
+            time_context="2025-01-01 ~ 2025-01-15",
+        ))
+        assert "Resolved time range" in captured["user"]
+        assert "2025-01-01 ~ 2025-01-15" in captured["user"]
+
+        await node(make_state(row_count=1, columns=["n"], rows=[[0]]))
+        assert "Resolved time range" not in captured["user"]
 
     async def test_llm_failure_assumes_ok(self):
         class BrokenLLM:
@@ -852,3 +1203,103 @@ class TestOutput:
         response = (await output(state))["final_response"]
         assert "Clarification" in response
         assert "请说明你想查询哪张表的数据" in response
+
+
+class TestSemanticPromptGuards:
+    """① planner 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。"""
+
+    def test_planner_prompt_carries_scope_principle(self):
+        from trove.workflow.nodes.planner import (
+            PLANNER_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT_ZH,
+        )
+        assert "lowest" in PLANNER_SYSTEM_PROMPT.lower()
+        assert "scope" in PLANNER_SYSTEM_PROMPT.lower()
+        assert "作用域" in PLANNER_SYSTEM_PROMPT_ZH
+        assert "最低" in PLANNER_SYSTEM_PROMPT_ZH
+
+    def test_reflect_prompt_carries_condition_completeness(self):
+        from trove.workflow.nodes.reflect import (
+            REFLECT_SYSTEM_PROMPT, REFLECT_SYSTEM_PROMPT_ZH,
+        )
+        assert "every condition" in REFLECT_SYSTEM_PROMPT
+        assert "每个条件" in REFLECT_SYSTEM_PROMPT_ZH
+
+    def test_reflect_prompt_guards_against_rearguing_ambiguity(self):
+        """法官不得重新争论问题歧义,也不得用'并列可能漏行'打回 LIMIT 1。"""
+        from trove.workflow.nodes.reflect import (
+            REFLECT_SYSTEM_PROMPT, REFLECT_SYSTEM_PROMPT_ZH,
+        )
+        assert "interpretation" in REFLECT_SYSTEM_PROMPT
+        assert "LIMIT 1" in REFLECT_SYSTEM_PROMPT
+        assert "合理解读" in REFLECT_SYSTEM_PROMPT_ZH
+        assert "并列" in REFLECT_SYSTEM_PROMPT_ZH
+
+
+class TestStructuredPlan:
+    """⑦ planner 结构化输出:JSON 计划 → 渲染进 gen_sql 提示词,解析失败回退散文。"""
+
+    JSON_PLAN = """
+{
+  "tables": ["loan", "account"],
+  "joins": "loan.account_id = account.account_id",
+  "conditions": [
+    {"field": "loan.date", "op": "=", "value": "1997", "note": "贷款批准年份"},
+    {"field": "account.frequency", "op": "=", "value": "POPLATEK TYDNE", "note": "周发放"}
+  ],
+  "aggregation": "none",
+  "extreme": {"func": "min", "column": "loan.amount", "scope": "after all filters"},
+  "ordering": "amount asc",
+  "answer_columns": ["account_id"]
+}
+"""
+
+    def test_parse_plain_json(self):
+        from trove.workflow.nodes.planner import _parse_plan
+        data = _parse_plan(self.JSON_PLAN)
+        assert data["extreme"]["scope"] == "after all filters"
+        assert len(data["conditions"]) == 2
+
+    def test_parse_fenced_json(self):
+        from trove.workflow.nodes.planner import _parse_plan
+        data = _parse_plan(f"```json\n{self.JSON_PLAN}\n```")
+        assert data["answer_columns"] == ["account_id"]
+
+    def test_parse_prose_returns_none(self):
+        from trove.workflow.nodes.planner import _parse_plan
+        assert _parse_plan("先取1997年贷款，再筛选周发放的账户") is None
+        assert _parse_plan("plan: ok") is None
+
+    def test_render_makes_scope_explicit(self):
+        from trove.workflow.nodes.planner import _parse_plan, _render_plan
+        text = _render_plan(_parse_plan(self.JSON_PLAN), lang="zh")
+        assert "贷款批准年份" in text          # 条件带注释
+        assert "周发放" in text
+        assert "after all filters" in text     # 作用域显式
+        assert "account_id" in text
+
+    async def test_node_renders_structured_plan(self):
+        from trove.core.config import AgentConfig
+        from trove.workflow.nodes.planner import make_planner
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return TestStructuredPlan.JSON_PLAN
+
+        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        update = await node(make_state())
+        assert "Conditions" in update["plan"] or "条件" in update["plan"]
+        assert "after all filters" in update["plan"]
+
+    async def test_node_falls_back_to_prose(self):
+        """模型不听话输出散文时:计划原样保留,管线不因结构化失败而中断。"""
+        from trove.core.config import AgentConfig
+        from trove.workflow.nodes.planner import make_planner
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "先筛选1997年贷款，再取最低金额。"
+
+        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        update = await node(make_state())
+        assert update["plan"] == "先筛选1997年贷款，再取最低金额。"
+

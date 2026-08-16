@@ -32,12 +32,12 @@ class RecordingLLM:
         return {"content": self._responses.pop(0), "tool_calls": []}
 
 
-def make_services(llm, catalog=None, connectors=None, kb=None):
+def make_services(llm, catalog=None, connectors=None, kb=None, config=None):
     return GraphServices(
         llm=llm,
         catalog=catalog,
         connectors=connectors,
-        config=AgentConfig(target="mock/model"),
+        config=config or AgentConfig(target="mock/model"),
         kb=kb,
     )
 
@@ -75,9 +75,9 @@ class TestGenSQLSubgraph:
         assert out["sql"] == "SELECT name FROM students;"
         assert out["error"] == ""
         assert len(llm.calls) == 3
-        # Second and third calls used the fix prompt
-        assert "failed validation" in llm.calls[1][-1]["content"]
-        assert "failed validation" in llm.calls[2][-1]["content"]
+        # Second and third calls used the fix prompt (默认 zh)
+        assert "校验错误" in llm.calls[1][-1]["content"]
+        assert "校验错误" in llm.calls[2][-1]["content"]
 
     async def test_exhaustion_sets_error(self):
         llm = RecordingLLM([INVALID_SQL] * 3)
@@ -101,7 +101,7 @@ class TestGenSQLSubgraph:
 
 class TestReflectionGraph:
     async def test_happy_path(self, sqlite_registry, catalog):
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "OK"
@@ -110,46 +110,52 @@ class TestReflectionGraph:
         assert "SELECT name FROM students;" in final["sql"]
         assert final["row_count"] == 5
         assert "## Answer" in final["final_response"]
-        assert len(llm.calls) == 2  # gen_sql + reflect
+        assert len(llm.calls) == 3  # intent + gen_sql + reflect
 
     async def test_retry_loop_regenerates_with_reason(self, sqlite_registry, catalog):
-        llm = RecordingLLM([VALID_SQL, "RETRY: wrong grouping", VALID_SQL, "OK"])
+        llm = RecordingLLM([
+            "query", VALID_SQL, "RETRY: wrong grouping",
+            "TARGET: gen_sql", VALID_SQL, "OK",
+        ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "OK"
         assert final["retry_count"] == 1
         assert final["error"] == ""
+        assert len(llm.calls) == 6  # intent + gen + reflect + judge + gen + reflect
         # The regenerated SQL prompt carried the reflect reason
-        assert "wrong grouping" in llm.calls[2][-1]["content"]
+        assert "wrong grouping" in llm.calls[4][-1]["content"]
 
     async def test_retry_cap_forces_accept(self, sqlite_registry, catalog, monkeypatch):
         monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
         llm = RecordingLLM([
-            VALID_SQL, "RETRY: a", VALID_SQL, "RETRY: b", VALID_SQL, "RETRY: c",
+            "query", VALID_SQL, "RETRY: a", "TARGET: gen_sql",
+            VALID_SQL, "RETRY: b", "TARGET: gen_sql",
+            VALID_SQL, "RETRY: c",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["retry_count"] == 2
         assert final["verdict"] == "OK"
         assert final["error"] == ""
-        assert len(llm.calls) == 6  # 3 generate passes + 3 reflect calls
+        assert len(llm.calls) == 9  # intent + 3×(gen+reflect) + 2×judge
 
     async def test_gen_sql_exhaustion_degrades_to_output(self, sqlite_registry, catalog):
         """gen_sql subgraph exhausts retries → execute/reflect skipped → error section."""
-        llm = RecordingLLM([INVALID_SQL] * 3)
+        llm = RecordingLLM(["query"] + [INVALID_SQL] * 3)
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert "3 attempts" in final["error"]
         assert final["row_count"] == -1  # execute_sql never ran
         assert "**Error**" in final["final_response"]
-        assert len(llm.calls) == 3  # reflect never called
+        assert len(llm.calls) == 4  # intent + 3 generate attempts; reflect never called
 
     async def test_execute_failure_degrades_to_output(self, sqlite_registry, catalog, monkeypatch):
         """执行失败 → 修正预算内重生成 → 耗尽后优雅降级（不再首错即降级）。"""
         monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
         bad_sql = "```sql\nSELECT * FROM nonexistent;\n```"
         # 每轮修正：gen → analyze（诊断）→ gen…
-        llm = RecordingLLM([bad_sql, "diag", bad_sql, "diag", bad_sql])
+        llm = RecordingLLM(["query", bad_sql, "diag", bad_sql, "diag", bad_sql])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"]
@@ -160,6 +166,7 @@ class TestReflectionGraph:
     async def test_execute_error_feedback_fixes_sql(self, sqlite_registry, catalog):
         """执行错误反馈给 gen_sql → 修正后成功（修正闭环）。"""
         llm = RecordingLLM([
+            "query",                                             # 意图
             "```sql\nSELECT * FROM nonexistent;\n```",           # 初稿（运行时错误）
             "diag: 表名错误",                                      # 错误诊断
             "```sql\nSELECT name FROM students;\n```",           # 修正稿
@@ -172,8 +179,8 @@ class TestReflectionGraph:
         assert final["retry_count"] == 1
         assert final["row_count"] == 5
         assert final["verdict"] == "OK"
-        # 修正 prompt 携带了执行错误信息
-        assert "nonexistent" in llm.calls[1][-1]["content"]
+        # 错误诊断 prompt 携带了执行错误信息
+        assert "nonexistent" in llm.calls[2][-1]["content"]
 
     async def test_preexisting_error_passes_straight_to_output(self, sqlite_registry, catalog):
         graphs = build(make_services(RecordingLLM([]), catalog, sqlite_registry))
@@ -181,25 +188,41 @@ class TestReflectionGraph:
         assert "upstream failed" in final["final_response"]
         assert final["row_count"] == -1
 
+    async def test_error_analysis_reaches_regeneration(self, sqlite_registry, catalog):
+        """analyze_error 的专家诊断必须注入重生成 prompt,而不是被丢弃。"""
+        llm = RecordingLLM([
+            "query",                                             # 意图
+            "```sql\nSELECT * FROM nonexistent;\n```",           # 初稿(运行时错误)
+            "diag: 表名错误,应使用 students",                      # 错误诊断
+            "```sql\nSELECT name FROM students;\n```",           # 修正稿
+            "OK",                                                # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["retry_count"] == 1
+        # 重生成 prompt(call 3)携带专家诊断
+        assert "diag: 表名错误" in llm.calls[3][-1]["content"]
+
     async def test_empty_result_reflect_short_circuits(self, sqlite_registry, catalog):
         """Zero rows → EMPTY verdict, no reflect LLM call."""
-        llm = RecordingLLM(["```sql\nSELECT name FROM students WHERE 0;\n```"])
+        llm = RecordingLLM(["query", "```sql\nSELECT name FROM students WHERE 0;\n```"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "EMPTY"
-        assert len(llm.calls) == 1  # only gen_sql
+        assert len(llm.calls) == 2  # intent + gen_sql
 
 
 class TestIntentRouting:
     async def test_schema_intent_llm_answer(self, sqlite_registry, catalog):
         """「有哪些表」→ 强信号直路由，答案由 LLM 组织。"""
-        llm = RecordingLLM(["数据源共 1 张表：students（4 列）", "OK"])
+        llm = RecordingLLM(["metadata", "数据源共 1 张表：students（4 列）", "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state(question="有哪些表"))
         assert final["intent"] == "metadata"
         assert "students" in final["intent_answer"]
         assert final["sql"] == ""
-        assert len(llm.calls) == 2  # 答案 + 裁决
+        assert len(llm.calls) == 3  # 分类 + 答案 + 裁决
 
     async def test_lineage_intent_llm_answer(self, sqlite_registry, catalog):
         """血缘意图 → LLM 组织关联答案。"""
@@ -210,7 +233,7 @@ class TestIntentRouting:
         await adapter.execute(
             "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
         )
-        llm = RecordingLLM(["city 与 district 通过 city.district_id 关联"])
+        llm = RecordingLLM(["metadata", "city 与 district 通过 city.district_id 关联"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(question="city 表的血缘")
@@ -230,7 +253,7 @@ class TestIntentRouting:
             "    tables: [students]\n    definition: 学生平均分\n",
             encoding="utf-8",
         )
-        llm = RecordingLLM(["平均成绩 → AVG(students.grade)，即学生平均分"])
+        llm = RecordingLLM(["metadata", "平均成绩 → AVG(students.grade)，即学生平均分"])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
         final = await graphs["reflection"].ainvoke(
             make_state(question="平均成绩的定义")
@@ -240,17 +263,17 @@ class TestIntentRouting:
 
     async def test_query_intent_still_runs_pipeline(self, sqlite_registry, catalog):
         """普通查询问题照常走生成流水线。"""
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["intent"] == "query"
         assert final["row_count"] == 5
 
     async def test_schema_intent_answers_in_english(self, sqlite_registry, catalog):
-        """英文问题 → 英文答案。"""
-        llm = RecordingLLM(["The datasource has 1 table: students (4 columns)"])
+        """配置 lang=en → 英文答案(不按问题语言检测)。"""
+        llm = RecordingLLM(["metadata", "The datasource has 1 table: students (4 columns)"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
-        final = await graphs["reflection"].ainvoke(make_state(question="list tables"))
+        final = await graphs["reflection"].ainvoke(make_state(question="list tables", lang="en"))
         assert final["intent"] == "metadata"
         assert "table" in final["intent_answer"].lower()
         assert "数据源" not in final["intent_answer"]
@@ -375,7 +398,7 @@ class TestGenerationTemperature:
 
 
 class AgenticLLM:
-    """chat_full 脚本化：dict 响应（content/tool_calls）。"""
+    """chat_full 脚本化：dict 响应（content/tool_calls）；chat 共享队列（reflect 单次裁决用）。"""
 
     def __init__(self, responses):
         self._responses = list(responses)
@@ -386,13 +409,43 @@ class AgenticLLM:
         return self._responses.pop(0)
 
     async def chat(self, model, messages, **kwargs):
-        raise AssertionError("agentic tests should only use chat_full")
+        self.calls.append(messages)
+        return self._responses.pop(0)
+
+
+class BrokenAgenticLLM(AgenticLLM):
+    """chat_full 永远抛异常（loop 崩溃）；chat 走 classic 脚本化响应。"""
+
+    def __init__(self, classic_responses):
+        super().__init__([])
+        self._classic = list(classic_responses)
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append(messages)
+        raise RuntimeError("llm down")
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append(messages)
+        return self._classic.pop(0)
 
 
 class TestAgenticNodes:
+    async def test_loop_failure_falls_back_to_classic(self, sqlite_registry, catalog):
+        """agentic 循环异常（如 LLM 500）→ 回退 classic 生成，不崩溃。
+
+        回归：此前 result=None 时仍访问 result["tool_history"]，整图 TypeError。
+        """
+        llm = BrokenAgenticLLM(["query", VALID_SQL, "OK"])  # intent + classic 生成 + reflect 裁决
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        assert final["row_count"] == 5
+
     async def test_gen_sql_tool_validation_round(self, sqlite_registry, catalog):
         """gen_sql ReAct：模型先调 validate_sql 工具自检，再交最终 SQL。"""
         llm = AgenticLLM([
+            "query",  # 意图（chat）
             {"content": None, "tool_calls": [
                 {"id": "c1", "name": "validate_sql",
                  "arguments": '{"sql": "SELECT name FROM students"}'},
@@ -404,26 +457,30 @@ class TestAgenticNodes:
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["sql"] == "SELECT name FROM students;"
-        assert len(llm.calls) == 3  # 工具轮 + 最终轮 + reflect
+        assert len(llm.calls) == 4  # 意图 + 工具轮 + 最终轮 + reflect
         assert final["row_count"] == 5
 
-    async def test_reflect_reexecutes_tool(self, sqlite_registry, catalog):
-        """reflect ReAct：模型调 execute_sql 工具复核结果，再裁决。"""
-        llm = AgenticLLM([
-            {"content": VALID_SQL, "tool_calls": []},  # gen 内容型单轮
-            {"content": None, "tool_calls": [
-                {"id": "c2", "name": "execute_sql",
-                 "arguments": '{"sql": "SELECT name FROM students"}'},
-            ]},
-            {"content": "OK", "tool_calls": []},  # 复核后裁决
-        ])
+    async def test_reflect_is_single_shot(self, sqlite_registry, catalog):
+        """reflect 去工具化：即使有 connectors，裁决也只调一次 chat，绝不进 chat_full。"""
+        class NoToolJudgeLLM:
+            def __init__(self):
+                self.chat_count = 0
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                if (kwargs.get("metadata") or {}).get("node") == "reflect":
+                    raise AssertionError("reflect must not use chat_full/tools")
+                return {"content": VALID_SQL, "tool_calls": []}  # gen 内容型单轮
+
+            async def chat(self, model, messages, **kwargs):
+                self.chat_count += 1
+                return "OK"
+
+        llm = NoToolJudgeLLM()
         graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["verdict"] == "OK"
         assert final["row_count"] == 5
-        # 工具观测回传给了模型
-        tool_messages = [m for call in llm.calls for m in call if m.get("role") == "tool"]
-        assert any("rows=5" in m["content"] for m in tool_messages)
+        assert llm.chat_count == 2  # route_intent + reflect 各一次单次调用
 
 
 class TestClarifyRouting:
@@ -440,7 +497,7 @@ class TestClarifyRouting:
 
     async def test_default_is_permissive_without_match(self, sqlite_registry, catalog):
         """默认（clarify 关闭）：无表匹配也照常生成，不拦截。"""
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(question="zzz 完全不相关的数据")
@@ -451,28 +508,114 @@ class TestClarifyRouting:
 
     async def test_matched_tables_proceed_normally(self, sqlite_registry, catalog):
         """有表匹配 → 正常走生成流程。"""
-        llm = RecordingLLM(["plan: use students", VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", "plan: use students", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["clarification_question"] == ""
         assert final["row_count"] == 5
         # 查询计划到达了 gen_sql 的生成 prompt
-        assert "Query plan" in llm.calls[1][-1]["content"]
+        assert "Query plan" in llm.calls[2][-1]["content"]
+
+
+class TestRollbackRouting:
+    """失败即判断：LLM 诊断根因并决定回退目标，带上下文重跑。"""
+
+    async def test_execute_error_judge_routes_to_planner(self, sqlite_registry, catalog):
+        """执行错误 → 判断回退 planner → 带修正上下文重定计划 → 重新生成成功。"""
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "plan: 初版计划",                                # planner 首跑
+            "```sql\nSELECT * FROM nonexistent;\n```",      # 初稿（执行失败）
+            "类型: 计划偏差\nTARGET: planner",               # 判断：回退 planner
+            "plan: 用 students 表按 county 分组",            # planner 重定计划
+            "```sql\nSELECT name FROM students;\n```",      # 重新生成
+            "OK",                                           # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        assert final["rollback_target"] == "planner"
+        assert len(llm.calls) == 7
+        # planner 重跑时携带了修正上下文(默认中文配置 → 中文标签)
+        planner_prompts = [
+            str(m.get("content", ""))
+            for call in llm.calls
+            for m in call
+            if "修正上下文" in str(m.get("content", ""))
+        ]
+        assert planner_prompts
+        assert "no such table" in planner_prompts[0]
+
+    async def test_judge_routes_to_schema_linking(self, sqlite_registry, catalog):
+        """判断回退 schema_linking：重新选表后重新生成成功。"""
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "```sql\nSELECT * FROM nonexistent;\n```",      # 初稿（执行失败）
+            "判断: 漏了表\nTARGET: schema_linking",          # 判断：重做选表
+            "```sql\nSELECT name FROM students;\n```",      # 重新生成
+            "OK",                                           # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        assert final["rollback_target"] == "schema_linking"
+
+    async def test_reflect_retry_goes_through_judge(self, sqlite_registry, catalog):
+        """reflect RETRY 不再直回 gen_sql，而是先经 LLM 判断回退目标。"""
+        llm = RecordingLLM([
+            "query",                    # 意图
+            VALID_SQL,                  # 初稿
+            "RETRY: wrong grouping",    # reflect 裁决
+            "TARGET: gen_sql",          # 判断：仍回 gen_sql
+            VALID_SQL,                  # 重新生成
+            "OK",                       # reflect 通过
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["verdict"] == "OK"
+        assert final["retry_count"] == 1
+        assert final["error"] == ""
+        assert final["rollback_target"] == "gen_sql"
+        assert len(llm.calls) == 6  # 意图 + gen + reflect + judge + gen + reflect
+
+    async def test_anti_loop_escalates_within_graph(self, sqlite_registry, catalog):
+        """防打转：判断连续两次指回 gen_sql → 强制升级到 planner。"""
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "plan: v1",                                     # planner 首跑
+            "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass1（执行失败）
+            "TARGET: gen_sql",                              # judge pass1
+            "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass2（仍失败）
+            "TARGET: gen_sql",                              # judge pass2 → 应被升级
+            "plan: 用 students 表",                          # planner（升级后重跑）
+            "```sql\nSELECT name FROM students;\n```",      # gen pass3 成功
+            "OK",                                           # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        # 升级生效：gen_sql 的重复判断被替换为 planner
+        assert final["rollback_target"] == "planner"
+        assert len(llm.calls) == 9  # 意图+planner+gen+judge+gen+judge+planner+gen+reflect
 
 
 class TestFixedGraph:
     async def test_no_reflection(self, sqlite_registry, catalog):
-        llm = RecordingLLM([VALID_SQL])
+        llm = RecordingLLM(["query", VALID_SQL])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["fixed"].ainvoke(make_state())
         assert final["verdict"] == ""  # reflect never ran
         assert final["row_count"] == 5
         assert "## Answer" in final["final_response"]
-        assert len(llm.calls) == 1
+        assert len(llm.calls) == 2  # intent + gen_sql
 
     async def test_execute_error_feedback_retries(self, sqlite_registry, catalog):
         """fixed 图同样带执行错误修正闭环。"""
         llm = RecordingLLM([
+            "query",
             "```sql\nSELECT * FROM nonexistent;\n```",
             "```sql\nSELECT name FROM students;\n```",
         ])
@@ -480,7 +623,7 @@ class TestFixedGraph:
         final = await graphs["fixed"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["row_count"] == 5
-        assert len(llm.calls) == 2
+        assert len(llm.calls) == 3  # intent + 初稿 + 修正稿
 
 
 class TestEmptyGraph:
@@ -488,6 +631,59 @@ class TestEmptyGraph:
         graphs = build(make_services(RecordingLLM([])))
         final = await graphs["empty"].ainvoke(make_state())
         assert "(No query executed)" in final["final_response"]
+
+
+class TestParseDateWiring:
+    """parse_date 节点接线:确定性解析,不消耗 LLM 调用,结果注入生成 prompt。"""
+
+    async def test_resolves_and_injects_into_gen_prompt(self, sqlite_registry, catalog):
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="最近7天学生的平均成绩是多少")
+        )
+        import re
+
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2} ~ \d{4}-\d{2}-\d{2}", final["time_context"])
+        # 时间块注入 gen_sql 的用户提示词(不新增 LLM 调用)
+        assert "Resolved time range" in llm.calls[1][-1]["content"]
+        assert len(llm.calls) == 3  # intent + gen_sql + reflect
+
+    async def test_fixed_graph_also_resolves(self, sqlite_registry, catalog):
+        llm = RecordingLLM(["query", VALID_SQL])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["fixed"].ainvoke(
+            make_state(question="最近7天学生的平均成绩是多少")
+        )
+        assert final["time_context"]
+        assert "Resolved time range" in llm.calls[1][-1]["content"]
+        assert len(llm.calls) == 2  # intent + gen_sql
+
+    async def test_no_time_expression_passes_through(self, sqlite_registry, catalog):
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["time_context"] == ""
+        assert "Resolved time range" not in llm.calls[1][-1]["content"]
+
+    async def test_disabled_config_skips_parsing(self, sqlite_registry, catalog):
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        config = AgentConfig(target="mock/model", date_parser=False)
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=config))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="最近7天学生的平均成绩是多少")
+        )
+        assert final["time_context"] == ""
+        assert "Resolved time range" not in llm.calls[1][-1]["content"]
+
+    async def test_empty_graph_unaffected(self):
+        llm = RecordingLLM([])
+        graphs = build(make_services(llm))
+        final = await graphs["empty"].ainvoke(
+            make_state(question="最近7天学生的平均成绩是多少")
+        )
+        assert final["time_context"] == ""
+        assert len(llm.calls) == 0
 
 
 class TestKnowledgeBaseGraph:
@@ -534,6 +730,7 @@ examples:
         """中文问题：术语命中表 + 示例注入 prompt + kb_hits 贯穿状态。"""
         kb = self._kb(tmp_path, sqlite_registry.default_name)
         llm = RecordingLLM([
+            "query",
             "```sql\nSELECT county, AVG(grade) FROM students GROUP BY county;\n```",
             "OK",
         ])
@@ -558,7 +755,7 @@ examples:
 
     async def test_no_kb_has_no_kb_hits(self, sqlite_registry, catalog):
         """kb 未配置时状态与行为不变（回归）。"""
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["kb_hits"] == []
@@ -575,21 +772,21 @@ examples:
             "rules:\n  - rule: '年龄 = 1998 - YEAR(birth_date)'\n",
             encoding="utf-8",
         )
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
         await graphs["reflection"].ainvoke(make_state())
-        assert "Data source rules" in llm.calls[0][-1]["content"]
+        assert "Data source rules" in llm.calls[1][-1]["content"]
 
     async def test_context_budget_drops_low_priority_blocks(self, sqlite_registry, catalog, monkeypatch):
         """预算不足时低优先级块（history）被排除，核心 schema 保留。"""
         monkeypatch.setattr(graphs_module, "CONTEXT_BUDGET_TOKENS", 5)
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(history="user: 平均成绩是多少\nassistant: 85 分")
         )
         assert final["error"] == ""
-        gen_prompt = llm.calls[0][-1]["content"]
+        gen_prompt = llm.calls[1][-1]["content"]
         assert "Conversation history" not in gen_prompt  # 低优先级被预算排除
         assert "Database schema" in gen_prompt                 # 核心保留
         usage = final["context_usage"]
@@ -597,16 +794,17 @@ examples:
 
     async def test_history_reaches_generation_prompt(self, sqlite_registry, catalog):
         """会话历史注入 gen_sql 的生成 prompt。"""
-        llm = RecordingLLM([VALID_SQL, "OK"])
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         await graphs["reflection"].ainvoke(
             make_state(history="user: 平均成绩是多少\nassistant: 85 分")
         )
-        assert "平均成绩是多少" in llm.calls[0][-1]["content"]
+        assert "平均成绩是多少" in llm.calls[1][-1]["content"]
 
     async def test_validation_rule_fixes_count_question(self, sqlite_registry, catalog):
         """count 问题先返回多行 → 规则失败 → 带理由重新生成 → 修正成功。"""
         llm = RecordingLLM([
+            "query",                                         # 意图
             "```sql\nSELECT name FROM students;\n```",   # 多行（规则失败）
             "diag: count 应单值",                          # 错误诊断
             "```sql\nSELECT COUNT(*) FROM students;\n```",  # 修正：单值
@@ -619,11 +817,12 @@ examples:
         assert final["error"] == ""
         assert final["row_count"] == 1
         assert final["retry_count"] == 1
-        assert "Validation rule" in llm.calls[1][-1]["content"]
+        assert "校验规则" in llm.calls[3][-1]["content"]
 
     async def test_validation_rule_fixes_empty_list_question(self, sqlite_registry, catalog):
         """list 问题返回 0 行 → 规则触发重新生成 → 非空结果。"""
         llm = RecordingLLM([
+            "query",
             "```sql\nSELECT name FROM students WHERE 0;\n```",
             "diag: 空结果可疑",
             "```sql\nSELECT name FROM students;\n```",
@@ -639,6 +838,7 @@ examples:
     async def test_two_candidates_consensus_passes(self, sqlite_registry, catalog):
         """两个候选结果一致 → 高置信放行（无需修正）。"""
         llm = RecordingLLM([
+            "query",                                                 # 意图
             VALID_SQL,                                             # 主候选
             "```sql\nSELECT name FROM students ORDER BY name;\n```",  # 副候选（同结果）
             "OK",                                                  # reflect
@@ -649,14 +849,15 @@ examples:
         assert final["retry_count"] == 0
         assert final["row_count"] == 5
         assert len(final["candidates"]) == 1
-        assert len(llm.calls) == 3  # 主 + 副 + reflect
+        assert len(llm.calls) == 4  # 意图 + 主 + 副 + reflect
 
     async def test_candidate_disagreement_regenerates(self, sqlite_registry, catalog):
         """候选结果不一致 → 反馈重生成 → 一致后放行。"""
         llm = RecordingLLM([
+            "query",                                                 # 意图
             VALID_SQL,                                             # pass1 主
             "```sql\nSELECT name FROM students WHERE 0;\n```",     # pass1 副（0 行）
-            VALID_SQL,                                             # pass2 主
+            VALID_SQL,                                             # pass2 主（被诊断吞掉）
             "```sql\nSELECT name FROM students ORDER BY name;\n```",  # pass2 副
             "OK",                                                  # reflect
         ])
@@ -665,5 +866,141 @@ examples:
         assert final["error"] == ""
         assert final["retry_count"] == 1
         assert final["row_count"] == 5
-        # pass2 的生成 prompt 带了一致性失败理由
-        assert "different results" in llm.calls[2][-1]["content"]
+        # 一致性失败理由进入了错误诊断 prompt
+        assert "候选 SQL 结果不一致" in llm.calls[3][-1]["content"]
+
+
+class TestNoSQLExit:
+    """「这不是 SQL 问题」的结构性出口：意图验证 + reflect/analyze_error NO_SQL。"""
+
+    async def _make_disp(self, sqlite_registry):
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE disp (disp_id INTEGER PRIMARY KEY, "
+            "client_id INTEGER, account_id INTEGER, type TEXT)"
+        )
+
+    async def test_llm_intent_routes_definitional_question_to_metadata(self, sqlite_registry, catalog):
+        """「disp 表是啥」→ LLM 裁决 metadata → 验证（已知表命中）→ 直答，零 SQL。"""
+        await self._make_disp(sqlite_registry)
+        llm = RecordingLLM([
+            "metadata",
+            "disp 是账户与客户发放关系表，记录客户与账户的关联及类型。",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="disp 表是啥")
+        )
+        assert final["intent"] == "metadata"
+        assert "disp" in final["intent_answer"]
+        assert final["sql"] == ""
+        assert len(llm.calls) == 3  # 意图 + 答案 + 裁决
+
+    async def test_reflect_no_sql_exits_to_metadata_without_looping(self, sqlite_registry, catalog):
+        """query 管线走到 reflect，裁决 NO_SQL → answer_metadata，不进入重试循环。"""
+        await self._make_disp(sqlite_registry)
+        llm = RecordingLLM([
+            "query",
+            VALID_SQL,
+            "NO_SQL: 这不是数据查询，是表含义问题",
+            "disp 是账户与客户发放关系表。",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="disp 表是啥")
+        )
+        assert final["verdict"] == "NO_SQL"
+        assert final["no_sql"] is True
+        assert final["retry_count"] == 0  # 未消耗修正预算
+        assert "disp" in final["intent_answer"]
+        assert "SELECT" not in final["final_response"]
+        assert len(llm.calls) == 5  # 意图 + gen + 裁决 + 答案 + 答案裁决
+
+    async def test_analyze_error_no_sql_exits_via_consensus_disagreement(self, sqlite_registry, catalog):
+        """候选不一致 → 诊断判定 NO_SQL → answer_metadata（清掉陈旧反馈）。"""
+        await self._make_disp(sqlite_registry)
+        llm = RecordingLLM([
+            "query",                                                # 意图
+            VALID_SQL,                                             # 主候选（5 行）
+            "```sql\nSELECT name FROM students WHERE 0;\n```",     # 副候选（0 行）
+            "NO_SQL: 定义问题不是数据查询",                           # 诊断
+            "disp 是账户与客户发放关系表。",                            # 元数据答案
+            "OK",                                                  # 答案裁决
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="disp 表是啥")
+        )
+        assert final["no_sql"] is True
+        assert final["error_feedback"] == ""
+        assert final["retry_count"] == 1  # select 的不一致反馈计了一轮
+        assert "disp" in final["intent_answer"]
+        assert len(llm.calls) == 6
+
+    async def test_query_verdict_overridden_by_strong_regex(self, sqlite_registry, catalog):
+        """LLM 误判 query，但强 metadata 信号 + 无数据信号 → 验证覆写为 metadata。"""
+        llm = RecordingLLM([
+            "query",
+            "客户数指去重后的客户数量。",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="客户数的定义")
+        )
+        assert final["intent"] == "metadata"
+        assert "客户" in final["intent_answer"]
+        assert final["sql"] == ""
+
+
+class TestRouteIntentObservability:
+    """route_intent 观测:节点返回完整 LLM 详情 + 意图证据,供日志/诊断。"""
+
+    async def test_returns_llm_detail_and_intent_evidence(self):
+        from trove.workflow.graphs import make_route_intent
+
+        class IntentLLM:
+            async def chat(self, model, messages, **kwargs):
+                return "metadata"
+
+        node = make_route_intent(
+            llm=IntentLLM(), config=AgentConfig(target="mock/model"),
+            catalog=None, kb=None, connectors=None,
+        )
+        # "表结构"命中强信号,且不带 count/list 等数据信号
+        delta = await node(make_state(question="loan 的表结构是怎样的?"))
+
+        assert delta["intent"] == "metadata"
+        assert delta["llm"]["model"] == "mock/model"
+        assert delta["llm"]["elapsed_ms"] >= 0
+        assert delta["llm"]["input_preview"]      # 意图分类 system prompt
+        assert delta["llm"]["output_preview"] == "metadata"
+        assert delta["intent_evidence"] == {
+            "strong_match": True,
+            "data_signal": False,
+            "llm_verdict": "metadata",
+            "llm_error": "",
+            "mentioned_table": False,
+            "term_hit": False,
+        }
+
+    async def test_llm_failure_recorded_as_evidence(self):
+        """LLM 不可用时:回退正则路由,但证据里记下 llm_error。"""
+        from trove.workflow.graphs import make_route_intent
+
+        class BoomLLM:
+            async def chat(self, model, messages, **kwargs):
+                raise RuntimeError("api down")
+
+        node = make_route_intent(
+            llm=BoomLLM(), config=AgentConfig(target="mock/model"),
+            catalog=None, kb=None, connectors=None,
+        )
+        delta = await node(make_state(question="平均成绩是多少"))
+
+        assert delta["intent"] == "query"  # 正则兜底默认 query
+        assert delta["llm"] is None
+        assert delta["intent_evidence"]["llm_verdict"] is None
+        assert "api down" in delta["intent_evidence"]["llm_error"]
