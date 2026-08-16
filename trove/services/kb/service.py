@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -100,6 +101,29 @@ def _word_tokens(text: str) -> set[str]:
 def _mentions_any(text: str, names: list[str]) -> bool:
     """Deterministic lexical check: does text mention any of the names."""
     return any(n and n in text for n in names)
+
+
+def resolve_kb_root(kb_dir: str | None, db_id: str) -> Path | None:
+    """Resolve a --kb-dir argument to a KB root in per-datasource layout.
+
+    - None → 默认布局(<cwd>/.trove/kb),由 KbService 自己解析;
+    - 含 <db_id>/ 子目录 → 直接当作 KB 根;
+    - 扁平 YAML 目录(如手工整理的 KB 文件夹)→ 软链到临时根下的
+      <db_id>/,让 KbService 按 datasource 布局读取;
+    - 其他情况 → ValueError(调用方转 argparse 错误)。
+    """
+    if not kb_dir:
+        return None
+    root = Path(kb_dir)
+    if not root.is_dir():
+        raise ValueError(f"--kb-dir 不存在: {root}")
+    if (root / db_id).is_dir():
+        return root
+    if any(root.glob("*.yml")):
+        staged = Path(tempfile.mkdtemp(prefix="trove-kb-"))
+        (staged / db_id).symlink_to(root, target_is_directory=True)
+        return staged
+    raise ValueError(f"--kb-dir 需包含 {db_id}/ 子目录或直接包含 YAML 文件: {root}")
 
 
 def _score_example(
@@ -222,8 +246,11 @@ class KbService:
     exactly as without a KB.
     """
 
-    def __init__(self, project_root: str | Path):
-        self.kb_dir = Path(project_root) / ".trove" / KB_DIR_NAME
+    def __init__(self, project_root: str | Path, kb_dir: str | Path | None = None):
+        self.kb_dir = (
+            Path(kb_dir) if kb_dir is not None
+            else Path(project_root) / ".trove" / KB_DIR_NAME
+        )
         self.db_path = self.kb_dir / "kb.sqlite"
         # /kb learn draft awaiting user confirmation
         self.pending_draft: dict[str, Any] | None = None
@@ -251,6 +278,34 @@ class KbService:
             for ds_dir in sorted(self._datasource_dirs()):
                 for yml in sorted(ds_dir.glob("*.yml")):
                     await self._sync_file(db, yml, ds_dir.name)
+            await self._purge_deleted_files(db)
+            await db.commit()
+
+    async def _purge_deleted_files(self, db: aiosqlite.Connection) -> None:
+        """Drop mirror rows whose source YAML no longer exists on disk.
+
+        Keyed by (datasource, source_file): a same-named file in another
+        datasource directory must not keep stale rows alive.
+        """
+        current = {
+            (ds_dir.name, yml.name)
+            for ds_dir in self._datasource_dirs()
+            for yml in ds_dir.glob("*.yml")
+        }
+        rows = await (await db.execute(
+            "SELECT datasource, source_file FROM kb_items"
+        )).fetchall()
+        for datasource, source_file in rows:
+            if (datasource, source_file) in current:
+                continue
+            await db.execute(
+                "DELETE FROM kb_items WHERE datasource = ? AND source_file = ?",
+                (datasource, source_file),
+            )
+            await db.execute(
+                "DELETE FROM kb_sync WHERE file_path = ?",
+                (f"{datasource}/{source_file}",),
+            )
 
     async def _sync_file(
         self, db: aiosqlite.Connection, yml: Path, datasource: str,
@@ -299,25 +354,10 @@ class KbService:
         self.kb_dir.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy_files(default_datasource)
 
-        current_files = {
-            f"{ds_dir.name}/{yml.name}"
-            for ds_dir in self._datasource_dirs()
-            for yml in ds_dir.glob("*.yml")
-        }
         async with aiosqlite.connect(self.db_path) as db:
             await self._ensure_mirror_schema(db)
             await db.execute("DELETE FROM kb_sync")
-            if current_files:
-                rows = await (await db.execute(
-                    "SELECT file_path FROM kb_sync"
-                )).fetchall()  # placeholder to keep structure clear
-                placeholders = ",".join("?" * len(current_files))
-                await db.execute(
-                    f"DELETE FROM kb_items WHERE source_file NOT IN ({placeholders})",
-                    [f.split("/", 1)[1] for f in current_files],
-                )
-            else:
-                await db.execute("DELETE FROM kb_items")
+            await self._purge_deleted_files(db)
             await db.commit()
         await self.ensure_synced(default_datasource)
 

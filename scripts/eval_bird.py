@@ -33,7 +33,7 @@ from trove.tracing.runlog import create_tracer
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
 from trove.services.datasource.catalog import CatalogService
-from trove.services.kb.service import KbService
+from trove.services.kb.service import KbService, resolve_kb_root
 from trove.workflow.graphs import GraphServices, build_graphs
 from trove.workflow.state import WorkflowState
 
@@ -43,6 +43,9 @@ def parse_args():
     parser.add_argument("--dev-json", default="/Users/zhaolipan/Downloads/minidev/MINIDEV/mini_dev_mysql.json")
     parser.add_argument("--db-id", default="financial")
     parser.add_argument("--datasource", default="mysql://root:root@127.0.0.1:3306/financial")
+    parser.add_argument("--kb-dir", default=None,
+                        help="KB 根目录(含 <db-id>/ 子目录)或直接指向该数据源的 YAML 目录;"
+                             "默认 <cwd>/.trove/kb")
     parser.add_argument("--limit", type=int, default=0, help="Only evaluate N questions (0 = all)")
     parser.add_argument("--start", type=int, default=0,
                         help="Skip the first N questions (applied before --limit)")
@@ -59,6 +62,7 @@ def normalize_rows(rows: list[list]) -> list[tuple]:
 
 
 FAILURES_PATH = Path.cwd() / ".trove" / "eval" / "failures.jsonl"
+RESULTS_PATH = Path.cwd() / ".trove" / "eval" / "results.jsonl"
 
 
 def record_failure(entry: dict) -> None:
@@ -69,6 +73,40 @@ def record_failure(entry: dict) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+def classify_pred_error(error: str) -> str:
+    """final.error → GENERATION_ERROR | EXECUTION_ERROR(与汇总口径一致)。"""
+    return "GENERATION_ERROR" if error and "generation" in error.lower() else "EXECUTION_ERROR"
+
+
+def record_result(entry: dict, path: Path | None = None) -> None:
+    """逐题判定追加到 results.jsonl(含 MATCH,供 A/B 对比与归因)。"""
+    try:
+        target = path or RESULTS_PATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _result_entry(
+    run_id: str, question: str, evidence: str, gold_sql: str, verdict: str,
+    final: WorkflowState | None = None,
+) -> dict:
+    """逐题判定条目;final 缺失(崩溃)时不带 pred/kb/retries 字段。"""
+    entry: dict[str, Any] = {
+        "run_id": run_id, "question": question, "evidence": evidence,
+        "gold_sql": gold_sql, "verdict": verdict,
+    }
+    if final is not None:
+        entry.update({
+            "pred_sql": final.sql or "",
+            "kb_hits": final.kb_hits,
+            "retries": final.retry_count,
+        })
+    return entry
 
 
 def slice_questions(questions: list[dict], limit: int = 0, start: int = 0) -> list[dict]:
@@ -157,6 +195,14 @@ async def main() -> None:
     print(f"评估 {args.db_id}: {len(questions)} 题", flush=True)
 
     config = ConfigLoader.load_agent_config("conf/agent.yml")
+    try:
+        kb_root = resolve_kb_root(args.kb_dir, args.db_id)
+    except ValueError as e:
+        # parser.error 会在协程内抛 SystemExit,把 asyncio.run 的清理流程
+        # 搅出 "Event loop is closed" 噪声;打印一行错误并返回码 2 更干净。
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
     # LLM 调用记录到本地 trace store（诊断 reflect/gen loop 实际行为）
     configure_trace_store(Path.home() / ".trove")
     registry = ConnectorRegistry()
@@ -167,7 +213,7 @@ async def main() -> None:
         catalog=CatalogService(registry),
         connectors=registry,
         config=config,
-        kb=KbService(Path.cwd()),
+        kb=KbService(Path.cwd(), kb_dir=kb_root),
     )
     graph = build_graphs(services)["reflection"]
 
@@ -210,6 +256,9 @@ async def main() -> None:
                 "question": question, "evidence": evidence, "gold_sql": gold_sql,
                 "pred_sql": "", "error": f"crash: {str(e)[:200]}",
             })
+            record_result(_result_entry(
+                run_id, question, evidence, gold_sql, "CRASH",
+            ) | {"error": f"crash: {str(e)[:200]}"})
             log(f"[{i}/{len(questions)}] ✗ 崩溃: {str(e)[:70]}")
             continue
         total_retries += final.retry_count
@@ -218,6 +267,9 @@ async def main() -> None:
             gold_rows = (await adapter.execute(gold_sql)).rows
         except Exception as e:
             failures["gold_error"] += 1
+            record_result(_result_entry(
+                run_id, question, evidence, gold_sql, "GOLD_ERROR", final,
+            ) | {"error": str(e)[:200]})
             log(f"[{i}/{len(questions)}] ✗ gold 执行失败: {question[:40]}... ({e})")
             continue
 
@@ -228,17 +280,27 @@ async def main() -> None:
                 "question": question, "evidence": evidence, "gold_sql": gold_sql,
                 "pred_sql": final.sql or "", "error": final.error[:200],
             })
+            record_result(_result_entry(
+                run_id, question, evidence, gold_sql,
+                classify_pred_error(final.error), final,
+            ) | {"error": final.error[:200]})
             log(f"[{i}/{len(questions)}] ✗ {final.error[:70]}")
             continue
 
         if not final.sql:
             failures["execution"] += 1
+            record_result(_result_entry(
+                run_id, question, evidence, gold_sql, "EMPTY_SQL", final,
+            ) | {"error": "空 SQL（意图可能误路由）"})
             log(f"[{i}/{len(questions)}] ✗ 空 SQL（意图可能误路由）")
             continue
 
         pred_rows = (await adapter.execute(final.sql)).rows
         if normalize_rows(pred_rows) == normalize_rows(gold_rows):
             matched += 1
+            record_result(_result_entry(
+                run_id, question, evidence, gold_sql, "MATCH", final,
+            ))
             log(f"[{i}/{len(questions)}] ✓ {question[:50]}... (retry {final.retry_count})")
         else:
             failures["mismatch"] += 1
@@ -247,6 +309,9 @@ async def main() -> None:
                 "pred_sql": final.sql or "",
                 "error": f"mismatch (pred {len(pred_rows)} rows, gold {len(gold_rows)} rows)",
             })
+            record_result(_result_entry(
+                run_id, question, evidence, gold_sql, "MISMATCH", final,
+            ) | {"error": f"mismatch (pred {len(pred_rows)} rows, gold {len(gold_rows)} rows)"})
             log(f"[{i}/{len(questions)}] ✗ 结果不一致: {question[:50]}... "
                 f"(pred {len(pred_rows)} rows, gold {len(gold_rows)} rows, retry {final.retry_count})")
 
@@ -263,4 +328,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

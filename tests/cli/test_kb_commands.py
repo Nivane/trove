@@ -67,8 +67,28 @@ class TestKbInit:
         assert (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
 
 
-# LLM 只起草表格注释(描述+枚举含义);terms/examples 由代码确定性生成
+# LLM 只起草表格注释(描述+枚举含义);terms/examples 由代码确定性生成。
+# 默认语言为英文(benchmark 均为英文问题)。
 TABLES_DOC = """tables:
+- name: students
+  description: student records
+  columns:
+  - name: id
+    type: int
+    description: student identifier
+    enums: []
+  - name: grade
+    type: int
+    description: grade
+    enums: []
+  - name: county
+    type: varchar
+    description: county
+    enums: []
+  metrics: []
+"""
+
+TABLES_DOC_ZH = """tables:
 - name: students
   description: 学生表
   columns:
@@ -146,7 +166,7 @@ class TestKbInitLLM:
         return reg
 
     async def test_init_generates_three_files_with_llm(self, kb, sqlite_registry):
-        """有 LLM 时 /kb init 生成三份文件:描述由 LLM 起草,terms/examples 确定性生成。"""
+        """有 LLM 时 /kb init 生成三份文件:描述由 LLM 起草,terms/examples 确定性生成(默认英文)。"""
         reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
         result = await reg.get("kb").handler("init")
 
@@ -156,15 +176,43 @@ class TestKbInitLLM:
         assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert (kb.kb_dir / ds / "examples.yml").exists()
         notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
-        assert "学生表" in notes
+        assert "student records" in notes
         # 确定性 term:count + 数值列 SUM/AVG;ID 列不生成
         semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
-        assert "学生总数" in semantics and "平均成绩" in semantics
+        assert "number of students records" in semantics and "average grade" in semantics
         assert "COUNT(*)" in semantics
         # 确定性模板:count + 首条文本列 GROUP BY
         examples = (kb.kb_dir / ds / "examples.yml").read_text(encoding="utf-8")
         assert "SELECT COUNT(*) FROM students" in examples
+        assert "How many records are in the students table?" in examples
         assert "SELECT county, COUNT(*) FROM students GROUP BY county" in examples
+
+    async def test_init_lang_zh_keeps_chinese_generation(self, kb, sqlite_registry):
+        """--lang zh:沿用中文术语/模板与中文起草提示词。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC_ZH))
+        result = await reg.get("kb").handler("init --lang zh")
+
+        ds = sqlite_registry.default_name
+        assert "Initialized" in result
+        semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "学生总数" in semantics and "平均成绩" in semantics
+
+    async def test_init_default_prompt_is_english(self, kb, sqlite_registry):
+        """默认起草提示词要求英文描述(枚举含义也英文)。"""
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                return TABLES_DOC
+
+        llm = ScriptedLLM()
+        reg = self._reg(kb, sqlite_registry, llm)
+        await reg.get("kb").handler("init")
+
+        system = llm.calls[0][0]["content"]
+        assert "in English" in system
 
     async def test_init_deterministic_terms_skip_undescribed_columns(self, kb, sqlite_registry):
         """不透明列(无描述)不生成 SUM/AVG 术语——防止瞎猜映射。"""
@@ -278,7 +326,7 @@ class TestKbInitLLM:
         assert (kb.kb_dir / ds / "schema_notes.yml").exists()
         assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert (kb.kb_dir / ds / "examples.yml").exists()
-        assert "学生总数" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "number of students records" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
 
     def test_parse_init_tables_accepts_both_formats(self):
         from trove.cli.commands.kb_cmds import _parse_init_tables
@@ -303,6 +351,14 @@ class TestKbInitLLM:
 
         with pytest.raises(ValueError):
             _parse_init_tables("terms:\n- term: x\n")
+
+    def test_lang_arg_defaults_to_english(self):
+        from trove.cli.commands.kb_cmds import _lang_arg
+
+        assert _lang_arg("init") == "en"
+        assert _lang_arg("init --docs /tmp/x") == "en"
+        assert _lang_arg("init --lang zh") == "zh"
+        assert _lang_arg("init --lang zh --docs /tmp/x") == "zh"
 
     async def test_init_chunks_large_schema_and_merges(self, kb, sqlite_registry, monkeypatch):
         """大 schema 分块调用（每块 1 表）→ 多次 LLM 调用 → 结果合并。"""
@@ -352,7 +408,7 @@ class TestKbInitLLM:
         notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
         assert "students" in notes and "courses" in notes  # 两块合并
         semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
-        assert "学生总数" in semantics and "课程总数" in semantics  # 确定性生成
+        assert "number of students records" in semantics and "number of courses records" in semantics  # 确定性生成
 
 
 class TestKbList:

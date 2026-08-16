@@ -34,7 +34,7 @@ TABLES = [
 
 class TestGenerateTerms:
     def test_count_term_per_table_with_aliases(self):
-        terms = generate_terms(TABLES)
+        terms = generate_terms(TABLES, lang="zh")
         account = {t["term"]: t for t in terms if "account" in t["tables"]}
         count = next(t for t in account.values() if t["mapping"] == "COUNT(*)")
         assert count["term"] == "银行账户总数"
@@ -42,14 +42,14 @@ class TestGenerateTerms:
         assert count["tables"] == ["account"]
 
     def test_sum_and_avg_terms_for_described_numeric_columns(self):
-        terms = generate_terms(TABLES)
+        terms = generate_terms(TABLES, lang="zh")
         loan = {t["term"]: t for t in terms if "loan" in t["tables"]}
         assert loan["贷款总金额"]["mapping"] == "SUM(amount)"
         assert loan["贷款平均金额"]["mapping"] == "AVG(amount)"
         assert loan["贷款平均期限"]["mapping"] == "AVG(duration)"
 
     def test_date_column_gets_avg_year_term(self):
-        terms = generate_terms(TABLES)
+        terms = generate_terms(TABLES, lang="zh")
         account = {t["term"]: t for t in terms if "account" in t["tables"]}
         date_terms = [t for t in account.values() if "日期" in t["term"]]
         assert date_terms
@@ -66,19 +66,19 @@ class TestGenerateTerms:
             ],
             "metrics": [],
         }]
-        terms = generate_terms(tables)
+        terms = generate_terms(tables, lang="zh")
         assert len(terms) == 1  # 只有 count term
         assert terms[0]["mapping"] == "COUNT(*)"
 
     def test_id_columns_get_no_sum_terms(self):
         """ID 列不生成 SUM/AVG term(对 ID 求平均没有业务含义)。"""
-        terms = generate_terms(TABLES)
+        terms = generate_terms(TABLES, lang="zh")
         all_terms = [t["term"] for t in terms]
         assert not any("account_id" in t or "唯一标识符" in t for t in all_terms)
         assert not any(t["mapping"] == "SUM(account_id)" for t in terms)
 
     def test_term_definitions_carry_table_name(self):
-        terms = generate_terms(TABLES)
+        terms = generate_terms(TABLES, lang="zh")
         loan_count = next(
             t for t in terms if t["mapping"] == "COUNT(*)" and "loan" in t["tables"]
         )
@@ -87,14 +87,14 @@ class TestGenerateTerms:
 
 class TestGenerateTemplates:
     def test_count_template_per_table(self):
-        templates = generate_templates(TABLES)
+        templates = generate_templates(TABLES, lang="zh")
         account = next(t for t in templates if "account" in t["sql"])
         assert account["template"] is True
         assert account["sql"] == "SELECT COUNT(*) FROM account"
         assert account["question"]
 
     def test_group_by_template_over_first_text_column(self):
-        templates = generate_templates(TABLES)
+        templates = generate_templates(TABLES, lang="zh")
         account = next(
             t for t in templates
             if t["sql"].startswith("SELECT frequency")
@@ -102,7 +102,7 @@ class TestGenerateTemplates:
         assert account["sql"] == "SELECT frequency, COUNT(*) FROM account GROUP BY frequency"
 
     def test_group_by_template_over_first_text_column_loan(self):
-        templates = generate_templates(TABLES)
+        templates = generate_templates(TABLES, lang="zh")
         loan = next(
             t for t in templates
             if t["sql"].startswith("SELECT status")
@@ -116,6 +116,89 @@ class TestGenerateTemplates:
             "columns": [{"name": "n", "type": "int", "description": "数值", "enums": []}],
             "metrics": [],
         }]
-        templates = generate_templates(tables)
+        templates = generate_templates(tables, lang="zh")
         assert len(templates) == 1
         assert templates[0]["sql"] == "SELECT COUNT(*) FROM t"
+
+
+EN_TABLES = [
+    {
+        "name": "account",
+        "description": "bank account information",
+        "columns": [
+            {"name": "account_id", "type": "int", "description": "account identifier", "enums": []},
+            {"name": "frequency", "type": "varchar", "description": "statement issuance frequency", "enums": []},
+            {"name": "date", "type": "date", "description": "account opening date", "enums": []},
+        ],
+        "metrics": [],
+    },
+    {
+        "name": "loan",
+        "description": "loan information",
+        "columns": [
+            {"name": "loan_id", "type": "int", "description": "loan identifier", "enums": []},
+            {"name": "amount", "type": "int", "description": "loan amount", "enums": []},
+            {"name": "status", "type": "varchar", "description": "loan status", "enums": []},
+        ],
+        "metrics": [],
+    },
+    {
+        "name": "order",
+        "description": "payment order",
+        "columns": [
+            {"name": "order_id", "type": "int", "description": "order identifier", "enums": []},
+            {"name": "account_to", "type": "int", "description": "recipient account number", "enums": []},
+        ],
+        "metrics": [],
+    },
+]
+
+
+class TestEnglishGeneration:
+    """默认 lang="en":面向英文 benchmark 的术语/模板;中文描述列跳过派生。"""
+
+    def test_count_term_in_english(self):
+        terms = generate_terms(EN_TABLES)
+        loan = [t for t in terms if t["tables"] == ["loan"] and t["mapping"] == "COUNT(*)"]
+        assert loan and loan[0]["term"] == "number of loan records"
+
+    def test_sum_avg_terms_from_english_descriptions(self):
+        terms = generate_terms(EN_TABLES)
+        loan = {t["term"]: t for t in terms if "loan" in t["tables"]}
+        assert loan["total loan amount"]["mapping"] == "SUM(amount)"
+        assert loan["average loan amount"]["mapping"] == "AVG(amount)"
+
+    def test_cjk_descriptions_skipped_in_english_mode(self):
+        """中文描述无法确定性翻译成英文 → 与无描述列同等待遇,不生成术语。"""
+        tables = [{
+            "name": "loan",
+            "description": "贷款信息表",
+            "columns": [
+                {"name": "amount", "type": "int", "description": "贷款金额", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        terms = generate_terms(tables)
+        assert [t for t in terms if t["mapping"] != "COUNT(*)"] == []
+
+    def test_account_number_column_gets_no_sum_terms_in_either_lang(self):
+        """account_to 不是 _id 后缀但同为标识类(账户号)→ 两种语言都不生成 SUM/AVG。"""
+        for lang in ("en", "zh"):
+            terms = generate_terms(EN_TABLES, lang=lang)
+            assert not any(
+                t["mapping"].startswith(("SUM(account_to", "AVG(account_to"))
+                for t in terms
+            ), f"{lang}: account_to 不应生成 SUM/AVG"
+
+    def test_count_template_in_english(self):
+        templates = generate_templates(EN_TABLES)
+        account = next(
+            t for t in templates
+            if t["sql"] == "SELECT COUNT(*) FROM account"
+        )
+        assert account["question"] == "How many records are in the account table?"
+
+    def test_group_by_template_in_english(self):
+        templates = generate_templates(EN_TABLES)
+        loan = next(t for t in templates if t["sql"].startswith("SELECT status"))
+        assert loan["question"] == "How many loan records are there for each loan status?"

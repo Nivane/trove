@@ -42,6 +42,23 @@ INIT_SYSTEM_PROMPT = """You are initializing a knowledge base for a SQL data age
 
 tables:
   - name: <table>
+    description: <one-line business description in English>
+    columns:
+      - name: <column>
+        description: <one-line description in English>
+        enums: []
+    metrics: []
+
+Rules:
+- For every column write a one-line English description (empty string "" if the column is truly opaque — do NOT guess the meaning of opaque columns like A1..A16 from name alone).
+- Columns that already carry an official description must keep it unchanged; only fill the blanks.
+- For text columns whose sample values are shown, fill enums with one "value=English meaning" entry per sample value, e.g. "POPLATEK MESICNE=monthly issuance".
+- Business terms and reference templates are generated automatically by the system — do NOT add terms/examples sections."""
+
+INIT_SYSTEM_PROMPT_ZH = """You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, and sample values for low-cardinality text columns — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
+
+tables:
+  - name: <table>
     description: <one-line business description in Chinese>
     columns:
       - name: <column>
@@ -308,6 +325,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         model = (config.target if config else "") or "openai/gpt-4o"
 
         docs = load_docs_tables(Path(_docs_arg(args))) if _docs_arg(args) else {}
+        lang = _lang_arg(args)
 
         # Live enum probe(离线/探测失败静默跳过,不影响 init)
         probed: dict = {}
@@ -322,6 +340,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             try:
                 tables = await _draft_init_chunk(
                     llm, model, _table_dicts(chunk, docs), samples=probed,
+                    lang=lang,
                 )
             except Exception as e:
                 logger.warning("Could not parse init draft after repair: %s", e)
@@ -332,8 +351,8 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         all_tables = apply_docs(all_tables, docs)  # 官方描述权威
         if probed:
             all_tables = merge_into_notes({"tables": all_tables}, probed)["tables"]
-        terms = generate_terms(all_tables)
-        examples = generate_templates(all_tables)
+        terms = generate_terms(all_tables, lang=lang)
+        examples = generate_templates(all_tables, lang=lang)
 
         kb.init_notes(all_tables, datasource)
         kb.init_terms(terms, datasource)
@@ -384,9 +403,10 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             return await _cmd_learn(args)
 
         return (
-            "Usage: /kb init [--docs <dir>] | list | reload | learn [--yes] | lessons [--yes]\n"
+            "Usage: /kb init [--docs <dir>] [--lang en|zh] | list | reload | learn [--yes] | lessons [--yes]\n"
             "  init     draft table/column annotations via LLM, generate terms/templates "
-            "deterministically; --docs imports official column descriptions\n"
+            "deterministically; --docs imports official column descriptions; "
+            "--lang sets the KB language (default en)\n"
             "  list     show knowledge base item counts per datasource\n"
             "  reload   re-sync YAML files immediately\n"
             "  learn    draft an example+terms from the last exchange; --yes saves it\n"
@@ -401,14 +421,15 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
     ))
 
 
-async def _draft_init_chunk(llm, model, tables, samples=None) -> list:
+async def _draft_init_chunk(llm, model, tables, samples=None, lang: str = "en") -> list:
     """Draft one schema chunk; on parse failure, one LLM repair round.
 
     Raises:
         Exception: Parse failure even after the repair round.
     """
+    system = INIT_SYSTEM_PROMPT_ZH if lang == "zh" else INIT_SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": INIT_SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": f"Schema:\n{_schema_text(tables, samples)}\n"},
     ]
     response = await llm.chat(
@@ -441,6 +462,16 @@ def _docs_arg(args: str) -> str:
         if i + 1 < len(parts):
             return parts[i + 1]
     return ""
+
+
+def _lang_arg(args: str) -> str:
+    """Extract --lang from the command args;默认英文(benchmark 均为英文问题)。"""
+    parts = args.split()
+    if "--lang" in parts:
+        i = parts.index("--lang")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return "en"
 
 
 def _backfill_types(tables: list[dict], schema) -> None:

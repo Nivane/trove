@@ -145,6 +145,12 @@ class TestEnablement:
         assert await kb.search_terms("平均贷款金额", "demo") == []
         assert await kb.search_examples("平均贷款金额", "demo") == []
 
+    def test_kb_dir_override(self, tmp_path):
+        """kb_dir 参数覆盖默认的 <project_root>/.trove/kb 布局(供 eval --kb-dir 使用)。"""
+        custom = tmp_path / "custom_kb"
+        service = KbService(tmp_path / "proj", kb_dir=custom)
+        assert service.kb_dir == custom
+
 
 class TestSync:
     async def test_sync_imports_all_files(self, kb, kb_dir):
@@ -462,6 +468,69 @@ class TestEvolution:
 
         hits = await kb.search_terms("贷款笔数", "demo")
         assert [h.term for h in hits] == ["贷款笔数"]
+
+
+class TestPurgeDeletedFiles:
+    """Deleting a YAML from disk must purge its mirror items.
+
+    Keyed by (datasource, source_file) — a same-named file in another
+    datasource must not keep stale rows alive (the old basename-only
+    purge let demo/lessons.yml shield a deleted financial/lessons.yml).
+    """
+
+    LESSONS_A = """
+lessons:
+  - pattern: "pattern one"
+    note: 教训一
+    confirmed: true
+"""
+
+    LESSONS_B = """
+lessons:
+  - pattern: "pattern two"
+    note: 教训二
+    confirmed: true
+"""
+
+    async def test_ensure_synced_purges_items_of_deleted_file(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        assert (await kb.list_items())["demo"]["term"] == 2
+
+        (kb_dir / "demo" / "semantics.yml").unlink()
+        await kb.ensure_synced("demo")
+
+        counts = (await kb.list_items())["demo"]
+        assert "term" not in counts
+        assert counts["example"] == 2  # 其他文件的条目保留
+        assert counts["table"] == 1
+
+    async def test_ensure_synced_purges_stale_sync_row(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        (kb_dir / "demo" / "semantics.yml").unlink()
+        await kb.ensure_synced("demo")
+
+        async with aiosqlite.connect(kb.db_path) as db:
+            rows = await (await db.execute(
+                "SELECT file_path FROM kb_sync"
+            )).fetchall()
+        assert [r[0] for r in rows] == ["demo/examples.yml", "demo/schema_notes.yml"]
+
+    async def test_force_sync_purges_by_datasource_not_basename(self, kb, kb_dir):
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "financial").mkdir(parents=True)
+        (kb_dir / "demo" / "lessons.yml").write_text(self.LESSONS_A, encoding="utf-8")
+        (kb_dir / "financial" / "lessons.yml").write_text(self.LESSONS_B, encoding="utf-8")
+        await kb.ensure_synced("demo")
+        await kb.ensure_synced("financial")
+        assert len(await kb.list_lessons("financial")) == 1
+
+        (kb_dir / "financial" / "lessons.yml").unlink()
+        await kb.force_sync()
+
+        assert len(await kb.list_lessons("financial")) == 0
+        assert len(await kb.list_lessons("demo")) == 1
 
 
 class TestInitSchemaNotes:
