@@ -67,6 +67,27 @@ class TestKbInit:
         assert (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
 
 
+# LLM 只起草表格注释(描述+枚举含义);terms/examples 由代码确定性生成
+TABLES_DOC = """tables:
+- name: students
+  description: 学生表
+  columns:
+  - name: id
+    type: int
+    description: 学生唯一标识符
+    enums: []
+  - name: grade
+    type: int
+    description: 成绩
+    enums: []
+  - name: county
+    type: varchar
+    description: 所在县
+    enums: []
+  metrics: []
+"""
+
+# 真实 LLM 的自然输出:'---' 分隔多文档,第一份携带 tables
 THREE_DOC = """tables:
 - name: students
   description: 学生表
@@ -90,7 +111,7 @@ examples:
   tags: [学生]
 """
 
-# 真实 LLM（DeepSeek）的自然输出：忽略 '---' 分隔，单文档三顶层键
+# 单文档三顶层键(旧格式容忍:terms/examples 被忽略,仅 tables 生效)
 MERGED_DOC = """tables:
 - name: students
   description: 学生表
@@ -125,8 +146,8 @@ class TestKbInitLLM:
         return reg
 
     async def test_init_generates_three_files_with_llm(self, kb, sqlite_registry):
-        """有 LLM 时 /kb init 生成 schema_notes + semantics + examples 三份初稿。"""
-        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=THREE_DOC))
+        """有 LLM 时 /kb init 生成三份文件:描述由 LLM 起草,terms/examples 确定性生成。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
         result = await reg.get("kb").handler("init")
 
         ds = sqlite_registry.default_name
@@ -134,13 +155,85 @@ class TestKbInitLLM:
         assert (kb.kb_dir / ds / "schema_notes.yml").exists()
         assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert (kb.kb_dir / ds / "examples.yml").exists()
-        assert "学生表" in (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
-        assert "学生数" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "学生表" in notes
+        # 确定性 term:count + 数值列 SUM/AVG;ID 列不生成
+        semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "学生总数" in semantics and "平均成绩" in semantics
+        assert "COUNT(*)" in semantics
+        # 确定性模板:count + 首条文本列 GROUP BY
+        examples = (kb.kb_dir / ds / "examples.yml").read_text(encoding="utf-8")
+        assert "SELECT COUNT(*) FROM students" in examples
+        assert "SELECT county, COUNT(*) FROM students GROUP BY county" in examples
+
+    async def test_init_deterministic_terms_skip_undescribed_columns(self, kb, sqlite_registry):
+        """不透明列(无描述)不生成 SUM/AVG 术语——防止瞎猜映射。"""
+        doc = """tables:
+- name: students
+  description: 学生表
+  columns:
+  - name: grade
+    type: int
+    description: ""
+    enums: []
+  metrics: []
+"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=doc))
+        await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "SUM(" not in semantics and "AVG(" not in semantics
+
+    async def test_init_probe_fills_raw_enum_values(self, kb, sqlite_registry):
+        """LLM 未写枚举含义的列 → 探测到的原始取值兜底写入 schema_notes。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
+        await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "Alameda" in notes  # students.county 的 distinct 值
+
+    async def test_init_prompt_shows_sample_values(self, kb, sqlite_registry):
+        """低基数文本列的样例值出现在起草提示词里(辅助 LLM 猜含义)。"""
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                return TABLES_DOC
+
+        llm = ScriptedLLM()
+        reg = self._reg(kb, sqlite_registry, llm)
+        await reg.get("kb").handler("init")
+
+        user_content = llm.calls[0][-1]["content"]
+        assert "Alameda" in user_content  # county 样例值
+
+    async def test_init_with_docs_imports_official_descriptions(self, kb, sqlite_registry, tmp_path):
+        """--docs:官方列描述导入,覆盖 LLM 草稿(枚举含义一并导入)。"""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir()
+        (docs_dir / "students.csv").write_text(
+            "original_column_name,column_description,value_description\n"
+            'grade,官方成绩说明,"A=优秀"\n',
+            encoding="utf-8",
+        )
+
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
+        result = await reg.get("kb").handler(f"init --docs {docs_dir}")
+
+        assert "Initialized" in result
+        ds = sqlite_registry.default_name
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "官方成绩说明" in notes  # docs 覆盖 LLM 草稿的"成绩"
+        assert "A=优秀" in notes
 
     async def test_init_with_llm_repairs_broken_draft(self, kb, sqlite_registry):
         class ScriptedLLM:
             def __init__(self):
-                self.responses = iter(["bad: [yaml", THREE_DOC])
+                self.responses = iter(["bad: [yaml", TABLES_DOC])
                 self.calls = []
 
             async def chat(self, model, messages, **kwargs):
@@ -160,7 +253,7 @@ class TestKbInitLLM:
         (kb.kb_dir / ds).mkdir(parents=True)
         (kb.kb_dir / ds / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
 
-        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=THREE_DOC))
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
         result = await reg.get("kb").handler("init")
 
         assert "refusing" in result
@@ -176,7 +269,7 @@ class TestKbInitLLM:
         assert not (kb.kb_dir / ds / "schema_notes.yml").exists()
 
     async def test_init_accepts_merged_single_document(self, kb, sqlite_registry):
-        """回归：真实 LLM 常输出单文档三顶层键（无 --- 分隔）。"""
+        """回归：旧格式单文档三顶层键仍可解析(terms/examples 被忽略)。"""
         reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=MERGED_DOC))
         result = await reg.get("kb").handler("init")
 
@@ -185,24 +278,31 @@ class TestKbInitLLM:
         assert (kb.kb_dir / ds / "schema_notes.yml").exists()
         assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert (kb.kb_dir / ds / "examples.yml").exists()
-        assert "学生数" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "学生总数" in (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
 
-    def test_parse_init_docs_accepts_both_formats(self):
-        from trove.cli.commands.kb_cmds import _parse_init_docs
+    def test_parse_init_tables_accepts_both_formats(self):
+        from trove.cli.commands.kb_cmds import _parse_init_tables
 
-        tables, terms, examples = _parse_init_docs(THREE_DOC)
-        assert len(tables) == 1 and len(terms) == 1 and len(examples) == 1
-
-        tables, terms, examples = _parse_init_docs(MERGED_DOC)
-        assert len(tables) == 1 and len(terms) == 1 and len(examples) == 1
+        tables = _parse_init_tables(THREE_DOC)
+        assert len(tables) == 1
         assert tables[0]["name"] == "students"
 
-    def test_parse_init_docs_tolerates_extra_top_level_key(self):
-        from trove.cli.commands.kb_cmds import _parse_init_docs
-
-        doc = MERGED_DOC + "notes: 初稿，人工审阅\n"
-        tables, terms, examples = _parse_init_docs(doc)
+        tables = _parse_init_tables(MERGED_DOC)
         assert len(tables) == 1
+        assert tables[0]["name"] == "students"
+
+    def test_parse_init_tables_tolerates_extra_top_level_key(self):
+        from trove.cli.commands.kb_cmds import _parse_init_tables
+
+        doc = TABLES_DOC + "notes: 初稿，人工审阅\n"
+        tables = _parse_init_tables(doc)
+        assert len(tables) == 1
+
+    def test_parse_init_tables_rejects_missing_section(self):
+        from trove.cli.commands.kb_cmds import _parse_init_tables
+
+        with pytest.raises(ValueError):
+            _parse_init_tables("terms:\n- term: x\n")
 
     async def test_init_chunks_large_schema_and_merges(self, kb, sqlite_registry, monkeypatch):
         """大 schema 分块调用（每块 1 表）→ 多次 LLM 调用 → 结果合并。"""
@@ -223,8 +323,8 @@ class TestKbInitLLM:
         class ScriptedLLM:
             def __init__(self):
                 docs = [
-                    MERGED_DOC,  # students
-                    MERGED_DOC.replace("students", "courses").replace("学生", "课程"),  # courses
+                    TABLES_DOC,  # students
+                    TABLES_DOC.replace("students", "courses").replace("学生", "课程"),  # courses
                 ]
                 self.responses = iter(docs)
                 self.calls = []
@@ -252,7 +352,7 @@ class TestKbInitLLM:
         notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
         assert "students" in notes and "courses" in notes  # 两块合并
         semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
-        assert "学生数" in semantics and "课程数" in semantics
+        assert "学生总数" in semantics and "课程总数" in semantics  # 确定性生成
 
 
 class TestKbList:

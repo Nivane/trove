@@ -7,10 +7,15 @@ and only written after the user confirms with /kb learn --yes.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import yaml
 
 from trove.cli.slash_registry import SlashRegistry, SlashCommand
 from trove.core.logging import get_logger
+from trove.services.kb.deterministic_gen import generate_terms, generate_templates
+from trove.services.kb.docs_import import apply_docs, load_docs_tables
+from trove.services.kb.enum_probe import merge_into_notes, probe_enums
 
 logger = get_logger(__name__)
 
@@ -33,9 +38,8 @@ terms:
 
 IMPORTANT: every value must be on a single line with correct YAML indentation. Never continue a value on an unindented line."""
 
-INIT_SYSTEM_PROMPT = """You are initializing a knowledge base for a SQL data agent. Given the schema below, produce ONE YAML document with THREE top-level sections: tables, terms, examples (strict YAML, no markdown fences, no commentary, every value on a single line).
+INIT_SYSTEM_PROMPT = """You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, and sample values for low-cardinality text columns — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
 
-Section 1 — table/column annotations:
 tables:
   - name: <table>
     description: <one-line business description in Chinese>
@@ -45,24 +49,11 @@ tables:
         enums: []
     metrics: []
 
-Section 2 — business terms:
-terms:
-  - term: <Chinese business term>
-    aliases: [<1-2 synonyms>]
-    mapping: <SQL expression>
-    tables: [<tables involved>]
-    definition: <one line>
-
-For every table add a row-count term; for every numeric column add a sensible SUM or AVG aggregation term.
-
-Section 3 — reference templates:
-examples:
-  - template: true
-    question: <generic Chinese question>
-    sql: <generic SQL on one line>
-    tags: [<2-3 tags>]
-
-One or two generic templates per table (row count, group-by aggregate)."""
+Rules:
+- For every column write a one-line Chinese description (empty string "" if the column is truly opaque — do NOT guess the meaning of opaque columns like A1..A16 from name alone).
+- Columns that already carry an official description must keep it unchanged; only fill the blanks.
+- For text columns whose sample values are shown, fill enums with one "value=中文含义" entry per sample value, e.g. "POPLATEK MESICNE=月发放 (monthly)".
+- Business terms and reference templates are generated automatically by the system — do NOT add terms/examples sections."""
 
 
 def _draft_prompt(question: str, sql: str) -> str:
@@ -96,13 +87,46 @@ def _parse_draft(response: str) -> dict:
     return {"example": example, "terms": list(data.get("terms") or [])}
 
 
-def _schema_text(tables) -> str:
-    """Compact schema listing for the init prompt (table: col type, col type)."""
+def _schema_text(tables, samples: dict | None = None) -> str:
+    """Compact schema listing for the init prompt.
+
+    每列形如 "name type — 已有官方描述 [样例值; 样例值]":
+    官方描述让 LLM 保留上下文,样例值帮 LLM 猜枚举含义。
+    """
+    samples = samples or {}
     lines = []
     for table in tables:
-        cols = ", ".join(f"{c.name} {c.type}" for c in table.columns)
-        lines.append(f"{table.name}: {cols}")
+        cols = []
+        for c in table["columns"]:
+            line = f"{c['name']} {c['type']}"
+            desc = str(c.get("description", "") or "").strip()
+            if desc:
+                line += f" — {desc}"
+            values = samples.get(table["name"], {}).get(c["name"], "")
+            if values:
+                shown = "; ".join(values.split("; ")[:3])
+                line += f" [{shown}]"
+            cols.append(line)
+        lines.append(f"{table['name']}: {', '.join(cols)}")
     return "\n".join(lines)
+
+
+def _table_dicts(chunk, docs: dict) -> list[dict]:
+    """SchemaInfo 表块 → 字典列表,官方文档描述预填(docs 权威)。"""
+    tables = []
+    for t in chunk:
+        doc = docs.get(t.name, {})
+        columns = []
+        for c in t.columns:
+            entry = doc.get(c.name, {})
+            columns.append({
+                "name": c.name,
+                "type": c.type,
+                "description": str(entry.get("description", "") or ""),
+                "enums": list(entry.get("enums") or []),
+            })
+        tables.append({"name": t.name, "description": "", "columns": columns, "metrics": []})
+    return tables
 
 
 def _chunk_tables(schema, size: int | None = None):
@@ -114,36 +138,28 @@ def _chunk_tables(schema, size: int | None = None):
         yield tables[i : i + size]
 
 
-def _parse_init_docs(response: str) -> tuple[list, list, list]:
-    """Parse the init draft into (tables, terms, examples).
+def _parse_init_tables(response: str) -> list:
+    """Parse the init draft into table annotations (LLM 只起草描述).
 
     Accepts both shapes LLMs actually produce:
-      - ONE document with three top-level sections (tables/terms/examples)
-        — the common real-world output, extra top-level keys tolerated
-      - three '---'-separated documents with one section each
+      - ONE document with a `tables` section (extra top-level keys
+        tolerated — 旧版三顶层键格式的 terms/examples 被忽略)
+      - multiple '---'-separated documents, the one carrying `tables` wins
 
     Raises:
-        ValueError: Wrong document count or missing sections.
+        ValueError: Missing/empty tables section.
     """
     docs = [d for d in yaml.safe_load_all(_strip_fences(response)) if d]
 
-    if len(docs) == 1 and isinstance(docs[0], dict) and all(
-        key in docs[0] for key in ("tables", "terms", "examples")
-    ):
-        doc = docs[0]
-        tables = doc["tables"]
-        terms = doc["terms"]
-        examples = doc["examples"]
-    elif len(docs) == 3:
-        tables = docs[0].get("tables") if isinstance(docs[0], dict) else None
-        terms = docs[1].get("terms") if isinstance(docs[1], dict) else None
-        examples = docs[2].get("examples") if isinstance(docs[2], dict) else None
-    else:
-        raise ValueError(f"expected one merged document or 3 YAML documents, got {len(docs)}")
+    tables = None
+    for doc in docs:
+        if isinstance(doc, dict) and isinstance(doc.get("tables"), list):
+            tables = doc["tables"]
+            break
 
-    if not all(isinstance(x, list) for x in (tables, terms, examples)):
-        raise ValueError("draft must contain 'tables' / 'terms' / 'examples' sections")
-    return tables, terms, examples
+    if not tables:
+        raise ValueError(f"draft must contain a 'tables' section, got {len(docs)} doc(s)")
+    return tables
 
 
 def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
@@ -263,8 +279,12 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             lines.append("Pending lessons were auto-captured from successful corrections.")
         return "\n".join(lines)
 
-    async def _cmd_init(kb, registry_svc, datasource) -> str:
-        """LLM-assisted three-file initialization; skeleton fallback without LLM."""
+    async def _cmd_init(kb, registry_svc, datasource, args) -> str:
+        """LLM-assisted initialization: 描述由 LLM 起草,terms/examples 确定性生成。
+
+        --docs <dir>:导入官方列描述(docs 权威,覆盖 LLM 草稿);
+        低基数文本列先探测 distinct 值(样例进提示词,漏写列兜底合并)。
+        """
         schema = await registry_svc.get_schema()
         llm = context.get("llm_gateway")
 
@@ -287,25 +307,41 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         config = context.get("config")
         model = (config.target if config else "") or "openai/gpt-4o"
 
+        docs = load_docs_tables(Path(_docs_arg(args))) if _docs_arg(args) else {}
+
+        # Live enum probe(离线/探测失败静默跳过,不影响 init)
+        probed: dict = {}
+        try:
+            probed = await probe_enums(registry_svc, schema)
+        except Exception:
+            pass
+
         # Large schemas: draft per chunk (bounded LLM output), merge results.
-        all_tables, all_terms, all_examples = [], [], []
+        all_tables: list[dict] = []
         for chunk in _chunk_tables(schema):
             try:
-                tables, terms, examples = await _draft_init_chunk(llm, model, chunk)
+                tables = await _draft_init_chunk(
+                    llm, model, _table_dicts(chunk, docs), samples=probed,
+                )
             except Exception as e:
                 logger.warning("Could not parse init draft after repair: %s", e)
                 return f"Could not parse LLM draft after repair: {e}"
             all_tables.extend(tables)
-            all_terms.extend(terms)
-            all_examples.extend(examples)
+
+        _backfill_types(all_tables, schema)
+        all_tables = apply_docs(all_tables, docs)  # 官方描述权威
+        if probed:
+            all_tables = merge_into_notes({"tables": all_tables}, probed)["tables"]
+        terms = generate_terms(all_tables)
+        examples = generate_templates(all_tables)
 
         kb.init_notes(all_tables, datasource)
-        kb.init_terms(all_terms, datasource)
-        kb.init_examples(all_examples, datasource)
+        kb.init_terms(terms, datasource)
+        kb.init_examples(examples, datasource)
         await kb.force_sync(datasource)
         return (
             f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
-            f"{len(all_terms)} terms, {len(all_examples)} templates. "
+            f"{len(terms)} terms, {len(examples)} templates. "
             f"Review the drafts, then /kb reload."
         )
 
@@ -321,7 +357,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             registry_svc = context.get("connector_registry")
             if not registry_svc:
                 return "No datasource connected."
-            return await _cmd_init(kb, registry_svc, datasource)
+            return await _cmd_init(kb, registry_svc, datasource, args)
 
         if sub == "list":
             await kb.ensure_synced(datasource or None)
@@ -348,8 +384,9 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             return await _cmd_learn(args)
 
         return (
-            "Usage: /kb init | list | reload | learn [--yes] | lessons [--yes]\n"
-            "  init     generate schema_notes.yml skeleton for the active datasource\n"
+            "Usage: /kb init [--docs <dir>] | list | reload | learn [--yes] | lessons [--yes]\n"
+            "  init     draft table/column annotations via LLM, generate terms/templates "
+            "deterministically; --docs imports official column descriptions\n"
             "  list     show knowledge base item counts per datasource\n"
             "  reload   re-sync YAML files immediately\n"
             "  learn    draft an example+terms from the last exchange; --yes saves it\n"
@@ -364,7 +401,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
     ))
 
 
-async def _draft_init_chunk(llm, model, tables) -> tuple[list, list, list]:
+async def _draft_init_chunk(llm, model, tables, samples=None) -> list:
     """Draft one schema chunk; on parse failure, one LLM repair round.
 
     Raises:
@@ -372,13 +409,13 @@ async def _draft_init_chunk(llm, model, tables) -> tuple[list, list, list]:
     """
     messages = [
         {"role": "system", "content": INIT_SYSTEM_PROMPT},
-        {"role": "user", "content": f"Schema:\n{_schema_text(tables)}\n"},
+        {"role": "user", "content": f"Schema:\n{_schema_text(tables, samples)}\n"},
     ]
     response = await llm.chat(
         model=model, messages=messages, max_tokens=INIT_MAX_TOKENS,
     )
     try:
-        return _parse_init_docs(response)
+        return _parse_init_tables(response)
     except Exception as first_error:
         logger.warning("Could not parse init draft: %s; asking for repair", first_error)
         repair_response = await llm.chat(
@@ -393,4 +430,27 @@ async def _draft_init_chunk(llm, model, tables) -> tuple[list, list, list]:
                 )},
             ],
         )
-        return _parse_init_docs(repair_response)
+        return _parse_init_tables(repair_response)
+
+
+def _docs_arg(args: str) -> str:
+    """Extract --docs <path> from the command args (missing path → "")."""
+    parts = args.split()
+    if "--docs" in parts:
+        i = parts.index("--docs")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
+def _backfill_types(tables: list[dict], schema) -> None:
+    """LLM 草稿可能漏写 type:从真实 schema 回填(确定性生成依赖列类型)。"""
+    schema_types = {
+        t.name: {c.name: c.type for c in t.columns} for t in schema.tables
+    }
+    for table in tables:
+        for col in table.get("columns", []):
+            if not col.get("type"):
+                col["type"] = schema_types.get(table.get("name", ""), {}).get(
+                    col.get("name", ""), "",
+                )
