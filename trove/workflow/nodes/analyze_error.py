@@ -76,6 +76,34 @@ def _fallback_analysis(error_text: str, lang: str) -> str:
     )
 
 
+def _hypothesis_fingerprint(sql: str) -> str:
+    """失败 SQL 的归一化指纹(折叠空白 + 小写)——去重口径。"""
+    return " ".join((sql or "").split()).lower()
+
+
+def record_rejected_hypothesis(
+    existing: list[dict[str, str]],
+    sql: str,
+    reason: str,
+    sql_limit: int = 160,
+    reason_limit: int = 220,
+) -> list[dict[str, str]]:
+    """把本轮失败假设(错误 SQL + 原因)记入黑名单,指纹去重,摘要限长。
+
+    Returns:
+        需要追加的假设列表(已在黑名单 → 空列表,不重复累积)。
+    """
+    if not sql:
+        return []
+    fp = _hypothesis_fingerprint(sql)
+    if any(_hypothesis_fingerprint(h.get("sql", "")) == fp for h in existing):
+        return []
+    return [{
+        "sql": " ".join(sql.split())[:sql_limit],
+        "reason": (reason or "")[:reason_limit],
+    }]
+
+
 def render_reasoning_context(
     history: list[dict[str, str]],
     nodes: tuple[str, ...] = ("gen_sql", "planner"),
@@ -194,6 +222,9 @@ def make_analyze_error(
                 "error_analysis": analysis,
                 "rollback_target": target,
                 "last_rollback_target": target,
+                "rejected_hypotheses": record_rejected_hypothesis(
+                    state.rejected_hypotheses, state.sql, error_text,
+                ),
             }
         except Exception as e:
             logger.warning("Error analysis failed (proceeding with raw feedback): %s", e)

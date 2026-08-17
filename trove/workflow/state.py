@@ -121,8 +121,25 @@ class WorkflowState(BaseModel):
     # with this message (shared retry budget); cleared on success
     error_feedback: str = ""
 
+    # verify_step 断言层命中记录(断言名 + 失败原因);规则失败的那一轮写入,
+    # 供日志/eval 归因「哪条断言拦了什么」
+    validation_hits: list[dict] = Field(default_factory=list)
+
+    # select 节点投票归因:各结果组票数、赢家(primary/候选)、是否采纳、
+    # 被 verify/执行失败过滤掉的候选
+    selection: dict[str, Any] = Field(default_factory=dict)
+
+    # 平局专用计数(select 打回时 +1):自适应降级信号——拉锯轮次达阈值
+    # (adopt_after_tie_rounds)后采纳票王,不再烧完共享 retry 预算
+    tie_rounds: int = 0
+
     # LLM diagnosis of the failed SQL (error type / judgment / fix plan)
     error_analysis: str = ""
+
+    # 已试错的解释黑名单(analyze_error 累积,指纹去重):
+    # [{"sql": 失败SQL摘要, "reason": 失败原因}] — 注入重生成 prompt,
+    # 防止模型在修正轮重复同样的错误假设(撞预算题的典型形态)
+    rejected_hypotheses: Annotated[list[dict[str, str]], operator.add] = Field(default_factory=list)
 
     # output artifact
     final_response: str = ""
@@ -151,6 +168,13 @@ class GenSQLState(BaseModel):
 
     # 上一轮思考痕迹(诊断方/生成方轨迹),注入重生成 prompt
     reasoning_context: str = ""
+
+    # 已试错的解释黑名单(跨轮累积),注入重生成 prompt 禁止重复假设
+    rejected_hypotheses: list[dict[str, str]] = Field(default_factory=list)
+
+    # 上一版失败 SQL 全文(Fixer 模式):修正轮注入 prompt,指示局部修改
+    # 而非整体重写——诊断后的修复路径比从头生成更可靠
+    previous_sql: str = ""
 
     # 交互语言(由外层 WorkflowState 注入)
     lang: str = "zh"

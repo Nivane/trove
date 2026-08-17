@@ -38,10 +38,18 @@ Question:
 Note: a previous version of this query was rejected with: {{ reflect_reason }}. Please correct it.
 {% endif %}{% if error_feedback %}
 Note: the previous query failed during execution with: {{ error_feedback }}. Please correct the SQL.
+{% endif %}{% if previous_sql %}
+Previous SQL (your last attempt — fix it with minimal changes, do not rewrite from scratch):
+{{ previous_sql }}
 {% endif %}{% if error_analysis %}
 Error analysis (diagnosis and fix plan from the expert):
 {{ error_analysis }}
-{% endif %}{% if reasoning_context %}
+{% endif %}{% if rejected_hypotheses %}
+Rejected hypotheses (already tried and failed — do NOT repeat these interpretations):
+{% for h in rejected_hypotheses -%}
+- SQL: {{ h.sql }}
+  Reason: {{ h.reason }}
+{% endfor %}{% endif %}{% if reasoning_context %}
 Prior reasoning trail (your previous thinking; avoid repeating the same mistake):
 {{ reasoning_context }}
 {% endif %}

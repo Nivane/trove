@@ -482,6 +482,32 @@ class TestSQLHelpers:
         assert "no such table: loans" in prompt
         assert "failed during execution" in prompt
 
+    def test_build_sql_prompt_injects_rejected_hypotheses(self):
+        """已试错的解释黑名单注入:模型必须知道哪些解释已被排除。"""
+        prompt = build_sql_prompt("q", "schema", "sqlite", rejected_hypotheses=[
+            {"sql": "SELECT * FROM loans", "reason": "table does not exist"},
+        ])
+        assert "Rejected hypotheses" in prompt
+        assert "SELECT * FROM loans" in prompt
+        assert "table does not exist" in prompt
+
+    def test_build_sql_prompt_without_hypotheses_has_no_section(self):
+        assert "Rejected hypotheses" not in build_sql_prompt("q", "schema", "sqlite")
+
+    def test_build_sql_prompt_injects_previous_sql_for_local_fix(self):
+        """Fixer 模式:打回轮注入上一版 SQL 全文,指示局部修复而非整体重写。"""
+        prompt = build_sql_prompt(
+            "q", "schema", "sqlite",
+            error_feedback="rule failed",
+            previous_sql="SELECT name FROM students WHERE 0;",
+        )
+        assert "Previous SQL" in prompt
+        assert "SELECT name FROM students WHERE 0;" in prompt
+        assert "minimal" in prompt  # 局部修复指令
+
+    def test_build_sql_prompt_without_previous_sql_has_no_section(self):
+        assert "Previous SQL" not in build_sql_prompt("q", "schema", "sqlite")
+
     def test_build_sql_prompt_includes_history(self):
         history = "user: 平均成绩是多少\nassistant: 平均成绩是 85 分"
         prompt = build_sql_prompt("q", "schema", "sqlite", history=history)

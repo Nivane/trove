@@ -121,6 +121,37 @@ class TestAnalyzeError:
         ))
         assert "syntax" in update["error_analysis"].lower()
 
+    async def test_records_rejected_hypothesis(self):
+        """诊断后把本轮失败假设(错误 SQL + 原因)记入黑名单,供后续轮次避开。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT name FROM client WHERE age = (SELECT MIN(age) FROM client)",
+            error_feedback="Validation rule F1-a: single-value question returned multiple rows",
+        ))
+        assert update["rejected_hypotheses"] == [{
+            "sql": "SELECT name FROM client WHERE age = (SELECT MIN(age) FROM client)",
+            "reason": "Validation rule F1-a: single-value question returned multiple rows",
+        }]
+
+    async def test_rejected_hypothesis_dedup_by_fingerprint(self):
+        """同一失败 SQL(含空白差异)重复诊断 → 不重复进黑名单。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        state = make_state(
+            sql="SELECT  1",  # 与已有指纹归一化后相同
+            error_feedback="boom again",
+            rejected_hypotheses=[{"sql": "SELECT 1", "reason": "old failure"}],
+        )
+        update = await node(state)
+        assert update.get("rejected_hypotheses") == []  # 已在黑名单 → 无新增
+
     async def test_no_sql_verdict(self):
         """诊断判定问题本身不是 SQL 问题 → no_sql 出口 + 清掉陈旧反馈。"""
         class LLM:
