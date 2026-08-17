@@ -39,6 +39,7 @@ def build_sql_prompt(
     reasoning_context: str = "",
     rejected_hypotheses: list[dict[str, str]] | None = None,
     previous_sql: str = "",
+    sql_versions: list[dict[str, Any]] | None = None,
     rules: list[str] | None = None,
     lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
@@ -69,6 +70,7 @@ def build_sql_prompt(
         reasoning_context=reasoning_context,
         rejected_hypotheses=rejected_hypotheses or [],
         previous_sql=previous_sql,
+        sql_versions=render_versions(sql_versions or []),
         rules=rules or [],
         lessons=lessons or [],
         few_shots=few_shots or [],
@@ -104,6 +106,22 @@ def render_lessons(lessons: list[dict[str, Any]]) -> str:
     return "".join(
         f"- {l.get('pattern', '')}: {l.get('note', '')}\n" for l in lessons
     )
+
+
+def render_versions(versions: list[dict[str, Any]]) -> str:
+    """失败版本链文本（定点修复用）：每版 SQL + 结果签名 + 规则命中。"""
+    if not versions:
+        return ""
+    parts = []
+    for v in versions:
+        issues = ", ".join(v.get("issues") or []) or "-"
+        sql_short = " ".join((v.get("sql") or "").split())
+        sig_short = (v.get("sig") or "")[:60]
+        parts.append(
+            f"- Round {v.get('round', '?')}: {sql_short}\n"
+            f"  result: {sig_short}; issues: {issues}"
+        )
+    return "\n".join(parts)
 
 
 def extract_sql(response: str) -> str:
@@ -202,6 +220,7 @@ def make_generate(
                 reasoning_context=state.reasoning_context,
                 rejected_hypotheses=state.rejected_hypotheses or None,
                 previous_sql=state.previous_sql,
+                sql_versions=state.sql_versions or None,
                 rules=state.rules or None,
                 lessons=state.lessons or None,
                 few_shots=state.few_shots or None,

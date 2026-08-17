@@ -803,6 +803,34 @@ examples:
         )
         assert "平均成绩是多少" in llm.calls[1][-1]["content"]
 
+    async def test_invalid_fix_detected_and_versions_injected(self, sqlite_registry, catalog):
+        """版本链+定点修复: pass2 结果与 pass1 相同(无效修复) → 回归报告进诊断;
+        pass3 生成 prompt 注入完整版本链。"""
+        llm = RecordingLLM([
+            "query",                                                       # 意图
+            "```sql\nSELECT name FROM students;\n```",                   # p1 主（5行,规则失败）
+            "TARGET: gen_sql",                                           # 诊断1（记录 v1）
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",     # p2 主（同 5 行 → 无效修复）
+            "TARGET: gen_sql",                                           # 诊断2（应含 Invalid fix）
+            "```sql\nSELECT COUNT(*) FROM students;\n```",               # p3 主（单值 → 通过）
+            "OK",                                                        # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="how many students are there")
+        )
+        assert final["error"] == ""
+        assert final["row_count"] == 1
+        assert final["retry_count"] == 2
+        # 回归硬检查: 诊断2 的 prompt 含无效修复报告(对比 Round 1)
+        diag2 = " ".join(m["content"] for m in llm.calls[4])
+        assert "Invalid fix" in diag2
+        assert "Round 1" in diag2
+        # 版本链注入: pass3 生成 prompt 含两个失败版本
+        gen3 = " ".join(m["content"] for m in llm.calls[5])
+        assert "Failed SQL versions" in gen3
+        assert "Round 1" in gen3 and "Round 2" in gen3
+
     async def test_validation_rule_fixes_count_question(self, sqlite_registry, catalog):
         """count 问题先返回多行 → 规则失败 → 带理由重新生成 → 修正成功。"""
         llm = RecordingLLM([

@@ -22,6 +22,12 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.workflow.state import WorkflowState
+from trove.workflow.versions import (
+    extract_rule_hits,
+    record_version,
+    regression_report,
+    result_sig,
+)
 
 logger = get_logger(__name__)
 
@@ -171,6 +177,13 @@ def make_analyze_error(
             model = config.target or "openai/gpt-4o"
             system_prompt = render("analyze_error/system", lang=state.lang)
             error_text = state.error_feedback or state.reason
+            # 版本链回归检查:对比上一版失败(签名/规则命中),产出确定性反馈
+            # 并入诊断输入——模型必须看到「无效修复/无进展/问题转移」
+            issues = extract_rule_hits(error_text)
+            prev = state.sql_versions[-1] if state.sql_versions else None
+            report = regression_report(prev, result_sig(state.rows), issues)
+            if report:
+                error_text = f"{error_text}\n[Regression check] {report}"
             # 上一轮生成/规划方的思考痕迹:定位误判根因的关键上下文
             trail = render_reasoning_context(state.reasoning_history)
             prompt = render(
@@ -224,6 +237,11 @@ def make_analyze_error(
                 "last_rollback_target": target,
                 "rejected_hypotheses": record_rejected_hypothesis(
                     state.rejected_hypotheses, state.sql, error_text,
+                ),
+                # 版本链:记录本轮失败版本供下一轮定点修复
+                "sql_versions": record_version(
+                    state.sql_versions, state.sql, state.rows, issues,
+                    round_n=len(state.sql_versions) + 1,
                 ),
             }
         except Exception as e:

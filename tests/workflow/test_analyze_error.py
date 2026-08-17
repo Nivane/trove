@@ -152,6 +152,55 @@ class TestAnalyzeError:
         update = await node(state)
         assert update.get("rejected_hypotheses") == []  # 已在黑名单 → 无新增
 
+    async def test_records_sql_version(self):
+        """诊断后把本轮失败版本(SQL + 结果签名 + 规则命中 + 轮次)记入版本链。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT name FROM client",
+            rows=[["a"], ["b"]],
+            row_count=2,
+            error_feedback="Validation rule [F1-b]: list question returned wide columns",
+        ))
+        assert len(update["sql_versions"]) == 1
+        v = update["sql_versions"][0]
+        assert v["sql"] == "SELECT name FROM client"
+        assert v["round"] == 1
+        assert v["issues"] == ["F1-b"]
+        # 签名与归一化口径一致(排序/类型不敏感)
+        assert v["sig"] == "repr-of-normalized" or len(v["sig"]) > 0
+
+    async def test_regression_report_enters_diagnosis_prompt(self):
+        """上一版与本轮结果签名相同 → 回归报告(无效修复)并入诊断 prompt。"""
+        from trove.workflow.versions import result_sig
+
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        rows = [["a"], ["b"]]
+        state = make_state(
+            sql="SELECT name FROM client",
+            rows=rows,
+            error_feedback="Validation rule [F1-b]: list question returned wide columns",
+            sql_versions=[{
+                "sql": "SELECT name FROM client ORDER BY name",
+                "sig": result_sig(rows),  # 与本轮结果签名相同 → 无效修复
+                "issues": ["F1-b"],
+                "round": 1,
+            }],
+        )
+        await node(state)
+        assert "Invalid fix" in captured["prompt"]
+        assert "Round 1" in captured["prompt"]
+
     async def test_no_sql_verdict(self):
         """诊断判定问题本身不是 SQL 问题 → no_sql 出口 + 清掉陈旧反馈。"""
         class LLM:

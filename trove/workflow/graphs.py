@@ -278,6 +278,7 @@ def _make_gen_sql_node(
                 state.reasoning_history, ("gen_sql",),
             ),
             rejected_hypotheses=state.rejected_hypotheses,
+            sql_versions=state.sql_versions,
             # Fixer 模式:打回轮(state.sql 是上一版失败 SQL)注入全文,
             # 指示模型局部修复而非整体重写
             previous_sql=(
@@ -681,6 +682,7 @@ def _build_gen_prompt(sub_state: GenSQLState) -> str:
         reasoning_context=sub_state.reasoning_context,
         rejected_hypotheses=sub_state.rejected_hypotheses or None,
         previous_sql=sub_state.previous_sql,
+        sql_versions=sub_state.sql_versions or None,
         history=sub_state.history,
         plan=sub_state.plan,
         evidence=sub_state.evidence,

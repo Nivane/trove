@@ -41,6 +41,9 @@ Note: the previous query failed during execution with: {{ error_feedback }}. Ple
 {% endif %}{% if previous_sql %}
 Previous SQL (your last attempt — fix it with minimal changes, do not rewrite from scratch):
 {{ previous_sql }}
+{% endif %}{% if sql_versions %}
+Failed SQL versions (iterative history — build on the latest version, do not regress):
+{{ sql_versions }}
 {% endif %}{% if error_analysis %}
 Error analysis (diagnosis and fix plan from the expert):
 {{ error_analysis }}

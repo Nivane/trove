@@ -508,6 +508,21 @@ class TestSQLHelpers:
     def test_build_sql_prompt_without_previous_sql_has_no_section(self):
         assert "Previous SQL" not in build_sql_prompt("q", "schema", "sqlite")
 
+    def test_build_sql_prompt_injects_sql_versions(self):
+        """定点修复:失败版本链(SQL + 签名 + 规则命中)注入生成 prompt。"""
+        prompt = build_sql_prompt("q", "schema", "sqlite", sql_versions=[
+            {"sql": "SELECT * FROM loans", "sig": "sig1", "issues": ["F1-b"], "round": 1},
+            {"sql": "SELECT * FROM loan", "sig": "sig2", "issues": ["F1-b"], "round": 2},
+        ])
+        assert "Failed SQL versions" in prompt
+        assert "Round 1" in prompt
+        assert "Round 2" in prompt
+        assert "SELECT * FROM loans" in prompt
+        assert "F1-b" in prompt
+
+    def test_build_sql_prompt_without_versions_has_no_section(self):
+        assert "Failed SQL versions" not in build_sql_prompt("q", "schema", "sqlite")
+
     def test_build_sql_prompt_includes_history(self):
         history = "user: 平均成绩是多少\nassistant: 平均成绩是 85 分"
         prompt = build_sql_prompt("q", "schema", "sqlite", history=history)

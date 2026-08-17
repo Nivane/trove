@@ -133,6 +133,11 @@ class WorkflowState(BaseModel):
     # (adopt_after_tie_rounds)后采纳票王,不再烧完共享 retry 预算
     tie_rounds: int = 0
 
+    # SQL 版本链(analyze_error 记录,operator.add 累积):
+    # [{"sql": 失败SQL全文, "sig": 结果集签名, "issues": [规则名], "round": N}]
+    # 注入重生成 prompt 支撑定点修复;回归硬检查对比相邻版本
+    sql_versions: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
+
     # LLM diagnosis of the failed SQL (error type / judgment / fix plan)
     error_analysis: str = ""
 
@@ -175,6 +180,10 @@ class GenSQLState(BaseModel):
     # 上一版失败 SQL 全文(Fixer 模式):修正轮注入 prompt,指示局部修改
     # 而非整体重写——诊断后的修复路径比从头生成更可靠
     previous_sql: str = ""
+
+    # 失败版本链(跨轮累积):[{"sql", "sig", "issues", "round"}] — 定点修复
+    # 注入全部历史版本,回归检查对比相邻版本
+    sql_versions: list[dict[str, Any]] = Field(default_factory=list)
 
     # 交互语言(由外层 WorkflowState 注入)
     lang: str = "zh"
