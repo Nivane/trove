@@ -836,30 +836,40 @@ examples:
         assert final["retry_count"] == 1
 
     async def test_two_candidates_consensus_passes(self, sqlite_registry, catalog):
-        """两个候选结果一致 → 高置信放行（无需修正）。"""
+        """5 候选(1 主 + 4 备)结果全部一致 → 高置信放行（无需修正）。"""
         llm = RecordingLLM([
-            "query",                                                 # 意图
-            VALID_SQL,                                             # 主候选
-            "```sql\nSELECT name FROM students ORDER BY name;\n```",  # 副候选（同结果）
-            "OK",                                                  # reflect
+            "query",                                                       # 意图
+            VALID_SQL,                                                   # 主候选
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",     # 备1（同结果）
+            "```sql\nSELECT name FROM students ORDER BY name DESC;\n```",  # 备2（同结果）
+            "```sql\nSELECT name FROM students ORDER BY name ASC;\n```",  # 备3（同结果）
+            "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```",  # 备4（同结果）
+            "OK",                                                        # reflect
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["retry_count"] == 0
         assert final["row_count"] == 5
-        assert len(final["candidates"]) == 1
-        assert len(llm.calls) == 4  # 意图 + 主 + 副 + reflect
+        assert len(final["candidates"]) == 4
+        assert len(llm.calls) == 7  # 意图 + 主 + 4 备 + reflect
 
     async def test_candidate_disagreement_regenerates(self, sqlite_registry, catalog):
-        """候选结果不一致 → 反馈重生成 → 一致后放行。"""
+        """5 候选投票平局 → 反馈重生成 → 一致后放行。"""
         llm = RecordingLLM([
-            "query",                                                 # 意图
-            VALID_SQL,                                             # pass1 主
-            "```sql\nSELECT name FROM students WHERE 0;\n```",     # pass1 副（0 行）
-            VALID_SQL,                                             # pass2 主（被诊断吞掉）
-            "```sql\nSELECT name FROM students ORDER BY name;\n```",  # pass2 副
-            "OK",                                                  # reflect
+            "query",                                                       # 意图
+            VALID_SQL,                                                   # pass1 主（5 行）
+            "```sql\nSELECT name FROM students WHERE 0;\n```",           # 备1（0 行）
+            "```sql\nSELECT name FROM students LIMIT 1;\n```",           # 备2（1 行）
+            "```sql\nSELECT name FROM students LIMIT 2;\n```",           # 备3（2 行）
+            "```sql\nSELECT name FROM students LIMIT 3;\n```",           # 备4（3 行）
+            "TARGET: gen_sql",                                           # pass1 诊断
+            VALID_SQL,                                                   # pass2 主
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",     # 备1（同结果）
+            "```sql\nSELECT name FROM students ORDER BY name DESC;\n```",  # 备2（同结果）
+            "```sql\nSELECT name FROM students ORDER BY name ASC;\n```",  # 备3（同结果）
+            "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```",  # 备4（同结果）
+            "OK",                                                        # reflect
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
         final = await graphs["reflection"].ainvoke(make_state())
@@ -867,7 +877,7 @@ examples:
         assert final["retry_count"] == 1
         assert final["row_count"] == 5
         # 一致性失败理由进入了错误诊断 prompt
-        assert "候选 SQL 结果不一致" in llm.calls[3][-1]["content"]
+        assert "候选 SQL 结果不一致" in llm.calls[6][-1]["content"]
 
 
 class TestNoSQLExit:
@@ -924,7 +934,10 @@ class TestNoSQLExit:
         llm = RecordingLLM([
             "query",                                                # 意图
             VALID_SQL,                                             # 主候选（5 行）
-            "```sql\nSELECT name FROM students WHERE 0;\n```",     # 副候选（0 行）
+            "```sql\nSELECT name FROM students WHERE 0;\n```",     # 备1（0 行）
+            "```sql\nSELECT name FROM students LIMIT 1;\n```",     # 备2（1 行）
+            "```sql\nSELECT name FROM students LIMIT 2;\n```",     # 备3（2 行）
+            "```sql\nSELECT name FROM students LIMIT 3;\n```",     # 备4（3 行）
             "NO_SQL: 定义问题不是数据查询",                           # 诊断
             "disp 是账户与客户发放关系表。",                            # 元数据答案
             "OK",                                                  # 答案裁决
@@ -937,7 +950,7 @@ class TestNoSQLExit:
         assert final["error_feedback"] == ""
         assert final["retry_count"] == 1  # select 的不一致反馈计了一轮
         assert "disp" in final["intent_answer"]
-        assert len(llm.calls) == 6
+        assert len(llm.calls) == 9
 
     async def test_query_verdict_overridden_by_strong_regex(self, sqlite_registry, catalog):
         """LLM 误判 query，但强 metadata 信号 + 无数据信号 → 验证覆写为 metadata。"""

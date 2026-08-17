@@ -159,6 +159,7 @@ def _make_gen_sql_node(
     services: GraphServices,
     subgraph: CompiledStateGraph,
     subgraph_alt: CompiledStateGraph | None = None,
+    alt_subgraphs: list[CompiledStateGraph] | None = None,
     agentic: bool = True,
 ):
     """gen_sql node — agentic by default: a ReAct loop where the model
@@ -166,9 +167,11 @@ def _make_gen_sql_node(
     SQL ready (model-driven termination). Content-only first response
     behaves exactly like the classic single-shot generation.
 
-    With subgraph_alt given (multi-candidate mode), a second candidate
-    is generated at a higher temperature and stored in state.candidates
-    for the consensus select node.
+    Multi-candidate mode (subgraph_alt / alt_subgraphs given): extra
+    candidates are generated at higher temperatures and stored in
+    state.candidates for the consensus select node's execution voting.
+    alt_subgraphs (one per temperature) takes precedence over
+    subgraph_alt; subgraph_alt alone yields a single candidate.
     """
 
     async def gen_sql(state: WorkflowState) -> dict[str, Any]:
@@ -380,22 +383,35 @@ def _make_gen_sql_node(
                 update["llm"] = out["llm"]
             if out["error"]:
                 update["error"] = out["error"]
-        # Multi-candidate: a second generation at higher temperature;
+        # Multi-candidate: extra generations at higher temperatures;
         # failures fall back to the single-candidate path silently.
         # KB 精确命中时跳过备选生成——备选的"另一种解释"只会引发
         # 无谓的一致性拉锯。
+        # 每个温度子图各跑一次(总候选 = 1 primary + N alt),重复文本
+        # 不重复投票(与 primary 相同或彼此相同则跳过,继续下个温度)。
         if (
-            subgraph_alt is not None
+            (subgraph_alt is not None or alt_subgraphs)
             and update.get("sql") and not update.get("error")
             and not update.get("kb_exact_match")
         ):
-            try:
-                out_alt = await subgraph_alt.ainvoke(sub_state.model_copy(deep=True))
-            except Exception:
-                out_alt = {}
-            alt_sql = out_alt.get("sql", "")
-            if alt_sql and not out_alt.get("error") and alt_sql != update.get("sql"):
-                update["candidates"] = [alt_sql]
+            alt_graphs = alt_subgraphs if alt_subgraphs else [subgraph_alt]
+            seen = {" ".join(update["sql"].split()).lower()}
+            candidates = []
+            for g in alt_graphs:
+                try:
+                    out_alt = await g.ainvoke(sub_state.model_copy(deep=True))
+                except Exception:
+                    continue
+                alt_sql = out_alt.get("sql", "")
+                if not alt_sql or out_alt.get("error"):
+                    continue
+                key = " ".join(alt_sql.split()).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(alt_sql)
+            if candidates:
+                update["candidates"] = candidates
         if example_hits:
             update["kb_hits"] = [
                 {"kind": "example", "question": h.question, "sql": h.sql, "tags": h.tags}
@@ -435,8 +451,10 @@ def build_graphs(
         Mapping of workflow name → compiled graph.
     """
     subgraph = build_gen_sql_subgraph(services)
-    subgraph_alt = (
-        build_gen_sql_subgraph(services, temperature=0.3)
+    # Multi-candidate: 4 alternative generations, one per temperature
+    # (N = 5 candidates total incl. the primary), for execution voting.
+    alt_subgraphs = (
+        [build_gen_sql_subgraph(services, temperature=t) for t in (0.3, 0.5, 0.7, 1.0)]
         if multi_candidate else None
     )
 
@@ -444,7 +462,10 @@ def build_graphs(
         return g.compile(checkpointer=checkpointer) if checkpointer else g.compile()
 
     return {
-        "reflection": compile(_build_reflection(services, subgraph, subgraph_alt, planner, clarify, agentic)),
+        "reflection": compile(_build_reflection(
+            services, subgraph, alt_subgraphs=alt_subgraphs, planner=planner,
+            clarify=clarify, agentic=agentic,
+        )),
         "fixed": compile(_build_fixed(services, subgraph, clarify, agentic)),
         "empty": compile(_build_empty()),
     }
@@ -694,6 +715,7 @@ def _build_reflection(
     services: GraphServices,
     subgraph: CompiledStateGraph,
     subgraph_alt: CompiledStateGraph | None = None,
+    alt_subgraphs: list[CompiledStateGraph] | None = None,
     planner: bool = True,
     clarify: bool = False,
     agentic: bool = True,
@@ -703,7 +725,10 @@ def _build_reflection(
         services.catalog, kb=services.kb, connectors=services.connectors,
         fallback_all=not clarify,
     ))
-    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, subgraph_alt, agentic=agentic))
+    g.add_node("gen_sql", _make_gen_sql_node(
+        services, subgraph, subgraph_alt=subgraph_alt,
+        alt_subgraphs=alt_subgraphs, agentic=agentic,
+    ))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))

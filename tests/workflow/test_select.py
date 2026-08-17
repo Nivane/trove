@@ -20,6 +20,8 @@ class FakeConnectors:
 
     async def execute(self, sql, datasource=None):
         self.executed.append(sql)
+        if "boom" in sql:
+            raise RuntimeError("boom")
         return self._results.pop(0)
 
 
@@ -94,8 +96,9 @@ class TestSelectNode:
             candidates=["SELECT v FROM t WHERE 0"], retry_count=10,
         )
         update = await node(state)
-        assert update == {"consensus": False}
+        assert update["consensus"] is False
         assert "error" not in update
+        assert update["selection"]["adopted"] is False
 
     async def test_alt_execution_failure_silently_passes(self):
         class Exploding:
@@ -112,3 +115,136 @@ class TestSelectNode:
         node = make_select_consensus(FakeConnectors([]))
         state = make_state(error_feedback="pending")
         assert await node(state) == {}
+
+
+class TestVoteSelection:
+    """多候选执行结果分组投票:多数派胜出,平局打回,异常候选过滤。"""
+
+    def _state(self, **kw):
+        defaults = dict(
+            question="list the accounts", sql="SELECT id FROM t",
+            rows=[[1], [2]], row_count=2, candidates=[],
+        )
+        defaults.update(kw)
+        return make_state(**defaults)
+
+    async def test_majority_matches_primary_passes(self):
+        """多数派(3 票)与 primary 结果一致 → 无操作。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # 候选 A: 同 primary
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # 候选 B: 同 primary
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # 候选 C: 同 primary
+            QueryResult(columns=["v"], rows=[[9]], row_count=1),       # 候选 D: 少数派
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(self._state(candidates=[f"SELECT id FROM t WHERE {i}" for i in range(4)]))
+        assert update == {}
+
+    async def test_majority_not_primary_adopts_winner(self):
+        """多数派不含 primary → 采纳多数派 SQL 及其执行结果(不重跑)。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),  # A
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),  # B
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),  # C
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # D: 同 primary
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(self._state(
+            sql="SELECT id FROM t",
+            candidates=["SELECT A", "SELECT B", "SELECT C", "SELECT D"],
+        ))
+        assert "error_feedback" not in update
+        assert "SELECT A" in update["sql"]
+        assert update["rows"] == [[7]]
+        assert update["row_count"] == 1
+        assert update["consensus"] is True
+        assert update["selection"]["adopted"] is True
+
+    async def test_everyone_single_vote_feeds_back(self):
+        """全平局(每个候选结果都不同) → 打回重生成。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),
+            QueryResult(columns=["v"], rows=[[8]], row_count=1),
+            QueryResult(columns=["v"], rows=[[9]], row_count=1),
+            QueryResult(columns=["v"], rows=[[10]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(self._state(
+            lang="en",
+            candidates=["SELECT 1", "SELECT 2", "SELECT 3", "SELECT 4"],
+        ))
+        assert "different results" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["consensus"] is False
+
+    async def test_split_2_2_feeds_back(self):
+        """两组并列 2:2(primary 组 2 票 vs 候选组 2 票 + 单票组) → 平局打回。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # A: 同 primary
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),       # B
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),       # C
+            QueryResult(columns=["v"], rows=[[9]], row_count=1),       # D: 单票
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(self._state(candidates=["SELECT A", "SELECT B", "SELECT C", "SELECT D"]))
+        assert "error_feedback" in update
+
+    async def test_invalid_candidate_dropped_from_vote(self):
+        """被 verify 规则拦下的候选(如单值题返回多行)不参与投票。"""
+        q = "how many accounts have running contracts"
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),   # A: 被 F1-a 拦
+            QueryResult(columns=["v"], rows=[[5]], row_count=1),        # B: 与 primary 一致
+        ])
+        node = make_select_consensus(connectors)
+        state = self._state(
+            question=q, rows=[[5]], row_count=1, candidates=["SELECT A", "SELECT B"],
+        )
+        update = await node(state)
+        assert update == {}  # 过滤后 primary(1) + B(1) 一致 → 通过
+        assert update == {}
+
+    async def test_all_candidates_filtered_passes(self):
+        """有效候选 0 个(规则拦截 + 执行失败)→ 静默保留 primary。"""
+        q = "list the top ten withdrawals"
+        connectors = FakeConnectors([
+            QueryResult(columns=["a", "b", "c"], rows=[[1, 2, 3]], row_count=1),  # A: F1-b 拦(3 列)
+        ])
+        node = make_select_consensus(connectors)
+        state = self._state(
+            question=q, rows=[[3], [4]], row_count=2,
+            candidates=["SELECT 1", "SELECT boom"],
+        )
+        assert await node(state) == {}
+
+    async def test_majority_winner_adopts_with_filtered_report(self):
+        """采纳多数派时,selection 详情记录分组与过滤痕迹(eval 归因)。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(self._state(candidates=["SELECT A", "SELECT B", "SELECT C"]))
+        sel = update["selection"]
+        assert list(sel["votes"].values()) == [3, 1]  # 多数派 3 票 + primary 1 票
+        assert sel["adopted"] is True
+        assert "filtered" in sel and len(sel["filtered"]) == 0
+
+    async def test_execution_failure_dropped_from_vote(self):
+        """执行失败的候选丢弃,其余照常投票。"""
+        class OneBoom:
+            def __init__(self):
+                self.executed = []
+
+            async def execute(self, sql, datasource=None):
+                self.executed.append(sql)
+                if "boom" in sql:
+                    raise RuntimeError("boom")
+                return QueryResult(columns=["v"], rows=[[1], [2]], row_count=2)
+
+        connectors = OneBoom()
+        node = make_select_consensus(connectors)
+        update = await node(self._state(candidates=["SELECT boom", "SELECT ok"]))
+        assert update == {}
+        assert connectors.executed == ["SELECT boom", "SELECT ok"]
