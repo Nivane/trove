@@ -59,6 +59,32 @@ def build(services, multi_candidate=False, planner=False, clarify=False, agentic
 # ── gen_sql subgraph ─────────────────────────────────────
 
 
+class TestFewShotRotation:
+    def _state(self, shots=None):
+        return GenSQLState(question="q", session_id="s1", run_id="r1", few_shots=shots)
+
+    def test_rotates_leading_example_by_offset(self):
+        from trove.workflow.graphs import _rotate_few_shots
+        shots = [{"question": f"q{i}", "sql": f"sql{i}"} for i in range(3)]
+        st = self._state(shots)
+        r1 = _rotate_few_shots(st, 1)
+        assert [s["question"] for s in r1.few_shots] == ["q1", "q2", "q0"]
+        r2 = _rotate_few_shots(st, 2)
+        assert [s["question"] for s in r2.few_shots] == ["q2", "q0", "q1"]
+        # offset 超过长度取模循环(4 % 3 = 1)
+        r4 = _rotate_few_shots(st, 4)
+        assert [s["question"] for s in r4.few_shots] == ["q1", "q2", "q0"]
+        # 原对象不被修改(纯函数)
+        assert [s["question"] for s in st.few_shots] == ["q0", "q1", "q2"]
+
+    def test_fewer_than_two_shots_returns_same_state(self):
+        from trove.workflow.graphs import _rotate_few_shots
+        single = self._state([{"question": "q0", "sql": "sql0"}])
+        assert _rotate_few_shots(single, 1) is single
+        empty = self._state([])
+        assert _rotate_few_shots(empty, 1) is empty
+
+
 class TestGenSQLSubgraph:
     async def test_single_valid_generation(self):
         sub = build_gen_sql_subgraph(make_services(RecordingLLM([VALID_SQL])))
@@ -762,6 +788,73 @@ examples:
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["kb_hits"] == []
         assert "Knowledge base" not in final["final_response"]
+
+    async def test_few_shots_rotated_across_alt_candidates(
+        self, sqlite_registry, catalog, tmp_path,
+    ):
+        """P2-7:备选候选按索引轮换 few-shot 首条目(示例锚点各异防趋同)。
+
+        主候选拿到相关度排序的完整示例集;第 i 个备选整体左移 i 位,
+        不同候选锚定不同的参考示例——投票分歧不再被共享范例抹平。
+        """
+        from trove.services.kb.service import KbService
+        kb = KbService(tmp_path / "proj")
+        ds_dir = kb.kb_dir / sqlite_registry.default_name
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "schema_notes.yml").write_text(
+            "tables:\n  - name: students\n    description: 学生表\n"
+            "    columns:\n      - name: grade\n        description: 成绩\n",
+            encoding="utf-8",
+        )
+        (ds_dir / "examples.yml").write_text(
+            """
+examples:
+  - question: 各地区的平均成绩是多少
+    sql: SELECT county, AVG(grade) FROM students GROUP BY county
+    tags: [成绩]
+  - question: 各县的最高成绩是多少
+    sql: SELECT county, MAX(grade) FROM students GROUP BY county
+    tags: [成绩]
+  - question: 各城市有多少学生成绩
+    sql: SELECT county, COUNT(*) FROM students GROUP BY county
+    tags: [成绩]
+""",
+            encoding="utf-8",
+        )
+        ex_qs = ["各地区的平均成绩是多少", "各县的最高成绩是多少", "各城市有多少学生成绩"]
+        sql = "SELECT county, AVG(grade) FROM students GROUP BY county"
+        llm = RecordingLLM([
+            "query",
+            f"```sql\n{sql};\n```",  # 主候选
+            f"```sql\n{sql};\n```",  # 备1-4(同结果,投票一致)
+            f"```sql\n{sql};\n```",
+            f"```sql\n{sql};\n```",
+            f"```sql\n{sql};\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
+                       multi_candidate=True)
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="各县市的成绩情况汇总")
+        )
+        assert final["error"] == ""
+
+        def example_order(prompt):
+            """按 prompt 中出现位置排序示例问题(提取真实出场顺序)。"""
+            return sorted(
+                (q for q in ex_qs if q in prompt), key=lambda q: prompt.find(q),
+            )
+
+        primary = " ".join(str(m.get("content", "")) for m in llm.calls[1])
+        order0 = example_order(primary)
+        assert len(order0) == 3  # 三个示例都进了主候选 prompt
+        n = len(order0)
+        for i, call in enumerate(llm.calls[2:6], start=1):
+            prompt = " ".join(str(m.get("content", "")) for m in call)
+            off = i % n  # offset = 候选索引,超长度取模循环
+            assert example_order(prompt) == order0[off:] + order0[:off], (
+                f"备选 {i} 应轮换 {off} 位"
+            )
 
     async def test_data_source_rules_reach_prompt(self, sqlite_registry, catalog, tmp_path):
         """rules.yml 的业务规则注入生成 prompt。"""

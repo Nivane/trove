@@ -95,7 +95,18 @@ def _result_entry(
     run_id: str, question: str, evidence: str, gold_sql: str, verdict: str,
     final: WorkflowState | None = None,
 ) -> dict:
-    """逐题判定条目;final 缺失(崩溃)时不带 pred/kb/retries 字段。"""
+    """逐题判定条目;final 缺失(崩溃)时不带 pred/kb/retries 字段。
+
+    归因字段(P2-8)随 final 一起记录,让"哪个机制贡献了多少准确率"
+    可以从 results.jsonl 直接回答:
+      consensus        — select 节点多候选投票是否达成一致
+      confidence       — 共识置信度(票数/候选数)
+      selection        — 裁决细节(votes/adopted/原因)
+      fix_mode         — 修复路径:fixer 实现级 / revisor 语义级 / 空(一次过)
+      rollback_target  — 打回目标(gen_sql/planner/schema_linking)
+      validation_hits  — 通过前被哪些确定性规则拦过(含 answer-columns 层)
+      n_candidates     — 进入执行投票的候选数(1 = 单候选直出)
+    """
     entry: dict[str, Any] = {
         "run_id": run_id, "question": question, "evidence": evidence,
         "gold_sql": gold_sql, "verdict": verdict,
@@ -105,8 +116,67 @@ def _result_entry(
             "pred_sql": final.sql or "",
             "kb_hits": final.kb_hits,
             "retries": final.retry_count,
+            "consensus": final.consensus,
+            "confidence": round(final.confidence, 3),
+            "selection": final.selection or {},
+            "fix_mode": final.fix_mode or "",
+            "rollback_target": final.rollback_target or "",
+            "validation_hits": final.validation_hits or [],
+            "n_candidates": len(final.candidates or []),
         })
     return entry
+
+
+def attribution_slices(results: list[dict]) -> list[str]:
+    """机制归因切片:每个维度按取值统计 EX%(分母 = 该取值内的可判定题数)。
+
+    维度覆盖全部新记录字段:共识与否、置信度档、修复路径(fixer/revisor)、
+    打回目标、规则拦截、候选数、evidence A/B。gold 失败/崩溃题不进切片
+    (verdict 不在可判定集合,避免污染分子分母)。
+    """
+    verdicts_ok = {
+        "MATCH", "MISMATCH", "GENERATION_ERROR", "EXECUTION_ERROR", "EMPTY_SQL",
+    }
+    rows = [r for r in results if r.get("verdict") in verdicts_ok]
+    if not rows:
+        return []
+
+    def rate(rows_sub: list[dict]) -> str:
+        m = sum(1 for r in rows_sub if r.get("verdict") == "MATCH")
+        return f"{m}/{len(rows_sub)} ({m / len(rows_sub) * 100:.1f}%)"
+
+    _MISSING = object()  # 区分"键不存在"与 False/""(共识 False 也是有效取值)
+
+    def bucket(rows_sub: list[dict], key: str) -> str:
+        by_val: dict[Any, list[dict]] = {}
+        for r in rows_sub:
+            v = r.get(key, _MISSING)
+            if v == "" or v is None:  # 空字符串/None 与缺失同义(机制未走)
+                v = _MISSING
+            by_val.setdefault(v, []).append(r)
+        return " | ".join(
+            f"{v}: {rate(vr)}" if v is not _MISSING else f"(无): {rate(vr)}"
+            for v, vr in sorted(by_val.items(), key=lambda kv: -len(kv[1]))
+        )
+
+    # 为数值/布尔/集合类取值预计算桶键(不污染 jsonl 条目本身)
+    for r in rows:
+        r["_confidence_bucket"] = "high (≥0.5)" if r.get("confidence", 0) >= 0.5 else "low (<0.5)"
+        r["_hits_bucket"] = "拦过" if r.get("validation_hits") else "未拦"
+        r["_cand_bucket"] = (
+            "multi (≥2)" if (r.get("n_candidates") or 0) >= 2 else "single (1)"
+        )
+        r["_evidence_bucket"] = "with evidence" if r.get("evidence") else "no evidence"
+    return [
+        "=== 机制归因切片 ===",
+        f"共识: {bucket(rows, 'consensus')}",
+        f"置信度: {bucket(rows, '_confidence_bucket')}",
+        f"修复模式: {bucket(rows, 'fix_mode')}",
+        f"回退目标: {bucket(rows, 'rollback_target')}",
+        f"规则拦截: {bucket(rows, '_hits_bucket')}",
+        f"候选数: {bucket(rows, '_cand_bucket')}",
+        f"evidence: {bucket(rows, '_evidence_bucket')}",
+    ]
 
 
 def slice_questions(questions: list[dict], limit: int = 0, start: int = 0) -> list[dict]:
@@ -220,6 +290,13 @@ async def main() -> None:
     matched = 0
     failures = {"generation": 0, "execution": 0, "mismatch": 0, "gold_error": 0, "crash": 0}
     total_retries = 0
+    results: list[dict] = []  # 本轮的逐题条目(供归因切片;jsonl 仍全部落盘)
+
+    def done(entry: dict) -> dict:
+        """判定条目同时进内存切片池与 results.jsonl。"""
+        results.append(entry)
+        record_result(entry)
+        return entry
 
     def log(msg: str) -> None:
         print(msg, flush=True)
@@ -256,7 +333,7 @@ async def main() -> None:
                 "question": question, "evidence": evidence, "gold_sql": gold_sql,
                 "pred_sql": "", "error": f"crash: {str(e)[:200]}",
             })
-            record_result(_result_entry(
+            done(_result_entry(
                 run_id, question, evidence, gold_sql, "CRASH",
             ) | {"error": f"crash: {str(e)[:200]}"})
             log(f"[{i}/{len(questions)}] ✗ 崩溃: {str(e)[:70]}")
@@ -267,7 +344,7 @@ async def main() -> None:
             gold_rows = (await adapter.execute(gold_sql)).rows
         except Exception as e:
             failures["gold_error"] += 1
-            record_result(_result_entry(
+            done(_result_entry(
                 run_id, question, evidence, gold_sql, "GOLD_ERROR", final,
             ) | {"error": str(e)[:200]})
             log(f"[{i}/{len(questions)}] ✗ gold 执行失败: {question[:40]}... ({e})")
@@ -280,7 +357,7 @@ async def main() -> None:
                 "question": question, "evidence": evidence, "gold_sql": gold_sql,
                 "pred_sql": final.sql or "", "error": final.error[:200],
             })
-            record_result(_result_entry(
+            done(_result_entry(
                 run_id, question, evidence, gold_sql,
                 classify_pred_error(final.error), final,
             ) | {"error": final.error[:200]})
@@ -289,7 +366,7 @@ async def main() -> None:
 
         if not final.sql:
             failures["execution"] += 1
-            record_result(_result_entry(
+            done(_result_entry(
                 run_id, question, evidence, gold_sql, "EMPTY_SQL", final,
             ) | {"error": "空 SQL（意图可能误路由）"})
             log(f"[{i}/{len(questions)}] ✗ 空 SQL（意图可能误路由）")
@@ -298,7 +375,7 @@ async def main() -> None:
         pred_rows = (await adapter.execute(final.sql)).rows
         if normalize_rows(pred_rows) == normalize_rows(gold_rows):
             matched += 1
-            record_result(_result_entry(
+            done(_result_entry(
                 run_id, question, evidence, gold_sql, "MATCH", final,
             ))
             log(f"[{i}/{len(questions)}] ✓ {question[:50]}... (retry {final.retry_count})")
@@ -309,7 +386,7 @@ async def main() -> None:
                 "pred_sql": final.sql or "",
                 "error": f"mismatch (pred {len(pred_rows)} rows, gold {len(gold_rows)} rows)",
             })
-            record_result(_result_entry(
+            done(_result_entry(
                 run_id, question, evidence, gold_sql, "MISMATCH", final,
             ) | {"error": f"mismatch (pred {len(pred_rows)} rows, gold {len(gold_rows)} rows)"})
             log(f"[{i}/{len(questions)}] ✗ 结果不一致: {question[:50]}... "
@@ -323,6 +400,8 @@ async def main() -> None:
     log(f"错误分布: 生成失败 {failures['generation']} | 执行失败 {failures['execution']} | "
         f"结果不一致 {failures['mismatch']} | 崩溃 {failures['crash']}")
     log(f"平均修正轮数: {total_retries / total:.1f}")
+    for line in attribution_slices(results):
+        log(line)
 
     await registry.close_all()
 

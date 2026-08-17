@@ -2,5 +2,8 @@ Question: {{ question }}
 
 Candidate tables with statistics:
 {{ alignment_context }}
-
+{% if evidence %}
+Evidence (official hint for this question — authoritative, must follow):
+{{ evidence }}
+{% endif %}
 Return the JSON alignment: keep_tables must be a subset of the candidates; drop_columns only for kept tables.

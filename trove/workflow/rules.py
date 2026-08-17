@@ -263,6 +263,47 @@ def validate(
 # ── 既有基础规则(保持原语义,仅迁移为注册表) ──────────────────────
 
 
+@_rule("count-multirow")
+def _rule_count_multirow(
+    question: str, sql: str, columns: list, rows: list[list], row_count: int, lang: str,
+):
+    """count 题返回多行且 SQL 结构佐证 → 分组展开/漏写 COUNT 的定点诊断。
+
+    弱规则:多行本身不构成错误(分组题多行合法,由问题守卫排除),但
+    纯 count 题多行 + GROUP BY/LIMIT 结构证据 → 高度疑似误展开,
+    给出比 count-shape 更可执行的修复指向(先去 GROUP BY 再谈单行)。
+    注册在 count-shape 之前:多行情况这里先给出具体诊断,拿不到结构
+    证据的多行仍落回 count-shape 的通用提示。
+    """
+    if not is_count_question(question):
+        return None
+    if row_count <= 1:
+        return None
+    if re.search(r"\bgroup\s+by\b", sql, re.I):
+        return L(
+            lang,
+            f"计数问题返回了 {row_count} 行且 SQL 含 GROUP BY——疑似按分组"
+            f"展开(如逐地区计数)。问题要的是一个总数:去掉 GROUP BY,"
+            f"只输出单个 COUNT 值。",
+            f"Count question returned {row_count} rows and the SQL contains "
+            f"GROUP BY — likely expanded per group (e.g. counting per "
+            f"district). The question asks for one total: drop the GROUP BY "
+            f"and output a single COUNT value.",
+        )
+    if re.search(r"\blimit\b", sql, re.I) and not re.search(
+        r"\bcount\s*\(", sql, re.I,
+    ):
+        return L(
+            lang,
+            f"计数问题返回了 {row_count} 行且 SQL 未见 COUNT 聚合——疑似"
+            f"直接取了明细行。问题要的是数量:写 COUNT(*) 并只返回一行。",
+            f"Count question returned {row_count} rows with no COUNT aggregate "
+            f"in the SQL — likely returning detail rows. The question asks for "
+            f"a count: write COUNT(*) and return one row.",
+        )
+    return None
+
+
 @_rule("count-shape")
 def _rule_count_shape(
     question: str, sql: str, columns: list, rows: list[list], row_count: int, lang: str,

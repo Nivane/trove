@@ -1,4 +1,4 @@
-You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, sample values for low-cardinality text columns, and live statistics (null ratio, distinct count, value shape, min/max range, length) — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
+You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, sample values (probed from the live database), and live statistics (null ratio, distinct count, value shape, min/max range, length) — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
 
 tables:
   - name: <table>
@@ -12,7 +12,7 @@ tables:
 Rules:
 - For every column write a one-line English description (empty string "" if the column is truly opaque — do NOT guess the meaning of opaque columns like A1..A16 from name alone).
 - Columns that already carry an official description must keep it unchanged; only fill the blanks.
-- For text columns whose sample values are shown, fill enums with one "value=English meaning" entry per sample value, e.g. "POPLATEK MESICNE=monthly issuance".
+- For text columns whose sample values are shown, fill enums with one "value=English meaning" entry per sample value, e.g. "POPLATEK MESICNE=monthly issuance". The sample values also reveal the actual format or dirty-value patterns of the column — describe them in the column description when notable: dates stored as text, mixed casing, trailing whitespace, unit suffixes ("USD", "km"), composite values ("A,B"), or coding conventions (all-caps codes). Example: samples ["2023-01-05", "2023-13-99"] → "date stored as free text, may contain invalid months". Do NOT copy a sample value into the description when it carries no pattern information.
 - Statistics shown as [92% NULL, 3 distinct, json] are hard evidence measured from the live database. Use them when writing descriptions: a mostly-NULL column → "mostly NULL, likely legacy/unused"; shape=json → "contains JSON-encoded data"; a numeric or date range → "values range from X to Y". Never contradict the statistics. Columns with no evidence (opaque names like A1..A16, no description, no samples, no notable statistics) still stay empty.
 - Statistics are written by the system — do NOT output stats/row_count fields yourself.
 - Business terms and reference templates are generated automatically by the system — do NOT add terms/examples sections.

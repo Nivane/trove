@@ -28,6 +28,10 @@ from typing import Any
 from trove.services.kb.enum_probe import DEFAULT_MAX_ROWS, DEFAULT_TIMEOUT_S
 
 SHAPE_SAMPLE_LIMIT = 50  # 值形状检测的采样行数
+TOP_VALUES_LIMIT = 10            # 发布的 Top 取值数
+TOP_VALUES_DISTINCT_MAX = 30     # distinct ≤ 此数才发布(高基数=唯一键,无信息量)
+TOP_VALUES_DISTINCT_MIN = 2      # 1 个 distinct 由枚举/形状覆盖,不值得探测
+SAMPLE_LIMIT = 5                 # 文本列任意基数都采集的 distinct 样例数
 
 # 类型判定标记(与 enum_probe / deterministic_gen 各自维护的元组同源)
 _TEXT_TYPES = ("char", "text", "varchar", "enum", "string", "character")
@@ -130,6 +134,20 @@ async def _probe_column(
         shape = await _probe_shape(registry, table, name, timeout_s)
         if shape:
             stats["shape"] = shape
+        # 样例值:文本列任意基数都采集(高基数名字/地址也能看出格式/脏值)
+        sample = await _probe_sample(registry, table, name, timeout_s)
+        if sample:
+            stats["sample"] = sample
+        # Top-K 值:低基数文本列的规范写法/脏值就藏在这里
+        # (BIRD: 'POPLATEK TYDNE' 这类值 question 里带引号即可命中)
+        distinct = stats.get("distinct")
+        if (
+            distinct is not None
+            and TOP_VALUES_DISTINCT_MIN <= distinct <= TOP_VALUES_DISTINCT_MAX
+        ):
+            top = await _probe_top_values(registry, table, name, timeout_s)
+            if top:
+                stats["top_values"] = top
     elif any(m in col_type for m in (*_NUMERIC_TYPES, *_DATE_TYPES)):
         if len(row) >= 5:
             stats["min"] = row[3]
@@ -150,6 +168,52 @@ async def _probe_shape(
     except Exception:
         return None
     return detect_shape([r[0] for r in res.rows if r])
+
+
+async def _probe_sample(
+    registry: Any, table: str, column: str, timeout_s: int,
+) -> list[Any] | None:
+    """文本列 distinct 样例(LIMIT 采样,任意基数)。
+
+    高基数列(名字/地址等)没有 Top-K 值可言,但 3-5 个真实取值能让
+    LLM 描述实际格式/脏值模式("日期存成文本""大小写混用")——
+    证据提示词里唯一能让模型"看见数据"的通道。
+    失败/超时 → None(静默跳过)。
+    """
+    sql = (
+        f"SELECT DISTINCT `{column}` FROM `{table}` "
+        f"WHERE `{column}` IS NOT NULL LIMIT {SAMPLE_LIMIT}"
+    )
+    try:
+        res = await asyncio.wait_for(registry.execute(sql), timeout=timeout_s)
+    except Exception:
+        return None
+    values = [r[0] for r in (res.rows or []) if r and r[0] is not None]
+    return values or None
+
+
+async def _probe_top_values(
+    registry: Any, table: str, column: str, timeout_s: int,
+) -> list[list[Any]] | None:
+    """低基数列 Top 取值 + 频次(AskData Top-K;脏值/规范写法的出处)。
+
+    全表 GROUP BY——低基数列聚合成本可接受(行数护栏已在调用侧);
+    失败/超时 → None(静默跳过,同其他探测)。
+
+    Returns:
+        [[value, count], ...] 按频次降序;空表/全 NULL → None。
+    """
+    sql = (
+        f"SELECT `{column}`, COUNT(*) AS c FROM `{table}` "
+        f"WHERE `{column}` IS NOT NULL GROUP BY `{column}` "
+        f"ORDER BY c DESC, `{column}` LIMIT {TOP_VALUES_LIMIT}"
+    )
+    try:
+        res = await asyncio.wait_for(registry.execute(sql), timeout=timeout_s)
+    except Exception:
+        return None
+    rows = [[r[0], int(r[1])] for r in (res.rows or []) if r and r[0] is not None]
+    return rows or None
 
 
 async def probe_stats(

@@ -8,7 +8,13 @@ import json
 
 import pytest
 
-from scripts.eval_bird import classify_pred_error, record_result, slice_questions
+from scripts.eval_bird import (
+    attribution_slices,
+    classify_pred_error,
+    record_result,
+    slice_questions,
+    _result_entry,
+)
 from trove.services.kb.service import resolve_kb_root
 
 
@@ -94,3 +100,76 @@ class TestResultRecording:
         # 中文原样保留(非 \u 转义),供人直接阅读
         assert "第一题" in lines[0]
         assert json.loads(lines[1])["verdict"] == "MISMATCH"
+
+
+class TestAttributionSlices:
+    """P2-8 机制归因切片:逐题归因字段 + 按维度切 EX%。"""
+
+    def _entry(self, verdict="MATCH", **attrs):
+        e = {"run_id": "r1", "question": "q", "evidence": "", "gold_sql": "",
+             "verdict": verdict}
+        e.update(attrs)
+        return e
+
+    def test_result_entry_carries_attribution_fields(self):
+        """final 存在时记录机制路径:consensus/confidence/selection/fix_mode/
+        rollback_target/validation_hits/n_candidates。"""
+        final = _DummyState()
+        entry = _result_entry("r1", "q", "", "g", "MATCH", final)
+        assert entry["consensus"] is True
+        assert entry["confidence"] == 0.6
+        assert entry["selection"] == {"votes": {"s1": 3}, "adopted": True}
+        assert entry["fix_mode"] == "fixer"
+        assert entry["rollback_target"] == "gen_sql"
+        assert entry["validation_hits"] == [{"rule": "answer-columns"}]
+        assert entry["n_candidates"] == 2
+
+    def test_slices_rate_per_dimension_value(self):
+        results = [
+            self._entry("MATCH", consensus=True, confidence=0.8, fix_mode="",
+                        rollback_target="", validation_hits=[],
+                        n_candidates=5, evidence="hint"),
+            self._entry("MATCH", consensus=True, confidence=0.8, fix_mode="",
+                        rollback_target="", validation_hits=[],
+                        n_candidates=5, evidence="hint"),
+            self._entry("MISMATCH", consensus=False, confidence=0.25, fix_mode="",
+                        rollback_target="gen_sql", validation_hits=[{"rule": "f3"}],
+                        n_candidates=1, evidence=""),
+        ]
+        lines = attribution_slices(results)
+        text = "\n".join(lines)
+        assert "共识: True: 2/2 (100.0%) | False: 0/1 (0.0%)" in text
+        assert "high (≥0.5): 2/2 (100.0%)" in text
+        assert "回退目标: (无): 2/2 (100.0%) | gen_sql: 0/1 (0.0%)" in text
+        assert "拦过: 0/1 (0.0%)" in text
+        assert "multi (≥2): 2/2 (100.0%)" in text
+        assert "with evidence: 2/2 (100.0%)" in text
+
+    def test_gold_error_and_crash_excluded_from_slices(self):
+        results = [
+            self._entry("MATCH", consensus=True, confidence=1.0),
+            self._entry("GOLD_ERROR", consensus=True, confidence=1.0),
+            self._entry("CRASH", consensus=True, confidence=1.0),
+        ]
+        lines = attribution_slices(results)
+        text = "\n".join(lines)
+        assert "True: 1/1 (100.0%)" in text  # 只有 MATCH 进分母
+
+    def test_empty_results_yield_no_lines(self):
+        assert attribution_slices([]) == []
+
+
+class _DummyState:
+    """_result_entry 的 final 形状(只用到归因字段,构造真实 WorkflowState
+    需要 lang/session 等环境)。"""
+
+    sql = "SELECT 1"
+    kb_hits = []
+    retry_count = 1
+    consensus = True
+    confidence = 0.6
+    selection = {"votes": {"s1": 3}, "adopted": True}
+    fix_mode = "fixer"
+    rollback_target = "gen_sql"
+    validation_hits = [{"rule": "answer-columns"}]
+    candidates = ["SELECT 1", "SELECT 2"]

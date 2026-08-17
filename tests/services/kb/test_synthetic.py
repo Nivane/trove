@@ -81,6 +81,30 @@ class TestSchemaText:
         assert "(5 rows)" not in text
         assert "[75..99]" not in text
 
+    def test_sample_fallback_from_stats(self):
+        """P1-5:枚举探测缺失时(高基数列)从 profiling sample 回退渲染。"""
+        stats = {"students": {"row_count": 5, "columns": {
+            "county": {"sample": ["Alameda", "Los Angeles", "Marin"]},
+        }}}
+        text = schema_text(TABLE, stats=stats)
+        assert "[Alameda; Los Angeles; Marin]" in text
+
+    def test_enum_samples_take_precedence_over_stats_sample(self):
+        """samples dict 有值时优先(枚举探测值更准,含完整值清单)。"""
+        stats = {"students": {"columns": {
+            "county": {"sample": ["Alameda", "Marin"]},
+        }}}
+        text = schema_text(TABLE, samples=SAMPLES, stats=stats)
+        assert "[Alameda; Orange; Los Angeles]" in text
+        assert "Marin" not in text
+
+    def test_empty_stats_sample_not_rendered(self):
+        text = schema_text(TABLE, stats={"students": {"columns": {
+            "county": {"sample": []},
+        }}})
+        assert "county varchar — county" in text
+        assert "[Alameda" not in text
+
 
 class TestParse:
     def test_valid_json(self):

@@ -109,6 +109,28 @@ class TestProbeStats:
         assert cols["county"]["shape"] == "capital"  # Alameda/Orange/Los Angeles
         assert cols["county"]["distinct"] == 3
 
+    async def test_top_values_for_low_cardinality_text(self, sqlite_registry):
+        """P1-4:低基数文本列(2≤distinct≤30)发布 Top 取值+频次。"""
+        schema = await sqlite_registry.get_schema()
+        profiled = await probe_stats(sqlite_registry, schema, max_rows=100)
+        tv = profiled["students"]["columns"]["county"]["top_values"]
+        # 按频次降序:Alameda×2 在前,Los Angeles×1 在后
+        assert tv == [["Alameda", 2], ["Orange", 2], ["Los Angeles", 1]]
+        # 非文本列不发布(整型 id 走数值分支)
+        assert "top_values" not in profiled["students"]["columns"]["id"]
+        # 文本列在 2..30 区间内都发布(频次为 1 也是值清单)
+        assert profiled["students"]["columns"]["name"]["top_values"]
+
+    async def test_sample_for_all_text_columns(self, sqlite_registry):
+        """P1-5:文本列任意基数都采集 distinct 样例(高基数列靠它看出格式)。"""
+        schema = await sqlite_registry.get_schema()
+        profiled = await probe_stats(sqlite_registry, schema, max_rows=100)
+        cols = profiled["students"]["columns"]
+        # 文本列(county/name)都有 sample;非文本列(id)没有
+        assert cols["county"]["sample"] == ["Alameda", "Orange", "Los Angeles"]
+        assert cols["name"]["sample"]
+        assert "sample" not in cols["id"]
+
     async def test_row_count_guard_skips_large_tables(self, sqlite_registry):
         schema = await sqlite_registry.get_schema()
         profiled = await probe_stats(sqlite_registry, schema, max_rows=1)

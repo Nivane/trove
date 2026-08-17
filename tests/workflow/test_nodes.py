@@ -258,6 +258,34 @@ tables:
         assert "grade: 0% NULL" not in update["schema_context"]
         assert "grade: 5 distinct" not in update["schema_context"]
 
+    async def test_top_values_reach_schema_context(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """P1-4:Top-K 值渲染进 Stats 段(规范拼写/脏值就地可见)。"""
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: 学生表
+    row_count: 5
+    columns:
+      - name: county
+        description: 县
+        stats:
+          distinct: 3
+          top_values:
+            - ["Alameda", 2]
+            - ["Orange", 2]
+            - ["Los Angeles", 1]
+""",
+            encoding="utf-8",
+        )
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+        )
+        update = await node(make_state(question="students"))
+        assert "top values: Alameda (2), Orange (2), Los Angeles (1)" in update["schema_context"]
+
 
     async def test_enum_translations_reach_schema_context(
         self, catalog, sqlite_registry, kb_service, kb_ds_dir,
@@ -307,7 +335,27 @@ tables:
         assert "kb_hits" not in update
 
     async def test_join_hints_in_schema_context(self, catalog, sqlite_registry):
-        """*_id 列名启发式：schema_context 带 Join 路径提示。"""
+        """P0-3:*_id 命名启发式 + 数据级验证——真实 key 重叠才发布 Join 提示。"""
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        await adapter.execute(
+            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
+        )
+        # 有重叠数据 → hint 发布
+        await adapter.execute(
+            "INSERT INTO district (district_id, name) VALUES (1, 'A'), (2, 'B')"
+        )
+        await adapter.execute("INSERT INTO city (city_id, district_id) VALUES (10, 1)")
+        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
+        update = await node(make_state(question="city and district info"))
+        assert "city.district_id → district.district_id" in update["schema_context"]
+
+    async def test_join_hints_without_overlap_are_dropped(
+        self, catalog, sqlite_registry,
+    ):
+        """命名对但数据对不上(空表/无交集)→ hint 不发布,防止错关联进 prompt。"""
         adapter = await sqlite_registry.get()
         await adapter.execute(
             "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
@@ -317,7 +365,7 @@ tables:
         )
         node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
         update = await node(make_state(question="city and district info"))
-        assert "city.district_id → district.district_id" in update["schema_context"]
+        assert "Join hints" not in update["schema_context"]
 
 
 # ── Value linking ────────────────────────────────────────
@@ -388,6 +436,27 @@ class TestAlignment:
         ctx = _alignment_context(details, notes)
         assert "Table: students (5 rows)" in ctx
         assert "90% NULL" in ctx and "1..10" in ctx
+
+    def test_alignment_context_includes_top_values_and_join_hints(self):
+        """P1-6:Top-K 值(列实际内容)与已验证 join hints 进对齐上下文。"""
+        _alignment_context = self._import("_alignment_context")
+        from trove.services.kb.service import TableNotes
+        details = [
+            {"name": "city", "row_count": 2, "columns": [
+                {"name": "district_id", "type": "int"},
+                {"name": "name", "type": "varchar"},
+            ]},
+            {"name": "district", "row_count": 2, "columns": [
+                {"name": "district_id", "type": "int"},
+            ]},
+        ]
+        notes = {"city": TableNotes(row_count=2, stats={"name": {
+            "distinct": 2, "top_values": [["Alameda", 1], ["Orange", 1]],
+        }})}
+        hints = {"city": ["city.district_id → district.district_id (2/2 match)"]}
+        ctx = _alignment_context(details, notes, hints)
+        assert "Join hints: city.district_id → district.district_id (2/2 match)" in ctx
+        assert "top values: Alameda (1), Orange (1)" in ctx
 
     async def test_alignment_trims_tables_and_columns(
         self, catalog, sqlite_registry, kb_service, kb_ds_dir,
@@ -481,6 +550,67 @@ tables:
         update = await node(make_state(question="students"))
         assert "students" in update["schema_context"]
 
+    async def test_alignment_prompt_receives_hints_and_top_values(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """P1-6:已验证 join hints 与 Top-K 值进入对齐上下文。
+
+        对齐裁掉 district 后,hint(city→district)两端必须都在保留集,
+        不再发布给 gen_sql——防止引用已裁表的错关联进 schema_context。
+        """
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
+            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
+        )
+        await adapter.execute(
+            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER, "
+            "name TEXT)"
+        )
+        await adapter.execute(
+            "INSERT INTO district (district_id, name) VALUES (1, 'A'), (2, 'B')"
+        )
+        await adapter.execute(
+            "INSERT INTO city (city_id, district_id, name) VALUES "
+            "(10, 1, 'Alameda'), (11, 2, 'Orange')"
+        )
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: city
+    description: city records
+    columns:
+      - name: district_id
+        description: district ref
+        stats:
+          null_ratio: 0.0
+      - name: name
+        description: city name
+        stats:
+          distinct: 2
+          top_values:
+            - ["Alameda", 1]
+            - ["Orange", 1]
+""",
+            encoding="utf-8",
+        )
+        captured = {}
+
+        class CapturingLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(messages=messages)
+                return '{"keep_tables": ["city"], "drop_columns": {}}'
+
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+            llm=CapturingLLM(), config=AgentConfig(target="mock/model"),
+        )
+        update = await node(make_state(question="city and district info"))
+        prompt = " ".join(m["content"] for m in captured["messages"])
+        assert "Join hints: city.district_id → district.district_id" in prompt
+        assert "top values: Alameda (1), Orange (1)" in prompt
+        # 对齐裁掉 district → hint 引用已裁表,不再发布
+        assert "Join hints" not in update["schema_context"]
+
 
 class TestValueCandidates:
     def test_quoted_and_capitalized_words(self):
@@ -555,6 +685,96 @@ class TestJoinHints:
         # 无对应表 / 无对应列 → 不产生提示
         assert _join_hints("account", ["ghost_id"], {"account": ["account_id"]}) == []
         assert _join_hints("account", ["account_id"], {"account": ["account_id"]}) == []
+
+
+class TestVerifiedJoinHints:
+    """P0-3:join hint 数据级验证——采样值重叠探测。"""
+
+    @staticmethod
+    def _scripted(values, hits, fail=False):
+        import types
+
+        class _C:
+            def __init__(self):
+                self.queries = []
+
+            async def get(self):
+                return types.SimpleNamespace(dialect=lambda: "sqlite")
+
+            async def execute(self, sql):
+                if fail:
+                    raise RuntimeError("db down")
+                self.queries.append(sql)
+                if "SELECT COUNT(*)" in sql:
+                    return types.SimpleNamespace(rows=[[hits]])
+                return types.SimpleNamespace(rows=[[v] for v in values])
+
+        return _C()
+
+    HINT = "account.district_id → district.district_id"
+
+    async def test_all_match_keeps_hint_plain(self):
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        result = await _verified_hints(
+            self._scripted([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10), [self.HINT],
+        )
+        assert result == {self.HINT: self.HINT}
+
+    async def test_partial_match_keeps_hint_with_ratio(self):
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        result = await _verified_hints(
+            self._scripted([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 7), [self.HINT],
+        )
+        assert result[self.HINT] == f"{self.HINT} (7/10 match)"
+
+    async def test_below_min_match_drops(self):
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        result = await _verified_hints(
+            self._scripted([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1), [self.HINT],
+        )
+        assert result == {}
+
+    async def test_probe_failure_drops_silently(self):
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        result = await _verified_hints(self._scripted([], 0, fail=True), [self.HINT])
+        assert result == {}
+
+    async def test_null_sample_drops(self):
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        result = await _verified_hints(self._scripted([None, None], 0), [self.HINT])
+        assert result == {}
+
+    async def test_no_connectors_passthrough(self):
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        assert await _verified_hints(None, [self.HINT]) == {self.HINT: self.HINT}
+
+    async def test_mysql_uses_backtick_quoting(self):
+        import types
+
+        from trove.workflow.nodes.schema_linking import _verified_hints
+
+        class _C:
+            def __init__(self):
+                self.queries = []
+
+            async def get(self):
+                return types.SimpleNamespace(dialect=lambda: "mysql")
+
+            async def execute(self, sql):
+                self.queries.append(sql)
+                if "SELECT COUNT(*)" in sql:
+                    return types.SimpleNamespace(rows=[[2]])
+                return types.SimpleNamespace(rows=[[1], [2]])
+
+        c = _C()
+        await _verified_hints(c, [self.HINT])
+        assert "`district_id`" in c.queries[0]
 
 
 # ── gen_sql: prompt builders and extraction ──────────────
@@ -1639,6 +1859,172 @@ class TestStructuredPlan:
         assert update["plan"] == "先筛选1997年贷款，再取最低金额。"
 
 
+class TestPlanValidation:
+    """P0-2 层1:计划落地校验(表/列存在性)与自修正/丢弃。"""
+
+    SCHEMA = {
+        "loan": {"account_id", "amount", "date", "status"},
+        "account": {"account_id", "district_id", "frequency"},
+    }
+
+    def test_valid_plan_passes(self):
+        from trove.workflow.nodes.planner import validate_plan
+        plan = {
+            "tables": ["loan", "account"],
+            "answer_columns": ["account_id", "amount"],
+            "conditions": [{"field": "loan.status", "op": "=", "value": "OK"}],
+        }
+        assert validate_plan(plan, self.SCHEMA) == []
+
+    def test_unknown_table_fails(self):
+        from trove.workflow.nodes.planner import validate_plan
+        plan = {"tables": ["loan", "nonexistent"], "answer_columns": ["account_id"]}
+        errors = validate_plan(plan, self.SCHEMA)
+        assert any("nonexistent" in e for e in errors)
+
+    def test_unknown_column_fails(self):
+        from trove.workflow.nodes.planner import validate_plan
+        plan = {"tables": ["loan"], "answer_columns": ["account_id", "ghost_col"]}
+        errors = validate_plan(plan, self.SCHEMA)
+        assert any("ghost_col" in e for e in errors)
+
+    def test_table_dot_column_form_checked(self):
+        from trove.workflow.nodes.planner import validate_plan
+        plan = {"tables": ["loan"], "conditions": [{"field": "loan.missing"}]}
+        errors = validate_plan(plan, self.SCHEMA)
+        assert any("missing" in e for e in errors)
+        plan_ok = {"tables": ["loan"], "conditions": [{"field": "loan.amount"}]}
+        assert validate_plan(plan_ok, self.SCHEMA) == []
+
+    def test_expressions_and_wildcards_skipped(self):
+        from trove.workflow.nodes.planner import validate_plan
+        plan = {
+            "tables": ["loan"],
+            "answer_columns": ["COUNT(*)", "AVG(amount)", "*", ""],
+        }
+        assert validate_plan(plan, self.SCHEMA) == []
+
+    def test_case_insensitive(self):
+        from trove.workflow.nodes.planner import validate_plan
+        plan = {"tables": ["LOAN"], "answer_columns": ["Account_ID"]}
+        assert validate_plan(plan, self.SCHEMA) == []
+
+    def test_no_schema_or_no_plan_skips(self):
+        from trove.workflow.nodes.planner import validate_plan
+        assert validate_plan(None, self.SCHEMA) == []
+        assert validate_plan({"tables": ["x"]}, None) == []
+
+    def test_answer_columns_mismatch_all_missing_is_conflict(self):
+        from trove.workflow.nodes.planner import answer_columns_mismatch
+        plan = {"answer_columns": ["account_id", "frequency"]}
+        errs = answer_columns_mismatch(plan, ["status", "amount"])
+        assert errs and "conflict" in errs[0]
+
+    def test_answer_columns_mismatch_partial_match_passes(self):
+        """别名/表达式噪音:至少一个命中即放行。"""
+        from trove.workflow.nodes.planner import answer_columns_mismatch
+        plan = {"answer_columns": ["account_id", "total"]}
+        assert answer_columns_mismatch(plan, ["account_id", "SUM(amount) AS total"]) == []
+
+    def test_answer_columns_mismatch_skipped_without_plan(self):
+        from trove.workflow.nodes.planner import answer_columns_mismatch
+        assert answer_columns_mismatch(None, ["a"]) == []
+        assert answer_columns_mismatch({"answer_columns": []}, ["a"]) == []
+        assert answer_columns_mismatch({"answer_columns": ["COUNT(*)"]}, ["a"]) == []
+
+    @staticmethod
+    def _connectors():
+        """带 loan/account 两表的 connectors mock(触发落地校验)。"""
+        import types
+
+        class _C:
+            async def get_schema(self):
+                table = lambda name, cols: types.SimpleNamespace(
+                    name=name,
+                    columns=[types.SimpleNamespace(name=c) for c in cols],
+                )
+                return types.SimpleNamespace(tables=[
+                    table("loan", ["account_id", "amount", "date", "status"]),
+                    table("account", ["account_id", "district_id", "frequency"]),
+                ])
+
+        return _C()
+
+    async def test_node_drops_invalid_plan(self):
+        """校验不过且修正后仍不过 → 丢弃 plan(gen_sql 不受幻觉列挟持)。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class LLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls += 1
+                return (
+                    '{"tables": ["loan", "ghost"], '
+                    '"answer_columns": ["ghost_col", "COUNT(*)"]}'
+                )
+
+        llm = LLM()
+        node = make_planner(
+            llm, AgentConfig(target="m"), agentic=False,
+            connectors=self._connectors(),
+        )
+        update = await node(make_state())
+        assert update["plan"] == ""
+        assert update["plan_json"] is None
+        assert update["plan_validation"]["status"] == "dropped"
+        assert any("ghost" in e for e in update["plan_validation"]["errors"])
+        assert llm.calls == 2  # 自修正一次后仍无效才丢弃
+
+    async def test_node_self_retries_then_accepts_fixed_plan(self):
+        """修正轮产出合法计划 → 采纳并携带 plan_json。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        responses = [
+            '{"tables": ["loan", "ghost"], "answer_columns": ["amount"]}',
+            '{"tables": ["loan"], "answer_columns": ["amount"]}',
+        ]
+
+        class LLM:
+            def __init__(self):
+                self.calls = 0
+                self.prompts = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.prompts.append(" ".join(m["content"] for m in messages))
+                r = responses[self.calls]
+                self.calls += 1
+                return r
+
+        llm = LLM()
+        node = make_planner(
+            llm, AgentConfig(target="m"), agentic=False,
+            connectors=self._connectors(),
+        )
+        update = await node(make_state())
+        assert llm.calls == 2
+        assert "invalid" in llm.prompts[1]  # 修正提示携带具体错误
+        assert update["plan_json"] == {"tables": ["loan"], "answer_columns": ["amount"]}
+        assert update["plan_validation"]["status"] == "ok"
+
+    async def test_planner_prompt_includes_evidence(self):
+        """P0-1:planner 起草 answer_columns 时能看到官方 evidence。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["user"] = messages[1]["content"]
+                return "plan text"
+
+        from trove.workflow.nodes.planner import make_planner
+
+        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        await node(make_state(evidence="Answer should list district names", lang="en"))
+        assert "Answer should list district names" in captured["user"]
+        assert "official hint" in captured["user"]
+
+
 class TestValidateRulesNode:
     """确定性规则节点:失败时输出 validation_hits 供归因。"""
 
@@ -1675,3 +2061,45 @@ class TestValidateRulesNode:
         )
         update = await node(state)
         assert update == {}
+
+    async def test_answer_columns_conflict_feeds_back(self):
+        """P0-2 层2:结果列整体背离 plan 的 answer_columns → 打回(归因 planner)。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3)
+        state = make_state(
+            question="list account frequency",
+            sql="SELECT status, amount FROM loan",
+            columns=["status", "amount"],
+            rows=[["active", 1.0]], row_count=1, lang="en",
+            plan_json={"tables": ["loan"], "answer_columns": ["account_id", "frequency"]},
+        )
+        update = await node(state)
+        assert update["error_feedback"] and "answer_columns" in update["error_feedback"]
+        assert update["validation_hits"][0]["rule"] == "answer-columns"
+        assert update["retry_count"] == 1
+
+    async def test_answer_columns_partial_match_passes(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3)
+        state = make_state(
+            question="list account frequency",
+            sql="SELECT account_id, frequency FROM loan",
+            columns=["account_id", "frequency"],
+            rows=[[1, "x"]], row_count=1, lang="en",
+            plan_json={"tables": ["loan"], "answer_columns": ["account_id", "frequency"]},
+        )
+        assert await node(state) == {}
+
+    async def test_answer_columns_no_plan_skips(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3)
+        state = make_state(
+            question="average loan amount",
+            sql="SELECT AVG(amount) FROM loan",
+            columns=["avg"], rows=[[123.4]], row_count=1, lang="en",
+            plan_json=None,
+        )
+        assert await node(state) == {}

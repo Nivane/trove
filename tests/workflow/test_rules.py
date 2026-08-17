@@ -115,6 +115,49 @@ class TestValidate:
             ["count"], [[123.0]], 1,
         ) is None
 
+    def test_count_question_grouped_expansion_specific_diagnosis(self):
+        """count 题多行 + SQL 含 GROUP BY → 定点诊断(先于 count-shape 命中)。"""
+        reason, hits = verify(
+            "how many accounts", "SELECT district_id, COUNT(*) FROM account "
+            "GROUP BY district_id",
+            ["district_id", "count"], [["1", 3], ["2", 5]], 2, lang="en",
+        )
+        assert reason and "GROUP BY" in reason and "drop the GROUP BY" in reason
+        assert hits[0]["name"] == "count-multirow"
+
+    def test_count_question_detail_rows_with_limit(self):
+        """count 题多行 + LIMIT 且无 COUNT → 疑似忘了聚合。"""
+        reason = validate(
+            "how many accounts", "SELECT * FROM account LIMIT 5",
+            ["id", "name"], [["1", "a"], ["2", "b"]], 2, lang="en",
+        )
+        assert reason and "COUNT" in reason
+
+    def test_count_question_grouped_single_row_passes(self):
+        """GROUP BY 只产生一组(单行)不触发多行规则;count-shape 继续校验。"""
+        assert validate(
+            "how many accounts", "SELECT COUNT(*) FROM account GROUP BY district_id",
+            ["count"], [[3]], 1,
+        ) is None
+
+    def test_grouped_question_multi_rows_not_count_rule(self):
+        """「per district」是分组题:多行合法,不触发 count-multirow。"""
+        reason = validate(
+            "how many accounts per district", "SELECT district_id, COUNT(*) "
+            "FROM account GROUP BY district_id",
+            ["district_id", "count"], [["1", 3], ["2", 5]], 2, lang="en",
+        )
+        assert reason is None
+
+    def test_count_multirow_without_sql_evidence_falls_back_to_shape(self):
+        """多行但 SQL 无 GROUP BY/LIMIT 结构证据 → 落回 count-shape 通用提示。"""
+        reason, hits = verify(
+            "how many accounts", "SELECT name FROM account",
+            ["name"], [["a"], ["b"]], 2, lang="en",
+        )
+        assert reason and "single number" in reason
+        assert hits[0]["name"] == "count-shape"
+
     def test_list_question_zero_rows_fails(self):
         reason = validate(
             "list all withdrawals", "SELECT * FROM trans WHERE 1=0",

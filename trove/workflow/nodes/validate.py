@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.i18n import L
+from trove.workflow.nodes.planner import answer_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState
 
@@ -40,21 +41,46 @@ def make_validate_rules(
             state.question, state.sql, state.columns, state.rows, state.row_count,
             lang=state.lang,
         )
-        if reason is None:
-            return {}
+        if reason is not None:
+            if state.retry_count >= max_retries:
+                return {"error": reason}
+            feedback = L(
+                state.lang,
+                f"校验规则: {reason}",
+                f"Validation rule: {reason}",
+            )
+            return {
+                "error_feedback": feedback,
+                "retry_count": state.retry_count + 1,
+                "correction_history": [feedback],
+                "validation_hits": hits,
+            }
 
-        if state.retry_count >= max_retries:
-            return {"error": reason}
-        feedback = L(
-            state.lang,
-            f"校验规则: {reason}",
-            f"Validation rule: {reason}",
-        )
-        return {
-            "error_feedback": feedback,
-            "retry_count": state.retry_count + 1,
-            "correction_history": [feedback],
-            "validation_hits": hits,
-        }
+        # 层2:answer_columns 与执行结果列的一致性检查(plan 的钦点列必须
+        # 能在结果里看到;全部缺失才是冲突——别名/表达式会制造单列噪音,
+        # 全缺才是 SELECT 列表整体背离计划的强信号)。走 analyze_error
+        # 通道,反馈文本把归因指向 planner 的 answer_columns。
+        ac_errors = answer_columns_mismatch(state.plan_json, state.columns)
+        if ac_errors:
+            if state.retry_count >= max_retries:
+                return {"error": "; ".join(ac_errors)}
+            feedback = L(
+                state.lang,
+                f"计划校验: {'; '.join(ac_errors)}。"
+                "查询计划的 answer_columns 与执行结果列不符——重新规划并修正输出列。",
+                f"Plan check: {'; '.join(ac_errors)}. "
+                "The query plan's answer_columns do not match the executed "
+                "result columns — re-plan and fix the answer columns.",
+            )
+            return {
+                "error_feedback": feedback,
+                "retry_count": state.retry_count + 1,
+                "correction_history": [feedback],
+                "validation_hits": [{
+                    "rule": "answer-columns",
+                    "reason": "; ".join(ac_errors),
+                }],
+            }
+        return {}
 
     return validate

@@ -144,7 +144,10 @@ def lint_tables(tables: list[dict[str, Any]]) -> list[str]:
     return issues
 
 
-_STATS_KEYS = {"null_ratio", "distinct", "min", "max", "min_len", "max_len", "shape"}
+_STATS_KEYS = {
+    "null_ratio", "distinct", "min", "max", "min_len", "max_len", "shape",
+    "top_values", "sample",
+}
 _SHAPES = {"numeric", "json", "composite", "all_caps", "capital", "text"}
 
 
@@ -179,6 +182,27 @@ def lint_stats(tables: list[dict[str, Any]]) -> list[str]:
             shape = st.get("shape")
             if shape is not None and shape not in _SHAPES:
                 issues.append(f"表 {table_name} 列 {col_name} shape 未知: {shape}")
+            tv = st.get("top_values")
+            if tv is not None:
+                if (
+                    not isinstance(tv, list)
+                    or not tv
+                    or any(
+                        not isinstance(p, list) or len(p) != 2 or not isinstance(p[1], int)
+                        for p in tv
+                    )
+                ):
+                    issues.append(
+                        f"表 {table_name} 列 {col_name} top_values 非法"
+                        "(应为 [[值, 频次], ...])")
+            sample = st.get("sample")
+            if sample is not None and (
+                not isinstance(sample, list) or not sample
+                or any(v is None for v in sample)
+            ):
+                issues.append(
+                    f"表 {table_name} 列 {col_name} sample 非法"
+                    "(应为非空取值列表)")
     return issues
 
 

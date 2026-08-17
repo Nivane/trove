@@ -75,12 +75,15 @@ def schema_text(tables, samples: dict | None = None, stats: dict | None = None) 
             desc = str(c.get("description", "") or "").strip()
             if desc:
                 line += f" — {desc}"
+            # probe_stats 返回 {table: {row_count, columns: {col: stats}}}
+            col_stats = stats.get(table["name"], {}).get("columns", {}).get(c["name"])
             values = samples.get(table["name"], {}).get(c["name"], "")
+            # 枚举探测只覆盖低基数;高基数列回退到 profiling 的 sample 探测
+            if not values and col_stats and col_stats.get("sample"):
+                values = "; ".join(str(v) for v in col_stats["sample"])
             if values:
                 shown = "; ".join(values.split("; ")[:3])
                 line += f" [{shown}]"
-            # probe_stats 返回 {table: {row_count, columns: {col: stats}}}
-            col_stats = stats.get(table["name"], {}).get("columns", {}).get(c["name"])
             line += stats_suffix(col_stats)
             cols.append(line)
         rows = stats.get(table["name"], {}).get("row_count")

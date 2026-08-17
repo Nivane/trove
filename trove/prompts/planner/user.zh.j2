@@ -2,7 +2,10 @@ Question: {{ question }}
 
 Schema context:
 {{ schema_context }}
-{% if time_context %}
+{% if evidence %}
+Evidence（本题官方提示——权威，必须遵循）:
+{{ evidence }}
+{% endif %}{% if time_context %}
 Resolved time range: {{ time_context }}
 {% endif %}{% if history %}
 Conversation history:

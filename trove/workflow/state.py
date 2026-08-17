@@ -48,6 +48,14 @@ class WorkflowState(BaseModel):
     # LLM query plan (planner node) injected into SQL generation
     plan: str = ""
 
+    # 结构化计划(planner 原始 JSON):answer_columns 双层验证的输入——
+    # 层1 校验计划引用的表/列存在性,层2 执行后校验结果列一致性
+    plan_json: dict[str, Any] | None = None
+
+    # 计划校验观测(planner/validate 写入):status ok/dropped + errors,
+    # 供 eval 归因「plan 层拦了什么」
+    plan_validation: dict[str, Any] = Field(default_factory=dict)
+
     # Multi-candidate agreement; False = candidates disagreed and the
     # answer is delivered with a low-confidence note
     consensus: bool = True

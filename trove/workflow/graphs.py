@@ -119,6 +119,23 @@ class GraphServices:
     kb: KbService | None = None  # optional knowledge base enhancement
 
 
+def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
+    """按候选索引轮换 few-shot 首条目(候选多样性:示例锚点各异)。
+
+    各候选温度固定之外,轮换参考示例的出场顺序——模型通常以第一个
+    示例为模式锚点,轮换 = 不同候选采纳不同示例的口径/风格,投票才有
+    真正的分歧可统计(所有候选共享同一组示例会趋同)。少于此两条示例
+    或未注入(few_shots 为 None)时原样返回。
+    """
+    shots = sub_state.few_shots or []
+    if len(shots) < 2:
+        return sub_state
+    off = offset % len(shots)
+    return sub_state.model_copy(update={
+        "few_shots": shots[off:] + shots[:off],
+    })
+
+
 # ── gen_sql subgraph ─────────────────────────────────────
 
 
@@ -413,9 +430,15 @@ def _make_gen_sql_node(
             seen.update(" ".join(c.split()).lower() for c in state.candidates)
             candidates = list(state.candidates)
             # 并行生成:各温度子图互不依赖,asyncio.gather 把候选生成时间
-            # 从 N×串行压到单次耗时(容错:异常子图静默跳过)
+            # 从 N×串行压到单次耗时(容错:异常子图静默跳过)。
+            # P2-7:每个备选按索引轮换 few-shot 首条目——不同候选锚定
+            # 不同参考示例,避免共享同一组示例导致候选趋同。
             outs = await asyncio.gather(
-                *(g.ainvoke(sub_state.model_copy(deep=True)) for g in alt_graphs),
+                *(
+                    g.ainvoke(_rotate_few_shots(
+                        sub_state.model_copy(deep=True), idx + 1))
+                    for idx, g in enumerate(alt_graphs)
+                ),
                 return_exceptions=True,
             )
             for out_alt in outs:

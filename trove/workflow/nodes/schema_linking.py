@@ -78,6 +78,11 @@ def _stats_lines(stats: dict[str, dict[str, Any]]) -> list[str]:
             bits.append(f"range {st['min']} .. {st['max']}")
         if bits:
             lines.append(f"- {col_name}: " + ", ".join(bits))
+        # Top-K 值(低基数文本列):规范拼写/脏值就藏在这里,直接可见
+        tv = st.get("top_values")
+        if tv:
+            shown = ", ".join(f"{v} ({c})" for v, c in tv[:5])
+            lines.append(f"- {col_name}: top values: {shown}")
     return lines
 
 
@@ -225,16 +230,93 @@ def _join_hints(
     return hints
 
 
+_HINT_RE = re.compile(r"^(\S+)\.(\S+) → (\S+)\.(\S+)$")
+JOIN_PROBE_SAMPLE = 10   # 每个 hint 的采样值数
+JOIN_MIN_MATCH = 2       # 命中数下限(命名约定可能是错的,数据证据兜底)
+
+
+def _hint_tables(hint: str) -> tuple[str, str] | None:
+    """hint 字符串 → (源表, 目标表);无法解析返回 None。"""
+    m = _HINT_RE.match(hint)
+    return (m.group(1), m.group(3)) if m else None
+
+
+async def _verified_hints(
+    connectors: ConnectorRegistry | None, hints: list[str],
+) -> dict[str, str]:
+    """数据级验证 join hints(采样值重叠探测,零 LLM)。
+
+    对每个 hint(a.x → b.y):采样 a.x 前 10 个非 NULL 值,统计 b.y 命中数。
+    命中 ≥2 才发布;部分命中附重叠比率("a.x → b.y (7/10 match)")。
+    探测失败/超时 → 丢弃该 hint(静默,护栏同 value 探测)。
+    connectors 不可用 → 原样返回(无法验证不阻塞)。
+
+    Returns:
+        原始 hint → 发布文本(可能带重叠后缀;未通过验证的 hint 不在映射里)。
+    """
+    if connectors is None or not hints:
+        return {h: h for h in hints}
+    try:
+        adapter = await connectors.get()
+        quote = "`" if adapter.dialect() == "mysql" else '"'
+    except Exception:
+        return {h: h for h in hints}
+
+    async def verify(hint: str) -> tuple[str, str] | None:
+        m = _HINT_RE.match(hint)
+        if not m:
+            return (hint, hint)
+        src_t, src_c, dst_t, dst_c = m.groups()
+        sample_sql = (
+            f"SELECT {quote}{src_c}{quote} FROM {quote}{src_t}{quote} "
+            f"WHERE {quote}{src_c}{quote} IS NOT NULL LIMIT {JOIN_PROBE_SAMPLE}"
+        )
+        try:
+            res = await asyncio.wait_for(connectors.execute(sample_sql), timeout=5.0)
+        except Exception:
+            return None
+        values = [r[0] for r in (res.rows or []) if r and r[0] is not None]
+        if not values:
+            return None
+        in_list = ", ".join(f"'{str(v).replace(chr(39), chr(39) * 2)}'" for v in values)
+        count_sql = (
+            f"SELECT COUNT(*) FROM {quote}{dst_t}{quote} "
+            f"WHERE {quote}{dst_c}{quote} IN ({in_list})"
+        )
+        try:
+            res = await asyncio.wait_for(connectors.execute(count_sql), timeout=5.0)
+        except Exception:
+            return None
+        hits = int(res.rows[0][0]) if res.rows and res.rows[0] else 0
+        # 命中 ≥2 才发布;小表(采样不足 2 行)时全部命中视为通过。
+        if hits < JOIN_MIN_MATCH and hits < len(values):
+            return None
+        published = f"{hint} ({hits}/{len(values)} match)" if hits < len(values) else hint
+        return (hint, published)
+
+    results = await asyncio.gather(*[verify(h) for h in hints])
+    mapping: dict[str, str] = {}
+    for item in results:
+        if item is None:
+            continue
+        orig, published = item
+        mapping[orig] = published
+    return mapping
+
+
 # ── LLM 对齐裁剪(AskData Task Alignment)──────────────────
 
 
 def _alignment_context(
     details: list[dict[str, Any]], notes: dict[str, TableNotes] | None,
+    hints_by_table: dict[str, list[str]] | None = None,
 ) -> str:
-    """候选表的紧凑对齐上下文:行数 + 每列类型与统计证据。
+    """候选表的紧凑对齐上下文:行数 + join hints + 每列类型与统计证据。
 
     无 stats 的表退化为 "col (type)" 清单——对齐仍可基于列名与类型判断;
     统计存在时给出 null 比例/基数/形状/范围,供 LLM 判断列的可用性。
+    Top-K 值(低基数列的规范拼写)与已数据级验证的 join hints 也进上下文:
+    前者让对齐看到列的实际内容,后者提醒它别裁掉连接路径两端的表。
     """
     lines = []
     for detail in details:
@@ -250,6 +332,9 @@ def _alignment_context(
         if row_count:
             header += f" ({row_count} rows)"
         lines.append(header)
+        hints = (hints_by_table or {}).get(name) or []
+        if hints:
+            lines.append("Join hints: " + ", ".join(hints))
         for col in detail["columns"]:
             cname = col["name"]
             bits = []
@@ -268,6 +353,10 @@ def _alignment_context(
             if bits:
                 line += ": " + ", ".join(bits)
             lines.append(line)
+            tv = st.get("top_values")
+            if tv:
+                shown = ", ".join(f"{v} ({c})" for v, c in tv[:5])
+                lines.append(f"    top values: {shown}")
     return "\n".join(lines)
 
 
@@ -323,6 +412,7 @@ def _apply_alignment(
 async def _align_tables(
     llm: Any, config: Any, state: WorkflowState,
     details: list[dict[str, Any]], notes: dict[str, TableNotes] | None,
+    hints_by_table: dict[str, list[str]] | None = None,
 ) -> dict[str, Any] | None:
     """LLM 对齐调用:问题 + 候选表统计摘要 → {keep_tables, drop_columns}。
 
@@ -341,7 +431,9 @@ async def _align_tables(
                     "schema_alignment/user",
                     lang=state.lang,
                     question=state.question,
-                    alignment_context=_alignment_context(details, notes),
+                    evidence=state.evidence,
+                    alignment_context=_alignment_context(
+                        details, notes, hints_by_table),
                 )},
             ],
             max_tokens=400,
@@ -514,13 +606,33 @@ def make_schema_linking(
             # 上一轮匹配表强制保留(诊断钦点的表不允许被对齐丢弃)。
             # 无统计证据(未 kb init / 旧 KB)时跳过——没有 profiling 数据
             # 对齐就没有额外信号,不值得多一次 LLM 调用。
+            table_columns = {
+                d["name"]: [c["name"] for c in d["columns"]] for d in details
+            }
+
+            # P0-3:join hints 数据级验证——命名约定推断的 hint 用采样值
+            # 重叠探测过滤,只把真实可连接的关联发布。先于对齐计算:
+            # 已验证的连接路径同时进入对齐上下文(对齐因此能看出
+            # 裁表会切断关联,不会把连接路径两端的表裁掉)。
+            hints_by_table = {
+                name: _join_hints(name, table_columns[name], table_columns)
+                for name in table_columns
+            }
+            all_hints = [h for hs in hints_by_table.values() for h in hs]
+            verified_map = await _verified_hints(connectors, all_hints)
+            verified_hints_by_table = {
+                t: [verified_map[h] for h in hs if h in verified_map]
+                for t, hs in hints_by_table.items()
+            }
+
             drop_columns: dict[str, set[str]] = {}
             has_stats_evidence = any(
                 notes.get(d["name"]).stats if notes.get(d["name"]) else None
                 for d in details
             )
             if llm is not None and details and has_stats_evidence:
-                aligned = await _align_tables(llm, config, state, details, notes)
+                aligned = await _align_tables(
+                    llm, config, state, details, notes, verified_hints_by_table)
                 if aligned:
                     must_keep = state.matched_tables if (
                         state.error_feedback or state.error_analysis or state.retry_count
@@ -537,8 +649,17 @@ def make_schema_linking(
                             details_by_name[name] for name in matched_names
                             if name in details_by_name
                         ]
-
-            table_columns = {d["name"]: [c["name"] for c in d["columns"]] for d in details}
+                    # 对齐裁掉了某些表后,连接路径两端的表必须都在保留集里,
+                    # 否则 hint 引用了已裁表,发布给 gen_sql 会误导
+                    kept = {d["name"] for d in details}
+                    verified_hints_by_table = {
+                        t: [
+                            h for h in hs
+                            if (ends := _hint_tables(h))
+                            and ends[0] in kept and ends[1] in kept
+                        ]
+                        for t, hs in verified_hints_by_table.items()
+                    }
 
             schema_parts = []
             for detail in details:
@@ -554,9 +675,7 @@ def make_schema_linking(
                     f"Columns: {cols}\n"
                     f"Approximate rows: {detail.get('row_count', 'unknown')}\n",
                 ]
-                hints = _join_hints(
-                    name, [c["name"] for c in detail["columns"]], table_columns,
-                )
+                hints = verified_hints_by_table.get(name) or []
                 if hints:
                     parts.append("Join hints: " + ", ".join(hints) + "\n")
                 if table_notes and table_notes.description:

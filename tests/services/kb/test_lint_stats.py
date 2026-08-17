@@ -51,3 +51,33 @@ def test_stats_not_a_dict():
 
 def test_missing_stats_section_ok():
     assert lint_stats([{"name": "t"}]) == []
+
+
+def test_top_values_valid_format_passes():
+    tables = [{"name": "t", "stats": {"c": {
+        "top_values": [["POPLATEK TYDNE", 6456], ["POPLATEK MESICNE", 300]],
+    }}}]
+    assert lint_stats(tables) == []
+
+
+def test_top_values_malformed_flagged():
+    tables = [{"name": "t", "stats": {"c": {"top_values": [["a"]]}}}]
+    assert any("top_values 非法" in i for i in lint_stats(tables))
+    tables = [{"name": "t", "stats": {"c": {"top_values": [["a", "many"]]}}}]
+    assert any("top_values 非法" in i for i in lint_stats(tables))
+    tables = [{"name": "t", "stats": {"c": {"top_values": []}}}]
+    assert any("top_values 非法" in i for i in lint_stats(tables))
+
+
+def test_sample_valid_format_passes():
+    tables = [{"name": "t", "stats": {"c": {"sample": ["2023-01-05", "x"]}}}]
+    assert lint_stats(tables) == []
+
+
+def test_sample_malformed_flagged():
+    tables = [{"name": "t", "stats": {"c": {"sample": []}}}]
+    assert any("sample 非法" in i for i in lint_stats(tables))
+    tables = [{"name": "t", "stats": {"c": {"sample": [None]}}}]
+    assert any("sample 非法" in i for i in lint_stats(tables))
+    tables = [{"name": "t", "stats": {"c": {"sample": "abc"}}}]
+    assert any("sample 非法" in i for i in lint_stats(tables))
