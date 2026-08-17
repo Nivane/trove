@@ -26,6 +26,7 @@ from trove.workflow.versions import (
     extract_rule_hits,
     record_version,
     regression_report,
+    regression_state,
     result_sig,
 )
 
@@ -33,6 +34,32 @@ logger = get_logger(__name__)
 
 ROLLBACK_TARGET_RE = re.compile(r"TARGET\s*[:：]\s*(\w+)", re.I)
 DEFAULT_ROLLBACK_LADDER = ("gen_sql", "planner", "schema_linking")
+
+# 语义级规则族:过滤条件缺失/错误是「问题意图没被理解」→ revisor
+# （其余规则族 F1 形状 / F3 值域 / F4 排序都是实现形态 → fixer）
+REVISOR_RULE_GROUPS = {"F2"}
+# 投票平局文本:候选解释不一致 → 语义重估
+_REVISOR_TEXTS = ("differ", "disagree", "不一致", "分歧")
+
+# 连续无进展轮数上限:达到后停止迭代打回（省预算 + 明确降级信号）
+MAX_NO_PROGRESS_ROUNDS = 3
+
+
+def classify_fix_mode(error_text: str, issues: list[str]) -> str:
+    """失败 → 修复模式: fixer（实现级定点修）| revisor（语义重写）。
+
+    确定性判定,零额外 LLM 输出（修复模式与诊断文本同时可得）:
+      1. 规则命中（issues）优先: F2 族（过滤）→ revisor,其余 → fixer
+      2. 无规则命中: 投票平局文本 → revisor;其余（执行/语法错误等）→ fixer
+      3. 默认 fixer: 未知失败先做最小实现级修复,回归检查负责纠偏
+    """
+    if issues:
+        groups = {i.split("-", 1)[0] for i in issues}
+        return "revisor" if groups & REVISOR_RULE_GROUPS else "fixer"
+    low = (error_text or "").lower()
+    if any(k in low for k in _REVISOR_TEXTS):
+        return "revisor"
+    return "fixer"
 
 
 def _fallback_analysis(error_text: str, lang: str) -> str:
@@ -231,10 +258,33 @@ def make_analyze_error(
                         f"回退目标 {parsed or 'gen_sql'} 连续失败且无档可升，优雅降级"
                     ),
                 }
+            # 缺口3: 修复模式判定（fixer 实现级 vs revisor 语义级),注入重生成方
+            fix_mode = classify_fix_mode(error_text, issues)
+            # 缺口5: 修复进展量化 —— regression_state 标签 + 无进展轮计数
+            progress = regression_state(prev, result_sig(state.rows), issues)
+            no_progress = (
+                0 if progress in ("first", "improved")
+                else state.no_progress_rounds + 1
+            )
+            if no_progress >= MAX_NO_PROGRESS_ROUNDS:
+                # 连续无进展:打回重生成已无意义(结果未变/问题维度未变),
+                # 提前停止迭代省预算,输出方走优雅降级路径。诊断数据仍随行,
+                # 供日志归因「为什么停止迭代」。
+                return {
+                    "error": (
+                        f"连续 {MAX_NO_PROGRESS_ROUNDS} 轮修复无进展"
+                        f"({progress}),停止迭代,优雅降级"
+                    ),
+                    "last_progress": progress,
+                    "no_progress_rounds": no_progress,
+                }
             return {
                 "error_analysis": analysis,
                 "rollback_target": target,
                 "last_rollback_target": target,
+                "fix_mode": fix_mode,
+                "last_progress": progress,
+                "no_progress_rounds": no_progress,
                 "rejected_hypotheses": record_rejected_hypothesis(
                     state.rejected_hypotheses, state.sql, error_text,
                 ),

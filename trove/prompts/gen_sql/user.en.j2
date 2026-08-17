@@ -38,6 +38,10 @@ Question:
 Note: a previous version of this query was rejected with: {{ reflect_reason }}. Please correct it.
 {% endif %}{% if error_feedback %}
 Note: the previous query failed during execution with: {{ error_feedback }}. Please correct the SQL.
+{% endif %}{% if fix_mode == "fixer" %}
+Fix mode: implementation-level repair — keep the semantic interpretation unchanged; fix only the implementation (tables, columns, joins, syntax).
+{% elif fix_mode == "revisor" %}
+Fix mode: semantic rework — the interpretation itself may be wrong; re-evaluate the question's intent and rewrite the query if needed.
 {% endif %}{% if previous_sql %}
 Previous SQL (your last attempt — fix it with minimal changes, do not rewrite from scratch):
 {{ previous_sql }}

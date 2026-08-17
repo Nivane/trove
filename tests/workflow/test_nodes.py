@@ -523,6 +523,21 @@ class TestSQLHelpers:
     def test_build_sql_prompt_without_versions_has_no_section(self):
         assert "Failed SQL versions" not in build_sql_prompt("q", "schema", "sqlite")
 
+    def test_build_sql_prompt_renders_fixer_mode(self):
+        """Fixer 模式:显式指令「保持语义解释不变,只修实现」。"""
+        prompt = build_sql_prompt("q", "schema", "sqlite", fix_mode="fixer")
+        assert "implementation-level repair" in prompt
+        assert "keep the semantic interpretation unchanged" in prompt
+
+    def test_build_sql_prompt_renders_revisor_mode(self):
+        """Revisor 模式:显式指令「语义解释本身可能错,重新评估意图」。"""
+        prompt = build_sql_prompt("q", "schema", "sqlite", fix_mode="revisor")
+        assert "semantic rework" in prompt
+        assert "re-evaluate the question's intent" in prompt
+
+    def test_build_sql_prompt_without_fix_mode_has_no_section(self):
+        assert "Fix mode" not in build_sql_prompt("q", "schema", "sqlite")
+
     def test_build_sql_prompt_includes_history(self):
         history = "user: 平均成绩是多少\nassistant: 平均成绩是 85 分"
         prompt = build_sql_prompt("q", "schema", "sqlite", history=history)

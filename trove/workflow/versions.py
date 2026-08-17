@@ -48,6 +48,34 @@ def record_version(
     }]
 
 
+def regression_state(
+    prev: dict[str, Any] | None,
+    cur_sig: str,
+    cur_issues: list[str],
+) -> str:
+    """修复进展量化标签（确定性,置信度信号的数据源）。
+
+    五态判定（按优先级）:
+      - first:    无上一版基线（首轮失败）
+      - invalid:  结果签名相同 → 大概率复制了旧错误（最硬信号）
+      - none:     签名不同但规则命中有交集 → 问题维度未变
+      - shift:    签名不同且规则命中集合变化 → 修 A 引入 B
+      - improved: 签名变化且无交集无新增 → 有进展
+    无规则命中的失败（执行错误/投票平局）只做签名对比。
+    """
+    if prev is None:
+        return "first"
+    if prev.get("sig") == cur_sig:
+        return "invalid"
+    prev_rules = set(prev.get("issues") or [])
+    cur_rules = set(cur_issues)
+    if prev_rules & cur_rules:
+        return "none"
+    if cur_rules - prev_rules:
+        return "shift"
+    return "improved"
+
+
 def regression_report(
     prev: dict[str, Any] | None,
     cur_sig: str,
@@ -55,32 +83,29 @@ def regression_report(
 ) -> str | None:
     """对比当前失败与上一版,返回回归报告（None = 有进展,无需额外反馈）。
 
-    三态判定（确定性,按优先级）:
-      1. 无效修复: 结果签名相同 → 大概率复制了旧错误（最硬信号）
-      2. 无进展:   签名不同但规则命中有交集 → 问题维度未变
-      3. 问题转移: 签名不同且规则命中集合变化 → 修 A 引入 B
-    无规则命中的失败（执行错误/投票平局）只做签名对比。
+    三态判定由 regression_state 给出,这里只负责把它翻译成给 LLM 的
+    确定性反馈文本（无效修复 / 无进展 / 问题转移）。
     """
-    if prev is None:
+    state = regression_state(prev, cur_sig, cur_issues)
+    if state in ("first", "improved"):
         return None
-    if prev.get("sig") == cur_sig:
+    if state == "invalid":
         return (
             f"Invalid fix: the result set is identical to Round {prev['round']} "
             f"(the fix likely reproduced the same mistake — do not repeat it)."
         )
     prev_rules = set(prev.get("issues") or [])
     cur_rules = set(cur_issues)
-    common = prev_rules & cur_rules
-    if common:
+    if state == "none":
+        common = prev_rules & cur_rules
         new = cur_rules - prev_rules
         parts = [f"no progress: still violating {', '.join(sorted(common))}"]
         if new:
             parts.append(f"new violations: {', '.join(sorted(new))}")
         return f"Round {prev['round']} → now: " + "; ".join(parts) + "."
-    if cur_rules - prev_rules:
-        return (
-            f"problem shift: Round {prev['round']} violated "
-            f"{', '.join(sorted(prev_rules)) or 'another dimension'}, "
-            f"now additionally violating {', '.join(sorted(cur_rules - prev_rules))}."
-        )
-    return None
+    # state == "shift"
+    return (
+        f"problem shift: Round {prev['round']} violated "
+        f"{', '.join(sorted(prev_rules)) or 'another dimension'}, "
+        f"now additionally violating {', '.join(sorted(cur_rules - prev_rules))}."
+    )

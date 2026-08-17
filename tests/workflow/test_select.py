@@ -309,3 +309,34 @@ class TestVoteSelection:
         update = await node(self._state(candidates=["SELECT boom", "SELECT ok"]))
         assert update == {}
         assert connectors.executed == ["SELECT boom", "SELECT ok"]
+
+
+class TestConfidence:
+    """缺口5: 候选投票分布 → 置信度信号（票王得票率,注入 selection 供观测）。"""
+
+    async def test_majority_confidence_is_winner_share(self):
+        """多数派 2 票 + primary 独票 → 置信度 2/3。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),  # A
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),  # B
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(make_state(
+            sql="SELECT id FROM t", rows=[[1], [2]], row_count=2,
+            candidates=["SELECT A", "SELECT B"],
+        ))
+        assert update["consensus"] is True
+        assert update["selection"]["adopted"] is True
+        assert update["selection"]["confidence"] == pytest.approx(2 / 3)
+
+    async def test_budget_exhausted_confidence_marks_low(self):
+        """预算耗尽降级交付 primary → 仍带置信度(票王占比),供输出方观测。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),
+        ])
+        node = make_select_consensus(connectors)
+        update = await node(make_state(
+            sql="SELECT v FROM t", rows=[[1], [2]], row_count=2,
+            candidates=["SELECT v FROM t WHERE 0"], retry_count=10,
+        ))
+        assert update["selection"]["confidence"] == pytest.approx(1 / 2)

@@ -3,7 +3,7 @@
 import pytest
 
 from trove.core.config import AgentConfig
-from trove.workflow.nodes.analyze_error import make_analyze_error
+from trove.workflow.nodes.analyze_error import classify_fix_mode, make_analyze_error
 from trove.workflow.state import WorkflowState
 
 
@@ -284,3 +284,124 @@ class TestRollbackDecision:
         ))
         assert "wrong grouping" in captured["prompt"]
         assert update["rollback_target"] == "gen_sql"
+
+
+class TestFixMode:
+    """失败 → 修复模式: fixer(实现级定点修) vs revisor(语义重写)。"""
+
+    def test_filter_rule_means_revisor(self):
+        """F2 族(过滤条件缺失/错误)是问题意图级 → 语义重写。"""
+        assert classify_fix_mode("Validation rule [F2-a]: missing gender filter", ["F2-a"]) == "revisor"
+
+    def test_shape_value_order_rules_mean_fixer(self):
+        """F1(形状)/F3(值域)/F4(排序)是实现形态级 → 定点修。"""
+        assert classify_fix_mode("rule [F1-b]", ["F1-b"]) == "fixer"
+        assert classify_fix_mode("rule [F3-a]", ["F3-a"]) == "fixer"
+        assert classify_fix_mode("rule [F4-b]", ["F4-b"]) == "fixer"
+
+    def test_execution_error_means_fixer(self):
+        """执行/语法错误(表不存在/未知列/1064) → 实现级。"""
+        assert classify_fix_mode("no such table: loans", []) == "fixer"
+        assert classify_fix_mode("MySQL error: (1064, syntax error)", []) == "fixer"
+        assert classify_fix_mode("Unknown column 'x'", []) == "fixer"
+
+    def test_vote_disagreement_means_revisor(self):
+        """投票平局:候选解释不一致 → 语义重估。"""
+        assert classify_fix_mode("Candidate SQL variants returned different results", []) == "revisor"
+        assert classify_fix_mode("候选 SQL 结果不一致", []) == "revisor"
+
+    def test_unknown_text_defaults_to_fixer(self):
+        """未知失败文本默认保守: 先做最小实现级修复。"""
+        assert classify_fix_mode("something unexpected happened", []) == "fixer"
+
+    async def test_update_carries_fix_mode(self):
+        """analyze_error 把判定出的修复模式传给重生成方。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT * FROM loans",
+            error_feedback="no such table: loans",
+        ))
+        assert update["fix_mode"] == "fixer"
+
+
+class TestProgressTracking:
+    """缺口5: 修复进展量化 —— regression_state 标签 + no_progress 计数 + 提前止损。"""
+
+    @staticmethod
+    def _node():
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "TARGET: gen_sql"
+        return make_analyze_error(LLM(), AgentConfig(target="m"))
+
+    async def test_first_round_does_not_count(self):
+        """首轮失败(无基线) → progress=first, 不计数。"""
+        update = await self._node()(make_state(error_feedback="boom"))
+        assert update["last_progress"] == "first"
+        assert update["no_progress_rounds"] == 0
+
+    async def test_invalid_fix_increments_no_progress(self):
+        """结果签名相同 → invalid, 无进展轮 +1。"""
+        from trove.workflow.versions import result_sig
+
+        rows = [["a"]]
+        update = await self._node()(make_state(
+            sql="SELECT 1", rows=rows,
+            error_feedback="Validation rule [F1-b]: wide columns",
+            sql_versions=[{
+                "sql": "SELECT 2", "sig": result_sig(rows),
+                "issues": ["F1-b"], "round": 1,
+            }],
+        ))
+        assert update["last_progress"] == "invalid"
+        assert update["no_progress_rounds"] == 1
+
+    async def test_no_progress_carries_previous_rounds(self):
+        """无进展计数跨轮累积(operator.add 语义), 由 analyze_error 自身维护。"""
+        from trove.workflow.versions import result_sig
+
+        rows = [["a"]]
+        update = await self._node()(make_state(
+            sql="SELECT 1", rows=rows,
+            error_feedback="Validation rule [F1-b]: wide columns",
+            no_progress_rounds=2,
+            sql_versions=[{
+                "sql": "SELECT 2", "sig": result_sig(rows),
+                "issues": ["F1-b"], "round": 1,
+            }],
+        ))
+        assert update["no_progress_rounds"] == 3
+
+    async def test_improved_resets_no_progress(self):
+        """有进展(签名变化且规则集变小) → 计数清零。"""
+        update = await self._node()(make_state(
+            sql="SELECT 1", rows=[["a"]],
+            error_feedback="boom", no_progress_rounds=2,
+            sql_versions=[{
+                "sql": "SELECT 2", "sig": "old-sig",
+                "issues": [], "round": 1,
+            }],
+        ))
+        assert update["last_progress"] == "improved"
+        assert update["no_progress_rounds"] == 0
+
+    async def test_three_stalled_rounds_degrades(self):
+        """连续 3 轮无进展 → 停止迭代打回,直接优雅降级(不再烧预算)。"""
+        from trove.workflow.versions import result_sig
+
+        rows = [["a"]]
+        update = await self._node()(make_state(
+            sql="SELECT 1", rows=rows,
+            error_feedback="Validation rule [F1-b]: wide columns",
+            no_progress_rounds=2,
+            sql_versions=[{
+                "sql": "SELECT 2", "sig": result_sig(rows),
+                "issues": ["F1-b"], "round": 1,
+            }],
+        ))
+        assert "error" in update
+        assert "无进展" in update["error"] or "progress" in update["error"].lower()

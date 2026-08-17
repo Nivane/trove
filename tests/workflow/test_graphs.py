@@ -1131,3 +1131,54 @@ class TestRouteIntentObservability:
         assert delta["llm"] is None
         assert delta["intent_evidence"]["llm_verdict"] is None
         assert "api down" in delta["intent_evidence"]["llm_error"]
+
+
+class TestFixModeWiring:
+    """缺口3: fix_mode 从 analyze_error 判定到重生成 prompt 的全链路。"""
+
+    async def test_execution_error_routes_to_fixer_mode(self, sqlite_registry, catalog):
+        """执行错误 → judge 判定 fixer → 重生成 prompt 显式要求实现级修复。"""
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "plan: v1",                                     # planner
+            "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass1（执行失败）
+            "TARGET: gen_sql",                              # judge → fixer
+            "```sql\nSELECT name FROM students;\n```",      # gen pass2 成功
+            "OK",                                           # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["fix_mode"] == "fixer"          # 判定结果落 state
+        assert final["last_progress"] == "first"     # 仅一轮 judge（首轮无基线）
+        # pass2 的 prompt 显式含 Fix mode 指令（实现级修复）
+        assert "Fix mode: implementation-level repair" in llm.calls[4][-1]["content"]
+
+    async def test_no_progress_degrades_before_ladder_exhausts(self, sqlite_registry, catalog):
+        """缺口5: 连续 3 轮无效修复(结果签名不变) → judge 提前止损,不再打回。
+
+        每轮换回退目标规避 ladder 升级干扰——证明止损来自 no_progress
+        计数而非防打转护栏。
+        """
+        bad = "```sql\nSELECT * FROM nonexistent;\n```"
+        llm = RecordingLLM([
+            "query",
+            "plan: v1",                         # planner
+            bad,                                # gen pass1 → 执行失败
+            "TARGET: gen_sql",                  # judge1: first, 计数 0
+            bad,                                # gen pass2（复制旧错误）
+            "TARGET: planner",                  # judge2: invalid, 计数 1
+            "plan: v2",                         # planner 重跑(回退目标)
+            bad,                                # gen pass3
+            "TARGET: schema_linking",           # judge3: invalid, 计数 2
+            "query",                            # schema_linking 重跑(LLM 判定)
+            bad,                                # gen pass4
+            "TARGET: gen_sql",                  # judge4: invalid, 计数 3 → 降级
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert "无进展" in final["error"]        # 优雅降级,不再打回
+        assert final["no_progress_rounds"] == 3
+        assert final["last_progress"] == "invalid"
+        assert "## Answer" in final["final_response"]
+        assert "Error" in final["final_response"]

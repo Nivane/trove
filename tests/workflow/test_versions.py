@@ -2,6 +2,7 @@
 
 from trove.workflow.versions import (
     regression_report,
+    regression_state,
     result_sig,
 )
 
@@ -65,3 +66,31 @@ class TestRegressionReport:
         assert report is not None
         assert "F1-a" in report
         assert "F1-b" in report  # 新增规则也提示（问题转移部分）
+
+
+class TestRegressionState:
+    """regression_state: 修复进展量化标签（置信度信号 + no_progress 计数的数据源）。"""
+
+    def test_no_previous_version_is_first(self):
+        assert regression_state(None, "sig", []) == "first"
+
+    def test_identical_signature_is_invalid(self):
+        prev = {"round": 1, "sig": "same", "issues": []}
+        assert regression_state(prev, "same", []) == "invalid"
+
+    def test_overlapping_rules_is_none(self):
+        prev = {"round": 1, "sig": "old", "issues": ["F1-b"]}
+        assert regression_state(prev, "new", ["F1-b", "F2-a"]) == "none"
+
+    def test_only_new_rules_is_shift(self):
+        prev = {"round": 1, "sig": "old", "issues": ["F1-b"]}
+        assert regression_state(prev, "new", ["F2-a"]) == "shift"
+
+    def test_no_overlap_no_new_is_improved(self):
+        prev = {"round": 1, "sig": "old", "issues": ["F1-b"]}
+        assert regression_state(prev, "new", []) == "improved"
+
+    def test_execution_error_signature_change_is_improved(self):
+        """无规则命中的失败(执行错误/投票)签名变化 → 在动,视为有进展。"""
+        prev = {"round": 1, "sig": "old", "issues": []}
+        assert regression_state(prev, "new", []) == "improved"

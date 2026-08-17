@@ -118,6 +118,10 @@ def make_select_consensus(
         if len(ranked) == 1:
             return {}  # 全员一致 — 高置信通过
 
+        # 缺口5: 置信度 = 票王得票率(确定性,零 LLM)。
+        # 全票 → 1.0;2:1 多数 → 2/3;平局 1:1:1 → 1/3 —— 降级/输出方观测用
+        confidence = max(votes.values()) / sum(votes.values())
+
         top_key, top_members = ranked[0]
         runner_up_size = len(ranked[1][1])
         if len(top_members) >= 2 and len(top_members) > runner_up_size:
@@ -132,7 +136,8 @@ def make_select_consensus(
                 "row_count": winner[1].row_count,
                 "consensus": True,
                 "selection": {"votes": votes, "adopted": True,
-                              "winner": "candidate", "filtered": filtered},
+                              "winner": "candidate", "filtered": filtered,
+                              "confidence": confidence},
             }
 
         # 平局(全单票或并列) → 打回重生成
@@ -143,7 +148,8 @@ def make_select_consensus(
                                                       "adopted": False,
                                                       "winner": "primary",
                                                       "filtered": filtered,
-                                                      "degraded": "budget-exhausted"}}
+                                                      "degraded": "budget-exhausted",
+                                                      "confidence": confidence}}
         if state.tie_rounds >= adopt_after_tie_rounds:
             # 自适应止损:平局 = 无唯一多数派(并列或全单票),没有"票王"可
             # 采纳——拉锯 N 轮仍无多数,继续打回收益递减,提前执行保守交付
@@ -152,7 +158,8 @@ def make_select_consensus(
                                                       "adopted": False,
                                                       "winner": "primary",
                                                       "filtered": filtered,
-                                                      "degraded": "repeated-tie"}}
+                                                      "degraded": "repeated-tie",
+                                                      "confidence": confidence}}
         others = []
         for _key, members in ranked:
             sql, qr = members[0]
@@ -185,7 +192,8 @@ def make_select_consensus(
             "correction_history": [feedback],
             "consensus": False,
             "selection": {"votes": votes, "adopted": False,
-                          "winner": "primary", "filtered": filtered},
+                          "winner": "primary", "filtered": filtered,
+                          "confidence": confidence},
         }
 
     return select

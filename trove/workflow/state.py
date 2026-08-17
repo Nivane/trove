@@ -133,6 +133,19 @@ class WorkflowState(BaseModel):
     # (adopt_after_tie_rounds)后采纳票王,不再烧完共享 retry 预算
     tie_rounds: int = 0
 
+    # 修复模式(analyze_error 判定,缺口3): fixer = 实现级定点修(保持语义
+    # 解释不变); revisor = 语义重写(重新评估问题意图)。注入重生成 prompt。
+    fix_mode: str = ""
+
+    # 修复进展量化(analyze_error 维护,缺口5): 最近一轮 regression_state
+    # 标签(first/invalid/none/shift/improved) + 连续无进展轮数计数。
+    # 计数达 MAX_NO_PROGRESS_ROUNDS → analyze_error 提前止损(不再打回)。
+    last_progress: str = ""
+    no_progress_rounds: int = 0
+
+    # select 置信度(票王得票率): 候选投票分布的确定性信号,供降级/输出观测
+    confidence: float = 0.0
+
     # SQL 版本链(analyze_error 记录,operator.add 累积):
     # [{"sql": 失败SQL全文, "sig": 结果集签名, "issues": [规则名], "round": N}]
     # 注入重生成 prompt 支撑定点修复;回归硬检查对比相邻版本
@@ -184,6 +197,9 @@ class GenSQLState(BaseModel):
     # 失败版本链(跨轮累积):[{"sql", "sig", "issues", "round"}] — 定点修复
     # 注入全部历史版本,回归检查对比相邻版本
     sql_versions: list[dict[str, Any]] = Field(default_factory=list)
+
+    # 修复模式(analyze_error 判定): fixer 实现级 / revisor 语义级,注入 prompt
+    fix_mode: str = ""
 
     # 交互语言(由外层 WorkflowState 注入)
     lang: str = "zh"

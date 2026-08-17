@@ -279,6 +279,9 @@ def _make_gen_sql_node(
             ),
             rejected_hypotheses=state.rejected_hypotheses,
             sql_versions=state.sql_versions,
+            # 缺口3:修复模式(analyze_error 判定)传入 sub_state,重生成
+            # prompt 显式区分 fixer(实现级定点修)vs revisor(语义重写)
+            fix_mode=state.fix_mode,
             # Fixer 模式:打回轮(state.sql 是上一版失败 SQL)注入全文,
             # 指示模型局部修复而非整体重写
             previous_sql=(
@@ -683,6 +686,7 @@ def _build_gen_prompt(sub_state: GenSQLState) -> str:
         rejected_hypotheses=sub_state.rejected_hypotheses or None,
         previous_sql=sub_state.previous_sql,
         sql_versions=sub_state.sql_versions or None,
+        fix_mode=sub_state.fix_mode,
         history=sub_state.history,
         plan=sub_state.plan,
         evidence=sub_state.evidence,
