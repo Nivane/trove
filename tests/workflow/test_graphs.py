@@ -1,5 +1,7 @@
 """LangGraph topology tests: subgraph retry loop, reflect loop, degradation."""
 
+import asyncio
+
 import pytest
 
 from trove.core.config import AgentConfig
@@ -878,6 +880,90 @@ examples:
         assert final["row_count"] == 5
         # 一致性失败理由进入了错误诊断 prompt
         assert "候选 SQL 结果不一致" in llm.calls[6][-1]["content"]
+        # 任务1: 第 2 轮生成的 prompt 注入第 1 轮失败假设黑名单(诊断后跨轮累积)
+        prompt2 = " ".join(m["content"] for m in llm.calls[7])
+        assert "Rejected hypotheses" in prompt2
+        assert "SELECT name FROM students" in prompt2  # 上一轮失败 SQL 摘要
+        # 任务2: Fixer 模式 — 注入上一版 SQL 全文,指示局部修复
+        assert "Previous SQL" in prompt2
+        assert "SELECT name FROM students;" in prompt2
+
+    async def test_candidates_accumulate_across_retries(self, sqlite_registry, catalog):
+        """任务3: 候选池跨轮累积 — 平局打回后旧候选保留,新候选加入,重试=加票。
+
+        三轮:pass1 4 备选结果互异(平局) → pass2 又 4 个新结果(仍平局,
+        旧候选与新候选同组加票) → pass3 主+4 备同结果形成 5 票多数放行。
+        最终候选池 = 旧 8 + 新 4 = 12(去重后),而非每轮覆盖成 4。
+        """
+        llm = RecordingLLM([
+            "query",                                                       # 意图
+            VALID_SQL,                                                   # p1 主（5行）
+            "```sql\nSELECT name FROM students WHERE 0;\n```",           # p1 备1（0行）
+            "```sql\nSELECT name FROM students LIMIT 1;\n```",           # p1 备2（1行）
+            "```sql\nSELECT name FROM students LIMIT 2;\n```",           # p1 备3（2行）
+            "```sql\nSELECT name FROM students LIMIT 3;\n```",           # p1 备4（3行）
+            "TARGET: gen_sql",                                           # p1 诊断
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",     # p2 主（5行）
+            "```sql\nSELECT name FROM students WHERE 1=0;\n```",         # p2 备1（0行→与旧备1同组）
+            "```sql\nSELECT name FROM students LIMIT 1 OFFSET 0;\n```",  # p2 备2（1行→与旧备2同组）
+            "```sql\nSELECT name FROM students LIMIT 2 OFFSET 0;\n```",  # p2 备3（2行→与旧备3同组）
+            "```sql\nSELECT name FROM students LIMIT 3 OFFSET 0;\n```",  # p2 备4（3行→与旧备4同组）
+            "TARGET: gen_sql",                                           # p2 诊断
+            "```sql\nSELECT name FROM students ORDER BY name ASC;\n```",  # p3 主（5行）
+            "```sql\nSELECT name FROM students ORDER BY name DESC;\n```",  # p3 备1（5行）
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",      # p3 备2（5行）
+            "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```",  # p3 备3（5行）
+            "```sql\nSELECT name FROM students ORDER BY name COLLATE NOCASE;\n```",  # p3 备4（5行）
+            "OK",                                                        # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        assert final["retry_count"] == 2
+        # 候选池跨轮累积:pass1 4 + pass2 4 + pass3 4(文本均不同) = 12
+        assert len(final["candidates"]) == 12
+        # 旧候选(平局轮的解释)仍留在池中参与投票
+        assert any("WHERE 0" in c for c in final["candidates"])
+        assert any("LIMIT 3" in c for c in final["candidates"])
+
+    async def test_alt_candidates_generate_in_parallel(self, sqlite_registry, catalog):
+        """任务4: 备选子图并行生成 — 并发活跃 LLM 调用数 > 1(串行恒为 1)。"""
+        class ConcurrencyLLM:
+            def __init__(self, responses):
+                self._responses = list(responses)
+                self.calls = []
+                self.active = 0
+                self.max_active = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                self.calls.append(messages)
+                await asyncio.sleep(0.005)  # 放大交错窗口
+                resp = self._responses.pop(0)
+                self.active -= 1
+                return resp
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self.calls.append(messages)
+                return {"content": self._responses.pop(0), "tool_calls": []}
+
+        llm = ConcurrencyLLM([
+            "query",                                                       # 意图
+            VALID_SQL,                                                   # 主候选
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",     # 备1
+            "```sql\nSELECT name FROM students ORDER BY name DESC;\n```",  # 备2
+            "```sql\nSELECT name FROM students ORDER BY name ASC;\n```",  # 备3
+            "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```",  # 备4
+            "OK",                                                        # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        assert len(final["candidates"]) == 4
+        assert llm.max_active >= 2  # 备选并发生成(串行时恒为 1)
 
 
 class TestNoSQLExit:

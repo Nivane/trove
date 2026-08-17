@@ -177,6 +177,67 @@ class TestVoteSelection:
         assert update["retry_count"] == 1
         assert update["consensus"] is False
 
+    async def test_repeated_ties_degrade_before_budget(self):
+        """任务4: 平局轮次达阈值 → 提前降级交付 primary,不再打回拉锯。
+
+        平局 = 无唯一多数派(并列或全单票)——此时没有"票王"可采纳,
+        止损动作 = 预算耗尽分支的保守交付 + degraded 标记。
+        """
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),  # A
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),  # B（与 A 并列 2:2）
+            QueryResult(columns=["v"], rows=[[2]], row_count=1),  # C
+            QueryResult(columns=["v"], rows=[[2]], row_count=1),  # D（与 C 并列 2:2）
+        ])
+        node = make_select_consensus(connectors, adopt_after_tie_rounds=3)
+        state = self._state(
+            rows=[[0]], row_count=1,  # primary 独票
+            candidates=["SELECT A", "SELECT B", "SELECT C", "SELECT D"],
+            tie_rounds=3,  # 已拉锯 3 轮
+        )
+        update = await node(state)
+        assert "error_feedback" not in update  # 不再打回
+        assert update["consensus"] is False    # 低置信交付
+        assert update["selection"]["adopted"] is False  # 保守保留 primary
+        assert update["selection"]["winner"] == "primary"
+        assert update["selection"]["degraded"] == "repeated-tie"
+
+    async def test_ties_below_threshold_still_feed_back(self):
+        """平局轮次未达阈值 → 照常打回重生成。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[7]], row_count=1),
+            QueryResult(columns=["v"], rows=[[8]], row_count=1),
+        ])
+        node = make_select_consensus(connectors, adopt_after_tie_rounds=3)
+        state = self._state(
+            rows=[[0]], row_count=1,
+            candidates=["SELECT 1", "SELECT 2"],
+            tie_rounds=2, lang="en",
+        )
+        update = await node(state)
+        assert "different results" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert "degraded" not in update["selection"]
+
+    async def test_split_majority_tie_below_threshold_feeds_back(self):
+        """并列平局(2:2)未达阈值 → 同样打回(候选组进反馈)。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),  # A
+            QueryResult(columns=["v"], rows=[[1]], row_count=1),  # B
+            QueryResult(columns=["v"], rows=[[2]], row_count=1),  # C
+            QueryResult(columns=["v"], rows=[[2]], row_count=1),  # D
+        ])
+        node = make_select_consensus(connectors, adopt_after_tie_rounds=3)
+        state = self._state(
+            rows=[[0]], row_count=1,  # primary 独票
+            candidates=["SELECT A", "SELECT B", "SELECT C", "SELECT D"],
+            tie_rounds=2, lang="en",
+        )
+        update = await node(state)
+        assert "different results" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["tie_rounds"] == 3  # 平局计数 +1
+
     async def test_split_2_2_feeds_back(self):
         """两组并列 2:2(primary 组 2 票 vs 候选组 2 票 + 单票组) → 平局打回。"""
         connectors = FakeConnectors([

@@ -48,6 +48,7 @@ def make_select_consensus(
     connectors: ConnectorRegistry | None = None,
     timeout_ms: int = 30000,
     max_retries: int = 10,
+    adopt_after_tie_rounds: int = 3,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the consensus select node.
 
@@ -55,6 +56,11 @@ def make_select_consensus(
         connectors: Registry used to execute the candidate SQLs.
         timeout_ms: Timeout for each candidate execution.
         max_retries: Shared correction budget (same semantics as execute).
+        adopt_after_tie_rounds: Tie rounds before adaptive degradation —
+            when the pool has accumulated N rounds of votes without a
+            majority, further regeneration has diminishing returns, so the
+            strongest group is adopted with a low-confidence mark instead
+            of burning the rest of the retry budget.
 
     Voting semantics (N candidates + 1 primary vote):
       - execution failures and rule-invalid candidates are dropped;
@@ -136,7 +142,17 @@ def make_select_consensus(
             return {"consensus": False, "selection": {"votes": votes,
                                                       "adopted": False,
                                                       "winner": "primary",
-                                                      "filtered": filtered}}
+                                                      "filtered": filtered,
+                                                      "degraded": "budget-exhausted"}}
+        if state.tie_rounds >= adopt_after_tie_rounds:
+            # 自适应止损:平局 = 无唯一多数派(并列或全单票),没有"票王"可
+            # 采纳——拉锯 N 轮仍无多数,继续打回收益递减,提前执行保守交付
+            # (primary + 低置信标记),不再烧完共享 retry 预算(撞预算题形态)。
+            return {"consensus": False, "selection": {"votes": votes,
+                                                      "adopted": False,
+                                                      "winner": "primary",
+                                                      "filtered": filtered,
+                                                      "degraded": "repeated-tie"}}
         others = []
         for _key, members in ranked:
             sql, qr = members[0]
@@ -165,6 +181,7 @@ def make_select_consensus(
         return {
             "error_feedback": feedback,
             "retry_count": state.retry_count + 1,
+            "tie_rounds": state.tie_rounds + 1,  # 平局专用计数(自适应降级信号)
             "correction_history": [feedback],
             "consensus": False,
             "selection": {"votes": votes, "adopted": False,

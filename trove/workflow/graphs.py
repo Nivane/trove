@@ -15,6 +15,7 @@ which formats a readable error section.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass
@@ -276,6 +277,12 @@ def _make_gen_sql_node(
             reasoning_context=render_reasoning_context(
                 state.reasoning_history, ("gen_sql",),
             ),
+            rejected_hypotheses=state.rejected_hypotheses,
+            # Fixer 模式:打回轮(state.sql 是上一版失败 SQL)注入全文,
+            # 指示模型局部修复而非整体重写
+            previous_sql=(
+                state.sql if (state.error_feedback or state.error_analysis or state.reason) else ""
+            ),
             history=state.history if "history" in included else "",
             plan=state.plan if "plan" in included else "",
             evidence=state.evidence,
@@ -395,12 +402,20 @@ def _make_gen_sql_node(
             and not update.get("kb_exact_match")
         ):
             alt_graphs = alt_subgraphs if alt_subgraphs else [subgraph_alt]
+            # 候选池跨轮累积(重试=加票):旧候选保留,新候选加入后一起投票。
+            # 平局轮打回 gen_sql 时 state.candidates 是上一轮的池——同组票数
+            # 跨轮相加,正确解释的证据可以跨轮聚合,而不是每轮推倒重来。
             seen = {" ".join(update["sql"].split()).lower()}
-            candidates = []
-            for g in alt_graphs:
-                try:
-                    out_alt = await g.ainvoke(sub_state.model_copy(deep=True))
-                except Exception:
+            seen.update(" ".join(c.split()).lower() for c in state.candidates)
+            candidates = list(state.candidates)
+            # 并行生成:各温度子图互不依赖,asyncio.gather 把候选生成时间
+            # 从 N×串行压到单次耗时(容错:异常子图静默跳过)
+            outs = await asyncio.gather(
+                *(g.ainvoke(sub_state.model_copy(deep=True)) for g in alt_graphs),
+                return_exceptions=True,
+            )
+            for out_alt in outs:
+                if isinstance(out_alt, BaseException):
                     continue
                 alt_sql = out_alt.get("sql", "")
                 if not alt_sql or out_alt.get("error"):
@@ -664,6 +679,8 @@ def _build_gen_prompt(sub_state: GenSQLState) -> str:
         error_feedback=sub_state.error_feedback,
         error_analysis=sub_state.error_analysis,
         reasoning_context=sub_state.reasoning_context,
+        rejected_hypotheses=sub_state.rejected_hypotheses or None,
+        previous_sql=sub_state.previous_sql,
         history=sub_state.history,
         plan=sub_state.plan,
         evidence=sub_state.evidence,
