@@ -328,6 +328,7 @@ def _make_gen_sql_node(
         elif agentic:
             from trove.workflow.nodes.gen_sql import (
                 extract_sql, probe_query, validate_sql as validate_sql_fn,
+                check_result as check_result_fn,
             )
 
             async def validate_tool(arguments: dict) -> str:
@@ -341,6 +342,19 @@ def _make_gen_sql_node(
                 return await probe_query(
                     services.connectors, arguments.get("sql", ""), dialect,
                 )
+
+            # check_result 的规则命中收集:循环结束后随 update 带出,
+            # 供 eval 归因切片(validation_hits)统计该工具拦截/自纠次数
+            check_hits: list[dict] = []
+
+            async def check_tool(arguments: dict) -> str:
+                # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
+                text, hits = await check_result_fn(
+                    services.connectors, sub_state.question,
+                    arguments.get("sql", ""), dialect, lang=sub_state.lang,
+                )
+                check_hits.extend(hits)
+                return text
 
             prompt = _build_gen_prompt(sub_state)
             model = (services.config.target if services.config else "") or "openai/gpt-4o"
@@ -382,6 +396,28 @@ def _make_gen_sql_node(
                         },
                     })
                     tool_handlers["probe_query"] = probe_tool
+                    tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": "check_result",
+                            "description": (
+                                "Run the deterministic rule checks against your draft SQL "
+                                "(executes it read-only): result shape, row count, value "
+                                "ranges, integer-division ratios. Returns 'OK (N rows)' or "
+                                "'VIOLATION [rule] <reason>' — the reason is the fix "
+                                "instruction. Call AFTER probe_query and BEFORE finalizing: "
+                                "a VIOLATION means fix the SQL, never finalize a violating draft."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "sql": {"type": "string", "description": "The SQL to check (read-only)"},
+                                },
+                                "required": ["sql"],
+                            },
+                        },
+                    })
+                    tool_handlers["check_result"] = check_tool
                 result = await run_agent_loop(
                 services.llm, model,
                 system=render(
@@ -414,12 +450,16 @@ def _make_gen_sql_node(
                 sql = extract_sql(result["content"])
                 if not sql:
                     # 模型可能只在工具里给出 SQL，最终 content 无 SQL 回显
-                    # (validate 过或 probe 过都算——捞最近一次工具里的 SQL)
+                    # (validate/probe/check 过都算——捞最近一次工具里的 SQL)
                     for entry in reversed(result.get("tool_history") or []):
-                        if entry["name"] in ("validate_sql", "probe_query") and entry["arguments"].get("sql"):
+                        if entry["name"] in ("validate_sql", "probe_query", "check_result") and entry["arguments"].get("sql"):
                             sql = entry["arguments"]["sql"]
                             break
                 update["attempts"] = result["rounds"]
+                # check_result 规则命中随状态带出(与既有 hits 合并,不覆盖
+                # validate 层已记录的拦截)
+                if check_hits:
+                    update["validation_hits"] = list(state.validation_hits) + check_hits
                 trail = " ".join(
                     p for p in (result.get("reasoning", ""), result.get("transcript", "")) if p
                 )

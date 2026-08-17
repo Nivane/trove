@@ -22,6 +22,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.workflow.rules import verify
 from trove.workflow.state import GenSQLState
 
 logger = get_logger(__name__)
@@ -231,45 +232,47 @@ def _short_value(v: Any) -> str:
     return s[:40] + "…" if len(s) > 40 else s
 
 
-async def probe_query(
+async def _probe_result(
     connectors, sql: str, dialect: str,
+    limit: int = PROBE_LIMIT,
     timeout_s: float = PROBE_TIMEOUT_S,
-) -> str:
-    """只读执行探针:真实执行草稿 SQL,返回短 JSON 观测串。
+) -> dict[str, Any]:
+    """共享只读执行通道:真实执行草稿 SQL,返回原始观测 dict(值不截断)。
 
-    模型在定稿前用它快速验证:行数规模、列形状、过滤值是否命中
-    (如最高级问题是否 0 行、自造过滤值是否有数据)。**永不抛异常**
-    ——任何失败都折叠成 ``{"ok": false, "error": ...}`` 观测。
+    供 probe_query(观测)与 check_result(规则校验)复用。**永不抛异常**
+    ——任何失败都折叠成 ``{"ok": False, "error": ...}``。
 
     双保险只读门:``SQLValidator.is_safe``(关键词正则)+ ``validate_sql``
     (sqlglot 单语句 ``exp.Query`` 校验——Insert/Update/Delete/Drop
     均非 exp.Query,天然拦截;多语句同样拒绝)。
 
-    观测形状: ``{"ok", "row_count", "columns"[:20], "rows"[:5], "error"}``
+    Returns:
+        ``{"ok", "row_count", "columns"[:20], "rows"[:limit], "error"}``
+        ——rows 为原始值,由调用方决定展示形式(观测截断 vs 规则校验用真值)。
     """
     if connectors is None:
-        return json.dumps({"ok": False, "error": "no datasource available"})
+        return {"ok": False, "error": "no datasource available"}
     sql = (sql or "").strip()
     if not sql:
-        return json.dumps({"ok": False, "error": "empty SQL"})
+        return {"ok": False, "error": "empty SQL"}
     from trove.services.sql.validator import SQLValidator
 
     if not SQLValidator().is_safe(sql):
-        return json.dumps({"ok": False, "error": "write operations are not permitted"})
+        return {"ok": False, "error": "write operations are not permitted"}
     valid, errors = validate_sql(sql, dialect)
     if not valid:
-        return json.dumps({"ok": False, "error": "; ".join(errors)})
+        return {"ok": False, "error": "; ".join(errors)}
 
     had_limit = _has_limit(sql, dialect)
-    probe_sql = sql if had_limit else _append_limit(sql, dialect, PROBE_LIMIT)
+    probe_sql = sql if had_limit else _append_limit(sql, dialect, limit)
     try:
         result = await asyncio.wait_for(
             connectors.execute(probe_sql), timeout=timeout_s,
         )
     except TimeoutError:
-        return json.dumps({"ok": False, "error": f"probe timed out after {timeout_s}s"})
+        return {"ok": False, "error": f"probe timed out after {timeout_s}s"}
     except Exception as e:
-        return json.dumps({"ok": False, "error": f"execution failed: {e}"})
+        return {"ok": False, "error": f"execution failed: {e}"}
 
     rows = result.rows or []
     row_count = len(rows)
@@ -284,12 +287,75 @@ async def probe_query(
                 row_count = count_result.rows[0][0]
         except Exception:
             pass
-    return json.dumps({
+    return {
         "ok": True,
         "row_count": row_count,
         "columns": (result.columns or [])[:20],
-        "rows": [[_short_value(v) for v in r] for r in rows[:PROBE_SAMPLE_ROWS]],
+        "rows": rows[:limit],
+    }
+
+
+async def probe_query(
+    connectors, sql: str, dialect: str,
+    timeout_s: float = PROBE_TIMEOUT_S,
+) -> str:
+    """只读执行探针:真实执行草稿 SQL,返回短 JSON 观测串。
+
+    模型在定稿前用它快速验证:行数规模、列形状、过滤值是否命中
+    (如最高级问题是否 0 行、自造过滤值是否有数据)。**永不抛异常**
+    ——任何失败都折叠成 ``{"ok": false, "error": ...}`` 观测。
+
+    观测形状: ``{"ok", "row_count", "columns"[:20], "rows"[:5], "error"}``
+    """
+    obs = await _probe_result(
+        connectors, sql, dialect, limit=PROBE_LIMIT, timeout_s=timeout_s,
+    )
+    if not obs["ok"]:
+        return json.dumps(obs)
+    return json.dumps({
+        "ok": True,
+        "row_count": obs["row_count"],
+        "columns": obs["columns"],
+        "rows": [[_short_value(v) for v in r] for r in obs["rows"][:PROBE_SAMPLE_ROWS]],
     })
+
+
+# ── check_result tool (deterministic rule verification) ──
+
+CHECK_RESULT_LIMIT = 50  # 规则校验取数封顶(规则只消费行数/首行值/列形状,50 足够)
+
+
+async def check_result(
+    connectors,
+    question: str,
+    sql: str,
+    dialect: str,
+    lang: str = "en",
+    timeout_s: float = PROBE_TIMEOUT_S,
+) -> tuple[str, list[dict]]:
+    """确定性校验工具:执行草稿 SQL 后跑规则链,返回 (观测文本, hits)。
+
+    与 probe_query 的分工:probe 只给观测、判断仍靠模型;check_result
+    把判断变成硬规则(workflow.rules 的注册表——结果形状、行数、值域、
+    整数除法等)。违规原因即修复指令,模型拿到后直接改 SQL,而不是等
+    execute→validate 事后打回(那要浪费一整轮 retry 预算)。
+
+    返回 (text, hits):
+      - 通过: ``"OK (N rows)"``,hits 为空
+      - 违规: ``"VIOLATION [规则名] 原因"``,hits=[{"name", "reason"}]
+      - 不可执行: ``"ERROR: ..."``,hits 为空
+    """
+    obs = await _probe_result(
+        connectors, sql, dialect, limit=CHECK_RESULT_LIMIT, timeout_s=timeout_s,
+    )
+    if not obs["ok"]:
+        return f"ERROR: {obs['error']}", []
+    reason, hits = verify(
+        question, sql, obs["columns"], obs["rows"], obs["row_count"], lang=lang,
+    )
+    if reason:
+        return f"VIOLATION {reason}", hits
+    return f"OK ({obs['row_count']} rows)", []
 
 
 # ── Subgraph nodes ───────────────────────────────────────

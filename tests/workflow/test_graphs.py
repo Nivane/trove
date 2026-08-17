@@ -547,6 +547,86 @@ class TestAgenticNodes:
         r = await sqlite_registry.execute("SELECT COUNT(*) FROM students")
         assert r.rows[0][0] == 5
 
+    async def test_gen_sql_check_result_round(self, sqlite_registry, catalog):
+        """gen_sql ReAct：模型先 check_result 跑确定性规则(观测 OK)，再定稿。"""
+        llm = AgenticLLM([
+            "query",  # 意图（chat）
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT county, AVG(grade) FROM students GROUP BY county"}'},
+            ]},
+            {"content": "```sql\nSELECT county, AVG(grade) FROM students GROUP BY county;\n```",
+             "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT county, AVG(grade) FROM students GROUP BY county;"
+        # 观测进 tool 消息:OK + 真实行数;无规则命中 → validation_hits 为空
+        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
+        assert any("OK (3 rows)" in m["content"] for m in tool_msgs)
+        assert final["validation_hits"] == []
+
+    async def test_gen_sql_check_result_catches_violation(self, sqlite_registry, catalog):
+        """count 题草稿按分组展开 → check_result 报 VIOLATION；模型改 SQL；命中记入 validation_hits。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT county, COUNT(*) FROM students GROUP BY county"}'},
+            ]},
+            {"content": "```sql\nSELECT COUNT(*) FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="How many students are there in total?"),
+        )
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT COUNT(*) FROM students;"
+        # count 题结果单行单列,值为 5 名学生
+        assert final["row_count"] == 1
+        assert final["rows"][0][0] == 5
+        # 违规命中随状态带出:count-multirow
+        assert any(h["name"] == "count-multirow" for h in final["validation_hits"])
+
+    async def test_gen_sql_check_result_write_rejected(self, sqlite_registry, catalog):
+        """check_result 写语句 → ERROR 观测,管线正常完成,数据未被改动(只读性)。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "DELETE FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
+        assert any("write operations are not permitted" in m["content"] for m in tool_msgs)
+        r = await sqlite_registry.execute("SELECT COUNT(*) FROM students")
+        assert r.rows[0][0] == 5
+
+    async def test_gen_sql_check_result_harvests_sql_from_tool_history(self, sqlite_registry, catalog):
+        """模型结尾 content 无 SQL 但 check 过 → 从 tool_history 捞回 SQL。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "", "tool_calls": []},  # 结尾无 SQL 回显
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students"  # 从工具参数捞回
+
     async def test_reflect_is_single_shot(self, sqlite_registry, catalog):
         """reflect 去工具化：即使有 connectors，裁决也只调一次 chat，绝不进 chat_full。"""
         class NoToolJudgeLLM:
