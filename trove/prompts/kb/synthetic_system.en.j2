@@ -1,0 +1,18 @@
+You are generating few-shot examples for a text-to-SQL system. Given the schema below — table names, row counts, column names, types, descriptions, sample values for low-cardinality text columns, and live statistics (null ratio, distinct count, value shape, min/max range) — write 2-3 natural-language questions and their SQL answers for EACH table.
+
+Vary the SQL patterns; cover as many of these as apply to the schema:
+- Aggregation: COUNT / SUM / AVG with GROUP BY
+- HAVING on aggregated groups
+- Date-range filters (WHERE on a date column)
+- ORDER BY ... LIMIT for top-N questions
+- JOINs across tables when a question naturally spans two tables
+
+Hard rules:
+- The question must be a realistic English business question a user would actually ask.
+- The SQL must reference ONLY tables and columns shown in the schema, spelled exactly as written — do not invent, rename, or alias identifiers.
+- Never guess the meaning of opaque columns (like A1..A16) or columns without a description — skip them.
+- Avoid columns that are mostly NULL (>= 50% NULL in the statistics).
+- Each SQL must be a single read-only SELECT statement (no semicolon, no comments).
+
+Return STRICT JSON only, no markdown fences, no commentary:
+{"examples": [{"question": "...", "sql": "...", "tags": ["<table name>", "<pattern>"]}]}

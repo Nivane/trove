@@ -144,6 +144,44 @@ def lint_tables(tables: list[dict[str, Any]]) -> list[str]:
     return issues
 
 
+_STATS_KEYS = {"null_ratio", "distinct", "min", "max", "min_len", "max_len", "shape"}
+_SHAPES = {"numeric", "json", "composite", "all_caps", "capital", "text"}
+
+
+def lint_stats(tables: list[dict[str, Any]]) -> list[str]:
+    """Profiling stats 格式校验:未知键、取值域、形状枚举。
+
+    tables 形如 _parse_file 的 table payload:{"name", "stats": {列名: dict}}。
+    统计是 LLM 描述的证据源,格式错了会静默污染 schema_context。
+    """
+    issues: list[str] = []
+    for table in tables:
+        table_name = str(table.get("name", ""))
+        for col_name, st in (table.get("stats") or {}).items():
+            if not isinstance(st, dict):
+                issues.append(f"表 {table_name} 列 {col_name} stats 不是对象")
+                continue
+            unknown = set(st) - _STATS_KEYS
+            if unknown:
+                issues.append(
+                    f"表 {table_name} 列 {col_name} stats 含未知键: {sorted(unknown)}")
+            nr = st.get("null_ratio")
+            if nr is not None and not (
+                isinstance(nr, (int, float)) and 0 <= nr <= 1
+            ):
+                issues.append(f"表 {table_name} 列 {col_name} null_ratio 超出 [0,1]: {nr}")
+            d = st.get("distinct")
+            if d is not None and not (isinstance(d, int) and d >= 0):
+                issues.append(f"表 {table_name} 列 {col_name} distinct 非法: {d}")
+            mn, mx = st.get("min_len"), st.get("max_len")
+            if mn is not None and mx is not None and mn > mx:
+                issues.append(f"表 {table_name} 列 {col_name} min_len > max_len")
+            shape = st.get("shape")
+            if shape is not None and shape not in _SHAPES:
+                issues.append(f"表 {table_name} 列 {col_name} shape 未知: {shape}")
+    return issues
+
+
 def lint_lessons(lessons: list[dict[str, Any]]) -> list[str]:
     """Lessons must carry a short, retrievable pattern and a non-empty note."""
     issues: list[str] = []

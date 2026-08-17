@@ -221,10 +221,49 @@ tables:
         assert "学生成绩表" in update["schema_context"]
         assert "考试成绩" in update["schema_context"]
 
+    async def test_stats_lines_reach_schema_context(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """profiling stats 渲染进 schema_context(仅异常证据,平凡统计不显示)。"""
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: 学生表
+    row_count: 5
+    columns:
+      - name: grade
+        description: 成绩
+        stats:
+          null_ratio: 0.0
+          distinct: 5
+          min: 75
+          max: 99
+      - name: note
+        description: 备注
+        stats:
+          null_ratio: 0.9
+          shape: json
+""",
+            encoding="utf-8",
+        )
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+        )
+        update = await node(make_state(question="students"))
+        assert "Stats:" in update["schema_context"]
+        assert "note: 90% NULL, shape=json" in update["schema_context"]
+        assert "grade: range 75 .. 99" in update["schema_context"]
+        # 平凡统计(0% NULL / 高 distinct)不渲染
+        assert "grade: 0% NULL" not in update["schema_context"]
+        assert "grade: 5 distinct" not in update["schema_context"]
+
+
     async def test_enum_translations_reach_schema_context(
         self, catalog, sqlite_registry, kb_service, kb_ds_dir,
     ):
         """列枚举值说明（如 BIRD value_description）渲染进 schema 上下文。"""
+
         (kb_ds_dir / "schema_notes.yml").write_text(
             """
 tables:
@@ -282,6 +321,165 @@ tables:
 
 
 # ── Value linking ────────────────────────────────────────
+
+
+class TestAlignment:
+    """LLM 对齐裁剪(AskData Task Alignment):纯函数 + 节点集成。"""
+
+    def _import(self, name):
+        from trove.workflow.nodes import schema_linking
+        return getattr(schema_linking, name)
+
+    def test_parse_alignment_valid(self):
+        _parse_alignment = self._import("_parse_alignment")
+        assert _parse_alignment(
+            '{"keep_tables": ["students"], "drop_columns": {"students": ["grade"]}}'
+        ) == {"keep_tables": ["students"], "drop_columns": {"students": ["grade"]}}
+
+    def test_parse_alignment_fenced_json(self):
+        _parse_alignment = self._import("_parse_alignment")
+        assert _parse_alignment('```json\n{"keep_tables": ["a"]}\n```') == {
+            "keep_tables": ["a"], "drop_columns": {},
+        }
+
+    def test_parse_alignment_invalid_returns_none(self):
+        _parse_alignment = self._import("_parse_alignment")
+        assert _parse_alignment("just prose") is None
+        assert _parse_alignment('{"keep_tables": "not-a-list"}') is None
+        assert _parse_alignment("") is None
+
+    def test_apply_alignment_filters_and_validates_columns(self):
+        _apply_alignment = self._import("_apply_alignment")
+        cols = {"students": {"grade", "name"}, "courses": {"id"}}
+        keep, drop = _apply_alignment(
+            ["students", "courses"],
+            {"keep_tables": ["students"], "drop_columns": {
+                "students": ["grade", "nope"]}},
+            cols,
+        )
+        assert keep == ["students"]
+        assert drop == {"students": {"grade"}}  # nope 校验到真实列后丢弃
+
+    def test_apply_alignment_empty_keep_falls_back(self):
+        _apply_alignment = self._import("_apply_alignment")
+        keep, drop = _apply_alignment(
+            ["a"], {"keep_tables": [], "drop_columns": {}}, {"a": set()},
+        )
+        assert keep == ["a"] and drop == {}
+
+    def test_apply_alignment_must_keep_survives(self):
+        """回退重跑时上一轮匹配表强制保留,对齐不允许丢。"""
+        _apply_alignment = self._import("_apply_alignment")
+        keep, _ = _apply_alignment(
+            ["a", "b"], {"keep_tables": ["b"], "drop_columns": {}},
+            {"a": set(), "b": set()}, must_keep=["a"],
+        )
+        assert keep == ["a", "b"]
+
+    def test_alignment_context_includes_stats(self):
+        _alignment_context = self._import("_alignment_context")
+        from trove.services.kb.service import TableNotes
+        details = [{"name": "students", "row_count": 5, "columns": [
+            {"name": "grade", "type": "int"}]}]
+        notes = {"students": TableNotes(
+            row_count=5,
+            stats={"grade": {"null_ratio": 0.9, "distinct": 5, "min": 1, "max": 10}},
+        )}
+        ctx = _alignment_context(details, notes)
+        assert "Table: students (5 rows)" in ctx
+        assert "90% NULL" in ctx and "1..10" in ctx
+
+    async def test_alignment_trims_tables_and_columns(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """对齐结果生效:表保序过滤,裁剪列不进 schema_context。"""
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: student records
+    row_count: 5
+    columns:
+      - name: grade
+        description: grade
+        stats:
+          null_ratio: 0.0
+          distinct: 5
+          min: 75
+          max: 99
+      - name: name
+        description: name
+        stats:
+          null_ratio: 0.0
+          distinct: 5
+""",
+            encoding="utf-8",
+        )
+        llm = ScriptedLLM(
+            ['{"keep_tables": ["students"], "drop_columns": {"students": ["name"]}}']
+        )
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+            llm=llm, config=AgentConfig(target="mock/model"),
+        )
+        update = await node(make_state(question="students"))
+        assert update["matched_tables"] == ["students"]
+        assert "grade (INTEGER)" in update["schema_context"]
+        assert "name (TEXT)" not in update["schema_context"]
+        assert "Stats:" in update["schema_context"]
+
+    async def test_alignment_failure_falls_back(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """LLM 输出不可解析 → 原样使用候选集,管线不阻塞。"""
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: student records
+    columns:
+      - name: grade
+        description: grade
+        stats:
+          null_ratio: 0.9
+""",
+            encoding="utf-8",
+        )
+        llm = ScriptedLLM(["this is not json"])
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+            llm=llm, config=AgentConfig(target="mock/model"),
+        )
+        update = await node(make_state(question="students"))
+        assert "students" in update["schema_context"]
+        assert "grade (INTEGER)" in update["schema_context"]
+
+    async def test_no_stats_skips_alignment(
+        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+    ):
+        """无统计证据(KB 只有描述)→ 不发起对齐调用。"""
+        (kb_ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: student records
+    columns:
+      - name: grade
+        description: grade
+""",
+            encoding="utf-8",
+        )
+
+        class ExplodingLLM:
+            async def chat(self, model, messages, **kwargs):
+                raise AssertionError("alignment should not run without stats")
+
+        node = make_schema_linking(
+            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
+            llm=ExplodingLLM(), config=AgentConfig(target="mock/model"),
+        )
+        update = await node(make_state(question="students"))
+        assert "students" in update["schema_context"]
 
 
 class TestValueCandidates:

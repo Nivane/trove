@@ -72,6 +72,8 @@ class TableNotes:
     columns: dict[str, str] = field(default_factory=dict)  # col name → description
     metrics: dict[str, str] = field(default_factory=dict)  # metric name → definition
     enums: dict[str, str] = field(default_factory=dict)  # col name → enum value description
+    stats: dict[str, dict[str, Any]] = field(default_factory=dict)  # col → profiling stats
+    row_count: int | None = None  # 精确行数(profiling 写入,区别于 catalog 估算)
 
 
 @dataclass
@@ -175,6 +177,7 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
         for table in data.get("tables", []):
             columns = {}
             enums = {}
+            stats = {}
             for col in table.get("columns", []):
                 desc = str(col.get("description", "") or "").strip()
                 if desc:
@@ -185,16 +188,24 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
                 )
                 if enum_text:
                     enums[str(col["name"])] = enum_text
+                col_stats = col.get("stats")
+                if isinstance(col_stats, dict) and col_stats:
+                    stats[str(col["name"])] = {
+                        k: v for k, v in col_stats.items() if v is not None
+                    }
             metrics = {}
             for metric in table.get("metrics", []):
                 definition = str(metric.get("definition", "") or "").strip()
                 if definition:
                     metrics[str(metric["name"])] = definition
+            row_count = table.get("row_count")
             entries.append(("table", str(table["name"]), {
                 "description": str(table.get("description", "") or "").strip(),
                 "columns": columns,
                 "metrics": metrics,
                 "enums": enums,
+                "stats": stats,
+                "row_count": int(row_count) if row_count is not None else None,
             }))
 
     elif path.name == "semantics.yml":

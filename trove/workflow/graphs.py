@@ -747,6 +747,7 @@ def _build_reflection(
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
         fallback_all=not clarify,
+        llm=services.llm, config=services.config or AgentConfig(),
     ))
     g.add_node("gen_sql", _make_gen_sql_node(
         services, subgraph, subgraph_alt=subgraph_alt,
@@ -832,6 +833,7 @@ def _build_fixed(
     g.add_node("schema_linking", make_schema_linking(
         services.catalog, kb=services.kb, connectors=services.connectors,
         fallback_all=not clarify,
+        llm=services.llm, config=services.config or AgentConfig(),
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))

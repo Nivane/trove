@@ -15,10 +15,12 @@ returns a partial state update.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.prompts import render
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService, TableNotes, TermHit
@@ -52,6 +54,31 @@ def _column_line(col: dict[str, Any], notes: TableNotes | None) -> str:
     if enums:
         base += f" — values: {enums}"
     return f"{base} — {desc}" if desc else base
+
+
+_NOTABLE_SHAPES = {"all_caps", "capital", "text"}  # 常见形状不显示(与枚举含义重复)
+
+
+def _stats_lines(stats: dict[str, dict[str, Any]]) -> list[str]:
+    """仅渲染有信息量的统计行(null 比例高/形状异常/数值日期范围)。
+
+    平凡统计(0% NULL、高 distinct)与常见形状不显示——上下文预算
+    留给真正异常的证据(AskData:统计的价值在"异常"处)。
+    """
+    lines = []
+    for col_name, st in stats.items():
+        bits = []
+        nr = st.get("null_ratio")
+        if nr is not None and nr >= 0.3:
+            bits.append(f"{round(nr * 100)}% NULL")
+        shape = st.get("shape")
+        if shape and shape not in _NOTABLE_SHAPES:
+            bits.append(f"shape={shape}")
+        if st.get("min") is not None and st.get("max") is not None:
+            bits.append(f"range {st['min']} .. {st['max']}")
+        if bits:
+            lines.append(f"- {col_name}: " + ", ".join(bits))
+    return lines
 
 
 def _extract_value_candidates(text: str, limit: int = 8) -> list[str]:
@@ -198,12 +225,146 @@ def _join_hints(
     return hints
 
 
+# ── LLM 对齐裁剪(AskData Task Alignment)──────────────────
+
+
+def _alignment_context(
+    details: list[dict[str, Any]], notes: dict[str, TableNotes] | None,
+) -> str:
+    """候选表的紧凑对齐上下文:行数 + 每列类型与统计证据。
+
+    无 stats 的表退化为 "col (type)" 清单——对齐仍可基于列名与类型判断;
+    统计存在时给出 null 比例/基数/形状/范围,供 LLM 判断列的可用性。
+    """
+    lines = []
+    for detail in details:
+        name = detail["name"]
+        table_notes = notes.get(name) if notes else None
+        stats = (table_notes.stats if table_notes else {}) or {}
+        row_count = (
+            table_notes.row_count
+            if (table_notes and table_notes.row_count is not None)
+            else detail.get("row_count")
+        )
+        header = f"Table: {name}"
+        if row_count:
+            header += f" ({row_count} rows)"
+        lines.append(header)
+        for col in detail["columns"]:
+            cname = col["name"]
+            bits = []
+            st = stats.get(cname) or {}
+            nr = st.get("null_ratio")
+            if nr is not None and nr >= 0.1:
+                bits.append(f"{round(nr * 100)}% NULL")
+            if st.get("distinct") is not None:
+                bits.append(f"{st['distinct']} distinct")
+            shape = st.get("shape")
+            if shape and shape != "text":
+                bits.append(shape)
+            if st.get("min") is not None and st.get("max") is not None:
+                bits.append(f"{st['min']}..{st['max']}")
+            line = f"  {cname} ({col['type']})"
+            if bits:
+                line += ": " + ", ".join(bits)
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def _parse_alignment(response: str) -> dict[str, Any] | None:
+    """严格 JSON 解析(容忍 markdown 围栏);格式错误 → None(回退)。"""
+    text = (response or "").strip()
+    m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+    if m:
+        text = m.group(1)
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    keep = data.get("keep_tables")
+    drop = data.get("drop_columns") or {}
+    if not isinstance(keep, list) or not isinstance(drop, dict):
+        return None
+    return {
+        "keep_tables": [str(t) for t in keep],
+        "drop_columns": {
+            str(k): [str(c) for c in v]
+            for k, v in drop.items() if isinstance(v, list)
+        },
+    }
+
+
+def _apply_alignment(
+    matched: list[str],
+    alignment: dict[str, Any] | None,
+    all_columns: dict[str, set[str]],
+    must_keep: list[str] | None = None,
+) -> tuple[list[str], dict[str, set[str]]]:
+    """对齐结果应用到匹配集:保序过滤 + 列裁剪(校验到真实列)。
+
+    空 keep 结果(LLM 全删)视为失败 → 原样返回;must_keep(回退重跑
+    的上一轮匹配表)强制保留——对齐不允许丢掉诊断已经钦点的表。
+    """
+    if not alignment:
+        return matched, {}
+    must = {t for t in (must_keep or []) if t in matched}
+    keep = [t for t in matched if t in must or t in alignment["keep_tables"]]
+    if not keep:
+        return matched, {}
+    drop: dict[str, set[str]] = {}
+    for table, cols in alignment["drop_columns"].items():
+        if table in keep:
+            drop[table] = {c for c in cols if c in all_columns.get(table, set())}
+    return keep, drop
+
+
+async def _align_tables(
+    llm: Any, config: Any, state: WorkflowState,
+    details: list[dict[str, Any]], notes: dict[str, TableNotes] | None,
+) -> dict[str, Any] | None:
+    """LLM 对齐调用:问题 + 候选表统计摘要 → {keep_tables, drop_columns}。
+
+    失败/超时/格式错误 → None,管线原样回退(对齐不阻塞生成)。
+    """
+    if not details:
+        return None
+    model = (config.target if config else "") or "openai/gpt-4o"
+    try:
+        response = await llm.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": render(
+                    "schema_alignment/system", lang=state.lang)},
+                {"role": "user", "content": render(
+                    "schema_alignment/user",
+                    lang=state.lang,
+                    question=state.question,
+                    alignment_context=_alignment_context(details, notes),
+                )},
+            ],
+            max_tokens=400,
+            metadata={
+                "node": "schema_linking",
+                "session_id": state.session_id,
+                "run_id": state.run_id,
+            },
+        )
+    except Exception as e:
+        logger.debug("Alignment LLM call failed (proceeding without): %s", e)
+        return None
+    return _parse_alignment(response)
+
+
 def make_schema_linking(
     catalog: CatalogService | None = None,
     max_tables: int = 5,
     kb: KbService | None = None,
     connectors: ConnectorRegistry | None = None,
     fallback_all: bool = True,
+    llm: Any | None = None,
+    config: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the schema_linking node bound to catalog and knowledge base.
 
@@ -216,6 +377,9 @@ def make_schema_linking(
         fallback_all: When nothing matched, fall back to the full table list
             (bounded) so generation stays anchored to the real schema.
             Disable in clarify mode, where zero matches should ask the user.
+        llm/config: Optional — when present, an LLM alignment step (AskData
+            Task Alignment) trims the candidate tables/columns by question +
+            statistics before the schema context is rendered.
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -344,6 +508,36 @@ def make_schema_linking(
                 details_by_name[name] for name in matched_names
                 if name in details_by_name
             ]
+
+            # 3.5 LLM 对齐裁剪(AskData Task Alignment):问题 + 统计摘要
+            # → 保留表/裁剪列,防元数据膨胀后的上下文爆炸。回退重跑时
+            # 上一轮匹配表强制保留(诊断钦点的表不允许被对齐丢弃)。
+            # 无统计证据(未 kb init / 旧 KB)时跳过——没有 profiling 数据
+            # 对齐就没有额外信号,不值得多一次 LLM 调用。
+            drop_columns: dict[str, set[str]] = {}
+            has_stats_evidence = any(
+                notes.get(d["name"]).stats if notes.get(d["name"]) else None
+                for d in details
+            )
+            if llm is not None and details and has_stats_evidence:
+                aligned = await _align_tables(llm, config, state, details, notes)
+                if aligned:
+                    must_keep = state.matched_tables if (
+                        state.error_feedback or state.error_analysis or state.retry_count
+                    ) else None
+                    all_cols = {
+                        d["name"]: {c["name"] for c in d["columns"]} for d in details
+                    }
+                    aligned_names, drop_columns = _apply_alignment(
+                        matched_names, aligned, all_cols, must_keep=must_keep,
+                    )
+                    if aligned_names != matched_names:
+                        matched_names = aligned_names
+                        details = [
+                            details_by_name[name] for name in matched_names
+                            if name in details_by_name
+                        ]
+
             table_columns = {d["name"]: [c["name"] for c in d["columns"]] for d in details}
 
             schema_parts = []
@@ -351,7 +545,9 @@ def make_schema_linking(
                 name = detail["name"]
                 table_notes = notes.get(name)
                 cols = ", ".join(
-                    _column_line(c, table_notes) for c in detail["columns"]
+                    _column_line(c, table_notes)
+                    for c in detail["columns"]
+                    if c["name"] not in drop_columns.get(name, set())
                 )
                 parts = [
                     f"Table: {name}\n"
@@ -370,6 +566,10 @@ def make_schema_linking(
                         "Metrics:\n"
                         + "".join(f"- {m} — {d}\n" for m, d in table_notes.metrics.items())
                     )
+                if table_notes and table_notes.stats:
+                    stat_lines = _stats_lines(table_notes.stats)
+                    if stat_lines:
+                        parts.append("Stats:\n" + "".join(f"{s}\n" for s in stat_lines))
                 schema_parts.append("".join(parts))
 
             schema_context = "\n".join(schema_parts) if schema_parts else (

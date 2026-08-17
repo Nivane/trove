@@ -278,6 +278,38 @@ class TestSearchTerms:
 
 
 class TestTableNotes:
+    async def test_stats_and_row_count_parsed(self, kb, kb_dir):
+        """profiling 写入的 stats/row_count 经解析进入 table_notes。"""
+        (kb_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: district
+    description: 行政区划表
+    row_count: 77
+    columns:
+      - name: A2
+        description: 地区名称
+        stats:
+          null_ratio: 0.0
+          distinct: 77
+          shape: capital
+      - name: A11
+        description: ""
+        stats:
+          null_ratio: 0.93
+          distinct: 3
+""",
+            encoding="utf-8",
+        )
+        await kb.force_sync("default")
+        notes = await kb.table_notes(["district"], "default")
+        table = notes["district"]
+        assert table.row_count == 77
+        assert table.stats["A2"] == {"null_ratio": 0.0, "distinct": 77, "shape": "capital"}
+        assert table.stats["A11"]["null_ratio"] == 0.93
+        # 空描述列不进 columns,但 stats 照常解析(描述盲区与统计可分离)
+        assert "A11" not in table.columns
+
     async def test_notes_retrieved_for_tables(self, kb, kb_dir):
         write_kb(kb_dir)
         await kb.ensure_synced("demo")

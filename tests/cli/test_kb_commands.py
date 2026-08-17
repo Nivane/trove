@@ -259,6 +259,67 @@ class TestKbInitLLM:
         user_content = llm.calls[0][-1]["content"]
         assert "Alameda" in user_content  # county 样例值
 
+    async def test_init_prompt_shows_statistics(self, kb, sqlite_registry):
+        """统计证据(null/distinct/极值/形状)进入 LLM 起草提示词(AskData 式总结)。"""
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                return TABLES_DOC
+
+        llm = ScriptedLLM()
+        reg = self._reg(kb, sqlite_registry, llm)
+        await reg.get("kb").handler("init")
+
+        user_content = llm.calls[0][-1]["content"]
+        assert "75..99" in user_content               # grade 数值范围
+        assert "5 distinct" in user_content           # id/grade 基数
+        assert "3-5 chars" in user_content            # name 长度(列未被 LLM 响应覆盖也进提示词)
+        system = llm.calls[0][0]["content"]
+        assert "hard evidence" in system              # 统计规则进入 system prompt
+
+    async def test_init_stats_written_to_schema_notes(self, kb, sqlite_registry):
+        """profiling 统计与精确行数落盘 schema_notes.yml(stats 字段)。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
+        await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "row_count: 5" in notes
+        assert "stats:" in notes
+        assert "distinct: 5" in notes
+        assert "max: 99" in notes
+        assert "shape: capital" in notes
+
+    async def test_llm_drafted_stats_stripped(self, kb, sqlite_registry):
+        """LLM 草稿里的伪造 stats 被剥掉,真实探测统计胜出。"""
+        doc = """tables:
+- name: students
+  description: student records
+  row_count: 9999
+  columns:
+  - name: grade
+    type: int
+    description: grade
+    enums: []
+    stats:
+      distinct: 999
+      null_ratio: 0.5
+  metrics: []
+"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=doc))
+        await reg.get("kb").handler("init")
+
+        ds = sqlite_registry.default_name
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "row_count: 5" in notes      # 真实行数,不是 LLM 的 9999
+        assert "9999" not in notes
+        assert "distinct: 5" in notes       # 真实 distinct,不是 999
+        assert "999" not in notes
+        assert "null_ratio: 0.5" not in notes  # grade 无 NULL
+
     async def test_init_with_docs_imports_official_descriptions(self, kb, sqlite_registry, tmp_path):
         """--docs:官方列描述导入,覆盖 LLM 草稿(枚举含义一并导入)。"""
         docs_dir = tmp_path / "docs"
@@ -294,7 +355,7 @@ class TestKbInitLLM:
 
         ds = sqlite_registry.default_name
         assert (kb.kb_dir / ds / "semantics.yml").exists()
-        assert len(llm.calls) == 2  # draft + repair
+        assert len(llm.calls) >= 2  # draft + repair(合成 few-shot 的额外调用会被静默跳过)
 
     async def test_init_with_llm_refuses_when_any_exists(self, kb, sqlite_registry):
         ds = sqlite_registry.default_name
@@ -400,7 +461,7 @@ class TestKbInitLLM:
 
         result = await reg.get("kb").handler("init")
         assert "Initialized" in result
-        assert len(llm.calls) == 2
+        assert len(llm.calls) >= 2  # 每块 1 次起草;合成 few-shot 的额外调用会被静默跳过
         # 每块调用都带更大的 max_tokens（防止 4096 截断大 schema）
         assert all(kwargs.get("max_tokens") == 8192 for _, kwargs in llm.calls)
 
@@ -446,6 +507,80 @@ class TestKbReload:
         assert "reloaded" in result
         listed = await reg.get("kb").handler("list")
         assert "empty" in listed.lower()
+
+
+SYNTH_JSON = """{"examples": [
+  {"question": "Average grade by county",
+   "sql": "SELECT county, AVG(grade) FROM students GROUP BY county",
+   "tags": ["students", "aggregation"]},
+  {"question": "Top student by grade",
+   "sql": "SELECT name, grade FROM students ORDER BY grade DESC LIMIT 1",
+   "tags": ["students", "order"]}
+]}"""
+
+
+class TestKbInitSynthetic:
+    """/kb init 的合成 few-shot:LLM 生成 Q/SQL 对,经双护栏并入 examples.yml。"""
+
+    def _reg(self, kb, sqlite_registry, llm):
+        reg = SlashRegistry()
+        register_kb_commands(reg, {
+            "kb": kb,
+            "connector_registry": sqlite_registry,
+            "llm_gateway": llm,
+            "config": AgentConfig(target="mock/model"),
+        })
+        return reg
+
+    async def test_init_appends_synthetic_examples(self, kb, sqlite_registry):
+        """起草响应后跟合成 JSON:examples.yml 同时含确定性模板与合成条目。"""
+        class ScriptedLLM:
+            def __init__(self):
+                self._responses = iter([TABLES_DOC, SYNTH_JSON])
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._responses)
+
+        reg = self._reg(kb, sqlite_registry, ScriptedLLM())
+        result = await reg.get("kb").handler("init")
+        assert "Initialized" in result
+
+        ds = sqlite_registry.default_name
+        examples = (kb.kb_dir / ds / "examples.yml").read_text(encoding="utf-8")
+        assert "How many records are in the students table?" in examples  # 确定性模板
+        assert "Average grade by county" in examples                     # 合成条目
+        assert "SELECT county, AVG(grade) FROM students GROUP BY county" in examples
+
+    async def test_init_synthetic_rejects_unrunnable_sql(self, kb, sqlite_registry):
+        """护栏丢弃跑不起来的 SQL(未知列),init 不中断。"""
+        class ScriptedLLM:
+            def __init__(self):
+                self._responses = iter([TABLES_DOC, """{"examples": [
+                  {"question": "broken", "sql": "SELECT nope FROM students", "tags": ["students"]}
+                ]}"""])
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._responses)
+
+        reg = self._reg(kb, sqlite_registry, ScriptedLLM())
+        result = await reg.get("kb").handler("init")
+        assert "Initialized" in result
+
+        ds = sqlite_registry.default_name
+        examples = (kb.kb_dir / ds / "examples.yml").read_text(encoding="utf-8")
+        assert "broken" not in examples
+
+    async def test_init_synthetic_garbage_keeps_deterministic_templates(
+        self, kb, sqlite_registry,
+    ):
+        """LLM 合成响应不可解析:静默跳过,确定性模板保留。"""
+        reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
+        result = await reg.get("kb").handler("init")
+        assert "Initialized" in result
+
+        ds = sqlite_registry.default_name
+        examples = (kb.kb_dir / ds / "examples.yml").read_text(encoding="utf-8")
+        assert "How many records are in the students table?" in examples
 
 
 class TestKbLessons:

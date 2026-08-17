@@ -25,6 +25,7 @@ from trove.services.datasource.urls import parse_datasource_url
 from trove.services.kb.lint import (
     lint_examples,
     lint_lessons,
+    lint_stats,
     lint_tables,
     lint_terms,
     parse_enum_values,
@@ -127,7 +128,7 @@ def main() -> int:
         for t in tables
     }
     errors = lint_terms(terms, schema) + lint_examples(examples, set(schema))
-    warnings = lint_tables(tables) + lint_lessons(lessons)
+    warnings = lint_tables(tables) + lint_lessons(lessons) + lint_stats(tables)
 
     if args.datasource:
         async def _live() -> tuple[list[str], list[str]]:

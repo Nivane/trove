@@ -17,6 +17,13 @@ from trove.prompts import render
 from trove.services.kb.deterministic_gen import generate_terms, generate_templates
 from trove.services.kb.docs_import import apply_docs, load_docs_tables
 from trove.services.kb.enum_probe import merge_into_notes, probe_enums
+from trove.services.kb.profiling import merge_into_stats, probe_stats
+from trove.services.kb.synthetic import (
+    generate_synthetic_examples,
+    schema_text,
+    stats_suffix,
+    validate_examples,
+)
 
 logger = get_logger(__name__)
 
@@ -57,28 +64,8 @@ def _parse_draft(response: str) -> dict:
     return {"example": example, "terms": list(data.get("terms") or [])}
 
 
-def _schema_text(tables, samples: dict | None = None) -> str:
-    """Compact schema listing for the init prompt.
-
-    每列形如 "name type — 已有官方描述 [样例值; 样例值]":
-    官方描述让 LLM 保留上下文,样例值帮 LLM 猜枚举含义。
-    """
-    samples = samples or {}
-    lines = []
-    for table in tables:
-        cols = []
-        for c in table["columns"]:
-            line = f"{c['name']} {c['type']}"
-            desc = str(c.get("description", "") or "").strip()
-            if desc:
-                line += f" — {desc}"
-            values = samples.get(table["name"], {}).get(c["name"], "")
-            if values:
-                shown = "; ".join(values.split("; ")[:3])
-                line += f" [{shown}]"
-            cols.append(line)
-        lines.append(f"{table['name']}: {', '.join(cols)}")
-    return "\n".join(lines)
+# stats_suffix/schema_text 迁至 services/kb/synthetic.py(init 起草与
+# 合成 few-shot 共用同一证据渲染,避免 CLI→services 反向依赖)。
 
 
 def _table_dicts(chunk, docs: dict) -> list[dict]:
@@ -129,6 +116,12 @@ def _parse_init_tables(response: str) -> list:
 
     if not tables:
         raise ValueError(f"draft must contain a 'tables' section, got {len(docs)} doc(s)")
+    # LLM 只起草描述:stats/row_count 是 profiling 的确定性产物,LLM 输出
+    # 里的同名键一律剥掉,防止模型"写统计"污染证据源。
+    for table in tables:
+        table.pop("row_count", None)
+        for col in table.get("columns", []):
+            col.pop("stats", None)
     return tables
 
 
@@ -253,7 +246,11 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         """LLM-assisted initialization: 描述由 LLM 起草,terms/examples 确定性生成。
 
         --docs <dir>:导入官方列描述(docs 权威,覆盖 LLM 草稿);
-        低基数文本列先探测 distinct 值(样例进提示词,漏写列兜底合并)。
+        低基数文本列先探测 distinct 值(样例进提示词,漏写列兜底合并);
+        统计 profiling 每列写入 stats(null 比例/distinct/极值/值形状),
+        统计证据随 schema_text 进 LLM 起草提示词(AskData 式总结);
+        合成 few-shot:LLM 基于统计生成 Q/SQL 对,经 SQLGlot + 试执行
+        双护栏后追加进 examples.yml(纯合成,零金标注入)。
         """
         schema = await registry_svc.get_schema()
         llm = context.get("llm_gateway")
@@ -280,10 +277,15 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         docs = load_docs_tables(Path(_docs_arg(args))) if _docs_arg(args) else {}
         lang = _lang_arg(args)
 
-        # Live enum probe(离线/探测失败静默跳过,不影响 init)
+        # Live enum probe + 统计 profiling(离线/探测失败静默跳过,不影响 init)
         probed: dict = {}
         try:
             probed = await probe_enums(registry_svc, schema)
+        except Exception:
+            pass
+        profiled: dict = {}
+        try:
+            profiled = await probe_stats(registry_svc, schema)
         except Exception:
             pass
 
@@ -293,7 +295,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             try:
                 tables = await _draft_init_chunk(
                     llm, model, _table_dicts(chunk, docs), samples=probed,
-                    lang=lang,
+                    stats=profiled, lang=lang,
                 )
             except Exception as e:
                 logger.warning("Could not parse init draft after repair: %s", e)
@@ -302,10 +304,17 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
 
         _backfill_types(all_tables, schema)
         all_tables = apply_docs(all_tables, docs)  # 官方描述权威
+        if profiled:
+            all_tables = merge_into_stats({"tables": all_tables}, profiled)["tables"]
         if probed:
             all_tables = merge_into_notes({"tables": all_tables}, probed)["tables"]
         terms = generate_terms(all_tables, lang=lang)
         examples = generate_templates(all_tables, lang=lang)
+        if llm is not None:
+            examples = await _append_synthetic_examples(
+                examples, llm, model, all_tables, registry_svc, datasource,
+                samples=probed, stats=profiled, lang=lang,
+            )
 
         kb.init_notes(all_tables, datasource)
         kb.init_terms(terms, datasource)
@@ -374,7 +383,9 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
     ))
 
 
-async def _draft_init_chunk(llm, model, tables, samples=None, lang: str = "en") -> list:
+async def _draft_init_chunk(
+    llm, model, tables, samples=None, stats=None, lang: str = "en",
+) -> list:
     """Draft one schema chunk; on parse failure, one LLM repair round.
 
     Raises:
@@ -382,7 +393,8 @@ async def _draft_init_chunk(llm, model, tables, samples=None, lang: str = "en") 
     """
     messages = [
         {"role": "system", "content": render("kb/init_system", lang=lang)},
-        {"role": "user", "content": render("kb/init_user", schema_text=_schema_text(tables, samples))},
+        {"role": "user", "content": render(
+            "kb/init_user", schema_text=schema_text(tables, samples, stats))},
     ]
     response = await llm.chat(
         model=model, messages=messages, max_tokens=INIT_MAX_TOKENS,
@@ -401,6 +413,40 @@ async def _draft_init_chunk(llm, model, tables, samples=None, lang: str = "en") 
             ],
         )
         return _parse_init_tables(repair_response)
+
+
+async def _append_synthetic_examples(
+    examples: list[dict],
+    llm,
+    model: str,
+    all_tables: list[dict],
+    registry_svc,
+    datasource: str,
+    *,
+    samples: dict,
+    stats: dict,
+    lang: str,
+) -> list[dict]:
+    """合成 few-shot(SQL-to-Text):LLM 基于带统计的 schema 生成 Q/SQL 对。
+
+    逐块生成(与起草同为 INIT_CHUNK_TABLES),每块经 SQLGlot 语法 +
+    试执行(LIMIT 1)双护栏;任何失败(解析失败/执行失败/超时)整批
+    静默跳过——确定性模板仍是兜底,合成 few-shot 只是锦上添花。
+    """
+    try:
+        synthetic: list[dict] = []
+        for i in range(0, len(all_tables), INIT_CHUNK_TABLES):
+            chunk = all_tables[i : i + INIT_CHUNK_TABLES]
+            generated = await generate_synthetic_examples(
+                llm, model, chunk, samples=samples, stats=stats, lang=lang,
+            )
+            synthetic.extend(await validate_examples(
+                generated, registry_svc, datasource or None,
+            ))
+        return examples + synthetic
+    except Exception as e:
+        logger.warning("Synthetic few-shot generation skipped: %s", e)
+        return examples
 
 
 def _docs_arg(args: str) -> str:
