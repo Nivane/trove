@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.i18n import L
-from trove.workflow.nodes.planner import answer_columns_mismatch
+from trove.workflow.nodes.planner import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState
 
@@ -79,6 +79,32 @@ def make_validate_rules(
                 "validation_hits": [{
                     "rule": "answer-columns",
                     "reason": "; ".join(ac_errors),
+                }],
+            }
+
+        # 层2补充:结果列"多余"检查(plan 的 answer_columns 必须覆盖结果列;
+        # 结果多出计划外的列 → 打回重规划)。保守:全部 refs 都在结果里才
+        # 判定;question 点名列豁免——宁漏勿误,误伤成本=一次重试轮。
+        extra_errors = extra_columns_mismatch(
+            state.plan_json, state.columns, state.question,
+        )
+        if extra_errors:
+            if state.retry_count >= max_retries:
+                return {"error": "; ".join(extra_errors)}
+            feedback = L(
+                state.lang,
+                f"计划校验: {'; '.join(extra_errors)}。"
+                "只输出查询计划的 answer_columns——去掉多余列。",
+                f"Plan check: {'; '.join(extra_errors)}. "
+                "Output only the plan's answer_columns — drop the extra columns.",
+            )
+            return {
+                "error_feedback": feedback,
+                "retry_count": state.retry_count + 1,
+                "correction_history": [feedback],
+                "validation_hits": [{
+                    "rule": "extra-columns",
+                    "reason": "; ".join(extra_errors),
                 }],
             }
         return {}

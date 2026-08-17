@@ -326,7 +326,9 @@ def _make_gen_sql_node(
                 "KB exact match used: %r", kb_exact_match["question"][:80],
             )
         elif agentic:
-            from trove.workflow.nodes.gen_sql import extract_sql, validate_sql as validate_sql_fn
+            from trove.workflow.nodes.gen_sql import (
+                extract_sql, probe_query, validate_sql as validate_sql_fn,
+            )
 
             async def validate_tool(arguments: dict) -> str:
                 valid, errors = validate_sql_fn(arguments.get("sql", ""), dialect)
@@ -334,15 +336,17 @@ def _make_gen_sql_node(
                     return "valid"
                 return "ERRORS: " + "; ".join(errors)
 
+            async def probe_tool(arguments: dict) -> str:
+                # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
+                return await probe_query(
+                    services.connectors, arguments.get("sql", ""), dialect,
+                )
+
             prompt = _build_gen_prompt(sub_state)
             model = (services.config.target if services.config else "") or "openai/gpt-4o"
             result = None
             try:
-                result = await run_agent_loop(
-                services.llm, model,
-                system=render("gen_sql/system", lang=sub_state.lang),
-                user=prompt,
-                tools=[{
+                tools = [{
                     "type": "function",
                     "function": {
                         "name": "validate_sql",
@@ -353,8 +357,41 @@ def _make_gen_sql_node(
                             "required": ["sql"],
                         },
                     },
-                }],
-                tool_handlers={"validate_sql": validate_tool},
+                }]
+                tool_handlers = {"validate_sql": validate_tool}
+                if services.connectors is not None:
+                    tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": "probe_query",
+                            "description": (
+                                "Execute a SQL query read-only and return a short observation: "
+                                '{"ok", "row_count", "columns", "rows" (first 5)}. '
+                                "Fetches at most 10 rows, 5s timeout, never modifies data. "
+                                "Use BEFORE finalizing a draft to verify result shape, row count, "
+                                "and that filter values actually match data (e.g. a superlative "
+                                "question returning 0 rows, or a self-invented filter value)."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
+                                },
+                                "required": ["sql"],
+                            },
+                        },
+                    })
+                    tool_handlers["probe_query"] = probe_tool
+                result = await run_agent_loop(
+                services.llm, model,
+                system=render(
+                    "gen_sql/system",
+                    lang=sub_state.lang,
+                    has_probe=services.connectors is not None,
+                ),
+                user=prompt,
+                tools=tools,
+                tool_handlers=tool_handlers,
                 max_rounds=6,
                 metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
                 temperature=generation_temperature(state.retry_count),
@@ -377,8 +414,9 @@ def _make_gen_sql_node(
                 sql = extract_sql(result["content"])
                 if not sql:
                     # 模型可能只在工具里给出 SQL，最终 content 无 SQL 回显
+                    # (validate 过或 probe 过都算——捞最近一次工具里的 SQL)
                     for entry in reversed(result.get("tool_history") or []):
-                        if entry["name"] == "validate_sql" and entry["arguments"].get("sql"):
+                        if entry["name"] in ("validate_sql", "probe_query") and entry["arguments"].get("sql"):
                             sql = entry["arguments"]["sql"]
                             break
                 update["attempts"] = result["rounds"]

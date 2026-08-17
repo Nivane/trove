@@ -1014,6 +1014,198 @@ class TestSQLHelpers:
         assert len(errors) > 0
 
 
+# ── probe_query(只读执行探针)──────────────────────────
+
+
+class TestProbeQuery:
+    async def test_probe_returns_observation(self, sqlite_registry):
+        """正常只读探针:ok + 真实行数(COUNT 包装)+ 列 + 前 5 行。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(sqlite_registry, "SELECT name FROM students", "sqlite"))
+        assert obs["ok"] is True
+        assert obs["row_count"] == 5
+        assert obs["columns"] == ["name"]
+        assert len(obs["rows"]) == 5
+
+    async def test_probe_respects_existing_limit(self, sqlite_registry):
+        """已有 LIMIT 时不重写、不做 COUNT 包装——行数就是 LIMIT 值。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(sqlite_registry, "SELECT name FROM students LIMIT 2", "sqlite"))
+        assert obs["ok"] is True
+        assert obs["row_count"] == 2
+        assert len(obs["rows"]) == 2
+
+    async def test_probe_rejects_write_operations(self, sqlite_registry):
+        """只读门:DROP/DELETE/INSERT/UPDATE 一律 ok:false,且不执行。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        for sql in ("DELETE FROM students", "INSERT INTO students (name) VALUES ('X')",
+                    "DROP TABLE students", "UPDATE students SET grade = 0"):
+            obs = json.loads(await probe_query(sqlite_registry, sql, "sqlite"))
+            assert obs["ok"] is False, sql
+            assert "write" in obs["error"], sql
+        # 表仍在(只读性验证)
+        r = await sqlite_registry.execute("SELECT COUNT(*) FROM students")
+        assert r.rows[0][0] == 5
+
+    async def test_probe_rejects_multi_statement(self, sqlite_registry):
+        """多语句由 sqlglot 层拦截(不在关键词正则范围内时也拦)。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(
+            sqlite_registry, "SELECT 1; SELECT 2", "sqlite"))
+        assert obs["ok"] is False
+        assert "Multiple" in obs["error"]
+
+    async def test_probe_syntax_error(self, sqlite_registry):
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(sqlite_registry, "SELEC * FROM students", "sqlite"))
+        assert obs["ok"] is False
+        assert obs["error"]
+
+    async def test_probe_timeout_folded_into_observation(self):
+        """超时折叠成 ok:false 观测,不抛异常。"""
+        import asyncio
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        class SlowConnector:
+            async def execute(self, sql, datasource=None):
+                await asyncio.sleep(5)
+                raise AssertionError("should not finish")
+
+        obs = json.loads(await probe_query(SlowConnector(), "SELECT 1", "sqlite", timeout_s=0.01))
+        assert obs["ok"] is False
+        assert "timed out" in obs["error"]
+
+    async def test_probe_no_connectors(self):
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(None, "SELECT 1", "sqlite"))
+        assert obs["ok"] is False
+        assert "no datasource" in obs["error"]
+
+    async def test_probe_accepts_cte(self, sqlite_registry):
+        """CTE 查询通过只读门,行数正确(COUNT 包装包裹整个 WITH 查询)。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(
+            sqlite_registry,
+            "WITH x AS (SELECT id, name FROM students) SELECT name FROM x",
+            "sqlite"))
+        assert obs["ok"] is True
+        assert obs["row_count"] == 5
+
+
+# ── _column_stats_text(planner 列画像)─────────────────
+
+
+class TestColumnStats:
+    async def test_county_stats(self, sqlite_registry):
+        """rows/null 比例/distinct/样例/低基数 top 一应俱全。"""
+        from trove.workflow.nodes.planner import _column_stats_text
+
+        text = await _column_stats_text(sqlite_registry, "students", "county")
+        assert "rows=5" in text
+        assert "null_ratio=0.0" in text
+        assert "distinct=3" in text
+        assert "Alameda" in text  # 样例
+        assert "Alameda (2)" in text  # 低频 top:频次
+        assert "Los Angeles (1)" in text
+
+    async def test_unknown_table(self, sqlite_registry):
+        from trove.workflow.nodes.planner import _column_stats_text
+
+        text = await _column_stats_text(sqlite_registry, "nope", "county")
+        assert "not found" in text
+        assert "nope" in text
+
+    async def test_unknown_column(self, sqlite_registry):
+        from trove.workflow.nodes.planner import _column_stats_text
+
+        text = await _column_stats_text(sqlite_registry, "students", "nope")
+        assert "not found" in text
+        assert "nope" in text
+
+    async def test_no_connectors(self):
+        from trove.workflow.nodes.planner import _column_stats_text
+
+        text = await _column_stats_text(None, "students", "county")
+        assert "no datasource" in text
+
+
+# ── extra_columns_mismatch(层2多余列检查)───────────────
+
+
+class TestExtraColumnsMismatch:
+    def test_extra_sort_column_caught(self):
+        """结果列含 plan 答案列之外、问题也未点名的列 → 冲突。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        errors = extra_columns_mismatch(
+            {"answer_columns": ["account_id"]},
+            ["account_id", "amount"],
+            "list the accounts",
+        )
+        assert len(errors) == 1
+        assert "amount" in errors[0]
+        assert "account_id" in errors[0]
+
+    def test_question_named_column_exempt(self):
+        """问题点名了某列而 plan 漏写 → 规则 19 允许的偏离,豁免。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        # 复数 + 下划线变体
+        assert extra_columns_mismatch(
+            {"answer_columns": ["unemployment_rate"]},
+            ["unemployment_rate", "district"],
+            "list the districts and their unemployment rate",
+        ) == []
+        # 下划线 vs 空格
+        assert extra_columns_mismatch(
+            {"answer_columns": ["avg_balance"]},
+            ["avg_balance", "account_type"],
+            "what is the account type and average balance",
+        ) == []
+
+    def test_alias_and_qualified_refs_pass(self):
+        """answer ref 带表限定、结果列是别名 → 尾缀匹配,无多余列。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        assert extra_columns_mismatch(
+            {"answer_columns": ["loan.account_id"]},
+            ["account_id"],
+            "list the accounts",
+        ) == []
+
+    def test_missing_answer_column_deferred(self):
+        """答案列有缺失 → 交给层2主检查(宁漏勿误,不双重打回)。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        assert extra_columns_mismatch(
+            {"answer_columns": ["account_id", "client_id"]},
+            ["account_id"],
+            "list the accounts",
+        ) == []
+
+    def test_no_plan_or_no_refs(self):
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        assert extra_columns_mismatch(None, ["x"], "q") == []
+        assert extra_columns_mismatch({}, ["x"], "q") == []
+        assert extra_columns_mismatch({"answer_columns": ["*"]}, ["x"], "q") == []
+
+
 # ── gen_sql subgraph nodes: generate / validate ──────────
 
 
@@ -1403,6 +1595,52 @@ class TestPlanner:
         assert "Resolved time range" not in captured["user"]
 
 
+class TestPlannerAgentic:
+    """planner agentic 路径(带 connectors 的 ReAct 循环)——首个覆盖测试。"""
+
+    async def test_planner_get_column_stats_round(self, sqlite_registry):
+        """模型先调 get_column_stats 拿真实画像,再交 plan JSON;观测进对话。"""
+        import json
+        from trove.workflow.nodes.planner import make_planner
+
+        class AgenticLLM:
+            def __init__(self, responses):
+                self._responses = list(responses)
+                self.calls = []
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self.calls.append(messages)
+                return self._responses.pop(0)
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                return self._responses.pop(0)
+
+        plan = json.dumps({
+            "tables": ["students"],
+            "joins": "",
+            "conditions": [],
+            "aggregation": "none",
+            "answer_columns": ["county"],
+        })
+        llm = AgenticLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "get_column_stats",
+                 "arguments": '{"table": "students", "column": "county"}'},
+            ]},
+            {"content": plan, "tool_calls": []},
+        ])
+        node = make_planner(llm, AgentConfig(target="m"), connectors=sqlite_registry)
+        update = await node(make_state(question="how are students distributed by county"))
+        # 观测进 tool 消息:真实画像(distinct/null 比例/样例)
+        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
+        assert any("distinct=3" in m["content"] and "Alameda" in m["content"] for m in tool_msgs)
+        # plan 落地并通过层1校验
+        assert update["plan"]
+        assert update["plan_json"]["answer_columns"] == ["county"]
+        assert update["plan_validation"]["status"] == "ok"
+
+
 # ── Clarify ──────────────────────────────────────────────
 
 
@@ -1473,6 +1711,40 @@ class TestValidateRules:
         node = make_validate_rules()
         update = await node(make_state(question="average grade", row_count=0))
         assert update == {}
+
+    async def test_extra_columns_rule_gives_feedback(self):
+        """结果列超出 plan 的 answer_columns → extra-columns 命中打回。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = make_state(
+            question="list all the students",
+            sql="SELECT name, grade FROM students",
+            columns=["name", "grade"],
+            rows=[["a", 1], ["b", 2]],
+            row_count=2,
+            plan_json={"answer_columns": ["name"]},
+        )
+        update = await node(state)
+        assert "error" not in update
+        assert "answer_columns" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["validation_hits"][0]["rule"] == "extra-columns"
+
+    async def test_extra_columns_question_named_column_passes(self):
+        """结果列被问题点名(plan 漏写)→ 豁免,不误伤。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = make_state(
+            question="list the districts and their unemployment rate",
+            sql="SELECT district, unemployment_rate FROM districts",
+            columns=["district", "unemployment_rate"],
+            rows=[["a", 0.1]],
+            row_count=1,
+            plan_json={"answer_columns": ["unemployment_rate"]},
+        )
+        assert await node(state) == {}
 
     async def test_pending_feedback_passes_through(self):
         """execute 已挂起反馈时，校验节点不覆盖。"""
@@ -1771,6 +2043,33 @@ class TestSemanticPromptGuards:
         assert "平局" in zh
         assert "行粒度" in zh
         assert "实体列" in zh
+
+    def test_gen_prompt_carries_critical_rules_and_probe_tools(self):
+        """前置 CRITICAL RULES 块 + has_probe 门控工具段落(默认不出现)。"""
+        en = render("gen_sql/system", lang="en")
+        zh = render("gen_sql/system", lang="zh")
+        assert "CRITICAL RULES" in en
+        assert "关键规则" in zh
+        # 既有锚字符串保持不动(规则 16/19 等未改编号)
+        assert "breaks ties" in en
+        assert "平局" in zh
+        assert "row granularity" in en
+        # has_probe=True → 工具段落出现;默认(无 has_probe)→ 不出现
+        en_probe = render("gen_sql/system", lang="en", has_probe=True)
+        zh_probe = render("gen_sql/system", lang="zh", has_probe=True)
+        assert "probe_query" in en_probe
+        assert "probe_query" in zh_probe
+        assert "probe_query" not in en
+        assert "probe_query" not in zh
+
+    def test_planner_prompt_carries_tools_gated_by_has_tools(self):
+        """planner 工具段落:has_tools=True 含 get_column_stats,False 不含。"""
+        en = render("planner/system", lang="en", has_tools=True)
+        zh = render("planner/system", lang="zh", has_tools=True)
+        assert "get_column_stats" in en
+        assert "get_column_stats" in zh
+        assert "get_column_stats" not in render("planner/system", lang="en")
+        assert "get_column_stats" not in render("planner/system", lang="zh")
 
     def test_reflect_prompt_carries_condition_completeness(self):
         en = render("reflect/system", lang="en")

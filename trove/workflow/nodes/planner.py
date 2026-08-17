@@ -8,6 +8,7 @@ pipeline never blocks on planning.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -154,6 +155,61 @@ def answer_columns_mismatch(
     ]
 
 
+def _word_in_question(column: str, question_lower: str) -> bool:
+    """列名(去表限定尾缀)是否以单词形式出现在问题文本中(单复数、下划线变体)。
+
+    规则 19 允许的偏离:问题通顺地点名了某列(如 "districts")而 plan
+    没写进 answer_columns 时,结果里带出该列不是错误——豁免之。
+    """
+    tail = column.split(".", 1)[-1].lower()
+    for candidate in (tail, tail.replace("_", " ")):
+        if re.search(rf"\b{re.escape(candidate)}s?\b", question_lower):
+            return True
+    return False
+
+
+def extra_columns_mismatch(
+    plan_json: dict[str, Any] | None,
+    result_columns: list[str],
+    question: str,
+) -> list[str]:
+    """plan 的 answer_columns 与执行结果列的"多余列"检查(层2补充,确定性)。
+
+    与 answer_columns_mismatch 互补:那个查"答案列全缺",这个查
+    "结果列多余"。保守方向(宁漏勿误):
+    - 前置条件:所有直接引用都出现在结果列中——任一缺失留给层2主检查,
+      避免双重打回;
+    - 豁免:结果列与 answer ref 大小写不敏感匹配(含去表限定尾缀);
+      列名以单词形式出现在 question 文本中(规则 19 允许的偏离)。
+    剩余多余列 → 冲突。误伤成本 = 一次共享预算重试轮。
+    """
+    if not plan_json:
+        return []
+    refs = [
+        str(ac).strip() for ac in (plan_json.get("answer_columns") or [])
+        if str(ac or "").strip() and str(ac).strip() not in ("*", "") and "(" not in str(ac)
+    ]
+    if not refs:
+        return []
+    lower_result = {str(c).lower() for c in result_columns}
+    for r in refs:
+        if r.lower() not in lower_result and r.split(".", 1)[-1].lower() not in lower_result:
+            return []  # 有答案列缺失 → 交给层2主检查(宁漏勿误)
+    ref_tails = {r.split(".", 1)[-1].lower() for r in refs}
+    q_lower = (question or "").lower()
+    extra = [
+        c for c in result_columns
+        if c.lower() not in ref_tails
+        and not _word_in_question(c, q_lower)
+    ]
+    if not extra:
+        return []
+    return [
+        f"result columns {list(extra)} are not in the plan's answer_columns {refs} "
+        "— output only the answer columns"
+    ]
+
+
 async def _schema_map(connectors) -> dict[str, set[str]] | None:
     """真实 schema → 小写表名 → 小写列名集合;不可用 → None(跳过校验)。"""
     if connectors is None:
@@ -166,6 +222,92 @@ async def _schema_map(connectors) -> dict[str, set[str]] | None:
         }
     except Exception:
         return None
+
+
+def _short_value(v: Any) -> str:
+    """观测里的单值:截断为短字符串。"""
+    if v is None:
+        return "null"
+    s = str(v)
+    return s[:40] + "…" if len(s) > 40 else s
+
+
+async def _column_stats_text(connectors, table: str, column: str) -> str:
+    """列画像观测:行数 / null 比例 / distinct / 样例 / 低基数高频值。
+
+    运行时探测,**永不抛异常**——失败折叠成短错误文本。方言感知引号
+    (schema_linking.py JOIN_PROBE 同款惯例):MySQL 反引号,其余双引号
+    (SQLite 接受双引号标识符)。每个探测独立 5s 超时、失败静默跳过。
+    高基数列(>30 distinct)不展示 top 值——top 只对低基数列有意义。
+    """
+    if connectors is None:
+        return "error: no datasource available"
+    try:
+        adapter = await connectors.get()
+        quote = "`" if adapter.dialect() == "mysql" else '"'
+    except Exception as e:
+        return f"error: {e}"
+    t, c = str(table or "").strip(), str(column or "").strip()
+    if not t or not c:
+        return "error: both table and column are required"
+
+    # 表/列存在性(schema 可用时;不可用则靠探查询的 SQL 错误兜底)
+    distinct: int | None = None
+    try:
+        schema = await asyncio.wait_for(connectors.get_schema(), timeout=5.0)
+        tbl = next((x for x in schema.tables if x.name.lower() == t.lower()), None)
+        if tbl is None:
+            return f"table '{t}' not found"
+        if c.lower() not in {col.name.lower() for col in tbl.columns}:
+            return f"column '{c}' not found in table '{t}'"
+    except Exception:
+        pass
+
+    q_t, q_c = f"{quote}{t}{quote}", f"{quote}{c}{quote}"
+
+    agg: list | None = None
+    try:
+        r = await asyncio.wait_for(connectors.execute(
+            f"SELECT COUNT(*), SUM({q_c} IS NULL), COUNT(DISTINCT {q_c}) FROM {q_t}",
+        ), timeout=5.0)
+        if r.rows and r.rows[0]:
+            agg = r.rows[0]
+            distinct = agg[2]
+    except Exception:
+        pass
+
+    sample: list[str] = []
+    try:
+        r = await asyncio.wait_for(connectors.execute(
+            f"SELECT DISTINCT {q_c} FROM {q_t} WHERE {q_c} IS NOT NULL LIMIT 5",
+        ), timeout=5.0)
+        sample = [_short_value(row[0]) for row in (r.rows or [])[:5]]
+    except Exception:
+        pass
+
+    top: list[tuple[str, Any]] = []
+    if distinct is None or 2 <= distinct <= 30:
+        try:
+            r = await asyncio.wait_for(connectors.execute(
+                f"SELECT {q_c}, COUNT(*) FROM {q_t} GROUP BY {q_c} "
+                f"ORDER BY COUNT(*) DESC, {q_c} LIMIT 10",
+            ), timeout=5.0)
+            top = [(_short_value(row[0]), row[1]) for row in (r.rows or [])[:10]]
+        except Exception:
+            pass
+
+    parts: list[str] = []
+    if agg is not None:
+        rows, nulls = agg[0], agg[1] or 0
+        null_ratio = round(nulls / rows, 3) if rows else 0.0
+        parts.append(f"rows={rows} null_ratio={null_ratio} distinct={distinct}")
+    if sample:
+        parts.append("sample: " + ", ".join(sample))
+    if top:
+        parts.append("top: " + ", ".join(f"{v} ({n})" for v, n in top))
+    if not parts:
+        return f"error: no stats available for {t}.{c}"
+    return "; ".join(parts)
 
 
 def make_planner(
@@ -187,7 +329,11 @@ def make_planner(
         )
         schema_map = await _schema_map(connectors)
         model = config.target or "openai/gpt-4o"
-        system_prompt = render("planner/system", lang=state.lang)
+        system_prompt = render(
+            "planner/system",
+            lang=state.lang,
+            has_tools=bool(agentic and connectors is not None),
+        )
         llm_detail: dict[str, Any] | None = None
         trail = ""
 
@@ -213,6 +359,14 @@ def make_planner(
                             return ", ".join(f"{c.name} {c.type}" for c in t.columns)
                     return f"table '{table}' not found"
 
+                async def column_stats(arguments: dict) -> str:
+                    # 列画像:起草条件前锚定过滤值的真实取值与行数量级
+                    return await _column_stats_text(
+                        connectors,
+                        arguments.get("table", ""),
+                        arguments.get("column", ""),
+                    )
+
                 result = await run_agent_loop(
                     llm, model,
                     system=system_prompt,
@@ -228,8 +382,32 @@ def make_planner(
                                 "required": ["table"],
                             },
                         },
+                    }, {
+                        "type": "function",
+                        "function": {
+                            "name": "get_column_stats",
+                            "description": (
+                                "Inspect a column's real data: row count, null ratio, "
+                                "distinct count, sample values, and (for low-cardinality "
+                                "columns) the most frequent values with counts. "
+                                "Use BEFORE drafting filter conditions to anchor values "
+                                "to actual data — what type/frequency/status columns "
+                                "really store, and the row-count scale of a table."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "table": {"type": "string"},
+                                    "column": {"type": "string"},
+                                },
+                                "required": ["table", "column"],
+                            },
+                        },
                     }],
-                    tool_handlers={"get_table_columns": table_columns},
+                    tool_handlers={
+                        "get_table_columns": table_columns,
+                        "get_column_stats": column_stats,
+                    },
                     max_rounds=5,
                     metadata={"node": "planner", "session_id": state.session_id, "run_id": state.run_id},
                 )

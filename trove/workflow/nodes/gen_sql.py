@@ -11,6 +11,8 @@ level for direct unit testing.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -182,6 +184,112 @@ def validate_sql(sql: str, dialect: str) -> tuple[bool, list[str]]:
         # sqlglot not installed — skip validation
         logger.warning("sqlglot not available; skipping SQL validation")
         return True, []
+
+
+# ── Probe tool (read-only execution observation) ─────────
+
+PROBE_LIMIT = 10        # fetch 封顶
+PROBE_SAMPLE_ROWS = 5   # 观测里显示的行数
+PROBE_TIMEOUT_S = 5.0
+
+
+def _has_limit(sql: str, dialect: str) -> bool:
+    """检测顶层 LIMIT 是否已存在(sqlglot 解析;失败退化文本扫描)。
+
+    保守方向:无法确认时按"已有 LIMIT"处理——不改写、不做 COUNT 包装
+    (观测里 row_count 可能超过封顶,但不会把模型合法的 SQL 改坏)。
+    """
+    try:
+        import sqlglot
+        parsed = sqlglot.parse_one(
+            sql, dialect=dialect, error_level=sqlglot.ErrorLevel.RAISE,
+        )
+        return parsed.args.get("limit") is not None
+    except Exception:
+        if re.search(r"\bLIMIT\s+\d+\b", sql, re.I):
+            return True
+        return True  # 无法确认 → 保守按有 LIMIT 处理
+
+
+def _append_limit(sql: str, dialect: str, limit: int) -> str:
+    """追加顶层 LIMIT(sqlglot 重写;失败退化文本追加)。"""
+    try:
+        import sqlglot
+        parsed = sqlglot.parse_one(
+            sql, dialect=dialect, error_level=sqlglot.ErrorLevel.RAISE,
+        )
+        return parsed.limit(limit, copy=False).sql(dialect=dialect)
+    except Exception:
+        return f"{sql.rstrip().rstrip(';')} LIMIT {limit}"
+
+
+def _short_value(v: Any) -> str:
+    """观测里的单值:截断为短字符串(超长文本/二进制不刷屏)。"""
+    if v is None:
+        return "null"
+    s = str(v)
+    return s[:40] + "…" if len(s) > 40 else s
+
+
+async def probe_query(
+    connectors, sql: str, dialect: str,
+    timeout_s: float = PROBE_TIMEOUT_S,
+) -> str:
+    """只读执行探针:真实执行草稿 SQL,返回短 JSON 观测串。
+
+    模型在定稿前用它快速验证:行数规模、列形状、过滤值是否命中
+    (如最高级问题是否 0 行、自造过滤值是否有数据)。**永不抛异常**
+    ——任何失败都折叠成 ``{"ok": false, "error": ...}`` 观测。
+
+    双保险只读门:``SQLValidator.is_safe``(关键词正则)+ ``validate_sql``
+    (sqlglot 单语句 ``exp.Query`` 校验——Insert/Update/Delete/Drop
+    均非 exp.Query,天然拦截;多语句同样拒绝)。
+
+    观测形状: ``{"ok", "row_count", "columns"[:20], "rows"[:5], "error"}``
+    """
+    if connectors is None:
+        return json.dumps({"ok": False, "error": "no datasource available"})
+    sql = (sql or "").strip()
+    if not sql:
+        return json.dumps({"ok": False, "error": "empty SQL"})
+    from trove.services.sql.validator import SQLValidator
+
+    if not SQLValidator().is_safe(sql):
+        return json.dumps({"ok": False, "error": "write operations are not permitted"})
+    valid, errors = validate_sql(sql, dialect)
+    if not valid:
+        return json.dumps({"ok": False, "error": "; ".join(errors)})
+
+    had_limit = _has_limit(sql, dialect)
+    probe_sql = sql if had_limit else _append_limit(sql, dialect, PROBE_LIMIT)
+    try:
+        result = await asyncio.wait_for(
+            connectors.execute(probe_sql), timeout=timeout_s,
+        )
+    except TimeoutError:
+        return json.dumps({"ok": False, "error": f"probe timed out after {timeout_s}s"})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"execution failed: {e}"})
+
+    rows = result.rows or []
+    row_count = len(rows)
+    if not had_limit:
+        # 无原始 LIMIT:补 COUNT 包装拿真实行数(失败静默保留封顶值)
+        try:
+            count_sql = f"SELECT COUNT(*) AS _p FROM ({sql}) AS _p"
+            count_result = await asyncio.wait_for(
+                connectors.execute(count_sql), timeout=timeout_s,
+            )
+            if count_result.rows and count_result.rows[0]:
+                row_count = count_result.rows[0][0]
+        except Exception:
+            pass
+    return json.dumps({
+        "ok": True,
+        "row_count": row_count,
+        "columns": (result.columns or [])[:20],
+        "rows": [[_short_value(v) for v in r] for r in rows[:PROBE_SAMPLE_ROWS]],
+    })
 
 
 # ── Subgraph nodes ───────────────────────────────────────

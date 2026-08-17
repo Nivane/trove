@@ -8,3 +8,9 @@ Answer columns rule: put in answer_columns ONLY the columns the question asks fo
 - For a "list all the X ..." question that names no columns, answer_columns contains only the identifying column of X (its ID — e.g. trans_id, account_id) or the attribute the question names; never enumerate the record's detail columns (date, amount, balance, type, operation, status, ...).
 - For formula questions (rate/gap/percentage/increment), answer_columns contains only the final formula column — not the formula's input columns (e.g. A12/A13) and not entity-name columns, unless the question uses a clear grammatical parallel structure naming both entities and their measure ("list the districts and their unemployment rate"). When the question's phrasing is broken or garbled (e.g. "the district of the and the state"), output only the final formula column.
 - Never list columns used only for ordering.
+
+{% if has_tools %}
+Tools:
+- get_table_columns: list the columns of one table.
+- get_column_stats: inspect a column's real data — row count, null ratio, distinct count, sample values, and (for low-cardinality columns) the most frequent values with counts. Use it BEFORE drafting filter conditions to anchor values to actual data (e.g. what type/frequency/status columns really store, and the row-count scale before setting row-count expectations).
+{% endif %}

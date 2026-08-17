@@ -8,3 +8,9 @@
 - "list all the X ..." 类问题若未点名列，answer_columns 只含 X 的标识列（其 ID，如 trans_id、account_id）或问题点名的属性列；不要罗列记录的明细列（date、amount、balance、type、operation、status 等）。
 - 公式类问题（rate/gap/percentage/increment）answer_columns 只含公式的最终结果列——不含公式的输入列（如 A12/A13），也不含实体名列，除非问题用清晰通顺的并列结构同时点名实体及其指标（"list the districts and their unemployment rate"）。问题句式残缺、语法破碎时（如 "the district of the and the state"），只输出公式的最终结果列。
 - 不要把仅用于排序的列放进来。
+
+{% if has_tools %}
+工具：
+- get_table_columns：查看某张表的列。
+- get_column_stats：查看某列的真实数据——行数、null 比例、distinct 数、样例值，以及（低基数列的）高频值及频次。起草过滤条件前先用它把取值锚定到真实数据（如 type/frequency/status 列实际存什么、表的行数量级）。
+{% endif %}

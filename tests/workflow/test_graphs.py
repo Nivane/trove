@@ -488,6 +488,65 @@ class TestAgenticNodes:
         assert len(llm.calls) == 4  # 意图 + 工具轮 + 最终轮 + reflect
         assert final["row_count"] == 5
 
+    async def test_gen_sql_probe_query_round(self, sqlite_registry, catalog):
+        """gen_sql ReAct：模型先 probe_query 自证草稿(观测含 ok/row_count)，再定稿。"""
+        llm = AgenticLLM([
+            "query",  # 意图（chat）
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "probe_query",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        assert len(llm.calls) == 4  # 意图 + 探针轮 + 最终轮 + reflect
+        # 观测进 tool 消息:ok true + 真实行数
+        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
+        assert any('"ok": true' in m["content"] and "row_count" in m["content"] for m in tool_msgs)
+        assert final["row_count"] == 5
+
+    async def test_gen_sql_probe_harvests_sql_from_tool_history(self, sqlite_registry, catalog):
+        """模型结尾 content 无 SQL 但 probe 过 → 从 tool_history 捞回 SQL。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "probe_query",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "", "tool_calls": []},  # 结尾无 SQL 回显
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students"  # 从工具参数捞回
+        assert final["row_count"] == 5
+
+    async def test_gen_sql_probe_write_rejected_safely(self, sqlite_registry, catalog):
+        """probe 写语句 → ok:false 观测,管线正常完成,数据未被改动(只读性)。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "probe_query",
+                 "arguments": '{"sql": "DELETE FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
+        assert any('"ok": false' in m["content"] for m in tool_msgs)
+        # 只读性验证:表仍在、行数不变
+        r = await sqlite_registry.execute("SELECT COUNT(*) FROM students")
+        assert r.rows[0][0] == 5
+
     async def test_reflect_is_single_shot(self, sqlite_registry, catalog):
         """reflect 去工具化：即使有 connectors，裁决也只调一次 chat，绝不进 chat_full。"""
         class NoToolJudgeLLM:
