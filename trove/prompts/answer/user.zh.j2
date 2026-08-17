@@ -1,0 +1,7 @@
+Metadata context:
+{{ context }}
+
+Question: {{ question }}
+{% if error_feedback %}
+注意：上一次回答未通过校验（{{ error_feedback }}），请修正。
+{% endif -%}

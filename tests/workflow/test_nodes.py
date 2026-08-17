@@ -20,6 +20,7 @@ from trove.workflow.nodes.gen_sql import (
     make_validate,
     validate_sql,
 )
+from trove.prompts import render
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
@@ -1270,50 +1271,49 @@ class TestOutput:
 
 
 class TestSemanticPromptGuards:
-    """① planner 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。"""
+    """① planner 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。
+
+    常量已迁入 trove/prompts/*.j2 模板,这里直接渲染模板断言子串。
+    """
 
     def test_planner_prompt_carries_scope_principle(self):
-        from trove.workflow.nodes.planner import (
-            PLANNER_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT_ZH,
-        )
-        assert "lowest" in PLANNER_SYSTEM_PROMPT.lower()
-        assert "scope" in PLANNER_SYSTEM_PROMPT.lower()
-        assert "作用域" in PLANNER_SYSTEM_PROMPT_ZH
-        assert "最低" in PLANNER_SYSTEM_PROMPT_ZH
+        en = render("planner/system", lang="en")
+        zh = render("planner/system", lang="zh")
+        assert "lowest" in en.lower()
+        assert "scope" in en.lower()
+        assert "作用域" in zh
+        assert "最低" in zh
 
     def test_gen_prompt_carries_generalized_lessons(self):
         """Hint Bank 通用教训升入 system prompt(跨数据集生效):
         极值 ORDER BY LIMIT 1 / 多重最高级单排序 / 直接 FK join / 按点名实体选择。"""
-        from trove.workflow.nodes.gen_sql import (
-            SQL_GENERATION_SYSTEM_PROMPT, SQL_GENERATION_SYSTEM_PROMPT_ZH,
-        )
-        assert "CTE" in SQL_GENERATION_SYSTEM_PROMPT  # 极值:不用 CTE/嵌套子查询
-        assert "breaks ties" in SQL_GENERATION_SYSTEM_PROMPT  # 多重最高级:次级条件只裁决平局
-        assert "row granularity" in SQL_GENERATION_SYSTEM_PROMPT  # 直接 FK join
-        assert "entity column" in SQL_GENERATION_SYSTEM_PROMPT  # 按点名实体分组/选择
-        assert "CTE" in SQL_GENERATION_SYSTEM_PROMPT_ZH
-        assert "平局" in SQL_GENERATION_SYSTEM_PROMPT_ZH
-        assert "行粒度" in SQL_GENERATION_SYSTEM_PROMPT_ZH
-        assert "实体列" in SQL_GENERATION_SYSTEM_PROMPT_ZH
+        en = render("gen_sql/system", lang="en")
+        zh = render("gen_sql/system", lang="zh")
+        assert "CTE" in en  # 极值:不用 CTE/嵌套子查询
+        assert "breaks ties" in en  # 多重最高级:次级条件只裁决平局
+        assert "row granularity" in en  # 直接 FK join
+        assert "entity column" in en  # 按点名实体分组/选择
+        assert "CTE" in zh
+        assert "平局" in zh
+        assert "行粒度" in zh
+        assert "实体列" in zh
 
     def test_reflect_prompt_carries_condition_completeness(self):
-        from trove.workflow.nodes.reflect import (
-            REFLECT_SYSTEM_PROMPT, REFLECT_SYSTEM_PROMPT_ZH,
-        )
-        assert "every condition" in REFLECT_SYSTEM_PROMPT
-        assert "每个条件" in REFLECT_SYSTEM_PROMPT_ZH
+        en = render("reflect/system", lang="en")
+        zh = render("reflect/system", lang="zh")
+        assert "every condition" in en
+        assert "每个条件" in zh
 
     def test_reflect_prompt_guards_against_rearguing_ambiguity(self):
         """法官不得重新争论问题歧义,也不得用'并列可能漏行'打回 LIMIT 1。"""
-        from trove.workflow.nodes.reflect import (
-            REFLECT_SYSTEM_PROMPT, REFLECT_SYSTEM_PROMPT_ZH,
-        )
-        assert "interpretation" in REFLECT_SYSTEM_PROMPT
-        assert "LIMIT 1" in REFLECT_SYSTEM_PROMPT
-        assert "合理解读" in REFLECT_SYSTEM_PROMPT_ZH
-        assert "并列" in REFLECT_SYSTEM_PROMPT_ZH
-        assert "formula" in REFLECT_SYSTEM_PROMPT
-        assert "公式" in REFLECT_SYSTEM_PROMPT_ZH
+        en = render("reflect/system", lang="en")
+        zh = render("reflect/system", lang="zh")
+        assert "interpretation" in en
+        assert "LIMIT 1" in en
+        assert "合理解读" in zh
+        assert "并列" in zh
+        assert "formula" in en
+        assert "公式" in zh
 
 
 class TestStructuredPlan:

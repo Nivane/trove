@@ -1,0 +1,48 @@
+Target SQL dialect: {{ dialect }}
+
+Database schema:
+{{ schema_context or "(No schema information available - generate a best-effort query)" }}
+{% if history %}
+Conversation history (previous exchanges, oldest first):
+{{ history }}
+{% endif %}{% if plan %}
+Query plan (follow it unless it conflicts with the question):
+{{ plan }}
+{% endif %}{% if rules %}
+Data source rules (must follow):
+{% for rule in rules -%}
+- {{ rule }}
+{% endfor %}{% endif %}{% if lessons %}
+Known pitfalls (learned from past corrections — avoid these):
+{% for lesson in lessons -%}
+- {{ lesson.pattern }}: {{ lesson.note }}
+{% endfor %}{% endif %}{% if term_notes %}
+Terminology (standard formulations):
+{% for note in term_notes -%}
+- {{ note.term }} → {{ note.mapping }}{% if note.definition %} — {{ note.definition }}{% endif %}
+{% endfor %}{% endif %}{% if few_shots %}
+Reference examples (standard formulations for this data):
+{% for shot in few_shots -%}
+Q: {{ shot.question }}
+SQL: {{ shot.sql }}
+{% endfor %}{% endif %}{% if evidence %}
+Evidence (official hint for this question — authoritative, must follow):
+{{ evidence }}
+{% endif %}{% if time_context %}
+Resolved time range (authoritative — derived from the question's relative time expression; use it for date filters):
+{{ time_context }}
+{% endif %}
+Question:
+{{ question }}
+{% if reflect_reason %}
+Note: a previous version of this query was rejected with: {{ reflect_reason }}. Please correct it.
+{% endif %}{% if error_feedback %}
+Note: the previous query failed during execution with: {{ error_feedback }}. Please correct the SQL.
+{% endif %}{% if error_analysis %}
+Error analysis (diagnosis and fix plan from the expert):
+{{ error_analysis }}
+{% endif %}{% if reasoning_context %}
+Prior reasoning trail (your previous thinking; avoid repeating the same mistake):
+{{ reasoning_context }}
+{% endif %}
+Generate the SQL query to answer this question:

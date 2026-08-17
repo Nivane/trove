@@ -62,25 +62,6 @@ def has_weak_signal(question: str) -> bool:
     return any(p.search(question) for p in _WEAK_COMPILED)
 
 
-INTENT_PROMPT_ZH = """把用户输入分类为以下之一：query | metadata。
-
-- query: 数据问题，需要用 SQL 回答
-- metadata: 关于数据本身的问题（表、字段、业务术语定义、表关系、知识库内容）
-
-例如「disp 是啥」「loan 表是什么」「平均贷款金额的定义」→ metadata。
-
-只回答单个词。"""
-
-INTENT_PROMPT = """Classify the user input into ONE of: query | metadata.
-
-- query: a data question to be answered with SQL
-- metadata: a question ABOUT the data itself (tables, columns, business term definitions, table relationships, knowledge base contents)
-
-Examples: "what is the disp table?", "what does the loan table mean?" → metadata.
-
-Reply with ONLY the single word."""
-
-
 def parse_llm_intent(response: str) -> Intent | None:
     """Parse the tiny LLM classification reply into an Intent.
 

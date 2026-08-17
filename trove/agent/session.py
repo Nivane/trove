@@ -28,6 +28,7 @@ from trove.llm.token_counter import TokenCounter
 import uuid
 
 from trove.core.i18n import L
+from trove.prompts import render
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -152,21 +153,10 @@ class SessionManager:
             f"[{m.role}]: {m.content[:500]}" for m in old_messages
         )
 
-        prompt = L(
-            self.config.language,
-            (
-                "请压缩这段对话，保留关键事实、生成的 SQL 查询、发现的数据洞察，"
-                "以及任何重要的决定或修正。\n\n"
-                f"{conversation}\n\n"
-                "摘要："
-            ),
-            (
-                "Summarize this conversation, preserving key facts, "
-                "SQL queries generated, data insights discovered, and "
-                "any important decisions or corrections made.\n\n"
-                f"{conversation}\n\n"
-                "Summary:"
-            ),
+        prompt = render(
+            "session/compact",
+            lang=self.config.language,
+            conversation=conversation,
         )
 
         try:

@@ -37,7 +37,15 @@ from trove.workflow.nodes.schema_linking import make_schema_linking
 from trove.workflow.nodes.parse_date import make_parse_date
 from trove.workflow.nodes.clarify import make_clarify
 from trove.workflow.nodes.planner import make_planner
-from trove.workflow.nodes.gen_sql import SQL_GENERATION_SYSTEM_PROMPT, build_sql_prompt, make_generate, make_validate
+from trove.workflow.nodes.gen_sql import (
+    build_sql_prompt,
+    make_generate,
+    make_validate,
+    render_lessons,
+    render_shots,
+    render_terms,
+)
+from trove.prompts import render
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.nodes.select import make_select_consensus
 from trove.workflow.nodes.validate import make_validate_rules
@@ -48,8 +56,6 @@ from trove.workflow.nodes.metadata_check import make_metadata_check
 from trove.workflow.nodes.analyze_error import make_analyze_error, render_reasoning_context
 from trove.core.i18n import L
 from trove.workflow.intent import (
-    INTENT_PROMPT,
-    INTENT_PROMPT_ZH,
     Intent,
     classify_intent,
     parse_llm_intent,
@@ -240,10 +246,10 @@ def _make_gen_sql_node(
         # Context budget: optional blocks filled by priority, usage
         # reported for observability (what the model actually saw).
         optional_blocks = {
-            "few_shots": _render_shots(few_shots),
+            "few_shots": render_shots(few_shots),
             "rules": "\n".join(rules),
-            "term_notes": _render_terms(term_notes),
-            "lessons": _render_lessons(lessons),
+            "term_notes": render_terms(term_notes),
+            "lessons": render_lessons(lessons),
             "plan": state.plan,
             "history": state.history,
         }
@@ -303,7 +309,7 @@ def _make_gen_sql_node(
             try:
                 result = await run_agent_loop(
                 services.llm, model,
-                system=SQL_GENERATION_SYSTEM_PROMPT,
+                system=render("gen_sql/system", lang=sub_state.lang),
                 user=prompt,
                 tools=[{
                     "type": "function",
@@ -512,11 +518,7 @@ def make_route_intent(
         mentioned_table = term_hit = False
         if llm is not None:
             model = (config.target if config else "") or "openai/gpt-4o"
-            intent_prompt = L(
-                state.lang,
-                INTENT_PROMPT_ZH,
-                INTENT_PROMPT,
-            )
+            intent_prompt = render("intent/system", lang=state.lang)
             start = time.monotonic()
             try:
                 response = await llm.chat(
@@ -649,24 +651,6 @@ def _build_gen_prompt(sub_state: GenSQLState) -> str:
         lessons=sub_state.lessons or None,
         few_shots=sub_state.few_shots or None,
         term_notes=sub_state.term_notes or None,
-    )
-
-
-def _render_shots(shots: list[dict[str, Any]]) -> str:
-    return "\n".join(
-        f"Q: {s.get('question', '')}\nSQL: {s.get('sql', '')}" for s in shots
-    )
-
-
-def _render_terms(terms: list[dict[str, Any]]) -> str:
-    return "\n".join(
-        f"- {t.get('term', '')} → {t.get('mapping', '')}" for t in terms
-    )
-
-
-def _render_lessons(lessons: list[dict[str, Any]]) -> str:
-    return "\n".join(
-        f"- {l.get('pattern', '')}: {l.get('note', '')}" for l in lessons
     )
 
 

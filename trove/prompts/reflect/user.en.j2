@@ -1,0 +1,21 @@
+User question: {{ question }}
+{% if evidence %}
+Evidence (official hint, authoritative):
+{{ evidence }}
+{% endif %}{% if time_context %}
+Resolved time range (authoritative):
+{{ time_context }}
+{% endif %}{% if schema_context %}
+Schema context:
+{{ schema_context }}
+{% endif %}{% if sql %}
+Generated SQL:
+{{ sql }}
+{% endif %}
+Result columns: {{ columns }}
+Total rows returned: {{ total_rows }}
+Sample rows (first 5):
+{{ sample }}
+
+Does this result correctly answer the user's question?
+Respond with OK, RETRY: <reason>, EMPTY, or NO_SQL: <reason>.

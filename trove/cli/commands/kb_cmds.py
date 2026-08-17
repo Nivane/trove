@@ -13,6 +13,7 @@ import yaml
 
 from trove.cli.slash_registry import SlashRegistry, SlashCommand
 from trove.core.logging import get_logger
+from trove.prompts import render
 from trove.services.kb.deterministic_gen import generate_terms, generate_templates
 from trove.services.kb.docs_import import apply_docs, load_docs_tables
 from trove.services.kb.enum_probe import merge_into_notes, probe_enums
@@ -24,57 +25,9 @@ logger = get_logger(__name__)
 INIT_CHUNK_TABLES = 10
 INIT_MAX_TOKENS = 8192
 
-DRAFT_SYSTEM_PROMPT = """You maintain a SQL knowledge base for a data agent. Given a user question and the SQL that answered it, draft a YAML document in strict YAML (no markdown fences, no commentary) with this shape:
-
-example:
-  question: <the question>
-  sql: <the complete SQL on ONE single line>
-  tags: [<2-4 short topic tags>]
-terms:
-  - term: <a business term appearing in the question>
-    mapping: <SQL expression it corresponds to>
-    tables: [<tables involved>]
-    definition: <one-line definition>
-
-IMPORTANT: every value must be on a single line with correct YAML indentation. Never continue a value on an unindented line."""
-
-INIT_SYSTEM_PROMPT = """You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, and sample values for low-cardinality text columns — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
-
-tables:
-  - name: <table>
-    description: <one-line business description in English>
-    columns:
-      - name: <column>
-        description: <one-line description in English>
-        enums: []
-    metrics: []
-
-Rules:
-- For every column write a one-line English description (empty string "" if the column is truly opaque — do NOT guess the meaning of opaque columns like A1..A16 from name alone).
-- Columns that already carry an official description must keep it unchanged; only fill the blanks.
-- For text columns whose sample values are shown, fill enums with one "value=English meaning" entry per sample value, e.g. "POPLATEK MESICNE=monthly issuance".
-- Business terms and reference templates are generated automatically by the system — do NOT add terms/examples sections."""
-
-INIT_SYSTEM_PROMPT_ZH = """You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, and sample values for low-cardinality text columns — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
-
-tables:
-  - name: <table>
-    description: <one-line business description in Chinese>
-    columns:
-      - name: <column>
-        description: <one-line description in Chinese>
-        enums: []
-    metrics: []
-
-Rules:
-- For every column write a one-line Chinese description (empty string "" if the column is truly opaque — do NOT guess the meaning of opaque columns like A1..A16 from name alone).
-- Columns that already carry an official description must keep it unchanged; only fill the blanks.
-- For text columns whose sample values are shown, fill enums with one "value=中文含义" entry per sample value, e.g. "POPLATEK MESICNE=月发放 (monthly)".
-- Business terms and reference templates are generated automatically by the system — do NOT add terms/examples sections."""
-
-
 def _draft_prompt(question: str, sql: str) -> str:
-    return f"Question: {question}\nSQL: {sql}\n"
+    """/kb learn 用户提示词（薄封装，模板见 prompts/kb/draft_user.en.j2）。"""
+    return render("kb/draft_user", question=question, sql=sql)
 
 
 def _strip_fences(text: str) -> str:
@@ -234,7 +187,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         response = await llm.chat(
             model=model,
             messages=[
-                {"role": "system", "content": DRAFT_SYSTEM_PROMPT},
+                {"role": "system", "content": render("kb/draft_system")},
                 {"role": "user", "content": _draft_prompt(question, sql)},
             ],
         )
@@ -246,7 +199,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             repair_response = await llm.chat(
                 model=model,
                 messages=[
-                    {"role": "system", "content": DRAFT_SYSTEM_PROMPT},
+                    {"role": "system", "content": render("kb/draft_system")},
                     {"role": "user", "content": _draft_prompt(question, sql)},
                     {"role": "assistant", "content": response},
                     {"role": "user", "content": (
@@ -427,10 +380,9 @@ async def _draft_init_chunk(llm, model, tables, samples=None, lang: str = "en") 
     Raises:
         Exception: Parse failure even after the repair round.
     """
-    system = INIT_SYSTEM_PROMPT_ZH if lang == "zh" else INIT_SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": f"Schema:\n{_schema_text(tables, samples)}\n"},
+        {"role": "system", "content": render("kb/init_system", lang=lang)},
+        {"role": "user", "content": render("kb/init_user", schema_text=_schema_text(tables, samples))},
     ]
     response = await llm.chat(
         model=model, messages=messages, max_tokens=INIT_MAX_TOKENS,
@@ -445,10 +397,7 @@ async def _draft_init_chunk(llm, model, tables, samples=None, lang: str = "en") 
             messages=[
                 *messages,
                 {"role": "assistant", "content": response},
-                {"role": "user", "content": (
-                    f"Your YAML failed to parse: {first_error}\n"
-                    f"Output ONLY the corrected YAML document."
-                )},
+                {"role": "user", "content": render("kb/init_repair", error=first_error)},
             ],
         )
         return _parse_init_tables(repair_response)

@@ -1,0 +1,16 @@
+Question: {{ question }}
+
+Schema context:
+{{ schema_context }}
+{% if time_context %}
+Resolved time range: {{ time_context }}
+{% endif %}{% if history %}
+Conversation history:
+{{ history }}
+{% endif %}{% if correction %}
+Correction context (previous failure):
+{{ correction }}
+{% endif %}{% if previous_plan %}
+Previous plan (judged failed; keep the parts that remain correct):
+{{ previous_plan }}
+{% endif %}

@@ -1,0 +1,9 @@
+Question: {{ question }}
+Failed SQL: {{ sql }}
+Error: {{ error }}
+Schema context: {{ schema_context }}
+{% if evidence %}Evidence (official hint, authoritative): {{ evidence }}
+{% endif %}{% if trail -%}
+Prior reasoning trail (thinking/tool trace from the failed generation):
+{{ trail }}
+{% endif -%}

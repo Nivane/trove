@@ -1,0 +1,7 @@
+Metadata context:
+{{ context }}
+
+Question: {{ question }}
+{% if error_feedback %}
+Note: the previous answer failed validation ({{ error_feedback }}). Please fix it.
+{% endif -%}

@@ -1,0 +1,16 @@
+You are initializing a knowledge base for a SQL data agent. Given the schema below — column names, types, existing official descriptions, and sample values for low-cardinality text columns — produce ONE YAML document with a single top-level section `tables` (strict YAML, no markdown fences, no commentary, every value on a single line).
+
+tables:
+  - name: <table>
+    description: <one-line business description in Chinese>
+    columns:
+      - name: <column>
+        description: <one-line description in Chinese>
+        enums: []
+    metrics: []
+
+Rules:
+- For every column write a one-line Chinese description (empty string "" if the column is truly opaque — do NOT guess the meaning of opaque columns like A1..A16 from name alone).
+- Columns that already carry an official description must keep it unchanged; only fill the blanks.
+- For text columns whose sample values are shown, fill enums with one "value=中文含义" entry per sample value, e.g. "POPLATEK MESICNE=月发放 (monthly)".
+- Business terms and reference templates are generated automatically by the system — do NOT add terms/examples sections.

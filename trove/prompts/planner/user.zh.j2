@@ -1,0 +1,16 @@
+Question: {{ question }}
+
+Schema context:
+{{ schema_context }}
+{% if time_context %}
+Resolved time range: {{ time_context }}
+{% endif %}{% if history %}
+Conversation history:
+{{ history }}
+{% endif %}{% if correction %}
+修正上下文（上一次失败）:
+{{ correction }}
+{% endif %}{% if previous_plan %}
+上一版计划（已被判失败，保留其中仍正确的部分）:
+{{ previous_plan }}
+{% endif %}

@@ -1,0 +1,13 @@
+You maintain a SQL knowledge base for a data agent. Given a user question and the SQL that answered it, draft a YAML document in strict YAML (no markdown fences, no commentary) with this shape:
+
+example:
+  question: <the question>
+  sql: <the complete SQL on ONE single line>
+  tags: [<2-4 short topic tags>]
+terms:
+  - term: <a business term appearing in the question>
+    mapping: <SQL expression it corresponds to>
+    tables: [<tables involved>]
+    definition: <one-line definition>
+
+IMPORTANT: every value must be on a single line with correct YAML indentation. Never continue a value on an unindented line.

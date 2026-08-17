@@ -11,30 +11,19 @@ import json
 import re
 from typing import Any
 
-DISTILL_SYSTEM = (
-    "You distill reusable lessons from Text2SQL evaluation failures. "
-    'For each failure, output ONLY a JSON object: '
-    '{"pattern": "...", "note": "...", "sql_snippet": "..."}\n'
-    "- pattern: a distinctive 2-6 word phrase from the question (verbatim, "
-    "lowercase) that future questions with the same pitfall will contain; "
-    "- note: the concrete lesson — what was wrong and how to fix it; "
-    "- sql_snippet: a short fragment of the WRONG SQL (up to 120 chars)."
-)
+from trove.prompts import render
 
 
 def build_distill_prompt(failure: dict[str, Any]) -> str:
     """失败记录 → 蒸馏提示词(含 gold 与 pred 对照)。"""
-    return "\n".join([
-        "A Text2SQL question was answered incorrectly.",
-        "",
-        f"Question: {failure.get('question', '')}",
-        f"Evidence: {failure.get('evidence', '')}",
-        f"Gold SQL: {failure.get('gold_sql', '')}",
-        f"Predicted SQL: {failure.get('pred_sql', '')}",
-        f"Error: {failure.get('error', '')}",
-        "",
-        "Extract the reusable lesson.",
-    ])
+    return render(
+        "lesson_distill/user",
+        question=failure.get("question", ""),
+        evidence=failure.get("evidence", ""),
+        gold_sql=failure.get("gold_sql", ""),
+        pred_sql=failure.get("pred_sql", ""),
+        error=failure.get("error", ""),
+    )
 
 
 def parse_lesson(response: str) -> dict[str, str] | None:

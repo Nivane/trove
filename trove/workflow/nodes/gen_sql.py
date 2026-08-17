@@ -17,112 +17,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.config import AgentConfig
-from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
+from trove.prompts import render
 from trove.workflow.state import GenSQLState
 
 logger = get_logger(__name__)
-
-# ── Prompt Templates ─────────────────────────────────────
-
-SQL_GENERATION_SYSTEM_PROMPT = """You are a SQL generation assistant. Your task is to translate natural language questions into accurate SQL queries.
-
-Guidelines:
-1. Generate ONLY the SQL query, nothing else.
-2. Use the provided table schemas exactly as described.
-3. Use standard SQL syntax that works with the target dialect.
-4. If the question is ambiguous, make reasonable assumptions and note them.
-5. Do NOT use INSERT, UPDATE, DELETE, DROP, or any write operations.
-6. Always use proper quoting for table and column names when needed.
-7. If you cannot generate a valid SQL query, explain why.
-8. When the Evidence defines a formula (e.g. "Gap = X - Y" or "rate = (A - B) / B * 100"), apply it at the scope the formula states. Unless the Evidence explicitly restricts the scope, the formula's terms ("highest/lowest/average X") are computed GLOBALLY over the whole table — do not anchor a global term to one specific row or entity mentioned elsewhere in the question.
-9. For percentage/ratio calculations over counts, use CAST(SUM(cond) AS DOUBLE) * 100 / COUNT(...) — cast to floating point BEFORE dividing, and return the full-precision result. Integer division in MySQL truncates to 4 decimal places (27/61*100 yields 44.2623 instead of 44.26229508196721), which breaks exact result matching.
-10. Unit consistency: the question's own wording decides WHAT is being measured. "Percentage of accounts/clients/rows" → count rows (SUM(cond) / COUNT(*)); "percentage of amount/total amount" → sum amounts (SUM(CASE cond THEN amount) / SUM(amount)). When the Evidence formula's unit conflicts with the question's unit, the question's unit wins — Evidence resolves column/value meanings, not what is counted.
-11. Reference examples are authoritative: when a Reference example's question closely matches the current question, treat its SQL as the standard formulation — reproduce its joins, filters, grouping, and result columns exactly. Do not "improve" or reinterpret it.
-12. Result granularity: a plain "list the X ..." question (no ranking words like "top N") returns ONE ROW PER MATCHING RECORD — do NOT add SELECT DISTINCT or DISTINCT inside aggregate functions (e.g. AVG(DISTINCT x), SUM(DISTINCT x)) to collapse duplicates unless the question explicitly asks for unique/unduplicated values (e.g. "unique", "distinct", "different X"). COUNT(DISTINCT) is allowed when the question asks for the NUMBER of distinct entities ("number of districts", "how many different X"). Only ranking questions ("top ten X by Y") may deduplicate to one row per Y.
-13. Answer columns: output ONLY the columns the question asks for. For a "list all the X" question that does not name columns, output just the identifying column of X (its ID — e.g. trans_id, account_id) or the attribute the question names; do NOT dump the full record (dates, amounts, symbols, statuses) unless the question explicitly names them. Do NOT append extra identification columns: when the question mentions people ("who are the account holders") but names specific columns to state ("State the account ID and the frequency"), output exactly those named columns — no extra person/entity ID (e.g. client_id), and no extra joins whose only purpose is to "identify" them.
-14. Age computation: "age" questions compute age as the simple YEAR difference, e.g. DATE_FORMAT(CAST(CURRENT_TIMESTAMP() AS DATETIME), '%Y') - DATE_FORMAT(CAST(birth_date AS DATETIME), '%Y'). Do NOT use TIMESTAMPDIFF(YEAR, birth_date, ...) — it subtracts one more year when the birthday has not passed yet this year, producing off-by-one ages that break exact result matching.
-15. Minimum/maximum: "lowest/highest X" questions use ORDER BY col ASC/DESC LIMIT 1 — plain and sufficient. Do NOT wrap them in CTEs or nested MIN/MAX subqueries; those add syntax risk with no benefit.
-16. Combined superlatives: "oldest AND lowest X" (youngest AND highest, etc.) is ONE ordering: ORDER BY <primary> ASC, <secondary> ASC LIMIT 1 — the primary condition decides, the secondary only breaks ties. Do NOT pre-filter by the global MIN/MAX of the secondary condition first — pre-filtering by ANY condition's global MIN/MAX (or intersecting two global MIN/MAX subqueries) almost always yields zero rows.
-17. Join paths: when the table in question carries its own FK column (e.g. client.district_id), join directly on that column. Do NOT route through association tables (disp) to reach the same table — that changes the row granularity and the result.
-18. Entity vs metric: for "the X with the biggest/smallest Y" questions, select or group by the entity column the question names (e.g. the region name), not by the metric column (e.g. inhabitants count). Likewise, in a "top N X by <attribute>" question, the attribute after "by" IS the sort key (e.g. "top ten withdrawals by district names" → ORDER BY the district name, take N) — do not invent an aggregate metric (SUM/COUNT) as the ranking key.
-19. SELECT list hygiene: the SELECT list contains ONLY the answer columns. Never include: (a) columns used only for ORDER BY sorting (e.g. loan.amount when the question asks for accounts only); (b) intermediate/input columns of a formula (e.g. the A12/A13 operands of a rate or increment); (c) extra identification columns for entities the question does not ask to list. For formula questions (rate/gap/percentage/increment), the formula's final result column IS the answer — output only it. Add an entity-name column alongside it ONLY when the question grammatically and clearly pairs an entity with its measure ("list the districts and their unemployment rate"). Do not extract entity columns from broken or garbled phrasing (e.g. "list the district of the and the state the percentage ..." — the district noun is buried in garbled text, it is NOT a requested column; output only the formula column). The Query plan's Answer columns field is authoritative for your SELECT list: it has already resolved the question's output columns, so do not re-add entity columns by re-reading nouns out of the question. Deviate from the plan's answer columns only when the question grammatically and explicitly names a specific output column the plan missed.
-20. Formula term attribution: when a noun phrase in the question duplicates a term in the Evidence formula (e.g. "lowest average salary" is also the MIN operand of "Gap = highest - lowest"), that phrase belongs to the FORMULA — compute the formula's terms globally (rule 8), and do NOT stack the phrase onto the entity qualifiers (WHERE/ORDER BY). Garbled conjunctions ("clients who are oldest and has lowest average salary") resolve the same way: the term that matches the formula goes to the formula.
-21. Schema-first attributes & multi-question isolation: (a) when the question asks about a record's attribute ("how often", "frequency", "type", "mode") and the schema has a column with that meaning (e.g. account.frequency), SELECT that column's value directly — do not synthesize an aggregate over a related table, and do not invent filter values the question does not state; (b) a question with multiple sentences/sub-questions must be answered per sub-question independently — each sub-question uses only its own conditions; never import the other sub-question's filters (k_symbol, amounts) into this one.
-22. Evidence equivalence definitions are authoritative rewrites for WHERE: when the Evidence states a column-value equivalence (e.g. "when the account type = 'OWNER', it's eligible for loans" or "non-credit card refers to type = 'VYDAJ'"), build the filter directly from that definition (not eligible → type <> 'OWNER'; non-credit-card → type = 'VYDAJ'). Do NOT bypass the Evidence and invent an equivalent filter from other columns (e.g. loan.status, operation).
-23. Person-as-subject ownership filter: when the question constrains assets/accounts by a PERSON (e.g. "loans for a male client", "the client's accounts") and the person↔asset link goes through a role/disposition table (e.g. disp), filter to the OWNER role (e.g. disp.type = 'OWNER') — a person's "own" accounts are the ones they own, not ones they merely hold disposition rights over (DISPONENT), which would over-count. Drop this filter only when the question explicitly includes non-owner associations (e.g. "all accounts associated with the client").
-
-Output format:
-```sql
-SELECT ...
-```
-"""
-
-SQL_GENERATION_SYSTEM_PROMPT_ZH = """你是 SQL 生成助手，负责把自然语言问题翻译成准确的 SQL 查询。
-
-规则：
-1. 只输出 SQL 查询，不要输出其他内容。
-2. 严格使用提供的表结构。
-3. 使用符合目标方言的标准 SQL 语法。
-4. 问题有歧义时做合理假设并在 SQL 注释中说明。
-5. 禁止 INSERT、UPDATE、DELETE、DROP 等写操作。
-6. 需要时正确引用表名和列名。
-7. 无法生成合法 SQL 时，说明原因。
-8. 当 Evidence 给出公式定义（如 "Gap = X - Y" 或 "rate = (A - B) / B * 100"）时，按其字面作用域执行：除非 Evidence 明确限定范围，公式中的"最高/最低/平均 X"都在整表全局计算，不要把全局项锚定到问题中提到的某个具体行或实体上。
-9. 百分比/比例计算遵循 BIRD 惯例：CAST(SUM(条件) AS DOUBLE) * 100 / COUNT(...) —— 先转浮点再除，返回全精度结果。MySQL 整数除法会截断到 4 位小数（27/61*100 = 44.2623，而不是 44.26229508196721），导致结果无法精确匹配。
-10. 口径一致性：问题自身措辞决定"数什么"。"percentage of accounts/clients/rows" → 按行数统计（SUM(条件) / COUNT(*)）；"percentage of amount/total amount" → 按金额求和（SUM(CASE 条件 THEN amount) / SUM(amount)）。当 Evidence 公式的口径与问题措辞冲突时，以问题措辞为准——Evidence 只解决列/取值含义，不决定统计对象。
-11. 参考示例是权威的：当某个 Reference example 的问题与当前问题高度相似时，把它的 SQL 视为标准写法——精确复刻其 join、过滤、分组和结果列，不要"改进"或重新解读它。
-12. 结果粒度：普通 "list the X ..." 问题（不含 "top N" 等排序词）应每个匹配记录返回一行——不要加 SELECT DISTINCT，也不要在聚合函数内加 DISTINCT（如 AVG(DISTINCT x)、SUM(DISTINCT x)）去重，除非问题明确要求唯一/去重值（如 "unique"、"distinct"、"different X"）。问题询问"不同实体的数量"（"number of districts"、"how many different X"）时允许 COUNT(DISTINCT)。只有排序类问题（"top ten X by Y"）才按 Y 去重为一行。
-13. 答案列：只输出问题要求的列。"list all the X" 类问题若未指明列，只输出 X 的标识列（其 ID，如 trans_id、account_id）或问题点名的属性列；不要输出整条记录的日期、金额、符号、状态等额外列，除非问题明确点名这些列。不要附加额外的识别列：问题提到人物（"who are the account holders"）但点名了要输出的列（"State the account ID and the frequency"）时，只输出这些点名的列——不要为了"识别"人物而追加 client_id 等实体 ID，也不要为此增加多余的 join。
-14. 年龄计算："age" 问题按简单年份差计算年龄，如 DATE_FORMAT(CAST(CURRENT_TIMESTAMP() AS DATETIME), '%Y') - DATE_FORMAT(CAST(birth_date AS DATETIME), '%Y')。不要用 TIMESTAMPDIFF(YEAR, birth_date, ...)——当年生日未过时它会少算一岁，与标准答案差 1 岁，导致结果无法精确匹配。
-15. 极值问题："最低/最高的 X" 直接用 ORDER BY 列 ASC/DESC LIMIT 1 即可，不要包 CTE 或嵌套 MIN/MAX 子查询——徒增语法风险。
-16. 多重最高级："最年长且 X 最低"（最年轻且最高等）是单条排序：ORDER BY 主条件, 次条件 LIMIT 1——主条件定胜负，次条件只裁决平局。不要先按次条件的全局 MIN/MAX 预过滤——按任一条件的全局 MIN/MAX 预过滤（或把两个全局 MIN/MAX 子查询取交集）几乎必然得到空集、0 行。
-17. 连接路径：相关表自带外键列时（如 client.district_id）直接在该列上 join；不要为了到达同一张表绕道关联表（disp）——那会改变行粒度与结果。
-18. 实体与度量："拥有最多/最少 Y 的 X" 类问题按问题点名的实体列（如地区名）选择或分组，而不是按度量列（如居民数量）。同理，"top N X by <属性>" 类问题里 "by" 后的属性就是排序键（如 "top ten withdrawals by district names" → 按区名排序取 N）——不要自造聚合度量（SUM/COUNT）作为排名键。
-19. SELECT 列表洁癖：SELECT 列表只包含答案列。绝不包含：(a) 仅用于 ORDER BY 排序的列（如问题只问账号时附带 loan.amount）；(b) 公式的中间/输入列（如 rate/increment 公式里的 A12、A13 操作数）；(c) 问题未要求列出的实体的附加标识列。公式类问题（rate/gap/percentage/increment）的最终结果列就是答案——只输出它。仅当问题用通顺的并列结构明确把实体与其指标配对（"list the districts and their unemployment rate"）时，才加实体名列。不要从残缺破碎的句式里提取实体列（如 "list the district of the and the state the percentage ..."——district 这个名词埋在残缺文本里，不是被要求的输出列，只输出公式列）。Query plan 的 Answer columns 字段对你的 SELECT 列表有权威性：它已经解决了问题的输出列，不要靠重读问题里的名词再加回实体列。只有当问题通顺且明确点名了计划遗漏的具体输出列时，才偏离计划的答案列。
-20. 公式术语归属：当问题中某名词短语与 Evidence 公式的术语同名（如 "lowest average salary" 同时也是 "Gap = highest - lowest" 的 MIN 操作数）时，该短语属于公式——公式各项全局计算（规则 8），不要把该短语叠加到实体的限定条件（WHERE/ORDER BY）上。句式残缺的并列（"clients who are oldest and has lowest average salary"）同样处理：与公式同名的项归入公式。
-21. Schema 列优先与多问句隔离：(a) 问题询问记录的属性（"多久一次"、"频率"、"类型"、"方式"等）且 schema 中有同义列（如 account.frequency）时，直接输出该列的值——不要在相关表上自造聚合统计，也不要臆造问题未给出的过滤值；(b) 多问句问题必须逐句独立解析：每个问句只用它自己的条件，禁止把其他问句的过滤线索（k_symbol、金额等）混入当前问句。
-22. Evidence 的等价定义是 WHERE 条件的权威改写：当 Evidence 给出列值等价关系（如 "account type = 'OWNER' → eligible for loans"、"non-credit card refers to type = 'VYDAJ'"）时，直接用该定义构造过滤条件（not eligible → type <> 'OWNER'；non-credit-card → type = 'VYDAJ'）。禁止绕开 Evidence 用其他列自造等价过滤（如 loan.status、operation）。
-23. 以人为主体的所有权过滤：当问题以某个人为主体限定资产/账户（如 "for a male client"、"the client's accounts"），且 person↔asset 关系经角色/处置表（如 disp）建立时，用所有权角色过滤（如 disp.type = 'OWNER'）——某人的"自己的"账户指其拥有的账户，不包括仅有处置权（DISPONENT）的账户，否则会多算。仅当问题明确包含非所有者关联（如 "all accounts associated with the client"）时才去掉该过滤。
-
-输出格式：
-```sql
-SELECT ...
-```
-"""
-
-SQL_FIX_PROMPT = """The following SQL query failed validation:
-
-```sql
-{sql}
-```
-
-Validation errors:
-{errors}
-
-Please fix the SQL query. Keep the original query intent — fix syntax errors only, do not change the business semantics. Generate ONLY the corrected SQL.
-
-```sql
-SELECT ...
-```
-"""
-
-SQL_FIX_PROMPT_ZH = """以下 SQL 查询未通过校验：
-
-```sql
-{sql}
-```
-
-校验错误：
-{errors}
-
-请修复该 SQL。保持原始查询意图不变，只修正语法错误，不要改变问题的业务语义。只输出修正后的 SQL，不要输出其他内容。
-
-```sql
-SELECT ...
-```
-"""
 
 
 def build_sql_prompt(
@@ -141,112 +41,64 @@ def build_sql_prompt(
     lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
+    lang: str = "en",
 ) -> str:
     """Build the initial SQL generation prompt.
 
     Knowledge base material (optional) is injected as:
       - Terminology: standard formulations for matched business terms
       - Reference examples: top-K similar questions with their SQL
+
+    Thin wrapper over the ``gen_sql/user`` Jinja template.
     """
-    parts = [
-        f"Target SQL dialect: {dialect}",
-        "",
-        "Database schema:",
-        schema_context or "(No schema information available - generate a best-effort query)",
-        "",
-    ]
-    if history:
-        parts += [
-            "Conversation history (previous exchanges, oldest first):",
-            history,
-            "",
-        ]
-    if plan:
-        parts += [
-            "Query plan (follow it unless it conflicts with the question):",
-            plan,
-            "",
-        ]
-    if rules:
-        parts.append("Data source rules (must follow):")
-        for rule in rules:
-            parts.append(f"- {rule}")
-        parts.append("")
-    if lessons:
-        parts.append("Known pitfalls (learned from past corrections — avoid these):")
-        for lesson in lessons:
-            parts.append(f"- {lesson.get('pattern', '')}: {lesson.get('note', '')}")
-        parts.append("")
-    if term_notes:
-        parts.append("Terminology (standard formulations):")
-        for note in term_notes:
-            line = f"- {note.get('term', '')} → {note.get('mapping', '')}"
-            if note.get("definition"):
-                line += f" — {note['definition']}"
-            parts.append(line)
-        parts.append("")
-    if few_shots:
-        parts.append("Reference examples (standard formulations for this data):")
-        for shot in few_shots:
-            parts.append(f"Q: {shot.get('question', '')}")
-            parts.append(f"SQL: {shot.get('sql', '')}")
-        parts.append("")
-    # Evidence and the resolved time range sit right before the question —
-    # the last things the model reads before generating, and authoritative
-    # over its own assumptions (a wrong assumption here is silent, not
-    # visible).
-    if evidence:
-        parts += [
-            "Evidence (official hint for this question — authoritative, must follow):",
-            evidence,
-            "",
-        ]
-    if time_context:
-        parts += [
-            "Resolved time range (authoritative — derived from the question's relative time expression; use it for date filters):",
-            time_context,
-            "",
-        ]
-    parts += [
-        "Question:",
-        question,
-        "",
-    ]
-    if reflect_reason:
-        parts += [
-            f"Note: a previous version of this query was rejected with: "
-            f"{reflect_reason}. Please correct it.",
-            "",
-        ]
-    if error_feedback:
-        parts += [
-            f"Note: the previous query failed during execution with: "
-            f"{error_feedback}. Please correct the SQL.",
-            "",
-        ]
-    if error_analysis:
-        parts += [
-            "Error analysis (diagnosis and fix plan from the expert):",
-            error_analysis,
-            "",
-        ]
-    if reasoning_context:
-        parts += [
-            "Prior reasoning trail (your previous thinking; avoid repeating the same mistake):",
-            reasoning_context,
-            "",
-        ]
-    parts.append("Generate the SQL query to answer this question:")
-    return "\n".join(parts)
+    return render(
+        "gen_sql/user",
+        lang=lang,
+        question=question,
+        schema_context=schema_context,
+        dialect=dialect,
+        reflect_reason=reflect_reason,
+        error_feedback=error_feedback,
+        history=history,
+        plan=plan,
+        evidence=evidence,
+        time_context=time_context,
+        error_analysis=error_analysis,
+        reasoning_context=reasoning_context,
+        rules=rules or [],
+        lessons=lessons or [],
+        few_shots=few_shots or [],
+        term_notes=term_notes or [],
+    )
 
 
 def build_fix_prompt(sql: str, errors: list[str], lang: str = "en") -> str:
     """Build a fix prompt when validation fails (bilingual; default en keeps
     the pure-helper behavior for direct callers)."""
-    template = L(lang, SQL_FIX_PROMPT_ZH, SQL_FIX_PROMPT)
-    return template.format(
-        sql=sql,
-        errors="\n".join(f"- {e}" for e in errors),
+    return render("gen_sql/fix", lang=lang, sql=sql, errors=errors)
+
+
+def render_shots(shots: list[dict[str, Any]]) -> str:
+    """参考示例段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    return "".join(
+        f"Q: {s.get('question', '')}\nSQL: {s.get('sql', '')}\n" for s in shots
+    )
+
+
+def render_terms(terms: list[dict[str, Any]]) -> str:
+    """术语段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    return "".join(
+        f"- {t.get('term', '')} → {t.get('mapping', '')}"
+        + (f" — {t['definition']}" if t.get("definition") else "")
+        + "\n"
+        for t in terms
+    )
+
+
+def render_lessons(lessons: list[dict[str, Any]]) -> str:
+    """教训段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    return "".join(
+        f"- {l.get('pattern', '')}: {l.get('note', '')}\n" for l in lessons
     )
 
 
@@ -352,11 +204,7 @@ def make_generate(
 
         model = config.target or "openai/gpt-4o"
         start = time.monotonic()
-        system_prompt = L(
-            state.lang,
-            SQL_GENERATION_SYSTEM_PROMPT_ZH,
-            SQL_GENERATION_SYSTEM_PROMPT,
-        )
+        system_prompt = render("gen_sql/system", lang=state.lang)
         response = await llm.chat(
             model=model,
             messages=[

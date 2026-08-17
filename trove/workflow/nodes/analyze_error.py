@@ -20,37 +20,10 @@ from trove.core.config import AgentConfig
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
+from trove.prompts import render
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
-
-ANALYZE_ZH = """你是 SQL 错误诊断专家。给定失败的 SQL、错误信息、问题与相关表结构，输出四部分：
-
-1. 错误类型：Schema Linking / Join / 聚合 / 过滤 / 业务语义（选一）
-2. 判断：这条 SQL 错在哪里，为什么会错
-3. 修正方案：具体怎么改
-4. 回退目标：判断失败根因在哪一步，输出一行 "TARGET: gen_sql|planner|schema_linking"
-   （SQL 本身写错→gen_sql；查询计划/聚合思路错→planner；表/列匹配错或漏表→schema_linking；无法判断时→gen_sql）
-
-如果给出了 Evidence（官方提示），它代表该题的标准业务语义；当它与你的领域知识冲突时，以 Evidence 为准。
-
-如果问题本身不是数据查询（表含义/术语定义/知识性问题），只输出一行："NO_SQL: <一句话>"，不要输出错误诊断。
-
-简洁输出，不要输出完整 SQL。"""
-
-ANALYZE_EN = """You are a SQL error diagnosis expert. Given a failed SQL, the error, the question, and relevant schema, output four parts:
-
-1. Error type: Schema Linking / Join / Aggregation / Filter / Business semantics (pick one)
-2. Judgment: what is wrong with this SQL and why
-3. Fix plan: how to correct it concretely
-4. Rollback target: decide which step is at fault and output one line "TARGET: gen_sql|planner|schema_linking"
-   (SQL itself wrong → gen_sql; plan/aggregation logic wrong → planner; table/column matching wrong or missing → schema_linking; unsure → gen_sql)
-
-If Evidence (an official hint) is given, it states the question's standard business semantics; when it conflicts with your domain knowledge, trust the Evidence.
-
-If the question itself is not answerable by SQL (table meaning / term definition / knowledge question), output ONLY one line: "NO_SQL: <one sentence>", nothing else.
-
-Be concise; do not output the full SQL."""
 
 ROLLBACK_TARGET_RE = re.compile(r"TARGET\s*[:：]\s*(\w+)", re.I)
 DEFAULT_ROLLBACK_LADDER = ("gen_sql", "planner", "schema_linking")
@@ -168,30 +141,19 @@ def make_analyze_error(
 
         try:
             model = config.target or "openai/gpt-4o"
-            system_prompt = L(
-                state.lang,
-                ANALYZE_ZH,
-                ANALYZE_EN,
-            )
+            system_prompt = render("analyze_error/system", lang=state.lang)
             error_text = state.error_feedback or state.reason
-            prompt = (
-                f"Question: {state.question}\n"
-                f"Failed SQL: {state.sql}\n"
-                f"Error: {error_text}\n"
-                f"Schema context: {state.schema_context[:1200]}\n"
-            )
-            # 官方提示是业务语义的权威锚点:诊断不得把 evidence 支持的解释判为错误
-            if state.evidence:
-                prompt += (
-                    f"Evidence (official hint, authoritative): {state.evidence}\n"
-                )
             # 上一轮生成/规划方的思考痕迹:定位误判根因的关键上下文
             trail = render_reasoning_context(state.reasoning_history)
-            if trail:
-                prompt += (
-                    "Prior reasoning trail (thinking/tool trace from the "
-                    f"failed generation):\n{trail}\n"
-                )
+            prompt = render(
+                "analyze_error/user",
+                question=state.question,
+                sql=state.sql,
+                error=error_text,
+                schema_context=state.schema_context[:1200],
+                evidence=state.evidence,
+                trail=trail,
+            )
             analysis = await llm.chat(
                 model=model,
                 messages=[

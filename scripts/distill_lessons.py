@@ -22,8 +22,8 @@ load_dotenv(Path.cwd() / ".env")
 
 from trove.core.config import ConfigLoader
 from trove.llm.gateway import LLMGateway
+from trove.prompts import render
 from trove.services.kb.lesson_distill import (
-    DISTILL_SYSTEM,
     build_distill_prompt,
     dedupe_by_pattern,
     is_noise_lesson,
@@ -64,7 +64,7 @@ async def main() -> None:
         response = await llm.chat(
             model=config.target,
             messages=[
-                {"role": "system", "content": DISTILL_SYSTEM},
+                {"role": "system", "content": render("lesson_distill/system")},
                 {"role": "user", "content": build_distill_prompt(f)},
             ],
             max_tokens=300,

@@ -15,27 +15,14 @@ from typing import Any
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
-from trove.core.i18n import L
 from trove.llm.gateway import LLMGateway
+from trove.prompts import render
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
 _REF_RE = re.compile(r"\b([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\b")
-
-JUDGE_SYSTEM_PROMPT_ZH = """你是元数据答案评审员。给定用户问题和已生成的答案，检查：
-1. 答案是否完整回答了问题的每个部分？
-2. 答案是否只引用了元数据上下文中存在的信息？
-
-只回答 "OK" 或 "ISSUE: <理由>"。"""
-
-JUDGE_SYSTEM_PROMPT = """You are a metadata answer reviewer. Given the user question and the generated answer, check:
-1. Does the answer fully address every part of the question?
-2. Does it reference only information that could come from the provided metadata context?
-
-Reply with ONLY "OK" or "ISSUE: <reason>"."""
-
 
 def find_hallucinations(answer: str, table_columns: dict[str, list[str]]) -> list[str]:
     """table.column references that do not exist in the schema."""
@@ -82,19 +69,16 @@ def make_metadata_check(
         if llm is not None:
             try:
                 model = (config.target if config else "") or "openai/gpt-4o"
-                judge_prompt = L(
-                    state.lang,
-                    JUDGE_SYSTEM_PROMPT_ZH,
-                    JUDGE_SYSTEM_PROMPT,
-                )
+                system_prompt = render("metadata_check/system", lang=state.lang)
                 verdict = await llm.chat(
                     model=model,
                     max_tokens=64,
                     messages=[
-                        {"role": "system", "content": judge_prompt},
-                        {"role": "user", "content": (
-                            f"Question: {state.question}\n"
-                            f"Answer: {state.intent_answer}\n"
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": render(
+                            "metadata_check/user",
+                            question=state.question,
+                            answer=state.intent_answer,
                         )},
                     ],
                     metadata={
