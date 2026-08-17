@@ -47,6 +47,7 @@ Guidelines:
 16. Combined superlatives: "oldest AND lowest X" (youngest AND highest, etc.) is ONE ordering: ORDER BY <primary> ASC, <secondary> ASC LIMIT 1 — the primary condition decides, the secondary only breaks ties. Do NOT pre-filter by the global MIN/MAX of the secondary condition first.
 17. Join paths: when the table in question carries its own FK column (e.g. client.district_id), join directly on that column. Do NOT route through association tables (disp) to reach the same table — that changes the row granularity and the result.
 18. Entity vs metric: for "the X with the biggest/smallest Y" questions, select or group by the entity column the question names (e.g. the region name), not by the metric column (e.g. inhabitants count).
+19. SELECT list hygiene: the SELECT list contains ONLY the answer columns. Never include: (a) columns used only for ORDER BY sorting (e.g. loan.amount when the question asks for accounts only); (b) intermediate/input columns of a formula (e.g. the A12/A13 operands of a rate or increment); (c) extra identification columns for entities the question does not ask to list. For formula questions (rate/gap/percentage/increment), the formula's final result column IS the answer — output only it. Add an entity-name column alongside it ONLY when the question grammatically and clearly pairs an entity with its measure ("list the districts and their unemployment rate"). Do not extract entity columns from broken or garbled phrasing (e.g. "list the district of the and the state the percentage ..." — the district noun is buried in garbled text, it is NOT a requested column; output only the formula column). The Query plan's Answer columns field is authoritative for your SELECT list: it has already resolved the question's output columns, so do not re-add entity columns by re-reading nouns out of the question. Deviate from the plan's answer columns only when the question grammatically and explicitly names a specific output column the plan missed.
 
 Output format:
 ```sql
@@ -75,6 +76,7 @@ SQL_GENERATION_SYSTEM_PROMPT_ZH = """你是 SQL 生成助手，负责把自然�
 16. 多重最高级："最年长且 X 最低"（最年轻且最高等）是单条排序：ORDER BY 主条件, 次条件 LIMIT 1——主条件定胜负，次条件只裁决平局。不要先按次条件的全局 MIN/MAX 预过滤。
 17. 连接路径：相关表自带外键列时（如 client.district_id）直接在该列上 join；不要为了到达同一张表绕道关联表（disp）——那会改变行粒度与结果。
 18. 实体与度量："拥有最多/最少 Y 的 X" 类问题按问题点名的实体列（如地区名）选择或分组，而不是按度量列（如居民数量）。
+19. SELECT 列表洁癖：SELECT 列表只包含答案列。绝不包含：(a) 仅用于 ORDER BY 排序的列（如问题只问账号时附带 loan.amount）；(b) 公式的中间/输入列（如 rate/increment 公式里的 A12、A13 操作数）；(c) 问题未要求列出的实体的附加标识列。公式类问题（rate/gap/percentage/increment）的最终结果列就是答案——只输出它。仅当问题用通顺的并列结构明确把实体与其指标配对（"list the districts and their unemployment rate"）时，才加实体名列。不要从残缺破碎的句式里提取实体列（如 "list the district of the and the state the percentage ..."——district 这个名词埋在残缺文本里，不是被要求的输出列，只输出公式列）。Query plan 的 Answer columns 字段对你的 SELECT 列表有权威性：它已经解决了问题的输出列，不要靠重读问题里的名词再加回实体列。只有当问题通顺且明确点名了计划遗漏的具体输出列时，才偏离计划的答案列。
 
 输出格式：
 ```sql

@@ -81,13 +81,23 @@ PLANNER_SYSTEM_PROMPT_ZH = """你是 SQL 查询规划器。根据用户问题和
 
 {"tables": ["loan", "account"], "joins": "loan.account_id = account.account_id", "conditions": [{"field": "loan.date", "op": "=", "value": "1997", "note": "贷款批准年份"}], "aggregation": "无 | count | sum | avg | ...", "extreme": {"func": "min|max", "column": "loan.amount", "scope": "全部条件过滤后 | 全局"}, "ordering": "字段 升/降序（无则留空）", "answer_columns": ["account_id"]}
 
-关键作用域规则：当问题用「在…中 / among / whose」等限定多个条件（含属性条件，如"选择周发放"），并要求最低/最高/最多/最少时，必须先把全部限定条件应用于过滤，再在过滤后的集合上取极值（或排序取第一条）。极值的作用域永远是被全部限定条件筛选后的集合——绝不能在应用全部限定条件之前先算极值。extreme.scope 必须显式写明极值在哪个集合上取。"""
+关键作用域规则：当问题用「在…中 / among / whose」等限定多个条件（含属性条件，如"选择周发放"），并要求最低/最高/最多/最少时，必须先把全部限定条件应用于过滤，再在过滤后的集合上取极值（或排序取第一条）。极值的作用域永远是被全部限定条件筛选后的集合——绝不能在应用全部限定条件之前先算极值。extreme.scope 必须显式写明极值在哪个集合上取。
+
+输出列规则：answer_columns 只放问题明确要求的列。
+- "list all the X ..." 类问题若未点名列，answer_columns 只含 X 的标识列（其 ID，如 trans_id、account_id）或问题点名的属性列；不要罗列记录的明细列（date、amount、balance、type、operation、status 等）。
+- 公式类问题（rate/gap/percentage/increment）answer_columns 只含公式的最终结果列——不含公式的输入列（如 A12/A13），也不含实体名列，除非问题用清晰通顺的并列结构同时点名实体及其指标（"list the districts and their unemployment rate"）。问题句式残缺、语法破碎时（如 "the district of the and the state"），只输出公式的最终结果列。
+- 不要把仅用于排序的列放进来。"""
 
 PLANNER_SYSTEM_PROMPT = """You are a SQL query planner. Given the user question and the relevant schema, draft a query plan as a JSON object only (no markdown fences, no extra text):
 
 {"tables": ["loan", "account"], "joins": "loan.account_id = account.account_id", "conditions": [{"field": "loan.date", "op": "=", "value": "1997", "note": "loan approval year"}], "aggregation": "none | count | sum | avg | ...", "extreme": {"func": "min|max", "column": "loan.amount", "scope": "after all filters | global"}, "ordering": "column asc/desc (empty if none)", "answer_columns": ["account_id"]}
 
-Scoping rule: when the question qualifies a set with multiple conditions (among/whose, including attribute conditions like "choose weekly issuance") and asks for the lowest/highest/most/fewest, apply ALL qualifying conditions as filters FIRST, then take the extreme (or order and take the first row) within that filtered set. The scope of the extreme is always the set after every qualifier has been applied — never compute the extreme before applying all qualifiers. The extreme.scope field must state explicitly which set the extreme is taken over."""
+Scoping rule: when the question qualifies a set with multiple conditions (among/whose, including attribute conditions like "choose weekly issuance") and asks for the lowest/highest/most/fewest, apply ALL qualifying conditions as filters FIRST, then take the extreme (or order and take the first row) within that filtered set. The scope of the extreme is always the set after every qualifier has been applied — never compute the extreme before applying all qualifiers. The extreme.scope field must state explicitly which set the extreme is taken over.
+
+Answer columns rule: put in answer_columns ONLY the columns the question asks for.
+- For a "list all the X ..." question that names no columns, answer_columns contains only the identifying column of X (its ID — e.g. trans_id, account_id) or the attribute the question names; never enumerate the record's detail columns (date, amount, balance, type, operation, status, ...).
+- For formula questions (rate/gap/percentage/increment), answer_columns contains only the final formula column — not the formula's input columns (e.g. A12/A13) and not entity-name columns, unless the question uses a clear grammatical parallel structure naming both entities and their measure ("list the districts and their unemployment rate"). When the question's phrasing is broken or garbled (e.g. "the district of the and the state"), output only the final formula column.
+- Never list columns used only for ordering."""
 
 
 def make_planner(
