@@ -327,97 +327,20 @@ def _make_gen_sql_node(
             )
         elif agentic:
             from trove.workflow.nodes.gen_sql import (
-                extract_sql, probe_query, validate_sql as validate_sql_fn,
-                check_result as check_result_fn,
+                extract_sql, make_sql_tools,
             )
 
-            async def validate_tool(arguments: dict) -> str:
-                valid, errors = validate_sql_fn(arguments.get("sql", ""), dialect)
-                if valid:
-                    return "valid"
-                return "ERRORS: " + "; ".join(errors)
-
-            async def probe_tool(arguments: dict) -> str:
-                # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
-                return await probe_query(
-                    services.connectors, arguments.get("sql", ""), dialect,
-                )
-
-            # check_result 的规则命中收集:循环结束后随 update 带出,
-            # 供 eval 归因切片(validation_hits)统计该工具拦截/自纠次数
-            check_hits: list[dict] = []
-
-            async def check_tool(arguments: dict) -> str:
-                # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
-                text, hits = await check_result_fn(
-                    services.connectors, sub_state.question,
-                    arguments.get("sql", ""), dialect, lang=sub_state.lang,
-                )
-                check_hits.extend(hits)
-                return text
+            # 工具定义与 handler 统一由工厂提供(validate_sql 始终可用,
+            # probe_query/check_result 依赖 connectors);check_hits 收集
+            # check_result 的规则命中,循环结束后随 update 带出(归因)
+            tools, tool_handlers, check_hits = make_sql_tools(
+                services.connectors, sub_state.question, sub_state.lang, dialect,
+            )
 
             prompt = _build_gen_prompt(sub_state)
             model = (services.config.target if services.config else "") or "openai/gpt-4o"
             result = None
             try:
-                tools = [{
-                    "type": "function",
-                    "function": {
-                        "name": "validate_sql",
-                        "description": "Validate a SQL query for syntax. Returns 'valid' or a list of errors.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"sql": {"type": "string", "description": "The SQL to validate"}},
-                            "required": ["sql"],
-                        },
-                    },
-                }]
-                tool_handlers = {"validate_sql": validate_tool}
-                if services.connectors is not None:
-                    tools.append({
-                        "type": "function",
-                        "function": {
-                            "name": "probe_query",
-                            "description": (
-                                "Execute a SQL query read-only and return a short observation: "
-                                '{"ok", "row_count", "columns", "rows" (first 5)}. '
-                                "Fetches at most 10 rows, 5s timeout, never modifies data. "
-                                "Use BEFORE finalizing a draft to verify result shape, row count, "
-                                "and that filter values actually match data (e.g. a superlative "
-                                "question returning 0 rows, or a self-invented filter value)."
-                            ),
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
-                                },
-                                "required": ["sql"],
-                            },
-                        },
-                    })
-                    tool_handlers["probe_query"] = probe_tool
-                    tools.append({
-                        "type": "function",
-                        "function": {
-                            "name": "check_result",
-                            "description": (
-                                "Run the deterministic rule checks against your draft SQL "
-                                "(executes it read-only): result shape, row count, value "
-                                "ranges, integer-division ratios. Returns 'OK (N rows)' or "
-                                "'VIOLATION [rule] <reason>' — the reason is the fix "
-                                "instruction. Call AFTER probe_query and BEFORE finalizing: "
-                                "a VIOLATION means fix the SQL, never finalize a violating draft."
-                            ),
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "sql": {"type": "string", "description": "The SQL to check (read-only)"},
-                                },
-                                "required": ["sql"],
-                            },
-                        },
-                    })
-                    tool_handlers["check_result"] = check_tool
                 result = await run_agent_loop(
                 services.llm, model,
                 system=render(

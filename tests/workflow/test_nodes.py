@@ -17,6 +17,7 @@ from trove.workflow.nodes.gen_sql import (
     build_sql_prompt,
     extract_sql,
     make_generate,
+    make_sql_tools,
     make_validate,
     validate_sql,
 )
@@ -2402,3 +2403,37 @@ class TestValidateRulesNode:
             plan_json=None,
         )
         assert await node(state) == {}
+
+
+class TestMakeSQLTools:
+    """gen_sql ReAct 循环的工具工厂:工具集合、handler 绑定、hits_sink 归因。"""
+
+    async def test_without_connectors_only_syntax_tool(self):
+        """connectors 缺失 → 仅 validate_sql(纯语法),无执行类工具,hits_sink 为空。"""
+        tools, handlers, hits = make_sql_tools(None, "q", "en", "sqlite")
+        names = [t["function"]["name"] for t in tools]
+        assert names == ["validate_sql"]
+        assert list(handlers) == ["validate_sql"]
+        assert hits == []
+        assert await handlers["validate_sql"]({"sql": "SELECT 1"}) == "valid"
+        assert "ERRORS" in await handlers["validate_sql"]({"sql": "SELEC 1"})
+
+    async def test_with_connectors_three_tools_and_hits_sink(self, sqlite_registry):
+        """connectors 就位 → 三工具;check_tool 命中写 hits_sink,probe_tool 返回观测。"""
+        tools, handlers, hits = make_sql_tools(
+            sqlite_registry, "How many students are there in total?", "en", "sqlite",
+        )
+        names = [t["function"]["name"] for t in tools]
+        assert names == ["validate_sql", "probe_query", "check_result"]
+        # check_tool:count 题分组展开草稿 → VIOLATION,命中进 hits_sink
+        text = await handlers["check_result"]({
+            "sql": "SELECT county, COUNT(*) FROM students GROUP BY county",
+        })
+        assert text.startswith("VIOLATION")
+        assert [h["name"] for h in hits] == ["count-multirow"]
+        # probe_tool:观测 JSON,真实行数
+        obs = await handlers["probe_query"]({"sql": "SELECT name FROM students"})
+        assert '"ok": true' in obs and '"row_count"' in obs
+        # 无规则命中时 hits_sink 不被污染(与 count 题一致的合规 SQL)
+        assert await handlers["check_result"]({"sql": "SELECT COUNT(*) FROM students"}) == "OK (1 rows)"
+        assert [h["name"] for h in hits] == ["count-multirow"]

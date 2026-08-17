@@ -358,6 +358,114 @@ async def check_result(
     return f"OK ({obs['row_count']} rows)", []
 
 
+# ── Tool factory (gen_sql ReAct 循环的工具集合) ─────────
+
+
+def make_sql_tools(
+    connectors,
+    question: str,
+    lang: str,
+    dialect: str,
+) -> tuple[list[dict], dict[str, Callable[[dict[str, Any]], Awaitable[str]]], list[dict]]:
+    """gen_sql ReAct 循环的工具工厂:返回 (tools, handlers, hits_sink)。
+
+    validate_sql 始终可用(纯语法校验,不执行);probe_query / check_result
+    依赖 connectors(只读执行),connectors 缺失时自动降级为仅语法工具。
+    hits_sink 收集 check_result 的规则命中,循环结束后由调用方带出到
+    状态(validation_hits 归因切片)。
+
+    Args:
+        connectors: 数据源注册表(None → 降级,无执行类工具)。
+        question: 当前问题(规则校验的判定输入,由节点注入)。
+        lang: 交互语言(规则原因文本本地化)。
+        dialect: SQL 方言(sqlglot 校验/重写用)。
+    """
+    async def validate_tool(arguments: dict) -> str:
+        valid, errors = validate_sql(arguments.get("sql", ""), dialect)
+        if valid:
+            return "valid"
+        return "ERRORS: " + "; ".join(errors)
+
+    tools: list[dict] = [{
+        "type": "function",
+        "function": {
+            "name": "validate_sql",
+            "description": "Validate a SQL query for syntax. Returns 'valid' or a list of errors.",
+            "parameters": {
+                "type": "object",
+                "properties": {"sql": {"type": "string", "description": "The SQL to validate"}},
+                "required": ["sql"],
+            },
+        },
+    }]
+    handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
+        "validate_sql": validate_tool,
+    }
+
+    if connectors is None:
+        return tools, handlers, []
+
+    check_hits: list[dict] = []
+
+    async def probe_tool(arguments: dict) -> str:
+        # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
+        return await probe_query(connectors, arguments.get("sql", ""), dialect)
+
+    async def check_tool(arguments: dict) -> str:
+        # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
+        text, hits = await check_result(
+            connectors, question, arguments.get("sql", ""), dialect, lang=lang,
+        )
+        check_hits.extend(hits)
+        return text
+
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "probe_query",
+            "description": (
+                "Execute a SQL query read-only and return a short observation: "
+                '{"ok", "row_count", "columns", "rows" (first 5)}. '
+                "Fetches at most 10 rows, 5s timeout, never modifies data. "
+                "Use BEFORE finalizing a draft to verify result shape, row count, "
+                "and that filter values actually match data (e.g. a superlative "
+                "question returning 0 rows, or a self-invented filter value)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
+                },
+                "required": ["sql"],
+            },
+        },
+    })
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "check_result",
+            "description": (
+                "Run the deterministic rule checks against your draft SQL "
+                "(executes it read-only): result shape, row count, value "
+                "ranges, integer-division ratios. Returns 'OK (N rows)' or "
+                "'VIOLATION [rule] <reason>' — the reason is the fix "
+                "instruction. Call AFTER probe_query and BEFORE finalizing: "
+                "a VIOLATION means fix the SQL, never finalize a violating draft."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "The SQL to check (read-only)"},
+                },
+                "required": ["sql"],
+            },
+        },
+    })
+    handlers["probe_query"] = probe_tool
+    handlers["check_result"] = check_tool
+    return tools, handlers, check_hits
+
+
 # ── Subgraph nodes ───────────────────────────────────────
 
 
