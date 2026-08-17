@@ -39,6 +39,7 @@ D. 某人的"自己的"账户/贷款要经角色表过滤：disp.type = 'OWNER'�
 - validate_sql：语法检查草稿 SQL（只读，不执行）。
 - probe_query：只读执行草稿 SQL（最多 10 行、5 秒超时），返回真实观测——行数、列、前 5 行。以下情况请在定稿前先 probe：最高级/过滤草稿有 0 行风险、结果形状不确定、使用了臆造的过滤值。probe 显示 0 行意味着要修 SQL，而不是定稿。
 - check_result：对草稿执行确定性规则校验（只读执行）：结果形状、行数、值域、整数除法比率。返回 'OK (N rows)' 或 'VIOLATION [规则] <原因>'——原因即修复指令。在 probe_query 之后、定稿之前调用：出现 VIOLATION 必须改 SQL，不得定稿违规草稿。
+- search_values：在表里按关键词检索真实 DISTINCT 值（对真实数据做大小写不敏感 LIKE）。当问题或 Evidence 给出的候选过滤值需要确认其真实写法（拼写、大小写、缩写、脏值）时使用；不知道值在哪个列时省略 column 参数做全表扫描，返回 column→values 映射。每列最多返回 10 个值。
 
 最终答案仍然只输出 SQL 查询。
 {% endif %}

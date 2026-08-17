@@ -358,6 +358,106 @@ async def check_result(
     return f"OK ({obs['row_count']} rows)", []
 
 
+# ── search_values tool (value/cell retrieval) ───────────
+
+SEARCH_VALUES_LIMIT = 10   # 每列返回的匹配值上限
+SEARCH_VALUES_MAX_COLS = 10  # 未指定列时扫描的最大列数
+
+
+def _like_pattern(keyword: str) -> str:
+    """LIKE 通配符转义:%,_ 按字面匹配(否则 'P%' 会被当通配)。
+
+    用 ``!`` 作 ESCAPE 字符而非反斜杠:反斜杠在 MySQL(解释转义)与
+    SQLite(不解释转义)的字面量处理不一致,``!`` 在两方言都是单字符。
+    """
+    escaped = keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"%{escaped}%"
+
+
+async def search_values(
+    connectors,
+    table: str,
+    keyword: str,
+    column: str | None = None,
+    timeout_s: float = PROBE_TIMEOUT_S,
+) -> str:
+    """按关键词检索真实值:定位脏值/格式变体/拼写差异。
+
+    - column 给定:在该列做大小写不敏感 LIKE,返回匹配的 DISTINCT 值;
+    - column 省略:扫描该表前 SEARCH_VALUES_MAX_COLS 个列,返回
+      ``column → 匹配值`` 映射(帮模型定位"这个值藏在哪列")。
+
+    标识符取自已校验的 schema(无注入面);LIKE 通配符按字面转义。
+    **永不抛异常**——失败折叠成 ``{"ok": false, "error": ...}``。
+    """
+    if connectors is None:
+        return json.dumps({"ok": False, "error": "no datasource available"})
+    table = (table or "").strip()
+    keyword = (keyword or "").strip()
+    if not table or not keyword:
+        return json.dumps({"ok": False, "error": "table and keyword are required"})
+
+    schema = await connectors.get_schema()
+    target = next(
+        (t for t in schema.tables if t.name.lower() == table.lower()), None,
+    )
+    if target is None:
+        return json.dumps({"ok": False, "error": f"table '{table}' not found"})
+
+    if column:
+        cols = [c.name for c in target.columns if c.name.lower() == column.lower()]
+        if not cols:
+            return json.dumps({"ok": False, "error": f"column '{column}' not found in '{table}'"})
+        obs = await _search_one(connectors, table, cols[0], keyword, timeout_s)
+        if not obs["ok"]:
+            return json.dumps(obs)
+        # 工具契约:始终返回 JSON 串(_search_one 返回 dict,单列路径不得泄漏)
+        return json.dumps({
+            "ok": True, "table": table, "column": cols[0], "values": obs["values"],
+        })
+
+    # 未指定列:扫描前 N 列,返回 column → 匹配值 映射。
+    # 单列失败不能静默吞掉(否则方言/类型错误会被谎报成"无匹配"),
+    # 首错上抛;真无匹配才返回空映射。
+    hits: dict[str, list] = {}
+    first_error: str | None = None
+    for c in target.columns[:SEARCH_VALUES_MAX_COLS]:
+        obs = await _search_one(connectors, table, c.name, keyword, timeout_s)
+        if obs.get("ok"):
+            if obs.get("values"):
+                hits[c.name] = obs["values"]
+        elif first_error is None:
+            first_error = obs.get("error")
+    if first_error and not hits:
+        return json.dumps({"ok": False, "error": first_error})
+    if not hits:
+        return json.dumps({
+            "ok": True, "table": table, "hits": {},
+            "note": f"no column contains a value matching '{keyword}'",
+        })
+    return json.dumps({"ok": True, "table": table, "hits": hits})
+
+
+async def _search_one(
+    connectors, table: str, column: str, keyword: str, timeout_s: float,
+) -> dict:
+    """单列 LIKE 检索:返回 {"ok", "values"} 或 {"ok": False, "error"}。"""
+    pattern = _like_pattern(keyword)
+    sql = (
+        f"SELECT DISTINCT `{column}` FROM `{table}` "
+        f"WHERE CAST(`{column}` AS CHAR) LIKE '{pattern}' ESCAPE '!' "
+        f"LIMIT {SEARCH_VALUES_LIMIT}"
+    )
+    try:
+        result = await asyncio.wait_for(connectors.execute(sql), timeout=timeout_s)
+    except TimeoutError:
+        return {"ok": False, "error": f"search timed out after {timeout_s}s"}
+    except Exception as e:
+        return {"ok": False, "error": f"execution failed: {e}"}
+    values = [_short_value(r[0]) for r in (result.rows or [])]
+    return {"ok": True, "values": values}
+
+
 # ── Tool factory (gen_sql ReAct 循环的工具集合) ─────────
 
 
@@ -461,8 +561,43 @@ def make_sql_tools(
             },
         },
     })
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "search_values",
+            "description": (
+                "Search a table for distinct values matching a keyword "
+                "(case-insensitive LIKE on real data). Use when you have a "
+                "candidate filter value from the question or Evidence but must "
+                "confirm its exact real form (spelling, case, abbreviations, "
+                "dirty values), or when you don't know which column stores a "
+                "value — omit the column to scan the table and get a "
+                "column→values map. Returns at most 10 values per column."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string", "description": "Table to search in"},
+                    "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
+                    "column": {"type": "string", "description": "Optional: restrict the search to one column"},
+                },
+                "required": ["table", "keyword"],
+            },
+        },
+    })
+
+    async def search_tool(arguments: dict) -> str:
+        # 值检索:定位脏值/格式变体/拼写差异,锚定过滤值到真实数据
+        return await search_values(
+            connectors,
+            arguments.get("table", ""),
+            arguments.get("keyword", ""),
+            arguments.get("column"),
+        )
+
     handlers["probe_query"] = probe_tool
     handlers["check_result"] = check_tool
+    handlers["search_values"] = search_tool
     return tools, handlers, check_hits
 
 

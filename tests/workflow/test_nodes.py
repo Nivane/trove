@@ -5,6 +5,8 @@ return a partial state update. Services are bound at construction time
 via factory functions.
 """
 
+import json
+
 import pytest
 
 from trove.core.config import AgentConfig
@@ -13,12 +15,14 @@ from trove.llm.gateway import LLMGateway
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
 from trove.workflow.nodes.gen_sql import (
+    _like_pattern,
     build_fix_prompt,
     build_sql_prompt,
     extract_sql,
     make_generate,
     make_sql_tools,
     make_validate,
+    search_values,
     validate_sql,
 )
 from trove.prompts import render
@@ -912,6 +916,23 @@ class TestSQLHelpers:
 
     def test_build_sql_prompt_without_hypotheses_has_no_section(self):
         assert "Rejected hypotheses" not in build_sql_prompt("q", "schema", "sqlite")
+
+    def test_build_sql_prompt_repair_verification_mandatory_on_fix_rounds(self):
+        """修复轮必须强制自证:error_feedback/error_analysis 时注入 verification 指令,
+        正常生成轮不出现(避免污染无错误的首轮生成)。"""
+        fix = build_sql_prompt("q", "schema", "sqlite", error_feedback="no such table: loans")
+        assert "Repair verification (mandatory)" in fix
+        assert "probe_query" in fix and "check_result" in fix
+        assert "Never submit an unverified repair" in fix
+
+        rework = build_sql_prompt("q", "schema", "sqlite", error_analysis="misread intent")
+        assert "Repair verification (mandatory)" in rework
+
+        first = build_sql_prompt("q", "schema", "sqlite")
+        assert "Repair verification" not in first
+        # 仅 reflect 打回(无执行失败)也不算修复轮
+        reflected = build_sql_prompt("q", "schema", "sqlite", reflect_reason="wrong grouping")
+        assert "Repair verification" not in reflected
 
     def test_build_sql_prompt_injects_previous_sql_for_local_fix(self):
         """Fixer 模式:打回轮注入上一版 SQL 全文,指示局部修复而非整体重写。"""
@@ -2418,13 +2439,13 @@ class TestMakeSQLTools:
         assert await handlers["validate_sql"]({"sql": "SELECT 1"}) == "valid"
         assert "ERRORS" in await handlers["validate_sql"]({"sql": "SELEC 1"})
 
-    async def test_with_connectors_three_tools_and_hits_sink(self, sqlite_registry):
-        """connectors 就位 → 三工具;check_tool 命中写 hits_sink,probe_tool 返回观测。"""
+    async def test_with_connectors_four_tools_and_hits_sink(self, sqlite_registry):
+        """connectors 就位 → 四工具;check_tool 命中写 hits_sink,probe_tool 返回观测。"""
         tools, handlers, hits = make_sql_tools(
             sqlite_registry, "How many students are there in total?", "en", "sqlite",
         )
         names = [t["function"]["name"] for t in tools]
-        assert names == ["validate_sql", "probe_query", "check_result"]
+        assert names == ["validate_sql", "probe_query", "check_result", "search_values"]
         # check_tool:count 题分组展开草稿 → VIOLATION,命中进 hits_sink
         text = await handlers["check_result"]({
             "sql": "SELECT county, COUNT(*) FROM students GROUP BY county",
@@ -2437,3 +2458,67 @@ class TestMakeSQLTools:
         # 无规则命中时 hits_sink 不被污染(与 count 题一致的合规 SQL)
         assert await handlers["check_result"]({"sql": "SELECT COUNT(*) FROM students"}) == "OK (1 rows)"
         assert [h["name"] for h in hits] == ["count-multirow"]
+        # search_tool:值检索 JSON,大小写不敏感命中
+        found = await handlers["search_values"]({
+            "table": "students", "keyword": "ala",
+        })
+        assert '"hits"' in found and "Alameda" in found
+
+
+class TestSearchValues:
+    """search_values 值检索工具:单列/扫描/转义/错误折叠。"""
+
+    async def test_single_column_case_insensitive_hit(self, sqlite_registry):
+        out = await search_values(sqlite_registry, "students", "ala", column="county")
+        data = json.loads(out)
+        assert data["ok"] and data["values"] == ["Alameda"]
+
+    async def test_single_column_no_match(self, sqlite_registry):
+        out = await search_values(sqlite_registry, "students", "zzzz", column="county")
+        data = json.loads(out)
+        assert data["ok"] and data["values"] == []
+
+    async def test_scan_locates_column_with_hits(self, sqlite_registry):
+        """不指定列 → 扫描前 N 列,返回 column → 匹配值 映射('los' 应命中 county 的 'Los Angeles')。"""
+        out = await search_values(sqlite_registry, "students", "los")
+        data = json.loads(out)
+        assert data["ok"]
+        assert data["hits"].get("county") == ["Los Angeles"]
+
+    async def test_scan_honest_empty(self, sqlite_registry):
+        out = await search_values(sqlite_registry, "students", "zzzz")
+        data = json.loads(out)
+        assert data["ok"] and data["hits"] == {}
+        assert "no column contains" in data.get("note", "")
+
+    async def test_wildcards_treated_literally(self, sqlite_registry):
+        """%,_ 按字面匹配:数据里没有含 '%' 的值 → 空命中,且不因模式报错。"""
+        assert _like_pattern("100%") == "%100!%%"
+        assert _like_pattern("a_b") == "%a!_b%"
+        out = await search_values(sqlite_registry, "students", "100%")
+        data = json.loads(out)
+        assert data["ok"] and data["hits"] == {}
+
+    async def test_unknown_table_and_column_fold_to_error(self, sqlite_registry):
+        out = await search_values(sqlite_registry, "missing", "x")
+        assert json.loads(out)["ok"] is False
+        out = await search_values(sqlite_registry, "students", "x", column="nope")
+        assert json.loads(out)["ok"] is False
+
+    async def test_no_connectors_folds_to_error(self):
+        out = await search_values(None, "students", "x")
+        assert json.loads(out)["ok"] is False
+
+    async def test_scan_propagates_error_when_all_columns_fail(
+        self, sqlite_registry, monkeypatch,
+    ):
+        """扫描路径不得把列级错误谎报成'无匹配'——首错上抛。"""
+        async def fail(connectors, table, column, keyword, timeout_s):
+            return {"ok": False, "error": f"boom on {column}"}
+        monkeypatch.setattr(
+            "trove.workflow.nodes.gen_sql._search_one", fail,
+        )
+        out = await search_values(sqlite_registry, "students", "x")
+        data = json.loads(out)
+        assert data["ok"] is False
+        assert data["error"] == "boom on id"  # 首列首错

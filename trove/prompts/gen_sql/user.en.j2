@@ -42,6 +42,8 @@ Note: the previous query failed during execution with: {{ error_feedback }}. Ple
 Fix mode: implementation-level repair — keep the semantic interpretation unchanged; fix only the implementation (tables, columns, joins, syntax).
 {% elif fix_mode == "revisor" %}
 Fix mode: semantic rework — the interpretation itself may be wrong; re-evaluate the question's intent and rewrite the query if needed.
+{% endif %}{% if error_feedback or error_analysis %}
+Repair verification (mandatory): before finalizing the repaired SQL, run probe_query on it — confirm the error is gone, the result shape matches, and filter values hit real data — then run check_result to confirm no rule violations. Never submit an unverified repair.
 {% endif %}{% if previous_sql %}
 Previous SQL (your last attempt — fix it with minimal changes, do not rewrite from scratch):
 {{ previous_sql }}

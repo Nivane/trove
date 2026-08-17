@@ -627,6 +627,28 @@ class TestAgenticNodes:
         assert final["error"] == ""
         assert final["sql"] == "SELECT name FROM students"  # 从工具参数捞回
 
+    async def test_gen_sql_search_values_round(self, sqlite_registry, catalog):
+        """gen_sql ReAct：模型用疑似错误的过滤值调 search_values，拿到真实值后修正 SQL。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "search_values",
+                 "arguments": '{"table": "students", "keyword": "ala", "column": "county"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students WHERE county = 'Alameda';\n```",
+             "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="List students in Alameda county."),
+        )
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students WHERE county = 'Alameda';"
+        # 观测进 tool 消息:真实值 'Alameda' 可见
+        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
+        assert any("Alameda" in m["content"] for m in tool_msgs)
+
     async def test_reflect_is_single_shot(self, sqlite_registry, catalog):
         """reflect 去工具化：即使有 connectors，裁决也只调一次 chat，绝不进 chat_full。"""
         class NoToolJudgeLLM:
