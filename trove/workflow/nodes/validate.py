@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.i18n import L
-from trove.workflow.rules import validate as run_rules
+from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState
 
 
@@ -26,6 +26,9 @@ def make_validate_rules(
         max_retries: Shared correction budget — rule failures feed back
             to gen_sql while retry_count < max_retries; once exhausted,
             failures degrade gracefully via state.error.
+
+    The verify_step assertion layer reports structured hits
+    (rule name + reason) via state.validation_hits for eval attribution.
     """
 
     async def validate(state: WorkflowState) -> dict[str, Any]:
@@ -33,7 +36,7 @@ def make_validate_rules(
         if state.error or state.error_feedback:
             return {}
 
-        reason = run_rules(
+        reason, hits = run_rules(
             state.question, state.sql, state.columns, state.rows, state.row_count,
             lang=state.lang,
         )
@@ -51,6 +54,7 @@ def make_validate_rules(
             "error_feedback": feedback,
             "retry_count": state.retry_count + 1,
             "correction_history": [feedback],
+            "validation_hits": hits,
         }
 
     return validate

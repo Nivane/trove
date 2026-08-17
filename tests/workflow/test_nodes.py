@@ -1383,3 +1383,41 @@ class TestStructuredPlan:
         node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
         update = await node(make_state())
         assert update["plan"] == "先筛选1997年贷款，再取最低金额。"
+
+
+class TestValidateRulesNode:
+    """确定性规则节点:失败时输出 validation_hits 供归因。"""
+
+    async def test_rule_failure_reports_hits(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3)
+        state = make_state(
+            question=(
+                "List all the withdrawals in cash transactions that the "
+                "client with the id 3356 makes."
+            ),
+            sql=("SELECT trans_id, account_id, date, type, operation, "
+                 "amount, balance, k_symbol, bank FROM trans"),
+            columns=["trans_id", "account_id", "date", "type", "operation",
+                     "amount", "balance", "k_symbol", "bank"],
+            rows=[["1"] * 9],
+            row_count=1,
+            lang="en",
+        )
+        update = await node(state)
+        assert update["error_feedback"] and "[F1-b]" in update["error_feedback"]
+        assert update["validation_hits"] and update["validation_hits"][0]["name"] == "F1-b"
+        assert update["retry_count"] == 1
+
+    async def test_rule_pass_returns_empty(self):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3)
+        state = make_state(
+            question="average loan amount",
+            sql="SELECT AVG(amount) FROM loan",
+            columns=["avg"], rows=[[123.4]], row_count=1, lang="en",
+        )
+        update = await node(state)
+        assert update == {}
