@@ -4,6 +4,7 @@ Layout: .trove/kb/<datasource>/{schema_notes,semantics,examples}.yml
 Legacy flat files (kb root) are auto-migrated into a datasource dir.
 """
 
+import json
 import re
 
 import aiosqlite
@@ -322,6 +323,44 @@ class TestSync:
         assert [h.term for h in await kb.search_terms("页面浏览量", "demo")] == []
         assert [h.term for h in await kb.search_terms("页面浏览量", "other")] == ["页面浏览量"]
         assert await kb.search_terms("平均贷款金额", "other") == []
+
+    async def test_yaml_date_literals_sync_into_json_mirror(self, kb, kb_dir):
+        """schema_notes 里的裸日期字面量(min/max 统计值)同步不崩溃。
+
+        profiling 对 DATE 列写入的 MIN/MAX 是 datetime.date,safe_dump
+        写成裸 YAML 日期,safe_load 又还原成 date —— 镜像的 json.dumps
+        必须兜底(default=str),否则任何含日期统计的 schema_notes 都让
+        sync 崩(TypeError: Object of type date is not JSON serializable)。
+        """
+        d = kb_dir / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "schema_notes.yml").write_text(
+            SCHEMA_NOTES
+            + """  - name: account
+    description: 账户表
+    columns:
+      - name: date
+        description: 账户创建日期
+        type: date
+        stats:
+          null_ratio: 0.0
+          distinct: 1535
+          min: 1993-01-01
+          max: 1997-12-29
+""",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+
+        async with aiosqlite.connect(kb.db_path) as db:
+            row = await (await db.execute(
+                "SELECT payload FROM kb_items "
+                "WHERE datasource='demo' AND kind='table' AND item_key='account'"
+            )).fetchone()
+        assert row is not None, "account 表应同步进镜像"
+        stats = json.loads(row[0])["stats"]["date"]
+        assert stats["min"] == "1993-01-01"
+        assert stats["max"] == "1997-12-29"
 
 
 class TestLegacyMigration:

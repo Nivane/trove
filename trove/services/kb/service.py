@@ -389,7 +389,11 @@ class KbService:
             await db.execute(
                 "INSERT INTO kb_items (datasource, kind, item_key, payload, source_file) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (datasource, kind, item_key, json.dumps(payload, ensure_ascii=False), yml.name),
+                # default=str:YAML 原生类型(裸日期字面量会还原成 date/
+                # datetime)在 JSON 镜像里一律落成字符串,下游 str()/正则
+                # 消费方均兼容,否则含日期统计的 schema_notes 让 sync 崩。
+                (datasource, kind, item_key,
+                 json.dumps(payload, ensure_ascii=False, default=str), yml.name),
             )
         await db.execute(
             "INSERT OR REPLACE INTO kb_sync (file_path, mtime) VALUES (?, ?)",
