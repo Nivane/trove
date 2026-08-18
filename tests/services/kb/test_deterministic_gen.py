@@ -23,9 +23,20 @@ TABLES = [
         "description": "贷款信息表，包含贷款ID、账户ID、日期、金额、期限和状态",
         "columns": [
             {"name": "loan_id", "type": "int", "description": "贷款唯一标识符", "enums": []},
+            {"name": "account_id", "type": "int", "description": "贷款关联账户ID", "enums": []},
             {"name": "amount", "type": "int", "description": "贷款金额", "enums": []},
             {"name": "duration", "type": "int", "description": "贷款期限（月数）", "enums": []},
-            {"name": "status", "type": "varchar", "description": "贷款状态", "enums": []},
+            {"name": "status", "type": "varchar", "description": "贷款状态",
+             "enums": ["A=contract finished", "B=contract running", "C=contract finished loan not paid"]},
+        ],
+        "metrics": [],
+    },
+    {
+        "name": "district",
+        "description": "地区信息表，包含地区ID、名称和人口统计",
+        "columns": [
+            {"name": "district_id", "type": "int", "description": "地区唯一标识符", "enums": []},
+            {"name": "name", "type": "varchar", "description": "地区名称", "enums": []},
         ],
         "metrics": [],
     },
@@ -120,6 +131,47 @@ class TestGenerateTemplates:
         assert len(templates) == 1
         assert templates[0]["sql"] == "SELECT COUNT(*) FROM t"
 
+    # —— 组合模板:JOIN 骨架 + WHERE 过滤 ——
+
+    def test_join_template_from_same_name_fk(self):
+        """account.district_id + district.district_id 同名键 → JOIN 模板。"""
+        templates = generate_templates(TABLES, lang="zh")
+        join = next(
+            t for t in templates
+            if t["sql"] == "SELECT COUNT(*) FROM account JOIN district ON account.district_id = district.district_id"
+        )
+        assert join["question"] == "地区中有多少银行账户记录？"
+        assert set(join["tags"]) == {"银行账户", "地区", "连接", "聚合"}
+
+    def test_join_group_template_over_dimension_text_column(self):
+        """JOIN + 维度表文本列分组(地区名称分组)。"""
+        templates = generate_templates(TABLES, lang="zh")
+        grouped = next(
+            t for t in templates
+            if t["sql"].startswith("SELECT district.name")
+        )
+        assert grouped["sql"] == (
+            "SELECT district.name, COUNT(*) FROM account JOIN district "
+            "ON account.district_id = district.district_id GROUP BY district.name"
+        )
+        assert grouped["question"] == "按地区的地区名称分组，统计每种地区名称的银行账户数量"
+
+    def test_enum_filter_template_takes_sample_values(self):
+        """enum 列取前 2 个值生成 WHERE 过滤模板。"""
+        templates = generate_templates(TABLES, lang="zh")
+        filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM loan WHERE status")]
+        assert len(filters) == 2
+        assert filters[0]["sql"] == "SELECT COUNT(*) FROM loan WHERE status = 'A'"
+        assert filters[1]["sql"] == "SELECT COUNT(*) FROM loan WHERE status = 'B'"
+        assert filters[0]["question"] == "贷款中贷款状态为'A'的记录有多少？"
+        assert "过滤" in filters[0]["tags"]
+
+    def test_primary_key_does_not_create_self_join(self):
+        """{table}_id 主键不是 FK → 不生成自连接模板。"""
+        templates = generate_templates(TABLES, lang="zh")
+        self_joins = [t for t in templates if "ON account.account_id" in t["sql"]]
+        assert self_joins == []
+
 
 EN_TABLES = [
     {
@@ -127,6 +179,7 @@ EN_TABLES = [
         "description": "bank account information",
         "columns": [
             {"name": "account_id", "type": "int", "description": "account identifier", "enums": []},
+            {"name": "district_id", "type": "int", "description": "district of the account", "enums": []},
             {"name": "frequency", "type": "varchar", "description": "statement issuance frequency", "enums": []},
             {"name": "date", "type": "date", "description": "account opening date", "enums": []},
         ],
@@ -138,7 +191,17 @@ EN_TABLES = [
         "columns": [
             {"name": "loan_id", "type": "int", "description": "loan identifier", "enums": []},
             {"name": "amount", "type": "int", "description": "loan amount", "enums": []},
-            {"name": "status", "type": "varchar", "description": "loan status", "enums": []},
+            {"name": "status", "type": "varchar", "description": "loan status",
+             "enums": ["A=contract finished", "B=contract running"]},
+        ],
+        "metrics": [],
+    },
+    {
+        "name": "district",
+        "description": "geographic district",
+        "columns": [
+            {"name": "district_id", "type": "int", "description": "district identifier", "enums": []},
+            {"name": "name", "type": "varchar", "description": "district name", "enums": []},
         ],
         "metrics": [],
     },
@@ -202,3 +265,28 @@ class TestEnglishGeneration:
         templates = generate_templates(EN_TABLES)
         loan = next(t for t in templates if t["sql"].startswith("SELECT status"))
         assert loan["question"] == "How many loan records are there for each loan status?"
+
+    def test_join_and_join_group_templates_in_english(self):
+        templates = generate_templates(EN_TABLES)
+        join = next(
+            t for t in templates
+            if t["sql"] == "SELECT COUNT(*) FROM account JOIN district ON account.district_id = district.district_id"
+        )
+        assert join["question"] == "How many account records are there in district?"
+        assert set(join["tags"]) == {"account", "district", "join", "aggregation"}
+        grouped = next(
+            t for t in templates
+            if t["sql"].startswith("SELECT district.name")
+        )
+        assert grouped["question"] == (
+            "How many account records are there for each district name of district?"
+        )
+
+    def test_enum_filter_templates_in_english(self):
+        templates = generate_templates(EN_TABLES)
+        filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM loan WHERE status")]
+        assert [t["sql"] for t in filters] == [
+            "SELECT COUNT(*) FROM loan WHERE status = 'A'",
+            "SELECT COUNT(*) FROM loan WHERE status = 'B'",
+        ]
+        assert filters[0]["question"] == "How many loan records have loan status = 'A'?"

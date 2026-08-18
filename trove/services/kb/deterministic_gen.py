@@ -161,10 +161,36 @@ def generate_terms(
     return terms
 
 
+def _enum_values(enums: list[str], limit: int = 2) -> list[str]:
+    """枚举条目 → 取值(前 limit 个,去重)。
+
+    两种常见格式:
+      'POPLATEK MESICNE=monthly issuance' → 取 = 前的值
+      '"junior": junior class; "classic": ...' → 取引号内的值
+    """
+    values: list[str] = []
+    for raw in enums or []:
+        text = str(raw).strip()
+        head = re.split(r"[=:]", text, maxsplit=1)[0].strip().strip("\"'")
+        quoted = re.findall(r'"([^"]+)"', text)
+        for candidate in quoted or [head]:
+            candidate = candidate.strip()
+            if candidate and candidate not in values:
+                values.append(candidate)
+        if len(values) >= limit:
+            break
+    return values[:limit]
+
+
 def generate_templates(
     tables: list[dict[str, Any]], lang: str = "en",
 ) -> list[dict[str, Any]]:
-    """每个表生成 COUNT 模板 + 首条文本列的 GROUP BY 模板。"""
+    """确定性模板生成:COUNT + GROUP BY + 组合模板(JOIN 骨架/WHERE 过滤)。
+
+    组合模板补齐单表原子模板缺的多表/过滤列覆盖(eval_retrieval 实测
+    列覆盖仅 ~19%):同名 FK 列(account_id → account 表有同名列)推导
+    JOIN;enum 列取样例值生成 WHERE 过滤模板。
+    """
     templates: list[dict[str, Any]] = []
     for table in tables:
         name = table.get("name", "")
@@ -210,4 +236,105 @@ def generate_templates(
                         "tags": [label, "分组", "聚合"],
                     })
                 break  # 每表一条 GROUP BY 模板(取首条文本列)
+
+    # —— 组合模板:JOIN 骨架 + WHERE 过滤 ——
+    # 单表原子模板对多表题的列覆盖不足(实测列覆盖 ~19%)。同名 FK
+    # 列(fact.{dim}_id 且 dim 表有同名列)可确定性推导 JOIN 骨架;
+    # enum 列取前 2 个样例值生成 WHERE 过滤模板。全部来自代码推导,
+    # 非 gold 背诵,合规。
+    by_name = {t.get("name", "").lower(): t for t in tables}
+
+    def first_text_col(dim: dict) -> dict | None:
+        for col in dim.get("columns", []):
+            if any(m in str(col.get("type", "") or "").lower() for m in _TEXT_TYPES):
+                return col
+        return None
+
+    def label(t: dict, fallback: str) -> str:
+        if lang == "en":
+            return fallback
+        return business_label(str(t.get("description", "") or ""), fallback)
+
+    for table in tables:
+        tname = table.get("name", "")
+        tquoted = _quote(tname)
+        tlabel = label(table, tname)
+
+        # A + B: {dim}_id FK → JOIN 骨架(同名键),维度表文本列可分组
+        for col in table.get("columns", []):
+            col_name = col.get("name", "")
+            m = re.fullmatch(r"(.+)_id", col_name)
+            if not m:
+                continue
+            dim = by_name.get(m.group(1))
+            if not dim or dim.get("name") == tname:
+                continue  # 排除主键({table}_id 不是 FK,避免自连接模板)
+            if not any(c.get("name") == col_name for c in dim.get("columns", [])):
+                continue
+            dname = dim.get("name", "")
+            dquoted = _quote(dname)
+            dlabel = label(dim, dname)
+            join_on = f"{tquoted}.{col_name} = {dquoted}.{col_name}"
+            if lang == "en":
+                templates.append({
+                    "template": True,
+                    "question": f"How many {tname} records are there in {dname}?",
+                    "sql": f"SELECT COUNT(*) FROM {tquoted} JOIN {dquoted} ON {join_on}",
+                    "tags": [tname, dname, "join", "aggregation"],
+                })
+            else:
+                templates.append({
+                    "template": True,
+                    "question": f"{dlabel}中有多少{tlabel}记录？",
+                    "sql": f"SELECT COUNT(*) FROM {tquoted} JOIN {dquoted} ON {join_on}",
+                    "tags": [tlabel, dlabel, "连接", "聚合"],
+                })
+            dcol = first_text_col(dim)
+            if dcol:
+                dcol_name = dcol.get("name", "")
+                ddesc = str(dcol.get("description", "") or "").strip()
+                if lang == "en" and (not ddesc or _CJK_RE.search(ddesc)):
+                    ddesc = dcol_name
+                ddesc = ddesc or dcol_name
+                group_col = f"{dquoted}.{dcol_name}"
+                if lang == "en":
+                    templates.append({
+                        "template": True,
+                        "question": f"How many {tname} records are there for each {ddesc} of {dname}?",
+                        "sql": f"SELECT {group_col}, COUNT(*) FROM {tquoted} JOIN {dquoted} ON {join_on} GROUP BY {group_col}",
+                        "tags": [tname, dname, "join", "group", "aggregation"],
+                    })
+                else:
+                    templates.append({
+                        "template": True,
+                        "question": f"按{dlabel}的{ddesc}分组，统计每种{ddesc}的{tlabel}数量",
+                        "sql": f"SELECT {group_col}, COUNT(*) FROM {tquoted} JOIN {dquoted} ON {join_on} GROUP BY {group_col}",
+                        "tags": [tlabel, dlabel, "连接", "分组", "聚合"],
+                    })
+
+        # C: enum 列 WHERE 过滤模板
+        for col in table.get("columns", []):
+            vals = _enum_values(col.get("enums") or [])
+            if not vals:
+                continue
+            col_name = col.get("name", "")
+            desc = str(col.get("description", "") or "").strip()
+            if lang == "en" and (not desc or _CJK_RE.search(desc)):
+                desc = col_name
+            desc = desc or col_name
+            for val in vals:
+                if lang == "en":
+                    templates.append({
+                        "template": True,
+                        "question": f"How many {tname} records have {desc} = '{val}'?",
+                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{val}'",
+                        "tags": [tname, col_name, "filter", "aggregation"],
+                    })
+                else:
+                    templates.append({
+                        "template": True,
+                        "question": f"{tlabel}中{desc}为'{val}'的记录有多少？",
+                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{val}'",
+                        "tags": [tlabel, col_name, "过滤", "聚合"],
+                    })
     return templates
