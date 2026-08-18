@@ -88,6 +88,7 @@ class ExampleHit:
     tags: list[str] = field(default_factory=list)
     template: bool = False
     score: int = 0
+    aggregate: bool = False
 
 
 # ── Pure scoring helpers ─────────────────────────────────
@@ -163,6 +164,12 @@ def _score_example(
     meaningless there) and char-bigram for Chinese; the max of the two
     covers mixed-language questions. A matched-table mention adds a
     strong +3 anchor per table (evidence-graph scoring).
+
+    Aggregate templates (SELECT MAX/MIN/AVG/SUM(col) FROM t) get a 0.6
+    discount: they carry one column of low-density structure and duplicate
+    the SUM/AVG semantics already injected via terms — undiscounted they
+    crowd JOIN skeletons out of top-k (eval_retrieval: B@5 coverage flat,
+    sim@5 66%→59%).
     """
     tags = [str(t) for t in example.get("tags", [])]
     ex_text = " ".join([str(example.get("question", "")), *tags])
@@ -185,7 +192,10 @@ def _score_example(
         full_text = " ".join([example_question, str(example.get("sql", "")), *tags])
         table_anchor = 3 * sum(1 for t in tables if t and t in full_text)
 
-    return 2 * term_hits + tag_hits + overlap + table_anchor
+    score = 2 * term_hits + tag_hits + overlap + table_anchor
+    if example.get("aggregate"):
+        score = max(1, round(score * 0.6))
+    return score
 
 
 # ── YAML parsing ─────────────────────────────────────────
@@ -264,6 +274,7 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
                 "sql": str(example.get("sql", "")),
                 "tags": list(example.get("tags") or []),
                 "template": bool(example.get("template")),
+                "aggregate": bool(example.get("aggregate")),
             }))
 
     return entries

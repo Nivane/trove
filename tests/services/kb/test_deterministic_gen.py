@@ -121,6 +121,7 @@ class TestGenerateTemplates:
         assert loan["sql"] == "SELECT status, COUNT(*) FROM loan GROUP BY status"
 
     def test_tables_without_text_columns_get_count_only(self):
+        """无文本列的表:COUNT + 数值列聚合/比较模板(D 族)。"""
         tables = [{
             "name": "t",
             "description": "只有数值列的表",
@@ -128,8 +129,11 @@ class TestGenerateTemplates:
             "metrics": [],
         }]
         templates = generate_templates(tables, lang="zh")
-        assert len(templates) == 1
-        assert templates[0]["sql"] == "SELECT COUNT(*) FROM t"
+        sqls = [t["sql"] for t in templates]
+        assert sqls.count("SELECT COUNT(*) FROM t") == 1
+        assert "SELECT MAX(n) FROM t" in sqls
+        assert "SELECT AVG(n) FROM t" in sqls
+        assert "SELECT COUNT(*) FROM t WHERE n > 0" in sqls
 
     # —— 组合模板:JOIN 骨架 + WHERE 过滤 ——
 
@@ -171,6 +175,58 @@ class TestGenerateTemplates:
         templates = generate_templates(TABLES, lang="zh")
         self_joins = [t for t in templates if "ON account.account_id" in t["sql"]]
         assert self_joins == []
+
+    def test_numeric_columns_get_aggregate_and_gt0_templates(self):
+        """数值列(贷款金额/期限)生成 MAX/MIN/AVG/SUM + >0 比较模板。"""
+        templates = generate_templates(TABLES, lang="zh")
+        sqls = [t["sql"] for t in templates]
+        for fn in ("MAX", "MIN", "AVG", "SUM"):
+            assert f"SELECT {fn}(amount) FROM loan" in sqls, fn
+            assert f"SELECT {fn}(duration) FROM loan" in sqls, fn
+        assert "SELECT COUNT(*) FROM loan WHERE amount > 0" in sqls
+        assert "SELECT COUNT(*) FROM loan WHERE duration > 0" in sqls
+
+    def test_numeric_templates_carry_business_questions(self):
+        """问题文本带业务描述(描述权威,非列名)。"""
+        templates = generate_templates(TABLES, lang="zh")
+        by_sql = {t["sql"]: t for t in templates}
+        avg = by_sql["SELECT AVG(amount) FROM loan"]
+        assert avg["question"] == "贷款金额的平均值是多少？"
+        assert avg["tags"] == ["贷款", "amount", "聚合"]
+        gt0 = by_sql["SELECT COUNT(*) FROM loan WHERE amount > 0"]
+        assert gt0["question"] == "贷款中贷款金额大于 0 的记录有多少？"
+
+    def test_date_column_gets_earliest_latest_templates(self):
+        """日期列生成 MIN/MAX(最早/最晚)模板;不做等值/区间(需样例值)。"""
+        templates = generate_templates(TABLES, lang="zh")
+        sqls = [t["sql"] for t in templates]
+        assert "SELECT MIN(date) FROM account" in sqls
+        assert "SELECT MAX(date) FROM account" in sqls
+        assert "WHERE date" not in " ".join(sqls)
+
+    def test_id_columns_get_no_numeric_templates(self):
+        """ID 列(account_id/loan_id)不对聚合/比较求值。"""
+        templates = generate_templates(TABLES, lang="zh")
+        sqls = [t["sql"] for t in templates]
+        assert not any("MAX(account_id)" in s or "AVG(loan_id)" in s for s in sqls)
+        assert not any("WHERE account_id" in s or "WHERE loan_id" in s for s in sqls)
+
+    def test_undescribed_numeric_column_skipped(self):
+        """无描述数值列(A11 类)不生成模板——名字无从可靠推导。"""
+        tables = [{
+            "name": "district",
+            "description": "地区信息表",
+            "columns": [
+                {"name": "district_id", "type": "int", "description": "地区唯一标识符", "enums": []},
+                {"name": "A11", "type": "int", "description": "", "enums": []},
+                {"name": "A12", "type": "double", "description": "失业率 1995", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables, lang="zh")
+        sqls = [t["sql"] for t in templates]
+        assert not any("A11" in s for s in sqls)
+        assert "SELECT MAX(A12) FROM district" in sqls  # 有描述才生成
 
 
 EN_TABLES = [
@@ -290,3 +346,32 @@ class TestEnglishGeneration:
             "SELECT COUNT(*) FROM loan WHERE status = 'B'",
         ]
         assert filters[0]["question"] == "How many loan records have loan status = 'A'?"
+
+    def test_numeric_templates_in_english(self):
+        """数值列聚合/比较模板问题文本用英文描述(检索锚:business 词)。"""
+        templates = generate_templates(EN_TABLES)
+        by_sql = {t["sql"]: t for t in templates}
+        assert by_sql["SELECT MAX(amount) FROM loan"]["question"] == (
+            "What is the maximum loan amount?")
+        assert by_sql["SELECT AVG(amount) FROM loan"]["question"] == (
+            "What is the average loan amount?")
+        assert by_sql["SELECT SUM(amount) FROM loan"]["question"] == (
+            "What is the total loan amount?")
+        assert by_sql["SELECT COUNT(*) FROM loan WHERE amount > 0"]["question"] == (
+            "How many loan records have loan amount greater than 0?")
+        assert by_sql["SELECT MAX(amount) FROM loan"]["tags"] == [
+            "loan", "amount", "aggregation"]
+
+    def test_date_templates_in_english(self):
+        templates = generate_templates(EN_TABLES)
+        by_sql = {t["sql"]: t for t in templates}
+        assert by_sql["SELECT MIN(date) FROM account"]["question"] == (
+            "What is the earliest account opening date?")
+        assert by_sql["SELECT MAX(date) FROM account"]["question"] == (
+            "What is the latest account opening date?")
+
+    def test_account_number_column_gets_no_numeric_templates(self):
+        """account_to(账户号,标识类)不生成数值聚合/比较模板。"""
+        templates = generate_templates(EN_TABLES)
+        sqls = [t["sql"] for t in templates]
+        assert not any("account_to" in s for s in sqls)

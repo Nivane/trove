@@ -337,4 +337,97 @@ def generate_templates(
                         "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{val}'",
                         "tags": [tlabel, col_name, "过滤", "聚合"],
                     })
+
+        # D: 数值/日期列聚合 + 比较模板
+        # 缺口列(eval_retrieval 实测):amount/duration/balance/a11 等数值列与
+        # date/birth_date 日期列无任何模板——C 族只覆盖 enum 等值过滤,
+        # 比较/聚合类问题("average salary greater than 8000"、"loan amount
+        # less than 100000"、"oldest client")命中不了。全部确定性推导、
+        # 不依赖样例值;比较阈值用 0 占位——示例是结构参考,具体值由
+        # gen_sql 的 check_result 兜底。无描述列不生成(名字无法可靠
+        # 推导,与 generate_terms 同规则)。
+        for col in table.get("columns", []):
+            col_type = str(col.get("type", "") or "").lower()
+            col_name = col.get("name", "")
+            desc_raw = str(col.get("description", "") or "").strip()
+            if lang == "en" and (not desc_raw or _CJK_RE.search(desc_raw)):
+                desc = col_name
+            else:
+                desc = desc_raw or col_name
+            if not desc_raw or _is_id_column(col_name, desc):
+                continue
+            if any(m in col_type for m in _NUMERIC_TYPES):
+                agg_shapes = [
+                    ("maximum", "MAX",
+                     f"What is the maximum {desc}?", f"{desc}的最大值是多少？"),
+                    ("minimum", "MIN",
+                     f"What is the minimum {desc}?", f"{desc}的最小值是多少？"),
+                    ("average", "AVG",
+                     f"What is the average {desc}?", f"{desc}的平均值是多少？"),
+                    ("total", "SUM",
+                     f"What is the total {desc}?", f"{desc}的总和是多少？"),
+                ]
+                for word, fn, q_en, q_zh in agg_shapes:
+                    if lang == "en":
+                        templates.append({
+                            "template": True,
+                            "aggregate": True,
+                            "question": q_en,
+                            "sql": f"SELECT {fn}({col_name}) FROM {tquoted}",
+                            "tags": [tname, col_name, "aggregation"],
+                        })
+                    else:
+                        templates.append({
+                            "template": True,
+                            "aggregate": True,
+                            "question": q_zh,
+                            "sql": f"SELECT {fn}({col_name}) FROM {tquoted}",
+                            "tags": [tlabel, col_name, "聚合"],
+                        })
+                if lang == "en":
+                    templates.append({
+                        "template": True,
+                        "question": f"How many {tname} records have {desc} greater than 0?",
+                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} > 0",
+                        "tags": [tname, col_name, "filter", "aggregation"],
+                    })
+                else:
+                    templates.append({
+                        "template": True,
+                        "question": f"{tlabel}中{desc}大于 0 的记录有多少？",
+                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} > 0",
+                        "tags": [tlabel, col_name, "过滤", "聚合"],
+                    })
+            elif any(m in col_type for m in _DATE_TYPES):
+                # 日期列:最早/最晚(等值/区间比较需样例值,留给 probe 通道)
+                if lang == "en":
+                    templates.append({
+                        "template": True,
+                        "aggregate": True,
+                        "question": f"What is the earliest {desc}?",
+                        "sql": f"SELECT MIN({col_name}) FROM {tquoted}",
+                        "tags": [tname, col_name, "aggregation"],
+                    })
+                    templates.append({
+                        "template": True,
+                        "aggregate": True,
+                        "question": f"What is the latest {desc}?",
+                        "sql": f"SELECT MAX({col_name}) FROM {tquoted}",
+                        "tags": [tname, col_name, "aggregation"],
+                    })
+                else:
+                    templates.append({
+                        "template": True,
+                        "aggregate": True,
+                        "question": f"最早的{desc}是什么时候？",
+                        "sql": f"SELECT MIN({col_name}) FROM {tquoted}",
+                        "tags": [tlabel, col_name, "聚合"],
+                    })
+                    templates.append({
+                        "template": True,
+                        "aggregate": True,
+                        "question": f"最晚的{desc}是什么时候？",
+                        "sql": f"SELECT MAX({col_name}) FROM {tquoted}",
+                        "tags": [tlabel, col_name, "聚合"],
+                    })
     return templates

@@ -510,6 +510,20 @@ class TestPureHelpers:
         )
         assert score == 0
 
+    def test_score_example_aggregate_discounted(self):
+        """单表聚合模板(MAX/MIN/AVG/SUM)降权 0.6——不挤 join 骨架槽位。"""
+        question = "what is the average loan amount"
+        example = {
+            "question": "What is the average loan amount?",
+            "tags": ["loan", "amount", "aggregation"],
+            "aggregate": True,
+        }
+        base = _score_example(question, set(), example)
+        plain = dict(example)
+        plain.pop("aggregate")
+        assert base == round(_score_example(question, set(), plain) * 0.6)
+        assert base >= 1  # 降权后仍 > 0,能进 top-k
+
 
 class TestListing:
     async def test_list_term_names(self, kb, kb_dir):
