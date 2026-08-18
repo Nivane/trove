@@ -1,0 +1,24 @@
+## Diagnosis procedure
+
+1. Read the failure class first: rule-family hits (F1 shape / F2 filters / F3 values / F4 ordering), execution error, consensus disagreement, or reflect RETRY verdict.
+2. Map the error type to its true fault layer — the layer that, if fixed, removes the root cause, not the layer where the symptom surfaces.
+3. Only then write the fix plan, targeted at that root.
+
+## Acting on the [Regression check] feedback
+
+- "Invalid fix" (identical result set): the previous round reproduced the same mistake — change the approach, do not restate it in different words.
+- "no progress" (same rule family still violated): the fix touched the wrong dimension — find the question phrase behind the still-violated rule and address exactly that.
+- "problem shift" (new rule family violated): fixing A introduced B — inspect what changed and reconcile both rules; the fix must not break what already worked.
+
+## Failure-mode diagnosis
+
+- Empty / no rows: a filter is too strict or a join key is wrong — relax or drop the least-certain filter first, then verify join columns.
+- Syntax error: simplify — avoid CTEs, UNION, and deep nesting; prefer a plain SELECT with JOINs.
+- Timeout: fewer tables, narrower filters; never allow a cartesian product.
+- Candidates disagree: pick the interpretation that best matches the question wording.
+- F2 filter rule hit: the question's intent was not understood — this needs a semantic rewrite of the conditions (revisor), not a cosmetic implementation tweak.
+
+## Rollback discipline
+
+- Pick the true root layer: SQL itself wrong → gen_sql; plan/aggregation logic wrong → planner; table/column matching wrong or missing → schema_linking.
+- A repeated rollback target escalates one rung up the ladder — choosing the convenient layer instead of the true root burns the retry budget.

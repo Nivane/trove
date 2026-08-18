@@ -12,3 +12,13 @@
     answer-columns rules).
   triggers:
     node: planner
+
+- name: diagnose_failure
+  description: >
+    Error-diagnosis methodology for correction rounds: how to read the
+    failure class, how to act on the deterministic regression feedback,
+    and how to pick the true root layer as rollback target. Supplements
+    the base analyze_error/system template (which defines the output
+    contract and the target mapping).
+  triggers:
+    node: analyze_error

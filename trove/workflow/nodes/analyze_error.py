@@ -21,6 +21,7 @@ from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.prompts.skills import render_skills
 from trove.workflow.state import WorkflowState
 from trove.workflow.versions import (
     extract_rule_hits,
@@ -203,6 +204,10 @@ def make_analyze_error(
         try:
             model = config.target or "openai/gpt-4o"
             system_prompt = render("analyze_error/system", lang=state.lang)
+            # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
+            skill_block = render_skills("analyze_error", lang=state.lang)
+            if skill_block:
+                system_prompt = f"{system_prompt}\n\n{skill_block}"
             error_text = state.error_feedback or state.reason
             # 版本链回归检查:对比上一版失败(签名/规则命中),产出确定性反馈
             # 并入诊断输入——模型必须看到「无效修复/无进展/问题转移」

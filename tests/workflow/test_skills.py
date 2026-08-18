@@ -29,9 +29,10 @@ def make_state(**kwargs) -> WorkflowState:
     return WorkflowState(**defaults)
 
 
-def test_manifest_matches_planner_only():
-    """plan_query 只由 planner 节点触发;其它节点不匹配。"""
+def test_manifest_matches_by_node():
+    """每个 skill 只由声明的节点触发;其它节点不匹配。"""
     assert matched_skills("planner") == ["plan_query"]
+    assert matched_skills("analyze_error") == ["diagnose_failure"]
     assert matched_skills("gen_sql") == []
     assert matched_skills("schema_linking") == []
 
@@ -48,6 +49,13 @@ def test_render_skills_bilingual():
     assert "decomposition" in en.lower()
     assert "可追溯" in zh
     assert "分解" in zh
+
+    en = render_skills("analyze_error", lang="en")
+    zh = render_skills("analyze_error", lang="zh")
+    assert "Regression" in en
+    assert "Rollback" in en
+    assert "回归检查" in zh
+    assert "回退纪律" in zh
 
 
 def test_render_skills_no_match_is_empty():
@@ -77,3 +85,37 @@ async def test_planner_system_prompt_includes_skill():
     system = captured["messages"][0]["content"]
     assert "query planner" in system
     assert "Traceability" in system
+
+
+async def test_analyze_error_system_prompt_includes_skill():
+    """analyze_error 的 system prompt 携带 diagnose_failure skill 块。"""
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.analyze_error import make_analyze_error
+
+    captured = {}
+
+    class LLM:
+        async def chat(self, model, messages, **kwargs):
+            captured.update(messages=messages)
+            return "类型: Filter\n判断: 条件过严\n修正: 放宽\nTARGET: planner"
+
+    node = make_analyze_error(LLM(), AgentConfig(target="m"))
+    await node(make_state(
+        sql="SELECT * FROM loan",
+        error_feedback="no rows",
+        schema_context="Table: loan",
+        lang="zh",
+    ))
+    system = captured["messages"][0]["content"]
+    assert "诊断流程" in system
+    assert "回归" in system
+
+    await node(make_state(
+        sql="SELECT * FROM loan",
+        error_feedback="no rows",
+        schema_context="Table: loan",
+        lang="en",
+    ))
+    system = captured["messages"][0]["content"]
+    assert "Diagnosis procedure" in system
+    assert "Regression" in system
