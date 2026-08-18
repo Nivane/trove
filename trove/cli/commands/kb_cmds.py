@@ -7,6 +7,7 @@ and only written after the user confirms with /kb learn --yes.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -62,6 +63,23 @@ def _parse_draft(response: str) -> dict:
     if not example.get("question") or not example.get("sql"):
         raise ValueError("example missing question/sql")
     return {"example": example, "terms": list(data.get("terms") or [])}
+
+
+def _fenced_blocks(text: str) -> list[str]:
+    """Fenced code blocks (``` … ``` / ```yaml … ```) anywhere in the text,
+    last first — reasoning 文本里越靠后的围栏越接近最终草稿。"""
+    blocks = re.findall(r"```[a-zA-Z]*\s*\n(.*?)```", text, re.DOTALL)
+    return list(reversed(blocks))
+
+
+def _recover_draft(response: str) -> dict | None:
+    """Salvage a learn draft (example/terms) from prose via fenced blocks."""
+    for candidate in _fenced_blocks(response):
+        try:
+            return _parse_draft(candidate)
+        except Exception:
+            continue
+    return None
 
 
 # stats_suffix/schema_text 迁至 services/kb/synthetic.py(init 起草与
@@ -123,6 +141,25 @@ def _parse_init_tables(response: str) -> list:
         for col in table.get("columns", []):
             col.pop("stats", None)
     return tables
+
+
+def _recover_init_tables(response: str) -> list | None:
+    """Salvage a `tables` draft from a response that is thinking prose
+    (推理模型 content 为空时网关回退 reasoning),而非干净 YAML。
+
+    候选依次为:文本内 ```yaml 围栏块(从后往前)、最靠后的顶格
+    `tables:` 起的尾部片段;任一可解析即采用,全部失败返回 None。
+    """
+    candidates = _fenced_blocks(response)
+    tail_starts = [m.start() for m in re.finditer(r"(?m)^tables:\s*$", response)]
+    if tail_starts:
+        candidates.append(response[tail_starts[-1]:])
+    for candidate in candidates:
+        try:
+            return _parse_init_tables(candidate)
+        except Exception:
+            continue
+    return None
 
 
 def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
@@ -187,25 +224,29 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         try:
             draft = _parse_draft(response)
         except Exception as first_error:
-            # One repair round: feed the parse error back to the LLM.
-            logger.warning("Could not parse LLM draft: %s; asking for repair", first_error)
-            repair_response = await llm.chat(
-                model=model,
-                messages=[
-                    {"role": "system", "content": render("kb/draft_system")},
-                    {"role": "user", "content": _draft_prompt(question, sql)},
-                    {"role": "assistant", "content": response},
-                    {"role": "user", "content": (
-                        f"Your YAML failed to parse: {first_error}\n"
-                        f"Output ONLY the corrected YAML."
-                    )},
-                ],
-            )
-            try:
-                draft = _parse_draft(repair_response)
-            except Exception as e:
-                logger.warning("Could not parse LLM draft after repair: %s", e)
-                return f"Could not parse LLM draft after repair: {e}"
+            # 推理模型可能把全部输出写进 reasoning(网关回退 prose):围栏内
+            # 草稿直接回收,不触发修复轮。修复轮也不再回声 prose 进上下文。
+            draft = _recover_draft(response)
+            if draft is None:
+                logger.warning("Could not parse LLM draft: %s; asking for repair", first_error)
+                repair_response = await llm.chat(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": render("kb/draft_system")},
+                        {"role": "user", "content": _draft_prompt(question, sql)},
+                        {"role": "user", "content": (
+                            f"Your YAML failed to parse: {first_error}\n"
+                            f"Output ONLY the corrected YAML."
+                        )},
+                    ],
+                )
+                try:
+                    draft = _parse_draft(repair_response)
+                except Exception:
+                    draft = _recover_draft(repair_response)
+                if draft is None:
+                    logger.warning("Could not parse LLM draft after repair: %s", first_error)
+                    return f"Could not parse LLM draft after repair: {first_error}"
 
         kb.pending_draft = draft
         example = draft["example"]
@@ -396,23 +437,40 @@ async def _draft_init_chunk(
         {"role": "user", "content": render(
             "kb/init_user", schema_text=schema_text(tables, samples, stats))},
     ]
-    response = await llm.chat(
+    expected = {t["name"] for t in tables}
+
+    def parse_try(response: str) -> tuple[list | None, str | None]:
+        """→ (draft, None) 或 (None, error)。正规解析失败 → 从 prose 回收
+        (推理模型空 content 回退);草稿必须覆盖块内全部表,缺表按失败处理:
+        防推理截断的残缺草稿静默入库,并给修复轮精确的缺表清单。"""
+        try:
+            draft = _parse_init_tables(response)
+        except Exception as e:
+            draft = _recover_init_tables(response)
+            if draft is None:
+                return None, str(e)
+        missing = sorted(expected - {t["name"] for t in draft})
+        if missing:
+            return None, f"draft missing table(s): {', '.join(missing)}"
+        return draft, None
+
+    draft, first_error = parse_try(await llm.chat(
         model=model, messages=messages, max_tokens=INIT_MAX_TOKENS,
+    ))
+    if draft is not None:
+        return draft
+
+    logger.warning("Could not parse init draft: %s; asking for repair", first_error)
+    repair_response = await llm.chat(
+        model=model,
+        max_tokens=INIT_MAX_TOKENS,
+        messages=[*messages, {"role": "user", "content": render(
+            "kb/init_repair", error=first_error)}],
     )
-    try:
-        return _parse_init_tables(response)
-    except Exception as first_error:
-        logger.warning("Could not parse init draft: %s; asking for repair", first_error)
-        repair_response = await llm.chat(
-            model=model,
-            max_tokens=INIT_MAX_TOKENS,
-            messages=[
-                *messages,
-                {"role": "assistant", "content": response},
-                {"role": "user", "content": render("kb/init_repair", error=first_error)},
-            ],
-        )
-        return _parse_init_tables(repair_response)
+    draft, repair_error = parse_try(repair_response)
+    if draft is None:
+        raise ValueError(repair_error)
+    return draft
 
 
 async def _append_synthetic_examples(

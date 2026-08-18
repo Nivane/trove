@@ -357,6 +357,65 @@ class TestKbInitLLM:
         assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert len(llm.calls) >= 2  # draft + repair(合成 few-shot 的额外调用会被静默跳过)
 
+    async def test_init_recovers_draft_from_reasoning_prose(self, kb, sqlite_registry):
+        """回归:推理模型 content 为空、全部输出进 reasoning → 网关回退 prose。
+        草稿若嵌在 prose 的 ```yaml 围栏里,应直接回收,不触发修复轮。"""
+        prose = (
+            "Let me think through this schema carefully.\n"
+            "The table layout is:\n"
+            "```yaml\n" + TABLES_DOC + "```\n"
+            "I believe that covers everything.\n"
+        )
+
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                if len(self.calls) > 1:
+                    raise AssertionError("unexpected LLM call")  # 修复轮走到 → 测试失败
+                return prose
+
+        reg = self._reg(kb, sqlite_registry, ScriptedLLM())
+        result = await reg.get("kb").handler("init")
+
+        assert "Initialized" in result
+        ds = sqlite_registry.default_name
+        assert "student records" in (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+
+    async def test_init_rejects_truncated_recovered_draft(self, kb, sqlite_registry):
+        """回收草稿缺表(推理被截断)→ 走修复轮;修复轮不再把 prose 回声进上下文。"""
+        truncated = (
+            "Let me draft the tables.\n"
+            "```yaml\ntables:\n"
+            "- name: other\n  description: wrong\n  columns: []\n  metrics: []\n"
+            "```\n"
+        )
+
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter([truncated, TABLES_DOC])
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                try:
+                    return next(self.responses)
+                except StopIteration:
+                    raise AssertionError("unexpected extra LLM call")
+
+        llm = ScriptedLLM()
+        reg = self._reg(kb, sqlite_registry, llm)
+        result = await reg.get("kb").handler("init")
+
+        assert "Initialized" in result
+        assert len(llm.calls) == 3  # draft + repair + synthetic(静默跳过)
+        repair_messages = llm.calls[1]
+        # 修复轮上下文不含 assistant 回声(prose 是噪声,只保留 schema + 错误)
+        assert all(m["role"] != "assistant" for m in repair_messages)
+        assert "missing" in repair_messages[-1]["content"]
+
     async def test_init_with_llm_refuses_when_any_exists(self, kb, sqlite_registry):
         ds = sqlite_registry.default_name
         (kb.kb_dir / ds).mkdir(parents=True)
@@ -399,6 +458,29 @@ class TestKbInitLLM:
         tables = _parse_init_tables(MERGED_DOC)
         assert len(tables) == 1
         assert tables[0]["name"] == "students"
+
+    def test_recover_init_tables_from_fenced_prose(self):
+        from trove.cli.commands.kb_cmds import _recover_init_tables
+
+        prose = "Let me think.\n```yaml\n" + TABLES_DOC + "```\nDone.\n"
+        tables = _recover_init_tables(prose)
+        assert tables is not None
+        assert tables[0]["name"] == "students"
+
+    def test_recover_init_tables_from_tables_rooted_prose(self):
+        from trove.cli.commands.kb_cmds import _recover_init_tables
+
+        prose = "I will now write the draft.\n\n" + TABLES_DOC
+        tables = _recover_init_tables(prose)
+        assert tables is not None
+        assert tables[0]["name"] == "students"
+
+    def test_recover_init_tables_none_for_pure_prose(self):
+        from trove.cli.commands.kb_cmds import _recover_init_tables
+
+        assert _recover_init_tables(
+            "Just thinking about the schema, no draft written yet."
+        ) is None
 
     def test_parse_init_tables_tolerates_extra_top_level_key(self):
         from trove.cli.commands.kb_cmds import _parse_init_tables
@@ -702,6 +784,33 @@ GROUP BY county
         assert len(llm.calls) == 2  # draft + repair round
         # repair prompt carried the parse error
         assert "failed to parse" in llm.calls[1][-1]["content"].lower()
+
+    async def test_learn_recovers_draft_from_reasoning_prose(self, kb):
+        """推理模型 content 为空 → 网关回退 prose;围栏内草稿直接回收,不触发修复轮。"""
+        prose = (
+            "Let me think about this question.\n"
+            "The example should be:\n"
+            "```yaml\n" + DRAFT_YAML + "```\n"
+            "Yes, that is correct.\n"
+        )
+
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                if len(self.calls) > 1:
+                    raise AssertionError("unexpected LLM call")  # 修复轮走到 → 测试失败
+                return prose
+
+        reg = make_reg(
+            kb, llm_gateway=ScriptedLLM(), current_session=self._session_with_exchange(),
+        )
+        result = await reg.get("kb").handler("learn")
+        assert kb.pending_draft is not None
+        assert kb.pending_draft["example"]["question"] == "学生们的平均成绩是多少"
+        assert "yes" in result
 
     async def test_learn_repair_failure_reports_error(self, kb):
         class ScriptedLLM:
