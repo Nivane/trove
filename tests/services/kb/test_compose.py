@@ -8,7 +8,9 @@ from trove.services.kb.compose import (
     compose_candidates,
     compose_pair,
     compose_question,
+    compose_triple,
     parse_filter,
+    parse_group,
     parse_join,
 )
 
@@ -17,6 +19,15 @@ JOIN_SQL = (
     "ON loan.account_id = account.account_id"
 )
 FILTER_SQL = "SELECT COUNT(*) FROM loan WHERE status = 'A'"
+GROUP_SQL = (
+    "SELECT account.frequency, COUNT(*) FROM loan JOIN account "
+    "ON loan.account_id = account.account_id GROUP BY account.frequency"
+)
+JOIN_WHERE_SQL = (
+    "SELECT COUNT(*) FROM loan JOIN account "
+    "ON loan.account_id = account.account_id "
+    "WHERE loan.status = 'A'"
+)
 
 # 过滤表在 JOIN 之外(account JOIN district + loan 过滤)→ 3+ 表跨链跳过
 OUTSIDE_JOIN_SQL = (
@@ -80,6 +91,37 @@ class TestComposeQuestion:
         assert compose_question("甲？", "乙？", lang="zh") == "甲？；乙？"
 
 
+class TestParseGroup:
+    def test_parse_join_group(self):
+        assert parse_group(GROUP_SQL) == (
+            "loan", "account", "frequency",
+            "loan.account_id = account.account_id")
+
+    def test_single_table_group_not_parsed(self):
+        """单表 GROUP BY 模板不参与三层组合(表集合不同)。"""
+        assert parse_group("SELECT status, COUNT(*) FROM loan GROUP BY status") is None
+
+
+class TestComposeTriple:
+    def test_three_layer_composition(self):
+        sql = compose_triple(JOIN_WHERE_SQL, GROUP_SQL)
+        assert sql == (
+            "SELECT account.frequency, COUNT(*) FROM loan JOIN account "
+            "ON loan.account_id = account.account_id "
+            "WHERE loan.status = 'A' "
+            "GROUP BY account.frequency"
+        )
+
+    def test_mismatched_table_pair_skipped(self):
+        """GROUP 模板表对与组合不同 → 不组合(粒度不匹配)。"""
+        other_group = GROUP_SQL.replace("account", "card", 2)
+        assert compose_triple(JOIN_WHERE_SQL, other_group) is None
+
+    def test_unparseable_input_returns_none(self):
+        assert compose_triple(JOIN_WHERE_SQL, "SELECT * FROM t") is None
+        assert compose_triple("SELECT * FROM t", GROUP_SQL) is None
+
+
 class TestComposeCandidates:
     def _hit(self, sql, score, question="q", tags=None):
         return {"question": question, "sql": sql, "tags": tags or [], "score": score}
@@ -98,7 +140,7 @@ class TestComposeCandidates:
         out = compose_candidates(hits)
         assert len(out) == 3  # 2 原子 + 1 组合
         combo = [h for h in out if "JOIN" in h["sql"] and "WHERE" in h["sql"]][0]
-        assert combo["score"] == 8  # max(8, 6)
+        assert combo["score"] == 6  # int(max(8, 6) × 0.85) 降权:组合不压过最强原子
         assert combo["template"] is True
         assert "account" in combo["question"] and "status" in combo["question"]
 
@@ -126,7 +168,7 @@ class TestComposeCandidates:
             h for h in out if "JOIN" in h["sql"] and "WHERE" in h["sql"]
         ]
         assert len(combos) == 2  # 3 个唯一组合被截到 2 个
-        assert combos[0]["score"] == 9 and combos[1]["score"] == 9
+        assert combos[0]["score"] == 7 and combos[1]["score"] == 7  # int(9×0.85)
 
     def test_duplicate_combination_deduped(self):
         """同一 join × 同一 filter 重复出现只产出一个组合。"""
@@ -150,3 +192,30 @@ class TestComposeCandidates:
         hits = [Hit(JOIN_SQL, 5), Hit(FILTER_SQL, 4)]
         out = compose_candidates(hits)
         assert len(out) == 3
+
+    def test_three_layer_combo_generated(self):
+        """JOIN×WHERE×GROUP:三层组合进候选池,score = 三者最高分。"""
+        hits = [
+            self._hit(JOIN_SQL, 9, question="How many loans in account?"),
+            self._hit(FILTER_SQL, 7, question="How many loans with status A?"),
+            self._hit(GROUP_SQL, 5, question="Loans per frequency?"),
+        ]
+        out = compose_candidates(hits, max_triples=4)
+        triples = [
+            h for h in out
+            if "JOIN" in h["sql"] and "WHERE" in h["sql"] and "GROUP BY" in h["sql"]
+        ]
+        assert len(triples) == 1
+        assert triples[0]["sql"] == (
+            "SELECT account.frequency, COUNT(*) FROM loan JOIN account "
+            "ON loan.account_id = account.account_id "
+            "WHERE loan.status = 'A' "
+            "GROUP BY account.frequency"
+        )
+        assert triples[0]["score"] == 7  # int(max(9,7,5) × 0.85)
+
+    def test_three_layer_requires_all_three_atoms(self):
+        """缺 join/filter/group 任一 → 无三层组合。"""
+        no_filter = [self._hit(JOIN_SQL, 9), self._hit(GROUP_SQL, 5)]
+        out = compose_candidates(no_filter)
+        assert len(out) == 2  # 只有两个原子,无任何组合

@@ -98,9 +98,29 @@ def _bigrams(text: str) -> set[str]:
     return {text[i : i + 2] for i in range(len(text) - 1)}
 
 
+_STOP_WORDS = {
+    "the", "a", "an", "of", "for", "and", "or", "in", "with", "at",
+    "to", "on", "by", "is", "are", "per", "each",
+}
+
+
 def _word_tokens(text: str) -> set[str]:
     """Lowercased ASCII word tokens (empty for pure-Chinese text)."""
     return set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+
+
+def _term_word_overlap(term: str, question: str) -> float:
+    """术语词重叠率:术语有效词(去停用词)在问题中出现的比例。
+
+    子串匹配对 paraphrase 完全失效("average approved amount" vs
+    "average loan amount" 措辞不同但语义等价)——词重叠 ≥0.5 且
+    ≥2 词时视为同一语义的检索命中。
+    """
+    tw = _word_tokens(term) - _STOP_WORDS
+    if len(tw) < 2:
+        return 0.0
+    qw = _word_tokens(question)
+    return len(tw & qw) / len(tw)
 
 
 def _mentions_any(text: str, names: list[str]) -> bool:
@@ -439,9 +459,11 @@ class KbService:
         hits = []
         for row in rows:
             payload = json.loads(row["payload"])
+            term = payload["term"]
             if not (
-                payload["term"] in question
+                term in question
                 or any(a and a in question for a in payload.get("aliases", []))
+                or _term_word_overlap(term, question) >= 0.5
             ):
                 continue
             if tables is not None:

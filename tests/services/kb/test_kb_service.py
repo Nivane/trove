@@ -140,6 +140,42 @@ class TestTableAnchoredRetrieval:
         loan_hit = next(h for h in hits if "loan" in h.sql.lower())
         assert loan_hit.score >= 3
 
+    async def test_terms_hit_by_word_overlap_paraphrase(self, kb, kb_dir):
+        """词重叠:措辞不同的语义等价问题命中术语(substring 命中不了)。
+
+        术语 "average approved amount" vs 问题 "highest average loan amount"
+        ——2/3 有效词重叠 → 命中。映射仍指向 AVG(amount),这正是检索
+        想达到的效果:措辞不同但语义等价。
+        """
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        import yaml as _yaml
+
+        sem = kb_dir / "demo" / "semantics.yml"
+        doc = _yaml.safe_load(sem.read_text(encoding="utf-8"))
+        doc["terms"].append({
+            "term": "average approved amount",
+            "aliases": [],
+            "mapping": "AVG(loan.amount)",
+            "tables": ["loan"],
+            "definition": "average approved loan amount",
+        })
+        sem.write_text(_yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        hits = await kb.search_terms(
+            "List the districts with the highest average loan amount",
+            "demo",
+        )
+        assert any(h.term == "average approved amount" for h in hits), [
+            h.term for h in hits]
+
+    async def test_term_word_overlap_requires_min_two_words(self):
+        """单/两有效词术语不被词重叠误命中(噪声护栏)。"""
+        from trove.services.kb.service import _term_word_overlap
+        assert _term_word_overlap("loan count", "count of loans in district") >= 0.5
+        assert _term_word_overlap("number of loan records", "total records") < 0.5
+
     async def test_per_table_keeps_one_representative_per_anchor(self, kb, kb_dir):
         """per_table 分组:每张锚定表各保底一个代表模板,高分单表不霸榜。"""
         write_kb(kb_dir)
@@ -222,8 +258,8 @@ class TestTableAnchoredRetrieval:
             "WHERE loan.status = 'A'"
         )
         assert combined[0].template is True
-        # 组合评分 = 两个原子的较高分 → 排序在原子之前
-        assert combined[0].score >= max(h.score for h in hits[:3])
+        # 组合评分 = 最强原子 ×0.85 降权(组合是结构推测,不压过真实命中)
+        assert 0 < combined[0].score < max(h.score for h in hits)
 
 
 class TestEnablement:
