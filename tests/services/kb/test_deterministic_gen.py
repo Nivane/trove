@@ -161,10 +161,10 @@ class TestGenerateTemplates:
         assert grouped["question"] == "按地区的地区名称分组，统计每种地区名称的银行账户数量"
 
     def test_enum_filter_template_takes_sample_values(self):
-        """enum 列取前 2 个值生成 WHERE 过滤模板。"""
+        """enum 列取前 3 个值生成 WHERE 过滤模板。"""
         templates = generate_templates(TABLES, lang="zh")
         filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM loan WHERE status")]
-        assert len(filters) == 2
+        assert len(filters) == 3
         assert filters[0]["sql"] == "SELECT COUNT(*) FROM loan WHERE status = 'A'"
         assert filters[1]["sql"] == "SELECT COUNT(*) FROM loan WHERE status = 'B'"
         assert filters[0]["question"] == "贷款中贷款状态为'A'的记录有多少？"
@@ -339,13 +339,73 @@ class TestEnglishGeneration:
         )
 
     def test_enum_filter_templates_in_english(self):
+        """问题文本用人类可读 label(male/female),SQL 保留 code 值。"""
         templates = generate_templates(EN_TABLES)
         filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM loan WHERE status")]
         assert [t["sql"] for t in filters] == [
             "SELECT COUNT(*) FROM loan WHERE status = 'A'",
             "SELECT COUNT(*) FROM loan WHERE status = 'B'",
         ]
-        assert filters[0]["question"] == "How many loan records have loan status = 'A'?"
+        assert filters[0]["question"] == (
+            "How many loan records are contract finished?")
+
+    def test_multiline_enum_generates_all_values_with_labels(self):
+        """多行 enum('F=female\\nM=male')逐行解析,label 进问题文本。"""
+        tables = [{
+            "name": "client",
+            "description": "client information",
+            "columns": [
+                {"name": "client_id", "type": "int", "description": "client identifier", "enums": []},
+                {"name": "gender", "type": "text", "description": "gender of client",
+                 "enums": ["F=female\nM=male"]},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables)
+        filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM client WHERE gender")]
+        assert [(t["sql"], t["question"]) for t in filters] == [
+            ("SELECT COUNT(*) FROM client WHERE gender = 'F'",
+             "How many client records are female?"),
+            ("SELECT COUNT(*) FROM client WHERE gender = 'M'",
+             "How many client records are male?"),
+        ]
+
+    def test_stands_for_enum_format_parsed_cleanly(self):
+        """''A' stands for contract finished' → code='A', label 去 stands for。"""
+        tables = [{
+            "name": "loan",
+            "description": "loan information",
+            "columns": [
+                {"name": "status", "type": "text", "description": "loan status",
+                 "enums": ["'A' stands for contract finished;\n'B' stands for running"]},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables)
+        filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM loan WHERE status")]
+        assert filters[0]["sql"] == "SELECT COUNT(*) FROM loan WHERE status = 'A'"
+        assert "stand for" not in filters[0]["sql"]
+        assert filters[0]["question"].endswith("are contract finished?")
+
+    def test_narrative_enum_lines_skipped(self):
+        """叙述行('each bank has unique two-letter code')不当成值。"""
+        tables = [{
+            "name": "trans",
+            "description": "transaction information",
+            "columns": [
+                {"name": "bank", "type": "text", "description": "bank of the partner",
+                 "enums": ["each bank has unique two-letter code", "AB", "YZ"]},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables)
+        filters = [t for t in templates if t["sql"].startswith("SELECT COUNT(*) FROM trans WHERE bank")]
+        sqls = [t["sql"] for t in filters]
+        assert "each bank" not in " ".join(sqls)
+        assert sqls == [
+            "SELECT COUNT(*) FROM trans WHERE bank = 'AB'",
+            "SELECT COUNT(*) FROM trans WHERE bank = 'YZ'",
+        ]
 
     def test_numeric_templates_in_english(self):
         """数值列聚合/比较模板问题文本用英文描述(检索锚:business 词)。"""

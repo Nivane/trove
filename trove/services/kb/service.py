@@ -106,8 +106,16 @@ _STOP_WORDS = {
 
 
 def _word_tokens(text: str) -> set[str]:
-    """Lowercased ASCII word tokens (empty for pure-Chinese text)."""
-    return set(re.findall(r"[a-zA-Z0-9_]+", text.lower()))
+    """Lowercased ASCII word tokens with naive plural stripping.
+
+    "clients" vs "client"、"withdrawals" vs "withdrawal" 复数形式导致
+    overlap 丢失("male customers" 题漏 gender 列就是这个词法死区)。
+    仅去尾 s(长度>3 保护 "is/us/its");交集双方同归一,一致性不受影响。
+    """
+    out = set()
+    for w in re.findall(r"[a-zA-Z0-9_]+", text.lower()):
+        out.add(w[:-1] if len(w) > 3 and w.endswith("s") else w)
+    return out
 
 
 def _term_word_overlap(term: str, question: str) -> float:

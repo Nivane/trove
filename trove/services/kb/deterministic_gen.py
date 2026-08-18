@@ -161,25 +161,56 @@ def generate_terms(
     return terms
 
 
-def _enum_values(enums: list[str], limit: int = 2) -> list[str]:
-    """枚举条目 → 取值(前 limit 个,去重)。
+def _enum_label(rest: str) -> str:
+    """去引号后的剩余文本 → 人类可读描述(去前导标点/stands for/尾标点)。"""
+    rest = rest.strip().lstrip(":;,，。").strip()
+    rest = re.sub(r"^stands for\s+", "", rest, flags=re.I)
+    return rest.rstrip(";,，。.!").strip()
 
-    两种常见格式:
-      'POPLATEK MESICNE=monthly issuance' → 取 = 前的值
-      '"junior": junior class; "classic": ...' → 取引号内的值
+
+def _enum_values(
+    enums: list[str], limit: int = 5,
+) -> list[tuple[str, str]]:
+    """枚举条目 → [(code, label)] 前 limit 个(去重)。
+
+    格式多样(实测 BIRD 描述):
+      'F=female\\nM=male'                 → [('F','female'), ('M','male')]
+      'POPLATEK MESICNE=monthly issuance' → [('POPLATEK MESICNE','monthly issuance')]
+      '"junior": junior class of credit card;' → [('junior','junior class of credit card')]
+      "'A' stands for contract finished"  → [('A','contract finished')]
+      'west Bohemia'(纯值)                → [('west Bohemia','west Bohemia')]
+    叙述/噪声行('commonsense evidence: ...'、'each bank has unique
+    two-letter code')跳过——保守:不产出 garbage 值。label 解析不出
+    回退 code。
     """
-    values: list[str] = []
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for raw in enums or []:
-        text = str(raw).strip()
-        head = re.split(r"[=:]", text, maxsplit=1)[0].strip().strip("\"'")
-        quoted = re.findall(r'"([^"]+)"', text)
-        for candidate in quoted or [head]:
-            candidate = candidate.strip()
-            if candidate and candidate not in values:
-                values.append(candidate)
-        if len(values) >= limit:
-            break
-    return values[:limit]
+        for line in str(raw).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r"^([^=]+)=(.*)$", line)
+            if m:
+                code = m.group(1).strip().strip("'\"")
+                label = m.group(2).strip()
+            else:
+                quoted = re.findall(r'["\']([^"\']+)["\']', line)
+                if quoted:
+                    code = quoted[0].strip()
+                    label = _enum_label(
+                        re.sub(r'["\'][^"\']*["\']', "", line))
+                else:
+                    if ":" in line or len(line.split()) >= 3:
+                        continue  # 叙述行(含冒号)或多词句子 → 跳过
+                    code, label = line, ""
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            pairs.append((code, label or code))
+            if len(pairs) >= limit:
+                return pairs
+    return pairs
 
 
 def generate_templates(
@@ -313,6 +344,9 @@ def generate_templates(
                     })
 
         # C: enum 列 WHERE 过滤模板
+        # en 问题文本用人类可读 label(male/female 而非 M/F)——
+        # "male customers" 与 "gender = 'M'" 词法零重叠,是检索死区;
+        # SQL 保留 code 值。
         for col in table.get("columns", []):
             vals = _enum_values(col.get("enums") or [])
             if not vals:
@@ -322,19 +356,22 @@ def generate_templates(
             if lang == "en" and (not desc or _CJK_RE.search(desc)):
                 desc = col_name
             desc = desc or col_name
-            for val in vals:
+            for code, label_word in vals:
                 if lang == "en":
+                    # "are {label}" 比 "have {desc} = '{label}'" 词重叠更高
+                    # ("male customers" 命中 how/many/male,实测 gender 模板
+                    # 从 top-10 外进 top-10);SQL 保留 code 值
                     templates.append({
                         "template": True,
-                        "question": f"How many {tname} records have {desc} = '{val}'?",
-                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{val}'",
+                        "question": f"How many {tname} records are {label_word}?",
+                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{code}'",
                         "tags": [tname, col_name, "filter", "aggregation"],
                     })
                 else:
                     templates.append({
                         "template": True,
-                        "question": f"{tlabel}中{desc}为'{val}'的记录有多少？",
-                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{val}'",
+                        "question": f"{tlabel}中{desc}为'{code}'的记录有多少？",
+                        "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {col_name} = '{code}'",
                         "tags": [tlabel, col_name, "过滤", "聚合"],
                     })
 
