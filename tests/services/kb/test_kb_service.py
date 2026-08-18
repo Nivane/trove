@@ -4,6 +4,8 @@ Layout: .trove/kb/<datasource>/{schema_notes,semantics,examples}.yml
 Legacy flat files (kb root) are auto-migrated into a datasource dir.
 """
 
+import re
+
 import aiosqlite
 import pytest
 
@@ -137,6 +139,45 @@ class TestTableAnchoredRetrieval:
         # 表锚是加分项：loan 示例得分更高
         loan_hit = next(h for h in hits if "loan" in h.sql.lower())
         assert loan_hit.score >= 3
+
+    async def test_per_table_keeps_one_representative_per_anchor(self, kb, kb_dir):
+        """per_table 分组:每张锚定表各保底一个代表模板,高分单表不霸榜。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        # 补一张 district 模板,把 loan 模板做得分普遍更高
+        import yaml as _yaml
+
+        examples = kb_dir / "demo" / "examples.yml"
+        doc = _yaml.safe_load(examples.read_text(encoding="utf-8"))
+        doc["examples"].append({
+            "question": "每个地区的客户有多少",
+            "template": True,
+            "sql": "SELECT d.A2, COUNT(*) FROM client c JOIN district d ON c.district_id = d.A1 GROUP BY d.A2",
+            "tags": ["地区", "客户", "分组"],
+        })
+        examples.write_text(_yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        # 分组:limit=2 两张表各保底 1 个(不加分组时可能全被 loan 模板占据)
+        grouped = await kb.search_examples(
+            "客户 地区 贷款", "demo", limit=2,
+            tables=["loan", "district"], all_tables=self.ALL_TABLES,
+            per_table=True,
+        )
+        grouped_tables = set()
+        for h in grouped:
+            grouped_tables |= {"loan", "district"} & set(
+                {w for w in re.findall(r"[a-z]+", h.sql.lower())})
+        assert grouped_tables == {"loan", "district"}, grouped_tables
+        # 单表场景退化为普通行为(分组无副作用)
+        single = await kb.search_examples(
+            "贷款", "demo", limit=2, tables=["loan"],
+            all_tables=self.ALL_TABLES, per_table=True,
+        )
+        assert single == await kb.search_examples(
+            "贷款", "demo", limit=2, tables=["loan"],
+            all_tables=self.ALL_TABLES,
+        )
 
 
 class TestEnablement:

@@ -479,12 +479,19 @@ class KbService:
         limit: int = 3,
         tables: list[str] | None = None,
         all_tables: list[str] | None = None,
+        per_table: bool = False,
     ) -> list[ExampleHit]:
         """Top-K reference examples/templates by relevance score.
 
         With `tables` given, examples that mention OTHER tables are
         dropped (deterministic evidence filtering); examples mentioning
         the matched tables get a score anchor.
+
+        With `per_table=True` and `tables` given, each anchor table gets
+        its own top group first (anchored to that table alone), then the
+        groups are merged and de-duplicated — a multi-table question keeps
+        at least one representative template per matched table instead of
+        letting one table's templates crowd out the rest.
         """
         if not self.enabled:
             return []
@@ -495,18 +502,53 @@ class KbService:
             "WHERE kind IN ('example', 'template') AND datasource = ? ORDER BY id",
             (datasource,),
         )
-        scored = []
-        for row in rows:
-            payload = json.loads(row["payload"])
+        payloads = [json.loads(row["payload"]) for row in rows]
+
+        def keep(payload: dict) -> bool:
+            """确定性跨表过滤:示例提到未匹配的表 → 丢弃。"""
+            if tables is None or not all_tables:
+                return True
             full_text = " ".join([
                 str(payload.get("question", "")),
                 str(payload.get("sql", "")),
                 *[str(t) for t in payload.get("tags", [])],
             ])
-            if tables is not None and all_tables:
-                mentioned = [t for t in all_tables if t and t in full_text]
-                if mentioned and not any(t in tables for t in mentioned):
-                    continue  # 示例绑定到未匹配的表 → 与当前问题无关
+            mentioned = [t for t in all_tables if t and t in full_text]
+            return not mentioned or any(t in tables for t in mentioned)
+
+        if per_table and tables:
+            # 每表分组 top-limit(锚定只给组内表)→ 合并 → 每表保底 1 个,
+            # 剩余名额按分填充——多表题的 join 骨架不会因单表高分被挤出
+            groups: list[list[ExampleHit]] = []
+            merged: dict[str, ExampleHit] = {}
+            for t in tables:
+                group = [
+                    (_score_example(question, matched_terms, p, tables=[t]), p)
+                    for p in payloads
+                    if keep(p)
+                ]
+                group = [(s, p) for s, p in group if s > 0]
+                group.sort(key=lambda x: x[0], reverse=True)
+                hits = [ExampleHit(**p, score=s) for s, p in group[:limit]]
+                groups.append(hits)
+                for hit in hits:
+                    key = f"{hit.sql}|{hit.question}"
+                    if key not in merged or merged[key].score < hit.score:
+                        merged[key] = hit
+            # 保底:每表 top1 先进(表数 > limit 时按表顺序截断)
+            picks = [g[0] for g in groups if g]
+            picked_keys = {f"{h.sql}|{h.question}" for h in picks}
+            rest = [
+                h for h in merged.values()
+                if f"{h.sql}|{h.question}" not in picked_keys
+            ]
+            rest.sort(key=lambda h: h.score, reverse=True)
+            return (picks + rest)[:limit]
+
+        scored = []
+        for payload in payloads:
+            if not keep(payload):
+                continue
             score = _score_example(question, matched_terms, payload, tables=tables)
             if score > 0:
                 scored.append(ExampleHit(**payload, score=score))

@@ -232,6 +232,8 @@ def _make_gen_sql_node(
             example_hits = await services.kb.search_examples(
                 state.question, datasource, limit=3,
                 tables=matched or None, all_tables=all_table_names or None,
+                # 多表锚定:每表分组 top 再合并,避免单表模板挤占
+                per_table=bool(matched),
             )
             rules = await services.kb.list_rules(datasource)
             all_lessons = await services.kb.list_lessons(datasource)

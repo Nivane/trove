@@ -52,14 +52,30 @@ def _clean(name: str) -> str | None:
 
 
 def sql_features(sql: str) -> tuple[set[str], set[str]]:
-    """结构特征:表集合 + 列集合(SQLGlot,别名/字面量清洗)。解析失败→空集。"""
+    """结构特征:表集合 + 列集合(SQLGlot)。
+
+    walk(exp.Table) 会把别名引用/列引用/字面量当表——表名只取
+    From/Join 的 this.name;列名排除数字/单字符/含空格的字面量/
+    表别名。解析失败→空集。
+    """
     try:
         ast = sqlglot.parse_one(sql, read="mysql")
     except Exception:
         return set(), set()
-    tables = {n for n in {_clean(t.name) for t in ast.walk(exp.Table)} if n}
-    cols = {n for n in {_clean(c.name) for c in ast.walk(exp.Column)} if n}
-    return tables, cols
+    tables: set[str] = set()
+    aliases: set[str] = set()
+    for node in ast.walk():
+        if isinstance(node, (exp.From, exp.Join)) and node.this:
+            name = _clean(node.this.name)
+            if name:
+                tables.add(name)
+            if node.this.alias:
+                aliases.add(node.this.alias.lower())
+    cols = {
+        n for n in {_clean(c.name) for c in ast.walk(exp.Column)}
+        if n and " " not in n
+    }
+    return tables, cols - tables - aliases
 
 
 def jaccard(a: set[str], b: set[str]) -> float:
@@ -115,12 +131,14 @@ async def main() -> None:
     await kb.ensure_synced()
 
     # per-db: {anchor: {exact@k, sim@k, cover_tables@k, cover_cols@k, tokens}}
+    # 口径: A 无锚定 / B gold表锚定 / C gold表锚定+per_table 分组
     stats = defaultdict(lambda: {
         "n": 0,
-        "A": {"exact": defaultdict(int), "sim": defaultdict(int),
-              "ct": defaultdict(list), "cc": defaultdict(list), "tokens": []},
-        "B": {"exact": defaultdict(int), "sim": defaultdict(int),
-              "ct": defaultdict(list), "cc": defaultdict(list), "tokens": []},
+        **{
+            name: {"exact": defaultdict(int), "sim": defaultdict(int),
+                   "ct": defaultdict(list), "cc": defaultdict(list), "tokens": []}
+            for name in ("A", "B", "C")
+        },
     })
 
     def union_coverage(top: list, gold_set: set[str]) -> float:
@@ -143,9 +161,13 @@ async def main() -> None:
         s = stats[db]
         s["n"] += 1
 
-        for anchor_name, anchor in (("A", None), ("B", gold_tables or None)):
+        for anchor_name, anchor, per in (
+            ("A", None, False),
+            ("B", gold_tables or None, False),
+            ("C", gold_tables or None, True),
+        ):
             hits = await kb.search_examples(
-                q["question"], db, limit=10, tables=anchor,
+                q["question"], db, limit=10, tables=anchor, per_table=per,
             )
             for k in TOP_K:
                 top = hits[:k]
@@ -163,7 +185,9 @@ async def main() -> None:
         if n == 0:
             continue
         print(f"\n== {db} (n={n}) ==")
-        for anchor_name, label in (("A", "A 无锚定"), ("B", "B gold表锚定")):
+        for anchor_name, label in (
+            ("A", "A 无锚定"), ("B", "B gold表锚定"), ("C", "C 锚定+分组"),
+        ):
             exact = {k: s[anchor_name]["exact"][k] / n for k in TOP_K}
             sim = {k: s[anchor_name]["sim"][k] / n for k in TOP_K}
             ct = {k: sum(v) / len(v) if v else 0.0
