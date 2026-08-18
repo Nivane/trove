@@ -563,6 +563,20 @@ class TestPureHelpers:
         assert base == round(_score_example(question, set(), plain) * 0.6)
         assert base >= 1  # 降权后仍 > 0,能进 top-k
 
+    def test_score_example_date_range_discounted(self):
+        """日期派生模板同款 0.6 降权——how/many/{table} 泛化词不挤占。"""
+        question = "how many loans are there"
+        example = {
+            "question": "How many loan records have loan date in 1993?",
+            "tags": ["loan", "date", "filter", "aggregation"],
+            "date_range": True,
+        }
+        base = _score_example(question, set(), example)
+        plain = dict(example)
+        plain.pop("date_range")
+        assert base == round(_score_example(question, set(), plain) * 0.6)
+        assert base >= 1
+
 
 class TestListing:
     async def test_list_term_names(self, kb, kb_dir):

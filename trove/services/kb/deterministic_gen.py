@@ -24,6 +24,59 @@ _NUMERIC_TYPES = (
 )
 _DATE_TYPES = ("date", "datetime", "timestamp", "time")
 
+# 日期值域采样:跨度超过此数时按 10 年步进抽取(每 decade 一个代表)
+_DATE_YEAR_CAP = 12
+
+
+def _parse_date_range(range_vals: list) -> tuple[int, int, str] | None:
+    """列 range 字段 → (start_year, end_year, fmt)。
+
+    fmt 支持 Berka YYMMDD('930101' → 1993)与标准 YYYY-MM-DD/YYYYMMDD。
+    probe 端只保证"像日期",这里做严格解析;解析失败返回 None(不生成)。
+    """
+    if not range_vals or len(range_vals) < 2:
+        return None
+    lo, hi = str(range_vals[0]).strip(), str(range_vals[1]).strip()
+    if not lo or not hi:
+        return None
+    if re.fullmatch(r"\d{6}", lo) and re.fullmatch(r"\d{6}", hi):
+        fmt, width = "yymmdd", 2
+        start = 1900 + int(lo[:2])
+        end = 1900 + int(hi[:2])
+    elif (
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}", lo)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}", hi)
+    ) or (
+        re.fullmatch(r"\d{8}", lo) and re.fullmatch(r"\d{8}", hi)
+    ):
+        fmt, width = "ymd", 4
+        start = int(lo[:4])
+        end = int(hi[:4])
+    else:
+        return None
+    if start > end:
+        return None
+    return start, end, fmt
+
+
+def _sample_years(start: int, end: int) -> list[int]:
+    """数据跨度内的代表年份。跨度 ≤ cap 全采;否则每 decade 一个 + 末年。"""
+    if end - start + 1 <= _DATE_YEAR_CAP:
+        return list(range(start, end + 1))
+    years = [start, end]
+    decade = (start // 10) * 10
+    while decade < end:
+        years.append(decade)
+        decade += 10
+    return sorted(set(years))
+
+
+def _human_date(raw: str, fmt: str) -> str:
+    """存储值 → 人类可读日期('930101' → '1993-01-01';标准格式原样)。"""
+    if fmt == "yymmdd" and re.fullmatch(r"\d{6}", raw):
+        return f"19{raw[:2]}-{raw[2:4]}-{raw[4:6]}"
+    return raw[:10]
+
 # 度量后缀:总量/平均插在这些词之前("贷款金额" → "贷款总金额")
 _MEASURE_SUFFIXES = ("金额", "数量", "余额", "收入", "工资", "薪资", "期限", "笔数", "总额")
 
@@ -466,5 +519,127 @@ def generate_templates(
                         "question": f"最晚的{desc}是什么时候？",
                         "sql": f"SELECT MAX({col_name}) FROM {tquoted}",
                         "tags": [tlabel, col_name, "聚合"],
+                    })
+                # E: 日期值域模板(probe 通道写入的 range 字段)
+                # "approved loan date in 1997" / "between 1/1/1995 and 12/31/1997"
+                # / "born before 1950" 的漏列根因:模板里没有年份/区间字面量。
+                # range = probe_enums 对 MIN/MAX 的统计值,确定性数据,不是 gold。
+                parsed = _parse_date_range(col.get("range"))
+                if parsed is None:
+                    continue
+                start_year, end_year, fmt = parsed
+                width = 2 if fmt == "yymmdd" else 4
+                date_tags = [tname, col_name, "filter", "aggregation"]
+                for year in _sample_years(start_year, end_year):
+                    code = f"{year % 100:02d}" if fmt == "yymmdd" else str(year)
+                    cond = f"substr({col_name}, 1, {width}) = '{code}'"
+                    if lang == "en":
+                        templates.append({
+                            "template": True,
+                            "date_range": True,
+                            "question": f"How many {tname} records have {desc} in {year}?",
+                            "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {cond}",
+                            "tags": date_tags,
+                        })
+                    else:
+                        templates.append({
+                            "template": True,
+                            "date_range": True,
+                            "question": f"{tlabel}中{desc}在{year}年的记录有多少？",
+                            "sql": f"SELECT COUNT(*) FROM {tquoted} WHERE {cond}",
+                            "tags": date_tags,
+                        })
+                range_vals = [str(v) for v in col.get("range")][:2]
+                between_sql = (
+                    f"SELECT COUNT(*) FROM {tquoted} "
+                    f"WHERE {col_name} BETWEEN '{range_vals[0]}' AND '{range_vals[1]}'"
+                )
+                if lang == "en":
+                    templates.append({
+                        "template": True,
+                        "date_range": True,
+                        "question": (
+                            f"How many {tname} records have {desc} between "
+                            f"{start_year} and {end_year}?"
+                        ),
+                        "sql": between_sql,
+                        "tags": date_tags,
+                    })
+                else:
+                    templates.append({
+                        "template": True,
+                        "date_range": True,
+                        "question": (
+                            f"{tlabel}中{desc}在{start_year}到{end_year}年之间"
+                            f"的记录有多少？"
+                        ),
+                        "sql": between_sql,
+                        "tags": date_tags,
+                    })
+                for raw in (range_vals[0], range_vals[1]):
+                    if lang == "en":
+                        templates.append({
+                            "template": True,
+                            "date_range": True,
+                            "question": (
+                                f"How many {tname} records have {desc} on "
+                                f"{_human_date(raw, fmt)}?"
+                            ),
+                            "sql": (
+                                f"SELECT COUNT(*) FROM {tquoted} "
+                                f"WHERE {col_name} = '{raw}'"
+                            ),
+                            "tags": date_tags,
+                        })
+                    else:
+                        templates.append({
+                            "template": True,
+                            "date_range": True,
+                            "question": f"{tlabel}中{desc}为{_human_date(raw, fmt)}的记录有多少？",
+                            "sql": (
+                                f"SELECT COUNT(*) FROM {tquoted} "
+                                f"WHERE {col_name} = '{raw}'"
+                            ),
+                            "tags": date_tags,
+                        })
+                end_code = f"{end_year % 100:02d}" if fmt == "yymmdd" else str(end_year)
+                start_code = f"{start_year % 100:02d}" if fmt == "yymmdd" else str(start_year)
+                before_sql = (
+                    f"SELECT COUNT(*) FROM {tquoted} "
+                    f"WHERE substr({col_name}, 1, {width}) < '{end_code}'"
+                )
+                after_sql = (
+                    f"SELECT COUNT(*) FROM {tquoted} "
+                    f"WHERE substr({col_name}, 1, {width}) > '{start_code}'"
+                )
+                if lang == "en":
+                    templates.append({
+                        "template": True,
+                        "date_range": True,
+                        "question": f"How many {tname} records have {desc} before {end_year}?",
+                        "sql": before_sql,
+                        "tags": date_tags,
+                    })
+                    templates.append({
+                        "template": True,
+                        "date_range": True,
+                        "question": f"How many {tname} records have {desc} after {start_year}?",
+                        "sql": after_sql,
+                        "tags": date_tags,
+                    })
+                else:
+                    templates.append({
+                        "template": True,
+                        "date_range": True,
+                        "question": f"{tlabel}中{desc}早于{end_year}年的记录有多少？",
+                        "sql": before_sql,
+                        "tags": date_tags,
+                    })
+                    templates.append({
+                        "template": True,
+                        "date_range": True,
+                        "question": f"{tlabel}中{desc}晚于{start_year}年的记录有多少？",
+                        "sql": after_sql,
+                        "tags": date_tags,
                     })
     return templates

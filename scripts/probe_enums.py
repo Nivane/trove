@@ -21,7 +21,12 @@ load_dotenv(Path.cwd() / ".env")
 
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
-from trove.services.kb.enum_probe import probe_enums, merge_into_notes
+from trove.services.kb.enum_probe import (
+    merge_into_notes,
+    merge_ranges_into_notes,
+    probe_date_ranges,
+    probe_enums,
+)
 
 
 def parse_args():
@@ -44,10 +49,11 @@ async def main() -> None:
     name = registry.default_name or "default"
     schema = await registry.get_schema()
     probed = await probe_enums(registry, schema, max_rows=args.max_rows)
+    ranges = await probe_date_ranges(registry, schema, max_rows=args.max_rows)
     await registry.close_all()
 
-    if not probed:
-        print("没有探测到低基数枚举列。")
+    if not probed and not ranges:
+        print("没有探测到低基数枚举列或日期值域。")
         return
 
     notes_path = Path.cwd() / ".trove" / "kb" / name / "schema_notes.yml"
@@ -56,6 +62,7 @@ async def main() -> None:
         sys.exit(1)
     notes = yaml.safe_load(notes_path.read_text(encoding="utf-8")) or {}
     merged = merge_into_notes(notes, probed, overwrite=args.overwrite)
+    merged = merge_ranges_into_notes(merged, ranges, overwrite=args.overwrite)
     notes_path.write_text(
         yaml.safe_dump(merged, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -64,6 +71,9 @@ async def main() -> None:
     for table, cols in probed.items():
         for col, values in cols.items():
             print(f"{table}.{col} → {values}")
+    for table, cols in ranges.items():
+        for col, (lo, hi) in cols.items():
+            print(f"{table}.{col} range → [{lo}, {hi}]")
 
 
 if __name__ == "__main__":

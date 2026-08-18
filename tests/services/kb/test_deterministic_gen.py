@@ -435,3 +435,127 @@ class TestEnglishGeneration:
         templates = generate_templates(EN_TABLES)
         sqls = [t["sql"] for t in templates]
         assert not any("account_to" in s for s in sqls)
+
+
+DATE_TABLES = [
+    {
+        "name": "account",
+        "description": "Bank account",
+        "columns": [
+            {"name": "account_id", "type": "int", "description": "id", "enums": []},
+            {"name": "date", "type": "date", "description": "account opening date",
+             "enums": [], "range": ["930101", "971231"]},
+        ],
+        "metrics": [],
+    },
+    {
+        "name": "client",
+        "description": "Client",
+        "columns": [
+            {"name": "client_id", "type": "int", "description": "id", "enums": []},
+            {"name": "birth_date", "type": "date", "description": "birth date",
+             "enums": [], "range": ["200101", "951231"]},
+        ],
+        "metrics": [],
+    },
+]
+
+
+class TestDateRangeTemplates:
+    def _sqls(self, tables):
+        return {t["sql"]: t for t in generate_templates(tables)}
+
+    def test_year_equality_templates_for_each_year(self):
+        """range 内每年一个年份等值模板(YYYYMMDD 前缀比较,问题文本含 4 位年)。"""
+        by_sql = self._sqls(DATE_TABLES)
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) = '93'"] is not None
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) = '97'"] is not None
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) = '97'"]["question"] == (
+            "How many account records have account opening date in 1997?")
+        assert not any("substr(date, 1, 2) = '98'" in s for s in by_sql)
+
+    def test_full_range_between_template(self):
+        by_sql = self._sqls(DATE_TABLES)
+        t = by_sql["SELECT COUNT(*) FROM account WHERE date BETWEEN '930101' AND '971231'"]
+        assert t["question"] == (
+            "How many account records have account opening date between 1993 and 1997?")
+
+    def test_endpoint_equal_templates(self):
+        """值域端点等值模板:SQL 用存储格式,问题文本用人类可读日期。"""
+        by_sql = self._sqls(DATE_TABLES)
+        t = by_sql["SELECT COUNT(*) FROM account WHERE date = '930101'"]
+        assert t["question"] == (
+            "How many account records have account opening date on 1993-01-01?")
+        assert by_sql["SELECT COUNT(*) FROM account WHERE date = '971231'"] is not None
+
+    def test_before_after_templates(self):
+        """before/after 用年份前缀比较(不含边界年本身)。"""
+        by_sql = self._sqls(DATE_TABLES)
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) < '97'"] is not None
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) > '93'"] is not None
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) < '97'"]["question"] == (
+            "How many account records have account opening date before 1997?")
+        assert by_sql["SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) > '93'"]["question"] == (
+            "How many account records have account opening date after 1993?")
+
+    def test_standard_ymd_format_range(self):
+        """YYYY-MM-DD range:前缀 4 位比较,区间字面量原样。"""
+        tables = [{
+            "name": "event", "description": "Event",
+            "columns": [{"name": "happened_on", "type": "date",
+                         "description": "event date", "enums": [],
+                         "range": ["1995-01-01", "1998-12-31"]}],
+        }]
+        by_sql = self._sqls(tables)
+        assert by_sql["SELECT COUNT(*) FROM event WHERE substr(happened_on, 1, 4) = '1995'"] is not None
+        assert by_sql["SELECT COUNT(*) FROM event WHERE substr(happened_on, 1, 4) = '1998'"] is not None
+        t = by_sql["SELECT COUNT(*) FROM event WHERE happened_on BETWEEN '1995-01-01' AND '1998-12-31'"]
+        assert t["question"] == (
+            "How many event records have event date between 1995 and 1998?")
+        assert by_sql["SELECT COUNT(*) FROM event WHERE happened_on = '1998-12-31'"]["question"] == (
+            "How many event records have event date on 1998-12-31?")
+
+    def test_long_span_sampled_by_decade(self):
+        """跨度 > cap(如出生日期 1920-1995):每 decade 一个代表 + 端点,不超 14 个。"""
+        by_sql = self._sqls(DATE_TABLES)
+        year_questions = {
+            t["question"] for t in by_sql.values()
+            if "birth date in " in t["question"]
+        }
+        assert "How many client records have birth date in 1920?" in year_questions
+        assert "How many client records have birth date in 1930?" in year_questions
+        assert "How many client records have birth date in 1990?" in year_questions
+        assert "How many client records have birth date in 1995?" in year_questions
+        assert "How many client records have birth date in 1921?" not in year_questions
+        assert len(year_questions) <= 14
+
+    def test_no_range_keeps_only_min_max(self):
+        """无 range 字段 → 向后兼容:只有 MIN/MAX 聚合模板,无区间/年份模板。"""
+        tables = [{
+            "name": "account", "description": "Bank account",
+            "columns": [{"name": "date", "type": "date",
+                         "description": "account opening date", "enums": []}],
+        }]
+        sqls = [t["sql"] for t in generate_templates(tables)]
+        assert "SELECT MIN(date) FROM account" in sqls
+        assert not any("WHERE" in s for s in sqls)
+
+    def test_invalid_or_reversed_range_ignored(self):
+        for bad_range in (["abc", "xyz"], ["971231", "930101"], ["93"], []):
+            tables = [{
+                "name": "account", "description": "Bank account",
+                "columns": [{"name": "date", "type": "date",
+                             "description": "account opening date", "enums": [],
+                             "range": bad_range}],
+            }]
+            sqls = [t["sql"] for t in generate_templates(tables)]
+            assert not any("WHERE" in s for s in sqls), bad_range
+
+    def test_chinese_question_shapes(self):
+        templates = generate_templates(DATE_TABLES, lang="zh")
+        zh = {t["question"]: t["sql"] for t in templates}
+        assert "Bank中account opening date在1993年的记录有多少？" in zh
+        assert zh["Bank中account opening date在1993年的记录有多少？"] == (
+            "SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) = '93'")
+        assert "Bank中account opening date在1993到1997年之间的记录有多少？" in zh
+        assert "Bank中account opening date早于1997年的记录有多少？" in zh

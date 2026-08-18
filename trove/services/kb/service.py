@@ -89,6 +89,7 @@ class ExampleHit:
     template: bool = False
     score: int = 0
     aggregate: bool = False
+    date_range: bool = False
 
 
 # ── Pure scoring helpers ─────────────────────────────────
@@ -178,6 +179,11 @@ def _score_example(
     the SUM/AVG semantics already injected via terms — undiscounted they
     crowd JOIN skeletons out of top-k (eval_retrieval: B@5 coverage flat,
     sim@5 66%→59%).
+
+    Date-range templates (probe 通道的年份/区间/等值/比较派生模板) get the
+    same 0.6 discount: their "How many {table} records ..." wording shares
+    how/many/{table} with every count question, so undiscounted they crowd
+    top-k on non-date questions (实测:C@5/10 63%→48/57)。
     """
     tags = [str(t) for t in example.get("tags", [])]
     ex_text = " ".join([str(example.get("question", "")), *tags])
@@ -201,7 +207,7 @@ def _score_example(
         table_anchor = 3 * sum(1 for t in tables if t and t in full_text)
 
     score = 2 * term_hits + tag_hits + overlap + table_anchor
-    if example.get("aggregate"):
+    if example.get("aggregate") or example.get("date_range"):
         score = max(1, round(score * 0.6))
     return score
 
@@ -283,6 +289,7 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
                 "tags": list(example.get("tags") or []),
                 "template": bool(example.get("template")),
                 "aggregate": bool(example.get("aggregate")),
+                "date_range": bool(example.get("date_range")),
             }))
 
     return entries
