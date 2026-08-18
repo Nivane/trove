@@ -22,3 +22,13 @@
     contract and the target mapping).
   triggers:
     node: analyze_error
+
+- name: align_schema
+  description: >
+    Schema-alignment methodology for the schema_linking node's LLM call:
+    decide table/column necessity by question coverage, prefer populated
+    columns over name-matching empty ones, metric tables over entity-only
+    tables, and join-path awareness. Supplements the base
+    schema_alignment/system template (which defines the JSON contract).
+  triggers:
+    node: schema_linking

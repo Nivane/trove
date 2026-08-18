@@ -1,0 +1,34 @@
+## Decide by necessity
+
+A candidate table is needed only if it carries at least one of:
+- a dimension or filter the question names;
+- a metric the question asks for (where the aggregate is computed);
+- the join path connecting those.
+
+A table whose only link is an association table is droppable when the main
+table carries its own FK column — routing through the association changes
+the row granularity of the result.
+
+## Prefer the populated column
+
+When several candidate columns could match a question term, decide by the
+statistics: prefer the column with real data (low null ratio, meaningful
+top values) over one that matches by name but is opaque or near-empty
+(>50% NULL) — a name-matching empty column is usually the wrong match.
+
+## Metric over entity
+
+When the question asks for a metric, keep the table that stores the metric
+(or where the aggregate is computed), not a table that only identifies the
+entity. Keep both only when the metric is computed per-entity.
+
+## Evidence columns must be kept
+
+When Evidence defines a term as a column value (e.g. eligible → type =
+'OWNER'), the table and column carrying that definition must be kept —
+the query's filters depend on them.
+
+## Drop only when confident
+
+Never drop a column you are not fully confident about. Over-dropping
+breaks the query later; under-keeping only costs a few tokens.

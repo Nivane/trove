@@ -21,6 +21,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.prompts import render
+from trove.prompts.skills import render_skills
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService, TableNotes, TermHit
@@ -409,6 +410,15 @@ def _apply_alignment(
     return keep, drop
 
 
+def _alignment_system_prompt(lang: str) -> str:
+    """对齐 system prompt:base 模板 + 方法论 skill(manifest 触发,节点级)。"""
+    system_prompt = render("schema_alignment/system", lang=lang)
+    skill_block = render_skills("schema_linking", lang=lang)
+    if skill_block:
+        system_prompt = f"{system_prompt}\n\n{skill_block}"
+    return system_prompt
+
+
 async def _align_tables(
     llm: Any, config: Any, state: WorkflowState,
     details: list[dict[str, Any]], notes: dict[str, TableNotes] | None,
@@ -425,8 +435,7 @@ async def _align_tables(
         response = await llm.chat(
             model=model,
             messages=[
-                {"role": "system", "content": render(
-                    "schema_alignment/system", lang=state.lang)},
+                {"role": "system", "content": _alignment_system_prompt(state.lang)},
                 {"role": "user", "content": render(
                     "schema_alignment/user",
                     lang=state.lang,

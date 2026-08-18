@@ -33,8 +33,9 @@ def test_manifest_matches_by_node():
     """每个 skill 只由声明的节点触发;其它节点不匹配。"""
     assert matched_skills("planner") == ["plan_query"]
     assert matched_skills("analyze_error") == ["diagnose_failure"]
+    assert matched_skills("schema_linking") == ["align_schema"]
     assert matched_skills("gen_sql") == []
-    assert matched_skills("schema_linking") == []
+    assert matched_skills("answer") == []
 
 
 def test_trigger_extra_ctx_does_not_break_match():
@@ -56,6 +57,13 @@ def test_render_skills_bilingual():
     assert "Rollback" in en
     assert "回归检查" in zh
     assert "回退纪律" in zh
+
+    en = render_skills("schema_linking", lang="en")
+    zh = render_skills("schema_linking", lang="zh")
+    assert "necessity" in en.lower()
+    assert "populated" in en.lower()
+    assert "必要性" in zh
+    assert "有数据" in zh
 
 
 def test_render_skills_no_match_is_empty():
@@ -85,6 +93,41 @@ async def test_planner_system_prompt_includes_skill():
     system = captured["messages"][0]["content"]
     assert "query planner" in system
     assert "Traceability" in system
+
+
+async def test_schema_alignment_prompt_includes_skill():
+    """schema_linking 对齐调用的 system prompt 携带 align_schema skill 块。"""
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.schema_linking import _align_tables
+
+    captured = {}
+
+    class LLM:
+        async def chat(self, model, messages, **kwargs):
+            captured.update(messages=messages)
+            return '{"keep_tables": ["loan"], "drop_columns": {}}'
+
+    result = await _align_tables(
+        LLM(), AgentConfig(target="m"),
+        make_state(question="loans in 1997", lang="zh"),
+        details=[{"name": "loan", "row_count": 100, "columns": []}],
+        notes={},
+    )
+    assert result == {"keep_tables": ["loan"], "drop_columns": {}}
+    system = captured["messages"][0]["content"]
+    assert "对齐助手" in system
+    assert "按必要性决策" in system
+
+    result = await _align_tables(
+        LLM(), AgentConfig(target="m"),
+        make_state(question="loans in 1997", lang="en"),
+        details=[{"name": "loan", "row_count": 100, "columns": []}],
+        notes={},
+    )
+    assert result == {"keep_tables": ["loan"], "drop_columns": {}}
+    system = captured["messages"][0]["content"]
+    assert "schema alignment" in system.lower()
+    assert "Decide by necessity" in system
 
 
 async def test_analyze_error_system_prompt_includes_skill():
