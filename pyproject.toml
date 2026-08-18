@@ -69,7 +69,8 @@ include = ["trove*"]
 [tool.setuptools.package-data]
 trove = ["prompts/*.j2", "prompts/gen_sql/*.j2", "prompts/planner/*.j2", "prompts/reflect/*.j2",
          "prompts/analyze_error/*.j2", "prompts/answer/*.j2", "prompts/metadata_check/*.j2",
-         "prompts/intent/*.j2", "prompts/kb/*.j2", "prompts/lesson_distill/*.j2", "prompts/session/*.j2"]
+         "prompts/intent/*.j2", "prompts/kb/*.j2", "prompts/lesson_distill/*.j2", "prompts/session/*.j2",
+         "api/static/*"]
 
 [tool.uv]
 package = true

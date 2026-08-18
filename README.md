@@ -56,6 +56,18 @@ REPL 命令：
 
 CLI 参数：`--datasource/-d`（demo 或 `scheme://` URL）· `--config/-f` · `--model/-m` · `--print/-p`（JSON 输出）· `--workflow/-w`（reflection/fixed/empty）· `--version/-v`
 
+## Web UI（trove serve）
+
+```bash
+uv run trove serve --datasource demo
+# 打开浏览器 → http://127.0.0.1:8000/ （自动跳转 /ui/）
+```
+
+- 单页聊天界面（纯静态 HTML + vanilla JS，零构建），`GET /` 重定向到 `/ui/`；答案流式展示每步轨迹（意图/匹配表/计划/SQL/校验/反思，含耗时与重试轮次）
+- 接口：`POST /v1/chat`（SSE 流式）、`GET/POST/DELETE /v1/sessions[/{id}]`、`GET /v1/catalog/*`、`GET/POST /v1/kb/*`；API 文档见 `/v1/docs`
+- 会话 ID 与界面语言（zh/en）保存在浏览器 localStorage；对话历史由服务端按 session 持久化
+- 停止按钮只中断客户端读取——服务端会跑完本次查询并持久化，刷新页面即可看到结果
+
 ## 配置
 
 配置优先级（模型选择）：CLI `--model` > `conf/agent.yml` / `~/.trove/conf/agent.yml`。
