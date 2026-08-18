@@ -28,7 +28,10 @@ import aiosqlite
 import yaml
 
 from trove.core.logging import get_logger
+
+_CJK_RE = re.compile(r"[一-鿿]")
 from trove.core.types import SchemaInfo
+from trove.services.kb.compose import compose_candidates
 
 logger = get_logger(__name__)
 
@@ -492,6 +495,11 @@ class KbService:
         groups are merged and de-duplicated — a multi-table question keeps
         at least one representative template per matched table instead of
         letting one table's templates crowd out the rest.
+
+        Atomic templates are additionally composed into JOIN × WHERE
+        combinations (see kb.compose) before the final top-K cut — a
+        multi-table question with a filter sees a structural reference no
+        single template covers.
         """
         if not self.enabled:
             return []
@@ -543,6 +551,15 @@ class KbService:
                 if f"{h.sql}|{h.question}" not in picked_keys
             ]
             rest.sort(key=lambda h: h.score, reverse=True)
+            # 组合只在非保底槽位竞争——保底代表(每表一个)不被组合示例
+            # 挤出 top-k(实测:组合参与统一排序会让 C 口径列覆盖回退)
+            rest = compose_candidates(
+                rest, lang="zh" if _CJK_RE.search(question) else "en")
+            rest = [
+                hit if isinstance(hit, ExampleHit) else ExampleHit(**hit)
+                for hit in rest
+            ]
+            rest.sort(key=lambda h: h.score, reverse=True)
             return (picks + rest)[:limit]
 
         scored = []
@@ -553,7 +570,16 @@ class KbService:
             if score > 0:
                 scored.append(ExampleHit(**payload, score=score))
         scored.sort(key=lambda h: h.score, reverse=True)
-        return scored[:limit]
+
+        # 原子模板组合(JION×WHERE)→ 统一按分排序后截断
+        candidates = compose_candidates(
+            scored, lang="zh" if _CJK_RE.search(question) else "en")
+        candidates = [
+            hit if isinstance(hit, ExampleHit) else ExampleHit(**hit)
+            for hit in candidates
+        ]
+        candidates.sort(key=lambda h: h.score, reverse=True)
+        return candidates[:limit]
 
     async def list_rules(self, datasource: str) -> list[str]:
         """Business rules of one datasource (injected into generation)."""

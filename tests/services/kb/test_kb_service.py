@@ -179,6 +179,52 @@ class TestTableAnchoredRetrieval:
             all_tables=self.ALL_TABLES,
         )
 
+    async def test_retrieval_composes_join_and_filter_templates(self, kb, kb_dir):
+        """检索时组合膨胀:命中 JOIN 模板 + WHERE 模板 → 组合示例进 top-k。
+
+        组合 SQL = join 骨架 + 过滤列加表前缀;评分 = 两个原子较高分。
+        现有中文/别名模板不匹配组合正则,不受影响。
+        """
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        import yaml as _yaml
+
+        examples = kb_dir / "demo" / "examples.yml"
+        doc = _yaml.safe_load(examples.read_text(encoding="utf-8"))
+        doc["examples"].extend([
+            {
+                "question": "How many loan records are there in account?",
+                "template": True,
+                "sql": ("SELECT COUNT(*) FROM loan JOIN account "
+                        "ON loan.account_id = account.account_id"),
+                "tags": ["loan", "account", "join", "aggregation"],
+            },
+            {
+                "question": "How many loan records have status A?",
+                "template": True,
+                "sql": "SELECT COUNT(*) FROM loan WHERE status = 'A'",
+                "tags": ["loan", "status", "filter", "aggregation"],
+            },
+        ])
+        examples.write_text(_yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        hits = await kb.search_examples(
+            "How many loan records have status A in account?",
+            "demo", limit=3,
+            tables=["loan", "account"], all_tables=self.ALL_TABLES,
+        )
+        combined = [h for h in hits if "JOIN" in h.sql and "WHERE" in h.sql]
+        assert combined, [h.sql for h in hits]
+        assert combined[0].sql == (
+            "SELECT COUNT(*) FROM loan JOIN account "
+            "ON loan.account_id = account.account_id "
+            "WHERE loan.status = 'A'"
+        )
+        assert combined[0].template is True
+        # 组合评分 = 两个原子的较高分 → 排序在原子之前
+        assert combined[0].score >= max(h.score for h in hits[:3])
+
 
 class TestEnablement:
     async def test_disabled_when_kb_dir_missing(self, kb):

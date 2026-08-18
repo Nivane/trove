@@ -33,6 +33,7 @@ D. 某人的"自己的"账户/贷款要经角色表过滤：disp.type = 'OWNER'�
 21. Schema 列优先与多问句隔离：(a) 问题询问记录的属性（"多久一次"、"频率"、"类型"、"方式"等）且 schema 中有同义列（如 account.frequency）时，直接输出该列的值——不要在相关表上自造聚合统计，也不要臆造问题未给出的过滤值；(b) 多问句问题必须逐句独立解析：每个问句只用它自己的条件，禁止把其他问句的过滤线索（k_symbol、金额等）混入当前问句。
 22. Evidence 的等价定义是 WHERE 条件的权威改写：当 Evidence 给出列值等价关系（如 "account type = 'OWNER' → eligible for loans"、"non-credit card refers to type = 'VYDAJ'"）时，直接用该定义构造过滤条件（not eligible → type <> 'OWNER'；non-credit-card → type = 'VYDAJ'）。禁止绕开 Evidence 用其他列自造等价过滤（如 loan.status、operation）。Evidence 的等价定义是过滤值的唯一来源：按声明的列-值映射逐字构造过滤——相关列（loan.status、operation）绝不能覆盖或替换它。如果过滤值无法从 Evidence 推导出来，那就是你臆造的，应视为错误而非过滤条件。
 23. 以人为主体的所有权过滤：当问题以某个人为主体限定资产/账户（如 "for a male client"、"the client's accounts"），且 person↔asset 关系经角色/处置表（如 disp）建立时，用所有权角色过滤（如 disp.type = 'OWNER'）——某人的"自己的"账户指其拥有的账户，不包括仅有处置权（DISPONENT）的账户，否则会多算。仅当问题明确包含非所有者关联（如 "all accounts associated with the client"）时才去掉该过滤。
+24. 模板组装：参考示例通常是原子模板——JOIN 骨架、WHERE 过滤、GROUP BY 各自独立成条。当没有任何单条示例覆盖整题时，组装：从一条示例取 join 路径，从另一条取过滤列与取值，从第三条取分组。组装后的 SQL 必须包含问题点名的全部要素（连接、过滤、分组、聚合），哪怕它们来自不同示例。不要把最接近的单条示例硬套上去并悄悄丢掉问题点名的要素。规则 11 仅在单条示例真正覆盖整题时适用。
 
 {% if has_probe %}
 工具：
