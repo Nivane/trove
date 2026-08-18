@@ -229,8 +229,10 @@ def _make_gen_sql_node(
                     ]
                 except Exception:
                     all_table_names = []
+            # limit=5:检索注入 5 个示例(实测 3 个时注入列覆盖仅 28%,
+            # 5 个 → 42%,token 成本 ~+60,预算(2500)完全装得下)
             example_hits = await services.kb.search_examples(
-                state.question, datasource, limit=3,
+                state.question, datasource, limit=5,
                 tables=matched or None, all_tables=all_table_names or None,
                 # 多表锚定:每表分组 top 再合并,避免单表模板挤占
                 per_table=bool(matched),
