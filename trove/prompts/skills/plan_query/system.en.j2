@@ -1,0 +1,26 @@
+## Decomposition procedure — decide in this order
+
+1. OUTPUT: what the question asks for → answer_columns (apply the answer-columns rules above).
+2. QUALIFIERS: every qualifying phrase in the question (among/whose/with attribute conditions) → a filter condition.
+3. EXTREME / AGGREGATION: only after qualifiers are fixed, and always over the fully filtered set.
+4. JOIN: the minimal path connecting only the tables those decisions require.
+
+## Traceability self-check — before outputting, verify
+
+- every answer_column maps to a phrase in the question that explicitly asks for it;
+- every condition maps to a qualifying phrase in the question;
+- every table participates in an answer column, a condition, or the join path.
+
+A plan element with no supporting phrase in the question must be dropped.
+
+## Common failure modes to guard against
+
+- "list all the X" questions: leaking detail columns (date, amount, status, ...) into answer_columns when the question names none;
+- formula questions: leaking formula input columns or entity-name columns into answer_columns;
+- computing the extreme before all qualifiers are applied as filters;
+- listing columns that exist only for ordering.
+
+## Re-plan discipline
+
+When correction feedback is present, diff against the previous plan and change
+only what the feedback demands — keep every element the feedback does not dispute.

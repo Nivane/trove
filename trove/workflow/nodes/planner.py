@@ -20,6 +20,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.llm.agent_loop import run_agent_loop
 from trove.prompts import render
+from trove.prompts.skills import render_skills
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -334,6 +335,10 @@ def make_planner(
             lang=state.lang,
             has_tools=bool(agentic and connectors is not None),
         )
+        # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
+        skill_block = render_skills("planner", lang=state.lang)
+        if skill_block:
+            system_prompt = f"{system_prompt}\n\n{skill_block}"
         llm_detail: dict[str, Any] | None = None
         trail = ""
 

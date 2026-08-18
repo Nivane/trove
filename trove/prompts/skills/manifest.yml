@@ -1,0 +1,14 @@
+# Skill manifest: node-triggered methodology blocks.
+# Each skill declares deterministic trigger conditions; a skill matches when
+# every trigger field matches the node context (scalar equality, or list
+# membership for OR semantics). Matched skills are rendered into the node's
+# system prompt via render_skills().
+
+- name: plan_query
+  description: >
+    Planner decomposition methodology: decision order, traceability
+    self-check, and common failure modes. Supplements the base
+    planner/system template (which carries JSON format, scoping and
+    answer-columns rules).
+  triggers:
+    node: planner
