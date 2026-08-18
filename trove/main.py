@@ -344,6 +344,56 @@ def main_cli():
         sys.exit(0)
 
 
-# Allow running as python -m trove
-if __name__ == "__main__":
-    main_repl()
+# ── HTTP API (trove serve) ───────────────────────────────
+
+
+def serve_parser() -> argparse.ArgumentParser:
+    """Argument parser for the 'trove serve' REST API subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="trove serve",
+        description="Run the Trove REST API (uvicorn)",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8000, help="Bind port (default 8000)")
+    parser.add_argument("--datasource", "-d", default="demo", help="Datasource to use")
+    parser.add_argument("--config", "-f", default=None, help="Path to agent.yml config file")
+    parser.add_argument("--model", "-m", default=None, help="LLM model to use (overrides config)")
+    parser.add_argument("--workflow", "-w", default="reflection", help="Default workflow")
+    return parser
+
+
+async def async_main_serve(argv: list[str]) -> None:
+    """Async main for 'trove serve' (REST API over uvicorn)."""
+    import uvicorn
+
+    args = serve_parser().parse_args(argv)
+    config = await _load_config(args)
+    components = await create_app_components(args, config)
+
+    from trove.api.app import create_app
+    app = create_app(components)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
+    try:
+        await server.serve()
+    finally:
+        await components["connector_registry"].close_all()
+
+
+def main_serve(argv: list[str] | None = None) -> None:
+    """Entry point for 'trove serve'."""
+    try:
+        asyncio.run(async_main_serve(argv if argv is not None else sys.argv[2:]))
+    except KeyboardInterrupt:
+        sys.exit(0)
+
+
+def main_repl():
+    """Entry point for 'trove' command (REPL mode, or `trove serve`)."""
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        main_serve()
+        return
+    try:
+        asyncio.run(async_main_repl())
+    except KeyboardInterrupt:
+        print("\nGoodbye!")
+        sys.exit(0)
