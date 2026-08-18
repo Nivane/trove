@@ -31,7 +31,10 @@ logger = get_logger(__name__)
 # /kb init chunking: LLM output is capped, so large schemas are drafted
 # in batches of tables and merged afterwards.
 INIT_CHUNK_TABLES = 10
-INIT_MAX_TOKENS = 8192
+# 推理模型(deepseek-reasoner 实测)的 max_tokens 计入 CoT:8192 时思考即
+# 耗尽全部预算、content 为空(finish_reason=length);16384 给 CoT+草稿
+# 正文留足余量(实测 8 表带统计提示词:CoT ~6.3k + 正文 ~2.1k tokens)。
+INIT_MAX_TOKENS = 16384
 
 def _draft_prompt(question: str, sql: str) -> str:
     """/kb learn 用户提示词（薄封装，模板见 prompts/kb/draft_user.en.j2）。"""
@@ -439,37 +442,63 @@ async def _draft_init_chunk(
     ]
     expected = {t["name"] for t in tables}
 
-    def parse_try(response: str) -> tuple[list | None, str | None]:
-        """→ (draft, None) 或 (None, error)。正规解析失败 → 从 prose 回收
-        (推理模型空 content 回退);草稿必须覆盖块内全部表,缺表按失败处理:
+    def parse_try(response: str) -> tuple[list | None, list[str], str | None]:
+        """→ (tables, missing, parse_error)。正规解析失败 → 从 prose 回收
+        (推理模型空 content 回退);草稿必须覆盖块内全部表,缺表单独携带:
         防推理截断的残缺草稿静默入库,并给修复轮精确的缺表清单。"""
         try:
             draft = _parse_init_tables(response)
         except Exception as e:
             draft = _recover_init_tables(response)
             if draft is None:
-                return None, str(e)
+                return None, [], str(e)
         missing = sorted(expected - {t["name"] for t in draft})
-        if missing:
-            return None, f"draft missing table(s): {', '.join(missing)}"
-        return draft, None
+        return draft, missing, None
 
-    draft, first_error = parse_try(await llm.chat(
+    draft, missing, parse_error = parse_try(await llm.chat(
         model=model, messages=messages, max_tokens=INIT_MAX_TOKENS,
     ))
-    if draft is not None:
+    if not missing and parse_error is None:
         return draft
 
+    first_error = parse_error or f"draft missing table(s): {', '.join(missing)}"
     logger.warning("Could not parse init draft: %s; asking for repair", first_error)
+
+    if draft is not None:
+        # 部分草稿 → 外科手术式修复:只补缺表。任务变小后推理 CoT 更短,
+        # 在 max_tokens 预算内更容易产出完整正文;补完按表名合并。
+        repair_response = await llm.chat(
+            model=model,
+            max_tokens=INIT_MAX_TOKENS,
+            messages=[*messages, {"role": "user", "content": render(
+                "kb/init_repair_missing", missing=", ".join(missing))}],
+        )
+        try:
+            repaired = _parse_init_tables(repair_response)
+        except Exception:
+            repaired = _recover_init_tables(repair_response)
+        if repaired:
+            known = {t["name"] for t in draft}
+            for t in repaired:
+                if t["name"] in expected and t["name"] not in known:
+                    draft.append(t)
+                    known.add(t["name"])
+        missing = sorted(expected - known)
+        if missing:
+            raise ValueError(f"draft missing table(s): {', '.join(missing)}")
+        # 只保留块内表:草稿/修复里的多余表一并剥掉(旧整块修复同样丢弃
+        # 残缺草稿,不把噪声带进 schema_notes)。
+        return [t for t in draft if t["name"] in expected]
+
     repair_response = await llm.chat(
         model=model,
         max_tokens=INIT_MAX_TOKENS,
         messages=[*messages, {"role": "user", "content": render(
             "kb/init_repair", error=first_error)}],
     )
-    draft, repair_error = parse_try(repair_response)
-    if draft is None:
-        raise ValueError(repair_error)
+    draft, missing, repair_error = parse_try(repair_response)
+    if draft is None or missing:
+        raise ValueError(repair_error or f"draft missing table(s): {', '.join(missing)}")
     return draft
 
 

@@ -193,7 +193,9 @@ class TestGenerate:
         assert len(out) == 2
         model, messages, kwargs = llm.calls[0]
         assert model == "mock/model"
-        assert kwargs["max_tokens"] == 8192
+        from trove.services.kb import synthetic as synth_mod
+
+        assert kwargs["max_tokens"] == synth_mod.SYNTH_MAX_TOKENS
         joined = " ".join(m["content"] for m in messages)
         assert "students (5 rows)" in joined
         assert "5 distinct, 75..99" in joined

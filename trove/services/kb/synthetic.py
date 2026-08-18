@@ -27,7 +27,7 @@ from trove.prompts import render
 logger = get_logger(__name__)
 
 SYNTH_PER_TABLE = 3        # 每表目标条数(提示词约束;护栏会再筛掉坏的)
-SYNTH_MAX_TOKENS = 8192    # 与 init 起草一致
+SYNTH_MAX_TOKENS = 16384   # 与 init 起草一致(推理模型 max_tokens 计入 CoT)
 TRIAL_TIMEOUT_S = 10       # 单条试执行超时(慢查询静默丢弃)
 
 

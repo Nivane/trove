@@ -416,6 +416,44 @@ class TestKbInitLLM:
         assert all(m["role"] != "assistant" for m in repair_messages)
         assert "missing" in repair_messages[-1]["content"]
 
+    async def test_init_repairs_only_missing_tables(self, kb, sqlite_registry):
+        """回归:部分草稿走外科手术式修复——只补缺表(任务变小,推理 CoT
+        更短,预算内更容易产出完整正文),修复结果按表名合并;噪声表剥掉。"""
+        truncated = (
+            "```yaml\ntables:\n"
+            "- name: other\n  description: wrong\n  columns: []\n  metrics: []\n"
+            "```\n"
+        )
+
+        class ScriptedLLM:
+            def __init__(self):
+                self.calls = []
+                self.responses = iter([truncated, TABLES_DOC])
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                try:
+                    return next(self.responses)
+                except StopIteration:
+                    raise AssertionError("unexpected extra LLM call")
+
+        llm = ScriptedLLM()
+        reg = self._reg(kb, sqlite_registry, llm)
+        result = await reg.get("kb").handler("init")
+
+        assert "Initialized" in result
+        assert len(llm.calls) == 3  # draft + missing-only repair + synthetic(静默跳过)
+        repair_messages = llm.calls[1]
+        assert all(m["role"] != "assistant" for m in repair_messages)
+        content = repair_messages[-1]["content"]
+        assert "students" in content  # 只补缺表
+        assert "missing" in content
+        assert "other" not in content  # 已覆盖表不回显,任务不放大
+        ds = sqlite_registry.default_name
+        notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
+        assert "student records" in notes
+        assert "wrong" not in notes  # 噪声表不进 schema_notes
+
     async def test_init_with_llm_refuses_when_any_exists(self, kb, sqlite_registry):
         ds = sqlite_registry.default_name
         (kb.kb_dir / ds).mkdir(parents=True)
@@ -544,8 +582,12 @@ class TestKbInitLLM:
         result = await reg.get("kb").handler("init")
         assert "Initialized" in result
         assert len(llm.calls) >= 2  # 每块 1 次起草;合成 few-shot 的额外调用会被静默跳过
-        # 每块调用都带更大的 max_tokens（防止 4096 截断大 schema）
-        assert all(kwargs.get("max_tokens") == 8192 for _, kwargs in llm.calls)
+        # 每块调用都带更大的 max_tokens（防止 4096 截断大 schema;
+        # 推理模型的 max_tokens 计入 CoT,预算要给 CoT+草稿留余量)
+        assert all(
+            kwargs.get("max_tokens") == kb_cmds.INIT_MAX_TOKENS
+            for _, kwargs in llm.calls
+        )
 
         ds = sqlite_registry.default_name
         notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")

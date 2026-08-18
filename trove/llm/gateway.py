@@ -178,6 +178,12 @@ class LLMGateway:
             )
             if not content and reasoning:
                 # 与 _call_litellm 同策略:纯推理输出回退到 reasoning 正文
+                finish = getattr(response.choices[0], "finish_reason", "") or ""
+                logger.info(
+                    "LLM returned empty content with reasoning (%d chars, "
+                    "finish_reason=%s); falling back to reasoning text",
+                    len(reasoning), finish,
+                )
                 content = reasoning
             return {
                 "content": content,
@@ -314,9 +320,13 @@ class LLMGateway:
         # content 为空时回退到 reasoning,否则调用方拿到空串,SQL 提取/
         # 裁决解析全部落空。
         if not content and reasoning:
+            # finish_reason=length 说明预算被 CoT 耗尽(推理计入 max_tokens),
+            # 与"正文落在 reasoning"是两种故障,日志里要能区分。
+            finish = getattr(response.choices[0], "finish_reason", "") or ""
             logger.info(
-                "LLM returned empty content with reasoning (%d chars); "
-                "falling back to reasoning text", len(reasoning),
+                "LLM returned empty content with reasoning (%d chars, "
+                "finish_reason=%s); falling back to reasoning text",
+                len(reasoning), finish,
             )
             return reasoning
         return content
