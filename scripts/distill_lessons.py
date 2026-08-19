@@ -67,7 +67,7 @@ async def main() -> None:
                 {"role": "system", "content": render("lesson_distill/system")},
                 {"role": "user", "content": build_distill_prompt(f)},
             ],
-            max_tokens=300,
+            max_tokens=16000,
         )
         lesson = parse_lesson(response)
         if lesson is None:

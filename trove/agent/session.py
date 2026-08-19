@@ -163,7 +163,7 @@ class SessionManager:
             summary = await self._llm.chat(
                 model=self.config.target or "openai/gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=500,
+                max_tokens=16000,
             )
             return await self._store.compact_session(
                 session, summary, keep_recent=keep_recent,

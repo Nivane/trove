@@ -72,7 +72,7 @@ class LLMGateway:
         model: str,
         messages: list[dict[str, str]],
         temperature: float = 0.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 16000,
         api_key: str | None = None,
         api_base: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -132,7 +132,7 @@ class LLMGateway:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 16000,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Chat with tool-calling support; returns the full message.
@@ -198,7 +198,7 @@ class LLMGateway:
         model: str,
         messages: list[dict[str, str]],
         temperature: float = 0.0,
-        max_tokens: int = 4096,
+        max_tokens: int = 16000,
         api_key: str | None = None,
         api_base: str | None = None,
         metadata: dict[str, Any] | None = None,

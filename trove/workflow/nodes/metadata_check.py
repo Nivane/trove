@@ -72,7 +72,7 @@ def make_metadata_check(
                 system_prompt = render("metadata_check/system", lang=state.lang)
                 verdict = await llm.chat(
                     model=model,
-                    max_tokens=64,
+                    max_tokens=16000,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": render(

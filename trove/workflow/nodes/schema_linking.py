@@ -451,7 +451,7 @@ async def _align_tables(
                         details, notes, hints_by_table),
                 )},
             ],
-            max_tokens=400,
+            max_tokens=16000,
             metadata={
                 "node": "schema_linking",
                 "session_id": state.session_id,

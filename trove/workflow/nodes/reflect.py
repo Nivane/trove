@@ -75,7 +75,7 @@ async def _reask_verdict(llm: LLMGateway, model: str, state: WorkflowState) -> s
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=200,
+            max_tokens=16000,
             metadata={
                 "node": "reflect_reask",
                 "session_id": state.session_id,
@@ -143,9 +143,9 @@ def make_reflect(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                # 推理模型会把预算花在 reasoning 上(实测 300 导致 content 为空、
-                # 裁决从未产出);800 给 reasoning+裁决行都留出空间
-                max_tokens=800,
+                # 推理模型会把预算花在 reasoning 上(实测小预算导致 content 为空、
+                # 裁决从未产出);统一放宽输出上限(见 gateway 默认值)
+                max_tokens=16000,
                 metadata={
                     "node": "reflect",
                     "session_id": state.session_id,
