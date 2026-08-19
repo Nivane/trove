@@ -862,6 +862,7 @@ function applyLang() {
   setHtml("stop-btn", `<span class="btn-icon">${icon("stop")}</span>`);
   setText("lang-toggle", t("langBtn"));
   setTitle("sidebar-toggle", t("collapseTitle"));
+  setHtml("sidebar-toggle", `<span class="btn-icon">${icon("panelLeft")}</span>`);
   setText("welcome-title", t("welcomeTitle"));
   setText("welcome-subtitle", t("welcomeSubtitle"));
   setText("composer-hint", t("disclaimer"));
