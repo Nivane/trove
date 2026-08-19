@@ -356,6 +356,10 @@ def make_planner(
                 previous_plan=state.plan[:800] if state.plan else "",
             )
             if agentic and connectors is not None:
+                from trove.llm.agent_loop import ToolRegistry
+
+                registry = ToolRegistry(finish=True)
+
                 async def table_columns(arguments: dict) -> str:
                     table = arguments.get("table", "")
                     schema = await connectors.get_schema()
@@ -372,47 +376,42 @@ def make_planner(
                         arguments.get("column", ""),
                     )
 
+                registry.register(
+                    "get_table_columns", table_columns,
+                    description="Inspect the columns of one table.",
+                    parameters={
+                        "type": "object",
+                        "properties": {"table": {"type": "string"}},
+                        "required": ["table"],
+                    },
+                )
+                registry.register(
+                    "get_column_stats", column_stats,
+                    description=(
+                        "Inspect a column's real data: row count, null ratio, "
+                        "distinct count, sample values, and (for low-cardinality "
+                        "columns) the most frequent values with counts. "
+                        "Use BEFORE drafting filter conditions to anchor values "
+                        "to actual data — what type/frequency/status columns "
+                        "really store, and the row-count scale of a table."
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "table": {"type": "string"},
+                            "column": {"type": "string"},
+                        },
+                        "required": ["table", "column"],
+                    },
+                )
+
                 result = await run_agent_loop(
                     llm, model,
                     system=system_prompt,
                     user=prompt,
-                    tools=[{
-                        "type": "function",
-                        "function": {
-                            "name": "get_table_columns",
-                            "description": "Inspect the columns of one table.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {"table": {"type": "string"}},
-                                "required": ["table"],
-                            },
-                        },
-                    }, {
-                        "type": "function",
-                        "function": {
-                            "name": "get_column_stats",
-                            "description": (
-                                "Inspect a column's real data: row count, null ratio, "
-                                "distinct count, sample values, and (for low-cardinality "
-                                "columns) the most frequent values with counts. "
-                                "Use BEFORE drafting filter conditions to anchor values "
-                                "to actual data — what type/frequency/status columns "
-                                "really store, and the row-count scale of a table."
-                            ),
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "table": {"type": "string"},
-                                    "column": {"type": "string"},
-                                },
-                                "required": ["table", "column"],
-                            },
-                        },
-                    }],
-                    tool_handlers={
-                        "get_table_columns": table_columns,
-                        "get_column_stats": column_stats,
-                    },
+                    registry=registry,
+                    tool_timeout_s=20.0,
+                    time_budget_s=60.0,
                     max_rounds=5,
                     metadata={"node": "planner", "session_id": state.session_id, "run_id": state.run_id},
                 )
@@ -420,7 +419,14 @@ def make_planner(
                     p for p in (result.get("reasoning", ""), result.get("transcript", "")) if p
                 )
                 trail = t[:800]
-                return result["content"]
+                if not result.get("guard_hit"):
+                    return result["content"]
+                # 护栏降级:agent loop 原地打转/预算耗尽 → 退到直接生成
+                # (plan 校验在 call_planner 之外,照常拦截幻觉列)
+                logger.warning(
+                    "Planner agent loop guard (%s, %d rounds); degrading to direct generation",
+                    result.get("budget_why"), result["rounds"],
+                )
 
             start = time.monotonic()
             response = await llm.chat(

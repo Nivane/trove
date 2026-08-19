@@ -497,50 +497,130 @@ async def _search_one(
 
 # ── Tool factory (gen_sql ReAct 循环的工具集合) ─────────
 
+_VALIDATE_DEF = {
+    "type": "function",
+    "function": {
+        "name": "validate_sql",
+        "description": "Validate a SQL query for syntax. Returns 'valid' or a list of errors.",
+        "parameters": {
+            "type": "object",
+            "properties": {"sql": {"type": "string", "description": "The SQL to validate"}},
+            "required": ["sql"],
+        },
+    },
+}
 
-def make_sql_tools(
+_PROBE_DEF = {
+    "type": "function",
+    "function": {
+        "name": "probe_query",
+        "description": (
+            "Execute a SQL query read-only and return a short observation: "
+            '{"ok", "row_count", "columns", "rows" (first 5)}. '
+            "Fetches at most 10 rows, 5s timeout, never modifies data. "
+            "Use BEFORE finalizing a draft to verify result shape, row count, "
+            "and that filter values actually match data (e.g. a superlative "
+            "question returning 0 rows, or a self-invented filter value)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
+            },
+            "required": ["sql"],
+        },
+    },
+}
+
+_CHECK_DEF = {
+    "type": "function",
+    "function": {
+        "name": "check_result",
+        "description": (
+            "Run the deterministic rule checks against your draft SQL "
+            "(executes it read-only): result shape, row count, value "
+            "ranges, integer-division ratios. Returns 'OK (N rows)' or "
+            "'VIOLATION [rule] <reason>' — the reason is the fix "
+            "instruction. Call AFTER probe_query and BEFORE finalizing: "
+            "a VIOLATION means fix the SQL, never finalize a violating draft."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "The SQL to check (read-only)"},
+            },
+            "required": ["sql"],
+        },
+    },
+}
+
+_SEARCH_DEF = {
+    "type": "function",
+    "function": {
+        "name": "search_values",
+        "description": (
+            "Search a table for distinct values matching a keyword "
+            "(case-insensitive LIKE on real data). Use when you have a "
+            "candidate filter value from the question or Evidence but must "
+            "confirm its exact real form (spelling, case, abbreviations, "
+            "dirty values), or when you don't know which column stores a "
+            "value — omit the column to scan the table and get a "
+            "column→values map. Returns at most 10 values per column."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "table": {"type": "string", "description": "Table to search in"},
+                "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
+                "column": {"type": "string", "description": "Optional: restrict the search to one column"},
+            },
+            "required": ["table", "keyword"],
+        },
+    },
+}
+
+
+def build_sql_registry(
     connectors,
     question: str,
     lang: str,
     dialect: str,
-) -> tuple[list[dict], dict[str, Callable[[dict[str, Any]], Awaitable[str]]], list[dict]]:
-    """gen_sql ReAct 循环的工具工厂:返回 (tools, handlers, hits_sink)。
+    *,
+    finish: bool = True,
+):
+    """gen_sql ReAct 循环的注册表工厂:返回 (ToolRegistry, hits_sink)。
 
     validate_sql 始终可用(纯语法校验,不执行);probe_query / check_result
     依赖 connectors(只读执行),connectors 缺失时自动降级为仅语法工具。
     hits_sink 收集 check_result 的规则命中,循环结束后由调用方带出到
-    状态(validation_hits 归因切片)。
+    状态(validation_hits 归因切片)。注册表自带显式 finish 协议:
+    模型用 ``finish(answer)`` 携带最终 SQL 定稿,避免答案丢失。
 
     Args:
         connectors: 数据源注册表(None → 降级,无执行类工具)。
         question: 当前问题(规则校验的判定输入,由节点注入)。
         lang: 交互语言(规则原因文本本地化)。
         dialect: SQL 方言(sqlglot 校验/重写用)。
+        finish: 是否注册显式 finish 工具(harness 协议;legacy 层关闭)。
     """
+    from trove.llm.agent_loop import ToolRegistry
+
+    registry = ToolRegistry(finish=finish)
+
     async def validate_tool(arguments: dict) -> str:
         valid, errors = validate_sql(arguments.get("sql", ""), dialect)
         if valid:
             return "valid"
         return "ERRORS: " + "; ".join(errors)
 
-    tools: list[dict] = [{
-        "type": "function",
-        "function": {
-            "name": "validate_sql",
-            "description": "Validate a SQL query for syntax. Returns 'valid' or a list of errors.",
-            "parameters": {
-                "type": "object",
-                "properties": {"sql": {"type": "string", "description": "The SQL to validate"}},
-                "required": ["sql"],
-            },
-        },
-    }]
-    handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
-        "validate_sql": validate_tool,
-    }
+    registry.register(
+        "validate_sql", validate_tool,
+        description=_VALIDATE_DEF["function"]["description"],
+        parameters=_VALIDATE_DEF["function"]["parameters"],
+    )
 
     if connectors is None:
-        return tools, handlers, []
+        return registry, []
 
     check_hits: list[dict] = []
 
@@ -556,73 +636,6 @@ def make_sql_tools(
         check_hits.extend(hits)
         return text
 
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "probe_query",
-            "description": (
-                "Execute a SQL query read-only and return a short observation: "
-                '{"ok", "row_count", "columns", "rows" (first 5)}. '
-                "Fetches at most 10 rows, 5s timeout, never modifies data. "
-                "Use BEFORE finalizing a draft to verify result shape, row count, "
-                "and that filter values actually match data (e.g. a superlative "
-                "question returning 0 rows, or a self-invented filter value)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
-                },
-                "required": ["sql"],
-            },
-        },
-    })
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "check_result",
-            "description": (
-                "Run the deterministic rule checks against your draft SQL "
-                "(executes it read-only): result shape, row count, value "
-                "ranges, integer-division ratios. Returns 'OK (N rows)' or "
-                "'VIOLATION [rule] <reason>' — the reason is the fix "
-                "instruction. Call AFTER probe_query and BEFORE finalizing: "
-                "a VIOLATION means fix the SQL, never finalize a violating draft."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "sql": {"type": "string", "description": "The SQL to check (read-only)"},
-                },
-                "required": ["sql"],
-            },
-        },
-    })
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "search_values",
-            "description": (
-                "Search a table for distinct values matching a keyword "
-                "(case-insensitive LIKE on real data). Use when you have a "
-                "candidate filter value from the question or Evidence but must "
-                "confirm its exact real form (spelling, case, abbreviations, "
-                "dirty values), or when you don't know which column stores a "
-                "value — omit the column to scan the table and get a "
-                "column→values map. Returns at most 10 values per column."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "table": {"type": "string", "description": "Table to search in"},
-                    "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
-                    "column": {"type": "string", "description": "Optional: restrict the search to one column"},
-                },
-                "required": ["table", "keyword"],
-            },
-        },
-    })
-
     async def search_tool(arguments: dict) -> str:
         # 值检索:定位脏值/格式变体/拼写差异,锚定过滤值到真实数据
         return await search_values(
@@ -632,9 +645,42 @@ def make_sql_tools(
             arguments.get("column"),
         )
 
-    handlers["probe_query"] = probe_tool
-    handlers["check_result"] = check_tool
-    handlers["search_values"] = search_tool
+    registry.register(
+        "probe_query", probe_tool,
+        description=_PROBE_DEF["function"]["description"],
+        parameters=_PROBE_DEF["function"]["parameters"],
+    )
+    registry.register(
+        "check_result", check_tool,
+        description=_CHECK_DEF["function"]["description"],
+        parameters=_CHECK_DEF["function"]["parameters"],
+    )
+    registry.register(
+        "search_values", search_tool,
+        description=_SEARCH_DEF["function"]["description"],
+        parameters=_SEARCH_DEF["function"]["parameters"],
+    )
+    return registry, check_hits
+
+
+def make_sql_tools(
+    connectors,
+    question: str,
+    lang: str,
+    dialect: str,
+) -> tuple[list[dict], dict[str, Callable[[dict[str, Any]], Awaitable[str]]], list[dict]]:
+    """gen_sql ReAct 循环的工具工厂(legacy 形态):返回 (tools, handlers, hits_sink)。
+
+    registry 形态见 build_sql_registry;本函数为向后兼容保留——返回
+    纯定义列表 + handler 字典(不含 finish 工具)。
+    """
+    from trove.llm.agent_loop import ToolRegistry
+
+    registry, check_hits = build_sql_registry(
+        connectors, question, lang, dialect, finish=False,
+    )
+    tools: list[dict] = registry.defs()
+    handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = registry.handlers()
     return tools, handlers, check_hits
 
 

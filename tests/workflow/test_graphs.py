@@ -718,6 +718,54 @@ class TestAgenticNodes:
         assert final["error"] == ""
         assert final["sql"] == "SELECT name FROM students"  # 从工具参数捞回
 
+    async def test_gen_sql_finish_tool_round(self, sqlite_registry, catalog):
+        """模型用显式 finish(answer) 携带最终 SQL 定稿,harness 立即终止。"""
+        llm = AgenticLLM([
+            "query",  # 意图（chat）
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "finish",
+                 "arguments": '{"answer": "```sql\\nSELECT name FROM students;\\n```"}'},
+            ]},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        assert len(llm.calls) == 3  # 意图 + finish 轮 + reflect(无额外生成轮)
+
+    async def test_gen_sql_guard_degrades_to_classic(self, sqlite_registry, catalog):
+        """agent loop 一直调工具到护栏 → 降级到经典生成,而不是判失败。
+
+        护栏降级链:agentic ReAct → (guard_hit) → 经典 generate/validate 子图。
+        模型反复调 finish 但载荷无效 → 循环无法终止,触发护栏。
+        """
+        class GuardLLM:
+            """chat_full 永远返回无效 finish(打转);chat 走经典脚本化响应。"""
+
+            def __init__(self, classic_responses):
+                self._classic = list(classic_responses)
+                self.calls = []
+                self.rounds = 0
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self.calls.append(messages)
+                self.rounds += 1
+                return {"content": None, "tool_calls": [
+                    {"id": f"c{self.rounds}", "name": "finish", "arguments": "{}"},
+                ]}
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(messages)
+                return self._classic.pop(0)
+
+        llm = GuardLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"  # classic 兜底产出
+        assert final["row_count"] == 5
+
     async def test_gen_sql_search_values_round(self, sqlite_registry, catalog):
         """gen_sql ReAct：模型用疑似错误的过滤值调 search_values，拿到真实值后修正 SQL。"""
         llm = AgenticLLM([

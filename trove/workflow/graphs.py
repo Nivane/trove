@@ -348,13 +348,13 @@ def _make_gen_sql_node(
             )
         elif agentic:
             from trove.workflow.nodes.gen_sql import (
-                extract_sql, make_sql_tools,
+                extract_sql, build_sql_registry,
             )
 
-            # 工具定义与 handler 统一由工厂提供(validate_sql 始终可用,
-            # probe_query/check_result 依赖 connectors);check_hits 收集
-            # check_result 的规则命中,循环结束后随 update 带出(归因)
-            tools, tool_handlers, check_hits = make_sql_tools(
+            # 工具统一由注册表提供(定义+处理器+finish 协议+超时/并行策略);
+            # check_hits 收集 check_result 的规则命中,循环结束后随 update
+            # 带出(归因)。validate_sql 始终可用,probe/check 依赖 connectors。
+            registry, check_hits = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
             )
 
@@ -370,8 +370,9 @@ def _make_gen_sql_node(
                     has_probe=services.connectors is not None,
                 ),
                 user=prompt,
-                tools=tools,
-                tool_handlers=tool_handlers,
+                registry=registry,
+                tool_timeout_s=20.0,
+                time_budget_s=120.0,
                 max_rounds=6,
                 metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
                 temperature=generation_temperature(state.retry_count),
@@ -381,7 +382,7 @@ def _make_gen_sql_node(
                 result = None
 
             async def _classic_fallback() -> None:
-                """经典单发子图生成(异常或 agent loop 空手而归时兜底)。"""
+                """经典单发子图生成(异常 / agent loop 空手而归 / 护栏降级兜底)。"""
                 out = await subgraph.ainvoke(sub_state)
                 if out["sql"]:
                     update["sql"] = out["sql"]
@@ -391,13 +392,15 @@ def _make_gen_sql_node(
                     update["error"] = out["error"]
 
             if result is not None:
-                sql = extract_sql(result["content"])
+                sql = extract_sql(result["content"]) if result.get("content") else ""
                 if not sql:
-                    # 模型可能只在工具里给出 SQL，最终 content 无 SQL 回显
-                    # (validate/probe/check 过都算——捞最近一次工具里的 SQL)
+                    # 模型可能只在工具里给出 SQL,最终 content 无 SQL 回显
+                    # (validate/probe/check/finish 过都算——捞最近一次工具载荷)。
                     for entry in reversed(result.get("tool_history") or []):
-                        if entry["name"] in ("validate_sql", "probe_query", "check_result") and entry["arguments"].get("sql"):
-                            sql = entry["arguments"]["sql"]
+                        args = entry["arguments"] or {}
+                        payload = args.get("sql") or args.get("answer")
+                        if entry["name"] in ("validate_sql", "probe_query", "check_result", "finish") and payload:
+                            sql = payload
                             break
                 update["attempts"] = result["rounds"]
                 # check_result 规则命中随状态带出(与既有 hits 合并,不覆盖
@@ -411,8 +414,14 @@ def _make_gen_sql_node(
                     update["reasoning_history"] = [{"node": "gen_sql", "text": trail[:800]}]
                 if sql:
                     update["sql"] = sql
-                elif result["guard_hit"]:
-                    update["error"] = "SQL generation loop hit the round guard without producing SQL"
+                elif result.get("guard_hit"):
+                    # 护栏降级:agent loop 预算耗尽/原地打转未产出 SQL →
+                    # 降到经典生成,而不是直接判失败
+                    logger.warning(
+                        "gen_sql agent loop guard (%s, %d rounds); degrading to classic",
+                        result.get("budget_why"), result["rounds"],
+                    )
+                    await _classic_fallback()
                 else:
                     # loop 正常结束但没产出 SQL(如最后一轮只有 reasoning、
                     # content 为空且未调工具)——兜底到经典生成,不静默空转

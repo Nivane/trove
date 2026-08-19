@@ -189,6 +189,7 @@ class LLMGateway:
                 "content": content,
                 "tool_calls": tool_calls,
                 "reasoning": reasoning,
+                "usage": _usage_dict(response),
             }
         except Exception as e:
             raise LLMError(message=f"LLM call failed: {e}", model=model) from e
@@ -399,6 +400,25 @@ def _record_local_call(
         })
     except Exception:
         pass
+
+
+def _usage_dict(raw_response: Any) -> dict[str, int]:
+    """Best-effort token usage from a litellm completion response.
+
+    Returns {} when the provider omits usage (mock/legacy), so harness
+    token budgets simply skip counting.
+    """
+    try:
+        usage = getattr(raw_response, "usage", None)
+        if usage is None:
+            return {}
+        return {
+            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        }
+    except Exception:
+        return {}
 
 
 def _record_generation(

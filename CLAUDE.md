@@ -38,8 +38,8 @@ Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **co
 
 ### gen_sql (agentic by default) `trove/workflow/nodes/gen_sql.py`
 
-- ReAct loop (`trove/llm/agent_loop.py`): the model self-validates via tools and **decides when it is done itself** (max_rounds is only a safety guard, not the stopping rule). On exception or empty output it falls back to the classic "generate → validate retry" subgraph (`build_gen_sql_subgraph`).
-- Tools come from a module-level factory: `make_sql_tools(connectors, question, lang, dialect) -> (tools, handlers, check_hits)` — `validate_sql` (SQLGlot syntax, always available), `probe_query` (read-only execution observation, 10 rows/5s), `check_result` (read-only execution then `rules.verify` rule chain), `search_values` (value lookup). probe/check share the `_probe_result` execution channel; check hits merge into `validation_hits` via the node update for eval attribution.
+- ReAct loop (`trove/llm/agent_loop.py`): the model self-validates via tools and **decides when it is done itself** (max_rounds is only a safety guard, not the stopping rule). Guard/empty-hand → degrade to the classic "generate → validate retry" subgraph (`build_gen_sql_subgraph`).
+- Tools come from a registry factory: `build_sql_registry(connectors, question, lang, dialect) -> (ToolRegistry, check_hits)` (legacy `make_sql_tools` kept for tests) — `validate_sql` (SQLGlot syntax, always available), `probe_query` (read-only execution observation, 10 rows/5s), `check_result` (read-only execution then `rules.verify` rule chain), `search_values` (value lookup), plus the explicit `finish(answer)` tool (SQL delivered as its payload). probe/check share the `_probe_result` execution channel; check hits merge into `validation_hits` via the node update for eval attribution.
 - KB exact hit (word overlap ≥0.95) uses the standard SQL directly, skipping generation; multi-candidate (higher temperature + few-shot rotation `_rotate_few_shots`) → `select` consensus voting.
 - Node factories: `make_generate` / `make_validate`.
 
@@ -55,6 +55,7 @@ Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **co
 
 ### LLM and tests
 
+- `trove/llm/agent_loop.py` — shared agent-loop harness (`run_agent_loop`): parallel tool dispatch, per-tool timeout/retry, round/time/token budgets, loop-steering feedback, and a `ToolRegistry` (defs + handlers + observer middleware hooks: tracing happens here). The `finish(answer)` protocol lets the model deliver a validated final payload instead of relying on "no tool calls = done"; guard/empty results call back into the caller's degradation chain (gen_sql → classic subgraph, planner → direct generation). `chat_full` returns best-effort `usage` for token budgets.
 - `trove/llm/gateway.py` — litellm gateway with `LLMGateway(mock_response=...)` mode for tests; `chat`/`chat_full` (tool calling)/`chat_stream`; model selection CLI `--model` > `conf/agent.yml` > `~/.trove/conf/agent.yml`; `providers[]` supports custom api_base with `${ENV_VAR}` substitution.
 - Test constraints (`tests/conftest.py`): zero API keys, zero network, all LLM mocked, all databases in-memory SQLite. Common fixtures: `mock_llm`, `sql_llm`, `sqlite_registry`, `demo_registry`, `tmp_home`; workflow tests use the `ScriptedLLM` (scripted responses + recorded prompts) pattern. `tracing.local` is a process-level global; conftest's autouse fixture ensures every test starts from an unconfigured state.
 
