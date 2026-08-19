@@ -130,6 +130,7 @@ const ICONS = {
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
   monitor: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
   panelLeft: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
   dot: '<circle cx="12" cy="12" r="4"/>',
 };
 
@@ -276,12 +277,12 @@ function inlineTransforms(text) {
   return out;
 }
 
-/* Code block with header bar (language label + copy button). */
-function codeBlock(escapedCode, lang, copyLabel) {
+/* Code block with header bar (language label + icon-only copy button). */
+function codeBlock(escapedCode, lang) {
   const label = (lang || "code").toUpperCase();
   return `<div class="code-block">` +
     `<div class="code-header"><span class="code-lang">${esc(label)}</span>` +
-    `<button type="button" class="copy-btn">${icon("copy")}<span>${esc(copyLabel)}</span></button></div>` +
+    `<button type="button" class="copy-btn" title="${esc(t("copy"))}" aria-label="${esc(t("copy"))}">${icon("copy")}</button></div>` +
     `<code>${escapedCode}</code></div>`;
 }
 
@@ -322,7 +323,7 @@ function renderMarkdown(md) {
         code.push(lines[i]);
         i++;
       }
-      out.push(codeBlock(esc(code.join("\n")), fence[1] || "code", t("copy")));
+      out.push(codeBlock(esc(code.join("\n")), fence[1] || "code"));
       continue;
     }
 
@@ -426,7 +427,7 @@ function beginAssistantTurn() {
     <button type="button" class="steps-summary" hidden></button>
     <div class="answer markdown"></div>
     <div class="answer-toolbar" hidden>
-      <button type="button" class="copy-btn copy-answer-btn">${icon("copy")}<span>${esc(t("copy"))}</span></button>
+      <button type="button" class="copy-btn copy-answer-btn" title="${esc(t("copy"))}" aria-label="${esc(t("copy"))}">${icon("copy")}</button>
     </div>`;
   $("message-list").appendChild(el);
   scrollToBottom();
@@ -515,7 +516,6 @@ function llmLine(llm) {
 }
 
 function stepBody(node, d, k, stepLang) {
-  const copyLabel = stepLang === "zh" ? "复制" : "Copy";
   switch (node) {
     case "route_intent":
       return kvLine(k.intent, d.intent) + kvLine(k.evidence, d.intent_evidence) + llmLine(d.llm);
@@ -528,7 +528,7 @@ function stepBody(node, d, k, stepLang) {
     case "planner":
       return d.plan ? `<div class="plan">${esc(d.plan)}</div>` : "";
     case "gen_sql":
-      return (d.sql ? codeBlock(esc(d.sql), "sql", copyLabel) : "") +
+      return (d.sql ? codeBlock(esc(d.sql), "sql") : "") +
         kvLine(k.attempts, d.attempts) + kvLine(k.reason, d.reason) + llmLine(d.llm);
     case "execute_sql":
       return kvLine(k.rows, d.row_count) +
@@ -802,8 +802,7 @@ async function selectSession(id) {
       el.innerHTML =
         `<div class="answer markdown">${renderMarkdown(m.content)}</div>` +
         `<div class="answer-toolbar">` +
-        `<button type="button" class="copy-btn copy-answer-btn">${icon("copy")}` +
-        `<span>${esc(t("copy"))}</span></button></div>`;
+        `<button type="button" class="copy-btn copy-answer-btn" title="${esc(t("copy"))}" aria-label="${esc(t("copy"))}">${icon("copy")}</button></div>`;
       list.appendChild(el);
     }
   }
@@ -927,14 +926,18 @@ function bindCopyButtons() {
   const list = $("message-list");
   if (!list) return;
   list.addEventListener("click", async (e) => {
+    const flashCopied = (btn) => {
+      const prev = btn.innerHTML;
+      btn.title = t("copied");
+      btn.innerHTML = icon("check");
+      setTimeout(() => { btn.title = t("copy"); btn.innerHTML = prev; }, 1500);
+    };
     const codeBtn = e.target.closest(".copy-btn:not(.copy-answer-btn)");
     if (codeBtn) {
       const code = codeBtn.closest(".code-block")?.querySelector("code");
       if (!code) return;
       await copyText(code.textContent);
-      const prev = codeBtn.innerHTML;
-      codeBtn.innerHTML = `<span>${esc(t("copied"))}</span>`;
-      setTimeout(() => { codeBtn.innerHTML = prev; }, 1500);
+      flashCopied(codeBtn);
       return;
     }
     const answerBtn = e.target.closest(".copy-answer-btn");
@@ -943,9 +946,7 @@ function bindCopyButtons() {
       const answer = turnEl?.querySelector(".answer");
       if (!answer || !answer.textContent.trim()) return;
       await copyText(answer.innerText);
-      const prev = answerBtn.innerHTML;
-      answerBtn.innerHTML = `<span>${esc(t("copied"))}</span>`;
-      setTimeout(() => { answerBtn.innerHTML = prev; }, 1500);
+      flashCopied(answerBtn);
     }
   });
 }
