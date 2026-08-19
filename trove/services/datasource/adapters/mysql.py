@@ -99,9 +99,33 @@ class MySQLAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
+    async def _ping_reconnect(self) -> None:
+        """Reconnect if the underlying connection went stale.
+
+        MySQL closes idle connections (wait_timeout); a long-running
+        `trove serve` then turns every query/catalog call into a raw
+        driver exception (InterfaceError/OperationalError). ping with
+        reconnect transparently reopens the connection when the server
+        is reachable again.
+        """
+        try:
+            await self._conn.ping(reconnect=True)
+        except Exception as e:
+            raise DatasourceError(
+                message=f"MySQL connection lost and reconnect failed: {e}",
+                datasource=self.name,
+            ) from e
+
+    async def _ensure_connected(self) -> None:
+        """Ensure a live connection, reconnecting a stale one."""
+        if not self._conn or not self._connected:
+            raise DatasourceError(message="Not connected", datasource=self.name)
+        await self._ping_reconnect()
+
     async def execute(self, sql: str) -> QueryResult:
         if not self._conn or not self._connected:
             raise SQLExecutionError(message="Not connected to MySQL", sql=sql)
+        await self._ping_reconnect()
 
         start = time.monotonic()
         cursor = await self._conn.cursor()
@@ -129,8 +153,7 @@ class MySQLAdapter(DatabaseAdapter):
             await cursor.close()
 
     async def get_schema(self) -> SchemaInfo:
-        if not self._conn or not self._connected:
-            raise DatasourceError(message="Not connected", datasource=self.name)
+        await self._ensure_connected()
 
         tables = []
         cursor = await self._conn.cursor()
@@ -164,6 +187,13 @@ class MySQLAdapter(DatabaseAdapter):
                     columns=columns,
                     row_count_estimate=int(row_count or 0),
                 ))
+        except DatasourceError:
+            raise
+        except Exception as e:
+            raise DatasourceError(
+                message=f"MySQL schema introspection failed: {e}",
+                datasource=self.name,
+            ) from e
         finally:
             await cursor.close()
 

@@ -40,6 +40,13 @@ class FakeConn:
         # cursor_specs: list of (responses, description, error) per cursor creation
         self._cursor_specs = list(cursor_specs or [])
         self.cursors = []
+        self.ping_count = 0
+        self.ping_error = None
+
+    async def ping(self, reconnect=True):
+        self.ping_count += 1
+        if self.ping_error:
+            raise self.ping_error
 
     async def cursor(self):
         spec = self._cursor_specs.pop(0) if self._cursor_specs else ({}, None, None)
@@ -142,6 +149,49 @@ class TestMySQLAdapter:
         adapter, _ = make_adapter(monkeypatch)
         with pytest.raises(SQLExecutionError):
             await adapter.execute("SELECT 1")
+
+    async def test_execute_reconnects_stale_connection(self, monkeypatch):
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),  # version probe
+            ([[[1, "a"]]], [("id",)], None),  # execute after reconnect
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+        adapter._conn.close()  # simulate server dropping the idle connection
+
+        result = await adapter.execute("SELECT id FROM t")
+        assert result.rows == [[1, "a"]]
+        assert conn.ping_count >= 1
+
+    async def test_reconnect_failure_raises_datasource_error(self, monkeypatch):
+        conn = FakeConn()
+        conn.ping_error = RuntimeError("connection refused")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+        adapter._conn.close()
+
+        with pytest.raises(DatasourceError, match="reconnect failed"):
+            await adapter.execute("SELECT 1")
+
+    async def test_get_schema_reconnects_stale_connection(self, monkeypatch):
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),                       # version probe cursor
+            (                                               # get_schema cursor (reused):
+                [
+                    [("students", 100)],
+                    [("id", "int", "NO", "PRI")],
+                ],
+                None, None,
+            ),
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+        adapter._conn.close()
+
+        schema = await adapter.get_schema()
+        assert len(schema.tables) == 1
+        assert schema.tables[0].name == "students"
+        assert conn.ping_count >= 1
 
     async def test_get_schema_introspects_information_schema(self, monkeypatch):
         conn = FakeConn(cursor_specs=[
