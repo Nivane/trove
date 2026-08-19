@@ -523,10 +523,26 @@ function llmLine(llm) {
   return kvLine("llm", model);
 }
 
+/* intent_evidence is a dict of routing signals — render the ones that
+   fired instead of stringifying the object ("[object Object]"). */
+function evidenceLine(ev, k) {
+  if (!ev || typeof ev !== "object") return "";
+  const signals = [
+    "strong_match", "data_signal", "write_signal", "chitchat_signal",
+    "correction_signal", "followup_signal", "weak_signal",
+    "mentioned_table", "term_hit", "rewritten", "substituted",
+  ].filter((s) => ev[s]);
+  const parts = signals.slice();
+  if (ev.llm_verdict) parts.push(`llm_verdict: ${ev.llm_verdict}`);
+  if (ev.llm_error) parts.push(`llm_error: ${ev.llm_error}`);
+  if (ev.history_present === false) parts.push("no_history");
+  return parts.length ? kvLine(k.evidence, parts.join(" · ")) : "";
+}
+
 function stepBody(node, d, k, stepLang) {
   switch (node) {
     case "route_intent":
-      return kvLine(k.intent, d.intent) + kvLine(k.evidence, d.intent_evidence) + llmLine(d.llm);
+      return kvLine(k.intent, d.intent) + evidenceLine(d.intent_evidence, k) + llmLine(d.llm);
     case "schema_linking": {
       const chips = (d.matched_tables ?? [])
         .map((tb) => `<span class="chip">${esc(tb)}</span>`).join("");
