@@ -70,6 +70,10 @@ class WorkflowState(BaseModel):
     # Direct answer for non-query intents (metadata/lineage questions)
     intent_answer: str = ""
 
+    # 意图层改写痕迹:省略式追问补全 / 纯反馈重跑上一问时,记录原始问题
+    # (当前 question 是改写后的有效问题);空 = 本次未发生改写
+    rewritten_question: str = ""
+
     # Correction reasons accumulated across the run (Hint Bank capture)
     correction_history: Annotated[list[str], operator.add] = Field(default_factory=list)
 

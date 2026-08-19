@@ -1,8 +1,11 @@
-把用户输入分类为以下之一：query | metadata。
+把用户输入分类为以下之一：query | metadata | write | chitchat | correction。
 
 - query: 数据问题，需要用 SQL 回答
 - metadata: 关于数据本身的问题（表、字段、业务术语定义、表关系、知识库内容）
+- write: 请求修改数据或表结构（增删改、建表、清空等）。Trove 是只读工具，此类输入会被礼貌拒绝
+- chitchat: 纯寒暄（你好、谢谢、再见），或询问助手身份/能力
+- correction: 对上一问结果的纯反馈（「不对」「重算」），或省略式追问（「那北京呢？」「最高的呢？」）
 
-例如「disp 是啥」「loan 表是什么」「平均贷款金额的定义」→ metadata。
+例：「disp 是啥」「loan 表是什么」→ metadata；「你好」→ chitchat；「把记录删掉」→ write；「不对，重算」「那北京呢？」→ correction；「平均贷款金额是多少」→ query。
 
 只回答单个词。

@@ -166,13 +166,44 @@ class TestConnectorRegistry:
         config = DatasourceConfig(
             name="db", type="sqlite", connection_params={"path": ":memory:"},
         )
-        await registry.register(config)
-        await registry.execute("CREATE TABLE t (v INTEGER)", "db")
-        await registry.execute("INSERT INTO t VALUES (7)", "db")
+        adapter = await registry.register(config)
+        # 建表/灌数走 adapter(注册表 execute 是只读查询入口,写被拦截)
+        await adapter.execute("CREATE TABLE t (v INTEGER)")
+        await adapter.execute("INSERT INTO t VALUES (7)")
 
         result = await registry.execute("SELECT v FROM t", "db")
         assert result.rows == [[7]]
 
+        await registry.close_all()
+
+    async def test_execute_rejects_non_select(self):
+        """执行层写保护:registry.execute 拦截一切非 SELECT(DML/DDL)。"""
+        registry = ConnectorRegistry()
+        config = DatasourceConfig(
+            name="db", type="sqlite", connection_params={"path": ":memory:"},
+        )
+        await registry.register(config)
+        for sql in [
+            "CREATE TABLE t (v INTEGER)",
+            "INSERT INTO t VALUES (1)",
+            "UPDATE t SET v = 1",
+            "DELETE FROM t",
+            "DROP TABLE t",
+            "SELECT 1; DELETE FROM t",  # 多语句注入也不放过
+        ]:
+            with pytest.raises(DatasourceError):
+                await registry.execute(sql, "db")
+
+        await registry.close_all()
+
+    async def test_execute_allows_select_with_cte_and_without_table(self):
+        """SELECT 家族(含 CTE/无表查询)正常放行。"""
+        registry = ConnectorRegistry()
+        config = DatasourceConfig(
+            name="db", type="sqlite", connection_params={"path": ":memory:"},
+        )
+        await registry.register(config)
+        assert (await registry.execute("SELECT 1 AS v", "db")).rows == [[1]]
         await registry.close_all()
 
     async def test_close_all(self):

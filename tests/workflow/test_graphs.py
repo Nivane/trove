@@ -1540,10 +1540,18 @@ class TestRouteIntentObservability:
         assert delta["intent_evidence"] == {
             "strong_match": True,
             "data_signal": False,
+            "write_signal": False,
+            "chitchat_signal": False,
+            "correction_signal": False,
+            "followup_signal": False,
+            "history_present": False,
+            "weak_signal": True,
             "llm_verdict": "metadata",
             "llm_error": "",
             "mentioned_table": False,
             "term_hit": False,
+            "rewritten": False,
+            "substituted": False,
         }
 
     async def test_llm_failure_recorded_as_evidence(self):
@@ -1564,6 +1572,158 @@ class TestRouteIntentObservability:
         assert delta["llm"] is None
         assert delta["intent_evidence"]["llm_verdict"] is None
         assert "api down" in delta["intent_evidence"]["llm_error"]
+
+
+class TestRouteIntentNewIntents:
+    """五意图路由:write / chitchat / correction(纯反馈重跑 + 省略式追问重写)。"""
+
+    async def test_write_routes_directly(self):
+        from trove.workflow.graphs import make_route_intent
+
+        node = make_route_intent(llm=None, config=AgentConfig(),
+                                 catalog=None, kb=None, connectors=None)
+        delta = await node(make_state(question="删除loan表的记录"))
+        assert delta["intent"] == "write"
+
+    async def test_chitchat_routes_directly(self):
+        from trove.workflow.graphs import make_route_intent
+
+        node = make_route_intent(llm=None, config=AgentConfig(),
+                                 catalog=None, kb=None, connectors=None)
+        delta = await node(make_state(question="你好"))
+        assert delta["intent"] == "chitchat"
+
+    async def test_pure_feedback_substitutes_previous_question(self):
+        """「不对」→ 重跑上一问:question 替换为历史里的上一问,intent 按它重判。"""
+        from trove.workflow.graphs import make_route_intent
+
+        class IntentLLM:
+            async def chat(self, model, messages, **kwargs):
+                return "correction"
+
+        node = make_route_intent(llm=IntentLLM(), config=AgentConfig(target="mock/model"),
+                                 catalog=None, kb=None, connectors=None)
+        delta = await node(make_state(
+            question="不对",
+            history="user: 哪个地区的平均贷款金额最高?\nassistant: 北京\n",
+        ))
+        assert delta["question"] == "哪个地区的平均贷款金额最高?"
+        assert delta["intent"] == "query"
+        assert delta["rewritten_question"] == "不对"
+        assert delta["intent_evidence"]["substituted"] is True
+
+    async def test_feedback_without_history_keeps_correction(self):
+        """无历史可重跑 → 保留 correction,由 answer_correction 给引导话术。"""
+        from trove.workflow.graphs import make_route_intent
+
+        node = make_route_intent(llm=None, config=AgentConfig(),
+                                 catalog=None, kb=None, connectors=None)
+        delta = await node(make_state(question="不对"))
+        assert delta["intent"] == "correction"
+        assert "question" not in delta  # 未替换
+
+    async def test_elliptical_followup_rewrites_then_reclassifies(self):
+        """「那北京呢」→ 一次 LLM 重写补全 → 再走一次完整证据链分类。"""
+        from trove.workflow.graphs import make_route_intent
+
+        calls: list[list[dict]] = []
+
+        class RewriteLLM:
+            async def chat(self, model, messages, **kwargs):
+                calls.append(messages)
+                # 第1次=初始分类,第2次=重写,第3次=重写后问题分类
+                return ["query", "北京的平均贷款金额是多少", "query"][
+                    min(len(calls) - 1, 2)
+                ]
+
+        node = make_route_intent(llm=RewriteLLM(), config=AgentConfig(target="mock/model"),
+                                 catalog=None, kb=None, connectors=None)
+        delta = await node(make_state(
+            question="那北京呢",
+            history="user: 哪个地区平均贷款最高?\nassistant: 北京\n",
+        ))
+        assert delta["question"] == "北京的平均贷款金额是多少"
+        assert delta["rewritten_question"] == "那北京呢"
+        assert delta["intent"] == "query"
+        assert delta["intent_evidence"]["rewritten"] is True
+        assert len(calls) == 3  # 分类 + 重写 + 重分类
+        # 重写调用带上了对话历史
+        assert "哪个地区平均贷款最高" in calls[1][0]["content"]
+
+    async def test_followup_rewrite_failure_degrades_to_guidance(self):
+        """重写失败(LLM 异常)→ 保留 correction 走引导话术,不瞎路由。"""
+        from trove.workflow.graphs import make_route_intent
+
+        class BoomLLM:
+            async def chat(self, model, messages, **kwargs):
+                raise RuntimeError("api down")
+
+        node = make_route_intent(llm=BoomLLM(), config=AgentConfig(target="mock/model"),
+                                 catalog=None, kb=None, connectors=None)
+        delta = await node(make_state(
+            question="那北京呢",
+            history="user: 哪个地区平均贷款最高?\nassistant: 北京\n",
+        ))
+        assert delta["intent"] == "correction"
+        assert "question" not in delta  # 未替换问题
+        assert delta["intent_evidence"]["rewritten"] is False
+
+    def test_route_after_intent_returns_intent_value(self):
+        """_route_after_intent 返回 intent 值,节点映射在条件边表里。"""
+        from trove.workflow.graphs import _route_after_intent
+
+        assert _route_after_intent(make_state(intent="write")) == "write"
+        assert _route_after_intent(make_state(intent="chitchat")) == "chitchat"
+        assert _route_after_intent(make_state(intent="correction")) == "correction"
+        assert _route_after_intent(make_state(intent="metadata")) == "metadata"
+        assert _route_after_intent(make_state(intent="query")) == "query"
+
+    async def test_write_refused_e2e(self, sqlite_registry, catalog):
+        """写意图走完整图 → 拒绝话术,不生成 SQL。"""
+        llm = RecordingLLM(["write"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="删除loan表的记录")
+        )
+        assert final["intent"] == "write"
+        assert "只读" in final["final_response"]
+        assert final["sql"] == ""
+
+    async def test_chitchat_answered_without_sql_e2e(self, sqlite_registry, catalog):
+        llm = RecordingLLM(["chitchat"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state(question="你好"))
+        assert final["intent"] == "chitchat"
+        assert "Trove" in final["final_response"]
+        assert final["sql"] == ""
+
+    async def test_correction_without_history_guidance_e2e(self, sqlite_registry, catalog):
+        """无历史可重跑的纯反馈 → answer_correction 引导话术。"""
+        llm = RecordingLLM(["correction"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state(question="不对"))
+        assert final["intent"] == "correction"
+        assert "重算" in final["final_response"]
+        assert final["sql"] == ""
+
+    async def test_terminal_nodes_answer_without_llm(self):
+        from trove.workflow.nodes.terminal import (
+            answer_chitchat,
+            answer_correction,
+            answer_reject,
+        )
+
+        reject = await answer_reject(make_state(lang="zh"))
+        assert "只读" in reject["intent_answer"]
+        assert reject["intent_answer"]
+
+        greet = await answer_chitchat(make_state(question="你好"))
+        thanks = await answer_chitchat(make_state(question="谢谢"))
+        assert greet["intent_answer"]
+        assert greet["intent_answer"] != thanks["intent_answer"]
+
+        guidance = await answer_correction(make_state(lang="zh"))
+        assert "重算" in guidance["intent_answer"]
 
 
 class TestFixModeWiring:

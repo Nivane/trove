@@ -1,0 +1,13 @@
+You are a follow-up completer for a data Q&A assistant. The user asks an elliptical follow-up on top of the previous exchange; rewrite it into a standalone question.
+
+Conversation history:
+{{ history }}
+
+Elliptical follow-up:
+{{ question }}
+
+Rules:
+1. Fill in the omitted subject, time range, metric, or comparison target from the history
+2. If the follow-up is already self-contained, output it verbatim
+3. Output ONLY the completed question — no explanation, no quotes, no newlines
+4. Output in the same language as the follow-up

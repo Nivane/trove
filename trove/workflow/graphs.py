@@ -55,10 +55,21 @@ from trove.workflow.nodes.output import output
 from trove.workflow.nodes.answer import make_answer_metadata
 from trove.workflow.nodes.metadata_check import make_metadata_check
 from trove.workflow.nodes.analyze_error import make_analyze_error, render_reasoning_context
+from trove.workflow.nodes.terminal import (
+    answer_chitchat,
+    answer_correction,
+    answer_reject,
+)
 from trove.core.i18n import L
 from trove.workflow.intent import (
     Intent,
     classify_intent,
+    has_followup_signal,
+    has_strong_chitchat,
+    has_strong_correction,
+    has_strong_write,
+    has_weak_signal,
+    last_user_question,
     parse_llm_intent,
     verify_intent,
 )
@@ -585,20 +596,27 @@ def make_route_intent(
 ):
     """Intent router: LLM classifies, deterministic evidence verifies.
 
-    The LLM always judges (a tiny two-way call); its verdict is then
-    verified against evidence: a METADATA verdict needs substance (strong
-    signal / known table / known term), a QUERY verdict is overridden by
-    a strong metadata signal without a data-question signal. Regex
-    classification remains as the fallback when the LLM is unavailable
-    or its reply is unparseable.
+    Five-way routing (query/metadata/write/chitchat/correction). The LLM
+    always judges (a tiny call); its verdict is verified against
+    evidence. Write and chitchat are answered by zero-LLM terminal nodes.
+    Correction is a transform intent:
+      - elliptical follow-up ("那北京呢?") → rewritten with history,
+        then the full evidence chain runs again on the new question;
+      - pure feedback ("不对") → substitutes the previous question from
+        history and reclassifies it deterministically;
+      - with nothing to act on (no history / rewrite failed) → guidance
+        via answer_correction.
+    Regex classification remains the fallback when the LLM is
+    unavailable or its reply is unparseable.
     """
 
-    async def route_intent(state: WorkflowState) -> dict[str, Any]:
-        if state.error:
-            return {}
-        strong = classify_intent(state.question)
+    async def _classify(
+        question: str, state: WorkflowState
+    ) -> tuple[Intent, dict[str, Any], dict[str, Any] | None]:
+        """One classification pass over a question → (intent, evidence, llm_detail)."""
+        strong = classify_intent(question)
         data_signal = any(
-            f(state.question)
+            f(question)
             for f in (
                 is_count_question,
                 is_list_question,
@@ -606,10 +624,15 @@ def make_route_intent(
                 is_ordered_question,
             )
         )
+        write_sig = has_strong_write(question)
+        chit_sig = has_strong_chitchat(question)
+        corr_sig = has_strong_correction(question)
+        followup = has_followup_signal(question, state.history)
+        weak_sig = has_weak_signal(question)
+
         llm_intent: Intent | None = None
         llm_detail: dict[str, Any] | None = None
         llm_error = ""
-        mentioned_table = term_hit = False
         if llm is not None:
             model = (config.target if config else "") or "openai/gpt-4o"
             intent_prompt = render("intent/system", lang=state.lang)
@@ -622,13 +645,13 @@ def make_route_intent(
                     max_tokens=16000,
                     messages=[
                         {"role": "system", "content": intent_prompt},
-                        {"role": "user", "content": state.question},
+                        {"role": "user", "content": question},
                     ],
                     metadata={
                         "node": "route_intent",
                         "session_id": state.session_id,
                         "run_id": state.run_id,
-                        "question": state.question[:80],
+                        "question": question[:80],
                     },
                 )
                 llm_intent = parse_llm_intent(response)
@@ -642,47 +665,169 @@ def make_route_intent(
                 llm_error = str(e)[:120]
                 llm_intent = None
 
-        if llm_intent is not None:
-            if llm_intent == Intent.METADATA:
-                # Evidence for the metadata verdict: a known table or a
-                # known business term mentioned in the question.
-                if catalog is not None:
-                    try:
-                        mentioned_table = bool(
-                            await catalog.search_tables(state.question, limit=3)
+        mentioned_table = term_hit = False
+        if llm_intent == Intent.METADATA:
+            # Evidence for the metadata verdict: a known table or a
+            # known business term mentioned in the question.
+            if catalog is not None:
+                try:
+                    mentioned_table = bool(
+                        await catalog.search_tables(question, limit=3)
+                    )
+                except Exception:
+                    pass
+            if kb is not None and connectors is not None:
+                try:
+                    ds = connectors.default_name or ""
+                    if ds:
+                        await kb.ensure_synced(ds)
+                        term_hit = bool(
+                            await kb.search_terms(question, ds)
                         )
-                    except Exception:
-                        pass
-                if kb is not None and connectors is not None:
-                    try:
-                        ds = connectors.default_name or ""
-                        if ds:
-                            await kb.ensure_synced(ds)
-                            term_hit = bool(
-                                await kb.search_terms(state.question, ds)
-                            )
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
+
+        if llm_intent is not None:
             intent = verify_intent(
                 llm_intent,
-                strong_match=strong is not None,
+                # strong_match 只指 metadata 强信号:classify_intent 现在也会
+                # 返回 write/chitchat/correction,不能拿"任意强意图"充数
+                strong_match=strong == Intent.METADATA,
+                write_signal=write_sig,
+                chitchat_signal=chit_sig,
+                correction_signal=corr_sig,
+                followup_signal=followup,
+                history_present=bool(state.history),
+                weak_signal=weak_sig,
                 mentioned_table=mentioned_table,
                 term_hit=term_hit,
                 data_signal=data_signal,
             )
         else:
-            intent = strong if strong is not None else Intent.QUERY
+            # LLM 不可用 → 纯正则直路由(高置信信号直接生效,与旧语义一致);
+            # 省略式追问无 LLM 可重写 → correction 引导,不跑注定失败的管线
+            intent = strong or (
+                Intent.CORRECTION if followup and state.history else Intent.QUERY
+            )
+        evidence = {
+            "strong_match": strong is not None,
+            "data_signal": data_signal,
+            "write_signal": write_sig,
+            "chitchat_signal": chit_sig,
+            "correction_signal": corr_sig,
+            "followup_signal": followup,
+            "history_present": bool(state.history),
+            "weak_signal": weak_sig,
+            "llm_verdict": llm_intent.value if llm_intent else None,
+            "llm_error": llm_error,
+            "mentioned_table": mentioned_table,
+            "term_hit": term_hit,
+            "rewritten": False,
+            "substituted": False,
+        }
+        return intent, evidence, llm_detail
+
+    async def _rewrite_followup(question: str, state: WorkflowState) -> str:
+        """LLM 用历史补全省略式追问;失败/无进展由调用方兜底。"""
+        model = (config.target if config else "") or "openai/gpt-4o"
+        prompt = render(
+            "intent/followup_rewrite",
+            lang=state.lang,
+            history=state.history,
+            question=question,
+        )
+        response = await llm.chat(
+            model=model,
+            max_tokens=16000,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": question},
+            ],
+            metadata={
+                "node": "route_intent_rewrite",
+                "session_id": state.session_id,
+                "run_id": state.run_id,
+                "question": question[:80],
+            },
+        )
+        return (response or "").strip()
+
+    async def route_intent(state: WorkflowState) -> dict[str, Any]:
+        if state.error:
+            return {}
+        intent, evidence, llm_detail = await _classify(state.question, state)
+
+        if intent == Intent.CORRECTION:
+            if evidence["followup_signal"] and llm is not None:
+                # 省略式追问 → 补全重写 → 全新问题重新走完整证据链
+                try:
+                    rewritten = await _rewrite_followup(state.question, state)
+                except Exception:
+                    rewritten = ""
+                if rewritten and rewritten != state.question:
+                    intent2, evidence2, detail2 = await _classify(rewritten, state)
+                    evidence2["rewritten"] = True
+                    return {
+                        "question": rewritten,
+                        "rewritten_question": state.question,
+                        "intent": intent2.value,
+                        "llm": detail2,
+                        "intent_evidence": evidence2,
+                    }
+                # 重写失败/无进展 → 落到引导话术,不瞎路由
+                return {
+                    "intent": "correction",
+                    "llm": llm_detail,
+                    "intent_evidence": evidence,
+                }
+            if not evidence["followup_signal"]:
+                # 纯反馈 → 替换为上一问,确定性重判后继续管线
+                prev = last_user_question(state.history)
+                if prev and prev != state.question:
+                    strong2 = classify_intent(prev)
+                    data2 = any(
+                        f(prev)
+                        for f in (
+                            is_count_question,
+                            is_list_question,
+                            is_percent_question,
+                            is_ordered_question,
+                        )
+                    )
+                    evidence2 = {
+                        "strong_match": strong2 == Intent.METADATA,
+                        "data_signal": data2,
+                        "write_signal": has_strong_write(prev),
+                        "chitchat_signal": has_strong_chitchat(prev),
+                        "correction_signal": has_strong_correction(prev),
+                        "followup_signal": False,
+                        "history_present": bool(state.history),
+                        "weak_signal": has_weak_signal(prev),
+                        "llm_verdict": None,
+                        "llm_error": "",
+                        "mentioned_table": False,
+                        "term_hit": False,
+                        "rewritten": False,
+                        "substituted": True,
+                    }
+                    return {
+                        "question": prev,
+                        "rewritten_question": state.question,
+                        "intent": (strong2 or Intent.QUERY).value,
+                        "llm": llm_detail,
+                        "intent_evidence": evidence2,
+                    }
+            # 无历史可重跑 → answer_correction 引导
+            return {
+                "intent": "correction",
+                "llm": llm_detail,
+                "intent_evidence": evidence,
+            }
+
         return {
             "intent": intent.value,
             "llm": llm_detail,
-            "intent_evidence": {
-                "strong_match": strong is not None,
-                "data_signal": data_signal,
-                "llm_verdict": llm_intent.value if llm_intent else None,
-                "llm_error": llm_error,
-                "mentioned_table": mentioned_table,
-                "term_hit": term_hit,
-            },
+            "intent_evidence": evidence,
         }
 
     return route_intent
@@ -709,6 +854,10 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
         services.connectors, llm=services.llm, config=services.config,
         max_retries=MAX_REFLECT_RETRIES,
     ))
+    # 零 LLM 终态意图应答:write 拒绝 / 闲聊 / 纠正引导
+    g.add_node("answer_reject", answer_reject)
+    g.add_node("answer_chitchat", answer_chitchat)
+    g.add_node("answer_correction", answer_correction)
     g.add_edge(START, "route_intent")
     g.add_conditional_edges(
         "route_intent",
@@ -716,8 +865,14 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
         {
             "query": "parse_date",
             "metadata": "answer_metadata",
+            "write": "answer_reject",
+            "chitchat": "answer_chitchat",
+            "correction": "answer_correction",
         },
     )
+    g.add_edge("answer_reject", "output")
+    g.add_edge("answer_chitchat", "output")
+    g.add_edge("answer_correction", "output")
     g.add_edge("parse_date", "schema_linking")
     g.add_edge("answer_metadata", "metadata_check")
     g.add_conditional_edges(

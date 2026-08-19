@@ -1,8 +1,11 @@
-Classify the user input into ONE of: query | metadata.
+Classify the user input into ONE of: query | metadata | write | chitchat | correction.
 
 - query: a data question to be answered with SQL
 - metadata: a question ABOUT the data itself (tables, columns, business term definitions, table relationships, knowledge base contents)
+- write: a request to modify data or schema (insert/update/delete/DDL). Trove is read-only; such input is politely refused
+- chitchat: pure small talk (hello, thanks, goodbye) or questions about the assistant's identity/capabilities
+- correction: pure feedback on the previous answer ("wrong", "recalculate"), or an elliptical follow-up ("and Beijing?", "the highest?")
 
-Examples: "what is the disp table?", "what does the loan table mean?" → metadata.
+Examples: "what is the disp table?" → metadata; "hello" → chitchat; "delete the records" → write; "wrong, recalculate" / "and Beijing?" → correction; "what is the average loan amount?" → query.
 
 Reply with ONLY the single word.

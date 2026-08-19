@@ -85,19 +85,21 @@ class TestProbeEnums:
 class TestProbeDateRanges:
     async def _make_events_table(self, sqlite_registry):
         """Events 表:date 类型列 + 高基数文本列存 YYMMDD(模拟 BIRD)。"""
-        await sqlite_registry.execute(
+        # 灌数据走 adapter:registry.execute 是只读查询入口(守卫拦截写)
+        adapter = await sqlite_registry.get()
+        await adapter.execute(
             "CREATE TABLE events ("
             "id INTEGER PRIMARY KEY, "
             "happened_on DATE, "
             "stamp TEXT)")
-        await sqlite_registry.execute(
+        await adapter.execute(
             "INSERT INTO events (happened_on, stamp) VALUES "
             "('1993-01-15', '930115'), ('1994-06-01', '940601'), "
             "('1995-03-20', '950320'), ('1996-11-02', '961102'), "
             "('1997-04-09', '970409'), ('1998-12-31', '981231'), "
             "('1992-02-10', '920210'), ('1991-05-22', '910522')")
         # stamp 高基数(>PROBE_LIMIT 20):distinct 路径跳过 → 走 MIN/MAX 回退
-        await sqlite_registry.execute(
+        await adapter.execute(
             "INSERT INTO events (happened_on, stamp) "
             "SELECT '1999-01-01', printf('%02d%02d%02d', 90 + n / 100, 1, 1 + n) "
             "FROM (WITH RECURSIVE c(n) AS (SELECT 0 UNION ALL SELECT n + 1 "
@@ -127,8 +129,9 @@ class TestProbeDateRanges:
 
     async def test_high_cardinality_non_date_text_skipped(self, sqlite_registry):
         """高基数普通文本(非日期格式)的 MIN/MAX 不记入。"""
-        await sqlite_registry.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
-        await sqlite_registry.execute(
+        adapter = await sqlite_registry.get()
+        await adapter.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
+        await adapter.execute(
             "INSERT INTO notes (body) VALUES "
             "('alpha'), ('beta'), ('gamma'), ('delta'), ('epsilon'), ('zeta'), "
             "('eta'), ('theta'), ('iota'), ('kappa'), ('lambda'), ('mu')")

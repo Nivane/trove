@@ -166,15 +166,72 @@ class ConnectorRegistry:
     async def execute(self, sql: str, datasource: str | None = None) -> QueryResult:
         """Execute SQL on a specific datasource.
 
+        Read-only guard: only SELECT statements reach the adapter —
+        DML/DDL (insert/update/delete/create/drop/...) is rejected here.
+        This is the execution-layer write protection backing the intent
+        layer's write refusal; it covers every pipeline entry point
+        (execute_sql, probe_query, check_result), so a write slipping
+        past intent classification can never touch the datasource.
+
         Args:
             sql: The SQL to execute.
             datasource: Target datasource name (default if None).
 
         Returns:
             QueryResult.
+
+        Raises:
+            DatasourceError: If the SQL is not a SELECT statement.
+        """
+        self._guard_read_only(sql)
+        adapter = await self.get(datasource)
+        return await adapter.execute(sql)
+
+    async def execute_unsafe(
+        self, sql: str, datasource: str | None = None
+    ) -> QueryResult:
+        """Execute SQL bypassing the read-only guard.
+
+        Escape hatch for explicit write-permission paths (SQLExecutor
+        DANGEROUS mode, admin tooling). The query pipeline must never
+        use this — writes only happen here when the user opted into
+        `permission dangerous`.
         """
         adapter = await self.get(datasource)
         return await adapter.execute(sql)
+
+    @staticmethod
+    def _guard_read_only(sql: str) -> None:
+        """Reject non-SELECT statements (best-effort; sqlglot optional)."""
+        try:
+            import sqlglot
+            from sqlglot import exp
+        except ImportError:
+            logger.warning("sqlglot not available; skipping read-only guard")
+            return
+        statements: list | None = None
+        # 反引号标识符(MySQL 方言,KB 探测等内部 SQL 使用)默认解析失败 →
+        # 回退 mysql 方言再试;两者都失败才拒绝(安全方向)
+        for dialect in (None, "mysql"):
+            try:
+                statements = sqlglot.parse(sql, dialect=dialect)
+                break
+            except Exception:
+                continue
+        if statements is None:
+            raise DatasourceError(
+                message="SQL rejected: could not parse statement"
+            )
+        for stmt in statements:
+            if stmt is None:
+                continue
+            if not isinstance(stmt, exp.Select):
+                raise DatasourceError(
+                    message=(
+                        "Trove is read-only: only SELECT queries are allowed "
+                        f"(rejected: {stmt.sql()[:120]})"
+                    )
+                )
 
     async def get_schema(self, datasource: str | None = None) -> SchemaInfo:
         """Get schema info for a datasource."""

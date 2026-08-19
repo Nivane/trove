@@ -60,7 +60,9 @@ class SQLExecutor:
             CancelledError: If cancelled during execution.
         """
         # Safety check — write operations are blocked in NORMAL and AUTO
-        # modes; only DANGEROUS allows them through.
+        # modes; only DANGEROUS allows them through. DANGEROUS bypasses
+        # the registry's read-only guard via execute_unsafe (the explicit
+        # escape hatch for write-permission mode).
         if self.permission_level != PermissionLevel.DANGEROUS:
             if not self._validator.is_safe(sql):
                 raise SQLExecutionError(
@@ -75,10 +77,15 @@ class SQLExecutor:
             raise CancelledError("Execution cancelled")
 
         # Execute with timeout
+        execute = (
+            self._registry.execute_unsafe
+            if self.permission_level == PermissionLevel.DANGEROUS
+            else self._registry.execute
+        )
         try:
             if cancellation_event:
                 # Execute in a task so we can cancel it
-                task = asyncio.create_task(self._registry.execute(sql, datasource))
+                task = asyncio.create_task(execute(sql, datasource))
                 done, _ = await asyncio.wait(
                     [task],
                     timeout=self.timeout_ms / 1000.0,
@@ -94,7 +101,7 @@ class SQLExecutor:
                 return task.result()
             else:
                 return await asyncio.wait_for(
-                    self._registry.execute(sql, datasource),
+                    execute(sql, datasource),
                     timeout=self.timeout_ms / 1000.0,
                 )
 
