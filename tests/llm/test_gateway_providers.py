@@ -131,6 +131,34 @@ class TestProviderParams:
         )
         assert captured["metadata"] == {"node": "gen_sql", "session_id": "s1"}
 
+    async def test_truncated_response_warns_with_lengths(self, mocker, caplog):
+        """finish_reason=length 且正文非空:截断必须显式告警(init 草稿
+        在引号中间被切断即此类),正文原样返回给调用方。"""
+        async def fake_acompletion(**kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content="SELECT 1 -- cut mid-generation",
+                    reasoning_content="think think think"),
+                finish_reason="length",
+            )])
+        mocker.patch("litellm.acompletion", fake_acompletion)
+
+        text = await LLMGateway().chat(model="openai/gpt-4o", messages=[])
+        assert text == "SELECT 1 -- cut mid-generation"
+        assert any("truncated" in r.message and "length" in r.message
+                   for r in caplog.records)
+
+    async def test_stop_response_does_not_warn(self, mocker, caplog):
+        async def fake_acompletion(**kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content="SELECT 1", reasoning_content=""),
+                finish_reason="stop",
+            )])
+        mocker.patch("litellm.acompletion", fake_acompletion)
+
+        await LLMGateway().chat(model="openai/gpt-4o", messages=[])
+        assert not any("truncated" in r.message for r in caplog.records)
+
     async def test_generation_recorded_when_tracing_enabled(self, mocker):
         """SDK 轨迹：litellm 响应后记录 generation（含 reasoning_content/CoT）。"""
         captured = {}

@@ -311,6 +311,17 @@ class LLMGateway:
         message = response.choices[0].message
         reasoning = getattr(message, "reasoning_content", "") or ""
         content = message.content or ""
+        finish = getattr(response.choices[0], "finish_reason", "") or ""
+        if finish == "length" and content:
+            # 正文非空但被截断:finish_reason=length(推理模型 CoT 挤占
+            # max_tokens 预算,正文在中间被切)。调用方拿到的 YAML/SQL
+            # 是残缺的(如 /kb init 草稿在引号中间切断)——显式告警便于
+            # 定位,而不是等下游解析器报出莫名其妙的语法错误。
+            logger.warning(
+                "LLM response truncated (finish_reason=length): %d content chars, "
+                "%d reasoning chars; output budget exhausted mid-generation",
+                len(content), len(reasoning),
+            )
         _record_local_call(
             model, messages, content,
             metadata, int((time.monotonic() - start) * 1000),

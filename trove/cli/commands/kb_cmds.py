@@ -30,7 +30,10 @@ logger = get_logger(__name__)
 
 # /kb init chunking: LLM output is capped, so large schemas are drafted
 # in batches of tables and merged afterwards.
-INIT_CHUNK_TABLES = 10
+# 5 表/块:推理模型 CoT 波动会挤占 max_tokens 预算、正文在中间被截断
+# (deepseek-reasoner 实测:8 表单块在 207 行处被切,修复轮第 6 行被切);
+# 单块减半输出,给 CoT 波动留足缓冲。
+INIT_CHUNK_TABLES = 5
 # 推理模型(deepseek-reasoner 实测)的 max_tokens 计入 CoT:8192 时思考即
 # 耗尽全部预算、content 为空(finish_reason=length);16384 给 CoT+草稿
 # 正文留足余量(实测 8 表带统计提示词:CoT ~6.3k + 正文 ~2.1k tokens)。
