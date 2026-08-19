@@ -26,7 +26,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.workflow.intent import has_weak_signal
-from trove.workflow.state import WorkflowState
+from trove.workflow.state import WorkflowState, budget_exhausted
 
 logger = get_logger(__name__)
 
@@ -190,7 +190,7 @@ def make_reflect(
                 semantic = not state.error_feedback
                 semantic_retries = state.semantic_retries + 1 if semantic else 0
                 if (
-                    state.retry_count >= max_retries
+                    budget_exhausted(state.retry_count, max_retries)
                     or semantic_retries >= MAX_SEMANTIC_RETRIES
                 ):
                     logger.warning(

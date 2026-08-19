@@ -84,6 +84,36 @@ def build_sql_prompt(
     )
 
 
+def build_sql_prompt_from_state(state: GenSQLState) -> str:
+    """从子图状态装配生成 prompt:集中 17 个字段的展开(与 build_sql_prompt 一致)。
+
+    消除 graphs.py 与 make_generate 两处各自列 17 个 kwargs 的重复——新增
+    注入字段只改这一处 + build_sql_prompt 签名。
+    """
+    return build_sql_prompt(
+        question=state.question,
+        schema_context=state.schema_context,
+        dialect=state.dialect,
+        reflect_reason=state.reflect_reason,
+        error_feedback=state.error_feedback,
+        history=state.history,
+        plan=state.plan,
+        evidence=state.evidence,
+        time_context=state.time_context,
+        error_analysis=state.error_analysis,
+        reasoning_context=state.reasoning_context,
+        rejected_hypotheses=state.rejected_hypotheses or None,
+        previous_sql=state.previous_sql,
+        sql_versions=state.sql_versions or None,
+        fix_mode=state.fix_mode,
+        rules=state.rules or None,
+        lessons=state.lessons or None,
+        few_shots=state.few_shots or None,
+        term_notes=state.term_notes or None,
+        lang=state.lang,
+    )
+
+
 def build_fix_prompt(sql: str, errors: list[str], lang: str = "en") -> str:
     """Build a fix prompt when validation fails (bilingual; default en keeps
     the pure-helper behavior for direct callers)."""
@@ -632,27 +662,7 @@ def make_generate(
         else:
             # 上一轮产出为空(SQL 为空):没有可"修复"的对象,
             # 回到原始生成提示词重试,而不是让模型去修一条空 SQL。
-            prompt = build_sql_prompt(
-                question=state.question,
-                schema_context=state.schema_context,
-                dialect=state.dialect,
-                reflect_reason=state.reflect_reason,
-                error_feedback=state.error_feedback,
-                history=state.history,
-                plan=state.plan,
-                evidence=state.evidence,
-                time_context=state.time_context,
-                error_analysis=state.error_analysis,
-                reasoning_context=state.reasoning_context,
-                rejected_hypotheses=state.rejected_hypotheses or None,
-                previous_sql=state.previous_sql,
-                sql_versions=state.sql_versions or None,
-                fix_mode=state.fix_mode,
-                rules=state.rules or None,
-                lessons=state.lessons or None,
-                few_shots=state.few_shots or None,
-                term_notes=state.term_notes or None,
-            )
+            prompt = build_sql_prompt_from_state(state)
 
         model = config.target or "openai/gpt-4o"
         start = time.monotonic()

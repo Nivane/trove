@@ -18,6 +18,7 @@ from trove.workflow.nodes.gen_sql import (
     _like_pattern,
     build_fix_prompt,
     build_sql_prompt,
+    build_sql_prompt_from_state,
     extract_sql,
     make_generate,
     make_sql_tools,
@@ -917,6 +918,31 @@ class TestSQLHelpers:
         prompt = build_sql_prompt("q", "schema", "sqlite", reflect_reason="wrong grouping")
         assert "wrong grouping" in prompt
         assert "rejected" in prompt
+
+    def test_build_sql_prompt_from_state_matches_kwargs(self):
+        """状态装配与直接 kwargs 产出一致:集中展开不改变 prompt 内容。"""
+        from trove.workflow.state import GenSQLState
+
+        state = GenSQLState(
+            question="q",
+            schema_context="schema",
+            dialect="sqlite",
+            lang="en",
+            reflect_reason="wrong grouping",
+            error_feedback="no such table: loans",
+            evidence="hint",
+            few_shots=[{"question": "x", "sql": "SELECT 1", "template": False}],
+        )
+        expected = build_sql_prompt(
+            question="q",
+            schema_context="schema",
+            dialect="sqlite",
+            reflect_reason="wrong grouping",
+            error_feedback="no such table: loans",
+            evidence="hint",
+            few_shots=[{"question": "x", "sql": "SELECT 1", "template": False}],
+        )
+        assert build_sql_prompt_from_state(state) == expected
 
     def test_build_sql_prompt_includes_few_shots_and_terms(self):
         few_shots = [{"question": "各地区平均成绩", "sql": "SELECT 1", "template": False}]

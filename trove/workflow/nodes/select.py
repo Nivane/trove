@@ -22,7 +22,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.rules import verify as run_rules
-from trove.workflow.state import WorkflowState
+from trove.workflow.state import WorkflowState, budget_exhausted
 
 
 def _normalize_rows(rows: list[list[Any]]) -> list[tuple[str, ...]]:
@@ -141,7 +141,7 @@ def make_select_consensus(
             }
 
         # 平局(全单票或并列) → 打回重生成
-        if state.retry_count >= max_retries:
+        if budget_exhausted(state.retry_count, max_retries):
             # Budget exhausted: deliver the primary with a low-confidence
             # mark instead of degrading to an error.
             return {"consensus": False, "selection": {"votes": votes,

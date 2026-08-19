@@ -39,7 +39,7 @@ from trove.workflow.nodes.parse_date import make_parse_date
 from trove.workflow.nodes.clarify import make_clarify
 from trove.workflow.nodes.planner import make_planner
 from trove.workflow.nodes.gen_sql import (
-    build_sql_prompt,
+    build_sql_prompt_from_state,
     make_generate,
     make_validate,
     render_lessons,
@@ -321,37 +321,17 @@ def _make_gen_sql_node(
             CONTEXT_BUDGET_TOKENS,
         )
 
-        sub_state = GenSQLState(
-            question=state.question,
-            session_id=state.session_id,
-            run_id=state.run_id,
-            schema_context=state.schema_context,
+        sub_state = GenSQLState.from_workflow(
+            state,
             dialect=dialect,
-            lang=state.lang,
-            time_context=state.time_context,
-            reflect_reason=state.reason,
-            error_feedback=state.error_feedback,
-            error_analysis=state.error_analysis,
+            included=included,
             reasoning_context=render_reasoning_context(
                 state.reasoning_history, ("gen_sql",),
             ),
-            rejected_hypotheses=state.rejected_hypotheses,
-            sql_versions=state.sql_versions,
-            # 缺口3:修复模式(analyze_error 判定)传入 sub_state,重生成
-            # prompt 显式区分 fixer(实现级定点修)vs revisor(语义重写)
-            fix_mode=state.fix_mode,
-            # Fixer 模式:打回轮(state.sql 是上一版失败 SQL)注入全文,
-            # 指示模型局部修复而非整体重写
-            previous_sql=(
-                state.sql if (state.error_feedback or state.error_analysis or state.reason) else ""
-            ),
-            history=state.history if "history" in included else "",
-            plan=state.plan if "plan" in included else "",
-            evidence=state.evidence,
-            few_shots=few_shots if "few_shots" in included else None,
-            term_notes=term_notes if "term_notes" in included else None,
-            lessons=lessons if "lessons" in included else None,
-            rules=rules if "rules" in included else None,
+            few_shots=few_shots,
+            term_notes=term_notes,
+            lessons=lessons,
+            rules=rules,
         )
         update: dict[str, Any] = {
             "dialect": dialect,
@@ -378,7 +358,7 @@ def _make_gen_sql_node(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
             )
 
-            prompt = _build_gen_prompt(sub_state)
+            prompt = build_sql_prompt_from_state(sub_state)
             model = (services.config.target if services.config else "") or "openai/gpt-4o"
             result = None
             try:
@@ -877,41 +857,32 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     g.add_edge("answer_metadata", "metadata_check")
     g.add_conditional_edges(
         "metadata_check",
-        _route_after_metadata_check,
+        _make_route_after_feedback("answer_metadata", "answer_metadata", "output"),
         {"answer_metadata": "answer_metadata", "output": "output"},
     )
 
 
-def _build_gen_prompt(sub_state: GenSQLState) -> str:
-    """Assemble the generation user prompt from the prepared sub-state."""
-    return build_sql_prompt(
-        question=sub_state.question,
-        schema_context=sub_state.schema_context,
-        dialect=sub_state.dialect,
-        reflect_reason=sub_state.reflect_reason,
-        error_feedback=sub_state.error_feedback,
-        error_analysis=sub_state.error_analysis,
-        reasoning_context=sub_state.reasoning_context,
-        rejected_hypotheses=sub_state.rejected_hypotheses or None,
-        previous_sql=sub_state.previous_sql,
-        sql_versions=sub_state.sql_versions or None,
-        fix_mode=sub_state.fix_mode,
-        history=sub_state.history,
-        plan=sub_state.plan,
-        evidence=sub_state.evidence,
-        time_context=sub_state.time_context,
-        rules=sub_state.rules or None,
-        lessons=sub_state.lessons or None,
-        few_shots=sub_state.few_shots or None,
-        term_notes=sub_state.term_notes or None,
-    )
+def _make_route_after_feedback(
+    error_target: str,
+    feedback_target: str,
+    ok_target: str,
+):
+    """反馈分流工厂:error → error_target,error_feedback → feedback_target,
+    否则 → ok_target。
 
+    execute/validate/metadata 共用同一分流语义,只差目标节点——以参数化
+    工厂替代三份近似重复的路由。error 与 error_feedback 同目标(如 metadata
+    图)时两者传同一个值。
+    """
 
-def _route_after_metadata_check(state: WorkflowState) -> Literal["answer_metadata", "output"]:
-    """Judge/rule failure feeds back to the metadata answer; otherwise output."""
-    if state.error or state.error_feedback:
-        return "answer_metadata"
-    return "output"
+    def route(state: WorkflowState) -> str:
+        if state.error:
+            return error_target
+        if state.error_feedback:
+            return feedback_target
+        return ok_target
+
+    return route
 
 
 def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "output"]:
@@ -926,21 +897,6 @@ def _route_after_clarify_gen_sql(state: WorkflowState) -> Literal["gen_sql", "ou
     if state.error or state.clarification_question:
         return "output"
     return "gen_sql"
-
-
-def _route_after_execute(state: WorkflowState) -> Literal["analyze_error", "reflect", "output"]:
-    """Execution failure → error diagnosis → regeneration.
-
-    execute_sql enforces the budget itself (degrades via state.error when
-    exhausted, clears feedback on success), so the loop always terminates:
-    error_feedback set ⇒ analyze then regenerate; next failure either
-    clears or degrades.
-    """
-    if state.error:
-        return "output"
-    if state.error_feedback:
-        return "analyze_error"
-    return "reflect"
 
 
 def _build_reflection(
@@ -1019,9 +975,12 @@ def _build_reflection(
         _make_route_after_analyze_error(analyze_targets),
         analyze_targets,
     )
+    # 执行/规则失败 → analyze_error 诊断 → 重生成。execute_sql 自守预算
+    # (耗尽走 state.error、成功清 feedback),循环必然终止:error_feedback
+    # 置位 ⇒ 诊断后重生成;下一轮要么清掉要么降级。
     g.add_conditional_edges(
         "validate",
-        _route_after_execute,
+        _make_route_after_feedback("output", "analyze_error", "reflect"),
         {"analyze_error": "analyze_error", "reflect": "reflect", "output": "output"},
     )
     g.add_conditional_edges(
@@ -1066,20 +1025,11 @@ def _build_fixed(
     g.add_edge("execute_sql", "validate")
     g.add_conditional_edges(
         "validate",
-        _route_after_execute_fixed,
+        _make_route_after_feedback("output", "gen_sql", "output"),
         {"gen_sql": "gen_sql", "output": "output"},
     )
     g.add_edge("output", END)
     return g
-
-
-def _route_after_execute_fixed(state: WorkflowState) -> Literal["gen_sql", "output"]:
-    """Fixed graph: execution failure regenerates (budget enforced in execute)."""
-    if state.error:
-        return "output"
-    if state.error_feedback:
-        return "gen_sql"
-    return "output"
 
 
 def _build_empty() -> StateGraph:

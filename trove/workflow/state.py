@@ -17,6 +17,15 @@ from typing import Annotated, Any
 from pydantic import BaseModel, Field
 
 
+def budget_exhausted(retry_count: int, max_retries: int) -> bool:
+    """共享修正预算判定:retry_count 达到上限即耗尽。
+
+    各节点的降级分支不同(execute→error / reflect→forced OK /
+    select→低置信交付),因此只统一"比较 + 耗尽判定",分支保留在各节点。
+    """
+    return retry_count >= max_retries
+
+
 class WorkflowState(BaseModel):
     """State carried through one workflow (graph) execution."""
 
@@ -229,8 +238,60 @@ class GenSQLState(BaseModel):
     plan: str = ""
 
     # Knowledge base material for prompt injection
-    few_shots: list[dict[str, Any]] = Field(default_factory=list)   # reference examples/templates
-    term_notes: list[dict[str, Any]] = Field(default_factory=list)  # terminology definitions
-    lessons: list[dict[str, Any]] = Field(default_factory=list)     # known pitfalls (Hint Bank)
-    rules: list[str] = Field(default_factory=list)                    # data source business rules
-    llm: dict[str, Any] | None = None                                    # last generate call detail
+    # None = 未注入(context budget 排除或未检索);消费方统一 ``or None`` 处理
+    few_shots: list[dict[str, Any]] | None = None   # reference examples/templates
+    term_notes: list[dict[str, Any]] | None = None  # terminology definitions
+    lessons: list[dict[str, Any]] | None = None     # known pitfalls (Hint Bank)
+    rules: list[str] | None = None                  # data source business rules
+    llm: dict[str, Any] | None = None                    # last generate call detail
+
+    @classmethod
+    def from_workflow(
+        cls,
+        state: WorkflowState,
+        *,
+        dialect: str,
+        included: set[str] | None = None,
+        reasoning_context: str = "",
+        few_shots: list[dict[str, Any]] | None = None,
+        term_notes: list[dict[str, Any]] | None = None,
+        lessons: list[dict[str, Any]] | None = None,
+        rules: list[str] | None = None,
+    ) -> "GenSQLState":
+        """从外层 WorkflowState 构造子图状态:集中字段映射 + 派生 + 预算门控。
+
+        - 直接复制:question/session/run/schema/lang/time/evidence 等上下文;
+        - 派生:reflect_reason ← state.reason;previous_sql 仅修正轮取上一版
+          失败 SQL;reasoning_context 由调用方按思考痕迹渲染后传入;
+        - 预算门控:history/plan/few_shots/term_notes/lessons/rules 只在
+          included 包含对应块时注入(included 为 None = 全注入)。
+        """
+
+        def _include(name: str) -> bool:
+            return included is None or name in included
+
+        in_correction = bool(state.error_feedback or state.error_analysis or state.reason)
+        return cls(
+            question=state.question,
+            session_id=state.session_id,
+            run_id=state.run_id,
+            schema_context=state.schema_context,
+            dialect=dialect,
+            lang=state.lang,
+            time_context=state.time_context,
+            reflect_reason=state.reason,
+            error_feedback=state.error_feedback,
+            error_analysis=state.error_analysis,
+            reasoning_context=reasoning_context,
+            rejected_hypotheses=state.rejected_hypotheses,
+            sql_versions=state.sql_versions,
+            fix_mode=state.fix_mode,
+            previous_sql=state.sql if in_correction else "",
+            history=state.history if _include("history") else "",
+            plan=state.plan if _include("plan") else "",
+            evidence=state.evidence,
+            few_shots=few_shots if _include("few_shots") else None,
+            term_notes=term_notes if _include("term_notes") else None,
+            lessons=lessons if _include("lessons") else None,
+            rules=rules if _include("rules") else None,
+        )

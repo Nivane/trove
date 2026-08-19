@@ -15,7 +15,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.workflow.nodes.planner import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
-from trove.workflow.state import WorkflowState
+from trove.workflow.state import WorkflowState, budget_exhausted
 
 
 def make_validate_rules(
@@ -42,7 +42,7 @@ def make_validate_rules(
             lang=state.lang,
         )
         if reason is not None:
-            if state.retry_count >= max_retries:
+            if budget_exhausted(state.retry_count, max_retries):
                 return {"error": reason}
             feedback = L(
                 state.lang,
@@ -62,7 +62,7 @@ def make_validate_rules(
         # 通道,反馈文本把归因指向 planner 的 answer_columns。
         ac_errors = answer_columns_mismatch(state.plan_json, state.columns)
         if ac_errors:
-            if state.retry_count >= max_retries:
+            if budget_exhausted(state.retry_count, max_retries):
                 return {"error": "; ".join(ac_errors)}
             feedback = L(
                 state.lang,
@@ -89,7 +89,7 @@ def make_validate_rules(
             state.plan_json, state.columns, state.question,
         )
         if extra_errors:
-            if state.retry_count >= max_retries:
+            if budget_exhausted(state.retry_count, max_retries):
                 return {"error": "; ".join(extra_errors)}
             feedback = L(
                 state.lang,

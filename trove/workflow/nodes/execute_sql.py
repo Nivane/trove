@@ -17,7 +17,7 @@ from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.llm.observability import record_span
-from trove.workflow.state import WorkflowState
+from trove.workflow.state import WorkflowState, budget_exhausted
 
 logger = get_logger(__name__)
 
@@ -89,7 +89,7 @@ def _execution_failure(
     state: WorkflowState, message: str, max_retries: int,
 ) -> dict[str, Any]:
     """Feed the error back to gen_sql, or degrade when the budget is spent."""
-    if state.retry_count >= max_retries:
+    if budget_exhausted(state.retry_count, max_retries):
         return {"error": message}
     return {
         "error_feedback": message,
