@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from trove.core.i18n import L
+from trove.services.sql.format import format_sql
 from trove.workflow.state import WorkflowState
 
 
@@ -50,7 +51,7 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     # SQL
     if state.sql:
         parts.append(f"### {L(lang, 'Generated SQL', 'Generated SQL')}\n")
-        parts.append(f"```sql\n{state.sql}\n```\n")
+        parts.append(f"```sql\n{format_sql(state.sql, state.dialect)}\n```\n")
 
     # Results
     if state.columns:

@@ -278,7 +278,7 @@ class TestStructuredSteps:
                 steps[event["node"]] = event
 
         assert steps["execute_sql"]["detail"]["row_count"] == 5
-        assert "SELECT name" in steps["gen_sql"]["detail"]["sql"]
+        assert "SELECT name" in " ".join(steps["gen_sql"]["detail"]["sql"].split())
         assert steps["reflect"]["detail"]["verdict"] == "OK"
         assert steps["schema_linking"]["detail"]["matched_tables"]
 

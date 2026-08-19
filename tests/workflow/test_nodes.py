@@ -2068,7 +2068,7 @@ class TestOutput:
         update = await output(state)
         response = update["final_response"]
         assert "Question" in response
-        assert "SELECT county" in response
+        assert "SELECT county" in " ".join(response.split())  # pretty-printed SQL
         assert "Alameda" in response
         assert "2 rows" in response
 
