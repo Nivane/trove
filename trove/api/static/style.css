@@ -765,10 +765,64 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 /* ── Composer ────────────────────────────────────────── */
 
+/* Slash-command suggestion menu — floats above the composer box. */
+#slash-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  z-index: 20;
+}
+
+#slash-menu .slash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#slash-menu .slash-item:hover,
+#slash-menu .slash-item.active {
+  background: var(--accent-soft);
+}
+
+#slash-menu .slash-name {
+  font-family: var(--mono);
+  color: var(--accent);
+  flex-shrink: 0;
+  min-width: 140px;
+}
+
+#slash-menu .slash-desc {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#slash-menu .slash-empty {
+  padding: 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--faint);
+}
+
 #composer {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
   width: 100%;
   max-width: 780px;
   margin: 0 auto;

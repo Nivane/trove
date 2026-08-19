@@ -24,6 +24,7 @@ const I18N = {
     welcomeSubtitle: "用自然语言提问，自动生成 SQL、执行并验证答案",
     disclaimer: "内容由 AI 生成，可能出错，重要信息请核对",
     langBtn: "EN",
+    noSlashMatch: "没有匹配的命令",
     suggestions: [
       "哪个地区的平均贷款金额最高？",
       "列出各地区的账户数量",
@@ -46,6 +47,7 @@ const I18N = {
     welcomeSubtitle: "Ask in natural language — SQL is generated, executed and verified",
     disclaimer: "AI-generated — verify important information",
     langBtn: "中文",
+    noSlashMatch: "No matching command",
     suggestions: [
       "Which region has the highest average loan amount?",
       "List account counts by region",
@@ -1077,6 +1079,66 @@ function applyLang() {
 
 /* ── Init ────────────────────────────────────────────── */
 
+let slashActive = -1;
+
+/* Slash-command suggestion menu: typing "/" at the start of the
+   composer shows the matching commands; the menu is display-only
+   (selection fills in the command text, then Enter submits). */
+function showSlashMenu() {
+  const menu = $("slash-menu");
+  if (menu) menu.hidden = false;
+}
+
+function hideSlashMenu() {
+  const menu = $("slash-menu");
+  if (menu) menu.hidden = true;
+  slashActive = -1;
+}
+
+function renderSlashMenu(filter) {
+  const menu = $("slash-menu");
+  if (!menu) return;
+  const f = filter.toLowerCase();
+  const matches = SLASH_COMMANDS.filter((c) =>
+    c.name.toLowerCase().startsWith(f) ||
+    c.aliases.some((a) => a.toLowerCase().startsWith(f)));
+  if (!matches.length) {
+    menu.innerHTML = `<div class="slash-empty">${esc(t("noSlashMatch"))}</div>`;
+    showSlashMenu();
+    slashActive = -1;
+    return;
+  }
+  menu.innerHTML = matches.map((c, i) =>
+    `<div class="slash-item" data-i="${i}">` +
+      `<span class="slash-name">/${esc(c.name)}</span>` +
+      `<span class="slash-desc">${esc(c.desc[state.lang])}</span>` +
+    `</div>`).join("");
+  slashActive = 0;
+  slashMark(menu);
+  showSlashMenu();
+}
+
+function slashMark(menu) {
+  (menu.querySelectorAll(".slash-item") || []).forEach((el, i) => {
+    el.classList.toggle("active", i === slashActive);
+  });
+}
+
+function slashCommit(input) {
+  const menu = $("slash-menu");
+  const el = menu && menu.querySelector(`.slash-item[data-i="${slashActive}"]`);
+  if (!el) return;
+  const name = el.querySelector(".slash-name").textContent.replace(/^\//, "");
+  const cmd = SLASH_COMMANDS.find((c) => c.name === name);
+  if (cmd) {
+    input.value = `/${cmd.name} `;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+    input.focus();
+  }
+  hideSlashMenu();
+}
+
 function bindComposer() {
   const input = $("question-input");
   const composer = $("composer");
@@ -1086,20 +1148,68 @@ function bindComposer() {
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
     updateSend();
+    const v = input.value;
+    if (v.startsWith("/") && !v.includes(" ") && !v.includes("\n")) {
+      renderSlashMenu(v.slice(1));
+    } else {
+      hideSlashMenu();
+    }
   });
   composer.addEventListener("submit", (e) => {
     e.preventDefault();
+    if (!$("slash-menu").hidden) hideSlashMenu();
     sendQuestion(input.value);
     input.style.height = "auto";
   });
   input.addEventListener("keydown", (e) => {
+    const menu = $("slash-menu");
+    const open = menu && !menu.hidden;
     // Enter sends — except during IME composition, where Enter commits
-    // the current candidate (e.isComposing).
+    // the current candidate (e.isComposing). With the slash menu open,
+    // Enter commits the highlighted command first, then submits.
+    if (open && e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      slashCommit(input);
+      composer.requestSubmit();
+      return;
+    }
+    if (open && e.key === "Tab") {
+      e.preventDefault();
+      slashCommit(input);
+      return;
+    }
+    if (open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      const items = menu.querySelectorAll(".slash-item");
+      if (!items.length) return;
+      slashActive = e.key === "ArrowDown"
+        ? (slashActive + 1) % items.length
+        : (slashActive - 1 + items.length) % items.length;
+      slashMark(menu);
+      return;
+    }
+    if (open && e.key === "Escape") {
+      e.preventDefault();
+      hideSlashMenu();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       composer.requestSubmit();
     }
   });
+  // Mouse selection: delegate clicks on the menu items.
+  composer.addEventListener("mousedown", (e) => {
+    const item = e.target.closest(".slash-item");
+    if (!item) return;
+    e.preventDefault();
+    slashActive = Number(item.dataset.i);
+    slashCommit(input);
+  });
+  composer.addEventListener("blur", (e) => {
+    if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("#slash-menu")) return;
+    hideSlashMenu();
+  }, true);
 }
 
 async function copyText(text) {
