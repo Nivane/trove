@@ -183,9 +183,9 @@ class TestVerifyIntent:
         assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=True, term_hit=False, data_signal=False) == Intent.METADATA
         assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=False, term_hit=True, data_signal=False) == Intent.METADATA
 
-    def test_metadata_without_evidence_falls_back_to_query(self):
-        """metadata 裁决无实质 → 宽容回退 query（防幻觉方向）。"""
-        assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=False, term_hit=False, data_signal=False) == Intent.QUERY
+    def test_metadata_llm_verdict_is_trusted(self):
+        """LLM 判定 metadata 应直接信任，无需证据背书。"""
+        assert verify_intent(Intent.METADATA, strong_match=False, mentioned_table=False, term_hit=False, data_signal=False) == Intent.METADATA
 
     def test_query_overridden_by_strong_signal(self):
         """LLM 说 query 但强 metadata 信号且无数据问题信号 → 覆写 metadata。"""

@@ -48,7 +48,7 @@ class Intent(str, Enum):
 _STRONG_METADATA: list[str] = [
     r"有哪些表", r"表结构", r"几张表", r"\blist\s+tables\b", r"\btables\b",
     r"知识库", r"参考\s*SQL",
-    r"血缘", r"数据来源",
+    r"血缘", r"数据来源", r"元数据", r"\bmetadata\b",
     r"口径(?:是|为|指)\s*(?:什么|啥)?|(?:的)?口径\s*$|口径(?:的定义|的含义|是什么意思)",
     r"定义", r"是什么意思",
 ]
@@ -284,9 +284,7 @@ def verify_intent(
     if correction_signal and not data_signal and not weak_signal and not strong_match:
         return Intent.CORRECTION
     if llm_intent == Intent.METADATA:
-        if strong_match or mentioned_table or term_hit:
-            return Intent.METADATA
-        return Intent.QUERY
+        return Intent.METADATA
     if strong_match and not data_signal:
         return Intent.METADATA
     if llm_intent == Intent.WRITE:
