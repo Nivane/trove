@@ -222,7 +222,12 @@ class TestVerifyIntent:
     def test_chitchat_needs_signal_and_no_data_question(self):
         assert verify_intent(Intent.CHITCHAT, chitchat_signal=True, data_signal=False) == Intent.CHITCHAT
         assert verify_intent(Intent.CHITCHAT, chitchat_signal=True, data_signal=True) == Intent.QUERY
-        assert verify_intent(Intent.CHITCHAT, chitchat_signal=False, data_signal=False) == Intent.QUERY
+
+    def test_llm_chitchat_trusted_without_signal(self):
+        """LLM 判 chitchat(正则未命中,如拼音问候 nihao)→ 无数据信号则信任;
+        有数据信号(可能误判)→ 仍按 query 走,不吞数据问题。"""
+        assert verify_intent(Intent.CHITCHAT, chitchat_signal=False, data_signal=False) == Intent.CHITCHAT
+        assert verify_intent(Intent.CHITCHAT, chitchat_signal=False, data_signal=True) == Intent.QUERY
 
     def test_chitchat_signal_routes_even_when_llm_says_query(self):
         """LLM 不可用/误判时,纯闲聊信号 + 无数据信号 → 直接路由。"""

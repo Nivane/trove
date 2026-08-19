@@ -295,6 +295,10 @@ def verify_intent(
     # has_strong_chitchat 内,data_signal 兜底双重校验
     if chitchat_signal and not data_signal:
         return Intent.CHITCHAT
+    # LLM 判闲聊(正则未命中:拼音问候、变体寒暄等)→ 无数据信号则信任。
+    # 闲聊误判代价最低(一句 canned 回复),数据问题误吞代价高,故 data 信号兜底
+    if llm_intent == Intent.CHITCHAT and not data_signal:
+        return Intent.CHITCHAT
     if llm_intent == Intent.CORRECTION and (
         history_present or correction_signal or followup_signal
     ):
