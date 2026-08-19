@@ -66,6 +66,22 @@ class TestKbInit:
         assert "refusing" in result
         assert (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
 
+    async def test_init_overwrite_regenerates_existing_files(self, kb, sqlite_registry):
+        """--overwrite:重新生成已存在的 KB 文件(旧 flat semantics 迁移路径)。"""
+        ds = sqlite_registry.default_name
+        (kb.kb_dir / ds).mkdir(parents=True)
+        (kb.kb_dir / ds / "semantics.yml").write_text(
+            "terms:\n  - term: 旧术语\n    mapping: COUNT(*)\n", encoding="utf-8")
+
+        llm = LLMGateway(mock_response=TABLES_DOC)
+        reg = make_reg(kb, connector_registry=sqlite_registry, llm_gateway=llm,
+                       config=AgentConfig(target="mock/model"))
+        result = await reg.get("kb").handler("init --overwrite")
+        assert "Initialized" in result
+        text = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
+        assert "semantic_model" in text
+        assert "COUNT(students.id)" in text
+
 
 # LLM 只起草表格注释(描述+枚举含义);terms/examples 由代码确定性生成。
 # 默认语言为英文(benchmark 均为英文问题)。
@@ -177,10 +193,10 @@ class TestKbInitLLM:
         assert (kb.kb_dir / ds / "examples.yml").exists()
         notes = (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8")
         assert "student records" in notes
-        # 确定性 term:count + 数值列 SUM/AVG;ID 列不生成
+        # 确定性 term:count + 数值列 SUM/AVG;ID 列不生成;表达式带表限定
         semantics = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
         assert "number of students records" in semantics and "average grade" in semantics
-        assert "COUNT(*)" in semantics
+        assert "COUNT(students.id)" in semantics
         # 确定性模板:count + 首条文本列 GROUP BY
         examples = (kb.kb_dir / ds / "examples.yml").read_text(encoding="utf-8")
         assert "SELECT COUNT(*) FROM students" in examples
@@ -603,12 +619,13 @@ class TestKbList:
         assert "empty" in result.lower()
 
     async def test_list_shows_counts_grouped_by_datasource(self, kb, sqlite_registry):
+        from tests.helpers.kb import ossie_semantics_yaml
+
         ds = sqlite_registry.default_name
         (kb.kb_dir / ds).mkdir(parents=True)
-        (kb.kb_dir / ds / "semantics.yml").write_text(
-            "terms:\n  - term: 平均成绩\n    mapping: AVG(grade)\n    tables: [students]\n",
-            encoding="utf-8",
-        )
+        (kb.kb_dir / ds / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "平均成绩", "mapping": "AVG(students.grade)", "tables": ["students"]},
+        ]))
         reg = make_reg(kb, connector_registry=sqlite_registry)
         result = await reg.get("kb").handler("list")
         assert ds in result

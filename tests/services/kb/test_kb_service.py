@@ -31,18 +31,33 @@ tables:
         definition: 按地区分组的平均贷款金额
 """
 
+# 手写 OSSIE semantic_model(读端需覆盖人类手写的 spec YAML,
+# 而非只经写端生成);锚定由表达式推导:平均贷款金额 → loan 表。
 SEMANTICS = """
-terms:
-  - term: 平均贷款金额
-    aliases: [平均贷款, 贷款均值]
-    mapping: AVG(loan.amount)
-    tables: [loan, account, district]
-    definition: 按问题所需维度分组的贷款金额均值
-  - term: 客户数量
-    aliases: []
-    mapping: COUNT(client.client_id)
-    tables: [client]
-    definition: 客户数
+semantic_model:
+  - name: demo
+    datasets:
+      - name: loan
+      - name: account
+      - name: district
+      - name: client
+    metrics:
+      - name: 平均贷款金额
+        description: 按问题所需维度分组的贷款金额均值
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: AVG(loan.amount)
+        ai_context:
+          synonyms:
+            - 平均贷款
+            - 贷款均值
+      - name: 客户数量
+        description: 客户数
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(client.client_id)
 """
 
 EXAMPLES = """
@@ -60,12 +75,17 @@ examples:
 """
 
 OTHER_SEMANTICS = """
-terms:
-  - term: 页面浏览量
-    aliases: []
-    mapping: COUNT(events.page_view)
-    tables: [events]
-    definition: 浏览事件数
+semantic_model:
+  - name: events
+    datasets:
+      - name: events
+    metrics:
+      - name: 页面浏览量
+        description: 浏览事件数
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(events.page_view)
 """
 
 
@@ -108,11 +128,14 @@ class TestTableAnchoredRetrieval:
         """不绑定任何表的术语（无 tables 字段）不过滤。"""
         write_kb(kb_dir)
         await kb.ensure_synced("demo")
-        # 手动补一个无表绑定的术语
+        # 手动补一个无数据集引用的 metric(表达式无 dataset.field → 无锚定)
         import yaml as _yaml
         sem = kb_dir / "demo" / "semantics.yml"
         doc = _yaml.safe_load(sem.read_text(encoding="utf-8"))
-        doc["terms"].append({"term": "金卡", "mapping": "card_type='gold'", "definition": "黄金卡"})
+        doc["semantic_model"][0]["metrics"].append({
+            "name": "金卡", "description": "黄金卡",
+            "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "card_type='gold'"}]},
+        })
         sem.write_text(_yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
         await kb.ensure_synced("demo")
 
@@ -154,12 +177,11 @@ class TestTableAnchoredRetrieval:
 
         sem = kb_dir / "demo" / "semantics.yml"
         doc = _yaml.safe_load(sem.read_text(encoding="utf-8"))
-        doc["terms"].append({
-            "term": "average approved amount",
-            "aliases": [],
-            "mapping": "AVG(loan.amount)",
-            "tables": ["loan"],
-            "definition": "average approved loan amount",
+        doc["semantic_model"][0]["metrics"].append({
+            "name": "average approved amount",
+            "description": "average approved loan amount",
+            "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "AVG(loan.amount)"}]},
         })
         sem.write_text(_yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
         await kb.ensure_synced("demo")
@@ -312,6 +334,32 @@ class TestSync:
         hits = await kb.search_examples("贷款", "demo")
         assert len(hits) > 0
 
+    async def test_legacy_flat_semantics_syncs_to_zero_and_purges(self, kb, kb_dir, caplog):
+        """旧 flat terms: 格式不兼容 → 零条目 + 旧镜像被清 + 迁移警告。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        assert len(await kb.search_terms("平均贷款金额", "demo")) == 1
+
+        (kb_dir / "demo" / "semantics.yml").write_text(
+            "terms:\n  - term: x\n    mapping: COUNT(*)\n", encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        assert await kb.search_terms("平均贷款金额", "demo") == []
+        assert any("overwrite" in r.message for r in caplog.records)
+
+    async def test_broken_ossie_metric_only_empties_semantics(self, kb, kb_dir, caplog):
+        """无方言表达式的 metric 使整份 semantics 降级为零,其他文件不受影响。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+
+        (kb_dir / "demo" / "semantics.yml").write_text(
+            "semantic_model:\n  - metrics:\n      - name: x\n        expression:\n"
+            "          dialects: []\n", encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        assert await kb.search_terms("平均贷款金额", "demo") == []
+        assert len(await kb.search_examples("贷款", "demo")) > 0  # examples 正常
+
     async def test_datasources_are_isolated(self, kb, kb_dir):
         """一个数据源的知识对另一个不可见。"""
         write_kb(kb_dir, ds="demo")
@@ -425,7 +473,9 @@ class TestSearchTerms:
         assert len(hits) == 1
         assert hits[0].term == "平均贷款金额"
         assert hits[0].mapping == "AVG(loan.amount)"
-        assert "district" in hits[0].tables
+        # 推导锚定:只含表达式实际引用的表(原 flat 格式的显式
+        # [loan, account, district] 收紧为 ["loan"])
+        assert hits[0].tables == ["loan"]
 
     async def test_alias_match(self, kb, kb_dir):
         write_kb(kb_dir)
@@ -690,6 +740,35 @@ class TestEvolution:
 
         hits = await kb.search_terms("贷款笔数", "demo")
         assert [h.term for h in hits] == ["贷款笔数"]
+        text = (kb_dir / "demo" / "semantics.yml").read_text(encoding="utf-8")
+        assert "semantic_model" in text
+        assert "COUNT(loan.loan_id)" in text
+
+    async def test_append_term_qualifies_bare_mapping(self, kb, kb_dir):
+        """未限定列名在写入时尽力补表前缀(单表绑定),锚定因此可推导。"""
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+
+        await kb.append_term({
+            "term": "平均成绩", "mapping": "AVG(grade)", "tables": ["students"],
+        }, "demo")
+
+        text = (kb_dir / "demo" / "semantics.yml").read_text(encoding="utf-8")
+        assert "AVG(students.grade)" in text
+
+    async def test_append_term_rejects_empty_mapping(self, kb, kb_dir):
+        write_kb(kb_dir)
+        with pytest.raises(ValueError, match="mapping is required"):
+            await kb.append_term({"term": "坏term", "mapping": ""}, "demo")
+
+    async def test_append_term_rejects_legacy_flat_file(self, kb, kb_dir):
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "semantics.yml").write_text(
+            "terms:\n  - term: x\n    mapping: COUNT(*)\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="overwrite"):
+            await kb.append_term(
+                {"term": "y", "mapping": "COUNT(loan.loan_id)", "tables": ["loan"]},
+                "demo")
 
 
 class TestPurgeDeletedFiles:
@@ -800,6 +879,8 @@ class TestInitThreeWay:
         assert kb.init_terms(terms, "demo") is True
         text = (kb_dir / "demo" / "semantics.yml").read_text(encoding="utf-8")
         assert "学生数" in text
+        assert "semantic_model" in text
+        assert "COUNT(students.id)" in text
 
     def test_init_examples_writes_templates(self, kb, kb_dir):
         examples = [{
@@ -821,5 +902,30 @@ class TestInitThreeWay:
     def test_init_exists_lists_existing_files(self, kb, kb_dir):
         assert kb.init_exists("demo") == []
         (kb_dir / "demo").mkdir(parents=True)
-        (kb_dir / "demo" / "semantics.yml").write_text("terms: []\n", encoding="utf-8")
+        (kb_dir / "demo" / "semantics.yml").write_text("semantic_model: []\n", encoding="utf-8")
         assert kb.init_exists("demo") == ["semantics.yml"]
+
+
+class TestListTemplates:
+    """快径输入:list_templates 只返回 kb init 的确定性模板行。"""
+
+    async def test_returns_only_template_rows(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        hits = await kb.list_templates("demo")
+        assert hits and all(h.template for h in hits)
+
+    async def test_examplehit_fields_preserved(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        hits = await kb.list_templates("demo")
+        assert all(h.question and h.sql for h in hits)
+
+    async def test_disabled_returns_empty(self, tmp_path):
+        service = KbService(tmp_path / "empty")
+        assert await service.list_templates("demo") == []
+
+    async def test_other_datasource_empty(self, kb, kb_dir):
+        write_kb(kb_dir, ds="demo")
+        await kb.ensure_synced("demo")
+        assert await kb.list_templates("other") == []

@@ -114,6 +114,15 @@ def make_reflect(
                 "reason": "KB exact match (canonical answer from the knowledge base)",
             }
 
+        # 确定性快径命中:模板 SQL 是 kb init 的确定性产物(结构受
+        # sqlglot 形状约束,执行与规则链已过)——与 kb_exact_match
+        # 同理由,跳过语义裁决。
+        if state.fast_path and state.sql:
+            return {
+                "verdict": "OK",
+                "reason": "fast path deterministic template match (kb init)",
+            }
+
         # Fast path: empty result is acceptable (no data matches).
         # List questions returning no rows are already intercepted by
         # deterministic rules before this node. Questions with a metadata
@@ -123,6 +132,23 @@ def make_reflect(
             return {
                 "verdict": "EMPTY",
                 "reason": "Query returned zero rows — this may be correct if no data matches",
+            }
+
+        # 规则全过 + 低复杂度 → 跳过 LLM 裁决(reflect_skip 配置控制)。
+        # 确定性规则链(形状/过滤/值域)对简单查询已是完整的安全网,语义
+        # 裁决主要是给复杂 SQL 的盲区兜底。弱信号问题保留法官(metadata
+        # 倾向题需要 NO_SQL 出口,镜像上方 EMPTY 分支)。
+        skip = config.reflect_skip or "simple"
+        if (
+            skip != "off"
+            and state.rules_passed
+            and not state.error_feedback
+            and not has_weak_signal(state.question)
+            and (skip == "all" or state.complexity == "simple")
+        ):
+            return {
+                "verdict": "OK",
+                "reason": "deterministic rules passed; reflect skipped",
             }
 
         prompt = _build_reflect_prompt(

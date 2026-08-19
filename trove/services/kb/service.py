@@ -2,7 +2,7 @@
 
 Files (human-editable, single source of truth):
   .trove/kb/<datasource>/schema_notes.yml   table/column descriptions, metrics
-  .trove/kb/<datasource>/semantics.yml      business terms → physical mappings
+  .trove/kb/<datasource>/semantics.yml      OSSIE semantic_model (datasets + metrics)
   .trove/kb/<datasource>/examples.yml       reference SQL + templates (few-shot)
 
 Mirror (agent reads only this):
@@ -32,6 +32,12 @@ from trove.core.logging import get_logger
 _CJK_RE = re.compile(r"[一-鿿]")
 from trove.core.types import SchemaInfo
 from trove.services.kb.compose import compose_candidates
+from trove.services.kb.ossie_format import (
+    append_term_to_document,
+    ossie_to_term_payloads,
+    qualify_mapping,
+    terms_to_ossie_document,
+)
 
 logger = get_logger(__name__)
 
@@ -217,7 +223,8 @@ def _score_example(
 
 def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
     """Parse one YAML file into (kind, item_key, payload) entries."""
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    text = path.read_text(encoding="utf-8")
+    data = yaml.safe_load(text) or {}
     entries: list[tuple[str, str, dict]] = []
 
     if path.name == "schema_notes.yml":
@@ -256,14 +263,10 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
             }))
 
     elif path.name == "semantics.yml":
-        for term in data.get("terms", []):
-            entries.append(("term", str(term["term"]), {
-                "term": str(term["term"]),
-                "aliases": list(term.get("aliases") or []),
-                "mapping": str(term.get("mapping", "")),
-                "tables": list(term.get("tables") or []),
-                "definition": str(term.get("definition", "")),
-            }))
+        # OSSIE semantic_model 格式(见 kb.ossie_format);旧 flat terms: 格式
+        # 解析为零条目 + 迁移警告(不兼容决策,需 /kb init --overwrite)。
+        for payload in ossie_to_term_payloads(text):
+            entries.append(("term", payload["term"], payload))
 
     elif path.name == "rules.yml":
         for rule in data.get("rules", []):
@@ -633,6 +636,23 @@ class KbService:
         candidates.sort(key=lambda h: h.score, reverse=True)
         return candidates[:limit]
 
+    async def list_templates(self, datasource: str) -> list[ExampleHit]:
+        """One datasource's deterministic template rows (kind='template').
+
+        Fast path (fast_match node) input: only kb-init-generated templates
+        are visible — compose.py's JOIN×WHERE combination candidates live
+        under kind='example' and are excluded by construction (KB
+        anti-cheating constraint: the fast path may only emit what kb init
+        can generate deterministically).
+        """
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT payload FROM kb_items WHERE kind = 'template' AND datasource = ? ORDER BY id",
+            (datasource,),
+        )
+        return [ExampleHit(**json.loads(row["payload"])) for row in rows]
+
     async def list_rules(self, datasource: str) -> list[str]:
         """Business rules of one datasource (injected into generation)."""
         if not self.enabled:
@@ -722,8 +742,40 @@ class KbService:
         await self._append_entry("examples.yml", "examples", entry, datasource)
 
     async def append_term(self, entry: dict[str, Any], datasource: str) -> None:
-        """Append a business term to the datasource's semantics.yml."""
-        await self._append_entry("semantics.yml", "terms", entry, datasource)
+        """Append a business term to the datasource's semantics.yml (OSSIE format).
+
+        flat 请求体(term/aliases/mapping/tables/definition)在此转换为
+        OSSIE metric 追加进 semantic_model。守卫:
+        - 空 mapping 拒绝(无表达式的 metric 会被 OSSIE 解析器整体丢弃);
+        - 旧 flat terms: 文件拒绝写入(不兼容决策,需 /kb init --overwrite)。
+        """
+        mapping = str(entry.get("mapping", "") or "").strip()
+        if not mapping:
+            raise ValueError(
+                "term mapping is required: expressionless metrics are dropped "
+                "by the OSSIE parser")
+        entry = dict(entry)
+        entry["mapping"] = qualify_mapping(mapping, list(entry.get("tables") or []))
+
+        ds_dir = self.kb_dir / datasource
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        path = ds_dir / "semantics.yml"
+        if path.exists():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            if not isinstance(data, dict) or "semantic_model" not in data:
+                raise ValueError(
+                    "semantics.yml uses the legacy flat terms format — delete the "
+                    "file and re-run /kb init --overwrite to migrate")
+            append_term_to_document(data, entry)
+        else:
+            data = terms_to_ossie_document([entry], model_name=datasource)
+        path.write_text(
+            yaml.safe_dump(
+                data, default_flow_style=False, allow_unicode=True, sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        await self.force_sync()
 
     async def _append_entry(
         self, filename: str, section: str, entry: dict, datasource: str,
@@ -805,8 +857,10 @@ class KbService:
     def init_terms(
         self, terms: list[dict], datasource: str, overwrite: bool = False,
     ) -> bool:
-        """Write a semantics.yml (LLM-assisted /kb init)."""
-        return self._init_file("semantics.yml", "terms", terms, datasource, overwrite)
+        """Write a semantics.yml as an OSSIE semantic_model (LLM-assisted /kb init)."""
+        doc = terms_to_ossie_document(terms, model_name=datasource)
+        return self._init_file(
+            "semantics.yml", "semantic_model", doc["semantic_model"], datasource, overwrite)
 
     def init_examples(
         self, examples: list[dict], datasource: str, overwrite: bool = False,

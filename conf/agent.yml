@@ -9,6 +9,13 @@ agent:
   language: en
   # 时间解析:确定性规则解析相对时间表达(zh/en),未命中静默透传
   date_parser: true
+  # 负载削减:
+  #   fast_path: 确定性模板快径(单表/单聚合模板命中即直接产出 SQL,
+  #              跳过 planner + 生成 + 裁决)。默认开。
+  #   reflect_skip: validate 确定性规则全过时跳过 reflect 的 LLM 裁决——
+  #                 simple(仅低复杂度题,默认)/ all(所有题)/ off(关闭)
+  # fast_path: true
+  # reflect_skip: simple
   # OSSIE 语义层目录(相对项目根,按 datasource 名取子目录 .trove/semantic/<datasource>/):
   # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
   # 空 = 关闭。

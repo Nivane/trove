@@ -108,6 +108,27 @@ def _is_id_column(name: str, description: str) -> bool:
     )
 
 
+def _count_id_column(table: dict[str, Any]) -> str | None:
+    """COUNT 术语的 id 列(确定性选取)。
+
+    OSSIE 纯 spec 要求锚定从表达式推导,COUNT(*) 无列引用会退化为
+    无锚定 —— 改为 COUNT(表.id列)(id 列非空,语义等价)。选取规则:
+    primary_key 列 > _is_id_column 命名/描述匹配 > 首列 > None(保持
+    COUNT(*),无列可依时不做无依据的假设)。
+    """
+    columns = table.get("columns") or []
+    if not columns:
+        return None
+    for col in columns:
+        if col.get("primary_key"):
+            return col.get("name", "")
+    for col in columns:
+        name = col.get("name", "")
+        if name and _is_id_column(name, str(col.get("description", "") or "")):
+            return name
+    return columns[0].get("name", "") or None
+
+
 def _quote(name: str) -> str:
     return f'"{name}"' if name in _RESERVED_NAMES else name
 
@@ -131,18 +152,24 @@ def generate_terms(
 
     lang="en"(默认):表名/英文描述直接命名;中文描述列跳过(无法
     确定性翻译)。lang="zh":沿用中文命名规则。
+
+    表达式一律表限定(COUNT(表.id列) / SUM(表.列) / AVG(表.列)):
+    OSSIE 纯 spec 的锚定从表达式的 dataset.field 引用推导,裸列名
+    会丢失表锚定。id 列选取见 _count_id_column。
     """
     terms: list[dict[str, Any]] = []
     for table in tables:
         name = table.get("name", "")
         label = name if lang == "en" else business_label(
             str(table.get("description", "") or ""), name)
+        tref = _quote(name)
+        id_col = _count_id_column(table)
 
         if lang == "en":
             terms.append({
                 "term": f"number of {name} records",
                 "aliases": [f"{name} count"],
-                "mapping": "COUNT(*)",
+                "mapping": f"COUNT({tref}.{id_col})" if id_col else "COUNT(*)",
                 "tables": [name],
                 "definition": f"total number of records in the {name} table",
             })
@@ -150,7 +177,7 @@ def generate_terms(
             terms.append({
                 "term": f"{label}总数",
                 "aliases": [f"{label}数量", f"{label}记录数"],
-                "mapping": "COUNT(*)",
+                "mapping": f"COUNT({tref}.{id_col})" if id_col else "COUNT(*)",
                 "tables": [name],
                 "definition": f"{label}表中的记录总数",
             })
@@ -168,14 +195,14 @@ def generate_terms(
                     terms.append({
                         "term": f"total {desc}",
                         "aliases": [f"sum of {desc}"],
-                        "mapping": f"SUM({col_name})",
+                        "mapping": f"SUM({tref}.{col_name})",
                         "tables": [name],
                         "definition": f"sum of {desc} over all records",
                     })
                     terms.append({
                         "term": f"average {desc}",
                         "aliases": [f"avg {desc}"],
-                        "mapping": f"AVG({col_name})",
+                        "mapping": f"AVG({tref}.{col_name})",
                         "tables": [name],
                         "definition": f"average {desc} over all records",
                     })
@@ -183,14 +210,14 @@ def generate_terms(
                     terms.append({
                         "term": _insert_measure("总", desc),
                         "aliases": [f"{desc}总和"],
-                        "mapping": f"SUM({col_name})",
+                        "mapping": f"SUM({tref}.{col_name})",
                         "tables": [name],
                         "definition": f"所有{desc}的总和",
                     })
                     terms.append({
                         "term": _insert_measure("平均", desc),
                         "aliases": [],
-                        "mapping": f"AVG({col_name})",
+                        "mapping": f"AVG({tref}.{col_name})",
                         "tables": [name],
                         "definition": f"所有{desc}的平均值",
                     })
@@ -199,7 +226,7 @@ def generate_terms(
                     terms.append({
                         "term": f"average year of {desc}",
                         "aliases": [f"{desc} average year"],
-                        "mapping": f"AVG(EXTRACT(YEAR FROM {col_name}))",
+                        "mapping": f"AVG(EXTRACT(YEAR FROM {tref}.{col_name}))",
                         "tables": [name],
                         "definition": f"average year of {desc}",
                     })
@@ -207,7 +234,7 @@ def generate_terms(
                     terms.append({
                         "term": f"平均{desc}",
                         "aliases": [f"{desc}平均年份"],
-                        "mapping": f"AVG(EXTRACT(YEAR FROM {col_name}))",
+                        "mapping": f"AVG(EXTRACT(YEAR FROM {tref}.{col_name}))",
                         "tables": [name],
                         "definition": f"{desc}的平均年份",
                     })

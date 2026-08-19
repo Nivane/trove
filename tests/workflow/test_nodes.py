@@ -240,17 +240,12 @@ class TestPlannerRollbackRevision:
 
 class TestSchemaLinkingWithKB:
     def _kb_with_terms(self, kb_service, kb_ds_dir):
-        (kb_ds_dir / "semantics.yml").write_text(
-            """
-terms:
-  - term: 平均成绩
-    aliases: [平均分]
-    mapping: AVG(students.grade)
-    tables: [students]
-    definition: 学生平均分
-""",
-            encoding="utf-8",
-        )
+        from tests.helpers.kb import ossie_semantics_yaml
+
+        (kb_ds_dir / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "平均成绩", "aliases": ["平均分"], "mapping": "AVG(students.grade)",
+             "tables": ["students"], "definition": "学生平均分"},
+        ]))
         return kb_service
 
     async def test_chinese_question_matches_via_terms(
@@ -386,12 +381,13 @@ tables:
     ):
         """知识按数据源隔离：另一个数据源目录的术语不可见。"""
         self._kb_with_terms(kb_service, kb_ds_dir)
+        from tests.helpers.kb import ossie_semantics_yaml
+
         other = kb_service.kb_dir / "other_db"
         other.mkdir()
-        (other / "semantics.yml").write_text(
-            "terms:\n  - term: 别的术语\n    tables: [ghost]\n",
-            encoding="utf-8",
-        )
+        (other / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "别的术语", "mapping": "COUNT(ghost.id)", "tables": ["ghost"]},
+        ]))
         node = make_schema_linking(
             catalog=catalog, kb=kb_service, connectors=sqlite_registry,
         )
@@ -1822,7 +1818,8 @@ class TestValidateRules:
 
         node = make_validate_rules()
         update = await node(make_state(question="average grade", row_count=0))
-        assert update == {}
+        # 全过 → 正向信号 rules_passed,供 reflect 决定是否跳过 LLM 裁决
+        assert update == {"rules_passed": True}
 
     async def test_extra_columns_rule_gives_feedback(self):
         """结果列超出 plan 的 answer_columns → extra-columns 命中打回。"""
@@ -1856,7 +1853,7 @@ class TestValidateRules:
             row_count=1,
             plan_json={"answer_columns": ["unemployment_rate"]},
         )
-        assert await node(state) == {}
+        assert await node(state) == {"rules_passed": True}
 
     async def test_pending_feedback_passes_through(self):
         """execute 已挂起反馈时，校验节点不覆盖。"""
@@ -2471,7 +2468,7 @@ class TestValidateRulesNode:
             columns=["avg"], rows=[[123.4]], row_count=1, lang="en",
         )
         update = await node(state)
-        assert update == {}
+        assert update == {"rules_passed": True}
 
     async def test_answer_columns_conflict_feeds_back(self):
         """P0-2 层2:结果列整体背离 plan 的 answer_columns → 打回(归因 planner)。"""
@@ -2501,7 +2498,7 @@ class TestValidateRulesNode:
             rows=[[1, "x"]], row_count=1, lang="en",
             plan_json={"tables": ["loan"], "answer_columns": ["account_id", "frequency"]},
         )
-        assert await node(state) == {}
+        assert await node(state) == {"rules_passed": True}
 
     async def test_answer_columns_no_plan_skips(self):
         from trove.workflow.nodes.validate import make_validate_rules
@@ -2513,7 +2510,7 @@ class TestValidateRulesNode:
             columns=["avg"], rows=[[123.4]], row_count=1, lang="en",
             plan_json=None,
         )
-        assert await node(state) == {}
+        assert await node(state) == {"rules_passed": True}
 
 
 class TestMakeSQLTools:
@@ -2612,3 +2609,83 @@ class TestSearchValues:
         data = json.loads(out)
         assert data["ok"] is False
         assert data["error"] == "boom on id"  # 首列首错
+
+
+class TestReflectAdaptiveSkip:
+    """自适应减负:快径命中 / 规则全过+低复杂度 → 跳过 LLM 裁决。"""
+
+    async def test_fast_path_skips_judge(self):
+        class NoCallLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("LLM must not be called for fast path")
+
+        node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            fast_path=True, sql="SELECT COUNT(*) FROM students",
+            row_count=1, columns=["count"], rows=[[5]],
+        ))
+        assert update["verdict"] == "OK"
+        assert update["reason"] == "fast path deterministic template match (kb init)"
+
+    async def test_rules_passed_simple_skips_judge(self):
+        class NoCallLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("LLM must not be called for simple pass")
+
+        node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            row_count=1, columns=["n"], rows=[[1]],
+        ))
+        assert update["verdict"] == "OK"
+        assert update["reason"] == "deterministic rules passed; reflect skipped"
+
+    async def test_reflect_skip_all_with_standard_complexity(self):
+        class NoCallLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("LLM must not be called with skip=all")
+
+        node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model", reflect_skip="all"))
+        update = await node(make_state(
+            rules_passed=True, complexity="standard",
+            row_count=2, columns=["n"], rows=[[1], [2]],
+        ))
+        assert update["verdict"] == "OK"
+
+    async def test_reflect_skip_off_keeps_judge(self):
+        class LLM:
+            async def chat(self, *a, **k):
+                return "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="mock/model", reflect_skip="off"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            row_count=2, columns=["n"], rows=[[1], [2]],
+        ))
+        assert update["verdict"] == "OK"
+
+    async def test_weak_signal_keeps_judge(self):
+        """metadata 倾向题保留 NO_SQL 出口,规则全过也不跳过。"""
+        class LLM:
+            async def chat(self, *a, **k):
+                return "NO_SQL"
+
+        node = make_reflect(LLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            row_count=1, columns=["n"], rows=[[1]],
+            question="disp 表是啥",
+        ))
+        assert update["verdict"] == "NO_SQL"
+
+    async def test_rules_not_passed_keeps_judge(self):
+        class LLM:
+            async def chat(self, *a, **k):
+                return "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=False, complexity="simple",
+            row_count=2, columns=["n"], rows=[[1], [2]],
+        ))
+        assert update["verdict"] == "OK"

@@ -200,3 +200,25 @@ class TestWhitelist:
     def test_whitelist_excludes_credentials(self):
         assert "api_key" not in PROJECT_CONFIG_WHITELIST
         assert "password" not in PROJECT_CONFIG_WHITELIST
+
+
+class TestAdaptiveLoadConfig:
+    """fast_path / reflect_skip 配置键映射与缺省。"""
+
+    def test_defaults_when_absent(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text("agent:\n  target: mock/model\n")
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.fast_path is True
+        assert config.reflect_skip == "simple"
+
+    def test_maps_explicit_values(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  fast_path: false\n"
+            "  reflect_skip: all\n"
+        )
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.fast_path is False
+        assert config.reflect_skip == "all"

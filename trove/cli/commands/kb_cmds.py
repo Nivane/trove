@@ -290,6 +290,8 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         """LLM-assisted initialization: 描述由 LLM 起草,terms/examples 确定性生成。
 
         --docs <dir>:导入官方列描述(docs 权威,覆盖 LLM 草稿);
+        --overwrite:重新生成,替换已存在的 KB 文件(旧 flat terms: 格式
+        迁移的唯一路径);
         低基数文本列先探测 distinct 值(样例进提示词,漏写列兜底合并);
         统计 profiling 每列写入 stats(null 比例/distinct/极值/值形状),
         统计证据随 schema_text 进 LLM 起草提示词(AskData 式总结);
@@ -298,10 +300,11 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
         """
         schema = await registry_svc.get_schema()
         llm = context.get("llm_gateway")
+        overwrite = _overwrite_arg(args)
 
         if llm is None:
             # No LLM: plain skeleton (no descriptions)
-            if kb.init_schema_notes(schema, datasource):
+            if kb.init_schema_notes(schema, datasource, overwrite=overwrite):
                 return (
                     f"Created .trove/kb/{datasource}/schema_notes.yml skeleton. "
                     f"Fill in table/column descriptions, then /kb reload."
@@ -309,10 +312,11 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             return f".trove/kb/{datasource}/schema_notes.yml already exists — refusing to overwrite."
 
         existing = kb.init_exists(datasource)
-        if existing:
+        if existing and not overwrite:
             return (
                 f".trove/kb/{datasource}/ already has {', '.join(existing)} — "
-                f"refusing to overwrite. Delete the files first to re-initialize."
+                f"refusing to overwrite. Delete the files first (or /kb init --overwrite) "
+                f"to re-initialize."
             )
 
         config = context.get("config")
@@ -347,6 +351,7 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             all_tables.extend(tables)
 
         _backfill_types(all_tables, schema)
+        _backfill_pks(all_tables, schema)
         all_tables = apply_docs(all_tables, docs)  # 官方描述权威
         if profiled:
             all_tables = merge_into_stats({"tables": all_tables}, profiled)["tables"]
@@ -360,9 +365,9 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
                 samples=probed, stats=profiled, lang=lang,
             )
 
-        kb.init_notes(all_tables, datasource)
-        kb.init_terms(terms, datasource)
-        kb.init_examples(examples, datasource)
+        kb.init_notes(all_tables, datasource, overwrite=overwrite)
+        kb.init_terms(terms, datasource, overwrite=overwrite)
+        kb.init_examples(examples, datasource, overwrite=overwrite)
         await kb.force_sync(datasource)
         return (
             f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
@@ -409,10 +414,11 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
             return await _cmd_learn(args)
 
         return (
-            "Usage: /kb init [--docs <dir>] [--lang en|zh] | list | reload | learn [--yes] | lessons [--yes]\n"
+            "Usage: /kb init [--docs <dir>] [--lang en|zh] [--overwrite] | list | reload | learn [--yes] | lessons [--yes]\n"
             "  init     draft table/column annotations via LLM, generate terms/templates "
             "deterministically; --docs imports official column descriptions; "
-            "--lang sets the KB language (default en)\n"
+            "--lang sets the KB language (default en); --overwrite regenerates, "
+            "replacing existing KB files (required to migrate legacy semantics.yml)\n"
             "  list     show knowledge base item counts per datasource\n"
             "  reload   re-sync YAML files immediately\n"
             "  learn    draft an example+terms from the last exchange; --yes saves it\n"
@@ -546,6 +552,11 @@ def _docs_arg(args: str) -> str:
     return ""
 
 
+def _overwrite_arg(args: str) -> bool:
+    """--overwrite 存在即真:重新生成已存在的 KB 文件。"""
+    return "--overwrite" in args.split()
+
+
 def _lang_arg(args: str) -> str:
     """Extract --lang from the command args;默认英文(benchmark 均为英文问题)。"""
     parts = args.split()
@@ -567,3 +578,20 @@ def _backfill_types(tables: list[dict], schema) -> None:
                 col["type"] = schema_types.get(table.get("name", ""), {}).get(
                     col.get("name", ""), "",
                 )
+
+
+def _backfill_pks(tables: list[dict], schema) -> None:
+    """回填主键标记(COUNT 术语的 id 列选取优先用 primary_key)。
+
+    只回填草稿里存在的列;被 LLM 草稿丢弃的列回退到命名规则
+    (_is_id_column),确定性不依赖列数。
+    """
+    schema_pks = {
+        t.name: {c.name: c.primary_key for c in t.columns} for t in schema.tables
+    }
+    for table in tables:
+        for col in table.get("columns", []):
+            if "primary_key" not in col:
+                col["primary_key"] = schema_pks.get(
+                    table.get("name", ""), {},
+                ).get(col.get("name", ""), False)

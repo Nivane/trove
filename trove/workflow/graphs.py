@@ -48,6 +48,7 @@ from trove.workflow.nodes.gen_sql import (
     render_terms,
 )
 from trove.prompts import render
+from trove.workflow.nodes.fast_match import make_fast_match
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.nodes.select import make_select_consensus
 from trove.workflow.nodes.validate import make_validate_rules
@@ -239,6 +240,9 @@ def _make_gen_sql_node(
         )
         complexity = "standard" if in_correction else grade_complexity(
             state.plan_json, matched,
+            term_hit=bool(state.intent_evidence.get("term_hit")),
+            kb_hit=bool(state.kb_hits),
+            plan_validation=state.plan_validation,
         )
         all_table_names: list[str] = []
         if services.catalog is not None and matched:
@@ -249,17 +253,32 @@ def _make_gen_sql_node(
             except Exception:
                 all_table_names = []
         if services.kb is not None and datasource:
+            # ensure_synced 必须领先所有读(mtime 检查/懒加载);其后的四个
+            # KB 调用互相独立(各自开自己的 aiosqlite 连接)→ asyncio.gather
+            # 并行化。失败语义不变:KB 异常原本未捕获直接中止节点,
+            # 现在按原调用顺序 re-raise 第一个异常。
             await services.kb.ensure_synced(default_datasource=datasource)
             # limit=5:检索注入 5 个示例(实测 3 个时注入列覆盖仅 28%,
             # 5 个 → 42%,token 成本 ~+60,预算(2500)完全装得下)
-            example_hits = await services.kb.search_examples(
-                state.question, datasource, limit=5,
-                tables=matched or None, all_tables=all_table_names or None,
-                # 多表锚定:每表分组 top 再合并,避免单表模板挤占
-                per_table=bool(matched),
+            _kb_results = await asyncio.gather(
+                services.kb.search_examples(
+                    state.question, datasource, limit=5,
+                    tables=matched or None, all_tables=all_table_names or None,
+                    # 多表锚定:每表分组 top 再合并,避免单表模板挤占
+                    per_table=bool(matched),
+                ),
+                services.kb.list_rules(datasource),
+                services.kb.list_lessons(datasource),
+                services.kb.search_terms(
+                    state.question, datasource,
+                    tables=matched or None, all_tables=all_table_names or None,
+                ),
+                return_exceptions=True,
             )
-            rules = await services.kb.list_rules(datasource)
-            all_lessons = await services.kb.list_lessons(datasource)
+            for r in _kb_results[1:]:  # 首个异常(原顺序)→ 中止节点,同旧语义
+                if isinstance(r, BaseException):
+                    raise r
+            example_hits, rules, all_lessons, term_hits = _kb_results
             haystack = (state.question + " " + state.error_feedback).lower()
             lessons = [
                 l for l in all_lessons
@@ -272,10 +291,7 @@ def _make_gen_sql_node(
             ]
             term_notes = [
                 {"term": h.term, "mapping": h.mapping, "definition": h.definition}
-                for h in await services.kb.search_terms(
-                    state.question, datasource,
-                    tables=matched or None, all_tables=all_table_names or None,
-                )
+                for h in term_hits
             ]
 
         # 实时语义层 metric 作为 term 源(KB 优先,同名去重):
@@ -343,6 +359,10 @@ def _make_gen_sql_node(
             "dialect": dialect,
             "candidates": [],
             "context_usage": context_usage,
+            "complexity": complexity,
+            # gen_sql 是权威生成路径:清掉陈旧快径标记,重生成的修正轮
+            # 不享受快径的 reflect 跳过
+            "fast_path": False,
         }
 
         if kb_exact_match is not None:
@@ -352,7 +372,7 @@ def _make_gen_sql_node(
             logger.info(
                 "KB exact match used: %r", kb_exact_match["question"][:80],
             )
-        elif agentic:
+        elif agentic and complexity != "simple":
             from trove.workflow.nodes.gen_sql import (
                 extract_sql, build_sql_registry,
             )
@@ -458,6 +478,9 @@ def _make_gen_sql_node(
             (subgraph_alt is not None or alt_subgraphs)
             and update.get("sql") and not update.get("error")
             and not update.get("kb_exact_match")
+            # 简单题(单表/单聚合/无 join 等)跳过多候选:共识投票是给
+            # 歧义准备的,简单结构没有歧义值得花 4 次额外生成
+            and complexity != "simple"
         ):
             alt_graphs = alt_subgraphs if alt_subgraphs else [subgraph_alt]
             # 候选池跨轮累积(重试=加票):旧候选保留,新候选加入后一起投票。
@@ -900,6 +923,22 @@ def _make_route_after_feedback(
     return route
 
 
+def _make_route_after_fast_match(miss_target: str):
+    """快径分流:命中(有模板 SQL 且无 error)→ 直接执行;miss → 正常链路。
+
+    fast_match 刻意不是回滚目标:快径 SQL 失败由 analyze_error 诊断后走
+    gen_sql/planner/schema_linking 正常重生成,重生成轮 in_correction
+    保证不再触发快径。
+    """
+
+    def route(state: WorkflowState) -> str:
+        if state.fast_path and state.sql and not state.error:
+            return "execute_sql"
+        return miss_target
+
+    return route
+
+
 def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "output"]:
     """Clarification needed → ask the user; otherwise proceed to planning."""
     if state.error or state.clarification_question:
@@ -941,6 +980,12 @@ def _build_reflection(
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
+    # 确定性简单快径:模板命中 → 直接执行,跳过 planner + 生成 + 裁决;
+    # miss → 走正常 planner/gen_sql 路径(静默降级,零状态写入)。
+    g.add_node("fast_match", make_fast_match(
+        kb=services.kb, connectors=services.connectors,
+        config=services.config or AgentConfig(),
+    ))
     if clarify:
         g.add_node("clarify", make_clarify())
         g.add_edge("schema_linking", "clarify")
@@ -949,22 +994,42 @@ def _build_reflection(
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_planner,
-                {"planner": "planner", "output": "output"},
+                {"planner": "fast_match", "output": "output"},
+            )
+            g.add_conditional_edges(
+                "fast_match",
+                _make_route_after_fast_match("planner"),
+                {"execute_sql": "execute_sql", "planner": "planner"},
             )
             g.add_edge("planner", "gen_sql")
         else:
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_gen_sql,
-                {"gen_sql": "gen_sql", "output": "output"},
+                {"gen_sql": "fast_match", "output": "output"},
+            )
+            g.add_conditional_edges(
+                "fast_match",
+                _make_route_after_fast_match("gen_sql"),
+                {"execute_sql": "execute_sql", "gen_sql": "gen_sql"},
             )
     else:
         if planner:
             g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors))
-            g.add_edge("schema_linking", "planner")
+            g.add_edge("schema_linking", "fast_match")
+            g.add_conditional_edges(
+                "fast_match",
+                _make_route_after_fast_match("planner"),
+                {"execute_sql": "execute_sql", "planner": "planner"},
+            )
             g.add_edge("planner", "gen_sql")
         else:
-            g.add_edge("schema_linking", "gen_sql")
+            g.add_edge("schema_linking", "fast_match")
+            g.add_conditional_edges(
+                "fast_match",
+                _make_route_after_fast_match("gen_sql"),
+                {"execute_sql": "execute_sql", "gen_sql": "gen_sql"},
+            )
     g.add_edge("gen_sql", "execute_sql")
     g.add_edge("execute_sql", "select")
     g.add_edge("select", "validate")

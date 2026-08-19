@@ -43,7 +43,7 @@ def make_validate_rules(
         )
         if reason is not None:
             if budget_exhausted(state.retry_count, max_retries):
-                return {"error": reason}
+                return {"error": reason, "rules_passed": False}
             feedback = L(
                 state.lang,
                 f"校验规则: {reason}",
@@ -54,6 +54,7 @@ def make_validate_rules(
                 "retry_count": state.retry_count + 1,
                 "correction_history": [feedback],
                 "validation_hits": hits,
+                "rules_passed": False,
             }
 
         # 层2:answer_columns 与执行结果列的一致性检查(plan 的钦点列必须
@@ -63,7 +64,7 @@ def make_validate_rules(
         ac_errors = answer_columns_mismatch(state.plan_json, state.columns)
         if ac_errors:
             if budget_exhausted(state.retry_count, max_retries):
-                return {"error": "; ".join(ac_errors)}
+                return {"error": "; ".join(ac_errors), "rules_passed": False}
             feedback = L(
                 state.lang,
                 f"计划校验: {'; '.join(ac_errors)}。"
@@ -80,6 +81,7 @@ def make_validate_rules(
                     "rule": "answer-columns",
                     "reason": "; ".join(ac_errors),
                 }],
+                "rules_passed": False,
             }
 
         # 层2补充:结果列"多余"检查(plan 的 answer_columns 必须覆盖结果列;
@@ -90,7 +92,7 @@ def make_validate_rules(
         )
         if extra_errors:
             if budget_exhausted(state.retry_count, max_retries):
-                return {"error": "; ".join(extra_errors)}
+                return {"error": "; ".join(extra_errors), "rules_passed": False}
             feedback = L(
                 state.lang,
                 f"计划校验: {'; '.join(extra_errors)}。"
@@ -106,7 +108,10 @@ def make_validate_rules(
                     "rule": "extra-columns",
                     "reason": "; ".join(extra_errors),
                 }],
+                "rules_passed": False,
             }
-        return {}
+        # 全过:确定性规则链 + 层2 计划检查全通过 → 显式正向信号,
+        # reflect 据此(配合复杂度)决定是否跳过 LLM 裁决。
+        return {"rules_passed": True}
 
     return validate

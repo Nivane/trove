@@ -65,6 +65,10 @@ class WorkflowState(BaseModel):
     # 供 eval 归因「plan 层拦了什么」
     plan_validation: dict[str, Any] = Field(default_factory=dict)
 
+    # 复杂度分级(gen_sql 写入,reflect 读取):"simple"/"standard"/"complex",
+    # 驱动负载削减开关(经典子图/跳多候选/跳裁决);修正轮强制 standard
+    complexity: str = "standard"
+
     # Multi-candidate agreement; False = candidates disagreed and the
     # answer is delivered with a low-confidence note
     consensus: bool = True
@@ -104,6 +108,11 @@ class WorkflowState(BaseModel):
     # (未经过模型生成)。reflect 对这类答案跳过语义裁决(执行与
     # 确定性规则已通过,KB 是标准写法)。
     kb_exact_match: bool = False
+
+    # 确定性快径命中:fast_match 节点用 kb init 模板直接产出 SQL
+    # (未经过 planner/生成)。reflect 对这类答案跳过语义裁决,理由同
+    # kb_exact_match——模板是确定性产物,不是模型解释。
+    fast_path: bool = False
 
     # schema_linking artifacts
     matched_tables: list[str] = Field(default_factory=list)
@@ -145,6 +154,11 @@ class WorkflowState(BaseModel):
     # verify_step 断言层命中记录(断言名 + 失败原因);规则失败的那一轮写入,
     # 供日志/eval 归因「哪条断言拦了什么」
     validation_hits: list[dict] = Field(default_factory=list)
+
+    # 确定性规则全过信号(validate 节点写入):本轮执行结果通过了
+    # rules.verify 全链 + 层2 计划列检查,无 error/error_feedback。
+    # reflect 据此 + 复杂度决定是否跳过 LLM 裁决。
+    rules_passed: bool = False
 
     # select 节点投票归因:各结果组票数、赢家(primary/候选)、是否采纳、
     # 被 verify/执行失败过滤掉的候选

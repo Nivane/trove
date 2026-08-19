@@ -47,7 +47,7 @@ class TestGenerateTerms:
     def test_count_term_per_table_with_aliases(self):
         terms = generate_terms(TABLES, lang="zh")
         account = {t["term"]: t for t in terms if "account" in t["tables"]}
-        count = next(t for t in account.values() if t["mapping"] == "COUNT(*)")
+        count = next(t for t in account.values() if t["mapping"] == "COUNT(account.account_id)")
         assert count["term"] == "银行账户总数"
         assert count["aliases"] == ["银行账户数量", "银行账户记录数"]
         assert count["tables"] == ["account"]
@@ -55,16 +55,17 @@ class TestGenerateTerms:
     def test_sum_and_avg_terms_for_described_numeric_columns(self):
         terms = generate_terms(TABLES, lang="zh")
         loan = {t["term"]: t for t in terms if "loan" in t["tables"]}
-        assert loan["贷款总金额"]["mapping"] == "SUM(amount)"
-        assert loan["贷款平均金额"]["mapping"] == "AVG(amount)"
-        assert loan["贷款平均期限"]["mapping"] == "AVG(duration)"
+        assert loan["贷款总金额"]["mapping"] == "SUM(loan.amount)"
+        assert loan["贷款平均金额"]["mapping"] == "AVG(loan.amount)"
+        assert loan["贷款平均期限"]["mapping"] == "AVG(loan.duration)"
 
     def test_date_column_gets_avg_year_term(self):
         terms = generate_terms(TABLES, lang="zh")
         account = {t["term"]: t for t in terms if "account" in t["tables"]}
         date_terms = [t for t in account.values() if "日期" in t["term"]]
         assert date_terms
-        assert all(t["mapping"] == "AVG(EXTRACT(YEAR FROM date))" for t in date_terms)
+        assert all(t["mapping"] == "AVG(EXTRACT(YEAR FROM account.date))"
+                   for t in date_terms)
 
     def test_undescribed_columns_get_no_terms(self):
         """无描述的列(如 A1~A16)不生成 term——名字无从可靠推导。"""
@@ -79,21 +80,51 @@ class TestGenerateTerms:
         }]
         terms = generate_terms(tables, lang="zh")
         assert len(terms) == 1  # 只有 count term
-        assert terms[0]["mapping"] == "COUNT(*)"
+        assert terms[0]["mapping"] == "COUNT(district.district_id)"
 
     def test_id_columns_get_no_sum_terms(self):
         """ID 列不生成 SUM/AVG term(对 ID 求平均没有业务含义)。"""
         terms = generate_terms(TABLES, lang="zh")
         all_terms = [t["term"] for t in terms]
         assert not any("account_id" in t or "唯一标识符" in t for t in all_terms)
-        assert not any(t["mapping"] == "SUM(account_id)" for t in terms)
+        assert not any(t["mapping"] == "SUM(account.account_id)" for t in terms)
 
     def test_term_definitions_carry_table_name(self):
         terms = generate_terms(TABLES, lang="zh")
         loan_count = next(
-            t for t in terms if t["mapping"] == "COUNT(*)" and "loan" in t["tables"]
+            t for t in terms if t["mapping"] == "COUNT(loan.loan_id)" and "loan" in t["tables"]
         )
         assert "贷款" in loan_count["definition"]
+
+    def test_count_id_selection_prefers_primary_key(self):
+        """primary_key 列优先于更靠前的 id 命名列(id 列非空由主键保证)。"""
+        tables = [{
+            "name": "payments",
+            "columns": [
+                {"name": "seq_no", "type": "int", "description": "流水号", "primary_key": False},
+                {"name": "pay_id", "type": "int", "description": "支付ID",
+                 "primary_key": True},
+            ],
+        }]
+        terms = generate_terms(tables, lang="zh")
+        assert terms[0]["mapping"] == "COUNT(payments.pay_id)"
+
+    def test_count_id_selection_falls_back_to_first_column(self):
+        """无主键也无 id 命名列 → 首列(确定性回退)。"""
+        tables = [{
+            "name": "events",
+            "columns": [
+                {"name": "ts", "type": "timestamp", "description": "事件时间"},
+                {"name": "kind", "type": "varchar", "description": "事件类型"},
+            ],
+        }]
+        terms = generate_terms(tables, lang="zh")
+        assert terms[0]["mapping"] == "COUNT(events.ts)"
+
+    def test_count_id_selection_zero_columns_keeps_count_star(self):
+        """无列可依 → COUNT(*)(不做无依据假设;此时无锚定是唯一选择)。"""
+        terms = generate_terms([{"name": "ghost", "columns": []}], lang="zh")
+        assert terms[0]["mapping"] == "COUNT(*)"
 
 
 class TestGenerateTemplates:
@@ -278,14 +309,15 @@ class TestEnglishGeneration:
 
     def test_count_term_in_english(self):
         terms = generate_terms(EN_TABLES)
-        loan = [t for t in terms if t["tables"] == ["loan"] and t["mapping"] == "COUNT(*)"]
+        loan = [t for t in terms if t["tables"] == ["loan"]
+                and t["mapping"] == "COUNT(loan.loan_id)"]
         assert loan and loan[0]["term"] == "number of loan records"
 
     def test_sum_avg_terms_from_english_descriptions(self):
         terms = generate_terms(EN_TABLES)
         loan = {t["term"]: t for t in terms if "loan" in t["tables"]}
-        assert loan["total loan amount"]["mapping"] == "SUM(amount)"
-        assert loan["average loan amount"]["mapping"] == "AVG(amount)"
+        assert loan["total loan amount"]["mapping"] == "SUM(loan.amount)"
+        assert loan["average loan amount"]["mapping"] == "AVG(loan.amount)"
 
     def test_cjk_descriptions_skipped_in_english_mode(self):
         """中文描述无法确定性翻译成英文 → 与无描述列同等待遇,不生成术语。"""
@@ -298,14 +330,15 @@ class TestEnglishGeneration:
             "metrics": [],
         }]
         terms = generate_terms(tables)
-        assert [t for t in terms if t["mapping"] != "COUNT(*)"] == []
+        # 唯一非 count term 判定:首列回退 → COUNT(loan.amount)
+        assert [t for t in terms if t["mapping"] != "COUNT(loan.amount)"] == []
 
     def test_account_number_column_gets_no_sum_terms_in_either_lang(self):
         """account_to 不是 _id 后缀但同为标识类(账户号)→ 两种语言都不生成 SUM/AVG。"""
         for lang in ("en", "zh"):
             terms = generate_terms(EN_TABLES, lang=lang)
             assert not any(
-                t["mapping"].startswith(("SUM(account_to", "AVG(account_to"))
+                t["mapping"].startswith(('SUM("order".account_to', 'AVG("order".account_to'))
                 for t in terms
             ), f"{lang}: account_to 不应生成 SUM/AVG"
 

@@ -14,14 +14,16 @@ from trove.api.app import create_app
 from trove.services.datasource.catalog import CatalogService
 from trove.services.kb.service import KbService
 
+from tests.helpers.kb import ossie_semantics_yaml
+
 KB_SEED = {
-    "semantics.yml": """terms:
-  - term: 平均成绩
-    aliases: [均分]
-    mapping: AVG(students.grade)
-    tables: [students]
-    definition: 学生平均分
-""",
+    "semantics.yml": ossie_semantics_yaml([{
+        "term": "平均成绩",
+        "aliases": ["均分"],
+        "mapping": "AVG(students.grade)",
+        "tables": ["students"],
+        "definition": "学生平均分",
+    }]),
     "examples.yml": """examples:
   - question: 学生们的平均成绩是多少
     sql: SELECT county, AVG(grade) FROM students GROUP BY county

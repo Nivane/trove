@@ -96,12 +96,15 @@ async def output(state: WorkflowState) -> dict[str, Any]:
             if h.get("kind") == "term"
         ]
         example_count = sum(1 for h in state.kb_hits if h.get("kind") == "example")
+        template_count = sum(1 for h in state.kb_hits if h.get("kind") == "template")
         segments = []
         if term_parts:
             segments.append(", ".join(term_parts))
         if example_count:
             label = "example" if example_count == 1 else "examples"
             segments.append(f"{example_count} {label} used")
+        if template_count:
+            segments.append(f"{template_count} template used (deterministic fast path)")
         parts.append(L(lang, f"\n*Knowledge base: {' | '.join(segments)}*\n", f"\n*Knowledge base: {' | '.join(segments)}*\n"))
 
     response = "\n".join(parts)

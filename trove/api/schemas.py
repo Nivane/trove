@@ -18,7 +18,7 @@ class SessionCreateResponse(BaseModel):
 
 
 class TermCreate(BaseModel):
-    """POST /v1/kb/terms body (semantics.yml entry)."""
+    """POST /v1/kb/terms body (flat request; converted to an OSSIE semantic_model metric on write)."""
 
     term: str = Field(min_length=1)
     aliases: list[str] = Field(default_factory=list)

@@ -112,16 +112,15 @@ semantic_model:
         from trove.services.semantic_layer.provider import SemanticLayerProvider
 
         # KB:同名 term,映射不同(KB 口径优先)
+        from tests.helpers.kb import ossie_semantics_yaml
+
         kb = KbService(tmp_path / "proj")
         ds_dir = kb.kb_dir / "demo"
         ds_dir.mkdir(parents=True)
-        (ds_dir / "semantics.yml").write_text(
-            "terms:\n"
-            "  - term: total_loan_amount\n"
-            "    aliases:\n"
-            "      - \"total loans\"\n"
-            "    mapping: SUM(loan.amount) * 2\n"
-            "    tables: [loan]\n")
+        (ds_dir / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "total_loan_amount", "aliases": ["total loans"],
+             "mapping": "SUM(loan.amount) * 2", "tables": ["loan"]},
+        ]))
         await kb.force_sync(default_datasource="demo")
 
         # 实时语义层:同名但映射为普通 SUM
@@ -364,14 +363,15 @@ class TestIntentRouting:
         """语义意图 → 术语材料进上下文，LLM 组织答案。"""
         from trove.services.kb.service import KbService
 
+        from tests.helpers.kb import ossie_semantics_yaml
+
         kb = KbService(tmp_path / "proj")
         ds_dir = kb.kb_dir / sqlite_registry.default_name
         ds_dir.mkdir(parents=True)
-        (ds_dir / "semantics.yml").write_text(
-            "terms:\n  - term: 平均成绩\n    mapping: AVG(students.grade)\n"
-            "    tables: [students]\n    definition: 学生平均分\n",
-            encoding="utf-8",
-        )
+        (ds_dir / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "平均成绩", "mapping": "AVG(students.grade)",
+             "tables": ["students"], "definition": "学生平均分"},
+        ]))
         llm = RecordingLLM(["metadata", "平均成绩 → AVG(students.grade)，即学生平均分"])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
         final = await graphs["reflection"].ainvoke(
@@ -1106,20 +1106,15 @@ class TestKnowledgeBaseGraph:
     def _kb(self, tmp_path, datasource):
         from trove.services.kb.service import KbService
 
+        from tests.helpers.kb import ossie_semantics_yaml
+
         kb = KbService(tmp_path / "proj")
         ds_dir = kb.kb_dir / datasource
         ds_dir.mkdir(parents=True)
-        (ds_dir / "semantics.yml").write_text(
-            """
-terms:
-  - term: 平均成绩
-    aliases: []
-    mapping: AVG(students.grade)
-    tables: [students]
-    definition: 学生平均分
-""",
-            encoding="utf-8",
-        )
+        (ds_dir / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "平均成绩", "mapping": "AVG(students.grade)",
+             "tables": ["students"], "definition": "学生平均分"},
+        ]))
         (ds_dir / "schema_notes.yml").write_text(
             """
 tables:
@@ -1823,3 +1818,205 @@ class TestFixModeWiring:
         assert final["last_progress"] == "invalid"
         assert "## Answer" in final["final_response"]
         assert "Error" in final["final_response"]
+
+
+# ── 自适应减负:确定性快径 + 复杂度分级开关 ───────────────
+
+
+class _FastPathKB:
+    """带确定性模板 + schema_notes 的 KB:快径命中与复杂度 simple 判据共用。"""
+
+    def __init__(self, tmp_path, datasource):
+        from trove.services.kb.service import KbService
+
+        self.kb = KbService(tmp_path / "proj")
+        ds_dir = self.kb.kb_dir / datasource
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "schema_notes.yml").write_text(
+            """
+tables:
+  - name: students
+    description: student records
+    columns:
+      - name: grade
+        description: test score
+""",
+            encoding="utf-8",
+        )
+        # 术语:让 schema_linking 产出 term 命中 → kb_hits 非空,
+        # grade_complexity 的 simple 判据才满足(语义证据是必要条件)
+        from tests.helpers.kb import ossie_semantics_yaml
+
+        (ds_dir / "semantics.yml").write_text(ossie_semantics_yaml([
+            {"term": "students", "aliases": ["student"], "mapping": "students.id",
+             "tables": ["students"], "definition": "student record"},
+        ]))
+        (ds_dir / "examples.yml").write_text(
+            """
+examples:
+  - question: How many records are in the students table?
+    sql: SELECT COUNT(*) FROM students
+    tags: [students, count, aggregation]
+    template: true
+  - question: What is the average grade?
+    sql: SELECT AVG(grade) FROM students
+    tags: [students, grade, aggregation]
+    template: true
+    aggregate: true
+""",
+            encoding="utf-8",
+        )
+
+
+class TestFastPathGraph:
+    async def test_template_hit_skips_llm_path(self, sqlite_registry, catalog, tmp_path):
+        """模板命中:SQL 直接执行,planner/gen_sql/reflect 的 LLM 全部不调用。"""
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        llm = RecordingLLM(["query"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="How many students are there?")
+        )
+        assert final["fast_path"] is True
+        assert final["sql"] == "SELECT COUNT(*) FROM students"
+        assert final["verdict"] == "OK"
+        assert final["row_count"] == 1
+        assert len(llm.calls) == 1  # 仅 intent——planner/gen_sql/reflect 全未调用
+        kinds = {h.get("kind") for h in final["kb_hits"]}
+        assert "template" in kinds
+
+    async def test_miss_uses_full_pipeline(self, sqlite_registry, catalog, tmp_path):
+        """模板未命中(无聚合词/表不锚)→ 正常链路,快径零痕迹。"""
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="Who is in the students table?")
+        )
+        assert final["fast_path"] is False
+        assert len(llm.calls) == 3  # intent + gen_sql + reflect
+
+    async def test_reflect_skips_for_fast_path_sql(self, sqlite_registry, catalog, tmp_path):
+        """快径 SQL 即使走到 reflect 也不调用 LLM 裁决(kb_exact 同理由)。"""
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        llm = RecordingLLM(["query"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="How many students are there?")
+        )
+        assert final["verdict"] == "OK"
+        assert final["reason"] == "fast path deterministic template match (kb init)"
+        assert len(llm.calls) == 1
+
+    async def test_fast_path_disabled_by_config(self, sqlite_registry, catalog, tmp_path):
+        """fast_path 配置关闭 → 快径不启用,走正常链路。"""
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        cfg = AgentConfig(target="mock/model", fast_path=False)
+        llm = RecordingLLM([
+            "query",
+            "```sql\nSELECT COUNT(*) FROM students;\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb, config=cfg))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="How many students are there?")
+        )
+        assert final["fast_path"] is False
+        assert len(llm.calls) == 3
+
+
+class TestComplexitySwitch:
+    async def test_simple_plan_skips_multi_candidate(self, sqlite_registry, catalog, tmp_path):
+        """planner 产出 simple plan → 复杂度 simple:agentic 降级为经典子图、
+        跳过 4 个备选温度子图(无候选池)。"""
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        plan = '{"tables": ["students"], "aggregation": "COUNT", "answer_columns": ["count(*)"]}'
+        llm = RecordingLLM([
+            "query",
+            plan,
+            "```sql\nSELECT COUNT(*) FROM students;\n```",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
+                       multi_candidate=True, planner=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state(
+            question="How many students have a grade?",
+            kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
+                      "definition": "student record", "tables": ["students"]}],
+        ))
+        assert final["complexity"] == "simple"
+        assert final["candidates"] == []  # 跳过多候选
+        assert len(llm.calls) == 3  # intent + planner + gen_sql(经典);无 reflect
+
+    async def test_complex_plan_keeps_multi_candidate(self, sqlite_registry, catalog, tmp_path):
+        """多表 plan → complex:候选池照常生成。"""
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        # joins 非空即 complex(validate_plan 不检查 joins 文本,表必须真实存在)
+        plan = ('{"tables": ["students"], "joins": "joined with another table", '
+                '"aggregation": "COUNT", "answer_columns": ["count(*)"]}')
+        llm = RecordingLLM([
+            "query",
+            plan,
+            "```sql\nSELECT COUNT(*) FROM students;\n```",
+            # 备选温度子图:同结果组(全部单行单列),避免 select 平局打回
+            "```sql\nSELECT COUNT(*) FROM students WHERE 1=1;\n```",
+            "```sql\nSELECT COUNT(id) FROM students;\n```",
+            "```sql\nSELECT COUNT(grade) FROM students;\n```",
+            "```sql\nSELECT COUNT(*) FROM students;\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
+                       multi_candidate=True, planner=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state(
+            question="How many students have a grade?",
+            kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
+                      "definition": "student record", "tables": ["students"]}],
+        ))
+        assert final["complexity"] == "complex"
+        assert len(final["candidates"]) >= 1
+
+
+class TestReflectSkipGraph:
+    def _simple_kb(self, tmp_path, datasource):
+        return _FastPathKB(tmp_path, datasource).kb
+
+    async def test_rules_pass_simple_skips_judge(self, sqlite_registry, catalog, tmp_path):
+        """validate 规则全过 + 复杂度 simple → reflect 不调用 LLM 裁决。"""
+        kb = self._simple_kb(tmp_path, sqlite_registry.default_name)
+        plan = '{"tables": ["students"], "aggregation": "COUNT", "answer_columns": ["count(*)"]}'
+        llm = RecordingLLM([
+            "query",
+            plan,
+            "```sql\nSELECT COUNT(*) FROM students;\n```",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
+                       multi_candidate=True, planner=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state(
+            question="How many students have a grade?",
+            kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
+                      "definition": "student record", "tables": ["students"]}],
+        ))
+        assert final["verdict"] == "OK"
+        assert final["rules_passed"] is True
+        assert len(llm.calls) == 3  # intent + planner + gen_sql;无 reflect
+        assert final["reason"] == "deterministic rules passed; reflect skipped"
+
+    async def test_reflect_skip_off_keeps_judge(self, sqlite_registry, catalog, tmp_path):
+        """reflect_skip=off → 规则全过也照常裁决。"""
+        kb = self._simple_kb(tmp_path, sqlite_registry.default_name)
+        cfg = AgentConfig(target="mock/model", reflect_skip="off")
+        plan = '{"tables": ["students"], "aggregation": "COUNT", "answer_columns": ["count(*)"]}'
+        llm = RecordingLLM([
+            "query",
+            plan,
+            "```sql\nSELECT COUNT(*) FROM students;\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb, config=cfg),
+                       multi_candidate=True, planner=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state(
+            question="How many students have a grade?",
+            kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
+                      "definition": "student record", "tables": ["students"]}],
+        ))
+        assert final["verdict"] == "OK"
+        assert len(llm.calls) == 4  # intent + planner + gen_sql + reflect

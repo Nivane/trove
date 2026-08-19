@@ -76,18 +76,16 @@ async def full_stack(tmp_path, demo_registry):
     )
 
     # KB 术语解决中文问题匹配（真实使用路径：/kb init + 术语）
+    from tests.helpers.kb import ossie_semantics_yaml
     from trove.services.kb.service import KbService
     kb = KbService(tmp_path / "proj")
     (kb.kb_dir / demo_registry.default_name).mkdir(parents=True, exist_ok=True)
     (kb.kb_dir / demo_registry.default_name / "semantics.yml").write_text(
-        "terms:\n"
-        "  - term: 平均贷款金额\n"
-        "    aliases: [平均贷款]\n"
-        "    mapping: AVG(loan.amount)\n"
-        "    tables: [loan, account, district]\n"
-        "    definition: 按地区分组的贷款金额均值\n",
-        encoding="utf-8",
-    )
+        ossie_semantics_yaml([
+            {"term": "平均贷款金额", "aliases": ["平均贷款"],
+             "mapping": "AVG(loan.amount)", "tables": ["loan", "account", "district"],
+             "definition": "按地区分组的贷款金额均值"},
+        ]))
 
     services = GraphServices(
         llm=llm,

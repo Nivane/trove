@@ -6,8 +6,8 @@ example:
   tags: [<2-4 short topic tags>]
 terms:
   - term: <a business term appearing in the question>
-    mapping: <SQL expression it corresponds to>
+    mapping: <table-qualified SQL expression, every column prefixed with its table, e.g. AVG(students.grade) or COUNT(students.id)>
     tables: [<tables involved>]
     definition: <one-line definition>
 
-IMPORTANT: every value must be on a single line with correct YAML indentation. Never continue a value on an unindented line.
+IMPORTANT: every value must be on a single line with correct YAML indentation. Never continue a value on an unindented line. Every column reference in `mapping` MUST be qualified with its table name — the table binding is derived from the expression.

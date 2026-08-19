@@ -46,6 +46,7 @@ Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **co
 ### Knowledge base `trove/services/kb/`
 
 - **YAML is the single source of truth** (`.trove/kb/<datasource>/`: `schema_notes.yml`, `semantics.yml`, `examples.yml`, `rules.yml`, `lessons.yml`); the SQLite mirror is for runtime retrieval only. Datasource name = database name.
+- `semantics.yml` stores an **Apache OSSIE core spec `semantic_model`** (datasets + metrics with `expression.dialects`, expressions are table-qualified — metric `datasets` anchoring is derived from `dataset.field` refs). The legacy flat `terms:` format is **not read** (zero terms + a migration warning); re-run `/kb init --overwrite` to regenerate.
 - `KbService` retrieval is deterministically filtered with schema linking's `matched_tables` as anchor; `/kb init` (LLM-drafted notes + deterministic rules for terms/templates), `/kb learn` (LLM draft → human confirm → commit), lessons are a two-tier (pending/confirmed) Hint Bank.
 - **KB content language must match the question language** (BIRD is English; measured: a Chinese KB drops accuracy on English questions from 96.9% to 50%, the gap being few-shot retrieval hits).
 
