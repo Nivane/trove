@@ -32,6 +32,7 @@ from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService
 from trove.llm.agent_loop import run_agent_loop
 from trove.workflow.context_budget import assemble_blocks
+from trove.workflow.complexity import grade_complexity
 from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
@@ -231,6 +232,14 @@ def _make_gen_sql_node(
         rules: list[str] = []
         # 证据层锚:schema linking 的 matched_tables(实时语义层也要用)
         matched = list(state.matched_tables or [])
+        # 复杂度分级(纯函数,零 IO/LLM):结构信号(plan) + 语义信号(锚定表)。
+        # 修正轮强制 standard,保证修正循环行为不变;simple 用于跳过多候选等。
+        in_correction = bool(
+            state.error_feedback or state.error_analysis or state.reason
+        )
+        complexity = "standard" if in_correction else grade_complexity(
+            state.plan_json, matched,
+        )
         all_table_names: list[str] = []
         if services.catalog is not None and matched:
             try:
@@ -295,9 +304,6 @@ def _make_gen_sql_node(
         # 修正轮禁用快捷通道:KB 标准写法已被证明失败(执行/规则/裁决),
         # 再重发同一 SQL 只会空转烧预算——此时走生成,示例照常进 few_shots,
         # 模型基于错误反馈做定点修复。
-        in_correction = bool(
-            state.error_feedback or state.error_analysis or state.reason
-        )
         kb_exact_match: dict[str, Any] | None = None
         if not in_correction and example_hits:
             for h in example_hits:
@@ -354,7 +360,7 @@ def _make_gen_sql_node(
             # 工具统一由注册表提供(定义+处理器+finish 协议+超时/并行策略);
             # check_hits 收集 check_result 的规则命中,循环结束后随 update
             # 带出(归因)。validate_sql 始终可用,probe/check 依赖 connectors。
-            registry, check_hits = build_sql_registry(
+            registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
             )
 
@@ -405,8 +411,8 @@ def _make_gen_sql_node(
                 update["attempts"] = result["rounds"]
                 # check_result 规则命中随状态带出(与既有 hits 合并,不覆盖
                 # validate 层已记录的拦截)
-                if check_hits:
-                    update["validation_hits"] = list(state.validation_hits) + check_hits
+                if registry.check_hits:
+                    update["validation_hits"] = list(state.validation_hits) + registry.check_hits
                 trail = " ".join(
                     p for p in (result.get("reasoning", ""), result.get("transcript", "")) if p
                 )
