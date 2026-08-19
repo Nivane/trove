@@ -189,6 +189,7 @@ class TestAnalyzeError:
         state = make_state(
             sql="SELECT name FROM client",
             rows=rows,
+            row_count=2,  # 执行过 → 规则失败路径(签名可比)
             error_feedback="Validation rule [F1-b]: list question returned wide columns",
             sql_versions=[{
                 "sql": "SELECT name FROM client ORDER BY name",
@@ -242,7 +243,7 @@ class TestRollbackDecision:
         assert update["rollback_target"] == "gen_sql"
 
     async def test_repeated_target_escalates(self):
-        """同一回退目标连续两次仍失败 → 强制升一档。"""
+        """同一失败(错误文本一致)连续两次仍失败 → 强制升一档。"""
         class LLM:
             async def chat(self, model, messages, **kwargs):
                 return "TARGET: gen_sql"
@@ -251,11 +252,32 @@ class TestRollbackDecision:
         update = await node(make_state(
             error_feedback="boom",
             last_rollback_target="gen_sql",
+            sql_versions=[{
+                "sql": "SELECT 1", "sig": "", "issues": [], "round": 1,
+                "error": "boom",  # 与当前失败文本一致 → 同一失败重演
+            }],
         ))
         assert update["rollback_target"] == "planner"  # gen_sql → planner 升级
 
+    async def test_repeated_target_different_failure_does_not_escalate(self):
+        """目标重复但失败文本不同(如执行错误后接语义 RETRY)→ 视为新判断,不升级。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            error_feedback="no such table: clients",
+            last_rollback_target="gen_sql",
+            sql_versions=[{
+                "sql": "SELECT 1", "sig": "exec-error", "issues": [], "round": 1,
+                "error": "no such column: birth_date",  # 与当前失败文本不同
+            }],
+        ))
+        assert update["rollback_target"] == "gen_sql"
+
     async def test_repeated_last_target_degrades(self):
-        """护栏顶部目标仍重复 → 优雅降级（state.error）。"""
+        """护栏顶部目标同一失败仍重复 → 优雅降级（state.error）。"""
         class LLM:
             async def chat(self, model, messages, **kwargs):
                 return "TARGET: schema_linking"
@@ -264,6 +286,10 @@ class TestRollbackDecision:
         update = await node(make_state(
             error_feedback="boom",
             last_rollback_target="schema_linking",
+            sql_versions=[{
+                "sql": "SELECT 1", "sig": "", "issues": [], "round": 1,
+                "error": "boom",
+            }],
         ))
         assert update["error"]
 
@@ -344,13 +370,65 @@ class TestProgressTracking:
         assert update["last_progress"] == "first"
         assert update["no_progress_rounds"] == 0
 
+    async def test_exec_failure_skips_sig_regression(self):
+        """执行错误(row_count == -1)不比较结果集签名:不同错误不误报 invalid。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT * FROM clients",
+            error_feedback="no such table: clients",  # 上一版是另一错误
+            sql_versions=[{
+                "sql": "SELECT * FROM loans", "sig": "exec-error",
+                "issues": [], "round": 1, "error": "no such column: x",
+            }],
+        ))
+        # 回归报告段(注入的确定性反馈)不应出现——skill 模板里静态存在
+        # "[Regression check]" 术语说明,以注入报告独有的句式作判据
+        assert "same execution error as Round" not in captured["prompt"]
+        assert update["last_progress"] == "improved"  # 错误不同 = 有进展
+        assert update["no_progress_rounds"] == 0
+        # 版本记录带哨兵签名 + 原始错误文本
+        v = update["sql_versions"][0]
+        assert v["sig"] == "exec-error"
+        assert v["error"] == "no such table: clients"
+
+    async def test_exec_failure_same_error_marks_invalid_and_escalates(self):
+        """同一执行错误(错误文本一致)重演 → invalid + 升档。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT * FROM clients",
+            error_feedback="no such table: clients",
+            last_rollback_target="gen_sql",
+            sql_versions=[{
+                "sql": "SELECT * FROM clients", "sig": "exec-error",
+                "issues": [], "round": 1, "error": "no such table: clients",
+            }],
+        ))
+        assert "same execution error as Round 1" in captured["prompt"]
+        assert update["last_progress"] == "invalid"
+        assert update["no_progress_rounds"] == 1
+        assert update["rollback_target"] == "planner"  # 同错误重演 → 升档
+
     async def test_invalid_fix_increments_no_progress(self):
         """结果签名相同 → invalid, 无进展轮 +1。"""
         from trove.workflow.versions import result_sig
 
         rows = [["a"]]
         update = await self._node()(make_state(
-            sql="SELECT 1", rows=rows,
+            sql="SELECT 1", rows=rows, row_count=1,  # 执行过 → 规则失败路径
             error_feedback="Validation rule [F1-b]: wide columns",
             sql_versions=[{
                 "sql": "SELECT 2", "sig": result_sig(rows),
@@ -366,7 +444,7 @@ class TestProgressTracking:
 
         rows = [["a"]]
         update = await self._node()(make_state(
-            sql="SELECT 1", rows=rows,
+            sql="SELECT 1", rows=rows, row_count=1,  # 执行过 → 规则失败路径
             error_feedback="Validation rule [F1-b]: wide columns",
             no_progress_rounds=2,
             sql_versions=[{
@@ -379,7 +457,7 @@ class TestProgressTracking:
     async def test_improved_resets_no_progress(self):
         """有进展(签名变化且规则集变小) → 计数清零。"""
         update = await self._node()(make_state(
-            sql="SELECT 1", rows=[["a"]],
+            sql="SELECT 1", rows=[["a"]], row_count=1,  # 执行过 → 规则失败路径
             error_feedback="boom", no_progress_rounds=2,
             sql_versions=[{
                 "sql": "SELECT 2", "sig": "old-sig",
@@ -395,7 +473,7 @@ class TestProgressTracking:
 
         rows = [["a"]]
         update = await self._node()(make_state(
-            sql="SELECT 1", rows=rows,
+            sql="SELECT 1", rows=rows, row_count=1,  # 执行过 → 规则失败路径
             error_feedback="Validation rule [F1-b]: wide columns",
             no_progress_rounds=2,
             sql_versions=[{

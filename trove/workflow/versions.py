@@ -30,21 +30,34 @@ def extract_rule_hits(text: str) -> list[str]:
     return hits
 
 
+# 执行错误的哨兵签名:本轮 SQL 未执行时结果集签名无意义(rows 为空/过期),
+# 用哨兵防止它与真实结果集签名(含空结果 "[]")误撞出 "invalid" 回归判定
+EXEC_FAILURE_SIG = "exec-error"
+
+
 def record_version(
     existing: list[dict[str, Any]],
     sql: str,
-    rows: list[list[Any]],
+    sig: str,
     issues: list[str],
     round_n: int,
+    error: str = "",
 ) -> list[dict[str, Any]]:
-    """记录本轮失败版本。返回需要追加的条目（不修改 existing）。"""
+    """记录本轮失败版本。返回需要追加的条目（不修改 existing）。
+
+    Args:
+        sig: 结果集签名;执行失败(未执行)时传 EXEC_FAILURE_SIG。
+        error: 原始失败文本(反馈/理由)——执行错误的"同一失败重演"判定
+            以它为准(结果集签名对执行错误无意义)。
+    """
     if not sql:
         return []
     return [{
         "sql": sql,
-        "sig": result_sig(rows),
+        "sig": sig,
         "issues": list(issues),
         "round": round_n,
+        "error": (error or "")[:200],
     }]
 
 

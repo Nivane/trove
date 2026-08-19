@@ -24,6 +24,7 @@ from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.workflow.rules import verify
 from trove.workflow.state import GenSQLState
+from trove.workflow.versions import EXEC_FAILURE_SIG
 
 logger = get_logger(__name__)
 
@@ -121,10 +122,16 @@ def render_versions(versions: list[dict[str, Any]]) -> str:
     for v in versions:
         issues = ", ".join(v.get("issues") or []) or "-"
         sql_short = " ".join((v.get("sql") or "").split())
-        sig_short = (v.get("sig") or "")[:60]
+        sig = v.get("sig") or ""
+        if sig == EXEC_FAILURE_SIG:
+            # 执行错误:签名无意义,展示原始错误文本
+            err = (v.get("error") or "")[:120]
+            result_part = f"result: exec-error ({err})" if err else "result: exec-error"
+        else:
+            result_part = f"result: {sig[:60]}"
         parts.append(
             f"- Round {v.get('round', '?')}: {sql_short}\n"
-            f"  result: {sig_short}; issues: {issues}"
+            f"  {result_part}; issues: {issues}"
         )
     return "\n".join(parts)
 

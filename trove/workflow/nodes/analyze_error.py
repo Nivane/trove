@@ -24,6 +24,7 @@ from trove.prompts import render
 from trove.prompts.skills import render_skills
 from trove.workflow.state import WorkflowState
 from trove.workflow.versions import (
+    EXEC_FAILURE_SIG,
     extract_rule_hits,
     record_version,
     regression_report,
@@ -164,14 +165,22 @@ def render_reasoning_context(
     return "\n".join(parts)
 
 
-def _resolve_rollback(parsed: str, ladder: list[str], last: str) -> str | None:
+def _resolve_rollback(
+    parsed: str, ladder: list[str], last: str, same_failure: bool,
+) -> str | None:
     """Anti-loop guard: a repeated target escalates one rung up the ladder.
+
+    Escalation only fires when the SAME failure repeats (identical raw
+    error text as the previous recorded round). Different failure causes
+    independently picking the same target is a fresh judgment, not a loop
+    — e.g. an execution error followed by a semantic RETRY both targeting
+    gen_sql must NOT escalate (the second round is a different problem).
 
     Returns:
         The resolved target, or None when the top rung repeats (→ degrade).
     """
     target = parsed if parsed in ladder else ladder[0]
-    if target != last:
+    if target != last or not same_failure:
         return target
     idx = ladder.index(target)
     if idx + 1 < len(ladder):
@@ -208,14 +217,32 @@ def make_analyze_error(
             skill_block = render_skills("analyze_error", lang=state.lang)
             if skill_block:
                 system_prompt = f"{system_prompt}\n\n{skill_block}"
-            error_text = state.error_feedback or state.reason
+            raw_error = state.error_feedback or state.reason
             # 版本链回归检查:对比上一版失败(签名/规则命中),产出确定性反馈
             # 并入诊断输入——模型必须看到「无效修复/无进展/问题转移」
-            issues = extract_rule_hits(error_text)
+            issues = extract_rule_hits(raw_error)
             prev = state.sql_versions[-1] if state.sql_versions else None
-            report = regression_report(prev, result_sig(state.rows), issues)
+            # 执行错误(本轮 SQL 未执行 → row_count == -1):rows 为空或
+            # 上一轮成功的残留,结果集签名无意义——两轮不同错误也会
+            # 签名相同被误判"无效修复"。改用原始错误文本判定同一失败
+            # 是否重演(引擎错误文本是确定性的,同一错误文本 = 同一失败)。
+            exec_failed = state.row_count == -1
+            same_failure = bool(prev) and bool(raw_error) and prev.get("error") == raw_error
+            if exec_failed:
+                report = (
+                    f"Invalid fix: the same execution error as Round {prev['round']} "
+                    "(identical error message — do not repeat the same SQL)."
+                    if same_failure else None
+                )
+                progress = "invalid" if same_failure else (
+                    "first" if prev is None else "improved"
+                )
+            else:
+                report = regression_report(prev, result_sig(state.rows), issues)
+                progress = regression_state(prev, result_sig(state.rows), issues)
+            error_text = raw_error
             if report:
-                error_text = f"{error_text}\n[Regression check] {report}"
+                error_text = f"{raw_error}\n[Regression check] {report}"
             # 上一轮生成/规划方的思考痕迹:定位误判根因的关键上下文
             trail = render_reasoning_context(state.reasoning_history)
             prompt = render(
@@ -233,8 +260,9 @@ def make_analyze_error(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ],
-                # 推理模型 reasoning 占用预算,300 会导致诊断文本被截断/为空
-                max_tokens=800,
+                # 推理模型 reasoning 占用预算,小预算会导致诊断文本被截断/为空;
+                # 统一放宽输出上限(见 gateway 默认值)
+                max_tokens=16000,
                 metadata={
                     "node": "analyze_error",
                     "session_id": state.session_id,
@@ -256,7 +284,9 @@ def make_analyze_error(
 
             match = ROLLBACK_TARGET_RE.search(analysis)
             parsed = match.group(1).lower() if match else ""
-            target = _resolve_rollback(parsed, ladder, state.last_rollback_target)
+            target = _resolve_rollback(
+                parsed, ladder, state.last_rollback_target, same_failure,
+            )
             if target is None:
                 return {
                     "error": (
@@ -266,7 +296,6 @@ def make_analyze_error(
             # 缺口3: 修复模式判定（fixer 实现级 vs revisor 语义级),注入重生成方
             fix_mode = classify_fix_mode(error_text, issues)
             # 缺口5: 修复进展量化 —— regression_state 标签 + 无进展轮计数
-            progress = regression_state(prev, result_sig(state.rows), issues)
             no_progress = (
                 0 if progress in ("first", "improved")
                 else state.no_progress_rounds + 1
@@ -293,10 +322,15 @@ def make_analyze_error(
                 "rejected_hypotheses": record_rejected_hypothesis(
                     state.rejected_hypotheses, state.sql, error_text,
                 ),
-                # 版本链:记录本轮失败版本供下一轮定点修复
+                # 版本链:记录本轮失败版本供下一轮定点修复。执行错误
+                # 用哨兵签名(rows 无意义),错误文本随之记录供"同一失败
+                # 重演"判定与提示注入。
                 "sql_versions": record_version(
-                    state.sql_versions, state.sql, state.rows, issues,
+                    state.sql_versions, state.sql,
+                    EXEC_FAILURE_SIG if exec_failed else result_sig(state.rows),
+                    issues,
                     round_n=len(state.sql_versions) + 1,
+                    error=raw_error,
                 ),
             }
         except Exception as e:

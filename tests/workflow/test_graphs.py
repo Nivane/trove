@@ -1,6 +1,7 @@
 """LangGraph topology tests: subgraph retry loop, reflect loop, degradation."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -879,6 +880,94 @@ class TestRollbackRouting:
         # 升级生效：gen_sql 的重复判断被替换为 planner
         assert final["rollback_target"] == "planner"
         assert len(llm.calls) == 9  # 意图+planner+gen+judge+gen+judge+planner+gen+reflect
+
+    async def test_execution_errors_not_mislabeled_regression(self, sqlite_registry, catalog):
+        """连续不同的执行错误不误报 invalid(结果集签名对执行错误无意义)。"""
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "```sql\nSELECT * FROM nonexistent_tbl;\n```",  # gen pass1 (exec error 1)
+            "TARGET: gen_sql",                              # judge round1
+            "```sql\nSELECT name FROM studnets;\n```",      # gen pass2 (exec error 2)
+            "TARGET: gen_sql",                              # judge round2
+            "```sql\nSELECT grade FROM studentss;\n```",    # gen pass3 (exec error 3)
+            "TARGET: gen_sql",                              # judge round3
+            "```sql\nSELECT name FROM students;\n```",      # gen pass4 OK
+            "OK",                                           # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""  # 3 个不同执行错误不会触发 no-progress 提前降级
+        assert final["last_progress"] == "improved"
+        assert final["no_progress_rounds"] == 0
+        # judge prompt 不注入"同一错误重演"报告(不同执行错误 ≠ 无效修复)
+        for msgs in llm.calls:
+            text = " ".join(str(m.get("content", "")) for m in msgs)
+            assert "same execution error as Round" not in text
+
+    async def test_semantic_retry_does_not_escalate_across_failure_types(
+        self, sqlite_registry, catalog,
+    ):
+        """防打转只对同一失败重演升档:语义 RETRY 不因上轮执行错误而误升级。"""
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "plan: v1",                                     # planner 首跑
+            "```sql\nSELECT * FROM nonexistent_tbl;\n```",  # gen pass1 (exec error)
+            "TARGET: gen_sql",                              # judge round1 → last=gen_sql
+            "```sql\nSELECT name FROM students;\n```",      # gen pass2 OK
+            "RETRY: 语义不对，应该按 county 分组",           # reflect RETRY (纯语义)
+            "TARGET: gen_sql",                              # judge round2: 不回退再升级
+            "```sql\nSELECT county, COUNT(*) FROM students GROUP BY county;\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["verdict"] == "OK"
+        assert final["rollback_target"] == "gen_sql"  # 未被升级到 planner
+        assert len(llm.calls) == 9  # 意图+planner+gen+judge+gen+reflect+judge+gen+reflect
+
+    async def test_kb_exact_match_regenerates_on_correction_rounds(
+        self, sqlite_registry, catalog,
+    ):
+        """KB 精确命中的 SQL 执行失败后,修正轮重新生成而非重发同一 SQL。"""
+
+        class FakeKB:
+            """KB stub:与问题逐词一致的示例(指向不存在的表 → 执行必失败)。"""
+
+            async def ensure_synced(self, default_datasource=None):
+                pass
+
+            async def search_examples(self, q, ds, limit=5, tables=None,
+                                      all_tables=None, per_table=False):
+                return [SimpleNamespace(
+                    question="Average grade by county",
+                    sql="SELECT grade FROM nonexistent_kb", tags=[], template=None,
+                )]
+
+            async def list_rules(self, ds):
+                return []
+
+            async def list_lessons(self, ds):
+                return []
+
+            async def search_terms(self, q, ds, tables=None, all_tables=None):
+                return []
+
+            async def table_notes(self, tables, ds):
+                return {}
+
+        llm = RecordingLLM([
+            "query",                                        # 意图
+            "TARGET: gen_sql",                              # judge round1
+            "```sql\nSELECT name FROM students;\n```",      # gen pass2(修正轮)
+            "OK",                                           # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=FakeKB()))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        # 修正轮走了真实生成,而非重发 KB 示例 SQL(否则 execute 必再次失败)
+        assert " ".join(final["sql"].split()).rstrip(";") == "SELECT name FROM students"
+        assert final["retry_count"] == 1
 
 
 class TestFixedGraph:

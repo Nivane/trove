@@ -95,4 +95,10 @@ def _execution_failure(
         "error_feedback": message,
         "retry_count": state.retry_count + 1,
         "correction_history": [message],
+        # 清掉执行产物并标记"本轮未执行":rows/columns 可能是上一轮成功的
+        # 残留——analyze_error 的回归检查用 row_count == -1 区分执行错误
+        # (结果集签名无意义)与执行后的规则/裁决失败(签名可比)。
+        "columns": [],
+        "rows": [],
+        "row_count": -1,
     }

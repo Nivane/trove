@@ -281,8 +281,14 @@ def _make_gen_sql_node(
         # KB 保存的是该数据源的标准写法;对已收录的问题让模型"再解释一遍"
         # 只会产出歧义变体(实测:disp vs client 口径摇摆 5 轮)。SQL 仍会
         # 走 execute → validate → reflect,确定性规则与裁决不受影响。
+        # 修正轮禁用快捷通道:KB 标准写法已被证明失败(执行/规则/裁决),
+        # 再重发同一 SQL 只会空转烧预算——此时走生成,示例照常进 few_shots,
+        # 模型基于错误反馈做定点修复。
+        in_correction = bool(
+            state.error_feedback or state.error_analysis or state.reason
+        )
         kb_exact_match: dict[str, Any] | None = None
-        if example_hits:
+        if not in_correction and example_hits:
             for h in example_hits:
                 if _word_overlap(state.question, h.question) >= KB_EXACT_OVERLAP and h.sql:
                     kb_exact_match = {"question": h.question, "sql": h.sql}
@@ -611,9 +617,9 @@ def make_route_intent(
             try:
                 response = await llm.chat(
                     model=model,
-                    # 推理模型 reasoning 占用预算,16 会导致 content 为空、
-                    # 意图判定永远回退 regex;100 给 reasoning+单词留出空间
-                    max_tokens=100,
+                    # 推理模型 reasoning 占用预算,小预算会导致 content 为空、
+                    # 意图判定永远回退 regex;统一放宽输出上限(见 gateway 默认值)
+                    max_tokens=16000,
                     messages=[
                         {"role": "system", "content": intent_prompt},
                         {"role": "user", "content": state.question},
