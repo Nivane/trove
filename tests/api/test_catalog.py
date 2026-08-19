@@ -8,7 +8,12 @@ class TestCatalog:
         resp = await client.get("/v1/catalog/datasources")
         assert resp.status_code == 200
         ds = resp.json()["datasources"]
-        assert ds == [{"name": "test_db", "default": True}]
+        assert ds == [{
+            "name": "test_db",
+            "default": True,
+            "type": "sqlite",
+            "connection": {"path": ":memory:"},
+        }]
 
     async def test_list_tables(self, client):
         resp = await client.get("/v1/catalog/tables")
@@ -47,3 +52,27 @@ class TestCatalog:
     async def test_unknown_datasource_404(self, client):
         resp = await client.get("/v1/catalog/tables", params={"datasource": "nope"})
         assert resp.status_code == 404
+
+    async def test_datasources_redact_credentials(self, sqlite_registry):
+        from trove.core.types import DatasourceConfig
+
+        await sqlite_registry.register(DatasourceConfig(
+            name="mysql_like",
+            type="sqlite",
+            connection_params={
+                "host": "db.internal",
+                "port": 3306,
+                "database": "orders",
+                "user": "app",
+                "password": "hunter2",
+            },
+        ))
+        info = sqlite_registry.list_info()
+        entry = next(d for d in info if d["name"] == "mysql_like")
+        assert entry["connection"] == {
+            "host": "db.internal",
+            "port": 3306,
+            "database": "orders",
+            "user": "app",
+        }
+        assert "password" not in entry["connection"]

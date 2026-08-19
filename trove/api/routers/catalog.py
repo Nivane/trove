@@ -20,13 +20,7 @@ def _registry(request: Request):
 @router.get("/catalog/datasources")
 async def list_datasources(request: Request) -> dict:
     registry = _registry(request)
-    default = registry.default_name
-    return {
-        "datasources": [
-            {"name": name, "default": name == default}
-            for name in registry.list_names()
-        ]
-    }
+    return {"datasources": registry.list_info()}
 
 
 @router.get("/catalog/tables")

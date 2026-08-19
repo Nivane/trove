@@ -645,6 +645,14 @@ async function sendQuestion(text, retried = false) {
   if (!question || (state.currentTurn && !state.currentTurn.finished)) return;
   $("question-input").value = "";
 
+  // Slash commands are handled locally (display-only) — the REPL's
+  // management commands (/kb /model /init /clear /compact /exit /trace)
+  // are intentionally not exposed here.
+  if (question.startsWith("/")) {
+    await runSlashCommand(question);
+    return;
+  }
+
   const bubbleEl = appendUserBubble(question);
   const turn = beginAssistantTurn();
   setStreaming(true);
@@ -733,6 +741,194 @@ async function sendQuestion(text, retried = false) {
       turn.answerEl.innerHTML = `<div class="error-box">${esc(t("error"))}</div>`;
     }
   }
+}
+
+/* ── Slash commands (display-only) ───────────────────── */
+
+const CMD_LABELS = {
+  zh: {
+    helpTitle: "可用命令", cmdHead: "命令", descHead: "说明",
+    unknown: (n) => `未知命令 /${n}`, hint: "输入 /help 查看可用命令",
+    ds: "数据源", type: "类型", conn: "地址", def: "默认",
+    attr: "属性", val: "值",
+    table: "表", cols: "列数", rows: "约行数",
+    col: "列名", colType: "类型", pk: "主键", nullable: "可空",
+    usage: (u) => `用法：/${u}`, noDs: "未连接数据源",
+    noTables: "当前数据源没有表", noSchemas: "没有 schema 信息",
+    tableNotFound: (n) => `表不存在：${n}`,
+  },
+  en: {
+    helpTitle: "Available commands", cmdHead: "Command", descHead: "Description",
+    unknown: (n) => `Unknown command /${n}`, hint: "Type /help to list commands",
+    ds: "Datasource", type: "Type", conn: "Address", def: "Default",
+    attr: "Attribute", val: "Value",
+    table: "Table", cols: "Columns", rows: "Approx rows",
+    col: "Column", colType: "Type", pk: "PK", nullable: "Nullable",
+    usage: (u) => `Usage: /${u}`, noDs: "No datasource connected",
+    noTables: "No tables in the current datasource", noSchemas: "No schema information",
+    tableNotFound: (n) => `Table not found: ${n}`,
+  },
+};
+const cmdT = (k, ...a) => {
+  const v = CMD_LABELS[state.lang][k];
+  return typeof v === "function" ? v(...a) : v;
+};
+
+const SLASH_COMMANDS = [
+  { name: "help", aliases: ["h", "?"], usage: "help",
+    desc: { zh: "显示可用命令", en: "Show available commands" } },
+  { name: "datasource", aliases: ["ds"], usage: "datasource",
+    desc: { zh: "查看当前数据源连接信息", en: "Show current datasource info" } },
+  { name: "databases", aliases: ["dbs"], usage: "databases",
+    desc: { zh: "列出所有数据源", en: "List all datasources" } },
+  { name: "tables", aliases: [], usage: "tables",
+    desc: { zh: "列出所有表", en: "List all tables" } },
+  { name: "table_schema", aliases: ["schema"], usage: "table_schema <表名>",
+    desc: { zh: "查看表结构", en: "Show table schema" } },
+  { name: "schemas", aliases: [], usage: "schemas",
+    desc: { zh: "列出所有 schema", en: "List all schemas" } },
+];
+
+/* renderMarkdown expects pre-escaped text — sanitize dynamic values
+   (names/types can contain pipes, brackets, or HTML-ish chars). The
+   table renderer splits cells on "|" without honoring escapes, so a
+   literal pipe becomes a full-width ｜ to keep the row shape intact. */
+function mdCell(v) {
+  return esc(String(v ?? "")).replace(/\|/g, "｜").replace(/\n/g, " ");
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function fetchDatasources() {
+  const data = await fetchJson("/v1/catalog/datasources");
+  return data.datasources || [];
+}
+
+function connAddr(conn) {
+  if (!conn) return "";
+  if (conn.path) return mdCell(conn.path);
+  if (conn.host) {
+    const base = `${conn.host}${conn.port ? ":" + conn.port : ""}`;
+    return conn.database ? `${base}/${conn.database}` : base;
+  }
+  return Object.entries(conn).map(([k, v]) => `${mdCell(k)}=${mdCell(v)}`).join(", ");
+}
+
+function slashHelp() {
+  const l = state.lang;
+  const rows = SLASH_COMMANDS.map((c) =>
+    `| \`/${mdCell(c.usage)}\` | ${c.desc[l]} |`).join("\n");
+  return `**${cmdT("helpTitle")}**\n\n` +
+    `| ${cmdT("cmdHead")} | ${cmdT("descHead")} |\n|---|---|\n${rows}`;
+}
+
+function renderDatasourceCard(d) {
+  const rows = [`| ${cmdT("type")} | ${mdCell(d.type || "—")} |`];
+  for (const [k, v] of Object.entries(d.connection || {})) {
+    rows.push(`| ${mdCell(k)} | ${mdCell(v)} |`);
+  }
+  return `**${mdCell(d.name)}**${d.default ? ` · ${cmdT("def")}` : ""}\n\n` +
+    `| ${cmdT("attr")} | ${cmdT("val")} |\n|---|---|\n${rows.join("\n")}`;
+}
+
+async function slashDatasource() {
+  const ds = await fetchDatasources();
+  if (!ds.length) return cmdT("noDs");
+  const cur = ds.find((d) => d.default) || ds[0];
+  return renderDatasourceCard(cur);
+}
+
+async function slashDatabases() {
+  const ds = await fetchDatasources();
+  if (!ds.length) return cmdT("noDs");
+  const rows = ds.map((d) =>
+    `| ${mdCell(d.name)}${d.default ? " ✓" : ""} | ${mdCell(d.type || "—")} | ${connAddr(d.connection)} |`);
+  return `| ${cmdT("ds")} | ${cmdT("type")} | ${cmdT("conn")} |\n|---|---|---|\n${rows.join("\n")}`;
+}
+
+async function slashTables() {
+  const data = await fetchJson("/v1/catalog/tables");
+  const tables = data.tables || [];
+  if (!tables.length) return cmdT("noTables");
+  const rows = tables.map((t) => {
+    const n = t.row_count == null ? "—" : mdCell(t.row_count);
+    return `| ${mdCell(t.name)} | ${mdCell(t.columns)} | ${n} |`;
+  });
+  return `| ${cmdT("table")} | ${cmdT("cols")} | ${cmdT("rows")} |\n|---|---|---|\n${rows.join("\n")}`;
+}
+
+async function slashSchemas() {
+  const data = await fetchJson("/v1/catalog/tables");
+  const schemas = [...new Set((data.tables || []).map((t) => t.schema).filter(Boolean))].sort();
+  if (!schemas.length) return cmdT("noSchemas");
+  return schemas.map((s) => `- \`${mdCell(s)}\``).join("\n");
+}
+
+async function slashTableSchema(arg) {
+  const name = arg.trim();
+  if (!name) return cmdT("usage", "table_schema <表名>");
+  let data;
+  try {
+    data = await fetchJson(`/v1/catalog/tables/${encodeURIComponent(name)}`);
+  } catch {
+    return cmdT("tableNotFound", name);
+  }
+  const lines = [
+    `**${mdCell(data.name)}**${data.schema ? ` · \`${mdCell(data.schema)}\`` : ""}`,
+    `${cmdT("rows")}：${data.row_count == null ? "—" : mdCell(data.row_count)}`,
+    "",
+    `| ${cmdT("col")} | ${cmdT("colType")} | ${cmdT("pk")} | ${cmdT("nullable")} |`,
+    "|---|---|---|---|",
+  ];
+  for (const c of data.columns || []) {
+    lines.push(`| ${mdCell(c.name)} | ${mdCell(c.type)} | ${c.primary_key ? "✓" : ""} | ${c.nullable ? "✓" : "—"} |`);
+  }
+  return lines.join("\n");
+}
+
+async function runSlashCommand(text) {
+  appendUserBubble(text);
+  const el = document.createElement("div");
+  el.className = "turn";
+  el.innerHTML =
+    `<div class="answer markdown"></div>` +
+    `<div class="answer-toolbar">` +
+    `<button type="button" class="copy-btn copy-answer-btn" title="${esc(t("copy"))}" ` +
+    `aria-label="${esc(t("copy"))}">${icon("copy")}</button>` +
+    `</div>`;
+  $("message-list").appendChild(el);
+  const answerEl = el.querySelector(".answer");
+
+  const parts = text.slice(1).split(/\s+/).filter(Boolean);
+  const name = (parts[0] || "").toLowerCase();
+  const arg = parts.slice(1).join(" ");
+  const cmd = SLASH_COMMANDS.find((c) => c.name === name || c.aliases.includes(name));
+
+  try {
+    let md;
+    if (!cmd) {
+      md = `**${cmdT("unknown", name)}** — ${cmdT("hint")}`;
+    } else {
+      const handlers = {
+        help: slashHelp,
+        datasource: slashDatasource,
+        databases: slashDatabases,
+        tables: slashTables,
+        schemas: slashSchemas,
+        table_schema: () => slashTableSchema(arg),
+      };
+      md = await handlers[cmd.name]();
+    }
+    answerEl.innerHTML = renderMarkdown(md);
+  } catch (err) {
+    answerEl.innerHTML = `<div class="error-box">${esc(String(err.message || err))}</div>`;
+  }
+  updateWelcome();
+  scrollToBottom();
 }
 
 /* ── Sessions sidebar ────────────────────────────────── */

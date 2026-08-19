@@ -6,6 +6,7 @@ and switching between database connections.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from trove.core.types import DatasourceConfig, QueryResult, SchemaInfo
@@ -22,6 +23,20 @@ logger = get_logger(__name__)
 # ── Adapter factory mapping ──────────────────────────────
 # Adapter modules import their drivers lazily, so importing them here
 # never requires the optional extras to be installed.
+
+# Keys that look like credentials — never exposed to the Web UI.
+_SENSITIVE_KEY_RE = re.compile(r"password|passwd|secret|token|credential", re.IGNORECASE)
+
+
+def _sanitize_connection(params: dict[str, Any]) -> dict[str, Any]:
+    """Strip credential-like keys from connection params for display.
+
+    connection_params may carry password keys when parsed from a URL
+    (see urls.py), so filtering by key name is the safety boundary —
+    only non-secret fields (host/port/database/path/user) survive.
+    """
+    return {k: v for k, v in params.items() if not _SENSITIVE_KEY_RE.search(k)}
+
 
 _ADAPTER_REGISTRY: dict[str, type[DatabaseAdapter]] = {
     "sqlite": SQLiteAdapter,
@@ -50,6 +65,8 @@ class ConnectorRegistry:
     def __init__(self):
         self._adapters: dict[str, DatabaseAdapter] = {}
         self._default_name: str | None = None
+        # Display-safe connection info per datasource (no credentials).
+        self._datasource_info: dict[str, dict[str, Any]] = {}
 
     # ── Connection management ────────────────────────────
 
@@ -84,6 +101,10 @@ class ConnectorRegistry:
         )
         await adapter.connect()
         self._adapters[config.name] = adapter
+        self._datasource_info[config.name] = {
+            "type": config.type,
+            "connection": _sanitize_connection(config.connection_params),
+        }
 
         if set_default or config.default or self._default_name is None:
             self._default_name = config.name
@@ -104,6 +125,7 @@ class ConnectorRegistry:
             return
 
         adapter = self._adapters.pop(name)
+        self._datasource_info.pop(name, None)
         await adapter.disconnect()
 
         if self._default_name == name:
@@ -168,6 +190,22 @@ class ConnectorRegistry:
     def list_names(self) -> list[str]:
         """List all registered datasource names."""
         return list(self._adapters.keys())
+
+    def list_info(self) -> list[dict[str, Any]]:
+        """List registered datasources with display-safe connection info.
+
+        Each entry carries name/default plus the sanitized type and
+        connection params recorded at registration time (credentials
+        are never stored here — see _sanitize_connection).
+        """
+        return [
+            {
+                "name": name,
+                "default": name == self._default_name,
+                **self._datasource_info.get(name, {}),
+            }
+            for name in self._adapters
+        ]
 
     def is_registered(self, name: str) -> bool:
         return name in self._adapters
