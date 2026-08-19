@@ -22,6 +22,7 @@ const I18N = {
     stepsSummary: (n, ms) => `${n} 步 · ${ms}ms`,
     welcomeTitle: "Trove 数据问答",
     welcomeSubtitle: "用自然语言提问，自动生成 SQL、执行并验证答案",
+    disclaimer: "内容由 AI 生成，可能出错，重要信息请核对",
     langBtn: "EN",
     suggestions: [
       "哪个地区的平均贷款金额最高？",
@@ -43,6 +44,7 @@ const I18N = {
     stepsSummary: (n, ms) => `${n} steps · ${ms}ms`,
     welcomeTitle: "Trove Chat",
     welcomeSubtitle: "Ask in natural language — SQL is generated, executed and verified",
+    disclaimer: "AI-generated — verify important information",
     langBtn: "中文",
     suggestions: [
       "Which region has the highest average loan amount?",
@@ -175,7 +177,8 @@ const state = {
   sessionId: localStorage.getItem("trove_ui_session") || null,
   sessions: [],
   titles: {},        // session_id → derived title (first user question)
-  currentTurn: null, // {stepsEl, statusEl, answerEl, round, finished}
+  currentTurn: null, // {el, stepsEl, statusEl, answerEl, toolbarEl, round, finished}
+  controller: null,  // AbortController of the in-flight /v1/chat stream
 };
 
 function t(key, ...args) {
@@ -214,6 +217,10 @@ function cycleTheme() {
 
 function applySidebar() {
   document.body.classList.toggle("sidebar-collapsed", state.sidebarCollapsed);
+}
+
+function closeDrawer() {
+  document.body.classList.remove("sidebar-open");
 }
 
 /* ── SSE frame parser (POST → fetch stream) ──────────── */
@@ -401,6 +408,7 @@ function appendUserBubble(text) {
   $("message-list").appendChild(el);
   updateWelcome();
   scrollToBottom();
+  return el;
 }
 
 function beginAssistantTurn() {
@@ -411,15 +419,20 @@ function beginAssistantTurn() {
     `<span class="status-text">${esc(t("processing"))}</span></div>
     <div class="steps-wrap"><div class="steps"></div></div>
     <button type="button" class="steps-summary" hidden></button>
-    <div class="answer markdown"></div>`;
+    <div class="answer markdown"></div>
+    <div class="answer-toolbar" hidden>
+      <button type="button" class="copy-btn copy-answer-btn">${icon("copy")}<span>${esc(t("copy"))}</span></button>
+    </div>`;
   $("message-list").appendChild(el);
   scrollToBottom();
   state.currentTurn = {
+    el,
     stepsEl: el.querySelector(".steps"),
     stepsWrap: el.querySelector(".steps-wrap"),
     summaryEl: el.querySelector(".steps-summary"),
     statusEl: el.querySelector(".status"),
     answerEl: el.querySelector(".answer"),
+    toolbarEl: el.querySelector(".answer-toolbar"),
     steps: [],       // {label, elapsed_ms, icon} — for the summary trail
     round: 0,
     finished: false,
@@ -444,8 +457,9 @@ function renderStep(ev, turn) {
   const labelFn = NODE_LABELS[node];
   const label = labelFn ? labelFn[stepLang](detail) : node;
 
-  // A new reflection round starts on rollback or a non-OK verdict.
-  if (node === "analyze_error" || (node === "reflect" && detail.verdict && detail.verdict !== "OK")) {
+  // A new reflection round starts on rollback (analyze_error). A non-OK
+  // reflect verdict belongs to the round it judged — no divider there.
+  if (node === "analyze_error") {
     turn.round += 1;
     turn.stepsEl.insertAdjacentHTML("beforeend", roundDivider(turn.round, stepLang));
   }
@@ -579,13 +593,44 @@ function finishTurn(turn) {
     turn.stepsWrap.classList.toggle("hidden");
   });
   turn.statusEl.remove();
+  turn.toolbarEl.hidden = false;
+  state.controller = null;
+  state.currentTurn = null;
   setStreaming(false);
   scrollToBottom();
 }
 
+/* Stop pressed / session switched mid-stream: neutral rail, "aborted"
+   status, and the composer back to idle (the partial trace stays). */
+function abortTurn(turn) {
+  if (!turn || turn.finished) return;
+  turn.finished = true;
+  turn.el.classList.add("aborted");
+  turn.statusEl.classList.add("aborted");
+  const st = turn.statusEl.querySelector(".status-text");
+  if (st) st.textContent = t("aborted");
+  turn.stepsEl.querySelectorAll(".step.running")
+    .forEach((s) => s.classList.replace("running", "done"));
+  state.controller = null;
+  state.currentTurn = null;
+  setStreaming(false);
+}
+
+function abortCurrentTurn() {
+  const turn = state.currentTurn;
+  if (turn && !turn.finished) {
+    if (state.controller) state.controller.abort();
+    abortTurn(turn);
+  }
+}
+
 function setStreaming(on) {
-  $("send-btn").disabled = on;
-  $("stop-btn").hidden = !on;
+  const input = $("question-input");
+  const send = $("send-btn");
+  const stop = $("stop-btn");
+  if (input) input.disabled = on;
+  if (send) send.disabled = on || !(input && input.value.trim());
+  if (stop) stop.hidden = !on;
 }
 
 /* ── Send flow ───────────────────────────────────────── */
@@ -595,11 +640,18 @@ async function sendQuestion(text, retried = false) {
   if (!question || (state.currentTurn && !state.currentTurn.finished)) return;
   $("question-input").value = "";
 
-  appendUserBubble(question);
+  const bubbleEl = appendUserBubble(question);
   const turn = beginAssistantTurn();
   setStreaming(true);
 
+  // First question of a session → derive its title (sidebar + topbar).
+  if (!state.titles[state.sessionId]) {
+    state.titles[state.sessionId] = question.slice(0, 40);
+    setText("session-title", state.titles[state.sessionId]);
+  }
+
   const controller = new AbortController();
+  state.controller = controller;
   $("stop-btn").onclick = () => controller.abort();
 
   let res;
@@ -616,9 +668,7 @@ async function sendQuestion(text, retried = false) {
     });
   } catch (err) {
     if (err.name === "AbortError") {
-      turn.finished = true;
-      turn.statusEl.querySelector(".status-text").textContent = t("aborted");
-      setStreaming(false);
+      abortTurn(turn);
       return;
     }
     finishTurn(turn);
@@ -628,17 +678,21 @@ async function sendQuestion(text, retried = false) {
 
   if (!res.ok) {
     // Stale localStorage session (deleted server-side) → recreate once.
+    // Drop the stub bubble/turn so the retry renders a single clean pair.
     if (res.status === 404 && state.sessionId && !retried) {
       state.sessionId = null;
       localStorage.removeItem("trove_ui_session");
-      await createSession();
       turn.finished = true;
-      turn.statusEl.remove();
-      turn.stepsEl.insertAdjacentHTML(
-        "beforeend",
-        `<div class="round-divider">${esc(t("sessionNotFound"))}</div>`,
-      );
+      state.currentTurn = null;
+      state.controller = null;
+      bubbleEl.remove();
+      turn.el.remove();
+      const note = document.createElement("div");
+      note.className = "sys-note";
+      note.textContent = t("sessionNotFound");
+      $("message-list").appendChild(note);
       setStreaming(false);
+      await createSession();
       await sendQuestion(question, true);
       return;
     }
@@ -664,10 +718,16 @@ async function sendQuestion(text, retried = false) {
       turn.answerEl.innerHTML = `<div class="error-box">${esc(String(err))}</div>`;
       return;
     }
-    turn.finished = true;
-    turn.statusEl.querySelector(".status-text").textContent = t("aborted");
+    abortTurn(turn);
+    return;
   }
-  if (!turn.finished) finishTurn(turn);
+  if (!turn.finished) {
+    finishTurn(turn);
+    // Stream closed without a terminal event → surface an error.
+    if (!turn.answerEl.textContent.trim()) {
+      turn.answerEl.innerHTML = `<div class="error-box">${esc(t("error"))}</div>`;
+    }
+  }
 }
 
 /* ── Sessions sidebar ────────────────────────────────── */
@@ -718,6 +778,8 @@ async function createSession() {
 }
 
 async function selectSession(id) {
+  abortCurrentTurn();
+  closeDrawer();
   const res = await fetch(`/v1/sessions/${id}`);
   if (!res.ok) return;
   const data = await res.json();
@@ -732,7 +794,11 @@ async function selectSession(id) {
     } else if (m.role === "assistant") {
       const el = document.createElement("div");
       el.className = "turn";
-      el.innerHTML = `<div class="answer markdown">${renderMarkdown(m.content)}</div>`;
+      el.innerHTML =
+        `<div class="answer markdown">${renderMarkdown(m.content)}</div>` +
+        `<div class="answer-toolbar">` +
+        `<button type="button" class="copy-btn copy-answer-btn">${icon("copy")}` +
+        `<span>${esc(t("copy"))}</span></button></div>`;
       list.appendChild(el);
     }
   }
@@ -747,6 +813,7 @@ async function selectSession(id) {
 
 async function deleteSession(id) {
   if (!confirm(t("confirmDelete"))) return;
+  abortCurrentTurn();
   const res = await fetch(`/v1/sessions/${id}`, { method: "DELETE" });
   if (!res.ok) return;
   if (state.sessionId === id) {
@@ -797,6 +864,7 @@ function applyLang() {
   setTitle("sidebar-toggle", t("collapseTitle"));
   setText("welcome-title", t("welcomeTitle"));
   setText("welcome-subtitle", t("welcomeSubtitle"));
+  setText("composer-hint", t("disclaimer"));
   const ds = $("datasource-label");
   if (ds && ds.dataset.name) {
     ds.textContent = `${t("datasource")}：${ds.dataset.name}`;
@@ -812,9 +880,11 @@ function bindComposer() {
   const input = $("question-input");
   const composer = $("composer");
   if (!input || !composer) return;
+  const updateSend = () => { $("send-btn").disabled = !input.value.trim(); };
   input.addEventListener("input", () => {
     input.style.height = "auto";
     input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+    updateSend();
   });
   composer.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -822,35 +892,55 @@ function bindComposer() {
     input.style.height = "auto";
   });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Enter sends — except during IME composition, where Enter commits
+    // the current candidate (e.isComposing).
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       composer.requestSubmit();
     }
   });
 }
 
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
 function bindCopyButtons() {
-  // Delegated: the markdown renderer injects .copy-btn into code headers.
+  // Delegated: the markdown renderer injects .copy-btn into code headers,
+  // and each answer carries a .copy-answer-btn in its toolbar. innerHTML
+  // is saved/restored so the icon survives the "copied" swap.
   const list = $("message-list");
   if (!list) return;
   list.addEventListener("click", async (e) => {
-    const btn = e.target.closest(".copy-btn");
-    if (!btn) return;
-    const code = btn.closest(".code-block").querySelector("code");
-    const text = code ? code.textContent : "";
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
+    const codeBtn = e.target.closest(".copy-btn:not(.copy-answer-btn)");
+    if (codeBtn) {
+      const code = codeBtn.closest(".code-block")?.querySelector("code");
+      if (!code) return;
+      await copyText(code.textContent);
+      const prev = codeBtn.innerHTML;
+      codeBtn.innerHTML = `<span>${esc(t("copied"))}</span>`;
+      setTimeout(() => { codeBtn.innerHTML = prev; }, 1500);
+      return;
     }
-    const prev = btn.textContent;
-    btn.textContent = t("copied");
-    setTimeout(() => { btn.textContent = prev; }, 1500);
+    const answerBtn = e.target.closest(".copy-answer-btn");
+    if (answerBtn) {
+      const turnEl = answerBtn.closest(".turn");
+      const answer = turnEl?.querySelector(".answer");
+      if (!answer || !answer.textContent.trim()) return;
+      await copyText(answer.innerText);
+      const prev = answerBtn.innerHTML;
+      answerBtn.innerHTML = `<span>${esc(t("copied"))}</span>`;
+      setTimeout(() => { answerBtn.innerHTML = prev; }, 1500);
+    }
   });
 }
 
@@ -884,13 +974,27 @@ async function init() {
   on("theme-toggle", "click", cycleTheme);
   window.matchMedia("(prefers-color-scheme: dark)")
     .addEventListener("change", () => { if (state.theme === "auto") applyTheme(); });
+  // Desktop: collapse the sidebar. Mobile: overlay drawer + backdrop.
+  const mobileMq = window.matchMedia("(max-width: 768px)");
   on("sidebar-toggle", "click", () => {
-    state.sidebarCollapsed = !state.sidebarCollapsed;
-    localStorage.setItem("trove_ui_sidebar", state.sidebarCollapsed ? "1" : "0");
-    applySidebar();
+    if (mobileMq.matches) {
+      document.body.classList.toggle("sidebar-open");
+    } else {
+      state.sidebarCollapsed = !state.sidebarCollapsed;
+      localStorage.setItem("trove_ui_sidebar", state.sidebarCollapsed ? "1" : "0");
+      applySidebar();
+    }
+  });
+  mobileMq.addEventListener("change", (e) => { if (!e.matches) closeDrawer(); });
+  const backdrop = $("backdrop");
+  if (backdrop) backdrop.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeDrawer();
   });
   on("new-session-btn", "click", async () => {
+    abortCurrentTurn();
     if (await createSession()) {
+      closeDrawer();
       const list = $("message-list");
       if (list) list.innerHTML = "";
       setText("session-title", "");

@@ -42,21 +42,32 @@
     </header>
     <div id="message-list" aria-live="polite">
       <div id="welcome">
+        <div class="welcome-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2 3 12l9 10 9-10-9-10Z"></path>
+            <path d="M3 12h18"></path>
+          </svg>
+        </div>
         <h2 id="welcome-title">Trove 数据问答</h2>
         <p id="welcome-subtitle">用自然语言提问，自动生成 SQL、执行并验证答案</p>
         <div id="suggestion-chips"></div>
       </div>
     </div>
     <form id="composer" autocomplete="off">
-      <textarea id="question-input" rows="1" placeholder="输入问题…"></textarea>
-      <button id="send-btn" type="submit" title="发送" aria-label="Send">
-        <span class="btn-icon" aria-hidden="true"></span>
-      </button>
-      <button id="stop-btn" type="button" title="停止" aria-label="Stop" hidden>
-        <span class="btn-icon" aria-hidden="true"></span>
-      </button>
+      <div id="composer-box">
+        <textarea id="question-input" rows="1" placeholder="输入问题…"></textarea>
+        <button id="send-btn" type="submit" title="发送" aria-label="Send" disabled>
+          <span class="btn-icon" aria-hidden="true"></span>
+        </button>
+        <button id="stop-btn" type="button" title="停止" aria-label="Stop" hidden>
+          <span class="btn-icon" aria-hidden="true"></span>
+        </button>
+      </div>
+      <div id="composer-hint">内容由 AI 生成，可能出错，重要信息请核对</div>
     </form>
   </main>
+  <div id="backdrop" aria-hidden="true"></div>
   <script src="/ui/app.js" defer></script>
 </body>
 </html>
