@@ -117,6 +117,7 @@ class GraphServices:
     connectors: ConnectorRegistry | None = None
     config: AgentConfig | None = None
     kb: KbService | None = None  # optional knowledge base enhancement
+    semantic_layer: Any | None = None  # optional live semantic provider (OSSIE)
 
 
 def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
@@ -217,18 +218,18 @@ def _make_gen_sql_node(
         example_hits = []
         lessons: list[dict[str, Any]] = []
         rules: list[str] = []
+        # 证据层锚:schema linking 的 matched_tables(实时语义层也要用)
+        matched = list(state.matched_tables or [])
+        all_table_names: list[str] = []
+        if services.catalog is not None and matched:
+            try:
+                all_table_names = [
+                    t["name"] for t in await services.catalog.list_tables(datasource)
+                ]
+            except Exception:
+                all_table_names = []
         if services.kb is not None and datasource:
             await services.kb.ensure_synced(default_datasource=datasource)
-            # 证据层：以 schema linking 的 matched_tables 为锚做确定性过滤
-            matched = list(state.matched_tables or [])
-            all_table_names: list[str] = []
-            if services.catalog is not None and matched:
-                try:
-                    all_table_names = [
-                        t["name"] for t in await services.catalog.list_tables(datasource)
-                    ]
-                except Exception:
-                    all_table_names = []
             # limit=5:检索注入 5 个示例(实测 3 个时注入列覆盖仅 28%,
             # 5 个 → 42%,token 成本 ~+60,预算(2500)完全装得下)
             example_hits = await services.kb.search_examples(
@@ -256,6 +257,25 @@ def _make_gen_sql_node(
                     tables=matched or None, all_tables=all_table_names or None,
                 )
             ]
+
+        # 实时语义层 metric 作为 term 源(KB 优先,同名去重):
+        # 与 KB term 同语义的名称/同义词匹配,表锚定由 provider 完成。
+        # 不进 kb_exact_match 快捷通道(那是 KB 示例的专用路径)。
+        if services.semantic_layer is not None and datasource:
+            try:
+                live_hits = services.semantic_layer.terms_for(
+                    state.question, tables=matched or None,
+                    all_tables=all_table_names or None,
+                )
+            except Exception as e:
+                logger.warning("Semantic layer terms failed (%s): %s", datasource, e)
+                live_hits = []
+            seen = {t["term"] for t in term_notes}
+            for h in live_hits:
+                if h.term not in seen:
+                    term_notes.append(
+                        {"term": h.term, "mapping": h.mapping, "definition": h.definition})
+                    seen.add(h.term)
 
         # KB 精确命中:示例问题与当前问题几乎逐词一致 → 直接采用示例 SQL。
         # KB 保存的是该数据源的标准写法;对已收录的问题让模型"再解释一遍"
@@ -776,6 +796,7 @@ def _build_reflection(
         services.catalog, kb=services.kb, connectors=services.connectors,
         fallback_all=not clarify,
         llm=services.llm, config=services.config or AgentConfig(),
+        semantic_layer=services.semantic_layer,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(
         services, subgraph, subgraph_alt=subgraph_alt,
@@ -862,6 +883,7 @@ def _build_fixed(
         services.catalog, kb=services.kb, connectors=services.connectors,
         fallback_all=not clarify,
         llm=services.llm, config=services.config or AgentConfig(),
+        semantic_layer=services.semantic_layer,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))

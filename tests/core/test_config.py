@@ -130,6 +130,23 @@ class TestLoadAgentConfig:
         assert config.datasources[0].name == "prod"
         assert config.datasources[0].type == "postgres"
 
+    def test_load_with_semantic_layer_path(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  semantic_layer_path: .trove/semantic\n"
+        )
+
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.semantic_layer_path == ".trove/semantic"
+
+    def test_semantic_layer_path_defaults_empty(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text("agent:\n  target: openai/gpt-4o\n")
+
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.semantic_layer_path == ""
+
     def test_load_invalid_yaml_raises(self, tmp_path):
         config_file = tmp_path / "agent.yml"
         config_file.write_text("agent: [unclosed\n")

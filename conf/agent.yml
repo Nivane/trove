@@ -9,6 +9,10 @@ agent:
   language: en
   # 时间解析:确定性规则解析相对时间表达(zh/en),未命中静默透传
   date_parser: true
+  # OSSIE 语义层目录(相对项目根,按 datasource 名取子目录 .trove/semantic/<datasource>/):
+  # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
+  # 空 = 关闭。
+  # semantic_layer_path: .trove/semantic
   # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
   observability:
     tracing:

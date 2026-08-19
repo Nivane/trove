@@ -149,6 +149,70 @@ class TestSchemaLinking:
         assert "No matching tables" not in update["schema_context"]
 
 
+class TestSchemaLinkingSemanticLayer:
+    """实时语义层(OSSIE provider)渲染进 schema_context。"""
+
+    class FakeProvider:
+        enabled = True
+
+        def __init__(self, metrics, instructions=""):
+            self._metrics = metrics
+            self._instructions = instructions
+
+        def metrics(self):
+            return list(self._metrics)
+
+        @property
+        def instructions(self):
+            return self._instructions
+
+    @pytest.fixture
+    def semantic_metrics(self):
+        from trove.services.semantic_layer.models import SemanticMetric
+        return [
+            SemanticMetric(
+                name="total_loan_amount", expression="SUM(loan.amount)",
+                datasets=["loan"], definition="Total amount of all loans"),
+            SemanticMetric(
+                name="ghost_metric", expression="SUM(ghost.col)",
+                datasets=["ghost"], definition="Ghost"),
+            SemanticMetric(name="global_count", expression="COUNT(*)"),
+        ]
+
+    async def test_renders_anchored_metrics_and_instructions(self, demo_registry, semantic_metrics):
+        from trove.services.datasource.catalog import CatalogService
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=self.FakeProvider(
+                semantic_metrics, instructions="Use this model for loan analysis"),
+        )
+        update = await node(make_state(question="What is the total loan amount?"))
+        ctx = update["schema_context"]
+        # 锚定命中 loan 表 → 进该表段
+        assert "Semantic metrics:" in ctx
+        assert "total_loan_amount: SUM(loan.amount) — Total amount of all loans" in ctx
+        # 模型级 AI 使用说明
+        assert "Semantic note: Use this model for loan analysis" in ctx
+        # 无数据集锚定 → 模型级块
+        assert "global_count: COUNT(*)" in ctx
+        # 数据集没进 matched_tables → 不渲染
+        assert "ghost_metric" not in ctx
+
+    async def test_disabled_provider_renders_nothing(self, demo_registry, semantic_metrics):
+        from trove.services.datasource.catalog import CatalogService
+        provider = self.FakeProvider(semantic_metrics, instructions="note")
+        provider.enabled = False
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=provider,
+        )
+        update = await node(make_state(question="What is the total loan amount?"))
+        assert "Semantic metrics:" not in update["schema_context"]
+        assert "Semantic note:" not in update["schema_context"]
+
+
 class TestPlannerRollbackRevision:
     async def test_rollback_revision_includes_prior_plan(self):
         """回退重跑规划时,上一版计划必须进 prompt(增量修订,非从零重写)。"""

@@ -167,6 +167,32 @@ async def create_app_components(
     from trove.services.kb.service import KbService
     kb = KbService(Path.cwd())
 
+    # ── Semantic layer (optional: config.semantic_layer_path) ──
+    # OSSIE YAML 每查询实时读取(mtime 缓存),坏文件回退 last-known-good,
+    # 任何初始化失败都不阻断问题流程。
+    semantic_layer = None
+    if config.semantic_layer_path:
+        try:
+            from trove.services.semantic_layer.provider import (
+                SemanticLayerProvider,
+            )
+            adapter = await connector_registry.get()
+            ds_name = connector_registry.default_name or "default"
+            schema = await adapter.get_schema()
+            known_tables = {t.name.lower() for t in schema.tables}
+            semantic_layer = SemanticLayerProvider(
+                directory=Path.cwd() / config.semantic_layer_path / ds_name,
+                datasource=ds_name,
+                dialect=adapter.dialect(),
+                table_exists=lambda t: t.lower() in known_tables,
+            )
+            logger.info(
+                "Semantic layer enabled: %s", semantic_layer.directory)
+        except Exception as e:
+            logger.warning(
+                "Semantic layer init failed (%s); continuing without it.", e)
+            semantic_layer = None
+
     # ── Graphs ────────────────────────────────────────────
     services = GraphServices(
         llm=llm_gateway,
@@ -174,6 +200,7 @@ async def create_app_components(
         connectors=connector_registry,
         config=config,
         kb=kb,
+        semantic_layer=semantic_layer,
     )
     graphs = build_graphs(services, checkpointer=checkpointer)
 

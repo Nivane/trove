@@ -34,13 +34,15 @@ class RecordingLLM:
         return {"content": self._responses.pop(0), "tool_calls": []}
 
 
-def make_services(llm, catalog=None, connectors=None, kb=None, config=None):
+def make_services(llm, catalog=None, connectors=None, kb=None, config=None,
+                   semantic_layer=None):
     return GraphServices(
         llm=llm,
         catalog=catalog,
         connectors=connectors,
         config=config or AgentConfig(target="mock/model"),
         kb=kb,
+        semantic_layer=semantic_layer,
     )
 
 
@@ -54,6 +56,94 @@ def build(services, multi_candidate=False, planner=False, clarify=False, agentic
     """Build graphs with single-candidate classic generation (scripted-response tests)."""
     return build_graphs(services, multi_candidate=multi_candidate, planner=planner,
                         clarify=clarify, agentic=agentic)
+
+
+# ── gen_sql subgraph ─────────────────────────────────────
+
+
+class TestGenSQLSemanticLayerTerms:
+    """实时语义层 metric 以 term 形态合并进 gen_sql 提示词(KB 优先去重)。"""
+
+    OSSIE_SAMPLE = """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: loan
+        source: financial.loan
+    metrics:
+      - name: total_loan_amount
+        description: Total amount of all loans
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(loan.amount)
+        ai_context:
+          synonyms:
+            - "total loans"
+    """
+
+    async def test_live_terms_merged_into_gen_prompt(self, tmp_path, demo_registry):
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(self.OSSIE_SAMPLE)
+
+        provider = SemanticLayerProvider(semantic_dir, "demo")
+        llm = RecordingLLM(["```sql\nSELECT SUM(amount) FROM loan;\n```"])
+        sub = build_gen_sql_subgraph(make_services(llm))
+        services = make_services(llm, connectors=demo_registry, semantic_layer=provider)
+        node = graphs_module._make_gen_sql_node(services, sub)
+        state = make_state(
+            question="What is the total loans volume?",
+            matched_tables=["loan"],
+        )
+        out = await node(state)
+        assert out["sql"]
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[-1])
+        # 同义词命中 → live term(名字 + mapping)注入 Terminology 段
+        assert "total_loan_amount" in prompt
+        assert "SUM(loan.amount)" in prompt
+        assert "Terminology" in prompt
+
+    async def test_kb_terms_take_precedence_on_duplicate_names(self, tmp_path, demo_registry):
+        """同名 term:KB 在先在先,实时语义层同名不覆盖。"""
+        from trove.services.kb.service import KbService, TermHit
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+        # KB:同名 term,映射不同(KB 口径优先)
+        kb = KbService(tmp_path / "proj")
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "semantics.yml").write_text(
+            "terms:\n"
+            "  - term: total_loan_amount\n"
+            "    aliases:\n"
+            "      - \"total loans\"\n"
+            "    mapping: SUM(loan.amount) * 2\n"
+            "    tables: [loan]\n")
+        await kb.force_sync(default_datasource="demo")
+
+        # 实时语义层:同名但映射为普通 SUM
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(self.OSSIE_SAMPLE)
+        provider = SemanticLayerProvider(semantic_dir, "demo")
+
+        llm = RecordingLLM(["```sql\nSELECT SUM(amount) FROM loan;\n```"])
+        sub = build_gen_sql_subgraph(make_services(llm))
+        services = make_services(
+            llm, connectors=demo_registry, kb=kb, semantic_layer=provider)
+        node = graphs_module._make_gen_sql_node(services, sub)
+        state = make_state(
+            question="What is the total loans volume?",
+            matched_tables=["loan"],
+        )
+        out = await node(state)
+        assert out["sql"]
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[-1])
+        # KB 的映射出现;实时层的 SUM(loan.amount) 作为 term 被去重
+        assert "SUM(loan.amount) * 2" in prompt
+        assert "total_loan_amount" in prompt
 
 
 # ── gen_sql subgraph ─────────────────────────────────────

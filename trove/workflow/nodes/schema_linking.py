@@ -57,6 +57,12 @@ def _column_line(col: dict[str, Any], notes: TableNotes | None) -> str:
     return f"{base} — {desc}" if desc else base
 
 
+def _semantic_metric_line(m: Any) -> str:
+    """语义层 metric 一行:名字:表达式 — 业务定义。"""
+    base = f"- {m.name}: {m.expression}"
+    return f"{base} — {m.definition}" if m.definition else base
+
+
 _NOTABLE_SHAPES = {"all_caps", "capital", "text"}  # 常见形状不显示(与枚举含义重复)
 
 
@@ -466,6 +472,7 @@ def make_schema_linking(
     fallback_all: bool = True,
     llm: Any | None = None,
     config: Any | None = None,
+    semantic_layer: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the schema_linking node bound to catalog and knowledge base.
 
@@ -481,6 +488,9 @@ def make_schema_linking(
         llm/config: Optional — when present, an LLM alignment step (AskData
             Task Alignment) trims the candidate tables/columns by question +
             statistics before the schema context is rendered.
+        semantic_layer: Optional live semantic provider (OSSIE etc.) —
+            metrics render into each matched table's section (datasets
+            anchored) and a model-level block; never raises.
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -604,6 +614,24 @@ def make_schema_linking(
                 await kb.table_notes(matched_names, datasource)
                 if (kb is not None and datasource) else {}
             )
+
+            # 3.1 实时语义层(OSSIE provider):外部语义文件查询时直读。
+            # metric 表达式渲染进锚定表的 Semantic metrics 段;无数据集
+            # 锚定的 metric 和模型级说明走模型级块。provider 自身保证
+            # 软失败(last-known-good/逐条丢弃),这里再兜一层 try。
+            live_metrics = []
+            semantic_instructions = ""
+            if (
+                semantic_layer is not None and datasource
+                and getattr(semantic_layer, "enabled", False)
+            ):
+                try:
+                    live_metrics = list(semantic_layer.metrics() or [])
+                    semantic_instructions = (
+                        getattr(semantic_layer, "instructions", "") or "")
+                except Exception as e:
+                    logger.warning(
+                        "Semantic layer lookup failed (%s): %s", datasource, e)
             details_by_name = {d["name"]: d for d in all_details}
             details = [
                 details_by_name[name] for name in matched_names
@@ -694,6 +722,12 @@ def make_schema_linking(
                         "Metrics:\n"
                         + "".join(f"- {m} — {d}\n" for m, d in table_notes.metrics.items())
                     )
+                anchored = [m for m in live_metrics if m.datasets and name in m.datasets]
+                if anchored:
+                    parts.append(
+                        "Semantic metrics:\n"
+                        + "".join(f"{_semantic_metric_line(m)}\n" for m in anchored)
+                    )
                 if table_notes and table_notes.stats:
                     stat_lines = _stats_lines(table_notes.stats)
                     if stat_lines:
@@ -716,6 +750,20 @@ def make_schema_linking(
                         for v, loc in shown.items()
                     )
                     schema_context += "\n\n" + hint_lines
+
+            # 4.5 模型级语义块:无数据集锚定的 metric + AI 使用说明
+            # (锚定 metric 已进各表段;放最后以免挤占表段上下文)
+            model_lines = []
+            agnostic = [m for m in live_metrics if not m.datasets]
+            if agnostic:
+                model_lines.append(
+                    "Semantic metrics:\n"
+                    + "\n".join(_semantic_metric_line(m) for m in agnostic)
+                )
+            if semantic_instructions:
+                model_lines.append(f"Semantic note: {semantic_instructions}")
+            if model_lines:
+                schema_context += "\n\n" + "\n\n".join(model_lines)
 
             logger.debug(
                 "Schema linking matched %d tables for query: %s",
