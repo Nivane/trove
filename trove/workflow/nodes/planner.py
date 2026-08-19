@@ -348,7 +348,7 @@ def make_planner(
                 "planner/user",
                 lang=state.lang,
                 question=state.question,
-                schema_context=state.schema_context[:1500],
+                schema_context=state.schema_context[:10000],
                 evidence=state.evidence,
                 time_context=state.time_context,
                 history=state.history,

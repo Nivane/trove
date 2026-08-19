@@ -223,7 +223,7 @@ def make_analyze_error(
                 question=state.question,
                 sql=state.sql,
                 error=error_text,
-                schema_context=state.schema_context[:1200],
+                schema_context=state.schema_context[:10000],
                 evidence=state.evidence,
                 trail=trail,
             )

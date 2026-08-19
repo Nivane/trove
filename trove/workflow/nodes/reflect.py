@@ -250,14 +250,15 @@ def _build_reflect_prompt(
         sample = "\n".join(
             str(row) for row in sample_rows[:5]
         )
-    # schema 截到 600 字符:推理模型的 reasoning 预算有限,过长的 schema
-    # 会让它在裁决前耗尽预算(content 为空,裁决从未产出)
+    # schema 上限 10000 字符:裁决需要足够 schema 才能判断连接/过滤是否
+    # 成立(实测 600 连联表都看不清)。推理模型把预算花在 reasoning 上导致
+    # content 为空的失败已由 _reask_verdict 极简重问 + 强制放行兜底。
     return render(
         "reflect/user",
         question=question,
         evidence=evidence,
         time_context=time_context,
-        schema_context=schema_context[:600] if schema_context else "",
+        schema_context=schema_context[:10000] if schema_context else "",
         sql=sql,
         columns=columns,
         total_rows=total_rows,
