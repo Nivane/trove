@@ -25,6 +25,9 @@ const I18N = {
     disclaimer: "内容由 AI 生成，可能出错，重要信息请核对",
     langBtn: "EN",
     noSlashMatch: "没有匹配的命令",
+    noSession: "未选择会话",
+    sessionCleared: "会话已清空",
+    sessionCompacted: (n) => `会话已压缩，保留最近 ${n} 条消息`,
     suggestions: [
       "哪个地区的平均贷款金额最高？",
       "列出各地区的账户数量",
@@ -48,6 +51,9 @@ const I18N = {
     disclaimer: "AI-generated — verify important information",
     langBtn: "中文",
     noSlashMatch: "No matching command",
+    noSession: "No active session",
+    sessionCleared: "Session cleared",
+    sessionCompacted: (n) => `Session compacted — ${n} messages remain`,
     suggestions: [
       "Which region has the highest average loan amount?",
       "List account counts by region",
@@ -647,9 +653,9 @@ async function sendQuestion(text, retried = false) {
   if (!question || (state.currentTurn && !state.currentTurn.finished)) return;
   $("question-input").value = "";
 
-  // Slash commands are handled locally (display-only) — the REPL's
-  // management commands (/kb /model /init /clear /compact /exit /trace)
-  // are intentionally not exposed here.
+  // Slash commands: catalog queries render locally; /clear and /compact
+  // call the session endpoints. /kb /model /init /exit /trace remain
+  // REPL-only.
   if (question.startsWith("/")) {
     await runSlashCommand(question);
     return;
@@ -789,6 +795,10 @@ const SLASH_COMMANDS = [
     desc: { zh: "查看表结构", en: "Show table schema" } },
   { name: "schemas", aliases: [], usage: "schemas",
     desc: { zh: "列出所有 schema", en: "List all schemas" } },
+  { name: "clear", aliases: [], usage: "clear",
+    desc: { zh: "清空当前会话历史", en: "Clear current session history" } },
+  { name: "compact", aliases: [], usage: "compact",
+    desc: { zh: "压缩会话历史，节省上下文空间", en: "Compact conversation history" } },
 ];
 
 /* renderMarkdown expects pre-escaped text — sanitize dynamic values
@@ -892,7 +902,54 @@ async function slashTableSchema(arg) {
   return lines.join("\n");
 }
 
+async function slashClear() {
+  if (!state.sessionId) return `**${cmdT("noSession")}**`;
+  const res = await fetch(`/v1/sessions/${encodeURIComponent(state.sessionId)}/clear`, { method: "POST" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const list = $("message-list");
+  if (list) list.innerHTML = "";
+  setText("session-title", "");
+  const note = document.createElement("div");
+  note.className = "sys-note";
+  note.textContent = t("sessionCleared");
+  if (list) list.appendChild(note);
+  updateWelcome();
+  await refreshSessions();
+  scrollToBottom();
+}
+
+async function slashCompact() {
+  if (!state.sessionId) return `**${cmdT("noSession")}**`;
+  const res = await fetch(`/v1/sessions/${encodeURIComponent(state.sessionId)}/compact`, { method: "POST" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  // Reload from the server so the UI reflects the compaction (the
+  // summary + recent turns), then surface a confirmation note.
+  await selectSession(state.sessionId);
+  const list = $("message-list");
+  const note = document.createElement("div");
+  note.className = "sys-note";
+  note.textContent = t("sessionCompacted", data.message_count);
+  if (list) list.appendChild(note);
+  updateWelcome();
+  scrollToBottom();
+}
+
 async function runSlashCommand(text) {
+  // Session-mutating commands handle their own UI (they replace the
+  // message list), so they bypass the standard bubble/turn rendering.
+  const parts = text.slice(1).split(/\s+/).filter(Boolean);
+  const name = (parts[0] || "").toLowerCase();
+  const cmd = SLASH_COMMANDS.find((c) => c.name === name || c.aliases.includes(name));
+  if (cmd && cmd.name === "clear") {
+    await slashClear();
+    return;
+  }
+  if (cmd && cmd.name === "compact") {
+    await slashCompact();
+    return;
+  }
+
   appendUserBubble(text);
   const el = document.createElement("div");
   el.className = "turn";
@@ -905,10 +962,7 @@ async function runSlashCommand(text) {
   $("message-list").appendChild(el);
   const answerEl = el.querySelector(".answer");
 
-  const parts = text.slice(1).split(/\s+/).filter(Boolean);
-  const name = (parts[0] || "").toLowerCase();
   const arg = parts.slice(1).join(" ");
-  const cmd = SLASH_COMMANDS.find((c) => c.name === name || c.aliases.includes(name));
 
   try {
     let md;

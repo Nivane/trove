@@ -164,3 +164,37 @@ class TestCompactSession:
         loaded = await store.load_session(session.session_id, "/tmp/p")
         assert loaded.summary == "summary text"
         assert loaded.messages[0].role == "system"
+
+
+class TestClearSession:
+    async def test_clear_removes_messages_and_summary(self, tmp_home):
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+
+        for i in range(3):
+            session.messages.append(Message(role="user", content=f"q{i}"))
+            session.messages.append(Message(role="assistant", content=f"a{i}"))
+        session.summary = "old summary"
+        await store.save_session(session)
+
+        cleared = await store.clear_session(session)
+        assert cleared.messages == []
+        assert cleared.summary is None
+
+        loaded = await store.load_session(session.session_id, "/tmp/p")
+        assert loaded.messages == []
+        assert loaded.summary is None
+
+    async def test_clear_keeps_session_record(self, tmp_home):
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+        session.messages.append(Message(role="user", content="hi"))
+        await store.save_session(session)
+
+        await store.clear_session(session)
+        # 会话仍可加载/继续使用,只是没有消息
+        loaded = await store.load_session(session.session_id, "/tmp/p")
+        assert loaded.messages == []
+        loaded.messages.append(Message(role="user", content="again"))
+        await store.save_session(loaded)
+        assert len((await store.load_session(session.session_id, "/tmp/p")).messages) == 1

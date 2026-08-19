@@ -29,6 +29,7 @@ import uuid
 
 from trove.core.i18n import L
 from trove.prompts import render
+from trove.services.sql.format import format_sql
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -126,6 +127,18 @@ class SessionManager:
         """Delete a session and its stored data."""
         return await self._store.delete_session(session_id, project_cwd)
 
+    async def clear_session(self, session: Session) -> Session:
+        """Clear all messages and the compaction summary (keeps the session)."""
+        return await self._store.clear_session(session)
+
+    async def _maybe_auto_compact(self, session: Session) -> None:
+        """Auto-compact before a query when context nears the token limit."""
+        try:
+            if self.should_compact(session):
+                await self.compact_session(session)
+        except Exception as e:
+            logger.warning("Auto-compaction failed: %s", e)
+
     async def compact_session(
         self,
         session: Session,
@@ -215,7 +228,9 @@ class SessionManager:
         """
         graph = self._get_graph(workflow_name)
 
-        # History is built BEFORE appending the current question
+        # Auto-compact an over-long session, then build history BEFORE
+        # appending the current question
+        await self._maybe_auto_compact(session)
         history = self._conversation_history(session)
         user_msg = Message(
             role="user",
@@ -266,6 +281,7 @@ class SessionManager:
             yield {"type": "error", "node": "workflow", "content": str(e)}
             return
 
+        await self._maybe_auto_compact(session)
         history = self._conversation_history(session)
         user_msg = Message(
             role="user",
@@ -313,7 +329,10 @@ class SessionManager:
                     merged.update(delta)
 
                     # ── Structured step (REPL renders; also in --print) ──
-                    yield self._step_event(seq, node_name, delta, elapsed_ms, reason, retry, lang)
+                    yield self._step_event(
+                        seq, node_name, delta, elapsed_ms,
+                        reason, retry, lang, merged.get("dialect", ""),
+                    )
 
                     # ── Legacy trajectory events (--print compatibility) ──
                     if node_name == "planner" and delta.get("plan"):
@@ -336,7 +355,8 @@ class SessionManager:
                         }
 
                     if node_name == "gen_sql" and delta.get("sql"):
-                        yield {"type": "sql", "node": "gen_sql", "content": delta["sql"]}
+                        yield {"type": "sql", "node": "gen_sql",
+                               "content": format_sql(delta["sql"], merged.get("dialect", ""))}
                     elif node_name == "execute_sql" and "row_count" in delta:
                         yield {"type": "result", "node": "execute_sql", "row_count": delta["row_count"]}
         except asyncio.CancelledError:
@@ -360,7 +380,8 @@ class SessionManager:
     @staticmethod
     def _step_event(
         seq: int, node_name: str, delta: dict[str, Any],
-        elapsed_ms: int, reason: str, retry: int, lang: str = "zh",
+        elapsed_ms: int, reason: str, retry: int,
+        lang: str = "zh", dialect: str = "",
     ) -> dict[str, Any]:
         """Structured trajectory step for REPL rendering / --print."""
         detail: dict[str, Any] = {}
@@ -377,7 +398,7 @@ class SessionManager:
         elif node_name == "planner":
             detail["plan"] = delta.get("plan", "")
         elif node_name == "gen_sql":
-            detail["sql"] = delta.get("sql", "")
+            detail["sql"] = format_sql(delta.get("sql", ""), dialect)
             detail["attempts"] = delta.get("attempts", 1)
             detail["retry"] = retry
             detail["reason"] = reason

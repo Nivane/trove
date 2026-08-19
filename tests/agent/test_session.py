@@ -647,3 +647,93 @@ class TestTokenUsage:
         long_content = "word " * 200000
         session.messages = [Message(role="user", content=long_content)]
         assert session_manager.should_compact(session) is True
+
+
+class TestAutoCompact:
+    async def _manager(self, tmp_home, graph):
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        class SummaryLLM:
+            async def chat(self, model, messages, **kwargs):
+                return "SUMMARY"
+
+        return SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": graph},
+            llm_gateway=SummaryLLM(),
+        )
+
+    async def test_ask_auto_compacts_over_limit(self, tmp_home):
+        """上下文超限时,ask 在构建历史前自动压缩并注入摘要。"""
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(state)
+                return {**state.model_dump(), "final_response": "answer"}
+
+        manager = await self._manager(tmp_home, StubGraph())
+        session = await manager.start_session(project_cwd="/tmp/p")
+        # ~1M chars >> 128k*0.9 → triggers should_compact
+        session.messages = [Message(role="user", content="word " * 12000) for _ in range(10)]
+        await manager.ask(session=session, question="新问题")
+
+        assert "SUMMARY" in captured[0].history  # 自动压缩摘要进入历史
+        assert session.summary == "SUMMARY"
+        assert session.messages[0].role == "system"  # 摘要消息已持久化
+
+    async def test_ask_skips_compact_when_short(self, tmp_home):
+        captured = []
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                captured.append(state)
+                return {**state.model_dump(), "final_response": "answer"}
+
+        manager = await self._manager(tmp_home, StubGraph())
+        session = await manager.start_session(project_cwd="/tmp/p")
+        session.messages = [Message(role="user", content="short")]
+        await manager.ask(session=session, question="新问题")
+
+        assert "SUMMARY" not in captured[0].history
+        assert session.summary is None
+
+    async def test_ask_stream_auto_compacts_over_limit(self, tmp_home):
+        """ask_stream 同样在构建历史前自动压缩。"""
+        captured = []
+
+        class StubGraph:
+            async def astream(self, state, config=None, stream_mode=None):
+                captured.append(state)
+                yield {"output": {"final_response": "answer"}}
+
+        manager = await self._manager(tmp_home, StubGraph())
+        session = await manager.start_session(project_cwd="/tmp/p")
+        session.messages = [Message(role="user", content="word " * 12000) for _ in range(10)]
+        events = []
+        async for event in manager.ask_stream(session=session, question="新问题"):
+            events.append(event)
+
+        assert "SUMMARY" in captured[0].history
+        assert session.summary == "SUMMARY"
+
+
+class TestClearSession:
+    async def test_clear_removes_messages_and_summary(self, session_manager):
+        session = await session_manager.start_session(project_cwd="/tmp/p1")
+        for i in range(4):
+            session.messages.append(Message(role="user", content=f"q{i}"))
+            session.messages.append(Message(role="assistant", content=f"a{i}"))
+        session.summary = "旧摘要"
+        await session_manager.save_session(session)
+
+        cleared = await session_manager.clear_session(session)
+        assert len(cleared.messages) == 0
+        assert cleared.summary is None
+
+        loaded = await session_manager.load_session(session.session_id, "/tmp/p1")
+        assert loaded.messages == []
+        assert loaded.summary is None

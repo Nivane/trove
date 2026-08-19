@@ -60,6 +60,31 @@ async def delete_session(session_id: str, request: Request) -> None:
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
 
 
+def _load_or_404(request: Request, session_id: str):
+    try:
+        return _manager(request).load_session(session_id)
+    except SessionError:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+
+
+@router.post("/sessions/{session_id}/compact")
+async def compact_session(session_id: str, request: Request) -> dict:
+    session = await _load_or_404(request, session_id)
+    compacted = await _manager(request).compact_session(session)
+    return {
+        "session_id": session_id,
+        "summary": compacted.summary,
+        "message_count": len(compacted.messages),
+    }
+
+
+@router.post("/sessions/{session_id}/clear")
+async def clear_session(session_id: str, request: Request) -> dict:
+    session = await _load_or_404(request, session_id)
+    cleared = await _manager(request).clear_session(session)
+    return {"session_id": session_id, "message_count": len(cleared.messages)}
+
+
 @router.post("/chat")
 async def chat(body: ChatRequest, request: Request):
     manager = _manager(request)

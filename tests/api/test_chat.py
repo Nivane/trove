@@ -49,6 +49,47 @@ class TestSessions:
         assert resp.status_code == 200
         assert isinstance(resp.json()["sessions"], list)
 
+    async def test_clear_session(self, client):
+        created = (await client.post("/v1/sessions")).json()["session_id"]
+        await client.post(
+            "/v1/chat",
+            json={"session_id": created, "question": "Which county has most students?"},
+        )
+        resp = await client.post(f"/v1/sessions/{created}/clear")
+        assert resp.status_code == 200
+        assert resp.json()["message_count"] == 0
+
+        detail = (await client.get(f"/v1/sessions/{created}")).json()
+        assert detail["messages"] == []
+        assert detail["summary"] is None
+
+    async def test_clear_missing_session_404(self, client):
+        assert (await client.post("/v1/sessions/nope/clear")).status_code == 404
+
+    async def test_compact_session(self, client, api_app):
+        """压缩后返回摘要与剩余消息数(该会话 manager 的 LLM 只在压缩时被调用)。"""
+        from trove.core.types import Message
+        manager = api_app.state.session_manager
+        created = (await client.post("/v1/sessions")).json()["session_id"]
+        session = await manager.load_session(created)
+        for i in range(4):
+            session.messages.append(Message(role="user", content=f"q{i}"))
+            session.messages.append(Message(role="assistant", content=f"a{i}"))
+        await manager.save_session(session)
+
+        resp = await client.post(f"/v1/sessions/{created}/compact")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["summary"]
+        assert body["message_count"] == 7  # summary + keep_recent=3 pairs
+
+        detail = (await client.get(f"/v1/sessions/{created}")).json()
+        assert detail["messages"][0]["role"] == "system"
+        assert detail["summary"]
+
+    async def test_compact_missing_session_404(self, client):
+        assert (await client.post("/v1/sessions/nope/compact")).status_code == 404
+
 
 class TestChat:
     async def test_chat_streams_typed_events(self, client):

@@ -336,6 +336,27 @@ class SessionStore:
 
     # ── Session operations ───────────────────────────────
 
+    async def clear_session(self, session: Session) -> Session:
+        """Remove all messages and the compaction summary, then persist.
+
+        Keeps the session record itself (unlike delete_session).
+        """
+        db_path = self._session_db(session.project_name, session.session_id)
+        conn = await self._init_db(db_path)
+        await conn.execute("DELETE FROM messages")
+        await conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("summary", ""),
+        )
+        await conn.commit()
+        await conn.close()
+
+        session.messages = []
+        session.summary = None
+        session.updated_at = datetime.now(timezone.utc)
+        logger.debug("Cleared session %s", session.session_id)
+        return session
+
     async def compact_session(
         self,
         session: Session,
