@@ -18,7 +18,7 @@ const I18N = {
     meta: (n) => `${n} 条消息`, aborted: "已停止",
     sessionNotFound: "会话不存在，已新建会话", error: "错误",
     sessionsLabel: "会话", collapseTitle: "折叠侧栏",
-    themeAuto: "主题：跟随系统", themeLight: "主题：浅色", themeDark: "主题：深色",
+    themeLight: "主题：浅色", themeDark: "主题：深色",
     stepsSummary: (n, ms) => `${n} 步 · ${ms}ms`,
     welcomeTitle: "Trove 数据问答",
     welcomeSubtitle: "用自然语言提问，自动生成 SQL、执行并验证答案",
@@ -40,7 +40,7 @@ const I18N = {
     meta: (n) => `${n} messages`, aborted: "Stopped",
     sessionNotFound: "Session missing — created a new one", error: "Error",
     sessionsLabel: "Sessions", collapseTitle: "Toggle sidebar",
-    themeAuto: "Theme: system", themeLight: "Theme: light", themeDark: "Theme: dark",
+    themeLight: "Theme: light", themeDark: "Theme: dark",
     stepsSummary: (n, ms) => `${n} steps · ${ms}ms`,
     welcomeTitle: "Trove Chat",
     welcomeSubtitle: "Ask in natural language — SQL is generated, executed and verified",
@@ -170,9 +170,18 @@ function setHtml(id, html) { const el = $(id); if (el) el.innerHTML = html; }
 function setTitle(id, text) { const el = $(id); if (el) el.title = text; }
 function on(id, evt, fn) { const el = $(id); if (el) el.addEventListener(evt, fn); }
 
+/* Two-state theme: an explicit light/dark choice is persisted; before the
+   first toggle the system preference wins (legacy "auto" values count as
+   unset). */
+function storedTheme() {
+  const v = localStorage.getItem("trove_ui_theme");
+  if (v === "light" || v === "dark") return v;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 const state = {
   lang: localStorage.getItem("trove_ui_lang") || "zh",
-  theme: localStorage.getItem("trove_ui_theme") || "auto",
+  theme: storedTheme(),
   sidebarCollapsed: localStorage.getItem("trove_ui_sidebar") === "1",
   sessionId: localStorage.getItem("trove_ui_session") || null,
   sessions: [],
@@ -197,20 +206,16 @@ function esc(s) {
 /* ── Theme (auto / light / dark, persisted) ──────────── */
 
 function applyTheme() {
-  const dark = state.theme === "dark" ||
-    (state.theme === "auto" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
-  const key = state.theme === "auto" ? "themeAuto" : state.theme === "dark" ? "themeDark" : "themeLight";
+  document.documentElement.dataset.theme = state.theme;
   const btn = $("theme-toggle");
   if (btn) {
-    btn.innerHTML = icon(state.theme === "auto" ? "monitor" : state.theme === "dark" ? "moon" : "sun");
-    btn.title = t(key);
+    btn.innerHTML = icon(state.theme === "dark" ? "moon" : "sun");
+    btn.title = t(state.theme === "dark" ? "themeDark" : "themeLight");
   }
 }
 
 function cycleTheme() {
-  state.theme = state.theme === "auto" ? "light" : state.theme === "light" ? "dark" : "auto";
+  state.theme = state.theme === "dark" ? "light" : "dark";
   localStorage.setItem("trove_ui_theme", state.theme);
   applyTheme();
 }
@@ -973,8 +978,6 @@ async function init() {
     applyLang();
   });
   on("theme-toggle", "click", cycleTheme);
-  window.matchMedia("(prefers-color-scheme: dark)")
-    .addEventListener("change", () => { if (state.theme === "auto") applyTheme(); });
   // Desktop: collapse the sidebar. Mobile: overlay drawer + backdrop.
   const mobileMq = window.matchMedia("(max-width: 768px)");
   on("sidebar-toggle", "click", () => {

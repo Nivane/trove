@@ -828,7 +828,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 #stop-btn { background: var(--danger); color: #fff; }
 #stop-btn:hover { opacity: 0.9; }
-#stop-btn .btn-icon { width: 13px; height: 13px; }
+#stop-btn .btn-icon { width: 16px; height: 16px; }
 
 #composer-hint {
   padding: 7px 0 10px;
