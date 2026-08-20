@@ -11,17 +11,20 @@ It answers, and learns with every question.
 
 - **LangGraph 流水线**（`reflection` 工作流，全链路）：
   `route_intent → parse_date → schema_linking → planner → gen_sql → execute_sql → select → validate → reflect → (analyze_error 回滚) → output`
-  - **意图路由**：LLM 判定 + 证据校验，分流两条路径——数据查询（query）与元数据问答（metadata：`answer_metadata → metadata_check` 自校验循环）
-  - **gen_sql（agentic 默认）**：ReAct 循环，模型持 `validate_sql` 工具自校验、自行判定结束（≤6 轮）；异常或空产出自动回退经典「生成 → 校验重试」子图；KB 精确命中（词重叠 ≥0.95）时直接采用标准 SQL，跳过生成
+  - **意图路由**：LLM 判定 + 规则校验，五意图分流（优先级 write > metadata > chitchat > correction）——`write`（写操作请求直接拒绝兜底）/ `chitchat`（问候闲聊短路，不烧 LLM）/ `correction`（纠错·追问重写后再次路由）/ `query`（数据查询）/ `metadata`（元数据问答：`answer_metadata → metadata_check` 自校验循环）
+  - **gen_sql（agentic 默认）**：ReAct 循环，模型持工具自校验、自行判定结束（≤6 轮）；异常或空产出自动回退经典「生成 → 校验重试」子图；KB 精确命中（词重叠 ≥0.95）时直接采用标准 SQL，跳过生成。工具面：`validate_sql`（语法校验 + 静态语义启发式警告）、`probe_query`（只读执行观测，10 行/5s）、`check_result`（确定性规则链校验——F1 形状 / F2 过滤 / F3 值域 / F4 排序，首败即止；**通过即 harness 自动定稿**，无需显式 finish）、`search_values`（值查找）、`explain_plan`（EXPLAIN 执行计划，只读毫秒级，定稿前发现慢查询写法）、`lookup_schema`（预算裁剪漏掉的表按需取结构）、`finish(answer)`（显式定稿协议）
   - **多候选共识**：备选候选以更高温度生成 → `select` 裁决（KB 命中时跳过）
-  - **analyze_error 根因诊断**：LLM 判定失败根因，沿 `gen_sql → planner → schema_linking` 回滚阶梯重跑，防环守护；reflect 裁决与执行错误共享 ≤10 轮修正上限
+  - **analyze_error 根因诊断**：LLM 判定失败根因，沿 `gen_sql → planner → schema_linking` 回滚阶梯重跑，防环守护；reflect 裁决与执行错误共享 ≤10 轮修正上限；SQL 版本链记录每轮失败（SQL + 结果签名），与上一版对比产生确定性回归反馈（无效修复 / 无进展 / 问题转移）
+  - **会话内任务层（跨轮）**：规则门控的 LLM 拆解（命中「依次 / 分别 / 还要 / 编号列表」等提示词才花一次拆解调用，单问题零额外 token）→ 逐条顺序执行（单条失败不中断批次）→ 跨轮推进：回复「继续 / 重做 / 跳过 / 追加」被解释为任务操作；批处理 HITL 给三选项（仅当前 / 确认全部 / 不继续）；REPL `/tasks`（别名 `/todo`）与 Web UI 任务面板查看进度
+  - **精确结果缓存**：同会话内归一化后完全相同的问句直接返回上次已验证的 SQL + 结果（0 LLM 调用），TTL 300s、按数据源隔离；命中跳过 HITL 确认（该 SQL 首轮已人工确认过）
+  - **复杂度分档与确定性快径**：`grade_complexity` 分 simple / standard / complex 三档——档位化 token 预算 + 分档选模（simple/standard → `model_fast`，complex → `target`）+ 确定性模板快径（单表/单聚合模板命中即直接产出 SQL，跳过 planner/生成/裁决）+ `reflect_skip`（validate 确定性规则全过即跳过 reflect 的 LLM 裁决）
   - 三个工作流：`reflection`（默认，带自校正）/ `fixed`（快速直通）/ `empty`（调试透传）
 - **确定性时间解析**（parse_date）：相对时间表达（"最近7天" / "last week"）解析为绝对范围，未命中静默透传
-- **上下文预算**：gen prompt 的可选块（示例/规则/术语/经验/计划/历史）按优先级装入 2500 token 预算，实际装载量进入可观测
+- **上下文预算**：gen prompt 的可选块（示例/规则/术语/经验/计划/历史）按优先级装入 token 预算（simple 瘦身 / complex 放开，默认 2500），实际装载量进入可观测
 - **优雅降级**：SQL 生成/执行失败时输出可读的错误说明，不中断会话
 - **流式输出**：REPL 实时显示 thought / SQL / 结果 / 答案；Ctrl+C 可取消运行中的查询
 - **双轨持久化**：会话消息（`~/.trove/sessions/`）+ 图状态检查点（`~/.trove/checkpoints.db`，支持时间旅行）
-- **本地轨迹**：每次运行记录 span 树轨迹（节点耗时、每次 LLM 调用输入输出、工具调用）到 `~/.trove/traces.jsonl`，`/trace` 回放完整推理链路，零外部依赖
+- **本地轨迹**：每次运行记录 span 树轨迹（节点耗时、每次 LLM 调用输入输出、工具调用）到 `~/.trove/traces.jsonl`，`/trace` 回放完整推理链路，零外部依赖；每次问答附 token 用量与耗时统计
 - **可演化知识库**（按数据源隔离，`.trove/kb/<datasource>/`）：
   - `schema_notes.yml` — 表/列注释、指标口径（`/kb init` 生成）
   - `semantics.yml` — 业务术语 → 物理映射（中文问题匹配、口径统一）
@@ -50,7 +53,7 @@ REPL 命令：
 
 | 分组 | 命令 |
 |---|---|
-| 会话 | `/help` `/exit` `/clear` `/compact`（压缩历史） |
+| 会话 | `/help` `/exit` `/clear` `/compact`（压缩历史）`/tasks`（任务清单，别名 `/todo`） |
 | 元数据 | `/tables` `/schemas` `/table_schema <表>` `/databases` `/kb …` `/trace` |
 | 系统 | `/model [模型]` `/datasource [名]` `/init` |
 
@@ -63,8 +66,9 @@ uv run trove serve --datasource demo
 # 打开浏览器 → http://127.0.0.1:8000/ （自动跳转 /ui/）
 ```
 
-- 单页聊天界面（纯静态 HTML + vanilla JS，零构建），`GET /` 重定向到 `/ui/`；答案流式展示每步轨迹（意图/匹配表/计划/SQL/校验/反思，含耗时与重试轮次）
-- 接口：`POST /v1/chat`（SSE 流式）、`GET/POST/DELETE /v1/sessions[/{id}]`、`GET /v1/catalog/*`、`GET/POST /v1/kb/*`；API 文档见 `/v1/docs`
+- 单页聊天界面（纯静态 HTML + vanilla JS，零构建），`GET /` 重定向到 `/ui/`；答案流式展示每步轨迹（意图/匹配表/计划/SQL/校验/反思，含耗时与重试轮次）；输入框支持 `/` 斜杠命令补全菜单
+- **任务面板**：多任务批处理时侧栏展示任务进度（待办/进行中/完成/失败/跳过），单条失败不中断批次；**HITL 确认框**：执行前展示 SQL + 语义说明，单任务提供 批准/否决，批任务提供三选项（仅当前 / 确认全部 / 不继续）
+- 接口：`POST /v1/chat`（SSE 流式）、`GET/POST/DELETE /v1/sessions[/{id}]`、`GET /v1/sessions/{id}/tasks`、`POST /v1/sessions/{id}/resume`（HITL 继续）、`POST /v1/sessions/{id}/compact|clear`、`GET /v1/catalog/*`、`GET/POST /v1/kb/*`；API 文档见 `/v1/docs`
 - 会话 ID 与界面语言（zh/en）保存在浏览器 localStorage；对话历史由服务端按 session 持久化
 - 停止按钮只中断客户端读取——服务端会跑完本次查询并持久化，刷新页面即可看到结果
 
@@ -76,11 +80,15 @@ uv run trove serve --datasource demo
 # conf/agent.yml 示例
 agent:
   target: deepseek/deepseek-v4-flash    # litellm 模型字符串（推理模型如 deepseek-reasoner 亦可）
+  model_fast: deepseek/deepseek-chat    # 快速档模型：simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型（留空 = 不分档）
   language: en                          # 交互语言 en / zh：提示词、答案、轨迹统一使用
   date_parser: true                     # 确定性相对时间解析（未命中静默透传）
   explain_semantics: false              # 生成 SQL 后 LLM 说明语义（输出与 HITL 确认时展示）
-  hitl: false                           # 执行前人工确认（LangGraph interrupt，需 persistence/checkpointer）
+  hitl: false                           # 执行前人工确认（LangGraph interrupt，需 persistence/checkpointer；批任务给三选项）
   insights: false                       # 执行后 LLM 基于结果生成洞察
+  result_cache: false                   # 精确结果缓存（进程内存）：同问句直接返回上次已验证结果，0 LLM，命中跳过 HITL
+  fast_path: true                       # 确定性模板快径：单表/单聚合模板命中即出 SQL，跳过 planner/生成/裁决
+  reflect_skip: simple                  # validate 规则全过后跳过 LLM 裁决：simple / standard / all / off
   providers:
     - name: openai                  # 非官方端点（兼容 OpenAI API）示例
       litellm_params:
@@ -108,7 +116,7 @@ LANGFUSE_SECRET_KEY=sk-...
 LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
 ```
 
-启用后每个 LLM 调用（意图判定 / 计划 / gen_sql 生成与修正 / 裁决 / 错误诊断）都会进入 Langfuse，prompt 与输出全程可见，并按 `session_id`、`node`、`question` 元数据分组——CoT 每一步可回溯。本地轨迹（`/trace`）始终可用，不依赖外部服务。
+启用后每次问答是一棵完整的 trace 树：每个节点（意图 / 计划 / gen_sql / 裁决 / 错误诊断…）一个 span，节点内每次 LLM 调用（含推理模型的 reasoning 过程）记 generation，**失败 generation 记 ERROR 级别**；非 LLM 步骤同样插桩——SQL 执行、每轮工具调用（probe / check / explain / search_values 的入参与观测，工具出错记 ERROR）、KB 检索、规则校验、结果缓存命中、终态 summary 均有独立 span。全部按 `session_id`、`node`、`question` 元数据分组，CoT 每一步可回溯。本地轨迹（`/trace`）始终可用，不依赖外部服务。
 
 ## 知识库使用
 
@@ -182,6 +190,8 @@ GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
 - 多租户优先每租户独立库 + 独立只读角色；必须共享库时用 RLS 或程序化 CTE 预过滤
 - 只读角色的 DSN 密钥妥善保管；Trove 报错路径已统一脱敏（`sanitize_error_text`），
   但错误日志仍可能泄露连接信息——日志系统同样需要访问控制
+- 所有只读执行工具（`probe_query` / `check_result` / `explain_plan` / `search_values`）
+  统一先过 AST 防火墙（含表名 allowlist），每次调用与结果落审计日志（`sql_audit`）
 
 （DuckDB 集成测试用内存库，无需外部服务，常开。）
 
