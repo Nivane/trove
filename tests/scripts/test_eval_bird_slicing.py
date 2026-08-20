@@ -11,6 +11,7 @@ import pytest
 from scripts.eval_bird import (
     attribution_slices,
     classify_pred_error,
+    extract_tables,
     record_result,
     slice_questions,
     _result_entry,
@@ -80,7 +81,34 @@ class TestResolveKbRoot:
             resolve_kb_root(str(empty), "financial")
 
 
-class TestResultRecording:
+class TestExtractTables:
+    """gold SQL → oracle 表提取:sqlglot 优先、正则兜底、保序去重。"""
+
+    def test_sqlglot_joins_and_alias(self):
+        sql = (
+            "SELECT a.account_id, t.amount "
+            "FROM account AS a JOIN trans t ON a.account_id = t.account_id"
+        )
+        assert extract_tables(sql) == ["account", "trans"]
+
+    def test_union_subqueries_collected(self):
+        sql = (
+            "SELECT account_id FROM account "
+            "UNION SELECT account_id FROM (SELECT account_id FROM loan) s"
+        )
+        tables = extract_tables(sql)
+        assert set(tables) == {"account", "loan"}
+
+    def test_regex_fallback_when_sqlglot_fails(self, monkeypatch):
+        """sqlglot 解析异常 → 正则兜底(FROM/JOIN 表名)。"""
+        import sqlglot
+
+        def boom(*a, **k):
+            raise RuntimeError("parse failed")
+
+        monkeypatch.setattr(sqlglot, "parse", boom)
+        sql = "select * from loan where status = 'A'"
+        assert extract_tables(sql) == ["loan"]
     """逐题判定落盘 results.jsonl:verdict 分类 + JSONL 追加语义。"""
 
     def test_classify_generation_error(self):
@@ -144,6 +172,19 @@ class TestAttributionSlices:
         assert "拦过: 0/1 (0.0%)" in text
         assert "multi (≥2): 2/2 (100.0%)" in text
         assert "with evidence: 2/2 (100.0%)" in text
+
+    def test_oracle_and_scaling_slice_buckets(self):
+        """oracle A/B 与缩放 A/B 的归因切片:从 results 直接切 EX%。"""
+        results = [
+            self._entry("MATCH", oracle=True, scaling=50),
+            self._entry("MISMATCH", oracle=True, scaling=50),
+            self._entry("MATCH", oracle=False, scaling=5),
+        ]
+        lines = attribution_slices(results)
+        text = "\n".join(lines)
+        assert "oracle: oracle: 1/2 (50.0%)" in text
+        assert "no-oracle: 1/1 (100.0%)" in text
+        assert "scaling: 50: 1/2 (50.0%)" in text
 
     def test_gold_error_and_crash_excluded_from_slices(self):
         results = [

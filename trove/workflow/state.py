@@ -160,6 +160,11 @@ class WorkflowState(BaseModel):
     matched_tables: list[str] = Field(default_factory=list)
     schema_context: str = ""
 
+    # Oracle 锚(eval 专用,默认为空):gold SQL 涉及的物理表名,推理期
+    # 由 schema_linking 强制锚进匹配集首位。生产路径永远不设置——
+    # 只在评测中做"半开卷"上限对照,不落 KB、不进配置。
+    oracle_tables: list[str] = Field(default_factory=list)
+
     # gen_sql artifacts
     sql: str = ""
     dialect: str = "sqlite"

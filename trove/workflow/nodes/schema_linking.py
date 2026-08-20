@@ -558,7 +558,14 @@ def make_schema_linking(
             # ("issue"→card.issued),扩表时优先采纳强证据。
             name_matches = [m["name"] for m in matches if m.get("match_type") == "name"]
             col_matches = [m["name"] for m in matches if m.get("match_type") != "name"]
-            matched_names = [t for t in name_matches]
+            # Oracle 锚(eval 专用):gold 表强制进匹配集首位,随后的 value/
+            # term/FK/列名信号照常补位。oracle_tables 为空 → 完全等于既有
+            # "name 命中优先"行为,生产路径零变化。
+            oracle_kept = [t for t in state.oracle_tables if t in all_columns]
+            matched_names = list(oracle_kept)
+            for t in name_matches:
+                if t not in matched_names:
+                    matched_names.append(t)
 
             # Value linking(全表):question/evidence 中的字面值出现在某表
             # → 该表加入匹配集('POPLATEK TYDNE' → account.frequency)。
@@ -673,9 +680,14 @@ def make_schema_linking(
                 aligned = await _align_tables(
                     llm, config, state, details, notes, verified_hints_by_table)
                 if aligned:
-                    must_keep = state.matched_tables if (
-                        state.error_feedback or state.error_analysis or state.retry_count
-                    ) else None
+                    # must_keep:回退重跑时上一轮匹配表保留(修漏表不丢旧
+                    # 匹配);oracle 表无条件保留(评测锚不允许被对齐裁掉)。
+                    must_keep = [t for t in state.oracle_tables if t in matched_names]
+                    if state.error_feedback or state.error_analysis or state.retry_count:
+                        for t in state.matched_tables:
+                            if t not in must_keep:
+                                must_keep.append(t)
+                    must_keep = must_keep or None
                     all_cols = {
                         d["name"]: {c["name"] for c in d["columns"]} for d in details
                     }

@@ -170,6 +170,29 @@ def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
     })
 
 
+def _candidate_schedule(n_alt: int) -> list[tuple[float, str]]:
+    """去相关候选配置:温度 + 风格提示,确定性生成。
+
+    scaling=5 时精确保持历史 4 个温度子图(0.3/0.5/0.7/1.0,无风格
+    提示)——既有行为逐字节不变。更大规模(n=49/199):温度在 [0.2, 1.2]
+    均匀铺开 + 风格提示轮换,让大候选池覆盖不同的正确解释表述,
+    而不是温度差太小导致几乎同构的重复样本(select 只会按 SQL 归一
+    文本去重,重复候选取不到额外的票)。
+
+    Returns:
+        [(temperature, style_mode), ...] 每候选一个配置。
+    """
+    if n_alt == 4:
+        return [(float(t), "") for t in (0.3, 0.5, 0.7, 1.0)]
+    modes = ["", "cte", "explicit-join", "subquery"]
+    out: list[tuple[float, str]] = []
+    for i in range(n_alt):
+        frac = (i + 0.5) / n_alt
+        temp = round(0.2 + 1.0 * frac, 3)
+        out.append((temp, modes[i % len(modes)]))
+    return out
+
+
 # ── gen_sql subgraph ─────────────────────────────────────
 
 
@@ -177,12 +200,16 @@ def build_gen_sql_subgraph(
     services: GraphServices,
     max_retries: int = DEFAULT_GEN_SQL_RETRIES,
     temperature: float = 0.0,
+    mode: str = "",
 ) -> CompiledStateGraph:
     """Build the gen_sql subgraph: generate → validate retry loop.
 
     Args:
         temperature: Sampling temperature (alternative candidates use
             a higher value for diversity).
+        mode: Optional de-correlation style hint ("cte"/"explicit-join"/
+            "subquery") appended to the generation prompt — keeps large
+            candidate pools from converging on identical formulations.
     """
     config = services.config or AgentConfig()
 
@@ -192,7 +219,7 @@ def build_gen_sql_subgraph(
         return "generate"
 
     g = StateGraph(GenSQLState)
-    g.add_node("generate", make_generate(services.llm, config, temperature=temperature))
+    g.add_node("generate", make_generate(services.llm, config, temperature=temperature, mode=mode))
     g.add_node("validate", make_validate(max_retries=max_retries))
     g.add_edge(START, "generate")
     g.add_edge("generate", "validate")
@@ -662,29 +689,40 @@ def build_graphs(
     planner: bool = True,
     clarify: bool = False,
     agentic: bool = True,
+    scaling: int = 5,
 ) -> dict[str, CompiledStateGraph]:
     """Build and compile the reflection / fixed / empty graphs.
 
     Args:
         services: Service bundle bound into node closures.
         checkpointer: Optional LangGraph checkpointer (None = in-memory only).
-        multi_candidate: Reflection generates a second candidate at higher
-            temperature for consensus selection (off = single candidate).
+        multi_candidate: Reflection generates alternative candidates at
+            higher temperatures for consensus selection (off = single
+            candidate).
         planner: Reflection drafts an LLM query plan before generation.
         clarify: Ask the user instead of generating when no tables match
             (off by default — generation proceeds permissively).
         agentic: gen_sql runs a ReAct loop (model validates via the
             validate_sql tool and self-terminates); off = classic
             single-shot subgraph generation.
+        scaling: Candidate pool size (N total incl. the primary). 5 = the
+            historical 4 alternative subgraphs at 0.3/0.5/0.7/1.0 — the
+            default is byte-identical to the pre-scaling behavior. Larger
+            values (50/200) fan out de-correlated alternatives for the
+            eval-side test-time-scaling A/B; the cost scales with N, so
+            only opt in via the eval script's --scaling.
 
     Returns:
         Mapping of workflow name → compiled graph.
     """
     subgraph = build_gen_sql_subgraph(services)
-    # Multi-candidate: 4 alternative generations, one per temperature
-    # (N = 5 candidates total incl. the primary), for execution voting.
+    # Multi-candidate: N-1 alternative generations, one per de-correlated
+    # (temperature, style-mode) config, for execution voting.
     alt_subgraphs = (
-        [build_gen_sql_subgraph(services, temperature=t) for t in (0.3, 0.5, 0.7, 1.0)]
+        [
+            build_gen_sql_subgraph(services, temperature=t, mode=mode)
+            for t, mode in _candidate_schedule(max(scaling, 1) - 1)
+        ]
         if multi_candidate else None
     )
 

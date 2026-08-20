@@ -1016,12 +1016,16 @@ def make_generate(
     llm: LLMGateway,
     config: AgentConfig,
     temperature: float = 0.0,
+    mode: str = "",
 ) -> Callable[[GenSQLState], Awaitable[dict[str, Any]]]:
     """Build the generate node: prompt → LLM → extract SQL.
 
     Args:
         temperature: Sampling temperature (0.0 deterministic; the
             alternative multi-candidate subgraph uses a higher value).
+        mode: Optional de-correlation style hint appended to the prompt
+            ("cte" / "explicit-join" / "subquery"), so large candidate
+            pools don't converge on identical formulations. "" = no change.
     """
 
     async def generate(state: GenSQLState) -> dict[str, Any]:
@@ -1034,6 +1038,23 @@ def make_generate(
             # 上一轮产出为空(SQL 为空):没有可"修复"的对象,
             # 回到原始生成提示词重试,而不是让模型去修一条空 SQL。
             prompt = build_sql_prompt_from_state(state)
+        # 去相关风格提示:仅候选生成注入(风格性偏好,不改语义)。
+        # 修正常规不使用——错误反馈已经够用,再加提示噪声。
+        if mode and not state.validation_errors:
+            style = {
+                "cte": (
+                    "Prefer a WITH (CTE) formulation where it makes the "
+                    "query clearer."
+                ),
+                "explicit-join": (
+                    "Prefer explicit JOIN ... ON ... syntax over comma joins."
+                ),
+                "subquery": (
+                    "Prefer a single statement with subqueries where possible."
+                ),
+            }.get(mode, "")
+            if style:
+                prompt = f"{prompt}\n\n{style}"
 
         model = config.model_for(state.complexity)
         start = time.monotonic()

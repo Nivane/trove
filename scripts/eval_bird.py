@@ -14,6 +14,7 @@ Usage:
 import argparse
 import asyncio
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -51,6 +52,13 @@ def parse_args():
                         help="Skip the first N questions (applied before --limit)")
     parser.add_argument("--no-evidence", action="store_true",
                         help="Don't append the official evidence hint to the question")
+    parser.add_argument("--oracle", action="store_true",
+                        help="Oracle 锚:gold SQL 的 FROM/JOIN 表强制进 schema 匹配集"
+                             "首位(半开卷上限对照,eval-only,默认关)")
+    parser.add_argument("--scaling", type=int, default=5, choices=[5, 50, 200],
+                        help="候选池规模(含 primary):5 = 历史 4 温度子图(默认,"
+                             "成本不变);50/200 = 去相关大池测试时缩放 A/B"
+                             "(成本随 N 线性上升,谨慎开)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Per-step detail: node inputs/outputs, full LLM prompts/outputs, tool observations")
     return parser.parse_args()
@@ -59,6 +67,33 @@ def parse_args():
 def normalize_rows(rows: list[list]) -> list[tuple]:
     """Set-comparison: sorted, stringified rows (column order-insensitive)."""
     return sorted(tuple(str(v) for v in row) for row in rows)
+
+
+def extract_tables(sql: str) -> list[str]:
+    """gold SQL → 涉及的物理表名(sqlglot 优先,正则兜底,保序去重)。
+
+    纯解析,零网络——评测时把 FROM/JOIN 表喂给 oracle_tables 锚进
+    schema 匹配集。解析失败退化为空(该题不应用 oracle 锚,不误伤)。
+    """
+    names: list[str] = []
+    try:
+        import sqlglot
+        for ast in sqlglot.parse(sql, read="mysql"):
+            for node in ast.find_all(sqlglot.exp.Table):
+                t = node.name
+                if t and t not in names:
+                    names.append(t)
+    except Exception:
+        names = []
+    if not names:
+        for m in re.finditer(
+            r"\b(?:FROM|JOIN)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?",
+            sql, re.IGNORECASE,
+        ):
+            t = m.group(1)
+            if t and t not in names:
+                names.append(t)
+    return names
 
 
 FAILURES_PATH = Path.cwd() / ".trove" / "eval" / "failures.jsonl"
@@ -167,6 +202,8 @@ def attribution_slices(results: list[dict]) -> list[str]:
             "multi (≥2)" if (r.get("n_candidates") or 0) >= 2 else "single (1)"
         )
         r["_evidence_bucket"] = "with evidence" if r.get("evidence") else "no evidence"
+        r["_oracle_bucket"] = "oracle" if r.get("oracle") else "no-oracle"
+        r["_scaling_bucket"] = str(r.get("scaling") or 5)
     return [
         "=== 机制归因切片 ===",
         f"共识: {bucket(rows, 'consensus')}",
@@ -176,6 +213,8 @@ def attribution_slices(results: list[dict]) -> list[str]:
         f"规则拦截: {bucket(rows, '_hits_bucket')}",
         f"候选数: {bucket(rows, '_cand_bucket')}",
         f"evidence: {bucket(rows, '_evidence_bucket')}",
+        f"oracle: {bucket(rows, '_oracle_bucket')}",
+        f"scaling: {bucket(rows, '_scaling_bucket')}",
     ]
 
 
@@ -285,7 +324,7 @@ async def main() -> None:
         config=config,
         kb=KbService(Path.cwd(), kb_dir=kb_root),
     )
-    graph = build_graphs(services)["reflection"]
+    graph = build_graphs(services, scaling=args.scaling)["reflection"]
 
     matched = 0
     failures = {"generation": 0, "execution": 0, "mismatch": 0, "gold_error": 0, "crash": 0}
@@ -293,7 +332,13 @@ async def main() -> None:
     results: list[dict] = []  # 本轮的逐题条目(供归因切片;jsonl 仍全部落盘)
 
     def done(entry: dict) -> dict:
-        """判定条目同时进内存切片池与 results.jsonl。"""
+        """判定条目同时进内存切片池与 results.jsonl。
+
+        oracle/scaling 随条目记录(每个 done 都渲染当前 state),让 oracle
+        A/B 与缩放 A/B 可以从 results.jsonl 直接切片。
+        """
+        entry.setdefault("oracle", bool(state.oracle_tables))
+        entry.setdefault("scaling", args.scaling)
         results.append(entry)
         record_result(entry)
         return entry
@@ -308,10 +353,12 @@ async def main() -> None:
         # run_id 唯一(含时间戳):traces.jsonl 与 /trace 回放按 run 隔离,
         # 同一题反复评估不会把多轮执行的事件混进一个 run
         run_id = f"eval-{i}-{int(time.time())}"
+        oracle_tables = extract_tables(gold_sql) if args.oracle else []
         state = WorkflowState(
             session_id=f"eval-{i}", question=question, evidence=evidence,
             run_id=run_id,
             lang=config.language,
+            oracle_tables=oracle_tables,
         )
         # per-run 观测:trace span 树 + runs/{run_id}.log 详尽日志(+verbose 回显)
         tracer = create_tracer(state.run_id, verbose=args.verbose)
@@ -319,6 +366,8 @@ async def main() -> None:
             "question": question,
             "evidence": evidence,
             "gold_sql": gold_sql,
+            "oracle": bool(oracle_tables),
+            "scaling": args.scaling,
             "model": config.target,
             "lang": config.language,
         })

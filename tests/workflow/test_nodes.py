@@ -117,6 +117,47 @@ class TestSchemaLinking:
         update = await node(make_state())
         assert "Schema linking failed" in update["error"]
 
+    async def test_oracle_tables_anchor_match_set_first(self):
+        """oracle 锚(eval 专用):gold 表无条件进匹配集首位,其他信号补位在后。"""
+        class Catalog:
+            async def search_tables(self, query, datasource=None, limit=10):
+                return [{"name": "trans", "match_type": "name"}]
+
+            async def list_tables(self, datasource=None):
+                return [
+                    {"name": "district", "columns": 2, "row_count": 77},
+                    {"name": "trans", "columns": 8, "row_count": 100},
+                ]
+
+            async def table_detail(self, name):
+                return {
+                    "name": name,
+                    "columns": [{"name": "account_id", "type": "int"}],
+                    "row_count": 100,
+                }
+
+        node = make_schema_linking(catalog=Catalog())
+        update = await node(make_state(question="q", oracle_tables=["district"]))
+        assert update["matched_tables"][0] == "district"
+        assert "trans" in update["matched_tables"]
+
+    async def test_oracle_tables_ignored_when_not_in_schema(self):
+        """oracle 表不存在于 schema → 静默丢弃,不报错也不产生匹配。"""
+        class Catalog:
+            async def search_tables(self, query, datasource=None, limit=10):
+                return [{"name": "students", "match_type": "name"}]
+
+            async def list_tables(self, datasource=None):
+                return [{"name": "students", "columns": 4, "row_count": 5}]
+
+            async def table_detail(self, name):
+                return {"name": name, "columns": [{"name": "id", "type": "int"}], "row_count": 5}
+
+        node = make_schema_linking(catalog=Catalog())
+        update = await node(make_state(question="q", oracle_tables=["ghost"]))
+        assert "ghost" not in update["matched_tables"]
+        assert update["matched_tables"] == ["students"]
+
     async def test_error_passthrough(self, catalog):
         """A node must not run when an upstream node already failed."""
         node = make_schema_linking(catalog=catalog)
@@ -1483,6 +1524,35 @@ class TestGenerate:
         )
         await generate(state)
         assert "wrong grouping" in llm.last_messages[-1]["content"]
+
+    async def test_default_mode_no_style_hint(self):
+        """mode 默认 '' = 不注入风格提示(现有提示词字节不变)。"""
+        llm = ScriptedLLM(["```sql\nSELECT 1;\n```"])
+        generate = make_generate(llm, self._config())
+        from trove.workflow.state import GenSQLState
+        await generate(GenSQLState(question="q", schema_context="", dialect="sqlite"))
+        assert "Prefer a WITH" not in llm.last_messages[-1]["content"]
+
+    async def test_mode_style_hint_appended(self):
+        """候选去相关:模式提示追加在原始生成提示词末尾。"""
+        llm = ScriptedLLM(["```sql\nSELECT 1;\n```"])
+        generate = make_generate(llm, self._config(), mode="cte")
+        from trove.workflow.state import GenSQLState
+        state = GenSQLState(question="q", schema_context="", dialect="sqlite")
+        await generate(state)
+        assert "WITH (CTE)" in llm.last_messages[-1]["content"]
+
+    async def test_style_hint_skipped_on_fix_pass(self):
+        """修正轮不注入风格提示:错误反馈已够,避免再加噪声。"""
+        llm = ScriptedLLM(["```sql\nSELECT 1;\n```"])
+        generate = make_generate(llm, self._config(), mode="explicit-join")
+        from trove.workflow.state import GenSQLState
+        state = GenSQLState(
+            question="q", schema_context="", dialect="sqlite",
+            sql="SELEC 1", attempts=1, validation_errors=["Parse error"],
+        )
+        await generate(state)
+        assert "explicit JOIN" not in llm.last_messages[-1]["content"]
 
 
 class TestValidate:

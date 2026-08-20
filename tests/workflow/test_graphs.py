@@ -8,10 +8,34 @@ import pytest
 from trove.core.config import AgentConfig
 from trove.workflow.state import WorkflowState, GenSQLState
 from trove.workflow import graphs as graphs_module
-from trove.workflow.graphs import GraphServices, build_graphs, build_gen_sql_subgraph
+from trove.workflow.graphs import (
+    GraphServices,
+    _candidate_schedule,
+    build_gen_sql_subgraph,
+    build_graphs,
+)
 
 VALID_SQL = "```sql\nSELECT name FROM students;\n```"
 INVALID_SQL = "```sql\nSELEC * FROM students;\n```"
+
+
+def test_candidate_schedule_default_matches_historical():
+    """scaling=5 必须逐字节等于历史 4 温度子图(0.3/0.5/0.7/1.0,无风格)。"""
+    assert _candidate_schedule(4) == [(0.3, ""), (0.5, ""), (0.7, ""), (1.0, "")]
+
+
+def test_candidate_schedule_scales_deterministically():
+    """大池(49/199):温度单调铺开 + 风格轮换,确定性生成(同输入同输出)。"""
+    s49 = _candidate_schedule(49)
+    assert len(s49) == 49
+    temps = [t for t, _ in s49]
+    assert temps == sorted(temps)
+    assert 0.2 <= temps[0] and temps[-1] <= 1.2
+    assert len({round(t, 1) for t in temps}) >= 10  # 温度真实铺开,没有挤成一团
+    modes = [m for _, m in s49]
+    assert set(modes) == {"", "cte", "explicit-join", "subquery"}
+    assert _candidate_schedule(49) == s49  # 确定性:两次构建一致
+    assert len(_candidate_schedule(199)) == 199
 
 
 class RecordingLLM:
