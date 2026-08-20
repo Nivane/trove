@@ -144,6 +144,24 @@ def render_lessons(lessons: list[dict[str, Any]]) -> str:
     )
 
 
+def render_rules(rules: list[str]) -> str:
+    """业务规则段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    return "".join(f"- {r}\n" for r in rules)
+
+
+def render_cache_prefix(dialect: str, schema_context: str) -> str:
+    """稳定可缓存前缀（dialect + schema）——gen_sql/user 模板最前面的两节。
+
+    prompt caching 的稳定前缀：同一数据源 + 方言下字节级一致，跨调用
+    可复用（Anthropic/OpenAI 对 stable prefix 打折）。与模板的渲染输出
+    逐字一致，避免估算失真；被归入 context_usage 的 cache_prefix_tokens。
+    """
+    schema = schema_context or (
+        "(No schema information available - generate a best-effort query)"
+    )
+    return f"Target SQL dialect: {dialect}\n\nDatabase schema:\n{schema}\n"
+
+
 def render_versions(versions: list[dict[str, Any]]) -> str:
     """失败版本链文本（定点修复用）：每版 SQL + 结果签名 + 规则命中。"""
     if not versions:

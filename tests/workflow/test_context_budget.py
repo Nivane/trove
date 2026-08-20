@@ -1,6 +1,11 @@
 """Context budget assembly tests — priority fill + usage report."""
 
-from trove.workflow.context_budget import assemble_blocks, estimate_tokens
+from trove.workflow.context_budget import (
+    ContextItem,
+    assemble_blocks,
+    assemble_context,
+    estimate_tokens,
+)
 
 
 class TestEstimateTokens:
@@ -28,3 +33,60 @@ class TestAssembleBlocks:
 
     def test_empty_blocks(self):
         assert assemble_blocks({}, {}, 100) == (set(), [])
+
+
+class TestAssembleContext:
+    """Item-level trimming: a block keeps its best items instead of
+    all-or-nothing when the budget is tight."""
+
+    def _items(self, scores, n=0):
+        """scores: list of (score, text_len) → ContextItems keyed shot<i>."""
+        return [
+            ContextItem(key=f"shot{i}", text="x" * ln, score=sc)
+            for i, (sc, ln) in enumerate(scores)
+        ]
+
+    def test_keeps_high_score_items_within_budget(self):
+        # 每条 25 tokens；预算 60 → 高分 3 条(75)塞不下,取前 2 条
+        blocks = {"shots": self._items([(9, 100), (5, 100), (1, 100)])}
+        included, usage = assemble_context(blocks, {"shots": 1}, budget_tokens=60)
+        assert included == {"shots": ["shot0", "shot1"]}
+        assert usage[0]["items_total"] == 3
+        assert usage[0]["items_included"] == 2
+
+    def test_low_score_item_dropped_high_kept(self):
+        # 预算只够 1 条:最低分的被裁剪
+        blocks = {"shots": self._items([(1, 100), (9, 100)])}
+        included, _ = assemble_context(blocks, {"shots": 1}, budget_tokens=30)
+        assert included == {"shots": ["shot1"]}
+
+    def test_skip_item_that_does_not_fit_keep_smaller(self):
+        # 高分长条目超预算 → 被跳过,后续能塞下的小条目保留(而非整块丢弃)
+        blocks = {"shots": self._items([(9, 2000), (1, 100)])}
+        included, _ = assemble_context(blocks, {"shots": 1}, budget_tokens=300)
+        assert included == {"shots": ["shot1"]}
+
+    def test_block_priority_order_still_respected(self):
+        # 低优先级块(history)整体塞不下 → 被排除,高优先级仍在
+        blocks = {
+            "shots": self._items([(5, 100)]),
+            "history": [ContextItem(key="history", text="h" * 2000, score=0.0)],
+        }
+        included, usage = assemble_context(
+            blocks, {"shots": 1, "history": 2}, budget_tokens=60,
+        )
+        assert included == {"shots": ["shot0"]}
+        by_name = {u["name"]: u for u in usage}
+        assert by_name["history"]["included"] is False
+
+    def test_empty_blocks_ignored(self):
+        assert assemble_context({}, {}, 100) == ({}, [])
+        assert assemble_context({"a": []}, {"a": 1}, 100) == ({}, [])
+
+    def test_usage_reports_item_counts(self):
+        blocks = {"shots": self._items([(9, 100), (1, 100)])}
+        _, usage = assemble_context(blocks, {"shots": 1}, budget_tokens=30)
+        assert usage == [{
+            "name": "shots", "tokens": 25, "included": True,
+            "items_total": 2, "items_included": 1,
+        }]

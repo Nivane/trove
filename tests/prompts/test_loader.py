@@ -90,19 +90,22 @@ class TestEstimationMirror:
         {"pattern": "p1", "note": "n1"},
         {"pattern": "p2", "note": "n2"},
     ]
+    RULES = ["rule1", "rule2"]
 
     def test_estimator_text_is_substring_of_rendered_prompt(self):
         from trove.workflow.nodes.gen_sql import (
-            render_lessons, render_shots, render_terms,
+            render_lessons, render_rules, render_shots, render_terms,
         )
         full = render(
             "gen_sql/user", lang="en",
             question="q", schema_context="s", dialect="sqlite",
             few_shots=self.SHOTS, term_notes=self.TERMS, lessons=self.LESSONS,
+            rules=self.RULES,
         )
         assert render_shots(self.SHOTS) in full
         assert render_terms(self.TERMS) in full
         assert render_lessons(self.LESSONS) in full
+        assert render_rules(self.RULES) in full
 
     def test_estimator_formats_match_template(self):
         """定义后缀（— definition）与行尾换行必须与模板逐字一致。"""
@@ -110,3 +113,8 @@ class TestEstimationMirror:
         assert "t2 → m2 — d2" in render_terms(self.TERMS)
         assert render_terms(self.TERMS).endswith("\n")
         assert render_terms([{"term": "t", "mapping": "m"}]) == "- t → m\n"
+
+    def test_render_rules_matches_template(self):
+        from trove.workflow.nodes.gen_sql import render_rules
+        assert render_rules(["r1", "r2"]) == "- r1\n- r2\n"
+        assert render_rules([]) == ""

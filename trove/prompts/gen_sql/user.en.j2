@@ -1,7 +1,7 @@
 Target SQL dialect: {{ dialect }}
 
 Database schema:
-{{ schema_context or "(No schema information available - generate a best-effort query)" }}
+{{ schema_context or "(No schema information available - generate a best-effort query)" }}{# ── CACHE PREFIX boundary: everything above (dialect + schema) is byte-stable per (datasource, dialect) — keep it first for prompt-cache hits; everything below is per-question/per-round and volatile. ── #}
 {% if history %}
 Conversation history (previous exchanges, oldest first):
 {{ history }}

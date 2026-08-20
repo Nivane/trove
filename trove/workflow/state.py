@@ -97,6 +97,10 @@ class WorkflowState(BaseModel):
     # Context budget usage of the last gen pass (observability)
     context_usage: list[dict[str, Any]] = Field(default_factory=list)
 
+    # 稳定可缓存前缀(dialect+schema)的 token 数——prompt caching 观测:
+    # 同一数据源+方言下该前缀字节级稳定,跨调用可复用(缓存折扣)。
+    cache_prefix_tokens: int = 0
+
     # LLM call detail of the last LLM node (model/elapsed/io previews)
     llm: dict[str, Any] | None = None
 

@@ -23,6 +23,7 @@ from trove.workflow.nodes.gen_sql import (
     make_generate,
     make_sql_tools,
     make_validate,
+    render_cache_prefix,
     search_values,
     validate_sql,
 )
@@ -985,6 +986,29 @@ class TestSQLHelpers:
         assert prompt.index("Resolved time range") < prompt.index("Question:")
 
         assert "Resolved time range" not in build_sql_prompt("q", "schema", "sqlite")
+
+    def test_prompt_starts_with_stable_cache_prefix(self):
+        """Prompt caching 布局:稳定前缀(dialect+schema)在开头,易变内容在尾部。"""
+        prompt = build_sql_prompt(
+            "q", "schema", "sqlite",
+            few_shots=[{"question": "x", "sql": "SELECT 1"}],
+            history="h",
+        )
+        assert prompt.startswith(render_cache_prefix("sqlite", "schema"))
+        assert prompt.index("Database schema:") < prompt.index("Question:")
+        assert prompt.index("Question:") < prompt.index("Generate the SQL query")
+
+    def test_render_cache_prefix_matches_template_and_empty_schema(self):
+        assert render_cache_prefix("sqlite", "") == (
+            "Target SQL dialect: sqlite\n\nDatabase schema:\n"
+            "(No schema information available - generate a best-effort query)\n"
+        )
+        # 与模板渲染输出的前缀逐字一致(估算/观测口径不漂移)
+        rendered = render(
+            "gen_sql/user", lang="en",
+            question="q", schema_context="schema", dialect="sqlite",
+        )
+        assert rendered.startswith(render_cache_prefix("sqlite", "schema"))
 
     def test_build_sql_prompt_includes_error_feedback(self):
         prompt = build_sql_prompt("q", "schema", "sqlite", error_feedback="no such table: loans")

@@ -31,7 +31,11 @@ from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService
 from trove.llm.agent_loop import run_agent_loop
-from trove.workflow.context_budget import assemble_blocks
+from trove.workflow.context_budget import (
+    ContextItem,
+    assemble_context,
+    estimate_tokens,
+)
 from trove.workflow.complexity import grade_complexity
 from trove.workflow.state import GenSQLState, WorkflowState
 
@@ -43,7 +47,9 @@ from trove.workflow.nodes.gen_sql import (
     build_sql_prompt_from_state,
     make_generate,
     make_validate,
+    render_cache_prefix,
     render_lessons,
+    render_rules,
     render_shots,
     render_terms,
 )
@@ -88,7 +94,10 @@ from trove.workflow.rules import (
 logger = get_logger(__name__)
 
 MAX_REFLECT_RETRIES = 10  # 修正轮上限（执行错误/规则/一致性/裁决共享）
-CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计划/历史）的预算
+CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计划/历史）的预算（standard 档）
+# 复杂度档位预算：simple 瘦身 / standard 默认 / complex 放开。
+# 修正轮强制 standard（见 grade_complexity），档位只作用于首轮生成。
+COMPLEXITY_BUDGET_TOKENS = {"simple": 1500, "standard": 2500, "complex": 4000}
 
 
 def generation_temperature(retry_count: int) -> float:
@@ -330,26 +339,66 @@ def _make_gen_sql_node(
                     kb_exact_match = {"question": h.question, "sql": h.sql}
                     break
 
-        # Context budget: optional blocks filled by priority, usage
-        # reported for observability (what the model actually saw).
-        optional_blocks = {
-            "few_shots": render_shots(few_shots),
-            "rules": "\n".join(rules),
-            "term_notes": render_terms(term_notes),
-            "lessons": render_lessons(lessons),
-            "plan": state.plan,
-            "history": state.history,
-        }
-        included, context_usage = assemble_blocks(
+        # Context budget: optional blocks filled by priority; within each
+        # block, items are selected by relevance score, all capped at a
+        # complexity-tiered token budget (simple 瘦身 / complex 放开).
+        # Usage reported for observability (what the model actually saw).
+        budget = COMPLEXITY_BUDGET_TOKENS.get(complexity, CONTEXT_BUDGET_TOKENS)
+        optional_blocks: dict[str, list[ContextItem]] = {}
+        if few_shots:
+            # 每表/每条示例带 KB 相关度分数(score 降序=检索顺序)——预算
+            # 内保留最相关条目,而非整块丢弃。getattr 兼容无 score 的桩。
+            optional_blocks["few_shots"] = [
+                ContextItem(
+                    key=f"shot{i}",
+                    text=render_shots([s]),
+                    score=float(getattr(h, "score", 0) or 0),
+                )
+                for i, (h, s) in enumerate(zip(example_hits, few_shots))
+            ]
+        if rules:
+            optional_blocks["rules"] = [
+                ContextItem(key=f"rule{i}", text=render_rules([r]), score=0.0)
+                for i, r in enumerate(rules)
+            ]
+        if term_notes:
+            optional_blocks["term_notes"] = [
+                ContextItem(key=f"term{i}", text=render_terms([t]), score=0.0)
+                for i, t in enumerate(term_notes)
+            ]
+        if lessons:
+            optional_blocks["lessons"] = [
+                ContextItem(key=f"lesson{i}", text=render_lessons([l]), score=0.0)
+                for i, l in enumerate(lessons)
+            ]
+        if state.plan:
+            optional_blocks["plan"] = [
+                ContextItem(key="plan", text=state.plan, score=0.0),
+            ]
+        if state.history:
+            optional_blocks["history"] = [
+                ContextItem(key="history", text=state.history, score=0.0),
+            ]
+
+        included, context_usage = assemble_context(
             optional_blocks,
             {"few_shots": 1, "rules": 2, "term_notes": 3, "lessons": 4, "plan": 5, "history": 6},
-            CONTEXT_BUDGET_TOKENS,
+            budget,
         )
+        # 按预算选中的 item key 过滤各源列表(保留检索顺序)
+        def _trim(block: str, prefix: str, items: list[Any]) -> list[Any]:
+            keys = set(included.get(block, ()))
+            return [it for i, it in enumerate(items) if f"{prefix}{i}" in keys]
+
+        few_shots = _trim("few_shots", "shot", few_shots)
+        term_notes = _trim("term_notes", "term", term_notes)
+        lessons = _trim("lessons", "lesson", lessons)
+        rules = _trim("rules", "rule", rules)
 
         sub_state = GenSQLState.from_workflow(
             state,
             dialect=dialect,
-            included=included,
+            included=set(included.keys()),
             reasoning_context=render_reasoning_context(
                 state.reasoning_history, ("gen_sql",),
             ),
@@ -358,10 +407,16 @@ def _make_gen_sql_node(
             lessons=lessons,
             rules=rules,
         )
+        # 稳定可缓存前缀(dialect+schema)的 token 数——prompt caching 观测:
+        # 同一数据源+方言下跨调用字节级一致,值越大缓存复用空间越大。
+        cache_prefix_tokens = estimate_tokens(
+            render_cache_prefix(dialect, state.schema_context),
+        )
         update: dict[str, Any] = {
             "dialect": dialect,
             "candidates": [],
             "context_usage": context_usage,
+            "cache_prefix_tokens": cache_prefix_tokens,
             "complexity": complexity,
             # gen_sql 是权威生成路径:清掉陈旧快径标记,重生成的修正轮
             # 不享受快径的 reflect 跳过

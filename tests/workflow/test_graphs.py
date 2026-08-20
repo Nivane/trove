@@ -1257,7 +1257,10 @@ examples:
 
     async def test_context_budget_drops_low_priority_blocks(self, sqlite_registry, catalog, monkeypatch):
         """预算不足时低优先级块（history）被排除，核心 schema 保留。"""
-        monkeypatch.setattr(graphs_module, "CONTEXT_BUDGET_TOKENS", 5)
+        monkeypatch.setattr(
+            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            {"simple": 5, "standard": 5, "complex": 5},
+        )
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
@@ -1269,6 +1272,81 @@ examples:
         assert "Database schema" in gen_prompt                 # 核心保留
         usage = final["context_usage"]
         assert any(u["name"] == "history" and not u["included"] for u in usage)
+
+    async def test_complexity_tier_drives_budget(self, sqlite_registry, catalog, monkeypatch):
+        """复杂度档位驱动预算:simple 档预算小(history 被裁),complex 档预算大(history 保留)。"""
+        monkeypatch.setattr(
+            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            {"simple": 5, "standard": 2500, "complex": 2500},
+        )
+        history = "user: 平均成绩是多少\nassistant: 85 分"
+
+        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "simple")
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        await graphs["reflection"].ainvoke(make_state(history=history))
+        assert "Conversation history" not in llm.calls[1][-1]["content"]
+
+        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "complex")
+        llm2 = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs2 = build(make_services(llm2, catalog, sqlite_registry))
+        await graphs2["reflection"].ainvoke(make_state(history=history))
+        assert "Conversation history" in llm2.calls[1][-1]["content"]
+
+    async def test_few_shots_trimmed_by_score_in_tight_budget(
+        self, sqlite_registry, catalog, monkeypatch,
+    ):
+        """预算吃紧时按分数保留最相关示例(高分进 prompt,低分被裁)。"""
+
+        class ScoredKB:
+            async def ensure_synced(self, default_datasource=None):
+                pass
+
+            async def search_examples(self, q, ds, limit=5, tables=None,
+                                      all_tables=None, per_table=False):
+                return [
+                    SimpleNamespace(
+                        question="high q", tags=[], template=False, score=9,
+                        sql="SELECT 1 FROM students WHERE grade = 90",
+                    ),
+                    SimpleNamespace(
+                        question="mid q", tags=[], template=False, score=5,
+                        sql="SELECT 2 FROM students WHERE grade = 80",
+                    ),
+                    SimpleNamespace(
+                        question="low q", tags=[], template=False, score=1,
+                        sql="SELECT 3 FROM students WHERE grade = 70",
+                    ),
+                ]
+
+            async def list_rules(self, ds):
+                return []
+
+            async def list_lessons(self, ds):
+                return []
+
+            async def search_terms(self, q, ds, tables=None, all_tables=None):
+                return []
+
+            async def table_notes(self, tables, ds):
+                return {}
+
+        # 每条示例约 13 tokens;standard 档预算 20 → 只装得下最高分那条
+        monkeypatch.setattr(
+            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            {"simple": 2500, "standard": 20, "complex": 2500},
+        )
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=ScoredKB()))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        prompt = llm.calls[1][-1]["content"]
+        assert "grade = 90" in prompt          # 高分示例保留
+        assert "grade = 70" not in prompt      # 低分示例被预算裁掉
+        usage = {u["name"]: u for u in final["context_usage"]}
+        assert usage["few_shots"]["items_total"] == 3
+        assert usage["few_shots"]["items_included"] == 1
+        assert final["cache_prefix_tokens"] > 0
 
     async def test_history_reaches_generation_prompt(self, sqlite_registry, catalog):
         """会话历史注入 gen_sql 的生成 prompt。"""
