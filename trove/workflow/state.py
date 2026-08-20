@@ -69,6 +69,14 @@ class WorkflowState(BaseModel):
     # Compact conversation history (prior exchanges) for follow-up questions
     history: str = ""
 
+    # 批内子任务上下文(HITL 三选项):{"index": i, "total": n, "remaining": r}
+    # 由 SessionManager 协调器注入;None = 单任务路径,HITL 保持 y/n 两选项。
+    task_context: dict[str, Any] | None = None
+
+    # 批内"确认并继续全部"置位:本 run 跳过 HITL 门直接 approved
+    # (仅协调器在 approve_all 后续跑剩余任务时设置,单任务恒为 False)
+    auto_approve: bool = False
+
     # Official hint for the question (evaluation/reference use); kept
     # separate so classification and rules see the pure question only
     evidence: str = ""

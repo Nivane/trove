@@ -18,6 +18,8 @@ const I18N = {
     meta: (n) => `${n} 条消息`, aborted: "已停止",
     sessionNotFound: "会话不存在，已新建会话", error: "错误",
     hitlApprove: "批准执行", hitlReject: "否决",
+    hitlApproveOne: "确认", hitlApproveAll: "确认，继续全部任务", hitlStop: "不继续",
+    taskPanel: "任务进度",
     sessionsLabel: "会话", collapseTitle: "折叠侧栏",
     themeLight: "主题：浅色", themeDark: "主题：深色",
     stepsSummary: (n, ms, tokens) => `${n} 步 · ${ms}ms${tokens ? ` · ${tokens}` : ""}`,
@@ -45,6 +47,8 @@ const I18N = {
     meta: (n) => `${n} messages`, aborted: "Stopped",
     sessionNotFound: "Session missing — created a new one", error: "Error",
     hitlApprove: "Approve", hitlReject: "Reject",
+    hitlApproveOne: "Confirm", hitlApproveAll: "Confirm, continue all", hitlStop: "Stop",
+    taskPanel: "Tasks",
     sessionsLabel: "Sessions", collapseTitle: "Toggle sidebar",
     themeLight: "Theme: light", themeDark: "Theme: dark",
     stepsSummary: (n, ms, tokens) => `${n} steps · ${ms}ms${tokens ? ` · ${tokens}` : ""}`,
@@ -199,7 +203,8 @@ const state = {
   titles: {},        // session_id → derived title (first user question)
   currentTurn: null, // {el, stepsEl, statusEl, answerEl, toolbarEl, round, finished}
   controller: null,  // AbortController of the in-flight /v1/chat stream
-  pendingHitl: null, // HITL: {sessionId, workflow} — waiting for user decision
+  pendingHitl: null, // HITL: {sessionId, workflow, batch} — waiting for user decision
+  batchRunning: false, // 批处理中:逐任务的 done 只追加答案,不结束整轮
 };
 
 function t(key, ...args) {
@@ -582,6 +587,7 @@ function handleEvent(ev, turn) {
     case "session":
       state.sessionId = data.session_id;
       localStorage.setItem("trove_ui_session", state.sessionId);
+      hideTaskPanel();
       refreshSessions();
       break;
     case "thought":
@@ -590,23 +596,56 @@ function handleEvent(ev, turn) {
     case "step":
       renderStep(data, turn);
       break;
+    case "task":
+      /* 任务清单快照:面板同步;批内任一任务进行中 → 后续逐任务
+         done 只追加答案,直到收尾的 batched done 才结束整轮。 */
+      renderTaskPanel(data.tasks);
+      // 批内任一任务进行中 → 后续逐任务 done 只追加答案,直到收尾的
+      // batched done 才结束整轮(恢复渲染不进批模式)。
+      state.batchRunning = (data.tasks || [])
+        .some((tsk) => tsk.status === "in_progress");
+      break;
     case "done":
-      finishTurn(turn, data.summary);
-      turn.answerEl.innerHTML = renderMarkdown(data.content);
+      if (data.summary && data.summary.batched) {
+        /* 批收尾:整批结束,结束本轮 */
+        state.batchRunning = false;
+        finishTurn(turn, data.summary);
+        if (data.content) {
+          turn.answerEl.innerHTML += renderMarkdown(data.content);
+        }
+      } else if (state.batchRunning) {
+        /* 批内单个任务完成:追加答案块,继续批 */
+        turn.answerEl.innerHTML += renderMarkdown(data.content || "");
+      } else {
+        finishTurn(turn, data.summary);
+        turn.answerEl.innerHTML = renderMarkdown(data.content);
+      }
       break;
     case "hitl":
       /* 执行前人工确认(HITL):展示 SQL+语义,提供批准/否决按钮。
-         流在此关闭(图已暂停),按钮触发 /resume 继续同一线程。 */
-      state.pendingHitl = { sessionId: state.sessionId, workflow: "reflection" };
+         流在此关闭(图已暂停),按钮触发 /resume 继续同一线程。
+         批内任务(batch)给三选项:1 确认 / 2 确认并继续全部 / 3 不继续。 */
+      state.pendingHitl = {
+        sessionId: state.sessionId,
+        workflow: "reflection",
+        batch: ((data.payload || {}).task_context || {}).total > 1,
+      };
       finishTurn(turn, data.summary);
       turn.answerEl.innerHTML =
         renderMarkdown(data.content || "") +
-        `<div class="hitl-actions">
-           <button class="hitl-yes" onclick="resumeHitl('yes')">${esc(t("hitlApprove"))}</button>
-           <button class="hitl-no" onclick="resumeHitl('no')">${esc(t("hitlReject"))}</button>
-         </div>`;
+        (state.pendingHitl.batch
+          ? `<div class="hitl-actions hitl-3">
+               <button class="hitl-yes" onclick="resumeHitl('yes')">${esc(t("hitlApproveOne"))}</button>
+               <button class="hitl-all" onclick="resumeHitl('approve_all')">${esc(t("hitlApproveAll"))}</button>
+               <button class="hitl-no" onclick="resumeHitl('no')">${esc(t("hitlStop"))}</button>
+             </div>`
+          : `<div class="hitl-actions">
+               <button class="hitl-yes" onclick="resumeHitl('yes')">${esc(t("hitlApprove"))}</button>
+               <button class="hitl-no" onclick="resumeHitl('no')">${esc(t("hitlReject"))}</button>
+             </div>`);
       break;
     case "error":
+      state.batchRunning = false;
       finishTurn(turn, data.summary);
       if (data.summary) {
         turn.answerEl.innerHTML =
@@ -619,6 +658,51 @@ function handleEvent(ev, turn) {
     /* plan/verdict/correction/sql/result are legacy flat events fully
        covered by `step` cards — ignored (same as the REPL). */
   }
+}
+
+/* ── 任务面板(消息流顶部的跨轮 todo 状态) ─────────────── */
+
+const TASK_MARKS = {
+  pending: "○", in_progress: "◐", done: "✓", failed: "✗", skipped: "–",
+};
+
+function ensureTaskPanel() {
+  let panel = $("task-panel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "task-panel";
+    panel.className = "task-panel hidden";
+    const list = $("message-list");
+    list.insertBefore(panel, list.firstChild);
+  }
+  return panel;
+}
+
+function hideTaskPanel() {
+  const panel = $("task-panel");
+  if (panel) {
+    panel.classList.add("hidden");
+    panel.innerHTML = "";
+  }
+  state.batchRunning = false;
+}
+
+function renderTaskPanel(tasks) {
+  if (!tasks || !tasks.length) {
+    hideTaskPanel();
+    return;
+  }
+  const panel = ensureTaskPanel();
+  const chips = tasks.map((tsk) => {
+    const st = tsk.status || "pending";
+    const mark = TASK_MARKS[st] || "·";
+    const title = String(tsk.title || "").slice(0, 32);
+    return `<span class="task-chip task-${esc(st)}" title="${esc(title)}">` +
+      `<span class="task-mark">${esc(mark)}</span> ${esc((tsk.position ?? 0) + 1)}. ${esc(title)}</span>`;
+  }).join("");
+  panel.innerHTML =
+    `<span class="task-panel-title">${esc(t("taskPanel"))}</span> ${chips}`;
+  panel.classList.remove("hidden");
 }
 
 function turnStats(summary, steps) {
@@ -806,22 +890,48 @@ async function resumeHitl(decision) {
   const turn = beginAssistantTurn();
   setStreaming(true);
   $("question-input").value = "";
+
+  let res;
   try {
-    const res = await fetch(`/v1/sessions/${encodeURIComponent(pending.sessionId)}/resume`, {
+    res = await fetch(`/v1/sessions/${encodeURIComponent(pending.sessionId)}/resume`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ decision, workflow: "reflection" }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    finishTurn(turn, data);
-    let html = "";
-    if (data.response) html = renderMarkdown(data.response);
-    if (data.error) html += `<div class="error-box">${esc(data.error)}</div>`;
-    turn.answerEl.innerHTML = html || `<div class="error-box">${esc(t("error"))}</div>`;
   } catch (err) {
     finishTurn(turn);
     turn.answerEl.innerHTML = `<div class="error-box">${esc(String(err))}</div>`;
+    return;
+  }
+  if (!res.ok) {
+    finishTurn(turn);
+    turn.answerEl.innerHTML = `<div class="error-box">${esc(`HTTP ${res.status}`)}</div>`;
+    return;
+  }
+
+  /* SSE 流与 /v1/chat 同构:批内 approve_all 时逐任务 done + 收尾
+     batched done;其余情形等价于原来的 JSON 终态。 */
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  const feed = createSSEParser();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const ev of feed(decoder.decode(value, { stream: true }))) {
+        handleEvent(ev, turn);
+      }
+    }
+  } catch (err) {
+    finishTurn(turn);
+    turn.answerEl.innerHTML = `<div class="error-box">${esc(String(err))}</div>`;
+    return;
+  }
+  if (!turn.finished) {
+    finishTurn(turn);
+    if (!turn.answerEl.textContent.trim()) {
+      turn.answerEl.innerHTML = `<div class="error-box">${esc(t("error"))}</div>`;
+    }
   }
 }
 
@@ -1139,6 +1249,15 @@ async function selectSession(id) {
   renderSessionList();
   updateWelcome();
   scrollToBottom();
+
+  // 跨轮任务状态恢复:serve 重启后任务清单仍在(会话文件持久化)。
+  try {
+    const tres = await fetch(`/v1/sessions/${encodeURIComponent(id)}/tasks`);
+    if (tres.ok) {
+      const tdata = await tres.json();
+      if ((tdata.tasks || []).length) renderTaskPanel(tdata.tasks);
+    }
+  } catch { /* 面板恢复失败不阻断会话加载 */ }
 }
 
 async function deleteSession(id) {

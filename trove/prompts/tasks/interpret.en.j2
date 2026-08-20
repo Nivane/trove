@@ -1,0 +1,15 @@
+The current session has this task list (numbered from 1):
+
+{% for t in tasks %}{{ loop.index }}. [{{ t.status }}] {{ t.title }}
+{% endfor %}
+Latest user message: "{{ question }}"
+
+Decide what the user wants to do with the task list. Output ONLY a JSON object, no other text:
+
+- Continue with the next pending task: {"action": "continue_next"}
+- Redo task N: {"action": "redo", "index": N}
+- Skip task N: {"action": "skip", "index": N}
+- The user gave new tasks (message unrelated to the list or adds analysis goals): {"action": "add"}
+- None of the above (ordinary follow-up, unrelated question): {"action": "none"}
+
+Mapping hints: "continue", "next", "keep going" → continue_next; "redo #2" → redo, index=2; "skip #3" → skip, index=3. index is 1-based. If the message mentions continuing AND adds new tasks, prefer "add".

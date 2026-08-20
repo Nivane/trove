@@ -48,6 +48,29 @@ class Session:
     # metadata may contain: model, datasource, language, workflow, ...
 
 
+# ── Task ─────────────────────────────────────────────────
+
+
+@dataclass
+class Task:
+    """A cross-turn sub-task of a multi-part user instruction.
+
+    Status flow (one-way chain with two side actions):
+        pending → in_progress → done / failed
+        skipped (user asked to skip) · redo (failed/done → pending again)
+    """
+
+    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    session_id: str = ""
+    title: str = ""  # 子问题原文(该任务的 question)
+    status: Literal["pending", "in_progress", "done", "failed", "skipped"] = "pending"
+    position: int = 0  # 列表顺序 0..n
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: dict[str, Any] = field(default_factory=dict)
+    # metadata may contain: run_id, sql, row_count, verdict, error, user_cancelled
+
+
 # ── Datasource / Schema ──────────────────────────────────
 
 

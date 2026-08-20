@@ -84,6 +84,10 @@ class SessionStore:
     def _session_db(self, project_name: str, session_id: str) -> Path:
         return self._sessions_dir(project_name) / f"{session_id}.db"
 
+    def session_db_path(self, project_name: str, session_id: str) -> Path:
+        """Public accessor for the per-session SQLite file (shared with TaskStore)."""
+        return self._session_db(project_name, session_id)
+
     def _ensure_dir(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -389,13 +393,12 @@ class SessionStore:
         session.messages = [summary_msg] + recent
         session.summary = summary_text
 
-        # Persist by rewriting the database
+        # Persist by rewriting messages in place (never unlink: the file
+        # also carries the tasks table and meta keys like created_at/user_id)
         project_name = session.project_name
         db_path = self._session_db(project_name, session.session_id)
-        if db_path.exists():
-            db_path.unlink()
-
         conn = await self._init_db(db_path)
+        await conn.execute("DELETE FROM messages")
         for msg in session.messages:
             await conn.execute(
                 "INSERT INTO messages (role, content, timestamp, metadata_json) VALUES (?, ?, ?, ?)",

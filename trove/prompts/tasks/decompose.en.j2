@@ -1,0 +1,15 @@
+Decide whether the user question below is a multi-task instruction containing several independent sub-questions.
+
+Multi-task criteria (any of):
+- Items explicitly enumerated: "1) 2) 3)", "a. b. c." etc.
+- Connectors joining multiple analysis goals: "respectively", "then", "also", "in addition"
+- The request contains several independent analytical questions
+
+Counter-examples (not multi-task): a single question with a long description, one time range, or only one analysis dimension.
+
+Output format: output ONLY a JSON object, no other text.
+- Multi-task: {"tasks": ["sub-question 1 (a complete, independently queryable question)", "sub-question 2", ...]}
+- Single-task: {"tasks": []}
+
+User question:
+{{ question }}

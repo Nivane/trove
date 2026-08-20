@@ -35,6 +35,7 @@ from trove.workflow.state import WorkflowState
 logger = get_logger(__name__)
 
 _APPROVE = {"approve", "yes", "y", "ok", "confirm", "1", "true"}
+_APPROVE_ALL = {"approve_all", "approveall", "ya", "2"}
 _REJECT = {"reject", "no", "n", "cancel", "0", "false"}
 
 
@@ -48,8 +49,8 @@ def _normalize(decision: Any) -> str:
         return "approved" if decision else "rejected"
     if isinstance(decision, str):
         d = decision.strip().lower()
-        if d in _APPROVE:
-            return "approved"
+        if d in _APPROVE or d in _APPROVE_ALL:
+            return "approved"  # approve_all also approves the current task
         if d in _REJECT:
             return "rejected"
     return "approved"  # explicit resume implies approval unless it is a clear rejection
@@ -67,6 +68,11 @@ def make_hitl(
     async def hitl(state: WorkflowState) -> dict[str, Any]:
         # No gate when disabled, no SQL, errored upstream, or mid-correction
         # (retry loop → regenerating anyway; do not re-prompt the human).
+        # 批内"确认并继续全部":后续子任务不再暂停,直接放行
+        # (hitl_status=approved 保持结果口径一致,避免下游误判未确认)
+        if state.auto_approve:
+            return {"hitl_status": "approved"}
+
         in_correction = bool(state.error_feedback or state.error_analysis or state.reason)
         if (
             not config.hitl
@@ -81,6 +87,7 @@ def make_hitl(
             "question": state.question,
             "sql": state.sql,
             "semantics": state.semantics,
+            "task_context": state.task_context,
         }
         try:
             decision = interrupt(proposal)

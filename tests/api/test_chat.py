@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+from tests.conftest import ScriptedGateway
+
 
 def parse_sse(text: str) -> list[tuple[str, dict]]:
     """Parse a text/event-stream body into [(event, data), ...]."""
@@ -211,18 +213,142 @@ class TestChatHITLResume:
             assert payload["kind"] == "confirm_sql"
             assert "SELECT name FROM students;" in payload["sql"]
 
-            # 批准 → 最终状态带执行结果与洞察
+            # 批准 → SSE 事件流:done 终态带执行结果与洞察
             resume = await c.post(
                 f"/v1/sessions/{session_id}/resume",
                 json={"decision": "yes"},
             )
             assert resume.status_code == 200
-            body = resume.json()
-            assert body["hitl_status"] == "approved"
-            assert body["row_count"] == 5
-            assert body["insights"] == ["共 5 名学生"]
-            assert body["response"]
+            resume_events = parse_sse(resume.text)
+            assert resume_events[-1][0] == "done"
+            summary = resume_events[-1][1]["summary"]
+            assert summary["hitl_status"] == "approved"
+            assert summary["row_count"] == 5
+            assert summary["insights"] == ["共 5 名学生"]
+            assert summary["final_response"]
 
             # 会话落库为一次完整问答
             detail = (await c.get(f"/v1/sessions/{session_id}")).json()
             assert len(detail["messages"]) == 2
+
+
+class TestChatTasks:
+    """跨轮任务层 API:GET /tasks 快照 + 多任务流 + 批内 HITL 三选项。"""
+
+    @staticmethod
+    def _build_manager(tmp_home, sqlite_registry, responses, *, hitl=False):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+
+        config = AgentConfig(home=str(tmp_home), target="mock/model", hitl=hitl)
+        gateway = ScriptedGateway(responses)
+        graphs = build_graphs(
+            GraphServices(llm=gateway, connectors=sqlite_registry, config=config),
+            checkpointer=InMemorySaver(),
+            multi_candidate=False, planner=False, agentic=False,
+        )
+        return SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=graphs,
+            llm_gateway=gateway,
+        )
+
+    async def test_tasks_endpoint_empty_for_fresh_session(self, client):
+        created = (await client.post("/v1/sessions")).json()["session_id"]
+        resp = await client.get(f"/v1/sessions/{created}/tasks")
+        assert resp.status_code == 200
+        assert resp.json() == {"session_id": created, "tasks": []}
+
+    async def test_tasks_endpoint_404(self, client):
+        assert (await client.get("/v1/sessions/nope/tasks")).status_code == 404
+
+    async def test_chat_multitask_streams_and_persists_tasks(self, tmp_home, sqlite_registry):
+        """多任务 chat:逐任务 done + 收尾 batched done;GET /tasks 返回持久化快照。"""
+        from trove.api.app import create_app
+        from httpx import ASGITransport, AsyncClient
+
+        SQL = "```sql\nSELECT name FROM students;\n```"
+        manager = self._build_manager(
+            tmp_home, sqlite_registry,
+            [
+                '{"tasks": ["学生名单", "平均成绩"]}',
+                "query", SQL, "OK",
+                "query", SQL, "OK",
+            ],
+        )
+        app = create_app({"session_manager": manager})
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            session_id = (await c.post("/v1/sessions")).json()["session_id"]
+            resp = await c.post(
+                "/v1/chat",
+                json={"session_id": session_id, "question": "分别查询 1. 学生名单 2. 平均成绩"},
+            )
+            events = parse_sse(resp.text)
+            types = [t for t, _ in events]
+
+            # task 快照 ×5(初始 + 每任务 in_progress/终态)+ 3 个 done(2 逐任务 + 1 收尾)
+            assert types.count("task") == 5
+            assert types.count("done") == 3
+            done_data = [d for t, d in events if t == "done"]
+            assert done_data[-1]["summary"]["batched"] is True
+            assert "任务 1/2" in done_data[0]["content"]
+            assert "任务 2/2" in done_data[1]["content"]
+
+            # 持久化快照(会话文件 tasks 表)
+            tasks = (await c.get(f"/v1/sessions/{session_id}/tasks")).json()["tasks"]
+            assert [t["status"] for t in tasks] == ["done", "done"]
+            assert [t["title"] for t in tasks] == ["学生名单", "平均成绩"]
+
+            # 会话消息:user + 每任务 assistant(带 task_id 元数据)
+            detail = (await c.get(f"/v1/sessions/{session_id}")).json()
+            assert len(detail["messages"]) == 3
+            assert all(m["metadata"]["task_id"] for m in detail["messages"] if m["role"] == "assistant")
+
+    async def test_chat_batch_hitl_approve_all_resume_streams(self, tmp_home, sqlite_registry):
+        """批内 HITL:hitl 事件带 task_context;approve_all resume 以 SSE 流收尾。"""
+        from trove.api.app import create_app
+        from httpx import ASGITransport, AsyncClient
+
+        SQL = "```sql\nSELECT name FROM students;\n```"
+        manager = self._build_manager(
+            tmp_home, sqlite_registry,
+            [
+                '{"tasks": ["学生名单", "平均成绩"]}',
+                "query", SQL,        # 任务1 → HITL 中断
+                "OK",                # resume:reflect
+                "query", SQL, "OK",  # 任务2:auto_approve
+            ],
+            hitl=True,
+        )
+        app = create_app({"session_manager": manager})
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            session_id = (await c.post("/v1/sessions")).json()["session_id"]
+            resp = await c.post(
+                "/v1/chat",
+                json={"session_id": session_id, "question": "分别查询 1. 学生名单 2. 平均成绩"},
+            )
+            events = parse_sse(resp.text)
+            hitl_data = [d for t, d in events if t == "hitl"]
+            assert hitl_data
+            assert hitl_data[0]["payload"]["task_context"]["total"] == 2
+
+            # approve_all:整个批次在此流中完成,收尾事件为 batched done
+            resume = await c.post(
+                f"/v1/sessions/{session_id}/resume",
+                json={"decision": "approve_all"},
+            )
+            assert resume.status_code == 200
+            resume_events = parse_sse(resume.text)
+            resume_types = [t for t, _ in resume_events]
+            assert resume_types.count("done") == 3
+            assert resume_events[-1][1]["summary"]["batched"] is True
+
+            tasks = (await c.get(f"/v1/sessions/{session_id}/tasks")).json()["tasks"]
+            assert [t["status"] for t in tasks] == ["done", "done"]

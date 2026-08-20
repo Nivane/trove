@@ -75,3 +75,38 @@ def register_session_commands(registry: SlashRegistry, context: dict) -> None:
         group="session",
         handler=cmd_compact,
     ))
+
+    async def cmd_tasks(args: str) -> str:
+        """Show the current session's cross-turn task list."""
+        manager = context.get("session_manager")
+        session = context.get("current_session")
+        if not manager or not session:
+            return "No active session."
+        lang = getattr(context.get("config"), "language", "zh")
+        tasks = await manager.get_tasks(session)
+        if not tasks:
+            return ("当前会话没有任务。" if lang == "zh"
+                    else "No tasks in the current session.")
+        marks = {
+            "pending": "·", "in_progress": "→", "done": "✓",
+            "failed": "✗", "skipped": "-",
+        }
+        lines = []
+        for t in tasks:
+            status = t.get("status", "pending")
+            mark = marks.get(status, "·")
+            title = (t.get("title") or "")[:80]
+            failed_reason = ""
+            meta = t.get("metadata") or {}
+            if status == "failed" and meta.get("error"):
+                failed_reason = f" ({meta['error'][:60]})"
+            lines.append(f"{mark} {t.get('position', 0) + 1}. {title} [{status}]{failed_reason}")
+        return "\n".join(lines)
+
+    registry.register(SlashCommand(
+        name="tasks",
+        description="Show cross-turn task list",
+        group="session",
+        handler=cmd_tasks,
+        aliases=["todo"],
+    ))

@@ -64,7 +64,7 @@ class TestRegistryBasics:
 
 class TestBuiltInCommands:
     def test_session_commands_registered(self, registry):
-        for name in ["help", "exit", "clear", "compact"]:
+        for name in ["help", "exit", "clear", "compact", "tasks"]:
             assert registry.get(name) is not None, f"Missing /{name}"
 
     def test_metadata_commands_registered(self, registry):
@@ -115,6 +115,71 @@ class TestCommandHandlersWithContext:
         result = await reg.get("clear").handler("")
         assert "cleared" in result.lower()
         assert session.messages == []
+
+    async def test_tasks_handler_with_tasks(self, tmp_home):
+        from trove.storage.session_store import SessionStore
+        from trove.storage.task_store import TaskStore
+
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+        task_store = TaskStore(store.session_db_path(session.project_name, session.session_id))
+        from trove.core.types import Task
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        await task_store.save_task(Task(
+            title="查询学生名单", status="done", position=0,
+            created_at=now, updated_at=now,
+        ))
+        await task_store.save_task(Task(
+            title="查询平均成绩", status="pending", position=1,
+            created_at=now, updated_at=now,
+        ))
+        await task_store.save_task(Task(
+            title="坏任务", status="failed", position=2,
+            created_at=now, updated_at=now,
+            metadata={"error": "sql boom"},
+        ))
+
+        from trove.core.config import AgentConfig
+        from trove.agent.session import SessionManager
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=store,
+            graphs={},
+            llm_gateway=None,
+        )
+        context = {"session_manager": manager, "current_session": session,
+                   "config": AgentConfig(home=str(tmp_home), language="zh")}
+
+        reg = SlashRegistry()
+        register_session_commands(reg, context)
+
+        result = await reg.get("tasks").handler("")
+        assert "✓ 1. 查询学生名单" in result
+        assert "· 2. 查询平均成绩" in result
+        assert "✗ 3. 坏任务" in result
+        assert "sql boom" in result  # 失败原因展示
+
+    async def test_tasks_handler_empty(self, tmp_home):
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=store,
+            graphs={},
+            llm_gateway=None,
+        )
+        context = {"session_manager": manager, "current_session": session,
+                   "config": AgentConfig(home=str(tmp_home), language="zh")}
+        reg = SlashRegistry()
+        register_session_commands(reg, context)
+
+        result = await reg.get("tasks").handler("")
+        assert "没有任务" in result
 
     async def test_model_command_set(self):
         class FakeConfig:

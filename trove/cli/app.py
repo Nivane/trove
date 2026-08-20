@@ -204,39 +204,62 @@ class TroveREPL:
                 session=self._session,
                 question=text,
             ):
-                event_type = event.get("type", "")
-                content = event.get("content", "")
-
-                if event_type == "thought":
-                    self._tui.print_thought(content)
-                elif event_type == "step":
-                    self._render_step(event)
-                elif event_type in ("plan", "verdict", "correction", "sql", "result"):
-                    # 已由结构化 step 渲染覆盖（--print 中仍保留这些事件）
-                    pass
-                elif event_type == "hitl":
-                    # 执行前人工确认(HITL):展示确认请求,同步询问用户,
-                    # 通过 resume() 继续被打断的图(批准→执行/否决→取消)。
-                    self._tui.print_markdown(content)
-                    lang = getattr(self._config, "language", "zh")
-                    decision = self._tui.prompt_input(
-                        TroveREPL._lang_confirm(lang)
-                    )
-                    resumed = await self._manager.resume(
-                        self._session, decision,
-                    )
-                    self._tui.print_markdown(resumed.final_response)
-                    return
-                elif event_type == "done":
-                    self._tui.print_markdown(content)
-                    self._print_done_stats(event.get("summary") or {})
-                elif event_type == "error":
-                    self._tui.print_error(content)
+                await self._render_event(event)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self._tui.print_error(f"Query failed: {e}")
             logger.exception("Query error")
+
+    async def _render_event(self, event: dict) -> None:
+        """Render one stream event; HITL blocks for the user's decision."""
+        event_type = event.get("type", "")
+        content = event.get("content", "")
+
+        if event_type == "thought":
+            self._tui.print_thought(content)
+        elif event_type == "step":
+            self._render_step(event)
+        elif event_type == "task":
+            self._render_task(event)
+        elif event_type in ("plan", "verdict", "correction", "sql", "result"):
+            # 已由结构化 step 渲染覆盖(--print 中仍保留这些事件)
+            pass
+        elif event_type == "hitl":
+            # 执行前人工确认(HITL):展示确认请求,同步询问用户,
+            # 通过 resume_stream() 继续被打断的图。批内任务显示
+            # 三选项(1 确认 / 2 确认并继续全部 / 3 不继续)。
+            self._tui.print_markdown(content)
+            lang = getattr(self._config, "language", "zh")
+            payload = event.get("payload") or {}
+            batch = ((payload.get("task_context") or {}).get("total") or 1) > 1
+            if batch:
+                decision = self._tui.prompt_input(
+                    L(lang, "选择 1/2/3 > ", "Choose 1/2/3 > ")
+                )
+            else:
+                decision = self._tui.prompt_input(TroveREPL._lang_confirm(lang))
+            async for ev in self._manager.resume_stream(self._session, decision):
+                await self._render_event(ev)
+        elif event_type == "done":
+            self._tui.print_markdown(content)
+            self._print_done_stats(event.get("summary") or {})
+        elif event_type == "error":
+            self._tui.print_error(content)
+
+    def _render_task(self, event: dict) -> None:
+        """Render a task-list snapshot as one compact progress line."""
+        tasks = (event.get("data") or {}).get("tasks") or []
+        if not tasks:
+            return
+        marks = {"pending": "·", "in_progress": "→", "done": "✓",
+                 "failed": "✗", "skipped": "-"}
+        parts = []
+        for t in tasks:
+            status = t.get("status", "pending")
+            title = (t.get("title") or "")[:24]
+            parts.append(f"{marks.get(status, '·')} {t.get('position', 0) + 1}. {title}")
+        self._tui.print_info("任务: " + " | ".join(parts))
 
     def _render_step(self, event: dict) -> None:
         """Render a structured trajectory step (序号 · 节点 · 耗时 · 摘要)."""

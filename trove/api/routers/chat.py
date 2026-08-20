@@ -67,21 +67,30 @@ def _load_or_404(request: Request, session_id: str):
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
 
 
+@router.get("/sessions/{session_id}/tasks")
+async def get_session_tasks(session_id: str, request: Request) -> dict:
+    """当前会话的任务清单(跨轮次 todo 状态)。"""
+    session = await _load_or_404(request, session_id)
+    tasks = await _manager(request).get_tasks(session)
+    return {"session_id": session_id, "tasks": tasks}
+
+
 @router.post("/sessions/{session_id}/resume")
 async def resume_session(session_id: str, body: ResumeRequest, request: Request):
-    """继续一处 HITL 中断:用用户决定 resume 被打断的图,返回最终状态。"""
+    """继续一处 HITL 中断:SSE 事件流(与 /v1/chat 同构)。
+
+    decision=approve_all 且为批内任务时,剩余任务以 auto_approve 继续执行,
+    全部事件在此流中推送;其余情形等价于原来的 JSON 终态(以 done 事件产出)。
+    """
     session = await _load_or_404(request, session_id)
-    final = await _manager(request).resume(session, body.decision, body.workflow)
-    return {
-        "session_id": session_id,
-        "hitl_status": final.hitl_status,
-        "response": final.final_response,
-        "sql": final.sql,
-        "row_count": final.row_count,
-        "verdict": final.verdict,
-        "insights": final.insights,
-        "error": final.error,
-    }
+    manager = _manager(request)
+
+    async def events():
+        async for event in manager.resume_stream(session, body.decision, body.workflow):
+            payload = {k: v for k, v in event.items() if k != "type"}
+            yield {"type": event["type"], "data": payload}
+
+    return sse_response(events())
 
 
 @router.post("/sessions/{session_id}/compact")

@@ -1,0 +1,15 @@
+以下是当前会话的任务清单(编号从 1 开始):
+
+{% for t in tasks %}{{ loop.index }}. [{{ t.status }}] {{ t.title }}
+{% endfor %}
+用户最新消息:"{{ question }}"
+
+判断用户想对任务清单做什么。只输出一个 JSON 对象,不要任何其他文字,格式:
+
+- 继续执行下一个待办任务:{"action": "continue_next"}
+- 重做第 N 个任务:{"action": "redo", "index": N}
+- 跳过第 N 个任务:{"action": "skip", "index": N}
+- 用户下达了新任务(消息内容与现有任务无关或新增分析目标):{"action": "add"}
+- 都不属于(例如普通追问、与任务无关的问题):{"action": "none"}
+
+参考映射:"继续"、"下一个"、"接着做" → continue_next;"重做第2个" → redo, index=2;"跳过第3个" → skip, index=3。index 一律从 1 开始。消息既提到继续又包含新任务时优先 add。
