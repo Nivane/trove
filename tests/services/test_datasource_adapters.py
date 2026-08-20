@@ -196,6 +196,26 @@ class TestConnectorRegistry:
 
         await registry.close_all()
 
+    async def test_execute_rejects_bypass_techniques(self):
+        """AST 防火墙升级:拦截关键词正则/顶层检查绕不过去的手法。"""
+        registry = ConnectorRegistry()
+        config = DatasourceConfig(
+            name="db", type="sqlite", connection_params={"path": ":memory:"},
+        )
+        await registry.register(config)
+        for sql in [
+            "DEL/**/ETE FROM t",   # 注释拆分绕过关键词正则
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",  # data-modifying CTE
+            "SELECT * FROM sqlite_master",   # 元数据侦察
+            "SELECT * FROM information_schema.tables",
+            "SELECT SLEEP(5)",     # 危险函数
+            "SELECT LOAD_FILE('/etc/passwd')",
+        ]:
+            with pytest.raises(DatasourceError):
+                await registry.execute(sql, "db")
+
+        await registry.close_all()
+
     async def test_execute_allows_select_with_cte_and_without_table(self):
         """SELECT 家族(含 CTE/无表查询)正常放行。"""
         registry = ConnectorRegistry()

@@ -149,6 +149,40 @@ CLICKHOUSE_TEST_URL="clickhouse://default:pass@host:8123/default" \
   uv run pytest tests/services/test_clickhouse_adapter.py -m integration
 ```
 
+### 只读执行安全（多租户 SaaS / 共享库部署必读）
+
+Trove 对自动生成的 SQL 做了应用层纵深防御（`trove/services/sql/guard.py` 的 AST
+防火墙：只读语句白名单、data-modifying CTE 拦截、危险函数、元数据表拒绝、可选
+表名 allowlist），但**应用层可被绕过，不是安全边界**。真正的边界在数据库侧：
+给 Trove 用的连接必须指向一个**专用只读角色**，授权粒度比应用层更细。
+
+PostgreSQL（PG14+，覆盖未来新建对象）：
+
+```sql
+CREATE ROLE trove_ro LOGIN PASSWORD '...';
+GRANT pg_read_all_data TO trove_ro;   -- 或按 schema 显式授权:
+-- GRANT CONNECT ON DATABASE app TO trove_ro;
+-- GRANT USAGE ON SCHEMA public TO trove_ro;
+-- GRANT SELECT ON ALL TABLES IN SCHEMA public TO trove_ro;
+```
+
+MySQL（按库授权，禁止 `*.*`，固定来源 IP）：
+
+```sql
+CREATE USER 'trove_ro'@'10.0.0.5' IDENTIFIED BY '...';
+GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
+```
+
+要点：
+
+- 隐藏敏感列用**列级 grant 或视图**，在授权层做，别依赖应用层掩码
+- 连接侧开启超时：`statement_timeout`/`lock_timeout`（PG）、`MAX_EXECUTION_TIME`
+  （MySQL 会话变量）
+- 行数上限在数据库侧用 `LIMIT`/`LEAST()` 强制，应用层限制可被 SQL 绕过
+- 多租户优先每租户独立库 + 独立只读角色；必须共享库时用 RLS 或程序化 CTE 预过滤
+- 只读角色的 DSN 密钥妥善保管；Trove 报错路径已统一脱敏（`sanitize_error_text`），
+  但错误日志仍可能泄露连接信息——日志系统同样需要访问控制
+
 （DuckDB 集成测试用内存库，无需外部服务，常开。）
 
 ## 评测

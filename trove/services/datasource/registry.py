@@ -202,8 +202,9 @@ class ConnectorRegistry:
         Raises:
             DatasourceError: If the SQL is not a SELECT statement.
         """
-        self._guard_read_only(sql)
         adapter = await self.get(datasource)
+        # 测试替身等轻量 adapter 可能缺 dialect — getattr 防御
+        self._guard_read_only(sql, getattr(adapter, "dialect", lambda: "")())
         key = (
             adapter.name,
             re.sub(r"\s+", " ", sql.strip()).upper(),
@@ -261,43 +262,27 @@ class ConnectorRegistry:
         Deliberately bypasses the result cache (plans are cheap and the
         key space is the same as execute's).
         """
-        self._guard_read_only(sql)
         adapter = await self.get(datasource)
+        self._guard_read_only(sql, adapter.dialect())
         prefix = "EXPLAIN QUERY PLAN" if adapter.dialect() == "sqlite" else "EXPLAIN"
         return await adapter.execute(f"{prefix} {sql}")
 
     @staticmethod
-    def _guard_read_only(sql: str) -> None:
-        """Reject non-SELECT statements (best-effort; sqlglot optional)."""
-        try:
-            import sqlglot
-            from sqlglot import exp
-        except ImportError:
-            logger.warning("sqlglot not available; skipping read-only guard")
-            return
-        statements: list | None = None
-        # 反引号标识符(MySQL 方言,KB 探测等内部 SQL 使用)默认解析失败 →
-        # 回退 mysql 方言再试;两者都失败才拒绝(安全方向)
-        for dialect in (None, "mysql"):
-            try:
-                statements = sqlglot.parse(sql, dialect=dialect)
-                break
-            except Exception:
-                continue
-        if statements is None:
+    def _guard_read_only(sql: str, dialect: str = "") -> None:
+        """Reject non-SELECT statements (AST-level read-only firewall).
+
+        统一执行入口的只读门:execute / explain 共用。AST 整树检查,
+        覆盖关键词正则与「只查顶层」都绕不过去的手法——data-modifying
+        CTE(WITH x AS (DELETE ...) SELECT)、注释拆分 DEL/**/ETE、
+        危险函数(SLEEP/LOAD_FILE)、元数据表侦察(sqlite_master 等)。
+        """
+        from trove.services.sql.guard import check_readonly
+
+        ok, reasons = check_readonly(sql, dialect)
+        if not ok:
             raise DatasourceError(
-                message="SQL rejected: could not parse statement"
+                message="Trove is read-only: " + "; ".join(reasons[:3])
             )
-        for stmt in statements:
-            if stmt is None:
-                continue
-            if not isinstance(stmt, exp.Select):
-                raise DatasourceError(
-                    message=(
-                        "Trove is read-only: only SELECT queries are allowed "
-                        f"(rejected: {stmt.sql()[:120]})"
-                    )
-                )
 
     async def get_schema(self, datasource: str | None = None) -> SchemaInfo:
         """Get schema info for a datasource."""

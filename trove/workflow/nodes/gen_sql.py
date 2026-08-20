@@ -417,8 +417,8 @@ PROBE_TIMEOUT_S = 5.0
 def _has_limit(sql: str, dialect: str) -> bool:
     """检测顶层 LIMIT 是否已存在(sqlglot 解析;失败退化文本扫描)。
 
-    保守方向:无法确认时按"已有 LIMIT"处理——不改写、不做 COUNT 包装
-    (观测里 row_count 可能超过封顶,但不会把模型合法的 SQL 改坏)。
+    保守方向:无法确认时按"无 LIMIT"处理——注入封顶后再执行
+    (观测行数被钉在封顶值,绝不放行无上限的全表探测)。
     """
     try:
         import sqlglot
@@ -429,7 +429,7 @@ def _has_limit(sql: str, dialect: str) -> bool:
     except Exception:
         if re.search(r"\bLIMIT\s+\d+\b", sql, re.I):
             return True
-        return True  # 无法确认 → 保守按有 LIMIT 处理
+        return False  # 无法确认 → 按无 LIMIT 处理(注入封顶)
 
 
 def _append_limit(sql: str, dialect: str, limit: int) -> str:
@@ -456,15 +456,23 @@ async def _probe_result(
     connectors, sql: str, dialect: str,
     limit: int = PROBE_LIMIT,
     timeout_s: float = PROBE_TIMEOUT_S,
+    allowed_tables: set[str] | None = None,
 ) -> dict[str, Any]:
     """共享只读执行通道:真实执行草稿 SQL,返回原始观测 dict(值不截断)。
 
     供 probe_query(观测)与 check_result(规则校验)复用。**永不抛异常**
     ——任何失败都折叠成 ``{"ok": False, "error": ...}``。
 
-    双保险只读门:``SQLValidator.is_safe``(关键词正则)+ ``validate_sql``
-    (sqlglot 单语句 ``exp.Query`` 校验——Insert/Update/Delete/Drop
-    均非 exp.Query,天然拦截;多语句同样拒绝)。
+    三层只读门(纵深防御):
+      1. ``SQLValidator.is_safe`` — 关键词正则(廉价首层);
+      2. ``check_readonly`` — AST 级防火墙(data-modifying CTE、危险
+         函数、元数据表、可选表名 allowlist);
+      3. ``validate_sql`` — sqlglot RAISE 单语句校验。
+      最终执行入口(registry)还有一层统一 AST 门兜底。
+
+    Args:
+        allowed_tables: 允许引用的业务表集合(有 schema 快照时传入;
+            None 仅排除元数据表)。
 
     Returns:
         ``{"ok", "row_count", "columns"[:20], "rows"[:limit], "error"}``
@@ -475,10 +483,15 @@ async def _probe_result(
     sql = (sql or "").strip()
     if not sql:
         return {"ok": False, "error": "empty SQL"}
+    from trove.services.sql.guard import check_readonly
+    from trove.services.sql.sanitize import sanitize_error_text
     from trove.services.sql.validator import SQLValidator
 
     if not SQLValidator().is_safe(sql):
         return {"ok": False, "error": "write operations are not permitted"}
+    ok, reasons = check_readonly(sql, dialect, allowed_tables)
+    if not ok:
+        return {"ok": False, "error": "; ".join(reasons)}
     valid, errors = validate_sql(sql, dialect)
     if not valid:
         return {"ok": False, "error": "; ".join(errors)}
@@ -492,7 +505,7 @@ async def _probe_result(
     except TimeoutError:
         return {"ok": False, "error": f"probe timed out after {timeout_s}s"}
     except Exception as e:
-        return {"ok": False, "error": f"execution failed: {e}"}
+        return {"ok": False, "error": f"execution failed: {sanitize_error_text(str(e))}"}
 
     rows = result.rows or []
     row_count = len(rows)
@@ -518,6 +531,7 @@ async def _probe_result(
 async def probe_query(
     connectors, sql: str, dialect: str,
     timeout_s: float = PROBE_TIMEOUT_S,
+    allowed_tables: set[str] | None = None,
 ) -> str:
     """只读执行探针:真实执行草稿 SQL,返回短 JSON 观测串。
 
@@ -526,9 +540,13 @@ async def probe_query(
     ——任何失败都折叠成 ``{"ok": false, "error": ...}`` 观测。
 
     观测形状: ``{"ok", "row_count", "columns"[:20], "rows"[:5], "error"}``
+
+    Args:
+        allowed_tables: 允许引用的业务表集合(schema 快照可用时传入)。
     """
     obs = await _probe_result(
         connectors, sql, dialect, limit=PROBE_LIMIT, timeout_s=timeout_s,
+        allowed_tables=allowed_tables,
     )
     if not obs["ok"]:
         return json.dumps(obs)
@@ -552,6 +570,7 @@ async def check_result(
     dialect: str,
     lang: str = "en",
     timeout_s: float = PROBE_TIMEOUT_S,
+    allowed_tables: set[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """确定性校验工具:执行草稿 SQL 后跑规则链,返回 (观测文本, hits)。
 
@@ -567,6 +586,7 @@ async def check_result(
     """
     obs = await _probe_result(
         connectors, sql, dialect, limit=CHECK_RESULT_LIMIT, timeout_s=timeout_s,
+        allowed_tables=allowed_tables,
     )
     if not obs["ok"]:
         return f"ERROR: {obs['error']}", []
@@ -673,7 +693,9 @@ async def _search_one(
     except TimeoutError:
         return {"ok": False, "error": f"search timed out after {timeout_s}s"}
     except Exception as e:
-        return {"ok": False, "error": f"execution failed: {e}"}
+        from trove.services.sql.sanitize import sanitize_error_text
+
+        return {"ok": False, "error": f"execution failed: {sanitize_error_text(str(e))}"}
     values = [_short_value(r[0]) for r in (result.rows or [])]
     return {"ok": True, "values": values}
 
@@ -753,26 +775,54 @@ def build_sql_registry(
     if connectors is None:
         return registry
 
+    async def _allowed_tables():
+        """schema 快照可用时 → 业务表名集合(allowlist 输入);否则 None。"""
+        schema = await _lazy_schema()
+        if schema is None:
+            return None
+        return {t.name.lower() for t in schema.tables}
+
+    async def _audit(tool: str, sql_text: str, result: str) -> None:
+        """一行结构化审计:工具 + 问题 + SQL + 结果签名(结果行数据不进日志)。
+
+        与 runlog 的工具 span 互补:span 用于本次运行的诊断回放,这里给
+        长期日志一条可 grep 的摘要(多租户 SaaS 的查询审计起点)。
+        """
+        logger.info(
+            "sql_audit tool=%s question=%r sql=%r result=%s",
+            tool, question[:80], sql_text[:300], result[:200],
+        )
+
     async def probe_tool(arguments: dict) -> str:
         # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
-        return await probe_query(connectors, arguments.get("sql", ""), dialect)
+        sql_text = arguments.get("sql", "")
+        result = await probe_query(
+            connectors, sql_text, dialect,
+            allowed_tables=await _allowed_tables(),
+        )
+        await _audit("probe", sql_text, result)
+        return result
 
     async def check_tool(arguments: dict) -> str:
         # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
+        sql_text = arguments.get("sql", "")
         text, hits = await check_result(
-            connectors, question, arguments.get("sql", ""), dialect, lang=lang,
+            connectors, question, sql_text, dialect, lang=lang,
+            allowed_tables=await _allowed_tables(),
         )
         registry.check_hits.extend(hits)
+        await _audit("check", sql_text, text)
         return text
 
     async def search_tool(arguments: dict) -> str:
         # 值检索:定位脏值/格式变体/拼写差异,锚定过滤值到真实数据
-        return await search_values(
-            connectors,
-            arguments.get("table", ""),
-            arguments.get("keyword", ""),
+        table = arguments.get("table", "")
+        result = await search_values(
+            connectors, table, arguments.get("keyword", ""),
             arguments.get("column"),
         )
+        await _audit("search", f"TABLE {table}", result)
+        return result
 
     async def lookup_schema_tool(arguments: dict) -> str:
         # 懒加载表 DDL:预算裁掉未注入的表时,模型按需取列/主键/外键
@@ -881,25 +931,39 @@ def build_sql_registry(
 
     async def explain_tool(arguments: dict) -> str:
         # 执行计划(EXPLAIN,只读、毫秒级):定稿前检查索引使用/join 顺序/
-        # 全表扫描,提前发现"能跑但慢"的写法,省掉执行后才发现的重写
+        # 全表扫描,提前发现"能跑但慢"的写法,省掉执行后才发现的重写。
+        # 工具层先过 AST 防火墙(含 allowlist)——registry 的 EXPLAIN
+        # 前缀由注册表自己拼,这里拦的是 LLM 提交的 inner SQL 本身。
+        from trove.services.sql.guard import check_readonly
+        from trove.services.sql.sanitize import sanitize_error_text
+
         sql = (arguments.get("sql") or "").strip()
         if not sql:
             return '{"ok": false, "error": "sql is required"}'
+        ok, reasons = check_readonly(sql, dialect, await _allowed_tables())
+        if not ok:
+            denied = json.dumps({"ok": False, "error": "; ".join(reasons[:3])})
+            await _audit("explain", sql, denied)
+            return denied
         try:
             result = await asyncio.wait_for(
                 connectors.explain(sql), timeout=5.0,
             )
         except Exception as e:
-            return '{"ok": false, "error": "%s"}' % (e,)
+            failed = '{"ok": false, "error": "%s"}' % (sanitize_error_text(str(e)),)
+            await _audit("explain", sql, failed)
+            return failed
         lines = [
             " | ".join(str(cell) for cell in row)
             for row in result.rows[:20]
         ]
-        return json.dumps({
+        out = json.dumps({
             "ok": True,
             "plan": lines,
             "truncated": len(result.rows) > 20,
         })
+        await _audit("explain", sql, out)
+        return out
 
     registry.register(
         "explain_plan", explain_tool,

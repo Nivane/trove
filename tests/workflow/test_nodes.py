@@ -1187,14 +1187,14 @@ class TestProbeQuery:
         assert r.rows[0][0] == 5
 
     async def test_probe_rejects_multi_statement(self, sqlite_registry):
-        """多语句由 sqlglot 层拦截(不在关键词正则范围内时也拦)。"""
+        """多语句被拦截:AST 防火墙(Block)或 sqlglot 校验层均可。"""
         import json
         from trove.workflow.nodes.gen_sql import probe_query
 
         obs = json.loads(await probe_query(
             sqlite_registry, "SELECT 1; SELECT 2", "sqlite"))
         assert obs["ok"] is False
-        assert "Multiple" in obs["error"]
+        assert "Multiple" in obs["error"] or "only SELECT" in obs["error"]
 
     async def test_probe_syntax_error(self, sqlite_registry):
         import json
@@ -1202,7 +1202,52 @@ class TestProbeQuery:
 
         obs = json.loads(await probe_query(sqlite_registry, "SELEC * FROM students", "sqlite"))
         assert obs["ok"] is False
-        assert obs["error"]
+
+    async def test_probe_rejects_metadata_table(self, sqlite_registry):
+        """元数据侦察(sqlite_master)在注册表执行层被统一拦截。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(
+            sqlite_registry, "SELECT * FROM sqlite_master", "sqlite"))
+        assert obs["ok"] is False
+        assert "metadata" in obs["error"]
+
+    async def test_probe_rejects_data_modifying_cte(self, sqlite_registry):
+        """data-modifying CTE:顶层是 SELECT,树内藏 DELETE — AST 整树扫描拦截。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        obs = json.loads(await probe_query(
+            sqlite_registry,
+            "WITH x AS (DELETE FROM students RETURNING *) SELECT * FROM x",
+            "sqlite"))
+        assert obs["ok"] is False
+        assert "write operation" in obs["error"]
+
+    async def test_probe_allowlist(self, sqlite_registry):
+        """allowed_tables 约束:表在集合内放行,集合外拒绝。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        ok = json.loads(await probe_query(
+            sqlite_registry, "SELECT name FROM students", "sqlite",
+            allowed_tables={"students"}))
+        assert ok["ok"] is True
+        denied = json.loads(await probe_query(
+            sqlite_registry, "SELECT name FROM students", "sqlite",
+            allowed_tables={"other"}))
+        assert denied["ok"] is False
+        assert "not in the allowed tables" in denied["error"]
+
+    def test_has_limit_unparseable_defaults_to_no_limit(self):
+        """LIMIT 判定保守方向:无法确认 → 按无 LIMIT 处理(注入封顶),
+        而不是按「已有 LIMIT」放行(那会让全表查询无上限执行)。"""
+        from trove.workflow.nodes.gen_sql import _has_limit
+
+        assert _has_limit("SELECT name FROM students LIMIT 2", "sqlite") is True
+        assert _has_limit("SELECT name FROM students", "sqlite") is False
+        assert _has_limit("SELEC * FROM students", "sqlite") is False  # 无法解析
 
     async def test_probe_timeout_folded_into_observation(self):
         """超时折叠成 ok:false 观测,不抛异常。"""
