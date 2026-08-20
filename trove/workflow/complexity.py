@@ -7,9 +7,10 @@
                的语义盲区最大,不值得省。
 - "standard" → 默认/证据不足时的保守档,行为与未分级时完全一致。
 
-simple 门槛(2026-08 放宽):≤2 表(允许 join)、可有排序、answer_columns ≤ 3、
-聚合 ≤ 2、matched_tables ≤ 2,且必须有术语或 KB 命中(term_hit or kb_hit)。
-complex 判据同步调高:≥3 表、子查询迹象、聚合 ≥ 3、plan 被校验丢弃。
+simple 门槛(2026-08 放宽):≤2 表(允许 join 与子查询)、可有排序、
+answer_columns ≤ 3、聚合 ≤ 2、matched_tables ≤ 2,且必须有术语或 KB
+命中(term_hit or kb_hit)。complex 判据同步调高:≥3 表、聚合 ≥ 3、
+plan 被校验丢弃。
 
 判据:plan_json 是 planner 产出的自由格式 JSON(结构信号,最硬);matched_tables
 是 schema_linking 的锚定表(语义信号)。所有访问均防御式:缺失/错型键取保守侧
@@ -22,13 +23,7 @@ complex 判据同步调高:≥3 表、子查询迹象、聚合 ≥ 3、plan 被�
 
 from __future__ import annotations
 
-import re
 from typing import Any
-
-# 子查询/嵌套 SQL 迹象:出现在 plan 的 joins/conditions/aggregation/ordering 文本里。
-# 不含 join 关键词——表 join 已允许进 simple(≤2 表),真正的嵌套查询
-# 由 select/union/intersect/except/with 捕获。
-_SUBQUERY_RE = re.compile(r"\b(select|union|intersect|except|with)\b", re.IGNORECASE)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -42,22 +37,6 @@ def _as_str(value: Any) -> str:
     """把 plan 字段防御式取为 str:None/错型 → ""。"""
     if isinstance(value, str):
         return value
-    return ""
-
-
-def _text_value(value: Any) -> str:
-    """str 原样,list 拼接(dict 取 value/text/note 字段),其余 → "":
-    用于子查询迹象的文本扫描。"""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts = []
-        for v in value:
-            if isinstance(v, dict):
-                parts.append(" ".join(_as_str(v.get(k)) for k in ("value", "text", "note")))
-            else:
-                parts.append(_as_str(v))
-        return " ".join(parts)
     return ""
 
 
@@ -97,16 +76,6 @@ def _well_typed(plan: dict[str, Any]) -> bool:
     return True
 
 
-def has_subquery_signal(plan_json: dict[str, Any] | None) -> bool:
-    """plan 文本里是否出现嵌套 SQL 迹象(join/子查询/集合运算/CTE 关键词)。"""
-    if not plan_json:
-        return False
-    for key in ("joins", "conditions", "aggregation", "ordering"):
-        if _SUBQUERY_RE.search(_text_value(plan_json.get(key))):
-            return True
-    return False
-
-
 def grade_complexity(
     plan_json: dict[str, Any] | None,
     matched_tables: list[str] | None = None,
@@ -136,8 +105,6 @@ def grade_complexity(
     # complex 判据(任一命中即 complex;先判,simple 只在全部约束满足时成立)
     tables = [t for t in _as_list(plan_json.get("tables")) if isinstance(t, str) and t]
     if len(tables) >= 3:
-        return "complex"
-    if has_subquery_signal(plan_json):
         return "complex"
     if _aggregation_count(plan_json) >= 3:
         return "complex"

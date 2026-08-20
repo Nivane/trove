@@ -1,6 +1,6 @@
 """grade_complexity 纯函数测试:结构信号(plan) + 语义信号(锚定表)分级。"""
 
-from trove.workflow.complexity import grade_complexity, has_subquery_signal
+from trove.workflow.complexity import grade_complexity
 
 SIMPLE_PLAN = {
     "tables": ["students"],
@@ -49,12 +49,12 @@ def test_joins_are_simple():
     assert grade_complexity(plan2, ["students", "counties"], term_hit=True) == "simple"
 
 
-def test_subquery_in_conditions_is_complex():
+def test_subquery_in_conditions_is_simple():
+    """子查询不再单独判 complex:声明 ≤2 表的嵌套 SQL 与 2 表 join 等价。"""
     plan = dict(SIMPLE_PLAN, conditions=[
         {"field": "grade", "op": ">", "value": "SELECT AVG(grade) FROM students"},
     ])
-    assert grade_complexity(plan, ["students"], term_hit=True) == "complex"
-    assert has_subquery_signal(plan) is True
+    assert grade_complexity(plan, ["students"], term_hit=True) == "simple"
 
 
 def test_three_aggregations_is_complex():

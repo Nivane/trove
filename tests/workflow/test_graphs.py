@@ -2026,11 +2026,11 @@ class TestComplexitySwitch:
         assert len(llm.calls) == 3  # intent + planner + gen_sql(经典);无 reflect
 
     async def test_complex_plan_keeps_multi_candidate(self, sqlite_registry, catalog, tmp_path):
-        """多表 plan → complex:候选池照常生成。"""
+        """≥3 聚合 → complex:候选池照常生成。"""
         kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
-        # joins 非空即 complex(validate_plan 不检查 joins 文本,表必须真实存在)
-        plan = ('{"tables": ["students"], "joins": "joined with another table", '
-                '"aggregation": "COUNT", "answer_columns": ["count(*)"]}')
+        # 聚合 ≥ 3 即 complex(validate_plan 不校验 aggregation 文本,表不虚构)
+        plan = ('{"tables": ["students"], "aggregation": ["COUNT(*)", "AVG(grade)", "SUM(grade)"], '
+                '"answer_columns": ["count(*)"]}')
         llm = RecordingLLM([
             "query",
             plan,
