@@ -539,6 +539,11 @@ def _make_gen_sql_node(
             # 简单题(单表/单聚合/无 join 等)跳过多候选:共识投票是给
             # 歧义准备的,简单结构没有歧义值得花 4 次额外生成
             and complexity != "simple"
+            # 修正轮默认跳过候选:模型已拿到错误反馈做定点修复,再花
+            # 4 次生成纯属烧预算(执行/规则/裁决失败与"歧义"无关)。
+            # 唯一例外是上一轮 select 平局(consensus=False)——候选池
+            # 跨轮加票正是为那种歧义设计的,保留。
+            and not (in_correction and state.consensus)
         ):
             alt_graphs = alt_subgraphs if alt_subgraphs else [subgraph_alt]
             # 候选池跨轮累积(重试=加票):旧候选保留,新候选加入后一起投票。

@@ -54,12 +54,17 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
     if conditions:
         lines.append("条件:" if zh else "Conditions:")
         for c in conditions:
+            # 模型偶发把条件输出成字符串数组(而非对象数组)——原样展示
+            # 而不是崩溃丢整个 plan(崩溃 → 无计划 → SQL 质量下降 → RETRY 级联)
+            if not isinstance(c, dict):
+                lines.append(f"  - {c}")
+                continue
             note = f"（{c['note']}）" if zh and c.get("note") else f" ({c['note']})" if c.get("note") else ""
             lines.append(f"  - {c.get('field')} {c.get('op')} {c.get('value')}{note}")
     if data.get("aggregation"):
         lines.append(("聚合: " if zh else "Aggregation: ") + str(data["aggregation"]))
     extreme = data.get("extreme")
-    if extreme:
+    if isinstance(extreme, dict):
         scope = extreme.get("scope", "")
         lines.append(
             f"{('极值: ' if zh else 'Extreme: ')}{extreme.get('func')}({extreme.get('column')})"
