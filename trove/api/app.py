@@ -18,6 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 from trove.api.routers import catalog, chat, kb
 from trove.core.errors import DatasourceError, SessionError
+from trove.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def _static_dir() -> str | None:
@@ -52,6 +55,25 @@ def create_app(components: dict) -> FastAPI:
     app = FastAPI(title="Trove API", version="0.1.0", docs_url="/v1/docs")
     for name, value in components.items():
         setattr(app.state, name, value)
+
+    # Auth: real service → mount /v1/auth (+ /v1/admin when present);
+    # missing → NullAuth fallback so embedded/stray callers keep working
+    # (every request runs as synthetic local admin, loud one-time warning).
+    from trove.api.deps import NullAuth
+    from trove.api.routers import admin as admin_router
+    from trove.api.routers import auth as auth_router
+
+    auth = components.get("auth")
+    if auth is None:
+        auth = NullAuth()
+        app.state.auth = auth
+        logger.warning(
+            "AUTH DISABLED — no auth service in components; "
+            "requests run as synthetic local admin"
+        )
+    if not isinstance(auth, NullAuth):
+        app.include_router(auth_router.router, prefix="/v1")
+        app.include_router(admin_router.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")

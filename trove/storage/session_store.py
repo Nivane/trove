@@ -296,8 +296,14 @@ class SessionStore:
     async def list_sessions(
         self,
         project_cwd: str | Path = ".",
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List all sessions for a project.
+        """List sessions for a project.
+
+        Args:
+            project_cwd: Project directory.
+            user_id: When given, only sessions owned by this user are
+                returned; ``None`` lists all (REPL/CLI "local" default).
 
         Returns:
             List of dicts with session_id, created_at, updated_at, message_count.
@@ -325,7 +331,14 @@ class SessionStore:
                 row = await cursor.fetchone()
                 updated_at = row[0] if row else ""
 
+                owner = None
+                cursor = await conn.execute("SELECT value FROM meta WHERE key = 'user_id'")
+                row = await cursor.fetchone()
+                owner = row[0] if row else None
                 await conn.close()
+
+                if user_id is not None and owner != user_id:
+                    continue
 
                 results.append({
                     "session_id": sid,

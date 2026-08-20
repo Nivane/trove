@@ -53,3 +53,41 @@ class LessonCreate(BaseModel):
 
 class LessonConfirmResponse(BaseModel):
     confirmed: int
+
+
+class LoginRequest(BaseModel):
+    """POST /v1/auth/login body."""
+
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class UserCreate(BaseModel):
+    """POST /v1/admin/users body."""
+
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    role: str = "user"
+    display_name: str = ""
+
+
+class UserPatch(BaseModel):
+    """PATCH /v1/admin/users/{id} body (all fields optional)."""
+
+    password: str | None = Field(default=None, min_length=1)
+    role: str | None = None
+    display_name: str | None = None
+    disabled: bool | None = None
+
+
+class TokenCreate(BaseModel):
+    """POST /v1/admin/users/{id}/tokens body."""
+
+    label: str = ""
+    ttl_hours: int | None = Field(default=None, ge=1)
+
+
+class DatasourcesPut(BaseModel):
+    """PUT /v1/admin/users/{id}/datasources body."""
+
+    datasources: list[str] = Field(default_factory=list)

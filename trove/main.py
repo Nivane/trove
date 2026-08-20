@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -146,6 +147,13 @@ async def create_app_components(
     # ── Storage ────────────────────────────────────────────
     session_store = SessionStore(home_dir=config.home)
 
+    # ── Auth (central app.db: users/tokens/grants/audit) ────
+    from trove.services.auth.service import AuthService
+    auth = AuthService(Path(config.home).expanduser() / "app.db")
+    bootstrap_admin, bootstrap_password = await auth.ensure_bootstrap_admin(
+        os.environ.get("TROVE_ADMIN_PASSWORD")
+    )
+
     # ── LLM Gateway ───────────────────────────────────────
     llm_gateway = LLMGateway(providers=config.providers)
 
@@ -226,6 +234,8 @@ async def create_app_components(
     return {
         "config": config,
         "session_store": session_store,
+        "auth": auth,
+        "bootstrap_admin_password": bootstrap_password,
         "llm_gateway": llm_gateway,
         "connector_registry": connector_registry,
         "catalog_service": catalog_service,
@@ -418,6 +428,21 @@ async def async_main_serve(argv: list[str]) -> None:
     async with build_checkpointer(config.home) as checkpointer:
         components = await create_app_components(args, config, checkpointer)
 
+        bootstrap_password = components.get("bootstrap_admin_password")
+        if bootstrap_password:
+            # print + logger 双路:uvicorn 可能吞掉/延迟 stdout 顺序
+            print(
+                f"\n[!] Bootstrap admin 'admin' created — initial password: "
+                f"{bootstrap_password}\n"
+                f"    Set TROVE_ADMIN_PASSWORD to control it; change it after login.\n",
+                flush=True,
+            )
+            logger.warning(
+                "Bootstrap admin 'admin' created — initial password: %s "
+                "(set TROVE_ADMIN_PASSWORD to control it)",
+                bootstrap_password,
+            )
+
         from trove.api.app import create_app
         app = create_app(components)
         server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
@@ -436,9 +461,14 @@ def main_serve(argv: list[str] | None = None) -> None:
 
 
 def main_repl():
-    """Entry point for 'trove' command (REPL mode, or `trove serve`)."""
+    """Entry point for 'trove' command (REPL / serve / job / admin)."""
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         main_serve()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "admin":
+        # run_admin_cmds manages its own event loop (asyncio.run inside)
+        from trove.cli.admin_cmds import run_admin_cmds
+        run_admin_cmds(sys.argv[2:])
         return
     if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule"):
         async def _run_sub():

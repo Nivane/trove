@@ -699,6 +699,63 @@ class KbService:
         await self.force_sync(datasource)
         return confirmed
 
+    async def get_lesson(self, datasource: str, pattern: str) -> dict | None:
+        """One lesson by exact pattern match, or None."""
+        path = self.kb_dir / datasource / "lessons.yml"
+        if not path.exists():
+            return None
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for lesson in data.get("lessons", []):
+            if lesson.get("pattern") == pattern:
+                return lesson
+        return None
+
+    async def confirm_lesson(self, datasource: str, pattern: str) -> bool:
+        """Confirm one pending lesson by pattern (rewrites the YAML).
+
+        Returns False when the pattern is absent. Idempotent for an
+        already-confirmed lesson (returns True).
+        """
+        path = self.kb_dir / datasource / "lessons.yml"
+        if not path.exists():
+            return False
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        found = False
+        for lesson in data.get("lessons", []):
+            if lesson.get("pattern") == pattern:
+                lesson["confirmed"] = True
+                found = True
+                break
+        if not found:
+            return False
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        await self.force_sync(datasource)
+        return True
+
+    async def reject_lesson(self, datasource: str, pattern: str) -> bool:
+        """Remove one lesson by pattern (rewrites the YAML).
+
+        Returns False when the pattern is absent.
+        """
+        path = self.kb_dir / datasource / "lessons.yml"
+        if not path.exists():
+            return False
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        lessons = data.get("lessons", [])
+        before = len(lessons)
+        data["lessons"] = [l for l in lessons if l.get("pattern") != pattern]
+        if len(data["lessons"]) == before:
+            return False
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        await self.force_sync(datasource)
+        return True
+
     async def list_term_names(self, datasource: str) -> list[str]:
         """Term names of one datasource (knowledge intent answers)."""
         if not self.enabled:

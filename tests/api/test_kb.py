@@ -13,10 +13,11 @@ from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
-async def kb_client(api_kb):
-    """AsyncClient bound to the seeded KB app (api_kb is the app itself)."""
+async def kb_client(api_kb, admin_token):
+    """Authenticated admin client bound to the seeded KB app."""
     transport = ASGITransport(app=api_kb)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
         yield c
 
 

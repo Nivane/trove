@@ -1,74 +1,16 @@
 <!doctype html>
 <html lang="zh">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>Trove</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2 3 12l9 10 9-10-9-10Z' fill='%236366f1'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/ui/style.css">
-</head>
-<body>
-  <aside id="sidebar">
-    <div class="sidebar-header">
-      <a id="brand" href="/ui/">
-        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M12 2 3 12l9 10 9-10-9-10Z"></path>
-          <path d="M3 12h18"></path>
-        </svg>
-        <span id="app-title">Trove</span>
-      </a>
-    </div>
-    <button id="new-session-btn" type="button">
-      <span class="btn-icon" aria-hidden="true"></span>
-      <span class="btn-text">新建会话</span>
-    </button>
-    <div class="sidebar-section-label">会话</div>
-    <nav id="session-list" aria-label="Sessions"></nav>
-  </aside>
-  <main>
-    <header id="topbar">
-      <button id="sidebar-toggle" type="button" class="icon-btn" title="折叠侧栏" aria-label="Toggle sidebar">
-        <span class="btn-icon" aria-hidden="true"></span>
-      </button>
-      <span id="session-title"></span>
-      <span class="spacer"></span>
-      <span id="datasource-label" class="pill" hidden></span>
-      <button id="lang-toggle" type="button" title="切换语言 / Switch language">EN</button>
-      <button id="theme-toggle" type="button" class="icon-btn" title="切换主题" aria-label="Toggle theme">
-        <span class="btn-icon" aria-hidden="true"></span>
-      </button>
-    </header>
-    <div id="message-list" aria-live="polite">
-      <div id="welcome">
-        <div class="welcome-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2 3 12l9 10 9-10-9-10Z"></path>
-            <path d="M3 12h18"></path>
-          </svg>
-        </div>
-        <h2 id="welcome-title">Trove 数据问答</h2>
-        <p id="welcome-subtitle">用自然语言提问，自动生成 SQL、执行并验证答案</p>
-        <div id="suggestion-chips"></div>
-      </div>
-    </div>
-    <form id="composer" autocomplete="off">
-      <div id="slash-menu" hidden></div>
-      <div id="composer-box">
-        <textarea id="question-input" rows="1" placeholder="输入问题…"></textarea>
-        <button id="send-btn" type="submit" title="发送" aria-label="Send" disabled>
-          <span class="btn-icon" aria-hidden="true"></span>
-        </button>
-        <button id="stop-btn" type="button" title="停止" aria-label="Stop" hidden>
-          <span class="btn-icon" aria-hidden="true"></span>
-        </button>
-      </div>
-      <div id="composer-hint">内容由 AI 生成，可能出错，重要信息请核对</div>
-    </form>
-  </main>
-  <div id="backdrop" aria-hidden="true"></div>
-  <script src="/ui/app.js" defer></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Trove</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='7' y='7' width='10' height='10' rx='2.5' fill='%236366f1'/%3E%3C/svg%3E" />
+    <script type="module" crossorigin src="/ui/assets/index-DFzKkuaq.js"></script>
+    <link rel="modulepreload" crossorigin href="/ui/assets/vendor-element-plus-DdMNBWlm.js">
+    <link rel="stylesheet" crossorigin href="/ui/assets/index-CywLS6hU.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
 </html>

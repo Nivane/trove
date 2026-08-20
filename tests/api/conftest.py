@@ -50,8 +50,33 @@ KB_SEED = {
 
 
 @pytest.fixture
-async def api_app(sqlite_registry, session_manager, tmp_path):
-    """FastAPI app with real catalog/registry/session-manager + empty KB."""
+async def auth_service(tmp_path):
+    """Central app.db with bootstrap admin 'admin'/'adminpw' + user 'bob'/'bobpw'."""
+    from trove.services.auth.service import AuthService
+
+    auth = AuthService(tmp_path / "app.db")
+    await auth.ensure_bootstrap_admin(env_password="adminpw")
+    await auth.create_user("bob", "bobpw", display_name="Bob")
+    return auth
+
+
+@pytest.fixture
+async def admin_token(auth_service):
+    admin = await auth_service.authenticate("admin", "adminpw")
+    raw, _ = await auth_service.create_token(admin["id"], label="test-admin")
+    return raw
+
+
+@pytest.fixture
+async def user_token(auth_service):
+    bob = await auth_service.authenticate("bob", "bobpw")
+    raw, _ = await auth_service.create_token(bob["id"], label="test-bob")
+    return raw
+
+
+@pytest.fixture
+async def api_app(sqlite_registry, session_manager, tmp_path, auth_service):
+    """FastAPI app with real catalog/registry/session-manager + empty KB + auth."""
     kb = KbService(tmp_path / "proj")
     kb.kb_dir.mkdir(parents=True)
     app = create_app({
@@ -59,6 +84,7 @@ async def api_app(sqlite_registry, session_manager, tmp_path):
         "catalog_service": CatalogService(sqlite_registry),
         "connector_registry": sqlite_registry,
         "kb": kb,
+        "auth": auth_service,
     })
     return app
 
@@ -76,7 +102,26 @@ async def api_kb(api_app):
 
 
 @pytest.fixture
-async def client(api_app):
+async def client(api_app, admin_token):
+    """Authenticated admin client (most tests run as admin)."""
+    transport = ASGITransport(app=api_app)
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
+        yield c
+
+
+@pytest.fixture
+async def anon_client(api_app):
+    """Unauthenticated client (no Authorization header)."""
     transport = ASGITransport(app=api_app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.fixture
+async def user_client(api_app, user_token):
+    """Authenticated non-admin client (bob)."""
+    transport = ASGITransport(app=api_app)
+    headers = {"Authorization": f"Bearer {user_token}"}
+    async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
         yield c

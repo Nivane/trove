@@ -39,6 +39,10 @@ class ErrorCode:
     # Auth
     AUTH_USER_ID_MISSING = "AUTH_001"
     AUTH_CONFIG_IMMUTABLE = "AUTH_002"
+    AUTH_INVALID_CREDENTIALS = "AUTH_003"
+    AUTH_TOKEN_INVALID = "AUTH_004"
+    AUTH_FORBIDDEN = "AUTH_005"
+    AUTH_USER_EXISTS = "AUTH_006"
 
     # MCP
     MCP_SERVER_UNREACHABLE = "MCP_001"
@@ -213,4 +217,21 @@ class CancelledError(TroveError):
             code=ErrorCode.SYS_INTERNAL,
             message=message,
             recoverable=False,
+        )
+
+
+class AuthError(TroveError):
+    """Authentication or authorization failed."""
+
+    def __init__(
+        self,
+        code: str = ErrorCode.AUTH_INVALID_CREDENTIALS,
+        message: str = "Authentication failed",
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(
+            code=code,
+            message=message,
+            recoverable=False,
+            details=details or {},
         )

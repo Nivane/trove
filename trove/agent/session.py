@@ -142,9 +142,17 @@ class SessionManager:
         """Persist the current session state."""
         await self._store.save_session(session)
 
-    async def list_sessions(self, project_cwd: str = ".") -> list[dict[str, Any]]:
-        """List all sessions for a project."""
-        return await self._store.list_sessions(project_cwd)
+    async def list_sessions(
+        self, project_cwd: str = ".", user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List sessions for a project.
+
+        Args:
+            project_cwd: Project directory.
+            user_id: When given, only sessions owned by this user are
+                returned (``None`` = all, the REPL/CLI "local" default).
+        """
+        return await self._store.list_sessions(project_cwd, user_id=user_id)
 
     async def delete_session(self, session_id: str, project_cwd: str = ".") -> bool:
         """Delete a session and its stored data."""
@@ -1342,6 +1350,13 @@ class SessionManager:
     @staticmethod
     def _state_summary(final: WorkflowState) -> dict[str, Any]:
         """Essentials of the final state for event consumers (e.g. --print)."""
+        chart_option = None
+        if final.chart:
+            try:
+                from trove.services.viz.echarts import build_echarts_option
+                chart_option = build_echarts_option(final.chart)
+            except Exception:
+                chart_option = None  # 渲染元数据坏时前端仍可退回首选手绘
         return {
             "session_id": final.session_id,
             "question": final.question,
@@ -1357,6 +1372,7 @@ class SessionManager:
             "final_response": final.final_response,
             "columns": list(final.columns),
             "chart": final.chart,
+            "chart_option": chart_option,
         }
 
     # ── Result cache (exact-question, in-process) ────────

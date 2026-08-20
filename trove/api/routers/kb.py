@@ -3,14 +3,20 @@
 Reads go through the SQLite mirror (ensure_synced refreshes it
 incrementally from YAML — the single source of truth); appends write
 straight into the YAML files.
+
+Reads are open to any authenticated user. KB writes (terms/examples) and
+the confirm-ALL action are admin-only; POST /v1/kb/lessons stays open to
+any authenticated user — it is the user feedback channel that produces
+*pending* lessons for the admin console to confirm or reject.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from trove.api.deps import get_current_user, require_admin
 from trove.api.schemas import (
     ExampleCreate,
     LessonConfirmResponse,
@@ -34,13 +40,18 @@ def _datasource(request: Request, datasource: str | None) -> str:
 
 
 @router.get("/kb/status")
-async def kb_status(request: Request) -> dict:
+async def kb_status(
+    request: Request, user: dict = Depends(get_current_user)
+) -> dict:
     kb = _kb(request)
     return {"enabled": kb.enabled, "items": await kb.list_items()}
 
 
 @router.get("/kb/rules")
-async def list_rules(request: Request, datasource: str | None = None) -> dict:
+async def list_rules(
+    request: Request, user: dict = Depends(get_current_user),
+    datasource: str | None = None,
+) -> dict:
     kb = _kb(request)
     ds = _datasource(request, datasource)
     await kb.ensure_synced(ds)
@@ -55,6 +66,7 @@ async def list_terms(
     request: Request,
     q: str | None = None,
     datasource: str | None = None,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
     ds = _datasource(request, datasource)
@@ -66,7 +78,9 @@ async def list_terms(
 
 
 @router.post("/kb/terms", status_code=201)
-async def create_term(body: TermCreate, request: Request) -> dict:
+async def create_term(
+    body: TermCreate, request: Request, user: dict = Depends(require_admin)
+) -> dict:
     ds = _datasource(request, None)
     await _kb(request).append_term(body.model_dump(), ds)
     return {"status": "ok", "term": body.term}
@@ -81,6 +95,7 @@ async def list_examples(
     q: str | None = None,
     datasource: str | None = None,
     limit: int = Query(default=3, ge=1, le=20),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
     ds = _datasource(request, datasource)
@@ -92,7 +107,9 @@ async def list_examples(
 
 
 @router.post("/kb/examples", status_code=201)
-async def create_example(body: ExampleCreate, request: Request) -> dict:
+async def create_example(
+    body: ExampleCreate, request: Request, user: dict = Depends(require_admin)
+) -> dict:
     ds = _datasource(request, None)
     await _kb(request).append_example(body.model_dump(), ds)
     return {"status": "ok", "question": body.question}
@@ -106,6 +123,7 @@ async def list_lessons(
     request: Request,
     datasource: str | None = None,
     pending: bool = False,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
     ds = _datasource(request, datasource)
@@ -114,7 +132,10 @@ async def list_lessons(
 
 
 @router.post("/kb/lessons", status_code=201)
-async def create_lesson(body: LessonCreate, request: Request) -> dict:
+async def create_lesson(
+    body: LessonCreate, request: Request, user: dict = Depends(get_current_user)
+) -> dict:
+    """User feedback channel: creates a *pending* lesson for admin review."""
     ds = _datasource(request, None)
     entry = body.model_dump()
     entry["confirmed"] = False
@@ -123,7 +144,10 @@ async def create_lesson(body: LessonCreate, request: Request) -> dict:
 
 
 @router.post("/kb/lessons/confirm", response_model=LessonConfirmResponse)
-async def confirm_lessons(request: Request, datasource: str | None = None) -> dict:
+async def confirm_lessons(
+    request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
     ds = _datasource(request, datasource)
     return {"confirmed": await _kb(request).confirm_pending_lessons(ds)}
 
@@ -132,7 +156,10 @@ async def confirm_lessons(request: Request, datasource: str | None = None) -> di
 
 
 @router.get("/kb/tables/{table_name}/notes")
-async def table_notes(table_name: str, request: Request, datasource: str | None = None) -> dict:
+async def table_notes(
+    table_name: str, request: Request, datasource: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
     kb = _kb(request)
     ds = _datasource(request, datasource)
     await kb.ensure_synced(ds)
