@@ -2550,13 +2550,16 @@ class TestMakeSQLTools:
         assert await handlers["validate_sql"]({"sql": "SELECT 1"}) == "valid"
         assert "ERRORS" in await handlers["validate_sql"]({"sql": "SELEC 1"})
 
-    async def test_with_connectors_four_tools_and_hits_sink(self, sqlite_registry):
-        """connectors 就位 → 四工具;check_tool 命中写 hits_sink,probe_tool 返回观测。"""
+    async def test_with_connectors_five_tools_and_hits_sink(self, sqlite_registry):
+        """connectors 就位 → 五工具(含 lookup_schema 懒加载);check_tool 命中写 hits_sink,probe_tool 返回观测。"""
         tools, handlers, hits = make_sql_tools(
             sqlite_registry, "How many students are there in total?", "en", "sqlite",
         )
         names = [t["function"]["name"] for t in tools]
-        assert names == ["validate_sql", "probe_query", "check_result", "search_values"]
+        assert names == ["validate_sql", "probe_query", "check_result", "search_values", "lookup_schema"]
+        # lookup_schema:懒加载表 DDL
+        assert '"columns"' in await handlers["lookup_schema"]({"table": "students"})
+        assert '"ok": false' in await handlers["lookup_schema"]({"table": "nope"})
         # check_tool:count 题分组展开草稿 → VIOLATION,命中进 hits_sink
         text = await handlers["check_result"]({
             "sql": "SELECT county, COUNT(*) FROM students GROUP BY county",
@@ -2675,6 +2678,38 @@ class TestReflectAdaptiveSkip:
             row_count=2, columns=["n"], rows=[[1], [2]],
         ))
         assert update["verdict"] == "OK"
+
+    async def test_reflect_skip_standard_covers_standard_complexity(self):
+        """reflect_skip=standard:规则全过 → simple/standard 都跳过裁决。"""
+        class NoCallLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("LLM must not be called with skip=standard")
+
+        node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model", reflect_skip="standard"))
+        update = await node(make_state(
+            rules_passed=True, complexity="standard",
+            row_count=2, columns=["n"], rows=[[1], [2]],
+        ))
+        assert update["verdict"] == "OK"
+        assert update["reason"] == "deterministic rules passed; reflect skipped"
+
+    async def test_reflect_skip_simple_does_not_cover_standard(self):
+        """默认 simple:standard 复杂度的规则全过仍交给 LLM 裁决。"""
+        class LLM:
+            def __init__(self):
+                self.called = False
+
+            async def chat(self, *a, **k):
+                self.called = True
+                return "RETRY: 结果与问题语义不符"
+
+        llm = LLM()
+        node = make_reflect(llm, AgentConfig(target="mock/model", reflect_skip="simple"))
+        update = await node(make_state(
+            rules_passed=True, complexity="standard",
+            row_count=2, columns=["n"], rows=[[1], [2]],
+        ))
+        assert llm.called is True
 
     async def test_reflect_skip_off_keeps_judge(self):
         class LLM:

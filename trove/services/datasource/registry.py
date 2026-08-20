@@ -7,6 +7,8 @@ and switching between database connections.
 from __future__ import annotations
 
 import re
+import time
+from dataclasses import replace
 from typing import Any
 
 from trove.core.types import DatasourceConfig, QueryResult, SchemaInfo
@@ -60,13 +62,30 @@ def register_adapter(dialect: str, adapter_cls: type[DatabaseAdapter]) -> None:
 
 
 class ConnectorRegistry:
-    """Central registry for all active database connections."""
+    """Central registry for all active database connections.
 
-    def __init__(self):
+    Read-only result caching: probe_query / check_result / execute_sql
+    repeatedly run the same SELECT within and across questions (drafts,
+    verification, follow-ups). execute() keeps a bounded short-TTL cache
+    keyed on (datasource, normalized SQL) so identical reads skip the
+    database. Writes never enter the cache (execute_unsafe bypasses it),
+    so cached entries only ever mirror immutable query results.
+    """
+
+    def __init__(
+        self,
+        result_cache_ttl_s: float = 60.0,
+        result_cache_max_entries: int = 256,
+    ):
         self._adapters: dict[str, DatabaseAdapter] = {}
         self._default_name: str | None = None
         # Display-safe connection info per datasource (no credentials).
         self._datasource_info: dict[str, dict[str, Any]] = {}
+        # (datasource, normalized SQL) → (stored_at, QueryResult)
+        self._result_cache: dict[tuple, tuple[float, QueryResult]] = {}
+        self._result_cache_ttl_s = result_cache_ttl_s
+        self._result_cache_max = result_cache_max_entries
+        self._result_cache_hits = 0
 
     # ── Connection management ────────────────────────────
 
@@ -185,7 +204,40 @@ class ConnectorRegistry:
         """
         self._guard_read_only(sql)
         adapter = await self.get(datasource)
-        return await adapter.execute(sql)
+        key = (
+            adapter.name,
+            re.sub(r"\s+", " ", sql.strip()).upper(),
+        )
+        hit = self._result_cache.get(key)
+        now = time.monotonic()
+        if hit is not None and now - hit[0] < self._result_cache_ttl_s:
+            self._result_cache_hits += 1
+            cached = hit[1]
+            return replace(
+                cached, rows=list(cached.rows), columns=list(cached.columns),
+            )
+        result = await adapter.execute(sql)
+        self._put_result_cache(key, result)
+        return result
+
+    def _put_result_cache(self, key: tuple, result: QueryResult) -> None:
+        """写入结果缓存(短 TTL + 容量上限,超限淘汰最旧条目)。"""
+        if self._result_cache_ttl_s <= 0:
+            return
+        self._result_cache[key] = (time.monotonic(), result)
+        if len(self._result_cache) > self._result_cache_max:
+            oldest = min(
+                self._result_cache, key=lambda k: self._result_cache[k][0],
+            )
+            self._result_cache.pop(oldest, None)
+
+    def result_cache_stats(self) -> dict[str, int]:
+        """缓存命中统计(诊断/测试):当前条目数 + 累计命中数。"""
+        return {
+            "entries": len(self._result_cache),
+            "hits": self._result_cache_hits,
+            "max_entries": self._result_cache_max,
+        }
 
     async def execute_unsafe(
         self, sql: str, datasource: str | None = None

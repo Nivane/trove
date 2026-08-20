@@ -8,6 +8,7 @@
 - "list all the X ..." 类问题若未点名列，answer_columns 只含 X 的标识列（其 ID，如 trans_id、account_id）或问题点名的属性列；不要罗列记录的明细列（date、amount、balance、type、operation、status 等）。
 - 公式类问题（rate/gap/percentage/increment）answer_columns 只含公式的最终结果列——不含公式的输入列（如 A12/A13），也不含实体名列，除非问题用清晰通顺的并列结构同时点名实体及其指标（"list the districts and their unemployment rate"）。问题句式残缺、语法破碎时（如 "the district of the and the state"），只输出公式的最终结果列。
 - 不要把仅用于排序的列放进来。
+- Evidence 决定输出列:当 Evidence 明确点名结果列（"list the account ID"、"output the account ID and the frequency"），answer_columns 必须逐字镜像这些列名——不增、不删、不改写。
 
 {% if has_tools %}
 工具：

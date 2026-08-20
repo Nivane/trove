@@ -74,19 +74,30 @@ class AgentConfig:
 
     home: str = "~/.trove"
     target: str = ""  # default model e.g. "openai/gpt-4o"
+    model_fast: str = ""  # 快速档模型: simple/standard 复杂度走此模型(未配置 = 不分档,全走 target)
     language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
     semantic_layer_path: str = ""  # OSSIE 语义层目录(相对项目根),空 = 关闭
     date_parser: bool = True  # 时间解析节点:确定性规则解析相对时间(zh/en),未命中静默透传
     fast_path: bool = True  # 确定性模板快径:命中即跳过 planner/生成/裁决
-    reflect_skip: str = "simple"  # 规则全过后跳 LLM 裁决: simple / all / off
+    reflect_skip: str = "simple"  # 规则全过后跳 LLM 裁决档位: simple / standard / all / off
     explain_semantics: bool = False  # 生成 SQL 后 LLM 说明语义(执行前展示给用户)
     hitl: bool = False  # 执行前人工确认(LangGraph interrupt; 需 checkpointer)
     insights: bool = False  # 执行后 LLM 基于结果生成洞察
+    result_cache: bool = False  # 精确问题结果缓存(进程内存;命中直接返回已验证答案,跳过 HITL 确认)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
     tracing: TracingConfig = field(default_factory=TracingConfig)
     raw: dict[str, Any] = field(default_factory=dict)
+
+    def model_for(self, complexity: str) -> str:
+        """复杂度分档选模: simple/standard → model_fast(未配置 → target);complex 及未知 → target。
+
+        复杂度分级(grade_complexity)驱动的降本开关:简单查询不需要推理模型。
+        """
+        if self.model_fast and complexity in ("simple", "standard"):
+            return self.model_fast
+        return self.target or "openai/gpt-4o"
 
 
 @dataclass
@@ -227,6 +238,7 @@ class ConfigLoader:
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
+            model_fast=agent_section.get("model_fast", ""),
             language=agent_section.get("language", "zh"),
             semantic_layer_path=agent_section.get("semantic_layer_path", ""),
             date_parser=agent_section.get("date_parser", True),
@@ -235,6 +247,7 @@ class ConfigLoader:
             explain_semantics=agent_section.get("explain_semantics", False),
             hitl=agent_section.get("hitl", False),
             insights=agent_section.get("insights", False),
+            result_cache=agent_section.get("result_cache", False),
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

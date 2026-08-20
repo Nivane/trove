@@ -26,6 +26,36 @@ def budget_exhausted(retry_count: int, max_retries: int) -> bool:
     return retry_count >= max_retries
 
 
+# 修正轮累积产物的硬上限:这些列表随 retry 轮次只增不减(修正最多 10 轮),
+# 不封顶会在第 10 轮把整条失败 SQL × 10 全注入 prompt。写入即裁剪
+# (带 cap 的 reducer,模块级函数保证 checkpointer 可 pickle)。
+# 回归检查只读最近一版(sql_versions[-1]),裁掉旧版不影响判定。
+MAX_SQL_VERSIONS = 3           # 版本链保留最近 N 版
+MAX_REJECTED_HYPOTHESES = 5    # 解释黑名单保留最近 N 条
+MAX_REASONING_ENTRIES = 8      # 思考痕迹保留最近 N 条
+
+
+def _cap_add(
+    existing: list | None, update: list | None, limit: int,
+) -> list:
+    """``operator.add`` 的封顶变体:追加后裁剪到最近 ``limit`` 条。"""
+    if update is None:
+        return existing or []
+    return (list(existing or []) + list(update))[-limit:]
+
+
+def _cap_sql_versions(existing, update):
+    return _cap_add(existing, update, MAX_SQL_VERSIONS)
+
+
+def _cap_rejected_hypotheses(existing, update):
+    return _cap_add(existing, update, MAX_REJECTED_HYPOTHESES)
+
+
+def _cap_reasoning_history(existing, update):
+    return _cap_add(existing, update, MAX_REASONING_ENTRIES)
+
+
 class WorkflowState(BaseModel):
     """State carried through one workflow (graph) execution."""
 
@@ -91,8 +121,8 @@ class WorkflowState(BaseModel):
     correction_history: Annotated[list[str], operator.add] = Field(default_factory=list)
 
     # LLM 思考痕迹(节点 → 紧凑轨迹:模型文本+工具调用+观测/推理),
-    # 回退修正时注入诊断与重生成 prompt。operator.add 累积。
-    reasoning_history: Annotated[list[dict[str, str]], operator.add] = Field(default_factory=list)
+    # 回退修正时注入诊断与重生成 prompt。cap 版累积(最近 N 条)。
+    reasoning_history: Annotated[list[dict[str, str]], _cap_reasoning_history] = Field(default_factory=list)
 
     # Context budget usage of the last gen pass (observability)
     context_usage: list[dict[str, Any]] = Field(default_factory=list)
@@ -196,18 +226,19 @@ class WorkflowState(BaseModel):
     # select 置信度(票王得票率): 候选投票分布的确定性信号,供降级/输出观测
     confidence: float = 0.0
 
-    # SQL 版本链(analyze_error 记录,operator.add 累积):
+    # SQL 版本链(analyze_error 记录,cap 版累积):
     # [{"sql": 失败SQL全文, "sig": 结果集签名, "issues": [规则名], "round": N}]
-    # 注入重生成 prompt 支撑定点修复;回归硬检查对比相邻版本
-    sql_versions: Annotated[list[dict[str, Any]], operator.add] = Field(default_factory=list)
+    # 注入重生成 prompt 支撑定点修复;回归硬检查对比相邻版本。
+    # 只保留最近 MAX_SQL_VERSIONS 版(回归判定只看上一版,旧版无增益)。
+    sql_versions: Annotated[list[dict[str, Any]], _cap_sql_versions] = Field(default_factory=list)
 
     # LLM diagnosis of the failed SQL (error type / judgment / fix plan)
     error_analysis: str = ""
 
-    # 已试错的解释黑名单(analyze_error 累积,指纹去重):
+    # 已试错的解释黑名单(analyze_error 累积,指纹去重 + cap 上限):
     # [{"sql": 失败SQL摘要, "reason": 失败原因}] — 注入重生成 prompt,
     # 防止模型在修正轮重复同样的错误假设(撞预算题的典型形态)
-    rejected_hypotheses: Annotated[list[dict[str, str]], operator.add] = Field(default_factory=list)
+    rejected_hypotheses: Annotated[list[dict[str, str]], _cap_rejected_hypotheses] = Field(default_factory=list)
 
     # output artifact
     final_response: str = ""
@@ -266,6 +297,10 @@ class GenSQLState(BaseModel):
     # LLM query plan (planner node) injected into the generation prompt
     plan: str = ""
 
+    # 复杂度分档(由外层 WorkflowState 注入):模型分层用——simple/standard
+    # 走 model_fast,complex 走 target;缺省 standard 保证直接构造行为不变
+    complexity: str = "standard"
+
     # Knowledge base material for prompt injection
     # None = 未注入(context budget 排除或未检索);消费方统一 ``or None`` 处理
     few_shots: list[dict[str, Any]] | None = None   # reference examples/templates
@@ -286,6 +321,8 @@ class GenSQLState(BaseModel):
         term_notes: list[dict[str, Any]] | None = None,
         lessons: list[dict[str, Any]] | None = None,
         rules: list[str] | None = None,
+        history: str | None = None,
+        schema_context: str | None = None,
     ) -> "GenSQLState":
         """从外层 WorkflowState 构造子图状态:集中字段映射 + 派生 + 预算门控。
 
@@ -293,7 +330,9 @@ class GenSQLState(BaseModel):
         - 派生:reflect_reason ← state.reason;previous_sql 仅修正轮取上一版
           失败 SQL;reasoning_context 由调用方按思考痕迹渲染后传入;
         - 预算门控:history/plan/few_shots/term_notes/lessons/rules 只在
-          included 包含对应块时注入(included 为 None = 全注入)。
+          included 包含对应块时注入(included 为 None = 全注入);
+        - 覆盖参数:history/schema_context 非 None 时优先于 state 对应字段
+          ——item 级预算裁剪后的历史轮 / 裁剪后的 schema 由调用方传入。
         """
 
         def _include(name: str) -> bool:
@@ -304,7 +343,9 @@ class GenSQLState(BaseModel):
             question=state.question,
             session_id=state.session_id,
             run_id=state.run_id,
-            schema_context=state.schema_context,
+            schema_context=(
+                schema_context if schema_context is not None else state.schema_context
+            ),
             dialect=dialect,
             lang=state.lang,
             time_context=state.time_context,
@@ -316,8 +357,13 @@ class GenSQLState(BaseModel):
             sql_versions=state.sql_versions,
             fix_mode=state.fix_mode,
             previous_sql=state.sql if in_correction else "",
-            history=state.history if _include("history") else "",
+            history=(
+                history
+                if history is not None
+                else (state.history if _include("history") else "")
+            ),
             plan=state.plan if _include("plan") else "",
+            complexity=state.complexity,
             evidence=state.evidence,
             few_shots=few_shots if _include("few_shots") else None,
             term_notes=term_notes if _include("term_notes") else None,

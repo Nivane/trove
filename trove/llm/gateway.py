@@ -429,16 +429,28 @@ def _usage_dict(raw_response: Any) -> dict[str, int]:
 
     Returns {} when the provider omits usage (mock/legacy), so harness
     token budgets simply skip counting.
+
+    Cache fields are surfaced best-effort across providers: Anthropic
+    reports ``cache_read_input_tokens`` / ``cache_creation_input_tokens``,
+    OpenAI-family reports ``prompt_tokens_details.cached_tokens``. 0 或
+    缺失都算未命中——观测 prompt 缓存的真实命中率(cache_prefix_tokens
+    只给"理论上可缓存多少")。
     """
     try:
         usage = getattr(raw_response, "usage", None)
         if usage is None:
             return {}
-        return {
+        out = {
             "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
             "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
             "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            "cache_read_input_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+            "cache_creation_input_tokens": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
         }
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            out["cached_tokens"] = int(getattr(details, "cached_tokens", 0) or 0)
+        return out
     except Exception:
         return {}
 

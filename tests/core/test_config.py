@@ -222,3 +222,45 @@ class TestAdaptiveLoadConfig:
         config = ConfigLoader.load_agent_config(str(config_file))
         assert config.fast_path is False
         assert config.reflect_skip == "all"
+
+
+class TestModelTiering:
+    """model_fast 字段缺省 / YAML 加载 / model_for 分档。"""
+
+    def test_model_fast_default_empty(self):
+        assert AgentConfig().model_fast == ""
+
+    def test_model_fast_loaded_from_yaml(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  target: deepseek/deepseek-reasoner\n"
+            "  model_fast: deepseek/deepseek-chat\n"
+        )
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.target == "deepseek/deepseek-reasoner"
+        assert config.model_fast == "deepseek/deepseek-chat"
+
+    def test_result_cache_default_off(self):
+        assert AgentConfig().result_cache is False
+
+    def test_result_cache_loaded_from_yaml(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text("agent:\n  result_cache: true\n")
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.result_cache is True
+
+    @pytest.mark.parametrize("model_fast,complexity,expected", [
+        ("", "simple", "mock/target"),            # 未配置 fast → 不分档
+        ("", "complex", "mock/target"),
+        ("mock/fast", "simple", "mock/fast"),     # simple/standard → fast
+        ("mock/fast", "standard", "mock/fast"),
+        ("mock/fast", "complex", "mock/target"),  # complex 及未知 → target
+        ("mock/fast", "anything", "mock/target"),
+    ])
+    def test_model_for_tiering(self, model_fast, complexity, expected):
+        cfg = AgentConfig(target="mock/target", model_fast=model_fast)
+        assert cfg.model_for(complexity) == expected
+
+    def test_model_for_falls_back_to_gpt4o(self):
+        assert AgentConfig().model_for("simple") == "openai/gpt-4o"

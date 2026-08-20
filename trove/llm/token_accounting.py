@@ -17,6 +17,13 @@ from typing import Any
 
 _usage: dict[str, dict[str, int]] = {}
 
+# 需要聚合的 token 字段(prompt/completion 之外,含 prompt 缓存命中)
+_CACHE_FIELDS = (
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cached_tokens",
+)
+
 
 def add(run_id: str, usage: dict[str, Any]) -> None:
     """Add one call's token usage to a run's running total."""
@@ -31,6 +38,10 @@ def add(run_id: str, usage: dict[str, Any]) -> None:
     bucket["prompt"] += prompt
     bucket["completion"] += completion
     bucket["total"] += total
+    for f in _CACHE_FIELDS:
+        v = int(usage.get(f) or 0)
+        if v:
+            bucket[f] = bucket.get(f, 0) + v
 
 
 def get(run_id: str) -> dict[str, int] | None:

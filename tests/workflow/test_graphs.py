@@ -1256,10 +1256,14 @@ examples:
         assert "Data source rules" in llm.calls[1][-1]["content"]
 
     async def test_context_budget_drops_low_priority_blocks(self, sqlite_registry, catalog, monkeypatch):
-        """预算不足时低优先级块（history）被排除，核心 schema 保留。"""
+        """预算不足时低优先级块（history）被排除，核心 schema 保留。
+
+        history 已拆成逐轮条目:预算 2 连单轮(~5 tokens)都塞不下 →
+        整块排除;核心 schema(非可选块)始终保留。
+        """
         monkeypatch.setattr(
             graphs_module, "COMPLEXITY_BUDGET_TOKENS",
-            {"simple": 5, "standard": 5, "complex": 5},
+            {"simple": 2, "standard": 2, "complex": 2},
         )
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
@@ -1274,10 +1278,10 @@ examples:
         assert any(u["name"] == "history" and not u["included"] for u in usage)
 
     async def test_complexity_tier_drives_budget(self, sqlite_registry, catalog, monkeypatch):
-        """复杂度档位驱动预算:simple 档预算小(history 被裁),complex 档预算大(history 保留)。"""
+        """复杂度档位驱动预算:simple 档��算小(history 被裁),complex 档预算大(history 保留)。"""
         monkeypatch.setattr(
             graphs_module, "COMPLEXITY_BUDGET_TOKENS",
-            {"simple": 5, "standard": 2500, "complex": 2500},
+            {"simple": 2, "standard": 2500, "complex": 2500},
         )
         history = "user: 平均成绩是多少\nassistant: 85 分"
 

@@ -585,6 +585,36 @@ def build_sql_registry(
             arguments.get("column"),
         )
 
+    async def lookup_schema_tool(arguments: dict) -> str:
+        # 懒加载表 DDL:预算裁掉未注入的表时,模型按需取列/主键/外键
+        table = (arguments.get("table") or "").strip()
+        if not table:
+            return '{"ok": false, "error": "table is required"}'
+        try:
+            schema = await connectors.get_schema()
+        except Exception as e:
+            return '{"ok": false, "error": "schema unavailable: %s"}' % (e,)
+        target = next(
+            (t for t in schema.tables if t.name.lower() == table.lower()), None,
+        )
+        if target is None:
+            return '{"ok": false, "error": "table not found: %s"}' % (table,)
+        cols = ", ".join(c.name for c in target.columns)
+        pk = ", ".join(
+            c.name for c in target.columns if c.primary_key
+        ) or "-"
+        fks = "; ".join(
+            f"{c.name} → {c.foreign_key}"
+            for c in target.columns if c.foreign_key
+        ) or "-"
+        return json.dumps({
+            "ok": True,
+            "table": target.name,
+            "columns": cols,
+            "primary_key": pk,
+            "foreign_keys": fks,
+        })
+
     registry.register(
         "probe_query", probe_tool,
         description=(
@@ -642,6 +672,23 @@ def build_sql_registry(
             "required": ["table", "keyword"],
         },
     )
+    registry.register(
+        "lookup_schema", lookup_schema_tool,
+        description=(
+            "Fetch the full schema of a single table: columns, primary "
+            "key, foreign keys. Use when a table is referenced in the "
+            "question but was NOT listed in the Database schema section "
+            "(budget pruning omits low-signal tables from the prompt) — "
+            "fetch it here instead of guessing its columns."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "table": {"type": "string", "description": "Table name to describe"},
+            },
+            "required": ["table"],
+        },
+    )
     return registry
 
 
@@ -692,7 +739,7 @@ def make_generate(
             # 回到原始生成提示词重试,而不是让模型去修一条空 SQL。
             prompt = build_sql_prompt_from_state(state)
 
-        model = config.target or "openai/gpt-4o"
+        model = config.model_for(state.complexity)
         start = time.monotonic()
         system_prompt = render("gen_sql/system", lang=state.lang)
         response = await llm.chat(

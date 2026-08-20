@@ -39,6 +39,8 @@ def _reset_trace_store():
     configure_trace_store(None)
     from trove.llm.token_accounting import reset as reset_token_accounting
     reset_token_accounting()
+    from trove.llm.token_calibration import reset as reset_token_calibration
+    reset_token_calibration()
     yield
 
 

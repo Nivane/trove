@@ -417,7 +417,8 @@ def make_planner(
                     registry=registry,
                     tool_timeout_s=20.0,
                     time_budget_s=60.0,
-                    max_rounds=5,
+                    max_rounds=3,
+                    max_total_tokens=1500,
                     metadata={"node": "planner", "session_id": state.session_id, "run_id": state.run_id},
                 )
                 t = " ".join(

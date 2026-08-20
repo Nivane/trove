@@ -138,13 +138,18 @@ def make_reflect(
         # 确定性规则链(形状/过滤/值域)对简单查询已是完整的安全网,语义
         # 裁决主要是给复杂 SQL 的盲区兜底。弱信号问题保留法官(metadata
         # 倾向题需要 NO_SQL 出口,镜像上方 EMPTY 分支)。
+        # reflect_skip 是档位阶梯: simple(默认,只跳 simple) < standard
+        # (再跳 standard) < all(全跳)。off=全不跳。
+        _skip_levels = {"simple": 1, "standard": 2, "all": 3}
+        _complexity_levels = {"simple": 1, "standard": 2, "complex": 3}
         skip = config.reflect_skip or "simple"
         if (
             skip != "off"
             and state.rules_passed
             and not state.error_feedback
             and not has_weak_signal(state.question)
-            and (skip == "all" or state.complexity == "simple")
+            and _skip_levels.get(skip, 1)
+            >= _complexity_levels.get(state.complexity, 2)
         ):
             return {
                 "verdict": "OK",

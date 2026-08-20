@@ -34,8 +34,13 @@ from trove.llm.agent_loop import run_agent_loop
 from trove.workflow.context_budget import (
     ContextItem,
     assemble_context,
+    count_tokens,
     estimate_tokens,
 )
+from trove.workflow.context_score import history_items, relevance_score
+from trove.workflow.schema_budget import trim_schema
+from trove.llm.token_calibration import factor as token_calibration_factor
+from trove.llm.token_calibration import record as record_token_calibration
 from trove.workflow.complexity import grade_complexity
 from trove.workflow.state import GenSQLState, WorkflowState
 
@@ -98,6 +103,9 @@ CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计�
 # 复杂度档位预算：simple 瘦身 / standard 默认 / complex 放开。
 # 修正轮强制 standard（见 grade_complexity），档位只作用于首轮生成。
 COMPLEXITY_BUDGET_TOKENS = {"simple": 1500, "standard": 2500, "complex": 4000}
+# Schema 段（gen prompt 的稳定缓存前缀）自身的 token 上限：大库宽表下
+# 避免 schema 全量注入挤占窗口；被裁的表经 lookup_schema 工具懒加载。
+SCHEMA_BUDGET_TOKENS = {"simple": 900, "standard": 1800, "complex": 3500}
 
 
 def generation_temperature(retry_count: int) -> float:
@@ -357,18 +365,40 @@ def _make_gen_sql_node(
                 for i, (h, s) in enumerate(zip(example_hits, few_shots))
             ]
         if rules:
+            # rules/terms/lessons 无检索分数(0.0 = 纯检索序,裁剪无区分度)
+            # ——用词重叠相关度补上,item 级裁剪才真正生效
             optional_blocks["rules"] = [
-                ContextItem(key=f"rule{i}", text=render_rules([r]), score=0.0)
+                ContextItem(
+                    key=f"rule{i}",
+                    text=render_rules([r]),
+                    score=relevance_score(r, state.question),
+                )
                 for i, r in enumerate(rules)
             ]
         if term_notes:
             optional_blocks["term_notes"] = [
-                ContextItem(key=f"term{i}", text=render_terms([t]), score=0.0)
+                ContextItem(
+                    key=f"term{i}",
+                    text=render_terms([t]),
+                    score=relevance_score(
+                        " ".join([str(t.get("term", "")), str(t.get("mapping", "")),
+                                  str(t.get("definition", ""))]),
+                        state.question,
+                    ),
+                )
                 for i, t in enumerate(term_notes)
             ]
         if lessons:
             optional_blocks["lessons"] = [
-                ContextItem(key=f"lesson{i}", text=render_lessons([l]), score=0.0)
+                ContextItem(
+                    key=f"lesson{i}",
+                    text=render_lessons([l]),
+                    score=relevance_score(
+                        " ".join([str(l.get("pattern", "")), str(l.get("note", "")),
+                                  str(l.get("sql_snippet", ""))]),
+                        state.question,
+                    ),
+                )
                 for i, l in enumerate(lessons)
             ]
         if state.plan:
@@ -376,14 +406,25 @@ def _make_gen_sql_node(
                 ContextItem(key="plan", text=state.plan, score=0.0),
             ]
         if state.history:
-            optional_blocks["history"] = [
-                ContextItem(key="history", text=state.history, score=0.0),
-            ]
+            # 历史拆成逐轮条目:score = 相关度(与问句词重叠) + 最近度——
+            # 预算内保留最相关的轮次,而非整块全有全无
+            optional_blocks["history"] = history_items(state.history, state.question)
+
+        # 估算校准:实测/估算比例(按 model+dialect 的 EMA)放大单条成本,
+        # 把系统性的低估反馈进预算,避免真实 prompt 超窗。冷启动 = 1.0。
+        # 复杂度分档选模:simple/standard → model_fast,complex → target。
+        model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
+        cal = token_calibration_factor(model, dialect)
+
+        def _count(text: str) -> int:
+            n = count_tokens(text)
+            return max(1, int(n * cal)) if cal > 0 else n
 
         included, context_usage = assemble_context(
             optional_blocks,
             {"few_shots": 1, "rules": 2, "term_notes": 3, "lessons": 4, "plan": 5, "history": 6},
             budget,
+            count=_count,
         )
         # 按预算选中的 item key 过滤各源列表(保留检索顺序)
         def _trim(block: str, prefix: str, items: list[Any]) -> list[Any]:
@@ -394,6 +435,21 @@ def _make_gen_sql_node(
         term_notes = _trim("term_notes", "term", term_notes)
         lessons = _trim("lessons", "lesson", lessons)
         rules = _trim("rules", "rule", rules)
+        # history 是逐轮条目:按预算保留的轮次重拼回字符串注入
+        history_trimmed = ""
+        if "history" in included:
+            kept_texts = [
+                it.text for it in optional_blocks["history"]
+                if it.key in set(included["history"])
+            ]
+            history_trimmed = "\n".join(kept_texts)
+
+        # Schema 预算化:表块按信号裁剪到复杂度分档的 schema 上限,尾部
+        # 段(值提示/语义)始终保留;被裁的表经 lookup_schema 工具懒加载。
+        schema_budget = SCHEMA_BUDGET_TOKENS.get(complexity, SCHEMA_BUDGET_TOKENS["standard"])
+        schema_for_gen = trim_schema(
+            state.schema_context, schema_budget, state.question, state.plan,
+        )
 
         sub_state = GenSQLState.from_workflow(
             state,
@@ -406,11 +462,13 @@ def _make_gen_sql_node(
             term_notes=term_notes,
             lessons=lessons,
             rules=rules,
+            history=history_trimmed,
+            schema_context=schema_for_gen,
         )
         # 稳定可缓存前缀(dialect+schema)的 token 数——prompt caching 观测:
         # 同一数据源+方言下跨调用字节级一致,值越大缓存复用空间越大。
         cache_prefix_tokens = estimate_tokens(
-            render_cache_prefix(dialect, state.schema_context),
+            render_cache_prefix(dialect, schema_for_gen),
         )
         update: dict[str, Any] = {
             "dialect": dialect,
@@ -443,7 +501,6 @@ def _make_gen_sql_node(
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
-            model = (services.config.target if services.config else "") or "openai/gpt-4o"
             result = None
             try:
                 result = await run_agent_loop(
@@ -457,7 +514,8 @@ def _make_gen_sql_node(
                 registry=registry,
                 tool_timeout_s=20.0,
                 time_budget_s=120.0,
-                max_rounds=6,
+                max_rounds=4,
+                max_total_tokens=2500,
                 metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
                 temperature=generation_temperature(state.retry_count),
             )
@@ -476,6 +534,12 @@ def _make_gen_sql_node(
                     update["error"] = out["error"]
 
             if result is not None:
+                # 估算校准闭环:首轮实测输入 tokens vs 可选块估算——系统性
+                # 低估会经 token_calibration.factor 反馈进下一次装配��
+                est = sum(u.get("tokens", 0) for u in context_usage if u.get("included"))
+                actual = result.get("first_input_tokens") or 0
+                if est and actual:
+                    record_token_calibration(model, dialect, est, actual)
                 sql = extract_sql(result["content"]) if result.get("content") else ""
                 if not sql:
                     # 模型可能只在工具里给出 SQL,最终 content 无 SQL 回显

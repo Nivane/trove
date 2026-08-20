@@ -3,7 +3,17 @@
 import pytest
 from pydantic import ValidationError
 
-from trove.workflow.state import WorkflowState, GenSQLState, budget_exhausted
+from trove.workflow.state import (
+    WorkflowState,
+    GenSQLState,
+    MAX_REASONING_ENTRIES,
+    MAX_REJECTED_HYPOTHESES,
+    MAX_SQL_VERSIONS,
+    _cap_reasoning_history,
+    _cap_rejected_hypotheses,
+    _cap_sql_versions,
+    budget_exhausted,
+)
 
 
 def test_budget_exhausted_boundary():
@@ -154,3 +164,54 @@ class TestGenSQLStateFromWorkflow:
         state = self._wf()
         sub = GenSQLState.from_workflow(state, dialect="sqlite", reasoning_context="[gen_sql] trail")
         assert sub.reasoning_context == "[gen_sql] trail"
+
+    def test_history_override_wins_over_state(self):
+        """item 级预算裁剪后的历史轮优先于 state.history。"""
+        state = self._wf(history="user: full history\nassistant: old answer")
+        sub = GenSQLState.from_workflow(
+            state, dialect="sqlite", included={"history"}, history="user: kept turn",
+        )
+        assert sub.history == "user: kept turn"
+
+    def test_schema_context_override_wins_over_state(self):
+        """预算裁剪后的 schema 优先于 state.schema_context。"""
+        state = self._wf()
+        sub = GenSQLState.from_workflow(
+            state, dialect="sqlite", schema_context="Table: kept\nColumns: a",
+        )
+        assert sub.schema_context == "Table: kept\nColumns: a"
+
+
+class TestCappedReducers:
+    """修正轮累积产物写入即裁剪:版本链/黑名单/思考痕迹不会无限增长。"""
+
+    def test_sql_versions_capped(self):
+        existing = [{"sql": f"SELECT {i}", "round": i} for i in range(1, MAX_SQL_VERSIONS + 3)]
+        out = _cap_sql_versions(existing, [{"sql": "SELECT 99", "round": 99}])
+        assert len(out) == MAX_SQL_VERSIONS
+        assert out[-1]["round"] == 99  # 最新版保留
+        assert [v["round"] for v in out] == [4, 5, 99]  # 只留最近 N 版
+
+    def test_sql_versions_regression_needs_latest_only(self):
+        # 回归判定只看上一版(sql_versions[-1]);裁旧版不影响
+        out = _cap_sql_versions([], [{"sql": "SELECT 1", "round": 1}])
+        assert out == [{"sql": "SELECT 1", "round": 1}]
+
+    def test_rejected_hypotheses_capped(self):
+        existing = [{"sql": f"S{i}", "reason": "r"} for i in range(MAX_REJECTED_HYPOTHESES + 5)]
+        out = _cap_rejected_hypotheses(existing, [{"sql": "new", "reason": "r"}])
+        assert len(out) == MAX_REJECTED_HYPOTHESES
+        assert out[-1]["sql"] == "new"
+
+    def test_reasoning_history_capped(self):
+        existing = [{"node": "gen_sql", "text": f"t{i}"} for i in range(MAX_REASONING_ENTRIES + 4)]
+        out = _cap_reasoning_history(existing, [{"node": "gen_sql", "text": "new"}])
+        assert len(out) == MAX_REASONING_ENTRIES
+        assert out[-1]["text"] == "new"
+
+    def test_append_when_under_limit(self):
+        out = _cap_sql_versions([{"sql": "S1"}], [{"sql": "S2"}])
+        assert out == [{"sql": "S1"}, {"sql": "S2"}]
+
+    def test_ignore_none_update(self):
+        assert _cap_sql_versions([{"sql": "S1"}], None) == [{"sql": "S1"}]

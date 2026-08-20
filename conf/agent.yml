@@ -2,8 +2,9 @@
 agent:
   # DeepSeek 的 OpenAI 兼容 API，litellm 原生支持
   target: deepseek/deepseek-reasoner
-  # 想用推理模型可以改成:
-  # target: deepseek/deepseek-reasoner
+  # 快速档模型: simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型
+  # (复杂度分级 grade_complexity 驱动;complex 仍走 target)。留空 = 不分档。
+  model_fast: deepseek/deepseek-chat
   # 交互语言: en(默认) / zh — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
   # 不按问题的中英文自动检测
   language: en
@@ -16,6 +17,10 @@ agent:
   hitl: true
   # 执行后 LLM 基于结果生成洞察
   insights: true
+  # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
+  # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
+  # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。
+  result_cache: true
   # 负载削减:
   #   fast_path: 确定性模板快径(单表/单聚合模板命中即直接产出 SQL,
   #              跳过 planner + 生成 + 裁决)。默认开。

@@ -206,6 +206,44 @@ class TestConnectorRegistry:
         assert (await registry.execute("SELECT 1 AS v", "db")).rows == [[1]]
         await registry.close_all()
 
+    async def test_execute_caches_identical_read(self):
+        """归一化后相同的 SQL 命中结果缓存:adapter 只执行一次,返回值是副本。"""
+        registry = ConnectorRegistry()
+        config = DatasourceConfig(
+            name="db", type="sqlite", connection_params={"path": ":memory:"},
+        )
+        adapter = await registry.register(config)
+        await adapter.execute("CREATE TABLE t (v INTEGER)")
+        await adapter.execute("INSERT INTO t VALUES (7)")
+
+        class CountingAdapter:
+            def __init__(self, inner):
+                self.inner = inner
+                self.name = inner.name
+                self.calls = 0
+
+            async def execute(self, sql, datasource=None):
+                self.calls += 1
+                return await self.inner.execute(sql)
+
+            async def disconnect(self):
+                await self.inner.disconnect()
+
+        counting = CountingAdapter(adapter)
+        registry._adapters["db"] = counting  # type: ignore[assignment]
+
+        r1 = await registry.execute("  SELECT   v FROM t ", "db")
+        r2 = await registry.execute("SELECT v FROM t", "db")
+        assert r1.rows == [[7]] and r2.rows == [[7]]
+        assert counting.calls == 1
+        # 返回副本:就地改动不污染缓存
+        r2.rows.append([99])
+        r3 = await registry.execute("SELECT v FROM t", "db")
+        assert r3.rows == [[7]]
+        assert registry.result_cache_stats()["hits"] == 2
+
+        await registry.close_all()
+
     async def test_close_all(self):
         registry = ConnectorRegistry()
         config = DatasourceConfig(

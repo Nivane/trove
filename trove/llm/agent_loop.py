@@ -39,6 +39,43 @@ Observer = Callable[[str, dict[str, Any], str, float, str | None, str], None]
 
 FINISH_TOOL = "finish"
 
+# 注入 messages 的上下文护栏:单条工具观测超长即截断、轮次过多即丢弃
+# 最早往返轮(Claude Code 式窗口)——tracing/tool_history 仍保留完整观测,
+# 只有喂回模型的 messages 被压缩,避免 ReAct 循环内上下文复利爆炸。
+MAX_OBSERVATION_CHARS = 800   # 单条工具观测注入上限
+MAX_TOOL_TURNS = 8            # messages 保留的最近往返轮数
+
+
+def _truncate_observation(obs: str, limit: int = MAX_OBSERVATION_CHARS) -> str:
+    """超长工具观测截断:保留头部 + 截断标记(注入版;tracing 用全文)。"""
+    obs = obs or ""
+    if len(obs) <= limit:
+        return obs
+    return obs[:limit] + f"\n…[truncated {len(obs) - limit} chars]"
+
+
+def _prune_old_rounds(
+    messages: list[dict[str, Any]],
+    keep_rounds: int = MAX_TOOL_TURNS,
+) -> list[dict[str, Any]]:
+    """丢弃最早的完整往返轮,保留最近 ``keep_rounds`` 轮。
+
+    system/user(前两条)永不丢弃。以 assistant 消息为轮起点:某轮被
+    丢弃时,其后的 tool 消息(到下一个 assistant 为止)一并丢弃,
+    保证不出现孤儿 tool_call_id 或无人认领的 tool 结果。steering
+    (user)消息随其所在早轮一并丢弃。
+
+    返回裁剪后的新列表(原地不修改)。
+    """
+    if len(messages) <= 2:
+        return messages
+    tail = messages[2:]
+    starts = [i for i, m in enumerate(tail) if m["role"] == "assistant"]
+    if len(starts) <= keep_rounds:
+        return messages
+    keep_from = starts[-keep_rounds]
+    return messages[:2] + tail[keep_from:]
+
 
 # ── Tool spec & registry ──────────────────────────────────
 
@@ -262,11 +299,13 @@ async def run_agent_loop(
     guard_hit = False
     budget_why: str | None = None
     tool_history: list[dict[str, Any]] = []
-    # 思考痕迹:每轮的模型文本+工具调用+观测,供回退修正上下文使用
+    # 思考��迹:每轮的模型文本+工具调用+观测,供回退修正上下文使用
     transcript_parts: list[str] = []
     reasoning_parts: list[str] = []
     steering_hits: list[str] = []
     total_tokens = 0
+    completion_tokens = 0
+    first_input_tokens = 0  # 首轮 prompt_tokens(调用方做估算校准用)
     start_time = time.monotonic()
     recent_sigs: list[str] = []
     consumed_rounds = 0
@@ -346,6 +385,7 @@ async def run_agent_loop(
             "steering_hits": steering_hits,
             "tool_calls": len(tool_history),
             "total_tokens": total_tokens or None,
+            "first_input_tokens": first_input_tokens or None,
             "tool_history": tool_history,
             "transcript": "\n".join(transcript_parts),
             "reasoning": "\n".join(reasoning_parts)[:1000],
@@ -369,6 +409,9 @@ async def run_agent_loop(
         reasoning = response.get("reasoning") or ""
         usage = response.get("usage") or {}
         total_tokens += int(usage.get("total_tokens") or 0)
+        completion_tokens += int(usage.get("completion_tokens") or 0)
+        if round_no == 1:
+            first_input_tokens = int(usage.get("prompt_tokens") or 0)
         if reasoning:
             reasoning_parts.append(reasoning)
 
@@ -383,7 +426,9 @@ async def run_agent_loop(
             return _finish_result(round_no, answered=False)
 
         # token 预算已耗尽:不再执行更多工具,直接按护栏结束
-        if max_total_tokens is not None and total_tokens >= max_total_tokens:
+        # 预算针对"模型输出"计(completion),prompt 每轮回灌增长不计入,
+        # 否则预算会在大上下文首轮即误触。
+        if max_total_tokens is not None and completion_tokens >= max_total_tokens:
             guard_hit = True
             budget_why = "tokens"
             logger.warning(
@@ -460,12 +505,15 @@ async def run_agent_loop(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": observation,
+                "content": _truncate_observation(observation),
             })
             recent_sigs.append(
                 f"{tc['name']}|"
                 + json.dumps(sorted(res["arguments"].items()), ensure_ascii=False, default=str)
             )
+
+        # 上下文窗口护栏:丢弃最早往返轮,防 ReAct 循环内消息复利爆炸
+        messages = _prune_old_rounds(messages)
 
         # 循环转向:连续相同调用 → 注入转向消息,而不是干等到护栏
         if len(recent_sigs) >= steering_window:
