@@ -565,3 +565,73 @@ class TestContextWindowGuards:
 
         result = await run_agent_loop(llm, "m", "sys", "user", TOOL_DEF, {"echo": ok}, max_rounds=5)
         assert result["first_input_tokens"] == 123
+
+class TestErrorClassificationWiring:
+    """错误分类在 harness 的落地:参数防火墙 + 按类重试决策 + [ERR:] 标注。"""
+
+    async def test_args_schema_blocked_before_handler_run(self):
+        """参数校验失败 → 不执行 handler,观测带 [ERR:ARGS_SCHEMA] 回喂模型。"""
+        calls: list = []
+
+        async def boom(arguments: dict) -> str:
+            calls.append(1)
+            return "ran"
+
+        registry = ToolRegistry()
+        registry.register(
+            "need_sql", boom,
+            description="needs sql",
+            parameters={
+                "type": "object",
+                "properties": {"sql": {"type": "string"}},
+                "required": ["sql"],
+            },
+        )
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "need_sql", "arguments": "{}"}]},
+            {"content": "done", "tool_calls": []},
+        ])
+        result = await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
+        assert calls == []                       # 防火墙拦截,未执行
+        assert result["content"] == "done"
+        obs = llm.calls[1][-1]["content"]
+        assert "[ERR:ARGS_SCHEMA]" in obs
+        assert "missing required field 'sql'" in obs
+
+    async def test_permanent_tool_error_not_retried(self):
+        """python 级错误(ValueError)→ 不消耗 retries,只折叠一次。"""
+        calls = {"n": 0}
+
+        async def boom(arguments: dict) -> str:
+            calls["n"] += 1
+            raise ValueError("kernel bug in handler")
+
+        registry = ToolRegistry()
+        registry.register("boom", boom, description="boom", retries=3, parameters={})
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "boom", "arguments": "{}"}]},
+            {"content": "done", "tool_calls": []},
+        ])
+        result = await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
+        assert calls["n"] == 1                   # 未盲目重试
+        assert "[ERR:TOOL_RUNTIME]" in llm.calls[1][-1]["content"]
+
+    async def test_transient_connection_error_retried(self):
+        """瞬时连接类 → 按 spec.retries 退避重试(第 3 次成功)。"""
+        calls = {"n": 0}
+
+        async def flaky(arguments: dict) -> str:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise ConnectionError("Lost connection to MySQL server")
+            return "recovered"
+
+        registry = ToolRegistry()
+        registry.register("flaky", flaky, description="x", retries=3, retry_base_delay=0.0, parameters={})
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [{"id": "c1", "name": "flaky", "arguments": "{}"}]},
+            {"content": "done", "tool_calls": []},
+        ])
+        result = await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
+        assert calls["n"] == 3
+        assert "recovered" in result["tool_history"][0]["observation"]

@@ -92,3 +92,48 @@ class TestTokenCounter:
         assert usage["context_limit"] == 10000
         assert usage["token_count"] > 0
         assert 0 < usage["usage_ratio"] < 1
+
+
+class TestGatewayRetryGating:
+    """LLM 错误分类驱动重试:瞬时重试、永久立即放弃。"""
+
+    async def test_permanent_llm_service_error_not_retried(self, monkeypatch):
+        gw = LLMGateway(retry_base_delay=0.01)
+        calls = {"n": 0}
+
+        async def fail(model, messages, **kwargs):
+            calls["n"] += 1
+            raise RuntimeError("401 unauthorized: invalid api_key")
+
+        monkeypatch.setattr(gw, "_call_litellm", fail)
+        with pytest.raises(LLMError):
+            await gw.chat(model="m", messages=[{"role": "user", "content": "hi"}])
+        assert calls["n"] == 1  # 认证错误重试无意义,立即放弃
+
+    async def test_transient_llm_error_retried(self, monkeypatch):
+        gw = LLMGateway(retry_base_delay=0.0)
+        calls = {"n": 0}
+
+        async def fail(model, messages, **kwargs):
+            calls["n"] += 1
+            raise RuntimeError("status code 429: rate limit exceeded")
+
+        monkeypatch.setattr(gw, "_call_litellm", fail)
+        with pytest.raises(LLMError):
+            await gw.chat(model="m", messages=[{"role": "user", "content": "hi"}])
+        assert calls["n"] == gw.max_retries  # 瞬时错误烧满重试再放弃
+
+    async def test_service_error_carries_retry_after(self, monkeypatch):
+        gw = LLMGateway(retry_base_delay=0.0)
+        calls = {"n": 0}
+
+        async def fail(model, messages, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise RuntimeError("status code 429")
+            return "SELECT 1"
+
+        monkeypatch.setattr(gw, "_call_litellm", fail)
+        out = await gw.chat(model="m", messages=[{"role": "user", "content": "hi"}])
+        assert out == "SELECT 1"
+        assert calls["n"] == 2

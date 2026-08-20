@@ -22,6 +22,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import render_skills
+from trove.services.errors import DETERMINISTIC_DEAD_END, classify_error, ErrorClass
 from trove.workflow.state import WorkflowState
 from trove.workflow.versions import (
     EXEC_FAILURE_SIG,
@@ -45,6 +46,45 @@ _REVISOR_TEXTS = ("differ", "disagree", "不一致", "分歧")
 
 # 连续无进展轮数上限:达到后停止迭代打回（省预算 + 明确降级信号）
 MAX_NO_PROGRESS_ROUNDS = 3
+
+
+# 确定性死胡同的用户文案:这些类 LLM 诊断是纯浪费,直接 surface 给用户。
+# 不做 whitelist 而是 DETERMINISTIC_DEAD_END(id 集合)对齐 classify 模块。
+_DETERMINISTIC_MSGS: dict[str, tuple[str, str]] = {
+    "SQL_PERMISSION": (
+        "该操作在当前权限等级下不被允许(只读数据代理拒绝写操作)。",
+        "This operation is not permitted at the current permission level "
+        "(read-only agent refuses write operations).",
+    ),
+    "DS_AUTH": (
+        "数据源拒绝了访问:需检查凭据或字段级权限。",
+        "The datasource denied access — check credentials or field-level "
+        "permissions.",
+    ),
+    "LLM_SERVICE": (
+        "LLM 服务拒绝了请求(认证/模型/上下文)。请检查模型配置或换用其他模型。",
+        "The LLM provider rejected the request (auth/model/context). Check "
+        "model config or switch providers.",
+    ),
+    "TOOL_RUNTIME": (
+        "工具执行出现内部错误,已放弃该轮自动重试。",
+        "An internal tool error occurred; automatic retry for this round was "
+        "abandoned.",
+    ),
+    "ARGS_SCHEMA": (
+        "工具调用参数不合法,已放弃该轮自动重试。",
+        "Tool call arguments were invalid; automatic retry for this round was "
+        "abandoned.",
+    ),
+}
+
+
+def _deterministic_message(error_class: ErrorClass, lang: str) -> str:
+    """确定性死胡同类 → 用户可见的降级文案(中/英)。"""
+    pair = _DETERMINISTIC_MSGS.get(error_class.id)
+    if pair is None:
+        return error_class.user_msg or error_class.id
+    return pair[0] if lang == "zh" else pair[1]
 
 
 def classify_fix_mode(error_text: str, issues: list[str]) -> str:
@@ -210,6 +250,24 @@ def make_analyze_error(
         if not state.error_feedback and state.verdict != "RETRY":
             return {}
 
+        # 确定性预分类(零 LLM):死胡同类(权限/鉴权/内部 bug)直接 surface,
+        # 打回重生成无意义,不再烧诊断 token;其余类打 [ERR:<id>] 进诊断
+        # prompt,让 LLM 只判词典覆盖不到的语义面。
+        verdict = classify_error(
+            state.error_feedback or state.reason, context="workflow",
+        )
+        if verdict.cls.id in DETERMINISTIC_DEAD_END:
+            msg = _deterministic_message(verdict.cls, state.lang)
+            logger.info(
+                "analyze_error short-circuited (%s), surfacing deterministically",
+                verdict.cls.id,
+            )
+            return {
+                "error": f"{verdict.tag()} {msg}",
+                "error_feedback": "",
+                "error_analysis": verdict.tag(),
+            }
+
         try:
             # 失败诊断走 fast 档(未配置 fast → 回退 target)
             model = config.model_fast or config.target or "openai/gpt-4o"
@@ -219,9 +277,15 @@ def make_analyze_error(
             if skill_block:
                 system_prompt = f"{system_prompt}\n\n{skill_block}"
             raw_error = state.error_feedback or state.reason
+            # 版本链/回归检查基于未打标的引擎文本(保持跨轮稳定比较)——详见
+            # 上文;诊断 prompt 用打标文本([ERR:<id>]):机器类对 LLM 可见,
+            # 又不污染"同一失败重演"的原始文本判定。
+            prompt_error = raw_error
+            if verdict.cls.id != "UNKNOWN" and raw_error:
+                prompt_error = f"{verdict.tag()} {raw_error}"
             # 版本链回归检查:对比上一版失败(签名/规则命中),产出确定性反馈
             # 并入诊断输入——模型必须看到「无效修复/无进展/问题转移」
-            issues = extract_rule_hits(raw_error)
+            issues = extract_rule_hits(prompt_error)
             prev = state.sql_versions[-1] if state.sql_versions else None
             # 执行错误(本轮 SQL 未执行 → row_count == -1):rows 为空或
             # 上一轮成功的残留,结果集签名无意义——两轮不同错误也会
@@ -255,9 +319,9 @@ def make_analyze_error(
             else:
                 report = regression_report(prev, result_sig(state.rows), issues)
                 progress = regression_state(prev, result_sig(state.rows), issues)
-            error_text = raw_error
+            error_text = prompt_error
             if report:
-                error_text = f"{raw_error}\n[Regression check] {report}"
+                error_text = f"{prompt_error}\n[Regression check] {report}"
             # 上一轮生成/规划方的思考痕迹:定位误判根因的关键上下文
             trail = render_reasoning_context(state.reasoning_history)
             prompt = render(

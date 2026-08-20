@@ -30,6 +30,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from trove.core.logging import get_logger
+from trove.services.errors import classify_error, validate_arguments
 
 logger = get_logger(__name__)
 
@@ -345,8 +346,19 @@ async def run_agent_loop(
         if spec is None:
             return {
                 "tc": tc, "arguments": arguments,
-                "observation": f"Unknown tool: {name}",
+                "observation": f"[ERR:ARGS_SCHEMA] Unknown tool: {name}",
                 "elapsed_ms": 0.0, "error": None, "finish_ok": False,
+            }
+        # 参数校验防火墙(确定性,零执行):模型拼错参数重跑工具必死。
+        # 分派前拦下,观测带 [ERR:ARGS_SCHEMA] 回喂模型修正参数本身。
+        param_problems = validate_arguments(spec.parameters, arguments)
+        if param_problems:
+            issue = "; ".join(param_problems)
+            return {
+                "tc": tc, "arguments": arguments,
+                "observation": f"[ERR:ARGS_SCHEMA] invalid arguments: {issue}",
+                "elapsed_ms": 0.0,
+                "error": f"ARGS_SCHEMA: {issue}", "finish_ok": False,
             }
         timeout = spec.timeout_s if spec.timeout_s else tool_timeout_s
         start = time.monotonic()
@@ -366,20 +378,26 @@ async def run_agent_loop(
             except TimeoutError:
                 return {
                     "tc": tc, "arguments": arguments,
-                    "observation": f"Tool timed out after {timeout}s: {name}",
+                    "observation": (
+                        f"[ERR:TOOL_TIMEOUT] Tool timed out after {timeout}s: {name}"
+                    ),
                     "elapsed_ms": (time.monotonic() - start) * 1000,
-                    "error": f"timed out after {timeout}s", "finish_ok": False,
+                    "error": f"TOOL_TIMEOUT: timed out after {timeout}s",
+                    "finish_ok": False,
                 }
             except Exception as e:
-                if attempt < spec.retries:
+                # 错误分类决定是否值得重试:瞬时/连接类(exc 强信号或词典)才
+                # 消耗 spec.retries;python bug / 永久错误直接折叠,不白烧预算。
+                verdict = classify_error(str(e), exc=e, context="tool")
+                if attempt < spec.retries and verdict.retryable:
                     attempt += 1
                     await asyncio.sleep(spec.retry_base_delay * (2 ** (attempt - 1)))
                     continue
                 return {
                     "tc": tc, "arguments": arguments,
-                    "observation": f"Tool error: {e}",
+                    "observation": f"{verdict.tag()} Tool error: {e}",
                     "elapsed_ms": (time.monotonic() - start) * 1000,
-                    "error": str(e), "finish_ok": False,
+                    "error": f"{verdict.cls.id}: {e}", "finish_ok": False,
                 }
 
     def _finish_result(rounds: int, answered: bool) -> dict[str, Any]:

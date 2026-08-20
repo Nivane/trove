@@ -16,6 +16,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
+from trove.services.errors import is_transient, tag_error
 from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState, budget_exhausted
 
@@ -77,7 +78,8 @@ def make_execute_sql(
                     continue
                 return _execution_failure(
                     state,
-                    L(
+                    "[ERR:SQL_TIMEOUT] "
+                    + L(
                         state.lang,
                         f"查询超时（{timeout_ms}ms）",
                         f"Query timed out after {timeout_ms}ms",
@@ -90,12 +92,15 @@ def make_execute_sql(
                 # 瞬态连接错误(断连/不可达/协议重置)与 SQL 错误(语法/列不存在)
                 # 判别:前者重跑同一 SQL 大概率恢复,后者重跑必死——只在瞬时
                 # 错误上烧小重试,SQL 错误直接喂回错误反馈(同旧语义)。
-                if retryable > 0 and _is_transient(e):
+                # 反馈文本一律带 [ERR:<class>] 前缀,供 analyze_error 预分流。
+                if retryable > 0 and is_transient(e):
                     retryable -= 1
                     await asyncio.sleep(retry_backoff_s)
                     retry_backoff_s = min(retry_backoff_s * 2, 4.0)
                     continue
-                return _execution_failure(state, str(e), max_retries)
+                return _execution_failure(
+                    state, tag_error(str(e), context="sql"), max_retries,
+                )
 
         # 血缘捕获:成功执行的查询记录为消费方(downstream)事实。
         # 失败永远不记录(重试轮的正确 SQL 由最终成功的一次独占)。
@@ -124,32 +129,15 @@ def make_execute_sql(
 _TRANSIENT_RETRIES = 2
 _TRANSIENT_BACKOFF_S = 0.5
 
-_TRANSIENT_HINTS = (
-    "connection", "conn reset", "connection reset", "server has gone away",
-    "lost connection", "cannot connect", "unreachable", "broken pipe",
-    "protocol", "closed connection", "ssl", "handshake", "eof",
-    "gone away", "not connected", "stale", "refused",
-)
-
 
 def _is_transient(exc: BaseException) -> bool:
     """判别瞬时连接类异常(重试可恢复) vs SQL 错误(重试无意义)。
 
-    基于异常类型 + 错误文本双重信号;不匹配任何信号即视为 SQL 错误
-    (保守——绝不把语法错误当瞬态去重试)。
+    委托给确定性错分器(services/errors):只认可 DS_TRANSIENT / RATE_LIMIT
+    两类连接层故障,语法/缺列/权限等一律 False(保守——绝不把语法错误
+    当瞬态去重试)。基于异常类型 + 错误文本双重信号。
     """
-    text = f"{type(exc).__name__}: {exc}".lower()
-    for hint in _TRANSIENT_HINTS:
-        if hint in text:
-            return True
-    # 驱动级连接类型(aiomysql/pymysql)
-    try:
-        from pymysql.err import InterfaceError, OperationalError
-    except Exception:
-        InterfaceError = OperationalError = ()
-    if isinstance(exc, (InterfaceError, OperationalError)):
-        return True
-    return False
+    return is_transient(exc)
 
 
 def _execution_failure(

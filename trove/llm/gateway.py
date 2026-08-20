@@ -13,13 +13,39 @@ import asyncio
 import time
 from typing import Any, AsyncIterator
 
+from trove.core.config import ProviderConfig
 from trove.core.errors import LLMError
 from trove.core.logging import get_logger
-from trove.core.config import ProviderConfig
+from trove.services.errors import classify_error
 from trove.llm.observability import get_client
 from trove.llm.call_log import record_call
 
 logger = get_logger(__name__)
+
+
+def _extract_retry_after(exc: Exception | None) -> float | None:
+    """Best-effort server retry-after hint (429/限流):秒数或 None。
+
+    litellm 异常的 ``retry_after`` 字段、HTTP ``Retry-After`` 头(秒数或
+    HTTP-date)、以及 ``status_code==429`` 无头时的保守等待值。失败静默
+    返回 None(由调用方按指数退避兜底)。
+    """
+    if exc is None:
+        return None
+    try:
+        ra = getattr(exc, "retry_after", None)
+        if isinstance(ra, (int, float)) and ra > 0:
+            return float(ra)
+        resp = getattr(exc, "response", None)
+        headers = getattr(resp, "headers", None) or {}
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if raw and str(raw).isdecimal():
+            return float(raw)
+        if getattr(exc, "status_code", None) == 429:
+            return 5.0
+    except Exception:
+        pass
+    return None
 
 
 class LLMGateway:
@@ -113,18 +139,28 @@ class LLMGateway:
                 )
             except Exception as e:
                 last_error = e
-                if attempt < self.max_retries - 1:
+                # 错误分类决定重试策略:瞬时(429/5xx/连接)才值得等退避重试;
+                # 认证/模型不存在/上下文超窗等永久错误直接放弃,不烧重试次数。
+                verdict = classify_error(str(e), exc=e, context="llm")
+                if not verdict.retryable or attempt >= self.max_retries - 1:
+                    break
+                delay = (
+                    _extract_retry_after(e)
+                    if verdict.cls.retry_after else None
+                )
+                if delay is None:
                     delay = self.retry_base_delay * (2 ** attempt)
-                    logger.warning(
-                        "LLM call attempt %d/%d failed: %s. Retrying in %.1fs...",
-                        attempt + 1, self.max_retries, e, delay,
-                    )
-                    await asyncio.sleep(delay)
+                logger.warning(
+                    "LLM call attempt %d/%d failed: %s (%s). Retrying in %.1fs...",
+                    attempt + 1, self.max_retries, e, verdict.describe(), delay,
+                )
+                await asyncio.sleep(delay)
 
         _record_failed_generation(model, messages, last_error, metadata)
         raise LLMError(
             message=f"LLM call failed after {self.max_retries} attempts: {last_error}",
             model=model,
+            retry_after=_extract_retry_after(last_error),
         )
 
     async def chat_full(

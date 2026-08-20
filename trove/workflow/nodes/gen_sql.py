@@ -22,6 +22,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.services.errors import tag_error
 from trove.workflow.rules import verify
 from trove.workflow.state import GenSQLState
 from trove.workflow.versions import EXEC_FAILURE_SIG
@@ -479,22 +480,22 @@ async def _probe_result(
         ——rows 为原始值,由调用方决定展示形式(观测截断 vs 规则校验用真值)。
     """
     if connectors is None:
-        return {"ok": False, "error": "no datasource available"}
+        return {"ok": False, "error": "[ERR:DS_AUTH] no datasource available"}
     sql = (sql or "").strip()
     if not sql:
-        return {"ok": False, "error": "empty SQL"}
+        return {"ok": False, "error": "[ERR:ARGS_SCHEMA] empty SQL"}
     from trove.services.sql.guard import check_readonly
     from trove.services.sql.sanitize import sanitize_error_text
     from trove.services.sql.validator import SQLValidator
 
     if not SQLValidator().is_safe(sql):
-        return {"ok": False, "error": "write operations are not permitted"}
+        return {"ok": False, "error": "[ERR:SQL_PERMISSION] write operations are not permitted"}
     ok, reasons = check_readonly(sql, dialect, allowed_tables)
     if not ok:
-        return {"ok": False, "error": "; ".join(reasons)}
+        return {"ok": False, "error": "[ERR:SQL_PERMISSION] " + "; ".join(reasons)}
     valid, errors = validate_sql(sql, dialect)
     if not valid:
-        return {"ok": False, "error": "; ".join(errors)}
+        return {"ok": False, "error": tag_error("; ".join(errors), context="sql")}
 
     had_limit = _has_limit(sql, dialect)
     probe_sql = sql if had_limit else _append_limit(sql, dialect, limit)
@@ -503,9 +504,14 @@ async def _probe_result(
             connectors.execute(probe_sql), timeout=timeout_s,
         )
     except TimeoutError:
-        return {"ok": False, "error": f"probe timed out after {timeout_s}s"}
+        return {"ok": False, "error": f"[ERR:SQL_TIMEOUT] probe timed out after {timeout_s}s"}
     except Exception as e:
-        return {"ok": False, "error": f"execution failed: {sanitize_error_text(str(e))}"}
+        return {
+            "ok": False,
+            "error": tag_error(
+                f"execution failed: {sanitize_error_text(str(e))}", context="sql",
+            ),
+        }
 
     rows = result.rows or []
     row_count = len(rows)

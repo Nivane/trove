@@ -536,3 +536,58 @@ class TestProgressTracking:
         ))
         assert "error" in update
         assert "无进展" in update["error"] or "progress" in update["error"].lower()
+
+
+class TestDeterministicShortCircuit:
+    async def test_permission_error_skips_llm_and_surfaces(self):
+        """SQL 权限错:打回重生成无意义 → 确定性 surface,不调 LLM。"""
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run for deterministic dead-end")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="DELETE FROM loans",
+            error_feedback="write operations are not permitted",
+        ))
+        assert calls["n"] == 0
+        assert update["error"].startswith("[ERR:SQL_PERMISSION]")
+        assert update["error_feedback"] == ""
+
+    async def test_ds_auth_error_skips_llm_and_surfaces(self):
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT 1",
+            error_feedback="Access denied for user 'root'@'localhost'",
+        ))
+        assert calls["n"] == 0
+        assert update["error"].startswith("[ERR:DS_AUTH]")
+
+    async def test_fixable_error_still_routes_to_llm_with_tag(self):
+        """可修复类(缺表)不打短路:LLM 判断,诊断 prompt 带 [ERR:] 标。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT * FROM loans",
+            error_feedback="no such table: loans",
+        ))
+        assert "[ERR:SQL_SCHEMA_MISSING]" in captured["prompt"]
+        assert update["rollback_target"] == "gen_sql"
+        # 版本链仍记录未打标的引擎文本(跨轮"同一失败"判定稳定)
+        assert update["sql_versions"][0]["error"] == "no such table: loans"
