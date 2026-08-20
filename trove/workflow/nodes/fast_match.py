@@ -29,6 +29,7 @@ from sqlglot import exp
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
+from trove.llm.observability import record_span
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import ExampleHit, KbService
 from trove.workflow.state import WorkflowState
@@ -353,6 +354,13 @@ def make_fast_match(
         m = match_fast_template(state.question, hits, list(state.matched_tables or []))
         if m is None:
             return {}
+        # 模板快径命中进 langfuse(无 Langfuse 时 no-op)
+        with record_span(
+            "kb.template_hit",
+            input={"question": state.question, "template": m["question"], "tags": m["tags"]},
+        ) as span:
+            if span is not None:
+                span.update(output={"sql": m["sql"]})
         return {
             "sql": m["sql"],
             "dialect": dialect,

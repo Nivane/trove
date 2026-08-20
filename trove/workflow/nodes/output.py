@@ -14,12 +14,35 @@ from __future__ import annotations
 from typing import Any
 
 from trove.core.i18n import L
+from trove.llm.observability import record_span
 from trove.services.sql.format import format_sql
 from trove.workflow.state import WorkflowState
 
 
+def _record_result(state: WorkflowState) -> None:
+    """终态 span:成败原因(verdict/重试/行数/错误)进 langfuse。
+
+    output 是全部路径的必经终点(含错误路径),成败原因在此落 trace;
+    节点异常本身已由 LangGraph 回调标红。无 Langfuse 时 no-op。
+    """
+    with record_span(
+        "workflow.result",
+        input={
+            "question": state.question,
+            "verdict": state.verdict,
+            "reason": state.reason,
+            "retry_count": state.retry_count,
+            "row_count": state.row_count,
+            "error": state.error,
+            "sql": state.sql,
+        },
+    ):
+        pass
+
+
 async def output(state: WorkflowState) -> dict[str, Any]:
     """Format results into Markdown from the workflow state."""
+    _record_result(state)
     question = state.question
 
     if state.clarification_question:

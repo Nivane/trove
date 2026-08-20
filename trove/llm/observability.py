@@ -63,10 +63,11 @@ def build_callback_handler():
 
 
 @contextmanager
-def record_span(name: str, input: Any = None):
+def record_span(name: str, input: Any = None, metadata: Any = None):
     """Open a nested span (no-op without Langfuse); yields the span or None.
 
     Callers may update the yielded span: `if span: span.update(output=...)`.
+    `metadata` is passed through to the observation (session grouping).
 
     Langfuse SDK v4 removed start_as_current_span/generation — observations
     with an explicit type are the current API.
@@ -84,7 +85,7 @@ def record_span(name: str, input: Any = None):
         return
     try:
         cm = client.start_as_current_observation(
-            as_type="span", name=name, input=input,
+            as_type="span", name=name, input=input, metadata=metadata or {},
         )
         span = cm.__enter__()
     except Exception as e:
@@ -99,3 +100,45 @@ def record_span(name: str, input: Any = None):
             cm.__exit__(*_sys.exc_info())
         except Exception as e:
             logger.debug("Span teardown failed (%s): %s", name, e)
+
+
+OBSERVATION_TRUNCATE = 2000  # 工具观测进 langfuse 的截断上限
+
+
+def record_tool_call(
+    name: str,
+    arguments: dict[str, Any] | None = None,
+    observation: str = "",
+    error: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    max_obs_len: int = OBSERVATION_TRUNCATE,
+) -> None:
+    """Record one tool call as a langfuse span (no-op without Langfuse).
+
+    Nests under the current node span via context propagation — agent-loop
+    tools (probe/check/validate/search_values) land inside the gen_sql
+    node span. `observation` is truncated (runlog keeps full fidelity);
+    a tool error is recorded at level=ERROR with the message.
+    """
+    client = get_client()
+    if client is None:
+        return
+    try:
+        if error:
+            output: dict[str, Any] = {"error": error[:max_obs_len]}
+            level, status_message = "ERROR", error[:max_obs_len]
+        else:
+            output = {"observation": observation[:max_obs_len]}
+            level, status_message = "DEFAULT", None
+        with client.start_as_current_observation(
+            as_type="span",
+            name=f"tool.{name}",
+            input={"arguments": arguments},
+            output=output,
+            level=level,
+            status_message=status_message,
+            metadata=metadata or {},
+        ):
+            pass
+    except Exception as e:
+        logger.debug("Tool span recording failed (%s): %s", name, e)

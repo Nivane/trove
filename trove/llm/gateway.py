@@ -121,6 +121,7 @@ class LLMGateway:
                     )
                     await asyncio.sleep(delay)
 
+        _record_failed_generation(model, messages, last_error, metadata)
         raise LLMError(
             message=f"LLM call failed after {self.max_retries} attempts: {last_error}",
             model=model,
@@ -193,6 +194,7 @@ class LLMGateway:
                 "usage": _usage_dict(response),
             }
         except Exception as e:
+            _record_failed_generation(model, messages, e, metadata)
             raise LLMError(message=f"LLM call failed: {e}", model=model) from e
 
     async def chat_stream(
@@ -485,3 +487,36 @@ def _record_generation(
             pass
     except Exception as e:
         logger.debug("Generation recording failed: %s", e)
+
+
+def _record_failed_generation(
+    model: str,
+    messages: list[dict[str, str]],
+    error: Exception | str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record a failed LLM completion as a langfuse generation (level=ERROR).
+
+    Silent no-op when Langfuse is disabled; only the final failure after
+    retries is recorded — individual attempts stay invisible (noise).
+    The error text lands in both status_message and output so the failure
+    reason is traceable from the UI and the trace API.
+    """
+    client = get_client()
+    if client is None:
+        return
+    try:
+        text = str(error)
+        with client.start_as_current_observation(
+            as_type="generation",
+            name="llm",
+            model=model,
+            input={"messages": messages},
+            output={"error": text},
+            level="ERROR",
+            status_message=text,
+            metadata=metadata or {},
+        ):
+            pass
+    except Exception as e:
+        logger.debug("Failed-generation recording failed: %s", e)

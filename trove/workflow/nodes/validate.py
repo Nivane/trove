@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.i18n import L
+from trove.llm.observability import record_span
 from trove.workflow.nodes.planner import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
@@ -37,10 +38,17 @@ def make_validate_rules(
         if state.error or state.error_feedback:
             return {}
 
-        reason, hits = run_rules(
-            state.question, state.sql, state.columns, state.rows, state.row_count,
-            lang=state.lang,
-        )
+        # 规则链结果进 langfuse(hits = 规则名+原因,即修正指令的证据)
+        with record_span(
+            "rules.verify",
+            input={"question": state.question, "sql": state.sql},
+        ) as span:
+            reason, hits = run_rules(
+                state.question, state.sql, state.columns, state.rows, state.row_count,
+                lang=state.lang,
+            )
+            if span is not None:
+                span.update(output={"passed": reason is None, "failures": hits})
         if reason is not None:
             if budget_exhausted(state.retry_count, max_retries):
                 return {"error": reason, "rules_passed": False}

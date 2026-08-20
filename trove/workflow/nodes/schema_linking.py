@@ -26,6 +26,7 @@ from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService, TableNotes, TermHit
 from trove.core.logging import get_logger
+from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -776,7 +777,7 @@ def make_schema_linking(
             }
 
         if term_hits:
-            update["kb_hits"] = [
+            hits = [
                 {
                     "kind": "term",
                     "term": h.term,
@@ -786,6 +787,16 @@ def make_schema_linking(
                 }
                 for h in term_hits
             ]
+            update["kb_hits"] = hits
+            # KB 术语命中进 langfuse(无 Langfuse 时 no-op)
+            with record_span(
+                "kb.hits", input={"question": state.question},
+            ) as span:
+                if span is not None:
+                    span.update(output={
+                        "hits": [{"term": h["term"], "mapping": h["mapping"]}
+                                 for h in hits],
+                    })
         return update
 
     return schema_linking

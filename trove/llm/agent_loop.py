@@ -217,14 +217,21 @@ def _trace_observer(
     name: str, arguments: dict[str, Any], observation: str,
     elapsed_ms: float, error: str | None, run_id: str,
 ) -> None:
-    """Default observer: 工具调用挂到当前节点 span 下(详尽日志/诊断)。"""
-    if not run_id:
-        return
+    """Default observer: 工具调用挂到当前节点 span 下(本地 runlog + langfuse)。
+
+    两个通道共享同一插桩点:runlog 保真全量,langfuse 记截断的
+    证据(嵌套进当前节点 span,contextvar 传播)。
+    """
     try:
         from trove.tracing.runlog import get_tracer
-        tracer = get_tracer(run_id)
+        tracer = get_tracer(run_id) if run_id else None
         if tracer is not None:
             tracer.tool(name, arguments, observation)
+    except Exception:
+        pass
+    try:
+        from trove.llm.observability import record_tool_call
+        record_tool_call(name, arguments, observation, error)
     except Exception:
         pass
 
