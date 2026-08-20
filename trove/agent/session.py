@@ -420,6 +420,8 @@ class SessionManager:
         graph = self._get_graph(workflow_name)
         pending = self._pending_runs.pop(session.session_id, {})
         run_id = pending.get("run_id", "")
+        import time as _time
+        resume_start = _time.monotonic()
         config = dict(self._thread_config(session))
         if run_id:
             config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
@@ -466,6 +468,9 @@ class SessionManager:
 
         summary = self._state_summary(final)
         summary["hitl_status"] = final.hitl_status
+        # resume 段统计:token 是该 run_id 的整条 tally(中断前已累计的也在这里,
+        # 中断时只 get 未 pop),_run_stats 一次性 pop 结算。
+        summary.update(self._run_stats(run_id, resume_start))
         if final.error:
             yield {"type": "error", "node": "output", "content": final.final_response, "summary": summary}
         else:
@@ -473,6 +478,8 @@ class SessionManager:
 
         # approve_all → 继续批内剩余 pending 任务(auto_approve,不再暂停)
         if is_approve_all(decision) and pending.get("batch"):
+            batch_stats: dict[str, Any] = {}
+            self._merge_run_stats(batch_stats, summary)
             tasks = await store.load_tasks()
             remaining = [t for t in tasks if t.status == "pending"]
             if remaining:
@@ -493,10 +500,15 @@ class SessionManager:
                     session, graph, workflow_name, store, current, target,
                     final.lang, auto_approve=True,
                 ):
+                    if ev.get("type") in ("done", "error") and ev.get("summary"):
+                        self._merge_run_stats(batch_stats, ev["summary"])
                     yield ev
             if remaining:
-                # 批收尾:整批结束,前端据此结束本轮(逐任务的 done 只是中间事件)
-                yield await self._batch_summary_event(session, store)
+                # 批收尾:整批结束,前端据此结束本轮(逐任务的 done 只是中间事件);
+                # 汇总统计(耗时 + token)随收尾事件带出,前端据此展示。
+                yield await self._batch_summary_event(
+                    session, store, stats=batch_stats or None,
+                )
 
     async def ask_stream(
         self,
@@ -657,6 +669,18 @@ class SessionManager:
                                 "hitl_status": "pending",
                                 "final_response": "",
                             }
+                            # 消耗统计随中断带出:前端确认气泡即可展示 token 数。
+                            # get 不 pop —— 本轮 tally 留给 resume 收尾时一次性结算。
+                            pending_summary["total_elapsed_ms"] = int(
+                                round((_time.monotonic() - run_start) * 1000)
+                            )
+                            try:
+                                from trove.llm.token_accounting import get as _get_usage
+                                usage = _get_usage(run_id) or {}
+                            except Exception:
+                                usage = {}
+                            if usage:
+                                pending_summary["token_usage"] = usage
                             yield {
                                 "type": "hitl",
                                 "node": "hitl",
@@ -1111,6 +1135,7 @@ class SessionManager:
 
         yield {"type": "task", "data": {"tasks": await self._tasks_snapshot(session)}}
 
+        batch_stats: dict[str, Any] = {}
         for t in tasks:
             current = await store.load_tasks()
             target = next((x for x in current if x.task_id == t.task_id), None)
@@ -1120,12 +1145,17 @@ class SessionManager:
                 session, graph, workflow_name, store, current, target,
                 self.config.language,
             ):
+                if ev.get("type") in ("done", "error") and ev.get("summary"):
+                    self._merge_run_stats(batch_stats, ev["summary"])
                 yield ev
             if self._pending_runs.get(session.session_id):
                 return  # HITL 批暂停:剩余保持 pending,等 resume 决策
 
-        # 批收尾事件:前端/REPL 据此结束整轮(逐任务的 done 只是中间事件)
-        yield await self._batch_summary_event(session, store)
+        # 批收尾事件:前端/REPL 据此结束整轮(逐任务的 done 只是中间事件);
+        # 汇总统计(耗时 + token)随收尾事件带出。
+        yield await self._batch_summary_event(
+            session, store, stats=batch_stats or None,
+        )
 
     async def _run_one_task(
         self,
@@ -1260,20 +1290,33 @@ class SessionManager:
         )
         session.messages.append(user_msg)
 
+        batch_stats: dict[str, Any] = {}
         async for ev in self._run_one_task(
             session, graph, workflow_name, store, tasks, target, lang,
         ):
+            if ev.get("type") in ("done", "error") and ev.get("summary"):
+                self._merge_run_stats(batch_stats, ev["summary"])
             yield ev
 
         if self._pending_runs.get(session.session_id):
             return  # HITL 暂停:等 resume 决策
-        yield await self._batch_summary_event(session, store)
+        yield await self._batch_summary_event(
+            session, store, stats=batch_stats or None,
+        )
 
-    async def _batch_summary_event(self, session: Session, store: TaskStore) -> dict[str, Any]:
-        """批处理收尾事件:前端据此结束整轮(逐任务的 done 只是中间事件)。"""
+    async def _batch_summary_event(
+        self, session: Session, store: TaskStore, stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """批处理收尾事件:前端据此结束整轮(逐任务的 done 只是中间事件)。
+
+        ``stats`` 汇总各子任务 done 的耗时/token,随收尾事件带出供前端展示。
+        """
         snapshot = await self._tasks_snapshot(session)
         done = sum(1 for t in snapshot if t["status"] in ("done", "failed"))
         total = len(snapshot)
+        summary: dict[str, Any] = {"batched": True, "tasks": snapshot}
+        if stats:
+            summary.update(stats)
         return {
             "type": "done",
             "content": L(
@@ -1281,8 +1324,20 @@ class SessionManager:
                 f"任务处理完成:{done}/{total} 个任务已结束。",
                 f"Task batch finished: {done}/{total} tasks done.",
             ),
-            "summary": {"batched": True, "tasks": snapshot},
+            "summary": summary,
         }
+
+    @staticmethod
+    def _merge_run_stats(acc: dict[str, Any], summary: dict[str, Any]) -> None:
+        """把一次子任务 run 的耗时/token 累加进批汇总(供 batched done 展示)。"""
+        ms = summary.get("total_elapsed_ms")
+        if ms is not None:
+            acc["total_elapsed_ms"] = acc.get("total_elapsed_ms", 0) + int(ms)
+        usage = summary.get("token_usage") or {}
+        bucket = acc.setdefault("token_usage", {})
+        for k, v in usage.items():
+            if v:
+                bucket[k] = bucket.get(k, 0) + int(v)
 
     @staticmethod
     def _state_summary(final: WorkflowState) -> dict[str, Any]:

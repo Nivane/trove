@@ -15,6 +15,35 @@ SQL = "```sql\nSELECT name FROM students;\n```"
 DECOMPOSE_JSON = '{"tasks": ["学生名单", "平均成绩"]}'
 
 
+class _UsageScriptedGateway(ScriptedGateway):
+    """ScriptedGateway 变体:每次调用向 token_accounting 记账,驱动 done
+    summary 的 token_usage(镜像 test_token_accounting 的 UsageGateway)。"""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self._n = 0
+
+    def _record(self, model, messages, out, metadata):
+        self._n += 1
+        n = self._n
+        from trove.llm.gateway import _record_local_call
+        _record_local_call(
+            model=model, messages=messages, output=out,
+            metadata=metadata, elapsed_ms=10,
+            usage={"prompt_tokens": n * 10, "completion_tokens": n * 2, "total_tokens": n * 12},
+        )
+
+    async def chat(self, model, messages, **kwargs):
+        out = next(self._responses)
+        self._record(model, messages, out, kwargs.get("metadata"))
+        return out
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        out = next(self._responses)
+        self._record(model, messages, out, kwargs.get("metadata"))
+        return {"content": out, "tool_calls": []}
+
+
 class StubGraph:
     """Scripted graph: one ``astream`` outcome per task (exact control)."""
 
@@ -262,7 +291,7 @@ class TestCrossTurnFollowup:
 class TestHitlBatchOptions:
     """真图 + InMemorySaver + hitl=True:批内三选项。"""
 
-    def _build(self, tmp_home, sqlite_registry, responses):
+    def _build(self, tmp_home, sqlite_registry, responses, gateway_cls=ScriptedGateway):
         from langgraph.checkpoint.memory import InMemorySaver
 
         from trove.agent.session import SessionManager
@@ -271,7 +300,7 @@ class TestHitlBatchOptions:
         from trove.workflow.graphs import GraphServices, build_graphs
 
         config = AgentConfig(home=str(tmp_home), target="mock/model", hitl=True)
-        gateway = ScriptedGateway(responses)
+        gateway = gateway_cls(responses)
         graphs = build_graphs(
             GraphServices(llm=gateway, connectors=sqlite_registry, config=config),
             checkpointer=InMemorySaver(),
@@ -315,6 +344,43 @@ class TestHitlBatchOptions:
 
         final = await manager.get_tasks(session)
         assert [t["status"] for t in final] == ["done", "done"]
+
+    async def test_batch_approve_all_batched_done_carries_stats(self, tmp_home, sqlite_registry):
+        """收尾 batched done 汇总各子任务耗时/token;hitl 事件带已累计统计。
+
+        前端据此在确认气泡与收尾摘要上展示 token 数(逐任务 done 只是
+        中间事件,汇总只落在最后的 batched done 上)。
+        """
+        manager = self._build(
+            tmp_home, sqlite_registry,
+            [
+                DECOMPOSE_JSON,
+                "query", SQL,            # 任务1:route → gen_sql → HITL 中断
+                "OK",                    # resume:reflect
+                "query", SQL, "OK",      # 任务2:auto_approve 全程
+            ],
+            gateway_cls=_UsageScriptedGateway,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+
+        first = await self._ask(manager, session, "分别查询 1. 学生名单 2. 平均成绩")
+        assert first[-1]["type"] == "hitl"
+        # 确认气泡即可展示已累计的耗时与 token(中断时只读不 pop)
+        assert first[-1]["summary"]["total_elapsed_ms"] >= 0
+        usage = first[-1]["summary"]["token_usage"]
+        assert usage and usage["total"] > 0
+
+        resumed = [ev async for ev in manager.resume_stream(session, "approve_all")]
+        last = resumed[-1]
+        assert last["type"] == "done"
+        assert last["summary"]["batched"] is True
+        # 聚合 2 个子任务:耗时与 token 都上收尾事件
+        assert last["summary"]["total_elapsed_ms"] >= 0
+        assert last["summary"]["token_usage"]["total"] > 0
+        # 逐任务的中间 done 不带汇总统计(保持只追加语义)
+        middles = [e for e in resumed if e.get("type") == "done" and not e["summary"].get("batched")]
+        assert middles
+        assert all("total_elapsed_ms" in m["summary"] for m in middles)
 
     async def test_batch_hitl_approve_single_leaves_rest_pending(self, tmp_home, sqlite_registry):
         """选项1 approve:只完成被打断任务,剩余保持 pending,无收尾事件。"""

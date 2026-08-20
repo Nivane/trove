@@ -349,6 +349,8 @@ class TestChatTasks:
             resume_types = [t for t, _ in resume_events]
             assert resume_types.count("done") == 3
             assert resume_events[-1][1]["summary"]["batched"] is True
+            # 收尾 batched done 带聚合耗时(前端据此展示统计)
+            assert resume_events[-1][1]["summary"]["total_elapsed_ms"] >= 0
 
             tasks = (await c.get(f"/v1/sessions/{session_id}/tasks")).json()["tasks"]
             assert [t["status"] for t in tasks] == ["done", "done"]

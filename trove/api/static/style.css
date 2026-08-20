@@ -778,6 +778,14 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .hitl-actions .hitl-no {
   background: var(--panel); border: 1px solid var(--border); color: inherit;
 }
+.hitl-chosen {
+  margin: 12px 0; display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-radius: 6px; font-size: 12.5px;
+  background: var(--panel); border: 1px solid var(--accent); color: inherit;
+}
+.hitl-chosen::before {
+  content: "✓"; color: var(--accent); font-weight: 600;
+}
 
 /* ── 跨轮任务面板(消息流顶部) ─────────────────────────── */
 

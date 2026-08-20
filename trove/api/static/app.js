@@ -19,6 +19,7 @@ const I18N = {
     sessionNotFound: "会话不存在，已新建会话", error: "错误",
     hitlApprove: "批准执行", hitlReject: "否决",
     hitlApproveOne: "确认", hitlApproveAll: "确认，继续全部任务", hitlStop: "不继续",
+    hitlChosen: (d) => `已选择：${d}`,
     taskPanel: "任务进度",
     sessionsLabel: "会话", collapseTitle: "折叠侧栏",
     themeLight: "主题：浅色", themeDark: "主题：深色",
@@ -48,6 +49,7 @@ const I18N = {
     sessionNotFound: "Session missing — created a new one", error: "Error",
     hitlApprove: "Approve", hitlReject: "Reject",
     hitlApproveOne: "Confirm", hitlApproveAll: "Confirm, continue all", hitlStop: "Stop",
+    hitlChosen: (d) => `Chosen: ${d}`,
     taskPanel: "Tasks",
     sessionsLabel: "Sessions", collapseTitle: "Toggle sidebar",
     themeLight: "Theme: light", themeDark: "Theme: dark",
@@ -583,6 +585,7 @@ function stepBody(node, d, k, stepLang) {
 
 function handleEvent(ev, turn) {
   const { type, data } = ev;
+  if (data && data.summary) turn.lastSummary = data.summary;
   switch (type) {
     case "session":
       state.sessionId = data.session_id;
@@ -600,10 +603,11 @@ function handleEvent(ev, turn) {
       /* 任务清单快照:面板同步;批内任一任务进行中 → 后续逐任务
          done 只追加答案,直到收尾的 batched done 才结束整轮。 */
       renderTaskPanel(data.tasks);
-      // 批内任一任务进行中 → 后续逐任务 done 只追加答案,直到收尾的
-      // batched done 才结束整轮(恢复渲染不进批模式)。
+      // 批未终结判定:只要还有 pending/in_progress 任务,批就仍在跑
+      // (HITL 暂停处任务已 done、剩余 pending → 仍是批,中间 done 只追加;
+      // 全部终结后到来的收尾 batched done 才结束本轮)。
       state.batchRunning = (data.tasks || [])
-        .some((tsk) => tsk.status === "in_progress");
+        .some((tsk) => tsk.status === "pending" || tsk.status === "in_progress");
       break;
     case "done":
       if (data.summary && data.summary.batched) {
@@ -629,6 +633,7 @@ function handleEvent(ev, turn) {
         sessionId: state.sessionId,
         workflow: "reflection",
         batch: ((data.payload || {}).task_context || {}).total > 1,
+        actionsEl: null,
       };
       finishTurn(turn, data.summary);
       turn.answerEl.innerHTML =
@@ -643,6 +648,7 @@ function handleEvent(ev, turn) {
                <button class="hitl-yes" onclick="resumeHitl('yes')">${esc(t("hitlApprove"))}</button>
                <button class="hitl-no" onclick="resumeHitl('no')">${esc(t("hitlReject"))}</button>
              </div>`);
+      state.pendingHitl.actionsEl = turn.answerEl.querySelector(".hitl-actions");
       break;
     case "error":
       state.batchRunning = false;
@@ -732,9 +738,9 @@ function finishTurn(turn, summary) {
     `${iconsHtml}<span class="s-text">${esc(t("stepsSummary", turn.steps.length, stats.total, stats.tokens))}</span>`;
   turn.summaryEl.hidden = false;
   turn.stepsWrap.classList.add("hidden");
-  turn.summaryEl.addEventListener("click", () => {
-    turn.stepsWrap.classList.toggle("hidden");
-  });
+  // 用 onclick 覆盖而非 addEventListener 累加:finishTurn 理论上只会被
+  // 收尾事件调用一次,但双绑定会让一次点击 toggle 两次 → 无法展开。
+  turn.summaryEl.onclick = () => turn.stepsWrap.classList.toggle("hidden");
   turn.statusEl.remove();
   turn.toolbarEl.hidden = false;
   state.controller = null;
@@ -873,7 +879,7 @@ async function sendQuestion(text, retried = false) {
     return;
   }
   if (!turn.finished) {
-    finishTurn(turn);
+    finishTurn(turn, turn.lastSummary);
     // Stream closed without a terminal event → surface an error.
     if (!turn.answerEl.textContent.trim()) {
       turn.answerEl.innerHTML = `<div class="error-box">${esc(t("error"))}</div>`;
@@ -883,10 +889,26 @@ async function sendQuestion(text, retried = false) {
 
 /* ── HITL 确认 → /resume ─────────────────────────────── */
 
+function hitlDecisionLabel(decision, batch) {
+  if (batch) {
+    return decision === "approve_all" ? t("hitlApproveAll")
+      : decision === "yes" ? t("hitlApproveOne") : t("hitlStop");
+  }
+  return decision === "yes" ? t("hitlApprove") : t("hitlReject");
+}
+
 async function resumeHitl(decision) {
   const pending = state.pendingHitl;
   state.pendingHitl = null;
   if (!pending || !pending.sessionId) return;
+  /* 点击即替换按钮为所选结果,避免旧气泡一直挂着失效按钮。 */
+  if (pending.actionsEl && pending.actionsEl.isConnected) {
+    pending.actionsEl.insertAdjacentHTML(
+      "afterend",
+      `<div class="hitl-chosen">${esc(t("hitlChosen", hitlDecisionLabel(decision, pending.batch)))}</div>`,
+    );
+    pending.actionsEl.remove();
+  }
   const turn = beginAssistantTurn();
   setStreaming(true);
   $("question-input").value = "";
@@ -928,7 +950,7 @@ async function resumeHitl(decision) {
     return;
   }
   if (!turn.finished) {
-    finishTurn(turn);
+    finishTurn(turn, turn.lastSummary);
     if (!turn.answerEl.textContent.trim()) {
       turn.answerEl.innerHTML = `<div class="error-box">${esc(t("error"))}</div>`;
     }
