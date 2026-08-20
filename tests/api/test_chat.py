@@ -146,3 +146,83 @@ class TestChat:
         resp = await client.get("/v1/health")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+class TestChatHITLResume:
+    """HITL:chat 流发出 hitl 事件暂停;POST /resume 以决定继续。"""
+
+    async def test_chat_hitl_pause_and_resume(self, tmp_home, sqlite_registry):
+        from langgraph.checkpoint.memory import InMemorySaver
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.agent.session import SessionManager
+        from trove.api.app import create_app
+        from httpx import ASGITransport, AsyncClient
+
+        class Gateway:
+            def __init__(self, responses):
+                self._responses = iter(responses)
+                self.calls = []
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls.append(kwargs.get("metadata", {}).get("node"))
+                return next(self._responses)
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self.calls.append(kwargs.get("metadata", {}).get("node"))
+                return {"content": next(self._responses), "tool_calls": []}
+
+        config = AgentConfig(
+            home=str(tmp_home), target="mock/model",
+            explain_semantics=True, hitl=True, insights=True,
+        )
+        gateway = Gateway([
+            "query",
+            "```sql\nSELECT name FROM students;\n```",
+            "这条 SQL 查询学生姓名",
+            "OK",
+            "- 共 5 名学生",
+        ])
+        graphs = build_graphs(
+            GraphServices(llm=gateway, connectors=sqlite_registry, config=config),
+            checkpointer=InMemorySaver(),
+            multi_candidate=False, planner=False, agentic=False,
+        )
+        manager = SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=graphs,
+            llm_gateway=gateway,
+        )
+        app = create_app({"session_manager": manager})
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            session_id = (await c.post("/v1/sessions")).json()["session_id"]
+            resp = await c.post(
+                "/v1/chat",
+                json={"session_id": session_id, "question": "What is the average loan amount?"},
+            )
+            events = parse_sse(resp.text)
+            types = [t for t, _ in events]
+            assert types[-1] == "hitl"
+            # payload 携带待确认 SQL
+            payload = [d["payload"] for t, d in events if t == "hitl"][0]
+            assert payload["kind"] == "confirm_sql"
+            assert "SELECT name FROM students;" in payload["sql"]
+
+            # 批准 → 最终状态带执行结果与洞察
+            resume = await c.post(
+                f"/v1/sessions/{session_id}/resume",
+                json={"decision": "yes"},
+            )
+            assert resume.status_code == 200
+            body = resume.json()
+            assert body["hitl_status"] == "approved"
+            assert body["row_count"] == 5
+            assert body["insights"] == ["共 5 名学生"]
+            assert body["response"]
+
+            # 会话落库为一次完整问答
+            detail = (await c.get(f"/v1/sessions/{session_id}")).json()
+            assert len(detail["messages"]) == 2

@@ -53,6 +53,11 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         parts.append(f"### {L(lang, 'Generated SQL', 'Generated SQL')}\n")
         parts.append(f"```sql\n{format_sql(state.sql, state.dialect)}\n```\n")
 
+    # Semantic explanation (生成 SQL 后的 LLM 语义说明)
+    if state.semantics:
+        parts.append(f"### {L(lang, 'Semantics', 'Semantics')}\n")
+        parts.append(f"{state.semantics}\n")
+
     # Results
     if state.columns:
         parts.append(L(lang, f"### Results ({state.row_count} rows)\n", f"### Results ({state.row_count} rows)\n"))
@@ -83,6 +88,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     # Metadata
     if state.execution_time_ms:
         parts.append(f"\n---\n*Execution time: {state.execution_time_ms:.0f}ms*")
+
+    # Insights (执行后 LLM 生成的洞察)
+    if state.insights:
+        parts.append(f"\n### {L(lang, 'Insights', 'Insights')}\n")
+        for insight in state.insights:
+            parts.append(f"- {insight}")
 
     # Multi-candidate disagreement → low-confidence note
     if not state.consensus:

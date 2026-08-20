@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from trove.api.schemas import ChatRequest, SessionCreateResponse
+from trove.api.schemas import ChatRequest, ResumeRequest, SessionCreateResponse
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
 
@@ -65,6 +65,23 @@ def _load_or_404(request: Request, session_id: str):
         return _manager(request).load_session(session_id)
     except SessionError:
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+
+
+@router.post("/sessions/{session_id}/resume")
+async def resume_session(session_id: str, body: ResumeRequest, request: Request):
+    """继续一处 HITL 中断:用用户决定 resume 被打断的图,返回最终状态。"""
+    session = await _load_or_404(request, session_id)
+    final = await _manager(request).resume(session, body.decision, body.workflow)
+    return {
+        "session_id": session_id,
+        "hitl_status": final.hitl_status,
+        "response": final.final_response,
+        "sql": final.sql,
+        "row_count": final.row_count,
+        "verdict": final.verdict,
+        "insights": final.insights,
+        "error": final.error,
+    }
 
 
 @router.post("/sessions/{session_id}/compact")

@@ -251,6 +251,9 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
         "verdict": summary.get("verdict", ""),
         "error": summary.get("error", ""),
         "kb_hits": summary.get("kb_hits", []),
+        "semantics": summary.get("semantics", ""),
+        "insights": summary.get("insights", []),
+        "hitl_status": summary.get("hitl_status", ""),
         "events": printable_events,
     }
 

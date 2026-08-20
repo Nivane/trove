@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from typing import Any
 
 
 class ChatRequest(BaseModel):
@@ -10,6 +11,13 @@ class ChatRequest(BaseModel):
 
     session_id: str | None = None  # omitted → a new session is created
     question: str = Field(min_length=1)
+    workflow: str = "reflection"
+
+
+class ResumeRequest(BaseModel):
+    """POST /v1/sessions/{id}/resume body (HITL decision)."""
+
+    decision: Any = Field(description="HITL 决定:yes/approve 或 no/reject,或任意 resume 载荷")
     workflow: str = "reflection"
 
 

@@ -54,6 +54,9 @@ from trove.workflow.nodes.select import make_select_consensus
 from trove.workflow.nodes.validate import make_validate_rules
 from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
+from trove.workflow.nodes.semantics import make_semantics
+from trove.workflow.nodes.hitl import make_hitl
+from trove.workflow.nodes.insights import make_insights
 from trove.workflow.nodes.answer import make_answer_metadata
 from trove.workflow.nodes.metadata_check import make_metadata_check
 from trove.workflow.nodes.analyze_error import make_analyze_error, render_reasoning_context
@@ -573,15 +576,22 @@ def build_graphs(
     }
 
 
-def _route_after_reflect(state: WorkflowState) -> Literal["analyze_error", "answer_metadata", "output"]:
+def _route_after_hitl(state: WorkflowState) -> str:
+    """HITL 门后分流:被用户否决 → 直接输出(不执行);否则正常执行。"""
+    if state.error or state.hitl_status == "rejected":
+        return "output"
+    return "execute_sql"
+
+
+def _route_after_reflect(state: WorkflowState) -> Literal["analyze_error", "answer_metadata", "insights"]:
     # Termination is guaranteed by reflect itself: it only returns RETRY
     # while retry_count < MAX_REFLECT_RETRIES (then forces OK).
     if state.error:
-        return "output"
+        return "insights"  # insights 对 error 透传,不阻断降级输出
     if state.no_sql:
         return "answer_metadata"
     if state.verdict != "RETRY":
-        return "output"
+        return "insights"
     # RETRY goes through the diagnose-and-decide node: the LLM judges the
     # failure root cause and picks the rollback target.
     return "analyze_error"
@@ -977,6 +987,10 @@ def _build_reflection(
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
+    # 说明语义 + 执行前人工确认(HITL):生成 SQL → 解释 → 确认 → 执行 → 洞察
+    g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
+    g.add_node("hitl", make_hitl(services.config or AgentConfig()))
+    g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -1030,7 +1044,16 @@ def _build_reflection(
                 _make_route_after_fast_match("gen_sql"),
                 {"execute_sql": "execute_sql", "gen_sql": "gen_sql"},
             )
-    g.add_edge("gen_sql", "execute_sql")
+    # 生成路径:gen_sql → semantics(说明语义) → hitl(人工确认) → execute。
+    # hitl 被用户否决 → 直接 output(不执行);批准/未开启 → execute_sql。
+    # 确定性快径(fast_match)仍直达 execute_sql,跳过生成级别的确认。
+    g.add_edge("gen_sql", "semantics")
+    g.add_edge("semantics", "hitl")
+    g.add_conditional_edges(
+        "hitl",
+        _route_after_hitl,
+        {"execute_sql": "execute_sql", "output": "output"},
+    )
     g.add_edge("execute_sql", "select")
     g.add_edge("select", "validate")
     # Rollback ladder mirrors the graph topology: without the planner node,
@@ -1066,8 +1089,9 @@ def _build_reflection(
     g.add_conditional_edges(
         "reflect",
         _route_after_reflect,
-        {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "output": "output"},
+        {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "insights": "insights"},
     )
+    g.add_edge("insights", "output")
     g.add_edge("output", END)
     return g
 
@@ -1088,6 +1112,10 @@ def _build_fixed(
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
+    # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
+    g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
+    g.add_node("hitl", make_hitl(services.config or AgentConfig()))
+    g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -1101,13 +1129,20 @@ def _build_fixed(
         )
     else:
         g.add_edge("schema_linking", "gen_sql")
-    g.add_edge("gen_sql", "execute_sql")
+    g.add_edge("gen_sql", "semantics")
+    g.add_edge("semantics", "hitl")
+    g.add_conditional_edges(
+        "hitl",
+        _route_after_hitl,
+        {"execute_sql": "execute_sql", "output": "output"},
+    )
     g.add_edge("execute_sql", "validate")
     g.add_conditional_edges(
         "validate",
-        _make_route_after_feedback("output", "gen_sql", "output"),
-        {"gen_sql": "gen_sql", "output": "output"},
+        _make_route_after_feedback("output", "gen_sql", "insights"),
+        {"gen_sql": "gen_sql", "insights": "insights", "output": "output"},
     )
+    g.add_edge("insights", "output")
     g.add_edge("output", END)
     return g
 

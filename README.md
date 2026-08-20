@@ -78,6 +78,9 @@ agent:
   target: deepseek/deepseek-v4-flash    # litellm 模型字符串（推理模型如 deepseek-reasoner 亦可）
   language: en                          # 交互语言 en / zh：提示词、答案、轨迹统一使用
   date_parser: true                     # 确定性相对时间解析（未命中静默透传）
+  explain_semantics: false              # 生成 SQL 后 LLM 说明语义（输出与 HITL 确认时展示）
+  hitl: false                           # 执行前人工确认（LangGraph interrupt，需 persistence/checkpointer）
+  insights: false                       # 执行后 LLM 基于结果生成洞察
   providers:
     - name: openai                  # 非官方端点（兼容 OpenAI API）示例
       litellm_params:

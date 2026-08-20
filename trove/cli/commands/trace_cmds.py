@@ -126,13 +126,30 @@ def _render_run(run: dict) -> str:
     for event in events:
         if event.get("kind") == "finish":
             summary = event.get("summary", {})
+            stats = _format_stats(summary)
             lines.append(
                 f"└─ 最终：verdict={summary.get('verdict', '')} "
                 f"retries={summary.get('retry_count', 0)} "
                 f"rows={summary.get('row_count', -1)} "
                 f"error={str(summary.get('error', ''))[:80]}"
+                f"{stats}"
             )
     return "\n".join(lines)
+
+
+def _format_stats(summary: dict) -> str:
+    """Run-level cost stats (time + LLM token usage), '' when absent."""
+    parts = []
+    elapsed = summary.get("total_elapsed_ms")
+    if elapsed:
+        parts.append(f"耗时 {elapsed}ms")
+    usage = summary.get("token_usage") or {}
+    if usage:
+        parts.append(
+            f"tokens {usage.get('prompt', 0)}+{usage.get('completion', 0)}="
+            f"{usage.get('total', 0)}"
+        )
+    return (" · " + " · ".join(parts)) if parts else ""
 
 
 def register_trace_commands(registry: SlashRegistry, context: dict) -> None:

@@ -1,0 +1,8 @@
+用户问题: {{ question }}
+{% if time_context %}
+解析出的时间范围: {{ time_context }}
+{% endif %}
+生成的 SQL:
+{{ sql }}
+
+请用通俗的语言说明这条 SQL 查询做了什么、返回的结果回答了什么问题。

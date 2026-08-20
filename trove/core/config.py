@@ -79,6 +79,9 @@ class AgentConfig:
     date_parser: bool = True  # 时间解析节点:确定性规则解析相对时间(zh/en),未命中静默透传
     fast_path: bool = True  # 确定性模板快径:命中即跳过 planner/生成/裁决
     reflect_skip: str = "simple"  # 规则全过后跳 LLM 裁决: simple / all / off
+    explain_semantics: bool = False  # 生成 SQL 后 LLM 说明语义(执行前展示给用户)
+    hitl: bool = False  # 执行前人工确认(LangGraph interrupt; 需 checkpointer)
+    insights: bool = False  # 执行后 LLM 基于结果生成洞察
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -229,6 +232,9 @@ class ConfigLoader:
             date_parser=agent_section.get("date_parser", True),
             fast_path=agent_section.get("fast_path", True),
             reflect_skip=agent_section.get("reflect_skip", "simple"),
+            explain_semantics=agent_section.get("explain_semantics", False),
+            hitl=agent_section.get("hitl", False),
+            insights=agent_section.get("insights", False),
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

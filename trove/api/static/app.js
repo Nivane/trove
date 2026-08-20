@@ -17,9 +17,10 @@ const I18N = {
     confirmDelete: "删除该会话？", datasource: "数据源",
     meta: (n) => `${n} 条消息`, aborted: "已停止",
     sessionNotFound: "会话不存在，已新建会话", error: "错误",
+    hitlApprove: "批准执行", hitlReject: "否决",
     sessionsLabel: "会话", collapseTitle: "折叠侧栏",
     themeLight: "主题：浅色", themeDark: "主题：深色",
-    stepsSummary: (n, ms) => `${n} 步 · ${ms}ms`,
+    stepsSummary: (n, ms, tokens) => `${n} 步 · ${ms}ms${tokens ? ` · ${tokens}` : ""}`,
     welcomeTitle: "Trove 数据问答",
     welcomeSubtitle: "用自然语言提问，自动生成 SQL、执行并验证答案",
     disclaimer: "内容由 AI 生成，可能出错，重要信息请核对",
@@ -43,9 +44,10 @@ const I18N = {
     confirmDelete: "Delete this session?", datasource: "Datasource",
     meta: (n) => `${n} messages`, aborted: "Stopped",
     sessionNotFound: "Session missing — created a new one", error: "Error",
+    hitlApprove: "Approve", hitlReject: "Reject",
     sessionsLabel: "Sessions", collapseTitle: "Toggle sidebar",
     themeLight: "Theme: light", themeDark: "Theme: dark",
-    stepsSummary: (n, ms) => `${n} steps · ${ms}ms`,
+    stepsSummary: (n, ms, tokens) => `${n} steps · ${ms}ms${tokens ? ` · ${tokens}` : ""}`,
     welcomeTitle: "Trove Chat",
     welcomeSubtitle: "Ask in natural language — SQL is generated, executed and verified",
     disclaimer: "AI-generated — verify important information",
@@ -197,6 +199,7 @@ const state = {
   titles: {},        // session_id → derived title (first user question)
   currentTurn: null, // {el, stepsEl, statusEl, answerEl, toolbarEl, round, finished}
   controller: null,  // AbortController of the in-flight /v1/chat stream
+  pendingHitl: null, // HITL: {sessionId, workflow} — waiting for user decision
 };
 
 function t(key, ...args) {
@@ -588,11 +591,23 @@ function handleEvent(ev, turn) {
       renderStep(data, turn);
       break;
     case "done":
-      finishTurn(turn);
+      finishTurn(turn, data.summary);
       turn.answerEl.innerHTML = renderMarkdown(data.content);
       break;
+    case "hitl":
+      /* 执行前人工确认(HITL):展示 SQL+语义,提供批准/否决按钮。
+         流在此关闭(图已暂停),按钮触发 /resume 继续同一线程。 */
+      state.pendingHitl = { sessionId: state.sessionId, workflow: "reflection" };
+      finishTurn(turn, data.summary);
+      turn.answerEl.innerHTML =
+        renderMarkdown(data.content || "") +
+        `<div class="hitl-actions">
+           <button class="hitl-yes" onclick="resumeHitl('yes')">${esc(t("hitlApprove"))}</button>
+           <button class="hitl-no" onclick="resumeHitl('no')">${esc(t("hitlReject"))}</button>
+         </div>`;
+      break;
     case "error":
-      finishTurn(turn);
+      finishTurn(turn, data.summary);
       if (data.summary) {
         turn.answerEl.innerHTML =
           `<div class="error-box">${renderMarkdown(data.content)}</div>`;
@@ -606,16 +621,31 @@ function handleEvent(ev, turn) {
   }
 }
 
-function finishTurn(turn) {
+function turnStats(summary, steps) {
+  /* Run-level cost stats from the done summary (server is authoritative);
+     fall back to the step-accumulated total time for old servers that
+     omit summary stats. */
+  let total = summary && summary.total_elapsed_ms != null
+    ? summary.total_elapsed_ms
+    : steps.reduce((a, s) => a + s.elapsed_ms, 0);
+  let tokens = "";
+  if (summary && summary.token_usage) {
+    const u = summary.token_usage;
+    tokens = `tokens ${u.prompt ?? 0}+${u.completion ?? 0}=${u.total ?? 0}`;
+  }
+  return { total, tokens };
+}
+
+function finishTurn(turn, summary) {
   turn.finished = true;
   turn.stepsEl.querySelectorAll(".step.running")
     .forEach((s) => s.classList.replace("running", "done"));
   // Collapse the trace into a one-line summary (click to re-expand).
-  const total = turn.steps.reduce((a, s) => a + s.elapsed_ms, 0);
+  const stats = turnStats(summary, turn.steps);
   const iconsHtml = turn.steps
     .map((s) => `<span class="s-icon">${svgIcon(s.icon)}</span>`).join("");
   turn.summaryEl.innerHTML =
-    `${iconsHtml}<span class="s-text">${esc(t("stepsSummary", turn.steps.length, total))}</span>`;
+    `${iconsHtml}<span class="s-text">${esc(t("stepsSummary", turn.steps.length, stats.total, stats.tokens))}</span>`;
   turn.summaryEl.hidden = false;
   turn.stepsWrap.classList.add("hidden");
   turn.summaryEl.addEventListener("click", () => {
@@ -764,6 +794,34 @@ async function sendQuestion(text, retried = false) {
     if (!turn.answerEl.textContent.trim()) {
       turn.answerEl.innerHTML = `<div class="error-box">${esc(t("error"))}</div>`;
     }
+  }
+}
+
+/* ── HITL 确认 → /resume ─────────────────────────────── */
+
+async function resumeHitl(decision) {
+  const pending = state.pendingHitl;
+  state.pendingHitl = null;
+  if (!pending || !pending.sessionId) return;
+  const turn = beginAssistantTurn();
+  setStreaming(true);
+  $("question-input").value = "";
+  try {
+    const res = await fetch(`/v1/sessions/${encodeURIComponent(pending.sessionId)}/resume`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, workflow: "reflection" }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    finishTurn(turn, data);
+    let html = "";
+    if (data.response) html = renderMarkdown(data.response);
+    if (data.error) html += `<div class="error-box">${esc(data.error)}</div>`;
+    turn.answerEl.innerHTML = html || `<div class="error-box">${esc(t("error"))}</div>`;
+  } catch (err) {
+    finishTurn(turn);
+    turn.answerEl.innerHTML = `<div class="error-box">${esc(String(err))}</div>`;
   }
 }
 

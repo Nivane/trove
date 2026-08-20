@@ -37,6 +37,8 @@ def _reset_trace_store():
     避免其它测试文件 configure_trace_store 的残留(如激活 RunTracer)。"""
     from trove.tracing.local import configure_trace_store
     configure_trace_store(None)
+    from trove.llm.token_accounting import reset as reset_token_accounting
+    reset_token_accounting()
     yield
 
 

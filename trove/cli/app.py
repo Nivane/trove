@@ -214,8 +214,22 @@ class TroveREPL:
                 elif event_type in ("plan", "verdict", "correction", "sql", "result"):
                     # 已由结构化 step 渲染覆盖（--print 中仍保留这些事件）
                     pass
+                elif event_type == "hitl":
+                    # 执行前人工确认(HITL):展示确认请求,同步询问用户,
+                    # 通过 resume() 继续被打断的图(批准→执行/否决→取消)。
+                    self._tui.print_markdown(content)
+                    lang = getattr(self._config, "language", "zh")
+                    decision = self._tui.prompt_input(
+                        TroveREPL._lang_confirm(lang)
+                    )
+                    resumed = await self._manager.resume(
+                        self._session, decision,
+                    )
+                    self._tui.print_markdown(resumed.final_response)
+                    return
                 elif event_type == "done":
                     self._tui.print_markdown(content)
+                    self._print_done_stats(event.get("summary") or {})
                 elif event_type == "error":
                     self._tui.print_error(content)
         except asyncio.CancelledError:
@@ -263,6 +277,25 @@ class TroveREPL:
         elif node == "planner" and detail.get("plan"):
             self._tui.print_thought(detail["plan"])
 
+    def _print_done_stats(self, summary: dict) -> None:
+        """打印本轮结束的耗时与 LLM token 用量（来自 done summary）。"""
+        parts: list[str] = []
+        elapsed = summary.get("total_elapsed_ms")
+        if elapsed:
+            parts.append(L(getattr(self._config, "language", "zh"), f"耗时 {elapsed}ms", f"time {elapsed}ms"))
+        usage = summary.get("token_usage") or {}
+        if usage:
+            parts.append(
+                f"tokens {usage.get('prompt', 0)}+{usage.get('completion', 0)}={usage.get('total', 0)}"
+            )
+        if parts:
+            self._tui.print_info("  " + " · ".join(parts))
+
+    @staticmethod
+    def _lang_confirm(lang: str = "zh") -> str:
+        """HITL 确认提示语(按 REPL 配置语言)。"""
+        return L(lang, "\n执行该查询? [y/N] ", "\nRun this query? [y/N] ")
+
     @staticmethod
     def _step_summary(node: str, detail: dict, lang: str = "zh") -> str:
         if node == "route_intent":
@@ -294,6 +327,16 @@ class TroveREPL:
             verdict = detail.get("verdict", "")
             r = detail.get("reason", "")
             return L(lang, f"裁决 {verdict}", f"verdict {verdict}") + (f"：{r}" if r and verdict in ("RETRY", "NO_SQL") else "")
+        if node == "semantics":
+            return L(lang, "说明语义", "explaining semantics")
+        if node == "insights":
+            n = len(detail.get("insights", []))
+            return L(lang, f"生成 {n} 条洞察", "generating insights") if n else L(lang, "生成洞察", "generating insights")
+        if node == "hitl":
+            status = detail.get("hitl_status", "")
+            if status == "rejected":
+                return L(lang, "人工否决", "rejected by user")
+            return L(lang, "人工确认", "awaiting human confirmation")
         if node == "output":
             return L(lang, "生成答案", "composing answer")
         return ""

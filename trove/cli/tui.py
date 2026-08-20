@@ -106,6 +106,13 @@ class TUI:
         """Print command help text."""
         self._console.print(text)
 
+    def prompt_input(self, prompt: str) -> str:
+        """Prompt the user for a single line of input (HITL confirmation)."""
+        try:
+            return input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            return "n"
+
     @property
     def console(self) -> Console:
         return self._console

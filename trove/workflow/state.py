@@ -122,6 +122,17 @@ class WorkflowState(BaseModel):
     sql: str = ""
     dialect: str = "sqlite"
 
+    # 语义说明(semantics 节点):生成 SQL 后 LLM 用自然语言解释其含义,
+    # 在执行前展示给用户(HITL 确认时同时呈现)。空 = 未生成(未开启/无 SQL/失败)。
+    semantics: str = ""
+
+    # 洞察(insights 节点):执行完成后 LLM 基于结果表格生成的自然语言洞察。
+    insights: list[str] = Field(default_factory=list)
+
+    # HITL 状态(hitl 节点):"" = 未参与/未开启;"pending" = 已中断等待确认;
+    # "approved" = 用户批准继续执行;"rejected" = 用户否决(中止,不再执行)。
+    hitl_status: str = ""
+
     # execute_sql artifacts
     columns: list[str] = Field(default_factory=list)
     rows: list[list[Any]] = Field(default_factory=list)

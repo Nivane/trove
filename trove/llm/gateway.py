@@ -175,6 +175,7 @@ class LLMGateway:
             _record_local_call(
                 model, messages, content, metadata, elapsed_ms,
                 temperature=temperature, reasoning=reasoning,
+                usage=_usage_dict(response),
             )
             if not content and reasoning:
                 # 与 _call_litellm 同策略:纯推理输出回退到 reasoning 正文
@@ -326,6 +327,7 @@ class LLMGateway:
             model, messages, content,
             metadata, int((time.monotonic() - start) * 1000),
             temperature=temperature, reasoning=reasoning,
+            usage=_usage_dict(response),
         )
         # 推理模型可能把全部输出放进 reasoning_content、content 为空
         # (DeepSeek 实测:38s 思考后 content="" 而 reasoning 有正文)。
@@ -375,6 +377,7 @@ def _record_local_call(
     elapsed_ms: int,
     temperature: float = 0.0,
     reasoning: str = "",
+    usage: dict[str, int] | None = None,
 ) -> None:
     """Zero-config local trace: one llm event into the run-trace store.
 
@@ -382,10 +385,18 @@ def _record_local_call(
     library users without a run stay silent. When an active RunTracer
     owns the run, the event routes through it (span parent linkage +
     run log + optional verbose echo); otherwise the flat llm event is
-    written directly."""
+    written directly.
+
+    Also feeds the per-run token accumulator (token_usage aggregated
+    per question and surfaced in the run summary)."""
     run_id = (metadata or {}).get("run_id", "")
     if not run_id:
         return
+    try:
+        from trove.llm.token_accounting import add
+        add(run_id, usage or {})
+    except Exception:
+        pass
     try:
         from trove.tracing.runlog import get_tracer
         tracer = get_tracer(run_id)

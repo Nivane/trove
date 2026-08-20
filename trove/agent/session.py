@@ -25,6 +25,7 @@ from trove.core.logging import get_logger
 from trove.storage.session_store import SessionStore
 from trove.llm.gateway import LLMGateway
 from trove.llm.token_counter import TokenCounter
+from langgraph.types import Command
 import uuid
 
 from trove.core.i18n import L
@@ -69,6 +70,7 @@ class SessionManager:
         self._callbacks = callbacks or []
         self._kb = kb
         self._connectors = connectors
+        self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
 
     # ── Session lifecycle ────────────────────────────────
 
@@ -251,12 +253,100 @@ class SessionManager:
         self._trace_run_start(state)
         config = dict(self._thread_config(session))
         config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
-        final = WorkflowState.model_validate(
-            await graph.ainvoke(state, config)
-        )
+        result = await graph.ainvoke(state, config)
+
+        if self._is_interrupted(result):
+            # HITL 门:图在执行前暂停,返回确认请求。调用方展示后
+            # 通过 resume() 用用户的批准/否决继续同一图。
+            # 持久化本轮用户消息:resume() 会从 store 重载会话,
+            # 未保存的用户输入会丢失(resume 的 _record_exchange 只追加 assistant)。
+            await self._store.save_session(session)
+            final = WorkflowState.model_validate({k: v for k, v in result.items() if k != "__interrupt__"})
+            final = final.model_copy(update={
+                "hitl_status": "pending",
+                "final_response": self._hitl_confirmation(result, state.lang),
+            })
+            self._pending_runs[session.session_id] = {
+                "run_id": run_id,
+                "workflow_name": workflow_name,
+            }
+            return final
+
+        final = WorkflowState.model_validate(result)
 
         await self._record_exchange(session, workflow_name, final)
         self._trace_run_finish(run_id, final)
+        return final
+
+    @staticmethod
+    def _is_interrupted(result: dict[str, Any]) -> bool:
+        """True when the graph paused at an interrupt (HITL gate)."""
+        return bool(result.get("__interrupt__"))
+
+    @staticmethod
+    def _hitl_interrupt(result: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract the HITL confirmation payload from an interrupted run."""
+        for entry in result.get("__interrupt__", []):
+            value = getattr(entry, "value", None)
+            if isinstance(value, dict) and value.get("kind") == "confirm_sql":
+                return value
+        return None
+
+    @classmethod
+    def _hitl_confirmation(cls, result: dict[str, Any], lang: str) -> str:
+        """Build the confirmation-request text shown to the user on pause."""
+        payload = cls._hitl_interrupt(result) or {}
+        question = payload.get("question", "")
+        sql = payload.get("sql", "")
+        semantics = payload.get("semantics", "")
+        body = [
+            L(lang, "## 执行确认(HITL)\n", "## Execution confirmation (HITL)\n"),
+            f"**{L(lang, '问题', 'Question')}**: {question}",
+        ]
+        if semantics:
+            body.append(f"\n**{L(lang, '语义', 'Semantics')}**: {semantics}")
+        if sql:
+            body.append(f"\n**{L(lang, 'SQL', 'SQL')}**:\n```sql\n{sql}\n```")
+        body.append(
+            L(
+                lang,
+                "\n\n该查询尚未执行。回复 y/确认 继续执行,或 n/拒绝 取消。",
+                "\n\nThis query has NOT been executed. Reply y/approve to run it, or n/reject to cancel.",
+            )
+        )
+        return "\n".join(body)
+
+    async def resume(
+        self,
+        session: Session,
+        decision: Any,
+        workflow_name: str = DEFAULT_WORKFLOW,
+    ) -> WorkflowState:
+        """Continue a graph paused at the HITL gate with the user's decision.
+
+        Args:
+            session: The session whose thread is paused.
+            decision: The human decision passed into ``interrupt`` resume
+                (e.g. "approve"/"reject", a bool, or a dict).
+            workflow_name: Which graph the pending run belongs to.
+
+        Returns:
+            The final WorkflowState after resumption.
+        """
+        graph = self._get_graph(workflow_name)
+        pending = self._pending_runs.pop(session.session_id, {})
+        run_id = pending.get("run_id", "")
+        config = dict(self._thread_config(session))
+        if run_id:
+            config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
+
+        result = await graph.ainvoke(Command(resume=decision), config)
+        final = WorkflowState.model_validate(
+            {k: v for k, v in result.items() if k != "__interrupt__"}
+        )
+        await self._record_exchange(session, workflow_name, final)
+        if run_id:
+            self._trace_run_finish(run_id, final)
         return final
 
     async def ask_stream(
@@ -307,11 +397,54 @@ class SessionManager:
             lang = state.lang
             seq = 0
             last_ts = _time.monotonic()
+            run_start = last_ts
             config = dict(self._thread_config(session))
             config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
             async for update in graph.astream(
                 state, config, stream_mode="updates",
             ):
+                # HITL 中断:图在执行前暂停 —— 发出确认事件并停止本轮流。
+                # 调用方展示 SQL+语义后,用 resume() 继续同一线程。
+                if "__interrupt__" in update:
+                    interrupts = update["__interrupt__"]
+                    for entry in interrupts:
+                        value = getattr(entry, "value", None)
+                        if isinstance(value, dict) and value.get("kind") == "confirm_sql":
+                            self._pending_runs[session.session_id] = {
+                                "run_id": run_id,
+                                "workflow_name": workflow_name,
+                            }
+                            # 持久化本轮用户消息(resume 重载会话后不丢失)
+                            await self._store.save_session(session)
+                            merged.update(
+                                {k: str(v) for k, v in value.items()}
+                            )
+                            pending_summary = {
+                                "session_id": session.session_id,
+                                "question": value.get("question", state.question),
+                                "sql": value.get("sql", ""),
+                                "semantics": value.get("semantics", ""),
+                                "row_count": -1,
+                                "verdict": "",
+                                "reason": "",
+                                "error": "",
+                                "kb_hits": [],
+                                "insights": [],
+                                "hitl_status": "pending",
+                                "final_response": "",
+                            }
+                            yield {
+                                "type": "hitl",
+                                "node": "hitl",
+                                "content": self._hitl_confirmation(
+                                    {"__interrupt__": interrupts}, lang,
+                                ),
+                                "payload": value,
+                                "summary": pending_summary,
+                            }
+                            return
+                    continue
+
                 for node_name, delta in update.items():
                     if not delta:  # guard nodes returning {} surface as None
                         continue
@@ -368,8 +501,10 @@ class SessionManager:
         final = WorkflowState.model_validate(merged)
         await self._record_exchange(session, workflow_name, final)
 
-        self._trace_run_finish(run_id, final)
+        stats = self._run_stats(run_id, run_start)
+        self._trace_run_finish(run_id, final, stats)
         summary = self._state_summary(final)
+        summary.update(stats)
         if final.error:
             yield {"type": "error", "node": "output", "content": final.final_response, "summary": summary}
         else:
@@ -421,11 +556,17 @@ class SessionManager:
         elif node_name == "reflect":
             detail["verdict"] = delta.get("verdict", "")
             detail["reason"] = delta.get("reason", "")
+        elif node_name == "semantics":
+            detail["semantics"] = delta.get("semantics", "")
+        elif node_name == "insights":
+            detail["insights"] = delta.get("insights", [])
+        elif node_name == "hitl":
+            detail["hitl_status"] = delta.get("hitl_status", "")
         elif node_name == "output":
             detail["final"] = True
 
         # LLM call detail (independent of the node chain above)
-        if node_name in ("gen_sql", "planner", "reflect") and delta.get("llm"):
+        if node_name in ("gen_sql", "planner", "reflect", "semantics", "insights") and delta.get("llm"):
             detail["llm"] = delta["llm"]
 
         return {
@@ -474,17 +615,20 @@ class SessionManager:
             pass
 
     @staticmethod
-    def _trace_run_finish(run_id: str, final: WorkflowState) -> None:
+    def _trace_run_finish(run_id: str, final: WorkflowState, stats: dict[str, Any] | None = None) -> None:
         from trove.tracing.runlog import get_tracer
+        summary = SessionManager._state_summary(final)
+        if stats:
+            summary.update(stats)
         tracer = get_tracer(run_id)
         if tracer is not None:
-            tracer.finish(SessionManager._state_summary(final))
+            tracer.finish(summary)
             return
         try:
             from trove.tracing.local import add_event
             add_event(run_id, {
                 "kind": "finish",
-                "summary": SessionManager._state_summary(final),
+                "summary": summary,
             })
         except Exception:
             pass
@@ -582,10 +726,34 @@ class SessionManager:
             "reason": final.reason,
             "error": final.error,
             "kb_hits": final.kb_hits,
+            "semantics": final.semantics,
+            "insights": final.insights,
+            "hitl_status": final.hitl_status,
             "final_response": final.final_response,
         }
 
     # ── Token usage ──────────────────────────────────────
+
+    @staticmethod
+    def _run_stats(run_id: str, run_start: float) -> dict[str, Any]:
+        """Per-question cost stats: total wall time + LLM token usage.
+
+        Token usage comes from the process-level accumulator fed by every
+        gateway call carrying this run_id; the tally is popped so results
+        never leak across questions in the same process. Wall time is the
+        clock from the first graph update to the final summary."""
+        import time as _time
+        stats: dict[str, Any] = {
+            "total_elapsed_ms": int((_time.monotonic() - run_start) * 1000),
+        }
+        try:
+            from trove.llm.token_accounting import pop
+            usage = pop(run_id) or {}
+        except Exception:
+            usage = {}
+        if usage:
+            stats["token_usage"] = usage
+        return stats
 
     def get_context_usage(self, session: Session) -> dict[str, float]:
         """Estimate token usage for a session."""
