@@ -737,3 +737,199 @@ class TestClearSession:
         loaded = await session_manager.load_session(session.session_id, "/tmp/p1")
         assert loaded.messages == []
         assert loaded.summary is None
+
+
+class TestResultCache:
+    """精确结果缓存:同会话同问句零 LLM 直接返回;错误不缓存;命中跳过 HITL。"""
+
+    def _manager(self, tmp_home, sqlite_registry, responses, **build_kwargs):
+        from trove.core.config import AgentConfig
+        from trove.services.datasource.catalog import CatalogService
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.agent.session import SessionManager
+
+        class Scripted:
+            """循环响应:命中缓存时零调用(断言 calls 不增);未命中时重复提供脚本。"""
+
+            def __init__(self):
+                self._pool = list(responses)
+                self._i = 0
+                self.calls = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls += 1
+                r = self._pool[self._i % len(self._pool)]
+                self._i += 1
+                return r
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self.calls += 1
+                r = self._pool[self._i % len(self._pool)]
+                self._i += 1
+                return {"content": r, "tool_calls": []}
+
+        config = AgentConfig(home=str(tmp_home), target="mock/model", result_cache=True)
+        llm = Scripted()
+        services = GraphServices(
+            llm=llm,
+            catalog=CatalogService(sqlite_registry),
+            connectors=sqlite_registry,
+            config=config,
+        )
+        manager = SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=build_graphs(services, multi_candidate=False, **build_kwargs),
+            llm_gateway=llm,
+            connectors=sqlite_registry,
+        )
+        return manager, llm
+
+    Q = "What students are in Alameda county?"
+    RESPONSES = ["query", "```sql\nSELECT name FROM students;\n```", "OK"]
+
+    async def test_identical_question_hits_cache_zero_llm(self, tmp_home, sqlite_registry):
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        session = await manager.start_session(project_cwd="/tmp/p")
+        first = await manager.ask(session=session, question=self.Q)
+        assert first.sql and first.verdict == "OK"
+        calls = llm.calls
+
+        second = await manager.ask(session=session, question=self.Q)
+        assert second.sql == first.sql
+        assert second.verdict == "OK"
+        assert second.error == ""
+        assert llm.calls == calls  # 命中 → 零额外 LLM 调用
+        assert len(session.messages) == 4  # user+assistant × 2(交换照常记录)
+
+    async def test_normalization_equivalence(self, tmp_home, sqlite_registry):
+        """标点/大小写/空白变体归一化后命中同一键。"""
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        session = await manager.start_session(project_cwd="/tmp/p")
+        first = await manager.ask(session=session, question=self.Q)
+        calls = llm.calls
+        second = await manager.ask(session=session, question="  WHAT STUDENTS, ARE IN alameda county?? ")
+        assert second.sql == first.sql
+        assert llm.calls == calls
+
+    async def test_session_isolation(self, tmp_home, sqlite_registry):
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        s1 = await manager.start_session(project_cwd="/tmp/p")
+        s2 = await manager.start_session(project_cwd="/tmp/p")
+        await manager.ask(session=s1, question=self.Q)
+        calls = llm.calls
+        await manager.ask(session=s2, question=self.Q)  # 不同会话 → 未命中
+        assert llm.calls > calls
+
+    async def test_datasource_isolation(self, tmp_home, sqlite_registry):
+        """键含数据源分量:默认数据源变化后同问句不再命中。"""
+        from trove.core.types import DatasourceConfig
+
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager.ask(session=session, question=self.Q)
+        calls = llm.calls
+        key_before = manager._cache_key(session, self.Q)
+        await sqlite_registry.register(DatasourceConfig(
+            name="other", type="sqlite", connection_params={"path": ":memory:"},
+            default=True,
+        ))
+        key_after = manager._cache_key(session, self.Q)
+        assert key_before != key_after  # 数据源分量变化
+        await manager.ask(session=session, question=self.Q)  # 未命中 → 重新跑
+        assert llm.calls > calls
+
+    async def test_ttl_expiry(self, tmp_home, sqlite_registry):
+        from trove.agent.session import RESULT_CACHE_TTL_S
+
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager.ask(session=session, question=self.Q)
+        calls = llm.calls
+        key = manager._cache_key(session, self.Q)
+        old_cached_at = manager._result_cache[key]["cached_at"]
+        manager._result_cache[key]["cached_at"] -= RESULT_CACHE_TTL_S + 1.0
+        await manager.ask(session=session, question=self.Q)  # TTL 过期 → 惰性淘汰 → 重新跑
+        assert llm.calls > calls
+        # 重跑后条目被重新写入,但 cached_at 是新的(过期 → 淘汰 → 重写闭环)
+        assert key in manager._result_cache
+        assert manager._result_cache[key]["cached_at"] > old_cached_at
+
+    async def test_error_run_not_cached(self, tmp_home, sqlite_registry):
+        """错误/打回的结果不写缓存,下次同问照常重跑。"""
+        manager, llm = self._manager(
+            tmp_home, sqlite_registry,
+            ["query", "```sql\nSELEC * FROM students;\n```", "OK"],
+            planner=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        first = await manager.ask(session=session, question=self.Q)
+        assert first.error
+        assert manager._result_cache == {}  # 错误不写
+        await manager.ask(session=session, question=self.Q)  # 再问仍重跑
+        assert llm.calls > 3
+
+    async def test_stream_hit_marks_cached(self, tmp_home, sqlite_registry):
+        """流式命中:事件形状与实跑一致(sql → result → done),summary 带 cached 标记。"""
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        session = await manager.start_session(project_cwd="/tmp/p")
+        async for _ in manager.ask_stream(session=session, question=self.Q):
+            pass
+        calls = llm.calls
+
+        events = []
+        async for e in manager.ask_stream(session=session, question=self.Q):
+            events.append(e)
+        assert llm.calls == calls
+        types = [e["type"] for e in events]
+        assert "sql" in types and "result" in types and "done" in types
+        done = events[-1]
+        assert done["type"] == "done"
+        assert done["summary"].get("cached") is True
+        assert done["summary"]["sql"] == "SELECT name FROM students;"
+        assert done["summary"]["row_count"] == 5
+        sql_event = next(e for e in events if e["type"] == "sql")
+        assert "students" in sql_event["content"]  # format_sql 美化后的语句
+
+    async def test_hitl_enabled_hit_skips_confirmation(self, tmp_home):
+        """HITL 开启时缓存命中照常返回:读钩子在图执行之前,中断不触发。"""
+        import time
+
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.agent.session import SessionManager
+
+        invoked = []
+
+        class HitlGraph:
+            async def ainvoke(self, state, config=None):
+                invoked.append(state.question)  # 命中时绝不应被调
+                return {**state.model_dump(), "sql": "SELECT 1", "row_count": 1,
+                        "verdict": "OK", "final_response": "answer",
+                        "__interrupt__": [type("I", (), {"value": {"kind": "confirm_sql"}})()]}
+
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home), result_cache=True, hitl=True),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": HitlGraph()},
+            llm_gateway=None,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        q = "How many students?"
+        # 首次运行已人工确认过 → 结果在缓存里
+        manager._result_cache[manager._cache_key(session, q)] = {
+            "summary": {
+                "session_id": session.session_id, "question": q, "sql": "SELECT 1",
+                "row_count": 1, "verdict": "OK", "reason": "", "error": "",
+                "kb_hits": [], "semantics": "", "insights": [],
+                "hitl_status": "ok", "final_response": "answer",
+                "cached": True, "dialect": "sqlite",
+            },
+            "cached_at": time.time(),
+        }
+        final = await manager.ask(session=session, question=q)
+        assert final.sql == "SELECT 1"
+        assert final.verdict == "OK"
+        assert not invoked  # 图从未执行 → HITL 中断未触发
+        assert session.messages[-1].role == "assistant"  # 交换照常记录

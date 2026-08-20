@@ -13,6 +13,7 @@ into a single coherent API.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, AsyncIterator
 
 from trove.core.types import (
@@ -36,6 +37,11 @@ from trove.workflow.state import WorkflowState
 logger = get_logger(__name__)
 
 DEFAULT_WORKFLOW = "reflection"
+
+# 精确结果缓存:同一会话内、归一化后相同的问句直接返回上次结果(0 LLM)。
+# 缓存命中跳过 HITL 确认——首次运行该问题已人工确认过。
+RESULT_CACHE_TTL_S = 300.0
+CACHEABLE_VERDICTS = {"OK", "EMPTY"}
 
 
 def _time_now() -> float:
@@ -71,6 +77,8 @@ class SessionManager:
         self._kb = kb
         self._connectors = connectors
         self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
+        # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
+        self._result_cache: dict[tuple, dict[str, Any]] = {}
 
     # ── Session lifecycle ────────────────────────────────
 
@@ -251,6 +259,18 @@ class SessionManager:
         )
         self._begin_trace(state)
         self._trace_run_start(state)
+
+        # 精确结果缓存:同会话同问句直接返回上次结果(0 LLM)。命中跳过
+        # HITL 确认——首次运行该问题已人工确认过。
+        cached = self._cache_get(self._cache_key(session, question))
+        if cached is not None:
+            final = self._cached_final(
+                cached, run_id, history, self.config.language,
+            )
+            await self._record_exchange(session, workflow_name, final)
+            self._trace_run_finish(run_id, final)
+            return final
+
         config = dict(self._thread_config(session))
         config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
         result = await graph.ainvoke(state, config)
@@ -390,6 +410,27 @@ class SessionManager:
         )
         self._begin_trace(state)
         self._trace_run_start(state)
+
+        # 精确结果缓存:同会话同问句直接产出结果事件(0 LLM),形状与
+        # 实跑路径一致(sql → result → done);命中跳过 HITL 确认。
+        cached = self._cache_get(self._cache_key(session, question))
+        if cached is not None:
+            import time as _time
+            final = self._cached_final(
+                cached, run_id, history, self.config.language,
+            )
+            await self._record_exchange(session, workflow_name, final)
+            stats = self._run_stats(run_id, _time.monotonic())
+            self._trace_run_finish(run_id, final, stats)
+            summary = dict(cached)
+            summary["cached"] = True
+            summary.update(stats)
+            yield {"type": "sql", "node": "gen_sql",
+                   "content": format_sql(final.sql, cached.get("dialect", ""))}
+            yield {"type": "result", "node": "execute_sql", "row_count": final.row_count}
+            yield {"type": "done", "content": final.final_response, "summary": summary}
+            return
+
         merged: dict[str, Any] = state.model_dump()
 
         try:
@@ -713,6 +754,8 @@ class SessionManager:
         session.messages.append(assistant_msg)
         await self._store.save_session(session)
         await self._capture_lessons(final)
+        # 结果缓存写钩子(覆盖 ask / resume / ask_stream 三路径)
+        self._maybe_cache_exchange(session, final)
 
     @staticmethod
     def _state_summary(final: WorkflowState) -> dict[str, Any]:
@@ -731,6 +774,73 @@ class SessionManager:
             "hitl_status": final.hitl_status,
             "final_response": final.final_response,
         }
+
+    # ── Result cache (exact-question, in-process) ────────
+
+    @staticmethod
+    def _normalize_question(q: str) -> str:
+        """归一化问句:小写 + 非单词字符置空格(\\W 保留 CJK 等 Unicode 字母)
+        + 折叠空白。同问的标点/大小写变体命中同一个键。"""
+        text = (q or "").lower()
+        text = re.sub(r"\W", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _cache_enabled(self) -> bool:
+        return bool(self.config.result_cache)
+
+    def _cache_key(self, session: Session, question: str) -> tuple:
+        """键 = (会话, 数据源, 归一化问句)。数据源隔离:同一问句在不同
+        库上是不同问题。"""
+        ds = ""
+        if self._connectors is not None:
+            try:
+                ds = self._connectors.default_name or ""
+            except Exception:
+                ds = ""
+        return (session.session_id, ds, self._normalize_question(question))
+
+    def _cache_get(self, key: tuple) -> dict[str, Any] | None:
+        hit = self._result_cache.get(key)
+        if hit is None:
+            return None
+        if _time_now() - hit["cached_at"] > RESULT_CACHE_TTL_S:
+            self._result_cache.pop(key, None)  # 惰性淘汰
+            return None
+        return hit["summary"]
+
+    def _cache_put(self, key: tuple, summary: dict[str, Any]) -> None:
+        self._result_cache[key] = {"summary": summary, "cached_at": _time_now()}
+
+    def _maybe_cache_exchange(self, session: Session, final: WorkflowState) -> None:
+        """结果缓存写门:启用 ∧ 无错误/反馈 ∧ 裁决可缓存 ∧ SQL 非空。
+
+        错误/RETRY/NO_SQL 不缓存(下次同问需要重新跑);OK/EMPTY 且真
+        实执行过(SQL 非空、row_count ≥ 0)才写。
+        """
+        if not self._cache_enabled():
+            return
+        if final.error or final.error_feedback:
+            return
+        if final.verdict not in CACHEABLE_VERDICTS:
+            return
+        if not (final.sql or "").strip() or final.row_count < 0:
+            return
+        summary = self._state_summary(final)
+        summary["cached"] = True
+        summary["dialect"] = final.dialect
+        self._cache_put(self._cache_key(session, final.question), summary)
+
+    def _cached_final(
+        self, cached: dict[str, Any], run_id: str, history: str, lang: str,
+    ) -> WorkflowState:
+        """缓存命中 → 重建 WorkflowState(只取模型字段;run_id/history/lang 用本轮值)。"""
+        summary = {k: v for k, v in cached.items() if k in WorkflowState.model_fields}
+        final = WorkflowState.model_validate(summary)
+        return final.model_copy(update={
+            "run_id": run_id,
+            "history": history,
+            "lang": lang,
+        })
 
     # ── Token usage ──────────────────────────────────────
 
