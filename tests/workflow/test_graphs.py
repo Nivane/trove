@@ -958,8 +958,10 @@ class TestRollbackRouting:
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""  # 3 个不同执行错误不会触发 no-progress 提前降级
-        assert final["last_progress"] == "improved"
-        assert final["no_progress_rounds"] == 0
+        # 新执行错误 ≠ improved:执行成功前都计无进展(计数 2 < 上限 3,
+        # 第 4 轮执行成功,不触发降级)——但仍不误报 invalid
+        assert final["last_progress"] == "none"
+        assert final["no_progress_rounds"] == 2
         # judge prompt 不注入"同一错误重演"报告(不同执行错误 ≠ 无效修复)
         for msgs in llm.calls:
             text = " ".join(str(m.get("content", "")) for m in msgs)

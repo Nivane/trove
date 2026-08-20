@@ -228,15 +228,29 @@ def make_analyze_error(
             # 签名相同被误判"无效修复"。改用原始错误文本判定同一失败
             # 是否重演(引擎错误文本是确定性的,同一错误文本 = 同一失败)。
             exec_failed = state.row_count == -1
-            same_failure = bool(prev) and bool(raw_error) and prev.get("error") == raw_error
+            # 同一执行错误判定对比「全部历史版本」的错误文本(不止上一版):
+            # 模型每轮换一种新死法(表不存在→语法错→超时)交替出现时,逐轮
+            # 对比永远「不同」,会被误判 improved 清空无进展计数、烧满共享
+            # retry 预算。错误文本是引擎的确定性输出,任一历史轮重复出现
+            # = 无效修复重演,该升档/该计数。
+            prev_errors = [v.get("error") for v in state.sql_versions]
+            same_failure = bool(raw_error) and raw_error in prev_errors
+            dup_round = next(
+                (v.get("round") for v in state.sql_versions
+                 if v.get("error") == raw_error),
+                None,
+            )
             if exec_failed:
                 report = (
-                    f"Invalid fix: the same execution error as Round {prev['round']} "
+                    f"Invalid fix: the same execution error as Round {dup_round} "
                     "(identical error message — do not repeat the same SQL)."
                     if same_failure else None
                 )
+                # 新错误文本 ≠ 长进:SQL 仍未执行成功。执行成功前的任何执行
+                # 错误都计无进展(除首轮),连续 3 轮后提前止损——而不是让
+                # 「换着死法」烧满共享 retry 预算(MAX_REFLECT_RETRIES=10)。
                 progress = "invalid" if same_failure else (
-                    "first" if prev is None else "improved"
+                    "first" if prev is None else "none"
                 )
             else:
                 report = regression_report(prev, result_sig(state.rows), issues)

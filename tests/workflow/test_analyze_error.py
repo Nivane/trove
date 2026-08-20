@@ -389,7 +389,8 @@ class TestProgressTracking:
         assert update["no_progress_rounds"] == 0
 
     async def test_exec_failure_skips_sig_regression(self):
-        """执行错误(row_count == -1)不比较结果集签名:不同错误不误报 invalid。"""
+        """执行错误(row_count == -1)不比较结果集签名:新错误不误报 invalid,
+        但也不再算 improved——执行成功前任何执行错误都是无进展。"""
         captured = {}
 
         class LLM:
@@ -409,12 +410,46 @@ class TestProgressTracking:
         # 回归报告段(注入的确定性反馈)不应出现——skill 模板里静态存在
         # "[Regression check]" 术语说明,以注入报告独有的句式作判据
         assert "same execution error as Round" not in captured["prompt"]
-        assert update["last_progress"] == "improved"  # 错误不同 = 有进展
-        assert update["no_progress_rounds"] == 0
+        # 新错误文本 ≠ 长进:SQL 仍未执行成功,算无进展(仅首轮豁免)
+        assert update["last_progress"] == "none"
+        assert update["no_progress_rounds"] == 1
         # 版本记录带哨兵签名 + 原始错误文本
         v = update["sql_versions"][0]
         assert v["sig"] == "exec-error"
         assert v["error"] == "no such table: clients"
+
+    async def test_exec_failure_alternating_errors_count_no_progress(self):
+        """交替死法 A→B→A:错误与历史任一版相同(非相邻)也判 invalid,
+        防止「换着死法」无限 improved 烧满 10 轮预算。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT * FROM clients",
+            error_feedback="no such table: clients",  # 与 Round 1 相同
+            last_rollback_target="gen_sql",
+            no_progress_rounds=1,  # Round 2(新错误)已计过 1
+            sql_versions=[
+                {
+                    "sql": "SELECT * FROM clients", "sig": "exec-error",
+                    "issues": [], "round": 1, "error": "no such table: clients",
+                },
+                {
+                    "sql": "SELECT * FROM clients c", "sig": "exec-error",
+                    "issues": [], "round": 2, "error": "syntax error",
+                },
+            ],
+        ))
+        assert "same execution error as Round 1" in captured["prompt"]
+        assert update["last_progress"] == "invalid"
+        assert update["no_progress_rounds"] == 2
+        # 同错误重演(即使非相邻)→ 升档,不再吃 gen_sql 空转
+        assert update["rollback_target"] == "planner"
 
     async def test_exec_failure_same_error_marks_invalid_and_escalates(self):
         """同一执行错误(错误文本一致)重演 → invalid + 升档。"""
