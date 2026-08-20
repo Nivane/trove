@@ -26,6 +26,7 @@ def make_execute_sql(
     connectors: ConnectorRegistry | None = None,
     timeout_ms: int = 30000,
     max_retries: int = 10,
+    lineage=None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -35,6 +36,8 @@ def make_execute_sql(
         max_retries: Shared correction budget — execution failures feed
             back to gen_sql for regeneration while retry_count < max_retries;
             once exhausted, failures degrade gracefully via state.error.
+        lineage: Optional LineageService — successful queries are recorded
+            as downstream (consumer) lineage facts for the datasource.
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -51,28 +54,58 @@ def make_execute_sql(
         if connectors is None:
             return {"error": "No datasource registry available."}
 
-        try:
-            with record_span("tool.execute_sql", input=state.sql) as span:
-                result = await asyncio.wait_for(
-                    connectors.execute(state.sql),
-                    timeout=timeout_ms / 1000.0,
+        result = None
+        timeout_s = timeout_ms / 1000.0
+        retryable = _TRANSIENT_RETRIES  # 瞬时连接抖动的小重试预算(同一条 SQL)
+        retry_backoff_s = _TRANSIENT_BACKOFF_S
+        while True:
+            try:
+                with record_span("tool.execute_sql", input=state.sql) as span:
+                    result = await asyncio.wait_for(
+                        connectors.execute(state.sql),
+                        timeout=timeout_s,
+                    )
+                    if span is not None:
+                        span.update(output={"row_count": result.row_count})
+                break
+            except asyncio.TimeoutError:
+                # 超时未必是 SQL 的问题(慢查询/连接抖动)——残余重试预算内再试一次
+                if retryable > 0:
+                    retryable -= 1
+                    await asyncio.sleep(retry_backoff_s)
+                    retry_backoff_s = min(retry_backoff_s * 2, 4.0)
+                    continue
+                return _execution_failure(
+                    state,
+                    L(
+                        state.lang,
+                        f"查询超时（{timeout_ms}ms）",
+                        f"Query timed out after {timeout_ms}ms",
+                    ),
+                    max_retries,
                 )
-                if span is not None:
-                    span.update(output={"row_count": result.row_count})
-        except asyncio.TimeoutError:
-            return _execution_failure(
-                state,
-                L(
-                    state.lang,
-                    f"查询超时（{timeout_ms}ms）",
-                    f"Query timed out after {timeout_ms}ms",
-                ),
-                max_retries,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            return _execution_failure(state, str(e), max_retries)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # 瞬态连接错误(断连/不可达/协议重置)与 SQL 错误(语法/列不存在)
+                # 判别:前者重跑同一 SQL 大概率恢复,后者重跑必死——只在瞬时
+                # 错误上烧小重试,SQL 错误直接喂回错误反馈(同旧语义)。
+                if retryable > 0 and _is_transient(e):
+                    retryable -= 1
+                    await asyncio.sleep(retry_backoff_s)
+                    retry_backoff_s = min(retry_backoff_s * 2, 4.0)
+                    continue
+                return _execution_failure(state, str(e), max_retries)
+
+        # 血缘捕获:成功执行的查询记录为消费方(downstream)事实。
+        # 失败永远不记录(重试轮的正确 SQL 由最终成功的一次独占)。
+        if lineage is not None:
+            try:
+                ds = connectors.default_name or ""
+                if ds:
+                    await lineage.record_query(state.sql, ds, state.dialect)
+            except Exception as e:  # 血缘失败绝不阻断查询链路
+                logger.warning("lineage record failed: %s", e)
 
         return {
             "columns": result.columns,
@@ -83,6 +116,40 @@ def make_execute_sql(
         }
 
     return execute_sql
+
+
+# 瞬时连接错误的小重试预算(同一条 SQL,不烧 LLM 生成预算)。
+# 针对本地/远程 MySQL 抖动:断连、不可达、协议重置等瞬态错误重跑大概率
+# 恢复;SQL 自身错误(语法/缺列)重跑必死,不做无谓的 sleep。
+_TRANSIENT_RETRIES = 2
+_TRANSIENT_BACKOFF_S = 0.5
+
+_TRANSIENT_HINTS = (
+    "connection", "conn reset", "connection reset", "server has gone away",
+    "lost connection", "cannot connect", "unreachable", "broken pipe",
+    "protocol", "closed connection", "ssl", "handshake", "eof",
+    "gone away", "not connected", "stale", "refused",
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """判别瞬时连接类异常(重试可恢复) vs SQL 错误(重试无意义)。
+
+    基于异常类型 + 错误文本双重信号;不匹配任何信号即视为 SQL 错误
+    (保守——绝不把语法错误当瞬态去重试)。
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    for hint in _TRANSIENT_HINTS:
+        if hint in text:
+            return True
+    # 驱动级连接类型(aiomysql/pymysql)
+    try:
+        from pymysql.err import InterfaceError, OperationalError
+    except Exception:
+        InterfaceError = OperationalError = ()
+    if isinstance(exc, (InterfaceError, OperationalError)):
+        return True
+    return False
 
 
 def _execution_failure(

@@ -416,6 +416,192 @@ function renderMarkdown(md) {
   return out.join("\n");
 }
 
+/* ── Chart rendering (zero-dependency SVG) ──────────────
+   Consumes the `chart` payload from the done-event summary
+   ({"type": line|bar|pie, categories, series:[{name,data}]}).
+   Drawn by hand so the frontend works fully offline (no CDN). */
+
+const CHART_PALETTE = ["#6366f1", "#10b981", "#f59e0b", "#ef4444", "#0ea5e9", "#a855f7", "#f97316"];
+const CHART_W = 520, CHART_H = 220, CHART_PAD = { l: 52, r: 16, t: 14, b: 42 };
+
+function chartTitle(chart) {
+  const title = esc(chart.title || "");
+  return title ? `<div class="chart-title">${title}</div>` : "";
+}
+
+function fmtVal(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v ?? "");
+  return Math.abs(n) >= 1e6 ? n.toExponential(2)
+    : Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function trunc(c, n) {
+  const s = String(c ?? "");
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function niceMax(vmax) {
+  if (vmax <= 0) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(vmax)));
+  for (const m of [1, 2, 2.5, 5, 10]) {
+    if (vmax <= mag * m) return mag * m;
+  }
+  return mag * 10;
+}
+
+function chartPlotW() { return CHART_W - CHART_PAD.l - CHART_PAD.r; }
+function chartPlotH() { return CHART_H - CHART_PAD.t - CHART_PAD.b; }
+
+function renderChartBar(chart) {
+  const cats = chart.categories || [];
+  const series = chart.series || [];
+  if (!cats.length || !series.length) return "";
+  const all = series.flatMap((s) => (s.data || []).map(Number));
+  const vmax = niceMax(Math.max(0, ...all));
+  const vmin = Math.min(0, ...all);
+  const span = Math.max(vmax - vmin, 1e-9);
+  const plotW = chartPlotW(), plotH = chartPlotH();
+  const n = cats.length;
+  const groupW = plotW / n;
+  const barW = Math.min(groupW * 0.7, groupW * 0.7 / series.length);
+  const slotW = barW / series.length;
+
+  let svg = `<svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" class="chart-svg" preserveAspectRatio="xMidYMid meet">`;
+  // zero gridline
+  const yZero = CHART_PAD.t + plotH * (vmax / span);
+  svg += `<line x1="${CHART_PAD.l}" y1="${yZero}" x2="${CHART_W - CHART_PAD.r}" y2="${yZero}" class="chart-grid-zero"/>`;
+  // value labels + bars
+  cats.forEach((cat, i) => {
+    const gx = CHART_PAD.l + groupW * i;
+    series.forEach((s, si) => {
+      const v = Number((s.data || [])[i]);
+      const h = Math.abs(v) / span * plotH;
+      const x = gx + groupW * 0.15 + slotW * si;
+      const y = v >= 0 ? yZero - h : yZero;
+      svg += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, slotW * 0.7).toFixed(1)}" ` +
+        `height="${Math.max(0.5, h).toFixed(1)}" fill="${CHART_PALETTE[si % CHART_PALETTE.length]}" rx="2">` +
+        `<title>${esc(cat)} · ${esc(fmtVal(v))}</title></rect>`;
+    });
+    // category label (drop some when crowded)
+    if (n <= 12 || i % Math.ceil(n / 12) === 0) {
+      const tx = gx + groupW / 2;
+      const anchor = tx - CHART_PAD.l < plotW * 0.28 ? "start" : (tx - CHART_PAD.l > plotW * 0.72 ? "end" : "middle");
+      svg += `<text x="${tx}" y="${CHART_H - 16}" class="chart-axis-label" text-anchor="${anchor}">${esc(trunc(cat, 10))}</text>`;
+    }
+  });
+  // legend (multi-series)
+  if (series.length > 1) {
+    series.forEach((s, si) => {
+      svg += `<text x="${CHART_PAD.l + si * 100 + 8}" y="14" class="chart-legend">` +
+        `<tspan fill="${CHART_PALETTE[si % CHART_PALETTE.length]}" font-weight="700">● </tspan>${esc(trunc(s.name, 12))}</text>`;
+    });
+  }
+  svg += `</svg>`;
+  return svg;
+}
+
+function renderChartLine(chart) {
+  const cats = chart.categories || [];
+  const series = chart.series || [];
+  if (!cats.length || !series.length) return "";
+  const all = series.flatMap((s) => (s.data || []).map(Number));
+  const vmax = niceMax(Math.max(0, ...all));
+  const vmin = Math.min(0, ...all);
+  const span = Math.max(vmax - vmin, 1e-9);
+  const plotW = chartPlotW(), plotH = chartPlotH();
+  const n = cats.length;
+  const pts = (data) => (data || []).map((v, i) => {
+    const x = CHART_PAD.l + (n > 1 ? plotW * i / (n - 1) : 0);
+    const y = CHART_PAD.t + plotH * (vmax - Number(v)) / span;
+    return [x, y];
+  });
+
+  let svg = `<svg viewBox="0 0 ${CHART_W} ${CHART_H}" role="img" class="chart-svg" preserveAspectRatio="xMidYMid meet">`;
+  const yZero = CHART_PAD.t + plotH * (vmax / span);
+  svg += `<line x1="${CHART_PAD.l}" y1="${yZero}" x2="${CHART_W - CHART_PAD.r}" y2="${yZero}" class="chart-grid-zero"/>`;
+  // horizontal gridlines
+  for (let g = 0; g <= 4; g++) {
+    const gy = CHART_PAD.t + plotH * g / 4;
+    const val = vmax - span * g / 4;
+    svg += `<line x1="${CHART_PAD.l}" y1="${gy.toFixed(1)}" x2="${CHART_W - CHART_PAD.r}" y2="${gy.toFixed(1)}" class="chart-grid"/>`;
+    svg += `<text x="${CHART_PAD.l - 8}" y="${(gy + 4).toFixed(1)}" class="chart-y-label" text-anchor="end">${fmtVal(val)}</text>`;
+  }
+  series.forEach((s, si) => {
+    const color = CHART_PALETTE[si % CHART_PALETTE.length];
+    const point = pts(s.data);
+    const path = point.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+    if (point.length) {
+      svg += `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      point.forEach(([x, y], i) => {
+        svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.6" fill="${color}">` +
+          `<title>${esc(trunc(cats[i], 16))} · ${esc(fmtVal((s.data || [])[i]))}</title></circle>`;
+      });
+    }
+  });
+  // x labels (spread)
+  if (n <= 12 || true) {
+    cats.forEach((c, i) => {
+      if (n > 12 && i % Math.ceil(n / 12) !== 0) return;
+      const x = CHART_PAD.l + (n > 1 ? plotW * i / (n - 1) : 0);
+      const anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
+      svg += `<text x="${x}" y="${CHART_H - 16}" class="chart-axis-label" text-anchor="${anchor}">${esc(trunc(c, 10))}</text>`;
+    });
+  }
+  series.forEach((s, si) => {
+    svg += `<text x="${CHART_PAD.l + si * 100 + 8}" y="14" class="chart-legend">` +
+      `<tspan fill="${CHART_PALETTE[si % CHART_PALETTE.length]}" font-weight="700">● </tspan>${esc(trunc(s.name, 12))}</text>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+function renderChartPie(chart) {
+  const cats = chart.categories || [];
+  const first = (chart.series || [])[0];
+  const vals = (first && first.data || []).map(Number);
+  const total = vals.reduce((a, b) => a + (b > 0 ? b : 0), 0);
+  if (!total || total <= 0) return "";
+  const R = 68, CX = 100, CY = CHART_H / 2;
+  let angle = -Math.PI / 2;
+  let paths = "";
+  const legend = [];
+  vals.forEach((v, i) => {
+    if (v <= 0) return;
+    const frac = v / total;
+    const a2 = angle + frac * 2 * Math.PI;
+    const x1 = CX + R * Math.cos(angle), y1 = CY + R * Math.sin(angle);
+    const x2 = CX + R * Math.cos(a2), y2 = CY + R * Math.sin(a2);
+    const large = frac > 0.5 ? 1 : 0;
+    const color = CHART_PALETTE[i % CHART_PALETTE.length];
+    paths += `<path d="M${CX},${CY} L${x1.toFixed(1)},${y1.toFixed(1)} A${R},${R} 0 ${large} 1 ${x2.toFixed(1)},${y2.toFixed(1)} Z" fill="${color}">` +
+      `<title>${esc(trunc(cats[i], 16))} · ${(frac * 100).toFixed(1)}%</title></path>`;
+    legend.push(
+      `<div class="chart-legend-row"><span class="chart-dot" style="background:${color}"></span>` +
+      `<span class="chart-legend-label">${esc(trunc(cats[i], 18))}</span>` +
+      `<span class="chart-legend-val">${(frac * 100).toFixed(1)}%</span></div>`);
+    angle = a2;
+  });
+  return `<svg viewBox="0 0 200 ${CHART_H}" role="img" class="chart-svg" preserveAspectRatio="xMidYMid meet">${paths}</svg>` +
+    `<div class="chart-legend-list">${legend.join("")}</div>`;
+}
+
+function renderChartHtml(chart) {
+  if (!chart || !chart.categories || !chart.series || !chart.categories.length ||
+      !chart.series.length || !chart.series[0].data) return "";
+  const svg = chart.type === "pie" ? renderChartPie(chart)
+    : chart.type === "line" ? renderChartLine(chart)
+    : renderChartBar(chart);
+  if (!svg) return "";
+  return `<div class="chart-box">${chartTitle(chart)}<div class="chart-body">${svg}</div></div>`;
+}
+
+/* The output node also embeds a terminal ASCII bar chart in the markdown;
+   on the web the SVG above supersedes it — strip that block. */
+function stripAsciiChart(md) {
+  return String(md ?? "").replace(/\*\*(?:图表|Chart)\*\*[^\n]*\n```[\s\S]*?```/g, "");
+}
+
 /* ── Bubbles & step cards ────────────────────────────── */
 
 function updateWelcome() {
@@ -615,14 +801,19 @@ function handleEvent(ev, turn) {
         state.batchRunning = false;
         finishTurn(turn, data.summary);
         if (data.content) {
-          turn.answerEl.innerHTML += renderMarkdown(data.content);
+          turn.answerEl.insertAdjacentHTML("beforeend",
+            renderChartHtml(data.summary.chart) + renderMarkdown(stripAsciiChart(data.content)));
         }
       } else if (state.batchRunning) {
         /* 批内单个任务完成:追加答案块,继续批 */
-        turn.answerEl.innerHTML += renderMarkdown(data.content || "");
+        turn.answerEl.insertAdjacentHTML("beforeend",
+          renderChartHtml(data.summary && data.summary.chart) +
+          renderMarkdown(stripAsciiChart(data.content || "")));
       } else {
         finishTurn(turn, data.summary);
-        turn.answerEl.innerHTML = renderMarkdown(data.content);
+        turn.answerEl.innerHTML =
+          renderChartHtml(data.summary && data.summary.chart) +
+          renderMarkdown(stripAsciiChart(data.content));
       }
       break;
     case "hitl":

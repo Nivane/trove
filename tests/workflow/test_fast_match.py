@@ -247,6 +247,17 @@ class TestZh:
     def test_agg_zh_label_missing(self):
         assert match_fast_template("平均成绩是多少？", [self.AVG_ZH], ["students"]) is None
 
+    def test_agg_zh_desc_nomatch_does_not_crash(self):
+        """回归:模板问句不带"X的平均值"措辞(_ZH_AGG_DESC_RE 不命中)时
+        不得崩溃 'NoneType' has no attribute 'group'——应干净地 miss。"""
+        plain = hit(
+            question="各地区的平均工资",          # 无「值」字后缀,desc 正则不命中
+            sql="SELECT A3, AVG(A11) FROM district GROUP BY A3",
+            tags=["district", "A11", "聚合"],
+            aggregate=True,
+        )
+        assert match_fast_template("各地区的平均工资", [plain], ["district"]) is None
+
 
 # ── 节点 gate(修正轮 / 意图 / 配置 kill-switch) ─────────
 

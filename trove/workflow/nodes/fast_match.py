@@ -209,8 +209,10 @@ def _match_aggregate(hit: ExampleHit, question: str, table: str, agg: str,
     if not _has_agg_word(question, agg, is_zh):
         return False
     if is_zh:
+        # 描述词锚定:模板措辞必须命中 desc 正则才相信列描述("X的平均值")。
+        # 模板问句不含该模式 → desc 为空 → miss,交正常链路(绝不崩)。
         m = _ZH_AGG_DESC_RE.search(hit.question)
-        desc = m.group(1) or m.group(2) or ""
+        desc = (m.group(1) or m.group(2) or "") if m else ""
         label = hit.tags[0] if hit.tags else table
         return bool(desc and desc in question and label in question)
     # 列描述锚定:共享 token/前缀(至少一个 desc 词出现)。子集检查会把

@@ -5,6 +5,10 @@ user actually asked (relationships? table meanings? calibers? several
 things at once?) and composes a focused answer from the assembled
 metadata context — no unbounded signal-word matching.
 
+Lineage questions (血缘/来源/上游/下游/怎么算) get an OPTIONAL
+deterministic lineage section assembled from LineageService state — the
+LLM composes prose around it, or the fallback renders it directly.
+
 Fallback (no LLM or LLM failure): the template-based composite answer
 below keeps the pipeline responsive.
 """
@@ -23,15 +27,25 @@ from trove.prompts import render
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService
+from trove.services.lineage.service import LineageService
+from trove.services.lineage.render import (
+    render_column_lineage,
+    render_table_downstream,
+    render_table_upstream,
+)
 from trove.workflow.nodes.schema_linking import _join_hints
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
 _RELATIONS_RE = re.compile(r"关系|关联|关连|连接|相连|怎么连|血缘|来源|从哪")
+_LINEAGE_RE = re.compile(
+    r"血缘|数据来源|上游|下游|怎么算|如何计算|如何算出|计算过程|算出|盏生|依赖|取自|来自|追溯|数据流|链路"
+)
 _TERMS_RE = re.compile(r"口径|定义|含义|是什么意思|指标")
 _KB_RE = re.compile(r"知识库|模板|示例|参考")
 _INVENTORY_RE = re.compile(r"有哪些表|表结构|list\\s+tables|\\btables\\b|\\bschema\\b")
+_TABLE_COL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*[\..、]\s*([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _datasource(connectors: ConnectorRegistry | None) -> str:
@@ -40,14 +54,108 @@ def _datasource(connectors: ConnectorRegistry | None) -> str:
     return connectors.default_name or ""
 
 
+async def _lineage_targets(
+    question: str, catalog: CatalogService | None,
+    extra_tables: list[str] | None = None,
+) -> list[tuple[str, str | None]]:
+    """Extract (table, column|None) lineage targets from a question.
+
+    Three match tiers, deterministic:
+      1. explicit ``table.column`` / ``table·column`` forms,
+      2. an existing table name mentioned verbatim in the question
+         (physical catalog ∪ lineage-known names: views/ETL outputs),
+      3. a column name that exists in exactly one catalog table.
+    """
+    targets: list[tuple[str, str | None]] = []
+    tables = await catalog.list_tables() if catalog else []
+    known = {t["name"].lower(): t["name"] for t in tables}
+    for extra in extra_tables or []:
+        known.setdefault(extra.lower(), extra)
+
+    for match in _TABLE_COL_RE.finditer(question):
+        tc, col = match.group(1).lower(), match.group(2).lower()
+        if tc in known:
+            targets.append((known[tc], col))
+
+    mentioned = [t for t in tables if t["name"].lower() in question.lower()]
+    seen = {t.lower() for t, _ in targets}
+    for t in mentioned:
+        if t["name"].lower() not in seen:
+            targets.append((t["name"], None))
+            seen.add(t["name"].lower())
+    for extra in extra_tables or []:
+        if extra.lower() in question.lower() and extra.lower() not in seen:
+            targets.append((extra, None))
+            seen.add(extra.lower())
+
+    if not targets and catalog:
+        # Column-only mention → resolve against the catalog (unambiguous only)
+        for t in tables:
+            detail = await catalog.table_detail(t["name"])
+            cols = {c["name"].lower() for c in (detail or {}).get("columns", [])}
+            hit = [q for q in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", question) if q.lower() in cols]
+            if len(hit) == 1:
+                targets.append((t["name"], hit[0]))
+                break
+    return targets[:3]
+
+
+def _has_lineage_signal(question: str) -> bool:
+    return bool(_LINEAGE_RE.search(question))
+
+
+async def _lineage_context(
+    question: str, catalog, connectors, lineage: LineageService | None,
+) -> str:
+    """Deterministic lineage material for the metadata LLM prompt."""
+    if lineage is None:
+        return ""
+    ds = _datasource(connectors)
+    if not ds:
+        return ""
+    extra: list[str] = []
+    try:
+        extra = await lineage.known_tables(ds)
+    except Exception as e:
+        logger.warning("lineage known_tables failed: %s", e)
+    targets = await _lineage_targets(question, catalog, extra)
+    if not targets:
+        return ""
+    sections: list[str] = []
+    for table, column in targets:
+        if column:
+            cell = await lineage.column_lineage(ds, table, column)
+            sections.append(render_column_lineage(table, column, cell))
+            consumers = cell.get("consumers", [])
+            if not consumers:
+                upstream = await lineage.table_upstream(ds, table)
+                if upstream:
+                    sections.append(render_table_upstream(ds, table, upstream))
+        else:
+            upstream = await lineage.table_upstream(ds, table)
+            if upstream:
+                sections.append(render_table_upstream(ds, table, upstream))
+            downstream = await lineage.table_downstream(ds, table)
+            sections.append(render_table_downstream(table, downstream))
+    return "\n\n".join(sections)[:4000]
+
+
 async def _build_metadata_context(
-    state: WorkflowState, catalog, kb, connectors,
+    state: WorkflowState, catalog, kb, connectors, lineage: LineageService | None = None,
 ) -> str:
     """All metadata material the LLM may need (bounded)."""
     sections: list[str] = []
     ds = _datasource(connectors)
     tables = await catalog.list_tables() if catalog else []
     mentioned = [t for t in tables if t["name"].lower() in state.question.lower()]
+
+    # 血缘(确定性,零 LLM):血缘信号问题附 LineageService 事实
+    if _has_lineage_signal(state.question):
+        lg = await _lineage_context(state.question, catalog, connectors, lineage)
+        if lg:
+            sections.append(lg)
+        else:
+            sections.append("Lineage: no recorded lineage facts.")
 
     # 提及表详情
     if mentioned and catalog:
@@ -81,7 +189,9 @@ async def _build_metadata_context(
     return "\n".join(sections)[:6000]
 
 
-async def _fallback_answer(state: WorkflowState, catalog, kb, connectors) -> str:
+async def _fallback_answer(
+    state: WorkflowState, catalog, kb, connectors, lineage: LineageService | None = None,
+) -> str:
     """Template composite answer (no LLM / LLM failure)."""
     lang = state.lang
     q = state.question
@@ -89,6 +199,14 @@ async def _fallback_answer(state: WorkflowState, catalog, kb, connectors) -> str
     tables = await catalog.list_tables() if catalog else []
     mentioned = [t for t in tables if t["name"].lower() in q.lower()]
     ds = _datasource(connectors)
+
+    # 血缘(确定性,零 LLM,渲染即答案)
+    if _has_lineage_signal(q):
+        lg = await _lineage_context(q, catalog, connectors, lineage)
+        if lg:
+            sections.append(lg)
+        else:
+            sections.append(L(lang, "尚无该对象的数据血缘记录。", "No lineage records for this object yet."))
 
     if mentioned and catalog:
         notes = {}
@@ -139,9 +257,10 @@ def make_answer_metadata(
     connectors: ConnectorRegistry | None = None,
     llm: LLMGateway | None = None,
     config: AgentConfig | None = None,
+    lineage: LineageService | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     async def answer_metadata(state: WorkflowState) -> dict[str, Any]:
-        context = await _build_metadata_context(state, catalog, kb, connectors)
+        context = await _build_metadata_context(state, catalog, kb, connectors, lineage)
 
         if llm is not None:
             try:
@@ -172,6 +291,6 @@ def make_answer_metadata(
             except Exception as e:
                 logger.warning("Metadata LLM answer failed, using fallback: %s", e)
 
-        return {"intent_answer": await _fallback_answer(state, catalog, kb, connectors)}
+        return {"intent_answer": await _fallback_answer(state, catalog, kb, connectors, lineage)}
 
     return answer_metadata

@@ -1355,6 +1355,8 @@ class SessionManager:
             "insights": final.insights,
             "hitl_status": final.hitl_status,
             "final_response": final.final_response,
+            "columns": list(final.columns),
+            "chart": final.chart,
         }
 
     # ── Result cache (exact-question, in-process) ────────

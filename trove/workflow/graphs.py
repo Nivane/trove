@@ -68,6 +68,7 @@ from trove.workflow.nodes.output import output
 from trove.workflow.nodes.semantics import make_semantics
 from trove.workflow.nodes.hitl import make_hitl
 from trove.workflow.nodes.insights import make_insights
+from trove.workflow.nodes.chart import make_chart
 from trove.workflow.nodes.answer import make_answer_metadata
 from trove.workflow.nodes.metadata_check import make_metadata_check
 from trove.workflow.nodes.analyze_error import make_analyze_error, render_reasoning_context
@@ -151,6 +152,7 @@ class GraphServices:
     config: AgentConfig | None = None
     kb: KbService | None = None  # optional knowledge base enhancement
     semantic_layer: Any | None = None  # optional live semantic provider (OSSIE)
+    lineage: Any | None = None  # optional data lineage service (metadata + execute recording)
 
 
 def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
@@ -1040,7 +1042,7 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     g.add_node("parse_date", make_parse_date(services.config))
     g.add_node("answer_metadata", make_answer_metadata(
         services.catalog, kb=services.kb, connectors=services.connectors,
-        llm=services.llm, config=services.config,
+        llm=services.llm, config=services.config, lineage=services.lineage,
     ))
     g.add_node("metadata_check", make_metadata_check(
         services.connectors, llm=services.llm, config=services.config,
@@ -1147,7 +1149,7 @@ def _build_reflection(
         services, subgraph, subgraph_alt=subgraph_alt,
         alt_subgraphs=alt_subgraphs, agentic=agentic,
     ))
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -1155,6 +1157,7 @@ def _build_reflection(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("chart", make_chart())
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -1255,7 +1258,8 @@ def _build_reflection(
         _route_after_reflect,
         {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "insights": "insights"},
     )
-    g.add_edge("insights", "output")
+    g.add_edge("insights", "chart")
+    g.add_edge("chart", "output")
     g.add_edge("output", END)
     return g
 
@@ -1274,12 +1278,13 @@ def _build_fixed(
         semantic_layer=services.semantic_layer,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("chart", make_chart())
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -1306,7 +1311,8 @@ def _build_fixed(
         _make_route_after_feedback("output", "gen_sql", "insights"),
         {"gen_sql": "gen_sql", "insights": "insights", "output": "output"},
     )
-    g.add_edge("insights", "output")
+    g.add_edge("insights", "chart")
+    g.add_edge("chart", "output")
     g.add_edge("output", END)
     return g
 

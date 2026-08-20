@@ -1665,6 +1665,77 @@ class TestExecuteSQL:
         assert update == {}
 
 
+class TestExecuteSQLTransientRetry:
+    """执行瞬态重试：连接抖动重跑同一 SQL；SQL 错误不重试。"""
+
+    class _Stub:
+        def __init__(self, stream, default_name="test"):
+            self._stream = list(stream)
+            self.default_name = default_name
+
+        async def execute(self, sql):
+            item = self._stream.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        def default_name(self):  # pragma: no cover
+            return self._conn_data
+
+    @staticmethod
+    def _result():
+        from trove.core.types import QueryResult
+
+        return QueryResult(
+            columns=["a"], rows=[[1]], row_count=1,
+            execution_time_ms=1.0, sql="", datasource="test",
+        )
+
+    async def test_transient_error_retried_then_succeeds(self):
+        """连接抖动(2 次瞬态失败)后同一 SQL 成功 → 不烧修正预算。"""
+        from pymysql.err import OperationalError
+
+        stub = self._Stub([OperationalError(2006, "MySQL server has gone away"),
+                           OperationalError(2006, "server has gone away"),
+                           self._result()])
+        node = make_execute_sql(stub, max_retries=10)
+        state = make_state(sql="SELECT a FROM t")
+        update = await node(state)
+        assert update["row_count"] == 1
+        assert update.get("error_feedback", "") == ""  # 未喂回"修复"
+        assert "retry_count" not in update  # 未消耗共享预算
+
+    async def test_transient_error_exhausted_falls_back(self):
+        """瞬态重试耗尽仍失败 → 走正常错误反馈路径(消耗一轮修正预算)。"""
+        from pymysql.err import OperationalError
+
+        stub = self._Stub([OperationalError(2006, "server has gone away")] * 5)
+        node = make_execute_sql(stub, max_retries=10)
+        update = await node(make_state(sql="SELECT a FROM t"))
+        assert "error" not in update
+        assert "server" in update["error_feedback"]
+        assert update["retry_count"] == 1
+
+    async def test_sql_error_not_retried(self):
+        """SQL 自身错误(语法/列不存在)→ 立即反馈,不做瞬态重试。"""
+        stub = self._Stub([Exception("nonexistent column")])
+        node = make_execute_sql(stub, max_retries=10)
+        update = await node(make_state(sql="SELECT x FROM nope"))
+        assert "nonexistent" in update["error_feedback"]
+        assert update["retry_count"] == 1
+
+    def test_is_transient_classification(self):
+        from trove.workflow.nodes.execute_sql import _is_transient
+
+        import pymysql
+
+        assert _is_transient(pymysql.err.OperationalError(1040, "Too many connections"))
+        assert _is_transient(pymysql.err.InterfaceError(0, ""))
+        assert _is_transient(Exception("Lost connection to MySQL server"))
+        assert not _is_transient(Exception("no such table: foo"))
+        assert not _is_transient(Exception("you have an error in your SQL syntax"))
+
+
 # ── Planner ──────────────────────────────────────────────
 
 

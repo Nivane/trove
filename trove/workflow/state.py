@@ -176,6 +176,11 @@ class WorkflowState(BaseModel):
     # 洞察(insights 节点):执行完成后 LLM 基于结果表格生成的自然语言洞察。
     insights: list[str] = Field(default_factory=list)
 
+    # 图表(chart 节点):确定性推断的 ECharts 可消费字典
+    # {"type": line|bar|pie, "title", "dimension", "categories", "series",
+    #  "measures"};None = 无需图表/未生成。
+    chart: dict[str, Any] | None = None
+
     # HITL 状态(hitl 节点):"" = 未参与/未开启;"pending" = 已中断等待确认;
     # "approved" = 用户批准继续执行;"rejected" = 用户否决(中止,不再执行)。
     hitl_status: str = ""

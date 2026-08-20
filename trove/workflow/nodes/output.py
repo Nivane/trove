@@ -16,6 +16,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.llm.observability import record_span
 from trove.services.sql.format import format_sql
+from trove.services.viz.spark import render_ascii_bar
 from trove.workflow.state import WorkflowState
 
 
@@ -107,6 +108,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         if state.reason:
             parts.append(f" — {state.reason}")
         parts.append("\n")
+
+    # ASCII 图表(CLI/终端可读;ECharts JSON 由 state.chart 经 API 交付)
+    if state.chart:
+        ascii_chart = render_ascii_bar(state.chart, lang)
+        if ascii_chart:
+            parts.append(f"\n{ascii_chart}\n")
 
     # Metadata
     if state.execution_time_ms:

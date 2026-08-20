@@ -1015,3 +1015,59 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Chart (zero-dep SVG) ────────────────────────────── */
+
+.chart-box {
+  margin: 12px 0 4px;
+  padding: 12px 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.chart-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.chart-body { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.chart-svg {
+  width: min(100%, 560px);
+  height: auto;
+  max-height: 230px;
+}
+
+.chart-axis-label {
+  fill: var(--muted);
+  font-size: 10.5px;
+}
+
+.chart-y-label {
+  fill: var(--faint);
+  font-size: 10px;
+}
+
+.chart-legend {
+  fill: var(--muted);
+  font-size: 10.5px;
+}
+
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-grid-zero { stroke: var(--border-strong); stroke-width: 1; }
+
+.chart-legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+  font-size: 11.5px;
+}
+
+.chart-legend-row { display: flex; align-items: center; gap: 6px; }
+.chart-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.chart-legend-label { color: var(--text); flex: 1; }
+.chart-legend-val { color: var(--faint); font-variant-numeric: tabular-nums; }

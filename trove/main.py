@@ -167,6 +167,11 @@ async def create_app_components(
     from trove.services.kb.service import KbService
     kb = KbService(Path.cwd())
 
+    # ── Data lineage (optional: .trove/lineage/) — definitions.yml lazy
+    # sync + executed-query capture; never blocks agent startup.
+    from trove.services.lineage.service import LineageService
+    lineage = LineageService(Path.cwd())
+
     # ── Semantic layer (optional: config.semantic_layer_path) ──
     # OSSIE YAML 每查询实时读取(mtime 缓存),坏文件回退 last-known-good,
     # 任何初始化失败都不阻断问题流程。
@@ -201,6 +206,7 @@ async def create_app_components(
         config=config,
         kb=kb,
         semantic_layer=semantic_layer,
+        lineage=lineage,
     )
     graphs = build_graphs(services, checkpointer=checkpointer)
 
@@ -224,6 +230,7 @@ async def create_app_components(
         "connector_registry": connector_registry,
         "catalog_service": catalog_service,
         "kb": kb,
+        "lineage": lineage,
         "graphs": graphs,
         "session_manager": session_manager,
     }
@@ -330,6 +337,14 @@ def main_repl():
 
 async def async_main_cli():
     """Async main for CLI (non-interactive) mode."""
+    # Subcommands: trove-cli job ...   trove-cli schedule ...
+    if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule"):
+        from trove.cli.schedule_cmds import main_job, main_schedule
+
+        handler = main_job if sys.argv[1] == "job" else main_schedule
+        await handler(sys.argv[2:])
+        return
+
     args = parse_args()
 
     if args.print_mode:
@@ -424,6 +439,18 @@ def main_repl():
     """Entry point for 'trove' command (REPL mode, or `trove serve`)."""
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         main_serve()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule"):
+        async def _run_sub():
+            from trove.cli.schedule_cmds import main_job, main_schedule
+
+            handler = main_job if sys.argv[1] == "job" else main_schedule
+            await handler(sys.argv[2:])
+
+        try:
+            asyncio.run(_run_sub())
+        except KeyboardInterrupt:
+            sys.exit(0)
         return
     try:
         asyncio.run(async_main_repl())
