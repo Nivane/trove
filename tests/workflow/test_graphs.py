@@ -232,7 +232,7 @@ class TestReflectionGraph:
 
     async def test_retry_loop_regenerates_with_reason(self, sqlite_registry, catalog):
         llm = RecordingLLM([
-            "query", VALID_SQL, "RETRY: wrong grouping",
+            "query", VALID_SQL, "RETRY: wrong grouping", "RETRY: wrong grouping",
             "TARGET: gen_sql", VALID_SQL, "OK",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
@@ -240,23 +240,38 @@ class TestReflectionGraph:
         assert final["verdict"] == "OK"
         assert final["retry_count"] == 1
         assert final["error"] == ""
-        assert len(llm.calls) == 6  # intent + gen + reflect + judge + gen + reflect
+        assert len(llm.calls) == 7  # intent + gen + (reflect + rejudge) + judge + gen + reflect
         # The regenerated SQL prompt carried the reflect reason
-        assert "wrong grouping" in llm.calls[4][-1]["content"]
+        assert "wrong grouping" in llm.calls[5][-1]["content"]
 
-    async def test_retry_cap_forces_accept(self, sqlite_registry, catalog, monkeypatch):
-        monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
+    async def test_semantic_retry_cap_forces_accept(self, sqlite_registry, catalog):
+        """两次一致判 RETRY 后,第二次达语义上限 → 强制接受,不再第 3 次
+        重生成(修复前:语义拉锯可到 4 轮重生成)。"""
         llm = RecordingLLM([
-            "query", VALID_SQL, "RETRY: a", "TARGET: gen_sql",
-            VALID_SQL, "RETRY: b", "TARGET: gen_sql",
-            VALID_SQL, "RETRY: c",
+            "query", VALID_SQL, "RETRY: a", "RETRY: a",
+            "TARGET: gen_sql", VALID_SQL, "RETRY: b", "RETRY: b",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
-        assert final["retry_count"] == 2
+        assert final["retry_count"] == 1
         assert final["verdict"] == "OK"
+        assert final["forced"] is True
         assert final["error"] == ""
-        assert len(llm.calls) == 9  # intent + 3×(gen+reflect) + 2×judge
+        assert len(llm.calls) == 8  # intent + gen + (reflect+rejudge) + judge + gen + (reflect+rejudge)
+
+    async def test_rejudge_disagreement_delivers(self, sqlite_registry, catalog):
+        """A: 主裁决 RETRY 但 rejudge 判 OK(不一致)→ 结果直接交付,
+        不经过 analyze_error 打回。"""
+        llm = RecordingLLM([
+            "query", VALID_SQL, "RETRY: gap semantics", "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["verdict"] == "OK"
+        assert final["forced"] is True
+        assert final["retry_count"] == 0
+        assert final["error"] == ""
+        assert len(llm.calls) == 4  # intent + gen + reflect + rejudge(analyze_error 未执行)
 
     async def test_gen_sql_exhaustion_degrades_to_output(self, sqlite_registry, catalog):
         """gen_sql subgraph exhausts retries → execute/reflect skipped → error section."""
@@ -893,6 +908,7 @@ class TestRollbackRouting:
             "query",                    # 意图
             VALID_SQL,                  # 初稿
             "RETRY: wrong grouping",    # reflect 裁决
+            "RETRY: wrong grouping",    # rejudge 一致判 RETRY
             "TARGET: gen_sql",          # 判断：仍回 gen_sql
             VALID_SQL,                  # 重新生成
             "OK",                       # reflect 通过
@@ -903,7 +919,7 @@ class TestRollbackRouting:
         assert final["retry_count"] == 1
         assert final["error"] == ""
         assert final["rollback_target"] == "gen_sql"
-        assert len(llm.calls) == 6  # 意图 + gen + reflect + judge + gen + reflect
+        assert len(llm.calls) == 7  # 意图 + gen + (reflect+rejudge) + judge + gen + reflect
 
     async def test_anti_loop_escalates_within_graph(self, sqlite_registry, catalog):
         """防打转：判断连续两次指回 gen_sql → 强制升级到 planner。"""
@@ -960,6 +976,7 @@ class TestRollbackRouting:
             "TARGET: gen_sql",                              # judge round1 → last=gen_sql
             "```sql\nSELECT name FROM students;\n```",      # gen pass2 OK
             "RETRY: 语义不对，应该按 county 分组",           # reflect RETRY (纯语义)
+            "RETRY: 语义不对，应该按 county 分组",           # rejudge 一致
             "TARGET: gen_sql",                              # judge round2: 不回退再升级
             "```sql\nSELECT county, COUNT(*) FROM students GROUP BY county;\n```",
             "OK",
@@ -969,7 +986,8 @@ class TestRollbackRouting:
         assert final["error"] == ""
         assert final["verdict"] == "OK"
         assert final["rollback_target"] == "gen_sql"  # 未被升级到 planner
-        assert len(llm.calls) == 9  # 意图+planner+gen+judge+gen+reflect+judge+gen+reflect
+        # 意图+planner+gen+judge+gen+(reflect+rejudge)+judge+gen+reflect
+        assert len(llm.calls) == 10
 
     async def test_kb_exact_match_regenerates_on_correction_rounds(
         self, sqlite_registry, catalog,

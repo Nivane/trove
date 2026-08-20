@@ -1703,6 +1703,8 @@ class TestBilingualPrompts:
 
             async def chat(self, model, messages, **kwargs):
                 self.calls += 1
+                # call 1: 主裁决空 → reask;call 2: reask 判 RETRY;
+                # call 3: rejudge 独立裁决一致判 RETRY → 回退。
                 return "" if self.calls == 1 else "RETRY: columns look wrong"
 
         llm = LLM()
@@ -1714,7 +1716,7 @@ class TestBilingualPrompts:
         assert update["verdict"] == "RETRY"
         assert "columns look wrong" in update["reason"]
         assert update["retry_count"] == 1
-        assert llm.calls == 2
+        assert llm.calls == 3  # 主裁决 + reask + rejudge
 
 
 class TestPlanner:
@@ -2135,20 +2137,20 @@ class TestReflect:
 # ── Output ───────────────────────────────────────────────
 
     async def test_semantic_retry_cap_forces_ok(self):
-        """连续纯语义 RETRY(执行成功、无执行错误)达到上限 → 强制接受,
-        防止欠定问题被法官无限重审烧光预算。"""
+        """连续纯语义 RETRY(两次裁决一致)达到上限 2 → 强制接受,防止欠定
+        问题被法官无限重审烧光预算。"""
         node = make_reflect(LLMGateway(mock_response="RETRY: gap semantics"), AgentConfig(target="m"))
         state = make_state(row_count=1, columns=["x"], rows=[[1]])
-        for _ in range(2):
-            update = await node(state)
-            assert update["verdict"] == "RETRY"
-            state = make_state(**{**state.model_dump(), **update})
-        update = await node(state)  # 第 3 次连续语义 RETRY(达到上限) → forced OK
+        update = await node(state)  # 第 1 次一致 RETRY(计数 1,未达上限)
+        assert update["verdict"] == "RETRY"
+        state = make_state(**{**state.model_dump(), **update})
+        update = await node(state)  # 第 2 次一致 RETRY(计数 2,达上限)→ forced OK
         assert update["verdict"] == "OK"
         assert update["forced"] is True
 
-    async def test_execution_error_resets_semantic_counter(self):
-        """执行错误后的 RETRY 是修执行问题,不算语义重审,计数器归零。"""
+    async def test_execution_error_does_not_reset_semantic_counter(self):
+        """B: 执行错误后的 RETRY 不重置语义计数——单调累计,否则"打回→改坏→
+        再打回"可无限交替;且非语义 RETRY 不触发 rejudge(修的是真错)。"""
         node = make_reflect(LLMGateway(mock_response="RETRY: fix it"), AgentConfig(target="m"))
         state = make_state(row_count=1, columns=["x"], rows=[[1]])
         u1 = await node(state)
@@ -2156,7 +2158,71 @@ class TestReflect:
         state = make_state(**{**state.model_dump(), **u1})
         state = make_state(**{**state.model_dump(), "error_feedback": "SQL execution error"})
         u2 = await node(state)
-        assert u2["semantic_retries"] == 0
+        assert u2["semantic_retries"] == 1  # 保持,不重置
+
+    async def test_semantic_retry_rejudged_ok_delivers(self):
+        """A: 纯语义 RETRY 取第二次独立裁决——rejudge 判 OK(两次不一致)→
+        结果交付,不回退重生成、不消耗修正预算;rejudge 必须更高温度采样。"""
+        calls = []
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                calls.append(kwargs.get("temperature"))
+                return "RETRY: gap semantics" if len(calls) == 1 else "OK"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(row_count=1, columns=["x"], rows=[[1]]))
+        assert update["verdict"] == "OK"
+        assert update["forced"] is True
+        assert "disagreement" in update["reason"]
+        assert update["semantic_retries"] == 0
+        assert calls == [None, 0.7]  # 主裁决用默认 temp,rejudge 独立采样
+        assert "retry_count" not in update  # 不打回,不消耗修正预算
+
+    async def test_semantic_retry_rejudge_agrees_retries(self):
+        """A: 两次裁决一致判 RETRY → 回退重生成,语义计数 +1。"""
+        node = make_reflect(LLMGateway(mock_response="RETRY: gap semantics"), AgentConfig(target="m"))
+        update = await node(make_state(row_count=1, columns=["x"], rows=[[1]]))
+        assert update["verdict"] == "RETRY"
+        assert update["reason"] == "gap semantics"
+        assert update["semantic_retries"] == 1
+        assert update["retry_count"] == 1
+
+    async def test_semantic_retry_rejudge_failure_delivers(self):
+        """A: rejudge 调用失败 → 没有第二次意见,不构成一致 → 放行交付。"""
+        calls = [0]
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                calls[0] += 1
+                if calls[0] == 2:
+                    raise RuntimeError("judge down")
+                return "RETRY: gap semantics"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(row_count=1, columns=["x"], rows=[[1]]))
+        assert update["verdict"] == "OK"
+        assert update["forced"] is True
+        assert "unavailable" in update["reason"]
+
+    async def test_non_semantic_retry_skips_rejudge(self):
+        """A: 非语义 RETRY(有执行错误反馈)→ 只做主裁决,不 rejudge。"""
+        calls = []
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                calls.append(1)
+                return "RETRY: fix the error"
+
+        node = make_reflect(LLM(), AgentConfig(target="m"))
+        state = make_state(
+            row_count=1, columns=["x"], rows=[[1]],
+            error_feedback="SQL execution error", semantic_retries=1,
+        )
+        update = await node(state)
+        assert update["verdict"] == "RETRY"
+        assert update["semantic_retries"] == 1  # 计数保持,不重置
+        assert len(calls) == 1  # 只有一次主裁决,无 rejudge
 
 class TestOutput:
     async def test_format_with_full_data(self):
