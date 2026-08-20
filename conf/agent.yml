@@ -25,9 +25,10 @@ agent:
   #   fast_path: 确定性模板快径(单表/单聚合模板命中即直接产出 SQL,
   #              跳过 planner + 生成 + 裁决)。默认开。
   #   reflect_skip: validate 确定性规则全过时跳过 reflect 的 LLM 裁决——
-  #                 simple(仅低复杂度题,默认)/ all(所有题)/ off(关闭)
+  #                 simple(仅低复杂度题,默认)/ standard(再跳 standard,
+  #                 修正轮强制 standard 复杂度,成功轮也受益)/ all/ off
   # fast_path: true
-  # reflect_skip: simple
+  reflect_skip: standard
   # OSSIE 语义层目录(相对项目根,按 datasource 名取子目录 .trove/semantic/<datasource>/):
   # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
   # 空 = 关闭。
