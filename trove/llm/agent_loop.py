@@ -483,6 +483,38 @@ async def run_agent_loop(
             })
             return _finish_result(round_no, answered=True)
 
+        # 自动定稿:本轮无显式 finish,但 check_result 已返回通过观测
+        # ("OK (N rows)" —— 确定性规则链在真实数据上验证过草稿)。check_result
+        # 的工具契约是"AFTER probe, BEFORE finalizing",模型调它就是要定稿;
+        # harness 替模型按 finish 协议定稿,省掉"再调一轮 finish"的 LLM 调用。
+        # 逆序只看到最近一次 check_result(决定性信号):它是 VIOLATION →
+        # 模型仍在修正,违例观测回喂循环继续;是 "OK (" → 定稿。
+        # 0 行也算通过(规则链放行;空结果由下游 EMPTY/reflect 兜底)。
+        if finish_ok is None:
+            for res in reversed(results):
+                if res["tc"]["name"] != "check_result":
+                    continue
+                payload = str(res["arguments"].get("sql", ""))
+                if (
+                    not str(res["observation"]).startswith("OK (")
+                    or not payload
+                ):
+                    break
+                final_content = payload
+                tool_history.append({
+                    "name": "check_result", "arguments": res["arguments"],
+                    "observation": res["observation"],
+                })
+                transcript_parts.append(
+                    f"[tool:check_result] {str(res['arguments'])[:150]} -> {res['observation'][:150]}"
+                )
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": res["tc"]["id"],
+                    "content": _truncate_observation(res["observation"]),
+                })
+                return _finish_result(round_no, answered=True)
+
         by_id = {id(r["tc"]): r for r in results}
         for tc in tool_calls:
             res = by_id.get(id(tc))

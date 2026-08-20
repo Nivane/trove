@@ -34,6 +34,35 @@ MAX_TOTAL_RETRIES = 10
 MAX_SEMANTIC_RETRIES = 3  # 连续纯语义 RETRY 上限(执行成功后仍被连续打回)
 
 
+def _projection_width_matches(sql: str, dialect: str, actual_columns: int) -> bool:
+    """自洽检查:顶层 SELECT 投影列数 == 执行结果列数。
+
+    ``state.sql`` 与 ``state.columns`` 由 execute_sql / select 原子写入,
+    宽度一致是"结果确实来自该 SQL"的确定性旁证。SELECT * / 解析失败 /
+    非查询 → False(不跳过,交给 LLM 法官,保守方向)。
+    """
+    if actual_columns <= 0:
+        return False
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        parsed = sqlglot.parse_one(sql, dialect=dialect, error_level=sqlglot.ErrorLevel.RAISE)
+    except Exception:
+        return False
+    node = parsed
+    if isinstance(node, exp.With):  # CTE:取外层查询,不是 WITH 体
+        node = node.this
+    if not isinstance(node, exp.Select):
+        node = node.find(exp.Select)
+        if node is None:
+            return False
+    exprs = node.expressions
+    if not exprs or any(isinstance(e, exp.Star) for e in exprs):
+        return False  # SELECT * → 宽度不可验证
+    return len(exprs) == actual_columns
+
+
 def _extract_verdict(response: str) -> str:
     """从回复中提取裁决词:逐行从末尾向前找 OK/EMPTY/RETRY:/NO_SQL: 行。
 
@@ -140,6 +169,9 @@ def make_reflect(
         # 倾向题需要 NO_SQL 出口,镜像上方 EMPTY 分支)。
         # reflect_skip 是档位阶梯: simple(默认,只跳 simple) < standard
         # (再跳 standard) < all(全跳)。off=全不跳。
+        # 追加的确定性证据:row_count > 0(0 行由上方 EMPTY 分支处理,
+        # 弱信号问题需保留法官)+ 投影宽度自洽(执行结果列数 == SQL
+        # SELECT 列数)——两者不满足即退回 LLM 裁决,保守方向。
         _skip_levels = {"simple": 1, "standard": 2, "all": 3}
         _complexity_levels = {"simple": 1, "standard": 2, "complex": 3}
         skip = config.reflect_skip or "simple"
@@ -148,8 +180,12 @@ def make_reflect(
             and state.rules_passed
             and not state.error_feedback
             and not has_weak_signal(state.question)
+            and state.row_count > 0
             and _skip_levels.get(skip, 1)
             >= _complexity_levels.get(state.complexity, 2)
+            and _projection_width_matches(
+                state.sql, state.dialect, len(state.columns),
+            )
         ):
             return {
                 "verdict": "OK",
@@ -165,7 +201,7 @@ def make_reflect(
         )
 
         try:
-            model = config.target or "openai/gpt-4o"
+            model = config.model_for(state.complexity)
             system_prompt = render("reflect/system", lang=state.lang)
             start = time.monotonic()
             response = await llm.chat(

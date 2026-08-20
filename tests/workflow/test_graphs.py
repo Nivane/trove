@@ -639,24 +639,21 @@ class TestAgenticNodes:
         assert r.rows[0][0] == 5
 
     async def test_gen_sql_check_result_round(self, sqlite_registry, catalog):
-        """gen_sql ReAct：模型先 check_result 跑确定性规则(观测 OK)，再定稿。"""
+        """gen_sql ReAct：check_result 观测 OK → harness 自动定稿,省掉再调 finish 的一轮。"""
         llm = AgenticLLM([
             "query",  # 意图（chat）
             {"content": None, "tool_calls": [
                 {"id": "c1", "name": "check_result",
                  "arguments": '{"sql": "SELECT county, AVG(grade) FROM students GROUP BY county"}'},
             ]},
-            {"content": "```sql\nSELECT county, AVG(grade) FROM students GROUP BY county;\n```",
-             "tool_calls": []},
-            {"content": "OK", "tool_calls": []},  # reflect
+            "OK",  # reflect（loop 在 check 通过后即定稿,不再消耗下一轮）
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
-        assert final["sql"] == "SELECT county, AVG(grade) FROM students GROUP BY county;"
-        # 观测进 tool 消息:OK + 真实行数;无规则命中 → validation_hits 为空
-        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
-        assert any("OK (3 rows)" in m["content"] for m in tool_msgs)
+        assert final["sql"] == "SELECT county, AVG(grade) FROM students GROUP BY county"
+        # 观测进轨迹:OK + 真实行数;无规则命中 → validation_hits 为空
+        assert "OK (3 rows)" in final["reasoning_history"][0]["text"]
         assert final["validation_hits"] == []
 
     async def test_gen_sql_check_result_catches_violation(self, sqlite_registry, catalog):

@@ -348,6 +348,124 @@ class TestFinishProtocol:
         assert "non-empty 'answer'" in llm.calls[1][-1]["content"]
 
 
+def _check_registry():
+    """minimal registry with a check_result handler mimicking gen_sql's contract:
+    pass → "OK (N rows)", violation → "VIOLATION [rule] reason"."""
+    registry = ToolRegistry(finish=True)
+
+    async def check_result(arguments: dict) -> str:
+        sql = arguments.get("sql", "")
+        if "bad" in sql:
+            return "VIOLATION [F2] missing filter condition"
+        return "OK (3 rows)"
+
+    registry.register("check_result", check_result)
+    return registry
+
+
+class TestAutoFinishOnCheckOk:
+    """check_result 通过 → harness 自动按 finish 协议定稿,省掉再调一轮。"""
+
+    async def test_check_ok_auto_finishes_saving_a_round(self):
+        """round 1 check_result 返回 "OK (N rows)" → 单轮结束,无第二次 chat。"""
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+        ])
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", registry=_check_registry(), max_rounds=5,
+        )
+        assert result["finish_tool"] is True
+        assert result["content"] == "SELECT name FROM students"
+        assert result["rounds"] == 1
+        assert result["guard_hit"] is False
+        assert len(llm.calls) == 1  # 第二轮 chat_full 未发生
+
+    async def test_auto_finish_not_on_violation(self):
+        """VIOLATION → 不自动定稿,违例观测回喂,循环继续。"""
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT bad FROM t"}'},
+            ]},
+            {"content": "done", "tool_calls": []},
+        ])
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", registry=_check_registry(), max_rounds=5,
+        )
+        assert result["finish_tool"] is False
+        assert result["content"] == "done"
+        assert result["rounds"] == 2
+        assert "VIOLATION [F2]" in llm.calls[1][-1]["content"]
+
+    async def test_explicit_finish_wins_over_auto_finish(self):
+        """同轮显式 finish 与 check OK 并存 → 显式 finish 的载荷胜出。"""
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+                {"id": "c2", "name": "finish", "arguments": '{"answer": "SELECT explicit"}'},
+            ]},
+        ])
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", registry=_check_registry(), max_rounds=5,
+        )
+        assert result["finish_tool"] is True
+        assert result["content"] == "SELECT explicit"
+        assert result["rounds"] == 1
+
+    async def test_auto_finish_picks_last_passing_check(self):
+        """同轮多个 check OK → 取最后(最新)一个的 SQL 定稿。"""
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT v1 FROM students"}'},
+                {"id": "c2", "name": "check_result",
+                 "arguments": '{"sql": "SELECT v2 FROM students"}'},
+            ]},
+        ])
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", registry=_check_registry(), max_rounds=5,
+        )
+        assert result["content"] == "SELECT v2 FROM students"
+        assert result["rounds"] == 1
+
+    async def test_violation_after_ok_prevents_auto_finish(self):
+        """最后(最新)一个 check 是 VIOLATION → 不自动定稿(模型仍在修正)。"""
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result",
+                 "arguments": '{"sql": "SELECT v1 FROM students"}'},
+                {"id": "c2", "name": "check_result",
+                 "arguments": '{"sql": "SELECT bad FROM t"}'},
+            ]},
+            {"content": "fixed", "tool_calls": []},
+        ])
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", registry=_check_registry(), max_rounds=5,
+        )
+        assert result["finish_tool"] is False
+        assert result["content"] == "fixed"
+        assert result["rounds"] == 2
+
+    async def test_auto_finish_skips_empty_sql_payload(self):
+        """check OK 但 sql 载荷为空 → 不自动定稿(无法交付,继续循环)。"""
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "check_result", "arguments": "{}"},
+            ]},
+            {"content": "done", "tool_calls": []},
+        ])
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", registry=_check_registry(), max_rounds=5,
+        )
+        assert result["finish_tool"] is False
+        assert result["content"] == "done"
+        assert result["rounds"] == 2
+
+
 class TestRegistryObservers:
     async def test_observer_hook_receives_tool_execution(self):
         """observer 中间件钩子拿到每次工具执行(name/args/obs)。"""
