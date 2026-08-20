@@ -334,7 +334,8 @@ def make_planner(
             p for p in (state.error_feedback, state.error_analysis, state.reason) if p
         )
         schema_map = await _schema_map(connectors)
-        model = config.target or "openai/gpt-4o"
+        # 计划起草走 fast 档(未配置 fast → 回退 target)
+        model = config.model_fast or config.target or "openai/gpt-4o"
         system_prompt = render(
             "planner/system",
             lang=state.lang,

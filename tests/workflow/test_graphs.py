@@ -1640,6 +1640,27 @@ class TestNoSQLExit:
 class TestRouteIntentObservability:
     """route_intent 观测:节点返回完整 LLM 详情 + 意图证据,供日志/诊断。"""
 
+    async def test_uses_fast_model_when_configured(self):
+        """意图分类是判别任务:配置 model_fast 时走 fast 档,不烧推理模型。"""
+        from trove.workflow.graphs import make_route_intent
+
+        class IntentLLM:
+            def __init__(self):
+                self.model = None
+
+            async def chat(self, model, messages, **kwargs):
+                self.model = model
+                return "query"
+
+        llm = IntentLLM()
+        node = make_route_intent(
+            llm=llm,
+            config=AgentConfig(target="mock/model", model_fast="fast/model"),
+            catalog=None, kb=None, connectors=None,
+        )
+        await node(make_state(question="What is the average loan amount?"))
+        assert llm.model == "fast/model"
+
     async def test_returns_llm_detail_and_intent_evidence(self):
         from trove.workflow.graphs import make_route_intent
 

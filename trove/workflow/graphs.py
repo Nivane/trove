@@ -787,7 +787,8 @@ def make_route_intent(
         llm_detail: dict[str, Any] | None = None
         llm_error = ""
         if llm is not None:
-            model = (config.target if config else "") or "openai/gpt-4o"
+            # 意图分类是琐碎判别任务,走 fast 档(未配置 fast → 回退 target)
+            model = (config.model_fast or config.target) if config else "openai/gpt-4o"
             intent_prompt = render("intent/system", lang=state.lang)
             start = time.monotonic()
             try:
@@ -882,7 +883,7 @@ def make_route_intent(
 
     async def _rewrite_followup(question: str, state: WorkflowState) -> str:
         """LLM 用历史补全省略式追问;失败/无进展由调用方兜底。"""
-        model = (config.target if config else "") or "openai/gpt-4o"
+        model = (config.model_fast or config.target) if config else "openai/gpt-4o"
         prompt = render(
             "intent/followup_rewrite",
             lang=state.lang,

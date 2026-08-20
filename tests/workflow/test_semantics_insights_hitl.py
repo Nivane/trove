@@ -87,6 +87,16 @@ class TestSemanticsNode:
         out = await node(make_state())
         assert out["semantics"] == ""
 
+    async def test_skips_on_correction_round(self):
+        """修正轮:semantics 仅供 HITL 确认展示,而 HITL 在修正轮直接放行
+        (hitl.py in_correction pass-through)——修正轮再调 LLM 解释 SQL 是
+        纯浪费,每次修正轮 +1 次 LLM 调用。"""
+        llm = RecordingLLM([])
+        node = make_semantics(llm, on_config())
+        out = await node(make_state(error_feedback="execution failed"))
+        assert out == {}
+        assert len(llm.calls) == 0
+
 
 class TestInsightsNode:
     ROWS = [[1000.0], [2000.0], [3000.0]]

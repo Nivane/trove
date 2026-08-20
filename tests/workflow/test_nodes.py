@@ -464,6 +464,25 @@ class TestAlignment:
         assert _parse_alignment('{"keep_tables": "not-a-list"}') is None
         assert _parse_alignment("") is None
 
+    async def test_align_tables_uses_fast_model_when_configured(self):
+        """表对齐判定走 fast 档(配置 model_fast 时),不烧推理模型。"""
+        _align_tables = self._import("_align_tables")
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["model"] = model
+                return '{"keep_tables": ["students"]}'
+
+        state = WorkflowState(session_id="s1", question="q")
+        out = await _align_tables(
+            LLM(), AgentConfig(target="m", model_fast="fast/model"), state,
+            details=[{"name": "students", "columns": []}],
+            notes=None,
+        )
+        assert captured["model"] == "fast/model"
+        assert out == {"keep_tables": ["students"], "drop_columns": {}}
+
     def test_apply_alignment_filters_and_validates_columns(self):
         _apply_alignment = self._import("_apply_alignment")
         cols = {"students": {"grade", "name"}, "courses": {"id"}}
@@ -1737,6 +1756,23 @@ class TestPlanner:
         update = await node(make_state())
         assert update["llm"]["model"] == "mock/model"
         assert update["llm"]["output_preview"] == "plan text"
+
+    async def test_planner_uses_fast_model_when_configured(self):
+        """计划起草走 fast 档(配置 model_fast 时),不烧推理模型。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class LLM:
+            def __init__(self):
+                self.model = None
+
+            async def chat(self, model, messages, **kwargs):
+                self.model = model
+                return "plan text"
+
+        llm = LLM()
+        node = make_planner(llm, AgentConfig(target="mock/model", model_fast="fast/model"))
+        await node(make_state())
+        assert llm.model == "fast/model"
 
     async def test_planner_passes_trace_metadata(self):
         """trace metadata（node/session/question）随 LLM 调用上报。"""

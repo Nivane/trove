@@ -437,7 +437,8 @@ async def _align_tables(
     """
     if not details:
         return None
-    model = (config.target if config else "") or "openai/gpt-4o"
+    # 表对齐判定是判别任务,走 fast 档(未配置 fast → 回退 target)
+    model = ((config.model_fast or config.target) if config else "") or "openai/gpt-4o"
     try:
         response = await llm.chat(
             model=model,

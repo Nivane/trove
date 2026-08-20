@@ -40,6 +40,14 @@ def make_semantics(
             return {}
         if not config.explain_semantics:
             return {}
+        # 修正轮跳过:semantics 的唯一消费场景是 HITL 执行前确认
+        # (hitl.py in_correction 直接放行,不暂停)——修正轮再生成解释
+        # 是纯浪费,每次修正轮白烧一次 LLM 调用。
+        in_correction = bool(
+            state.error_feedback or state.error_analysis or state.reason
+        )
+        if in_correction:
+            return {}
 
         model = config.model_for(state.complexity)
         try:

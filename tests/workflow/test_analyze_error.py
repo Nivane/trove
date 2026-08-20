@@ -44,6 +44,24 @@ class TestAnalyzeError:
         node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
         assert await node(make_state()) == {}
 
+    async def test_uses_fast_model_when_configured(self):
+        """失败诊断走 fast 档(配置 model_fast 时),不烧推理模型。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["model"] = model
+                return "类型: Schema Linking\n判断: loans 表不存在\n修正: 改用 loan"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m", model_fast="fast/model"))
+        state = make_state(
+            sql="SELECT * FROM loans",
+            error_feedback="no such table: loans",
+            schema_context="Table: loan",
+        )
+        await node(state)
+        assert captured["model"] == "fast/model"
+
     async def test_prompt_includes_evidence_hint(self):
         """诊断必须看到官方 evidence,不能凭记忆误判业务语义。"""
         captured = {}
