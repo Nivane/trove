@@ -398,15 +398,18 @@ async def async_main_serve(argv: list[str]) -> None:
 
     args = serve_parser().parse_args(argv)
     config = await _load_config(args)
-    components = await create_app_components(args, config)
+    # HITL interrupt 依赖 checkpointer(REPL/CLI 同样传入);serve 的
+    # /resume 端点靠它恢复被打断的图线程,缺失会导致 resume 抛错。
+    async with build_checkpointer(config.home) as checkpointer:
+        components = await create_app_components(args, config, checkpointer)
 
-    from trove.api.app import create_app
-    app = create_app(components)
-    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
-    try:
-        await server.serve()
-    finally:
-        await components["connector_registry"].close_all()
+        from trove.api.app import create_app
+        app = create_app(components)
+        server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
+        try:
+            await server.serve()
+        finally:
+            await components["connector_registry"].close_all()
 
 
 def main_serve(argv: list[str] | None = None) -> None:
