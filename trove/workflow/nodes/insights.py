@@ -44,7 +44,7 @@ def make_insights(
             " | ".join(str(cell) for cell in row)
             for row in state.rows[:MAX_INSIGHT_ROWS]
         )
-        model = config.target or "openai/gpt-4o"
+        model = config.model_for(state.complexity)
         try:
             start = time.monotonic()
             user_prompt = render(

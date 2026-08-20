@@ -252,6 +252,20 @@ class ConnectorRegistry:
         adapter = await self.get(datasource)
         return await adapter.execute(sql)
 
+    async def explain(self, sql: str, datasource: str | None = None) -> QueryResult:
+        """Fetch the execution plan for a SELECT (EXPLAIN).
+
+        Read-only: the inner statement passes the same guard as ``execute``
+        (only SELECT reaches the adapter — the EXPLAIN prefix itself is
+        applied here, not in the adapter). Milliseconds, no row data.
+        Deliberately bypasses the result cache (plans are cheap and the
+        key space is the same as execute's).
+        """
+        self._guard_read_only(sql)
+        adapter = await self.get(datasource)
+        prefix = "EXPLAIN QUERY PLAN" if adapter.dialect() == "sqlite" else "EXPLAIN"
+        return await adapter.execute(f"{prefix} {sql}")
+
     @staticmethod
     def _guard_read_only(sql: str) -> None:
         """Reject non-SELECT statements (best-effort; sqlglot optional)."""

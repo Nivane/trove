@@ -498,6 +498,7 @@ def _make_gen_sql_node(
             # 带出(归因)。validate_sql 始终可用,probe/check 依赖 connectors。
             registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
+                matched_tables=state.matched_tables or None,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)

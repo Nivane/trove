@@ -25,6 +25,7 @@ from trove.workflow.nodes.gen_sql import (
     make_validate,
     render_cache_prefix,
     search_values,
+    static_semantic_warnings,
     validate_sql,
 )
 from trove.prompts import render
@@ -2551,12 +2552,12 @@ class TestMakeSQLTools:
         assert "ERRORS" in await handlers["validate_sql"]({"sql": "SELEC 1"})
 
     async def test_with_connectors_five_tools_and_hits_sink(self, sqlite_registry):
-        """connectors 就位 → 五工具(含 lookup_schema 懒加载);check_tool 命中写 hits_sink,probe_tool 返回观测。"""
+        """connectors 就位 → 六工具(含 lookup_schema 懒加载 + explain_plan);check_tool 命中写 hits_sink,probe_tool 返回观测。"""
         tools, handlers, hits = make_sql_tools(
             sqlite_registry, "How many students are there in total?", "en", "sqlite",
         )
         names = [t["function"]["name"] for t in tools]
-        assert names == ["validate_sql", "probe_query", "check_result", "search_values", "lookup_schema"]
+        assert names == ["validate_sql", "probe_query", "check_result", "search_values", "lookup_schema", "explain_plan"]
         # lookup_schema:懒加载表 DDL
         assert '"columns"' in await handlers["lookup_schema"]({"table": "students"})
         assert '"ok": false' in await handlers["lookup_schema"]({"table": "nope"})
@@ -2577,6 +2578,118 @@ class TestMakeSQLTools:
             "table": "students", "keyword": "ala",
         })
         assert '"hits"' in found and "Alameda" in found
+        # explain_tool:执行计划 JSON,非空行;错误折叠
+        plan = await handlers["explain_plan"]({"sql": "SELECT name FROM students"})
+        data = json.loads(plan)
+        assert data["ok"] is True and data["plan"] and "scan" in data["plan"][0].lower()
+        assert json.loads(await handlers["explain_plan"]({"sql": "SELEC broken"}))["ok"] is False
+        assert json.loads(await handlers["explain_plan"]({}))["ok"] is False
+
+
+class TestStaticSemanticWarnings:
+    """静态语义检查:纯 AST 启发式,只警告不拦截。"""
+
+    @staticmethod
+    def _schema():
+        from trove.core.types import ColumnInfo, SchemaInfo, TableInfo
+
+        return SchemaInfo(tables=[
+            TableInfo(name="students", columns=[
+                ColumnInfo(name="id", type="INTEGER"),
+                ColumnInfo(name="name", type="TEXT"),
+                ColumnInfo(name="grade", type="REAL"),
+                ColumnInfo(name="county", type="TEXT"),
+            ]),
+            TableInfo(name="courses", columns=[
+                ColumnInfo(name="id", type="INTEGER"),
+                ColumnInfo(name="title", type="TEXT"),
+            ]),
+        ])
+
+    # ── C1:问题提及的表必须出现在 SQL ──
+    def test_c1_mentioned_table_missing_warns(self):
+        out = static_semantic_warnings(
+            "SELECT COUNT(*) FROM pupils", "sqlite",
+            "How many students are there?", ["students"], self._schema(),
+        )
+        assert any("'students'" in w and "not reference" in w for w in out)
+
+    def test_c1_mentioned_table_present_ok(self):
+        out = static_semantic_warnings(
+            "SELECT COUNT(*) FROM students", "sqlite",
+            "How many students are there?", ["students"], self._schema(),
+        )
+        assert out == []
+
+    def test_c1_unmentioned_matched_table_silent(self):
+        """matched 但问题未字面提到 → 不触发(弱信号)。"""
+        out = static_semantic_warnings(
+            "SELECT COUNT(*) FROM students", "sqlite",
+            "How many students are there?", ["students", "courses"], self._schema(),
+        )
+        assert out == []
+
+    # ── C2:JOIN ON 列必须存在 ──
+    def test_c2_missing_join_column_warns(self):
+        out = static_semantic_warnings(
+            "SELECT * FROM students s JOIN courses c ON s.id = c.nope", "sqlite",
+            "students with courses", ["students", "courses"], self._schema(),
+        )
+        assert any("'nope'" in w and "'courses'" in w for w in out)
+
+    def test_c2_valid_join_ok_and_alias_resolution(self):
+        out = static_semantic_warnings(
+            "SELECT * FROM students s JOIN courses c ON s.id = c.id", "sqlite",
+            "students with courses", ["students", "courses"], self._schema(),
+        )
+        assert out == []
+
+    # ── C3:列类型 × 字面量类型错配 ──
+    def test_c3_numeric_column_vs_string_literal(self):
+        out = static_semantic_warnings(
+            "SELECT * FROM students WHERE grade = 'high'", "sqlite",
+            "students by grade", ["students"], self._schema(),
+        )
+        assert any("numeric column 'grade'" in w and "string literal" in w for w in out)
+
+    def test_c3_string_column_vs_number(self):
+        out = static_semantic_warnings(
+            "SELECT * FROM students WHERE name = 42", "sqlite",
+            "students named 42", ["students"], self._schema(),
+        )
+        assert any("string column 'name'" in w and "numeric literal" in w for w in out)
+
+    def test_c3_matching_types_ok_and_like_skipped(self):
+        out = static_semantic_warnings(
+            "SELECT * FROM students WHERE grade > 90 AND name LIKE 'A%'", "sqlite",
+            "top students", ["students"], self._schema(),
+        )
+        assert out == []
+
+    # ── schema 缺失退化 ──
+    def test_no_schema_degrades_to_c1_only(self):
+        out = static_semantic_warnings(
+            "SELECT * FROM students s JOIN courses c ON s.id = c.nope WHERE grade = 'high'",
+            "sqlite", "students with courses", ["students", "courses"], None,
+        )
+        # C1 不触发(表都在)且 C2/C3 因缺 schema 静默
+        assert out == []
+
+    # ── 工具级集成:警告为软信号,不阻塞 ──
+    async def test_validate_tool_appends_warnings_without_blocking(self, sqlite_registry):
+        tools, handlers, _ = make_sql_tools(
+            sqlite_registry, "How many students are there in total?", "en", "sqlite",
+            matched_tables=["students"],
+        )
+        text = await handlers["validate_sql"](
+            {"sql": "SELECT COUNT(*) FROM pupils"},
+        )
+        assert text.startswith("valid")
+        assert "WARNINGS" in text and "'students'" in text
+        # 合规 SQL → 无警告,保持原契约
+        assert await handlers["validate_sql"](
+            {"sql": "SELECT COUNT(*) FROM students"},
+        ) == "valid"
 
 
 class TestSearchValues:
@@ -2662,6 +2775,7 @@ class TestReflectAdaptiveSkip:
         node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model"))
         update = await node(make_state(
             rules_passed=True, complexity="simple",
+            sql="SELECT COUNT(*) AS n FROM students",
             row_count=1, columns=["n"], rows=[[1]],
         ))
         assert update["verdict"] == "OK"
@@ -2675,6 +2789,7 @@ class TestReflectAdaptiveSkip:
         node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model", reflect_skip="all"))
         update = await node(make_state(
             rules_passed=True, complexity="standard",
+            sql="SELECT COUNT(*) AS n FROM students",
             row_count=2, columns=["n"], rows=[[1], [2]],
         ))
         assert update["verdict"] == "OK"
@@ -2688,6 +2803,7 @@ class TestReflectAdaptiveSkip:
         node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model", reflect_skip="standard"))
         update = await node(make_state(
             rules_passed=True, complexity="standard",
+            sql="SELECT COUNT(*) AS n FROM students",
             row_count=2, columns=["n"], rows=[[1], [2]],
         ))
         assert update["verdict"] == "OK"
@@ -2707,6 +2823,7 @@ class TestReflectAdaptiveSkip:
         node = make_reflect(llm, AgentConfig(target="mock/model", reflect_skip="simple"))
         update = await node(make_state(
             rules_passed=True, complexity="standard",
+            sql="SELECT COUNT(*) AS n FROM students",
             row_count=2, columns=["n"], rows=[[1], [2]],
         ))
         assert llm.called is True
@@ -2719,6 +2836,7 @@ class TestReflectAdaptiveSkip:
         node = make_reflect(LLM(), AgentConfig(target="mock/model", reflect_skip="off"))
         update = await node(make_state(
             rules_passed=True, complexity="simple",
+            sql="SELECT COUNT(*) AS n FROM students",
             row_count=2, columns=["n"], rows=[[1], [2]],
         ))
         assert update["verdict"] == "OK"
@@ -2732,6 +2850,7 @@ class TestReflectAdaptiveSkip:
         node = make_reflect(LLM(), AgentConfig(target="mock/model"))
         update = await node(make_state(
             rules_passed=True, complexity="simple",
+            sql="SELECT COUNT(*) AS n FROM students",
             row_count=1, columns=["n"], rows=[[1]],
             question="disp 表是啥",
         ))
@@ -2748,3 +2867,204 @@ class TestReflectAdaptiveSkip:
             row_count=2, columns=["n"], rows=[[1], [2]],
         ))
         assert update["verdict"] == "OK"
+
+
+class RecordingLLM:
+    """记录每次调用的 (model, messages),返回固定响应 —— 模型分层断言用。"""
+
+    def __init__(self, response: str = "OK"):
+        self._response = response
+        self.calls: list[tuple[str, list]] = []
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append((model, messages))
+        return self._response
+
+
+class TestModelTiering:
+    """模型分层:simple/standard → model_fast,complex → target。"""
+
+    async def test_generate_tiers_by_complexity(self):
+        from trove.workflow.state import GenSQLState
+
+        config = AgentConfig(target="mock/target", model_fast="mock/fast")
+        for complexity, expected in [("simple", "mock/fast"), ("standard", "mock/fast"),
+                                     ("complex", "mock/target")]:
+            llm = RecordingLLM()
+            node = make_generate(llm, config)
+            state = GenSQLState(question="q", complexity=complexity, dialect="sqlite")
+            await node(state)
+            assert llm.calls[-1][0] == expected, complexity
+
+    async def test_generate_model_fast_empty_keeps_target(self):
+        from trove.workflow.state import GenSQLState
+
+        config = AgentConfig(target="mock/target")
+        llm = RecordingLLM()
+        node = make_generate(llm, config)
+        await node(GenSQLState(question="q", complexity="simple", dialect="sqlite"))
+        assert llm.calls[-1][0] == "mock/target"
+
+    async def test_reflect_tiers_by_complexity(self):
+        config = AgentConfig(target="mock/target", model_fast="mock/fast")
+        for complexity, expected in [("simple", "mock/fast"), ("standard", "mock/fast"),
+                                     ("complex", "mock/target")]:
+            llm = RecordingLLM()
+            node = make_reflect(llm, config)
+            update = await node(make_state(
+                rules_passed=False, complexity=complexity,
+                sql="SELECT COUNT(*) FROM students",
+                row_count=1, columns=["n"], rows=[[1]],
+            ))
+            assert update["verdict"] == "OK"
+            assert llm.calls[-1][0] == expected, complexity
+
+    async def test_semantics_tiers_by_complexity(self):
+        from trove.workflow.nodes.semantics import make_semantics
+
+        config = AgentConfig(target="mock/target", model_fast="mock/fast",
+                             explain_semantics=True)
+        for complexity, expected in [("simple", "mock/fast"), ("complex", "mock/target")]:
+            llm = RecordingLLM()
+            node = make_semantics(llm, config)
+            update = await node(make_state(
+                complexity=complexity, sql="SELECT COUNT(*) FROM students",
+            ))
+            assert "semantics" in update
+            assert llm.calls[-1][0] == expected, complexity
+
+    async def test_insights_tiers_by_complexity(self):
+        from trove.workflow.nodes.insights import make_insights
+
+        config = AgentConfig(target="mock/target", model_fast="mock/fast", insights=True)
+        for complexity, expected in [("simple", "mock/fast"), ("complex", "mock/target")]:
+            llm = RecordingLLM()
+            node = make_insights(llm, config)
+            update = await node(make_state(
+                complexity=complexity, sql="SELECT COUNT(*) FROM students",
+                row_count=1, columns=["n"], rows=[[5]],
+            ))
+            assert "insights" in update
+            assert llm.calls[-1][0] == expected, complexity
+
+
+class TestReflectProjectionSelfCheck:
+    """投影宽度自洽是 skip 的必要条件(结果列数必须等于 SQL SELECT 列数)。"""
+
+    async def test_skip_blocked_on_projection_mismatch(self):
+        """SQL 选 2 列但结果只有 1 列 → 不跳过,交 LLM 法官。"""
+        class LLM:
+            def __init__(self):
+                self.called = False
+
+            async def chat(self, *a, **k):
+                self.called = True
+                return "OK"
+
+        llm = LLM()
+        node = make_reflect(llm, AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            sql="SELECT name, grade FROM students",
+            row_count=2, columns=["name"], rows=[["a"]],
+        ))
+        assert llm.called is True
+        assert update["verdict"] == "OK"
+
+    async def test_skip_pass_on_projection_match(self):
+        class NoCallLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("LLM must not be called")
+
+        node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            sql="SELECT name, grade FROM students",
+            row_count=2, columns=["name", "grade"], rows=[["a", 1]],
+        ))
+        assert update["verdict"] == "OK"
+        assert update["reason"] == "deterministic rules passed; reflect skipped"
+
+    async def test_select_star_unverifiable_keeps_judge(self):
+        """SELECT * 宽度不可验证 → 不跳过。"""
+        class LLM:
+            def __init__(self):
+                self.called = False
+
+            async def chat(self, *a, **k):
+                self.called = True
+                return "OK"
+
+        llm = LLM()
+        node = make_reflect(llm, AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            sql="SELECT * FROM students",
+            row_count=2, columns=["a", "b"], rows=[[1, 2]],
+        ))
+        assert llm.called is True
+        assert update["verdict"] == "OK"
+
+    async def test_zero_rows_weak_signal_keeps_judge(self):
+        """0 行 + 弱信号:EMPTY 分支被 has_weak_signal 拦下,skip 也被 row_count>0 拦下。"""
+        class LLM:
+            async def chat(self, *a, **k):
+                return "NO_SQL"
+
+        node = make_reflect(LLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=True, complexity="simple",
+            sql="SELECT COUNT(*) AS n FROM students",
+            row_count=0, columns=["n"], rows=[],
+            question="disp 表是啥",
+        ))
+        assert update["verdict"] == "NO_SQL"
+
+
+class TestProjectionWidthHelper:
+    def test_plain_select(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        assert _projection_width_matches("SELECT a, b FROM t", "sqlite", 2) is True
+        assert _projection_width_matches("SELECT a, b FROM t", "sqlite", 3) is False
+
+    def test_aggregate_alias(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        assert _projection_width_matches(
+            "SELECT COUNT(*) AS n FROM t", "sqlite", 1,
+        ) is True
+
+    def test_select_star_false(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        assert _projection_width_matches("SELECT * FROM t", "sqlite", 5) is False
+
+    def test_cte_uses_outer_select(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        sql = "WITH x AS (SELECT a FROM t) SELECT a, b FROM x"
+        assert _projection_width_matches(sql, "sqlite", 2) is True
+
+    def test_union_uses_first_select(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        sql = "SELECT a, b FROM t UNION SELECT c, d FROM u"
+        assert _projection_width_matches(sql, "sqlite", 2) is True
+
+    def test_parse_failure_false(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        assert _projection_width_matches("NOT SQL AT ALL", "sqlite", 2) is False
+        assert _projection_width_matches("", "sqlite", 2) is False
+
+    def test_non_query_false(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        assert _projection_width_matches("INSERT INTO t VALUES (1)", "sqlite", 1) is False
+
+    def test_zero_or_negative_columns_false(self):
+        from trove.workflow.nodes.reflect import _projection_width_matches
+
+        assert _projection_width_matches("SELECT a FROM t", "sqlite", 0) is False
+        assert _projection_width_matches("SELECT a FROM t", "sqlite", -1) is False

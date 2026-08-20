@@ -41,7 +41,7 @@ def make_semantics(
         if not config.explain_semantics:
             return {}
 
-        model = config.target or "openai/gpt-4o"
+        model = config.model_for(state.complexity)
         try:
             start = time.monotonic()
             user_prompt = render(

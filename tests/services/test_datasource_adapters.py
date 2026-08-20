@@ -244,6 +244,33 @@ class TestConnectorRegistry:
 
         await registry.close_all()
 
+    async def test_explain_returns_plan(self):
+        """explain:sqlite 走 EXPLAIN QUERY PLAN,计划行含 SCAN/SEARCH 标记。"""
+        registry = ConnectorRegistry()
+        config = DatasourceConfig(
+            name="db", type="sqlite", connection_params={"path": ":memory:"},
+        )
+        adapter = await registry.register(config)
+        await adapter.execute("CREATE TABLE t (v INTEGER)")
+        await adapter.execute("INSERT INTO t VALUES (7)")
+
+        result = await registry.explain("SELECT v FROM t", "db")
+        assert result.rows, "plan should have lines"
+        plan_text = " ".join(str(cell) for row in result.rows for cell in row)
+        assert "SCAN" in plan_text or "SEARCH" in plan_text
+        await registry.close_all()
+
+    async def test_explain_rejects_non_select(self):
+        """explain 与 execute 共用只读闸门:非 SELECT 拒绝,EXPLAIN 前缀进不了 adapter。"""
+        registry = ConnectorRegistry()
+        config = DatasourceConfig(
+            name="db", type="sqlite", connection_params={"path": ":memory:"},
+        )
+        await registry.register(config)
+        with pytest.raises(DatasourceError):
+            await registry.explain("DROP TABLE t", "db")
+        await registry.close_all()
+
     async def test_close_all(self):
         registry = ConnectorRegistry()
         config = DatasourceConfig(

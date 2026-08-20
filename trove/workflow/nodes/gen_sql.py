@@ -242,6 +242,171 @@ def validate_sql(sql: str, dialect: str) -> tuple[bool, list[str]]:
         return True, []
 
 
+# ── Static semantic checks (validate_sql companion) ──────
+
+MAX_STATIC_WARNINGS = 5
+
+_NUMERIC_TYPE_RE = re.compile(r"int|float|double|decimal|numeric|real", re.I)
+_STRING_TYPE_RE = re.compile(r"char|text|varchar|string|blob", re.I)
+
+
+def static_semantic_warnings(
+    sql: str,
+    dialect: str,
+    question: str,
+    matched_tables: list[str] | None = None,
+    schema=None,
+) -> list[str]:
+    """静态语义检查(纯 AST,零执行):返回警告列表(软信号,不硬拦)。
+
+    紧随 validate_sql 语法校验运行。启发式本身有盲区(SQLite 日期存
+    TEXT、脏数据、方言差异),**只警告不拦截**——最终裁决由执行、规则链
+    与 reflect 法官负责。schema 缺失时自动退化为仅 C1,不报错。
+
+    C1(仅需 matched_tables):问题字面提到的表必须出现在 SQL 中——
+    提了表却完全没引用,极可能是丢表/写错表。
+    C2(需 schema):JOIN 的 ON 列必须存在于被连接表的列集合。
+    C3(需 schema):WHERE/ON 比较里,数值列×字符串字面量、字符串列×数字。
+    """
+    warnings: list[str] = []
+
+    def _push(msg: str) -> bool:
+        warnings.append(msg)
+        return len(warnings) >= MAX_STATIC_WARNINGS
+
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        parsed = sqlglot.parse_one(
+            sql, dialect=dialect, error_level=sqlglot.ErrorLevel.RAISE,
+        )
+    except Exception:
+        return warnings  # 语法错误由 validate_sql 报告,这里静默
+
+    # C1:问题字面提到、且 schema 匹配命中的表,必须出现在 SQL 中
+    if matched_tables:
+        for t in matched_tables:
+            if not re.search(rf"\b{re.escape(t)}\b", question or "", re.I):
+                continue  # 仅命中未字面提到 → 不触发(弱信号)
+            if not re.search(rf"\b{re.escape(t)}\b", sql, re.I):
+                if _push(
+                    f"question mentions table '{t}' but the SQL does not reference it"
+                ):
+                    return warnings
+
+    schema_by_name = {}
+    if schema is not None:
+        schema_by_name = {t.name.lower(): t for t in schema.tables}
+
+    if not isinstance(parsed, exp.Query):
+        return warnings
+
+    root = parsed
+    if isinstance(root, exp.With):
+        root = root.this
+    if not isinstance(root, exp.Select) or not schema_by_name:
+        return warnings
+
+    # 顶层 FROM/JOIN:建别名→真实表映射 + 源表列集合
+    # sqlglot 30.x 里 "from" 是关键字 → 键名为 from_(fast_match.py 同款处理)
+    alias_map: dict[str, str] = {}
+    sources: list[tuple[str, set[str]]] = []
+    from_ = root.args.get("from_") or root.args.get("from")
+    src_nodes = [from_] + [j for j in (root.args.get("joins") or [])]
+    for s in src_nodes:
+        if s is None:
+            continue
+        table = s.this if isinstance(s.this, exp.Table) else s.find(exp.Table)
+        if table is None:
+            continue
+        real = table.name.lower()
+        alias_map[(table.alias or table.name).lower()] = real
+        info = schema_by_name.get(real)
+        if info is not None:
+            sources.append(
+                (real, {c.name.lower() for c in info.columns})
+            )
+
+    def _resolve_column(col: exp.Column) -> tuple[str | None, str | None]:
+        """列 → (真实表名, 列类型):限定列走别名映射;未限定列在源表里
+        恰好命中一个时返回该表(否则歧义跳过)。
+
+        列类型可能为 None(列不在表里或类型未知)——C2 靠 real 判定
+        "表在 schema 里但列不存在",C3 靠 col_type 判定类型错配。
+        """
+        qual = (col.table or "").lower()
+        if qual:
+            real = alias_map.get(qual, qual)
+            info = schema_by_name.get(real)
+            if info is None:
+                return None, None  # 表不在 schema → 无法验证
+            col_type = next(
+                (c.type for c in info.columns if c.name.lower() == col.name.lower()),
+                None,
+            )
+            return real, col_type
+        hits = [
+            (real, c.type) for real, cols in sources
+            for c in schema_by_name[real].columns
+            if col.name.lower() in cols and c.name.lower() == col.name.lower()
+        ]
+        if len(hits) == 1:
+            return hits[0]
+        return None, None
+
+    # C2:JOIN 的 ON 列必须存在于被连接表的列集合
+    for join in root.args.get("joins") or []:
+        on = join.args.get("on")
+        if on is None:
+            continue
+        for col in on.find_all(exp.Column):
+            real, _ = _resolve_column(col)
+            if real is None:
+                continue  # 无法解析(表不在 schema/未限定列歧义)→ 跳过(保守)
+            info = schema_by_name[real]
+            if col.name.lower() not in {c.name.lower() for c in info.columns}:
+                if _push(
+                    f"JOIN condition column '{col.name}' does not exist "
+                    f"in table '{info.name}'"
+                ):
+                    return warnings
+
+    # C3:WHERE/ON 比较对里的类型错配(跳过 LIKE/参数)
+    for cond in (
+        [root.args.get("where")]
+        + [j.args.get("on") for j in (root.args.get("joins") or [])]
+    ):
+        if cond is None:
+            continue
+        for node in cond.walk():
+            if not isinstance(node, exp.Binary) or isinstance(node, (exp.Like, exp.ILike)):
+                continue
+            for col_side, lit_side in (
+                (node.this, node.expression),
+                (node.expression, node.this),
+            ):
+                if not isinstance(col_side, exp.Column) or not isinstance(lit_side, exp.Literal):
+                    continue
+                _, col_type = _resolve_column(col_side)
+                if col_type is None:
+                    continue
+                if lit_side.is_number:
+                    if _STRING_TYPE_RE.search(col_type):
+                        if _push(
+                            f"string column '{col_side.name}' compared to "
+                            f"numeric literal '{lit_side.this}'"
+                        ):
+                            return warnings
+                elif _NUMERIC_TYPE_RE.search(col_type):
+                    if _push(
+                        f"numeric column '{col_side.name}' compared to "
+                        f"string literal '{lit_side.this}'"
+                    ):
+                        return warnings
+    return warnings
+
+
 # ── Probe tool (read-only execution observation) ─────────
 
 PROBE_LIMIT = 10        # fetch 封顶
@@ -523,15 +688,16 @@ def build_sql_registry(
     dialect: str,
     *,
     finish: bool = True,
+    matched_tables: list[str] | None = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
-    validate_sql 始终可用(纯语法校验,不执行);probe_query / check_result
-    依赖 connectors(只读执行),connectors 缺失时自动降级为仅语法工具。
-    check_result 的规则命中累积在 ``registry.check_hits``,循环结束后由
-    调用方带出到状态(validation_hits 归因切片)——不再是位置返回值。
-    注册表自带显式 finish 协议:模型用 ``finish(answer)`` 携带最终 SQL
-    定稿,避免答案丢失。
+    validate_sql 始终可用(纯语法校验 + 静态语义警告,不执行);probe_query
+    / check_result 依赖 connectors(只读执行),connectors 缺失时自动降级
+    为仅语法工具。check_result 的规则命中累积在 ``registry.check_hits``,
+    循环结束后由调用方带出到状态(validation_hits 归因切片)——不再是位置
+    返回值。注册表自带显式 finish 协议:模型用 ``finish(answer)`` 携带
+    最终 SQL 定稿,避免答案丢失。
 
     Args:
         connectors: 数据源注册表(None → 降级,无执行类工具)。
@@ -539,17 +705,40 @@ def build_sql_registry(
         lang: 交互语言(规则原因文本本地化)。
         dialect: SQL 方言(sqlglot 校验/重写用)。
         finish: 是否注册显式 finish 工具(harness 协议;legacy 层关闭)。
+        matched_tables: schema linking 命中的表(静态检查 C1 的输入)。
     """
     from trove.llm.agent_loop import ToolRegistry
 
     registry = ToolRegistry(finish=finish)
     registry.check_hits = []
 
+    _schema_cache: dict[str, Any] = {}
+
+    async def _lazy_schema():
+        """静态检查要的 schema:首调懒加载一次,失败/不可用 → None(只余 C1)。"""
+        if "value" in _schema_cache:
+            return _schema_cache["value"]
+        if connectors is None:
+            _schema_cache["value"] = None
+            return None
+        try:
+            _schema_cache["value"] = await connectors.get_schema()
+        except Exception:
+            _schema_cache["value"] = None
+        return _schema_cache["value"]
+
     async def validate_tool(arguments: dict) -> str:
-        valid, errors = validate_sql(arguments.get("sql", ""), dialect)
-        if valid:
-            return "valid"
-        return "ERRORS: " + "; ".join(errors)
+        sql_text = arguments.get("sql", "")
+        valid, errors = validate_sql(sql_text, dialect)
+        if not valid:
+            return "ERRORS: " + "; ".join(errors)
+        # 语法过 → 静态语义警告(软信号,保持 "valid" 前缀,模型自决)
+        warnings = static_semantic_warnings(
+            sql_text, dialect, question, matched_tables, await _lazy_schema(),
+        )
+        if warnings:
+            return "valid; WARNINGS: " + "; ".join(warnings)
+        return "valid"
 
     registry.register(
         "validate_sql", validate_tool,
@@ -689,6 +878,47 @@ def build_sql_registry(
             "required": ["table"],
         },
     )
+
+    async def explain_tool(arguments: dict) -> str:
+        # 执行计划(EXPLAIN,只读、毫秒级):定稿前检查索引使用/join 顺序/
+        # 全表扫描,提前发现"能跑但慢"的写法,省掉执行后才发现的重写
+        sql = (arguments.get("sql") or "").strip()
+        if not sql:
+            return '{"ok": false, "error": "sql is required"}'
+        try:
+            result = await asyncio.wait_for(
+                connectors.explain(sql), timeout=5.0,
+            )
+        except Exception as e:
+            return '{"ok": false, "error": "%s"}' % (e,)
+        lines = [
+            " | ".join(str(cell) for cell in row)
+            for row in result.rows[:20]
+        ]
+        return json.dumps({
+            "ok": True,
+            "plan": lines,
+            "truncated": len(result.rows) > 20,
+        })
+
+    registry.register(
+        "explain_plan", explain_tool,
+        description=(
+            "Fetch the execution plan for a SELECT (EXPLAIN, read-only, "
+            "milliseconds, no row data). Returns the engine's access plan "
+            "lines — index usage, join order, full-table scans. Use when "
+            "a draft joins several large tables or filters look "
+            "expensive: spot a missing index / scan before finalizing, "
+            "not after execution."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "The SQL to explain (read-only)"},
+            },
+            "required": ["sql"],
+        },
+    )
     return registry
 
 
@@ -697,6 +927,7 @@ def make_sql_tools(
     question: str,
     lang: str,
     dialect: str,
+    matched_tables: list[str] | None = None,
 ) -> tuple[list[dict], dict[str, Callable[[dict[str, Any]], Awaitable[str]]], list[dict]]:
     """gen_sql ReAct 循环的工具工厂(legacy 形态):返回 (tools, handlers, hits_sink)。
 
@@ -707,6 +938,7 @@ def make_sql_tools(
 
     registry = build_sql_registry(
         connectors, question, lang, dialect, finish=False,
+        matched_tables=matched_tables,
     )
     tools: list[dict] = registry.defs()
     handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = registry.handlers()
