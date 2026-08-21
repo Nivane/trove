@@ -22,7 +22,11 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   // On first load with a stored token, restore the session before guarding.
-  if (!auth.user && auth.token && !auth.bootPromise) {
+  // bootstrap() is cached (bootPromise), so this is safe when App.vue's
+  // setup already started the restore — awaiting an in-flight restore is
+  // the point; skipping it would decide auth on stale state (login loop
+  // after every reload/lang switch).
+  if (!auth.user && auth.token) {
     await auth.bootstrap()
   }
   if (to.name !== 'login' && !auth.isAuthed) {

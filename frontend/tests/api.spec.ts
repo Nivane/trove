@@ -42,6 +42,37 @@ describe('auth bootstrap — restores session from token on load', () => {
     expect(localStorage.getItem('trove_auth_token')).toBeNull()
   })
 
+  it('router guard awaits an in-flight bootstrap instead of redirecting to login', async () => {
+    // Regression: App.vue setup starts bootstrap() (mount) before the guard's
+    // first run; the guard used to skip the await when bootPromise was already
+    // set and decide auth on stale state → login after every reload/lang switch.
+    localStorage.setItem('trove_auth_token', 'tok')
+    let resolveMe!: (value: unknown) => void
+    const meResponse = new Promise((r) => (resolveMe = r))
+    globalThis.fetch = vi.fn().mockReturnValue(meResponse)
+
+    const { useAuthStore } = await import('../src/stores/auth')
+    const { router } = await import('../src/router')
+    const auth = useAuthStore()
+
+    const booting = auth.bootstrap() // what App.vue setup does
+    const nav = router.push('/') // the guard's first run
+    await new Promise((r) => setTimeout(r, 0))
+
+    // Guard must NOT have redirected yet while the restore is in flight.
+    expect(router.currentRoute.value.name).not.toBe('login')
+
+    resolveMe({
+      ok: true,
+      status: 200,
+      json: async () => ({ user: { id: 1, username: 'bob', role: 'admin' } }),
+    })
+    await booting
+    await nav
+    expect(router.currentRoute.value.name).toBe('chat')
+    expect(auth.isAuthed).toBe(true)
+  })
+
   it('bootstrap without a token is false without network', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new Error('should not be called'))
     const { useAuthStore } = await import('../src/stores/auth')
