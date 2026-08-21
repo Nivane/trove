@@ -40,7 +40,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 .chat-shell { display: flex; height: 100%; }
 
 .sidebar {
-  width: 272px;
+  /* 宽度由内联 style 控制(ui.sidebarWidth);rail 态固定 44px */
+  position: relative;
   border-right: 1px solid var(--border-subtle);
   background: var(--surface-raised);
   display: flex;
@@ -50,6 +51,29 @@ button:disabled { opacity: 0.5; cursor: default; }
   flex-shrink: 0;
   z-index: 10;
 }
+.sidebar.rail { width: 44px !important; padding: var(--sp-2); align-items: center; }
+.sidebar-resizer {
+  position: absolute; top: 0; right: -2px; width: 4px; height: 100%;
+  cursor: col-resize; z-index: 20;
+}
+.sidebar-resizer:hover, .sidebar-resizer:active { background: var(--accent); opacity: 0.4; }
+.rail-btns { display: flex; flex-direction: column; gap: var(--sp-2); align-items: center; }
+.rail-btn {
+  width: 32px; height: 32px; display: grid; place-items: center;
+  border-radius: var(--r-md); color: var(--text-secondary); cursor: pointer;
+}
+.rail-btn:hover { background: var(--surface-hover); }
+.history-popover {
+  position: fixed; left: 52px; top: var(--sp-4); width: 260px; max-height: 70vh;
+  overflow-y: auto; background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-radius: var(--r-md); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: var(--sp-3); z-index: 50; display: flex; flex-direction: column; gap: 2px;
+}
+.history-popover-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: var(--sp-2); gap: var(--sp-2);
+}
+.history-title { font-weight: 600; font-size: var(--fs-sm); }
 .brand { display: flex; align-items: center; gap: var(--sp-2); font-weight: 700; font-size: var(--fs-md); padding: 0 var(--sp-1); }
 .brand-mark {
   width: 26px; height: 26px; border-radius: var(--r-sm);
