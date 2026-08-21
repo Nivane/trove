@@ -10,6 +10,7 @@ components dict with mocks.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from importlib import resources
 from pathlib import Path
@@ -55,7 +56,9 @@ class _NoCacheStaticFiles(StaticFiles):
 async def _periodic_sweep(app: FastAPI) -> None:
     """Background loop: run retention sweep every sweep_interval_hours."""
     config = getattr(app.state, "config", None)
-    interval_hours = getattr(config, "retention", None).sweep_interval_hours if config else 0
+    interval_hours = getattr(
+        getattr(config, "retention", None), "sweep_interval_hours", 0
+    )
     if interval_hours <= 0:
         return
     while True:
@@ -83,6 +86,8 @@ async def _lifespan(app: FastAPI):
     finally:
         if sweep_task is not None:
             sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweep_task
 
 
 def create_app(components: dict) -> FastAPI:
