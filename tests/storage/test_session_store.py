@@ -1,5 +1,7 @@
 """Session store persistence tests."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from trove.core.types import Message
@@ -198,3 +200,45 @@ class TestClearSession:
         loaded.messages.append(Message(role="user", content="again"))
         await store.save_session(loaded)
         assert len((await store.load_session(session.session_id, "/tmp/p")).messages) == 1
+
+
+async def _seed_session(store: "SessionStore", project: str, user: str, n_msgs: int = 2) -> str:
+    """Create a session with n_msgs messages in the given project."""
+    session = await store.create_session(project, user_id=user)
+    session.messages = [Message(role="user", content=f"q{i}", timestamp=datetime.now(timezone.utc), metadata={}) for i in range(n_msgs)]
+    await store.save_session(session)
+    return session.session_id
+
+
+async def test_list_all_cross_project(tmp_home):
+    """list_all 跨 project 汇总,含 size_bytes,按 updated_at 降序。"""
+    from trove.storage.session_store import SessionStore
+
+    store = SessionStore(home_dir=str(tmp_home))
+    sid_a = await _seed_session(store, "proj_a", "alice")
+    sid_b = await _seed_session(store, "proj_b", "bob")
+    await _seed_session(store, "proj_b", "alice")
+
+    all_sessions = await store.list_all()
+    assert len(all_sessions) == 3
+    by_id = {s["session_id"]: s for s in all_sessions}
+    assert by_id[sid_a]["project_name"] == "proj_a"
+    assert by_id[sid_b]["project_name"] == "proj_b"
+    assert all(s["size_bytes"] > 0 for s in all_sessions)
+    assert all("user_id" in s and "updated_at" in s for s in all_sessions)
+    # 降序:第一项 updated_at >= 第二项
+    from datetime import datetime as dt
+    times = [dt.fromisoformat(s["updated_at"]) for s in all_sessions]
+    assert times == sorted(times, reverse=True)
+
+
+async def test_list_all_filter_user(tmp_home):
+    """user_id 过滤只返回该用户的会话。"""
+    from trove.storage.session_store import SessionStore
+
+    store = SessionStore(home_dir=str(tmp_home))
+    await _seed_session(store, "proj_a", "alice")
+    await _seed_session(store, "proj_a", "bob")
+    sessions = await store.list_all(user_id="alice")
+    assert len(sessions) == 1
+    assert sessions[0]["user_id"] == "alice"

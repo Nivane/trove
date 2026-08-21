@@ -293,6 +293,53 @@ class SessionStore:
 
     # ── CRUD: List ───────────────────────────────────────
 
+    async def _read_session_file(self, db_file: Path, project_name: str) -> dict[str, Any] | None:
+        """Read metadata from a single session db file.
+
+        Returns a dict of session metadata, or None when the file is
+        unreadable (corrupt db) — caller skips it.
+        """
+        sid = db_file.stem
+        try:
+            conn = await aiosqlite.connect(str(db_file))
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            msg_count = row[0] if row else 0
+
+            cursor = await conn.execute(
+                "SELECT content FROM messages WHERE role = 'user' ORDER BY id LIMIT 1"
+            )
+            row = await cursor.fetchone()
+            first_question = row[0] if row else ""
+
+            cursor = await conn.execute("SELECT value FROM meta WHERE key = 'created_at'")
+            row = await cursor.fetchone()
+            created_at = row[0] if row else ""
+
+            cursor = await conn.execute("SELECT value FROM meta WHERE key = 'updated_at'")
+            row = await cursor.fetchone()
+            updated_at = row[0] if row else ""
+
+            owner = None
+            cursor = await conn.execute("SELECT value FROM meta WHERE key = 'user_id'")
+            row = await cursor.fetchone()
+            owner = row[0] if row else None
+            await conn.close()
+
+            return {
+                "session_id": sid,
+                "project_name": project_name,
+                "user_id": owner,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "message_count": msg_count,
+                "title": first_question,
+                "size_bytes": db_file.stat().st_size,
+            }
+        except Exception as e:
+            logger.warning("Skipping corrupt session db %s: %s", db_file, e)
+            return None
+
     async def list_sessions(
         self,
         project_cwd: str | Path = ".",
@@ -316,47 +363,45 @@ class SessionStore:
 
         results = []
         for db_file in sorted(sessions_dir.glob("*.db"), key=os.path.getmtime, reverse=True):
-            sid = db_file.stem
-            try:
-                conn = await aiosqlite.connect(str(db_file))
-                cursor = await conn.execute("SELECT COUNT(*) FROM messages")
-                row = await cursor.fetchone()
-                msg_count = row[0] if row else 0
+            info = await self._read_session_file(db_file, project_name)
+            if info is None:
+                continue
+            if user_id is not None and info["user_id"] != user_id:
+                continue
+            results.append(info)
+        return results
 
-                # Derive a human-readable title from the first user message.
-                cursor = await conn.execute(
-                    "SELECT content FROM messages WHERE role = 'user' ORDER BY id LIMIT 1"
-                )
-                row = await cursor.fetchone()
-                first_question = row[0] if row else ""
+    async def list_all(
+        self,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List sessions across ALL projects (maintenance sweep).
 
-                cursor = await conn.execute("SELECT value FROM meta WHERE key = 'created_at'")
-                row = await cursor.fetchone()
-                created_at = row[0] if row else ""
+        Args:
+            user_id: When given, only sessions owned by this user are
+                returned; ``None`` lists every session in the home dir.
 
-                cursor = await conn.execute("SELECT value FROM meta WHERE key = 'updated_at'")
-                row = await cursor.fetchone()
-                updated_at = row[0] if row else ""
+        Returns:
+            List of dicts with session_id, project_name, user_id,
+            created_at, updated_at, message_count, title, size_bytes,
+            sorted by updated_at descending.
+        """
+        sessions_dir = self.home_dir / "sessions"
+        if not sessions_dir.exists():
+            return []
 
-                owner = None
-                cursor = await conn.execute("SELECT value FROM meta WHERE key = 'user_id'")
-                row = await cursor.fetchone()
-                owner = row[0] if row else None
-                await conn.close()
-
-                if user_id is not None and owner != user_id:
+        results = []
+        for project_dir in sorted(sessions_dir.iterdir()):
+            if not project_dir.is_dir():
+                continue
+            for db_file in project_dir.glob("*.db"):
+                info = await self._read_session_file(db_file, project_dir.name)
+                if info is None:
                     continue
-
-                results.append({
-                    "session_id": sid,
-                    "created_at": created_at,
-                    "updated_at": updated_at,
-                    "message_count": msg_count,
-                    "title": first_question,
-                })
-            except Exception as e:
-                logger.warning("Skipping corrupt session db %s: %s", db_file, e)
-
+                if user_id is not None and info["user_id"] != user_id:
+                    continue
+                results.append(info)
+        results.sort(key=lambda s: s["updated_at"], reverse=True)
         return results
 
     # ── Session operations ───────────────────────────────
