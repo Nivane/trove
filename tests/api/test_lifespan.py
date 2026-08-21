@@ -114,3 +114,31 @@ def test_lifespan_periodic_sweep_fires(monkeypatch):
         time.sleep(0.4)  # several periodic iterations at 0.05s/loop
     # startup sweep + at least one periodic sweep
     assert maint.calls >= 2
+
+
+def test_lifespan_startup_sweep_does_not_block_serve():
+    """启动 sweep 不得阻塞 serve 就绪(spec: 不阻塞)。
+
+    A regression to `await maintenance.run_all()` inline in _lifespan
+    would block the portal thread — the health request could not be
+    serviced (TestClient enter or the request would hang past the
+    httpx/portal timeout). This test is throw-shaped against that.
+    """
+
+    class _BlockingMaintenance:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def run_all(self):
+            self.started.set()
+            await self.release.wait()  # stay in-flight until released
+            return {"orphans": 0, "pruned": 0, "sweep": "scanned=0"}
+
+    maint = _BlockingMaintenance()
+    app = create_app(_components(maintenance=maint, interval_hours=0))
+    with TestClient(app) as c:
+        _wait_until(lambda: maint.started.is_set())  # sweep task started...
+        # ...and serve must answer while the sweep is still blocked in-flight
+        assert c.get("/v1/health").status_code == 200
+        maint.release.set()
