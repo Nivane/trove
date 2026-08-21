@@ -523,6 +523,7 @@ class SessionManager:
         session: Session,
         question: str,
         workflow_name: str = DEFAULT_WORKFLOW,
+        datasource: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream a query response as graph events.
 
@@ -571,6 +572,7 @@ class SessionManager:
             run_id=run_id,
             history=history,
             lang=self.config.language,
+            datasource=datasource or "",
         )
         self._begin_trace(state)
         self._trace_run_start(state)

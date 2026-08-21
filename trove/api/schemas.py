@@ -12,6 +12,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None  # omitted → a new session is created
     question: str = Field(min_length=1)
     workflow: str = "reflection"
+    datasource: str | None = None  # target datasource (None = registry default)
 
 
 class ResumeRequest(BaseModel):

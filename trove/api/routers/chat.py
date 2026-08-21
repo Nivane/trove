@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trove.api.deps import get_current_user
+from trove.api.deps import get_current_user, require_datasource
 from trove.api.schemas import ChatRequest, ResumeRequest, SessionCreateResponse
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
@@ -147,6 +147,7 @@ async def chat(
     body: ChatRequest, request: Request, user: dict = Depends(get_current_user)
 ):
     manager = _manager(request)
+    ds = await require_datasource(request, body.datasource, user)
     if body.session_id:
         try:
             session = await manager.load_session(body.session_id)
@@ -158,7 +159,7 @@ async def chat(
 
     async def events():
         yield {"type": "session", "data": {"session_id": session.session_id}}
-        async for event in manager.ask_stream(session, body.question, body.workflow):
+        async for event in manager.ask_stream(session, body.question, body.workflow, datasource=ds):
             payload = {k: v for k, v in event.items() if k != "type"}
             yield {"type": event["type"], "data": payload}
 

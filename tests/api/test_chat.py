@@ -197,7 +197,7 @@ class TestChatHITLResume:
             graphs=graphs,
             llm_gateway=gateway,
         )
-        app = create_app({"session_manager": manager})
+        app = create_app({"session_manager": manager, "connector_registry": sqlite_registry})
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]
@@ -281,7 +281,7 @@ class TestChatTasks:
                 "query", SQL, "OK",
             ],
         )
-        app = create_app({"session_manager": manager})
+        app = create_app({"session_manager": manager, "connector_registry": sqlite_registry})
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]
@@ -326,7 +326,7 @@ class TestChatTasks:
             ],
             hitl=True,
         )
-        app = create_app({"session_manager": manager})
+        app = create_app({"session_manager": manager, "connector_registry": sqlite_registry})
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]
@@ -354,3 +354,29 @@ class TestChatTasks:
 
             tasks = (await c.get(f"/v1/sessions/{session_id}/tasks")).json()["tasks"]
             assert [t["status"] for t in tasks] == ["done", "done"]
+
+
+class TestChatDatasource:
+    """/v1/chat datasource 参数:授权通过放行,未授权 403。"""
+
+    async def test_admin_targets_named_datasource(self, client):
+        resp = await client.post(
+            "/v1/chat",
+            json={"question": "Which county has most students?", "datasource": "test_db"},
+        )
+        assert resp.status_code == 200
+        assert "session" in resp.text
+
+    async def test_user_allowed_default_datasource(self, user_client):
+        resp = await user_client.post(
+            "/v1/chat",
+            json={"question": "Which county has most students?", "datasource": "test_db"},
+        )
+        assert resp.status_code == 200
+
+    async def test_user_forbidden_datasource_403(self, user_client):
+        resp = await user_client.post(
+            "/v1/chat", json={"question": "hello", "datasource": "other_db"}
+        )
+        assert resp.status_code == 403
+        assert "not allowed" in resp.text
