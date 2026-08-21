@@ -69,6 +69,16 @@ class TracingConfig:
 
 
 @dataclass
+class RetentionConfig:
+    """会话保留策略(配额清理)。0 = 关闭对应机制。"""
+
+    max_sessions_per_user: int = 100  # 每用户会话数配额;0 = 关闭配额清理
+    active_grace_min: int = 10  # 最近有更新的会话豁免窗口(分钟)
+    max_checkpoints_per_thread: int = 50  # 单线程 checkpoint 深度上限
+    sweep_interval_hours: int = 24  # 周期清理间隔;<=0 = 关闭周期清理
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -84,10 +94,12 @@ class AgentConfig:
     hitl: bool = False  # 执行前人工确认(LangGraph interrupt; 需 checkpointer)
     insights: bool = False  # 执行后 LLM 基于结果生成洞察
     result_cache: bool = False  # 精确问题结果缓存(进程内存;命中直接返回已验证答案,跳过 HITL 确认)
+    decompose_llm_judge: bool = True  # 多任务拆解 LLM 判断层:规则未命中但疑似多步时花一次 LLM 判断;false = 纯正则门控
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
     tracing: TracingConfig = field(default_factory=TracingConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def model_for(self, complexity: str) -> str:
@@ -235,6 +247,15 @@ class ConfigLoader:
             capture=obs.get("capture", {}),
         )
 
+        # Parse retention
+        retention_raw = agent_section.get("retention", {})
+        retention = RetentionConfig(
+            max_sessions_per_user=int(retention_raw.get("max_sessions_per_user", 100)),
+            active_grace_min=int(retention_raw.get("active_grace_min", 10)),
+            max_checkpoints_per_thread=int(retention_raw.get("max_checkpoints_per_thread", 50)),
+            sweep_interval_hours=int(retention_raw.get("sweep_interval_hours", 24)),
+        )
+
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
@@ -252,6 +273,7 @@ class ConfigLoader:
             providers=providers,
             datasources=datasources,
             tracing=tracing,
+            retention=retention,
             raw=resolved,
         )
 

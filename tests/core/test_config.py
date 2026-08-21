@@ -264,3 +264,34 @@ class TestModelTiering:
 
     def test_model_for_falls_back_to_gpt4o(self):
         assert AgentConfig().model_for("simple") == "openai/gpt-4o"
+
+
+def test_retention_config_defaults():
+    """缺省时 RetentionConfig 使用文档默认值。"""
+    from trove.core.config import RetentionConfig
+
+    cfg = RetentionConfig()
+    assert cfg.max_sessions_per_user == 100
+    assert cfg.active_grace_min == 10
+    assert cfg.max_checkpoints_per_thread == 50
+    assert cfg.sweep_interval_hours == 24
+
+
+def test_retention_config_from_yaml(tmp_path):
+    """agent.yml 的 retention 段被正确解析(含 0=关闭 语义)。"""
+    from trove.core.config import ConfigLoader, AgentConfig
+
+    yml = tmp_path / "agent.yml"
+    yml.write_text(
+        "agent:\n"
+        "  target: mock/model\n"
+        "  retention:\n"
+        "    max_sessions_per_user: 0\n"
+        "    active_grace_min: 5\n"
+        "    sweep_interval_hours: 6\n"
+    )
+    cfg = ConfigLoader.load_agent_config(str(yml))
+    assert cfg.retention.max_sessions_per_user == 0
+    assert cfg.retention.active_grace_min == 5
+    assert cfg.retention.sweep_interval_hours == 6
+    assert cfg.retention.max_checkpoints_per_thread == 50  # 未写 → 默认

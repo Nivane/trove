@@ -21,6 +21,10 @@ agent:
   # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
   # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。
   result_cache: true
+  # 多任务拆解 LLM 判断层:规则正则未命中但"疑似多步"(长问句/弱提示词)时,
+  # 花一次 fast 调用判断是否拆解。false = 纯正则门控(单问题零 LLM,但
+  # "各行业贷款TOP3的银行及其坏账率"这类隐式多步不会被识别)。
+  decompose_llm_judge: true
   # 负载削减:
   #   fast_path: 确定性模板快径(单表/单聚合模板命中即直接产出 SQL,
   #              跳过 planner + 生成 + 裁决)。默认开。
@@ -37,3 +41,10 @@ agent:
   observability:
     tracing:
       enabled: true
+  # 会话保留策略(配额清理):每用户会话数超限时删最旧。
+  # 0 = 关闭对应机制;periodic 需 schedule daemon 或 serve 长驻才生效。
+  retention:
+    max_sessions_per_user: 100
+    active_grace_min: 10
+    max_checkpoints_per_thread: 50
+    sweep_interval_hours: 24
