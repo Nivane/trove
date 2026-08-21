@@ -115,23 +115,25 @@ async def test_sweep_quota_zero_disables(tmp_home):
 
 
 async def test_sweep_active_grace_exempts_fresh(tmp_home):
-    """grace 窗口内的最新会话豁免;超配额删次旧的。"""
+    """候选者全在 grace 窗口内时被豁免(真实覆盖豁免分支);grace=0 对照组删除发生。"""
     from trove.services.maintenance import MaintenanceService
 
     store = SessionStore(home_dir=str(tmp_home))
     ckpt = _fake_checkpointer()
-    # 3 个会话:1 分钟前(active)、30 分钟前、60 分钟前;配额 2、grace 10
-    await _seed(store, "proj", "alice", updated_delta_min=1)
-    await _seed(store, "proj", "alice", updated_delta_min=30)
-    await _seed(store, "proj", "alice", updated_delta_min=60)
+    # 3 个会话 1/2/3 分钟前(全部在 10 分钟窗口内);配额 2、grace 10
+    for delta in (1, 2, 3):
+        await _seed(store, "proj", "alice", updated_delta_min=delta)
     svc = MaintenanceService(store, ckpt, _retention(max_sessions=2, grace_min=10))
     stats = await svc.sweep()
-    assert stats.removed_sessions == 1
-    remaining = await store.list_all()
-    assert len(remaining) == 2
-    # 剩下的是最新两个(1 分钟前豁免 + 30 分钟前)
-    times = sorted(datetime.fromisoformat(s["updated_at"]) for s in remaining)
-    assert (times[0] - _utcnow()).total_seconds() > -35 * 60  # 30 分钟前那个在
+    assert stats.removed_sessions == 0  # 候选者(3 分钟前)被豁免
+    assert stats.skipped_active == 1
+    assert len(await store.list_all()) == 3  # 文件全部还在
+    # 对照组:grace=0 关闭豁免 → 最旧者被删
+    svc0 = MaintenanceService(store, ckpt, _retention(max_sessions=2, grace_min=0))
+    stats0 = await svc0.sweep()
+    assert stats0.removed_sessions == 1
+    assert stats0.skipped_active == 0
+    assert len(await store.list_all()) == 2
 
 
 async def test_sweep_idempotent(tmp_home):
@@ -147,3 +149,29 @@ async def test_sweep_idempotent(tmp_home):
     stats2 = await svc.sweep()
     assert stats1.removed_sessions == 1
     assert stats2.removed_sessions == 0
+
+
+async def test_sweep_naive_updated_at_falls_back_to_mtime(tmp_home):
+    """meta.updated_at 为无时区偏移(naive)的脏数据时不崩溃,回退文件 mtime 判活跃。"""
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt = _fake_checkpointer()
+    old_id = await _seed(store, "proj", "alice", updated_delta_min=60)
+    await _seed(store, "proj", "alice", updated_delta_min=30)
+    # 把最旧会话的 updated_at 改写为 naive 时间戳(无时区偏移,脏数据)
+    import aiosqlite
+    db = store.session_db_path("proj", old_id)
+    conn = await aiosqlite.connect(str(db))
+    await conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('updated_at', ?)",
+        ((_utcnow() - timedelta(minutes=120)).replace(tzinfo=None).isoformat(),),
+    )
+    await conn.commit()
+    await conn.close()
+    svc = MaintenanceService(store, ckpt, _retention(max_sessions=1, grace_min=10))
+    stats = await svc.sweep()
+    assert stats.errors == 0  # 不崩溃
+    assert stats.skipped_active == 1  # 回退 mtime(新文件)→ 活跃 → 豁免
+    assert stats.removed_sessions == 0
+    assert len(await store.list_all()) == 2  # 文件全部还在

@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from trove.core.config import RetentionConfig
 from trove.core.logging import get_logger
@@ -46,11 +47,14 @@ class SweepStats:
 
 
 def _parse_dt(value: str) -> datetime | None:
-    """Parse an ISO timestamp from meta; None on malformed input."""
+    """Parse an ISO timestamp from meta; None on malformed or naive input."""
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
     except (ValueError, TypeError):
         return None
+    if dt.tzinfo is None:
+        return None  # naive datetime = 脏数据,回退文件 mtime
+    return dt
 
 
 def _is_active(updated_at: str, file_mtime: float, grace_min: int, now: datetime) -> bool:
