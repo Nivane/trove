@@ -70,7 +70,7 @@ def check_readonly(
 
     parsed = _parse(sql, dialect)
     if parsed is None:
-        return False, ["SQL could not be parsed (rejected as unsafe)"]
+        return False, ["SQL could not be parsed; treat as a syntax error, not a permission denial"]
 
     try:
         import sqlglot

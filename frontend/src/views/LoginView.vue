@@ -1,7 +1,7 @@
 <template>
   <div class="login-view">
     <div class="login-card">
-      <div class="login-brand">◆ Trove</div>
+      <div class="login-brand"><span class="brand-mark"><el-icon :size="14"><DataAnalysis /></el-icon></span> Trove</div>
       <h2 class="login-title">{{ t('loginTitle', ui.lang) }}</h2>
       <el-form @submit.prevent="submit">
         <el-form-item>
@@ -32,6 +32,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { DataAnalysis } from '@element-plus/icons-vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'

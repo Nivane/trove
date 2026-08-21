@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from typing import Any
+from typing import Any, Literal
 
 
 class ChatRequest(BaseModel):
@@ -49,6 +49,20 @@ class LessonCreate(BaseModel):
     pattern: str = Field(min_length=1)
     note: str = Field(min_length=1)
     sql_snippet: str = ""
+
+
+class LessonRatingCreate(BaseModel):
+    """POST /v1/kb/ratings body (user up/down vote on a question->answer).
+
+    Stored as a pending lesson keyed by `question` with aggregated
+    upvotes/downvotes for the admin console to review.
+    """
+
+    question: str = Field(min_length=1)
+    note: str = ""
+    sql_snippet: str = ""
+    vote: Literal[1, -1] = Field(description="1 = upvote, -1 = downvote")
+
 
 
 class LessonConfirmResponse(BaseModel):

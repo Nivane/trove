@@ -1,45 +1,227 @@
-/* Design tokens — ported from the vanilla style.css design system
-   (precision tool, Linear/Vercel style). */
+/* ─────────────────────────────────────────────────────────────
+   Trove Design Tokens — a single source of truth for the visual
+   system. Layers:
+     primitives  → raw palette / spacing / type steps
+     semantic    → intent-based surfaces, text, accent, status
+     aliases     → legacy names kept for migration compatibility
+   Override via [data-theme='dark'] on <html>.
+   ───────────────────────────────────────────────────────────── */
 
 :root {
-  --bg: #fafafa;
-  --panel: #ffffff;
-  --panel-2: #f4f4f5;
-  --border: #e5e5e6;
-  --border-strong: #d4d4d5;
-  --text: #18181b;
-  --muted: #71717a;
-  --faint: #a1a1aa;
-  --accent: #6366f1;
-  --accent-hover: #4f46e5;
-  --accent-soft: rgba(99, 102, 241, 0.1);
-  --on-accent: #ffffff;
-  --ok: #16a34a;
-  --warn: #d97706;
-  --warn-soft: rgba(217, 119, 6, 0.12);
-  --danger: #dc2626;
-  --danger-soft: rgba(220, 38, 38, 0.1);
+  color-scheme: light;
+
+  /* ── Primitives: color ── */
+  --gray-0: #ffffff;
+  --gray-50: #fafafa;
+  --gray-100: #f4f4f5;
+  --gray-200: #e4e4e7;
+  --gray-300: #d4d4d8;
+  --gray-400: #a1a1aa;
+  --gray-500: #71717a;
+  --gray-600: #52525b;
+  --gray-700: #3f3f46;
+  --gray-800: #27272a;
+  --gray-900: #18181b;
+  --gray-950: #09090b;
+
+  --indigo-50: #eef2ff;
+  --indigo-100: #e0e7ff;
+  --indigo-400: #818cf8;
+  --indigo-500: #6366f1;
+  --indigo-600: #4f46e5;
+  --indigo-700: #4338ca;
+
+  --green-500: #16a34a;
+  --green-600: #15803d;
+  --green-100: #dcfce7;
+  --amber-500: #d97706;
+  --amber-100: #fef3c7;
+  --red-500: #dc2626;
+  --red-100: #fee2e2;
+
+  /* ── Primitives: elevation (soft shadows, no hard borders) ── */
+  --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-sm: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(24, 24, 27, 0.06), 0 2px 4px -2px rgba(24, 24, 27, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(24, 24, 27, 0.08), 0 4px 6px -4px rgba(24, 24, 27, 0.05);
+  --shadow-xl: 0 20px 25px -5px rgba(24, 24, 27, 0.1), 0 8px 10px -6px rgba(24, 24, 27, 0.05);
+
+  /* ── Primitives: type scale (8px base) ── */
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 16px;
+  --fs-lg: 20px;
+  --fs-xl: 24px;
+  --fs-2xl: 32px;
+  --lh-tight: 1.3;
+  --lh-normal: 1.55;
+  --lh-relaxed: 1.7;
+
+  /* ── Primitives: spacing (4px grid) ── */
+  --sp-0: 0;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* ── Primitives: radius ── */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 20px;
+  --r-full: 999px;
+
+  /* ── Primitives: motion ── */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+
+  /* ── Semantic: surface ── */
+  --surface-canvas: var(--gray-50);
+  --surface-raised: var(--gray-0);
+  --surface-muted: var(--gray-100);
+  --surface-hover: var(--gray-100);
+  --surface-accent: var(--indigo-50);
+
+  /* ── Semantic: border ── */
+  --border-subtle: var(--gray-200);
+  --border-default: var(--gray-300);
+  --border-strong: var(--gray-400);
+
+  /* ── Semantic: text ── */
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-500);
+  --text-tertiary: var(--gray-400);
+  --text-on-accent: var(--gray-0);
+
+  /* ── Semantic: status ── */
+  --ok: var(--green-600);
+  --ok-bg: var(--green-100);
+  --ok-text: var(--green-600);
+  --warn: var(--amber-500);
+  --warn-bg: var(--amber-100);
+  --warn-text: var(--amber-500);
+  --danger: var(--red-500);
+  --danger-bg: var(--red-100);
+  --danger-text: var(--red-500);
+
+  /* ── Semantic: accent ── */
+  --accent: var(--indigo-500);
+  --accent-hover: var(--indigo-600);
+  --accent-active: var(--indigo-700);
+  --accent-soft: var(--indigo-50);
+  --accent-soft-hover: var(--indigo-100);
   --ring: rgba(99, 102, 241, 0.35);
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --on-accent: var(--gray-0);
+
+  /* ── Elevation (rollup) ── */
+  --elev-1: 0 1px 2px rgba(24, 24, 27, 0.04);
+  --elev-2: 0 1px 3px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
+  --elev-3: 0 10px 15px -3px rgba(24, 24, 27, 0.08), 0 4px 6px -4px rgba(24, 24, 27, 0.05);
+
+  /* ── Typography + misc ── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: var(--font-mono);
+
+  /* ── Legacy aliases (migration-only; prefer semantic names) ── */
+  --bg: var(--surface-canvas);
+  --panel: var(--surface-raised);
+  --panel-2: var(--surface-muted);
+  --border: var(--border-subtle);
+  --border-strong: var(--border-default);
+  --text: var(--text-primary);
+  --muted: var(--text-secondary);
+  --faint: var(--text-tertiary);
+  --accent-soft: var(--surface-accent);
+  --on-accent: var(--text-on-accent);
+  --ok: var(--ok-text);
+  --warn: var(--warn-text);
+  --danger: var(--danger-text);
 }
 
+/* ───────────────────────── Dark ───────────────────────── */
 [data-theme='dark'] {
-  --bg: #09090b;
-  --panel: #111113;
-  --panel-2: #1a1a1e;
-  --border: #26262b;
-  --border-strong: #3f3f46;
-  --text: #e4e4e7;
-  --muted: #a1a1aa;
-  --faint: #71717a;
-  --accent: #818cf8;
-  --accent-hover: #6366f1;
-  --accent-soft: rgba(129, 140, 248, 0.14);
-  --on-accent: #18181b;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --warn-soft: rgba(251, 191, 36, 0.14);
-  --danger: #f87171;
-  --danger-soft: rgba(248, 113, 113, 0.14);
+  color-scheme: dark;
+
+  --gray-0: #161618;
+  --gray-50: #0f0f11;
+  --gray-100: #1a1a1e;
+  --gray-200: #26262b;
+  --gray-300: #3f3f46;
+  --gray-400: #52525b;
+  --gray-500: #a1a1aa;
+  --gray-600: #d4d4d8;
+  --gray-700: #e4e4e7;
+  --gray-800: #f4f4f5;
+  --gray-900: #fafafa;
+
+  --indigo-50: #1e1b4b;
+  --indigo-100: #312e81;
+  --indigo-400: #818cf8;
+  --indigo-500: #818cf8;
+  --indigo-600: #6366f1;
+  --indigo-700: #4f46e5;
+
+  --green-500: #4ade80;
+  --green-600: #4ade80;
+  --green-100: rgba(74, 222, 128, 0.14);
+  --amber-500: #fbbf24;
+  --amber-100: rgba(251, 191, 36, 0.14);
+  --red-500: #f87171;
+  --red-100: rgba(248, 113, 113, 0.14);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+
+  --surface-canvas: var(--gray-50);
+  --surface-raised: var(--gray-0);
+  --surface-muted: var(--gray-100);
+  --surface-hover: var(--gray-100);
+  --surface-accent: rgba(129, 140, 248, 0.14);
+
+  --border-subtle: var(--gray-200);
+  --border-default: var(--gray-300);
+  --border-strong: var(--gray-400);
+
+  --text-primary: var(--gray-900);
+  --text-secondary: var(--gray-500);
+  --text-tertiary: var(--gray-400);
+  --text-on-accent: var(--gray-900);
+
+  --ok: var(--ok-text);
+  --ok-bg: var(--green-100);
+  --ok-text: var(--green-500);
+  --warn: var(--warn-text);
+  --warn-bg: var(--amber-100);
+  --warn-text: var(--amber-500);
+  --danger: var(--danger-text);
+  --danger-bg: var(--red-100);
+  --danger-text: var(--red-500);
+
+  --accent: var(--indigo-500);
+  --accent-hover: var(--indigo-600);
+  --accent-active: var(--indigo-700);
+  --accent-soft: var(--surface-accent);
+  --accent-soft-hover: var(--indigo-100);
   --ring: rgba(129, 140, 248, 0.4);
+  --on-accent: var(--gray-900);
+
+  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --elev-2: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --elev-3: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
 }

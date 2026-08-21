@@ -5,9 +5,10 @@ incrementally from YAML — the single source of truth); appends write
 straight into the YAML files.
 
 Reads are open to any authenticated user. KB writes (terms/examples) and
-the confirm-ALL action are admin-only; POST /v1/kb/lessons stays open to
-any authenticated user — it is the user feedback channel that produces
-*pending* lessons for the admin console to confirm or reject.
+the confirm-ALL action are admin-only; POST /v1/kb/lessons and
+POST /v1/kb/ratings stay open to any authenticated user — they are the
+user feedback channel that produces *pending* lessons for the admin
+console to confirm or reject.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from trove.api.schemas import (
     ExampleCreate,
     LessonConfirmResponse,
     LessonCreate,
+    LessonRatingCreate,
     TermCreate,
 )
 
@@ -141,6 +143,21 @@ async def create_lesson(
     entry["confirmed"] = False
     await _kb(request).append_lesson(entry, ds)
     return {"status": "ok", "pattern": body.pattern}
+
+
+@router.post("/kb/ratings", status_code=201)
+async def rate_lesson(
+    body: LessonRatingCreate, request: Request, user: dict = Depends(get_current_user)
+) -> dict:
+    """User up/down vote on a question->answer.
+
+    The rated Q&A is upserted into the lesson Hint Bank keyed by
+    `question`, aggregating upvotes/downvotes and landing *pending* for the
+    admin console to confirm or reject.
+    """
+    ds = _datasource(request, None)
+    lesson = await _kb(request).rate_lesson(body.model_dump(), ds)
+    return {"status": "ok", "question": body.question, "lesson": lesson}
 
 
 @router.post("/kb/lessons/confirm", response_model=LessonConfirmResponse)

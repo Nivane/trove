@@ -23,6 +23,7 @@ export interface DoneSummary {
   chart_option?: Record<string, unknown> | null
   insights?: unknown[]
   hitl_status?: string
+  batched?: boolean
 }
 
 export interface StepPayload {

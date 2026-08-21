@@ -6,7 +6,9 @@
 
 import { defineStore } from 'pinia'
 import { streamSse } from '../api/sse'
-import { apiGet } from '../api/http'
+import { apiGet, apiPost } from '../api/http'
+import { notifyError } from '../utils/notify'
+import { telemetry, newRequestId } from '../utils/telemetry'
 import type { DoneSummary, HitlPayload, SseEvent, StepPayload, TaskItem } from '../api/types'
 
 export interface StepCard {
@@ -25,6 +27,8 @@ export interface Turn {
   error?: string
   hitlBatch?: boolean
   hitlActionsShown?: boolean
+  rating?: 1 | -1 | null
+  requestId?: string
 }
 
 const SESSION_KEY = 'trove_ui_session'
@@ -32,7 +36,8 @@ const SESSION_KEY = 'trove_ui_session'
 export const useChatStore = defineStore('chat', {
   state: () => ({
     sessionId: localStorage.getItem(SESSION_KEY) || '',
-    sessions: [] as { session_id: string; created_at?: string; updated_at?: string; message_count?: number }[],
+    sessions: [] as { session_id: string; created_at?: string; updated_at?: string; message_count?: number; title?: string }[],
+    sessionsLoading: false,
     turns: [] as Turn[],
     tasks: [] as TaskItem[],
     batchRunning: false,
@@ -56,9 +61,14 @@ export const useChatStore = defineStore('chat', {
       this.tasks = []
     },
     async listSessions() {
-      const body = await apiGet('/v1/sessions')
-      this.sessions = body.sessions ?? []
-      return this.sessions
+      this.sessionsLoading = true
+      try {
+        const body = await apiGet('/v1/sessions')
+        this.sessions = body.sessions ?? []
+        return this.sessions
+      } finally {
+        this.sessionsLoading = false
+      }
     },
     async createSession() {
       const body = await apiPost('/v1/sessions', {})
@@ -80,12 +90,16 @@ export const useChatStore = defineStore('chat', {
       }
     },
     async deleteSession(sid: string) {
-      await fetch(`/v1/sessions/${sid}`, {
-        method: 'DELETE',
-        headers: this._authHeaders(),
-      })
-      if (sid === this.sessionId) this.setSessionId('')
-      await this.listSessions()
+      try {
+        await fetch(`/v1/sessions/${sid}`, {
+          method: 'DELETE',
+          headers: this._authHeaders(),
+        })
+        if (sid === this.sessionId) this.setSessionId('')
+        await this.listSessions()
+      } catch (e) {
+        notifyError(String((e as Error)?.message ?? 'delete failed'))
+      }
     },
     _authHeaders(): Record<string, string> {
       const token = localStorage.getItem('trove_auth_token')
@@ -97,6 +111,7 @@ export const useChatStore = defineStore('chat', {
       this.batchRunning = false
       this.pendingHitl = null
       this.controller = new AbortController()
+      const requestId = newRequestId()
       this.turns.push({
         question,
         thoughts: [],
@@ -104,6 +119,7 @@ export const useChatStore = defineStore('chat', {
         answer: '',
         summary: null,
         status: 'streaming',
+        requestId,
       })
 
       let retried = false
@@ -122,9 +138,20 @@ export const useChatStore = defineStore('chat', {
           this.turns.pop()
           this.setSessionId('')
           await this.createSession()
+          // re-instate the turn so the retried stream's events target it
+          this.turns.push({
+            question,
+            thoughts: [],
+            steps: [],
+            answer: '',
+            summary: null,
+            status: 'streaming',
+            requestId: newRequestId(),
+          })
           continue
         }
         if (!resp.ok) {
+          telemetry.error('chat.send', `HTTP ${resp.status}`, { requestId, error: resp.statusText })
           this._failTurn(`HTTP ${resp.status}`)
           return
         }
@@ -135,6 +162,7 @@ export const useChatStore = defineStore('chat', {
       if (t && t.status === 'streaming') {
         // stream closed without a terminal event — guard against a hung turn
         if (!t.answer && !t.error) {
+          telemetry.error('chat.send', 'stream interrupted', { requestId })
           t.error = 'stream interrupted'
           t.status = 'error'
         } else {
@@ -156,9 +184,11 @@ export const useChatStore = defineStore('chat', {
           if (sid) this.setSessionId(sid)
           break
         }
-        case 'thought':
-          t.thoughts.push(String(ev.data.content ?? ev.data.text ?? ''))
+        case 'thought': {
+          const text = String(ev.data.content ?? ev.data.text ?? '')
+          if (text.trim()) t.thoughts.push(text)
           break
+        }
         case 'step': {
           const p = ev.data as StepPayload
           t.steps.push({ node: p.node ?? p.label ?? 'step', label: p.label, payload: p })
@@ -187,21 +217,28 @@ export const useChatStore = defineStore('chat', {
         }
         case 'done': {
           const summary = ev.data.summary as DoneSummary | undefined
+          const content = String(ev.data.content ?? '')
           if (summary?.batched) {
             // terminal batched done → finalize the whole turn
             t.summary = summary
             t.status = 'done'
-          } else if (summary?.final_response) {
-            // per-task done inside a batch: only append the answer chunk
-            t.answer += '\n\n' + summary.final_response
-            if (summary.sql) t.steps.push({ node: 'gen_sql', payload: { sql: summary.sql } })
           } else {
-            t.status = 'done'
+            const answerAdd = summary?.final_response || content
+            if (answerAdd && !t.answer.includes(answerAdd)) {
+              t.answer += (t.answer ? '\n\n' : '') + answerAdd
+            }
+            if (summary) t.summary = summary
+            if (summary?.sql && !t.steps.some((s) => s.node === 'gen_sql')) {
+              t.steps.push({ node: 'gen_sql', payload: { node: 'gen_sql', sql: summary.sql } })
+            }
+            // Batch in progress → intermediate per-task done; wait for the
+            // terminal batched done. Otherwise this is the final answer.
+            if (!this.batchRunning) t.status = 'done'
           }
           break
         }
         case 'error': {
-          const msg = String(ev.data.error ?? ev.data.message ?? '')
+          const msg = String(ev.data.error ?? ev.data.message ?? ev.data.content ?? (ev.data as { summary?: { error?: string } }).summary?.error ?? '')
           this._failTurn(msg || 'unknown error')
           break
         }
@@ -260,13 +297,17 @@ export const useChatStore = defineStore('chat', {
             )
           } else if (ev.type === 'done') {
             const summary = ev.data.summary as DoneSummary | undefined
-            if (summary?.final_response) tt.answer += '\n\n' + summary.final_response
+            const content = String(ev.data.content ?? '')
+            const answerAdd = summary?.final_response || content
+            if (answerAdd && !tt.answer.includes(answerAdd)) {
+              tt.answer += (tt.answer ? '\n\n' : '') + answerAdd
+            }
+            if (summary) tt.summary = summary
             if (summary?.batched || !summary?.final_response) {
-              tt.summary = summary ?? tt.summary
               tt.status = 'done'
             }
           } else if (ev.type === 'error') {
-            this._failTurn(String(ev.data.error ?? 'resume failed'))
+            this._failTurn(String(ev.data.error ?? ev.data.message ?? ev.data.content ?? 'resume failed'))
           }
         },
         this.controller.signal,
@@ -275,6 +316,31 @@ export const useChatStore = defineStore('chat', {
       this.streaming = false
       this.batchRunning = false
       this.controller = null
+    },
+
+    /** Re-send the most recent failed turn's question. */
+    async retry() {
+      const t = this.currentTurn
+      if (!t || t.status !== 'error' || !t.question) return
+      await this.send(t.question)
+    },
+
+    async rateTurn(index: number, vote: 1 | -1) {
+      const t = this.turns[index]
+      if (!t || !t.question) return
+      const summary = t.summary
+      const body: Record<string, unknown> = {
+        question: t.question,
+        vote,
+      }
+      if (t.answer) body.note = t.answer.slice(0, 800)
+      if (summary?.sql) body.sql_snippet = summary.sql
+      try {
+        await apiPost('/v1/kb/ratings', body)
+        t.rating = vote
+      } catch (e) {
+        console.error('rate failed', e)
+      }
     },
 
     async clearConversation() {

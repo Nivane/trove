@@ -10,7 +10,8 @@ import { router } from './router'
 import { useUiStore } from './stores/ui'
 import './assets/styles/tokens.css'
 import './assets/styles/base.css'
-import './assets/styles/element-dark.css'
+import './assets/styles/element.css'
+import 'highlight.js/styles/atom-one-light.css'
 
 // Stable marker pinned by tests/api/test_ui.py on the served bundle.
 ;(window as any).__TROVE_UI__ = true

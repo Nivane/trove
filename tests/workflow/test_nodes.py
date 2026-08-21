@@ -1263,6 +1263,22 @@ class TestProbeQuery:
         obs = json.loads(await probe_query(sqlite_registry, "SELEC * FROM students", "sqlite"))
         assert obs["ok"] is False
 
+    async def test_probe_unparsable_is_syntax_not_permission(self, sqlite_registry):
+        """夹带非 SQL 文本导致无法解析时,应归为可重试的 SQL_SYNTAX,
+        而非 SQL_PERMISSION(死胡同)。"""
+        import json
+        from trove.workflow.nodes.gen_sql import probe_query
+
+        junk = (
+            '"question": "Name the accounts of oldest female clients?", '
+            '"evidence": "A11 holds average salary" SELECT * FROM students'
+        )
+        obs = json.loads(await probe_query(sqlite_registry, junk, "sqlite"))
+        assert obs["ok"] is False
+        assert obs["error"].startswith("[ERR:SQL_SYNTAX]")
+        assert "SQL_PERMISSION" not in obs["error"]
+        assert "non-SQL" in obs["error"]
+
     async def test_probe_rejects_metadata_table(self, sqlite_registry):
         """元数据侦察(sqlite_master)在注册表执行层被统一拦截。"""
         import json

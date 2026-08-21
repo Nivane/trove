@@ -5,6 +5,7 @@
 
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
+import type Token from 'markdown-it/lib/token.mjs'
 
 // Numeric-looking cells get right alignment (vanilla NUMERIC_RE behavior)
 const NUMERIC_RE = /^-?\d[\d,]*\.?\d*%?$/
@@ -21,7 +22,7 @@ export function renderMarkdown(src: string): string {
   md.renderer.rules.table_close = function () {
     return '</table></div>'
   }
-  md.renderer.rules.td_open = function (tokens, idx) {
+  md.renderer.rules.td_open = function (tokens: Token[], idx: number) {
     const token = tokens[idx]
     const align = token.attrGet('align')
     const content = tokens[idx + 1]?.content ?? ''
@@ -30,7 +31,7 @@ export function renderMarkdown(src: string): string {
     if (NUMERIC_RE.test(content.trim())) cls.push('numeric')
     return `<td${cls.length ? ` class="${cls.join(' ')}"` : ''}>`
   }
-  md.renderer.rules.th_open = function (tokens, idx) {
+  md.renderer.rules.th_open = function (tokens: Token[], idx: number) {
     const token = tokens[idx]
     const align = token.attrGet('align')
     return `<th${align ? ` class="align-${align}"` : ''}>`
@@ -55,8 +56,8 @@ export function renderMarkdown(src: string): string {
 }
 
 /** Strip the terminal ASCII chart block the output node embeds (the web
- * UI renders the real chart via ECharts instead). */
+ * UI renders the real chart via ECharts instead). The backend emits:
+ *   **Chart**: title / **图表: title**  followed by a ``` ``` fenced block. */
 export function stripAsciiChart(src: string): string {
-  // eslint-disable-next-line no-control-regex
-  return src.replace(/\*\*图表\/Chart\*\*\s*```[\s\S]*?```/g, '')
+  return src.replace(/^(\*\*(?:图表|Chart)\*{0,1}[^:\n]*:?[^\n]*)\n```[\s\S]*?```/gm, '')
 }

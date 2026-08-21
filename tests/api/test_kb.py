@@ -132,6 +132,59 @@ class TestLessons:
         assert len(resp.json()["lessons"]) == 1
 
 
+class TestRatings:
+    async def test_upvote_creates_pending_lesson(self, kb_client, api_kb):
+        resp = await kb_client.post("/v1/kb/ratings", json={
+            "question": "平均贷款金额是多少",
+            "note": "答案",
+            "sql_snippet": "SELECT AVG(amount) FROM loans",
+            "vote": 1,
+        })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["lesson"]["upvotes"] == 1
+        assert body["lesson"]["downvotes"] == 0
+        assert body["lesson"]["confirmed"] is False
+
+        kb = api_kb.state.kb
+        data = yaml.safe_load((kb.kb_dir / "test_db" / "lessons.yml").read_text(encoding="utf-8"))
+        lesson = next(l for l in data["lessons"] if l.get("question") == "平均贷款金额是多少")
+        assert lesson["upvotes"] == 1
+
+    async def test_same_question_upserts_counts(self, kb_client):
+        for _ in range(2):
+            resp = await kb_client.post("/v1/kb/ratings", json={
+                "question": "重复问题",
+                "vote": 1,
+            })
+            assert resp.status_code == 201
+        resp = await kb_client.post("/v1/kb/ratings", json={
+            "question": "重复问题",
+            "vote": -1,
+        })
+        assert resp.status_code == 201
+        lesson = resp.json()["lesson"]
+        assert lesson["upvotes"] == 2
+        assert lesson["downvotes"] == 1
+
+    async def test_invalid_vote_rejected(self, kb_client):
+        resp = await kb_client.post("/v1/kb/ratings", json={
+            "question": "测试",
+            "vote": 5,
+        })
+        assert resp.status_code == 422
+
+    async def test_rating_listed_in_pending(self, kb_client):
+        await kb_client.post("/v1/kb/ratings", json={
+            "question": "点踩问题",
+            "vote": -1,
+        })
+        resp = await kb_client.get("/v1/kb/lessons", params={"pending": "true"})
+        lessons = resp.json()["lessons"]
+        rated = next(l for l in lessons if l.get("question") == "点踩问题")
+        assert rated["downvotes"] == 1
+
+
 class TestTableNotes:
     async def test_table_notes(self, kb_client):
         resp = await kb_client.get("/v1/kb/tables/students/notes")

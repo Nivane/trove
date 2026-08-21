@@ -21,7 +21,7 @@
               </details>
             </div>
             <div v-if="turn.summary?.sql" class="summary-sql">
-              <pre class="code-block sql"><code>{{ turn.summary.sql }}</code></pre>
+              <SqlBlock :code="turn.summary.sql" />
             </div>
             <div v-if="turn.summary?.chart_option || turn.summary?.chart" class="chart-wrap">
               <ChartCard :chart="turn.summary.chart" :option="turn.summary.chart_option" />
@@ -32,8 +32,25 @@
             <div v-if="turn.status === 'hitl' && !turn.hitlActionsShown" class="step-wrap">
               <HitlCard :batch="!!turn.hitlBatch" />
             </div>
-            <div v-if="turn.error" class="error-box">{{ turn.error }}</div>
+            <div v-if="turn.error" class="error-box">
+              <span>{{ turn.error }}</span>
+              <button class="retry-btn" @click="chat.retry()">↻ {{ t('retry', ui.lang) }}</button>
+            </div>
             <div v-if="turn.status === 'streaming'" class="streaming-dots"><span></span><span></span><span></span></div>
+            <div v-if="turn.status === 'done'" class="rating-row">
+              <button
+                class="rate-btn"
+                :class="{ active: turn.rating === 1 }"
+                :title="t('thumbUp', ui.lang)"
+                @click="rate(turn, 1)"
+              >👍</button>
+              <button
+                class="rate-btn"
+                :class="{ active: turn.rating === -1 }"
+                :title="t('thumbDown', ui.lang)"
+                @click="rate(turn, -1)"
+              >👎</button>
+            </div>
           </div>
         </template>
       </div>
@@ -51,12 +68,24 @@ import StepCard from '../components/chat/StepCard.vue'
 import ChartCard from '../components/chat/ChartCard.vue'
 import HitlCard from '../components/chat/HitlCard.vue'
 import MarkdownView from '../components/chat/MarkdownView.vue'
+import SqlBlock from '../components/chat/SqlBlock.vue'
 import Composer from '../components/chat/Composer.vue'
 import Welcome from '../components/chat/Welcome.vue'
 import { useChatStore } from '../stores/chat'
+import { useUiStore } from '../stores/ui'
+import { t } from '../i18n'
+import type { Turn } from '../stores/chat'
 
 const chat = useChatStore()
+const ui = useUiStore()
 const messageList = ref<HTMLDivElement>()
+
+async function rate(turn: Turn, vote: 1 | -1) {
+  if (turn.rating === vote) return
+  const index = chat.turns.indexOf(turn)
+  if (index < 0) return
+  await chat.rateTurn(index, vote)
+}
 
 function scrollToBottom() {
   void nextTick(() => {

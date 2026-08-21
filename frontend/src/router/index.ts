@@ -19,8 +19,12 @@ export const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  // On first load with a stored token, restore the session before guarding.
+  if (!auth.user && auth.token && !auth.bootPromise) {
+    await auth.bootstrap()
+  }
   if (to.name !== 'login' && !auth.isAuthed) {
     return { name: 'login', query: to.fullPath !== '/' ? { next: to.fullPath } : {} }
   }

@@ -1,6 +1,6 @@
 <template>
-  <div v-if="option" class="chart-card">
-    <div class="chart-title">{{ chart?.title || 'Chart' }}</div>
+  <div v-if="option || chart" class="chart-card">
+    <div class="chart-title">{{ props.chart?.title || 'Chart' }}</div>
     <div ref="el" class="chart-canvas"></div>
   </div>
 </template>
@@ -16,10 +16,9 @@ const props = defineProps<{
 }>()
 
 const el = ref<HTMLDivElement>()
-let chart: echarts.ECharts | null = null
+let chartInstance: echarts.ECharts | null = null
 
 function fallbackOption(spec: ChartSpec): Record<string, unknown> {
-  const dim = spec.dimension || ''
   const cats = spec.categories || []
   const series = (spec.series || []).map((s) => ({ name: s.name || 'value', type: 'bar', data: s.data }))
   return {
@@ -33,9 +32,13 @@ function fallbackOption(spec: ChartSpec): Record<string, unknown> {
 
 function render() {
   if (!el.value) return
-  if (!chart) chart = echarts.init(el.value)
-  const opt = (props.option as Record<string, unknown>) || (props.chart ? fallbackOption(props.chart) : null)
-  if (opt) chart.setOption(opt)
+  if (chartInstance?.getDom() !== el.value) {
+    chartInstance?.dispose()
+    chartInstance = null
+  }
+  if (!chartInstance) chartInstance = echarts.init(el.value)
+  const opt = props.option || (props.chart ? fallbackOption(props.chart) : null)
+  if (opt) chartInstance.setOption(opt)
 }
 
 onMounted(async () => {
@@ -46,13 +49,13 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', resize)
-  chart?.dispose()
-  chart = null
+  chartInstance?.dispose()
+  chartInstance = null
 })
 
 function resize() {
-  chart?.resize()
+  chartInstance?.resize()
 }
 
-watch(() => props.option, () => render())
+watch(() => [props.option, props.chart] as const, render)
 </script>

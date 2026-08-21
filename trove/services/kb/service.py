@@ -278,9 +278,12 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
         for lesson in data.get("lessons", []):
             entries.append(("lesson", str(lesson.get("pattern", "")), {
                 "pattern": str(lesson.get("pattern", "")),
+                "question": str(lesson.get("question", "")),
                 "note": str(lesson.get("note", "")),
                 "sql_snippet": str(lesson.get("sql_snippet", "")),
                 "confirmed": bool(lesson.get("confirmed", False)),
+                "upvotes": int(lesson.get("upvotes") or 0),
+                "downvotes": int(lesson.get("downvotes") or 0),
             }))
 
     elif path.name == "examples.yml":
@@ -680,6 +683,46 @@ class KbService:
         """Record a lesson candidate (pending until confirmed)."""
         entry.setdefault("confirmed", False)
         await self._append_entry("lessons.yml", "lessons", entry, datasource)
+
+    async def rate_lesson(self, entry: dict, datasource: str) -> dict:
+        """Record a user up/down vote, upserting a lesson keyed by `question`.
+
+        Turns +1 (upvote) or -1 (downvote) into a pending lesson entry; a
+        repeat vote on the same question merges into the existing entry and
+        re-marks it pending for admin re-review.
+        """
+        question = entry.get("question")
+        path = self.kb_dir / datasource / "lessons.yml"
+        data = {}
+        if path.exists():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        lessons = list(data.get("lessons", []))
+        existing = next((l for l in lessons if l.get("question") == question), None)
+        if existing is None:
+            lesson = {
+                "question": question,
+                "note": entry.get("note", ""),
+                "sql_snippet": entry.get("sql_snippet", ""),
+                "upvotes": 0,
+                "downvotes": 0,
+                "confirmed": False,
+            }
+            lessons.append(lesson)
+            existing = lesson
+        if entry["vote"] == 1:
+            existing["upvotes"] = int(existing.get("upvotes", 0)) + 1
+        else:
+            existing["downvotes"] = int(existing.get("downvotes", 0)) + 1
+        existing["confirmed"] = False
+        if entry.get("sql_snippet"):
+            existing["sql_snippet"] = entry["sql_snippet"]
+        data["lessons"] = lessons
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        await self.force_sync()
+        return dict(existing)
 
     async def confirm_pending_lessons(self, datasource: str) -> int:
         """Mark all pending lessons as confirmed (rewrites the YAML)."""

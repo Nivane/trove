@@ -73,6 +73,7 @@ export async function apiPatch<T = any>(path: string, body?: unknown): Promise<T
 export async function apiDelete<T = any>(path: string): Promise<T> {
   const resp = await apiFetch(path, { method: 'DELETE' })
   if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText))
+  if (resp.status === 204 || resp.status === 205) return undefined as unknown as T
   return resp.json()
 }
 

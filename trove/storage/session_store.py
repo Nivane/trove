@@ -323,6 +323,13 @@ class SessionStore:
                 row = await cursor.fetchone()
                 msg_count = row[0] if row else 0
 
+                # Derive a human-readable title from the first user message.
+                cursor = await conn.execute(
+                    "SELECT content FROM messages WHERE role = 'user' ORDER BY id LIMIT 1"
+                )
+                row = await cursor.fetchone()
+                first_question = row[0] if row else ""
+
                 cursor = await conn.execute("SELECT value FROM meta WHERE key = 'created_at'")
                 row = await cursor.fetchone()
                 created_at = row[0] if row else ""
@@ -345,6 +352,7 @@ class SessionStore:
                     "created_at": created_at,
                     "updated_at": updated_at,
                     "message_count": msg_count,
+                    "title": first_question,
                 })
             except Exception as e:
                 logger.warning("Skipping corrupt session db %s: %s", db_file, e)

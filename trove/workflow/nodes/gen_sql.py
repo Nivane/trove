@@ -492,6 +492,18 @@ async def _probe_result(
         return {"ok": False, "error": "[ERR:SQL_PERMISSION] write operations are not permitted"}
     ok, reasons = check_readonly(sql, dialect, allowed_tables)
     if not ok:
+        if any("could not be parsed" in r for r in reasons):
+            allowlisted = (
+                f" (allowed tables: {sorted(allowed_tables)})"
+                if allowed_tables
+                else ""
+            )
+            return {
+                "ok": False,
+                "error": f"[ERR:SQL_SYNTAX] SQL could not be parsed as a single "
+                f"SELECT statement; it may contain non-SQL text{allowlisted}. "
+                f"Please emit only the SQL query.",
+            }
         return {"ok": False, "error": "[ERR:SQL_PERMISSION] " + "; ".join(reasons)}
     valid, errors = validate_sql(sql, dialect)
     if not valid:

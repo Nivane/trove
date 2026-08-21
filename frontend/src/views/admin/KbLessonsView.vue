@@ -8,9 +8,17 @@
     <el-tabs v-model="tab">
       <el-tab-pane :label="t('pendingLessons', ui.lang)" name="pending">
         <el-table :data="pending" v-loading="loading" empty-text="—">
-          <el-table-column prop="pattern" label="pattern" min-width="220" />
+          <el-table-column :label="t('kb', ui.lang)" min-width="220">
+            <template #default="{ row }">{{ label(row) }}</template>
+          </el-table-column>
           <el-table-column prop="note" label="note" min-width="260" />
           <el-table-column prop="sql_snippet" label="sql" min-width="180" />
+          <el-table-column :label="t('upvotes', ui.lang)" width="90">
+            <template #default="{ row }">{{ row.upvotes ?? 0 }}</template>
+          </el-table-column>
+          <el-table-column :label="t('downvotes', ui.lang)" width="90">
+            <template #default="{ row }">{{ row.downvotes ?? 0 }}</template>
+          </el-table-column>
           <el-table-column :label="t('actions', ui.lang)" width="160" fixed="right">
             <template #default="{ row }">
               <el-button size="small" type="primary" @click="confirmLesson(row)">
@@ -26,9 +34,17 @@
       </el-tab-pane>
       <el-tab-pane :label="t('confirmedLessons', ui.lang)" name="confirmed">
         <el-table :data="confirmed" v-loading="loading">
-          <el-table-column prop="pattern" label="pattern" min-width="220" />
+          <el-table-column :label="t('kb', ui.lang)" min-width="220">
+            <template #default="{ row }">{{ label(row) }}</template>
+          </el-table-column>
           <el-table-column prop="note" label="note" min-width="260" />
           <el-table-column prop="sql_snippet" label="sql" min-width="180" />
+          <el-table-column :label="t('upvotes', ui.lang)" width="90">
+            <template #default="{ row }">{{ row.upvotes ?? 0 }}</template>
+          </el-table-column>
+          <el-table-column :label="t('downvotes', ui.lang)" width="90">
+            <template #default="{ row }">{{ row.downvotes ?? 0 }}</template>
+          </el-table-column>
         </el-table>
       </el-tab-pane>
     </el-tabs>
@@ -43,10 +59,17 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 
 interface Lesson {
-  pattern: string
+  pattern?: string
+  question?: string
   note?: string
   sql_snippet?: string
   confirmed?: boolean
+  upvotes?: number
+  downvotes?: number
+}
+
+function label(l: Lesson): string {
+  return l.question || l.pattern || '-'
 }
 
 const ui = useUiStore()
@@ -69,13 +92,17 @@ async function load() {
 }
 
 async function confirmLesson(row: Lesson) {
-  await apiPost(`/v1/admin/kb/lessons/${encodeURIComponent(row.pattern)}/confirm`)
+  const key = row.pattern || row.question || ''
+  if (!key) return
+  await apiPost(`/v1/admin/kb/lessons/${encodeURIComponent(key)}/confirm`)
   ElMessage.success('confirmed')
   await load()
 }
 
 async function rejectLesson(row: Lesson) {
-  await apiPost(`/v1/admin/kb/lessons/${encodeURIComponent(row.pattern)}/reject`)
+  const key = row.pattern || row.question || ''
+  if (!key) return
+  await apiPost(`/v1/admin/kb/lessons/${encodeURIComponent(key)}/reject`)
   ElMessage.success('rejected')
   await load()
 }
