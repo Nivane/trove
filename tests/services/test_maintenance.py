@@ -27,8 +27,8 @@ def _retention(max_sessions: int = 100, grace_min: int = 10) -> RetentionConfig:
 def _fake_checkpointer():
     """Duck-typed checkpointer for quota-sweep tests.
 
-    Records adelete_thread calls; alist/prune are no-ops so run_all()
-    (Task 4) can reuse this fake.
+    Records adelete_thread calls; alist yields no threads, so run_all()
+    (Task 4: orphans/prune) degrades to zero work on this fake.
     """
 
     class FakeCheckpointer:
@@ -41,9 +41,6 @@ def _fake_checkpointer():
         async def alist(self, config=None):  # async generator: no threads
             if False:
                 yield  # pragma: no cover
-
-        async def aprune(self, thread_id: str, depth: int) -> None:
-            pass
 
     return FakeCheckpointer()
 
@@ -204,26 +201,31 @@ async def test_purge_orphan_checkpoints(tmp_home):
     store = SessionStore(home_dir=str(tmp_home))
     ckpt_db = str(tmp_home / "checkpoints.db")
     async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
-        # 有主线程 + 3 个无主线程
+        # 有主线程 + 3 个无主线程(无主线程 01 塞 3 行,钉线程级计数:
+        # 若按行计数会错成 5,线程级应为 3)
         sid = await _seed(store, "proj", "alice")
-        for i, orphan in enumerate(("00000000-0000-0000-0000-000000000001",
-                                    "00000000-0000-0000-0000-000000000002",
-                                    "00000000-0000-0000-0000-000000000003")):
+        orphans = ("00000000-0000-0000-0000-000000000001",
+                   "00000000-0000-0000-0000-000000000002",
+                   "00000000-0000-0000-0000-000000000003")
+        for step in range(3):
+            await saver.aput({"configurable": {"thread_id": orphans[0], "checkpoint_ns": ""}},
+                             _ckpt_row(step), _ckpt_meta(step), {})
+        for step, orphan in enumerate(orphans[1:], start=3):
             await saver.aput({"configurable": {"thread_id": orphan, "checkpoint_ns": ""}},
-                             _ckpt_row(i), _ckpt_meta(i), {})
+                             _ckpt_row(step), _ckpt_meta(step), {})
         await saver.aput({"configurable": {"thread_id": sid, "checkpoint_ns": ""}},
                          _ckpt_row(99), _ckpt_meta(99), {})
-        # 统计前先确认有 4 个线程可列
         svc = MaintenanceService(store, saver, _retention())
         removed = await svc.purge_orphan_checkpoints()
-        assert removed == 3
-        # 有主线程仍在
+        assert removed == 3  # 3 个无主线程;01 有 3 行也只计 1
+        # 有主线程仍在,checkpoints.db 总量只剩有主线程的 1 行
         tuples = [t async for t in saver.alist({"configurable": {"thread_id": sid}})]
         assert tuples  # 非空 = 还在
+        assert len([t async for t in saver.alist(None)]) == 1
 
 
 async def test_prune_thread_depth(tmp_home):
-    """单线程 60 行 checkpoint,depth=50 → 修剪后行数收敛。"""
+    """单线程 60 行 checkpoint,depth=50 → 精确保留最新 50 行且父链不打断。"""
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from trove.services.maintenance import MaintenanceService
 
@@ -231,16 +233,29 @@ async def test_prune_thread_depth(tmp_home):
     ckpt_db = str(tmp_home / "checkpoints.db")
     async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
         tid = "aaaaaaaa-0000-0000-0000-000000000000"
+        # 逐行按序插入并串起父链(c00 为 root,c01 的父 = c00,……)
+        prev: str | None = None
         for i in range(60):
-            await saver.aput(
-                {"configurable": {"thread_id": tid, "checkpoint_ns": ""}},
-                _ckpt_row(i), _ckpt_meta(i), {},
-            )
+            cfg = {"configurable": {"thread_id": tid, "checkpoint_ns": ""}}
+            if prev is not None:
+                cfg["configurable"]["checkpoint_id"] = prev
+            await saver.aput(cfg, _ckpt_row(i), _ckpt_meta(i), {})
+            prev = f"c{i:02d}"
         svc = MaintenanceService(store, saver, _retention())
         pruned = await svc.prune_thread_depth(depth=50)
         assert pruned == 1
         remaining = [t async for t in saver.alist({"configurable": {"thread_id": tid}})]
-        assert 0 < len(remaining) <= 51  # 保留最近 depth 行(本版本 aprune 为 stub,走重写)
+        by_id = {t.checkpoint["id"]: t for t in remaining}
+        # 精确钉"最新行保留":存活 id 集合 == 最新 50 行,最老 10 行被修剪
+        # (自造 id 零填充、字典序与插入序一致)
+        assert len(by_id) == 50
+        assert set(by_id) == {f"c{i:02d}" for i in range(10, 60)}
+        # 父指针保留:链内行的父 = 上一行 id;仅最老 kept 行(c10)的父
+        # (c09)位于被删段内,悬空终止
+        for i in range(11, 60):
+            parent = by_id[f"c{i:02d}"].parent_config
+            assert parent["configurable"]["checkpoint_id"] == f"c{i-1:02d}"
+        assert by_id["c10"].parent_config["configurable"]["checkpoint_id"] == "c09"
 
 
 async def test_run_all_returns_stats(tmp_home):
@@ -254,4 +269,38 @@ async def test_run_all_returns_stats(tmp_home):
     svc = MaintenanceService(store, ckpt, _retention(max_sessions=2, grace_min=0))
     result = await svc.run_all()
     assert result["sweep"].removed_sessions == 1
-    assert "orphans" in result and "pruned" in result
+    assert result["orphans"] == 0 and result["pruned"] == 0
+
+
+async def test_run_all_sweep_failure_isolated(tmp_home):
+    """sweep 抛错被 run_all 隔离,仍返回完整统计(任一步失败不影响其他步)。"""
+    from trove.services.maintenance import MaintenanceService, SweepStats
+
+    class _RaisingStore:
+        async def list_all(self):
+            raise RuntimeError("boom")
+
+    svc = MaintenanceService(_RaisingStore(), _fake_checkpointer(), _retention())
+    result = await svc.run_all()
+    assert result["orphans"] == 0 and result["pruned"] == 0
+    assert isinstance(result["sweep"], SweepStats)
+    assert result["sweep"].errors == 1
+
+
+async def test_prune_thread_depth_zero_disables(tmp_home):
+    """显式 depth=0 关闭深度修剪(不再落回默认 depth)。"""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt_db = str(tmp_home / "checkpoints.db")
+    async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
+        tid = "bbbbbbbb-0000-0000-0000-000000000000"
+        for i in range(60):
+            await saver.aput({"configurable": {"thread_id": tid, "checkpoint_ns": ""}},
+                             _ckpt_row(i), _ckpt_meta(i), {})
+        svc = MaintenanceService(store, saver, _retention())
+        pruned = await svc.prune_thread_depth(depth=0)
+        assert pruned == 0
+        remaining = [t async for t in saver.alist({"configurable": {"thread_id": tid}})]
+        assert len(remaining) == 60  # 未修剪

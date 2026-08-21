@@ -150,36 +150,49 @@ class MaintenanceService:
 
         Fixes the historical accumulation: sessions deleted before
         cascade logic existed left orphan threads in checkpoints.db.
+
+        Deletion and counting are at thread level: the thread_id set is
+        deduplicated from a streaming alist pass (no full checkpoint rows
+        materialized), so a thread with N rows is deleted once and counts
+        once.
         """
         removed = 0
         try:
             all_sessions = await self._store.list_all()
             existing = {s["session_id"] for s in all_sessions}
-            # alist over every thread in the shared checkpoint db
-            # (this langgraph version yields CheckpointTuple objects,
-            # thread_id lives in t.config["configurable"]["thread_id"])
-            all_tuples = [t async for t in self._ckpt.alist(None)]
-            for t in all_tuples:
+            # stream every thread in the shared checkpoint db; only the
+            # thread_id is kept (this langgraph version yields
+            # CheckpointTuple objects, thread_id lives in
+            # t.config["configurable"]["thread_id"])
+            orphan_threads: set[str] = set()
+            async for t in self._ckpt.alist(None):
                 thread_id = t.config["configurable"]["thread_id"]
                 if thread_id not in existing:
-                    try:
-                        await self._ckpt.adelete_thread(thread_id)
-                        removed += 1
-                    except Exception as e:
-                        logger.warning("orphan checkpoint delete failed %s: %s", thread_id, e)
+                    orphan_threads.add(thread_id)
+            for thread_id in orphan_threads:
+                try:
+                    await self._ckpt.adelete_thread(thread_id)
+                    removed += 1
+                except Exception as e:
+                    logger.warning("orphan checkpoint delete failed %s: %s", thread_id, e)
         except Exception as e:
             logger.warning("purge_orphan_checkpoints failed: %s", e)
         return removed
 
     async def prune_thread_depth(self, depth: int | None = None) -> int:
-        """Cap checkpoint rows per thread; returns number of threads pruned."""
-        depth = depth or self._retention.max_checkpoints_per_thread
+        """Cap checkpoint rows per thread; returns number of threads pruned.
+
+        ``depth=None`` falls back to the retention config; an explicit
+        ``depth=0`` disables pruning (no fallback).
+        """
+        depth = self._retention.max_checkpoints_per_thread if depth is None else depth
         if depth <= 0:
             return 0
         pruned = 0
         try:
             counts: dict[str, int] = {}
-            for t in [x async for x in self._ckpt.alist(None)]:
+            # streaming pass: only the thread_id is kept per row
+            async for t in self._ckpt.alist(None):
                 thread_id = t.config["configurable"]["thread_id"]
                 counts[thread_id] = counts.get(thread_id, 0) + 1
             for thread_id, n in counts.items():
@@ -199,8 +212,18 @@ class MaintenanceService:
         The locked langgraph-checkpoint-sqlite (3.1.1) ships ``aprune`` as a
         NotImplementedError stub, so the depth cap is done with the primitives
         that do work here: alist(limit=depth) -> adelete_thread -> re-put.
-        Caveat: pending-writes rows are dropped (same DeltaChannel caveat the
-        langgraph docs themselves attach to prune).
+
+        Parent pointers are preserved: each kept row is re-put with its
+        original parent's checkpoint_id, so only the oldest kept row's parent
+        (inside the deleted segment) is a dangling pointer and the chain
+        naturally terminates there. Pending-writes rows are dropped (same
+        DeltaChannel caveat the langgraph docs attach to prune).
+
+        Interruption semantics: the rewrite is two-phase (whole-thread
+        delete, then per-row re-put) and therefore not atomic — a crash
+        mid-rewrite truncates the thread, a wider window than the official
+        prune's single DELETE. Accepted: maintenance runs as a daemon
+        against idle sessions.
         """
         kept = [
             t
@@ -212,14 +235,28 @@ class MaintenanceService:
             return
         await self._ckpt.adelete_thread(thread_id)
         for t in kept:
-            # strip checkpoint_id so re-put rows are clean roots (no self-parent)
+            # re-put with the ORIGINAL parent pointer (config's
+            # checkpoint_id = the row's parent), not the row's own id
             cfg = {"configurable": dict(t.config["configurable"])}
-            cfg["configurable"].pop("checkpoint_id", None)
+            parent_cid = None
+            if t.parent_config is not None:
+                parent_cid = t.parent_config.get("configurable", {}).get("checkpoint_id")
+            if parent_cid is not None:
+                cfg["configurable"]["checkpoint_id"] = parent_cid
+            else:
+                cfg["configurable"].pop("checkpoint_id", None)
             await self._ckpt.aput(cfg, t.checkpoint, t.metadata, {})
 
     async def run_all(self, now: datetime | None = None) -> dict[str, Any]:
-        """One-shot entry for daemon/lifespan: orphans -> depth -> sweep."""
+        """One-shot entry for daemon/lifespan: orphans -> depth -> sweep.
+
+        Each stage is isolated: a failure in one never blocks the others.
+        """
         orphans = await self.purge_orphan_checkpoints()
         pruned = await self.prune_thread_depth()
-        sweep = await self.sweep(now)
+        try:
+            sweep = await self.sweep(now)
+        except Exception as e:
+            logger.warning("sweep failed in run_all: %s", e)
+            sweep = SweepStats(errors=1)
         return {"orphans": orphans, "pruned": pruned, "sweep": sweep}
