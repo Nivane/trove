@@ -66,6 +66,10 @@ class WorkflowState(BaseModel):
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 
+    # 目标数据源(会话请求指定;空 = 注册表默认)。节点内连接器统一用
+    # ``connectors.get(state.datasource or None)`` 解析——None 回退 default_name。
+    datasource: str = ""
+
     # Compact conversation history (prior exchanges) for follow-up questions
     history: str = ""
 
@@ -303,6 +307,9 @@ class GenSQLState(BaseModel):
     # 交互语言(由外层 WorkflowState 注入)
     lang: str = "zh"
 
+    # 目标数据源(由外层 WorkflowState 经 from_workflow 注入)
+    datasource: str = ""
+
     # conversation history for follow-up questions
     history: str = ""
 
@@ -366,6 +373,7 @@ class GenSQLState(BaseModel):
             ),
             dialect=dialect,
             lang=state.lang,
+            datasource=state.datasource,
             time_context=state.time_context,
             reflect_reason=state.reason,
             error_feedback=state.error_feedback,

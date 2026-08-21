@@ -215,3 +215,16 @@ class TestCappedReducers:
 
     def test_ignore_none_update(self):
         assert _cap_sql_versions([{"sql": "S1"}], None) == [{"sql": "S1"}]
+
+
+def test_workflow_state_carries_datasource():
+    st = WorkflowState(session_id="s", question="q", datasource="financial")
+    assert st.datasource == "financial"
+    # 未指定时为空串(节点侧 ``or None`` 回退注册表默认)
+    assert WorkflowState(session_id="s", question="q").datasource == ""
+
+
+def test_gen_sql_state_from_workflow_copies_datasource():
+    st = WorkflowState(session_id="s", question="q", datasource="financial")
+    gs = GenSQLState.from_workflow(st, dialect="sqlite")
+    assert gs.datasource == "financial"
