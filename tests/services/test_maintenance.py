@@ -175,3 +175,83 @@ async def test_sweep_naive_updated_at_falls_back_to_mtime(tmp_home):
     assert stats.skipped_active == 1  # 回退 mtime(新文件)→ 活跃 → 豁免
     assert stats.removed_sessions == 0
     assert len(await store.list_all()) == 2  # 文件全部还在
+
+
+# ---------------------------------------------------------------------------
+# Task 4: purge_orphan_checkpoints / prune_thread_depth / run_all
+# 校准说明(锁定 langgraph 1.2.11 / checkpoint-sqlite 3.1.1):
+#   - aput(config, checkpoint, metadata, new_versions) 四参全必填;config 需
+#     checkpoint_ns,checkpoint dict 需 id 键。
+#   - alist 产出 CheckpointTuple 对象(非 (thread_id, checkpoint) 元组)。
+#   - aprune 为 NotImplementedError stub → 深度修剪走 alist+adelete_thread+重写。
+# ---------------------------------------------------------------------------
+
+
+def _ckpt_row(step: int) -> dict:
+    """Minimal graph checkpoint dict the saver can round-trip (id is required)."""
+    return {"id": f"c{step:02d}", "__metadata__": {"step": step}, "messages": []}
+
+
+def _ckpt_meta(step: int) -> dict:
+    return {"source": "test", "step": step, "writes": None, "score": None}
+
+
+async def test_purge_orphan_checkpoints(tmp_home):
+    """checkpoints.db 中无会话文件的 thread_id 被清掉,有主的保留。"""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt_db = str(tmp_home / "checkpoints.db")
+    async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
+        # 有主线程 + 3 个无主线程
+        sid = await _seed(store, "proj", "alice")
+        for i, orphan in enumerate(("00000000-0000-0000-0000-000000000001",
+                                    "00000000-0000-0000-0000-000000000002",
+                                    "00000000-0000-0000-0000-000000000003")):
+            await saver.aput({"configurable": {"thread_id": orphan, "checkpoint_ns": ""}},
+                             _ckpt_row(i), _ckpt_meta(i), {})
+        await saver.aput({"configurable": {"thread_id": sid, "checkpoint_ns": ""}},
+                         _ckpt_row(99), _ckpt_meta(99), {})
+        # 统计前先确认有 4 个线程可列
+        svc = MaintenanceService(store, saver, _retention())
+        removed = await svc.purge_orphan_checkpoints()
+        assert removed == 3
+        # 有主线程仍在
+        tuples = [t async for t in saver.alist({"configurable": {"thread_id": sid}})]
+        assert tuples  # 非空 = 还在
+
+
+async def test_prune_thread_depth(tmp_home):
+    """单线程 60 行 checkpoint,depth=50 → 修剪后行数收敛。"""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt_db = str(tmp_home / "checkpoints.db")
+    async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
+        tid = "aaaaaaaa-0000-0000-0000-000000000000"
+        for i in range(60):
+            await saver.aput(
+                {"configurable": {"thread_id": tid, "checkpoint_ns": ""}},
+                _ckpt_row(i), _ckpt_meta(i), {},
+            )
+        svc = MaintenanceService(store, saver, _retention())
+        pruned = await svc.prune_thread_depth(depth=50)
+        assert pruned == 1
+        remaining = [t async for t in saver.alist({"configurable": {"thread_id": tid}})]
+        assert 0 < len(remaining) <= 51  # 保留最近 depth 行(本版本 aprune 为 stub,走重写)
+
+
+async def test_run_all_returns_stats(tmp_home):
+    """run_all 依次执行三阶段并返回完整统计。"""
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt = _fake_checkpointer()
+    for i in range(3):
+        await _seed(store, "proj", "alice", updated_delta_min=i + 1)
+    svc = MaintenanceService(store, ckpt, _retention(max_sessions=2, grace_min=0))
+    result = await svc.run_all()
+    assert result["sweep"].removed_sessions == 1
+    assert "orphans" in result and "pruned" in result
