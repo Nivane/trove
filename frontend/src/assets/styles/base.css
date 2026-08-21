@@ -142,6 +142,13 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: var(--surface-raised); border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg); padding: var(--sp-4) var(--sp-5); box-shadow: var(--elev-1);
 }
+.answer-synthesis {
+  border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--surface-raised));
+}
+.answer-label {
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .08em;
+  color: var(--accent); text-transform: uppercase; margin-bottom: var(--sp-2);
+}
 
 /* ── Step cards ─────────────────────────────────────── */
 .step-wrap { animation: rise var(--dur) var(--ease); }

@@ -603,8 +603,10 @@ def make_schema_linking(
                 if t not in matched_names:
                     matched_names.append(t)
 
-            # 回退重跑:上一轮已匹配的表保留(并集),修"漏表"不丢旧匹配
-            if state.error_feedback or state.error_analysis or state.retry_count:
+            # 入口已带匹配表时并入(并集):回退重跑保留上轮匹配修"漏表",
+            # 多步子任务则继承前序步骤的锚点(coordinator 预注入);全新
+            # 单问题入口为空,行为不变。
+            if state.matched_tables:
                 for table in state.matched_tables:
                     if table not in matched_names:
                         matched_names.append(table)

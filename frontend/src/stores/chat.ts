@@ -22,6 +22,8 @@ export interface Turn {
   thoughts: string[]
   steps: StepCard[]
   answer: string
+  /** 批收尾综合回答(summary.final_response):与逐条子任务答案(answer)分离展示 */
+  synthesis?: string
   summary: DoneSummary | null
   status: 'streaming' | 'done' | 'error' | 'hitl'
   error?: string
@@ -219,8 +221,10 @@ export const useChatStore = defineStore('chat', {
           const summary = ev.data.summary as DoneSummary | undefined
           const content = String(ev.data.content ?? '')
           if (summary?.batched) {
-            // terminal batched done → finalize the whole turn
+            // terminal batched done → finalize the whole turn; the synthesis
+            // answer is kept separate (rendered above the per-task answers)
             t.summary = summary
+            t.synthesis = summary.final_response
             t.status = 'done'
           } else {
             const answerAdd = summary?.final_response || content
@@ -298,13 +302,18 @@ export const useChatStore = defineStore('chat', {
           } else if (ev.type === 'done') {
             const summary = ev.data.summary as DoneSummary | undefined
             const content = String(ev.data.content ?? '')
-            const answerAdd = summary?.final_response || content
-            if (answerAdd && !tt.answer.includes(answerAdd)) {
-              tt.answer += (tt.answer ? '\n\n' : '') + answerAdd
-            }
-            if (summary) tt.summary = summary
-            if (summary?.batched || !summary?.final_response) {
+            if (summary?.batched) {
+              // terminal batched done → synthesis kept separate from the
+              // per-task answer chunks appended below
+              tt.summary = summary
+              tt.synthesis = summary.final_response
               tt.status = 'done'
+            } else {
+              const answerAdd = summary?.final_response || content
+              if (answerAdd && !tt.answer.includes(answerAdd)) {
+                tt.answer += (tt.answer ? '\n\n' : '') + answerAdd
+              }
+              if (summary) tt.summary = summary
             }
           } else if (ev.type === 'error') {
             this._failTurn(String(ev.data.error ?? ev.data.message ?? ev.data.content ?? 'resume failed'))

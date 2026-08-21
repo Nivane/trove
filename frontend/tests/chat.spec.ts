@@ -88,4 +88,48 @@ describe('chat store — SSE event state machine', () => {
     expect(t.hitlBatch).toBe(true)
     expect(chat.pendingHitl?.batch).toBe(true)
   })
+
+  it('batched done stores synthesis separately from per-task answers', () => {
+    const chat = useChatStore()
+    chat.turns.push({ question: 'q', thoughts: [], steps: [], answer: '', summary: null, status: 'streaming' })
+    chat.batchRunning = true
+
+    chat.onEvent({ type: 'done', data: { summary: { final_response: 'task1 answer' } } })
+    chat.onEvent({ type: 'done', data: { summary: { final_response: 'task2 answer' } } })
+    // terminal batched done → synthesis block text, NOT mixed into per-task answers
+    chat.onEvent({ type: 'done', data: { summary: { batched: true, final_response: '综合回答' } } })
+    const t = chat.currentTurn!
+    expect(t.status).toBe('done')
+    expect(t.synthesis).toBe('综合回答')
+    expect(t.answer).toContain('task1 answer')
+    expect(t.answer).toContain('task2 answer')
+    expect(t.answer).not.toContain('综合回答')
+  })
+
+  it('resume approve_all keeps synthesis out of the per-task answer', async () => {
+    const chat = useChatStore()
+    chat.turns.push({ question: 'q', thoughts: [], steps: [], answer: '', summary: null, status: 'streaming' })
+    chat.onEvent({ type: 'hitl', data: { payload: { task_context: { total: 2 } } } })
+
+    const body = [
+      { type: 'task', data: { task_id: 't1', title: '任务A', status: 'done' } },
+      { type: 'done', data: { summary: { final_response: 'task1 answer' } } },
+      { type: 'task', data: { task_id: 't2', title: '任务B', status: 'done' } },
+      { type: 'done', data: { summary: { final_response: 'task2 answer' } } },
+      { type: 'done', data: { summary: { batched: true, final_response: '综合回答' } } },
+    ].map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`).join('')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 200 })))
+    try {
+      await chat.resume('approve_all')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    const t = chat.currentTurn!
+    expect(t.status).toBe('done')
+    expect(t.synthesis).toBe('综合回答')
+    expect(t.answer).toContain('task1 answer')
+    expect(t.answer).toContain('task2 answer')
+    expect(t.answer).not.toContain('综合回答')
+  })
 })

@@ -26,8 +26,12 @@
             <div v-if="turn.summary?.chart_option || turn.summary?.chart" class="chart-wrap">
               <ChartCard :chart="turn.summary.chart" :option="turn.summary.chart_option" />
             </div>
-            <div v-if="turn.answer || turn.summary?.final_response" class="answer">
-              <MarkdownView :source="turn.answer || turn.summary!.final_response!" />
+            <div v-if="turn.synthesis" class="answer answer-synthesis">
+              <div class="answer-label">{{ t('synthesisAnswer', ui.lang) }}</div>
+              <MarkdownView :source="turn.synthesis" />
+            </div>
+            <div v-if="turn.answer" class="answer">
+              <MarkdownView :source="turn.answer" />
             </div>
             <div v-if="turn.status === 'hitl' && !turn.hitlActionsShown" class="step-wrap">
               <HitlCard :batch="!!turn.hitlBatch" />

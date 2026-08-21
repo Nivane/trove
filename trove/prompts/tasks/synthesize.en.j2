@@ -1,0 +1,16 @@
+Below are the results of several sub-tasks run for one user question. Synthesize them into one coherent final answer.
+
+{% for t in tasks %}
+Task {{ loop.index }}[{{ t.status }}]: {{ t.title }}
+{%- if t.sql %} SQL: {{ t.sql }}{% endif %}
+{%- if t.row_count is not none %} Rows: {{ t.row_count }}{% endif %}
+{%- if t.verdict %} Verdict: {{ t.verdict }}{% endif %}
+{%- if t.error %} Error: {{ t.error }}{% endif %}
+{%- if t.rows_preview %} Preview: {{ t.rows_preview | map("join", " | ") | join(" ; ") }}{% endif %}
+{% endfor %}
+
+Requirements:
+- State conclusions directly, citing the key numbers
+- Do not output SQL code blocks
+- If a sub-task failed or returned nothing, say plainly that this part is unavailable
+- Output only the synthesized answer text, no prefixes or explanations

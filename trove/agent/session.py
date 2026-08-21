@@ -33,8 +33,12 @@ import uuid
 from datetime import datetime, timezone
 
 from trove.agent.tasks import (
+    ROWS_PREVIEW,
+    cap_cell,
+    format_result_packet,
     is_approve_all,
     is_reject,
+    looks_likely_multitask,
     looks_multitask,
     looks_task_followup,
     parse_action_json,
@@ -513,9 +517,10 @@ class SessionManager:
                     yield ev
             if remaining:
                 # 批收尾:整批结束,前端据此结束本轮(逐任务的 done 只是中间事件);
-                # 汇总统计(耗时 + token)随收尾事件带出,前端据此展示。
+                # 汇总统计(耗时 + token)随收尾事件带出,前端据此展示;
+                # HITL 批场景必然 ≥2 任务,做一次最终综合。
                 yield await self._batch_summary_event(
-                    session, store, stats=batch_stats or None,
+                    session, store, stats=batch_stats or None, synthesize=True,
                 )
 
     async def ask_stream(
@@ -1035,12 +1040,18 @@ class SessionManager:
     async def _decompose_tasks(self, session: Session, question: str) -> list[Task]:
         """Rule-gated LLM decomposition; [] = single-task path.
 
-        The rule gate runs first — single questions spend zero LLM calls.
+        三级门控:
+          1. 强化正则命中 → 直接调 LLM 拆解(零行为变化)。
+          2. 正则未命中但"疑似多步"(长问句或弱提示词)且
+             decompose_llm_judge 开启 → 调同一次 LLM 判断+拆解
+             (prompt 输出 {"tasks": [...]},空数组 = 单任务)。
+          3. 否则单任务路径,零 LLM 调用(单问题零额外 token)。
         A failed or empty decomposition also degrades to the single-task
         path (the task layer must never become a new failure source).
         """
         if not looks_multitask(question):
-            return []
+            if not (self.config.decompose_llm_judge and looks_likely_multitask(question)):
+                return []
         prompt = render(
             "tasks/decompose",
             lang=self.config.language,
@@ -1075,7 +1086,12 @@ class SessionManager:
 
     @staticmethod
     def _tasks_block(tasks: list[Task]) -> str:
-        """[tasks] 清单块,追加到 history,注入 gen/planner/意图改写 prompt。"""
+        """[tasks] 清单块 + [previous results] 结果包,追加到 history,
+        注入 gen/planner/意图改写 prompt。
+
+        [previous results] 只带最近一个已完成任务的 ContextPacket
+        (done/failed 且落库了 context),供下钻/续问直接引用上一步结论。
+        """
         marks = {
             "pending": "[pending]", "in_progress": "[in_progress]",
             "done": "[done]", "failed": "[failed]", "skipped": "[skipped]",
@@ -1083,7 +1099,22 @@ class SessionManager:
         lines = ["[tasks] 当前任务清单:"]
         for t in tasks:
             lines.append(f"{t.position + 1}. {marks.get(t.status, '[' + t.status + ']')} {t.title}")
-        return "\n".join(lines)
+        block = "\n".join(lines)
+        packet = SessionManager._previous_packet(tasks)
+        if packet is not None:
+            block += "\n\n" + format_result_packet(packet)
+        return block
+
+    @staticmethod
+    def _previous_packet(tasks: list[Task]) -> dict | None:
+        """最近一个已完成任务的 ContextPacket(位置最大者);无则 None。"""
+        completed = [
+            t for t in tasks
+            if t.status in ("done", "failed") and (t.metadata or {}).get("context")
+        ]
+        if not completed:
+            return None
+        return max(completed, key=lambda t: t.position).metadata["context"]
 
     async def _task_history(self, session: Session, tasks: list[Task]) -> str:
         """会话历史 + [tasks] 块(子任务与跨轮推进共用的 prompt 上下文)。"""
@@ -1162,9 +1193,10 @@ class SessionManager:
                 return  # HITL 批暂停:剩余保持 pending,等 resume 决策
 
         # 批收尾事件:前端/REPL 据此结束整轮(逐任务的 done 只是中间事件);
-        # 汇总统计(耗时 + token)随收尾事件带出。
+        # 汇总统计(耗时 + token)随收尾事件带出;≥2 任务时额外做一次最终综合。
         yield await self._batch_summary_event(
             session, store, stats=batch_stats or None,
+            synthesize=len(tasks) >= 2,
         )
 
     async def _run_one_task(
@@ -1188,6 +1220,7 @@ class SessionManager:
         total = len(tasks)
         history = await self._task_history(session, tasks)
         run_id = str(uuid.uuid4())
+        prev_packet = self._previous_packet(tasks)
         state = WorkflowState(
             session_id=session.session_id,
             question=task.title,
@@ -1196,6 +1229,9 @@ class SessionManager:
             lang=lang,
             task_context={"index": task.position + 1, "total": total, "remaining": remaining},
             auto_approve=auto_approve,
+            # 步骤间共享:继承上一步 schema linking 锚定的表(schema_linking
+            # 节点会与本次新匹配合并,KB 检索与 C1 规则据此锚定)
+            matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -1220,6 +1256,18 @@ class SessionManager:
             "row_count": summary.get("row_count"),
             "verdict": summary.get("verdict"),
             "error": summary.get("error"),
+            # ContextPacket:后续子任务/跨轮通过 [previous results] 与
+            # matched_tables 锚点复用本步结论
+            "context": {
+                "title": task.title,
+                "sql": summary.get("sql"),
+                "columns": list(summary.get("columns") or []),
+                "rows_preview": list(summary.get("rows_preview") or []),
+                "row_count": summary.get("row_count"),
+                "verdict": summary.get("verdict"),
+                "error": summary.get("error"),
+                "matched_tables": list(summary.get("matched_tables") or []),
+            },
         })
         yield {"type": "task", "data": {"tasks": await self._tasks_snapshot(session)}}
 
@@ -1316,10 +1364,14 @@ class SessionManager:
 
     async def _batch_summary_event(
         self, session: Session, store: TaskStore, stats: dict[str, Any] | None = None,
+        synthesize: bool = False,
     ) -> dict[str, Any]:
         """批处理收尾事件:前端据此结束整轮(逐任务的 done 只是中间事件)。
 
         ``stats`` 汇总各子任务 done 的耗时/token,随收尾事件带出供前端展示。
+        ``synthesize`` 为 True 且任务数 ≥2 时,调用一次 fast LLM 把各任务结果
+        综合成最终回答,放进 ``summary["final_response"]``(前端置顶展示;
+        综合失败/全败时自动回退,逐条答案仍完整可见)。
         """
         snapshot = await self._tasks_snapshot(session)
         done = sum(1 for t in snapshot if t["status"] in ("done", "failed"))
@@ -1327,6 +1379,10 @@ class SessionManager:
         summary: dict[str, Any] = {"batched": True, "tasks": snapshot}
         if stats:
             summary.update(stats)
+        if synthesize and total >= 2:
+            text = await self._synthesize_batch(snapshot)
+            if text:
+                summary["final_response"] = text
         return {
             "type": "done",
             "content": L(
@@ -1336,6 +1392,46 @@ class SessionManager:
             ),
             "summary": summary,
         }
+
+    async def _synthesize_batch(self, snapshot: list[dict[str, Any]]) -> str | None:
+        """批收尾综合:一次 fast LLM 调用,把各任务结果合成最终回答。
+
+        输入来自快照行的 title/status + 落库 ContextPacket(context):
+        失败任务的错误一并带进,让综合能如实说明缺失部分。
+        全部任务失败时无结论可综合 → 不调用(零额外 token);
+        调用异常或空响应 → None,逐条答案兜底。
+        """
+        rows: list[dict[str, Any]] = []
+        for row in snapshot:
+            ctx = (row.get("metadata") or {}).get("context") or {}
+            rows.append({
+                "status": row.get("status", ""),
+                "title": row.get("title", ""),
+                "sql": ctx.get("sql"),
+                "row_count": ctx.get("row_count"),
+                "verdict": ctx.get("verdict"),
+                "error": ctx.get("error"),
+                "rows_preview": list(ctx.get("rows_preview") or []),
+            })
+        if not any(r["status"] == "done" for r in rows):
+            return None
+        try:
+            text = await self._llm.chat(
+                model=self.config.target or "openai/gpt-4o-mini",
+                messages=[{
+                    "role": "user",
+                    "content": render(
+                        "tasks/synthesize",
+                        lang=self.config.language,
+                        tasks=rows,
+                    ),
+                }],
+                max_tokens=500,
+            )
+        except Exception as e:
+            logger.warning("Batch synthesis failed (%s); per-task answers fall back", e)
+            return None
+        return (text or "").strip() or None
 
     @staticmethod
     def _merge_run_stats(acc: dict[str, Any], summary: dict[str, Any]) -> None:
@@ -1359,6 +1455,10 @@ class SessionManager:
                 chart_option = build_echarts_option(final.chart)
             except Exception:
                 chart_option = None  # 渲染元数据坏时前端仍可退回首选手绘
+        rows_preview = [
+            [cap_cell(v) for v in row]
+            for row in (final.rows or [])[:ROWS_PREVIEW]
+        ]
         return {
             "session_id": final.session_id,
             "question": final.question,
@@ -1373,6 +1473,8 @@ class SessionManager:
             "hitl_status": final.hitl_status,
             "final_response": final.final_response,
             "columns": list(final.columns),
+            "rows_preview": rows_preview,
+            "matched_tables": list(final.matched_tables),
             "chart": final.chart,
             "chart_option": chart_option,
         }

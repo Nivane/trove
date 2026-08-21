@@ -102,6 +102,31 @@ class TestSchemaLinking:
         assert "account" in update["matched_tables"]  # 旧匹配保留
         assert "trans" in update["matched_tables"]    # 新匹配并入
 
+    async def test_preseeded_tables_merged_without_retry(self):
+        """步骤间共享:coordinator 前序注入的 matched_tables 在全新 run 也并入
+        (不做"仅 retry 才保留"的区分)—— 多步子任务 2 据此继承子任务 1 的锚点。"""
+        class Catalog:
+            async def search_tables(self, query, datasource=None, limit=10):
+                return [{"name": "trans", "columns": 8, "row_count": 100}]
+
+            async def list_tables(self, datasource=None):
+                return [{"name": "trans", "columns": 8, "row_count": 100}]
+
+            async def table_detail(self, name):
+                return {
+                    "name": name,
+                    "columns": [{"name": "account_id", "type": "int"}],
+                    "row_count": 100,
+                }
+
+        node = make_schema_linking(catalog=Catalog())
+        update = await node(make_state(
+            question="q",
+            matched_tables=["account"],  # 前序注入,无 error_feedback/retry
+        ))
+        assert "account" in update["matched_tables"]  # 注入锚点保留
+        assert "trans" in update["matched_tables"]    # 新匹配并入
+
     async def test_with_catalog(self, catalog):
         node = make_schema_linking(catalog=catalog)
         update = await node(make_state())

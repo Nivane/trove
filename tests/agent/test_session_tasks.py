@@ -13,6 +13,7 @@ from tests.conftest import ScriptedGateway
 
 SQL = "```sql\nSELECT name FROM students;\n```"
 DECOMPOSE_JSON = '{"tasks": ["学生名单", "平均成绩"]}'
+SYNTHESIS_TEXT = "综合回答:名单与成绩见上。"
 
 
 class _UsageScriptedGateway(ScriptedGateway):
@@ -65,28 +66,52 @@ class StubGraph:
 def _ok_outcome(final_response="答案"):
     return {
         "route_intent": {"intent": "query", "llm": None},
+        "schema_linking": {"matched_tables": ["students"]},
         "gen_sql": {"sql": "SELECT name FROM students;", "attempts": 1, "llm": None},
-        "execute_sql": {"row_count": 5, "execution_time_ms": 1},
+        "execute_sql": {
+            "row_count": 5,
+            "rows": [[1, "Alice"], [2, "Bob"]],
+            "columns": ["id", "name"],
+            "execution_time_ms": 1,
+        },
         "reflect": {"verdict": "OK", "reason": "", "llm": None},
         "output": {"final_response": final_response},
     }
 
 
+class _RecordingScriptedGateway(ScriptedGateway):
+    """ScriptedGateway 变体:记录每次调用的 (model, messages)。"""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.calls: list[tuple] = []
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append((model, messages))
+        return await super().chat(model, messages, **kwargs)
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append((model, messages))
+        return await super().chat_full(model, messages, tools=tools, **kwargs)
+
+
 class _StubManagerHarness:
     """SessionManager over a StubGraph with a scripted LLM gateway."""
 
-    def __init__(self, tmp_home, llm_responses, graph):
+    def __init__(self, tmp_home, llm_responses, graph, config_kwargs=None, gateway=None):
         from trove.agent.session import SessionManager
         from trove.core.config import AgentConfig
         from trove.storage.session_store import SessionStore
 
-        config = AgentConfig(home=str(tmp_home), language="zh", target="mock/model")
+        config = AgentConfig(home=str(tmp_home), language="zh", target="mock/model", **(config_kwargs or {}))
+        gateway = gateway or ScriptedGateway(llm_responses)
         self.manager = SessionManager(
             config=config,
             session_store=SessionStore(home_dir=str(tmp_home)),
             graphs={"reflection": graph},
-            llm_gateway=ScriptedGateway(llm_responses),
+            llm_gateway=gateway,
         )
+        self.gateway = gateway
 
     async def session(self):
         return await self.manager.start_session(project_cwd="/tmp/p")
@@ -119,7 +144,7 @@ class TestDecompositionFlow:
         graph = StubGraph([_ok_outcome("名单答案"), _ok_outcome("成绩答案")])
         h = _StubManagerHarness(
             tmp_home,
-            [DECOMPOSE_JSON],
+            [DECOMPOSE_JSON, SYNTHESIS_TEXT],
             graph,
         )
         session = await h.session()
@@ -155,12 +180,37 @@ class TestDecompositionFlow:
         # 落库消息带任务元数据
         assert all(m.metadata.get("task_id") for m in session.messages if m.role == "assistant")
 
+    async def test_subtask_shares_previous_results(self, tmp_home):
+        """步骤间共享:子任务2 的 history 带任务1 的结果包,matched_tables 锚点继承。"""
+        graph = StubGraph([_ok_outcome("名单答案"), _ok_outcome("成绩答案")])
+        h = _StubManagerHarness(tmp_home, [DECOMPOSE_JSON, SYNTHESIS_TEXT], graph)
+        session = await h.session()
+
+        await h.stream(session, "分别查询 1. 学生名单 2. 平均成绩")
+
+        states = graph.run_states()
+        assert len(states) == 2
+        # 任务2 history 注入任务1 的 [previous results] 结果包
+        assert "[previous results]" in states[1].history
+        assert "学生名单" in states[1].history
+        assert "SELECT name FROM students;" in states[1].history
+        # matched_tables 锚点继承
+        assert states[1].matched_tables == ["students"]
+        # 任务1 落库 context 包(供后续步骤/跨轮复用)
+        final = await h.manager.get_tasks(session)
+        ctx = final[0]["metadata"]["context"]
+        assert ctx["title"] == "学生名单"
+        assert ctx["sql"] == "SELECT name FROM students;"
+        assert ctx["row_count"] == 5
+        assert ctx["rows_preview"] == [["1", "Alice"], ["2", "Bob"]]  # 单元格字符串化(截断预算)
+        assert ctx["matched_tables"] == ["students"]
+
     async def test_task_failure_marks_failed_and_continues(self, tmp_home):
         """单任务失败 → failed 状态 + 错误事件,序列继续下一条。"""
         graph = StubGraph([RuntimeError("boom"), _ok_outcome("成绩答案")])
         h = _StubManagerHarness(
             tmp_home,
-            [DECOMPOSE_JSON],
+            [DECOMPOSE_JSON, SYNTHESIS_TEXT],
             graph,
         )
         session = await h.session()
@@ -173,6 +223,50 @@ class TestDecompositionFlow:
         assert [t["status"] for t in final] == ["failed", "done"]
         assert final[0]["metadata"]["error"] is not None
         assert h.done_events(events)[-1]["summary"]["batched"] is True
+
+    async def test_judge_false_keeps_single_task_path(self, tmp_home):
+        """规则未命中 + 疑似多步 → LLM 判断一次,返回 [] → 单任务路径。"""
+        graph = StubGraph([_ok_outcome("直接答案")])
+        gw = _RecordingScriptedGateway(['{"tasks": []}'])
+        h = _StubManagerHarness(tmp_home, [], graph, gateway=gw)
+        session = await h.session()
+
+        question = "各银行的不良贷款情况如何,资产质量怎么样"
+        events = await h.stream(session, question)
+        assert h.task_events(events) == []
+        assert len(h.done_events(events)) == 1
+        assert len(graph.run_states()) == 1  # 原始问题直接跑图
+        # 恰 1 次 LLM 调用 = 判断层;prompt 带原问题
+        assert len(gw.calls) == 1
+        assert question in gw.calls[0][1][0]["content"]
+
+    async def test_judge_true_decomposes(self, tmp_home):
+        """规则未命中 + judge 返回任务列表 → 走多任务执行。"""
+        graph = StubGraph([_ok_outcome("A答"), _ok_outcome("B答")])
+        h = _StubManagerHarness(
+            tmp_home,
+            ['{"tasks": ["任务A", "任务B"]}', SYNTHESIS_TEXT],
+            graph,
+        )
+        session = await h.session()
+
+        events = await h.stream(session, "各银行的不良贷款情况如何,资产质量怎么样")
+        dones = h.done_events(events)
+        assert len(dones) == 3  # 两个逐任务 + 收尾 batched
+        assert dones[-1]["summary"]["batched"] is True
+        assert [s.question for s in graph.run_states()] == ["任务A", "任务B"]
+
+    async def test_judge_disabled_keeps_zero_llm(self, tmp_home):
+        """decompose_llm_judge=false → 疑似多步也零 LLM,纯正则门控。"""
+        graph = StubGraph([_ok_outcome("直接答案")])
+        h = _StubManagerHarness(
+            tmp_home, [], graph, config_kwargs={"decompose_llm_judge": False},
+        )
+        session = await h.session()
+
+        events = await h.stream(session, "各银行的不良贷款情况如何,资产质量怎么样")
+        assert h.task_events(events) == []
+        assert len(graph.run_states()) == 1
 
     async def test_decompose_garbage_degrades_to_single_task(self, tmp_home):
         """拆解 LLM 返回不可解析内容 → 单任务路径(任务层绝不成为新失败源)。"""
@@ -191,6 +285,60 @@ class TestDecompositionFlow:
         assert dones[0]["content"] == "单答案"
         assert len(graph.run_states()) == 1  # 原始问题直接跑图
 
+    async def test_batch_synthesizes_final_answer(self, tmp_home):
+        """批收尾:≥2 任务结束 → 一次 fast 综合,进 batched done 的 final_response。"""
+        graph = StubGraph([_ok_outcome("名单答案"), _ok_outcome("成绩答案")])
+        gw = _RecordingScriptedGateway([DECOMPOSE_JSON, SYNTHESIS_TEXT])
+        h = _StubManagerHarness(tmp_home, [], graph, gateway=gw)
+        session = await h.session()
+
+        events = await h.stream(session, "分别查询 1. 学生名单 2. 平均成绩")
+        last = h.done_events(events)[-1]
+        assert last["summary"]["batched"] is True
+        assert last["summary"]["final_response"] == SYNTHESIS_TEXT
+        # 汇总调用恰一次,输入带各任务标题/状态
+        assert len(gw.calls) == 2  # 拆解 + 综合
+        assert "学生名单" in gw.calls[1][1][0]["content"]
+        assert "平均成绩" in gw.calls[1][1][0]["content"]
+
+    async def test_batch_synthesis_failure_falls_back(self, tmp_home):
+        """汇总 LLM 失败 → 不阻塞:summary 无 final_response,逐条答案兜底。"""
+        graph = StubGraph([_ok_outcome("名单答案"), _ok_outcome("成绩答案")])
+        h = _StubManagerHarness(tmp_home, [DECOMPOSE_JSON], graph)  # 综合调用无响应 → 异常
+        session = await h.session()
+
+        events = await h.stream(session, "分别查询 1. 学生名单 2. 平均成绩")
+        last = h.done_events(events)[-1]
+        assert last["summary"]["batched"] is True
+        assert "final_response" not in last["summary"]
+        assert "2/2" in last["content"]  # 收尾文案仍在
+
+    async def test_partial_failure_still_synthesizes(self, tmp_home):
+        """部分失败:综合仍执行,输入含失败任务的状态与错误。"""
+        graph = StubGraph([RuntimeError("boom"), _ok_outcome("成绩答案")])
+        gw = _RecordingScriptedGateway([DECOMPOSE_JSON, SYNTHESIS_TEXT])
+        h = _StubManagerHarness(tmp_home, [], graph, gateway=gw)
+        session = await h.session()
+
+        events = await h.stream(session, "分别查询 1. 学生名单 2. 平均成绩")
+        last = h.done_events(events)[-1]
+        assert last["summary"]["batched"] is True
+        assert last["summary"]["final_response"] == SYNTHESIS_TEXT
+        assert "boom" in gw.calls[1][1][0]["content"]  # 失败任务错误带进综合输入
+
+    async def test_all_failed_no_synthesis(self, tmp_home):
+        """全部失败:不调用综合(零额外 LLM)。"""
+        graph = StubGraph([RuntimeError("boom"), RuntimeError("boom2")])
+        gw = _RecordingScriptedGateway([DECOMPOSE_JSON])
+        h = _StubManagerHarness(tmp_home, [], graph, gateway=gw)
+        session = await h.session()
+
+        events = await h.stream(session, "分别查询 1. 学生名单 2. 平均成绩")
+        last = h.done_events(events)[-1]
+        assert last["summary"]["batched"] is True
+        assert "final_response" not in last["summary"]
+        assert len(gw.calls) == 1  # 只有拆解调用
+
 
 class TestCrossTurnFollowup:
     # 注:continue_next 真正执行 pending 任务的路径由 HITL 三选项测试覆盖
@@ -201,7 +349,7 @@ class TestCrossTurnFollowup:
         graph = StubGraph([_ok_outcome("名单答案"), _ok_outcome("成绩答案"), _ok_outcome("重做答案")])
         h = _StubManagerHarness(
             tmp_home,
-            [DECOMPOSE_JSON, '{"action": "redo", "index": 2}'],
+            [DECOMPOSE_JSON, SYNTHESIS_TEXT, '{"action": "redo", "index": 2}'],
             graph,
         )
         session = await h.session()
@@ -219,7 +367,7 @@ class TestCrossTurnFollowup:
         graph = StubGraph([_ok_outcome(), _ok_outcome()])
         h = _StubManagerHarness(
             tmp_home,
-            [DECOMPOSE_JSON, '{"action": "skip", "index": 2}'],
+            [DECOMPOSE_JSON, SYNTHESIS_TEXT, '{"action": "skip", "index": 2}'],
             graph,
         )
         session = await h.session()
@@ -240,7 +388,7 @@ class TestCrossTurnFollowup:
         graph = StubGraph([_ok_outcome(), _ok_outcome()])
         h = _StubManagerHarness(
             tmp_home,
-            [DECOMPOSE_JSON, '{"action": "continue_next"}'],
+            [DECOMPOSE_JSON, SYNTHESIS_TEXT, '{"action": "continue_next"}'],
             graph,
         )
         session = await h.session()
@@ -268,6 +416,7 @@ class TestCrossTurnFollowup:
             tmp_home,
             [
                 DECOMPOSE_JSON,
+                SYNTHESIS_TEXT,
                 '{"action": "add"}',
                 '{"tasks": ["新任务一", "新任务二"]}',
             ],
@@ -326,6 +475,7 @@ class TestHitlBatchOptions:
                 "query", SQL,                # 任务1:route → gen_sql → HITL 中断
                 "OK",                        # resume:reflect
                 "query", SQL, "OK",          # 任务2:auto_approve 全程
+                SYNTHESIS_TEXT,              # 批收尾综合
             ],
         )
         session = await manager.start_session(project_cwd="/tmp/p")
@@ -358,6 +508,7 @@ class TestHitlBatchOptions:
                 "query", SQL,            # 任务1:route → gen_sql → HITL 中断
                 "OK",                    # resume:reflect
                 "query", SQL, "OK",      # 任务2:auto_approve 全程
+                SYNTHESIS_TEXT,          # 批收尾综合
             ],
             gateway_cls=_UsageScriptedGateway,
         )
@@ -451,6 +602,56 @@ class TestTaskHelpers:
         assert looks_multitask("先查 A,再查 B")
         assert not looks_multitask("哪个地区的平均贷款金额最高?")
         assert not looks_multitask("继续")
+
+    def test_looks_multitask_strengthened_hints(self):
+        """强化正则:隐式多步(及其/对比/TOP/排名/各行业/每个)命中。"""
+        from trove.agent.tasks import looks_multitask
+
+        assert looks_multitask("各行业贷款TOP3的银行及其坏账率")
+        assert looks_multitask("2024 年各地区贷款总额对比")
+        assert looks_multitask("排名前五的银行有哪些以及它们的坏账率")
+        assert looks_multitask("每个地区的贷款总额和坏账率")
+        # 纯单分析问题不误伤
+        assert not looks_multitask("哪些地区的贷款总额最高")
+        assert not looks_multitask("本月贷款金额是多少")
+
+    def test_looks_likely_multitask(self):
+        """弱提示词或长问句进入 LLM 判断层(慢路径)。"""
+        from trove.agent.tasks import looks_likely_multitask
+
+        assert looks_likely_multitask("各银行的不良贷款情况如何,资产质量怎么样")
+        assert looks_likely_multitask(
+            "我想详细了解一下这些银行在过去一年中的不良贷款率情况与资产质量的变化趋势情况如何"
+        )
+        # 短问句 + 无弱提示词:不浪费 LLM 调用
+        assert not looks_likely_multitask("贷款总额是多少")
+        assert not looks_likely_multitask("哪个地区的平均贷款金额最高?")
+
+    def test_format_result_packet(self):
+        """ContextPacket → [previous results] 文本块:SQL/行数/预览行/裁定。"""
+        from trove.agent.tasks import format_result_packet
+
+        text = format_result_packet({
+            "title": "学生名单",
+            "sql": "SELECT name FROM students;",
+            "columns": ["id", "name"],
+            "rows_preview": [[1, "Alice"], [2, "Bob"]],
+            "row_count": 5,
+            "verdict": "OK",
+            "error": None,
+            "matched_tables": ["students"],
+        })
+        assert "[previous results]" in text
+        assert "学生名单" in text
+        assert "SELECT name FROM students;" in text
+        assert "5" in text  # row_count
+        assert "Alice" in text  # 预览行内容
+        # 失败包带错误说明
+        text = format_result_packet({
+            "title": "坏账率", "sql": None, "columns": [], "rows_preview": [],
+            "row_count": 0, "verdict": None, "error": "boom", "matched_tables": [],
+        })
+        assert "boom" in text
 
     def test_looks_task_followup(self):
         from trove.agent.tasks import looks_task_followup

@@ -1,0 +1,16 @@
+下面是针对同一个用户问题的多个子任务查询结果。请把各任务结果综合成一段连贯的最终回答。
+
+{% for t in tasks %}
+任务 {{ loop.index }}[{{ t.status }}]: {{ t.title }}
+{%- if t.sql %} SQL: {{ t.sql }}{% endif %}
+{%- if t.row_count is not none %} 行数: {{ t.row_count }}{% endif %}
+{%- if t.verdict %} 裁定: {{ t.verdict }}{% endif %}
+{%- if t.error %} 错误: {{ t.error }}{% endif %}
+{%- if t.rows_preview %} 预览: {{ t.rows_preview | map("join", " | ") | join(" ; ") }}{% endif %}
+{% endfor %}
+
+要求:
+- 直接给出结论,引用关键数字;用通顺的陈述句
+- 不要输出 SQL 代码块
+- 若有失败/空结果的子任务,如实说明该部分未取到
+- 只输出综合回答正文,不要任何前缀或说明文字
