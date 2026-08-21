@@ -3,12 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "vitest run",
     "types:generate": "openapi-typescript http://127.0.0.1:8000/openapi.json -o src/api/openapi.d.ts",
     "ci": "npm run typecheck && npm run lint && npm test && npm run build"
@@ -33,6 +38,7 @@
     "eslint-plugin-vue": "^10.10.0",
     "jsdom": "^30.0.1",
     "openapi-typescript": "^7.13.0",
+    "prettier": "^3.8.4",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.67.0",
     "vite": "^6.0.5",

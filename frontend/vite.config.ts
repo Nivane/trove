@@ -7,6 +7,16 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   base: '/ui/',
   plugins: [vue()],
+  server: {
+    // Dev-only: proxy API + SSE to the local backend so `npm run dev` works
+    // without an API base — open http://localhost:5173/ui/ (HMR on).
+    proxy: {
+      '/v1': {
+        target: 'http://127.0.0.1:8000',
+        changeOrigin: true,
+      },
+    },
+  },
   build: {
     outDir: '../trove/api/static',
     emptyOutDir: true,

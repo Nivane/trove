@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'frontend/**'
+      - 'Dockerfile'
       - '.github/workflows/frontend.yml'
   pull_request:
     paths:
       - 'frontend/**'
+      - 'Dockerfile'
       - '.github/workflows/frontend.yml'
 
 jobs:
@@ -27,3 +29,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run ci
+
+  # Keep the multi-stage Dockerfile honest: builds it on every frontend change.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t trove:ci .
