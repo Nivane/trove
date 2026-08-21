@@ -482,6 +482,17 @@ def main_repl():
         except KeyboardInterrupt:
             sys.exit(0)
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
+        async def _run_maint():
+            from trove.cli.maintenance_cmds import main_maintenance
+
+            await main_maintenance(sys.argv[2:])
+
+        try:
+            asyncio.run(_run_maint())
+        except KeyboardInterrupt:
+            sys.exit(0)
+        return
     try:
         asyncio.run(async_main_repl())
     except KeyboardInterrupt:
