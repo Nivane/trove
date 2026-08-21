@@ -74,20 +74,26 @@ async def _periodic_sweep(app: FastAPI) -> None:
 async def _lifespan(app: FastAPI):
     maintenance = getattr(app.state, "maintenance", None)
     sweep_task: asyncio.Task | None = None
+    startup_task: asyncio.Task | None = None
     if maintenance is not None:
-        try:
-            stats = await maintenance.run_all()
-            logger.info("[maintenance] startup sweep: %s", stats)
-        except Exception as e:
-            logger.warning("[maintenance] startup sweep failed: %s", e)
+        # 启动 sweep 不阻塞 serve:后台任务,内部自包异常防护
+        async def _startup_sweep() -> None:
+            try:
+                stats = await maintenance.run_all()
+                logger.info("[maintenance] startup sweep: %s", stats)
+            except Exception as e:
+                logger.warning("[maintenance] startup sweep failed: %s", e)
+
+        startup_task = asyncio.create_task(_startup_sweep())
         sweep_task = asyncio.create_task(_periodic_sweep(app))
     try:
         yield
     finally:
-        if sweep_task is not None:
-            sweep_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await sweep_task
+        for task in (sweep_task, startup_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
 
 def create_app(components: dict) -> FastAPI:

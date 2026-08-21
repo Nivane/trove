@@ -43,6 +43,7 @@ agent:
       enabled: true
   # 会话保留策略(配额清理):每用户会话数超限时删最旧。
   # 0 = 关闭对应机制;periodic 需 schedule daemon 或 serve 长驻才生效。
+  # serve 与 daemon 建议单实例运行(双进程并发 sweep 由 SQLite 锁+幂等兜底,最坏多删一次)。
   retention:
     max_sessions_per_user: 100
     active_grace_min: 10

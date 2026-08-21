@@ -46,11 +46,25 @@ def _components(maintenance=None, interval_hours=0) -> dict:
     return components
 
 
+def _wait_until(predicate, timeout_s: float = 0.5) -> None:
+    """Poll a condition while the portal thread's loop runs (sync context).
+
+    Startup sweep now runs as a background task (non-blocking), so
+    assertions about it must poll instead of assuming it ran synchronously.
+    """
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"condition not reached within {timeout_s:.1f}s")
+        time.sleep(0.01)
+
+
 def test_lifespan_startup_sweep_runs_and_exits_clean():
     """Shape A: maintenance + interval>0 -> startup sweep once, clean exit.
 
-    The periodic loop sleeps interval*3600s, so it cannot fire inside the
-    test window; the cancelled task must not hang or leak on shutdown
+    Startup sweep runs as a background task (does not block serve); the
+    periodic loop sleeps interval*3600s, so it cannot fire inside the
+    test window; the cancelled tasks must not hang or leak on shutdown
     ("Task was destroyed" must not appear in any output — covered by this
     test exiting without exception/warning).
     """
@@ -58,8 +72,7 @@ def test_lifespan_startup_sweep_runs_and_exits_clean():
     app = create_app(_components(maintenance=maint, interval_hours=24))
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
-        # startup sweep has already run by the time the app is serving
-        assert maint.calls == 1
+        _wait_until(lambda: maint.calls >= 1)  # startup sweep runs in background
     assert maint.calls == 1  # periodic never fired; no extra sweeps
 
 
@@ -76,7 +89,7 @@ def test_lifespan_interval_zero_startup_sweep_only():
     app = create_app(_components(maintenance=maint, interval_hours=0))
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
-        assert maint.calls == 1
+        _wait_until(lambda: maint.calls >= 1)
     assert maint.calls == 1
 
 

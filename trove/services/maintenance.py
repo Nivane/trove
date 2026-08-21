@@ -11,7 +11,7 @@ MaintenanceService 是确定性清理引擎:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -71,6 +71,34 @@ def _is_active(updated_at: str, file_mtime: float, grace_min: int, now: datetime
     return ts > cutoff
 
 
+def _is_active_checkpoint(metadata: dict, grace_min: int, now: datetime) -> bool:
+    """True when a checkpoint's metadata carries a fresh timestamp.
+
+    No timestamp / unparseable -> False (never exempts). Real langgraph
+    CheckpointMetadata (langgraph-checkpoint 4.2.0, vendored with
+    langgraph 1.2.11) has NO timestamp field and trove's graph config
+    passes none, so the grace protection only kicks in when a caller
+    embeds ``updated_at``/``timestamp`` in checkpoint metadata.
+    """
+    if grace_min <= 0:
+        return False
+    raw = metadata.get("updated_at") or metadata.get("timestamp")
+    ts = _parse_dt(raw) if isinstance(raw, str) else None
+    if ts is None:
+        return False
+    return ts > now - timedelta(minutes=grace_min)
+
+
+def _group_by_user(sessions: list[dict]) -> dict[str, list[dict]]:
+    """Group sessions by user (None/"" -> "unknown"), oldest first per group."""
+    by_user: dict[str, list[dict]] = {}
+    for s in sessions:
+        by_user.setdefault(s["user_id"] or "unknown", []).append(s)
+    for group in by_user.values():
+        group.sort(key=lambda s: s["updated_at"])  # 升序:最旧在前
+    return by_user
+
+
 class MaintenanceService:
     """Retention enforcement over sessions and graph checkpoints."""
 
@@ -94,17 +122,35 @@ class MaintenanceService:
         all_sessions = await self._store.list_all()
         stats.scanned = len(all_sessions)
 
-        # Group by user, oldest first within each group
-        by_user: dict[str, list[dict]] = {}
-        for s in all_sessions:
-            by_user.setdefault(s["user_id"] or "unknown", []).append(s)
-        for group in by_user.values():
-            group.sort(key=lambda s: s["updated_at"])  # 升序:最旧在前
-
-        for user, group in by_user.items():
-            quota = self._retention.max_sessions_per_user
-            candidates = group[: max(0, len(group) - quota)]
+        for user, (candidates, skipped) in self._quota_candidates(
+            _group_by_user(all_sessions), now
+        ).items():
+            stats.skipped_active += skipped
             for s in candidates:
+                await self._delete_session(s, stats)
+        return stats
+
+    def _quota_candidates(
+        self,
+        by_user: dict[str, list[dict]],
+        now: datetime,
+    ) -> dict[str, tuple[list[dict], int]]:
+        """Per-user quota-excess candidates + active-skips (shared口径).
+
+        Shared by sweep() and preview(): excess over the per-user quota,
+        oldest first, `_is_active` grace exemption applied. A kept entry
+        is a real deletion candidate; a skipped one counts toward the
+        user's skip tally.
+        """
+        quota = self._retention.max_sessions_per_user
+        plan: dict[str, tuple[list[dict], int]] = {}
+        if quota <= 0:
+            return plan
+        for user, group in by_user.items():
+            over = group[: max(0, len(group) - quota)]
+            candidates: list[dict] = []
+            skipped = 0
+            for s in over:
                 db_path = (
                     Path(self._store.home_dir)
                     / "sessions"
@@ -118,10 +164,27 @@ class MaintenanceService:
                     self._retention.active_grace_min,
                     now,
                 ):
-                    stats.skipped_active += 1
-                    continue
-                await self._delete_session(s, stats)
-        return stats
+                    skipped += 1
+                else:
+                    candidates.append(s)
+            plan[user] = (candidates, skipped)
+        return plan
+
+    async def preview(self, now: datetime | None = None) -> dict[str, Any]:
+        """Dry-run view of the quota sweep; deletes nothing.
+
+        Same candidate口径 as sweep() (per-user quota excess, oldest
+        first, active-grace exemption) via the shared `_quota_candidates`.
+        Returns per-user counts so callers can total or display detail.
+        """
+        now = now or _utcnow()
+        all_sessions = await self._store.list_all()
+        plan = self._quota_candidates(_group_by_user(all_sessions), now)
+        return {
+            "sessions": len(all_sessions),
+            "candidates": {user: len(c) for user, (c, _s) in plan.items() if c},
+            "skipped_active": {user: s for user, (_c, s) in plan.items() if s},
+        }
 
     async def _delete_session(self, s: dict, stats: SweepStats) -> None:
         """Delete one session: checkpoint chain first, then the db file."""
@@ -133,9 +196,6 @@ class MaintenanceService:
             stats.errors += 1
             return  # 文件保留,避免"无 checkpoint 有文件"的半删状态
         try:
-            import os
-            from pathlib import Path
-
             db_path = Path(self._store.home_dir) / "sessions" / s["project_name"] / f"{s['session_id']}.db"
             if db_path.exists():
                 stats.freed_bytes += db_path.stat().st_size
@@ -184,11 +244,16 @@ class MaintenanceService:
 
         ``depth=None`` falls back to the retention config; an explicit
         ``depth=0`` disables pruning (no fallback).
+
+        Threads whose newest checkpoint carries a timestamp inside the
+        active-grace window are skipped (in-flight conversation protection);
+        metadata without a timestamp is never exempted.
         """
         depth = self._retention.max_checkpoints_per_thread if depth is None else depth
         if depth <= 0:
             return 0
         pruned = 0
+        now = _utcnow()
         try:
             counts: dict[str, int] = {}
             # streaming pass: only the thread_id is kept per row
@@ -198,6 +263,8 @@ class MaintenanceService:
             for thread_id, n in counts.items():
                 if n > depth:
                     try:
+                        if await self._thread_active(thread_id, now):
+                            continue  # 最新 checkpoint 在 grace 窗口内 → 豁免
                         await self._prune_thread(thread_id, depth)
                         pruned += 1
                     except Exception as e:
@@ -205,6 +272,20 @@ class MaintenanceService:
         except Exception as e:
             logger.warning("prune_thread_depth failed: %s", e)
         return pruned
+
+    async def _thread_active(self, thread_id: str, now: datetime) -> bool:
+        """True when the thread's newest checkpoint is inside the grace window."""
+        latest = [
+            t
+            async for t in self._ckpt.alist(
+                {"configurable": {"thread_id": thread_id}}, limit=1
+            )
+        ]
+        if not latest:
+            return False
+        return _is_active_checkpoint(
+            latest[0].metadata or {}, self._retention.active_grace_min, now
+        )
 
     async def _prune_thread(self, thread_id: str, depth: int) -> None:
         """Rewrite a thread keeping only its newest ``depth`` checkpoints.
@@ -222,8 +303,10 @@ class MaintenanceService:
         Interruption semantics: the rewrite is two-phase (whole-thread
         delete, then per-row re-put) and therefore not atomic — a crash
         mid-rewrite truncates the thread, a wider window than the official
-        prune's single DELETE. Accepted: maintenance runs as a daemon
-        against idle sessions.
+        prune's single DELETE. Accepted: maintenance runs inside the serve
+        process alongside graph executions (same-process concurrency) and
+        skips threads whose newest checkpoint is within the grace window;
+        a crash loses only the deleted segment's older history.
         """
         kept = [
             t

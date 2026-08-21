@@ -353,11 +353,16 @@ def main_repl():
 
 async def async_main_cli():
     """Async main for CLI (non-interactive) mode."""
-    # Subcommands: trove-cli job ...   trove-cli schedule ...
-    if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule"):
+    # Subcommands: trove-cli job ...   trove-cli schedule ...   trove-cli maintenance ...
+    if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule", "maintenance"):
+        from trove.cli.maintenance_cmds import main_maintenance
         from trove.cli.schedule_cmds import main_job, main_schedule
 
-        handler = main_job if sys.argv[1] == "job" else main_schedule
+        handler = {
+            "job": main_job,
+            "schedule": main_schedule,
+            "maintenance": main_maintenance,
+        }[sys.argv[1]]
         await handler(sys.argv[2:])
         return
 

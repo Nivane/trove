@@ -45,10 +45,31 @@ async def test_maintenance_status_empty(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.asyncio
 async def test_maintenance_run_dry_run(tmp_path, monkeypatch, capsys):
-    """dry-run 报告候选(配额 2、3 会话 → 1 候选)但不删除任何文件。"""
+    """dry-run 与真实 sweep 同口径(含活跃豁免):默认 grace=10 + 刚创建会话 → 候选 0、豁免 1。"""
     from trove.storage.session_store import SessionStore
 
-    home = _point_home(monkeypatch, tmp_path, quota=2)
+    home = _point_home(monkeypatch, tmp_path, quota=2)  # 默认 grace_min=10
+    store = SessionStore(home_dir=str(home))
+    for _ in range(3):
+        s = await store.create_session(".", user_id="alice")
+        await store.save_session(s)
+
+    await main_maintenance(["run", "--dry-run"])
+    out = capsys.readouterr().out
+    assert '"sessions": 3' in out
+    assert '"candidates": 0' in out  # 与真实 sweep 一致:新会话全在 grace 窗口内
+    assert '"skipped_active": 1' in out
+    # 文件都在
+    remaining = await store.list_all()
+    assert len(remaining) == 3
+
+
+@pytest.mark.asyncio
+async def test_maintenance_run_dry_run_grace_zero(tmp_path, monkeypatch, capsys):
+    """grace=0 时 dry-run 候选与真实 run 删除数一致(配额 2、3 会话 → 候选 1、豁免 0)。"""
+    from trove.storage.session_store import SessionStore
+
+    home = _point_home(monkeypatch, tmp_path, quota=2, grace_min=0)
     store = SessionStore(home_dir=str(home))
     for _ in range(3):
         s = await store.create_session(".", user_id="alice")
@@ -58,7 +79,7 @@ async def test_maintenance_run_dry_run(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"sessions": 3' in out
     assert '"candidates": 1' in out
-    # 文件都在
+    assert '"skipped_active": 0' in out
     remaining = await store.list_all()
     assert len(remaining) == 3
 

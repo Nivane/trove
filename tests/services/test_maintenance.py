@@ -304,3 +304,106 @@ async def test_prune_thread_depth_zero_disables(tmp_home):
         assert pruned == 0
         remaining = [t async for t in saver.alist({"configurable": {"thread_id": tid}})]
         assert len(remaining) == 60  # 未修剪
+
+
+def test_parse_dt_malformed_returns_none():
+    """_parse_dt 的 malformed/naive/非 str 输入分支。"""
+    from trove.services.maintenance import _parse_dt
+
+    assert _parse_dt("garbage") is None
+    assert _parse_dt("2024-01-01T00:00:00") is None  # naive 无时区
+    assert _parse_dt(None) is None  # TypeError 分支
+
+
+async def test_prune_thread_depth_default_depth(tmp_home):
+    """prune_thread_depth() 无参调用回落 retention.max_checkpoints_per_thread(50)。"""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt_db = str(tmp_home / "checkpoints.db")
+    async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
+        tid = "cccccccc-0000-0000-0000-000000000000"
+        for i in range(60):
+            await saver.aput({"configurable": {"thread_id": tid, "checkpoint_ns": ""}},
+                             _ckpt_row(i), _ckpt_meta(i), {})
+        svc = MaintenanceService(store, saver, _retention())  # 默认 max_checkpoints_per_thread=50
+        pruned = await svc.prune_thread_depth()
+        assert pruned == 1
+        remaining = [t async for t in saver.alist({"configurable": {"thread_id": tid}})]
+        assert len(remaining) == 50
+
+
+async def test_prune_thread_depth_active_grace_exempts(tmp_home):
+    """最新 checkpoint 带 grace 窗口内时间戳 → 该线程被豁免;无时间戳照常修剪。"""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt_db = str(tmp_home / "checkpoints.db")
+    now = datetime.now(timezone.utc)
+    async with AsyncSqliteSaver.from_conn_string(ckpt_db) as saver:
+        active_tid = "dddddddd-0000-0000-0000-000000000000"
+        idle_tid = "eeeeeeee-0000-0000-0000-000000000000"
+        for i in range(60):
+            meta = dict(_ckpt_meta(i), updated_at=now.isoformat())
+            await saver.aput({"configurable": {"thread_id": active_tid, "checkpoint_ns": ""}},
+                             _ckpt_row(i), meta, {})
+            await saver.aput({"configurable": {"thread_id": idle_tid, "checkpoint_ns": ""}},
+                             _ckpt_row(i), _ckpt_meta(i), {})
+        svc = MaintenanceService(store, saver, _retention(grace_min=10))
+        pruned = await svc.prune_thread_depth(depth=50)
+        assert pruned == 1  # 只有无时间戳的 idle 线程被修剪
+        active_remaining = [t async for t in saver.alist({"configurable": {"thread_id": active_tid}})]
+        assert len(active_remaining) == 60  # 活跃线程被豁免
+
+
+async def test_sweep_checkpoint_failure_keeps_file(tmp_home):
+    """adelete_thread 抛错 → 半删保护:文件保留、removed 全 0、errors=1。"""
+    from trove.services.maintenance import MaintenanceService
+
+    class _FailingCheckpointer:
+        async def adelete_thread(self, thread_id: str) -> None:
+            raise RuntimeError("ckpt boom")
+
+    store = SessionStore(home_dir=str(tmp_home))
+    old_id = await _seed(store, "proj", "alice", updated_delta_min=60)
+    await _seed(store, "proj", "alice", updated_delta_min=30)
+    svc = MaintenanceService(store, _FailingCheckpointer(), _retention(max_sessions=1, grace_min=0))
+    stats = await svc.sweep()
+    assert stats.removed_sessions == 0
+    assert stats.removed_checkpoints == 0
+    assert stats.errors == 1
+    assert store.session_db_path("proj", old_id).exists()  # 半删保护:文件还在
+    assert len(await store.list_all()) == 2
+
+
+async def test_sweep_file_delete_failure_continues(tmp_home, monkeypatch):
+    """unlink 抛错 → 该会话记 errors=1,其余候选删除照常进行。"""
+    from pathlib import Path
+
+    from trove.services.maintenance import MaintenanceService
+
+    store = SessionStore(home_dir=str(tmp_home))
+    ckpt = _fake_checkpointer()
+    for delta in (60, 30, 10):
+        await _seed(store, "proj", "alice", updated_delta_min=delta)
+
+    real_unlink = Path.unlink
+    unlink_calls = {"n": 0}
+
+    def _flaky_unlink(self, *args, **kwargs):
+        unlink_calls["n"] += 1
+        if unlink_calls["n"] == 1:
+            raise PermissionError("simulated unlink failure")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr("pathlib.Path.unlink", _flaky_unlink)
+
+    svc = MaintenanceService(store, ckpt, _retention(max_sessions=1, grace_min=0))
+    stats = await svc.sweep()
+    assert stats.errors == 1
+    assert stats.removed_sessions == 1  # 第二个候选删除成功
+    assert len(ckpt.deleted) == 2  # 两个候选都删了 checkpoint 链
+    # 3 个会话 - 成功删除 1 - unlink 失败仍在 1 = 剩 2(unlink 失败不中断其余删除)
+    assert len(await store.list_all()) == 2

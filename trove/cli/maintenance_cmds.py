@@ -43,15 +43,16 @@ async def _run_maintenance(home: str, config, dry_run: bool, purge_orphans: bool
     async with build_checkpointer(home) as checkpointer:
         svc = MaintenanceService(store, checkpointer, config.retention)
         if dry_run:
-            # Dry run: report candidates without deleting.
-            all_sessions = await store.list_all()
-            by_user: dict[str, int] = {}
-            for s in all_sessions:
-                key = s["user_id"] or "unknown"
-                by_user[key] = by_user.get(key, 0) + 1
-            quota = config.retention.max_sessions_per_user
-            candidates = sum(max(0, n - quota) for n in by_user.values()) if quota > 0 else 0
-            return {"dry_run": True, "sessions": len(all_sessions), "candidates": candidates}
+            # Dry run: same candidate口径 as the real sweep (per-user quota
+            # excess, oldest first, active-grace exemption) via the
+            # service's preview(), so dry-run and run can never diverge.
+            preview = await svc.preview()
+            return {
+                "dry_run": True,
+                "sessions": preview["sessions"],
+                "candidates": sum(preview["candidates"].values()),
+                "skipped_active": sum(preview["skipped_active"].values()),
+            }
         if purge_orphans:
             return await svc.run_all()
         # 默认:配额 sweep + 深度修剪,不含孤儿清理;与 run_all 同款错误隔离
@@ -73,22 +74,21 @@ async def main_maintenance(argv: list[str]) -> None:
     config = await _load_config(cfg_args)
 
     if args.subcommand == "status":
+        from trove.services.maintenance import _group_by_user
         from trove.storage.session_store import SessionStore
         store = SessionStore(home_dir=config.home)
         sessions = await store.list_all()
-        by_user: dict[str, int] = {}
+        by_user = _group_by_user(sessions)
         size_bytes = 0
         for s in sessions:
-            key = s["user_id"] or "unknown"
-            by_user[key] = by_user.get(key, 0) + 1
             size_bytes += int(s.get("size_bytes") or 0)
         quota = config.retention.max_sessions_per_user
         print(
             f"sessions={len(sessions)} quota_per_user={quota} "
             f"disk_mb={size_bytes / (1024 * 1024):.1f}"
         )
-        for user, n in sorted(by_user.items()):
-            print(f"  {user}: {n}")
+        for user, group in sorted(by_user.items()):
+            print(f"  {user}: {len(group)}")
         return
 
     if args.subcommand == "run":
