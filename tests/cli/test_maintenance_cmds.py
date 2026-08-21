@@ -79,3 +79,40 @@ async def test_maintenance_run_default_no_orphans(tmp_path, monkeypatch, capsys)
     assert '"orphans": 0' in out
     assert "removed=1" in out  # SweepStats.__str__ 用 removed=N 表示 removed_sessions
     assert len(await store.list_all()) == 2
+
+
+@pytest.mark.asyncio
+async def test_maintenance_run_orphans_only_with_flag(tmp_path, monkeypatch, capsys):
+    """行为级:默认 run 不清孤儿 checkpoint;--purge-orphans 才清。
+
+    若默认路径被改回恒走 run_all(含 purge),本测试会红——钉住的是
+    行为而非 stats 键形状(空 fixture 下 orphans=0 任何实现都恒真)。
+    """
+    from trove.main import build_checkpointer
+
+    home = _point_home(monkeypatch, tmp_path)
+    # 种一个不指向任何会话文件的孤儿 checkpoint 线程(真实 AsyncSqliteSaver)
+    async with build_checkpointer(home) as ckpt:
+        await ckpt.aput(
+            {"configurable": {"thread_id": "orphan-1", "checkpoint_ns": ""}},
+            {"id": "c00", "__metadata__": {"step": 0}, "messages": []},
+            {"source": "test", "step": 0, "writes": None, "score": None},
+            {},
+        )
+
+    async def _orphan_count() -> int:
+        async with build_checkpointer(home) as ckpt:
+            rows = [
+                t async for t in ckpt.alist({"configurable": {"thread_id": "orphan-1"}})
+            ]
+        return len(rows)
+
+    # 默认路径:孤儿线程存活
+    await main_maintenance(["run"])
+    assert await _orphan_count() == 1
+    assert '"orphans": 0' in capsys.readouterr().out
+
+    # --purge-orphans:孤儿线程被清
+    await main_maintenance(["run", "--purge-orphans"])
+    assert await _orphan_count() == 0
+    assert '"orphans": 1' in capsys.readouterr().out
