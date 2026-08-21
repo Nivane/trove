@@ -9,6 +9,8 @@ components dict with mocks.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from importlib import resources
 from pathlib import Path
 
@@ -50,9 +52,42 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 
+async def _periodic_sweep(app: FastAPI) -> None:
+    """Background loop: run retention sweep every sweep_interval_hours."""
+    config = getattr(app.state, "config", None)
+    interval_hours = getattr(config, "retention", None).sweep_interval_hours if config else 0
+    if interval_hours <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval_hours * 3600)
+        try:
+            stats = await app.state.maintenance.run_all()
+            logger.info("[maintenance] periodic sweep: %s", stats)
+        except Exception as e:
+            logger.warning("[maintenance] periodic sweep failed: %s", e)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    maintenance = getattr(app.state, "maintenance", None)
+    sweep_task: asyncio.Task | None = None
+    if maintenance is not None:
+        try:
+            stats = await maintenance.run_all()
+            logger.info("[maintenance] startup sweep: %s", stats)
+        except Exception as e:
+            logger.warning("[maintenance] startup sweep failed: %s", e)
+        sweep_task = asyncio.create_task(_periodic_sweep(app))
+    try:
+        yield
+    finally:
+        if sweep_task is not None:
+            sweep_task.cancel()
+
+
 def create_app(components: dict) -> FastAPI:
     """Build the FastAPI app from a components dict (see main.py)."""
-    app = FastAPI(title="Trove API", version="0.1.0", docs_url="/v1/docs")
+    app = FastAPI(title="Trove API", version="0.1.0", docs_url="/v1/docs", lifespan=_lifespan)
     for name, value in components.items():
         setattr(app.state, name, value)
 

@@ -16,8 +16,18 @@ import sys
 from pathlib import Path
 
 from trove.core.config import AgentConfig
+from trove.core.logging import get_logger
 from trove.services.jobs.service import JobsService
 from trove.services.jobs.store import JobStore
+
+logger = get_logger(__name__)
+
+
+def should_sweep(last_sweep: float, now: float, interval_hours: int) -> bool:
+    """True when a periodic maintenance sweep is due (interval<=0 = off)."""
+    if interval_hours <= 0:
+        return False
+    return (now - last_sweep) >= interval_hours * 3600
 
 
 def _args_for(cmd: str, datasource: str | None = None):
@@ -152,14 +162,32 @@ async def main_schedule(argv: list[str]) -> None:
                 for r in results:
                     print(json.dumps(r, ensure_ascii=False))
                 return
+            import time as _time
+
+            from trove.services.maintenance import MaintenanceService
+            from trove.storage.session_store import SessionStore
+
+            maintenance = MaintenanceService(
+                SessionStore(home_dir=config.home),
+                checkpointer,
+                config.retention,
+            )
             print(
                 "Scheduler daemon running "
                 f"(poll every {args.poll_seconds}s; Ctrl-C to stop)"
             )
+            last_sweep = 0.0
             while True:
                 results = await runner.tick()
                 for r in results:
                     print(json.dumps(r, ensure_ascii=False), flush=True)
+                if should_sweep(last_sweep, _time.time(), config.retention.sweep_interval_hours):
+                    try:
+                        stats = await maintenance.run_all()
+                        print(f"[maintenance] {stats}", flush=True)
+                    except Exception as e:
+                        logger.warning("maintenance sweep failed: %s", e)
+                    last_sweep = _time.time()
                 await asyncio.sleep(args.poll_seconds)
         finally:
             await components["connector_registry"].close_all()

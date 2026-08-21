@@ -231,6 +231,9 @@ async def create_app_components(
         connectors=connector_registry,
     )
 
+    # ── Maintenance (retention sweeps: daemon tick + serve lifespan) ──
+    from trove.services.maintenance import MaintenanceService
+
     return {
         "config": config,
         "session_store": session_store,
@@ -243,6 +246,9 @@ async def create_app_components(
         "lineage": lineage,
         "graphs": graphs,
         "session_manager": session_manager,
+        "maintenance": MaintenanceService(
+            session_store, checkpointer, config.retention,
+        ),
     }
 
 
