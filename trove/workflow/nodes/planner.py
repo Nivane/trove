@@ -654,11 +654,48 @@ async def _column_stats_text(
     return "; ".join(parts)
 
 
+def _compile_semantic(
+    plan_json: dict[str, Any] | None,
+    matched: list[str],
+    semantic_layer,
+) -> tuple[str, str] | None:
+    """语义层覆盖内 → (权威 SQL, 提示块);任何成分 MISS → None。
+
+    受限选择编译:plan 的 metric/group_by/filters 必须全部解析到已声明
+    metric/field/relationship,AND guardrail 放行才注入 gen_sql;否则原样
+    走现有通道。全程确定性,零额外 LLM 调用。
+    """
+    if plan_json is None or not matched or semantic_layer is None:
+        return None
+    try:
+        model = semantic_layer.model()
+        if model is None:
+            return None
+        from trove.services.semantic_layer.compiler import (
+            SemanticCompiler,
+            validate_compiled_sql,
+        )
+
+        result = SemanticCompiler(model).compile_from_plan(plan_json, list(matched))
+        if result is None:
+            return None
+        violations = validate_compiled_sql(result.sql, model, list(matched))
+        if violations:
+            logger.info(
+                "Compiled SQL rejected by guardrail: %s", "; ".join(violations))
+            return None
+        return result.sql, result.block
+    except Exception as e:
+        logger.warning("Semantic compilation failed: %s", e)
+        return None
+
+
 def make_planner(
     llm: LLMGateway,
     config: AgentConfig,
     agentic: bool = True,
     connectors=None,
+    semantic_layer=None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the planner node bound to an LLM gateway."""
 
@@ -847,6 +884,14 @@ def make_planner(
                 "plan_json": plan_json,
                 "plan_validation": {"status": "ok"},
             }
+            # 受限选择编译:覆盖内问题编译器拼出权威 SQL 并注入 plan,
+            # gen_sql 遵从(确定性通道);MISS/越界 → 原通道。确定性零 LLM。
+            compiled = _compile_semantic(plan_json, state.matched_tables, semantic_layer)
+            if compiled is not None:
+                compiled_sql, block = compiled
+                update["plan"] = f"{plan}\n\n{block}" if plan else block
+                update["compiled_sql"] = compiled_sql
+                update["compiled"] = True
             if llm_detail:
                 update["llm"] = llm_detail
             if trail:

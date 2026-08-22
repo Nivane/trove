@@ -2373,6 +2373,93 @@ class TestPlanner:
         await node(make_state())
         assert llm.model == "fast/model"
 
+    # ── 受限选择编译(P3)────────────────────────────────
+
+    @staticmethod
+    def _demo_model():
+        from trove.services.semantic_layer.models import (
+            SemanticDataset, SemanticField, SemanticMetric, SemanticModel,
+            SemanticRelationship,
+        )
+
+        def f(name):
+            return SemanticField(name=name, expression=name)
+
+        return SemanticModel(
+            name="fin",
+            datasets=[
+                SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                    f("loan_id"), f("account_id"), f("amount"), f("status")]),
+                SemanticDataset(name="account", primary_key=["account_id"], fields=[
+                    f("account_id"), f("district_id")]),
+            ],
+            relationships=[
+                SemanticRelationship("loan_to_account", "loan", "account",
+                                     from_columns=["account_id"], to_columns=["account_id"]),
+            ],
+            metrics=[
+                SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
+                               datasets=["loan"]),
+            ],
+        )
+
+    async def test_planner_compiles_covered_question(self):
+        """覆盖内问题:planner 编译出权威 SQL,注入 plan + 标注 compiled 通道。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        llm = ScriptedLLM([json.dumps({
+            "tables": ["loan"],
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+            "conditions": [],
+        })])
+        node = make_planner(
+            llm, AgentConfig(target="mock/model"),
+            semantic_layer=FakeProvider(self._demo_model()),
+        )
+        update = await node(make_state(
+            question="how many loans?", matched_tables=["loan"]))
+        assert update["compiled"] is True
+        assert update["compiled_sql"] == "SELECT COUNT(loan.loan_id)\nFROM loan"
+        assert "Compiled SQL (authoritative" in update["plan"]
+
+    async def test_planner_misses_uncovered_question(self):
+        """metric 不在模型(宇宙外)→ 严格 MISS,不置位 compiled,plan 原样。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        node = make_planner(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "sum(loan.ghost)",
+                "answer_columns": ["sum(loan.ghost)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model"),
+            semantic_layer=FakeProvider(self._demo_model()),
+        )
+        update = await node(make_state(question="?", matched_tables=["loan"]))
+        assert "compiled" not in update
+        assert "compiled_sql" not in update
+        assert "Compiled SQL" not in update["plan"]
+
     async def test_planner_passes_trace_metadata(self):
         """trace metadata（node/session/question）随 LLM 调用上报。"""
         from trove.workflow.nodes.planner import make_planner

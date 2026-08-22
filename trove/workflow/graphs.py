@@ -1172,7 +1172,7 @@ def _build_reflection(
         g.add_node("clarify", make_clarify())
         g.add_edge("schema_linking", "clarify")
         if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors))
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_planner,
@@ -1197,7 +1197,7 @@ def _build_reflection(
             )
     else:
         if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors))
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_edge("schema_linking", "fast_match")
             g.add_conditional_edges(
                 "fast_match",

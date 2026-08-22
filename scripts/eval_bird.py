@@ -149,6 +149,7 @@ def _result_entry(
     if final is not None:
         entry.update({
             "pred_sql": final.sql or "",
+            "path": "compiled" if getattr(final, "compiled", False) else "llm",
             "kb_hits": final.kb_hits,
             "retries": final.retry_count,
             "consensus": final.consensus,
@@ -206,6 +207,7 @@ def attribution_slices(results: list[dict]) -> list[str]:
         r["_scaling_bucket"] = str(r.get("scaling") or 5)
     return [
         "=== 机制归因切片 ===",
+        f"路径: {bucket(rows, 'path')}",
         f"共识: {bucket(rows, 'consensus')}",
         f"置信度: {bucket(rows, '_confidence_bucket')}",
         f"修复模式: {bucket(rows, 'fix_mode')}",

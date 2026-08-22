@@ -36,13 +36,19 @@ def test_intermediate_table_pulled_in():
         _rel("loan_to_account", "loan", "account", "account_id", "account_id"),
         _rel("account_to_district", "account", "district", "district_id", "district_id"),
     )
-    # 问题只点名 loan + district → BFS 经 account 联上
+    # 问题只点名 loan + district → BFS 经 loan 起走,把 account 联进来
     res = JoinResolver(model).resolve(["loan", "district"])
     assert res.clauses == [
+        "loan.account_id = account.account_id",
+        "account.district_id = district.district_id",
+    ]
+    assert res.extra_tables == ["account"]
+    # 从 district 起走(不同锚表)→ 树序不同,BFS 仍是合法左深序
+    res2 = JoinResolver(model).resolve(["loan", "district"], root="district")
+    assert res2.clauses == [
         "account.district_id = district.district_id",
         "loan.account_id = account.account_id",
     ]
-    assert res.extra_tables == ["account"]
 
 
 def test_verified_naming_fallback_without_model():
