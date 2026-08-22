@@ -46,17 +46,14 @@
         </el-table-column>
         <el-table-column :label="t('auditAction', ui.lang)" min-width="170">
           <template #default="{ row }">
-            <span class="pill pill-accent">{{ row.action }}</span>
+            <span class="pill pill-neutral">{{ row.action }}</span>
           </template>
         </el-table-column>
         <el-table-column label="method" width="84">
           <template #default="{ row }">
-            <span
-              class="method-badge"
-              :class="methodClass(row.method)"
-              >{{
-                row.method || '—'
-              }}</span>
+            <span class="method-badge">{{
+              row.method || '—'
+            }}</span>
           </template>
         </el-table-column>
         <el-table-column :label="t('auditPath', ui.lang)" min-width="220">
@@ -105,11 +102,6 @@ const action = ref('')
 
 function okStatus(s: unknown): boolean {
   return typeof s === 'number' && s >= 200 && s < 400
-}
-
-function methodClass(m: unknown): string {
-  const v = (typeof m === 'string' ? m : '').toLowerCase()
-  return `method-${v || 'other'}`
 }
 
 async function load() {

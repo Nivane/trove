@@ -108,21 +108,19 @@
           <template #default="{ row }">
             <div class="row-actions">
               <button
+                v-if="!row.kb_initialized"
                 class="mini-btn init"
-                :class="{ 'mini-btn-primary': !row.kb_initialized }"
                 :disabled="busy(row.name, 'init')"
                 @click="initKb(row)"
               >
-                <Sparkles v-if="!row.kb_initialized" :size="13" />
-                <RefreshCw v-else :size="13" />
                 {{ t('dsInit', ui.lang) }}
               </button>
               <button
+                v-if="row.kb_initialized"
                 class="mini-btn"
                 :disabled="busy(row.name, 'reload')"
                 @click="reloadKb(row)"
               >
-                <RotateCw :size="13" />
                 {{ t('dsReload', ui.lang) }}
               </button>
               <button
@@ -130,14 +128,9 @@
                 :disabled="busy(row.name, 'reconnect')"
                 @click="reconnect(row)"
               >
-                <RefreshCcw :size="13" />
                 {{ t('dsReconnect', ui.lang) }}
               </button>
-              <button
-                class="mini-btn mini-btn-danger"
-                @click="remove(row)"
-              >
-                <Trash2 :size="13" />
+              <button class="mini-btn is-danger" @click="remove(row)">
                 {{ t('dsRemove', ui.lang) }}
               </button>
             </div>
@@ -154,11 +147,6 @@ import { ElMessageBox } from 'element-plus'
 import {
   Plus,
   Database,
-  Sparkles,
-  RefreshCw,
-  RotateCw,
-  RefreshCcw,
-  Trash2,
 } from 'lucide-vue-next'
 import { apiDelete, apiGet, apiPost } from '../../api/http'
 import { useUiStore } from '../../stores/ui'

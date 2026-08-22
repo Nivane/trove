@@ -1,11 +1,9 @@
 <template>
   <div class="login-view">
-    <div class="login-glow login-glow-a" />
-    <div class="login-glow login-glow-b" />
     <div class="login-card-wrap">
       <div class="login-card">
         <div class="login-head">
-          <span class="login-logo"><BrandMark :size="28" /></span>
+          <span class="login-logo"><BrandMark :size="32" /></span>
           <h1 class="login-title">{{ t('loginTitle', ui.lang) }}</h1>
           <p class="login-subtitle">{{ t('loginSubtitle', ui.lang) }}</p>
         </div>

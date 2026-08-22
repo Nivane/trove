@@ -57,39 +57,31 @@
                   <span v-else class="cell-muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('upvotes', ui.lang)" width="84">
+              <el-table-column :label="t('upvotes', ui.lang)" width="80">
                 <template #default="{ row }">
-                  <span class="vote-badge vote-up">
-                    <ThumbsUp :size="13" />
-                    {{ row.upvotes ?? 0 }}
-                  </span>
+                  <span class="cell-muted">{{ row.upvotes ?? 0 }}</span>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('downvotes', ui.lang)" width="84">
+              <el-table-column :label="t('downvotes', ui.lang)" width="80">
                 <template #default="{ row }">
-                  <span class="vote-badge vote-down">
-                    <ThumbsDown :size="13" />
-                    {{ row.downvotes ?? 0 }}
-                  </span>
+                  <span class="cell-muted">{{ row.downvotes ?? 0 }}</span>
                 </template>
               </el-table-column>
               <el-table-column :label="t('actions', ui.lang)" width="160" fixed="right">
                 <template #default="{ row }">
                   <div class="row-actions">
                     <button
-                      class="mini-btn mini-btn-primary"
+                      class="mini-btn"
                       :disabled="acting"
                       @click="confirmLesson(row)"
                     >
-                      <Check :size="13" />
                       {{ t('confirmLesson', ui.lang) }}
                     </button>
                     <button
-                      class="mini-btn mini-btn-danger"
+                      class="mini-btn is-danger"
                       :disabled="acting"
                       @click="rejectLesson(row)"
                     >
-                      <X :size="13" />
                       {{ t('rejectLesson', ui.lang) }}
                     </button>
                   </div>
@@ -143,20 +135,14 @@
                   <span v-else class="cell-muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('upvotes', ui.lang)" width="84">
+              <el-table-column :label="t('upvotes', ui.lang)" width="80">
                 <template #default="{ row }">
-                  <span class="vote-badge vote-up">
-                    <ThumbsUp :size="13" />
-                    {{ row.upvotes ?? 0 }}
-                  </span>
+                  <span class="cell-muted">{{ row.upvotes ?? 0 }}</span>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('downvotes', ui.lang)" width="84">
+              <el-table-column :label="t('downvotes', ui.lang)" width="80">
                 <template #default="{ row }">
-                  <span class="vote-badge vote-down">
-                    <ThumbsDown :size="13" />
-                    {{ row.downvotes ?? 0 }}
-                  </span>
+                  <span class="cell-muted">{{ row.downvotes ?? 0 }}</span>
                 </template>
               </el-table-column>
               <el-table-column :label="t('status', ui.lang)" width="110">
@@ -177,7 +163,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { RefreshCw, ThumbsUp, ThumbsDown, Check, X } from 'lucide-vue-next'
+import { RefreshCw } from 'lucide-vue-next'
 import { apiGet, apiPost } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
