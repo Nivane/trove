@@ -8,6 +8,10 @@ services:
     image: trove-backend:local
     ports:
       - "8000:8000" # exposed for local debugging (curl the API directly)
+    # serve 零默认数据源启动：不显式传 --datasource 会裸启动、无数据源可用。
+    # demo = 内置 BIRD 金融 SQLite（演练入口）；生产数据源改由管理端注册
+    # （持久化到 .trove/datasources.yml），或在这里换成 scheme:// URL。
+    command: ["trove", "serve", "--host", "0.0.0.0", "--port", "8000", "--datasource", "demo"]
     environment:
       # Dev-only: deterministic bootstrap admin password for the login
       # flow; without this it is random and printed once in the logs.

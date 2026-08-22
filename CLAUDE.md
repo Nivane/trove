@@ -34,6 +34,8 @@ docker compose down              # 停止并移除容器
 ```
 
 - 登录：admin / `admin123`（compose 里 `TROVE_ADMIN_PASSWORD` 仅本地演练；生产由 `TROVE_ADMIN_PASSWORD` 环境变量控制）
+- 数据源零默认启动：`serve` 默认不注册任何数据源，compose 已显式 `--datasource demo`（内置 BIRD 金融 SQLite，演练入口）；也可换成 `scheme://` URL（如 `mysql://...`）。生产数据源改由管理端注册（`/admin/datasources`，持久化到 `.trove/datasources.yml`，重启自动恢复）
+- 管理端数据源流程：admin 登录 → 注册（内置 demo 或 URL，注册即连接探测，失败 400 报原因）→ 该源 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）→ 用户端下拉/列表才可见（仅显示「已连接且 KB 已初始化」的数据源，非 admin 还需 grants 授权）
 - 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`），或在容器内提供 API key
 - 后端镜像单独跑仍可访问 `/ui`（pip package-data 携带的 committed bundle）；本地单体开发流程不变：`uv run trove serve` + `cd frontend && npm run build`
 
