@@ -12,7 +12,7 @@ Evaluate on:
 5. If official evidence is provided, do the SQL and result comply with it?
 6. Are columns redundant or missing? The result columns should exactly match what the question asks — no more, no fewer.
 7. Does the column order match the question's expectation? Columns the question emphasizes or asks for first should come first.
-8. Condition completeness (two-way mapping): does every condition the question requires appear in the SQL? Can every WHERE condition in the SQL be justified by the question? A missing condition (especially an attribute condition inside an "among" qualifier, e.g. weekly issuance) or an extra one is an error — judge RETRY.
+8. Condition completeness (two-way mapping): does every condition the question requires appear in the SQL? Can every WHERE condition in the SQL be justified by the question? A missing condition (especially an attribute condition inside an "among" qualifier, e.g. a weekly frequency condition) or an extra one is an error — judge RETRY.
 9. Unit consistency (takes PRECEDENCE over the formula rule when they conflict): the question's wording decides WHAT is measured. "Percentage of accounts/clients/rows" requires counting rows (SUM(cond)/COUNT(*)); a percentage of AMOUNT (SUM(amount)-based) answers a different question — judge RETRY. The Evidence resolves column/value meanings; when its formula's unit conflicts with the question's unit, the formula is wrong on that point and the question's unit wins.
 
 Decision guardrails:

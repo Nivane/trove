@@ -2,9 +2,9 @@
 
 关键规则（前置提请注意；下方完整编号规则仍然逐条适用）：
 A. 多重最高级（"最年长且 X 最低"、"最年轻且 Y 最高"）是单行：ORDER BY 主条件 ASC, 次条件 ASC LIMIT 1——绝不要取两个全局 MIN/MAX 子查询的交集，也不要按次条件的全局 MIN/MAX 预过滤，那样几乎必然 0 行（规则 16）。
-B. 当 Evidence 定义了过滤值的含义（如 eligible → type = 'OWNER'）时，该定义是过滤值的唯一来源——绝不要用相关列（如 loan.status、operation）替代（规则 22）。
+B. 当 Evidence 定义了过滤值的含义（如 eligible → status = 'ACTIVE'）时，该定义是过滤值的唯一来源——绝不要用其他相关列（如另一列 status 或分类列）替代（规则 22）。
 C. 只输出问题要求的列——排序用、公式中间列、识别列一律不加（规则 13/19）。
-D. 某人的"自己的"账户/贷款要经角色表过滤：disp.type = 'OWNER'（规则 23）。
+D. 某人的"自己的"记录要经角色表过滤：<角色表>.<角色列> = '<OWNER>'（规则 23）。
 {% if has_probe %}
 如果 probe_query 显示 0 行且问题是最高级类，先查规则 A（全局 MIN/MAX 交集是最常见原因）；如果你臆造了任何过滤值，对照规则 B 核实。
 {% endif %}
@@ -18,23 +18,23 @@ D. 某人的"自己的"账户/贷款要经角色表过滤：disp.type = 'OWNER'�
 6. 需要时正确引用表名和列名。
 7. 无法生成合法 SQL 时，说明原因。
 8. 当 Evidence 给出公式定义（如 "Gap = X - Y" 或 "rate = (A - B) / B * 100"）时，按其字面作用域执行：除非 Evidence 明确限定范围，公式中的"最高/最低/平均 X"都在整表全局计算，不要把全局项锚定到问题中提到的某个具体行或实体上。
-9. 百分比/比例计算遵循 BIRD 惯例：CAST(SUM(条件) AS DOUBLE) * 100 / COUNT(...) —— 先转浮点再除，返回全精度结果。MySQL 整数除法会截断到 4 位小数（27/61*100 = 44.2623，而不是 44.26229508196721），导致结果无法精确匹配。
+9. 百分比/比例计算：CAST(SUM(条件) AS DOUBLE) * 100 / COUNT(...) —— 先转浮点再除，返回全精度结果。MySQL 整数除法会截断到 4 位小数（27/61*100 = 44.2623，而不是 44.26229508196721），导致结果无法精确匹配。
 10. 口径一致性：问题自身措辞决定"数什么"。"percentage of accounts/clients/rows" → 按行数统计（SUM(条件) / COUNT(*)）；"percentage of amount/total amount" → 按金额求和（SUM(CASE 条件 THEN amount) / SUM(amount)）。当 Evidence 公式的口径与问题措辞冲突时，以问题措辞为准——Evidence 只解决列/取值含义，不决定统计对象。
 11. 参考示例是权威的：当某个 Reference example 的问题与当前问题高度相似时，把它的 SQL 视为标准写法——精确复刻其 join、过滤、分组和结果列，不要"改进"或重新解读它。
 12. 结果粒度：普通 "list the X ..." 问题（不含 "top N" 等排序词）应每个匹配记录返回一行——不要加 SELECT DISTINCT，也不要在聚合函数内加 DISTINCT（如 AVG(DISTINCT x)、SUM(DISTINCT x)）去重，除非问题明确要求唯一/去重值（如 "unique"、"distinct"、"different X"）。问题询问"不同实体的数量"（"number of districts"、"how many different X"）时允许 COUNT(DISTINCT)。只有排序类问题（"top ten X by Y"）才按 Y 去重为一行。
-13. 答案列：只输出问题要求的列。"list all the X" 类问题若未指明列，只输出 X 的标识列（其 ID，如 trans_id、account_id）或问题点名的属性列；不要输出整条记录的日期、金额、符号、状态等额外列，除非问题明确点名这些列。不要附加额外的识别列：问题提到人物（"who are the account holders"）但点名了要输出的列（"State the account ID and the frequency"）时，只输出这些点名的列——不要为了"识别"人物而追加 client_id 等实体 ID，也不要为此增加多余的 join。
+13. 答案列：只输出问题要求的列。"list all the X" 类问题若未指明列，只输出 X 的标识列（其 ID，如 orders.id、customers.id）或问题点名的属性列；不要输出整条记录的日期、金额、符号、状态等额外列，除非问题明确点名这些列。不要附加额外的识别列：问题提到人物（"who are the record owners"）但点名了要输出的列（"State the customer ID and the status"）时，只输出这些点名的列——不要为了"识别"人物而追加实体 ID，也不要为此增加多余的 join。
 14. 年龄计算："age" 问题按简单年份差计算年龄，如 DATE_FORMAT(CAST(CURRENT_TIMESTAMP() AS DATETIME), '%Y') - DATE_FORMAT(CAST(birth_date AS DATETIME), '%Y')。不要用 TIMESTAMPDIFF(YEAR, birth_date, ...)——当年生日未过时它会少算一岁，与标准答案差 1 岁，导致结果无法精确匹配。
 15. 极值问题："最低/最高的 X" 直接用 ORDER BY 列 ASC/DESC LIMIT 1 即可，不要包 CTE 或嵌套 MIN/MAX 子查询——徒增语法风险。
 16. 多重最高级："最年长且 X 最低"（最年轻且最高等）是单条排序：ORDER BY 主条件, 次条件 LIMIT 1——主条件定胜负，次条件只裁决平局。不要先按次条件的全局 MIN/MAX 预过滤——按任一条件的全局 MIN/MAX 预过滤（或把两个全局 MIN/MAX 子查询取交集）几乎必然得到空集、0 行。失败签名："the oldest client with the lowest salary" 是单行：ORDER BY age ASC, salary ASC LIMIT 1。如果探针（或执行结果）在最高级问题上显示 0 行，先查本条——全局 MIN/MAX 交集是最常见原因。
-17. 连接路径：相关表自带外键列时（如 client.district_id）直接在该列上 join；不要为了到达同一张表绕道关联表（disp）——那会改变行粒度与结果。
-18. 实体与度量："拥有最多/最少 Y 的 X" 类问题按问题点名的实体列（如地区名）选择或分组，而不是按度量列（如居民数量）。同理，"top N X by <属性>" 类问题里 "by" 后的属性就是排序键（如 "top ten withdrawals by district names" → 按区名排序取 N）——不要自造聚合度量（SUM/COUNT）作为排名键。
-19. SELECT 列表洁癖：SELECT 列表只包含答案列。绝不包含：(a) 仅用于 ORDER BY 排序的列（如问题只问账号时附带 loan.amount）；(b) 公式的中间/输入列（如 rate/increment 公式里的 A12、A13 操作数）；(c) 问题未要求列出的实体的附加标识列。公式类问题（rate/gap/percentage/increment）的最终结果列就是答案——只输出它。仅当问题用通顺的并列结构明确把实体与其指标配对（"list the districts and their unemployment rate"）时，才加实体名列。不要从残缺破碎的句式里提取实体列（如 "list the district of the and the state the percentage ..."——district 这个名词埋在残缺文本里，不是被要求的输出列，只输出公式列）。Query plan 的 Answer columns 字段是你 SELECT 列表的默认参考——除非问题自身的语义与它冲突。**plan 是有损草稿，不是权威**：当问题明确要求数去重实体（用户/客户/人数；users/customers/people），而计划的聚合是普通记录计数（如 count(loan.loan_id)）时，把它改写为 COUNT(DISTINCT 实体.实体id) 并保留该列——问题语义优先于 plan。只要问题通顺且明确点名了不同的输出列或聚合语义，就允许偏离计划的答案列。
+17. 连接路径：相关表自带外键列时（如 <表>.region_id）直接在该列上 join；不要为了到达同一张表绕道关联表——那会改变行粒度与结果。
+18. 实体与度量："拥有最多/最少 Y 的 X" 类问题按问题点名的实体列（如地区名）选择或分组，而不是按度量列（如人口数量）。同理，"top N X by <属性>" 类问题里 "by" 后的属性就是排序键（如 "top ten items by category name" → 按类别名排序取 N）——不要自造聚合度量（SUM/COUNT）作为排名键。
+19. SELECT 列表洁癖：SELECT 列表只包含答案列。绝不包含：(a) 仅用于 ORDER BY 排序的列（如问题只要求列出记录时附带金额列）；(b) 公式的中间/输入列（如 rate/gap/increment 公式的分子、分母操作数）；(c) 问题未要求列出的实体的附加标识列。公式类问题（rate/gap/percentage/increment）的最终结果列就是答案——只输出它。仅当问题用通顺的并列结构明确把实体与其指标配对（"list the regions and their population size"）时，才加实体名列。不要从残缺破碎的句式里提取实体列（如 "list the region of the and the percentage ..."——实体名词埋在残缺文本里，不是被要求的输出列，只输出公式列）。Query plan 的 Answer columns 字段是你 SELECT 列表的默认参考——除非问题自身的语义与它冲突。**plan 是有损草稿，不是权威**：当问题明确要求数去重实体（用户/客户/人数；users/customers/people），而计划的聚合是普通记录计数（如 count(<表>.<id>)）时，把它改写为 COUNT(DISTINCT 实体.实体id) 并保留该列——问题语义优先于 plan。只要问题通顺且明确点名了不同的输出列或聚合语义，就允许偏离计划的答案列。
 20. 公式术语归属：当问题中某名词短语与 Evidence 公式的术语同名（如 "lowest average salary" 同时也是 "Gap = highest - lowest" 的 MIN 操作数）时，该短语属于公式——公式各项全局计算（规则 8），不要把该短语叠加到实体的限定条件（WHERE/ORDER BY）上。句式残缺的并列（"clients who are oldest and has lowest average salary"）同样处理：与公式同名的项归入公式。
-21. Schema 列优先与多问句隔离：(a) 问题询问记录的属性（"多久一次"、"频率"、"类型"、"方式"等）且 schema 中有同义列（如 account.frequency）时，直接输出该列的值——不要在相关表上自造聚合统计，也不要臆造问题未给出的过滤值；(b) 多问句问题必须逐句独立解析：每个问句只用它自己的条件，禁止把其他问句的过滤线索（k_symbol、金额等）混入当前问句。
-22. Evidence 的等价定义是 WHERE 条件的权威改写：当 Evidence 给出列值等价关系（如 "account type = 'OWNER' → eligible for loans"、"non-credit card refers to type = 'VYDAJ'"）时，直接用该定义构造过滤条件（not eligible → type <> 'OWNER'；non-credit-card → type = 'VYDAJ'）。禁止绕开 Evidence 用其他列自造等价过滤（如 loan.status、operation）。Evidence 的等价定义是过滤值的唯一来源：按声明的列-值映射逐字构造过滤——相关列（loan.status、operation）绝不能覆盖或替换它。如果过滤值无法从 Evidence 推导出来，那就是你臆造的，应视为错误而非过滤条件。
-23. 以人为主体的所有权过滤：当问题以某个人为主体限定资产/账户（如 "for a male client"、"the client's accounts"），且 person↔asset 关系经角色/处置表（如 disp）建立时，用所有权角色过滤（如 disp.type = 'OWNER'）——某人的"自己的"账户指其拥有的账户，不包括仅有处置权（DISPONENT）的账户，否则会多算。仅当问题明确包含非所有者关联（如 "all accounts associated with the client"）时才去掉该过滤。
+21. Schema 列优先与多问句隔离：(a) 问题询问记录的属性（"多久一次"、"频率"、"类型"、"方式"等）且 schema 中有同义列（如频率/方式列）时，直接输出该列的值——不要在相关表上自造聚合统计，也不要臆造问题未给出的过滤值；(b) 多问句问题必须逐句独立解析：每个问句只用它自己的条件，禁止把其他问句的过滤线索（如其他分类条件、金额等）混入当前问句。
+22. Evidence 的等价定义是 WHERE 条件的权威改写：当 Evidence 给出列值等价关系（如 "status = 'ACTIVE' → eligible"、"某个分类码对应 'EXPENSE'"）时，直接用该定义构造过滤条件（not eligible → status <> 'ACTIVE'；expense 类 → type = 'EXPENSE'）。禁止绕开 Evidence 用其他列自造等价过滤。Evidence 的等价定义是过滤值的唯一来源：按声明的列-值映射逐字构造过滤——相关列绝不能覆盖或替换它。如果过滤值无法从 Evidence 推导出来，那就是你臆造的，应视为错误而非过滤条件。
+23. 以人为主体的所有权过滤：当问题以某个人为主体限定记录（如 "for a male client"、"the client's records"），且 person↔记录关系经角色/处置表（如 <角色表>）建立时，用所有权角色过滤（如 <角色表>.<角色列> = '<OWNER>'）——某人的"自己的"记录指其拥有的记录，不包括仅有处置权的记录，否则会多算。仅当问题明确包含非所有者关联（如 "all records associated with the client"）时才去掉该过滤。
 24. 模板组装：参考示例通常是原子模板——JOIN 骨架、WHERE 过滤、GROUP BY 各自独立成条。当没有任何单条示例覆盖整题时，组装：从一条示例取 join 路径，从另一条取过滤列与取值，从第三条取分组。组装后的 SQL 必须包含问题点名的全部要素（连接、过滤、分组、聚合），哪怕它们来自不同示例。不要把最接近的单条示例硬套上去并悄悄丢掉问题点名的要素。规则 11 仅在单条示例真正覆盖整题时适用。
-25. 聚合列命名（确定性、可读输出）：(a) 数行数用 COUNT(*)——不要写 COUNT(col) 或 COUNT(1)，除非问题明确要求统计某列的非空值；(b) 数去重实体用 COUNT(DISTINCT 表.列)——保留表限定列名（如 COUNT(DISTINCT client.client_id)），不要写裸的 COUNT(DISTINCT col)；(c) 每个聚合表达式必须加一个简短可读的 snake_case 别名，反映它统计的对象，如 COUNT(*) AS num_loans、COUNT(DISTINCT client.client_id) AS num_loan_users、SUM(amount) AS total_amount——让结果列头可读，而不是摊开原始函数文本。
+25. 聚合列命名（确定性、可读输出）：(a) 数行数用 COUNT(*)——不要写 COUNT(col) 或 COUNT(1)，除非问题明确要求统计某列的非空值；(b) 数去重实体用 COUNT(DISTINCT 表.列)——保留表限定列名（如 COUNT(DISTINCT <表>.<id>)），不要写裸的 COUNT(DISTINCT col)；(c) 每个聚合表达式必须加一个简短可读的 snake_case 别名，反映它统计的对象，如 COUNT(*) AS num_records、COUNT(DISTINCT <表>.<id>) AS num_users、SUM(amount) AS total_amount——让结果列头可读，而不是摊开原始函数文本。
 
 {% if has_probe %}
 工具：
