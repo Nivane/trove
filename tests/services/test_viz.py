@@ -19,6 +19,20 @@ class TestInferChart:
         assert spec.dimension == "month"
         assert spec.measures == ["amount"]
 
+    def test_bare_year_column_infers_line(self):
+        """4 位整数年份值会被数值判定吞掉,必须仍当作维度 → 有图。"""
+        rows = [["2020", 120], ["2021", 135], ["2022", 99]]
+        spec = infer_chart(["year", "loan_count"], rows)
+        assert spec.chart_type == "line"
+        assert spec.dimension == "year"
+        assert spec.measures == ["loan_count"]
+
+    def test_year_like_values_infer_line_even_with_expression_alias(self):
+        rows = [["2020", 120], ["2021", 135], ["2022", 99]]
+        spec = infer_chart(["strftime('%Y', issue_date)", "loan_count"], rows)
+        assert spec.chart_type == "line"
+        assert spec.measures == ["loan_count"]
+
     def test_categorical_single_measure_is_bar(self):
         spec = infer_chart(
             ["region", "count"],

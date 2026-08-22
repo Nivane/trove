@@ -24,6 +24,7 @@ _TIME_VALUE_RE = re.compile(
     r"^\d{4}[-/]\d{1,2}(?:-\d{1,2})?$"
     r"|^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$"
 )
+_YEAR_RE = re.compile(r"^\d{4}$")
 _INT_RE = re.compile(r"^[-+]?\d+$")
 _FLOAT_RE = re.compile(r"^[-+]?(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?$")
 
@@ -50,14 +51,30 @@ def _num(value: Any) -> float:
         return 0.0
 
 
+def _values_time_like(values: list[Any]) -> bool:
+    """Bulk of the cells look like dates ('2024-01') or bare years ('2020').
+
+    A year column of 4-digit integers parses as numeric; it must stay a
+    dimension, otherwise year-over-year queries end up with no dimension
+    and no chart.
+    """
+    sampled = [str(v).strip() for v in values[:12] if v not in (None, "")]
+    if not sampled:
+        return False
+    hits = 0
+    for s in sampled:
+        if _TIME_VALUE_RE.match(s):
+            hits += 1
+        elif _YEAR_RE.match(s) and 1000 <= int(s) <= 2100:
+            hits += 1
+    return hits / len(sampled) >= 0.5
+
+
 def is_time_dimension(name: str, values: list[Any]) -> bool:
     """Time-like dimension: by column name or by value shape."""
     if _TIME_NAME_RE.search(name.lower()):
         return True
-    sampled = [str(v).strip() for v in values[:12] if v not in (None, "")]
-    return bool(sampled) and sum(
-        1 for s in sampled if _TIME_VALUE_RE.match(s)
-    ) / len(sampled) >= 0.5
+    return _values_time_like(values)
 
 
 def _is_proportional(values: list[Any]) -> bool:
@@ -87,18 +104,33 @@ class ChartSpec:
 
 
 def infer_chart(columns: list[str], rows: list[list[Any]]) -> ChartSpec:
-    """Chart decision from columns + rows (empty/default-safe)."""
+    """Chart decision from columns + rows (empty/default-safe).
+
+    Dimension / measure split follows column dtype AND shape: time-like
+    columns (name or values — e.g. a bare ``year`` of 4-digit integers)
+    are always dimensions, so year-over-year queries still chart even
+    when the year column parses as numbers.
+    """
     if not columns or rows is None:
         return ChartSpec()
     idx = {c: i for i, c in enumerate(columns)}
-    numeric = [c for c in columns if is_numeric_column([row[idx[c]] for row in rows])]
-    dims = [c for c in columns if c not in numeric]
-    if not numeric or not dims:
+    values = {c: [row[idx[c]] for row in rows] for c in columns}
+    dims: list[str] = []
+    measures: list[str] = []
+    for c in columns:
+        cv = values[c]
+        if _TIME_NAME_RE.search(c.lower()) or _values_time_like(cv):
+            dims.append(c)
+        elif is_numeric_column(cv):
+            measures.append(c)
+        else:
+            dims.append(c)
+    if not measures or not dims:
         return ChartSpec()
 
     dimension = dims[0]
-    measures = numeric[:4]  # cap series count; extra measures stay in the table
-    cat_values = [row[idx[dimension]] for row in rows]
+    measures = measures[:4]  # cap series count; extra measures stay in the table
+    cat_values = values[dimension]
     is_time = is_time_dimension(dimension, cat_values)
 
     if is_time:
@@ -106,7 +138,7 @@ def infer_chart(columns: list[str], rows: list[list[Any]]) -> ChartSpec:
     if (
         len(measures) == 1
         and 2 <= len({str(v) for v in cat_values}) <= 6
-        and _is_proportional([row[idx[measures[0]]] for row in rows])
+        and _is_proportional(values[measures[0]])
     ):
         return ChartSpec(chart_type="pie", dimension=dimension, measures=measures)
     return ChartSpec(chart_type="bar", dimension=dimension, measures=measures)
