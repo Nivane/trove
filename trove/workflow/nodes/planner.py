@@ -254,38 +254,41 @@ def correct_entity_count_plan(
 
     根因修复(第一轮就做对,不等 reflect 反推):plan 常把「X 的用户数量」写成
     ``count(loan.loan_id)``(数记录行),而问题语义要求 ``count(distinct
-    实体.id)``(数去重用户)。规则 19 让 gen_sql 不敢反驳 plan——这里在
+    实体)``(数去重用户)。规则 19 让 gen_sql 不敢反驳 plan——这里在
     plan→gen 之间用确定性规则把 plan 纠正好,gen 拿到对的就是对的。
 
-    命中条件:
-      1. aggregation 是 count(含 count distinct 之外的 count 族);
-      2. 问题含实体计数语词(用户/客户/人数/customers/users/people...)。
-    纠偏:
-      - aggregation → ``count distinct <table>.<id>``;
-      - answer_columns 里的记录计数表达式(count(<table>.<id>)) → 改去重版;
-      - answer_columns 本身缺聚合列时追加去重计数列(交给 ensure_... 的性能
-        由本函数先行,避免 count(*) 占位压过去重语义)。
-    无法确定实体表 → None(不瞎猜,保持原 plan)。
+    两层决策:
+      1. 优先精确层(answer_columns 含 count(<记录表>.<某列>)):从该表达式
+         反推记录表 t,再到 plan.joins 里找形如 ``t.<fk> = <other>.<id>``
+         的"记录表到实体的外键",改为 ``count(distinct t.<fk>)``。
+         —— 例:count(loan.loan_id) + joins 含 ``loan.account_id=...``
+            → count(distinct loan.account_id),正好是"贷款用户"的去重口径;
+         2. 兜底层(无 count 表达式 / 外键不可定位):从问题名词 + plan.tables
+         选实体表,但要验证该表出现在 joins 里(引用不存在的表会产生无效
+         SQL),且不去碰需新增联表的实体。
+    无法确定 → None(不瞎猜,保持原 plan)。
     """
     if not plan:
         return None
     if not _is_entity_count_question(question, lang):
         return None
     agg = str(plan.get("aggregation") or "").strip().lower()
-    if not agg or re.search(r"\bcount\s*\(", agg):
-        if not agg or "count" not in agg:
-            return None  # 非 count 聚合(sum/avg)或已显式去重 → 不动
-    # 实体表解析(允许在 question 里,也可来自 plan.tables)
-    tbls = _entity_tables(question, plan, lang)
-    if not tbls:
+    if "count" not in agg:
         return None
-    table = tbls[0]
-    col = f"{table}.{_entity_id_column(table)}"
-    expr = f"count(distinct {col})"
+    if re.search(r"\bcount\s*\(\s*distinct", agg):
+        return None  # 已是去重计数 → 无需纠正
 
-    cols = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    colses = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    joins = str(plan.get("joins") or "")
+
+    expr = _distinct_expr_from_plan(colses, joins)
+    if expr is None:
+        expr = _distinct_expr_from_entities(question, plan, joins, lang)
+    if expr is None:
+        return None
+
     replaced: list[str] = []
-    for a in cols:
+    for a in colses:
         low = a.lower()
         if re.match(r"^count\s*\(", low):
             replaced.append(expr)  # 记录计数(含别名/裸) → 去重版
@@ -295,10 +298,57 @@ def correct_entity_count_plan(
         replaced.append(expr)
 
     fixed = dict(plan)
-    fixed["aggregation"] = f"count distinct {col}"
+    fixed["aggregation"] = expr
     fixed["answer_columns"] = replaced
     fixed["plan_field"] = "correct_entity_count_plan"
     return fixed
+
+
+def _distinct_expr_from_plan(cols: list[str], joins: str) -> str | None:
+    """精确层:从 answer_columns 的 count(记录表.列) + joins 外键推去重实体列。
+
+    只认 ``count(<t>.<anything>)`` 且 joins 里有 ``<t>.<fk> = ... <id>``:
+    把记录计数(count 行)改成 count(distinct 记录表.外键列)。外键列名通常
+    即"实体归属",如 count(loan.loan_id) → count(distinct loan.account_id)。
+    """
+    for a in cols:
+        m = re.match(r"^count\s*\(\s*([A-Za-z_][\w]*)\.(\w+)\s*\)", a, re.I)
+        if not m:
+            continue
+        tbl, col = m.group(1), m.group(2)
+        if col.lower() == f"{tbl}_id".lower():
+            continue  # count(loan.loan_id) 是记录主键,不是外键;继续找外键
+        # joins 里该表的其它列作为 <=> 键(通常是外键,如 account_id)
+        fk = re.search(
+            rf"\b{re.escape(tbl)}\s*\.\s*(\w+)\s*=\s*[A-Za-z_][\w]*\s*\.\s*(\w+)",
+            joins, re.I,
+        )
+        if fk:
+            return f"count(distinct {tbl}.{fk.group(1)})"
+    # 记录主键在 count 里,退一层:从 joins 找记录表级联的外键
+    for a in cols:
+        m = re.match(r"^count\s*\(\s*([A-Za-z_][\w]*)\.\w+\s*\)", a, re.I)
+        if not m:
+            continue
+        tbl = m.group(1)
+        fk = re.search(
+            rf"\b{re.escape(tbl)}\s*\.\s*(\w+)\s*=\s*[A-Za-z_][\w]*\s*\.\s*(\w+)",
+            joins, re.I,
+        )
+        if fk:
+            return f"count(distinct {tbl}.{fk.group(1)})"
+    return None
+
+
+def _distinct_expr_from_entities(
+    question: str, plan: dict, joins: str, lang: str,
+) -> str | None:
+    """兜底层:从问题名词挑实体表(必须已出现在 joins 里,避免引不存在的表)。"""
+    tables = [str(t).lower() for t in ((plan or {}).get("tables") or [])]
+    for t in _entity_tables(question, plan, lang):
+        if re.search(rf"\b{re.escape(t)}\s*\.", joins, re.I) or t in tables:
+            return f"count(distinct {t}.{_entity_id_column(t)})"
+    return None
 
 
 def answer_columns_mismatch(
