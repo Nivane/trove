@@ -76,10 +76,37 @@ cd frontend && npm run build   # 产物在 frontend/dist/
 ```
 
 - 单页聊天界面（Vue 3 + Element Plus，零后端页面依赖）
-- **任务面板**：多任务批处理时侧栏展示任务进度（待办/进行中/完成/失败/跳过），单条失败不中断批次；**HITL 确认框**：执行前展示 SQL + 语义说明，单任务提供 批准/否决，批任务提供三选项（仅当前 / 确认全部 / 不继续）
-- 接口：`POST /v1/chat`（SSE 流式）、`GET/POST/DELETE /v1/sessions[/{id}]`、`GET /v1/sessions/{id}/tasks`、`POST /v1/sessions/{id}/resume`（HITL 继续）、`POST /v1/sessions/{id}/compact|clear`、`GET /v1/catalog/*`、`GET/POST /v1/kb/*`；API 文档见 `/v1/docs`
+- **HITL 确认框**：执行前展示 SQL + 语义说明，单任务提供 批准/否决，批任务提供三选项（仅当前 / 确认全部 / 不继续）
+- **图表与分析过程**：结果可渲染折线/柱状/饼图（含主题化），侧栏「分析过程」展示规划、SQL 与校验链路；输入框加号菜单可切换图表类型 / 上传文件
+- 接口：`POST /v1/chat`（SSE 流式）、`GET/POST/DELETE /v1/sessions[/{id}]`（列表分页 `limit/offset`）、`POST /v1/sessions/{id}/title`（重命名）、`GET /v1/sessions/{id}/tasks`、`POST /v1/sessions/{id}/resume`（HITL 继续）、`POST /v1/sessions/{id}/compact|clear`、`GET /v1/catalog/*`（含 `POST /v1/catalog/upload` 数据上传）、`GET/POST /v1/kb/*`、`/v1/admin/*`（用户 / 数据源 / KB / 审计管理）；API 文档见 `/v1/docs`
 - 会话 ID 与界面语言（zh/en）保存在浏览器 localStorage；对话历史由服务端按 session 持久化
 - 停止按钮只中断客户端读取——服务端会跑完本次查询并持久化，刷新页面即可看到结果
+
+## Docker 部署（前后端独立容器）
+
+前端容器（nginx 托管 SPA + 反代 `/v1` → 后端）与后端容器（`trove serve`，纯 JSON API）各自独立镜像、独立重建，互不阻塞：
+
+```bash
+docker compose up --build        # 构建并启动（后端 :8000 仅供调试，前端 :8080）
+docker compose build frontend    # 只重建前端镜像（前端改动不动后端）
+docker compose restart backend   # 只重启后端，前端容器不受影响
+docker compose down              # 停止并移除容器
+```
+
+- 访问 `http://localhost:8080/`；登录：admin / `admin123`（compose 里 `TROVE_ADMIN_PASSWORD` 仅本地演练；生产由环境变量控制）
+- compose 已显式 `--datasource demo`（内置 BIRD 金融 SQLite，演练入口）；生产数据源改由管理端注册（见下节）
+- 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释，或在容器内提供 API key（无凭证时 `kb/init` 会报凭证错误）
+
+## 平台化数据源与知识库管理
+
+`serve` **默认零数据源启动**（不注册任何源），数据源与 KB 由管理端全生命周期管理，持久化到 `.trove/datasources.yml` + `.trove/kb/`（重启自动恢复）：
+
+1. admin 登录 → 管理端「数据源」注册（内置 demo 或 `scheme://` URL，注册即连接探测，失败 400 报原因）
+2. 注册后 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）
+3. 用户端下拉/列表仅显示「已连接且 KB 已初始化」的数据源；非 admin 用户还需管理端 grants 授权
+4. `/kb learn` 半自动演化与 REPL 相同；`kb/reload` 使编辑立即生效
+
+管理端点：`GET/POST/DELETE /v1/admin/datasources[/{name}]`、`POST /v1/admin/datasources/{name}/reconnect|kb/init|kb/reload`、`GET /v1/admin/users/{user_id}/datasources`（grants）。
 
 ## 配置
 
@@ -129,6 +156,8 @@ LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
 
 ## 知识库使用
 
+> 平台化部署（`serve`）下初始化走管理端 `kb/init`（见「平台化数据源与知识库管理」）；以下为 REPL 本地流程。
+
 1. 启动 REPL 后 `/kb init` —— LLM 起草表/列中文注释（大 schema 分块起草后合并，解析失败自动修复一轮），可选：
    - `--docs <dir>` 导入官方列描述（权威，覆盖 LLM 草稿）
    - 低基数文本列自动探测 distinct 值，辅助 LLM 猜枚举含义
@@ -153,7 +182,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
 
 - 数据源名 = **数据库名**（知识库目录 `.trove/kb/<数据库名>/` 与之对应，每个库各自演化）
 - 驱动按需惰性导入：未安装对应 extra 时给出明确提示，不影响其他数据源
-- 连接失败时回退到 demo 并输出警告
+- `serve` 零默认启动：未指定 `--datasource` 时从 `.trove/datasources.yml` 恢复已注册源（失败跳过并在管理端显示断开态）；REPL/CLI 用 `--datasource demo` 或 `scheme://` URL 直接指定
 - 新增适配器：实现 `DatabaseAdapter` 五个抽象方法（`trove/services/datasource/adapters/base.py`），在 `registry.py` 的 `_ADAPTER_REGISTRY` 注册
 
 **真实服务集成测试**（未设置环境变量时自动跳过，CI 零网络约束不变）：
