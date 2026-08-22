@@ -336,9 +336,12 @@ def make_fast_match(
         # 回滚到 schema_linking 后的重入(error_feedback 已置位)
         if bool(state.error_feedback or state.error_analysis or state.reason):
             return {}
-        if kb is None or connectors is None or not connectors.default_name:
+        if kb is None or connectors is None:
             return {}
-        datasource = connectors.default_name
+        datasource = state.datasource or connectors.default_name
+        if not datasource:
+            # 无数据源则 KB 快径直接 miss(原守卫语义)
+            return {}
         try:
             await kb.ensure_synced(default_datasource=datasource)
             hits = await kb.list_templates(datasource)
@@ -349,7 +352,7 @@ def make_fast_match(
             return {}
         dialect = state.dialect
         try:
-            adapter = await connectors.get()
+            adapter = await connectors.get(state.datasource or None)
             dialect = adapter.dialect()
         except Exception:
             pass

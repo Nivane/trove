@@ -48,10 +48,10 @@ _INVENTORY_RE = re.compile(r"有哪些表|表结构|list\\s+tables|\\btables\\b|
 _TABLE_COL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*[\..、]\s*([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def _datasource(connectors: ConnectorRegistry | None) -> str:
+def _datasource(connectors: ConnectorRegistry | None, datasource: str = "") -> str:
     if connectors is None:
         return ""
-    return connectors.default_name or ""
+    return datasource or connectors.default_name or ""
 
 
 async def _lineage_targets(
@@ -106,11 +106,12 @@ def _has_lineage_signal(question: str) -> bool:
 
 async def _lineage_context(
     question: str, catalog, connectors, lineage: LineageService | None,
+    datasource: str = "",
 ) -> str:
     """Deterministic lineage material for the metadata LLM prompt."""
     if lineage is None:
         return ""
-    ds = _datasource(connectors)
+    ds = _datasource(connectors, datasource)
     if not ds:
         return ""
     extra: list[str] = []
@@ -145,13 +146,15 @@ async def _build_metadata_context(
 ) -> str:
     """All metadata material the LLM may need (bounded)."""
     sections: list[str] = []
-    ds = _datasource(connectors)
+    ds = _datasource(connectors, state.datasource)
     tables = await catalog.list_tables() if catalog else []
     mentioned = [t for t in tables if t["name"].lower() in state.question.lower()]
 
     # 血缘(确定性,零 LLM):血缘信号问题附 LineageService 事实
     if _has_lineage_signal(state.question):
-        lg = await _lineage_context(state.question, catalog, connectors, lineage)
+        lg = await _lineage_context(
+            state.question, catalog, connectors, lineage, state.datasource,
+        )
         if lg:
             sections.append(lg)
         else:
@@ -166,7 +169,7 @@ async def _build_metadata_context(
 
     # 全库关联总览
     if connectors:
-        schema = await connectors.get_schema()
+        schema = await connectors.get_schema(state.datasource or None)
         table_columns = {t.name: [c.name for c in t.columns] for t in schema.tables}
         rel_lines = []
         for table, cols in table_columns.items():
@@ -198,11 +201,13 @@ async def _fallback_answer(
     sections: list[str] = []
     tables = await catalog.list_tables() if catalog else []
     mentioned = [t for t in tables if t["name"].lower() in q.lower()]
-    ds = _datasource(connectors)
+    ds = _datasource(connectors, state.datasource)
 
     # 血缘(确定性,零 LLM,渲染即答案)
     if _has_lineage_signal(q):
-        lg = await _lineage_context(q, catalog, connectors, lineage)
+        lg = await _lineage_context(
+            q, catalog, connectors, lineage, state.datasource,
+        )
         if lg:
             sections.append(lg)
         else:
@@ -220,7 +225,7 @@ async def _fallback_answer(
             sections.append("\n".join(lines))
 
     if _RELATIONS_RE.search(q) and connectors:
-        schema = await connectors.get_schema()
+        schema = await connectors.get_schema(state.datasource or None)
         table_columns = {t.name: [c.name for c in t.columns] for t in schema.tables}
         targets = [t["name"] for t in mentioned] or list(table_columns)
         rel_lines: list[str] = []

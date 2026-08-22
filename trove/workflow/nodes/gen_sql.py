@@ -458,6 +458,7 @@ async def _probe_result(
     limit: int = PROBE_LIMIT,
     timeout_s: float = PROBE_TIMEOUT_S,
     allowed_tables: set[str] | None = None,
+    datasource: str | None = None,
 ) -> dict[str, Any]:
     """共享只读执行通道:真实执行草稿 SQL,返回原始观测 dict(值不截断)。
 
@@ -513,7 +514,7 @@ async def _probe_result(
     probe_sql = sql if had_limit else _append_limit(sql, dialect, limit)
     try:
         result = await asyncio.wait_for(
-            connectors.execute(probe_sql), timeout=timeout_s,
+            connectors.execute(probe_sql, datasource), timeout=timeout_s,
         )
     except TimeoutError:
         return {"ok": False, "error": f"[ERR:SQL_TIMEOUT] probe timed out after {timeout_s}s"}
@@ -532,7 +533,7 @@ async def _probe_result(
         try:
             count_sql = f"SELECT COUNT(*) AS _p FROM ({sql}) AS _p"
             count_result = await asyncio.wait_for(
-                connectors.execute(count_sql), timeout=timeout_s,
+                connectors.execute(count_sql, datasource), timeout=timeout_s,
             )
             if count_result.rows and count_result.rows[0]:
                 row_count = count_result.rows[0][0]
@@ -550,6 +551,7 @@ async def probe_query(
     connectors, sql: str, dialect: str,
     timeout_s: float = PROBE_TIMEOUT_S,
     allowed_tables: set[str] | None = None,
+    datasource: str | None = None,
 ) -> str:
     """只读执行探针:真实执行草稿 SQL,返回短 JSON 观测串。
 
@@ -564,7 +566,7 @@ async def probe_query(
     """
     obs = await _probe_result(
         connectors, sql, dialect, limit=PROBE_LIMIT, timeout_s=timeout_s,
-        allowed_tables=allowed_tables,
+        allowed_tables=allowed_tables, datasource=datasource,
     )
     if not obs["ok"]:
         return json.dumps(obs)
@@ -589,6 +591,7 @@ async def check_result(
     lang: str = "en",
     timeout_s: float = PROBE_TIMEOUT_S,
     allowed_tables: set[str] | None = None,
+    datasource: str | None = None,
 ) -> tuple[str, list[dict]]:
     """确定性校验工具:执行草稿 SQL 后跑规则链,返回 (观测文本, hits)。
 
@@ -604,7 +607,7 @@ async def check_result(
     """
     obs = await _probe_result(
         connectors, sql, dialect, limit=CHECK_RESULT_LIMIT, timeout_s=timeout_s,
-        allowed_tables=allowed_tables,
+        allowed_tables=allowed_tables, datasource=datasource,
     )
     if not obs["ok"]:
         return f"ERROR: {obs['error']}", []
@@ -638,6 +641,7 @@ async def search_values(
     keyword: str,
     column: str | None = None,
     timeout_s: float = PROBE_TIMEOUT_S,
+    datasource: str | None = None,
 ) -> str:
     """按关键词检索真实值:定位脏值/格式变体/拼写差异。
 
@@ -655,7 +659,7 @@ async def search_values(
     if not table or not keyword:
         return json.dumps({"ok": False, "error": "table and keyword are required"})
 
-    schema = await connectors.get_schema()
+    schema = await connectors.get_schema(datasource)
     target = next(
         (t for t in schema.tables if t.name.lower() == table.lower()), None,
     )
@@ -666,7 +670,7 @@ async def search_values(
         cols = [c.name for c in target.columns if c.name.lower() == column.lower()]
         if not cols:
             return json.dumps({"ok": False, "error": f"column '{column}' not found in '{table}'"})
-        obs = await _search_one(connectors, table, cols[0], keyword, timeout_s)
+        obs = await _search_one(connectors, table, cols[0], keyword, timeout_s, datasource)
         if not obs["ok"]:
             return json.dumps(obs)
         # 工具契约:始终返回 JSON 串(_search_one 返回 dict,单列路径不得泄漏)
@@ -680,7 +684,7 @@ async def search_values(
     hits: dict[str, list] = {}
     first_error: str | None = None
     for c in target.columns[:SEARCH_VALUES_MAX_COLS]:
-        obs = await _search_one(connectors, table, c.name, keyword, timeout_s)
+        obs = await _search_one(connectors, table, c.name, keyword, timeout_s, datasource)
         if obs.get("ok"):
             if obs.get("values"):
                 hits[c.name] = obs["values"]
@@ -698,6 +702,7 @@ async def search_values(
 
 async def _search_one(
     connectors, table: str, column: str, keyword: str, timeout_s: float,
+    datasource: str | None = None,
 ) -> dict:
     """单列 LIKE 检索:返回 {"ok", "values"} 或 {"ok": False, "error"}。"""
     pattern = _like_pattern(keyword)
@@ -707,7 +712,9 @@ async def _search_one(
         f"LIMIT {SEARCH_VALUES_LIMIT}"
     )
     try:
-        result = await asyncio.wait_for(connectors.execute(sql), timeout=timeout_s)
+        result = await asyncio.wait_for(
+            connectors.execute(sql, datasource), timeout=timeout_s,
+        )
     except TimeoutError:
         return {"ok": False, "error": f"search timed out after {timeout_s}s"}
     except Exception as e:
@@ -729,6 +736,7 @@ def build_sql_registry(
     *,
     finish: bool = True,
     matched_tables: list[str] | None = None,
+    datasource: str = "",
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -762,7 +770,7 @@ def build_sql_registry(
             _schema_cache["value"] = None
             return None
         try:
-            _schema_cache["value"] = await connectors.get_schema()
+            _schema_cache["value"] = await connectors.get_schema(datasource or None)
         except Exception:
             _schema_cache["value"] = None
         return _schema_cache["value"]
@@ -817,6 +825,7 @@ def build_sql_registry(
         result = await probe_query(
             connectors, sql_text, dialect,
             allowed_tables=await _allowed_tables(),
+            datasource=datasource or None,
         )
         await _audit("probe", sql_text, result)
         return result
@@ -827,6 +836,7 @@ def build_sql_registry(
         text, hits = await check_result(
             connectors, question, sql_text, dialect, lang=lang,
             allowed_tables=await _allowed_tables(),
+            datasource=datasource or None,
         )
         registry.check_hits.extend(hits)
         await _audit("check", sql_text, text)
@@ -837,7 +847,7 @@ def build_sql_registry(
         table = arguments.get("table", "")
         result = await search_values(
             connectors, table, arguments.get("keyword", ""),
-            arguments.get("column"),
+            arguments.get("column"), datasource=datasource or None,
         )
         await _audit("search", f"TABLE {table}", result)
         return result
@@ -848,7 +858,7 @@ def build_sql_registry(
         if not table:
             return '{"ok": false, "error": "table is required"}'
         try:
-            schema = await connectors.get_schema()
+            schema = await connectors.get_schema(datasource or None)
         except Exception as e:
             return '{"ok": false, "error": "schema unavailable: %s"}' % (e,)
         target = next(
@@ -1010,6 +1020,7 @@ def make_sql_tools(
     lang: str,
     dialect: str,
     matched_tables: list[str] | None = None,
+    datasource: str = "",
 ) -> tuple[list[dict], dict[str, Callable[[dict[str, Any]], Awaitable[str]]], list[dict]]:
     """gen_sql ReAct 循环的工具工厂(legacy 形态):返回 (tools, handlers, hits_sink)。
 
@@ -1020,7 +1031,7 @@ def make_sql_tools(
 
     registry = build_sql_registry(
         connectors, question, lang, dialect, finish=False,
-        matched_tables=matched_tables,
+        matched_tables=matched_tables, datasource=datasource,
     )
     tools: list[dict] = registry.defs()
     handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = registry.handlers()

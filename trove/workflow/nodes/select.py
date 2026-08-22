@@ -82,7 +82,8 @@ def make_select_consensus(
         async def run(cand: str):
             try:
                 return await asyncio.wait_for(
-                    connectors.execute(cand), timeout=timeout_ms / 1000.0,
+                    connectors.execute(cand, state.datasource or None),
+                    timeout=timeout_ms / 1000.0,
                 )
             except asyncio.CancelledError:
                 raise

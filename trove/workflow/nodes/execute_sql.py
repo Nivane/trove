@@ -63,7 +63,7 @@ def make_execute_sql(
             try:
                 with record_span("tool.execute_sql", input=state.sql) as span:
                     result = await asyncio.wait_for(
-                        connectors.execute(state.sql),
+                        connectors.execute(state.sql, state.datasource or None),
                         timeout=timeout_s,
                     )
                     if span is not None:
@@ -106,7 +106,7 @@ def make_execute_sql(
         # 失败永远不记录(重试轮的正确 SQL 由最终成功的一次独占)。
         if lineage is not None:
             try:
-                ds = connectors.default_name or ""
+                ds = state.datasource or connectors.default_name or ""
                 if ds:
                     await lineage.record_query(state.sql, ds, state.dialect)
             except Exception as e:  # 血缘失败绝不阻断查询链路

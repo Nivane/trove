@@ -216,12 +216,12 @@ def extra_columns_mismatch(
     ]
 
 
-async def _schema_map(connectors) -> dict[str, set[str]] | None:
+async def _schema_map(connectors, datasource: str | None = None) -> dict[str, set[str]] | None:
     """真实 schema → 小写表名 → 小写列名集合;不可用 → None(跳过校验)。"""
     if connectors is None:
         return None
     try:
-        schema = await connectors.get_schema()
+        schema = await connectors.get_schema(datasource)
         return {
             t.name.lower(): {c.name.lower() for c in t.columns}
             for t in schema.tables
@@ -238,7 +238,9 @@ def _short_value(v: Any) -> str:
     return s[:40] + "…" if len(s) > 40 else s
 
 
-async def _column_stats_text(connectors, table: str, column: str) -> str:
+async def _column_stats_text(
+    connectors, table: str, column: str, datasource: str | None = None,
+) -> str:
     """列画像观测:行数 / null 比例 / distinct / 样例 / 低基数高频值。
 
     运行时探测,**永不抛异常**——失败折叠成短错误文本。方言感知引号
@@ -249,7 +251,7 @@ async def _column_stats_text(connectors, table: str, column: str) -> str:
     if connectors is None:
         return "error: no datasource available"
     try:
-        adapter = await connectors.get()
+        adapter = await connectors.get(datasource)
         quote = "`" if adapter.dialect() == "mysql" else '"'
     except Exception as e:
         return f"error: {e}"
@@ -260,7 +262,7 @@ async def _column_stats_text(connectors, table: str, column: str) -> str:
     # 表/列存在性(schema 可用时;不可用则靠探查询的 SQL 错误兜底)
     distinct: int | None = None
     try:
-        schema = await asyncio.wait_for(connectors.get_schema(), timeout=5.0)
+        schema = await asyncio.wait_for(connectors.get_schema(datasource), timeout=5.0)
         tbl = next((x for x in schema.tables if x.name.lower() == t.lower()), None)
         if tbl is None:
             return f"table '{t}' not found"
@@ -275,6 +277,7 @@ async def _column_stats_text(connectors, table: str, column: str) -> str:
     try:
         r = await asyncio.wait_for(connectors.execute(
             f"SELECT COUNT(*), SUM({q_c} IS NULL), COUNT(DISTINCT {q_c}) FROM {q_t}",
+            datasource,
         ), timeout=5.0)
         if r.rows and r.rows[0]:
             agg = r.rows[0]
@@ -286,6 +289,7 @@ async def _column_stats_text(connectors, table: str, column: str) -> str:
     try:
         r = await asyncio.wait_for(connectors.execute(
             f"SELECT DISTINCT {q_c} FROM {q_t} WHERE {q_c} IS NOT NULL LIMIT 5",
+            datasource,
         ), timeout=5.0)
         sample = [_short_value(row[0]) for row in (r.rows or [])[:5]]
     except Exception:
@@ -297,6 +301,7 @@ async def _column_stats_text(connectors, table: str, column: str) -> str:
             r = await asyncio.wait_for(connectors.execute(
                 f"SELECT {q_c}, COUNT(*) FROM {q_t} GROUP BY {q_c} "
                 f"ORDER BY COUNT(*) DESC, {q_c} LIMIT 10",
+                datasource,
             ), timeout=5.0)
             top = [(_short_value(row[0]), row[1]) for row in (r.rows or [])[:10]]
         except Exception:
@@ -333,7 +338,7 @@ def make_planner(
         base_correction = " ".join(
             p for p in (state.error_feedback, state.error_analysis, state.reason) if p
         )
-        schema_map = await _schema_map(connectors)
+        schema_map = await _schema_map(connectors, state.datasource or None)
         # 计划起草走 fast 档(未配置 fast → 回退 target)
         model = config.model_fast or config.target or "openai/gpt-4o"
         system_prompt = render(
@@ -368,7 +373,7 @@ def make_planner(
 
                 async def table_columns(arguments: dict) -> str:
                     table = arguments.get("table", "")
-                    schema = await connectors.get_schema()
+                    schema = await connectors.get_schema(state.datasource or None)
                     for t in schema.tables:
                         if t.name.lower() == table.lower():
                             return ", ".join(f"{c.name} {c.type}" for c in t.columns)
@@ -380,6 +385,7 @@ def make_planner(
                         connectors,
                         arguments.get("table", ""),
                         arguments.get("column", ""),
+                        state.datasource or None,
                     )
 
                 registry.register(

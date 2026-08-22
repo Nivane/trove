@@ -263,7 +263,7 @@ def _make_gen_sql_node(
         dialect = state.dialect
         if services.connectors:
             try:
-                adapter = await services.connectors.get()
+                adapter = await services.connectors.get(state.datasource or None)
                 dialect = adapter.dialect()
             except Exception:
                 pass
@@ -273,7 +273,7 @@ def _make_gen_sql_node(
         # KB is not consulted.
         datasource = ""
         if services.connectors is not None:
-            datasource = services.connectors.default_name or ""
+            datasource = state.datasource or services.connectors.default_name or ""
 
         few_shots: list[dict[str, Any]] = []
         term_notes: list[dict[str, Any]] = []
@@ -528,6 +528,7 @@ def _make_gen_sql_node(
             registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
+                datasource=state.datasource,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
@@ -872,7 +873,7 @@ def make_route_intent(
                     pass
             if kb is not None and connectors is not None:
                 try:
-                    ds = connectors.default_name or ""
+                    ds = state.datasource or connectors.default_name or ""
                     if ds:
                         await kb.ensure_synced(ds)
                         term_hit = bool(

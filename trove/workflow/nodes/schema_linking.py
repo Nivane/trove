@@ -135,7 +135,7 @@ def _extract_value_candidates(text: str, limit: int = 8) -> list[str]:
 
 async def _find_value_hits(
     connectors: ConnectorRegistry, details: list[dict[str, Any]],
-    candidates: list[str],
+    candidates: list[str], datasource: str | None = None,
 ) -> dict[str, str]:
     """Which candidates appear as actual values in the tables' text columns.
 
@@ -147,7 +147,7 @@ async def _find_value_hits(
         Map of value → location ("table.column").
     """
     try:
-        adapter = await connectors.get()
+        adapter = await connectors.get(datasource)
         quote = "`" if adapter.dialect() == "mysql" else '"'
     except Exception:
         return {}
@@ -169,7 +169,7 @@ async def _find_value_hits(
                 )
                 try:
                     result = await asyncio.wait_for(
-                        connectors.execute(sql), timeout=5.0,
+                        connectors.execute(sql, datasource), timeout=5.0,
                     )
                 except Exception:
                     continue
@@ -251,6 +251,7 @@ def _hint_tables(hint: str) -> tuple[str, str] | None:
 
 async def _verified_hints(
     connectors: ConnectorRegistry | None, hints: list[str],
+    datasource: str | None = None,
 ) -> dict[str, str]:
     """数据级验证 join hints(采样值重叠探测,零 LLM)。
 
@@ -265,7 +266,7 @@ async def _verified_hints(
     if connectors is None or not hints:
         return {h: h for h in hints}
     try:
-        adapter = await connectors.get()
+        adapter = await connectors.get(datasource)
         quote = "`" if adapter.dialect() == "mysql" else '"'
     except Exception:
         return {h: h for h in hints}
@@ -280,7 +281,9 @@ async def _verified_hints(
             f"WHERE {quote}{src_c}{quote} IS NOT NULL LIMIT {JOIN_PROBE_SAMPLE}"
         )
         try:
-            res = await asyncio.wait_for(connectors.execute(sample_sql), timeout=5.0)
+            res = await asyncio.wait_for(
+                connectors.execute(sample_sql, datasource), timeout=5.0,
+            )
         except Exception:
             return None
         values = [r[0] for r in (res.rows or []) if r and r[0] is not None]
@@ -292,7 +295,9 @@ async def _verified_hints(
             f"WHERE {quote}{dst_c}{quote} IN ({in_list})"
         )
         try:
-            res = await asyncio.wait_for(connectors.execute(count_sql), timeout=5.0)
+            res = await asyncio.wait_for(
+                connectors.execute(count_sql, datasource), timeout=5.0,
+            )
         except Exception:
             return None
         hits = int(res.rows[0][0]) if res.rows and res.rows[0] else 0
@@ -504,7 +509,9 @@ def make_schema_linking(
             return {}
 
         # Knowledge base is scoped to the active datasource
-        datasource = connectors.default_name if connectors is not None else ""
+        datasource = state.datasource or (
+            connectors.default_name if connectors is not None else ""
+        )
 
         # 带上下文重跑：诊断文本参与检索，诊断中提到的表/术语可重新进入匹配
         search_query = (
@@ -578,6 +585,7 @@ def make_schema_linking(
                 if candidates:
                     value_hits = await _find_value_hits(
                         connectors, all_details, candidates,
+                        state.datasource or None,
                     )
                     for loc in value_hits.values():
                         t = loc.split(".", 1)[0]
@@ -667,7 +675,9 @@ def make_schema_linking(
                 for name in table_columns
             }
             all_hints = [h for hs in hints_by_table.values() for h in hs]
-            verified_map = await _verified_hints(connectors, all_hints)
+            verified_map = await _verified_hints(
+                connectors, all_hints, state.datasource or None,
+            )
             verified_hints_by_table = {
                 t: [verified_map[h] for h in hs if h in verified_map]
                 for t, hs in hints_by_table.items()

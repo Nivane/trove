@@ -47,7 +47,7 @@ def make_metadata_check(
         # 1. Deterministic hallucination check
         if connectors is not None:
             try:
-                schema = await connectors.get_schema()
+                schema = await connectors.get_schema(state.datasource or None)
                 table_columns = {t.name: [c.name for c in t.columns] for t in schema.tables}
                 hallucinations = find_hallucinations(state.intent_answer, table_columns)
                 if hallucinations:

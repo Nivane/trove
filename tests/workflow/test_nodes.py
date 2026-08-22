@@ -6,10 +6,13 @@ via factory functions.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from trove.core.config import AgentConfig
+from trove.core.types import DatasourceConfig
+from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.state import WorkflowState
 from trove.llm.gateway import LLMGateway
 
@@ -851,10 +854,10 @@ class TestVerifiedJoinHints:
             def __init__(self):
                 self.queries = []
 
-            async def get(self):
+            async def get(self, datasource=None):
                 return types.SimpleNamespace(dialect=lambda: "sqlite")
 
-            async def execute(self, sql):
+            async def execute(self, sql, datasource=None):
                 if fail:
                     raise RuntimeError("db down")
                 self.queries.append(sql)
@@ -916,10 +919,10 @@ class TestVerifiedJoinHints:
             def __init__(self):
                 self.queries = []
 
-            async def get(self):
+            async def get(self, datasource=None):
                 return types.SimpleNamespace(dialect=lambda: "mysql")
 
-            async def execute(self, sql):
+            async def execute(self, sql, datasource=None):
                 self.queries.append(sql)
                 if "SELECT COUNT(*)" in sql:
                     return types.SimpleNamespace(rows=[[2]])
@@ -1714,7 +1717,7 @@ class TestExecuteSQLTransientRetry:
             self._stream = list(stream)
             self.default_name = default_name
 
-        async def execute(self, sql):
+        async def execute(self, sql, datasource=None):
             item = self._stream.pop(0)
             if isinstance(item, BaseException):
                 raise item
@@ -2700,7 +2703,7 @@ class TestPlanValidation:
         import types
 
         class _C:
-            async def get_schema(self):
+            async def get_schema(self, datasource=None):
                 table = lambda name, cols: types.SimpleNamespace(
                     name=name,
                     columns=[types.SimpleNamespace(name=c) for c in cols],
@@ -3069,7 +3072,7 @@ class TestSearchValues:
         self, sqlite_registry, monkeypatch,
     ):
         """扫描路径不得把列级错误谎报成'无匹配'——首错上抛。"""
-        async def fail(connectors, table, column, keyword, timeout_s):
+        async def fail(connectors, table, column, keyword, timeout_s, datasource=None):
             return {"ok": False, "error": f"boom on {column}"}
         monkeypatch.setattr(
             "trove.workflow.nodes.gen_sql._search_one", fail,
@@ -3397,3 +3400,72 @@ class TestProjectionWidthHelper:
 
         assert _projection_width_matches("SELECT a FROM t", "sqlite", 0) is False
         assert _projection_width_matches("SELECT a FROM t", "sqlite", -1) is False
+
+
+# ── Datasource routing (state.datasource → connector resolution) ──
+
+
+class TestDatasourceRouting:
+    async def test_execute_sql_passes_state_datasource_to_registry(self):
+        class RecordingConnectors:
+            default_name = None
+
+            def __init__(self):
+                self.calls = []
+
+            async def execute(self, sql, datasource=None):
+                self.calls.append((sql, datasource))
+                return SimpleNamespace(
+                    row_count=1, rows=[["x"]], columns=["v"], execution_time_ms=0,
+                )
+
+        reg = RecordingConnectors()
+        node = make_execute_sql(reg, timeout_ms=5000)
+        out = await node(
+            WorkflowState(session_id="s", question="q", sql="SELECT v", datasource="fin")
+        )
+        assert ("SELECT v", "fin") in reg.calls
+        assert out["rows"] == [["x"]]
+
+    async def test_execute_sql_falls_back_to_default_when_no_datasource(self):
+        class RecordingConnectors:
+            default_name = None
+
+            def __init__(self):
+                self.calls = []
+
+            async def execute(self, sql, datasource=None):
+                self.calls.append((sql, datasource))
+                return SimpleNamespace(
+                    row_count=1, rows=[["x"]], columns=["v"], execution_time_ms=0,
+                )
+
+        reg = RecordingConnectors()
+        node = make_execute_sql(reg, timeout_ms=5000)
+        await node(WorkflowState(session_id="s", question="q", sql="SELECT v"))
+        assert reg.calls == [("SELECT v", None)]
+
+    async def test_two_datasource_registry_routes_by_state(self):
+        """state.datasource 指向第二个库时,执行真实落在该库上。"""
+        reg = ConnectorRegistry()
+        a = await reg.register(
+            DatasourceConfig(name="db_a", type="sqlite", connection_params={"path": ":memory:"}),
+            set_default=True,
+        )
+        await a.execute("CREATE TABLE t (v TEXT)")
+        await a.execute("INSERT INTO t VALUES ('from_a')")
+        b = await reg.register(
+            DatasourceConfig(name="db_b", type="sqlite", connection_params={"path": ":memory:"}),
+            set_default=False,
+        )
+        await b.execute("CREATE TABLE t (v TEXT)")
+        await b.execute("INSERT INTO t VALUES ('from_b')")
+
+        node = make_execute_sql(reg, timeout_ms=5000)
+        try:
+            out = await node(
+                WorkflowState(session_id="s", question="q", sql="SELECT v FROM t", datasource="db_b")
+            )
+            assert out["rows"] == [["from_b"]]
+        finally:
+            await reg.close_all()

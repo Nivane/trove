@@ -43,7 +43,7 @@ class TestMetadataCheckNode:
         return make_metadata_check(connectors, llm=llm)
 
     class FakeConnectors:
-        async def get_schema(self):
+        async def get_schema(self, datasource=None):
             from trove.core.types import SchemaInfo, TableInfo, ColumnInfo
             return SchemaInfo(tables=[
                 TableInfo(name="loan", columns=[ColumnInfo(name="loan_id", type="int"), ColumnInfo(name="account_id", type="int")]),
