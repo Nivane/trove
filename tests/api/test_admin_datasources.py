@@ -46,12 +46,63 @@ async def test_register_bad_url_400(client):
     resp = await client.post("/v1/admin/datasources",
                              json={"name": "x", "url": "bogus://nope"})
     assert resp.status_code == 400
+    # detail 必须带具体原因（spec §4），不是笼统的失败
+    assert "Unsupported datasource scheme 'bogus'" in resp.json()["detail"]
+
+
+async def test_register_probe_failure_400(client, api_app):
+    """URL 合法但连接探测失败（sqlite 父目录不存在）→ 400 且 detail 报探测原因，
+    注册不落地（registry 无残留、datasources.yml 不写入）。"""
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "x", "url": "sqlite:///no/such/dir_xyz/x.db"})
+    assert resp.status_code == 400
+    assert "Failed to connect to SQLite" in resp.json()["detail"]
+    assert not api_app.state.connector_registry.is_registered("x")
+    assert "x" not in {c.name for c in api_app.state.config_store.load_configs()}
 
 
 async def test_register_demo(client, api_app):
     resp = await client.post("/v1/admin/datasources", json={"name": "demo"})
     assert resp.status_code == 201
     assert api_app.state.connector_registry.is_registered("demo")
+
+
+async def test_register_demo_default_persisted(client, api_app):
+    """T8 demo 默认评估顺序修复：注册前先取默认态，持久化的 default 与注册结果一致。
+
+    修前 setup_demo_datasource 内部固定 set_default=True，随后
+    `default=registry.default_name is None` 恒为 False → yml 记录 default=False
+    而 registry 里 demo 是默认，重启后默认位丢失。现修复：无默认时注册 demo →
+    default=True；已有默认（extra）时注册 demo → default=False 且不抢默认位。
+    """
+    from trove.core.types import DatasourceConfig
+    from trove.services.datasource.registry import ConnectorRegistry
+
+    fresh = ConnectorRegistry()
+    api_app.state.connector_registry = fresh
+
+    # 1) 空默认态：demo 成为默认并持久化 default=True
+    resp = await client.post("/v1/admin/datasources", json={"name": "demo"})
+    assert resp.status_code == 201
+    assert resp.json()["datasource"]["default"] is True
+    assert fresh.default_name == "demo"
+    demo_cfg = next(c for c in api_app.state.config_store.load_configs()
+                    if c.name == "demo")
+    assert demo_cfg.default is True
+
+    # 2) 已有默认（extra）时再注册 demo：不抢默认位，持久化 default=False
+    await fresh.register(
+        DatasourceConfig(name="extra", type="sqlite",
+                         connection_params={"path": ":memory:"}, credentials={},
+                         default=True), set_default=True)
+    assert fresh.default_name == "extra"
+    resp = await client.post("/v1/admin/datasources", json={"name": "demo"})
+    assert resp.status_code == 201
+    assert resp.json()["datasource"]["default"] is False
+    assert fresh.default_name == "extra"
+    demo_cfg = next(c for c in api_app.state.config_store.load_configs()
+                    if c.name == "demo")
+    assert demo_cfg.default is False
 
 
 async def test_non_admin_403(user_client):

@@ -83,6 +83,11 @@ async def test_kb_init_unknown_ds_404(client):
     assert resp.status_code == 404
 
 
+async def test_kb_reload_unknown_ds_404(client):
+    resp = await client.post("/v1/admin/datasources/nope/kb/reload")
+    assert resp.status_code == 404
+
+
 async def test_kb_init_uses_datasource_schema(client, api_app, tmp_path):
     """I1-T5 回归:非默认源 init 必须读自己的 schema,不能读到默认源 (test_db) 的。
 

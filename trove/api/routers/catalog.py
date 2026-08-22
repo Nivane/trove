@@ -29,6 +29,8 @@ async def list_datasources(
     kb = request.app.state.kb
     for info in infos:
         info["kb_initialized"] = bool(kb.init_exists(info["name"]))
+        # status 恒为 "connected"：catalog 数据只来自 registry，而 registry 只持有已连接
+        # 的数据源；断开态（仅 datasources.yml 里的配置）只出现在管理端列表
         info["status"] = "connected"
     if user["role"] == "admin":
         return {"datasources": infos}

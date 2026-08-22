@@ -85,7 +85,9 @@ async def boot_register(registry, configs: list[DatasourceConfig]) -> list[str]:
                 from trove.services.datasource.demo_setup import (
                     setup_demo_datasource,
                 )
-                await setup_demo_datasource(registry)
+                # set_default 必须与持久化的 cfg.default 一致，否则非默认 demo
+                # 重启后会被错误恢复为默认（admin 注册时已按当时默认态持久化）
+                await setup_demo_datasource(registry, set_default=cfg.default)
             else:
                 await registry.register(cfg, set_default=cfg.default)
         except (DatasourceError, OSError) as e:

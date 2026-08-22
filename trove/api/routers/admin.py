@@ -282,14 +282,19 @@ async def create_datasource(request: Request, body: dict,
     try:
         if url == "demo" or (name == "demo" and not url):
             from trove.services.datasource.demo_setup import setup_demo_datasource
-            await setup_demo_datasource(registry)
+            # 先取当前默认态再注册：无默认时新源成为默认（注册顺序即默认语义），
+            # 持久化的 default 必须与注册结果一致，否则重启后 demo 不会被恢复为默认。
+            was_default = registry.default_name is None
+            await setup_demo_datasource(registry, set_default=was_default)
             cfg = DatasourceConfig(name="demo", type="demo",
                                    connection_params={}, credentials={},
-                                   default=registry.default_name is None)
+                                   default=was_default)
         else:
             cfg = parse_datasource_url(url)
             if name:
                 cfg = dataclasses.replace(cfg, name=name)  # DatasourceConfig 是 dataclass，无 model_copy
+            # 新注册源在无默认时成为默认（default 持久化，重启按 datasources.yml 恢复）；
+            # 默认的管理 API（改默认/取消默认）属范围外（spec §6）。
             await registry.register(cfg, set_default=cfg.default or registry.default_name is None)
     except DatasourceError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -324,7 +329,7 @@ async def reconnect_datasource(name: str, request: Request,
     try:
         if cfg.type == "demo":
             from trove.services.datasource.demo_setup import setup_demo_datasource
-            await setup_demo_datasource(registry)
+            await setup_demo_datasource(registry, set_default=cfg.default)
         else:
             await registry.register(cfg, set_default=cfg.default)
     except DatasourceError as e:
