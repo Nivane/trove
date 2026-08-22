@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ElementPlus from 'element-plus'
@@ -21,12 +21,43 @@ import { apiGet, apiPost, apiDelete } from '../src/api/http'
 import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
+import type { VueWrapper } from '@vue/test-utils'
+
+let wrapper: VueWrapper | null = null
+
+function mountView() {
+  wrapper = mount(DatasourcesView, {
+    global: { plugins: [ElementPlus] },
+    attachTo: document.body,
+  })
+  return wrapper
+}
+
+function dialogs(): HTMLElement[] {
+  return Array.from(document.body.querySelectorAll<HTMLElement>('.el-dialog'))
+}
+
+async function setInput(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )!.set!
+  setter.call(el, value)
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+}
 
 beforeEach(() => {
   setActivePinia(createPinia())
   useAuthStore().user = { id: 1, username: 'admin', role: 'admin' }
   useUiStore().lang = 'en'
   vi.clearAllMocks()
+  document.body.innerHTML = ''
+})
+
+afterEach(() => {
+  wrapper?.unmount()
+  wrapper = null
+  document.body.innerHTML = ''
 })
 
 describe('DatasourcesView', () => {
@@ -37,52 +68,90 @@ describe('DatasourcesView', () => {
         { name: 'demo', type: 'demo', status: 'disconnected', kb_initialized: false, kb_items: {} },
       ],
     })
-    const wrapper = mount(DatasourcesView, {
-      global: { plugins: [ElementPlus] },
-    })
+    const view = mountView()
     await flushPromises()
-    expect(wrapper.text()).toContain('financial')
-    expect(wrapper.text()).toContain('demo')
-    expect(wrapper.text()).toContain('Connected')
-    expect(wrapper.text()).toContain('Disconnected')
-    // KB status labels — initialized vs not
-    expect(wrapper.text()).toContain('Initialized')
-    expect(wrapper.text()).toContain('Not initialized')
-    // default marker column
-    expect(wrapper.text()).toContain('default')
+    const text = view.text()
+    expect(text).toContain('financial')
+    expect(text).toContain('demo')
+    expect(text).toContain('Connected')
+    expect(text).toContain('Disconnected')
+    expect(text).toContain('Initialized')
+    expect(text).toContain('Not initialized')
+    expect(text).toContain('default')
   })
 
-  it('registers a datasource via POST', async () => {
+  it('registers a datasource through the dialog via POST', async () => {
     ;(apiGet as any).mockResolvedValue({ datasources: [] })
     ;(apiPost as any).mockResolvedValue({ datasource: { name: 'newds' } })
-    const wrapper = mount(DatasourcesView, {
-      global: { plugins: [ElementPlus] },
+    const view = mountView()
+    await flushPromises()
+
+    // opens the register dialog (empty state also offers a CTA, header comes first)
+    await view.find('button.add').trigger('click')
+    await flushPromises()
+
+    // switch type to MySQL → URL field appears
+    const select = view.findAllComponents({ name: 'ElSelect' })[0]
+    select.vm.$emit('update:modelValue', 'mysql')
+    await flushPromises()
+
+    const dialog = dialogs()[0]
+    const urlInput = dialog.querySelector<HTMLInputElement>(
+      '.ds-url-input input',
+    )!
+    await setInput(urlInput, 'mysql://user@localhost:3306/financial')
+
+    const nameInput = dialog.querySelector<HTMLInputElement>(
+      '.ds-name-field input',
+    )!
+    await setInput(nameInput, 'newds')
+
+    const register = Array.from(
+      dialog.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((b) => b.textContent!.includes('Register'))!
+    register.click()
+    await flushPromises()
+
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources', {
+      name: 'newds',
+      url: 'mysql://user@localhost:3306/financial',
     })
+  })
+
+  it('registers the built-in demo without a URL', async () => {
+    ;(apiGet as any).mockResolvedValue({ datasources: [] })
+    ;(apiPost as any).mockResolvedValue({ datasource: { name: 'demo' } })
+    const view = mountView()
     await flushPromises()
-    await wrapper.find('input[placeholder*="name" i]').setValue('newds')
-    await wrapper.find('input[placeholder*="url" i]').setValue('sqlite://:memory:')
-    await wrapper.find('button.add').trigger('click')
+    await view.find('button.add').trigger('click')
     await flushPromises()
-    expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources', { name: 'newds', url: 'sqlite://:memory:' })
+    const dialog = dialogs()[0]
+    const register = Array.from(
+      dialog.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((b) => b.textContent!.includes('Register'))!
+    register.click()
+    await flushPromises()
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources', {
+      name: '',
+      url: 'demo',
+    })
   })
 
   it('init asks for confirmation, then POSTs only after confirm', async () => {
     ;(apiGet as any).mockResolvedValue({ datasources: [{ name: 'financial', type: 'mysql', status: 'connected', kb_initialized: false }] })
     ;(apiPost as any).mockResolvedValue({ summary: 'Initialized' })
-    const wrapper = mount(DatasourcesView, {
-      global: { plugins: [ElementPlus] },
-    })
+    const view = mountView()
     await flushPromises()
 
     // cancelled — billed LLM call must not fire
     ;(ElMessageBox.confirm as any).mockRejectedValue(new Error('cancel'))
-    await wrapper.find('button.init').trigger('click')
+    await view.find('button.init').trigger('click')
     await flushPromises()
     expect(apiPost).not.toHaveBeenCalled()
 
     // confirmed — POST fires
     ;(ElMessageBox.confirm as any).mockResolvedValue('confirm')
-    await wrapper.find('button.init').trigger('click')
+    await view.find('button.init').trigger('click')
     await flushPromises()
     expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources/financial/kb/init', {})
   })

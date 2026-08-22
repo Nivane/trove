@@ -2314,38 +2314,91 @@ button:disabled {
   opacity: 1;
 }
 
-/* ── Datasource create card ── */
-.ds-create {
-  border: 1px solid var(--border-subtle);
+/* ── Datasource empty state + register dialog ── */
+.ds-empty {
+  border: 1px dashed var(--border-default);
   border-radius: var(--r-lg);
+  padding: var(--sp-10) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  text-align: center;
   background: var(--surface-raised);
-  padding: var(--sp-4) var(--sp-5);
-  margin-bottom: var(--sp-4);
 }
-.ds-create-head {
+.ds-empty-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-lg);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  margin-bottom: var(--sp-2);
+}
+.ds-empty-title {
+  font-weight: 600;
+  font-size: var(--fs-base);
+}
+.ds-empty-sub {
+  color: var(--text-tertiary);
+  font-size: var(--fs-sm);
   margin-bottom: var(--sp-3);
 }
-.ds-create-title {
-  font-weight: 600;
+.ds-dialog .ds-type-select {
+  width: 100%;
+}
+.ds-dialog .ds-url-input .el-input__inner {
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
-.ds-create-row {
-  display: flex;
-  gap: var(--sp-2);
-  align-items: center;
-}
-.ds-name-input {
-  width: 190px;
-  flex-shrink: 0;
-}
-.ds-url-input {
-  flex: 1;
-  min-width: 0;
-}
-.ds-create-hint {
-  margin-top: var(--sp-2);
+.form-hint {
   font-size: var(--fs-xs);
   color: var(--text-tertiary);
+  margin-top: var(--sp-1);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.link-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  padding: 0;
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+.form-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-1);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-2);
+}
+.ds-dialog .el-dialog__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.dialog-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-tertiary);
+}
+.dialog-footer-spacer {
+  flex: 1;
 }
 .ds-name-cell {
   display: flex;

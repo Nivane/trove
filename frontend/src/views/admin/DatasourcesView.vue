@@ -5,47 +5,26 @@
         <h2>{{ t('datasources', ui.lang) }}</h2>
         <p class="view-desc">{{ t('dsPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-meta">
+      <div class="view-header-right">
         <span class="view-count">{{ rows.length }} · {{ t('datasources', ui.lang) }}</span>
-      </div>
-    </div>
-
-    <div class="ds-create">
-      <div class="ds-create-head">
-        <span class="ds-create-title">{{ t('dsCreateTitle', ui.lang) }}</span>
-      </div>
-      <div class="ds-create-row">
-        <el-input
-          v-model="newName"
-          :placeholder="t('dsName', ui.lang)"
-          class="ds-name-input"
-          clearable
-          @keyup.enter="add"
-        />
-        <el-input
-          v-model="newUrl"
-          :placeholder="t('dsUrl', ui.lang)"
-          class="ds-url-input"
-          clearable
-          @keyup.enter="add"
-        />
-        <el-button
-          type="primary"
-          class="add"
-          :disabled="!newUrl.trim() && !newName.trim()"
-          :loading="adding"
-          @click="add"
-        >
+        <el-button type="primary" class="add" @click="openDialog">
           <Plus :size="15" class="btn-icon" />
-          {{ t('dsAdd', ui.lang) }}
+          {{ t('dsCreateTitle', ui.lang) }}
         </el-button>
       </div>
-      <div class="ds-create-hint">
-        {{ t('dsAddHint', ui.lang) }} · {{ t('dsUrlExample', ui.lang) }}
-      </div>
     </div>
 
-    <div class="admin-card">
+    <div v-if="!loading && !rows.length" class="ds-empty">
+      <span class="ds-empty-icon"><Database :size="22" /></span>
+      <div class="ds-empty-title">{{ t('dsEmpty', ui.lang) }}</div>
+      <div class="ds-empty-sub">{{ t('dsEmptySub', ui.lang) }}</div>
+      <el-button type="primary" class="add" @click="openDialog">
+        <Plus :size="15" class="btn-icon" />
+        {{ t('dsCreateTitle', ui.lang) }}
+      </el-button>
+    </div>
+
+    <div v-else class="admin-card">
       <el-table
         v-loading="loading"
         :data="rows"
@@ -138,16 +117,87 @@
         </el-table-column>
       </el-table>
     </div>
+
+    <el-dialog
+      v-model="dlgOpen"
+      :title="t('dsCreateTitle', ui.lang)"
+      width="480"
+      class="admin-dialog ds-dialog"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top" @submit.prevent="add">
+        <el-form-item :label="t('dsTypeLabel', ui.lang)">
+          <el-select v-model="form.type" class="ds-type-select">
+            <el-option
+              v-for="opt in typeOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+
+        <el-form-item v-if="form.type !== 'demo'" :label="t('dsUrl', ui.lang)">
+          <el-input
+            v-model="form.url"
+            class="ds-url-input"
+            :placeholder="exampleFor(form.type)"
+            spellcheck="false"
+            autocomplete="off"
+            @input="detectType"
+          />
+          <div class="form-hint">
+            {{ t('dsExample', ui.lang) }}
+            <button
+              class="link-btn"
+              type="button"
+              @click="insertExample()"
+            >
+              {{ exampleFor(form.type) }}
+            </button>
+          </div>
+        </el-form-item>
+
+        <el-form-item :label="t('dsName', ui.lang)">
+          <el-input
+            v-model="form.name"
+            class="ds-name-field"
+            :placeholder="t('dsNamePlaceholder', ui.lang)"
+            autocomplete="off"
+          />
+          <div class="form-hint">{{ t('dsNameHint', ui.lang) }}</div>
+        </el-form-item>
+
+        <div v-if="formError" class="form-error">
+          <AlertCircle :size="15" />
+          <span>{{ formError }}</span>
+        </div>
+      </el-form>
+
+      <template #footer>
+        <span class="dialog-hint">
+          <Info :size="13" />
+          {{ t('dsProbeHint', ui.lang) }}
+        </span>
+        <span class="dialog-footer-spacer" />
+        <el-button @click="dlgOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button
+          type="primary"
+          :loading="submitting"
+          :disabled="!canSubmit"
+          @click="add"
+        >
+          {{ t('dsRegister', ui.lang) }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import {
-  Plus,
-  Database,
-} from 'lucide-vue-next'
+import { Plus, Database, AlertCircle, Info } from 'lucide-vue-next'
 import { apiDelete, apiGet, apiPost } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
@@ -157,10 +207,58 @@ import type { DatasourceInfo } from '../../api/types'
 const ui = useUiStore()
 const rows = ref<DatasourceInfo[]>([])
 const loading = ref(false)
-const adding = ref(false)
-const newName = ref('')
-const newUrl = ref('')
+const dlgOpen = ref(false)
+const submitting = ref(false)
+const formError = ref('')
 const busyMap = reactive<Record<string, boolean>>({})
+
+const form = reactive({
+  type: 'demo',
+  name: '',
+  url: '',
+})
+
+interface TypeMeta {
+  value: string
+  label: string
+  example: string
+}
+
+// Connection-string examples per scheme — demo needs no URL.
+const TYPES: Record<string, TypeMeta> = {
+  demo: { value: 'demo', label: 'Demo · 内置示例', example: '' },
+  mysql: {
+    value: 'mysql',
+    label: 'MySQL',
+    example: 'mysql://user:pass@localhost:3306/financial',
+  },
+  clickhouse: {
+    value: 'clickhouse',
+    label: 'ClickHouse',
+    example: 'clickhouse://user@localhost:8123/default',
+  },
+  sqlite: {
+    value: 'sqlite',
+    label: 'SQLite',
+    example: 'sqlite:///path/to/data.db',
+  },
+  duckdb: {
+    value: 'duckdb',
+    label: 'DuckDB',
+    example: 'duckdb:///path/to/data.duckdb',
+  },
+}
+
+const typeOptions = Object.values(TYPES) as TypeMeta[]
+
+function exampleFor(type: string): string {
+  return TYPES[type]?.example ?? ''
+}
+
+const canSubmit = computed(() => {
+  if (form.type === 'demo') return true
+  return !!form.url.trim()
+})
 
 function busyKey(row: DatasourceInfo, action: string) {
   return `${row.name}:${action}`
@@ -184,21 +282,42 @@ async function load() {
   }
 }
 
+function openDialog() {
+  formError.value = ''
+  Object.assign(form, { type: 'demo', name: '', url: '' })
+  dlgOpen.value = true
+}
+
+function insertExample() {
+  form.url = exampleFor(form.type)
+}
+
+/** When a ``scheme://`` URL is pasted in, switch the type selector to match. */
+function detectType() {
+  const scheme = form.url.trim().split('://')[0].toLowerCase()
+  if (scheme && scheme !== 'demo' && TYPES[scheme]) {
+    form.type = scheme
+  }
+}
+
 async function add() {
-  const name = newName.value.trim()
-  const url = newUrl.value.trim()
-  if (!name && !url) return
-  adding.value = true
+  if (!canSubmit.value || submitting.value) return
+  formError.value = ''
+  // demo carries no connection string — the bare marker tells the backend.
+  const url = form.type === 'demo' ? 'demo' : form.url.trim()
+  submitting.value = true
   try {
-    await apiPost('/v1/admin/datasources', { name, url })
-    newName.value = ''
-    newUrl.value = ''
+    await apiPost('/v1/admin/datasources', { name: form.name.trim(), url })
+    dlgOpen.value = false
     notifySuccess(t('dsAddedOk', ui.lang))
     await load()
   } catch (e) {
-    toastError(e, t('dsAddFail', ui.lang))
+    formError.value =
+      e && typeof e === 'object' && 'message' in e
+        ? String((e as { message: unknown }).message)
+        : t('dsAddFail', ui.lang)
   } finally {
-    adding.value = false
+    submitting.value = false
   }
 }
 

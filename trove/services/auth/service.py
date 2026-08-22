@@ -241,3 +241,9 @@ class AuthService:
             limit=min(max(limit, 1), 500), offset=max(offset, 0),
             user_id=user_id, action=action,
         )
+
+    async def count_audit(
+        self, user_id: int | None = None, action: str | None = None,
+    ) -> int:
+        """Total audit rows for the given filters (pagination support)."""
+        return await self.store.count_audit(user_id=user_id, action=action)
