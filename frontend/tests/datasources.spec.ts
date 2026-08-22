@@ -10,7 +10,15 @@ vi.mock('../src/api/http', () => ({
   apiDelete: vi.fn(),
 }))
 
+// Confirm dialogs gate billed/irreversible actions — stub the real dialog,
+// keep the ElementPlus plugin (default export) intact for component mounts.
+vi.mock('element-plus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('element-plus')>()
+  return { ...actual, ElMessageBox: { confirm: vi.fn() } }
+})
+
 import { apiGet, apiPost, apiDelete } from '../src/api/http'
+import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 
@@ -22,7 +30,7 @@ beforeEach(() => {
 })
 
 describe('DatasourcesView', () => {
-  it('renders datasources with kb status', async () => {
+  it('renders datasources with status and kb labels', async () => {
     ;(apiGet as any).mockResolvedValue({
       datasources: [
         { name: 'financial', type: 'mysql', default: true, status: 'connected', kb_initialized: true, kb_items: { schema_notes: 12 } },
@@ -37,6 +45,11 @@ describe('DatasourcesView', () => {
     expect(wrapper.text()).toContain('demo')
     expect(wrapper.text()).toContain('Connected')
     expect(wrapper.text()).toContain('Disconnected')
+    // KB status labels — initialized vs not
+    expect(wrapper.text()).toContain('Initialized')
+    expect(wrapper.text()).toContain('Not initialized')
+    // default marker column
+    expect(wrapper.text()).toContain('default')
   })
 
   it('registers a datasource via POST', async () => {
@@ -53,13 +66,22 @@ describe('DatasourcesView', () => {
     expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources', { name: 'newds', url: 'sqlite://:memory:' })
   })
 
-  it('init button confirms then POSTs', async () => {
+  it('init asks for confirmation, then POSTs only after confirm', async () => {
     ;(apiGet as any).mockResolvedValue({ datasources: [{ name: 'financial', type: 'mysql', status: 'connected', kb_initialized: false }] })
     ;(apiPost as any).mockResolvedValue({ summary: 'Initialized' })
     const wrapper = mount(DatasourcesView, {
       global: { plugins: [ElementPlus] },
     })
     await flushPromises()
+
+    // cancelled — billed LLM call must not fire
+    ;(ElMessageBox.confirm as any).mockRejectedValue(new Error('cancel'))
+    await wrapper.find('button.init').trigger('click')
+    await flushPromises()
+    expect(apiPost).not.toHaveBeenCalled()
+
+    // confirmed — POST fires
+    ;(ElMessageBox.confirm as any).mockResolvedValue('confirm')
     await wrapper.find('button.init').trigger('click')
     await flushPromises()
     expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources/financial/kb/init', {})

@@ -7,7 +7,7 @@
     </div>
     <el-table :data="rows" v-loading="loading" class="ds-table">
       <el-table-column prop="name" :label="t('datasources', ui.lang)" width="160" />
-      <el-table-column prop="type" label="Type" width="100" />
+      <el-table-column prop="type" :label="t('dsType', ui.lang)" width="100" />
       <el-table-column :label="t('dsStatus', ui.lang)" width="120">
         <template #default="{ row }">
           <el-tag :type="row.status === 'connected' ? 'success' : 'danger'">
@@ -19,6 +19,11 @@
         <template #default="{ row }">
           <el-tag v-if="row.kb_initialized" type="info">{{ t('dsKbReady', ui.lang) }}</el-tag>
           <el-tag v-else type="warning">{{ t('dsKbNotReady', ui.lang) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="default" width="90">
+        <template #default="{ row }">
+          <el-tag v-if="row.default" type="success" size="small">default</el-tag>
         </template>
       </el-table-column>
       <el-table-column :label="t('actions', ui.lang)" width="260" fixed="right">
@@ -35,6 +40,7 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { apiDelete, apiGet, apiPost } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'  // 模块函数 t(key, lang)——不是 ui store 方法（UsersView 同款用法）
@@ -67,6 +73,11 @@ async function add() {
   }
 }
 async function initKb(row: DatasourceInfo) {
+  try {
+    await ElMessageBox.confirm(t('dsInitConfirm', ui.lang), 'Confirm')
+  } catch {
+    return
+  }
   busy.value = true
   try {
     await apiPost(`/v1/admin/datasources/${row.name}/kb/init`, {})
@@ -84,6 +95,11 @@ async function reconnect(row: DatasourceInfo) {
   try { await apiPost(`/v1/admin/datasources/${row.name}/reconnect`); await load() } finally { busy.value = false }
 }
 async function remove(row: DatasourceInfo) {
+  try {
+    await ElMessageBox.confirm(t('dsRemoveConfirm', ui.lang), 'Confirm')
+  } catch {
+    return
+  }
   busy.value = true
   try { await apiDelete(`/v1/admin/datasources/${row.name}`); await load() } finally { busy.value = false }
 }
