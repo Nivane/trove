@@ -27,8 +27,11 @@
       <template v-else>
         <div ref="messageList" class="message-list">
           <template v-for="(turn, i) in chat.turns" :key="i">
-            <div class="user-bubble-wrap">
-              <div v-if="editingId !== i" class="user-bubble" @click="startEdit(i)">
+            <div
+              class="user-bubble-wrap"
+              :class="{ editing: editingId === i }"
+            >
+              <div v-if="editingId !== i" class="user-bubble">
                 {{ turn.question }}
               </div>
               <form v-else class="user-edit" @submit.prevent="commitEdit(i)">
@@ -37,18 +40,46 @@
                   v-model="editDraft"
                   class="user-edit-input"
                   rows="1"
-                  @keydown="
-                    (e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        commitEdit(i)
-                      } else if (e.key === 'Escape') {
-                        editingId = -1
-                      }
-                    }
-                  "
+                  @keydown="onEditKeydown($event, i)"
+                  @input="autoGrowEdit"
                 />
+                <div class="edit-toolbar">
+                  <span class="edit-toolbar-spacer" />
+                  <button
+                    type="button"
+                    class="edit-tool-btn"
+                    :title="t('cancel', ui.lang)"
+                    @click="editingId = -1"
+                  >
+                    <X :size="16" />
+                  </button>
+                  <button
+                    type="submit"
+                    class="edit-tool-btn primary"
+                    :disabled="!editDraft.trim()"
+                    :title="t('send', ui.lang)"
+                  >
+                    <ArrowUp :size="16" />
+                  </button>
+                </div>
               </form>
+              <button
+                v-if="editingId !== i && !chat.streaming"
+                class="edit-pencil copy"
+                :title="t('copy', ui.lang)"
+                @click="copyQuestion(turn, i)"
+              >
+                <Check v-if="userCopiedId === i" :size="14" :stroke-width="2" />
+                <Copy v-else :size="14" :stroke-width="2" />
+              </button>
+              <button
+                v-if="editingId !== i && !chat.streaming"
+                class="edit-pencil"
+                :title="t('edit', ui.lang)"
+                @click="startEdit(i)"
+              >
+                <Pencil :size="14" :stroke-width="2" />
+              </button>
             </div>
             <div class="assistant-turn">
               <div
@@ -56,11 +87,14 @@
                 class="answer"
                 :class="{ streaming: turn.status === 'streaming' }"
               >
-                <MarkdownView :source="turn.answer || turn.synthesis || ''" />
+                <MarkdownView
+                :source="turn.answer || turn.synthesis || ''"
+                :result-rows="turn.summary?.rows ?? null"
+              />
                 <span
                   v-if="turn.status === 'streaming'"
                   class="stream-caret"
-                ></span>
+                />
               </div>
               <div
                 v-if="
@@ -163,8 +197,12 @@ import {
   LoaderCircle,
   ThumbsUp,
   ThumbsDown,
+  Pencil,
+  ArrowUp,
+  X,
 } from 'lucide-vue-next'
 import { RefreshRight } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
 import Sidebar from '../components/layout/Sidebar.vue'
 import AnalysisPanel from '../components/chat/AnalysisPanel.vue'
 import ChartCard from '../components/chat/ChartCard.vue'
@@ -184,6 +222,7 @@ const editingId = ref(-1)
 const editDraft = ref('')
 const editEls = ref<HTMLTextAreaElement[]>([])
 const copiedId = ref(-1)
+const userCopiedId = ref(-1)
 const regenerateId = ref(-1)
 
 const analysisToggleTitle = computed(() => t('analysisToggle', ui.lang))
@@ -205,27 +244,67 @@ function askRegenerate(i: number) {
 
 async function doRegenerate() {
   regenerateId.value = -1
+  editingId.value = -1
   await chat.regenerate()
 }
 
 function startEdit(i: number) {
   const turn = chat.turns[i]
-  if (!turn || i < chat.turns.length - 1) return
+  if (!turn || chat.streaming) return
   editingId.value = i
   editDraft.value = turn.question
   void nextTick(() => {
-    const el = editEls.value[editingId.value]
+    const el = editEls.value[i]
     if (el) {
       el.focus()
       el.setSelectionRange(el.value.length, el.value.length)
+      autoGrowEdit()
     }
   })
 }
 
+function onEditKeydown(e: KeyboardEvent, i: number) {
+  if (e.isComposing) return
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    commitEdit(i)
+  } else if (e.key === 'Escape') {
+    editingId.value = -1
+  }
+}
+
+function autoGrowEdit() {
+  const i = editingId.value
+  const el = i >= 0 ? editEls.value[i] : undefined
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+}
+
 async function commitEdit(i: number) {
   if (editingId.value !== i) return
+  const q = editDraft.value.trim()
+  if (!q || chat.streaming) return
+  const truncating = i < chat.turns.length - 1
+  try {
+    await ElMessageBox.confirm(
+      truncating
+        ? t('editTruncateConfirm', ui.lang, chat.turns.length - 1 - i)
+        : t('editResendConfirm', ui.lang),
+      '',
+      {
+        type: 'warning',
+        confirmButtonText: t('confirm', ui.lang),
+        cancelButtonText: t('cancel', ui.lang),
+        roundButton: true,
+      },
+    )
+  } catch {
+    // cancelled — stay in edit mode so the draft is kept
+    return
+  }
   editingId.value = -1
-  await chat.editAndResend(i, editDraft.value)
+  await chat.editAndResend(i, q)
 }
 
 async function copyAnswer(turn: Turn) {
@@ -237,6 +316,15 @@ async function copyAnswer(turn: Turn) {
   copiedId.value = idx
   window.setTimeout(() => {
     if (copiedId.value === idx) copiedId.value = -1
+  }, 1600)
+}
+
+async function copyQuestion(turn: Turn, i: number) {
+  const ok = await copyText(turn.question)
+  if (!ok) return
+  userCopiedId.value = i
+  window.setTimeout(() => {
+    if (userCopiedId.value === i) userCopiedId.value = -1
   }, 1600)
 }
 

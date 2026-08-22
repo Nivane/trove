@@ -24,6 +24,15 @@ export interface StepCard {
   payload: StepPayload
 }
 
+/** A node currently in flight (from a `begin` event, not yet resolved by a step). */
+export interface LiveStep {
+  node: string
+  label?: string
+  /** Wall clock (Date.now) when the node started running. */
+  startedAt: number
+  startedSeq: number
+}
+
 export interface Turn {
   question: string
   thoughts: string[]
@@ -38,6 +47,10 @@ export interface Turn {
   hitlActionsShown?: boolean
   rating?: 1 | -1 | null
   requestId?: string
+  /** In-flight nodes (from begin events) — powers the live "analysis now" bar. */
+  live?: LiveStep[]
+  /** Wall clock when the turn began streaming (live total-elapsed meter). */
+  startedAt?: number
 }
 
 const SESSION_KEY = 'trove_ui_session'
@@ -176,6 +189,8 @@ export const useChatStore = defineStore('chat', {
         summary: null,
         status: 'streaming',
         requestId,
+        live: [],
+        startedAt: Date.now(),
       })
 
       let retried = false
@@ -210,6 +225,8 @@ export const useChatStore = defineStore('chat', {
             summary: null,
             status: 'streaming',
             requestId: newRequestId(),
+            live: [],
+            startedAt: Date.now(),
           })
           continue
         }
@@ -234,6 +251,7 @@ export const useChatStore = defineStore('chat', {
         } else {
           t.status = 'done'
         }
+        t.live = []
       }
       this.streaming = false
       this.batchRunning = false
@@ -250,6 +268,26 @@ export const useChatStore = defineStore('chat', {
           if (sid) this.setSessionId(sid)
           break
         }
+        case 'begin': {
+          const node = String(ev.data.node ?? '')
+          if (!node) break
+          if (!t.startedAt) t.startedAt = Date.now()
+          t.live = t.live ?? []
+          // A repeated begin of the SAME node (backend re-fires for node
+          // chains) should not double-count — bump the live marker instead.
+          const tail = t.live[t.live.length - 1]
+          if (tail && tail.node === node) {
+            tail.startedAt = Date.now()
+          } else {
+            t.live.push({
+              node,
+              label: ev.data.label as string | undefined,
+              startedAt: Date.now(),
+              startedSeq: t.live.length + 1,
+            })
+          }
+          break
+        }
         case 'thought': {
           const text = String(ev.data.content ?? ev.data.text ?? '')
           if (text.trim()) t.thoughts.push(text)
@@ -262,6 +300,9 @@ export const useChatStore = defineStore('chat', {
             label: p.label,
             payload: p,
           })
+          // A step marks the completion of the current node chain — resolve
+          // every pending begin (nested sub-nodes included).
+          t.live = []
           break
         }
         case 'task': {
@@ -281,6 +322,7 @@ export const useChatStore = defineStore('chat', {
           t.status = 'hitl'
           t.hitlBatch = !!total && total > 1
           t.hitlActionsShown = false
+          t.live = []
           this.pendingHitl = {
             sessionId: this.sessionId,
             workflow: 'reflection',
@@ -291,6 +333,7 @@ export const useChatStore = defineStore('chat', {
         case 'done': {
           const summary = ev.data.summary as DoneSummary | undefined
           const content = String(ev.data.content ?? '')
+          t.live = []
           if (summary?.batched) {
             // terminal batched done → finalize the whole turn; the synthesis
             // answer is kept separate (rendered above the per-task answers)
@@ -338,6 +381,7 @@ export const useChatStore = defineStore('chat', {
       if (t) {
         t.error = message
         t.status = 'error'
+        t.live = []
       }
     },
 
@@ -347,6 +391,7 @@ export const useChatStore = defineStore('chat', {
       if (t && t.status === 'streaming') {
         t.status = t.answer ? 'done' : 'error'
         t.error = t.answer ? undefined : 'aborted'
+        t.live = []
       }
       this.streaming = false
       this.batchRunning = false
@@ -369,13 +414,30 @@ export const useChatStore = defineStore('chat', {
         (ev) => {
           const tt = this.currentTurn
           if (!tt) return
-          if (ev.type === 'step') {
+          if (ev.type === 'begin') {
+            const node = String(ev.data.node ?? '')
+            if (!node) return
+            if (!tt.startedAt) tt.startedAt = Date.now()
+            tt.live = tt.live ?? []
+            const tail = tt.live[tt.live.length - 1]
+            if (tail && tail.node === node) {
+              tail.startedAt = Date.now()
+            } else {
+              tt.live.push({
+                node,
+                label: ev.data.label as string | undefined,
+                startedAt: Date.now(),
+                startedSeq: tt.live.length + 1,
+              })
+            }
+          } else if (ev.type === 'step') {
             const p = ev.data as StepPayload
             tt.steps.push({
               node: p.node ?? p.label ?? 'step',
               label: p.label,
               payload: p,
             })
+            tt.live = []
           } else if (ev.type === 'task') {
             const task = ev.data as Partial<TaskItem> & { task_id: string }
             const idx = this.tasks.findIndex((x) => x.task_id === task.task_id)
@@ -387,6 +449,7 @@ export const useChatStore = defineStore('chat', {
           } else if (ev.type === 'done') {
             const summary = ev.data.summary as DoneSummary | undefined
             const content = String(ev.data.content ?? '')
+            tt.live = []
             if (summary?.batched) {
               // terminal batched done → synthesis kept separate from the
               // per-task answer chunks appended below
@@ -415,6 +478,7 @@ export const useChatStore = defineStore('chat', {
       )
       if (this.currentTurn?.status === 'streaming')
         this.currentTurn.status = 'done'
+      if (this.currentTurn) this.currentTurn.live = []
       this.streaming = false
       this.batchRunning = false
       this.controller = null

@@ -64,6 +64,9 @@ function chartTypeKey(tp: ChartType): I18nKey {
 
 const titleText = computed(() => {
   if (props.chart?.title) return props.chart.title
+  const raw = props.option as { title?: { text?: string } } | undefined
+  const rawText = raw?.title && typeof raw.title === 'object' ? raw.title.text : ''
+  if (rawText) return rawText
   return t('chart', ui.lang)
 })
 
@@ -71,7 +74,6 @@ const titleText = computed(() => {
 function buildOption(spec: ChartSpec, type: ChartType) {
   const th = chartTheme()
   const cats = spec.categories || []
-  const title = { text: titleText.value }
 
   if (type === 'pie') {
     const first = (spec.series || [])[0] || {}
@@ -79,7 +81,6 @@ function buildOption(spec: ChartSpec, type: ChartType) {
       typeof v === 'number' ? v : Number(v) || 0,
     )
     return applyChartTheme({
-      title,
       legend: { top: 0 },
       series: [
         stylePie({
@@ -101,7 +102,6 @@ function buildOption(spec: ChartSpec, type: ChartType) {
     return styleBar({ name, data: s.data }, color)
   })
   return applyChartTheme({
-    title,
     legend: seriesCount > 1 ? { top: 0 } : undefined,
     xAxis: { type: 'category', data: cats },
     yAxis: { type: 'value', name: seriesCount > 1 ? '' : spec.measures?.[0] },
@@ -119,7 +119,8 @@ function render() {
   const opt = props.chart
     ? buildOption(props.chart, selected.value)
     : props.option
-      ? applyChartTheme(props.option)
+      // 标题只渲染在卡片头部(chart-title),剥掉 option 自带的 title 防重复
+      ? applyChartTheme({ ...props.option, title: undefined })
       : null
   if (opt) chartInstance.setOption(opt, true)
 }

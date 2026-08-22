@@ -1,6 +1,6 @@
 <template>
   <div class="admin-view">
-    <div class="view-header">
+    <header class="view-header">
       <div>
         <h2>{{ t('users', ui.lang) }}</h2>
         <p class="view-desc">{{ t('usersPageDesc', ui.lang) }}</p>
@@ -12,19 +12,67 @@
           {{ t('createUser', ui.lang) }}
         </el-button>
       </div>
+    </header>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <span class="stat-icon accent"><Users :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('users', ui.lang) }}</span>
+          <span class="stat-value">{{ users.length }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon ok"><UserCheck :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('statusActive', ui.lang) }}</span>
+          <span class="stat-value">{{ activeCount }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon"><ShieldCheck :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('adminRole', ui.lang) }}</span>
+          <span class="stat-value">{{ adminCount }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon warn"><VolumeX :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('statusDisabled', ui.lang) }}</span>
+          <span class="stat-value">{{ disabledCount }}</span>
+        </div>
+      </div>
     </div>
 
     <div class="admin-card">
+      <div class="card-toolbar">
+        <el-input
+          v-model="search"
+          class="toolbar-search"
+          :prefix-icon="Search"
+          :placeholder="t('searchUsers', ui.lang)"
+          clearable
+        />
+        <span class="spacer" />
+        <span class="view-count">
+          {{ filtered.length }} · {{ users.length }}
+        </span>
+      </div>
+
       <el-table
         v-loading="loading"
-        :data="users"
+        :data="filtered"
         class="admin-table"
         empty-text="—"
       >
-        <el-table-column :label="t('username', ui.lang)" min-width="200">
+        <el-table-column :label="t('username', ui.lang)" min-width="210">
           <template #default="{ row }">
             <div class="user-cell">
-              <span class="user-avatar">{{ avatar(row) }}</span>
+              <span
+                class="user-avatar"
+                :class="{ 'is-admin': row.role === 'admin' }"
+                >{{ avatar(row) }}</span>
               <div class="user-meta">
                 <span class="user-name">{{ row.username }}</span>
                 <span v-if="row.display_name" class="user-sub">{{
@@ -34,30 +82,44 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column :label="t('role', ui.lang)" width="120">
+        <el-table-column :label="t('role', ui.lang)" width="130">
           <template #default="{ row }">
             <span
               class="pill"
               :class="row.role === 'admin' ? 'pill-accent' : 'pill-neutral'"
             >
-              {{ row.role === 'admin' ? t('adminRole', ui.lang) : t('userRole', ui.lang) }}
+              {{
+                row.role === 'admin'
+                  ? t('adminRole', ui.lang)
+                  : t('userRole', ui.lang)
+              }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('disabled', ui.lang)" width="110">
+        <el-table-column :label="t('status', ui.lang)" width="110">
           <template #default="{ row }">
-            <span class="pill" :class="row.disabled ? 'pill-disabled' : 'pill-ok'">
-              <span class="pill-dot" :class="row.disabled ? 'pill-dot-off' : 'pill-dot-ok'" />
-              {{ row.disabled ? t('statusDisabled', ui.lang) : t('statusActive', ui.lang) }}
+            <span
+              class="pill"
+              :class="row.disabled ? 'pill-disabled' : 'pill-ok'"
+            >
+              <span
+                class="pill-dot"
+                :class="row.disabled ? 'pill-dot-off' : 'pill-dot-ok'"
+              />
+              {{
+                row.disabled
+                  ? t('statusDisabled', ui.lang)
+                  : t('statusActive', ui.lang)
+              }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('createdAt', ui.lang)" width="150">
+        <el-table-column :label="t('createdAt', ui.lang)" width="160">
           <template #default="{ row }">
-            <span class="cell-muted">{{ fmtDateTime(row.created_at) }}</span>
+            <span class="cell-mono">{{ fmtDateTime(row.created_at) }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('datasources', ui.lang)" min-width="200">
+        <el-table-column :label="t('datasources', ui.lang)" min-width="220">
           <template #default="{ row }">
             <el-select
               v-model="row._datasources"
@@ -80,16 +142,22 @@
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column :label="t('actions', ui.lang)" width="230" fixed="right">
+        <el-table-column
+          :label="t('actions', ui.lang)"
+          width="240"
+          fixed="right"
+        >
           <template #default="{ row }">
             <div class="row-actions">
               <button class="mini-btn" @click="openEdit(row)">
                 {{ t('edit', ui.lang) }}
               </button>
               <button class="mini-btn" @click="openTokens(row)">
+                <KeyRound :size="13" />
                 {{ t('apiTokens', ui.lang) }}
               </button>
               <button class="mini-btn is-danger" @click="del(row)">
+                <Trash2 :size="13" />
                 {{ t('deleteUser', ui.lang) }}
               </button>
             </div>
@@ -111,12 +179,15 @@
             v-model="dlgForm.username"
             :disabled="dlgIsEdit"
             :placeholder="t('username', ui.lang)"
+            autocomplete="off"
           />
         </el-form-item>
         <el-form-item :label="t('displayName', ui.lang)">
           <el-input
             v-model="dlgForm.display_name"
-            :placeholder="dlgIsEdit ? t('displayNameOptional', ui.lang) : undefined"
+            :placeholder="
+              dlgIsEdit ? t('displayNameOptional', ui.lang) : undefined
+            "
           />
         </el-form-item>
         <el-form-item :label="t('loginPass', ui.lang)">
@@ -127,15 +198,16 @@
             :placeholder="
               dlgIsEdit ? t('passwordKeep', ui.lang) : t('loginPass', ui.lang)
             "
+            autocomplete="new-password"
           />
         </el-form-item>
         <el-form-item :label="t('role', ui.lang)">
-          <el-select v-model="dlgForm.role" class="role-select">
+          <el-select v-model="dlgForm.role" class="ds-select">
             <el-option :label="t('userRole', ui.lang)" value="user" />
             <el-option :label="t('adminRole', ui.lang)" value="admin" />
           </el-select>
         </el-form-item>
-        <el-form-item v-if="dlgIsEdit" :label="t('disabled', ui.lang)">
+        <el-form-item v-if="dlgIsEdit" :label="t('status', ui.lang)">
           <el-switch
             v-model="dlgForm.disabled"
             :active-text="t('statusDisabled', ui.lang)"
@@ -144,7 +216,11 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dlgOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button @click="dlgOpen = false">
+{{
+          t('cancel', ui.lang)
+        }}
+</el-button>
         <el-button type="primary" :loading="saving" @click="saveUser">
           {{ t('confirm', ui.lang) }}
         </el-button>
@@ -159,10 +235,12 @@
       :close-on-click-modal="false"
     >
       <div v-if="tokenRaw" class="token-reveal">
-        <div class="token-reveal-title">{{ t('tokenRevealTitle', ui.lang) }}</div>
+        <div class="token-reveal-title">
+          {{ t('tokenRevealTitle', ui.lang) }}
+        </div>
         <div class="token-reveal-row">
           <code class="token-reveal-code">{{ tokenRaw }}</code>
-          <button class="mini-btn" @click="copyTokenRaw()">
+          <button class="mini-btn primary" @click="copyTokenRaw()">
             <Check v-if="tokenCopied" :size="13" />
             <Copy v-else :size="13" />
             {{ t('copy', ui.lang) }}
@@ -170,7 +248,11 @@
         </div>
       </div>
       <div class="token-create">
-        <el-input v-model="tokenForm.label" :placeholder="t('tokenLabel', ui.lang)" clearable />
+        <el-input
+          v-model="tokenForm.label"
+          :placeholder="t('tokenLabel', ui.lang)"
+          clearable
+        />
         <el-input-number
           v-model="tokenForm.ttl"
           :min="0"
@@ -187,7 +269,10 @@
           {{ t('noTokens', ui.lang) }}
         </div>
         <div v-for="tk in tokens" :key="tk.id" class="token-row">
-          <span class="token-dot" :class="tk.revoked ? 'token-dot-off' : 'token-dot-ok'" />
+          <span
+            class="token-dot"
+            :class="tk.revoked ? 'token-dot-off' : 'token-dot-ok'"
+          />
           <div class="token-meta">
             <span class="token-label">{{ tk.label || '—' }}</span>
             <span class="token-sub">
@@ -213,9 +298,22 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { UserPlus, Plus, Check, X, Copy } from 'lucide-vue-next'
+import {
+  UserPlus,
+  Plus,
+  Check,
+  X,
+  Copy,
+  Users,
+  UserCheck,
+  ShieldCheck,
+  VolumeX,
+  KeyRound,
+  Trash2,
+  Search,
+} from 'lucide-vue-next'
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
@@ -244,7 +342,26 @@ const ui = useUiStore()
 const users = ref<UserRow[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const search = ref('')
 const knownDatasources = ref<string[]>([])
+
+const activeCount = computed(
+  () => users.value.filter((u) => !u.disabled).length,
+)
+const adminCount = computed(
+  () => users.value.filter((u) => u.role === 'admin').length,
+)
+const disabledCount = computed(() => users.value.length - activeCount.value)
+
+const filtered = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return users.value
+  return users.value.filter(
+    (u) =>
+      u.username.toLowerCase().includes(q) ||
+      (u.display_name || '').toLowerCase().includes(q),
+  )
+})
 
 const dlgOpen = ref(false)
 const dlgIsEdit = ref(false)
@@ -287,9 +404,9 @@ async function load() {
     // hydrate grants in parallel (no N+1 serial round-trips)
     const grants = await Promise.all(
       list.map((u) =>
-        apiGet(`/v1/admin/users/${u.id}/datasources`).then(
-          (g) => g.datasources ?? [],
-        ).catch(() => [] as string[]),
+        apiGet(`/v1/admin/users/${u.id}/datasources`)
+          .then((g) => g.datasources ?? [])
+          .catch(() => [] as string[]),
       ),
     )
     users.value = list.map((u, i) => ({ ...u, _datasources: grants[i] ?? [] }))
@@ -328,11 +445,17 @@ function openEdit(row: UserRow) {
 
 async function saveUser() {
   if (!dlgForm.username.trim()) {
-    toastError(new Error(t('errUserRequired', ui.lang)), t('errUserRequired', ui.lang))
+    toastError(
+      new Error(t('errUserRequired', ui.lang)),
+      t('errUserRequired', ui.lang),
+    )
     return
   }
   if (!dlgIsEdit.value && !dlgForm.password) {
-    toastError(new Error(t('errPassRequired', ui.lang)), t('errPassRequired', ui.lang))
+    toastError(
+      new Error(t('errPassRequired', ui.lang)),
+      t('errPassRequired', ui.lang),
+    )
     return
   }
   saving.value = true
@@ -420,10 +543,13 @@ async function createToken() {
   tokenBusy.value = true
   tokenRaw.value = ''
   try {
-    const body = await apiPost(`/v1/admin/users/${tokenTarget.value.id}/tokens`, {
-      label: tokenForm.label,
-      ttl_hours: tokenForm.ttl > 0 ? tokenForm.ttl : undefined,
-    })
+    const body = await apiPost(
+      `/v1/admin/users/${tokenTarget.value.id}/tokens`,
+      {
+        label: tokenForm.label,
+        ttl_hours: tokenForm.ttl > 0 ? tokenForm.ttl : undefined,
+      },
+    )
     tokenRaw.value = body.token as string
     tokenForm.label = ''
     tokenForm.ttl = 0

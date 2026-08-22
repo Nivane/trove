@@ -1,6 +1,6 @@
 <template>
   <div class="admin-view">
-    <div class="view-header">
+    <header class="view-header">
       <div>
         <h2>{{ t('audit', ui.lang) }}</h2>
         <p class="view-desc">{{ t('auditPageDesc', ui.lang) }}</p>
@@ -12,17 +12,38 @@
             :placeholder="t('auditAction', ui.lang)"
             clearable
             class="audit-filter-input"
+            :prefix-icon="Search"
             @keyup.enter="onActionChange"
             @clear="onActionChange"
-          >
-            <template #prefix>
-              <Search :size="14" />
-            </template>
-          </el-input>
+          />
           <el-button class="refresh-btn" :loading="loading" @click="load">
             <RefreshCw :size="15" class="btn-icon" />
             {{ t('refresh', ui.lang) }}
           </el-button>
+        </div>
+      </div>
+    </header>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <span class="stat-icon accent"><ScrollText :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('audit', ui.lang) }}</span>
+          <span class="stat-value">{{ total }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon ok"><ShieldCheck :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('statusActive', ui.lang) }}</span>
+          <span class="stat-value">{{ statusSummary.ok }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon warn"><AlertTriangle :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('errors', ui.lang) }}</span>
+          <span class="stat-value">{{ statusSummary.err }}</span>
         </div>
       </div>
     </div>
@@ -44,29 +65,33 @@
             <span class="cell-user">{{ row.username || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('auditAction', ui.lang)" min-width="170">
+        <el-table-column :label="t('auditAction', ui.lang)" min-width="180">
           <template #default="{ row }">
             <span class="pill pill-neutral">{{ row.action }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="method" width="84">
+        <el-table-column label="method" width="90">
           <template #default="{ row }">
-            <span class="method-badge">{{
+            <span class="method-badge" :class="methodClass(row.method)">{{
               row.method || '—'
             }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('auditPath', ui.lang)" min-width="220">
+        <el-table-column :label="t('auditPath', ui.lang)" min-width="240">
           <template #default="{ row }">
             <span class="cell-mono">{{ row.path }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('auditStatus', ui.lang)" width="90">
+        <el-table-column :label="t('auditStatus', ui.lang)" width="100">
           <template #default="{ row }">
             <span
               class="pill"
               :class="okStatus(row.status) ? 'pill-ok' : 'pill-danger'"
             >
+              <span
+                class="pill-dot"
+                :class="okStatus(row.status) ? 'pill-dot-ok' : ''"
+              />
               {{ row.status ?? '—' }}
             </span>
           </template>
@@ -88,8 +113,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { RefreshCw, Search } from 'lucide-vue-next'
+import { computed, onMounted, ref, watch } from 'vue'
+import {
+  RefreshCw,
+  Search,
+  ScrollText,
+  ShieldCheck,
+  AlertTriangle,
+} from 'lucide-vue-next'
 import { apiGet } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
@@ -116,6 +147,26 @@ const total = ref(0)
 
 function okStatus(s: unknown): boolean {
   return typeof s === 'number' && s >= 200 && s < 400
+}
+
+// A peek at the current page's outcome split, not a full aggregate — the
+// table already shows each row; the stat cards summarize the visible page.
+const statusSummary = computed(() => {
+  let ok = 0
+  let err = 0
+  for (const e of entries.value) {
+    if (okStatus(e.status)) ok += 1
+    else if (!okStatus(e.status) && e.status != null) err += 1
+  }
+  return { ok, err }
+})
+
+function methodClass(method?: string): string {
+  const m = (method || '').toUpperCase()
+  if (m === 'GET') return 'is-get'
+  if (m === 'POST' || m === 'PUT' || m === 'PATCH') return 'is-post'
+  if (m === 'DELETE') return 'is-delete'
+  return 'is-warn'
 }
 
 async function load() {
@@ -146,13 +197,15 @@ function onSizeChange() {
   load()
 }
 
+// 结果集缩水时(如刷新后总条数减少)把当前页钳回合法范围并重拉数据,
+// 否则翻页控件会停在超出范围的页码上,出现"翻页没反应/白页"的假故障。
+watch(total, () => {
+  const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value))
+  if (page.value > maxPage) {
+    page.value = maxPage
+    load()
+  }
+})
+
 onMounted(load)
 </script>
-
-<style scoped>
-.pagination-bar {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-</style>

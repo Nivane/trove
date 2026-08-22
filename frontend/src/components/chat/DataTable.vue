@@ -55,8 +55,20 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, notifyError } from '../../utils/notify'
 
-const props = defineProps<{ headers: string[]; rows: unknown[][] }>()
+const props = defineProps<{
+  headers: string[]
+  rows: unknown[][]
+  /** 完整查询结果(供下载):未提供时回退到展示的 rows。 */
+  downloadRows?: unknown[][] | null
+}>()
 const ui = useUiStore()
+
+/** 下载用数据:优先完整查询结果(由后端 summary.rows 提供)。 */
+const exportRows = computed(
+  () => props.downloadRows && props.downloadRows.length
+    ? props.downloadRows
+    : props.rows,
+)
 
 function isNumericCol(colIdx: number): boolean {
   const sample = props.rows.slice(0, 20).some((r) => {
@@ -92,7 +104,9 @@ function downloadCsv() {
     const s = fmtCell(v)
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const csv = [props.headers, ...props.rows]
+  // 按完整查询结果下载(不被答案表格的展示行数截断)
+  const rows = exportRows.value
+  const csv = [props.headers, ...rows]
     .map((r) => r.map(esc).join(','))
     .join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })

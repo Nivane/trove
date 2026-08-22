@@ -8,6 +8,10 @@ Validation errors:
 {% for e in errors -%}
 - {{ e }}
 {% endfor %}
+{% if target -%}
+{{ target }}
+
+{% endif %}
 Please fix the SQL query. Keep the original query intent — fix syntax errors only, do not change the business semantics. Generate ONLY the corrected SQL.
 
 ```sql

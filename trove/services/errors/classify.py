@@ -39,6 +39,7 @@ class RecoveryAction(str, enum.Enum):
     RETRY_BACKOFF = "retry:backoff"      # 指数退避后重试(默认上限=配置)
     RETRY_AFTER = "retry:after"          # 按服务端 retry_after 等待后重试
     RECONNECT = "retry:reconnect"        # 重建连接后重跑同一调用
+    SIMPLE_REGENERATE = "fix:simple"     # 语法位置精确可知 → 定向微调,不整句重生成
     SIMPLIFY = "simplify"                # 降复杂度后重试(超时)
     SURFACE = "surface"                  # 直接报告用户,自动恢复无意义
     INTERNAL = "internal"                # python/实现级 bug,降级上报
@@ -107,8 +108,10 @@ CLASSES: dict[str, ErrorClass] = {
         # ── SQL 静态 ──────────────────────────────────────
         ErrorClass(
             "SQL_SYNTAX", "sql", "error", retryable=True,
-            recovery=RecoveryAction.FIX,
-            user_msg="SQL syntax error; regenerate with simpler SQL.",
+            # 语法错误位置是确定性信息(SQLGlot 报 Line/Col/token)——定向微调
+            # 该位置即可,不需要整句重生成(不烧完整 revisor/修复轮)。
+            recovery=RecoveryAction.SIMPLE_REGENERATE,
+            user_msg="SQL syntax error; fix the offending token locally.",
         ),
         ErrorClass(
             "SQL_SCHEMA_MISSING", "sql", "error", retryable=True,

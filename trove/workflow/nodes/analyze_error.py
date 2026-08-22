@@ -375,8 +375,10 @@ def make_analyze_error(
             # 缺口3: 修复模式判定（fixer 实现级 vs revisor 语义级),注入重生成方
             fix_mode = classify_fix_mode(error_text, issues)
             # 缺口5: 修复进展量化 —— regression_state 标签 + 无进展轮计数
+            # validator-conflict 是校验器误报复现(改 SQL 无解),不计无进展;
+            # 该轮照常推进回滚,但由第 5 节的可申诉出口(planner 回滚)兜底。
             no_progress = (
-                0 if progress in ("first", "improved")
+                0 if progress in ("first", "improved", "validator-conflict")
                 else state.no_progress_rounds + 1
             )
             if no_progress >= MAX_NO_PROGRESS_ROUNDS:

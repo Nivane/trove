@@ -120,3 +120,61 @@ async def test_kb_init_uses_datasource_schema(client, api_app, tmp_path):
     notes = (api_app.state.kb.kb_dir / "extra" / "schema_notes.yml").read_text(encoding="utf-8")
     assert "employees" in notes
     assert "students" not in notes
+
+
+async def test_kb_detail_endpoint(client, api_app):
+    """KB 管理页详情:初始化状态 + 术语/示例/规则/lessons 全量读取。"""
+    from tests.helpers.kb import ossie_semantics_yaml
+
+    seed = api_app.state.kb.kb_dir / "test_db"
+    seed.mkdir(parents=True, exist_ok=True)
+    (seed / "semantics.yml").write_text(
+        ossie_semantics_yaml([{
+            "term": "学生数", "aliases": [],
+            "mapping": "COUNT(students.id)", "tables": ["students"],
+            "definition": "学生总人数",
+        }]),
+        encoding="utf-8",
+    )
+    (seed / "examples.yml").write_text(
+        "examples:\n- question: sheet1\n  sql: SELECT 1\n  tags: [t]\n",
+        encoding="utf-8",
+    )
+    (seed / "rules.yml").write_text("rules:\n- rule: 金额单位统一为千元\n", encoding="utf-8")
+    await api_app.state.kb.ensure_synced("test_db")
+
+    resp = await client.get("/v1/admin/datasources/test_db/kb")
+    assert resp.status_code == 200
+    kb = resp.json()["kb"]
+    assert kb["status"]["initialized"] is True
+    assert set(kb["status"]["files"]) >= {"semantics.yml", "examples.yml"}
+    assert kb["status"]["items"].get("term") == 1
+    assert any(t["term"] == "学生数" for t in kb["terms"])
+    assert any(e["question"] == "sheet1" for e in kb["examples"])
+    assert kb["rules"] == ["金额单位统一为千元"]
+    assert isinstance(kb["lessons"], list)
+
+
+async def test_kb_delete_endpoint(client, api_app):
+    """KB 删除:目录移除 + 镜像清理 + 审计;幂等维度二次删除 → 404。"""
+    seed = api_app.state.kb.kb_dir / "test_db"
+    seed.mkdir(parents=True, exist_ok=True)
+    (seed / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
+    await api_app.state.kb.ensure_synced("test_db")
+    assert api_app.state.kb.init_exists("test_db")
+
+    resp = await client.delete("/v1/admin/datasources/test_db/kb")
+    assert resp.status_code == 200
+    assert not seed.exists()
+    assert api_app.state.kb.init_exists("test_db") == []
+    entries = await api_app.state.auth.list_audit(action="kb.delete")
+    assert any(e["username"] == "admin" and e["details"]["name"] == "test_db"
+               for e in entries)
+    # 已无 KB → 409/404
+    resp2 = await client.delete("/v1/admin/datasources/test_db/kb")
+    assert resp2.status_code == 404
+
+
+async def test_kb_delete_unknown_ds_404(client):
+    resp = await client.delete("/v1/admin/datasources/nope/kb")
+    assert resp.status_code == 404

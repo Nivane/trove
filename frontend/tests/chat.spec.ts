@@ -116,6 +116,80 @@ describe('chat store — SSE event state machine', () => {
     expect((t.steps[0].payload as any).row_count).toBe(10)
   })
 
+  it('tracks live (in-flight) nodes from begin events and resolves them on step', () => {
+    const chat = useChatStore()
+    chat.turns.push({
+      question: 'q',
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'streaming',
+      live: [],
+      startedAt: Date.now(),
+    })
+
+    chat.onEvent({ type: 'begin', data: { node: 'gen_sql' } })
+    const t = chat.currentTurn!
+    expect(t.live).toHaveLength(1)
+    expect(t.live![0].node).toBe('gen_sql')
+    expect(t.live![0].startedAt).toBeGreaterThan(0)
+
+    // a re-fire of the same node (LangGraph node chain) must not double-count
+    chat.onEvent({ type: 'begin', data: { node: 'gen_sql' } })
+    expect(t.live).toHaveLength(1)
+
+    // a step resolves the whole pending node chain
+    chat.onEvent({
+      type: 'step',
+      data: { node: 'gen_sql', detail: { sql: 'SELECT 1' } },
+    })
+    expect(t.live).toHaveLength(0)
+    expect(t.steps).toHaveLength(1)
+  })
+
+  it('tracks distinct live nodes while a parent node is pending', () => {
+    const chat = useChatStore()
+    chat.turns.push({
+      question: 'q',
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'streaming',
+      live: [],
+    })
+
+    chat.onEvent({ type: 'begin', data: { node: 'gen_sql' } })
+    chat.onEvent({ type: 'begin', data: { node: 'validate' } })
+    const t = chat.currentTurn!
+    expect(t.live!.map((s) => s.node)).toEqual(['gen_sql', 'validate'])
+  })
+
+  it('clears live nodes on a terminal done / error event', () => {
+    const chat = useChatStore()
+    chat.turns.push({
+      question: 'q',
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'streaming',
+      live: [],
+    })
+    const t = chat.currentTurn!
+    chat.onEvent({ type: 'begin', data: { node: 'gen_sql' } })
+    expect(t.live).toHaveLength(1)
+
+    chat.onEvent({
+      type: 'error',
+      data: { error: 'boom', summary: { error: 'boom' } },
+    })
+    expect(t.live).toHaveLength(0)
+    expect(t.status).toBe('error')
+    expect(t.error).toBe('boom')
+  })
+
   it('fails the turn on an error event', () => {
     const chat = useChatStore()
     chat.turns.push({

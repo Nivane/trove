@@ -10,6 +10,7 @@
         v-else-if="b.type === 'table'"
         :headers="b.headers"
         :rows="b.rows"
+        :download-rows="resultRows"
       />
       <SqlBlock v-else-if="b.type === 'sql'" :code="b.code" />
     </template>
@@ -23,7 +24,11 @@ import SqlBlock from './SqlBlock.vue'
 import { tokenize } from '../../utils/blocks'
 import { renderMarkdown, stripAsciiChart } from '../../utils/markdown'
 
-const props = defineProps<{ source: string }>()
+const props = defineProps<{
+  source: string
+  /** 完整查询结果(可选,供结果表格"按查询结果下载")。 */
+  resultRows?: unknown[][] | null
+}>()
 
 const cleaned = computed(() => stripAsciiChart(props.source || ''))
 const blocks = computed(() => tokenize(cleaned.value))

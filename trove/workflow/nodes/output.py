@@ -15,6 +15,7 @@ from typing import Any
 
 from trove.core.i18n import L
 from trove.llm.observability import record_span
+from trove.services.limits import get_result_limits
 from trove.services.sql.format import format_sql
 from trove.services.viz.spark import render_ascii_bar
 from trove.workflow.state import WorkflowState
@@ -58,53 +59,67 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         return {"final_response": state.intent_answer}
 
     lang = state.lang
+    limits = get_result_limits()
+    display_rows = limits.display_rows
 
     if state.error:
         response = (
-            f"## {L(lang, 'Answer', 'Answer')}\n\n"
-            f"**{L(lang, 'Question', 'Question')}**: {question}\n\n"
-            f"**{L(lang, 'Error', 'Error')}**: {state.error}\n"
+            f"## {L(lang, '回答', 'Answer')}\n\n"
+            f"**{L(lang, '问题', 'Question')}**: {question}\n\n"
+            f"**{L(lang, '错误', 'Error')}**: {state.error}\n"
         )
         return {"final_response": response}
 
-    parts = [f"## {L(lang, 'Answer', 'Answer')}\n"]
+    parts = [f"## {L(lang, '回答', 'Answer')}\n"]
 
     # Question
-    parts.append(f"**{L(lang, 'Question', 'Question')}**: {question}\n")
+    parts.append(f"**{L(lang, '问题', 'Question')}**: {question}\n")
 
     # SQL
     if state.sql:
-        parts.append(f"### {L(lang, 'Generated SQL', 'Generated SQL')}\n")
+        parts.append(f"### {L(lang, '生成的 SQL', 'Generated SQL')}\n")
         parts.append(f"```sql\n{format_sql(state.sql, state.dialect)}\n```\n")
 
     # Semantic explanation (生成 SQL 后的 LLM 语义说明)
     if state.semantics:
-        parts.append(f"### {L(lang, 'Semantics', 'Semantics')}\n")
+        parts.append(f"### {L(lang, '语义说明', 'Semantics')}\n")
         parts.append(f"{state.semantics}\n")
 
     # Results
     if state.columns:
-        parts.append(L(lang, f"### Results ({state.row_count} rows)\n", f"### Results ({state.row_count} rows)\n"))
+        parts.append(L(
+            lang,
+            f"### 结果 ({state.row_count} 行)\n",
+            f"### Results ({state.row_count} rows)\n",
+        ))
 
         # Build a markdown table
         parts.append("| " + " | ".join(state.columns) + " |")
         parts.append("| " + " | ".join("---" for _ in state.columns) + " |")
 
-        for row in state.rows[:20]:  # Show first 20 rows
+        shown = 0
+        for row in state.rows[:display_rows]:
             parts.append("| " + " | ".join(str(cell) for cell in row) + " |")
+            shown += 1
 
-        if state.row_count > 20:
-            parts.append(f"\n*... and {state.row_count - 20} more rows*\n")
+        if state.row_count > shown:
+            parts.append(L(
+                lang,
+                f"\n*…以及另外 {state.row_count - shown} 行(表格展示上限 {display_rows} 行,"
+                "下载为完整查询结果)*\n",
+                f"\n*... and {state.row_count - shown} more rows "
+                f"(table shows up to {display_rows}; download includes the full result)*\n",
+            ))
 
     elif state.row_count == 0:
-        parts.append(L(lang, "**Result**: Query returned zero rows.\n", "**Result**: Query returned zero rows.\n"))
+        parts.append(L(lang, "**结果**: 查询返回 0 行。\n", "**Result**: Query returned zero rows.\n"))
     else:
         # No execution data — this is the "empty" workflow case
-        parts.append(L(lang, "(No query executed)\n", "(No query executed)\n"))
+        parts.append(L(lang, "(未执行任何查询)\n", "(No query executed)\n"))
 
     # Reflection
     if state.verdict and state.verdict != "OK":
-        parts.append(f"\n**Assessment**: {state.verdict}")
+        parts.append(f"\n**{L(lang, '评估', 'Assessment')}**: {state.verdict}")
         if state.reason:
             parts.append(f" — {state.reason}")
         parts.append("\n")
@@ -117,17 +132,21 @@ async def output(state: WorkflowState) -> dict[str, Any]:
 
     # Metadata
     if state.execution_time_ms:
-        parts.append(f"\n---\n*Execution time: {state.execution_time_ms:.0f}ms*")
+        parts.append(f"\n---\n*{L(lang, '执行耗时', 'Execution time')}: {state.execution_time_ms:.0f}ms*")
 
     # Insights (执行后 LLM 生成的洞察)
     if state.insights:
-        parts.append(f"\n### {L(lang, 'Insights', 'Insights')}\n")
+        parts.append(f"\n### {L(lang, '洞察', 'Insights')}\n")
         for insight in state.insights:
             parts.append(f"- {insight}")
 
     # Multi-candidate disagreement → low-confidence note
     if not state.consensus:
-        parts.append(L(lang, "\n*Confidence: low (candidate SQLs disagreed)*\n", "\n*Confidence: low (candidate SQLs disagreed)*\n"))
+        parts.append(L(
+            lang,
+            "\n*置信度:低(候选 SQL 结果不一致)*\n",
+            "\n*Confidence: low (candidate SQLs disagreed)*\n",
+        ))
 
     # Knowledge base usage
     if state.kb_hits:
@@ -142,11 +161,18 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         if term_parts:
             segments.append(", ".join(term_parts))
         if example_count:
-            label = "example" if example_count == 1 else "examples"
-            segments.append(f"{example_count} {label} used")
+            segments.append(L(lang,
+                              f"{example_count} 个示例参与",
+                              f"{example_count} example" + ("s" if example_count != 1 else "") + " used"))
         if template_count:
-            segments.append(f"{template_count} template used (deterministic fast path)")
-        parts.append(L(lang, f"\n*Knowledge base: {' | '.join(segments)}*\n", f"\n*Knowledge base: {' | '.join(segments)}*\n"))
+            segments.append(L(lang,
+                              f"{template_count} 个确定性模板命中(快速路径)",
+                              f"{template_count} template used (deterministic fast path)"))
+        parts.append(L(
+            lang,
+            f"\n*知识库: {' | '.join(segments)}*\n",
+            f"\n*Knowledge base: {' | '.join(segments)}*\n",
+        ))
 
     response = "\n".join(parts)
 

@@ -112,3 +112,10 @@ class DatasourcesPut(BaseModel):
     """PUT /v1/admin/users/{id}/datasources body."""
 
     datasources: list[str] = Field(default_factory=list)
+
+
+class SettingsUpdate(BaseModel):
+    """PUT /v1/admin/settings body — partial flat updates keyed by the
+    settings schema (e.g. `llm.default_model`, `app.hitl`)."""
+
+    values: dict[str, Any] = Field(default_factory=dict)

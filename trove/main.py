@@ -124,6 +124,25 @@ async def create_app_components(
     # ── Storage ────────────────────────────────────────────
     session_store = SessionStore(home_dir=config.home)
 
+    # ── Runtime settings (DB overrides applied on top of agent.yml) ──
+    # 管理台写入 ~/.trove/settings.db;这里在启动时把已存配置合入运行时
+    # AgentConfig(DB 优先)。agent.yml 始终只读。
+    from trove.services.admin_settings.service import apply_overrides
+    from trove.services.admin_settings.store import SettingsStore
+
+    settings_store = SettingsStore(Path(config.home).expanduser() / "settings.db")
+    settings_overrides = await settings_store.get_all()
+    if settings_overrides:
+        apply_overrides(config, settings_overrides)
+        logger.info(
+            "Applied %d runtime settings overrides from settings.db",
+            len(settings_overrides),
+        )
+    # 结果限制镜像进 pipeline 节点可读的进程级注册表(默认 50/1000;
+    # DB 覆盖后 apply_overrides 已改 config,这里统一同步一次)。
+    from trove.services.limits import set_result_limits
+    set_result_limits(config.result_max_rows, config.result_display_rows)
+
     # ── Auth (central app.db: users/tokens/grants/audit) ────
     from trove.services.auth.service import AuthService
     auth = AuthService(Path(config.home).expanduser() / "app.db")
@@ -228,6 +247,7 @@ async def create_app_components(
     return {
         "config": config,
         "session_store": session_store,
+        "settings": settings_store,
         "auth": auth,
         "bootstrap_admin_password": bootstrap_password,
         "llm_gateway": llm_gateway,
