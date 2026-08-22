@@ -22,6 +22,7 @@ export const router = createRouter({
     {
       path: '/admin',
       component: () => import('../views/AdminLayout.vue'),
+      meta: { requiresAdmin: true },
       children: [
         { path: '', redirect: '/admin/users' },
         {
@@ -69,6 +70,8 @@ router.beforeEach(async (to) => {
     return { name: 'chat' }
   }
   if (to.path.startsWith('/admin') && auth.user?.role !== 'admin') {
+    // Regular users are kept out of the console — frontend guard + every
+    // /v1/admin/* route enforces the same rule server-side (403).
     return { name: 'chat' }
   }
   return true
