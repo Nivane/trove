@@ -1,15 +1,16 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// Build output lands in trove/api/static (the FastAPI static mount).
-// The committed build keeps pip-install parity; _NoCacheStaticFiles on the
-// server side already handles browser-side staleness during dev.
+// Frontend builds are fully decoupled from the backend: `vite build`
+// outputs to frontend/dist, deployed independently (CDN / nginx). The
+// _NoCacheStaticFiles pattern no longer applies — the backend API never
+// serves the UI.
 export default defineConfig({
-  base: '/ui/',
+  base: '/',
   plugins: [vue()],
   server: {
     // Dev-only: proxy API + SSE to the local backend so `npm run dev` works
-    // without an API base — open http://localhost:5173/ui/ (HMR on).
+    // without an API base — open http://localhost:5173/ (HMR on).
     proxy: {
       '/v1': {
         target: 'http://127.0.0.1:8000',
@@ -18,7 +19,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../trove/api/static',
+    outDir: 'dist',
     emptyOutDir: true,
     rollupOptions: {
       output: {
