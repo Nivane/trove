@@ -20,6 +20,10 @@ async def test_register_list_delete(client, api_app, tmp_path):
 
     assert (await client.delete("/v1/admin/datasources/extra")).status_code == 204
     assert not api_app.state.connector_registry.is_registered("extra")
+    # DELETE 删除持久化记录：列表不再出现（KB 文件保留，可复用）
+    listed_after = (await client.get("/v1/admin/datasources")).json()["datasources"]
+    assert "extra" not in {d["name"] for d in listed_after}
+    assert "extra" not in {c.name for c in api_app.state.config_store.load_configs()}
 
 
 async def test_register_bad_url_400(client):
@@ -40,9 +44,24 @@ async def test_non_admin_403(user_client):
 
 
 async def test_reconnect(client, api_app):
-    await client.post("/v1/admin/datasources", json={"name": "extra", "url": "sqlite://:memory:"})
-    await client.delete("/v1/admin/datasources/extra")
+    # 模拟启动失败遗留：config 在 datasources.yml 里但未注册（断开态）——
+    # boot_register 失败时 config 文件还在而 registry 没有，reconnect 从 config 恢复
+    from trove.core.types import DatasourceConfig
+
+    api_app.state.config_store.save_configs([
+        DatasourceConfig(name="extra", type="sqlite",
+                         connection_params={"path": ":memory:"}, credentials={},
+                         default=False),
+    ])
     assert not api_app.state.connector_registry.is_registered("extra")
+    listed = (await client.get("/v1/admin/datasources")).json()["datasources"]
+    extra = next(d for d in listed if d["name"] == "extra")
+    assert extra["status"] == "disconnected"
+
     resp = await client.post("/v1/admin/datasources/extra/reconnect")
     assert resp.status_code == 200
     assert api_app.state.connector_registry.is_registered("extra")
+
+
+async def test_reconnect_unknown_404(client, api_app):
+    assert (await client.post("/v1/admin/datasources/ghost/reconnect")).status_code == 404

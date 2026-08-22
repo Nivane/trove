@@ -301,11 +301,11 @@ async def create_datasource(request: Request, body: dict,
 @router.delete("/admin/datasources/{name}", status_code=204)
 async def delete_datasource(name: str, request: Request,
                             admin: dict = Depends(require_admin)) -> None:
-    # 只断开注册、保留 datasources.yml 配置（KB 文件本就保留）——
-    # 列表以 disconnected 呈现，reconnect 可从 config 恢复（见 test_reconnect）。
     registry = _registry(request)
+    store = _store(request)
     if registry.is_registered(name):
         await registry.unregister(name)
+    store.save_configs([c for c in store.load_configs() if c.name != name])
     await _audit(request, "datasource.delete", admin, 204, {"name": name})
 
 
