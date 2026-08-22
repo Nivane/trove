@@ -9,12 +9,12 @@ WORKDIR /build/frontend
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . ./
-# vite outDir is ../trove/api/static (kept for monolith parity) →
-# the bundle lands at /build/trove/api/static
+# vite outDir is frontend/dist (decoupled frontend); the bundle lands
+# at /build/frontend/dist
 RUN npm run build
 
 # ── Stage 2: nginx runtime ────────────────────────────────────────
 FROM nginx:alpine
-COPY --from=build /build/trove/api/static /usr/share/nginx/html
+COPY --from=build /build/frontend/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
