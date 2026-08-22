@@ -24,9 +24,7 @@
         <el-table-column :label="t('username', ui.lang)" min-width="200">
           <template #default="{ row }">
             <div class="user-cell">
-              <span class="user-avatar" :class="`user-avatar-${row.role}`">{{
-                avatar(row)
-              }}</span>
+              <span class="user-avatar">{{ avatar(row) }}</span>
               <div class="user-meta">
                 <span class="user-name">{{ row.username }}</span>
                 <span v-if="row.display_name" class="user-sub">{{
@@ -38,16 +36,18 @@
         </el-table-column>
         <el-table-column :label="t('role', ui.lang)" width="120">
           <template #default="{ row }">
-            <span class="pill" :class="row.role === 'admin' ? 'pill-accent' : 'pill-neutral'">
-              <span class="role-dot" :class="row.role === 'admin' ? 'role-dot-admin' : 'role-dot-user'" />
+            <span
+              class="pill"
+              :class="row.role === 'admin' ? 'pill-accent' : 'pill-neutral'"
+            >
               {{ row.role === 'admin' ? t('adminRole', ui.lang) : t('userRole', ui.lang) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('disabled', ui.lang)" width="100">
+        <el-table-column :label="t('disabled', ui.lang)" width="110">
           <template #default="{ row }">
-            <span class="pill" :class="row.disabled ? 'pill-danger' : 'pill-ok'">
-              <span class="pill-dot" :class="row.disabled ? '' : 'pill-dot-ok'" />
+            <span class="pill" :class="row.disabled ? 'pill-disabled' : 'pill-ok'">
+              <span class="pill-dot" :class="row.disabled ? 'pill-dot-off' : 'pill-dot-ok'" />
               {{ row.disabled ? t('statusDisabled', ui.lang) : t('statusActive', ui.lang) }}
             </span>
           </template>
@@ -83,20 +83,13 @@
         <el-table-column :label="t('actions', ui.lang)" width="230" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
-              <button class="mini-btn" @click="resetPassword(row)">
-                <KeyRound :size="13" />
-                {{ t('resetPassword', ui.lang) }}
-              </button>
               <button class="mini-btn" @click="openEdit(row)">
-                <Pencil :size="13" />
                 {{ t('edit', ui.lang) }}
               </button>
               <button class="mini-btn" @click="openTokens(row)">
-                <KeySquare :size="13" />
                 {{ t('apiTokens', ui.lang) }}
               </button>
-              <button class="mini-btn mini-btn-danger" @click="del(row)">
-                <Trash2 :size="13" />
+              <button class="mini-btn is-danger" @click="del(row)">
                 {{ t('deleteUser', ui.lang) }}
               </button>
             </div>
@@ -207,7 +200,7 @@
           </div>
           <button
             v-if="!tk.revoked"
-            class="mini-btn mini-btn-danger"
+            class="mini-btn is-danger"
             @click="revokeToken(tk)"
           >
             <X :size="13" />
@@ -222,7 +215,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { UserPlus, KeyRound, Pencil, Trash2, KeySquare, Plus, Check, X, Copy } from 'lucide-vue-next'
+import { UserPlus, Plus, Check, X, Copy } from 'lucide-vue-next'
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
@@ -378,21 +371,6 @@ async function saveDatasources(row: UserRow, v: string[]) {
   } catch (e) {
     toastError(e)
     await load()
-  }
-}
-
-async function resetPassword(row: UserRow) {
-  try {
-    const { value } = await ElMessageBox.prompt(
-      t('promptNewPassword', ui.lang),
-      t('resetPassword', ui.lang),
-      { inputType: 'password', confirmButtonText: t('confirm', ui.lang) },
-    )
-    if (!value) return
-    await apiPatch(`/v1/admin/users/${row.id}`, { password: value })
-    notifySuccess(t('passwordResetOk', ui.lang))
-  } catch {
-    /* cancelled */
   }
 }
 

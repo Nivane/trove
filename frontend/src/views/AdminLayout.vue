@@ -2,13 +2,7 @@
   <div class="admin-shell">
     <aside class="admin-sidebar">
       <div class="admin-brand">
-        <button
-          class="admin-brand-tile"
-          :title="t('backToChat', ui.lang)"
-          @click="goChat"
-        >
-          <BrandMark :size="26" />
-        </button>
+        <span class="admin-brand-logo"><BrandMark :size="28" /></span>
         <div class="admin-brand-text">
           <div class="admin-brand-name">Trove</div>
           <div class="admin-brand-sub">{{ t('admin', ui.lang) }}</div>
@@ -65,10 +59,7 @@
                 <span class="admin-profile-name">{{
                   auth.user?.display_name || auth.user?.username || ''
                 }}</span>
-                <span class="admin-profile-role">
-                  <span class="role-dot role-dot-admin" />
-                  {{ t('adminRole', ui.lang) }}
-                </span>
+                <span class="admin-profile-role">{{ t('adminRole', ui.lang) }}</span>
               </span>
             </button>
             <template #dropdown>
