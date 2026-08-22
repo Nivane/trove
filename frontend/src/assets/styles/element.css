@@ -34,6 +34,72 @@
   --el-box-shadow: var(--elev-2);
   --el-box-shadow-light: var(--elev-1);
   --el-box-shadow-lighter: var(--elev-1);
+
+  --el-font-size-base: 14px;
+}
+
+/* Element component chrome — matches the refined chat look: soft-radius
+   poppers/dialogs, quiet menu items, accent-framed inputs. */
+.el-popper.is-light {
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-3);
+}
+.el-dropdown-menu {
+  padding: var(--sp-1);
+  border-radius: var(--r-lg);
+}
+.el-dropdown-menu__item {
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  padding: 7px 12px;
+  min-width: 140px;
+}
+.el-dialog {
+  border-radius: var(--r-xl);
+  box-shadow: var(--elev-3);
+}
+.el-dialog__header {
+  padding: var(--sp-5) var(--sp-6) var(--sp-2);
+}
+.el-dialog__body {
+  padding: var(--sp-3) var(--sp-6) var(--sp-6);
+}
+.el-input__wrapper,
+.el-textarea__inner {
+  border-radius: var(--r-md);
+}
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow:
+    0 0 0 1px var(--accent) inset,
+    0 0 0 3px var(--ring);
+}
+.el-button {
+  border-radius: var(--r-md);
+  font-weight: 500;
+}
+.el-button--primary {
+  box-shadow: var(--elev-1);
+}
+.el-table {
+  --el-table-header-bg-color: var(--surface-muted);
+  --el-table-row-hover-bg-color: var(--surface-hover);
+  --el-table-border-color: var(--border-subtle);
+  --el-table-header-text-color: var(--text-secondary);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.el-pagination {
+  --el-pagination-button-bg-color: transparent;
+}
+.el-tag {
+  border-radius: var(--r-sm);
+}
+.el-notification {
+  border-radius: var(--r-lg);
+}
+.el-message {
+  border-radius: var(--r-md);
 }
 
 [data-theme='dark'] {
