@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from trove.api.app import create_app
 from trove.services.datasource.catalog import CatalogService
+from trove.services.datasource.config_store import ConfigStore
 from trove.services.kb.service import KbService
 
 from tests.helpers.kb import ossie_semantics_yaml
@@ -79,12 +80,14 @@ async def api_app(sqlite_registry, session_manager, tmp_path, auth_service):
     """FastAPI app with real catalog/registry/session-manager + empty KB + auth."""
     kb = KbService(tmp_path / "proj")
     kb.kb_dir.mkdir(parents=True)
+    await kb.ensure_synced(None)  # build the mirror schema, as serve's lifespan does
     app = create_app({
         "session_manager": session_manager,
         "catalog_service": CatalogService(sqlite_registry),
         "connector_registry": sqlite_registry,
         "kb": kb,
         "auth": auth_service,
+        "config_store": ConfigStore(tmp_path / "proj" / ".trove" / "datasources.yml"),
     })
     return app
 

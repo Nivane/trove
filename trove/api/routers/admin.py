@@ -7,6 +7,8 @@ per-lesson KB approval. Every mutation writes an audit entry
 
 from __future__ import annotations
 
+import dataclasses
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from trove.api.deps import require_admin
@@ -16,7 +18,9 @@ from trove.api.schemas import (
     UserCreate,
     UserPatch,
 )
-from trove.core.errors import AuthError
+from trove.core.errors import AuthError, DatasourceError
+from trove.core.types import DatasourceConfig
+from trove.services.datasource.urls import parse_datasource_url
 
 router = APIRouter()
 
@@ -38,6 +42,18 @@ async def _user_or_404(request: Request, user_id: int) -> dict:
     if user is None:
         raise HTTPException(status_code=404, detail=f"user not found: {user_id}")
     return user
+
+
+def _store(request: Request):
+    return request.app.state.config_store
+
+
+def _registry(request: Request):
+    return request.app.state.connector_registry
+
+
+def _sanitized(cfg: DatasourceConfig) -> dict:
+    return {"name": cfg.name, "type": cfg.type, "default": bool(cfg.default)}
 
 
 @router.get("/admin/users")
@@ -225,3 +241,91 @@ async def reject_lesson(
     await _audit(request, "kb.lesson.reject", admin, 200,
                  {"datasource": ds, "pattern": pattern})
     return {"status": "ok", "pattern": pattern, "rejected": True}
+
+
+# ── Datasource management ────────────────────────────────
+
+
+@router.get("/admin/datasources")
+async def list_admin_datasources(request: Request, admin: dict = Depends(require_admin)) -> dict:
+    registry = _registry(request)
+    kb = _kb(request)
+    out = []
+    for info in registry.list_info():
+        out.append({
+            **info,
+            "status": "connected",
+            "kb_initialized": bool(kb.init_exists(info["name"])),
+            "kb_items": (await kb.list_items()).get(info["name"], {}),
+        })
+    registered = {d["name"] for d in out}
+    for cfg in _store(request).load_configs():
+        if cfg.name not in registered:
+            out.append({
+                **_sanitized(cfg), "type": cfg.type,
+                "status": "disconnected", "kb_initialized": False, "kb_items": {},
+            })
+    return {"datasources": out}
+
+
+@router.post("/admin/datasources", status_code=201)
+async def create_datasource(request: Request, body: dict,
+                            admin: dict = Depends(require_admin)) -> dict:
+    registry = _registry(request)
+    store = _store(request)
+    name = (body.get("name") or "").strip()
+    url = (body.get("url") or "").strip()
+    if not name and not url:
+        raise HTTPException(status_code=400, detail="name or url required")
+    try:
+        if url == "demo" or (name == "demo" and not url):
+            from trove.services.datasource.demo_setup import setup_demo_datasource
+            await setup_demo_datasource(registry)
+            cfg = DatasourceConfig(name="demo", type="demo",
+                                   connection_params={}, credentials={},
+                                   default=registry.default_name is None)
+        else:
+            cfg = parse_datasource_url(url)
+            if name:
+                cfg = dataclasses.replace(cfg, name=name)  # DatasourceConfig 是 dataclass，无 model_copy
+            await registry.register(cfg, set_default=cfg.default or registry.default_name is None)
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    configs = store.load_configs()
+    configs = [c for c in configs if c.name != cfg.name] + [cfg]
+    store.save_configs(configs)
+    await _audit(request, "datasource.create", admin, 201, {"name": cfg.name, "type": cfg.type})
+    return {"datasource": _sanitized(cfg)}
+
+
+@router.delete("/admin/datasources/{name}", status_code=204)
+async def delete_datasource(name: str, request: Request,
+                            admin: dict = Depends(require_admin)) -> None:
+    # 只断开注册、保留 datasources.yml 配置（KB 文件本就保留）——
+    # 列表以 disconnected 呈现，reconnect 可从 config 恢复（见 test_reconnect）。
+    registry = _registry(request)
+    if registry.is_registered(name):
+        await registry.unregister(name)
+    await _audit(request, "datasource.delete", admin, 204, {"name": name})
+
+
+@router.post("/admin/datasources/{name}/reconnect")
+async def reconnect_datasource(name: str, request: Request,
+                               admin: dict = Depends(require_admin)) -> dict:
+    registry = _registry(request)
+    store = _store(request)
+    cfg = next((c for c in store.load_configs() if c.name == name), None)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    if registry.is_registered(name):
+        await registry.unregister(name)
+    try:
+        if cfg.type == "demo":
+            from trove.services.datasource.demo_setup import setup_demo_datasource
+            await setup_demo_datasource(registry)
+        else:
+            await registry.register(cfg, set_default=cfg.default)
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "datasource.reconnect", admin, 200, {"name": name})
+    return {"datasource": _sanitized(cfg)}

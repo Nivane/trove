@@ -54,7 +54,17 @@ class ConfigStore:
             raise DatasourceError(
                 message=f"corrupt datasources.yml: {e}", datasource="",
             ) from e
-        return [from_dict(d) for d in data.get("datasources", [])]
+        configs = []
+        for d in data.get("datasources", []):
+            try:
+                configs.append(from_dict(d))
+            except KeyError as e:
+                name = d.get("name", "<unknown>") if isinstance(d, dict) else "<unknown>"
+                raise DatasourceError(
+                    message=f"corrupt datasources.yml entry for '{name}': missing {e}",
+                    datasource=name,
+                ) from e
+        return configs
 
     def save_configs(self, configs: list[DatasourceConfig]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
