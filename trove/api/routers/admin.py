@@ -331,3 +331,45 @@ async def reconnect_datasource(name: str, request: Request,
         raise HTTPException(status_code=400, detail=str(e))
     await _audit(request, "datasource.reconnect", admin, 200, {"name": name})
     return {"datasource": _sanitized(cfg)}
+
+
+# ── KB init / reload ─────────────────────────────────────
+
+
+# Spec §4 防重入:同一数据源 init 进行中拒绝重复请求(单事件循环,set 即互斥)
+_kb_init_inflight: set[str] = set()
+
+
+@router.post("/admin/datasources/{name}/kb/init")
+async def kb_init_datasource(name: str, request: Request, body: dict | None = None,
+                             admin: dict = Depends(require_admin)) -> dict:
+    if name in _kb_init_inflight:
+        raise HTTPException(status_code=409, detail=f"KB init already running for {name}")
+    if not _registry(request).is_registered(name):
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    from trove.services.kb.init_pipeline import init_kb
+    _kb_init_inflight.add(name)
+    try:
+        summary = await init_kb(
+            _kb(request), _registry(request),
+            llm=request.app.state.llm_gateway,
+            config=request.app.state.config,
+            datasource=name,
+            overwrite=bool((body or {}).get("overwrite")),
+        )
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        _kb_init_inflight.discard(name)
+    await _audit(request, "kb.init", admin, 200, {"name": name})
+    return {"summary": summary}
+
+
+@router.post("/admin/datasources/{name}/kb/reload")
+async def kb_reload_datasource(name: str, request: Request,
+                               admin: dict = Depends(require_admin)) -> dict:
+    kb = _kb(request)
+    if not _registry(request).is_registered(name):
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    await kb.force_sync(name)
+    return {"status": await kb.kb_status(name)}

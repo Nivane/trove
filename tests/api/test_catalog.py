@@ -8,11 +8,15 @@ class TestCatalog:
         resp = await client.get("/v1/catalog/datasources")
         assert resp.status_code == 200
         ds = resp.json()["datasources"]
+        # kb_initialized/status 是 T5 catalog 扩展的契约字段
+        # (本测试的 KB 未 seed test_db → 未 init)
         assert ds == [{
             "name": "test_db",
             "default": True,
             "type": "sqlite",
             "connection": {"path": ":memory:"},
+            "kb_initialized": False,
+            "status": "connected",
         }]
 
     async def test_list_tables(self, client):

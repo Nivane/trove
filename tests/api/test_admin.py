@@ -108,11 +108,15 @@ class TestDatasourceGrants:
         got = (await client.get(f"/v1/admin/users/{bob['id']}/datasources")).json()
         assert got["datasources"] == ["other", "test_db"]
 
-    async def test_grant_gates_catalog(self, api_app, user_client, client, auth_service):
-        """bob without grants sees only the default datasource; granting 'test_db' is a no-op there; a second datasource needs a grant."""
+    async def test_grant_gates_catalog(self, api_app, user_client, client, auth_service, api_kb):
+        """bob without grants sees only the default datasource; granting 'test_db' is a no-op there; a second datasource needs a grant.
+
+        api_kb seeds test_db's KB: T5 起非 admin 门禁 = granted ∧ init'd,
+        默认源未 init 时 bob 同样看不见。
+        """
         bob = await auth_service.authenticate("bob", "bobpw")
 
-        # bob sees only default (test_db)
+        # bob sees only default (test_db, init'd via api_kb)
         ds = (await user_client.get("/v1/catalog/datasources")).json()["datasources"]
         assert [d["name"] for d in ds] == ["test_db"]
 

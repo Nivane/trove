@@ -11,10 +11,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from trove.api.app import create_app
+from trove.core.config import AgentConfig
+from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.config_store import ConfigStore
 from trove.services.kb.service import KbService
 
+from tests.cli.test_kb_commands import TABLES_DOC
 from tests.helpers.kb import ossie_semantics_yaml
 
 KB_SEED = {
@@ -88,6 +91,9 @@ async def api_app(sqlite_registry, session_manager, tmp_path, auth_service):
         "kb": kb,
         "auth": auth_service,
         "config_store": ConfigStore(tmp_path / "proj" / ".trove" / "datasources.yml"),
+        # kb/init 端点读这两组件:LLM 走 mock,config 提供 target 模型名
+        "llm_gateway": LLMGateway(mock_response=TABLES_DOC),
+        "config": AgentConfig(target="mock/model"),
     })
     return app
 

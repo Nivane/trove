@@ -23,9 +23,13 @@ async def list_datasources(
     request: Request, user: dict = Depends(get_current_user)
 ) -> dict:
     """Datasources visible to the caller: admins see all; users see only
-    granted ones (empty grants = the registry default)."""
+    granted AND initialized ones (empty grants = the registry default)."""
     registry = _registry(request)
     infos = registry.list_info()
+    kb = request.app.state.kb
+    for info in infos:
+        info["kb_initialized"] = bool(kb.init_exists(info["name"]))
+        info["status"] = "connected"
     if user["role"] == "admin":
         return {"datasources": infos}
     auth = request.app.state.auth
@@ -35,7 +39,10 @@ async def list_datasources(
         allowed = {default_name} if default_name else set()
     else:
         allowed = set(grants)
-    return {"datasources": [i for i in infos if i.get("name") in allowed]}
+    return {"datasources": [
+        i for i in infos
+        if i.get("name") in allowed and i["kb_initialized"]
+    ]}
 
 
 @router.get("/catalog/tables")
