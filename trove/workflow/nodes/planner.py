@@ -279,6 +279,9 @@ def correct_entity_count_plan(
         return None  # 已是去重计数 → 无需纠正
 
     colses = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    # answer_columns 里已含去重计数(count(distinct ...)) → 无需纠正
+    if any(re.search(r"count\s*\(\s*distinct", a, re.I) for a in colses):
+        return None
     joins = str(plan.get("joins") or "")
 
     expr = _distinct_expr_from_plan(colses, joins)

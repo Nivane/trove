@@ -1567,6 +1567,67 @@ class TestEnsureAggregateAnswerColumn:
                    "aggregation": "count(distinct account_id)"})
         assert fixed["answer_columns"] == ["district.A2", "count(*)"]
 
+
+class TestCorrectEntityCountPlan:
+    """语义级计数纠正:「X 的用户数量/人数」→ count(distinct 实体)。
+
+    回归:planner 把「每个地区的贷款用户数量」plan 成 count(loan.loan_id)
+    (记录计数),gen_sql 遵守规则 19 不敢反驳 → 第一轮总输出"贷款数量"。
+    该 guard 在 plan→gen 之间确定性纠偏,第一轮就做对。"""
+
+    def _import(self):
+        from trove.workflow.nodes.planner import correct_entity_count_plan
+        return correct_entity_count_plan
+
+    def _plan(self, ans=None, agg="count"):
+        return {
+            "tables": ["loan", "account", "district"],
+            "joins": "loan.account_id = account.account_id AND "
+                     "account.district_id = district.district_id",
+            "aggregation": agg,
+            "answer_columns": ans or ["district.A2", "count(loan.loan_id)"],
+        }
+
+    def test_record_count_rewritten_via_fk(self):
+        """count(loan.loan_id) + joins 外键 → count(distinct loan.account_id)。"""
+        f = self._import()
+        fixed = f(self._plan(), "查看每个地区的贷款用户数量", "zh")
+        assert fixed is not None
+        assert fixed["answer_columns"] == [
+            "district.A2", "count(distinct loan.account_id)",
+        ]
+        assert fixed["aggregation"] == "count(distinct loan.account_id)"
+
+    def test_english_entity_count(self):
+        f = self._import()
+        fixed = f(self._plan(), "number of loan users per district", "en")
+        assert fixed is not None
+        assert fixed["answer_columns"][1] == "count(distinct loan.account_id)"
+
+    def test_fallback_when_group_col_only(self):
+        """plan 丢了 count 表达式 → 兜底补去重计数列。"""
+        f = self._import()
+        plan = dict(self._plan(ans=["district.A2"]))
+        fixed = f(plan, "查看每个地区的贷款用户数量", "zh")
+        assert fixed is not None
+        assert fixed["answer_columns"] == [
+            "district.A2", "count(distinct account.account_id)",
+        ]
+
+    def test_non_count_aggregate_untouched(self):
+        f = self._import()
+        assert f(self._plan(agg="sum"), "查看每个地区的贷款用户数量", "zh") is None
+
+    def test_already_distinct_untouched(self):
+        f = self._import()
+        plan = self._plan(ans=["district.A2", "count(distinct loan.account_id)"])
+        assert f(plan, "查看每个地区的贷款用户数量", "zh") is None
+
+    def test_record_count_question_untouched(self):
+        """问题本身是数记录(不是数实体) → 不改。"""
+        f = self._import()
+        assert f(self._plan(), "loan 表总共有多少条记录", "zh") is None
+
     def test_aggregate_expr_answer_column_quota(self):
         """含聚合表达式 answer 列时,聚合别名的多余列按配额豁免。
 
