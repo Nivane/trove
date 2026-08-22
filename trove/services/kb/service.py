@@ -835,6 +835,12 @@ class KbService:
             grouped.setdefault(row["datasource"], {})[row["kind"]] = row["n"]
         return grouped
 
+    async def kb_status(self, datasource: str) -> dict:
+        """Init/state summary of one datasource's KB (admin API)."""
+        files = self.init_exists(datasource)
+        items = (await self.list_items()).get(datasource, {})
+        return {"initialized": bool(files), "files": files, "items": items}
+
     # ── Evolution (human-confirmed writes) ────────────────
 
     async def append_example(self, entry: dict[str, Any], datasource: str) -> None:
