@@ -26,6 +26,22 @@ async def test_register_list_delete(client, api_app, tmp_path):
     assert "extra" not in {c.name for c in api_app.state.config_store.load_configs()}
 
 
+async def test_list_without_kb_mirror(client, api_app):
+    """KB 目录存在但 kb.sqlite 镜像未建（挂载 .trove 的真实生产形态）→ 列表不 500，
+    kb_initialized 仍正确（从 YAML 文件判定，不依赖镜像）。"""
+    kb = api_app.state.kb
+    ds_dir = kb.kb_dir / "test_db"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    (ds_dir / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
+    if kb.db_path.exists():  # api_app fixture 已 ensure_synced，先删镜像再测
+        kb.db_path.unlink()
+
+    resp = await client.get("/v1/admin/datasources")
+    assert resp.status_code == 200
+    test_db = next(d for d in resp.json()["datasources"] if d["name"] == "test_db")
+    assert test_db["kb_initialized"] is True
+
+
 async def test_register_bad_url_400(client):
     resp = await client.post("/v1/admin/datasources",
                              json={"name": "x", "url": "bogus://nope"})

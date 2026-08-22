@@ -250,6 +250,8 @@ async def reject_lesson(
 async def list_admin_datasources(request: Request, admin: dict = Depends(require_admin)) -> dict:
     registry = _registry(request)
     kb = _kb(request)
+    # 幂等：KB 目录存在但镜像未建（如挂载的 .trove）时先建表，否则 list_items 500
+    await kb.ensure_synced(None)
     out = []
     for info in registry.list_info():
         out.append({
