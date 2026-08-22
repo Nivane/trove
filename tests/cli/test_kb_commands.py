@@ -568,7 +568,8 @@ class TestKbInitLLM:
         class FakeRegistry:
             default_name = "test_db"
 
-            async def get_schema(self):
+            # I1-T5 后 init_kb 显式传 datasource——fake 与真实签名对齐
+            async def get_schema(self, datasource=None):
                 return SchemaInfo(tables=[
                     TableInfo(name="students", columns=[ColumnInfo(name="grade", type="int")]),
                     TableInfo(name="courses", columns=[ColumnInfo(name="title", type="varchar")]),

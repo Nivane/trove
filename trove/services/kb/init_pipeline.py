@@ -306,7 +306,9 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     """LLM-assisted KB initialization (shared by REPL /kb init and the
     admin API). No-LLM → plain schema skeleton. Refuses to overwrite an
     initialized datasource unless overwrite=True."""
-    schema = await registry.get_schema()
+    # 显式传 datasource:admin 可初始化非默认源,无参会解析到默认源
+    # (多源必触发——新注册源即默认的 T3 minor 下错写更隐蔽)
+    schema = await registry.get_schema(datasource)
     if llm is None:
         if kb.init_schema_notes(schema, datasource, overwrite=overwrite):
             return (f"Created .trove/kb/{datasource}/schema_notes.yml skeleton. "
