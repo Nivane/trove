@@ -14,6 +14,11 @@ export const router = createRouter({
         { path: 'users', name: 'admin-users', component: () => import('../views/admin/UsersView.vue') },
         { path: 'kb', name: 'admin-kb', component: () => import('../views/admin/KbLessonsView.vue') },
         { path: 'audit', name: 'admin-audit', component: () => import('../views/admin/AuditView.vue') },
+        {
+          path: 'datasources',
+          name: 'admin-datasources',
+          component: () => import('../views/admin/DatasourcesView.vue'),
+        },
       ],
     },
   ],

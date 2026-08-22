@@ -6,6 +6,7 @@
         <el-menu-item index="/admin/users"><el-icon><User /></el-icon>{{ t('users', ui.lang) }}</el-menu-item>
         <el-menu-item index="/admin/kb"><el-icon><Collection /></el-icon>{{ t('kb', ui.lang) }}</el-menu-item>
         <el-menu-item index="/admin/audit"><el-icon><Document /></el-icon>{{ t('audit', ui.lang) }}</el-menu-item>
+        <el-menu-item index="/admin/datasources"><el-icon><Coin /></el-icon>{{ t('datasources', ui.lang) }}</el-menu-item>
       </el-menu>
       <div class="admin-footer">
         <router-link to="/" class="back-link">← {{ t('brand', ui.lang) }}</router-link>
@@ -22,7 +23,7 @@
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { useRouter } from 'vue-router'
-import { DataAnalysis, User, Collection, Document } from '@element-plus/icons-vue'
+import { DataAnalysis, User, Collection, Document, Coin } from '@element-plus/icons-vue'
 import { t } from '../i18n'
 
 const auth = useAuthStore()

@@ -55,3 +55,12 @@ export interface SseEvent {
   type: string
   data: Record<string, unknown>
 }
+
+export interface DatasourceInfo {
+  name: string
+  type: string
+  default?: boolean
+  status?: string
+  kb_initialized?: boolean
+  kb_items?: Record<string, number>
+}
