@@ -7,9 +7,16 @@
 import { defineStore } from 'pinia'
 import { streamSse } from '../api/sse'
 import { apiGet, apiPost } from '../api/http'
+import { useUiStore } from './ui'
 import { notifyError } from '../utils/notify'
 import { telemetry, newRequestId } from '../utils/telemetry'
-import type { DoneSummary, HitlPayload, SseEvent, StepPayload, TaskItem } from '../api/types'
+import type {
+  DoneSummary,
+  HitlPayload,
+  SseEvent,
+  StepPayload,
+  TaskItem,
+} from '../api/types'
 
 export interface StepCard {
   node: string
@@ -34,17 +41,30 @@ export interface Turn {
 }
 
 const SESSION_KEY = 'trove_ui_session'
+const SESSION_PAGE_SIZE = 20
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
     sessionId: localStorage.getItem(SESSION_KEY) || '',
-    sessions: [] as { session_id: string; created_at?: string; updated_at?: string; message_count?: number; title?: string }[],
+    sessions: [] as {
+      session_id: string
+      created_at?: string
+      updated_at?: string
+      message_count?: number
+      title?: string
+    }[],
     sessionsLoading: false,
+    sessionsOffset: 0,
+    sessionsHasMore: true,
     turns: [] as Turn[],
     tasks: [] as TaskItem[],
     batchRunning: false,
     streaming: false,
-    pendingHitl: null as null | { sessionId: string; workflow: string; batch: boolean },
+    pendingHitl: null as null | {
+      sessionId: string
+      workflow: string
+      batch: boolean
+    },
     controller: null as AbortController | null,
   }),
   getters: {
@@ -63,11 +83,31 @@ export const useChatStore = defineStore('chat', {
       this.tasks = []
     },
     async listSessions() {
+      // reset pagination and reload the first page (after create/delete/send)
+      this.sessions = []
+      this.sessionsOffset = 0
+      this.sessionsHasMore = true
+      return this.loadMoreSessions()
+    },
+    async loadMoreSessions() {
+      if (this.sessionsLoading || !this.sessionsHasMore) return
       this.sessionsLoading = true
       try {
-        const body = await apiGet('/v1/sessions')
-        this.sessions = body.sessions ?? []
-        return this.sessions
+        const body = await apiGet<{
+          sessions: {
+            session_id: string
+            created_at?: string
+            updated_at?: string
+            message_count?: number
+            title?: string
+          }[]
+          has_more?: boolean
+        }>(`/v1/sessions?limit=${SESSION_PAGE_SIZE}&offset=${this.sessionsOffset}`)
+        const page = body.sessions ?? []
+        this.sessions.push(...page)
+        this.sessionsOffset += page.length
+        this.sessionsHasMore = !!body.has_more && page.length > 0
+        return page.length
       } finally {
         this.sessionsLoading = false
       }
@@ -80,7 +120,12 @@ export const useChatStore = defineStore('chat', {
     },
     async loadSession(sid: string) {
       this.setSessionId(sid)
-      this.turns = []
+      try {
+        const body = await apiGet(`/v1/sessions/${sid}`)
+        this.turns = restoreTurns(body.messages ?? [])
+      } catch {
+        this.turns = []
+      }
       await this.loadTasks(sid)
     },
     async loadTasks(sid: string) {
@@ -101,6 +146,15 @@ export const useChatStore = defineStore('chat', {
         await this.listSessions()
       } catch (e) {
         notifyError(String((e as Error)?.message ?? 'delete failed'))
+      }
+    },
+    async renameSession(sid: string, title: string) {
+      try {
+        await apiPost(`/v1/sessions/${sid}/title`, { title })
+        const row = this.sessions.find((s) => s.session_id === sid)
+        if (row) row.title = title
+      } catch (e) {
+        notifyError(String((e as Error)?.message ?? 'rename failed'))
       }
     },
     _authHeaders(): Record<string, string> {
@@ -126,13 +180,20 @@ export const useChatStore = defineStore('chat', {
 
       let retried = false
       for (;;) {
+        const ui = useUiStore()
         const body: Record<string, unknown> = {
           question,
           workflow: 'reflection',
         }
+        if (ui.datasource) body.datasource = ui.datasource
         if (this.sessionId) body.session_id = this.sessionId
 
-        const resp = await streamSse('/v1/chat', body, (ev) => this.onEvent(ev), this.controller.signal)
+        const resp = await streamSse(
+          '/v1/chat',
+          body,
+          (ev) => this.onEvent(ev),
+          this.controller.signal,
+        )
 
         if (resp.status === 404 && this.sessionId && !retried) {
           // stale session on the server → retry once with a fresh one
@@ -153,7 +214,10 @@ export const useChatStore = defineStore('chat', {
           continue
         }
         if (!resp.ok) {
-          telemetry.error('chat.send', `HTTP ${resp.status}`, { requestId, error: resp.statusText })
+          telemetry.error('chat.send', `HTTP ${resp.status}`, {
+            requestId,
+            error: resp.statusText,
+          })
           this._failTurn(`HTTP ${resp.status}`)
           return
         }
@@ -193,15 +257,22 @@ export const useChatStore = defineStore('chat', {
         }
         case 'step': {
           const p = ev.data as StepPayload
-          t.steps.push({ node: p.node ?? p.label ?? 'step', label: p.label, payload: p })
+          t.steps.push({
+            node: p.node ?? p.label ?? 'step',
+            label: p.label,
+            payload: p,
+          })
           break
         }
         case 'task': {
           const task = ev.data as Partial<TaskItem> & { task_id: string }
           const idx = this.tasks.findIndex((x) => x.task_id === task.task_id)
-          if (idx >= 0) this.tasks[idx] = { ...this.tasks[idx], ...task } as TaskItem
+          if (idx >= 0)
+            this.tasks[idx] = { ...this.tasks[idx], ...task } as TaskItem
           else this.tasks.push(task as TaskItem)
-          this.batchRunning = this.tasks.some((x) => x.status === 'pending' || x.status === 'in_progress')
+          this.batchRunning = this.tasks.some(
+            (x) => x.status === 'pending' || x.status === 'in_progress',
+          )
           break
         }
         case 'hitl': {
@@ -233,7 +304,10 @@ export const useChatStore = defineStore('chat', {
             }
             if (summary) t.summary = summary
             if (summary?.sql && !t.steps.some((s) => s.node === 'gen_sql')) {
-              t.steps.push({ node: 'gen_sql', payload: { node: 'gen_sql', sql: summary.sql } })
+              t.steps.push({
+                node: 'gen_sql',
+                payload: { node: 'gen_sql', sql: summary.sql },
+              })
             }
             // Batch in progress → intermediate per-task done; wait for the
             // terminal batched done. Otherwise this is the final answer.
@@ -242,7 +316,13 @@ export const useChatStore = defineStore('chat', {
           break
         }
         case 'error': {
-          const msg = String(ev.data.error ?? ev.data.message ?? ev.data.content ?? (ev.data as { summary?: { error?: string } }).summary?.error ?? '')
+          const msg = String(
+            ev.data.error ??
+              ev.data.message ??
+              ev.data.content ??
+              (ev.data as { summary?: { error?: string } }).summary?.error ??
+              '',
+          )
           this._failTurn(msg || 'unknown error')
           break
         }
@@ -291,11 +371,16 @@ export const useChatStore = defineStore('chat', {
           if (!tt) return
           if (ev.type === 'step') {
             const p = ev.data as StepPayload
-            tt.steps.push({ node: p.node ?? p.label ?? 'step', label: p.label, payload: p })
+            tt.steps.push({
+              node: p.node ?? p.label ?? 'step',
+              label: p.label,
+              payload: p,
+            })
           } else if (ev.type === 'task') {
             const task = ev.data as Partial<TaskItem> & { task_id: string }
             const idx = this.tasks.findIndex((x) => x.task_id === task.task_id)
-            if (idx >= 0) this.tasks[idx] = { ...this.tasks[idx], ...task } as TaskItem
+            if (idx >= 0)
+              this.tasks[idx] = { ...this.tasks[idx], ...task } as TaskItem
             this.batchRunning = this.tasks.some(
               (x) => x.status === 'pending' || x.status === 'in_progress',
             )
@@ -316,12 +401,20 @@ export const useChatStore = defineStore('chat', {
               if (summary) tt.summary = summary
             }
           } else if (ev.type === 'error') {
-            this._failTurn(String(ev.data.error ?? ev.data.message ?? ev.data.content ?? 'resume failed'))
+            this._failTurn(
+              String(
+                ev.data.error ??
+                  ev.data.message ??
+                  ev.data.content ??
+                  'resume failed',
+              ),
+            )
           }
         },
         this.controller.signal,
       )
-      if (this.currentTurn?.status === 'streaming') this.currentTurn.status = 'done'
+      if (this.currentTurn?.status === 'streaming')
+        this.currentTurn.status = 'done'
       this.streaming = false
       this.batchRunning = false
       this.controller = null
@@ -332,6 +425,24 @@ export const useChatStore = defineStore('chat', {
       const t = this.currentTurn
       if (!t || t.status !== 'error' || !t.question) return
       await this.send(t.question)
+    },
+
+    /** Regenerate the last answer: drop its turn and stream a fresh run. */
+    async regenerate() {
+      const t = this.currentTurn
+      if (!t || !t.question || this.streaming) return
+      this.turns = this.turns.slice(0, -1)
+      this.tasks = []
+      await this.send(t.question)
+    },
+
+    /** Edit a past user message and branch from there (ChatGPT-style). */
+    async editAndResend(index: number, question: string) {
+      const q = question.trim()
+      if (!q || this.streaming) return
+      if (index < 0 || index >= this.turns.length) return
+      this.turns = this.turns.slice(0, index)
+      await this.send(q)
     },
 
     async rateTurn(index: number, vote: 1 | -1) {
@@ -372,3 +483,59 @@ export const useChatStore = defineStore('chat', {
     },
   },
 })
+
+interface StoredMessage {
+  role: string
+  content: string
+  metadata?: Record<string, unknown>
+}
+
+/** Rebuild chat turns from GET /v1/sessions/{id} messages.
+ *
+ * Persisted metadata carries the structured summary (sql / chart /
+ * rows_preview ...) written by the backend's _record_exchange; older
+ * sessions only have plain text — those fall back to text-only turns.
+ */
+export function restoreTurns(messages: StoredMessage[]): Turn[] {
+  const turns: Turn[] = []
+  for (const m of messages) {
+    if (m.role === 'user') {
+      turns.push({
+        question: m.content,
+        thoughts: [],
+        steps: [],
+        answer: '',
+        summary: null,
+        status: 'done',
+      })
+    } else if (m.role === 'assistant' && turns.length) {
+      const t = turns[turns.length - 1]
+      const meta = m.metadata ?? {}
+      const summary = (meta.summary ?? null) as DoneSummary | null
+      if (summary) {
+        t.summary = {
+          ...summary,
+          final_response: summary.final_response || m.content,
+        }
+        t.answer = summary.final_response || m.content
+        if (summary.chart || summary.sql) {
+          t.steps = [
+            {
+              node: 'gen_sql',
+              label: 'SQL',
+              payload: {
+                node: 'gen_sql',
+                label: 'SQL',
+                sql: summary.sql || '',
+                row_count: summary.row_count,
+              } as StepPayload,
+            },
+          ]
+        }
+      } else {
+        t.answer = m.content
+      }
+    }
+  }
+  return turns.filter((t) => t.question || t.answer)
+}

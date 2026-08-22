@@ -1,30 +1,75 @@
 <template>
   <form class="composer" @submit.prevent="submit">
     <div class="composer-box">
+      <button
+        class="plus-btn"
+        type="button"
+        :aria-expanded="plusOpen"
+        :title="t('attach', ui.lang)"
+        @click.stop="plusOpen = !plusOpen"
+      >
+        <Plus :size="18" :stroke-width="2" />
+      </button>
+
       <textarea
         v-model="draft"
         ref="inputEl"
         class="composer-input"
-        :placeholder="t('placeholder', ui.lang)"
         rows="1"
         @keydown="onKeydown"
         @compositionstart="composing = true"
         @compositionend="composing = false"
         @input="onInput"
       ></textarea>
+
       <button
         v-if="!chat.streaming"
-        class="send-btn"
+        class="send-btn circular"
         type="submit"
         :disabled="!draft.trim()"
       >
-        <el-icon v-if="draft.trim()" :size="14"><Promotion /></el-icon>
-        {{ t('send', ui.lang) }}
+        <ArrowUp :size="18" :stroke-width="2.5" />
       </button>
-      <button v-else class="stop-btn" type="button" @click="chat.stop()">
-        <el-icon :size="14"><VideoPause /></el-icon>
-        {{ t('stop', ui.lang) }}
+      <button
+        v-else
+        class="stop-btn circular"
+        type="button"
+        @click="chat.stop()"
+      >
+        <Square :size="14" :stroke-width="2.5" />
       </button>
+
+      <div v-if="plusOpen" class="plus-menu" @pointerdown.stop>
+        <div class="plus-menu-title">{{ t('datasources', ui.lang) }}</div>
+        <button
+          v-for="ds in ui.datasourceList"
+          :key="ds.name"
+          class="plus-item"
+          :class="{ active: ds.name === currentDatasource }"
+          @click="selectDatasource(ds.name)"
+        >
+          <Database :size="14" :stroke-width="2" />
+          <span>{{ ds.name }}</span>
+          <Check
+            v-if="ds.name === currentDatasource"
+            class="plus-check"
+            :size="14"
+          />
+        </button>
+        <div class="plus-menu-sep"></div>
+        <button class="plus-item" @click="pickFile">
+          <Upload :size="14" :stroke-width="2" />
+          <span>{{ t('uploadFile', ui.lang) }}</span>
+          <span v-if="uploading" class="uploading-label">…</span>
+        </button>
+      </div>
+      <input
+        ref="fileInput"
+        type="file"
+        accept=".csv,.tsv,.txt"
+        style="display: none"
+        @change="onFile"
+      />
     </div>
 
     <div v-if="menuOpen" class="command-menu" role="listbox">
@@ -42,16 +87,23 @@
         <span class="command-desc">{{ cmd.label }}</span>
       </button>
     </div>
-
-    <div class="composer-hint">{{ t('composerHint', ui.lang) }}</div>
   </form>
 </template>
 
 <script setup lang="ts">
 import { ref, nextTick, computed, onMounted, onUnmounted } from 'vue'
-import { Promotion, VideoPause } from '@element-plus/icons-vue'
+import {
+  Plus,
+  Check,
+  Database,
+  Upload,
+  ArrowUp,
+  Square,
+} from 'lucide-vue-next'
 import { useChatStore } from '../../stores/chat'
 import { useUiStore } from '../../stores/ui'
+import { apiFetch } from '../../api/http'
+import { notifyError } from '../../utils/notify'
 import { t } from '../../i18n'
 
 const chat = useChatStore()
@@ -59,6 +111,52 @@ const ui = useUiStore()
 const draft = ref('')
 const inputEl = ref<HTMLTextAreaElement>()
 const composing = ref(false)
+
+const plusOpen = ref(false)
+const fileInput = ref<HTMLInputElement>()
+const uploading = ref(false)
+
+const currentDatasource = computed(() => {
+  if (ui.datasource) return ui.datasource
+  const def = ui.datasourceList.find((ds) => ds.default)
+  return def?.name || ui.datasourceList[0]?.name || ''
+})
+
+function selectDatasource(name: string) {
+  ui.setDatasource(name)
+  plusOpen.value = false
+}
+
+function pickFile() {
+  fileInput.value?.click()
+}
+
+async function onFile(e: Event) {
+  const el = e.target as HTMLInputElement
+  const file = el.files?.[0]
+  if (!file) return
+  try {
+    uploading.value = true
+    const form = new FormData()
+    form.append('file', file)
+    const resp = await apiFetch('/v1/catalog/upload', {
+      method: 'POST',
+      body: form,
+    })
+    if (!resp.ok) {
+      const err = await resp.text().catch(() => resp.statusText)
+      throw new Error(err)
+    }
+    const body = await resp.json()
+    ui.setDatasource(body.datasource)
+    await ui.loadDatasources()
+  } catch (err) {
+    notifyError(String((err as Error)?.message ?? 'upload failed'))
+  } finally {
+    uploading.value = false
+    el.value = ''
+  }
+}
 
 const menuOpen = ref(false)
 const activeCmd = ref('clear')
@@ -91,7 +189,7 @@ function updateMenu() {
     const kw = q.slice(1).toLowerCase()
     menuOpen.value = true
     const match = commands.value.find((c) => c.key === kw)
-    activeCmd.value = match ? match.key : commands.value[0]?.key ?? ''
+    activeCmd.value = match ? match.key : (commands.value[0]?.key ?? '')
   } else {
     menuOpen.value = false
   }
@@ -151,21 +249,39 @@ async function submit() {
 }
 
 function onGlobalKey(e: KeyboardEvent) {
+  if (e.key === 'Escape' && plusOpen.value) {
+    plusOpen.value = false
+    return
+  }
   // '/' focuses the composer when not already inside an input
   const target = e.target as HTMLElement
   const tag = target?.tagName
-  if (e.key === '/' && tag !== 'TEXTAREA' && tag !== 'INPUT' && tag !== 'SELECT') {
+  if (
+    e.key === '/' &&
+    tag !== 'TEXTAREA' &&
+    tag !== 'INPUT' &&
+    tag !== 'SELECT'
+  ) {
     e.preventDefault()
     inputEl.value?.focus()
   }
 }
 
+function onGlobalPointer(e: PointerEvent) {
+  if (plusOpen.value) {
+    const target = e.target as HTMLElement
+    if (!target.closest('.composer-box')) plusOpen.value = false
+  }
+}
+
 onMounted(() => {
   window.addEventListener('keydown', onGlobalKey)
-  updateMenu()
+  window.addEventListener('pointerdown', onGlobalPointer)
+  void ui.loadDatasources()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKey)
+  window.removeEventListener('pointerdown', onGlobalPointer)
 })
 </script>
