@@ -71,10 +71,16 @@ class ConfigStore:
             )
         configs = []
         for d in data.get("datasources", []):
+            if not isinstance(d, dict):
+                raise DatasourceError(
+                    message="corrupt datasources.yml entry: expected a mapping, "
+                            f"got {type(d).__name__}",
+                    datasource="<unknown>",
+                )
             try:
                 configs.append(from_dict(d))
             except KeyError as e:
-                name = d.get("name", "<unknown>") if isinstance(d, dict) else "<unknown>"
+                name = d.get("name", "<unknown>")
                 raise DatasourceError(
                     message=f"corrupt datasources.yml entry for '{name}': missing {e}",
                     datasource=name,

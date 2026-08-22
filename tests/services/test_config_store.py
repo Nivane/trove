@@ -52,6 +52,17 @@ def test_load_datasources_mapping_form(tmp_path):
         store.load_configs()
 
 
+def test_load_datasources_entry_not_mapping(tmp_path):
+    """终审 residual: 列表内非 dict 条目(- foo)必须抛 DatasourceError,不能裸 TypeError。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    (tmp_path / "datasources.yml").write_text(
+        "datasources:\n  - foo\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DatasourceError, match="expected a mapping"):
+        store.load_configs()
+
+
 def test_save_leaves_no_temp_files(tmp_path):
     """M2: 原子写——save 后同目录不得残留临时文件。"""
     store = ConfigStore(tmp_path / "datasources.yml")
