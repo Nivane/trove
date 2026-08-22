@@ -2,11 +2,19 @@
   <div class="hitl-card">
     <div class="hitl-hint">{{ t('hitlHint', ui.lang) }}</div>
     <div v-if="!chosen" class="hitl-actions">
-      <button class="hitl-btn approve" @click="choose('yes')">{{ t('hitlApprove', ui.lang) }}</button>
-      <button v-if="batch" class="hitl-btn approve-all" @click="choose('approve_all')">
+      <button class="hitl-btn approve" @click="choose('yes')">
+        {{ t('hitlApprove', ui.lang) }}
+      </button>
+      <button
+        v-if="batch"
+        class="hitl-btn approve-all"
+        @click="choose('approve_all')"
+      >
         {{ t('hitlApproveAll', ui.lang) }}
       </button>
-      <button class="hitl-btn reject" @click="choose('no')">{{ t('hitlReject', ui.lang) }}</button>
+      <button class="hitl-btn reject" @click="choose('no')">
+        {{ t('hitlReject', ui.lang) }}
+      </button>
     </div>
     <div v-else class="hitl-chosen">
       <span class="badge">{{ chosenLabel }}</span>
@@ -34,9 +42,11 @@ async function choose(decision: 'yes' | 'approve_all' | 'no') {
   if (chosen.value) return
   chosen.value = true
   chosenLabel.value =
-    decision === 'approve_all' ? t('hitlApproveAll', ui.lang)
-    : decision === 'yes' ? t('hitlApprove', ui.lang)
-    : t('hitlReject', ui.lang)
+    decision === 'approve_all'
+      ? t('hitlApproveAll', ui.lang)
+      : decision === 'yes'
+        ? t('hitlApprove', ui.lang)
+        : t('hitlReject', ui.lang)
   await chat.resume(decision)
 }
 </script>

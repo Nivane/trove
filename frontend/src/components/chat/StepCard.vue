@@ -9,8 +9,12 @@
       <SqlBlock v-if="view.sql" :code="view.sql" />
       <template v-else-if="node === 'execute_sql'">
         <div class="kv-line">
-          <span class="k">rows</span><span class="v">{{ view.rowCount ?? '–' }}</span>
-          <span v-if="view.timeMs != null" class="k">time</span><span v-if="view.timeMs != null" class="v">{{ fmtMs(view.timeMs) }}</span>
+          <span class="k">rows</span
+          ><span class="v">{{ view.rowCount ?? '–' }}</span>
+          <span v-if="view.timeMs != null" class="k">time</span
+          ><span v-if="view.timeMs != null" class="v">{{
+            fmtMs(view.timeMs)
+          }}</span>
         </div>
         <MarkdownView v-if="view.text" :source="view.text" />
       </template>
@@ -33,8 +37,8 @@ const ui = useUiStore()
 
 const node = computed(() => props.card.node)
 const cssNode = computed(() => node.value.replace(/[^a-z0-9_]/gi, '_'))
-const displayLabel = computed(() =>
-  props.card.label || stepLabel(node.value, ui.lang),
+const displayLabel = computed(
+  () => props.card.label || stepLabel(node.value, ui.lang),
 )
 const payload = computed(() => props.card.payload)
 const view = computed(() => extractStep(props.card.payload))

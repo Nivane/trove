@@ -8,7 +8,9 @@
         </button>
       </span>
     </div>
-    <pre class="sql-block-pre"><code class="hljs" v-html="highlighted"></code></pre>
+    <pre
+      class="sql-block-pre"
+    ><code class="hljs" v-html="highlighted"></code></pre>
   </div>
 </template>
 
@@ -23,12 +25,17 @@ import { notifySuccess, notifyError } from '../../utils/notify'
 
 highlight.registerLanguage('sql', sql)
 
-const props = withDefaults(defineProps<{ code: string; wrap?: boolean }>(), { wrap: true })
+const props = withDefaults(defineProps<{ code: string; wrap?: boolean }>(), {
+  wrap: true,
+})
 const ui = useUiStore()
 
 const highlighted = computed(() => {
   try {
-    return highlight.highlight(props.code, { language: 'sql', ignoreIllegals: true }).value
+    return highlight.highlight(props.code, {
+      language: 'sql',
+      ignoreIllegals: true,
+    }).value
   } catch {
     return escapeHtml(props.code)
   }

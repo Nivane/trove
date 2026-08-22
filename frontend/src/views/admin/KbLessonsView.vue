@@ -2,7 +2,9 @@
   <div class="admin-view">
     <div class="view-header">
       <h2>{{ t('kb', ui.lang) }}</h2>
-      <el-button size="small" @click="load">{{ t('brand', ui.lang) }}</el-button>
+      <el-button size="small" @click="load">{{
+        t('brand', ui.lang)
+      }}</el-button>
     </div>
 
     <el-tabs v-model="tab">
@@ -19,9 +21,17 @@
           <el-table-column :label="t('downvotes', ui.lang)" width="90">
             <template #default="{ row }">{{ row.downvotes ?? 0 }}</template>
           </el-table-column>
-          <el-table-column :label="t('actions', ui.lang)" width="160" fixed="right">
+          <el-table-column
+            :label="t('actions', ui.lang)"
+            width="160"
+            fixed="right"
+          >
             <template #default="{ row }">
-              <el-button size="small" type="primary" @click="confirmLesson(row)">
+              <el-button
+                size="small"
+                type="primary"
+                @click="confirmLesson(row)"
+              >
                 {{ t('confirmLesson', ui.lang) }}
               </el-button>
               <el-button size="small" type="danger" @click="rejectLesson(row)">
@@ -30,7 +40,9 @@
             </template>
           </el-table-column>
         </el-table>
-        <div v-if="!loading && !pending.length" class="empty-note">{{ t('noPending', ui.lang) }}</div>
+        <div v-if="!loading && !pending.length" class="empty-note">
+          {{ t('noPending', ui.lang) }}
+        </div>
       </el-tab-pane>
       <el-tab-pane :label="t('confirmedLessons', ui.lang)" name="confirmed">
         <el-table :data="confirmed" v-loading="loading">

@@ -1,8 +1,16 @@
 <template>
   <div class="markdown-blocks">
     <template v-for="(b, idx) in blocks" :key="idx">
-      <div v-if="b.type === 'md'" class="markdown-body" v-html="renderMd(b.text)"></div>
-      <DataTable v-else-if="b.type === 'table'" :headers="b.headers" :rows="b.rows" />
+      <div
+        v-if="b.type === 'md'"
+        class="markdown-body"
+        v-html="renderMd(b.text)"
+      ></div>
+      <DataTable
+        v-else-if="b.type === 'table'"
+        :headers="b.headers"
+        :rows="b.rows"
+      />
       <SqlBlock v-else-if="b.type === 'sql'" :code="b.code" />
     </template>
   </div>

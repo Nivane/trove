@@ -1,7 +1,12 @@
 <template>
   <div class="login-view">
     <div class="login-card">
-      <div class="login-brand"><span class="brand-mark"><el-icon :size="14"><DataAnalysis /></el-icon></span> Trove</div>
+      <div class="login-brand">
+        <span class="brand-mark"
+          ><el-icon :size="14"><DataAnalysis /></el-icon
+        ></span>
+        Trove
+      </div>
       <h2 class="login-title">{{ t('loginTitle', ui.lang) }}</h2>
       <el-form @submit.prevent="submit">
         <el-form-item>
@@ -21,8 +26,20 @@
             @keyup.enter="submit"
           />
         </el-form-item>
-        <el-alert v-if="error" type="error" :title="t('loginFail', ui.lang)" show-icon :closable="false" class="login-error" />
-        <el-button type="primary" class="login-btn" :loading="loading" @click="submit">
+        <el-alert
+          v-if="error"
+          type="error"
+          :title="t('loginFail', ui.lang)"
+          show-icon
+          :closable="false"
+          class="login-error"
+        />
+        <el-button
+          type="primary"
+          class="login-btn"
+          :loading="loading"
+          @click="submit"
+        >
           {{ t('loginBtn', ui.lang) }}
         </el-button>
       </el-form>

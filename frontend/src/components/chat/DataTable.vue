@@ -1,12 +1,19 @@
 <template>
   <div class="data-table-wrap">
     <div class="data-table-toolbar">
-      <span class="data-table-meta">{{ rows.length }} {{ t('rows', ui.lang) }} × {{ headers.length }} {{ t('cols', ui.lang) }}</span>
+      <span class="data-table-meta"
+        >{{ rows.length }} {{ t('rows', ui.lang) }} × {{ headers.length }}
+        {{ t('cols', ui.lang) }}</span
+      >
       <span class="data-table-actions">
         <button class="icon-btn" :title="t('copyTable', ui.lang)" @click="copy">
           <el-icon :size="14"><CopyDocument /></el-icon>
         </button>
-        <button class="icon-btn" :title="t('downloadCsv', ui.lang)" @click="downloadCsv">
+        <button
+          class="icon-btn"
+          :title="t('downloadCsv', ui.lang)"
+          @click="downloadCsv"
+        >
           <el-icon :size="14"><Download /></el-icon>
         </button>
       </span>
@@ -15,7 +22,13 @@
       <table class="data-table">
         <thead>
           <tr>
-            <th v-for="(h, j) in headers" :key="h" :class="{ numeric: isNumericCol(j) }">{{ h }}</th>
+            <th
+              v-for="(h, j) in headers"
+              :key="h"
+              :class="{ numeric: isNumericCol(j) }"
+            >
+              {{ h }}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -25,7 +38,9 @@
               :key="j"
               :class="{ numeric: isNumericCol(j) }"
               :title="String(cell ?? '')"
-            >{{ fmtCell(cell) }}</td>
+            >
+              {{ fmtCell(cell) }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -61,7 +76,9 @@ function fmtCell(v: unknown): string {
 }
 
 async function copy() {
-  const text = [props.headers, ...props.rows].map((r) => r.map(fmtCell).join('\t')).join('\n')
+  const text = [props.headers, ...props.rows]
+    .map((r) => r.map(fmtCell).join('\t'))
+    .join('\n')
   try {
     await navigator.clipboard.writeText(text)
     notifySuccess(t('copied', ui.lang))
@@ -75,7 +92,9 @@ function downloadCsv() {
     const s = fmtCell(v)
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
   }
-  const csv = [props.headers, ...props.rows].map((r) => r.map(esc).join(',')).join('\n')
+  const csv = [props.headers, ...props.rows]
+    .map((r) => r.map(esc).join(','))
+    .join('\n')
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
