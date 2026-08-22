@@ -724,6 +724,31 @@ def make_schema_linking(
                         for t, hs in verified_hints_by_table.items()
                     }
 
+            # P1-8:语义层声明的关系 → 权威 Relationships 块(替换逐表 Join hints)。
+            # JoinResolver 在完整声明图上 BFS:跨中间表联(resolution.extra_tables,
+            # 如 loan+district 经 account),中间表补进渲染让 gen_sql 拿得到列。
+            resolved_block = ""
+            if (
+                semantic_layer is not None and datasource
+                and getattr(semantic_layer, "enabled", False)
+            ):
+                try:
+                    provider_model = getattr(semantic_layer, "model", None)
+                    live_model = provider_model() if provider_model is not None else None
+                    if live_model is not None and len(matched_names) >= 2:
+                        from trove.services.semantic_layer.compiler import JoinResolver
+
+                        resolution = JoinResolver(live_model).resolve(
+                            matched_names, verified_hints_by_table)
+                        if not resolution.empty:
+                            resolved_block = JoinResolver.render(resolution)
+                            for extra in resolution.extra_tables:
+                                d = details_by_name.get(extra)
+                                if d is not None and d not in details:
+                                    details.append(d)
+                except Exception as e:
+                    logger.warning("Join resolution failed (%s): %s", datasource, e)
+
             schema_parts = []
             for detail in details:
                 name = detail["name"]
@@ -739,7 +764,7 @@ def make_schema_linking(
                     f"Approximate rows: {detail.get('row_count', 'unknown')}\n",
                 ]
                 hints = verified_hints_by_table.get(name) or []
-                if hints:
+                if hints and not resolved_block:
                     parts.append("Join hints: " + ", ".join(hints) + "\n")
                 if table_notes and table_notes.description:
                     parts.append(f"Description: {table_notes.description}\n")
@@ -776,6 +801,11 @@ def make_schema_linking(
                         for v, loc in shown.items()
                     )
                     schema_context += "\n\n" + hint_lines
+
+            # 4.4 权威 Relationships 块:编译器 BFS 得到的 ON 子句(声明关系
+            # 优先;已由 JoinResolver.render 渲染),gen_sql 不再发明 join 键。
+            if resolved_block:
+                schema_context += "\n\n" + resolved_block
 
             # 4.5 模型级语义块:无数据集锚定的 metric + AI 使用说明
             # (锚定 metric 已进各表段;放最后以免挤占表段上下文)

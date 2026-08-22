@@ -140,6 +140,17 @@ class SemanticLayerProvider:
         self._reload()
         return list(self._validated or [])
 
+    def model(self) -> SemanticModel | None:
+        """当前解析出的完整 SemanticModel(datasets/relationships/metrics)。
+
+        不可用 → None;解析失败保留 last-known-good(与 metrics() 同一
+        缓存路径)。
+        """
+        if not self.enabled:
+            return None
+        self._reload()
+        return self._parsed
+
     def terms_for(
         self,
         question: str,

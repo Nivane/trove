@@ -285,6 +285,86 @@ class TestSchemaLinkingSemanticLayer:
         assert "Semantic note:" not in update["schema_context"]
 
 
+class TestSchemaLinkingRelationshipBlock:
+    """P2:语义层声明关系 → 权威 Relationships 块替换逐表 Join hints。
+
+    JoinResolver 在声明图上 BFS:问题只点名 loan+district 时,中间表
+    account 被自动拉进联路径并补进渲染。
+    """
+
+    MODEL = """
+semantic_model:
+  - name: demo
+    datasets:
+      - name: loan
+      - name: account
+      - name: district
+      - name: client
+    relationships:
+      - name: loan_to_account
+        from: loan
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+      - name: account_to_district
+        from: account
+        to: district
+        from_columns: [district_id]
+        to_columns: [district_id]
+    metrics:
+      - name: total_loan_amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(loan.amount)
+"""
+
+    def _provider(self, tmp_path):
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(self.MODEL)
+        return SemanticLayerProvider(semantic_dir, "demo")
+
+    async def test_renders_authoritative_relationships_block(self, tmp_path, demo_registry):
+        from trove.services.datasource.catalog import CatalogService
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=self._provider(tmp_path),
+        )
+        update = await node(make_state(
+            question="What is the average loan amount per district?"))
+        ctx = update["schema_context"]
+        assert "Relationships:" in ctx
+        assert "loan.account_id = account.account_id" in ctx
+        assert "account.district_id = district.district_id" in ctx
+        # 中间表 account 补进渲染(问题没点名它)
+        assert "Table: account" in ctx
+
+    async def test_suppressed_join_hints_when_block_present(self, tmp_path, demo_registry):
+        from trove.services.datasource.catalog import CatalogService
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=self._provider(tmp_path),
+        )
+        update = await node(make_state(question="What is the average loan amount?"))
+        ctx = update["schema_context"]
+        assert "Relationships:" in ctx
+        assert "Join hints:" not in ctx
+
+    async def test_no_block_without_semantic_layer(self, demo_registry):
+        """无语义层 → 保持既有 Join hints 行为,不渲染 Relationships。"""
+        from trove.services.datasource.catalog import CatalogService
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+        )
+        update = await node(make_state(question="city and district info"))
+        assert "Relationships:" not in update["schema_context"]
+
+
 class TestPlannerRollbackRevision:
     async def test_rollback_revision_includes_prior_plan(self):
         """回退重跑规划时,上一版计划必须进 prompt(增量修订,非从零重写)。"""

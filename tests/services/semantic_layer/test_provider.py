@@ -171,3 +171,20 @@ def test_terms_for_table_agnostic_kept(semantic_dir):
 
     hits = p.terms_for("avg loan", ["district"])  # 锚定表里没有 loan/account
     assert [h.term for h in hits] == ["avg_loan_per_account"]
+
+
+def test_model_exposes_datasets_and_relationships(semantic_dir):
+    _write(semantic_dir, SAMPLE)
+    p = SemanticLayerProvider(semantic_dir, "financial")
+
+    model = p.model()
+    assert model is not None
+    assert [d.name for d in model.datasets] == ["loan", "account"]
+    assert model.relationships == []  # SAMPLE 未声明 relationships
+
+    assert p.model() is not None  # 缓存路径不发散
+
+
+def test_model_none_when_disabled(tmp_path):
+    p = SemanticLayerProvider(tmp_path / "missing", "financial")
+    assert p.model() is None
