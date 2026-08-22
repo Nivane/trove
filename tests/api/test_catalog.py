@@ -80,3 +80,45 @@ class TestCatalog:
             "user": "app",
         }
         assert "password" not in entry["connection"]
+
+
+class TestUpload:
+    async def test_upload_csv_registers_datasource(self, client):
+        csv_bytes = b"name,age,city\nAlice,30,NYC\nBob,25,SF\n"
+        resp = await client.post(
+            "/v1/catalog/upload",
+            files={"file": ("people.csv", csv_bytes, "text/csv")},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["datasource"] == "people"
+        assert body["rows"] == 2
+        assert body["columns"] == ["name", "age", "city"]
+
+        ds = await client.get("/v1/catalog/datasources")
+        names = [d["name"] for d in ds.json()["datasources"]]
+        assert "people" in names
+
+        tables = await client.get(
+            "/v1/catalog/tables", params={"datasource": "people"}
+        )
+        assert any(t["name"] == "data" for t in tables.json()["tables"])
+
+    async def test_upload_non_admin_403(self, user_client):
+        resp = await user_client.post(
+            "/v1/catalog/upload",
+            files={"file": ("x.csv", b"a,b\n1,2\n", "text/csv")},
+        )
+        assert resp.status_code == 403
+
+    async def test_upload_bad_csv_400(self, client):
+        resp = await client.post(
+            "/v1/catalog/upload", files={"file": ("e.csv", b"onlyheader\n", "text/csv")}
+        )
+        assert resp.status_code == 400
+
+    async def test_upload_empty_400(self, client):
+        resp = await client.post(
+            "/v1/catalog/upload", files={"file": ("e.csv", b"", "text/csv")}
+        )
+        assert resp.status_code == 400

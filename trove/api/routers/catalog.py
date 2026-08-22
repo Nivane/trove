@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+import csv
+import re
+from io import StringIO
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 
 from trove.api.deps import get_current_user, require_datasource
 from trove.core.errors import DatasourceError
+from trove.core.types import DatasourceConfig
 
 router = APIRouter()
 
@@ -107,3 +113,124 @@ async def table_ddl(
     if detail is None:
         raise HTTPException(status_code=404, detail=f"table not found: {table_name}")
     return {"ddl": await catalog.get_schema_ddl(table_name, ds)}
+
+
+def _infer_sql_type(values: list[str]) -> str:
+    """Infer a SQLite column type from a column's string values.
+
+    int if every non-empty value parses as an integer, real if every
+    value parses as a float, text otherwise. Booleans (t/f, true/false,
+    0/1) are stored as INTEGER for natural SQL comparisons.
+    """
+    parsed_bool = True
+    non_empty = [v for v in values if v != ""]
+    if non_empty and all(v.lower() in ("true", "false", "t", "f") for v in non_empty):
+        return "INTEGER"
+    for v in non_empty:
+        try:
+            int(v)
+        except ValueError:
+            parsed_bool = False
+            break
+    else:
+        if non_empty:
+            return "INTEGER"
+    if non_empty and all(_is_float(v) for v in non_empty):
+        return "REAL"
+    return "TEXT"
+
+
+def _is_float(v: str) -> bool:
+    try:
+        float(v)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_datasource_name(filename: str) -> str:
+    stem = Path(filename).stem.lower()
+    stem = re.sub(r"[^a-z0-9_]+", "_", stem).strip("_")
+    return stem[:40] or "upload"
+
+
+@router.post("/catalog/upload")
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Upload a CSV/TSV file → register as a queryable SQLite datasource.
+
+    The uploaded rows land in a per-file SQLite database under the config
+    home (``~/.trove/uploads/<name>.db``) holding a single ``data`` table;
+    column types are inferred from the first rows. The datasource is then
+    registered so /v1/chat and the catalog can query it immediately.
+    """
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="only admins may upload files")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty file")
+    text = raw.decode("utf-8-sig", errors="replace").lstrip("\ufeff")
+
+    try:
+        reader = csv.reader(StringIO(text))
+        rows = [row for row in reader if any(cell.strip() for cell in row)]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"cannot parse file: {e}")
+    if len(rows) < 2:
+        raise HTTPException(status_code=400, detail="need a header row plus data rows")
+    header = [c.strip() or f"col{i}" for i, c in enumerate(rows[0])]
+    rows = rows[1:]
+    if len(set(header)) != len(header):
+        raise HTTPException(status_code=400, detail="duplicate column names in header")
+
+    cols = len(header)
+    col_values: list[list[str]] = [[] for _ in range(cols)]
+    for row in rows:
+        for i in range(cols):
+            col_values[i].append(row[i] if i < len(row) else "")
+    col_types = [_infer_sql_type(vals) for vals in col_values]
+
+    name = _normalize_datasource_name(file.filename or "upload")
+    registry = _registry(request)
+    seq = 1
+    base = name
+    while registry.is_registered(name):
+        name = f"{base}_{seq}"
+        seq += 1
+
+    config = getattr(request.app.state, "config", None)
+    home = Path(getattr(config, "home", "~/.trove")).expanduser()
+    uploads_dir = home / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    db_path = uploads_dir / f"{name}.db"
+    if db_path.exists():
+        db_path.unlink()
+
+    import aiosqlite
+    conn = await aiosqlite.connect(str(db_path))
+    try:
+        col_defs = ", ".join(f'"{c}" {t}' for c, t in zip(header, col_types))
+        await conn.execute(f"CREATE TABLE data ({col_defs})")
+        placeholders = ", ".join(["?"] * cols)
+        for row in rows:
+            await conn.execute(
+                f"INSERT INTO data VALUES ({placeholders})",
+                [row[i] if i < len(row) else "" for i in range(cols)],
+            )
+        await conn.commit()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"cannot create table: {e}")
+    finally:
+        await conn.close()
+
+    config = DatasourceConfig(
+        name=name,
+        type="sqlite",
+        connection_params={"path": str(db_path)},
+        default=False,
+    )
+    await registry.register(config, set_default=False)
+    return {"datasource": name, "rows": len(rows), "columns": header}
