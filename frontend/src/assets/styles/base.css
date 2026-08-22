@@ -2006,6 +2006,15 @@ button:disabled {
 }
 
 /* ── Admin console (refined — same language as the chat sidebar) ── */
+/* 管理台(含其弹层里的按钮)按下不位移——去掉全局 button:active 的
+   translateY(0.5px) "弹一下"效果;hover 反馈保留 */
+.admin-shell button:not(:disabled):active,
+.el-dialog button:not(:disabled):active,
+.el-message-box button:not(:disabled):active,
+.el-message button:not(:disabled):active,
+.el-notification button:not(:disabled):active {
+  transform: none;
+}
 .admin-shell {
   display: flex;
   height: 100%;
