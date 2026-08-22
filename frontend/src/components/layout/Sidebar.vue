@@ -6,7 +6,7 @@
   >
     <template v-if="ui.sidebarOpen">
       <div class="brand">
-        <span class="brand-mark"><BrandMark :size="32" /></span>
+        <span class="brand-mark"><BrandMark :size="24" /></span>
         <button
           class="topbar-btn sidebar-toggle-btn"
           :title="t('toggleSidebar', ui.lang)"
