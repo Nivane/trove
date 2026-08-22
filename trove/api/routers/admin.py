@@ -18,9 +18,15 @@ from trove.api.schemas import (
     UserCreate,
     UserPatch,
 )
-from trove.core.errors import AuthError, DatasourceError
+from trove.core.errors import (
+    AuthError,
+    DatasourceConflictError,
+    DatasourceError,
+)
 from trove.core.types import DatasourceConfig
+from trove.services.datasource.naming import validate_datasource_name
 from trove.services.datasource.urls import parse_datasource_url
+from trove.services.kb.locks import KbInitBusy, KbInitLock
 
 router = APIRouter()
 
@@ -53,7 +59,7 @@ def _registry(request: Request):
 
 
 def _sanitized(cfg: DatasourceConfig) -> dict:
-    return {"name": cfg.name, "type": cfg.type, "default": bool(cfg.default)}
+    return {"id": cfg.ds_id, "name": cfg.name, "type": cfg.type, "default": bool(cfg.default)}
 
 
 @router.get("/admin/users")
@@ -185,7 +191,8 @@ async def list_audit(
     entries = await _auth(request).list_audit(
         limit=limit, offset=offset, user_id=user_id, action=action
     )
-    return {"audit": entries}
+    total = await _auth(request).count_audit(user_id=user_id, action=action)
+    return {"audit": entries, "total": total}
 
 
 # ── Cross-user sessions (admin view) ─────────────────────
@@ -270,6 +277,23 @@ async def list_admin_datasources(request: Request, admin: dict = Depends(require
     return {"datasources": out}
 
 
+def _existing_identities(request: Request) -> dict[str, str]:
+    """name → ds_id across connected + persisted datasources.
+
+    Conflict source for registration: a name bound to a *different*
+    ds_id is a conflict (409); the same ds_id is idempotent (reconnect).
+    A persisted id wins over the registry view — the config file is the
+    source of truth, so a stale registry copy must surface the conflict
+    rather than mask it.
+    """
+    ids: dict[str, str] = {}
+    for info in _registry(request).list_info():
+        ids[info["name"]] = info.get("id") or ""
+    for cfg in _store(request).load_configs():
+        ids[cfg.name] = cfg.ds_id
+    return ids
+
+
 @router.post("/admin/datasources", status_code=201)
 async def create_datasource(request: Request, body: dict,
                             admin: dict = Depends(require_admin)) -> dict:
@@ -279,29 +303,77 @@ async def create_datasource(request: Request, body: dict,
     url = (body.get("url") or "").strip()
     if not name and not url:
         raise HTTPException(status_code=400, detail="name or url required")
-    try:
-        if url == "demo" or (name == "demo" and not url):
-            from trove.services.datasource.demo_setup import setup_demo_datasource
-            # 先取当前默认态再注册：无默认时新源成为默认（注册顺序即默认语义），
-            # 持久化的 default 必须与注册结果一致，否则重启后 demo 不会被恢复为默认。
-            was_default = registry.default_name is None
-            await setup_demo_datasource(registry, set_default=was_default)
-            cfg = DatasourceConfig(name="demo", type="demo",
-                                   connection_params={}, credentials={},
-                                   default=was_default)
-        else:
+
+    is_demo = url == "demo" or (name == "demo" and not url)
+    if is_demo:
+        from trove.services.datasource.demo_setup import setup_demo_datasource
+        # 先取当前默认态再注册：无默认时新源成为默认（注册顺序即默认语义），
+        # 持久化的 default 必须与注册结果一致，否则重启后 demo 不会被恢复为默认。
+        was_default = registry.default_name is None
+        await setup_demo_datasource(registry, set_default=was_default)
+        cfg = DatasourceConfig(name="demo", type="demo",
+                               connection_params={}, credentials={},
+                               default=was_default,
+                               ds_id=registry.identity_of("demo") or "")
+    else:
+        try:
             cfg = parse_datasource_url(url)
             if name:
+                # 命名规则只约束显式输入的名字（URL 派生的库名常非 slug，
+                # 如 mini_dev），registry 另有 path-safety 兜底。
+                validate_datasource_name(name)
                 cfg = dataclasses.replace(cfg, name=name)  # DatasourceConfig 是 dataclass，无 model_copy
-            # 新注册源在无默认时成为默认（default 持久化，重启按 datasources.yml 恢复）；
-            # 默认的管理 API（改默认/取消默认）属范围外（spec §6）。
-            await registry.register(cfg, set_default=cfg.default or registry.default_name is None)
-    except DatasourceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    configs = store.load_configs()
-    configs = [c for c in configs if c.name != cfg.name] + [cfg]
-    store.save_configs(configs)
-    await _audit(request, "datasource.create", admin, 201, {"name": cfg.name, "type": cfg.type})
+            cfg = registry.ensure_identity(cfg)
+        except DatasourceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # 冲突先行：同名不同身份 → 409，绝不静默覆盖（连接探测前就拒绝）。
+    existing = _existing_identities(request)
+    if cfg.name in existing and existing[cfg.name] != cfg.ds_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"datasource '{cfg.name}' already exists with a different identity",
+        )
+
+    if is_demo:
+        # demo 由 setup 内部已连接注册；这里只补持久化（幂等替换同身份）。
+        store.save_configs(
+            [c for c in store.load_configs() if c.ds_id != cfg.ds_id] + [cfg]
+        )
+    else:
+        # 事务性注册：先连成功 → 再落库 → 再入 registry；任一步失败回滚，
+        # 不留半状态（连接既建、registry 有、持久层无 或 反之）。
+        set_default = cfg.default or registry.default_name is None
+        try:
+            adapter = await registry.prepare(cfg)
+        except DatasourceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        try:
+            store.save_configs(
+                [c for c in store.load_configs() if c.ds_id != cfg.ds_id] + [cfg]
+            )
+        except Exception as e:
+            await adapter.disconnect()
+            raise HTTPException(
+                status_code=400,
+                detail=f"failed to persist datasource registration (rolled back): {e}",
+            ) from e
+        try:
+            registry.activate(cfg, adapter, set_default)
+        except DatasourceConflictError:
+            # prepare 与 activate 之间的并发竞态：另一方先抢占了同名身份。
+            store.save_configs([c for c in store.load_configs() if c.ds_id != cfg.ds_id])
+            await adapter.disconnect()
+            raise HTTPException(
+                status_code=409,
+                detail=f"datasource '{cfg.name}' already exists with a different identity",
+            ) from None
+        except Exception:
+            store.save_configs([c for c in store.load_configs() if c.ds_id != cfg.ds_id])
+            await adapter.disconnect()
+            raise
+    await _audit(request, "datasource.create", admin, 201,
+                 {"id": cfg.ds_id, "name": cfg.name, "type": cfg.type})
     return {"datasource": _sanitized(cfg)}
 
 
@@ -341,32 +413,49 @@ async def reconnect_datasource(name: str, request: Request,
 # ── KB init / reload ─────────────────────────────────────
 
 
-# Spec §4 防重入:同一数据源 init 进行中拒绝重复请求(单事件循环,set 即互斥)
-_kb_init_inflight: set[str] = set()
+def _ds_id_or_404(request: Request, name: str) -> tuple[str, str]:
+    """Resolve a datasource name to its immutable ds_id.
+
+    Lookup order: connected registry first, then persisted config
+    (disconnected sources still carry an identity). Unknown → 404.
+    Returns ``(name, ds_id)`` — the name stays the KB storage key, the
+    ds_id is what init locking is keyed on.
+    """
+    reg = _registry(request)
+    info = next((i for i in reg.list_info() if i["name"] == name), None)
+    if info is not None:
+        return name, info.get("id") or ""
+    cfg = next((c for c in _store(request).load_configs() if c.name == name), None)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    return name, cfg.ds_id
 
 
 @router.post("/admin/datasources/{name}/kb/init")
 async def kb_init_datasource(name: str, request: Request, body: dict | None = None,
                              admin: dict = Depends(require_admin)) -> dict:
-    if name in _kb_init_inflight:
-        raise HTTPException(status_code=409, detail=f"KB init already running for {name}")
     if not _registry(request).is_registered(name):
         raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    _, ds_id = _ds_id_or_404(request, name)
     from trove.services.kb.init_pipeline import init_kb
-    _kb_init_inflight.add(name)
+    # 跨进程互斥:flock 按 ds_id 加锁,同一 KB 卷上多 serve 实例串行初始化
+    # (Spec §4 防重入的分布式形态;旧 _kb_init_inflight 仅防单进程)。
+    lock = KbInitLock(_kb(request).kb_dir / ".locks")
     try:
-        summary = await init_kb(
-            _kb(request), _registry(request),
-            llm=request.app.state.llm_gateway,
-            config=request.app.state.config,
-            datasource=name,
-            overwrite=bool((body or {}).get("overwrite")),
-        )
+        with lock.acquire(ds_id):
+            summary = await init_kb(
+                _kb(request), _registry(request),
+                llm=request.app.state.llm_gateway,
+                config=request.app.state.config,
+                datasource=name,
+                overwrite=bool((body or {}).get("overwrite")),
+            )
+    except KbInitBusy as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except DatasourceError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        _kb_init_inflight.discard(name)
-    await _audit(request, "kb.init", admin, 200, {"name": name})
+    await _audit(request, "kb.init", admin, 200,
+                 {"id": ds_id, "name": name})
     return {"summary": summary}
 
 

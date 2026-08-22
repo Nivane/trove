@@ -11,6 +11,7 @@ def _cfg(name="sqlite", **kw):
         name=name, type="sqlite",
         connection_params=kw.get("connection_params", {"path": "/tmp/x.db"}),
         credentials=kw.get("credentials", {}), default=kw.get("default", False),
+        ds_id=kw.get("ds_id", ""),
     )
 
 
@@ -88,3 +89,41 @@ async def test_boot_register_registers_and_skips_bad(sqlite_registry, tmp_path):
     assert failed == ["bad"]
     assert sqlite_registry.is_registered("good")
     assert not sqlite_registry.is_registered("bad")
+
+
+def test_ds_id_persisted_and_backfilled(tmp_path):
+    """新写落 id;旧 yml 无 id 用确定性 uuid5 回填,重载幂等。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    store.save_configs([_cfg("a")])
+    persisted = (tmp_path / "datasources.yml").read_text(encoding="utf-8")
+    assert "id:" in persisted
+    loaded = store.load_configs()
+    assert loaded[0].ds_id
+
+    # 去掉 id 字段(模拟旧格式文件)→ 确定性回填且稳定
+    legacy = """datasources:\n- name: a\n  type: sqlite\n  connection:\n    path: /tmp/x.db\n"""
+    (tmp_path / "datasources.yml").write_text(legacy, encoding="utf-8")
+    first = store.load_configs()[0].ds_id
+    second = store.load_configs()[0].ds_id
+    assert first == second and len(first) >= 16
+
+
+def test_load_duplicate_ds_id_rejected(tmp_path):
+    """唯一性约束落在持久层:重复 ds_id 判为损坏,启动 fail-fast 不静默覆盖。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    (tmp_path / "datasources.yml").write_text(
+        "datasources:\n"
+        "- name: a\n  type: sqlite\n  connection:\n    path: /tmp/x.db\n"
+        "  id: same-id\n"
+        "- name: b\n  type: sqlite\n  connection:\n    path: /tmp/y.db\n"
+        "  id: same-id\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DatasourceError, match="duplicate datasource id"):
+        store.load_configs()
+
+
+def test_save_duplicate_ds_id_rejected(tmp_path):
+    store = ConfigStore(tmp_path / "datasources.yml")
+    with pytest.raises(DatasourceError, match="duplicate datasource id"):
+        store.save_configs([_cfg("a", ds_id="same"), _cfg("b", ds_id="same")])

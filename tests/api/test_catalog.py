@@ -9,15 +9,16 @@ class TestCatalog:
         assert resp.status_code == 200
         ds = resp.json()["datasources"]
         # kb_initialized/status 是 T5 catalog 扩展的契约字段
-        # (本测试的 KB 未 seed test_db → 未 init)
-        assert ds == [{
-            "name": "test_db",
-            "default": True,
-            "type": "sqlite",
-            "connection": {"path": ":memory:"},
-            "kb_initialized": False,
-            "status": "connected",
-        }]
+        # (本测试的 KB 未 seed test_db → 未 init);id 是 ds_id 身份字段
+        assert len(ds) == 1
+        entry = ds[0]
+        assert entry["name"] == "test_db"
+        assert entry["default"] is True
+        assert entry["type"] == "sqlite"
+        assert entry["connection"] == {"path": ":memory:"}
+        assert entry["kb_initialized"] is False
+        assert entry["status"] == "connected"
+        assert isinstance(entry["id"], str) and entry["id"]
 
     async def test_list_tables(self, client):
         resp = await client.get("/v1/catalog/tables")

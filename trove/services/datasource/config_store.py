@@ -11,12 +11,14 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
 
 from trove.core.errors import DatasourceError
 from trove.core.types import DatasourceConfig
+from trove.services.datasource.naming import backfill_ds_id, new_ds_id
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ DEFAULT_PATH = Path(".trove") / "datasources.yml"
 
 def to_dict(cfg: DatasourceConfig) -> dict:
     return {
+        "id": cfg.ds_id,
         "name": cfg.name,
         "type": cfg.type,
         "connection": dict(cfg.connection_params),
@@ -40,6 +43,8 @@ def from_dict(data: dict) -> DatasourceConfig:
         connection_params=dict(data.get("connection", {})),
         credentials=dict(data.get("credentials", {})),
         default=bool(data.get("default", False)),
+        # 旧 yml 无 id 字段(迁移):确定性回填,保证重启间稳定且幂等。
+        ds_id=data.get("id") or backfill_ds_id(data["type"], data["name"]),
     )
 
 
@@ -70,6 +75,7 @@ class ConfigStore:
                 datasource="",
             )
         configs = []
+        seen_ids: set[str] = set()
         for d in data.get("datasources", []):
             if not isinstance(d, dict):
                 raise DatasourceError(
@@ -78,19 +84,41 @@ class ConfigStore:
                     datasource="<unknown>",
                 )
             try:
-                configs.append(from_dict(d))
+                cfg = from_dict(d)
             except KeyError as e:
                 name = d.get("name", "<unknown>")
                 raise DatasourceError(
                     message=f"corrupt datasources.yml entry for '{name}': missing {e}",
                     datasource=name,
                 ) from e
+            # 唯一性约束落在持久层(datasources.yml 即本架构的"数据库"):
+            # ds_id 是唯一键,重复即损坏,启动 fail-fast 而不是静默覆盖。
+            if cfg.ds_id in seen_ids:
+                raise DatasourceError(
+                    message=f"corrupt datasources.yml: duplicate datasource id "
+                            f"'{cfg.ds_id}' ({cfg.name})",
+                    datasource=cfg.name,
+                )
+            seen_ids.add(cfg.ds_id)
+            configs.append(cfg)
         return configs
 
     def save_configs(self, configs: list[DatasourceConfig]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        seen_ids: set[str] = set()
+        normalized = []
+        for cfg in configs:
+            # 空 id 落库时生成(注册路径在 registry 已确保,这里兜底)。
+            ds_id = cfg.ds_id or new_ds_id()
+            if ds_id in seen_ids:
+                raise DatasourceError(
+                    message=f"duplicate datasource id '{ds_id}' ({cfg.name})",
+                    datasource=cfg.name,
+                )
+            seen_ids.add(ds_id)
+            normalized.append(replace(cfg, ds_id=ds_id))
         payload = yaml.safe_dump(
-            {"datasources": [to_dict(c) for c in configs]},
+            {"datasources": [to_dict(c) for c in normalized]},
             allow_unicode=True, sort_keys=False,
         )
         # 原子写:先写同目录临时文件再 os.replace,避免写中断留下截断的

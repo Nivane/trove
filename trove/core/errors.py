@@ -175,6 +175,24 @@ class DatasourceError(TroveError):
         self.datasource = datasource
 
 
+class DatasourceConflictError(DatasourceError):
+    """A datasource with the same identity/name is already registered.
+
+    Raised instead of silently overwriting — the admin surface maps this
+    to HTTP 409. Distinct from a plain connection failure (DS_001);
+    carries the factory's existing DS_ALREADY_EXISTS (DS_002) code.
+    """
+
+    def __init__(
+        self,
+        message: str = "Datasource already exists",
+        datasource: str = "",
+        details: dict[str, Any] | None = None,
+    ):
+        super().__init__(message=message, datasource=datasource, details=details)
+        self.code = ErrorCode.DS_ALREADY_EXISTS
+
+
 class ConfigError(TroveError):
     """Configuration loading or validation failed."""
 

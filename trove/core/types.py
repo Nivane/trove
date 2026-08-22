@@ -130,10 +130,19 @@ class Capabilities:
 
 @dataclass
 class DatasourceConfig:
-    """Configuration for a single datasource connection."""
+    """Configuration for a single datasource connection.
+
+    ``ds_id`` is the immutable identity of a datasource (UUID hex).
+    ``name`` is a unique, user-facing handle. ``ds_id`` never changes
+    across reconnects/re-registrations and is the persistence key that
+    backs KB init locking; ``name`` remains the runtime/storage key the
+    rest of the stack (workflow state, sessions, grants, KB directory)
+    is keyed on. Empty ``ds_id`` is backfilled at registration time.
+    """
 
     name: str
     type: str  # "sqlite", "duckdb", "postgres", "mysql", ...
     connection_params: dict[str, Any] = field(default_factory=dict)
     credentials: dict[str, str] = field(default_factory=dict)
     default: bool = False
+    ds_id: str = ""

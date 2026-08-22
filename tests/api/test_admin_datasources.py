@@ -1,7 +1,10 @@
 """Admin datasource CRUD endpoints — register (connect-probed) / list /
-delete (KB files kept) / reconnect. All writes go through the audit log."""
+delete (KB files kept) / reconnect / naming rules / 409 conflicts /
+transactional rollback. All writes go through the audit log."""
 
 from __future__ import annotations
+
+import pytest
 
 
 async def test_register_list_delete(client, api_app, tmp_path):
@@ -54,11 +57,11 @@ async def test_register_probe_failure_400(client, api_app):
     """URL 合法但连接探测失败（sqlite 父目录不存在）→ 400 且 detail 报探测原因，
     注册不落地（registry 无残留、datasources.yml 不写入）。"""
     resp = await client.post("/v1/admin/datasources",
-                             json={"name": "x", "url": "sqlite:///no/such/dir_xyz/x.db"})
+                             json={"name": "probe", "url": "sqlite:///no/such/dir_xyz/x.db"})
     assert resp.status_code == 400
     assert "Failed to connect to SQLite" in resp.json()["detail"]
-    assert not api_app.state.connector_registry.is_registered("x")
-    assert "x" not in {c.name for c in api_app.state.config_store.load_configs()}
+    assert not api_app.state.connector_registry.is_registered("probe")
+    assert "probe" not in {c.name for c in api_app.state.config_store.load_configs()}
 
 
 async def test_register_demo(client, api_app):
@@ -132,3 +135,107 @@ async def test_reconnect(client, api_app):
 
 async def test_reconnect_unknown_404(client, api_app):
     assert (await client.post("/v1/admin/datasources/ghost/reconnect")).status_code == 404
+
+
+# ── ds_id 身份 / 命名规则 / 冲突 409 / 事务性注册 ────────────────
+
+
+async def test_register_exposes_immutable_id(client, api_app):
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "extra", "url": "sqlite://:memory:"})
+    assert resp.status_code == 201
+    ds_id = resp.json()["datasource"]["id"]
+    assert isinstance(ds_id, str) and len(ds_id) >= 16
+    assert api_app.state.connector_registry.identity_of("extra") == ds_id
+    persisted = next(c for c in api_app.state.config_store.load_configs()
+                     if c.name == "extra")
+    assert persisted.ds_id == ds_id
+    # 幂等重注册:同一身份,持久层条目不翻倍
+    again = await client.post("/v1/admin/datasources",
+                              json={"name": "extra", "url": "sqlite://:memory:"})
+    assert again.status_code == 201
+    assert again.json()["datasource"]["id"] == ds_id
+    entries = [c.name for c in api_app.state.config_store.load_configs()]
+    assert entries.count("extra") == 1
+
+
+async def test_register_invalid_name_400(client):
+    for bad in ("My DB", "ab", "bad/name", "has.dot", "UPPER"):
+        resp = await client.post("/v1/admin/datasources",
+                                 json={"name": bad, "url": "sqlite://:memory:"})
+        assert resp.status_code == 400, f"{bad} should be rejected"
+        assert "invalid datasource name" in resp.json()["detail"]
+
+
+async def test_register_reserved_name_400(client):
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "default", "url": "sqlite://:memory:"})
+    assert resp.status_code == 400
+    assert "reserved" in resp.json()["detail"]
+
+
+async def test_url_derived_name_bypasses_slug_rule(api_app):
+    """URL 派生名字(如 mysql 库名 some_db,带下划线)只走 path-safety,不被 slug 卡死。"""
+    from trove.services.datasource.urls import parse_datasource_url
+
+    cfg = api_app.state.connector_registry.ensure_identity(
+        parse_datasource_url("mysql://root@localhost/some_db"))
+    assert cfg.name == "some_db"
+    assert cfg.ds_id  # 身份已生成
+    # slug 规则只约束显式输入;显式输入 same name 反而被拒
+    from trove.services.datasource.naming import validate_datasource_name
+    with pytest.raises(Exception):
+        validate_datasource_name("some_db")
+
+
+async def test_register_same_name_different_identity_409(client, api_app):
+    """同名不同身份 → 409,绝不静默覆盖;registry 层同样守卫。"""
+    from trove.core.errors import DatasourceConflictError
+    from trove.core.types import DatasourceConfig
+
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "extra", "url": "sqlite://:memory:"})
+    assert resp.status_code == 201
+    registry = api_app.state.connector_registry
+
+    # registry 层:显式不同 ds_id 注册同名 → conflict
+    with pytest.raises(DatasourceConflictError):
+        await registry.register(DatasourceConfig(
+            name="extra", type="sqlite",
+            connection_params={"path": ":memory:"}, credentials={},
+            default=False, ds_id="other-identity"))
+
+    # API 层:持久层把同名绑到另一个身份(外部篡改/双写),再注册 → 409
+    api_app.state.config_store.save_configs([
+        DatasourceConfig(name="extra", type="sqlite",
+                         connection_params={"path": ":memory:"}, credentials={},
+                         default=False, ds_id="other-identity"),
+    ])
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "extra", "url": "sqlite://:memory:"})
+    assert resp.status_code == 409
+
+
+async def test_register_unpathsafe_name_rejected(client, api_app):
+    from trove.core.errors import DatasourceError
+    from trove.core.types import DatasourceConfig
+
+    with pytest.raises(DatasourceError):
+        await api_app.state.connector_registry.register(DatasourceConfig(
+            name="../escape", type="sqlite",
+            connection_params={"path": ":memory:"}, credentials={}, default=False))
+
+
+async def test_register_persist_failure_rolls_back(client, api_app, tmp_path):
+    """事务性注册:连接成功但落库失败 → 回滚,registry 无残留、config 不写入。"""
+    from trove.services.datasource.config_store import ConfigStore
+
+    blocker = tmp_path / "block"
+    blocker.write_text("x", encoding="utf-8")  # 把一个"文件"顶到父目录位置
+    api_app.state.config_store = ConfigStore(blocker / "datasources.yml")
+
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "txnds", "url": "sqlite://:memory:"})
+    assert resp.status_code == 400
+    assert "persist" in resp.json()["detail"] or "rolled back" in resp.json()["detail"]
+    assert not api_app.state.connector_registry.is_registered("txnds")
