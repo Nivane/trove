@@ -377,4 +377,5 @@ async def kb_reload_datasource(name: str, request: Request,
     if not _registry(request).is_registered(name):
         raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
     await kb.force_sync(name)
+    await _audit(request, "kb.reload", admin, 200, {"name": name})
     return {"status": await kb.kb_status(name)}

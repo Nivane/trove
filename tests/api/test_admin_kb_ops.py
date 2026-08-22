@@ -76,6 +76,10 @@ async def test_kb_reload_endpoint(client, api_app, tmp_path):
     assert resp.status_code == 200
     status = resp.json()["status"]
     assert all(k in status for k in ("initialized", "files", "items"))
+    # M3: kb/reload 是写镜像的变更操作,必须留审计(同 kb.init 约定)
+    entries = await api_app.state.auth.list_audit(action="kb.reload")
+    assert any(e["username"] == "admin" and e["details"] == {"name": "extra"}
+               for e in entries)
 
 
 async def test_kb_init_unknown_ds_404(client):

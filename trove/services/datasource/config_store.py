@@ -9,6 +9,8 @@ list API sanitizes them away (see registry._sanitize_connection).
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -54,6 +56,19 @@ class ConfigStore:
             raise DatasourceError(
                 message=f"corrupt datasources.yml: {e}", datasource="",
             ) from e
+        # 合法 YAML 但错误形状(手改/损坏):顶层非映射或 datasources 非列表
+        # 都会在迭代时抛裸 AttributeError/TypeError → 启动裸 traceback。统一
+        # 包装为 DatasourceError,与 KeyError/YAMLError 同一失败契约(fail-fast)。
+        if not isinstance(data, dict):
+            raise DatasourceError(
+                message="corrupt datasources.yml: top-level must be a mapping",
+                datasource="",
+            )
+        if not isinstance(data.get("datasources"), list):
+            raise DatasourceError(
+                message="corrupt datasources.yml: 'datasources' must be a list",
+                datasource="",
+            )
         configs = []
         for d in data.get("datasources", []):
             try:
@@ -68,11 +83,26 @@ class ConfigStore:
 
     def save_configs(self, configs: list[DatasourceConfig]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            yaml.safe_dump({"datasources": [to_dict(c) for c in configs]},
-                           allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
+        payload = yaml.safe_dump(
+            {"datasources": [to_dict(c) for c in configs]},
+            allow_unicode=True, sort_keys=False,
         )
+        # 原子写:先写同目录临时文件再 os.replace,避免写中断留下截断的
+        # datasources.yml 把下次启动锁死(管理端可写文件自我破坏路径)。
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self.path.parent, prefix=f".{self.path.name}-", suffix=".tmp",
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            os.replace(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 async def boot_register(registry, configs: list[DatasourceConfig]) -> list[str]:
