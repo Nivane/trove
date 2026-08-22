@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trove.api.deps import get_current_user, require_datasource
-from trove.api.schemas import ChatRequest, ResumeRequest, SessionCreateResponse
+from trove.api.schemas import ChatRequest, RenameRequest, ResumeRequest, SessionCreateResponse
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
 
@@ -51,10 +51,17 @@ async def create_session(
 
 @router.get("/sessions")
 async def list_sessions(
-    request: Request, user: dict = Depends(get_current_user)
+    request: Request,
+    limit: int = 20,
+    offset: int = 0,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     user_id = None if user["role"] == "admin" else str(user["id"])
-    return {"sessions": await _manager(request).list_sessions(user_id=user_id)}
+    sessions = await _manager(request).list_sessions(
+        user_id=user_id, offset=offset, limit=limit
+    )
+    # has_more is a heuristic: a full page suggests more sessions may exist
+    return {"sessions": sessions, "has_more": len(sessions) == limit}
 
 
 @router.get("/sessions/{session_id}")
@@ -87,6 +94,19 @@ async def delete_session(
     session = await _load_or_404(request, session_id, user)
     if not await _manager(request).delete_session(session.session_id):
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+
+
+@router.post("/sessions/{session_id}/title")
+async def rename_session(
+    session_id: str,
+    body: RenameRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    session = await _load_or_404(request, session_id, user)
+    if not await _manager(request).rename_session(session.session_id, body.title.strip()):
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    return {"session_id": session.session_id, "title": body.title.strip()}
 
 
 @router.get("/sessions/{session_id}/tasks")
@@ -147,7 +167,6 @@ async def chat(
     body: ChatRequest, request: Request, user: dict = Depends(get_current_user)
 ):
     manager = _manager(request)
-    ds = await require_datasource(request, body.datasource, user)
     if body.session_id:
         try:
             session = await manager.load_session(body.session_id)
@@ -156,6 +175,10 @@ async def chat(
         _assert_owned(session, user)
     else:
         session = await manager.start_session(user_id=str(user["id"]))
+    # datasource resolution/authorization comes after the ownership check so
+    # foreign/missing sessions keep their documented 404 (no existence
+    # disclosure) instead of being preempted by a 403
+    ds = await require_datasource(request, body.datasource, user)
 
     async def events():
         yield {"type": "session", "data": {"session_id": session.session_id}}

@@ -933,3 +933,59 @@ class TestResultCache:
         assert final.verdict == "OK"
         assert not invoked  # 图从未执行 → HITL 中断未触发
         assert session.messages[-1].role == "assistant"  # 交换照常记录
+
+
+async def _no_action(*args, **kwargs):
+    return {"action": "none"}
+
+
+async def _no_tasks(*args, **kwargs):
+    return []
+
+
+class TestDatasourceThreading:
+    async def test_ask_stream_threads_datasource_into_state(
+        self, session_manager, monkeypatch
+    ):
+        captured: dict = {}
+        async def fake_stream(session, graph, state, workflow_name, run_id, *, task=None):
+            captured["state"] = state
+            yield {"type": "done", "content": "ok", "summary": {}}
+
+        monkeypatch.setattr(session_manager, "_interpret_followup", _no_action)
+        monkeypatch.setattr(session_manager, "_decompose_tasks", _no_tasks)
+        monkeypatch.setattr(session_manager, "_stream_graph_run", fake_stream)
+
+        session = await session_manager.start_session(user_id="t")
+        events = [
+            e async for e in session_manager.ask_stream(
+                session, "hi", datasource="financial"
+            )
+        ]
+        assert events[-1]["type"] == "done"
+        assert captured["state"].datasource == "financial"
+
+    async def test_ask_stream_defaults_datasource_to_empty(self, session_manager, monkeypatch):
+        captured: dict = {}
+        async def fake_stream(session, graph, state, workflow_name, run_id, *, task=None):
+            captured["state"] = state
+            yield {"type": "done", "content": "ok", "summary": {}}
+
+        monkeypatch.setattr(session_manager, "_interpret_followup", _no_action)
+        monkeypatch.setattr(session_manager, "_decompose_tasks", _no_tasks)
+        monkeypatch.setattr(session_manager, "_stream_graph_run", fake_stream)
+
+        session = await session_manager.start_session(user_id="t")
+        events = [
+            e async for e in session_manager.ask_stream(session, "hi")
+        ]
+        assert events[-1]["type"] == "done"
+        assert captured["state"].datasource == ""
+
+    async def test_cache_key_uses_explicit_datasource(self, session_manager):
+        session = await session_manager.start_session(user_id="t")
+        key = session_manager._cache_key(
+            session, "how many rows?", datasource="financial"
+        )
+        assert key[0] == session.session_id
+        assert key[1] == "financial"

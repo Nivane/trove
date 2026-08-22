@@ -269,6 +269,41 @@ class SessionStore:
         await conn.commit()
         await conn.close()
 
+    async def set_title(
+        self,
+        session_id: str,
+        title: str,
+        project_cwd: str | Path = ".",
+    ) -> bool:
+        """Rename a session (persisted in the session db meta table).
+
+        Args:
+            session_id: Session to rename.
+            title: New display title (empty clears to first-question).
+            project_cwd: Project directory.
+
+        Returns:
+            True on success, False when the session db does not exist.
+        """
+        project_name = _normalize_project_name(project_cwd)
+        db_path = self._session_db(project_name, session_id)
+        if not db_path.exists():
+            return False
+        conn = await aiosqlite.connect(str(db_path))
+        try:
+            await conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('title', ?)",
+                (title or "",),
+            )
+            await conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('updated_at', ?)",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+        return True
+
     # ── CRUD: Delete ─────────────────────────────────────
 
     async def delete_session(
@@ -324,6 +359,11 @@ class SessionStore:
             cursor = await conn.execute("SELECT value FROM meta WHERE key = 'user_id'")
             row = await cursor.fetchone()
             owner = row[0] if row else None
+
+            custom_title = ""
+            cursor = await conn.execute("SELECT value FROM meta WHERE key = 'title'")
+            row = await cursor.fetchone()
+            custom_title = (row[0] if row else "") or ""
             await conn.close()
 
             return {
@@ -333,7 +373,7 @@ class SessionStore:
                 "created_at": created_at,
                 "updated_at": updated_at,
                 "message_count": msg_count,
-                "title": first_question,
+                "title": custom_title or first_question,
                 "size_bytes": db_file.stat().st_size,
             }
         except Exception as e:
@@ -344,6 +384,8 @@ class SessionStore:
         self,
         project_cwd: str | Path = ".",
         user_id: str | None = None,
+        offset: int = 0,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions for a project.
 
@@ -351,6 +393,8 @@ class SessionStore:
             project_cwd: Project directory.
             user_id: When given, only sessions owned by this user are
                 returned; ``None`` lists all (REPL/CLI "local" default).
+            offset: Skip the first ``offset`` sessions (by mtime, desc).
+            limit: Return at most ``limit`` sessions; ``None`` = no limit.
 
         Returns:
             List of dicts with session_id, created_at, updated_at, message_count.
@@ -369,6 +413,10 @@ class SessionStore:
             if user_id is not None and info["user_id"] != user_id:
                 continue
             results.append(info)
+        if offset:
+            results = results[offset:]
+        if limit is not None:
+            results = results[:limit]
         return results
 
     async def list_all(

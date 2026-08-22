@@ -26,6 +26,12 @@ class SessionCreateResponse(BaseModel):
     session_id: str
 
 
+class RenameRequest(BaseModel):
+    """POST /v1/sessions/{id}/title body."""
+
+    title: str = ""
+
+
 class TermCreate(BaseModel):
     """POST /v1/kb/terms body (flat request; converted to an OSSIE semantic_model metric on write)."""
 

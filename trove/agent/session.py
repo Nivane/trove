@@ -147,7 +147,11 @@ class SessionManager:
         await self._store.save_session(session)
 
     async def list_sessions(
-        self, project_cwd: str = ".", user_id: str | None = None
+        self,
+        project_cwd: str = ".",
+        user_id: str | None = None,
+        offset: int = 0,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions for a project.
 
@@ -155,12 +159,20 @@ class SessionManager:
             project_cwd: Project directory.
             user_id: When given, only sessions owned by this user are
                 returned (``None`` = all, the REPL/CLI "local" default).
+            offset: Skip the first ``offset`` sessions (by mtime, desc).
+            limit: Return at most ``limit`` sessions; ``None`` = no limit.
         """
-        return await self._store.list_sessions(project_cwd, user_id=user_id)
+        return await self._store.list_sessions(
+            project_cwd, user_id=user_id, offset=offset, limit=limit
+        )
 
     async def delete_session(self, session_id: str, project_cwd: str = ".") -> bool:
         """Delete a session and its stored data."""
         return await self._store.delete_session(session_id, project_cwd)
+
+    async def rename_session(self, session_id: str, title: str, project_cwd: str = ".") -> bool:
+        """Rename a session (empty title falls back to the first question)."""
+        return await self._store.set_title(session_id, title, project_cwd)
 
     async def clear_session(self, session: Session) -> Session:
         """Clear all messages, the compaction summary, and the task list
@@ -252,6 +264,7 @@ class SessionManager:
         session: Session,
         question: str,
         workflow_name: str = DEFAULT_WORKFLOW,
+        datasource: str | None = None,
     ) -> WorkflowState:
         """Process a natural language question through a compiled graph.
 
@@ -259,6 +272,8 @@ class SessionManager:
             session: Current session.
             question: The user's natural language question.
             workflow_name: Which graph to run ("reflection", "fixed", "empty").
+            datasource: Datasource name for this request; empty/None keeps
+                the current default-datasource behavior.
 
         Returns:
             The final WorkflowState (final_response, sql, row_count, verdict, ...).
@@ -286,13 +301,14 @@ class SessionManager:
             run_id=run_id,
             history=history,
             lang=self.config.language,
+            datasource=datasource or "",
         )
         self._begin_trace(state)
         self._trace_run_start(state)
 
         # 精确结果缓存:同会话同问句直接返回上次结果(0 LLM)。命中跳过
         # HITL 确认——首次运行该问题已人工确认过。
-        cached = self._cache_get(self._cache_key(session, question))
+        cached = self._cache_get(self._cache_key(session, question, datasource))
         if cached is not None:
             self._record_cache_hit(session, run_id, question, cached)
             final = self._cached_final(
@@ -551,13 +567,13 @@ class SessionManager:
         # ── 任务层:跨轮推进(解释器)→ 多任务拆解 → 普通单任务 ──
         action = await self._interpret_followup(session, question)
         if action.get("action") != "none":
-            async for ev in self._run_task_action(session, graph, question, action, workflow_name):
+            async for ev in self._run_task_action(session, graph, question, action, workflow_name, datasource=datasource):
                 yield ev
             return
 
         tasks = await self._decompose_tasks(session, question)
         if tasks:
-            async for ev in self._run_task_sequence(session, graph, question, tasks, workflow_name):
+            async for ev in self._run_task_sequence(session, graph, question, tasks, workflow_name, datasource=datasource):
                 yield ev
             return
 
@@ -613,7 +629,7 @@ class SessionManager:
 
         # 精确结果缓存:同会话同问句直接产出结果事件(0 LLM),形状与
         # 实跑路径一致(sql → result → done);命中跳过 HITL 确认。
-        cached = self._cache_get(self._cache_key(session, state.question))
+        cached = self._cache_get(self._cache_key(session, state.question, state.datasource))
         if cached is not None:
             import time as _time
             self._record_cache_hit(session, run_id, state.question, cached)
@@ -932,7 +948,7 @@ class SessionManager:
             return
         if final.error or not final.correction_history or not final.sql:
             return
-        datasource = self._connectors.default_name or ""
+        datasource = final.datasource or self._connectors.default_name or ""
         if not datasource:
             return
         for reason in final.correction_history[-2:]:
@@ -978,13 +994,16 @@ class SessionManager:
         content_prefix: str = "",
     ) -> None:
         """Append the assistant message and persist the session."""
-        metadata = {
+        # 结构化摘要(sql/chart/rows_preview/insights 等)入 metadata:
+        # GET /sessions/{id} 透出该字段,前端可原样还原历史 turn。
+        metadata: dict[str, Any] = {
             "trace_id": session.session_id,
             "workflow": workflow_name,
             "sql": final.sql,
             "row_count": final.row_count,
             "verdict": final.verdict,
             "error": final.error,
+            "summary": self._state_summary(final),
         }
         if task is not None:
             metadata["task_id"] = task.task_id
@@ -1155,6 +1174,7 @@ class SessionManager:
         question: str,
         tasks: list[Task],
         workflow_name: str,
+        datasource: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """多任务单轮连跑:逐条执行,事件流中插入 task 快照事件。
 
@@ -1184,7 +1204,7 @@ class SessionManager:
                 continue
             async for ev in self._run_one_task(
                 session, graph, workflow_name, store, current, target,
-                self.config.language,
+                self.config.language, datasource=datasource,
             ):
                 if ev.get("type") in ("done", "error") and ev.get("summary"):
                     self._merge_run_stats(batch_stats, ev["summary"])
@@ -1208,6 +1228,7 @@ class SessionManager:
         tasks: list[Task],
         task: Task,
         lang: str,
+        datasource: str | None = None,
         *,
         auto_approve: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
@@ -1229,6 +1250,7 @@ class SessionManager:
             lang=lang,
             task_context={"index": task.position + 1, "total": total, "remaining": remaining},
             auto_approve=auto_approve,
+            datasource=datasource or "",
             # 步骤间共享:继承上一步 schema linking 锚定的表(schema_linking
             # 节点会与本次新匹配合并,KB 检索与 C1 规则据此锚定)
             matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],
@@ -1278,6 +1300,7 @@ class SessionManager:
         question: str,
         action: dict,
         workflow_name: str,
+        datasource: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """执行跨轮任务操作:continue_next / redo / skip / add。"""
         lang = self.config.language
@@ -1351,6 +1374,7 @@ class SessionManager:
         batch_stats: dict[str, Any] = {}
         async for ev in self._run_one_task(
             session, graph, workflow_name, store, tasks, target, lang,
+            datasource=datasource,
         ):
             if ev.get("type") in ("done", "error") and ev.get("summary"):
                 self._merge_run_stats(batch_stats, ev["summary"])
@@ -1492,11 +1516,11 @@ class SessionManager:
     def _cache_enabled(self) -> bool:
         return bool(self.config.result_cache)
 
-    def _cache_key(self, session: Session, question: str) -> tuple:
+    def _cache_key(self, session: Session, question: str, datasource: str | None = None) -> tuple:
         """键 = (会话, 数据源, 归一化问句)。数据源隔离:同一问句在不同
         库上是不同问题。"""
-        ds = ""
-        if self._connectors is not None:
+        ds = datasource or ""
+        if not ds and self._connectors is not None:
             try:
                 ds = self._connectors.default_name or ""
             except Exception:
@@ -1551,7 +1575,7 @@ class SessionManager:
         summary = self._state_summary(final)
         summary["cached"] = True
         summary["dialect"] = final.dialect
-        self._cache_put(self._cache_key(session, final.question), summary)
+        self._cache_put(self._cache_key(session, final.question, final.datasource), summary)
 
     def _cached_final(
         self, cached: dict[str, Any], run_id: str, history: str, lang: str,

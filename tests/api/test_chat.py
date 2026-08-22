@@ -45,11 +45,44 @@ class TestSessions:
         assert (await client.get(f"/v1/sessions/{created}")).status_code == 404
         assert (await client.delete(f"/v1/sessions/{created}")).status_code == 404
 
+    async def test_rename_session_title_roundtrip(self, client):
+        created = (await client.post("/v1/sessions")).json()["session_id"]
+        resp = await client.post(
+            f"/v1/sessions/{created}/title", json={"title": "季度分析"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "季度分析"
+        listing = (await client.get("/v1/sessions")).json()["sessions"]
+        by_id = {s["session_id"]: s for s in listing}
+        assert by_id[created]["title"] == "季度分析"
+        foreign = await client.post(
+            "/v1/sessions/~/nope/title", json={"title": "x"}
+        )
+        assert foreign.status_code == 404
+
     async def test_list_sessions(self, client):
         assert (await client.post("/v1/sessions")).status_code == 201
         resp = await client.get("/v1/sessions")
         assert resp.status_code == 200
         assert isinstance(resp.json()["sessions"], list)
+
+    async def test_list_sessions_pagination(self, client):
+        for _ in range(3):
+            assert (await client.post("/v1/sessions")).status_code == 201
+        page = await client.get("/v1/sessions", params={"limit": 2, "offset": 0})
+        assert page.status_code == 200
+        body = page.json()
+        assert len(body["sessions"]) == 2
+        assert body["has_more"] is True
+        next_page = await client.get(
+            "/v1/sessions", params={"limit": 2, "offset": 2}
+        )
+        body2 = next_page.json()
+        assert len(body2["sessions"]) == 1
+        assert body2["has_more"] is False
+        ids_page1 = {s["session_id"] for s in body["sessions"]}
+        ids_page2 = {s["session_id"] for s in body2["sessions"]}
+        assert not (ids_page1 & ids_page2)
 
     async def test_clear_session(self, client):
         created = (await client.post("/v1/sessions")).json()["session_id"]
