@@ -13,8 +13,8 @@ agent:
   # 生成 SQL 后 LLM 说明语义(输出与 HITL 确认时展示)
   explain_semantics: true
   # 执行前人工确认(LangGraph interrupt,需 persistence/checkpointer;
-  # REPL/CLI/serve 均已接 resume)
-  hitl: true
+  # REPL/CLI/serve 均已接 resume)。当前默认关:每次自动执行,不再打断。
+  hitl: false
   # 执行后 LLM 基于结果生成洞察
   insights: true
   # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的

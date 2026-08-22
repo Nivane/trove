@@ -23,7 +23,7 @@ uv run python scripts/lint_kb.py --datasource financial   # KB quality check
 
 ### Docker 部署（前后端独立容器）
 
-前后端各自独立镜像、独立重建：前端容器（nginx 托管 SPA + 反代 `/v1` → 后端），后端容器（`trove serve`）。访问 `http://localhost:8080/ui/`。
+前后端各自独立镜像、独立重建：前端容器（nginx 托管 SPA + 反代 `/v1` → 后端），后端容器（`trove serve`）。访问 `http://localhost:8080/`。
 
 ```bash
 docker compose up --build        # 构建并启动（后端 :8000 仅供调试，前端 :8080）
@@ -37,7 +37,7 @@ docker compose down              # 停止并移除容器
 - 数据源零默认启动：`serve` 默认不注册任何数据源，compose 已显式 `--datasource demo`（内置 BIRD 金融 SQLite，演练入口）；也可换成 `scheme://` URL（如 `mysql://...`）。生产数据源改由管理端注册（`/admin/datasources`，持久化到 `.trove/datasources.yml`，重启自动恢复）
 - 管理端数据源流程：admin 登录 → 注册（内置 demo 或 URL，注册即连接探测，失败 400 报原因）→ 该源 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）→ 用户端下拉/列表才可见（仅显示「已连接且 KB 已初始化」的数据源，非 admin 还需 grants 授权）
 - 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`），或在容器内提供 API key
-- 后端镜像单独跑仍可访问 `/ui`（pip package-data 携带的 committed bundle）；本地单体开发流程不变：`uv run trove serve` + `cd frontend && npm run build`
+- 后端镜像是不带页面的纯 JSON API（所有路由在 `/v1` 下）；前端由独立容器/CDN 发布（`frontend/docker build → dist → nginx/CDN`）。本机开发：后端 `uv run trove serve`（:8000）+ 前端 `cd frontend && npm run dev`（:5173，HMR，反代 `/v1` → 后端）。
 
 Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres`. Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset); see README.
 
@@ -84,4 +84,4 @@ Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **co
 - **Never run eval_bird proactively** — cost-sensitive (billed LLM calls); do not launch eval runs without explicit instruction.
 - **Debug planner first**: wrong output columns from gen_sql usually root in the planner's `answer_columns` dictating output columns (the "Query plan (follow it...)" line in the user message outranks system rules; gen just obeys). Check the planner node's output in `~/.trove/runs/<run_id>.log` (look up run_id from `.trove/eval/results.jsonl` by question).
 - Eval environment: `scripts/eval_bird.py` connects to MySQL `root:root@127.0.0.1:3306/financial`, dev json at `/Users/zhaolipan/Downloads/minidev/MINIDEV/mini_dev_mysql.json`; swap KBs with `--kb-dir` (flat YAML dirs supported); per-question verdicts land in `.trove/eval/results.jsonl`, failures in `failures.jsonl` for `distill_lessons.py`.
-- Git habit: if a new feature, checkout a new branch, after test succeess, commit directly, merge to main.
+- Git habit: if a new feature, checkout a new branch, and test succeess, commit directly, merge to main but dont push, and never delete the feature branch. make sure there are no design docs or secert configs in every commit;

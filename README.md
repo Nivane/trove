@@ -59,14 +59,23 @@ REPL 命令：
 
 CLI 参数：`--datasource/-d`（demo 或 `scheme://` URL）· `--config/-f` · `--model/-m` · `--print/-p`（JSON 输出）· `--workflow/-w`（reflection/fixed/empty）· `--version/-v`
 
-## Web UI（trove serve）
+## Web UI（前后端分离）
+
+后端 `trove serve` 是纯 JSON API（全部路径在 `/v1` 下，含 `/v1/chat` SSE 流式），**不托管前端页面**。前端是独立构建的 SPA（Vue + Vite，`frontend/`），发布只依赖 CDN/nginx：
 
 ```bash
+# 后端（API，不含页面）
 uv run trove serve --datasource demo
-# 打开浏览器 → http://127.0.0.1:8000/ （自动跳转 /ui/）
+
+# 前端（本机开发：Vite dev server，:5173，HMR + 反代 /v1 → 127.0.0.1:8000）
+cd frontend && npm run dev
+# 打开浏览器 → http://localhost:5173/
+
+# 前端（生产构建产物）
+cd frontend && npm run build   # 产物在 frontend/dist/
 ```
 
-- 单页聊天界面（纯静态 HTML + vanilla JS，零构建），`GET /` 重定向到 `/ui/`；答案流式展示每步轨迹（意图/匹配表/计划/SQL/校验/反思，含耗时与重试轮次）；输入框支持 `/` 斜杠命令补全菜单
+- 单页聊天界面（Vue 3 + Element Plus，零后端页面依赖）
 - **任务面板**：多任务批处理时侧栏展示任务进度（待办/进行中/完成/失败/跳过），单条失败不中断批次；**HITL 确认框**：执行前展示 SQL + 语义说明，单任务提供 批准/否决，批任务提供三选项（仅当前 / 确认全部 / 不继续）
 - 接口：`POST /v1/chat`（SSE 流式）、`GET/POST/DELETE /v1/sessions[/{id}]`、`GET /v1/sessions/{id}/tasks`、`POST /v1/sessions/{id}/resume`（HITL 继续）、`POST /v1/sessions/{id}/compact|clear`、`GET /v1/catalog/*`、`GET/POST /v1/kb/*`；API 文档见 `/v1/docs`
 - 会话 ID 与界面语言（zh/en）保存在浏览器 localStorage；对话历史由服务端按 session 持久化

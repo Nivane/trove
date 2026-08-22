@@ -21,3 +21,9 @@ htmlcov/
 .env
 .trove_history
 .trove
+
+# Local dev process state (PID / logs)
+.dev/
+
+# Node modules (root-level vite cache; frontend/ has its own .gitignore)
+node_modules/
