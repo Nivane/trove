@@ -12,8 +12,8 @@
             :placeholder="t('auditAction', ui.lang)"
             clearable
             class="audit-filter-input"
-            @keyup.enter="load"
-            @clear="load"
+            @keyup.enter="onActionChange"
+            @clear="onActionChange"
           >
             <template #prefix>
               <Search :size="14" />
@@ -72,6 +72,17 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-bar">
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :total="total"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+          @current-change="load"
+          @size-change="onSizeChange"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -99,6 +110,9 @@ const ui = useUiStore()
 const entries = ref<AuditEntry[]>([])
 const loading = ref(false)
 const action = ref('')
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
 
 function okStatus(s: unknown): boolean {
   return typeof s === 'number' && s >= 200 && s < 400
@@ -107,9 +121,13 @@ function okStatus(s: unknown): boolean {
 async function load() {
   loading.value = true
   try {
-    const q = action.value ? `?action=${encodeURIComponent(action.value)}` : ''
-    const body = await apiGet(`/v1/admin/audit${q}`)
+    const params = new URLSearchParams()
+    if (action.value) params.set('action', action.value)
+    params.set('limit', String(pageSize.value))
+    params.set('offset', String((page.value - 1) * pageSize.value))
+    const body = await apiGet(`/v1/admin/audit?${params}`)
     entries.value = body.audit ?? []
+    total.value = body.total ?? 0
   } catch (e) {
     toastError(e)
   } finally {
@@ -117,5 +135,24 @@ async function load() {
   }
 }
 
+// 过滤条件变化回到第 1 页;页大小变化同理(当前页可能超出新分页范围)
+function onActionChange() {
+  page.value = 1
+  load()
+}
+
+function onSizeChange() {
+  page.value = 1
+  load()
+}
+
 onMounted(load)
 </script>
+
+<style scoped>
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+</style>

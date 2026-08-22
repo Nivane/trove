@@ -142,3 +142,17 @@ class TestAudit:
         assert len(created) >= 1
         empty = (await client.get("/v1/admin/audit?action=nonexistent")).json()["audit"]
         assert empty == []
+
+    async def test_audit_pagination_total(self, client):
+        """分页:total 带相同过滤条件,limit 截断只影响 audit 列表不影响 total。"""
+        await client.post("/v1/admin/users", json={"username": "grace", "password": "pw"})
+        body = (await client.get("/v1/admin/audit")).json()
+        assert body["total"] >= len(body["audit"]) >= 1
+        page = (await client.get("/v1/admin/audit?limit=1&offset=0")).json()
+        assert len(page["audit"]) == 1
+        assert page["total"] == body["total"]
+        filtered = (await client.get(
+            "/v1/admin/audit?action=admin.user.create&limit=1"
+        )).json()
+        assert len(filtered["audit"]) == 1
+        assert filtered["total"] >= 1

@@ -383,3 +383,29 @@ class AppDbStore:
             return [self._audit_row(row) async for row in cursor]
         finally:
             await conn.close()
+
+    async def count_audit(
+        self, user_id: int | None = None, action: str | None = None,
+    ) -> int:
+        """Count audit rows matching the same filters as ``list_audit``.
+
+        Kept as a separate COUNT query (same WHERE construction) so the
+        list path keeps its LIMIT/OFFSET shape; total powers pagination UI.
+        """
+        clauses, values = [], []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            values.append(user_id)
+        if action:
+            clauses.append("action = ?")
+            values.append(action)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                f"SELECT COUNT(*) FROM audit_log {where}", values,
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            await conn.close()
