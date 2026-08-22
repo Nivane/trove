@@ -1031,6 +1031,18 @@ class KbService:
         return self._init_file(
             "semantics.yml", "semantic_model", doc["semantic_model"], datasource, overwrite)
 
+    def init_semantics(
+        self, doc: dict, datasource: str, overwrite: bool = False,
+    ) -> bool:
+        """Write a semantics.yml from a full OSSIE semantic_model document.
+
+        ``doc`` carries the deterministic structure layer
+        (datasets with fields/primary keys + relationships) plus metrics —
+        a superset of what ``init_terms`` writes. See semantic_gen.py.
+        """
+        return self._init_file(
+            "semantics.yml", "semantic_model", doc["semantic_model"], datasource, overwrite)
+
     def init_examples(
         self, examples: list[dict], datasource: str, overwrite: bool = False,
     ) -> bool:

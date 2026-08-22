@@ -1,9 +1,11 @@
 """Semantic layer models shared by parsers and consumers.
 
-Semantic metrics are the live, external counterpart to KB terms: a
-business phrase → SQL mapping injected into the gen_sql prompt as
-context. Fields mirror the Apache Ossie core spec subset we consume
-and map 1:1 onto TermHit for retrieval (see kb.service.search_terms).
+Models mirror the Apache Ossie core spec subset we consume: datasets
+(with fields/primary keys), relationships (the declared join graph) and
+metrics (business phrase → aggregate SQL expression). Metrics map 1:1
+onto TermHit for retrieval (see kb.service.search_terms); datasets and
+relationships are the deterministic structure layer that later stages
+compile queries from (see services/kb/semantic_gen.py).
 """
 from dataclasses import dataclass, field
 
@@ -24,6 +26,52 @@ class SemanticMetric:
 
 
 @dataclass
+class SemanticField:
+    """A row-level attribute (dimension / filter) on a dataset.
+
+    expression: scalar (non-aggregate) SQL expression, dialect-picked.
+    is_time: OSSIE temporal-role flag — defaults to True for temporal
+        datatypes (Date/Time/DateTime/DateTimeTz) unless overridden.
+    """
+
+    name: str
+    expression: str
+    datatype: str | None = None
+    is_time: bool = False
+    description: str = ""
+    synonyms: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SemanticRelationship:
+    """A declared join edge: ``from_`` = many side, ``to`` = one side.
+
+    from_columns/to_columns are ordered key pairs (composite joins
+    supported); the many→one direction maps onto the OSSIE
+    ``relationships`` block and the MetricFlow convention that avoids
+    fan-out joins.
+    """
+
+    name: str
+    from_: str
+    to: str
+    from_columns: list[str] = field(default_factory=list)
+    to_columns: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SemanticDataset:
+    """A logical dataset: physical table + declared fields + keys."""
+
+    name: str
+    source: str = ""  # physical table reference (schema.table)
+    primary_key: list[str] = field(default_factory=list)
+    description: str = ""
+    synonyms: list[str] = field(default_factory=list)
+    fields: list[SemanticField] = field(default_factory=list)
+
+
+@dataclass
 class SemanticModel:
     """One parsed semantic model (OSSIE `semantic_model` entry)."""
 
@@ -31,3 +79,5 @@ class SemanticModel:
     description: str = ""
     instructions: str = ""  # model-level ai_context.instructions
     metrics: list[SemanticMetric] = field(default_factory=list)
+    datasets: list[SemanticDataset] = field(default_factory=list)
+    relationships: list[SemanticRelationship] = field(default_factory=list)

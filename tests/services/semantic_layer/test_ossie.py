@@ -102,3 +102,146 @@ def test_parse_rejects_metric_without_expression():
             "semantic_model:\n  - name: x\n    metrics:\n      - name: m\n",
             preferred_dialect="sqlite",
         )
+
+
+FULL_STRUCTURE = """
+semantic_model:
+  - name: financial
+    description: Full structure model
+    datasets:
+      - name: loan
+        source: financial.loan
+        primary_key: [loan_id]
+        fields:
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            datatype: String
+            description: loan repayment status
+            ai_context:
+              synonyms: [repayment state]
+          - name: issue_date
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: issue_date
+            datatype: Date
+      - name: account
+        source: financial.account
+        primary_key: [account_id]
+        fields:
+          - name: district_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: district_id
+            datatype: Integer
+            dimension:
+              is_time: false
+          - name: created_at
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: created_at
+            datatype: DateTime
+            dimension:
+              is_time: false
+    relationships:
+      - name: loan_to_account
+        from: loan
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+    metrics:
+      - name: total_loan_amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(loan.amount)
+"""
+
+
+def test_parse_full_structure_datasets_and_keys():
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+
+    assert [d.name for d in model.datasets] == ["loan", "account"]
+    assert model.datasets[0].source == "financial.loan"
+    assert model.datasets[0].primary_key == ["loan_id"]
+    assert model.datasets[1].primary_key == ["account_id"]
+
+
+def test_parse_fields_with_datatype_and_synonyms():
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+
+    fields = model.datasets[0].fields
+    assert [f.name for f in fields] == ["status", "issue_date"]
+    assert fields[0].expression == "status"
+    assert fields[0].datatype == "String"
+    assert fields[0].synonyms == ["repayment state"]
+    assert fields[0].is_time is False  # String → 非时态
+
+
+def test_is_time_defaults_from_temporal_datatype():
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+    loan_fields = model.datasets[0].fields
+
+    # 未显式声明 is_time,datatype=Date → 默认时态
+    assert loan_fields[1].is_time is True
+
+    account = model.datasets[1]
+    # 显式 is_time: false 覆盖时态默认
+    assert account.fields[0].is_time is False
+    assert account.fields[1].is_time is False
+
+
+def test_parse_relationships():
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+
+    assert len(model.relationships) == 1
+    rel = model.relationships[0]
+    assert rel.name == "loan_to_account"
+    assert rel.from_ == "loan"
+    assert rel.to == "account"
+    assert rel.from_columns == ["account_id"]
+    assert rel.to_columns == ["account_id"]
+
+
+def test_parse_relationship_with_unknown_endpoint_dropped():
+    bad = FULL_STRUCTURE.replace(
+        "        from: loan\n        to: account",
+        "        from: loan\n        to: ghosts",
+    )
+    model = parse_ossie(bad, preferred_dialect="sqlite")
+    assert model.relationships == []
+
+
+def test_parse_relationship_key_mismatch_dropped():
+    bad = FULL_STRUCTURE.replace(
+        "        from_columns: [account_id]\n        to_columns: [account_id]",
+        "        from_columns: [account_id, x]\n        to_columns: [account_id]",
+    )
+    model = parse_ossie(bad, preferred_dialect="sqlite")
+    assert model.relationships == []
+
+
+def test_parse_field_without_expression_dropped_lenient():
+    no_expr = (
+        "          - name: issue_date\n"
+        "            expression:\n"
+        "              dialects:\n"
+        "                - dialect: ANSI_SQL\n"
+        "                  expression: issue_date\n"
+    )
+    bad = FULL_STRUCTURE.replace(no_expr, "          - name: issue_date\n            datatype: Date\n")
+    model = parse_ossie(bad, preferred_dialect="sqlite")
+    assert [f.name for f in model.datasets[0].fields] == ["status"]
+
+
+def test_parse_backwards_compatible_without_fields():
+    """无 fields/relationships 的旧格式仍能解析(metrics/datasets 照常)。"""
+    model = parse_ossie(SAMPLE, preferred_dialect="sqlite")
+    assert model.datasets[0].fields == []
+    assert model.datasets[0].primary_key == []
+    assert model.relationships == []

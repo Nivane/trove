@@ -29,6 +29,12 @@ async def test_init_kb_with_llm_creates_files(tmp_path, sqlite_registry):
     semantics = (kb.kb_dir / "test_db" / "semantics.yml").read_text(encoding="utf-8")
     assert "number of students records" in semantics and "average grade" in semantics
     assert "COUNT(students.id)" in semantics
+    # 结构层:datasets 带 primary_key + fields(含 datatype);关系命名推断
+    import yaml
+    model = yaml.safe_load(semantics)["semantic_model"][0]
+    students = next(d for d in model["datasets"] if d["name"] == "students")
+    assert students["primary_key"] == ["id"]
+    assert {f["name"] for f in students["fields"]} >= {"id", "county", "grade"}
     # 确定性模板:count + 首条文本列 GROUP BY
     examples = (kb.kb_dir / "test_db" / "examples.yml").read_text(encoding="utf-8")
     assert "SELECT COUNT(*) FROM students" in examples
