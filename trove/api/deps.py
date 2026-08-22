@@ -1,7 +1,6 @@
 """Auth dependencies for API routes.
 
-FastAPI dependency-based auth (not global middleware) keeps the static
-``/ui`` mount, ``/v1/health`` and ``/v1/auth/login`` public for free.
+FastAPI dependency-based auth (not global middleware) keeps
 Every protected endpoint adds ``user: dict = Depends(get_current_user)``
 (or ``Depends(require_admin)``); the resolved user is also attached to
 ``request.state.user`` for audit.

@@ -135,6 +135,45 @@ class TestEndToEnd:
         assert session.messages[-1].metadata["sql"] == state.sql
         assert session.messages[-1].metadata["verdict"] == "OK"
 
+    async def test_year_grouped_query_generates_chart(self, tmp_path, demo_registry):
+        """按年聚合(整数值年份)也必须自动出图——回归:年份列被判为数值度量
+        导致无维度 → 无图表。"""
+        from trove.services.datasource.catalog import CatalogService
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.agent.session import SessionManager
+
+        store = SessionStore(home_dir=str(tmp_path / "home"))
+        config = AgentConfig(home=str(tmp_path / "home"), target="mock/model")
+        sql = (
+            "SELECT strftime('%Y', date) AS year, COUNT(*) AS cnt "
+            "FROM loan GROUP BY year ORDER BY year"
+        )
+        llm = ScriptedLLM(sql=sql)
+        services = GraphServices(
+            llm=llm,
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            config=config,
+        )
+        manager = SessionManager(
+            config=config,
+            session_store=store,
+            graphs=build_graphs(services, agentic=False),
+            llm_gateway=llm,
+        )
+        session = await manager.start_session(project_cwd=str(tmp_path))
+        state = await manager.ask(
+            session=session, question="每年发放的贷款笔数", workflow_name="reflection",
+        )
+        assert state.error == ""
+        assert state.chart is not None, (
+            f"year-grouped query produced no chart (columns={state.columns})"
+        )
+        assert state.chart["type"] in ("line", "bar")
+        assert state.chart["dimension"] == "year"
+        assert state.chart["measures"] == ["cnt"]
+
     async def test_multi_turn_conversation(self, full_stack):
         """Multiple questions in the same session accumulate history."""
         session = await full_stack.start_session(project_cwd="/tmp/integration")
