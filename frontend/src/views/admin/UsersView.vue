@@ -1,104 +1,241 @@
 <template>
   <div class="admin-view">
     <div class="view-header">
-      <h2>{{ t('users', ui.lang) }}</h2>
-      <el-button type="primary" @click="openCreate">{{
-        t('createUser', ui.lang)
-      }}</el-button>
+      <div>
+        <h2>{{ t('users', ui.lang) }}</h2>
+        <p class="view-desc">{{ t('usersPageDesc', ui.lang) }}</p>
+      </div>
+      <div class="view-header-right">
+        <span class="view-count">{{ users.length }} · {{ t('users', ui.lang) }}</span>
+        <el-button type="primary" @click="openCreate">
+          <UserPlus :size="15" class="btn-icon" />
+          {{ t('createUser', ui.lang) }}
+        </el-button>
+      </div>
     </div>
 
-    <el-table :data="users" v-loading="loading" class="users-table">
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column
-        prop="username"
-        :label="t('username', ui.lang)"
-        min-width="140"
-      />
-      <el-table-column
-        prop="display_name"
-        :label="t('displayName', ui.lang)"
-        min-width="140"
-      />
-      <el-table-column prop="role" :label="t('role', ui.lang)" width="90" />
-      <el-table-column :label="t('disabled', ui.lang)" width="90">
-        <template #default="{ row }">
-          <el-tag :type="row.disabled ? 'danger' : 'success'">{{
-            row.disabled ? '✓' : '–'
-          }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('datasources', ui.lang)" min-width="160">
-        <template #default="{ row }">
-          <el-select
-            v-model="row._datasources"
-            multiple
-            filterable
-            allow-create
-            size="small"
-            placeholder="—"
-            @change="(v: string[]) => saveDatasources(row, v)"
-          >
-            <el-option
-              v-for="d in knownDatasources"
-              :key="d"
-              :label="d"
-              :value="d"
-            />
-          </el-select>
-        </template>
-      </el-table-column>
-      <el-table-column :label="t('actions', ui.lang)" width="300" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" @click="resetPassword(row)">{{
-            t('resetPassword', ui.lang)
-          }}</el-button>
-          <el-button size="small" @click="toggleDisabled(row)">
-            {{ row.disabled ? t('enable', ui.lang) : t('disable', ui.lang) }}
-          </el-button>
-          <el-button size="small" type="danger" @click="del(row)">{{
-            t('deleteUser', ui.lang)
-          }}</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div class="admin-card">
+      <el-table
+        v-loading="loading"
+        :data="users"
+        class="admin-table"
+        empty-text="—"
+      >
+        <el-table-column :label="t('username', ui.lang)" min-width="200">
+          <template #default="{ row }">
+            <div class="user-cell">
+              <span class="user-avatar" :class="`user-avatar-${row.role}`">{{
+                avatar(row)
+              }}</span>
+              <div class="user-meta">
+                <span class="user-name">{{ row.username }}</span>
+                <span v-if="row.display_name" class="user-sub">{{
+                  row.display_name
+                }}</span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('role', ui.lang)" width="120">
+          <template #default="{ row }">
+            <span class="pill" :class="row.role === 'admin' ? 'pill-accent' : 'pill-neutral'">
+              <span class="role-dot" :class="row.role === 'admin' ? 'role-dot-admin' : 'role-dot-user'" />
+              {{ row.role === 'admin' ? t('adminRole', ui.lang) : t('userRole', ui.lang) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('disabled', ui.lang)" width="100">
+          <template #default="{ row }">
+            <span class="pill" :class="row.disabled ? 'pill-danger' : 'pill-ok'">
+              <span class="pill-dot" :class="row.disabled ? '' : 'pill-dot-ok'" />
+              {{ row.disabled ? t('statusDisabled', ui.lang) : t('statusActive', ui.lang) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('createdAt', ui.lang)" width="150">
+          <template #default="{ row }">
+            <span class="cell-muted">{{ fmtDateTime(row.created_at) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('datasources', ui.lang)" min-width="200">
+          <template #default="{ row }">
+            <el-select
+              v-model="row._datasources"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              :max-collapse-tags="2"
+              size="default"
+              class="grant-select"
+              :placeholder="t('grantPlaceholder', ui.lang)"
+              @change="(v: string[]) => saveDatasources(row, v)"
+            >
+              <el-option
+                v-for="d in knownDatasources"
+                :key="d"
+                :label="d"
+                :value="d"
+              />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('actions', ui.lang)" width="230" fixed="right">
+          <template #default="{ row }">
+            <div class="row-actions">
+              <button class="mini-btn" @click="resetPassword(row)">
+                <KeyRound :size="13" />
+                {{ t('resetPassword', ui.lang) }}
+              </button>
+              <button class="mini-btn" @click="openEdit(row)">
+                <Pencil :size="13" />
+                {{ t('edit', ui.lang) }}
+              </button>
+              <button class="mini-btn" @click="openTokens(row)">
+                <KeySquare :size="13" />
+                {{ t('apiTokens', ui.lang) }}
+              </button>
+              <button class="mini-btn mini-btn-danger" @click="del(row)">
+                <Trash2 :size="13" />
+                {{ t('deleteUser', ui.lang) }}
+              </button>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
 
     <el-dialog
-      v-model="createOpen"
-      :title="t('createUser', ui.lang)"
-      width="420"
+      v-model="dlgOpen"
+      :title="dlgIsEdit ? t('editUser', ui.lang) : t('createUser', ui.lang)"
+      width="440"
+      class="admin-dialog"
+      :close-on-click-modal="false"
     >
-      <el-form label-width="90">
+      <el-form label-position="top">
         <el-form-item :label="t('username', ui.lang)">
-          <el-input v-model="createForm.username" />
-        </el-form-item>
-        <el-form-item :label="t('loginPass', ui.lang)">
-          <el-input v-model="createForm.password" show-password />
+          <el-input
+            v-model="dlgForm.username"
+            :disabled="dlgIsEdit"
+            :placeholder="t('username', ui.lang)"
+          />
         </el-form-item>
         <el-form-item :label="t('displayName', ui.lang)">
-          <el-input v-model="createForm.display_name" />
+          <el-input
+            v-model="dlgForm.display_name"
+            :placeholder="dlgIsEdit ? t('displayNameOptional', ui.lang) : undefined"
+          />
+        </el-form-item>
+        <el-form-item :label="t('loginPass', ui.lang)">
+          <el-input
+            v-model="dlgForm.password"
+            type="password"
+            show-password
+            :placeholder="
+              dlgIsEdit ? t('passwordKeep', ui.lang) : t('loginPass', ui.lang)
+            "
+          />
         </el-form-item>
         <el-form-item :label="t('role', ui.lang)">
+          <el-select v-model="dlgForm.role" class="role-select">
+            <el-option :label="t('userRole', ui.lang)" value="user" />
+            <el-option :label="t('adminRole', ui.lang)" value="admin" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="dlgIsEdit" :label="t('disabled', ui.lang)">
           <el-switch
-            v-model="createForm.isAdmin"
-            active-text="admin"
-            inactive-text="user"
+            v-model="dlgForm.disabled"
+            :active-text="t('statusDisabled', ui.lang)"
+            :inactive-text="t('statusActive', ui.lang)"
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createOpen = false">Cancel</el-button>
-        <el-button type="primary" @click="create">OK</el-button>
+        <el-button @click="dlgOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button type="primary" :loading="saving" @click="saveUser">
+          {{ t('confirm', ui.lang) }}
+        </el-button>
       </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="tokensOpen"
+      :title="`${t('apiTokens', ui.lang)} · ${tokenTarget?.username || ''}`"
+      width="520"
+      class="admin-dialog"
+      :close-on-click-modal="false"
+    >
+      <div v-if="tokenRaw" class="token-reveal">
+        <div class="token-reveal-title">{{ t('tokenRevealTitle', ui.lang) }}</div>
+        <div class="token-reveal-row">
+          <code class="token-reveal-code">{{ tokenRaw }}</code>
+          <button class="mini-btn" @click="copyTokenRaw()">
+            <Check v-if="tokenCopied" :size="13" />
+            <Copy v-else :size="13" />
+            {{ t('copy', ui.lang) }}
+          </button>
+        </div>
+      </div>
+      <div class="token-create">
+        <el-input v-model="tokenForm.label" :placeholder="t('tokenLabel', ui.lang)" clearable />
+        <el-input-number
+          v-model="tokenForm.ttl"
+          :min="0"
+          :placeholder="t('tokenTtl', ui.lang)"
+        />
+        <el-button type="primary" :loading="tokenBusy" @click="createToken">
+          <Plus :size="15" class="btn-icon" />
+          {{ t('createToken', ui.lang) }}
+        </el-button>
+      </div>
+      <div class="token-hint">{{ t('tokenTtlHint', ui.lang) }}</div>
+      <div class="token-list">
+        <div v-if="!tokens.length && !tokenBusy" class="empty-note">
+          {{ t('noTokens', ui.lang) }}
+        </div>
+        <div v-for="tk in tokens" :key="tk.id" class="token-row">
+          <span class="token-dot" :class="tk.revoked ? 'token-dot-off' : 'token-dot-ok'" />
+          <div class="token-meta">
+            <span class="token-label">{{ tk.label || '—' }}</span>
+            <span class="token-sub">
+              {{ tk.revoked ? t('revoked', ui.lang) : t('created', ui.lang) }} ·
+              {{ fmtDateTime(tk.created_at) }}
+              <template v-if="tk.expires_at">
+                · {{ t('expiresAt', ui.lang) }} {{ fmtDateTime(tk.expires_at) }}
+              </template>
+            </span>
+          </div>
+          <button
+            v-if="!tk.revoked"
+            class="mini-btn mini-btn-danger"
+            @click="revokeToken(tk)"
+          >
+            <X :size="13" />
+            {{ t('revoke', ui.lang) }}
+          </button>
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { UserPlus, KeyRound, Pencil, Trash2, KeySquare, Plus, Check, X, Copy } from 'lucide-vue-next'
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
+import { toastError, notifySuccess } from '../../utils/notify'
+import { fmtDateTime, copyText } from '../../utils/format'
+
+interface TokenRow {
+  id: number
+  label?: string
+  revoked?: number | boolean
+  created_at?: string
+  expires_at?: string | null
+}
 
 interface UserRow {
   id: number
@@ -106,98 +243,240 @@ interface UserRow {
   display_name: string
   role: string
   disabled: boolean
+  created_at?: string
   _datasources: string[]
 }
 
 const ui = useUiStore()
 const users = ref<UserRow[]>([])
 const loading = ref(false)
-const createOpen = ref(false)
-const createForm = reactive({
+const saving = ref(false)
+const knownDatasources = ref<string[]>([])
+
+const dlgOpen = ref(false)
+const dlgIsEdit = ref(false)
+const editingId = ref<number | null>(null)
+const dlgForm = reactive({
   username: '',
   password: '',
   display_name: '',
-  isAdmin: false,
+  role: 'user',
+  disabled: false,
 })
-const knownDatasources = ref<string[]>([])
+
+// ── API tokens ──
+const tokensOpen = ref(false)
+const tokenTarget = ref<UserRow | null>(null)
+const tokens = ref<TokenRow[]>([])
+const tokenBusy = ref(false)
+const tokenRaw = ref('')
+const tokenCopied = ref(false)
+const tokenForm = reactive({
+  label: '',
+  ttl: 0,
+})
+
+function avatar(row: UserRow): string {
+  return (row.display_name || row.username || '?').trim()[0].toUpperCase()
+}
 
 async function load() {
   loading.value = true
   try {
-    const body = await apiGet('/v1/admin/users')
-    const ds = await apiGet('/v1/catalog/datasources')
-    knownDatasources.value = (ds.datasources ?? []).map(
+    const [uBody, dsBody] = await Promise.all([
+      apiGet('/v1/admin/users'),
+      apiGet('/v1/catalog/datasources'),
+    ])
+    knownDatasources.value = (dsBody.datasources ?? []).map(
       (d: { name: string }) => d.name,
     )
-    users.value = []
-    for (const u of body.users ?? []) {
-      const grants = await apiGet(`/v1/admin/users/${u.id}/datasources`)
-      users.value.push({ ...u, _datasources: grants.datasources ?? [] })
-    }
+    const list = (uBody.users ?? []) as UserRow[]
+    // hydrate grants in parallel (no N+1 serial round-trips)
+    const grants = await Promise.all(
+      list.map((u) =>
+        apiGet(`/v1/admin/users/${u.id}/datasources`).then(
+          (g) => g.datasources ?? [],
+        ).catch(() => [] as string[]),
+      ),
+    )
+    users.value = list.map((u, i) => ({ ...u, _datasources: grants[i] ?? [] }))
+  } catch (e) {
+    toastError(e)
   } finally {
     loading.value = false
   }
 }
 
 function openCreate() {
-  Object.assign(createForm, {
+  dlgIsEdit.value = false
+  editingId.value = null
+  Object.assign(dlgForm, {
     username: '',
     password: '',
     display_name: '',
-    isAdmin: false,
+    role: 'user',
+    disabled: false,
   })
-  createOpen.value = true
+  dlgOpen.value = true
 }
 
-async function create() {
+function openEdit(row: UserRow) {
+  dlgIsEdit.value = true
+  editingId.value = row.id
+  Object.assign(dlgForm, {
+    username: row.username,
+    password: '',
+    display_name: row.display_name ?? '',
+    role: row.role,
+    disabled: !!row.disabled,
+  })
+  dlgOpen.value = true
+}
+
+async function saveUser() {
+  if (!dlgForm.username.trim()) {
+    toastError(new Error(t('errUserRequired', ui.lang)), t('errUserRequired', ui.lang))
+    return
+  }
+  if (!dlgIsEdit.value && !dlgForm.password) {
+    toastError(new Error(t('errPassRequired', ui.lang)), t('errPassRequired', ui.lang))
+    return
+  }
+  saving.value = true
   try {
-    await apiPost('/v1/admin/users', {
-      username: createForm.username,
-      password: createForm.password,
-      display_name: createForm.display_name,
-      role: createForm.isAdmin ? 'admin' : 'user',
-    })
-    createOpen.value = false
+    if (dlgIsEdit.value && editingId.value != null) {
+      const body: Record<string, unknown> = {
+        role: dlgForm.role,
+        display_name: dlgForm.display_name,
+        disabled: dlgForm.disabled,
+      }
+      if (dlgForm.password) body.password = dlgForm.password
+      await apiPatch(`/v1/admin/users/${editingId.value}`, body)
+      notifySuccess(t('userUpdatedOk', ui.lang))
+    } else {
+      await apiPost('/v1/admin/users', {
+        username: dlgForm.username,
+        password: dlgForm.password,
+        display_name: dlgForm.display_name,
+        role: dlgForm.role,
+      })
+      notifySuccess(t('userCreatedOk', ui.lang))
+    }
+    dlgOpen.value = false
     await load()
-  } catch (e: any) {
-    ElMessage.error(String(e.message ?? e))
+  } catch (e) {
+    toastError(e)
+  } finally {
+    saving.value = false
   }
 }
 
 async function saveDatasources(row: UserRow, v: string[]) {
-  await apiPut(`/v1/admin/users/${row.id}/datasources`, { datasources: v })
+  try {
+    await apiPut(`/v1/admin/users/${row.id}/datasources`, { datasources: v })
+    notifySuccess(t('grantsUpdatedOk', ui.lang))
+  } catch (e) {
+    toastError(e)
+    await load()
+  }
 }
 
 async function resetPassword(row: UserRow) {
   try {
     const { value } = await ElMessageBox.prompt(
-      'New password',
-      'Reset password',
+      t('promptNewPassword', ui.lang),
+      t('resetPassword', ui.lang),
+      { inputType: 'password', confirmButtonText: t('confirm', ui.lang) },
     )
+    if (!value) return
     await apiPatch(`/v1/admin/users/${row.id}`, { password: value })
-    ElMessage.success('ok')
+    notifySuccess(t('passwordResetOk', ui.lang))
   } catch {
     /* cancelled */
   }
 }
 
-async function toggleDisabled(row: UserRow) {
-  try {
-    await apiPatch(`/v1/admin/users/${row.id}`, { disabled: !row.disabled })
-    await load()
-  } catch (e: any) {
-    ElMessage.error(String(e.message ?? e))
-  }
-}
-
 async function del(row: UserRow) {
   try {
-    await ElMessageBox.confirm(t('confirmDelete', ui.lang), 'Confirm')
+    await ElMessageBox.confirm(
+      `${t('confirmDelete', ui.lang)} (${row.username})`,
+      t('deleteUser', ui.lang),
+      { type: 'warning', confirmButtonText: t('delete', ui.lang) },
+    )
   } catch {
     return
   }
-  await apiDelete(`/v1/admin/users/${row.id}`)
-  await load()
+  try {
+    await apiDelete(`/v1/admin/users/${row.id}`)
+    notifySuccess(t('userDeletedOk', ui.lang))
+    await load()
+  } catch (e) {
+    toastError(e)
+  }
+}
+
+async function openTokens(row: UserRow) {
+  tokenTarget.value = row
+  tokens.value = []
+  tokenRaw.value = ''
+  Object.assign(tokenForm, { label: '', ttl: 0 })
+  tokensOpen.value = true
+  await loadTokens()
+}
+
+async function loadTokens() {
+  if (tokenTarget.value == null) return
+  tokenBusy.value = true
+  try {
+    const body = await apiGet(`/v1/admin/users/${tokenTarget.value.id}/tokens`)
+    tokens.value = (body.tokens ?? []) as TokenRow[]
+  } catch (e) {
+    toastError(e)
+  } finally {
+    tokenBusy.value = false
+  }
+}
+
+async function createToken() {
+  if (tokenTarget.value == null) return
+  tokenBusy.value = true
+  tokenRaw.value = ''
+  try {
+    const body = await apiPost(`/v1/admin/users/${tokenTarget.value.id}/tokens`, {
+      label: tokenForm.label,
+      ttl_hours: tokenForm.ttl > 0 ? tokenForm.ttl : undefined,
+    })
+    tokenRaw.value = body.token as string
+    tokenForm.label = ''
+    tokenForm.ttl = 0
+    notifySuccess(t('tokenCreatedOk', ui.lang))
+    await loadTokens()
+  } catch (e) {
+    toastError(e)
+  } finally {
+    tokenBusy.value = false
+  }
+}
+
+async function revokeToken(tk: TokenRow) {
+  try {
+    await apiDelete(`/v1/admin/tokens/${tk.id}`)
+    notifySuccess(t('tokenRevokedOk', ui.lang))
+    await loadTokens()
+  } catch (e) {
+    toastError(e)
+  }
+}
+
+async function copyTokenRaw() {
+  if (!tokenRaw.value) return
+  const ok = await copyText(tokenRaw.value)
+  if (!ok) {
+    notifySuccess(t('copyFailed', ui.lang))
+    return
+  }
+  tokenCopied.value = true
+  window.setTimeout(() => (tokenCopied.value = false), 1600)
 }
 
 onMounted(load)

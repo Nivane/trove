@@ -20,6 +20,30 @@ async function onUnauthorized() {
   }
 }
 
+/** Extract a human error message from a failed response: the backend's
+ *  FastAPI errors are `{"detail": "..."}` — parsing that beats dumping the
+ *  raw JSON string into the UI (silent failure in admin panel). */
+async function apiError(resp: Response): Promise<ApiError> {
+  const raw = await resp.text().catch(() => '')
+  let message = raw || resp.statusText
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed.detail === 'string') {
+        message = parsed.detail
+      } else if (parsed && Array.isArray(parsed.detail)) {
+        message = parsed.detail
+          .map((d: { msg?: string }) => d?.msg ?? '')
+          .filter(Boolean)
+          .join('; ')
+      }
+    } catch {
+      /* keep raw text */
+    }
+  }
+  return new ApiError(resp.status, message)
+}
+
 export async function apiFetch(
   path: string,
   options: RequestInit = {},
@@ -46,10 +70,7 @@ export async function apiGet<T = any>(
 ): Promise<T> {
   const resp = await apiFetch(path, { ...options, method: 'GET' })
   if (!resp.ok) {
-    throw new ApiError(
-      resp.status,
-      await resp.text().catch(() => resp.statusText),
-    )
+    throw await apiError(resp)
   }
   return resp.json()
 }
@@ -68,10 +89,7 @@ export async function apiPost<T = any>(
     options,
   )
   if (!resp.ok) {
-    throw new ApiError(
-      resp.status,
-      await resp.text().catch(() => resp.statusText),
-    )
+    throw await apiError(resp)
   }
   return resp.json()
 }
@@ -84,21 +102,13 @@ export async function apiPatch<T = any>(
     method: 'PATCH',
     body: JSON.stringify(body ?? {}),
   })
-  if (!resp.ok)
-    throw new ApiError(
-      resp.status,
-      await resp.text().catch(() => resp.statusText),
-    )
+  if (!resp.ok) throw await apiError(resp)
   return resp.json()
 }
 
 export async function apiDelete<T = any>(path: string): Promise<T> {
   const resp = await apiFetch(path, { method: 'DELETE' })
-  if (!resp.ok)
-    throw new ApiError(
-      resp.status,
-      await resp.text().catch(() => resp.statusText),
-    )
+  if (!resp.ok) throw await apiError(resp)
   if (resp.status === 204 || resp.status === 205)
     return undefined as unknown as T
   return resp.json()
@@ -112,10 +122,6 @@ export async function apiPut<T = any>(
     method: 'PUT',
     body: JSON.stringify(body ?? {}),
   })
-  if (!resp.ok)
-    throw new ApiError(
-      resp.status,
-      await resp.text().catch(() => resp.statusText),
-    )
+  if (!resp.ok) throw await apiError(resp)
   return resp.json()
 }

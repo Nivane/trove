@@ -1,56 +1,116 @@
 <template>
   <div class="admin-view">
     <div class="view-header">
-      <h2>{{ t('audit', ui.lang) }}</h2>
-      <div class="audit-filters">
-        <el-input
-          v-model="action"
-          :placeholder="t('auditAction', ui.lang)"
-          clearable
-          style="width: 200px"
-          @keyup.enter="load"
-        />
-        <el-button :icon="Refresh" circle @click="load" />
+      <div>
+        <h2>{{ t('audit', ui.lang) }}</h2>
+        <p class="view-desc">{{ t('auditPageDesc', ui.lang) }}</p>
+      </div>
+      <div class="view-header-right">
+        <div class="audit-filters">
+          <el-input
+            v-model="action"
+            :placeholder="t('auditAction', ui.lang)"
+            clearable
+            class="audit-filter-input"
+            @keyup.enter="load"
+            @clear="load"
+          >
+            <template #prefix>
+              <Search :size="14" />
+            </template>
+          </el-input>
+          <el-button class="refresh-btn" :loading="loading" @click="load">
+            <RefreshCw :size="15" class="btn-icon" />
+            {{ t('refresh', ui.lang) }}
+          </el-button>
+        </div>
       </div>
     </div>
-    <el-table :data="entries" v-loading="loading" class="audit-table">
-      <el-table-column prop="ts" :label="t('auditTime', ui.lang)" width="210" />
-      <el-table-column
-        prop="username"
-        :label="t('auditUser', ui.lang)"
-        width="130"
-      />
-      <el-table-column
-        prop="action"
-        :label="t('auditAction', ui.lang)"
-        min-width="160"
-      />
-      <el-table-column prop="method" label="method" width="80" />
-      <el-table-column
-        prop="path"
-        :label="t('auditPath', ui.lang)"
-        min-width="200"
-      />
-      <el-table-column
-        prop="status"
-        :label="t('auditStatus', ui.lang)"
-        width="80"
-      />
-    </el-table>
+
+    <div class="admin-card">
+      <el-table
+        v-loading="loading"
+        :data="entries"
+        class="admin-table"
+        empty-text="—"
+      >
+        <el-table-column :label="t('auditTime', ui.lang)" width="180">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ fmtDateTime(row.ts) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('auditUser', ui.lang)" width="150">
+          <template #default="{ row }">
+            <span class="cell-user">{{ row.username || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('auditAction', ui.lang)" min-width="170">
+          <template #default="{ row }">
+            <span class="pill pill-accent">{{ row.action }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="method" width="84">
+          <template #default="{ row }">
+            <span
+              class="method-badge"
+              :class="methodClass(row.method)"
+              >{{
+                row.method || '—'
+              }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('auditPath', ui.lang)" min-width="220">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ row.path }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('auditStatus', ui.lang)" width="90">
+          <template #default="{ row }">
+            <span
+              class="pill"
+              :class="okStatus(row.status) ? 'pill-ok' : 'pill-danger'"
+            >
+              {{ row.status ?? '—' }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { RefreshCw, Search } from 'lucide-vue-next'
 import { apiGet } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
+import { toastError } from '../../utils/notify'
+import { fmtDateTime } from '../../utils/format'
+
+interface AuditEntry {
+  ts?: string
+  username?: string
+  action?: string
+  method?: string
+  path?: string
+  status?: number
+  [k: string]: unknown
+}
 
 const ui = useUiStore()
-const entries = ref<Record<string, unknown>[]>([])
+const entries = ref<AuditEntry[]>([])
 const loading = ref(false)
 const action = ref('')
+
+function okStatus(s: unknown): boolean {
+  return typeof s === 'number' && s >= 200 && s < 400
+}
+
+function methodClass(m: unknown): string {
+  const v = (typeof m === 'string' ? m : '').toLowerCase()
+  return `method-${v || 'other'}`
+}
 
 async function load() {
   loading.value = true
@@ -58,6 +118,8 @@ async function load() {
     const q = action.value ? `?action=${encodeURIComponent(action.value)}` : ''
     const body = await apiGet(`/v1/admin/audit${q}`)
     entries.value = body.audit ?? []
+  } catch (e) {
+    toastError(e)
   } finally {
     loading.value = false
   }
