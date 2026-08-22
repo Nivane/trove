@@ -562,7 +562,8 @@ class TestKbInitLLM:
         from trove.core.types import SchemaInfo, TableInfo, ColumnInfo
         from trove.cli.commands import kb_cmds
 
-        monkeypatch.setattr(kb_cmds, "INIT_CHUNK_TABLES", 1)
+        monkeypatch.setattr(
+            "trove.services.kb.init_pipeline.INIT_CHUNK_TABLES", 1)
 
         class FakeRegistry:
             default_name = "test_db"
