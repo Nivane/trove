@@ -33,7 +33,7 @@ export const router = createRouter({
         {
           path: 'kb',
           name: 'admin-kb',
-          component: () => import('../views/admin/KbLessonsView.vue'),
+          component: () => import('../views/admin/KbView.vue'),
         },
         {
           path: 'audit',
@@ -44,6 +44,11 @@ export const router = createRouter({
           path: 'datasources',
           name: 'admin-datasources',
           component: () => import('../views/admin/DatasourcesView.vue'),
+        },
+        {
+          path: 'settings',
+          name: 'admin-settings',
+          component: () => import('../views/admin/SettingsView.vue'),
         },
       ],
     },

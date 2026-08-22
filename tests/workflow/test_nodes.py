@@ -1234,6 +1234,39 @@ class TestSQLHelpers:
         assert valid is False
         assert len(errors) > 0
 
+    def test_validate_sql_includes_position(self):
+        """SIMPLE_REGENERATE 载体:ParseError 带 line/col/token,供定向修复。
+
+        回归:语法错误只报 'Parse error: ...' 时,模型要通读整句重写;
+        现在带 'at line N, col M near token X' → fix prompt 只需改那一处。"""
+        valid, errors = validate_sql("SELECT * FRM t", "mysql")
+        assert valid is False
+        assert any("at line 1, col" in e and "near token" in e for e in errors), errors
+
+    def test_validate_sql_position_missing_on_non_syntax(self):
+        """非 ParseError(如多语句/空结果)不伪造成语法修复。"""
+        valid, errors = validate_sql("SELECT 1; SELECT 2;", "sqlite")
+        assert valid is False
+        assert not any("at line" in e for e in errors)
+
+    def test_fix_prompt_injects_target_hint(self):
+        """带位置的语法错误 → fix prompt 明示只修那一处,不整句重构。"""
+        from trove.prompts import render
+
+        errs = ["Parse error: Unexpected token at line 1, col 14 near token 't'"]
+        prompt = build_fix_prompt("SELECT * FRM t", errs, lang="en")
+        assert "line 1, column 14" in prompt
+        assert "Fix ONLY that token" in prompt
+        # 无位置(非语法)错误 → 不注入定向段
+        prompt2 = build_fix_prompt("SELECT 1", ["some other issue"], lang="en")
+        assert "Fix ONLY that token" not in prompt2
+
+    def test_fix_prompt_target_hint_chinese(self):
+        errs = ["Parse error: Unexpected token at line 3, col 5 near token 'x'"]
+        prompt = build_fix_prompt("SELEC", errs, lang="zh")
+        assert "第 3 行" in prompt and "第 5 列" in prompt
+        assert "只修这一处" in prompt
+
 
 # ── probe_query(只读执行探针)──────────────────────────
 
@@ -1488,6 +1521,202 @@ class TestExtraColumnsMismatch:
         assert extra_columns_mismatch({"answer_columns": ["*"]}, ["x"], "q") == []
 
 
+class TestEnsureAggregateAnswerColumn:
+    """分组聚合兜底:声明聚合但 answer_columns 缺聚合指标列 → 自动补列。
+
+    回归:planner 把「每个地区的贷款用户数量」只写成 answer_columns=["district.A2"]
+    (聚合意图仅在 aggregation 字段),gen_sql 收到单列指引只输出地区列、丢掉 count。
+    """
+
+    def _import(self):
+        from trove.workflow.nodes.planner import ensure_aggregate_answer_column
+        return ensure_aggregate_answer_column
+
+    def test_missing_metric_column_is_appended(self):
+        f = self._import()
+        plan = {"answer_columns": ["district.A2"], "aggregation": "count",
+                "tables": ["district"]}
+        fixed = f(plan)
+        assert fixed is not None
+        assert fixed["answer_columns"] == ["district.A2", "count(*)"]
+        assert fixed["plan_field"] == "ensure_aggregate_answer_column"
+
+    def test_existing_expression_column_untouched(self):
+        f = self._import()
+        plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"],
+                "aggregation": "count"}
+        assert f(plan) is None
+
+    def test_no_aggregation_untouched(self):
+        f = self._import()
+        assert f({"answer_columns": ["district.A2"], "aggregation": "none"}) is None
+        assert f({"answer_columns": ["district.A2"]}) is None
+        assert f(None) is None
+
+    def test_bare_metric_and_no_answer_columns(self):
+        """无实体列但声明聚合 → 补一个聚合列(纯 count 题走 count-shape 校验)。"""
+        f = self._import()
+        fixed = f({"answer_columns": [], "aggregation": "count"})
+        assert fixed is not None
+        assert fixed["answer_columns"] == ["count(*)"]
+
+    def test_qualified_aggregation_function_extracted(self):
+        """aggregation 带修饰(count(distinct x)) → 取函数名作占位列。"""
+        f = self._import()
+        fixed = f({"answer_columns": ["district.A2"],
+                   "aggregation": "count(distinct account_id)"})
+        assert fixed["answer_columns"] == ["district.A2", "count(*)"]
+
+    def test_aggregate_expr_answer_column_quota(self):
+        """含聚合表达式 answer 列时,聚合别名的多余列按配额豁免。
+
+        回归:计划 answer_columns 含 COUNT(...) 表达式(§"(" 被 refs 过滤),
+        执行结果里的聚合别名(loan_count)曾被打成"多余列"→ 正确 SQL 死循环。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
+        assert extra_columns_mismatch(
+            plan, ["A2", "loan_count"], "查看每个地区的贷款用户数量",
+        ) == []
+        # 表达式的别名可以任意
+        assert extra_columns_mismatch(
+            plan, ["A2", "cnt"], "查看每个地区的贷款用户数量",
+        ) == []
+        # 未加别名的裸聚合
+        assert extra_columns_mismatch(
+            plan, ["A2", "count(loan.loan_id)"], "查看每个地区的贷款用户数量",
+        ) == []
+
+    def test_aggregate_signature_reconciliation_with_sql(self):
+        """(sqlglot 结构化对账)给出真实 SQL 时,聚合别名按签名划掉,不再靠配额。
+
+        覆盖 layer2 补查的实际输入形态:plan 含 count 表达式 + SQL 真正
+        投影了 COUNT(...) AS loan_count → 该列必须是聚合输出而非法外列。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
+        sql = (
+            "SELECT district.A2, COUNT(loan.loan_id) AS loan_count "
+            "FROM loan JOIN account ON loan.account_id = account.account_id "
+            "JOIN district ON account.district_id = district.district_id "
+            "GROUP BY district.A2"
+        )
+        assert extra_columns_mismatch(
+            plan, ["A2", "loan_count"], "查看每个地区的贷款用户数量", sql,
+        ) == []
+
+    def test_aggregate_signature_count_star_reconciliation(self):
+        """COUNT(*) 通配签名也归到计划里的 count(loan.loan_id) → 不误报。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
+        sql = (
+            "SELECT district.A2, COUNT(*) AS n "
+            "FROM loan JOIN account ON loan.account_id = account.account_id "
+            "JOIN district ON account.district_id = district.district_id "
+            "GROUP BY district.A2"
+        )
+        assert extra_columns_mismatch(
+            plan, ["A2", "n"], "查看每个地区的贷款用户数量", sql,
+        ) == []
+
+    def test_aggregate_declared_in_plan_field(self):
+        """plan 只在 aggregation 字段声明聚合(answer_columns 无表达式)→ 不误报。
+
+        回归:planner 把聚合意图写成 aggregation='count'、answer_columns 只列
+        district.A2 时,SQL 里的 COUNT(DISTINCT ...) AS num_loan_users 曾是
+        "多余列"→ 正确 SQL 被连环打回。聚合投影列是声明聚合后的预期输出。
+        """
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {"answer_columns": ["district.A2"], "aggregation": "count"}
+        sql = (
+            "SELECT district.A2, COUNT(DISTINCT loan.account_id) AS num_loan_users "
+            "FROM loan JOIN account ON loan.account_id = account.account_id "
+            "JOIN district ON account.district_id = district.district_id "
+            "GROUP BY district.A2"
+        )
+        assert extra_columns_mismatch(
+            plan, ["A2", "num_loan_users"], "查看每个地区的贷款用户数量", sql,
+        ) == []
+        # 无 SQL 时回退配额同样豁免(兼容无 SQL 白话调用)
+        assert extra_columns_mismatch(
+            plan, ["A2", "num_loan_users"], "查看每个地区的贷款用户数量",
+        ) == []
+
+    def test_aggregate_declared_still_catches_nonagg_extra(self):
+        """声明聚合只豁免聚合投影列;非聚合的多余列仍判冲突。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {"answer_columns": ["district.A2"], "aggregation": "count"}
+        sql = (
+            "SELECT district.A2, COUNT(DISTINCT loan.account_id) AS num_loan_users, "
+            "account.district_id "
+            "FROM loan JOIN account ON loan.account_id = account.account_id "
+            "JOIN district ON account.district_id = district.district_id "
+            "GROUP BY district.A2"
+        )
+        errors = extra_columns_mismatch(
+            plan, ["A2", "num_loan_users", "district_id"], "查看每个地区的贷款用户数量", sql,
+        )
+        assert len(errors) == 1
+        assert "district_id" in errors[0]
+        assert "num_loan_users" not in errors[0]
+
+    def test_aggregate_quota_overflow_still_caught(self):
+        """超过聚合表达式配额的多余列仍判冲突(配额只豁免聚合计数的列)。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        errors = extra_columns_mismatch(
+            {"answer_columns": ["district.A2", "count(loan.loan_id)"]},
+            ["A2", "loan_count", "loan.amount"],
+            "查看每个地区的贷款用户数量",
+        )
+        assert len(errors) == 1
+        assert "loan.amount" in errors[0]
+        assert "loan_count" not in errors[0]
+
+    def test_aggregate_signature_unrelated_extra_still_caught(self):
+        """签名对账只划聚合输出列;与计划无关的多余列(即使带别名)仍判冲突。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
+        sql = (
+            "SELECT district.A2, COUNT(loan.loan_id) AS loan_count, "
+            "SUM(trans.amount) AS total_movements "
+            "FROM loan JOIN account ON loan.account_id = account.account_id "
+            "JOIN district ON account.district_id = district.district_id "
+            "GROUP BY district.A2"
+        )
+        errors = extra_columns_mismatch(
+            plan, ["A2", "loan_count", "total_movements"],
+            "查看每个地区的贷款用户数量", sql,
+        )
+        assert len(errors) == 1
+        assert "total_movements" in errors[0]
+        assert "loan_count" not in errors[0]
+
+    def test_aggregate_quota_multiple_exprs(self):
+        """多个聚合表达式各占一个配额,配额用尽后的多余列仍判冲突。"""
+        from trove.workflow.nodes.planner import extra_columns_mismatch
+
+        plan = {
+            "answer_columns": [
+                "district.A2", "count(loan.loan_id)", "sum(loan.amount)",
+            ],
+        }
+        # 聚合别名占满配额 → 通过
+        assert extra_columns_mismatch(
+            plan, ["A2", "loan_count", "total_amount"], "q",
+        ) == []
+        # 超出配额一个列 → 冲突
+        errors = extra_columns_mismatch(
+            plan, ["A2", "loan_count", "total_amount", "extra"], "q",
+        )
+        assert len(errors) == 1
+        assert "extra" in errors[0]
+
+
 # ── gen_sql subgraph nodes: generate / validate ──────────
 
 
@@ -1529,6 +1758,48 @@ class TestGenerate:
         )
         await generate(state)
         assert "failed validation" in llm.last_messages[-1]["content"]
+
+    async def test_simple_syntax_fix_uses_fast_model(self):
+        """SIMPLE_REGENERATE:带位置的语法错误走 fast 档模型,不烧推理级模型。
+
+        复杂问题时正常修复会用推理级模型,但局部 token 修复用 fast 即可。"""
+        captured = {}
+
+        class CaptureLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["model"] = model
+                return "```sql\nSELECT * FROM t;\n```"
+
+        config = AgentConfig(target="mock/reasoner", model_fast="mock/fast")
+        generate = make_generate(CaptureLLM(), config)
+        from trove.workflow.state import GenSQLState
+        state = GenSQLState(
+            question="q", schema_context="", dialect="mysql", complexity="complex",
+            sql="SELECT * FRM t", attempts=1,
+            validation_errors=["Parse error: at line 1, col 14 near token 't'"],
+        )
+        await generate(state)
+        assert captured["model"] == "mock/fast"
+
+    async def test_non_syntax_validation_error_keeps_full_model(self):
+        """非语法(如语义类)错误仍走 model_for 档(复杂 → 推理级),不被降级。"""
+        captured = {}
+
+        class CaptureLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["model"] = model
+                return "```sql\nSELECT 1;\n```"
+
+        config = AgentConfig(target="mock/reasoner", model_fast="mock/fast")
+        generate = make_generate(CaptureLLM(), config)
+        from trove.workflow.state import GenSQLState
+        state = GenSQLState(
+            question="q", schema_context="", dialect="mysql", complexity="complex",
+            sql="SELECT 1", attempts=1,
+            validation_errors=["Semantic issue: wrong join"],
+        )
+        await generate(state)
+        assert captured["model"] == "mock/reasoner"
 
     async def test_skips_when_error_present(self):
         class RaisingLLM:
@@ -2418,6 +2689,7 @@ class TestOutput:
             row_count=2,
             execution_time_ms=15.0,
             verdict="OK",
+            lang="en",
         )
         update = await output(state)
         response = update["final_response"]
@@ -2426,22 +2698,35 @@ class TestOutput:
         assert "Alameda" in response
         assert "2 rows" in response
 
+    async def test_format_zh_localized_headings(self):
+        """回答分段标题跟随语言:zh 时不再输出写死的英文标题。"""
+        state = make_state(
+            sql="SELECT 1", columns=["x"], rows=[["1"]], row_count=1, lang="zh",
+        )
+        response = (await output(state))["final_response"]
+        assert "回答" in response
+        assert "问题" in response
+        assert "生成的 SQL" in response
+        assert "结果 (1 行)" in response
+        assert "Generated SQL" not in response
+
     async def test_format_empty_result(self):
-        update = await output(make_state(row_count=0))
+        update = await output(make_state(row_count=0, lang="en"))
         assert "zero rows" in update["final_response"]
 
     async def test_format_no_execution(self):
         """The 'empty' workflow has no execute_sql data (row_count stays -1)."""
-        update = await output(make_state())
+        update = await output(make_state(lang="en"))
         assert "(No query executed)" in update["final_response"]
 
     async def test_format_limits_table_rows(self):
-        rows = [[f"row{i}"] for i in range(30)]
-        update = await output(make_state(columns=["col"], rows=rows, row_count=30))
+        rows = [[f"row{i}"] for i in range(60)]
+        update = await output(
+            make_state(columns=["col"], rows=rows, row_count=60, lang="en"))
         assert "10 more rows" in update["final_response"]
 
     async def test_error_state_formats_error_section(self):
-        update = await output(make_state(error="SQL generation failed after 3 attempts"))
+        update = await output(make_state(error="SQL generation failed after 3 attempts", lang="en"))
         response = update["final_response"]
         assert "**Error**" in response
         assert "3 attempts" in response
@@ -2449,6 +2734,7 @@ class TestOutput:
     async def test_kb_hits_rendered(self):
         state = make_state(
             row_count=0,
+            lang="en",
             kb_hits=[
                 {"kind": "term", "term": "平均成绩", "mapping": "AVG(students.grade)"},
                 {"kind": "example", "question": "各地区平均成绩"},
@@ -2460,18 +2746,18 @@ class TestOutput:
         assert "1 example used" in response
 
     async def test_no_kb_hits_no_kb_line(self):
-        response = (await output(make_state(row_count=0)))["final_response"]
+        response = (await output(make_state(row_count=0, lang="en")))["final_response"]
         assert "Knowledge base" not in response
 
     async def test_low_confidence_rendered(self):
         """多候选不一致耗尽 → 输出主候选 + 低置信标注。"""
-        state = make_state(row_count=0, consensus=False)
+        state = make_state(row_count=0, consensus=False, lang="en")
         response = (await output(state))["final_response"]
         assert "Confidence" in response
         assert "low" in response.lower()
 
     async def test_high_confidence_no_note(self):
-        response = (await output(make_state(row_count=0)))["final_response"]
+        response = (await output(make_state(row_count=0, lang="en")))["final_response"]
         assert "Confidence" not in response
 
     async def test_clarification_rendered(self):

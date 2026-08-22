@@ -200,6 +200,17 @@ class TestValidate:
             ["pct"], [[44.26229508196721]], 1,
         ) is None
 
+    def test_percent_without_aggregate_division_passes(self):
+        """除法两侧无聚合调用(列常量相除,结果不受整数除法截断影响)→ 不误报。
+
+        防误报:整数除法陷阱只对聚合比值题成立;纯列除法 x/y 结果精确,
+        拦截只会把正确 SQL 打回重写。"""
+        assert validate(
+            "what percentage of clients",
+            "SELECT (male_count / total) * 100 FROM stats",
+            ["pct"], [[44.26229508196721]], 1,
+        ) is None
+
     def test_percent_none_value_fails(self):
         reason = validate(
             "what percentage of clients", "SELECT NULL",
@@ -306,6 +317,41 @@ WHERE YEAR(l.date) = 1997
   AND l.amount = (
       SELECT MIN(l2.amount) FROM loan l2 WHERE YEAR(l2.date) = 1997
   )
+"""
+        reason = validate(q, sql, ["account_id"], [[176]], 1, lang="en")
+        assert reason and "scope" in reason
+
+    def test_global_extreme_subquery_on_other_table_passes(self):
+        """非关联全局极值子查询(表不与外层过滤相交)→ 不误报。
+
+        eval 金标形态:「account, (SELECT MAX(A11)-MIN(A11) FROM district)」
+        + 对 client/disp 的外层过滤。过滤器不能塞进「对整个 district 表
+        取极值」的子查询,判歧义只会把正确 SQL 打回重写。
+        """
+        q = ("List out the account numbers of female clients who are oldest "
+             "and has lowest average salary, calculate the gap between this "
+             "lowest average salary with the highest average salary?")
+        sql = """
+SELECT `T1`.`account_id`,
+       (SELECT MAX(`T2`.`A11`) - MIN(`T2`.`A11`) FROM `district` AS `T2`)
+FROM `account` AS `T1`
+INNER JOIN `district` AS `T3` ON `T3`.`district_id` = `T1`.`district_id`
+INNER JOIN `disp` AS `T4` ON `T1`.`account_id` = `T4`.`account_id`
+INNER JOIN `client` AS `T5` ON `T4`.`client_id` = `T5`.`client_id`
+WHERE `T5`.`gender` = 'F'
+  AND `T1`.`district_id` = (SELECT `district_id` FROM `client`
+                            WHERE `gender` = 'F' ORDER BY `birth_date` DESC LIMIT 1)
+"""
+        assert validate(q, sql, ["account_id"], [[1]], 1, lang="en") is None
+
+    def test_same_table_scalar_subquery_still_flags(self):
+        """极值子查询与外层过滤读同一张表 → 维持判歧义(表集合交集启发式)。"""
+        q = "list the accounts that have the lowest approved amount approved in 1997"
+        sql = """
+SELECT a.account_id
+FROM loan a
+WHERE YEAR(a.date) = 1997
+  AND a.amount = (SELECT MIN(b.amount) FROM loan b WHERE YEAR(b.date) = 1995)
 """
         reason = validate(q, sql, ["account_id"], [[176]], 1, lang="en")
         assert reason and "scope" in reason
@@ -538,6 +584,20 @@ class TestF2FilterCoverage:
                "(SELECT AVG(A4) FROM account WHERE gender = 'F' "
                "AND district_id = d.district_id) < 2000")
         assert verify(q, sql, ["count"], [[3]], 1, lang="en") == (None, [])
+
+    def test_female_question_with_birth_number_encoding_passes(self):
+        """无 gender 列的数据源(性别编进 birth_number)→ 不误报 F2-a。
+
+        财务库 client 表无 gender 列,正确写法按 birth_number 推断性别
+        (female = birth_number 超 9999 / 奇偶)。强求 gender 条件只会把
+        正确 SQL 打回重写。
+        """
+        q = ("List out the account numbers of female clients who are oldest "
+             "and has lowest average salary?")
+        sql = ("SELECT account_id FROM disp d "
+               "JOIN client c ON c.client_id = d.client_id "
+               "WHERE c.birth_number > 9999 AND d.type = 'OWNER'")
+        assert verify(q, sql, ["account_id"], [["1"]], 1, lang="en") == (None, [])
 
     def test_year_question_without_date_condition_fails(self):
         q = ("Among the accounts who have approved loan date on 1/1/1997, "

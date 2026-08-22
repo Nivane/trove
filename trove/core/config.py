@@ -95,6 +95,9 @@ class AgentConfig:
     insights: bool = False  # 执行后 LLM 基于结果生成洞察
     result_cache: bool = False  # 精确问题结果缓存(进程内存;命中直接返回已验证答案,跳过 HITL 确认)
     decompose_llm_judge: bool = True  # 多任务拆解 LLM 判断层:规则未命中但疑似多步时花一次 LLM 判断;false = 纯正则门控
+    # 结果限制(管理台可配):答案表格单次展示行数 / 查询结果行数上限
+    result_display_rows: int = 50
+    result_max_rows: int = 1000
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -269,6 +272,8 @@ class ConfigLoader:
             hitl=agent_section.get("hitl", False),
             insights=agent_section.get("insights", False),
             result_cache=agent_section.get("result_cache", False),
+            result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
+            result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from trove.api.deps import require_admin
 from trove.api.schemas import (
     DatasourcesPut,
+    SettingsUpdate,
     TokenCreate,
     UserCreate,
     UserPatch,
@@ -468,3 +469,137 @@ async def kb_reload_datasource(name: str, request: Request,
     await kb.force_sync(name)
     await _audit(request, "kb.reload", admin, 200, {"name": name})
     return {"status": await kb.kb_status(name)}
+
+
+@router.get("/admin/datasources/{name}/kb")
+async def kb_detail_datasource(name: str, request: Request,
+                               admin: dict = Depends(require_admin)) -> dict:
+    """Full KB detail of one datasource for the management page.
+
+    The mirror is refreshed (ensure_synced) before reading so freshly
+    written YAML (manual edits, /kb learn, appends) shows up immediately.
+    """
+    kb = _kb(request)
+    if not _registry(request).is_registered(name):
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    try:
+        await kb.ensure_synced(name)
+        detail = await kb.kb_detail(name)
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"kb": detail}
+
+
+@router.delete("/admin/datasources/{name}/kb", status_code=200)
+async def kb_delete_datasource(name: str, request: Request,
+                               admin: dict = Depends(require_admin)) -> dict:
+    """Delete a datasource's knowledge base entirely.
+
+    Completes the delete story (previously only datasource registration
+    was removable; KB files lingered on disk). Removes the KB directory,
+    purges the mirror rows and drops the per-ds init lock — idempotent:
+    deleting an already-empty KB returns the same empty status.
+    """
+    kb = _kb(request)
+    ds_id = ""
+    if _registry(request).is_registered(name):
+        ds_id = _registry(request).identity_of(name) or ""
+    else:
+        cfg = next((c for c in _store(request).load_configs() if c.name == name), None)
+        if cfg is not None:
+            ds_id = cfg.ds_id
+    if not kb.init_exists(name):
+        raise HTTPException(status_code=404, detail=f"no KB for datasource: {name}")
+    try:
+        await kb.delete_kb(name)
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    # 释放按 ds_id 预留的跨进程 init 锁文件(pending init 不会被悬挂)。
+    if ds_id:
+        lock_path = kb.kb_dir / ".locks" / f"{ds_id}.lock"
+        lock_path.unlink(missing_ok=True)
+    await _audit(request, "kb.delete", admin, 200, {"id": ds_id, "name": name})
+    # 返回删除后的空状态(数据源本身可能未注册,不复用 detail 端点的 404 校验)
+    await kb.ensure_synced(name)
+    return {"kb": await kb.kb_detail(name)}
+
+
+# ── Runtime settings (DB-backed; agent.yml is never written) ──
+
+
+def _settings(request: Request):
+    return getattr(request.app.state, "settings", None)
+
+
+def _runtime_config(request: Request):
+    return getattr(request.app.state, "config", None)
+
+
+@router.get("/admin/settings")
+async def get_settings(request: Request, admin: dict = Depends(require_admin)) -> dict:
+    """Current runtime settings + which keys have DB overrides.
+
+    API keys are masked: clients only ever see names/endpoints and a
+    has_api_key flag — the secret round-trips as a mask sentinel on PUT.
+    """
+    store = _settings(request)
+    config = _runtime_config(request)
+    from trove.services.admin_settings import service as settings_service
+
+    values = settings_service.effective_values(config)
+    if store is not None:
+        from trove.services.admin_settings.service import MASK
+
+        stored = await store.get_all()
+        masked = {
+            k: settings_service.mask_providers(v)
+            if k == "llm.providers" else v
+            for k, v in stored.items()
+        }
+        return {"values": values, "stored": masked, "mask": MASK}
+    return {"values": values, "stored": {}, "mask": MASK}
+
+
+@router.put("/admin/settings")
+async def put_settings(
+    body: SettingsUpdate, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Validate + persist + hot-apply a partial settings update.
+
+    Unknown keys or invalid values return 400 listing every error; on
+    success the update takes effect immediately (the shared AgentConfig is
+    mutated in place) and is persisted for the next boot.
+    """
+    store = _settings(request)
+    config = _runtime_config(request)
+    from trove.services.admin_settings import service as settings_service
+
+    if not body.values:
+        return {"values": settings_service.effective_values(config)}
+
+    # resolve masked api_keys against the *stored* providers (falling back
+    # to what the runtime config currently holds)
+    current_providers = None
+    if store is not None:
+        current_providers = (await store.get_all()).get("llm.providers")
+    if current_providers is None:
+        current_providers = settings_service.mask_providers(config.providers)
+
+    coerced, errors = settings_service.validate_values(body.values, current_providers)
+    if errors:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    if store is not None:
+        await store.put_many(coerced)
+    settings_service.apply_overrides(config, coerced)
+    # 结果限制热更新同步到 pipeline 节点可读的进程级注册表
+    from trove.services.limits import set_result_limits
+    set_result_limits(config.result_max_rows, config.result_display_rows)
+    # hot-swap gateway providers so key/base changes apply without restart
+    gateway = getattr(request.app.state, "llm_gateway", None)
+    if gateway is not None and "llm.providers" in coerced:
+        gateway.set_providers(config.providers)
+    await _audit(request, "admin.settings.update", admin, 200,
+                 {"keys": sorted(coerced)})
+    return {"values": settings_service.effective_values(config)}

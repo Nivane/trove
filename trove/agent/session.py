@@ -657,120 +657,157 @@ class SessionManager:
             last_ts = _time.monotonic()
             run_start = last_ts
             config = dict(self._thread_config(session))
-            config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
-            async for update in graph.astream(
-                state, config, stream_mode="updates",
-            ):
-                # HITL 中断:图在执行前暂停 —— 发出确认事件并停止本轮流。
-                # 调用方展示 SQL+语义后,用 resume() 继续同一线程。
-                if "__interrupt__" in update:
-                    interrupts = update["__interrupt__"]
-                    for entry in interrupts:
-                        value = getattr(entry, "value", None)
-                        if isinstance(value, dict) and value.get("kind") == "confirm_sql":
-                            pending_info: dict[str, Any] = {
-                                "run_id": run_id,
-                                "workflow_name": workflow_name,
-                            }
-                            if task is not None:
-                                tc = state.task_context or {}
-                                pending_info.update({
-                                    "task_id": task.task_id,
-                                    "task_index": task.position + 1,
-                                    "task_total": tc.get("total", 0),
-                                    "batch": True,
-                                })
-                            self._pending_runs[session.session_id] = pending_info
-                            # 持久化本轮用户消息(resume 重载会话后不丢失)
-                            await self._store.save_session(session)
-                            merged.update(
-                                {k: str(v) for k, v in value.items()}
-                            )
-                            pending_summary = {
-                                "session_id": session.session_id,
-                                "question": value.get("question", state.question),
-                                "sql": value.get("sql", ""),
-                                "semantics": value.get("semantics", ""),
-                                "row_count": -1,
-                                "verdict": "",
-                                "reason": "",
-                                "error": "",
-                                "kb_hits": [],
-                                "insights": [],
-                                "hitl_status": "pending",
-                                "final_response": "",
-                            }
-                            # 消耗统计随中断带出:前端确认气泡即可展示 token 数。
-                            # get 不 pop —— 本轮 tally 留给 resume 收尾时一次性结算。
-                            pending_summary["total_elapsed_ms"] = int(
-                                round((_time.monotonic() - run_start) * 1000)
-                            )
-                            try:
-                                from trove.llm.token_accounting import get as _get_usage
-                                usage = _get_usage(run_id) or {}
-                            except Exception:
-                                usage = {}
-                            if usage:
-                                pending_summary["token_usage"] = usage
-                            yield {
-                                "type": "hitl",
-                                "node": "hitl",
-                                "content": self._hitl_confirmation(
-                                    {"__interrupt__": interrupts}, lang,
-                                ),
-                                "payload": value,
-                                "summary": pending_summary,
-                            }
-                            return
-                    continue
+            # Node-start bridging: a queued LangGraph callback surfaces BEGIN
+            # events mid-node so the UI can show *which* node is executing now
+            # (not only after it completes) with a live elapsed timer.
+            stream_events: asyncio.Queue = asyncio.Queue()
+            begin_handler = self._node_start_callback(stream_events)
+            config["callbacks"] = (
+                list(config.get("callbacks") or [])
+                + self._trace_callbacks(run_id)
+                + [begin_handler]
+            )
 
-                for node_name, delta in update.items():
-                    if not delta:  # guard nodes returning {} surface as None
+            async def _produce() -> None:
+                try:
+                    async for update in graph.astream(
+                        state, config, stream_mode="updates",
+                    ):
+                        stream_events.put_nowait(("update", update))
+                    stream_events.put_nowait(("end", None))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    stream_events.put_nowait(("error", exc))
+
+            producer = asyncio.ensure_future(_produce())
+            try:
+                begin_seq = 0
+                while True:
+                    kind, payload = await stream_events.get()
+                    if kind == "begin":
+                        begin_seq += 1
+                        yield {"type": "begin", "node": payload, "seq": begin_seq}
+                        continue
+                    if kind == "end":
+                        break
+                    if kind == "error":
+                        raise payload
+                    update = payload
+
+                    # HITL 中断:图在执行前暂停 —— 发出确认事件并停止本轮流。
+                    # 调用方展示 SQL+语义后,用 resume() 继续同一线程。
+                    if "__interrupt__" in update:
+                        interrupts = update["__interrupt__"]
+                        for entry in interrupts:
+                            value = getattr(entry, "value", None)
+                            if isinstance(value, dict) and value.get("kind") == "confirm_sql":
+                                pending_info: dict[str, Any] = {
+                                    "run_id": run_id,
+                                    "workflow_name": workflow_name,
+                                }
+                                if task is not None:
+                                    tc = state.task_context or {}
+                                    pending_info.update({
+                                        "task_id": task.task_id,
+                                        "task_index": task.position + 1,
+                                        "task_total": tc.get("total", 0),
+                                        "batch": True,
+                                    })
+                                self._pending_runs[session.session_id] = pending_info
+                                # 持久化本轮用户消息(resume 重载会话后不丢失)
+                                await self._store.save_session(session)
+                                merged.update(
+                                    {k: str(v) for k, v in value.items()}
+                                )
+                                pending_summary = {
+                                    "session_id": session.session_id,
+                                    "question": value.get("question", state.question),
+                                    "sql": value.get("sql", ""),
+                                    "semantics": value.get("semantics", ""),
+                                    "row_count": -1,
+                                    "verdict": "",
+                                    "reason": "",
+                                    "error": "",
+                                    "kb_hits": [],
+                                    "insights": [],
+                                    "hitl_status": "pending",
+                                    "final_response": "",
+                                }
+                                # 消耗统计随中断带出:前端确认气泡即可展示 token 数。
+                                # get 不 pop —— 本轮 tally 留给 resume 收尾时一次性结算。
+                                pending_summary["total_elapsed_ms"] = int(
+                                    round((_time.monotonic() - run_start) * 1000)
+                                )
+                                try:
+                                    from trove.llm.token_accounting import get as _get_usage
+                                    usage = _get_usage(run_id) or {}
+                                except Exception:
+                                    usage = {}
+                                if usage:
+                                    pending_summary["token_usage"] = usage
+                                yield {
+                                    "type": "hitl",
+                                    "node": "hitl",
+                                    "content": self._hitl_confirmation(
+                                        {"__interrupt__": interrupts}, lang,
+                                    ),
+                                    "payload": value,
+                                    "summary": pending_summary,
+                                }
+                                return
                         continue
 
-                    # 上一节点阶段耗时（更新到达间隔）
-                    now = _time.monotonic()
-                    elapsed_ms = int((now - last_ts) * 1000)
-                    last_ts = now
-                    seq += 1
+                    for node_name, delta in update.items():
+                        if not delta:  # guard nodes returning {} surface as None
+                            continue
 
-                    # 修正上下文：本次节点执行前挂起的反馈与轮次
-                    reason = merged.get("error_feedback", "")
-                    retry = merged.get("retry_count", 0)
+                        # 上一节点阶段耗时（更新到达间隔）
+                        now = _time.monotonic()
+                        elapsed_ms = int((now - last_ts) * 1000)
+                        last_ts = now
+                        seq += 1
 
-                    merged.update(delta)
+                        # 修正上下文：本次节点执行前挂起的反馈与轮次
+                        reason = merged.get("error_feedback", "")
+                        retry = merged.get("retry_count", 0)
 
-                    # ── Structured step (REPL renders; also in --print) ──
-                    yield self._step_event(
-                        seq, node_name, delta, elapsed_ms,
-                        reason, retry, lang, merged.get("dialect", ""),
-                    )
+                        merged.update(delta)
 
-                    # ── Legacy trajectory events (--print compatibility) ──
-                    if node_name == "planner" and delta.get("plan"):
-                        yield {"type": "plan", "node": "planner", "content": delta["plan"]}
-                    if node_name == "reflect" and delta.get("verdict"):
-                        yield {
-                            "type": "verdict", "node": "reflect",
-                            "verdict": delta["verdict"],
-                            "reason": delta.get("reason", ""),
-                        }
-                    if node_name == "select" and "consensus" in delta and not delta["consensus"]:
-                        yield {
-                            "type": "correction", "node": "select",
-                            "content": L(lang, "候选 SQL 结果不一致——本答案置信度低", "Candidate SQLs disagreed — low confidence answer"),
-                        }
-                    if delta.get("error_feedback"):
-                        yield {
-                            "type": "correction", "node": node_name,
-                            "content": delta["error_feedback"],
-                        }
+                        # ── Structured step (REPL renders; also in --print) ──
+                        yield self._step_event(
+                            seq, node_name, delta, elapsed_ms,
+                            reason, retry, lang, merged.get("dialect", ""),
+                        )
 
-                    if node_name == "gen_sql" and delta.get("sql"):
-                        yield {"type": "sql", "node": "gen_sql",
-                               "content": format_sql(delta["sql"], merged.get("dialect", ""))}
-                    elif node_name == "execute_sql" and "row_count" in delta:
-                        yield {"type": "result", "node": "execute_sql", "row_count": delta["row_count"]}
+                        # ── Legacy trajectory events (--print compatibility) ──
+                        if node_name == "planner" and delta.get("plan"):
+                            yield {"type": "plan", "node": "planner", "content": delta["plan"]}
+                        if node_name == "reflect" and delta.get("verdict"):
+                            yield {
+                                "type": "verdict", "node": "reflect",
+                                "verdict": delta["verdict"],
+                                "reason": delta.get("reason", ""),
+                            }
+                        if node_name == "select" and "consensus" in delta and not delta["consensus"]:
+                            yield {
+                                "type": "correction", "node": "select",
+                                "content": L(lang, "候选 SQL 结果不一致——本答案置信度低", "Candidate SQLs disagreed — low confidence answer"),
+                            }
+                        if delta.get("error_feedback"):
+                            yield {
+                                "type": "correction", "node": node_name,
+                                "content": delta["error_feedback"],
+                            }
+
+                        if node_name == "gen_sql" and delta.get("sql"):
+                            yield {"type": "sql", "node": "gen_sql",
+                                   "content": format_sql(delta["sql"], merged.get("dialect", ""))}
+                        elif node_name == "execute_sql" and "row_count" in delta:
+                            yield {"type": "result", "node": "execute_sql", "row_count": delta["row_count"]}
+            finally:
+                if not producer.done():
+                    producer.cancel()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -941,6 +978,45 @@ class SessionManager:
         from trove.tracing.runlog import get_tracer
         tracer = get_tracer(run_id)
         return [tracer.callback()] if tracer is not None else []
+
+    @staticmethod
+    def _node_start_callback(stream_events: asyncio.Queue) -> Any:
+        """LangGraph callback that pushes a `("begin", node)` item per node start.
+
+        Mirrors the tracer callback's dedup: LangGraph re-fires on_chain_start
+        for the same node's chain, and nested subgraph nodes could otherwise
+        double-count. Only real nodes are surfaced (`__start__`/`__end__` are
+        skipped). The consumer picks these up to emit begin SSE events so the
+        UI can render the *currently-executing* node with a live timer.
+        """
+        from langchain_core.callbacks import BaseCallbackHandler
+
+        class _BeginHandler(BaseCallbackHandler):
+            def __init__(self) -> None:
+                self._open: dict[str, str] = {}   # run_id -> node
+                self._stack: list[str] = []       # 当前嵌套链(栈顶=当前节点)
+
+            async def on_chain_start(
+                self, serialized, inputs, *, run_id, parent_run_id=None,
+                tags=None, metadata=None, **kwargs,
+            ) -> None:
+                node = (metadata or {}).get("langgraph_node", "")
+                if not node or node in ("__start__", "__end__"):
+                    return
+                if self._stack and self._stack[-1] == node:
+                    return
+                self._stack.append(node)
+                self._open[run_id] = node
+                stream_events.put_nowait(("begin", node))
+
+            async def on_chain_end(self, outputs, *, run_id, **kwargs) -> None:
+                node = self._open.pop(run_id, None)
+                if node is None:
+                    return
+                if self._stack and self._stack[-1] == node:
+                    self._stack.pop()
+
+        return _BeginHandler()
 
     async def _capture_lessons(self, final: WorkflowState) -> None:
         """修正闭环成功后，把修正理由沉淀为待确认的经验教训（Hint Bank）。"""
@@ -1483,6 +1559,13 @@ class SessionManager:
             [cap_cell(v) for v in row]
             for row in (final.rows or [])[:ROWS_PREVIEW]
         ]
+        from trove.services.limits import get_result_limits
+        # 全量结果(受查询结果上限约束)随 summary 交付:前端"按查询结果下载"
+        # 直接用这份数据,而不去解析答案 markdown 里被截断的展示表格。
+        rows_full = [
+            [cap_cell(v) for v in row]
+            for row in (final.rows or [])[:get_result_limits().max_rows]
+        ]
         return {
             "session_id": final.session_id,
             "question": final.question,
@@ -1497,6 +1580,7 @@ class SessionManager:
             "hitl_status": final.hitl_status,
             "final_response": final.final_response,
             "columns": list(final.columns),
+            "rows": rows_full,
             "rows_preview": rows_preview,
             "matched_tables": list(final.matched_tables),
             "chart": final.chart,

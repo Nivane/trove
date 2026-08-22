@@ -85,6 +85,13 @@ def _scope_ambiguity(sql: str, question: str) -> bool:
     即过滤条件被排除在极值作用域外(应先过滤再取极值)。过滤已正确
     放进子查询内的写法(外层冗余重复,别名可不同)不算歧义——按
     列名+字面量归一化等价比较,防误报回查循环。问题须含极值词才介入。
+
+    防误报收紧(2026-08):只对**谓词子查询**形态判定——极值子查询必须
+    出现在外层 WHERE 里(WISE `amount = (SELECT MIN(...) ...)`)时才可能
+    "该把外层条件推进去"。SELECT 投影里的全局极值标量子查询(如
+    ``(SELECT MAX(A11)-MIN(A11) FROM district)``)是一个不依赖外层行的
+    常量,与 client/disp 等外层过滤正交、推不进去——判歧义只会把正确
+    SQL 打回重写(BIRD eval 金标正是投影形态 + 外层过滤)。
     """
     if not _EXTREME_Q_RE.search(question):
         return False
@@ -108,6 +115,10 @@ def _scope_ambiguity(sql: str, question: str) -> bool:
         return False
     where = outer.args.get("where")
     if where is None:
+        return False
+    # 投影里的全局极值子查询(不参与外层行过滤)不算歧义。
+    where_select_ids = {id(s) for s in where.find_all(exp.Select)}
+    if not any(id(e) in where_select_ids for e in extreme_queries):
         return False
     outer_conds = [
         c for c in _split_where(where)
@@ -363,6 +374,18 @@ def _rule_percent_range(
     return None
 
 
+def _division_near_aggregate(sql: str) -> bool:
+    """``/`` 附近(±200 字符)是否出现聚合调用。
+
+    整数除法陷阱只对聚合比值题成立(COUNT(x)/COUNT(y) 会被截断);纯
+    列常量除法(x/y)误伤面大且结果通常精确,不介入——收紧防误报。
+    """
+    return any(
+        re.search(r"\b(?:SUM|COUNT|AVG|MAX|MIN)\s*\(", sql[max(0, m.start() - 200):m.end() + 200], re.I)
+        for m in re.finditer(r"/", sql)
+    )
+
+
 @_rule("ratio-int-division")
 def _rule_ratio_int_division(
     question: str, sql: str, columns: list, rows: list[list], row_count: int, lang: str,
@@ -371,7 +394,12 @@ def _rule_ratio_int_division(
     ratio_question = is_percent_question(question) or bool(
         re.search(r"\brate\b", question, re.I)
     )
-    if ratio_question and "/" in sql and not re.search(r"\b(?:DOUBLE|FLOAT|DECIMAL)\b", sql, re.I):
+    if (
+        ratio_question
+        and "/" in sql
+        and not re.search(r"\b(?:DOUBLE|FLOAT|DECIMAL)\b", sql, re.I)
+        and _division_near_aggregate(sql)
+    ):
         return L(
             lang,
             "比率计算疑似整数除法(MySQL 会截断到 4 位小数,如 44.2623 而非 "
@@ -620,21 +648,40 @@ _CREDIT_CARD_Q = re.compile(r"\bcredit[\s-]?card\b", re.I)
 _CREDIT_CARD_COND = re.compile(r"\bkartou\b|\bcard\b|\bcredit\b", re.I)
 
 
+def _unquote_sql(sql: str) -> str:
+    """去掉标识符引号(MySQL 反引号 / MSSQL 方括号),再做条件词面匹配。
+
+    反引号写法(如 ``T1.gender = 'F'``,原样带 backtick)会让
+    ``gender <op>`` 类正则断掉(引号隔着列名与运算符),导致 F2 把带
+    引号的正确 SQL 误报为"缺条件"。这里仅在检测前置清洗,不影响执行。
+    """
+    return sql.replace("`", "").replace("[", "").replace("]", "")
+
+
 @_rule("F2-a")
 def _f2a(question: str, sql: str, columns: list, rows: list[list], row_count: int, lang: str):
-    """问题提到性别但 SQL 没有 gender 条件 → 关键过滤条件缺失。"""
+    """问题提到性别但 SQL 没有 gender 条件 → 关键过滤条件缺失。
+
+    防误报:部分数据源没有 gender/sex 列,性别由 ``birth_number`` 编码
+    推断(如财务库 female = birth_number 奇偶/超 9999)。SQL 已按此编码
+    过滤(出现 birth_number)即视为已覆盖性别,不再强求 gender 列。
+    """
     if not _GENDER_Q.search(question):
         return None
     if _GENDER_METRIC_GUARD.search(question):
         return None
-    if _GENDER_COND.search(sql):
+    clean = _unquote_sql(sql)
+    if _GENDER_COND.search(clean):
+        return None
+    if re.search(r"\bbirth_number\b", clean, re.I):
         return None
     return L(
         lang,
-        "问题提到性别(male/female),但 SQL 没有任何 gender/sex 过滤条件——"
-        "检查是否漏了性别条件。",
+        "问题提到性别(male/female),但 SQL 没有任何 gender/sex 过滤条件,"
+        "也不含按 birth_number 推断性别的写法——检查是否漏了性别条件。",
         "The question mentions gender (male/female) but the SQL has no "
-        "gender/sex filter condition.",
+        "gender/sex filter and no birth_number-based encoding — check for a "
+        "missing gender condition.",
     )
 
 
@@ -643,7 +690,8 @@ def _f2b(question: str, sql: str, columns: list, rows: list[list], row_count: in
     """问题限定年份/日期但 SQL 没有日期条件 → 关键过滤条件缺失。"""
     if not _YEAR_Q.search(question):
         return None
-    if _DATE_COND.search(sql):
+    clean = _unquote_sql(sql)
+    if _DATE_COND.search(clean):
         return None
     return L(
         lang,
@@ -660,7 +708,8 @@ def _f2c(question: str, sql: str, columns: list, rows: list[list], row_count: in
     """问题提到地区专名但 SQL 没有对应条件 → 关键过滤条件缺失。"""
     if not _REGION_Q.search(question):
         return None
-    if _REGION_COND.search(sql):
+    clean = _unquote_sql(sql)
+    if _REGION_COND.search(clean):
         return None
     return L(
         lang,
@@ -677,7 +726,7 @@ def _f2d(question: str, sql: str, columns: list, rows: list[list], row_count: in
     只保留 credit card 桶:cash 词面不可靠(BIRD 数据里 gold 常以
     operation='VYBER' 表达「cash transactions」,无 pokl/cash 字样)。
     """
-    if _CREDIT_CARD_Q.search(question) and not _CREDIT_CARD_COND.search(sql):
+    if _CREDIT_CARD_Q.search(question) and not _CREDIT_CARD_COND.search(_unquote_sql(sql)):
         return L(
             lang,
             "问题提到 credit card,但 SQL 没有对应的卡交易条件"

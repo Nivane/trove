@@ -37,7 +37,7 @@ class TestGraphStatePersistence:
 
             snapshot = await graph.aget_state({"configurable": {"thread_id": "s1"}})
             assert snapshot.values["final_response"]
-            assert "(No query executed)" in snapshot.values["final_response"]
+            assert "(未执行任何查询)" in snapshot.values["final_response"]
 
     async def test_threads_are_isolated(self, tmp_home):
         """Different session thread_ids keep independent checkpoints."""

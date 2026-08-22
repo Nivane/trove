@@ -22,7 +22,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
-from trove.services.errors import tag_error
+from trove.services.errors import is_transient, tag_error
 from trove.workflow.rules import verify
 from trove.workflow.state import GenSQLState
 from trove.workflow.versions import EXEC_FAILURE_SIG
@@ -118,7 +118,40 @@ def build_sql_prompt_from_state(state: GenSQLState) -> str:
 def build_fix_prompt(sql: str, errors: list[str], lang: str = "en") -> str:
     """Build a fix prompt when validation fails (bilingual; default en keeps
     the pure-helper behavior for direct callers)."""
-    return render("gen_sql/fix", lang=lang, sql=sql, errors=errors)
+    return render(
+        "gen_sql/fix", lang=lang, sql=sql, errors=errors,
+        target=_syntax_target_hint(errors, lang),
+    )
+
+
+def _syntax_target_hint(errors: list[str], lang: str = "en") -> str:
+    """从 SQLGlot 语法错误文本提取"位置 + 出错 token",生成定向修复提示。
+
+    SIMPLE_REGENERATE 的载体:错误带 "at line N, col M near token 'X'" 时,
+    fix prompt 明示模型只需改动那一处,而不是通读整句重构。无位置/非语法
+    错误返回空串(模板不渲染该段,保持原行为)。
+    """
+    for e in errors or []:
+        m = re.search(
+            r"at line (\d+), col (\d+)( near token '([^']*)')?",
+            (e or "").strip(),
+        )
+        if m:
+            line, col = m.group(1), m.group(2)
+            tok = m.group(4)
+            if lang == "zh":
+                return (
+                    f"语法错误位于第 {line} 行、第 {col} 列"
+                    + (f",出错的 token 是 '{tok}'" if tok else "")
+                    + "。只修这一处位置——其余查询保持逐字不变。"
+                )
+            return (
+                f"The syntax error is located at line {line}, column {col}"
+                + (f" near token '{tok}'" if tok else "")
+                + ". Fix ONLY that token/location — keep the rest of the "
+                "query byte-for-byte identical."
+            )
+    return ""
 
 
 def render_shots(shots: list[dict[str, Any]]) -> str:
@@ -232,6 +265,8 @@ def validate_sql(sql: str, dialect: str) -> tuple[bool, list[str]]:
             elif not isinstance(statements[0], exp.Query):
                 # e.g. "SELEC * FORM t" parses into an Alias, not a query
                 errors.append("Not a valid SQL query")
+        except sqlglot.errors.ParseError as e:
+            errors.append(_parse_error_with_position(e, sql, dialect))
         except Exception as e:
             errors.append(f"Parse error: {e}")
 
@@ -241,6 +276,33 @@ def validate_sql(sql: str, dialect: str) -> tuple[bool, list[str]]:
         # sqlglot not installed — skip validation
         logger.warning("sqlglot not available; skipping SQL validation")
         return True, []
+
+
+def _parse_error_with_position(e, sql: str, dialect: str) -> str:
+    """把 SQLGlot ParseError 转成带精确位置/出错 token 的修复指令。
+
+    SQLGlot 的 ErrorLevel.RAISE 会把第一个 ParseError 作为异常抛出,其
+    message 已含 "Line N, Col: M" 与高亮 token。定向微调只需那一处——读
+    出行列 + 出错词,fix prompt 据此做局部修改,而不是让模型整句重写。
+    """
+    base = f"Parse error: {e}"
+    try:
+        import sqlglot
+        errors = getattr(e, "errors", None) or []
+        detail = errors[0] if errors else None
+        if detail is None or not isinstance(detail, dict):
+            return base
+        line, col = detail.get("line"), detail.get("col")
+        hl = detail.get("highlight") or ""
+        pos = ""
+        if isinstance(line, int) and isinstance(col, int):
+            pos = f" at line {line}, col {col}"
+        tok = f" near token '{hl}'" if hl else ""
+        # 去 ANSI 高亮转义(sqlglot 消息里的 \x1b[4m...\x1b[0m)
+        cleaned = re.sub(r"\x1b\[[0-9;]*m", "", base)
+        return f"{cleaned}{pos}{tok}"
+    except Exception:
+        return base
 
 
 # ── Static semantic checks (validate_sql companion) ──────
@@ -413,6 +475,10 @@ def static_semantic_warnings(
 PROBE_LIMIT = 10        # fetch 封顶
 PROBE_SAMPLE_ROWS = 5   # 观测里显示的行数
 PROBE_TIMEOUT_S = 5.0
+# 探针/校验的瞬态连接重试预算(同 execute_sql:断连抖动重跑大概率恢复,
+# SQL 自身错误重跑必死)。探针失败只折观测、不烧 LLM 生成预算。
+_PROBE_TRANSIENT_RETRIES = 2
+_PROBE_TRANSIENT_BACKOFF_S = 0.5
 
 
 def _has_limit(sql: str, dialect: str) -> bool:
@@ -512,19 +578,31 @@ async def _probe_result(
 
     had_limit = _has_limit(sql, dialect)
     probe_sql = sql if had_limit else _append_limit(sql, dialect, limit)
-    try:
-        result = await asyncio.wait_for(
-            connectors.execute(probe_sql, datasource), timeout=timeout_s,
-        )
-    except TimeoutError:
-        return {"ok": False, "error": f"[ERR:SQL_TIMEOUT] probe timed out after {timeout_s}s"}
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": tag_error(
-                f"execution failed: {sanitize_error_text(str(e))}", context="sql",
-            ),
-        }
+    # 瞬时连接抖动(断连/不可达/协议重置)重跑大概率恢复——与 execute_sql
+    # 相同的退避重试预算,避免 DB 抖动把正确的探针/校验打成失败,烧 LLM 轮次。
+    retryable, backoff_s = _PROBE_TRANSIENT_RETRIES, _PROBE_TRANSIENT_BACKOFF_S
+    while True:
+        try:
+            result = await asyncio.wait_for(
+                connectors.execute(probe_sql, datasource), timeout=timeout_s,
+            )
+            break
+        except TimeoutError:
+            return {"ok": False, "error": f"[ERR:SQL_TIMEOUT] probe timed out after {timeout_s}s"}
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if retryable > 0 and is_transient(e):
+                retryable -= 1
+                await asyncio.sleep(backoff_s)
+                backoff_s = min(backoff_s * 2, 4.0)
+                continue
+            return {
+                "ok": False,
+                "error": tag_error(
+                    f"execution failed: {sanitize_error_text(str(e))}", context="sql",
+                ),
+            }
 
     rows = result.rows or []
     row_count = len(rows)
@@ -1085,7 +1163,14 @@ def make_generate(
             if style:
                 prompt = f"{prompt}\n\n{style}"
 
-        model = config.model_for(state.complexity)
+        # 语法位置可知的定向修复(SIMPLE_REGENERATE):走 fast 档模型。
+        # 局部 token 修复不需要推理级模型的重整句理解,位置已在 prompt 里。
+        is_simple_fix = bool(
+            state.validation_errors and _syntax_target_hint(state.validation_errors, state.lang)
+        )
+        model = (
+            config.model_fast or config.model_for(state.complexity)
+        ) if is_simple_fix else config.model_for(state.complexity)
         start = time.monotonic()
         system_prompt = render("gen_sql/system", lang=state.lang)
         response = await llm.chat(

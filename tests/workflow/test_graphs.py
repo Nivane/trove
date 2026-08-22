@@ -251,7 +251,7 @@ class TestReflectionGraph:
         assert final["error"] == ""
         assert "SELECT name FROM students;" in final["sql"]
         assert final["row_count"] == 5
-        assert "## Answer" in final["final_response"]
+        assert "## 回答" in final["final_response"]
         assert len(llm.calls) == 3  # intent + gen_sql + reflect
 
     async def test_retry_loop_regenerates_with_reason(self, sqlite_registry, catalog):
@@ -304,7 +304,7 @@ class TestReflectionGraph:
         final = await graphs["reflection"].ainvoke(make_state())
         assert "3 attempts" in final["error"]
         assert final["row_count"] == -1  # execute_sql never ran
-        assert "**Error**" in final["final_response"]
+        assert "**错误**" in final["final_response"]
         assert len(llm.calls) == 4  # intent + 3 generate attempts; reflect never called
 
     async def test_execute_failure_degrades_to_output(self, sqlite_registry, catalog, monkeypatch):
@@ -317,7 +317,7 @@ class TestReflectionGraph:
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"]
         assert final["retry_count"] == 2
-        assert "**Error**" in final["final_response"]
+        assert "**错误**" in final["final_response"]
         assert final["verdict"] == ""  # reflect skipped
 
     async def test_execute_error_feedback_fixes_sql(self, sqlite_registry, catalog):
@@ -1066,7 +1066,7 @@ class TestFixedGraph:
         final = await graphs["fixed"].ainvoke(make_state())
         assert final["verdict"] == ""  # reflect never ran
         assert final["row_count"] == 5
-        assert "## Answer" in final["final_response"]
+        assert "## 回答" in final["final_response"]
         assert len(llm.calls) == 2  # intent + gen_sql
 
     async def test_execute_error_feedback_retries(self, sqlite_registry, catalog):
@@ -1087,7 +1087,7 @@ class TestEmptyGraph:
     async def test_pass_through(self):
         graphs = build(make_services(RecordingLLM([])))
         final = await graphs["empty"].ainvoke(make_state())
-        assert "(No query executed)" in final["final_response"]
+        assert "(未执行任何查询)" in final["final_response"]
 
 
 class TestParseDateWiring:
@@ -1196,7 +1196,7 @@ examples:
         assert kinds == {"term", "example"}
         assert final["row_count"] > 0
         assert final["error"] == ""
-        assert "Knowledge base" in final["final_response"]
+        assert "知识库" in final["final_response"]
         # The reference example reached the LLM prompt
         assert any(
             "Reference examples" in " ".join(
@@ -1211,7 +1211,7 @@ examples:
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["kb_hits"] == []
-        assert "Knowledge base" not in final["final_response"]
+        assert "知识库" not in final["final_response"]
 
     async def test_few_shots_rotated_across_alt_candidates(
         self, sqlite_registry, catalog, tmp_path,
@@ -1960,8 +1960,8 @@ class TestFixModeWiring:
         assert "无进展" in final["error"]        # 优雅降级,不再打回
         assert final["no_progress_rounds"] == 3
         assert final["last_progress"] == "invalid"
-        assert "## Answer" in final["final_response"]
-        assert "Error" in final["final_response"]
+        assert "## 回答" in final["final_response"]
+        assert "错误" in final["final_response"]
 
 
 # ── 自适应减负:确定性快径 + 复杂度分级开关 ───────────────

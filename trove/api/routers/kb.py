@@ -81,11 +81,12 @@ async def list_terms(
 
 @router.post("/kb/terms", status_code=201)
 async def create_term(
-    body: TermCreate, request: Request, user: dict = Depends(require_admin)
+    body: TermCreate, request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
 ) -> dict:
-    ds = _datasource(request, None)
+    ds = _datasource(request, datasource)
     await _kb(request).append_term(body.model_dump(), ds)
-    return {"status": "ok", "term": body.term}
+    return {"status": "ok", "term": body.term, "datasource": ds}
 
 
 # ── Examples (examples.yml) ──────────────────────────────
@@ -110,11 +111,12 @@ async def list_examples(
 
 @router.post("/kb/examples", status_code=201)
 async def create_example(
-    body: ExampleCreate, request: Request, user: dict = Depends(require_admin)
+    body: ExampleCreate, request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
 ) -> dict:
-    ds = _datasource(request, None)
+    ds = _datasource(request, datasource)
     await _kb(request).append_example(body.model_dump(), ds)
-    return {"status": "ok", "question": body.question}
+    return {"status": "ok", "question": body.question, "datasource": ds}
 
 
 # ── Lessons (Hint Bank, pending until confirmed) ─────────

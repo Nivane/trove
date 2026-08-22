@@ -1,6 +1,9 @@
 """SQL 版本链 + 回归硬检查测试（Sequential Scaling 缺口 1+2+4）。"""
 
 from trove.workflow.versions import (
+    extract_rule_hits,
+    is_validator_conflict,
+    record_version,
     regression_report,
     regression_state,
     result_sig,
@@ -94,3 +97,52 @@ class TestRegressionState:
         """无规则命中的失败(执行错误/投票)签名变化 → 在动,视为有进展。"""
         prev = {"round": 1, "sig": "old", "issues": []}
         assert regression_state(prev, "new", []) == "improved"
+
+
+class TestValidatorConflictGuard:
+    """校验冲突护栏:answer/extra-columns 类命中 + 同签名 ≠ 复制旧错误。
+
+    回归:正确 SQL(聚合别名被 extra-columns 误判)每轮同签名,曾被判
+    invalid → 无进展轮累加 → 优雅降级。现在应判 validator-conflict。"""
+
+    def test_extract_rule_hits_captures_validator_conflicts(self):
+        assert extract_rule_hits("Plan check [extra-columns]: ...") == ["extra-columns"]
+        assert extract_rule_hits("[answer-columns] foo") == ["answer-columns"]
+        assert extract_rule_hits("[F1-b] list too wide") == ["F1-b"]
+        # 混合:保序去重
+        assert extract_rule_hits(
+            "[F1-a] x [extra-columns] y [extra-columns]",
+        ) == ["F1-a", "extra-columns"]
+
+    def test_is_validator_conflict(self):
+        assert is_validator_conflict(["extra-columns"])
+        assert is_validator_conflict(["answer-columns"])
+        assert not is_validator_conflict([])
+        assert not is_validator_conflict(["F1-a"])
+        assert not is_validator_conflict(["F1-a", "extra-columns"])
+
+    def test_record_version_marks_validator_conflict(self):
+        v = record_version([], "SELECT 1", "sig", ["extra-columns"], 1, "err")
+        assert v[0]["validator_conflict"] is True
+        v2 = record_version([], "SELECT 1", "sig", ["F1-a"], 1, "err")
+        assert v2[0]["validator_conflict"] is False
+
+    def test_same_signature_validator_conflict_not_invalid(self):
+        """上一版校验冲突 + 当前同签名且仍同类命中 → validator-conflict。"""
+        prev = {"round": 1, "sig": "same", "issues": ["extra-columns"],
+                "validator_conflict": True}
+        assert regression_state(prev, "same", ["extra-columns"]) == "validator-conflict"
+
+    def test_validator_conflict_report_guides_replan(self):
+        prev = {"round": 1, "sig": "same", "issues": ["extra-columns"],
+                "validator_conflict": True}
+        report = regression_report(prev, "same", ["extra-columns"])
+        assert report is not None
+        assert "validator conflict" in report.lower()
+        assert "re-plan" in report.lower()
+
+    def test_same_signature_validator_conflict_wrong_rule_still_invalid(self):
+        """上一版校验冲突但当前是新规则类命中 → 仍判 invalid(不是误报复现)。"""
+        prev = {"round": 1, "sig": "same", "issues": ["extra-columns"],
+                "validator_conflict": True}
+        assert regression_state(prev, "same", ["F1-b"]) == "invalid"

@@ -91,6 +91,10 @@ class LLMGateway:
         self.retry_base_delay = retry_base_delay
         self._providers = providers or []
 
+    def set_providers(self, providers: list[ProviderConfig] | None) -> None:
+        """Hot-swap provider params (admin settings update — no restart)."""
+        self._providers = providers or []
+
     # ── Public API ───────────────────────────────────────
 
     async def chat(

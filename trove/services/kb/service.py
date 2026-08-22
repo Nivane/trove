@@ -841,6 +841,69 @@ class KbService:
         items = (await self.list_items()).get(datasource, {})
         return {"initialized": bool(files), "files": files, "items": items}
 
+    async def list_term_entries(self, datasource: str) -> list[dict]:
+        """Full term payloads of one datasource (management UI)."""
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT payload FROM kb_items WHERE kind = 'term' AND datasource = ? "
+            "ORDER BY id",
+            (datasource,),
+        )
+        return [json.loads(row["payload"]) for row in rows]
+
+    async def list_example_entries(self, datasource: str) -> list[dict]:
+        """Full example/template payloads of one datasource (management UI)."""
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT payload FROM kb_items "
+            "WHERE kind IN ('example', 'template') AND datasource = ? ORDER BY id",
+            (datasource,),
+        )
+        return [json.loads(row["payload"]) for row in rows]
+
+    async def kb_detail(self, datasource: str) -> dict:
+        """One aggregate dump for the KB management page (admin API).
+
+        Reads go through the mirror, so a fresh ``force_sync``/``ensure_synced``
+        must run first (the admin endpoint does it) to reflect YAML changes.
+        """
+        terms = await self.list_term_entries(datasource)
+        examples = await self.list_example_entries(datasource)
+        rules = await self.list_rules(datasource)
+        lessons = await self.list_lessons(datasource, confirmed_only=False)
+        return {
+            "status": await self.kb_status(datasource),
+            "terms": terms,
+            "examples": examples,
+            "rules": rules,
+            "lessons": lessons,
+        }
+
+    async def delete_kb(self, datasource: str) -> None:
+        """Delete a datasource's KB: files + mirror rows + init lock.
+
+        ``datasource`` is used as a directory name, so path-safety is
+        enforced here (not just at the API) — the KB dir must never
+        escape ``kb_dir``.
+        """
+        from trove.services.datasource.naming import is_path_safe
+
+        if not is_path_safe(datasource):
+            raise ValueError(f"unsafe KB datasource name {datasource!r}")
+        ds_dir = self.kb_dir / datasource
+        if ds_dir.exists():
+            shutil.rmtree(ds_dir)
+        # 清理该数据源在镜像(sync 与 items)中的残留行。
+        if self.db_path.exists():
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "DELETE FROM kb_items WHERE datasource = ?", (datasource,))
+                await db.execute(
+                    "DELETE FROM kb_sync WHERE file_path LIKE ?", (f"{datasource}/%",))
+                await db.commit()
+
     # ── Evolution (human-confirmed writes) ────────────────
 
     async def append_example(self, entry: dict[str, Any], datasource: str) -> None:

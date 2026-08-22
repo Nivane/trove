@@ -84,7 +84,7 @@ class TestAsk:
             question="hello",
             workflow_name="empty",
         )
-        assert "(No query executed)" in state.final_response
+        assert "(未执行任何查询)" in state.final_response
 
     async def test_ask_unknown_workflow_raises(self, session_manager):
         session = await session_manager.start_session(project_cwd="/tmp/p1")
@@ -113,6 +113,33 @@ class TestAskStream:
         assert sql_event["node"] == "gen_sql"
         done_event = events[-1]
         assert done_event["summary"]["sql"] == "SELECT name FROM students;"
+
+    async def test_stream_emits_begin_events_before_steps(self, session_manager):
+        """Node-start events let the UI show the currently-executing step."""
+        session = await session_manager.start_session(project_cwd="/tmp/p1")
+        events = []
+        async for event in session_manager.ask_stream(
+            session=session,
+            question="What students are in Alameda county?",
+            workflow_name="reflection",
+        ):
+            events.append(event)
+
+        begins = [e for e in events if e["type"] == "begin"]
+        steps = [e for e in events if e["type"] == "step"]
+        assert begins, "expected node-start events"
+        # intel routing is the first executed node
+        assert begins[0]["node"] == "route_intent"
+        assert begins[0]["seq"] == 1
+        # every begin for a top-level node precedes its step completion
+        stream_pos = {
+            (e["type"], e["node"]): i
+            for i, e in enumerate(events)
+            if e["type"] in ("begin", "step")
+        }
+        for node in {b["node"] for b in begins}:
+            if ("step", node) in stream_pos:
+                assert stream_pos[("begin", node)] < stream_pos[("step", node)]
 
     async def test_stream_records_exchange(self, session_manager):
         session = await session_manager.start_session(project_cwd="/tmp/p1")

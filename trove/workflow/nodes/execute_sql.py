@@ -16,6 +16,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
+from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
 from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState, budget_exhausted
@@ -112,9 +113,12 @@ def make_execute_sql(
             except Exception as e:  # 血缘失败绝不阻断查询链路
                 logger.warning("lineage record failed: %s", e)
 
+        result_limits = get_result_limits()
         return {
             "columns": result.columns,
-            "rows": result.rows,
+            # 查询结果上限(管理台可配,默认 1000 行):防止超大结果集撑爆
+            # 内存/传输;row_count 保留真实总数用于展示与提示。
+            "rows": result.rows[:result_limits.max_rows],
             "row_count": result.row_count,
             "execution_time_ms": result.execution_time_ms,
             "error_feedback": "",  # success clears previous feedback

@@ -19,11 +19,16 @@ export interface DoneSummary {
   error?: string
   final_response?: string
   columns?: string[]
+  /** 完整查询结果(受后端 result_max_rows 约束;下载用,不放回答案表格)。 */
+  rows?: unknown[][]
   chart?: ChartSpec | null
   chart_option?: Record<string, unknown> | null
   insights?: unknown[]
   hitl_status?: string
   batched?: boolean
+  total_elapsed_ms?: number
+  token_usage?: { prompt?: number; completion?: number; total?: number }
+  cached?: boolean
 }
 
 export interface StepPayload {

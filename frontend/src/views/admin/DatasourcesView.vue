@@ -1,6 +1,6 @@
 <template>
   <div class="admin-view">
-    <div class="view-header">
+    <header class="view-header">
       <div>
         <h2>{{ t('datasources', ui.lang) }}</h2>
         <p class="view-desc">{{ t('dsPageDesc', ui.lang) }}</p>
@@ -11,6 +11,30 @@
           <Plus :size="15" class="btn-icon" />
           {{ t('dsCreateTitle', ui.lang) }}
         </el-button>
+      </div>
+    </header>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <span class="stat-icon accent"><Database :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('datasources', ui.lang) }}</span>
+          <span class="stat-value">{{ rows.length }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon ok"><PlugZap :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('dsConnected', ui.lang) }}</span>
+          <span class="stat-value">{{ connectedCount }}</span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon"><Library :size="18" /></span>
+        <div class="stat-meta">
+          <span class="stat-label">{{ t('dsKbReady', ui.lang) }}</span>
+          <span class="stat-value">{{ kbReadyCount }}</span>
+        </div>
       </div>
     </div>
 
@@ -31,18 +55,21 @@
         class="admin-table"
         empty-text="—"
       >
-        <el-table-column :label="t('datasources', ui.lang)" min-width="200">
+        <el-table-column :label="t('datasources', ui.lang)" min-width="220">
           <template #default="{ row }">
             <div class="ds-name-cell">
-              <span class="ds-icon"><Database :size="15" /></span>
+              <span class="ds-icon"><Database :size="16" /></span>
               <div class="ds-name-meta">
-                <span class="ds-name">{{ row.name }}</span>
+                <div class="ds-name-row">
+                  <span class="ds-name">{{ row.name }}</span>
+                  <span v-if="row.default" class="pill pill-accent">default</span>
+                </div>
                 <span class="ds-type">{{ row.type }}</span>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column :label="t('dsStatus', ui.lang)" width="130">
+        <el-table-column :label="t('dsStatus', ui.lang)" width="140">
           <template #default="{ row }">
             <span
               class="pill"
@@ -66,6 +93,10 @@
               class="pill"
               :class="row.kb_initialized ? 'pill-ok' : 'pill-warn'"
             >
+              <span
+                class="pill-dot"
+                :class="row.kb_initialized ? 'pill-dot-ok' : ''"
+              />
               {{
                 row.kb_initialized
                   ? t('dsKbReady', ui.lang)
@@ -74,24 +105,20 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="default" width="92">
-          <template #default="{ row }">
-            <span v-if="row.default" class="pill pill-accent">default</span>
-          </template>
-        </el-table-column>
         <el-table-column
           :label="t('actions', ui.lang)"
-          width="270"
+          width="320"
           fixed="right"
         >
           <template #default="{ row }">
             <div class="row-actions">
               <button
                 v-if="!row.kb_initialized"
-                class="mini-btn init"
+                class="mini-btn primary init"
                 :disabled="busy(row.name, 'init')"
                 @click="initKb(row)"
               >
+                <Sparkles :size="13" />
                 {{ t('dsInit', ui.lang) }}
               </button>
               <button
@@ -100,6 +127,7 @@
                 :disabled="busy(row.name, 'reload')"
                 @click="reloadKb(row)"
               >
+                <RefreshCw :size="13" />
                 {{ t('dsReload', ui.lang) }}
               </button>
               <button
@@ -107,9 +135,11 @@
                 :disabled="busy(row.name, 'reconnect')"
                 @click="reconnect(row)"
               >
+                <PlugZap :size="13" />
                 {{ t('dsReconnect', ui.lang) }}
               </button>
               <button class="mini-btn is-danger" @click="remove(row)">
+                <Trash2 :size="13" />
                 {{ t('dsRemove', ui.lang) }}
               </button>
             </div>
@@ -135,6 +165,7 @@
               :value="opt.value"
             />
           </el-select>
+          <div class="form-hint">{{ t('dsTypeHint', ui.lang) }}</div>
         </el-form-item>
 
         <el-form-item v-if="form.type !== 'demo'" :label="t('dsUrl', ui.lang)">
@@ -148,11 +179,7 @@
           />
           <div class="form-hint">
             {{ t('dsExample', ui.lang) }}
-            <button
-              class="link-btn"
-              type="button"
-              @click="insertExample()"
-            >
+            <button class="link-btn" type="button" @click="insertExample()">
               {{ exampleFor(form.type) }}
             </button>
           </div>
@@ -180,7 +207,11 @@
           {{ t('dsProbeHint', ui.lang) }}
         </span>
         <span class="dialog-footer-spacer" />
-        <el-button @click="dlgOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button @click="dlgOpen = false">
+{{
+          t('cancel', ui.lang)
+        }}
+</el-button>
         <el-button
           type="primary"
           :loading="submitting"
@@ -197,7 +228,17 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Plus, Database, AlertCircle, Info } from 'lucide-vue-next'
+import {
+  Plus,
+  Database,
+  AlertCircle,
+  Info,
+  PlugZap,
+  Library,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+} from 'lucide-vue-next'
 import { apiDelete, apiGet, apiPost } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
@@ -211,6 +252,13 @@ const dlgOpen = ref(false)
 const submitting = ref(false)
 const formError = ref('')
 const busyMap = reactive<Record<string, boolean>>({})
+
+const connectedCount = computed(
+  () => rows.value.filter((r) => r.status === 'connected').length,
+)
+const kbReadyCount = computed(
+  () => rows.value.filter((r) => r.kb_initialized).length,
+)
 
 const form = reactive({
   type: 'demo',

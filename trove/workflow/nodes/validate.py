@@ -77,7 +77,7 @@ def make_validate_rules(
                 state.lang,
                 f"计划校验: {'; '.join(ac_errors)}。"
                 "查询计划的 answer_columns 与执行结果列不符——重新规划并修正输出列。",
-                f"Plan check: {'; '.join(ac_errors)}. "
+                f"Plan check [answer-columns]: {'; '.join(ac_errors)}. "
                 "The query plan's answer_columns do not match the executed "
                 "result columns — re-plan and fix the answer columns.",
             )
@@ -96,7 +96,7 @@ def make_validate_rules(
         # 结果多出计划外的列 → 打回重规划)。保守:全部 refs 都在结果里才
         # 判定;question 点名列豁免——宁漏勿误,误伤成本=一次重试轮。
         extra_errors = extra_columns_mismatch(
-            state.plan_json, state.columns, state.question,
+            state.plan_json, state.columns, state.question, state.sql,
         )
         if extra_errors:
             if budget_exhausted(state.retry_count, max_retries):
@@ -105,7 +105,7 @@ def make_validate_rules(
                 state.lang,
                 f"计划校验: {'; '.join(extra_errors)}。"
                 "只输出查询计划的 answer_columns——去掉多余列。",
-                f"Plan check: {'; '.join(extra_errors)}. "
+                f"Plan check [extra-columns]: {'; '.join(extra_errors)}. "
                 "Output only the plan's answer_columns — drop the extra columns.",
             )
             return {

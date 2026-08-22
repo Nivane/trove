@@ -130,6 +130,177 @@ def validate_plan(
     return errors
 
 
+def ensure_aggregate_answer_column(
+    plan: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """分组聚合计划兜底:声明了聚合但 answer_columns 缺聚合指标列 → 补一列。
+
+    分组计数/聚合类问题("每个地区的贷款用户数量"、"number of X per Y")
+    的答案必须是两列:分组实体列 + 聚合指标列。planner 时常只把实体列写进
+    answer_columns(聚合意图只表现在 aggregation 字段)——gen_sql 收到
+    只有实体列的 answer_columns 就会只 SELECT 实体列、丢掉聚合结果。
+
+    兜底:当 aggregation 非 none 且 answer_columns 没有任何含 `(` 的表达式
+    列时,追加一个规范化的聚合指标列。函数名取 aggregation 字段的头部
+    (count/sum/avg/min/max 等),列用 `*`(COUNT(*) 或 COUNT(1) 对任意
+    基表都合法)——gen_sql 拿到"分组列 + count(*)"的权威指引后自然输出两列。
+    返回修正后的 plan(新增 plan_field 标注),无改动时返回原 plan。
+    """
+    if not plan:
+        return None
+    agg = str(plan.get("aggregation") or "").strip().lower()
+    if not agg or agg in ("none", "无"):
+        return None
+    cols = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    if cols and any("(" in a for a in cols):
+        return None  # 已有聚合表达式列 → 不重复补
+    # aggregation 可能带修饰(如 "count(distinct x)")——取其函数名作占位前列
+    func = re.split(r"[(\s]", agg, 1)[0] or "count"
+    metric = f"{func}(*)"
+    fixed = dict(plan)
+    fixed["answer_columns"] = list(cols) + [metric]
+    fixed["plan_field"] = "ensure_aggregate_answer_column"
+    return fixed
+
+
+# 语义级计数纠正的实体名词识别。收益率最高的是业务实体词 + 表名的双信号:
+# 命中名词 → 找以其为表名(或含该名词)的表 → 取该表主键/ID 列做去重计数。
+_ENTITY_COUNT_RE = re.compile(
+    r"(?:用户|客户|顾客|人数|人员|多少(?:个|位|名)?(?:不同|不同|不同)?)"
+    r"|\b(?:customers?|users?|clients?|persons?|people|holders?)\b",
+    re.I,
+)
+_ENTITY_WORDS = {
+    # 中文业务词 → 表名必须包含的 token(无 -> 匹配"近义表")
+    "用户": ("client", "account", "customer"),
+    "客户": ("client", "customer", "account"),
+    "顾客": ("customer", "client"),
+    "人员": ("client", "employee", "staff"),
+    "人数": ("client", "customer", "employee"),
+    # 英文 → 原词即表名或近义
+    "customer": ("customer", "client"),
+    "user": ("user", "client", "account"),
+    "client": ("client", "customer"),
+    "person": ("client", "customer", "user"),
+    "people": ("client", "customer", "user"),
+    "holder": ("account", "client", "card"),
+}
+
+
+def _is_entity_count_question(question: str, lang: str) -> bool:
+    """问题是否在数"业务实体/人数"而不是"记录行数"。
+
+    语词信号:「X 的用户数量/人数/多少用户」「number of X users/customers/
+    people」。这类问题需要 COUNT(DISTINCT 实体),而 LLM planner 常把它
+    误译成 COUNT(loan.loan_id) 之类的记录计数。纯正则,零 LLM。
+    """
+    q = question or ""
+    if lang == "zh":
+        return bool(re.search(
+            r"(?:用户|客户|顾客|人员|人数|多少(?:名|位|个)?(?:用户|客户|顾客))",
+            q,
+        ))
+    return bool(re.search(
+        r"\b(?:customers?|users?|clients?|persons?|people|holders?)\b",
+        q,
+        re.I,
+    ))
+
+
+def _entity_tables(question: str, plan: dict | None, lang: str) -> list[str]:
+    """从问题名词 + plan 的表单里选"实体表"(用于 COUNT(DISTINCT 实体.id))。
+
+    策略:问题中出现的业务实体名词 → 在 plan.tables(及 schema 语境里)找表名
+    包含该名词或近义的表;找到的候选优先 prefer 有一个 `_id` 结尾列且带
+    FK 到所答指标表的表(schema 语境不可用时退化为选择顺序第一的候选)。
+    返回小写表名列表(可能为空 = 无法确定实体表)。
+    """
+    q = (question or "").lower()
+    tables = [str(t).lower() for t in ((plan or {}).get("tables") or [])]
+    matches: list[str] = []
+    for word, cousins in _ENTITY_WORDS.items():
+        if word == "user" and not re.search(r"\bus(?:e|es)?\b", q, re.I):
+            continue  # "user" 是词根,避免误吞 "custom user" 之类
+        if re.search(re.escape(word), q) or any(re.search(re.escape(c), q) for c in cousins):
+            for t in tables:
+                if any(tok in t for tok in (word, *cousins)):
+                    if t not in matches:
+                        matches.append(t)
+    # 无命名实体的近义命中时,回退:取 plan 表里带 *_id 主列候选(如 client/
+    # account)——宁可猜实体表也不要让 planner 的 count(loan.loan_id) 溜过去。
+    if not matches:
+        for t in tables:
+            if t not in matches and any(tok in t for tok in ("client", "account", "customer", "user")):
+                matches.append(t)
+    return matches
+
+
+def _entity_id_column(table: str) -> str:
+    """实体表选取去重计数列:优先 <表>_id;退化为 id。"""
+    base = f"{table}_id"
+    if table.endswith("ies"):
+        base = f"{table[:-3]}y_id"
+    elif table.endswith("s") and not table.endswith("ss"):
+        base = f"{table[:-1]}_id"
+    return base
+
+
+def correct_entity_count_plan(
+    plan: dict[str, Any] | None,
+    question: str,
+    lang: str = "en",
+) -> dict[str, Any] | None:
+    """语义级计数纠正:把"数用户/人数"计划的记录计数改写为去重实体计数。
+
+    根因修复(第一轮就做对,不等 reflect 反推):plan 常把「X 的用户数量」写成
+    ``count(loan.loan_id)``(数记录行),而问题语义要求 ``count(distinct
+    实体.id)``(数去重用户)。规则 19 让 gen_sql 不敢反驳 plan——这里在
+    plan→gen 之间用确定性规则把 plan 纠正好,gen 拿到对的就是对的。
+
+    命中条件:
+      1. aggregation 是 count(含 count distinct 之外的 count 族);
+      2. 问题含实体计数语词(用户/客户/人数/customers/users/people...)。
+    纠偏:
+      - aggregation → ``count distinct <table>.<id>``;
+      - answer_columns 里的记录计数表达式(count(<table>.<id>)) → 改去重版;
+      - answer_columns 本身缺聚合列时追加去重计数列(交给 ensure_... 的性能
+        由本函数先行,避免 count(*) 占位压过去重语义)。
+    无法确定实体表 → None(不瞎猜,保持原 plan)。
+    """
+    if not plan:
+        return None
+    if not _is_entity_count_question(question, lang):
+        return None
+    agg = str(plan.get("aggregation") or "").strip().lower()
+    if not agg or re.search(r"\bcount\s*\(", agg):
+        if not agg or "count" not in agg:
+            return None  # 非 count 聚合(sum/avg)或已显式去重 → 不动
+    # 实体表解析(允许在 question 里,也可来自 plan.tables)
+    tbls = _entity_tables(question, plan, lang)
+    if not tbls:
+        return None
+    table = tbls[0]
+    col = f"{table}.{_entity_id_column(table)}"
+    expr = f"count(distinct {col})"
+
+    cols = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    replaced: list[str] = []
+    for a in cols:
+        low = a.lower()
+        if re.match(r"^count\s*\(", low):
+            replaced.append(expr)  # 记录计数(含别名/裸) → 去重版
+        else:
+            replaced.append(a)
+    if not any("(" in a for a in replaced):
+        replaced.append(expr)
+
+    fixed = dict(plan)
+    fixed["aggregation"] = f"count distinct {col}"
+    fixed["answer_columns"] = replaced
+    fixed["plan_field"] = "correct_entity_count_plan"
+    return fixed
+
+
 def answer_columns_mismatch(
     plan_json: dict[str, Any] | None, result_columns: list[str],
 ) -> list[str]:
@@ -174,10 +345,64 @@ def _word_in_question(column: str, question_lower: str) -> bool:
     return False
 
 
+def _expr_signature(expr_text: str) -> tuple | None:
+    """归一化一个表达式 answer 列 → (func, frozenset(列尾缀)) 签名。
+
+    用于聚合表达式列的"按语义对账"而不是按名字符串:计划写
+    ``count(loan.loan_id)``、SQL 投影成 ``COUNT(*) AS loan_count`` 时,
+    两者签名都能归到 (count, 列集合),从而把 alias 与函数/列变化抹平。
+    ``COUNT(*)`` 无列 → 空列集 = 通配(匹配同名聚合函数的任意列)。
+    解析失败 → None(调用方回退位置配额)。
+    """
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(expr_text)
+    except Exception:
+        return None
+    funcs = list(tree.find_all(exp.AggFunc))
+    if not funcs:
+        return None
+    f = funcs[0]
+    name = f.sql().split("(", 1)[0].strip().lower()
+    cols = frozenset(
+        c.name.lower() for c in f.find_all(exp.Column) if c.name
+    )
+    return (name, cols)
+
+
+def _sql_projections(sql: str) -> list[tuple[str, tuple | None]]:
+    """解析 SQL 顶层 SELECT 投影 → [(结果名, 签名|None), ...]。
+
+    结果名 = 别名(小写)或原始表达式文本;签名 = 该投影的聚合签名。
+    解析失败/无 SELECT → []。仅供 extra 对账使用,绝不抛异常。
+    """
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(sql)
+    except Exception:
+        return []
+    select = tree.find(exp.Select)
+    if select is None:
+        return []
+    out: list[tuple[str, tuple | None]] = []
+    for proj in select.expressions:
+        alias = None
+        inner = proj
+        if isinstance(proj, exp.Alias):
+            alias = proj.alias
+            inner = proj.this
+        sig = _expr_signature(inner.sql())
+        out.append((alias.lower() if alias else inner.sql().lower(), sig))
+    return out
+
+
 def extra_columns_mismatch(
     plan_json: dict[str, Any] | None,
     result_columns: list[str],
     question: str,
+    sql: str | None = None,
 ) -> list[str]:
     """plan 的 answer_columns 与执行结果列的"多余列"检查(层2补充,确定性)。
 
@@ -186,15 +411,20 @@ def extra_columns_mismatch(
     - 前置条件:所有直接引用都出现在结果列中——任一缺失留给层2主检查,
       避免双重打回;
     - 豁免:结果列与 answer ref 大小写不敏感匹配(含去表限定尾缀);
-      列名以单词形式出现在 question 文本中(规则 19 允许的偏离)。
+      列名以单词形式出现在 question 文本中(规则 19 允许的偏离);
+    - 聚合表达式 answer 列(含 `(`):优先用 sqlglot 按语义签名对账——
+      聚合表达式在结果里以别名(COUNT(...) AS loan_count)或裸表达式
+      呈现,无法按名字符串匹配,改按"函数名+列集"签名把对应结果列
+      从多余列里划掉;SQL 不可解析时回退位置配额(旧语义)。
     剩余多余列 → 冲突。误伤成本 = 一次共享预算重试轮。
     """
     if not plan_json:
         return []
-    refs = [
+    answer_cols = [
         str(ac).strip() for ac in (plan_json.get("answer_columns") or [])
-        if str(ac or "").strip() and str(ac).strip() not in ("*", "") and "(" not in str(ac)
+        if str(ac or "").strip() and str(ac).strip() not in ("*", "")
     ]
+    refs = [a for a in answer_cols if "(" not in a]
     if not refs:
         return []
     lower_result = {str(c).lower() for c in result_columns}
@@ -208,12 +438,62 @@ def extra_columns_mismatch(
         if c.lower() not in ref_tails
         and not _word_in_question(c, q_lower)
     ]
+    expr_cols = [a for a in answer_cols if "(" in a]
+    # 聚合豁免的第二来源:plan 的 aggregation 字段。planner 常把聚合意图
+    # 只写进 aggregation(= count/sum/avg...)而不写进 answer_columns,此时
+    # SQL 顶层的聚合投影(COUNT(DISTINCT ...) AS num_loan_users)是预期输出,
+    # 不能当多余列打回——COUNT(DISTINCT loan.account_id) 正是每区贷款用户数。
+    plan_agg = str(plan_json.get("aggregation") or "").strip().lower()
+    agg_declared = bool(plan_agg) and plan_agg not in ("none", "")
+
+    # 聚合表达式对账:按签名把"聚合输出列"从多余列里划掉。
+    # 1) 计划里每个聚合表达式一个签名;2) SQL 投影 → (结果名, 签名)。
+    # 结果列名命中"与某计划聚合签名同函数的投影" → 该列是聚合输出,豁免。
+    # plan 声明了聚合(aggregation 字段)时,所有聚合投影列都豁免(聚合列就
+    # 是指标输出);不声明聚合时只豁免"与 answer 表达式签名匹配"的列。
+    plan_sigs = [s for s in (_expr_signature(a) for a in expr_cols) if s is not None]
+    projs = _sql_projections(sql) if sql else []
+    claimed = set()
+    if projs:
+        if plan_sigs:
+            claimed |= {
+                name for name, sig in projs
+                if sig is not None and any(_sig_compatible(sig, p) for p in plan_sigs)
+            }
+        if agg_declared:
+            # 聚合投影 = 预期指标列(SQL 声明了聚合且 plan 也声明了聚合)
+            claimed |= {name for name, sig in projs if sig is not None}
+    extra = [c for c in extra if c.lower() not in claimed]
+
+    if not extra:
+        return []
+    # 回退配额:无 SQL/无法解析时按"计划声明的聚合数"豁免前几列——宁漏勿误。
+    if not claimed:
+        quota = len(expr_cols) + (1 if agg_declared else 0)
+        if len(extra) <= quota:
+            return []
+        extra = extra[quota:]
     if not extra:
         return []
     return [
         f"result columns {list(extra)} are not in the plan's answer_columns {refs} "
         "— output only the answer columns"
     ]
+
+
+def _sig_compatible(a: tuple, b: tuple) -> bool:
+    """两个聚合签名是否与对方兼容 → 该结果列是某计划聚合的输出。
+
+    - 函数名必须相同;
+    - 列集:任一侧为空(COUNT(*) 通配 / 计划用通配)即兼容;
+      否则列集有交集才算同一目标列(表限定在签名里已去尾缀)。
+    """
+    if a[0] != b[0]:
+        return False
+    acols, bcols = a[1], b[1]
+    if not acols or not bcols:
+        return True
+    return bool(acols & bcols)
 
 
 async def _schema_map(connectors, datasource: str | None = None) -> dict[str, set[str]] | None:
@@ -493,6 +773,22 @@ def make_planner(
                 return update
             if not plan:
                 return {}
+            # 语义级计数纠正(优先):「X 的用户数量/人数」→ count(distinct 实体)。
+            # planner 常把实体计数误译成 count(loan.loan_id) 的记录计数,这里
+            # 在 plan→gen 之间确定性纠偏——gen 遵守规则 19 也不会做错。
+            # 先于 ensure_aggregate_answer_column:后者只补 count(*) 占位列,
+            # 若先跑会把已纠正的去重语义覆盖成 count(*) 通配。
+            corrected = correct_entity_count_plan(plan_json, state.question, state.lang)
+            if corrected is not None:
+                plan_json = corrected
+                plan = _render_plan(plan_json, state.lang)
+            # 分组聚合兜底:声明了聚合但 answer_columns 缺聚合指标列 → 补列。
+            # 修正后重渲染 plan 文本(gen_sql 以 answer_columns 为权威),
+            # 并保留计划 JSON。此修正不违反 schema 校验(补的是表达式列)。
+            fixed = ensure_aggregate_answer_column(plan_json)
+            if fixed is not None:
+                plan_json = fixed
+                plan = _render_plan(plan_json, state.lang)
             update = {
                 "plan": plan,
                 "plan_json": plan_json,
