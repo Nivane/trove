@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import type { Lang } from '../i18n'
+import type { DatasourceInfo } from '../api/types'
+import { apiGet } from '../api/http'
 import { clampSidebarWidth } from '../utils/sidebar'
 
 // Legacy localStorage keys kept so the vanilla-UI migration is seamless.
@@ -20,7 +22,13 @@ export const useUiStore = defineStore('ui', {
     sidebarWidth: clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 260),
     analysisOpen: localStorage.getItem(ANALYSIS_KEY) !== '0',
     datasource: localStorage.getItem(DATASOURCE_KEY) || '',
+    datasourceList: [] as DatasourceInfo[],
+    datasourcesLoaded: false,
   }),
+  getters: {
+    hasDatasource: (state) =>
+      state.datasourceList.some((d) => d.name === state.datasource),
+  },
   actions: {
     applyTheme() {
       document.documentElement.dataset.theme = this.theme
@@ -50,6 +58,22 @@ export const useUiStore = defineStore('ui', {
     setDatasource(name: string) {
       this.datasource = name
       localStorage.setItem(DATASOURCE_KEY, name)
+    },
+    async loadDatasources() {
+      try {
+        const body = await apiGet('/v1/catalog/datasources')
+        this.datasourceList = body.datasources ?? []
+        if (
+          this.datasource &&
+          !this.datasourceList.some((d) => d.name === this.datasource)
+        ) {
+          this.datasource = ''
+        }
+      } catch {
+        this.datasourceList = []
+      } finally {
+        this.datasourcesLoaded = true
+      }
     },
   },
 })

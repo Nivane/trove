@@ -3,6 +3,12 @@
     <Sidebar />
     <div class="chat-main">
       <TopBar />
+      <div
+        v-if="ui.datasourcesLoaded && !ui.datasourceList.length"
+        class="no-ds-banner"
+      >
+        {{ t('noDatasources', ui.lang) }}
+      </div>
       <TaskPanel />
       <div ref="messageList" class="message-list">
         <template v-if="!chat.turns.length">

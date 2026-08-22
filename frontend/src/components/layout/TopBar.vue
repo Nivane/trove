@@ -5,7 +5,7 @@
     <span class="topbar-spacer"></span>
     <span class="datasource-label">
       <el-icon :size="12"><Odometer /></el-icon>
-      {{ datasource || t('datasources', ui.lang) }}
+      {{ ui.datasource || t('datasources', ui.lang) }}
     </span>
     <button class="topbar-btn" :title="langTitle" @click="toggleLang">中/EN</button>
     <button class="topbar-btn" :title="themeTitle" @click="ui.cycleTheme()">
@@ -15,16 +15,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { onMounted, computed } from 'vue'
 import { Expand, Odometer, Sunny, Moon } from '@element-plus/icons-vue'
 import { useUiStore } from '../../stores/ui'
 import { useChatStore } from '../../stores/chat'
 import { t } from '../../i18n'
-import { apiGet } from '../../api/http'
 
 const ui = useUiStore()
 const chat = useChatStore()
-const datasource = ref('')
 
 const sessionLabel = computed(() => {
   const first = chat.turns[0]?.question
@@ -38,13 +36,7 @@ function toggleLang() {
   window.location.reload()
 }
 
-onMounted(async () => {
-  try {
-    const body = await apiGet('/v1/catalog/datasources')
-    const list = body.datasources ?? []
-    datasource.value = list[0]?.name ?? ''
-  } catch {
-    datasource.value = ''
-  }
+onMounted(() => {
+  void ui.loadDatasources()
 })
 </script>
