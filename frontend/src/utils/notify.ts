@@ -17,8 +17,9 @@ export function notifyInfo(msg: string) {
 
 /** Humanize an unknown thrown value into a message and surface it. */
 export function toastError(err: unknown, fallback = 'Something went wrong') {
-  const msg = err && typeof err === 'object' && 'message' in err
-    ? String((err as { message: unknown }).message)
-    : String(err ?? '')
+  const msg =
+    err && typeof err === 'object' && 'message' in err
+      ? String((err as { message: unknown }).message)
+      : String(err ?? '')
   notifyError(msg || fallback)
 }

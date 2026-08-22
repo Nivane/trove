@@ -43,8 +43,9 @@ export function renderMarkdown(src: string): string {
     .split('\n')
     .map((line) => {
       if (!line.trim().startsWith('|')) return line
-      return line.replace(/`([^`]*)`/g, (_m, code: string) =>
-        '`' + code.replace(/\|/g, '｜') + '`',
+      return line.replace(
+        /`([^`]*)`/g,
+        (_m, code: string) => '`' + code.replace(/\|/g, '｜') + '`',
       )
     })
     .join('\n')
@@ -59,5 +60,8 @@ export function renderMarkdown(src: string): string {
  * UI renders the real chart via ECharts instead). The backend emits:
  *   **Chart**: title / **图表: title**  followed by a ``` ``` fenced block. */
 export function stripAsciiChart(src: string): string {
-  return src.replace(/^(\*\*(?:图表|Chart)\*{0,1}[^:\n]*:?[^\n]*)\n```[\s\S]*?```/gm, '')
+  return src.replace(
+    /^(\*\*(?:图表|Chart)\*{0,1}[^:\n]*:?[^\n]*)\n```[\s\S]*?```/gm,
+    '',
+  )
 }

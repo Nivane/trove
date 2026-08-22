@@ -40,10 +40,16 @@ export async function apiFetch(
   return resp
 }
 
-export async function apiGet<T = any>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiGet<T = any>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
   const resp = await apiFetch(path, { ...options, method: 'GET' })
   if (!resp.ok) {
-    throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText))
+    throw new ApiError(
+      resp.status,
+      await resp.text().catch(() => resp.statusText),
+    )
   }
   return resp.json()
 }
@@ -55,30 +61,61 @@ export async function apiPost<T = any>(
 ): Promise<T> {
   const resp = await apiFetch(
     path,
-    { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) },
+    {
+      method: 'POST',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    },
     options,
   )
   if (!resp.ok) {
-    throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText))
+    throw new ApiError(
+      resp.status,
+      await resp.text().catch(() => resp.statusText),
+    )
   }
   return resp.json()
 }
 
-export async function apiPatch<T = any>(path: string, body?: unknown): Promise<T> {
-  const resp = await apiFetch(path, { method: 'PATCH', body: JSON.stringify(body ?? {}) })
-  if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText))
+export async function apiPatch<T = any>(
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const resp = await apiFetch(path, {
+    method: 'PATCH',
+    body: JSON.stringify(body ?? {}),
+  })
+  if (!resp.ok)
+    throw new ApiError(
+      resp.status,
+      await resp.text().catch(() => resp.statusText),
+    )
   return resp.json()
 }
 
 export async function apiDelete<T = any>(path: string): Promise<T> {
   const resp = await apiFetch(path, { method: 'DELETE' })
-  if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText))
-  if (resp.status === 204 || resp.status === 205) return undefined as unknown as T
+  if (!resp.ok)
+    throw new ApiError(
+      resp.status,
+      await resp.text().catch(() => resp.statusText),
+    )
+  if (resp.status === 204 || resp.status === 205)
+    return undefined as unknown as T
   return resp.json()
 }
 
-export async function apiPut<T = any>(path: string, body?: unknown): Promise<T> {
-  const resp = await apiFetch(path, { method: 'PUT', body: JSON.stringify(body ?? {}) })
-  if (!resp.ok) throw new ApiError(resp.status, await resp.text().catch(() => resp.statusText))
+export async function apiPut<T = any>(
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const resp = await apiFetch(path, {
+    method: 'PUT',
+    body: JSON.stringify(body ?? {}),
+  })
+  if (!resp.ok)
+    throw new ApiError(
+      resp.status,
+      await resp.text().catch(() => resp.statusText),
+    )
   return resp.json()
 }

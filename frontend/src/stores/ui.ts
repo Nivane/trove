@@ -19,7 +19,9 @@ export const useUiStore = defineStore('ui', {
     theme: (localStorage.getItem(THEME_KEY) as Theme) || 'light',
     lang: (localStorage.getItem(LANG_KEY) as Lang) || 'zh',
     sidebarOpen: localStorage.getItem(SIDEBAR_KEY) !== '0',
-    sidebarWidth: clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 260),
+    sidebarWidth: clampSidebarWidth(
+      Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 260,
+    ),
     analysisOpen: localStorage.getItem(ANALYSIS_KEY) !== '0',
     datasource: localStorage.getItem(DATASOURCE_KEY) || '',
     datasourceList: [] as DatasourceInfo[],

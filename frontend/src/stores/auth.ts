@@ -23,7 +23,11 @@ export const useAuthStore = defineStore('auth', {
   },
   actions: {
     async login(username: string, password: string) {
-      const body = await apiPost('/v1/auth/login', { username, password }, { noAuth: true })
+      const body = await apiPost(
+        '/v1/auth/login',
+        { username, password },
+        { noAuth: true },
+      )
       this.token = body.token
       this.user = body.user
       localStorage.setItem(TOKEN_KEY, body.token)

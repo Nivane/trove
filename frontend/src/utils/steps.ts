@@ -16,7 +16,9 @@ export interface StepView {
 }
 
 function get(payload: StepPayload, key: string): unknown {
-  const d = payload as Record<string, unknown> & { detail?: Record<string, unknown> }
+  const d = payload as Record<string, unknown> & {
+    detail?: Record<string, unknown>
+  }
   if (d.detail && key in d.detail) return d.detail[key]
   if (key in d) return d[key]
   return undefined
@@ -131,7 +133,13 @@ export function extractStep(payload: StepPayload): StepView {
   }
 
   // Generic nodes with free-form detail.
-  for (const key of ['content', 'verdict', 'reason', 'semantics', 'hitl_status']) {
+  for (const key of [
+    'content',
+    'verdict',
+    'reason',
+    'semantics',
+    'hitl_status',
+  ]) {
     const v = str(get(payload, key))
     if (v) {
       view.text = v

@@ -29,7 +29,12 @@ export function newRequestId(): string {
     : `rid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function emit(level: TelemetryEvent['level'], source: string, message: string, meta?: TelemetryEvent['meta'] & { requestId?: string; error?: unknown }) {
+function emit(
+  level: TelemetryEvent['level'],
+  source: string,
+  message: string,
+  meta?: TelemetryEvent['meta'] & { requestId?: string; error?: unknown },
+) {
   const event: TelemetryEvent = {
     level,
     source,
@@ -40,13 +45,19 @@ function emit(level: TelemetryEvent['level'], source: string, message: string, m
     ts: new Date().toISOString(),
   }
   reporter?.(event)
-  if (level === 'error') console.error(`[trove:${source}]`, message, meta?.error ?? '')
+  if (level === 'error')
+    console.error(`[trove:${source}]`, message, meta?.error ?? '')
   else if (level === 'warn') console.warn(`[trove:${source}]`, message)
 }
 
 export const telemetry = {
-  info: (source: string, message: string, meta?: Record<string, unknown>) => emit('info', source, message, meta),
-  warn: (source: string, message: string, meta?: Record<string, unknown>) => emit('warn', source, message, meta),
-  error: (source: string, message: string, meta?: Record<string, unknown> & { error?: unknown; requestId?: string }) =>
-    emit('error', source, message, meta),
+  info: (source: string, message: string, meta?: Record<string, unknown>) =>
+    emit('info', source, message, meta),
+  warn: (source: string, message: string, meta?: Record<string, unknown>) =>
+    emit('warn', source, message, meta),
+  error: (
+    source: string,
+    message: string,
+    meta?: Record<string, unknown> & { error?: unknown; requestId?: string },
+  ) => emit('error', source, message, meta),
 }

@@ -8,23 +8,33 @@ describe('markdown block tokenizer', () => {
   })
 
   it('extracts a pipe table with headers and rows', () => {
-    const blocks = tokenize([
-      '| name | amount |',
-      '|------|--------|',
-      '| a    | 10     |',
-      '| b    | 20     |',
-    ].join('\n'))
+    const blocks = tokenize(
+      [
+        '| name | amount |',
+        '|------|--------|',
+        '| a    | 10     |',
+        '| b    | 20     |',
+      ].join('\n'),
+    )
     expect(blocks[0]).toEqual({
       type: 'table',
       headers: ['name', 'amount'],
-      rows: [['a', '10'], ['b', '20']],
+      rows: [
+        ['a', '10'],
+        ['b', '20'],
+      ],
     })
   })
 
   it('extracts sql fenced blocks and leaves other fences as markdown', () => {
-    const blocks = tokenize('```sql\nSELECT * FROM t\n```\n\ntext\n\n```python\nx=1\n```')
+    const blocks = tokenize(
+      '```sql\nSELECT * FROM t\n```\n\ntext\n\n```python\nx=1\n```',
+    )
     expect(blocks[0]).toEqual({ type: 'sql', code: 'SELECT * FROM t' })
-    expect(blocks[1]).toEqual({ type: 'md', text: '\ntext\n\n```python\nx=1\n```' })
+    expect(blocks[1]).toEqual({
+      type: 'md',
+      text: '\ntext\n\n```python\nx=1\n```',
+    })
   })
 
   it('preserves order of mixed content', () => {

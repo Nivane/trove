@@ -21,7 +21,9 @@ describe('auth bootstrap — restores session from token on load', () => {
 
   it('returns true and populates user when token restores via /me', async () => {
     localStorage.setItem('trove_auth_token', 'tok')
-    globalThis.fetch = mockFetch(true, { user: { id: 1, username: 'bob', role: 'admin' } })
+    globalThis.fetch = mockFetch(true, {
+      user: { id: 1, username: 'bob', role: 'admin' },
+    })
 
     const { useAuthStore } = await import('../src/stores/auth')
     const auth = useAuthStore()
@@ -74,7 +76,9 @@ describe('auth bootstrap — restores session from token on load', () => {
   })
 
   it('bootstrap without a token is false without network', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('should not be called'))
+    globalThis.fetch = vi
+      .fn()
+      .mockRejectedValue(new Error('should not be called'))
     const { useAuthStore } = await import('../src/stores/auth')
     const ok = await useAuthStore().bootstrap()
     expect(ok).toBe(false)

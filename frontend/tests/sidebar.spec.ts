@@ -35,9 +35,11 @@ describe('Sidebar', () => {
     const ui = useUiStore()
     // @vue/test-utils trigger() maps pointer events to MouseEvent whose
     // clientX is getter-only in jsdom — dispatch a real PointerEvent instead.
-    wrapper.find('.sidebar-resizer').element.dispatchEvent(
-      new PointerEvent('pointerdown', { clientX: 300, bubbles: true }),
-    )
+    wrapper
+      .find('.sidebar-resizer')
+      .element.dispatchEvent(
+        new PointerEvent('pointerdown', { clientX: 300, bubbles: true }),
+      )
     window.dispatchEvent(new PointerEvent('pointermove', { clientX: 500 }))
     window.dispatchEvent(new PointerEvent('pointerup'))
     // 260 + 200 = 460 → clamp 到 400
@@ -45,13 +47,14 @@ describe('Sidebar', () => {
     expect(localStorage.getItem('trove_ui_sidebar_width')).toBe('400')
   })
 
-  it('toggles the history popover in rail mode', async () => {
+  it('toggles between rail and expanded with the panel button', async () => {
     const wrapper = mountSidebar()
     const ui = useUiStore()
     ui.sidebarOpen = false
     await wrapper.vm.$nextTick()
+    expect(wrapper.find('.rail-btn').exists()).toBe(true)
     expect(wrapper.find('.history-popover').exists()).toBe(false)
-    await wrapper.findAll('.rail-btn')[1].trigger('click')
-    expect(wrapper.find('.history-popover').exists()).toBe(true)
+    await wrapper.find('.rail-btn').trigger('click')
+    expect(ui.sidebarOpen).toBe(true)
   })
 })

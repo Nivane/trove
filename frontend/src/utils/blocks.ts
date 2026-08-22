@@ -68,7 +68,10 @@ export function tokenize(src: string): Block[] {
 
     if (fence && isTopLevel(line)) {
       // fenced code block
-      const lang = line.trim().replace(/^[`~]+/, '').trim()
+      const lang = line
+        .trim()
+        .replace(/^[`~]+/, '')
+        .trim()
       const code: string[] = []
       i++
       while (i < lines.length && !fenceChar(lines[i])) {
@@ -85,10 +88,17 @@ export function tokenize(src: string): Block[] {
       continue
     }
 
-    if (isPipeRow(line) && isSeparatorRow(lines[i + 1] ?? '') && isTopLevel(line)) {
+    if (
+      isPipeRow(line) &&
+      isSeparatorRow(lines[i + 1] ?? '') &&
+      isTopLevel(line)
+    ) {
       const block: string[] = []
       let j = i
-      while (j < lines.length && (isPipeRow(lines[j]) || isSeparatorRow(lines[j]))) {
+      while (
+        j < lines.length &&
+        (isPipeRow(lines[j]) || isSeparatorRow(lines[j]))
+      ) {
         block.push(lines[j])
         j++
       }

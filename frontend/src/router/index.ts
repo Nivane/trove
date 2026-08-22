@@ -1,19 +1,44 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
+// Dev runs at /ui/ (the original mount), prod nginx serves at / — accept both.
+const history = createWebHistory(
+  window.location.pathname.startsWith('/ui') ? '/ui/' : '/',
+)
+
 export const router = createRouter({
-  history: createWebHistory('/ui/'),
+  history,
   routes: [
-    { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
-    { path: '/', name: 'chat', component: () => import('../views/ChatView.vue') },
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('../views/LoginView.vue'),
+    },
+    {
+      path: '/',
+      name: 'chat',
+      component: () => import('../views/ChatView.vue'),
+    },
     {
       path: '/admin',
       component: () => import('../views/AdminLayout.vue'),
       children: [
         { path: '', redirect: '/admin/users' },
-        { path: 'users', name: 'admin-users', component: () => import('../views/admin/UsersView.vue') },
-        { path: 'kb', name: 'admin-kb', component: () => import('../views/admin/KbLessonsView.vue') },
-        { path: 'audit', name: 'admin-audit', component: () => import('../views/admin/AuditView.vue') },
+        {
+          path: 'users',
+          name: 'admin-users',
+          component: () => import('../views/admin/UsersView.vue'),
+        },
+        {
+          path: 'kb',
+          name: 'admin-kb',
+          component: () => import('../views/admin/KbLessonsView.vue'),
+        },
+        {
+          path: 'audit',
+          name: 'admin-audit',
+          component: () => import('../views/admin/AuditView.vue'),
+        },
         {
           path: 'datasources',
           name: 'admin-datasources',
@@ -35,7 +60,10 @@ router.beforeEach(async (to) => {
     await auth.bootstrap()
   }
   if (to.name !== 'login' && !auth.isAuthed) {
-    return { name: 'login', query: to.fullPath !== '/' ? { next: to.fullPath } : {} }
+    return {
+      name: 'login',
+      query: to.fullPath !== '/' ? { next: to.fullPath } : {},
+    }
   }
   if (to.name === 'login' && auth.isAuthed) {
     return { name: 'chat' }
