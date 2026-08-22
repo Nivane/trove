@@ -72,11 +72,13 @@ async def boot_register(registry, configs: list[DatasourceConfig]) -> list[str]:
     for cfg in configs:
         try:
             if cfg.type == "demo":
-                from trove.main import setup_demo_datasource
+                from trove.services.datasource.demo_setup import (
+                    setup_demo_datasource,
+                )
                 await setup_demo_datasource(registry)
             else:
                 await registry.register(cfg, set_default=cfg.default)
-        except DatasourceError as e:
+        except (DatasourceError, OSError) as e:
             failed.append(cfg.name)
             logger.warning("boot register '%s' skipped: %s", cfg.name, e)
     return failed

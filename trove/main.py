@@ -15,30 +15,37 @@ from pathlib import Path
 from typing import Any
 
 from trove.core.config import ConfigLoader, AgentConfig
+from trove.core.errors import DatasourceError
 from trove.core.logging import get_logger
-from trove.core.types import DatasourceConfig
 from trove.storage.session_store import SessionStore
 from trove.storage.checkpoint_store import build_checkpointer
 from trove.llm.gateway import LLMGateway
 from trove.services.datasource.registry import ConnectorRegistry, register_adapter
-from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 from trove.services.datasource.catalog import CatalogService
+from trove.services.datasource.demo_setup import setup_demo_datasource
 from trove.workflow.graphs import GraphServices, build_graphs
 from trove.agent.session import SessionManager
 
 logger = get_logger(__name__)
 
 
-def parse_args():
-    """Parse command-line arguments."""
+def parse_args(argv: list[str] | None = None):
+    """Parse command-line arguments.
+
+    Args:
+        argv: Optional argv override (tests); defaults to sys.argv.
+    """
     parser = argparse.ArgumentParser(
         description="Trove — Intelligent Data Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--datasource", "-d",
-        default="demo",
-        help="Datasource to use (default: demo uses built-in SQLite)",
+        default="",
+        help=(
+            "Datasource to use (default: empty — load .trove/datasources.yml; "
+            "use demo for the built-in SQLite, or a scheme:// URL)"
+        ),
     )
     parser.add_argument(
         "--config", "-f",
@@ -67,36 +74,7 @@ def parse_args():
         action="store_true",
         help="Print version and exit",
     )
-    return parser.parse_args()
-
-
-async def setup_demo_datasource(registry: ConnectorRegistry) -> None:
-    """Set up the built-in demo SQLite database with BIRD financial data.
-
-    Args:
-        registry: The connector registry to register with.
-    """
-    from trove.demo import create_demo_database
-
-    demo_path = Path.home() / ".trove" / "demo.db"
-    demo_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Remove old demo db to start fresh each time
-    if demo_path.exists():
-        demo_path.unlink()
-
-    adapter = SQLiteAdapter(name="demo", config={"path": str(demo_path)})
-    await adapter.connect()
-    await create_demo_database(adapter)
-    await adapter.disconnect()
-
-    config = DatasourceConfig(
-        name="demo",
-        type="sqlite",
-        connection_params={"path": str(demo_path)},
-        default=True,
-    )
-    await registry.register(config, set_default=True)
+    return parser.parse_args(argv)
 
 
 async def setup_datasource(args, registry: ConnectorRegistry) -> None:
@@ -109,7 +87,6 @@ async def setup_datasource(args, registry: ConnectorRegistry) -> None:
     Raises:
         DatasourceError: Unknown target, malformed URL, or connection failure.
     """
-    from trove.core.errors import DatasourceError
     from trove.services.datasource.urls import parse_datasource_url
 
     target = args.datasource
@@ -158,15 +135,29 @@ async def create_app_components(
     llm_gateway = LLMGateway(providers=config.providers)
 
     # ── Datasource ────────────────────────────────────────
+    from trove.services.datasource.config_store import ConfigStore, boot_register
+    config_store = ConfigStore()
     connector_registry = ConnectorRegistry()
-
-    # Set up the requested datasource; on failure fall back to demo
-    # so the REPL stays usable (with a clear warning).
     try:
-        await setup_datasource(args, connector_registry)
-    except Exception as e:
-        logger.warning("Datasource setup failed (%s); falling back to demo.", e)
-        await setup_demo_datasource(connector_registry)
+        if args.datasource:
+            await setup_datasource(args, connector_registry)
+        else:
+            failed = await boot_register(
+                connector_registry, config_store.load_configs()
+            )
+            if not connector_registry.list_names() and not failed:
+                logger.info(
+                    "No datasource configured — register one in the admin UI "
+                    "(or start with --datasource demo / a scheme:// URL)."
+                )
+            if failed:
+                logger.warning(
+                    "Datasources failed to connect at boot (retry in admin): %s",
+                    ", ".join(failed),
+                )
+    except DatasourceError as e:
+        logger.error("Datasource setup failed: %s", e)
+        raise
 
     # ── Catalog ───────────────────────────────────────────
     catalog_service = CatalogService(connector_registry)
@@ -241,6 +232,7 @@ async def create_app_components(
         "bootstrap_admin_password": bootstrap_password,
         "llm_gateway": llm_gateway,
         "connector_registry": connector_registry,
+        "config_store": config_store,
         "catalog_service": catalog_service,
         "kb": kb,
         "lineage": lineage,
@@ -421,7 +413,13 @@ def serve_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default 8000)")
-    parser.add_argument("--datasource", "-d", default="demo", help="Datasource to use")
+    parser.add_argument(
+        "--datasource", "-d", default="",
+        help=(
+            "Datasource to use (empty — load .trove/datasources.yml; "
+            "demo — built-in SQLite; or a scheme:// URL)"
+        ),
+    )
     parser.add_argument("--config", "-f", default=None, help="Path to agent.yml config file")
     parser.add_argument("--model", "-m", default=None, help="LLM model to use (overrides config)")
     parser.add_argument("--workflow", "-w", default="reflection", help="Default workflow")
