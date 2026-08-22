@@ -1,8 +1,18 @@
 .git
+.gitignore
+.github
 .venv
 **/__pycache__
 *.egg-info
 .pytest_cache
 .ruff_cache
-frontend/node_modules
 .trove
+.env
+node_modules
+dist
+build
+.coverage
+htmlcov
+# The backend image no longer needs the frontend sources (frontend/
+# builds from its own context with frontend/.dockerignore)
+frontend

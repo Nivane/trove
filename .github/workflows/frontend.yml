@@ -30,9 +30,10 @@ jobs:
       - run: npm ci
       - run: npm run ci
 
-  # Keep the multi-stage Dockerfile honest: builds it on every frontend change.
+  # Keep the split Dockerfiles honest: builds both containers on every
+  # frontend change (backend image + frontend nginx image via compose).
   docker-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t trove:ci .
+      - run: docker compose build

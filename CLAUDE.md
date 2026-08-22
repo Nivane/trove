@@ -21,6 +21,22 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
 uv run python scripts/lint_kb.py --datasource financial   # KB quality check
 ```
 
+### Docker 部署（前后端独立容器）
+
+前后端各自独立镜像、独立重建：前端容器（nginx 托管 SPA + 反代 `/v1` → 后端），后端容器（`trove serve`）。访问 `http://localhost:8080/ui/`。
+
+```bash
+docker compose up --build        # 构建并启动（后端 :8000 仅供调试，前端 :8080）
+docker compose build frontend    # 只重建前端镜像（独立迭代：前端改动不动后端）
+docker compose build backend     # 只重建后端镜像
+docker compose restart backend   # 只重启后端，前端容器不受影响
+docker compose down              # 停止并移除容器
+```
+
+- 登录：admin / `admin123`（compose 里 `TROVE_ADMIN_PASSWORD` 仅本地演练；生产由 `TROVE_ADMIN_PASSWORD` 环境变量控制）
+- 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`），或在容器内提供 API key
+- 后端镜像单独跑仍可访问 `/ui`（pip package-data 携带的 committed bundle）；本地单体开发流程不变：`uv run trove serve` + `cd frontend && npm run build`
+
 Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres`. Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset); see README.
 
 Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **cost-sensitive — do not launch eval runs without explicit user instruction**. Helper scripts: `distill_lessons.py` (distill Hint Bank lessons from eval failures), `import_golden_examples.py`, `import_bird_descriptions.py`, `probe_enums.py`, `import_sqlite_to_mysql.py`.
@@ -66,4 +82,4 @@ Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **co
 - **Never run eval_bird proactively** — cost-sensitive (billed LLM calls); do not launch eval runs without explicit instruction.
 - **Debug planner first**: wrong output columns from gen_sql usually root in the planner's `answer_columns` dictating output columns (the "Query plan (follow it...)" line in the user message outranks system rules; gen just obeys). Check the planner node's output in `~/.trove/runs/<run_id>.log` (look up run_id from `.trove/eval/results.jsonl` by question).
 - Eval environment: `scripts/eval_bird.py` connects to MySQL `root:root@127.0.0.1:3306/financial`, dev json at `/Users/zhaolipan/Downloads/minidev/MINIDEV/mini_dev_mysql.json`; swap KBs with `--kb-dir` (flat YAML dirs supported); per-question verdicts land in `.trove/eval/results.jsonl`, failures in `failures.jsonl` for `distill_lessons.py`.
-- Git habit: commit directly, merge to main, push both the dev branch and main, no PRs.
+- Git habit: if a new feature, checkout a new branch, after test succeess, commit directly, merge to main.

@@ -1,0 +1,6 @@
+# Build-context hygiene for the frontend image: never ship node_modules
+# or build outputs into the Docker build context.
+node_modules
+dist
+tests
+*.md

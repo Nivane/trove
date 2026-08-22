@@ -1,0 +1,45 @@
+# Trove split deployment: backend (FastAPI) + frontend (nginx serving
+# the SPA and reverse-proxying /v1 → backend). Each container builds
+# and releases independently: `docker compose build frontend` only
+# rebuilds the UI, `docker compose build backend` only the API.
+services:
+  backend:
+    build: .
+    image: trove-backend:local
+    ports:
+      - "8000:8000" # exposed for local debugging (curl the API directly)
+    environment:
+      # Dev-only: deterministic bootstrap admin password for the login
+      # flow; without this it is random and printed once in the logs.
+      TROVE_ADMIN_PASSWORD: admin123
+      # Real chats need the LLM credentials from your host config —
+      # uncomment to mount them read-only (never commit secrets):
+      # - ${HOME}/.trove/conf:/root/.trove/conf:ro
+    volumes:
+      # KB persistence: .trove/kb/<datasource>/ lives at <cwd>/.trove by
+      # default (WORKDIR /app) — mount it so KB edits survive container
+      # recreation and are shared with local REPL runs.
+      - ./.trove:/app/.trove
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: trove-frontend:local
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
