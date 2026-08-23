@@ -773,7 +773,9 @@ def make_schema_linking(
 
                     resolution = JoinResolver(live_model).resolve(
                         matched_names, verified_hints_by_table)
-                    if not resolution.empty:
+                    if not resolution.empty and not resolution.fan_out:
+                        # P5.2:M:N 联路径(fan_out)不渲染权威 Relations 块,
+                        # 避免把行倍增的联法钦点给 gen_sql → 走 LLM + 规则兜底
                         resolved_block = JoinResolver.render(resolution)
                         for extra in resolution.extra_tables:
                             d = details_by_name.get(extra)

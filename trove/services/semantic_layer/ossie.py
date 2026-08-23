@@ -189,6 +189,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             to=str(r["to"]),
             from_columns=from_cols,
             to_columns=to_cols,
+            cardinality=str(r.get("cardinality") or "").strip().upper(),
         ))
 
     ai = top.get("ai_context") or {}

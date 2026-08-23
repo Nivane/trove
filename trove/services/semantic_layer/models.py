@@ -57,6 +57,11 @@ class SemanticRelationship:
     supported); the many→one direction maps onto the OSSIE
     ``relationships`` block and the MetricFlow convention that avoids
     fan-out joins.
+
+    cardinality: 从 ``to`` 侧看 ``from`` 侧(ER 惯例)——
+        "1:N"=一个 to 对应多个 from(默认,由 many→one 构造推断)、
+        "1:1"、显式 "M:N" 表示多对多:编译器将拒绝经它编译(编译期拒
+        fan-out,交回 LLM 通道 + 规则链兜底)。
     """
 
     name: str
@@ -64,6 +69,7 @@ class SemanticRelationship:
     to: str
     from_columns: list[str] = field(default_factory=list)
     to_columns: list[str] = field(default_factory=list)
+    cardinality: str = ""  # ""(安全,默认) | "1:N" | "1:1" | "M:N"
 
 
 @dataclass

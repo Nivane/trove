@@ -8,9 +8,10 @@ from trove.services.semantic_layer.compiler import JoinResolution, JoinResolver
 from trove.services.semantic_layer.models import SemanticModel, SemanticRelationship
 
 
-def _rel(name, from_, to, fc, tc):
+def _rel(name, from_, to, fc, tc, cardinality=""):
     return SemanticRelationship(
-        name=name, from_=from_, to=to, from_columns=[fc], to_columns=[tc])
+        name=name, from_=from_, to=to, from_columns=[fc], to_columns=[tc],
+        cardinality=cardinality)
 
 
 def _model(*rels):
@@ -108,3 +109,48 @@ def test_deterministic_output():
     a = JoinResolver(model).resolve(["loan", "district"]).clauses
     b = JoinResolver(model).resolve(["loan", "district"]).clauses
     assert a == b
+
+# ── P5.2: 链接基数 / fan-out 编译期拒 ─────────────────────
+
+
+def test_one_to_many_edge_is_safe():
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id",
+             cardinality="1:N"))
+    res = JoinResolver(model).resolve(["loan", "account"])
+    assert res.fan_out is False
+    assert not res.empty
+
+
+def test_many_to_many_edge_flags_fan_out():
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id",
+             cardinality="M:N"))
+    res = JoinResolver(model).resolve(["loan", "account"])
+    assert res.fan_out is True
+    assert not res.empty  # 树仍建立(M:N 边在),但被标记
+
+
+def test_many_to_many_intermediate_flags_fan_out():
+    """中间表经 M:N 联 → 同样标记 fan_out(经它行倍增)。"""
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id",
+             cardinality="1:N"),
+        _rel("account_to_trans", "trans", "account", "account_id", "account_id",
+             cardinality="M:N"),
+    )
+    res = JoinResolver(model).resolve(["loan", "trans"])
+    assert res.fan_out is True
+    assert res.extra_tables == ["account"]
+
+
+def test_m2n_edge_unused_does_not_flag():
+    """M:N 边存在但 BFS 没走它(另一条安全路径可达)→ 不算 fan-out。"""
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id",
+             cardinality="1:N"),
+        _rel("order_to_account", "order", "account", "account_id", "account_id",
+             cardinality="M:N"),
+    )
+    res = JoinResolver(model).resolve(["loan", "account"])
+    assert res.fan_out is False

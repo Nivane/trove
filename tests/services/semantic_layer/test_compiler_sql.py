@@ -219,3 +219,35 @@ def test_synonym_ambiguous_is_miss():
         "answer_columns": ["district.region", "avg(loan.amount)"],
     }
     assert _compile(plan, ["loan", "district", "account"], model=model) is None
+
+def test_compile_strict_miss_on_many_to_many_path():
+    """P5.2:M:N 边在联路径 → 编译期拒,严格 MISS 回 LLM 通道。"""
+    from trove.services.semantic_layer.models import SemanticRelationship
+
+    model = _demo_model()
+    model.relationships.append(
+        SemanticRelationship("trans_to_card_m2n", "trans", "card",
+                             from_columns=["disp_id"], to_columns=["disp_id"],
+                             cardinality="M:N"))
+    # matched 含 card(仅经 M:N 路径可达)→ fan_out → None
+    plan = {
+        "aggregation": "count(trans.trans_id)",
+        "answer_columns": ["count(trans.trans_id)"],
+    }
+    assert _compile(plan, ["trans", "card"], model=model) is None
+
+
+def test_compile_still_ok_when_m2n_unrelated():
+    """M:N 边存在但与查询无关(剪枝后不在路径上)→ 正常编译。"""
+    from trove.services.semantic_layer.models import SemanticRelationship
+
+    model = _demo_model()
+    model.relationships.append(
+        SemanticRelationship("order_to_card_m2n", "order", "card",
+                             from_columns=["disp_id"], to_columns=["disp_id"],
+                             cardinality="M:N"))
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["count(loan.loan_id)"],
+    }
+    assert _compile(plan, ["loan"], model=model) is not None

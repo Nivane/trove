@@ -208,6 +208,20 @@ def test_parse_relationships():
     assert rel.to_columns == ["account_id"]
 
 
+def test_parse_relationship_cardinality():
+    m2n = FULL_STRUCTURE.replace(
+        "      - name: loan_to_account\n        from: loan\n        to: account",
+        "      - name: loan_to_account\n        from: loan\n        to: account\n"
+        "        cardinality: M:N",
+    )
+    model = parse_ossie(m2n, preferred_dialect="sqlite")
+    assert model.relationships[0].cardinality == "M:N"
+
+    # 未声明 → 空(消费端按安全 many→one 处理)
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+    assert model.relationships[0].cardinality == ""
+
+
 def test_parse_relationship_with_unknown_endpoint_dropped():
     bad = FULL_STRUCTURE.replace(
         "        from: loan\n        to: account",

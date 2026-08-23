@@ -412,6 +412,31 @@ semantic_model:
         assert "district.A2:" not in ctx
         assert "Field hints: 'region' → district.A3" in ctx
 
+    async def test_fanout_skips_authoritative_relationships(self, tmp_path, demo_registry):
+        """P5.2:M:N 联路径 → 不渲染权威 Relationships 块(交 LLM+规则兜底)。"""
+        from trove.services.datasource.catalog import CatalogService
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+        model_with_m2n = self.MODEL.replace(
+            "      - name: loan_to_account\n        from: loan\n        to: account",
+            "      - name: loan_to_account\n        from: loan\n        to: account\n"
+            "        cardinality: M:N",
+        )
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(model_with_m2n)
+        provider = SemanticLayerProvider(semantic_dir, "demo")
+
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=provider,
+        )
+        update = await node(make_state(
+            question="What is the average loan amount per district?"))
+        ctx = update["schema_context"]
+        assert "Relationships:" not in ctx
+
 
 class TestPlannerRollbackRevision:
     async def test_rollback_revision_includes_prior_plan(self):

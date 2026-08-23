@@ -41,6 +41,7 @@ class JoinEdge:
     from_column: str
     to_column: str
     declared: bool
+    cardinality: str = ""  # 空 = 安全(many→one);"M:N" = 编译期拒 fan-out
 
 
 @dataclass
@@ -51,11 +52,14 @@ class JoinResolution:
     tree_edges: 与 clauses 一一对应的有向边(编译 JOIN 目标用,免字符串解析)。
     extra_tables: intermediate tables used by the join tree but not named
         in the matched set — schema blocks for them must be published too.
+    fan_out: 树中使用了 M:N 边(P5.2,编译期拒) → 消费方应严格 MISS,
+        交回 LLM 通道 + 规则链(fan-out 重复行)兜底,而不是产出行倍增 SQL。
     """
 
     clauses: list[str] = field(default_factory=list)
     tree_edges: list["JoinEdge"] = field(default_factory=list)
     extra_tables: list[str] = field(default_factory=list)
+    fan_out: bool = False
 
     @property
     def empty(self) -> bool:
@@ -89,7 +93,10 @@ class JoinResolver:
             if not r.from_columns or not r.to_columns:
                 continue
             for fc, tc in zip(r.from_columns, r.to_columns):
-                edges.append(JoinEdge(r.from_, r.to, fc, tc, declared=True))
+                edges.append(JoinEdge(
+                    r.from_, r.to, fc, tc, declared=True,
+                    cardinality=(r.cardinality or "").upper(),
+                ))
         return edges
 
     @staticmethod
@@ -158,7 +165,8 @@ class JoinResolver:
 
         visited = {root} if root in adjacency or root in matched_set else set()
         queue: deque[str] = deque([root])
-        tree: list[JoinEdge] = []
+        parent_edge: dict[str, tuple[str, JoinEdge]] = {}  # child → (parent, edge)
+        children: dict[str, list[str]] = {}
         while queue:
             table = queue.popleft()
             for edge in adjacency.get(table, []):
@@ -166,15 +174,42 @@ class JoinResolver:
                 if other in visited:
                     continue
                 visited.add(other)
-                tree.append(edge)
+                parent_edge[other] = (table, edge)
+                children.setdefault(table, []).append(other)
                 queue.append(other)
+
+        # 保留"根→matched 路径上"的边;纯多余叶子(子树不含任何 matched 表)
+        # 剪掉——否则无关的 M:N 边会误触发 fan-out,挡住合法编译。
+        memo: dict[str, bool] = {}
+
+        def leads_to_matched(node: str) -> bool:
+            if node in memo:
+                return memo[node]
+            if node in matched_set:
+                memo[node] = True
+                return True
+            memo[node] = any(leads_to_matched(c) for c in children.get(node, []))
+            return memo[node]
+
+        tree: list[JoinEdge] = []
+        fan_out = False
+        for child, (parent, edge) in parent_edge.items():
+            if not leads_to_matched(child):
+                continue
+            tree.append(edge)
+            if edge.cardinality == "M:N":
+                # P5.2:多对多经此边联(在 matched 路径上)→ 编译期拒 fan-out
+                fan_out = True
+
+        relevant = {node for node in parent_edge if leads_to_matched(node)}
 
         clauses = [
             f"{e.from_}.{e.from_column} = {e.to}.{e.to_column}"
             for e in tree
         ]
-        extra = sorted(visited - matched_set)
-        return JoinResolution(clauses=clauses, tree_edges=tree, extra_tables=extra)
+        extra = sorted(relevant - matched_set)
+        return JoinResolution(
+            clauses=clauses, tree_edges=tree, extra_tables=extra, fan_out=fan_out)
 
     @staticmethod
     def render(resolution: JoinResolution) -> str:
@@ -414,6 +449,9 @@ class SemanticCompiler:
 
         resolution = JoinResolver(self._model).resolve(
             list(matched), verified_by_table or {}, root=anchor)
+        if resolution.fan_out:
+            # P5.2:M:N 边在联路径上 → 编译期拒(行倍增),严格 MISS 回 LLM
+            return None
         joins = resolution.tree_edges if (not resolution.empty and resolution.tree_edges) else []
 
         projections: list[str] = []
