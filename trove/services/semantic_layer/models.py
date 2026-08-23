@@ -32,6 +32,11 @@ class SemanticField:
     expression: scalar (non-aggregate) SQL expression, dialect-picked.
     is_time: OSSIE temporal-role flag — defaults to True for temporal
         datatypes (Date/Time/DateTime/DateTimeTz) unless overridden.
+    semantic_role: Palantir 风格属性角色 —— identifier / measure /
+        dimension / enum / time。让字段候选检索与编译器不用猜"这列
+        能不能聚合/该不该分组"(P5.1)。
+    enum_display: 枚举列的 ``code → 人类可读词`` 字典(过滤值锚定用,
+        "POPLATEK MESICNE" → "monthly")。
     """
 
     name: str
@@ -40,6 +45,8 @@ class SemanticField:
     is_time: bool = False
     description: str = ""
     synonyms: list[str] = field(default_factory=list)
+    semantic_role: str = ""  # identifier | measure | dimension | enum | time
+    enum_display: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

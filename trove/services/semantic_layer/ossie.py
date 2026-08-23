@@ -139,6 +139,13 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             dt = f.get("datatype") or None
             dim = f.get("dimension")
             _, f_synonyms = _ai_context(f)
+            # P5.1:语义角色 + 枚举 display 字典(均可选;缺省由生成/消费端推导)
+            role = str(f.get("semantic_role") or "").strip().lower()
+            display = f.get("enum_display") or {}
+            enum_display = {
+                str(k): str(v) for k, v in display.items()
+                if isinstance(display, dict)
+            } if isinstance(display, dict) else {}
             fields.append(SemanticField(
                 name=f["name"],
                 expression=expr,
@@ -146,6 +153,8 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
                 is_time=_resolve_is_time(dim, dt),
                 description=f.get("description", "") or "",
                 synonyms=f_synonyms,
+                semantic_role=role,
+                enum_display=enum_display,
             ))
         datasets.append(SemanticDataset(
             name=name,

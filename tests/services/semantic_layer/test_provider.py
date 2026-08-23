@@ -229,6 +229,13 @@ def _kb_path(tmp_path) -> Path:
     return p
 
 
+def _role_path(tmp_path) -> Path:
+    p = Path(tmp_path) / "kb" / "fin" / "semantics.yml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(ROLE_MODEL, encoding="utf-8")
+    return p
+
+
 def test_enabled_via_kb_semantics_alone(tmp_path):
     """配置目录为空,KB semantics.yml 存在 → 启用且模型字段可达。"""
     p = SemanticLayerProvider(tmp_path / "empty", "financial",
@@ -264,3 +271,65 @@ def test_field_hits_maps_question_word_to_field(tmp_path):
 
     assert p.field_hits("how many accounts?", tables=["district"]) == []
     assert p.field_hits("average loan per region", tables=["loan"]) == []
+
+
+# ── P5.1: 倒排字段候选 + 语义角色 ─────────────────────────
+
+ROLE_MODEL = """
+semantic_model:
+  - name: fin
+    datasets:
+      - name: district
+        fields:
+          - name: A3
+            expression: {dialects: [{dialect: ANSI_SQL, expression: A3}]}
+            ai_context: {synonyms: [region, area]}
+            semantic_role: dimension
+          - name: district_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: district_id}]}
+            semantic_role: identifier
+          - name: A11
+            expression: {dialects: [{dialect: ANSI_SQL, expression: A11}]}
+            ai_context: {synonyms: [avg salary]}
+            semantic_role: measure
+      - name: loan
+        fields:
+          - name: status
+            expression: {dialects: [{dialect: ANSI_SQL, expression: status}]}
+            enum_display: {A: finished, B: running}
+            ai_context: {synonyms: [repayment state]}
+"""
+
+
+def test_field_candidates_via_inverted_index(tmp_path):
+    p = SemanticLayerProvider(tmp_path / "empty", "fin",
+                              kb_semantics_path=_role_path(tmp_path))
+
+    cands = p.field_candidates("average salary per region", tables=["district"])
+    terms = {(d, f) for d, f, _ in cands}
+    assert ("district", "A11") in terms   # salary synonym hit
+    assert ("district", "A3") in terms    # region synonym hit
+
+    # 表级锚定:只回命中表
+    assert all(d == "district" for d, f, _ in cands)
+
+
+def test_field_candidates_unmatched_question_empty(tmp_path):
+    p = SemanticLayerProvider(tmp_path / "empty", "fin",
+                              kb_semantics_path=_role_path(tmp_path))
+    assert p.field_candidates("how many zebras?", tables=["district"]) == []
+
+
+def test_parse_semantic_role_and_enum_display(tmp_path):
+    p = SemanticLayerProvider(tmp_path / "empty", "fin",
+                              kb_semantics_path=_role_path(tmp_path))
+    model = p.model()
+    district = next(d for d in model.datasets if d.name == "district")
+    by_name = {f.name: f for f in district.fields}
+    assert by_name["A3"].semantic_role == "dimension"
+    assert by_name["district_id"].semantic_role == "identifier"
+    assert by_name["A11"].semantic_role == "measure"
+
+    loan = next(d for d in model.datasets if d.name == "loan")
+    status = next(f for f in loan.fields if f.name == "status")
+    assert status.enum_display == {"A": "finished", "B": "running"}

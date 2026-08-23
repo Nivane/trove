@@ -105,6 +105,7 @@ class SemanticLayerProvider:
         self._key: tuple | None = None  # [(path, mtime_ns, size)] 缓存键
         self._parsed: SemanticModel | None = None  # last known good
         self._validated: list[SemanticMetric] | None = None
+        self._field_index: dict[str, list[tuple[str, str]]] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -141,6 +142,7 @@ class SemanticLayerProvider:
             )
             return
         self._validated = self._validate(self._parsed.metrics)
+        self._field_index = None  # 惰性重建(首次 field_candidates 时才建)
 
     def _validate(self, metrics: list[SemanticMetric]) -> list[SemanticMetric]:
         """逐条校验:括号配平 + SQLGlot 解析 + 数据集存在性。坏条目丢弃。"""
@@ -219,33 +221,100 @@ class SemanticLayerProvider:
             ))
         return hits
 
-    def field_hits(self, question: str, tables: list[str] | None = None) -> list[str]:
-        """问题词元 × 字段 synonyms 词重叠 → 确定性 Field hints(零 LLM)。
+    def _ensure_field_index(self) -> dict[str, list[tuple[str, str]]]:
+        """字段同义词倒排索引: token → [(dataset, fieldname), ...]。
 
-        命中即输出 ``'region' → district.A3``:planner 靠它把问题词链接到
-        不透明列(如 BIRD 的 A3),与 value_hints 同机制。top≤5,保序。
+        P5.1:上万个字段时 field_candidates 变成 O(tokens×k) 的字典查找,
+        而非全量扫描。索引含字段名词元与每个 synonym 词元;加载一次、
+        mtime 变化即失效重建。候选精确性(整词集合命中)在消费端再验。
         """
+        if self._field_index is not None:
+            return self._field_index
+        index: dict[str, list[tuple[str, str]]] = {}
+        model = self._parsed
+        for d in (model.datasets if model is not None else []):
+            for f in d.fields:
+                for syn in [s for s in f.synonyms if s]:
+                    for tok in _tokens(syn):
+                        index.setdefault(tok, []).append((d.name, f.name))
+                for tok in [*_tokens(f.name), f.name.lower()]:
+                    if tok:
+                        index.setdefault(tok, []).append((d.name, f.name))
+        self._field_index = index
+        return index
+
+    @staticmethod
+    def _best_field_match(f, q_tokens: set[str]) -> tuple[int, str]:
+        """候选字段的最高命中:(score, matched_term)。
+
+        2 = 某 synonym 词元集合完整出现在问题(精确,取最长);
+        1 = 某 synonym **部分**词元命中或字段名词元命中(召回兜底);
+        0 = 无。
+        """
+        best_syn, best_score = "", 0
+        for syn in f.synonyms:
+            st = _tokens(syn)
+            if not st:
+                continue
+            if st <= q_tokens:
+                if len(st) > len(best_syn):
+                    best_syn, best_score = syn, 2
+            elif st & q_tokens and best_score < 2:
+                best_syn, best_score = syn, 1
+        if best_syn:
+            return best_score, best_syn
+        if _tokens(f.name) & q_tokens:
+            return 1, f.name
+        return 0, ""
+
+    def field_candidates(
+        self,
+        question: str,
+        tables: list[str] | None = None,
+        top: int = 5,
+    ) -> list[tuple[str, str, str]]:
+        """(表级锚定后)问题词元 → 字段候选,按命中强度排序,top≤top。零 LLM。"""
         if not self.enabled:
             return []
-        model = self.model()
+        self._reload()
+        model = self._parsed
         if model is None:
             return []
         q = _tokens(question)
         if not q:
             return []
         matched = {str(t) for t in (tables or [])}
-        out: list[str] = []
-        for d in model.datasets:
-            if tables is not None and d.name not in matched:
+        index = self._ensure_field_index()
+
+        field_map = {d.name: {f.name: f for f in d.fields} for d in model.datasets}
+        cands: set[tuple[str, str]] = set()
+        for tok in q:
+            for d, f in index.get(tok, []):
+                if tables is not None and d not in matched:
+                    continue
+                cands.add((d, f))
+
+        scored: list[tuple[int, str, str, str]] = []
+        for d, fname in cands:
+            field = field_map.get(d, {}).get(fname)
+            if field is None:
                 continue
-            for f in d.fields:
-                for syn in [s for s in f.synonyms if s]:
-                    if _tokens(syn) <= q:
-                        out.append(f"'{syn}' → {d.name}.{f.name}")
-                        break
-                if len(out) >= 5:
-                    return out
-        return out
+            score, term = self._best_field_match(field, q)
+            if score:
+                scored.append((score, term, d, fname))
+
+        scored.sort(key=lambda x: (-x[0], x[2], x[3]))
+        return [(d, f, term) for _s, term, d, f in scored[:top]]
+
+    def field_hits(self, question: str, tables: list[str] | None = None) -> list[str]:
+        """问题词元 × 字段 synonyms 词重叠 → 确定性 Field hints(零 LLM)。
+
+        命中即输出 ``'region' → district.A3``:planner 靠它把问题词链接到
+        不透明列(如 BIRD 的 A3),与 value_hints 同机制。top≤5。
+        """
+        cands = self.field_candidates(question, tables=tables, top=5)
+        return [f"'{term}' → {d}.{f}" for d, f, term in cands]
+
 
     @staticmethod
     def _word_overlap_ok(term: str, question: str) -> bool:

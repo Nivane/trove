@@ -65,7 +65,7 @@ def _semantic_metric_line(m: Any) -> str:
 
 
 def _dimension_lines(model: Any, table: str, limit: int = 6) -> str:
-    """该表在声明模型里的字段维度行(带 synonyms 或 is_time)。"""
+    """该表在声明模型里的字段维度行(带 synonyms / is_time / 语义角色)。"""
     dataset = next((d for d in model.datasets if d.name == table), None)
     if dataset is None:
         return ""
@@ -74,8 +74,12 @@ def _dimension_lines(model: Any, table: str, limit: int = 6) -> str:
         bits = []
         if f.synonyms:
             bits.append(", ".join(f.synonyms))
+        if f.semantic_role:
+            bits.append(f"role={f.semantic_role}")
         if f.is_time:
             bits.append("time dimension")
+        if f.enum_display:
+            bits.append(f"{len(f.enum_display)} values")
         if not bits:
             continue
         lines.append(f"- {table}.{f.name}: " + ", ".join(bits))

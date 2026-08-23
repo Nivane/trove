@@ -9,6 +9,7 @@ import yaml
 from trove.core.types import ColumnInfo, SchemaInfo, TableInfo
 from trove.services.kb.semantic_gen import (
     generate_semantic_document,
+    infer_semantic_role,
     ossie_datatype,
     relationships_from_schema,
 )
@@ -145,3 +146,30 @@ def test_ossie_datatype_unknown_returns_none():
     assert ossie_datatype(None) is None
     assert ossie_datatype("VARCHAR(100)") == "String"
     assert ossie_datatype("timestamp") == "DateTime"
+
+# ── P5.1: 语义角色推断 ───────────────────────────────────
+
+
+def test_infer_semantic_role():
+    assert infer_semantic_role("loan_id", "INTEGER", True) == "identifier"
+    assert infer_semantic_role("account_id", "INTEGER", False) == "identifier"
+    assert infer_semantic_role("id", "INTEGER", False) == "identifier"
+    assert infer_semantic_role("date", "DATE", False) == "time"
+    assert infer_semantic_role("created_at", "TIMESTAMP", False) == "time"
+    assert infer_semantic_role("amount", "DECIMAL", False) == "measure"
+    assert infer_semantic_role("status", "VARCHAR", False) == "dimension"
+    assert infer_semantic_role("A3", "VARCHAR", False) == "dimension"
+
+
+def test_generated_doc_carries_semantic_roles():
+    doc = generate_semantic_document(_financial_schema())
+    datasets = doc["semantic_model"][0]["datasets"]
+    loan = next(d for d in datasets if d["name"] == "loan")
+    by_name = {f["name"]: f for f in loan["fields"]}
+    assert by_name["loan_id"]["semantic_role"] == "identifier"
+    assert by_name["account_id"]["semantic_role"] == "identifier"
+    assert by_name["amount"]["semantic_role"] == "measure"
+    assert by_name["status"]["semantic_role"] == "dimension"
+    account = next(d for d in datasets if d["name"] == "account")
+    date_f = next(f for f in account["fields"] if f["name"] == "date")
+    assert date_f["semantic_role"] == "time"

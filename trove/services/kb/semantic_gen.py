@@ -60,7 +60,7 @@ def ossie_datatype(sql_type: str | None) -> str | None:
 
 
 def _field_from_column(col: Any) -> dict[str, Any]:
-    """一列 → 一个 field dict(标量表达式 + datatype)。"""
+    """一列 → 一个 field dict(标量表达式 + datatype + 语义角色)。"""
     entry: dict[str, Any] = {
         "name": col.name,
         "expression": {"dialects": [{"dialect": _ANSI, "expression": col.name}]},
@@ -68,6 +68,9 @@ def _field_from_column(col: Any) -> dict[str, Any]:
     dt = ossie_datatype(col.type)
     if dt:
         entry["datatype"] = dt
+    role = infer_semantic_role(col.name, col.type, bool(getattr(col, "primary_key", False)))
+    if role:
+        entry["semantic_role"] = role
     return entry
 
 
@@ -76,6 +79,24 @@ def _source(table: TableInfo) -> str:
     if table.schema and table.schema not in ("main", ""):
         return f"{table.schema}.{table.name}"
     return table.name
+
+
+def infer_semantic_role(name: str, sql_type: str | None, is_pk: bool) -> str:
+    """确定性属性角色(零 LLM):identifier / time / measure / dimension。
+
+    顺序即优先级:主键/id → identifier;日期 → time;非 id 数值 → measure;
+    其余(含文本) → dimension。enum 角色需要真实取值(probe),生成期未知,
+    留待声明层补充(有 enum_display 时消费端可标记)。
+    """
+    n = (name or "").lower()
+    if is_pk or n == "id" or n.endswith("_id"):
+        return "identifier"
+    base = (sql_type or "").lower().split("(")[0].strip()
+    if base in _DATE_TYPES | _TIME_TYPES | _DATETIME_TYPES | _TZ_TYPES:
+        return "time"
+    if base in _INT_TYPES | _FLOAT_TYPES | _DECIMAL_TYPES:
+        return "measure"
+    return "dimension"
 
 
 def relationships_from_schema(
