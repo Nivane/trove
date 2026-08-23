@@ -3019,19 +3019,18 @@ class TestOutput:
         )
         update = await output(state)
         response = update["final_response"]
-        assert "Question" in response
         assert "SELECT county" in " ".join(response.split())  # pretty-printed SQL
         assert "Alameda" in response
         assert "2 rows" in response
 
     async def test_format_zh_localized_headings(self):
-        """回答分段标题跟随语言:zh 时不再输出写死的英文标题。"""
+        """回答分段标题跟随语言:zh 时不再输出写死的英文标题;不再重复问题与标题。"""
         state = make_state(
             sql="SELECT 1", columns=["x"], rows=[["1"]], row_count=1, lang="zh",
         )
         response = (await output(state))["final_response"]
-        assert "回答" in response
-        assert "问题" in response
+        assert "## 回答" not in response
+        assert "**问题**" not in response
         assert "生成的 SQL" in response
         assert "结果 (1 行)" in response
         assert "Generated SQL" not in response

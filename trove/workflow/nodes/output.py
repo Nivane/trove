@@ -174,17 +174,10 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     display_rows = limits.display_rows
 
     if state.error:
-        response = (
-            f"## {L(lang, '回答', 'Answer')}\n\n"
-            f"**{L(lang, '问题', 'Question')}**: {question}\n\n"
-            f"**{L(lang, '错误', 'Error')}**: {state.error}\n"
-        )
+        response = f"**{L(lang, '错误', 'Error')}**: {state.error}\n"
         return {"final_response": response}
 
-    parts = [f"## {L(lang, '回答', 'Answer')}\n"]
-
-    # Question
-    parts.append(f"**{L(lang, '问题', 'Question')}**: {question}\n")
+    parts: list[str] = []
 
     # 1. Conclusion — LLM one-sentence direct answer (结论前置)
     if state.conclusion:
