@@ -2092,6 +2092,48 @@ button:disabled {
   padding: 0;
 }
 
+/* ── Answer collapsible details (conclusion-first layout) ──────── */
+.answer-details {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--surface-muted);
+  margin-top: var(--sp-2);
+}
+.answer-details-summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  user-select: none;
+  list-style: none;
+}
+.answer-details-summary::-webkit-details-marker {
+  display: none;
+}
+.answer-details-caret {
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--text-tertiary);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+.answer-details[open] .answer-details-caret {
+  transform: rotate(90deg);
+}
+.answer-details-body {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
 /* ── Data table ─────────────────────────────────────── */
 .data-table-wrap {
   border: 1px solid var(--border-subtle);

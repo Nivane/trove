@@ -190,6 +190,10 @@ class WorkflowState(BaseModel):
     # 洞察(insights 节点):执行完成后 LLM 基于结果表格生成的自然语言洞察。
     insights: list[str] = Field(default_factory=list)
 
+    # 结论摘要(conclusion 节点):执行后 LLM 用一句话直接回答问题的结论,
+    # 置于回答开头(结论前置)。空 = 未生成(未开启/无 SQL/失败)。
+    conclusion: str = ""
+
     # 图表(chart 节点):确定性推断的 ECharts 可消费字典
     # {"type": line|bar|pie, "title", "dimension", "categories", "series",
     #  "measures"};None = 无需图表/未生成。

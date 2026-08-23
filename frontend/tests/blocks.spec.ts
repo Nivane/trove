@@ -46,4 +46,61 @@ describe('markdown block tokenizer', () => {
     const blocks = tokenize('  | not a table |\n  |---|---|')
     expect(blocks.every((b) => b.type === 'md')).toBe(true)
   })
+
+  it('extracts a collapsible details block with its inner blocks', () => {
+    const blocks = tokenize(
+      [
+        '<details>',
+        '<summary>View SQL &amp; details</summary>',
+        '',
+        '### Generated SQL',
+        '',
+        '```sql',
+        'SELECT * FROM t',
+        '```',
+        '',
+        '| c |',
+        '|---|',
+        '| 1 |',
+        '</details>',
+      ].join('\n'),
+    )
+    expect(blocks).toHaveLength(1)
+    const d = blocks[0] as {
+      type: 'details'
+      summary: string
+      blocks: { type: string; text?: string; code?: string; headers?: string[]; rows?: string[][] }[]
+    }
+    expect(d.type).toBe('details')
+    expect(d.summary).toBe('View SQL &amp; details')
+    expect(d.blocks.map((b) => b.type)).toEqual(['md', 'sql', 'table'])
+    expect(d.blocks[0].text).toContain('### Generated SQL')
+    expect(d.blocks[1]).toEqual({ type: 'sql', code: 'SELECT * FROM t' })
+    expect(d.blocks[2]).toEqual({ type: 'table', headers: ['c'], rows: [['1']] })
+  })
+
+  it('extracts multiple details blocks in order', () => {
+    const blocks = tokenize(
+      [
+        '<details>',
+        '<summary>结果明细</summary>',
+        '',
+        '| c |',
+        '|---|',
+        '| 1 |',
+        '</details>',
+        '',
+        '<details>',
+        '<summary>View SQL &amp; details</summary>',
+        '',
+        '```sql',
+        'SELECT 1',
+        '```',
+        '</details>',
+      ].join('\n'),
+    )
+    expect(blocks.map((b) => b.type)).toEqual(['details', 'details'])
+    expect((blocks[0] as { summary: string }).summary).toBe('结果明细')
+    expect((blocks[1] as { summary: string }).summary).toBe('View SQL &amp; details')
+  })
 })

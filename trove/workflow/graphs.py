@@ -68,6 +68,7 @@ from trove.workflow.nodes.output import output
 from trove.workflow.nodes.semantics import make_semantics
 from trove.workflow.nodes.hitl import make_hitl
 from trove.workflow.nodes.insights import make_insights
+from trove.workflow.nodes.conclusion import make_conclusion
 from trove.workflow.nodes.chart import make_chart
 from trove.workflow.nodes.answer import make_answer_metadata
 from trove.workflow.nodes.metadata_check import make_metadata_check
@@ -1159,6 +1160,7 @@ def _build_reflection(
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
     g.add_node("chart", make_chart())
+    g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -1260,7 +1262,8 @@ def _build_reflection(
         {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "insights": "insights"},
     )
     g.add_edge("insights", "chart")
-    g.add_edge("chart", "output")
+    g.add_edge("chart", "conclusion")
+    g.add_edge("conclusion", "output")
     g.add_edge("output", END)
     return g
 
@@ -1286,6 +1289,7 @@ def _build_fixed(
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
     g.add_node("chart", make_chart())
+    g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -1313,7 +1317,8 @@ def _build_fixed(
         {"gen_sql": "gen_sql", "insights": "insights", "output": "output"},
     )
     g.add_edge("insights", "chart")
-    g.add_edge("chart", "output")
+    g.add_edge("chart", "conclusion")
+    g.add_edge("conclusion", "output")
     g.add_edge("output", END)
     return g
 

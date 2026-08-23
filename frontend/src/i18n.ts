@@ -369,6 +369,8 @@ export const messages = {
     explainSemanticsHint: '生成 SQL 后解释语义(执行前展示)',
     insights: '洞察',
     insightsHint: '执行后基于结果生成洞察',
+    conclusion: '结论摘要',
+    conclusionHint: '执行后生成一句话结论并置于回答开头',
     resultCache: '结果缓存',
     resultCacheHint: '相同问题直接复用已验证结果(0 LLM)',
     decomposeLlm: '多任务拆解判断',
@@ -763,6 +765,8 @@ export const messages = {
     explainSemanticsHint: 'Explain SQL semantics before execution',
     insights: 'Insights',
     insightsHint: 'Generate insights from the execution result',
+    conclusion: 'Conclusion',
+    conclusionHint: 'Generate a one-sentence conclusion at the top of the answer',
     resultCache: 'Result cache',
     resultCacheHint:
       'Reuse the verified result for identical questions (0 LLM)',

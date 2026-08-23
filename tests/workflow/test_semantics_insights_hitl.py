@@ -9,6 +9,7 @@ from trove.workflow.graphs import GraphServices, build_graphs
 from trove.workflow.nodes.semantics import make_semantics
 from trove.workflow.nodes.hitl import make_hitl, _normalize
 from trove.workflow.nodes.insights import make_insights
+from trove.workflow.nodes.conclusion import make_conclusion
 from trove.workflow.state import WorkflowState
 
 
@@ -41,7 +42,7 @@ def make_state(**kwargs):
 
 
 def on_config(**kwargs):
-    cfg = dict(target="mock/model", explain_semantics=True, hitl=True, insights=True)
+    cfg = dict(target="mock/model", explain_semantics=True, hitl=True, insights=True, conclusion=True)
     cfg.update(kwargs)
     return AgentConfig(**cfg)
 
@@ -137,6 +138,54 @@ class TestInsightsNode:
         ))
         assert len(out["insights"]) <= 6
         assert out["insights"][0] == "洞察 0"
+
+
+class TestConclusionNode:
+    ROWS = [[1994, 101], [1997, 196]]
+
+    async def test_generates_conclusion_from_rows(self):
+        llm = RecordingLLM(["贷款次数上升,1997年达到峰值196笔"])
+        node = make_conclusion(llm, on_config())
+        out = await node(make_state(
+            columns=["loan_year", "num_loans"], rows=self.ROWS, row_count=2,
+        ))
+        assert out["conclusion"] == "贷款次数上升,1997年达到峰值196笔"
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[0])
+        assert "1997" in prompt and "num_loans" in prompt
+
+    async def test_skips_when_disabled(self):
+        llm = RecordingLLM([])
+        node = make_conclusion(llm, on_config(conclusion=False))
+        out = await node(make_state(columns=["x"], rows=self.ROWS, row_count=2))
+        assert out == {}
+        assert len(llm.calls) == 0
+
+    async def test_skips_when_no_rows(self):
+        llm = RecordingLLM([])
+        node = make_conclusion(llm, on_config())
+        out = await node(make_state(columns=["x"], rows=[], row_count=0))
+        assert out == {}
+
+    async def test_skips_when_not_executed(self):
+        llm = RecordingLLM([])
+        node = make_conclusion(llm, on_config())
+        out = await node(make_state(columns=[], rows=[], row_count=-1))
+        assert out == {}
+
+    async def test_empty_response_degrades_to_empty(self):
+        llm = RecordingLLM([""])
+        node = make_conclusion(llm, on_config())
+        out = await node(make_state(columns=["x"], rows=self.ROWS, row_count=2))
+        assert out["conclusion"] == ""
+
+    async def test_llm_failure_degrades_to_empty(self):
+        class Boom:
+            async def chat(self, model, messages, **kwargs):
+                raise RuntimeError("llm down")
+
+        node = make_conclusion(Boom(), on_config())
+        out = await node(make_state(columns=["x"], rows=self.ROWS, row_count=2))
+        assert out["conclusion"] == ""
 
 
 class TestHITLNode:

@@ -122,6 +122,7 @@ agent:
   explain_semantics: false              # 生成 SQL 后 LLM 说明语义（输出与 HITL 确认时展示）
   hitl: false                           # 执行前人工确认（LangGraph interrupt，需 persistence/checkpointer；批任务给三选项）
   insights: false                       # 执行后 LLM 基于结果生成洞察
+  conclusion: false                     # 执行后 LLM 用一句话生成结论摘要，置于回答开头（结论前置）
   result_cache: false                   # 精确结果缓存（进程内存）：同问句直接返回上次已验证结果，0 LLM，命中跳过 HITL
   fast_path: true                       # 确定性模板快径：单表/单聚合模板命中即出 SQL，跳过 planner/生成/裁决
   reflect_skip: simple                  # validate 规则全过后跳过 LLM 裁决：simple / standard / all / off
