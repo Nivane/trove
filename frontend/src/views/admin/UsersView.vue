@@ -332,6 +332,7 @@ import {
   KeyRound,
   Trash2,
   Search,
+  Pencil,
 } from 'lucide-vue-next'
 import { apiGet, apiPost, apiPatch, apiDelete, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
