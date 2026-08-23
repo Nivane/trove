@@ -22,6 +22,7 @@ from trove.services.kb.deterministic_gen import generate_terms, generate_templat
 from trove.services.kb.docs_import import apply_docs, load_docs_tables
 from trove.services.kb.enum_probe import merge_into_notes, probe_enums
 from trove.services.kb.profiling import merge_into_stats, probe_stats
+from trove.services.kb.semantic_draft import draft_semantic_annotations
 from trove.services.kb.semantic_gen import generate_semantic_document
 from trove.services.kb.synthetic import (
     generate_synthetic_examples,
@@ -364,9 +365,15 @@ async def init_kb(kb, registry, llm, config, datasource, *,
         samples=probed, stats=profiled, lang=lang,
     )
     kb.init_notes(all_tables, datasource, overwrite=overwrite)
-    kb.init_semantics(
-        generate_semantic_document(schema, model_name=datasource, terms=terms),
-        datasource, overwrite=overwrite)
+    semantic_doc = generate_semantic_document(schema, model_name=datasource, terms=terms)
+    # P4:有 LLM 时在结构层之上起草字段 synonyms/description(白名单,只加措辞
+    # 不改结构);任何失败静默回退纯结构层。
+    try:
+        semantic_doc = await draft_semantic_annotations(
+            llm, model, semantic_doc, lang=lang)
+    except Exception as e:
+        logger.warning("Semantic draft skipped: %s", e)
+    kb.init_semantics(semantic_doc, datasource, overwrite=overwrite)
     kb.init_examples(examples, datasource, overwrite=overwrite)
     await kb.force_sync(datasource)
     return (f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "

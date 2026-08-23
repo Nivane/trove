@@ -182,3 +182,40 @@ def test_astral_table_anchor_falls_back_to_first_matched():
     # loan 不在 matched → 回到 district,仍编译(FROM district)但不引用 loan 会很怪
     # —— strict 语义下这种情况当场 MISS(表不在 matched 就是未覆盖)
     assert result is None
+
+
+def test_resolve_field_via_synonym_alias():
+    """planner 直接用别名写列(district.region)→ 唯一命中同数据集字段 A3。"""
+    model = _demo_model()
+    district = model.datasets[2]
+    a3 = next(f for f in district.fields if f.name == "A3")
+    a3.synonyms = ["region", "area"]
+
+    plan = {
+        "aggregation": "avg(loan.amount)",
+        "answer_columns": ["district.region", "avg(loan.amount)"],
+        "conditions": [{"field": "district.region", "op": "=", "value": "Prague"}],
+    }
+    result = _compile(plan, ["loan", "district", "account"], model=model)
+    assert result is not None
+    sql = result.sql
+    assert "district.A3" in sql
+    assert "district.region" not in sql
+    assert "WHERE district.A3 = 'Prague'" in sql
+    assert "GROUP BY district.A3" in sql
+
+
+def test_synonym_ambiguous_is_miss():
+    """两个字段共享同一 synonym → 歧义,不猜,转 LLM 通道。"""
+    model = _demo_model()
+    district = model.datasets[2]
+    a3 = next(f for f in district.fields if f.name == "A3")
+    a3.synonyms = ["region"]
+    district.fields.append(_field("A4"))
+    district.fields[-1].synonyms = ["region"]
+
+    plan = {
+        "aggregation": "avg(loan.amount)",
+        "answer_columns": ["district.region", "avg(loan.amount)"],
+    }
+    assert _compile(plan, ["loan", "district", "account"], model=model) is None

@@ -59,3 +59,49 @@ async def test_init_kb_refuses_without_overwrite(tmp_path, sqlite_registry):
     with pytest.raises(DatasourceError):
         await init_kb(kb, sqlite_registry, llm=None, config=None,
                       datasource="test_db", lang="en")
+
+
+SYNTH_JSON = """{"examples": [
+    {"question": "How many records in students?", "sql": "SELECT COUNT(*) FROM students"},
+    {"question": "What is the average grade?", "sql": "SELECT AVG(grade) FROM students"}
+]}"""
+
+DRAFT_ANNOTATIONS = """
+annotations:
+  - table: students
+    field_notes:
+      - name: county
+        synonyms: [district, region]
+        description: county name
+      - name: grade
+        synonyms: [score]
+"""
+
+
+async def test_init_kb_semantic_draft_reaches_single_source(tmp_path, sqlite_registry):
+    """P4:起草步骤把字段 synonyms 合并进语义模型单一真源(semantics.yml),
+    SemanticLayerProvider(KB semantics 路径)可达。"""
+    class QueueLLM:
+        def __init__(self, *responses):
+            self._q = list(responses)
+
+        async def chat(self, model, messages, **kwargs):
+            return self._q.pop(0) if self._q else ""
+
+    kb = KbService(tmp_path)
+    llm = QueueLLM(TABLES_DOC, SYNTH_JSON, DRAFT_ANNOTATIONS)
+    config = AgentConfig(target="mock/model")
+    summary = await init_kb(kb, sqlite_registry, llm, config, datasource="test_db", lang="en")
+    assert "Initialized" in summary
+
+    from trove.services.semantic_layer.provider import SemanticLayerProvider
+    provider = SemanticLayerProvider(
+        tmp_path / "empty_semantic", "test_db",
+        kb_semantics_path=kb.semantics_path("test_db"),
+    )
+    model = provider.model()
+    assert model is not None
+    students = next(d for d in model.datasets if d.name == "students")
+    county = next(f for f in students.fields if f.name == "county")
+    assert county.synonyms == ["district", "region"]
+    assert county.description == "county name"

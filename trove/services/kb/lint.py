@@ -127,6 +127,51 @@ def lint_examples(
     return issues
 
 
+def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
+    """语义层模型(OSSIE):同名字段/指标、坏表达式、非法 alias、越界关系。"""
+    issues: list[str] = []
+    seen_metrics: set[str] = set()
+    for m in model.get("metrics", []) or []:
+        if not isinstance(m, dict):
+            continue
+        name = str(m.get("name", ""))
+        if name and name in seen_metrics:
+            issues.append(f"指标「{name}」重复定义")
+        seen_metrics.add(name)
+        for dia in (m.get("expression") or {}).get("dialects", []) or []:
+            expr = str(dia.get("expression", ""))
+            if expr and _parse(expr, dialect) is None:
+                issues.append(f"指标「{name}」表达式无法解析: {expr[:60]}")
+
+    ds_names = {str(d.get("name", "")) for d in model.get("datasets", []) or []}
+    for d in model.get("datasets", []) or []:
+        if not isinstance(d, dict):
+            continue
+        ds_name = str(d.get("name", ""))
+        seen_fields: set[str] = set()
+        for f in d.get("fields", []) or []:
+            if not isinstance(f, dict):
+                continue
+            fname = str(f.get("name", ""))
+            if fname and fname in seen_fields:
+                issues.append(f"表 {ds_name} 字段「{fname}」重复定义")
+            seen_fields.add(fname)
+            for syn in (f.get("ai_context") or {}).get("synonyms") or []:
+                if not isinstance(syn, str) or not syn.strip():
+                    issues.append(f"表 {ds_name}.{fname} 含空/非法 synonym")
+            for dia in (f.get("expression") or {}).get("dialects", []) or []:
+                expr = str(dia.get("expression", ""))
+                if expr and _parse(expr, dialect) is None:
+                    issues.append(f"表 {ds_name}.{fname} 表达式无法解析: {expr[:60]}")
+
+    for r in model.get("relationships", []) or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("from", "")) not in ds_names or str(r.get("to", "")) not in ds_names:
+            issues.append(f"关系「{r.get('name', '')}」引用未声明的数据集")
+    return issues
+
+
 def lint_tables(tables: list[dict[str, Any]]) -> list[str]:
     """Columns with empty descriptions are knowledge blind spots.
 

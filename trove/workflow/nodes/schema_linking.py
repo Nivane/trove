@@ -64,6 +64,26 @@ def _semantic_metric_line(m: Any) -> str:
     return f"{base} — {m.definition}" if m.definition else base
 
 
+def _dimension_lines(model: Any, table: str, limit: int = 6) -> str:
+    """该表在声明模型里的字段维度行(带 synonyms 或 is_time)。"""
+    dataset = next((d for d in model.datasets if d.name == table), None)
+    if dataset is None:
+        return ""
+    lines: list[str] = []
+    for f in dataset.fields:
+        bits = []
+        if f.synonyms:
+            bits.append(", ".join(f.synonyms))
+        if f.is_time:
+            bits.append("time dimension")
+        if not bits:
+            continue
+        lines.append(f"- {table}.{f.name}: " + ", ".join(bits))
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
 _NOTABLE_SHAPES = {"all_caps", "capital", "text"}  # 常见形状不显示(与枚举含义重复)
 
 
@@ -724,10 +744,9 @@ def make_schema_linking(
                         for t, hs in verified_hints_by_table.items()
                     }
 
-            # P1-8:语义层声明的关系 → 权威 Relationships 块(替换逐表 Join hints)。
-            # JoinResolver 在完整声明图上 BFS:跨中间表联(resolution.extra_tables,
-            # 如 loan+district 经 account),中间表补进渲染让 gen_sql 拿得到列。
-            resolved_block = ""
+            # 语义层单一真源模型(KB semantics.yml + 配置目录合并):供关系编译、
+            # 每表 Dimensions 渲染与 Field hints 使用。
+            live_model = None
             if (
                 semantic_layer is not None and datasource
                 and getattr(semantic_layer, "enabled", False)
@@ -735,17 +754,27 @@ def make_schema_linking(
                 try:
                     provider_model = getattr(semantic_layer, "model", None)
                     live_model = provider_model() if provider_model is not None else None
-                    if live_model is not None and len(matched_names) >= 2:
-                        from trove.services.semantic_layer.compiler import JoinResolver
+                except Exception as e:
+                    logger.warning(
+                        "Semantic layer model lookup failed (%s): %s", datasource, e)
+                    live_model = None
 
-                        resolution = JoinResolver(live_model).resolve(
-                            matched_names, verified_hints_by_table)
-                        if not resolution.empty:
-                            resolved_block = JoinResolver.render(resolution)
-                            for extra in resolution.extra_tables:
-                                d = details_by_name.get(extra)
-                                if d is not None and d not in details:
-                                    details.append(d)
+            # P1-8:语义层声明的关系 → 权威 Relationships 块(替换逐表 Join hints)。
+            # JoinResolver 在完整声明图上 BFS:跨中间表联(resolution.extra_tables,
+            # 如 loan+district 经 account),中间表补进渲染让 gen_sql 拿得到列。
+            resolved_block = ""
+            if live_model is not None and len(matched_names) >= 2:
+                try:
+                    from trove.services.semantic_layer.compiler import JoinResolver
+
+                    resolution = JoinResolver(live_model).resolve(
+                        matched_names, verified_hints_by_table)
+                    if not resolution.empty:
+                        resolved_block = JoinResolver.render(resolution)
+                        for extra in resolution.extra_tables:
+                            d = details_by_name.get(extra)
+                            if d is not None and d not in details:
+                                details.append(d)
                 except Exception as e:
                     logger.warning("Join resolution failed (%s): %s", datasource, e)
 
@@ -779,6 +808,13 @@ def make_schema_linking(
                         "Semantic metrics:\n"
                         + "".join(f"{_semantic_metric_line(m)}\n" for m in anchored)
                     )
+                # P4:声明的字段维度(带 synonyms / 时间的字段)——planner 据此
+                # 把问题词链接到不透明列(如 district.A3 ↔ region)。只渲染有
+                # 语义的字段,顶格 6 条,信息密度高体积小。
+                if live_model is not None:
+                    dim_lines = _dimension_lines(live_model, name)
+                    if dim_lines:
+                        parts.append("Dimensions:\n" + dim_lines + "\n")
                 if table_notes and table_notes.stats:
                     stat_lines = _stats_lines(table_notes.stats)
                     if stat_lines:
@@ -801,6 +837,18 @@ def make_schema_linking(
                         for v, loc in shown.items()
                     )
                     schema_context += "\n\n" + hint_lines
+
+            # 4.35 确定性 Field hints:问题词元 × 字段 synonyms 词重叠(零 LLM)——
+            # planner 靠它把问题词链接到不透明列,不受 LLM 对齐波动影响。
+            if live_model is not None:
+                try:
+                    field_hits = getattr(semantic_layer, "field_hits", None)
+                    if field_hits is not None:
+                        hits = field_hits(state.question, matched_names)
+                        if hits:
+                            schema_context += "\n\nField hints: " + "; ".join(hits)
+                except Exception as e:
+                    logger.warning("Field hints failed (%s): %s", datasource, e)
 
             # 4.4 权威 Relationships 块:编译器 BFS 得到的 ON 子句(声明关系
             # 优先;已由 JoinResolver.render 渲染),gen_sql 不再发明 join 键。

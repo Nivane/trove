@@ -25,6 +25,7 @@ from trove.services.datasource.urls import parse_datasource_url
 from trove.services.kb.lint import (
     lint_examples,
     lint_lessons,
+    lint_semantics,
     lint_stats,
     lint_tables,
     lint_terms,
@@ -129,6 +130,19 @@ def main() -> int:
     }
     errors = lint_terms(terms, schema) + lint_examples(examples, set(schema))
     warnings = lint_tables(tables) + lint_lessons(lessons) + lint_stats(tables)
+
+    # 语义层模型(单一真源 semantics.yml):结构/别名/表达式/关系校验。
+    semantics_yml = ds_dir / "semantics.yml"
+    if semantics_yml.exists():
+        try:
+            import yaml as _yaml
+            _sem_data = _yaml.safe_load(
+                semantics_yml.read_text(encoding="utf-8")) or {}
+            for _entry in _sem_data.get("semantic_model", []) or []:
+                if isinstance(_entry, dict):
+                    errors += lint_semantics(_entry)
+        except Exception as e:
+            errors.append(f"semantics.yml 读取失败: {e}")
 
     if args.datasource:
         async def _live() -> tuple[list[str], list[str]]:

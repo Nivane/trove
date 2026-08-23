@@ -12,6 +12,7 @@
 from trove.services.kb.lint import (
     lint_examples,
     lint_lessons,
+    lint_semantics,
     lint_terms,
     lint_tables,
     parse_enum_values,
@@ -171,3 +172,55 @@ class TestParseEnumValues:
 
     def test_full_width_colon_format(self):
         assert parse_enum_values("F：female\nM：male") == {"F", "M"}
+
+
+class TestLintSemantics:
+    def _model(self):
+        return {
+            "name": "fin",
+            "datasets": [
+                {"name": "district", "fields": [
+                    {"name": "A3", "expression": {"dialects": [
+                        {"dialect": "ANSI_SQL", "expression": "A3"}]}},
+                    {"name": "A3", "expression": {"dialects": [
+                        {"dialect": "ANSI_SQL", "expression": "A3"}]}},
+                    {"name": "A11", "expression": {"dialects": [
+                        {"dialect": "ANSI_SQL", "expression": "A11"}]},
+                     "ai_context": {"synonyms": ["salary", ""]}},
+                ]},
+            ],
+            "relationships": [{"name": "r", "from": "ghost", "to": "district"}],
+            "metrics": [
+                {"name": "m", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "SUM(("}]}},
+                {"name": "m", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "SUM(loan.amount)"}]}},
+            ],
+        }
+
+    def test_duplicate_field_and_bad_alias_flagged(self):
+        issues = lint_semantics(self._model())
+        assert any("字段「A3」重复" in i for i in issues)
+        assert any("空/非法 synonym" in i for i in issues)
+
+    def test_duplicate_metric_and_unparseable_expr_flagged(self):
+        issues = lint_semantics(self._model())
+        assert any("指标「m」重复" in i for i in issues)
+        assert any("表达式无法解析" in i for i in issues)
+
+    def test_relationship_to_undeclared_dataset_flagged(self):
+        issues = lint_semantics(self._model())
+        assert any("引用未声明的数据集" in i for i in issues)
+
+    def test_clean_model_no_issues(self):
+        clean = {
+            "name": "fin",
+            "datasets": [{"name": "loan", "fields": [
+                {"name": "amount", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "amount"}]},
+                 "ai_context": {"synonyms": ["loan value"]}},
+            ]}],
+            "relationships": [{"name": "r", "from": "loan", "to": "loan"}],
+            "metrics": [],
+        }
+        assert lint_semantics(clean) == []

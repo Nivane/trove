@@ -5,6 +5,7 @@ re-parsing only when a file's mtime/size changes, validating each metric
 expression, and keeping the last known good model when a file breaks.
 """
 import pytest
+from pathlib import Path
 
 from trove.services.semantic_layer.ossie import parse_ossie
 from trove.services.semantic_layer.provider import SemanticLayerProvider
@@ -188,3 +189,78 @@ def test_model_exposes_datasets_and_relationships(semantic_dir):
 def test_model_none_when_disabled(tmp_path):
     p = SemanticLayerProvider(tmp_path / "missing", "financial")
     assert p.model() is None
+
+
+# ── 单一真源:KB semantics.yml 合并(P4)──────────────────────
+
+KB_MODEL = """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: district
+        source: financial.district
+        primary_key: [district_id]
+        fields:
+          - name: A3
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: A3
+            datatype: String
+            description: district name
+            ai_context:
+              synonyms: [region, area]
+    metrics:
+      - name: total_loan_amount
+        description: KB authoritative
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(loan.amount) * 2
+        ai_context:
+          synonyms: [total loans]
+"""
+
+
+def _kb_path(tmp_path) -> Path:
+    p = Path(tmp_path) / "kb" / "financial" / "semantics.yml"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(KB_MODEL, encoding="utf-8")
+    return p
+
+
+def test_enabled_via_kb_semantics_alone(tmp_path):
+    """配置目录为空,KB semantics.yml 存在 → 启用且模型字段可达。"""
+    p = SemanticLayerProvider(tmp_path / "empty", "financial",
+                              kb_semantics_path=_kb_path(tmp_path))
+    assert p.enabled is True
+
+    model = p.model()
+    assert model is not None
+    district = next(d for d in model.datasets if d.name == "district")
+    a3 = next(f for f in district.fields if f.name == "A3")
+    assert a3.synonyms == ["region", "area"]
+    assert a3.datatype == "String"
+
+
+def test_kb_metric_overrides_directory_source(tmp_path, semantic_dir):
+    """同名 metric:KB(真源)覆盖配置目录演示资产。"""
+    _write(semantic_dir, SAMPLE.replace(
+        "description: Total amount of all loans",
+        "description: demo asset (should lose)"))
+    p = SemanticLayerProvider(semantic_dir, "financial",
+                              kb_semantics_path=_kb_path(tmp_path))
+    metrics = {m.name: m for m in p.metrics()}
+    assert metrics["total_loan_amount"].expression == "SUM(loan.amount) * 2"
+    assert metrics["total_loan_amount"].definition == "KB authoritative"
+
+
+def test_field_hits_maps_question_word_to_field(tmp_path):
+    p = SemanticLayerProvider(tmp_path / "empty", "financial",
+                              kb_semantics_path=_kb_path(tmp_path))
+
+    hits = p.field_hits("What is the average loan per region?", tables=["district"])
+    assert hits == ["'region' → district.A3"]
+
+    assert p.field_hits("how many accounts?", tables=["district"]) == []
+    assert p.field_hits("average loan per region", tables=["loan"]) == []

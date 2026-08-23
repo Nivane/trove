@@ -412,7 +412,11 @@ class TestKbInitLLM:
         class ScriptedLLM:
             def __init__(self):
                 self.calls = []
-                self.responses = iter([truncated, TABLES_DOC])
+                self.responses = iter([
+                    truncated, TABLES_DOC,
+                    '{"examples": []}',   # synthetic(空)
+                    "annotations: []",    # P4 语义层起草(空)
+                ])
 
             async def chat(self, model, messages, **kwargs):
                 self.calls.append(messages)
@@ -426,7 +430,7 @@ class TestKbInitLLM:
         result = await reg.get("kb").handler("init")
 
         assert "Initialized" in result
-        assert len(llm.calls) == 3  # draft + repair + synthetic(静默跳过)
+        assert len(llm.calls) == 4  # draft + repair + synthetic + 语义层起草
         repair_messages = llm.calls[1]
         # 修复轮上下文不含 assistant 回声(prose 是噪声,只保留 schema + 错误)
         assert all(m["role"] != "assistant" for m in repair_messages)
@@ -444,7 +448,11 @@ class TestKbInitLLM:
         class ScriptedLLM:
             def __init__(self):
                 self.calls = []
-                self.responses = iter([truncated, TABLES_DOC])
+                self.responses = iter([
+                    truncated, TABLES_DOC,
+                    '{"examples": []}',   # synthetic(空)
+                    "annotations: []",    # P4 语义层起草(空)
+                ])
 
             async def chat(self, model, messages, **kwargs):
                 self.calls.append(messages)
@@ -458,7 +466,7 @@ class TestKbInitLLM:
         result = await reg.get("kb").handler("init")
 
         assert "Initialized" in result
-        assert len(llm.calls) == 3  # draft + missing-only repair + synthetic(静默跳过)
+        assert len(llm.calls) == 4  # draft + missing-only repair + synthetic + 语义层起草
         repair_messages = llm.calls[1]
         assert all(m["role"] != "assistant" for m in repair_messages)
         content = repair_messages[-1]["content"]
@@ -599,12 +607,17 @@ class TestKbInitLLM:
 
         result = await reg.get("kb").handler("init")
         assert "Initialized" in result
-        assert len(llm.calls) >= 2  # 每块 1 次起草;合成 few-shot 的额外调用会被静默跳过
-        # 每块调用都带更大的 max_tokens（防止 4096 截断大 schema;
-        # 推理模型的 max_tokens 计入 CoT,预算要给 CoT+草稿留余量)
+        assert len(llm.calls) >= 2  # 每块 1 次起草;合成 few-shot / 语义层起草静默跳过
+        # 每块调用都带更大的 max_tokens(防止 4096 截断大 schema;推理模型
+        # 的 max_tokens 计入 CoT,预算要给 CoT+草稿留余量);P4 语义层起草
+        # 步用自己的 DRAFT_MAX_TOKENS。
+        draft_max = __import__(
+            "trove.services.kb.semantic_draft", fromlist=["DRAFT_MAX_TOKENS"],
+        ).DRAFT_MAX_TOKENS
         assert all(
             kwargs.get("max_tokens") == kb_cmds.INIT_MAX_TOKENS
             for _, kwargs in llm.calls
+            if kwargs.get("max_tokens") != draft_max
         )
 
         ds = sqlite_registry.default_name

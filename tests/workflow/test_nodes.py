@@ -364,6 +364,54 @@ semantic_model:
         update = await node(make_state(question="city and district info"))
         assert "Relationships:" not in update["schema_context"]
 
+    MODEL_WITH_FIELDS = """
+semantic_model:
+  - name: demo
+    datasets:
+      - name: district
+        source: demo.district
+        primary_key: [district_id]
+        fields:
+          - name: A3
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: A3
+            datatype: String
+            description: district name
+            ai_context:
+              synonyms: [region, area]
+          - name: A2
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: A2
+            datatype: String
+"""
+
+    async def test_renders_dimensions_and_field_hints(self, tmp_path, demo_registry):
+        """声明的字段维度+别名渲染进 schema_context;问题词→字段提示注入。"""
+        from trove.services.datasource.catalog import CatalogService
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(self.MODEL_WITH_FIELDS)
+        provider = SemanticLayerProvider(semantic_dir, "demo")
+
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=provider,
+        )
+        update = await node(make_state(
+            question="What is the average loan amount per district region?"))
+        ctx = update["schema_context"]
+        assert "Dimensions:" in ctx
+        assert "district.A3: region, area" in ctx
+        # 无 synonyms 的字段不渲染
+        assert "district.A2:" not in ctx
+        assert "Field hints: 'region' → district.A3" in ctx
+
 
 class TestPlannerRollbackRevision:
     async def test_rollback_revision_includes_prior_plan(self):

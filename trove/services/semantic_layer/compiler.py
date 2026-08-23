@@ -311,22 +311,40 @@ class SemanticCompiler:
         return None
 
     def _resolve_field(self, ref: str, matched: set[str]) -> tuple[str, Any] | None:
-        """列引用(``col`` / ``table.col``)→ (dataset, field);找不到 → None。"""
+        """列引用(``col`` / ``table.col``)→ (dataset, field);找不到 → None。
+
+        先按字段名精确匹配;未命中时追加同数据集内 **synonyms 唯一命中**
+        (如 ``district.region`` → 字段 ``A3``)——补偿 planner 直接写别名列
+        的场景。歧义(多个同义字段)不猜,转 None 走 LLM 通道。
+        """
         ref = (ref or "").strip()
         if not ref or ref == "*" or "(" in ref:
             return None
+
         if "." in ref:
             tbl, col = ref.split(".", 1)
             hit = self._fields.get((tbl, col))
-            return (tbl, hit) if hit is not None else None
-        # 无表限定:在 matched 数据集里找唯一命中
+            if hit is not None:
+                return (tbl, hit)
+            cands = [
+                (ds, f) for (ds, _n), f in self._fields.items()
+                if ds == tbl
+                and any(s.lower() == col.lower() for s in f.synonyms if s)
+            ]
+            return cands[0] if len(cands) == 1 else None
+
         hits = [
-            (d.name, f) for (d, f) in self._fields.items()
-            if d in matched and f.name == ref
+            (ds, f) for (ds, _n), f in self._fields.items()
+            if ds in matched and f.name == ref
         ]
-        if len(hits) != 1:
-            return None
-        return hits[0]
+        if len(hits) == 1:
+            return hits[0]
+        cands = [
+            (ds, f) for (ds, _n), f in self._fields.items()
+            if ds in matched
+            and any(s.lower() == ref.lower() for s in f.synonyms if s)
+        ]
+        return cands[0] if len(cands) == 1 else None
 
     # ── compile ────────────────────────────────────────────
 
