@@ -25,26 +25,9 @@ describe('Sidebar', () => {
     expect(wrapper.classes()).toContain('rail')
   })
 
-  it('shows the resizer in the expanded state', () => {
+  it('has no resizer (fixed width, not draggable)', () => {
     const wrapper = mountSidebar()
-    expect(wrapper.find('.sidebar-resizer').exists()).toBe(true)
-  })
-
-  it('resizer drag updates and persists the width', async () => {
-    const wrapper = mountSidebar()
-    const ui = useUiStore()
-    // @vue/test-utils trigger() maps pointer events to MouseEvent whose
-    // clientX is getter-only in jsdom — dispatch a real PointerEvent instead.
-    wrapper
-      .find('.sidebar-resizer')
-      .element.dispatchEvent(
-        new PointerEvent('pointerdown', { clientX: 300, bubbles: true }),
-      )
-    window.dispatchEvent(new PointerEvent('pointermove', { clientX: 500 }))
-    window.dispatchEvent(new PointerEvent('pointerup'))
-    // 260 + 200 = 460 → clamp 到 400
-    expect(ui.sidebarWidth).toBe(400)
-    expect(localStorage.getItem('trove_ui_sidebar_width')).toBe('400')
+    expect(wrapper.find('.sidebar-resizer').exists()).toBe(false)
   })
 
   it('toggles between rail and expanded with the panel button', async () => {

@@ -46,6 +46,11 @@ export const router = createRouter({
           component: () => import('../views/admin/DatasourcesView.vue'),
         },
         {
+          path: 'model-config',
+          name: 'admin-model-config',
+          component: () => import('../views/admin/ModelConfigView.vue'),
+        },
+        {
           path: 'settings',
           name: 'admin-settings',
           component: () => import('../views/admin/SettingsView.vue'),

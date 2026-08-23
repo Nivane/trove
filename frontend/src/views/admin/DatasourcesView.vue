@@ -53,8 +53,11 @@
         v-loading="loading"
         :data="rows"
         class="admin-table"
-        empty-text="—"
+        max-height="calc(100vh - 300px)"
       >
+        <template #empty>
+          <TableEmpty />
+        </template>
         <el-table-column :label="t('datasources', ui.lang)" min-width="220">
           <template #default="{ row }">
             <div class="ds-name-cell">
@@ -118,13 +121,18 @@
                 :disabled="busy(row.name, 'init')"
                 @click="initKb(row)"
               >
-                <Sparkles :size="13" />
-                {{ t('dsInit', ui.lang) }}
+                <span v-if="busy(row.name, 'init')" class="btn-spinner" />
+                <Sparkles v-else :size="13" />
+                {{
+                  busy(row.name, 'init')
+                    ? t('dsInitRunning', ui.lang)
+                    : t('dsInit', ui.lang)
+                }}
               </button>
               <button
                 v-if="row.kb_initialized"
                 class="mini-btn"
-                :disabled="busy(row.name, 'reload')"
+                :disabled="busy(row.name, 'reload') || busy(row.name, 'init')"
                 @click="reloadKb(row)"
               >
                 <RefreshCw :size="13" />
@@ -132,13 +140,17 @@
               </button>
               <button
                 class="mini-btn"
-                :disabled="busy(row.name, 'reconnect')"
+                :disabled="busy(row.name, 'reconnect') || busy(row.name, 'init')"
                 @click="reconnect(row)"
               >
                 <PlugZap :size="13" />
                 {{ t('dsReconnect', ui.lang) }}
               </button>
-              <button class="mini-btn is-danger" @click="remove(row)">
+              <button
+                class="mini-btn is-danger"
+                :disabled="busy(row.name, 'init')"
+                @click="remove(row)"
+              >
                 <Trash2 :size="13" />
                 {{ t('dsRemove', ui.lang) }}
               </button>
@@ -227,7 +239,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus,
   Database,
@@ -244,6 +256,7 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
 import type { DatasourceInfo } from '../../api/types'
+import TableEmpty from '../../components/admin/TableEmpty.vue'
 
 const ui = useUiStore()
 const rows = ref<DatasourceInfo[]>([])
@@ -376,6 +389,12 @@ async function initKb(row: DatasourceInfo) {
     return
   }
   setBusy(row, 'init', true)
+  // 同步初始化可能几十秒(sticky 提示,防止用户以为卡死/重复点击)
+  const notice = ElMessage({
+    type: 'info',
+    message: t('dsInitStarted', ui.lang),
+    duration: 0,
+  })
   try {
     await apiPost(`/v1/admin/datasources/${row.name}/kb/init`, {})
     notifySuccess(t('dsInitDone', ui.lang))
@@ -383,6 +402,7 @@ async function initKb(row: DatasourceInfo) {
   } catch (e) {
     toastError(e, t('dsInitFail', ui.lang))
   } finally {
+    notice.close()
     setBusy(row, 'init', false)
   }
 }

@@ -75,18 +75,15 @@ describe('SettingsView', () => {
   it('loads and renders the current runtime values', async () => {
     const view = await mountView()
     await view.vm.$nextTick()
-    const model = view
-      .findAll('input')
-      .find(
-        (i) => (i.element as HTMLInputElement).value === 'deepseek/deepseek-reasoner',
-      )
-    expect(model).toBeTruthy()
-    // provider rows render with the secret blanked out
-    const nameInputs = view.findAll('.provider-name input')
-    expect(nameInputs.length).toBe(1)
+    // the language selector reflects the current value
+    const langSelect = view.find('.settings-select')
+    expect(langSelect.exists()).toBeTruthy()
+    // model config is no longer on this page (moved to ModelConfigView)
+    expect(view.findAll('.provider-name input').length).toBe(0)
+    expect(view.text()).not.toContain('deepseek/deepseek-reasoner')
   })
 
-  it('sends only changed scalars and keeps provider secrets masked', async () => {
+  it('sends only changed scalars and never touches model keys', async () => {
     const view = await mountView()
     await view.vm.$nextTick()
     ;(apiPut as any).mockResolvedValue({ values: baseValues })
@@ -107,11 +104,26 @@ describe('SettingsView', () => {
     const values = payload.values
     // the toggled scalar lands in the payload
     expect(values['app.result_cache']).toBe(true)
-    // kept provider api_key round-trips as the mask sentinel, never the secret
-    const providers = values['llm.providers'] as {
-      name: string
-      litellm_params: { api_key: string }
-    }[]
-    expect(providers[0].litellm_params.api_key).toBe(MASK)
+    // model/provider keys are managed by the separate ModelConfigView
+    expect(values['llm.default_model']).toBeUndefined()
+    expect(values['llm.providers']).toBeUndefined()
+  })
+
+  it('renders and saves the semantic layer path', async () => {
+    const view = await mountView()
+    await view.vm.$nextTick()
+    const group = view.findAll('.settings-card').find((c) => c.text().includes('语义层'))
+    expect(group).toBeTruthy()
+
+    const input = group!.find('input')
+    await input.setValue('.trove/semantic')
+    await flushPromises()
+    ;(apiPut as any).mockResolvedValue({ values: { ...baseValues, 'app.semantic_layer_path': '.trove/semantic' } })
+
+    await view.find('.view-header-right .el-button--primary').trigger('click')
+    await flushPromises()
+    expect(apiPut).toHaveBeenCalledTimes(1)
+    const payload = (apiPut as any).mock.calls[0][1] as { values: Record<string, unknown> }
+    expect(payload.values['app.semantic_layer_path']).toBe('.trove/semantic')
   })
 })

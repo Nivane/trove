@@ -3,7 +3,6 @@
     <aside
       class="sidebar admin-sidebar"
       :class="{ rail: !ui.sidebarOpen }"
-      :style="ui.sidebarOpen ? { width: ui.sidebarWidth + 'px' } : undefined"
     >
       <template v-if="ui.sidebarOpen">
         <div class="brand">
@@ -98,8 +97,6 @@
             </template>
           </el-dropdown>
         </div>
-
-        <div class="sidebar-resizer" @pointerdown="startResize" />
       </template>
 
       <template v-else>
@@ -187,6 +184,7 @@ import {
   Library,
   ScrollText,
   SlidersHorizontal,
+  Cpu,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -218,6 +216,7 @@ const systemItems: {
   label: keyof typeof import('../i18n').messages['zh']
   icon: Component
 }[] = [
+  { path: '/admin/model-config', label: 'modelConfig', icon: Cpu },
   { path: '/admin/audit', label: 'audit', icon: ScrollText },
   { path: '/admin/settings', label: 'systemSettings', icon: SlidersHorizontal },
 ]
@@ -253,19 +252,5 @@ async function onProfileCmd(cmd: string) {
     await auth.logout()
     await router.push({ name: 'login' })
   }
-}
-
-function startResize(e: PointerEvent) {
-  e.preventDefault()
-  const startX = e.clientX
-  const startW = ui.sidebarWidth
-  const onMove = (ev: PointerEvent) =>
-    ui.setSidebarWidth(startW + ev.clientX - startX)
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-  }
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
 }
 </script>

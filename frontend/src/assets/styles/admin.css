@@ -86,8 +86,8 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  background: var(--surface-raised);
-  --el-bg-color-page: var(--surface-raised);
+  background: var(--surface-canvas);
+  --el-bg-color-page: var(--surface-canvas);
 }
 
 /* ── Page header (shared across all admin views) ── */
@@ -109,7 +109,7 @@
 }
 .view-header h2 {
   margin: 0;
-  font-size: var(--fs-lg);
+  font-size: var(--fs-xl);
   letter-spacing: -0.02em;
   line-height: var(--lh-tight);
 }
@@ -125,6 +125,7 @@
   align-items: center;
   gap: var(--sp-2);
   flex-shrink: 0;
+  padding-top: 2px;
 }
 .view-count {
   font-size: var(--fs-xs);
@@ -246,6 +247,13 @@
 .toolbar-search {
   width: 260px;
 }
+/* settings / model-config card body — unified titled-card body */
+.settings-card__body {
+  padding: var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
 .ds-name-row {
   display: flex;
   align-items: center;
@@ -290,6 +298,21 @@
 }
 .admin-table .el-table__body tr.el-table__row:hover > td.el-table__cell {
   background: var(--surface-hover);
+}
+
+/* ── Table first-load skeleton ── */
+.table-skeleton {
+  padding: var(--sp-2) var(--sp-5) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.skeleton-row {
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--sp-3) 0;
+}
+.skeleton-row:last-child {
+  border-bottom: none;
 }
 
 /* ── Pills / badges — consistent, meaning-restricted colors ── */
@@ -409,6 +432,22 @@
 }
 .row-actions .mini-btn:disabled:hover {
   background: transparent;
+}
+
+/* KB init 进行中:按钮内置小 spinner(同步初始化几十秒,给明确反馈) */
+.row-actions .mini-btn .btn-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: btn-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── User identity cells ── */
@@ -848,4 +887,43 @@
 .token-sub {
   font-size: var(--fs-2xs);
   color: var(--text-tertiary);
+}
+
+/* ── Responsive (small screens) ── */
+@media (max-width: 900px) {
+  .admin-view {
+    padding: var(--sp-4) var(--sp-4) var(--sp-8);
+  }
+  .toolbar-search {
+    width: 200px;
+  }
+  .audit-filters {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .audit-filter-input {
+    width: 100%;
+  }
+}
+@media (max-width: 640px) {
+  .view-header h2 {
+    font-size: var(--fs-lg);
+  }
+  .stat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .view-header-right {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .provider-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .provider-row .provider-key {
+    grid-column: 1 / -1;
+  }
+  .card-toolbar {
+    flex-wrap: wrap;
+  }
 }

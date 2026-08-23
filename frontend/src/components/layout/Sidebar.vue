@@ -2,7 +2,6 @@
   <aside
     class="sidebar"
     :class="{ rail: !ui.sidebarOpen }"
-    :style="ui.sidebarOpen ? { width: ui.sidebarWidth + 'px' } : undefined"
   >
     <template v-if="ui.sidebarOpen">
       <div class="brand">
@@ -91,8 +90,6 @@
       <div v-else-if="!chat.sessions.length" class="sidebar-empty">
         <span class="empty-note">{{ t('sessionEmpty', ui.lang) }}</span>
       </div>
-
-      <div class="sidebar-resizer" @pointerdown="startResize" />
     </template>
 
     <template v-else>
@@ -137,12 +134,12 @@
         <template #dropdown>
           <div class="profile-head">
             <span class="profile-head-avatar">{{ avatarChar }}</span>
-            <div class="profile-head-meta">
+              <div class="profile-head-meta">
               <div class="profile-head-name">{{
                 auth.user?.display_name || auth.user?.username || ''
               }}</div>
               <div class="profile-head-sub">{{ auth.user?.username || '' }}</div>
-            </div>
+              </div>
           </div>
           <el-dropdown-menu class="profile-menu">
             <el-dropdown-item command="lang">
@@ -401,19 +398,5 @@ function select(sid: string) {
 async function remove(sid: string) {
   closeMenu()
   await chat.deleteSession(sid)
-}
-
-function startResize(e: PointerEvent) {
-  e.preventDefault()
-  const startX = e.clientX
-  const startW = ui.sidebarWidth
-  const onMove = (ev: PointerEvent) =>
-    ui.setSidebarWidth(startW + ev.clientX - startX)
-  const onUp = () => {
-    window.removeEventListener('pointermove', onMove)
-    window.removeEventListener('pointerup', onUp)
-  }
-  window.addEventListener('pointermove', onMove)
-  window.addEventListener('pointerup', onUp)
 }
 </script>

@@ -49,12 +49,21 @@
     </div>
 
     <div class="admin-card">
+      <div v-if="loading && !entries.length" class="table-skeleton">
+        <div v-for="n in 8" :key="n" class="skeleton-row">
+          <el-skeleton :rows="1" animated />
+        </div>
+      </div>
       <el-table
+        v-else
         v-loading="loading"
         :data="entries"
         class="admin-table"
-        empty-text="—"
+        max-height="calc(100vh - 300px)"
       >
+        <template #empty>
+          <TableEmpty />
+        </template>
         <el-table-column :label="t('auditTime', ui.lang)" width="180">
           <template #default="{ row }">
             <span class="cell-mono">{{ fmtDateTime(row.ts) }}</span>
@@ -126,6 +135,7 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError } from '../../utils/notify'
 import { fmtDateTime } from '../../utils/format'
+import TableEmpty from '../../components/admin/TableEmpty.vue'
 
 interface AuditEntry {
   ts?: string

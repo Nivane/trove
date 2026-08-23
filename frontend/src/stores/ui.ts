@@ -2,13 +2,11 @@ import { defineStore } from 'pinia'
 import type { Lang } from '../i18n'
 import type { DatasourceInfo } from '../api/types'
 import { apiGet } from '../api/http'
-import { clampSidebarWidth } from '../utils/sidebar'
 
 // Legacy localStorage keys kept so the vanilla-UI migration is seamless.
 const THEME_KEY = 'trove_ui_theme'
 const LANG_KEY = 'trove_ui_lang'
 const SIDEBAR_KEY = 'trove_ui_sidebar'
-const SIDEBAR_WIDTH_KEY = 'trove_ui_sidebar_width'
 const ANALYSIS_KEY = 'trove_ui_analysis'
 const DATASOURCE_KEY = 'trove_ui_datasource'
 
@@ -19,9 +17,6 @@ export const useUiStore = defineStore('ui', {
     theme: (localStorage.getItem(THEME_KEY) as Theme) || 'light',
     lang: (localStorage.getItem(LANG_KEY) as Lang) || 'zh',
     sidebarOpen: localStorage.getItem(SIDEBAR_KEY) !== '0',
-    sidebarWidth: clampSidebarWidth(
-      Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 260,
-    ),
     analysisOpen: localStorage.getItem(ANALYSIS_KEY) !== '0',
     datasource: localStorage.getItem(DATASOURCE_KEY) || '',
     datasourceList: [] as DatasourceInfo[],
@@ -48,10 +43,6 @@ export const useUiStore = defineStore('ui', {
     toggleSidebar() {
       this.sidebarOpen = !this.sidebarOpen
       localStorage.setItem(SIDEBAR_KEY, this.sidebarOpen ? '1' : '0')
-    },
-    setSidebarWidth(w: number) {
-      this.sidebarWidth = clampSidebarWidth(w)
-      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(this.sidebarWidth))
     },
     toggleAnalysis() {
       this.analysisOpen = !this.analysisOpen

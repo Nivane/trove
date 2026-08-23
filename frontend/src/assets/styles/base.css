@@ -95,8 +95,8 @@ button:disabled {
 }
 
 .sidebar {
-  /* 宽度由内联 style 控制(ui.sidebarWidth);rail 态固定 44px */
   position: relative;
+  width: 272px;
   border-right: 1px solid var(--border-subtle);
   background: var(--sidebar-bg);
   display: flex;
@@ -112,20 +112,6 @@ button:disabled {
   padding: var(--sp-2);
   align-items: center;
   gap: var(--sp-2);
-}
-.sidebar-resizer {
-  position: absolute;
-  top: 0;
-  right: -2px;
-  width: 4px;
-  height: 100%;
-  cursor: col-resize;
-  z-index: 20;
-}
-.sidebar-resizer:hover,
-.sidebar-resizer:active {
-  background: var(--accent);
-  opacity: 0.4;
 }
 .rail-btns {
   display: flex;
@@ -216,8 +202,9 @@ button:disabled {
   padding: var(--sp-1);
 }
 .sidebar.rail .profile-avatar {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
+  font-size: var(--fs-xs);
 }
 /* rail is 52px wide — keep the profile button/avatar inside it */
 .sidebar.rail .sidebar-profile .el-dropdown {

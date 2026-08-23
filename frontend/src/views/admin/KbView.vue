@@ -143,8 +143,11 @@
               v-loading="loading"
               :data="terms"
               class="admin-table"
-              empty-text="—"
+              max-height="calc(100vh - 380px)"
             >
+              <template #empty>
+                <TableEmpty>{{ t('kbTermsEmpty', ui.lang) }}</TableEmpty>
+              </template>
               <el-table-column
                 :label="t('kbTermField', ui.lang)"
                 min-width="160"
@@ -184,9 +187,6 @@
                 </template>
               </el-table-column>
             </el-table>
-            <div v-if="!loading && !terms.length" class="empty-note">
-              {{ t('kbTermsEmpty', ui.lang) }}
-            </div>
           </div>
         </el-tab-pane>
 
@@ -212,8 +212,11 @@
               v-loading="loading"
               :data="examples"
               class="admin-table"
-              empty-text="—"
+              max-height="calc(100vh - 380px)"
             >
+              <template #empty>
+                <TableEmpty>{{ t('kbExamplesEmpty', ui.lang) }}</TableEmpty>
+              </template>
               <el-table-column
                 :label="t('kbQuestion', ui.lang)"
                 min-width="240"
@@ -246,9 +249,6 @@
                 </template>
               </el-table-column>
             </el-table>
-            <div v-if="!loading && !examples.length" class="empty-note">
-              {{ t('kbExamplesEmpty', ui.lang) }}
-            </div>
           </div>
         </el-tab-pane>
 
@@ -266,17 +266,17 @@
               v-loading="loading"
               :data="rules"
               class="admin-table"
-              empty-text="—"
+              max-height="calc(100vh - 380px)"
             >
+              <template #empty>
+                <TableEmpty>{{ t('kbRulesEmpty', ui.lang) }}</TableEmpty>
+              </template>
               <el-table-column :label="t('kbRules', ui.lang)" min-width="100">
                 <template #default="{ row }">
                   <span class="lesson-title">{{ row }}</span>
                 </template>
               </el-table-column>
             </el-table>
-            <div v-if="!loading && !rules.length" class="empty-note">
-              {{ t('kbRulesEmpty', ui.lang) }}
-            </div>
           </div>
         </el-tab-pane>
 
@@ -309,8 +309,11 @@
               v-loading="loading"
               :data="pending"
               class="admin-table"
-              empty-text="—"
+              max-height="calc(100vh - 380px)"
             >
+              <template #empty>
+                <TableEmpty />
+              </template>
               <el-table-column :label="t('kb', ui.lang)" min-width="210">
                 <template #default="{ row }">
                   <div class="lesson-cell">
@@ -381,8 +384,11 @@
               v-loading="loading"
               :data="confirmed"
               class="admin-table kb-confirmed-table"
-              empty-text="—"
+              max-height="calc(100vh - 380px)"
             >
+              <template #empty>
+                <TableEmpty />
+              </template>
               <el-table-column :label="t('kb', ui.lang)" min-width="210">
                 <template #default="{ row }">
                   <div class="lesson-cell">
@@ -532,13 +538,14 @@ import {
   Check,
   X,
 } from 'lucide-vue-next'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiDelete, apiGet, apiPost } from '../../api/http'
 import type { DatasourceInfo } from '../../api/types'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
 import { copyText } from '../../utils/format'
+import TableEmpty from '../../components/admin/TableEmpty.vue'
 
 interface Term {
   term?: string
@@ -661,6 +668,12 @@ async function initKb() {
     return
   }
   setBusy('init', true)
+  // 同步初始化可能几十秒(sticky 提示,防止用户以为卡死/重复点击)
+  const notice = ElMessage({
+    type: 'info',
+    message: t('dsInitStarted', ui.lang),
+    duration: 0,
+  })
   try {
     await apiPost(
       `/v1/admin/datasources/${encodeURIComponent(ds.value)}/kb/init`,
@@ -671,6 +684,7 @@ async function initKb() {
   } catch (e) {
     toastError(e, t('dsInitFail', ui.lang))
   } finally {
+    notice.close()
     setBusy('init', false)
   }
 }

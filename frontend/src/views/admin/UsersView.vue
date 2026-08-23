@@ -60,12 +60,21 @@
         </span>
       </div>
 
+      <div v-if="loading && !filtered.length" class="table-skeleton">
+        <div v-for="n in 8" :key="n" class="skeleton-row">
+          <el-skeleton :rows="1" animated />
+        </div>
+      </div>
       <el-table
+        v-else
         v-loading="loading"
         :data="filtered"
         class="admin-table"
-        empty-text="—"
+        max-height="calc(100vh - 320px)"
       >
+        <template #empty>
+          <TableEmpty>{{ t('emptyFiltered', ui.lang) }}</TableEmpty>
+        </template>
         <el-table-column :label="t('username', ui.lang)" min-width="210">
           <template #default="{ row }">
             <div class="user-cell">
@@ -319,6 +328,7 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
 import { fmtDateTime, copyText } from '../../utils/format'
+import TableEmpty from '../../components/admin/TableEmpty.vue'
 
 interface TokenRow {
   id: number

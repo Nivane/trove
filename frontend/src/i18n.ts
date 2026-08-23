@@ -148,6 +148,9 @@ export const messages = {
     dsRemove: '删除',
     dsType: '类型',
     dsInitConfirm: '初始化将调用计费 LLM 为大表起草注释，确认继续？',
+    dsInitRunning: '初始化中…',
+    dsInitStarted:
+      '初始化已开始：大 schema 需要几十秒（计费 LLM 起草注释），完成后自动刷新，请勿重复点击。',
     dsRemoveConfirm:
       '删除将移除该数据源的注册与配置（KB 文件保留），确认删除？',
     dsPageDesc: '注册连接、查看知识库状态',
@@ -250,6 +253,12 @@ export const messages = {
     attempt: '第 {n} 次',
     stepsCount: '{n} 个步骤',
     systemSettings: '系统设置',
+    modelConfig: '模型配置',
+    emptyData: '暂无数据',
+    emptyFiltered: '没有匹配的记录',
+    modelConfigPageDesc: '配置默认/快速模型与模型服务商(Providers)',
+    modelFallbackNote:
+      '未配置任何 Providers 时,litellm 会自动回退到环境变量(如 DEEPSEEK_API_KEY / OPENAI_API_KEY)或默认凭据,因此服务仍可用;此处配置会按服务商名覆盖对应模型的 key/base。',
     settingsSaved: '设置已保存',
     settingsDbHint:
       '配置保存在数据库中(settings.db),立即生效;agent.yml 只读不被改写。',
@@ -264,6 +273,10 @@ export const messages = {
     apiBase: 'API Base',
     apiKey: 'API Key',
     apiKeyKept: '已保存,留空保持不变',
+    semanticLayerGroup: '语义层',
+    semanticLayerPath: '语义层目录',
+    semanticLayerPlaceholder: '如 .trove/semantic (留空 = 关闭)',
+    semanticLayerHint: 'OSSIE 语义层目录(相对项目根);每次重启后生效',
     interactionGroup: '交互',
     language: '语言',
     featureGroup: '流程开关',
@@ -445,6 +458,9 @@ export const messages = {
     dsType: 'Type',
     dsInitConfirm:
       'Initializing calls the billed LLM to draft notes for large schemas — continue?',
+    dsInitRunning: 'Initializing…',
+    dsInitStarted:
+      "Initialization started: large schemas take tens of seconds (billed LLM drafting); it will auto-refresh when done — don't click again.",
     dsRemoveConfirm:
       "Deleting removes this datasource's registration and config (KB files are kept). Confirm?",
     dsPageDesc: 'Register connections and review KB status',
@@ -548,6 +564,12 @@ export const messages = {
     attempt: 'attempt #{n}',
     stepsCount: '{n} steps',
     systemSettings: 'System settings',
+    modelConfig: 'Model config',
+    emptyData: 'No data',
+    emptyFiltered: 'No matching records',
+    modelConfigPageDesc: 'Configure default/fast models and providers',
+    modelFallbackNote:
+      'With no providers configured, litellm falls back to environment variables (e.g. DEEPSEEK_API_KEY / OPENAI_API_KEY) or default credentials, so the service still works; entries here override key/base for the matching provider name.',
     settingsSaved: 'Settings saved',
     settingsDbHint:
       'Stored in the database (settings.db) and applied immediately; agent.yml stays read-only.',
@@ -563,6 +585,10 @@ export const messages = {
     apiBase: 'API Base',
     apiKey: 'API Key',
     apiKeyKept: 'Kept — leave blank to keep the stored key',
+    semanticLayerGroup: 'Semantic layer',
+    semanticLayerPath: 'Semantic layer directory',
+    semanticLayerPlaceholder: 'e.g. .trove/semantic (blank = disabled)',
+    semanticLayerHint: 'OSSIE semantic layer directory (relative to project root); applied on restart',
     interactionGroup: 'Interaction',
     language: 'Language',
     featureGroup: 'Pipeline switches',
