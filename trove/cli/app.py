@@ -326,9 +326,10 @@ class TroveREPL:
         if node == "schema_linking":
             tables = detail.get("matched_tables", [])
             terms = detail.get("kb_terms", 0)
+            n_terms = len(terms) if isinstance(terms, list) else terms
             parts = [L(lang, f"匹配 {len(tables)} 表", f"matched {len(tables)} tables")]
-            if terms:
-                parts.append(L(lang, f"{terms} 术语", f"{terms} terms"))
+            if n_terms:
+                parts.append(L(lang, f"{n_terms} 术语", f"{n_terms} terms"))
             return ", ".join(parts)
         if node == "planner":
             return L(lang, "生成查询计划", "drafting query plan")

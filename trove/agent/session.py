@@ -857,9 +857,11 @@ class SessionManager:
             detail["intent_evidence"] = delta.get("intent_evidence")
         elif node_name == "schema_linking":
             detail["matched_tables"] = delta.get("matched_tables", [])
-            detail["kb_terms"] = sum(
-                1 for h in delta.get("kb_hits", []) if h.get("kind") == "term"
-            )
+            kh = delta.get("kb_hits", []) if isinstance(delta.get("kb_hits"), list) else []
+            detail["kb_terms"] = [
+                h.get("term") for h in kh if h.get("kind") == "term"
+            ]
+            detail["link_detail"] = delta.get("link_detail")
         elif node_name == "planner":
             detail["plan"] = delta.get("plan", "")
         elif node_name == "gen_sql":

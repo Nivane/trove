@@ -10,7 +10,46 @@
       }}</span>
     </summary>
     <div class="step-body">
-      <SqlBlock v-if="view.sql" :code="view.sql" />
+      <!-- schema_linking: 匹配与来源(分析面板核心) -->
+      <div v-if="view.link" class="link-detail">
+        <div class="link-row">
+          <span class="k">{{ t('matchedTables', ui.lang) }}</span>
+          <span v-if="view.link.tables.length" class="chips">
+            <span v-for="tb in view.link.tables" :key="tb" class="chip">
+              {{ tb }}
+              <span v-if="view.link.notesTables.includes(tb)" class="chip-src" :title="t('srcSchemaNotes', ui.lang)">
+                notes
+              </span>
+            </span>
+          </span>
+          <span v-else class="v">—</span>
+        </div>
+        <div v-if="view.link.terms.length" class="link-row">
+          <span class="k">{{ t('srcSemantics', ui.lang) }}</span>
+          <span class="chips">
+            <span v-for="tq in view.link.terms" :key="tq" class="chip chip-term">{{ tq }}</span>
+          </span>
+        </div>
+        <div v-if="view.link.valueHits.length" class="link-row">
+          <span class="k">{{ t('srcValues', ui.lang) }}</span>
+          <span class="mono">{{ view.link.valueHits.join(' · ') }}</span>
+        </div>
+        <div v-if="view.link.fieldHits.length" class="link-row">
+          <span class="k">{{ t('srcFields', ui.lang) }}</span>
+          <span class="mono">{{ view.link.fieldHits.join(' · ') }}</span>
+        </div>
+        <div v-if="view.link.relations" class="link-row">
+          <span class="k">{{ t('srcRelations', ui.lang) }}</span>
+          <span class="v">{{ t('yes', ui.lang) }}</span>
+        </div>
+        <div v-if="view.text && view.text !== (view.link.tables.join(', '))" class="link-log">
+          <details>
+            <summary>{{ t('ctxLog', ui.lang) }}</summary>
+            <pre class="ctx-pre">{{ view.text }}</pre>
+          </details>
+        </div>
+      </div>
+      <SqlBlock v-else-if="view.sql" :code="view.sql" />
       <template v-else-if="node === 'execute_sql'">
         <div class="kv-line">
           <span class="k">{{ t('rows', ui.lang) }}</span><span class="v">{{ view.rowCount ?? '–' }}</span>

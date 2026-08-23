@@ -832,6 +832,7 @@ def make_schema_linking(
             )
 
             # 4. Value linking hints: show hits whose table made it into context
+            value_hit_list: list[str] = []
             if value_hits:
                 shown = {
                     v: loc for v, loc in value_hits.items()
@@ -843,14 +844,17 @@ def make_schema_linking(
                         for v, loc in shown.items()
                     )
                     schema_context += "\n\n" + hint_lines
+                    value_hit_list = [f"'{v}' → {loc}" for v, loc in shown.items()]
 
             # 4.35 确定性 Field hints:问题词元 × 字段 synonyms 词重叠(零 LLM)——
             # planner 靠它把问题词链接到不透明列,不受 LLM 对齐波动影响。
+            field_hit_list: list[str] = []
             if live_model is not None:
                 try:
                     field_hits = getattr(semantic_layer, "field_hits", None)
                     if field_hits is not None:
                         hits = field_hits(state.question, matched_names)
+                        field_hit_list = list(hits)
                         if hits:
                             schema_context += "\n\nField hints: " + "; ".join(hits)
                 except Exception as e:
@@ -883,6 +887,20 @@ def make_schema_linking(
             update = {
                 "matched_tables": matched_names,
                 "schema_context": schema_context,
+                # 分析面板用的"匹配过程与来源"摘要(右侧边栏/--print):
+                # notes_tables = 有 schema_notes.yml 描述/统计的匹配表;
+                # value_hits/field_hits/relations = 命中证据;context = LLM
+                # 实际看到的上下文片段(表/列来自实时库,描述/统计/术语来自
+                # schema_notes.yml / semantics.yml / 语义层,示例在 gen 层)。
+                "link_detail": {
+                    "notes_tables": [
+                        t for t in matched_names if notes.get(t)
+                    ],
+                    "value_hits": value_hit_list,
+                    "field_hits": field_hit_list,
+                    "relations": bool(resolved_block),
+                    "context": schema_context[:4000],
+                },
             }
 
         if term_hits:

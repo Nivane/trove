@@ -13,6 +13,15 @@ export interface StepView {
   rowCount?: number | null
   timeMs?: number | null
   text?: string
+  /** schema_linking: 匹配与来源结构化摘要(右侧分析面板渲染)。 */
+  link?: {
+    tables: string[]
+    terms: string[]
+    notesTables: string[]
+    valueHits: string[]
+    fieldHits: string[]
+    relations: boolean
+  }
 }
 
 function get(payload: StepPayload, key: string): unknown {
@@ -108,6 +117,30 @@ export function extractStep(payload: StepPayload): StepView {
     const tables = get(payload, 'matched_tables')
     if (Array.isArray(tables) && tables.length) {
       view.text = tables.join(', ')
+    }
+    const ld = get(payload, 'link_detail') as
+      | Record<string, unknown>
+      | undefined
+    const terms = get(payload, 'kb_terms')
+    if (ld && typeof ld === 'object') {
+      view.label = 'match'
+      view.link = {
+        tables: Array.isArray(tables) ? (tables as string[]) : [],
+        terms: Array.isArray(terms) ? (terms as string[]) : [],
+        notesTables: Array.isArray(ld.notes_tables)
+          ? (ld.notes_tables as string[])
+          : [],
+        valueHits: Array.isArray(ld.value_hits)
+          ? (ld.value_hits as string[])
+          : [],
+        fieldHits: Array.isArray(ld.field_hits)
+          ? (ld.field_hits as string[])
+          : [],
+        relations: Boolean(ld.relations),
+      }
+      // 上下文片段(执行日志:模型实际看到的匹配信息来源)
+      const ctx = typeof ld.context === 'string' ? ld.context : ''
+      if (ctx) view.text = ctx
     }
     return view
   }

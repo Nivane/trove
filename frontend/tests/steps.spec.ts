@@ -62,6 +62,34 @@ describe('step payload extraction (backend `step` events carry detail.{...})', (
     expect(s.text).toContain('account')
   })
 
+  it('builds link view (matching + sources) from link_detail + terms', () => {
+    const card = {
+      node: 'schema_linking',
+      payload: {
+        node: 'schema_linking',
+        detail: {
+          matched_tables: ['loan', 'account', 'district'],
+          kb_terms: ['number of loan records'],
+          link_detail: {
+            notes_tables: ['loan', 'account'],
+            value_hits: ["'Prague' → district.A3"],
+            field_hits: ["'region' → district.A3"],
+            relations: true,
+            context: 'Table: district\nColumns: A3 (TEXT)',
+          },
+        },
+      },
+    }
+    const s = extractStep(card.payload as never)
+    expect(s.link?.tables).toEqual(['loan', 'account', 'district'])
+    expect(s.link?.terms).toEqual(['number of loan records'])
+    expect(s.link?.notesTables).toEqual(['loan', 'account'])
+    expect(s.link?.relations).toBe(true)
+    expect(s.link?.fieldHits).toContain("'region' → district.A3")
+    // 上下文片段(执行日志)落在 text
+    expect(s.text).toContain('Table: district')
+  })
+
   it('falls back to legacy flat fields (old format)', () => {
     const card = {
       node: 'gen_sql',

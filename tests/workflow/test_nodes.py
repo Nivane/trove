@@ -437,6 +437,31 @@ semantic_model:
         ctx = update["schema_context"]
         assert "Relationships:" not in ctx
 
+    async def test_link_detail_carries_matching_sources(self, tmp_path, demo_registry):
+        """分析面板数据:schema_linking 的 link_detail 携带匹配来源摘要。"""
+        from trove.services.datasource.catalog import CatalogService
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(self.MODEL_WITH_FIELDS)
+        node = make_schema_linking(
+            catalog=CatalogService(demo_registry),
+            connectors=demo_registry,
+            semantic_layer=SemanticLayerProvider(semantic_dir, "demo"),
+        )
+        update = await node(make_state(
+            question="What is the average loan amount per district region?"))
+        ld = update.pop("link_detail", None)
+        assert ld is not None
+        assert set(ld) >= {"notes_tables", "value_hits", "field_hits",
+                           "relations", "context"}
+        assert isinstance(ld["value_hits"], list)
+        assert isinstance(ld["field_hits"], list)
+        assert isinstance(ld["relations"], bool)
+        # field_hits 命中 region → district.A3(semantics.yml 别名来源)
+        assert any("district.A3" in h for h in ld["field_hits"])
+        assert "Table: district" in ld["context"]
+
 
 class TestPlannerRollbackRevision:
     async def test_rollback_revision_includes_prior_plan(self):
