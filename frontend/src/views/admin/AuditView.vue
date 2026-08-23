@@ -5,23 +5,6 @@
         <h2>{{ t('audit', ui.lang) }}</h2>
         <p class="view-desc">{{ t('auditPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-right">
-        <div class="audit-filters">
-          <el-input
-            v-model="action"
-            :placeholder="t('auditAction', ui.lang)"
-            clearable
-            class="audit-filter-input"
-            :prefix-icon="Search"
-            @keyup.enter="onActionChange"
-            @clear="onActionChange"
-          />
-          <el-button class="refresh-btn" :loading="loading" @click="load">
-            <RefreshCw :size="15" class="btn-icon" />
-            {{ t('refresh', ui.lang) }}
-          </el-button>
-        </div>
-      </div>
     </header>
 
     <div class="stat-grid">
@@ -49,6 +32,25 @@
     </div>
 
     <div class="admin-card">
+      <div class="card-toolbar">
+        <div class="audit-filters">
+          <el-input
+            v-model="action"
+            :placeholder="t('auditAction', ui.lang)"
+            clearable
+            class="audit-filter-input"
+            :prefix-icon="Search"
+            @keyup.enter="onActionChange"
+            @clear="onActionChange"
+          />
+        </div>
+        <span class="spacer" />
+        <span class="view-count">{{ total }}</span>
+        <el-button class="refresh-btn" :loading="loading" @click="load">
+          <RefreshCw :size="15" class="btn-icon" />
+          {{ t('refresh', ui.lang) }}
+        </el-button>
+      </div>
       <div v-if="loading && !entries.length" class="table-skeleton">
         <div v-for="n in 8" :key="n" class="skeleton-row">
           <el-skeleton :rows="1" animated />

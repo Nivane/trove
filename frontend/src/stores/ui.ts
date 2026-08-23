@@ -4,17 +4,13 @@ import type { DatasourceInfo } from '../api/types'
 import { apiGet } from '../api/http'
 
 // Legacy localStorage keys kept so the vanilla-UI migration is seamless.
-const THEME_KEY = 'trove_ui_theme'
 const LANG_KEY = 'trove_ui_lang'
 const SIDEBAR_KEY = 'trove_ui_sidebar'
 const ANALYSIS_KEY = 'trove_ui_analysis'
 const DATASOURCE_KEY = 'trove_ui_datasource'
 
-export type Theme = 'light' | 'dark'
-
 export const useUiStore = defineStore('ui', {
   state: () => ({
-    theme: (localStorage.getItem(THEME_KEY) as Theme) || 'light',
     lang: (localStorage.getItem(LANG_KEY) as Lang) || 'zh',
     sidebarOpen: localStorage.getItem(SIDEBAR_KEY) !== '0',
     analysisOpen: localStorage.getItem(ANALYSIS_KEY) !== '0',
@@ -28,13 +24,9 @@ export const useUiStore = defineStore('ui', {
   },
   actions: {
     applyTheme() {
-      document.documentElement.dataset.theme = this.theme
-      document.documentElement.classList.toggle('dark', this.theme === 'dark')
-    },
-    cycleTheme() {
-      this.theme = this.theme === 'light' ? 'dark' : 'light'
-      localStorage.setItem(THEME_KEY, this.theme)
-      this.applyTheme()
+      // light-only theme: nothing to toggle
+      document.documentElement.dataset.theme = 'light'
+      document.documentElement.classList.remove('dark')
     },
     setLang(lang: Lang) {
       this.lang = lang

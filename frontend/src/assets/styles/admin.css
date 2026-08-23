@@ -3,8 +3,8 @@
    Loaded after base.css + element.css; owns every admin view.
    Design language:
      · quiet canvas, raised white cards, hairline borders
-     · one accent (indigo) for primary + active states
-     · status colors reserved for meaning (ok/warn/danger)
+     · near-monochrome: badges/icons/buttons/selection all grayscale
+     · red reserved for errors and destructive actions
      · dense but breathable tables, uppercase tiny headers
      · stat rows → toolbar → table → footer chrome on every page
    ───────────────────────────────────────────────────────────── */
@@ -71,9 +71,13 @@
   color: var(--text-primary);
 }
 .admin-nav-item.active {
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--surface-muted);
+  color: var(--text-primary);
   font-weight: 600;
+}
+.admin-nav-item.active:hover {
+  background: var(--surface-muted);
+  color: var(--text-primary);
 }
 .admin-nav-icon {
   flex-shrink: 0;
@@ -162,18 +166,8 @@
   background: var(--surface-muted);
   color: var(--text-secondary);
 }
-.stat-icon.accent {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-.stat-icon.ok {
-  background: var(--ok-bg);
-  color: var(--ok-text);
-}
-.stat-icon.warn {
-  background: var(--warn-bg);
-  color: var(--warn-text);
-}
+/* monochrome: no accent/status tint on stat icons — grayscale keeps the
+   console quiet; red is reserved for real errors/destructive actions */
 .stat-meta {
   display: flex;
   flex-direction: column;
@@ -331,20 +325,21 @@
   color: var(--text-secondary);
 }
 .pill-ok {
-  background: color-mix(in srgb, var(--ok-text) 12%, transparent);
-  color: var(--ok-text);
+  background: var(--surface-muted);
+  color: var(--text-primary);
 }
 .pill-warn {
-  background: color-mix(in srgb, var(--warn-text) 12%, transparent);
-  color: var(--warn-text);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
 }
 .pill-danger {
   background: color-mix(in srgb, var(--danger-text) 12%, transparent);
   color: var(--danger-text);
 }
 .pill-accent {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
+  background: var(--surface-muted);
+  color: var(--text-primary);
+  font-weight: 600;
 }
 .pill-neutral {
   background: var(--surface-muted);
@@ -363,7 +358,7 @@
   flex-shrink: 0;
 }
 .pill-dot-ok {
-  background: var(--ok-text);
+  background: var(--text-primary);
   opacity: 1;
 }
 .pill-dot-off {
@@ -375,16 +370,120 @@
 .btn-icon {
   vertical-align: -2px;
 }
-.admin-main .el-button {
+.admin-main .el-button,
+.admin-dialog .el-button,
+.el-message-box .el-button {
   height: 32px;
   border-radius: var(--r-md);
   font-weight: 500;
+}
+/* Flat monochrome buttons: black text on a white surface, no hover/active
+   change in the content panel. Red is reserved for destructive actions.
+   Hover vars equal the resting vars so hovering is visually inert
+   (base.css's global `button:hover` is re-asserted below). */
+.admin-main .el-button,
+.admin-dialog .el-button,
+.el-message-box .el-button {
+  --el-button-bg-color: var(--surface-raised);
+  --el-button-border-color: var(--border-default);
+  --el-button-text-color: var(--text-primary);
+  --el-button-hover-bg-color: var(--surface-raised);
+  --el-button-hover-border-color: var(--border-default);
+  --el-button-hover-text-color: var(--text-primary);
+  --el-button-active-bg-color: var(--surface-raised);
+  --el-button-active-border-color: var(--border-default);
+  --el-button-active-text-color: var(--text-primary);
+  --el-button-disabled-bg-color: var(--surface-muted);
+  --el-button-disabled-border-color: var(--surface-muted);
+  --el-button-disabled-text-color: var(--text-tertiary);
+  --el-button-outline-color: var(--border-strong);
+}
+.admin-main .el-button--primary,
+.admin-dialog .el-button--primary,
+.el-message-box .el-button--primary {
+  font-weight: 600;
+  --el-button-border-color: var(--border-strong);
+}
+.admin-main .el-button--danger,
+.admin-dialog .el-button--danger,
+.el-message-box .el-button--danger {
+  --el-button-border-color: var(--danger-text);
+  --el-button-text-color: var(--danger-text);
+  --el-button-hover-bg-color: var(--surface-raised);
+  --el-button-hover-border-color: var(--danger-text);
+  --el-button-hover-text-color: var(--danger-text);
+  --el-button-active-bg-color: var(--surface-raised);
+  --el-button-active-border-color: var(--danger-text);
+  --el-button-active-text-color: var(--danger-text);
+}
+/* Re-assert hover/active colors so base.css's global `button:hover { background:
+   surface-hover }` cannot change a button's look — content-panel buttons are
+   hover-inert by design. */
+.admin-main .el-button:not(:disabled):hover,
+.admin-main .el-button:not(:disabled):active,
+.admin-dialog .el-button:not(:disabled):hover,
+.admin-dialog .el-button:not(:disabled):active,
+.el-message-box .el-button:not(:disabled):hover,
+.el-message-box .el-button:not(:disabled):active {
+  background-color: var(--el-button-hover-bg-color);
+  border-color: var(--el-button-hover-border-color);
+  color: var(--el-button-hover-text-color);
+}
+/* popup close buttons — no hover change (base.css would paint a square gray
+   background on them, breaking the dialog's rounded corner) */
+.admin-dialog .el-dialog__headerbtn:not(:disabled):hover,
+.admin-dialog .el-dialog__headerbtn:not(:disabled):active,
+.el-message-box .el-message-box__headerbtn:not(:disabled):hover,
+.el-message-box .el-message-box__headerbtn:not(:disabled):active,
+.el-message .el-message__closeBtn:not(:disabled):hover,
+.el-notification .el-notification__closeBtn:not(:disabled):hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+.admin-dialog .el-dialog__headerbtn:hover .el-dialog__close,
+.el-message-box .el-message-box__headerbtn:hover .el-message-box__close {
+  color: var(--text-secondary);
+}
+/* icon-only compact action buttons (uniform row actions) */
+.row-actions .mini-btn.icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  font-size: 0;
+  gap: 0;
 }
 .admin-main .el-button--small {
   height: 28px;
 }
 .refresh-btn.el-button {
   border-radius: var(--r-md);
+}
+
+/* ── Monochrome interactive chrome ──
+   Selection feedback stays in black-and-white too: tabs, pagination,
+   switches and select highlights lose their indigo/green tints. */
+.admin-tabs {
+  --el-color-primary: var(--text-primary);
+}
+.admin-main .el-pagination .el-pager li.is-active {
+  color: var(--text-primary);
+}
+.admin-main .el-pagination.is-background .el-pager li.is-active {
+  background-color: var(--text-primary);
+  color: var(--surface-canvas);
+}
+.admin-main .el-switch.is-checked .el-switch__core,
+.admin-dialog .el-switch.is-checked .el-switch__core {
+  background-color: var(--text-primary);
+  border-color: var(--text-primary);
+}
+.el-select-dropdown__item.is-selected {
+  color: var(--text-primary);
+}
+.el-select-dropdown__item.is-hovering,
+.el-dropdown-menu__item:not(.is-disabled):hover {
+  background: var(--surface-muted);
 }
 
 /* row actions */
@@ -410,21 +509,26 @@
     background var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease);
 }
-.row-actions .mini-btn:hover {
-  background: var(--surface-muted);
-  color: var(--text-primary);
+/* row actions stay hover-inert — no bg/color change on hover */
+.admin-main .row-actions .mini-btn:not(:disabled):hover,
+.admin-dialog .row-actions .mini-btn:not(:disabled):hover {
+  background: transparent;
+  color: var(--text-secondary);
 }
 .row-actions .mini-btn.is-danger {
   color: var(--danger-text);
 }
-.row-actions .mini-btn.is-danger:hover {
-  background: var(--danger-bg);
+.admin-main .row-actions .mini-btn.is-danger:not(:disabled):hover,
+.admin-dialog .row-actions .mini-btn.is-danger:not(:disabled):hover {
+  color: var(--danger-text);
 }
 .row-actions .mini-btn.primary {
-  color: var(--accent);
+  color: var(--text-primary);
+  font-weight: 600;
 }
-.row-actions .mini-btn.primary:hover {
-  background: var(--accent-soft);
+.admin-main .row-actions .mini-btn.primary:not(:disabled):hover,
+.admin-dialog .row-actions .mini-btn.primary:not(:disabled):hover {
+  color: var(--text-primary);
 }
 .row-actions .mini-btn:disabled {
   opacity: 0.5;
@@ -432,6 +536,20 @@
 }
 .row-actions .mini-btn:disabled:hover {
   background: transparent;
+}
+/* generic hover-inert mini buttons (provider rows, dialogs, etc.) */
+.admin-main .mini-btn:not(:disabled):hover,
+.admin-dialog .mini-btn:not(:disabled):hover {
+  background: transparent;
+  color: var(--text-secondary);
+}
+.admin-main .mini-btn.is-danger:not(:disabled):hover,
+.admin-dialog .mini-btn.is-danger:not(:disabled):hover {
+  color: var(--danger-text);
+}
+.admin-main .mini-btn.primary:not(:disabled):hover,
+.admin-dialog .mini-btn.primary:not(:disabled):hover {
+  color: var(--text-primary);
 }
 
 /* KB init 进行中:按钮内置小 spinner(同步初始化几十秒,给明确反馈) */
@@ -466,17 +584,13 @@
   place-items: center;
   font-size: var(--fs-sm);
   font-weight: 600;
-  background: linear-gradient(
-    135deg,
-    var(--accent-soft),
-    var(--accent-soft-hover)
-  );
-  color: var(--accent);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
 }
 .user-avatar.is-admin {
-  background: linear-gradient(135deg, var(--accent), var(--accent-active));
-  color: var(--on-accent);
+  background: var(--text-primary);
+  color: var(--surface-canvas);
   border-color: transparent;
 }
 .user-meta {
@@ -516,8 +630,8 @@
   width: 32px;
   height: 32px;
   border-radius: var(--r-md);
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
   display: grid;
   place-items: center;
   flex-shrink: 0;
@@ -618,8 +732,8 @@
   width: 52px;
   height: 52px;
   border-radius: var(--r-lg);
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--surface-muted);
+  color: var(--text-secondary);
   display: grid;
   place-items: center;
   margin-bottom: var(--sp-2);
@@ -648,14 +762,15 @@
 .link-btn {
   border: none;
   background: transparent;
-  color: var(--accent);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   cursor: pointer;
   padding: 0;
 }
 .link-btn:hover {
-  text-decoration: underline;
+  color: var(--text-secondary);
+  text-decoration: none;
 }
 .form-error {
   display: flex;
@@ -715,22 +830,6 @@
   border-radius: var(--r-sm);
   letter-spacing: 0.02em;
 }
-.method-badge.is-get {
-  color: var(--ok-text);
-  background: color-mix(in srgb, var(--ok-text) 12%, transparent);
-}
-.method-badge.is-post {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.method-badge.is-delete {
-  color: var(--danger-text);
-  background: color-mix(in srgb, var(--danger-text) 12%, transparent);
-}
-.method-badge.is-warn {
-  color: var(--warn-text);
-  background: color-mix(in srgb, var(--warn-text) 12%, transparent);
-}
 .pagination-bar {
   display: flex;
   justify-content: flex-end;
@@ -778,10 +877,22 @@
   white-space: nowrap;
 }
 .kb-summary {
-  padding: var(--sp-4) var(--sp-5);
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+  padding: 0;
+}
+.kb-summary > .card-header {
+  padding: var(--sp-4) var(--sp-5);
+}
+.kb-summary > .kb-stat-row,
+.kb-summary > .kb-actions,
+.kb-summary > .empty-note {
+  margin: 0 var(--sp-5);
+}
+.kb-summary > .kb-actions,
+.kb-summary > .empty-note {
+  margin-bottom: var(--sp-4);
 }
 .kb-stat-row {
   display: flex;
@@ -798,8 +909,8 @@
 
 /* ── API tokens ── */
 .token-reveal {
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  background: var(--accent-soft);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-muted);
   border-radius: var(--r-md);
   padding: var(--sp-3);
   margin-bottom: var(--sp-4);
@@ -808,7 +919,7 @@
   font-size: var(--fs-xs);
   font-weight: 600;
   margin-bottom: var(--sp-2);
-  color: var(--accent);
+  color: var(--text-secondary);
 }
 .token-reveal-row {
   display: flex;
@@ -869,7 +980,7 @@
   flex-shrink: 0;
 }
 .token-dot-ok {
-  background: var(--ok-text);
+  background: var(--text-secondary);
 }
 .token-dot-off {
   background: var(--text-tertiary);

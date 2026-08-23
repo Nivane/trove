@@ -5,35 +5,28 @@
         <h2>{{ t('datasources', ui.lang) }}</h2>
         <p class="view-desc">{{ t('dsPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-right">
-        <span class="view-count">{{ rows.length }} · {{ t('datasources', ui.lang) }}</span>
-        <el-button type="primary" class="add" @click="openDialog">
-          <Plus :size="15" class="btn-icon" />
-          {{ t('dsCreateTitle', ui.lang) }}
-        </el-button>
-      </div>
     </header>
 
     <div class="stat-grid">
       <div class="stat-card">
-        <span class="stat-icon accent"><Database :size="18" /></span>
+        <span class="stat-icon"><Database :size="18" /></span>
         <div class="stat-meta">
           <span class="stat-label">{{ t('datasources', ui.lang) }}</span>
           <span class="stat-value">{{ rows.length }}</span>
         </div>
       </div>
       <div class="stat-card">
-        <span class="stat-icon ok"><PlugZap :size="18" /></span>
+        <span class="stat-icon"><PlugZap :size="18" /></span>
         <div class="stat-meta">
           <span class="stat-label">{{ t('dsConnected', ui.lang) }}</span>
           <span class="stat-value">{{ connectedCount }}</span>
         </div>
       </div>
       <div class="stat-card">
-        <span class="stat-icon"><Library :size="18" /></span>
+        <span class="stat-icon"><WifiOff :size="18" /></span>
         <div class="stat-meta">
-          <span class="stat-label">{{ t('dsKbReady', ui.lang) }}</span>
-          <span class="stat-value">{{ kbReadyCount }}</span>
+          <span class="stat-label">{{ t('dsDisconnected', ui.lang) }}</span>
+          <span class="stat-value">{{ disconnectedCount }}</span>
         </div>
       </div>
     </div>
@@ -49,16 +42,27 @@
     </div>
 
     <div v-else class="admin-card">
+      <div class="card-toolbar">
+        <span class="view-count">
+          {{ rows.length }} · {{ connectedCount }} {{ t('dsConnected', ui.lang) }}
+        </span>
+        <span class="spacer" />
+        <el-button type="primary" class="add" @click="openDialog">
+          <Plus :size="15" class="btn-icon" />
+          {{ t('dsCreateTitle', ui.lang) }}
+        </el-button>
+      </div>
+
       <el-table
         v-loading="loading"
         :data="rows"
         class="admin-table"
-        max-height="calc(100vh - 300px)"
+        max-height="calc(100vh - 340px)"
       >
         <template #empty>
           <TableEmpty />
         </template>
-        <el-table-column :label="t('datasources', ui.lang)" min-width="220">
+        <el-table-column :label="t('datasources', ui.lang)" min-width="240">
           <template #default="{ row }">
             <div class="ds-name-cell">
               <span class="ds-icon"><Database :size="16" /></span>
@@ -72,7 +76,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column :label="t('dsStatus', ui.lang)" width="140">
+        <el-table-column :label="t('dsStatus', ui.lang)" width="130">
           <template #default="{ row }">
             <span
               class="pill"
@@ -90,69 +94,41 @@
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('dsKb', ui.lang)" width="150">
-          <template #default="{ row }">
-            <span
-              class="pill"
-              :class="row.kb_initialized ? 'pill-ok' : 'pill-warn'"
-            >
-              <span
-                class="pill-dot"
-                :class="row.kb_initialized ? 'pill-dot-ok' : ''"
-              />
-              {{
-                row.kb_initialized
-                  ? t('dsKbReady', ui.lang)
-                  : t('dsKbNotReady', ui.lang)
-              }}
-            </span>
-          </template>
-        </el-table-column>
         <el-table-column
           :label="t('actions', ui.lang)"
-          width="320"
+          width="120"
           fixed="right"
         >
           <template #default="{ row }">
             <div class="row-actions">
-              <button
-                v-if="!row.kb_initialized"
-                class="mini-btn primary init"
-                :disabled="busy(row.name, 'init')"
-                @click="initKb(row)"
+              <el-tooltip
+                :disabled="!editLocked(row)"
+                :content="editLockedReason(row)"
               >
-                <span v-if="busy(row.name, 'init')" class="btn-spinner" />
-                <Sparkles v-else :size="13" />
-                {{
-                  busy(row.name, 'init')
-                    ? t('dsInitRunning', ui.lang)
-                    : t('dsInit', ui.lang)
-                }}
-              </button>
+                <button
+                  class="mini-btn icon edit"
+                  :title="t('edit', ui.lang)"
+                  :disabled="editLocked(row) || busy(row.name, 'edit')"
+                  @click="openEdit(row)"
+                >
+                  <Pencil :size="13" />
+                </button>
+              </el-tooltip>
               <button
-                v-if="row.kb_initialized"
-                class="mini-btn"
-                :disabled="busy(row.name, 'reload') || busy(row.name, 'init')"
-                @click="reloadKb(row)"
-              >
-                <RefreshCw :size="13" />
-                {{ t('dsReload', ui.lang) }}
-              </button>
-              <button
-                class="mini-btn"
-                :disabled="busy(row.name, 'reconnect') || busy(row.name, 'init')"
-                @click="reconnect(row)"
+                class="mini-btn icon test"
+                :title="t('dsTest', ui.lang)"
+                :disabled="busy(row.name, 'test')"
+                @click="testConnectionRow(row)"
               >
                 <PlugZap :size="13" />
-                {{ t('dsReconnect', ui.lang) }}
               </button>
               <button
-                class="mini-btn is-danger"
-                :disabled="busy(row.name, 'init')"
+                class="mini-btn icon is-danger"
+                :title="t('dsRemove', ui.lang)"
+                :disabled="busy(row.name, 'test')"
                 @click="remove(row)"
               >
                 <Trash2 :size="13" />
-                {{ t('dsRemove', ui.lang) }}
               </button>
             </div>
           </template>
@@ -234,24 +210,81 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="editOpen"
+      :title="`${t('dsEditTitle', ui.lang)} · ${editTarget?.name || ''}`"
+      width="480"
+      class="admin-dialog ds-dialog"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top" @submit.prevent="saveEdit">
+        <el-form-item :label="t('dsName', ui.lang)">
+          <el-input v-model="editForm.name" class="ds-name-field" disabled />
+        </el-form-item>
+
+        <el-form-item :label="t('dsTypeLabel', ui.lang)">
+          <el-input v-model="editForm.type" disabled class="ds-type-locked" />
+        </el-form-item>
+
+        <el-form-item :label="t('dsUrl', ui.lang)">
+          <el-input
+            v-model="editForm.url"
+            class="ds-url-input mono-input"
+            :placeholder="t('dsUrlPlaceholder', ui.lang)"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <div class="form-hint">
+            <Info :size="13" />
+            {{ t('dsEditUrlHint', ui.lang) }}
+          </div>
+        </el-form-item>
+
+        <div v-if="editError" class="form-error">
+          <AlertCircle :size="15" />
+          <span>{{ editError }}</span>
+        </div>
+      </el-form>
+
+      <template #footer>
+        <el-button :loading="testing" @click="testEdit">
+          <PlugZap :size="14" class="btn-icon" />
+          {{ t('dsTest', ui.lang) }}
+        </el-button>
+        <span class="dialog-footer-spacer" />
+        <el-button @click="editOpen = false">
+{{
+          t('cancel', ui.lang)
+        }}
+</el-button>
+        <el-button
+          type="primary"
+          :loading="savingEdit"
+          :disabled="!editForm.url.trim()"
+          @click="saveEdit"
+        >
+          {{ t('saveLabel', ui.lang) }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
 import {
   Plus,
   Database,
   AlertCircle,
   Info,
   PlugZap,
-  Library,
-  RefreshCw,
-  Sparkles,
+  Pencil,
+  WifiOff,
   Trash2,
 } from 'lucide-vue-next'
-import { apiDelete, apiGet, apiPost } from '../../api/http'
+import { apiDelete, apiGet, apiPost, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
@@ -269,9 +302,25 @@ const busyMap = reactive<Record<string, boolean>>({})
 const connectedCount = computed(
   () => rows.value.filter((r) => r.status === 'connected').length,
 )
-const kbReadyCount = computed(
-  () => rows.value.filter((r) => r.kb_initialized).length,
-)
+const disconnectedCount = computed(() => rows.value.length - connectedCount.value)
+
+function busy(row: DatasourceInfo, action: string): boolean {
+  return !!busyMap[`${row.name}:${action}`]
+}
+function setBusy(row: DatasourceInfo, action: string, v: boolean) {
+  if (v) busyMap[`${row.name}:${action}`] = true
+  else delete busyMap[`${row.name}:${action}`]
+}
+
+// ── 编辑锁定：已初始化知识库（或内置 demo）后不允许改动连接 ──
+function editLocked(row: DatasourceInfo): boolean {
+  return row.type === 'demo' || !!row.kb_initialized
+}
+function editLockedReason(row: DatasourceInfo): string {
+  if (row.type === 'demo') return t('dsDemoLocked', ui.lang)
+  if (row.kb_initialized) return t('dsEditLocked', ui.lang)
+  return ''
+}
 
 const form = reactive({
   type: 'demo',
@@ -320,17 +369,6 @@ const canSubmit = computed(() => {
   if (form.type === 'demo') return true
   return !!form.url.trim()
 })
-
-function busyKey(row: DatasourceInfo, action: string) {
-  return `${row.name}:${action}`
-}
-function busy(row: DatasourceInfo, action: string): boolean {
-  return !!busyMap[busyKey(row, action)]
-}
-function setBusy(row: DatasourceInfo, action: string, v: boolean) {
-  if (v) busyMap[busyKey(row, action)] = true
-  else delete busyMap[busyKey(row, action)]
-}
 
 async function load() {
   loading.value = true
@@ -382,55 +420,88 @@ async function add() {
   }
 }
 
-async function initKb(row: DatasourceInfo) {
+// ── 测试连接 / 编辑 ──
+const testing = ref(false)
+const editOpen = ref(false)
+const savingEdit = ref(false)
+const editError = ref('')
+const editTarget = ref<DatasourceInfo | null>(null)
+const editForm = reactive({ name: '', type: '', url: '' })
+
+async function testUrl(url: string, row?: DatasourceInfo) {
   try {
-    await ElMessageBox.confirm(t('dsInitConfirm', ui.lang), 'Confirm')
-  } catch {
-    return
-  }
-  setBusy(row, 'init', true)
-  // 同步初始化可能几十秒(sticky 提示,防止用户以为卡死/重复点击)
-  const notice = ElMessage({
-    type: 'info',
-    message: t('dsInitStarted', ui.lang),
-    duration: 0,
-  })
-  try {
-    await apiPost(`/v1/admin/datasources/${row.name}/kb/init`, {})
-    notifySuccess(t('dsInitDone', ui.lang))
-    await load()
+    const body = await apiPost<{ ok: boolean; error?: string | null }>(
+      '/v1/admin/datasources/test-connection',
+      row ? { name: row.name } : { url },
+    )
+    if (body.ok) {
+      notifySuccess(t('dsTestOk', ui.lang))
+    } else {
+      toastError(new Error(body.error || t('dsTestFail', ui.lang)))
+    }
+    return body.ok
   } catch (e) {
-    toastError(e, t('dsInitFail', ui.lang))
-  } finally {
-    notice.close()
-    setBusy(row, 'init', false)
+    toastError(e)
+    return false
   }
 }
 
-async function runAction(
-  row: DatasourceInfo,
-  action: 'reload' | 'reconnect',
-  pathSuffix: string,
-  okKey: 'dsReloadDone' | 'dsReconnectDone',
-) {
-  setBusy(row, action, true)
+async function testConnectionRow(row: DatasourceInfo) {
+  setBusy(row, 'test', true)
+  await testUrl('', row)
+  setBusy(row, 'test', false)
+}
+
+async function testEdit() {
+  testing.value = true
+  editError.value = ''
+  await testUrl(editForm.url.trim())
+  testing.value = false
+}
+
+async function openEdit(row: DatasourceInfo) {
+  if (editLocked(row)) return
+  editTarget.value = row
+  editError.value = ''
+  setBusy(row, 'edit', true)
   try {
-    await apiPost(`/v1/admin/datasources/${row.name}${pathSuffix}`)
-    notifySuccess(t(okKey, ui.lang))
-    await load()
+    const body = await apiGet<{ datasource: DatasourceInfo & { url: string } }>(
+      `/v1/admin/datasources/${encodeURIComponent(row.name)}`,
+    )
+    const ds = body.datasource
+    Object.assign(editForm, {
+      name: ds.name,
+      type: ds.type,
+      url: ds.url || '',
+    })
+    editOpen.value = true
   } catch (e) {
     toastError(e)
   } finally {
-    setBusy(row, action, false)
+    setBusy(row, 'edit', false)
   }
 }
 
-async function reloadKb(row: DatasourceInfo) {
-  await runAction(row, 'reload', '/kb/reload', 'dsReloadDone')
-}
-
-async function reconnect(row: DatasourceInfo) {
-  await runAction(row, 'reconnect', '/reconnect', 'dsReconnectDone')
+async function saveEdit() {
+  if (!editTarget.value || !editForm.url.trim() || savingEdit.value) return
+  savingEdit.value = true
+  editError.value = ''
+  try {
+    await apiPut(
+      `/v1/admin/datasources/${encodeURIComponent(editTarget.value.name)}`,
+      { url: editForm.url.trim() },
+    )
+    editOpen.value = false
+    notifySuccess(t('dsUpdatedOk', ui.lang))
+    await load()
+  } catch (e) {
+    editError.value =
+      e && typeof e === 'object' && 'message' in e
+        ? String((e as { message: unknown }).message)
+        : t('dsEditFail', ui.lang)
+  } finally {
+    savingEdit.value = false
+  }
 }
 
 async function remove(row: DatasourceInfo) {

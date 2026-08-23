@@ -59,7 +59,10 @@ async function openDialog(text: string) {
   await flushPromises()
   const btn = view
     .findAll('button')
-    .find((b) => b.text().includes(text))
+    .find(
+      (b) =>
+        b.text().includes(text) || b.attributes('title') === text,
+    )
   await btn!.trigger('click')
   await flushPromises()
   return view
@@ -149,7 +152,11 @@ describe('UsersView', () => {
     expect(document.body.textContent).toContain('ci')
     const revoke = Array.from(
       document.body.querySelectorAll<HTMLElement>('.el-dialog button'),
-    ).find((b) => b.textContent!.includes('Revoke'))!
+    ).find(
+      (b) =>
+        b.textContent!.includes('Revoke') ||
+        b.getAttribute('title') === 'Revoke',
+    )!
     revoke.click()
     await flushPromises()
     expect(apiDelete).toHaveBeenCalledWith('/v1/admin/tokens/7')

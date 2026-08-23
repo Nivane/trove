@@ -7,6 +7,7 @@ import DatasourcesView from '../src/views/admin/DatasourcesView.vue'
 vi.mock('../src/api/http', () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+  apiPut: vi.fn(),
   apiDelete: vi.fn(),
 }))
 
@@ -17,8 +18,7 @@ vi.mock('element-plus', async (importOriginal) => {
   return { ...actual, ElMessageBox: { confirm: vi.fn() } }
 })
 
-import { apiGet, apiPost, apiDelete } from '../src/api/http'
-import { ElMessageBox } from 'element-plus'
+import { apiGet, apiPost, apiPut } from '../src/api/http'
 import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 import type { VueWrapper } from '@vue/test-utils'
@@ -61,7 +61,7 @@ afterEach(() => {
 })
 
 describe('DatasourcesView', () => {
-  it('renders datasources with status and kb labels', async () => {
+  it('renders datasources with status labels and row actions', async () => {
     ;(apiGet as any).mockResolvedValue({
       datasources: [
         { name: 'financial', type: 'mysql', default: true, status: 'connected', kb_initialized: true, kb_items: { schema_notes: 12 } },
@@ -75,9 +75,14 @@ describe('DatasourcesView', () => {
     expect(text).toContain('demo')
     expect(text).toContain('Connected')
     expect(text).toContain('Disconnected')
-    expect(text).toContain('Initialized')
-    expect(text).toContain('Not initialized')
     expect(text).toContain('default')
+    // KB status is gone from this page — actions are edit / test / delete
+    expect(text).not.toContain('Initialized KB')
+    // row actions are icon-only; the tooltip carries the label
+    const testBtns = view.findAll('button.test')
+    expect(testBtns.length).toBe(2)
+    expect(testBtns[0].attributes('title')).toBe('Test connection')
+    expect(text).not.toContain('Test connection')
   })
 
   it('registers a datasource through the dialog via POST', async () => {
@@ -86,7 +91,7 @@ describe('DatasourcesView', () => {
     const view = mountView()
     await flushPromises()
 
-    // opens the register dialog (empty state also offers a CTA, header comes first)
+    // opens the register dialog (empty state CTA)
     await view.find('button.add').trigger('click')
     await flushPromises()
 
@@ -137,22 +142,50 @@ describe('DatasourcesView', () => {
     })
   })
 
-  it('init asks for confirmation, then POSTs only after confirm', async () => {
+  it('tests a connection by name without touching the registration', async () => {
     ;(apiGet as any).mockResolvedValue({ datasources: [{ name: 'financial', type: 'mysql', status: 'connected', kb_initialized: false }] })
-    ;(apiPost as any).mockResolvedValue({ summary: 'Initialized' })
+    ;(apiPost as any).mockResolvedValue({ ok: true, error: null })
+    const view = mountView()
+    await flushPromises()
+    await view.find('button.test').trigger('click')
+    await flushPromises()
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources/test-connection', { name: 'financial' })
+  })
+
+  it('disables edit once the KB is initialized', async () => {
+    ;(apiGet as any).mockResolvedValue({ datasources: [
+      { name: 'financial', type: 'mysql', status: 'connected', kb_initialized: true },
+      { name: 'demo', type: 'demo', status: 'connected', kb_initialized: false },
+    ] })
+    const view = mountView()
+    await flushPromises()
+    const editBtns = view.findAll('button.edit')
+    expect(editBtns.length).toBe(2)
+    expect(editBtns[0].attributes('disabled')).toBeDefined() // KB locked
+    expect(editBtns[1].attributes('disabled')).toBeDefined() // demo locked
+  })
+
+  it('edits a datasource connection through the dialog', async () => {
+    ;(apiGet as any)
+      .mockResolvedValueOnce({ datasources: [{ name: 'financial', type: 'mysql', status: 'connected', kb_initialized: false }] })
+      .mockResolvedValueOnce({ datasource: { name: 'financial', type: 'mysql', url: 'mysql://user@localhost:3306/financial', status: 'connected', kb_initialized: false } })
+    ;(apiPut as any).mockResolvedValue({ datasource: {} })
     const view = mountView()
     await flushPromises()
 
-    // cancelled — billed LLM call must not fire
-    ;(ElMessageBox.confirm as any).mockRejectedValue(new Error('cancel'))
-    await view.find('button.init').trigger('click')
+    await view.find('button.edit').trigger('click')
     await flushPromises()
-    expect(apiPost).not.toHaveBeenCalled()
 
-    // confirmed — POST fires
-    ;(ElMessageBox.confirm as any).mockResolvedValue('confirm')
-    await view.find('button.init').trigger('click')
+    const dialog = dialogs()[0]
+    const urlInput = dialog.querySelector<HTMLInputElement>('.ds-url-input input')!
+    expect(urlInput.value).toContain('mysql://user@localhost:3306/financial')
+    await setInput(urlInput, 'mysql://user@localhost:3306/other')
+
+    const save = Array.from(
+      dialog.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((b) => b.textContent!.includes('Save'))!
+    save.click()
     await flushPromises()
-    expect(apiPost).toHaveBeenCalledWith('/v1/admin/datasources/financial/kb/init', {})
+    expect(apiPut).toHaveBeenCalledWith('/v1/admin/datasources/financial', { url: 'mysql://user@localhost:3306/other' })
   })
 })

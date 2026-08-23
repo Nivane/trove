@@ -5,16 +5,6 @@
         <h2>{{ t('modelConfig', ui.lang) }}</h2>
         <p class="view-desc">{{ t('modelConfigPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-right">
-        <el-button class="refresh-btn" :loading="loading" @click="load">
-          <RefreshCw :size="15" class="btn-icon" />
-          {{ t('refresh', ui.lang) }}
-        </el-button>
-        <el-button type="primary" :loading="saving" :disabled="!dirty" @click="save">
-          <Check :size="15" class="btn-icon" />
-          {{ t('saveLabel', ui.lang) }}
-        </el-button>
-      </div>
     </div>
 
     <div class="settings-stack">
@@ -23,6 +13,16 @@
       <div class="admin-card settings-card">
         <div class="card-header">
           <div class="card-title">{{ t('modelConfig', ui.lang) }}</div>
+          <div class="card-actions">
+            <el-button class="refresh-btn" :loading="loading" @click="load">
+              <RefreshCw :size="15" class="btn-icon" />
+              {{ t('refresh', ui.lang) }}
+            </el-button>
+            <el-button type="primary" :loading="saving" :disabled="!dirty" @click="save">
+              <Check :size="15" class="btn-icon" />
+              {{ t('saveLabel', ui.lang) }}
+            </el-button>
+          </div>
         </div>
         <div class="settings-card__body">
           <div class="model-note">
@@ -52,9 +52,12 @@
           <div class="providers-block">
             <div class="providers-head">
               <span class="providers-title">{{ t('providers', ui.lang) }}</span>
-              <button class="mini-btn" @click="addProvider">
+              <button
+                class="mini-btn icon"
+                :title="t('addProvider', ui.lang)"
+                @click="addProvider"
+              >
                 <Plus :size="13" class="btn-icon" />
-                {{ t('addProvider', ui.lang) }}
               </button>
             </div>
             <div v-for="(p, i) in form.providers" :key="i" class="provider-row">

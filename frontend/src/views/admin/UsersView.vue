@@ -5,13 +5,6 @@
         <h2>{{ t('users', ui.lang) }}</h2>
         <p class="view-desc">{{ t('usersPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-right">
-        <span class="view-count">{{ users.length }} · {{ t('users', ui.lang) }}</span>
-        <el-button type="primary" @click="openCreate">
-          <UserPlus :size="15" class="btn-icon" />
-          {{ t('createUser', ui.lang) }}
-        </el-button>
-      </div>
     </header>
 
     <div class="stat-grid">
@@ -58,6 +51,10 @@
         <span class="view-count">
           {{ filtered.length }} · {{ users.length }}
         </span>
+        <el-button type="primary" @click="openCreate">
+          <UserPlus :size="15" class="btn-icon" />
+          {{ t('createUser', ui.lang) }}
+        </el-button>
       </div>
 
       <div v-if="loading && !filtered.length" class="table-skeleton">
@@ -153,21 +150,31 @@
         </el-table-column>
         <el-table-column
           :label="t('actions', ui.lang)"
-          width="240"
+          width="120"
           fixed="right"
         >
           <template #default="{ row }">
             <div class="row-actions">
-              <button class="mini-btn" @click="openEdit(row)">
-                {{ t('edit', ui.lang) }}
+              <button
+                class="mini-btn icon"
+                :title="t('edit', ui.lang)"
+                @click="openEdit(row)"
+              >
+                <Pencil :size="13" />
               </button>
-              <button class="mini-btn" @click="openTokens(row)">
+              <button
+                class="mini-btn icon"
+                :title="t('apiTokens', ui.lang)"
+                @click="openTokens(row)"
+              >
                 <KeyRound :size="13" />
-                {{ t('apiTokens', ui.lang) }}
               </button>
-              <button class="mini-btn is-danger" @click="del(row)">
+              <button
+                class="mini-btn icon is-danger"
+                :title="t('deleteUser', ui.lang)"
+                @click="del(row)"
+              >
                 <Trash2 :size="13" />
-                {{ t('deleteUser', ui.lang) }}
               </button>
             </div>
           </template>
@@ -249,10 +256,13 @@
         </div>
         <div class="token-reveal-row">
           <code class="token-reveal-code">{{ tokenRaw }}</code>
-          <button class="mini-btn primary" @click="copyTokenRaw()">
+          <button
+            class="mini-btn icon primary"
+            :title="t('copy', ui.lang)"
+            @click="copyTokenRaw()"
+          >
             <Check v-if="tokenCopied" :size="13" />
             <Copy v-else :size="13" />
-            {{ t('copy', ui.lang) }}
           </button>
         </div>
       </div>
@@ -294,11 +304,11 @@
           </div>
           <button
             v-if="!tk.revoked"
-            class="mini-btn is-danger"
+            class="mini-btn icon is-danger"
+            :title="t('revoke', ui.lang)"
             @click="revokeToken(tk)"
           >
             <X :size="13" />
-            {{ t('revoke', ui.lang) }}
           </button>
         </div>
       </div>

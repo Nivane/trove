@@ -112,7 +112,7 @@ describe('ModelConfigView', () => {
     await defaultInput!.setValue('deepseek/deepseek-v3')
     await flushPromises()
 
-    await view.find('.view-header-right .el-button--primary').trigger('click')
+    await view.find('.card-actions .el-button--primary').trigger('click')
     await flushPromises()
 
     expect(apiPut).toHaveBeenCalledTimes(1)

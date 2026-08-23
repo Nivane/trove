@@ -81,10 +81,6 @@
                     ui.lang === 'zh' ? '中文' : 'English'
                   }}</span>
                 </el-dropdown-item>
-                <el-dropdown-item command="theme">
-                  <component :is="ui.theme === 'dark' ? Sun : Moon" :size="15" />
-                  {{ themeLabel }}
-                </el-dropdown-item>
                 <el-dropdown-item divided command="chat">
                   <MessageSquare :size="15" />
                   {{ t('goToChat', ui.lang) }}
@@ -148,10 +144,6 @@
                     ui.lang === 'zh' ? '中文' : 'English'
                   }}</span>
                 </el-dropdown-item>
-                <el-dropdown-item command="theme">
-                  <component :is="ui.theme === 'dark' ? Sun : Moon" :size="15" />
-                  {{ themeLabel }}
-                </el-dropdown-item>
                 <el-dropdown-item divided command="chat">
                   <MessageSquare :size="15" />
                   {{ t('goToChat', ui.lang) }}
@@ -188,8 +180,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
-  Sun,
-  Moon,
   MessageSquare,
   LogOut,
 } from 'lucide-vue-next'
@@ -236,16 +226,10 @@ const avatarChar = computed(() => {
   return (name.trim()[0] || '?').toUpperCase()
 })
 
-const themeLabel = computed(() =>
-  ui.theme === 'dark' ? t('themeLight', ui.lang) : t('themeDark', ui.lang),
-)
-
 async function onProfileCmd(cmd: string) {
   if (cmd === 'lang') {
     ui.setLang(ui.lang === 'zh' ? 'en' : 'zh')
     window.location.reload()
-  } else if (cmd === 'theme') {
-    ui.cycleTheme()
   } else if (cmd === 'chat') {
     await router.push('/')
   } else if (cmd === 'logout') {

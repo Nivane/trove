@@ -1896,6 +1896,16 @@ button:disabled {
   background: var(--accent-hover);
   color: var(--on-accent);
 }
+.mini-btn.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 0;
+  gap: 0;
+}
 
 /* ── Skeleton ───────────────────────────────────────── */
 .session-skel {
@@ -2004,9 +2014,6 @@ button:disabled {
 .sql-block .hljs {
   background: transparent;
   padding: 0;
-}
-[data-theme='dark'] .sql-block .hljs {
-  color: var(--text-primary);
 }
 
 /* ── Data table ─────────────────────────────────────── */

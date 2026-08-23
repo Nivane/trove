@@ -151,10 +151,4 @@ watch(
 )
 
 watch(selected, () => render())
-
-// theme toggle (light ↔ dark) → re-read tokens and repaint
-watch(
-  () => ui.theme,
-  () => render(),
-)
 </script>

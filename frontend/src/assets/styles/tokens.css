@@ -4,7 +4,7 @@
      primitives  → raw palette / spacing / type steps
      semantic    → intent-based surfaces, text, accent, status
      aliases     → legacy names kept for migration compatibility
-   Override via [data-theme='dark'] on <html>.
+   Light theme only.
    ───────────────────────────────────────────────────────────── */
 
 :root {
@@ -168,90 +168,4 @@
   --ok: var(--ok-text);
   --warn: var(--warn-text);
   --danger: var(--danger-text);
-}
-
-/* ───────────────────────── Dark ───────────────────────── */
-[data-theme='dark'] {
-  color-scheme: dark;
-
-  --gray-0: #161618;
-  --gray-50: #0f0f11;
-  --gray-100: #1a1a1e;
-  --gray-200: #26262b;
-  --gray-300: #3f3f46;
-  --gray-400: #52525b;
-  --gray-500: #a1a1aa;
-  --gray-600: #d4d4d8;
-  --gray-700: #e4e4e7;
-  --gray-800: #f4f4f5;
-  --gray-900: #fafafa;
-
-  --indigo-50: #1e1b4b;
-  --indigo-100: #312e81;
-  --indigo-400: #818cf8;
-  --indigo-500: #818cf8;
-  --indigo-600: #6366f1;
-  --indigo-700: #4f46e5;
-
-  --green-500: #4ade80;
-  --green-600: #4ade80;
-  --green-100: rgba(74, 222, 128, 0.14);
-  --amber-500: #fbbf24;
-  --amber-100: rgba(251, 191, 36, 0.14);
-  --red-500: #f87171;
-  --red-100: rgba(248, 113, 113, 0.14);
-
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md:
-    0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
-  --shadow-lg:
-    0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
-  --shadow-xl:
-    0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
-
-  --surface-canvas: var(--gray-50);
-  --surface-raised: var(--gray-0);
-  --surface-muted: var(--gray-100);
-  --surface-hover: var(--gray-100);
-  --surface-accent: rgba(129, 140, 248, 0.14);
-
-  --border-subtle: var(--gray-200);
-  --border-default: var(--gray-300);
-  --border-strong: var(--gray-400);
-
-  --text-primary: var(--gray-900);
-  --text-secondary: var(--gray-500);
-  --text-tertiary: var(--gray-400);
-  --text-on-accent: var(--gray-900);
-
-  --ok: var(--ok-text);
-  --ok-bg: var(--green-100);
-  --ok-text: var(--green-500);
-  --warn: var(--warn-text);
-  --warn-bg: var(--amber-100);
-  --warn-text: var(--amber-500);
-  --danger: var(--danger-text);
-  --danger-bg: var(--red-100);
-  --danger-text: var(--red-500);
-
-  --accent: var(--indigo-500);
-  --accent-hover: var(--indigo-600);
-  --accent-active: var(--indigo-700);
-  --accent-soft: var(--surface-accent);
-  --accent-soft-hover: var(--indigo-100);
-  --ring: rgba(129, 140, 248, 0.4);
-  --on-accent: var(--gray-900);
-
-  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --elev-2: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --elev-3:
-    0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
-
-  /* ── Semantic: chat chrome (ChatGPT-class look) ── */
-  --chat-bg: var(--gray-0);
-  --sidebar-bg: var(--gray-0);
-  --bubble-user: #2a2a30;
-  --bubble-user-text: var(--gray-800);
-  --composer-bg: #303036;
 }

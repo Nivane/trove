@@ -5,28 +5,6 @@
         <h2>{{ t('kb', ui.lang) }}</h2>
         <p class="view-desc">{{ t('kbPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-right">
-        <el-select
-          v-model="ds"
-          class="ds-select"
-          :placeholder="t('kbSelectDs', ui.lang)"
-          @change="loadDetail"
-        >
-          <el-option
-            v-for="d in connected"
-            :key="d.name"
-            :value="d.name"
-            :label="d.name"
-          >
-            <span>{{ d.name }}</span>
-            <span v-if="d.default" class="cell-muted"> · default</span>
-          </el-option>
-        </el-select>
-        <el-button class="refresh-btn" :loading="loading" @click="loadAll">
-          <RefreshCw :size="15" class="btn-icon" />
-          {{ t('refresh', ui.lang) }}
-        </el-button>
-      </div>
     </header>
 
     <div class="stat-grid">
@@ -64,6 +42,31 @@
     </div>
 
     <div class="admin-card kb-summary">
+      <div class="card-header">
+        <div class="card-title">{{ t('kb', ui.lang) }}</div>
+        <div class="card-actions">
+          <el-select
+            v-model="ds"
+            class="ds-select"
+            :placeholder="t('kbSelectDs', ui.lang)"
+            @change="loadDetail"
+          >
+            <el-option
+              v-for="d in connected"
+              :key="d.name"
+              :value="d.name"
+              :label="d.name"
+            >
+              <span>{{ d.name }}</span>
+              <span v-if="d.default" class="cell-muted"> · default</span>
+            </el-option>
+          </el-select>
+          <el-button class="refresh-btn" :loading="loading" @click="loadAll">
+            <RefreshCw :size="15" class="btn-icon" />
+            {{ t('refresh', ui.lang) }}
+          </el-button>
+        </div>
+      </div>
       <div class="kb-stat-row">
         <span class="pill" :class="initialized ? 'pill-ok' : 'pill-warn'">
           <span class="pill-dot" :class="initialized ? 'pill-dot-ok' : ''" />
@@ -355,26 +358,26 @@
               </el-table-column>
               <el-table-column
                 :label="t('actions', ui.lang)"
-                width="180"
+                width="90"
                 fixed="right"
               >
                 <template #default="{ row }">
                   <div class="row-actions">
                     <button
-                      class="mini-btn primary"
+                      class="mini-btn icon primary"
+                      :title="t('confirmLesson', ui.lang)"
                       :disabled="acting"
                       @click="confirmLesson(row)"
                     >
                       <Check :size="13" />
-                      {{ t('confirmLesson', ui.lang) }}
                     </button>
                     <button
-                      class="mini-btn is-danger"
+                      class="mini-btn icon is-danger"
+                      :title="t('rejectLesson', ui.lang)"
                       :disabled="acting"
                       @click="rejectLesson(row)"
                     >
                       <X :size="13" />
-                      {{ t('rejectLesson', ui.lang) }}
                     </button>
                   </div>
                 </template>

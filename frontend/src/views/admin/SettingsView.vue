@@ -5,16 +5,6 @@
         <h2>{{ t('settingsNav', ui.lang) }}</h2>
         <p class="view-desc">{{ t('settingsPageDesc', ui.lang) }}</p>
       </div>
-      <div class="view-header-right">
-        <el-button class="refresh-btn" :loading="loading" @click="load">
-          <RefreshCw :size="15" class="btn-icon" />
-          {{ t('refresh', ui.lang) }}
-        </el-button>
-        <el-button type="primary" :loading="saving" :disabled="!dirty" @click="save">
-          <Check :size="15" class="btn-icon" />
-          {{ t('saveLabel', ui.lang) }}
-        </el-button>
-      </div>
     </div>
 
     <div class="settings-stack">
@@ -142,6 +132,17 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="settings-footer">
+      <el-button class="refresh-btn" :loading="loading" @click="load">
+        <RefreshCw :size="15" class="btn-icon" />
+        {{ t('refresh', ui.lang) }}
+      </el-button>
+      <el-button type="primary" :loading="saving" :disabled="!dirty" @click="save">
+        <Check :size="15" class="btn-icon" />
+        {{ t('saveLabel', ui.lang) }}
+      </el-button>
     </div>
   </div>
 </template>
@@ -273,6 +274,15 @@ onMounted(load)
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
+}
+.settings-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--sp-1);
 }
 .settings-error {
   margin-bottom: 0;

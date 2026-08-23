@@ -149,10 +149,6 @@
                 ui.lang === 'zh' ? '中文' : 'English'
               }}</span>
             </el-dropdown-item>
-            <el-dropdown-item command="theme">
-              <component :is="ui.theme === 'dark' ? Sun : Moon" :size="15" />
-              {{ themeLabel }}
-            </el-dropdown-item>
             <el-dropdown-item v-if="auth.isAdmin" command="admin">
               <Settings :size="15" />
               {{ t('admin', ui.lang) }}
@@ -219,8 +215,6 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
-  Sun,
-  Moon,
   Settings,
   LogOut,
   Search,
@@ -354,16 +348,10 @@ const avatarChar = computed(() => {
   return (name.trim()[0] || '?').toUpperCase()
 })
 
-const themeLabel = computed(() =>
-  ui.theme === 'dark' ? t('themeLight', ui.lang) : t('themeDark', ui.lang),
-)
-
 async function onProfileCmd(cmd: string) {
   if (cmd === 'lang') {
     ui.setLang(ui.lang === 'zh' ? 'en' : 'zh')
     window.location.reload()
-  } else if (cmd === 'theme') {
-    ui.cycleTheme()
   } else if (cmd === 'admin') {
     await router.push('/admin')
   } else if (cmd === 'logout') {

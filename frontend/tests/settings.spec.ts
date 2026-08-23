@@ -96,7 +96,7 @@ describe('SettingsView', () => {
     await cacheSwitch.vm.$emit('change', true)
     await flushPromises()
 
-    await view.find('.view-header-right .el-button--primary').trigger('click')
+    await view.find('.settings-footer .el-button--primary').trigger('click')
     await flushPromises()
 
     expect(apiPut).toHaveBeenCalledTimes(1)
@@ -120,7 +120,7 @@ describe('SettingsView', () => {
     await flushPromises()
     ;(apiPut as any).mockResolvedValue({ values: { ...baseValues, 'app.semantic_layer_path': '.trove/semantic' } })
 
-    await view.find('.view-header-right .el-button--primary').trigger('click')
+    await view.find('.settings-footer .el-button--primary').trigger('click')
     await flushPromises()
     expect(apiPut).toHaveBeenCalledTimes(1)
     const payload = (apiPut as any).mock.calls[0][1] as { values: Record<string, unknown> }

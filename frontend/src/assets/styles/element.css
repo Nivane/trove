@@ -1,6 +1,6 @@
 /* Element Plus theme mapping — unify Element's variable namespace with the
-   Trove design tokens so admin/forms/dialogs share the product's look and
-   dark mode. Kept as overrides on :root (light) and [data-theme='dark']. */
+   Trove design tokens so admin/forms/dialogs share the product's look.
+   Light theme only. */
 
 :root {
   --el-color-primary: var(--accent);
@@ -100,29 +100,4 @@
 }
 .el-message {
   border-radius: var(--r-md);
-}
-
-[data-theme='dark'] {
-  --el-color-primary: var(--accent);
-  --el-color-primary-light-3: var(--accent-hover);
-  --el-color-primary-light-5: var(--accent-soft-hover);
-  --el-color-primary-light-8: var(--accent-soft);
-  --el-color-primary-dark-2: var(--accent-active);
-
-  --el-bg-color: var(--surface-raised);
-  --el-bg-color-overlay: var(--surface-raised);
-  --el-bg-color-page: var(--surface-canvas);
-  --el-fill-color-blank: var(--surface-raised);
-  --el-fill-color-light: var(--surface-muted);
-  --el-fill-color: var(--surface-muted);
-  --el-border-color: var(--border-default);
-  --el-border-color-light: var(--border-subtle);
-  --el-border-color-lighter: var(--border-subtle);
-
-  --el-text-color-primary: var(--text-primary);
-  --el-text-color-regular: var(--text-secondary);
-  --el-text-color-secondary: var(--text-tertiary);
-  --el-text-color-placeholder: var(--text-tertiary);
-
-  --el-mask-color: rgba(0, 0, 0, 0.6);
 }
