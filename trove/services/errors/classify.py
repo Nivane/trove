@@ -128,6 +128,16 @@ CLASSES: dict[str, ErrorClass] = {
             recovery=RecoveryAction.SURFACE, needs_analysis=False,
             user_msg="Operation not permitted under the current permission level.",
         ),
+        ErrorClass(
+            # guard 拦截的自产「写操作/越界」SQL:只读代理拒写是生成方自己的
+            # 错误(重写为只读 SELECT 即可),不是数据库权限死胡同。
+            "SQL_WRITEOP", "sql", "error", retryable=True,
+            recovery=RecoveryAction.FIX, needs_analysis=False,
+            user_msg=(
+                "Generated SQL attempts a write/disallowed operation; "
+                "rewrite it as a read-only SELECT."
+            ),
+        ),
         # ── SQL 结果 ──────────────────────────────────────
         ErrorClass(
             "SQL_TIMEOUT", "sql", "error", retryable=True,
@@ -229,8 +239,17 @@ _RULES: list[tuple[str, str, frozenset[str] | None]] = [
     (r"access denied|authentication failed|password.*(?:incorrect|failed)|invalid (?:username|user|password|login)|permission denied to|command denied|denied by row level|row.?level security|\brls\b",
      "DS_AUTH", None),
 
-    # ── SQL 权限 / guard ──────────────────────────────────
-    (r"not permitted|not allowed|write operations|read.?only|forbidden|disallow(?:ed)?|unsafe",
+    # ── SQL 自产「写操作/越界」guard 拦截(可修复,非死胡同) ──
+    # 这些措辞只由我们自己的只读守卫(check_readonly / SQLValidator /
+    # 注册表执行门)产生——是生成 SQL 自身越界,重写即修,交回修正循环。
+    (r"trove is read-only|write operation|only select queries are allowed|"
+     r"writes a file|metadata/system table|not in the allowed tables|"
+     r"select into (?:outfile|dumpfile)",
+     "SQL_WRITEOP", _SQL_CTX),
+
+    # ── SQL 权限 / guard(DB 层真实权限拒绝 → 死胡同) ──────
+    (r"permission denied|not permitted|not allowed|read.?only|forbidden|"
+     r"disallow(?:ed)?|unsafe|not authorized|command denied",
      "SQL_PERMISSION", _SQL_CTX),
 
     # ── SQL 缺 schema(表/列/库;does not exist 限 schema 实体词,避免

@@ -34,8 +34,14 @@ class TestClassifyLexicon:
             ("sqlglot error: Error parsing input", "sql", "SQL_SYNTAX"),
             ("probe timed out after 5s", "sql", "SQL_TIMEOUT"),
             ("query timed out after 30000ms", "sql", "SQL_TIMEOUT"),
-            ("write operations are not permitted under NORMAL", "sql", "SQL_PERMISSION"),
+            ("write operations are not permitted under NORMAL", "sql", "SQL_WRITEOP"),
             ("operation is not allowed by read-only guard", "sql", "SQL_PERMISSION"),
+            ("permission denied for relation loans", "sql", "SQL_PERMISSION"),
+            ("Trove is read-only: write operation INSERT is not allowed", "sql", "SQL_WRITEOP"),
+            ("only SELECT queries are allowed (rejected: Block)", "sql", "SQL_WRITEOP"),
+            ("table sqlite_master is a metadata/system table", "sql", "SQL_WRITEOP"),
+            ("table students is not in the allowed tables", "sql", "SQL_WRITEOP"),
+            ("SELECT INTO OUTFILE is not allowed (writes a file)", "sql", "SQL_WRITEOP"),
             ("type mismatch: cannot cast TEXT to INTEGER", "sql", "SQL_EXEC_TYPE"),
             ("No function matches the given name", "sql", "SQL_EXEC_TYPE"),
             ("operator does not exist: integer = text", "sql", "SQL_EXEC_TYPE"),
@@ -104,11 +110,16 @@ class TestRetryability:
 
     def test_permanent_errors_not_retryable(self):
         for text, ctx in [
-            ("write operations are not permitted", "sql"),
             ("Access denied for user", "sql"),
             ("401 unauthorized", "llm"),
+            ("permission denied for relation loans", "sql"),
         ]:
             assert classify_error(text, context=ctx).retryable is False
+
+    def test_guard_writeop_is_retryable(self):
+        """guard 拦截的自产写操作可修复重试(重写为只读 SELECT),不是死胡同。"""
+        assert classify_error("write operations are not permitted", context="sql").cls.id == "SQL_WRITEOP"
+        assert classify_error("write operations are not permitted", context="sql").retryable is True
 
     def test_unknown_defaults_to_retryable_and_analyze(self):
         """词典覆盖不到的失败默认可重试 + 交 LLM 分析,绝不静默吞掉。"""

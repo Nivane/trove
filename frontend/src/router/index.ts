@@ -36,6 +36,11 @@ export const router = createRouter({
           component: () => import('../views/admin/KbView.vue'),
         },
         {
+          path: 'semantic',
+          name: 'admin-semantic',
+          component: () => import('../views/admin/SemanticView.vue'),
+        },
+        {
           path: 'audit',
           name: 'admin-audit',
           component: () => import('../views/admin/AuditView.vue'),

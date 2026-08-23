@@ -78,6 +78,20 @@ _DETERMINISTIC_MSGS: dict[str, tuple[str, str]] = {
     ),
 }
 
+# 确定性修复(非死胡同):打回重生成有意义,且修正指令完全确定——
+# 不烧 LLM 诊断,直接把修正指令注入生成方(fix_mode=fixer)。
+_DETERMINISTIC_FIX: dict[str, tuple[str, str]] = {
+    "SQL_WRITEOP": (
+        "生成的 SQL 含写操作或越界构造,只读代理不允许。请重写为纯只读 "
+        "SELECT(禁止 CREATE/INSERT/UPDATE/DELETE/DROP/DDL/INTO OUTFILE、"
+        "元数据表与未授权表)。",
+        "The generated SQL attempts a write/disallowed operation that the "
+        "read-only agent refuses. Rewrite it as a pure read-only SELECT: "
+        "no CREATE/INSERT/UPDATE/DELETE/DROP/DDL, no SELECT INTO OUTFILE, "
+        "no metadata or unauthorized tables.",
+    ),
+}
+
 
 def _deterministic_message(error_class: ErrorClass, lang: str) -> str:
     """确定性死胡同类 → 用户可见的降级文案(中/英)。"""
@@ -333,33 +347,42 @@ def make_analyze_error(
                 evidence=state.evidence,
                 trail=trail,
             )
-            analysis = await llm.chat(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                # 推理模型 reasoning 占用预算,小预算会导致诊断文本被截断/为空;
-                # 统一放宽输出上限(见 gateway 默认值)
-                max_tokens=16000,
-                metadata={
-                    "node": "analyze_error",
-                    "session_id": state.session_id,
-                    "run_id": state.run_id,
-                    "question": state.question[:80],
-                },
-            )
-            analysis = analysis.strip()
-            if analysis.upper().startswith("NO_SQL"):
-                # The question itself is not a SQL question — route to the
-                # metadata answer path. Clear error_feedback so the stale
-                # correction note is not injected into the answer prompt
-                # (and metadata_check actually runs).
-                return {"no_sql": True, "error_feedback": "", "error_analysis": analysis}
-            if not analysis:
-                # LLM 调用成功但输出为空:确定性兜底诊断替代静默放行,
-                # 生成方下一轮仍能得到可执行的修正方向(而非空诊断)。
-                analysis = _fallback_analysis(error_text, state.lang)
+            det_fix = _DETERMINISTIC_FIX.get(verdict.cls.id)
+            if det_fix is not None:
+                # 确定性修复(非死胡同):修正指令完全确定,不烧 LLM 诊断。
+                logger.info(
+                    "analyze_error deterministic fix (%s), skipping LLM",
+                    verdict.cls.id,
+                )
+                analysis = det_fix[0] if state.lang == "zh" else det_fix[1]
+            else:
+                analysis = await llm.chat(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    # 推理模型 reasoning 占用预算,小预算会导致诊断文本被截断/为空;
+                    # 统一放宽输出上限(见 gateway 默认值)
+                    max_tokens=16000,
+                    metadata={
+                        "node": "analyze_error",
+                        "session_id": state.session_id,
+                        "run_id": state.run_id,
+                        "question": state.question[:80],
+                    },
+                )
+                analysis = analysis.strip()
+                if analysis.upper().startswith("NO_SQL"):
+                    # The question itself is not a SQL question — route to the
+                    # metadata answer path. Clear error_feedback so the stale
+                    # correction note is not injected into the answer prompt
+                    # (and metadata_check actually runs).
+                    return {"no_sql": True, "error_feedback": "", "error_analysis": analysis}
+                if not analysis:
+                    # LLM 调用成功但输出为空:确定性兜底诊断替代静默放行,
+                    # 生成方下一轮仍能得到可执行的修正方向(而非空诊断)。
+                    analysis = _fallback_analysis(error_text, state.lang)
 
             match = ROLLBACK_TARGET_RE.search(analysis)
             parsed = match.group(1).lower() if match else ""

@@ -840,10 +840,18 @@ class KbService:
         return grouped
 
     async def kb_status(self, datasource: str) -> dict:
-        """Init/state summary of one datasource's KB (admin API)."""
+        """Init/state summary of one datasource's KB (admin API).
+
+        ``initialized`` 与列表页一致:三个关键文件**全部**存在才算完成
+        (半成品允许续跑补齐,不让 UI 卡在"已初始化"却缺文件)。
+        """
         files = self.init_exists(datasource)
         items = (await self.list_items()).get(datasource, {})
-        return {"initialized": bool(files), "files": files, "items": items}
+        return {
+            "initialized": len(files) == 3,
+            "files": files,
+            "items": items,
+        }
 
     async def list_term_entries(self, datasource: str) -> list[dict]:
         """Full term payloads of one datasource (management UI)."""
@@ -979,6 +987,15 @@ class KbService:
             name for name in ("schema_notes.yml", "semantics.yml", "examples.yml")
             if (ds_dir / name).exists()
         ]
+
+    def kb_initialized(self, datasource: str) -> bool:
+        """语义层/查询是否真正就绪:三个关键文件**全部**存在。
+
+        只用"任一存在"(init_exists)会把半成品 init(如中断后只有
+        schema_notes.yml)误判为已初始化——UI 切到重新同步却生成不了
+        缺失文件。全部齐全才算完成;半成品允许重跑续补。
+        """
+        return len(self.init_exists(datasource)) == 3
 
     def _init_file(
         self, filename: str, section: str, items: list[dict], datasource: str,

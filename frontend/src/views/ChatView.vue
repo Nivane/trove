@@ -338,7 +338,10 @@ function scrollToBottom() {
 watch(() => chat.turns.map((t) => t.answer.length).join(','), scrollToBottom)
 
 onMounted(async () => {
+  // 进入对话页 = 一次新的待输入对话:不自动选中/还原上一次会话
+  // (此前 localStorage 里的 sessionId 会让侧栏高亮最近会话,但 turns 未
+  // 加载 → 右侧空白、选中态与实际内容不一致)
+  chat.clearSession()
   await chat.listSessions()
-  if (chat.sessionId) await chat.loadTasks(chat.sessionId)
 })
 </script>

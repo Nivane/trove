@@ -114,6 +114,24 @@ class TestSettingsApi:
         assert stored_params["api_key"] == "sk-super-secret"
         assert stored_params["api_base"] == "https://new.base"
 
+    async def test_put_semantic_layer_path(self, client, api_app, tmp_path):
+        """语义层目录经 settings API 落库 + 应用到运行时 config。"""
+        store = await _with_store(api_app, tmp_path)
+        r = await client.put("/v1/admin/settings", json={"values": {
+            "app.semantic_layer_path": ".trove/semantic",
+        }})
+        assert r.status_code == 200
+        assert r.json()["values"]["app.semantic_layer_path"] == ".trove/semantic"
+        assert api_app.state.config.semantic_layer_path == ".trove/semantic"
+        stored = await store.get_all()
+        assert stored["app.semantic_layer_path"] == ".trove/semantic"
+        # 空串 = 关闭,允许
+        r2 = await client.put("/v1/admin/settings", json={"values": {
+            "app.semantic_layer_path": "",
+        }})
+        assert r2.status_code == 200
+        assert api_app.state.config.semantic_layer_path == ""
+
     async def test_non_admin_forbidden(self, user_client):
         assert (await user_client.get("/v1/admin/settings")).status_code == 403
         assert (await user_client.put("/v1/admin/settings",

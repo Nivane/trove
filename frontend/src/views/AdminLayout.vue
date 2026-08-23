@@ -174,6 +174,7 @@ import {
   Users,
   Database,
   Library,
+  Layers3,
   ScrollText,
   SlidersHorizontal,
   Cpu,
@@ -199,6 +200,7 @@ const manageItems: {
   { path: '/admin/users', label: 'users', icon: Users },
   { path: '/admin/datasources', label: 'datasources', icon: Database },
   { path: '/admin/kb', label: 'kb', icon: Library },
+  { path: '/admin/semantic', label: 'semanticLayer', icon: Layers3 },
 ]
 
 const systemItems: {

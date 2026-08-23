@@ -141,6 +141,7 @@ async def test_kb_detail_endpoint(client, api_app):
         encoding="utf-8",
     )
     (seed / "rules.yml").write_text("rules:\n- rule: 金额单位统一为千元\n", encoding="utf-8")
+    (seed / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
     await api_app.state.kb.ensure_synced("test_db")
 
     resp = await client.get("/v1/admin/datasources/test_db/kb")

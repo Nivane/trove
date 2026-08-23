@@ -540,7 +540,7 @@ class TestProgressTracking:
 
 class TestDeterministicShortCircuit:
     async def test_permission_error_skips_llm_and_surfaces(self):
-        """SQL 权限错:打回重生成无意义 → 确定性 surface,不调 LLM。"""
+        """DB 层真实权限拒绝:打回重生成无意义 → 确定性 surface,不调 LLM。"""
         calls = {"n": 0}
 
         class NoLLM:
@@ -551,11 +551,34 @@ class TestDeterministicShortCircuit:
         node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
         update = await node(make_state(
             sql="DELETE FROM loans",
-            error_feedback="write operations are not permitted",
+            error_feedback="permission denied for relation loans",
         ))
         assert calls["n"] == 0
         assert update["error"].startswith("[ERR:SQL_PERMISSION]")
         assert update["error_feedback"] == ""
+
+    async def test_writeop_error_skips_llm_and_returns_deterministic_fix(self):
+        """自产写操作(guard 拦截)不是死胡同:不调 LLM,直接给生成方
+        确定性「重写为只读 SELECT」修正指令,打回 gen_sql 修复。"""
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run for deterministic fix")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            lang="en",
+            sql="CREATE TEMPORARY TABLE y AS SELECT * FROM loans",
+            error_feedback="write operations are not permitted",
+        ))
+        assert calls["n"] == 0
+        assert "error" not in update                      # 非死胡同
+        assert "read-only SELECT" in update["error_analysis"]
+        assert update["rollback_target"] == "gen_sql"
+        assert update["fix_mode"] == "fixer"
+        assert update["sql_versions"][0]["error"] == "write operations are not permitted"
 
     async def test_ds_auth_error_skips_llm_and_surfaces(self):
         calls = {"n": 0}

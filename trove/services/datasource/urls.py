@@ -9,7 +9,7 @@ Supported schemes:
 
 from __future__ import annotations
 
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from trove.core.types import DatasourceConfig
 from trove.core.errors import DatasourceError
@@ -79,4 +79,44 @@ def parse_datasource_url(url: str) -> DatasourceConfig:
     raise DatasourceError(
         message=f"Unsupported datasource scheme '{scheme}' in: {url}",
         datasource="",
+    )
+
+
+def build_url(cfg: DatasourceConfig) -> str:
+    """Reverse of :func:`parse_datasource_url` — reconstruct a scheme:// URL.
+
+    Powers the admin edit dialog (prefill) from the persisted config. The
+    round-trip is lossless: user/password are URL-encoded, credentials
+    (stored separately in datasources.yml) are merged before building.
+    """
+    params = {**cfg.connection_params, **cfg.credentials}
+    if cfg.type == "demo":
+        return "demo"
+    if cfg.type in DEFAULT_PORTS:
+        host = params.get("host", "")
+        port = params.get("port") or DEFAULT_PORTS[cfg.type]
+        user = quote(params.get("user", ""), safe="")
+        password = quote(params.get("password", ""), safe="")
+        if user and password:
+            auth = f"{user}:{password}@"
+        elif user:
+            auth = f"{user}@"
+        elif password:
+            auth = f":{password}@"
+        else:
+            auth = ""
+        database = params.get("database", "")
+        return f"{cfg.type}://{auth}{host}:{port}/{database}"
+    if cfg.type in FILE_SCHEMES:
+        path = params.get("path", "")
+        if not path:
+            raise DatasourceError(
+                message=f"cannot build URL for {cfg.type} datasource: missing path",
+                datasource=cfg.name,
+            )
+        # 绝对路径 .db → sqlite:///abs.db;:memory: → sqlite://:memory:
+        return f"{cfg.type}://{path}"
+    raise DatasourceError(
+        message=f"cannot build URL for unsupported type {cfg.type!r}",
+        datasource=cfg.name,
     )

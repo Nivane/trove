@@ -113,6 +113,10 @@ class WorkflowState(BaseModel):
     compiled_sql: str = ""
     compiled: bool = False
 
+    # schema_linking 的分析面板摘要:匹配表/来源(notes/value/field/relations/
+    # context 片段)。非管线消费,仅 step 事件透传给前端右侧分析面板。
+    link_detail: dict[str, Any] = Field(default_factory=dict)
+
     # 复杂度分级(gen_sql 写入,reflect 读取):"simple"/"standard"/"complex",
     # 驱动负载削减开关(经典子图/跳多候选/跳裁决);修正轮强制 standard
     complexity: str = "standard"

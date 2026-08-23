@@ -478,17 +478,25 @@ class TestKbInitLLM:
         assert "student records" in notes
         assert "wrong" not in notes  # 噪声表不进 schema_notes
 
-    async def test_init_with_llm_refuses_when_any_exists(self, kb, sqlite_registry):
+    async def test_init_resumes_partial_and_refuses_full(self, kb, sqlite_registry):
+        """半成品(只有 schema_notes.yml)→ 续跑补齐其余文件;三个齐全 →
+        非 overwrite 拒绝(防重复计费)。"""
         ds = sqlite_registry.default_name
-        (kb.kb_dir / ds).mkdir(parents=True)
-        (kb.kb_dir / ds / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
+        ds_dir = kb.kb_dir / ds
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
 
         reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response=TABLES_DOC))
         result = await reg.get("kb").handler("init")
+        assert "Initialized" in result
+        # 续跑补齐缺失文件
+        assert (ds_dir / "semantics.yml").exists()
+        assert (ds_dir / "examples.yml").exists()
+        assert kb.kb_initialized(ds) is True
 
-        assert "refusing" in result
-        assert not (kb.kb_dir / ds / "semantics.yml").exists()
-        assert not (kb.kb_dir / ds / "examples.yml").exists()
+        # 已完整 → 非 overwrite 拒绝
+        result2 = await reg.get("kb").handler("init")
+        assert "refusing" in result2
 
     async def test_init_llm_parse_failure_after_repair(self, kb, sqlite_registry):
         reg = self._reg(kb, sqlite_registry, LLMGateway(mock_response="still not yaml"))

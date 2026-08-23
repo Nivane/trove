@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from trove.api.routers import catalog, chat, kb
+from trove.api.routers import catalog, chat, kb, semantic
 from trove.core.errors import DatasourceError, SessionError
 from trove.core.logging import get_logger
 
@@ -94,6 +94,7 @@ def create_app(components: dict) -> FastAPI:
     app.include_router(chat.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
     app.include_router(kb.router, prefix="/v1")
+    app.include_router(semantic.router, prefix="/v1")
 
     @app.exception_handler(SessionError)
     async def _session_error(request: Request, exc: SessionError) -> JSONResponse:

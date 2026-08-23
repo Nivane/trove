@@ -35,7 +35,13 @@ async def test_list_without_kb_mirror(client, api_app):
     kb = api_app.state.kb
     ds_dir = kb.kb_dir / "test_db"
     ds_dir.mkdir(parents=True, exist_ok=True)
-    (ds_dir / "schema_notes.yml").write_text("tables: []\n", encoding="utf-8")
+    # 完整初始化 = 三个关键文件齐全(schema_notes/semantics/examples)
+    for name, content in {
+        "schema_notes.yml": "tables: []\n",
+        "semantics.yml": "semantic_model: []\n",
+        "examples.yml": "examples: []\n",
+    }.items():
+        (ds_dir / name).write_text(content, encoding="utf-8")
     if kb.db_path.exists():  # api_app fixture 已 ensure_synced，先删镜像再测
         kb.db_path.unlink()
 
@@ -135,6 +141,138 @@ async def test_reconnect(client, api_app):
 
 async def test_reconnect_unknown_404(client, api_app):
     assert (await client.post("/v1/admin/datasources/ghost/reconnect")).status_code == 404
+
+
+# ── 编辑(detail 预填 / PUT 更新 / 测试连接) ─────────────────
+
+
+async def test_detail_returns_url_for_edit(client, api_app):
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+    resp = await client.get("/v1/admin/datasources/extra")
+    assert resp.status_code == 200
+    ds = resp.json()["datasource"]
+    assert ds["name"] == "extra"
+    assert ds["url"] == "sqlite://:memory:"
+    assert ds["status"] == "connected"
+    assert ds["kb_initialized"] is False
+
+    # 持久层含凭据的源：URL 重建保留凭据(admin-only)。
+    from trove.core.types import DatasourceConfig
+    api_app.state.config_store.save_configs([
+        DatasourceConfig(name="dbx", type="mysql",
+                         connection_params={
+                             "host": "h.example", "port": 3306,
+                             "user": "root", "password": "s3cret",
+                             "database": "appdb"},
+                         credentials={}, default=False, ds_id="id-dbx"),
+    ])
+    resp = await client.get("/v1/admin/datasources/dbx")
+    ds = resp.json()["datasource"]
+    assert ds["url"] == "mysql://root:s3cret@h.example:3306/appdb"
+    assert ds["status"] == "disconnected"
+
+
+async def test_detail_unknown_404(client):
+    assert (await client.get("/v1/admin/datasources/ghost")).status_code == 404
+
+
+async def test_update_datasource(client, api_app, tmp_path):
+    resp = await client.post("/v1/admin/datasources",
+                             json={"name": "extra", "url": "sqlite://:memory:"})
+    assert resp.status_code == 201
+    ds_id = resp.json()["datasource"]["id"]
+
+    file_db = tmp_path / "moved.db"
+    resp = await client.put("/v1/admin/datasources/extra",
+                            json={"url": f"sqlite://{file_db}"})
+    assert resp.status_code == 200
+    assert resp.json()["datasource"]["id"] == ds_id  # 身份不变
+    assert api_app.state.connector_registry.is_registered("extra")
+    persisted = next(c for c in api_app.state.config_store.load_configs()
+                     if c.name == "extra")
+    assert persisted.connection_params["path"] == str(file_db)
+
+
+async def test_update_bad_url_400(client):
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+    resp = await client.put("/v1/admin/datasources/extra", json={"url": "bogus://nope"})
+    assert resp.status_code == 400
+    assert "Unsupported datasource scheme 'bogus'" in resp.json()["detail"]
+
+
+async def test_update_unknown_404(client):
+    assert (await client.put("/v1/admin/datasources/ghost",
+                             json={"url": "sqlite://:memory:"})).status_code == 404
+
+
+async def test_update_missing_url_400(client):
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+    assert (await client.put("/v1/admin/datasources/extra", json={})).status_code == 400
+
+
+async def test_update_blocked_when_kb_initialized(client, api_app):
+    """KB 初始化后数据源锁定：编辑被拒(409)，配置与连接不变。"""
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+    kb = api_app.state.kb
+    ds_dir = kb.kb_dir / "extra"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in {
+        "schema_notes.yml": "tables: []\n",
+        "semantics.yml": "semantic_model: []\n",
+        "examples.yml": "examples: []\n",
+    }.items():
+        (ds_dir / name).write_text(content, encoding="utf-8")
+
+    resp = await client.put("/v1/admin/datasources/extra",
+                            json={"url": "sqlite://:memory:"})
+    assert resp.status_code == 409
+    assert "knowledge base" in resp.json()["detail"]
+
+
+async def test_update_demo_400(client):
+    await client.post("/v1/admin/datasources", json={"name": "demo"})
+    resp = await client.put("/v1/admin/datasources/demo",
+                            json={"url": "sqlite://:memory:"})
+    assert resp.status_code == 400
+    assert "demo" in resp.json()["detail"].lower()
+
+
+async def test_test_connection_by_url(client):
+    ok = (await client.post("/v1/admin/datasources/test-connection",
+                            json={"url": "sqlite://:memory:"})).json()
+    assert ok["ok"] is True and ok["error"] is None
+    bad = (await client.post("/v1/admin/datasources/test-connection",
+                             json={"url": "bogus://nope"})).json()
+    assert bad["ok"] is False and "Unsupported datasource scheme 'bogus'" in bad["error"]
+    probe_fail = (await client.post("/v1/admin/datasources/test-connection",
+                                    json={"url": "sqlite:///no/such/dir_xyz/x.db"})).json()
+    assert probe_fail["ok"] is False
+
+
+async def test_test_connection_by_name(client):
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+    ok = (await client.post("/v1/admin/datasources/test-connection",
+                            json={"name": "extra"})).json()
+    assert ok["ok"] is True
+    missing = (await client.post("/v1/admin/datasources/test-connection",
+                                 json={"name": "ghost"})).json()
+    assert missing["ok"] is False
+
+
+async def test_test_connection_demo(client):
+    ok = (await client.post("/v1/admin/datasources/test-connection",
+                            json={"url": "demo"})).json()
+    assert ok["ok"] is True
+
+
+async def test_test_connection_requires_input(client):
+    assert (await client.post("/v1/admin/datasources/test-connection",
+                              json={})).status_code == 400
 
 
 # ── ds_id 身份 / 命名规则 / 冲突 409 / 事务性注册 ────────────────

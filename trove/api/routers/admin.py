@@ -7,6 +7,7 @@ per-lesson KB approval. Every mutation writes an audit entry
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -26,7 +27,7 @@ from trove.core.errors import (
 )
 from trove.core.types import DatasourceConfig
 from trove.services.datasource.naming import validate_datasource_name
-from trove.services.datasource.urls import parse_datasource_url
+from trove.services.datasource.urls import build_url, parse_datasource_url
 from trove.services.kb.locks import KbInitBusy, KbInitLock
 
 router = APIRouter()
@@ -265,7 +266,7 @@ async def list_admin_datasources(request: Request, admin: dict = Depends(require
         out.append({
             **info,
             "status": "connected",
-            "kb_initialized": bool(kb.init_exists(info["name"])),
+            "kb_initialized": kb.kb_initialized(info["name"]),
             "kb_items": (await kb.list_items()).get(info["name"], {}),
         })
     registered = {d["name"] for d in out}
@@ -411,6 +412,132 @@ async def reconnect_datasource(name: str, request: Request,
     return {"datasource": _sanitized(cfg)}
 
 
+@router.get("/admin/datasources/{name}")
+async def get_admin_datasource(name: str, request: Request,
+                               admin: dict = Depends(require_admin)) -> dict:
+    """One datasource with its connection URL — edit-dialog prefill.
+
+    Admin-only: the URL may embed credentials (the admin manages the
+    registration and could read datasources.yml directly anyway).
+    """
+    store = _store(request)
+    registry = _registry(request)
+    kb = _kb(request)
+    cfg = next((c for c in store.load_configs() if c.name == name), None)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    return {
+        "datasource": {
+            "id": cfg.ds_id,
+            "name": cfg.name,
+            "type": cfg.type,
+            "url": build_url(cfg),
+            "default": bool(cfg.default),
+            "status": "connected" if registry.is_registered(name) else "disconnected",
+            "kb_initialized": kb.kb_initialized(name),
+        }
+    }
+
+
+@router.put("/admin/datasources/{name}")
+async def update_datasource(name: str, body: dict, request: Request,
+                            admin: dict = Depends(require_admin)) -> dict:
+    """Edit a datasource's connection (URL/type). Name and ds_id are immutable.
+
+    Blocked once the datasource has an initialized knowledge base — the KB
+    is keyed on the name, so after init the connection is locked. Demo is
+    bundled and has no URL to edit.
+    """
+    registry = _registry(request)
+    store = _store(request)
+    kb = _kb(request)
+    cfg = next((c for c in store.load_configs() if c.name == name), None)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
+    if cfg.type == "demo":
+        raise HTTPException(status_code=400, detail="built-in demo datasource cannot be edited")
+    if kb.kb_initialized(name):
+        raise HTTPException(
+            status_code=409,
+            detail="datasource has an initialized knowledge base; edit is disabled",
+        )
+
+    url = (body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    try:
+        new_cfg = parse_datasource_url(url)
+        new_cfg = dataclasses.replace(
+            new_cfg, name=cfg.name, default=cfg.default, ds_id=cfg.ds_id,
+        )
+        new_cfg = registry.ensure_identity(new_cfg)
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 事务性更新:连接探测成功 → 落库 → 换 online。任一步失败回滚,不留半状态。
+    try:
+        adapter = await registry.prepare(new_cfg)
+    except DatasourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        store.save_configs(
+            [c for c in store.load_configs() if c.name != name] + [new_cfg],
+        )
+    except Exception as e:
+        await adapter.disconnect()
+        raise HTTPException(
+            status_code=400,
+            detail=f"failed to persist datasource update (rolled back): {e}",
+        ) from e
+    if registry.is_registered(name):
+        await registry.unregister(name)
+    try:
+        registry.activate(new_cfg, adapter, cfg.default)
+    except BaseException:
+        await adapter.disconnect()
+        raise
+    await _audit(request, "datasource.update", admin, 200,
+                 {"name": name, "type": new_cfg.type})
+    return {"datasource": _sanitized(new_cfg)}
+
+
+@router.post("/admin/datasources/test-connection")
+async def test_datasource_connection(body: dict, request: Request,
+                                     admin: dict = Depends(require_admin)) -> dict:
+    """Non-destructive connection probe.
+
+    Pass ``url`` to test a candidate connection (edit dialog) or ``name`` to
+    test a persisted datasource's stored config (row action). Never mutates
+    the registry or the config file. Probe *results* are data → always 200
+    with ``{ok, error}``.
+    """
+    registry = _registry(request)
+    store = _store(request)
+    url = (body.get("url") or "").strip()
+    name = (body.get("name") or "").strip()
+    if url:
+        if url == "demo":
+            return {"ok": True, "error": None}
+        try:
+            cfg = parse_datasource_url(url)
+        except DatasourceError as e:
+            return {"ok": False, "error": str(e)}
+    elif name:
+        cfg = next((c for c in store.load_configs() if c.name == name), None)
+        if cfg is None:
+            return {"ok": False, "error": f"datasource not found: {name}"}
+        if cfg.type == "demo":
+            return {"ok": True, "error": None}
+    else:
+        raise HTTPException(status_code=400, detail="name or url required")
+    try:
+        adapter = await registry.prepare(cfg)
+    except DatasourceError as e:
+        return {"ok": False, "error": str(e)}
+    await adapter.disconnect()
+    return {"ok": True, "error": None}
+
+
 # ── KB init / reload ─────────────────────────────────────
 
 
@@ -444,13 +571,15 @@ async def kb_init_datasource(name: str, request: Request, body: dict | None = No
     lock = KbInitLock(_kb(request).kb_dir / ".locks")
     try:
         with lock.acquire(ds_id):
-            summary = await init_kb(
+            # shield:客户端断开不能杀掉 init 管线(写盘原子段保证
+            # 中断只落"全无/全有");disconnect 只让响应发不出去,任务照跑。
+            summary = await asyncio.shield(init_kb(
                 _kb(request), _registry(request),
                 llm=request.app.state.llm_gateway,
                 config=request.app.state.config,
                 datasource=name,
                 overwrite=bool((body or {}).get("overwrite")),
-            )
+            ))
     except KbInitBusy as e:
         raise HTTPException(status_code=409, detail=str(e))
     except DatasourceError as e:

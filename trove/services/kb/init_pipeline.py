@@ -320,10 +320,11 @@ async def init_kb(kb, registry, llm, config, datasource, *,
             datasource=datasource,
         )
     existing = kb.init_exists(datasource)
-    if existing and not overwrite:
+    if kb.kb_initialized(datasource) and not overwrite:
         raise DatasourceError(
-            f".trove/kb/{datasource}/ already has {', '.join(existing)} — "
-            f"refusing to overwrite. Pass overwrite=true to re-initialize.",
+            f".trove/kb/{datasource}/ is fully initialized "
+            f"({', '.join(existing)}) — refusing to overwrite. "
+            f"Pass overwrite=true to re-initialize.",
             datasource=datasource,
         )
     model = (config.target if config else "") or "openai/gpt-4o"
@@ -364,7 +365,6 @@ async def init_kb(kb, registry, llm, config, datasource, *,
         examples, llm, model, all_tables, registry, datasource,
         samples=probed, stats=profiled, lang=lang,
     )
-    kb.init_notes(all_tables, datasource, overwrite=overwrite)
     semantic_doc = generate_semantic_document(schema, model_name=datasource, terms=terms)
     # P4:有 LLM 时在结构层之上起草字段 synonyms/description(白名单,只加措辞
     # 不改结构);任何失败静默回退纯结构层。
@@ -373,6 +373,10 @@ async def init_kb(kb, registry, llm, config, datasource, *,
             llm, model, semantic_doc, lang=lang)
     except Exception as e:
         logger.warning("Semantic draft skipped: %s", e)
+    # ── 写盘原子段:三个文件连续写、中间无 await。任何中断(客户端断开/
+    # 异常)只会落在"全无"(写盘前)或"全有"(写盘后),杜绝半成品——
+    # 半成品会让 UI 误判已初始化、又补不了缺失文件。
+    kb.init_notes(all_tables, datasource, overwrite=overwrite)
     kb.init_semantics(semantic_doc, datasource, overwrite=overwrite)
     kb.init_examples(examples, datasource, overwrite=overwrite)
     await kb.force_sync(datasource)

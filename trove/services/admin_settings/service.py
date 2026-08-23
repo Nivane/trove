@@ -29,6 +29,7 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     "llm.providers": ("providers", "providers", None),
     # General
     "app.language": ("language", "enum", ALLOWED_LANGUAGES),
+    "app.semantic_layer_path": ("semantic_layer_path", "path", None),
     "app.date_parser": ("date_parser", "bool", None),
     "app.explain_semantics": ("explain_semantics", "bool", None),
     "app.fast_path": ("fast_path", "bool", None),
@@ -60,6 +61,9 @@ def coerce_value(key: str, raw: Any, current_providers: list[dict[str, Any]] | N
             if not value:
                 return raw, f"{key} must not be empty"
             return value, None
+        if kind == "path":
+            # 目录路径;空串 = 关闭该功能(与 str 的区别:允许清空)
+            return str(raw).strip(), None
         if kind == "bool":
             if isinstance(raw, bool):
                 return raw, None

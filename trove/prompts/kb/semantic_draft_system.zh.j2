@@ -11,7 +11,23 @@ annotations:
 
 Rules:
 - Only add synonyms and descriptions to EXISTING columns. NEVER add, rename, delete columns, tables, expressions, keys, or relationships; NEVER change datatypes; NEVER invent metrics or aggregate SQL.
-- Synonyms are the natural-language words a user would say for this column ("region", "area" for column A3). At most 3 short lowercase phrases.
-- For opaque column names (A1..A16 style) give the probable business meaning from your domain knowledge; empty synonyms [] only when you genuinely cannot tell.
+- Synonyms are the natural-language words a user would say for this column. NEVER echo the column name itself as a synonym (e.g. for `loan.status` answer ["repayment state", "loan state"], NOT ["status"]).
+- At most 3 short lowercase phrases, most distinct to least distinct.
+- For opaque column names (A1..A16 style) infer the probable business meaning from the column's datatype and your domain knowledge of banking/finance data; when genuinely unknowable use empty synonyms [] (never guess a random meaning).
 - description: one short line, plain language.
 - Cover every column in the chunk; skip none.
+
+Example for a banking schema chunk:
+  - table: district
+    field_notes:
+      - name: A3
+        synonyms: [region, area]
+        description: district name
+      - name: A11
+        synonyms: [avg salary]
+        description: annual average salary in this district
+  - table: loan
+    field_notes:
+      - name: status
+        synonyms: [repayment state]
+        description: loan repayment status code

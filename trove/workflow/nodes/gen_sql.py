@@ -556,7 +556,14 @@ async def _probe_result(
     from trove.services.sql.validator import SQLValidator
 
     if not SQLValidator().is_safe(sql):
-        return {"ok": False, "error": "[ERR:SQL_PERMISSION] write operations are not permitted"}
+        return {
+            "ok": False,
+            "error": (
+                "[ERR:SQL_WRITEOP] write operations are not permitted — "
+                "rewrite as a read-only SELECT (no CREATE/INSERT/UPDATE/"
+                "DELETE/DROP/DDL)."
+            ),
+        }
     ok, reasons = check_readonly(sql, dialect, allowed_tables)
     if not ok:
         if any("could not be parsed" in r for r in reasons):
@@ -571,7 +578,7 @@ async def _probe_result(
                 f"SELECT statement; it may contain non-SQL text{allowlisted}. "
                 f"Please emit only the SQL query.",
             }
-        return {"ok": False, "error": "[ERR:SQL_PERMISSION] " + "; ".join(reasons)}
+        return {"ok": False, "error": "[ERR:SQL_WRITEOP] " + "; ".join(reasons)}
     valid, errors = validate_sql(sql, dialect)
     if not valid:
         return {"ok": False, "error": tag_error("; ".join(errors), context="sql")}

@@ -76,6 +76,21 @@ class LessonConfirmResponse(BaseModel):
     confirmed: int
 
 
+class SemanticDraftCreate(BaseModel):
+    """POST /v1/admin/semantic/{ds}/drafts body (审批流草稿).
+
+    kind: metric | field | dataset; action: upsert | delete。
+    payload 为平铺友好结构,confirm 时转换为 OSSIE 文档(见
+    services/semantic_layer/manage.py)。
+    """
+
+    kind: Literal["metric", "field", "dataset"]
+    action: Literal["upsert", "delete"]
+    name: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    note: str = ""
+
+
 class LoginRequest(BaseModel):
     """POST /v1/auth/login body."""
 

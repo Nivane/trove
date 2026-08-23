@@ -120,6 +120,28 @@ class TestSettingsService:
         assert cfg.result_display_rows == 80
         assert cfg.result_max_rows == 2000
 
+    def test_validate_path_kind(self):
+        """path 类目录配置:非空通过,空串=关闭(区别于 str 的必填)。"""
+        coerced, errors = validate_values({"app.semantic_layer_path": ".trove/semantic"})
+        assert errors == []
+        assert coerced["app.semantic_layer_path"] == ".trove/semantic"
+        # 清空 = 关闭语义层,允许
+        coerced, errors = validate_values({"app.semantic_layer_path": ""})
+        assert errors == []
+        assert coerced["app.semantic_layer_path"] == ""
+
+    def test_apply_overrides_semantic_layer_path(self):
+        cfg = AgentConfig(target="openai/gpt-4o")
+        apply_overrides(cfg, {"app.semantic_layer_path": ".trove/semantic"})
+        assert cfg.semantic_layer_path == ".trove/semantic"
+        apply_overrides(cfg, {"app.semantic_layer_path": ""})
+        assert cfg.semantic_layer_path == ""
+
+    def test_effective_values_semantic_layer_path(self):
+        cfg = AgentConfig(semantic_layer_path=".trove/semantic")
+        values = effective_values(cfg)
+        assert values["app.semantic_layer_path"] == ".trove/semantic"
+
     def test_provider_mask_roundtrip(self):
         config = AgentConfig()
         config.providers = [__import__("trove.core.config", fromlist=["ProviderConfig"])

@@ -21,6 +21,18 @@ from tests.cli.test_kb_commands import TABLES_DOC
 from tests.helpers.kb import ossie_semantics_yaml
 
 KB_SEED = {
+    "schema_notes.yml": """tables:
+  - name: students
+    description: student records
+    columns:
+      - name: grade
+        description: grade
+        enums: []
+      - name: county
+        description: county
+        enums: []
+    metrics: []
+""",
     "semantics.yml": ossie_semantics_yaml([{
         "term": "平均成绩",
         "aliases": ["均分"],
