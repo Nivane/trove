@@ -24,7 +24,8 @@ describe('restoreTurns — 历史会话还原', () => {
     expect(turns[0].status).toBe('done')
     expect(turns[0].answer).toBe('## Answer\n\n**Question**: ...')
     expect(turns[0].summary?.sql).toBe('SELECT COUNT(*) FROM card')
-    expect(turns[0].steps.some((s) => s.node === 'gen_sql')).toBe(true)
+    // 历史会话不重建分析步骤:右侧面板无可展开的分析过程
+    expect(turns[0].steps).toHaveLength(0)
   })
 
   it('旧会话(无 summary metadata)仍回退为纯文本 answer', () => {

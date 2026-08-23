@@ -582,20 +582,9 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
           final_response: summary.final_response || m.content,
         }
         t.answer = summary.final_response || m.content
-        if (summary.chart || summary.sql) {
-          t.steps = [
-            {
-              node: 'gen_sql',
-              label: 'SQL',
-              payload: {
-                node: 'gen_sql',
-                label: 'SQL',
-                sql: summary.sql || '',
-                row_count: summary.row_count,
-              } as StepPayload,
-            },
-          ]
-        }
+        // 分析面板只服务"当前直播轮次":历史会话不重建步骤/日志,
+        // 只保留 answer/summary(消息体渲染 SQL 与图表用),保证点开
+        // 历史会话时右侧没有可展开的分析过程。
       } else {
         t.answer = m.content
       }
