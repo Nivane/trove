@@ -129,7 +129,8 @@ class TestEndToEnd:
 
         # Final output contains the result
         assert "Benesov" in state.final_response
-        assert "问题" in state.final_response
+        # 问题/标题不再重复展示
+        assert "**问题**" not in state.final_response
 
         # The exchange was recorded with graph metadata
         assert session.messages[-1].metadata["sql"] == state.sql

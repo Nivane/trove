@@ -251,7 +251,7 @@ class TestReflectionGraph:
         assert final["error"] == ""
         assert "SELECT name FROM students;" in final["sql"]
         assert final["row_count"] == 5
-        assert "## 回答" in final["final_response"]
+        assert "### 结果" in final["final_response"]
         assert len(llm.calls) == 3  # intent + gen_sql + reflect
 
     async def test_retry_loop_regenerates_with_reason(self, sqlite_registry, catalog):
@@ -1066,7 +1066,7 @@ class TestFixedGraph:
         final = await graphs["fixed"].ainvoke(make_state())
         assert final["verdict"] == ""  # reflect never ran
         assert final["row_count"] == 5
-        assert "## 回答" in final["final_response"]
+        assert "### 结果" in final["final_response"]
         assert len(llm.calls) == 2  # intent + gen_sql
 
     async def test_execute_error_feedback_retries(self, sqlite_registry, catalog):
@@ -1990,8 +1990,7 @@ class TestFixModeWiring:
         assert "无进展" in final["error"]        # 优雅降级,不再打回
         assert final["no_progress_rounds"] == 3
         assert final["last_progress"] == "invalid"
-        assert "## 回答" in final["final_response"]
-        assert "错误" in final["final_response"]
+        assert "**错误**" in final["final_response"]
 
 
 # ── 自适应减负:确定性快径 + 复杂度分级开关 ───────────────
