@@ -178,6 +178,7 @@ const switchDefs = [
   { key: 'explain_semantics', label: 'explainSemantics', hint: 'explainSemanticsHint' },
   { key: 'hitl', label: 'hitlSetting', hint: 'hitlHint' },
   { key: 'insights', label: 'insights', hint: 'insightsHint' },
+  { key: 'conclusion', label: 'conclusion', hint: 'conclusionHint' },
   { key: 'result_cache', label: 'resultCache', hint: 'resultCacheHint' },
   { key: 'decompose_llm_judge', label: 'decomposeLlm', hint: 'decomposeLlmHint' },
 ] as const

@@ -731,6 +731,7 @@ class SessionManager:
                                     "error": "",
                                     "kb_hits": [],
                                     "insights": [],
+                                    "conclusion": "",
                                     "hitl_status": "pending",
                                     "final_response": "",
                                 }
@@ -821,6 +822,7 @@ class SessionManager:
                 "error": str(e),
                 "kb_hits": [],
                 "insights": [],
+                "conclusion": "",
                 "hitl_status": "",
                 "final_response": "",
             }
@@ -892,13 +894,15 @@ class SessionManager:
             detail["semantics"] = delta.get("semantics", "")
         elif node_name == "insights":
             detail["insights"] = delta.get("insights", [])
+        elif node_name == "conclusion":
+            detail["conclusion"] = delta.get("conclusion", "")
         elif node_name == "hitl":
             detail["hitl_status"] = delta.get("hitl_status", "")
         elif node_name == "output":
             detail["final"] = True
 
         # LLM call detail (independent of the node chain above)
-        if node_name in ("gen_sql", "planner", "reflect", "semantics", "insights") and delta.get("llm"):
+        if node_name in ("gen_sql", "planner", "reflect", "semantics", "insights", "conclusion") and delta.get("llm"):
             detail["llm"] = delta["llm"]
 
         return {
@@ -1579,6 +1583,7 @@ class SessionManager:
             "kb_hits": final.kb_hits,
             "semantics": final.semantics,
             "insights": final.insights,
+            "conclusion": final.conclusion,
             "hitl_status": final.hitl_status,
             "final_response": final.final_response,
             "columns": list(final.columns),

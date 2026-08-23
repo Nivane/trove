@@ -1090,6 +1090,36 @@ class TestEmptyGraph:
         assert "(未执行任何查询)" in final["final_response"]
 
 
+class TestConclusionWiring:
+    """conclusion 节点接线:结论 LLM 生成并置于回答开头(结论前置)。"""
+
+    async def test_reflection_graph_emits_conclusion(self, sqlite_registry, catalog):
+        config = AgentConfig(target="mock/model", insights=True, conclusion=True)
+        llm = RecordingLLM([
+            "query",            # intent
+            VALID_SQL,          # gen_sql
+            "OK",               # reflect
+            "洞察一条",           # insights
+            "结论:共 5 名学生",    # conclusion
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=config))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["conclusion"] == "结论:共 5 名学生"
+        assert final["insights"] == ["洞察一条"]
+        assert "### 结论" in final["final_response"]
+        # 结论位于生成的 SQL 之前
+        assert final["final_response"].index("### 结论") < final["final_response"].index("### 生成的 SQL")
+        assert len(llm.calls) == 5  # intent + gen + reflect + insights + conclusion
+
+    async def test_disabled_config_skips_conclusion(self, sqlite_registry, catalog):
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["conclusion"] == ""
+        assert "### 结论" not in final["final_response"]
+        assert len(llm.calls) == 3  # 未新增结论 LLM 调用
+
+
 class TestParseDateWiring:
     """parse_date 节点接线:确定性解析,不消耗 LLM 调用,结果注入生成 prompt。"""
 

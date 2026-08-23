@@ -12,11 +12,16 @@ export interface SqlBlock {
   type: 'sql'
   code: string
 }
+export interface DetailsBlock {
+  type: 'details'
+  summary: string
+  blocks: Block[]
+}
 export interface MdBlock {
   type: 'md'
   text: string
 }
-export type Block = MdBlock | TableBlock | SqlBlock
+export type Block = MdBlock | TableBlock | SqlBlock | DetailsBlock
 
 function isSeparatorRow(line: string): boolean {
   return /^\s*\|?[\s:|-]+\|?\s*$/.test(line) && line.includes('-')
@@ -40,6 +45,10 @@ function fenceChar(line: string): string | null {
   return m ? m[1][0] : null
 }
 
+const DETAILS_OPEN_RE = /^<details>\s*$/i
+const DETAILS_CLOSE_RE = /^<\/details>\s*$/i
+const DETAILS_SUMMARY_RE = /<summary>(.*?)<\/summary>/is
+
 /** True when indent is 0 (top-level, not inside a list/blockquote). */
 function isTopLevel(line: string): boolean {
   return !/^\s/.test(line) || /^\s*$/.test(line)
@@ -56,7 +65,12 @@ export function tokenize(src: string): Block[] {
 
   const flushMd = () => {
     if (md.length) {
-      blocks.push({ type: 'md', text: md.join('\n') })
+      const text = md.join('\n')
+      // Whitespace-only md segments (blank separators between extracted
+      // blocks) are layout noise — drop them.
+      if (text.trim() !== '') {
+        blocks.push({ type: 'md', text })
+      }
       md.length = 0
     }
   }
@@ -64,6 +78,31 @@ export function tokenize(src: string): Block[] {
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
+
+    // Collapsible detail section emitted by the backend output node
+    // (<details><summary>…</summary>…markdown…</details>). Rendered as a
+    // native <details> in the web UI; inner content is tokenized recursively
+    // (nested details, tables and sql fences all work inside).
+    if (DETAILS_OPEN_RE.test(line) && isTopLevel(line)) {
+      const raw: string[] = []
+      i++
+      while (i < lines.length && !DETAILS_CLOSE_RE.test(lines[i])) {
+        raw.push(lines[i])
+        i++
+      }
+      i++ // skip </details>
+      const inner = raw.join('\n')
+      const sm = inner.match(DETAILS_SUMMARY_RE)
+      const summary = sm ? sm[1].trim() : ''
+      flushMd()
+      blocks.push({
+        type: 'details',
+        summary,
+        blocks: tokenize(inner.replace(DETAILS_SUMMARY_RE, '')),
+      })
+      continue
+    }
+
     const fence = fenceChar(line)
 
     if (fence && isTopLevel(line)) {

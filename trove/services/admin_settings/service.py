@@ -36,6 +36,7 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     "app.reflect_skip": ("reflect_skip", "enum", ALLOWED_REFLECT_SKIP),
     "app.hitl": ("hitl", "bool", None),
     "app.insights": ("insights", "bool", None),
+    "app.conclusion": ("conclusion", "bool", None),
     "app.result_cache": ("result_cache", "bool", None),
     "app.decompose_llm_judge": ("decompose_llm_judge", "bool", None),
     # Retention

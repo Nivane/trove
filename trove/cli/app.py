@@ -41,6 +41,16 @@ REPL_STYLE = Style.from_dict({
 })
 
 
+def _flatten_details(markdown: str) -> str:
+    """Strip the <details> wrapper the output node emits so rich renders the
+    inner markdown flat (the CLI has no collapsible UI)."""
+    out = [
+        line for line in (markdown or "").splitlines()
+        if not line.strip().lower().startswith(("<details", "</details", "<summary"))
+    ]
+    return "\n".join(out)
+
+
 class TroveREPL:
     """Main REPL application for Trove CLI."""
 
@@ -242,7 +252,7 @@ class TroveREPL:
             async for ev in self._manager.resume_stream(self._session, decision):
                 await self._render_event(ev)
         elif event_type == "done":
-            self._tui.print_markdown(content)
+            self._tui.print_markdown(_flatten_details(content))
             self._print_done_stats(event.get("summary") or {})
         elif event_type == "error":
             self._tui.print_error(content)
@@ -356,6 +366,8 @@ class TroveREPL:
         if node == "insights":
             n = len(detail.get("insights", []))
             return L(lang, f"生成 {n} 条洞察", "generating insights") if n else L(lang, "生成洞察", "generating insights")
+        if node == "conclusion":
+            return L(lang, "提炼结论", "composing conclusion")
         if node == "hitl":
             status = detail.get("hitl_status", "")
             if status == "rejected":

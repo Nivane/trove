@@ -1,0 +1,12 @@
+用户问题: {{ question }}
+{% if time_context %}
+解析出的时间范围: {{ time_context }}
+{% endif %}
+生成的 SQL:
+{{ sql }}
+结果列: {{ columns }}
+返回行数: {{ total_rows }}
+数据行:
+{{ rows }}
+
+请用一句话直接回答用户问题。

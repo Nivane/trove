@@ -17,6 +17,8 @@ agent:
   hitl: false
   # 执行后 LLM 基于结果生成洞察
   insights: true
+  # 执行后 LLM 用一句话生成结论摘要,置于回答开头(结论前置)
+  conclusion: true
   # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
   # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
   # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。

@@ -3093,6 +3093,68 @@ class TestOutput:
         assert "Clarification" in response
         assert "请说明你想查询哪张表的数据" in response
 
+    async def test_conclusion_rendered_first(self):
+        """结论前置:LLM 结论出现在 SQL/结果之前(结论优先布局)。"""
+        state = make_state(
+            sql="SELECT county FROM students",
+            columns=["county"],
+            rows=[["Alameda"], ["Orange"]],
+            row_count=2,
+            conclusion="两县各有学生,结果共 2 行。",
+            lang="zh",
+        )
+        response = (await output(state))["final_response"]
+        assert "### 结论" in response
+        assert response.index("### 结论") < response.index("### 生成的 SQL")
+        assert "两县各有学生,结果共 2 行。" in response
+
+    async def test_details_wrapper_collapses_sql_and_meta(self):
+        """SQL/语义/耗时/KB 折叠在 <details> 明细里,而非平铺。"""
+        state = make_state(
+            sql="SELECT 1", columns=["x"], rows=[["1"]], row_count=1,
+            execution_time_ms=5.0, lang="en",
+            kb_hits=[{"kind": "term", "term": "平均成绩", "mapping": "AVG(grade)"}],
+        )
+        response = (await output(state))["final_response"]
+        assert "<details>" in response
+        assert "<summary>View SQL & details</summary>" in response
+        assert "</details>" in response
+        # SQL 与知识库信息都在明细段内(位于折叠标记之后)
+        assert response.index("<summary>View SQL & details") < response.index("Generated SQL")
+        assert response.index("<summary>View SQL & details") < response.index("Knowledge base")
+
+    async def test_no_details_wrapper_without_sql_or_meta(self):
+        state = make_state(columns=["x"], rows=[["1"]], row_count=1, lang="en")
+        response = (await output(state))["final_response"]
+        assert "<details>" not in response
+
+    async def test_table_collapsed_when_chart_present(self):
+        """图表为主:有图表时结果表折叠进「结果明细」。"""
+        state = make_state(
+            sql="SELECT 1", columns=["c"], rows=[["a"], ["b"]], row_count=2,
+            chart={
+                "type": "bar", "title": "demo", "dimension": "c",
+                "categories": ["a", "b"],
+                "series": [{"name": "n", "data": [1, 2]}],
+                "measures": ["n"],
+            },
+            lang="zh",
+        )
+        response = (await output(state))["final_response"]
+        assert "**图表**: demo" in response
+        assert "<summary>结果明细</summary>" in response
+        # 结果表位于明细折叠内
+        assert response.index("结果明细") < response.index("### 结果 (2 行)")
+
+    async def test_table_visible_without_chart(self):
+        """无图表时结果表直接展示,不折叠。"""
+        state = make_state(
+            sql="SELECT 1", columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+        )
+        response = (await output(state))["final_response"]
+        assert "<summary>结果明细</summary>" not in response
+        assert "### 结果 (1 行)" in response
+
 
 class TestSemanticPromptGuards:
     """① planner 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。
