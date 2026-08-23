@@ -7,7 +7,7 @@ agent:
   model_fast: deepseek/deepseek-chat
   # 交互语言: en(默认) / zh — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
   # 不按问题的中英文自动检测
-  language: en
+  language: zh
   # 时间解析:确定性规则解析相对时间表达(zh/en),未命中静默透传
   date_parser: true
   # 生成 SQL 后 LLM 说明语义(输出与 HITL 确认时展示)
