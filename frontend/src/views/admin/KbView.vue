@@ -759,17 +759,42 @@ async function initKb() {
   }
 }
 
+async function pollReloadStatus(): Promise<void> {
+  for (;;) {
+    await sleep(2000)
+    const st = await apiGet<{
+      status: string
+      error?: string
+    }>(`/v1/admin/datasources/${encodeURIComponent(ds.value)}/kb/reload/status`)
+    if (st.status === 'done') return
+    if (st.status === 'error') {
+      throw new Error(st.error || t('dsReloadFail', ui.lang))
+    }
+    if (st.status === 'idle') {
+      throw new Error(t('dsReloadLost', ui.lang))
+    }
+  }
+}
+
 async function reloadKb() {
   setBusy('reload', true)
+  const notice = ElMessage({
+    type: 'info',
+    message: t('dsReloadStarted', ui.lang),
+    duration: 0,
+  })
   try {
+    // 异步 reload:202 + task_id → 轮询状态(后台同步,不阻塞请求)
     await apiPost(
       `/v1/admin/datasources/${encodeURIComponent(ds.value)}/kb/reload`,
     )
+    await pollReloadStatus()
     notifySuccess(t('dsReloadDone', ui.lang))
     await loadDetail()
   } catch (e) {
-    toastError(e)
+    toastError(e, t('dsReloadFail', ui.lang))
   } finally {
+    notice.close()
     setBusy('reload', false)
   }
 }
