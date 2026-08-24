@@ -90,17 +90,54 @@ async def test_kb_init_endpoint(client, api_app, tmp_path):
     assert (kb.kb_dir / "extra" / "semantics.yml").exists()
 
 
+async def _wait_reload(client, name: str, timeout: float = 10.0) -> dict:
+    """轮询异步 reload 状态直到 done/error(返回最终 status 响应体)。"""
+    import asyncio
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        resp = await client.get(f"/v1/admin/datasources/{name}/kb/reload/status")
+        assert resp.status_code == 200
+        st = resp.json()
+        if st["status"] in ("done", "error"):
+            return st
+        if asyncio.get_event_loop().time() > deadline:
+            raise AssertionError(f"reload not finished: {st}")
+        await asyncio.sleep(0.05)
+
+
 async def test_kb_reload_endpoint(client, api_app, tmp_path):
+    from trove.services.kb.init_tasks import init_tasks
+    init_tasks.reset()
     await client.post("/v1/admin/datasources",
                       json={"name": "extra", "url": "sqlite://:memory:"})
+    # 异步 reload:202 + task_id → 轮询 status
     resp = await client.post("/v1/admin/datasources/extra/kb/reload")
-    assert resp.status_code == 200
-    status = resp.json()["status"]
-    assert all(k in status for k in ("initialized", "files", "items"))
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["task_id"]
+    st = await _wait_reload(client, "extra")
+    assert st["status"] == "done"
     # M3: kb/reload 是写镜像的变更操作,必须留审计(同 kb.init 约定)
     entries = await api_app.state.auth.list_audit(action="kb.reload")
     assert any(e["username"] == "admin" and e["details"] == {"name": "extra"}
                for e in entries)
+    # reload 后台 force_sync 后镜像可读
+    kb_detail = await client.get("/v1/admin/datasources/extra/kb")
+    assert kb_detail.status_code == 200
+    assert all(k in kb_detail.json()["kb"]["status"]
+               for k in ("initialized", "files", "items"))
+
+
+async def test_kb_reload_idle_status(client, api_app, tmp_path):
+    """无 running reload 任务时 status → idle(前端轮询兜底)。"""
+    from trove.services.kb.init_tasks import init_tasks
+    init_tasks.reset()
+    await client.post("/v1/admin/datasources",
+                      json={"name": "extra", "url": "sqlite://:memory:"})
+    resp = await client.get("/v1/admin/datasources/extra/kb/reload/status")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "idle"
 
 
 async def test_kb_init_unknown_ds_404(client):

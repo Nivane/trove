@@ -651,15 +651,71 @@ async def kb_init_status_datasource(name: str, request: Request,
     }
 
 
-@router.post("/admin/datasources/{name}/kb/reload")
-async def kb_reload_datasource(name: str, request: Request,
-                               admin: dict = Depends(require_admin)) -> dict:
-    kb = _kb(request)
+@router.post("/admin/datasources/{name}/kb/reload", status_code=202)
+async def kb_reload_datasource_async(name: str, request: Request,
+                                     admin: dict = Depends(require_admin)) -> dict:
+    """异步重新同步:立即返回 task_id,后台 force_sync,GET .../reload/status 轮询。
+
+    与 /kb/init 共用 init_tasks 注册表(按 datasource 键控)——同源已有
+    running 任务(init 或 reload)时 409,天然互斥同一数据源的文件写。
+    """
     if not _registry(request).is_registered(name):
         raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
-    await kb.force_sync(name)
-    await _audit(request, "kb.reload", admin, 200, {"name": name})
-    return {"status": await kb.kb_status(name)}
+    from trove.services.kb.init_tasks import init_tasks
+
+    task = init_tasks.create(name)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"KB reload already running for datasource {name}",
+        )
+    task_id = task["id"]
+    kb = _kb(request)
+
+    async def _run() -> None:
+        try:
+            await kb.force_sync(name)
+            await _audit(request, "kb.reload", admin, 200, {"name": name})
+            init_tasks.done(task_id, "")
+        except Exception as e:
+            logger.warning("Async KB reload failed (%s): %s", name, e)
+            init_tasks.fail(task_id, f"KB reload failed: {e}")
+        finally:
+            init_tasks.release_background(task_id)
+
+    bg = asyncio.create_task(_run())
+    init_tasks.bind_background(task_id, bg)
+    return {"task_id": task_id, "status": "running", "datasource": name}
+
+
+@router.get("/admin/datasources/{name}/kb/reload/status")
+async def kb_reload_status_datasource(name: str, request: Request,
+                                      admin: dict = Depends(require_admin)) -> dict:
+    """KB reload 任务状态(前端轮询)。无任务 → idle。"""
+    from trove.services.kb.init_tasks import init_tasks
+
+    task = init_tasks.by_datasource(name)
+    if task is None:
+        return {
+            "status": "idle",
+            "task_id": None,
+            "datasource": name,
+            "stage": None,
+            "progress": None,
+            "detail": None,
+            "summary": None,
+            "error": None,
+        }
+    return {
+        "task_id": task["id"],
+        "datasource": name,
+        "status": task["status"],
+        "stage": task["stage"],
+        "progress": task["progress"],
+        "detail": task["detail"],
+        "summary": task["summary"],
+        "error": task["error"],
+    }
 
 
 @router.get("/admin/datasources/{name}/kb")
