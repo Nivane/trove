@@ -28,6 +28,96 @@ from trove.services.datasource.catalog import CatalogService
 from trove.storage.session_store import SessionStore
 
 
+# ── 语义优先(Phase B)测试语义模型 ─────────────────────────
+#
+# 测试数据源(sqlite_registry/demo_registry)挂一个确定性语义模型:结构层
+# (datasets/fields/relationships)由 schema 确定性生成 + 每个 dataset 带
+# 「列名词表」描述(词重叠匹配,等价旧列名检索),metrics 覆盖 count + 数值
+# 列聚合。产物是 kb init 能生成内容的子集,不违反 KB anti-cheating。
+
+_NUMERIC_HINTS = ("int", "float", "double", "decimal", "numeric", "real")
+
+
+def _test_terms(schema) -> list[dict]:
+    """schema → flat term 列表(确定性):count + 数值列 SUM/AVG/MIN/MAX。"""
+    terms: list[dict] = []
+    for t in schema.tables:
+        id_col = next(
+            (c.name for c in t.columns
+             if c.primary_key or c.name == "id" or c.name.endswith("_id")),
+            None,
+        )
+        terms.append({
+            "term": f"number of {t.name} records",
+            "aliases": [f"{t.name} count", f"count of {t.name}"],
+            "mapping": f"COUNT({t.name}.{id_col})" if id_col else "COUNT(*)",
+            "tables": [t.name],
+            "definition": f"total number of records in {t.name}",
+        })
+        for c in t.columns:
+            if c.name == id_col:
+                continue
+            if any(m in str(c.type or "").lower() for m in _NUMERIC_HINTS):
+                for fn in ("SUM", "AVG", "MIN", "MAX"):
+                    terms.append({
+                        "term": f"{fn.lower()} of {t.name}.{c.name}",
+                        "aliases": [f"{fn.lower()} {c.name}"],
+                        "mapping": f"{fn}({t.name}.{c.name})",
+                        "tables": [t.name],
+                        "definition": f"{fn.lower()} of {c.name} in {t.name}",
+                    })
+    return terms
+
+
+async def make_test_semantic_provider(registry, kb_dir):
+    """registry → 确定性语义模型 + provider(测试专用)。
+
+    返回的 provider 挂到 registry._test_semantic_provider,graph 服务构造器
+    默认注入(见各测试文件的 make_services)。无语义层的测试仍可显式传
+    semantic_layer=None 走 no_model 拒绝路径。
+    """
+    import yaml
+
+    from trove.services.kb.service import KbService
+    from trove.services.kb.semantic_gen import generate_semantic_document
+    from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+    ds = registry.default_name or "default"
+    adapter = await registry.get(ds)
+    schema = await adapter.get_schema()
+    doc = generate_semantic_document(schema, model_name=ds, terms=_test_terms(schema))
+    model_entry = doc["semantic_model"][0]
+    # 测试夹具的中文别名(生产由 kb init 起草):让中文测试问题能锚定数据集
+    _ZH_ALIASES = {
+        "students": ["学生", "成绩"],
+        "loan": ["贷款"],
+        "account": ["账户"],
+        "client": ["客户"],
+        "district": ["地区", "区域"],
+        "card": ["卡"],
+        "disp": ["发放", "授权"],
+        "order": ["订单"],
+        "trans": ["交易"],
+    }
+    for d in model_entry.get("datasets", []):
+        zh = _ZH_ALIASES.get(d["name"], [])
+        d["ai_context"] = {"synonyms": [d["name"], *zh]}
+        cols = ", ".join(f["name"] for f in d.get("fields", []))
+        d["description"] = f"{d['name']} records; columns: {cols}"
+
+    kb = KbService(kb_dir)
+    kb.kb_dir.mkdir(parents=True, exist_ok=True)
+    (kb.kb_dir / ds).mkdir(parents=True, exist_ok=True)
+    (kb.semantics_path(ds)).write_text(
+        yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    return SemanticLayerProvider(
+        kb_dir / "semantic", ds,
+        kb_semantics_path=kb.semantics_path(ds),
+        dialect=adapter.dialect(),
+    )
+
+
 # ── Fixtures ─────────────────────────────────────────────
 
 
@@ -65,7 +155,7 @@ def sql_llm():
 
 
 @pytest.fixture
-async def sqlite_registry():
+async def sqlite_registry(tmp_path):
     """Connected in-memory SQLite registry with a test table."""
     registry = ConnectorRegistry()
     config = DatasourceConfig(
@@ -93,6 +183,11 @@ async def sqlite_registry():
         "('Eve', 99, 'Los Angeles')"
     )
 
+    # 语义优先(Phase B):给测试数据源挂一个确定性语义模型,
+    # 供 graph 服务构造器默认注入(见 make_test_semantic_provider)。
+    registry._test_semantic_provider = await make_test_semantic_provider(
+        registry, tmp_path / "kb")
+
     yield registry
     await registry.close_all()
 
@@ -116,6 +211,9 @@ async def demo_registry(tmp_home):
         default=True,
     )
     await registry.register(config, set_default=True)
+
+    registry._test_semantic_provider = await make_test_semantic_provider(
+        registry, tmp_home / "kb")
 
     yield registry
     await registry.close_all()
@@ -156,6 +254,7 @@ def graphs(sqlite_registry, agent_config):
         llm=ScriptedGateway(["query", "```sql\nSELECT name FROM students;\n```", "OK"]),
         catalog=CatalogService(sqlite_registry),
         connectors=sqlite_registry,
+        semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
         config=agent_config,
     )
     return build_graphs(services, multi_candidate=False, planner=False, agentic=False)

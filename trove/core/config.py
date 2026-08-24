@@ -87,10 +87,9 @@ class AgentConfig:
     model_fast: str = ""  # 快速档模型: simple/standard 复杂度走此模型(未配置 = 不分档,全走 target)
     language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
     semantic_layer_path: str = ""  # OSSIE 语义层目录(相对项目根),空 = 关闭
-    # 语义优先(Phase A):语义模型是唯一可答边界——未覆盖=拒绝+反问扩展;
-    # 无模型=拒绝并提示 /kb init。dataclass 默认关保持旧裸表路径(Phase A
-    # 评测对照),conf/agent.yml 生产默认开(见 semantic-first 架构文档)。
-    semantic_first: bool = False
+    # 语义优先(Phase B):语义模型是唯一可答边界——未覆盖=拒绝+反问扩展;
+    # 无模型=拒绝并提示 /kb init(决策 2/3)。旧裸表路径已从查询图删除。
+    semantic_first: bool = True
     date_parser: bool = True  # 时间解析节点:确定性规则解析相对时间(zh/en),未命中静默透传
     fast_path: bool = True  # 确定性模板快径:命中即跳过 planner/生成/裁决
     reflect_skip: str = "simple"  # 规则全过后跳 LLM 裁决档位: simple / standard / all / off
@@ -270,7 +269,7 @@ class ConfigLoader:
             model_fast=agent_section.get("model_fast", ""),
             language=agent_section.get("language", "zh"),
             semantic_layer_path=agent_section.get("semantic_layer_path", ""),
-            semantic_first=agent_section.get("semantic_first", False),
+            semantic_first=agent_section.get("semantic_first", True),
             date_parser=agent_section.get("date_parser", True),
             fast_path=agent_section.get("fast_path", True),
             reflect_skip=agent_section.get("reflect_skip", "simple"),

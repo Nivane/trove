@@ -61,6 +61,9 @@ class RecordingLLM:
 
 def make_services(llm, catalog=None, connectors=None, kb=None, config=None,
                    semantic_layer=None):
+    if semantic_layer is None and connectors is not None:
+        # 语义优先(Phase B):默认注入 fixture 的确定性语义模型
+        semantic_layer = getattr(connectors, "_test_semantic_provider", None)
     return GraphServices(
         llm=llm,
         catalog=catalog,
@@ -802,28 +805,6 @@ class TestAgenticNodes:
         assert final["sql"] == "SELECT name FROM students;"  # classic 兜底产出
         assert final["row_count"] == 5
 
-    async def test_gen_sql_search_values_round(self, sqlite_registry, catalog):
-        """gen_sql ReAct：模型用疑似错误的过滤值调 search_values，拿到真实值后修正 SQL。"""
-        llm = AgenticLLM([
-            "query",
-            {"content": None, "tool_calls": [
-                {"id": "c1", "name": "search_values",
-                 "arguments": '{"table": "students", "keyword": "ala", "column": "county"}'},
-            ]},
-            {"content": "```sql\nSELECT name FROM students WHERE county = 'Alameda';\n```",
-             "tool_calls": []},
-            {"content": "OK", "tool_calls": []},  # reflect
-        ])
-        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
-        final = await graphs["reflection"].ainvoke(
-            make_state(question="List students in Alameda county."),
-        )
-        assert final["error"] == ""
-        assert final["sql"] == "SELECT name FROM students WHERE county = 'Alameda';"
-        # 观测进 tool 消息:真实值 'Alameda' 可见
-        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
-        assert any("Alameda" in m["content"] for m in tool_msgs)
-
     async def test_reflect_is_single_shot(self, sqlite_registry, catalog):
         """reflect 去工具化：即使有 connectors，裁决也只调一次 chat，绝不进 chat_full。"""
         class NoToolJudgeLLM:
@@ -859,16 +840,16 @@ class TestClarifyRouting:
         assert "Clarification" in final["final_response"]
         assert final["sql"] == ""
 
-    async def test_default_is_permissive_without_match(self, sqlite_registry, catalog):
-        """默认（clarify 关闭）：无表匹配也照常生成，不拦截。"""
-        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+    async def test_zero_match_refuses_without_fallback(self, sqlite_registry, catalog):
+        """语义优先（Phase B,决策 4）：零命中 = 未覆盖 = 拒绝，不生成不执行。"""
+        llm = RecordingLLM([])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
             make_state(question="zzz 完全不相关的数据")
         )
-        assert final["clarification_question"] == ""
-        assert final["sql"] == "SELECT name FROM students;"
-        assert final["row_count"] == 5
+        assert final["refusal"] is not None
+        assert final["sql"] == ""
+        assert final["row_count"] == -1
 
     async def test_matched_tables_proceed_normally(self, sqlite_registry, catalog):
         """有表匹配 → 正常走生成流程。"""
@@ -1127,7 +1108,7 @@ class TestParseDateWiring:
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
-            make_state(question="最近7天学生的平均成绩是多少")
+            make_state(question="students 最近7天的平均成绩是多少")
         )
         import re
 
@@ -1140,7 +1121,7 @@ class TestParseDateWiring:
         llm = RecordingLLM(["query", VALID_SQL])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["fixed"].ainvoke(
-            make_state(question="最近7天学生的平均成绩是多少")
+            make_state(question="students 最近7天的平均成绩是多少")
         )
         assert final["time_context"]
         assert "Resolved time range" in llm.calls[1][-1]["content"]
@@ -1158,7 +1139,7 @@ class TestParseDateWiring:
         config = AgentConfig(target="mock/model", date_parser=False)
         graphs = build(make_services(llm, catalog, sqlite_registry, config=config))
         final = await graphs["reflection"].ainvoke(
-            make_state(question="最近7天学生的平均成绩是多少")
+            make_state(question="students 最近7天的平均成绩是多少")
         )
         assert final["time_context"] == ""
         assert "Resolved time range" not in llm.calls[1][-1]["content"]
@@ -1167,7 +1148,7 @@ class TestParseDateWiring:
         llm = RecordingLLM([])
         graphs = build(make_services(llm))
         final = await graphs["empty"].ainvoke(
-            make_state(question="最近7天学生的平均成绩是多少")
+            make_state(question="students 最近7天的平均成绩是多少")
         )
         assert final["time_context"] == ""
         assert len(llm.calls) == 0
@@ -1289,7 +1270,7 @@ examples:
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
                        multi_candidate=True)
         final = await graphs["reflection"].ainvoke(
-            make_state(question="各县市的成绩情况汇总")
+            make_state(question="students 各县市的成绩情况汇总")
         )
         assert final["error"] == ""
 
@@ -1638,15 +1619,15 @@ class TestNoSQLExit:
         await self._make_disp(sqlite_registry)
         llm = RecordingLLM([
             "metadata",
-            "disp 是账户与客户发放关系表，记录客户与账户的关联及类型。",
+            "students 是学生成绩表，记录学生姓名、成绩与所在县。",
             "OK",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
-            make_state(question="disp 表是啥")
+            make_state(question="students 表是啥")
         )
         assert final["intent"] == "metadata"
-        assert "disp" in final["intent_answer"]
+        assert "students" in final["intent_answer"]
         assert final["sql"] == ""
         assert len(llm.calls) == 3  # 意图 + 答案 + 裁决
 
@@ -1657,17 +1638,17 @@ class TestNoSQLExit:
             "query",
             VALID_SQL,
             "NO_SQL: 这不是数据查询，是表含义问题",
-            "disp 是账户与客户发放关系表。",
+            "students 是学生成绩表。",
             "OK",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
         final = await graphs["reflection"].ainvoke(
-            make_state(question="disp 表是啥")
+            make_state(question="students 表是啥")
         )
         assert final["verdict"] == "NO_SQL"
         assert final["no_sql"] is True
         assert final["retry_count"] == 0  # 未消耗修正预算
-        assert "disp" in final["intent_answer"]
+        assert "students" in final["intent_answer"]
         assert "SELECT" not in final["final_response"]
         assert len(llm.calls) == 5  # 意图 + gen + 裁决 + 答案 + 答案裁决
 
@@ -1682,17 +1663,17 @@ class TestNoSQLExit:
             "```sql\nSELECT name FROM students LIMIT 2;\n```",     # 备3（2 行）
             "```sql\nSELECT name FROM students LIMIT 3;\n```",     # 备4（3 行）
             "NO_SQL: 定义问题不是数据查询",                           # 诊断
-            "disp 是账户与客户发放关系表。",                            # 元数据答案
+            "students 是学生成绩表。",                            # 元数据答案
             "OK",                                                  # 答案裁决
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry), multi_candidate=True)
         final = await graphs["reflection"].ainvoke(
-            make_state(question="disp 表是啥")
+            make_state(question="students 表是啥")
         )
         assert final["no_sql"] is True
         assert final["error_feedback"] == ""
         assert final["retry_count"] == 1  # select 的不一致反馈计了一轮
-        assert "disp" in final["intent_answer"]
+        assert "students" in final["intent_answer"]
         assert len(llm.calls) == 9
 
     async def test_query_verdict_overridden_by_strong_regex(self, sqlite_registry, catalog):

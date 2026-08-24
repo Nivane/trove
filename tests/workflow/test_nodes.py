@@ -73,220 +73,88 @@ def kb_ds_dir(kb_service, sqlite_registry):
 # ── Schema Linking ───────────────────────────────────────
 
 
-class TestSchemaLinking:
-    async def test_no_catalog_graceful(self):
-        node = make_schema_linking(catalog=None)
-        update = await node(make_state())
-        assert update["matched_tables"] == []
-        assert "No schema" in update["schema_context"]
-
-    async def test_rollback_rerun_keeps_previous_matches(self):
-        """回退重跑 schema_linking 时,旧匹配表必须保留(并集),修漏表不丢旧表。"""
-        class Catalog:
-            async def search_tables(self, query, datasource=None, limit=10):
-                return [{"name": "trans", "columns": 8, "row_count": 100}]
-
-            async def list_tables(self, datasource=None):
-                return [{"name": "trans", "columns": 8, "row_count": 100}]
-
-            async def table_detail(self, name):
-                return {
-                    "name": name,
-                    "columns": [{"name": "account_id", "type": "int"}],
-                    "row_count": 100,
-                }
-
-        node = make_schema_linking(catalog=Catalog())
-        update = await node(make_state(
-            question="q",
-            matched_tables=["account"],   # 上一轮已匹配的表
-            error_feedback="missing trans table",  # 回退重跑信号
-        ))
-        assert "account" in update["matched_tables"]  # 旧匹配保留
-        assert "trans" in update["matched_tables"]    # 新匹配并入
-
-    async def test_preseeded_tables_merged_without_retry(self):
-        """步骤间共享:coordinator 前序注入的 matched_tables 在全新 run 也并入
-        (不做"仅 retry 才保留"的区分)—— 多步子任务 2 据此继承子任务 1 的锚点。"""
-        class Catalog:
-            async def search_tables(self, query, datasource=None, limit=10):
-                return [{"name": "trans", "columns": 8, "row_count": 100}]
-
-            async def list_tables(self, datasource=None):
-                return [{"name": "trans", "columns": 8, "row_count": 100}]
-
-            async def table_detail(self, name):
-                return {
-                    "name": name,
-                    "columns": [{"name": "account_id", "type": "int"}],
-                    "row_count": 100,
-                }
-
-        node = make_schema_linking(catalog=Catalog())
-        update = await node(make_state(
-            question="q",
-            matched_tables=["account"],  # 前序注入,无 error_feedback/retry
-        ))
-        assert "account" in update["matched_tables"]  # 注入锚点保留
-        assert "trans" in update["matched_tables"]    # 新匹配并入
-
-    async def test_with_catalog(self, catalog):
-        node = make_schema_linking(catalog=catalog)
-        update = await node(make_state())
-        assert "students" in update["matched_tables"]
-        assert "grade" in update["schema_context"]
-
-    async def test_catalog_failure_sets_error(self):
-        class BrokenCatalog:
-            async def search_tables(self, *a, **k):
-                raise RuntimeError("catalog down")
-
-        node = make_schema_linking(catalog=BrokenCatalog())
-        update = await node(make_state())
-        assert "Schema linking failed" in update["error"]
-
-    async def test_oracle_tables_anchor_match_set_first(self):
-        """oracle 锚(eval 专用):gold 表无条件进匹配集首位,其他信号补位在后。"""
-        class Catalog:
-            async def search_tables(self, query, datasource=None, limit=10):
-                return [{"name": "trans", "match_type": "name"}]
-
-            async def list_tables(self, datasource=None):
-                return [
-                    {"name": "district", "columns": 2, "row_count": 77},
-                    {"name": "trans", "columns": 8, "row_count": 100},
-                ]
-
-            async def table_detail(self, name):
-                return {
-                    "name": name,
-                    "columns": [{"name": "account_id", "type": "int"}],
-                    "row_count": 100,
-                }
-
-        node = make_schema_linking(catalog=Catalog())
-        update = await node(make_state(question="q", oracle_tables=["district"]))
-        assert update["matched_tables"][0] == "district"
-        assert "trans" in update["matched_tables"]
-
-    async def test_oracle_tables_ignored_when_not_in_schema(self):
-        """oracle 表不存在于 schema → 静默丢弃,不报错也不产生匹配。"""
-        class Catalog:
-            async def search_tables(self, query, datasource=None, limit=10):
-                return [{"name": "students", "match_type": "name"}]
-
-            async def list_tables(self, datasource=None):
-                return [{"name": "students", "columns": 4, "row_count": 5}]
-
-            async def table_detail(self, name):
-                return {"name": name, "columns": [{"name": "id", "type": "int"}], "row_count": 5}
-
-        node = make_schema_linking(catalog=Catalog())
-        update = await node(make_state(question="q", oracle_tables=["ghost"]))
-        assert "ghost" not in update["matched_tables"]
-        assert update["matched_tables"] == ["students"]
-
-    async def test_error_passthrough(self, catalog):
-        """A node must not run when an upstream node already failed."""
-        node = make_schema_linking(catalog=catalog)
-        update = await node(make_state(error="upstream failed"))
-        assert update == {}
-
-    async def test_zero_matches_falls_back_to_all_tables(self):
-        """英文题复数/缩写匹配不到任何表时,兜底为全量表清单,保证 schema 锚定。"""
-        class EmptySearchCatalog:
-            async def search_tables(self, query, datasource=None, limit=10):
-                return []
-
-            async def list_tables(self, datasource=None):
-                return [
-                    {"name": "account", "columns": 4, "row_count": 4500},
-                    {"name": "trans", "columns": 8, "row_count": 1056320},
-                ]
-
-            async def table_detail(self, name):
-                return {
-                    "name": name,
-                    "columns": [{"name": "account_id", "type": "int"}],
-                    "row_count": 100,
-                }
-
-        node = make_schema_linking(catalog=EmptySearchCatalog())
-        update = await node(make_state(
-            question="How many accounts choose issuance after transaction",
-        ))
-        assert "account" in update["matched_tables"]
-        assert "trans" in update["matched_tables"]
-        assert "account" in update["schema_context"]
-        assert "No matching tables" not in update["schema_context"]
-
-
 class TestSchemaLinkingSemanticLayer:
-    """实时语义层(OSSIE provider)渲染进 schema_context。"""
+    """语义优先(Phase B):semantic_context 渲染进 schema_context,唯一通道。"""
 
     class FakeProvider:
         enabled = True
 
-        def __init__(self, metrics, instructions=""):
-            self._metrics = metrics
+        def __init__(self, model, instructions=""):
+            self._model = model
             self._instructions = instructions
 
-        def metrics(self):
-            return list(self._metrics)
+        def model(self):
+            return self._model
+
+        def terms_for(self, question, tables=None, all_tables=None):
+            return []
+
+        def field_hits(self, question, tables=None):
+            return []
 
         @property
         def instructions(self):
             return self._instructions
 
     @pytest.fixture
-    def semantic_metrics(self):
-        from trove.services.semantic_layer.models import SemanticMetric
-        return [
-            SemanticMetric(
-                name="total_loan_amount", expression="SUM(loan.amount)",
-                datasets=["loan"], definition="Total amount of all loans"),
-            SemanticMetric(
-                name="ghost_metric", expression="SUM(ghost.col)",
-                datasets=["ghost"], definition="Ghost"),
-            SemanticMetric(name="global_count", expression="COUNT(*)"),
-        ]
+    def semantic_model(self):
+        from trove.services.semantic_layer.models import (
+            SemanticDataset, SemanticField, SemanticMetric, SemanticModel,
+        )
+        return SemanticModel(
+            name="fin",
+            datasets=[
+                SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                    SemanticField(name="loan_id", expression="loan_id"),
+                    SemanticField(name="amount", expression="amount"),
+                ]),
+                SemanticDataset(name="ghost", primary_key=["id"], fields=[
+                    SemanticField(name="id", expression="id"),
+                ]),
+            ],
+            metrics=[
+                SemanticMetric(
+                    name="total_loan_amount", expression="SUM(loan.amount)",
+                    datasets=["loan"], definition="Total amount of all loans"),
+                SemanticMetric(
+                    name="ghost_metric", expression="SUM(ghost.col)",
+                    datasets=["ghost"], definition="Ghost"),
+                SemanticMetric(name="global_count", expression="COUNT(*)"),
+            ],
+        )
 
-    async def test_renders_anchored_metrics_and_instructions(self, demo_registry, semantic_metrics):
-        from trove.services.datasource.catalog import CatalogService
+    async def test_renders_anchored_metrics_and_instructions(self, demo_registry, semantic_model):
+        semantic_model.instructions = "Use this model for loan analysis"
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
-            semantic_layer=self.FakeProvider(
-                semantic_metrics, instructions="Use this model for loan analysis"),
+            semantic_layer=self.FakeProvider(semantic_model),
         )
         update = await node(make_state(question="What is the total loan amount?"))
         ctx = update["schema_context"]
-        # 锚定命中 loan 表 → 进该表段
-        assert "Semantic metrics:" in ctx
-        assert "total_loan_amount: SUM(loan.amount) — Total amount of all loans" in ctx
+        # 锚定命中 loan 数据集 → 进该段
+        assert "Dataset: loan" in ctx
+        assert "total_loan_amount = SUM(loan.amount) — Total amount of all loans" in ctx
         # 模型级 AI 使用说明
         assert "Semantic note: Use this model for loan analysis" in ctx
         # 无数据集锚定 → 模型级块
-        assert "global_count: COUNT(*)" in ctx
+        assert "global_count = COUNT(*)" in ctx
         # 数据集没进 matched_tables → 不渲染
         assert "ghost_metric" not in ctx
 
-    async def test_disabled_provider_renders_nothing(self, demo_registry, semantic_metrics):
-        from trove.services.datasource.catalog import CatalogService
-        provider = self.FakeProvider(semantic_metrics, instructions="note")
+    async def test_disabled_provider_no_model(self, demo_registry, semantic_model):
+        provider = self.FakeProvider(semantic_model, instructions="note")
         provider.enabled = False
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
             semantic_layer=provider,
         )
         update = await node(make_state(question="What is the total loan amount?"))
-        assert "Semantic metrics:" not in update["schema_context"]
-        assert "Semantic note:" not in update["schema_context"]
+        # 无语义模型 → no_model 拒绝(决策 2/3)
+        assert update["no_model"] is True
 
 
 class TestSchemaLinkingRelationshipBlock:
-    """P2:语义层声明关系 → 权威 Relationships 块替换逐表 Join hints。
+    """P2:语义层声明关系 → 权威 Relationships 块(semantic_context 内)。
 
     JoinResolver 在声明图上 BFS:问题只点名 loan+district 时,中间表
     account 被自动拉进联路径并补进渲染。
@@ -327,9 +195,7 @@ semantic_model:
         return SemanticLayerProvider(semantic_dir, "demo")
 
     async def test_renders_authoritative_relationships_block(self, tmp_path, demo_registry):
-        from trove.services.datasource.catalog import CatalogService
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
             semantic_layer=self._provider(tmp_path),
         )
@@ -340,28 +206,27 @@ semantic_model:
         assert "loan.account_id = account.account_id" in ctx
         assert "account.district_id = district.district_id" in ctx
         # 中间表 account 补进渲染(问题没点名它)
-        assert "Table: account" in ctx
+        assert "Dataset: account" in ctx
 
     async def test_suppressed_join_hints_when_block_present(self, tmp_path, demo_registry):
-        from trove.services.datasource.catalog import CatalogService
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
             semantic_layer=self._provider(tmp_path),
         )
-        update = await node(make_state(question="What is the average loan amount?"))
+        update = await node(make_state(
+            question="What is the average loan amount per district?"))
         ctx = update["schema_context"]
         assert "Relationships:" in ctx
         assert "Join hints:" not in ctx
 
     async def test_no_block_without_semantic_layer(self, demo_registry):
-        """无语义层 → 保持既有 Join hints 行为,不渲染 Relationships。"""
-        from trove.services.datasource.catalog import CatalogService
+        """无语义层 → no_model 拒绝(决策 2/3),不渲染 Relationships。"""
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
+            semantic_layer=None,
         )
         update = await node(make_state(question="city and district info"))
+        assert update["no_model"] is True
         assert "Relationships:" not in update["schema_context"]
 
     MODEL_WITH_FIELDS = """
@@ -390,8 +255,7 @@ semantic_model:
 """
 
     async def test_renders_dimensions_and_field_hints(self, tmp_path, demo_registry):
-        """声明的字段维度+别名渲染进 schema_context;问题词→字段提示注入。"""
-        from trove.services.datasource.catalog import CatalogService
+        """声明的字段+别名渲染进 semantic_context;问题词→字段提示注入。"""
         from trove.services.semantic_layer.provider import SemanticLayerProvider
         semantic_dir = tmp_path / "semantic" / "demo"
         semantic_dir.mkdir(parents=True)
@@ -399,22 +263,18 @@ semantic_model:
         provider = SemanticLayerProvider(semantic_dir, "demo")
 
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
             semantic_layer=provider,
         )
         update = await node(make_state(
             question="What is the average loan amount per district region?"))
         ctx = update["schema_context"]
-        assert "Dimensions:" in ctx
-        assert "district.A3: region, area" in ctx
-        # 无 synonyms 的字段不渲染
-        assert "district.A2:" not in ctx
+        assert "Dataset: district" in ctx
+        assert "A3" in ctx and "region, area" in ctx
         assert "Field hints: 'region' → district.A3" in ctx
 
     async def test_fanout_skips_authoritative_relationships(self, tmp_path, demo_registry):
         """P5.2:M:N 联路径 → 不渲染权威 Relationships 块(交 LLM+规则兜底)。"""
-        from trove.services.datasource.catalog import CatalogService
         from trove.services.semantic_layer.provider import SemanticLayerProvider
 
         model_with_m2n = self.MODEL.replace(
@@ -428,7 +288,6 @@ semantic_model:
         provider = SemanticLayerProvider(semantic_dir, "demo")
 
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
             semantic_layer=provider,
         )
@@ -439,13 +298,11 @@ semantic_model:
 
     async def test_link_detail_carries_matching_sources(self, tmp_path, demo_registry):
         """分析面板数据:schema_linking 的 link_detail 携带匹配来源摘要。"""
-        from trove.services.datasource.catalog import CatalogService
         from trove.services.semantic_layer.provider import SemanticLayerProvider
         semantic_dir = tmp_path / "semantic" / "demo"
         semantic_dir.mkdir(parents=True)
         (semantic_dir / "model.yml").write_text(self.MODEL_WITH_FIELDS)
         node = make_schema_linking(
-            catalog=CatalogService(demo_registry),
             connectors=demo_registry,
             semantic_layer=SemanticLayerProvider(semantic_dir, "demo"),
         )
@@ -453,14 +310,9 @@ semantic_model:
             question="What is the average loan amount per district region?"))
         ld = update.pop("link_detail", None)
         assert ld is not None
-        assert set(ld) >= {"notes_tables", "value_hits", "field_hits",
-                           "relations", "context"}
-        assert isinstance(ld["value_hits"], list)
-        assert isinstance(ld["field_hits"], list)
-        assert isinstance(ld["relations"], bool)
-        # field_hits 命中 region → district.A3(semantics.yml 别名来源)
-        assert any("district.A3" in h for h in ld["field_hits"])
-        assert "Table: district" in ld["context"]
+        assert ld["semantic_first"] is True
+        assert isinstance(ld["matched_datasets"], list)
+        assert any("district" in d for d in ld["matched_datasets"])
 
 
 class TestPlannerRollbackRevision:
@@ -497,136 +349,24 @@ class TestSchemaLinkingWithKB:
         ]))
         return kb_service
 
+    def _node(self, sqlite_registry, **kw):
+        return make_schema_linking(
+            connectors=sqlite_registry,
+            semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
+            **kw,
+        )
+
     async def test_chinese_question_matches_via_terms(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+        self, sqlite_registry, kb_service, kb_ds_dir,
     ):
         """中文问题无 ASCII 分词，靠语义术语命中表（中文匹配修复）。"""
-        node = make_schema_linking(
-            catalog=catalog,
-            kb=self._kb_with_terms(kb_service, kb_ds_dir),
-            connectors=sqlite_registry,
-        )
+        node = self._node(sqlite_registry, kb=self._kb_with_terms(kb_service, kb_ds_dir))
         update = await node(make_state(question="学生们的平均成绩是多少"))
         assert "students" in update["matched_tables"]
         assert any(h["term"] == "平均成绩" for h in update["kb_hits"])
 
-    async def test_notes_included_in_schema_context(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        self._kb_with_terms(kb_service, kb_ds_dir)
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: 学生成绩表
-    columns:
-      - name: grade
-        description: 考试成绩
-    metrics:
-      - name: avg_grade
-        definition: 平均成绩
-""",
-            encoding="utf-8",
-        )
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-        )
-        update = await node(make_state(question="学生们的平均成绩是多少"))
-        assert "学生成绩表" in update["schema_context"]
-        assert "考试成绩" in update["schema_context"]
-
-    async def test_stats_lines_reach_schema_context(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """profiling stats 渲染进 schema_context(仅异常证据,平凡统计不显示)。"""
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: 学生表
-    row_count: 5
-    columns:
-      - name: grade
-        description: 成绩
-        stats:
-          null_ratio: 0.0
-          distinct: 5
-          min: 75
-          max: 99
-      - name: note
-        description: 备注
-        stats:
-          null_ratio: 0.9
-          shape: json
-""",
-            encoding="utf-8",
-        )
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-        )
-        update = await node(make_state(question="students"))
-        assert "Stats:" in update["schema_context"]
-        assert "note: 90% NULL, shape=json" in update["schema_context"]
-        assert "grade: range 75 .. 99" in update["schema_context"]
-        # 平凡统计(0% NULL / 高 distinct)不渲染
-        assert "grade: 0% NULL" not in update["schema_context"]
-        assert "grade: 5 distinct" not in update["schema_context"]
-
-    async def test_top_values_reach_schema_context(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """P1-4:Top-K 值渲染进 Stats 段(规范拼写/脏值就地可见)。"""
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: 学生表
-    row_count: 5
-    columns:
-      - name: county
-        description: 县
-        stats:
-          distinct: 3
-          top_values:
-            - ["Alameda", 2]
-            - ["Orange", 2]
-            - ["Los Angeles", 1]
-""",
-            encoding="utf-8",
-        )
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-        )
-        update = await node(make_state(question="students"))
-        assert "top values: Alameda (2), Orange (2), Los Angeles (1)" in update["schema_context"]
-
-
-    async def test_enum_translations_reach_schema_context(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """列枚举值说明（如 BIRD value_description）渲染进 schema 上下文。"""
-
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: 学生成绩表
-    columns:
-      - name: grade
-        description: ""
-        enums: ["'POPLATEK PO OBRATU' stands for issuance after transaction"]
-""",
-            encoding="utf-8",
-        )
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-        )
-        update = await node(make_state(question="学生们的平均成绩是多少"))
-        assert "POPLATEK PO OBRATU" in update["schema_context"]
-        assert "issuance after transaction" in update["schema_context"]
-
     async def test_other_datasource_kb_not_visible(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
+        self, sqlite_registry, kb_service, kb_ds_dir,
     ):
         """知识按数据源隔离：另一个数据源目录的术语不可见。"""
         self._kb_with_terms(kb_service, kb_ds_dir)
@@ -637,509 +377,19 @@ tables:
         (other / "semantics.yml").write_text(ossie_semantics_yaml([
             {"term": "别的术语", "mapping": "COUNT(ghost.id)", "tables": ["ghost"]},
         ]))
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-        )
+        node = self._node(sqlite_registry, kb=kb_service)
         update = await node(make_state(question="别的术语查询"))
         assert "ghost" not in update["matched_tables"]
 
-    async def test_no_kb_unchanged(self, catalog):
-        """kb=None 时行为与现状一致（无 kb_hits 键）。"""
-        node = make_schema_linking(catalog=catalog, kb=None)
-        update = await node(make_state())
+    async def test_no_kb_no_terms(self, sqlite_registry):
+        """kb=None 时无 kb_hits 键;语义层仍正常匹配。"""
+        node = self._node(sqlite_registry, kb=None)
+        update = await node(make_state(question="students"))
         assert "kb_hits" not in update
-
-    async def test_join_hints_in_schema_context(self, catalog, sqlite_registry):
-        """P0-3:*_id 命名启发式 + 数据级验证——真实 key 重叠才发布 Join 提示。"""
-        adapter = await sqlite_registry.get()
-        await adapter.execute(
-            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
-        )
-        await adapter.execute(
-            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
-        )
-        # 有重叠数据 → hint 发布
-        await adapter.execute(
-            "INSERT INTO district (district_id, name) VALUES (1, 'A'), (2, 'B')"
-        )
-        await adapter.execute("INSERT INTO city (city_id, district_id) VALUES (10, 1)")
-        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
-        update = await node(make_state(question="city and district info"))
-        assert "city.district_id → district.district_id" in update["schema_context"]
-
-    async def test_join_hints_without_overlap_are_dropped(
-        self, catalog, sqlite_registry,
-    ):
-        """命名对但数据对不上(空表/无交集)→ hint 不发布,防止错关联进 prompt。"""
-        adapter = await sqlite_registry.get()
-        await adapter.execute(
-            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
-        )
-        await adapter.execute(
-            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER)"
-        )
-        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
-        update = await node(make_state(question="city and district info"))
-        assert "Join hints" not in update["schema_context"]
-
-
-# ── Value linking ────────────────────────────────────────
-
-
-class TestAlignment:
-    """LLM 对齐裁剪(AskData Task Alignment):纯函数 + 节点集成。"""
-
-    def _import(self, name):
-        from trove.workflow.nodes import schema_linking
-        return getattr(schema_linking, name)
-
-    def test_parse_alignment_valid(self):
-        _parse_alignment = self._import("_parse_alignment")
-        assert _parse_alignment(
-            '{"keep_tables": ["students"], "drop_columns": {"students": ["grade"]}}'
-        ) == {"keep_tables": ["students"], "drop_columns": {"students": ["grade"]}}
-
-    def test_parse_alignment_fenced_json(self):
-        _parse_alignment = self._import("_parse_alignment")
-        assert _parse_alignment('```json\n{"keep_tables": ["a"]}\n```') == {
-            "keep_tables": ["a"], "drop_columns": {},
-        }
-
-    def test_parse_alignment_invalid_returns_none(self):
-        _parse_alignment = self._import("_parse_alignment")
-        assert _parse_alignment("just prose") is None
-        assert _parse_alignment('{"keep_tables": "not-a-list"}') is None
-        assert _parse_alignment("") is None
-
-    async def test_align_tables_uses_fast_model_when_configured(self):
-        """表对齐判定走 fast 档(配置 model_fast 时),不烧推理模型。"""
-        _align_tables = self._import("_align_tables")
-        captured = {}
-
-        class LLM:
-            async def chat(self, model, messages, **kwargs):
-                captured["model"] = model
-                return '{"keep_tables": ["students"]}'
-
-        state = WorkflowState(session_id="s1", question="q")
-        out = await _align_tables(
-            LLM(), AgentConfig(target="m", model_fast="fast/model"), state,
-            details=[{"name": "students", "columns": []}],
-            notes=None,
-        )
-        assert captured["model"] == "fast/model"
-        assert out == {"keep_tables": ["students"], "drop_columns": {}}
-
-    def test_apply_alignment_filters_and_validates_columns(self):
-        _apply_alignment = self._import("_apply_alignment")
-        cols = {"students": {"grade", "name"}, "courses": {"id"}}
-        keep, drop = _apply_alignment(
-            ["students", "courses"],
-            {"keep_tables": ["students"], "drop_columns": {
-                "students": ["grade", "nope"]}},
-            cols,
-        )
-        assert keep == ["students"]
-        assert drop == {"students": {"grade"}}  # nope 校验到真实列后丢弃
-
-    def test_apply_alignment_empty_keep_falls_back(self):
-        _apply_alignment = self._import("_apply_alignment")
-        keep, drop = _apply_alignment(
-            ["a"], {"keep_tables": [], "drop_columns": {}}, {"a": set()},
-        )
-        assert keep == ["a"] and drop == {}
-
-    def test_apply_alignment_must_keep_survives(self):
-        """回退重跑时上一轮匹配表强制保留,对齐不允许丢。"""
-        _apply_alignment = self._import("_apply_alignment")
-        keep, _ = _apply_alignment(
-            ["a", "b"], {"keep_tables": ["b"], "drop_columns": {}},
-            {"a": set(), "b": set()}, must_keep=["a"],
-        )
-        assert keep == ["a", "b"]
-
-    def test_alignment_context_includes_stats(self):
-        _alignment_context = self._import("_alignment_context")
-        from trove.services.kb.service import TableNotes
-        details = [{"name": "students", "row_count": 5, "columns": [
-            {"name": "grade", "type": "int"}]}]
-        notes = {"students": TableNotes(
-            row_count=5,
-            stats={"grade": {"null_ratio": 0.9, "distinct": 5, "min": 1, "max": 10}},
-        )}
-        ctx = _alignment_context(details, notes)
-        assert "Table: students (5 rows)" in ctx
-        assert "90% NULL" in ctx and "1..10" in ctx
-
-    def test_alignment_context_includes_top_values_and_join_hints(self):
-        """P1-6:Top-K 值(列实际内容)与已验证 join hints 进对齐上下文。"""
-        _alignment_context = self._import("_alignment_context")
-        from trove.services.kb.service import TableNotes
-        details = [
-            {"name": "city", "row_count": 2, "columns": [
-                {"name": "district_id", "type": "int"},
-                {"name": "name", "type": "varchar"},
-            ]},
-            {"name": "district", "row_count": 2, "columns": [
-                {"name": "district_id", "type": "int"},
-            ]},
-        ]
-        notes = {"city": TableNotes(row_count=2, stats={"name": {
-            "distinct": 2, "top_values": [["Alameda", 1], ["Orange", 1]],
-        }})}
-        hints = {"city": ["city.district_id → district.district_id (2/2 match)"]}
-        ctx = _alignment_context(details, notes, hints)
-        assert "Join hints: city.district_id → district.district_id (2/2 match)" in ctx
-        assert "top values: Alameda (1), Orange (1)" in ctx
-
-    async def test_alignment_trims_tables_and_columns(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """对齐结果生效:表保序过滤,裁剪列不进 schema_context。"""
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: student records
-    row_count: 5
-    columns:
-      - name: grade
-        description: grade
-        stats:
-          null_ratio: 0.0
-          distinct: 5
-          min: 75
-          max: 99
-      - name: name
-        description: name
-        stats:
-          null_ratio: 0.0
-          distinct: 5
-""",
-            encoding="utf-8",
-        )
-        llm = ScriptedLLM(
-            ['{"keep_tables": ["students"], "drop_columns": {"students": ["name"]}}']
-        )
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-            llm=llm, config=AgentConfig(target="mock/model"),
-        )
-        update = await node(make_state(question="students"))
-        assert update["matched_tables"] == ["students"]
-        assert "grade (INTEGER)" in update["schema_context"]
-        assert "name (TEXT)" not in update["schema_context"]
-        assert "Stats:" in update["schema_context"]
-
-    async def test_alignment_failure_falls_back(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """LLM 输出不可解析 → 原样使用候选集,管线不阻塞。"""
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: student records
-    columns:
-      - name: grade
-        description: grade
-        stats:
-          null_ratio: 0.9
-""",
-            encoding="utf-8",
-        )
-        llm = ScriptedLLM(["this is not json"])
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-            llm=llm, config=AgentConfig(target="mock/model"),
-        )
-        update = await node(make_state(question="students"))
-        assert "students" in update["schema_context"]
-        assert "grade (INTEGER)" in update["schema_context"]
-
-    async def test_no_stats_skips_alignment(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """无统计证据(KB 只有描述)→ 不发起对齐调用。"""
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: students
-    description: student records
-    columns:
-      - name: grade
-        description: grade
-""",
-            encoding="utf-8",
-        )
-
-        class ExplodingLLM:
-            async def chat(self, model, messages, **kwargs):
-                raise AssertionError("alignment should not run without stats")
-
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-            llm=ExplodingLLM(), config=AgentConfig(target="mock/model"),
-        )
-        update = await node(make_state(question="students"))
-        assert "students" in update["schema_context"]
-
-    async def test_alignment_prompt_receives_hints_and_top_values(
-        self, catalog, sqlite_registry, kb_service, kb_ds_dir,
-    ):
-        """P1-6:已验证 join hints 与 Top-K 值进入对齐上下文。
-
-        对齐裁掉 district 后,hint(city→district)两端必须都在保留集,
-        不再发布给 gen_sql——防止引用已裁表的错关联进 schema_context。
-        """
-        adapter = await sqlite_registry.get()
-        await adapter.execute(
-            "CREATE TABLE district (district_id INTEGER PRIMARY KEY, name TEXT)"
-        )
-        await adapter.execute(
-            "CREATE TABLE city (city_id INTEGER PRIMARY KEY, district_id INTEGER, "
-            "name TEXT)"
-        )
-        await adapter.execute(
-            "INSERT INTO district (district_id, name) VALUES (1, 'A'), (2, 'B')"
-        )
-        await adapter.execute(
-            "INSERT INTO city (city_id, district_id, name) VALUES "
-            "(10, 1, 'Alameda'), (11, 2, 'Orange')"
-        )
-        (kb_ds_dir / "schema_notes.yml").write_text(
-            """
-tables:
-  - name: city
-    description: city records
-    columns:
-      - name: district_id
-        description: district ref
-        stats:
-          null_ratio: 0.0
-      - name: name
-        description: city name
-        stats:
-          distinct: 2
-          top_values:
-            - ["Alameda", 1]
-            - ["Orange", 1]
-""",
-            encoding="utf-8",
-        )
-        captured = {}
-
-        class CapturingLLM:
-            async def chat(self, model, messages, **kwargs):
-                captured.update(messages=messages)
-                return '{"keep_tables": ["city"], "drop_columns": {}}'
-
-        node = make_schema_linking(
-            catalog=catalog, kb=kb_service, connectors=sqlite_registry,
-            llm=CapturingLLM(), config=AgentConfig(target="mock/model"),
-        )
-        update = await node(make_state(question="city and district info"))
-        prompt = " ".join(m["content"] for m in captured["messages"])
-        assert "Join hints: city.district_id → district.district_id" in prompt
-        assert "top values: Alameda (1), Orange (1)" in prompt
-        # 对齐裁掉 district → hint 引用已裁表,不再发布
-        assert "Join hints" not in update["schema_context"]
-
-
-class TestValueCandidates:
-    def test_quoted_and_capitalized_words(self):
-        from trove.workflow.nodes.schema_linking import _extract_value_candidates
-
-        q = "账户 'POPLATEK' 在 Benesov 地区的贷款"
-        assert "POPLATEK" in _extract_value_candidates(q)
-        assert "Benesov" in _extract_value_candidates(q)
-
-    def test_no_candidates_for_plain_question(self):
-        from trove.workflow.nodes.schema_linking import _extract_value_candidates
-
-        assert _extract_value_candidates("哪个地区的平均贷款金额最高?") == []
-
-    def test_candidates_deduplicated_and_limited(self):
-        from trove.workflow.nodes.schema_linking import _extract_value_candidates
-
-        q = "'XX' 'XX' " + " ".join(f"Word{i}" for i in range(8))
-        result = _extract_value_candidates(q)
-        assert result.count("XX") == 1
-        assert len(result) <= 5
-
-
-class TestValueLinkingInSchemaContext:
-    async def test_value_hints_for_matched_tables(self, catalog, sqlite_registry):
-        """问题中的实体在匹配表的列值中命中 → schema_context 带 Value hints。"""
-        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
-        update = await node(make_state(question="Alameda 县学生的平均 grade 成绩"))
-        assert "Value hints" in update["schema_context"]
-        assert "Alameda" in update["schema_context"]
-        assert "students.county" in update["schema_context"]
-
-    async def test_no_value_hints_without_hits(self, catalog, sqlite_registry):
-        node = make_schema_linking(catalog=catalog, connectors=sqlite_registry)
-        update = await node(make_state(question="学生的平均成绩"))
-        assert "Value hints" not in update["schema_context"]
-
-
-# ── Join hints ───────────────────────────────────────────
-
-
-class TestJoinHints:
-    def test_infer_from_id_suffix(self):
-        """account.district_id 且存在 district 表 → 生成 Join 提示。"""
-        from trove.workflow.nodes.schema_linking import _join_hints
-
-        hints = _join_hints(
-            "account", ["account_id", "district_id", "frequency"],
-            {"district": ["district_id", "A2"]},
-        )
-        assert hints == ["account.district_id → district.district_id"]
-
-    def test_target_column_falls_back_to_id(self):
-        from trove.workflow.nodes.schema_linking import _join_hints
-
-        hints = _join_hints(
-            "loan", ["loan_id", "account_id"],
-            {"account": ["account_id"]},
-        )
-        assert hints == ["loan.account_id → account.account_id"]
-
-    def test_no_matching_table_no_hint(self):
-        from trove.workflow.nodes.schema_linking import _join_hints
-
-        assert _join_hints(
-            "account", ["account_id", "frequency"], {"district": ["district_id"]},
-        ) == []
-
-    def test_self_and_unknown_targets_skipped(self):
-        from trove.workflow.nodes.schema_linking import _join_hints
-
-        # 无对应表 / 无对应列 → 不产生提示
-        assert _join_hints("account", ["ghost_id"], {"account": ["account_id"]}) == []
-        assert _join_hints("account", ["account_id"], {"account": ["account_id"]}) == []
-
-
-class TestVerifiedJoinHints:
-    """P0-3:join hint 数据级验证——采样值重叠探测。"""
-
-    @staticmethod
-    def _scripted(values, hits, fail=False):
-        import types
-
-        class _C:
-            def __init__(self):
-                self.queries = []
-
-            async def get(self, datasource=None):
-                return types.SimpleNamespace(dialect=lambda: "sqlite")
-
-            async def execute(self, sql, datasource=None):
-                if fail:
-                    raise RuntimeError("db down")
-                self.queries.append(sql)
-                if "SELECT COUNT(*)" in sql:
-                    return types.SimpleNamespace(rows=[[hits]])
-                return types.SimpleNamespace(rows=[[v] for v in values])
-
-        return _C()
-
-    HINT = "account.district_id → district.district_id"
-
-    async def test_all_match_keeps_hint_plain(self):
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        result = await _verified_hints(
-            self._scripted([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 10), [self.HINT],
-        )
-        assert result == {self.HINT: self.HINT}
-
-    async def test_partial_match_keeps_hint_with_ratio(self):
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        result = await _verified_hints(
-            self._scripted([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 7), [self.HINT],
-        )
-        assert result[self.HINT] == f"{self.HINT} (7/10 match)"
-
-    async def test_below_min_match_drops(self):
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        result = await _verified_hints(
-            self._scripted([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 1), [self.HINT],
-        )
-        assert result == {}
-
-    async def test_probe_failure_drops_silently(self):
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        result = await _verified_hints(self._scripted([], 0, fail=True), [self.HINT])
-        assert result == {}
-
-    async def test_null_sample_drops(self):
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        result = await _verified_hints(self._scripted([None, None], 0), [self.HINT])
-        assert result == {}
-
-    async def test_no_connectors_passthrough(self):
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        assert await _verified_hints(None, [self.HINT]) == {self.HINT: self.HINT}
-
-    async def test_mysql_uses_backtick_quoting(self):
-        import types
-
-        from trove.workflow.nodes.schema_linking import _verified_hints
-
-        class _C:
-            def __init__(self):
-                self.queries = []
-
-            async def get(self, datasource=None):
-                return types.SimpleNamespace(dialect=lambda: "mysql")
-
-            async def execute(self, sql, datasource=None):
-                self.queries.append(sql)
-                if "SELECT COUNT(*)" in sql:
-                    return types.SimpleNamespace(rows=[[2]])
-                return types.SimpleNamespace(rows=[[1], [2]])
-
-        c = _C()
-        await _verified_hints(c, [self.HINT])
-        assert "`district_id`" in c.queries[0]
-
-
-# ── gen_sql: prompt builders and extraction ──────────────
-
+        assert "students" in update["matched_tables"]
 
 class TestCorrectionContextInjection:
     """回退重跑时把失败上下文带回上游步骤。"""
-
-    async def test_schema_linking_search_includes_error_analysis(self, catalog):
-        """schema_linking 重跑时，诊断文本进入目录搜索输入。"""
-        class RecordingCatalog:
-            def __init__(self):
-                self.queries = []
-
-            async def search_tables(self, query, limit=10):
-                self.queries.append(query)
-                return []
-
-            async def table_detail(self, name):
-                return None
-
-        from trove.workflow.nodes.schema_linking import make_schema_linking
-
-        rec = RecordingCatalog()
-        node = make_schema_linking(catalog=rec, kb=None, connectors=None, fallback_all=False)
-        await node(make_state(
-            question="学生的平均成绩",
-            error_analysis="判断: 漏了 nonexistent 表",
-        ))
-        assert rec.queries
-        assert "nonexistent" in rec.queries[0]
 
     async def test_planner_prompt_includes_correction_context(self):
         """planner 重跑时，提示词携带上一次失败与诊断。"""
@@ -1601,43 +851,6 @@ class TestProbeQuery:
 
 
 # ── _column_stats_text(planner 列画像)─────────────────
-
-
-class TestColumnStats:
-    async def test_county_stats(self, sqlite_registry):
-        """rows/null 比例/distinct/样例/低基数 top 一应俱全。"""
-        from trove.workflow.nodes.planner import _column_stats_text
-
-        text = await _column_stats_text(sqlite_registry, "students", "county")
-        assert "rows=5" in text
-        assert "null_ratio=0.0" in text
-        assert "distinct=3" in text
-        assert "Alameda" in text  # 样例
-        assert "Alameda (2)" in text  # 低频 top:频次
-        assert "Los Angeles (1)" in text
-
-    async def test_unknown_table(self, sqlite_registry):
-        from trove.workflow.nodes.planner import _column_stats_text
-
-        text = await _column_stats_text(sqlite_registry, "nope", "county")
-        assert "not found" in text
-        assert "nope" in text
-
-    async def test_unknown_column(self, sqlite_registry):
-        from trove.workflow.nodes.planner import _column_stats_text
-
-        text = await _column_stats_text(sqlite_registry, "students", "nope")
-        assert "not found" in text
-        assert "nope" in text
-
-    async def test_no_connectors(self):
-        from trove.workflow.nodes.planner import _column_stats_text
-
-        text = await _column_stats_text(None, "students", "county")
-        assert "no datasource" in text
-
-
-# ── extra_columns_mismatch(层2多余列检查)───────────────
 
 
 class TestExtraColumnsMismatch:
@@ -2595,52 +1808,6 @@ class TestPlanner:
 
 class TestPlannerAgentic:
     """planner agentic 路径(带 connectors 的 ReAct 循环)——首个覆盖测试。"""
-
-    async def test_planner_get_column_stats_round(self, sqlite_registry):
-        """模型先调 get_column_stats 拿真实画像,再交 plan JSON;观测进对话。"""
-        import json
-        from trove.workflow.nodes.planner import make_planner
-
-        class AgenticLLM:
-            def __init__(self, responses):
-                self._responses = list(responses)
-                self.calls = []
-
-            async def chat_full(self, model, messages, tools=None, **kwargs):
-                self.calls.append(messages)
-                return self._responses.pop(0)
-
-            async def chat(self, model, messages, **kwargs):
-                self.calls.append(messages)
-                return self._responses.pop(0)
-
-        plan = json.dumps({
-            "tables": ["students"],
-            "joins": "",
-            "conditions": [],
-            "aggregation": "none",
-            "answer_columns": ["county"],
-        })
-        llm = AgenticLLM([
-            {"content": None, "tool_calls": [
-                {"id": "c1", "name": "get_column_stats",
-                 "arguments": '{"table": "students", "column": "county"}'},
-            ]},
-            {"content": plan, "tool_calls": []},
-        ])
-        node = make_planner(llm, AgentConfig(target="m"), connectors=sqlite_registry)
-        update = await node(make_state(question="how are students distributed by county"))
-        # 观测进 tool 消息:真实画像(distinct/null 比例/样例)
-        tool_msgs = [m for msgs in llm.calls for m in msgs if m.get("role") == "tool"]
-        assert any("distinct=3" in m["content"] and "Alameda" in m["content"] for m in tool_msgs)
-        # plan 落地并通过层1校验
-        assert update["plan"]
-        assert update["plan_json"]["answer_columns"] == ["county"]
-        assert update["plan_validation"]["status"] == "ok"
-
-
-# ── Clarify ──────────────────────────────────────────────
-
 
 class TestClarify:
     async def test_matched_tables_pass(self):

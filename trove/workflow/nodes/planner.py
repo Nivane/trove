@@ -18,7 +18,6 @@ from typing import Any
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
-from trove.llm.agent_loop import run_agent_loop
 from trove.prompts import render
 from trove.prompts.skills import render_skills
 from trove.workflow.state import WorkflowState
@@ -550,7 +549,11 @@ def _sig_compatible(a: tuple, b: tuple) -> bool:
 
 
 async def _schema_map(connectors, datasource: str | None = None) -> dict[str, set[str]] | None:
-    """真实 schema → 小写表名 → 小写列名集合;不可用 → None(跳过校验)。"""
+    """真实 schema → 小写表名 → 小写列名集合;不可用 → None(跳过校验)。
+
+    Phase B(决策 1):仅用于计划引用存在性校验(层1),不注入 LLM 上下文,
+    也不作为 agent 的探测通道。
+    """
     if connectors is None:
         return None
     try:
@@ -561,97 +564,6 @@ async def _schema_map(connectors, datasource: str | None = None) -> dict[str, se
         }
     except Exception:
         return None
-
-
-def _short_value(v: Any) -> str:
-    """观测里的单值:截断为短字符串。"""
-    if v is None:
-        return "null"
-    s = str(v)
-    return s[:40] + "…" if len(s) > 40 else s
-
-
-async def _column_stats_text(
-    connectors, table: str, column: str, datasource: str | None = None,
-) -> str:
-    """列画像观测:行数 / null 比例 / distinct / 样例 / 低基数高频值。
-
-    运行时探测,**永不抛异常**——失败折叠成短错误文本。方言感知引号
-    (schema_linking.py JOIN_PROBE 同款惯例):MySQL 反引号,其余双引号
-    (SQLite 接受双引号标识符)。每个探测独立 5s 超时、失败静默跳过。
-    高基数列(>30 distinct)不展示 top 值——top 只对低基数列有意义。
-    """
-    if connectors is None:
-        return "error: no datasource available"
-    try:
-        adapter = await connectors.get(datasource)
-        quote = "`" if adapter.dialect() == "mysql" else '"'
-    except Exception as e:
-        return f"error: {e}"
-    t, c = str(table or "").strip(), str(column or "").strip()
-    if not t or not c:
-        return "error: both table and column are required"
-
-    # 表/列存在性(schema 可用时;不可用则靠探查询的 SQL 错误兜底)
-    distinct: int | None = None
-    try:
-        schema = await asyncio.wait_for(connectors.get_schema(datasource), timeout=5.0)
-        tbl = next((x for x in schema.tables if x.name.lower() == t.lower()), None)
-        if tbl is None:
-            return f"table '{t}' not found"
-        if c.lower() not in {col.name.lower() for col in tbl.columns}:
-            return f"column '{c}' not found in table '{t}'"
-    except Exception:
-        pass
-
-    q_t, q_c = f"{quote}{t}{quote}", f"{quote}{c}{quote}"
-
-    agg: list | None = None
-    try:
-        r = await asyncio.wait_for(connectors.execute(
-            f"SELECT COUNT(*), SUM({q_c} IS NULL), COUNT(DISTINCT {q_c}) FROM {q_t}",
-            datasource,
-        ), timeout=5.0)
-        if r.rows and r.rows[0]:
-            agg = r.rows[0]
-            distinct = agg[2]
-    except Exception:
-        pass
-
-    sample: list[str] = []
-    try:
-        r = await asyncio.wait_for(connectors.execute(
-            f"SELECT DISTINCT {q_c} FROM {q_t} WHERE {q_c} IS NOT NULL LIMIT 5",
-            datasource,
-        ), timeout=5.0)
-        sample = [_short_value(row[0]) for row in (r.rows or [])[:5]]
-    except Exception:
-        pass
-
-    top: list[tuple[str, Any]] = []
-    if distinct is None or 2 <= distinct <= 30:
-        try:
-            r = await asyncio.wait_for(connectors.execute(
-                f"SELECT {q_c}, COUNT(*) FROM {q_t} GROUP BY {q_c} "
-                f"ORDER BY COUNT(*) DESC, {q_c} LIMIT 10",
-                datasource,
-            ), timeout=5.0)
-            top = [(_short_value(row[0]), row[1]) for row in (r.rows or [])[:10]]
-        except Exception:
-            pass
-
-    parts: list[str] = []
-    if agg is not None:
-        rows, nulls = agg[0], agg[1] or 0
-        null_ratio = round(nulls / rows, 3) if rows else 0.0
-        parts.append(f"rows={rows} null_ratio={null_ratio} distinct={distinct}")
-    if sample:
-        parts.append("sample: " + ", ".join(sample))
-    if top:
-        parts.append("top: " + ", ".join(f"{v} ({n})" for v, n in top))
-    if not parts:
-        return f"error: no stats available for {t}.{c}"
-    return "; ".join(parts)
 
 
 def _plan_has_intent(plan_json: dict[str, Any] | None) -> bool:
@@ -720,9 +632,6 @@ def make_planner(
         if state.error:
             return {}
 
-        # 语义优先(Phase A):主干不暴露 catalog 探测工具、编译 MISS → refuse
-        semantic_first = bool(getattr(config, "semantic_first", False)) if config else False
-
         # 回退重跑：携带上一次失败与诊断，重定计划而不是重写原计划
         base_correction = " ".join(
             p for p in (state.error_feedback, state.error_analysis, state.reason) if p
@@ -740,10 +649,9 @@ def make_planner(
         if skill_block:
             system_prompt = f"{system_prompt}\n\n{skill_block}"
         llm_detail: dict[str, Any] | None = None
-        trail = ""
 
         async def call_planner(correction: str) -> str:
-            nonlocal llm_detail, trail
+            nonlocal llm_detail
             prompt = render(
                 "planner/user",
                 lang=state.lang,
@@ -755,83 +663,9 @@ def make_planner(
                 correction=correction[:600] if correction else "",
                 previous_plan=state.plan[:800] if state.plan else "",
             )
-            # 语义优先(Phase A,决策 1):主干不再暴露任何 catalog 探测工具——
-            # get_table_columns / get_column_stats 是物理 schema 旁路,仅
-            # 旧裸表路径(评测对照)保留。
-            if agentic and connectors is not None and not semantic_first:
-                from trove.llm.agent_loop import ToolRegistry
-
-                registry = ToolRegistry(finish=True)
-
-                async def table_columns(arguments: dict) -> str:
-                    table = arguments.get("table", "")
-                    schema = await connectors.get_schema(state.datasource or None)
-                    for t in schema.tables:
-                        if t.name.lower() == table.lower():
-                            return ", ".join(f"{c.name} {c.type}" for c in t.columns)
-                    return f"table '{table}' not found"
-
-                async def column_stats(arguments: dict) -> str:
-                    # 列画像:起草条件前锚定过滤值的真实取值与行数量级
-                    return await _column_stats_text(
-                        connectors,
-                        arguments.get("table", ""),
-                        arguments.get("column", ""),
-                        state.datasource or None,
-                    )
-
-                registry.register(
-                    "get_table_columns", table_columns,
-                    description="Inspect the columns of one table.",
-                    parameters={
-                        "type": "object",
-                        "properties": {"table": {"type": "string"}},
-                        "required": ["table"],
-                    },
-                )
-                registry.register(
-                    "get_column_stats", column_stats,
-                    description=(
-                        "Inspect a column's real data: row count, null ratio, "
-                        "distinct count, sample values, and (for low-cardinality "
-                        "columns) the most frequent values with counts. "
-                        "Use BEFORE drafting filter conditions to anchor values "
-                        "to actual data — what type/frequency/status columns "
-                        "really store, and the row-count scale of a table."
-                    ),
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "table": {"type": "string"},
-                            "column": {"type": "string"},
-                        },
-                        "required": ["table", "column"],
-                    },
-                )
-
-                result = await run_agent_loop(
-                    llm, model,
-                    system=system_prompt,
-                    user=prompt,
-                    registry=registry,
-                    tool_timeout_s=20.0,
-                    time_budget_s=60.0,
-                    max_rounds=3,
-                    max_total_tokens=1500,
-                    metadata={"node": "planner", "session_id": state.session_id, "run_id": state.run_id},
-                )
-                t = " ".join(
-                    p for p in (result.get("reasoning", ""), result.get("transcript", "")) if p
-                )
-                trail = t[:800]
-                if not result.get("guard_hit"):
-                    return result["content"]
-                # 护栏降级:agent loop 原地打转/预算耗尽 → 退到直接生成
-                # (plan 校验在 call_planner 之外,照常拦截幻觉列)
-                logger.warning(
-                    "Planner agent loop guard (%s, %d rounds); degrading to direct generation",
-                    result.get("budget_why"), result["rounds"],
-                )
+            # 语义优先(Phase B,决策 1):planner 不再暴露任何 catalog 探测工具——
+            # get_table_columns / get_column_stats 已从查询路径物理移除
+            # (agent 运行时不可能触达物理元数据)。
 
             start = time.monotonic()
             response = await llm.chat(
@@ -907,15 +741,15 @@ def make_planner(
                 "plan_validation": {"status": "ok"},
             }
             # 受限选择编译:覆盖内问题编译器拼出权威 SQL 并注入 plan,
-            # gen_sql 遵从(确定性通道);MISS/越界 → 原通道。确定性零 LLM。
+            # gen_sql 遵从(确定性通道);MISS → 拒绝(语义优先唯一通道)。
             compiled = _compile_semantic(plan_json, state.matched_tables, semantic_layer)
             if compiled is not None:
                 compiled_sql, block = compiled
                 update["plan"] = f"{plan}\n\n{block}" if plan else block
                 update["compiled_sql"] = compiled_sql
                 update["compiled"] = True
-            elif semantic_first:
-                # 语义优先(Phase A,决策 4):编译 MISS 不再静默降级裸表——
+            else:
+                # 语义优先(Phase B,决策 4):编译 MISS 不再静默降级裸表——
                 # 计划有真实意图但组件未覆盖 → 拒绝信号,图路由到 refuse 节点
                 # (LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞计划
                 # 不拒绝,gen_sql 从 semantic_context 照常生成。
@@ -928,8 +762,6 @@ def make_planner(
                     }
             if llm_detail:
                 update["llm"] = llm_detail
-            if trail:
-                update["reasoning_history"] = [{"node": "planner", "text": trail}]
             return update
         except Exception as e:
             logger.warning("Planner failed (proceeding without a plan): %s", e)

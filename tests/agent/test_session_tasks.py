@@ -451,7 +451,7 @@ class TestHitlBatchOptions:
         config = AgentConfig(home=str(tmp_home), target="mock/model", hitl=True)
         gateway = gateway_cls(responses)
         graphs = build_graphs(
-            GraphServices(llm=gateway, connectors=sqlite_registry, config=config),
+            GraphServices(llm=gateway, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None), config=config),
             checkpointer=InMemorySaver(),
             multi_candidate=False, planner=False, agentic=False,
         )

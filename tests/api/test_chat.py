@@ -220,7 +220,7 @@ class TestChatHITLResume:
             "- 共 5 名学生",
         ])
         graphs = build_graphs(
-            GraphServices(llm=gateway, connectors=sqlite_registry, config=config),
+            GraphServices(llm=gateway, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None), config=config),
             checkpointer=InMemorySaver(),
             multi_candidate=False, planner=False, agentic=False,
         )
@@ -236,7 +236,7 @@ class TestChatHITLResume:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]
             resp = await c.post(
                 "/v1/chat",
-                json={"session_id": session_id, "question": "What is the average loan amount?"},
+                json={"session_id": session_id, "question": "students average grade by county"},
             )
             events = parse_sse(resp.text)
             types = [t for t, _ in events]
@@ -280,7 +280,7 @@ class TestChatTasks:
         config = AgentConfig(home=str(tmp_home), target="mock/model", hitl=hitl)
         gateway = ScriptedGateway(responses)
         graphs = build_graphs(
-            GraphServices(llm=gateway, connectors=sqlite_registry, config=config),
+            GraphServices(llm=gateway, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None), config=config),
             checkpointer=InMemorySaver(),
             multi_candidate=False, planner=False, agentic=False,
         )

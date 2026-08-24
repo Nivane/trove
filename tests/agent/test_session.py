@@ -181,6 +181,7 @@ class TestAskStream:
             llm=ScriptedLLM(),
             catalog=CatalogService(sqlite_registry),
             connectors=sqlite_registry,
+            semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
         )
         manager = SessionManager(
             config=config,
@@ -260,6 +261,7 @@ class TestStructuredSteps:
             llm=llm,
             catalog=CatalogService(sqlite_registry),
             connectors=sqlite_registry,
+            semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
             config=config,
         )
         return SessionManager(
@@ -359,6 +361,7 @@ class TestTrajectoryEvents:
             llm=llm,
             catalog=CatalogService(sqlite_registry),
             connectors=sqlite_registry,
+            semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
             config=config,
         )
         return SessionManager(
@@ -802,6 +805,7 @@ class TestResultCache:
             llm=llm,
             catalog=CatalogService(sqlite_registry),
             connectors=sqlite_registry,
+            semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
             config=config,
         )
         manager = SessionManager(

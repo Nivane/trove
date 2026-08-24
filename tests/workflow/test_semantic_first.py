@@ -69,30 +69,24 @@ def make_state(**kwargs) -> WorkflowState:
     return WorkflowState(**defaults)
 
 
-def _node(catalog=None, connectors=None, provider=None, semantic_first=True):
+def _node(connectors=None, provider=None):
     return make_schema_linking(
-        catalog,
-        kb=None,
-        connectors=connectors,
-        fallback_all=True,  # 语义优先下应被忽略(不兜底)
-        llm=None,
-        config=AgentConfig(target="mock/model", semantic_first=semantic_first),
-        semantic_layer=provider,
+        kb=None, connectors=connectors, semantic_layer=provider,
     )
 
 
 class TestSemanticFirstLinking:
-    async def test_no_model_refuses_when_no_layer(self, catalog, sqlite_registry):
+    async def test_no_model_refuses_when_no_layer(self, sqlite_registry):
         """语义优先 + 无语义层 → no_model 拒绝(决策 2/3),不静默降级裸表。"""
-        node = _node(catalog=catalog, connectors=sqlite_registry, provider=None)
+        node = _node(connectors=sqlite_registry, provider=None)
         out = await node(make_state())
         assert out["no_model"] is True
         assert out["matched_tables"] == []
         assert out["semantic_context"] == ""
 
-    async def test_semantic_context_no_physical_leak(self, catalog, sqlite_registry):
+    async def test_semantic_context_no_physical_leak(self, sqlite_registry):
         """semantic_context 只含模型声明,不泄漏物理列/统计/样本/join hints。"""
-        node = _node(catalog=catalog, connectors=sqlite_registry,
+        node = _node(connectors=sqlite_registry,
                      provider=FakeProvider(_students_model()))
         out = await node(make_state())
         ctx = out["semantic_context"]
@@ -107,9 +101,9 @@ class TestSemanticFirstLinking:
         assert "county" not in ctx
         assert "name" not in ctx
 
-    async def test_matched_datasets_anchoring(self, catalog, sqlite_registry):
+    async def test_matched_datasets_anchoring(self, sqlite_registry):
         """表锚定改为 dataset 锚定:matched_tables = 匹配的 dataset 名。"""
-        node = _node(catalog=catalog, connectors=sqlite_registry,
+        node = _node(connectors=sqlite_registry,
                      provider=FakeProvider(_students_model()))
         out = await node(make_state())
         assert out["matched_tables"] == ["students"]
@@ -117,9 +111,9 @@ class TestSemanticFirstLinking:
         assert out["link_detail"]["semantic_first"] is True
         assert out["link_detail"]["matched_datasets"] == ["students"]
 
-    async def test_zero_match_refuses_no_fallback(self, catalog, sqlite_registry):
-        """零命中 = 未覆盖 = 拒绝;fallback_all 在语义优先下被忽略。"""
-        node = _node(catalog=catalog, connectors=sqlite_registry,
+    async def test_zero_match_refuses_no_fallback(self, sqlite_registry):
+        """零命中 = 未覆盖 = 拒绝;无任何 fallback 兜底(决策 4)。"""
+        node = _node(connectors=sqlite_registry,
                      provider=FakeProvider(_students_model()))
         out = await node(make_state(question="totally unrelated query about weather"))
         assert out["matched_tables"] == []
@@ -127,23 +121,13 @@ class TestSemanticFirstLinking:
         assert out["refusal"]["reason"] == "no_semantic_match"
         assert out["schema_context"].startswith("No semantic model matched")
 
-    async def test_legacy_context_recorded_for_comparison(self, catalog, sqlite_registry):
-        """Phase A 对照:旧裸表 schema_context 记入 link_detail.legacy。"""
-        node = _node(catalog=catalog, connectors=sqlite_registry,
-                     provider=FakeProvider(_students_model()))
-        out = await node(make_state())
-        legacy = out["link_detail"]["legacy"]
-        assert legacy["matched_tables"]
-        assert "Table: students" in legacy["schema_context"]
-
-    async def test_legacy_path_unchanged_when_semantic_first_false(self, catalog, sqlite_registry):
-        """semantic_first=False → 旧裸表路径原样(评测对照保留)。"""
-        node = _node(catalog=catalog, connectors=sqlite_registry,
-                     provider=None, semantic_first=False)
-        out = await node(make_state())
-        assert out["matched_tables"] == ["students"]
-        assert "Table: students" in out["schema_context"]
-        assert "no_model" not in out
+    async def test_legacy_catalog_path_removed(self, sqlite_registry):
+        """Phase B:旧裸表路径已从查询图物理移除——语义层缺失即拒绝,无对照路径。"""
+        node = _node(connectors=sqlite_registry, provider=None)
+        out = await node(make_state(question="students average grade by county"))
+        assert out["no_model"] is True
+        assert out["matched_tables"] == []
+        assert "legacy" not in out["link_detail"]
 
 
 class TestPlannerSemanticFirst:
@@ -245,80 +229,3 @@ class TestPlannerSemanticFirst:
         out = await node(make_state(question="how many loans?", matched_tables=["loan"]))
         assert out["compiled"] is True
         assert out["compiled_sql"] == "SELECT COUNT(loan.loan_id)\nFROM loan"
-
-
-class TestPlannerNoCatalogToolsSemanticFirst:
-    async def test_planner_drops_catalog_tools(self, monkeypatch):
-        """语义优先(决策 1):planner 不再注册 get_table_columns/get_column_stats。"""
-        from types import SimpleNamespace
-
-        import trove.workflow.nodes.planner as planner_mod
-        from trove.workflow.nodes.planner import make_planner
-
-        captured = {}
-
-        class FakeProvider:
-            enabled = True
-
-            def model(self):
-                return None
-
-        class FakeConnectors:
-            default_name = "demo"
-
-            async def get(self, datasource=None):
-                return SimpleNamespace(dialect=lambda: "sqlite")
-
-            async def get_schema(self, datasource=None):
-                return SimpleNamespace(tables=[])
-
-        async def fake_agent_loop(llm, model, *, system, user, registry, **kwargs):
-            captured["tool_names"] = sorted(
-                (d.get("function") or {}).get("name", "")
-                for d in (registry.defs() if hasattr(registry, "defs") else []))
-            return {"content": "plan text", "guard_hit": False, "reasoning": "", "transcript": ""}
-
-        monkeypatch.setattr(planner_mod, "run_agent_loop", fake_agent_loop)
-        node = make_planner(
-            ScriptedLLM([]), AgentConfig(target="mock/model", semantic_first=True),
-            agentic=True, connectors=FakeConnectors(),
-            semantic_layer=FakeProvider(),
-        )
-        await node(make_state(question="?"))
-        names = " ".join(captured.get("tool_names", []))
-        assert "get_table_columns" not in names
-        assert "get_column_stats" not in names
-
-    async def test_legacy_planner_keeps_catalog_tools(self, monkeypatch):
-        """semantic_first=False(旧裸表路径对照)→ catalog 工具保留。"""
-        from types import SimpleNamespace
-
-        import trove.workflow.nodes.planner as planner_mod
-        from trove.workflow.nodes.planner import make_planner
-
-        captured = {}
-
-        class FakeConnectors:
-            default_name = "demo"
-
-            async def get(self, datasource=None):
-                return SimpleNamespace(dialect=lambda: "sqlite")
-
-            async def get_schema(self, datasource=None):
-                return SimpleNamespace(tables=[])
-
-        async def fake_agent_loop(llm, model, *, system, user, registry, **kwargs):
-            captured["tool_names"] = sorted(
-                (d.get("function") or {}).get("name", "")
-                for d in (registry.defs() if hasattr(registry, "defs") else []))
-            return {"content": "plan text", "guard_hit": False, "reasoning": "", "transcript": ""}
-
-        monkeypatch.setattr(planner_mod, "run_agent_loop", fake_agent_loop)
-        node = make_planner(
-            ScriptedLLM([]), AgentConfig(target="mock/model", semantic_first=False),
-            agentic=True, connectors=FakeConnectors(),
-        )
-        await node(make_state(question="?"))
-        names = " ".join(captured.get("tool_names", []))
-        assert "get_table_columns" in names
-        assert "get_column_stats" in names
