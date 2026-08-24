@@ -302,7 +302,6 @@ class TestPipelineSpans:
         self, fake_v4_client, tmp_path, sqlite_registry,
     ):
         from tests.helpers.kb import ossie_semantics_yaml
-        from trove.services.datasource.catalog import CatalogService
         from trove.services.kb.service import KbService
         from trove.workflow.nodes.schema_linking import make_schema_linking
         from trove.workflow.state import WorkflowState
@@ -316,9 +315,9 @@ class TestPipelineSpans:
         ]), encoding="utf-8")
 
         node = make_schema_linking(
-            catalog=CatalogService(sqlite_registry),
             kb=kb,
             connectors=sqlite_registry,
+            semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
         )
         update = await node(WorkflowState(
             session_id="s1", question="学生们的平均成绩是多少", lang="zh",

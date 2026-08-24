@@ -527,10 +527,13 @@ def _make_gen_sql_node(
             # 工具统一由注册表提供(定义+处理器+finish 协议+超时/并行策略);
             # check_hits 收集 check_result 的规则命中,循环结束后随 update
             # 带出(归因)。validate_sql 始终可用,probe/check 依赖 connectors。
+            # 语义优先(Phase B,决策 1):semantic_only 移除元数据枚举工具
+            # (search_values / lookup_schema / explain_plan)。
             registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
                 datasource=state.datasource,
+                semantic_only=bool(getattr(services.config, "semantic_first", False)),
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
@@ -1177,9 +1180,7 @@ def _build_reflection(
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
-        services.catalog, kb=services.kb, connectors=services.connectors,
-        fallback_all=not clarify,
-        llm=services.llm, config=services.config or AgentConfig(),
+        kb=services.kb, connectors=services.connectors,
         semantic_layer=services.semantic_layer,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(
@@ -1337,9 +1338,7 @@ def _build_fixed(
 ) -> StateGraph:
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
-        services.catalog, kb=services.kb, connectors=services.connectors,
-        fallback_all=not clarify,
-        llm=services.llm, config=services.config or AgentConfig(),
+        kb=services.kb, connectors=services.connectors,
         semantic_layer=services.semantic_layer,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))

@@ -90,7 +90,7 @@ async def full_stack(tmp_path, demo_registry):
     services = GraphServices(
         llm=llm,
         catalog=catalog,
-        connectors=demo_registry,
+        connectors=demo_registry,semantic_layer=getattr(demo_registry, "_test_semantic_provider", None),
         config=config,
         kb=kb,
     )
@@ -155,6 +155,7 @@ class TestEndToEnd:
             llm=llm,
             catalog=CatalogService(demo_registry),
             connectors=demo_registry,
+            semantic_layer=getattr(demo_registry, "_test_semantic_provider", None),
             config=config,
         )
         manager = SessionManager(
@@ -225,7 +226,7 @@ class TestEndToEnd:
         assert state.final_response
 
     async def test_question_with_no_matching_tables(self, full_stack):
-        """无匹配问题:clarify 关闭时全量表兜底,流程照常完成。"""
+        """语义优先(Phase B,决策 4):零命中 = 未覆盖 = 拒绝 + 反问,不生成。"""
         session = await full_stack.start_session(project_cwd="/tmp/integration")
 
         state = await full_stack.ask(
@@ -233,9 +234,10 @@ class TestEndToEnd:
             question="zzz 不存在的表名 zzz",
             workflow_name="reflection",
         )
-        # 0 匹配 → 全量表兜底(clarify 关闭),生成锚定在真实 schema 上
-        assert state.matched_tables
+        assert state.matched_tables == []
+        assert state.refusal is not None
         assert state.final_response
+        assert "语义模型" in state.final_response
 
 
 class TestWorkflowEdgeCases:
@@ -270,7 +272,7 @@ class TestWorkflowEdgeCases:
             graphs=build_graphs(GraphServices(
                 llm=llm,
                 catalog=catalog,
-                connectors=demo_registry,
+                connectors=demo_registry,semantic_layer=getattr(demo_registry, "_test_semantic_provider", None),
                 config=config,
             ), multi_candidate=False, agentic=False),
             llm_gateway=llm,

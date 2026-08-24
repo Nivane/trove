@@ -5,14 +5,14 @@ It answers, and learns with every question.
 
 把数据库变成对话：自然语言提问，Trove 自动完成 schema 匹配、SQL 生成与自校验、执行与反思裁决，输出 Markdown 答案，答错自动诊断根因并回滚修正。
 
-它边用边学——每次问答与修正沉淀为该数据源的专属知识（注释、术语、参考 SQL、规则、经验），冷启动靠规则兜底，越用越准。
+它边用边学——每次问答与修正沉淀为该数据源的专属知识（注释、术语、参考 SQL、规则、经验），越用越准。**语义优先（接入即建模、建模即保障）**：语义模型（`semantics.yml`）是唯一可答边界——未覆盖查询 = 拒绝 + 反问扩展模型（LLM 草拟 draft → 管理端确认 → 重答），无语义模型的数据源整体拒绝并提示先 `/kb init`。
 
 ## 功能特性
 
 - **LangGraph 流水线**（`reflection` 工作流，全链路）：
   `route_intent → parse_date → schema_linking → planner → gen_sql → execute_sql → select → validate → reflect → (analyze_error 回滚) → output`
   - **意图路由**：LLM 判定 + 规则校验，五意图分流（优先级 write > metadata > chitchat > correction）——`write`（写操作请求直接拒绝兜底）/ `chitchat`（问候闲聊短路，不烧 LLM）/ `correction`（纠错·追问重写后再次路由）/ `query`（数据查询）/ `metadata`（元数据问答：`answer_metadata → metadata_check` 自校验循环）
-  - **gen_sql（agentic 默认）**：ReAct 循环，模型持工具自校验、自行判定结束（≤6 轮）；异常或空产出自动回退经典「生成 → 校验重试」子图；KB 精确命中（词重叠 ≥0.95）时直接采用标准 SQL，跳过生成。工具面：`validate_sql`（语法校验 + 静态语义启发式警告）、`probe_query`（只读执行观测，10 行/5s）、`check_result`（确定性规则链校验——F1 形状 / F2 过滤 / F3 值域 / F4 排序，首败即止；**通过即 harness 自动定稿**，无需显式 finish）、`search_values`（值查找）、`explain_plan`（EXPLAIN 执行计划，只读毫秒级，定稿前发现慢查询写法）、`lookup_schema`（预算裁剪漏掉的表按需取结构）、`finish(answer)`（显式定稿协议）
+  - **gen_sql（agentic 默认）**：ReAct 循环，模型持工具自校验、自行判定结束（≤6 轮）；异常或空产出自动回退经典「生成 → 校验重试」子图；KB 精确命中（词重叠 ≥0.95）时直接采用标准 SQL，跳过生成。工具面：`validate_sql`（语法校验 + 静态语义启发式警告）、`probe_query`（只读执行观测，10 行/5s）、`check_result`（确定性规则链校验——F1 形状 / F2 过滤 / F3 值域 / F4 排序，首败即止；**通过即 harness 自动定稿**，无需显式 finish）、`finish(answer)`（显式定稿协议）。**语义优先下（决策 1）**：`search_values` / `lookup_schema` / `explain_plan` 等元数据枚举/结构探测工具物理移除——agent 运行时不能触达物理 schema。
   - **多候选共识**：备选候选以更高温度生成 → `select` 裁决（KB 命中时跳过）
   - **analyze_error 根因诊断**：LLM 判定失败根因，沿 `gen_sql → planner → schema_linking` 回滚阶梯重跑，防环守护；reflect 裁决与执行错误共享 ≤10 轮修正上限；SQL 版本链记录每轮失败（SQL + 结果签名），与上一版对比产生确定性回归反馈（无效修复 / 无进展 / 问题转移）
   - **会话内任务层（跨轮）**：规则门控的 LLM 拆解（命中「依次 / 分别 / 还要 / 编号列表」等提示词才花一次拆解调用，单问题零额外 token）→ 逐条顺序执行（单条失败不中断批次）→ 跨轮推进：回复「继续 / 重做 / 跳过 / 追加」被解释为任务操作；批处理 HITL 给三选项（仅当前 / 确认全部 / 不继续）；REPL `/tasks`（别名 `/todo`）与 Web UI 任务面板查看进度
@@ -124,6 +124,7 @@ agent:
   insights: false                       # 执行后 LLM 基于结果生成洞察
   conclusion: false                     # 执行后 LLM 用一句话生成结论摘要，置于回答开头（结论前置）
   result_cache: false                   # 精确结果缓存（进程内存）：同问句直接返回上次已验证结果，0 LLM，命中跳过 HITL
+  semantic_first: true                  # 语义优先（默认开）：语义模型是唯一可答边界——未覆盖=拒绝+反问扩展；无语义模型=拒绝并提示 /kb init
   fast_path: true                       # 确定性模板快径：单表/单聚合模板命中即出 SQL，跳过 planner/生成/裁决
   reflect_skip: simple                  # validate 规则全过后跳过 LLM 裁决：simple / standard / all / off
   providers:

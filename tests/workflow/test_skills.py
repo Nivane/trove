@@ -95,41 +95,6 @@ async def test_planner_system_prompt_includes_skill():
     assert "Traceability" in system
 
 
-async def test_schema_alignment_prompt_includes_skill():
-    """schema_linking 对齐调用的 system prompt 携带 align_schema skill 块。"""
-    from trove.core.config import AgentConfig
-    from trove.workflow.nodes.schema_linking import _align_tables
-
-    captured = {}
-
-    class LLM:
-        async def chat(self, model, messages, **kwargs):
-            captured.update(messages=messages)
-            return '{"keep_tables": ["loan"], "drop_columns": {}}'
-
-    result = await _align_tables(
-        LLM(), AgentConfig(target="m"),
-        make_state(question="loans in 1997", lang="zh"),
-        details=[{"name": "loan", "row_count": 100, "columns": []}],
-        notes={},
-    )
-    assert result == {"keep_tables": ["loan"], "drop_columns": {}}
-    system = captured["messages"][0]["content"]
-    assert "对齐助手" in system
-    assert "按必要性决策" in system
-
-    result = await _align_tables(
-        LLM(), AgentConfig(target="m"),
-        make_state(question="loans in 1997", lang="en"),
-        details=[{"name": "loan", "row_count": 100, "columns": []}],
-        notes={},
-    )
-    assert result == {"keep_tables": ["loan"], "drop_columns": {}}
-    system = captured["messages"][0]["content"]
-    assert "schema alignment" in system.lower()
-    assert "Decide by necessity" in system
-
-
 async def test_analyze_error_system_prompt_includes_skill():
     """analyze_error 的 system prompt 携带 diagnose_failure skill 块。"""
     from trove.core.config import AgentConfig

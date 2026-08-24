@@ -33,9 +33,9 @@ def make_state(**kwargs):
     defaults = {
         "session_id": "s1",
         "run_id": "r1",
-        "question": "What is the average loan amount?",
+        "question": "students average grade by county",
         "lang": "zh",
-        "sql": "SELECT AVG(amount) FROM loan;",
+        "sql": "SELECT AVG(grade) FROM students;",
     }
     defaults.update(kwargs)
     return WorkflowState(**defaults)
@@ -48,10 +48,12 @@ def on_config(**kwargs):
 
 
 def make_services(llm, config=None, connectors=None):
+    semantic_layer = getattr(connectors, "_test_semantic_provider", None) if connectors else None
     return GraphServices(
         llm=llm,
         connectors=connectors,
         config=config or AgentConfig(target="mock/model"),
+        semantic_layer=semantic_layer,
     )
 
 
@@ -64,8 +66,8 @@ class TestSemanticsNode:
         assert len(llm.calls) == 1
         # prompt 含 SQL 与问题
         prompt = " ".join(str(m.get("content", "")) for m in llm.calls[0])
-        assert "SELECT AVG(amount) FROM loan;" in prompt
-        assert "What is the average loan amount?" in prompt
+        assert "SELECT AVG(grade) FROM students;" in prompt
+        assert "students average grade by county" in prompt
 
     async def test_passes_through_when_disabled(self):
         llm = RecordingLLM([])
@@ -256,7 +258,7 @@ class TestGraphHITLFlow:
         ])
         graph = build_graphs(
             GraphServices(
-                llm=llm, connectors=sqlite_registry,
+                llm=llm, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
@@ -285,7 +287,7 @@ class TestGraphHITLFlow:
         ])
         graph = build_graphs(
             GraphServices(
-                llm=llm, connectors=sqlite_registry,
+                llm=llm, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
@@ -310,7 +312,7 @@ class TestGraphHITLFlow:
         ])
         graph = build_graphs(
             GraphServices(
-                llm=llm, connectors=sqlite_registry,
+                llm=llm, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
@@ -336,7 +338,7 @@ class TestGraphHITLFlow:
         ])
         graph = build_graphs(
             GraphServices(
-                llm=llm, connectors=sqlite_registry,
+                llm=llm, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
@@ -357,7 +359,7 @@ class TestGraphHITLFlow:
         ])
         graph = build_graphs(
             GraphServices(
-                llm=llm, connectors=sqlite_registry,
+                llm=llm, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
@@ -399,7 +401,7 @@ class TestSessionManagerHITL:
         gateway = ScriptedGateway(responses)
         services = GraphServices(
             llm=gateway,
-            connectors=sqlite_registry,
+            connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
             config=config,
         )
         graphs = build_graphs(
@@ -425,7 +427,7 @@ class TestSessionManagerHITL:
         session = await manager.start_session(project_cwd="/tmp/p1")
 
         paused = await manager.ask(
-            session, "What is the average loan amount?", workflow_name="reflection",
+            session, "students average grade by county", workflow_name="reflection",
         )
         assert paused.hitl_status == "pending"
         assert "执行确认" in paused.final_response
@@ -449,7 +451,7 @@ class TestSessionManagerHITL:
         session = await manager.start_session(project_cwd="/tmp/p1")
 
         paused = await manager.ask(
-            session, "What is the average loan amount?", workflow_name="reflection",
+            session, "students average grade by county", workflow_name="reflection",
         )
         assert paused.hitl_status == "pending"
 
@@ -469,7 +471,7 @@ class TestSessionManagerHITL:
 
         events = []
         async for event in manager.ask_stream(
-            session, "What is the average loan amount?", workflow_name="reflection",
+            session, "students average grade by county", workflow_name="reflection",
         ):
             events.append(event)
 
@@ -496,7 +498,7 @@ class TestSessionManagerHITL:
         session = await manager.start_session(project_cwd="/tmp/p1")
         events = []
         async for event in manager.ask_stream(
-            session, "What is the average loan amount?", workflow_name="reflection",
+            session, "students average grade by county", workflow_name="reflection",
         ):
             events.append(event)
         assert events[-1]["type"] == "done"

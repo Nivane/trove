@@ -33,10 +33,31 @@ from trove.services.lineage.render import (
     render_table_downstream,
     render_table_upstream,
 )
-from trove.workflow.nodes.schema_linking import _join_hints
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
+
+
+def _join_hints(
+    table_name: str, columns: list[str], table_columns: dict[str, list[str]],
+) -> list[str]:
+    """*_id 命名约定的关联提示(metadata 答案专用,非查询期 agent 通道)。
+
+    决策 1 移除的是 NL→SQL 查询路径的 catalog 探测;metadata 路径(血缘/
+    关系/术语/表清单)仍直接回答「这些表怎么连」,保留该确定性渲染。
+    """
+    hints: list[str] = []
+    for col in columns:
+        if not col.endswith("_id") or len(col) <= 3:
+            continue
+        target = col[:-3]  # district_id → district
+        if target == table_name or target not in table_columns:
+            continue
+        target_cols = table_columns[target]
+        target_col = col if col in target_cols else ("id" if "id" in target_cols else None)
+        if target_col:
+            hints.append(f"{table_name}.{col} → {target}.{target_col}")
+    return hints
 
 _RELATIONS_RE = re.compile(r"关系|关联|关连|连接|相连|怎么连|血缘|来源|从哪")
 _LINEAGE_RE = re.compile(
