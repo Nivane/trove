@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+logger = logging.getLogger(__name__)
 
 from trove.api.deps import require_admin
 from trove.api.schemas import (
@@ -559,34 +562,93 @@ def _ds_id_or_404(request: Request, name: str) -> tuple[str, str]:
     return name, cfg.ds_id
 
 
-@router.post("/admin/datasources/{name}/kb/init")
-async def kb_init_datasource(name: str, request: Request, body: dict | None = None,
-                             admin: dict = Depends(require_admin)) -> dict:
+@router.post("/admin/datasources/{name}/kb/init", status_code=202)
+async def kb_init_datasource_async(name: str, request: Request,
+                                   body: dict | None = None,
+                                   admin: dict = Depends(require_admin)) -> dict:
+    """异步启动 KB init:立即返回 task_id,后台执行,GET status 轮询进度。"""
     if not _registry(request).is_registered(name):
         raise HTTPException(status_code=404, detail=f"datasource not found: {name}")
     _, ds_id = _ds_id_or_404(request, name)
     from trove.services.kb.init_pipeline import init_kb
-    # 跨进程互斥:flock 按 ds_id 加锁,同一 KB 卷上多 serve 实例串行初始化
-    # (Spec §4 防重入的分布式形态;旧 _kb_init_inflight 仅防单进程)。
-    lock = KbInitLock(_kb(request).kb_dir / ".locks")
+    from trove.services.kb.init_tasks import init_tasks
+
+    task = init_tasks.create(name, ds_id)
+    if task is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"KB init already running for datasource {name}",
+        )
+    kb = _kb(request)
+    registry = _registry(request)
+    llm_gateway = request.app.state.llm_gateway
+    config = request.app.state.config
+    lock = KbInitLock(kb.kb_dir / ".locks")
+    overwrite = bool((body or {}).get("overwrite"))
+    task_id = task["id"]
+
+    async def _run() -> None:
+        try:
+            with lock.acquire(ds_id):
+                summary = await init_kb(
+                    kb, registry,
+                    llm=llm_gateway, config=config,
+                    datasource=name, overwrite=overwrite,
+                    progress=lambda u: init_tasks.update(task_id, **u),
+                )
+            init_tasks.done(task_id, summary)
+            await _audit(request, "kb.init", admin, 200,
+                         {"id": ds_id, "name": name})
+        except KbInitBusy as e:
+            init_tasks.fail(task_id, f"KB init already running: {e}")
+        except DatasourceError as e:
+            init_tasks.fail(task_id, str(e))
+        except Exception as e:
+            logger.warning("Async KB init failed (%s): %s", name, e)
+            init_tasks.fail(task_id, f"KB init failed: {e}")
+        finally:
+            init_tasks.release_background(task_id)
+
+    bg = asyncio.create_task(_run())
+    init_tasks.bind_background(task_id, bg)
+    return {"task_id": task_id, "status": "running", "datasource": name}
+
+
+def _kb_init_status_sync(kb, datasource: str) -> bool:
+    """数据源当前是否已有初始化 KB(状态查询的兜底信号)。"""
     try:
-        with lock.acquire(ds_id):
-            # shield:客户端断开不能杀掉 init 管线(写盘原子段保证
-            # 中断只落"全无/全有");disconnect 只让响应发不出去,任务照跑。
-            summary = await asyncio.shield(init_kb(
-                _kb(request), _registry(request),
-                llm=request.app.state.llm_gateway,
-                config=request.app.state.config,
-                datasource=name,
-                overwrite=bool((body or {}).get("overwrite")),
-            ))
-    except KbInitBusy as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    except DatasourceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    await _audit(request, "kb.init", admin, 200,
-                 {"id": ds_id, "name": name})
-    return {"summary": summary}
+        return kb.kb_initialized(datasource)
+    except Exception:
+        return False
+
+
+@router.get("/admin/datasources/{name}/kb/init/status")
+async def kb_init_status_datasource(name: str, request: Request,
+                                    admin: dict = Depends(require_admin)) -> dict:
+    """KB init 任务状态(前端轮询)。无任务 → idle + kb_initialized 兜底。"""
+    from trove.services.kb.init_tasks import init_tasks
+
+    task = init_tasks.by_datasource(name)
+    initialized = _kb_init_status_sync(_kb(request), name)
+    if task is None:
+        return {
+            "status": "idle",
+            "task_id": None,
+            "datasource": name,
+            "kb_initialized": initialized,
+            "progress": None,
+        }
+    return {
+        "task_id": task["id"],
+        "datasource": name,
+        "status": task["status"],
+        "stage": task["stage"],
+        "progress": task["progress"],
+        "detail": task["detail"],
+        "summary": task["summary"],
+        "error": task["error"],
+        "kb_initialized": initialized,
+    }
 
 
 @router.post("/admin/datasources/{name}/kb/reload")

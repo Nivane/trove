@@ -120,6 +120,18 @@
       <div v-if="!initialized" class="empty-note">
         {{ t('kbNotFound', ui.lang) }}
       </div>
+      <div v-if="busy('init') && initProgress" class="kb-init-progress">
+        <el-progress
+          :percentage="initProgress.progress || 0"
+          :stroke-width="8"
+        />
+        <div class="kb-init-stage">
+          {{ initStageLabel(initProgress.stage) }}
+          <span v-if="initProgress.detail" class="cell-muted">
+            {{ initProgress.detail }}
+          </span>
+        </div>
+      </div>
     </div>
 
     <div class="admin-tabs">
@@ -664,6 +676,58 @@ async function copySnippet(sql: string) {
   notifySuccess(ok ? t('copied', ui.lang) : t('copyFailed', ui.lang))
 }
 
+const initProgress = ref<{
+  stage?: string
+  progress?: number
+  detail?: string
+} | null>(null)
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+function initStageLabel(stage?: string): string {
+  const map: Record<string, string> = {
+    queued: t('kbInitStageQueued', ui.lang),
+    schema: t('kbInitStageSchema', ui.lang),
+    probe: t('kbInitStageProbe', ui.lang),
+    notes: t('kbInitStageNotes', ui.lang),
+    examples: t('kbInitStageExamples', ui.lang),
+    semantic: t('kbInitStageSemantic', ui.lang),
+    write: t('kbInitStageWrite', ui.lang),
+    done: t('kbInitStageDone', ui.lang),
+    error: t('kbInitStageError', ui.lang),
+  }
+  return (stage && map[stage]) || stage || ''
+}
+
+async function pollInitStatus(): Promise<void> {
+  for (;;) {
+    await sleep(2000)
+    const st = await apiGet<{
+      status: string
+      stage?: string
+      progress?: number
+      detail?: string
+      summary?: string
+      error?: string
+    }>(`/v1/admin/datasources/${encodeURIComponent(ds.value)}/kb/init/status`)
+    initProgress.value = {
+      stage: st.stage,
+      progress: st.progress ?? 0,
+      detail: st.detail,
+    }
+    if (st.status === 'done') {
+      initProgress.value = { stage: 'done', progress: 100 }
+      return
+    }
+    if (st.status === 'error') {
+      throw new Error(st.error || t('dsInitFail', ui.lang))
+    }
+    if (st.status === 'idle') {
+      throw new Error(t('dsInitLost', ui.lang))
+    }
+  }
+}
+
 async function initKb() {
   try {
     await ElMessageBox.confirm(t('dsInitConfirm', ui.lang), 'Confirm')
@@ -671,17 +735,19 @@ async function initKb() {
     return
   }
   setBusy('init', true)
-  // 同步初始化可能几十秒(sticky 提示,防止用户以为卡死/重复点击)
+  initProgress.value = { stage: 'queued', progress: 0 }
   const notice = ElMessage({
     type: 'info',
     message: t('dsInitStarted', ui.lang),
     duration: 0,
   })
   try {
+    // 异步 init:202 + task_id → 轮询状态(后台跑,不阻塞请求)
     await apiPost(
       `/v1/admin/datasources/${encodeURIComponent(ds.value)}/kb/init`,
       {},
     )
+    await pollInitStatus()
     notifySuccess(t('dsInitDone', ui.lang))
     await loadDetail()
   } catch (e) {
@@ -689,6 +755,7 @@ async function initKb() {
   } finally {
     notice.close()
     setBusy('init', false)
+    initProgress.value = null
   }
 }
 

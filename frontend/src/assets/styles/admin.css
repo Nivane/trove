@@ -903,6 +903,19 @@
 .kb-actions {
   gap: var(--sp-2);
 }
+.kb-init-progress {
+  margin: 0 var(--sp-5) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.kb-init-stage {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  display: flex;
+  gap: var(--sp-2);
+  align-items: baseline;
+}
 .kb-confirmed-table {
   border-top: 1px solid var(--border-subtle);
 }

@@ -11,6 +11,7 @@ an initialized datasource unless overwrite=True.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -304,12 +305,25 @@ def _backfill_pks(tables: list[dict], schema) -> None:
 
 
 async def init_kb(kb, registry, llm, config, datasource, *,
-                  overwrite: bool = False, docs: str = "", lang: str = "en") -> str:
+                  overwrite: bool = False, docs: str = "", lang: str = "en",
+                  progress: Callable[[dict], None] | None = None) -> str:
     """LLM-assisted KB initialization (shared by REPL /kb init and the
     admin API). No-LLM → plain schema skeleton. Refuses to overwrite an
-    initialized datasource unless overwrite=True."""
+    initialized datasource unless overwrite=True.
+
+    ``progress``: 可选进度回调,签名 ``progress({"stage", "progress", "detail"})``,
+    供异步任务(admin /kb/init → 202 + 轮询状态)上报进度。
+    """
+    def _report(stage: str, pct: int, detail: str = "") -> None:
+        if progress is not None:
+            try:
+                progress({"stage": stage, "progress": pct, "detail": detail})
+            except Exception:
+                pass
+
     # 显式传 datasource:admin 可初始化非默认源,无参会解析到默认源
     # (多源必触发——新注册源即默认的 T3 minor 下错写更隐蔽)
+    _report("schema", 3, f"读取数据源 schema")
     schema = await registry.get_schema(datasource)
     if llm is None:
         if kb.init_schema_notes(schema, datasource, overwrite=overwrite):
@@ -331,16 +345,22 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     docs_tables = load_docs_tables(Path(docs)) if docs else {}
     probed: dict = {}
     try:
+        _report("probe", 5, "采样枚举值")
         probed = await probe_enums(registry, schema)
     except Exception:
         pass
     profiled: dict = {}
     try:
+        _report("probe", 8, "采样列统计")
         profiled = await probe_stats(registry, schema)
     except Exception:
         pass
     all_tables: list[dict] = []
-    for chunk in _chunk_tables(schema):
+    chunks = list(_chunk_tables(schema))
+    total_chunks = max(1, len(chunks))
+    for i, chunk in enumerate(chunks, start=1):
+        _report("notes", 10 + round(i / total_chunks * 60),
+                f"起草表注释 {i}/{total_chunks}")
         try:
             tables = await _draft_init_chunk(
                 llm, model, _table_dicts(chunk, docs_tables),
@@ -361,14 +381,17 @@ async def init_kb(kb, registry, llm, config, datasource, *,
         all_tables = merge_into_notes({"tables": all_tables}, probed)["tables"]
     terms = generate_terms(all_tables, lang=lang)
     examples = generate_templates(all_tables, lang=lang)
+    _report("examples", 72, "合成示例")
     examples = await _append_synthetic_examples(
         examples, llm, model, all_tables, registry, datasource,
         samples=probed, stats=profiled, lang=lang,
     )
+    _report("semantic", 78, "生成语义模型结构")
     semantic_doc = generate_semantic_document(schema, model_name=datasource, terms=terms)
     # P4:有 LLM 时在结构层之上起草字段 synonyms/description(白名单,只加措辞
     # 不改结构);任何失败静默回退纯结构层。
     try:
+        _report("semantic", 82, "起草字段别名与描述")
         semantic_doc = await draft_semantic_annotations(
             llm, model, semantic_doc, lang=lang)
     except Exception as e:
@@ -376,10 +399,12 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     # ── 写盘原子段:三个文件连续写、中间无 await。任何中断(客户端断开/
     # 异常)只会落在"全无"(写盘前)或"全有"(写盘后),杜绝半成品——
     # 半成品会让 UI 误判已初始化、又补不了缺失文件。
+    _report("write", 95, "写盘")
     kb.init_notes(all_tables, datasource, overwrite=overwrite)
     kb.init_semantics(semantic_doc, datasource, overwrite=overwrite)
     kb.init_examples(examples, datasource, overwrite=overwrite)
     await kb.force_sync(datasource)
+    _report("done", 100, "完成")
     return (f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
             f"{len(terms)} terms, {len(examples)} templates. "
             f"Review the drafts, then /kb reload.")

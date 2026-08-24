@@ -22,13 +22,10 @@ EMPLOYEES_DOC = """tables:
 
 
 async def test_kb_init_mutex(client, api_app, tmp_path):
-    """Spec §4 防重入:init 进行中重复请求 → 409。慢 LLM mock 保持 in-flight。
+    """异步 init:同源 running 中重复 POST → 409;首个 202。"""
+    from trove.services.kb.init_tasks import init_tasks
+    init_tasks.reset()
 
-    注册走 registry 直注且非默认(T3 遗留:API 新建 URL 数据源必成默认;
-    I1-T5 修后 init_kb 读 extra 自己的 schema——空库会零 LLM 调用、
-    init 瞬时完成,互斥从未被触发),故 extra 用文件 sqlite 且带一张
-    employees 表;SlowLLM 返回与之一致的 EMPLOYEES_DOC 使 init 真走到 200。
-    """
     import asyncio
     import sqlite3
     from trove.core.types import DatasourceConfig
@@ -54,17 +51,41 @@ async def test_kb_init_mutex(client, api_app, tmp_path):
     api_app.state.llm_gateway = SlowLLM()  # init_pipeline 只调 chat/chat_full（ScriptedGateway 同接口）
     async with asyncio.TaskGroup() as tg:
         t1 = tg.create_task(client.post("/v1/admin/datasources/extra/kb/init", json={}))
-        await asyncio.sleep(0.02)  # 保证第一个请求已进入管线
+        await asyncio.sleep(0.02)  # 保证第一个请求已登记 running 任务
         t2 = tg.create_task(client.post("/v1/admin/datasources/extra/kb/init", json={}))
-    assert {t1.result().status_code, t2.result().status_code} == {200, 409}
+    assert {t1.result().status_code, t2.result().status_code} == {202, 409}
+    await _wait_init(client, "extra")  # 后台任务跑完,清理 in-flight
+
+
+async def _wait_init(client, name: str, timeout: float = 10.0) -> dict:
+    """轮询异步 init 状态直到 done/error(返回最终 status 响应体)。"""
+    import asyncio
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        resp = await client.get(f"/v1/admin/datasources/{name}/kb/init/status")
+        assert resp.status_code == 200
+        st = resp.json()
+        if st["status"] in ("done", "error"):
+            return st
+        if asyncio.get_event_loop().time() > deadline:
+            raise AssertionError(f"init not finished: {st}")
+        await asyncio.sleep(0.05)
 
 
 async def test_kb_init_endpoint(client, api_app, tmp_path):
+    from trove.services.kb.init_tasks import init_tasks
+    init_tasks.reset()
     await client.post("/v1/admin/datasources",
                       json={"name": "extra", "url": "sqlite://:memory:"})
     resp = await client.post("/v1/admin/datasources/extra/kb/init", json={})
-    assert resp.status_code == 200
-    assert "Initialized" in resp.json()["summary"]
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["task_id"]
+    st = await _wait_init(client, "extra")
+    assert st["status"] == "done"
+    assert st["progress"] == 100
+    assert "Initialized" in st["summary"]
     kb = api_app.state.kb
     assert (kb.kb_dir / "extra" / "semantics.yml").exists()
 
@@ -114,9 +135,13 @@ async def test_kb_init_uses_datasource_schema(client, api_app, tmp_path):
         DatasourceConfig(name="extra", type="sqlite",
                          connection_params={"path": str(db)}, credentials={}, default=False))
     api_app.state.llm_gateway = LLMGateway(mock_response=EMPLOYEES_DOC)
+    from trove.services.kb.init_tasks import init_tasks
+    init_tasks.reset()
 
     resp = await client.post("/v1/admin/datasources/extra/kb/init", json={})
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 202, resp.text
+    st = await _wait_init(client, "extra")
+    assert st["status"] == "done", st
     notes = (api_app.state.kb.kb_dir / "extra" / "schema_notes.yml").read_text(encoding="utf-8")
     assert "employees" in notes
     assert "students" not in notes
