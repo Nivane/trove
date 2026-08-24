@@ -45,6 +45,7 @@ from trove.workflow.complexity import grade_complexity
 from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
+from trove.workflow.nodes.refuse import make_refuse
 from trove.workflow.nodes.parse_date import make_parse_date
 from trove.workflow.nodes.clarify import make_clarify
 from trove.workflow.nodes.planner import make_planner
@@ -1124,6 +1125,40 @@ def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "ou
     return "planner"
 
 
+def _route_semantic_gate_after_linking(state: WorkflowState) -> Literal["refuse", "clarify"]:
+    """语义优先(Phase A)门:无语义模型 / 编译 MISS / 零语义匹配 → refuse 终止本轮。
+
+    置位(no_model / refusal)即短路到 refuse 节点(不生成、不执行),否则
+    走既有通道。非语义优先恒走 clarify/原有路径。
+    """
+    if state.error or state.no_model or state.refusal:
+        return "refuse"
+    return "clarify"
+
+
+def _route_semantic_gate_after_linking_fast_match(
+    state: WorkflowState,
+) -> Literal["refuse", "fast_match"]:
+    if state.error or state.no_model or state.refusal:
+        return "refuse"
+    return "fast_match"
+
+
+def _route_semantic_gate_after_linking_gen_sql(
+    state: WorkflowState,
+) -> Literal["refuse", "gen_sql"]:
+    if state.error or state.no_model or state.refusal:
+        return "refuse"
+    return "gen_sql"
+
+
+def _route_after_planner(state: WorkflowState) -> Literal["refuse", "gen_sql"]:
+    """Planner 后:编译 MISS / 无语义模型 → refuse;否则 gen_sql。"""
+    if state.error or state.no_model or state.refusal:
+        return "refuse"
+    return "gen_sql"
+
+
 def _route_after_clarify_gen_sql(state: WorkflowState) -> Literal["gen_sql", "output"]:
     """Clarification needed → ask the user; otherwise proceed to generation."""
     if state.error or state.clarification_question:
@@ -1172,7 +1207,13 @@ def _build_reflection(
     ))
     if clarify:
         g.add_node("clarify", make_clarify())
-        g.add_edge("schema_linking", "clarify")
+        g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
+        g.add_edge("refuse", "output")
+        g.add_conditional_edges(
+            "schema_linking",
+            _route_semantic_gate_after_linking,
+            {"refuse": "refuse", "clarify": "clarify"},
+        )
         if planner:
             g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_conditional_edges(
@@ -1185,7 +1226,11 @@ def _build_reflection(
                 _make_route_after_fast_match("planner"),
                 {"execute_sql": "execute_sql", "planner": "planner"},
             )
-            g.add_edge("planner", "gen_sql")
+            g.add_conditional_edges(
+                "planner",
+                _route_after_planner,
+                {"refuse": "refuse", "gen_sql": "gen_sql"},
+            )
         else:
             g.add_conditional_edges(
                 "clarify",
@@ -1200,15 +1245,31 @@ def _build_reflection(
     else:
         if planner:
             g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors, semantic_layer=services.semantic_layer))
-            g.add_edge("schema_linking", "fast_match")
+            g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
+            g.add_edge("refuse", "output")
+            g.add_conditional_edges(
+                "schema_linking",
+                _route_semantic_gate_after_linking_fast_match,
+                {"refuse": "refuse", "fast_match": "fast_match"},
+            )
             g.add_conditional_edges(
                 "fast_match",
                 _make_route_after_fast_match("planner"),
                 {"execute_sql": "execute_sql", "planner": "planner"},
             )
-            g.add_edge("planner", "gen_sql")
+            g.add_conditional_edges(
+                "planner",
+                _route_after_planner,
+                {"refuse": "refuse", "gen_sql": "gen_sql"},
+            )
         else:
-            g.add_edge("schema_linking", "fast_match")
+            g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
+            g.add_edge("refuse", "output")
+            g.add_conditional_edges(
+                "schema_linking",
+                _route_semantic_gate_after_linking_fast_match,
+                {"refuse": "refuse", "fast_match": "fast_match"},
+            )
             g.add_conditional_edges(
                 "fast_match",
                 _make_route_after_fast_match("gen_sql"),
@@ -1293,16 +1354,26 @@ def _build_fixed(
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
+    g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
+    g.add_edge("refuse", "output")
     if clarify:
         g.add_node("clarify", make_clarify())
-        g.add_edge("schema_linking", "clarify")
+        g.add_conditional_edges(
+            "schema_linking",
+            _route_semantic_gate_after_linking,
+            {"refuse": "refuse", "clarify": "clarify"},
+        )
         g.add_conditional_edges(
             "clarify",
             _route_after_clarify_gen_sql,
             {"gen_sql": "gen_sql", "output": "output"},
         )
     else:
-        g.add_edge("schema_linking", "gen_sql")
+        g.add_conditional_edges(
+            "schema_linking",
+            _route_semantic_gate_after_linking_gen_sql,
+            {"refuse": "refuse", "gen_sql": "gen_sql"},
+        )
     g.add_edge("gen_sql", "semantics")
     g.add_edge("semantics", "hitl")
     g.add_conditional_edges(

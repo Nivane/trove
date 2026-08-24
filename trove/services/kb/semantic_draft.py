@@ -159,3 +159,89 @@ async def draft_semantic_annotations(
         applied, dropped = apply_annotations(model_entry, annotations)
         logger.debug("Semantic draft chunk: %d applied, %d dropped", applied, dropped)
     return doc
+
+
+# ── refuse 起草(Phase A 语义优先:编译 MISS 的模型扩展草稿) ───────
+
+
+def _vocabulary_text(model) -> str:
+    """SemanticModel → 已声明词表文本(供 refuse 起草时不重复定义)。"""
+    if model is None:
+        return "(no model declared)"
+    lines: list[str] = []
+    for d in model.datasets:
+        fields = ", ".join(f.name for f in d.fields) or "(no fields)"
+        lines.append(f"- dataset: {d.name} (source: {d.source}) fields: {fields}")
+    for m in model.metrics:
+        lines.append(f"- metric: {m.name} = {m.expression}")
+    return "\n".join(lines) or "(no datasets or metrics declared)"
+
+
+def _parse_refusal_draft(response: str) -> dict | None:
+    """refuse 草稿 YAML → draft dict;不可解析/缺 kind → None。"""
+    try:
+        data = yaml.safe_load(_strip_fences(response or ""))
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        return None
+    draft = data.get("draft")
+    if not isinstance(draft, dict) or not isinstance(draft.get("kind"), str):
+        return None
+    return draft
+
+
+def _recover_refusal_draft(response: str) -> dict | None:
+    """从 prose/围栏回收 refuse 草稿;失败返回 None。"""
+    for candidate in _fenced_blocks(response or ""):
+        parsed = _parse_refusal_draft(candidate)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+async def draft_refusal_extension(
+    llm, model: str, question: str, plan: dict | None,
+    existing_model, *, lang: str = "en",
+) -> dict | None:
+    """编译 MISS 的模型扩展草稿(metric/field 二选一,白名单到已声明数据集)。
+
+    语义优先(Phase A)的 refuse 通道:LLM 只被允许在已声明数据集范围内
+    草拟缺失的 metric(聚合表达式)或 field(标量维度),且绝不重复定义。
+    返回 draft dict(kind/name/expression/synonyms/definition/...);
+    起草失败/回收失败/kind=none → None(不写库,只产出"缺少声明"文案)。
+    """
+    plan_text = ""
+    if plan:
+        agg = plan.get("aggregation")
+        cols = plan.get("answer_columns")
+        conds = plan.get("conditions")
+        if agg:
+            plan_text += f"aggregation: {agg}\n"
+        if cols:
+            plan_text += f"answer_columns: {', '.join(map(str, cols))}\n"
+        if conds:
+            plan_text += f"conditions: {conds}\n"
+    if not plan_text.strip():
+        plan_text = "(none)"
+
+    messages = [
+        {"role": "system", "content": "You are drafting a minimal extension to a semantic model so a previously unanswerable question becomes answerable."},
+        {"role": "user", "content": render(
+            "refuse/draft", lang=lang,
+            question=question,
+            plan=plan_text.strip(),
+            vocabulary=_vocabulary_text(existing_model),
+        )},
+    ]
+    try:
+        raw = await llm.chat(model=model, messages=messages, max_tokens=DRAFT_MAX_TOKENS)
+    except Exception as e:
+        logger.warning("Refusal draft call failed: %s", e)
+        return None
+    draft = _parse_refusal_draft(raw)
+    if draft is None:
+        draft = _recover_refusal_draft(raw)
+    if draft is None or draft.get("kind") == "none":
+        return None
+    return draft
