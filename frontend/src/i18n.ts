@@ -213,6 +213,16 @@ export const messages = {
     dsInitRunning: '初始化中…',
     dsInitStarted:
       '初始化已开始：大 schema 需要几十秒（计费 LLM 起草注释），完成后自动刷新，请勿重复点击。',
+    dsInitLost: '初始化任务已丢失（后端可能已重启），请刷新后重试。',
+    kbInitStageQueued: '排队中',
+    kbInitStageSchema: '读取数据源 schema',
+    kbInitStageProbe: '采样枚举与统计',
+    kbInitStageNotes: '起草表注释',
+    kbInitStageExamples: '合成示例',
+    kbInitStageSemantic: '生成语义模型',
+    kbInitStageWrite: '写盘',
+    kbInitStageDone: '完成',
+    kbInitStageError: '失败',
     dsRemoveConfirm:
       '删除将移除该数据源的注册与配置（KB 文件保留），确认删除？',
     dsPageDesc: '注册、编辑与测试数据源连接',
@@ -605,6 +615,17 @@ export const messages = {
     dsInitRunning: 'Initializing…',
     dsInitStarted:
       "Initialization started: large schemas take tens of seconds (billed LLM drafting); it will auto-refresh when done — don't click again.",
+    dsInitLost:
+      'Init task was lost (backend may have restarted); refresh and retry.',
+    kbInitStageQueued: 'Queued',
+    kbInitStageSchema: 'Reading schema',
+    kbInitStageProbe: 'Probing enums & stats',
+    kbInitStageNotes: 'Drafting table notes',
+    kbInitStageExamples: 'Synthesizing examples',
+    kbInitStageSemantic: 'Building semantic model',
+    kbInitStageWrite: 'Writing files',
+    kbInitStageDone: 'Done',
+    kbInitStageError: 'Failed',
     dsRemoveConfirm:
       "Deleting removes this datasource's registration and config (KB files are kept). Confirm?",
     dsPageDesc: 'Register, edit and test datasource connections',
