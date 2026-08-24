@@ -654,6 +654,22 @@ async def _column_stats_text(
     return "; ".join(parts)
 
 
+def _plan_has_intent(plan_json: dict[str, Any] | None) -> bool:
+    """计划是否表达真实查询意图(可解析且含可编译成分)。
+
+    语义优先(Phase A)的 refuse 触发前提:plan 可解析且含 aggregation/
+    answer_columns/conditions 之一——否则视为空洞/退化计划,不拒绝,
+    交由 gen_sql 从 semantic_context 生成。
+    """
+    if not plan_json:
+        return False
+    return bool(
+        plan_json.get("aggregation")
+        or plan_json.get("answer_columns")
+        or plan_json.get("conditions")
+    )
+
+
 def _compile_semantic(
     plan_json: dict[str, Any] | None,
     matched: list[str],
@@ -704,6 +720,9 @@ def make_planner(
         if state.error:
             return {}
 
+        # 语义优先(Phase A):主干不暴露 catalog 探测工具、编译 MISS → refuse
+        semantic_first = bool(getattr(config, "semantic_first", False)) if config else False
+
         # 回退重跑：携带上一次失败与诊断，重定计划而不是重写原计划
         base_correction = " ".join(
             p for p in (state.error_feedback, state.error_analysis, state.reason) if p
@@ -736,7 +755,10 @@ def make_planner(
                 correction=correction[:600] if correction else "",
                 previous_plan=state.plan[:800] if state.plan else "",
             )
-            if agentic and connectors is not None:
+            # 语义优先(Phase A,决策 1):主干不再暴露任何 catalog 探测工具——
+            # get_table_columns / get_column_stats 是物理 schema 旁路,仅
+            # 旧裸表路径(评测对照)保留。
+            if agentic and connectors is not None and not semantic_first:
                 from trove.llm.agent_loop import ToolRegistry
 
                 registry = ToolRegistry(finish=True)
@@ -892,6 +914,18 @@ def make_planner(
                 update["plan"] = f"{plan}\n\n{block}" if plan else block
                 update["compiled_sql"] = compiled_sql
                 update["compiled"] = True
+            elif semantic_first:
+                # 语义优先(Phase A,决策 4):编译 MISS 不再静默降级裸表——
+                # 计划有真实意图但组件未覆盖 → 拒绝信号,图路由到 refuse 节点
+                # (LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞计划
+                # 不拒绝,gen_sql 从 semantic_context 照常生成。
+                if _plan_has_intent(plan_json):
+                    update["refusal"] = {
+                        "reason": "uncovered",
+                        "question": state.question,
+                        "plan": plan_json,
+                        "plan_text": plan,
+                    }
             if llm_detail:
                 update["llm"] = llm_detail
             if trail:

@@ -495,6 +495,576 @@ async def _align_tables(
     return _parse_alignment(response)
 
 
+# ── 语义优先通道(Phase A,见 semantic-first 架构文档 §4.1) ─────────
+#
+# 主通道切换到语义模型:dataset/metric/field 检索(synonym/词重叠,复用
+# search_terms 语义)→ 表锚定改为 dataset 锚定 → 产出 semantic_context(仅
+# 渲染模型声明内容,不含物理 DDL/统计/数值样本)+ matched datasets。零命中 =
+# 未覆盖 = 拒绝(semantic_first 下无 fallback_all 兜底)。旧裸表路径保留仅用于
+# 评测对照(同一问题同时产出旧 schema_context,记入 link_detail.legacy)。
+
+_SEMANTIC_STOPWORDS = {
+    "a", "an", "the", "of", "for", "in", "on", "with", "to", "and", "or",
+    "per", "by", "is", "are", "what", "how", "many", "much", "does", "do",
+}
+
+
+def _word_tokens(text: str) -> set[str]:
+    """小写词元,去停用词(与 provider/KB term 同款朴素处理)。"""
+    words = re.findall(r"[a-z0-9_]+", (text or "").lower())
+    return {w for w in words if w not in _SEMANTIC_STOPWORDS}
+
+
+def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
+    """dataset 名/synonym/description 的确定性匹配分(零 LLM)。
+
+    3.0 = 名称/synonym 子串命中;2.5 = synonym 词重叠 ≥0.5;2.0 =
+    description 词重叠 ≥0.5。阈值为 2.0 在调用侧判定。
+    """
+    q = (query or "").lower()
+    if d.name and d.name.lower() in q:
+        return 3.0
+    for s in d.synonyms:
+        if s and str(s).lower() in q:
+            return 3.0
+    for s in d.synonyms:
+        if s:
+            st = _word_tokens(s)
+            if len(st) >= 2 and len(st & q_tokens) / len(st) >= 0.5:
+                return 2.5
+    dt = _word_tokens(d.description)
+    if len(dt) >= 2 and len(dt & q_tokens) / len(dt) >= 0.5:
+        return 2.0
+    return 0.0
+
+
+def _semantic_match_datasets(
+    model: Any, query: str, term_hits: list[TermHit],
+    semantic_layer: Any | None,
+) -> list[str]:
+    """模型视角的 dataset 锚定:KB/live term 表 + 词法匹配,排序去重。"""
+    q_tokens = _word_tokens(query)
+    declared = {d.name for d in model.datasets}
+    matched: list[str] = []
+    scored = [
+        (name, _semantic_dataset_score(d, query, q_tokens))
+        for d in model.datasets for name in [d.name]
+    ]
+    for name, score in sorted(scored, key=lambda x: -x[1]):
+        if score >= 2.0 and name not in matched:
+            matched.append(name)
+
+    term_tables: list[str] = []
+    try:
+        term_tables = _dedup_tables(term_hits)
+    except Exception:
+        pass
+    live_tables: list[str] = []
+    if semantic_layer is not None:
+        try:
+            live_tables = _dedup_tables(semantic_layer.terms_for(query))
+        except Exception:
+            live_tables = []
+    for t in term_tables + live_tables:
+        if t in declared and t not in matched:
+            matched.append(t)
+    return matched[:FALLBACK_TABLES_LIMIT]
+
+
+def _render_semantic_context(
+    model: Any, matched: list[str], semantic_layer: Any | None,
+    question: str,
+) -> str:
+    """仅渲染模型声明内容(dataset/metric/field+synonym/关系/instructions)。
+
+    不出现物理 schema 启发(统计/数值样本/FK 命名边/value hints)。
+    字段名是已声明语义词表(§4.1),表达式隐藏、由 metric/field_hints 承载。
+    """
+    from trove.services.semantic_layer.compiler import JoinResolver
+
+    resolution = JoinResolver(model).resolve(list(matched))
+    datasets_by_name = {d.name: d for d in model.datasets}
+    render_tables = list(matched)
+    for extra in resolution.extra_tables:
+        if extra not in render_tables:
+            render_tables.append(extra)
+
+    parts: list[str] = []
+    for name in render_tables:
+        d = datasets_by_name.get(name)
+        if d is None:
+            continue
+        lines = [f"Dataset: {name}"]
+        if d.description:
+            lines.append(f"Description: {d.description}")
+        if d.fields:
+            lines.append("Fields:")
+            for f in d.fields:
+                bits = [f.name]
+                if f.synonyms:
+                    bits.append("synonyms: " + ", ".join(f.synonyms))
+                if f.semantic_role:
+                    bits.append(f"role={f.semantic_role}")
+                if f.is_time:
+                    bits.append("time")
+                if f.enum_display:
+                    bits.append(f"{len(f.enum_display)} values")
+                lines.append("  - " + " | ".join(bits))
+        anchored = [m for m in model.metrics if m.datasets and name in m.datasets]
+        if anchored:
+            lines.append("Metrics:")
+            for m in anchored:
+                line = f"  - {m.name} = {m.expression}"
+                if m.definition:
+                    line += f" — {m.definition}"
+                lines.append(line)
+        parts.append("\n".join(lines))
+
+    resolved_block = JoinResolver.render(resolution)
+    if resolved_block:
+        parts.append(resolved_block)
+
+    model_lines: list[str] = []
+    agnostic = [m for m in model.metrics if not m.datasets]
+    if agnostic:
+        model_lines.append(
+            "Metrics:\n" + "\n".join(
+                f"- {m.name} = {m.expression}" for m in agnostic))
+    if model.instructions:
+        model_lines.append(f"Semantic note: {model.instructions}")
+    if model_lines:
+        parts.append("\n\n".join(model_lines))
+
+    if semantic_layer is not None:
+        try:
+            hits = semantic_layer.field_hits(question, matched)
+            if hits:
+                parts.append("Field hints: " + "; ".join(hits))
+        except Exception:
+            pass
+
+    return "\n\n".join(parts) if parts else "No semantic model matched this question."
+
+
+async def _semantic_linking(
+    state: WorkflowState, catalog, kb, connectors, llm, config, semantic_layer,
+    max_tables: int, term_hits: list[TermHit], search_query: str, datasource: str,
+) -> dict[str, Any]:
+    """语义优先主通道(§3.1):dataset 锚定 + semantic_context + 对照旧路径。"""
+    model = None
+    if semantic_layer is not None and datasource and getattr(
+            semantic_layer, "enabled", False):
+        try:
+            model = semantic_layer.model()
+        except Exception as e:
+            logger.warning("Semantic model lookup failed (%s): %s", datasource, e)
+            model = None
+
+    if model is None:
+        # 决策 2/3:无语义模型 → 整体拒绝 + 提示 /kb init(不静默降级裸表)
+        return {
+            "matched_tables": [],
+            "schema_context": "",
+            "semantic_context": "",
+            "no_model": True,
+            "link_detail": {"semantic_first": True, "no_model": True},
+        }
+
+    # 旧裸表路径仅作 Phase A 评测对照(不参与主干),失败不阻断语义通道
+    legacy: dict[str, Any] = {}
+    if catalog is not None:
+        try:
+            legacy = await _legacy_catalog_linking(
+                state, catalog, kb, connectors, llm, config, semantic_layer,
+                fallback_all=False, max_tables=max_tables,
+                term_hits=term_hits, search_query=search_query, datasource=datasource,
+            )
+        except Exception as e:
+            logger.debug("Legacy linking for comparison failed (%s): %s", datasource, e)
+            legacy = {}
+
+    matched = _semantic_match_datasets(model, search_query, term_hits, semantic_layer)
+    semantic_context = _render_semantic_context(model, matched, semantic_layer, state.question)
+
+    base: dict[str, Any] = {
+        "matched_tables": matched,
+        "schema_context": semantic_context,
+        "semantic_context": semantic_context,
+        "link_detail": {
+            "semantic_first": True,
+            "matched_datasets": list(matched),
+            "legacy": {
+                "matched_tables": list(legacy.get("matched_tables") or []),
+                "schema_context": (legacy.get("schema_context") or "")[:4000],
+            },
+        },
+    }
+    if not matched:
+        # 零命中 = 未覆盖 = 拒绝(决策 4),不 fallback 全量表
+        base["refusal"] = {
+            "reason": "no_semantic_match",
+            "question": state.question,
+            "semantic_context": semantic_context,
+        }
+    return base
+
+
+async def _legacy_catalog_linking(
+    state: WorkflowState, catalog, kb, connectors, llm, config, semantic_layer,
+    fallback_all: bool, max_tables: int, term_hits: list[TermHit],
+    search_query: str, datasource: str,
+) -> dict[str, Any]:
+    """旧裸表路径(Phase A 语义优先下仅评测对照用,不参与主干)。"""
+    # 2. Catalog table search (existing behavior)
+    try:
+        matches = await catalog.search_tables(search_query, limit=max_tables)
+    except Exception as e:
+        logger.error("Schema linking failed: %s", e)
+        return {"error": f"Schema linking failed: {e}"}
+
+    # 全表 detail 一次取齐:value 探测与 FK 邻域扩展都基于全表
+    all_names: list[str] = []
+    try:
+        all_names = [
+            t["name"] for t in await catalog.list_tables(datasource or None)
+        ]
+    except Exception:
+        pass
+    all_details: list[dict[str, Any]] = []
+    for name in all_names:
+        try:
+            detail = await catalog.table_detail(name)
+        except Exception:
+            continue
+        if detail is not None:
+            all_details.append(detail)
+    all_columns = {
+        d["name"]: [c["name"] for c in d["columns"]] for d in all_details
+    }
+
+    # 匹配优先级:表名命中 > 字面值命中 > KB 术语 > FK 邻域(正向→反向)
+    # > 列名命中(最弱)。列名命中放最后是因为它最常假阳性
+    # ("issue"→card.issued),扩表时优先采纳强证据。
+    name_matches = [m["name"] for m in matches if m.get("match_type") == "name"]
+    col_matches = [m["name"] for m in matches if m.get("match_type") != "name"]
+    # Oracle 锚(eval 专用):gold 表强制进匹配集首位,随后的 value/
+    # term/FK/列名信号照常补位。oracle_tables 为空 → 完全等于既有
+    # "name 命中优先"行为,生产路径零变化。
+    oracle_kept = [t for t in state.oracle_tables if t in all_columns]
+    matched_names = list(oracle_kept)
+    for t in name_matches:
+        if t not in matched_names:
+            matched_names.append(t)
+
+    # Value linking(全表):question/evidence 中的字面值出现在某表
+    # → 该表加入匹配集('POPLATEK TYDNE' → account.frequency)。
+    value_tables: list[str] = []
+    value_hits: dict[str, str] = {}
+    if connectors is not None:
+        candidates = _extract_value_candidates(
+            (state.question + "\n" + state.evidence).strip()
+        )
+        if candidates:
+            value_hits = await _find_value_hits(
+                connectors, all_details, candidates,
+                state.datasource or None,
+            )
+            for loc in value_hits.values():
+                t = loc.split(".", 1)[0]
+                if t not in matched_names and t not in value_tables:
+                    value_tables.append(t)
+    matched_names += value_tables
+
+    # KB 术语绑定表(人工语义知识,强证据)
+    for table in _dedup_tables(term_hits):
+        if table not in matched_names:
+            matched_names.append(table)
+
+    # FK 一跳邻域:正向(matched.*_id → 目标表)再反向(其他表.*_id
+    # → matched),把联表所需但问题里没点名的表带进来
+    # (如 "clients" 需要 disp 做 client–account 关联)。
+    fwd, rev = _fk_neighbors(matched_names, all_columns)
+    for t in fwd + rev:
+        if t not in matched_names:
+            matched_names.append(t)
+
+    # 列名命中垫底:只填空位,不挤掉强证据表
+    for t in col_matches:
+        if t not in matched_names:
+            matched_names.append(t)
+
+    # 入口已带匹配表时并入(并集):回退重跑保留上轮匹配修"漏表",
+    # 多步子任务则继承前序步骤的锚点(coordinator 预注入);全新
+    # 单问题入口为空,行为不变。
+    if state.matched_tables:
+        for table in state.matched_tables:
+            if table not in matched_names:
+                matched_names.append(table)
+
+    # 预算封顶:优先级已在顺序中体现,超出截断
+    matched_names = matched_names[:FALLBACK_TABLES_LIMIT]
+
+    # 兜底:分词/复数/缩写匹配不到任何表时(典型英文 BIRD 题),
+    # 退回全量表清单,保证生成锚定在真实 schema 上。
+    # clarify 模式不需要兜底——0 匹配应当触发反问用户。
+    if not matched_names and fallback_all:
+        matched_names = all_names[:FALLBACK_TABLES_LIMIT]
+
+    # 3. Human annotations merged into the schema context
+    notes = (
+        await kb.table_notes(matched_names, datasource)
+        if (kb is not None and datasource) else {}
+    )
+
+    # 3.1 实时语义层(OSSIE provider):外部语义文件查询时直读。
+    # metric 表达式渲染进锚定表的 Semantic metrics 段;无数据集
+    # 锚定的 metric 和模型级说明走模型级块。provider 自身保证
+    # 软失败(last-known-good/逐条丢弃),这里再兜一层 try。
+    live_metrics = []
+    semantic_instructions = ""
+    if (
+        semantic_layer is not None and datasource
+        and getattr(semantic_layer, "enabled", False)
+    ):
+        try:
+            live_metrics = list(semantic_layer.metrics() or [])
+            semantic_instructions = (
+                getattr(semantic_layer, "instructions", "") or "")
+        except Exception as e:
+            logger.warning(
+                "Semantic layer lookup failed (%s): %s", datasource, e)
+    details_by_name = {d["name"]: d for d in all_details}
+    details = [
+        details_by_name[name] for name in matched_names
+        if name in details_by_name
+    ]
+
+    # 3.5 LLM 对齐裁剪(AskData Task Alignment):问题 + 统计摘要
+    # → 保留表/裁剪列,防元数据膨胀后的上下文爆炸。回退重跑时
+    # 上一轮匹配表强制保留(诊断钦点的表不允许被对齐丢弃)。
+    # 无统计证据(未 kb init / 旧 KB)时跳过——没有 profiling 数据
+    # 对齐就没有额外信号,不值得多一次 LLM 调用。
+    table_columns = {
+        d["name"]: [c["name"] for c in d["columns"]] for d in details
+    }
+
+    # P0-3:join hints 数据级验证——命名约定推断的 hint 用采样值
+    # 重叠探测过滤,只把真实可连接的关联发布。先于对齐计算:
+    # 已验证的连接路径同时进入对齐上下文(对齐因此能看出
+    # 裁表会切断关联,不会把连接路径两端的表裁掉)。
+    hints_by_table = {
+        name: _join_hints(name, table_columns[name], table_columns)
+        for name in table_columns
+    }
+    all_hints = [h for hs in hints_by_table.values() for h in hs]
+    verified_map = await _verified_hints(
+        connectors, all_hints, state.datasource or None,
+    )
+    verified_hints_by_table = {
+        t: [verified_map[h] for h in hs if h in verified_map]
+        for t, hs in hints_by_table.items()
+    }
+
+    drop_columns: dict[str, set[str]] = {}
+    has_stats_evidence = any(
+        notes.get(d["name"]).stats if notes.get(d["name"]) else None
+        for d in details
+    )
+    if llm is not None and details and has_stats_evidence:
+        aligned = await _align_tables(
+            llm, config, state, details, notes, verified_hints_by_table)
+        if aligned:
+            # must_keep:回退重跑时上一轮匹配表保留(修漏表不丢旧
+            # 匹配);oracle 表无条件保留(评测锚不允许被对齐裁掉)。
+            must_keep = [t for t in state.oracle_tables if t in matched_names]
+            if state.error_feedback or state.error_analysis or state.retry_count:
+                for t in state.matched_tables:
+                    if t not in must_keep:
+                        must_keep.append(t)
+            must_keep = must_keep or None
+            all_cols = {
+                d["name"]: {c["name"] for c in d["columns"]} for d in details
+            }
+            aligned_names, drop_columns = _apply_alignment(
+                matched_names, aligned, all_cols, must_keep=must_keep,
+            )
+            if aligned_names != matched_names:
+                matched_names = aligned_names
+                details = [
+                    details_by_name[name] for name in matched_names
+                    if name in details_by_name
+                ]
+            # 对齐裁掉了某些表后,连接路径两端的表必须都在保留集里,
+            # 否则 hint 引用了已裁表,发布给 gen_sql 会误导
+            kept = {d["name"] for d in details}
+            verified_hints_by_table = {
+                t: [
+                    h for h in hs
+                    if (ends := _hint_tables(h))
+                    and ends[0] in kept and ends[1] in kept
+                ]
+                for t, hs in verified_hints_by_table.items()
+            }
+
+    # 语义层单一真源模型(KB semantics.yml + 配置目录合并):供关系编译、
+    # 每表 Dimensions 渲染与 Field hints 使用。
+    live_model = None
+    if (
+        semantic_layer is not None and datasource
+        and getattr(semantic_layer, "enabled", False)
+    ):
+        try:
+            provider_model = getattr(semantic_layer, "model", None)
+            live_model = provider_model() if provider_model is not None else None
+        except Exception as e:
+            logger.warning(
+                "Semantic layer model lookup failed (%s): %s", datasource, e)
+            live_model = None
+
+    # P1-8:语义层声明的关系 → 权威 Relationships 块(替换逐表 Join hints)。
+    # JoinResolver 在完整声明图上 BFS:跨中间表联(resolution.extra_tables,
+    # 如 loan+district 经 account),中间表补进渲染让 gen_sql 拿得到列。
+    resolved_block = ""
+    if live_model is not None and len(matched_names) >= 2:
+        try:
+            from trove.services.semantic_layer.compiler import JoinResolver
+
+            resolution = JoinResolver(live_model).resolve(
+                matched_names, verified_hints_by_table)
+            if not resolution.empty and not resolution.fan_out:
+                # P5.2:M:N 联路径(fan_out)不渲染权威 Relations 块,
+                # 避免把行倍增的联法钦点给 gen_sql → 走 LLM + 规则兜底
+                resolved_block = JoinResolver.render(resolution)
+                for extra in resolution.extra_tables:
+                    d = details_by_name.get(extra)
+                    if d is not None and d not in details:
+                        details.append(d)
+        except Exception as e:
+            logger.warning("Join resolution failed (%s): %s", datasource, e)
+
+    schema_parts = []
+    for detail in details:
+        name = detail["name"]
+        table_notes = notes.get(name)
+        cols = ", ".join(
+            _column_line(c, table_notes)
+            for c in detail["columns"]
+            if c["name"] not in drop_columns.get(name, set())
+        )
+        parts = [
+            f"Table: {name}\n"
+            f"Columns: {cols}\n"
+            f"Approximate rows: {detail.get('row_count', 'unknown')}\n",
+        ]
+        hints = verified_hints_by_table.get(name) or []
+        if hints and not resolved_block:
+            parts.append("Join hints: " + ", ".join(hints) + "\n")
+        if table_notes and table_notes.description:
+            parts.append(f"Description: {table_notes.description}\n")
+        if table_notes and table_notes.metrics:
+            parts.append(
+                "Metrics:\n"
+                + "".join(f"- {m} — {d}\n" for m, d in table_notes.metrics.items())
+            )
+        anchored = [m for m in live_metrics if m.datasets and name in m.datasets]
+        if anchored:
+            parts.append(
+                "Semantic metrics:\n"
+                + "".join(f"{_semantic_metric_line(m)}\n" for m in anchored)
+            )
+        # P4:声明的字段维度(带 synonyms / 时间的字段)——planner 据此
+        # 把问题词链接到不透明列(如 district.A3 ↔ region)。只渲染有
+        # 语义的字段,顶格 6 条,信息密度高体积小。
+        if live_model is not None:
+            dim_lines = _dimension_lines(live_model, name)
+            if dim_lines:
+                parts.append("Dimensions:\n" + dim_lines + "\n")
+        if table_notes and table_notes.stats:
+            stat_lines = _stats_lines(table_notes.stats)
+            if stat_lines:
+                parts.append("Stats:\n" + "".join(f"{s}\n" for s in stat_lines))
+        schema_parts.append("".join(parts))
+
+    schema_context = "\n".join(schema_parts) if schema_parts else (
+        "No matching tables found. Consider using /tables to list available tables."
+    )
+
+    # 4. Value linking hints: show hits whose table made it into context
+    value_hit_list: list[str] = []
+    if value_hits:
+        shown = {
+            v: loc for v, loc in value_hits.items()
+            if loc.split(".", 1)[0] in matched_names
+        }
+        if shown:
+            hint_lines = "\n".join(
+                f"Value hints: '{v}' found in {loc}"
+                for v, loc in shown.items()
+            )
+            schema_context += "\n\n" + hint_lines
+            value_hit_list = [f"'{v}' → {loc}" for v, loc in shown.items()]
+
+    # 4.35 确定性 Field hints:问题词元 × 字段 synonyms 词重叠(零 LLM)——
+    # planner 靠它把问题词链接到不透明列,不受 LLM 对齐波动影响。
+    field_hit_list: list[str] = []
+    if live_model is not None:
+        try:
+            field_hits = getattr(semantic_layer, "field_hits", None)
+            if field_hits is not None:
+                hits = field_hits(state.question, matched_names)
+                field_hit_list = list(hits)
+                if hits:
+                    schema_context += "\n\nField hints: " + "; ".join(hits)
+        except Exception as e:
+            logger.warning("Field hints failed (%s): %s", datasource, e)
+
+    # 4.4 权威 Relationships 块:编译器 BFS 得到的 ON 子句(声明关系
+    # 优先;已由 JoinResolver.render 渲染),gen_sql 不再发明 join 键。
+    if resolved_block:
+        schema_context += "\n\n" + resolved_block
+
+    # 4.5 模型级语义块:无数据集锚定的 metric + AI 使用说明
+    # (锚定 metric 已进各表段;放最后以免挤占表段上下文)
+    model_lines = []
+    agnostic = [m for m in live_metrics if not m.datasets]
+    if agnostic:
+        model_lines.append(
+            "Semantic metrics:\n"
+            + "\n".join(_semantic_metric_line(m) for m in agnostic)
+        )
+    if semantic_instructions:
+        model_lines.append(f"Semantic note: {semantic_instructions}")
+    if model_lines:
+        schema_context += "\n\n" + "\n\n".join(model_lines)
+
+    logger.debug(
+        "Schema linking matched %d tables for query: %s",
+        len(matched_names), state.question[:80],
+    )
+
+    update = {
+        "matched_tables": matched_names,
+        "schema_context": schema_context,
+        # 分析面板用的"匹配过程与来源"摘要(右侧边栏/--print):
+        # notes_tables = 有 schema_notes.yml 描述/统计的匹配表;
+        # value_hits/field_hits/relations = 命中证据;context = LLM
+        # 实际看到的上下文片段(表/列来自实时库,描述/统计/术语来自
+        # schema_notes.yml / semantics.yml / 语义层,示例在 gen 层)。
+        "link_detail": {
+            "notes_tables": [
+                t for t in matched_names if notes.get(t)
+            ],
+            "value_hits": value_hit_list,
+            "field_hits": field_hit_list,
+            "relations": bool(resolved_block),
+            "context": schema_context[:4000],
+        },
+    }
+    return update
+
+
+
+
 def make_schema_linking(
     catalog: CatalogService | None = None,
     max_tables: int = 5,
@@ -550,358 +1120,23 @@ def make_schema_linking(
             term_hits = await kb.search_terms(search_query, datasource)
 
         update: dict[str, Any]
-
-        if catalog is None:
+        semantic_first = bool(getattr(config, "semantic_first", False)) if config else False
+        if semantic_first:
+            update = await _semantic_linking(
+                state, catalog, kb, connectors, llm, config, semantic_layer,
+                max_tables, term_hits, search_query, datasource,
+            )
+        elif catalog is None:
             update = {
                 "matched_tables": _dedup_tables(term_hits),
                 "schema_context": "No schema information available.",
             }
         else:
-            # 2. Catalog table search (existing behavior)
-            try:
-                matches = await catalog.search_tables(search_query, limit=max_tables)
-            except Exception as e:
-                logger.error("Schema linking failed: %s", e)
-                return {"error": f"Schema linking failed: {e}"}
-
-            # 全表 detail 一次取齐:value 探测与 FK 邻域扩展都基于全表
-            all_names: list[str] = []
-            try:
-                all_names = [
-                    t["name"] for t in await catalog.list_tables(datasource or None)
-                ]
-            except Exception:
-                pass
-            all_details: list[dict[str, Any]] = []
-            for name in all_names:
-                try:
-                    detail = await catalog.table_detail(name)
-                except Exception:
-                    continue
-                if detail is not None:
-                    all_details.append(detail)
-            all_columns = {
-                d["name"]: [c["name"] for c in d["columns"]] for d in all_details
-            }
-
-            # 匹配优先级:表名命中 > 字面值命中 > KB 术语 > FK 邻域(正向→反向)
-            # > 列名命中(最弱)。列名命中放最后是因为它最常假阳性
-            # ("issue"→card.issued),扩表时优先采纳强证据。
-            name_matches = [m["name"] for m in matches if m.get("match_type") == "name"]
-            col_matches = [m["name"] for m in matches if m.get("match_type") != "name"]
-            # Oracle 锚(eval 专用):gold 表强制进匹配集首位,随后的 value/
-            # term/FK/列名信号照常补位。oracle_tables 为空 → 完全等于既有
-            # "name 命中优先"行为,生产路径零变化。
-            oracle_kept = [t for t in state.oracle_tables if t in all_columns]
-            matched_names = list(oracle_kept)
-            for t in name_matches:
-                if t not in matched_names:
-                    matched_names.append(t)
-
-            # Value linking(全表):question/evidence 中的字面值出现在某表
-            # → 该表加入匹配集('POPLATEK TYDNE' → account.frequency)。
-            value_tables: list[str] = []
-            value_hits: dict[str, str] = {}
-            if connectors is not None:
-                candidates = _extract_value_candidates(
-                    (state.question + "\n" + state.evidence).strip()
-                )
-                if candidates:
-                    value_hits = await _find_value_hits(
-                        connectors, all_details, candidates,
-                        state.datasource or None,
-                    )
-                    for loc in value_hits.values():
-                        t = loc.split(".", 1)[0]
-                        if t not in matched_names and t not in value_tables:
-                            value_tables.append(t)
-            matched_names += value_tables
-
-            # KB 术语绑定表(人工语义知识,强证据)
-            for table in _dedup_tables(term_hits):
-                if table not in matched_names:
-                    matched_names.append(table)
-
-            # FK 一跳邻域:正向(matched.*_id → 目标表)再反向(其他表.*_id
-            # → matched),把联表所需但问题里没点名的表带进来
-            # (如 "clients" 需要 disp 做 client–account 关联)。
-            fwd, rev = _fk_neighbors(matched_names, all_columns)
-            for t in fwd + rev:
-                if t not in matched_names:
-                    matched_names.append(t)
-
-            # 列名命中垫底:只填空位,不挤掉强证据表
-            for t in col_matches:
-                if t not in matched_names:
-                    matched_names.append(t)
-
-            # 入口已带匹配表时并入(并集):回退重跑保留上轮匹配修"漏表",
-            # 多步子任务则继承前序步骤的锚点(coordinator 预注入);全新
-            # 单问题入口为空,行为不变。
-            if state.matched_tables:
-                for table in state.matched_tables:
-                    if table not in matched_names:
-                        matched_names.append(table)
-
-            # 预算封顶:优先级已在顺序中体现,超出截断
-            matched_names = matched_names[:FALLBACK_TABLES_LIMIT]
-
-            # 兜底:分词/复数/缩写匹配不到任何表时(典型英文 BIRD 题),
-            # 退回全量表清单,保证生成锚定在真实 schema 上。
-            # clarify 模式不需要兜底——0 匹配应当触发反问用户。
-            if not matched_names and fallback_all:
-                matched_names = all_names[:FALLBACK_TABLES_LIMIT]
-
-            # 3. Human annotations merged into the schema context
-            notes = (
-                await kb.table_notes(matched_names, datasource)
-                if (kb is not None and datasource) else {}
+            update = await _legacy_catalog_linking(
+                state, catalog, kb, connectors, llm, config, semantic_layer,
+                fallback_all=fallback_all, max_tables=max_tables,
+                term_hits=term_hits, search_query=search_query, datasource=datasource,
             )
-
-            # 3.1 实时语义层(OSSIE provider):外部语义文件查询时直读。
-            # metric 表达式渲染进锚定表的 Semantic metrics 段;无数据集
-            # 锚定的 metric 和模型级说明走模型级块。provider 自身保证
-            # 软失败(last-known-good/逐条丢弃),这里再兜一层 try。
-            live_metrics = []
-            semantic_instructions = ""
-            if (
-                semantic_layer is not None and datasource
-                and getattr(semantic_layer, "enabled", False)
-            ):
-                try:
-                    live_metrics = list(semantic_layer.metrics() or [])
-                    semantic_instructions = (
-                        getattr(semantic_layer, "instructions", "") or "")
-                except Exception as e:
-                    logger.warning(
-                        "Semantic layer lookup failed (%s): %s", datasource, e)
-            details_by_name = {d["name"]: d for d in all_details}
-            details = [
-                details_by_name[name] for name in matched_names
-                if name in details_by_name
-            ]
-
-            # 3.5 LLM 对齐裁剪(AskData Task Alignment):问题 + 统计摘要
-            # → 保留表/裁剪列,防元数据膨胀后的上下文爆炸。回退重跑时
-            # 上一轮匹配表强制保留(诊断钦点的表不允许被对齐丢弃)。
-            # 无统计证据(未 kb init / 旧 KB)时跳过——没有 profiling 数据
-            # 对齐就没有额外信号,不值得多一次 LLM 调用。
-            table_columns = {
-                d["name"]: [c["name"] for c in d["columns"]] for d in details
-            }
-
-            # P0-3:join hints 数据级验证——命名约定推断的 hint 用采样值
-            # 重叠探测过滤,只把真实可连接的关联发布。先于对齐计算:
-            # 已验证的连接路径同时进入对齐上下文(对齐因此能看出
-            # 裁表会切断关联,不会把连接路径两端的表裁掉)。
-            hints_by_table = {
-                name: _join_hints(name, table_columns[name], table_columns)
-                for name in table_columns
-            }
-            all_hints = [h for hs in hints_by_table.values() for h in hs]
-            verified_map = await _verified_hints(
-                connectors, all_hints, state.datasource or None,
-            )
-            verified_hints_by_table = {
-                t: [verified_map[h] for h in hs if h in verified_map]
-                for t, hs in hints_by_table.items()
-            }
-
-            drop_columns: dict[str, set[str]] = {}
-            has_stats_evidence = any(
-                notes.get(d["name"]).stats if notes.get(d["name"]) else None
-                for d in details
-            )
-            if llm is not None and details and has_stats_evidence:
-                aligned = await _align_tables(
-                    llm, config, state, details, notes, verified_hints_by_table)
-                if aligned:
-                    # must_keep:回退重跑时上一轮匹配表保留(修漏表不丢旧
-                    # 匹配);oracle 表无条件保留(评测锚不允许被对齐裁掉)。
-                    must_keep = [t for t in state.oracle_tables if t in matched_names]
-                    if state.error_feedback or state.error_analysis or state.retry_count:
-                        for t in state.matched_tables:
-                            if t not in must_keep:
-                                must_keep.append(t)
-                    must_keep = must_keep or None
-                    all_cols = {
-                        d["name"]: {c["name"] for c in d["columns"]} for d in details
-                    }
-                    aligned_names, drop_columns = _apply_alignment(
-                        matched_names, aligned, all_cols, must_keep=must_keep,
-                    )
-                    if aligned_names != matched_names:
-                        matched_names = aligned_names
-                        details = [
-                            details_by_name[name] for name in matched_names
-                            if name in details_by_name
-                        ]
-                    # 对齐裁掉了某些表后,连接路径两端的表必须都在保留集里,
-                    # 否则 hint 引用了已裁表,发布给 gen_sql 会误导
-                    kept = {d["name"] for d in details}
-                    verified_hints_by_table = {
-                        t: [
-                            h for h in hs
-                            if (ends := _hint_tables(h))
-                            and ends[0] in kept and ends[1] in kept
-                        ]
-                        for t, hs in verified_hints_by_table.items()
-                    }
-
-            # 语义层单一真源模型(KB semantics.yml + 配置目录合并):供关系编译、
-            # 每表 Dimensions 渲染与 Field hints 使用。
-            live_model = None
-            if (
-                semantic_layer is not None and datasource
-                and getattr(semantic_layer, "enabled", False)
-            ):
-                try:
-                    provider_model = getattr(semantic_layer, "model", None)
-                    live_model = provider_model() if provider_model is not None else None
-                except Exception as e:
-                    logger.warning(
-                        "Semantic layer model lookup failed (%s): %s", datasource, e)
-                    live_model = None
-
-            # P1-8:语义层声明的关系 → 权威 Relationships 块(替换逐表 Join hints)。
-            # JoinResolver 在完整声明图上 BFS:跨中间表联(resolution.extra_tables,
-            # 如 loan+district 经 account),中间表补进渲染让 gen_sql 拿得到列。
-            resolved_block = ""
-            if live_model is not None and len(matched_names) >= 2:
-                try:
-                    from trove.services.semantic_layer.compiler import JoinResolver
-
-                    resolution = JoinResolver(live_model).resolve(
-                        matched_names, verified_hints_by_table)
-                    if not resolution.empty and not resolution.fan_out:
-                        # P5.2:M:N 联路径(fan_out)不渲染权威 Relations 块,
-                        # 避免把行倍增的联法钦点给 gen_sql → 走 LLM + 规则兜底
-                        resolved_block = JoinResolver.render(resolution)
-                        for extra in resolution.extra_tables:
-                            d = details_by_name.get(extra)
-                            if d is not None and d not in details:
-                                details.append(d)
-                except Exception as e:
-                    logger.warning("Join resolution failed (%s): %s", datasource, e)
-
-            schema_parts = []
-            for detail in details:
-                name = detail["name"]
-                table_notes = notes.get(name)
-                cols = ", ".join(
-                    _column_line(c, table_notes)
-                    for c in detail["columns"]
-                    if c["name"] not in drop_columns.get(name, set())
-                )
-                parts = [
-                    f"Table: {name}\n"
-                    f"Columns: {cols}\n"
-                    f"Approximate rows: {detail.get('row_count', 'unknown')}\n",
-                ]
-                hints = verified_hints_by_table.get(name) or []
-                if hints and not resolved_block:
-                    parts.append("Join hints: " + ", ".join(hints) + "\n")
-                if table_notes and table_notes.description:
-                    parts.append(f"Description: {table_notes.description}\n")
-                if table_notes and table_notes.metrics:
-                    parts.append(
-                        "Metrics:\n"
-                        + "".join(f"- {m} — {d}\n" for m, d in table_notes.metrics.items())
-                    )
-                anchored = [m for m in live_metrics if m.datasets and name in m.datasets]
-                if anchored:
-                    parts.append(
-                        "Semantic metrics:\n"
-                        + "".join(f"{_semantic_metric_line(m)}\n" for m in anchored)
-                    )
-                # P4:声明的字段维度(带 synonyms / 时间的字段)——planner 据此
-                # 把问题词链接到不透明列(如 district.A3 ↔ region)。只渲染有
-                # 语义的字段,顶格 6 条,信息密度高体积小。
-                if live_model is not None:
-                    dim_lines = _dimension_lines(live_model, name)
-                    if dim_lines:
-                        parts.append("Dimensions:\n" + dim_lines + "\n")
-                if table_notes and table_notes.stats:
-                    stat_lines = _stats_lines(table_notes.stats)
-                    if stat_lines:
-                        parts.append("Stats:\n" + "".join(f"{s}\n" for s in stat_lines))
-                schema_parts.append("".join(parts))
-
-            schema_context = "\n".join(schema_parts) if schema_parts else (
-                "No matching tables found. Consider using /tables to list available tables."
-            )
-
-            # 4. Value linking hints: show hits whose table made it into context
-            value_hit_list: list[str] = []
-            if value_hits:
-                shown = {
-                    v: loc for v, loc in value_hits.items()
-                    if loc.split(".", 1)[0] in matched_names
-                }
-                if shown:
-                    hint_lines = "\n".join(
-                        f"Value hints: '{v}' found in {loc}"
-                        for v, loc in shown.items()
-                    )
-                    schema_context += "\n\n" + hint_lines
-                    value_hit_list = [f"'{v}' → {loc}" for v, loc in shown.items()]
-
-            # 4.35 确定性 Field hints:问题词元 × 字段 synonyms 词重叠(零 LLM)——
-            # planner 靠它把问题词链接到不透明列,不受 LLM 对齐波动影响。
-            field_hit_list: list[str] = []
-            if live_model is not None:
-                try:
-                    field_hits = getattr(semantic_layer, "field_hits", None)
-                    if field_hits is not None:
-                        hits = field_hits(state.question, matched_names)
-                        field_hit_list = list(hits)
-                        if hits:
-                            schema_context += "\n\nField hints: " + "; ".join(hits)
-                except Exception as e:
-                    logger.warning("Field hints failed (%s): %s", datasource, e)
-
-            # 4.4 权威 Relationships 块:编译器 BFS 得到的 ON 子句(声明关系
-            # 优先;已由 JoinResolver.render 渲染),gen_sql 不再发明 join 键。
-            if resolved_block:
-                schema_context += "\n\n" + resolved_block
-
-            # 4.5 模型级语义块:无数据集锚定的 metric + AI 使用说明
-            # (锚定 metric 已进各表段;放最后以免挤占表段上下文)
-            model_lines = []
-            agnostic = [m for m in live_metrics if not m.datasets]
-            if agnostic:
-                model_lines.append(
-                    "Semantic metrics:\n"
-                    + "\n".join(_semantic_metric_line(m) for m in agnostic)
-                )
-            if semantic_instructions:
-                model_lines.append(f"Semantic note: {semantic_instructions}")
-            if model_lines:
-                schema_context += "\n\n" + "\n\n".join(model_lines)
-
-            logger.debug(
-                "Schema linking matched %d tables for query: %s",
-                len(matched_names), state.question[:80],
-            )
-
-            update = {
-                "matched_tables": matched_names,
-                "schema_context": schema_context,
-                # 分析面板用的"匹配过程与来源"摘要(右侧边栏/--print):
-                # notes_tables = 有 schema_notes.yml 描述/统计的匹配表;
-                # value_hits/field_hits/relations = 命中证据;context = LLM
-                # 实际看到的上下文片段(表/列来自实时库,描述/统计/术语来自
-                # schema_notes.yml / semantics.yml / 语义层,示例在 gen 层)。
-                "link_detail": {
-                    "notes_tables": [
-                        t for t in matched_names if notes.get(t)
-                    ],
-                    "value_hits": value_hit_list,
-                    "field_hits": field_hit_list,
-                    "relations": bool(resolved_block),
-                    "context": schema_context[:4000],
-                },
-            }
 
         if term_hits:
             hits = [

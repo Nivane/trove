@@ -174,6 +174,20 @@ class WorkflowState(BaseModel):
     matched_tables: list[str] = Field(default_factory=list)
     schema_context: str = ""
 
+    # 语义优先(Phase A)视角上下文:仅渲染语义模型声明内容(dataset/metric/
+    # field+synonym/声明关系/instructions),不含物理表名/列/数值样本。
+    # 语义优先时 schema_context 也被置为同一内容(下游 gen_sql/planner 无感),
+    # 本字段供评测对照与 refuse 定位使用。
+    semantic_context: str = ""
+
+    # 语义优先(Phase A):编译 MISS(未覆盖)/零语义匹配/无语义模型 → 拒绝信号。
+    # 结构: {reason, question, plan?, draft?, conflict?, message?}。
+    # 置位后图路由到 refuse 节点,终止本轮(不执行),产出反问文案。
+    refusal: dict[str, Any] | None = None
+
+    # 语义优先(Phase A):数据源未初始化语义模型(决策 2/3)→ 整体拒绝,提示 /kb init。
+    no_model: bool = False
+
     # Oracle 锚(eval 专用,默认为空):gold SQL 涉及的物理表名,推理期
     # 由 schema_linking 强制锚进匹配集首位。生产路径永远不设置——
     # 只在评测中做"半开卷"上限对照,不落 KB、不进配置。

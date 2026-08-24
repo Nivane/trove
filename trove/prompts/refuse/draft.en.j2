@@ -1,0 +1,38 @@
+A user asked a data question that the current semantic model cannot answer — the model is missing a declaration. Draft the MINIMAL extension needed.
+
+Question: {{ question }}
+
+The query plan the assistant derived (what it needs but cannot compile):
+{{ plan }}
+
+Current semantic model vocabulary (already declared — do NOT redefine these):
+{{ vocabulary }}
+
+Produce ONE strict YAML document (no markdown fences, no commentary) with exactly one top-level `draft` entry. It must be either:
+
+A metric (a business measure computed by an aggregate over declared datasets/fields):
+  draft:
+    kind: metric
+    name: <short snake_case metric name>
+    expression: <aggregate SQL over dataset-qualified fields, e.g. AVG(loan.amount)>
+    synonyms: [<phrases the user said>]
+    definition: <one-line business meaning>
+    datasets: [<dataset(s) the expression references, must be declared>]
+
+Or a field (a declared dataset attribute that is missing — e.g. a filter/group-by dimension):
+  draft:
+    kind: field
+    name: <dataset.field — the target dataset MUST already be declared>
+    expression: <physical column or expression, scalar, no aggregation>
+    synonyms: [<phrases the user said>]
+    definition: <one-line business meaning>
+    datatype: <String|Integer|Float|Decimal|Date|DateTime|Time|Boolean>
+
+Rules:
+- The dataset(s) referenced MUST already exist in the vocabulary above. Never invent a dataset.
+- `expression` MUST be parseable SQL that only references declared dataset fields.
+- Never redefine an existing metric/field name. Never add relationships.
+- If the gap is genuinely unaddressable with the declared datasets, respond with:
+  draft:
+    kind: none
+    reason: <one-line explanation>

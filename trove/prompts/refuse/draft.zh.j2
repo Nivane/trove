@@ -1,0 +1,38 @@
+用户提出的数据问题,当前语义模型无法回答——模型缺少某个声明。请草拟最小化的模型扩展。
+
+问题: {{ question }}
+
+助手推导出的查询计划(它需要但无法编译的东西):
+{{ plan }}
+
+当前语义模型已声明的词表(不要重复定义这些):
+{{ vocabulary }}
+
+输出恰好一份严格 YAML(不要 markdown 围栏、不要评论),只含一个顶层 `draft` 条目。二选一:
+
+指标(对已声明数据集/字段的聚合业务度量):
+  draft:
+    kind: metric
+    name: <简短 snake_case 指标名>
+    expression: <带数据集限定的聚合 SQL,如 AVG(loan.amount)>
+    synonyms: [<用户问题里的说法>]
+    definition: <一句话业务含义>
+    datasets: [<表达式引用的数据集,必须是已声明的>]
+
+或字段(已声明数据集缺失的属性——如过滤/分组的维度):
+  draft:
+    kind: field
+    name: <dataset.field —— 目标数据集必须已声明>
+    expression: <物理列或标量表达式,不能是聚合>
+    synonyms: [<用户问题里的说法>]
+    definition: <一句话业务含义>
+    datatype: <String|Integer|Float|Decimal|Date|DateTime|Time|Boolean>
+
+规则:
+- 引用的数据集必须已存在于上面的词表。绝不虚构数据集。
+- `expression` 必须是可解析的 SQL,且只引用已声明数据集的字段。
+- 绝不重复定义已有的 metric/字段名。绝不添加关系。
+- 若在已声明数据集范围内确实无法补齐,则输出:
+  draft:
+    kind: none
+    reason: <一句话解释>

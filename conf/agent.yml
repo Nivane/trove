@@ -39,6 +39,12 @@ agent:
   # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
   # 空 = 关闭。
   # semantic_layer_path: .trove/semantic
+  # 语义优先(Phase A,见 docs 的 semantic-first 架构方案):
+  #   true = 语义模型是唯一可答边界——gen_sql/planner 只见语义视角,未覆盖查询
+  #          拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认 → 重答),无语义模型
+  #          的数据源拒绝并提示先 /kb init。
+  #   false = 旧裸表路径(仅 Phase A 评测对照使用)。
+  semantic_first: true
   # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
   observability:
     tracing:
