@@ -20,6 +20,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import render_skills
+from trove.services.semantic_layer.plan import PlanQuery, parse_plan_query
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -583,7 +584,7 @@ def _plan_has_intent(plan_json: dict[str, Any] | None) -> bool:
 
 
 def _compile_semantic(
-    plan_json: dict[str, Any] | None,
+    plan: dict[str, Any] | PlanQuery | None,
     matched: list[str],
     semantic_layer,
 ) -> tuple[str, str] | None:
@@ -592,8 +593,13 @@ def _compile_semantic(
     受限选择编译:plan 的 metric/group_by/filters 必须全部解析到已声明
     metric/field/relationship,AND guardrail 放行才注入 gen_sql;否则原样
     走现有通道。全程确定性,零额外 LLM 调用。
+
+    入参可为强类型 PlanQuery(planner 解析后的 AST)或 raw dict——
+    编译器内部统一按 dict 流处理,两条路径产物字节级一致。
     """
-    if plan_json is None or not matched or semantic_layer is None:
+    if isinstance(plan, PlanQuery):
+        plan = plan.to_dict()
+    if plan is None or not matched or semantic_layer is None:
         return None
     try:
         model = semantic_layer.model()
@@ -604,7 +610,7 @@ def _compile_semantic(
             validate_compiled_sql,
         )
 
-        result = SemanticCompiler(model).compile_from_plan(plan_json, list(matched))
+        result = SemanticCompiler(model).compile_from_plan(plan, list(matched))
         if result is None:
             return None
         violations = validate_compiled_sql(result.sql, model, list(matched))
@@ -742,7 +748,13 @@ def make_planner(
             }
             # 受限选择编译:覆盖内问题编译器拼出权威 SQL 并注入 plan,
             # gen_sql 遵从(确定性通道);MISS → 拒绝(语义优先唯一通道)。
-            compiled = _compile_semantic(plan_json, state.matched_tables, semantic_layer)
+            # 先在解析边界强类型化(形态错误 → None → 回退 raw-dict 流,
+            # 与改造前字节级一致)。
+            plan_query = parse_plan_query(plan_json)
+            compiled = _compile_semantic(
+                plan_query if plan_query is not None else plan_json,
+                state.matched_tables, semantic_layer,
+            )
             if compiled is not None:
                 compiled_sql, block = compiled
                 update["plan"] = f"{plan}\n\n{block}" if plan else block
