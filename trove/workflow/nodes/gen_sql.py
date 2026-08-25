@@ -50,6 +50,7 @@ def build_sql_prompt(
     lessons: list[dict[str, Any]] | None = None,
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
+    user_facts: list[dict[str, Any]] | None = None,
     lang: str = "en",
 ) -> str:
     """Build the initial SQL generation prompt.
@@ -57,6 +58,8 @@ def build_sql_prompt(
     Knowledge base material (optional) is injected as:
       - Terminology: standard formulations for matched business terms
       - Reference examples: top-K similar questions with their SQL
+      - User facts: the asking user's preferences/calibers for this
+        datasource (personalization memory)
 
     Thin wrapper over the ``gen_sql/user`` Jinja template.
     """
@@ -82,6 +85,7 @@ def build_sql_prompt(
         lessons=lessons or [],
         few_shots=few_shots or [],
         term_notes=term_notes or [],
+        user_facts=user_facts or [],
     )
 
 
@@ -111,6 +115,7 @@ def build_sql_prompt_from_state(state: GenSQLState) -> str:
         lessons=state.lessons or None,
         few_shots=state.few_shots or None,
         term_notes=state.term_notes or None,
+        user_facts=state.user_facts or None,
         lang=state.lang,
     )
 
@@ -181,6 +186,11 @@ def render_lessons(lessons: list[dict[str, Any]]) -> str:
 def render_rules(rules: list[str]) -> str:
     """业务规则段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
     return "".join(f"- {r}\n" for r in rules)
+
+
+def render_user_facts(facts: list[dict[str, Any]]) -> str:
+    """用户记忆段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    return "".join(f"- {f.get('fact', '')}\n" for f in facts)
 
 
 def render_cache_prefix(dialect: str, schema_context: str) -> str:

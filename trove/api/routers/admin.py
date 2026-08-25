@@ -850,3 +850,33 @@ async def put_settings(
     await _audit(request, "admin.settings.update", admin, 200,
                  {"keys": sorted(coerced)})
     return {"values": settings_service.effective_values(config)}
+
+
+# ── User facts (per-user memory) — cross-user view/delete ──
+
+
+def _user_facts(request: Request):
+    return request.app.state.user_facts
+
+
+@router.get("/admin/facts")
+async def list_all_facts(
+    request: Request,
+    user_id: str | None = None,
+    datasource: str | None = None,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Every user fact across all users (optionally filtered)."""
+    return {"facts": await _user_facts(request).list_all(
+        user_id=user_id, datasource=datasource,
+    )}
+
+
+@router.delete("/admin/facts/{fact_id}", status_code=204)
+async def delete_any_fact(
+    fact_id: int, request: Request, admin: dict = Depends(require_admin),
+) -> None:
+    """Admin delete of any user's fact (e.g. stale/incorrect memory)."""
+    if not await _user_facts(request).delete_any(fact_id):
+        raise HTTPException(status_code=404, detail=f"fact not found: {fact_id}")
+    await _audit(request, "admin.facts.delete", admin, 204, {"fact_id": fact_id})

@@ -12,6 +12,10 @@ Query plan (follow it unless it conflicts with the question):
 Data source rules (must follow):
 {% for rule in rules -%}
 - {{ rule }}
+{% endfor %}{% endif %}{% if user_facts %}
+Your personal notes for this data source (the user's stated preferences / calibers — follow them when they apply to the question):
+{% for f in user_facts -%}
+- {{ f.fact }}
 {% endfor %}{% endif %}{% if lessons %}
 Known pitfalls (learned from past corrections — avoid these):
 {% for lesson in lessons -%}

@@ -63,6 +63,10 @@ class WorkflowState(BaseModel):
     question: str
     run_id: str = ""  # trace identity of this run (set by SessionManager)
 
+    # 用户身份(会话归属;空 = 本地 CLI 未传/未启用)——user_facts(用户级
+    # 记忆)检索的键,由 SessionManager 从 session.user_id 注入。
+    user_id: str = ""
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 
@@ -360,6 +364,7 @@ class GenSQLState(BaseModel):
     term_notes: list[dict[str, Any]] | None = None  # terminology definitions
     lessons: list[dict[str, Any]] | None = None     # known pitfalls (Hint Bank)
     rules: list[str] | None = None                  # data source business rules
+    user_facts: list[dict[str, Any]] | None = None  # 用户级记忆(偏好/口径,user+datasource)
     llm: dict[str, Any] | None = None                    # last generate call detail
 
     @classmethod
@@ -374,6 +379,7 @@ class GenSQLState(BaseModel):
         term_notes: list[dict[str, Any]] | None = None,
         lessons: list[dict[str, Any]] | None = None,
         rules: list[str] | None = None,
+        user_facts: list[dict[str, Any]] | None = None,
         history: str | None = None,
         schema_context: str | None = None,
     ) -> "GenSQLState":
@@ -423,4 +429,5 @@ class GenSQLState(BaseModel):
             term_notes=term_notes if _include("term_notes") else None,
             lessons=lessons if _include("lessons") else None,
             rules=rules if _include("rules") else None,
+            user_facts=user_facts if _include("user_facts") else None,
         )

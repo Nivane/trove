@@ -76,6 +76,20 @@ class LessonConfirmResponse(BaseModel):
     confirmed: int
 
 
+class FactCreate(BaseModel):
+    """POST /v1/facts body — user-level memory (preference / caliber)."""
+
+    datasource: str = Field(min_length=1)
+    fact: str = Field(min_length=1)
+
+
+class FactPatch(BaseModel):
+    """PATCH /v1/facts/{id} body (both optional)."""
+
+    fact: str | None = Field(default=None, min_length=1)
+    datasource: str | None = Field(default=None, min_length=1)
+
+
 class SemanticDraftCreate(BaseModel):
     """POST /v1/admin/semantic/{ds}/drafts body (审批流草稿).
 
