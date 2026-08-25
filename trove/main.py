@@ -499,10 +499,58 @@ def main_serve(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
 
+# ── MCP server (trove mcp) ───────────────────────────────
+
+
+def mcp_parser() -> argparse.ArgumentParser:
+    """Argument parser for the 'trove mcp' MCP-server subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="trove mcp",
+        description="Run the Trove MCP server (stdio transport)",
+    )
+    parser.add_argument(
+        "--datasource", "-d", default="",
+        help=(
+            "Datasource to use (empty — load .trove/datasources.yml; "
+            "demo — built-in SQLite; or a scheme:// URL)"
+        ),
+    )
+    parser.add_argument("--config", "-f", default=None, help="Path to agent.yml config file")
+    parser.add_argument("--model", "-m", default=None, help="LLM model to use (overrides config)")
+    parser.add_argument("--workflow", "-w", default="reflection", help="Default workflow")
+    return parser
+
+
+async def async_main_mcp(argv: list[str]) -> None:
+    """Async main for 'trove mcp' (MCP server over stdio)."""
+    args = mcp_parser().parse_args(argv)
+    config = await _load_config(args)
+    async with build_checkpointer(config.home) as checkpointer:
+        components = await create_app_components(args, config, checkpointer)
+        from trove.mcp.server import build_mcp_server
+
+        server = build_mcp_server(components)
+        try:
+            await server.run_stdio_async()
+        finally:
+            await components["connector_registry"].close_all()
+
+
+def main_mcp(argv: list[str] | None = None) -> None:
+    """Entry point for 'trove mcp'."""
+    try:
+        asyncio.run(async_main_mcp(argv if argv is not None else sys.argv[2:]))
+    except KeyboardInterrupt:
+        sys.exit(0)
+
+
 def main_repl():
-    """Entry point for 'trove' command (REPL / serve / job / admin)."""
+    """Entry point for 'trove' command (REPL / serve / job / admin / mcp)."""
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         main_serve()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        main_mcp()
         return
     if len(sys.argv) > 1 and sys.argv[1] == "admin":
         # run_admin_cmds manages its own event loop (asyncio.run inside)
