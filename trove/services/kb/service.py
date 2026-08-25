@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import aiosqlite
 import yaml
@@ -32,6 +32,8 @@ from trove.core.logging import get_logger
 
 _CJK_RE = re.compile(r"[一-鿿]")
 from trove.core.types import SchemaInfo
+from trove.services.kb.backends.dense import CREATE_VECTORS
+from trove.services.kb.backends.fts import fts_item_text
 from trove.services.kb.compose import compose_candidates
 from trove.services.kb.embeddings import (
     coverage_score,
@@ -62,6 +64,16 @@ _CREATE_ITEMS = """CREATE TABLE IF NOT EXISTS kb_items (
 _CREATE_SYNC = """CREATE TABLE IF NOT EXISTS kb_sync (
     file_path TEXT PRIMARY KEY,
     mtime REAL NOT NULL
+)"""
+
+# kb_items 的 FTS5 稀疏镜像(contentless + UNINDEXED 元数据列)。
+# rowid = kb_items.id;text 为预分词后的可检索文本(见 backends.fts)。
+# 与 kb_items 同事务同步,删除传播天然成立。
+_CREATE_FTS = """CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
+    text,
+    datasource UNINDEXED,
+    kind UNINDEXED,
+    source_file UNINDEXED
 )"""
 
 
@@ -219,7 +231,7 @@ def _score_example(
         table_anchor = 3 * sum(1 for t in tables if t and t in full_text)
 
     score = 2 * term_hits + tag_hits + overlap + table_anchor
-    if example.get("aggregate") or example.get("date_range"):
+    if (example.get("aggregate") or example.get("date_range")) and score > 0:
         score = max(1, round(score * 0.6))
     return score
 
@@ -260,6 +272,16 @@ def _recency_factor(ts: str | None, half_life_days: int = 365) -> float:
     except Exception:
         return 1.0
     return 0.9 + 0.1 * (0.5 ** (days / half_life_days))
+
+
+def _fuse_extra_sim(sim: float, extra: float, alpha: float = 0.5) -> float:
+    """通道相似度(BM25/RRF)与确定性覆盖度融合(混合检索门内排序)。
+
+    仅 hybrid/rag 后端传入 sim_scores 时生效;alpha 使通道分与 coverage
+    同量级,不压过表锚/词重叠这些高区分度确定性信号(与 rerank_score 的
+    weight 同哲学:检索信号只排序、不改变"零确定性命中 = 不返回")。
+    """
+    return alpha * sim + (1.0 - alpha) * extra
 
 
 # ── YAML parsing ─────────────────────────────────────────
@@ -356,14 +378,31 @@ class KbService:
     exactly as without a KB.
     """
 
-    def __init__(self, project_root: str | Path, kb_dir: str | Path | None = None):
+    def __init__(
+        self,
+        project_root: str | Path,
+        kb_dir: str | Path | None = None,
+        backend_resolver: Callable[[str], Any] | None = None,
+    ):
         self.kb_dir = (
             Path(kb_dir) if kb_dir is not None
             else Path(project_root) / ".trove" / KB_DIR_NAME
         )
         self.db_path = self.kb_dir / "kb.sqlite"
+        # 按数据源解析检索后端(builtin → None 走本类现有逻辑);
+        # 检索失败/未配置一律退化 builtin,不阻断生成。
+        self._backend_resolver = backend_resolver
         # /kb learn draft awaiting user confirmation
         self.pending_draft: dict[str, Any] | None = None
+
+    def _backend_for(self, datasource: str):
+        """该数据源的检索后端;builtin/未配置/解析失败 → None。"""
+        if self._backend_resolver is None:
+            return None
+        try:
+            return self._backend_resolver(datasource or "")
+        except Exception:
+            return None
 
     @property
     def enabled(self) -> bool:
@@ -387,19 +426,28 @@ class KbService:
         self.kb_dir.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy_files(default_datasource)
 
+        purged: list[tuple[str, str]] = []
         async with aiosqlite.connect(self.db_path) as db:
             await self._ensure_mirror_schema(db)
             for ds_dir in sorted(self._datasource_dirs()):
                 for yml in sorted(ds_dir.glob("*.yml")):
                     await self._sync_file(db, yml, ds_dir.name)
-            await self._purge_deleted_files(db)
+            purged = await self._purge_deleted_files(db)
             await db.commit()
+        # 向量清理放镜像事务外(delete_file 走独立连接,避免锁竞争)
+        for datasource, source_file in purged:
+            await self._delete_vectors(datasource, source_file)
 
-    async def _purge_deleted_files(self, db: aiosqlite.Connection) -> None:
+    async def _purge_deleted_files(
+        self, db: aiosqlite.Connection,
+    ) -> list[tuple[str, str]]:
         """Drop mirror rows whose source YAML no longer exists on disk.
 
         Keyed by (datasource, source_file): a same-named file in another
         datasource directory must not keep stale rows alive.
+
+        Returns the purged (datasource, source_file) pairs so the caller
+        can clean derived mirrors (vectors) outside this transaction.
         """
         current = {
             (ds_dir.name, yml.name)
@@ -409,6 +457,7 @@ class KbService:
         rows = await (await db.execute(
             "SELECT datasource, source_file FROM kb_items"
         )).fetchall()
+        purged: list[tuple[str, str]] = []
         for datasource, source_file in rows:
             if (datasource, source_file) in current:
                 continue
@@ -417,9 +466,15 @@ class KbService:
                 (datasource, source_file),
             )
             await db.execute(
+                "DELETE FROM kb_fts WHERE datasource = ? AND source_file = ?",
+                (datasource, source_file),
+            )
+            await db.execute(
                 "DELETE FROM kb_sync WHERE file_path = ?",
                 (f"{datasource}/{source_file}",),
             )
+            purged.append((datasource, source_file))
+        return purged
 
     async def _sync_file(
         self, db: aiosqlite.Connection, yml: Path, datasource: str,
@@ -456,11 +511,86 @@ class KbService:
                 (datasource, kind, item_key,
                  json.dumps(payload, ensure_ascii=False, default=str), yml.name),
             )
+        await self._sync_file_fts(db, datasource, yml.name, entries)
         await db.execute(
             "INSERT OR REPLACE INTO kb_sync (file_path, mtime) VALUES (?, ?)",
             (rel_path, mtime),
         )
         await db.commit()
+        # 向量索引在镜像事务外(embedding 是慢 LLM 调用,不阻塞镜像写事务;
+        # 失败降级,稀疏通道仍可用)。
+        await self._index_vectors_for_file(datasource, yml.name, entries)
+
+    async def _index_vectors_for_file(
+        self, datasource: str, source_file: str,
+        entries: list[tuple[str, str, dict]],
+    ) -> None:
+        """按后端重建该文件的向量索引(rag 的 index_file 钩子;其余 no-op)。"""
+        backend = self._backend_for(datasource)
+        indexer = getattr(backend, "index_file", None)
+        if indexer is None:
+            return
+        try:
+            await indexer(datasource, source_file, entries)
+        except Exception:
+            logger.warning(
+                "KB vector indexing failed for %s/%s; sparse channel still serves",
+                datasource, source_file, exc_info=True,
+            )
+
+    async def _delete_vectors(self, datasource: str, source_file: str) -> None:
+        """删除传播:文件从磁盘移除时清理向量(rag 钩子;其余 no-op)。"""
+        backend = self._backend_for(datasource)
+        deleter = getattr(backend, "delete_file", None)
+        if deleter is None:
+            return
+        try:
+            await deleter(datasource, source_file)
+        except Exception:
+            logger.warning(
+                "KB vector delete failed for %s/%s", datasource, source_file,
+                exc_info=True,
+            )
+
+    async def _clear_vectors(self, datasource: str) -> None:
+        """delete_kb 时清空该数据源向量(rag 钩子;其余 no-op)。"""
+        backend = self._backend_for(datasource)
+        clearer = getattr(backend, "clear", None)
+        if clearer is None:
+            return
+        try:
+            await clearer(datasource)
+        except Exception:
+            logger.warning(
+                "KB vector clear failed for %s", datasource, exc_info=True)
+
+    async def _sync_file_fts(
+        self, db: aiosqlite.Connection, datasource: str, source_file: str,
+        entries: list[tuple[str, str, dict]],
+    ) -> None:
+        """重建该文件的 kb_fts 镜像(与 kb_items 同事务,删除传播天然)。
+
+        kb_items 先删除后按序重插,id 连续递增——ORDER BY id 取回的新
+        id 与 entries 顺序一一对应,逐条写入 FTS 索引。
+        """
+        await db.execute(
+            "DELETE FROM kb_fts WHERE datasource = ? AND source_file = ?",
+            (datasource, source_file),
+        )
+        rows = await (await db.execute(
+            "SELECT id FROM kb_items WHERE datasource = ? AND source_file = ? "
+            "ORDER BY id",
+            (datasource, source_file),
+        )).fetchall()
+        for (id_,), (kind, _key, payload) in zip(rows, entries):
+            text = fts_item_text(kind, payload)
+            if not text:
+                continue
+            await db.execute(
+                "INSERT INTO kb_fts (rowid, text, datasource, kind, source_file) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (id_, text, datasource, kind, source_file),
+            )
 
     async def force_sync(self, default_datasource: str | None = None) -> None:
         """Reload every YAML file unconditionally (/kb reload).
@@ -472,11 +602,14 @@ class KbService:
         self.kb_dir.mkdir(parents=True, exist_ok=True)
         self._migrate_legacy_files(default_datasource)
 
+        purged: list[tuple[str, str]] = []
         async with aiosqlite.connect(self.db_path) as db:
             await self._ensure_mirror_schema(db)
             await db.execute("DELETE FROM kb_sync")
-            await self._purge_deleted_files(db)
+            purged = await self._purge_deleted_files(db)
             await db.commit()
+        for datasource, source_file in purged:
+            await self._delete_vectors(datasource, source_file)
         await self.ensure_synced(default_datasource)
 
     def _datasource_dirs(self) -> list[Path]:
@@ -507,10 +640,14 @@ class KbService:
             logger.info("Rebuilding KB mirror (missing datasource column)")
             await db.execute("DROP TABLE kb_items")
             await db.execute("DROP TABLE IF EXISTS kb_sync")
+            await db.execute("DROP TABLE IF EXISTS kb_fts")
+            await db.execute("DROP TABLE IF EXISTS kb_vectors")
             columns = set()
         if not columns:
             await db.execute(_CREATE_ITEMS)
             await db.execute(_CREATE_SYNC)
+            await db.execute(_CREATE_FTS)
+            await db.execute(CREATE_VECTORS)
             await db.commit()
 
     # ── Retrieval ─────────────────────────────────────────
@@ -522,6 +659,24 @@ class KbService:
             return await cursor.fetchall()
 
     async def search_terms(
+        self,
+        question: str,
+        datasource: str,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+    ) -> list[TermHit]:
+        """Terms whose term/alias matches the question (per-datasource backend).
+
+        按数据源配置的检索后端读时 dispatch;builtin(默认)= 子串/词重叠
+        确定性匹配。后端解析失败一律退化 builtin,不阻断检索。
+        """
+        backend = self._backend_for(datasource)
+        if backend is not None:
+            return await backend.search_terms(
+                question, datasource, tables=tables, all_tables=all_tables)
+        return await self._search_terms(question, datasource, tables, all_tables)
+
+    async def _search_terms(
         self,
         question: str,
         datasource: str,
@@ -592,6 +747,9 @@ class KbService:
     ) -> list[ExampleHit]:
         """Top-K reference examples/templates by relevance score.
 
+        按数据源配置的检索后端读时 dispatch;builtin(默认)= 确定性分 +
+        hashed n-gram 重排;hybrid = FTS5/BM25 召回 + 门内融合重排。
+
         With `tables` given, examples that mention OTHER tables are
         dropped (deterministic evidence filtering); examples mentioning
         the matched tables get a score anchor.
@@ -607,16 +765,57 @@ class KbService:
         multi-table question with a filter sees a structural reference no
         single template covers.
         """
+        backend = self._backend_for(datasource)
+        if backend is not None:
+            return await backend.search_examples(
+                question, datasource, limit=limit,
+                tables=tables, all_tables=all_tables, per_table=per_table)
+        return await self._search_examples(
+            question, datasource, limit, tables, all_tables, per_table)
+
+    async def _search_examples(
+        self,
+        question: str,
+        datasource: str,
+        limit: int = 3,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+        per_table: bool = False,
+    ) -> list[ExampleHit]:
+        """builtin 示例检索:全量候选集上跑确定性排序。"""
         if not self.enabled:
             return []
-        term_hits = await self.search_terms(question, datasource)
-        matched_terms = {h.term for h in term_hits}
         rows = await self._rows(
-            "SELECT payload FROM kb_items "
+            "SELECT id, payload FROM kb_items "
             "WHERE kind IN ('example', 'template') AND datasource = ? ORDER BY id",
             (datasource,),
         )
-        payloads = [json.loads(row["payload"]) for row in rows]
+        items = [(r["id"], json.loads(r["payload"])) for r in rows]
+        return await self._rank_examples(
+            question, datasource, items, limit, tables, all_tables, per_table)
+
+    async def _rank_examples(
+        self,
+        question: str,
+        datasource: str,
+        items: list[tuple[int, dict]],
+        limit: int,
+        tables: list[str] | None,
+        all_tables: list[str] | None,
+        per_table: bool,
+        sim_scores: dict[int, float] | None = None,
+    ) -> list[ExampleHit]:
+        """示例候选排序(builtin 全量集 / hybrid·rag 召回子集共用)。
+
+        Args:
+            items: [(kb_items.rowid, payload)] 候选。
+            sim_scores: 可选 {rowid: 0..1} 通道相似度(hybrid = BM25,rag =
+                RRF),门内融合进 rerank sim(builtin 为 None 保持现状)。
+        """
+        if not self.enabled:
+            return []
+        term_hits = await self._search_terms(question, datasource)
+        matched_terms = {h.term for h in term_hits}
 
         def keep(payload: dict) -> bool:
             """确定性跨表过滤:示例提到未匹配的表 → 丢弃。"""
@@ -630,23 +829,28 @@ class KbService:
             mentioned = [t for t in all_tables if t and t in full_text]
             return not mentioned or any(t in tables for t in mentioned)
 
+        def _sim(payload: dict, id_: int) -> float:
+            sim = coverage_score(question, str(payload.get("question", "")))
+            if sim_scores is not None:
+                sim = _fuse_extra_sim(sim, sim_scores.get(id_, 0.0))
+            return sim
+
         if per_table and tables:
             # 每表分组 top-limit(锚定只给组内表)→ 合并 → 每表保底 1 个,
             # 剩余名额按分填充——多表题的 join 骨架不会因单表高分被挤出。
-            # 混合检索:确定性分(表锚/词重叠)是硬门,embedding 相似度在门内
-            # 提升近义候选的排序(无关候选 det=0 仍被排除)。
+            # 混合检索:确定性分(表锚/词重叠)是硬门,相似度(embedding/
+            # BM25)在门内提升近义候选的排序(无关候选 det=0 仍被排除)。
             groups: list[list[ExampleHit]] = []
             merged: dict[str, ExampleHit] = {}
             for t in tables:
                 group = []
-                for p in payloads:
+                for id_, p in items:
                     if not keep(p):
                         continue
                     det = _score_example(question, matched_terms, p, tables=[t])
                     if det <= 0:
                         continue
-                    sim = coverage_score(question, str(p.get("question", "")))
-                    group.append((rerank_score(det, sim), p))
+                    group.append((rerank_score(det, _sim(p, id_)), p))
                 group.sort(key=lambda x: x[0], reverse=True)
                 hits = [ExampleHit(**p, score=s) for s, p in group[:limit]]
                 groups.append(hits)
@@ -674,14 +878,13 @@ class KbService:
             return (picks + rest)[:limit]
 
         scored = []
-        for payload in payloads:
-            if not keep(payload):
+        for id_, p in items:
+            if not keep(p):
                 continue
-            det = _score_example(question, matched_terms, payload, tables=tables)
+            det = _score_example(question, matched_terms, p, tables=tables)
             if det <= 0:
                 continue
-            sim = coverage_score(question, str(payload.get("question", "")))
-            scored.append(ExampleHit(**payload, score=rerank_score(det, sim)))
+            scored.append(ExampleHit(**p, score=rerank_score(det, _sim(p, id_))))
         scored.sort(key=lambda h: h.score, reverse=True)
 
         # 原子模板组合(JION×WHERE)→ 统一按分排序后截断
@@ -742,22 +945,58 @@ class KbService:
         tables: list[str] | None = None,
         all_tables: list[str] | None = None,
     ) -> list[dict]:
-        """Hint Bank 语义检索:embedding 相似度 × 投票加权 × 时效衰减。
+        """Hint Bank 语义检索(按数据源后端 dispatch)。
 
         替代原 graphs 里的纯子串过滤(``pattern in question``)——近义改写
         (中英文/同义表述)也能命中;表锚过滤保留(提到未匹配表的教训丢弃)。
         ``score`` 写入每条返回 dict 供 context budget 排序。
         """
-        lessons = await self.list_lessons(datasource)
-        if not lessons:
+        backend = self._backend_for(datasource)
+        if backend is not None:
+            return await backend.search_lessons(
+                question, datasource, limit=limit,
+                tables=tables, all_tables=all_tables)
+        return await self._search_lessons(question, datasource, limit, tables, all_tables)
+
+    async def _search_lessons(
+        self,
+        question: str,
+        datasource: str,
+        limit: int = 3,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+    ) -> list[dict]:
+        """builtin 教训检索:全量教训(仅 confirmed)上做相似度排序。"""
+        if not self.enabled:
             return []
+        lessons = await self.list_lessons(datasource)
+        items = [(i, l) for i, l in enumerate(lessons)]
+        return await self._rank_lessons(
+            question, datasource, items, limit, tables, all_tables)
+
+    async def _rank_lessons(
+        self,
+        question: str,
+        datasource: str,
+        items: list[tuple[int, dict]],
+        limit: int,
+        tables: list[str] | None,
+        all_tables: list[str] | None,
+        sim_scores: dict[int, float] | None = None,
+    ) -> list[dict]:
+        """教训候选排序(builtin 全量集 / hybrid·rag 召回子集共用)。
+
+        ``score`` = 相似度(coverage × 可选通道分) × 投票加权 × 时效衰减。
+        """
         scored: list[dict] = []
-        for lesson in lessons:
+        for item_id, lesson in items:
             if not _lesson_table_ok(lesson, tables, all_tables):
                 continue
             sim = coverage_score(question, _lesson_text(lesson))
             if sim <= 0:
                 continue
+            if sim_scores is not None:
+                sim = _fuse_extra_sim(sim, sim_scores.get(item_id, 0.0))
             votes = int(lesson.get("upvotes", 0) or 0) - int(lesson.get("downvotes", 0) or 0)
             lesson = dict(lesson)
             lesson["score"] = sim * (1 + 0.25 * votes) * _recency_factor(
@@ -1018,8 +1257,11 @@ class KbService:
                 await db.execute(
                     "DELETE FROM kb_items WHERE datasource = ?", (datasource,))
                 await db.execute(
+                    "DELETE FROM kb_fts WHERE datasource = ?", (datasource,))
+                await db.execute(
                     "DELETE FROM kb_sync WHERE file_path LIKE ?", (f"{datasource}/%",))
                 await db.commit()
+        await self._clear_vectors(datasource)
 
     # ── Evolution (human-confirmed writes) ────────────────
 

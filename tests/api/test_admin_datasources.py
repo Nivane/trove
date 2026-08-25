@@ -29,6 +29,75 @@ async def test_register_list_delete(client, api_app, tmp_path):
     assert "extra" not in {c.name for c in api_app.state.config_store.load_configs()}
 
 
+async def test_register_with_retrieval_backend(client, api_app):
+    """注册时可选 retrieval_backend 字段:持久化 + 列表暴露 + 非法值 400。"""
+    resp = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "hybriddb", "url": "sqlite://:memory:",
+              "retrieval_backend": "hybrid"},
+    )
+    assert resp.status_code == 201
+    persisted = next(
+        c for c in api_app.state.config_store.load_configs()
+        if c.name == "hybriddb")
+    assert persisted.retrieval_backend == "hybrid"
+
+    listed = (await client.get("/v1/admin/datasources")).json()["datasources"]
+    entry = next(d for d in listed if d["name"] == "hybriddb")
+    assert entry["retrieval_backend"] == "hybrid"
+
+    bad = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "baddb", "url": "sqlite://:memory:",
+              "retrieval_backend": "nope"},
+    )
+    assert bad.status_code == 400
+
+    # 缺省 → builtin
+    plain = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "plaindb", "url": "sqlite://:memory:"},
+    )
+    assert plain.status_code == 201
+    assert plain.json()["datasource"]["retrieval_backend"] == "builtin"
+
+
+async def test_register_rag_requires_embedding_model(client, api_app):
+    """rag 后端必须配 embedding_model;pgvector 必须配 vector_dsn。"""
+    no_emb = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "ragdb", "url": "sqlite://:memory:",
+              "retrieval_backend": "rag"},
+    )
+    assert no_emb.status_code == 400
+
+    ok = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "ragdb", "url": "sqlite://:memory:",
+              "retrieval_backend": "rag", "embedding_model": "bge-m3"},
+    )
+    assert ok.status_code == 201
+    entry = ok.json()["datasource"]
+    assert entry["embedding_model"] == "bge-m3"
+    assert entry["vector_backend"] == "sqlite"
+
+    no_dsn = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "vecragdb", "url": "sqlite://:memory:",
+              "retrieval_backend": "rag", "embedding_model": "bge-m3",
+              "vector_backend": "pgvector"},
+    )
+    assert no_dsn.status_code == 400
+
+    bad_vb = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "vecragdb", "url": "sqlite://:memory:",
+              "retrieval_backend": "rag", "embedding_model": "bge-m3",
+              "vector_backend": "chroma", "vector_dsn": "postgresql://x"},
+    )
+    assert bad_vb.status_code == 400
+
+
 async def test_list_without_kb_mirror(client, api_app):
     """KB 目录存在但 kb.sqlite 镜像未建（挂载 .trove 的真实生产形态）→ 列表不 500，
     kb_initialized 仍正确（从 YAML 文件判定，不依赖镜像）。"""

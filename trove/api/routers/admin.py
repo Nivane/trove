@@ -64,7 +64,63 @@ def _registry(request: Request):
 
 
 def _sanitized(cfg: DatasourceConfig) -> dict:
-    return {"id": cfg.ds_id, "name": cfg.name, "type": cfg.type, "default": bool(cfg.default)}
+    return {
+        "id": cfg.ds_id, "name": cfg.name, "type": cfg.type,
+        "default": bool(cfg.default),
+        "retrieval_backend": cfg.retrieval_backend or "builtin",
+        "embedding_model": cfg.embedding_model or "",
+        "vector_backend": cfg.vector_backend or "sqlite",
+        "vector_dsn": cfg.vector_dsn or "",
+    }
+
+
+def _retrieval_backend(body: dict) -> str:
+    """解析请求体里的可选检索后端;缺省/空 → 保持 builtin。"""
+    rb = (body.get("retrieval_backend") or "").strip()
+    if not rb:
+        return "builtin"
+    from trove.services.kb.backends.registry import backend_names
+    allowed = {"builtin", *backend_names()}
+    if rb not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported retrieval_backend: {rb} (allowed: {sorted(allowed)})",
+        )
+    return rb
+
+
+def _vector_config(body: dict) -> dict:
+    """解析并校验检索/向量配置:返回可应用的字段字典。
+
+    - rag 要求 embedding_model(稠密通道依赖 LLM 凭证);
+    - vector_backend 仅 sqlite/pgvector;pgvector 要求 vector_dsn。
+    """
+    rb = _retrieval_backend(body)
+    emb = (body.get("embedding_model") or "").strip()
+    vb = (body.get("vector_backend") or "sqlite").strip()
+    vdsn = (body.get("vector_dsn") or "").strip()
+    if rb == "rag" and not emb:
+        raise HTTPException(
+            status_code=400,
+            detail="retrieval_backend 'rag' requires embedding_model "
+                   "(dense channel needs an embedding model via the LLM gateway)",
+        )
+    if vb not in ("sqlite", "pgvector"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported vector_backend: {vb} (allowed: sqlite, pgvector)",
+        )
+    if vb == "pgvector" and not vdsn:
+        raise HTTPException(
+            status_code=400,
+            detail="vector_backend 'pgvector' requires vector_dsn (dedicated vector database)",
+        )
+    return {
+        "retrieval_backend": rb,
+        "embedding_model": emb,
+        "vector_backend": vb,
+        "vector_dsn": vdsn,
+    }
 
 
 @router.get("/admin/users")
@@ -264,16 +320,21 @@ async def list_admin_datasources(request: Request, admin: dict = Depends(require
     kb = _kb(request)
     # 幂等：KB 目录存在但镜像未建（如挂载的 .trove）时先建表，否则 list_items 500
     await kb.ensure_synced(None)
+    configs = _store(request).load_configs()
+    cfg_of = {c.name: c for c in configs}
     out = []
     for info in registry.list_info():
+        cfg = cfg_of.get(info["name"])
+        merged = _sanitized(cfg) if cfg else {"retrieval_backend": "builtin"}
         out.append({
             **info,
             "status": "connected",
+            **merged,
             "kb_initialized": kb.kb_initialized(info["name"]),
             "kb_items": (await kb.list_items()).get(info["name"], {}),
         })
     registered = {d["name"] for d in out}
-    for cfg in _store(request).load_configs():
+    for cfg in configs:
         if cfg.name not in registered:
             out.append({
                 **_sanitized(cfg), "type": cfg.type,
@@ -331,6 +392,7 @@ async def create_datasource(request: Request, body: dict,
             cfg = registry.ensure_identity(cfg)
         except DatasourceError as e:
             raise HTTPException(status_code=400, detail=str(e))
+    cfg = dataclasses.replace(cfg, **_vector_config(body))
 
     # 冲突先行：同名不同身份 → 409，绝不静默覆盖（连接探测前就拒绝）。
     existing = _existing_identities(request)
@@ -472,6 +534,7 @@ async def update_datasource(name: str, body: dict, request: Request,
         new_cfg = parse_datasource_url(url)
         new_cfg = dataclasses.replace(
             new_cfg, name=cfg.name, default=cfg.default, ds_id=cfg.ds_id,
+            **_vector_config(body),
         )
         new_cfg = registry.ensure_identity(new_cfg)
     except DatasourceError as e:

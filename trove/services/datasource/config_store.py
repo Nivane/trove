@@ -33,6 +33,10 @@ def to_dict(cfg: DatasourceConfig) -> dict:
         "connection": dict(cfg.connection_params),
         "credentials": dict(cfg.credentials),
         "default": bool(cfg.default),
+        "retrieval_backend": cfg.retrieval_backend or "builtin",
+        "embedding_model": cfg.embedding_model or "",
+        "vector_backend": cfg.vector_backend or "sqlite",
+        "vector_dsn": cfg.vector_dsn or "",
     }
 
 
@@ -43,6 +47,10 @@ def from_dict(data: dict) -> DatasourceConfig:
         connection_params=dict(data.get("connection", {})),
         credentials=dict(data.get("credentials", {})),
         default=bool(data.get("default", False)),
+        retrieval_backend=str(data.get("retrieval_backend") or "builtin"),
+        embedding_model=str(data.get("embedding_model") or ""),
+        vector_backend=str(data.get("vector_backend") or "sqlite"),
+        vector_dsn=str(data.get("vector_dsn") or ""),
         # 旧 yml 无 id 字段(迁移):确定性回填,保证重启间稳定且幂等。
         ds_id=data.get("id") or backfill_ds_id(data["type"], data["name"]),
     )

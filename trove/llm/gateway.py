@@ -10,6 +10,7 @@ Supports:
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import Any, AsyncIterator
 
@@ -70,6 +71,7 @@ class LLMGateway:
         self,
         mock_response: str | None = None,
         mock_stream_chunks: list[str] | None = None,
+        mock_embedding: list[list[float]] | None = None,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
         providers: list[ProviderConfig] | None = None,
@@ -79,6 +81,8 @@ class LLMGateway:
         Args:
             mock_response: If set, chat() returns this string without calling LLM.
             mock_stream_chunks: If set, chat_stream() yields these chunks.
+            mock_embedding: If set, embedding() returns these vectors (per
+                input, cycled) without calling the LLM provider.
             max_retries: Maximum retry attempts on failure.
             retry_base_delay: Base delay in seconds for exponential backoff.
             providers: Provider configs from agent.yml; litellm_params are
@@ -87,6 +91,7 @@ class LLMGateway:
         """
         self._mock_response = mock_response
         self._mock_stream_chunks = mock_stream_chunks
+        self._mock_embedding = mock_embedding
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self._providers = providers or []
@@ -288,6 +293,58 @@ class LLMGateway:
                 message=f"LLM streaming failed: {e}",
                 model=model,
             ) from e
+
+    async def embedding(
+        self,
+        model: str,
+        inputs: list[str],
+        api_key: str | None = None,
+        api_base: str | None = None,
+    ) -> list[list[float]]:
+        """Embed a batch of texts via litellm.aembedding.
+
+        Mock mode (``mock_embedding`` set) returns the mocked vectors
+        cycled per input, so test harnesses get a deterministic,
+        network-free embedding path.
+
+        Returns:
+            One L2-normalized vector per input text.
+
+        Raises:
+            LLMError: On provider failure.
+        """
+        if self._mock_embedding is not None:
+            n = len(self._mock_embedding)
+            return [
+                [float(x) for x in self._mock_embedding[i % n]]
+                for i in range(len(inputs))
+            ]
+
+        import litellm
+
+        kwargs = self._provider_kwargs(model)
+        kwargs["model"] = model
+        kwargs["input"] = inputs
+        if api_key:
+            kwargs["api_key"] = api_key
+        if api_base:
+            kwargs["api_base"] = api_base
+        try:
+            resp = await litellm.aembedding(**kwargs)
+        except Exception as e:
+            raise LLMError(message=f"Embedding call failed: {e}", model=model) from e
+
+        data = getattr(resp, "data", None)
+        if data is None and isinstance(resp, dict):
+            data = resp.get("data", [])
+        out: list[list[float]] = []
+        for item in data or []:
+            vec = item.get("embedding") if isinstance(item, dict) else getattr(item, "embedding", None)
+            if vec is None:
+                continue
+            norm = math.sqrt(sum(float(x) ** 2 for x in vec)) or 1.0
+            out.append([float(x) / norm for x in vec])
+        return out
 
     # ── LiteLLM integration ──────────────────────────────
 

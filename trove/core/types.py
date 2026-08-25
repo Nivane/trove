@@ -146,3 +146,14 @@ class DatasourceConfig:
     credentials: dict[str, str] = field(default_factory=dict)
     default: bool = False
     ds_id: str = ""
+    # 检索后端: "builtin"(确定性 + hashed n-gram,默认) | "hybrid"(FTS5
+    # + BM25 稀疏通道) | "rag"(稀疏 + 稠密 embedding RRF)。读时生效,
+    # 写 datasources.yml 即切换。
+    retrieval_backend: str = "builtin"
+    # rag 的稠密通道:embedding 模型名(经 LLM 网关,需凭证;空 → rag 退化
+    # 纯稀疏,与 hybrid 同行为)。
+    embedding_model: str = ""
+    # 向量后端: "sqlite"(kb.sqlite 本地向量,默认零配置) | "pgvector"。
+    vector_backend: str = "sqlite"
+    # pgvector 专用向量库连接串(与业务库解耦;vector_backend=pgvector 必填)。
+    vector_dsn: str = ""
