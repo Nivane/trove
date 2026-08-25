@@ -164,11 +164,36 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
                 if expr and _parse(expr, dialect) is None:
                     issues.append(f"表 {ds_name}.{fname} 表达式无法解析: {expr[:60]}")
 
+    rel_pairs: set[frozenset[str]] = set()
     for r in model.get("relationships", []) or []:
         if not isinstance(r, dict):
             continue
         if str(r.get("from", "")) not in ds_names or str(r.get("to", "")) not in ds_names:
             issues.append(f"关系「{r.get('name', '')}」引用未声明的数据集")
+        if not str(r.get("cardinality") or "").strip():
+            issues.append(f"关系「{r.get('name', '')}」未声明基数(cardinality),编译器将保守 MISS")
+        rel_pairs.add(frozenset((str(r.get("from", "")), str(r.get("to", "")))))
+
+    # 命名约定 FK → 已声明数据集 但未声明关系:编译器「matched 但连不上」
+    # 会产出 FROM anchor 无 JOIN 的非法 SQL(被投影表守卫拦成 MISS)。
+    # 在建模期暴露,别等查询期。
+    for d in model.get("datasets", []) or []:
+        if not isinstance(d, dict):
+            continue
+        ds_name = str(d.get("name", ""))
+        for f in d.get("fields", []) or []:
+            if not isinstance(f, dict):
+                continue
+            fname = str(f.get("name", ""))
+            if not fname.endswith("_id") or len(fname) <= 3:
+                continue
+            target = fname[:-3]
+            if target == ds_name or target not in ds_names:
+                continue
+            if frozenset((ds_name, target)) not in rel_pairs:
+                issues.append(
+                    f"表 {ds_name}.{fname} 按命名约定指向已声明的 {target},"
+                    "但 relationships 未声明这对关系(联表将 MISS)")
     return issues
 
 

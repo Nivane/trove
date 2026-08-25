@@ -85,6 +85,9 @@ def test_relationships_inferred_from_id_naming():
     rel = next(r for r in rels if r["from"] == "loan")
     assert rel["from_columns"] == ["account_id"]
     assert rel["to_columns"] == ["account_id"]
+    # 命名约定 many→one:显式声明基数,编译器对未声明基数的边保守 MISS
+    assert rel["cardinality"] == "1:N"
+    assert all(r.get("cardinality") == "1:N" for r in rels)
 
 
 def test_relationships_skip_self_and_missing_target():

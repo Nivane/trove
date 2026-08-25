@@ -133,6 +133,9 @@ def relationships_from_schema(
                 "to": target,
                 "from_columns": [col.name],
                 "to_columns": [target_col],
+                # 命名约定(``*_id`` → 主键)天然 many→one;显式声明基数,
+                # 编译器对未声明基数的边保守 MISS(不再默认安全)。
+                "cardinality": "1:N",
             })
     return rels
 

@@ -212,6 +212,30 @@ class TestLintSemantics:
         issues = lint_semantics(self._model())
         assert any("引用未声明的数据集" in i for i in issues)
 
+    def test_relationship_without_cardinality_flagged(self):
+        """P0-3:未声明基数 → 编译器保守 MISS,lint 在建模期暴露。"""
+        model = {
+            "datasets": [{"name": "loan"}, {"name": "account"}],
+            "relationships": [{"name": "r", "from": "loan", "to": "account",
+                               "from_columns": ["account_id"], "to_columns": ["account_id"]}],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("未声明基数" in i for i in issues)
+
+    def test_missing_relationship_by_naming_convention_flagged(self):
+        """P2:命名约定 FK 指向已声明表但未声明关系 → 建模期警告。"""
+        model = {
+            "datasets": [{"name": "loan", "fields": [
+                {"name": "account_id", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "account_id"}]}},
+            ]}, {"name": "account"}],
+            "relationships": [],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("但 relationships 未声明这对关系" in i for i in issues)
+
     def test_clean_model_no_issues(self):
         clean = {
             "name": "fin",
@@ -220,7 +244,8 @@ class TestLintSemantics:
                     {"dialect": "ANSI_SQL", "expression": "amount"}]},
                  "ai_context": {"synonyms": ["loan value"]}},
             ]}],
-            "relationships": [{"name": "r", "from": "loan", "to": "loan"}],
+            "relationships": [{"name": "r", "from": "loan", "to": "loan",
+                               "cardinality": "1:N"}],
             "metrics": [],
         }
         assert lint_semantics(clean) == []
