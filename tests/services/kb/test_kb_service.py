@@ -562,6 +562,29 @@ class TestSearchExamples:
         await kb.ensure_synced("demo")
         assert await kb.search_examples("zzz 无关问题", "demo") == []
 
+    async def test_hybrid_rerank_prefers_semantic_near_match(self, kb, kb_dir):
+        """混合检索:同等确定性下,与问题近义的模板排在逐词无关的前面。"""
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "examples.yml").write_text(
+            "examples:\n"
+            "  - question: 客户年龄分布\n"
+            "    sql: SELECT age, COUNT(*) FROM client GROUP BY age\n"
+            "    tags: [客户]\n"
+            "  - question: 每个地区发放的贷款笔数\n"
+            "    sql: SELECT A2, COUNT(*) FROM loan GROUP BY A2\n"
+            "    tags: [贷款, 地区]\n"
+            "  - question: 每年发放的贷款笔数\n"
+            "    sql: SELECT YEAR(date), COUNT(*) FROM loan GROUP BY 1\n"
+            "    tags: [贷款, 年份]\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+        # 近义改写(与"每年发放的贷款笔数"语义相同但措辞不同)应把同义模板排前
+        hits = await kb.search_examples("按年份统计贷款发放数量", "demo", limit=2)
+        assert hits
+        assert "YEAR" in hits[0].sql  # 近义模板靠 embedding 提升到首位
+        assert hits[0].score > hits[-1].score
+
 
 class TestPureHelpers:
     def test_bigrams(self):
@@ -669,6 +692,86 @@ lessons:
         await kb.append_lesson({"pattern": "x", "note": "y", "sql_snippet": "z"}, "demo")
         assert await kb.list_lessons("demo") == []  # pending 不注入
         assert (kb_dir / "demo" / "lessons.yml").exists()
+
+    async def test_append_lesson_dedup_identical_pattern(self, kb, kb_dir):
+        """教训卫生:同 pattern 重复 append → 跳过,不重复累积。"""
+        await kb.append_lesson({"pattern": "no such table: loans", "note": "n"}, "demo")
+        await kb.append_lesson({"pattern": "no such table: loans", "note": "n2"}, "demo")
+        all_lessons = await kb.list_lessons("demo", confirmed_only=False)
+        assert len(all_lessons) == 1
+
+    async def test_append_lesson_dedup_near_duplicate(self, kb, kb_dir):
+        """教训卫生:近义重复(措辞略变)也被去重。"""
+        await kb.append_lesson({"pattern": "no such table: loans", "note": "n"}, "demo")
+        await kb.append_lesson(
+            {"pattern": "no such table: loans !", "note": "n", "sql_snippet": "s"}, "demo")
+        all_lessons = await kb.list_lessons("demo", confirmed_only=False)
+        assert len(all_lessons) == 1
+
+    async def test_append_lesson_distinct_not_deduped(self, kb, kb_dir):
+        await kb.append_lesson({"pattern": "no such table: loans", "note": "n"}, "demo")
+        await kb.append_lesson({"pattern": "平均贷款金额口径", "note": "m"}, "demo")
+        all_lessons = await kb.list_lessons("demo", confirmed_only=False)
+        assert len(all_lessons) == 2
+
+    async def test_search_lessons_ranks_by_similarity(self, kb, kb_dir):
+        """Hint Bank 语义检索:近义教训排前,投票加权生效,表锚过滤生效。"""
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "lessons.yml").write_text(
+            "lessons:\n"
+            "  - pattern: 每年贷款次数统计口径\n"
+            "    note: 按 loan.date 提取年份分组计数\n"
+            "    sql_snippet: SELECT YEAR(date), COUNT(*) FROM loan GROUP BY 1\n"
+            "    confirmed: true\n"
+            "  - pattern: 地区平均贷款金额\n"
+            "    note: 平均金额\n"
+            "    sql_snippet: SELECT A2, AVG(amount) FROM loan GROUP BY A2\n"
+            "    confirmed: true\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+        hits = await kb.search_lessons(
+            "每年发放的贷款笔数", "demo", limit=3,
+            tables=["loan"], all_tables=["loan", "district"],
+        )
+        assert hits, "至少命中一条近义教训"
+        assert hits[0]["pattern"].startswith("每年贷款")
+        assert all(h.get("score", 0) > 0 for h in hits)
+
+    async def test_search_lessons_table_anchor_filters(self, kb, kb_dir):
+        """提到未匹配表的教训被表锚过滤丢弃。"""
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "lessons.yml").write_text(
+            "lessons:\n"
+            "  - pattern: district 表 A11 是工资\n"
+            "    note: 引用 district\n"
+            "    sql_snippet: SELECT A11 FROM district\n"
+            "    confirmed: true\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+        hits = await kb.search_lessons(
+            "district 工资", "demo", limit=3,
+            tables=["loan"], all_tables=["loan", "district"],
+        )
+        assert hits == []  # 教训提到 district,但当前只锚定 loan
+
+    async def test_search_lessons_vote_weighting(self, kb, kb_dir):
+        """高赞教训在同等相似度下排前。"""
+        (kb_dir / "demo").mkdir(parents=True)
+        (kb_dir / "demo" / "lessons.yml").write_text(
+            "lessons:\n"
+            "  - pattern: 贷款计数用 loan.loan_id\n"
+            "    note: a\n    sql_snippet: s1\n    confirmed: true\n"
+            "    upvotes: 5\n    downvotes: 0\n"
+            "  - pattern: 贷款计数用 loan.loan_id 变体\n"
+            "    note: b\n    sql_snippet: s2\n    confirmed: true\n"
+            "    upvotes: 0\n    downvotes: 0\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+        hits = await kb.search_lessons("贷款计数", "demo", limit=2)
+        assert hits[0]["upvotes"] == 5
 
     async def test_confirm_pending_lessons(self, kb, kb_dir):
         (kb_dir / "demo").mkdir(parents=True)

@@ -465,7 +465,11 @@ class TestSelectCorrectionEvent:
 
 class TestHistorySummaryFusion:
     async def test_history_prefers_summary_over_old_turns(self, tmp_home):
-        """有 compaction summary 时：历史 = 摘要 + 最近 1 轮原文。"""
+        """有 compaction summary 时:历史 = 摘要 + 最近 max_turns 轮原文(分层)。
+
+        早期轮次被摘要承载并折叠出窗口;近若干轮保持逐字(比旧的只留
+        1 轮更宽,支撑更长跨度的 follow-up 指代)。
+        """
         from trove.core.config import AgentConfig
         from trove.storage.session_store import SessionStore
         from trove.agent.session import SessionManager
@@ -486,20 +490,28 @@ class TestHistorySummaryFusion:
         session = await manager.start_session(project_cwd="/tmp/p")
         session.summary = "早期摘要：用户关心贷款数据"
         session.messages = [
+            Message(role="user", content="旧问题0"),
+            Message(role="assistant", content="旧答案0"),
             Message(role="user", content="旧问题1"),
             Message(role="assistant", content="旧答案1"),
             Message(role="user", content="旧问题2"),
             Message(role="assistant", content="旧答案2"),
+            Message(role="user", content="旧问题3"),
+            Message(role="assistant", content="旧答案3"),
+            Message(role="user", content="旧问题4"),
+            Message(role="assistant", content="旧答案4"),
         ]
         await manager.ask(session=session, question="新问题")
 
         history = captured[0].history
         assert "早期摘要" in history
-        assert "旧答案2" in history          # 最近一轮保留原文
-        assert "旧答案1" not in history      # 更早轮次由摘要替代
+        assert "旧答案4" in history          # 最近轮保留原文
+        assert "旧答案3" in history          # 近 4 轮都在原文窗口内(分层)
+        assert "旧答案1" in history
+        assert "旧答案0" not in history      # 最早一轮由摘要承载并折叠出窗口
         assert "新问题" not in history
 
-    async def test_history_without_summary_keeps_two_turns(self, tmp_home):
+    async def test_history_without_summary_keeps_recent_turns(self, tmp_home):
         from trove.core.config import AgentConfig
         from trove.storage.session_store import SessionStore
         from trove.agent.session import SessionManager

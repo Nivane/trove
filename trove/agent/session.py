@@ -1047,18 +1047,21 @@ class SessionManager:
                 logger.debug("Lesson capture failed: %s", e)
 
     @staticmethod
-    def _conversation_history(session: Session, max_turns: int = 2) -> str:
-        """Compact prior exchanges (before the current question) for follow-ups.
+    def _conversation_history(session: Session, max_turns: int = 4) -> str:
+        """分层历史:摘要 + 最近原文(当前问题之前的上下文)。
 
-        When a compaction summary exists, older turns are replaced by the
-        summary and only the most recent turn keeps its verbatim text.
+        - 有 compaction summary:``[summary] ...`` 打头,再保留最近
+          ``max_turns`` 轮原文(分层:早期轮次浓缩为摘要,近期保持逐字)。
+        - 无摘要:保留最近 ``max_turns + 2`` 轮原文(窗口比有摘要时更宽,
+          因为还没有摘要承载更早的上下文)。
+        返回扁平文本,由 context_budget 按相关度/最近度做逐轮裁剪。
         """
         lines = []
         if session.summary:
             lines.append(f"[summary] {session.summary}")
-            recent = session.messages[-2:]  # 最近一轮原文
-        else:
             recent = session.messages[-max_turns * 2 :]
+        else:
+            recent = session.messages[-(max_turns + 2) * 2 :]
         for m in recent:
             if m.content == "":
                 continue

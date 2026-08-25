@@ -116,19 +116,6 @@ def generation_temperature(retry_count: int) -> float:
     return min(0.3, retry_count * 0.1)
 
 
-def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) -> bool:
-    """Hint Bank 经验按表锚过滤：提到未匹配表的教训与当前问题无关。"""
-    if not matched or not all_tables:
-        return True
-    text = " ".join([
-        str(lesson.get("pattern", "")),
-        str(lesson.get("note", "")),
-        str(lesson.get("sql_snippet", "")),
-    ])
-    mentioned = [t for t in all_tables if t and t in text]
-    return not mentioned or any(t in matched for t in mentioned)
-
-
 def _word_overlap(q1: str, q2: str) -> float:
     """两个问题的词重叠率(min 侧归一):KB 示例精确命中的判定依据。"""
     w1 = set(re.findall(r"[a-z0-9_]+", (q1 or "").lower()))
@@ -319,7 +306,12 @@ def _make_gen_sql_node(
                     per_table=bool(matched),
                 ),
                 services.kb.list_rules(datasource),
-                services.kb.list_lessons(datasource),
+                # Hint Bank 语义检索:embedding 相似度 × 投票加权 × 时效衰减,
+                # 表锚过滤在检索内完成;不再用纯子串过滤(近义改写也能命中)
+                services.kb.search_lessons(
+                    state.question, datasource, limit=3,
+                    tables=matched or None, all_tables=all_table_names or None,
+                ),
                 services.kb.search_terms(
                     state.question, datasource,
                     tables=matched or None, all_tables=all_table_names or None,
@@ -329,13 +321,7 @@ def _make_gen_sql_node(
             for r in _kb_results[1:]:  # 首个异常(原顺序)→ 中止节点,同旧语义
                 if isinstance(r, BaseException):
                     raise r
-            example_hits, rules, all_lessons, term_hits = _kb_results
-            haystack = (state.question + " " + state.error_feedback).lower()
-            lessons = [
-                l for l in all_lessons
-                if l.get("pattern", "").lower() in haystack
-                and _lesson_table_ok(l, matched, all_table_names)
-            ][:3]
+            example_hits, rules, lessons, term_hits = _kb_results
             few_shots = [
                 {"question": h.question, "sql": h.sql, "template": h.template}
                 for h in example_hits
@@ -424,11 +410,11 @@ def _make_gen_sql_node(
                 ContextItem(
                     key=f"lesson{i}",
                     text=render_lessons([l]),
-                    score=relevance_score(
+                    score=float(l.get("score") or relevance_score(
                         " ".join([str(l.get("pattern", "")), str(l.get("note", "")),
                                   str(l.get("sql_snippet", ""))]),
                         state.question,
-                    ),
+                    ) or 0),
                 )
                 for i, l in enumerate(lessons)
             ]

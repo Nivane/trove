@@ -21,6 +21,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,11 @@ from trove.core.logging import get_logger
 _CJK_RE = re.compile(r"[一-鿿]")
 from trove.core.types import SchemaInfo
 from trove.services.kb.compose import compose_candidates
+from trove.services.kb.embeddings import (
+    coverage_score,
+    near_duplicate,
+    rerank_score,
+)
 from trove.services.kb.ossie_format import (
     append_term_to_document,
     ossie_to_term_payloads,
@@ -93,7 +99,7 @@ class ExampleHit:
     sql: str
     tags: list[str] = field(default_factory=list)
     template: bool = False
-    score: int = 0
+    score: float = 0.0
     aggregate: bool = False
     date_range: bool = False
 
@@ -216,6 +222,44 @@ def _score_example(
     if example.get("aggregate") or example.get("date_range"):
         score = max(1, round(score * 0.6))
     return score
+
+
+def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) -> bool:
+    """Hint Bank 经验按表锚过滤：提到未匹配表的教训与当前问题无关。"""
+    if not matched or not all_tables:
+        return True
+    text = " ".join([
+        str(lesson.get("pattern", "")),
+        str(lesson.get("note", "")),
+        str(lesson.get("sql_snippet", "")),
+    ])
+    mentioned = [t for t in all_tables if t and t in text]
+    return not mentioned or any(t in matched for t in mentioned)
+
+
+def _lesson_text(lesson: dict) -> str:
+    return " ".join([
+        str(lesson.get("pattern", "")),
+        str(lesson.get("note", "")),
+        str(lesson.get("sql_snippet", "")),
+    ])
+
+
+def _recency_factor(ts: str | None, half_life_days: int = 365) -> float:
+    """时效衰减因子:有时间戳则 0.9~1.0(一年半衰,最多少 10%),无则 1.0。
+
+    只做温和的排序微调,不让久远教训被挤出,避免正确历史被过度惩罚。
+    """
+    if not ts:
+        return 1.0
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400)
+    except Exception:
+        return 1.0
+    return 0.9 + 0.1 * (0.5 ** (days / half_life_days))
 
 
 # ── YAML parsing ─────────────────────────────────────────
@@ -588,16 +632,21 @@ class KbService:
 
         if per_table and tables:
             # 每表分组 top-limit(锚定只给组内表)→ 合并 → 每表保底 1 个,
-            # 剩余名额按分填充——多表题的 join 骨架不会因单表高分被挤出
+            # 剩余名额按分填充——多表题的 join 骨架不会因单表高分被挤出。
+            # 混合检索:确定性分(表锚/词重叠)是硬门,embedding 相似度在门内
+            # 提升近义候选的排序(无关候选 det=0 仍被排除)。
             groups: list[list[ExampleHit]] = []
             merged: dict[str, ExampleHit] = {}
             for t in tables:
-                group = [
-                    (_score_example(question, matched_terms, p, tables=[t]), p)
-                    for p in payloads
-                    if keep(p)
-                ]
-                group = [(s, p) for s, p in group if s > 0]
+                group = []
+                for p in payloads:
+                    if not keep(p):
+                        continue
+                    det = _score_example(question, matched_terms, p, tables=[t])
+                    if det <= 0:
+                        continue
+                    sim = coverage_score(question, str(p.get("question", "")))
+                    group.append((rerank_score(det, sim), p))
                 group.sort(key=lambda x: x[0], reverse=True)
                 hits = [ExampleHit(**p, score=s) for s, p in group[:limit]]
                 groups.append(hits)
@@ -628,9 +677,11 @@ class KbService:
         for payload in payloads:
             if not keep(payload):
                 continue
-            score = _score_example(question, matched_terms, payload, tables=tables)
-            if score > 0:
-                scored.append(ExampleHit(**payload, score=score))
+            det = _score_example(question, matched_terms, payload, tables=tables)
+            if det <= 0:
+                continue
+            sim = coverage_score(question, str(payload.get("question", "")))
+            scored.append(ExampleHit(**payload, score=rerank_score(det, sim)))
         scored.sort(key=lambda h: h.score, reverse=True)
 
         # 原子模板组合(JION×WHERE)→ 统一按分排序后截断
@@ -683,9 +734,62 @@ class KbService:
             lessons = [l for l in lessons if l.get("confirmed")]
         return lessons
 
+    async def search_lessons(
+        self,
+        question: str,
+        datasource: str,
+        limit: int = 3,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+    ) -> list[dict]:
+        """Hint Bank 语义检索:embedding 相似度 × 投票加权 × 时效衰减。
+
+        替代原 graphs 里的纯子串过滤(``pattern in question``)——近义改写
+        (中英文/同义表述)也能命中;表锚过滤保留(提到未匹配表的教训丢弃)。
+        ``score`` 写入每条返回 dict 供 context budget 排序。
+        """
+        lessons = await self.list_lessons(datasource)
+        if not lessons:
+            return []
+        scored: list[dict] = []
+        for lesson in lessons:
+            if not _lesson_table_ok(lesson, tables, all_tables):
+                continue
+            sim = coverage_score(question, _lesson_text(lesson))
+            if sim <= 0:
+                continue
+            votes = int(lesson.get("upvotes", 0) or 0) - int(lesson.get("downvotes", 0) or 0)
+            lesson = dict(lesson)
+            lesson["score"] = sim * (1 + 0.25 * votes) * _recency_factor(
+                lesson.get("updated_at") or lesson.get("created_at"))
+            scored.append(lesson)
+        scored.sort(key=lambda l: l.get("score", 0.0), reverse=True)
+        return scored[:limit]
+
     async def append_lesson(self, entry: dict, datasource: str) -> None:
-        """Record a lesson candidate (pending until confirmed)."""
+        """Record a lesson candidate (pending until confirmed).
+
+        教训卫生:与已存在的教训(含 pending)近义重复(embedding ≥ 阈值)或
+        同 pattern 时跳过写入,避免 Hint Bank 无限膨胀。新教训带 created_at。
+        去重直接读 lessons.yml(写路径与镜像解耦,不依赖 sync)。
+        """
         entry.setdefault("confirmed", False)
+        if not entry.get("created_at"):
+            entry["created_at"] = datetime.now(timezone.utc).isoformat()
+        path = self.kb_dir / datasource / "lessons.yml"
+        existing: list[dict] = []
+        if path.exists():
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            existing = list(data.get("lessons", []))
+        pattern = str(entry.get("pattern", "")).strip()
+        new_text = _lesson_text(entry)
+        for lesson in existing:
+            if pattern and str(lesson.get("pattern", "")).strip() == pattern:
+                logger.info("Lesson dedup: identical pattern %r — skipped", pattern)
+                return
+            if near_duplicate(new_text, _lesson_text(lesson)):
+                logger.info("Lesson dedup: near-duplicate of existing lesson — skipped")
+                return
         await self._append_entry("lessons.yml", "lessons", entry, datasource)
 
     async def rate_lesson(self, entry: dict, datasource: str) -> dict:
@@ -717,6 +821,7 @@ class KbService:
             existing["upvotes"] = int(existing.get("upvotes", 0)) + 1
         else:
             existing["downvotes"] = int(existing.get("downvotes", 0)) + 1
+        existing["updated_at"] = datetime.now(timezone.utc).isoformat()
         existing["confirmed"] = False
         if entry.get("sql_snippet"):
             existing["sql_snippet"] = entry["sql_snippet"]

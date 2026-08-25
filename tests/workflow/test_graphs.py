@@ -1017,7 +1017,7 @@ class TestRollbackRouting:
             async def list_rules(self, ds):
                 return []
 
-            async def list_lessons(self, ds):
+            async def search_lessons(self, q, ds, limit=3, tables=None, all_tables=None):
                 return []
 
             async def search_terms(self, q, ds, tables=None, all_tables=None):
@@ -1378,7 +1378,7 @@ examples:
             async def list_rules(self, ds):
                 return []
 
-            async def list_lessons(self, ds):
+            async def search_lessons(self, q, ds, limit=3, tables=None, all_tables=None):
                 return []
 
             async def search_terms(self, q, ds, tables=None, all_tables=None):
