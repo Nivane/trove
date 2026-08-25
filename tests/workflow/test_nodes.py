@@ -1432,6 +1432,59 @@ class TestExecuteSQL:
         assert update == {}
 
 
+class TestExecuteSQLCompileDrift:
+    """编译照抄校验(执行前确定性 diff):偏离权威编译 SQL → 打回,不执行。"""
+
+    async def test_drift_feeds_back_before_executing(self, sqlite_registry):
+        """compiled 通道:生成 SQL 与编译 SQL 不等价 → 执行前打回 gen_sql。"""
+        node = make_execute_sql(sqlite_registry)
+        state = make_state(
+            sql="SELECT SUM(name) FROM students",
+            compiled=True,
+            compiled_sql="SELECT COUNT(name)\nFROM students",
+        )
+        update = await node(state)
+        assert "error" not in update
+        assert "COMPILE_DRIFT" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["row_count"] == -1  # 本轮未执行
+        assert "SELECT COUNT(name)" in update["error_feedback"]  # 权威 SQL 随反馈
+        assert update["columns"] == []  # 无执行产物
+
+    async def test_drift_with_budget_exhausted_degrades(self, sqlite_registry):
+        """预算耗尽仍偏离 → 优雅降级为 error,不再打回。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(make_state(
+            sql="SELECT SUM(name) FROM students",
+            compiled=True,
+            compiled_sql="SELECT COUNT(name)\nFROM students",
+            retry_count=10,
+        ))
+        assert "COMPILE_DRIFT" in update["error"]
+        assert "error_feedback" not in update
+
+    async def test_matching_sql_still_executes(self, sqlite_registry):
+        """生成 SQL 等价复现编译 SQL → 照常执行(编译通道不误伤)。"""
+        node = make_execute_sql(sqlite_registry)
+        state = make_state(
+            sql="SELECT name FROM students ORDER BY name",
+            compiled=True,
+            compiled_sql="SELECT name FROM students ORDER BY name",
+        )
+        update = await node(state)
+        assert update["row_count"] == 5
+        assert update["error_feedback"] == ""  # 成功清空反馈
+
+    async def test_non_compiled_path_unchanged(self, sqlite_registry):
+        """非 compiled 通道(compiled=False)不受影响。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(make_state(
+            sql="SELECT SUM(name) FROM students",
+            compiled_sql="SELECT COUNT(name)\nFROM students",
+        ))
+        assert update["row_count"] == 1  # 未走 drift 门,正常执行(聚合 1 行)
+
+
 class TestExecuteSQLTransientRetry:
     """执行瞬态重试：连接抖动重跑同一 SQL；SQL 错误不重试。"""
 

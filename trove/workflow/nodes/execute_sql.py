@@ -18,10 +18,14 @@ from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
+from trove.services.semantic_layer.compiler import compiled_sql_matches
 from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState, budget_exhausted
 
 logger = get_logger(__name__)
+
+# 编译照抄校验失败的错误前缀:analyze_error 据此走确定性短路径(不烧 LLM)。
+COMPILE_DRIFT_TAG = "[ERR:COMPILE_DRIFT]"
 
 
 def make_execute_sql(
@@ -55,6 +59,16 @@ def make_execute_sql(
 
         if connectors is None:
             return {"error": "No datasource registry available."}
+
+        # 编译照抄校验(确定性 diff,执行前):compiled 通道的 SQL 必须等价
+        # 复现编译器拼出的权威 SQL——偏离(改聚合/加别名/调 join 等)直接
+        # 打回 gen_sql 重生成,而不是把被 LLM 改坏的 SQL 拿去执行。该偏离
+        # 进入统一修正轮(analyze_error 确定性短路径 + versions 回归链)。
+        if state.compiled and state.compiled_sql:
+            ok, why = compiled_sql_matches(state.compiled_sql, state.sql, state.dialect)
+            if not ok:
+                logger.info("compile drift for %r: %s", state.question[:80], why)
+                return _compile_drift_failure(state, max_retries)
 
         result = None
         timeout_s = timeout_ms / 1000.0
@@ -161,3 +175,18 @@ def _execution_failure(
         "rows": [],
         "row_count": -1,
     }
+
+
+def _compile_drift_failure(state: WorkflowState, max_retries: int) -> dict[str, Any]:
+    """编译通道照抄校验失败:带权威 SQL 打回 gen_sql;预算耗尽才降级。
+
+    与 _execution_failure 共用修正预算与「本轮未执行」语义(row_count == -1),
+    偏离重生成同样受 analyze_error 的 versions 回归链约束。
+    """
+    message = (
+        f"{COMPILE_DRIFT_TAG} The generated SQL does not reproduce the "
+        "authoritative compiled SQL (semantic-first deterministic channel). "
+        "Regenerate it byte-for-byte from the compiled SQL in the plan:\n"
+        f"```sql\n{state.compiled_sql}\n```"
+    )
+    return _execution_failure(state, message, max_retries)

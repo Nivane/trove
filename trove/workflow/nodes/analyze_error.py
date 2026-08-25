@@ -23,6 +23,7 @@ from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import render_skills
 from trove.services.errors import DETERMINISTIC_DEAD_END, classify_error, ErrorClass
+from trove.workflow.nodes.execute_sql import COMPILE_DRIFT_TAG
 from trove.workflow.state import WorkflowState
 from trove.workflow.versions import (
     EXEC_FAILURE_SIG,
@@ -242,6 +243,41 @@ def _resolve_rollback(
     return None
 
 
+def _compile_drift_analysis(state: WorkflowState) -> dict[str, Any]:
+    """编译照抄偏离的确定性诊断与回滚决策(fixer,固定回 gen_sql)。
+
+    修复指令完全确定(逐字照抄权威编译 SQL),不烧 LLM;不累计无进展轮次
+    (偏离是修正对象而非「修不动」),版本链仍记录本轮失败 SQL 供回归对比。
+    """
+    analysis = (
+        "生成的 SQL 未逐字复现权威编译 SQL(语义优先确定性通道)。请从计划中"
+        "的 Compiled SQL 段照抄:不改聚合、不改列、不加别名、不调 join 顺序、"
+        "不改过滤值;仅当目标方言要求时才做格式级适配。"
+        if state.lang == "zh" else
+        "The generated SQL does not reproduce the authoritative compiled SQL "
+        "(semantic-first deterministic channel). Copy the Compiled SQL section "
+        "from the plan byte-for-byte — do not change aggregation, columns, "
+        "aliases, join order, or filter values; only apply formatting-level "
+        "dialect fixes."
+    )
+    raw_error = state.error_feedback
+    return {
+        "error_analysis": analysis,
+        "rollback_target": "gen_sql",
+        "last_rollback_target": "gen_sql",
+        "fix_mode": "fixer",
+        "last_progress": "improved",  # 修正对象明确,不计无进展
+        "no_progress_rounds": state.no_progress_rounds,
+        "rejected_hypotheses": record_rejected_hypothesis(
+            state.rejected_hypotheses, state.sql, raw_error,
+        ),
+        "sql_versions": record_version(
+            state.sql_versions, state.sql, EXEC_FAILURE_SIG, [],
+            round_n=len(state.sql_versions) + 1, error=raw_error,
+        ),
+    }
+
+
 def make_analyze_error(
     llm: LLMGateway,
     config: AgentConfig,
@@ -263,6 +299,16 @@ def make_analyze_error(
         # on reflect RETRY verdicts (reason carries the failure context).
         if not state.error_feedback and state.verdict != "RETRY":
             return {}
+
+        # 编译照抄偏离(确定性短路径,零 LLM):生成的 SQL 未复现权威编译
+        # SQL,修正指令 100% 确定(照抄计划里的 Compiled SQL 段)——跳过
+        # LLM 诊断与升档逻辑,固定回滚 gen_sql,回归链照常记录。
+        if state.error_feedback and state.error_feedback.startswith(COMPILE_DRIFT_TAG):
+            logger.info(
+                "analyze_error compile-drift short-circuit (%s)",
+                state.question[:80],
+            )
+            return _compile_drift_analysis(state)
 
         # 确定性预分类(零 LLM):死胡同类(权限/鉴权/内部 bug)直接 surface,
         # 打回重生成无意义,不再烧诊断 token;其余类打 [ERR:<id>] 进诊断

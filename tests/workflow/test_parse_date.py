@@ -117,6 +117,90 @@ class TestParseTimeRangeEdgeCases:
             "最近7天每个学生的平均成绩是多少",
             date(2025, 1, 1),
         ) == (date(2024, 12, 25), date(2025, 1, 1))
+        assert parse_time_range(
+            "前7天的订单有多少",
+            date(2025, 1, 10),
+        ) == (date(2025, 1, 3), date(2025, 1, 9))
+
+
+# ── Offsets (前N天 / N days ago) ───────────────────────────
+
+
+class TestParseTimeRangeOffsets:
+    def test_zh_prev_days_excludes_reference(self):
+        assert parse_time_range("前7天", date(2026, 8, 16)) == (date(2026, 8, 9), date(2026, 8, 15))
+
+    def test_zh_prev_weeks(self):
+        assert parse_time_range("前两周", date(2026, 8, 16)) == (date(2026, 8, 2), date(2026, 8, 15))
+
+    def test_zh_prev_month_clamped(self):
+        assert parse_time_range("前一个月", date(2025, 3, 31)) == (date(2025, 2, 28), date(2025, 3, 30))
+
+    def test_zh_ago_single_point(self):
+        assert parse_time_range("7天前", date(2026, 8, 16)) == (date(2026, 8, 9), date(2026, 8, 9))
+        assert parse_time_range("三个月前", date(2025, 1, 31)) == (date(2024, 10, 31), date(2024, 10, 31))
+
+    def test_zh_hundreds_numeral(self):
+        assert parse_time_range("前一百天", date(2026, 8, 16)) == (date(2026, 5, 8), date(2026, 8, 15))
+
+    def test_en_ago_single_point(self):
+        ref = date(2026, 8, 16)
+        assert parse_time_range("7 days ago", ref, lang="en") == (date(2026, 8, 9), date(2026, 8, 9))
+        assert parse_time_range("three weeks ago", ref, lang="en") == (date(2026, 7, 26), date(2026, 7, 26))
+
+    def test_en_number_words_to_twenty(self):
+        assert parse_time_range("thirteen days ago", date(2026, 8, 16), lang="en") == (
+            date(2026, 8, 3), date(2026, 8, 3))
+
+
+# ── Quarters (本季度 / this quarter) ───────────────────────
+
+
+class TestParseTimeRangeQuarters:
+    def test_zh_current_quarter(self):
+        assert parse_time_range("本季度", date(2026, 8, 16)) == (date(2026, 7, 1), date(2026, 9, 30))
+
+    def test_zh_previous_quarter(self):
+        assert parse_time_range("上季度", date(2026, 8, 16)) == (date(2026, 4, 1), date(2026, 6, 30))
+
+    def test_zh_next_quarter_wraps_year(self):
+        assert parse_time_range("下季度", date(2026, 11, 16)) == (date(2027, 1, 1), date(2027, 3, 31))
+
+    def test_en_quarter(self):
+        assert parse_time_range("last quarter", date(2026, 8, 16), lang="en") == (
+            date(2026, 4, 1), date(2026, 6, 30))
+        assert parse_time_range("this quarter", date(2026, 8, 16), lang="en") == (
+            date(2026, 7, 1), date(2026, 9, 30))
+
+
+# ── Since (X以来/至今, since X) ────────────────────────────
+
+
+class TestParseTimeRangeSince:
+    def test_zh_since_period(self):
+        assert parse_time_range("去年以来", date(2026, 8, 16)) == (date(2025, 1, 1), date(2026, 8, 16))
+
+    def test_zh_since_absolute_year(self):
+        assert parse_time_range("2024年以来", date(2026, 8, 16)) == (date(2024, 1, 1), date(2026, 8, 16))
+
+    def test_zh_since_upto_now(self):
+        assert parse_time_range("上个月至今", date(2026, 8, 16)) == (date(2026, 7, 1), date(2026, 8, 16))
+
+    def test_en_since_period(self):
+        assert parse_time_range("since last year", date(2026, 8, 16), lang="en") == (
+            date(2025, 1, 1), date(2026, 8, 16))
+
+    def test_en_since_absolute_year(self):
+        assert parse_time_range("since 2024", date(2026, 8, 16), lang="en") == (
+            date(2024, 1, 1), date(2026, 8, 16))
+
+    def test_en_since_resolvable_partial_start(self):
+        """since 起点部分可解析(day anchor 忽略后缀噪音)→ 半开区间。"""
+        assert parse_time_range("since yesterday noon", date(2026, 8, 16), lang="en") == (
+            date(2026, 8, 15), date(2026, 8, 16))
+
+    def test_en_since_unresolvable_start_is_miss(self):
+        assert parse_time_range("since the big celebration", date(2026, 8, 16), lang="en") is None
 
 
 # ── Misses (must return None) ─────────────────────────────
@@ -129,8 +213,8 @@ class TestParseTimeRangeMiss:
             ("每个学生的平均成绩", "zh"),
             ("average grade by county", "en"),
             ("在附近的学生", "zh"),          # 防「近」误伤
-            ("前7天", "zh"),                 # v1 不覆盖(「前」易与「前天」冲突)
-            ("3月1日以来", "zh"),            # 半绝对 v1 外
+            ("前天", "zh"),                  # 「前」+ 天 无数字 → 不误吞
+            ("3月1日以来", "zh"),            # 半绝对 v1 外(无四位年份/月日不可解析)
             ("去年底到现在", "zh"),          # 半绝对 v1 外(无四位年份)
             ("上周", "en"),                  # 语言错配
             ("last week", "zh"),

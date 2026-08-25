@@ -614,3 +614,48 @@ class TestDeterministicShortCircuit:
         assert update["rollback_target"] == "gen_sql"
         # 版本链仍记录未打标的引擎文本(跨轮"同一失败"判定稳定)
         assert update["sql_versions"][0]["error"] == "no such table: loans"
+
+    async def test_compile_drift_short_circuits_deterministically(self):
+        """编译照抄偏离:修正指令 100% 确定(照抄权威编译 SQL)→ 不烧 LLM,
+        固定回 gen_sql,版本链记录失败轮。"""
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run for compile-drift short-circuit")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            lang="en",
+            sql="SELECT SUM(name) FROM students",
+            error_feedback="[ERR:COMPILE_DRIFT] The generated SQL does not "
+                           "reproduce the authoritative compiled SQL. "
+                           "```sql\nSELECT COUNT(name)\nFROM students\n```",
+        ))
+        assert calls["n"] == 0
+        assert "error" not in update                      # 非死胡同
+        assert "byte-for-byte" in update["error_analysis"]
+        assert update["rollback_target"] == "gen_sql"
+        assert update["fix_mode"] == "fixer"
+        assert update["last_progress"] == "improved"      # 修正对象明确,不计无进展
+        assert update["sql_versions"][0]["sig"] == "exec-error"
+        assert "COMPILE_DRIFT" in update["sql_versions"][0]["error"]
+        assert update["no_progress_rounds"] == 0
+
+    async def test_compile_drift_not_confused_with_regular_error(self):
+        """非 COMPILE_DRIFT 的普通错误不打编译短路(标签是唯一切换条件)。"""
+        captured = {}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return "TARGET: gen_sql"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT * FROM loans",
+            error_feedback="no such table: loans",
+        ))
+        assert "compiled SQL" not in (captured["prompt"] or "").lower()
+        assert update["rollback_target"] == "gen_sql"

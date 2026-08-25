@@ -151,6 +151,29 @@ class TestUncoveredRefusal:
         assert out["refusal"]["conflict"] is True
         assert not SemanticManager(kb).drafts("demo")["pending"]
 
+    async def test_refusal_with_compile_miss_reason_in_message(self, kb):
+        """refusal 带 compile_miss 分因 → 拒绝文案具体到缺失组件,reason 契约不变。"""
+        node = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={
+                "reason": "uncovered", "question": "q",
+                "plan": {"aggregation": "AVG(loan.amount)",
+                         "answer_columns": ["AVG(loan.amount)"]},
+                "compile_miss": {"reason": "no_metric_match",
+                                 "component": "AVG(loan.amount)"},
+            },
+        ))
+        # 用户文案具体到「缺哪个组件」(不再笼统 uncovered)
+        assert "no_metric_match" in out["clarification_question"]
+        assert "AVG(loan.amount)" in out["clarification_question"]
+        # 上游契约不变:refusal["reason"] 仍是原始 reason,供机器匹配/聚合
+        assert out["refusal"]["reason"] == "uncovered"
+
     async def test_refusal_unparseable_expr_conflict(self, kb):
         """表达式不可解析 → 冲突,不写库。"""
         from trove.services.semantic_layer.manage import SemanticManager

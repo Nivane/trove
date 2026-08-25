@@ -8,6 +8,9 @@ Datus date_parser design:
   - duration expressions ("最近N天") include the reference date
   - period expressions ("上个月") return the full calendar period only
   - zh weeks run Monday–Sunday; en weeks run Sunday–Saturday
+  - offsets ("前7天" / "N days ago") anchor to a single point / yesterday
+  - since ("X以来" / "since X") returns a half-open range to the reference date
+  - quarters ("本季度" / "last quarter") return the full calendar quarter
 
 Unmatched questions pass through silently (node returns {}), so the
 pipeline behaves exactly as before for anything the rules don't cover.
@@ -34,15 +37,24 @@ _CN_DIGITS = {
 _EN_NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
     "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
 }
 
 
 def _cn_to_int(s: str) -> int | None:
-    """Parse a Chinese numeral 0-99 ('两'=2, '二十三'=23); None if unsupported."""
+    """Parse a Chinese numeral up to 999 ('两'=2, '二十三'=23, '一百五'=150)."""
     if s.isdigit():
         return int(s)
     if s in _CN_DIGITS:
         return _CN_DIGITS[s]
+    if "百" in s:
+        left, _, right = s.partition("百")
+        hundreds = _CN_DIGITS.get(left, 1) if left else 1
+        rest = _cn_to_int(right) if right else 0
+        if rest is None:
+            return None
+        return hundreds * 100 + rest
     if "十" in s:
         left, _, right = s.partition("十")
         tens = _CN_DIGITS.get(left, 1) if left else 1
@@ -86,6 +98,16 @@ def _month_period(ref: date, delta: int) -> tuple[date, date]:
 def _year_period(ref: date, delta: int) -> tuple[date, date]:
     y = ref.year + delta
     return date(y, 1, 1), date(y, 12, 31)
+
+
+def _quarter_period(ref: date, delta: int) -> tuple[date, date]:
+    """Full calendar quarter: delta=0 当前季、-1 上季、+1 下季。"""
+    q = (ref.month - 1) // 3 + delta
+    y = ref.year + q // 4
+    q = q % 4  # 0..3
+    start_month = q * 3 + 1
+    end_day = calendar.monthrange(y, start_month + 2)[1]
+    return date(y, start_month, 1), date(y, start_month + 2, end_day)
 
 
 def _duration(ref: date, n: int, unit: str, direction: int) -> tuple[date, date]:
@@ -270,13 +292,13 @@ def _rule_periods_en(text: str, ref: date) -> tuple[date, date] | None:
 
 # ── Rules 7-8: durations (past / future) ──────────────────
 
-_ZH_NUM = r"([0-9０-９一二两三四五六七八九十]+)"
+_ZH_NUM = r"([0-9０-９一二两三四五六七八九十百]+)"
 _ZH_UNIT = r"(天|日|周|星期|月|年)"
 
 _ZH_PAST_DUR_RE = re.compile(r"(?:最近|近|过去)\s*" + _ZH_NUM + r"\s*(?:个)?\s*" + _ZH_UNIT + r"(?:内|以内|之内)?")
 _ZH_FUTURE_DUR_RE = re.compile(r"(?:未来|接下来|今后|往后)\s*" + _ZH_NUM + r"\s*(?:个)?\s*" + _ZH_UNIT + r"(?:内|以内|之内)?")
 
-_EN_NUM = r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+_EN_NUM = r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)"
 _EN_UNIT = r"(day|days|week|weeks|month|months|year|years)"
 
 _EN_PAST_DUR_RE = re.compile(
@@ -311,27 +333,138 @@ def _rule_durations_en(text: str, ref: date) -> tuple[date, date] | None:
     return None
 
 
+# ── Rule 9: offsets ("前7天" / "N days ago") ────────────────
+
+_ZH_PREV_DUR_RE = re.compile(r"前\s*" + _ZH_NUM + r"\s*(?:个)?\s*(天|日|周|星期|月|年)")
+_ZH_AGO_DUR_RE = re.compile(_ZH_NUM + r"\s*(?:个)?\s*(天|日|周|星期|月|年)\s*前")
+_EN_AGO_RE = re.compile(r"\b" + _EN_NUM + r"\s+" + _EN_UNIT + r"\s+ago\b", re.IGNORECASE)
+
+
+def _offset_single(ref: date, n: int, unit: str) -> date:
+    """n 个单位前的单点日期(月/年按 shift_months 钳制月末)。"""
+    if unit in ("天", "日", "day", "days"):
+        return ref - timedelta(days=n)
+    if unit in ("周", "星期", "week", "weeks"):
+        return ref - timedelta(days=7 * n)
+    if unit in ("月", "month", "months"):
+        return _shift_months(ref, -n)
+    return _shift_months(ref, -12 * n)  # 年 / year(s)
+
+
+def _rule_offsets_zh(text: str, ref: date) -> tuple[date, date] | None:
+    # "前N天/周" = 截至昨天的 N 个单位(不含 ref);"N天前/N个月前" = 单点
+    if m := _ZH_PREV_DUR_RE.search(text):
+        n = _cn_to_int(m.group(1).translate(str.maketrans("０-９", "0-9")))
+        if n is not None:
+            unit = m.group(2)
+            if unit in ("天", "日"):
+                return ref - timedelta(days=n), ref - timedelta(days=1)
+            if unit in ("周", "星期"):
+                return ref - timedelta(days=7 * n), ref - timedelta(days=1)
+            end = _offset_single(ref, n, unit)  # 月/年
+            return end, ref - timedelta(days=1)
+    if m := _ZH_AGO_DUR_RE.search(text):
+        n = _cn_to_int(m.group(1).translate(str.maketrans("０-９", "0-9")))
+        if n is not None:
+            d = _offset_single(ref, n, m.group(2))
+            return d, d
+    return None
+
+
+def _rule_offsets_en(text: str, ref: date) -> tuple[date, date] | None:
+    if m := _EN_AGO_RE.search(text):
+        n = _en_to_int(m.group(1))
+        if n is not None:
+            d = _offset_single(ref, n, m.group(2).lower())
+            return d, d
+    return None
+
+
+# ── Rule 10: quarters (本季度 / this quarter) ───────────────
+
+_ZH_QUARTER_WORDS = {
+    "本季度": 0, "这个季度": 0,
+    "上季度": -1, "上个季度": -1,
+    "下季度": 1, "下个季度": 1,
+}
+_EN_QUARTER_RE = re.compile(r"\b(this|last|next)\s+quarter\b", re.IGNORECASE)
+
+
+def _rule_quarters_zh(text: str, ref: date) -> tuple[date, date] | None:
+    word = _match_first(text, sorted(_ZH_QUARTER_WORDS, key=len, reverse=True))
+    if word is None:
+        return None
+    return _quarter_period(ref, _ZH_QUARTER_WORDS[word])
+
+
+def _rule_quarters_en(text: str, ref: date) -> tuple[date, date] | None:
+    m = _EN_QUARTER_RE.search(text)
+    if not m:
+        return None
+    return _quarter_period(ref, {"this": 0, "last": -1, "next": 1}[m.group(1).lower()])
+
+
+# ── Rule 11: since ("X以来/至今" / "since X") ───────────────
+
+_ZH_SINCE_RE = re.compile(r"(.+?)\s*(?:以来|至今)")
+_EN_SINCE_RE = re.compile(r"\b(?:since)\s+(.+)", re.IGNORECASE)
+
+
+def _rule_since_zh(text: str, ref: date) -> tuple[date, date] | None:
+    m = _ZH_SINCE_RE.search(text)
+    if not m:
+        return None
+    left = re.sub(r"^(?:从|自)", "", m.group(1).strip())
+    ym = re.fullmatch(r"(\d{4})\s*年", left)
+    if ym:  # "2024年以来" → 年初至今(半开)
+        return date(int(ym.group(1)), 1, 1), ref
+    start = _parse_simple(left, ref, "zh")
+    if start is None:
+        return None  # 起点不可解析 → 放弃,不猜
+    return start[0], ref
+
+
+def _rule_since_en(text: str, ref: date) -> tuple[date, date] | None:
+    m = _EN_SINCE_RE.search(text)
+    if not m:
+        return None
+    right = re.sub(r"^(?:from\s+)?", "", m.group(1).strip(), flags=re.IGNORECASE)
+    ym = re.fullmatch(r"(\d{4})", right)
+    if ym:  # "since 2024" → 年初至今(半开)
+        return date(int(ym.group(1)), 1, 1), ref
+    start = _parse_simple(right, ref, "en")
+    if start is None:
+        return None
+    return start[0], ref
+
+
 # ── Engine ────────────────────────────────────────────────
 
 _ZH_RULES = [
     _rule_composite_zh,
+    _rule_since_zh,
     _rule_half_abs_zh,
+    _rule_quarters_zh,
     _rule_day_anchors_zh,
     _rule_periods_zh,
+    _rule_offsets_zh,
     _rule_durations_zh,
 ]
 
 _EN_RULES = [
     _rule_composite_en,
+    _rule_since_en,
     _rule_half_abs_en,
+    _rule_quarters_en,
     _rule_day_anchors_en,
     _rule_periods_en,
+    _rule_offsets_en,
     _rule_durations_en,
 ]
 
 
 def _parse_simple(text: str, ref: date, lang: str) -> tuple[date, date] | None:
-    """Run the non-composite rules (2-8) — used for composite side parsing."""
+    """Run the non-composite rules (2-11) — used for composite/since side parsing."""
     rules = _ZH_RULES if lang == "zh" else _EN_RULES
     for rule in rules[1:]:
         result = rule(text, ref)

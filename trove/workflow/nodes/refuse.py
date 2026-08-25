@@ -194,6 +194,17 @@ def make_refuse(
             return {}
 
         reason = str(refusal.get("reason") or "未覆盖")
+        # 编译 MISS 的结构化分因(reason slug + 失败组件)→ 拼进用户可见
+        # 文案,管理端知道具体缺哪个声明(metric/字段/join),而不是笼统
+        # 「uncovered」。返回的 refusal["reason"] 保持原始值(上游契约/
+        # 机器匹配不变),派生 detail 只进 message。
+        reason_detail = reason
+        cm = refusal.get("compile_miss") or {}
+        if isinstance(cm, dict) and cm.get("reason"):
+            detail = str(cm["reason"])
+            if cm.get("component"):
+                detail = f"{detail}: {cm['component']}"
+            reason_detail = f"{reason} ({detail})"
         question = str(refusal.get("question") or state.question)
         plan = refusal.get("plan")
         model = None
@@ -246,10 +257,10 @@ def make_refuse(
                          "payload": _payload_for(kind, draft), "status": "pending"}
 
         if draft is not None and conflict:
-            message = _uncovered_message(state.lang, reason, draft, conflict=True)
+            message = _uncovered_message(state.lang, reason_detail, draft, conflict=True)
         else:
             shown = draft if draft is not None else None
-            message = _uncovered_message(state.lang, reason, shown)
+            message = _uncovered_message(state.lang, reason_detail, shown)
         return {
             "clarification_question": message,
             "refusal": {
