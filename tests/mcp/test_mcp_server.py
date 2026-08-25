@@ -1,0 +1,148 @@
+"""Trove MCP server 测试:ask_data / list_datasources / kb_status / 多轮会话。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from trove.core.config import AgentConfig
+from trove.services.kb.service import KbService
+from trove.storage.session_store import SessionStore
+
+
+@pytest.fixture
+async def mcp_components(tmp_path, sqlite_registry):
+    """真实 components(可答 students 的 graph + 可查状态的 KB)。"""
+    from tests.conftest import ScriptedGateway, make_test_semantic_provider
+
+    from trove.workflow.graphs import GraphServices, build_graphs
+
+    kb = KbService(tmp_path / "kb")
+    # 用与 fixture 相同的确定性语义模型写入 kb(供 kb_status/list_datasources)
+    await make_test_semantic_provider(sqlite_registry, tmp_path / "kb")
+
+    config = AgentConfig(home=str(tmp_path / "home"), target="mock/model")
+    llm = ScriptedGateway([
+        "query", "```sql\nSELECT name FROM students;\n```", "OK",
+        "query", "```sql\nSELECT name FROM students;\n```", "OK",
+    ])
+    services = GraphServices(
+        llm=llm,
+        connectors=sqlite_registry,
+        semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
+        kb=kb,
+        config=config,
+    )
+    from trove.agent.session import SessionManager
+
+    manager = SessionManager(
+        config=config,
+        session_store=SessionStore(home_dir=str(tmp_path / "home")),
+        graphs=build_graphs(services, multi_candidate=False, planner=False, agentic=False),
+        llm_gateway=llm,
+        kb=kb,
+        connectors=sqlite_registry,
+    )
+    return {
+        "session_manager": manager,
+        "connector_registry": sqlite_registry,
+        "kb": kb,
+        "config": config,
+    }
+
+
+async def _invoke(server, name: str, **args):
+    """直接调用工具底层函数(fastmcp call_tool 需要 request context,测试用 fn 直调)。
+
+    工具函数可能 async(ask_data)或 sync(kb_status/list_datasources)。
+    """
+    tool = await server.get_tool(name)
+    result = tool.fn(**args)
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
+
+
+async def test_list_tools(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    tools = await server.list_tools()
+    names = {t.name for t in tools}
+    assert {"ask_data", "list_datasources", "kb_status"} <= names
+
+
+async def test_ask_data_answers(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    payload = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?", datasource="test_db")
+    assert isinstance(payload, dict)
+    assert payload["session_id"]
+    assert payload["sql"]
+    assert payload["row_count"] == 5
+    assert payload["no_model"] is False
+
+
+async def test_ask_data_multi_turn_session(mcp_components):
+    """同 session_id 复用会话:第二问能看到历史(session 保持同 id)。"""
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    r1 = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?", datasource="test_db")
+    sid = r1["session_id"]
+    r2 = await _invoke(server, "ask_data",
+        question="What students are in Orange county?", datasource="test_db", session_id=sid)
+    assert r2["session_id"] == sid  # 同一会话被复用
+    assert r2["sql"]
+
+
+async def test_ask_data_requires_question(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    payload = await _invoke(server, "ask_data", question="   ")
+    assert "error" in payload
+
+
+async def test_list_datasources_only_initialized(mcp_components, tmp_path):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    payload = await _invoke(server, "list_datasources")
+    names = {d["name"] for d in payload["datasources"]}
+    # test_db 有 semantics.yml → 可见;无语义模型的源不可见
+    assert "test_db" in names
+    assert all(d.get("has_semantics") for d in payload["datasources"])
+
+
+async def test_kb_status(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    ok = await _invoke(server, "kb_status", datasource="test_db")
+    assert ok["connected"] is True
+    assert ok["has_semantics"] is True
+
+    missing = await _invoke(server, "kb_status", datasource="nope")
+    assert missing["connected"] is False
+    assert missing["kb_initialized"] is False
+
+
+async def test_kb_status_requires_datasource(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    payload = await _invoke(server, "kb_status", datasource="")
+    assert "error" in payload
+
+
+async def test_unknown_tool_errors(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    assert await server.get_tool("nope") is None
