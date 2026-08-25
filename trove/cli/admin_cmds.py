@@ -18,6 +18,7 @@ from pathlib import Path
 from trove.core.config import ConfigLoader
 from trove.core.logging import get_logger
 from trove.services.auth.service import AuthService
+from trove.services.user_facts.service import UserFactsService
 
 logger = get_logger(__name__)
 
@@ -26,6 +27,12 @@ def _load_auth() -> AuthService:
     config = ConfigLoader.load_agent_config(None)
     home = Path(config.home).expanduser()
     return AuthService(home / "app.db")
+
+
+def _load_facts() -> UserFactsService:
+    config = ConfigLoader.load_agent_config(None)
+    home = Path(config.home).expanduser()
+    return UserFactsService(home / "user_facts.db")
 
 
 def _print_user(u: dict) -> None:
@@ -130,6 +137,32 @@ async def _cmd_grant(args) -> None:
     print(f"{'Revoked' if args.revoke else 'Granted'}: {args.username} → {args.datasource}")
 
 
+async def _cmd_facts_list(args) -> None:
+    facts = _load_facts()
+    user_id = None
+    if args.user:
+        auth = _load_auth()
+        user = await auth.store.get_user_by_username(args.user)
+        if user is None:
+            print(f"error: no such user: {args.user}", file=sys.stderr)
+            sys.exit(1)
+        user_id = str(user["id"])
+    rows = await facts.list_all(user_id=user_id, datasource=args.datasource)
+    if not rows:
+        print("No facts.")
+        return
+    for f in rows:
+        print(f"  #{f['id']:<4} user={f['user_id']:<10} [{f['datasource']}] {f['fact']}")
+
+
+async def _cmd_facts_delete(args) -> None:
+    facts = _load_facts()
+    if not await facts.delete_any(args.fact_id):
+        print(f"error: no such fact: {args.fact_id}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Deleted fact #{args.fact_id}.")
+
+
 async def run(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog="trove admin", description="Trove account management"
@@ -168,6 +201,16 @@ async def run(argv: list[str]) -> None:
     p.add_argument("username")
     p.add_argument("datasource")
     p.set_defaults(func=_cmd_grant, revoke=True)
+
+    p = sub.add_parser("facts", help="user facts (per-user memory) management")
+    fsub = p.add_subparsers(dest="facts_cmd", required=True)
+    fp = fsub.add_parser("list", help="list all users' facts")
+    fp.add_argument("--datasource", help="filter by datasource")
+    fp.add_argument("--user", help="filter by username")
+    fp.set_defaults(func=_cmd_facts_list)
+    fp = fsub.add_parser("delete", help="delete any fact by id")
+    fp.add_argument("fact_id", type=int)
+    fp.set_defaults(func=_cmd_facts_delete)
 
     args = parser.parse_args(argv)
     await args.func(args)

@@ -302,6 +302,7 @@ class SessionManager:
             history=history,
             lang=self.config.language,
             datasource=datasource or "",
+            user_id=session.user_id,
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -594,6 +595,7 @@ class SessionManager:
             history=history,
             lang=self.config.language,
             datasource=datasource or "",
+            user_id=session.user_id,
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -1336,6 +1338,7 @@ class SessionManager:
             task_context={"index": task.position + 1, "total": total, "remaining": remaining},
             auto_approve=auto_approve,
             datasource=datasource or "",
+            user_id=session.user_id,
             # 步骤间共享:继承上一步 schema linking 锚定的表(schema_linking
             # 节点会与本次新匹配合并,KB 检索与 C1 规则据此锚定)
             matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],

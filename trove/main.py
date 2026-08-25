@@ -185,6 +185,14 @@ async def create_app_components(
     from trove.services.kb.service import KbService
     kb = KbService(Path.cwd())
 
+    # ── User facts (per-user memory: ~/.trove/user_facts.db) ──
+    # 独立于数据源级 KB 的用户级记忆层:偏好/口径事实,按用户+数据源
+    # 隔离,注入 gen_sql 个性化上下文(多用户共用时每人有自己的口径)。
+    from trove.services.user_facts.service import UserFactsService
+    user_facts = UserFactsService(
+        Path(config.home).expanduser() / "user_facts.db"
+    )
+
     # ── Data lineage (optional: .trove/lineage/) — definitions.yml lazy
     # sync + executed-query capture; never blocks agent startup.
     from trove.services.lineage.service import LineageService
@@ -232,6 +240,7 @@ async def create_app_components(
         connectors=connector_registry,
         config=config,
         kb=kb,
+        user_facts=user_facts,
         semantic_layer=semantic_layer,
         lineage=lineage,
     )
@@ -264,6 +273,7 @@ async def create_app_components(
         "config_store": config_store,
         "catalog_service": catalog_service,
         "kb": kb,
+        "user_facts": user_facts,
         "lineage": lineage,
         "graphs": graphs,
         "session_manager": session_manager,
@@ -355,6 +365,7 @@ async def async_main_repl():
             current_session=session,
             kb_service=components["kb"],
             llm_gateway=components["llm_gateway"],
+            user_facts=components["user_facts"],
         )
 
         try:

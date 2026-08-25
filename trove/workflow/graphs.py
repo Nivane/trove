@@ -58,6 +58,7 @@ from trove.workflow.nodes.gen_sql import (
     render_rules,
     render_shots,
     render_terms,
+    render_user_facts,
 )
 from trove.prompts import render
 from trove.workflow.nodes.fast_match import make_fast_match
@@ -140,6 +141,7 @@ class GraphServices:
     connectors: ConnectorRegistry | None = None
     config: AgentConfig | None = None
     kb: KbService | None = None  # optional knowledge base enhancement
+    user_facts: Any | None = None  # optional user-level memory (per-user facts)
     semantic_layer: Any | None = None  # optional live semantic provider (OSSIE)
     lineage: Any | None = None  # optional data lineage service (metadata + execute recording)
 
@@ -350,6 +352,20 @@ def _make_gen_sql_node(
                         {"term": h.term, "mapping": h.mapping, "definition": h.definition})
                     seen.add(h.term)
 
+        # 用户级记忆(用户+数据源作用域):检索该用户在当前数据源下的
+        # 偏好/口径事实,按与问句的相关度取前 N 条注入 personalization
+        # 上下文块。故障静默降级——记忆检索不得阻断生成(与 KB 同语义:
+        # 检索失败不算生成失败)。
+        user_fact_items: list[dict[str, Any]] = []
+        if services.user_facts is not None and datasource and state.user_id:
+            try:
+                user_fact_items = await services.user_facts.search(
+                    state.user_id, datasource, state.question, limit=3,
+                )
+            except Exception as e:
+                logger.warning(
+                    "User facts retrieval failed (%s): %s", datasource, e)
+
         # KB 精确命中:示例问题与当前问题几乎逐词一致 → 直接采用示例 SQL。
         # KB 保存的是该数据源的标准写法;对已收录的问题让模型"再解释一遍"
         # 只会产出歧义变体(实测:disp vs client 口径摇摆 5 轮)。SQL 仍会
@@ -418,6 +434,15 @@ def _make_gen_sql_node(
                 )
                 for i, l in enumerate(lessons)
             ]
+        if user_fact_items:
+            optional_blocks["user_facts"] = [
+                ContextItem(
+                    key=f"ufact{i}",
+                    text=render_user_facts([f]),
+                    score=relevance_score(str(f.get("fact", "")), state.question),
+                )
+                for i, f in enumerate(user_fact_items)
+            ]
         if state.plan:
             optional_blocks["plan"] = [
                 ContextItem(key="plan", text=state.plan, score=0.0),
@@ -439,7 +464,8 @@ def _make_gen_sql_node(
 
         included, context_usage = assemble_context(
             optional_blocks,
-            {"few_shots": 1, "rules": 2, "term_notes": 3, "lessons": 4, "plan": 5, "history": 6},
+            {"few_shots": 1, "user_facts": 2, "rules": 3, "term_notes": 4,
+             "lessons": 5, "plan": 6, "history": 7},
             budget,
             count=_count,
         )
@@ -452,6 +478,7 @@ def _make_gen_sql_node(
         term_notes = _trim("term_notes", "term", term_notes)
         lessons = _trim("lessons", "lesson", lessons)
         rules = _trim("rules", "rule", rules)
+        user_facts = _trim("user_facts", "ufact", user_fact_items)
         # history 是逐轮条目:按预算保留的轮次重拼回字符串注入
         history_trimmed = ""
         if "history" in included:
@@ -479,6 +506,7 @@ def _make_gen_sql_node(
             term_notes=term_notes,
             lessons=lessons,
             rules=rules,
+            user_facts=user_facts,
             history=history_trimmed,
             schema_context=schema_for_gen,
         )

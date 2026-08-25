@@ -1,0 +1,215 @@
+"""User facts database — ``~/.trove/user_facts.db``.
+
+Independent per-user memory layer (Mem0-style) separate from the
+datasource-level KB. A fact is a short user statement of a preference or
+business caliber, scoped to ``(user_id, datasource)`` — e.g. "营收口径 = 净收入",
+"看日均用 30 日均值". Facts are injected into SQL generation as a
+personalization context block.
+
+Follows the repo's aiosqlite conventions (open-per-operation, idempotent
+``CREATE TABLE IF NOT EXISTS``, ISO-8601 text timestamps, additive-only
+schema) — see ``trove/services/admin_settings/store.py``.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import aiosqlite
+
+from trove.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+FACTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS user_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    datasource TEXT NOT NULL,
+    fact TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "user_id": row[1],
+        "datasource": row[2],
+        "fact": row[3],
+        "created_at": row[4],
+        "updated_at": row[5],
+    }
+
+
+class UserFactsStore:
+    """Raw CRUD over ``{home}/user_facts.db``."""
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = Path(db_path)
+
+    async def _conn(self) -> aiosqlite.Connection:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(str(self.db_path))
+        await conn.execute(FACTS_TABLE_SQL)
+        await conn.commit()
+        return conn
+
+    async def add(self, user_id: str, datasource: str, fact: str) -> dict[str, Any]:
+        """Insert a fact and return the stored row."""
+        ts = now_iso()
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "INSERT INTO user_facts (user_id, datasource, fact, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, datasource, fact, ts, ts),
+            )
+            await conn.commit()
+            fact_id = cursor.lastrowid
+        finally:
+            await conn.close()
+        return await self.get(user_id, fact_id)
+
+    async def get(self, user_id: str, fact_id: int) -> dict[str, Any] | None:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT id, user_id, datasource, fact, created_at, updated_at "
+                "FROM user_facts WHERE id = ? AND user_id = ?",
+                (fact_id, user_id),
+            )
+            row = await cursor.fetchone()
+        finally:
+            await conn.close()
+        return _row_to_dict(row) if row else None
+
+    async def get_any(self, fact_id: int) -> dict[str, Any] | None:
+        """Admin read: fetch a fact regardless of owner."""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT id, user_id, datasource, fact, created_at, updated_at "
+                "FROM user_facts WHERE id = ?",
+                (fact_id,),
+            )
+            row = await cursor.fetchone()
+        finally:
+            await conn.close()
+        return _row_to_dict(row) if row else None
+
+    async def list(
+        self, user_id: str, datasource: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List a user's facts, optionally scoped to one datasource (mtime desc)."""
+        conn = await self._conn()
+        try:
+            if datasource is None:
+                cursor = await conn.execute(
+                    "SELECT id, user_id, datasource, fact, created_at, updated_at "
+                    "FROM user_facts WHERE user_id = ? ORDER BY updated_at DESC, id DESC",
+                    (user_id,),
+                )
+            else:
+                cursor = await conn.execute(
+                    "SELECT id, user_id, datasource, fact, created_at, updated_at "
+                    "FROM user_facts WHERE user_id = ? AND datasource = ? "
+                    "ORDER BY updated_at DESC, id DESC",
+                    (user_id, datasource),
+                )
+            rows = await cursor.fetchall()
+        finally:
+            await conn.close()
+        return [_row_to_dict(r) for r in rows]
+
+    async def list_all(
+        self, user_id: str | None = None, datasource: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Admin read: every fact (optionally filtered), mtime desc."""
+        conn = await self._conn()
+        try:
+            where, params = [], []
+            if user_id is not None:
+                where.append("user_id = ?")
+                params.append(user_id)
+            if datasource is not None:
+                where.append("datasource = ?")
+                params.append(datasource)
+            sql = (
+                "SELECT id, user_id, datasource, fact, created_at, updated_at "
+                "FROM user_facts"
+                + (f" WHERE {' AND '.join(where)}" if where else "")
+                + " ORDER BY updated_at DESC, id DESC"
+            )
+            cursor = await conn.execute(sql, tuple(params))
+            rows = await cursor.fetchall()
+        finally:
+            await conn.close()
+        return [_row_to_dict(r) for r in rows]
+
+    async def update(
+        self, user_id: str, fact_id: int, *, fact: str | None = None,
+        datasource: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update a fact's text/datasource; returns None when not owned."""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT id FROM user_facts WHERE id = ? AND user_id = ?",
+                (fact_id, user_id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            fields, params = [], []
+            if fact is not None:
+                fields.append("fact = ?")
+                params.append(fact)
+            if datasource is not None:
+                fields.append("datasource = ?")
+                params.append(datasource)
+            if fields:
+                fields.append("updated_at = ?")
+                params.append(now_iso())
+                params.extend([fact_id, user_id])
+                await conn.execute(
+                    f"UPDATE user_facts SET {', '.join(fields)} WHERE id = ? AND user_id = ?",
+                    tuple(params),
+                )
+                await conn.commit()
+        finally:
+            await conn.close()
+        return await self.get(user_id, fact_id)
+
+    async def delete(self, user_id: str, fact_id: int) -> bool:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM user_facts WHERE id = ? AND user_id = ?",
+                (fact_id, user_id),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
+    async def delete_any(self, fact_id: int) -> bool:
+        """Admin delete: remove a fact regardless of owner."""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM user_facts WHERE id = ?", (fact_id,)
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            await conn.close()
