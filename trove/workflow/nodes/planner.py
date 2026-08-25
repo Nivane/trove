@@ -25,6 +25,9 @@ from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
 
+# 时间粒度中文标签(渲染 zh plan 文本用;编译器消费原始 grain slug)
+_GRAIN_ZH = {"year": "年", "quarter": "季度", "month": "月", "week": "周", "day": "日"}
+
 
 def _parse_plan(response: str) -> dict[str, Any] | None:
     """结构化计划解析:摘掉可能的 markdown 围栏后按 JSON 解析。
@@ -63,6 +66,24 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
             lines.append(f"  - {c.get('field')} {c.get('op')} {c.get('value')}{note}")
     if data.get("aggregation"):
         lines.append(("聚合: " if zh else "Aggregation: ") + str(data["aggregation"]))
+    time_grain = data.get("time_grain")
+    if isinstance(time_grain, dict) and time_grain.get("field"):
+        grain = str(time_grain.get("grain") or "")
+        grain_label = _GRAIN_ZH.get(grain, grain)
+        lines.append(
+            f"时间粒度: {time_grain.get('field')} 按{grain_label}"
+            if zh else
+            f"Time grain: {time_grain.get('field')} by {grain}"
+        )
+    having = data.get("having") or []
+    if having:
+        lines.append("聚合后过滤:" if zh else "Having:")
+        for h in having:
+            if not isinstance(h, dict):
+                lines.append(f"  - {h}")
+                continue
+            target = h.get("metric") or h.get("field")
+            lines.append(f"  - {target} {h.get('op')} {h.get('value')}")
     extreme = data.get("extreme")
     if isinstance(extreme, dict):
         scope = extreme.get("scope", "")
@@ -583,45 +604,97 @@ def _plan_has_intent(plan_json: dict[str, Any] | None) -> bool:
     )
 
 
+_TIME_RANGE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$")
+
+
+def _inject_time_condition(
+    plan: dict[str, Any] | None,
+    time_context: str,
+    model,
+    matched: list[str],
+) -> dict[str, Any] | None:
+    """解析出的时间范围 → 确定性注入唯一声明时间维度的区间条件。
+
+    P1-4:parse_date 的产物不再只是 prompt 文本——把它落成 plan 条件,
+    覆盖内问题编译 SQL 必然带时间过滤,未覆盖问题 gen_sql 的 plan 文本
+    也带该条件。无法判定(无唯一时间字段 / 范围格式非法 / 已有该字段
+    条件)→ None,不猜,保持原 plan。
+    """
+    m = _TIME_RANGE_RE.match((time_context or "").strip())
+    if not m or not plan:
+        return None
+    if not _plan_has_intent(plan):
+        return None  # 退化/空洞计划不注入(避免凭空造出拒绝前提)
+    from trove.services.semantic_layer.compiler import resolve_time_field
+
+    resolved = resolve_time_field(model, list(matched))
+    if resolved is None:
+        return None
+    ds, field = resolved
+    ref = f"{ds}.{field.name}"
+    conds = list(plan.get("conditions") or [])
+    if any(
+        isinstance(c, dict) and str(c.get("field", "")).lower() == ref.lower()
+        for c in conds
+    ):
+        return None  # 已有该字段条件,不重复注入
+    start, end = m.group(1), m.group(2)
+    fixed = dict(plan)
+    fixed["conditions"] = [
+        {"field": ref, "op": ">=", "value": start, "note": "resolved time range start"},
+        {"field": ref, "op": "<=", "value": end, "note": "resolved time range end"},
+    ] + conds
+    fixed["plan_field"] = "inject_time_condition"
+    return fixed
+
+
 def _compile_semantic(
     plan: dict[str, Any] | PlanQuery | None,
     matched: list[str],
     semantic_layer,
-) -> tuple[str, str] | None:
-    """语义层覆盖内 → (权威 SQL, 提示块);任何成分 MISS → None。
+    dialect: str = "sqlite",
+) -> tuple[tuple[str, str] | None, CompileMiss | None]:
+    """语义层覆盖内 → ((权威 SQL, 提示块), None);MISS → (None, CompileMiss)。
 
     受限选择编译:plan 的 metric/group_by/filters 必须全部解析到已声明
     metric/field/relationship,AND guardrail 放行才注入 gen_sql;否则原样
-    走现有通道。全程确定性,零额外 LLM 调用。
+    走现有通道。全程确定性,零额外 LLM 调用。miss reason(结构化分因)
+    带出供 planner/refuse/eval 归因——不再被丢弃成笼统「uncovered」。
 
     入参可为强类型 PlanQuery(planner 解析后的 AST)或 raw dict——
-    编译器内部统一按 dict 流处理,两条路径产物字节级一致。
+    编译器内部统一按 dict 流处理,两条路径产物字节级一致。dialect 来自
+    state(适配器),驱动时间分桶等方言感知渲染。
     """
+    from trove.services.semantic_layer.compiler import (
+        CompileMiss,
+        CompileResult,
+        SemanticCompiler,
+        validate_compiled_sql,
+    )
+
     if isinstance(plan, PlanQuery):
         plan = plan.to_dict()
     if plan is None or not matched or semantic_layer is None:
-        return None
+        return None, CompileMiss("no_plan_or_matched", "")
     try:
         model = semantic_layer.model()
         if model is None:
-            return None
-        from trove.services.semantic_layer.compiler import (
-            SemanticCompiler,
-            validate_compiled_sql,
-        )
+            return None, CompileMiss("no_plan_or_matched", "no semantic model")
 
-        result = SemanticCompiler(model).compile_from_plan(plan, list(matched))
-        if result is None:
-            return None
+        result = SemanticCompiler(model).compile_detailed(
+            plan, list(matched), force_dialect=dialect)
+        if isinstance(result, CompileMiss):
+            return None, result
         violations = validate_compiled_sql(result.sql, model, list(matched))
         if violations:
             logger.info(
                 "Compiled SQL rejected by guardrail: %s", "; ".join(violations))
-            return None
-        return result.sql, result.block
+            return None, CompileMiss(
+                "guardrail_rejected", "; ".join(violations))
+        return (result.sql, result.block), None
     except Exception as e:
         logger.warning("Semantic compilation failed: %s", e)
-        return None
+        return None, CompileMiss("guardrail_rejected", str(e)[:200])
 
 
 def make_planner(
@@ -741,6 +814,18 @@ def make_planner(
             if fixed is not None:
                 plan_json = fixed
                 plan = _render_plan(plan_json, state.lang)
+            # P1-4:解析出的时间范围确定性绑定唯一声明时间维度(注入 plan.conditions)。
+            # 覆盖内问题 → 编译 SQL 必然带时间过滤;未覆盖 → gen_sql 的 plan
+            # 文本带该条件。无法判定(多时间字段/无时间字段)不猜,time_context
+            # 仍作为 prompt 文本传给 LLM 自行处理。
+            if state.time_context and semantic_layer is not None:
+                timed = _inject_time_condition(
+                    plan_json, state.time_context,
+                    semantic_layer.model(), state.matched_tables,
+                )
+                if timed is not None:
+                    plan_json = timed
+                    plan = _render_plan(plan_json, state.lang)
             update = {
                 "plan": plan,
                 "plan_json": plan_json,
@@ -751,10 +836,29 @@ def make_planner(
             # 先在解析边界强类型化(形态错误 → None → 回退 raw-dict 流,
             # 与改造前字节级一致)。
             plan_query = parse_plan_query(plan_json)
-            compiled = _compile_semantic(
+            compiled, miss = _compile_semantic(
                 plan_query if plan_query is not None else plan_json,
-                state.matched_tables, semantic_layer,
+                state.matched_tables, semantic_layer, state.dialect,
             )
+            # 编译决策观测:恒写(命中/MISS/短路),eval hit-rate 归因闭环。
+            compile_meta = {
+                "outcome": "compiled" if compiled is not None else "miss",
+                "plan_typed": plan_query is not None,
+                "semantic_layer": semantic_layer is not None,
+            }
+            if compiled is not None:
+                compile_meta.update(miss_reason="", miss_component="")
+            elif miss is not None:
+                if semantic_layer is None:
+                    # 短路真实分因(无语义层 ≠ no_plan):eval 接线诊断用
+                    compile_meta.update(
+                        miss_reason="no_semantic_layer", miss_component="")
+                else:
+                    compile_meta.update(
+                        miss_reason=miss.reason, miss_component=miss.component)
+            else:
+                compile_meta.update(miss_reason="unknown", miss_component="")
+            update["compile_meta"] = compile_meta
             if compiled is not None:
                 compiled_sql, block = compiled
                 update["plan"] = f"{plan}\n\n{block}" if plan else block
@@ -766,12 +870,24 @@ def make_planner(
                 # (LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞计划
                 # 不拒绝,gen_sql 从 semantic_context 照常生成。
                 if _plan_has_intent(plan_json):
-                    update["refusal"] = {
+                    refusal = {
                         "reason": "uncovered",
                         "question": state.question,
                         "plan": plan_json,
                         "plan_text": plan,
                     }
+                    if miss is not None:
+                        # 结构化分因透出:reason slug + 失败组件,refuse 展示 /
+                        # eval 聚合「编译覆盖率真实缺口」的数据源。
+                        refusal["compile_miss"] = {
+                            "reason": miss.reason,
+                            "component": miss.component,
+                        }
+                        logger.info(
+                            "compile miss for %r: %s (%s)",
+                            state.question[:80], miss.reason, miss.component,
+                        )
+                    update["refusal"] = refusal
             if llm_detail:
                 update["llm"] = llm_detail
             return update

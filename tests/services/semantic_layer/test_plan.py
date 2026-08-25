@@ -129,3 +129,21 @@ def test_plan_query_never_raises_on_garbage():
     for garbage in ([], "x", 3.14, {"conditions": 5}, {"answer_columns": "notalist"},
                     {"ordering": {"column": "x"}}):
         assert parse_plan_query(garbage) is None
+
+
+def test_render_plan_time_grain_and_having_lines():
+    from trove.workflow.nodes.planner import _render_plan
+
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+        "having": [{"metric": "total_loan_amount", "op": ">", "value": 10000}],
+    }
+    en = _render_plan(plan, "en")
+    assert "Time grain: loan.date by month" in en
+    assert "Having:" in en
+    assert "- total_loan_amount > 10000" in en
+    zh = _render_plan(plan, "zh")
+    assert "时间粒度: loan.date 按月" in zh
+    assert "聚合后过滤:" in zh

@@ -259,3 +259,34 @@ def test_parse_backwards_compatible_without_fields():
     assert model.datasets[0].fields == []
     assert model.datasets[0].primary_key == []
     assert model.relationships == []
+
+
+def test_metric_type_parsed():
+    yaml_text = """
+semantic_model:
+  - name: m
+    datasets: []
+    metrics:
+      - name: r1
+        type: ratio
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "a / b"
+      - name: r2
+        type: DERIVED
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "a / b"
+      - name: r3
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "a / b"
+"""
+    model = parse_ossie(yaml_text, preferred_dialect="sqlite")
+    by_name = {m.name: m for m in model.metrics}
+    assert by_name["r1"].metric_type == "ratio"
+    assert by_name["r2"].metric_type == "derived"  # 大小写归一
+    assert by_name["r3"].metric_type == ""  # 缺省为空(旧文件解析不变)

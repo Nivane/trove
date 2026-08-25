@@ -333,3 +333,56 @@ def test_parse_semantic_role_and_enum_display(tmp_path):
     loan = next(d for d in model.datasets if d.name == "loan")
     status = next(f for f in loan.fields if f.name == "status")
     assert status.enum_display == {"A": "finished", "B": "running"}
+
+
+DERIVED_MODEL = """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: loan
+        source: financial.loan
+    metrics:
+      - name: total_loan_amount
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(loan.amount)
+      - name: avg_per_loan
+        type: derived
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: total_loan_amount / COUNT(loan.loan_id)
+"""
+
+
+def test_derived_metric_survives_validation(semantic_dir):
+    # 派生表达式(裸列引用 metric 名)可解析 → 通过 _validate;metric_type 落模型
+    _write(semantic_dir, DERIVED_MODEL)
+    p = SemanticLayerProvider(semantic_dir, "financial")
+    assert p.enabled
+    model = p.model()
+    assert model is not None
+    by_name = {m.name: m for m in model.metrics}
+    assert by_name["avg_per_loan"].metric_type == "derived"
+    assert by_name["total_loan_amount"].metric_type == ""
+
+
+def test_unparseable_derived_metric_still_dropped(semantic_dir):
+    _write(semantic_dir, """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: loan
+        source: financial.loan
+    metrics:
+      - name: bad_derived
+        type: derived
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: "SUM(loan.amount) / / /"
+""")
+    p = SemanticLayerProvider(semantic_dir, "financial")
+    # metrics() 返回校验后列表(model() 是未校验的解析结果)
+    assert all(m.name != "bad_derived" for m in p.metrics())

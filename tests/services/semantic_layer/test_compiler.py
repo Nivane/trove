@@ -4,6 +4,8 @@ Declared OSSIE relationships win over data-verified naming-convention edges;
 BFS from the anchor table connects matched tables, routing through
 intermediate tables when needed. Output is deterministic.
 """
+import pytest
+
 from trove.services.semantic_layer.compiler import JoinResolution, JoinResolver
 from trove.services.semantic_layer.models import SemanticModel, SemanticRelationship
 
@@ -52,27 +54,13 @@ def test_intermediate_table_pulled_in():
     ]
 
 
-def test_verified_naming_fallback_without_model():
-    verified = {"loan": ["loan.account_id → account.account_id (5/5 match)"]}
-    res = JoinResolver().resolve(["loan", "account"], verified)
-    assert res.clauses == ["loan.account_id = account.account_id"]
-    assert res.extra_tables == []
-
-
-def test_suffix_proof_naming_parse():
-    """已验证 hint 带 '(N/M match)' 后缀也能解析。"""
-    verified = {"account": ["account.district_id → district.district_id (2/2 match)"]}
-    res = JoinResolver().resolve(["account", "district"], verified)
-    assert res.clauses == ["account.district_id = district.district_id"]
-
-
-def test_declared_preferred_over_naming_for_same_pair():
+def test_declared_edge_alone_for_same_pair():
+    """命名约定回退通道已移除(Phase B);join 图只来自声明关系。"""
     model = _model(_rel("loan_to_account", "loan", "account", "account_id", "account_id"))
-    verified = {"loan": ["loan.account_id → account.account_id"]}
-    res = JoinResolver(model).resolve(["loan", "account"], verified)
-    # 声明边与命名边同对 → 只保留声明(1 条)
+    res = JoinResolver(model).resolve(["loan", "account"])
     assert len(res.clauses) == 1
     assert res.clauses == ["loan.account_id = account.account_id"]
+    assert res.ambiguous is False
 
 
 def test_disconnected_table_ignored():
@@ -154,3 +142,70 @@ def test_m2n_edge_unused_does_not_flag():
     )
     res = JoinResolver(model).resolve(["loan", "account"])
     assert res.fan_out is False
+
+
+@pytest.mark.parametrize("card", [
+    "MANY-TO-MANY", "many_to_many", "many to many", "M2M", "N:M", "MANY:MANY",
+])
+def test_m2n_variant_spellings_flag_fan_out(card):
+    """P0-3:基数拼写归一化——任何 M:N 变体都编译期拒,不再格式耦合漏检。"""
+    model = _model(_rel("loan_to_account", "loan", "account",
+                        "account_id", "account_id", cardinality=card))
+    res = JoinResolver(model).resolve(["loan", "account"])
+    assert res.fan_out is True
+    assert res.unknown_cardinality is False
+
+
+def test_empty_cardinality_flags_unknown_not_fan_out():
+    """P0-3:联路径上基数未声明 → unknown(保守 MISS),不算 M:N 也不算安全。"""
+    model = _model(_rel("loan_to_account", "loan", "account",
+                        "account_id", "account_id"))  # 空基数
+    res = JoinResolver(model).resolve(["loan", "account"])
+    assert res.unknown_cardinality is True
+    assert res.fan_out is False
+
+
+def test_declared_cardinality_not_unknown():
+    """P0-3:显式 1:N → 基数已知,不触发 unknown。"""
+    model = _model(_rel("loan_to_account", "loan", "account",
+                        "account_id", "account_id", cardinality="1:N"))
+    assert JoinResolver(model).resolve(["loan", "account"]).unknown_cardinality is False
+
+
+# ── P2: 路径二义性检测 ────────────────────────────────────
+
+
+def test_single_path_not_ambiguous():
+    """链式单路径(loan→account→district)→ 不触发二义。"""
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id", cardinality="1:N"),
+        _rel("account_to_district", "account", "district", "district_id", "district_id", cardinality="1:N"),
+    )
+    res = JoinResolver(model).resolve(["loan", "district"])
+    assert res.ambiguous is False
+    assert res.clauses == [
+        "loan.account_id = account.account_id",
+        "account.district_id = district.district_id",
+    ]
+
+
+def test_diamond_two_paths_is_ambiguous():
+    """双路由(loan→account→district 与 loan→client→district)→ 二义 MISS。"""
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id", cardinality="1:N"),
+        _rel("account_to_district", "account", "district", "district_id", "district_id", cardinality="1:N"),
+        _rel("loan_to_client", "loan", "client", "client_id", "client_id", cardinality="1:N"),
+        _rel("client_to_district", "client", "district", "district_id", "district_id", cardinality="1:N"),
+    )
+    res = JoinResolver(model).resolve(["loan", "district"])
+    assert res.ambiguous is True
+
+
+def test_parallel_edges_same_pair_not_ambiguous():
+    """同一对表的复合键/重复声明(同节点序列)→ 按对去重,不误伤为二义。"""
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id", cardinality="1:N"),
+        _rel("loan_to_account2", "loan", "account", "branch_id", "account_id", cardinality="1:N"),
+    )
+    res = JoinResolver(model).resolve(["loan", "account"])
+    assert res.ambiguous is False

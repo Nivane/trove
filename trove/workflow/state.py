@@ -117,6 +117,11 @@ class WorkflowState(BaseModel):
     compiled_sql: str = ""
     compiled: bool = False
 
+    # 编译决策观测(planner 恒写):{outcome: compiled|miss, miss_reason,
+    # miss_component, plan_typed, semantic_layer}——eval 统计 compile
+    # hit-rate 与 MISS 分因的闭环数据源;RunTracer 自动 dump 进 run log。
+    compile_meta: dict[str, Any] = Field(default_factory=dict)
+
     # schema_linking 的分析面板摘要:匹配表/来源(notes/value/field/relations/
     # context 片段)。非管线消费,仅 step 事件透传给前端右侧分析面板。
     link_detail: dict[str, Any] = Field(default_factory=dict)

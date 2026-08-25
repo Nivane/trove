@@ -47,6 +47,10 @@ def parse_args():
     parser.add_argument("--kb-dir", default=None,
                         help="KB 根目录(含 <db-id>/ 子目录)或直接指向该数据源的 YAML 目录;"
                              "默认 <cwd>/.trove/kb")
+    parser.add_argument("--semantic-layer", default=None,
+                        help="语义层目录(OSSIE YAML)。默认 config.semantic_layer_path,"
+                             "再退 .trove/semantic/<db-id>;启用后编译路径在 eval 里生效"
+                             "(path: compiled 归因 + compile_meta 分因)")
     parser.add_argument("--limit", type=int, default=0, help="Only evaluate N questions (0 = all)")
     parser.add_argument("--start", type=int, default=0,
                         help="Skip the first N questions (applied before --limit)")
@@ -150,6 +154,7 @@ def _result_entry(
         entry.update({
             "pred_sql": final.sql or "",
             "path": "compiled" if getattr(final, "compiled", False) else "llm",
+            "compile_meta": getattr(final, "compile_meta", {}) or {},
             "kb_hits": final.kb_hits,
             "retries": final.retry_count,
             "consensus": final.consensus,
@@ -318,13 +323,44 @@ async def main() -> None:
     configure_trace_store(Path.home() / ".trove")
     registry = ConnectorRegistry()
     adapter = await registry.register(parse_datasource_url(args.datasource), set_default=True)
+    kb = KbService(Path.cwd(), kb_dir=kb_root)
+
+    # 语义层接线(仿 main.py):编译路径在 eval 里必须是活的,否则
+    # path: compiled 永远为 0。--semantic-layer 显式给目录;默认走
+    # config.semantic_layer_path,再退 .trove/semantic/<db-id>。任何
+    # 失败静默降级(零语义层 → 全部 path: llm,compile_meta 记
+    # no_semantic_layer 供统计脚本诊断)。
+    semantic_layer = None
+    try:
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+        schema = await adapter.get_schema()
+        known_tables = {t.name.lower() for t in schema.tables}
+        semantic_dir = Path(args.semantic_layer) if args.semantic_layer else (
+            Path.cwd() / config.semantic_layer_path / args.db_id
+            if config.semantic_layer_path
+            else Path.cwd() / ".trove" / "semantic" / args.db_id
+        )
+        semantic_layer = SemanticLayerProvider(
+            directory=semantic_dir,
+            datasource=args.db_id,
+            dialect=adapter.dialect(),
+            table_exists=lambda t: t.lower() in known_tables,
+            kb_semantics_path=kb.semantics_path(args.db_id),
+        )
+        if not semantic_layer.enabled:
+            semantic_layer = None
+    except Exception as e:
+        print(f"semantic layer unavailable in eval: {e}", flush=True)
+        semantic_layer = None
 
     services = GraphServices(
         llm=LLMGateway(providers=config.providers),
         catalog=CatalogService(registry),
         connectors=registry,
         config=config,
-        kb=KbService(Path.cwd(), kb_dir=kb_root),
+        kb=kb,
+        semantic_layer=semantic_layer,
     )
     graph = build_graphs(services, scaling=args.scaling)["reflection"]
 

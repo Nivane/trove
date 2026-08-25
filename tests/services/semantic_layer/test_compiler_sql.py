@@ -36,9 +36,11 @@ def _demo_model():
         ],
         relationships=[
             SemanticRelationship("loan_to_account", "loan", "account",
-                                 from_columns=["account_id"], to_columns=["account_id"]),
+                                 from_columns=["account_id"], to_columns=["account_id"],
+                                 cardinality="1:N"),
             SemanticRelationship("account_to_district", "account", "district",
-                                 from_columns=["district_id"], to_columns=["district_id"]),
+                                 from_columns=["district_id"], to_columns=["district_id"],
+                                 cardinality="1:N"),
         ],
         metrics=[
             SemanticMetric("number of loan records", "COUNT(loan.loan_id)", datasets=["loan"]),
@@ -251,3 +253,502 @@ def test_compile_still_ok_when_m2n_unrelated():
         "answer_columns": ["count(loan.loan_id)"],
     }
     assert _compile(plan, ["loan"], model=model) is not None
+
+
+# ── P0: 列可达性 / 基数未知 / guardrail 列级校验 ─────────────
+
+
+def test_projection_on_unconnected_matched_table_is_miss():
+    """P0-1:matched 含 district 但模型无到 district 的关系边 → FROM loan
+    无 JOIN,投影 district.A3 不可达 → 投影表守卫严格 MISS(不产笛卡尔 SQL)。"""
+    model = _demo_model()
+    model.relationships = []  # 移除全部关系边
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+    }
+    assert SemanticCompiler(model).compile_from_plan(plan, ["loan", "district"]) is None
+
+
+def test_filter_on_unconnected_matched_table_is_miss():
+    """P0-1:过滤条件引用无关系边的表 → 同样不可达 → 严格 MISS。"""
+    model = _demo_model()
+    model.relationships = []
+    plan = {
+        "answer_columns": ["loan.status"],
+        "conditions": [{"field": "district.A3", "op": "=", "value": "Prague"}],
+    }
+    assert SemanticCompiler(model).compile_from_plan(plan, ["loan", "district"]) is None
+
+
+def test_compile_miss_on_unknown_cardinality():
+    """P0-3:联路径上出现未声明基数的关系 → 保守 MISS(不赌 many→one)。"""
+    model = _demo_model()
+    model.relationships[1] = SemanticRelationship(
+        "account_to_district", "account", "district",
+        from_columns=["district_id"], to_columns=["district_id"])  # 空基数
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+    }
+    assert SemanticCompiler(model).compile_from_plan(
+        plan, ["loan", "district", "account"]) is None
+
+
+def test_compile_ok_when_cardinality_declared():
+    """P0-3:显式声明 1:N → 编译正常(不再默认安全,但声明过就放行)。"""
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+    }
+    assert _compile(plan, ["loan", "district", "account"]) is not None
+
+
+def test_compile_miss_on_ambiguous_join_path():
+    """P2:root→matched 双路由 → 严格 MISS(不先到先得地猜)。"""
+    model = _demo_model()
+    model.relationships.append(
+        SemanticRelationship("loan_to_client", "loan", "client",
+                             from_columns=["account_id"], to_columns=["account_id"],
+                             cardinality="1:N"))
+    model.relationships.append(
+        SemanticRelationship("client_to_district", "client", "district",
+                             from_columns=["district_id"], to_columns=["district_id"],
+                             cardinality="1:N"))
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+    }
+    assert _compile(plan, ["loan", "district", "account"], model=model) is None
+
+
+def test_guardrail_flags_columns_not_in_from_join():
+    """P0-2:表在 allowed(声明集)但没 JOIN → 列级校验拦截(非笛卡尔/非法)。"""
+    from trove.services.semantic_layer.compiler import validate_compiled_sql
+
+    sql = "SELECT district.A3, COUNT(loan.loan_id)\nFROM loan"
+    violations = validate_compiled_sql(sql, _demo_model(), ["loan", "district"])
+    assert any("not in FROM/JOIN" in v for v in violations)
+
+
+def test_guardrail_ok_when_columns_joined():
+    """P0-2:正常 JOIN 覆盖引用列 → guardrail 放行。"""
+    from trove.services.semantic_layer.compiler import validate_compiled_sql
+
+    sql = (
+        "SELECT district.A3, COUNT(loan.loan_id)\nFROM loan\n"
+        "JOIN account ON loan.account_id = account.account_id\n"
+        "JOIN district ON account.district_id = district.district_id"
+    )
+    assert validate_compiled_sql(sql, _demo_model(), ["loan", "district", "account"]) == []
+
+
+# ── P1-4: 时间维度绑定 ────────────────────────────────────
+
+
+def test_resolve_time_field_unique_by_datatype():
+    """时态 datatype 未显式 is_time → datatype 默认即时间维度(唯一 → 可绑定)。"""
+    from trove.services.semantic_layer.compiler import resolve_time_field
+
+    model = _demo_model()
+    model.datasets[0].fields = [_field("loan_id"), _field("date", "Date")]  # is_time 未设
+    resolved = resolve_time_field(model, ["loan"])
+    assert resolved is not None
+    ds, field = resolved
+    assert ds == "loan" and field.name == "date"
+
+
+def test_resolve_time_field_ambiguous_is_none():
+    """多个时间字段(created_at/updated_at)→ 无法判定 → None,不猜。"""
+    from trove.services.semantic_layer.compiler import resolve_time_field
+
+    model = _demo_model()
+    model.datasets[0].fields = [
+        _field("loan_id"),
+        _field("created_at", "Date"),
+        _field("updated_at", "Date"),
+    ]
+    assert resolve_time_field(model, ["loan"]) is None
+
+
+def test_resolve_time_field_missing_is_none():
+    """matched 无时间字段 → None。"""
+    from trove.services.semantic_layer.compiler import resolve_time_field
+
+    model = _demo_model()
+    model.datasets[0].fields = [_field("loan_id"), _field("amount")]
+    assert resolve_time_field(model, ["loan"]) is None
+
+
+# ── 多度量 / 派生度量 ──────────────────────────────────────
+
+def test_multi_metric_projections_in_answer_order():
+    plan = {
+        "aggregation": "avg(loan.amount)",
+        "answer_columns": ["district.A3", "avg(loan.amount)", "count(loan.loan_id)"],
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert result.sql.startswith(
+        "SELECT district.A3, AVG(loan.amount), COUNT(loan.loan_id)")
+    assert "GROUP BY district.A3" in result.sql
+
+
+def test_multi_metric_one_unmatched_is_strict_miss():
+    plan = {
+        "answer_columns": ["district.A3", "avg(loan.amount)", "sum(loan.ghost)"],
+    }
+    assert _compile(plan, ["loan", "district", "account"]) is None
+
+
+def test_multi_metric_dedupes_aggregation_and_answer_column():
+    # aggregation 与 answer_columns 同度量 → 只投影一次
+    plan = {
+        "aggregation": "avg(loan.amount)",
+        "answer_columns": ["district.A3", "avg(loan.amount)"],
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert result.sql.count("AVG(loan.amount)") == 1
+
+
+def _derived_model():
+    model = _demo_model()
+    model.metrics.append(
+        SemanticMetric("avg_per_loan",
+                       "total_loan_amount / COUNT(loan.loan_id)",
+                       datasets=["loan"], metric_type="derived"))
+    return model
+
+
+def test_derived_metric_inlined_by_name_match():
+    # aggregation 直接写派生度量名(裸名匹配)→ 编译期内联
+    plan = {"aggregation": "avg_per_loan", "answer_columns": ["avg_per_loan"]}
+    result = _compile(plan, ["loan"], model=_derived_model())
+    assert result is not None
+    # sqlite 方言除法渲染带 CAST AS REAL(防整数除法截断)——方言正确行为
+    assert result.sql == (
+        "SELECT CAST(SUM(loan.amount) AS REAL) / COUNT(loan.loan_id)\nFROM loan")
+
+
+def test_derived_metric_in_answer_columns():
+    plan = {"answer_columns": ["district.A3", "avg_per_loan"]}
+    result = _compile(plan, ["loan", "district", "account"], model=_derived_model())
+    assert result is not None
+    assert "SUM(loan.amount)" in result.sql
+    assert "/ COUNT(loan.loan_id)" in result.sql
+    assert "GROUP BY district.A3" in result.sql
+
+
+def test_derived_metric_cycle_is_miss():
+    model = _demo_model()
+    model.metrics.append(
+        SemanticMetric("m_a", "m_b + 1", metric_type="derived"))
+    model.metrics.append(
+        SemanticMetric("m_b", "m_a + 1", metric_type="derived"))
+    plan = {"aggregation": "m_a", "answer_columns": ["m_a"]}
+    assert _compile(plan, ["loan"], model=model) is None
+
+
+def test_derived_metric_unresolved_identifier_is_miss():
+    model = _demo_model()
+    model.metrics.append(
+        SemanticMetric("m_x", "ghost_metric + COUNT(loan.loan_id)",
+                       metric_type="derived"))
+    plan = {"aggregation": "m_x", "answer_columns": ["m_x"]}
+    assert _compile(plan, ["loan"], model=model) is None
+
+
+def test_derived_metric_depth_guard_is_miss():
+    model = _demo_model()
+    model.metrics.append(
+        SemanticMetric("m_d0", "COUNT(loan.loan_id)", metric_type="derived"))
+    for i in range(1, 7):
+        model.metrics.append(
+            SemanticMetric(f"m_d{i}", f"m_d{i - 1} + 0", metric_type="derived"))
+    plan = {"aggregation": "m_d6", "answer_columns": ["m_d6"]}
+    assert _compile(plan, ["loan"], model=model) is None
+
+
+def test_derived_metric_referencing_unjoined_table_is_miss():
+    # 派生度量内联出 loan 但 matched 只有 district → 投影表守卫 MISS
+    model = _derived_model()
+    plan = {"aggregation": "avg_per_loan", "answer_columns": ["avg_per_loan"]}
+    assert _compile(plan, ["district"], model=model) is None
+
+
+def test_ratio_type_inlines_like_derived():
+    model = _demo_model()
+    model.metrics.append(
+        SemanticMetric("amount_per_record",
+                       "total_loan_amount / COUNT(loan.loan_id)",
+                       datasets=["loan"], metric_type="ratio"))
+    plan = {"aggregation": "amount_per_record", "answer_columns": ["amount_per_record"]}
+    result = _compile(plan, ["loan"], model=model)
+    assert result is not None
+    assert "SUM(loan.amount)" in result.sql
+    assert "/ COUNT(loan.loan_id)" in result.sql
+
+
+def test_simple_metric_type_keeps_expression_verbatim():
+    # 非派生度量(simple/空)表达式原样,不经过 sqlglot 重渲染
+    model = _demo_model()
+    plan = {"aggregation": "avg(loan.amount)", "answer_columns": ["avg(loan.amount)"]}
+    result = _compile(plan, ["loan"], model=model)
+    assert result is not None
+    assert "AVG(loan.amount)" in result.sql
+
+
+# ── 编译照抄校验(compiled_sql_matches)───────────────────────
+
+
+def test_compiled_sql_matches_ignores_formatting():
+    """空白/大小写/引号风格差异 → 等价(照抄校验不拦格式级微调)。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    ok, why = compiled_sql_matches(
+        "SELECT COUNT(loan.loan_id)\nFROM loan",
+        "select count(loan.loan_id) from loan",
+        "sqlite",
+    )
+    assert ok is True
+    assert why == ""
+
+
+def test_compiled_sql_matches_tolerates_count_normalization():
+    """COUNT(*) vs COUNT(col) 语义等价(编译器把 count(*) 归一到声明度量)——
+    结构签名相同,不误判为偏离。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    ok, _ = compiled_sql_matches(
+        "SELECT COUNT(loan.loan_id)\nFROM loan",
+        "SELECT COUNT(*) FROM loan",
+        "sqlite",
+    )
+    assert ok is True
+
+
+def test_compiled_sql_matches_rejects_structural_deviation():
+    """改聚合函数 / 改过滤值 / 改投影宽度 / 换表 → 结果形状必然改变 → 打回。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    base = "SELECT COUNT(loan.loan_id) FROM loan"
+    assert compiled_sql_matches(base, "SELECT SUM(loan.amount) FROM loan", "sqlite")[0] is False
+    assert compiled_sql_matches(base, "SELECT COUNT(loan.loan_id) FROM trans", "sqlite")[0] is False
+    assert compiled_sql_matches(
+        "SELECT a FROM t WHERE x = 'A'",
+        "SELECT a FROM t WHERE x = 'a'", "sqlite")[0] is False
+    assert compiled_sql_matches(
+        "SELECT a, b FROM t", "SELECT a FROM t", "sqlite")[0] is False
+
+
+def test_compiled_sql_matches_conservative_passthrough():
+    """保守方向:跨方言 / 解析失败 / 空 SQL → 放行(不误伤合法微调)。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    assert compiled_sql_matches(
+        "SELECT COUNT(x) FROM t", "SELECT SUM(y) FROM t", "mysql")[0] is True
+    assert compiled_sql_matches("SELECT 1", "not a query", "sqlite")[0] is True
+    assert compiled_sql_matches("", "", "sqlite")[0] is True
+    assert compiled_sql_matches("SELECT COUNT(x) FROM t", "", "sqlite")[0] is True
+
+
+# ── 时间粒度分桶 ─────────────────────────────────────────
+
+def test_time_grain_month_replaces_projection_and_group_by():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert result.sql == (
+        "SELECT strftime('%Y-%m', loan.date), SUM(loan.amount)\n"
+        "FROM loan\n"
+        "GROUP BY strftime('%Y-%m', loan.date)")
+
+
+def test_time_grain_mysql_dialect_changes_only_bucketed_expr():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+    }
+    result = SemanticCompiler(_demo_model()).compile_from_plan(
+        plan, ["loan"], force_dialect="mysql")
+    assert result is not None
+    assert "DATE_FORMAT(loan.date, '%Y-%m')" in result.sql
+    assert "SUM(loan.amount)" in result.sql
+
+
+def test_time_grain_field_not_declared_is_miss():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.ghost_date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.ghost_date", "grain": "year"},
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_time_grain_non_temporal_field_is_miss():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.amount", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.amount", "grain": "year"},
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_time_grain_bad_grain_is_miss():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "fortnight"},
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_time_grain_without_aggregation_is_miss():
+    plan = {
+        "answer_columns": ["loan.date"],
+        "time_grain": {"field": "loan.date", "grain": "year"},
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_time_grain_field_not_in_answer_columns_inserted_after_dims():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["district.A3", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "year"},
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert "SELECT district.A3, strftime('%Y', loan.date), SUM(loan.amount)" in result.sql
+    assert "GROUP BY district.A3, strftime('%Y', loan.date)" in result.sql
+
+
+def test_time_grain_compiled_sql_passes_guardrail():
+    from trove.services.semantic_layer.compiler import validate_compiled_sql
+
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert validate_compiled_sql(result.sql, _demo_model(), ["loan"]) == []
+
+
+# ── HAVING / ORDER BY ────────────────────────────────────
+
+def test_metric_having_after_group_by():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["district.A3", "sum(loan.amount)"],
+        "having": [{"metric": "total_loan_amount", "op": ">", "value": 10000}],
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert result.sql == (
+        "SELECT district.A3, SUM(loan.amount)\n"
+        "FROM loan\n"
+        "JOIN account ON loan.account_id = account.account_id\n"
+        "JOIN district ON account.district_id = district.district_id\n"
+        "GROUP BY district.A3\n"
+        "HAVING SUM(loan.amount) > 10000")
+
+
+def test_having_field_folds_into_where():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["district.A3", "sum(loan.amount)"],
+        "having": [{"field": "loan.status", "op": "=", "value": "A"}],
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert "WHERE loan.status = 'A'" in result.sql
+    assert "HAVING" not in result.sql
+
+
+def test_unknown_having_metric_is_miss():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["sum(loan.amount)"],
+        "having": [{"metric": "ghost_metric", "op": ">", "value": 1}],
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_having_both_field_and_metric_is_miss():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["sum(loan.amount)"],
+        "having": [{"field": "loan.status", "metric": "total_loan_amount",
+                    "op": ">", "value": 1}],
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_having_on_list_question_is_miss():
+    plan = {
+        "answer_columns": ["loan.status"],
+        "having": [{"metric": "total_loan_amount", "op": ">", "value": 1}],
+    }
+    assert _compile(plan, ["loan"]) is None
+
+
+def test_ordering_string_form():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["district.A3", "sum(loan.amount)"],
+        "ordering": "district.A3 desc",
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert result.sql.endswith("ORDER BY district.A3 DESC")
+
+
+def test_ordering_by_metric_name():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["district.A3", "sum(loan.amount)"],
+        "ordering": "total_loan_amount desc",
+    }
+    result = _compile(plan, ["loan", "district", "account"])
+    assert result is not None
+    assert result.sql.endswith("ORDER BY SUM(loan.amount) DESC")
+
+
+def test_ordering_list_of_dicts_form():
+    plan = {
+        "answer_columns": ["loan.status"],
+        "ordering": [{"column": "loan.status", "direction": "desc"}],
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert result.sql.endswith("ORDER BY loan.status DESC")
+
+
+def test_ordering_unresolvable_column_dropped():
+    plan = {
+        "answer_columns": ["loan.status"],
+        "ordering": "loan.ghost_col desc",
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert "ORDER BY" not in result.sql
+
+
+def test_ordering_with_time_grain_uses_bucketed_expr():
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+        "ordering": "loan.date desc",
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert result.sql.endswith("ORDER BY strftime('%Y-%m', loan.date) DESC")

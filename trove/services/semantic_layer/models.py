@@ -16,6 +16,10 @@ class SemanticMetric:
 
     datasets: logical dataset names referenced by the expression
         (`dataset.field`); empty means table-agnostic (no anchoring).
+
+    metric_type: OSSIE ``type`` — "" | "simple" | "derived" | "ratio"
+        (ratio 按 derived 处理)。derived/ratio 的表达式可引用其他已声明
+        metric 名(MetricFlow 风格),编译期递归内联。
     """
 
     name: str
@@ -23,6 +27,7 @@ class SemanticMetric:
     synonyms: list[str] = field(default_factory=list)
     datasets: list[str] = field(default_factory=list)
     definition: str = ""
+    metric_type: str = ""
 
 
 @dataclass

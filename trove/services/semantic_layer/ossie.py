@@ -207,6 +207,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             synonyms=synonyms,
             datasets=_dataset_refs(expression, declared),
             definition=m.get("description", "") or "",
+            metric_type=str(m.get("type") or "").strip().lower(),
         ))
 
     return SemanticModel(

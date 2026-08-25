@@ -167,6 +167,9 @@ def _metric_payload_to_ossie(name: str, payload: dict[str, Any], dialect: str | 
         metric["ai_context"] = {"synonyms": syns}
     if payload.get("definition"):
         metric["description"] = str(payload["definition"])
+    # 派生/比率度量(表达式引用其他 metric 名):OSSIE type 字段
+    if payload.get("type"):
+        metric["type"] = str(payload["type"])
     return metric
 
 

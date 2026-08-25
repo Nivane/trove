@@ -180,6 +180,9 @@ class TestPlannerSemanticFirst:
         assert out["refusal"] is not None
         assert out["refusal"]["reason"] == "uncovered"
         assert out["refusal"]["plan"]["aggregation"] == "sum(loan.ghost)"
+        # MISS 结构化分因透出(不再被丢弃成笼统 uncovered):reason slug + 组件
+        assert out["refusal"]["compile_miss"]["reason"] == "no_metric_match"
+        assert "sum(loan.ghost)" in out["refusal"]["compile_miss"]["component"]
 
     async def test_planner_miss_without_intent_does_not_refuse(self):
         """退化/空洞计划不拒绝 → 照常走 gen_sql(不误拒)。"""
@@ -229,3 +232,160 @@ class TestPlannerSemanticFirst:
         out = await node(make_state(question="how many loans?", matched_tables=["loan"]))
         assert out["compiled"] is True
         assert out["compiled_sql"] == "SELECT COUNT(loan.loan_id)\nFROM loan"
+
+    @staticmethod
+    def _demo_model_with_date():
+        """loan 带 is_time 的 date 字段 → 时间绑定可判定。"""
+        f = lambda name, **kw: SemanticField(name=name, expression=name, **kw)  # noqa: E731
+        return SemanticModel(
+            name="fin",
+            datasets=[
+                SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                    f("loan_id"), f("account_id"), f("amount"),
+                    f("date", datatype="Date", is_time=True),
+                ]),
+            ],
+            metrics=[
+                SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
+                               datasets=["loan"]),
+            ],
+        )
+
+    async def test_planner_time_binding_injects_range_condition(self):
+        """P1-4:time_context + 唯一时间维度 → 确定性注入区间条件,编译 SQL 带过滤。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        node = make_planner(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(self._demo_model_with_date()),
+        )
+        out = await node(make_state(
+            question="最近7天有多少贷款?", matched_tables=["loan"],
+            time_context="2025-01-01 ~ 2025-01-15"))
+        assert out["compiled"] is True
+        assert "loan.date >= '2025-01-01'" in out["compiled_sql"]
+        assert "loan.date <= '2025-01-15'" in out["compiled_sql"]
+        # 计划文本也带该条件(未覆盖路径 gen_sql 同样看到)
+        assert "loan.date >=" in out["plan"]
+
+    async def test_planner_time_binding_skips_when_ambiguous(self):
+        """P1-4:多个时间字段 → 无法判定,不注入(plan 原样,不猜)。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        f = lambda name, **kw: SemanticField(name=name, expression=name, **kw)  # noqa: E731
+        model = SemanticModel(
+            name="fin",
+            datasets=[SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                f("loan_id"),
+                f("created_at", datatype="Date", is_time=True),
+                f("updated_at", datatype="Date", is_time=True),
+            ])],
+            metrics=[SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
+                                    datasets=["loan"])],
+        )
+        node = make_planner(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(model),
+        )
+        out = await node(make_state(
+            question="最近7天有多少贷款?", matched_tables=["loan"],
+            time_context="2025-01-01 ~ 2025-01-15"))
+        assert out["compiled"] is True
+        assert "WHERE" not in out["compiled_sql"]  # 未注入区间条件
+
+    async def test_planner_writes_compile_meta_both_paths(self):
+        """编译决策观测:命中与 MISS 都写 compile_meta(eval hit-rate 闭环数据源)。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        # 命中路径
+        node = make_planner(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(self._demo_model()),
+        )
+        out = await node(make_state(question="how many loans?", matched_tables=["loan"]))
+        assert out["compile_meta"]["outcome"] == "compiled"
+        assert out["compile_meta"]["plan_typed"] is True
+        assert out["compile_meta"]["semantic_layer"] is True
+        assert out["compile_meta"]["miss_reason"] == ""
+
+        # MISS 路径
+        node_miss = make_planner(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "sum(loan.ghost)",
+                "answer_columns": ["sum(loan.ghost)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(self._demo_model()),
+        )
+        out_miss = await node_miss(
+            make_state(question="贷款总额?", matched_tables=["loan"]))
+        assert out_miss["compile_meta"]["outcome"] == "miss"
+        assert out_miss["compile_meta"]["miss_reason"] == "no_metric_match"
+        assert "sum(loan.ghost)" in out_miss["compile_meta"]["miss_component"]
+
+    async def test_planner_compile_meta_no_semantic_layer(self):
+        """无语义层接线时:不编译、不拒绝,compile_meta 记 no_semantic_layer。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        node = make_planner(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=None,
+        )
+        out = await node(make_state(question="how many loans?", matched_tables=["loan"]))
+        assert "compiled" not in out
+        assert out["compile_meta"]["outcome"] == "miss"
+        assert out["compile_meta"]["miss_reason"] == "no_semantic_layer"
+        assert out["compile_meta"]["semantic_layer"] is False
