@@ -49,7 +49,10 @@ async def list_facts(
 async def create_fact(
     body: FactCreate, request: Request, user: dict = Depends(get_current_user)
 ) -> dict:
-    fact = await _facts(request).add(str(user["id"]), body.datasource, body.fact)
+    try:
+        fact = await _facts(request).add(str(user["id"]), body.datasource, body.fact)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"fact": fact}
 
 
@@ -58,9 +61,12 @@ async def update_fact(
     fact_id: int, body: FactPatch, request: Request,
     user: dict = Depends(get_current_user),
 ) -> dict:
-    fact = await _facts(request).update(
-        str(user["id"]), fact_id, fact=body.fact, datasource=body.datasource,
-    )
+    try:
+        fact = await _facts(request).update(
+            str(user["id"]), fact_id, fact=body.fact, datasource=body.datasource,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if fact is None:
         raise HTTPException(status_code=404, detail=f"fact not found: {fact_id}")
     return {"fact": fact}

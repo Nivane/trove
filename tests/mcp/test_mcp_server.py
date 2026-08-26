@@ -146,3 +146,80 @@ async def test_unknown_tool_errors(mcp_components):
 
     server = build_mcp_server(mcp_components)
     assert await server.get_tool("nope") is None
+
+
+# ── resources(MCP 三原语:只读数据)────────────────────────────
+
+async def _read(server, uri: str) -> str:
+    """read_resource → 拼接 contents 文本(fastmcp ResourceResult)。"""
+    result = await server.read_resource(uri)
+    return "".join(
+        c.content if isinstance(c.content, str) else str(c.content)
+        for c in result.contents
+    )
+
+
+async def test_resources_registered(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    uris = {str(r.uri) for r in await server.list_resources()}
+    templates = {
+        str(t.uri_template) for t in await server.list_resource_templates()
+    }
+    assert "trove://datasources" in uris
+    assert "trove://{datasource}/schema" in templates
+    assert "trove://{datasource}/semantics" in templates
+
+
+async def test_datasources_resource(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    text = await _read(server, "trove://datasources")
+    assert "test_db" in text  # 有 semantics.yml 的源可见
+
+
+async def test_semantics_resource_returns_model(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    text = await _read(server, "trove://test_db/semantics")
+    assert "semantic_model" in text  # OSSIE 语义模型原文
+
+
+async def test_schema_resource_missing_placeholder(mcp_components):
+    """fixture 只写 semantics.yml → schema 返回明确占位而非报错。"""
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    text = await _read(server, "trove://test_db/schema")
+    assert text == "(no such KB file)"
+
+
+async def test_schema_resource_returns_notes(mcp_components, tmp_path):
+    """写入 schema_notes.yml 后资源返回其内容(把元数据暴露成工具底座)。"""
+    import yaml
+
+    from trove.mcp.server import build_mcp_server
+
+    ds_dir = mcp_components["kb"].kb_dir / "test_db"
+    (ds_dir / "schema_notes.yml").write_text(
+        yaml.safe_dump({"students": {"desc": "student records"}}),
+        encoding="utf-8",
+    )
+    server = build_mcp_server(mcp_components)
+    text = await _read(server, "trove://test_db/schema")
+    assert "student records" in text
+
+
+async def test_resource_blocks_path_traversal(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    # 单段危险名可寻址 → handler 拒绝
+    for evil in ("..", "."):
+        assert "(invalid datasource name)" == await _read(server, f"trove://{evil}/semantics")
+    # 多段穿越 URI 根本不匹配模板(datasource 不能含 "/")→ 不可解析
+    with pytest.raises(Exception):
+        await _read(server, "trove://../secret/semantics")

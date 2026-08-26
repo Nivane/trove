@@ -1,4 +1,4 @@
-"""Trove MCP server — 把 NL→SQL 问答能力暴露为 MCP tools。
+"""Trove MCP server — 把 NL→SQL 问答能力暴露为 MCP tools + resources。
 
 用官方 ``fastmcp`` 高层封装。工具面:
 
@@ -6,6 +6,14 @@
   会话用 ``session_id`` 参数复用(进程内会话注册表;缺失则新建)。
 - ``list_datasources``:已连接且 KB 已初始化的数据源(用户端可见性规则)。
 - ``kb_status``:数据源连接 / KB 初始化 / 语义模型文件状态。
+
+资源面(MCP 三原语之一:只读数据):
+
+- ``trove://datasources``:可答数据源清单。
+- ``trove://{datasource}/schema``:schema_notes.yml 原文(表/字段/口径注释)。
+- ``trove://{datasource}/semantics``:semantics.yml 原文(OSSIE 语义模型)。
+  ——把元数据暴露成 MCP server,数据平台成为 agent 的工具底座(只读、
+  无副作用)。
 
 语义优先(Phase B)天然生效:无语义模型的数据源 ask_data 会明确拒绝并
 提示 /kb init;未覆盖查询 → 拒绝 + draft。``trove mcp`` 命令以 stdio
@@ -81,6 +89,55 @@ def build_mcp_server(components: dict) -> FastMCP:
             "has_semantics": semantics_exists,
             "lang": config.language if config else "en",
         }
+
+    def _ds_name_safe(datasource: str) -> bool:
+        """数据源名须是单个路径段标识,防路径穿越(构造 kb 文件路径用)。"""
+        return (
+            bool(datasource)
+            and "/" not in datasource
+            and "\\" not in datasource
+            and datasource not in (".", "..")
+        )
+
+    def _read_kb_file(path: Any) -> str:
+        """只读 KB YAML 原文;缺失返回明确占位(资源语义 = 数据,不抛错)。"""
+        try:
+            if not path.exists():
+                return "(no such KB file)"
+            return path.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"(unreadable KB file: {e})"
+
+    # ── resources(MCP 三原语之一:只读数据——schema/语义模型)─────────────
+    # 对应"MCP × 数仓工具"结合点:把元数据暴露成 MCP server,成为 agent
+    # 的工具底座;resources 只读、无副作用,客户端可静态拉取比对口径。
+
+    @mcp.resource("trove://datasources")
+    def datasources_resource() -> str:
+        """Connected & KB-initialized datasources (read-only inventory)."""
+        lines = [
+            f"- {d['name']} (has_semantics={d.get('has_semantics', False)})"
+            for d in _datasources_visible()
+        ]
+        return "\n".join(lines) if lines else "(no answerable datasources)"
+
+    @mcp.resource("trove://{datasource}/schema")
+    async def schema_resource(datasource: str) -> str:
+        """schema_notes.yml content for the datasource — table/column/metric
+        annotation (read-only data, no side effects)."""
+        ds = (datasource or "").strip()
+        if not _ds_name_safe(ds):
+            return "(invalid datasource name)"
+        return _read_kb_file(kb.schema_notes_path(ds))
+
+    @mcp.resource("trove://{datasource}/semantics")
+    async def semantics_resource(datasource: str) -> str:
+        """semantics.yml content for the datasource — the OSSIE semantic model
+        (datasets + metrics, the single answerability boundary) as read-only data."""
+        ds = (datasource or "").strip()
+        if not _ds_name_safe(ds):
+            return "(invalid datasource name)"
+        return _read_kb_file(kb.semantics_path(ds))
 
     # ── tools ─────────────────────────────────────────────
 
