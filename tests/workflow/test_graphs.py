@@ -828,6 +828,64 @@ class TestAgenticNodes:
         assert llm.chat_count == 2  # route_intent + reflect 各一次单次调用
 
 
+class TestSubagentDelegation:
+    """P1: 主 agent 规划 + subagent 并行执行 —— agentic 多候选由独立
+    ReAct loop(gen_sql_subagent)并行产出,select 共识投票。"""
+
+    async def test_agentic_multicandidate_uses_parallel_subagents(self, sqlite_registry, catalog):
+        """agentic + multi_candidate:每个备选 = 独立 subagent loop,候选池
+        进入 select 共识投票(主 + 4 subagent 全走 chat_full)。"""
+        sql = "SELECT name FROM students ORDER BY name;"
+        llm = AgenticLLM([
+            "query",
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},  # 主 agent
+            {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},  # subagent 1
+            {"content": "```sql\nSELECT name FROM students ORDER BY name DESC;\n```", "tool_calls": []},  # subagent 2
+            {"content": "```sql\nSELECT name FROM students ORDER BY name ASC;\n```", "tool_calls": []},  # subagent 3
+            {"content": "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```", "tool_calls": []},  # subagent 4
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry),
+                       multi_candidate=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["retry_count"] == 0
+        assert final["row_count"] == 5
+        assert len(final["candidates"]) == 4  # 4 个 subagent 候选进入候选池
+        assert len(llm.calls) == 7  # 意图 + 主 + 4 subagent + reflect
+
+    async def test_subagent_failure_skipped_silently(self, sqlite_registry, catalog):
+        """subagent 异常 → 静默跳过(候选容错),主候选仍走通。"""
+        class FlakySubAgentLLM(AgenticLLM):
+            def __init__(self):
+                super().__init__([
+                    "query",
+                    {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},  # 主
+                    {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},  # sub
+                    {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},  # sub
+                    {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},  # sub
+                    {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},  # sub
+                    "OK",
+                ])
+                self._ff_n = 0
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                self._ff_n += 1
+                # 第 3 次 chat_full = 某个 subagent(主在 n=1)—— 抛异常被吞
+                if self._ff_n == 3:
+                    raise RuntimeError("subagent crashed")
+                self.calls.append(messages)
+                return self._responses.pop(0)
+
+        llm = FlakySubAgentLLM()
+        graphs = build(make_services(llm, catalog, sqlite_registry),
+                       multi_candidate=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["row_count"] == 5
+        assert final["retry_count"] == 0
+
+
 class TestClarifyRouting:
     async def test_no_table_match_asks_user(self, sqlite_registry, catalog):
         """clarify 开启时：无表匹配 → 反问用户，不调用 LLM 生成。"""

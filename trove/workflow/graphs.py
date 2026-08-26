@@ -186,6 +186,74 @@ def _candidate_schedule(n_alt: int) -> list[tuple[float, str]]:
     return out
 
 
+_STYLE_HINTS = {
+    "cte": "Prefer a WITH (CTE) formulation where it makes the query clearer.",
+    "explicit-join": "Prefer explicit JOIN ... ON ... syntax over comma joins.",
+    "subquery": "Prefer a single statement with subqueries where possible.",
+}
+
+
+async def _run_candidate_subagent(
+    services,
+    state: WorkflowState,
+    sub_state: GenSQLState,
+    dialect: str,
+    *,
+    temperature: float,
+    mode: str = "",
+    rotation: int = 1,
+) -> str | None:
+    """独立 subagent 并行打磨单个备选候选("主 agent 规划 + subagent 执行")。
+
+    每个备选 = 一个独立的 ReAct loop(自建工具注册表、自定终止),以去相关
+    温度 + few-shot 轮换 + 风格提示生成候选 SQL,供 select 共识投票。
+    失败/空手/护栏降级返回 None——静默跳过,保持经典候选路径的容错语义。
+    """
+    from trove.workflow.nodes.gen_sql import build_sql_registry, extract_sql
+
+    rotated = _rotate_few_shots(sub_state, rotation)
+    registry = build_sql_registry(
+        services.connectors, rotated.question, rotated.lang, dialect,
+        matched_tables=state.matched_tables or None,
+        datasource=state.datasource,
+        semantic_only=bool(getattr(services.config, "semantic_first", False)),
+    )
+    prompt = build_sql_prompt_from_state(rotated)
+    hint = _STYLE_HINTS.get(mode)
+    if hint:
+        prompt = f"{prompt}\n\n{hint}"
+    model = services.config.model_for(rotated.complexity) if services.config else "openai/gpt-4o"
+    try:
+        result = await run_agent_loop(
+            services.llm, model,
+            system=render("gen_sql/system", lang=rotated.lang),
+            user=prompt,
+            registry=registry,
+            tool_timeout_s=20.0,
+            time_budget_s=120.0,
+            max_rounds=4,
+            max_total_tokens=2500,
+            metadata={
+                "node": "gen_sql_subagent",
+                "session_id": state.session_id,
+                "run_id": state.run_id,
+            },
+            temperature=temperature,
+        )
+    except Exception:
+        return None
+    sql = extract_sql(result.get("content", "")) if result.get("content") else ""
+    if not sql:
+        # 模型可能在工具里给出 SQL(validate/probe/check/finish 过都算)
+        for entry in reversed(result.get("tool_history") or []):
+            args = entry.get("arguments") or {}
+            payload = args.get("sql") or args.get("answer")
+            if entry.get("name") in ("validate_sql", "probe_query", "check_result", "finish") and payload:
+                sql = payload
+                break
+    return sql or None
+
+
 # ── gen_sql subgraph ─────────────────────────────────────
 
 
@@ -666,29 +734,59 @@ def _make_gen_sql_node(
             seen = {" ".join(update["sql"].split()).lower()}
             seen.update(" ".join(c.split()).lower() for c in state.candidates)
             candidates = list(state.candidates)
-            # 并行生成:各温度子图互不依赖,asyncio.gather 把候选生成时间
-            # 从 N×串行压到单次耗时(容错:异常子图静默跳过)。
-            # P2-7:每个备选按索引轮换 few-shot 首条目——不同候选锚定
-            # 不同参考示例,避免共享同一组示例导致候选趋同。
-            outs = await asyncio.gather(
-                *(
-                    g.ainvoke(_rotate_few_shots(
-                        sub_state.model_copy(deep=True), idx + 1))
-                    for idx, g in enumerate(alt_graphs)
-                ),
-                return_exceptions=True,
-            )
-            for out_alt in outs:
-                if isinstance(out_alt, BaseException):
-                    continue
-                alt_sql = out_alt.get("sql", "")
-                if not alt_sql or out_alt.get("error"):
-                    continue
-                key = " ".join(alt_sql.split()).lower()
-                if key in seen:
-                    continue
-                seen.add(key)
-                candidates.append(alt_sql)
+            schedule = _candidate_schedule(len(alt_graphs))
+            if agentic:
+                # subagent 委派(主 agent 规划 + subagent 并行执行):每个备选
+                # 是一个独立 ReAct loop(自建工具注册表、自定终止),以去相关
+                # 温度 + few-shot 轮换 + 风格提示并行打磨,产出候选供 select
+                # 共识投票。asyncio.gather 把 N 个 subagent 压到单次耗时;
+                # 容错:返回 None/异常即静默跳过。
+                outs = await asyncio.gather(
+                    *(
+                        _run_candidate_subagent(
+                            services, state, sub_state.model_copy(deep=True),
+                            dialect, temperature=t, mode=m, rotation=idx + 1,
+                        )
+                        for idx, (t, m) in enumerate(schedule)
+                    ),
+                    return_exceptions=True,
+                )
+                for out_alt in outs:
+                    if isinstance(out_alt, BaseException):
+                        continue
+                    alt_sql = out_alt or ""
+                    if not alt_sql:
+                        continue
+                    key = " ".join(alt_sql.split()).lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(alt_sql)
+            else:
+                # 经典候选:固定 generate→validate 子图并行(非 agentic 档)。
+                # 并行生成:各温度子图互不依赖,asyncio.gather 把候选生成时间
+                # 从 N×串行压到单次耗时(容错:异常子图静默跳过)。
+                # P2-7:每个备选按索引轮换 few-shot 首条目——不同候选锚定
+                # 不同参考示例,避免共享同一组示例导致候选趋同。
+                outs = await asyncio.gather(
+                    *(
+                        g.ainvoke(_rotate_few_shots(
+                            sub_state.model_copy(deep=True), idx + 1))
+                        for idx, g in enumerate(alt_graphs)
+                    ),
+                    return_exceptions=True,
+                )
+                for out_alt in outs:
+                    if isinstance(out_alt, BaseException):
+                        continue
+                    alt_sql = out_alt.get("sql", "")
+                    if not alt_sql or out_alt.get("error"):
+                        continue
+                    key = " ".join(alt_sql.split()).lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(alt_sql)
             if candidates:
                 update["candidates"] = candidates
         if example_hits:

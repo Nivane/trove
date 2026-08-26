@@ -15,6 +15,12 @@
   ——把元数据暴露成 MCP server,数据平台成为 agent 的工具底座(只读、
   无副作用)。
 
+模板面(MCP 三原语之三:可复用提示词):
+
+- ``datasource_guide``:查数据源的规范工作流(先读 schema/semantics 资源
+  再 ask_data)。
+- ``ask_data``:向数据源提问的模板。
+
 语义优先(Phase B)天然生效:无语义模型的数据源 ask_data 会明确拒绝并
 提示 /kb init;未覆盖查询 → 拒绝 + draft。``trove mcp`` 命令以 stdio
 transport 启动(供 Claude Code / 其他 MCP 客户端本地挂载)。
@@ -138,6 +144,33 @@ def build_mcp_server(components: dict) -> FastMCP:
         if not _ds_name_safe(ds):
             return "(invalid datasource name)"
         return _read_kb_file(kb.semantics_path(ds))
+
+    # ── prompts(MCP 三原语之三:可复用模板——标准化的提示词工作流)─────────
+    # 客户端可直接拉起这些模板,把"查数据源"的规范流程固化成提示词,
+    # 而不是每次手写。
+
+    @mcp.prompt("datasource_guide")
+    def datasource_guide_prompt(datasource: str) -> str:
+        """How to work with a datasource: read its metadata resources first,
+        then ask via ask_data (reusable workflow prompt)."""
+        ds = (datasource or "").strip()
+        if not _ds_name_safe(ds):
+            return "(invalid datasource name)"
+        return (
+            f"To answer questions about datasource '{ds}':\n"
+            f"1. Read trove://{ds}/schema and trove://{ds}/semantics "
+            f"(table/column/metric annotations and the semantic model).\n"
+            f"2. Check kb_status({ds}) for connection/KB state.\n"
+            f"3. Ask natural-language questions with ask_data."
+        )
+
+    @mcp.prompt("ask_data")
+    def ask_data_prompt(datasource: str, question: str) -> str:
+        """Template for phrasing a question to a datasource via ask_data."""
+        return (
+            f"Ask the {'datasource ' + datasource if datasource else 'default datasource'}:\n"
+            f"{question}"
+        )
 
     # ── tools ─────────────────────────────────────────────
 
