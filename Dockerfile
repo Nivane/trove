@@ -8,6 +8,7 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1
 COPY pyproject.toml README.md ./
 COPY trove/ ./trove/
-RUN pip install --no-cache-dir .
+# postgres extra = psycopg(pgvector 同实例部署的业务/向量驱动),后端镜像默认带上
+RUN pip install --no-cache-dir ".[postgres]"
 EXPOSE 8000
 CMD ["trove", "serve", "--host", "0.0.0.0", "--port", "8000"]

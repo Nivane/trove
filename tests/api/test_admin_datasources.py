@@ -446,3 +446,39 @@ async def test_register_persist_failure_rolls_back(client, api_app, tmp_path):
     assert resp.status_code == 400
     assert "persist" in resp.json()["detail"] or "rolled back" in resp.json()["detail"]
     assert not api_app.state.connector_registry.is_registered("txnds")
+
+
+class TestVectorConfigDefault:
+    """默认向量后端按业务库类型:postgres → pgvector(同实例),其它 → sqlite。"""
+
+    def _vc(self, body, ds_type=""):
+        from trove.api.routers.admin import _vector_config
+
+        return _vector_config(body, ds_type)
+
+    def test_postgres_defaults_pgvector(self):
+        out = self._vc({"retrieval_backend": "rag", "embedding_model": "bge-m3"},
+                       ds_type="postgres")
+        assert out["vector_backend"] == "pgvector"
+        assert out["vector_dsn"] == ""  # 同实例推导,无需显式 dsn
+
+    def test_non_postgres_defaults_sqlite(self):
+        out = self._vc({"retrieval_backend": "rag", "embedding_model": "bge-m3"},
+                       ds_type="sqlite")
+        assert out["vector_backend"] == "sqlite"
+
+    def test_explicit_vector_backend_wins(self):
+        out = self._vc({"vector_backend": "sqlite"}, ds_type="postgres")
+        assert out["vector_backend"] == "sqlite"
+
+    def test_pgvector_requires_dsn_on_non_postgres(self):
+        import pytest as _pytest
+        from fastapi import HTTPException
+
+        with _pytest.raises(HTTPException) as exc:
+            self._vc({"vector_backend": "pgvector"}, ds_type="mysql")
+        assert exc.value.status_code == 400
+
+    def test_pgvector_ok_without_dsn_on_postgres(self):
+        out = self._vc({"vector_backend": "pgvector"}, ds_type="postgres")
+        assert out["vector_backend"] == "pgvector"

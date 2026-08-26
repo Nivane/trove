@@ -14,6 +14,8 @@ from trove.services.kb.backends.dense import (
     cosine,
     _pack_vector,
     _unpack_vector,
+    _vector_dsn,
+    vector_store_for,
 )
 from trove.services.kb.backends.rag import RagBackend, rrf_fuse
 from trove.services.kb.backends.registry import resolver_from_configs
@@ -309,3 +311,61 @@ class TestAggregateGate:
         )
         await kb.ensure_synced("demo")
         assert await kb.search_examples("zzz 无关问题", "demo") == []
+
+
+class TestVectorStoreDefault:
+    """默认向量后端:postgres 业务库 → pgvector(同实例推导 dsn),其它 → sqlite。"""
+
+    def test_postgres_cfg_derives_same_instance_dsn(self):
+        from trove.core.types import DatasourceConfig
+
+        cfg = DatasourceConfig(
+            name="trove", type="postgres",
+            connection_params={"host": "pg", "port": 5432,
+                               "user": "trove", "password": "p",
+                               "database": "trove"},
+            vector_backend="pgvector",
+        )
+        assert _vector_dsn(cfg) == "postgresql://trove:p@pg:5432/trove"
+
+    def test_explicit_vector_dsn_wins(self):
+        from trove.core.types import DatasourceConfig
+
+        cfg = DatasourceConfig(
+            name="trove", type="postgres",
+            connection_params={"host": "pg", "database": "trove"},
+            vector_backend="pgvector", vector_dsn="postgresql://v@h:5432/vec",
+        )
+        assert _vector_dsn(cfg) == "postgresql://v@h:5432/vec"
+
+    def test_non_postgres_cfg_has_no_derived_dsn(self):
+        from trove.core.types import DatasourceConfig
+
+        cfg = DatasourceConfig(name="demo", type="sqlite",
+                               connection_params={"path": "x.db"})
+        assert _vector_dsn(cfg) == ""
+
+    def test_postgres_cfg_builds_pgvector_store(self, tmp_path):
+        from trove.core.types import DatasourceConfig
+        from trove.services.kb.backends.dense import PgVectorStore
+        from trove.services.kb.service import KbService
+
+        cfg = DatasourceConfig(
+            name="trove", type="postgres",
+            connection_params={"host": "pg", "database": "trove",
+                               "user": "u", "password": "p"},
+            vector_backend="pgvector",
+        )
+        kb = KbService(tmp_path / "proj")
+        store = vector_store_for(kb, cfg)
+        assert isinstance(store, PgVectorStore)
+        assert store._dsn == "postgresql://u:p@pg:5432/trove"
+
+    def test_non_postgres_cfg_builds_sqlite_store(self, tmp_path):
+        from trove.core.types import DatasourceConfig
+        from trove.services.kb.service import KbService
+
+        cfg = DatasourceConfig(name="demo", type="sqlite",
+                               connection_params={"path": "x.db"})
+        kb = KbService(tmp_path / "proj")
+        assert isinstance(vector_store_for(kb, cfg), SqliteVectorStore)

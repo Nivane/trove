@@ -113,7 +113,7 @@ docker compose down              # 停止并移除容器
 ```
 
 - 访问 `http://localhost:8080/`；登录：admin / `admin123`（compose 里 `TROVE_ADMIN_PASSWORD` 仅本地演练；生产由环境变量控制）
-- compose 已显式 `--datasource demo`（内置 BIRD 金融 SQLite，演练入口）；生产数据源改由管理端注册（见下节）
+- compose 默认业务栈 = **PostgreSQL**（`pgvector/pgvector` 镜像：业务表 + pgvector 向量同实例）；`db-init` 一次性服务灌入 BIRD 金融 demo 数据，后端 `--datasource postgres://trove:trove@postgres:5432/trove`（换回内置 SQLite demo 可改 `--datasource demo`）；生产数据源改由管理端注册（见下节）
 - 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释，或在容器内提供 API key（无凭证时 `kb/init` 会报凭证错误）
 
 ## 平台化数据源与知识库管理
@@ -127,7 +127,7 @@ docker compose down              # 停止并移除容器
 
 管理端点：`GET/POST/DELETE /v1/admin/datasources[/{name}]`、`POST /v1/admin/datasources/{name}/reconnect|kb/init|kb/reload`、`GET .../kb/init/status`、`GET .../kb/reload/status`、`GET /v1/admin/users/{user_id}/datasources`（grants）。
 
-每个数据源可配置**检索后端**（`retrieval_backend: builtin | hybrid | rag`，写 `datasources.yml` 即生效）：`rag` 额外可配 `embedding_model`（经 LLM 网关的稠密通道，空则退化为纯稀疏）与 `vector_backend`/`vector_dsn`（`sqlite` 本地向量默认零配置，或 `pgvector` 独立向量库）。
+每个数据源可配置**检索后端**（`retrieval_backend: builtin | hybrid | rag`，写 `datasources.yml` 即生效）：`rag` 额外可配 `embedding_model`（经 LLM 网关的稠密通道，空则退化为纯稀疏）与 `vector_backend`/`vector_dsn`。**默认向量后端 = `pgvector`**：postgres 业务库留空 `vector_dsn` 即与业务库同实例（`CREATE EXTENSION vector` + `kb_vectors` 表）；非 postgres 业务库（sqlite/mysql 等）自动退化 `sqlite` 本地向量（零配置）。
 
 ## 配置
 
@@ -199,6 +199,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
 | 数据源 | 连接方式 | 安装 |
 |---|---|---|
 | SQLite | `--datasource demo` / `sqlite:///path/to.db` / `sqlite://:memory:` | 内置 |
+| PostgreSQL | `postgres://user:pass@host:5432/database`（默认 5432；业务库默认向量 pgvector 同实例） | `uv sync --extra postgres` |
 | MySQL | `mysql://user:pass@host:3306/database`（端口可省略，默认 3306） | `uv sync --extra mysql` |
 | ClickHouse | `clickhouse://user:pass@host:8123/database`（默认 8123） | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` / `duckdb://:memory:` | `uv sync --extra duckdb` |

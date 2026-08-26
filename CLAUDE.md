@@ -34,14 +34,14 @@ docker compose down              # 停止并移除容器
 ```
 
 - 登录：admin / `admin123`（compose 里 `TROVE_ADMIN_PASSWORD` 仅本地演练；生产由 `TROVE_ADMIN_PASSWORD` 环境变量控制）
-- 数据源零默认启动：`serve` 默认不注册任何数据源，compose 已显式 `--datasource demo`（内置 BIRD 金融 SQLite，演练入口）；也可换成 `scheme://` URL（如 `mysql://...`）。生产数据源改由管理端注册（`/admin/datasources`，持久化到 `.trove/datasources.yml`，重启自动恢复）
+- **默认业务栈 = PostgreSQL**：`postgres` 服务用 `pgvector/pgvector:pg16` 镜像（业务表 + pgvector 向量同实例），`db-init` 一次性服务把 BIRD 金融 demo 数据灌入（幂等，`scripts/init_postgres_demo.py`），后端 `--datasource postgres://trove:trove@postgres:5432/trove`；向量后端默认 `pgvector`（`vector_dsn` 留空 = 同实例推导）。换回内置 SQLite demo 可改 `--datasource demo`，生产数据源改由管理端注册（`/admin/datasources`，持久化到 `.trove/datasources.yml`，重启自动恢复）
 - 管理端数据源流程：admin 登录 → 注册（内置 demo 或 URL，注册即连接探测，失败 400 报原因）→ 该源 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）→ 用户端下拉/列表才可见（仅显示「已连接且 KB 已初始化」的数据源，非 admin 还需 grants 授权）
 - 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`），或在容器内提供 API key
 - 后端镜像是不带页面的纯 JSON API（所有路由在 `/v1` 下）；前端由独立容器/CDN 发布（`frontend/docker build → dist → nginx/CDN`）。本机开发：后端 `uv run trove serve`（:8000）+ 前端 `cd frontend && npm run dev`（:5173，HMR，反代 `/v1` → 后端）。
 
-Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres`. Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset); see README.
+Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres` (`postgres` = psycopg,业务 + pgvector 向量驱动). Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset; Postgres uses `PG_TEST_URL`); see README.
 
-Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **cost-sensitive — do not launch eval runs without explicit user instruction**. Helper scripts: `distill_lessons.py` (distill Hint Bank lessons from eval failures), `import_golden_examples.py`, `import_bird_descriptions.py`, `probe_enums.py`, `import_sqlite_to_mysql.py`.
+Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **cost-sensitive — do not launch eval runs without explicit user instruction**. Helper scripts: `distill_lessons.py` (distill Hint Bank lessons from eval failures), `import_golden_examples.py`, `import_bird_descriptions.py`, `probe_enums.py`, `import_sqlite_to_mysql.py`, `init_postgres_demo.py` (BIRD demo → PostgreSQL).
 
 ## Architecture
 

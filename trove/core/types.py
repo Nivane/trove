@@ -153,7 +153,9 @@ class DatasourceConfig:
     # rag 的稠密通道:embedding 模型名(经 LLM 网关,需凭证;空 → rag 退化
     # 纯稀疏,与 hybrid 同行为)。
     embedding_model: str = ""
-    # 向量后端: "sqlite"(kb.sqlite 本地向量,默认零配置) | "pgvector"。
-    vector_backend: str = "sqlite"
-    # pgvector 专用向量库连接串(与业务库解耦;vector_backend=pgvector 必填)。
+    # 向量后端: "pgvector"(默认,postgres 业务库同实例;vector_dsn 留空 =
+    # 由业务库连接推导) | "sqlite"(kb.sqlite 本地向量,非 postgres 业务库回退)。
+    vector_backend: str = "pgvector"
+    # pgvector 向量库连接串(留空 = 与 postgres 业务库同实例推导;业务库非
+    # postgres 时为空即退化为 sqlite 本地向量)。
     vector_dsn: str = ""

@@ -2,6 +2,7 @@
 
 Supported schemes:
   mysql://[user[:password]@]host[:port]/database      (default port 3306)
+  postgres://[user[:password]@]host[:port]/database  (default port 5432)
   clickhouse://[user[:password]@]host[:port]/database (default port 8123)
   sqlite://path/to/file.db | sqlite://:memory:
   duckdb://path/to/file.duckdb | duckdb://:memory:
@@ -14,7 +15,7 @@ from urllib.parse import quote, unquote, urlparse
 from trove.core.types import DatasourceConfig
 from trove.core.errors import DatasourceError
 
-DEFAULT_PORTS = {"mysql": 3306, "clickhouse": 8123}
+DEFAULT_PORTS = {"mysql": 3306, "postgres": 5432, "clickhouse": 8123}
 
 FILE_SCHEMES = ("sqlite", "duckdb")
 
@@ -47,7 +48,7 @@ def parse_datasource_url(url: str) -> DatasourceConfig:
                 message=f"Invalid {scheme} URL (bad port): {url}",
                 datasource="",
             ) from e
-        return DatasourceConfig(
+        cfg = DatasourceConfig(
             name=database,
             type=scheme,
             connection_params={
@@ -59,6 +60,14 @@ def parse_datasource_url(url: str) -> DatasourceConfig:
             },
             default=True,
         )
+        # 默认向量后端:postgres 业务库 → pgvector(同实例,dsn 运行时推导);
+        # 其它业务库无 pgvector 依托 → sqlite 本地向量(与 DatasourceConfig
+        # 的全局默认解耦,保证持久化的配置准确)。
+        if scheme == "postgres":
+            cfg.vector_backend = "pgvector"
+        else:
+            cfg.vector_backend = "sqlite"
+        return cfg
 
     if scheme in FILE_SCHEMES:
         # sqlite:///abs/path → netloc "" + path "/abs/path"
@@ -69,12 +78,14 @@ def parse_datasource_url(url: str) -> DatasourceConfig:
                 message=f"Invalid {scheme} URL (missing path): {url}",
                 datasource="",
             )
-        return DatasourceConfig(
+        cfg = DatasourceConfig(
             name=scheme,
             type=scheme,
             connection_params={"path": path},
             default=True,
         )
+        cfg.vector_backend = "sqlite"
+        return cfg
 
     raise DatasourceError(
         message=f"Unsupported datasource scheme '{scheme}' in: {url}",

@@ -44,5 +44,7 @@ async def setup_demo_datasource(
         type="sqlite",
         connection_params={"path": str(demo_path)},
         default=set_default,
+        # SQLite 业务库无 pgvector 依托 → 本地向量(显式覆盖全局 pgvector 默认)。
+        vector_backend="sqlite",
     )
     await registry.register(config, set_default=set_default)
