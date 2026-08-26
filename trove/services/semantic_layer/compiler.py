@@ -689,7 +689,7 @@ class SemanticCompiler:
         self._matched_set = matched_set
         self._dialect = force_dialect or "sqlite"
 
-        agg_declared = str(plan.get("aggregation") or "").strip().lower() not in ("", "none")
+        agg_declared = str(plan.get("aggregation") or "").strip().lower() not in ("", "none", "无")
         matched_pairs, miss_candidates = self._match_metrics(plan)
         if miss_candidates:
             # 聚合候选有签名但无兼容度量 → 严格 MISS(逐候选分因)

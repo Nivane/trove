@@ -155,6 +155,21 @@ def test_list_query_projects_fields():
     assert result.sql == "SELECT loan.status\nFROM loan\nWHERE loan.status = 'A'"
 
 
+def test_aggregation_none_marker_zh_compiles_list_query():
+    """planner 中文模式把 aggregation 标为「无」(=none),编译器不得误判为
+    真实聚合而 no_metric_match。回归:compiler 的 none 标记集需与
+    planner 的 ("none", "无") 对齐。"""
+    plan = {
+        "tables": ["loan"],
+        "aggregation": "无",
+        "answer_columns": ["loan.status"],
+        "conditions": [],
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert result.sql == "SELECT loan.status\nFROM loan"
+
+
 def test_two_filters_combined_with_and():
     plan = {
         "answer_columns": ["loan.status"],
