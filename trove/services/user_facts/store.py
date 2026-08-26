@@ -107,6 +107,39 @@ class UserFactsStore:
             await conn.close()
         return _row_to_dict(row) if row else None
 
+    async def find_by_text(
+        self, user_id: str, datasource: str, fact: str,
+    ) -> dict[str, Any] | None:
+        """已规范化等值事实查找(冲突消解):同 (user, datasource) 同文本。"""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT id, user_id, datasource, fact, created_at, updated_at "
+                "FROM user_facts WHERE user_id = ? AND datasource = ? AND fact = ? "
+                "ORDER BY updated_at DESC, id DESC LIMIT 1",
+                (user_id, datasource, fact),
+            )
+            row = await cursor.fetchone()
+        finally:
+            await conn.close()
+        return _row_to_dict(row) if row else None
+
+    async def purge_expired(self, days: int) -> int:
+        """物理删除超过 ``days`` 天未更新的事实(记忆压缩);返回删除条数。"""
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, days))
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM user_facts WHERE updated_at < ?",
+                (cutoff.isoformat(),),
+            )
+            await conn.commit()
+            return cursor.rowcount
+        finally:
+            await conn.close()
+
     async def list(
         self, user_id: str, datasource: str | None = None,
     ) -> list[dict[str, Any]]:

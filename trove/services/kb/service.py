@@ -412,6 +412,10 @@ class KbService:
         """该数据源的 OSSIE 语义模型文件(语义层单一真源)。"""
         return self.kb_dir / datasource / "semantics.yml"
 
+    def schema_notes_path(self, datasource: str) -> Path:
+        """该数据源的 schema_notes.yml 文件(表/字段/指标口径注释)。"""
+        return self.kb_dir / datasource / "schema_notes.yml"
+
     # ── Sync ──────────────────────────────────────────────
 
     async def ensure_synced(self, default_datasource: str | None = None) -> None:
