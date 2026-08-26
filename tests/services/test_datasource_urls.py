@@ -47,11 +47,30 @@ class TestParseDatasourceUrl:
         cfg = parse_datasource_url("clickhouse://default@localhost/events")
         assert cfg.connection_params["port"] == 8123
 
+    def test_postgres_full(self):
+        cfg = parse_datasource_url("postgres://trove:secret@pg:5432/trove")
+        assert cfg.type == "postgres"
+        assert cfg.connection_params == {
+            "host": "pg",
+            "port": 5432,
+            "user": "trove",
+            "password": "secret",
+            "database": "trove",
+        }
+        # postgres 业务库默认向量后端 = pgvector(同实例)
+        assert cfg.vector_backend == "pgvector"
+
+    def test_postgres_default_port(self):
+        cfg = parse_datasource_url("postgres://trove@pg/trove")
+        assert cfg.connection_params["port"] == 5432
+
     def test_sqlite_file(self):
         cfg = parse_datasource_url("sqlite:///tmp/data.db")
         assert cfg.type == "sqlite"
         assert cfg.name == "sqlite"
         assert cfg.connection_params == {"path": "/tmp/data.db"}
+        # 非 postgres 业务库 → sqlite 本地向量(覆盖全局 pgvector 默认)
+        assert cfg.vector_backend == "sqlite"
 
     def test_sqlite_memory(self):
         cfg = parse_datasource_url("sqlite://:memory:")

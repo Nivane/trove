@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import struct
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import quote
 
 import aiosqlite
 
@@ -246,14 +247,47 @@ class PgVectorStore:
             await conn.close()
 
 
-def vector_store_for(kb: Any, cfg: Any) -> VectorStore:
-    """按数据源配置构造向量后端(sqlite 默认;pgvector 需 vector_dsn)。
+def _vector_dsn(cfg: Any) -> str:
+    """向量库连接串:显式 vector_dsn 优先;留空时从 postgres 业务库同实例推导。
 
-    pgvector 缺 dsn / 驱动不可用 → 退化为 sqlite 本地向量(降级不报错)。
+    ``postgresql://user:pass@host:port/database`` 由 DatasourceConfig 的
+    connection_params + credentials 拼出(与 postgres 业务适配器同源)。
+    业务库非 postgres 且无显式 dsn → 空(调用方退化为 sqlite 本地向量)。
     """
-    backend = str(getattr(cfg, "vector_backend", "") or "sqlite")
+    explicit = str(getattr(cfg, "vector_dsn", "") or "").strip()
+    if explicit:
+        return explicit
+    if getattr(cfg, "type", "") != "postgres":
+        return ""
+    params = {
+        **(getattr(cfg, "connection_params", None) or {}),
+        **(getattr(cfg, "credentials", None) or {}),
+    }
+    host = str(params.get("host", "127.0.0.1"))
+    port = params.get("port", 5432)
+    user = str(params.get("user", ""))
+    password = str(params.get("password", ""))
+    database = str(params.get("database", ""))
+    auth = ""
+    if user and password:
+        auth = f"{quote(user, safe='')}:{quote(password, safe='')}@"
+    elif user:
+        auth = f"{quote(user, safe='')}@"
+    elif password:
+        auth = f":{quote(password, safe='')}@"
+    return f"postgresql://{auth}{host}:{port}/{database}"
+
+
+def vector_store_for(kb: Any, cfg: Any) -> VectorStore:
+    """按数据源配置构造向量后端(pgvector 默认;非 postgres 业务库退化为 sqlite)。
+
+    - vector_backend=pgvector:用 vector_dsn,未配则从 postgres 业务库同实例
+      推导(默认部署 = 一个 Postgres,业务表 + kb_vectors 共存)。
+    - 缺 dsn(业务库非 postgres)/ 驱动不可用 → 退化为 sqlite 本地向量(降级不报错)。
+    """
+    backend = str(getattr(cfg, "vector_backend", "") or "pgvector")
     if backend == "pgvector":
-        dsn = str(getattr(cfg, "vector_dsn", "") or "").strip()
+        dsn = _vector_dsn(cfg)
         if dsn:
             try:
                 return PgVectorStore(dsn)

@@ -89,16 +89,19 @@ def _retrieval_backend(body: dict) -> str:
     return rb
 
 
-def _vector_config(body: dict) -> dict:
+def _vector_config(body: dict, ds_type: str = "") -> dict:
     """解析并校验检索/向量配置:返回可应用的字段字典。
 
     - rag 要求 embedding_model(稠密通道依赖 LLM 凭证);
-    - vector_backend 仅 sqlite/pgvector;pgvector 要求 vector_dsn。
+    - vector_backend 仅 sqlite/pgvector;默认按业务库类型:postgres → pgvector
+      (同实例,dsn 运行时推导),其它 → sqlite;
+    - pgvector 在非 postgres 业务库上必须显式给 vector_dsn。
     """
     rb = _retrieval_backend(body)
     emb = (body.get("embedding_model") or "").strip()
-    vb = (body.get("vector_backend") or "sqlite").strip()
+    vb_raw = (body.get("vector_backend") or "").strip()
     vdsn = (body.get("vector_dsn") or "").strip()
+    vb = vb_raw or ("pgvector" if ds_type == "postgres" else "sqlite")
     if rb == "rag" and not emb:
         raise HTTPException(
             status_code=400,
@@ -110,10 +113,11 @@ def _vector_config(body: dict) -> dict:
             status_code=400,
             detail=f"unsupported vector_backend: {vb} (allowed: sqlite, pgvector)",
         )
-    if vb == "pgvector" and not vdsn:
+    if vb == "pgvector" and not vdsn and ds_type != "postgres":
         raise HTTPException(
             status_code=400,
-            detail="vector_backend 'pgvector' requires vector_dsn (dedicated vector database)",
+            detail="vector_backend 'pgvector' requires vector_dsn "
+                   "(dedicated vector database, or use a postgres business datasource)",
         )
     return {
         "retrieval_backend": rb,
@@ -392,7 +396,7 @@ async def create_datasource(request: Request, body: dict,
             cfg = registry.ensure_identity(cfg)
         except DatasourceError as e:
             raise HTTPException(status_code=400, detail=str(e))
-    cfg = dataclasses.replace(cfg, **_vector_config(body))
+    cfg = dataclasses.replace(cfg, **_vector_config(body, cfg.type))
 
     # 冲突先行：同名不同身份 → 409，绝不静默覆盖（连接探测前就拒绝）。
     existing = _existing_identities(request)
@@ -534,7 +538,7 @@ async def update_datasource(name: str, body: dict, request: Request,
         new_cfg = parse_datasource_url(url)
         new_cfg = dataclasses.replace(
             new_cfg, name=cfg.name, default=cfg.default, ds_id=cfg.ds_id,
-            **_vector_config(body),
+            **_vector_config(body, new_cfg.type),
         )
         new_cfg = registry.ensure_identity(new_cfg)
     except DatasourceError as e:

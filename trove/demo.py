@@ -229,12 +229,19 @@ def _literal(value) -> str:
 async def _insert(adapter, table: str, columns: list[str], rows: list[tuple]) -> None:
     """Insert sample rows into a table (values inlined — the adapter's
     execute() takes a single SQL string with no bind parameters)."""
+    dialect = adapter.dialect()
     col_sql = ", ".join(f'"{c}"' for c in columns)
+    if dialect == "postgres":
+        # Postgres 无 INSERT OR REPLACE;数据是新鲜子集,冲突即跳过
+        # (create_demo_database 幂等重建时避免重复行)。
+        clause = f"INSERT INTO {table} ({col_sql}) VALUES"
+        suffix = " ON CONFLICT DO NOTHING"
+    else:
+        clause = f"INSERT OR REPLACE INTO {table} ({col_sql}) VALUES"
+        suffix = ""
     for row in rows:
         values = ", ".join(_literal(v) for v in row)
-        await adapter.execute(
-            f"INSERT OR REPLACE INTO {table} ({col_sql}) VALUES ({values})"
-        )
+        await adapter.execute(f"{clause} ({values}){suffix}")
 
 
 async def create_demo_database(adapter) -> None:

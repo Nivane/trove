@@ -2,16 +2,57 @@
 # the SPA and reverse-proxying /v1 → backend). Each container builds
 # and releases independently: `docker compose build frontend` only
 # rebuilds the UI, `docker compose build backend` only the API.
+#
+# 默认业务栈 = PostgreSQL(pgvector 镜像:业务表 + kb_vectors 共存):
+#   - postgres   : 业务库(pgvector 扩展),db-init 一次性灌入 BIRD 金融 schema
+#   - db-init    : 一次性服务,启动时把 demo 数据写入 postgres(幂等)
+#   - backend    : --datasource postgres://... 连接业务库;向量后端默认 pgvector
+#                  (vector_dsn 留空 = 同实例推导)
 services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: trove
+      POSTGRES_PASSWORD: trove
+      POSTGRES_DB: trove
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trove -d trove"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    # 生产不要暴露 5432;本地调试数据库时可取消注释
+    # ports:
+    #   - "5432:5432"
+
+  db-init:
+    build: .
+    image: trove-backend:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # 灌入 BIRD 金融 schema+数据(幂等:IF NOT EXISTS + ON CONFLICT DO NOTHING)。
+    # scripts 未 COPY 进镜像,挂载后由 init 脚本读取。
+    command:
+      ["python", "/app/scripts/init_postgres_demo.py",
+       "postgres://trove:trove@postgres:5432/trove"]
+    volumes:
+      - ./scripts:/app/scripts
+
   backend:
     build: .
     image: trove-backend:local
     ports:
       - "8000:8000" # exposed for local debugging (curl the API directly)
-    # serve 零默认数据源启动：不显式传 --datasource 会裸启动、无数据源可用。
-    # demo = 内置 BIRD 金融 SQLite（演练入口）；生产数据源改由管理端注册
-    # （持久化到 .trove/datasources.yml），或在这里换成 scheme:// URL。
-    command: ["trove", "serve", "--host", "0.0.0.0", "--port", "8000", "--datasource", "demo"]
+    # 默认连 PostgreSQL 业务库(业务表 + pgvector 向量同实例);演示数据由
+    # db-init 负责灌入。换回内置 SQLite demo 可改 --datasource demo。
+    command: ["trove", "serve", "--host", "0.0.0.0", "--port", "8000",
+              "--datasource", "postgres://trove:trove@postgres:5432/trove"]
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
     environment:
       # Dev-only: deterministic bootstrap admin password for the login
       # flow; without this it is random and printed once in the logs.
@@ -47,3 +88,6 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+volumes:
+  pgdata:

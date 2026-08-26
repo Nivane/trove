@@ -98,3 +98,34 @@ class TestDemoDatabase:
         # Clients 2 and 3 live in Prague
         assert result.row_count == 2
         assert {row[0] for row in result.rows} == {2, 3}
+
+
+class _RecordingAdapter:
+    """Records executed SQL; dialect controllable (create_demo_database needs only execute)."""
+
+    def __init__(self, dialect="postgres"):
+        self._dialect = dialect
+        self.sql = []
+
+    def dialect(self):
+        return self._dialect
+
+    async def execute(self, sql):
+        self.sql.append(sql)
+
+
+class TestDemoPostgresDialect:
+    async def test_postgres_inserts_use_on_conflict_not_ors_replace(self):
+        adapter = _RecordingAdapter("postgres")
+        await create_demo_database(adapter)
+        inserts = [s for s in adapter.sql if s.startswith("INSERT")]
+        assert inserts, "expected INSERT statements"
+        assert all("ON CONFLICT DO NOTHING" in s for s in inserts)
+        assert not any("INSERT OR REPLACE" in s for s in adapter.sql)
+
+    async def test_sqlite_inserts_keep_or_replace(self):
+        adapter = _RecordingAdapter("sqlite")
+        await create_demo_database(adapter)
+        inserts = [s for s in adapter.sql if s.startswith("INSERT")]
+        assert inserts
+        assert all(s.startswith("INSERT OR REPLACE") for s in inserts)

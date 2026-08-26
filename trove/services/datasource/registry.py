@@ -17,6 +17,7 @@ from trove.core.logging import get_logger
 from trove.services.datasource.adapters.base import DatabaseAdapter
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 from trove.services.datasource.adapters.mysql import MySQLAdapter
+from trove.services.datasource.adapters.postgres import PostgresAdapter
 from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
 from trove.services.datasource.adapters.duckdb import DuckDBAdapter
 from trove.services.datasource.naming import backfill_ds_id, is_path_safe
@@ -44,9 +45,9 @@ def _sanitize_connection(params: dict[str, Any]) -> dict[str, Any]:
 _ADAPTER_REGISTRY: dict[str, type[DatabaseAdapter]] = {
     "sqlite": SQLiteAdapter,
     "mysql": MySQLAdapter,
+    "postgres": PostgresAdapter,
     "clickhouse": ClickHouseAdapter,
     "duckdb": DuckDBAdapter,
-    # "postgres": PostgresAdapter,
     # "snowflake": SnowflakeAdapter,
 }
 
