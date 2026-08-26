@@ -171,11 +171,11 @@ class TestDecompositionFlow:
         # 图输入:子任务标题 + [tasks] 清单块注入 history + task_context
         states = graph.run_states()
         assert len(states) == 2
-        assert states[0].question == "学生名单"
-        assert states[1].question == "平均成绩"
-        assert "[tasks] 当前任务清单:" in states[1].history
-        assert states[0].task_context == {"index": 1, "total": 2, "remaining": 1}
-        assert states[1].task_context == {"index": 2, "total": 2, "remaining": 0}
+        assert states[0]["question"] == "学生名单"
+        assert states[1]["question"] == "平均成绩"
+        assert "[tasks] 当前任务清单:" in states[1]["history"]
+        assert states[0]["task_context"] == {"index": 1, "total": 2, "remaining": 1}
+        assert states[1]["task_context"] == {"index": 2, "total": 2, "remaining": 0}
 
         # 落库消息带任务元数据
         assert all(m.metadata.get("task_id") for m in session.messages if m.role == "assistant")
@@ -191,11 +191,11 @@ class TestDecompositionFlow:
         states = graph.run_states()
         assert len(states) == 2
         # 任务2 history 注入任务1 的 [previous results] 结果包
-        assert "[previous results]" in states[1].history
-        assert "学生名单" in states[1].history
-        assert "SELECT name FROM students;" in states[1].history
+        assert "[previous results]" in states[1]["history"]
+        assert "学生名单" in states[1]["history"]
+        assert "SELECT name FROM students;" in states[1]["history"]
         # matched_tables 锚点继承
-        assert states[1].matched_tables == ["students"]
+        assert states[1]["matched_tables"] == ["students"]
         # 任务1 落库 context 包(供后续步骤/跨轮复用)
         final = await h.manager.get_tasks(session)
         ctx = final[0]["metadata"]["context"]
@@ -254,7 +254,7 @@ class TestDecompositionFlow:
         dones = h.done_events(events)
         assert len(dones) == 3  # 两个逐任务 + 收尾 batched
         assert dones[-1]["summary"]["batched"] is True
-        assert [s.question for s in graph.run_states()] == ["任务A", "任务B"]
+        assert [s["question"] for s in graph.run_states()] == ["任务A", "任务B"]
 
     async def test_judge_disabled_keeps_zero_llm(self, tmp_home):
         """decompose_llm_judge=false → 疑似多步也零 LLM,纯正则门控。"""

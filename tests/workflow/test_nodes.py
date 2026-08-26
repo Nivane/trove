@@ -2623,6 +2623,22 @@ class TestPlanValidation:
         assert answer_columns_mismatch({"answer_columns": []}, ["a"]) == []
         assert answer_columns_mismatch({"answer_columns": ["COUNT(*)"]}, ["a"]) == []
 
+    def test_answer_columns_mismatch_time_grain_expression_passes(self):
+        """时间粒度分桶列(loan.date → DATE_FORMAT(loan.date,'%Y'))不算冲突。"""
+        from trove.workflow.nodes.planner import answer_columns_mismatch
+        plan = {"answer_columns": ["loan.date", "count(loan.loan_id)"]}
+        assert answer_columns_mismatch(
+            plan, ["DATE_FORMAT(loan.date, '%Y')", "COUNT(loan.loan_id)"],
+        ) == []
+        # 未限定列名:词边界匹配表达式内的列尾缀
+        plan2 = {"answer_columns": ["date"]}
+        assert answer_columns_mismatch(
+            plan2, ["DATE_FORMAT(loan.date, '%Y')"],
+        ) == []
+        # 尾缀误吞防护:date 不应匹配 update_date
+        plan3 = {"answer_columns": ["date"]}
+        assert answer_columns_mismatch(plan3, ["update_date"]) != []
+
     @staticmethod
     def _connectors():
         """带 loan/account 两表的 connectors mock(触发落地校验)。"""

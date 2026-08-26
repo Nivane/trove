@@ -637,11 +637,20 @@ class KbService:
             logger.info("KB migrated %s → %s/", yml.name, target)
 
     async def _ensure_mirror_schema(self, db: aiosqlite.Connection) -> None:
-        """Create mirror tables; rebuild if the schema predates the datasource column."""
+        """Create mirror tables; rebuild if the schema predates a feature.
+
+        Rebuild triggers: missing ``datasource`` column (pre-multi-datasource)
+        or missing ``kb_fts`` virtual table (pre-FTS mirrors). Old mirrors that
+        already carry the datasource column but predate kb_fts would otherwise
+        keep a broken write path (INSERT INTO kb_fts → no such table).
+        """
         cursor = await db.execute("PRAGMA table_info(kb_items)")
         columns = {row[1] for row in await cursor.fetchall()}
-        if columns and "datasource" not in columns:
-            logger.info("Rebuilding KB mirror (missing datasource column)")
+        fts_cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_fts'")
+        has_fts = (await fts_cursor.fetchone()) is not None
+        if columns and (("datasource" not in columns) or not has_fts):
+            logger.info("Rebuilding KB mirror (missing datasource column / kb_fts)")
             await db.execute("DROP TABLE kb_items")
             await db.execute("DROP TABLE IF EXISTS kb_sync")
             await db.execute("DROP TABLE IF EXISTS kb_fts")

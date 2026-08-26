@@ -395,8 +395,19 @@ def _qualified(tbl: str, expr: str, force_qualify: bool = True) -> str:
     return f"{tbl}.{ex}"
 
 
+_ALREADY_LITERAL_RE = re.compile(
+    r"^\s*(?:'[^']*'|\"[^\"]*\"|[+-]?\d+(?:\.\d+)?|\([^)]*\)|NULL|TRUE|FALSE|true|false)\s*$",
+    re.I,
+)
+
+
 def _literal(value: Any) -> str:
-    """WHERE 值字面量:字符串加单引号并转义,数值原样。"""
+    """WHERE 值字面量:字符串加单引号并转义,数值原样。
+
+    plan 的 condition value 可能已带引号(``'C'``)、是值列表(``('C', 'D')``)
+    或数字——此时原样透传,避免二次加引号(``'('C', 'D')'`` 会把 IN 列表
+    变成字符串字面量,SQL 语义错误)。
+    """
     if value is None:
         return "NULL"
     if isinstance(value, bool):
@@ -404,6 +415,8 @@ def _literal(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     s = str(value)
+    if _ALREADY_LITERAL_RE.match(s):
+        return s
     return "'" + s.replace("'", "''") + "'"
 
 
@@ -839,18 +852,27 @@ class SemanticCompiler:
             # 无可编译成分(简单问题由 fast_match/普通通道覆盖)
             return CompileMiss("nothing_compilable", "")
 
-        # FROM:anchor 表 = 首个解析度量锚定表(须在 matched),否则 matched[0];
-        # BFS 从此表起,树序 JOIN 恒为合法左深序列
-        anchor = matched[0]
+        # FROM/join:以 **plan 声明的 tables** 为准(LLM 落地校验过的权威表
+        # 集),而不是 schema_linking 的 matched 超集——matched 可能被通用
+        # 字段名(order.amount 的 amount)或无关数据集污染,导致 join 路径
+        # 二义误拒绝。plan tables 过滤到已声明数据集;为空则回退 matched
+        # (旧行为,保持兼容)。BFS 从锚表起,树序 JOIN 恒为合法左深序列。
+        declared_datasets = {d.name for d in self._model.datasets}
+        join_tables = [
+            str(t) for t in (plan.get("tables") or [])
+            if str(t) in declared_datasets
+        ]
+        if not join_tables:
+            join_tables = [t for t in matched if t in declared_datasets] or list(matched)
+        join_set = set(join_tables)
+        anchor = join_tables[0]
         for _cand, m in matched_pairs:
-            if m.datasets:
+            if m.datasets and m.datasets[0] in join_set:
                 anchor = m.datasets[0]
                 break
-        if anchor not in matched_set:
-            anchor = matched[0]
 
         resolution = JoinResolver(self._model).resolve(
-            list(matched), root=anchor)
+            list(join_tables), root=anchor)
         if resolution.fan_out:
             # P5.2:M:N 边在联路径上 → 编译期拒(行倍增),严格 MISS 回 LLM
             return CompileMiss("fan_out", ", ".join(matched))

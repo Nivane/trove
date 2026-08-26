@@ -375,6 +375,32 @@ def _distinct_expr_from_entities(
     return None
 
 
+def _answer_ref_in_results(ref: str, lower_result: set[str],
+                           result_lower: list[str]) -> bool:
+    """answer 列引用是否出现在结果列中。
+
+    先做精确匹配(整列 / 去表限定尾缀);再识别**表达式投影**——时间分桶
+    等把 ``loan.date`` 渲染成 ``DATE_FORMAT(loan.date, '%Y')`` 时,完整
+    表限定引用会以子串形式出现在结果列里。未限定列名则按词边界匹配
+    尾缀,避免 ``update_date`` 误吞 ``date``。其余情形维持旧精确语义。
+    """
+    rl = ref.lower()
+    if rl in lower_result:
+        return True
+    tail = rl.split(".", 1)[-1]
+    if tail in lower_result:
+        return True
+    qualified = "." in rl
+    for c in result_lower:
+        # 完整表限定引用(loan.date)以子串出现在结果列表达式里 →
+        # 时间分桶等变换;未限定列名只做词边界尾缀匹配,防 date ⊂ update_date。
+        if qualified and rl in c:
+            return True
+        if "." not in rl and re.search(rf"\b{re.escape(tail)}\b", c):
+            return True
+    return False
+
+
 def answer_columns_mismatch(
     plan_json: dict[str, Any] | None, result_columns: list[str],
 ) -> list[str]:
@@ -394,10 +420,10 @@ def answer_columns_mismatch(
     if not refs:
         return []
     lower_result = {str(c).lower() for c in result_columns}
+    result_lower = [str(c).lower() for c in result_columns]
     missing = [
         r for r in refs
-        if r.lower() not in lower_result
-        and r.split(".", 1)[-1].lower() not in lower_result
+        if not _answer_ref_in_results(r, lower_result, result_lower)
     ]
     if len(missing) < len(refs):
         return []
@@ -729,6 +755,17 @@ def make_planner(
         if state.error:
             return {}
 
+        # 方言从活跃数据源 adapter 解析(与 gen_sql 同款):state.dialect
+        # 默认为 "sqlite",fast_match 未命中时不会回写,planner 直接用默认
+        # 方言会把 MySQL 等库编译成 sqlite 语法(strftime 等)导致执行失败。
+        dialect = state.dialect
+        if connectors:
+            try:
+                adapter = await connectors.get(state.datasource or None)
+                dialect = adapter.dialect()
+            except Exception:
+                pass
+
         # 回退重跑：携带上一次失败与诊断，重定计划而不是重写原计划
         base_correction = " ".join(
             p for p in (state.error_feedback, state.error_analysis, state.reason) if p
@@ -848,6 +885,7 @@ def make_planner(
                 "plan": plan,
                 "plan_json": plan_json,
                 "plan_validation": {"status": "ok"},
+                "dialect": dialect,
             }
             # 受限选择编译:覆盖内问题编译器拼出权威 SQL 并注入 plan,
             # gen_sql 遵从(确定性通道);MISS → 拒绝(语义优先唯一通道)。
@@ -856,7 +894,7 @@ def make_planner(
             plan_query = parse_plan_query(plan_json)
             compiled, miss = _compile_semantic(
                 plan_query if plan_query is not None else plan_json,
-                state.matched_tables, semantic_layer, state.dialect,
+                state.matched_tables, semantic_layer, dialect,
             )
             # 编译决策观测:恒写(命中/MISS/短路),eval hit-rate 归因闭环。
             compile_meta = {

@@ -218,7 +218,7 @@ class TestConversationHistory:
         class StubGraph:
             async def ainvoke(self, state, config=None):
                 captured.append(state)
-                return {**state.model_dump(), "final_response": "answer"}
+                return {**(state if isinstance(state, dict) else state.model_dump()), "final_response": "answer"}
 
         manager = SessionManager(
             config=AgentConfig(home=str(tmp_home)),
@@ -231,10 +231,10 @@ class TestConversationHistory:
         await manager.ask(session=session, question="第一问")
         await manager.ask(session=session, question="第二问")
 
-        assert captured[0].history == ""  # 第一轮无历史
-        assert "第一问" in captured[1].history
-        assert "answer" in captured[1].history  # 含上一轮答案
-        assert "第二问" not in captured[1].history  # 当前问题不混入历史
+        assert captured[0]["history"] == ""  # 第一轮无历史
+        assert "第一问" in captured[1]["history"]
+        assert "answer" in captured[1]["history"]  # 含上一轮答案
+        assert "第二问" not in captured[1]["history"]  # 当前问题不混入历史
 
 
 class TestStructuredSteps:
@@ -479,7 +479,7 @@ class TestHistorySummaryFusion:
         class StubGraph:
             async def ainvoke(self, state, config=None):
                 captured.append(state)
-                return {**state.model_dump(), "final_response": "answer"}
+                return {**(state if isinstance(state, dict) else state.model_dump()), "final_response": "answer"}
 
         manager = SessionManager(
             config=AgentConfig(home=str(tmp_home)),
@@ -503,7 +503,7 @@ class TestHistorySummaryFusion:
         ]
         await manager.ask(session=session, question="新问题")
 
-        history = captured[0].history
+        history = captured[0]["history"]
         assert "早期摘要" in history
         assert "旧答案4" in history          # 最近轮保留原文
         assert "旧答案3" in history          # 近 4 轮都在原文窗口内(分层)
@@ -521,7 +521,7 @@ class TestHistorySummaryFusion:
         class StubGraph:
             async def ainvoke(self, state, config=None):
                 captured.append(state)
-                return {**state.model_dump(), "final_response": "answer"}
+                return {**(state if isinstance(state, dict) else state.model_dump()), "final_response": "answer"}
 
         manager = SessionManager(
             config=AgentConfig(home=str(tmp_home)),
@@ -535,7 +535,7 @@ class TestHistorySummaryFusion:
             Message(role="assistant", content="旧答案1"),
         ]
         await manager.ask(session=session, question="新问题")
-        assert "旧问题1" in captured[0].history  # 无摘要 → 保留全部轮次
+        assert "旧问题1" in captured[0]["history"]  # 无摘要 → 保留全部轮次
 
 
 class TestLessonCapture:
@@ -552,7 +552,7 @@ class TestLessonCapture:
             async def ainvoke(self, state, config=None):
                 captured.append(state)
                 return {
-                    **state.model_dump(),
+                    **(state if isinstance(state, dict) else state.model_dump()),
                     "sql": "SELECT * FROM loan",
                     "error": "",
                     "correction_history": ["no such table: loans"],
@@ -590,7 +590,7 @@ class TestTracingCallbacks:
         class StubGraph:
             async def ainvoke(self, state, config=None):
                 captured.append(config)
-                return {**state.model_dump(), "final_response": "answer"}
+                return {**(state if isinstance(state, dict) else state.model_dump()), "final_response": "answer"}
 
         handler = object()
         manager = SessionManager(
@@ -715,7 +715,7 @@ class TestAutoCompact:
         class StubGraph:
             async def ainvoke(self, state, config=None):
                 captured.append(state)
-                return {**state.model_dump(), "final_response": "answer"}
+                return {**(state if isinstance(state, dict) else state.model_dump()), "final_response": "answer"}
 
         manager = await self._manager(tmp_home, StubGraph())
         session = await manager.start_session(project_cwd="/tmp/p")
@@ -723,7 +723,7 @@ class TestAutoCompact:
         session.messages = [Message(role="user", content="word " * 12000) for _ in range(10)]
         await manager.ask(session=session, question="新问题")
 
-        assert "SUMMARY" in captured[0].history  # 自动压缩摘要进入历史
+        assert "SUMMARY" in captured[0]["history"]  # 自动压缩摘要进入历史
         assert session.summary == "SUMMARY"
         assert session.messages[0].role == "system"  # 摘要消息已持久化
 
@@ -733,14 +733,14 @@ class TestAutoCompact:
         class StubGraph:
             async def ainvoke(self, state, config=None):
                 captured.append(state)
-                return {**state.model_dump(), "final_response": "answer"}
+                return {**(state if isinstance(state, dict) else state.model_dump()), "final_response": "answer"}
 
         manager = await self._manager(tmp_home, StubGraph())
         session = await manager.start_session(project_cwd="/tmp/p")
         session.messages = [Message(role="user", content="short")]
         await manager.ask(session=session, question="新问题")
 
-        assert "SUMMARY" not in captured[0].history
+        assert "SUMMARY" not in captured[0]["history"]
         assert session.summary is None
 
     async def test_ask_stream_auto_compacts_over_limit(self, tmp_home):
@@ -759,7 +759,7 @@ class TestAutoCompact:
         async for event in manager.ask_stream(session=session, question="新问题"):
             events.append(event)
 
-        assert "SUMMARY" in captured[0].history
+        assert "SUMMARY" in captured[0]["history"]
         assert session.summary == "SUMMARY"
 
 
@@ -948,7 +948,7 @@ class TestResultCache:
         class HitlGraph:
             async def ainvoke(self, state, config=None):
                 invoked.append(state.question)  # 命中时绝不应被调
-                return {**state.model_dump(), "sql": "SELECT 1", "row_count": 1,
+                return {**(state if isinstance(state, dict) else state.model_dump()), "sql": "SELECT 1", "row_count": 1,
                         "verdict": "OK", "final_response": "answer",
                         "__interrupt__": [type("I", (), {"value": {"kind": "confirm_sql"}})()]}
 
@@ -1032,3 +1032,106 @@ class TestDatasourceThreading:
         )
         assert key[0] == session.session_id
         assert key[1] == "financial"
+
+
+class TestCrossTurnStateReset:
+    """回归:同会话跨轮不得残留上一轮的 refusal/no_model(带 checkpointer)。
+
+    旧 bug:SessionManager 以 pydantic WorkflowState 作为图输入时,None 默认
+    值不覆盖旧 checkpoint 通道,导致上一轮 refusal 跨轮残留——第二轮语义
+    匹配成功仍被短路到 refuse。修复:传全量 state dict。
+    """
+
+    async def test_no_refusal_leak_between_turns(self, tmp_home):
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.services.kb.service import TermHit
+
+        class LLM:
+            async def chat(self, model, messages, **kw):
+                return "query"
+
+            async def chat_full(self, model, messages, tools=None, **kw):
+                return {"content": "query", "tool_calls": []}
+
+        class FakeDataset:
+            name = "loan"
+            source = "loan"
+            fields = []
+            synonyms = []
+            description = "loan table"
+            primary_key = []
+
+        class FakeMetric:
+            name = "average_loan_count_per_year"
+            expression = "AVG(COUNT(loan.loan_id))"
+            synonyms = ["每年平均贷款数量"]
+            datasets = ["loan"]
+            definition = ""
+            metric_type = ""
+            filter = ""
+            agg_time_dimension = ""
+            non_additive = False
+
+        class FakeModel:
+            name = "financial"
+            datasets = [FakeDataset()]
+            metrics = [FakeMetric()]
+            relationships = []
+            instructions = ""
+            description = ""
+
+        class ToggleLayer:
+            def __init__(self):
+                self.model_val = None
+
+            enabled = True
+
+            def model(self):
+                return self.model_val
+
+            def terms_for(self, question, tables=None, all_tables=None):
+                if self.model_val is None:
+                    return []
+                return [TermHit(
+                    term="average_loan_count_per_year",
+                    aliases=["每年平均贷款数量"],
+                    mapping=self.model_val.metrics[0].expression,
+                    tables=["loan"],
+                )]
+
+            def field_hits(self, *a, **k):
+                return []
+
+        layer = ToggleLayer()
+        services = GraphServices(
+            llm=LLM(), catalog=None, connectors=None,
+            config=AgentConfig(home=str(tmp_home)), kb=None,
+            semantic_layer=layer, user_facts=None, lineage=None,
+        )
+        graphs = build_graphs(services, checkpointer=MemorySaver())
+
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=graphs,
+            llm_gateway=None,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+
+        layer.model_val = None
+        final1 = await manager.ask(session=session, question="zzz-uncovered", datasource="financial")
+        assert final1.no_model is True
+        assert final1.refusal is not None
+
+        layer.model_val = FakeModel()
+        final2 = await manager.ask(session=session, question="每年平均贷款数量", datasource="financial")
+        assert final2.no_model is False
+        assert final2.refusal is None, (
+            f"turn2 不应携带上轮 refusal: {final2.refusal}"
+        )
+        assert "loan" in final2.matched_tables

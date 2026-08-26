@@ -321,7 +321,11 @@ class SessionManager:
 
         config = dict(self._thread_config(session))
         config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
-        result = await graph.ainvoke(state, config)
+        # 传完整 state dict 而非 pydantic 实例:带 checkpointer 的图上,
+        # pydantic 输入的 None 默认值不会覆盖前一轮 checkpoint 残留(如旧
+        # refusal),导致同会话下一问被错误短路到 refuse。dict 全量写入所有
+        # 通道(含 refusal=None),保证每问都是干净起点。
+        result = await graph.ainvoke(state.model_dump(), config)
 
         if self._is_interrupted(result):
             # HITL 门:图在执行前暂停,返回确认请求。调用方展示后
@@ -672,8 +676,10 @@ class SessionManager:
 
             async def _produce() -> None:
                 try:
+                    # 全量 state dict(见 ask 处注释):pydantic 输入的 None
+                    # 默认不覆盖旧 checkpoint 通道,会跨轮残留 refusal。
                     async for update in graph.astream(
-                        state, config, stream_mode="updates",
+                        state.model_dump(), config, stream_mode="updates",
                     ):
                         stream_events.put_nowait(("update", update))
                     stream_events.put_nowait(("end", None))
