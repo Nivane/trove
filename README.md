@@ -7,6 +7,8 @@ It answers, and learns with every question.
 
 它边用边学——每次问答与修正沉淀为该数据源的专属知识（注释、术语、参考 SQL、规则、经验），越用越准。**语义优先（接入即建模、建模即保障）**：语义模型（`semantics.yml`）是唯一可答边界——未覆盖查询 = 拒绝 + 反问扩展模型（LLM 草拟 draft → 管理端确认 → 重答），无语义模型的数据源整体拒绝并提示先 `/kb init`。
 
+**记忆分三层**：会话内短期记忆（最近 N 轮原文 + 早期摘要的分层历史）、数据源级长期记忆（`semantics.yml` / 示例 / 规则 / 经验教训）、用户级个性化记忆（`/facts`，偏好与口径按用户+数据源注入生成）。检索从确定性词法锚定可升级为 hybrid（FTS5+BM25 稀疏）或 RAG（稀疏 + 稠密 embedding RRF）后端。
+
 ## 功能特性
 
 - **LangGraph 流水线**（`reflection` 工作流，全链路）：
@@ -19,22 +21,29 @@ It answers, and learns with every question.
   - **精确结果缓存**：同会话内归一化后完全相同的问句直接返回上次已验证的 SQL + 结果（0 LLM 调用），TTL 300s、按数据源隔离；命中跳过 HITL 确认（该 SQL 首轮已人工确认过）
   - **复杂度分档与确定性快径**：`grade_complexity` 分 simple / standard / complex 三档——档位化 token 预算 + 分档选模（simple/standard → `model_fast`，complex → `target`）+ 确定性模板快径（单表/单聚合模板命中即直接产出 SQL，跳过 planner/生成/裁决）+ `reflect_skip`（validate 确定性规则全过即跳过 reflect 的 LLM 裁决）
   - 三个工作流：`reflection`（默认，带自校正）/ `fixed`（快速直通）/ `empty`（调试透传）
-- **确定性时间解析**（parse_date）：相对时间表达（"最近7天" / "last week"）解析为绝对范围，未命中静默透传
-- **上下文预算**：gen prompt 的可选块（示例/规则/术语/经验/计划/历史）按优先级装入 token 预算（simple 瘦身 / complex 放开，默认 2500），实际装载量进入可观测
+- **确定性时间解析**（parse_date）：相对时间表达（"最近7天" / "last week"）解析为绝对范围，未命中静默透传；解析产物确定性注入 planner 的时间过滤条件（仅当声明模型中存在唯一时间维度，不猜测）
+- **上下文预算**：gen prompt 的可选块（示例/规则/术语/经验/计划/历史/用户事实）按优先级装入 token 预算（simple 瘦身 / complex 放开，默认 2500），实际装载量进入可观测
 - **优雅降级**：SQL 生成/执行失败时输出可读的错误说明，不中断会话
 - **流式输出**：REPL 实时显示 thought / SQL / 结果 / 答案；Ctrl+C 可取消运行中的查询
-- **双轨持久化**：会话消息（`~/.trove/sessions/`）+ 图状态检查点（`~/.trove/checkpoints.db`，支持时间旅行）
+- **双轨持久化**：会话消息（`~/.trove/sessions/`）+ 图状态检查点（`~/.trove/checkpoints.db`，支持时间旅行）；会话历史分层注入（最近轮原文 + 早期压缩摘要）
 - **本地轨迹**：每次运行记录 span 树轨迹（节点耗时、每次 LLM 调用输入输出、工具调用）到 `~/.trove/traces.jsonl`，`/trace` 回放完整推理链路，零外部依赖；每次问答附 token 用量与耗时统计
 - **可演化知识库**（按数据源隔离，`.trove/kb/<datasource>/`）：
   - `schema_notes.yml` — 表/列注释、指标口径（`/kb init` 生成）
-  - `semantics.yml` — 业务术语 → 物理映射（中文问题匹配、口径统一）
+  - `semantics.yml` — OSSIE `semantic_model`：数据集/字段/关系/指标（含派生与比率指标、时间分桶 time_grain），中文问题匹配、口径统一
   - `examples.yml` — 参考 SQL + 模板（few-shot 注入 gen_sql）
   - `rules.yml` — 数据源规则（注入生成提示词）
-  - `lessons.yml` — Hint Bank 经验库：从修正闭环与评测失败提炼的教训，按模式匹配注入，pending/confirmed 两级
-  - 检索以 schema linking 的 `matched_tables` 为锚做确定性过滤，KB 精确命中短路
+  - `lessons.yml` — Hint Bank 经验库：从修正闭环与评测失败提炼的教训，按语义相关检索注入，pending/confirmed 两级；**教训卫生**：近义去重（embedding 判定）防膨胀 + 投票加权（up/down）+ 时效衰减
+  - 检索以 schema linking 的 `matched_tables` 为锚做确定性硬门（零命中不返回），门内按数据源**检索后端**排序：
+    - `builtin`（默认）：确定性词法分 + 本地哈希 n-gram embedding 覆盖率重排（零依赖零网络，中英/同义改写受益）
+    - `hybrid`：FTS5 倒排 + BM25 稀疏通道
+    - `rag`：稀疏（FTS5/BM25）+ 稠密（embedding 余弦）双通道 RRF 融合（稠密缺失时自动退化为纯稀疏）
+  - KB 精确命中（词重叠 ≥0.95）短路，直接采用标准 SQL
   - `/kb learn` 半自动演化：LLM 起草 → 人工确认 → 入库
+- **语义编译**（`trove/services/semantic_layer/`）：planner 输出经 **typed plan AST**（`PlanQuery`）在解析/编译边界强类型化——多度量/派生度量（递归内联，环/深度守卫）、时间分桶（四方言 `date_trunc` 等价物）、metric 级 HAVING / 宽排序处理；**保守化守卫**：任何语义组件无法解析到声明模型即整体 MISS（MISS 分因透出），基数声明与 FK 命名在建模期 lint（`/kb lint`）
+- **用户级记忆**（`user_facts`，Mem0 式）：按 `(用户, 数据源)` 作用域的偏好/口径事实，CRUD + 与问句的相关度排序，注入 gen_sql 个性化上下文块（REPL `/facts`，管理端 `trove admin facts`）
 - **多语言**：`language: en / zh` 统一交互语言——提示词、答案、轨迹全程使用所选语言（不按问题语言自动检测）
 - **多模型**：litellm 网关，支持任意兼容 provider（OpenAI / DeepSeek / Anthropic / …），可配 `api_base` 接非官方端点；已适配推理模型（reasoning 输出占用 token 预算的处理）
+- **MCP 服务**：`trove mcp` 以 stdio transport 启动 MCP server，把 NL→SQL 能力暴露为工具（`ask_data` / `list_datasources` / `kb_status`），供 Claude Code 等 MCP 客户端本地挂载；多轮会话用 `session_id` 复用
 
 ## 快速开始
 
@@ -55,9 +64,19 @@ REPL 命令：
 |---|---|
 | 会话 | `/help` `/exit` `/clear` `/compact`（压缩历史）`/tasks`（任务清单，别名 `/todo`） |
 | 元数据 | `/tables` `/schemas` `/table_schema <表>` `/databases` `/kb …` `/trace` |
-| 系统 | `/model [模型]` `/datasource [名]` `/init` |
+| 系统 | `/model [模型]` `/datasource [名]` `/init` `/facts`（用户记忆：list / add <文本> / del <id>） |
 
 CLI 参数：`--datasource/-d`（demo 或 `scheme://` URL）· `--config/-f` · `--model/-m` · `--print/-p`（JSON 输出）· `--workflow/-w`（reflection/fixed/empty）· `--version/-v`
+
+## MCP 服务
+
+`trove mcp` 以 stdio transport 启动 MCP server，把 Trove 的 NL→SQL 能力暴露为工具，供 Claude Code / 其他 MCP 客户端本地挂载：
+
+```bash
+uv run trove mcp
+```
+
+工具面：`ask_data`（自然语言提问 → 答案/SQL/行数/verdict/拒绝信息，多轮用 `session_id` 复用）· `list_datasources`（已连接且 KB 已初始化的数据源）· `kb_status`（连接 / KB 初始化 / 语义模型状态）。语义优先天然生效：无语义模型的数据源 `ask_data` 明确拒绝并提示 `/kb init`；未覆盖查询 → 拒绝 + 扩展草稿。
 
 ## Web UI（前后端分离）
 
@@ -102,11 +121,13 @@ docker compose down              # 停止并移除容器
 `serve` **默认零数据源启动**（不注册任何源），数据源与 KB 由管理端全生命周期管理，持久化到 `.trove/datasources.yml` + `.trove/kb/`（重启自动恢复）：
 
 1. admin 登录 → 管理端「数据源」注册（内置 demo 或 `scheme://` URL，注册即连接探测，失败 400 报原因）
-2. 注册后 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）
+2. 注册后 `kb/init`（LLM 起草 schema 注释 + 确定性 terms/templates；无 LLM 凭证时按配置走纯骨架或报凭证错误）——**异步执行**：立即返回 task_id，前端轮询 `GET .../kb/init/status` 拿进度
 3. 用户端下拉/列表仅显示「已连接且 KB 已初始化」的数据源；非 admin 用户还需管理端 grants 授权
-4. `/kb learn` 半自动演化与 REPL 相同；`kb/reload` 使编辑立即生效
+4. `/kb learn` 半自动演化与 REPL 相同；`kb/reload` 使编辑立即生效（同样异步 + 状态轮询，与 init 共用任务注册表，同源互斥）
 
-管理端点：`GET/POST/DELETE /v1/admin/datasources[/{name}]`、`POST /v1/admin/datasources/{name}/reconnect|kb/init|kb/reload`、`GET /v1/admin/users/{user_id}/datasources`（grants）。
+管理端点：`GET/POST/DELETE /v1/admin/datasources[/{name}]`、`POST /v1/admin/datasources/{name}/reconnect|kb/init|kb/reload`、`GET .../kb/init/status`、`GET .../kb/reload/status`、`GET /v1/admin/users/{user_id}/datasources`（grants）。
+
+每个数据源可配置**检索后端**（`retrieval_backend: builtin | hybrid | rag`，写 `datasources.yml` 即生效）：`rag` 额外可配 `embedding_model`（经 LLM 网关的稠密通道，空则退化为纯稀疏）与 `vector_backend`/`vector_dsn`（`sqlite` 本地向量默认零配置，或 `pgvector` 独立向量库）。
 
 ## 配置
 
@@ -247,7 +268,7 @@ uv run python scripts/eval_bird.py --db-id financial \
   [--limit 10] [--verbose]
 ```
 
-辅助脚本：`import_golden_examples.py`（gold SQL 导入 examples.yml）· `import_bird_descriptions.py`（官方 CSV 描述导入 schema_notes.yml）· `probe_enums.py`（枚举探测独立运行）· `import_sqlite_to_mysql.py`（demo 数据入库 MySQL）。
+辅助脚本：`import_golden_examples.py`（gold SQL 导入 examples.yml）· `import_bird_descriptions.py`（官方 CSV 描述导入 schema_notes.yml）· `probe_enums.py`（枚举探测独立运行）· `import_sqlite_to_mysql.py`（demo 数据入库 MySQL）· `eval_compile_stats.py`（编译命中率聚合，`--semantic-layer` 接线语义编译路径的 hit-rate 统计）。
 
 ## 开发
 
