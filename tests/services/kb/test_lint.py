@@ -236,6 +236,102 @@ class TestLintSemantics:
         issues = lint_semantics(model)
         assert any("但 relationships 未声明这对关系" in i for i in issues)
 
+    def test_metric_filter_undeclared_column_flagged(self):
+        model = {
+            "datasets": [{"name": "loan", "fields": [{"name": "loan_id"}, {"name": "status"}]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "active_count", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "filter": "ghost_col = 'A'"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("filter 引用不在其数据集中的列 ghost_col" in i for i in issues)
+
+    def test_metric_filter_unparseable_flagged(self):
+        model = {
+            "datasets": [{"name": "loan", "fields": [{"name": "status"}]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "c", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "filter": "status = = "},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("filter 无法解析" in i for i in issues)
+
+    def test_agg_time_dimension_not_temporal_flagged(self):
+        model = {
+            "datasets": [{"name": "loan", "fields": [
+                {"name": "loan_id"}, {"name": "status", "semantic_role": "dimension"},
+            ]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "c", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "agg_time_dimension": "loan.status"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("agg_time_dimension loan.status 不是时间字段" in i for i in issues)
+
+    def test_agg_time_dimension_undeclared_flagged(self):
+        model = {
+            "datasets": [{"name": "loan", "fields": [{"name": "loan_id"}]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "c", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "agg_time_dimension": "loan.nope"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("agg_time_dimension 引用不存在的列 loan.nope" in i for i in issues)
+
+    def test_many_to_many_flagged(self):
+        model = {
+            "datasets": [{"name": "a"}, {"name": "b"}],
+            "relationships": [{"name": "a_to_b", "from": "a", "to": "b",
+                               "cardinality": "M:N"}],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("M:N" in i and "fan-out" in i for i in issues)
+
+    def test_path_ambiguity_flagged(self):
+        """菱形关系图(loan-account, loan-client, client-account)→ 二义警告。"""
+        model = {
+            "datasets": [{"name": "loan"}, {"name": "account"}, {"name": "client"}],
+            "relationships": [
+                {"name": "loan_to_account", "from": "loan", "to": "account",
+                 "cardinality": "1:N"},
+                {"name": "loan_to_client", "from": "loan", "to": "client",
+                 "cardinality": "1:N"},
+                {"name": "client_to_account", "from": "client", "to": "account",
+                 "cardinality": "1:N"},
+            ],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("存在多条简单路径" in i for i in issues)
+
+    def test_non_additive_referenced_flagged(self):
+        model = {
+            "datasets": [{"name": "loan", "fields": [{"name": "loan_id"}]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "distinct_loans", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(DISTINCT loan.loan_id)"}]},
+                 "non_additive": True},
+                {"name": "sum_of_counts", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "SUM(distinct_loans)"}]}},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("non_additive" in i and "sum_of_counts" in i for i in issues)
+
     def test_clean_model_no_issues(self):
         clean = {
             "name": "fin",
@@ -243,9 +339,18 @@ class TestLintSemantics:
                 {"name": "amount", "expression": {"dialects": [
                     {"dialect": "ANSI_SQL", "expression": "amount"}]},
                  "ai_context": {"synonyms": ["loan value"]}},
+                {"name": "status", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "status"}]}},
+                {"name": "date", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "date"}]}, "datatype": "Date"},
             ]}],
             "relationships": [{"name": "r", "from": "loan", "to": "loan",
                                "cardinality": "1:N"}],
-            "metrics": [],
+            "metrics": [
+                {"name": "active_count", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "filter": "status = 'A'",
+                 "agg_time_dimension": "loan.date"},
+            ],
         }
         assert lint_semantics(clean) == []

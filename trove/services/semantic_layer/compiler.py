@@ -304,16 +304,31 @@ def _is_time_field(f: Any) -> bool:
 
 def resolve_time_field(
     model: "SemanticModel | None", matched: list[str],
+    preferred: str | None = None,
 ) -> tuple[str, Any] | None:
-    """matched 数据集里**唯一的**声明时间字段 → (dataset, field)。
+    """matched 数据集里的时间字段 → (dataset, field)。
 
-    P1-4 时间绑定专用:解析出的时间范围必须落到一个可判定的时间列。
-    多个时间字段(created_at/updated_at)或跨数据集多个时间字段都无法
-    判定 → None,不猜(交 LLM 提示词通道,time_context 仍在 prompt 里)。
+    ``preferred``(metric 的 agg_time_dimension,``loan.date`` 或裸列名):
+    显式声明优先——即使 matched 内多个时间字段也能判定(解决"多时间字段
+    无法注入时间过滤"的覆盖损失)。无 preferred 时仍要求 matched 内
+    **唯一**的声明时间字段,否则 None 不猜。
     """
     if model is None:
         return None
     matched_set = {str(t) for t in (matched or [])}
+    if preferred:
+        ref = (preferred or "").strip()
+        tbl = ref.split(".", 1)[0] if "." in ref else ""
+        col = ref.split(".", 1)[1] if "." in ref else ref
+        for d in model.datasets:
+            if tbl and d.name != tbl:
+                continue
+            if d.name not in matched_set:
+                continue
+            for f in d.fields:
+                if f.name == col and _is_time_field(f):
+                    return (d.name, f)
+        return None
     cands: list[tuple[str, Any]] = []
     for d in model.datasets:
         if d.name not in matched_set:
@@ -597,6 +612,38 @@ class SemanticCompiler:
         ]
         return cands[0] if len(cands) == 1 else None
 
+    def _render_metric_filter(
+        self, metric: SemanticMetric, matched_set: set[str],
+    ) -> tuple[str, CompileMiss | None]:
+        """metric 内建 filter → 表限定的 WHERE 片段(列须解析到声明字段)。
+
+        filter 是行级谓词字符串(``status = 'A'``)。裸列 → 声明字段
+        (锚定 matched,与 conditions 同规);不可解析/含子查询/写节点 →
+        保守 MISS(建模期应由 lint 拦截,运行时兜底不猜)。
+        """
+        text = (metric.filter or "").strip()
+        if not text:
+            return "", None
+        from sqlglot import exp, parse_one
+
+        try:
+            tree = parse_one(text, dialect=self._dialect)
+        except Exception:
+            return "", CompileMiss("unresolved_filter_field", metric.name)
+        if any(
+            isinstance(n, (exp.Select, exp.Subquery, exp.Insert, exp.Update, exp.Delete, exp.Drop))
+            for n in tree.walk()
+        ):
+            return "", CompileMiss("unresolved_filter_field", f"{metric.name}: filter")
+        for col in list(tree.find_all(exp.Column)):
+            if col.table:
+                continue
+            resolved = self._resolve_field(col.name, matched_set)
+            if resolved is None:
+                return "", CompileMiss("unresolved_filter_field", f"{metric.name}: {col.name}")
+            col.set("table", exp.to_identifier(resolved[0], quoted=False))
+        return f"({tree.sql(dialect=self._dialect)})", None
+
     # ── compile ────────────────────────────────────────────
 
     def compile_from_plan(
@@ -819,6 +866,21 @@ class SemanticCompiler:
             f"{_qualified(tbl, f.expression)} {op.upper()} {_literal(value)}"
             for tbl, f, op, value in filters
         ]
+        # metric 内建 filter 并入 WHERE(与条件过滤 AND 连接)。每个被选中
+        # metric 的 filter 都要解析;任一失败 → 整体保守 MISS。同一 metric
+        # 可能经 aggregation 与 answer_columns 各命中一次 → 按名去重。
+        seen_metric_filters: set[str] = set()
+        for _cand, m in matched_pairs:
+            if not (m.filter or "").strip():
+                continue
+            if m.name in seen_metric_filters:
+                continue
+            seen_metric_filters.add(m.name)
+            pred, miss = self._render_metric_filter(m, matched_set)
+            if miss is not None:
+                return miss
+            if pred:
+                where_parts.append(pred)
 
         sql = "SELECT " + ", ".join(projections) + f"\nFROM {anchor}"
         joined = {anchor}

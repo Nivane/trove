@@ -115,6 +115,10 @@ def _metric_to_dict(m: SemanticMetric) -> dict[str, Any]:
         "synonyms": list(m.synonyms),
         "datasets": list(m.datasets),
         "definition": m.definition,
+        "metric_type": m.metric_type,
+        "filter": m.filter,
+        "agg_time_dimension": m.agg_time_dimension,
+        "non_additive": m.non_additive,
     }
 
 

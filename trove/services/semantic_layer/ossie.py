@@ -208,6 +208,9 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             datasets=_dataset_refs(expression, declared),
             definition=m.get("description", "") or "",
             metric_type=str(m.get("type") or "").strip().lower(),
+            filter=str(m.get("filter") or "").strip(),
+            agg_time_dimension=str(m.get("agg_time_dimension") or "").strip(),
+            non_additive=bool(m.get("non_additive") or False),
         ))
 
     return SemanticModel(

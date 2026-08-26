@@ -88,6 +88,63 @@ def test_count_wildcard_matches_declared_metric():
     assert "COUNT(loan.loan_id)" in result.sql
 
 
+def test_metric_filter_merged_into_where():
+    """metric 内建 filter(status='A')编译期并入 WHERE,列被表限定。"""
+    model = _demo_model()
+    model.metrics.append(SemanticMetric(
+        "active_loan_count", "COUNT(loan.loan_id)",
+        datasets=["loan"], filter="status = 'A'",
+    ))
+    plan = {
+        "aggregation": "active_loan_count",
+        "answer_columns": ["active_loan_count"],
+    }
+    result = _compile(plan, ["loan"], model=model)
+    assert result is not None
+    assert "WHERE (loan.status = 'A')" in result.sql
+
+
+def test_metric_filter_respects_declared_fields():
+    """filter 列必须是声明字段;未声明的列 → 严格 MISS 不猜。"""
+    model = _demo_model()
+    model.metrics.append(SemanticMetric(
+        "bad_filter_count", "COUNT(loan.loan_id)",
+        datasets=["loan"], filter="ghost_col = 'x'",
+    ))
+    plan = {
+        "aggregation": "bad_filter_count",
+        "answer_columns": ["bad_filter_count"],
+    }
+    assert _compile(plan, ["loan"], model=model) is None
+
+
+def test_metric_filter_rejects_subquery():
+    model = _demo_model()
+    model.metrics.append(SemanticMetric(
+        "weird_count", "COUNT(loan.loan_id)",
+        datasets=["loan"], filter="account_id IN (SELECT account_id FROM account)",
+    ))
+    plan = {
+        "aggregation": "weird_count",
+        "answer_columns": ["weird_count"],
+    }
+    assert _compile(plan, ["loan"], model=model) is None
+
+
+def test_agg_time_dimension_preferred_in_resolve_time_field():
+    """agg_time_dimension 声明优先:多个时间字段也能判定,不再要求唯一。"""
+    from trove.services.semantic_layer.compiler import resolve_time_field
+
+    model = _demo_model()
+    model.datasets[0].fields.append(_field("updated_at", "DateTime"))
+    resolved = resolve_time_field(model, ["loan"], preferred="loan.date")
+    assert resolved is not None
+    assert resolved[0] == "loan"
+    assert resolved[1].name == "date"
+    # 无 preferred 时多个时间字段仍无法判定(不猜)
+    assert resolve_time_field(model, ["loan"]) is None
+
+
 def test_list_query_projects_fields():
     plan = {
         "answer_columns": ["loan.status"],

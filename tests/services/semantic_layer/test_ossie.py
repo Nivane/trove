@@ -60,6 +60,42 @@ def test_parse_extracts_metrics_with_synonyms():
     assert metric.definition == "Total amount of all loans"
 
 
+def test_parse_metric_filter_agg_time_non_additive():
+    """metric 级 filter / agg_time_dimension / non_additive 解析。"""
+    yaml_text = """
+semantic_model:
+  - name: fin
+    datasets:
+      - name: loan
+        fields:
+          - name: loan_id
+          - name: status
+          - name: date
+    metrics:
+      - name: active_loan_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(loan.loan_id)
+        filter: "status = 'A'"
+        agg_time_dimension: loan.date
+        non_additive: false
+      - name: distinct_loans
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT loan.loan_id)
+        non_additive: true
+"""
+    model = parse_ossie(yaml_text, preferred_dialect="sqlite")
+    active, distinct_ = model.metrics
+    assert active.filter == "status = 'A'"
+    assert active.agg_time_dimension == "loan.date"
+    assert active.non_additive is False
+    assert distinct_.filter == ""
+    assert distinct_.non_additive is True
+
+
 def test_datasets_extracted_from_expression():
     model = parse_ossie(SAMPLE, preferred_dialect="sqlite")
 

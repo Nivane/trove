@@ -28,6 +28,15 @@ class SemanticMetric:
     datasets: list[str] = field(default_factory=list)
     definition: str = ""
     metric_type: str = ""
+    # metric 级行级过滤(measure filter):如 ``status = 'A'``。编译期并入
+    # WHERE(列须解析到本 metric 锚定数据集的已声明字段,否则保守 MISS)。
+    filter: str = ""
+    # 聚合时间维度:该 metric 按哪个时间字段聚合(``loan.date`` 或裸列名)。
+    # 时间范围注入时优先用它,解决"matched 内多时间字段无法判定"的覆盖损失。
+    agg_time_dimension: str = ""
+    # 非加性标记:count distinct / ratio 等不可再加总的度量。lint 用于
+    # 警告"被其他度量再聚合",本身不阻断编译。
+    non_additive: bool = False
 
 
 @dataclass

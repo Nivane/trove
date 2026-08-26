@@ -613,11 +613,13 @@ def _inject_time_condition(
     model,
     matched: list[str],
 ) -> dict[str, Any] | None:
-    """解析出的时间范围 → 确定性注入唯一声明时间维度的区间条件。
+    """解析出的时间范围 → 确定性注入时间维度的区间条件。
 
     P1-4:parse_date 的产物不再只是 prompt 文本——把它落成 plan 条件,
     覆盖内问题编译 SQL 必然带时间过滤,未覆盖问题 gen_sql 的 plan 文本
-    也带该条件。无法判定(无唯一时间字段 / 范围格式非法 / 已有该字段
+    也带该条件。时间字段选择:plan 命中的 metric 若声明 ``agg_time_dimension``
+    则优先用它(即使 matched 内多时间字段也能判定);否则要求 matched 内
+    **唯一**时间字段。无法判定(无时间字段 / 范围格式非法 / 已有该字段
     条件)→ None,不猜,保持原 plan。
     """
     m = _TIME_RANGE_RE.match((time_context or "").strip())
@@ -627,7 +629,8 @@ def _inject_time_condition(
         return None  # 退化/空洞计划不注入(避免凭空造出拒绝前提)
     from trove.services.semantic_layer.compiler import resolve_time_field
 
-    resolved = resolve_time_field(model, list(matched))
+    preferred = _plan_metric_time_dimension(plan, model)
+    resolved = resolve_time_field(model, list(matched), preferred=preferred)
     if resolved is None:
         return None
     ds, field = resolved
@@ -646,6 +649,21 @@ def _inject_time_condition(
     ] + conds
     fixed["plan_field"] = "inject_time_condition"
     return fixed
+
+
+def _plan_metric_time_dimension(plan: dict[str, Any] | None, model) -> str | None:
+    """plan 命中的首个 metric 声明的 agg_time_dimension(否则 None)。"""
+    if not plan or model is None:
+        return None
+    candidates = [str(plan.get("aggregation") or "").strip()]
+    candidates += [str(ac).strip() for ac in (plan.get("answer_columns") or [])]
+    for cand in candidates:
+        if not cand or "(" in cand:
+            continue  # 表达式候选跳过,只认裸度量名
+        for m in model.metrics:
+            if m.name.strip().lower() == cand.lower() and m.agg_time_dimension:
+                return m.agg_time_dimension
+    return None
 
 
 def _compile_semantic(

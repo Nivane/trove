@@ -128,8 +128,29 @@ def lint_examples(
 
 
 def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
-    """语义层模型(OSSIE):同名字段/指标、坏表达式、非法 alias、越界关系。"""
+    """语义层模型(OSSIE):同名字段/指标、坏表达式、非法 alias、越界关系、
+    metric 内建 filter / agg_time_dimension 声明一致性、M:N 与路径二义提前暴露。"""
     issues: list[str] = []
+    datasets = list(model.get("datasets", []) or [])
+    ds_fields: dict[str, set[str]] = {
+        str(d.get("name", "")): {
+            str(f.get("name", "")) for f in (d.get("fields", []) or [])
+        }
+        for d in datasets
+    }
+    temporal_fields: dict[str, set[str]] = {}
+    for d in datasets:
+        ds_name = str(d.get("name", ""))
+        tmp = set()
+        for f in d.get("fields", []) or []:
+            if str(f.get("semantic_role", "") or "").lower() == "time":
+                tmp.add(str(f.get("name", "")))
+            elif str(f.get("datatype", "") or "").lower() in (
+                "date", "time", "datetime", "datetimetz", "timestamp",
+            ):
+                tmp.add(str(f.get("name", "")))
+        temporal_fields[ds_name] = tmp
+
     seen_metrics: set[str] = set()
     for m in model.get("metrics", []) or []:
         if not isinstance(m, dict):
@@ -142,9 +163,12 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
             expr = str(dia.get("expression", ""))
             if expr and _parse(expr, dialect) is None:
                 issues.append(f"指标「{name}」表达式无法解析: {expr[:60]}")
+        _lint_metric_filter(issues, m, ds_fields, dialect)
+        _lint_metric_agg_time(issues, m, ds_fields, temporal_fields)
+        _lint_metric_non_additive(issues, m, model)
 
-    ds_names = {str(d.get("name", "")) for d in model.get("datasets", []) or []}
-    for d in model.get("datasets", []) or []:
+    ds_names = set(ds_fields)
+    for d in datasets:
         if not isinstance(d, dict):
             continue
         ds_name = str(d.get("name", ""))
@@ -172,12 +196,18 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
             issues.append(f"关系「{r.get('name', '')}」引用未声明的数据集")
         if not str(r.get("cardinality") or "").strip():
             issues.append(f"关系「{r.get('name', '')}」未声明基数(cardinality),编译器将保守 MISS")
+        if str(r.get("cardinality") or "").strip().upper() == "M:N":
+            issues.append(
+                f"关系「{r.get('name', '')}」为 M:N 多对多,编译期将拒绝 fan-out"
+                "(如确属多对多,建议改为 1:N + 中间表显式建模)")
         rel_pairs.add(frozenset((str(r.get("from", "")), str(r.get("to", "")))))
+
+    _lint_path_ambiguity(issues, model, ds_names)
 
     # 命名约定 FK → 已声明数据集 但未声明关系:编译器「matched 但连不上」
     # 会产出 FROM anchor 无 JOIN 的非法 SQL(被投影表守卫拦成 MISS)。
     # 在建模期暴露,别等查询期。
-    for d in model.get("datasets", []) or []:
+    for d in datasets:
         if not isinstance(d, dict):
             continue
         ds_name = str(d.get("name", ""))
@@ -195,6 +225,130 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
                     f"表 {ds_name}.{fname} 按命名约定指向已声明的 {target},"
                     "但 relationships 未声明这对关系(联表将 MISS)")
     return issues
+
+
+def _lint_metric_filter(
+    issues: list[str], m: dict[str, Any], ds_fields: dict[str, set[str]],
+    dialect: str,
+) -> None:
+    """metric 内建 filter 必须可解析,且引用的列须落在 metric 数据集的声明字段内。"""
+    ftext = str(m.get("filter") or "").strip()
+    if not ftext:
+        return
+    name = str(m.get("name", ""))
+    tree = _parse(ftext, dialect)
+    if tree is None:
+        issues.append(f"指标「{name}」filter 无法解析: {ftext[:60]}")
+        return
+    bound = [t for t in (m.get("datasets") or []) if t]
+    for col in tree.find_all(exp.Column):
+        col_name = (col.name or "").lower()
+        col_table = (col.table or "").lower()
+        if col_table:
+            if col_table not in ds_fields or col_name not in ds_fields[col_table]:
+                issues.append(
+                    f"指标「{name}」filter 引用不存在的列 {col_table}.{col_name}")
+        elif bound:
+            if not any(col_name in ds_fields.get(t, set()) for t in bound):
+                issues.append(
+                    f"指标「{name}」filter 引用不在其数据集中的列 {col_name}")
+        elif not any(col_name in cols for cols in ds_fields.values()):
+            issues.append(f"指标「{name}」filter 引用不存在的列 {col_name}")
+
+
+def _lint_metric_agg_time(
+    issues: list[str], m: dict[str, Any], ds_fields: dict[str, set[str]],
+    temporal_fields: dict[str, set[str]],
+) -> None:
+    """agg_time_dimension 必须是 metric 数据集内已声明的时间字段。"""
+    ref = str(m.get("agg_time_dimension") or "").strip()
+    if not ref:
+        return
+    name = str(m.get("name", ""))
+    tbl = ref.split(".", 1)[0] if "." in ref else ""
+    col = ref.split(".", 1)[1] if "." in ref else ref
+    bound = [t for t in (m.get("datasets") or []) if t]
+    if tbl:
+        if tbl not in ds_fields or col not in ds_fields[tbl]:
+            issues.append(f"指标「{name}」agg_time_dimension 引用不存在的列 {tbl}.{col}")
+        elif col not in temporal_fields.get(tbl, set()):
+            issues.append(f"指标「{name}」agg_time_dimension {tbl}.{col} 不是时间字段")
+    else:
+        cands = [t for t in (bound or list(ds_fields)) if col in ds_fields.get(t, set())]
+        if len(cands) != 1:
+            issues.append(
+                f"指标「{name}」agg_time_dimension {col} 未唯一解析到声明字段")
+        elif col not in temporal_fields.get(cands[0], set()):
+            issues.append(
+                f"指标「{name}」agg_time_dimension {cands[0]}.{col} 不是时间字段")
+
+
+def _lint_metric_non_additive(
+    issues: list[str], m: dict[str, Any], model: dict[str, Any],
+) -> None:
+    """non_additive 度量被其他度量表达式按名引用(再聚合)→ 警告。"""
+    if not m.get("non_additive"):
+        return
+    name = str(m.get("name", ""))
+    for other in model.get("metrics", []) or []:
+        if not isinstance(other, dict):
+            continue
+        oname = str(other.get("name", ""))
+        if oname == name:
+            continue
+        for dia in (other.get("expression") or {}).get("dialects", []) or []:
+            if name.lower() in str(dia.get("expression", "")).lower():
+                issues.append(
+                    f"non_additive 指标「{name}」被指标「{oname}」的表达式引用,"
+                    "可能造成重复计算/再聚合,请复核")
+                return
+
+
+def _lint_path_ambiguity(
+    issues: list[str], model: dict[str, Any], ds_names: set[str],
+) -> None:
+    """声明关系图上两数据集之间存在多条简单路径 → 编译期可能 ambiguous MISS。
+
+    运行时只在"被查询涉及"时才判二义;建模期提前暴露,让建模者把路径
+    收敛(如只声明必要边)。图小,直接 BFS 计数简单路径(深度上限防爆)。
+    """
+    adj: dict[str, list[str]] = {}
+    for r in model.get("relationships", []) or []:
+        if not isinstance(r, dict):
+            continue
+        a, b = str(r.get("from", "")), str(r.get("to", ""))
+        if a not in ds_names or b not in ds_names:
+            continue
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    if not adj:
+        return
+
+    def paths(u: str, v: str, seen: frozenset[str], depth: int) -> int:
+        if depth > 12:
+            return 0
+        if u == v:
+            return 1
+        n = 0
+        for nb in adj.get(u, []):
+            if nb in seen:
+                continue
+            n += paths(nb, v, seen | {u}, depth + 1)
+            if n > 1:
+                return n  # 只需知道 >1
+        return n
+
+    reported: set[frozenset[str]] = set()
+    nodes = sorted(adj)
+    for i, a in enumerate(nodes):
+        for b in nodes[i + 1:]:
+            if frozenset((a, b)) in reported:
+                continue
+            if paths(a, b, frozenset(), 0) > 1:
+                reported.add(frozenset((a, b)))
+                issues.append(
+                    f"关系图上 {a}↔{b} 存在多条简单路径,编译器将拒绝二义"
+                    "(ambigous_join_path)——请收敛建模(仅声明必要边)")
 
 
 def lint_tables(tables: list[dict[str, Any]]) -> list[str]:
