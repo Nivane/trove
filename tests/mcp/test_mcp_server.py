@@ -223,3 +223,52 @@ async def test_resource_blocks_path_traversal(mcp_components):
     # 多段穿越 URI 根本不匹配模板(datasource 不能含 "/")→ 不可解析
     with pytest.raises(Exception):
         await _read(server, "trove://../secret/semantics")
+
+
+# ── prompts(MCP 三原语:可复用模板)────────────────────────────
+
+async def _render_prompt(server, name: str, **args) -> str:
+    prompt = await server.get_prompt(name)
+    assert prompt is not None, f"prompt {name!r} not registered"
+    result = prompt.render(args)
+    if asyncio.iscoroutine(result):
+        result = await result
+    if isinstance(result, str):
+        return result
+    return str(result)
+
+
+async def test_prompts_registered(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    names = {p.name for p in await server.list_prompts()}
+    assert {"datasource_guide", "ask_data"} <= names
+
+
+async def test_datasource_guide_prompt(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    text = await _render_prompt(server, "datasource_guide", datasource="test_db")
+    assert "trove://test_db/schema" in text
+    assert "trove://test_db/semantics" in text
+    assert "ask_data" in text
+
+
+async def test_datasource_guide_blocks_unsafe_name(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    text = await _render_prompt(server, "datasource_guide", datasource="..")
+    assert "invalid datasource name" in text
+
+
+async def test_ask_data_prompt(mcp_components):
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    text = await _render_prompt(
+        server, "ask_data", datasource="test_db", question="有多少学生?",
+    )
+    assert "test_db" in text and "有多少学生?" in text

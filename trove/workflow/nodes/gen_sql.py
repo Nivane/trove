@@ -665,12 +665,24 @@ async def probe_query(
     )
     if not obs["ok"]:
         return json.dumps(obs)
-    return json.dumps({
+    from trove.llm.injection import isolate_cells
+
+    rows: list[list[str]] = []
+    flagged = 0
+    for r in obs["rows"][:PROBE_SAMPLE_ROWS]:
+        isolated, n = isolate_cells([_short_value(v) for v in r])
+        rows.append(isolated)
+        flagged += n
+    payload: dict[str, Any] = {
         "ok": True,
         "row_count": obs["row_count"],
         "columns": obs["columns"],
-        "rows": [[_short_value(v) for v in r] for r in obs["rows"][:PROBE_SAMPLE_ROWS]],
-    })
+        "rows": rows,
+    }
+    # 内容隔离可观测性:命中注入模式(如 DB 单元格含 "ignore previous")
+    if flagged:
+        payload["injection_flagged"] = flagged
+    return json.dumps(payload)
 
 
 # ── check_result tool (deterministic rule verification) ──
@@ -816,8 +828,13 @@ async def _search_one(
         from trove.services.sql.sanitize import sanitize_error_text
 
         return {"ok": False, "error": f"execution failed: {sanitize_error_text(str(e))}"}
-    values = [_short_value(r[0]) for r in (result.rows or [])]
-    return {"ok": True, "values": values}
+    from trove.llm.injection import isolate_cells
+
+    values, flagged = isolate_cells(_short_value(r[0]) for r in (result.rows or []))
+    out: dict[str, Any] = {"ok": True, "values": values}
+    if flagged:
+        out["injection_flagged"] = flagged
+    return out
 
 
 # ── Tool factory (gen_sql ReAct 循环的工具集合) ─────────
