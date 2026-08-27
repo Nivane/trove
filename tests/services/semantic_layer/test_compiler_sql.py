@@ -211,6 +211,149 @@ def test_enum_value_ignored_when_no_enum_display():
     assert "WHERE loan.status = 'A'" in result.sql
 
 
+# ── 权威联表路径(plan.joins, MetricFlow 显式路径)────────────────
+
+
+def _diamond_model():
+    """共享维度菱形:client/account 同连 district(第二条路由)。
+
+    client↔account 有两条简单路径:client—disp—account 与
+    client—district—account。BFS 先到先得不可审计 → 无 joins 时严格 MISS;
+    显式 joins 选边后可编译。
+    """
+    return SemanticModel(
+        name="fin",
+        datasets=[
+            SemanticDataset(name="client", primary_key=["client_id"], fields=[
+                _field("client_id"), _field("district_id"),
+            ]),
+            SemanticDataset(name="account", primary_key=["account_id"], fields=[
+                _field("account_id"), _field("district_id"),
+            ]),
+            SemanticDataset(name="disp", primary_key=["disp_id"], fields=[
+                _field("disp_id"), _field("client_id"), _field("account_id"),
+            ]),
+            SemanticDataset(name="district", primary_key=["district_id"], fields=[
+                _field("district_id"), _field("A3"),
+            ]),
+            SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                _field("loan_id"), _field("account_id"),
+            ]),
+        ],
+        relationships=[
+            SemanticRelationship("disp_to_client", "disp", "client",
+                                 from_columns=["client_id"], to_columns=["client_id"],
+                                 cardinality="1:N"),
+            SemanticRelationship("disp_to_account", "disp", "account",
+                                 from_columns=["account_id"], to_columns=["account_id"],
+                                 cardinality="1:N"),
+            SemanticRelationship("client_to_district", "client", "district",
+                                 from_columns=["district_id"], to_columns=["district_id"],
+                                 cardinality="1:N"),
+            SemanticRelationship("account_to_district", "account", "district",
+                                 from_columns=["district_id"], to_columns=["district_id"],
+                                 cardinality="1:N"),
+            SemanticRelationship("loan_to_account", "loan", "account",
+                                 from_columns=["account_id"], to_columns=["account_id"],
+                                 cardinality="1:N"),
+        ],
+        metrics=[
+            SemanticMetric("number of clients", "COUNT(client.client_id)",
+                           datasets=["client"]),
+            SemanticMetric("number of loans", "COUNT(loan.loan_id)",
+                           datasets=["loan"]),
+        ],
+    )
+
+
+def test_no_joins_falls_back_to_bfs_ambiguous():
+    """无显式 joins → BFS 先到先得,菱形 → 严格 MISS(不赌安全)。"""
+    plan = {
+        "tables": ["client", "account", "loan"],
+        "answer_columns": ["client.client_id"],
+    }
+    res = SemanticCompiler(_diamond_model()).compile_detailed(
+        plan, ["client", "loan"], force_dialect="mysql")
+    from trove.services.semantic_layer.compiler import CompileMiss
+    assert isinstance(res, CompileMiss)
+    assert res.reason == "ambiguous_join_path"
+
+
+def test_explicit_joins_resolve_diamond():
+    """显式 joins 选边(client→disp→account→loan)→ 编译通过,不删关系。"""
+    plan = {
+        "tables": ["client", "disp", "account", "loan"],
+        "joins": ("disp.client_id = client.client_id, "
+                  "disp.account_id = account.account_id, "
+                  "loan.account_id = account.account_id"),
+        "answer_columns": ["client.client_id"],
+    }
+    result = _compile(plan, ["client", "loan"], model=_diamond_model())
+    assert result is not None
+    assert "FROM client" in result.sql
+    assert "JOIN disp ON disp.client_id = client.client_id" in result.sql
+    assert "JOIN account ON disp.account_id = account.account_id" in result.sql
+    assert "JOIN loan ON loan.account_id = account.account_id" in result.sql
+
+
+def test_explicit_joins_commas_and_and_parsed():
+    """joins 支持逗号与 AND 两种分隔(planner 输出形态)。"""
+    plan = {
+        "tables": ["client", "disp", "account", "loan"],
+        "joins": ("disp.client_id = client.client_id AND "
+                  "disp.account_id = account.account_id, "
+                  "loan.account_id = account.account_id"),
+        "answer_columns": ["client.client_id"],
+    }
+    result = _compile(plan, ["client", "loan"], model=_diamond_model())
+    assert result is not None
+    assert "FROM client" in result.sql
+
+
+def test_explicit_joins_undeclared_edge_strict_miss():
+    """显式 joins 引用未声明边 → 严格 MISS,不静默忽略后 BFS 改道。"""
+    plan = {
+        "tables": ["client", "loan"],
+        "joins": "client.district_id = loan.loan_id",
+        "answer_columns": ["client.client_id"],
+    }
+    res = SemanticCompiler(_diamond_model()).compile_detailed(
+        plan, ["client", "loan"], force_dialect="mysql")
+    from trove.services.semantic_layer.compiler import CompileMiss
+    assert isinstance(res, CompileMiss)
+    assert res.reason == "ambiguous_join_path"
+
+
+def test_explicit_joins_placeholder_falls_back():
+    """占位/空 joins 视为未声明 → 回退 BFS(行为不变)。"""
+    for placeholder in ("", "(empty if none)", "none"):
+        plan = {
+            "tables": ["client", "account", "loan"],
+            "joins": placeholder,
+            "answer_columns": ["client.client_id"],
+        }
+        res = SemanticCompiler(_diamond_model()).compile_detailed(
+            plan, ["client", "loan"], force_dialect="mysql")
+        from trove.services.semantic_layer.compiler import CompileMiss
+        assert isinstance(res, CompileMiss)
+        assert res.reason == "ambiguous_join_path"
+
+
+def test_explicit_joins_disconnected_tree_miss():
+    """joins 成两棵断树(anchor 连不上全部)→ 严格 MISS。"""
+    plan = {
+        "tables": ["client", "disp", "loan", "account"],
+        "joins": ("disp.client_id = client.client_id, "
+                  "loan.account_id = account.account_id"),
+        "answer_columns": ["client.client_id"],
+    }
+    res = SemanticCompiler(_diamond_model()).compile_detailed(
+        plan, ["client", "loan"], force_dialect="mysql")
+    from trove.services.semantic_layer.compiler import CompileMiss
+    assert isinstance(res, CompileMiss)
+    assert res.reason == "ambiguous_join_path"
+
+
 def test_metric_filter_rejects_subquery():
     model = _demo_model()
     model.metrics.append(SemanticMetric(
