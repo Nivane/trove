@@ -387,7 +387,8 @@ async def init_kb(kb, registry, llm, config, datasource, *,
         samples=probed, stats=profiled, lang=lang,
     )
     _report("semantic", 78, "生成语义模型结构")
-    semantic_doc = generate_semantic_document(schema, model_name=datasource, terms=terms)
+    semantic_doc = generate_semantic_document(
+        schema, model_name=datasource, terms=terms, enums=probed or None)
     # P4:有 LLM 时在结构层之上起草字段 synonyms/description(白名单,只加措辞
     # 不改结构);任何失败静默回退纯结构层。
     try:

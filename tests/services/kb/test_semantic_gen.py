@@ -176,3 +176,48 @@ def test_generated_doc_carries_semantic_roles():
     account = next(d for d in datasets if d["name"] == "account")
     date_f = next(f for f in account["fields"] if f["name"] == "date")
     assert date_f["semantic_role"] == "time"
+
+
+# ── OSSIE v0.2.0.dev0:version + enum 落位 ──────────────────────────
+
+
+def test_generated_doc_carries_version():
+    doc = generate_semantic_document(_financial_schema())
+    assert doc["version"] == "0.2.0.dev0"
+    assert doc["semantic_model"][0]["name"] == ""
+
+
+def test_enum_probe_roles_and_display():
+    """probe 结果 → 低基数列提升为 semantic_role=enum + 恒等 enum_display。"""
+    enums = {"loan": {"status": "A; B"}, "district": {"A3": "Prague; Ostrava"}}
+    doc = generate_semantic_document(_financial_schema(), enums=enums)
+    datasets = {d["name"]: d for d in doc["semantic_model"][0]["datasets"]}
+
+    status = next(f for f in datasets["loan"]["fields"] if f["name"] == "status")
+    assert status["semantic_role"] == "enum"
+    assert status["enum_display"] == {"A": "A", "B": "B"}
+
+    # 文本维度列提升为 enum
+    a3 = next(f for f in datasets["district"]["fields"] if f["name"] == "A3")
+    assert a3["semantic_role"] == "enum"
+    assert a3["enum_display"] == {"Prague": "Prague", "Ostrava": "Ostrava"}
+
+    # 非枚举列不受影响(identifier/measure/time 保持角色)
+    loan_id = next(f for f in datasets["loan"]["fields"] if f["name"] == "loan_id")
+    assert loan_id["semantic_role"] == "identifier"
+    assert "enum_display" not in loan_id
+    date_f = next(f for f in datasets["account"]["fields"] if f["name"] == "date")
+    assert date_f["semantic_role"] == "time"
+
+
+def test_enum_roles_round_trip_through_parse():
+    enums = {"loan": {"status": "A; B"}}
+    doc = generate_semantic_document(_financial_schema(), enums=enums)
+    text = yaml.safe_dump(doc)
+    model = parse_ossie(text, preferred_dialect="sqlite")
+    status = next(
+        f for d in model.datasets if d.name == "loan"
+        for f in d.fields if f.name == "status"
+    )
+    assert status.semantic_role == "enum"
+    assert status.enum_display == {"A": "A", "B": "B"}

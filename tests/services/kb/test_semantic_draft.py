@@ -111,6 +111,51 @@ class TestApplyAnnotations:
         assert (applied, dropped) == (0, 1)
 
 
+class TestEnumLabels:
+    """enum_labels:LLM 只补已声明 code 的可读词;未声明 code 丢弃(白名单)。"""
+
+    def test_applies_labels_to_declared_codes(self):
+        doc = _doc()
+        model = doc["semantic_model"][0]
+        model["datasets"][1]["fields"].append({
+            "name": "gender", "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "gender"}]},
+            "datatype": "String", "semantic_role": "enum",
+            "enum_display": {"F": "F", "M": "M"},
+        })
+        applied, dropped = apply_annotations(model, [{
+            "table": "loan",
+            "field_notes": [{"name": "gender", "synonyms": ["sex"],
+                             "description": "client gender"}],
+            "enum_labels": {"gender": {"F": "female", "M": "male"}},
+        }])
+        assert applied == 2
+        assert dropped == 0
+        gender = _field(model, "loan", "gender")
+        assert gender["enum_display"] == {"F": "female", "M": "male"}
+        assert gender["ai_context"]["synonyms"] == ["sex"]
+
+    def test_undeclared_code_ignored(self):
+        """LLM 发明枚举 code → 丢弃,不污染 enum_display。"""
+        doc = _doc()
+        model = doc["semantic_model"][0]
+        model["datasets"][1]["fields"].append({
+            "name": "gender", "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "gender"}]},
+            "datatype": "String", "semantic_role": "enum",
+            "enum_display": {"F": "F", "M": "M"},
+        })
+        applied, dropped = apply_annotations(model, [{
+            "table": "loan",
+            "field_notes": [{"name": "gender", "synonyms": ["sex"],
+                             "description": "client gender"}],
+            "enum_labels": {"gender": {"F": "female", "X": "unknown"}},
+        }])
+        gender = _field(model, "loan", "gender")
+        assert gender["enum_display"] == {"F": "female", "M": "M"}  # X 被剥掉
+        assert gender["ai_context"]["synonyms"] == ["sex"]
+
+
 class ScriptedLLM:
     def __init__(self, *responses):
         self._q = list(responses)

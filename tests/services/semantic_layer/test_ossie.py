@@ -297,6 +297,134 @@ def test_parse_backwards_compatible_without_fields():
     assert model.relationships == []
 
 
+# ── OSSIE v0.2.0.dev0 全字段:version / unique_keys / label / metric
+#    datatype / examples / custom_extensions ───────────────────────────
+
+
+FULL_V020 = """
+version: 0.2.0.dev0
+semantic_model:
+  - name: fin
+    description: full spec model
+    ai_context:
+      instructions: "use for banking"
+      examples: ["How many loans?", "Total amount by region"]
+    custom_extensions:
+      - vendor_name: DBT
+        data: '{"materialized": "table"}'
+    datasets:
+      - name: client
+        source: financial.client
+        primary_key: [client_id]
+        unique_keys:
+          - [client_id]
+          - [email]
+        ai_context:
+          examples: ["list all clients"]
+        custom_extensions:
+          - vendor_name: SNOWFLAKE
+            data: '{"warehouse": "ANALYTICS_WH"}'
+        fields:
+          - name: client_id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: client_id
+            datatype: Integer
+          - name: gender
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gender
+            datatype: String
+            label: demographics
+            enum_display: {F: female, M: male}
+            ai_context:
+              synonyms: [sex]
+              examples: ["filter by gender"]
+            custom_extensions:
+              - vendor_name: COMMON
+                data: '{"pii": false}'
+    metrics:
+      - name: number of clients
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(client.client_id)
+        datatype: Integer
+        ai_context:
+          synonyms: [client count]
+          examples: ["how many clients do we have"]
+        custom_extensions:
+          - vendor_name: DBT
+            data: '{"model": "client"}'
+"""
+
+
+def test_parse_full_v020_fields():
+    model = parse_ossie(FULL_V020, preferred_dialect="sqlite")
+
+    # 文档级 version + 模型级 examples / custom_extensions
+    assert model.version == "0.2.0.dev0"
+    assert model.examples == ["How many loans?", "Total amount by region"]
+    assert model.custom_extensions == [
+        {"vendor_name": "DBT", "data": '{"materialized": "table"}'}]
+
+    # dataset unique_keys / examples / custom_extensions
+    client = model.datasets[0]
+    assert client.unique_keys == [["client_id"], ["email"]]
+    assert client.examples == ["list all clients"]
+    assert client.custom_extensions[0]["vendor_name"] == "SNOWFLAKE"
+
+    # field label / examples / custom_extensions
+    gender = next(f for f in client.fields if f.name == "gender")
+    assert gender.label == "demographics"
+    assert gender.examples == ["filter by gender"]
+    assert gender.custom_extensions == [
+        {"vendor_name": "COMMON", "data": '{"pii": false}'}]
+
+    # metric datatype / examples / custom_extensions
+    m = model.metrics[0]
+    assert m.datatype == "Integer"
+    assert m.examples == ["how many clients do we have"]
+    assert m.custom_extensions[0]["vendor_name"] == "DBT"
+
+
+def test_parse_v020_missing_optional_fields_default():
+    """缺省的 v0.2.0 扩展面全为默认值(旧文件解析不变)。"""
+    model = parse_ossie(SAMPLE, preferred_dialect="sqlite")
+    assert model.version == ""
+    assert model.examples == []
+    assert model.custom_extensions == []
+    assert model.datasets[0].unique_keys == []
+    assert model.datasets[0].custom_extensions == []
+    for f in model.datasets[0].fields:
+        assert f.label == ""
+        assert f.examples == []
+        assert f.custom_extensions == []
+    for m in model.metrics:
+        assert m.datatype is None
+        assert m.examples == []
+        assert m.custom_extensions == []
+
+
+def test_parse_v020_malformed_custom_extensions_dropped():
+    """custom_extensions 只保留 {vendor_name, data} 形式;坏条目静默丢弃。"""
+    yaml_text = """
+semantic_model:
+  - name: m
+    custom_extensions:
+      - vendor_name: OK
+        data: x
+      - data: missing vendor
+      - vendor_name: ""
+      - "not a dict"
+    metrics: []
+"""
+    model = parse_ossie(yaml_text, preferred_dialect="sqlite")
+    assert model.custom_extensions == [{"vendor_name": "OK", "data": "x"}]
+
+
 def test_metric_type_parsed():
     yaml_text = """
 semantic_model:
@@ -326,3 +454,25 @@ semantic_model:
     assert by_name["r1"].metric_type == "ratio"
     assert by_name["r2"].metric_type == "derived"  # 大小写归一
     assert by_name["r3"].metric_type == ""  # 缺省为空(旧文件解析不变)
+
+
+def test_parse_enum_display():
+    """enum_display 解析(code → 人类可读词)。"""
+    yaml_text = """
+semantic_model:
+  - name: m
+    datasets:
+      - name: client
+        fields:
+          - name: gender
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: gender
+            semantic_role: enum
+            enum_display: {F: female, M: male}
+"""
+    model = parse_ossie(yaml_text, preferred_dialect="sqlite")
+    gender = model.datasets[0].fields[0]
+    assert gender.semantic_role == "enum"
+    assert gender.enum_display == {"F": "female", "M": "male"}

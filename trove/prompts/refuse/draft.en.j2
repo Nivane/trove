@@ -27,11 +27,15 @@ Or a field (a declared dataset attribute that is missing — e.g. a filter/group
     synonyms: [<phrases the user said>]
     definition: <one-line business meaning>
     datatype: <String|Integer|Float|Decimal|Date|DateTime|Time|Boolean>
+    enum_display: {<code>: <human-readable value>, ...}   # ONLY for enum-valued fields
 
 Rules:
 - The dataset(s) referenced MUST already exist in the vocabulary above. Never invent a dataset.
 - `expression` MUST be parseable SQL that only references declared dataset fields.
 - Never redefine an existing metric/field name. Never add relationships.
+- NEVER bake a filter value into a metric. Do NOT draft `number_of_female_clients = COUNT(...) FILTER (WHERE gender='F')` or a metric whose name/expression embeds a specific value — that would force one metric per value. Instead keep the metric value-agnostic and put the value on the field:
+  - If the dimension field already exists, draft kind: field with `enum_display` (or extend its synonyms) so the value resolves via query conditions — no new metric needed.
+  - If the dimension field itself is missing, draft kind: field (scalar, no aggregation) with `enum_display`, NOT a value-filtered metric.
 - If the gap is genuinely unaddressable with the declared datasets, respond with:
   draft:
     kind: none

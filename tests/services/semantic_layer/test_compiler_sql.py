@@ -118,6 +118,99 @@ def test_metric_filter_respects_declared_fields():
     assert _compile(plan, ["loan"], model=model) is None
 
 
+# ── 枚举值归一(值留在字段层,编译期归一成 code)────────────────
+
+
+def _client_model():
+    """带 enum 字段 gender 的模型(F/M + 可读词)。"""
+    return SemanticModel(
+        name="fin",
+        datasets=[
+            SemanticDataset(name="client", primary_key=["client_id"], fields=[
+                _field("client_id"),
+                SemanticField(name="gender", expression="gender",
+                              datatype="String", semantic_role="enum",
+                              enum_display={"F": "female", "M": "male"}),
+            ]),
+        ],
+        metrics=[
+            SemanticMetric("number of clients", "COUNT(client.client_id)",
+                           datasets=["client"]),
+        ],
+    )
+
+
+def test_enum_value_normalized_to_code():
+    """plan 写可读词 male → 编译归一成 code 'M'。"""
+    model = _client_model()
+    plan = {
+        "tables": ["client"],
+        "aggregation": "number of clients",
+        "answer_columns": ["number of clients"],
+        "conditions": [{"field": "client.gender", "op": "=", "value": "male"}],
+    }
+    result = _compile(plan, ["client"], model=model)
+    assert result is not None
+    assert "WHERE client.gender = 'M'" in result.sql
+
+
+def test_enum_value_code_passthrough():
+    """plan 直接写 code 'm'(大小写不敏感)→ 保持库里存的写法 'M'。"""
+    model = _client_model()
+    plan = {
+        "tables": ["client"],
+        "aggregation": "number of clients",
+        "answer_columns": ["number of clients"],
+        "conditions": [{"field": "client.gender", "op": "=", "value": "m"}],
+    }
+    result = _compile(plan, ["client"], model=model)
+    assert result is not None
+    assert "WHERE client.gender = 'M'" in result.sql
+
+
+def test_enum_value_list_normalized():
+    """IN 列表逐元素归一。"""
+    model = _client_model()
+    plan = {
+        "tables": ["client"],
+        "aggregation": "number of clients",
+        "answer_columns": ["number of clients"],
+        "conditions": [{"field": "client.gender", "op": "in",
+                        "value": "('female', 'M')"}],
+    }
+    result = _compile(plan, ["client"], model=model)
+    assert result is not None
+    assert "client.gender IN ('F', 'M')" in result.sql
+
+
+def test_enum_value_unresolved_is_strict_miss():
+    """值不在声明词表 → 保守 MISS(绝不静默产出 0 行 SQL)。"""
+    model = _client_model()
+    plan = {
+        "tables": ["client"],
+        "aggregation": "number of clients",
+        "answer_columns": ["number of clients"],
+        "conditions": [{"field": "client.gender", "op": "=", "value": "x"}],
+    }
+    res = SemanticCompiler(model).compile_detailed(plan, ["client"])
+    from trove.services.semantic_layer.compiler import CompileMiss
+    assert isinstance(res, CompileMiss)
+    assert res.reason == "enum_value_unresolved"
+
+
+def test_enum_value_ignored_when_no_enum_display():
+    """未声明 enum_display 的字段 → 值原样透传(旧行为不变)。"""
+    plan = {
+        "tables": ["loan"],
+        "aggregation": "number of loan records",
+        "answer_columns": ["number of loan records"],
+        "conditions": [{"field": "loan.status", "op": "=", "value": "A"}],
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    assert "WHERE loan.status = 'A'" in result.sql
+
+
 def test_metric_filter_rejects_subquery():
     model = _demo_model()
     model.metrics.append(SemanticMetric(

@@ -131,6 +131,10 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
     """语义层模型(OSSIE):同名字段/指标、坏表达式、非法 alias、越界关系、
     metric 内建 filter / agg_time_dimension 声明一致性、M:N 与路径二义提前暴露。"""
     issues: list[str] = []
+    _VALID_OSSIE_DATATYPES = {
+        "string", "integer", "decimal", "float", "boolean",
+        "date", "time", "datetime", "datetimetz", "opaque",
+    }
     datasets = list(model.get("datasets", []) or [])
     ds_fields: dict[str, set[str]] = {
         str(d.get("name", "")): {
@@ -139,9 +143,11 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
         for d in datasets
     }
     temporal_fields: dict[str, set[str]] = {}
+    enum_fields: dict[str, set[str]] = {}
     for d in datasets:
         ds_name = str(d.get("name", ""))
         tmp = set()
+        enums = set()
         for f in d.get("fields", []) or []:
             if str(f.get("semantic_role", "") or "").lower() == "time":
                 tmp.add(str(f.get("name", "")))
@@ -149,7 +155,13 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
                 "date", "time", "datetime", "datetimetz", "timestamp",
             ):
                 tmp.add(str(f.get("name", "")))
+            if (
+                str(f.get("semantic_role", "") or "").lower() == "enum"
+                or (f.get("enum_display") or {})
+            ):
+                enums.add(str(f.get("name", "")))
         temporal_fields[ds_name] = tmp
+        enum_fields[ds_name] = enums
 
     seen_metrics: set[str] = set()
     for m in model.get("metrics", []) or []:
@@ -164,14 +176,35 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
             if expr and _parse(expr, dialect) is None:
                 issues.append(f"指标「{name}」表达式无法解析: {expr[:60]}")
         _lint_metric_filter(issues, m, ds_fields, dialect)
+        _lint_metric_filter_enum(issues, m, ds_fields, enum_fields, dialect)
         _lint_metric_agg_time(issues, m, ds_fields, temporal_fields)
         _lint_metric_non_additive(issues, m, model)
+        if m.get("datatype") and str(m.get("datatype")).lower() not in _VALID_OSSIE_DATATYPES:
+            issues.append(
+                f"指标「{name}」datatype 非法: {m.get('datatype')} "
+                f"(应为 {sorted(_VALID_OSSIE_DATATYPES)})")
+        for ext in m.get("custom_extensions") or []:
+            if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
+                issues.append(f"指标「{name}」custom_extensions 缺 vendor_name")
 
     ds_names = set(ds_fields)
     for d in datasets:
         if not isinstance(d, dict):
             continue
         ds_name = str(d.get("name", ""))
+        declared = ds_fields.get(ds_name, set())
+        # OSSIE v0.2.0.dev0:unique_keys 的每个键必须落在已声明字段内
+        for keys in d.get("unique_keys") or []:
+            if not isinstance(keys, list):
+                issues.append(f"表 {ds_name} unique_keys 必须为列名数组")
+                continue
+            for k in keys:
+                if str(k) not in declared:
+                    issues.append(
+                        f"表 {ds_name} unique_keys 引用未声明的列 {k}")
+        for ext in d.get("custom_extensions") or []:
+            if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
+                issues.append(f"表 {ds_name} custom_extensions 缺 vendor_name")
         seen_fields: set[str] = set()
         for f in d.get("fields", []) or []:
             if not isinstance(f, dict):
@@ -187,6 +220,9 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
                 expr = str(dia.get("expression", ""))
                 if expr and _parse(expr, dialect) is None:
                     issues.append(f"表 {ds_name}.{fname} 表达式无法解析: {expr[:60]}")
+            for ext in f.get("custom_extensions") or []:
+                if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
+                    issues.append(f"表 {ds_name}.{fname} custom_extensions 缺 vendor_name")
 
     rel_pairs: set[frozenset[str]] = set()
     for r in model.get("relationships", []) or []:
@@ -254,6 +290,54 @@ def _lint_metric_filter(
                     f"指标「{name}」filter 引用不在其数据集中的列 {col_name}")
         elif not any(col_name in cols for cols in ds_fields.values()):
             issues.append(f"指标「{name}」filter 引用不存在的列 {col_name}")
+
+
+def _lint_metric_filter_enum(
+    issues: list[str], m: dict[str, Any], ds_fields: dict[str, set[str]],
+    enum_fields: dict[str, set[str]], dialect: str,
+) -> None:
+    """值不得写死在 metric 里:对已声明 enum 字段做等值过滤 → 建模异味。
+
+    根治「number_of_female_clients = COUNT(...) FILTER (WHERE gender='F')」
+    这类把维度值拆成 N 条 metric 的录入:枚举值应留在维度字段
+    (semantic_role=enum + enum_display),查询时走 conditions 维度过滤,
+    而不是 metric 内建 filter。命中 → issue(建模期拦截,不改 SQL)。
+    """
+    ftext = str(m.get("filter") or "").strip()
+    if not ftext:
+        return
+    name = str(m.get("name", ""))
+    tree = _parse(ftext, dialect)
+    if tree is None:
+        return
+    bound = [t for t in (m.get("datasets") or []) if t]
+    for eq in tree.find_all(exp.EQ):
+        col = eq.left if isinstance(eq.left, exp.Column) else None
+        if col is None:
+            continue
+        col_name = (col.name or "").strip().lower()
+        col_table = (col.table or "").strip().lower()
+        if col_table:
+            if col_table in enum_fields and col_name in enum_fields[col_table]:
+                _enum_baked_issue(issues, name, f"{col_table}.{col_name}")
+        elif bound:
+            for t in bound:
+                if col_name in enum_fields.get(t, set()):
+                    _enum_baked_issue(issues, name, f"{t}.{col_name}")
+                    break
+        else:
+            for t, enums in enum_fields.items():
+                if col_name in enums:
+                    _enum_baked_issue(issues, name, f"{t}.{col_name}")
+                    break
+
+
+def _enum_baked_issue(issues: list[str], metric_name: str, field_ref: str) -> None:
+    issues.append(
+        f"指标「{metric_name}」把枚举值过滤写死进 metric(filter 对 {field_ref} "
+        "做等值过滤)——值应留在维度字段(enum_display),查询走维度过滤;"
+        "请改为值无关 metric + conditions,避免每个枚举值各建一条 metric"
+    )
 
 
 def _lint_metric_agg_time(

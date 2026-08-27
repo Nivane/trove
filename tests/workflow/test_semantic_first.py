@@ -111,6 +111,30 @@ class TestSemanticFirstLinking:
         assert out["link_detail"]["semantic_first"] is True
         assert out["link_detail"]["matched_datasets"] == ["students"]
 
+    async def test_enum_display_rendered_in_context(self, sqlite_registry):
+        """enum_display 渲染进 semantic_context(值映射,不是只有个数)。"""
+        f = lambda name: SemanticField(name=name, expression=name)  # noqa: E731
+        model = SemanticModel(
+            name="fin",
+            datasets=[
+                SemanticDataset(name="client", primary_key=["client_id"], fields=[
+                    f("client_id"),
+                    SemanticField(name="gender", expression="gender",
+                                  datatype="String", semantic_role="enum",
+                                  enum_display={"F": "female", "M": "male"}),
+                ]),
+            ],
+            metrics=[
+                SemanticMetric("number of clients", "COUNT(client.client_id)",
+                               datasets=["client"]),
+            ],
+        )
+        node = _node(connectors=sqlite_registry, provider=FakeProvider(model))
+        out = await node(make_state(question="male clients"))
+        ctx = out["semantic_context"]
+        assert "role=enum" in ctx
+        assert "enum {F=female, M=male}" in ctx
+
     async def test_zero_match_refuses_no_fallback(self, sqlite_registry):
         """零命中 = 未覆盖 = 拒绝;无任何 fallback 兜底(决策 4)。"""
         node = _node(connectors=sqlite_registry,

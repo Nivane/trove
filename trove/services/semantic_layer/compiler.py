@@ -383,6 +383,7 @@ MISS_REASONS = frozenset({
     "time_grain_without_aggregation",
     "having_metric_unknown",
     "having_without_aggregation",
+    "enum_value_unresolved",
     "guardrail_rejected",
 })
 
@@ -418,6 +419,62 @@ def _literal(value: Any) -> str:
     if _ALREADY_LITERAL_RE.match(s):
         return s
     return "'" + s.replace("'", "''") + "'"
+
+
+def _enum_code_for(text: str, enum_display: dict[str, str]) -> str | None:
+    """人类值/码 → 规范 code(经 enum_display 双向匹配,大小写不敏感)。
+
+    先按 code 键匹配(identity 命中返回原键,保 SQL 用库里存的写法),
+    再按可读词值匹配(``male``/``男性`` → ``M``)。未命中 → None。
+    """
+    low = (text or "").strip().lower()
+    if not low:
+        return None
+    for code, _label in enum_display.items():
+        if str(code).lower() == low:
+            return str(code)
+    for code, label in enum_display.items():
+        if str(label).strip().lower() == low:
+            return str(code)
+    return None
+
+
+def _strip_quotes(text: str) -> str:
+    """剥掉外层成对引号(``'M'`` / ``\"M\"`` → ``M``)。"""
+    s = text.strip()
+    if len(s) >= 2 and s[0] in ("'", '"') and s[-1] == s[0]:
+        return s[1:-1]
+    return s
+
+
+def _normalize_enum_value(value: Any, enum_display: dict[str, str]) -> Any | None:
+    """枚举字段的 condition 值 → 规范 code;任一元素无法归一 → None。
+
+    - enum_display 为空 → 原样透传(未声明词表,无归一依据);
+    - 标量(可带引号)→ 单个归一;
+    - ``('C', 'D')`` 列表 → 逐元素归一。
+    归一失败返回 None,调用方保守 MISS——绝不静默产出 ``gender='male'``
+    这类 0 行 SQL(值不在声明词表 = 未覆盖,交拒绝/扩展流程)。
+    """
+    if not enum_display:
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _enum_code_for(str(value), enum_display)
+    s = str(value).strip()
+    if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+        parts = [p.strip() for p in s[1:-1].split(",") if p.strip()]
+        if not parts:
+            return None
+        out: list[str] = []
+        for p in parts:
+            code = _enum_code_for(_strip_quotes(p), enum_display)
+            if code is None:
+                return None
+            out.append(code)
+        # 列表元素带引号:后续 _literal 的已字面量正则才能透传,产出
+        # IN ('F', 'M') 而非 IN (F, M)(裸标识符会解析成列引用)。
+        return "(" + ", ".join(f"'{c.replace(chr(39), chr(39) * 2)}'" for c in out) + ")"
+    return _enum_code_for(_strip_quotes(s), enum_display)
 
 
 def _agg_signature(expr_text: str) -> tuple[str, frozenset[str]] | None:
@@ -811,6 +868,13 @@ class SemanticCompiler:
                 return CompileMiss("invalid_op", op)
             if value is None:
                 return CompileMiss("missing_filter_value", field_ref)
+            # 枚举字段:值经 enum_display 归一(male/男性 → 'M');无法归一
+            # → 保守 MISS(值不在声明词表 = 未覆盖,绝不静默产出 0 行 SQL)。
+            if resolved[1].enum_display:
+                normalized = _normalize_enum_value(value, resolved[1].enum_display)
+                if normalized is None:
+                    return CompileMiss("enum_value_unresolved", field_ref)
+                value = normalized
             filters.append((resolved[0], resolved[1], op, value))
 
         # 聚合后过滤:having[].metric → HAVING(内联度量表达式);
@@ -843,6 +907,11 @@ class SemanticCompiler:
             resolved_h = self._resolve_field(field_ref, matched_set)
             if resolved_h is None:
                 return CompileMiss("unresolved_filter_field", field_ref)
+            if resolved_h[1].enum_display:
+                normalized_h = _normalize_enum_value(value, resolved_h[1].enum_display)
+                if normalized_h is None:
+                    return CompileMiss("enum_value_unresolved", field_ref)
+                value = normalized_h
             filters.append((resolved_h[0], resolved_h[1], op, value))
         if having_parts and not is_agg:
             # 度量级 HAVING 只作用于聚合题;列表题挂 HAVING 是退化计划 → 严格 MISS
