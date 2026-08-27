@@ -374,10 +374,36 @@ class TestLintSemantics:
         issues = lint_semantics(model)
         assert any("M:N" in i and "fan-out" in i for i in issues)
 
-    def test_path_ambiguity_flagged(self):
-        """菱形关系图(loan-account, loan-client, client-account)→ 二义警告。"""
+    def test_shared_dimension_star_not_flagged(self):
+        """星型共享维度(account/client 各自 FK district,经纯维度叶 district
+        二次进入)→ 编译器视为虚假路由,建模期不再误报二义(BIRD 模式)。"""
         model = {
-            "datasets": [{"name": "loan"}, {"name": "account"}, {"name": "client"}],
+            "datasets": [{"name": "account"}, {"name": "client"},
+                         {"name": "disp"}, {"name": "district"},
+                         {"name": "loan"}],
+            "relationships": [
+                {"name": "account_to_district", "from": "account", "to": "district",
+                 "cardinality": "1:N"},
+                {"name": "client_to_district", "from": "client", "to": "district",
+                 "cardinality": "1:N"},
+                {"name": "disp_to_account", "from": "disp", "to": "account",
+                 "cardinality": "1:N"},
+                {"name": "disp_to_client", "from": "disp", "to": "client",
+                 "cardinality": "1:N"},
+                {"name": "loan_to_account", "from": "loan", "to": "account",
+                 "cardinality": "1:N"},
+            ],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert not any("存在多条简单路径" in i for i in issues)
+
+    def test_genuine_fact_diamond_flagged(self):
+        """真菱形:loan—account—client,且 account 自身拥有 FK(事实/枢纽表)
+        → loan↔client 两条经事实表的中转路径 → 二义警告。"""
+        model = {
+            "datasets": [{"name": "loan"}, {"name": "account"},
+                         {"name": "client"}, {"name": "order"}],
             "relationships": [
                 {"name": "loan_to_account", "from": "loan", "to": "account",
                  "cardinality": "1:N"},
@@ -385,11 +411,13 @@ class TestLintSemantics:
                  "cardinality": "1:N"},
                 {"name": "client_to_account", "from": "client", "to": "account",
                  "cardinality": "1:N"},
+                {"name": "account_to_order", "from": "account", "to": "order",
+                 "cardinality": "1:N"},
             ],
             "metrics": [],
         }
         issues = lint_semantics(model)
-        assert any("存在多条简单路径" in i for i in issues)
+        assert any("存在多条简单路径" in i and "loan" in i for i in issues)
 
     def test_non_additive_referenced_flagged(self):
         model = {

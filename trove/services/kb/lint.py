@@ -388,14 +388,35 @@ def _lint_metric_non_additive(
                 return
 
 
+def _is_many_to_many(cardinality: Any) -> bool:
+    """基数归一化判定(与 semantic_layer.compiler 同构):任意 M:N 拼写
+    (``M:N``/``many-to-many``/``MANY-TO-MANY``/``M2M``)一律视为多对多。"""
+    c = str(cardinality or "").strip().upper().replace("_", " ").replace("-", " ")
+    c = "".join(c.split())  # 去全部空白("M:N" 保留冒号)
+    return c in {"MN", "M:N", "N:M", "M2M", "MANYTOMANY", "MANY:MANY"}
+
+
 def _lint_path_ambiguity(
     issues: list[str], model: dict[str, Any], ds_names: set[str],
 ) -> None:
-    """声明关系图上两数据集之间存在多条简单路径 → 编译期可能 ambiguous MISS。
+    """声明关系图上两「事实/枢纽」数据集之间多条简单路径 → 编译期可能
+    ambiguous MISS 预警。
 
-    运行时只在"被查询涉及"时才判二义;建模期提前暴露,让建模者把路径
-    收敛(如只声明必要边)。图小,直接 BFS 计数简单路径(深度上限防爆)。
+    与编译器 JoinResolver 的 ``route_capable`` 语义对齐(compiler.py):
+    纯 1:N 维度叶(只作 to 端、自身无 FK,如 BIRD 的 district)是星型
+    共享维度——account/client 各自 FK 它,经它绕行 = 共享维度二次进入,
+    编译器按「查询所需表(needed)」作用域视为**虚假路由**不计入二义。
+    因此这里:
+      - 端点只取 route_capable 表(作过 many→one from 端、或 M:N 的 to
+        端)——纯维度叶(如 district)不参与计数,star 共享维度不误报;
+      - 路径中间节点也必须 route_capable 才计数——绕经纯维度叶的第二
+        路由不算,正确 BFS 树不会被误判。
+    只有「两个事实/枢纽表之间存在 ≥2 条仅经事实/枢纽表中转的简单路径」
+    (真菱形,如 loan—account—client 且 account/client 各自拥有 FK)才预警。
+    图小,直接 BFS 计数简单路径(深度上限防爆);无查询上下文,这正是
+    运行时按 needed 作用域可放行的最贴近近似。
     """
+    route_capable: set[str] = set()
     adj: dict[str, list[str]] = {}
     for r in model.get("relationships", []) or []:
         if not isinstance(r, dict):
@@ -403,6 +424,9 @@ def _lint_path_ambiguity(
         a, b = str(r.get("from", "")), str(r.get("to", ""))
         if a not in ds_names or b not in ds_names:
             continue
+        route_capable.add(a)  # from 端 = 自身拥有 FK → 事实/枢纽表
+        if _is_many_to_many(r.get("cardinality")):
+            route_capable.add(b)
         adj.setdefault(a, []).append(b)
         adj.setdefault(b, []).append(a)
     if not adj:
@@ -417,13 +441,15 @@ def _lint_path_ambiguity(
         for nb in adj.get(u, []):
             if nb in seen:
                 continue
+            if nb != v and nb not in route_capable:
+                continue  # 纯维度叶不能作中间路由(共享维度二次进入)
             n += paths(nb, v, seen | {u}, depth + 1)
             if n > 1:
                 return n  # 只需知道 >1
         return n
 
     reported: set[frozenset[str]] = set()
-    nodes = sorted(adj)
+    nodes = sorted(route_capable)  # 端点限事实/枢纽表,纯维度叶对不检查
     for i, a in enumerate(nodes):
         for b in nodes[i + 1:]:
             if frozenset((a, b)) in reported:
