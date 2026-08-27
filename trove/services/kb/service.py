@@ -418,6 +418,40 @@ class KbService:
 
     # ── Sync ──────────────────────────────────────────────
 
+    async def iter_items(
+        self, datasource: str,
+    ) -> list[dict]:
+        """Yield all KB items for a datasource as dicts.
+
+        Each dict: ``{"kind", "item_key", "payload", "source_file"}`` (payload
+        parsed from JSON). Used by the hybrid-retrieval indexer to build
+        retrievable documents from the parsed mirror.
+        """
+        import json
+
+        out: list[dict] = []
+        if not self.enabled:
+            return out
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT kind, item_key, payload, source_file FROM kb_items "
+                "WHERE datasource = ?",
+                (datasource,),
+            )
+            for r in await cur.fetchall():
+                try:
+                    payload = json.loads(r["payload"])
+                except Exception:
+                    continue
+                out.append({
+                    "kind": r["kind"],
+                    "item_key": r["item_key"],
+                    "payload": payload,
+                    "source_file": r["source_file"],
+                })
+        return out
+
     async def ensure_synced(self, default_datasource: str | None = None) -> None:
         """Lazy sync: reload only YAML files whose mtime changed.
 
@@ -688,6 +722,26 @@ class KbService:
             return await backend.search_terms(
                 question, datasource, tables=tables, all_tables=all_tables)
         return await self._search_terms(question, datasource, tables, all_tables)
+
+    async def search_schema_docs(
+        self,
+        question: str,
+        datasource: str,
+        limit: int = 5,
+    ) -> list[Any]:
+        """检索已索引的物理 schema 元数据(schema_doc),用于查询时表/列锚定。
+
+        仅当数据源后端为 pg_hybrid(统一 PG 检索库)时返回非空;其他后端
+        (builtin/hybrid/rag)无 schema_doc 通道,返回空,不影响语义优先边界。
+        """
+        backend = self._backend_for(datasource)
+        if backend is None or not hasattr(backend, "search_schema_docs"):
+            return []
+        try:
+            return await backend.search_schema_docs(question, datasource, limit=limit)
+        except Exception as e:
+            logger.warning("schema_doc retrieval failed (%s): %s", datasource, e)
+            return []
 
     async def _search_terms(
         self,

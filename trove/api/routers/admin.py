@@ -289,6 +289,35 @@ def _kb_datasource(request: Request, datasource: str | None) -> str:
     return ds
 
 
+@router.post("/admin/index")
+async def reindex(
+    request: Request,
+    body: dict | None = None,
+    datasource: str | None = None,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Trigger hybrid-retrieval indexing for a datasource.
+
+    Body / query: ``datasource`` (default = active), ``rebuild`` (bool, drop
+    and re-index), ``force_schema`` (bool, force schema re-index). Kicks the
+    ``Indexer.sync`` (KB + incremental schema). No-ops gracefully if no
+    retrieval store is configured.
+    """
+    body = body or {}
+    indexer = getattr(request.app.state, "indexer", None)
+    if indexer is None:
+        raise HTTPException(status_code=409, detail="hybrid retrieval not configured")
+    registry = request.app.state.connector_registry
+    ds = datasource or body.get("datasource") or registry.default_name
+    if not ds:
+        raise HTTPException(status_code=400, detail="no active datasource")
+    rebuild = bool(body.get("rebuild", False))
+    force_schema = bool(body.get("force_schema", False))
+    result = await indexer.sync(ds, rebuild=rebuild, force_schema=force_schema)
+    await _audit(request, "index.sync", admin, 200, {"datasource": ds, **result})
+    return {"status": "ok", "datasource": ds, **result}
+
+
 @router.post("/admin/kb/lessons/{pattern}/confirm")
 async def confirm_lesson(
     pattern: str, request: Request, datasource: str | None = None,

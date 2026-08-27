@@ -159,3 +159,17 @@ class DatasourceConfig:
     # pgvector 向量库连接串(留空 = 与 postgres 业务库同实例推导;业务库非
     # postgres 时为空即退化为 sqlite 本地向量)。
     vector_dsn: str = ""
+    # 统一 PostgreSQL 检索库连接串(混合检索 FTS+pgvector 的专属库;留空 =
+    # 从 retrieval_dsn 推导的 postgres 业务库同实例;再无 → 退化为 SQLite 混合库)。
+    retrieval_dsn: str = ""
+    # 精排(cross-encoder)模型名;空 → 确定性 n-gram 精排(零 LLM)。
+    rerank_model: str = ""
+    # pgvector 向量维度:须与 embedding_model 实际输出维度一致(OpenAI text-embedding-3-small
+    # = 1536,bge-m3 = 1024,m3e = 768 等);不一致会报向量长度错。留空默认 1536。
+    embedding_dims: int = 1536
+    # pg_bm25 分词器(仅混合检索 PG 后端):中文 KB 设 "chinese"(jieba),英文/通用设
+    # "en_stem"(默认);ParadeDB 镜像内置 pg_bm25 扩展,本字段透传进 BM25 索引 WITH 子句。
+    fts_tokenizer: str = "en_stem"
+    # 是否开放 catalog 探测工具(lookup_schema/explain_plan/search_values)。
+    # 默认关,维持语义优先边界;开启后这些工具重新注册且其输出进向量库。
+    allow_catalog_probing: bool = False

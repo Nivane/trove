@@ -48,6 +48,20 @@ class RetrievalBackend(Protocol):
     ) -> list[dict]:
         ...
 
+    async def search_schema_docs(
+        self,
+        query: str,
+        datasource: str,
+        limit: int = 5,
+    ) -> list[Any]:  # list[RetrievalHit]
+        """Optional: retrieve indexed physical schema metadata (schema_doc).
+
+        Used to re-inject curated table/column descriptions + enum values into
+        query-time schema linking (hybrid PG backend only). Backends without a
+        schema_doc channel simply omit this method; callers duck-type it.
+        """
+        ...
+
 
 @runtime_checkable
 class SearchIndexBackend(RetrievalBackend, Protocol):

@@ -3,14 +3,18 @@
 # and releases independently: `docker compose build frontend` only
 # rebuilds the UI, `docker compose build backend` only the API.
 #
-# 默认业务栈 = PostgreSQL(pgvector 镜像:业务表 + kb_vectors 共存):
-#   - postgres   : 业务库(pgvector 扩展),db-init 一次性灌入 BIRD 金融 schema
+# 默认业务栈 = PostgreSQL(ParadeDB 镜像:pgvector + pg_bm25 共存):
+#   - postgres   : 业务库(ParadeDB:pgvector 向量 + pg_bm25 真 BM25),db-init
+#                  一次性灌入 BIRD 金融 schema
 #   - db-init    : 一次性服务,启动时把 demo 数据写入 postgres(幂等)
-#   - backend    : --datasource postgres://... 连接业务库;向量后端默认 pgvector
-#                  (vector_dsn 留空 = 同实例推导)
+#   - backend    : --datasource postgres://... 连接业务库;检索库默认同实例
+#                  (retrieval_dsn 留空 = 同实例推导),混合检索 = pg_bm25 + pgvector
+#                  ANN + RRF + reranker
+#   注意:ParadeDB 镜像已内置 pg_bm25 扩展,无需额外安装;中文 KB 请在数据源
+#   配置里设 fts_tokenizer=chinese(见 .trove/datasources.yml)。
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: paradedb/paradedb:latest
     environment:
       POSTGRES_USER: trove
       POSTGRES_PASSWORD: trove

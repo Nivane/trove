@@ -123,6 +123,14 @@
                 <PlugZap :size="13" />
               </button>
               <button
+                class="mini-btn icon"
+                :title="t('dsReindex', ui.lang)"
+                :disabled="busy(row.name, 'reindex')"
+                @click="reindex(row)"
+              >
+                <RefreshCw :size="13" />
+              </button>
+              <button
                 class="mini-btn icon is-danger"
                 :title="t('dsRemove', ui.lang)"
                 :disabled="busy(row.name, 'test')"
@@ -283,6 +291,7 @@ import {
   Pencil,
   WifiOff,
   Trash2,
+  RefreshCw,
 } from 'lucide-vue-next'
 import { apiDelete, apiGet, apiPost, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
@@ -450,6 +459,18 @@ async function testConnectionRow(row: DatasourceInfo) {
   setBusy(row, 'test', true)
   await testUrl('', row)
   setBusy(row, 'test', false)
+}
+
+async function reindex(row: DatasourceInfo) {
+  setBusy(row, 'reindex', true)
+  try {
+    await apiPost('/v1/admin/index', { datasource: row.name })
+    notifySuccess(t('dsReindexOk', ui.lang))
+  } catch (e) {
+    toastError(e)
+  } finally {
+    setBusy(row, 'reindex', false)
+  }
 }
 
 async function testEdit() {

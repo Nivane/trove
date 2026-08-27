@@ -264,6 +264,32 @@ async def _semantic_linking(
             "matched_datasets": list(matched),
         },
     }
+
+    # 查询时回灌已索引的物理 schema 元数据(schema_doc:表/列描述 + 枚举值),
+    # 辅助 planner 锚定列/枚举值。仅 pg_hybrid 后端(统一 PG 检索库)有数据;
+    # 其他后端或库空 → 返回空,不注入,维持语义优先边界。只在已锚定数据集上
+    # 注入(按 doc_id 的 schema:<table> 过滤),避免无关物理表污染作用域。
+    if kb is not None and datasource and matched:
+        try:
+            schema_docs = await kb.search_schema_docs(state.question, datasource, limit=5)
+            if schema_docs:
+                matched_set = set(matched)
+                lines = []
+                for h in schema_docs:
+                    tbl = h.doc_id.split(":", 1)[1] if h.doc_id.startswith("schema:") else ""
+                    if tbl and tbl not in matched_set:
+                        continue
+                    lines.append(f"- {h.content}")
+                if lines:
+                    semantic_context = (
+                        semantic_context
+                        + "\n\nRetrieved schema notes:\n" + "\n".join(lines)
+                    )
+                    base["semantic_context"] = semantic_context
+                    base["schema_context"] = semantic_context
+                    base["link_detail"]["schema_doc_hits"] = len(lines)
+        except Exception as e:
+            logger.warning("schema_doc injection failed: %s", e)
     if not matched:
         # 零命中 = 未覆盖 = 拒绝(决策 4),不 fallback 全量表
         base["refusal"] = {

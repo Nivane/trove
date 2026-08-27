@@ -216,7 +216,8 @@ async def _run_candidate_subagent(
         services.connectors, rotated.question, rotated.lang, dialect,
         matched_tables=state.matched_tables or None,
         datasource=state.datasource,
-        semantic_only=bool(getattr(services.config, "semantic_first", False)),
+        semantic_only=bool(getattr(services.config, "semantic_first", False))
+        and not bool(getattr(services, "catalog_probing", False)),
     )
     prompt = build_sql_prompt_from_state(rotated)
     hint = _STYLE_HINTS.get(mode)
@@ -615,7 +616,8 @@ def _make_gen_sql_node(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
                 datasource=state.datasource,
-                semantic_only=bool(getattr(services.config, "semantic_first", False)),
+                semantic_only=bool(getattr(services.config, "semantic_first", False))
+                and not bool(getattr(services, "catalog_probing", False)),
             )
 
             prompt = build_sql_prompt_from_state(sub_state)

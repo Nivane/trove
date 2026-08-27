@@ -246,6 +246,29 @@ async def create_app_components(
             "Semantic layer init failed (%s); continuing without it.", e)
         semantic_layer = None
 
+    # ── Hybrid retrieval indexer (FTS + pgvector, RRF + rerank) ──
+    # 默认数据源的混合检索库 + 索引器(CLI `trove index` / 管理端触发)。
+    from trove.services.retrieval.factory import build_store
+    from trove.services.retrieval.indexer import Indexer
+
+    default_ds_cfg = None
+    for _c in config_store.load_configs():
+        if getattr(_c, "name", "") == (connector_registry.default_name or "default"):
+            default_ds_cfg = _c
+            break
+    hybrid_store = None
+    indexer = None
+    if default_ds_cfg is not None:
+        try:
+            hybrid_store = build_store(default_ds_cfg, llm_gateway, config.home)
+            indexer = Indexer(
+                hybrid_store, kb, connector_registry, config.home)
+        except Exception as e:
+            logger.warning("hybrid retrieval unavailable: %s", e)
+    catalog_probing = bool(
+        getattr(default_ds_cfg, "allow_catalog_probing", False)
+        if default_ds_cfg is not None else False)
+
     # ── Graphs ────────────────────────────────────────────
     services = GraphServices(
         llm=llm_gateway,
@@ -287,6 +310,9 @@ async def create_app_components(
         "catalog_service": catalog_service,
         "kb": kb,
         "user_facts": user_facts,
+        "indexer": indexer,
+        "hybrid_store": hybrid_store,
+        "catalog_probing": catalog_probing,
         "lineage": lineage,
         "graphs": graphs,
         "session_manager": session_manager,
@@ -397,10 +423,15 @@ def main_repl():
         sys.exit(0)
 
 
+async def _run_index(argv: list[str]) -> None:
+    from trove.cli.index_cmds import main_index
+
+    await main_index(argv)
+
+
 async def async_main_cli():
     """Async main for CLI (non-interactive) mode."""
-    # Subcommands: trove-cli job ...   trove-cli schedule ...   trove-cli maintenance ...
-    if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule", "maintenance"):
+    if len(sys.argv) > 1 and sys.argv[1] in ("job", "schedule", "maintenance", "index"):
         from trove.cli.maintenance_cmds import main_maintenance
         from trove.cli.schedule_cmds import main_job, main_schedule
 
@@ -408,6 +439,7 @@ async def async_main_cli():
             "job": main_job,
             "schedule": main_schedule,
             "maintenance": main_maintenance,
+            "index": _run_index,
         }[sys.argv[1]]
         await handler(sys.argv[2:])
         return

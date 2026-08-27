@@ -37,6 +37,22 @@ def build_retrieval_backend(name: str, kb: Any) -> Any:
     return factory(kb)
 
 
+def _effective_backend(cfg: Any) -> str:
+    """解析后端名:显式 hybrid/rag 沿用;缺省(builtin/空)时,若具备混合检索库
+    (retrieval_dsn 或 postgres 业务库同实例)且配置了 embedding_model,则
+    升级为 pg_hybrid 作为默认检索后端。"""
+    rb = str(getattr(cfg, "retrieval_backend", "") or "builtin").strip()
+    if rb not in ("", "builtin"):
+        return rb
+    dsn = str(getattr(cfg, "retrieval_dsn", "") or "").strip()
+    if not dsn and getattr(cfg, "type", "") == "postgres":
+        from trove.services.kb.backends.dense import _vector_dsn
+        dsn = _vector_dsn(cfg)
+    if dsn and str(getattr(cfg, "embedding_model", "") or "").strip():
+        return "pg_hybrid"
+    return "builtin"
+
+
 def resolver_from_configs(
     configs: list[Any],
     embedder_factory: Callable[[Any], Any] | None = None,
@@ -45,23 +61,23 @@ def resolver_from_configs(
 
     Args:
         configs: 持久化数据源配置列表。
-        embedder_factory: (cfg) → Embedder | None。rag 后端用它构造稠密通道
-            (None/缺 embedding_model → rag 退化为纯稀疏,不报错)。
+        embedder_factory: (cfg) → Embedder | None。rag / pg_hybrid 后端用它
+            构造稠密通道(None/缺 embedding_model → 退化为纯稀疏,不报错)。
 
     Returns:
         (resolve, bind):
-        - resolve(datasource) → RetrievalBackend | None(builtin/未知 → None);
+        - resolve(datasource) → RetrievalBackend | None(builtin/未知/构造失败 → None);
         - bind(kb) 把 KbService 实例注入闭包(构造后端需要读 KB 镜像)。
     """
     backend_map: dict[str, str] = {}
     cfg_map: dict[str, Any] = {}
     for cfg in configs:
         name = getattr(cfg, "name", "")
-        rb = str(getattr(cfg, "retrieval_backend", "") or "builtin").strip()
         if name:
             cfg_map[name] = cfg
-        if name and rb in _BACKEND_REGISTRY:
-            backend_map[name] = rb
+        eff = _effective_backend(cfg)
+        if name and (eff in _BACKEND_REGISTRY or eff == "pg_hybrid"):
+            backend_map[name] = eff
 
     holder: dict[str, Any] = {}
 
@@ -75,18 +91,60 @@ def resolver_from_configs(
             embedder = embedder_factory(cfg) if embedder_factory is not None else None
             store = vector_store_for(kb, cfg)
             return RagBackend(kb, embedder=embedder, vector_store=store)
+        if name == "pg_hybrid":
+            from trove.services.kb.backends.pg_hybrid import PgHybridKbBackend
+            from trove.services.retrieval import (
+                CrossEncoderReranker,
+                DeterministicReranker,
+                PgHybridStore,
+                SqliteHybridStore,
+            )
+
+            embedder = embedder_factory(cfg) if embedder_factory is not None else None
+            reranker_model = str(getattr(cfg, "rerank_model", "") or "")
+            reranker = (
+                CrossEncoderReranker(embedder, model=reranker_model)
+                if reranker_model else DeterministicReranker())
+            dsn = str(getattr(cfg, "retrieval_dsn", "") or "").strip()
+            if not dsn and getattr(cfg, "type", "") == "postgres":
+                from trove.services.kb.backends.dense import _vector_dsn
+                dsn = _vector_dsn(cfg)
+            if dsn:
+                store = PgHybridStore(
+                    dsn, embedder=embedder, reranker=reranker,
+                    dims=int(getattr(cfg, "embedding_dims", 1536) or 1536),
+                    fts_tokenizer=str(getattr(cfg, "fts_tokenizer", "") or "en_stem"),
+                )
+            else:
+                # SQLite 兜底须与索引器同一 home(否则检索库为空);取 kb 目录父级
+                home = getattr(cfg, "home", "") or (
+                    str(kb.kb_dir.parent) if kb is not None and getattr(kb, "kb_dir", None) else "")
+                store = SqliteHybridStore.for_home(home, embedder, reranker)
+            return PgHybridKbBackend(kb, store, embedder=embedder)
         return build_retrieval_backend(name, kb)
 
     def resolve(datasource: str) -> Any:
         name = backend_map.get(datasource or "", "builtin")
         if name == "builtin":
             return None
+        cache = holder.get("backends")
+        if cache is not None and datasource in cache:
+            return cache[datasource]
         kb = holder.get("kb")
         if kb is None:
             return None
-        return _build(name, cfg_map.get(datasource or ""), kb)
+        try:
+            backend = _build(name, cfg_map.get(datasource or ""), kb)
+        except Exception as e:
+            logger.warning("backend build failed for %s (%s); using builtin", datasource, e)
+            backend = None
+        if "backends" not in holder:
+            holder["backends"] = {}
+        holder["backends"][datasource] = backend
+        return backend
 
     def bind(kb: Any) -> None:
         holder["kb"] = kb
+        holder["backends"] = {}
 
     return resolve, bind
