@@ -562,7 +562,18 @@ def mcp_parser() -> argparse.ArgumentParser:
     """Argument parser for the 'trove mcp' MCP-server subcommand."""
     parser = argparse.ArgumentParser(
         prog="trove mcp",
-        description="Run the Trove MCP server (stdio transport)",
+        description="Run the Trove MCP server (stdio / sse / streamable-http)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Transports:\n"
+            "  stdio            (default) stdio — for Claude Desktop / Cursor /\n"
+            "                   Claude Code local mounts.\n"
+            "  sse|streamable-http  HTTP — mount over the network (Cursor /\n"
+            "                   Claude Code remote). Use --token for bearer auth.\n\n"
+            "Example (remote, with auth):\n"
+            "  trove mcp --transport streamable-http --host 0.0.0.0 --port 8001 \\\n"
+            "      --token $TROVE_MCP_TOKEN\n"
+        ),
     )
     parser.add_argument(
         "--datasource", "-d", default="",
@@ -574,11 +585,68 @@ def mcp_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", "-f", default=None, help="Path to agent.yml config file")
     parser.add_argument("--model", "-m", default=None, help="LLM model to use (overrides config)")
     parser.add_argument("--workflow", "-w", default="reflection", help="Default workflow")
+    parser.add_argument(
+        "--transport", "-t", default="stdio",
+        choices=("stdio", "sse", "streamable-http", "http"),
+        help=(
+            "MCP transport. stdio (default, local mounts); sse / "
+            "streamable-http (alias http) for network mounts."
+        ),
+    )
+    parser.add_argument(
+        "--host", default="127.0.0.1",
+        help="Bind host for sse / streamable-http (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8001,
+        help="Bind port for sse / streamable-http (default: 8001)",
+    )
+    parser.add_argument(
+        "--path", default=None,
+        help="Endpoint path for sse / streamable-http (default per transport)",
+    )
+    parser.add_argument(
+        "--token", default=None,
+        help=(
+            "Optional bearer token required for sse / streamable-http. "
+            "When set, HTTP clients must send 'Authorization: Bearer <token>'."
+        ),
+    )
     return parser
 
 
+def _build_mcp_auth_middleware(token: str | None):
+    """Optional bearer-token gate for HTTP transports.
+
+    Returns a Starlette middleware that enforces 'Authorization: Bearer
+    <token>' on every request when ``token`` is set; passes through
+    untouched when no token is configured. health/metadata endpoints are
+    not exempted so that unauthorized clients fail fast.
+    """
+    if not token:
+        return None
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.middleware import Middleware
+    from starlette.responses import JSONResponse
+
+    expected = f"Bearer {token}"
+
+    class _BearerMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            auth = request.headers.get("Authorization", "")
+            if auth != expected:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "unauthorized: missing or invalid bearer token"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return await call_next(request)
+
+    return Middleware(_BearerMiddleware)
+
+
 async def async_main_mcp(argv: list[str]) -> None:
-    """Async main for 'trove mcp' (MCP server over stdio)."""
+    """Async main for 'trove mcp' (MCP server over stdio / sse / streamable-http)."""
     args = mcp_parser().parse_args(argv)
     config = await _load_config(args)
     async with build_checkpointer(config.home) as checkpointer:
@@ -586,8 +654,27 @@ async def async_main_mcp(argv: list[str]) -> None:
         from trove.mcp.server import build_mcp_server
 
         server = build_mcp_server(components)
+        transport = args.transport
         try:
-            await server.run_stdio_async()
+            if transport == "stdio":
+                await server.run_stdio_async()
+            else:
+                middleware = _build_mcp_auth_middleware(args.token)
+                http_kwargs: dict[str, Any] = {
+                    "transport": "streamable-http" if transport == "http" else transport,
+                    "host": args.host,
+                    "port": args.port,
+                }
+                if args.path:
+                    http_kwargs["path"] = args.path
+                if middleware is not None:
+                    http_kwargs["middleware"] = [middleware]
+                if args.token:
+                    logger.info(
+                        "MCP %s listening on %s:%s (bearer auth required)",
+                        transport, args.host, args.port,
+                    )
+                await server.run_http_async(**http_kwargs)
         finally:
             await components["connector_registry"].close_all()
 
