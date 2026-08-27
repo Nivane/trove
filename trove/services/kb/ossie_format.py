@@ -50,12 +50,12 @@ def _metric_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
 def terms_to_ossie_document(
     terms: list[dict[str, Any]], model_name: str = "",
 ) -> dict[str, Any]:
-    """flat term 列表 → OSSIE 文档 dict(``{semantic_model: [...]}``)。
+    """flat term 列表 → OSSIE 文档 dict(``{version, semantic_model}``)。
 
     datasets 声明 = 各 term ``tables`` 的排序并集——推导锚定依赖声明集
     (``_dataset_refs`` 只信声明过的数据集),缺声明则锚定丢失。
     空/空白 mapping 的条目跳过并告警(parse_ossie 对无 dialect 的 metric
-    整体抛错,容忍单个坏 term)。
+    整体抛错,容忍单个坏 term)。文档带 OSSIE v0.2.0.dev0 ``version``。
     """
     datasets: set[str] = set()
     metrics: list[dict[str, Any]] = []
@@ -73,7 +73,7 @@ def terms_to_ossie_document(
     model: dict[str, Any] = {"name": model_name, "datasets": [{"name": t} for t in sorted(datasets)]}
     if metrics:
         model["metrics"] = metrics
-    return {"semantic_model": [model]}
+    return {"version": "0.2.0.dev0", "semantic_model": [model]}
 
 
 def ossie_to_term_payloads(text: str) -> list[dict[str, Any]]:

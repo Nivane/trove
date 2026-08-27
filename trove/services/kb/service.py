@@ -1377,6 +1377,25 @@ class KbService:
         )
         return True
 
+    def _init_doc(
+        self, filename: str, doc: dict, datasource: str,
+        overwrite: bool = False,
+    ) -> bool:
+        """Write a full YAML document as-is(顶层键保留,如 OSSIE ``version``)。"""
+        ds_dir = self.kb_dir / datasource
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        path = ds_dir / filename
+        if path.exists() and not overwrite:
+            logger.info("%s/%s already exists; refusing to overwrite", datasource, filename)
+            return False
+        path.write_text(
+            yaml.safe_dump(
+                doc, default_flow_style=False, allow_unicode=True, sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return True
+
     def init_schema_notes(
         self, schema: SchemaInfo, datasource: str, overwrite: bool = False,
     ) -> bool:
@@ -1409,8 +1428,8 @@ class KbService:
     ) -> bool:
         """Write a semantics.yml as an OSSIE semantic_model (LLM-assisted /kb init)."""
         doc = terms_to_ossie_document(terms, model_name=datasource)
-        return self._init_file(
-            "semantics.yml", "semantic_model", doc["semantic_model"], datasource, overwrite)
+        return self._init_doc(
+            "semantics.yml", doc, datasource, overwrite)
 
     def init_semantics(
         self, doc: dict, datasource: str, overwrite: bool = False,
@@ -1420,9 +1439,10 @@ class KbService:
         ``doc`` carries the deterministic structure layer
         (datasets with fields/primary keys + relationships) plus metrics —
         a superset of what ``init_terms`` writes. See semantic_gen.py.
+        顶层键(如 OSSIE ``version``)原样写盘(完整文档)。
         """
-        return self._init_file(
-            "semantics.yml", "semantic_model", doc["semantic_model"], datasource, overwrite)
+        return self._init_doc(
+            "semantics.yml", doc, datasource, overwrite)
 
     def init_examples(
         self, examples: list[dict], datasource: str, overwrite: bool = False,

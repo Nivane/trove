@@ -27,11 +27,15 @@
     synonyms: [<用户问题里的说法>]
     definition: <一句话业务含义>
     datatype: <String|Integer|Float|Decimal|Date|DateTime|Time|Boolean>
+    enum_display: {<code>: <人类可读值>, ...}   # 仅枚举型字段
 
 规则:
 - 引用的数据集必须已存在于上面的词表。绝不虚构数据集。
 - `expression` 必须是可解析的 SQL,且只引用已声明数据集的字段。
 - 绝不重复定义已有的 metric/字段名。绝不添加关系。
+- 绝不把过滤值写死进 metric。不要草拟 `number_of_female_clients = COUNT(...) FILTER (WHERE gender='F')` 这类名字/表达式里嵌了具体值的指标——那会变成每个枚举值一条 metric。应保持 metric 值无关,把值放在字段上:
+  - 若维度字段已存在,草拟 kind: field 并带 `enum_display`(或扩展其 synonyms),让值经查询条件解析——无需新 metric。
+  - 若维度字段本身缺失,草拟 kind: field(标量、非聚合)+ `enum_display`,而不是值过滤的 metric。
 - 若在已声明数据集范围内确实无法补齐,则输出:
   draft:
     kind: none

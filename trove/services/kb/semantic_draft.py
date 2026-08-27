@@ -68,7 +68,11 @@ def _recover_draft(response: str) -> list[dict] | None:
 
 
 def apply_annotations(model: dict, annotations: list[dict]) -> tuple[int, int]:
-    """白名单合并:只认已声明 table.field,synonyms/description 落位。
+    """白名单合并:只认已声明 table.field,synonyms/description/enum_labels 落位。
+
+    enum_labels(值可读词)只覆盖已声明 enum 字段的**已存在 code** 的
+    value 侧(``{F: female}``)——code 键由 probe 决定,LLM 只拥有措辞,
+    绝不发明新枚举值(值与码的锚定是确定性结构层的地盘)。
 
     Returns:
         (applied, dropped)——dropped = 未知表/字段 + 无内容条目。
@@ -87,6 +91,25 @@ def apply_annotations(model: dict, annotations: list[dict]) -> tuple[int, int]:
             dropped += 1
             continue
         fields = {f["name"]: f for f in dataset.get("fields", []) if isinstance(f, dict)}
+        # enum_labels:{column: {code: 人类可读词}} — 只改已声明 code 的 value 侧
+        enum_labels = ann.get("enum_labels") or {}
+        if isinstance(enum_labels, dict):
+            for col_name, labels in enum_labels.items():
+                field = fields.get(str(col_name))
+                if field is None or not isinstance(labels, dict):
+                    continue
+                display = dict(field.get("enum_display") or {})
+                changed = False
+                for code, label in labels.items():
+                    code = str(code)
+                    if code not in display:
+                        continue  # 未声明的 code → 丢弃(白名单,不发明枚举值)
+                    if isinstance(label, str) and label.strip():
+                        display[code] = label.strip()
+                        changed = True
+                if changed:
+                    field["enum_display"] = display
+                    applied += 1
         for note in ann.get("field_notes") or []:
             if not isinstance(note, dict):
                 dropped += 1
@@ -114,14 +137,18 @@ def apply_annotations(model: dict, annotations: list[dict]) -> tuple[int, int]:
 
 
 def _chunk_text(chunk: list[dict]) -> str:
-    """数据集块 → 提示词文本(表名 + 列名与类型)。"""
+    """数据集块 → 提示词文本(表名 + 列名/类型/枚举码)。"""
     lines: list[str] = []
     for d in chunk:
-        cols = ", ".join(
-            f["name"] + (f" ({f['datatype']})" if f.get("datatype") else "")
-            for f in d.get("fields", [])
-        )
-        lines.append(f"- {d['name']}: columns: {cols}")
+        cols = []
+        for f in d.get("fields", []):
+            text = f["name"] + (f" ({f['datatype']})" if f.get("datatype") else "")
+            display = f.get("enum_display") or {}
+            if display:
+                codes = ", ".join(str(k) for k in display)
+                text += f" [enum: {codes}]"
+            cols.append(text)
+        lines.append(f"- {d['name']}: columns: {', '.join(cols)}")
     return "\n".join(lines)
 
 

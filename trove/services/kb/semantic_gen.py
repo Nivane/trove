@@ -11,7 +11,11 @@ structural skeleton of a semantic model, **without any LLM**:
   many→one direction, deduplicated;
 - metrics: carried over from the provided flat `terms` list (the
   deterministic COUNT/SUM/AVG terms kb init already generates) so the
-  resulting semantics.yml is a drop-in superset of the old output.
+  resulting semantics.yml is a drop-in superset of the old output;
+- enums (P5.1): probed low-cardinality columns become
+  `semantic_role: enum` with an identity `enum_display` ({code: code}),
+  which the LLM annotation draft later enriches with human words — the
+  deterministic half of "values live on the field, not in metrics".
 
 This is 100% deterministic and regenerable from the schema, so it falls
 inside the "kb init can generate it" rule — never hand-authored gold SQL.
@@ -27,6 +31,7 @@ from trove.core.types import SchemaInfo, TableInfo
 from trove.services.kb.ossie_format import _metric_from_entry
 
 _ANSI = "ANSI_SQL"
+_OSSIE_VERSION = "0.2.0.dev0"
 
 _TEXT_TYPES = frozenset({"char", "text", "varchar", "enum", "string",
                           "character", "clob", "varchar2", "nvarchar"})
@@ -151,10 +156,25 @@ def _metrics_from_terms(terms: list[dict[str, Any]] | None) -> list[dict[str, An
     return out
 
 
+def _enum_display_from_values(values_text: str) -> dict[str, str]:
+    """probe 的 ``"v1; v2"`` → 恒等 enum_display ``{v: v}``(值收编到字段)。
+
+    恒等映射是确定性骨架:LLM 语义起草层把可读词补进 value 侧
+    ({F: female}),code 键保持不变。空/超限值被跳过。
+    """
+    out: dict[str, str] = {}
+    for v in (values_text or "").split(";"):
+        v = v.strip()
+        if v:
+            out[v] = v
+    return out
+
+
 def generate_semantic_document(
     schema: SchemaInfo,
     model_name: str = "",
     terms: list[dict[str, Any]] | None = None,
+    enums: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """schema → OSSIE semantic_model 文档 dict(结构层,确定性)。
 
@@ -163,6 +183,8 @@ def generate_semantic_document(
         model_name: semantic model 名(通常是 datasource)。
         terms: 可选 flat term 列表(确定性 generate_terms 输出),作为
             metrics 嵌进文档;缺省只产出结构骨架。
+        enums: 可选 probe_enums 输出 ``{table: {column: "v1; v2"}}``;
+            低基数列提升为 ``semantic_role: enum`` + 恒等 enum_display。
     """
     tables = {t.name: t for t in schema.tables}
     datasets = [
@@ -174,6 +196,7 @@ def generate_semantic_document(
         }
         for t in schema.tables
     ]
+    _apply_enum_roles(datasets, enums or {})
     rels = relationships_from_schema(tables)
 
     model: dict[str, Any] = {"name": model_name, "datasets": datasets}
@@ -182,4 +205,34 @@ def generate_semantic_document(
     metrics = _metrics_from_terms(terms)
     if metrics:
         model["metrics"] = metrics
-    return {"semantic_model": [model]}
+    doc: dict[str, Any] = {"semantic_model": [model]}
+    # OSSIE v0.2.0.dev0 文档级 version(透传;解析端容缺省)
+    doc["version"] = _OSSIE_VERSION
+    return doc
+
+
+def _apply_enum_roles(
+    datasets: list[dict[str, Any]],
+    enums: dict[str, dict[str, str]],
+) -> None:
+    """probe 结果落位:低基数列 → semantic_role=enum + 恒等 enum_display。
+
+    只作用于文本/维度列(取值已知),不动 identifier/measure/time 列。
+    """
+    by_name = {str(d.get("name")): d for d in datasets}
+    for table_name, cols in enums.items():
+        ds = by_name.get(table_name)
+        if ds is None:
+            continue
+        field_by_name = {str(f.get("name")): f for f in ds.get("fields", [])}
+        for col_name, values_text in cols.items():
+            field = field_by_name.get(col_name)
+            if field is None:
+                continue
+            display = _enum_display_from_values(values_text)
+            if not display:
+                continue
+            # 仅提升原 dimension 列(identifier/measure/time 保持角色不动)
+            if str(field.get("semantic_role") or "") in ("", "dimension"):
+                field["semantic_role"] = "enum"
+            field["enum_display"] = display

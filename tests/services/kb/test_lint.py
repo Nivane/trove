@@ -262,6 +262,80 @@ class TestLintSemantics:
         issues = lint_semantics(model)
         assert any("filter 无法解析" in i for i in issues)
 
+    def test_metric_filter_enum_baked_flagged(self):
+        """值不得写死进 metric:对已声明 enum 字段做等值过滤 → 建模异味。"""
+        model = {
+            "datasets": [{"name": "client", "fields": [
+                {"name": "client_id"},
+                {"name": "gender", "semantic_role": "enum",
+                 "enum_display": {"F": "female", "M": "male"}},
+            ]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "number_of_female_clients", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(client.client_id)"}]},
+                 "datasets": ["client"], "filter": "gender = 'F'"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("把枚举值过滤写死进 metric" in i and "gender" in i for i in issues)
+
+    def test_metric_filter_enum_via_enum_display_flagged(self):
+        """enum_display 存在(未显式 semantic_role)也算声明 enum 字段。"""
+        model = {
+            "datasets": [{"name": "loan", "fields": [
+                {"name": "loan_id"},
+                {"name": "status", "enum_display": {"A": "active", "B": "closed"}},
+            ]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "active_loan_count", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "filter": "status = 'A'"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("把枚举值过滤写死进 metric" in i and "loan.status" in i for i in issues)
+
+    def test_metric_filter_non_enum_not_flagged(self):
+        """非枚举字段(普通 dimension)等值过滤不误报。"""
+        model = {
+            "datasets": [{"name": "loan", "fields": [
+                {"name": "loan_id"}, {"name": "status", "semantic_role": "dimension"},
+            ]}],
+            "relationships": [],
+            "metrics": [
+                {"name": "active_loan_count", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datasets": ["loan"], "filter": "status = 'A'"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert not any("把枚举值过滤写死进 metric" in i for i in issues)
+
+    def test_unique_keys_undeclared_column_flagged(self):
+        model = {
+            "datasets": [{"name": "client", "fields": [{"name": "client_id"}],
+                          "unique_keys": [["client_id"], ["email"]]}],
+            "relationships": [],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("unique_keys 引用未声明的列 email" in i for i in issues)
+
+    def test_metric_datatype_invalid_flagged(self):
+        model = {
+            "datasets": [],
+            "relationships": [],
+            "metrics": [
+                {"name": "c", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]},
+                 "datatype": "BOGUS"},
+            ],
+        }
+        issues = lint_semantics(model)
+        assert any("datatype 非法: BOGUS" in i for i in issues)
+
     def test_agg_time_dimension_not_temporal_flagged(self):
         model = {
             "datasets": [{"name": "loan", "fields": [

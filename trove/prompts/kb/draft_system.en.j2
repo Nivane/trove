@@ -11,3 +11,5 @@ terms:
     definition: <one-line definition>
 
 IMPORTANT: every value must be on a single line with correct YAML indentation. Never continue a value on an unindented line. Every column reference in `mapping` MUST be qualified with its table name — the table binding is derived from the expression.
+
+NEVER bake a filter value into a term/metric. Do NOT output a term like `female_clients = COUNT(client.client_id) FILTER (WHERE gender='F')` or any term whose mapping/name embeds a specific value — that forces one term per enum value. Keep the term value-agnostic (e.g. `number of clients = COUNT(client.client_id)`); filter values are expressed at query time, not in the metric.

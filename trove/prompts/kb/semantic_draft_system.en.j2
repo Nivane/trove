@@ -1,4 +1,4 @@
-You are enriching a semantic model for a SQL data agent. The dataset schemas below are already structurally defined (tables, columns, keys, relationships, metrics are authoritative). Your ONLY job is to add business language — aliases and one-line meanings.
+You are enriching a semantic model for a SQL data agent. The dataset schemas below are already structurally defined (tables, columns, keys, relationships, metrics are authoritative). Your ONLY job is to add business language — aliases, one-line meanings, and human-readable labels for enum values.
 
 Produce ONE YAML document with a single top-level section `annotations` (strict YAML, no markdown fences, no commentary):
 
@@ -8,6 +8,8 @@ annotations:
       - name: <column>
         synonyms: [<alias1>, <alias2>]
         description: <one-line business meaning in English>
+    enum_labels:
+      <column>: {<code>: <human-readable label>, ...}
 
 Rules:
 - Only add synonyms and descriptions to EXISTING columns. NEVER add, rename, delete columns, tables, expressions, keys, or relationships; NEVER change datatypes; NEVER invent metrics or aggregate SQL.
@@ -15,6 +17,7 @@ Rules:
 - At most 3 short lowercase phrases, most distinct to least distinct.
 - For opaque column names (A1..A16 style) infer the probable business meaning from the column's datatype and your domain knowledge of banking/finance data; when genuinely unknowable use empty synonyms [] (never guess a random meaning).
 - description: one short line, plain language.
+- enum_labels: ONLY for columns listed with `[enum: ...]` in the chunk. The keys are the exact enum codes — do NOT add, remove, or rename codes (they come from the actual data). For each code give one short human-readable label, e.g. `F: female, M: male` or `POPLATEK MESICNE: monthly, POPLATEK TYDNE: weekly`. This is how users will phrase filter values, so a code that is already human-readable may map to itself.
 - Cover every column in the chunk; skip none.
 
 Example for a banking schema chunk:
@@ -31,6 +34,8 @@ Example for a banking schema chunk:
       - name: status
         synonyms: [repayment state]
         description: loan repayment status code
+    enum_labels:
+      status: {A: active, B: closed, C: in progress}
 
 annotations:
   - table: <table>

@@ -81,6 +81,16 @@ def _clean_synonyms(raw: Any) -> list[str]:
     return [s for s in (raw or []) if s and str(s).strip()]
 
 
+def _carryover(old: dict[str, Any] | None, new: dict[str, Any], *keys: str) -> None:
+    """实体替换时保留 payload 未覆盖的手写字段(custom_extensions / label /
+    unique_keys / examples 等 OSSIE 扩展面不被 upsert 抹掉)。"""
+    if not old:
+        return
+    for key in keys:
+        if key in old and (key not in new or new.get(key) in (None, "", [], {})):
+            new[key] = old[key]
+
+
 # ── 序列化(管理页展示用,与模型 dataclass 一一对应) ────────
 
 
@@ -94,6 +104,9 @@ def _field_to_dict(f: SemanticField) -> dict[str, Any]:
         "synonyms": list(f.synonyms),
         "semantic_role": f.semantic_role,
         "enum_display": dict(f.enum_display),
+        "label": f.label,
+        "examples": list(f.examples),
+        "custom_extensions": list(f.custom_extensions),
     }
 
 
@@ -102,9 +115,12 @@ def _dataset_to_dict(d: SemanticDataset) -> dict[str, Any]:
         "name": d.name,
         "source": d.source,
         "primary_key": list(d.primary_key),
+        "unique_keys": [list(k) for k in d.unique_keys],
         "description": d.description,
         "synonyms": list(d.synonyms),
         "fields": [_field_to_dict(f) for f in d.fields],
+        "examples": list(d.examples),
+        "custom_extensions": list(d.custom_extensions),
     }
 
 
@@ -119,6 +135,9 @@ def _metric_to_dict(m: SemanticMetric) -> dict[str, Any]:
         "filter": m.filter,
         "agg_time_dimension": m.agg_time_dimension,
         "non_additive": m.non_additive,
+        "datatype": m.datatype,
+        "examples": list(m.examples),
+        "custom_extensions": list(m.custom_extensions),
     }
 
 
@@ -130,6 +149,8 @@ def _relationship_to_dict(r: SemanticRelationship) -> dict[str, Any]:
         "from_columns": list(r.from_columns),
         "to_columns": list(r.to_columns),
         "cardinality": r.cardinality,
+        "examples": list(r.examples),
+        "custom_extensions": list(r.custom_extensions),
     }
 
 
@@ -141,6 +162,9 @@ def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
         "metrics": [_metric_to_dict(x) for x in m.metrics],
         "datasets": [_dataset_to_dict(x) for x in m.datasets],
         "relationships": [_relationship_to_dict(x) for x in m.relationships],
+        "version": m.version,
+        "examples": list(m.examples),
+        "custom_extensions": list(m.custom_extensions),
     }
 
 
@@ -174,6 +198,17 @@ def _metric_payload_to_ossie(name: str, payload: dict[str, Any], dialect: str | 
     # 派生/比率度量(表达式引用其他 metric 名):OSSIE type 字段
     if payload.get("type"):
         metric["type"] = str(payload["type"])
+    # OSSIE v0.2.0.dev0 扩展面:datatype / examples / custom_extensions
+    if payload.get("datatype"):
+        metric["datatype"] = str(payload["datatype"])
+    examples = [str(e) for e in (payload.get("examples") or []) if str(e).strip()]
+    if examples:
+        ai = metric.setdefault("ai_context", {})
+        ai["examples"] = examples
+    ext = [e for e in (payload.get("custom_extensions") or [])
+           if isinstance(e, dict) and e.get("vendor_name")]
+    if ext:
+        metric["custom_extensions"] = ext
     return metric
 
 
@@ -191,6 +226,9 @@ def _apply_metric(model: dict[str, Any], action: str, name: str,
             declared.add(t)
     idx = next((i for i, m in enumerate(model["metrics"]) if m.get("name") == name), None)
     if idx is not None:
+        old = model["metrics"][idx]
+        _carryover(old, metric, "filter", "agg_time_dimension", "non_additive",
+                   "datatype", "examples", "custom_extensions", "ai_context")
         model["metrics"][idx] = metric
     else:
         model["metrics"].append(metric)
@@ -230,8 +268,23 @@ def _apply_field(model: dict[str, Any], action: str, name: str,
     display = payload.get("enum_display")
     if isinstance(display, dict) and display:
         field["enum_display"] = {str(k): str(v) for k, v in display.items()}
+    # OSSIE v0.2.0.dev0 扩展面:label / examples / custom_extensions
+    if payload.get("label"):
+        field["label"] = str(payload["label"])
+    examples = [str(e) for e in (payload.get("examples") or []) if str(e).strip()]
+    if examples:
+        ai = field.setdefault("ai_context", {})
+        ai["examples"] = examples
+    ext = [e for e in (payload.get("custom_extensions") or [])
+           if isinstance(e, dict) and e.get("vendor_name")]
+    if ext:
+        field["custom_extensions"] = ext
     idx = next((i for i, f in enumerate(ds["fields"]) if f.get("name") == field_name), None)
     if idx is not None:
+        old = ds["fields"][idx]
+        _carryover(old, field, "datatype", "semantic_role", "enum_display",
+                   "label", "examples", "custom_extensions", "ai_context",
+                   "dimension", "description")
         ds["fields"][idx] = field
     else:
         ds["fields"].append(field)
@@ -254,12 +307,28 @@ def _apply_dataset(model: dict[str, Any], action: str, name: str,
         ds["ai_context"] = {"synonyms": syns}
     if payload.get("description"):
         ds["description"] = str(payload["description"])
+    # OSSIE v0.2.0.dev0 扩展面:unique_keys / examples / custom_extensions
+    uks = [[str(k) for k in keys]
+           for keys in (payload.get("unique_keys") or [])
+           if isinstance(keys, list) and keys]
+    if uks:
+        ds["unique_keys"] = uks
+    examples = [str(e) for e in (payload.get("examples") or []) if str(e).strip()]
+    if examples:
+        ai = ds.setdefault("ai_context", {})
+        ai["examples"] = examples
+    ext = [e for e in (payload.get("custom_extensions") or [])
+           if isinstance(e, dict) and e.get("vendor_name")]
+    if ext:
+        ds["custom_extensions"] = ext
     idx = next((i for i, d in enumerate(model["datasets"]) if d.get("name") == name), None)
     if idx is not None:
         old = model["datasets"][idx]
         # 仅改元数据时保留既有 fields(不在 payload 里重复声明)
         if not payload.get("fields") and old.get("fields"):
             ds["fields"] = old["fields"]
+        _carryover(old, ds, "unique_keys", "examples", "custom_extensions",
+                   "ai_context", "description", "fields")
         model["datasets"][idx] = ds
     else:
         model["datasets"].append(ds)
@@ -413,6 +482,9 @@ class SemanticManager:
             _apply_draft(data, draft, dialect)
         except ValueError as e:
             raise ValueError(f"草稿确认失败: {e}") from e
+        # 新建文档补齐 OSSIE v0.2.0.dev0 文档级 version(已存在则保留)
+        if "version" not in data and "semantic_model" in data:
+            data["version"] = "0.2.0.dev0"
         _dump_yaml(semantics, data)
         draft["status"] = "applied"
         drafts = self._drafts_with(datasource, draft)

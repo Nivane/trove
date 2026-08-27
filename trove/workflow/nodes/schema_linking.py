@@ -175,7 +175,11 @@ def _render_semantic_context(
                 if f.is_time:
                     bits.append("time")
                 if f.enum_display:
-                    bits.append(f"{len(f.enum_display)} values")
+                    # 渲染值映射(不是只报个数):planner 据此把人类值(male/男性)
+                    # 落到规范 code(M),编译期再确定性归一——值留在字段层。
+                    mapping = ", ".join(
+                        f"{k}={v}" for k, v in f.enum_display.items())
+                    bits.append(f"enum {{{mapping}}}")
                 lines.append("  - " + " | ".join(bits))
         anchored = [m for m in model.metrics if m.datasets and name in m.datasets]
         if anchored:
