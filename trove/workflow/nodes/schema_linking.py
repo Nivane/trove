@@ -110,14 +110,25 @@ def _semantic_match_datasets(
         if score >= 2.0 and name not in matched:
             matched.append(name)
 
-    # 声明字段命中 → 数据集锚定(问题词 = 字段名/synonym 子串)
+    # 声明字段命中 → 数据集锚定(问题词 = 字段名/synonym 子串)。
+    # 原始字段名子串只对业务列(dimension/enum/measure)生效:identifier/time
+    # 列是结构列(主键、日期),其原始名常与问题里的普通词撞车(如 "issued"
+    # 命中 card.issued 时间列,把无关数据集拉进作用域,planner 进而误锚列)。
+    # synonym 命中不受此限(人工写的业务词表)。
     for d in model.datasets:
         if d.name in matched:
             continue
         for f in d.fields:
-            if (f.name and f.name.lower() in q_lower) or any(
+            role = str(getattr(f, "semantic_role", "") or "").strip().lower()
+            name_hit = (
+                bool(f.name)
+                and f.name.lower() in q_lower
+                and role not in ("identifier", "time")
+            )
+            syn_hit = any(
                 s and str(s).lower() in q_lower for s in f.synonyms
-            ):
+            )
+            if name_hit or syn_hit:
                 matched.append(d.name)
                 break
 

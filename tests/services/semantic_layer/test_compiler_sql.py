@@ -232,6 +232,7 @@ def _diamond_model():
             ]),
             SemanticDataset(name="disp", primary_key=["disp_id"], fields=[
                 _field("disp_id"), _field("client_id"), _field("account_id"),
+                _field("type"),
             ]),
             SemanticDataset(name="district", primary_key=["district_id"], fields=[
                 _field("district_id"), _field("A3"),
@@ -266,14 +267,39 @@ def _diamond_model():
     )
 
 
-def test_no_joins_falls_back_to_bfs_ambiguous():
-    """无显式 joins → BFS 先到先得,菱形 → 严格 MISS(不赌安全)。"""
+def test_no_joins_ignores_spurious_shared_dimension_route():
+    """无显式 joins 时,绕经**查询未涉及**表的虚假路由不计入二义。
+
+    查询引用 client/loan(plan tables 含 account,但 district 未引用);BFS
+    树本身正确(client→disp→account→loan);共享维度 district 的第二路由是
+    虚假的 → 应编译而非 ambiguous_join_path。
+    """
     plan = {
-        "tables": ["client", "account", "loan"],
-        "answer_columns": ["client.client_id"],
+        "tables": ["client", "account", "loan", "district"],
+        "answer_columns": ["client.client_id", "loan.loan_id"],
+    }
+    result = _compile(plan, ["client", "loan"], model=_diamond_model())
+    assert result is not None
+    assert "FROM client" in result.sql
+    assert "JOIN account" in result.sql
+    assert "JOIN loan ON loan.account_id = account.account_id" in result.sql
+
+
+def test_no_joins_genuine_ambiguity_still_miss():
+    """真二义:查询组件**同时引用** client+account+district+disp(四条路由表
+    全在 needed 内)→ BFS 无法判定走 client 的 district 还是 account 的
+    district → 仍严格 MISS,防静默错答。
+
+    若路由表未被组件引用(如 district 只是 planner 误列),绕经它们的虚假
+    路由不计入二义 → 编译(见 test_no_joins_ignores_spurious_shared_dimension_route)。
+    """
+    plan = {
+        "tables": ["client", "account", "district", "disp"],
+        "answer_columns": ["client.client_id", "account.account_id", "district.A3"],
+        "conditions": [{"field": "disp.type", "op": "=", "value": "OWNER"}],
     }
     res = SemanticCompiler(_diamond_model()).compile_detailed(
-        plan, ["client", "loan"], force_dialect="mysql")
+        plan, ["client", "account", "district", "disp"], force_dialect="mysql")
     from trove.services.semantic_layer.compiler import CompileMiss
     assert isinstance(res, CompileMiss)
     assert res.reason == "ambiguous_join_path"
@@ -325,18 +351,16 @@ def test_explicit_joins_undeclared_edge_strict_miss():
 
 
 def test_explicit_joins_placeholder_falls_back():
-    """占位/空 joins 视为未声明 → 回退 BFS(行为不变)。"""
+    """占位/空 joins 视为未声明 → 回退 BFS(虚假共享维度路由不计入 → 编译)。"""
     for placeholder in ("", "(empty if none)", "none"):
         plan = {
             "tables": ["client", "account", "loan"],
             "joins": placeholder,
             "answer_columns": ["client.client_id"],
         }
-        res = SemanticCompiler(_diamond_model()).compile_detailed(
-            plan, ["client", "loan"], force_dialect="mysql")
-        from trove.services.semantic_layer.compiler import CompileMiss
-        assert isinstance(res, CompileMiss)
-        assert res.reason == "ambiguous_join_path"
+        result = _compile(plan, ["client", "loan"], model=_diamond_model())
+        assert result is not None
+        assert "FROM client" in result.sql
 
 
 def test_explicit_joins_disconnected_tree_miss():
@@ -613,8 +637,17 @@ def test_compile_ok_when_cardinality_declared():
 
 
 def test_compile_miss_on_ambiguous_join_path():
-    """P2:root→matched 双路由 → 严格 MISS(不先到先得地猜)。"""
+    """P2:root→matched 双路由,且两路由的表都被组件引用 → 严格 MISS。
+
+    查询同时引用 loan/district/account/client:district 可从 loan→account 与
+    loan→client 两条路由到达(BFS 无法判定走哪条)→ 不先到先得地猜。
+    若 account/client 未被引用,绕经它们的第二路由是虚假的 → 编译(见
+    test_no_joins_ignores_spurious_shared_dimension_route)。
+    """
     model = _demo_model()
+    model.datasets.append(SemanticDataset(name="client", primary_key=["client_id"], fields=[
+        _field("client_id"), _field("district_id"),
+    ]))
     model.relationships.append(
         SemanticRelationship("loan_to_client", "loan", "client",
                              from_columns=["account_id"], to_columns=["account_id"],
@@ -625,9 +658,13 @@ def test_compile_miss_on_ambiguous_join_path():
                              cardinality="1:N"))
     plan = {
         "aggregation": "count(loan.loan_id)",
-        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+        "answer_columns": [
+            "district.A3", "count(loan.loan_id)",
+            "account.account_id", "client.client_id",
+        ],
     }
-    assert _compile(plan, ["loan", "district", "account"], model=model) is None
+    assert _compile(
+        plan, ["loan", "district", "account", "client"], model=model) is None
 
 
 def test_guardrail_flags_columns_not_in_from_join():

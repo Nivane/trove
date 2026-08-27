@@ -45,12 +45,19 @@ def _has_ambiguous_path(
     subgraph: set[str],
     root: str,
     matched: set[str],
+    allowed: set[str] | None = None,
 ) -> bool:
     """相关子图内 root→任一 matched 表是否有多条简单路径(节点级去重)。
 
     边先按无序表对去重(复合键/同对重复声明算一条,不误伤),再做有限 DFS
     (每个目标最多找 2 条路径即提前返回,图规模小,成本可控)。
     图有环(如三角形)或双路由时:同一表对间存在两条不同节点序列 → 二义。
+
+    ``allowed``:DFS 只允许经过的表(查询实际涉及的 plan tables)。绕经
+    **查询未涉及**的表的路径(星型 schema 共享维度的二次进入,如 client 与
+    account 同连 district 时,查询只提 account→district,绕经 client 的
+    第二路由)是虚假路由——对当前查询不可达/无语义,不计入二义,避免把
+    正确 BFS 树误判成 ambiguous_join_path。缺省 = 全部相关表(旧行为)。
     """
     pair_adj: dict[str, set[str]] = {}
     for e in edges:
@@ -59,6 +66,7 @@ def _has_ambiguous_path(
         pair_adj.setdefault(e.from_, set()).add(e.to)
         pair_adj.setdefault(e.to, set()).add(e.from_)
 
+    allowed = matched if allowed is None else allowed
     for target in matched:
         if target == root:
             continue
@@ -72,6 +80,8 @@ def _has_ambiguous_path(
             for nxt in pair_adj.get(node, ()):
                 if nxt in visited:
                     continue
+                if nxt not in allowed:
+                    continue  # 绕经查询未涉及的表 → 虚假路由,不计入
                 stack.append((nxt, visited | {nxt}))
         if count > 1:
             return True
@@ -149,12 +159,22 @@ class JoinResolver:
         self,
         tables: list[str],
         root: str | None = None,
+        needed: set[str] | None = None,
     ) -> JoinResolution:
         """ON 子句 + 中间表集合(纯声明关系图,锚表 BFS)。
 
         边图 = 全量声明关系;从锚表(root,默认 matched[0])出发 BFS,子图连
         所有可达表——中间表(不在 matched 里的联表)也算,这正是 ''question
         只点名 loan+district、实际要经 account 联'' 的场景。
+
+        ``needed``:查询**实际需要**的表(组件引用的表,见
+        SemanticCompiler._plan_needed_tables)。它同时决定:
+          - 联表保留(BFS 树剪枝):只保留能到 needed 表的子树——planner 在
+            plan.tables 里误列的无关共享维度(如 client/account 同连的
+            district)不会多余联入,也不会触发行倍增;
+          - 歧义判定作用域:只数「路径节点都在 needed 内」的路径——绕经
+            needed 之外表的虚假路由不计入二义。
+        缺省 None = matched_set(旧行为,调用方不传时语义不变)。
 
         命名约定边不再有运行时回退通道(Phase B 移除 catalog 探测):join 图
         完全来自 KB 声明的 relationships,kb init 已确定性生成(含基数)。
@@ -167,6 +187,7 @@ class JoinResolver:
         if len(matched) < 2:
             return JoinResolution()
         matched_set = set(matched)
+        needed = set(needed) if needed else matched_set
         root = root or matched[0]
 
         declared = set()
@@ -176,6 +197,14 @@ class JoinResolver:
             for r in self._model.relationships:
                 rel_tables.add(r.from_)
                 rel_tables.add(r.to)
+        # 路由能力表:在关系图里作过 many→one 的 from 端(自身拥有 FK),或
+        # 是 M:N 边的 to 端——这类表是事实/关联/枢纽表,可作联桥。纯 1:N
+        # 维度叶(只作 to 端、无 FK 也无 M:N,如 district)不能作为路由中间
+        # 表:经它绕行 = 共享维度二次进入(虚假路由),会让 BFS 把 needed 表
+        # 的父节点错赋到维度侧。
+        rels = list(self._model.relationships) if self._model else []
+        route_capable = {r.from_ for r in rels}
+        route_capable |= {r.to for r in rels if _is_many_to_many(r.cardinality)}
         # 端点表也计入 known:即使 datasets 块不全,关系图的节点也算数
         known = matched_set | declared | rel_tables
 
@@ -196,42 +225,47 @@ class JoinResolver:
                 other = edge.to if table == edge.from_ else edge.from_
                 if other in visited:
                     continue
+                # 纯维度表不能作为路由中间表:需要它时才作为目标访问(进 needed),
+                # 否则经它绕行 = 共享维度二次进入(虚假路由,会让 BFS 选错父节点)。
+                if other not in needed and other not in route_capable:
+                    continue
                 visited.add(other)
                 parent_edge[other] = (table, edge)
                 children.setdefault(table, []).append(other)
                 queue.append(other)
 
-        # 保留"根→matched 路径上"的边;纯多余叶子(子树不含任何 matched 表)
-        # 剪掉——否则无关的 M:N 边会误触发 fan-out,挡住合法编译。
+        # 保留"根→needed 路径上"的边;纯多余叶子(子树不含任何 needed 表)
+        # 剪掉——否则无关的 M:N 边会误触发 fan-out,挡住合法编译,且 planner
+        # 误列但未被引用的表(如共享维度 district)会被多余联入(行倍增)。
         memo: dict[str, bool] = {}
 
-        def leads_to_matched(node: str) -> bool:
+        def leads_to_needed(node: str) -> bool:
             if node in memo:
                 return memo[node]
-            if node in matched_set:
+            if node in needed:
                 memo[node] = True
                 return True
-            memo[node] = any(leads_to_matched(c) for c in children.get(node, []))
+            memo[node] = any(leads_to_needed(c) for c in children.get(node, []))
             return memo[node]
 
         tree: list[JoinEdge] = []
         fan_out = False
         unknown_card = False
         for child, (parent, edge) in parent_edge.items():
-            if not leads_to_matched(child):
+            if not leads_to_needed(child):
                 continue
             tree.append(edge)
             if _is_many_to_many(edge.cardinality):
-                # P5.2:多对多经此边联(在 matched 路径上)→ 编译期拒 fan-out
+                # P5.2:多对多经此边联(在 needed 路径上)→ 编译期拒 fan-out
                 fan_out = True
             elif not (edge.cardinality or "").strip():
                 # 边在联路径上但基数未声明 → many→one 无从判定,保守 MISS
                 unknown_card = True
 
-        # P2 路径二义性:相关子图里 root→任一 matched 表存在 >1 条简单路径。
+        # P2 路径二义性:相关子图里 root→任一 needed 表存在 >1 条简单路径。
         # BFS 先到先得选边不可审计(图有环/双路由时可能选到语义错误路径),
         # MetricFlow 式做法是把二义暴露在建模期——运行时发现即严格 MISS。
-        # 相关子图按「root 可达 ∩ 可到 matched」在**图**上算,不能只依赖 BFS
+        # 相关子图按「root 可达 ∩ 可到 needed」在**图**上算,不能只依赖 BFS
         # 树:菱形里 client 的 district 被 account 先占,树里像死叶子,图上却是
         # 第二路由。边按无序表对去重后计路径(复合键/重复声明不算二义)。
         graph_edges = [e for e in edges if e.from_ in visited and e.to in visited]
@@ -239,18 +273,23 @@ class JoinResolver:
         for e in graph_edges:
             pair_adj.setdefault(e.from_, set()).add(e.to)
             pair_adj.setdefault(e.to, set()).add(e.from_)
-        to_matched: set[str] = set()
-        stack = list(matched_set)
+        to_needed: set[str] = set()
+        stack = list(needed)
         while stack:
             n = stack.pop()
-            if n in to_matched:
+            if n in to_needed:
                 continue
-            to_matched.add(n)
+            to_needed.add(n)
             for nb in pair_adj.get(n, ()):
-                if nb not in to_matched:
+                if nb not in to_needed:
                     stack.append(nb)
-        relevant_graph = visited & to_matched
-        ambiguous = _has_ambiguous_path(graph_edges, relevant_graph, root, matched_set)
+        relevant_graph = visited & to_needed
+        # 只数「路径节点都在查询实际需要表(needed)内」的路径:绕经 needed 之
+        # 外表(如 client 与 account 同连的 district 二次进入)的虚假路由不
+        # 计入二义——否则正确 BFS 树被误判成 ambiguous_join_path。
+        ambiguous = _has_ambiguous_path(
+            graph_edges, relevant_graph, root, needed,
+            allowed=needed)
 
         clauses = [
             f"{e.from_}.{e.from_column} = {e.to}.{e.to_column}"
@@ -550,7 +589,10 @@ def _enum_code_for(text: str, enum_display: dict[str, str]) -> str | None:
     """人类值/码 → 规范 code(经 enum_display 双向匹配,大小写不敏感)。
 
     先按 code 键匹配(identity 命中返回原键,保 SQL 用库里存的写法),
-    再按可读词值匹配(``male``/``男性`` → ``M``)。未命中 → None。
+    再按可读词值匹配(``male``/``男性`` → ``M``),最后词级兜底:label 词集
+    与输入词集互相子集(``weekly`` ↔ "weekly statements")且唯一命中才采纳;
+    多 label 同命中(如裸 "statements" 同时是 monthly/weekly 的子集)→ None,
+    调用方保守 MISS(值歧义,不猜)。
     """
     low = (text or "").strip().lower()
     if not low:
@@ -561,6 +603,18 @@ def _enum_code_for(text: str, enum_display: dict[str, str]) -> str | None:
     for code, label in enum_display.items():
         if str(label).strip().lower() == low:
             return str(code)
+    in_tokens = set(re.findall(r"[a-z0-9]+", low))
+    if not in_tokens:
+        return None
+    matches: list[str] = []
+    for code, label in enum_display.items():
+        label_tokens = set(re.findall(r"[a-z0-9]+", str(label).strip().lower()))
+        if not label_tokens:
+            continue
+        if label_tokens <= in_tokens or in_tokens <= label_tokens:
+            matches.append(str(code))
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
@@ -770,6 +824,52 @@ class SemanticCompiler:
         refs = {c.table.lower() for c in tree.find_all(exp.Column) if c.table}
         refs |= {t.name.lower() for t in tree.find_all(exp.Table) if t.name}
         return refs
+
+    def _plan_needed_tables(
+        self, plan: dict[str, Any], matched_pairs: list[tuple[str, SemanticMetric]],
+        matched_set: set[str],
+    ) -> set[str]:
+        """查询**实际需要**的表 = 组件引用的表(answer/条件/聚合度量/having/
+        时间/排序),经 _resolve_field 把裸列引用也落到其数据集。
+
+        与 plan.tables 的区别:plan.tables 是 planner 声明的超集,可能误列
+        共享维度等无关表(district);这里只取真正被引用/被回答需要的表——
+        决定联表树的保留与歧义判定作用域,避免误列表触发虚假二义或被多余
+        联入(行倍增)。distinct 是 ratio 的分子/分母都锚定同一数据集。
+        """
+        needed: set[str] = set()
+
+        def _add(ref: Any) -> None:
+            ref = str(ref or "").strip()
+            if not ref or ref == "*" or "(" in ref:
+                return
+            if "." in ref:
+                needed.add(ref.split(".", 1)[0].strip())
+                return
+            resolved = self._resolve_field(ref, matched_set)
+            if resolved is not None:
+                needed.add(resolved[0])
+
+        if not plan:
+            return needed
+        for ac in plan.get("answer_columns") or []:
+            _add(ac)
+        for c in plan.get("conditions") or []:
+            if isinstance(c, dict):
+                _add(c.get("field"))
+        for h in plan.get("having") or []:
+            if isinstance(h, dict):
+                _add(h.get("field"))
+                _add(h.get("metric"))
+        tg = plan.get("time_grain")
+        if isinstance(tg, dict):
+            _add(tg.get("field"))
+        for col, _dir in parse_ordering(plan.get("ordering")) or []:
+            _add(col)
+        for _cand, m in matched_pairs:
+            if m.datasets:
+                needed.update(m.datasets)
+        return needed
 
     def _resolve_field(self, ref: str, matched: set[str]) -> tuple[str, Any] | None:
         """列引用(``col`` / ``table.col``)→ (dataset, field);找不到 → None。
@@ -1085,8 +1185,12 @@ class SemanticCompiler:
                     "ambiguous_join_path", "explicit joins not a connected tree")
             joins = tree
         else:
+            # 查询实际需要的表 = 组件引用的表(非 planner 全集):决定联表树
+            # 保留与歧义作用域,避免误列的共享维度(district)触发虚假二义
+            # 或被多余联入。
+            needed = self._plan_needed_tables(plan, matched_pairs, matched_set)
             resolution = JoinResolver(self._model).resolve(
-                list(join_tables), root=anchor)
+                list(join_tables), root=anchor, needed=needed)
             if resolution.fan_out:
                 # P5.2:M:N 边在联路径上 → 编译期拒(行倍增),严格 MISS 回 LLM
                 return CompileMiss("fan_out", ", ".join(matched))
