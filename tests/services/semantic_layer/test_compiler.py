@@ -190,7 +190,29 @@ def test_single_path_not_ambiguous():
 
 
 def test_diamond_two_paths_is_ambiguous():
-    """双路由(loan→account→district 与 loan→client→district)→ 二义 MISS。"""
+    """双路由(loan→account→district 与 loan→client→district),且两路由的
+    表都在查询涉及表内 → 二义 MISS(BFS 无法判定走哪条,不先到先得地猜)。
+
+    若 account/client 不在查询涉及表内,绕经它们的第二路由是虚假的 → 不
+    判二义(见 test_diamond_spurious_route_not_ambiguous)。
+    """
+    model = _model(
+        _rel("loan_to_account", "loan", "account", "account_id", "account_id", cardinality="1:N"),
+        _rel("account_to_district", "account", "district", "district_id", "district_id", cardinality="1:N"),
+        _rel("loan_to_client", "loan", "client", "client_id", "client_id", cardinality="1:N"),
+        _rel("client_to_district", "client", "district", "district_id", "district_id", cardinality="1:N"),
+    )
+    res = JoinResolver(model).resolve(["loan", "district", "account", "client"])
+    assert res.ambiguous is True
+
+
+def test_diamond_spurious_route_not_ambiguous():
+    """共享维度二次进入(第二路由绕经**查询未涉及**的表)→ 虚假路由,不判二义。
+
+    查询只涉及 loan/district:district 可从 loan→account 与 loan→client 到达,
+    但 account/client 都不在查询涉及表内——第二路由对当前查询无语义,BFS 树
+    仍是可信的(按声明顺序选自然路由)。
+    """
     model = _model(
         _rel("loan_to_account", "loan", "account", "account_id", "account_id", cardinality="1:N"),
         _rel("account_to_district", "account", "district", "district_id", "district_id", cardinality="1:N"),
@@ -198,7 +220,11 @@ def test_diamond_two_paths_is_ambiguous():
         _rel("client_to_district", "client", "district", "district_id", "district_id", cardinality="1:N"),
     )
     res = JoinResolver(model).resolve(["loan", "district"])
-    assert res.ambiguous is True
+    assert res.ambiguous is False
+    assert res.clauses == [
+        "loan.account_id = account.account_id",
+        "account.district_id = district.district_id",
+    ]
 
 
 def test_parallel_edges_same_pair_not_ambiguous():
