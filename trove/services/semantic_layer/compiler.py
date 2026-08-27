@@ -278,6 +278,131 @@ class JoinResolver:
         return "\n".join(lines)
 
 
+# ── 权威联表路径(plan.joins, MetricFlow 显式路径) ──────────────
+#
+# 编译器默认用声明图 BFS 选边(P2:二义 → 严格 MISS)。当 planner 在 plan 里
+# 显式声明 ``joins`` 时,按声明路径选边——解决共享维度菱形(如 client 与
+# account 同连 district 造成的第二条路由)而不用删关系。每条 join 必须是
+# 已声明 relationship 的列对(路径选择而非造边),非法 → 严格 MISS 不静默改道。
+
+_PLACEHOLDER_JOINS = {"", "none", "empty", "-", "(empty if none)", "null"}
+
+
+def _explicit_join_edges(
+    joins_value: Any, model: SemanticModel | None,
+) -> tuple[list["JoinEdge"] | None, bool]:
+    """plan.joins → (权威 JoinEdge 列表 | None, present)。
+
+    present=False:joins 空/占位 → 调用方回退 BFS(行为不变)。
+    present=True, edges=None:joins 非空但含未声明边/不可解析 → 严格 MISS,
+        不静默忽略后走 BFS 改道(planner 明确声明了与模型不一致的路径)。
+    present=True, edges=[...]:权威路径(方向对齐声明 relationship)。
+    """
+    if model is None:
+        return None, False
+    if isinstance(joins_value, str):
+        parts = [joins_value]
+    elif isinstance(joins_value, list):
+        parts = [str(x) for x in joins_value]
+    else:
+        return None, False
+    text = " AND ".join(p for p in parts if str(p).strip())
+    stripped = text.strip().lower()
+    if stripped in _PLACEHOLDER_JOINS:
+        return None, False
+
+    from sqlglot import exp, parse_one
+
+    # joins 是逗号/AND 分隔的多个 ``lhs = rhs`` 子句(planner 输出):
+    # 整体 parse 会被逗号卡死,逐子句解析后收集 EQ。
+    clauses = [c for c in re.split(r"\s*,\s*|\s+and\s+", text, flags=re.I) if c.strip()]
+    parsed = []
+    for clause in clauses:
+        try:
+            parsed.append(parse_one(clause))
+        except Exception:
+            return None, True
+
+    rel_edges: list[tuple[str, str, str, str, str]] = []
+    for r in model.relationships:
+        for fc, tc in zip(r.from_columns or [], r.to_columns or []):
+            rel_edges.append(
+                (r.from_.lower(), r.to.lower(), fc.lower(), tc.lower(),
+                 (r.cardinality or "").upper()))
+    out: list[JoinEdge] = []
+    for tree in parsed:
+        eqs = list(tree.find_all(exp.EQ))
+        if len(eqs) != 1:
+            return None, True
+        eq = eqs[0]
+        left, right = eq.left, eq.right
+        if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+            return None, True
+        lt = (left.table or "").strip().lower()
+        lc = (left.name or "").strip().lower()
+        rt = (right.table or "").strip().lower()
+        rc = (right.name or "").strip().lower()
+        if not (lt and lc and rt and rc):
+            return None, True
+        matched = None
+        for f, t, fc, tc, card in rel_edges:
+            if (f == lt and t == rt and fc == lc and tc == rc) or (
+                f == rt and t == lt and fc == rc and tc == lc
+            ):
+                matched = (f, t, fc, tc, card)
+                break
+        if matched is None:
+            return None, True
+        out.append(JoinEdge(
+            matched[0], matched[1], matched[2], matched[3],
+            declared=True, cardinality=matched[4],
+        ))
+    return (out if out else None), True
+
+
+def _left_deep_tree(edges: list[JoinEdge], anchor: str) -> list[JoinEdge] | None:
+    """把权威 join 边组装成从 anchor 起的左深树(返回树序边;失败 → None)。
+
+    与 BFS 树序同语义:每条树边双亲先于孩子被访问,保证左深 JOIN 合法。
+    anchor 不在任何边 / 不成连通树(环或断开)→ None(调用方严格 MISS)。
+    """
+    in_tree = {anchor}
+    remaining = list(edges)
+    ordered: list[JoinEdge] = []
+    while remaining:
+        progressed = False
+        for i, e in enumerate(remaining):
+            if e.from_ in in_tree and e.to not in in_tree:
+                in_tree.add(e.to)
+                ordered.append(e)
+                remaining.pop(i)
+                progressed = True
+                break
+            if e.to in in_tree and e.from_ not in in_tree:
+                in_tree.add(e.from_)
+                ordered.append(e)
+                remaining.pop(i)
+                progressed = True
+                break
+        if not progressed:
+            return None
+    return ordered
+
+
+def _anchor_candidates(anchor: str, join_tables: list[str], edges: list[JoinEdge]) -> list[str]:
+    """权威路径的锚表候选(去重,保序):度量锚表优先,再 join_tables 顺序。
+
+    只保留出现在显式边里的表——锚表不在边内则 _left_deep_tree 必然失败,
+    提前剪掉。``anchor`` 通常是度量锚定表,优先尝试它。
+    """
+    edge_tables = {e.from_ for e in edges} | {e.to for e in edges}
+    out: list[str] = []
+    for cand in [anchor, *join_tables]:
+        if cand in edge_tables and cand not in out:
+            out.append(cand)
+    return out
+
+
 # ── Constrained-selection SQL compilation ────────────────────
 #
 # 对应 Snowflake Cortex Analyst 的「逻辑宇宙」/ MetricFlow 编译:LLM 只
@@ -940,18 +1065,38 @@ class SemanticCompiler:
                 anchor = m.datasets[0]
                 break
 
-        resolution = JoinResolver(self._model).resolve(
-            list(join_tables), root=anchor)
-        if resolution.fan_out:
-            # P5.2:M:N 边在联路径上 → 编译期拒(行倍增),严格 MISS 回 LLM
-            return CompileMiss("fan_out", ", ".join(matched))
-        if resolution.unknown_cardinality:
-            # 联路径上有未声明基数的边 → many→one 无从判定,保守 MISS(不赌安全)
-            return CompileMiss("unknown_cardinality", ", ".join(matched))
-        if resolution.ambiguous:
-            # P2:root→matched 存在多条简单路径,BFS 先到先得不可审计 → 严格 MISS
-            return CompileMiss("ambiguous_join_path", ", ".join(matched))
-        joins = resolution.tree_edges if (not resolution.empty and resolution.tree_edges) else []
+        resolution = None
+        joins: list[JoinEdge] = []
+        # 权威联表路径(plan.joins):planner 显式声明的路径优先,免 BFS 猜。
+        # 每条 join 必须是已声明 relationship(路径选择而非造边);非空但未
+        # 声明/不成左深树 → 严格 MISS,不静默忽略后 BFS 改道。
+        explicit, joins_present = _explicit_join_edges(plan.get("joins"), self._model)
+        if joins_present:
+            if explicit is None:
+                return CompileMiss(
+                    "ambiguous_join_path", "explicit joins reference undeclared edges")
+            tree = None
+            for cand in _anchor_candidates(anchor, join_tables, explicit):
+                tree = _left_deep_tree(explicit, cand)
+                if tree is not None:
+                    break
+            if tree is None:
+                return CompileMiss(
+                    "ambiguous_join_path", "explicit joins not a connected tree")
+            joins = tree
+        else:
+            resolution = JoinResolver(self._model).resolve(
+                list(join_tables), root=anchor)
+            if resolution.fan_out:
+                # P5.2:M:N 边在联路径上 → 编译期拒(行倍增),严格 MISS 回 LLM
+                return CompileMiss("fan_out", ", ".join(matched))
+            if resolution.unknown_cardinality:
+                # 联路径上有未声明基数的边 → many→one 无从判定,保守 MISS(不赌安全)
+                return CompileMiss("unknown_cardinality", ", ".join(matched))
+            if resolution.ambiguous:
+                # P2:root→matched 存在多条简单路径,BFS 先到先得不可审计 → 严格 MISS
+                return CompileMiss("ambiguous_join_path", ", ".join(matched))
+            joins = resolution.tree_edges if (not resolution.empty and resolution.tree_edges) else []
 
         where_parts = [
             f"{_qualified(tbl, f.expression)} {op.upper()} {_literal(value)}"
