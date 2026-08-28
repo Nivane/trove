@@ -8,5 +8,8 @@ Result columns: {{ columns }}
 Total rows returned: {{ total_rows }}
 Rows:
 {{ rows }}
+{% if rows_note %}
+{{ rows_note }}
+{% endif %}
 
 Write concise, data-grounded insights from these results.

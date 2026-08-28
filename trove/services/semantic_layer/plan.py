@@ -22,6 +22,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # 时间粒度白名单(编译器与 dict 流共用同一常量)。
 GRAINS = frozenset({"year", "quarter", "month", "week", "day"})
 
+# 分析类型(plan.analysis.type 白名单):编译器窗口函数分析。
+ANALYSIS_TYPES = frozenset({
+    "share",        # 占比:metric / SUM(metric) OVER (PARTITION BY ...)
+    "running_total",  # 累计:SUM(metric) OVER (... ORDER BY time ROWS UNBOUNDED PRECEDING)
+    "mom",          # 环比增量:metric - LAG(metric,1) OVER (... ORDER BY time)
+    "yoy",          # 同比增量:metric - LAG(metric,n) OVER (... ORDER BY time),n 由 grain 推
+    "pct_change",   # 环比增长率:(metric - LAG)/LAG
+    "rank",         # 排名:RANK() OVER (... ORDER BY metric DESC)
+})
+
 
 def _norm_direction(value: Any) -> str:
     """方向归一:desc/descending → "desc",其余一律 "asc"(容错)。"""
@@ -164,6 +174,53 @@ class PlanOrdering(BaseModel):
         return _norm_direction(v)
 
 
+class PlanAnalysis(BaseModel):
+    """窗口函数分析:编译器把聚合结果再套一层窗口计算。
+
+    type: share / running_total / mom / yoy / pct_change / rank。
+    metric: 目标度量名(缺省 = plan 的唯一聚合度量)。
+    partition_by: 窗口分区字段(占比/排名/环比按组内算时用;缺省空)。
+    order_by: 窗口排序字段——时间类分析(running_total/mom/yoy/pct_change)
+        必需时间维度;share/rank 可选(rank 默认按度量降序)。
+    direction: 窗口 ORDER BY 方向(asc/desc,默认 asc)。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: str
+    metric: str = ""
+    partition_by: list[str] = Field(default_factory=list)
+    order_by: str = ""
+    direction: str = "asc"
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _type(cls, v: Any) -> str:
+        t = _coerce_str(v).strip().lower()
+        if t not in ANALYSIS_TYPES:
+            raise ValueError(f"unknown analysis type: {t!r}")
+        return t
+
+    @field_validator("metric", "order_by", mode="before")
+    @classmethod
+    def _strs(cls, v: Any) -> str:
+        return _coerce_str(v).strip()
+
+    @field_validator("partition_by", mode="before")
+    @classmethod
+    def _parts(cls, v: Any) -> list[str]:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            raise ValueError("partition_by must be a list")
+        return [str(x).strip() for x in v if str(x).strip()]
+
+    @field_validator("direction", mode="before")
+    @classmethod
+    def _dir(cls, v: Any) -> str:
+        return _norm_direction(v)
+
+
 class PlanQuery(BaseModel):
     """planner 查询计划的强类型 IR(编译器唯一输入)。"""
 
@@ -178,6 +235,8 @@ class PlanQuery(BaseModel):
     answer_columns: list[str] = Field(default_factory=list)
     time_grain: PlanTimeGrain | None = None
     having: list[PlanHaving] = Field(default_factory=list)
+    analysis: PlanAnalysis | None = None
+    limit: int | None = None
     plan_field: str = ""
 
     @field_validator("tables", mode="before")
@@ -231,6 +290,26 @@ class PlanQuery(BaseModel):
         if not isinstance(v, list):
             raise ValueError(f"answer_columns must be a list, got {type(v).__name__}")
         return [str(x) for x in v]
+
+    @field_validator("analysis", mode="before")
+    @classmethod
+    def _analysis(cls, v: Any) -> Any:
+        # 缺省 → None;present 但形态非法 → 整体失败(回退 dict 流,编译器
+        # 在 dict 流同样严格 MISS,不静默丢弃分析意图)。
+        if v is None or v == "":
+            return None
+        return v
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def _limit(cls, v: Any) -> int | None:
+        if v is None or v == "":
+            return None
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"invalid limit: {v!r}")
+        return n if n > 0 else None
 
     def to_dict(self) -> dict[str, Any]:
         """回投 raw-dict 形态(供编译器内部 dict 流复用)。"""

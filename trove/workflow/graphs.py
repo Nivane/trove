@@ -1361,7 +1361,7 @@ def _build_reflection(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
-    g.add_node("chart", make_chart())
+    g.add_node("chart", make_chart(semantic_layer=services.semantic_layer))
     g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
@@ -1382,7 +1382,7 @@ def _build_reflection(
             {"refuse": "refuse", "clarify": "clarify"},
         )
         if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors, semantic_layer=services.semantic_layer))
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_planner,
@@ -1411,7 +1411,7 @@ def _build_reflection(
             )
     else:
         if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), agentic=agentic, connectors=services.connectors, semantic_layer=services.semantic_layer))
+            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
             g.add_edge("refuse", "output")
             g.add_conditional_edges(
@@ -1514,7 +1514,7 @@ def _build_fixed(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
-    g.add_node("chart", make_chart())
+    g.add_node("chart", make_chart(semantic_layer=services.semantic_layer))
     g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
