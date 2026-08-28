@@ -16,7 +16,7 @@ agent:
   # EXPLAIN 失败 → 放行)。防分析 agent 误跑超大扫描/笛卡尔积。
   # explain_row_guard: true
   # explain_max_rows: 50000000
-  # 交互语言: en(默认) / zh — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
+  # 交互语言: zh(默认) / en — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
   # 不按问题的中英文自动检测
   language: zh
   # 时间解析:确定性规则解析相对时间表达(zh/en),未命中静默透传
@@ -46,15 +46,22 @@ agent:
   #                 修正轮强制 standard 复杂度,成功轮也受益)/ all/ off
   # fast_path: true
   reflect_skip: standard
+  # 上下文预算覆盖(按复杂度分档 simple/standard/complex 的 token 上限;
+  # 空 = 用内置默认 1500/2500/4000 与 schema 900/1800/3500)。
+  # 200k/1m 窗口下可按模型窗口比例放大——只放大可选块预算并不能自动把
+  # 大窗口用起来(历史/多轮/schema 全量才是大窗口的主战场),请谨慎。
+  # context_budget_tokens: {simple: 1500, standard: 2500, complex: 8000}
+  # schema_budget_tokens: {simple: 900, standard: 1800, complex: 6000}
   # OSSIE 语义层目录(相对项目根,按 datasource 名取子目录 .trove/semantic/<datasource>/):
   # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
+  # 仅作补充源——唯一真源 = 数据源的 KB semantics.yml(/kb init 生成 + 人审)。
   # 空 = 关闭。
   # semantic_layer_path: .trove/semantic
-  # 语义优先(Phase A,见 docs 的 semantic-first 架构方案):
-  #   true = 语义模型是唯一可答边界——gen_sql/planner 只见语义视角,未覆盖查询
-  #          拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认 → 重答),无语义模型
-  #          的数据源拒绝并提示先 /kb init。
-  #   false = 旧裸表路径(仅 Phase A 评测对照使用)。
+  # 语义优先(Phase B):语义模型是唯一可答边界——gen_sql/planner 只见语义视角,
+  # 未覆盖查询拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认 → 重答),
+  # 无语义模型的数据源拒绝并提示先 /kb init。
+  #   false = 旧裸表路径(仅评测对照用;此时 search_values / lookup_schema /
+  #           explain_plan 等 catalog 工具仍注册,agent 可触达物理 schema)。
   semantic_first: true
   # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
   observability:

@@ -147,6 +147,32 @@ class TestLoadAgentConfig:
         config = ConfigLoader.load_agent_config(str(config_file))
         assert config.semantic_layer_path == ""
 
+    def test_context_budget_tokens(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  context_budget_tokens:\n"
+            "    simple: 1500\n"
+            "    standard: 2500\n"
+            "    complex: 8000\n"
+            "  schema_budget_tokens:\n"
+            "    complex: 6000\n"
+        )
+
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.context_budget_tokens == {
+            "simple": 1500, "standard": 2500, "complex": 8000,
+        }
+        assert config.schema_budget_tokens == {"complex": 6000}
+
+    def test_context_budget_tokens_default_empty(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text("agent:\n  target: openai/gpt-4o\n")
+
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.context_budget_tokens == {}
+        assert config.schema_budget_tokens == {}
+
     def test_load_invalid_yaml_raises(self, tmp_path):
         config_file = tmp_path / "agent.yml"
         config_file.write_text("agent: [unclosed\n")

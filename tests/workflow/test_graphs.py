@@ -1494,6 +1494,50 @@ examples:
         await graphs2["reflection"].ainvoke(make_state(history=history))
         assert "Conversation history" in llm2.calls[1][-1]["content"]
 
+    async def test_config_context_budget_overrides_drives_trimming(
+        self, sqlite_registry, catalog, monkeypatch,
+    ):
+        """AgentConfig.context_budget_tokens 覆盖内置档位:simple 档配了极小预算
+        → history 被裁;不配置(空 dict)回落默认常量行为不变。"""
+        from trove.core.config import AgentConfig
+
+        history = "user: 平均成绩是多少\nassistant: 85 分"
+        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "simple")
+
+        cfg = AgentConfig(context_budget_tokens={"simple": 2})
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=cfg))
+        await graphs["reflection"].ainvoke(make_state(history=history))
+        assert "Conversation history" not in llm.calls[1][-1]["content"]
+
+        # schema_budget 覆盖:极小预算裁掉 schema 段(核心"Database schema"头仍在,
+        # 但表裁剪生效——此处仅断言不因覆盖而报错、行为可跑通)
+        cfg2 = AgentConfig(
+            context_budget_tokens={"simple": 2},
+            schema_budget_tokens={"simple": 1},
+        )
+        llm2 = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs2 = build(make_services(llm2, catalog, sqlite_registry, config=cfg2))
+        final2 = await graphs2["reflection"].ainvoke(make_state(history=history))
+        assert final2["error"] == ""
+
+    async def test_config_context_budget_empty_falls_back_to_defaults(
+        self, sqlite_registry, catalog, monkeypatch,
+    ):
+        """空 context_budget_tokens → 回落内置 COMPLEXITY_BUDGET_TOKENS(与未配置一致)。"""
+        monkeypatch.setattr(
+            graphs_module, "COMPLEXITY_BUDGET_TOKENS",
+            {"simple": 2500, "standard": 2500, "complex": 2500},
+        )
+        monkeypatch.setattr(graphs_module, "grade_complexity", lambda *a, **k: "simple")
+        from trove.core.config import AgentConfig
+
+        history = "user: 平均成绩是多少\nassistant: 85 分"
+        llm = RecordingLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=AgentConfig()))
+        await graphs["reflection"].ainvoke(make_state(history=history))
+        assert "Conversation history" in llm.calls[1][-1]["content"]
+
     async def test_few_shots_trimmed_by_score_in_tight_budget(
         self, sqlite_registry, catalog, monkeypatch,
     ):

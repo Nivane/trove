@@ -110,6 +110,14 @@ class AgentConfig:
     # 解析方言/EXPLAIN 失败 → 放行)。见 trove/services/sql/row_guard.py。
     explain_row_guard: bool = False
     explain_max_rows: int = 50_000_000
+    # 上下文预算覆盖(可空 = 用内置默认):gen prompt 可选块(few-shot/术语/
+    # 教训/计划/历史)与 schema 段的 token 上限,按复杂度分档 simple/standard/
+    # complex。配置时整体覆盖对应档位,未配置项回落内置默认。示例:
+    #   context_budget_tokens: {simple: 1500, standard: 2500, complex: 8000}
+    #   schema_budget_tokens:   {simple: 900,  standard: 1800, complex: 6000}
+    # 200k/1m 窗口下可按模型窗口比例放大,而不是写死固定档位。
+    context_budget_tokens: dict[str, int] = field(default_factory=dict)
+    schema_budget_tokens: dict[str, int] = field(default_factory=dict)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -309,6 +317,14 @@ class ConfigLoader:
             explain_row_guard=bool(agent_section.get("explain_row_guard", False)),
             explain_max_rows=max(
                 1000, int(agent_section.get("explain_max_rows", 50_000_000))),
+            context_budget_tokens={
+                str(k): max(0, int(v))
+                for k, v in (agent_section.get("context_budget_tokens", {}) or {}).items()
+            },
+            schema_budget_tokens={
+                str(k): max(0, int(v))
+                for k, v in (agent_section.get("schema_budget_tokens", {}) or {}).items()
+            },
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

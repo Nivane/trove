@@ -1,4 +1,4 @@
-"""Schema context budgeting tests — table-level trim with a lazy-fetch note."""
+"""Schema context budgeting tests — table/dataset-level trim + conditional note."""
 
 from trove.workflow.schema_budget import split_schema, trim_schema, table_signal
 
@@ -9,6 +9,13 @@ SCHEMA = (
     "Value hints: '北京' found in students.county"
 )
 
+# 语义优先(Phase B)渲染:Dataset: 前缀 + 语义字段
+SEMANTIC_SCHEMA = (
+    "Dataset: account\nFields: account_id, district_id\n\n"
+    "Dataset: client\nFields: client_id, gender enum {M=male, F=female}\n\n"
+    "Semantic note: use banking terms"
+)
+
 
 class TestSplitSchema:
     def test_splits_tables_and_tail(self):
@@ -16,6 +23,13 @@ class TestSplitSchema:
         names = [n for n, _ in tables]
         assert names == ["students", "loans"]
         assert "Value hints" in tail
+
+    def test_splits_datasets(self):
+        # 语义优先渲染:Dataset: 前缀同样被识别为块
+        tables, tail = split_schema(SEMANTIC_SCHEMA)
+        names = [n for n, _ in tables]
+        assert names == ["account", "client"]
+        assert "Semantic note" in tail
 
     def test_empty_returns_no_tables(self):
         tables, tail = split_schema("")
@@ -49,6 +63,29 @@ class TestTrimSchema:
 
     def test_no_tables_returns_verbatim(self):
         assert trim_schema("No matching tables", 100, "q") == "No matching tables"
+
+    def test_semantic_schema_trimmed(self):
+        # 语义优先:Dataset: 块可被裁剪,尾部(Semantic note)始终保留
+        out = trim_schema(
+            SEMANTIC_SCHEMA, budget_tokens=20, question="account",
+        )
+        assert "Dataset: account" in out
+        assert "Dataset: client" not in out
+        assert "Semantic note" in out
+
+    def test_semantic_only_note_omits_lookup_tool(self):
+        # 语义优先下被裁提示不得引用 lookup_schema(工具已物理移除)
+        out = trim_schema(
+            SEMANTIC_SCHEMA, budget_tokens=20, question="account",
+            semantic_only=True,
+        )
+        assert "lookup_schema" not in out
+        assert "client" in out  # 被裁数据集仍点名
+        # 对照:非语义优先路径保留 lookup_schema 指引
+        out_legacy = trim_schema(
+            SEMANTIC_SCHEMA, budget_tokens=20, question="account",
+        )
+        assert "lookup_schema" in out_legacy
 
 
 class TestTableSignal:

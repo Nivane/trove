@@ -105,13 +105,29 @@ from trove.workflow.rules import (
 logger = get_logger(__name__)
 
 MAX_REFLECT_RETRIES = 10  # 修正轮上限（执行错误/规则/一致性/裁决共享）
-CONTEXT_BUDGET_TOKENS = 2500  # gen prompt 可选块（示例/术语/教训/计划/历史）的预算（standard 档）
 # 复杂度档位预算：simple 瘦身 / standard 默认 / complex 放开。
 # 修正轮强制 standard（见 grade_complexity），档位只作用于首轮生成。
 COMPLEXITY_BUDGET_TOKENS = {"simple": 1500, "standard": 2500, "complex": 4000}
 # Schema 段（gen prompt 的稳定缓存前缀）自身的 token 上限：大库宽表下
 # 避免 schema 全量注入挤占窗口；被裁的表经 lookup_schema 工具懒加载。
 SCHEMA_BUDGET_TOKENS = {"simple": 900, "standard": 1800, "complex": 3500}
+
+
+def _tier_budget(
+    overrides: dict[str, int] | None,
+    defaults: dict[str, int],
+    tier: str,
+) -> int:
+    """复杂度档位预算：config 覆盖优先（未配置该档回落默认），否则默认常量。
+
+    overrides 来自 AgentConfig.context_budget_tokens / schema_budget_tokens
+    （可空），让 200k/1m 窗口下按模型窗口比例放大预算，而不是写死固定档位。
+    """
+    if overrides:
+        value = overrides.get(tier)
+        if value is not None and value > 0:
+            return int(value)
+    return defaults.get(tier, defaults["standard"])
 
 
 def generation_temperature(retry_count: int) -> float:
@@ -491,7 +507,11 @@ def _make_gen_sql_node(
         # block, items are selected by relevance score, all capped at a
         # complexity-tiered token budget (simple 瘦身 / complex 放开).
         # Usage reported for observability (what the model actually saw).
-        budget = COMPLEXITY_BUDGET_TOKENS.get(complexity, CONTEXT_BUDGET_TOKENS)
+        budget = _tier_budget(
+            (services.config or AgentConfig()).context_budget_tokens,
+            COMPLEXITY_BUDGET_TOKENS,
+            complexity,
+        )
         optional_blocks: dict[str, list[ContextItem]] = {}
         if few_shots:
             # 每表/每条示例带 KB 相关度分数(score 降序=检索顺序)——预算
@@ -632,9 +652,20 @@ def _make_gen_sql_node(
 
         # Schema 预算化:表块按信号裁剪到复杂度分档的 schema 上限,尾部
         # 段(值提示/语义)始终保留;被裁的表经 lookup_schema 工具懒加载。
-        schema_budget = SCHEMA_BUDGET_TOKENS.get(complexity, SCHEMA_BUDGET_TOKENS["standard"])
+        schema_budget = _tier_budget(
+            (services.config or AgentConfig()).schema_budget_tokens,
+            SCHEMA_BUDGET_TOKENS,
+            complexity,
+        )
+        # 语义优先(Phase B,决策 1):catalog 工具物理移除——被裁数据集不能
+        # 经 lookup_schema 懒加载,裁剪提示不得引用该工具。
+        semantic_only = (
+            bool(getattr(services.config, "semantic_first", False))
+            and not bool(getattr(services, "catalog_probing", False))
+        )
         schema_for_gen = trim_schema(
             state.schema_context, schema_budget, state.question, state.plan,
+            semantic_only=semantic_only,
         )
 
         sub_state = GenSQLState.from_workflow(
@@ -691,8 +722,7 @@ def _make_gen_sql_node(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
                 datasource=state.datasource,
-                semantic_only=bool(getattr(services.config, "semantic_first", False))
-                and not bool(getattr(services, "catalog_probing", False)),
+                semantic_only=semantic_only,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
