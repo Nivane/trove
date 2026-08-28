@@ -8,6 +8,7 @@ substitute for the PostgreSQL ANN path in production.
 
 from __future__ import annotations
 
+import json
 import math
 import struct
 from pathlib import Path
@@ -28,11 +29,14 @@ CREATE TABLE IF NOT EXISTS documents (
     kind TEXT NOT NULL,
     source_file TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
-    embedding BLOB
+    embedding BLOB,
+    sparse BLOB
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(content, content_rowid);
 CREATE INDEX IF NOT EXISTS idx_documents_ds ON documents(datasource);
 """
+
+_ALTER_SPARSE = "ALTER TABLE documents ADD COLUMN sparse BLOB"
 
 
 def _pack(vec: list[float]) -> bytes:
@@ -43,23 +47,52 @@ def _unpack(blob: bytes) -> list[float]:
     return list(struct.unpack(f"{len(blob) // 4}f", blob))
 
 
+def _pack_sparse(sparse: dict[int, float]) -> bytes:
+    return json.dumps({str(i): float(v) for i, v in sparse.items()}).encode()
+
+
+def _unpack_sparse(blob: bytes) -> dict[int, float]:
+    return {int(k): float(v) for k, v in json.loads(blob.decode()).items()}
+
+
+def _sparse_cosine(a: dict[int, float], b: dict[int, float]) -> float:
+    if not a or not b:
+        return 0.0
+    dot = sum(v * b.get(i, 0.0) for i, v in a.items())
+    na = math.sqrt(sum(v * v for v in a.values()))
+    nb = math.sqrt(sum(v * v for v in b.values()))
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
 class SqliteHybridStore(HybridStore):
     def __init__(
         self, db_path: str | Path, embedder, reranker, dims: int = 0,
+        sparse_dim: int = 0, rrf_k: int = 60,
+        rrf_weights: dict[str, float] | None = None,
+        recorder: Any | None = None,
     ) -> None:
-        super().__init__(embedder, reranker)
+        super().__init__(
+            embedder, reranker, sparse_dim=sparse_dim, rrf_k=rrf_k,
+            rrf_weights=rrf_weights, recorder=recorder)
         self._db = str(db_path)
         self._dims = dims
 
     @classmethod
-    def for_home(cls, home: str | Path, embedder, reranker) -> "SqliteHybridStore":
+    def for_home(cls, home: str | Path, embedder, reranker, **kw) -> "SqliteHybridStore":
         p = Path(home) / "retrieval" / "retrieval.sqlite"
         p.parent.mkdir(parents=True, exist_ok=True)
-        return cls(p, embedder, reranker)
+        return cls(p, embedder, reranker, **kw)
 
     async def _ensure(self) -> None:
         async with aiosqlite.connect(self._db) as db:
             await db.executescript(_SCHEMA)
+            # 既有库无 sparse 列时补列(幂等)。
+            try:
+                await db.execute(_ALTER_SPARSE)
+            except Exception:
+                pass
             await db.commit()
 
     async def index(self, doc: RetrievalDoc) -> None:
@@ -70,15 +103,28 @@ class SqliteHybridStore(HybridStore):
         async with aiosqlite.connect(self._db) as db:
             for doc in docs:
                 doc_id = doc.item_key or f"{doc.kind}:{doc.source_file}"
-                emb = doc.embedding or await self._embed(doc.content)
+                emb = doc.embedding
+                sparse = None
+                if emb is None:
+                    if hasattr(self._embedder, "embed_hybrid"):
+                        emb, sparse = (
+                            await self._embedder.embed_hybrid([doc.content]))[0]
+                    else:
+                        emb = await self._embed(doc.content)
+                        if self._sparse_dim and hasattr(self._embedder, "embed_sparse"):
+                            sparse = (
+                                await self._embedder.embed_sparse([doc.content]))[0]
                 if self._dims and len(emb) != self._dims:
                     emb = emb[: self._dims] + [0.0] * max(0, self._dims - len(emb))
+                sparse_blob = (
+                    _pack_sparse(sparse) if sparse and self._sparse_dim else None)
                 await db.execute(
                     "DELETE FROM documents WHERE doc_id = ?", (doc_id,))
                 cur = await db.execute(
-                    "INSERT INTO documents (doc_id, datasource, kind, source_file, content, embedding) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (doc_id, doc.datasource, doc.kind, doc.source_file, doc.content, _pack(emb)),
+                    "INSERT INTO documents (doc_id, datasource, kind, source_file, content, embedding, sparse) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (doc_id, doc.datasource, doc.kind, doc.source_file, doc.content,
+                     _pack(emb), sparse_blob),
                 )
                 rowid = cur.lastrowid
                 await db.execute(
@@ -141,6 +187,25 @@ class SqliteHybridStore(HybridStore):
             rows = await cur.fetchall()
         scored = [
             (r["doc_id"], cosine(vector, _unpack(r["embedding"]))) for r in rows
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [doc_id for doc_id, _ in scored[:k]]
+
+    async def _sparse_ann_ids(self, sparse: dict[int, float], k: int) -> list[str]:
+        if not sparse or not self._sparse_dim:
+            return []
+        await self._ensure()
+        async with aiosqlite.connect(self._db) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT doc_id, sparse FROM documents "
+                "WHERE datasource = ? AND sparse IS NOT NULL",
+                (self._ds,),
+            )
+            rows = await cur.fetchall()
+        scored = [
+            (r["doc_id"], _sparse_cosine(sparse, _unpack_sparse(r["sparse"])))
+            for r in rows
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
         return [doc_id for doc_id, _ in scored[:k]]

@@ -31,6 +31,38 @@ def test_roundtrip(tmp_path):
     assert loaded[1].default is True
 
 
+def test_roundtrip_retrieval_tuning_fields(tmp_path):
+    """混合检索调优字段(embedder/sparse/rrf/rerank)必须 survive save→load。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    cfg = DatasourceConfig(
+        name="r", type="postgres", retrieval_dsn="postgresql://x",
+        embedder_backend="bge-m3", embedding_model="BAAI/bge-m3",
+        embedding_sparse_dims=250000, rrf_k=100,
+        rrf_weights={"keyword": 1.5, "dense": 1.0, "sparse": 0.7},
+        rerank_backend="bge", rerank_endpoint="https://x/rerank",
+    )
+    store.save_configs([cfg])
+    loaded = store.load_configs()[0]
+    assert loaded.embedder_backend == "bge-m3"
+    assert loaded.embedding_sparse_dims == 250000
+    assert loaded.rrf_k == 100
+    assert loaded.rrf_weights == {"keyword": 1.5, "dense": 1.0, "sparse": 0.7}
+    assert loaded.rerank_backend == "bge"
+    assert loaded.rerank_endpoint == "https://x/rerank"
+
+
+def test_roundtrip_retrieval_tuning_defaults(tmp_path):
+    """缺省时保持默认值(旧 yml 向后兼容)。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    store.save_configs([_cfg("a")])
+    loaded = store.load_configs()[0]
+    assert loaded.embedder_backend == ""
+    assert loaded.embedding_sparse_dims == 0
+    assert loaded.rrf_k == 60
+    assert loaded.rrf_weights == {}
+    assert loaded.rerank_backend == ""
+
+
 def test_load_top_level_not_mapping(tmp_path):
     """M1: 顶层为列表(合法 YAML、错误形状)必须抛 DatasourceError,不能裸 AttributeError。"""
     store = ConfigStore(tmp_path / "datasources.yml")
