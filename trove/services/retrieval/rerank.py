@@ -1,17 +1,21 @@
 """Coarse→fine rerankers (精排 stage after RRF fusion).
 
 The recall stage already fused FTS + ANN via RRF; the reranker reorders the
-fused candidates by a finer relevance signal. Two implementations:
+fused candidates by a finer relevance signal. Implementations:
 
 - ``DeterministicReranker``: zero-LLM, hashed n-gram coverage (reuses the
   existing deterministic rerank signal in ``kb/embeddings.py``). Always safe to
   use as a fallback.
 - ``CrossEncoderReranker``: a real cross-encoder pass. If a ``endpoint`` is
-  configured (a TEI/Jina-style ``/rerank`` HTTP API), it calls it directly;
-  otherwise it approximates the cross-encoder with the configured embedder by
-  scoring ``cosine(embed(query), embed(doc))``. (litellm has no native rerank
-  API, so a local TEI cross-encoder exposed as an OpenAI-compatible endpoint is
-  the intended production path — see GatewayEmbedder for the local-model story.)
+  configured (a TEI/Jina/Cohere-style ``/rerank`` HTTP API), it calls it
+  directly; otherwise it approximates the cross-encoder with the configured
+  embedder by scoring ``cosine(embed(query), embed(doc))``. (litellm has no
+  native rerank API, so a local TEI cross-encoder exposed as an
+  OpenAI-compatible endpoint is the intended production path.)
+- ``BgeReranker``: a local cross-encoder via ``FlagEmbedding``'s
+  ``FlagReranker`` (e.g. ``BAAI/bge-reranker-v2-m3``). The industry-standard
+  "real cross-encoder" 精排, offline and credential-free (needs
+  ``uv sync --extra bge``).
 """
 
 from __future__ import annotations
@@ -43,6 +47,51 @@ class DeterministicReranker:
     ) -> list[RetrievalHit]:
         for c in candidates:
             c.score = _deterministic_score(query, c.content)
+        return sorted(candidates, key=lambda c: c.score, reverse=True)[:k]
+
+
+class BgeReranker:
+    """Local cross-encoder reranker (FlagEmbedding FlagReranker).
+
+    The "real cross-encoder" 精排 default for production: scores each
+    (query, doc) pair jointly. Lazily imports FlagEmbedding so the module
+    imports without the optional dependency.
+    """
+
+    def __init__(self, model: str = "BAAI/bge-reranker-v2-m3") -> None:
+        self._model = model
+        self._backend: Any = None
+
+    @classmethod
+    def available(cls) -> bool:
+        """FlagEmbedding 是否可导入(本地 cross-encoder 可用性探测)。"""
+        try:
+            import FlagEmbedding  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _load(self) -> Any:
+        if self._backend is None:
+            try:
+                from FlagEmbedding import FlagReranker
+            except ImportError as e:  # pragma: no cover - 依赖提示
+                raise RuntimeError(
+                    "BgeReranker requires 'FlagEmbedding' (uv sync --extra bge)") from e
+            self._backend = FlagReranker(self._model)
+        return self._backend
+
+    async def rerank(
+        self, query: str, candidates: list[RetrievalHit], k: int,
+    ) -> list[RetrievalHit]:
+        if not candidates:
+            return []
+        pairs = [[query, c.content] for c in candidates]
+        scores = self._load().compute_score(pairs, normalize=True)
+        if not isinstance(scores, list):
+            scores = [scores]
+        for c, s in zip(candidates, scores):
+            c.score = float(s)
         return sorted(candidates, key=lambda c: c.score, reverse=True)[:k]
 
 

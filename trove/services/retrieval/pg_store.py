@@ -31,8 +31,13 @@ class PgHybridStore(HybridStore):
     def __init__(
         self, dsn: str, embedder: Embedder | None, reranker: Any | None,
         dims: int = 1536, fts_tokenizer: str | None = None,
+        sparse_dim: int = 0, rrf_k: int = 60,
+        rrf_weights: dict[str, float] | None = None,
+        recorder: Any | None = None,
     ) -> None:
-        super().__init__(embedder, reranker)
+        super().__init__(
+            embedder, reranker, sparse_dim=sparse_dim, rrf_k=rrf_k,
+            rrf_weights=rrf_weights, recorder=recorder)
         self._dsn = dsn
         self._dims = dims
         self._fts_tokenizer = fts_tokenizer
@@ -42,6 +47,12 @@ class PgHybridStore(HybridStore):
     @staticmethod
     def _lit(vec: list[float]) -> str:
         return "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
+
+    def _lit_sparse(self, sparse: dict[int, float]) -> str:
+        if not sparse:
+            return ""
+        body = ",".join(f"{i}:{float(v):.6f}" for i, v in sorted(sparse.items()))
+        return f"{{{body}}}/{self._sparse_dim}"
 
     async def _connect(self):
         import psycopg
@@ -56,6 +67,8 @@ class PgHybridStore(HybridStore):
             async with conn.cursor() as cur:
                 await cur.execute(f"CREATE SCHEMA IF NOT EXISTS {_SCHEMA_NS}")
                 await cur.execute(f"CREATE EXTENSION IF NOT EXISTS vector")
+                sparse_col = (
+                    f", sparse sparsevec({self._sparse_dim})" if self._sparse_dim else "")
                 await cur.execute(
                     f"""CREATE TABLE IF NOT EXISTS {_SCHEMA_NS}.documents (
                         id TEXT PRIMARY KEY,
@@ -65,13 +78,24 @@ class PgHybridStore(HybridStore):
                         content TEXT NOT NULL,
                         tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
                         embedding vector({self._dims})
+                        {sparse_col}
                     )""")
+                if self._sparse_dim:
+                    # 既有表没有 sparse 列时补列(幂等)+ HNSW 索引。
+                    await cur.execute(
+                        f"ALTER TABLE {_SCHEMA_NS}.documents "
+                        f"ADD COLUMN IF NOT EXISTS sparse sparsevec({self._sparse_dim})")
                 await cur.execute(
                     f"CREATE INDEX IF NOT EXISTS documents_ds ON "
                     f"{_SCHEMA_NS}.documents(datasource)")
                 await cur.execute(
                     f"CREATE INDEX IF NOT EXISTS documents_vec ON "
                     f"{_SCHEMA_NS}.documents USING hnsw (embedding vector_cosine_ops)")
+                if self._sparse_dim:
+                    await cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS documents_sparse ON "
+                        f"{_SCHEMA_NS}.documents "
+                        f"USING hnsw (sparse vector_sparsevec_cosine_ops)")
                 # Sparse channel: prefer pg_bm25 (true BM25), else tsvector GIN.
                 try:
                     await cur.execute("CREATE EXTENSION IF NOT EXISTS pg_bm25")
@@ -105,22 +129,45 @@ class PgHybridStore(HybridStore):
             async with conn.cursor() as cur:
                 for doc in docs:
                     doc_id = doc.item_key or f"{doc.kind}:{doc.source_file}"
-                    emb = doc.embedding or await self._embed(doc.content)
+                    emb = doc.embedding
+                    sparse = None
+                    if emb is None:
+                        if hasattr(self._embedder, "embed_hybrid"):
+                            emb, sparse = (
+                                await self._embedder.embed_hybrid([doc.content]))[0]
+                        else:
+                            emb = await self._embed(doc.content)
+                            if self._sparse_dim and hasattr(self._embedder, "embed_sparse"):
+                                sparse = (
+                                    await self._embedder.embed_sparse([doc.content]))[0]
                     if len(emb) != self._dims:
                         # pad/truncate to declared dims for a stable index
                         if len(emb) < self._dims:
                             emb = emb + [0.0] * (self._dims - len(emb))
                         else:
                             emb = emb[: self._dims]
-                    await cur.execute(
-                        f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
-                    await cur.execute(
-                        f"""INSERT INTO {_SCHEMA_NS}.documents
-                        (id, datasource, kind, source_file, content, embedding)
-                        VALUES (%s, %s, %s, %s, %s, %s::vector)""",
-                        (doc_id, doc.datasource, doc.kind, doc.source_file,
-                         doc.content, self._lit(emb)),
-                    )
+                    sparse_lit = (
+                        self._lit_sparse(sparse) if sparse and self._sparse_dim else None)
+                    if self._sparse_dim:
+                        await cur.execute(
+                            f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
+                        await cur.execute(
+                            f"""INSERT INTO {_SCHEMA_NS}.documents
+                            (id, datasource, kind, source_file, content, embedding, sparse)
+                            VALUES (%s, %s, %s, %s, %s, %s::vector, %s::sparsevec)""",
+                            (doc_id, doc.datasource, doc.kind, doc.source_file,
+                             doc.content, self._lit(emb), sparse_lit),
+                        )
+                    else:
+                        await cur.execute(
+                            f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
+                        await cur.execute(
+                            f"""INSERT INTO {_SCHEMA_NS}.documents
+                            (id, datasource, kind, source_file, content, embedding)
+                            VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                            (doc_id, doc.datasource, doc.kind, doc.source_file,
+                             doc.content, self._lit(emb)),
+                        )
             await conn.commit()
         finally:
             await conn.close()
@@ -197,6 +244,24 @@ class PgHybridStore(HybridStore):
         finally:
             await conn.close()
 
+    async def _sparse_ann_ids(self, sparse: dict[int, float], k: int) -> list[str]:
+        if not sparse or not self._sparse_dim:
+            return []
+        await self._ensure()
+        conn = await self._connect()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"""SELECT id FROM {_SCHEMA_NS}.documents
+                    WHERE datasource = %s AND sparse IS NOT NULL
+                    ORDER BY sparse <=> %s::sparsevec LIMIT %s""",
+                    (self._ds, self._lit_sparse(sparse), k),
+                )
+                rows = await cur.fetchall()
+            return [r[0] for r in rows]
+        finally:
+            await conn.close()
+
     async def _load(self, doc_ids: list[str]) -> list[RetrievalHit]:
         if not doc_ids:
             return []
@@ -225,6 +290,11 @@ class PgHybridStore(HybridStore):
         return out
 
     # datasource is threaded through recall() via self._ds (set in base recall).
-    async def recall(self, query: str, k: int = 20, rerank_k: int = 40,
-                     datasource: str = "") -> list[RetrievalHit]:
-        return await super().recall(query, k=k, rerank_k=rerank_k, datasource=datasource)
+    async def recall(
+        self, query: str, k: int = 20, rerank_k: int = 40,
+        datasource: str = "", keyword_text: str | None = None,
+        return_meta: bool = False,
+    ) -> list[RetrievalHit] | tuple[list[RetrievalHit], dict]:
+        return await super().recall(
+            query, k=k, rerank_k=rerank_k, datasource=datasource,
+            keyword_text=keyword_text, return_meta=return_meta)

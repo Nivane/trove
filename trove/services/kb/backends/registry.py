@@ -39,8 +39,9 @@ def build_retrieval_backend(name: str, kb: Any) -> Any:
 
 def _effective_backend(cfg: Any) -> str:
     """解析后端名:显式 hybrid/rag 沿用;缺省(builtin/空)时,若具备混合检索库
-    (retrieval_dsn 或 postgres 业务库同实例)且配置了 embedding_model,则
-    升级为 pg_hybrid 作为默认检索后端。"""
+    (retrieval_dsn 或 postgres 业务库同实例)且配置了 embedding 能力
+    (embedding_model 或本地 embedder_backend=bge-m3),则升级为 pg_hybrid
+    作为默认检索后端。"""
     rb = str(getattr(cfg, "retrieval_backend", "") or "builtin").strip()
     if rb not in ("", "builtin"):
         return rb
@@ -48,7 +49,12 @@ def _effective_backend(cfg: Any) -> str:
     if not dsn and getattr(cfg, "type", "") == "postgres":
         from trove.services.kb.backends.dense import _vector_dsn
         dsn = _vector_dsn(cfg)
-    if dsn and str(getattr(cfg, "embedding_model", "") or "").strip():
+    has_embedder = bool(
+        str(getattr(cfg, "embedding_model", "") or "").strip()
+        or str(getattr(cfg, "embedder_backend", "") or "").strip().lower()
+        in ("bge", "bge-m3")
+    )
+    if dsn and has_embedder:
         return "pg_hybrid"
     return "builtin"
 
@@ -94,17 +100,22 @@ def resolver_from_configs(
         if name == "pg_hybrid":
             from trove.services.kb.backends.pg_hybrid import PgHybridKbBackend
             from trove.services.retrieval import (
-                CrossEncoderReranker,
-                DeterministicReranker,
                 PgHybridStore,
                 SqliteHybridStore,
             )
+            from trove.services.retrieval.factory import (
+                _reranker_for,
+                channel_cfg,
+            )
+            from trove.services.retrieval.query_log import QueryLogRecorder
 
             embedder = embedder_factory(cfg) if embedder_factory is not None else None
-            reranker_model = str(getattr(cfg, "rerank_model", "") or "")
-            reranker = (
-                CrossEncoderReranker(embedder, model=reranker_model)
-                if reranker_model else DeterministicReranker())
+            reranker = _reranker_for(cfg, embedder)
+            sparse_dim, rrf_k, rrf_weights = channel_cfg(cfg)
+            # 检索 hit 日志落在 KB 目录父级 home(与 sqlite 兜底同 home)。
+            home = getattr(cfg, "home", "") or (
+                str(kb.kb_dir.parent) if kb is not None and getattr(kb, "kb_dir", None) else "")
+            recorder = QueryLogRecorder.for_home(home) if home else None
             dsn = str(getattr(cfg, "retrieval_dsn", "") or "").strip()
             if not dsn and getattr(cfg, "type", "") == "postgres":
                 from trove.services.kb.backends.dense import _vector_dsn
@@ -114,12 +125,14 @@ def resolver_from_configs(
                     dsn, embedder=embedder, reranker=reranker,
                     dims=int(getattr(cfg, "embedding_dims", 1536) or 1536),
                     fts_tokenizer=str(getattr(cfg, "fts_tokenizer", "") or "en_stem"),
+                    sparse_dim=sparse_dim, rrf_k=rrf_k,
+                    rrf_weights=rrf_weights, recorder=recorder,
                 )
             else:
                 # SQLite 兜底须与索引器同一 home(否则检索库为空);取 kb 目录父级
-                home = getattr(cfg, "home", "") or (
-                    str(kb.kb_dir.parent) if kb is not None and getattr(kb, "kb_dir", None) else "")
-                store = SqliteHybridStore.for_home(home, embedder, reranker)
+                store = SqliteHybridStore.for_home(
+                    home, embedder, reranker, sparse_dim=sparse_dim,
+                    rrf_k=rrf_k, rrf_weights=rrf_weights, recorder=recorder)
             return PgHybridKbBackend(kb, store, embedder=embedder)
         return build_retrieval_backend(name, kb)
 

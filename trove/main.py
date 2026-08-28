@@ -184,14 +184,14 @@ async def create_app_components(
     # ── Knowledge base (optional: .trove/kb/) ─────────────
     # 检索后端按数据源读时 dispatch(默认 builtin;datasources.yml 里配了
     # hybrid 走 FTS5/BM25 稀疏,rag 走稀疏 + 稠密 embedding RRF)。
-    # 稠密通道需要 LLM 凭证(embedding_model 为空的数据源 rag 退化为稀疏)。
-    from trove.services.kb.backends.dense import GatewayEmbedder
+    # 稠密通道:embedder_backend=bge-m3 走本地模型(免凭证),否则经 LLM 网关
+    # (embedding_model 为空的数据源 rag 退化为稀疏)。
+    from trove.services.kb.backends.dense import build_embedder
     from trove.services.kb.backends.registry import resolver_from_configs
     from trove.services.kb.service import KbService
 
     def _embedder_for(cfg):
-        model = getattr(cfg, "embedding_model", "") or ""
-        return GatewayEmbedder(llm_gateway, model) if model else None
+        return build_embedder(cfg, llm_gateway)
 
     resolve_backend, bind_kb = resolver_from_configs(
         config_store.load_configs(), embedder_factory=_embedder_for)

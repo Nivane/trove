@@ -6,6 +6,7 @@ import pytest
 
 from trove.services.kb.embeddings import cosine
 from trove.services.retrieval.rerank import (
+    BgeReranker,
     CrossEncoderReranker,
     DeterministicReranker,
 )
@@ -69,3 +70,18 @@ def test_rrf_fuse_combines_lists():
 def test_rrf_fuse_single_channel():
     fused = rrf_fuse([["a", "b"]])
     assert fused == ["a", "b"]
+
+
+def test_rrf_fuse_respects_weights():
+    fused = rrf_fuse([["a", "b"], ["b", "a"]], k=60, weights=[1.0, 10.0])
+    assert fused[0] == "b"
+
+
+def test_bge_reranker_requires_flag_embedding():
+    try:
+        import FlagEmbedding  # noqa: F401
+    except ImportError:
+        with pytest.raises(RuntimeError, match="FlagEmbedding"):
+            BgeReranker()._load()
+    else:  # 环境装了 FlagEmbedding:直接走真实加载(不下发重载验证)
+        pytest.skip("FlagEmbedding installed; skipping lazy-import check")

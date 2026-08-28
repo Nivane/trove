@@ -95,6 +95,31 @@ class PgHybridKbBackend:
 
     # ── recall: unified store → kb_items payloads ────────
 
+    async def _expand_keyword(self, question: str, datasource: str) -> str | None:
+        """KB term 别名词面扩展:问题命中某 term/别名时,把其全部别名 + 词面
+        拼进 keyword 通道的检索串(复用 ``_search_terms`` 的已有语义),让
+        FTS/BM25 能命中"别名写法"的文档。稠密通道仍用原始问题 embedding。
+        """
+        try:
+            terms = await self._kb._search_terms(question, datasource, None, None)
+        except Exception:
+            return None
+        extra: list[str] = []
+        for t in terms:
+            term = getattr(t, "term", "") or ""
+            if term:
+                extra.append(term)
+            for a in getattr(t, "aliases", None) or []:
+                if a:
+                    extra.append(str(a))
+        if not extra:
+            return None
+        seen: list[str] = []
+        for w in extra:
+            if w and w not in seen:
+                seen.append(w)
+        return f"{question} {' '.join(seen)}".strip()
+
     async def _recall(
         self, kinds: tuple[str, ...], question: str, datasource: str, recall_limit: int,
     ) -> tuple[list[tuple[int, dict]], dict[int, float]]:
@@ -102,7 +127,9 @@ class PgHybridKbBackend:
         try:
             hits = await self._store.recall(
                 question, k=recall_limit, rerank_k=recall_limit * 2,
-                datasource=datasource)
+                datasource=datasource,
+                keyword_text=await self._expand_keyword(question, datasource),
+            )
         except Exception as e:
             logger.warning("pg_hybrid recall failed for %s: %s", datasource, e)
             return [], {}

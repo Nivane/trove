@@ -51,6 +51,12 @@ mysql = [
 clickhouse = [
     "clickhouse-connect>=1.7.1",
 ]
+# 本地 learned-sparse / cross-encoder(bge-m3 dense+sparse 单模型、bge-reranker
+# 精排):拉入 FlagEmbedding(torch),离线、无需 LLM 凭证;不装则退化为
+# API embedder + 确定性精排,功能不受影响。
+bge = [
+    "FlagEmbedding>=1.3.0",
+]
 
 [dependency-groups]
 dev = [

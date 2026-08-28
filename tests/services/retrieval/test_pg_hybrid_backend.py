@@ -18,8 +18,11 @@ from trove.services.retrieval.store import RetrievalHit
 class FakeStore:
     def __init__(self, hits):
         self._hits = hits
+        self.calls = []
 
-    async def recall(self, query, k=20, rerank_k=40, datasource=""):
+    async def recall(self, query, k=20, rerank_k=40, datasource="", keyword_text=None,
+                     return_meta=False):
+        self.calls.append({"query": query, "keyword_text": keyword_text})
         return self._hits
 
 
@@ -31,6 +34,10 @@ class FakeKb:
 
     async def _rows(self, sql, params):
         return self._rows_data
+
+    async def _search_terms(self, *a, **k):
+        self.calls.append("terms")
+        return getattr(self, "_terms", [])
 
     async def _search_examples(self, *a, **k):
         self.calls.append("examples")
@@ -75,6 +82,30 @@ async def test_empty_store_falls_back_to_builtin():
     assert "examples" in kb.calls
 
 
+async def test_keyword_expands_with_term_aliases():
+    from trove.services.kb.service import TermHit
+
+    kb = FakeKb([])
+    kb._terms = [
+        TermHit(term="loan_amount", aliases=["贷款金额", "gmv_loan"]),
+    ]
+    store = FakeStore([RetrievalHit(doc_id="ex1", content="x", score=0.9, kind="kb")])
+    backend = PgHybridKbBackend(kb, store)
+    await backend._recall(("example",), "怎么算 贷款金额", "ds", 8)
+    assert store.calls[-1]["keyword_text"] is not None
+    assert "贷款金额" in store.calls[-1]["keyword_text"]
+    assert "gmv_loan" in store.calls[-1]["keyword_text"]
+
+
+async def test_keyword_expansion_absent_when_no_terms():
+    kb = FakeKb([])
+    kb._terms = []
+    store = FakeStore([RetrievalHit(doc_id="ex1", content="x", score=0.9, kind="kb")])
+    backend = PgHybridKbBackend(kb, store)
+    await backend._recall(("example",), "how to compute", "ds", 8)
+    assert store.calls[-1]["keyword_text"] is None
+
+
 async def test_search_schema_docs_returns_only_schema_doc_hits():
     kb = FakeKb([])
     store = FakeStore([
@@ -91,6 +122,13 @@ def test_effective_backend_upgrades_to_pg_hybrid_when_viable():
     cfg = DatasourceConfig(
         name="d", type="postgres", retrieval_dsn="postgresql://x",
         embedding_model="text-embedding-3-small")
+    assert _effective_backend(cfg) == "pg_hybrid"
+
+
+def test_effective_backend_upgrades_with_bge_m3_without_model():
+    cfg = DatasourceConfig(
+        name="d", type="postgres", retrieval_dsn="postgresql://x",
+        embedder_backend="bge-m3")
     assert _effective_backend(cfg) == "pg_hybrid"
 
 

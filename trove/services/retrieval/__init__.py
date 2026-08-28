@@ -10,9 +10,11 @@ from trove.services.retrieval.store import (
 from trove.services.retrieval.sqlite_store import SqliteHybridStore
 from trove.services.retrieval.pg_store import PgHybridStore
 from trove.services.retrieval.rerank import (
+    BgeReranker,
     DeterministicReranker,
     CrossEncoderReranker,
 )
+from trove.services.retrieval.query_log import QueryLogRecorder
 
 __all__ = [
     "HybridStore",
@@ -24,4 +26,6 @@ __all__ = [
     "PgHybridStore",
     "DeterministicReranker",
     "CrossEncoderReranker",
+    "BgeReranker",
+    "QueryLogRecorder",
 ]
