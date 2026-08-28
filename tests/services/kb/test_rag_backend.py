@@ -230,7 +230,7 @@ class TestRagBackend:
         assert any("客户总数" in q for q in texts)
         assert not any("客户数量" in q for q in texts)
         vec_rows = await kb._rows("SELECT id FROM kb_vectors")
-        assert len(vec_rows) == 4  # 3 example + 1 lesson,索引跟随重建
+        assert len(vec_rows) == 5  # 3 example + 1 lesson + 1 metric,索引跟随重建
 
     async def test_delete_kb_clears_vectors(self, tmp_path):
         kb = await _rag_kb(tmp_path)

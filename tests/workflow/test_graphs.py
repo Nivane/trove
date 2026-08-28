@@ -1081,6 +1081,12 @@ class TestRollbackRouting:
             async def search_terms(self, q, ds, tables=None, all_tables=None):
                 return []
 
+            async def search_metrics(self, q, ds, tables=None, all_tables=None, limit=5):
+                return []
+
+            async def search_entities(self, q, ds, tables=None, all_tables=None, limit=8):
+                return []
+
             async def table_notes(self, tables, ds):
                 return {}
 
@@ -1274,6 +1280,87 @@ examples:
             for call in llm.calls
         )
 
+    async def test_metrics_block_reaches_generation_prompt(
+        self, sqlite_registry, catalog, tmp_path,
+    ):
+        """typed 指标检索:相关性选择的指标(表达式+口径)进 gen_sql prompt。"""
+        kb = self._kb(tmp_path, sqlite_registry.default_name)
+        llm = RecordingLLM([
+            "query",
+            "```sql\nSELECT county, AVG(grade) FROM students GROUP BY county;\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="学生们的平均成绩是多少")
+        )
+        assert final["error"] == ""
+        prompt = " ".join(
+            str(m.get("content", "")) for m in llm.calls[1]
+        )
+        assert "Relevant metrics" in prompt
+        assert "平均成绩 = AVG(students.grade) — 学生平均分" in prompt
+
+    async def test_entities_enum_hints_reach_generation_prompt(
+        self, sqlite_registry, catalog, tmp_path,
+    ):
+        """实体枚举值确认通道:匹配字段的 code=label 映射进 gen_sql prompt。"""
+        from trove.services.kb.service import KbService
+
+        kb = KbService(tmp_path / "proj")
+        ds_dir = kb.kb_dir / sqlite_registry.default_name
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "semantics.yml").write_text(
+            """
+semantic_model:
+  - name: demo
+    datasets:
+      - name: students
+        fields:
+          - name: county
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: students.county
+            datatype: String
+            enum_display:
+              Alameda: 阿拉米达
+              Orange: 橙县
+            description: 学生所在县
+    metrics:
+      - name: 学生数量
+        description: 学生总数
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(students.id)
+""",
+            encoding="utf-8",
+        )
+        (ds_dir / "schema_notes.yml").write_text(
+            "tables:\n  - name: students\n    description: 学生表\n",
+            encoding="utf-8",
+        )
+        (ds_dir / "examples.yml").write_text(
+            "examples:\n  - question: 各县学生各有多少\n"
+            "    sql: SELECT county, COUNT(*) FROM students GROUP BY county\n"
+            "    tags: [县]\n",
+            encoding="utf-8",
+        )
+        llm = RecordingLLM([
+            "query",
+            "```sql\nSELECT COUNT(*) FROM students WHERE county = 'Orange';\n```",
+            "OK",
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="橙县的学生有多少")
+        )
+        assert final["error"] == ""
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[1])
+        assert "Matched dimensions/enums" in prompt
+        assert "county" in prompt and "Orange=橙县" in prompt
+
     async def test_no_kb_has_no_kb_hits(self, sqlite_registry, catalog):
         """kb 未配置时状态与行为不变（回归）。"""
         llm = RecordingLLM(["query", VALID_SQL, "OK"])
@@ -1440,6 +1527,12 @@ examples:
                 return []
 
             async def search_terms(self, q, ds, tables=None, all_tables=None):
+                return []
+
+            async def search_metrics(self, q, ds, tables=None, all_tables=None, limit=5):
+                return []
+
+            async def search_entities(self, q, ds, tables=None, all_tables=None, limit=8):
                 return []
 
             async def table_notes(self, tables, ds):

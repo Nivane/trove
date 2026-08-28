@@ -100,7 +100,7 @@ class Indexer:
     def _kb_text(self, item: dict) -> str:
         kind = item["kind"]
         payload = item["payload"]
-        if kind in ("example", "template", "lesson"):
+        if kind in ("example", "template", "lesson", "metric", "entity"):
             return fts_item_text(kind, payload)
         # term/table/rule: compact readable text for dense + FTS recall
         if kind == "term":

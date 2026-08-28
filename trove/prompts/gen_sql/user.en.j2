@@ -24,7 +24,11 @@ Known pitfalls (learned from past corrections — avoid these):
 Terminology (standard formulations):
 {% for note in term_notes -%}
 - {{ note.term }} → {{ note.mapping }}{% if note.definition %} — {{ note.definition }}{% endif %}
-{% endfor %}{% endif %}{% if few_shots %}
+{% endfor %}{% endif %}{% if metrics %}
+Relevant metrics (declared business metrics — use these expressions for the requested measure):
+{{ metrics }}{% endif %}{% if entities %}
+Matched dimensions/enums (value hints — map human values to codes here):
+{{ entities }}{% endif %}{% if few_shots %}
 Reference examples (standard formulations for this data):
 {% for shot in few_shots -%}
 Q: {{ shot.question }}

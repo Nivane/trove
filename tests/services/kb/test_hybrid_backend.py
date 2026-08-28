@@ -166,7 +166,7 @@ class TestFtsMirror:
         await kb.ensure_synced("financial")
         rows = await kb._rows(
             "SELECT rowid FROM kb_fts WHERE datasource = 'financial'")
-        assert len(rows) == 5
+        assert len(rows) == 7  # 3 example + 2 lesson + 2 metric(分型导入)
 
 
 class TestDispatch:

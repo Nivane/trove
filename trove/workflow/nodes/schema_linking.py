@@ -151,12 +151,16 @@ def _semantic_match_datasets(
 
 def _render_semantic_context(
     model: Any, matched: list[str], semantic_layer: Any | None,
-    question: str,
+    question: str, metric_hits: list[Any] | None = None,
 ) -> str:
     """仅渲染模型声明内容(dataset/metric/field+synonym/关系/instructions)。
 
     不出现物理 schema 启发(统计/数值样本/FK 命名边/value hints)。
     字段名是已声明语义词表(§4.1),表达式隐藏、由 metric/field_hints 承载。
+
+    ``metric_hits``(typed 检索选出的相关指标)非空时,以"Relevant metrics"
+    块渲染相关性选择的指标(带口径),替换逐 dataset 全量渲染的 Metrics 块
+    ——口径注入 + 相关度优先,避免无关指标挤占。
     """
     from trove.services.semantic_layer.compiler import JoinResolver
 
@@ -168,6 +172,12 @@ def _render_semantic_context(
             render_tables.append(extra)
 
     parts: list[str] = []
+    use_selected = bool(metric_hits)
+    if use_selected:
+        parts.append("Relevant metrics:\n" + "\n".join(
+            f"- {m.name} = {m.expression}"
+            + (f" — {m.definition}" if m.definition else "")
+            for m in metric_hits))
     for name in render_tables:
         d = datasets_by_name.get(name)
         if d is None:
@@ -192,14 +202,15 @@ def _render_semantic_context(
                         f"{k}={v}" for k, v in f.enum_display.items())
                     bits.append(f"enum {{{mapping}}}")
                 lines.append("  - " + " | ".join(bits))
-        anchored = [m for m in model.metrics if m.datasets and name in m.datasets]
-        if anchored:
-            lines.append("Metrics:")
-            for m in anchored:
-                line = f"  - {m.name} = {m.expression}"
-                if m.definition:
-                    line += f" — {m.definition}"
-                lines.append(line)
+        if not use_selected:
+            anchored = [m for m in model.metrics if m.datasets and name in m.datasets]
+            if anchored:
+                lines.append("Metrics:")
+                for m in anchored:
+                    line = f"  - {m.name} = {m.expression}"
+                    if m.definition:
+                        line += f" — {m.definition}"
+                    lines.append(line)
         parts.append("\n".join(lines))
 
     resolved_block = "" if resolution.fan_out else JoinResolver.render(resolution)
@@ -253,7 +264,24 @@ async def _semantic_linking(
         }
 
     matched = _semantic_match_datasets(model, search_query, term_hits, semantic_layer)
-    semantic_context = _render_semantic_context(model, matched, semantic_layer, state.question)
+
+    # 指标相关性选择 + 图链接(P4):metric 命中沿 metric.datasets 扩展表锚,
+    # 相关性选择的指标(带口径)替换"全量渲染锚定 metrics"。只在已有锚定时
+    # 生效——零锚定仍走 no_semantic_match 拒绝,不被指标复活(语义优先边界)。
+    metric_hits: list[Any] = []
+    if matched and kb is not None and datasource:
+        try:
+            family = await kb.metric_family(
+                state.question, datasource, matched_tables=matched)
+            metric_hits = family.get("metrics") or []
+            expanded = family.get("tables") or []
+            if expanded and set(expanded) != set(matched):
+                matched = expanded
+        except Exception as e:
+            logger.warning("metric_family failed (%s): %s", datasource, e)
+
+    semantic_context = _render_semantic_context(
+        model, matched, semantic_layer, state.question, metric_hits=metric_hits)
 
     base: dict[str, Any] = {
         "matched_tables": matched,

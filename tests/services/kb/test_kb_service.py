@@ -303,7 +303,9 @@ class TestSync:
         write_kb(kb_dir)
         await kb.ensure_synced("demo")
         counts = await kb.list_items()
-        assert counts == {"demo": {"table": 1, "term": 2, "example": 2, "template": 1}}
+        assert counts == {"demo": {
+            "table": 1, "term": 2, "example": 2, "template": 1, "metric": 2,
+        }}
 
     async def test_mtime_reloads_only_changed_file(self, kb, kb_dir):
         write_kb(kb_dir)

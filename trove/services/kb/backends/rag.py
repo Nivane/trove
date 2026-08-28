@@ -178,9 +178,14 @@ class RagBackend:
             "ORDER BY id",
             (datasource, source_file),
         )
+        # 位置对齐:kb_items id 与 entries 一一对应(同事务按序重插),但
+        # indexable 过滤了空文本条目 —— 用 entries 位置 → id 的映射,而不是
+        # zip(indexable, rows)(混合 kind 文件会错位:term 无 fts 文本被跳过,
+        # rows 却含其 id,向量会挂到错误的 kb_items 行上)。
+        id_by_pos = {i: id_ for i, (id_,) in enumerate(rows)}
         items = []
-        for (row_idx, kind, _payload), (id_,) in zip(indexable, rows):
-            items.append((id_, kind, vecs[row_idx]))
+        for (pos, kind, _payload), vec in zip(indexable, vecs):
+            items.append((id_by_pos[pos], kind, vec))
         await self._vectors.replace(datasource, source_file, items)
 
     async def delete_file(self, datasource: str, source_file: str) -> None:
