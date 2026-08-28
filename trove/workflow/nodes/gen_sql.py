@@ -51,6 +51,8 @@ def build_sql_prompt(
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
     user_facts: list[dict[str, Any]] | None = None,
+    metrics: list[dict[str, Any]] | None = None,
+    entities: list[dict[str, Any]] | None = None,
     lang: str = "en",
 ) -> str:
     """Build the initial SQL generation prompt.
@@ -60,6 +62,8 @@ def build_sql_prompt(
       - Reference examples: top-K similar questions with their SQL
       - User facts: the asking user's preferences/calibers for this
         datasource (personalization memory)
+      - Metrics: relevance-selected semantic metrics (expression + 口径)
+      - Entities: matched dimension/enum fields (value-confirmation hints)
 
     Thin wrapper over the ``gen_sql/user`` Jinja template.
     """
@@ -86,6 +90,8 @@ def build_sql_prompt(
         few_shots=few_shots or [],
         term_notes=term_notes or [],
         user_facts=user_facts or [],
+        metrics=render_metrics(metrics or []),
+        entities=render_entities(entities or []),
     )
 
 
@@ -116,6 +122,8 @@ def build_sql_prompt_from_state(state: GenSQLState) -> str:
         few_shots=state.few_shots or None,
         term_notes=state.term_notes or None,
         user_facts=state.user_facts or None,
+        metrics=state.metrics or None,
+        entities=state.entities or None,
         lang=state.lang,
     )
 
@@ -191,6 +199,34 @@ def render_rules(rules: list[str]) -> str:
 def render_user_facts(facts: list[dict[str, Any]]) -> str:
     """用户记忆段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
     return "".join(f"- {f.get('fact', '')}\n" for f in facts)
+
+
+def render_metrics(metrics: list[dict[str, Any]]) -> str:
+    """指标段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    return "".join(
+        f"- {m.get('name', '')} = {m.get('expression', '')}"
+        + (f" — {m['definition']}" if m.get("definition") else "")
+        + "\n"
+        for m in metrics
+    )
+
+
+def render_entities(entities: list[dict[str, Any]]) -> str:
+    """维度/枚举实体段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
+    out = []
+    for e in entities:
+        line = f"- {e.get('field', '')} ({e.get('dataset', '')})"
+        if e.get("role"):
+            line += f" role={e['role']}"
+        if e.get("enum_values"):
+            pairs = [
+                f"{c}={l}" for c, l in zip(
+                    e["enum_values"], e.get("enum_labels") or [],
+                )
+            ]
+            line += f" enums {{{', '.join(pairs)}}}"
+        out.append(line + "\n")
+    return "".join(out)
 
 
 def render_cache_prefix(dialect: str, schema_context: str) -> str:

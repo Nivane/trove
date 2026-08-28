@@ -73,6 +73,24 @@ def fts_item_text(kind: str, payload: dict) -> str:
         return fts_index_text(
             payload.get("pattern"), payload.get("note"), payload.get("sql_snippet"),
         )
+    if kind == "metric":
+        # 指标:name + aliases 词法,definition/expression 语义与结构
+        return fts_index_text(
+            payload.get("name"),
+            *[str(a) for a in payload.get("aliases", [])],
+            payload.get("definition"),
+            payload.get("expression"),
+        )
+    if kind == "entity":
+        # 维度/枚举实体:字段名 + 同义词 + 描述 + 枚举值(code+label,值确认通道)
+        return fts_index_text(
+            payload.get("field"),
+            *[str(s) for s in payload.get("synonyms", [])],
+            payload.get("description"),
+            *[str(e) for e in payload.get("enum_values", [])],
+            *[str(l) for l in payload.get("enum_labels", [])],
+            payload.get("dataset"),
+        )
     return ""
 
 

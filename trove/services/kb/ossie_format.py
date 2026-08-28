@@ -76,6 +76,31 @@ def terms_to_ossie_document(
     return {"version": "0.2.0.dev0", "semantic_model": [model]}
 
 
+def _parse_model_or_none(text: str) -> Any:
+    """Parse OSSIE semantics.yml → SemanticModel, or None + warning.
+
+    与 ossie_to_term_payloads 同哲学:永不抛异常(镜像同步不能因 KB 格式
+    问题阻塞)。空白/注释文件静默返回 None;旧 flat ``terms:`` 格式与
+    结构坏文件返回 None + 可操作警告。
+    """
+    try:
+        data = yaml.safe_load(text)
+    except Exception as e:  # yaml 语法错误
+        logger.warning("semantics.yml unreadable (%s) — zero entries loaded", e)
+        return None
+    if not data:
+        return None
+    if not isinstance(data, dict) or "terms" in data:
+        logger.warning("semantics.yml uses %s — zero entries loaded", _LEGACY_HINT)
+        return None
+    try:
+        return parse_ossie(text)
+    except Exception as e:
+        logger.warning("semantics.yml not a valid OSSIE semantic model (%s) — "
+                       "zero entries loaded; re-run /kb init --overwrite", e)
+        return None
+
+
 def ossie_to_term_payloads(text: str) -> list[dict[str, Any]]:
     """OSSIE 文本 → flat term payload 列表(kind='term' 的镜像条目)。
 
@@ -85,22 +110,8 @@ def ossie_to_term_payloads(text: str) -> list[dict[str, Any]]:
     - 其他解析失败(无 semantic_model、metric 缺表达式、YAML 坏) → ``[]`` + 警告。
     空 name 的 metric 被跳过:空串子串匹配恒真,会污染 search_terms。
     """
-    try:
-        data = yaml.safe_load(text)
-    except Exception as e:  # yaml 语法错误
-        logger.warning("semantics.yml unreadable (%s) — zero terms loaded", e)
-        return []
-    if not data:
-        return []
-    if not isinstance(data, dict) or "terms" in data:
-        logger.warning("semantics.yml uses %s — zero terms loaded", _LEGACY_HINT)
-        return []
-
-    try:
-        model = parse_ossie(text)
-    except Exception as e:
-        logger.warning("semantics.yml not a valid OSSIE semantic model (%s) — "
-                       "zero terms loaded; re-run /kb init --overwrite", e)
+    model = _parse_model_or_none(text)
+    if model is None:
         return []
 
     payloads: list[dict[str, Any]] = []
@@ -115,6 +126,69 @@ def ossie_to_term_payloads(text: str) -> list[dict[str, Any]]:
             "tables": list(m.datasets),
             "definition": m.definition,
         })
+    return payloads
+
+
+def ossie_to_metric_payloads(text: str) -> list[dict[str, Any]]:
+    """OSSIE 文本 → 保真 metric payload 列表(kind='metric' 的镜像条目)。
+
+    flat term 只保留 name/aliases/mapping/definition;这里是结构化指标:
+    expression / datasets / metric_type / filter / agg_time_dimension /
+    non_additive / datatype 全部保留,支撑"指标相关性检索"与 planner 的
+    口径注入。降级与 ossie_to_term_payloads 完全一致(共享解析)。
+    """
+    model = _parse_model_or_none(text)
+    if model is None:
+        return []
+
+    payloads: list[dict[str, Any]] = []
+    for m in model.metrics:
+        if not m.name:
+            continue  # 已在 term 路径告警,不重复
+        payloads.append({
+            "name": m.name,
+            "aliases": list(m.synonyms),
+            "definition": m.definition,
+            "expression": m.expression,
+            "datasets": list(m.datasets),
+            "metric_type": m.metric_type,
+            "filter": m.filter,
+            "agg_time_dimension": m.agg_time_dimension,
+            "non_additive": m.non_additive,
+            "datatype": m.datatype,
+        })
+    return payloads
+
+
+def ossie_to_entity_payloads(text: str) -> list[dict[str, Any]]:
+    """OSSIE 文本 → 实体(维度/枚举字段)payload 列表(kind='entity' 的镜像条目)。
+
+    每个 (dataset, field) 一条:字段名 / 同义词 / 描述 / 枚举值 / 语义角色,
+    支撑"维度/值槽"检索与枚举值确认。identifier/time 结构列也入镜像,
+    但 name 子串匹配在检索门内排除(避免 "date"/"issued" 撞普通词,与
+    schema_linking._semantic_match_datasets 同哲学)。
+    """
+    model = _parse_model_or_none(text)
+    if model is None:
+        return []
+
+    payloads: list[dict[str, Any]] = []
+    for d in model.datasets:
+        for f in d.fields:
+            codes = list(f.enum_display.keys())
+            labels = [str(f.enum_display[c]) for c in codes]
+            payloads.append({
+                "field": f.name,
+                "dataset": d.name,
+                "role": f.semantic_role,
+                "description": f.description,
+                "synonyms": list(f.synonyms),
+                "enum_values": codes,
+                "enum_labels": labels,
+                "is_time": f.is_time,
+                "datatype": f.datatype,
+                "label": f.label,
+            })
     return payloads
 
 

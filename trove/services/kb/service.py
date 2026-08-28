@@ -42,6 +42,8 @@ from trove.services.kb.embeddings import (
 )
 from trove.services.kb.ossie_format import (
     append_term_to_document,
+    ossie_to_entity_payloads,
+    ossie_to_metric_payloads,
     ossie_to_term_payloads,
     qualify_mapping,
     terms_to_ossie_document,
@@ -116,6 +118,36 @@ class ExampleHit:
     date_range: bool = False
 
 
+@dataclass
+class MetricHit:
+    """A semantic metric matched against the question (typed retrieval)."""
+
+    name: str
+    aliases: list[str] = field(default_factory=list)
+    definition: str = ""
+    expression: str = ""
+    datasets: list[str] = field(default_factory=list)
+    score: float = 0.0
+
+
+@dataclass
+class EntityHit:
+    """A semantic dimension/entity field matched against the question.
+
+    ``enum_values``/``enum_labels`` 是值确认通道:code → 人类 label 的映射
+    (值落在字段层,不参与可答性判定,见 schema_linking 的语义优先边界)。
+    """
+
+    field: str
+    dataset: str = ""
+    role: str = ""
+    description: str = ""
+    synonyms: list[str] = field(default_factory=list)
+    enum_values: list[str] = field(default_factory=list)
+    enum_labels: list[str] = field(default_factory=list)
+    score: float = 0.0
+
+
 # ── Pure scoring helpers ─────────────────────────────────
 
 
@@ -155,6 +187,19 @@ def _term_word_overlap(term: str, question: str) -> float:
         return 0.0
     qw = _word_tokens(question)
     return len(tw & qw) / len(tw)
+
+
+def _char_overlap(text: str, question: str) -> float:
+    """字符二元组覆盖:``text`` 的 bigram 有多少出现在问题里(中英同用)。
+
+    与 ``_term_word_overlap`` 互补——后者对纯中文失效(词元切分不到),
+    前者用字符 bigram,专治中文近义("地区名"↔"哪个地区")。作为弱门信号:
+    描述/枚举文本里 ≥50% 的 bigram 出现在问题即视为命中。
+    """
+    bs = _bigrams(text or "")
+    if not bs:
+        return 0.0
+    return sum(1 for b in bs if b in (question or "")) / len(bs)
 
 
 def _mentions_any(text: str, names: list[str]) -> bool:
@@ -234,6 +279,67 @@ def _score_example(
     if (example.get("aggregate") or example.get("date_range")) and score > 0:
         score = max(1, round(score * 0.6))
     return score
+
+
+def _score_metric(question: str, payload: dict) -> float | None:
+    """类型加权指标打分:名称命中 ×3 > 别名 ×2 > 定义重叠 > coverage 门内。
+
+    确定性门 = 名称/别名子串 · 词重叠 · 定义词/字符重叠(coverage 只在
+    门内提升近义候选排序)——检索信号不改变"零确定性命中 = 不返回"。
+    """
+    name = str(payload.get("name") or "")
+    aliases = [str(a) for a in payload.get("aliases", []) or []]
+    definition = str(payload.get("definition") or "")
+    name_hit = 1.0 if (
+        name in question or _term_word_overlap(name, question) >= 0.5
+    ) else 0.0
+    alias_hit = 1.0 if any(a and a in question for a in aliases) else 0.0
+    def_overlap = max(
+        _term_word_overlap(definition, question) if definition else 0.0,
+        _char_overlap(definition, question) if definition else 0.0,
+    )
+    index_text = " ".join([name, *aliases, definition, str(payload.get("expression") or "")])
+    sim = coverage_score(question, index_text)
+    if name_hit == 0.0 and alias_hit == 0.0 and def_overlap < 0.5 and sim < 0.45:
+        return None
+    return 3.0 * name_hit + 2.0 * alias_hit + 1.5 * def_overlap + sim
+
+
+def _score_entity(question: str, payload: dict) -> float | None:
+    """类型加权实体打分:字段/同义词/枚举命中各 ×2 + 描述/覆盖率门内。
+
+    identifier/time 结构列(含 is_time)的原始名子串匹配排除(撞普通词,
+    与 schema_linking._semantic_match_datasets 同哲学);同义词/枚举值/
+    中文描述重叠不受此限(人工业务词表)。
+    """
+    field = str(payload.get("field") or "")
+    synonyms = [str(s) for s in payload.get("synonyms", []) or []]
+    enums = [str(e) for e in payload.get("enum_values", []) or []]
+    enum_labels = [str(l) for l in payload.get("enum_labels", []) or []]
+    description = str(payload.get("description") or "")
+    role = str(payload.get("role") or "").strip().lower()
+    structural = role in ("identifier", "time") or bool(payload.get("is_time"))
+    field_hit = bool(field) and field in question and not structural
+    syn_hit = any(s and s in question for s in synonyms)
+    enum_hit = any(
+        (e and e in question) or (l and l in question)
+        for e, l in zip(enums, enum_labels)
+    ) or any(e and e in question for e in enums)
+    desc_overlap = _char_overlap(description, question) if description else 0.0
+    index_text = " ".join([
+        field, *synonyms, description, *enums, *enum_labels,
+        str(payload.get("dataset") or ""),
+    ])
+    sim = coverage_score(question, index_text)
+    if not (field_hit or syn_hit or enum_hit) and desc_overlap < 0.5 and sim < 0.45:
+        return None
+    return (
+        2.0 * (1.0 if field_hit else 0.0)
+        + 2.0 * (1.0 if syn_hit else 0.0)
+        + 2.0 * (1.0 if enum_hit else 0.0)
+        + desc_overlap
+        + sim
+    )
 
 
 def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) -> bool:
@@ -331,8 +437,16 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
     elif path.name == "semantics.yml":
         # OSSIE semantic_model 格式(见 kb.ossie_format);旧 flat terms: 格式
         # 解析为零条目 + 迁移警告(不兼容决策,需 /kb init --overwrite)。
+        # 分型导出:term(子串检索)/ metric(指标相关性)/ entity(维度/枚举值)
+        # ——三套镜像条目共享同一份解析,降级一致。
         for payload in ossie_to_term_payloads(text):
             entries.append(("term", payload["term"], payload))
+        for payload in ossie_to_metric_payloads(text):
+            entries.append(("metric", payload["name"], payload))
+        for payload in ossie_to_entity_payloads(text):
+            entries.append((
+                "entity", f"{payload['dataset']}.{payload['field']}", payload,
+            ))
 
     elif path.name == "rules.yml":
         for rule in data.get("rules", []):
@@ -742,6 +856,127 @@ class KbService:
         except Exception as e:
             logger.warning("schema_doc retrieval failed (%s): %s", datasource, e)
             return []
+
+    async def search_metrics(
+        self,
+        question: str,
+        datasource: str,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+        limit: int = 5,
+    ) -> list[MetricHit]:
+        """Top-K 语义指标检索(typed corpus):名称/别名/定义词法门 → coverage 门内。
+
+        词法门决定"是否返回",类型加权分排序(名称×3 > 别名×2 > 定义重叠
+        > coverage);``tables`` 给定后,绑定到未匹配数据集的指标被丢弃
+        (与 search_terms 同语义)。向量不参与名称匹配(与 term 同哲学),
+        因此不经过检索后端 dispatch——直接读 kind='metric' 镜像。
+        """
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT payload FROM kb_items WHERE kind = 'metric' AND datasource = ?",
+            (datasource,),
+        )
+        hits: list[MetricHit] = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            name = str(payload.get("name") or "")
+            if not name:
+                continue
+            if tables is not None:
+                bound = list(payload.get("datasets") or [])
+                if bound and not any(t in tables for t in bound):
+                    continue
+            score = _score_metric(question, payload)
+            if score is None:
+                continue
+            hits.append(MetricHit(
+                name=name,
+                aliases=list(payload.get("aliases") or []),
+                definition=str(payload.get("definition") or ""),
+                expression=str(payload.get("expression") or ""),
+                datasets=list(payload.get("datasets") or []),
+                score=round(score, 4),
+            ))
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits[:limit]
+
+    async def search_entities(
+        self,
+        question: str,
+        datasource: str,
+        tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+        limit: int = 8,
+    ) -> list[EntityHit]:
+        """Top-K 维度/枚举实体检索(typed corpus):字段/同义词/枚举值词法门。
+
+        ``tables`` 给定后,只返回属于这些数据集的实体(图链接的
+        沿边拉取入口);identifier/time 结构列不做原始名子串匹配。
+        """
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT payload FROM kb_items WHERE kind = 'entity' AND datasource = ?",
+            (datasource,),
+        )
+        hits: list[EntityHit] = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            if tables is not None:
+                ds = str(payload.get("dataset") or "")
+                if ds and ds not in tables:
+                    continue
+            score = _score_entity(question, payload)
+            if score is None:
+                continue
+            hits.append(EntityHit(
+                field=str(payload.get("field") or ""),
+                dataset=str(payload.get("dataset") or ""),
+                role=str(payload.get("role") or ""),
+                description=str(payload.get("description") or ""),
+                synonyms=list(payload.get("synonyms") or []),
+                enum_values=list(payload.get("enum_values") or []),
+                enum_labels=list(payload.get("enum_labels") or []),
+                score=round(score, 4),
+            ))
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits[:limit]
+
+    async def metric_family(
+        self,
+        question: str,
+        datasource: str,
+        matched_tables: list[str] | None = None,
+        all_tables: list[str] | None = None,
+        metric_limit: int = 4,
+        entity_limit: int = 8,
+    ) -> dict[str, Any]:
+        """图链接:metric 命中 → 沿 metric.datasets 拉 entity 族 + 扩展表锚。
+
+        返回 ``{"metrics", "entities", "tables"}``:metrics 是相关性选择的
+        指标(不做过窄表过滤,保证召回);tables = matched_tables ∪ 各指标
+        锚定的数据集(已在语义模型内声明,不越语义优先边界);entities 只
+        取这些数据集里与问题词法相关的维度/枚举字段(值确认通道)。
+        """
+        metrics = await self.search_metrics(
+            question, datasource, tables=None, all_tables=all_tables,
+            limit=metric_limit,
+        )
+        tables = list(matched_tables or [])
+        metric_tables: list[str] = []
+        for m in metrics:
+            for d in m.datasets:
+                if d and d not in tables:
+                    tables.append(d)
+                if d and d not in metric_tables:
+                    metric_tables.append(d)
+        entities = await self.search_entities(
+            question, datasource, tables=metric_tables or None,
+            all_tables=all_tables, limit=entity_limit,
+        )
+        return {"metrics": metrics, "entities": entities, "tables": tables}
 
     async def _search_terms(
         self,

@@ -54,7 +54,9 @@ from trove.workflow.nodes.gen_sql import (
     make_generate,
     make_validate,
     render_cache_prefix,
+    render_entities,
     render_lessons,
+    render_metrics,
     render_rules,
     render_shots,
     render_terms,
@@ -340,6 +342,8 @@ def _make_gen_sql_node(
         example_hits = []
         lessons: list[dict[str, Any]] = []
         rules: list[str] = []
+        metric_hits: list[Any] = []
+        entity_hits: list[Any] = []
         # 证据层锚:schema linking 的 matched_tables(实时语义层也要用)
         matched = list(state.matched_tables or [])
         # 复杂度分级(纯函数,零 IO/LLM):结构信号(plan) + 语义信号(锚定表)。
@@ -387,12 +391,23 @@ def _make_gen_sql_node(
                     state.question, datasource,
                     tables=matched or None, all_tables=all_table_names or None,
                 ),
+                # typed corpus 检索:指标(表达式+口径)与维度/枚举实体(值确认)
+                services.kb.search_metrics(
+                    state.question, datasource,
+                    tables=matched or None, all_tables=all_table_names or None,
+                    limit=4,
+                ),
+                services.kb.search_entities(
+                    state.question, datasource,
+                    tables=matched or None, all_tables=all_table_names or None,
+                    limit=8,
+                ),
                 return_exceptions=True,
             )
             for r in _kb_results[1:]:  # 首个异常(原顺序)→ 中止节点,同旧语义
                 if isinstance(r, BaseException):
                     raise r
-            example_hits, rules, lessons, term_hits = _kb_results
+            example_hits, rules, lessons, term_hits, metric_hits, entity_hits = _kb_results
             few_shots = [
                 {"question": h.question, "sql": h.sql, "template": h.template}
                 for h in example_hits
@@ -490,6 +505,39 @@ def _make_gen_sql_node(
                 )
                 for i, t in enumerate(term_notes)
             ]
+        if metric_hits:
+            metric_items = [
+                {
+                    "name": m.name, "expression": m.expression,
+                    "definition": m.definition, "score": m.score,
+                }
+                for m in metric_hits
+            ]
+            optional_blocks["metrics"] = [
+                ContextItem(
+                    key=f"metric{i}",
+                    text=render_metrics([m]),
+                    score=float(m["score"] or 0),
+                )
+                for i, m in enumerate(metric_items)
+            ]
+        if entity_hits:
+            entity_items = [
+                {
+                    "field": e.field, "dataset": e.dataset, "role": e.role,
+                    "enum_values": e.enum_values, "enum_labels": e.enum_labels,
+                    "score": e.score,
+                }
+                for e in entity_hits
+            ]
+            optional_blocks["entities"] = [
+                ContextItem(
+                    key=f"entity{i}",
+                    text=render_entities([e]),
+                    score=float(e["score"] or 0),
+                )
+                for i, e in enumerate(entity_items)
+            ]
         if lessons:
             optional_blocks["lessons"] = [
                 ContextItem(
@@ -534,7 +582,7 @@ def _make_gen_sql_node(
         included, context_usage = assemble_context(
             optional_blocks,
             {"few_shots": 1, "user_facts": 2, "rules": 3, "term_notes": 4,
-             "lessons": 5, "plan": 6, "history": 7},
+             "metrics": 5, "entities": 6, "lessons": 7, "plan": 8, "history": 9},
             budget,
             count=_count,
         )
@@ -548,6 +596,8 @@ def _make_gen_sql_node(
         lessons = _trim("lessons", "lesson", lessons)
         rules = _trim("rules", "rule", rules)
         user_facts = _trim("user_facts", "ufact", user_fact_items)
+        metrics = _trim("metrics", "metric", metric_items) if metric_hits else None
+        entities = _trim("entities", "entity", entity_items) if entity_hits else None
         # history 是逐轮条目:按预算保留的轮次重拼回字符串注入
         history_trimmed = ""
         if "history" in included:
@@ -576,6 +626,8 @@ def _make_gen_sql_node(
             lessons=lessons,
             rules=rules,
             user_facts=user_facts,
+            metrics=metrics,
+            entities=entities,
             history=history_trimmed,
             schema_context=schema_for_gen,
         )
