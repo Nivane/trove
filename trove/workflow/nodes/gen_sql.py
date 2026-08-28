@@ -168,10 +168,27 @@ def _syntax_target_hint(errors: list[str], lang: str = "en") -> str:
 
 
 def render_shots(shots: list[dict[str, Any]]) -> str:
-    """参考示例段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
-    return "".join(
-        f"Q: {s.get('question', '')}\nSQL: {s.get('sql', '')}\n" for s in shots
-    )
+    """参考示例段文本（token 估算用）——与 gen_sql/user 模板格式一致。
+
+    template 携带 parameters 时,追加参数块(类型/列/样例值),提示模型把
+    ``{{var}}`` 替换成真实值——与模板渲染格式逐字一致,避免估算失真。
+    """
+    parts: list[str] = []
+    for s in shots:
+        parts.append(f"Q: {s.get('question', '')}\nSQL: {s.get('sql', '')}")
+        params = s.get("parameters")
+        if params:
+            parts.append(
+                "Parameters (substitute real values; never emit {{ }} literally):")
+            for p in params:
+                line = f"- {p.get('name', '')}: {p.get('type', '')}"
+                if p.get("column"):
+                    line += f" ({p['column']})"
+                if p.get("sample_values"):
+                    line += f" sample: {', '.join(str(v) for v in p['sample_values'])}"
+                parts.append(line)
+        parts.append("")
+    return "\n".join(parts)
 
 
 def render_terms(terms: list[dict[str, Any]]) -> str:
@@ -1246,8 +1263,8 @@ def make_generate(
             state.validation_errors and _syntax_target_hint(state.validation_errors, state.lang)
         )
         model = (
-            config.model_fast or config.model_for(state.complexity)
-        ) if is_simple_fix else config.model_for(state.complexity)
+            config.model_fast or config.model_for_node("gen_sql", state.complexity)
+        ) if is_simple_fix else config.model_for_node("gen_sql", state.complexity)
         start = time.monotonic()
         system_prompt = render("gen_sql/system", lang=state.lang)
         response = await llm.chat(

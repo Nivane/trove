@@ -408,10 +408,33 @@ def _make_gen_sql_node(
                 if isinstance(r, BaseException):
                     raise r
             example_hits, rules, lessons, term_hits, metric_hits, entity_hits = _kb_results
-            few_shots = [
-                {"question": h.question, "sql": h.sql, "template": h.template}
-                for h in example_hits
-            ]
+
+            # 模板参数化(A1):template 且 SQL 含 {{var}} 时,确定性静态分析
+            # 出参数类型/声明列/枚举样例值,注入 few-shot(LLM 据此填真实值,
+            # 不把 {{var}} 当字面量)。零 LLM,失败静默降级为普通模板。
+            _semantic_model = None
+            if services.semantic_layer is not None:
+                try:
+                    _semantic_model = services.semantic_layer.model()
+                except Exception:
+                    _semantic_model = None
+
+            def _shot(h: Any) -> dict[str, Any]:
+                shot: dict[str, Any] = {
+                    "question": h.question, "sql": h.sql, "template": bool(h.template),
+                }
+                if h.template and "{{" in (h.sql or ""):
+                    try:
+                        from trove.services.kb.template_params import analyze_template
+
+                        params = analyze_template(h.sql, _semantic_model)
+                        if params:
+                            shot["parameters"] = params
+                    except Exception:
+                        pass
+                return shot
+
+            few_shots = [_shot(h) for h in example_hits]
             term_notes = [
                 {"term": h.term, "mapping": h.mapping, "definition": h.definition}
                 for h in term_hits
@@ -1353,7 +1376,7 @@ def _build_reflection(
         services, subgraph, subgraph_alt=subgraph_alt,
         alt_subgraphs=alt_subgraphs, agentic=agentic,
     ))
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -1508,7 +1531,7 @@ def _build_fixed(
         semantic_layer=services.semantic_layer,
     ))
     g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows)))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))

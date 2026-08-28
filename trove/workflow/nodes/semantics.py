@@ -49,7 +49,7 @@ def make_semantics(
         if in_correction:
             return {}
 
-        model = config.model_for(state.complexity)
+        model = config.model_for_node("semantics", state.complexity)
         try:
             start = time.monotonic()
             user_prompt = render(

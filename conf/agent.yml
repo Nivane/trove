@@ -5,6 +5,17 @@ agent:
   # 快速档模型: simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型
   # (复杂度分级 grade_complexity 驱动;complex 仍走 target)。留空 = 不分档。
   model_fast: deepseek/deepseek-chat
+  # 每节点模型覆盖(按节点名,优先于复杂度分档选模):planner/gen_sql/reflect/
+  # insights/conclusion/semantics/refuse/analyze_error。典型配置:planner 用
+  # 便宜模型、reflect 用强模型。空 = 不覆盖。
+  # node_models:
+  #   planner: deepseek/deepseek-chat
+  #   reflect: deepseek/deepseek-reasoner
+  # EXPLAIN 行数估算守卫(默认关):每次最终执行前 EXPLAIN 估算最重算子行数,
+  # 超 explain_max_rows 打回 gen_sql 加 LIMIT/收窄。fail-open(方言不可解析/
+  # EXPLAIN 失败 → 放行)。防分析 agent 误跑超大扫描/笛卡尔积。
+  # explain_row_guard: true
+  # explain_max_rows: 50000000
   # 交互语言: en(默认) / zh — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
   # 不按问题的中英文自动检测
   language: zh

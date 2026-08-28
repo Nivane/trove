@@ -792,7 +792,12 @@ def make_planner(
         )
         schema_map = await _schema_map(connectors, state.datasource or None)
         # 计划起草走 fast 档(未配置 fast → 回退 target)
-        model = config.model_fast or config.target or "openai/gpt-4o"
+        model = (
+            config.node_models.get("planner")
+            or config.model_fast
+            or config.target
+            or "openai/gpt-4o"
+        )
         system_prompt = render(
             "planner/system",
             lang=state.lang,

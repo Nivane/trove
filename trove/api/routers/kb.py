@@ -119,6 +119,54 @@ async def create_example(
     return {"status": "ok", "question": body.question, "datasource": ds}
 
 
+# ── Pending example drafts (好评闭环:user 好评 → draft → admin 确认) ──
+
+
+@router.get("/kb/examples/pending")
+async def list_pending_examples(
+    request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """待确认参考示例(好评问答自动草拟,pending 不参与检索)。"""
+    ds = _datasource(request, datasource)
+    return {"examples": await _kb(request).list_pending_examples(ds)}
+
+
+@router.post("/kb/examples/draft", status_code=201)
+async def draft_example(
+    body: ExampleCreate, request: Request, datasource: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """User feedback channel: 好评问答 → pending 参考示例,供 admin 确认。"""
+    ds = _datasource(request, datasource)
+    res = await _kb(request).draft_example(
+        body.question, body.sql, ds, tags=body.tags, note="",
+    )
+    if res.get("status") == "invalid":
+        raise HTTPException(status_code=400, detail="question and sql are required")
+    return {"status": res["status"], "question": body.question, "datasource": ds}
+
+
+@router.post("/kb/examples/confirm", response_model=LessonConfirmResponse)
+async def confirm_pending_examples(
+    request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """确认全部 pending 示例(清除 pending 标志,进入检索)。"""
+    ds = _datasource(request, datasource)
+    return {"confirmed": await _kb(request).confirm_pending_examples(ds)}
+
+
+@router.post("/kb/examples/reject", response_model=LessonConfirmResponse)
+async def reject_pending_examples(
+    request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """拒绝(删除)全部 pending 示例。"""
+    ds = _datasource(request, datasource)
+    return {"confirmed": await _kb(request).reject_pending_examples(ds)}
+
+
 # ── Lessons (Hint Bank, pending until confirmed) ─────────
 
 

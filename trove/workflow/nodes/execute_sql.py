@@ -33,6 +33,8 @@ def make_execute_sql(
     timeout_ms: int = 30000,
     max_retries: int = 10,
     lineage=None,
+    explain_row_guard: bool = False,
+    explain_max_rows: int = 50_000_000,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -69,6 +71,30 @@ def make_execute_sql(
             if not ok:
                 logger.info("compile drift for %r: %s", state.question[:80], why)
                 return _compile_drift_failure(state, max_retries)
+
+        # EXPLAIN 行数估算守卫(fail-open):执行前 EXPLAIN 估算最重算子
+        # 行数,超上限打回 gen_sql 加 LIMIT/收窄。无法解析方言/EXPLAIN
+        # 失败/未超限 → 放行,不阻断链路。
+        if explain_row_guard and connectors is not None:
+            try:
+                plan = await connectors.explain(state.sql, state.datasource or None)
+                from trove.services.sql.row_guard import is_over_limit
+
+                if is_over_limit(state.dialect, plan, explain_max_rows):
+                    logger.info(
+                        "row guard hit for %r: est > %d",
+                        state.question[:80], explain_max_rows,
+                    )
+                    return _execution_failure(
+                        state,
+                        "[ERR:ROW_GUARD] The EXPLAIN plan estimates a result "
+                        f"larger than {explain_max_rows} rows. Narrow the query "
+                        "(add filters / aggregation, or a LIMIT) so it returns a "
+                        "bounded result set.",
+                        max_retries,
+                    )
+            except Exception as e:
+                logger.warning("EXPLAIN row guard skipped (fail-open): %s", e)
 
         result = None
         timeout_s = timeout_ms / 1000.0

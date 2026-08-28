@@ -19,7 +19,7 @@ It answers, and learns with every question.
   - **analyze_error 根因诊断**：LLM 判定失败根因，沿 `gen_sql → planner → schema_linking` 回滚阶梯重跑，防环守护；reflect 裁决与执行错误共享 ≤10 轮修正上限；SQL 版本链记录每轮失败（SQL + 结果签名），与上一版对比产生确定性回归反馈（无效修复 / 无进展 / 问题转移）
   - **会话内任务层（跨轮）**：规则门控的 LLM 拆解（命中「依次 / 分别 / 还要 / 编号列表」等提示词才花一次拆解调用，单问题零额外 token）→ 逐条顺序执行（单条失败不中断批次）→ 跨轮推进：回复「继续 / 重做 / 跳过 / 追加」被解释为任务操作；批处理 HITL 给三选项（仅当前 / 确认全部 / 不继续）；REPL `/tasks`（别名 `/todo`）与 Web UI 任务面板查看进度
   - **精确结果缓存**：同会话内归一化后完全相同的问句直接返回上次已验证的 SQL + 结果（0 LLM 调用），TTL 300s、按数据源隔离；命中跳过 HITL 确认（该 SQL 首轮已人工确认过）
-  - **复杂度分档与确定性快径**：`grade_complexity` 分 simple / standard / complex 三档——档位化 token 预算 + 分档选模（simple/standard → `model_fast`，complex → `target`）+ 确定性模板快径（单表/单聚合模板命中即直接产出 SQL，跳过 planner/生成/裁决）+ `reflect_skip`（validate 确定性规则全过即跳过 reflect 的 LLM 裁决）
+  - **复杂度分档与确定性快径**：`grade_complexity` 分 simple / standard / complex 三档——档位化 token 预算 + 分档选模（simple/standard → `model_fast`，complex → `target`，可再按节点覆盖 `node_models`）+ 确定性模板快径（单表/单聚合模板命中即直接产出 SQL，跳过 planner/生成/裁决）+ `reflect_skip`（validate 确定性规则全过即跳过 reflect 的 LLM 裁决）
   - 三个工作流：`reflection`（默认，带自校正）/ `fixed`（快速直通）/ `empty`（调试透传）
 - **确定性时间解析**（parse_date）：相对时间表达（"最近7天" / "last week"）解析为绝对范围，未命中静默透传；解析产物确定性注入 planner 的时间过滤条件（仅当声明模型中存在唯一时间维度，不猜测）
 - **上下文预算**：gen prompt 的可选块（示例/规则/术语/经验/计划/历史/用户事实）按优先级装入 token 预算（simple 瘦身 / complex 放开，默认 2500），实际装载量进入可观测
@@ -37,8 +37,10 @@ It answers, and learns with every question.
     - `builtin`（默认）：确定性词法分 + 本地哈希 n-gram embedding 覆盖率重排（零依赖零网络，中英/同义改写受益）
     - `hybrid`：FTS5 倒排 + BM25 稀疏通道
     - `rag`：稀疏（FTS5/BM25）+ 稠密（embedding 余弦）双通道 RRF 融合（稠密缺失时自动退化为纯稀疏）
+  - **渐进式 schema linking**：反思/纠错重跑轮按档放宽匹配阈值（2.0 → 1.5 → 1.0）并放大候选表上限（8 → 16）——回滚修正时把弱命中数据集也拉进作用域，首轮行为不变
+  - **参数化参考模板**：`examples.yml` 模板可含 `{{var}}`，注入 gen 时经**确定性静态分析**（零 LLM）把参数分类为 dimension/number/keyword/column、解析到声明列（sqlglot）、并用语义模型枚举值丰富样例值——LLM 看到「可复用形状 + 合法取值」，不把占位符当字面量
   - KB 精确命中（词重叠 ≥0.95）短路，直接采用标准 SQL
-  - `/kb learn` 半自动演化：LLM 起草 → 人工确认 → 入库
+  - `/kb learn` 半自动演化：LLM 起草 → 人工确认 → 入库；**好评闭环**：用户好评（upvote）带 SQL 的问答自动草拟 pending 参考示例（`examples.yml`），管理端 `/kb/examples/pending` 确认后进入检索——好评即入库草稿，越用越准
 - **语义编译**（`trove/services/semantic_layer/`）：planner 输出经 **typed plan AST**（`PlanQuery`）在解析/编译边界强类型化——多度量/派生度量（递归内联，环/深度守卫）、时间分桶（四方言 `date_trunc` 等价物）、metric 级 HAVING / 宽排序处理；**窗口分析**（`plan.analysis`）：占比 `share` / 累计 `running_total` / 环比 `mom` / 同比 `yoy`（滞后月数随粒度推）/ 增长率 `pct_change` / 排名 `rank`（可配 `limit` 做 top-N），把聚合核心包成窗口查询，语义优先下分析类问题不再整拒；**保守化守卫**：任何语义组件无法解析到声明模型即整体 MISS（MISS 分因透出），基数声明与 FK 命名在建模期 lint（`/kb lint`）
 - **用户级记忆**（`user_facts`，Mem0 式）：按 `(用户, 数据源)` 作用域的偏好/口径事实，CRUD + 与问句的相关度排序，注入 gen_sql 个性化上下文块（REPL `/facts`，管理端 `trove admin facts`）
 - **多语言**：`language: en / zh` 统一交互语言——提示词、答案、轨迹全程使用所选语言（不按问题语言自动检测）
@@ -138,6 +140,11 @@ docker compose down              # 停止并移除容器
 agent:
   target: deepseek/deepseek-v4-flash    # litellm 模型字符串（推理模型如 deepseek-reasoner 亦可）
   model_fast: deepseek/deepseek-chat    # 快速档模型：simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型（留空 = 不分档）
+  node_models:                          # 每节点模型覆盖（优先于复杂度分档）：planner/gen_sql/reflect/insights/...
+    planner: deepseek/deepseek-chat     # planner 用便宜模型、reflect 用强模型的典型配置
+    reflect: deepseek/deepseek-reasoner
+  explain_row_guard: false              # EXPLAIN 行数估算守卫（默认关）：执行前 EXPLAIN 估算最重算子行数，超限打回加 LIMIT/收窄（fail-open）
+  explain_max_rows: 50000000
   language: en                          # 交互语言 en / zh：提示词、答案、轨迹统一使用
   date_parser: true                     # 确定性相对时间解析（未命中静默透传）
   explain_semantics: false              # 生成 SQL 后 LLM 说明语义（输出与 HITL 确认时展示）
@@ -249,6 +256,9 @@ GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
 - 连接侧开启超时：`statement_timeout`/`lock_timeout`（PG）、`MAX_EXECUTION_TIME`
   （MySQL 会话变量）
 - 行数上限在数据库侧用 `LIMIT`/`LEAST()` 强制，应用层限制可被 SQL 绕过
+- 可选 **EXPLAIN 行数估算守卫**（`explain_row_guard: true`）：执行前 `EXPLAIN`
+  估算最重算子行数（postgres/mysql/duckdb），超 `explain_max_rows` 打回
+  生成层加 LIMIT/收窄；方言不可解析/失败 fail-open——纵深防御的体验层
 - 多租户优先每租户独立库 + 独立只读角色；必须共享库时用 RLS 或程序化 CTE 预过滤
 - 只读角色的 DSN 密钥妥善保管；Trove 报错路径已统一脱敏（`sanitize_error_text`），
   但错误日志仍可能泄露连接信息——日志系统同样需要访问控制

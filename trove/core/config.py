@@ -85,6 +85,9 @@ class AgentConfig:
     home: str = "~/.trove"
     target: str = ""  # default model e.g. "openai/gpt-4o"
     model_fast: str = ""  # 快速档模型: simple/standard 复杂度走此模型(未配置 = 不分档,全走 target)
+    # 每节点模型覆盖(按节点名,如 planner/gen_sql/reflect/insights):优先于复杂度
+    # 分档选模——planner 用便宜模型、reflect 用强模型的典型配置。空 = 不覆盖。
+    node_models: dict[str, str] = field(default_factory=dict)
     language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
     semantic_layer_path: str = ""  # OSSIE 语义层目录(相对项目根),空 = 关闭
     # 语义优先(Phase B):语义模型是唯一可答边界——未覆盖=拒绝+反问扩展;
@@ -102,6 +105,11 @@ class AgentConfig:
     # 结果限制(管理台可配):答案表格单次展示行数 / 查询结果行数上限
     result_display_rows: int = 50
     result_max_rows: int = 1000
+    # EXPLAIN 行数估算守卫(默认关,开则每次最终执行前 EXPLAIN 估算最重算子
+    # 行数,超 explain_max_rows 打回 gen_sql 加 LIMIT/收窄。fail-open:无法
+    # 解析方言/EXPLAIN 失败 → 放行)。见 trove/services/sql/row_guard.py。
+    explain_row_guard: bool = False
+    explain_max_rows: int = 50_000_000
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -117,6 +125,19 @@ class AgentConfig:
         if self.model_fast and complexity in ("simple", "standard"):
             return self.model_fast
         return self.target or "openai/gpt-4o"
+
+    def model_for_node(self, node: str, complexity: str) -> str:
+        """每节点模型覆盖(优先) → 复杂度分档选模。
+
+        ``node_models`` 里给某节点(planner/gen_sql/reflect/insights/...)配了
+        模型就用它——planner 便宜、reflect 强模型的典型配置;没配则回落
+        ``model_for`` 的复杂度分档。
+        """
+        if node:
+            pinned = self.node_models.get(node) or self.node_models.get(node.lower())
+            if pinned:
+                return pinned
+        return self.model_for(complexity)
 
 
 @dataclass
@@ -267,6 +288,11 @@ class ConfigLoader:
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
             model_fast=agent_section.get("model_fast", ""),
+            node_models={
+                str(k).lower(): str(v)
+                for k, v in (agent_section.get("node_models", {}) or {}).items()
+                if str(k) and str(v)
+            },
             language=agent_section.get("language", "zh"),
             semantic_layer_path=agent_section.get("semantic_layer_path", ""),
             semantic_first=agent_section.get("semantic_first", True),
@@ -280,6 +306,9 @@ class ConfigLoader:
             result_cache=agent_section.get("result_cache", False),
             result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
             result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),
+            explain_row_guard=bool(agent_section.get("explain_row_guard", False)),
+            explain_max_rows=max(
+                1000, int(agent_section.get("explain_max_rows", 50_000_000))),
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,
