@@ -36,7 +36,7 @@ It answers, and learns with every question.
   - 检索以 schema linking 的 `matched_tables` 为锚做确定性硬门（零命中不返回），门内按数据源**检索后端**排序：
     - `builtin`（默认）：确定性词法分 + 本地哈希 n-gram embedding 覆盖率重排（零依赖零网络，中英/同义改写受益）
     - `hybrid`：FTS5 倒排 + BM25 稀疏通道
-    - `rag`：稀疏（FTS5/BM25）+ 稠密（embedding 余弦）双通道 RRF 融合（稠密缺失时自动退化为纯稀疏）
+    - `rag`：稀疏（FTS5/BM25）+ 稠密（embedding 余弦）双通道 RRF 融合；装 `bge` extra 后升级为 **bge-m3 learned-sparse 第三路**（dense+sparse 单模型、pgvector/sqlite sparsevec 通道）+ **cross-encoder 精排**（`rerank_backend`：本地 FlagReranker / http / none / deterministic，auto 按端点→bge→cosine 近似→确定性降级），RRF 权重/`k` 可配（`rrf_weights`/`rrf_k` 写 `datasources.yml`）；稠密缺失时自动退化为纯稀疏
   - **渐进式 schema linking**：反思/纠错重跑轮按档放宽匹配阈值（2.0 → 1.5 → 1.0）并放大候选表上限（8 → 16）——回滚修正时把弱命中数据集也拉进作用域，首轮行为不变
   - **参数化参考模板**：`examples.yml` 模板可含 `{{var}}`，注入 gen 时经**确定性静态分析**（零 LLM）把参数分类为 dimension/number/keyword/column、解析到声明列（sqlglot）、并用语义模型枚举值丰富样例值——LLM 看到「可复用形状 + 合法取值」，不把占位符当字面量
   - KB 精确命中（词重叠 ≥0.95）短路，直接采用标准 SQL
@@ -45,7 +45,7 @@ It answers, and learns with every question.
 - **用户级记忆**（`user_facts`，Mem0 式）：按 `(用户, 数据源)` 作用域的偏好/口径事实，CRUD + 与问句的相关度排序，注入 gen_sql 个性化上下文块（REPL `/facts`，管理端 `trove admin facts`）
 - **多语言**：`language: en / zh` 统一交互语言——提示词、答案、轨迹全程使用所选语言（不按问题语言自动检测）
 - **多模型**：litellm 网关，支持任意兼容 provider（OpenAI / DeepSeek / Anthropic / …），可配 `api_base` 接非官方端点；已适配推理模型（reasoning 输出占用 token 预算的处理）
-- **MCP 服务**：`trove mcp` 以 stdio transport 启动 MCP server，把 NL→SQL 能力暴露为工具（`ask_data` / `list_datasources` / `kb_status`），供 Claude Code 等 MCP 客户端本地挂载；多轮会话用 `session_id` 复用
+- **MCP 服务**：`trove mcp` 以 stdio（默认）或 sse / streamable-http transport 启动 MCP server，把 NL→SQL 能力暴露为工具（`ask_data` / `list_datasources` / `kb_status`）与 resources（`trove://datasources`、`trove://<ds>/schema`、`trove://<ds>/semantics`），供 Claude Code 等 MCP 客户端本地挂载或跨网络挂载（HTTP 可用 `--token` bearer 鉴权）；多轮会话用 `session_id` 复用
 
 ## 快速开始
 
@@ -72,13 +72,14 @@ CLI 参数：`--datasource/-d`（demo 或 `scheme://` URL）· `--config/-f` · 
 
 ## MCP 服务
 
-`trove mcp` 以 stdio transport 启动 MCP server，把 Trove 的 NL→SQL 能力暴露为工具，供 Claude Code / 其他 MCP 客户端本地挂载：
+`trove mcp` 启动 MCP server，把 Trove 的 NL→SQL 能力暴露为工具与 resources，供 Claude Code / 其他 MCP 客户端挂载。默认 stdio（本地挂载），也可 sse / streamable-http 跨网络挂载：
 
 ```bash
-uv run trove mcp
+uv run trove mcp                                    # stdio（默认）
+uv run trove mcp --transport streamable-http --host 0.0.0.0 --port 8001 --token <secret>   # HTTP + bearer 鉴权
 ```
 
-工具面：`ask_data`（自然语言提问 → 答案/SQL/行数/verdict/拒绝信息，多轮用 `session_id` 复用）· `list_datasources`（已连接且 KB 已初始化的数据源）· `kb_status`（连接 / KB 初始化 / 语义模型状态）。语义优先天然生效：无语义模型的数据源 `ask_data` 明确拒绝并提示 `/kb init`；未覆盖查询 → 拒绝 + 扩展草稿。
+工具面：`ask_data`（自然语言提问 → 答案/SQL/行数/verdict/拒绝信息，多轮用 `session_id` 复用）· `list_datasources`（已连接且 KB 已初始化的数据源）· `kb_status`（连接 / KB 初始化 / 语义模型状态）。resources（只读，客户端可静态拉取比对口径）：`trove://datasources` · `trove://<datasource>/schema` · `trove://<datasource>/semantics`。语义优先天然生效：无语义模型的数据源 `ask_data` 明确拒绝并提示 `/kb init`；未覆盖查询 → 拒绝 + 扩展草稿。
 
 ## Web UI（前后端分离）
 
@@ -145,16 +146,19 @@ agent:
     reflect: deepseek/deepseek-reasoner
   explain_row_guard: false              # EXPLAIN 行数估算守卫（默认关）：执行前 EXPLAIN 估算最重算子行数，超限打回加 LIMIT/收窄（fail-open）
   explain_max_rows: 50000000
-  language: en                          # 交互语言 en / zh：提示词、答案、轨迹统一使用
+  language: zh                          # 交互语言 zh / en：提示词、答案、轨迹统一使用（默认 zh）
   date_parser: true                     # 确定性相对时间解析（未命中静默透传）
-  explain_semantics: false              # 生成 SQL 后 LLM 说明语义（输出与 HITL 确认时展示）
+  explain_semantics: true               # 生成 SQL 后 LLM 说明语义（输出与 HITL 确认时展示）
   hitl: false                           # 执行前人工确认（LangGraph interrupt，需 persistence/checkpointer；批任务给三选项）
-  insights: false                       # 执行后 LLM 基于结果生成洞察
-  conclusion: false                     # 执行后 LLM 用一句话生成结论摘要，置于回答开头（结论前置）
-  result_cache: false                   # 精确结果缓存（进程内存）：同问句直接返回上次已验证结果，0 LLM，命中跳过 HITL
+  insights: true                        # 执行后 LLM 基于结果生成洞察
+  conclusion: true                      # 执行后 LLM 用一句话生成结论摘要，置于回答开头（结论前置）
+  result_cache: true                    # 精确结果缓存（进程内存）：同问句直接返回上次已验证结果，0 LLM，命中跳过 HITL
+  decompose_llm_judge: true             # 多任务拆解 LLM 判断层：规则未命中但"疑似多步"时花一次 fast 调用判断是否拆解
   semantic_first: true                  # 语义优先（默认开）：语义模型是唯一可答边界——未覆盖=拒绝+反问扩展；无语义模型=拒绝并提示 /kb init
   fast_path: true                       # 确定性模板快径：单表/单聚合模板命中即出 SQL，跳过 planner/生成/裁决
-  reflect_skip: simple                  # validate 规则全过后跳过 LLM 裁决：simple / standard / all / off
+  reflect_skip: standard                # validate 规则全过后跳过 LLM 裁决：simple / standard / all / off
+  retention:
+    max_sessions_per_user: 100          # 会话保留策略（配额清理）：每用户会话数超限时删最旧
   providers:
     - name: openai                  # 非官方端点（兼容 OpenAI API）示例
       litellm_params:
@@ -182,7 +186,7 @@ LANGFUSE_SECRET_KEY=sk-...
 LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
 ```
 
-启用后每次问答是一棵完整的 trace 树：每个节点（意图 / 计划 / gen_sql / 裁决 / 错误诊断…）一个 span，节点内每次 LLM 调用（含推理模型的 reasoning 过程）记 generation，**失败 generation 记 ERROR 级别**；非 LLM 步骤同样插桩——SQL 执行、每轮工具调用（probe / check / explain / search_values 的入参与观测，工具出错记 ERROR）、KB 检索、规则校验、结果缓存命中、终态 summary 均有独立 span。全部按 `session_id`、`node`、`question` 元数据分组，CoT 每一步可回溯。本地轨迹（`/trace`）始终可用，不依赖外部服务。
+启用后每次问答是一棵完整的 trace 树：每个节点（意图 / 计划 / gen_sql / 裁决 / 错误诊断…）一个 span，节点内每次 LLM 调用（含推理模型的 reasoning 过程）记 generation，**失败 generation 记 ERROR 级别**；非 LLM 步骤同样插桩——SQL 执行、每轮工具调用（probe / check 等的入参与观测，工具出错记 ERROR）、KB 检索、规则校验、结果缓存命中、终态 summary 均有独立 span。全部按 `session_id`、`node`、`question` 元数据分组，CoT 每一步可回溯。本地轨迹（`/trace`）始终可用，不依赖外部服务。
 
 ## 知识库使用
 
@@ -214,7 +218,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com   # 或自托管地址
 - 数据源名 = **数据库名**（知识库目录 `.trove/kb/<数据库名>/` 与之对应，每个库各自演化）
 - 驱动按需惰性导入：未安装对应 extra 时给出明确提示，不影响其他数据源
 - `serve` 零默认启动：未指定 `--datasource` 时从 `.trove/datasources.yml` 恢复已注册源（失败跳过并在管理端显示断开态）；REPL/CLI 用 `--datasource demo` 或 `scheme://` URL 直接指定
-- 新增适配器：实现 `DatabaseAdapter` 五个抽象方法（`trove/services/datasource/adapters/base.py`），在 `registry.py` 的 `_ADAPTER_REGISTRY` 注册
+- 新增适配器：实现 `DatabaseAdapter` 六个抽象方法（connect / disconnect / execute / get_schema / get_capabilities / dialect，见 `trove/services/datasource/adapters/base.py`），在 `registry.py` 的 `_ADAPTER_REGISTRY` 注册
 
 **真实服务集成测试**（未设置环境变量时自动跳过，CI 零网络约束不变）：
 
@@ -262,7 +266,7 @@ GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
 - 多租户优先每租户独立库 + 独立只读角色；必须共享库时用 RLS 或程序化 CTE 预过滤
 - 只读角色的 DSN 密钥妥善保管；Trove 报错路径已统一脱敏（`sanitize_error_text`），
   但错误日志仍可能泄露连接信息——日志系统同样需要访问控制
-- 所有只读执行工具（`probe_query` / `check_result` / `explain_plan` / `search_values`）
+- 所有只读执行工具（`probe_query` / `check_result`，以及非语义优先路径下的 `explain_plan` / `search_values`）
   统一先过 AST 防火墙（含表名 allowlist），每次调用与结果落审计日志（`sql_audit`）
 
 （DuckDB 集成测试用内存库，无需外部服务，常开。）
@@ -279,7 +283,7 @@ uv run python scripts/eval_bird.py --db-id financial \
   [--limit 10] [--verbose]
 ```
 
-辅助脚本：`import_golden_examples.py`（gold SQL 导入 examples.yml）· `import_bird_descriptions.py`（官方 CSV 描述导入 schema_notes.yml）· `probe_enums.py`（枚举探测独立运行）· `import_sqlite_to_mysql.py`（demo 数据入库 MySQL）· `eval_compile_stats.py`（编译命中率聚合，`--semantic-layer` 接线语义编译路径的 hit-rate 统计）。
+辅助脚本：`import_golden_examples.py`（gold SQL 导入 examples.yml）· `import_bird_descriptions.py`（官方 CSV 描述导入 schema_notes.yml）· `probe_enums.py`（枚举探测独立运行）· `import_sqlite_to_mysql.py`（demo 数据入库 MySQL）· `eval_compile_stats.py`（编译命中率聚合，`--semantic-layer` 接线语义编译路径的 hit-rate 统计）· `eval_hybrid_retrieval.py` / `tune_rrf.py`（混合检索 Recall@k/MRR/nDCG 精排前后对比与 RRF 权重网格调优）· `offline_eval.py`（离线评测，不连真实数据源）。
 
 ## 开发
 
