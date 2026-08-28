@@ -1,4 +1,4 @@
-"""Schema context budgeting tests — table/dataset-level trim + conditional note."""
+"""Schema context budgeting tests — table/dataset-level trim + lazy-load note."""
 
 from trove.workflow.schema_budget import split_schema, trim_schema, table_signal
 
@@ -73,19 +73,13 @@ class TestTrimSchema:
         assert "Dataset: client" not in out
         assert "Semantic note" in out
 
-    def test_semantic_only_note_omits_lookup_tool(self):
-        # 语义优先下被裁提示不得引用 lookup_schema(工具已物理移除)
+    def test_dropped_note_always_points_to_lookup_schema(self):
+        # agent 始终可触达物理 schema:被裁块一律提示用 lookup_schema 懒加载
         out = trim_schema(
             SEMANTIC_SCHEMA, budget_tokens=20, question="account",
-            semantic_only=True,
         )
-        assert "lookup_schema" not in out
         assert "client" in out  # 被裁数据集仍点名
-        # 对照:非语义优先路径保留 lookup_schema 指引
-        out_legacy = trim_schema(
-            SEMANTIC_SCHEMA, budget_tokens=20, question="account",
-        )
-        assert "lookup_schema" in out_legacy
+        assert "lookup_schema" in out  # 始终引用懒加载工具
 
 
 class TestTableSignal:

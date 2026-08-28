@@ -14,7 +14,7 @@ It answers, and learns with every question.
 - **LangGraph 流水线**（`reflection` 工作流，全链路）：
   `route_intent → parse_date → schema_linking → planner → gen_sql → execute_sql → select → validate → reflect → (analyze_error 回滚) → output`
   - **意图路由**：LLM 判定 + 规则校验，五意图分流（优先级 write > metadata > chitchat > correction）——`write`（写操作请求直接拒绝兜底）/ `chitchat`（问候闲聊短路，不烧 LLM）/ `correction`（纠错·追问重写后再次路由）/ `query`（数据查询）/ `metadata`（元数据问答：`answer_metadata → metadata_check` 自校验循环）
-  - **gen_sql（agentic 默认）**：ReAct 循环，模型持工具自校验、自行判定结束（≤6 轮）；异常或空产出自动回退经典「生成 → 校验重试」子图；KB 精确命中（词重叠 ≥0.95）时直接采用标准 SQL，跳过生成。工具面：`validate_sql`（语法校验 + 静态语义启发式警告）、`probe_query`（只读执行观测，10 行/5s）、`check_result`（确定性规则链校验——F1 形状 / F2 过滤 / F3 值域 / F4 排序，首败即止；**通过即 harness 自动定稿**，无需显式 finish）、`finish(answer)`（显式定稿协议）。**语义优先下（决策 1）**：`search_values` / `lookup_schema` / `explain_plan` 等元数据枚举/结构探测工具物理移除——agent 运行时不能触达物理 schema。
+  - **gen_sql（agentic 默认）**：ReAct 循环，模型持工具自校验、自行判定结束（≤6 轮）；异常或空产出自动回退经典「生成 → 校验重试」子图；KB 精确命中（词重叠 ≥0.95）时直接采用标准 SQL，跳过生成。工具面：`validate_sql`（语法校验 + 静态语义启发式警告）、`probe_query`（只读执行观测，10 行/5s）、`check_result`（确定性规则链校验——F1 形状 / F2 过滤 / F3 值域 / F4 排序，首败即止；**通过即 harness 自动定稿**，无需显式 finish）、`finish(answer)`（显式定稿协议），以及 `search_values` / `lookup_schema` / `explain_plan` 等 catalog 枚举工具（始终注册，agent 可触达物理 schema 作值确认 / 结构懒加载 / 执行计划辅助）。
   - **多候选共识**：备选候选以更高温度生成 → `select` 裁决（KB 命中时跳过）
   - **analyze_error 根因诊断**：LLM 判定失败根因，沿 `gen_sql → planner → schema_linking` 回滚阶梯重跑，防环守护；reflect 裁决与执行错误共享 ≤10 轮修正上限；SQL 版本链记录每轮失败（SQL + 结果签名），与上一版对比产生确定性回归反馈（无效修复 / 无进展 / 问题转移）
   - **会话内任务层（跨轮）**：规则门控的 LLM 拆解（命中「依次 / 分别 / 还要 / 编号列表」等提示词才花一次拆解调用，单问题零额外 token）→ 逐条顺序执行（单条失败不中断批次）→ 跨轮推进：回复「继续 / 重做 / 跳过 / 追加」被解释为任务操作；批处理 HITL 给三选项（仅当前 / 确认全部 / 不继续）；REPL `/tasks`（别名 `/todo`）与 Web UI 任务面板查看进度
@@ -266,7 +266,7 @@ GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
 - 多租户优先每租户独立库 + 独立只读角色；必须共享库时用 RLS 或程序化 CTE 预过滤
 - 只读角色的 DSN 密钥妥善保管；Trove 报错路径已统一脱敏（`sanitize_error_text`），
   但错误日志仍可能泄露连接信息——日志系统同样需要访问控制
-- 所有只读执行工具（`probe_query` / `check_result`，以及非语义优先路径下的 `explain_plan` / `search_values`）
+- 所有只读执行工具（`probe_query` / `check_result` / `explain_plan` / `search_values`）
   统一先过 AST 防火墙（含表名 allowlist），每次调用与结果落审计日志（`sql_audit`）
 
 （DuckDB 集成测试用内存库，无需外部服务，常开。）

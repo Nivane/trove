@@ -265,9 +265,6 @@ async def create_app_components(
                 hybrid_store, kb, connector_registry, config.home)
         except Exception as e:
             logger.warning("hybrid retrieval unavailable: %s", e)
-    catalog_probing = bool(
-        getattr(default_ds_cfg, "allow_catalog_probing", False)
-        if default_ds_cfg is not None else False)
 
     # ── Graphs ────────────────────────────────────────────
     services = GraphServices(
@@ -312,7 +309,6 @@ async def create_app_components(
         "user_facts": user_facts,
         "indexer": indexer,
         "hybrid_store": hybrid_store,
-        "catalog_probing": catalog_probing,
         "lineage": lineage,
         "graphs": graphs,
         "session_manager": session_manager,

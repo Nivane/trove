@@ -12,10 +12,9 @@ Block recognition accepts both prefixes:
 - ``Table: <name>`` — physical schema rendering (legacy / non-semantic path);
 - ``Dataset: <name>`` — semantic-model rendering (semantic-first, Phase B).
 
-Trimmed-away blocks are listed in a trailing note. Under ``semantic_only``
-the note must NOT mention the ``lookup_schema`` tool (physically removed in
-semantic-first mode — the model cannot lazily fetch details), so it falls
-back to a plain "more tables exist" note.
+Trimmed-away blocks are listed in a trailing note that points the model at
+the ``lookup_schema`` tool, so it can lazily fetch the full DDL of any
+dropped table on demand (agent can always reach the physical schema).
 
 Trim is deterministic for a given (question, plan, budget), so the
 stable cache prefix (dialect + schema) stays byte-identical across a
@@ -83,13 +82,12 @@ def trim_schema(
     question: str,
     plan_text: str = "",
     count: Callable[[str], int] = count_tokens,
-    semantic_only: bool = False,
 ) -> str:
     """预算内修剪 schema:保留信号最高的表/数据集块,尾部段始终保留。
 
-    至少保留一张表;被裁掉的块在末尾列出。语义优先(semantic_only)下
-    不提示 lookup_schema 工具(已物理移除),只提示还存在其他表/数据集。
-    无表块(空/纯尾部 schema)原样返回。
+    至少保留一张表;被裁掉的块在末尾列出,并提示用 lookup_schema 工具
+    按需取回完整 DDL(agent 始终可触达物理 schema)。无表块(空/纯尾部
+    schema)原样返回。
 
     Args:
         schema_context: schema_linking 的渲染输出。
@@ -97,7 +95,6 @@ def trim_schema(
         question: 当前问题(信号计算)。
         plan_text: 计划文本(信号计算,可选)。
         count: token 估算器。
-        semantic_only: 语义优先(Phase B)——被裁提示不提 lookup_schema 工具。
     """
     tables, tail = split_schema(schema_context)
     if not tables:
@@ -123,16 +120,10 @@ def trim_schema(
     if tail:
         parts.append(tail)
     if dropped:
-        if semantic_only:
-            parts.append(
-                "[Additional datasets exist in this semantic model "
-                f"(not shown here): {', '.join(dropped)}]"
-            )
-        else:
-            parts.append(
-                "[Additional tables in this datasource (fetch their schema "
-                f"with the lookup_schema tool): {', '.join(dropped)}]"
-            )
+        parts.append(
+            "[Additional tables in this datasource (fetch their schema "
+            f"with the lookup_schema tool): {', '.join(dropped)}]"
+        )
     return "\n\n".join(parts)
 
 

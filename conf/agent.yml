@@ -57,11 +57,11 @@ agent:
   # 仅作补充源——唯一真源 = 数据源的 KB semantics.yml(/kb init 生成 + 人审)。
   # 空 = 关闭。
   # semantic_layer_path: .trove/semantic
-  # 语义优先(Phase B):语义模型是唯一可答边界——gen_sql/planner 只见语义视角,
-  # 未覆盖查询拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认 → 重答),
-  # 无语义模型的数据源拒绝并提示先 /kb init。
-  #   false = 旧裸表路径(仅评测对照用;此时 search_values / lookup_schema /
-  #           explain_plan 等 catalog 工具仍注册,agent 可触达物理 schema)。
+  # 语义优先(Phase B):语义模型是生成主视角与可答边界——gen_sql/planner 以
+  # 语义视角为主,未覆盖查询拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认
+  # → 重答),无语义模型的数据源拒绝并提示先 /kb init。catalog 枚举工具
+  # (search_values / lookup_schema / explain_plan) 始终注册,agent 可触达物理
+  # schema 作值确认 / 结构懒加载 / 执行计划辅助(不替代语义边界判定)。
   semantic_first: true
   # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
   observability:

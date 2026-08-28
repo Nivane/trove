@@ -902,16 +902,17 @@ def build_sql_registry(
     finish: bool = True,
     matched_tables: list[str] | None = None,
     datasource: str = "",
-    semantic_only: bool = False,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
     validate_sql 始终可用(纯语法校验 + 静态语义警告,不执行);probe_query
     / check_result 依赖 connectors(只读执行),connectors 缺失时自动降级
-    为仅语法工具。check_result 的规则命中累积在 ``registry.check_hits``,
-    循环结束后由调用方带出到状态(validation_hits 归因切片)——不再是位置
-    返回值。注册表自带显式 finish 协议:模型用 ``finish(answer)`` 携带
-    最终 SQL 定稿,避免答案丢失。
+    为仅语法工具。search_values / lookup_schema / explain_plan 也始终注册
+    —— agent 运行时可触达物理 schema(值枚举 / 表结构懒加载 / 执行计划),
+    语义模型只作生成视角而非可答边界的物理封锁。check_result 的规则命中
+    累积在 ``registry.check_hits``,循环结束后由调用方带出到状态
+    (validation_hits 归因切片)——不再是位置返回值。注册表自带显式 finish
+    协议:模型用 ``finish(answer)`` 携带最终 SQL 定稿,避免答案丢失。
 
     Args:
         connectors: 数据源注册表(None → 降级,无执行类工具)。
@@ -920,10 +921,6 @@ def build_sql_registry(
         dialect: SQL 方言(sqlglot 校验/重写用)。
         finish: 是否注册显式 finish 工具(harness 协议;legacy 层关闭)。
         matched_tables: schema linking 命中的表(静态检查 C1 的输入)。
-        semantic_only: 语义优先(Phase B,决策 1)——只保留 validate_sql /
-            probe_query / check_result / finish,物理移除 search_values /
-            lookup_schema / explain_plan 这类元数据枚举通道(agent 运行时
-            不能触达物理 schema)。
     """
     from trove.llm.agent_loop import ToolRegistry
 
@@ -1088,30 +1085,29 @@ def build_sql_registry(
             "required": ["sql"],
         },
     )
-    if not semantic_only:
-        registry.register(
-            "search_values", search_tool,
-            description=(
-                "Search a table for distinct values matching a keyword "
-                "(case-insensitive LIKE on real data). Use when you have a "
-                "candidate filter value from the question or Evidence but must "
-                "confirm its exact real form (spelling, case, abbreviations, "
-                "dirty values), or when you don't know which column stores a "
-                "value — omit the column to scan the table and get a "
-                "column→values map. Returns at most 10 values per column."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "table": {"type": "string", "description": "Table to search in"},
-                    "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
-                    "column": {"type": "string", "description": "Optional: restrict the search to one column"},
-                },
-                "required": ["table", "keyword"],
+    registry.register(
+        "search_values", search_tool,
+        description=(
+            "Search a table for distinct values matching a keyword "
+            "(case-insensitive LIKE on real data). Use when you have a "
+            "candidate filter value from the question or Evidence but must "
+            "confirm its exact real form (spelling, case, abbreviations, "
+            "dirty values), or when you don't know which column stores a "
+            "value — omit the column to scan the table and get a "
+            "column→values map. Returns at most 10 values per column."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "table": {"type": "string", "description": "Table to search in"},
+                "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
+                "column": {"type": "string", "description": "Optional: restrict the search to one column"},
             },
-        )
-        registry.register(
-            "lookup_schema", lookup_schema_tool,
+            "required": ["table", "keyword"],
+        },
+    )
+    registry.register(
+        "lookup_schema", lookup_schema_tool,
             description=(
                 "Fetch the full schema of a single table: columns, primary "
                 "key, foreign keys. Use when a table is referenced in the "
@@ -1164,25 +1160,24 @@ def build_sql_registry(
         await _audit("explain", sql, out)
         return out
 
-    if not semantic_only:
-        registry.register(
-            "explain_plan", explain_tool,
-            description=(
-                "Fetch the execution plan for a SELECT (EXPLAIN, read-only, "
-                "milliseconds, no row data). Returns the engine's access plan "
-                "lines — index usage, join order, full-table scans. Use when "
-                "a draft joins several large tables or filters look "
-                "expensive: spot a missing index / scan before finalizing, "
-                "not after execution."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "sql": {"type": "string", "description": "The SQL to explain (read-only)"},
-                },
-                "required": ["sql"],
+    registry.register(
+        "explain_plan", explain_tool,
+        description=(
+            "Fetch the execution plan for a SELECT (EXPLAIN, read-only, "
+            "milliseconds, no row data). Returns the engine's access plan "
+            "lines — index usage, join order, full-table scans. Use when "
+            "a draft joins several large tables or filters look "
+            "expensive: spot a missing index / scan before finalizing, "
+            "not after execution."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "The SQL to explain (read-only)"},
             },
-        )
+            "required": ["sql"],
+        },
+    )
     return registry
 
 

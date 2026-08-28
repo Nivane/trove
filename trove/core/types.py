@@ -190,6 +190,3 @@ class DatasourceConfig:
     # pg_bm25 分词器(仅混合检索 PG 后端):中文 KB 设 "chinese"(jieba),英文/通用设
     # "en_stem"(默认);ParadeDB 镜像内置 pg_bm25 扩展,本字段透传进 BM25 索引 WITH 子句。
     fts_tokenizer: str = "en_stem"
-    # 是否开放 catalog 探测工具(lookup_schema/explain_plan/search_values)。
-    # 默认关,维持语义优先边界;开启后这些工具重新注册且其输出进向量库。
-    allow_catalog_probing: bool = False

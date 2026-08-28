@@ -234,8 +234,6 @@ async def _run_candidate_subagent(
         services.connectors, rotated.question, rotated.lang, dialect,
         matched_tables=state.matched_tables or None,
         datasource=state.datasource,
-        semantic_only=bool(getattr(services.config, "semantic_first", False))
-        and not bool(getattr(services, "catalog_probing", False)),
     )
     prompt = build_sql_prompt_from_state(rotated)
     hint = _STYLE_HINTS.get(mode)
@@ -657,15 +655,10 @@ def _make_gen_sql_node(
             SCHEMA_BUDGET_TOKENS,
             complexity,
         )
-        # 语义优先(Phase B,决策 1):catalog 工具物理移除——被裁数据集不能
-        # 经 lookup_schema 懒加载,裁剪提示不得引用该工具。
-        semantic_only = (
-            bool(getattr(services.config, "semantic_first", False))
-            and not bool(getattr(services, "catalog_probing", False))
-        )
+        # 被裁掉的表经 lookup_schema 工具懒加载——裁剪提示引用该工具,
+        # 让模型在需要时取回完整 DDL(agent 始终可触达物理 schema)。
         schema_for_gen = trim_schema(
             state.schema_context, schema_budget, state.question, state.plan,
-            semantic_only=semantic_only,
         )
 
         sub_state = GenSQLState.from_workflow(
@@ -716,13 +709,12 @@ def _make_gen_sql_node(
             # 工具统一由注册表提供(定义+处理器+finish 协议+超时/并行策略);
             # check_hits 收集 check_result 的规则命中,循环结束后随 update
             # 带出(归因)。validate_sql 始终可用,probe/check 依赖 connectors。
-            # 语义优先(Phase B,决策 1):semantic_only 移除元数据枚举工具
-            # (search_values / lookup_schema / explain_plan)。
+            # search_values / lookup_schema / explain_plan 也始终注册——
+            # agent 运行时可触达物理 schema。
             registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
                 datasource=state.datasource,
-                semantic_only=semantic_only,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
