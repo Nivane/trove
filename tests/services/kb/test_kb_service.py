@@ -1034,3 +1034,68 @@ class TestListTemplates:
         write_kb(kb_dir, ds="demo")
         await kb.ensure_synced("demo")
         assert await kb.list_templates("other") == []
+
+
+class TestPendingExampleDrafts:
+    """好评闭环:upvote + SQL → pending 示例 → admin 确认/拒绝(不污染检索)。"""
+
+    async def test_draft_example_writes_pending_and_not_retrieved(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        before = await kb.search_examples("哪个地区的平均贷款金额最高", "demo", limit=5)
+        res = await kb.draft_example(
+            "东区贷款总额是多少", "SELECT d.A2, SUM(l.amount) FROM loan l WHERE d.A2='East'",
+            "demo", tags=["贷款"],
+        )
+        assert res["status"] == "drafted"
+        # pending 草稿不参与检索(loader 跳过)
+        after = await kb.search_examples("东区贷款总额是多少", "demo", limit=5)
+        assert not any(h.question == "东区贷款总额是多少" for h in after)
+        assert len(before) >= len(after)  # 草稿不挤占检索槽位
+
+    async def test_draft_dedup_same_question_sql(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        sql = "SELECT 1"
+        await kb.draft_example("q", sql, "demo")
+        res = await kb.draft_example("q", sql, "demo")
+        assert res["status"] == "exists"
+
+    async def test_confirm_makes_it_retrievable(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        await kb.draft_example(
+            "东区贷款总额", "SELECT d.A2, SUM(l.amount) FROM loan l", "demo",
+        )
+        assert await kb.confirm_pending_examples("demo") == 1
+        hits = await kb.search_examples("东区贷款总额", "demo", limit=5)
+        assert any(h.question == "东区贷款总额" for h in hits)
+
+    async def test_reject_removes_pending(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        await kb.draft_example("坏例子", "SELECT * FROM secret", "demo")
+        assert await kb.reject_pending_examples("demo") == 1
+        assert await kb.list_pending_examples("demo") == []
+        hits = await kb.search_examples("坏例子", "demo", limit=5)
+        assert not any(h.question == "坏例子" for h in hits)
+
+    async def test_upvote_with_sql_drafts_example(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        res = await kb.rate_lesson({
+            "question": "各地区的贷款总额", "note": "口径对",
+            "sql_snippet": "SELECT d.A2, SUM(l.amount) FROM loan l GROUP BY d.A2",
+            "vote": 1,
+        }, "demo")
+        assert res["example_drafted"] is True
+        assert await kb.list_pending_examples("demo") != []
+
+    async def test_downvote_no_draft(self, kb, kb_dir):
+        write_kb(kb_dir)
+        await kb.ensure_synced("demo")
+        res = await kb.rate_lesson({
+            "question": "q", "sql_snippet": "SELECT 1", "vote": -1,
+        }, "demo")
+        assert res["example_drafted"] is False
+        assert await kb.list_pending_examples("demo") == []

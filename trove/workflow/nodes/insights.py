@@ -58,7 +58,7 @@ def make_insights(
                 "为查询返回顺序（可能未排序）——除非 SQL 已按其排序，不要仅凭预览"
                 "推断全局最大/最小值或极值。"
             )
-        model = config.model_for(state.complexity)
+        model = config.model_for_node("insights", state.complexity)
         try:
             start = time.monotonic()
             user_prompt = render(

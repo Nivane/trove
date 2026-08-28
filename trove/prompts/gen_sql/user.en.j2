@@ -33,6 +33,10 @@ Reference examples (standard formulations for this data):
 {% for shot in few_shots -%}
 Q: {{ shot.question }}
 SQL: {{ shot.sql }}
+{% if shot.parameters %}Parameters (substitute real values for each placeholder — never emit the placeholder braces literally):
+{% for p in shot.parameters -%}
+- {{ p.name }}: {{ p.type }}{% if p.column %} ({{ p.column }}){% endif %}{% if p.sample_values %} sample: {{ p.sample_values | join(', ') }}{% endif %}
+{% endfor %}{% endif %}
 {% endfor %}{% endif %}{% if evidence %}
 Evidence (official hint for this question — authoritative, must follow):
 {{ evidence }}

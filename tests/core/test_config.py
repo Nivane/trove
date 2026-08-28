@@ -295,3 +295,37 @@ def test_retention_config_from_yaml(tmp_path):
     assert cfg.retention.active_grace_min == 5
     assert cfg.retention.sweep_interval_hours == 6
     assert cfg.retention.max_checkpoints_per_thread == 50  # 未写 → 默认
+
+
+class TestPerNodeModel:
+    def test_model_for_node_pinned_wins(self):
+        cfg = AgentConfig(
+            target="openai/gpt-4o", model_fast="openai/gpt-4o-mini",
+            node_models={"reflect": "deepseek/deepseek-reasoner"},
+        )
+        assert cfg.model_for_node("reflect", "simple") == "deepseek/deepseek-reasoner"
+        assert cfg.model_for_node("reflect", "complex") == "deepseek/deepseek-reasoner"
+
+    def test_model_for_node_falls_back_to_complexity(self):
+        cfg = AgentConfig(
+            target="openai/gpt-4o", model_fast="openai/gpt-4o-mini",
+            node_models={"reflect": "x/y"},
+        )
+        # 未配节点 → 复杂度分档
+        assert cfg.model_for_node("gen_sql", "simple") == "openai/gpt-4o-mini"
+        assert cfg.model_for_node("gen_sql", "complex") == "openai/gpt-4o"
+        # 配了节点但未用 → 回落复杂度
+        assert cfg.model_for_node("insights", "standard") == "openai/gpt-4o-mini"
+
+    def test_config_loader_parses_node_models(self, tmp_path):
+        from trove.core.config import ConfigLoader
+
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n  node_models:\n"
+            "    planner: openai/gpt-4o-mini\n    reflect: deepseek/reasoner\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.node_models == {"planner": "openai/gpt-4o-mini", "reflect": "deepseek/reasoner"}
+        assert cfg.model_for_node("planner", "complex") == "openai/gpt-4o-mini"

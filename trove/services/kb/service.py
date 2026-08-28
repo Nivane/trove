@@ -468,6 +468,9 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
 
     elif path.name == "examples.yml":
         for example in data.get("examples", []):
+            # pending 草稿不参与检索(待 admin 确认后才成为可复用参考 SQL)
+            if example.get("pending"):
+                continue
             kind = "template" if example.get("template") else "example"
             entries.append((kind, str(example.get("question", "")), {
                 "question": str(example.get("question", "")),
@@ -1372,7 +1375,21 @@ class KbService:
             encoding="utf-8",
         )
         await self.force_sync()
-        return dict(existing)
+        # 好评闭环:upvote + 有效 SQL → 自动草拟参考示例(pending)待 admin 确认。
+        # 与 lesson 的 Hint Bank 记录互补:lesson 记模式/教训,example 记标准 SQL。
+        drafted = False
+        if entry["vote"] == 1 and entry.get("sql_snippet", "").strip():
+            try:
+                await self.draft_example(
+                    question, entry["sql_snippet"], datasource,
+                    tags=[], note=entry.get("note", ""),
+                )
+                drafted = True
+            except Exception:
+                pass
+        result = dict(existing)
+        result["example_drafted"] = drafted
+        return result
 
     async def confirm_pending_lessons(self, datasource: str) -> int:
         """Mark all pending lessons as confirmed (rewrites the YAML)."""
@@ -1392,7 +1409,94 @@ class KbService:
         await self.force_sync(datasource)
         return confirmed
 
-    async def get_lesson(self, datasource: str, pattern: str) -> dict | None:
+    # ── 参考示例草稿(好评闭环:用户好评 + SQL → pending 示例 → admin 确认) ──
+
+    @staticmethod
+    def _read_examples(path) -> dict:
+        if path.exists():
+            try:
+                return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                return {}
+        return {}
+
+    async def draft_example(
+        self, question: str, sql: str, datasource: str,
+        tags: list[str] | None = None, note: str = "",
+    ) -> dict:
+        """好评问答 → 待确认参考示例(pending: True 写 examples.yml)。
+
+        与 lessons 的两级确认同构:草稿不参与检索(loader 跳过 pending),
+        admin 确认后清除 pending 才成为可复用参考 SQL。同 question+sql
+        已存在(含已确认)→ 不重复追加,返回 exists。
+        """
+        question = (question or "").strip()
+        sql = (sql or "").strip()
+        if not question or not sql:
+            return {"status": "invalid"}
+        path = self.kb_dir / datasource / "examples.yml"
+        data = self._read_examples(path)
+        examples = list(data.get("examples", []))
+        for ex in examples:
+            if ex.get("question") == question and ex.get("sql") == sql:
+                return {"status": "exists", "draft": dict(ex)}
+        draft: dict[str, Any] = {
+            "question": question,
+            "sql": sql,
+            "tags": [str(t) for t in (tags or []) if str(t)][:6],
+            "pending": True,
+            "template": False,
+        }
+        if note:
+            draft["note"] = note
+        examples.append(draft)
+        data["examples"] = examples
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        await self.force_sync(datasource)
+        return {"status": "drafted", "draft": draft}
+
+    async def list_pending_examples(self, datasource: str) -> list[dict]:
+        """待确认参考示例(admin 审阅)。"""
+        path = self.kb_dir / datasource / "examples.yml"
+        data = self._read_examples(path)
+        return [
+            dict(ex) for ex in data.get("examples", []) if ex.get("pending")
+        ]
+
+    async def confirm_pending_examples(self, datasource: str) -> int:
+        """确认全部 pending 示例(清除 pending 标志,进入检索)。"""
+        path = self.kb_dir / datasource / "examples.yml"
+        data = self._read_examples(path)
+        confirmed = 0
+        for ex in data.get("examples", []):
+            if ex.get("pending"):
+                ex.pop("pending", None)
+                confirmed += 1
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        if confirmed:
+            await self.force_sync(datasource)
+        return confirmed
+
+    async def reject_pending_examples(self, datasource: str) -> int:
+        """拒绝(删除)全部 pending 示例。"""
+        path = self.kb_dir / datasource / "examples.yml"
+        data = self._read_examples(path)
+        kept = [ex for ex in data.get("examples", []) if not ex.get("pending")]
+        rejected = len(data.get("examples", [])) - len(kept)
+        data["examples"] = kept
+        path.write_text(
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        if rejected:
+            await self.force_sync(datasource)
+        return rejected
         """One lesson by exact pattern match, or None."""
         path = self.kb_dir / datasource / "lessons.yml"
         if not path.exists():

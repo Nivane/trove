@@ -413,3 +413,41 @@ class TestPlannerSemanticFirst:
         assert out["compile_meta"]["outcome"] == "miss"
         assert out["compile_meta"]["miss_reason"] == "no_semantic_layer"
         assert out["compile_meta"]["semantic_layer"] is False
+
+
+class TestProgressiveSchemaLinking:
+    """A3:反思轮放大候选——阈值放宽 + 上限提升,首轮行为不变。"""
+
+    def test_progressive_threshold_and_limit(self):
+        from trove.workflow.nodes.schema_linking import (
+            _progressive_tables_limit,
+            _progressive_threshold,
+        )
+
+        assert _progressive_threshold(0) == 2.0
+        assert _progressive_threshold(1) == 1.5
+        assert _progressive_threshold(2) == 1.0
+        assert _progressive_threshold(9) == 1.0  # 封顶
+        assert _progressive_tables_limit(0) == 8
+        assert _progressive_tables_limit(1) == 12
+        assert _progressive_tables_limit(2) == 16
+        assert _progressive_tables_limit(9) == 16  # 封顶
+
+    def test_retry_round_pulls_in_weaker_anchors(self):
+        from trove.workflow.nodes.schema_linking import _semantic_match_datasets
+
+        # 两库:loan(3.0 名称子串命中)→ trans(1.5 描述弱重叠,4 token 中 1 命中)。
+        # 首轮阈值 2.0 只锚 loan;第 1 轮放宽到 1.5 把 trans 拉进来。
+        model = SemanticModel(
+            name="m",
+            datasets=[
+                SemanticDataset(name="loan", description="loan records for borrowers"),
+                SemanticDataset(
+                    name="trans", description="loan history ledger archive"),
+            ],
+        )
+        q = "loan records"
+        first = _semantic_match_datasets(model, q, [], None, retry_round=0)
+        assert set(first) == {"loan"}
+        expanded = _semantic_match_datasets(model, q, [], None, retry_round=1)
+        assert set(expanded) == {"loan", "trans"}

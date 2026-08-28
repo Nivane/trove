@@ -466,6 +466,31 @@ class TestSQLHelpers:
         assert "SELECT 1" in prompt
         assert "AVG(students.grade)" in prompt
 
+    def test_build_sql_prompt_renders_template_parameters(self):
+        """A1:参数化模板把 {{var}} 类型/列/样例值注入 few-shot,提示替换真实值。"""
+        few_shots = [{
+            "question": "东区贷款总额",
+            "sql": "SELECT district.A3, SUM(loan.amount) FROM loan "
+                   "JOIN district ON loan.district_id=district.district_id "
+                   "WHERE district.A3 = '{{region}}' GROUP BY district.A3",
+            "template": True,
+            "parameters": [
+                {"name": "region", "type": "dimension", "column": "district.A3",
+                 "sample_values": ["East", "West", "North"]},
+            ],
+        }]
+        prompt = build_sql_prompt("q", "schema", "sqlite", few_shots=few_shots)
+        assert "{{region}}" in prompt            # 模板占位符保留
+        assert "Parameters" in prompt
+        assert "district.A3" in prompt
+        assert "East, West, North" in prompt
+        assert "never emit the placeholder braces literally" in prompt
+        # 无参数模板不渲染 Parameters 段
+        plain = build_sql_prompt("q", "schema", "sqlite", few_shots=[{
+            "question": "q", "sql": "SELECT 1", "template": False,
+        }])
+        assert "Parameters" not in plain
+
     def test_build_sql_prompt_without_kb_has_no_sections(self):
         prompt = build_sql_prompt("q", "schema", "sqlite")
         assert "Reference examples" not in prompt

@@ -251,7 +251,7 @@ def make_reflect(
         )
 
         try:
-            model = config.model_for(state.complexity)
+            model = config.model_for_node("reflect", state.complexity)
             system_prompt = render("reflect/system", lang=state.lang)
             start = time.monotonic()
             response = await llm.chat(

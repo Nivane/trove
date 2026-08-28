@@ -31,6 +31,16 @@ logger = get_logger(__name__)
 
 # 零匹配兜底的全量表数量上限(金融 dev 集 8 张表;防超长 context)
 FALLBACK_TABLES_LIMIT = 8
+# 反思轮放大上限(避免多轮重跑后 context 无限膨胀)
+MAX_PROGRESSIVE_LIMIT = 16
+# 基础匹配阈值(score ≥ 2.0 才锚定);反思轮按档放宽
+BASE_MATCH_THRESHOLD = 2.0
+# 反思轮 → 阈值放宽档位(第 N 轮起降到 1.5;第二轮再降 1.0)
+_PROGRESSIVE_THRESHOLD = (
+    (BASE_MATCH_THRESHOLD, BASE_MATCH_THRESHOLD),   # 第 0 轮(首查)
+    (1.5, 2.0),                                     # 第 1 轮:中置信扩容 + 字段词仍从严
+    (1.0, 2.0),                                     # 第 2+ 轮:再扩容
+)
 
 _QUOTED_RE = re.compile(r"['\"]([^'\"]{2,30})['\"]")
 _CAPITALIZED_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
@@ -70,7 +80,9 @@ def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
     """dataset 名/synonym/description 的确定性匹配分(零 LLM)。
 
     3.0 = 名称/synonym 子串命中;2.5 = synonym 词重叠 ≥0.5;2.0 =
-    description 词重叠 ≥0.5。阈值为 2.0 在调用侧判定。
+    description 词重叠 ≥0.5;1.5 = description 词重叠 ≥0.25;1.0 =
+    名称/synonym/description 单 token 命中(弱信号,仅反思轮放大时用)。
+    基础阈值为 2.0 在调用侧判定,重跑轮按档放宽(见 _progressive_threshold)。
     """
     q = (query or "").lower()
     if d.name and d.name.lower() in q:
@@ -84,30 +96,59 @@ def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
             if len(st) >= 2 and len(st & q_tokens) / len(st) >= 0.5:
                 return 2.5
     dt = _word_tokens(d.description)
-    if len(dt) >= 2 and len(dt & q_tokens) / len(dt) >= 0.5:
-        return 2.0
+    if len(dt) >= 2:
+        ov = len(dt & q_tokens) / len(dt)
+        if ov >= 0.5:
+            return 2.0
+        if ov >= 0.25:
+            return 1.5
+    # 弱信号:dataset 名/synonym 任一 token 或 description 任一 token 命中
+    pool = set(_word_tokens(d.name))
+    for s in d.synonyms:
+        pool |= _word_tokens(s)
+    if pool & q_tokens:
+        return 1.0
+    if dt and dt & q_tokens:
+        return 1.0
     return 0.0
+
+
+def _progressive_threshold(retry_round: int) -> float:
+    """反思轮 → 匹配阈值放宽(档位封顶)。首轮 = 旧阈值 2.0(行为不变)。"""
+    idx = min(max(retry_round, 0), len(_PROGRESSIVE_THRESHOLD) - 1)
+    return _PROGRESSIVE_THRESHOLD[idx][0]
+
+
+def _progressive_tables_limit(retry_round: int) -> int:
+    """反思轮 → 候选表上限(8 → 16,封顶)。"""
+    return min(FALLBACK_TABLES_LIMIT + retry_round * 4, MAX_PROGRESSIVE_LIMIT)
 
 
 def _semantic_match_datasets(
     model: Any, query: str, term_hits: list[TermHit],
     semantic_layer: Any | None,
+    retry_round: int = 0,
 ) -> list[str]:
     """模型视角的 dataset 锚定:KB/live term 表 + 词法匹配,排序去重。
 
     词法匹配覆盖 dataset 名/synonym/description 词重叠,以及**声明字段名/
     synonym 命中**(问题提到某字段 → 锚定其数据集,等价旧列名检索)。
+
+    ``retry_round``(反思/纠错重跑轮数)渐进放大候选:阈值档位放宽
+    (2.0 → 1.5 → 1.0) + 上限提升(8 → 16)。首轮(0)与旧行为字节级一致;
+    重跑轮多拉候选,给回滚到 schema_linking 的修正提供更多可锚表。
     """
     q_tokens = _word_tokens(query)
     q_lower = (query or "").lower()
     declared = {d.name for d in model.datasets}
     matched: list[str] = []
+    threshold = _progressive_threshold(retry_round)
     scored = [
         (name, _semantic_dataset_score(d, query, q_tokens))
         for d in model.datasets for name in [d.name]
     ]
     for name, score in sorted(scored, key=lambda x: -x[1]):
-        if score >= 2.0 and name not in matched:
+        if score >= threshold and name not in matched:
             matched.append(name)
 
     # 声明字段命中 → 数据集锚定(问题词 = 字段名/synonym 子串)。
@@ -146,7 +187,7 @@ def _semantic_match_datasets(
     for t in term_tables + live_tables:
         if t in declared and t not in matched:
             matched.append(t)
-    return matched[:FALLBACK_TABLES_LIMIT]
+    return matched[:_progressive_tables_limit(retry_round)]
 
 
 def _render_semantic_context(
@@ -242,6 +283,7 @@ def _render_semantic_context(
 async def _semantic_linking(
     state: WorkflowState, kb, connectors, semantic_layer,
     term_hits: list[TermHit], search_query: str, datasource: str,
+    retry_round: int = 0,
 ) -> dict[str, Any]:
     """语义优先主通道(§3.1):dataset 锚定 + semantic_context,唯一路径。"""
     model = None
@@ -263,7 +305,8 @@ async def _semantic_linking(
             "link_detail": {"semantic_first": True, "no_model": True},
         }
 
-    matched = _semantic_match_datasets(model, search_query, term_hits, semantic_layer)
+    matched = _semantic_match_datasets(
+        model, search_query, term_hits, semantic_layer, retry_round=retry_round)
 
     # 指标相关性选择 + 图链接(P4):metric 命中沿 metric.datasets 扩展表锚,
     # 相关性选择的指标(带口径)替换"全量渲染锚定 metrics"。只在已有锚定时
@@ -290,6 +333,9 @@ async def _semantic_linking(
         "link_detail": {
             "semantic_first": True,
             "matched_datasets": list(matched),
+            "retry_round": retry_round,
+            "tables_limit": _progressive_tables_limit(retry_round),
+            "threshold": _progressive_threshold(retry_round),
         },
     }
 
@@ -369,6 +415,10 @@ def make_schema_linking(
             if state.error_analysis else state.question
         )
 
+        # 反思/纠错重跑轮:回滚到 schema_linking 时渐进放大候选(决策:首轮
+        # 阈值/上限与旧行为一致,重跑轮放宽——匹配率自适应扩大的 trove 版)。
+        retry_round = max(state.retry_count, 0)
+
         # 1. Knowledge base term matching (substring, works for Chinese)
         term_hits: list[TermHit] = []
         if kb is not None and datasource:
@@ -377,6 +427,7 @@ def make_schema_linking(
 
         update = await _semantic_linking(
             state, kb, connectors, semantic_layer, term_hits, search_query, datasource,
+            retry_round=retry_round,
         )
 
         if term_hits:

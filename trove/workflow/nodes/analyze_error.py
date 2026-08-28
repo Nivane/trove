@@ -330,7 +330,7 @@ def make_analyze_error(
 
         try:
             # 失败诊断走 fast 档(未配置 fast → 回退 target)
-            model = config.model_fast or config.target or "openai/gpt-4o"
+            model = config.node_models.get("analyze_error") or config.model_fast or config.target or "openai/gpt-4o"
             system_prompt = render("analyze_error/system", lang=state.lang)
             # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
             skill_block = render_skills("analyze_error", lang=state.lang)
