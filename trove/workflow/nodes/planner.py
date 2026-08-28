@@ -97,6 +97,19 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
         lines.append(
             ("输出列: " if zh else "Answer columns: ") + ", ".join(map(str, data["answer_columns"]))
         )
+    analysis = data.get("analysis")
+    if isinstance(analysis, dict) and analysis.get("type"):
+        parts_a = [str(analysis.get("type"))]
+        if analysis.get("metric"):
+            parts_a.append(f"metric={analysis.get('metric')}")
+        if analysis.get("partition_by"):
+            parts_a.append(f"partition_by={analysis.get('partition_by')}")
+        if analysis.get("order_by"):
+            parts_a.append(f"order_by={analysis.get('order_by')}")
+        lines.append(("分析: " if zh else "Analysis: ") + " · ".join(parts_a))
+    limit = data.get("limit")
+    if limit:
+        lines.append(("限量: " if zh else "Limit: ") + str(limit))
     return "\n".join(lines)
 
 
@@ -168,6 +181,10 @@ def ensure_aggregate_answer_column(
     返回修正后的 plan(新增 plan_field 标注),无改动时返回原 plan。
     """
     if not plan:
+        return None
+    # 窗口分析(plan.analysis)自带权威度量列——确定性补列会引入多余投影
+    # (多度量)导致分析 MISS,分析计划跳过这些旧形态兜底。
+    if isinstance(plan.get("analysis"), dict):
         return None
     agg = str(plan.get("aggregation") or "").strip().lower()
     if not agg or agg in ("none", "无"):
@@ -290,6 +307,9 @@ def correct_entity_count_plan(
     无法确定 → None(不瞎猜,保持原 plan)。
     """
     if not plan:
+        return None
+    # 分析计划走权威通道,不做记录→实体的去重计数改写(度量由 analysis 指定)。
+    if isinstance(plan.get("analysis"), dict):
         return None
     if not _is_entity_count_question(question, lang):
         return None
@@ -776,7 +796,6 @@ def make_planner(
         system_prompt = render(
             "planner/system",
             lang=state.lang,
-            has_tools=bool(agentic and connectors is not None),
         )
         # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
         skill_block = render_skills("planner", lang=state.lang)

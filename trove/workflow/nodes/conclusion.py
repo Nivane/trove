@@ -46,6 +46,20 @@ def make_conclusion(
             " | ".join(str(cell) for cell in row)
             for row in state.rows[:MAX_CONCLUSION_ROWS]
         )
+        # 预览截断警示:仅展示前 N 行且为查询顺序(可能未排序)——避免 LLM
+        # 从部分预览推断全局极值(前 20 行里"最高"未必真是全局最高)。
+        rows_note = ""
+        if state.row_count > MAX_CONCLUSION_ROWS:
+            rows_note = (
+                "Note: only the first "
+                f"{MAX_CONCLUSION_ROWS} of {state.row_count} rows are shown, in "
+                "query order (which may be unsorted) — do NOT infer a global "
+                "max/min/extreme from this preview unless the SQL orders by it."
+                if state.lang != "zh" else
+                f"注意：以下仅展示 {state.row_count} 行中的前 {MAX_CONCLUSION_ROWS} 行，"
+                "为查询返回顺序（可能未排序）——除非 SQL 已按其排序，不要仅凭预览"
+                "推断全局最大/最小值或极值。"
+            )
         model = config.model_for(state.complexity)
         try:
             start = time.monotonic()
@@ -58,6 +72,7 @@ def make_conclusion(
                 columns=state.columns,
                 total_rows=state.row_count,
                 rows=rows_text,
+                rows_note=rows_note,
             )
             response = await llm.chat(
                 model=model,

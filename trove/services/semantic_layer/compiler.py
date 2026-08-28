@@ -548,6 +548,13 @@ MISS_REASONS = frozenset({
     "having_metric_unknown",
     "having_without_aggregation",
     "enum_value_unresolved",
+    "analysis_unsupported_type",
+    "analysis_metric_unknown",
+    "analysis_partition_unresolved",
+    "analysis_order_unresolved",
+    "analysis_time_required",
+    "analysis_invalid",
+    "limit_without_order",
     "guardrail_rejected",
 })
 
@@ -866,6 +873,12 @@ class SemanticCompiler:
             _add(tg.get("field"))
         for col, _dir in parse_ordering(plan.get("ordering")) or []:
             _add(col)
+        analysis = plan.get("analysis")
+        if isinstance(analysis, dict):
+            _add(analysis.get("metric"))
+            _add(analysis.get("order_by"))
+            for p in (analysis.get("partition_by") or []):
+                _add(p)
         for _cand, m in matched_pairs:
             if m.datasets:
                 needed.update(m.datasets)
@@ -1014,10 +1027,25 @@ class SemanticCompiler:
         out_cols: list[tuple[str, Any]] = []
         projections: list[str] = []
         gb_exprs: list[str] = []  # GROUP BY 表达式(时间分桶字段用分桶表达式)
+        # 与 projections 等长:投影的展示名与语义引用(分析包装用)。
+        # proj_display: 输出列名(dim 取字段尾缀 / metric 取度量名);
+        # proj_ref: dim → (dataset, field) 元组;time-grain 插入 → ("__tg__",);
+        # metric → SemanticMetric。
+        proj_display: list[str] = []
+        proj_ref: list[Any] = []
         seen_metrics: set[str] = set()
         tg_seen = False
         last_dim_idx: int | None = None
         by_candidate = dict(matched_pairs)
+
+        def _display_for_ac(ac: str, resolved) -> str:
+            """answer 列 → 输出列展示名:取表限定尾缀,去引号/括号。"""
+            tail = str(ac).strip().split(".", 1)[-1].strip()
+            tail = tail.strip("`\"'() ")
+            if not tail:
+                tail = str(resolved[1].name) if resolved else f"col{len(projections)}"
+            return tail
+
         for ac in plan.get("answer_columns") or []:
             ac = str(ac).strip()
             if not ac or ac == "*":
@@ -1032,6 +1060,8 @@ class SemanticCompiler:
                 if metric.name not in seen_metrics:
                     seen_metrics.add(metric.name)
                     projections.append(proj)
+                    proj_display.append(metric.name)
+                    proj_ref.append(metric)
                 continue
             resolved = self._resolve_field(ac, matched_set)
             if resolved is None:
@@ -1049,17 +1079,24 @@ class SemanticCompiler:
                     if metric.name not in seen_metrics:
                         seen_metrics.add(metric.name)
                         projections.append(proj)
+                        proj_display.append(metric.name)
+                        proj_ref.append(metric)
                     continue
                 return CompileMiss("unresolved_answer_column", ac)
             out_cols.append(resolved)
+            disp = _display_for_ac(ac, resolved)
             if tg_field is not None and resolved == tg_field:
                 # 原始时间列按字段身份替换为分桶表达式(投影 + GROUP BY)
                 projections.append(tg_expr)
                 gb_exprs.append(tg_expr)
+                proj_display.append(disp or tg_grain)
+                proj_ref.append(("__tg__", tg_grain))
                 tg_seen = True
             else:
                 projections.append(_qualified(resolved[0], resolved[1].expression))
                 gb_exprs.append(_qualified(resolved[0], resolved[1].expression))
+                proj_display.append(disp)
+                proj_ref.append(resolved)
             last_dim_idx = len(projections) - 1
         # 兜底:aggregation 解析的度量未出现在 answer_columns(旧 plan 形态)→ 追加一次
         if is_agg and not seen_metrics:
@@ -1069,6 +1106,8 @@ class SemanticCompiler:
                 return proj
             seen_metrics.add(m0.name)
             projections.append(proj)
+            proj_display.append(m0.name)
+            proj_ref.append(m0)
         if tg_field is not None:
             if not is_agg:
                 # 时间分桶必须伴随聚合意图(裸度量名兜底可能中途转聚合题)
@@ -1078,6 +1117,8 @@ class SemanticCompiler:
                 pos = last_dim_idx + 1 if last_dim_idx is not None else 0
                 projections.insert(pos, tg_expr)
                 gb_exprs.insert(pos, tg_expr)
+                proj_display.insert(pos, tg_grain)
+                proj_ref.insert(pos, ("__tg__", tg_grain))
 
         filters: list[tuple[str, Any, str, Any]] = []
         for cond in plan.get("conditions") or []:
@@ -1258,8 +1299,6 @@ class SemanticCompiler:
             else:
                 order_parts.append(
                     f"{_qualified(resolved_o[0], resolved_o[1].expression)} {direction.upper()}")
-        if order_parts:
-            sql += "\nORDER BY " + ", ".join(order_parts)
 
         # 投影表守卫:派生内联/字段解析后,产物引用的表必须 ⊆ 连接树
         # (防「matched 但无关系边」时 FROM anchor 无 JOIN 的非法/笛卡尔 SQL——
@@ -1272,12 +1311,254 @@ class SemanticCompiler:
                 f"tables outside join tree: {', '.join(sorted(bad))}",
             )
 
+        # 窗口分析(plan.analysis):把聚合核心包一层窗口计算。内层排序延后
+        # 到外层(窗口 ORDER BY 由 analysis 决定),LIMIT 也只落在外层。
+        analysis = plan.get("analysis")
+        limit = plan.get("limit")
+        if analysis:
+            wrapped = self._apply_analysis(
+                sql, plan, matched_set, analysis, limit,
+                projections, proj_display, proj_ref, tg_field, order_parts,
+            )
+            if isinstance(wrapped, CompileMiss):
+                return wrapped
+            sql = wrapped
+        else:
+            if order_parts:
+                sql += "\nORDER BY " + ", ".join(order_parts)
+            if limit is not None:
+                if not order_parts:
+                    return CompileMiss("limit_without_order", str(limit))
+                sql += f"\nLIMIT {int(limit)}"
+
         block = (
             "Compiled SQL (authoritative — generate exactly this SQL; only "
             "fix dialect or formatting if the schema demands it):\n"
             f"```sql\n{sql}\n```"
         )
         return CompileResult(sql=sql, block=block)
+
+    # ── 窗口分析编译(plan.analysis)────────────────────────────
+    #
+    # 把聚合核心包一层窗口函数:share(占比)/running_total(累计)/mom(环比
+    # 增量)/yoy(同比增量)/pct_change(环比增长率)/rank(排名)。内层聚合
+    # 投影逐列别名 _c{i},外层 SELECT 把窗口表达式投影为新列。任何组件
+    # 无法解析到声明模型/内层投影 → 严格 MISS(分析意图不静默丢弃)。
+    #
+    # 方言:窗口函数在 sqlite≥3.25 / PG / MySQL8 / ClickHouse / DuckDB 均
+    # 支持;内层由现有构建逻辑产出(方言感知),外层只包标准窗口语法。
+
+    _YOY_LAG_BY_GRAIN = {"month": 12, "quarter": 4, "week": 52, "day": 365, "year": 1}
+    _ANALYSIS_DISPLAY = {
+        "share": "share",
+        "running_total": "running_total",
+        "mom": "mom_delta",
+        "yoy": "yoy_delta",
+        "pct_change": "pct_change",
+        "rank": "rank",
+    }
+
+    def _apply_analysis(
+        self,
+        inner_sql: str,
+        plan: dict[str, Any],
+        matched_set: set[str],
+        analysis: Any,
+        limit: Any,
+        projections: list[str],
+        proj_display: list[str],
+        proj_ref: list[Any],
+        tg_field: Any,
+        order_parts: list[str],
+    ) -> str | CompileMiss:
+        if not isinstance(analysis, dict):
+            return CompileMiss("analysis_invalid", "analysis must be an object")
+        atype = str(analysis.get("type") or "").strip().lower()
+        if atype not in self._ANALYSIS_DISPLAY:
+            return CompileMiss("analysis_unsupported_type", atype)
+
+        # 目标度量:analysis.metric(缺省 = 内层唯一聚合度量);必须恰好一个
+        # 度量投影——窗口计算是单度量的。
+        metric_idxs = [i for i, r in enumerate(proj_ref) if isinstance(r, SemanticMetric)]
+        if len(metric_idxs) != 1:
+            return CompileMiss(
+                "analysis_metric_unknown",
+                str(analysis.get("metric") or f"{len(metric_idxs)} metrics"),
+            )
+        m_idx = metric_idxs[0]
+        target_metric = str(analysis.get("metric") or "").strip()
+        if target_metric:
+            m = self._metric_by_name(target_metric)
+            if m is None or m.name != proj_ref[m_idx].name:
+                return CompileMiss("analysis_metric_unknown", target_metric)
+
+        # 窗口排序字段(order_by):时间类分析必需(缺省取内层时间分桶列)。
+        order_ref = str(analysis.get("order_by") or "").strip()
+        time_idx = next(
+            (i for i, r in enumerate(proj_ref)
+             if isinstance(r, tuple) and r and r[0] == "__tg__"),
+            None,
+        )
+        order_idx = None
+        if order_ref:
+            resolved = self._resolve_field(order_ref, matched_set)
+            if resolved is None:
+                return CompileMiss("analysis_order_unresolved", order_ref)
+            order_idx = next(
+                (i for i, r in enumerate(proj_ref)
+                 if isinstance(r, tuple) and len(r) == 2 and r[1] == "__tg__" and r == resolved),
+                None,
+            )
+            if order_idx is None:
+                # 也允许按非时间维度排(如按 region)——窗口序仍需确定列
+                order_idx = next(
+                    (i for i, r in enumerate(proj_ref)
+                     if isinstance(r, tuple) and len(r) == 2 and r == resolved),
+                    None,
+                )
+            if order_idx is None:
+                return CompileMiss("analysis_order_unresolved", order_ref)
+        elif time_idx is not None:
+            order_idx = time_idx
+
+        # 窗口分区字段(partition_by):每个都须解析为内层维度投影。
+        part_idx: list[int] = []
+        for p in (analysis.get("partition_by") or []):
+            resolved = self._resolve_field(str(p), matched_set)
+            if resolved is None:
+                return CompileMiss("analysis_partition_unresolved", str(p))
+            idx = next(
+                (i for i, r in enumerate(proj_ref)
+                 if isinstance(r, tuple) and len(r) == 2 and r == resolved),
+                None,
+            )
+            if idx is None:
+                return CompileMiss("analysis_partition_unresolved", str(p))
+            if idx not in part_idx:
+                part_idx.append(idx)
+
+        def ref(i: int) -> str:
+            return f"_c{i}"
+
+        def partition_sql() -> str:
+            return ("PARTITION BY " + ", ".join(ref(i) for i in part_idx)) if part_idx else ""
+
+        def order_sql() -> str:
+            if order_idx is None:
+                return ""
+            direction = (str(analysis.get("direction") or "asc")).upper()
+            return f"ORDER BY {ref(order_idx)} {direction}"
+
+        needs_time = atype in ("running_total", "mom", "yoy", "pct_change")
+        if needs_time and order_idx is None:
+            return CompileMiss("analysis_time_required", atype)
+
+        if atype == "share":
+            win = f"SUM({ref(m_idx)}) OVER ({partition_sql()})"
+            expr = f"{ref(m_idx)} / NULLIF({win}, 0)"
+        elif atype == "running_total":
+            win = (
+                f"SUM({ref(m_idx)}) OVER ({partition_sql()} {order_sql()} "
+                "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
+            )
+            expr = win
+        elif atype == "mom":
+            win = f"LAG({ref(m_idx)}, 1) OVER ({partition_sql()} {order_sql()})"
+            expr = f"{ref(m_idx)} - {win}"
+        elif atype == "yoy":
+            lag = self._YOY_LAG_BY_GRAIN.get(self._current_grain(plan), 1)
+            win = f"LAG({ref(m_idx)}, {lag}) OVER ({partition_sql()} {order_sql()})"
+            expr = f"{ref(m_idx)} - {win}"
+        elif atype == "pct_change":
+            win = f"LAG({ref(m_idx)}, 1) OVER ({partition_sql()} {order_sql()})"
+            expr = f"({ref(m_idx)} - {win}) / NULLIF({win}, 0)"
+        else:  # rank:排名 = 度量降序的 RANK
+            expr = f"RANK() OVER ({partition_sql()} ORDER BY {ref(m_idx)} DESC)"
+
+        display = self._ANALYSIS_DISPLAY[atype]
+        # 外层展示名去重(与内层列名冲突时加后缀)
+        used = set(proj_display)
+        outer_display = display
+        suffix = 2
+        while outer_display in used:
+            outer_display = f"{display}_{suffix}"
+            suffix += 1
+
+        from sqlglot import exp, parse_one
+
+        try:
+            inner = parse_one(inner_sql, read=self._dialect)
+        except Exception as e:
+            return CompileMiss("analysis_invalid", f"inner unparseable: {e}")
+        if not isinstance(inner, exp.Select):
+            return CompileMiss("analysis_invalid", "inner not a SELECT")
+        new_projs = []
+        for j, p in enumerate(inner.expressions):
+            if isinstance(p, exp.Alias):
+                new_projs.append(exp.alias_(p.this, f"_c{j}"))
+            else:
+                new_projs.append(exp.alias_(p, f"_c{j}"))
+        inner.set("expressions", new_projs)
+
+        inner_text = inner.sql(dialect=self._dialect)
+        outer_cols = [
+            f"{ref(j)} AS {pd}" for j, pd in enumerate(proj_display)
+        ]
+        outer_cols.append(f"({expr}) AS {outer_display}")
+        outer = (
+            "SELECT " + ", ".join(outer_cols)
+            + "\nFROM (\n" + inner_text + "\n) AS _t"
+        )
+
+        # 外层排序:plan.ordering 里可引用 metric/字段/分析列;缺省给出
+        # 确定性排序(rank → 排名升序;share → 占比降序;时间类 → 时间升序)。
+        def outer_order() -> str | None:
+            if order_parts:
+                mapped: list[str] = []
+                for column, direction in (parse_ordering(plan.get("ordering")) or []):
+                    if column.lower() in self._ANALYSIS_DISPLAY.values():
+                        mapped.append(f"{column} {direction.upper()}")
+                        continue
+                    metric_o = self._metric_by_name(column)
+                    if metric_o is not None and metric_o.name == proj_ref[m_idx].name:
+                        mapped.append(f"{ref(m_idx)} {direction.upper()}")
+                        continue
+                    resolved_o = self._resolve_field(column, matched_set)
+                    if resolved_o is None:
+                        continue
+                    idx = next(
+                        (i for i, r in enumerate(proj_ref)
+                         if isinstance(r, tuple) and len(r) == 2 and r == resolved_o),
+                        None,
+                    )
+                    if idx is not None:
+                        mapped.append(f"{ref(idx)} {direction.upper()}")
+                if mapped:
+                    return "ORDER BY " + ", ".join(mapped)
+                return None
+            if atype == "rank":
+                return f"ORDER BY {outer_display} ASC"
+            if atype == "share":
+                return f"ORDER BY {outer_display} DESC"
+            if order_idx is not None:
+                return f"ORDER BY {ref(order_idx)} ASC"
+            return None
+
+        ob = outer_order()
+        if ob:
+            outer += "\n" + ob
+        if limit is not None:
+            if ob is None:
+                return CompileMiss("limit_without_order", str(limit))
+            outer += f"\nLIMIT {int(limit)}"
+        return outer
+
+    @staticmethod
+    def _current_grain(plan: dict[str, Any]) -> str:
+        tg = plan.get("time_grain")
+        if isinstance(tg, dict):
+            return str(tg.get("grain") or "").strip().lower()
+        return ""
 
 
 def validate_compiled_sql(

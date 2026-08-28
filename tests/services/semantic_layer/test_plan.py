@@ -147,3 +147,57 @@ def test_render_plan_time_grain_and_having_lines():
     zh = _render_plan(plan, "zh")
     assert "时间粒度: loan.date 按月" in zh
     assert "聚合后过滤:" in zh
+
+
+def test_analysis_and_limit_parsed():
+    q = parse_plan_query({
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+        "analysis": {"type": "mom", "metric": "total_loan_amount", "order_by": "loan.date"},
+        "limit": 5,
+    })
+    assert q is not None
+    assert q.analysis is not None
+    assert q.analysis.type == "mom"
+    assert q.analysis.metric == "total_loan_amount"
+    assert q.analysis.order_by == "loan.date"
+    assert q.limit == 5
+    dumped = q.to_dict()
+    assert dumped["analysis"]["type"] == "mom"
+    assert dumped["limit"] == 5
+
+
+def test_analysis_missing_defaults_none():
+    q = parse_plan_query({"answer_columns": ["loan.date"]})
+    assert q is not None and q.analysis is None and q.limit is None
+
+
+def test_analysis_unknown_type_fails_plan():
+    assert parse_plan_query({"analysis": {"type": "pivot"}}) is None
+
+
+def test_analysis_wrong_shape_fails_plan():
+    assert parse_plan_query({"analysis": "notadict"}) is None
+    assert parse_plan_query({"analysis": {"type": "share", "partition_by": "x"}}) is None
+
+
+def test_limit_invalid_fails_plan():
+    assert parse_plan_query({"limit": "abc"}) is None
+    assert parse_plan_query({"limit": -3}) is not None  # 负数宽松置空
+
+
+def test_render_plan_analysis_line():
+    from trove.workflow.nodes.planner import _render_plan
+
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["district.A3", "sum(loan.amount)"],
+        "analysis": {"type": "share", "metric": "total_loan_amount"},
+        "limit": 10,
+    }
+    en = _render_plan(plan, "en")
+    assert "Analysis: share" in en
+    assert "Limit: 10" in en
+    zh = _render_plan(plan, "zh")
+    assert "分析: share" in zh
+    assert "限量: 10" in zh

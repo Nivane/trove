@@ -8,5 +8,8 @@
 返回行数: {{ total_rows }}
 数据行:
 {{ rows }}
+{% if rows_note %}
+{{ rows_note }}
+{% endif %}
 
 请基于这些结果写出精炼、有数据依据的洞察。

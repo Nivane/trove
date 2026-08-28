@@ -2454,14 +2454,29 @@ class TestSemanticPromptGuards:
         assert "probe_query" not in en
         assert "probe_query" not in zh
 
-    def test_planner_prompt_carries_tools_gated_by_has_tools(self):
-        """planner 工具段落:has_tools=True 含 get_column_stats,False 不含。"""
-        en = render("planner/system", lang="en", has_tools=True)
-        zh = render("planner/system", lang="zh", has_tools=True)
-        assert "get_column_stats" in en
-        assert "get_column_stats" in zh
-        assert "get_column_stats" not in render("planner/system", lang="en")
-        assert "get_column_stats" not in render("planner/system", lang="zh")
+    def test_planner_prompt_never_carries_removed_catalog_tools(self):
+        """planner 的 catalog 探测工具(get_table_columns/get_column_stats)已随
+        语义优先(Phase B)物理移除——提示词绝不能再教 planner 调用不存在的工具。
+        has_tools 传入与否都不应出现。"""
+        for lang in ("en", "zh"):
+            base = render("planner/system", lang=lang)
+            gated = render("planner/system", lang=lang, has_tools=True)
+            for text in (base, gated):
+                assert "get_table_columns" not in text
+                assert "get_column_stats" not in text
+
+    def test_planner_prompt_carries_analysis_guidance(self):
+        """窗口分析(share/running_total/mom/yoy/pct_change/rank)指引:
+        planner 要能产出 analysis 字段给编译器。"""
+        en = render("planner/system", lang="en")
+        zh = render("planner/system", lang="zh")
+        for token in ("share", "running_total", "mom", "yoy", "pct_change", "rank"):
+            assert token in en
+        assert "占比" in zh
+        assert "累计" in zh
+        assert "环比" in zh
+        assert "同比" in zh
+        assert "排名" in zh
 
     def test_reflect_prompt_carries_condition_completeness(self):
         en = render("reflect/system", lang="en")

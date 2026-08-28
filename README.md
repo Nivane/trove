@@ -39,7 +39,7 @@ It answers, and learns with every question.
     - `rag`：稀疏（FTS5/BM25）+ 稠密（embedding 余弦）双通道 RRF 融合（稠密缺失时自动退化为纯稀疏）
   - KB 精确命中（词重叠 ≥0.95）短路，直接采用标准 SQL
   - `/kb learn` 半自动演化：LLM 起草 → 人工确认 → 入库
-- **语义编译**（`trove/services/semantic_layer/`）：planner 输出经 **typed plan AST**（`PlanQuery`）在解析/编译边界强类型化——多度量/派生度量（递归内联，环/深度守卫）、时间分桶（四方言 `date_trunc` 等价物）、metric 级 HAVING / 宽排序处理；**保守化守卫**：任何语义组件无法解析到声明模型即整体 MISS（MISS 分因透出），基数声明与 FK 命名在建模期 lint（`/kb lint`）
+- **语义编译**（`trove/services/semantic_layer/`）：planner 输出经 **typed plan AST**（`PlanQuery`）在解析/编译边界强类型化——多度量/派生度量（递归内联，环/深度守卫）、时间分桶（四方言 `date_trunc` 等价物）、metric 级 HAVING / 宽排序处理；**窗口分析**（`plan.analysis`）：占比 `share` / 累计 `running_total` / 环比 `mom` / 同比 `yoy`（滞后月数随粒度推）/ 增长率 `pct_change` / 排名 `rank`（可配 `limit` 做 top-N），把聚合核心包成窗口查询，语义优先下分析类问题不再整拒；**保守化守卫**：任何语义组件无法解析到声明模型即整体 MISS（MISS 分因透出），基数声明与 FK 命名在建模期 lint（`/kb lint`）
 - **用户级记忆**（`user_facts`，Mem0 式）：按 `(用户, 数据源)` 作用域的偏好/口径事实，CRUD + 与问句的相关度排序，注入 gen_sql 个性化上下文块（REPL `/facts`，管理端 `trove admin facts`）
 - **多语言**：`language: en / zh` 统一交互语言——提示词、答案、轨迹全程使用所选语言（不按问题语言自动检测）
 - **多模型**：litellm 网关，支持任意兼容 provider（OpenAI / DeepSeek / Anthropic / …），可配 `api_base` 接非官方端点；已适配推理模型（reasoning 输出占用 token 预算的处理）
