@@ -519,6 +519,7 @@ export const useChatStore = defineStore('chat', {
       }
       if (t.answer) body.note = t.answer.slice(0, 800)
       if (summary?.sql) body.sql_snippet = summary.sql
+      if (summary?.run_id) body.run_id = summary.run_id
       try {
         await apiPost('/v1/kb/ratings', body)
         t.rating = vote

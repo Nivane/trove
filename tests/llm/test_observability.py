@@ -69,11 +69,19 @@ class _FakeV4Client:
 
     def __init__(self):
         self.observations = []
+        self.scores = []
+        self.events = []
 
     def start_as_current_observation(self, **kwargs):
         obs = _FakeObservation(**kwargs)
         self.observations.append(obs)
         return obs
+
+    def create_score(self, **kwargs):
+        self.scores.append(kwargs)
+
+    def create_event(self, **kwargs):
+        self.events.append(kwargs)
 
 
 @pytest.fixture
@@ -136,6 +144,103 @@ class TestV4ApiUsage:
             pass
         obs = fake_v4_client.observations[0]
         assert obs.kwargs["metadata"] == {"session_id": "s1"}
+
+    def test_record_span_pins_trace_context(self, fake_v4_client):
+        """record_span 支持 trace_context 固定到指定 trace(cache-hit 根)。"""
+        with observability.record_span(
+            "cache.hit", input={"question": "q"},
+            trace_context={"trace_id": "abcd1234"},
+        ):
+            pass
+        obs = fake_v4_client.observations[0]
+        assert obs.kwargs["trace_context"] == {"trace_id": "abcd1234"}
+
+
+class TestTraceRootDimensions:
+    """Gap 1: trace 根维度(session/user/trace_name/tags)由 per-run handler 携带。"""
+
+    def test_langfuse_trace_id_normalizes_dash(self):
+        assert observability.langfuse_trace_id("a-b-c-d") == "abcd"
+        assert len(observability.langfuse_trace_id("f6b244b1-a64d-4152-86ea-1d25a240ebee")) == 32
+
+    def test_handler_with_trace_id(self, langfuse_env, monkeypatch):
+        from langfuse.langchain import CallbackHandler
+        captured = {}
+
+        def fake_init(self, *, public_key=None, trace_context=None):
+            captured["trace_context"] = trace_context
+
+        monkeypatch.setattr(CallbackHandler, "__init__", fake_init)
+        observability.build_callback_handler(trace_id="a1b2-c3d4")
+        assert captured["trace_context"] == {"trace_id": "a1b2c3d4"}
+
+    async def test_run_config_sets_root_metadata_and_per_run_callback(
+        self, session_manager, tmp_home, monkeypatch,
+    ):
+        """Gap 1+3: _run_config 注入 langfuse_* 根级 metadata + per-run handler。"""
+        from trove.workflow.state import WorkflowState
+        captured = {}
+        monkeypatch.setattr(
+            "trove.agent.session.SessionManager._langfuse_callbacks",
+            staticmethod(lambda run_id: ["LF-CB"]),
+        )
+        session = await session_manager.start_session(project_cwd="/tmp/p1")
+        state = WorkflowState(
+            session_id=session.session_id, question="q1", run_id="r1-xyz",
+            user_id="u1", datasource="ds1", lang="zh",
+        )
+        config = session_manager._run_config(session, "r1-xyz", state, "reflection")
+        assert config["metadata"]["langfuse_session_id"] == session.session_id
+        assert config["metadata"]["langfuse_user_id"] == session.user_id
+        assert config["metadata"]["langfuse_trace_name"] == "reflection: q1"
+        assert config["metadata"]["langfuse_tags"] == ["trove", "reflection", "ds1"]
+        assert config["metadata"]["run_id"] == "r1-xyz"
+        assert "LF-CB" in config["callbacks"]
+
+
+class TestRunFinishSummary:
+    """Gap 3: 终态汇总(verdict/timings/tokens)落到确定性 trace。"""
+
+    def test_record_run_finish_writes_score_and_event(self, fake_v4_client):
+        observability.record_run_finish("a1b2-c3d4", {
+            "question": "q", "verdict": "OK", "sql": "SELECT 1",
+            "row_count": 3, "total_elapsed_ms": 123,
+            "token_usage": {"prompt": 10, "completion": 5, "total": 15},
+            "rows": [[1]],  # 不应进 event(output 过滤)
+        })
+        score = fake_v4_client.scores[0]
+        assert score["name"] == "trove.verdict"
+        assert score["value"] == 1.0
+        assert score["trace_id"] == "a1b2c3d4"
+        assert score["comment"] == "OK"
+        event = fake_v4_client.events[0]
+        assert event["name"] == "run.summary"
+        assert event["trace_context"] == {"trace_id": "a1b2c3d4"}
+        assert event["output"]["verdict"] == "OK"
+        assert "rows" not in event["output"]
+
+    def test_record_run_finish_error_verdict_zero(self, fake_v4_client):
+        observability.record_run_finish("abc", {"question": "q", "verdict": ""})
+        assert fake_v4_client.scores[0]["value"] == 0.0
+
+    def test_record_run_finish_noop_when_disabled(self, no_langfuse):
+        observability.record_run_finish("abc", {"verdict": "OK"})  # 不抛
+
+
+class TestUserScore:
+    """Gap 2: 用户评分回写 Langfuse(rate_lesson 闭环)。"""
+
+    def test_record_user_score(self, fake_v4_client):
+        observability.record_user_score("a1b2-c3d4", 1, comment="nice")
+        score = fake_v4_client.scores[0]
+        assert score["name"] == "trove.user_rating"
+        assert score["value"] == 1.0
+        assert score["trace_id"] == "a1b2c3d4"
+        assert score["data_type"] == "NUMERIC"
+        assert score["comment"] == "nice"
+
+    def test_record_user_score_noop_when_disabled(self, no_langfuse):
+        observability.record_user_score("abc", -1)  # 不抛
 
 
 class TestFailedGeneration:

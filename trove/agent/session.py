@@ -319,7 +319,7 @@ class SessionManager:
             self._trace_run_finish(run_id, final)
             return final
 
-        config = dict(self._thread_config(session))
+        config = self._run_config(session, run_id, state, workflow_name)
         config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
         # 传完整 state dict 而非 pydantic 实例:带 checkpointer 的图上,
         # pydantic 输入的 None 默认值不会覆盖前一轮 checkpoint 残留(如旧
@@ -457,6 +457,16 @@ class SessionManager:
         resume_start = _time.monotonic()
         config = dict(self._thread_config(session))
         if run_id:
+            # 复用原 run 的确定性 trace_id:resume 继续同一 trace。
+            from trove.workflow.state import WorkflowState
+            stub = WorkflowState(
+                session_id=session.session_id,
+                question="",
+                run_id=run_id,
+                user_id=session.user_id,
+                datasource=pending.get("datasource", ""),
+            )
+            config = self._run_config(session, run_id, stub, workflow_name)
             config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
 
         result = await graph.ainvoke(Command(resume=decision), config)
@@ -662,7 +672,7 @@ class SessionManager:
             seq = 0
             last_ts = _time.monotonic()
             run_start = last_ts
-            config = dict(self._thread_config(session))
+            config = self._run_config(session, run_id, state, workflow_name)
             # Node-start bridging: a queued LangGraph callback surfaces BEGIN
             # events mid-node so the UI can show *which* node is executing now
             # (not only after it completes) with a live elapsed timer.
@@ -967,13 +977,19 @@ class SessionManager:
         tracer = get_tracer(run_id)
         if tracer is not None:
             tracer.finish(summary)
-            return
+        else:
+            try:
+                from trove.tracing.local import add_event
+                add_event(run_id, {
+                    "kind": "finish",
+                    "summary": summary,
+                })
+            except Exception:
+                pass
+        # Langfuse 侧:verdict/timings/tokens 汇总到确定性 trace_id(= run_id)
         try:
-            from trove.tracing.local import add_event
-            add_event(run_id, {
-                "kind": "finish",
-                "summary": summary,
-            })
+            from trove.llm.observability import record_run_finish
+            record_run_finish(run_id, summary)
         except Exception:
             pass
 
@@ -992,6 +1008,44 @@ class SessionManager:
         from trove.tracing.runlog import get_tracer
         tracer = get_tracer(run_id)
         return [tracer.callback()] if tracer is not None else []
+
+    @staticmethod
+    def _langfuse_callbacks(run_id: str) -> list[Any]:
+        """Per-run Langfuse callback pinned to trace_id = run_id (or []).
+
+        Deterministic trace id lets post-run updates (verdict summary, user
+        scores) target the same trace. No-op when Langfuse is not configured.
+        """
+        from trove.llm.observability import build_callback_handler
+        handler = build_callback_handler(trace_id=run_id)
+        return [handler] if handler is not None else []
+
+    def _run_config(
+        self, session: Session, run_id: str, state: WorkflowState,
+        workflow_name: str,
+    ) -> dict[str, Any]:
+        """Graph run config: thread + callbacks + Langfuse trace-root metadata.
+
+        Root-level langfuse_* keys are read by the SDK CallbackHandler at the
+        root chain start, so every trace carries session/user/trace_name/tags
+        (feature: trace 根维度). Only the per-run handler is appended here;
+        the caller adds runlog tracer callbacks as usual.
+        """
+        config = dict(self._thread_config(session))
+        config["metadata"] = {
+            **config.get("metadata", {}),
+            "langfuse_session_id": session.session_id,
+            "langfuse_user_id": session.user_id or "local",
+            "langfuse_trace_name": f"{workflow_name}: {(state.question or '')[:60]}",
+            "langfuse_tags": ["trove", workflow_name, state.datasource or ""],
+            "run_id": run_id,
+            "datasource": state.datasource or "",
+        }
+        config["callbacks"] = (
+            list(config.get("callbacks") or [])
+            + self._langfuse_callbacks(run_id)
+        )
+        return config
 
     @staticmethod
     def _node_start_callback(stream_events: asyncio.Queue) -> Any:
@@ -1586,6 +1640,7 @@ class SessionManager:
         ]
         return {
             "session_id": final.session_id,
+            "run_id": final.run_id,
             "question": final.question,
             "sql": final.sql,
             "row_count": final.row_count,
@@ -1651,12 +1706,13 @@ class SessionManager:
         本地 runlog 已有 finish 事件;这里补 langfuse 侧"零 LLM 直接返回"
         的可视性,output 带上次已验证的 summary(sql/verdict/行数/错误)。
         """
-        from trove.llm.observability import record_span
+        from trove.llm.observability import langfuse_trace_id, record_span
 
         with record_span(
             "cache.hit",
             input={"question": question},
             metadata={"session_id": session.session_id, "run_id": run_id},
+            trace_context={"trace_id": langfuse_trace_id(run_id)},
         ) as span:
             if span is not None:
                 span.update(output={"summary": cached})

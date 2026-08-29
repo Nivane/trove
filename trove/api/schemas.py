@@ -63,11 +63,15 @@ class LessonRatingCreate(BaseModel):
 
     Stored as a pending lesson keyed by `question` with aggregated
     upvotes/downvotes for the admin console to review.
+
+    ``run_id`` (optional) links the rating to the Langfuse trace that
+    produced the answer — used to write a user-rating score on it.
     """
 
     question: str = Field(min_length=1)
     note: str = ""
     sql_snippet: str = ""
+    run_id: str = ""
     vote: Literal[1, -1] = Field(description="1 = upvote, -1 = downvote")
 
 

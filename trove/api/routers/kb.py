@@ -207,6 +207,13 @@ async def rate_lesson(
     """
     ds = _datasource(request, None)
     lesson = await _kb(request).rate_lesson(body.model_dump(), ds)
+    # 反馈闭环:评分回写对应 Langfuse trace(run_id = trace_id)
+    if body.run_id:
+        try:
+            from trove.llm.observability import record_user_score
+            record_user_score(body.run_id, body.vote, comment=body.note or "")
+        except Exception:
+            pass
     return {"status": "ok", "question": body.question, "lesson": lesson}
 
 

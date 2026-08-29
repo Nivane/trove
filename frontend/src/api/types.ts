@@ -11,6 +11,7 @@ export interface ChartSpec {
 
 export interface DoneSummary {
   session_id?: string
+  run_id?: string
   question?: string
   sql?: string
   row_count?: number

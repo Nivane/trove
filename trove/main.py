@@ -280,14 +280,13 @@ async def create_app_components(
     graphs = build_graphs(services, checkpointer=checkpointer)
 
     # ── Session Manager ───────────────────────────────────
-    from trove.llm.observability import build_callback_handler
-    tracing_handler = build_callback_handler()
+    # Langfuse 采用 per-run handler(确定性 trace_id = run_id,见
+    # SessionManager._run_config)——不在此创建全局 handler,避免双 trace。
     session_manager = SessionManager(
         config=config,
         session_store=session_store,
         graphs=graphs,
         llm_gateway=llm_gateway,
-        callbacks=[tracing_handler] if tracing_handler else None,
         kb=kb,
         connectors=connector_registry,
     )

@@ -122,15 +122,27 @@ async def make_test_semantic_provider(registry, kb_dir):
 
 
 @pytest.fixture(autouse=True)
-def _reset_trace_store():
+def _reset_trace_store(monkeypatch):
     """trace store 是进程级全局;每个测试从"未配置"状态开始,
-    避免其它测试文件 configure_trace_store 的残留(如激活 RunTracer)。"""
+    避免其它测试文件 configure_trace_store 的残留(如激活 RunTracer)。
+
+    同时清除 LANGFUSE_* 环境(测试必须零 key/零网络;本机 shell 若导出过
+    key 会意外启用 langfuse 客户端并尝试上报,拖慢/污染测试)。需要 Langfuse
+    的测试自行用 monkeypatch.setenv 开启(见 tests/llm/test_observability.py)。
+    """
     from trove.tracing.local import configure_trace_store
     configure_trace_store(None)
     from trove.llm.token_accounting import reset as reset_token_accounting
     reset_token_accounting()
     from trove.llm.token_calibration import reset as reset_token_calibration
     reset_token_calibration()
+    from trove.llm import observability as _obs
+    _obs._client = None
+    for key in (
+        "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST",
+        "LANGFUSE_AUTH_CHECK",
+    ):
+        monkeypatch.delenv(key, raising=False)
     yield
 
 
