@@ -99,7 +99,7 @@ docker compose restart backend   # 只重启后端
 docker compose down
 ```
 
-访问 `http://localhost:8080/`（默认登录：admin / `admin123`，仅本地演练；生产由 `TROVE_ADMIN_PASSWORD` 环境变量控制）。默认业务栈为 **PostgreSQL**（pgvector），`db-init` 一次性服务灌入 BIRD 金融 demo 数据。真实对话需要 LLM 凭证：取消 `docker-compose.yml` 中 `~/.trove/conf` 只读挂载的注释，或在容器内提供 API key。
+访问 `http://localhost:8080/`（默认登录：admin / `admin123`，仅本地演练；生产由 `TROVE_ADMIN_PASSWORD` 环境变量控制）。默认业务栈为 **PostgreSQL**（ParadeDB 镜像：pgvector + pg_bm25 共存），`db-init` 一次性服务灌入 BIRD 金融 demo 数据。真实对话需要 LLM 凭证：取消 `docker-compose.yml` 中 `~/.trove/conf` 只读挂载的注释，或在容器内提供 API key。
 
 ## 数据源
 
@@ -120,7 +120,7 @@ docker compose down
 ```yaml
 # conf/agent.yml 示例
 agent:
-  target: deepseek/deepseek-v4-flash      # litellm 模型字符串（推理模型亦可）
+  target: deepseek/deepseek-reasoner      # litellm 模型字符串（推理模型亦可）
   model_fast: deepseek/deepseek-chat      # 快速档模型：simple/standard 复杂度查询
   node_models:                            # 每节点模型覆盖（优先于复杂度分档）
     planner: deepseek/deepseek-chat

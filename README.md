@@ -99,7 +99,7 @@ docker compose restart backend   # restart only the backend
 docker compose down
 ```
 
-Open `http://localhost:8080/` (default login: admin / `admin123` — local demo only; production uses the `TROVE_ADMIN_PASSWORD` environment variable). The default business stack is **PostgreSQL** (pgvector) with a `db-init` service that loads the BIRD financial demo data. Real conversations need LLM credentials: uncomment the read-only `~/.trove/conf` mount in `docker-compose.yml`, or provide an API key inside the container.
+Open `http://localhost:8080/` (default login: admin / `admin123` — local demo only; production uses the `TROVE_ADMIN_PASSWORD` environment variable). The default business stack is **PostgreSQL** (ParadeDB image — pgvector + pg_bm25, shared instance) with a `db-init` service that loads the BIRD financial demo data. Real conversations need LLM credentials: uncomment the read-only `~/.trove/conf` mount in `docker-compose.yml`, or provide an API key inside the container.
 
 ## Data Sources
 
@@ -120,7 +120,7 @@ Configuration precedence (model selection): CLI `--model` > `conf/agent.yml` / `
 ```yaml
 # conf/agent.yml (example)
 agent:
-  target: deepseek/deepseek-v4-flash      # litellm model string (reasoning models supported)
+  target: deepseek/deepseek-reasoner      # litellm model string (reasoning models supported)
   model_fast: deepseek/deepseek-chat      # fast tier for simple/standard questions
   node_models:                            # per-node model overrides (beat complexity tiering)
     planner: deepseek/deepseek-chat
