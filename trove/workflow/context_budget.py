@@ -139,12 +139,23 @@ def assemble_context(
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """Item-level context assembly within a global token budget.
 
-    Blocks are visited in priority order (lower priority number first).
-    Within each block, items are filled in score-descending order; an
-    item that does not fit the remaining budget is skipped (item-level
-    trimming) instead of dropping the whole block — a block keeps its
-    most relevant items rather than all-or-nothing. Blocks with no
-    items are ignored.
+    Items are filled GLOBALLY by effective score, ⑥ scale-unified:
+
+    - per-block min-max normalization → [0, 1] (blocks whose scores sit
+      on different scales — e.g. hybrid episodes ≈ 0.8-1.2 vs lexical
+      0-1 — no longer let a systematically-high block crowd out another
+      block's most relevant items);
+    - priority weight ``1/priority`` multiplies the normalized score, so
+      block priority stays the dominant lever while a highly-relevant
+      item in a lower-priority block can still beat a weakly-relevant
+      item in a higher-priority block (item-level relevance beats
+      block-level all-or-nothing);
+    - ties (equal effective score) break to the lower priority number.
+
+    An item that does not fit the remaining budget is skipped (item-level
+    trimming) instead of dropping the whole block. Blocks with no items
+    are ignored. Usage report keeps the per-block shape (tokens/included/
+    items_total/items_included) for observability.
 
     Args:
         blocks: name → its items.
@@ -157,24 +168,40 @@ def assemble_context(
         [{name, tokens, included, items_total, items_included}]).
     """
     ordered = sorted(blocks, key=lambda name: priorities.get(name, 100))
-    used = 0
-    included: dict[str, list[str]] = {}
-    usage: list[dict[str, Any]] = []
+    # (effective_score, priority, block, item)——全局候选池
+    scored: list[tuple[float, int, str, ContextItem]] = []
     for name in ordered:
         items = blocks[name]
         if not items:
             continue
-        block_used = 0
-        kept: list[str] = []
-        for item in sorted(items, key=lambda it: it.score, reverse=True):
-            cost = count(item.text)
-            if used + block_used + cost > budget_tokens:
-                continue  # item-level trim: skip this item, try the next
-            block_used += cost
-            kept.append(item.key)
-        if kept:
-            used += block_used
-            included[name] = kept
+        lo = min(it.score for it in items)
+        hi = max(it.score for it in items)
+        span = hi - lo
+        prio = priorities.get(name, 100)
+        weight = 1.0 / max(1, prio)
+        for it in items:
+            # span=0(整块同分,如 plan 0.0)→ 中性 0.5,块内无区分度
+            norm = (it.score - lo) / span if span > 0 else 0.5
+            scored.append((weight * norm, prio, name, it))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+
+    used = 0
+    included: dict[str, list[str]] = {}
+    for eff, prio, name, item in scored:
+        cost = count(item.text)
+        if used + cost > budget_tokens:
+            continue  # item-level trim: skip this item, try the next
+        used += cost
+        included.setdefault(name, []).append(item.key)
+
+    usage: list[dict[str, Any]] = []
+    for name in ordered:
+        items = blocks.get(name) or []
+        if not items:
+            continue  # 空块不进报告(与填充前行为一致)
+        kept = included.get(name, [])
+        kept_set = set(kept)
+        block_used = sum(count(it.text) for it in items if it.key in kept_set)
         usage.append({
             "name": name,
             "tokens": block_used,

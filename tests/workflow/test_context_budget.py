@@ -118,3 +118,62 @@ class TestAssembleContext:
             "name": "shots", "tokens": 25, "included": True,
             "items_total": 2, "items_included": 1,
         }]
+
+    # ── ⑥ 分数量纲统一 ─────────────────────────────────
+
+    def test_scale_unification_cross_block(self):
+        """量纲统一:1.2 分的 episode 不再系统性压过 0.9 分的 lesson。
+
+        归一化后两者都是各自块的最高分(1.0),优先级权重(1/7 vs 1/8)
+        决定 lesson 先填充——预算只够一条时保留 lesson。旧算法按原始
+        分(1.2 > 0.9)会保留 episode。
+        """
+        blocks = {
+            "lessons": self._items([(0.9, 100), (0.8, 100)]),
+            "episodes": self._items([(1.2, 100), (0.1, 100)]),
+        }
+        included, _ = assemble_context(
+            blocks, {"lessons": 7, "episodes": 8},
+            budget_tokens=30, count=estimate_tokens,
+        )
+        assert included == {"lessons": ["shot0"]}
+
+    def test_priority_weight_breaks_score_ties(self):
+        """同归一化分的条目:低优先级号(权重更大)先填充。"""
+        blocks = {
+            "few_shots": self._items([(5, 100)]),
+            "history": self._items([(5, 100)]),
+        }
+        included, _ = assemble_context(
+            blocks, {"few_shots": 1, "history": 9},
+            budget_tokens=30, count=estimate_tokens,
+        )
+        assert included == {"few_shots": ["shot0"]}
+
+    def test_low_relevance_dropped_for_lower_priority_high_relevance(self):
+        """低优先级块的高相关条目(归一化 0.5·1/9)挤掉高优先级块的
+        低相关条目(归一化 0.0)——item 级相关胜于块级全有全无。
+
+        旧块主算法会把 few_shots 两条全塞满再考虑 history;新算法
+        few_shots[1](norm 0)零拉动,history 先于它填充。
+        """
+        blocks = {
+            "few_shots": self._items([(10, 100), (2, 100)]),   # norm (1, 0)
+            "history": [ContextItem(key="h", text="h" * 100, score=7)],  # norm 0.5 → eff 0.056
+        }
+        included, _ = assemble_context(
+            blocks, {"few_shots": 1, "history": 9},
+            budget_tokens=60, count=estimate_tokens,
+        )
+        assert included == {"few_shots": ["shot0"], "history": ["h"]}
+
+    def test_flat_scores_neutral_mid(self):
+        """整块同分(plan 0.0):归一化取中性 0.5,不因块内无区分度而失效。"""
+        blocks = {
+            "plan": [ContextItem(key="plan", text="p" * 100, score=0.0)],
+        }
+        included, usage = assemble_context(
+            blocks, {"plan": 8}, budget_tokens=300, count=estimate_tokens,
+        )
+        assert included == {"plan": ["plan"]}
+        assert usage[0]["items_included"] == 1
