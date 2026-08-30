@@ -114,6 +114,17 @@ docker compose down
 
 数据源名 = 数据库名，每个库在 `.trove/kb/<数据库>/` 下独立演化知识库。驱动按需惰性加载。新增数据源：实现 `DatabaseAdapter` 六个抽象方法并在 `registry.py` 注册。
 
+## 内部状态与存储
+
+Trove 自身状态（会话、任务、用户事实、记忆情景/偏好、认证、设置、作业、血缘、检索日志、LangGraph 检查点）跑在统一 **StorageBackend** 抽象上（`trove/storage/backends/`）：
+
+- **生产 = PostgreSQL**：设置 `TROVE_STORAGE_URL=postgresql://…`（或直接用 compose 的 Postgres 栈）。所有内部 store + LangGraph checkpointer（`AsyncPostgresSaver`）落在同一 PG 实例。
+- **测试 / 本地 = 内存 SQLite 兜底**：未设 `TROVE_STORAGE_URL` 时，同一份 store 代码跑在内存 `SqliteBackend` 上——零网络、零 key，保持测试自包含。
+- 后端自动翻译 SQLite 方言（`?`→`%s`、`lastrowid`→`RETURNING id`、`AUTOINCREMENT`→`IDENTITY`），store 只需一套可移植代码。
+- **不在该抽象上**：KB 镜像（`kb.sqlite`、FTS5）留在 SQLite 兜底（PG 生产走 `pg_hybrid` 检索后端），业务数据源适配器仍是用户自己的数据库。
+
+真实 Postgres 覆盖为 env-gated 集成测试（`-m integration`、`PG_TEST_URL`）——见 `tests/storage/test_pg_storage.py` 与 `.github/workflows/backend.yml`。
+
 ## 配置
 
 配置优先级（模型选择）：CLI `--model` > `conf/agent.yml` / `~/.trove/conf/agent.yml`。

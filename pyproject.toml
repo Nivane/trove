@@ -43,7 +43,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.2.0"]
+postgres = [
+    "langgraph-checkpoint-postgres>=2.0.0",
+    "psycopg[binary]>=3.2.0",
+]
 duckdb = ["duckdb>=1.0.0"]
 mysql = [
     "aiomysql>=0.3.2",

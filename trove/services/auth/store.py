@@ -99,22 +99,30 @@ async def _fetch_all(cursor) -> list[tuple]:
 
 
 class AppDbStore:
-    """Raw SQL access to the central ``app.db``."""
+    """Raw SQL access to the central ``app.db`` (StorageBackend-backed)."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
+        from trove.storage.backends import resolve_backend
 
-    async def _conn(self) -> aiosqlite.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self.db_path))
-        await conn.execute(USERS_TABLE_SQL)
-        await conn.execute(TOKENS_TABLE_SQL)
-        await conn.execute(USER_DATASOURCES_TABLE_SQL)
-        await conn.execute(AUDIT_LOG_TABLE_SQL)
-        for stmt in INDEX_SQL:
-            await conn.execute(stmt)
-        await conn.commit()
-        return conn
+        self._backend = resolve_backend(str(db_path))
+        self._schema_ready = False
+
+    async def _conn(self):
+        await self._ensure_schema()
+        return self._backend
+
+    async def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        from trove.storage.backends.base import script_statements
+
+        script = script_statements(
+            [USERS_TABLE_SQL, TOKENS_TABLE_SQL, USER_DATASOURCES_TABLE_SQL,
+             AUDIT_LOG_TABLE_SQL, *INDEX_SQL]
+        )
+        await self._backend.executescript(script)
+        self._schema_ready = True
 
     @staticmethod
     def _user_row(row: tuple) -> dict[str, Any]:
@@ -147,6 +155,7 @@ class AppDbStore:
                 "INSERT INTO users (username, password_hash, role, display_name, "
                 "disabled, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
                 (username, password_hash, role, display_name, ts, ts),
+                need_lastrowid=True,
             )
             await conn.commit()
             return self._user_row((
@@ -259,6 +268,7 @@ class AppDbStore:
                 "INSERT INTO tokens (token_hash, user_id, label, expires_at, "
                 "revoked, created_at) VALUES (?, ?, ?, ?, 0, ?)",
                 (token_hash, user_id, label, expires_at, ts),
+                need_lastrowid=True,
             )
             await conn.commit()
             return self._token_row((

@@ -151,16 +151,10 @@ class MaintenanceService:
             candidates: list[dict] = []
             skipped = 0
             for s in over:
-                db_path = (
-                    Path(self._store.home_dir)
-                    / "sessions"
-                    / s["project_name"]
-                    / f"{s['session_id']}.db"
-                )
-                file_mtime = db_path.stat().st_mtime if db_path.exists() else 0.0
+                # 单库多表模型:活跃判定只用会话 updated_at(无独立文件 mtime)
                 if _is_active(
                     s["updated_at"],
-                    file_mtime,
+                    0.0,
                     self._retention.active_grace_min,
                     now,
                 ):
@@ -187,22 +181,22 @@ class MaintenanceService:
         }
 
     async def _delete_session(self, s: dict, stats: SweepStats) -> None:
-        """Delete one session: checkpoint chain first, then the db file."""
+        """Delete one session: checkpoint chain first, then the session row."""
         try:
             await self._ckpt.adelete_thread(s["session_id"])
             stats.removed_checkpoints += 1
         except Exception as e:
             logger.warning("checkpoint delete failed for %s: %s", s["session_id"], e)
             stats.errors += 1
-            return  # 文件保留,避免"无 checkpoint 有文件"的半删状态
+            return  # 会话保留,避免"无 checkpoint 有会话"的半删状态
         try:
-            db_path = Path(self._store.home_dir) / "sessions" / s["project_name"] / f"{s['session_id']}.db"
-            if db_path.exists():
-                stats.freed_bytes += db_path.stat().st_size
-                db_path.unlink()
-            stats.removed_sessions += 1
+            deleted = await self._store.delete_session(
+                s["session_id"], s["project_name"],
+            )
+            if deleted:
+                stats.removed_sessions += 1
         except Exception as e:
-            logger.warning("session file delete failed for %s: %s", s["session_id"], e)
+            logger.warning("session delete failed for %s: %s", s["session_id"], e)
             stats.errors += 1
 
     async def purge_orphan_checkpoints(self) -> int:

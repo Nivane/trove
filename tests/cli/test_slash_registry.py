@@ -122,7 +122,9 @@ class TestCommandHandlersWithContext:
 
         store = SessionStore(home_dir=str(tmp_home))
         session = await store.create_session(project_cwd="/tmp/p")
-        task_store = TaskStore(store.session_db_path(session.project_name, session.session_id))
+        task_store = TaskStore(
+            store.backend(), session.project_name, session.session_id,
+        )
         from trove.core.types import Task
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)

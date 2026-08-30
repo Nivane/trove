@@ -89,11 +89,23 @@ Wiring: `main.py` builds `MemoryService` (kb/user_facts/llm/connectors/catalog);
 
 - `adapters/base.py` defines the `DatabaseAdapter` abstract base (connect/disconnect/execute/get_schema/get_capabilities/dialect); new datasources register in `registry.py`'s `_ADAPTER_REGISTRY`. Drivers are lazily imported on demand. `catalog.py` provides table/column/statistics info (profiling Top-K values, join-hint sample-value verification).
 
+### Unified storage `trove/storage/backends/`
+
+Trove's **internal state** (sessions, tasks, user facts, memory episodes/preferences, auth, settings, jobs, lineage, query log, LangGraph checkpoints) lives on one `StorageBackend` abstraction instead of per-store SQLite files:
+
+- `base.py` — `StorageBackend` protocol + `StorageCursor` (fetchone/fetchall/`__aiter__`/`async with`, `lastrowid`, `rowcount`) + `script_statements` (semicolon-separated DDL for executescript).
+- `postgres.py` — `PostgresBackend` (production): translates SQLite idioms — `?`→`%s`, `INTEGER PRIMARY KEY AUTOINCREMENT`→`IDENTITY`, `INSERT OR REPLACE`→`INSERT ... ON CONFLICT`, `lastrowid` via explicit `need_lastrowid=True` → `INSERT ... RETURNING id`. Rows support both name and position access.
+- `sqlite.py` — `SqliteBackend` (test/local fallback): keeps the repo's zero-network test constraint (in-memory). `build_backend` picks by URL; `resolve_backend` honors the `TROVE_STORAGE_URL` env var (set → Postgres, unset → SQLite fallback).
+- Every internal store calls `resolve_backend(db_path)` in its constructor; stores keep their `db_path` constructor param so tests pass a tmp path unchanged.
+- `trove/storage/checkpoint_store.py` — `build_checkpointer` selects `AsyncPostgresSaver` when `TROVE_STORAGE_URL` is Postgres, else `AsyncSqliteSaver` on `{home}/checkpoints.db`.
+- `SessionStore`/`TaskStore` are single-backend multi-table (rows keyed by `(project_name, session_id)`), replacing the old per-session-file layout.
+- The **KB mirror** (`kb.sqlite`, FTS5 virtual table) and business datasource adapters (SQLite/MySQL/ClickHouse/DuckDB) are intentionally NOT on this abstraction: KB FTS5 stays on the SQLite fallback, PG production uses the `pg_hybrid` retrieval backend for KB. Business adapters remain the user's data sources.
+
 ### LLM and tests
 
 - `trove/llm/agent_loop.py` — shared agent-loop harness (`run_agent_loop`): parallel tool dispatch, per-tool timeout/retry, round/time/token budgets, loop-steering feedback, and a `ToolRegistry` (defs + handlers + observer middleware hooks: tracing happens here). The `finish(answer)` protocol lets the model deliver a validated final payload instead of relying on "no tool calls = done"; guard/empty results call back into the caller's degradation chain (gen_sql → classic subgraph, planner → direct generation). `chat_full` returns best-effort `usage` for token budgets.
 - `trove/llm/gateway.py` — litellm gateway with `LLMGateway(mock_response=...)` mode for tests; `chat`/`chat_full` (tool calling)/`chat_stream`; model selection CLI `--model` > `conf/agent.yml` > `~/.trove/conf/agent.yml`; `providers[]` supports custom api_base with `${ENV_VAR}` substitution.
-- Test constraints (`tests/conftest.py`): zero API keys, zero network, all LLM mocked, all databases in-memory SQLite. Common fixtures: `mock_llm`, `sql_llm`, `sqlite_registry`, `demo_registry`, `tmp_home`; workflow tests use the `ScriptedLLM` (scripted responses + recorded prompts) pattern. `tracing.local` is a process-level global; conftest's autouse fixture ensures every test starts from an unconfigured state.
+- Test constraints (`tests/conftest.py`): zero API keys, zero network, all LLM mocked. **Internal state stores run on the in-memory SQLite backend** (via `resolve_backend`, `TROVE_STORAGE_URL` unset); business datasource adapters also use in-memory SQLite. Real-Postgres coverage is env-gated with `-m integration` (`PG_TEST_URL`; see `tests/storage/test_pg_storage.py` + `.github/workflows/backend.yml`). Common fixtures: `mock_llm`, `sql_llm`, `sqlite_registry`, `demo_registry`, `tmp_home`; workflow tests use the `ScriptedLLM` (scripted responses + recorded prompts) pattern. `tracing.local` is a process-level global; conftest's autouse fixture ensures every test starts from an unconfigured state.
 
 ## Hard project constraints (must respect)
 

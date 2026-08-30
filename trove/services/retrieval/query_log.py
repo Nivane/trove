@@ -37,11 +37,13 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_log_ds ON retrieval_log(datasource);
 
 
 class QueryLogRecorder:
-    """Append-only hit logger backed by a local SQLite file (aiosqlite)."""
+    """Append-only hit logger backed by a StorageBackend (SQLite local / PG)."""
 
     def __init__(self, path: str | Path) -> None:
         self._path = str(path)
-        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        from trove.storage.backends import resolve_backend
+
+        self._backend = resolve_backend(str(path))
         self._ready = False
 
     @classmethod
@@ -51,9 +53,7 @@ class QueryLogRecorder:
     async def _ensure(self) -> None:
         if self._ready:
             return
-        async with aiosqlite.connect(self._path) as db:
-            await db.executescript(_CREATE)
-            await db.commit()
+        await self._backend.executescript(_CREATE)
         self._ready = True
 
     async def record(
@@ -62,23 +62,22 @@ class QueryLogRecorder:
         """Append one retrieval hit row. meta = recall() 的 meta dict。"""
         try:
             await self._ensure()
-            async with aiosqlite.connect(self._path) as db:
-                await db.execute(
-                    "INSERT INTO retrieval_log "
-                    "(ts, datasource, query, branch_sizes, rrf_top, rerank_top, "
-                    " rerank_used, latency_ms) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        str(datasource or ""),
-                        str(query or "")[:1000],
-                        json.dumps(meta.get("branch_sizes", [])),
-                        json.dumps(meta.get("rrf_ids", [])),
-                        json.dumps(meta.get("rerank_ids", [])),
-                        1 if meta.get("rerank_used") else 0,
-                        int(meta.get("latency_ms", 0)),
-                    ),
-                )
-                await db.commit()
+            await self._backend.execute(
+                "INSERT INTO retrieval_log "
+                "(ts, datasource, query, branch_sizes, rrf_top, rerank_top, "
+                " rerank_used, latency_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    str(datasource or ""),
+                    str(query or "")[:1000],
+                    json.dumps(meta.get("branch_sizes", [])),
+                    json.dumps(meta.get("rrf_ids", [])),
+                    json.dumps(meta.get("rerank_ids", [])),
+                    1 if meta.get("rerank_used") else 0,
+                    int(meta.get("latency_ms", 0)),
+                ),
+            )
+            await self._backend.commit()
         except Exception as e:  # 检索日志失败绝不影响检索本身
             logger.warning("query log write failed: %s", e)

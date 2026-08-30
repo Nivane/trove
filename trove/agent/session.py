@@ -1255,11 +1255,14 @@ class SessionManager:
     # ── Task coordination ────────────────────────────────
 
     def _task_store(self, session: Session) -> TaskStore:
-        """Per-session TaskStore over the session's SQLite file (lazy)."""
+        """Per-session TaskStore over the shared SessionStore backend (lazy)."""
         store = self._task_stores.get(session.session_id)
         if store is None:
-            db_path = self._store.session_db_path(session.project_name, session.session_id)
-            store = TaskStore(db_path)
+            # 与 SessionStore 共享同一 StorageBackend(messages/meta/tasks 同库)
+            store = TaskStore(
+                self._store.backend(),
+                session.project_name, session.session_id,
+            )
             self._task_stores[session.session_id] = store
         return store
 

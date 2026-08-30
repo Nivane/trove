@@ -52,17 +52,27 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 class UserFactsStore:
-    """Raw CRUD over ``{home}/user_facts.db``."""
+    """Raw CRUD over ``{home}/user_facts.db`` (StorageBackend-backed)."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
+        from trove.storage.backends import resolve_backend
 
-    async def _conn(self) -> aiosqlite.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self.db_path))
-        await conn.execute(FACTS_TABLE_SQL)
-        await conn.commit()
-        return conn
+        self._backend = resolve_backend(str(db_path))
+        self._schema_ready = False
+
+    async def _conn(self):
+        # 统一后端:生产 PG(TROVE_STORAGE_URL)/ 测试与本地 SQLite 内存库。
+        # 连接由后端缓存管理(单连接复用),close() 为无操作避免每操作断连。
+        await self._ensure_schema()
+        return self._backend
+
+    async def _ensure_schema(self) -> None:
+        """幂等建表(首次连接时执行一次)。"""
+        if self._schema_ready:
+            return
+        await self._backend.executescript(FACTS_TABLE_SQL)
+        self._schema_ready = True
 
     async def add(self, user_id: str, datasource: str, fact: str) -> dict[str, Any]:
         """Insert a fact and return the stored row."""
@@ -73,6 +83,7 @@ class UserFactsStore:
                 "INSERT INTO user_facts (user_id, datasource, fact, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (user_id, datasource, fact, ts, ts),
+                need_lastrowid=True,
             )
             await conn.commit()
             fact_id = cursor.lastrowid

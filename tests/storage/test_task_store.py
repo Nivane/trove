@@ -1,7 +1,9 @@
-"""TaskStore tests — cross-turn task persistence in the per-session SQLite file.
+"""TaskStore tests — cross-turn task persistence in the shared SessionStore backend.
 
-Tasks share the session .db with SessionStore; compaction must never
-unlink the file (tasks survive; messages are rewritten in place).
+Tasks share the SessionStore backend (single StorageBackend, rows keyed by
+(project, session_id)); compaction must never delete the session row (tasks
+survive; messages are rewritten in place). Deleting a session cascades to its
+tasks (same backend).
 """
 
 from __future__ import annotations
@@ -28,8 +30,11 @@ def _task(title: str, position: int, status: str = "pending") -> Task:
 class TestTaskStoreCRUD:
     @pytest.fixture
     def store(self, tmp_path):
+        from trove.storage.backends import resolve_backend
         from trove.storage.task_store import TaskStore
-        return TaskStore(tmp_path / "sessions" / "p" / "s1.db")
+
+        backend = resolve_backend(str(tmp_path / "sessions" / "p" / "s1.sqlite"))
+        return TaskStore(backend, "proj", "s1")
 
     async def test_save_and_load_ordered_by_position(self, store):
         await store.save_task(_task("任务一", 1))
@@ -83,8 +88,8 @@ class TestTaskStoreCRUD:
         assert await store.load_tasks() == []
 
 
-class TestTaskStoreSharesSessionFile:
-    """Tasks live in the same .db as messages — compaction/deletion coherence."""
+class TestTaskStoreSharesSessionBackend:
+    """Tasks live on the same backend as messages — compaction/deletion coherence."""
 
     @pytest.fixture
     async def session_and_store(self, tmp_home):
@@ -94,9 +99,12 @@ class TestTaskStoreSharesSessionFile:
         session = await store.create_session(project_cwd="/tmp/p")
         return session, store
 
+    def _task_store(self, store, session):
+        return TaskStore(store.backend(), session.project_name, session.session_id)
+
     async def test_task_survives_compact(self, tmp_home, session_and_store):
         session, store = session_and_store
-        task_store = TaskStore(store.session_db_path("proj", session.session_id))
+        task_store = self._task_store(store, session)
         await task_store.save_task(_task("任务一", 0))
         await task_store.save_task(_task("任务二", 1))
 
@@ -111,7 +119,7 @@ class TestTaskStoreSharesSessionFile:
         compacted = await store.compact_session(session, "summary text", keep_recent=2)
         assert len(compacted.messages) == 5  # summary + 最近 2 轮(user+assistant)
 
-        # 同一 .db 文件 —— 原文件未被 unlink,任务表保留
+        # 同一 backend —— 会话行未删除,任务表保留
         tasks = await task_store.load_tasks()
         assert [t.title for t in tasks] == ["任务一", "任务二"]
         assert tasks[0].status == "pending"
@@ -131,16 +139,12 @@ class TestTaskStoreSharesSessionFile:
 
     async def test_delete_session_removes_tasks(self, tmp_home, session_and_store):
         session, store = session_and_store
-        task_store = TaskStore(
-            store.session_db_path(session.project_name, session.session_id)
-        )
+        task_store = self._task_store(store, session)
         await task_store.save_task(_task("任务一", 0))
 
         await store.delete_session(session.session_id, project_cwd="/tmp/p")
         await store.delete_session(session.session_id, project_cwd="/tmp/p")  # 幂等
 
-        # 会话文件已删除 → 新 TaskStore 打开即重建空表(删除语义由 session 层负责)
-        fresh = TaskStore(
-            store.session_db_path(session.project_name, session.session_id)
-        )
+        # 会话删除级联删任务(同 backend);新 TaskStore 读同库 → 空
+        fresh = TaskStore(store.backend(), session.project_name, session.session_id)
         assert await fresh.load_tasks() == []
