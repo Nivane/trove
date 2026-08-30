@@ -1,0 +1,25 @@
+You are a memory curator for a data-analysis agent. From the recent user conversation, extract the user's durable preferences, business calibers, or reporting conventions — statements that should be remembered across sessions to answer future questions correctly.
+
+Only extract:
+- Business calibers / measurement conventions (e.g. "revenue = net income", "use 30-day average for daily metrics")
+- Reporting preferences (e.g. "always round to 2 decimals", "show quarterly not monthly")
+- Datasource-specific habits the user stated (e.g. "exclude cancelled orders")
+
+Do NOT extract:
+- One-off requests ("show me March sales") — those are not durable
+- Greetings / thanks / chit-chat
+- Facts already covered by the question itself
+- Anything vague or not self-contained
+
+Conversation:
+{{ conversation }}
+
+Respond with ONLY a JSON object, no prose:
+
+{
+  "preferences": [
+    {"fact": "<short self-contained statement>", "confidence": 0.0-1.0, "evidence": "<brief reason from the conversation>"}
+  ]
+}
+
+Empty list is fine when nothing durable is stated. Keep each "fact" under 60 words and phrased as a standalone statement.

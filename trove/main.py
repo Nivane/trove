@@ -206,6 +206,23 @@ async def create_app_components(
         Path(config.home).expanduser() / "user_facts.db"
     )
 
+    # ── Unified memory facade (episodes / observations / preferences /
+    #    promotion / profile) — ~/.trove/memory/ ──
+    # 统一记忆服务:情景记忆(跨会话过去查询)、成功→示例草稿、修正/失败→
+    # pending 教训、偏好自动提取、生命周期清理。全部渐进开关(agent.yml
+    # 的 agent.memory 段),任何失败静默降级,不阻断查询。
+    from trove.services.memory.service import MemoryService
+    memory = MemoryService(
+        config.home,
+        config.memory,
+        kb=kb,
+        user_facts=user_facts,
+        llm=llm_gateway,
+        connectors=connector_registry,
+        catalog=catalog_service,
+        config_resolver=config_store,
+    )
+
     # ── Data lineage (optional: .trove/lineage/) — definitions.yml lazy
     # sync + executed-query capture; never blocks agent startup.
     from trove.services.lineage.service import LineageService
@@ -276,6 +293,7 @@ async def create_app_components(
         user_facts=user_facts,
         semantic_layer=semantic_layer,
         lineage=lineage,
+        memory=memory,
     )
     graphs = build_graphs(services, checkpointer=checkpointer)
 
@@ -289,6 +307,7 @@ async def create_app_components(
         llm_gateway=llm_gateway,
         kb=kb,
         connectors=connector_registry,
+        memory=memory,
     )
 
     # ── Maintenance (retention sweeps: daemon tick + serve lifespan) ──
@@ -306,6 +325,7 @@ async def create_app_components(
         "catalog_service": catalog_service,
         "kb": kb,
         "user_facts": user_facts,
+        "memory": memory,
         "indexer": indexer,
         "hybrid_store": hybrid_store,
         "lineage": lineage,

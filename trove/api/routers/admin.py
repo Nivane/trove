@@ -976,3 +976,92 @@ async def delete_any_fact(
     if not await _user_facts(request).delete_any(fact_id):
         raise HTTPException(status_code=404, detail=f"fact not found: {fact_id}")
     await _audit(request, "admin.facts.delete", admin, 204, {"fact_id": fact_id})
+
+
+# ── Unified memory (P2-P4) — profile + preference drafts ──
+
+
+def _memory(request: Request):
+    return getattr(request.app.state, "memory", None)
+
+
+@router.get("/admin/memory/profile")
+async def memory_profile(
+    request: Request,
+    user_id: str = "local",
+    datasource: str | None = None,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """用户×数据源画像(正确率/失败模式/偏好事实)。"""
+    memory = _memory(request)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not enabled")
+    ds = datasource or ""
+    if not ds:
+        try:
+            ds = _kb_datasource(request, None)
+        except HTTPException:
+            ds = ""
+    profile = await memory.profile(user_id, ds)
+    await _audit(request, "admin.memory.profile", admin, 200,
+                 {"user_id": user_id, "datasource": ds})
+    return {"profile": profile}
+
+
+@router.get("/admin/memory/preferences")
+async def list_preference_drafts(
+    request: Request,
+    user_id: str | None = None,
+    datasource: str | None = None,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """待确认的自动偏好草稿(auto-extraction 低置信候选)。"""
+    memory = _memory(request)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not enabled")
+    drafts = await memory.preferences.list_pending()
+    if user_id is not None:
+        drafts = [d for d in drafts if d.get("user_id") == user_id]
+    if datasource is not None:
+        drafts = [d for d in drafts if d.get("datasource") == datasource]
+    return {"drafts": drafts}
+
+
+@router.post("/admin/memory/preferences/{draft_id}/confirm")
+async def confirm_preference_draft(
+    draft_id: int, request: Request, admin: dict = Depends(require_admin),
+) -> dict:
+    """确认偏好草稿 → 写入该用户的 user_facts(幂等)。"""
+    memory = _memory(request)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not enabled")
+    draft = await memory.preferences.get(draft_id)
+    if draft is None or draft.get("status") != "pending":
+        raise HTTPException(status_code=404, detail=f"draft not found: {draft_id}")
+    user_facts = _user_facts(request)
+    try:
+        await user_facts.add(
+            str(draft["user_id"]), str(draft["datasource"]), str(draft["fact"]),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid fact: {e}")
+    await memory.preferences.set_status(draft_id, "confirmed")
+    await _audit(request, "admin.memory.preference.confirm", admin, 200,
+                 {"draft_id": draft_id})
+    return {"status": "confirmed", "draft_id": draft_id}
+
+
+@router.post("/admin/memory/preferences/{draft_id}/reject")
+async def reject_preference_draft(
+    draft_id: int, request: Request, admin: dict = Depends(require_admin),
+) -> dict:
+    """拒绝偏好草稿(物理丢弃该候选)。"""
+    memory = _memory(request)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="memory not enabled")
+    if await memory.preferences.get(draft_id) is None:
+        raise HTTPException(status_code=404, detail=f"draft not found: {draft_id}")
+    await memory.preferences.set_status(draft_id, "rejected")
+    await _audit(request, "admin.memory.preference.reject", admin, 200,
+                 {"draft_id": draft_id})
+    return {"status": "rejected", "draft_id": draft_id}

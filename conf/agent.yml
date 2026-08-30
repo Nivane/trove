@@ -75,3 +75,28 @@ agent:
     active_grace_min: 10
     max_checkpoints_per_thread: 50
     sweep_interval_hours: 24
+  # ── 统一记忆子系统(记忆深度版)──
+  # 情景记忆(episodic):跨会话过去查询(question→SQL→verdict→修正要点)自动
+  # 入库,gen_sql 检索并注入(成功 SQL 是最强 few-shot 锚,失败+修正防重犯)。
+  # 观测回流:成功查询自动草拟 pending 参考示例;修正/失败沉淀 pending 教训
+  # (都需 admin 确认才进检索——自动内容永不污染人工 KB)。
+  # 偏好自动提取:会话压缩时 LLM 抽取用户口径/偏好,高置信直入 user_facts,
+  # 低置信落 pending 草稿(管理端确认)。
+  # 自动晋升(promotion: false 默认关):教训置信度过阈值(多轮复用/好评)自动确认。
+  # 画像(profile_boost: false 默认关):每用户每源正确率/失败模式,可选注入。
+  # 生命周期:agent.yml 的 memory.retention_days 控制各层过期清理(serve 周期
+  # sweep 自动跑);schema_drift_check 对比 live schema 与 KB schema_notes。
+  memory:
+    enabled: true
+    episodes: true
+    auto_examples: true
+    auto_preferences: true
+    promotion: false
+    promotion_threshold: 0.8
+    profile_boost: false
+    schema_drift_check: true
+    # retention_days: 各层过期天数(None/缺省 = 不清理)
+    #   episodes: 180
+    #   preferences: 90
+    #   facts: 180
+    #   retrieval_log: 90

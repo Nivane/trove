@@ -162,6 +162,7 @@ class GraphServices:
     user_facts: Any | None = None  # optional user-level memory (per-user facts)
     semantic_layer: Any | None = None  # optional live semantic provider (OSSIE)
     lineage: Any | None = None  # optional data lineage service (metadata + execute recording)
+    memory: Any | None = None  # optional unified memory facade (episodes/prefs/profile)
 
 
 def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
@@ -487,6 +488,35 @@ def _make_gen_sql_node(
                 logger.warning(
                     "User facts retrieval failed (%s): %s", datasource, e)
 
+        # 情景记忆(episodic):该用户在当前数据源下过去对类似问题的
+        # 查询结果(成功 SQL 是最强 few-shot 锚,失败 + 修正要点防重犯)。
+        # 统一走 memory facade;未启用/无用户时为空,静默降级。
+        episode_items: list[dict[str, Any]] = []
+        if (
+            services.memory is not None and datasource and state.user_id
+            and services.memory.enabled
+        ):
+            try:
+                from trove.services.memory.models import MemoryScope
+
+                _eps = await services.memory.retrieve(
+                    MemoryScope(datasource=datasource, user_id=state.user_id),
+                    state.question,
+                    kinds=["episode"],
+                    limit=2,
+                )
+                episode_items = [
+                    {"question": e.content.get("question", ""),
+                     "sql": e.content.get("sql", ""),
+                     "verdict": e.content.get("verdict", ""),
+                     "correction_history": e.content.get("correction_history", []),
+                     "score": e.score}
+                    for e in _eps
+                ]
+            except Exception as e:
+                logger.warning(
+                    "Episode memory retrieval failed (%s): %s", datasource, e)
+
         # KB 精确命中:示例问题与当前问题几乎逐词一致 → 直接采用示例 SQL。
         # KB 保存的是该数据源的标准写法;对已收录的问题让模型"再解释一遍"
         # 只会产出歧义变体(实测:disp vs client 口径摇摆 5 轮)。SQL 仍会
@@ -601,6 +631,17 @@ def _make_gen_sql_node(
                 )
                 for i, f in enumerate(user_fact_items)
             ]
+        if episode_items:
+            # 情景记忆:跨会话过去查询(成功=few-shot 锚,失败+修正=反例)。
+            # 优先级介于 lessons 与 plan 之间——作为经验信号而非硬约束。
+            optional_blocks["episodes"] = [
+                ContextItem(
+                    key=f"ep{i}",
+                    text=render_episodes([e]),
+                    score=float(e.get("score") or 0),
+                )
+                for i, e in enumerate(episode_items)
+            ]
         if state.plan:
             optional_blocks["plan"] = [
                 ContextItem(key="plan", text=state.plan, score=0.0),
@@ -623,7 +664,8 @@ def _make_gen_sql_node(
         included, context_usage = assemble_context(
             optional_blocks,
             {"few_shots": 1, "user_facts": 2, "rules": 3, "term_notes": 4,
-             "metrics": 5, "entities": 6, "lessons": 7, "plan": 8, "history": 9},
+             "metrics": 5, "entities": 6, "lessons": 7, "episodes": 8,
+             "plan": 8, "history": 9},
             budget,
             count=_count,
         )
@@ -637,6 +679,7 @@ def _make_gen_sql_node(
         lessons = _trim("lessons", "lesson", lessons)
         rules = _trim("rules", "rule", rules)
         user_facts = _trim("user_facts", "ufact", user_fact_items)
+        episodes = _trim("episodes", "ep", episode_items)
         metrics = _trim("metrics", "metric", metric_items) if metric_hits else None
         entities = _trim("entities", "entity", entity_items) if entity_hits else None
         # history 是逐轮条目:按预算保留的轮次重拼回字符串注入
@@ -673,6 +716,7 @@ def _make_gen_sql_node(
             lessons=lessons,
             rules=rules,
             user_facts=user_facts,
+            episodes=episodes,
             metrics=metrics,
             entities=entities,
             history=history_trimmed,

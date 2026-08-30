@@ -51,6 +51,7 @@ def build_sql_prompt(
     few_shots: list[dict[str, Any]] | None = None,
     term_notes: list[dict[str, Any]] | None = None,
     user_facts: list[dict[str, Any]] | None = None,
+    episodes: list[dict[str, Any]] | None = None,
     metrics: list[dict[str, Any]] | None = None,
     entities: list[dict[str, Any]] | None = None,
     lang: str = "en",
@@ -62,6 +63,9 @@ def build_sql_prompt(
       - Reference examples: top-K similar questions with their SQL
       - User facts: the asking user's preferences/calibers for this
         datasource (personalization memory)
+      - Episodes: the user's past similar queries on this datasource
+        (episodic memory — success anchors, failure+correction as counter
+        examples)
       - Metrics: relevance-selected semantic metrics (expression + 口径)
       - Entities: matched dimension/enum fields (value-confirmation hints)
 
@@ -90,6 +94,7 @@ def build_sql_prompt(
         few_shots=few_shots or [],
         term_notes=term_notes or [],
         user_facts=user_facts or [],
+        episodes=render_episodes(episodes or []),
         metrics=render_metrics(metrics or []),
         entities=render_entities(entities or []),
     )
@@ -122,6 +127,7 @@ def build_sql_prompt_from_state(state: GenSQLState) -> str:
         few_shots=state.few_shots or None,
         term_notes=state.term_notes or None,
         user_facts=state.user_facts or None,
+        episodes=state.episodes or None,
         metrics=state.metrics or None,
         entities=state.entities or None,
         lang=state.lang,
@@ -216,6 +222,26 @@ def render_rules(rules: list[str]) -> str:
 def render_user_facts(facts: list[dict[str, Any]]) -> str:
     """用户记忆段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
     return "".join(f"- {f.get('fact', '')}\n" for f in facts)
+
+
+def render_episodes(episodes: list[dict[str, Any]]) -> str:
+    """情景记忆段文本(用户过去对该数据源的类似查询)。
+
+    跨会话"我上次怎么问/怎么算"的提示:过去成功查询的标准做法是最强
+    的 few-shot 锚;过去失败查询 + 修正要点则防止重犯。verdict 标注 OK/
+    EMPTY/失败,让模型知道该历史是正例还是反例。
+    """
+    parts: list[str] = []
+    for e in episodes:
+        status = str(e.get("verdict", "") or "").upper()
+        head = f"[past {status}] Q: {e.get('question', '')}"
+        if e.get("sql"):
+            head += f"\nSQL: {e.get('sql', '')}"
+        corrections = e.get("correction_history") or []
+        if corrections:
+            head += "\ncorrection: " + "; ".join(str(c) for c in corrections[:2])
+        parts.append(head)
+    return "\n\n".join(parts) + "\n"
 
 
 def render_metrics(metrics: list[dict[str, Any]]) -> str:

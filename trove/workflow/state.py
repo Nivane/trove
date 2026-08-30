@@ -370,6 +370,7 @@ class GenSQLState(BaseModel):
     lessons: list[dict[str, Any]] | None = None     # known pitfalls (Hint Bank)
     rules: list[str] | None = None                  # data source business rules
     user_facts: list[dict[str, Any]] | None = None  # 用户级记忆(偏好/口径,user+datasource)
+    episodes: list[dict[str, Any]] | None = None    # 情景记忆(过去类似查询,episodic)
     metrics: list[dict[str, Any]] | None = None     # 相关性选择的指标(表达式+口径)
     entities: list[dict[str, Any]] | None = None    # 匹配的维度/枚举字段(值确认提示)
     llm: dict[str, Any] | None = None                    # last generate call detail
@@ -387,6 +388,7 @@ class GenSQLState(BaseModel):
         lessons: list[dict[str, Any]] | None = None,
         rules: list[str] | None = None,
         user_facts: list[dict[str, Any]] | None = None,
+        episodes: list[dict[str, Any]] | None = None,
         metrics: list[dict[str, Any]] | None = None,
         entities: list[dict[str, Any]] | None = None,
         history: str | None = None,
@@ -439,6 +441,7 @@ class GenSQLState(BaseModel):
             lessons=lessons if _include("lessons") else None,
             rules=rules if _include("rules") else None,
             user_facts=user_facts if _include("user_facts") else None,
+            episodes=episodes if _include("episodes") else None,
             metrics=metrics if _include("metrics") else None,
             entities=entities if _include("entities") else None,
         )

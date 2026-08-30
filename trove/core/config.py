@@ -17,6 +17,7 @@ import yaml
 
 from trove.core.errors import ConfigError
 from trove.core.logging import get_logger
+from trove.services.memory.models import MemoryConfig
 
 logger = get_logger(__name__)
 
@@ -118,6 +119,9 @@ class AgentConfig:
     # 200k/1m 窗口下可按模型窗口比例放大,而不是写死固定档位。
     context_budget_tokens: dict[str, int] = field(default_factory=dict)
     schema_budget_tokens: dict[str, int] = field(default_factory=dict)
+    # 记忆子系统配置(统一 memory facade):情景记忆/自动示例/偏好提取/
+    # 自动晋升/画像注入等渐进开关。见 trove.services.memory.models.MemoryConfig。
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -292,6 +296,28 @@ class ConfigLoader:
             sweep_interval_hours=int(retention_raw.get("sweep_interval_hours", 24)),
         )
 
+        # Parse memory subsystem
+        mem_raw = agent_section.get("memory", {}) or {}
+        mem_retention_raw = mem_raw.get("retention_days", {}) or {}
+        retention_days: dict[str, int | None] = {}
+        for k in ("episodes", "preferences", "facts", "retrieval_log", "lessons"):
+            if k in mem_retention_raw and mem_retention_raw[k] is not None:
+                try:
+                    retention_days[k] = int(mem_retention_raw[k])
+                except (TypeError, ValueError):
+                    retention_days[k] = None
+        memory = MemoryConfig(
+            enabled=mem_raw.get("enabled", True),
+            episodes=mem_raw.get("episodes", True),
+            auto_examples=mem_raw.get("auto_examples", True),
+            auto_preferences=mem_raw.get("auto_preferences", True),
+            promotion=mem_raw.get("promotion", False),
+            promotion_threshold=float(mem_raw.get("promotion_threshold", 0.8)),
+            profile_boost=mem_raw.get("profile_boost", False),
+            schema_drift_check=mem_raw.get("schema_drift_check", True),
+            retention_days=retention_days,
+        )
+
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
@@ -325,6 +351,7 @@ class ConfigLoader:
                 str(k): max(0, int(v))
                 for k, v in (agent_section.get("schema_budget_tokens", {}) or {}).items()
             },
+            memory=memory,
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,
