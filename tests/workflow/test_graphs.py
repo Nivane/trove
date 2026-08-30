@@ -2369,3 +2369,60 @@ class TestReflectSkipGraph:
         ))
         assert final["verdict"] == "OK"
         assert len(llm.calls) == 4  # intent + planner + gen_sql + reflect
+
+
+class TestCalibrationBasis:
+    """② 校准口径:est 与 actual 同基准(完整首轮输入)。
+
+    actual(agent_loop first_input_tokens)是完整首轮输入(system + tools
+    JSON + user)。旧口径 est 只算可选块 → ratio=actual/est 系统性放大
+    → factor>1 反而过度裁剪可选块(低估被放大成伤害)。修复后 est 与
+    actual 同量级,factor 落在合理区间。
+    """
+
+    async def test_est_is_full_first_round_basis(self, sqlite_registry, catalog, monkeypatch):
+        """est 包含 system+tools+user,不再是可选块之和(旧口径的 ~15× 失真)。"""
+        from trove.workflow import graphs as graphs_mod
+
+        captured: dict = {}
+
+        def spy(model, dialect, estimated, actual):
+            captured.update(
+                model=model, dialect=dialect,
+                estimated=estimated, actual=actual,
+            )
+
+        monkeypatch.setattr(graphs_mod, "record_token_calibration", spy)
+
+        actual_input = 4567  # 脚本化首轮完整输入实测
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "probe_query",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ], "usage": {"prompt_tokens": actual_input, "total_tokens": actual_input + 100}},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+
+        assert captured["actual"] == actual_input  # usage 透传
+        est = captured["estimated"]
+        assert est > 0
+        # 全量基准:sanely close to actual(旧口径仅可选块之和,这里会 >10×)
+        ratio = actual_input / est
+        assert 0.5 <= ratio <= 3.0, f"est={est} actual={actual_input} ratio={ratio:.2f}"
+
+        # 判别器:est 必须显著大于可选块之和(旧口径 = 该值,必然失真)
+        old_est = sum(
+            u.get("tokens", 0) for u in (final.get("context_usage") or [])
+            if u.get("included")
+        )
+        assert est > old_est * 3, (
+            f"est 仍是可选块之和? est={est} old_est={old_est}"
+        )
+        # 完整输入里 system+tools 是固定大头——可选块之和只有它们的零头
+        assert old_est < est / 2

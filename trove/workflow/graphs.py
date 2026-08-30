@@ -16,6 +16,7 @@ which formats a readable error section.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -800,17 +801,18 @@ def _make_gen_sql_node(
                 if (services.config or AgentConfig()).prompt_caching
                 else None
             )
+            system_text = render(
+                "gen_sql/system",
+                lang=sub_state.lang,
+                has_probe=services.connectors is not None,
+                has_catalog=complexity == "complex",
+                full_rules=complexity != "simple",
+            )
             result = None
             try:
                 result = await run_agent_loop(
                 services.llm, model,
-                system=render(
-                    "gen_sql/system",
-                    lang=sub_state.lang,
-                    has_probe=services.connectors is not None,
-                    has_catalog=complexity == "complex",
-                    full_rules=complexity != "simple",
-                ),
+                system=system_text,
                 user=prompt,
                 cache_prefix=cache_prefix,
                 registry=registry,
@@ -836,9 +838,16 @@ def _make_gen_sql_node(
                     update["error"] = out["error"]
 
             if result is not None:
-                # 估算校准闭环:首轮实测输入 tokens vs 可选块估算——系统性
-                # 低估会经 token_calibration.factor 反馈进下一次装配��
-                est = sum(u.get("tokens", 0) for u in context_usage if u.get("included"))
+                # 估算校准闭环:est 与 actual 同基准——actual(agent_loop 首轮
+                # prompt_tokens)是完整首轮输入(system + tools JSON + user),
+                # est 也必须是完整首轮估算。旧口径只算可选块,系统性低估让
+                # factor>1 反而过度裁剪可选块(低估被放大成伤害);观测本身
+                # 不加校准因子——因子是装配时的预算修正,不是观测的输入。
+                est = (
+                    count_tokens(system_text)
+                    + count_tokens(json.dumps(registry.defs(), ensure_ascii=False))
+                    + count_tokens(prompt)
+                )
                 actual = result.get("first_input_tokens") or 0
                 if est and actual:
                     record_token_calibration(model, dialect, est, actual)
