@@ -5,7 +5,10 @@ errors), context gating, retryability decisions (is_transient), the
 [ERR:]-tagging contract, and lightweight tool-argument validation.
 """
 
-import pymysql
+try:
+    import pymysql
+except ImportError:  # mysql extra 未装(CI 默认只装 postgres)时跳过 MySQL 专有断言
+    pymysql = None
 
 import pytest
 
@@ -100,8 +103,9 @@ class TestClassifyLexicon:
 class TestRetryability:
     def test_is_transient_connection_recovery(self):
         # 与 execute_sql 旧 _is_transient 语义对等(类型 + 文本双信号)
-        assert is_transient(pymysql.err.OperationalError(1040, "Too many connections"))
-        assert is_transient(pymysql.err.InterfaceError(0, ""))
+        if pymysql is not None:  # mysql 驱动未装时跳过 MySQL 专有异常断言
+            assert is_transient(pymysql.err.OperationalError(1040, "Too many connections"))
+            assert is_transient(pymysql.err.InterfaceError(0, ""))
         assert is_transient(Exception("Lost connection to MySQL server"))
         # SQL 错误重跑必死 → 绝不当瞬态
         assert not is_transient(Exception("no such table: foo"))
