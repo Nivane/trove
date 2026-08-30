@@ -464,6 +464,9 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
                 "confirmed": bool(lesson.get("confirmed", False)),
                 "upvotes": int(lesson.get("upvotes") or 0),
                 "downvotes": int(lesson.get("downvotes") or 0),
+                "confidence": float(lesson.get("confidence") or 0.0),
+                "source": str(lesson.get("source") or "manual"),
+                "evidence": str(lesson.get("evidence") or ""),
             }))
 
     elif path.name == "examples.yml":
@@ -1434,7 +1437,9 @@ class KbService:
         sql = (sql or "").strip()
         if not question or not sql:
             return {"status": "invalid"}
-        path = self.kb_dir / datasource / "examples.yml"
+        ds_dir = self.kb_dir / datasource
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        path = ds_dir / "examples.yml"
         data = self._read_examples(path)
         examples = list(data.get("examples", []))
         for ex in examples:
@@ -1552,6 +1557,48 @@ class KbService:
         )
         await self.force_sync(datasource)
         return True
+
+    async def update_lesson_confidence(
+        self, datasource: str, pattern: str,
+        *, evidence_kind: str = "repeated_correction", count: int = 1,
+        threshold: float | None = None,
+    ) -> dict:
+        """Bump a pending lesson's confidence; auto-confirm past threshold.
+
+        自动晋升(promotion.py 的 evidence 增量)写入 lessons.yml:
+        累加 confidence,当净好评/置信度过阈值(threshold 传入)时置
+        confirmed=True。YAML 写路径与手动确认一致,审计可回退。
+        """
+        from trove.services.memory.promotion import apply_evidence, maybe_promote
+
+        path = self.kb_dir / datasource / "lessons.yml"
+        if not path.exists():
+            return {"updated": False, "pattern": pattern, "reason": "no file"}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        lessons = list(data.get("lessons", []))
+        for lesson in lessons:
+            if str(lesson.get("pattern", "")).strip() != pattern:
+                continue
+            conf = float(lesson.get("confidence") or 0.0)
+            new_conf = apply_evidence(conf, evidence_kind, count)
+            lesson["confidence"] = round(new_conf, 3)
+            lesson["updated_at"] = datetime.now(timezone.utc).isoformat()
+            promoted = False
+            if threshold is not None and maybe_promote(lesson, threshold):
+                lesson["confirmed"] = True
+                promoted = True
+            data["lessons"] = lessons
+            path.write_text(
+                yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            await self.force_sync(datasource)
+            return {
+                "updated": True, "pattern": pattern,
+                "confidence": new_conf, "promoted": promoted,
+                "confirmed": bool(lesson.get("confirmed")),
+            }
+        return {"updated": False, "pattern": pattern, "reason": "pattern not found"}
 
     async def list_term_names(self, datasource: str) -> list[str]:
         """Term names of one datasource (knowledge intent answers)."""

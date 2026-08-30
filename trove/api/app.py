@@ -38,6 +38,16 @@ async def _periodic_sweep(app: FastAPI) -> None:
             logger.info("[maintenance] periodic sweep: %s", stats)
         except Exception as e:
             logger.warning("[maintenance] periodic sweep failed: %s", e)
+        # 记忆生命周期:过期/归档清理(情景记忆、偏好草稿、用户事实、
+        # 检索日志) + schema 漂移检测。静默降级,不阻断 maintenance。
+        memory = getattr(app.state, "memory", None)
+        if memory is not None and getattr(memory, "enabled", False):
+            try:
+                mem_stats = await memory.run_lifecycle()
+                if any(mem_stats.get("purged", {}).values()) or mem_stats.get("drift"):
+                    logger.info("[memory] lifecycle sweep: %s", mem_stats)
+            except Exception as e:
+                logger.warning("[memory] lifecycle sweep failed: %s", e)
 
 
 @asynccontextmanager

@@ -16,7 +16,9 @@ Data source rules (must follow):
 Your personal notes for this data source (the user's stated preferences / calibers — follow them when they apply to the question):
 {% for f in user_facts -%}
 - {{ f.fact }}
-{% endfor %}{% endif %}{% if lessons %}
+{% endfor %}{% endif %}{% if episodes %}
+Your past queries on this data source (episodic memory — reuse successful SQL patterns; avoid the failure modes marked with corrections):
+{{ episodes }}{% endif %}{% if lessons %}
 Known pitfalls (learned from past corrections — avoid these):
 {% for lesson in lessons -%}
 - {{ lesson.pattern }}: {{ lesson.note }}

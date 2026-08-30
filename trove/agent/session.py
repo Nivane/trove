@@ -83,6 +83,7 @@ class SessionManager:
         callbacks: list[Any] | None = None,
         kb=None,
         connectors=None,
+        memory=None,
     ):
         self.config = config
         self._store = session_store
@@ -92,6 +93,8 @@ class SessionManager:
         self._callbacks = callbacks or []
         self._kb = kb
         self._connectors = connectors
+        # 统一记忆 facade(情景记忆/观测回流/偏好提取/画像);None = 记忆关闭
+        self._memory = memory
         self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
         self._task_stores: dict[str, TaskStore] = {}  # session_id → TaskStore (惰性,同一会话 .db)
         # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
@@ -230,12 +233,46 @@ class SessionManager:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=16000,
             )
-            return await self._store.compact_session(
+            compacted = await self._store.compact_session(
                 session, summary, keep_recent=keep_recent,
             )
         except Exception as e:
             logger.warning("Compaction failed: %s", e)
             return session
+
+        # 偏好自动提取(机会窗口):压缩 = 对话长上下文的自然边界,趁机让
+        # LLM 抽取用户口径/偏好(高置信入 user_facts,低置信落 pending 草稿)。
+        # 静默降级——提取失败绝不影响压缩结果。
+        await self._extract_preferences_on_compact(session, conversation)
+        return compacted
+
+    async def _extract_preferences_on_compact(
+        self, session: Session, conversation: str,
+    ) -> None:
+        """会话压缩后抽取偏好候选(memory.extract_preferences 的薄壳)。"""
+        if (
+            self._memory is None or self._connectors is None
+            or not getattr(self._memory, "enabled", False)
+        ):
+            return
+        try:
+            from trove.services.memory.models import MemoryScope
+
+            datasource = (
+                (session.metadata or {}).get("datasource", "")
+                or self._connectors.default_name
+                or ""
+            )
+            if not datasource:
+                return
+            await self._memory.extract_preferences(
+                MemoryScope(datasource=datasource, user_id=session.user_id or "local"),
+                conversation,
+                model=self.config.target or "openai/gpt-4o",
+                lang=self.config.language,
+            )
+        except Exception as e:
+            logger.debug("Preference extraction on compact failed: %s", e)
 
     # ── Query ────────────────────────────────────────────
 
@@ -1161,9 +1198,59 @@ class SessionManager:
         )
         session.messages.append(assistant_msg)
         await self._store.save_session(session)
-        await self._capture_lessons(final)
+        # 统一记忆 write-back(情景记忆 + 观测回流 + 失败教训),替代旧的
+        # _capture_lessons 单通道;老方法保留供直接调用方(测试)使用。
+        await self._observe_memory(final)
         # 结果缓存写钩子(覆盖 ask / resume / ask_stream 三路径)
         self._maybe_cache_exchange(session, final)
+
+    async def _observe_memory(self, final: WorkflowState) -> None:
+        """观测回流:情景记忆记录 + 成功→示例草稿 + 修正/失败→pending 教训。
+
+        未配置统一记忆 facade 时回退到旧版 _capture_lessons(修正闭环
+        教训沉淀),保持既有行为。全部静默降级:记忆写失败绝不影响回答。
+        """
+        if self._memory is None or not getattr(self._memory, "enabled", False):
+            await self._capture_lessons(final)
+            return
+        datasource = final.datasource or self._connectors.default_name or ""
+        if not datasource:
+            return
+        from trove.services.memory.models import MemoryScope
+
+        await self._memory.observe(
+            scope=MemoryScope(datasource=datasource, user_id=final.user_id or "local"),
+            session_id=final.session_id,
+            run_id=final.run_id,
+            question=final.question,
+            sql=final.sql,
+            dialect=final.dialect,
+            verdict=final.verdict,
+            row_count=final.row_count,
+            correction_history=final.correction_history,
+            matched_tables=final.matched_tables,
+            error=final.error,
+        )
+        # 自动晋升:修正闭环成功后,为该轮修正理由累加置信度(阈值过则自动确认)
+        if (
+            not final.error and final.correction_history and final.sql
+            and getattr(self._memory, "config", None)
+            and self._memory.config.promotion_enabled
+        ):
+            for reason in final.correction_history[-2:]:
+                await self._memory.promote_lesson(
+                    datasource, reason[:120], evidence_kind="repeated_correction",
+                )
+        # 自动晋升:修正闭环成功后,为该轮修正理由累加置信度
+        if (
+            not final.error and final.correction_history and final.sql
+            and getattr(self._memory, "config", None)
+            and self._memory.config.promotion_enabled
+        ):
+            for reason in final.correction_history[-2:]:
+                await self._memory.promote_lesson(
+                    datasource, reason[:120], evidence_kind="repeated_correction",
+                )
 
     # ── Task coordination ────────────────────────────────
 
