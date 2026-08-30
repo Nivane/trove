@@ -377,6 +377,9 @@ class GenSQLState(BaseModel):
     episodes: list[dict[str, Any]] | None = None    # 情景记忆(过去类似查询,episodic)
     metrics: list[dict[str, Any]] | None = None     # 相关性选择的指标(表达式+口径)
     entities: list[dict[str, Any]] | None = None    # 匹配的维度/枚举字段(值确认提示)
+    # ⑦ 用户×数据源失败画像提示(opt-in profile_boost;已渲染文本,
+    # 空串 = 未注入)
+    profile: str = ""
     llm: dict[str, Any] | None = None                    # last generate call detail
 
     @classmethod
@@ -395,6 +398,7 @@ class GenSQLState(BaseModel):
         episodes: list[dict[str, Any]] | None = None,
         metrics: list[dict[str, Any]] | None = None,
         entities: list[dict[str, Any]] | None = None,
+        profile: str = "",
         history: str | None = None,
         schema_context: str | None = None,
     ) -> "GenSQLState":
@@ -447,5 +451,6 @@ class GenSQLState(BaseModel):
             user_facts=user_facts if _include("user_facts") else None,
             episodes=episodes if _include("episodes") else None,
             metrics=metrics if _include("metrics") else None,
+            profile=profile if _include("profile") else "",
             entities=entities if _include("entities") else None,
         )

@@ -1256,16 +1256,6 @@ class SessionManager:
                 await self._memory.promote_lesson(
                     datasource, reason[:120], evidence_kind="repeated_correction",
                 )
-        # 自动晋升:修正闭环成功后,为该轮修正理由累加置信度
-        if (
-            not final.error and final.correction_history and final.sql
-            and getattr(self._memory, "config", None)
-            and self._memory.config.promotion_enabled
-        ):
-            for reason in final.correction_history[-2:]:
-                await self._memory.promote_lesson(
-                    datasource, reason[:120], evidence_kind="repeated_correction",
-                )
 
     # ── Task coordination ────────────────────────────────
 

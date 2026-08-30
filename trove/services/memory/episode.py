@@ -349,6 +349,9 @@ class EpisodeStore:
                 status="confirmed",
                 score=round(score, 4),
                 created_at=r[12], updated_at=r[13],
+                # ⑦ touch 契约:idempotency_key = "question\x1fsql",读路径
+                # 命中后按此键刷新最近使用时间(生命周期信号)。
+                idempotency_key=f"{q_text}\x1f{sql}",
             ))
         out.sort(key=lambda e: e.score, reverse=True)
         return out[:limit]

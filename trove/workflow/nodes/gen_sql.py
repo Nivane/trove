@@ -54,6 +54,7 @@ def build_sql_prompt(
     episodes: list[dict[str, Any]] | None = None,
     metrics: list[dict[str, Any]] | None = None,
     entities: list[dict[str, Any]] | None = None,
+    profile: str = "",
     lang: str = "en",
 ) -> str:
     """Build the initial SQL generation prompt.
@@ -68,6 +69,8 @@ def build_sql_prompt(
         examples)
       - Metrics: relevance-selected semantic metrics (expression + 口径)
       - Entities: matched dimension/enum fields (value-confirmation hints)
+      - Profile: user×datasource failure profile (opt-in profile_boost,
+        rendered via render_profile — empty string = not injected)
 
     Thin wrapper over the ``gen_sql/user`` Jinja template.
     """
@@ -97,6 +100,7 @@ def build_sql_prompt(
         episodes=render_episodes(episodes or []),
         metrics=render_metrics(metrics or []),
         entities=render_entities(entities or []),
+        profile=profile or "",
     )
 
 
@@ -130,6 +134,7 @@ def build_sql_prompt_from_state(state: GenSQLState) -> str:
         episodes=state.episodes or None,
         metrics=state.metrics or None,
         entities=state.entities or None,
+        profile=state.profile or "",
         lang=state.lang,
     )
 
@@ -270,6 +275,30 @@ def render_entities(entities: list[dict[str, Any]]) -> str:
             line += f" enums {{{', '.join(pairs)}}}"
         out.append(line + "\n")
     return "".join(out)
+
+
+def render_profile(profile: dict[str, Any]) -> str:
+    """用户×数据源失败画像段文本(⑦ profile_boost 提示块)。
+
+    只渲染"重复失败模式"——该用户在此数据源的历史成功率与反复踩坑点,
+    让模型在同题命中时主动避开;偏好 facts 由 user_facts 块(priority 2)
+    注入,这里不重复。无失败模式 → 空串(不注入零噪音)。
+    """
+    patterns = profile.get("failure_patterns") or []
+    if not patterns:
+        return ""
+    totals = profile.get("totals") or {}
+    lines: list[str] = []
+    if totals.get("total"):
+        ok_rate = int(round(profile.get("ok_rate") or 0.0, 2) * 100)
+        lines.append(
+            f"- Past success rate on this data source: {ok_rate}% "
+            f"({totals.get('ok', 0)}/{totals['total']})."
+        )
+    lines.append("- Failure patterns from your past queries (avoid repeating them):")
+    for p in patterns:
+        lines.append(f"  - {p.get('pattern', '')} (x{p.get('count', 1)})")
+    return "\n".join(lines) + "\n"
 
 
 def render_cache_prefix(dialect: str, schema_context: str) -> str:

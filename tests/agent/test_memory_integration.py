@@ -95,3 +95,53 @@ async def test_ask_without_memory_still_records_lesson(tmp_home, sqlite_registry
 
     all_lessons = await kb.list_lessons(sqlite_registry.default_name, confirmed_only=False)
     assert any("loans" in (l.get("pattern") or "") for l in all_lessons)
+
+
+async def test_correction_promotes_once_not_double(tmp_home, sqlite_registry):
+    """⑦ 回归:修正闭环 → promote_lesson 每个理由只 bump 一次(曾重复双跳)。"""
+    from trove.agent.session import SessionManager
+    from trove.core.config import AgentConfig
+    from trove.services.kb.service import KbService
+    from trove.storage.session_store import SessionStore
+
+    kb = KbService(tmp_home / "proj")
+    kb.kb_dir.mkdir(parents=True)
+    memory = MemoryService(
+        tmp_home / "home",
+        MemoryConfig(enabled=True, episodes=True, promotion=True),
+        kb=kb,
+        connectors=sqlite_registry,
+    )
+
+    class _CorrGraph:
+        async def ainvoke(self, state, config=None):
+            base = state if isinstance(state, dict) else state.model_dump()
+            return {
+                **base,
+                "sql": "SELECT * FROM loan", "error": "",
+                "correction_history": ["no such table: loans"],
+                "final_response": "answer",
+            }
+
+    calls: list[tuple[str, str, str]] = []
+
+    async def _spy(datasource, pattern, *, evidence_kind="repeated_correction", count=1):
+        calls.append((datasource, pattern, evidence_kind))
+
+    memory.promote_lesson = _spy  # noqa: instance spy
+    manager = SessionManager(
+        config=AgentConfig(home=str(tmp_home)),
+        session_store=SessionStore(home_dir=str(tmp_home)),
+        graphs={"reflection": _CorrGraph()},
+        llm_gateway=None,
+        kb=kb,
+        connectors=sqlite_registry,
+        memory=memory,
+    )
+    session = await manager.start_session(project_cwd="/tmp/p", user_id="alice")
+    await manager.ask(session=session, question="q")
+
+    # 修正闭环成功 → 每个理由恰好一次(双跳会让后续 double-bump 置信度虚高)
+    assert len(calls) == 1
+    assert calls[0][0] == sqlite_registry.default_name
+    assert calls[0][2] == "repeated_correction"

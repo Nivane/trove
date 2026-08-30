@@ -60,7 +60,7 @@ class RecordingLLM:
 
 
 def make_services(llm, catalog=None, connectors=None, kb=None, config=None,
-                   semantic_layer=None):
+                   semantic_layer=None, memory=None):
     if semantic_layer is None and connectors is not None:
         # 语义优先(Phase B):默认注入 fixture 的确定性语义模型
         semantic_layer = getattr(connectors, "_test_semantic_provider", None)
@@ -71,6 +71,7 @@ def make_services(llm, catalog=None, connectors=None, kb=None, config=None,
         config=config or AgentConfig(target="mock/model"),
         kb=kb,
         semantic_layer=semantic_layer,
+        memory=memory,
     )
 
 
@@ -171,6 +172,70 @@ semantic_model:
         # KB 的映射出现;实时层的 SUM(loan.amount) 作为 term 被去重
         assert "SUM(loan.amount) * 2" in prompt
         assert "total_loan_amount" in prompt
+
+
+# ── ⑦ profile_boost 激活 ────────────────────────────────
+
+
+class _MemStub:
+    """memory facade 桩:enabled + config.profile_boost + profile() 返回画像。"""
+
+    def __init__(self, profile, boost=True):
+        self.enabled = True
+        self.config = SimpleNamespace(profile_boost=boost)
+        self._profile = profile
+
+    async def retrieve(self, *args, **kwargs):
+        return []
+
+    async def profile(self, user_id, datasource):
+        return self._profile
+
+
+class TestProfileBoostInjection:
+    """⑦ 死开关清理:profile_boost 从死开关激活为最低优先级提示块。
+
+    开关开 + 画像有重复失败模式 → 以 priority 10 注入 gen prompt;
+    无失败模式(空画像)或开关关 → 零注入(零噪音)。
+    """
+
+    PROFILE = {
+        "user_id": "alice", "datasource": "demo",
+        "totals": {"total": 4, "ok": 1, "empty": 0, "error": 3},
+        "ok_rate": 0.25,
+        "failure_patterns": [{"pattern": "missing approved filter", "count": 2}],
+    }
+
+    def _run(self, registry, memory, question="total loans?"):
+        llm = RecordingLLM(["```sql\nSELECT SUM(amount) FROM loan;\n```"])
+        services = make_services(llm, connectors=registry, memory=memory)
+        sub = build_gen_sql_subgraph(make_services(RecordingLLM([])))
+        node = graphs_module._make_gen_sql_node(services, sub)
+        state = make_state(question=question, matched_tables=["loan"], user_id="alice")
+        return llm, node, state
+
+    async def test_profile_injected_when_boost_and_patterns(self, demo_registry):
+        llm, node, state = self._run(demo_registry, _MemStub(self.PROFILE))
+        out = await node(state)
+        assert out["sql"]
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[-1])
+        assert "Past success rate on this data source: 25% (1/4)" in prompt
+        assert "missing approved filter (x2)" in prompt
+
+    async def test_profile_not_injected_without_patterns(self, demo_registry):
+        empty = dict(self.PROFILE, failure_patterns=[], totals={})
+        llm, node, state = self._run(demo_registry, _MemStub(empty))
+        out = await node(state)
+        assert out["sql"]
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[-1])
+        assert "Past success rate" not in prompt
+
+    async def test_profile_not_injected_when_switch_off(self, demo_registry):
+        llm, node, state = self._run(demo_registry, _MemStub(self.PROFILE, boost=False))
+        out = await node(state)
+        assert out["sql"]
+        prompt = " ".join(str(m.get("content", "")) for m in llm.calls[-1])
+        assert "Past success rate" not in prompt
 
 
 # ── gen_sql subgraph ─────────────────────────────────────

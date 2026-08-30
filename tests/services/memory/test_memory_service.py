@@ -99,6 +99,53 @@ async def test_retrieve_dispatch_episodes(memory):
     assert entries[0].kind == "episode"
 
 
+# ── ⑦ touch 接线(读路径生命周期信号) ─────────────────────
+
+
+async def test_episode_search_sets_idempotency_key(memory):
+    """\x1f 契约:命中条目的 idempotency_key = "question\x1fsql"(touch 可拆)。"""
+    await memory.observe(
+        scope=SCOPE, question="sales by month", sql="SELECT month, SUM(x)",
+        verdict="OK", row_count=3,
+    )
+    hits = await memory.episodes.search(SCOPE, "sales by month", limit=5)
+    assert hits[0].idempotency_key == "sales by month\x1fSELECT month, SUM(x)"
+
+
+async def test_retrieve_touches_read_hits(memory):
+    """⑦ 接线:retrieve 命中即经 touch 刷新最近使用时间(生命周期信号)。"""
+    await memory.observe(
+        scope=SCOPE, question="sales by month", sql="SELECT month, SUM(x)",
+        verdict="OK", row_count=3,
+    )
+    calls: list[tuple[str, str, str]] = []
+
+    async def _spy(scope, question, sql=""):
+        calls.append((scope.user_id, question, sql))
+
+    memory.episodes.touch = _spy  # noqa: instance spy
+    entries = await memory.retrieve(
+        SCOPE, "sales by month", kinds=["episode"], limit=3)
+    assert len(entries) == 1
+    # 契约为 (user, question, sql) —— touch 按 \x1f 拆键后原样透传
+    assert calls == [("alice", "sales by month", "SELECT month, SUM(x)")]
+
+
+async def test_touch_refreshes_updated_at(memory):
+    """touch 真实行为:同键更新 updated_at(未命中/拆键失败静默不炸)。"""
+    import asyncio
+
+    await memory.observe(
+        scope=SCOPE, question="q", sql="SELECT 1", verdict="OK", row_count=1)
+    await asyncio.sleep(0.02)
+    before = (await memory.episodes.search(SCOPE, "q", limit=5))[0].updated_at
+    await memory.touch(SCOPE, "episode", "q\x1fSELECT 1")
+    after = (await memory.episodes.search(SCOPE, "q", limit=5))[0].updated_at
+    assert after > before
+    # 无 \x1f 的键 → 拆键 ValueError → 吞掉(读路径永不因 touch 失败阻塞)
+    await memory.touch(SCOPE, "episode", "no-separator-key")
+
+
 async def test_store_preference_draft(memory):
     entry = await memory.store(
         SCOPE, {"fact": "use 30-day average", "evidence": "user said so"},

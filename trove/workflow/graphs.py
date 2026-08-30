@@ -57,6 +57,7 @@ from trove.workflow.nodes.gen_sql import (
     render_entities,
     render_lessons,
     render_metrics,
+    render_profile,
     render_rules,
     render_shots,
     render_terms,
@@ -541,6 +542,23 @@ def _make_gen_sql_node(
                 logger.warning(
                     "Episode memory retrieval failed (%s): %s", datasource, e)
 
+        # ⑦ profile_boost 激活:用户×数据源失败画像(重复失败模式)作最低
+        # 优先级提示块(priority 10,预算余量才进)。opt-in(memory.profile_boost);
+        # 无失败模式 → 空串不注入(零噪音零成本)。facts 不入块:user_facts
+        # 块(priority 2)已注入偏好,避免重复。best-effort:画像失败静默降级。
+        profile_text = ""
+        if (
+            services.memory is not None and datasource and state.user_id
+            and services.memory.enabled
+            and getattr(getattr(services.memory, "config", None),
+                        "profile_boost", False)
+        ):
+            try:
+                _profile = await services.memory.profile(state.user_id, datasource)
+                profile_text = render_profile(_profile)
+            except Exception as e:
+                logger.warning("Profile hint failed (%s): %s", datasource, e)
+
         # KB 精确命中:示例问题与当前问题几乎逐词一致 → 直接采用示例 SQL。
         # KB 保存的是该数据源的标准写法;对已收录的问题让模型"再解释一遍"
         # 只会产出歧义变体(实测:disp vs client 口径摇摆 5 轮)。SQL 仍会
@@ -666,6 +684,12 @@ def _make_gen_sql_node(
                 )
                 for i, e in enumerate(episode_items)
             ]
+        if profile_text:
+            # 失败画像:用户级而非问题级信号,score 0.0(中性);priority 10
+            # 垫底——预算余量才进,不挤占任何问题相关的上下文。
+            optional_blocks["profile"] = [
+                ContextItem(key="profile", text=profile_text, score=0.0),
+            ]
         if state.plan:
             optional_blocks["plan"] = [
                 ContextItem(key="plan", text=state.plan, score=0.0),
@@ -689,7 +713,7 @@ def _make_gen_sql_node(
             optional_blocks,
             {"few_shots": 1, "user_facts": 2, "rules": 3, "term_notes": 4,
              "metrics": 5, "entities": 6, "lessons": 7, "episodes": 8,
-             "plan": 8, "history": 9},
+             "plan": 8, "history": 9, "profile": 10},
             budget,
             count=_count,
         )
@@ -704,6 +728,7 @@ def _make_gen_sql_node(
         rules = _trim("rules", "rule", rules)
         user_facts = _trim("user_facts", "ufact", user_fact_items)
         episodes = _trim("episodes", "ep", episode_items)
+        profile = profile_text if "profile" in included else ""
         metrics = _trim("metrics", "metric", metric_items) if metric_hits else None
         entities = _trim("entities", "entity", entity_items) if entity_hits else None
         # history 是逐轮条目:按预算保留的轮次重拼回字符串注入
@@ -742,6 +767,7 @@ def _make_gen_sql_node(
             user_facts=user_facts,
             episodes=episodes,
             metrics=metrics,
+            profile=profile,
             entities=entities,
             history=history_trimmed,
             schema_context=schema_for_gen,

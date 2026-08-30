@@ -18,7 +18,9 @@ Your personal notes for this data source (the user's stated preferences / calibe
 - {{ f.fact }}
 {% endfor %}{% endif %}{% if episodes %}
 Your past queries on this data source (episodic memory — reuse successful SQL patterns; avoid the failure modes marked with corrections):
-{{ episodes }}{% endif %}{% if lessons %}
+{{ episodes }}{% endif %}{% if profile %}
+Your past experience on this data source (repeated failure patterns — avoid these when the question matches; advisory, not binding):
+{{ profile }}{% endif %}{% if lessons %}
 Known pitfalls (learned from past corrections — avoid these):
 {% for lesson in lessons -%}
 - {{ lesson.pattern }}: {{ lesson.note }}

@@ -126,3 +126,77 @@ def test_build_sql_prompt_from_state_carries_user_facts():
     )
     prompt = build_sql_prompt_from_state(state)
     assert "我的口径" in prompt
+
+
+# ── ⑦ profile_boost:失败画像提示块 ───────────────────────
+
+
+def test_render_profile_formats_patterns_and_rate():
+    from trove.workflow.nodes.gen_sql import render_profile
+    text = render_profile({
+        "totals": {"total": 4, "ok": 1},
+        "ok_rate": 0.25,
+        "failure_patterns": [
+            {"pattern": "missing approved filter", "count": 2},
+            {"pattern": "wrong region code", "count": 1},
+        ],
+    })
+    assert "25% (1/4)" in text
+    assert "missing approved filter (x2)" in text
+    assert "wrong region code (x1)" in text
+    # 用户级信号而非问题级:纯文本行,无每问题 SQL
+    assert "SQL:" not in text
+
+
+def test_render_profile_empty_without_patterns():
+    from trove.workflow.nodes.gen_sql import render_profile
+    # 空画像(无失败模式)→ 空串:调用方不注入,零噪音零成本
+    assert render_profile({"totals": {"total": 2, "ok": 2}, "ok_rate": 1.0,
+                           "failure_patterns": []}) == ""
+    assert render_profile({}) == ""
+
+
+def test_build_sql_prompt_renders_profile_section():
+    from trove.workflow.nodes.gen_sql import render_profile
+    text = render_profile({
+        "totals": {"total": 4, "ok": 1}, "ok_rate": 0.25,
+        "failure_patterns": [{"pattern": "missing approved filter", "count": 2}],
+    })
+    prompt = build_sql_prompt(
+        question="q", schema_context="s", dialect="sqlite",
+        profile=text,
+    )
+    assert "repeated failure patterns" in prompt
+    assert "missing approved filter" in prompt
+
+
+def test_build_sql_prompt_omits_profile_when_empty():
+    prompt = build_sql_prompt(
+        question="q", schema_context="s", dialect="sqlite",
+        profile="",
+    )
+    assert "repeated failure patterns" not in prompt
+
+
+def test_build_sql_prompt_from_state_carries_profile():
+    from trove.workflow.nodes.gen_sql import render_profile
+    state = GenSQLState(
+        question="q", schema_context="s", dialect="sqlite",
+        profile=render_profile({
+            "totals": {"total": 4, "ok": 1}, "ok_rate": 0.25,
+            "failure_patterns": [{"pattern": "missing approved filter", "count": 2}],
+        }),
+    )
+    prompt = build_sql_prompt_from_state(state)
+    assert "missing approved filter" in prompt
+
+
+def test_from_workflow_gates_profile_by_included():
+    """预算未选中 profile 块 → 空串(不注入);选中 → 透传。"""
+    wf = WorkflowState(question="q", session_id="s1")
+    st = GenSQLState.from_workflow(wf, dialect="sqlite", included=set(),
+                                   profile="PROFILE_TEXT")
+    assert st.profile == ""
+    st2 = GenSQLState.from_workflow(
+        wf, dialect="sqlite", included={"profile"}, profile="PROFILE_TEXT")
+    assert st2.profile == "PROFILE_TEXT"

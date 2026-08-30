@@ -144,10 +144,17 @@ class MemoryService:
         self, scope: MemoryScope, question: str, limit: int,
     ) -> list[MemoryEntry]:
         try:
-            return await self.episodes.search(scope, question, limit=limit)
+            entries = await self.episodes.search(scope, question, limit=limit)
         except Exception as e:
             logger.warning("Episode retrieval failed (%s): %s", scope.datasource, e)
             return []
+        # ⑦ touch 接线:检索命中即刷新最近使用时间(生命周期信号)——真正
+        # 进入上下文候选的 episode 保持活跃,长期未命中的自然老化退役。
+        # 契约为 MemoryEntry.idempotency_key = "question\x1fsql";best-effort,
+        # touch 内部吞异常,失败不影响本次检索。
+        for entry in entries:
+            await self.touch(scope, "episode", entry.idempotency_key)
+        return entries
 
     async def _retrieve_facts(
         self, scope: MemoryScope, question: str, limit: int,
