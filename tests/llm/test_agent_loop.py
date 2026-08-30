@@ -522,36 +522,97 @@ class TestContextWindowGuards:
         assert "truncated" in injected
         assert len(result["tool_history"][0]["observation"]) == 2000  # 全文保留
 
-    async def test_early_rounds_pruned_beyond_cap(self):
-        """轮次超过上限时丢弃最早往返轮(system/user 永保)。"""
-        from trove.llm.agent_loop import _prune_old_rounds, MAX_TOOL_TURNS
+    async def test_early_rounds_compacted_to_digests(self):
+        """轮次超过上限时最早往返轮压缩为 [compacted] 摘要行。"""
+        from trove.llm.agent_loop import (
+            _compact_old_rounds, COMPACT_PREFIX, MAX_COMPACT_ROUNDS,
+        )
 
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "user"},
         ]
-        for i in range(MAX_TOOL_TURNS + 5):
-            messages.append({"role": "assistant", "content": f"a{i}", "tool_calls": []})
-            messages.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"obs{i}"})
+        for i in range(MAX_COMPACT_ROUNDS + 5):
+            messages.append({
+                "role": "assistant", "content": f"a{i}",
+                "tool_calls": [{"id": f"t{i}", "type": "function",
+                                "function": {"name": "echo", "arguments": f'{{"n": {i}}}'}}],
+            })
+            messages.append({"role": "tool", "tool_call_id": f"t{i}", "content": f"obs{i}"})
 
-        out = _prune_old_rounds(messages)
+        out = _compact_old_rounds(messages)
         assert out[0]["role"] == "system"
         assert out[1]["role"] == "user"
+        # 全文保留最近的 MAX_COMPACT_ROUNDS 轮
         assistants = [m for m in out if m["role"] == "assistant"]
         tools = [m for m in out if m["role"] == "tool"]
-        assert len(assistants) == MAX_TOOL_TURNS
-        assert len(tools) == MAX_TOOL_TURNS  # 成组裁剪,无孤儿 tool
-        assert assistants[0]["content"] == f"a{MAX_TOOL_TURNS + 4 - MAX_TOOL_TURNS + 1}"
+        assert len(assistants) == MAX_COMPACT_ROUNDS
+        assert len(tools) == MAX_COMPACT_ROUNDS  # 成组压缩,无孤儿 tool
+        # 最早的 5 轮变成确定性摘要行(编号 1..5,含工具签名)
+        digests = [m["content"] for m in out if m["role"] == "user"
+                   and m["content"].startswith(COMPACT_PREFIX)]
+        assert len(digests) == 5
+        assert digests[0].startswith(f"{COMPACT_PREFIX} round 1: a0")
+        assert "echo({\"n\": 0})" in digests[0]
+        assert "obs: obs0" in digests[0]
+        assert digests[-1].startswith(f"{COMPACT_PREFIX} round 5: a4")
+        # 保留轮的第一个 assistant 是 a5(共 9 轮,保留最后 4 轮)
+        assert assistants[0]["content"] == f"a{MAX_COMPACT_ROUNDS + 1}"
 
-    def test_prune_keeps_structure_under_cap(self):
-        from trove.llm.agent_loop import _prune_old_rounds, MAX_TOOL_TURNS
+    def test_compact_keeps_structure_under_cap(self):
+        from trove.llm.agent_loop import _compact_old_rounds
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "user"},
             {"role": "assistant", "content": "a", "tool_calls": []},
             {"role": "tool", "tool_call_id": "c", "content": "obs"},
         ]
-        assert _prune_old_rounds(messages) == messages  # 未超限不动
+        assert _compact_old_rounds(messages) == messages  # 未超限不动
+
+    def test_compact_numbering_monotonic_across_runs(self):
+        """跨次压缩:新摘要编号接在已摘要轮数后,编号单调递增。"""
+        from trove.llm.agent_loop import (
+            _compact_old_rounds, COMPACT_PREFIX,
+        )
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]
+        for i in range(4):
+            messages.append({"role": "assistant", "content": f"a{i}", "tool_calls": []})
+            messages.append({"role": "tool", "tool_call_id": f"t{i}", "content": f"obs{i}"})
+        # 第一次压缩:轮 1-2 摘要,轮 3-4 全文
+        messages = _compact_old_rounds(messages)
+        # 再来 4 轮 → 第二次压缩:轮 3-4 进入摘要,编号 3..4(不重开)
+        for i in range(4, 8):
+            messages.append({"role": "assistant", "content": f"a{i}", "tool_calls": []})
+            messages.append({"role": "tool", "tool_call_id": f"t{i}", "content": f"obs{i}"})
+        out = _compact_old_rounds(messages)
+        digests = [m["content"] for m in out if m["role"] == "user"
+                   and m["content"].startswith(COMPACT_PREFIX)]
+        assert digests[0].startswith(f"{COMPACT_PREFIX} round 1:")
+        assert digests[-1].startswith(f"{COMPACT_PREFIX} round 4:")
+        assert len(digests) == 4  # 旧摘要保留,新摘要接续
+
+    async def test_loop_feeds_digests_to_model_in_later_rounds(self):
+        """集成:超过保留窗口后,模型第 6+ 轮的 messages 里出现 [compacted] 行。"""
+        responses = [
+            {"content": f"step{i}", "tool_calls": [
+                {"id": f"c{i}", "name": "echo", "arguments": '{"text": "x"}'},
+            ]}
+            for i in range(1, 7)
+        ] + [{"content": "done", "tool_calls": []}]
+        llm = ScriptedLLM(responses)
+        await run_agent_loop(
+            llm, "m", "sys", "user", TOOL_DEF, {"echo": _echo}, max_rounds=8,
+        )
+        # 第 7 轮调用(索引 6)时最早的轮次已压缩为摘要
+        last_call = llm.calls[-1]
+        assert any(
+            m["role"] == "user" and "[compacted]" in m["content"]
+            for m in last_call
+        )
 
     async def test_first_input_tokens_captured(self):
         """首轮 prompt_tokens 回带(调用方做估算校准)。"""

@@ -44,7 +44,8 @@ FINISH_TOOL = "finish"
 # 最早往返轮(Claude Code 式窗口)——tracing/tool_history 仍保留完整观测,
 # 只有喂回模型的 messages 被压缩,避免 ReAct 循环内上下文复利爆炸。
 MAX_OBSERVATION_CHARS = 800   # 单条工具观测注入上限
-MAX_TOOL_TURNS = 8            # messages 保留的最近往返轮数
+MAX_COMPACT_ROUNDS = 4        # messages 全文保留的最近往返轮数
+COMPACT_PREFIX = "[compacted]"  # 摘要行前缀(编号单调递增的锚点)
 
 
 def _truncate_observation(obs: str, limit: int = MAX_OBSERVATION_CHARS) -> str:
@@ -55,18 +56,49 @@ def _truncate_observation(obs: str, limit: int = MAX_OBSERVATION_CHARS) -> str:
     return obs[:limit] + f"\n…[truncated {len(obs) - limit} chars]"
 
 
-def _prune_old_rounds(
+def _round_digest(round_no: int, msgs: list[dict[str, Any]]) -> str:
+    """单轮确定性摘要:``[compacted] round N: <文本> | tools: <签名> | obs: <观测头>``。
+
+    全部来自消息内容本身(无时间戳/随机值):assistant 文本前 100 字符、
+    工具名 + 参数 JSON 前 60 字符、轮末最近一条 tool 观测前 80 字符。
+    上限 500 字符,保证压缩后早期轮只占几十 token。
+    """
+    first = msgs[0]
+    text = str(first.get("content") or "").strip().replace("\n", " ")[:100]
+    line = f"{COMPACT_PREFIX} round {round_no}: {text or '(no text)'}"
+    calls = []
+    for tc in first.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        args = str(fn.get("arguments") or "{}").replace("\n", " ")[:60]
+        calls.append(f"{fn.get('name', '?')}({args})")
+    if calls:
+        line += " | tools: " + ", ".join(calls)
+    last_tool = next(
+        (m for m in reversed(msgs[1:]) if m.get("role") == "tool"), None,
+    )
+    if last_tool is not None:
+        obs = str(last_tool.get("content") or "").replace("\n", " ")[:80]
+        line += f" | obs: {obs}"
+    return line[:500]
+
+
+def _compact_old_rounds(
     messages: list[dict[str, Any]],
-    keep_rounds: int = MAX_TOOL_TURNS,
+    keep_rounds: int = MAX_COMPACT_ROUNDS,
 ) -> list[dict[str, Any]]:
-    """丢弃最早的完整往返轮,保留最近 ``keep_rounds`` 轮。
+    """压缩最早的完整往返轮为确定性摘要行,保留最近 ``keep_rounds`` 轮全文。
 
-    system/user(前两条)永不丢弃。以 assistant 消息为轮起点:某轮被
-    丢弃时,其后的 tool 消息(到下一个 assistant 为止)一并丢弃,
-    保证不出现孤儿 tool_call_id 或无人认领的 tool 结果。steering
-    (user)消息随其所在早轮一并丢弃。
+    与硬丢弃的区别:早期轮不直接消失,而是压缩成 user 角色的一行
+    ``[compacted] round N: ...`` 摘要——模型保留轮次编号与行为的连续性
+    锚点,代价是每条摘要几十 token,换来长循环不再上下文复利爆炸。
 
-    返回裁剪后的新列表(原地不修改)。
+    system/user(前两条)永不压缩。以 assistant 消息为轮起点:某轮被
+    压缩时,其后的 tool / steering(user)消息(到下一个 assistant 为止)
+    一并进入摘要,保证不出现孤儿 tool_call_id 或无人认领的 tool 结果。
+    已存在的摘要行保持原样并排在前面,新增摘要的轮次编号接着已摘要
+    轮数单调递增(跨次压缩编号连续)。摘要内容确定性生成。
+
+    返回压缩后的新列表(原地不修改)。
     """
     if len(messages) <= 2:
         return messages
@@ -75,7 +107,29 @@ def _prune_old_rounds(
     if len(starts) <= keep_rounds:
         return messages
     keep_from = starts[-keep_rounds]
-    return messages[:2] + tail[keep_from:]
+    dropped = tail[:keep_from]
+    existing = sum(
+        1 for m in dropped
+        if m.get("role") == "user"
+        and str(m.get("content", "")).startswith(COMPACT_PREFIX)
+    )
+    # 分组新轮:assistant 开头,其后的 tool/steering 消息归入该轮
+    rounds: list[list[dict[str, Any]]] = []
+    for m in dropped:
+        if m["role"] == "assistant":
+            rounds.append([m])
+        elif rounds:
+            rounds[-1].append(m)
+    digests = [
+        {"role": "user", "content": _round_digest(existing + i, r)}
+        for i, r in enumerate(rounds, start=1)
+    ]
+    prefix = [
+        m for m in dropped
+        if m.get("role") == "user"
+        and str(m.get("content", "")).startswith(COMPACT_PREFIX)
+    ]
+    return messages[:2] + prefix + digests + tail[keep_from:]
 
 
 # ── Tool spec & registry ──────────────────────────────────
@@ -688,8 +742,9 @@ async def run_agent_loop(
                 + json.dumps(sorted(res["arguments"].items()), ensure_ascii=False, default=str)
             )
 
-        # 上下文窗口护栏:丢弃最早往返轮,防 ReAct 循环内消息复利爆炸
-        messages = _prune_old_rounds(messages)
+        # 上下文窗口护栏:最早往返轮压缩为确定性摘要行,防 ReAct 循环内
+        # 消息复利爆炸(保留最近 4 轮全文,更早的转 [compacted] 行)
+        messages = _compact_old_rounds(messages)
 
         # 循环转向:连续相同调用 → 注入转向消息,而不是干等到护栏
         if len(recent_sigs) >= steering_window:

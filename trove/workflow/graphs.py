@@ -267,7 +267,9 @@ async def _run_candidate_subagent(
             registry=registry,
             tool_timeout_s=20.0,
             time_budget_s=120.0,
-            max_rounds=4,
+            # ④ 循环内压缩兜底:max_rounds 4→8——早期轮已转确定性摘要
+            # ([compacted] 行),不再有上下文复利爆炸,护栏可以放宽
+            max_rounds=8,
             max_total_tokens=2500,
             metadata={
                 "node": "gen_sql_subagent",
@@ -816,7 +818,7 @@ def _make_gen_sql_node(
                 registry=registry,
                 tool_timeout_s=20.0,
                 time_budget_s=120.0,
-                max_rounds=4,
+                max_rounds=8,  # ④ 早期轮转 [compacted] 摘要后护栏放宽
                 max_total_tokens=2500,
                 metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
                 temperature=generation_temperature(state.retry_count),
