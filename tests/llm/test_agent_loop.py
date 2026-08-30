@@ -721,3 +721,68 @@ class TestPromptCachingSplit:
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "user"},
         ]
+
+
+class TestLazyToolVisibility:
+    """③ 懒注册工具跨轮可见性:激活后下一轮 defs 才注入 prompt。"""
+
+    async def test_activated_lazy_tool_appears_next_round(self):
+        """round1 只发 warm 的 def;warm 处理器内激活 cold;
+        round2 的 chat_full 收到 warm+cold 两份 def。"""
+        from types import SimpleNamespace
+
+        captured = []
+
+        async def fake_chat_full(model, messages, tools=None, **kwargs):
+            captured.append([t["function"]["name"] for t in (tools or [])])
+            # round1: 调用 warm;round2: 结束
+            if len(captured) == 1:
+                return {"content": None, "tool_calls": [
+                    {"id": "c1", "name": "warm", "arguments": "{}"},
+                ]}
+            return {"content": "done", "tool_calls": []}
+
+        registry = ToolRegistry(finish=True)
+
+        async def _warm(arguments):
+            registry.activate_lazy("cold")
+            return "warm ready"
+
+        async def _cold(arguments):
+            return "cold data"
+
+        registry.register("warm", _warm, description="warm tool")
+        registry.register_lazy("cold", _cold, description="cold tool")
+
+        await run_agent_loop(
+            SimpleNamespace(chat_full=fake_chat_full),
+            "anthropic/claude-opus-4", "sys", "user",
+            registry=registry, max_rounds=3,
+        )
+        # round1: 只有 warm(+finish 置末)
+        assert captured[0] == ["warm", "finish"]
+        # round2: cold 解锁后注入,仍置末 finish
+        assert captured[1] == ["warm", "cold", "finish"]
+        # 未激活时 spec 可查但 defs 不含
+        assert registry.spec("cold") is not None
+
+    async def test_unactivated_lazy_stays_out_of_defs(self):
+        """从不激活:cold 自始至终不进任何一轮的 defs。"""
+        from types import SimpleNamespace
+
+        captured = []
+
+        async def fake_chat_full(model, messages, tools=None, **kwargs):
+            captured.append([t["function"]["name"] for t in (tools or [])])
+            return {"content": "done", "tool_calls": []}
+
+        registry = ToolRegistry(finish=True)
+        registry.register("warm", _echo, description="warm tool")
+        registry.register_lazy("cold", _echo, description="cold tool")
+
+        await run_agent_loop(
+            SimpleNamespace(chat_full=fake_chat_full),
+            "m", "sys", "user", registry=registry, max_rounds=2,
+        )
+        assert captured[0] == ["warm", "finish"]
+        assert registry.spec("cold") is not None  # 始终注册的契约仍在

@@ -1005,12 +1005,15 @@ def build_sql_registry(
 
     validate_sql 始终可用(纯语法校验 + 静态语义警告,不执行);probe_query
     / check_result 依赖 connectors(只读执行),connectors 缺失时自动降级
-    为仅语法工具。search_values / lookup_schema / explain_plan 也始终注册
-    —— agent 运行时可触达物理 schema(值枚举 / 表结构懒加载 / 执行计划),
-    语义模型只作生成视角而非可答边界的物理封锁。check_result 的规则命中
-    累积在 ``registry.check_hits``,循环结束后由调用方带出到状态
-    (validation_hits 归因切片)——不再是位置返回值。注册表自带显式 finish
-    协议:模型用 ``finish(answer)`` 携带最终 SQL 定稿,避免答案丢失。
+    为仅语法工具。search_values / lookup_schema / explain_plan 始终注册
+    (spec 可查可执行—— agent 运行时可触达物理 schema:值枚举 / 表结构
+    懒加载 / 执行计划),但按需注入:默认不在 prompt 里,常驻的是 ~200B
+    的 ``catalog`` 发现工具,模型确认需要后解锁三件套、下一轮可见——
+    语义模型只作生成视角而非可答边界的物理封锁,同时省掉数百 token 的
+    常驻工具定义。check_result 的规则命中累积在 ``registry.check_hits``,
+    循环结束后由调用方带出到状态(validation_hits 归因切片)——不再是
+    位置返回值。注册表自带显式 finish 协议:模型用 ``finish(answer)``
+    携带最终 SQL 定稿,避免答案丢失。
 
     Args:
         connectors: 数据源注册表(None → 降级,无执行类工具)。
@@ -1020,8 +1023,8 @@ def build_sql_registry(
         finish: 是否注册显式 finish 工具(harness 协议;legacy 层关闭)。
         matched_tables: schema linking 命中的表(静态检查 C1 的输入)。
         complexity: 任务自适应工具集——simple → 仅 validate_sql + finish;
-            standard → + probe/check;complex → 全量含 catalog(search/lookup/
-            explain)。省去大量 schema token 与工具注意力开销。
+            standard/complex → + probe/check + catalog 发现工具(catalog
+            三件套懒激活)。省去大量 schema token 与工具注意力开销。
         roles: 用户角色列表(ToolSpec ACL 过滤;None = 不启用角色过滤)。
         user_id: 审计字段(查询归因到人)。
         probe_cache: 跨修正轮共享的 probe/check 结果缓存 dict;None = 不缓存。
@@ -1231,8 +1234,56 @@ def build_sql_registry(
             level="core",
         )
 
-    if tier == "complex":
+    if tier in ("standard", "complex"):
+        # ③ 工具注入去重 + 按需化:catalog 三件套(search_values /
+        # lookup_schema / explain_plan)不再常驻 prompt——数百 token 的
+        # 完整 defs 只在该用的时候注入。常驻的是 ~200B 的发现工具
+        # ``catalog``,模型确认需要值确认/表 DDL/执行计划时调用一次,
+        # 解锁三件套、下一轮对模型可见。spec 始终在(可执行可触达),
+        # 只是 prompt 注入按需化。system 模板的 Tools 段同步瘦身。
+        async def catalog_tool(arguments: dict) -> str:
+            activated = [
+                name for name in ("search_values", "lookup_schema", "explain_plan")
+                if registry.activate_lazy(name)
+            ]
+            target = (arguments.get("target") or "").strip()
+            await _audit("catalog", target or "(all)", f"activated: {', '.join(activated)}")
+            if not activated:
+                return (
+                    "Catalog tools already active — call search_values / "
+                    "lookup_schema / explain_plan directly."
+                )
+            return (
+                "Catalog tools activated — available from the NEXT round:\n"
+                "- search_values(table, keyword, [column]): confirm filter "
+                "values against real data\n"
+                "- lookup_schema(table): full DDL of one table (columns / pk / fks)\n"
+                "- explain_plan(sql): execution plan (read-only, no row data)\n"
+                f"Target: {target[:200] or '(unspecified)'}"
+            )
+
         registry.register(
+            "catalog", catalog_tool,
+            description=(
+                "Unlock the schema-exploration tools search_values / "
+                "lookup_schema / explain_plan (filter-value confirmation, "
+                "pruned-table DDL fetch, execution plan). Use when: the "
+                "Database schema section lacks a value or table you need — "
+                "call once and the three tools become available from the "
+                "next round. Do NOT use when: the schema section already "
+                "answers your need. "
+                "Example: catalog(target=\"confirm the county filter value\")"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "What you need to explore (free text)"},
+                },
+            },
+            level="catalog",
+            roles=["analyst", "admin"],
+        )
+        registry.register_lazy(
             "search_values", search_tool,
             description=(
                 "Search a table for distinct values matching a keyword "
@@ -1259,7 +1310,7 @@ def build_sql_registry(
             level="catalog",
             roles=["analyst", "admin"],
         )
-        registry.register(
+        registry.register_lazy(
             "lookup_schema", lookup_schema_tool,
                 description=(
                     "Fetch the full schema of a single table: columns, primary "
@@ -1319,8 +1370,8 @@ def build_sql_registry(
         await _audit("explain", sql, out)
         return out
 
-    if tier == "complex":
-        registry.register(
+    if tier in ("standard", "complex"):
+        registry.register_lazy(
             "explain_plan", explain_tool,
             description=(
                 "Fetch the execution plan for a SELECT (EXPLAIN, read-only, "
@@ -1365,6 +1416,10 @@ def make_sql_tools(
         connectors, question, lang, dialect, finish=False,
         matched_tables=matched_tables, datasource=datasource,
     )
+    # legacy 契约:返回全量工具集(含 catalog 三件套)——激活全部懒注册,
+    # 保持与 registry 形态的差异只在"是否按需注入"。
+    for _name in ("search_values", "lookup_schema", "explain_plan"):
+        registry.activate_lazy(_name)
     tools: list[dict] = registry.defs()
     handlers: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = registry.handlers()
     return tools, handlers, registry.check_hits

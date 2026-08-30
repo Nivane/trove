@@ -260,7 +260,6 @@ async def _run_candidate_subagent(
                 "gen_sql/system",
                 lang=rotated.lang,
                 has_probe=services.connectors is not None,
-                has_catalog=state.complexity == "complex",
                 full_rules=state.complexity != "simple",
             ),
             user=prompt,
@@ -805,7 +804,6 @@ def _make_gen_sql_node(
                 "gen_sql/system",
                 lang=sub_state.lang,
                 has_probe=services.connectors is not None,
-                has_catalog=complexity == "complex",
                 full_rules=complexity != "simple",
             )
             result = None

@@ -2916,12 +2916,19 @@ class TestMakeSQLTools:
         assert "ERRORS" in await handlers["validate_sql"]({"sql": "SELEC 1"})
 
     async def test_with_connectors_five_tools_and_hits_sink(self, sqlite_registry):
-        """connectors 就位 → 六工具(含 lookup_schema 懒加载 + explain_plan);check_tool 命中写 hits_sink,probe_tool 返回观测。"""
+        """connectors 就位 → 七工具(含 catalog 发现 + 懒激活的 catalog 三件套);check_tool 命中写 hits_sink,probe_tool 返回观测。
+
+        legacy 契约:make_sql_tools 全量激活懒注册——与 agentic 路径的
+        差异只在"是否按需注入",工具集合本身不变。
+        """
         tools, handlers, hits = make_sql_tools(
             sqlite_registry, "How many students are there in total?", "en", "sqlite",
         )
         names = [t["function"]["name"] for t in tools]
-        assert names == ["validate_sql", "probe_query", "check_result", "search_values", "lookup_schema", "explain_plan"]
+        assert names == [
+            "validate_sql", "probe_query", "check_result", "catalog",
+            "search_values", "lookup_schema", "explain_plan",
+        ]
         # lookup_schema:懒加载表 DDL
         assert '"columns"' in await handlers["lookup_schema"]({"table": "students"})
         assert '"ok": false' in await handlers["lookup_schema"]({"table": "nope"})
@@ -3501,3 +3508,66 @@ class TestDatasourceRouting:
             assert out["rows"] == [["from_b"]]
         finally:
             await reg.close_all()
+
+
+class TestCatalogOnDemand:
+    """③ 工具注入去重 + 按需化:catalog 三件套懒注册,发现工具常驻。"""
+
+    async def test_catalog_tools_lazy_in_standard_and_complex(self, sqlite_registry):
+        """standard/complex:defs 只有 catalog 发现工具,三件套不在;
+        调 catalog 解锁后下一轮 defs 可见。"""
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        for tier in ("standard", "complex"):
+            registry = build_sql_registry(
+                sqlite_registry, "How many students?", "en", "sqlite",
+                complexity=tier,
+            )
+            names = [d["function"]["name"] for d in registry.defs()]
+            # 发现工具常驻;三件套不在 prompt(节省 ~600 token)
+            assert "catalog" in names
+            assert "search_values" not in names
+            assert "lookup_schema" not in names
+            assert "explain_plan" not in names
+            # spec 始终可查可执行("始终注册"不变量保持)
+            assert registry.spec("search_values") is not None
+            assert registry.spec("lookup_schema") is not None
+            assert registry.spec("explain_plan") is not None
+
+            # 调发现工具 → 解锁三件套
+            obs = await registry.handlers()["catalog"]({"target": "confirm county"})
+            assert "search_values" in obs and "lookup_schema" in obs and "explain_plan" in obs
+            names2 = [d["function"]["name"] for d in registry.defs()]
+            assert {"search_values", "lookup_schema", "explain_plan"} <= set(names2)
+            # 幂等:再调一次只提示已激活
+            obs2 = await registry.handlers()["catalog"]({})
+            assert "already active" in obs2
+
+    async def test_simple_tier_no_catalog(self, sqlite_registry):
+        """simple 档只保留 validate_sql + finish,连发现工具都不挂。"""
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="simple",
+        )
+        names = [d["function"]["name"] for d in registry.defs()]
+        assert "catalog" not in names
+        assert "probe_query" not in names
+        assert "validate_sql" in names
+
+    async def test_system_prompt_no_tool_defs_duplication(self):
+        """system 模板瘦身:不再内嵌工具描述(职责回到工具定义本身)。"""
+        import jinja2
+
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(
+            "trove/prompts"))
+        text = env.get_template("gen_sql/system.en.j2").render(
+            lang="en", has_probe=True, full_rules=True,
+        )
+        # 工具描述只在 defs 里;模板只保留决策指引
+        assert "probe_query: execute a draft SQL" not in text
+        assert "search_values: search a table" not in text
+        # 决策指引仍在(0-row probe = fix)
+        assert "Verification protocol" in text
+        assert "0-row probe" in text

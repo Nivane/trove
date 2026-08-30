@@ -48,13 +48,7 @@ Guidelines:
 {% endif %}
 
 {% if has_probe %}
-Tools:
-- validate_sql: syntax-check a draft SQL (read-only, no execution).
-- probe_query: execute a draft SQL read-only (max 10 rows, 5s timeout) and return the real observation — row count, columns, first 5 rows. Use it BEFORE finalizing when: a superlative or filter draft risks returning 0 rows, the result shape is uncertain, or you used a self-invented filter value. A 0-row probe means fix the SQL, not finalize it.
-- check_result: run the deterministic rule checks against your draft (executes it read-only): result shape, row count, value ranges, integer-division ratios. Returns 'OK (N rows)' or 'VIOLATION [rule] <reason>' — the reason is the fix instruction. Call it AFTER probe_query and BEFORE finalizing: a VIOLATION means fix the SQL, never finalize a violating draft.
-{% if has_catalog %}
-- search_values: search a table for distinct values matching a keyword (case-insensitive LIKE on real data). Use when a candidate filter value from the question or Evidence must be confirmed against its exact real form (spelling, case, abbreviations, dirty values), or when you don't know which column stores a value — omit the column to scan the table and get a column→values map. Returns at most 10 values per column.
-{% endif %}
+Verification protocol: validate_sql (syntax) → probe_query (real shape/rows, read-only) → check_result (deterministic rule gate) → finish. A 0-row probe or a VIOLATION means FIX the SQL, never finalize. Schema exploration (search_values / lookup_schema / explain_plan) unlocks on demand: call the catalog tool once, then use them from the next round.
 
 Your final answer is still ONLY the SQL query.
 {% endif %}

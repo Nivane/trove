@@ -163,6 +163,7 @@ class ToolRegistry:
 
     def __init__(self, *, finish: bool = False, allowed_roles: list[str] | None = None):
         self._specs: dict[str, ToolSpec] = {}
+        self._lazy_specs: dict[str, ToolSpec] = {}
         self._finish_spec: ToolSpec | None = None
         self._observers: list[Observer] = [_trace_observer]
         self.allowed_roles = list(allowed_roles) if allowed_roles is not None else None
@@ -175,6 +176,25 @@ class ToolRegistry:
         spec = ToolSpec(name, func, **kwargs)
         self._specs[name] = spec
         return spec
+
+    def register_lazy(
+        self, name: str, func: ToolHandler, **kwargs: Any,
+    ) -> ToolSpec:
+        """注册懒激活工具:spec 始终可查、可执行(运行时可触达),但
+        ``defs()`` 不注入 prompt——直到 ``activate_lazy`` 显式解锁,下一轮
+        才被模型看到。按需化注入:重工具的完整 defs(数百 token)不再
+        常驻,由常驻的小发现工具(catalog)在模型确认需要后解锁。"""
+        spec = ToolSpec(name, func, **kwargs)
+        self._lazy_specs[name] = spec
+        return spec
+
+    def activate_lazy(self, name: str) -> bool:
+        """解锁一个懒工具(移入常规注册表)。返回是否确有该工具。"""
+        spec = self._lazy_specs.pop(name, None)
+        if spec is None:
+            return False
+        self._specs[name] = spec
+        return True
 
     def add_finish_tool(self) -> ToolSpec:
         spec = ToolSpec(
@@ -215,7 +235,7 @@ class ToolRegistry:
         return list(self._observers)
 
     def spec(self, name: str) -> ToolSpec | None:
-        return self._specs.get(name)
+        return self._specs.get(name) or self._lazy_specs.get(name)
 
     def is_finish(self, name: str) -> bool:
         return self._finish_spec is not None and name == FINISH_TOOL
@@ -358,10 +378,14 @@ async def run_agent_loop(
 
     # ① Prompt caching:cache_prefix 为 user 的真实字节前缀时,system 切成
     # 内容块列表打 ephemeral 断点,user 拆成 [稳定前缀块+断点, volatile
-    # 剩余块],最后一个工具定义也打断点(Anthropic 工具级缓存)。前缀不
+    # 剩余块];工具定义上的断点打在每轮最新定义(见 _round_defs)。前缀不
     # 匹配(模板演化/防御)或恰好覆盖全部 user(无剩余块)时保持原样——
     # 字节级不变,调用方无感。
-    if cache_prefix and prompt_caching and user and user.startswith(cache_prefix) and user != cache_prefix:
+    split_cache = bool(
+        cache_prefix and prompt_caching and user
+        and user.startswith(cache_prefix) and user != cache_prefix
+    )
+    if split_cache:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": [
                 {"type": "text", "text": system,
@@ -373,10 +397,6 @@ async def run_agent_loop(
                 {"type": "text", "text": user[len(cache_prefix):]},
             ]},
         ]
-        if tool_defs:
-            last = dict(tool_defs[-1])
-            last["cache_control"] = {"type": "ephemeral"}
-            tool_defs = tool_defs[:-1] + [last]
     else:
         messages = [
             {"role": "system", "content": system},
@@ -398,9 +418,20 @@ async def run_agent_loop(
     recent_sigs: list[str] = []
     consumed_rounds = 0
 
+    def _round_defs() -> list[dict[str, Any]] | None:
+        """每轮工具定义:注册表路径每轮重取——懒激活(③ catalog 发现)
+        的新工具下一轮对模型可见;缓存断点(①)打在每轮最新定义的末位。"""
+        defs = tool_defs if own_registry else registry.defs()
+        if split_cache and defs:
+            defs = list(defs)
+            last = dict(defs[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            defs[-1] = last
+        return defs
+
     async def _chat_once() -> dict[str, Any]:
         return await llm.chat_full(
-            model=model, messages=messages, tools=tool_defs,
+            model=model, messages=messages, tools=_round_defs(),
             metadata=metadata, temperature=temperature,
         )
 

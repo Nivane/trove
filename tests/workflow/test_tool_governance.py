@@ -56,10 +56,12 @@ class TestDescriptionLint:
         assert "syntax" in fns["validate_sql"]["description"].lower()
         assert "row" in fns["probe_query"]["description"].lower()
         assert "rule checks" in fns["check_result"]["description"].lower()
-        assert "values" in fns["search_values"]["description"].lower()
-        assert "schema" in fns["lookup_schema"]["description"].lower()
-        assert "execution plan" in fns["explain_plan"]["description"].lower()
         assert "final answer" in fns["finish"]["description"].lower()
+        # catalog 是 schema 探索三件套的唯一入口(路由信号在它的描述里)
+        catalog = fns["catalog"]["description"].lower()
+        assert "search_values" in catalog and "lookup_schema" in catalog
+        assert "explain_plan" in catalog
+        assert "use when:" in catalog and "do not use when:" in catalog
 
 
 class TestGoldenRoute:
@@ -73,11 +75,11 @@ class TestGoldenRoute:
         ("about to finalize, must confirm no rule violations on the draft",
          "check_result"),
         ("candidate filter value 'Ala' — confirm its exact spelling in data",
-         "search_values"),
+         "catalog"),
         ("a table referenced in the question is missing from the schema section",
-         "lookup_schema"),
+         "catalog"),
         ("draft joins several large tables; check index usage before finalizing",
-         "explain_plan"),
+         "catalog"),
         ("ready to submit the final SQL", "finish"),
     ]
 
@@ -110,31 +112,50 @@ class TestACLRoleFiltering:
         assert "probe_query" in names
         assert "check_result" in names
         assert "finish" in names
+        assert "catalog" not in names
         assert "search_values" not in names
         assert "lookup_schema" not in names
         assert "explain_plan" not in names
 
     async def test_catalog_tools_visible_for_analyst(self, sqlite_registry):
-        """allowed_roles=['analyst'] → catalog 工具可见。"""
+        """allowed_roles=['analyst'] → catalog 发现工具可见;
+        三件套按需解锁(初始不在 defs,spec 恒在)。"""
         registry = build_sql_registry(
             sqlite_registry, "How many students?", "en", "sqlite",
             roles=["analyst"],
         )
         names = [d["function"]["name"] for d in registry.defs()]
-        assert "search_values" in names
-        assert "lookup_schema" in names
-        assert "explain_plan" in names
+        assert "catalog" in names
+        assert "search_values" not in names
+        assert "lookup_schema" not in names
+        assert "explain_plan" not in names
+        # 按需契约:spec 始终可查可执行,只不注入 prompt
+        for name in ("search_values", "lookup_schema", "explain_plan"):
+            assert registry.spec(name) is not None
 
-    async def test_no_roles_preserves_legacy_full_toolset(self, sqlite_registry):
-        """roles=None(未启用 ACL)→ 全工具可见(旧行为)。"""
+    async def test_no_roles_preserves_legacy_core_plus_catalog(self, sqlite_registry):
+        """roles=None(未启用 ACL)→ core + catalog 常驻,三件套按需解锁。"""
         registry = build_sql_registry(
             sqlite_registry, "How many students?", "en", "sqlite",
         )
         names = [d["function"]["name"] for d in registry.defs()]
         assert names == [
             "validate_sql", "probe_query", "check_result",
-            "search_values", "lookup_schema", "explain_plan", "finish",
+            "catalog", "finish",
         ]
+        # 旧的全量形态由 make_sql_tools 保留(激活全部懒注册)
+        from trove.workflow.nodes.gen_sql import make_sql_tools
+        tools, handlers, _ = make_sql_tools(
+            sqlite_registry, "How many students?", "en", "sqlite",
+        )
+        assert [t["function"]["name"] for t in tools] == [
+            "validate_sql", "probe_query", "check_result",
+            "catalog", "search_values", "lookup_schema", "explain_plan",
+        ]
+        assert set(handlers) == {
+            "validate_sql", "probe_query", "check_result", "catalog",
+            "search_values", "lookup_schema", "explain_plan",
+        }
 
     async def test_calling_hidden_tool_folds_to_unknown(self, sqlite_registry):
         """模型调用被 ACL 裁掉的工具 → 按 unknown 折叠回喂,不执行。"""
@@ -163,24 +184,34 @@ class TestComplexityTiers:
         assert names == ["validate_sql", "finish"]
 
     def test_standard_tier_adds_probe_check(self, sqlite_registry):
-        """standard → + probe/check,无 catalog。"""
+        """standard → + probe/check + catalog 发现工具,三件套按需。"""
         registry = build_sql_registry(
             sqlite_registry, "How many students?", "en", "sqlite",
             complexity="standard",
         )
         names = [d["function"]["name"] for d in registry.defs()]
-        assert names == ["validate_sql", "probe_query", "check_result", "finish"]
+        assert names == [
+            "validate_sql", "probe_query", "check_result", "catalog", "finish",
+        ]
+        assert registry.spec("search_values") is not None
 
     def test_complex_tier_full_toolset(self, sqlite_registry):
-        """complex → 全量含 catalog。"""
+        """complex → core + catalog;三件套懒注册,解锁后进入 defs。"""
         registry = build_sql_registry(
             sqlite_registry, "How many students?", "en", "sqlite",
             complexity="complex",
         )
         names = [d["function"]["name"] for d in registry.defs()]
         assert names == [
+            "validate_sql", "probe_query", "check_result", "catalog", "finish",
+        ]
+        # 解锁 → 下一轮 defs 全量
+        for name in ("search_values", "lookup_schema", "explain_plan"):
+            registry.activate_lazy(name)
+        assert [d["function"]["name"] for d in registry.defs()] == [
             "validate_sql", "probe_query", "check_result",
-            "search_values", "lookup_schema", "explain_plan", "finish",
+            "catalog", "search_values", "lookup_schema", "explain_plan",
+            "finish",
         ]
 
 
