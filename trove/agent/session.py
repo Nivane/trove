@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
 from typing import Any, AsyncIterator
 
 from trove.core.types import (
@@ -84,6 +85,7 @@ class SessionManager:
         kb=None,
         connectors=None,
         memory=None,
+        role_resolver: Callable[[str], list[str] | None] | None = None,
     ):
         self.config = config
         self._store = session_store
@@ -95,10 +97,21 @@ class SessionManager:
         self._connectors = connectors
         # 统一记忆 facade(情景记忆/观测回流/偏好提取/画像);None = 记忆关闭
         self._memory = memory
+        # 用户角色解析(user_id → roles;None/异常 = 不启用工具 ACL 过滤)
+        self._role_resolver = role_resolver
         self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
         self._task_stores: dict[str, TaskStore] = {}  # session_id → TaskStore (惰性,同一会话 .db)
         # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
         self._result_cache: dict[tuple, dict[str, Any]] = {}
+
+    def _user_tool_roles(self, user_id: str | None) -> list[str] | None:
+        """解析用户角色列表(工具 ACL 用);无 resolver/失败 → None = 全可见。"""
+        if self._role_resolver is None or not user_id:
+            return None
+        try:
+            return self._role_resolver(user_id)
+        except Exception:
+            return None
 
     # ── Session lifecycle ────────────────────────────────
 
@@ -340,6 +353,7 @@ class SessionManager:
             lang=self.config.language,
             datasource=datasource or "",
             user_id=session.user_id,
+            tool_roles=self._user_tool_roles(session.user_id),
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -647,6 +661,7 @@ class SessionManager:
             lang=self.config.language,
             datasource=datasource or "",
             user_id=session.user_id,
+            tool_roles=self._user_tool_roles(session.user_id),
         )
         self._begin_trace(state)
         self._trace_run_start(state)

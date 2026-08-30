@@ -111,6 +111,7 @@ class LLMGateway:
         api_key: str | None = None,
         api_base: str | None = None,
         metadata: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
         """Send a chat request and return the full response text.
 
@@ -121,6 +122,9 @@ class LLMGateway:
             max_tokens: Maximum tokens in the response.
             api_key: Optional provider API key override.
             api_base: Optional provider API base override.
+            response_format: Optional structured-output hint passed to the
+                provider (e.g. {"type": "json_object"}) to replace fragile
+                text parsing. Mock mode ignores it.
 
         Returns:
             The full response text from the LLM.
@@ -145,6 +149,7 @@ class LLMGateway:
                     api_base=api_base,
                     stream=False,
                     metadata=metadata,
+                    response_format=response_format,
                 )
             except Exception as e:
                 last_error = e
@@ -180,6 +185,7 @@ class LLMGateway:
         temperature: float = 0.0,
         max_tokens: int = 16000,
         metadata: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Chat with tool-calling support; returns the full message.
 
@@ -202,6 +208,8 @@ class LLMGateway:
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
+            if response_format:
+                kwargs["response_format"] = response_format
             if metadata:
                 kwargs["metadata"] = metadata
 
@@ -366,6 +374,7 @@ class LLMGateway:
         api_base: str | None,
         stream: bool,
         metadata: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble litellm kwargs: provider params, then explicit overrides."""
         kwargs: dict[str, Any] = self._provider_kwargs(model)
@@ -382,6 +391,8 @@ class LLMGateway:
             kwargs["api_base"] = api_base
         if metadata:
             kwargs["metadata"] = metadata
+        if response_format:
+            kwargs["response_format"] = response_format
         return kwargs
 
     async def _call_litellm(
@@ -394,6 +405,7 @@ class LLMGateway:
         api_base: str | None,
         stream: bool,
         metadata: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
         """Make a blocking call via litellm.acompletion."""
         import litellm
@@ -401,6 +413,7 @@ class LLMGateway:
         kwargs = self._build_kwargs(
             model, messages, temperature, max_tokens, api_key, api_base, stream,
             metadata,
+            response_format=response_format,
         )
 
         start = time.monotonic()

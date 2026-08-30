@@ -86,6 +86,14 @@ class ToolSpec:
 
     parallel=False marks tools that must run before/after the parallel
     batch rather than inside it (ordering matters, e.g. ``finish``).
+
+    level/roles — tool governance (ACL): ``level`` is an operational
+    tier (core/catalog/admin, observability + default gating), ``roles``
+    is the list of user roles allowed to see this tool. ``roles=None``
+    means unrestricted (visible to every user); an empty list means the
+    tool is registered for internal/legacy use only. Filtering happens in
+    ``ToolRegistry.defs()``/``handlers()`` against the registry's
+    ``allowed_roles``.
     """
 
     def __init__(
@@ -99,6 +107,8 @@ class ToolSpec:
         retries: int = 0,
         retry_base_delay: float = 0.5,
         parallel: bool = True,
+        level: str = "core",
+        roles: list[str] | None = None,
     ):
         self.name = name
         self.func = func
@@ -108,6 +118,25 @@ class ToolSpec:
         self.retries = retries
         self.retry_base_delay = retry_base_delay
         self.parallel = parallel
+        self.level = level
+        self.roles = list(roles) if roles is not None else None
+
+    @property
+    def restricted(self) -> bool:
+        """True when this tool is gated behind a role (ACL-relevant)."""
+        return self.roles is not None and len(self.roles) > 0
+
+    def visible_to(self, allowed_roles: list[str] | None) -> bool:
+        """角色可见性判定:无角色限制 → 恒可见;未启用过滤 → 恒可见;
+        否则注册 roles 与 allowed 有交集才可见。
+
+        allowed_roles None = 未启用角色过滤(旧行为,全部可见)。
+        """
+        if self.roles is None or not self.roles:
+            return True
+        if allowed_roles is None:
+            return True
+        return bool(set(self.roles) & set(allowed_roles))
 
     def def_dict(self) -> dict[str, Any]:
         return {
@@ -132,10 +161,11 @@ class ToolRegistry:
         the payload only when 'answer' is a non-empty string, and terminates.
     """
 
-    def __init__(self, *, finish: bool = False):
+    def __init__(self, *, finish: bool = False, allowed_roles: list[str] | None = None):
         self._specs: dict[str, ToolSpec] = {}
         self._finish_spec: ToolSpec | None = None
         self._observers: list[Observer] = [_trace_observer]
+        self.allowed_roles = list(allowed_roles) if allowed_roles is not None else None
         if finish:
             self.add_finish_tool()
 
@@ -151,10 +181,14 @@ class ToolRegistry:
             FINISH_TOOL,
             _finish_handler,
             description=(
-                "Stop exploring and submit your final answer. Call ONLY when you "
-                "are ready to deliver: pass the final answer as plain text in "
-                "'answer' (the SQL statement, plan JSON, or verdict text — exactly "
-                "as it should be returned). Do not mix it with other tool calls."
+                "Stop exploring and submit your final answer as plain text "
+                "in 'answer' (the SQL statement, plan JSON, or verdict text "
+                "— exactly as it should be returned). Use when: you are ready "
+                "to deliver, after any probe/check finalization. Do NOT use "
+                "when: you still need to verify or fix the draft (call "
+                "probe_query/check_result first). "
+                "Example: finish(answer=\"SELECT COUNT(*) FROM students\"). "
+                "Do not mix it with other tool calls."
             ),
             parameters={
                 "type": "object",
@@ -167,6 +201,7 @@ class ToolRegistry:
                 "required": ["answer"],
             },
             parallel=False,
+            level="core",  # finish 是协议终止工具,所有角色必须可用
         )
         # finish 定义置于工具列表末尾(注册序靠后),避免抢占注意力
         self._finish_spec = spec
@@ -200,13 +235,22 @@ class ToolRegistry:
         )
 
     def defs(self) -> list[dict[str, Any]]:
-        ordered = [s for s in self._specs.values() if s is not self._finish_spec]
+        """工具定义(按 allowed_roles 裁剪;finish 恒可见、置末)。"""
+        visible = [
+            s for s in self._specs.values()
+            if s is not self._finish_spec and s.visible_to(self.allowed_roles)
+        ]
         if self._finish_spec is not None:
-            ordered.append(self._finish_spec)
-        return [s.def_dict() for s in ordered]
+            visible.append(self._finish_spec)
+        return [s.def_dict() for s in visible]
 
     def handlers(self) -> dict[str, ToolHandler]:
-        return {n: s.func for n, s in self._specs.items()}
+        """工具处理器映射(按 allowed_roles 裁剪;finish 恒保留供 harness 拦截)。"""
+        out: dict[str, ToolHandler] = {}
+        for n, s in self._specs.items():
+            if s is self._finish_spec or s.visible_to(self.allowed_roles):
+                out[n] = s.func
+        return out
 
 
 async def _finish_handler(arguments: dict[str, Any]) -> str:
@@ -344,6 +388,14 @@ async def run_agent_loop(
             }
         spec = registry.spec(name)
         if spec is None:
+            return {
+                "tc": tc, "arguments": arguments,
+                "observation": f"[ERR:ARGS_SCHEMA] Unknown tool: {name}",
+                "elapsed_ms": 0.0, "error": None, "finish_ok": False,
+            }
+        # 角色裁剪:模型不该调用不可见工具(不应出现在 defs);万一调用,
+        # 按 unknown 折叠回喂,不执行。
+        if not spec.visible_to(registry.allowed_roles):
             return {
                 "tc": tc, "arguments": arguments,
                 "observation": f"[ERR:ARGS_SCHEMA] Unknown tool: {name}",

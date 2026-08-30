@@ -826,19 +826,37 @@ def make_planner(
             # (agent 运行时不可能触达物理元数据)。
 
             start = time.monotonic()
-            response = await llm.chat(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                metadata={
-                    "node": "planner",
-                    "session_id": state.session_id,
-                    "run_id": state.run_id,
-                    "question": state.question[:80],
-                },
-            )
+            try:
+                response = await llm.chat(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    metadata={
+                        "node": "planner",
+                        "session_id": state.session_id,
+                        "run_id": state.run_id,
+                        "question": state.question[:80],
+                    },
+                    # 结构化输出:强约束"只输出 JSON"(替代正则剥围栏)。部分
+                    # provider 不支持 response_format → 捕获后不带它重试一次。
+                    response_format={"type": "json_object"},
+                )
+            except Exception:
+                response = await llm.chat(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    metadata={
+                        "node": "planner",
+                        "session_id": state.session_id,
+                        "run_id": state.run_id,
+                        "question": state.question[:80],
+                    },
+                )
             llm_detail = {
                 "model": model,
                 "elapsed_ms": int((time.monotonic() - start) * 1000),

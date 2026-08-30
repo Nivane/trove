@@ -12,6 +12,7 @@ termination.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -38,6 +39,29 @@ logger = get_logger(__name__)
 
 ROLLBACK_TARGET_RE = re.compile(r"TARGET\s*[:：]\s*(\w+)", re.I)
 DEFAULT_ROLLBACK_LADDER = ("gen_sql", "planner", "schema_linking")
+
+
+def _extract_rollback_target(analysis: str) -> str:
+    """从诊断文本提取回滚目标:优先 JSON 载荷,回退 TARGET: 行。
+
+    结构化输出升级:允许 ``{"rollback_target": "planner", ...}`` 形式的 JSON
+    载荷(替代脆弱正则)。两种形式都归一为小写目标名;取不到返回空串。
+    """
+    text = (analysis or "").strip()
+    if text:
+        m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+        candidate = m.group(1) if m else text
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                for key in ("rollback_target", "target"):
+                    val = str(data.get(key) or "").strip().lower()
+                    if val:
+                        return val
+        except (json.JSONDecodeError, ValueError):
+            pass
+    m = ROLLBACK_TARGET_RE.search(text)
+    return m.group(1).lower() if m else ""
 
 # 语义级规则族:过滤条件缺失/错误是「问题意图没被理解」→ revisor
 # （其余规则族 F1 形状 / F3 值域 / F4 排序都是实现形态 → fixer）
@@ -430,8 +454,7 @@ def make_analyze_error(
                     # 生成方下一轮仍能得到可执行的修正方向(而非空诊断)。
                     analysis = _fallback_analysis(error_text, state.lang)
 
-            match = ROLLBACK_TARGET_RE.search(analysis)
-            parsed = match.group(1).lower() if match else ""
+            parsed = _extract_rollback_target(analysis)
             target = _resolve_rollback(
                 parsed, ladder, state.last_rollback_target, same_failure,
             )

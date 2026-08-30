@@ -67,6 +67,10 @@ class WorkflowState(BaseModel):
     # 记忆)检索的键,由 SessionManager 从 session.user_id 注入。
     user_id: str = ""
 
+    # 用户角色(工具 ACL 过滤键):gen_sql 注册表按此裁剪可见工具(catalog
+    # 工具需要 analyst/admin)。None/空 = 未启用角色过滤(全部工具可见)。
+    tool_roles: list[str] | None = None
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 

@@ -221,6 +221,7 @@ async def _run_candidate_subagent(
     temperature: float,
     mode: str = "",
     rotation: int = 1,
+    probe_cache: dict | None = None,
 ) -> str | None:
     """独立 subagent 并行打磨单个备选候选("主 agent 规划 + subagent 执行")。
 
@@ -235,6 +236,10 @@ async def _run_candidate_subagent(
         services.connectors, rotated.question, rotated.lang, dialect,
         matched_tables=state.matched_tables or None,
         datasource=state.datasource,
+        complexity=state.complexity,
+        roles=state.tool_roles or None,
+        user_id=state.user_id,
+        probe_cache=probe_cache,
     )
     prompt = build_sql_prompt_from_state(rotated)
     hint = _STYLE_HINTS.get(mode)
@@ -244,7 +249,13 @@ async def _run_candidate_subagent(
     try:
         result = await run_agent_loop(
             services.llm, model,
-            system=render("gen_sql/system", lang=rotated.lang),
+            system=render(
+                "gen_sql/system",
+                lang=rotated.lang,
+                has_probe=services.connectors is not None,
+                has_catalog=state.complexity == "complex",
+                full_rules=state.complexity != "simple",
+            ),
             user=prompt,
             registry=registry,
             tool_timeout_s=20.0,
@@ -331,6 +342,10 @@ def _make_gen_sql_node(
     alt_subgraphs (one per temperature) takes precedence over
     subgraph_alt; subgraph_alt alone yields a single candidate.
     """
+    # 跨修正轮的 probe/check 结果缓存:闭包持有 → 同一次运行的多轮修正共享
+    # (registry 每轮重建,缓存独立于 registry 存活)。TTL 内同一数据源同一
+    # SQL 不重复执行;容量封顶防无限膨胀。
+    probe_cache: dict[Any, Any] = {}
 
     async def gen_sql(state: WorkflowState) -> dict[str, Any]:
         if state.error:
@@ -753,12 +768,18 @@ def _make_gen_sql_node(
             # 工具统一由注册表提供(定义+处理器+finish 协议+超时/并行策略);
             # check_hits 收集 check_result 的规则命中,循环结束后随 update
             # 带出(归因)。validate_sql 始终可用,probe/check 依赖 connectors。
-            # search_values / lookup_schema / explain_plan 也始终注册——
-            # agent 运行时可触达物理 schema。
+            # 任务自适应工具集(complexity 分档):standard → validate+probe+
+            # check;complex → 全量含 catalog(search/lookup/explain)。角色
+            # ACL 按 state.tool_roles 裁剪;probe_cache 在节点闭包持有 →
+            # 修正轮间共享同一 SQL 的 probe/check 结果(防重复执行)。
             registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
                 datasource=state.datasource,
+                complexity=complexity,
+                roles=state.tool_roles or None,
+                user_id=state.user_id,
+                probe_cache=probe_cache,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
@@ -770,6 +791,8 @@ def _make_gen_sql_node(
                     "gen_sql/system",
                     lang=sub_state.lang,
                     has_probe=services.connectors is not None,
+                    has_catalog=complexity == "complex",
+                    full_rules=complexity != "simple",
                 ),
                 user=prompt,
                 registry=registry,
@@ -889,6 +912,7 @@ def _make_gen_sql_node(
                         _run_candidate_subagent(
                             services, state, sub_state.model_copy(deep=True),
                             dialect, temperature=t, mode=m, rotation=idx + 1,
+                            probe_cache=probe_cache,
                         )
                         for idx, (t, m) in enumerate(schedule)
                     ),

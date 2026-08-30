@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import time
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -73,12 +74,31 @@ def _projection_width_matches(sql: str, dialect: str, actual_columns: int) -> bo
 
 
 def _extract_verdict(response: str) -> str:
-    """从回复中提取裁决词:逐行从末尾向前找 OK/EMPTY/RETRY:/NO_SQL: 行。
+    """从回复中提取裁决词:优先 JSON 载荷,回退逐行从末尾向前找 OK/EMPTY/RETRY:/NO_SQL: 行。
 
+    结构化输出升级:允许 ``{"verdict": "RETRY", "reason": "..."}`` 形式的 JSON
+    载荷(替代脆弱正则)。裁决词归一:RETRY/NO_SQL 带 reason 时拼成
+    ``RETRY: <reason>`` 形式(与行解析产物一致,下游不变)。解析失败回退原逻辑。
     推理模型(DeepSeek)常把整段 reasoning 放在 content 里、裁决词单列
     在末尾行。行首精确匹配避免把正文中提到的 "OK" 误当裁决。
     找不到时返回原文(调用方按不可解析处理)。
     """
+    text = (response or "").strip()
+    if text:
+        # 摘掉可能的 markdown 围栏后尝试 JSON 载荷
+        m = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+        candidate = m.group(1) if m else text
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                verdict = str(data.get("verdict") or data.get("verdict_text") or "").strip().upper()
+                reason = str(data.get("reason") or data.get("message") or "").strip()
+                if verdict in ("OK", "EMPTY"):
+                    return verdict
+                if verdict in ("RETRY", "NO_SQL"):
+                    return f"{verdict}: {reason}" if reason else verdict
+        except (json.JSONDecodeError, ValueError):
+            pass
     for line in reversed((response or "").splitlines()):
         m = re.match(r"^\s*(OK|EMPTY)\s*$", line, re.I)
         if m:

@@ -251,6 +251,20 @@ class TestRollbackDecision:
         assert update["rollback_target"] == "planner"
         assert update["last_rollback_target"] == "planner"
 
+    async def test_parses_target_from_json_payload(self):
+        """结构化输出:JSON 载荷 {"rollback_target": "planner", ...} 可解析。"""
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return '{"error_type": "Join", "judgment": "分组维度错了", "rollback_target": "planner"}'
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            sql="SELECT AVG(grade) FROM students",
+            error_feedback="wrong grouping",
+        ))
+        assert update["rollback_target"] == "planner"
+        assert update["last_rollback_target"] == "planner"
+
     async def test_missing_target_defaults_to_gen_sql(self):
         class LLM:
             async def chat(self, model, messages, **kwargs):

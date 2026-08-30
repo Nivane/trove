@@ -1898,6 +1898,40 @@ class TestPlanner:
         assert captured["metadata"]["node"] == "planner"
         assert captured["metadata"]["session_id"] == "s1"
 
+    async def test_planner_sends_response_format_json_object(self):
+        """结构化输出:planner 用 response_format json_object 强约束 JSON 输出。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        captured = {}
+
+        class CapturingLLM:
+            async def chat(self, model, messages, **kwargs):
+                captured.update(kwargs)
+                return '{"tables": ["students"]}'
+
+        node = make_planner(CapturingLLM(), AgentConfig(target="mock/model"))
+        await node(make_state(question="average grade by county"))
+        assert captured.get("response_format") == {"type": "json_object"}
+
+    async def test_planner_falls_back_when_response_format_rejected(self):
+        """provider 不支持 response_format → 捕获后不带它重试一次,不丢计划。"""
+        from trove.workflow.nodes.planner import make_planner
+
+        calls = []
+
+        class RejectingLLM:
+            async def chat(self, model, messages, **kwargs):
+                calls.append(kwargs)
+                if calls and len(calls) == 1:
+                    raise RuntimeError("response_format not supported")
+                return '{"tables": ["students"]}'
+
+        node = make_planner(RejectingLLM(), AgentConfig(target="mock/model"))
+        update = await node(make_state(question="average grade by county"))
+        assert len(calls) == 2  # 首次带 response_format 失败,第二次不带重试
+        assert calls[1].get("response_format") is None
+        assert update.get("plan")
+
     async def test_planner_sees_resolved_time_range(self):
         """planner 起草过滤条件时能看到解析出的时间范围;未解析时不注入。"""
         from trove.workflow.nodes.planner import make_planner
@@ -2100,6 +2134,22 @@ class TestReflect:
         assert update["verdict"] == "RETRY"
         assert update["reason"] == "wrong grouping"
         assert update["retry_count"] == 1
+
+    async def test_retry_verdict_from_json_payload(self):
+        """结构化输出:JSON 载荷 {"verdict": "RETRY", "reason": ...} 可解析。"""
+        node = self._make('{"verdict": "RETRY", "reason": "wrong grouping"}')
+        update = await node(make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]]))
+        assert update["verdict"] == "RETRY"
+        assert update["reason"] == "wrong grouping"
+        assert update["retry_count"] == 1
+
+    async def test_no_sql_verdict_from_json_payload(self):
+        """JSON 载荷 NO_SQL + reason → no_sql 标志 + 原因。"""
+        node = self._make('{"verdict": "NO_SQL", "reason": "table meaning question"}')
+        update = await node(make_state(row_count=3, columns=["x"], rows=[[1], [2], [3]]))
+        assert update["verdict"] == "NO_SQL"
+        assert update["reason"] == "table meaning question"
+        assert update["no_sql"] is True
 
     async def test_retry_cap_forces_ok(self):
         """At the retry cap a RETRY verdict is forced to OK."""

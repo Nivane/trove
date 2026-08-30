@@ -918,6 +918,74 @@ async def _search_one(
 
 # ── Tool factory (gen_sql ReAct 循环的工具集合) ─────────
 
+# 工具治理:审计带工具版本(语义变更时递增,便于长期日志归因"哪个版本的行为")。
+SQL_TOOL_VERSION = "2.0"
+
+# 工具描述治理:三段式描述标记(函数调用精度的第一杠杆——模型靠描述选工具)。
+# lint_tool_descriptions 校验:每个工具 description 必须含三段,长度有界。
+DESC_USE_MARKER = "Use when:"
+DESC_DONT_MARKER = "Do NOT use when:"
+DESC_EXAMPLE_MARKER = "Example:"
+DESC_MIN_CHARS = 120   # 过短 = 无法区分场景
+DESC_MAX_CHARS = 700   # 过长 = 挤占上下文/注意力
+
+
+def lint_tool_descriptions(tools: list[dict[str, Any]]) -> list[str]:
+    """三段式描述 lint(确定性,零 LLM):校验标记齐全 + 长度有界。
+
+    返回违规描述列表(空 = 全合规)。喂进测试/CI 作为 golden-route 的
+    静态前置:description 缺失"何时用/何时不用/示例"或长度越界,路由
+    精度无法保证——先红掉让作者补全。
+    """
+    problems: list[str] = []
+    for d in tools or []:
+        fn = d.get("function") or {}
+        name = fn.get("name", "")
+        desc = (fn.get("description") or "").strip()
+        if not desc:
+            problems.append(f"{name}: empty description")
+            continue
+        for marker in (DESC_USE_MARKER, DESC_DONT_MARKER, DESC_EXAMPLE_MARKER):
+            if marker not in desc:
+                problems.append(f"{name}: missing '{marker}'")
+        if len(desc) < DESC_MIN_CHARS:
+            problems.append(f"{name}: description too short ({len(desc)} < {DESC_MIN_CHARS})")
+        if len(desc) > DESC_MAX_CHARS:
+            problems.append(f"{name}: description too long ({len(desc)} > {DESC_MAX_CHARS})")
+    return problems
+
+# 工具结果 memoization:同一数据源同一 SQL 的 probe/check 结果在修正轮间共享。
+# cache 由调用方(graphs.py 的 gen_sql 节点闭包)持有 → 跨修正轮复用;
+# None = 不缓存(单发/测试直调保持每次真实执行)。带 TTL 防止跨问题陈旧。
+PROBE_CACHE_TTL_S = 60.0
+
+
+def _cache_key(datasource: str, sql: str, kind: str, limit: int) -> tuple[str, str, str, int]:
+    return (datasource or "", sql or "", kind, limit)
+
+
+def _cache_get(probe_cache: dict | None, key) -> str | None:
+    """读取缓存条目,命中且未过期 → 返回;否则 None。"""
+    if probe_cache is None:
+        return None
+    entry = probe_cache.get(key)
+    if entry is None:
+        return None
+    ts, text = entry
+    if time.monotonic() - ts > PROBE_CACHE_TTL_S:
+        return None
+    return text
+
+
+def _cache_put(probe_cache: dict | None, key, text: str) -> None:
+    """写入缓存(封顶:超限丢最旧,防无限膨胀)。"""
+    if probe_cache is None:
+        return
+    probe_cache[key] = (time.monotonic(), text)
+    if len(probe_cache) > 256:
+        oldest = min(probe_cache, key=lambda k: probe_cache[k][0])
+        probe_cache.pop(oldest, None)
+
 
 def build_sql_registry(
     connectors,
@@ -928,6 +996,10 @@ def build_sql_registry(
     finish: bool = True,
     matched_tables: list[str] | None = None,
     datasource: str = "",
+    complexity: str = "complex",
+    roles: list[str] | None = None,
+    user_id: str = "",
+    probe_cache: dict | None = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -947,11 +1019,23 @@ def build_sql_registry(
         dialect: SQL 方言(sqlglot 校验/重写用)。
         finish: 是否注册显式 finish 工具(harness 协议;legacy 层关闭)。
         matched_tables: schema linking 命中的表(静态检查 C1 的输入)。
+        complexity: 任务自适应工具集——simple → 仅 validate_sql + finish;
+            standard → + probe/check;complex → 全量含 catalog(search/lookup/
+            explain)。省去大量 schema token 与工具注意力开销。
+        roles: 用户角色列表(ToolSpec ACL 过滤;None = 不启用角色过滤)。
+        user_id: 审计字段(查询归因到人)。
+        probe_cache: 跨修正轮共享的 probe/check 结果缓存 dict;None = 不缓存。
     """
     from trove.llm.agent_loop import ToolRegistry
 
-    registry = ToolRegistry(finish=finish)
+    registry = ToolRegistry(finish=finish, allowed_roles=roles)
     registry.check_hits = []
+    registry.tool_version = SQL_TOOL_VERSION
+    registry.user_id = user_id
+
+    # 任务自适应工具集分档:simple → 仅 validate_sql + finish(执行类都不挂);
+    # standard → + probe/check(定稿验证);complex → 全量含 catalog。
+    tier = complexity if complexity in ("simple", "standard", "complex") else "complex"
 
     _schema_cache: dict[str, Any] = {}
 
@@ -983,7 +1067,16 @@ def build_sql_registry(
 
     registry.register(
         "validate_sql", validate_tool,
-        description="Validate a SQL query for syntax. Returns 'valid' or a list of errors.",
+        description=(
+            "Validate a SQL query for syntax (and static semantic warnings). "
+            "Returns 'valid', 'valid; WARNINGS: ...', or 'ERRORS: ...'. "
+            "Use when: you just drafted/edited SQL and want a cheap, "
+            "no-execution check before probing or finalizing. Do NOT use "
+            "when: you need real data/row evidence (use probe_query) or "
+            "final rule adjudication (use check_result). "
+            "Example: validate_sql(sql=\"SELECT name FROM students\") -> "
+            "\"valid\"."
+        ),
         parameters={
             "type": "object",
             "properties": {"sql": {"type": "string", "description": "The SQL to validate"}},
@@ -1002,36 +1095,51 @@ def build_sql_registry(
         return {t.name.lower() for t in schema.tables}
 
     async def _audit(tool: str, sql_text: str, result: str) -> None:
-        """一行结构化审计:工具 + 问题 + SQL + 结果签名(结果行数据不进日志)。
+        """一行结构化审计:工具版本 + 用户 + 工具 + 问题 + SQL + 结果签名。
 
         与 runlog 的工具 span 互补:span 用于本次运行的诊断回放,这里给
-        长期日志一条可 grep 的摘要(多租户 SaaS 的查询审计起点)。
+        长期日志一条可 grep 的摘要(多租户 SaaS 的查询审计起点)。用户与
+        工具版本使审计可按人/按版本归因,定位"谁问了什么、用了哪个版本
+        的行为"。
         """
         logger.info(
-            "sql_audit tool=%s question=%r sql=%r result=%s",
-            tool, question[:80], sql_text[:300], result[:200],
+            "sql_audit version=%s user=%r tool=%s question=%r sql=%r result=%s",
+            SQL_TOOL_VERSION, user_id, tool, question[:80], sql_text[:300], result[:200],
         )
 
     async def probe_tool(arguments: dict) -> str:
         # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
         sql_text = arguments.get("sql", "")
+        key = _cache_key(datasource, sql_text, "probe", PROBE_LIMIT)
+        cached = _cache_get(probe_cache, key)
+        if cached is not None:
+            await _audit("probe", sql_text, "(cache hit) " + cached[:200])
+            return cached
         result = await probe_query(
             connectors, sql_text, dialect,
             allowed_tables=await _allowed_tables(),
             datasource=datasource or None,
         )
+        _cache_put(probe_cache, key, result)
         await _audit("probe", sql_text, result)
         return result
 
     async def check_tool(arguments: dict) -> str:
         # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
         sql_text = arguments.get("sql", "")
+        key = _cache_key(datasource, sql_text, "check", CHECK_RESULT_LIMIT)
+        cached = _cache_get(probe_cache, key)
+        if cached is not None:
+            # 命中缓存 → 跳过重执行与规则校验(hits 已归因过),只回文本
+            await _audit("check", sql_text, "(cache hit) " + cached[:200])
+            return cached
         text, hits = await check_result(
             connectors, question, sql_text, dialect, lang=lang,
             allowed_tables=await _allowed_tables(),
             datasource=datasource or None,
         )
         registry.check_hits.extend(hits)
+        _cache_put(probe_cache, key, text)
         await _audit("check", sql_text, text)
         return text
 
@@ -1075,80 +1183,105 @@ def build_sql_registry(
             "foreign_keys": fks,
         })
 
-    registry.register(
-        "probe_query", probe_tool,
-        description=(
-            "Execute a SQL query read-only and return a short observation: "
-            '{"ok", "row_count", "columns", "rows" (first 5)}. '
-            "Fetches at most 10 rows, 5s timeout, never modifies data. "
-            "Use BEFORE finalizing a draft to verify result shape, row count, "
-            "and that filter values actually match data (e.g. a superlative "
-            "question returning 0 rows, or a self-invented filter value)."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
-            },
-            "required": ["sql"],
-        },
-    )
-    registry.register(
-        "check_result", check_tool,
-        description=(
-            "Run the deterministic rule checks against your draft SQL "
-            "(executes it read-only): result shape, row count, value "
-            "ranges, integer-division ratios. Returns 'OK (N rows)' or "
-            "'VIOLATION [rule] <reason>' — the reason is the fix "
-            "instruction. Call AFTER probe_query and BEFORE finalizing: "
-            "a VIOLATION means fix the SQL, never finalize a violating draft."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "The SQL to check (read-only)"},
-            },
-            "required": ["sql"],
-        },
-    )
-    registry.register(
-        "search_values", search_tool,
-        description=(
-            "Search a table for distinct values matching a keyword "
-            "(case-insensitive LIKE on real data). Use when you have a "
-            "candidate filter value from the question or Evidence but must "
-            "confirm its exact real form (spelling, case, abbreviations, "
-            "dirty values), or when you don't know which column stores a "
-            "value — omit the column to scan the table and get a "
-            "column→values map. Returns at most 10 values per column."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "table": {"type": "string", "description": "Table to search in"},
-                "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
-                "column": {"type": "string", "description": "Optional: restrict the search to one column"},
-            },
-            "required": ["table", "keyword"],
-        },
-    )
-    registry.register(
-        "lookup_schema", lookup_schema_tool,
+    if tier in ("standard", "complex"):
+        registry.register(
+            "probe_query", probe_tool,
             description=(
-                "Fetch the full schema of a single table: columns, primary "
-                "key, foreign keys. Use when a table is referenced in the "
-                "question but was NOT listed in the Database schema section "
-                "(budget pruning omits low-signal tables from the prompt) — "
-                "fetch it here instead of guessing its columns."
+                "Execute a SQL query read-only and return a short observation: "
+                '{"ok", "row_count", "columns", "rows" (first 5)}. '
+                "Use when: a superlative/filter draft risks 0 rows, the result "
+                "shape is uncertain, or you used a self-invented filter value — "
+                "verify BEFORE finalizing. Do NOT use when: you only need a "
+                "syntax check (use validate_sql) or you are already certain. "
+                "Example: probe_query(sql=\"SELECT name FROM students WHERE "
+                "county='Alameda'\") -> {\"ok\":true,\"row_count\":5,...}. "
+                "Fetches at most 10 rows, 5s timeout, never modifies data."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "table": {"type": "string", "description": "Table name to describe"},
+                    "sql": {"type": "string", "description": "The SQL to probe (read-only)"},
                 },
-                "required": ["table"],
+                "required": ["sql"],
             },
+            level="core",
         )
+        registry.register(
+            "check_result", check_tool,
+            description=(
+                "Run the deterministic rule checks against your draft SQL "
+                "(executes it read-only): result shape, row count, value "
+                "ranges, integer-division ratios. Returns 'OK (N rows)' or "
+                "'VIOLATION [rule] <reason>' — the reason is the fix "
+                "instruction. Use when: the draft is syntactically valid and "
+                "you are about to finalize — this is the final gate. Do NOT "
+                "use when: the SQL is still syntactically broken (validate "
+                "first) or you only need a quick shape look (probe_query). "
+                "Example: check_result(sql=\"SELECT COUNT(*) FROM students\") "
+                "-> \"OK (1 rows)\". A VIOLATION means fix the SQL, never "
+                "finalize a violating draft."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "The SQL to check (read-only)"},
+                },
+                "required": ["sql"],
+            },
+            level="core",
+        )
+
+    if tier == "complex":
+        registry.register(
+            "search_values", search_tool,
+            description=(
+                "Search a table for distinct values matching a keyword "
+                "(case-insensitive LIKE on real data). Use when: you have a "
+                "candidate filter value from the question or Evidence but must "
+                "confirm its exact real form (spelling, case, abbreviations, "
+                "dirty values), or you don't know which column stores a value "
+                "(omit the column to scan the table). Do NOT use when: the "
+                "value is already confirmed in the schema/Evidence or the "
+                "question needs no value filtering. "
+                "Example: search_values(table=\"students\", keyword=\"Ala\") "
+                "-> {\"ok\":true,\"hits\":{\"county\":[\"Alameda\"]}}. "
+                "Returns at most 10 values per column."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string", "description": "Table to search in"},
+                    "keyword": {"type": "string", "description": "Value fragment to match (case-insensitive)"},
+                    "column": {"type": "string", "description": "Optional: restrict the search to one column"},
+                },
+                "required": ["table", "keyword"],
+            },
+            level="catalog",
+            roles=["analyst", "admin"],
+        )
+        registry.register(
+            "lookup_schema", lookup_schema_tool,
+                description=(
+                    "Fetch the full schema of a single table: columns, primary "
+                    "key, foreign keys. Use when: a table is referenced in the "
+                    "question but was NOT listed in the Database schema section "
+                    "(budget pruning omits low-signal tables from the prompt). "
+                    "Do NOT use when: the table's columns are already in the "
+                    "schema context (re-fetching wastes a round). "
+                    "Example: lookup_schema(table=\"orders\") -> "
+                    "{\"ok\":true,\"columns\":\"id, amount, ...\","
+                    "\"primary_key\":\"id\"}."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "table": {"type": "string", "description": "Table name to describe"},
+                    },
+                    "required": ["table"],
+                },
+                level="catalog",
+                roles=["analyst", "admin"],
+            )
 
     async def explain_tool(arguments: dict) -> str:
         # 执行计划(EXPLAIN,只读、毫秒级):定稿前检查索引使用/join 顺序/
@@ -1186,24 +1319,30 @@ def build_sql_registry(
         await _audit("explain", sql, out)
         return out
 
-    registry.register(
-        "explain_plan", explain_tool,
-        description=(
-            "Fetch the execution plan for a SELECT (EXPLAIN, read-only, "
-            "milliseconds, no row data). Returns the engine's access plan "
-            "lines — index usage, join order, full-table scans. Use when "
-            "a draft joins several large tables or filters look "
-            "expensive: spot a missing index / scan before finalizing, "
-            "not after execution."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "sql": {"type": "string", "description": "The SQL to explain (read-only)"},
+    if tier == "complex":
+        registry.register(
+            "explain_plan", explain_tool,
+            description=(
+                "Fetch the execution plan for a SELECT (EXPLAIN, read-only, "
+                "milliseconds, no row data). Use when: a draft joins several "
+                "large tables or filters look expensive and you must spot a "
+                "missing index / full-table scan BEFORE finalizing. Do NOT "
+                "use when: the query is small/simple, needs no optimization, "
+                "or you only need row data (use probe_query). "
+                "Example: explain_plan(sql=\"SELECT * FROM orders o JOIN "
+                "clients c ON o.client_id=c.id\") -> {\"ok\":true,\"plan\":"
+                "[\"SCAN orders\", ...]}."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "The SQL to explain (read-only)"},
+                },
+                "required": ["sql"],
             },
-            "required": ["sql"],
-        },
-    )
+            level="catalog",
+            roles=["analyst", "admin"],
+        )
     return registry
 
 
@@ -1287,7 +1426,10 @@ def make_generate(
             config.model_fast or config.model_for_node("gen_sql", state.complexity)
         ) if is_simple_fix else config.model_for_node("gen_sql", state.complexity)
         start = time.monotonic()
-        system_prompt = render("gen_sql/system", lang=state.lang)
+        system_prompt = render(
+            "gen_sql/system", lang=state.lang,
+            full_rules=state.complexity != "simple",
+        )
         response = await llm.chat(
             model=model,
             messages=[
