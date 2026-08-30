@@ -134,14 +134,22 @@ class JobStore:
             else self.root / ".trove" / JOBS_DIR_NAME
         )
         self.db_path = self.jobs_dir / "jobs.sqlite"
+        from trove.storage.backends import resolve_backend
 
-    async def _conn(self) -> aiosqlite.Connection:
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self.db_path))
-        await conn.execute(_CREATE_JOBS)
-        await conn.execute(_CREATE_RUNS)
-        await conn.commit()
-        return conn
+        self._backend = resolve_backend(str(self.db_path))
+        self._schema_ready = False
+
+    async def _conn(self):
+        await self._ensure_schema()
+        return self._backend
+
+    async def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        from trove.storage.backends.base import script_statements
+
+        await self._backend.executescript(script_statements([_CREATE_JOBS, _CREATE_RUNS]))
+        self._schema_ready = True
 
     # ── jobs ─────────────────────────────────────────────
 
@@ -182,7 +190,7 @@ class JobStore:
     async def get_job(self, job_id: str) -> Job | None:
         conn = await self._conn()
         try:
-            async with conn.execute(
+            async with await conn.execute(
                 "SELECT * FROM jobs WHERE id = ?", (job_id,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -217,6 +225,7 @@ class JobStore:
                     run.row_count, run.verdict,
                     json.dumps(run.result_json, ensure_ascii=False),
                 ),
+                need_lastrowid=True,
             )
             await conn.commit()
             return int(cursor.lastrowid)
@@ -245,7 +254,7 @@ class JobStore:
         """Most recent run row for a job (alert dedup + status display)."""
         conn = await self._conn()
         try:
-            async with conn.execute(
+            async with await conn.execute(
                 """SELECT id, started_at, finished_at, status, alert_triggered,
                    alert_sent, row_count, verdict, result_json
                    FROM runs WHERE job_id = ? ORDER BY id DESC LIMIT 1""",

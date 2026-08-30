@@ -197,7 +197,7 @@ class LineageService:
         shard = normalization_key(sql)
         conn = await self._conn()
         try:
-            async with conn.execute(
+            async with await conn.execute(
                 "SELECT id, runs FROM lineage_query_log WHERE datasource = ? AND shard = ?",
                 (datasource, shard),
             ) as cursor:
@@ -230,7 +230,7 @@ class LineageService:
             return
         conn = await self._conn()
         try:
-            async with conn.execute(
+            async with await conn.execute(
                 "SELECT mtime FROM lineage_sync WHERE file_path = ?", (str(path),),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -255,9 +255,13 @@ class LineageService:
                     continue
                 if digest.kind in ("create_view", "create_table_as") and digest.name:
                     await conn.execute(
-                        """INSERT OR REPLACE INTO lineage_definitions
+                        """INSERT INTO lineage_definitions
                            (datasource, name, kind, sql, dialect, digest_json, created_at, updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(datasource, name) DO UPDATE SET
+                             kind=excluded.kind, sql=excluded.sql,
+                             dialect=excluded.dialect, digest_json=excluded.digest_json,
+                             updated_at=excluded.updated_at""",
                         (
                             datasource, digest.name, digest.kind, sql,
                             entry.get("dialect", "sqlite"),
@@ -268,16 +272,22 @@ class LineageService:
                     # Definition-file queries are stable consumers → shard 'def:<norm>'
                     shard = "def:" + (entry.get("name", "") or normalization_key(sql))[:64]
                     await conn.execute(
-                        """INSERT OR REPLACE INTO lineage_query_log
+                        """INSERT INTO lineage_query_log
                            (datasource, shard, sql, dialect, digest_json, first_seen, last_seen, runs)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(datasource, shard) DO UPDATE SET
+                             sql=excluded.sql, dialect=excluded.dialect,
+                             digest_json=excluded.digest_json,
+                             last_seen=excluded.last_seen,
+                             runs=lineage_query_log.runs + 1""",
                         (
                             datasource, shard, sql, entry.get("dialect", "sqlite"),
                             _digest_json(digest), _now(), _now(), 1,
                         ),
                     )
             await conn.execute(
-                "INSERT OR REPLACE INTO lineage_sync (file_path, mtime) VALUES (?, ?)",
+                "INSERT INTO lineage_sync (file_path, mtime) VALUES (?, ?) "
+                "ON CONFLICT(file_path) DO UPDATE SET mtime = excluded.mtime",
                 (str(path), mtime),
             )
             await conn.commit()
@@ -310,7 +320,7 @@ class LineageService:
     async def _definitions(self, datasource: str) -> list[dict[str, Any]]:
         conn = await self._conn()
         try:
-            async with conn.execute(
+            async with await conn.execute(
                 "SELECT name, kind, sql, dialect, digest_json, created_at, updated_at "
                 "FROM lineage_definitions WHERE datasource = ? ORDER BY name",
                 (datasource,),
@@ -331,7 +341,7 @@ class LineageService:
     async def _query_log(self, datasource: str) -> list[dict[str, Any]]:
         conn = await self._conn()
         try:
-            async with conn.execute(
+            async with await conn.execute(
                 "SELECT sql, dialect, digest_json, first_seen, last_seen, runs "
                 "FROM lineage_query_log WHERE datasource = ? ORDER BY last_seen DESC",
                 (datasource,),

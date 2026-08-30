@@ -1,0 +1,65 @@
+name: backend
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # 常驻 Postgres(pgvector 镜像,vector 扩展):CI 测试的数据库底座。
+      # 内部状态存储走统一 Storage 抽象——生产 PostgreSQL / 测试内存 SQLite。
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: trove
+          POSTGRES_PASSWORD: trove
+          POSTGRES_DB: trove
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trove -d trove"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (with postgres extra)
+        run: uv sync --extra postgres
+
+      # 零网络主套件:内部 store 走内存 SQLite 兜底(不设 TROVE_STORAGE_URL)。
+      - name: Run unit tests (SQLite fallback, zero network)
+        run: uv run pytest -m "not integration" -q
+
+      # 真实 Postgres 集成:统一存储抽象 + pg_hybrid 检索在 PG 上验证。
+      - name: Run Postgres integration tests
+        env:
+          PG_TEST_URL: postgresql://trove:trove@127.0.0.1:5432/trove
+          TROVE_STORAGE_URL: postgresql://trove:trove@127.0.0.1:5432/trove
+        run: |
+          uv run pytest -m integration -q \
+            tests/services/retrieval/test_pg_store.py \
+            tests/services/retrieval/test_pg_hybrid_backend.py
+          # 统一存储抽象在 PG 上的内部 store 端到端(见 tests/storage/test_pg_storage.py)
+          uv run pytest -m integration -q tests/storage/test_pg_storage.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --extra postgres
+      - name: Import smoke
+        run: uv run python -c "import trove.main; print('import ok')"

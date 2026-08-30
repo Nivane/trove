@@ -114,6 +114,17 @@ Open `http://localhost:8080/` (default login: admin / `admin123` — local demo 
 
 The datasource name is the database name; each database evolves its own knowledge base under `.trove/kb/<database>/`. Drivers load lazily on demand. For a new datasource, implement the six `DatabaseAdapter` methods and register it in `registry.py`.
 
+## Internal State & Storage
+
+Trove's own state (sessions, tasks, user facts, memory episodes/preferences, auth, settings, jobs, lineage, query log, LangGraph checkpoints) runs on one **unified StorageBackend** (`trove/storage/backends/`):
+
+- **Production = PostgreSQL**: set `TROVE_STORAGE_URL=postgresql://…` (or run with the compose Postgres stack). All internal stores + the LangGraph checkpointer (`AsyncPostgresSaver`) land in the same PG instance.
+- **Tests / local = in-memory SQLite fallback**: with `TROVE_STORAGE_URL` unset, the same store code runs on the in-memory `SqliteBackend` — zero network, zero keys, keeping the test suite self-contained.
+- The backend translates SQLite idioms (`?`→`%s`, `lastrowid`→`RETURNING id`, `AUTOINCREMENT`→`IDENTITY`) so stores keep one portable codebase.
+- **Not on this abstraction**: the KB mirror (`kb.sqlite`, FTS5) stays on the SQLite fallback (PG production uses the `pg_hybrid` retrieval backend for KB), and the business datasource adapters remain the user's own databases.
+
+Real-Postgres coverage is env-gated (`-m integration`, `PG_TEST_URL`) — see `tests/storage/test_pg_storage.py` and `.github/workflows/backend.yml`.
+
 ## Configuration
 
 Configuration precedence (model selection): CLI `--model` > `conf/agent.yml` / `~/.trove/conf/agent.yml`.

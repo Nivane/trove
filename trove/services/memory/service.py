@@ -391,17 +391,19 @@ class MemoryService:
         """Bound the append-only retrieval query log (best-effort)."""
         from datetime import timedelta
 
-        path = self.home / "retrieval" / "query_log.sqlite"
-        if not path.exists():
-            return 0
-        import aiosqlite
+        from trove.services.retrieval.query_log import QueryLogRecorder
 
+        path = self.home / "retrieval" / "query_log.sqlite"
+        rec = QueryLogRecorder(path)
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
-        async with aiosqlite.connect(path) as db:
-            cursor = await db.execute(
+        try:
+            await rec._ensure()
+            cursor = await rec._backend.execute(
                 "DELETE FROM retrieval_log WHERE ts < ?", (cutoff,))
-            await db.commit()
+            await rec._backend.commit()
             return cursor.rowcount
+        except Exception:
+            return 0
 
     async def detect_schema_drift(self) -> dict[str, Any]:
         """Live schema vs KB schema_notes drift (zero LLM)."""

@@ -224,7 +224,7 @@ async def test_list_all_cross_project(tmp_home):
     by_id = {s["session_id"]: s for s in all_sessions}
     assert by_id[sid_a]["project_name"] == "proj_a"
     assert by_id[sid_b]["project_name"] == "proj_b"
-    assert all(s["size_bytes"] > 0 for s in all_sessions)
+    assert all("size_bytes" in s for s in all_sessions)  # 单库多表模型无独立文件体积
     assert all("user_id" in s and "updated_at" in s for s in all_sessions)
     # 降序:第一项 updated_at >= 第二项
     from datetime import datetime as dt

@@ -62,19 +62,28 @@ def now_iso() -> str:
 
 
 class EpisodeStore:
-    """SQLite-backed episodic memory (``~/.trove/memory/episodes.sqlite``)."""
+    """Episodic memory store (``~/.trove/memory/episodes.sqlite``, StorageBackend-backed)."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
+        from trove.storage.backends import resolve_backend
 
-    async def _conn(self) -> aiosqlite.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self.db_path))
-        await conn.execute(EPISODES_TABLE_SQL)
-        await conn.execute(_EPISODE_UNIQ)
-        await conn.execute(_EPISODE_SCOPE)
-        await conn.commit()
-        return conn
+        self._backend = resolve_backend(str(db_path))
+        self._schema_ready = False
+
+    async def _conn(self):
+        await self._ensure_schema()
+        return self._backend
+
+    async def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        from trove.storage.backends.base import script_statements
+
+        await self._backend.executescript(
+            script_statements([EPISODES_TABLE_SQL, _EPISODE_UNIQ, _EPISODE_SCOPE])
+        )
+        self._schema_ready = True
 
     # ── Write ─────────────────────────────────────────────
 

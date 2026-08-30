@@ -69,17 +69,24 @@ def is_usable_preference(text: str) -> bool:
 
 
 class PreferenceStore:
-    """Pending-preference drafts (auto-extraction output awaiting confirm)."""
+    """Pending-preference drafts (StorageBackend-backed)."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
+        from trove.storage.backends import resolve_backend
 
-    async def _conn(self) -> aiosqlite.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self.db_path))
-        await conn.execute(PREFS_TABLE_SQL)
-        await conn.commit()
-        return conn
+        self._backend = resolve_backend(str(db_path))
+        self._schema_ready = False
+
+    async def _conn(self):
+        await self._ensure_schema()
+        return self._backend
+
+    async def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        await self._backend.executescript(PREFS_TABLE_SQL)
+        self._schema_ready = True
 
     async def add(
         self, scope: MemoryScope, fact: str, *,
@@ -103,12 +110,13 @@ class PreferenceStore:
                 )
                 await conn.commit()
                 return await self.get(row[0])
-            await conn.execute(
+            cursor = await conn.execute(
                 "INSERT INTO preference_drafts "
                 "(user_id, datasource, fact, evidence, confidence, status, "
                 " created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
                 (scope.user_id, scope.datasource, fact, evidence[:200],
                  confidence, ts, ts),
+                need_lastrowid=True,
             )
             await conn.commit()
             return await self.get(cursor.lastrowid)

@@ -38,17 +38,24 @@ CREATE TABLE IF NOT EXISTS settings (
 
 
 class SettingsStore:
-    """Raw key/value access to ``{home}/settings.db``."""
+    """Raw key/value access to ``{home}/settings.db`` (StorageBackend-backed)."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
+        from trove.storage.backends import resolve_backend
 
-    async def _conn(self) -> aiosqlite.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = await aiosqlite.connect(str(self.db_path))
-        await conn.execute(SETTINGS_TABLE_SQL)
-        await conn.commit()
-        return conn
+        self._backend = resolve_backend(str(db_path))
+        self._schema_ready = False
+
+    async def _conn(self):
+        await self._ensure_schema()
+        return self._backend
+
+    async def _ensure_schema(self) -> None:
+        if self._schema_ready:
+            return
+        await self._backend.executescript(SETTINGS_TABLE_SQL)
+        self._schema_ready = True
 
     async def get_all(self) -> dict[str, Any]:
         """Return every stored setting, JSON-decoded."""

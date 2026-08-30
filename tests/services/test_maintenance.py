@@ -53,16 +53,11 @@ async def _seed(store: SessionStore, project: str, user: str, *, updated_delta_m
     ]
     await store.save_session(session)
     if updated_delta_min:
-        # Rewrite updated_at in meta to simulate aging
-        import aiosqlite
-        db = store.session_db_path(project, session.session_id)
-        conn = await aiosqlite.connect(str(db))
-        await conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('updated_at', ?)",
-            ((_utcnow() - timedelta(minutes=updated_delta_min)).isoformat(),),
+        # Rewrite updated_at to simulate aging (single-DB model hook)
+        await store.set_updated_at(
+            project, session.session_id,
+            _utcnow() - timedelta(minutes=updated_delta_min),
         )
-        await conn.commit()
-        await conn.close()
     return session.session_id
 
 
@@ -148,8 +143,8 @@ async def test_sweep_idempotent(tmp_home):
     assert stats2.removed_sessions == 0
 
 
-async def test_sweep_naive_updated_at_falls_back_to_mtime(tmp_home):
-    """meta.updated_at 为无时区偏移(naive)的脏数据时不崩溃,回退文件 mtime 判活跃。"""
+async def test_sweep_naive_updated_at_falls_back(tmp_home):
+    """meta.updated_at 为无时区偏移(naive)的脏数据时不崩溃,按未活跃处理。"""
     from trove.services.maintenance import MaintenanceService
 
     store = SessionStore(home_dir=str(tmp_home))
@@ -157,21 +152,15 @@ async def test_sweep_naive_updated_at_falls_back_to_mtime(tmp_home):
     old_id = await _seed(store, "proj", "alice", updated_delta_min=60)
     await _seed(store, "proj", "alice", updated_delta_min=30)
     # 把最旧会话的 updated_at 改写为 naive 时间戳(无时区偏移,脏数据)
-    import aiosqlite
-    db = store.session_db_path("proj", old_id)
-    conn = await aiosqlite.connect(str(db))
-    await conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('updated_at', ?)",
-        ((_utcnow() - timedelta(minutes=120)).replace(tzinfo=None).isoformat(),),
+    await store.set_updated_at(
+        "proj", old_id,
+        (_utcnow() - timedelta(minutes=120)).replace(tzinfo=None),
     )
-    await conn.commit()
-    await conn.close()
     svc = MaintenanceService(store, ckpt, _retention(max_sessions=1, grace_min=10))
     stats = await svc.sweep()
     assert stats.errors == 0  # 不崩溃
-    assert stats.skipped_active == 1  # 回退 mtime(新文件)→ 活跃 → 豁免
-    assert stats.removed_sessions == 0
-    assert len(await store.list_all()) == 2  # 文件全部还在
+    assert stats.removed_sessions == 1  # naive 时间戳视为未活跃 → 删除
+    assert len(await store.list_all()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +347,8 @@ async def test_prune_thread_depth_active_grace_exempts(tmp_home):
         assert len(active_remaining) == 60  # 活跃线程被豁免
 
 
-async def test_sweep_checkpoint_failure_keeps_file(tmp_home):
-    """adelete_thread 抛错 → 半删保护:文件保留、removed 全 0、errors=1。"""
+async def test_sweep_checkpoint_failure_keeps_session(tmp_home):
+    """adelete_thread 抛错 → 半删保护:会话保留、removed 全 0、errors=1。"""
     from trove.services.maintenance import MaintenanceService
 
     class _FailingCheckpointer:
@@ -374,14 +363,14 @@ async def test_sweep_checkpoint_failure_keeps_file(tmp_home):
     assert stats.removed_sessions == 0
     assert stats.removed_checkpoints == 0
     assert stats.errors == 1
-    assert store.session_db_path("proj", old_id).exists()  # 半删保护:文件还在
+    # 半删保护:会话仍可加载(未删除)
+    loaded = await store.load_session(old_id, "proj")
+    assert loaded.session_id == old_id
     assert len(await store.list_all()) == 2
 
 
-async def test_sweep_file_delete_failure_continues(tmp_home, monkeypatch):
-    """unlink 抛错 → 该会话记 errors=1,其余候选删除照常进行。"""
-    from pathlib import Path
-
+async def test_sweep_delete_failure_continues(tmp_home, monkeypatch):
+    """delete_session 抛错 → 该会话记 errors=1,其余候选删除照常进行。"""
     from trove.services.maintenance import MaintenanceService
 
     store = SessionStore(home_dir=str(tmp_home))
@@ -389,21 +378,21 @@ async def test_sweep_file_delete_failure_continues(tmp_home, monkeypatch):
     for delta in (60, 30, 10):
         await _seed(store, "proj", "alice", updated_delta_min=delta)
 
-    real_unlink = Path.unlink
-    unlink_calls = {"n": 0}
+    real_delete = SessionStore.delete_session
+    delete_calls = {"n": 0}
 
-    def _flaky_unlink(self, *args, **kwargs):
-        unlink_calls["n"] += 1
-        if unlink_calls["n"] == 1:
-            raise PermissionError("simulated unlink failure")
-        return real_unlink(self, *args, **kwargs)
+    async def _flaky_delete(self, session_id, project_cwd="."):
+        delete_calls["n"] += 1
+        if delete_calls["n"] == 1:
+            raise PermissionError("simulated delete failure")
+        return await real_delete(self, session_id, project_cwd)
 
-    monkeypatch.setattr("pathlib.Path.unlink", _flaky_unlink)
+    monkeypatch.setattr(SessionStore, "delete_session", _flaky_delete)
 
     svc = MaintenanceService(store, ckpt, _retention(max_sessions=1, grace_min=0))
     stats = await svc.sweep()
     assert stats.errors == 1
     assert stats.removed_sessions == 1  # 第二个候选删除成功
     assert len(ckpt.deleted) == 2  # 两个候选都删了 checkpoint 链
-    # 3 个会话 - 成功删除 1 - unlink 失败仍在 1 = 剩 2(unlink 失败不中断其余删除)
+    # 3 个会话 - 成功删除 1 - 删除失败仍在 1 = 剩 2(删除失败不中断其余删除)
     assert len(await store.list_all()) == 2
