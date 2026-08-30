@@ -64,7 +64,14 @@ class MemoryService:
         # 数据源级配置(默认数据源 / retrieval 后端等),用于 schema_drift
         # 与生命周期。可空——缺失时相关能力静默降级。
         self.config_resolver = config_resolver
-        self.episodes = EpisodeStore(self.home / "memory" / "episodes.sqlite")
+        # ⑤ 数据源级 embedder 工厂(复用 datasources.yml 的 embedder_backend /
+        # embedding_model 配置,与 KB 稠密通道同一 build_embedder);按数据源
+        # 缓存实例,缺失(无配置/无网关)的数据源走纯词面路径。
+        self._embedder_cache: dict[str, Any] = {}
+        self.episodes = EpisodeStore(
+            self.home / "memory" / "episodes.sqlite",
+            embedder_factory=self._embedder_for,
+        )
         self.preferences = PreferenceStore(self.home / "memory" / "preferences.sqlite")
 
     # ── Public config helpers ─────────────────────────────
@@ -77,6 +84,30 @@ class MemoryService:
         if self.connectors is not None:
             return getattr(self.connectors, "default_name", "") or ""
         return ""
+
+    def _embedder_for(self, datasource: str) -> Any | None:
+        """数据源级 embedder(⑤ hybrid episodes 通道),按数据源缓存。
+
+        配置来自 config_resolver(datasources.yml 的 embedder_backend /
+        embedding_model);无网关或未配置的数据源 → None(纯词面路径)。
+        """
+        if not datasource or self.llm is None or self.config_resolver is None:
+            return None
+        if datasource in self._embedder_cache:
+            return self._embedder_cache[datasource]
+        embedder: Any | None = None
+        try:
+            cfgs = self.config_resolver.load_configs()
+            for cfg in cfgs:
+                if getattr(cfg, "name", "") == datasource:
+                    from trove.services.kb.backends.dense import build_embedder
+
+                    embedder = build_embedder(cfg, self.llm)
+                    break
+        except Exception as e:
+            logger.warning("Embedder config lookup failed for %s: %s", datasource, e)
+        self._embedder_cache[datasource] = embedder
+        return embedder
 
     # ── Read (unified dispatch) ───────────────────────────
 
