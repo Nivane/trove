@@ -635,3 +635,89 @@ class TestErrorClassificationWiring:
         result = await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
         assert calls["n"] == 3
         assert "recovered" in result["tool_history"][0]["observation"]
+
+
+class TestPromptCachingSplit:
+    """cache_prefix 拆分:system/user 内容块断点 + 末工具定义断点。
+
+    不传 cache_prefix 的调用方(planner/reflect 等)必须字节级原样——
+    缓存断点开关绝不影响无稳定前缀的路径。
+    """
+
+    async def test_cache_prefix_splits_into_blocks(self):
+        """system → 带断点的内容块列表;user → [稳定前缀+断点, 剩余]。"""
+        llm = ScriptedLLM([{"content": "done", "tool_calls": []}])
+        await run_agent_loop(
+            llm, "anthropic/claude-opus-4",
+            "sys rules", "stable-prefix\nquestion body",
+            TOOL_DEF, {"echo": _echo}, max_rounds=2,
+            cache_prefix="stable-prefix\n",
+        )
+        first = llm.calls[0]
+        assert first[0] == {"role": "system", "content": [
+            {"type": "text", "text": "sys rules",
+             "cache_control": {"type": "ephemeral"}},
+        ]}
+        assert first[1] == {"role": "user", "content": [
+            {"type": "text", "text": "stable-prefix\n",
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "question body"},
+        ]}
+
+    async def test_last_tool_def_gets_cache_control(self):
+        """工具级缓存:仅最后一个工具定义打断点(Anthropic 工具缓存规则)。"""
+        from types import SimpleNamespace
+
+        captured: dict = {}
+
+        async def fake_chat_full(model, messages, tools=None, **kwargs):
+            captured["tools"] = tools
+            captured["messages"] = list(messages)
+            return {"content": "done", "tool_calls": []}
+
+        tools = [
+            {"type": "function", "function": {"name": "a", "description": "d", "parameters": {}}},
+            {"type": "function", "function": {"name": "b", "description": "d", "parameters": {}}},
+        ]
+        await run_agent_loop(
+            SimpleNamespace(chat_full=fake_chat_full),
+            "anthropic/claude-opus-4", "sys", "prefix",
+            tools, {"a": _echo, "b": _echo}, max_rounds=2,
+            cache_prefix="pre",
+        )
+        assert "cache_control" not in captured["tools"][0]
+        assert captured["tools"][1]["cache_control"] == {"type": "ephemeral"}
+
+    async def test_no_split_without_cache_prefix(self):
+        """不传 cache_prefix:字节级原样(planner/reflect 等调用方不受影响)。"""
+        llm = ScriptedLLM([{"content": "done", "tool_calls": []}])
+        await run_agent_loop(
+            llm, "anthropic/claude-opus-4", "sys", "user",
+            TOOL_DEF, {"echo": _echo}, max_rounds=2,
+        )
+        assert llm.calls[0] == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]
+        # 工具定义也原样(无 cache_control)
+
+    async def test_prompt_caching_off_keeps_plain_messages(self):
+        """prompt_caching=False:传了 cache_prefix 也不拆。"""
+        from types import SimpleNamespace
+
+        captured: dict = {}
+
+        async def fake_chat_full(model, messages, tools=None, **kwargs):
+            captured["messages"] = list(messages)
+            return {"content": "done", "tool_calls": []}
+
+        await run_agent_loop(
+            SimpleNamespace(chat_full=fake_chat_full),
+            "anthropic/claude-opus-4", "sys", "user",
+            TOOL_DEF, {"echo": _echo}, max_rounds=2,
+            cache_prefix="stable-prefix\n", prompt_caching=False,
+        )
+        assert captured["messages"] == [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "user"},
+        ]

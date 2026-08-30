@@ -198,6 +198,11 @@ class LLMGateway:
         import litellm
         start = time.monotonic()
         try:
+            # 非 anthropic provider:剥掉 cache_control 断点(见 _build_kwargs)。
+            if not self._supports_cache_control(model):
+                messages = self._strip_cache_control(messages)
+                if tools:
+                    tools = self._strip_tool_cache(tools)
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
@@ -364,6 +369,45 @@ class LLMGateway:
                 return dict(provider.litellm_params)
         return {}
 
+    # ── Prompt caching ────────────────────────────────────
+
+    @staticmethod
+    def _supports_cache_control(model: str) -> bool:
+        """Provider 是否支持显式 ``cache_control`` 断点。
+
+        Anthropic 是唯一暴露显式断点的 provider(``cache_control:
+        {"type": "ephemeral"}``);OpenAI 系自动缓存(无需断点,带上也
+        无收益),其余 provider 会直接拒绝未知 key——都归为不支持,由
+        gateway 剥掉断点,行为等价、只是没有缓存收益。
+        """
+        return model.split("/", 1)[0] == "anthropic"
+
+    @staticmethod
+    def _strip_cache_control(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove ``cache_control`` markers from content blocks (provider
+        that would reject the unknown key). Returns new structures, never
+        mutates the caller's messages."""
+        out: list[dict[str, Any]] = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                blocks = []
+                for block in content:
+                    if isinstance(block, dict) and "cache_control" in block:
+                        block = {k: v for k, v in block.items() if k != "cache_control"}
+                    blocks.append(block)
+                msg = {**msg, "content": blocks}
+            out.append(msg)
+        return out
+
+    @staticmethod
+    def _strip_tool_cache(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Remove ``cache_control`` from tool definitions (Anthropic-only key)."""
+        return [
+            {k: v for k, v in t.items() if k != "cache_control"}
+            for t in tools
+        ]
+
     def _build_kwargs(
         self,
         model: str,
@@ -378,6 +422,11 @@ class LLMGateway:
     ) -> dict[str, Any]:
         """Assemble litellm kwargs: provider params, then explicit overrides."""
         kwargs: dict[str, Any] = self._provider_kwargs(model)
+        # 非 anthropic provider 剥掉 cache_control 断点(OpenAI 自动缓存
+        # 无需断点;其他 provider 不认该 key)。剥的是传给 provider 的副本,
+        # 调用方(agent_loop)的 messages 原样保留。
+        if not self._supports_cache_control(model):
+            messages = self._strip_cache_control(messages)
         kwargs.update({
             "model": model,
             "messages": messages,

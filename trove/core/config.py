@@ -111,6 +111,11 @@ class AgentConfig:
     # 解析方言/EXPLAIN 失败 → 放行)。见 trove/services/sql/row_guard.py。
     explain_row_guard: bool = False
     explain_max_rows: int = 50_000_000
+    # Prompt caching:对支持显式断点的 provider(anthropic)在 system / 稳定前缀
+    # / 工具定义上打 cache_control 断点;OpenAI 系自动缓存无需断点,其他
+    # provider 由 gateway 剥掉断点(行为等价,只是没有缓存收益)。默认开——
+    # 纯收益开关,provider 不支持时自动 no-op。
+    prompt_caching: bool = True
     # 上下文预算覆盖(可空 = 用内置默认):gen prompt 可选块(few-shot/术语/
     # 教训/计划/历史)与 schema 段的 token 上限,按复杂度分档 simple/standard/
     # complex。配置时整体覆盖对应档位,未配置项回落内置默认。示例:
@@ -343,6 +348,7 @@ class ConfigLoader:
             explain_row_guard=bool(agent_section.get("explain_row_guard", False)),
             explain_max_rows=max(
                 1000, int(agent_section.get("explain_max_rows", 50_000_000))),
+            prompt_caching=agent_section.get("prompt_caching", True),
             context_budget_tokens={
                 str(k): max(0, int(v))
                 for k, v in (agent_section.get("context_budget_tokens", {}) or {}).items()

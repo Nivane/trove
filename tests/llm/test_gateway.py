@@ -137,3 +137,106 @@ class TestGatewayRetryGating:
         out = await gw.chat(model="m", messages=[{"role": "user", "content": "hi"}])
         assert out == "SELECT 1"
         assert calls["n"] == 2
+
+
+class TestCacheControlSanitization:
+    """cache_control 断点:anthropic 原样透传,其余 provider 剥掉(不认该 key)。
+
+    agent_loop 打的断点对 OpenAI 系是多余键、对其他 provider 是非法键——
+    gateway 在进 litellm 前剥掉,行为等价,只是没有显式缓存收益。
+    """
+
+    CACHE_MSGS = [
+        {"role": "system", "content": [
+            {"type": "text", "text": "rules",
+             "cache_control": {"type": "ephemeral"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "text", "text": "stable-prefix",
+             "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "volatile rest"},
+        ]},
+    ]
+    CACHE_TOOLS = [
+        {"type": "function", "function": {"name": "a", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "b", "description": "d", "parameters": {}},
+         "cache_control": {"type": "ephemeral"}},
+    ]
+
+    def _fake_acompletion(self, captured):
+        from types import SimpleNamespace
+
+        async def fake_acompletion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            )
+        return fake_acompletion
+
+    async def test_anthropic_keeps_cache_control(self, mocker):
+        """支持显式断点的 provider:断点原样进 litellm。"""
+        captured = {}
+        mocker.patch("litellm.acompletion", self._fake_acompletion(captured))
+        gateway = LLMGateway()
+
+        await gateway.chat_full(
+            model="anthropic/claude-opus-4",
+            messages=self.CACHE_MSGS,
+            tools=self.CACHE_TOOLS,
+        )
+        sys_block = captured["messages"][0]["content"][0]
+        assert sys_block["cache_control"] == {"type": "ephemeral"}
+        assert captured["messages"][1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert captured["messages"][1]["content"][1] == {"type": "text", "text": "volatile rest"}
+        assert captured["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    async def test_openai_strips_cache_control(self, mocker):
+        """OpenAI 系:断点剥掉(自动缓存,无需断点);调用方数据不被改动。"""
+        captured = {}
+        mocker.patch("litellm.acompletion", self._fake_acompletion(captured))
+        gateway = LLMGateway()
+        msgs = list(self.CACHE_MSGS)
+        tools = list(self.CACHE_TOOLS)
+
+        await gateway.chat_full(
+            model="openai/gpt-4o",
+            messages=msgs,
+            tools=tools,
+        )
+        for msg in captured["messages"]:
+            for block in msg["content"]:
+                assert "cache_control" not in block
+        assert "cache_control" not in captured["tools"][-1]
+        # 传入方(agent_loop 侧)的 messages/tools 原样保留
+        assert msgs[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert tools[-1]["cache_control"] == {"type": "ephemeral"}
+
+    async def test_chat_plain_strips_cache_control(self, mocker):
+        """chat(无工具)路径同样剥断点。"""
+        captured = {}
+        mocker.patch("litellm.acompletion", self._fake_acompletion(captured))
+        gateway = LLMGateway()
+
+        await gateway.chat(
+            model="openai/gpt-4o",
+            messages=self.CACHE_MSGS,
+        )
+        for msg in captured["messages"]:
+            for block in msg["content"]:
+                assert "cache_control" not in block
+
+    async def test_unknown_provider_strips_cache_control(self, mocker):
+        """其余 provider 不认 cache_control key——剥掉避免 400。"""
+        captured = {}
+        mocker.patch("litellm.acompletion", self._fake_acompletion(captured))
+        gateway = LLMGateway()
+
+        await gateway.chat_full(
+            model="deepseek/deepseek-chat",
+            messages=self.CACHE_MSGS,
+            tools=self.CACHE_TOOLS,
+        )
+        for msg in captured["messages"]:
+            for block in msg["content"]:
+                assert "cache_control" not in block
+        assert "cache_control" not in captured["tools"][-1]

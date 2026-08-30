@@ -300,6 +300,8 @@ async def run_agent_loop(
     time_budget_s: float | None = None,
     max_total_tokens: int | None = None,
     steering_window: int = 3,
+    cache_prefix: str | None = None,
+    prompt_caching: bool = True,
 ) -> dict[str, Any]:
     """Run a tool-calling loop until the model returns content without calls.
 
@@ -325,6 +327,18 @@ async def run_agent_loop(
             in chat_full responses); exceeded → guard_hit.
         steering_window: N identical consecutive tool calls trigger a
             steering message instead of spinning until the guard.
+        cache_prefix: Byte-stable prefix of ``user`` (e.g. dialect+schema).
+            When given (and ``prompt_caching``), the system message becomes
+            a content-block list, ``user`` splits into [prefix+cache_control,
+            volatile remainder], and the last tool definition gets
+            cache_control — Anthropic ephemeral breakpoints, so repeated
+            calls with the same prefix skip re-processing the stable part.
+            Callers without a stable prefix keep messages byte-identical
+            (planner/reflect etc. pass None and are unaffected).
+        prompt_caching: Master switch for the breakpoint markers above.
+            Providers without explicit caching (OpenAI etc.) have the
+            markers stripped by the gateway — behavior-equivalent, no
+            caching benefit.
 
     Returns:
         {"content", "rounds", "guard_hit", "finish_tool", "budget_why",
@@ -342,10 +356,32 @@ async def run_agent_loop(
     tool_defs = tools if (own_registry and tools) else registry.defs()
     run_id = (metadata or {}).get("run_id", "")
 
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+    # ① Prompt caching:cache_prefix 为 user 的真实字节前缀时,system 切成
+    # 内容块列表打 ephemeral 断点,user 拆成 [稳定前缀块+断点, volatile
+    # 剩余块],最后一个工具定义也打断点(Anthropic 工具级缓存)。前缀不
+    # 匹配(模板演化/防御)或恰好覆盖全部 user(无剩余块)时保持原样——
+    # 字节级不变,调用方无感。
+    if cache_prefix and prompt_caching and user and user.startswith(cache_prefix) and user != cache_prefix:
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": [
+                {"type": "text", "text": system,
+                 "cache_control": {"type": "ephemeral"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "text", "text": cache_prefix,
+                 "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": user[len(cache_prefix):]},
+            ]},
+        ]
+        if tool_defs:
+            last = dict(tool_defs[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            tool_defs = tool_defs[:-1] + [last]
+    else:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
 
     final_content = ""
     guard_hit = False

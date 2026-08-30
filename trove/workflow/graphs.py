@@ -35,7 +35,6 @@ from trove.workflow.context_budget import (
     ContextItem,
     assemble_context,
     count_tokens,
-    estimate_tokens,
 )
 from trove.workflow.context_score import history_items, relevance_score
 from trove.workflow.schema_budget import trim_schema
@@ -242,6 +241,13 @@ async def _run_candidate_subagent(
         probe_cache=probe_cache,
     )
     prompt = build_sql_prompt_from_state(rotated)
+    # ① Prompt caching:与主路径同策略——前缀校验在 agent_loop 内部,
+    # 这里只按配置门控。
+    cache_prefix = (
+        render_cache_prefix(dialect, rotated.schema_context)
+        if (services.config or AgentConfig()).prompt_caching
+        else None
+    )
     hint = _STYLE_HINTS.get(mode)
     if hint:
         prompt = f"{prompt}\n\n{hint}"
@@ -257,6 +263,7 @@ async def _run_candidate_subagent(
                 full_rules=state.complexity != "simple",
             ),
             user=prompt,
+            cache_prefix=cache_prefix,
             registry=registry,
             tool_timeout_s=20.0,
             time_budget_s=120.0,
@@ -739,9 +746,10 @@ def _make_gen_sql_node(
         )
         # 稳定可缓存前缀(dialect+schema)的 token 数——prompt caching 观测:
         # 同一数据源+方言下跨调用字节级一致,值越大缓存复用空间越大。
-        cache_prefix_tokens = estimate_tokens(
-            render_cache_prefix(dialect, schema_for_gen),
-        )
+        # count_tokens 真实分词(与 agent_loop 首轮实测 prompt_tokens 同口径,
+        # 字符估算会系统性低估多字节语言),前缀文本同时复用为缓存断点。
+        cache_prefix_text = render_cache_prefix(dialect, schema_for_gen)
+        cache_prefix_tokens = count_tokens(cache_prefix_text)
         update: dict[str, Any] = {
             "dialect": dialect,
             "candidates": [],
@@ -783,6 +791,15 @@ def _make_gen_sql_node(
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
+            # ① Prompt caching:prompt 头两节(dialect+schema)与
+            # render_cache_prefix 逐字一致,交给 agent_loop 按字节前缀
+            # 拆稳定块打 ephemeral 断点(跨调用复用)。前缀校验/回退在
+            # loop 内部——这里只受配置开关门控,关闭时整串单块。
+            cache_prefix = (
+                cache_prefix_text
+                if (services.config or AgentConfig()).prompt_caching
+                else None
+            )
             result = None
             try:
                 result = await run_agent_loop(
@@ -795,6 +812,7 @@ def _make_gen_sql_node(
                     full_rules=complexity != "simple",
                 ),
                 user=prompt,
+                cache_prefix=cache_prefix,
                 registry=registry,
                 tool_timeout_s=20.0,
                 time_budget_s=120.0,
