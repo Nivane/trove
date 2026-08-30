@@ -13,7 +13,7 @@
 
 Trove 是**自学习型对话数据代理**：自然语言提问，Trove 自动完成 schema 匹配、SQL 生成与自校验、执行与反思裁决，返回 Markdown 答案；答错时自动诊断根因、回滚并修正。
 
-每次问答与修正都会沉淀为该数据源专属的知识库（注释、术语、参考 SQL、规则、经验教训），**越用越准**。
+每次问答与修正都会沉淀为该数据源专属的知识库（注释、术语、参考 SQL、规则、经验教训），外加一套统一记忆子系统（情景记忆、自动偏好、自动晋升、用户画像），**越用越准**。
 
 **语义优先（接入即建模、建模即保障）**：语义模型（`semantics.yml`）定义唯一可答边界——未覆盖的查询被拒绝并给出扩展模型的建议，绝不凭猜测作答；无语义模型的数据源会被整体拒绝并提示先 `/kb init`。
 
@@ -24,6 +24,7 @@ Trove 是**自学习型对话数据代理**：自然语言提问，Trove 自动�
 - **确定性安全护栏**——SQL 先过 AST 防火墙（只读语句白名单、DML 拦截、危险函数与元数据表阻断），再走规则链校验（形状 / 过滤 / 值域 / 排序），全程零 LLM。
 - **自校正闭环**——失败时 LLM 判定根因，沿 `gen_sql → planner → schema_linking` 回滚阶梯重跑，带防环守护与 SQL 版本链（确定性回归反馈）。
 - **会学习的知识库**——`/kb init` 起草 schema 注释与 `semantics.yml`（OSSIE 语义模型）、术语、模板；`/kb learn` 把确认后的问答沉淀为参考 SQL；修正闭环与评测失败自动蒸馏经验教训（Hint Bank）；检索以 schema linking 匹配为锚。
+- **统一记忆子系统**——在知识库之外，跨会话记住每个用户：情景记忆（历史问题 + SQL + 结果裁决，注入生成上下文）、会话压缩时的自动用户偏好提取、观测回流（成功 → 待确认参考示例，修正/失败 → 待确认教训）、可选置信度自动晋升、schema 漂移检测、用户×数据源画像。自动内容一律先落 `pending`、经管理端确认后才进检索——绝不污染人工维护的知识库。
 - **多候选共识**——更高温度生成备选 SQL，经 `select` 裁决投票，应对疑难问题。
 - **人工确认（HITL）**——可选执行前确认（单任务批准/否决，批任务三选项）。
 - **MCP 服务**——把 NL→SQL 暴露为工具（`ask_data` / `list_datasources` / `kb_status`）与资源（`trove://datasources`、`trove://<ds>/schema`、`trove://<ds>/semantics`），支持 stdio / SSE / streamable-http，可直接挂载到 Claude Code 等 MCP 客户端。
@@ -133,6 +134,16 @@ agent:
   result_cache: true                      # 精确结果缓存：重复问句 → 0 LLM 调用
   fast_path: true                         # 确定性模板快径
   reflect_skip: standard                  # validate 规则全过后跳过 LLM 裁决
+  memory:                                 # 统一记忆子系统（见「记忆」章节）
+    enabled: true
+    episodes: true                        # 跨会话情景记忆
+    auto_examples: true                   # 成功 → 待确认参考示例
+    auto_preferences: true                # 压缩时抽取用户口径/偏好
+    promotion: false                      # 可选：按置信度自动确认教训
+    promotion_threshold: 0.8
+    profile_boost: false                  # 可选：注入用户×数据源失败画像
+    schema_drift_check: true
+    # retention_days: {episodes: 180, preferences: 90, facts: 180, retrieval_log: 90}
   providers:
     - name: openai                        # 非官方端点（兼容 OpenAI API）
       litellm_params:
@@ -181,6 +192,21 @@ GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
 
 知识库按数据源隔离；YAML 是唯一事实源（可 git 管理），SQLite 镜像仅供运行时检索。
 
+## 记忆（跨会话如何记住）
+
+在数据源级知识库之外，Trove 提供统一记忆门面（`trove/services/memory/`），把「提问 → 修正 → 未来回答」串成闭环。所有自动内容一律先落 `pending`、经管理端确认后才进检索——自动记忆绝不绕过人工把关。
+
+| 层 | 存什么 | 存哪 | 怎么用 |
+|---|---|---|---|
+| **情景记忆** | 每用户×数据源的 `问题 → SQL → 结果裁决 → 修正要点 → 命中表` | `~/.trove/memory/episodes.sqlite` | 确定性相关度门（≥0.5）+ 最近度排序，注入 gen_sql 上下文块——成功 SQL = few-shot 锚，失败+修正 = 反例 |
+| **自动偏好** | 会话压缩时抽取的持久口径/偏好（「营收 = 净收入」「用 30 日均值」） | 高置信 → `user_facts.db`；低置信 → 待确认草稿（`preferences.sqlite`） | 注入个性化上下文；草稿在管理端确认 |
+| **观测回流** | 成功 → 待确认参考示例（`tags: [auto]`）；修正 → 待确认 Hint Bank 教训；失败 → LLM 蒸馏待确认教训 | `examples.yml` / `lessons.yml`（pending） | 确认后才进检索（`/kb examples/lessons --yes` 或管理端） |
+| **自动晋升**（可选） | 置信度累加器，跨过 `promotion_threshold` 自动确认教训 | `lessons.yml` 的 `confidence` 字段 | 仍可审计/回退 |
+| **Schema 漂移** | live schema 与 KB `schema_notes.yml` 的表/列差异（零 LLM） | 生命周期扫描报告 | 提醒重跑 `/kb init` |
+| **画像** | 每用户×数据源的正确率/失败模式/已确认偏好 | 由 episodes + facts 聚合 | 管理端 `GET /admin/memory/profile` |
+
+在 `conf/agent.yml` 的 `agent.memory` 下开关与调参（`episodes`、`auto_examples`、`auto_preferences`、`promotion` 默认关、`profile_boost` 默认关、`retention_days`）。生命周期清理由周期 maintenance sweep 自动执行。
+
 ## 评测
 
 BIRD 开发集执行准确率（EX），跑真实数据源 + 完整 reflection 管线：
@@ -197,13 +223,14 @@ uv run python scripts/eval_bird.py --db-id financial \
 ## 开发
 
 ```bash
-uv run pytest                     # 全量（~2600 测试，mock LLM，零网络零 key）
+uv run pytest                     # 全量（~2660 测试，mock LLM，零网络零 key）
 uv run pytest tests/workflow/     # LangGraph 图与节点
 uv run pytest tests/services/kb/  # 知识库
+uv run pytest tests/services/memory/  # 统一记忆子系统
 uv run pytest -k kb               # 所有知识库相关用例
 ```
 
-代码结构：`trove/workflow/`（图 + 节点 + 意图路由 + 规则）· `trove/services/`（数据源 / 知识库 / SQL）· `trove/agent/`（会话编排）· `trove/llm/`（litellm 网关 / agent 循环 / 可观测）· `trove/storage/`（会话存储与检查点）· `trove/tracing/`（本地轨迹）· `trove/cli/`（REPL 与命令）。
+代码结构：`trove/workflow/`（图 + 节点 + 意图路由 + 规则）· `trove/services/`（数据源 / 知识库 / SQL / **记忆**）· `trove/agent/`（会话编排）· `trove/llm/`（litellm 网关 / agent 循环 / 可观测）· `trove/storage/`（会话存储与检查点）· `trove/tracing/`（本地轨迹）· `trove/cli/`（REPL 与命令）。
 
 ## 文档
 

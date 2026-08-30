@@ -13,7 +13,7 @@
 
 Trove is a **self-learning conversational data agent**. Ask questions in natural language — Trove handles schema matching, SQL generation with self-validation, execution, and reflective adjudication, and returns a Markdown answer. When an answer is wrong, it diagnoses the root cause, rolls back, and corrects itself.
 
-Every question and every correction grows a per-datasource knowledge base (notes, terms, reference SQL, rules, and lessons), so **accuracy improves the more you use it**.
+Every question and every correction grows a per-datasource knowledge base (notes, terms, reference SQL, rules, and lessons) plus a unified memory subsystem (episodes, auto-preferences, auto-promotion, user profiles), so **accuracy improves the more you use it**.
 
 **Semantic-first by design**: a semantic model (`semantics.yml`) defines exactly what can be answered. Queries it cannot cover are refused with a proposal to extend the model — no hallucinated guesses. Datasources without an initialized semantic model are refused up front and pointed to `/kb init`.
 
@@ -24,6 +24,7 @@ Every question and every correction grows a per-datasource knowledge base (notes
 - **Deterministic safety rails** — SQL goes through an AST firewall (read-only whitelist, DML interception, dangerous-function and metadata-table blocking) and a rule chain (shape, filters, values, ordering) with zero-LLM verification.
 - **Self-correction** — on failure, an LLM diagnoses the root cause and re-runs along a rollback ladder (`gen_sql → planner → schema_linking`) with loop protection and a SQL version chain for deterministic regression feedback.
 - **A knowledge base that learns** — `/kb init` drafts schema notes, `semantics.yml` (OSSIE semantic model), terms, and templates; `/kb learn` converts confirmed Q&A into reference SQL. Lessons (Hint Bank) are distilled from corrections and eval failures. Retrieval is anchored to schema-linking matches.
+- **A unified memory subsystem** — beyond the KB, Trove remembers per-user across sessions: episodic memory (past questions + SQL + verdicts, injected into generation), automatic user-preference extraction (at session compaction), observation feedback (success → pending reference examples, corrections/failures → pending lessons), opt-in confidence-based auto-promotion, schema-drift detection, and per user×datasource profiles. Auto content always lands `pending` until an admin confirms — it never pollutes the human-curated KB.
 - **Multi-candidate consensus** — alternative candidates generated at higher temperature go through consensus voting (`select`) for tougher questions.
 - **Human-in-the-loop** — optional confirmation before execution (approve/deny per task; three options for batches).
 - **MCP server** — expose NL→SQL as tools (`ask_data`, `list_datasources`, `kb_status`) and resources (`trove://datasources`, `trove://<ds>/schema`, `trove://<ds>/semantics`) over stdio / SSE / streamable-http for Claude Code and other MCP clients.
@@ -133,6 +134,16 @@ agent:
   result_cache: true                      # exact-result cache: repeated question → 0 LLM calls
   fast_path: true                         # deterministic template fast path
   reflect_skip: standard                  # skip LLM adjudication when rules pass
+  memory:                                 # unified memory subsystem (see "Memory" section)
+    enabled: true
+    episodes: true                        # cross-session episodic recall
+    auto_examples: true                   # success → pending reference example
+    auto_preferences: true                # extract user calibers at compaction
+    promotion: false                      # opt-in: auto-confirm lessons by confidence
+    promotion_threshold: 0.8
+    profile_boost: false                  # opt-in: inject user×datasource failure profile
+    schema_drift_check: true
+    # retention_days: {episodes: 180, preferences: 90, facts: 180, retrieval_log: 90}
   providers:
     - name: openai                        # custom OpenAI-compatible endpoints
       litellm_params:
@@ -181,6 +192,21 @@ Recommendations:
 
 Knowledge bases are isolated per datasource. YAML is the single source of truth (git-manageable); the SQLite mirror is runtime retrieval only.
 
+## Memory (how it remembers across sessions)
+
+Beyond the datasource-level KB, Trove has a unified memory facade (`trove/services/memory/`) that closes the loop between queries, corrections, and future answers. All automatic content writes as `pending` and only enters retrieval after an admin confirms — auto memory never bypasses human curation.
+
+| Layer | What it stores | Where | Retrieval |
+|---|---|---|---|
+| **Episodic memory** | Past `question → SQL → verdict → corrections → matched tables` per user×datasource | `~/.trove/memory/episodes.sqlite` | deterministic relevance gate (≥0.5) + recency, injected into gen_sql as a context block — success SQL = few-shot anchor, failures = counter-examples |
+| **Auto preferences** | Durable user calibers ("营收 = 净收入", "用 30 日均值") extracted at session compaction | high-confidence → `user_facts.db`; low-confidence → pending drafts (`preferences.sqlite`) | injected as personalization; drafts confirmable in admin |
+| **Observations** | Success → pending reference example (`tags: [auto]`); corrections → pending Hint Bank lesson; failures → LLM-distilled pending lesson | `examples.yml` / `lessons.yml` (pending) | only after `/kb examples/lessons --yes` or admin confirm |
+| **Auto-promotion** (opt-in) | Confidence accumulator over evidence; crossing `promotion_threshold` auto-confirms a lesson | `lessons.yml` `confidence` field | still human-auditable/revertible |
+| **Schema drift** | Live schema vs KB `schema_notes.yml` tables/columns diff (zero LLM) | report on lifecycle sweep | alerts to re-run `/kb init` |
+| **Profiles** | Per user×datasource correctness rate / failure patterns / committed facts | aggregated from episodes + facts | admin `GET /admin/memory/profile` |
+
+Enable/tune under `agent.memory` in `conf/agent.yml` (`episodes`, `auto_examples`, `auto_preferences`, `promotion` default-off, `profile_boost` default-off, `retention_days`). Lifecycle purge runs on the periodic maintenance sweep.
+
 ## Evaluation
 
 BIRD dev-set execution accuracy (EX) against real datasources with the full reflection pipeline:
@@ -197,13 +223,14 @@ Failed questions land in `.trove/eval/failures.jsonl` for lesson distillation. H
 ## Development
 
 ```bash
-uv run pytest                     # full suite (~2600 tests, mocked LLM, zero network/keys)
+uv run pytest                     # full suite (~2660 tests, mocked LLM, zero network/keys)
 uv run pytest tests/workflow/     # LangGraph graphs and nodes
 uv run pytest tests/services/kb/  # knowledge base
+uv run pytest tests/services/memory/  # unified memory subsystem
 uv run pytest -k kb               # all KB-related tests
 ```
 
-Code layout: `trove/workflow/` (graphs, nodes, intent routing, rules) · `trove/services/` (datasources, KB, SQL) · `trove/agent/` (session orchestration) · `trove/llm/` (litellm gateway, agent loop, observability) · `trove/storage/` (sessions & checkpoints) · `trove/tracing/` (local traces) · `trove/cli/` (REPL and commands).
+Code layout: `trove/workflow/` (graphs, nodes, intent routing, rules) · `trove/services/` (datasources, KB, SQL, **memory**) · `trove/agent/` (session orchestration) · `trove/llm/` (litellm gateway, agent loop, observability) · `trove/storage/` (sessions & checkpoints) · `trove/tracing/` (local traces) · `trove/cli/` (REPL and commands).
 
 ## Documentation
 
