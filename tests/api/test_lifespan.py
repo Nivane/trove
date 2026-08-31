@@ -32,11 +32,18 @@ class _FakeMaintenance:
         return {"orphans": 0, "pruned": 0, "sweep": "scanned=0"}
 
 
+class _FakeRegistry:
+    """Satisfies the /v1/health datasource probe (list_names → no pings)."""
+
+    def list_names(self) -> list[str]:
+        return []
+
+
 def _components(maintenance=None, interval_hours=0) -> dict:
     """components dict in the create_app_components shape (config included)."""
     components = {
         "session_manager": object(),
-        "connector_registry": object(),
+        "connector_registry": _FakeRegistry(),
         "config": SimpleNamespace(
             retention=RetentionConfig(sweep_interval_hours=interval_hours)
         ),
@@ -78,7 +85,7 @@ def test_lifespan_startup_sweep_runs_and_exits_clean():
 
 def test_lifespan_without_maintenance_is_noop():
     """Shape B: api-test shape (no maintenance/config) -> zero side effects."""
-    app = create_app({"session_manager": object(), "connector_registry": object()})
+    app = create_app({"session_manager": object(), "connector_registry": _FakeRegistry()})
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
 

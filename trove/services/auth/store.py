@@ -80,9 +80,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
 )
 """
 
+LOGIN_ATTEMPTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    success INTEGER NOT NULL,
+    ts TEXT NOT NULL
+)
+"""
+
 INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_tokens_user ON tokens(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tokens_expires ON tokens(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts)",
+    "CREATE INDEX IF NOT EXISTS idx_login_attempts_ts ON login_attempts(ts)",
 ]
 
 # Column sets for row→dict mapping
@@ -127,7 +139,7 @@ class AppDbStore:
 
         script = script_statements(
             [USERS_TABLE_SQL, TOKENS_TABLE_SQL, USER_DATASOURCES_TABLE_SQL,
-             AUDIT_LOG_TABLE_SQL, *INDEX_SQL]
+             AUDIT_LOG_TABLE_SQL, LOGIN_ATTEMPTS_TABLE_SQL, *INDEX_SQL]
         )
         await self._backend.executescript(script)
         self._schema_ready = True
@@ -327,6 +339,85 @@ class AppDbStore:
                 "UPDATE tokens SET last_used_at = ? WHERE id = ?", (now_iso(), token_id)
             )
             await conn.commit()
+        finally:
+            await conn.close()
+
+    # ── Login attempts (brute-force lockout) ───────────────
+
+    async def count_recent_failures(self, username: str, since_iso: str) -> int:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT COUNT(*) FROM login_attempts "
+                "WHERE username = ? AND success = 0 AND ts >= ?",
+                (username, since_iso),
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            await conn.close()
+
+    async def oldest_failure_ts(self, username: str, since_iso: str) -> str | None:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT MIN(ts) FROM login_attempts "
+                "WHERE username = ? AND success = 0 AND ts >= ?",
+                (username, since_iso),
+            )
+            row = await cursor.fetchone()
+            return row[0] if row and row[0] else None
+        finally:
+            await conn.close()
+
+    async def insert_login_attempt(self, username: str, ip: str, success: bool) -> None:
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                "INSERT INTO login_attempts (username, ip, success, ts) "
+                "VALUES (?, ?, ?, ?)",
+                (username, ip, int(success), now_iso()),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def clear_login_failures(self, username: str) -> int:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM login_attempts WHERE username = ? AND success = 0",
+                (username,),
+            )
+            await conn.commit()
+            return cursor.rowcount
+        finally:
+            await conn.close()
+
+    # ── Hygiene (periodic purge) ───────────────────────────
+
+    async def purge_expired_tokens(self) -> int:
+        """Delete tokens whose ``expires_at`` has passed (ISO-8601 UTC
+        strings compare lexicographically)."""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM tokens WHERE expires_at IS NOT NULL AND expires_at < ?",
+                (now_iso(),),
+            )
+            await conn.commit()
+            return cursor.rowcount
+        finally:
+            await conn.close()
+
+    async def purge_old_login_attempts(self, cutoff_iso: str) -> int:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM login_attempts WHERE ts < ?", (cutoff_iso,)
+            )
+            await conn.commit()
+            return cursor.rowcount
         finally:
             await conn.close()
 

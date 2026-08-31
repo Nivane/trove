@@ -19,14 +19,29 @@ router = APIRouter()
 @router.post("/auth/login")
 async def login(body: LoginRequest, request: Request) -> dict:
     auth = request.app.state.auth
+    ip = request.client.host if request.client else ""
+    allowed, retry_after = await auth.login_attempt_allowed(body.username)
+    if not allowed:
+        await auth.record_audit(
+            "auth.login", method="POST", path="/v1/auth/login", status=429,
+            details={"reason": "rate limited", "ip": ip},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many failed login attempts; try again in {retry_after}s",
+            headers={"Retry-After": str(retry_after)},
+        )
     user = await auth.authenticate(body.username, body.password)
+    await auth.record_login_attempt(body.username, ip, success=user is not None)
     if user is None:
         await auth.record_audit(
             "auth.login", method="POST", path="/v1/auth/login", status=401,
             details={"reason": "invalid credentials"},
         )
         raise HTTPException(status_code=401, detail="invalid username or password")
-    raw, record = await auth.create_token(user["id"], label="login")
+    raw, record = await auth.create_token(
+        user["id"], label="login", ttl_hours=auth.token_ttl_hours
+    )
     await auth.record_audit(
         "auth.login", user=user, method="POST", path="/v1/auth/login", status=200
     )

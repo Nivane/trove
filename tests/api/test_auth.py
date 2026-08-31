@@ -41,6 +41,64 @@ class TestLogin:
         assert len(logins) == 2
         assert sorted(e["status"] for e in logins) == [200, 401]
 
+    async def test_login_response_has_expires_at(self, anon_client, auth_service):
+        resp = await anon_client.post(
+            "/v1/auth/login", json={"username": "admin", "password": "adminpw"}
+        )
+        assert resp.status_code == 200
+        expires_at = resp.json()["expires_at"]
+        assert expires_at is not None
+        from datetime import datetime, timezone
+
+        remaining = (
+            datetime.fromisoformat(expires_at) - datetime.now(timezone.utc)
+        ).total_seconds()
+        assert 0 < remaining <= auth_service.token_ttl_hours * 3600
+
+    async def test_login_rate_limited_429_with_retry_after(self, anon_client):
+        for _ in range(5):  # 5 failures recorded → 6th attempt is locked
+            resp = await anon_client.post(
+                "/v1/auth/login", json={"username": "admin", "password": "wrong"}
+            )
+            assert resp.status_code == 401
+        resp = await anon_client.post(
+            "/v1/auth/login", json={"username": "admin", "password": "adminpw"}
+        )
+        assert resp.status_code == 429
+        assert resp.headers.get("retry-after") is not None
+        # Even the correct password stays locked while the window is hot
+        resp = await anon_client.post(
+            "/v1/auth/login", json={"username": "admin", "password": "adminpw"}
+        )
+        assert resp.status_code == 429
+
+    async def test_login_attempts_do_not_block_other_user(self, anon_client):
+        for _ in range(5):
+            await anon_client.post(
+                "/v1/auth/login", json={"username": "bob", "password": "wrong"}
+            )
+        resp = await anon_client.post(
+            "/v1/auth/login", json={"username": "admin", "password": "adminpw"}
+        )
+        assert resp.status_code == 200
+
+    async def test_login_success_resets_lockout(self, anon_client, auth_service):
+        for _ in range(5):
+            await anon_client.post(
+                "/v1/auth/login", json={"username": "admin", "password": "wrong"}
+            )
+        assert (
+            await anon_client.post(
+                "/v1/auth/login", json={"username": "admin", "password": "adminpw"}
+            )
+        ).status_code == 429
+        # A successful attempt (e.g. via another surface) clears the counter
+        await auth_service.record_login_attempt("admin", "1.2.3.4", success=True)
+        resp = await anon_client.post(
+            "/v1/auth/login", json={"username": "admin", "password": "adminpw"}
+        )
+        assert resp.status_code == 200
+
 
 class TestMe:
     async def test_me_with_token(self, client):

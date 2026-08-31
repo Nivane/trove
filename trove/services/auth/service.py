@@ -13,6 +13,7 @@ Password hashing is PBKDF2 (see :mod:`trove.services.auth.passwords`).
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +24,8 @@ from trove.services.auth.passwords import hash_password, verify_password
 from trove.services.auth.store import AppDbStore, now_iso
 
 DEFAULT_TOKEN_TTL_HOURS = 720  # 30 days
+DEFAULT_LOGIN_MAX_ATTEMPTS = 5
+DEFAULT_LOGIN_WINDOW_MINUTES = 15
 GENERATED_PASSWORD_LEN = 20
 
 # Keys safe to expose to clients (password_hash never leaves the service)
@@ -41,11 +44,32 @@ def _hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a positive-int env knob (e.g. ``TROVE_TOKEN_TTL_HOURS``),
+    falling back to ``default`` when unset or unparseable."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
 class AuthService:
     """Account, token, grant and audit operations."""
 
     def __init__(self, db_path: str | Path):
         self.store = AppDbStore(db_path)
+        self.token_ttl_hours = _env_int(
+            "TROVE_TOKEN_TTL_HOURS", DEFAULT_TOKEN_TTL_HOURS
+        )
+        self.login_max_attempts = _env_int(
+            "TROVE_LOGIN_MAX_ATTEMPTS", DEFAULT_LOGIN_MAX_ATTEMPTS
+        )
+        self.login_window_minutes = _env_int(
+            "TROVE_LOGIN_WINDOW_MINUTES", DEFAULT_LOGIN_WINDOW_MINUTES
+        )
 
     async def dispose(self) -> None:
         """Release the store's backend connection (see AppDbStore.dispose)."""
@@ -191,6 +215,58 @@ class AuthService:
         if not verify_password(password, row["password_hash"]):
             return None
         return _public_user(row)
+
+    # ── Login rate limiting ────────────────────────────────
+
+    async def login_attempt_allowed(self, username: str) -> tuple[bool, int]:
+        """True when a login attempt may proceed; when False, the second
+        element is the Retry-After seconds (computed from the oldest
+        in-window failure, so the lock expires when that failure ages out
+        rather than after a full fresh window)."""
+        name = username.strip()
+        cutoff = (
+            datetime.now(timezone.utc)
+            - timedelta(minutes=self.login_window_minutes)
+        ).isoformat()
+        count = await self.store.count_recent_failures(name, cutoff)
+        if count < self.login_max_attempts:
+            return True, 0
+        retry_after = self.login_window_minutes * 60
+        oldest = await self.store.oldest_failure_ts(name, cutoff)
+        if oldest:
+            try:
+                remaining = (
+                    datetime.fromisoformat(oldest)
+                    + timedelta(minutes=self.login_window_minutes)
+                    - datetime.now(timezone.utc)
+                ).total_seconds()
+                retry_after = max(1, min(retry_after, int(remaining)))
+            except ValueError:
+                pass
+        return False, retry_after
+
+    async def record_login_attempt(
+        self, username: str, ip: str = "", success: bool = False,
+    ) -> None:
+        """Persist a login attempt; a successful login clears prior
+        failures so a user who recovers the password is never stuck
+        locked until the window ages out."""
+        name = username.strip()
+        await self.store.insert_login_attempt(name, ip, success)
+        if success:
+            await self.store.clear_login_failures(name)
+
+    async def purge_expired_tokens(self) -> int:
+        """Delete tokens past their ``expires_at`` (housekeeping; the
+        hard enforcement is ``resolve_token`` on every request)."""
+        return await self.store.purge_expired_tokens()
+
+    async def purge_old_login_attempts(self) -> int:
+        cutoff = (
+            datetime.now(timezone.utc)
+            - timedelta(minutes=self.login_window_minutes)
+        ).isoformat()
+        return await self.store.purge_old_login_attempts(cutoff)
 
     async def resolve_token(self, raw_token: str) -> dict[str, Any] | None:
         """Resolve a Bearer token to a user, or None (unknown/revoked/

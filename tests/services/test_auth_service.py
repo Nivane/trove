@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from trove.core.errors import AuthError
@@ -164,6 +166,92 @@ async def test_list_tokens_metadata_only(auth):
     tokens = await auth.list_tokens(u["id"])
     assert len(tokens) == 2
     assert all("token_hash" not in t or t["token_hash"] for t in tokens)
+
+
+# ── Login rate limiting ───────────────────────────────────
+
+
+async def _insert_old_attempt(auth, username: str, ts: str) -> None:
+    conn = await auth.store._conn()
+    try:
+        await conn.execute(
+            "INSERT INTO login_attempts (username, ip, success, ts) "
+            "VALUES (?, '', 0, ?)",
+            (username, ts),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
+
+
+async def test_login_attempts_below_limit_allowed(auth):
+    for _ in range(4):
+        await auth.record_login_attempt("bob", "1.2.3.4", success=False)
+    allowed, retry_after = await auth.login_attempt_allowed("bob")
+    assert allowed is True
+    assert retry_after == 0
+
+
+async def test_login_attempts_exceed_limit_blocked(auth):
+    for _ in range(5):
+        await auth.record_login_attempt("bob", "1.2.3.4", success=False)
+    allowed, retry_after = await auth.login_attempt_allowed("bob")
+    assert allowed is False
+    assert 0 < retry_after <= 15 * 60
+
+
+async def test_login_attempts_window_slides(auth):
+    old = (
+        datetime.now(timezone.utc) - timedelta(minutes=20)
+    ).isoformat()
+    for _ in range(5):
+        await _insert_old_attempt(auth, "bob", old)
+    allowed, _ = await auth.login_attempt_allowed("bob")
+    assert allowed is True  # all 5 failures aged out of the window
+
+
+async def test_login_success_clears_failures(auth):
+    for _ in range(5):
+        await auth.record_login_attempt("bob", "1.2.3.4", success=False)
+    await auth.record_login_attempt("bob", "1.2.3.4", success=True)
+    allowed, _ = await auth.login_attempt_allowed("bob")
+    assert allowed is True
+
+
+async def test_purge_expired_tokens(auth):
+    u = await auth.create_user("bob", "pw")
+    expired, _ = await auth.create_token(u["id"], ttl_hours=0)  # already expired
+    live, _ = await auth.create_token(u["id"])  # no TTL → never expires
+    purged = await auth.purge_expired_tokens()
+    assert purged == 1
+    assert await auth.resolve_token(expired) is None
+    assert await auth.resolve_token(live) is not None
+
+
+async def test_purge_old_login_attempts(auth):
+    old = (
+        datetime.now(timezone.utc) - timedelta(minutes=60)
+    ).isoformat()
+    await _insert_old_attempt(auth, "bob", old)
+    await auth.record_login_attempt("bob", "1.2.3.4", success=False)
+    purged = await auth.purge_old_login_attempts()
+    assert purged == 1
+    allowed, _ = await auth.login_attempt_allowed("bob")
+    assert allowed is True  # only the fresh failure remains, below the limit
+
+
+async def test_token_ttl_hours_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("TROVE_TOKEN_TTL_HOURS", "1")
+    service = AuthService(tmp_path / "env_app.db")
+    assert service.token_ttl_hours == 1
+    u = await service.create_user("bob", "pw")
+    raw, record = await service.create_token(
+        u["id"], label="login", ttl_hours=service.token_ttl_hours
+    )
+    expires = datetime.fromisoformat(record["expires_at"])
+    remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+    assert 0 < remaining <= 3600
+    assert await service.resolve_token(raw) is not None
 
 
 # ── Datasource grants ─────────────────────────────────────

@@ -36,6 +36,27 @@ _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9.\-_]{1,64}$")
 _HEALTH_PING_TIMEOUT_S = 2.0
 
 
+async def _purge_auth(app: FastAPI) -> None:
+    """Auth-store hygiene: purge expired tokens + stale login attempts.
+
+    Best-effort and never blocks the sweep loop; skipped silently when
+    no auth service (or a NullAuth stand-in) is present.
+    """
+    auth = getattr(app.state, "auth", None)
+    if auth is None or not hasattr(auth, "purge_expired_tokens"):
+        return
+    try:
+        tokens = await auth.purge_expired_tokens()
+        attempts = await auth.purge_old_login_attempts()
+        if tokens or attempts:
+            logger.info(
+                "[auth] hygiene purge: %s expired tokens, %s login attempts",
+                tokens, attempts,
+            )
+    except Exception as e:
+        logger.warning("[auth] hygiene purge failed: %s", e)
+
+
 async def _periodic_sweep(app: FastAPI) -> None:
     """Background loop: run retention sweep every sweep_interval_hours."""
     config = getattr(app.state, "config", None)
@@ -61,6 +82,7 @@ async def _periodic_sweep(app: FastAPI) -> None:
                     logger.info("[memory] lifecycle sweep: %s", mem_stats)
             except Exception as e:
                 logger.warning("[memory] lifecycle sweep failed: %s", e)
+        await _purge_auth(app)
 
 
 @asynccontextmanager
@@ -68,6 +90,7 @@ async def _lifespan(app: FastAPI):
     maintenance = getattr(app.state, "maintenance", None)
     sweep_task: asyncio.Task | None = None
     startup_task: asyncio.Task | None = None
+    purge_task = asyncio.create_task(_purge_auth(app))
     if maintenance is not None:
         # 启动 sweep 不阻塞 serve:后台任务,内部自包异常防护
         async def _startup_sweep() -> None:
@@ -82,7 +105,7 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for task in (sweep_task, startup_task):
+        for task in (sweep_task, startup_task, purge_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
