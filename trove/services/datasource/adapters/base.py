@@ -55,6 +55,18 @@ class DatabaseAdapter(ABC):
         """
         ...
 
+    async def interrupt(self) -> None:
+        """Best-effort cancellation of the in-flight query (no-op default).
+
+        Adapters whose driver exposes a cross-task cancel (sqlite3
+        interrupt, psycopg cancel, MySQL KILL QUERY, duckdb interrupt)
+        override this so a client abort stops the database work, not
+        just the awaiting coroutine. Implementations must be bounded
+        and must never raise — the caller is already unwinding a
+        cancellation.
+        """
+        return None
+
     @abstractmethod
     async def get_schema(self) -> SchemaInfo:
         """Introspect the database and return full schema metadata."""

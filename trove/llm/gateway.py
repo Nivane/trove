@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator
 from trove.core.config import ProviderConfig
 from trove.core.errors import LLMError
 from trove.core.logging import get_logger
+from trove.core.metrics import MetricsTimer, record_llm_call
 from trove.services.errors import classify_error
 from trove.llm.observability import get_client
 from trove.llm.call_log import record_call
@@ -139,8 +140,9 @@ class LLMGateway:
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
+            attempt_timer = MetricsTimer()
             try:
-                return await self._call_litellm(
+                result = await self._call_litellm(
                     model=model,
                     messages=messages,
                     temperature=temperature,
@@ -151,7 +153,13 @@ class LLMGateway:
                     metadata=metadata,
                     response_format=response_format,
                 )
+                record_llm_call(model, "success", attempt_timer.elapsed_s())
+                return result
+            except asyncio.CancelledError:
+                record_llm_call(model, "cancelled", attempt_timer.elapsed_s())
+                raise
             except Exception as e:
+                record_llm_call(model, "error", attempt_timer.elapsed_s())
                 last_error = e
                 # 错误分类决定重试策略:瞬时(429/5xx/连接)才值得等退避重试;
                 # 认证/模型不存在/上下文超窗等永久错误直接放弃,不烧重试次数。
@@ -197,6 +205,7 @@ class LLMGateway:
 
         import litellm
         start = time.monotonic()
+        metrics_timer = MetricsTimer()
         try:
             # 非 anthropic provider:剥掉 cache_control 断点(见 _build_kwargs)。
             if not self._supports_cache_control(model):
@@ -245,13 +254,18 @@ class LLMGateway:
                     len(reasoning), finish,
                 )
                 content = reasoning
+            record_llm_call(model, "success", metrics_timer.elapsed_s())
             return {
                 "content": content,
                 "tool_calls": tool_calls,
                 "reasoning": reasoning,
                 "usage": _usage_dict(response),
             }
+        except asyncio.CancelledError:
+            record_llm_call(model, "cancelled", metrics_timer.elapsed_s())
+            raise
         except Exception as e:
+            record_llm_call(model, "error", metrics_timer.elapsed_s())
             _record_failed_generation(model, messages, e, metadata)
             raise LLMError(message=f"LLM call failed: {e}", model=model) from e
 

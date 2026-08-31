@@ -77,6 +77,14 @@ class DuckDBAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
+    async def interrupt(self) -> None:
+        """duckdb conn.interrupt() — 跨线程停止正在执行的语句。"""
+        try:
+            if self._conn is not None:
+                await asyncio.to_thread(self._conn.interrupt)
+        except Exception as e:
+            logger.debug("DuckDB interrupt failed (best-effort): %s", e)
+
     async def execute(self, sql: str) -> QueryResult:
         if not self._conn or not self._connected:
             raise SQLExecutionError(message="Not connected to DuckDB", sql=sql)
@@ -98,6 +106,11 @@ class DuckDBAdapter(DatabaseAdapter):
 
         try:
             columns, rows = await asyncio.to_thread(_run)
+        except asyncio.CancelledError:
+            # 中止:to_thread 的线程不会被取消,duckdb interrupt() 跨线程
+            # 让正在执行的语句尽快停下(后台线程随后自行回收)。
+            await self.interrupt()
+            raise
         except SQLExecutionError:
             raise
         except Exception as e:

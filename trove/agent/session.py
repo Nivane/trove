@@ -13,6 +13,7 @@ into a single coherent API.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from collections.abc import Callable
 from typing import Any, AsyncIterator
@@ -879,6 +880,11 @@ class SessionManager:
             finally:
                 if not producer.done():
                     producer.cancel()
+                # 等待取消落定:节点里的 adapter interrupt 钩子借此收尾
+                # (客户端 Stop 后数据源上的查询真正停下,不留悬空任务);
+                # 5s 上限防止异常慢的收尾卡住会话关闭。
+                with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                    await asyncio.wait_for(producer, timeout=5)
         except asyncio.CancelledError:
             raise
         except Exception as e:

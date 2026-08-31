@@ -6,6 +6,7 @@ Supports both file-based and in-memory (:memory:) databases.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -85,12 +86,32 @@ class SQLiteAdapter(DatabaseAdapter):
                 sql=sql,
                 datasource=self.name,
             )
+        except asyncio.CancelledError:
+            # 客户端中止:让底层 sqlite3 停在当前语句上,而不是让查询
+            # 在后台线程里跑完。interrupt() 跨线程有效。
+            await self.interrupt()
+            raise
         except Exception as e:
             raise SQLExecutionError(
                 message=f"SQLite execution error: {e}",
                 sql=sql,
                 db_error=str(e),
             ) from e
+
+    async def interrupt(self) -> None:
+        """sqlite3 interrupt — 跨线程取消底层正在执行的语句。
+
+        注意:aiosqlite 的 interrupt() 是排队到同一个工作线程,查询
+        卡住时永远排不到;必须从事件循环线程直接调底层 sqlite3
+        连接的 interrupt()(sqlite3 明确支持跨线程调用)。
+        """
+        try:
+            if self._conn is not None:
+                raw = getattr(self._conn, "_conn", None)
+                if raw is not None:
+                    raw.interrupt()
+        except Exception as e:
+            logger.debug("SQLite interrupt failed (best-effort): %s", e)
 
     async def get_schema(self) -> SchemaInfo:
         if not self._conn:

@@ -10,6 +10,7 @@ without `uv sync --extra mysql`.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -99,6 +100,47 @@ class MySQLAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
+    async def interrupt(self) -> None:
+        """KILL QUERY via a side connection (a busy connection can't serve it).
+
+        Best-effort and bounded: thread-id lookup may be sync or coroutine
+        across aiomysql versions, and any failure just logs at debug —
+        the cancellation unwind must never hang.
+        """
+        try:
+            await asyncio.wait_for(self._kill_query(), timeout=2.0)
+        except Exception as e:
+            logger.debug("MySQL interrupt failed (best-effort): %s", e)
+
+    async def _kill_query(self) -> None:
+        if self._conn is None:
+            return
+        getter = getattr(self._conn, "thread_id", None)
+        if getter is None:
+            return
+        try:
+            tid = getter() if not asyncio.iscoroutinefunction(getter) else await getter()
+        except Exception:
+            return
+        if tid is None:
+            return
+        aiomysql = _get_driver()
+        side = await aiomysql.connect(
+            host=self.config.get("host", "127.0.0.1"),
+            port=self.config.get("port", DEFAULT_PORT),
+            user=self.config.get("user", ""),
+            password=self.config.get("password", ""),
+            db=self.config.get("database", ""),
+        )
+        try:
+            cursor = await side.cursor()
+            try:
+                await cursor.execute(f"KILL QUERY {int(tid)}")
+            finally:
+                await cursor.close()
+        finally:
+            side.close()
+
     async def _ping_reconnect(self) -> None:
         """Reconnect if the underlying connection went stale.
 
@@ -143,6 +185,11 @@ class MySQLAdapter(DatabaseAdapter):
                 sql=sql,
                 datasource=self.name,
             )
+        except asyncio.CancelledError:
+            # 客户端中止:在跑连接发不了 KILL,走旁路连接 KILL QUERY
+            # (同用户可杀自己的查询),服务端真正停止执行。
+            await self.interrupt()
+            raise
         except Exception as e:
             raise SQLExecutionError(
                 message=f"MySQL execution error: {e}",

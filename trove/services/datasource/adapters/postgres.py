@@ -10,6 +10,7 @@ without `uv sync --extra postgres`.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 from urllib.parse import quote
@@ -102,6 +103,14 @@ class PostgresAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
+    async def interrupt(self) -> None:
+        """psycopg AsyncConnection.cancel() — 服务端取消在跑查询(psycopg 3.1+)。"""
+        try:
+            if self._conn is not None and hasattr(self._conn, "cancel"):
+                await self._conn.cancel()
+        except Exception as e:
+            logger.debug("PostgreSQL interrupt failed (best-effort): %s", e)
+
     async def _ensure_connected(self) -> None:
         """Ensure a live connection, transparently reconnecting a stale one.
 
@@ -130,6 +139,11 @@ class PostgresAdapter(DatabaseAdapter):
                 rows = await cur.fetchall()
                 columns = [d.name for d in (cur.description or [])]
                 elapsed_ms = (time.monotonic() - start) * 1000
+        except asyncio.CancelledError:
+            # 客户端中止:psycopg cancel() 是服务端协议级取消(另开通道),
+            # 正在跑的查询会真正停下。
+            await self.interrupt()
+            raise
         except Exception as e:
             raise SQLExecutionError(
                 message=f"PostgreSQL execution error: {e}",

@@ -67,6 +67,14 @@ cd frontend && npm run dev                # local dev → http://localhost:5173/
 cd frontend && npm run build              # production build → frontend/dist/
 ```
 
+Ops endpoints (no auth, no sensitive data):
+
+- `GET /v1/health` — real dependency checks: pings internal storage and every connected datasource (`SELECT 1`), reports LLM config presence (no billed probe). `200` + `"status": "ok" | "degraded"` when the process serves; `503 "unavailable"` when internal storage is unreachable. Errors carry only exception type names, never driver text.
+- `GET /v1/metrics` — Prometheus text exposition: HTTP requests by route/status, durations, in-flight gauge, LLM attempts/tokens by provider/model, SQL executions by datasource (success/error/cancelled), result-cache hits.
+- Every response carries `X-Request-ID` (echoed when a caller supplies one, else a generated uuid4); the same id appears in every stderr log line of that request via `[req=<id>]`.
+
+Client abort (`Stop` in the UI / SSE disconnect) cancels the in-flight query end-to-end: the graph task is cancelled and each adapter's driver-level interrupt fires (sqlite3 interrupt / psycopg cancel / MySQL `KILL QUERY` / duckdb interrupt), so the datasource stops working, not just the awaiting coroutine.
+
 ### MCP server
 
 ```bash

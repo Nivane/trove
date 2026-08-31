@@ -73,7 +73,9 @@ async def auth_service(tmp_path):
     auth = AuthService(tmp_path / "app.db")
     await auth.ensure_bootstrap_admin(env_password="adminpw")
     await auth.create_user("bob", "bobpw", display_name="Bob")
-    return auth
+    yield auth
+    # aiosqlite worker 线程常驻非 daemon,不 dispose 会挂住进程退出
+    await auth.dispose()
 
 
 @pytest.fixture

@@ -94,6 +94,56 @@ class TestSQLExecutor:
         await executor.stop_execute()  # Should not raise
 
 
+class TestSQLExecutorCancellation:
+    """stop_execute / 等待方取消 —— 查询必须真正停下,不留悬空任务。"""
+
+    async def test_stop_execute_cancels_running_query(self):
+        class BlockingRegistry:
+            async def execute(self, sql, datasource=None):
+                await asyncio.Event().wait()
+
+        executor = SQLExecutor(
+            registry=BlockingRegistry(),
+            permission_level=PermissionLevel.AUTO,
+        )
+        task = asyncio.create_task(executor.execute("SELECT 1"))
+        await asyncio.sleep(0.05)
+        await executor.stop_execute()
+        with pytest.raises(CancelledError):
+            await task
+
+    async def test_awaiting_cancellation_cancels_inner_task(self):
+        """等待协程被取消时,内部查询任务必须一并取消(原写法会泄漏)。"""
+
+        class BlockingRegistry:
+            def __init__(self):
+                self.inner_cancelled = False
+
+            async def execute(self, sql, datasource=None):
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.inner_cancelled = True
+                    raise
+
+        reg = BlockingRegistry()
+        executor = SQLExecutor(
+            registry=reg, permission_level=PermissionLevel.AUTO,
+        )
+        task = asyncio.create_task(executor.execute("SELECT 1"))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert reg.inner_cancelled is True
+
+    async def test_stop_before_execution_raises(self, sqlite_registry):
+        executor = SQLExecutor(registry=sqlite_registry)
+        await executor.stop_execute("test_db")
+        with pytest.raises(CancelledError):
+            await executor.execute("SELECT 1", "test_db")
+
+
 class TestPermissionLevels:
     def test_enum_values(self):
         assert PermissionLevel.NORMAL.value == "normal"

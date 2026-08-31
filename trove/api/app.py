@@ -11,16 +11,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from trove.api.routers import catalog, chat, facts, kb, semantic
 from trove.core.errors import DatasourceError, SessionError
 from trove.core.logging import get_logger
+from trove.core.metrics import (
+    MetricsTimer,
+    http_inflight_dec,
+    http_inflight_inc,
+    record_http,
+    render_metrics,
+)
+from trove.core.request_id import request_id_var
 
 logger = get_logger(__name__)
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9.\-_]{1,64}$")
+_HEALTH_PING_TIMEOUT_S = 2.0
 
 
 async def _periodic_sweep(app: FastAPI) -> None:
@@ -115,8 +128,113 @@ def create_app(components: dict) -> FastAPI:
     async def _datasource_error(request: Request, exc: DatasourceError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
+    # ── Middleware ──────────────────────────────────────────────
+    # 装饰器后加的在外层:request-id 最外(所有路径都带响应头/日志关联),
+    # metrics 内层。两个中间件都不抛错——度量失败只降级为 debug 日志。
+
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next):
+        """Accept a caller X-Request-ID (bounded charset) or mint one;
+        echo it back and attach it to every log record in this request."""
+        header = request.headers.get("x-request-id")
+        rid = header if header and _REQUEST_ID_RE.match(header) else uuid.uuid4().hex
+        token = request_id_var.set(rid)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = rid
+            return response
+        finally:
+            request_id_var.reset(token)
+
+    @app.middleware("http")
+    async def _metrics_middleware(request: Request, call_next):
+        """Count every request + wall-clock duration (route template, not raw
+        URL, as the path label — keeps series cardinality bounded)."""
+        timer = MetricsTimer()
+        http_inflight_inc()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            # 路由匹配发生在中间件内层(call_next 里),scope["route"]
+            # 要在这里读;未匹配/中间件早退时归入 "unmatched"。
+            route = request.scope.get("route")
+            path = getattr(route, "path", None) or "unmatched"
+            http_inflight_dec()
+            record_http(request.method, path, status, timer.elapsed_s())
+
     @app.get("/v1/health")
-    async def health() -> dict:
-        return {"status": "ok"}
+    async def health(request: Request) -> JSONResponse:
+        """Liveness + real dependency checks.
+
+        200: 存储可用(数据源/LLM 异常降级为 "degraded",仍 200 — 进程活着
+        但不完整);503: 内部存储不可达。LLM 只报配置状态,不做计费探测。
+        """
+        checks: dict = {}
+
+        # 内部存储:ping 一次真实往返(2s 上限)。部分测试/嵌入方不提供
+        # session_store,缺省视为 ok 并标注 skipped。
+        storage_ok = True
+        backend = getattr(getattr(app.state, "session_store", None), "backend", None)
+        if backend is None:
+            checks["storage"] = {"ok": True, "skipped": "no backend"}
+        else:
+            try:
+                cursor = await asyncio.wait_for(
+                    backend.execute("SELECT 1"), timeout=_HEALTH_PING_TIMEOUT_S
+                )
+                await cursor.fetchone()
+                checks["storage"] = {"ok": True}
+            except Exception as e:
+                storage_ok = False
+                checks["storage"] = {"ok": False, "error": type(e).__name__}
+
+        # 业务数据源:逐个 SELECT 1(绕结果缓存、跳过未连接的)。
+        # 错误只报类型名,不回传驱动原文(避免凭据/主机信息入响应)。
+        registry = getattr(app.state, "connector_registry", None)
+        ds_checks: dict[str, dict] = {}
+        if registry is not None:
+            names = registry.list_names()
+
+            async def _ping_one(name: str) -> tuple[str, dict]:
+                try:
+                    adapter = await registry.get(name)
+                    if not getattr(adapter, "is_connected", False):
+                        return name, {"ok": False, "error": "NotConnected"}
+                    await asyncio.wait_for(
+                        adapter.execute("SELECT 1"), timeout=_HEALTH_PING_TIMEOUT_S
+                    )
+                    return name, {"ok": True}
+                except asyncio.TimeoutError:
+                    return name, {"ok": False, "error": "Timeout"}
+                except Exception as e:
+                    return name, {"ok": False, "error": type(e).__name__}
+
+            ds_checks = dict(await asyncio.gather(*(_ping_one(n) for n in names)))
+        checks["datasources"] = ds_checks
+
+        gateway = getattr(app.state, "llm_gateway", None)
+        providers = getattr(gateway, "_providers", None)
+        checks["llm"] = {
+            "configured": bool(providers),
+            "providers": len(providers) if providers else 0,
+        }
+
+        if not storage_ok:
+            status, http_status = "unavailable", 503
+        elif any(not v.get("ok") for v in ds_checks.values()):
+            status, http_status = "degraded", 200
+        else:
+            status, http_status = "ok", 200
+        return JSONResponse(
+            status_code=http_status, content={"status": status, "checks": checks}
+        )
+
+    @app.get("/v1/metrics")
+    async def metrics() -> Response:
+        """Prometheus text exposition(单进程 serve;计数不敏感,免鉴权)。"""
+        return Response(content=render_metrics(), media_type="text/plain; version=0.0.4")
 
     return app

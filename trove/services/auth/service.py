@@ -47,6 +47,10 @@ class AuthService:
     def __init__(self, db_path: str | Path):
         self.store = AppDbStore(db_path)
 
+    async def dispose(self) -> None:
+        """Release the store's backend connection (see AppDbStore.dispose)."""
+        await self.store.dispose()
+
     # ── Bootstrap ─────────────────────────────────────────
 
     async def ensure_bootstrap_admin(

@@ -40,6 +40,7 @@ dependencies = [
     "uvicorn>=0.30.0",
     "python-multipart>=0.0.9",
     "fastmcp>=3.4.7",
+    "prometheus-client>=0.20.0",
 ]
 
 [project.optional-dependencies]

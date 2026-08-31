@@ -6,6 +6,7 @@ and switching between database connections.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import replace
@@ -14,6 +15,7 @@ from typing import Any
 from trove.core.types import DatasourceConfig, QueryResult, SchemaInfo
 from trove.core.errors import DatasourceConflictError, DatasourceError
 from trove.core.logging import get_logger
+from trove.core.metrics import record_sql, record_sql_cache_hit
 from trove.services.datasource.adapters.base import DatabaseAdapter
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 from trove.services.datasource.adapters.mysql import MySQLAdapter
@@ -303,10 +305,22 @@ class ConnectorRegistry:
         if hit is not None and now - hit[0] < self._result_cache_ttl_s:
             self._result_cache_hits += 1
             cached = hit[1]
+            record_sql_cache_hit(adapter.name)
             return replace(
                 cached, rows=list(cached.rows), columns=list(cached.columns),
             )
-        result = await adapter.execute(sql)
+        # 指标:每次真实执行计一条(cancelled = 客户端中止链路,error = 驱动失败)。
+        # 失败也计数——生产上"error 率"是健康度的核心信号。
+        started = time.monotonic()
+        try:
+            result = await adapter.execute(sql)
+            record_sql(adapter.name, "success", time.monotonic() - started)
+        except asyncio.CancelledError:
+            record_sql(adapter.name, "cancelled", time.monotonic() - started)
+            raise
+        except Exception:
+            record_sql(adapter.name, "error", time.monotonic() - started)
+            raise
         self._put_result_cache(key, result)
         return result
 

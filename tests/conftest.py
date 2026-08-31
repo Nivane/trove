@@ -286,4 +286,6 @@ async def session_manager(tmp_home, agent_config, graphs):
         graphs=graphs,
         llm_gateway=llm,
     )
-    return manager
+    yield manager
+    # 后端连接 dispose:aiosqlite 常驻线程不关闭会挂住进程退出
+    await store.dispose()

@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import sys
 
+from trove.core.request_id import RequestIdFilter
+
 
 def get_logger(name: str) -> logging.Logger:
     """Return a configured logger for the given module name.
@@ -41,10 +43,11 @@ def _setup_root_logger() -> None:
     handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        fmt="%(asctime)s [%(levelname)s] %(name)s: [req=%(request_id)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)
+    handler.addFilter(RequestIdFilter())
 
     root.addHandler(handler)
     root.propagate = False
