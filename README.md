@@ -11,11 +11,13 @@
 
 ---
 
-Trove is a **self-learning conversational data agent**: ask questions in natural language, get Markdown answers backed by real SQL. It handles schema matching, SQL generation with self-validation, execution, and reflective adjudication; wrong answers are diagnosed, rolled back, and corrected.
+Trove is a **self-learning conversational data agent**: ask questions in natural language, get Markdown answers backed by real SQL. Its promise is not "always right" but **never wrong without a fight** — it verifies, refuses, and learns.
 
-Every question and correction grows a per-datasource knowledge base (notes, terms, reference SQL, rules, lessons) plus cross-session memory — **accuracy improves the more you use it**.
+**Semantic layer sets the boundary.** A semantic model (`semantics.yml`) is the only answerable scope; queries it cannot cover are refused with a suggestion to extend the model rather than answered with guesses. **RAG feeds the ammo.** Every generation is grounded in a per-datasource knowledge base — schema notes, terms, reference SQL, rules, lessons, and cross-session memory — retrieved deterministically against the question.
 
-**Semantic-first**: a semantic model (`semantics.yml`) defines exactly what can be answered. Queries it cannot cover are refused with a suggestion to extend the model — no hallucinated guesses.
+**Self-validation closes the loop.** Generated SQL runs through a zero-LLM rule chain (shape / filters / values / ordering) and a reflection cycle; wrong answers are diagnosed, rolled back, and corrected, with regression hard-checks across versions. Simple queries take a deterministic fast path; complex ones upgrade to an agentic ReAct loop that probes and self-checks before answering.
+
+**Learning compounds into an asset.** Each correction distills into a Hint Bank lesson, each confirmed Q&A becomes reference SQL, and cross-session memory recalls episodes and preferences — accuracy improves the more you use it, and the knowledge stays yours. **Governance keeps it deployable.** Auto-learned content lands `pending` until an admin confirms, HITL approval is supported, and every executed tool call is audited.
 
 ## Highlights
 
