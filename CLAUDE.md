@@ -41,7 +41,7 @@ docker compose down              # 停止并移除容器
 - 真实对话需要 LLM 凭证：取消 compose 中 `~/.trove/conf` 只读挂载的注释（`- ${HOME}/.trove/conf:/root/.trove/conf:ro`），或在容器内提供 API key
 - 后端镜像是不带页面的纯 JSON API（所有路由在 `/v1` 下）；前端由独立容器发布（`frontend/Dockerfile` 多阶段构建：`npm run build` → `frontend/dist` → nginx 运行时）。本机开发：后端 `uv run trove serve`（:8000）+ 前端 `cd frontend && npm run dev`（:5173，HMR，反代 `/v1` → 后端）。
 
-Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres` (`postgres` = psycopg,业务 + pgvector 向量驱动). Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset; Postgres uses `PG_TEST_URL`); see README.
+Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|postgres` (`postgres` = psycopg,业务 + pgvector 向量驱动); Doris 复用 MySQL 协议驱动(`--extra doris` = aiomysql). Real-service integration tests are env-gated with `-m integration` (auto-skipped when variables are unset; Postgres uses `PG_TEST_URL`); see README.
 
 Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **cost-sensitive — do not launch eval runs without explicit user instruction**. Helper scripts: `distill_lessons.py` (distill Hint Bank lessons from eval failures), `import_golden_examples.py`, `import_bird_descriptions.py`, `probe_enums.py`, `import_sqlite_to_mysql.py`, `init_postgres_demo.py` (BIRD demo → PostgreSQL).
 

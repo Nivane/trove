@@ -6,7 +6,6 @@ import uuid
 import pytest
 
 from trove.core.errors import DatasourceError, SQLExecutionError
-from trove.services.datasource.adapters import mysql as mysql_module
 from trove.services.datasource.adapters.mysql import MySQLAdapter
 
 
@@ -71,7 +70,7 @@ class FakeDriver:
 
 def make_adapter(monkeypatch, driver=None, config=None, version="8.0.36"):
     driver = driver or FakeDriver()
-    monkeypatch.setattr(mysql_module, "_get_driver", lambda: driver)
+    monkeypatch.setattr(MySQLAdapter, "_get_driver", staticmethod(lambda: driver))
     adapter = MySQLAdapter(
         name="test",
         config=config or {
@@ -113,7 +112,7 @@ class TestMySQLAdapter:
             async def connect(self, **kwargs):
                 raise OSError("connection refused")
 
-        monkeypatch.setattr(mysql_module, "_get_driver", lambda: BadDriver())
+        monkeypatch.setattr(MySQLAdapter, "_get_driver", staticmethod(lambda: BadDriver()))
         adapter = MySQLAdapter(name="test", config={})
         with pytest.raises(DatasourceError):
             await adapter.connect()
@@ -255,7 +254,7 @@ class TestMySQLAdapter:
                 datasource="",
             )
 
-        monkeypatch.setattr(mysql_module, "_get_driver", _missing)
+        monkeypatch.setattr(MySQLAdapter, "_get_driver", staticmethod(_missing))
         adapter = MySQLAdapter(name="test", config={})
         with pytest.raises(DatasourceError) as exc_info:
             await adapter.connect()

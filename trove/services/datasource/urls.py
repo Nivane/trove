@@ -2,6 +2,7 @@
 
 Supported schemes:
   mysql://[user[:password]@]host[:port]/database      (default port 3306)
+  doris://[user[:password]@]host[:port]/database     (default port 9030)
   postgres://[user[:password]@]host[:port]/database  (default port 5432)
   clickhouse://[user[:password]@]host[:port]/database (default port 8123)
   sqlite://path/to/file.db | sqlite://:memory:
@@ -15,7 +16,12 @@ from urllib.parse import quote, unquote, urlparse
 from trove.core.types import DatasourceConfig
 from trove.core.errors import DatasourceError
 
-DEFAULT_PORTS = {"mysql": 3306, "postgres": 5432, "clickhouse": 8123}
+DEFAULT_PORTS = {
+    "mysql": 3306,
+    "doris": 9030,
+    "postgres": 5432,
+    "clickhouse": 8123,
+}
 
 FILE_SCHEMES = ("sqlite", "duckdb")
 

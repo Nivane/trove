@@ -30,6 +30,11 @@ class TestEstimateMaxRows:
         r = _res(["id", "table"], [("1", "loan")])
         assert estimate_max_rows("mysql", r) is None
 
+    def test_doris_tabular_rows_column(self):
+        """Doris EXPLAIN 复用 MySQL 表格形态(rows 列)。"""
+        r = _res(["id", "table", "rows"], [("1", "loan", 900000), ("1", "district", 100)])
+        assert estimate_max_rows("doris", r) == 900000
+
     def test_duckdb_cardinality(self):
         r = _res(["physical_plan"], [("Pipeline   Cardinality: 8000000",)])
         assert estimate_max_rows("duckdb", r) == 8000000

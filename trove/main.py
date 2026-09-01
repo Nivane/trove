@@ -82,7 +82,7 @@ async def setup_datasource(args, registry: ConnectorRegistry) -> None:
 
     Accepts:
       - "demo": the built-in BIRD financial demo database
-      - scheme:// URLs: sqlite://, mysql://, clickhouse://, duckdb://
+      - scheme:// URLs: sqlite://, mysql://, doris://, clickhouse://, duckdb://
 
     Raises:
         DatasourceError: Unknown target, malformed URL, or connection failure.
@@ -100,7 +100,7 @@ async def setup_datasource(args, registry: ConnectorRegistry) -> None:
             message=(
                 f"Unknown datasource: {target}. "
                 f"Use --datasource demo or a scheme:// URL "
-                f"(sqlite/mysql/clickhouse/duckdb)."
+                f"(sqlite/mysql/doris/clickhouse/duckdb)."
             ),
             datasource=target,
         )

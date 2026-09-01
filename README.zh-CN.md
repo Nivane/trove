@@ -96,6 +96,7 @@ docker compose down
 | SQLite | `--datasource demo` / `sqlite:///path/to.db` / `sqlite://:memory:` | 内置 |
 | PostgreSQL | `postgres://user:pass@host:5432/database` | `uv sync --extra postgres` |
 | MySQL | `mysql://user:pass@host:3306/database` | `uv sync --extra mysql` |
+| Doris | `doris://user:pass@host:9030/database` | `uv sync --extra doris` |
 | ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` / `duckdb://:memory:` | `uv sync --extra duckdb` |
 

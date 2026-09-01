@@ -30,25 +30,36 @@ logger = get_logger(__name__)
 DEFAULT_PORT = 3306
 
 
-def _get_driver():
-    """Import aiomysql lazily (raises DatasourceError with a hint when missing)."""
-    try:
-        import aiomysql
-        return aiomysql
-    except ImportError as e:
-        raise DatasourceError(
-            message="aiomysql is not installed — run `uv sync --extra mysql`",
-            datasource="",
-        ) from e
-
-
 class MySQLAdapter(DatabaseAdapter):
-    """MySQL database adapter via aiomysql (async)."""
+    """MySQL database adapter via aiomysql (async).
+
+    Subclass overrides (Doris speaks the MySQL wire protocol):
+      - ``label``          product name in connect/ping error messages
+      - ``default_port``   server port when the config omits one
+      - ``driver_hint``    pip/uv extra hint when aiomysql is missing
+      - ``dialect()``      SQLGlot dialect
+    """
+
+    label = "MySQL"
+    default_port = DEFAULT_PORT
+    driver_hint = "`uv sync --extra mysql`"
 
     def __init__(self, name: str = "mysql", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._conn: Any = None
         self._server_version = ""
+
+    @classmethod
+    def _get_driver(cls):
+        """Import aiomysql lazily (raises DatasourceError with a hint when missing)."""
+        try:
+            import aiomysql
+            return aiomysql
+        except ImportError as e:
+            raise DatasourceError(
+                message=f"aiomysql is not installed — run {cls.driver_hint}",
+                datasource="",
+            ) from e
 
     @staticmethod
     def dialect() -> str:
@@ -58,24 +69,24 @@ class MySQLAdapter(DatabaseAdapter):
         if self._connected:
             return
         try:
-            aiomysql = _get_driver()
+            aiomysql = self._get_driver()
             self._conn = await aiomysql.connect(
                 host=self.config.get("host", "127.0.0.1"),
-                port=self.config.get("port", DEFAULT_PORT),
+                port=self.config.get("port", self.default_port),
                 user=self.config.get("user", ""),
                 password=self.config.get("password", ""),
                 db=self.config.get("database", ""),
             )
             self._connected = True
             await self._probe_version()
-            logger.debug("Connected to MySQL: %s:%s/%s",
-                         self.config.get("host"), self.config.get("port"),
+            logger.debug("Connected to %s: %s:%s/%s",
+                         self.label, self.config.get("host"), self.config.get("port"),
                          self.config.get("database"))
         except DatasourceError:
             raise
         except Exception as e:
             raise DatasourceError(
-                message=f"Failed to connect to MySQL at "
+                message=f"Failed to connect to {self.label} at "
                         f"{self.config.get('host')}:{self.config.get('port')}: {e}",
                 datasource=self.name,
             ) from e
@@ -124,10 +135,10 @@ class MySQLAdapter(DatabaseAdapter):
             return
         if tid is None:
             return
-        aiomysql = _get_driver()
+        aiomysql = self._get_driver()
         side = await aiomysql.connect(
             host=self.config.get("host", "127.0.0.1"),
-            port=self.config.get("port", DEFAULT_PORT),
+            port=self.config.get("port", self.default_port),
             user=self.config.get("user", ""),
             password=self.config.get("password", ""),
             db=self.config.get("database", ""),
@@ -154,7 +165,7 @@ class MySQLAdapter(DatabaseAdapter):
             await self._conn.ping(reconnect=True)
         except Exception as e:
             raise DatasourceError(
-                message=f"MySQL connection lost and reconnect failed: {e}",
+                message=f"{self.label} connection lost and reconnect failed: {e}",
                 datasource=self.name,
             ) from e
 

@@ -52,6 +52,9 @@ duckdb = ["duckdb>=1.0.0"]
 mysql = [
     "aiomysql>=0.3.2",
 ]
+doris = [
+    "aiomysql>=0.3.2",
+]
 clickhouse = [
     "clickhouse-connect>=1.7.1",
 ]

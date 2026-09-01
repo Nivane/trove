@@ -47,6 +47,24 @@ class TestParseDatasourceUrl:
         cfg = parse_datasource_url("clickhouse://default@localhost/events")
         assert cfg.connection_params["port"] == 8123
 
+    def test_doris_full(self):
+        cfg = parse_datasource_url("doris://root:root@127.0.0.1:9030/apboa")
+        assert cfg.type == "doris"
+        assert cfg.name == "apboa"
+        assert cfg.connection_params == {
+            "host": "127.0.0.1",
+            "port": 9030,
+            "user": "root",
+            "password": "root",
+            "database": "apboa",
+        }
+        # 非 postgres 业务库 → sqlite 本地向量
+        assert cfg.vector_backend == "sqlite"
+
+    def test_doris_default_port(self):
+        cfg = parse_datasource_url("doris://user@localhost/mydb")
+        assert cfg.connection_params["port"] == 9030
+
     def test_postgres_full(self):
         cfg = parse_datasource_url("postgres://trove:secret@pg:5432/trove")
         assert cfg.type == "postgres"

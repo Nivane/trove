@@ -104,6 +104,7 @@ Open `http://localhost:8080/` (default login: admin / `admin123` — local demo 
 | SQLite | `--datasource demo` / `sqlite:///path/to.db` / `sqlite://:memory:` | built-in |
 | PostgreSQL | `postgres://user:pass@host:5432/database` | `uv sync --extra postgres` |
 | MySQL | `mysql://user:pass@host:3306/database` | `uv sync --extra mysql` |
+| Doris | `doris://user:pass@host:9030/database` | `uv sync --extra doris` |
 | ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` / `duckdb://:memory:` | `uv sync --extra duckdb` |
 

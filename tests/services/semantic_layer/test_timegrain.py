@@ -30,6 +30,18 @@ def test_mysql(grain, expected):
 
 
 @pytest.mark.parametrize("grain,expected", [
+    ("year", "DATE_FORMAT(loan.date, '%Y')"),
+    ("quarter", "CONCAT(YEAR(loan.date), '-Q', QUARTER(loan.date))"),
+    ("month", "DATE_FORMAT(loan.date, '%Y-%m')"),
+    ("week", "DATE_FORMAT(loan.date, '%x-W%v')"),
+    ("day", "DATE_FORMAT(loan.date, '%Y-%m-%d')"),
+])
+def test_doris(grain, expected):
+    """Doris 兼容 MySQL 日期函数。"""
+    assert date_trunc(E, grain, "doris") == expected
+
+
+@pytest.mark.parametrize("grain,expected", [
     ("year", "date_trunc('year', loan.date)"),
     ("quarter", "date_trunc('quarter', loan.date)"),
     ("month", "date_trunc('month', loan.date)"),

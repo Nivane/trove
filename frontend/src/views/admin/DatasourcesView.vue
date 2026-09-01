@@ -351,6 +351,11 @@ const TYPES: Record<string, TypeMeta> = {
     label: 'MySQL',
     example: 'mysql://user:pass@localhost:3306/financial',
   },
+  doris: {
+    value: 'doris',
+    label: 'Doris',
+    example: 'doris://user:pass@localhost:9030/financial',
+  },
   clickhouse: {
     value: 'clickhouse',
     label: 'ClickHouse',

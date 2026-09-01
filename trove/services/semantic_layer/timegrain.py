@@ -43,6 +43,7 @@ _CLICKHOUSE = {
 _TABLES = {
     "sqlite": _SQLITE,
     "mysql": _MYSQL,
+    "doris": _MYSQL,  # Doris 兼容 MySQL 日期函数
     "duckdb": _DUCKDB,
     "clickhouse": _CLICKHOUSE,
 }

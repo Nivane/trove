@@ -4159,6 +4159,9 @@ bge = [
 clickhouse = [
     { name = "clickhouse-connect" },
 ]
+doris = [
+    { name = "aiomysql" },
+]
 duckdb = [
     { name = "duckdb" },
 ]
@@ -4181,6 +4184,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiomysql", marker = "extra == 'doris'", specifier = ">=0.3.2" },
     { name = "aiomysql", marker = "extra == 'mysql'", specifier = ">=0.3.2" },
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "clickhouse-connect", marker = "extra == 'clickhouse'", specifier = ">=1.7.1" },
@@ -4208,7 +4212,7 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.7.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
-provides-extras = ["postgres", "duckdb", "mysql", "clickhouse", "bge"]
+provides-extras = ["postgres", "duckdb", "mysql", "doris", "clickhouse", "bge"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -65,6 +65,7 @@ _PARSERS: dict[str, Any] = {
     "postgresql": lambda rows, cols: _max_regex(rows, _PG_ROWS_RE),
     "duckdb": lambda rows, cols: _max_regex(rows, _DUCKDB_ROWS_RE),
     "mysql": _mysql_rows,
+    "doris": _mysql_rows,  # Doris EXPLAIN 复用 MySQL 表格形态(rows 列)
 }
 
 
