@@ -1,6 +1,6 @@
 """Shared agent loop harness — model-driven termination with tool access.
 
-Every agentic node (planner, gen_sql, reflect, …) runs this loop:
+Every agentic node (query_sketch, gen_sql, reflect, …) runs this loop:
 the model observes, calls tools, observes again, and the loop ends
 when the model stops calling tools — i.e. when the model itself judges
 its task done. max_rounds is a safety guard only, not a stopping rule.
@@ -408,7 +408,7 @@ async def run_agent_loop(
             cache_control — Anthropic ephemeral breakpoints, so repeated
             calls with the same prefix skip re-processing the stable part.
             Callers without a stable prefix keep messages byte-identical
-            (planner/reflect etc. pass None and are unaffected).
+            (query_sketch/reflect etc. pass None and are unaffected).
         prompt_caching: Master switch for the breakpoint markers above.
             Providers without explicit caching (OpenAI etc.) have the
             markers stripped by the gateway — behavior-equivalent, no

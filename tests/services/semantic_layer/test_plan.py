@@ -132,7 +132,7 @@ def test_plan_query_never_raises_on_garbage():
 
 
 def test_render_plan_time_grain_and_having_lines():
-    from trove.workflow.nodes.planner import _render_plan
+    from trove.workflow.nodes.query_sketch import _render_plan
 
     plan = {
         "aggregation": "sum(loan.amount)",
@@ -187,7 +187,7 @@ def test_limit_invalid_fails_plan():
 
 
 def test_render_plan_analysis_line():
-    from trove.workflow.nodes.planner import _render_plan
+    from trove.workflow.nodes.query_sketch import _render_plan
 
     plan = {
         "aggregation": "sum(loan.amount)",

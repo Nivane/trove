@@ -40,7 +40,7 @@ async def mcp_components(tmp_path, sqlite_registry):
     manager = SessionManager(
         config=config,
         session_store=SessionStore(home_dir=str(tmp_path / "home")),
-        graphs=build_graphs(services, multi_candidate=False, planner=False, agentic=False),
+        graphs=build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False),
         llm_gateway=llm,
         kb=kb,
         connectors=sqlite_registry,

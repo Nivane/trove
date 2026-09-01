@@ -104,24 +104,24 @@ class WorkflowState(BaseModel):
     # generating SQL (e.g. no tables matched the question)
     clarification_question: str = ""
 
-    # LLM query plan (planner node) injected into SQL generation
+    # LLM query plan (query_sketch node) injected into SQL generation
     plan: str = ""
 
-    # 结构化计划(planner 原始 JSON):answer_columns 双层验证的输入——
+    # 结构化计划(query_sketch 原始 JSON):answer_columns 双层验证的输入——
     # 层1 校验计划引用的表/列存在性,层2 执行后校验结果列一致性
     plan_json: dict[str, Any] | None = None
 
-    # 计划校验观测(planner/validate 写入):status ok/dropped + errors,
+    # 计划校验观测(query_sketch/validate 写入):status ok/dropped + errors,
     # 供 eval 归因「plan 层拦了什么」
     plan_validation: dict[str, Any] = Field(default_factory=dict)
 
-    # 语义层确定性编译(planner 写入):覆盖内问题时编译器拼出权威 SQL
+    # 语义层确定性编译(query_sketch 写入):覆盖内问题时编译器拼出权威 SQL
     # 骨架,注入 plan(gen_sql 遵从);compiled 标记走「确定性编译」通道,
     # 供 eval path: compiled|llm 归因。
     compiled_sql: str = ""
     compiled: bool = False
 
-    # 编译决策观测(planner 恒写):{outcome: compiled|miss, miss_reason,
+    # 编译决策观测(query_sketch 恒写):{outcome: compiled|miss, miss_reason,
     # miss_component, plan_typed, semantic_layer}——eval 统计 compile
     # hit-rate 与 MISS 分因的闭环数据源;RunTracer 自动 dump 进 run log。
     compile_meta: dict[str, Any] = Field(default_factory=dict)
@@ -179,7 +179,7 @@ class WorkflowState(BaseModel):
     kb_exact_match: bool = False
 
     # 确定性快径命中:fast_match 节点用 kb init 模板直接产出 SQL
-    # (未经过 planner/生成)。reflect 对这类答案跳过语义裁决,理由同
+    # (未经过 query_sketch/生成)。reflect 对这类答案跳过语义裁决,理由同
     # kb_exact_match——模板是确定性产物,不是模型解释。
     fast_path: bool = False
 
@@ -189,7 +189,7 @@ class WorkflowState(BaseModel):
 
     # 语义优先(Phase A)视角上下文:仅渲染语义模型声明内容(dataset/metric/
     # field+synonym/声明关系/instructions),不含物理表名/列/数值样本。
-    # 语义优先时 schema_context 也被置为同一内容(下游 gen_sql/planner 无感),
+    # 语义优先时 schema_context 也被置为同一内容(下游 gen_sql/query_sketch 无感),
     # 本字段供评测对照与 refuse 定位使用。
     semantic_context: str = ""
 
@@ -249,7 +249,7 @@ class WorkflowState(BaseModel):
 
     # LLM-judged rollback (analyze_error): which upstream step to rerun.
     # last_rollback_target feeds the deterministic anti-loop escalation.
-    rollback_target: str = ""   # gen_sql / planner / schema_linking
+    rollback_target: str = ""   # gen_sql / query_sketch / schema_linking
     last_rollback_target: str = ""
 
     # graceful degradation channel: first node failure message wins
@@ -360,7 +360,7 @@ class GenSQLState(BaseModel):
     # parse_date 节点产物:解析出的时间范围 "YYYY-MM-DD ~ YYYY-MM-DD"(未命中为空)
     time_context: str = ""
 
-    # LLM query plan (planner node) injected into the generation prompt
+    # LLM query plan (query_sketch node) injected into the generation prompt
     plan: str = ""
 
     # 复杂度分档(由外层 WorkflowState 注入):模型分层用——simple/standard

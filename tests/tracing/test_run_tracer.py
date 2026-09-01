@@ -118,13 +118,13 @@ class TestRunTracerVerbose:
         buf = io.StringIO()
         tracer = create_tracer("r6", verbose=True, stream=buf)
         tracer.start_run({"question": "q"})
-        sid = tracer.node_start("planner", {"question": "q"})
-        tracer.llm("planner", "m", [{"role": "user", "content": "hello"}], "plan text", 10)
+        sid = tracer.node_start("query_sketch", {"question": "q"})
+        tracer.llm("query_sketch", "m", [{"role": "user", "content": "hello"}], "plan text", 10)
         tracer.node_end(sid, {"plan": "plan text"})
         tracer.finish({"verdict": "OK"})
 
         out = buf.getvalue()
-        assert "planner" in out
+        assert "query_sketch" in out
         assert "hello" in out
         assert "plan text" in out
 
@@ -133,7 +133,7 @@ class TestRunTracerVerbose:
         buf = io.StringIO()
         tracer = create_tracer("r7", stream=buf)
         tracer.start_run({"question": "q"})
-        sid = tracer.node_start("planner", {})
+        sid = tracer.node_start("query_sketch", {})
         tracer.node_end(sid, {})
         tracer.finish({})
         assert buf.getvalue() == ""
@@ -290,7 +290,7 @@ class TestRunLogHierarchy:
         buf = io.StringIO()
         tracer = create_tracer("r15", verbose=True, stream=buf)
         tracer.start_run({"question": "q"})
-        outer = tracer.node_start("planner", {})
+        outer = tracer.node_start("query_sketch", {})
         tracer.tool("get_table_columns", {"table": "loan"}, "cols")
         tracer.node_end(outer, {"plan": "p"})
         tracer.finish({})

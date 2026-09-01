@@ -134,7 +134,7 @@ def ossie_to_metric_payloads(text: str) -> list[dict[str, Any]]:
 
     flat term 只保留 name/aliases/mapping/definition;这里是结构化指标:
     expression / datasets / metric_type / filter / agg_time_dimension /
-    non_additive / datatype 全部保留,支撑"指标相关性检索"与 planner 的
+    non_additive / datatype 全部保留,支撑"指标相关性检索"与 query_sketch 的
     口径注入。降级与 ossie_to_term_payloads 完全一致(共享解析)。
     """
     model = _parse_model_or_none(text)

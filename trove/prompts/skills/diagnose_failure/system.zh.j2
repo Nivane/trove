@@ -20,5 +20,5 @@
 
 ## 回退纪律
 
-- 选真正的根因层：SQL 本身写错→gen_sql；查询计划/聚合思路错→planner；表/列匹配错或漏表→schema_linking。
+- 选真正的根因层：SQL 本身写错→gen_sql；查询计划/聚合思路错→query_sketch；表/列匹配错或漏表→schema_linking。
 - 重复的回退目标会沿阶梯升档——贪图方便而选错层，会白白烧掉重试预算。

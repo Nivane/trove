@@ -315,10 +315,10 @@ semantic_model:
         assert any("district" in d for d in ld["matched_datasets"])
 
 
-class TestPlannerRollbackRevision:
+class TestQuerySketchRollbackRevision:
     async def test_rollback_revision_includes_prior_plan(self):
         """回退重跑规划时,上一版计划必须进 prompt(增量修订,非从零重写)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         captured = {}
 
@@ -327,7 +327,7 @@ class TestPlannerRollbackRevision:
                 captured.update(messages=messages, **kwargs)
                 return "new plan"
 
-        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False)
         state = make_state(
             plan="旧计划: join account 与 district 按地区聚合",
             error_feedback="wrong aggregation",
@@ -391,8 +391,8 @@ class TestSchemaLinkingWithKB:
 class TestCorrectionContextInjection:
     """回退重跑时把失败上下文带回上游步骤。"""
 
-    async def test_planner_prompt_includes_correction_context(self):
-        """planner 重跑时，提示词携带上一次失败与诊断。"""
+    async def test_query_sketch_prompt_includes_correction_context(self):
+        """query_sketch 重跑时，提示词携带上一次失败与诊断。"""
         captured = {}
 
         class LLM:
@@ -401,9 +401,9 @@ class TestCorrectionContextInjection:
                 return "plan: ok"
 
         from trove.core.config import AgentConfig
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
-        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False)
         await node(make_state(
             error_feedback="no such table: loans",
             error_analysis="判断: loans 表不存在",
@@ -908,13 +908,13 @@ class TestProbeInjectionIsolation:
         assert "injection_flagged" not in obs
 
 
-# ── _column_stats_text(planner 列画像)─────────────────
+# ── _column_stats_text(query_sketch 列画像)─────────────────
 
 
 class TestExtraColumnsMismatch:
     def test_extra_sort_column_caught(self):
         """结果列含 plan 答案列之外、问题也未点名的列 → 冲突。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         errors = extra_columns_mismatch(
             {"answer_columns": ["account_id"]},
@@ -927,7 +927,7 @@ class TestExtraColumnsMismatch:
 
     def test_question_named_column_exempt(self):
         """问题点名了某列而 plan 漏写 → 规则 19 允许的偏离,豁免。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         # 复数 + 下划线变体
         assert extra_columns_mismatch(
@@ -944,7 +944,7 @@ class TestExtraColumnsMismatch:
 
     def test_alias_and_qualified_refs_pass(self):
         """answer ref 带表限定、结果列是别名 → 尾缀匹配,无多余列。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         assert extra_columns_mismatch(
             {"answer_columns": ["loan.account_id"]},
@@ -954,7 +954,7 @@ class TestExtraColumnsMismatch:
 
     def test_missing_answer_column_deferred(self):
         """答案列有缺失 → 交给层2主检查(宁漏勿误,不双重打回)。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         assert extra_columns_mismatch(
             {"answer_columns": ["account_id", "client_id"]},
@@ -963,7 +963,7 @@ class TestExtraColumnsMismatch:
         ) == []
 
     def test_no_plan_or_no_refs(self):
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         assert extra_columns_mismatch(None, ["x"], "q") == []
         assert extra_columns_mismatch({}, ["x"], "q") == []
@@ -973,12 +973,12 @@ class TestExtraColumnsMismatch:
 class TestEnsureAggregateAnswerColumn:
     """分组聚合兜底:声明聚合但 answer_columns 缺聚合指标列 → 自动补列。
 
-    回归:planner 把「每个地区的贷款用户数量」只写成 answer_columns=["district.A2"]
+    回归:query_sketch 把「每个地区的贷款用户数量」只写成 answer_columns=["district.A2"]
     (聚合意图仅在 aggregation 字段),gen_sql 收到单列指引只输出地区列、丢掉 count。
     """
 
     def _import(self):
-        from trove.workflow.nodes.planner import ensure_aggregate_answer_column
+        from trove.workflow.nodes.query_sketch import ensure_aggregate_answer_column
         return ensure_aggregate_answer_column
 
     def test_missing_metric_column_is_appended(self):
@@ -1020,12 +1020,12 @@ class TestEnsureAggregateAnswerColumn:
 class TestCorrectEntityCountPlan:
     """语义级计数纠正:「X 的用户数量/人数」→ count(distinct 实体)。
 
-    回归:planner 把「每个地区的贷款用户数量」plan 成 count(loan.loan_id)
+    回归:query_sketch 把「每个地区的贷款用户数量」plan 成 count(loan.loan_id)
     (记录计数),gen_sql 遵守规则 19 不敢反驳 → 第一轮总输出"贷款数量"。
     该 guard 在 plan→gen 之间确定性纠偏,第一轮就做对。"""
 
     def _import(self):
-        from trove.workflow.nodes.planner import correct_entity_count_plan
+        from trove.workflow.nodes.query_sketch import correct_entity_count_plan
         return correct_entity_count_plan
 
     def _plan(self, ans=None, agg="count"):
@@ -1082,7 +1082,7 @@ class TestCorrectEntityCountPlan:
 
         回归:计划 answer_columns 含 COUNT(...) 表达式(§"(" 被 refs 过滤),
         执行结果里的聚合别名(loan_count)曾被打成"多余列"→ 正确 SQL 死循环。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
         assert extra_columns_mismatch(
@@ -1102,7 +1102,7 @@ class TestCorrectEntityCountPlan:
 
         覆盖 layer2 补查的实际输入形态:plan 含 count 表达式 + SQL 真正
         投影了 COUNT(...) AS loan_count → 该列必须是聚合输出而非法外列。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
         sql = (
@@ -1117,7 +1117,7 @@ class TestCorrectEntityCountPlan:
 
     def test_aggregate_signature_count_star_reconciliation(self):
         """COUNT(*) 通配签名也归到计划里的 count(loan.loan_id) → 不误报。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
         sql = (
@@ -1133,11 +1133,11 @@ class TestCorrectEntityCountPlan:
     def test_aggregate_declared_in_plan_field(self):
         """plan 只在 aggregation 字段声明聚合(answer_columns 无表达式)→ 不误报。
 
-        回归:planner 把聚合意图写成 aggregation='count'、answer_columns 只列
+        回归:query_sketch 把聚合意图写成 aggregation='count'、answer_columns 只列
         district.A2 时,SQL 里的 COUNT(DISTINCT ...) AS num_loan_users 曾是
         "多余列"→ 正确 SQL 被连环打回。聚合投影列是声明聚合后的预期输出。
         """
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {"answer_columns": ["district.A2"], "aggregation": "count"}
         sql = (
@@ -1156,7 +1156,7 @@ class TestCorrectEntityCountPlan:
 
     def test_aggregate_declared_still_catches_nonagg_extra(self):
         """声明聚合只豁免聚合投影列;非聚合的多余列仍判冲突。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {"answer_columns": ["district.A2"], "aggregation": "count"}
         sql = (
@@ -1175,7 +1175,7 @@ class TestCorrectEntityCountPlan:
 
     def test_aggregate_quota_overflow_still_caught(self):
         """超过聚合表达式配额的多余列仍判冲突(配额只豁免聚合计数的列)。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         errors = extra_columns_mismatch(
             {"answer_columns": ["district.A2", "count(loan.loan_id)"]},
@@ -1188,7 +1188,7 @@ class TestCorrectEntityCountPlan:
 
     def test_aggregate_signature_unrelated_extra_still_caught(self):
         """签名对账只划聚合输出列;与计划无关的多余列(即使带别名)仍判冲突。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {"answer_columns": ["district.A2", "count(loan.loan_id)"]}
         sql = (
@@ -1208,7 +1208,7 @@ class TestCorrectEntityCountPlan:
 
     def test_aggregate_quota_multiple_exprs(self):
         """多个聚合表达式各占一个配额,配额用尽后的多余列仍判冲突。"""
-        from trove.workflow.nodes.planner import extra_columns_mismatch
+        from trove.workflow.nodes.query_sketch import extra_columns_mismatch
 
         plan = {
             "answer_columns": [
@@ -1614,7 +1614,7 @@ class TestExecuteSQLTransientRetry:
         assert not _is_transient(Exception("you have an error in your SQL syntax"))
 
 
-# ── Planner ──────────────────────────────────────────────
+# ── Query-sketch ──────────────────────────────────────────────
 
 
 class TestBilingualPrompts:
@@ -1638,8 +1638,8 @@ class TestBilingualPrompts:
         await generate(GenSQLState(question="average grade", schema_context="", dialect="sqlite", lang="en"))
         assert "SQL generation assistant" in captured["messages"][0]["content"]
 
-    async def test_planner_prompt_follows_language(self):
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_prompt_follows_language(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         captured = {}
 
@@ -1648,13 +1648,13 @@ class TestBilingualPrompts:
                 captured.update(messages=messages)
                 return "plan"
 
-        node = make_planner(LLM(), AgentConfig(target="m"))
+        node = make_query_sketch(LLM(), AgentConfig(target="m"))
         await node(make_state(question="平均成绩是多少"))
         assert "规划" in captured["messages"][0]["content"]
 
         # 语言跟随 state.lang(配置),不按问题语言检测
         await node(make_state(question="average grade", lang="en"))
-        assert "query planner" in captured["messages"][0]["content"]
+        assert "query query_sketch" in captured["messages"][0]["content"]
 
     async def test_reflect_prompt_follows_language(self):
         from trove.workflow.nodes.reflect import make_reflect
@@ -1738,49 +1738,49 @@ class TestBilingualPrompts:
         assert llm.calls == 3  # 主裁决 + reask + rejudge
 
 
-class TestPlanner:
-    async def test_planner_writes_plan(self):
-        from trove.workflow.nodes.planner import make_planner
+class TestQuerySketch:
+    async def test_query_sketch_writes_plan(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         llm = ScriptedLLM(["Use students, aggregate grade by county."])
-        node = make_planner(llm, AgentConfig(target="mock/model"))
+        node = make_query_sketch(llm, AgentConfig(target="mock/model"))
         update = await node(make_state(schema_context="Table: students"))
         assert "students" in update["plan"]
-        # planner prompt 带 schema 与问题
+        # query_sketch prompt 带 schema 与问题
         prompt_text = " ".join(m["content"] for m in llm.last_messages)
         assert "students" in prompt_text
 
-    async def test_planner_llm_failure_is_silent(self):
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_llm_failure_is_silent(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class BrokenLLM:
             async def chat(self, *a, **k):
                 raise RuntimeError("llm down")
 
-        node = make_planner(BrokenLLM(), AgentConfig(target="mock/model"))
+        node = make_query_sketch(BrokenLLM(), AgentConfig(target="mock/model"))
         assert await node(make_state()) == {}
 
-    async def test_planner_error_passthrough(self):
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_error_passthrough(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
-        node = make_planner(ScriptedLLM(["x"]), AgentConfig(target="mock/model"))
+        node = make_query_sketch(ScriptedLLM(["x"]), AgentConfig(target="mock/model"))
         assert await node(make_state(error="upstream")) == {}
 
-    async def test_planner_carries_llm_detail(self):
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_carries_llm_detail(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class LLM:
             async def chat(self, model, messages, **kwargs):
                 return "plan text"
 
-        node = make_planner(LLM(), AgentConfig(target="mock/model"))
+        node = make_query_sketch(LLM(), AgentConfig(target="mock/model"))
         update = await node(make_state())
         assert update["llm"]["model"] == "mock/model"
         assert update["llm"]["output_preview"] == "plan text"
 
-    async def test_planner_uses_fast_model_when_configured(self):
+    async def test_query_sketch_uses_fast_model_when_configured(self):
         """计划起草走 fast 档(配置 model_fast 时),不烧推理模型。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class LLM:
             def __init__(self):
@@ -1791,7 +1791,7 @@ class TestPlanner:
                 return "plan text"
 
         llm = LLM()
-        node = make_planner(llm, AgentConfig(target="mock/model", model_fast="fast/model"))
+        node = make_query_sketch(llm, AgentConfig(target="mock/model", model_fast="fast/model"))
         await node(make_state())
         assert llm.model == "fast/model"
 
@@ -1825,9 +1825,9 @@ class TestPlanner:
             ],
         )
 
-    async def test_planner_compiles_covered_question(self):
-        """覆盖内问题:planner 编译出权威 SQL,注入 plan + 标注 compiled 通道。"""
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_compiles_covered_question(self):
+        """覆盖内问题:query_sketch 编译出权威 SQL,注入 plan + 标注 compiled 通道。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -1844,7 +1844,7 @@ class TestPlanner:
             "answer_columns": ["count(loan.loan_id)"],
             "conditions": [],
         })])
-        node = make_planner(
+        node = make_query_sketch(
             llm, AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
@@ -1854,9 +1854,9 @@ class TestPlanner:
         assert update["compiled_sql"] == "SELECT COUNT(loan.loan_id)\nFROM loan"
         assert "Compiled SQL (authoritative" in update["plan"]
 
-    async def test_planner_misses_uncovered_question(self):
+    async def test_query_sketch_misses_uncovered_question(self):
         """metric 不在模型(宇宙外)→ 严格 MISS,不置位 compiled,plan 原样。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -1867,7 +1867,7 @@ class TestPlanner:
             def model(self):
                 return self._model
 
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "sum(loan.ghost)",
@@ -1882,9 +1882,9 @@ class TestPlanner:
         assert "compiled_sql" not in update
         assert "Compiled SQL" not in update["plan"]
 
-    async def test_planner_passes_trace_metadata(self):
+    async def test_query_sketch_passes_trace_metadata(self):
         """trace metadata（node/session/question）随 LLM 调用上报。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         captured = {}
 
@@ -1893,14 +1893,14 @@ class TestPlanner:
                 captured.update(kwargs)
                 return "plan text"
 
-        node = make_planner(CapturingLLM(), AgentConfig(target="mock/model"))
+        node = make_query_sketch(CapturingLLM(), AgentConfig(target="mock/model"))
         await node(make_state(question="average grade by county"))
-        assert captured["metadata"]["node"] == "planner"
+        assert captured["metadata"]["node"] == "query_sketch"
         assert captured["metadata"]["session_id"] == "s1"
 
-    async def test_planner_sends_response_format_json_object(self):
-        """结构化输出:planner 用 response_format json_object 强约束 JSON 输出。"""
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_sends_response_format_json_object(self):
+        """结构化输出:query_sketch 用 response_format json_object 强约束 JSON 输出。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         captured = {}
 
@@ -1909,13 +1909,13 @@ class TestPlanner:
                 captured.update(kwargs)
                 return '{"tables": ["students"]}'
 
-        node = make_planner(CapturingLLM(), AgentConfig(target="mock/model"))
+        node = make_query_sketch(CapturingLLM(), AgentConfig(target="mock/model"))
         await node(make_state(question="average grade by county"))
         assert captured.get("response_format") == {"type": "json_object"}
 
-    async def test_planner_falls_back_when_response_format_rejected(self):
+    async def test_query_sketch_falls_back_when_response_format_rejected(self):
         """provider 不支持 response_format → 捕获后不带它重试一次,不丢计划。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         calls = []
 
@@ -1926,15 +1926,15 @@ class TestPlanner:
                     raise RuntimeError("response_format not supported")
                 return '{"tables": ["students"]}'
 
-        node = make_planner(RejectingLLM(), AgentConfig(target="mock/model"))
+        node = make_query_sketch(RejectingLLM(), AgentConfig(target="mock/model"))
         update = await node(make_state(question="average grade by county"))
         assert len(calls) == 2  # 首次带 response_format 失败,第二次不带重试
         assert calls[1].get("response_format") is None
         assert update.get("plan")
 
-    async def test_planner_sees_resolved_time_range(self):
-        """planner 起草过滤条件时能看到解析出的时间范围;未解析时不注入。"""
-        from trove.workflow.nodes.planner import make_planner
+    async def test_query_sketch_sees_resolved_time_range(self):
+        """query_sketch 起草过滤条件时能看到解析出的时间范围;未解析时不注入。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         captured = {}
 
@@ -1943,7 +1943,7 @@ class TestPlanner:
                 captured["user"] = messages[1]["content"]
                 return "plan text"
 
-        node = make_planner(CapturingLLM(), AgentConfig(target="mock/model"))
+        node = make_query_sketch(CapturingLLM(), AgentConfig(target="mock/model"))
         await node(make_state(time_context="2025-01-01 ~ 2025-01-15"))
         assert "Resolved time range: 2025-01-01 ~ 2025-01-15" in captured["user"]
 
@@ -1951,8 +1951,8 @@ class TestPlanner:
         assert "Resolved time range" not in captured["user"]
 
 
-class TestPlannerAgentic:
-    """planner agentic 路径(带 connectors 的 ReAct 循环)——首个覆盖测试。"""
+class TestQuerySketchAgentic:
+    """query_sketch agentic 路径(带 connectors 的 ReAct 循环)——首个覆盖测试。"""
 
 class TestClarify:
     async def test_matched_tables_pass(self):
@@ -2484,14 +2484,14 @@ class TestOutput:
 
 
 class TestSemanticPromptGuards:
-    """① planner 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。
+    """① query_sketch 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。
 
     常量已迁入 trove/prompts/*.j2 模板,这里直接渲染模板断言子串。
     """
 
-    def test_planner_prompt_carries_scope_principle(self):
-        en = render("planner/system", lang="en")
-        zh = render("planner/system", lang="zh")
+    def test_query_sketch_prompt_carries_scope_principle(self):
+        en = render("query_sketch/system", lang="en")
+        zh = render("query_sketch/system", lang="zh")
         assert "lowest" in en.lower()
         assert "scope" in en.lower()
         assert "作用域" in zh
@@ -2529,22 +2529,22 @@ class TestSemanticPromptGuards:
         assert "probe_query" not in en
         assert "probe_query" not in zh
 
-    def test_planner_prompt_never_carries_removed_catalog_tools(self):
-        """planner 的 catalog 探测工具(get_table_columns/get_column_stats)已随
-        语义优先(Phase B)物理移除——提示词绝不能再教 planner 调用不存在的工具。
+    def test_query_sketch_prompt_never_carries_removed_catalog_tools(self):
+        """query_sketch 的 catalog 探测工具(get_table_columns/get_column_stats)已随
+        语义优先(Phase B)物理移除——提示词绝不能再教 query_sketch 调用不存在的工具。
         has_tools 传入与否都不应出现。"""
         for lang in ("en", "zh"):
-            base = render("planner/system", lang=lang)
-            gated = render("planner/system", lang=lang, has_tools=True)
+            base = render("query_sketch/system", lang=lang)
+            gated = render("query_sketch/system", lang=lang, has_tools=True)
             for text in (base, gated):
                 assert "get_table_columns" not in text
                 assert "get_column_stats" not in text
 
-    def test_planner_prompt_carries_analysis_guidance(self):
+    def test_query_sketch_prompt_carries_analysis_guidance(self):
         """窗口分析(share/running_total/mom/yoy/pct_change/rank)指引:
-        planner 要能产出 analysis 字段给编译器。"""
-        en = render("planner/system", lang="en")
-        zh = render("planner/system", lang="zh")
+        query_sketch 要能产出 analysis 字段给编译器。"""
+        en = render("query_sketch/system", lang="en")
+        zh = render("query_sketch/system", lang="zh")
         for token in ("share", "running_total", "mom", "yoy", "pct_change", "rank"):
             assert token in en
         assert "占比" in zh
@@ -2572,7 +2572,7 @@ class TestSemanticPromptGuards:
 
 
 class TestStructuredPlan:
-    """⑦ planner 结构化输出:JSON 计划 → 渲染进 gen_sql 提示词,解析失败回退散文。"""
+    """⑦ query_sketch 结构化输出:JSON 计划 → 渲染进 gen_sql 提示词,解析失败回退散文。"""
 
     JSON_PLAN = """
 {
@@ -2590,23 +2590,23 @@ class TestStructuredPlan:
 """
 
     def test_parse_plain_json(self):
-        from trove.workflow.nodes.planner import _parse_plan
+        from trove.workflow.nodes.query_sketch import _parse_plan
         data = _parse_plan(self.JSON_PLAN)
         assert data["extreme"]["scope"] == "after all filters"
         assert len(data["conditions"]) == 2
 
     def test_parse_fenced_json(self):
-        from trove.workflow.nodes.planner import _parse_plan
+        from trove.workflow.nodes.query_sketch import _parse_plan
         data = _parse_plan(f"```json\n{self.JSON_PLAN}\n```")
         assert data["answer_columns"] == ["account_id"]
 
     def test_parse_prose_returns_none(self):
-        from trove.workflow.nodes.planner import _parse_plan
+        from trove.workflow.nodes.query_sketch import _parse_plan
         assert _parse_plan("先取1997年贷款，再筛选周发放的账户") is None
         assert _parse_plan("plan: ok") is None
 
     def test_render_makes_scope_explicit(self):
-        from trove.workflow.nodes.planner import _parse_plan, _render_plan
+        from trove.workflow.nodes.query_sketch import _parse_plan, _render_plan
         text = _render_plan(_parse_plan(self.JSON_PLAN), lang="zh")
         assert "贷款批准年份" in text          # 条件带注释
         assert "周发放" in text
@@ -2615,13 +2615,13 @@ class TestStructuredPlan:
 
     async def test_node_renders_structured_plan(self):
         from trove.core.config import AgentConfig
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class LLM:
             async def chat(self, model, messages, **kwargs):
                 return TestStructuredPlan.JSON_PLAN
 
-        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False)
         update = await node(make_state())
         assert "Conditions" in update["plan"] or "条件" in update["plan"]
         assert "after all filters" in update["plan"]
@@ -2629,13 +2629,13 @@ class TestStructuredPlan:
     async def test_node_falls_back_to_prose(self):
         """模型不听话输出散文时:计划原样保留,管线不因结构化失败而中断。"""
         from trove.core.config import AgentConfig
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class LLM:
             async def chat(self, model, messages, **kwargs):
                 return "先筛选1997年贷款，再取最低金额。"
 
-        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False)
         update = await node(make_state())
         assert update["plan"] == "先筛选1997年贷款，再取最低金额。"
 
@@ -2649,7 +2649,7 @@ class TestPlanValidation:
     }
 
     def test_valid_plan_passes(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         plan = {
             "tables": ["loan", "account"],
             "answer_columns": ["account_id", "amount"],
@@ -2658,19 +2658,19 @@ class TestPlanValidation:
         assert validate_plan(plan, self.SCHEMA) == []
 
     def test_unknown_table_fails(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         plan = {"tables": ["loan", "nonexistent"], "answer_columns": ["account_id"]}
         errors = validate_plan(plan, self.SCHEMA)
         assert any("nonexistent" in e for e in errors)
 
     def test_unknown_column_fails(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         plan = {"tables": ["loan"], "answer_columns": ["account_id", "ghost_col"]}
         errors = validate_plan(plan, self.SCHEMA)
         assert any("ghost_col" in e for e in errors)
 
     def test_table_dot_column_form_checked(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         plan = {"tables": ["loan"], "conditions": [{"field": "loan.missing"}]}
         errors = validate_plan(plan, self.SCHEMA)
         assert any("missing" in e for e in errors)
@@ -2678,7 +2678,7 @@ class TestPlanValidation:
         assert validate_plan(plan_ok, self.SCHEMA) == []
 
     def test_expressions_and_wildcards_skipped(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         plan = {
             "tables": ["loan"],
             "answer_columns": ["COUNT(*)", "AVG(amount)", "*", ""],
@@ -2686,36 +2686,36 @@ class TestPlanValidation:
         assert validate_plan(plan, self.SCHEMA) == []
 
     def test_case_insensitive(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         plan = {"tables": ["LOAN"], "answer_columns": ["Account_ID"]}
         assert validate_plan(plan, self.SCHEMA) == []
 
     def test_no_schema_or_no_plan_skips(self):
-        from trove.workflow.nodes.planner import validate_plan
+        from trove.workflow.nodes.query_sketch import validate_plan
         assert validate_plan(None, self.SCHEMA) == []
         assert validate_plan({"tables": ["x"]}, None) == []
 
     def test_answer_columns_mismatch_all_missing_is_conflict(self):
-        from trove.workflow.nodes.planner import answer_columns_mismatch
+        from trove.workflow.nodes.query_sketch import answer_columns_mismatch
         plan = {"answer_columns": ["account_id", "frequency"]}
         errs = answer_columns_mismatch(plan, ["status", "amount"])
         assert errs and "conflict" in errs[0]
 
     def test_answer_columns_mismatch_partial_match_passes(self):
         """别名/表达式噪音:至少一个命中即放行。"""
-        from trove.workflow.nodes.planner import answer_columns_mismatch
+        from trove.workflow.nodes.query_sketch import answer_columns_mismatch
         plan = {"answer_columns": ["account_id", "total"]}
         assert answer_columns_mismatch(plan, ["account_id", "SUM(amount) AS total"]) == []
 
     def test_answer_columns_mismatch_skipped_without_plan(self):
-        from trove.workflow.nodes.planner import answer_columns_mismatch
+        from trove.workflow.nodes.query_sketch import answer_columns_mismatch
         assert answer_columns_mismatch(None, ["a"]) == []
         assert answer_columns_mismatch({"answer_columns": []}, ["a"]) == []
         assert answer_columns_mismatch({"answer_columns": ["COUNT(*)"]}, ["a"]) == []
 
     def test_answer_columns_mismatch_time_grain_expression_passes(self):
         """时间粒度分桶列(loan.date → DATE_FORMAT(loan.date,'%Y'))不算冲突。"""
-        from trove.workflow.nodes.planner import answer_columns_mismatch
+        from trove.workflow.nodes.query_sketch import answer_columns_mismatch
         plan = {"answer_columns": ["loan.date", "count(loan.loan_id)"]}
         assert answer_columns_mismatch(
             plan, ["DATE_FORMAT(loan.date, '%Y')", "COUNT(loan.loan_id)"],
@@ -2749,7 +2749,7 @@ class TestPlanValidation:
 
     async def test_node_drops_invalid_plan(self):
         """校验不过且修正后仍不过 → 丢弃 plan(gen_sql 不受幻觉列挟持)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class LLM:
             def __init__(self):
@@ -2763,7 +2763,7 @@ class TestPlanValidation:
                 )
 
         llm = LLM()
-        node = make_planner(
+        node = make_query_sketch(
             llm, AgentConfig(target="m"), agentic=False,
             connectors=self._connectors(),
         )
@@ -2776,7 +2776,7 @@ class TestPlanValidation:
 
     async def test_node_self_retries_then_accepts_fixed_plan(self):
         """修正轮产出合法计划 → 采纳并携带 plan_json。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         responses = [
             '{"tables": ["loan", "ghost"], "answer_columns": ["amount"]}',
@@ -2795,7 +2795,7 @@ class TestPlanValidation:
                 return r
 
         llm = LLM()
-        node = make_planner(
+        node = make_query_sketch(
             llm, AgentConfig(target="m"), agentic=False,
             connectors=self._connectors(),
         )
@@ -2805,8 +2805,8 @@ class TestPlanValidation:
         assert update["plan_json"] == {"tables": ["loan"], "answer_columns": ["amount"]}
         assert update["plan_validation"]["status"] == "ok"
 
-    async def test_planner_prompt_includes_evidence(self):
-        """P0-1:planner 起草 answer_columns 时能看到官方 evidence。"""
+    async def test_query_sketch_prompt_includes_evidence(self):
+        """P0-1:query_sketch 起草 answer_columns 时能看到官方 evidence。"""
         captured = {}
 
         class LLM:
@@ -2814,9 +2814,9 @@ class TestPlanValidation:
                 captured["user"] = messages[1]["content"]
                 return "plan text"
 
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
-        node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+        node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False)
         await node(make_state(evidence="Answer should list district names", lang="en"))
         assert "Answer should list district names" in captured["user"]
         assert "official hint" in captured["user"]
@@ -2860,7 +2860,7 @@ class TestValidateRulesNode:
         assert update == {"rules_passed": True}
 
     async def test_answer_columns_conflict_feeds_back(self):
-        """P0-2 层2:结果列整体背离 plan 的 answer_columns → 打回(归因 planner)。"""
+        """P0-2 层2:结果列整体背离 plan 的 answer_columns → 打回(归因 query_sketch)。"""
         from trove.workflow.nodes.validate import make_validate_rules
 
         node = make_validate_rules(max_retries=3)

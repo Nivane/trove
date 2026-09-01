@@ -43,7 +43,7 @@ export function stepLabel(node: string, lang: string): string {
     route_intent: '意图路由',
     parse_date: '日期解析',
     schema_linking: '表关联',
-    planner: '查询计划',
+    query_sketch: '查询计划',
     gen_sql: '生成 SQL',
     execute_sql: '执行 SQL',
     select: '结果选择',
@@ -62,7 +62,7 @@ export function stepLabel(node: string, lang: string): string {
     route_intent: 'Route intent',
     parse_date: 'Parse date',
     schema_linking: 'Schema link',
-    planner: 'Plan',
+    query_sketch: 'Plan',
     gen_sql: 'Gen SQL',
     execute_sql: 'Execute',
     select: 'Select',
@@ -145,7 +145,7 @@ export function extractStep(payload: StepPayload): StepView {
     return view
   }
 
-  if (node === 'planner') {
+  if (node === 'query_sketch') {
     const plan = str(get(payload, 'plan'))
     if (plan) view.text = plan
     return view

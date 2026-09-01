@@ -3,7 +3,7 @@
 Runs on every correction (execution error / rule failure / consensus
 disagreement / reflect RETRY): the LLM classifies the error, explains
 what is wrong, proposes a fix, and picks which upstream step to roll
-back to ("TARGET: gen_sql|planner|schema_linking"). The decision is
+back to ("TARGET: gen_sql|query_sketch|schema_linking"). The decision is
 enforced deterministically by the rollback ladder: a repeated target
 escalates one rung (anti-loop guard), and repeating the top rung
 degrades gracefully — the shared retry budget still guarantees
@@ -38,13 +38,13 @@ from trove.workflow.versions import (
 logger = get_logger(__name__)
 
 ROLLBACK_TARGET_RE = re.compile(r"TARGET\s*[:：]\s*(\w+)", re.I)
-DEFAULT_ROLLBACK_LADDER = ("gen_sql", "planner", "schema_linking")
+DEFAULT_ROLLBACK_LADDER = ("gen_sql", "query_sketch", "schema_linking")
 
 
 def _extract_rollback_target(analysis: str) -> str:
     """从诊断文本提取回滚目标:优先 JSON 载荷,回退 TARGET: 行。
 
-    结构化输出升级:允许 ``{"rollback_target": "planner", ...}`` 形式的 JSON
+    结构化输出升级:允许 ``{"rollback_target": "query_sketch", ...}`` 形式的 JSON
     载荷(替代脆弱正则)。两种形式都归一为小写目标名;取不到返回空串。
     """
     text = (analysis or "").strip()
@@ -220,7 +220,7 @@ def record_rejected_hypothesis(
 
 def render_reasoning_context(
     history: list[dict[str, str]],
-    nodes: tuple[str, ...] = ("gen_sql", "planner"),
+    nodes: tuple[str, ...] = ("gen_sql", "query_sketch"),
     limit: int = 2,
     width: int = 600,
 ) -> str:
@@ -311,7 +311,7 @@ def make_analyze_error(
 
     Args:
         rollback_ladder: Ordered rollback targets available in the graph
-            (e.g. without the planner node, planner is absent from the
+            (e.g. without the query_sketch node, query_sketch is absent from the
             ladder and can never be picked).
     """
     ladder = list(rollback_ladder)
@@ -468,7 +468,7 @@ def make_analyze_error(
             fix_mode = classify_fix_mode(error_text, issues)
             # 缺口5: 修复进展量化 —— regression_state 标签 + 无进展轮计数
             # validator-conflict 是校验器误报复现(改 SQL 无解),不计无进展;
-            # 该轮照常推进回滚,但由第 5 节的可申诉出口(planner 回滚)兜底。
+            # 该轮照常推进回滚,但由第 5 节的可申诉出口(query_sketch 回滚)兜底。
             no_progress = (
                 0 if progress in ("first", "improved", "validator-conflict")
                 else state.no_progress_rounds + 1

@@ -28,11 +28,11 @@ describe('step payload extraction (backend `step` events carry detail.{...})', (
     expect(s.timeMs).toBe(30)
   })
 
-  it('extracts plan text from planner detail', () => {
+  it('extracts plan text from query_sketch detail', () => {
     const card = {
-      node: 'planner',
+      node: 'query_sketch',
       payload: {
-        node: 'planner',
+        node: 'query_sketch',
         detail: { plan: '**Plan**: filter by region' },
       },
     }
@@ -102,7 +102,7 @@ describe('step payload extraction (backend `step` events carry detail.{...})', (
   it('maps node names to human labels', () => {
     expect(stepLabel('route_intent', 'zh')).toContain('意图')
     expect(stepLabel('schema_linking', 'zh')).toContain('关联')
-    expect(stepLabel('planner', 'zh')).toContain('计划')
+    expect(stepLabel('query_sketch', 'zh')).toContain('计划')
     expect(stepLabel('gen_sql', 'zh')).toContain('SQL')
     expect(stepLabel('execute_sql', 'zh')).toContain('执行')
     expect(stepLabel('reflect', 'en')).toContain('Reflect')

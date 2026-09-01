@@ -56,7 +56,7 @@ class TestGatewayWiring:
             model="test/model",
             messages=[{"role": "user", "content": "hi"}],
             output="ok",
-            metadata={"run_id": "r9", "node": "planner"},
+            metadata={"run_id": "r9", "node": "query_sketch"},
             elapsed_ms=10,
             usage={"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
         )
@@ -81,7 +81,7 @@ class TestGatewayWiring:
             model="test/model",
             messages=[],
             output="ok",
-            metadata={"node": "planner"},
+            metadata={"node": "query_sketch"},
             elapsed_ms=10,
             usage={"total_tokens": 5},
         )
@@ -148,7 +148,7 @@ class TestRunSummary:
             connectors=sqlite_registry,
             config=agent_config,
         )
-        graphs = build_graphs(services, multi_candidate=False, planner=False, agentic=False)
+        graphs = build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False)
         manager = SessionManager(
             config=agent_config,
             session_store=SessionStore(home_dir=str(tmp_home)),

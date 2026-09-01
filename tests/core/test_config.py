@@ -349,9 +349,9 @@ class TestPerNodeModel:
         conf = tmp_path / "agent.yml"
         conf.write_text(
             "agent:\n  target: openai/gpt-4o\n  node_models:\n"
-            "    planner: openai/gpt-4o-mini\n    reflect: deepseek/reasoner\n",
+            "    query_sketch: openai/gpt-4o-mini\n    reflect: deepseek/reasoner\n",
             encoding="utf-8",
         )
         cfg = ConfigLoader.load_agent_config(str(conf))
-        assert cfg.node_models == {"planner": "openai/gpt-4o-mini", "reflect": "deepseek/reasoner"}
-        assert cfg.model_for_node("planner", "complex") == "openai/gpt-4o-mini"
+        assert cfg.node_models == {"query_sketch": "openai/gpt-4o-mini", "reflect": "deepseek/reasoner"}
+        assert cfg.model_for_node("query_sketch", "complex") == "openai/gpt-4o-mini"

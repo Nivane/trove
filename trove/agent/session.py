@@ -853,8 +853,8 @@ class SessionManager:
                         )
 
                         # ── Legacy trajectory events (--print compatibility) ──
-                        if node_name == "planner" and delta.get("plan"):
-                            yield {"type": "plan", "node": "planner", "content": delta["plan"]}
+                        if node_name == "query_sketch" and delta.get("plan"):
+                            yield {"type": "plan", "node": "query_sketch", "content": delta["plan"]}
                         if node_name == "reflect" and delta.get("verdict"):
                             yield {
                                 "type": "verdict", "node": "reflect",
@@ -940,7 +940,7 @@ class SessionManager:
                 h.get("term") for h in kh if h.get("kind") == "term"
             ]
             detail["link_detail"] = delta.get("link_detail")
-        elif node_name == "planner":
+        elif node_name == "query_sketch":
             detail["plan"] = delta.get("plan", "")
         elif node_name == "gen_sql":
             detail["sql"] = format_sql(delta.get("sql", ""), dialect)
@@ -978,7 +978,7 @@ class SessionManager:
             detail["final"] = True
 
         # LLM call detail (independent of the node chain above)
-        if node_name in ("gen_sql", "planner", "reflect", "semantics", "insights", "conclusion") and delta.get("llm"):
+        if node_name in ("gen_sql", "query_sketch", "reflect", "semantics", "insights", "conclusion") and delta.get("llm"):
             detail["llm"] = delta["llm"]
 
         return {
@@ -1354,7 +1354,7 @@ class SessionManager:
     @staticmethod
     def _tasks_block(tasks: list[Task]) -> str:
         """[tasks] 清单块 + [previous results] 结果包,追加到 history,
-        注入 gen/planner/意图改写 prompt。
+        注入 gen/query_sketch/意图改写 prompt。
 
         [previous results] 只带最近一个已完成任务的 ContextPacket
         (done/failed 且落库了 context),供下钻/续问直接引用上一步结论。

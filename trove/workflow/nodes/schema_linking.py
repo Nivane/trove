@@ -154,7 +154,7 @@ def _semantic_match_datasets(
     # 声明字段命中 → 数据集锚定(问题词 = 字段名/synonym 子串)。
     # 原始字段名子串只对业务列(dimension/enum/measure)生效:identifier/time
     # 列是结构列(主键、日期),其原始名常与问题里的普通词撞车(如 "issued"
-    # 命中 card.issued 时间列,把无关数据集拉进作用域,planner 进而误锚列)。
+    # 命中 card.issued 时间列,把无关数据集拉进作用域,query_sketch 进而误锚列)。
     # synonym 命中不受此限(人工写的业务词表)。
     for d in model.datasets:
         if d.name in matched:
@@ -237,7 +237,7 @@ def _render_semantic_context(
                 if f.is_time:
                     bits.append("time")
                 if f.enum_display:
-                    # 渲染值映射(不是只报个数):planner 据此把人类值(male/男性)
+                    # 渲染值映射(不是只报个数):query_sketch 据此把人类值(male/男性)
                     # 落到规范 code(M),编译期再确定性归一——值留在字段层。
                     mapping = ", ".join(
                         f"{k}={v}" for k, v in f.enum_display.items())
@@ -340,7 +340,7 @@ async def _semantic_linking(
     }
 
     # 查询时回灌已索引的物理 schema 元数据(schema_doc:表/列描述 + 枚举值),
-    # 辅助 planner 锚定列/枚举值。仅 pg_hybrid 后端(统一 PG 检索库)有数据;
+    # 辅助 query_sketch 锚定列/枚举值。仅 pg_hybrid 后端(统一 PG 检索库)有数据;
     # 其他后端或库空 → 返回空,不注入,维持语义优先边界。只在已锚定数据集上
     # 注入(按 doc_id 的 schema:<table> 过滤),避免无关物理表污染作用域。
     if kb is not None and datasource and matched:

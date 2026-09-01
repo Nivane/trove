@@ -311,7 +311,7 @@ class TroveREPL:
 
         if node == "gen_sql" and detail.get("sql"):
             self._tui.print_sql(detail["sql"])
-        elif node == "planner" and detail.get("plan"):
+        elif node == "query_sketch" and detail.get("plan"):
             self._tui.print_thought(detail["plan"])
 
     def _print_done_stats(self, summary: dict) -> None:
@@ -345,7 +345,7 @@ class TroveREPL:
             if n_terms:
                 parts.append(L(lang, f"{n_terms} 术语", f"{n_terms} terms"))
             return ", ".join(parts)
-        if node == "planner":
+        if node == "query_sketch":
             return L(lang, "生成查询计划", "drafting query plan")
         if node == "gen_sql":
             attempts = detail.get("attempts", 1)

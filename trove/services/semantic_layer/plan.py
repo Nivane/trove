@@ -1,7 +1,7 @@
 """Typed plan AST for the semantic layer compile boundary.
 
-Planner 的原始输出仍是松散 JSON dict(生成侧无 structured output),这里
-在**解析/编译边界**把 plan 强类型化:`PlanQuery` 是编译器与 planner 共用的
+Query-sketch 的原始输出仍是松散 JSON dict(生成侧无 structured output),这里
+在**解析/编译边界**把 plan 强类型化:`PlanQuery` 是编译器与 query_sketch 共用的
 查询 IR。解析语义:
 
 - 顶层形态错误(非 dict、conditions/having 非列表、item 非 dict、ordering
@@ -222,7 +222,7 @@ class PlanAnalysis(BaseModel):
 
 
 class PlanQuery(BaseModel):
-    """planner 查询计划的强类型 IR(编译器唯一输入)。"""
+    """query_sketch 查询计划的强类型 IR(编译器唯一输入)。"""
 
     model_config = ConfigDict(extra="ignore")
 

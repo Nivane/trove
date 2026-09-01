@@ -275,7 +275,7 @@ class TestStructuredSteps:
         manager = self._manager(
             tmp_home, sqlite_registry,
             ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
-            planner=False,
+            query_sketch=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
         steps = []
@@ -296,7 +296,7 @@ class TestStructuredSteps:
         manager = self._manager(
             tmp_home, sqlite_registry,
             ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
-            planner=False,
+            query_sketch=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
         steps = {}
@@ -320,7 +320,7 @@ class TestStructuredSteps:
                 "```sql\nSELECT COUNT(*) FROM students;\n```",
                 "OK",
             ],
-            planner=False,
+            query_sketch=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
         steps = []
@@ -372,11 +372,11 @@ class TestTrajectoryEvents:
         )
 
     async def test_plan_and_verdict_events(self, tmp_home, sqlite_registry):
-        """planner 计划与 reflect 裁决作为轨迹事件实时可见。"""
+        """query_sketch 计划与 reflect 裁决作为轨迹事件实时可见。"""
         manager = self._manager(
             tmp_home, sqlite_registry,
             ["query", "plan: use students, group by county", "```sql\nSELECT name FROM students;\n```", "OK"],
-            planner=True,
+            query_sketch=True,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
         events = []
@@ -404,7 +404,7 @@ class TestTrajectoryEvents:
                 "```sql\nSELECT COUNT(*) FROM students;\n```",  # 修正
                 "OK",
             ],
-            planner=False,
+            query_sketch=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
         events = []
@@ -833,7 +833,7 @@ class TestResultCache:
     RESPONSES = ["query", "```sql\nSELECT name FROM students;\n```", "OK"]
 
     async def test_identical_question_hits_cache_zero_llm(self, tmp_home, sqlite_registry):
-        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
         session = await manager.start_session(project_cwd="/tmp/p")
         first = await manager.ask(session=session, question=self.Q)
         assert first.sql and first.verdict == "OK"
@@ -848,7 +848,7 @@ class TestResultCache:
 
     async def test_normalization_equivalence(self, tmp_home, sqlite_registry):
         """标点/大小写/空白变体归一化后命中同一键。"""
-        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
         session = await manager.start_session(project_cwd="/tmp/p")
         first = await manager.ask(session=session, question=self.Q)
         calls = llm.calls
@@ -857,7 +857,7 @@ class TestResultCache:
         assert llm.calls == calls
 
     async def test_session_isolation(self, tmp_home, sqlite_registry):
-        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
         s1 = await manager.start_session(project_cwd="/tmp/p")
         s2 = await manager.start_session(project_cwd="/tmp/p")
         await manager.ask(session=s1, question=self.Q)
@@ -869,7 +869,7 @@ class TestResultCache:
         """键含数据源分量:默认数据源变化后同问句不再命中。"""
         from trove.core.types import DatasourceConfig
 
-        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
         session = await manager.start_session(project_cwd="/tmp/p")
         await manager.ask(session=session, question=self.Q)
         calls = llm.calls
@@ -886,7 +886,7 @@ class TestResultCache:
     async def test_ttl_expiry(self, tmp_home, sqlite_registry):
         from trove.agent.session import RESULT_CACHE_TTL_S
 
-        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
         session = await manager.start_session(project_cwd="/tmp/p")
         await manager.ask(session=session, question=self.Q)
         calls = llm.calls
@@ -904,7 +904,7 @@ class TestResultCache:
         manager, llm = self._manager(
             tmp_home, sqlite_registry,
             ["query", "```sql\nSELEC * FROM students;\n```", "OK"],
-            planner=False,
+            query_sketch=False,
         )
         session = await manager.start_session(project_cwd="/tmp/p")
         first = await manager.ask(session=session, question=self.Q)
@@ -915,7 +915,7 @@ class TestResultCache:
 
     async def test_stream_hit_marks_cached(self, tmp_home, sqlite_registry):
         """流式命中:事件形状与实跑一致(sql → result → done),summary 带 cached 标记。"""
-        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), planner=False)
+        manager, llm = self._manager(tmp_home, sqlite_registry, list(self.RESPONSES), query_sketch=False)
         session = await manager.start_session(project_cwd="/tmp/p")
         async for _ in manager.ask_stream(session=session, question=self.Q):
             pass

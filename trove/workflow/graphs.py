@@ -4,7 +4,7 @@ Composition:
   - gen_sql subgraph: generate → validate retry loop (max_retries attempts)
   - reflection main graph: schema_linking → gen_sql[subgraph] → execute_sql
     → reflect → (conditional) failure → analyze_error → LLM-judged rollback
-    (gen_sql / planner / schema_linking, anti-loop guarded) or output
+    (gen_sql / query_sketch / schema_linking, anti-loop guarded) or output
   - fixed main graph: same pipeline without the reflect loop
   - empty main graph: pass-through output
 
@@ -48,7 +48,7 @@ from trove.workflow.nodes.schema_linking import make_schema_linking
 from trove.workflow.nodes.refuse import make_refuse
 from trove.workflow.nodes.parse_date import make_parse_date
 from trove.workflow.nodes.clarify import make_clarify
-from trove.workflow.nodes.planner import make_planner
+from trove.workflow.nodes.query_sketch import make_query_sketch
 from trove.workflow.nodes.gen_sql import (
     build_sql_prompt_from_state,
     make_generate,
@@ -1026,7 +1026,7 @@ def build_graphs(
     services: GraphServices,
     checkpointer: Any = None,
     multi_candidate: bool = True,
-    planner: bool = True,
+    query_sketch: bool = True,
     clarify: bool = False,
     agentic: bool = True,
     scaling: int = 5,
@@ -1039,7 +1039,7 @@ def build_graphs(
         multi_candidate: Reflection generates alternative candidates at
             higher temperatures for consensus selection (off = single
             candidate).
-        planner: Reflection drafts an LLM query plan before generation.
+        query_sketch: Reflection drafts an LLM query plan before generation.
         clarify: Ask the user instead of generating when no tables match
             (off by default — generation proceeds permissively).
         agentic: gen_sql runs a ReAct loop (model validates via the
@@ -1071,7 +1071,7 @@ def build_graphs(
 
     return {
         "reflection": compile(_build_reflection(
-            services, subgraph, alt_subgraphs=alt_subgraphs, planner=planner,
+            services, subgraph, alt_subgraphs=alt_subgraphs, query_sketch=query_sketch,
             clarify=clarify, agentic=agentic,
         )),
         "fixed": compile(_build_fixed(services, subgraph, clarify, agentic)),
@@ -1441,7 +1441,7 @@ def _make_route_after_fast_match(miss_target: str):
     """快径分流:命中(有模板 SQL 且无 error)→ 直接执行;miss → 正常链路。
 
     fast_match 刻意不是回滚目标:快径 SQL 失败由 analyze_error 诊断后走
-    gen_sql/planner/schema_linking 正常重生成,重生成轮 in_correction
+    gen_sql/query_sketch/schema_linking 正常重生成,重生成轮 in_correction
     保证不再触发快径。
     """
 
@@ -1453,11 +1453,11 @@ def _make_route_after_fast_match(miss_target: str):
     return route
 
 
-def _route_after_clarify_planner(state: WorkflowState) -> Literal["planner", "output"]:
+def _route_after_clarify_query_sketch(state: WorkflowState) -> Literal["query_sketch", "output"]:
     """Clarification needed → ask the user; otherwise proceed to planning."""
     if state.error or state.clarification_question:
         return "output"
-    return "planner"
+    return "query_sketch"
 
 
 def _route_semantic_gate_after_linking(state: WorkflowState) -> Literal["refuse", "clarify"]:
@@ -1487,8 +1487,8 @@ def _route_semantic_gate_after_linking_gen_sql(
     return "gen_sql"
 
 
-def _route_after_planner(state: WorkflowState) -> Literal["refuse", "gen_sql"]:
-    """Planner 后:编译 MISS / 无语义模型 → refuse;否则 gen_sql。"""
+def _route_after_query_sketch(state: WorkflowState) -> Literal["refuse", "gen_sql"]:
+    """Query-sketch 后:编译 MISS / 无语义模型 → refuse;否则 gen_sql。"""
     if state.error or state.no_model or state.refusal:
         return "refuse"
     return "gen_sql"
@@ -1506,7 +1506,7 @@ def _build_reflection(
     subgraph: CompiledStateGraph,
     subgraph_alt: CompiledStateGraph | None = None,
     alt_subgraphs: list[CompiledStateGraph] | None = None,
-    planner: bool = True,
+    query_sketch: bool = True,
     clarify: bool = False,
     agentic: bool = True,
 ) -> StateGraph:
@@ -1532,8 +1532,8 @@ def _build_reflection(
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
-    # 确定性简单快径:模板命中 → 直接执行,跳过 planner + 生成 + 裁决;
-    # miss → 走正常 planner/gen_sql 路径(静默降级,零状态写入)。
+    # 确定性简单快径:模板命中 → 直接执行,跳过 query_sketch + 生成 + 裁决;
+    # miss → 走正常 query_sketch/gen_sql 路径(静默降级,零状态写入)。
     g.add_node("fast_match", make_fast_match(
         kb=services.kb, connectors=services.connectors,
         config=services.config or AgentConfig(),
@@ -1547,21 +1547,21 @@ def _build_reflection(
             _route_semantic_gate_after_linking,
             {"refuse": "refuse", "clarify": "clarify"},
         )
-        if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
+        if query_sketch:
+            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_conditional_edges(
                 "clarify",
-                _route_after_clarify_planner,
-                {"planner": "fast_match", "output": "output"},
+                _route_after_clarify_query_sketch,
+                {"query_sketch": "fast_match", "output": "output"},
             )
             g.add_conditional_edges(
                 "fast_match",
-                _make_route_after_fast_match("planner"),
-                {"execute_sql": "execute_sql", "planner": "planner"},
+                _make_route_after_fast_match("query_sketch"),
+                {"execute_sql": "execute_sql", "query_sketch": "query_sketch"},
             )
             g.add_conditional_edges(
-                "planner",
-                _route_after_planner,
+                "query_sketch",
+                _route_after_query_sketch,
                 {"refuse": "refuse", "gen_sql": "gen_sql"},
             )
         else:
@@ -1576,8 +1576,8 @@ def _build_reflection(
                 {"execute_sql": "execute_sql", "gen_sql": "gen_sql"},
             )
     else:
-        if planner:
-            g.add_node("planner", make_planner(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
+        if query_sketch:
+            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
             g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
             g.add_edge("refuse", "output")
             g.add_conditional_edges(
@@ -1587,12 +1587,12 @@ def _build_reflection(
             )
             g.add_conditional_edges(
                 "fast_match",
-                _make_route_after_fast_match("planner"),
-                {"execute_sql": "execute_sql", "planner": "planner"},
+                _make_route_after_fast_match("query_sketch"),
+                {"execute_sql": "execute_sql", "query_sketch": "query_sketch"},
             )
             g.add_conditional_edges(
-                "planner",
-                _route_after_planner,
+                "query_sketch",
+                _route_after_query_sketch,
                 {"refuse": "refuse", "gen_sql": "gen_sql"},
             )
         else:
@@ -1620,10 +1620,10 @@ def _build_reflection(
     )
     g.add_edge("execute_sql", "select")
     g.add_edge("select", "validate")
-    # Rollback ladder mirrors the graph topology: without the planner node,
+    # Rollback ladder mirrors the graph topology: without the query_sketch node,
     # the judge can never escalate to it.
     rollback_ladder = (
-        ("gen_sql", "planner", "schema_linking") if planner
+        ("gen_sql", "query_sketch", "schema_linking") if query_sketch
         else ("gen_sql", "schema_linking")
     )
     g.add_node("analyze_error", make_analyze_error(
@@ -1634,8 +1634,8 @@ def _build_reflection(
         "answer_metadata": "answer_metadata",
         "output": "output",
     }
-    if planner:
-        analyze_targets["planner"] = "planner"
+    if query_sketch:
+        analyze_targets["query_sketch"] = "query_sketch"
     analyze_targets["schema_linking"] = "schema_linking"
     g.add_conditional_edges(
         "analyze_error",

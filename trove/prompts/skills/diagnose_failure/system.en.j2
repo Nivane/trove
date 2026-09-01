@@ -20,5 +20,5 @@
 
 ## Rollback discipline
 
-- Pick the true root layer: SQL itself wrong → gen_sql; plan/aggregation logic wrong → planner; table/column matching wrong or missing → schema_linking.
+- Pick the true root layer: SQL itself wrong → gen_sql; plan/aggregation logic wrong → query_sketch; table/column matching wrong or missing → schema_linking.
 - A repeated rollback target escalates one rung up the ladder — choosing the convenient layer instead of the true root burns the retry budget.

@@ -1,5 +1,5 @@
 """语义优先(Phase A)测试:semantic_context 渲染 / dataset 锚定 / 零 DDL 泄漏 /
-无 fallback / 无模型拒绝 / planner MISS→refuse。
+无 fallback / 无模型拒绝 / query_sketch MISS→refuse。
 
 对应 semantic-first 架构文档 §4.1 / §4.3 / §5。
 """
@@ -154,7 +154,7 @@ class TestSemanticFirstLinking:
         assert "legacy" not in out["link_detail"]
 
 
-class TestPlannerSemanticFirst:
+class TestQuerySketchSemanticFirst:
     @staticmethod
     def _demo_model():
         f = lambda name: SemanticField(name=name, expression=name)  # noqa: E731
@@ -176,9 +176,9 @@ class TestPlannerSemanticFirst:
             ],
         )
 
-    async def test_planner_miss_emits_refusal_signal(self):
+    async def test_query_sketch_miss_emits_refusal_signal(self):
         """语义优先:编译 MISS + 真实意图 → refusal 信号(不再静默降级裸表)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -189,7 +189,7 @@ class TestPlannerSemanticFirst:
             def model(self):
                 return self._model
 
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "sum(loan.ghost)",
@@ -208,9 +208,9 @@ class TestPlannerSemanticFirst:
         assert out["refusal"]["compile_miss"]["reason"] == "no_metric_match"
         assert "sum(loan.ghost)" in out["refusal"]["compile_miss"]["component"]
 
-    async def test_planner_miss_without_intent_does_not_refuse(self):
+    async def test_query_sketch_miss_without_intent_does_not_refuse(self):
         """退化/空洞计划不拒绝 → 照常走 gen_sql(不误拒)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -221,7 +221,7 @@ class TestPlannerSemanticFirst:
             def model(self):
                 return self._model
 
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({"tables": ["loan"]})]),
             AgentConfig(target="mock/model", semantic_first=True),
             semantic_layer=FakeProvider(self._demo_model()),
@@ -230,9 +230,9 @@ class TestPlannerSemanticFirst:
         assert "compiled" not in out
         assert "refusal" not in out
 
-    async def test_planner_covered_compiles(self):
+    async def test_query_sketch_covered_compiles(self):
         """覆盖内问题仍走编译器 → 权威 SQL(语义优先后路径不变)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -243,7 +243,7 @@ class TestPlannerSemanticFirst:
             def model(self):
                 return self._model
 
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "count(loan.loan_id)",
@@ -275,9 +275,9 @@ class TestPlannerSemanticFirst:
             ],
         )
 
-    async def test_planner_time_binding_injects_range_condition(self):
+    async def test_query_sketch_time_binding_injects_range_condition(self):
         """P1-4:time_context + 唯一时间维度 → 确定性注入区间条件,编译 SQL 带过滤。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -288,7 +288,7 @@ class TestPlannerSemanticFirst:
             def model(self):
                 return self._model
 
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "count(loan.loan_id)",
@@ -307,9 +307,9 @@ class TestPlannerSemanticFirst:
         # 计划文本也带该条件(未覆盖路径 gen_sql 同样看到)
         assert "loan.date >=" in out["plan"]
 
-    async def test_planner_time_binding_skips_when_ambiguous(self):
+    async def test_query_sketch_time_binding_skips_when_ambiguous(self):
         """P1-4:多个时间字段 → 无法判定,不注入(plan 原样,不猜)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -331,7 +331,7 @@ class TestPlannerSemanticFirst:
             metrics=[SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
                                     datasets=["loan"])],
         )
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "count(loan.loan_id)",
@@ -347,9 +347,9 @@ class TestPlannerSemanticFirst:
         assert out["compiled"] is True
         assert "WHERE" not in out["compiled_sql"]  # 未注入区间条件
 
-    async def test_planner_writes_compile_meta_both_paths(self):
+    async def test_query_sketch_writes_compile_meta_both_paths(self):
         """编译决策观测:命中与 MISS 都写 compile_meta(eval hit-rate 闭环数据源)。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
             enabled = True
@@ -361,7 +361,7 @@ class TestPlannerSemanticFirst:
                 return self._model
 
         # 命中路径
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "count(loan.loan_id)",
@@ -378,7 +378,7 @@ class TestPlannerSemanticFirst:
         assert out["compile_meta"]["miss_reason"] == ""
 
         # MISS 路径
-        node_miss = make_planner(
+        node_miss = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "sum(loan.ghost)",
@@ -394,11 +394,11 @@ class TestPlannerSemanticFirst:
         assert out_miss["compile_meta"]["miss_reason"] == "no_metric_match"
         assert "sum(loan.ghost)" in out_miss["compile_meta"]["miss_component"]
 
-    async def test_planner_compile_meta_no_semantic_layer(self):
+    async def test_query_sketch_compile_meta_no_semantic_layer(self):
         """无语义层接线时:不编译、不拒绝,compile_meta 记 no_semantic_layer。"""
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
-        node = make_planner(
+        node = make_query_sketch(
             ScriptedLLM([json.dumps({
                 "tables": ["loan"],
                 "aggregation": "count(loan.loan_id)",

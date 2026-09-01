@@ -10,7 +10,7 @@ SIMPLE_PLAN = {
 
 
 def test_none_plan_is_standard():
-    """planless(planner 未启用/失败)→ standard:保守,零行为漂移。"""
+    """planless(query_sketch 未启用/失败)→ standard:保守,零行为漂移。"""
     assert grade_complexity(None, ["students"]) == "standard"
 
 

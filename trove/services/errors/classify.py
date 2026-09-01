@@ -34,7 +34,7 @@ class RecoveryAction(str, enum.Enum):
     FIX = "fix"                          # 定点修复当前产出(语法/类型错误)
     FIX_ARGS = "fix_args"                # 修正工具参数,不重跑该次调用
     ROLLBACK_SCHEMA = "rollback:schema_linking"
-    ROLLBACK_PLANNER = "rollback:planner"
+    ROLLBACK_QUERY_SKETCH = "rollback:query_sketch"
     ROLLBACK_INTENT = "rollback:route_intent"
     RETRY_BACKOFF = "retry:backoff"      # 指数退避后重试(默认上限=配置)
     RETRY_AFTER = "retry:after"          # 按服务端 retry_after 等待后重试
@@ -157,7 +157,7 @@ CLASSES: dict[str, ErrorClass] = {
         # ── 规划/意图 ─────────────────────────────────────
         ErrorClass(
             "PLAN_DRIFT", "plan", "error", retryable=True,
-            recovery=RecoveryAction.ROLLBACK_PLANNER,
+            recovery=RecoveryAction.ROLLBACK_QUERY_SKETCH,
             user_msg="Generated columns drifted from the plan.",
         ),
         ErrorClass(

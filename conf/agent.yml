@@ -5,11 +5,11 @@ agent:
   # 快速档模型: simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型
   # (复杂度分级 grade_complexity 驱动;complex 仍走 target)。留空 = 不分档。
   model_fast: deepseek/deepseek-chat
-  # 每节点模型覆盖(按节点名,优先于复杂度分档选模):planner/gen_sql/reflect/
-  # insights/conclusion/semantics/refuse/analyze_error。典型配置:planner 用
+  # 每节点模型覆盖(按节点名,优先于复杂度分档选模):query_sketch/gen_sql/reflect/
+  # insights/conclusion/semantics/refuse/analyze_error。典型配置:query_sketch 用
   # 便宜模型、reflect 用强模型。空 = 不覆盖。
   # node_models:
-  #   planner: deepseek/deepseek-chat
+  #   query_sketch: deepseek/deepseek-chat
   #   reflect: deepseek/deepseek-reasoner
   # EXPLAIN 行数估算守卫(默认关):每次最终执行前 EXPLAIN 估算最重算子行数,
   # 超 explain_max_rows 打回 gen_sql 加 LIMIT/收窄。fail-open(方言不可解析/
@@ -40,7 +40,7 @@ agent:
   decompose_llm_judge: true
   # 负载削减:
   #   fast_path: 确定性模板快径(单表/单聚合模板命中即直接产出 SQL,
-  #              跳过 planner + 生成 + 裁决)。默认开。
+  #              跳过 query_sketch + 生成 + 裁决)。默认开。
   #   reflect_skip: validate 确定性规则全过时跳过 reflect 的 LLM 裁决——
   #                 simple(仅低复杂度题,默认)/ standard(再跳 standard,
   #                 修正轮强制 standard 复杂度,成功轮也受益)/ all/ off
@@ -57,7 +57,7 @@ agent:
   # 仅作补充源——唯一真源 = 数据源的 KB semantics.yml(/kb init 生成 + 人审)。
   # 空 = 关闭。
   # semantic_layer_path: .trove/semantic
-  # 语义优先(Phase B):语义模型是生成主视角与可答边界——gen_sql/planner 以
+  # 语义优先(Phase B):语义模型是生成主视角与可答边界——gen_sql/query_sketch 以
   # 语义视角为主,未覆盖查询拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认
   # → 重答),无语义模型的数据源拒绝并提示先 /kb init。catalog 枚举工具
   # (search_values / lookup_schema / explain_plan) 始终注册,agent 可触达物理

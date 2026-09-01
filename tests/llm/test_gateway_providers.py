@@ -194,12 +194,12 @@ class TestProviderParams:
         await gateway.chat(
             model="deepseek/deepseek-reasoner",
             messages=[{"role": "user", "content": "q"}],
-            metadata={"node": "planner"},
+            metadata={"node": "query_sketch"},
         )
         assert captured["name"] == "llm"
         assert captured["model"] == "deepseek/deepseek-reasoner"
         assert "step by step reasoning" in captured["output"]["reasoning"]
-        assert captured["metadata"] == {"node": "planner"}
+        assert captured["metadata"] == {"node": "query_sketch"}
 
     async def test_no_generation_when_disabled(self, mocker):
         """未配置 Langfuse 时，SDK 记录静默跳过。"""

@@ -1,4 +1,4 @@
-"""复杂度分级——纯函数、零 IO/LLM,基于 planner 结构信号 + schema_linking 语义信号。
+"""复杂度分级——纯函数、零 IO/LLM,基于 query_sketch 结构信号 + schema_linking 语义信号。
 
 分级结果驱动负载削减开关:
 - "simple"   → gen_sql 走经典子图(跳过 ReAct agent loop)+ 跳过多候选生成;
@@ -12,12 +12,12 @@ answer_columns ≤ 3、聚合 ≤ 2、matched_tables ≤ 2,且必须有术语或
 命中(term_hit or kb_hit)。complex 判据同步调高:≥3 表、聚合 ≥ 3、
 plan 被校验丢弃。
 
-判据:plan_json 是 planner 产出的自由格式 JSON(结构信号,最硬);matched_tables
+判据:plan_json 是 query_sketch 产出的自由格式 JSON(结构信号,最硬);matched_tables
 是 schema_linking 的锚定表(语义信号)。所有访问均防御式:缺失/错型键取保守侧
 (complex 判据里缺失视为不命中,simple 判据里缺失视为不满足),任何解析问题
 只可能把结果推向 standard/complex,不会推向 simple。
 
-保守原则:未知 → standard。plan_json 为 None(planless,planner 失败或未启用)
+保守原则:未知 → standard。plan_json 为 None(planless,query_sketch 失败或未启用)
 一律 standard,保证既有行为零漂移。
 """
 
@@ -84,15 +84,15 @@ def grade_complexity(
     kb_hit: bool = False,
     plan_validation: dict[str, Any] | None = None,
 ) -> str:
-    """把 planner 结构信号 + schema_linking 语义信号分级为 simple/standard/complex。
+    """把 query_sketch 结构信号 + schema_linking 语义信号分级为 simple/standard/complex。
 
     Args:
-        plan_json: planner 的结构化产出(自由 JSON,key: tables/joins/conditions/
+        plan_json: query_sketch 的结构化产出(自由 JSON,key: tables/joins/conditions/
             aggregation/extreme/ordering/answer_columns);None → standard。
         matched_tables: schema_linking 锚定的表列表。
         term_hit: 意图分类是否命中术语(KB 命中证据,语义信号)。
         kb_hit: 状态里是否已有 KB 命中记录(如 schema_linking 的 term 命中)。
-        plan_validation: planner 的校验结果;status == "dropped" → complex。
+        plan_validation: query_sketch 的校验结果;status == "dropped" → complex。
 
     Returns:
         "simple" | "standard" | "complex"

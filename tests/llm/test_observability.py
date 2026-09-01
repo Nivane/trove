@@ -288,13 +288,13 @@ class TestFailedGeneration:
             await gw.chat(
                 "deepseek/deepseek-chat",
                 [{"role": "user", "content": "hi"}],
-                metadata={"node": "planner"},
+                metadata={"node": "query_sketch"},
             )
         obs = fake_v4_client.observations[0]
         assert obs.kwargs["as_type"] == "generation"
         assert obs.kwargs["level"] == "ERROR"
         assert obs.kwargs["status_message"] == "provider 503"
-        assert obs.kwargs["metadata"] == {"node": "planner"}
+        assert obs.kwargs["metadata"] == {"node": "query_sketch"}
 
 
 class TestToolSpans:

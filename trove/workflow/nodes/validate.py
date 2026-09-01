@@ -14,7 +14,7 @@ from typing import Any
 
 from trove.core.i18n import L
 from trove.llm.observability import record_span
-from trove.workflow.nodes.planner import answer_columns_mismatch, extra_columns_mismatch
+from trove.workflow.nodes.query_sketch import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
 
@@ -68,7 +68,7 @@ def make_validate_rules(
         # 层2:answer_columns 与执行结果列的一致性检查(plan 的钦点列必须
         # 能在结果里看到;全部缺失才是冲突——别名/表达式会制造单列噪音,
         # 全缺才是 SELECT 列表整体背离计划的强信号)。走 analyze_error
-        # 通道,反馈文本把归因指向 planner 的 answer_columns。
+        # 通道,反馈文本把归因指向 query_sketch 的 answer_columns。
         ac_errors = answer_columns_mismatch(state.plan_json, state.columns)
         if ac_errors:
             if budget_exhausted(state.retry_count, max_retries):

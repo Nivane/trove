@@ -241,29 +241,29 @@ class TestRollbackDecision:
     async def test_parses_target_from_response(self):
         class LLM:
             async def chat(self, model, messages, **kwargs):
-                return "类型: 计划偏差\n判断: 分组维度错了\n修正: 按 county 分组\nTARGET: planner"
+                return "类型: 计划偏差\n判断: 分组维度错了\n修正: 按 county 分组\nTARGET: query_sketch"
 
         node = make_analyze_error(LLM(), AgentConfig(target="m"))
         update = await node(make_state(
             sql="SELECT AVG(grade) FROM students",
             error_feedback="wrong grouping",
         ))
-        assert update["rollback_target"] == "planner"
-        assert update["last_rollback_target"] == "planner"
+        assert update["rollback_target"] == "query_sketch"
+        assert update["last_rollback_target"] == "query_sketch"
 
     async def test_parses_target_from_json_payload(self):
-        """结构化输出:JSON 载荷 {"rollback_target": "planner", ...} 可解析。"""
+        """结构化输出:JSON 载荷 {"rollback_target": "query_sketch", ...} 可解析。"""
         class LLM:
             async def chat(self, model, messages, **kwargs):
-                return '{"error_type": "Join", "judgment": "分组维度错了", "rollback_target": "planner"}'
+                return '{"error_type": "Join", "judgment": "分组维度错了", "rollback_target": "query_sketch"}'
 
         node = make_analyze_error(LLM(), AgentConfig(target="m"))
         update = await node(make_state(
             sql="SELECT AVG(grade) FROM students",
             error_feedback="wrong grouping",
         ))
-        assert update["rollback_target"] == "planner"
-        assert update["last_rollback_target"] == "planner"
+        assert update["rollback_target"] == "query_sketch"
+        assert update["last_rollback_target"] == "query_sketch"
 
     async def test_missing_target_defaults_to_gen_sql(self):
         class LLM:
@@ -289,7 +289,7 @@ class TestRollbackDecision:
                 "error": "boom",  # 与当前失败文本一致 → 同一失败重演
             }],
         ))
-        assert update["rollback_target"] == "planner"  # gen_sql → planner 升级
+        assert update["rollback_target"] == "query_sketch"  # gen_sql → query_sketch 升级
 
     async def test_repeated_target_different_failure_does_not_escalate(self):
         """目标重复但失败文本不同(如执行错误后接语义 RETRY)→ 视为新判断,不升级。"""
@@ -463,7 +463,7 @@ class TestProgressTracking:
         assert update["last_progress"] == "invalid"
         assert update["no_progress_rounds"] == 2
         # 同错误重演(即使非相邻)→ 升档,不再吃 gen_sql 空转
-        assert update["rollback_target"] == "planner"
+        assert update["rollback_target"] == "query_sketch"
 
     async def test_exec_failure_same_error_marks_invalid_and_escalates(self):
         """同一执行错误(错误文本一致)重演 → invalid + 升档。"""
@@ -487,7 +487,7 @@ class TestProgressTracking:
         assert "same execution error as Round 1" in captured["prompt"]
         assert update["last_progress"] == "invalid"
         assert update["no_progress_rounds"] == 1
-        assert update["rollback_target"] == "planner"  # 同错误重演 → 升档
+        assert update["rollback_target"] == "query_sketch"  # 同错误重演 → 升档
 
     async def test_invalid_fix_increments_no_progress(self):
         """结果签名相同 → invalid, 无进展轮 +1。"""

@@ -81,9 +81,9 @@ def make_state(**kwargs):
     return WorkflowState(**defaults)
 
 
-def build(services, multi_candidate=False, planner=False, clarify=False, agentic=False):
+def build(services, multi_candidate=False, query_sketch=False, clarify=False, agentic=False):
     """Build graphs with single-candidate classic generation (scripted-response tests)."""
-    return build_graphs(services, multi_candidate=multi_candidate, planner=planner,
+    return build_graphs(services, multi_candidate=multi_candidate, query_sketch=query_sketch,
                         clarify=clarify, agentic=agentic)
 
 
@@ -977,7 +977,7 @@ class TestClarifyRouting:
     async def test_matched_tables_proceed_normally(self, sqlite_registry, catalog):
         """有表匹配 → 正常走生成流程。"""
         llm = RecordingLLM(["query", "plan: use students", VALID_SQL, "OK"])
-        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        graphs = build(make_services(llm, catalog, sqlite_registry), query_sketch=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["clarification_question"] == ""
         assert final["row_count"] == 5
@@ -988,32 +988,32 @@ class TestClarifyRouting:
 class TestRollbackRouting:
     """失败即判断：LLM 诊断根因并决定回退目标，带上下文重跑。"""
 
-    async def test_execute_error_judge_routes_to_planner(self, sqlite_registry, catalog):
-        """执行错误 → 判断回退 planner → 带修正上下文重定计划 → 重新生成成功。"""
+    async def test_execute_error_judge_routes_to_query_sketch(self, sqlite_registry, catalog):
+        """执行错误 → 判断回退 query_sketch → 带修正上下文重定计划 → 重新生成成功。"""
         llm = RecordingLLM([
             "query",                                        # 意图
-            "plan: 初版计划",                                # planner 首跑
+            "plan: 初版计划",                                # query_sketch 首跑
             "```sql\nSELECT * FROM nonexistent;\n```",      # 初稿（执行失败）
-            "类型: 计划偏差\nTARGET: planner",               # 判断：回退 planner
-            "plan: 用 students 表按 county 分组",            # planner 重定计划
+            "类型: 计划偏差\nTARGET: query_sketch",               # 判断：回退 query_sketch
+            "plan: 用 students 表按 county 分组",            # query_sketch 重定计划
             "```sql\nSELECT name FROM students;\n```",      # 重新生成
             "OK",                                           # reflect
         ])
-        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        graphs = build(make_services(llm, catalog, sqlite_registry), query_sketch=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["row_count"] == 5
-        assert final["rollback_target"] == "planner"
+        assert final["rollback_target"] == "query_sketch"
         assert len(llm.calls) == 7
-        # planner 重跑时携带了修正上下文(默认中文配置 → 中文标签)
-        planner_prompts = [
+        # query_sketch 重跑时携带了修正上下文(默认中文配置 → 中文标签)
+        query_sketch_prompts = [
             str(m.get("content", ""))
             for call in llm.calls
             for m in call
             if "修正上下文" in str(m.get("content", ""))
         ]
-        assert planner_prompts
-        assert "no such table" in planner_prompts[0]
+        assert query_sketch_prompts
+        assert "no such table" in query_sketch_prompts[0]
 
     async def test_judge_routes_to_schema_linking(self, sqlite_registry, catalog):
         """判断回退 schema_linking：重新选表后重新生成成功。"""
@@ -1050,25 +1050,25 @@ class TestRollbackRouting:
         assert len(llm.calls) == 7  # 意图 + gen + (reflect+rejudge) + judge + gen + reflect
 
     async def test_anti_loop_escalates_within_graph(self, sqlite_registry, catalog):
-        """防打转：判断连续两次指回 gen_sql → 强制升级到 planner。"""
+        """防打转：判断连续两次指回 gen_sql → 强制升级到 query_sketch。"""
         llm = RecordingLLM([
             "query",                                        # 意图
-            "plan: v1",                                     # planner 首跑
+            "plan: v1",                                     # query_sketch 首跑
             "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass1（执行失败）
             "TARGET: gen_sql",                              # judge pass1
             "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass2（仍失败）
             "TARGET: gen_sql",                              # judge pass2 → 应被升级
-            "plan: 用 students 表",                          # planner（升级后重跑）
+            "plan: 用 students 表",                          # query_sketch（升级后重跑）
             "```sql\nSELECT name FROM students;\n```",      # gen pass3 成功
             "OK",                                           # reflect
         ])
-        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        graphs = build(make_services(llm, catalog, sqlite_registry), query_sketch=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["row_count"] == 5
-        # 升级生效：gen_sql 的重复判断被替换为 planner
-        assert final["rollback_target"] == "planner"
-        assert len(llm.calls) == 9  # 意图+planner+gen+judge+gen+judge+planner+gen+reflect
+        # 升级生效：gen_sql 的重复判断被替换为 query_sketch
+        assert final["rollback_target"] == "query_sketch"
+        assert len(llm.calls) == 9  # 意图+query_sketch+gen+judge+gen+judge+query_sketch+gen+reflect
 
     async def test_execution_errors_not_mislabeled_regression(self, sqlite_registry, catalog):
         """连续不同的执行错误不误报 invalid(结果集签名对执行错误无意义)。"""
@@ -1101,7 +1101,7 @@ class TestRollbackRouting:
         """防打转只对同一失败重演升档:语义 RETRY 不因上轮执行错误而误升级。"""
         llm = RecordingLLM([
             "query",                                        # 意图
-            "plan: v1",                                     # planner 首跑
+            "plan: v1",                                     # query_sketch 首跑
             "```sql\nSELECT * FROM nonexistent_tbl;\n```",  # gen pass1 (exec error)
             "TARGET: gen_sql",                              # judge round1 → last=gen_sql
             "```sql\nSELECT name FROM students;\n```",      # gen pass2 OK
@@ -1111,12 +1111,12 @@ class TestRollbackRouting:
             "```sql\nSELECT county, COUNT(*) FROM students GROUP BY county;\n```",
             "OK",
         ])
-        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        graphs = build(make_services(llm, catalog, sqlite_registry), query_sketch=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["verdict"] == "OK"
-        assert final["rollback_target"] == "gen_sql"  # 未被升级到 planner
-        # 意图+planner+gen+judge+gen+(reflect+rejudge)+judge+gen+reflect
+        assert final["rollback_target"] == "gen_sql"  # 未被升级到 query_sketch
+        # 意图+query_sketch+gen+judge+gen+(reflect+rejudge)+judge+gen+reflect
         assert len(llm.calls) == 10
 
     async def test_kb_exact_match_regenerates_on_correction_rounds(
@@ -2191,13 +2191,13 @@ class TestFixModeWiring:
         """执行错误 → judge 判定 fixer → 重生成 prompt 显式要求实现级修复。"""
         llm = RecordingLLM([
             "query",                                        # 意图
-            "plan: v1",                                     # planner
+            "plan: v1",                                     # query_sketch
             "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass1（执行失败）
             "TARGET: gen_sql",                              # judge → fixer
             "```sql\nSELECT name FROM students;\n```",      # gen pass2 成功
             "OK",                                           # reflect
         ])
-        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        graphs = build(make_services(llm, catalog, sqlite_registry), query_sketch=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert final["error"] == ""
         assert final["fix_mode"] == "fixer"          # 判定结果落 state
@@ -2214,19 +2214,19 @@ class TestFixModeWiring:
         bad = "```sql\nSELECT * FROM nonexistent;\n```"
         llm = RecordingLLM([
             "query",
-            "plan: v1",                         # planner
+            "plan: v1",                         # query_sketch
             bad,                                # gen pass1 → 执行失败
             "TARGET: gen_sql",                  # judge1: first, 计数 0
             bad,                                # gen pass2（复制旧错误）
-            "TARGET: planner",                  # judge2: invalid, 计数 1
-            "plan: v2",                         # planner 重跑(回退目标)
+            "TARGET: query_sketch",                  # judge2: invalid, 计数 1
+            "plan: v2",                         # query_sketch 重跑(回退目标)
             bad,                                # gen pass3
             "TARGET: schema_linking",           # judge3: invalid, 计数 2
             "query",                            # schema_linking 重跑(LLM 判定)
             bad,                                # gen pass4
             "TARGET: gen_sql",                  # judge4: invalid, 计数 3 → 降级
         ])
-        graphs = build(make_services(llm, catalog, sqlite_registry), planner=True)
+        graphs = build(make_services(llm, catalog, sqlite_registry), query_sketch=True)
         final = await graphs["reflection"].ainvoke(make_state())
         assert "无进展" in final["error"]        # 优雅降级,不再打回
         assert final["no_progress_rounds"] == 3
@@ -2284,7 +2284,7 @@ examples:
 
 class TestFastPathGraph:
     async def test_template_hit_skips_llm_path(self, sqlite_registry, catalog, tmp_path):
-        """模板命中:SQL 直接执行,planner/gen_sql/reflect 的 LLM 全部不调用。"""
+        """模板命中:SQL 直接执行,query_sketch/gen_sql/reflect 的 LLM 全部不调用。"""
         kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
         llm = RecordingLLM(["query"])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb))
@@ -2295,7 +2295,7 @@ class TestFastPathGraph:
         assert final["sql"] == "SELECT COUNT(*) FROM students"
         assert final["verdict"] == "OK"
         assert final["row_count"] == 1
-        assert len(llm.calls) == 1  # 仅 intent——planner/gen_sql/reflect 全未调用
+        assert len(llm.calls) == 1  # 仅 intent——query_sketch/gen_sql/reflect 全未调用
         kinds = {h.get("kind") for h in final["kb_hits"]}
         assert "template" in kinds
 
@@ -2341,7 +2341,7 @@ class TestFastPathGraph:
 
 class TestComplexitySwitch:
     async def test_simple_plan_skips_multi_candidate(self, sqlite_registry, catalog, tmp_path):
-        """planner 产出 simple plan → 复杂度 simple:agentic 降级为经典子图、
+        """query_sketch 产出 simple plan → 复杂度 simple:agentic 降级为经典子图、
         跳过 4 个备选温度子图(无候选池)。"""
         kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
         plan = '{"tables": ["students"], "aggregation": "COUNT", "answer_columns": ["count(*)"]}'
@@ -2351,7 +2351,7 @@ class TestComplexitySwitch:
             "```sql\nSELECT COUNT(*) FROM students;\n```",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
-                       multi_candidate=True, planner=True, agentic=True)
+                       multi_candidate=True, query_sketch=True, agentic=True)
         final = await graphs["reflection"].ainvoke(make_state(
             question="How many students have a grade?",
             kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
@@ -2359,7 +2359,7 @@ class TestComplexitySwitch:
         ))
         assert final["complexity"] == "simple"
         assert final["candidates"] == []  # 跳过多候选
-        assert len(llm.calls) == 3  # intent + planner + gen_sql(经典);无 reflect
+        assert len(llm.calls) == 3  # intent + query_sketch + gen_sql(经典);无 reflect
 
     async def test_complex_plan_keeps_multi_candidate(self, sqlite_registry, catalog, tmp_path):
         """≥3 聚合 → complex:候选池照常生成。"""
@@ -2379,7 +2379,7 @@ class TestComplexitySwitch:
             "OK",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
-                       multi_candidate=True, planner=True, agentic=True)
+                       multi_candidate=True, query_sketch=True, agentic=True)
         final = await graphs["reflection"].ainvoke(make_state(
             question="How many students have a grade?",
             kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
@@ -2403,7 +2403,7 @@ class TestReflectSkipGraph:
             "```sql\nSELECT COUNT(*) FROM students;\n```",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb),
-                       multi_candidate=True, planner=True, agentic=True)
+                       multi_candidate=True, query_sketch=True, agentic=True)
         final = await graphs["reflection"].ainvoke(make_state(
             question="How many students have a grade?",
             kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
@@ -2411,7 +2411,7 @@ class TestReflectSkipGraph:
         ))
         assert final["verdict"] == "OK"
         assert final["rules_passed"] is True
-        assert len(llm.calls) == 3  # intent + planner + gen_sql;无 reflect
+        assert len(llm.calls) == 3  # intent + query_sketch + gen_sql;无 reflect
         assert final["reason"] == "deterministic rules passed; reflect skipped"
 
     async def test_reflect_skip_off_keeps_judge(self, sqlite_registry, catalog, tmp_path):
@@ -2426,14 +2426,14 @@ class TestReflectSkipGraph:
             "OK",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb, config=cfg),
-                       multi_candidate=True, planner=True, agentic=True)
+                       multi_candidate=True, query_sketch=True, agentic=True)
         final = await graphs["reflection"].ainvoke(make_state(
             question="How many students have a grade?",
             kb_hits=[{"kind": "term", "term": "students", "mapping": "students.id",
                       "definition": "student record", "tables": ["students"]}],
         ))
         assert final["verdict"] == "OK"
-        assert len(llm.calls) == 4  # intent + planner + gen_sql + reflect
+        assert len(llm.calls) == 4  # intent + query_sketch + gen_sql + reflect
 
 
 class TestCalibrationBasis:

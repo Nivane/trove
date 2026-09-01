@@ -1,4 +1,4 @@
-"""Planner time-injection tests: agg_time_dimension 优先于"唯一时间字段"。
+"""Query-sketch time-injection tests: agg_time_dimension 优先于"唯一时间字段"。
 
 parse_date 解析出的时间范围确定性注入 plan.conditions;时间字段选择:
 plan 命中的 metric 若声明 agg_time_dimension 则优先(即使 matched 内
@@ -13,7 +13,7 @@ from trove.services.semantic_layer.models import (
     SemanticMetric,
     SemanticModel,
 )
-from trove.workflow.nodes.planner import (
+from trove.workflow.nodes.query_sketch import (
     _inject_time_condition,
     _plan_metric_time_dimension,
 )

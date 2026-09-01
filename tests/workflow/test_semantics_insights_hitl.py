@@ -245,7 +245,7 @@ class TestGraphHITLFlow:
         return build_graphs(
             GraphServices(llm=llm, connectors=None, config=config),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )["reflection"]
 
     async def test_interrupt_pauses_before_execution(self, sqlite_registry, enabled_config):
@@ -262,7 +262,7 @@ class TestGraphHITLFlow:
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )["reflection"]
         cfg = {"configurable": {"thread_id": "hitl-1"}}
         result = await graph.ainvoke(make_state(session_id="hitl-1"), cfg)
@@ -291,7 +291,7 @@ class TestGraphHITLFlow:
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )["reflection"]
         cfg = {"configurable": {"thread_id": "hitl-2"}}
         result = await graph.ainvoke(make_state(session_id="hitl-2"), cfg)
@@ -316,7 +316,7 @@ class TestGraphHITLFlow:
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )["reflection"]
         cfg = {"configurable": {"thread_id": "hitl-3"}}
         result = await graph.ainvoke(make_state(session_id="hitl-3"), cfg)
@@ -342,7 +342,7 @@ class TestGraphHITLFlow:
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )["reflection"]
         cfg = {"configurable": {"thread_id": "hitl-4"}}
         final = await graph.ainvoke(make_state(session_id="hitl-4"), cfg)
@@ -363,7 +363,7 @@ class TestGraphHITLFlow:
                 config=enabled_config,
             ),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )["reflection"]
         cfg = {"configurable": {"thread_id": "hitl-5"}}
         final = await graph.ainvoke(make_state(session_id="hitl-5"), cfg)
@@ -406,7 +406,7 @@ class TestSessionManagerHITL:
         )
         graphs = build_graphs(
             services, checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )
         manager = SessionManager(
             config=config,

@@ -701,7 +701,7 @@ class TestErrorClassificationWiring:
 class TestPromptCachingSplit:
     """cache_prefix 拆分:system/user 内容块断点 + 末工具定义断点。
 
-    不传 cache_prefix 的调用方(planner/reflect 等)必须字节级原样——
+    不传 cache_prefix 的调用方(query_sketch/reflect 等)必须字节级原样——
     缓存断点开关绝不影响无稳定前缀的路径。
     """
 
@@ -750,7 +750,7 @@ class TestPromptCachingSplit:
         assert captured["tools"][1]["cache_control"] == {"type": "ephemeral"}
 
     async def test_no_split_without_cache_prefix(self):
-        """不传 cache_prefix:字节级原样(planner/reflect 等调用方不受影响)。"""
+        """不传 cache_prefix:字节级原样(query_sketch/reflect 等调用方不受影响)。"""
         llm = ScriptedLLM([{"content": "done", "tool_calls": []}])
         await run_agent_loop(
             llm, "anthropic/claude-opus-4", "sys", "user",

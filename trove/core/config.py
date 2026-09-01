@@ -86,8 +86,8 @@ class AgentConfig:
     home: str = "~/.trove"
     target: str = ""  # default model e.g. "openai/gpt-4o"
     model_fast: str = ""  # 快速档模型: simple/standard 复杂度走此模型(未配置 = 不分档,全走 target)
-    # 每节点模型覆盖(按节点名,如 planner/gen_sql/reflect/insights):优先于复杂度
-    # 分档选模——planner 用便宜模型、reflect 用强模型的典型配置。空 = 不覆盖。
+    # 每节点模型覆盖(按节点名,如 query_sketch/gen_sql/reflect/insights):优先于复杂度
+    # 分档选模——query_sketch 用便宜模型、reflect 用强模型的典型配置。空 = 不覆盖。
     node_models: dict[str, str] = field(default_factory=dict)
     language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
     semantic_layer_path: str = ""  # OSSIE 语义层目录(相对项目根),空 = 关闭
@@ -95,7 +95,7 @@ class AgentConfig:
     # 无模型=拒绝并提示 /kb init(决策 2/3)。旧裸表路径已从查询图删除。
     semantic_first: bool = True
     date_parser: bool = True  # 时间解析节点:确定性规则解析相对时间(zh/en),未命中静默透传
-    fast_path: bool = True  # 确定性模板快径:命中即跳过 planner/生成/裁决
+    fast_path: bool = True  # 确定性模板快径:命中即跳过 query_sketch/生成/裁决
     reflect_skip: str = "simple"  # 规则全过后跳 LLM 裁决档位: simple / standard / all / off
     explain_semantics: bool = False  # 生成 SQL 后 LLM 说明语义(执行前展示给用户)
     hitl: bool = False  # 执行前人工确认(LangGraph interrupt; 需 checkpointer)
@@ -146,8 +146,8 @@ class AgentConfig:
     def model_for_node(self, node: str, complexity: str) -> str:
         """每节点模型覆盖(优先) → 复杂度分档选模。
 
-        ``node_models`` 里给某节点(planner/gen_sql/reflect/insights/...)配了
-        模型就用它——planner 便宜、reflect 强模型的典型配置;没配则回落
+        ``node_models`` 里给某节点(query_sketch/gen_sql/reflect/insights/...)配了
+        模型就用它——query_sketch 便宜、reflect 强模型的典型配置;没配则回落
         ``model_for`` 的复杂度分档。
         """
         if node:

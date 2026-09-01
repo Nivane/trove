@@ -142,7 +142,7 @@ def _result_entry(
       confidence       — 共识置信度(票数/候选数)
       selection        — 裁决细节(votes/adopted/原因)
       fix_mode         — 修复路径:fixer 实现级 / revisor 语义级 / 空(一次过)
-      rollback_target  — 打回目标(gen_sql/planner/schema_linking)
+      rollback_target  — 打回目标(gen_sql/query_sketch/schema_linking)
       validation_hits  — 通过前被哪些确定性规则拦过(含 answer-columns 层)
       n_candidates     — 进入执行投票的候选数(1 = 单候选直出)
     """

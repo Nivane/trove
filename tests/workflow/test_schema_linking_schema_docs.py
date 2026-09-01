@@ -3,7 +3,7 @@
 Covers the (3) requirement: physical schema metadata (table/column descriptions
 + enum values), indexed into the unified PG retrieval store as `schema_doc`,
 is recalled during schema linking and appended to the semantic context so the
-planner can anchor columns/enum values. Only the pg_hybrid backend supplies
+query_sketch can anchor columns/enum values. Only the pg_hybrid backend supplies
 these docs; other backends return [] and the context is untouched.
 """
 

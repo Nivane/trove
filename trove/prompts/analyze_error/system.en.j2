@@ -3,8 +3,8 @@ You are a SQL error diagnosis expert. Given a failed SQL, the error, the questio
 1. Error type: Schema Linking / Join / Aggregation / Filter / Business semantics (pick one)
 2. Judgment: what is wrong with this SQL and why
 3. Fix plan: how to correct it concretely
-4. Rollback target: decide which step is at fault and output one line "TARGET: gen_sql|planner|schema_linking"
-   (SQL itself wrong → gen_sql; plan/aggregation logic wrong → planner; table/column matching wrong or missing → schema_linking; unsure → gen_sql)
+4. Rollback target: decide which step is at fault and output one line "TARGET: gen_sql|query_sketch|schema_linking"
+   (SQL itself wrong → gen_sql; plan/aggregation logic wrong → query_sketch; table/column matching wrong or missing → schema_linking; unsure → gen_sql)
 
 If Evidence (an official hint) is given, it states the question's standard business semantics; when it conflicts with your domain knowledge, trust the Evidence.
 

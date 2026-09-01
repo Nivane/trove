@@ -1,6 +1,6 @@
-"""确定性简单快径——零 LLM、零网络:planner 之前用 kb init 模板分流。
+"""确定性简单快径——零 LLM、零网络:query_sketch 之前用 kb init 模板分流。
 
-模板命中 → 直接产出模板 SQL,跳过 planner + gen_sql(agent loop + KB
+模板命中 → 直接产出模板 SQL,跳过 query_sketch + gen_sql(agent loop + KB
 检索)+ multi-candidate + reflect 裁决;仍流经 execute_sql → select
 (空候选透传)→ validate(确定性规则安全网)→ reflect(快径跳过,
 见 reflect.py)。KB 防作弊约束:只用 kind='template'(kb init 确定性
@@ -319,7 +319,7 @@ def make_fast_match(
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the fast-match node: hit → inject template SQL, skip the LLM path.
 
-    Miss (or any gate) → empty update: the pipeline continues to the planner
+    Miss (or any gate) → empty update: the pipeline continues to the query_sketch
     unchanged. Correction rounds never fast-path (KB standard SQL already
     failed; templates are the same deterministic family).
     """

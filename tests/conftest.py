@@ -269,7 +269,7 @@ def graphs(sqlite_registry, agent_config):
         semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
         config=agent_config,
     )
-    return build_graphs(services, multi_candidate=False, planner=False, agentic=False)
+    return build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False)
 
 
 @pytest.fixture

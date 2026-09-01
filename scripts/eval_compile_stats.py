@@ -58,7 +58,7 @@ def stats(entries: list[dict[str, Any]], verbose: bool = False) -> list[str]:
     lines: list[str] = [
         f"总条目: {len(entries)}(可判定 {len(judged)})",
         f"有 compile_meta: {len(with_meta)}"
-        f"(无 meta = 编译决策未发生,如 planner 无计划)",
+        f"(无 meta = 编译决策未发生,如 query_sketch 无计划)",
         f"编译命中率: {len(compiled)}/{len(with_meta)}"
         f" ({len(compiled) / len(with_meta) * 100:.1f}%)"
         if with_meta else

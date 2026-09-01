@@ -31,7 +31,7 @@ def make_state(**kwargs) -> WorkflowState:
 
 def test_manifest_matches_by_node():
     """每个 skill 只由声明的节点触发;其它节点不匹配。"""
-    assert matched_skills("planner") == ["plan_query"]
+    assert matched_skills("query_sketch") == ["plan_query"]
     assert matched_skills("analyze_error") == ["diagnose_failure"]
     assert matched_skills("schema_linking") == ["align_schema"]
     assert matched_skills("gen_sql") == []
@@ -40,12 +40,12 @@ def test_manifest_matches_by_node():
 
 def test_trigger_extra_ctx_does_not_break_match():
     """plan_query 只有 node 触发条件:额外的 ctx 特征不影响匹配。"""
-    assert matched_skills("planner", error_class="column_mismatch") == ["plan_query"]
+    assert matched_skills("query_sketch", error_class="column_mismatch") == ["plan_query"]
 
 
 def test_render_skills_bilingual():
-    en = render_skills("planner", lang="en")
-    zh = render_skills("planner", lang="zh")
+    en = render_skills("query_sketch", lang="en")
+    zh = render_skills("query_sketch", lang="zh")
     assert "Traceability" in en
     assert "decomposition" in en.lower()
     assert "可追溯" in zh
@@ -71,10 +71,10 @@ def test_render_skills_no_match_is_empty():
     assert render_skills("answer", lang="zh") == ""
 
 
-async def test_planner_system_prompt_includes_skill():
-    """planner 的 system prompt 携带 plan_query skill 块,语言跟随 state.lang。"""
+async def test_query_sketch_system_prompt_includes_skill():
+    """query_sketch 的 system prompt 携带 plan_query skill 块,语言跟随 state.lang。"""
     from trove.core.config import AgentConfig
-    from trove.workflow.nodes.planner import make_planner
+    from trove.workflow.nodes.query_sketch import make_query_sketch
 
     captured = {}
 
@@ -83,7 +83,7 @@ async def test_planner_system_prompt_includes_skill():
             captured.update(messages=messages)
             return "plan"
 
-    node = make_planner(LLM(), AgentConfig(target="m"), agentic=False)
+    node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False)
     await node(make_state(question="平均成绩是多少", lang="zh"))
     system = captured["messages"][0]["content"]
     assert "规划" in system
@@ -91,7 +91,7 @@ async def test_planner_system_prompt_includes_skill():
 
     await node(make_state(question="average grade", lang="en"))
     system = captured["messages"][0]["content"]
-    assert "query planner" in system
+    assert "query query_sketch" in system
     assert "Traceability" in system
 
 
@@ -105,7 +105,7 @@ async def test_analyze_error_system_prompt_includes_skill():
     class LLM:
         async def chat(self, model, messages, **kwargs):
             captured.update(messages=messages)
-            return "类型: Filter\n判断: 条件过严\n修正: 放宽\nTARGET: planner"
+            return "类型: Filter\n判断: 条件过严\n修正: 放宽\nTARGET: query_sketch"
 
     node = make_analyze_error(LLM(), AgentConfig(target="m"))
     await node(make_state(

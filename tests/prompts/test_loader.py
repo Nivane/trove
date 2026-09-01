@@ -12,7 +12,7 @@ from trove.prompts import render
 # also add it here (the roster test will fail otherwise).
 ROSTER = [
     "gen_sql/system", "gen_sql/fix", "gen_sql/user",
-    "planner/system", "planner/user",
+    "query_sketch/system", "query_sketch/user",
     "reflect/system", "reflect/user", "reflect/reask_system", "reflect/reask_user",
     "analyze_error/system", "analyze_error/user",
     "answer/system", "answer/user",

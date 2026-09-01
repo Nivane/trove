@@ -453,7 +453,7 @@ class TestHitlBatchOptions:
         graphs = build_graphs(
             GraphServices(llm=gateway, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None), config=config),
             checkpointer=InMemorySaver(),
-            multi_candidate=False, planner=False, agentic=False,
+            multi_candidate=False, query_sketch=False, agentic=False,
         )
         return SessionManager(
             config=config,

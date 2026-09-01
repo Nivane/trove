@@ -255,7 +255,7 @@ class TestRefuseConfirmReanswerLoop:
         """确认草稿 → semantics.yml 落地 → 重答时编译器可命中(闭环)。"""
         from trove.services.semantic_layer.manage import SemanticManager
         from trove.services.semantic_layer.provider import SemanticLayerProvider
-        from trove.workflow.nodes.planner import make_planner
+        from trove.workflow.nodes.query_sketch import make_query_sketch
 
         kb = KbService(tmp_path / "proj")
         ds_dir = kb.kb_dir / "demo"
@@ -313,12 +313,12 @@ class TestRefuseConfirmReanswerLoop:
 
         plan = {"tables": ["loan"], "aggregation": "AVG(loan.amount)",
                 "answer_columns": ["AVG(loan.amount)"], "conditions": []}
-        planner = make_planner(
+        query_sketch = make_query_sketch(
             ScriptedLLM([json.dumps(plan)]),
             AgentConfig(target="mock/model", semantic_first=True),
             semantic_layer=FakeEnabledProvider(),
         )
-        update = await planner(make_state(
+        update = await query_sketch(make_state(
             question="平均贷款金额?", matched_tables=["loan"], datasource="demo"))
         assert update["compiled"] is True
         assert "AVG(loan.amount)" in update["compiled_sql"]
@@ -400,11 +400,11 @@ draft:
   definition: total of all student grades
   datasets: [students]
 """
-        # intent → planner → refuse 草稿三处 LLM 调用
+        # intent → query_sketch → refuse 草稿三处 LLM 调用
         llm = ExhaustingLLM(["query", json.dumps(plan), draft])
         graphs = build_graphs(
             self._services(llm, catalog, sqlite_registry, kb, provider),
-            multi_candidate=False, planner=True, agentic=False,
+            multi_candidate=False, query_sketch=True, agentic=False,
         )
         final = await graphs["reflection"].ainvoke(WorkflowState(
             session_id="s1", question="what is the total ghost sum for students?",
@@ -414,22 +414,22 @@ draft:
         assert final["sql"] == ""
         assert final["row_count"] == -1
         assert "sum_of_grades" in (final["clarification_question"] or "")
-        assert llm.calls == 3  # intent + planner + refuse 草稿,无 gen_sql/reflect
+        assert llm.calls == 3  # intent + query_sketch + refuse 草稿,无 gen_sql/reflect
 
     async def test_covered_plan_not_routed_to_refuse(self):
-        """覆盖内计划 → _route_after_planner 走 gen_sql(不误拒)。"""
-        from trove.workflow.graphs import _route_after_planner
+        """覆盖内计划 → _route_after_query_sketch 走 gen_sql(不误拒)。"""
+        from trove.workflow.graphs import _route_after_query_sketch
         from trove.workflow.state import WorkflowState
 
         covered = WorkflowState(session_id="s1", question="q", compiled=True)
-        assert _route_after_planner(covered) == "gen_sql"
+        assert _route_after_query_sketch(covered) == "gen_sql"
 
         refused = WorkflowState(session_id="s1", question="q",
                                 refusal={"reason": "uncovered", "question": "q"})
-        assert _route_after_planner(refused) == "refuse"
+        assert _route_after_query_sketch(refused) == "refuse"
 
         no_model = WorkflowState(session_id="s1", question="q", no_model=True)
-        assert _route_after_planner(no_model) == "refuse"
+        assert _route_after_query_sketch(no_model) == "refuse"
 
     async def test_semantic_gates_short_circuit_to_refuse(self):
         """linking 后语义门:no_model / refusal 短路到 refuse,否则走原通道。"""

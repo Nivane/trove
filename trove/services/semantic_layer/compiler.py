@@ -169,7 +169,7 @@ class JoinResolver:
 
         ``needed``:查询**实际需要**的表(组件引用的表,见
         SemanticCompiler._plan_needed_tables)。它同时决定:
-          - 联表保留(BFS 树剪枝):只保留能到 needed 表的子树——planner 在
+          - 联表保留(BFS 树剪枝):只保留能到 needed 表的子树——query_sketch 在
             plan.tables 里误列的无关共享维度(如 client/account 同连的
             district)不会多余联入,也不会触发行倍增;
           - 歧义判定作用域:只数「路径节点都在 needed 内」的路径——绕经
@@ -235,7 +235,7 @@ class JoinResolver:
                 queue.append(other)
 
         # 保留"根→needed 路径上"的边;纯多余叶子(子树不含任何 needed 表)
-        # 剪掉——否则无关的 M:N 边会误触发 fan-out,挡住合法编译,且 planner
+        # 剪掉——否则无关的 M:N 边会误触发 fan-out,挡住合法编译,且 query_sketch
         # 误列但未被引用的表(如共享维度 district)会被多余联入(行倍增)。
         memo: dict[str, bool] = {}
 
@@ -319,7 +319,7 @@ class JoinResolver:
 
 # ── 权威联表路径(plan.joins, MetricFlow 显式路径) ──────────────
 #
-# 编译器默认用声明图 BFS 选边(P2:二义 → 严格 MISS)。当 planner 在 plan 里
+# 编译器默认用声明图 BFS 选边(P2:二义 → 严格 MISS)。当 query_sketch 在 plan 里
 # 显式声明 ``joins`` 时,按声明路径选边——解决共享维度菱形(如 client 与
 # account 同连 district 造成的第二条路由)而不用删关系。每条 join 必须是
 # 已声明 relationship 的列对(路径选择而非造边),非法 → 严格 MISS 不静默改道。
@@ -334,7 +334,7 @@ def _explicit_join_edges(
 
     present=False:joins 空/占位 → 调用方回退 BFS(行为不变)。
     present=True, edges=None:joins 非空但含未声明边/不可解析 → 严格 MISS,
-        不静默忽略后走 BFS 改道(planner 明确声明了与模型不一致的路径)。
+        不静默忽略后走 BFS 改道(query_sketch 明确声明了与模型不一致的路径)。
     present=True, edges=[...]:权威路径(方向对齐声明 relationship)。
     """
     if model is None:
@@ -352,7 +352,7 @@ def _explicit_join_edges(
 
     from sqlglot import exp, parse_one
 
-    # joins 是逗号/AND 分隔的多个 ``lhs = rhs`` 子句(planner 输出):
+    # joins 是逗号/AND 分隔的多个 ``lhs = rhs`` 子句(query_sketch 输出):
     # 整体 parse 会被逗号卡死,逐子句解析后收集 EQ。
     clauses = [c for c in re.split(r"\s*,\s*|\s+and\s+", text, flags=re.I) if c.strip()]
     parsed = []
@@ -516,7 +516,7 @@ class CompileMiss:
     """编译失败的结构化分因(eval hit-rate 归因用)。
 
     reason: 稳定 slug(见 MISS_REASONS);component: 人类可读的失败组件。
-    消费方(planner/eval)用 reason 聚合;``compile_from_plan`` 旧契约
+    消费方(query_sketch/eval)用 reason 聚合;``compile_from_plan`` 旧契约
     将其映射回 None(字节级向后兼容)。
     """
 
@@ -839,7 +839,7 @@ class SemanticCompiler:
         """查询**实际需要**的表 = 组件引用的表(answer/条件/聚合度量/having/
         时间/排序),经 _resolve_field 把裸列引用也落到其数据集。
 
-        与 plan.tables 的区别:plan.tables 是 planner 声明的超集,可能误列
+        与 plan.tables 的区别:plan.tables 是 query_sketch 声明的超集,可能误列
         共享维度等无关表(district);这里只取真正被引用/被回答需要的表——
         决定联表树的保留与歧义判定作用域,避免误列表触发虚假二义或被多余
         联入(行倍增)。distinct 是 ratio 的分子/分母都锚定同一数据集。
@@ -888,7 +888,7 @@ class SemanticCompiler:
         """列引用(``col`` / ``table.col``)→ (dataset, field);找不到 → None。
 
         先按字段名精确匹配;未命中时追加同数据集内 **synonyms 唯一命中**
-        (如 ``district.region`` → 字段 ``A3``)——补偿 planner 直接写别名列
+        (如 ``district.region`` → 字段 ``A3``)——补偿 query_sketch 直接写别名列
         的场景。歧义(多个同义字段)不猜,转 None 走 LLM 通道。
         """
         ref = (ref or "").strip()
@@ -1208,7 +1208,7 @@ class SemanticCompiler:
 
         resolution = None
         joins: list[JoinEdge] = []
-        # 权威联表路径(plan.joins):planner 显式声明的路径优先,免 BFS 猜。
+        # 权威联表路径(plan.joins):query_sketch 显式声明的路径优先,免 BFS 猜。
         # 每条 join 必须是已声明 relationship(路径选择而非造边);非空但未
         # 声明/不成左深树 → 严格 MISS,不静默忽略后 BFS 改道。
         explicit, joins_present = _explicit_join_edges(plan.get("joins"), self._model)
@@ -1226,7 +1226,7 @@ class SemanticCompiler:
                     "ambiguous_join_path", "explicit joins not a connected tree")
             joins = tree
         else:
-            # 查询实际需要的表 = 组件引用的表(非 planner 全集):决定联表树
+            # 查询实际需要的表 = 组件引用的表(非 query_sketch 全集):决定联表树
             # 保留与歧义作用域,避免误列的共享维度(district)触发虚假二义
             # 或被多余联入。
             needed = self._plan_needed_tables(plan, matched_pairs, matched_set)

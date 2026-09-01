@@ -11,7 +11,7 @@ Wires two corpora into a ``HybridStore``:
   re-index only fires when the schema actually changed (or ``rebuild``/force).
 
 Both corpora live behind the semantic-first boundary — the store returns docs,
-the planner/compiler still validate everything against the declared model.
+the query_sketch/compiler still validate everything against the declared model.
 """
 
 from __future__ import annotations

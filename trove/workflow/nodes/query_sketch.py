@@ -1,8 +1,8 @@
-"""Planner node — LLM drafts a concise query plan before SQL generation.
+"""Query-sketch node — LLM drafts a concise query plan before SQL generation.
 
 The plan (tables, joins, aggregations, filters, ordering) is injected
 into the gen_sql prompt as a "Query plan" section — the two-step
-plan-then-write flow. Planner failures are silent (empty plan): the
+plan-then-write flow. Query-sketch failures are silent (empty plan): the
 pipeline never blocks on planning.
 """
 
@@ -170,7 +170,7 @@ def ensure_aggregate_answer_column(
     """分组聚合计划兜底:声明了聚合但 answer_columns 缺聚合指标列 → 补一列。
 
     分组计数/聚合类问题("每个地区的贷款用户数量"、"number of X per Y")
-    的答案必须是两列:分组实体列 + 聚合指标列。planner 时常只把实体列写进
+    的答案必须是两列:分组实体列 + 聚合指标列。query_sketch 时常只把实体列写进
     answer_columns(聚合意图只表现在 aggregation 字段)——gen_sql 收到
     只有实体列的 answer_columns 就会只 SELECT 实体列、丢掉聚合结果。
 
@@ -229,7 +229,7 @@ def _is_entity_count_question(question: str, lang: str) -> bool:
     """问题是否在数"业务实体/人数"而不是"记录行数"。
 
     语词信号:「X 的用户数量/人数/多少用户」「number of X users/customers/
-    people」。这类问题需要 COUNT(DISTINCT 实体),而 LLM planner 常把它
+    people」。这类问题需要 COUNT(DISTINCT 实体),而 LLM query_sketch 常把它
     误译成 COUNT(loan.loan_id) 之类的记录计数。纯正则,零 LLM。
     """
     q = question or ""
@@ -265,7 +265,7 @@ def _entity_tables(question: str, plan: dict | None, lang: str) -> list[str]:
                     if t not in matches:
                         matches.append(t)
     # 无命名实体的近义命中时,回退:取 plan 表里带 *_id 主列候选(如 client/
-    # account)——宁可猜实体表也不要让 planner 的 count(loan.loan_id) 溜过去。
+    # account)——宁可猜实体表也不要让 query_sketch 的 count(loan.loan_id) 溜过去。
     if not matches:
         for t in tables:
             if t not in matches and any(tok in t for tok in ("client", "account", "customer", "user")):
@@ -559,7 +559,7 @@ def extra_columns_mismatch(
         and not _word_in_question(c, q_lower)
     ]
     expr_cols = [a for a in answer_cols if "(" in a]
-    # 聚合豁免的第二来源:plan 的 aggregation 字段。planner 常把聚合意图
+    # 聚合豁免的第二来源:plan 的 aggregation 字段。query_sketch 常把聚合意图
     # 只写进 aggregation(= count/sum/avg...)而不写进 answer_columns,此时
     # SQL 顶层的聚合投影(COUNT(DISTINCT ...) AS num_loan_users)是预期输出,
     # 不能当多余列打回——COUNT(DISTINCT loan.account_id) 正是每区贷款用户数。
@@ -723,9 +723,9 @@ def _compile_semantic(
     受限选择编译:plan 的 metric/group_by/filters 必须全部解析到已声明
     metric/field/relationship,AND guardrail 放行才注入 gen_sql;否则原样
     走现有通道。全程确定性,零额外 LLM 调用。miss reason(结构化分因)
-    带出供 planner/refuse/eval 归因——不再被丢弃成笼统「uncovered」。
+    带出供 query_sketch/refuse/eval 归因——不再被丢弃成笼统「uncovered」。
 
-    入参可为强类型 PlanQuery(planner 解析后的 AST)或 raw dict——
+    入参可为强类型 PlanQuery(query_sketch 解析后的 AST)或 raw dict——
     编译器内部统一按 dict 流处理,两条路径产物字节级一致。dialect 来自
     state(适配器),驱动时间分桶等方言感知渲染。
     """
@@ -761,22 +761,22 @@ def _compile_semantic(
         return None, CompileMiss("guardrail_rejected", str(e)[:200])
 
 
-def make_planner(
+def make_query_sketch(
     llm: LLMGateway,
     config: AgentConfig,
     agentic: bool = True,
     connectors=None,
     semantic_layer=None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
-    """Build the planner node bound to an LLM gateway."""
+    """Build the query_sketch node bound to an LLM gateway."""
 
-    async def planner(state: WorkflowState) -> dict[str, Any]:
+    async def query_sketch(state: WorkflowState) -> dict[str, Any]:
         # Upstream failure — pass through
         if state.error:
             return {}
 
         # 方言从活跃数据源 adapter 解析(与 gen_sql 同款):state.dialect
-        # 默认为 "sqlite",fast_match 未命中时不会回写,planner 直接用默认
+        # 默认为 "sqlite",fast_match 未命中时不会回写,query_sketch 直接用默认
         # 方言会把 MySQL 等库编译成 sqlite 语法(strftime 等)导致执行失败。
         dialect = state.dialect
         if connectors:
@@ -793,25 +793,25 @@ def make_planner(
         schema_map = await _schema_map(connectors, state.datasource or None)
         # 计划起草走 fast 档(未配置 fast → 回退 target)
         model = (
-            config.node_models.get("planner")
+            config.node_models.get("query_sketch")
             or config.model_fast
             or config.target
             or "openai/gpt-4o"
         )
         system_prompt = render(
-            "planner/system",
+            "query_sketch/system",
             lang=state.lang,
         )
         # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
-        skill_block = render_skills("planner", lang=state.lang)
+        skill_block = render_skills("query_sketch", lang=state.lang)
         if skill_block:
             system_prompt = f"{system_prompt}\n\n{skill_block}"
         llm_detail: dict[str, Any] | None = None
 
-        async def call_planner(correction: str) -> str:
+        async def call_query_sketch(correction: str) -> str:
             nonlocal llm_detail
             prompt = render(
-                "planner/user",
+                "query_sketch/user",
                 lang=state.lang,
                 question=state.question,
                 schema_context=state.schema_context[:10000],
@@ -821,7 +821,7 @@ def make_planner(
                 correction=correction[:600] if correction else "",
                 previous_plan=state.plan[:800] if state.plan else "",
             )
-            # 语义优先(Phase B,决策 1):planner 不再暴露任何 catalog 探测工具——
+            # 语义优先(Phase B,决策 1):query_sketch 不再暴露任何 catalog 探测工具——
             # get_table_columns / get_column_stats 已从查询路径物理移除
             # (agent 运行时不可能触达物理元数据)。
 
@@ -834,7 +834,7 @@ def make_planner(
                         {"role": "user", "content": prompt},
                     ],
                     metadata={
-                        "node": "planner",
+                        "node": "query_sketch",
                         "session_id": state.session_id,
                         "run_id": state.run_id,
                         "question": state.question[:80],
@@ -851,7 +851,7 @@ def make_planner(
                         {"role": "user", "content": prompt},
                     ],
                     metadata={
-                        "node": "planner",
+                        "node": "query_sketch",
                         "session_id": state.session_id,
                         "run_id": state.run_id,
                         "question": state.question[:80],
@@ -869,7 +869,7 @@ def make_planner(
             # 层1(plan 落地校验):引用的表/列必须真实存在;失败带修正
             # 自修正一次,仍失败则丢弃 plan(gen_sql 无 plan 照常生成,
             # 校验只拦截幻觉列,不让它变成 gen_sql 的钦点指令)
-            raw = await call_planner(base_correction)
+            raw = await call_query_sketch(base_correction)
             plan_json = _parse_plan(raw)
             plan = _plan_text(raw, state.lang)
             errors = validate_plan(plan_json, schema_map)
@@ -879,7 +879,7 @@ def make_planner(
                     + f" Your previous plan was invalid: {'; '.join(errors)}. "
                     + "Fix the plan so every table and column reference exists in the schema."
                 )
-                raw = await call_planner(fix_correction)
+                raw = await call_query_sketch(fix_correction)
                 plan_json = _parse_plan(raw)
                 plan = _plan_text(raw, state.lang)
                 errors = validate_plan(plan_json, schema_map)
@@ -896,7 +896,7 @@ def make_planner(
             if not plan:
                 return {}
             # 语义级计数纠正(优先):「X 的用户数量/人数」→ count(distinct 实体)。
-            # planner 常把实体计数误译成 count(loan.loan_id) 的记录计数,这里
+            # query_sketch 常把实体计数误译成 count(loan.loan_id) 的记录计数,这里
             # 在 plan→gen 之间确定性纠偏——gen 遵守规则 19 也不会做错。
             # 先于 ensure_aggregate_answer_column:后者只补 count(*) 占位列,
             # 若先跑会把已纠正的去重语义覆盖成 count(*) 通配。
@@ -990,7 +990,7 @@ def make_planner(
                 update["llm"] = llm_detail
             return update
         except Exception as e:
-            logger.warning("Planner failed (proceeding without a plan): %s", e)
+            logger.warning("Query-sketch failed (proceeding without a plan): %s", e)
             return {}
 
-    return planner
+    return query_sketch

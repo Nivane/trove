@@ -290,7 +290,7 @@ def test_no_joins_genuine_ambiguity_still_miss():
     全在 needed 内)→ BFS 无法判定走 client 的 district 还是 account 的
     district → 仍严格 MISS,防静默错答。
 
-    若路由表未被组件引用(如 district 只是 planner 误列),绕经它们的虚假
+    若路由表未被组件引用(如 district 只是 query_sketch 误列),绕经它们的虚假
     路由不计入二义 → 编译(见 test_no_joins_ignores_spurious_shared_dimension_route)。
     """
     plan = {
@@ -323,7 +323,7 @@ def test_explicit_joins_resolve_diamond():
 
 
 def test_explicit_joins_commas_and_and_parsed():
-    """joins 支持逗号与 AND 两种分隔(planner 输出形态)。"""
+    """joins 支持逗号与 AND 两种分隔(query_sketch 输出形态)。"""
     plan = {
         "tables": ["client", "disp", "account", "loan"],
         "joins": ("disp.client_id = client.client_id AND "
@@ -416,9 +416,9 @@ def test_list_query_projects_fields():
 
 
 def test_aggregation_none_marker_zh_compiles_list_query():
-    """planner 中文模式把 aggregation 标为「无」(=none),编译器不得误判为
+    """query_sketch 中文模式把 aggregation 标为「无」(=none),编译器不得误判为
     真实聚合而 no_metric_match。回归:compiler 的 none 标记集需与
-    planner 的 ("none", "无") 对齐。"""
+    query_sketch 的 ("none", "无") 对齐。"""
     plan = {
         "tables": ["loan"],
         "aggregation": "无",
@@ -519,7 +519,7 @@ def test_astral_table_anchor_falls_back_to_first_matched():
 
 
 def test_resolve_field_via_synonym_alias():
-    """planner 直接用别名写列(district.region)→ 唯一命中同数据集字段 A3。"""
+    """query_sketch 直接用别名写列(district.region)→ 唯一命中同数据集字段 A3。"""
     model = _demo_model()
     district = model.datasets[2]
     a3 = next(f for f in district.fields if f.name == "A3")

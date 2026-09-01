@@ -61,7 +61,7 @@ class TestUserFactsPromptInjection:
             semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
             user_facts=svc,
         )
-        graphs = build_graphs(services, multi_candidate=False, planner=False, agentic=False)
+        graphs = build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False)
 
         state = WorkflowState(
             session_id="s1",
@@ -97,7 +97,7 @@ class TestUserFactsPromptInjection:
             semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
             user_facts=svc,
         )
-        graphs = build_graphs(services, multi_candidate=False, planner=False, agentic=False)
+        graphs = build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False)
 
         state = WorkflowState(
             session_id="s1",

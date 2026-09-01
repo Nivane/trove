@@ -309,7 +309,7 @@ class SemanticLayerProvider:
     def field_hits(self, question: str, tables: list[str] | None = None) -> list[str]:
         """问题词元 × 字段 synonyms 词重叠 → 确定性 Field hints(零 LLM)。
 
-        命中即输出 ``'region' → district.A3``:planner 靠它把问题词链接到
+        命中即输出 ``'region' → district.A3``:query_sketch 靠它把问题词链接到
         不透明列(如 BIRD 的 A3),与 value_hints 同机制。top≤5。
         """
         cands = self.field_candidates(question, tables=tables, top=5)

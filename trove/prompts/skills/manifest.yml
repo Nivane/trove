@@ -6,12 +6,12 @@
 
 - name: plan_query
   description: >
-    Planner decomposition methodology: decision order, traceability
+    Query-sketch decomposition methodology: decision order, traceability
     self-check, and common failure modes. Supplements the base
-    planner/system template (which carries JSON format, scoping and
+    query_sketch/system template (which carries JSON format, scoping and
     answer-columns rules).
   triggers:
-    node: planner
+    node: query_sketch
 
 - name: diagnose_failure
   description: >
