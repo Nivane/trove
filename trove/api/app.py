@@ -200,7 +200,9 @@ def create_app(components: dict) -> FastAPI:
         # 内部存储:ping 一次真实往返(2s 上限)。部分测试/嵌入方不提供
         # session_store,缺省视为 ok 并标注 skipped。
         storage_ok = True
-        backend = getattr(getattr(app.state, "session_store", None), "backend", None)
+        # SessionStore.backend 是方法(非 property,TaskStore 以 backend() 复用);
+        # 这里直接读内部 _backend 拿到共享 StorageBackend 实例。
+        backend = getattr(getattr(app.state, "session_store", None), "_backend", None)
         if backend is None:
             checks["storage"] = {"ok": True, "skipped": "no backend"}
         else:

@@ -28,7 +28,7 @@ class TestHealth:
                 raise RuntimeError("boom")
 
         class DeadStore:
-            backend = DeadBackend()
+            _backend = DeadBackend()
 
         # monkeypatch:测后自动恢复,不污染同文件后续用例
         monkeypatch.setattr(
