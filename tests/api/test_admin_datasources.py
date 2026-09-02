@@ -182,6 +182,8 @@ async def test_register_demo_default_persisted(client, api_app):
                     if c.name == "demo")
     assert demo_cfg.default is False
 
+    await fresh.close_all()
+
 
 async def test_non_admin_403(user_client):
     assert (await user_client.post("/v1/admin/datasources",

@@ -51,6 +51,14 @@ class SettingsStore:
         await self._ensure_schema()
         return self._backend
 
+    async def dispose(self) -> None:
+        """Release the backend's connection (worker thread + file handle).
+
+        aiosqlite 的 worker 线程是常驻非 daemon——不关闭,进程退出会
+        挂住。测试 fixture teardown 与显式生命周期管理都应调用。
+        """
+        await self._backend.dispose()
+
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
             return

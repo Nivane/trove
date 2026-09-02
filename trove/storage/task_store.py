@@ -58,6 +58,14 @@ class TaskStore:
         await self._ensure_schema()
         return self._backend
 
+    async def dispose(self) -> None:
+        """Release the shared backend connection (see StorageBackend.dispose).
+
+        TaskStore 与 SessionStore 共享同一 backend;dispose 后连接关闭,
+        不应再对该 store 发请求。供应用生命周期与测试 teardown 调用。
+        """
+        await self._backend.dispose()
+
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
             return

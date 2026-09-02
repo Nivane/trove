@@ -99,6 +99,10 @@ class UserFactsService:
     def __init__(self, db_path: str | Path):
         self.store = UserFactsStore(db_path)
 
+    async def dispose(self) -> None:
+        """Release the store's backend connection (see UserFactsStore.dispose)."""
+        await self.store.dispose()
+
     async def add(self, user_id: str, datasource: str, fact: str) -> dict[str, Any]:
         """Add a fact for (user, datasource); returns the stored row.
 

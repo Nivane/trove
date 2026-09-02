@@ -11,8 +11,10 @@ from trove.services.user_facts.service import UserFactsService
 @pytest.fixture
 async def facts_app(api_app, tmp_path):
     """api_app with a real user_facts service attached (default ds = test_db)."""
-    api_app.state.user_facts = UserFactsService(tmp_path / "user_facts.db")
-    return api_app
+    service = UserFactsService(tmp_path / "user_facts.db")
+    api_app.state.user_facts = service
+    yield api_app
+    await service.dispose()
 
 
 async def _client(app, token):

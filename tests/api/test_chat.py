@@ -264,6 +264,8 @@ class TestChatHITLResume:
             detail = (await c.get(f"/v1/sessions/{session_id}")).json()
             assert len(detail["messages"]) == 2
 
+        await manager.dispose()
+
 
 class TestChatTasks:
     """跨轮任务层 API:GET /tasks 快照 + 多任务流 + 批内 HITL 三选项。"""
@@ -290,7 +292,6 @@ class TestChatTasks:
             graphs=graphs,
             llm_gateway=gateway,
         )
-
     async def test_tasks_endpoint_empty_for_fresh_session(self, client):
         created = (await client.post("/v1/sessions")).json()["session_id"]
         resp = await client.get(f"/v1/sessions/{created}/tasks")
@@ -343,6 +344,8 @@ class TestChatTasks:
             assert len(detail["messages"]) == 3
             assert all(m["metadata"]["task_id"] for m in detail["messages"] if m["role"] == "assistant")
 
+        await manager.dispose()
+
     async def test_chat_batch_hitl_approve_all_resume_streams(self, tmp_home, sqlite_registry):
         """批内 HITL:hitl 事件带 task_context;approve_all resume 以 SSE 流收尾。"""
         from trove.api.app import create_app
@@ -387,6 +390,8 @@ class TestChatTasks:
 
             tasks = (await c.get(f"/v1/sessions/{session_id}/tasks")).json()["tasks"]
             assert [t["status"] for t in tasks] == ["done", "done"]
+
+        await manager.dispose()
 
 
 class TestChatDatasource:

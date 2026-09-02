@@ -22,9 +22,6 @@ from __future__ import annotations
 import re
 from typing import Any, AsyncIterator
 
-import psycopg
-from psycopg.rows import tuple_row
-
 from trove.storage.backends.base import StorageBackend, StorageCursor
 
 # SQLite 表定义里用到的方言片段 → PG 等价物。
@@ -205,6 +202,7 @@ class PostgresBackend(StorageBackend):
     async def _connect(self) -> None:
         if self._conn is not None and not self._conn.closed:
             return
+        import psycopg
         self._conn = await psycopg.AsyncConnection.connect(
             self._dsn, row_factory=_named_row_factory,
         )

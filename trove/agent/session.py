@@ -105,6 +105,16 @@ class SessionManager:
         # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
         self._result_cache: dict[tuple, dict[str, Any]] = {}
 
+    async def dispose(self) -> None:
+        """Release the session store's backend connection.
+
+        aiosqlite 的 worker 线程是常驻非 daemon——不关闭,进程退出会挂住。
+        应用生命周期与测试 teardown 都应调用。
+        """
+        await self._store.dispose()
+        for task_store in self._task_stores.values():
+            await task_store.dispose()
+
     def _user_tool_roles(self, user_id: str | None) -> list[str] | None:
         """解析用户角色列表(工具 ACL 用);无 resolver/失败 → None = 全可见。"""
         if self._role_resolver is None or not user_id:

@@ -45,12 +45,15 @@ async def mcp_components(tmp_path, sqlite_registry):
         kb=kb,
         connectors=sqlite_registry,
     )
-    return {
-        "session_manager": manager,
-        "connector_registry": sqlite_registry,
-        "kb": kb,
-        "config": config,
-    }
+    try:
+        yield {
+            "session_manager": manager,
+            "connector_registry": sqlite_registry,
+            "kb": kb,
+            "config": config,
+        }
+    finally:
+        await manager.dispose()
 
 
 async def _invoke(server, name: str, **args):

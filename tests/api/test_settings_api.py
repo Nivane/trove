@@ -8,15 +8,25 @@ from trove.services.admin_settings.service import MASK
 from trove.services.admin_settings.store import SettingsStore
 
 
-async def _with_store(api_app, tmp_path) -> SettingsStore:
-    store = SettingsStore(tmp_path / "settings.db")
-    api_app.state.settings = store
-    return store
+@pytest.fixture
+async def settings_store():
+    """Dispose any SettingsStore the test attached (aiosqlite worker cleanup)."""
+    store = []
+    yield store
+    for s in store:
+        await s.dispose()
+
+
+async def _with_store(api_app, tmp_path, store: list) -> SettingsStore:
+    s = SettingsStore(tmp_path / "settings.db")
+    api_app.state.settings = s
+    store.append(s)
+    return s
 
 
 class TestSettingsApi:
-    async def test_get_returns_effective_values(self, client, api_app, tmp_path):
-        await _with_store(api_app, tmp_path)
+    async def test_get_returns_effective_values(self, client, api_app, tmp_path, settings_store):
+        await _with_store(api_app, tmp_path, settings_store)
         r = await client.get("/v1/admin/settings")
         assert r.status_code == 200
         body = r.json()
@@ -27,8 +37,8 @@ class TestSettingsApi:
         assert isinstance(values["llm.providers"], list)
         assert body["mask"] == MASK
 
-    async def test_put_applies_and_persists(self, client, api_app, tmp_path):
-        store = await _with_store(api_app, tmp_path)
+    async def test_put_applies_and_persists(self, client, api_app, tmp_path, settings_store):
+        store = await _with_store(api_app, tmp_path, settings_store)
         r = await client.put("/v1/admin/settings", json={"values": {
             "app.hitl": True,
             "app.language": "en",
@@ -47,8 +57,8 @@ class TestSettingsApi:
         assert stored["app.hitl"] is True
         assert stored["app.language"] == "en"
 
-    async def test_put_invalid_400_with_detail(self, client, api_app, tmp_path):
-        await _with_store(api_app, tmp_path)
+    async def test_put_invalid_400_with_detail(self, client, api_app, tmp_path, settings_store):
+        await _with_store(api_app, tmp_path, settings_store)
         r = await client.put("/v1/admin/settings", json={"values": {
             "app.language": "fr",
             "app.reflect_skip": "always",
@@ -60,11 +70,11 @@ class TestSettingsApi:
         assert "reflect_skip" in detail
         assert "unknown setting" in detail
 
-    async def test_put_result_limits_applied(self, client, api_app, tmp_path):
+    async def test_put_result_limits_applied(self, client, api_app, tmp_path, settings_store):
         """结果限制经 settings API 落库 + 热更新镜像到 pipeline 注册表。"""
         from trove.services.limits import get_result_limits
 
-        store = await _with_store(api_app, tmp_path)
+        store = await _with_store(api_app, tmp_path, settings_store)
         r = await client.put("/v1/admin/settings", json={"values": {
             "app.result_display_rows": 80,
             "app.result_max_rows": 2000,
@@ -89,8 +99,8 @@ class TestSettingsApi:
         from trove.services.limits import reset_result_limits
         reset_result_limits()
 
-    async def test_put_provider_api_key_masking(self, client, api_app, tmp_path):
-        store = await _with_store(api_app, tmp_path)
+    async def test_put_provider_api_key_masking(self, client, api_app, tmp_path, settings_store):
+        store = await _with_store(api_app, tmp_path, settings_store)
         # store a real secret via the API (full value, no mask)
         r = await client.put("/v1/admin/settings", json={"values": {"llm.providers": [
             {"name": "openai", "litellm_params": {"api_key": "sk-super-secret",
@@ -114,9 +124,9 @@ class TestSettingsApi:
         assert stored_params["api_key"] == "sk-super-secret"
         assert stored_params["api_base"] == "https://new.base"
 
-    async def test_put_semantic_layer_path(self, client, api_app, tmp_path):
+    async def test_put_semantic_layer_path(self, client, api_app, tmp_path, settings_store):
         """语义层目录经 settings API 落库 + 应用到运行时 config。"""
-        store = await _with_store(api_app, tmp_path)
+        store = await _with_store(api_app, tmp_path, settings_store)
         r = await client.put("/v1/admin/settings", json={"values": {
             "app.semantic_layer_path": ".trove/semantic",
         }})
