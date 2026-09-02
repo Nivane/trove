@@ -1571,6 +1571,7 @@ class TestExecuteSQLTransientRetry:
 
     async def test_transient_error_retried_then_succeeds(self):
         """连接抖动(2 次瞬态失败)后同一 SQL 成功 → 不烧修正预算。"""
+        pytest.importorskip("pymysql")
         from pymysql.err import OperationalError
 
         stub = self._Stub([OperationalError(2006, "MySQL server has gone away"),
@@ -1585,6 +1586,7 @@ class TestExecuteSQLTransientRetry:
 
     async def test_transient_error_exhausted_falls_back(self):
         """瞬态重试耗尽仍失败 → 走正常错误反馈路径(消耗一轮修正预算)。"""
+        pytest.importorskip("pymysql")
         from pymysql.err import OperationalError
 
         stub = self._Stub([OperationalError(2006, "server has gone away")] * 5)
@@ -1603,6 +1605,7 @@ class TestExecuteSQLTransientRetry:
         assert update["retry_count"] == 1
 
     def test_is_transient_classification(self):
+        pytest.importorskip("pymysql")
         from trove.workflow.nodes.execute_sql import _is_transient
 
         import pymysql

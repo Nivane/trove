@@ -1,5 +1,7 @@
 """DuckDB adapter tests — unit (fake driver) + real in-memory integration."""
 
+import importlib
+
 import pytest
 
 from trove.core.errors import DatasourceError, SQLExecutionError
@@ -164,9 +166,13 @@ class TestDuckDBAdapter:
         assert conn.closed is True
 
 
-# ── Real in-memory integration (always runs, zero network) ──
+# ── Real in-memory integration (skipped when the driver extra is missing) ──
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("duckdb") is None,
+    reason="duckdb not installed — run `uv sync --extra duckdb`",
+)
 class TestDuckDBIntegration:
     async def test_full_lifecycle_in_memory(self):
         adapter = DuckDBAdapter(name="mem", config={"path": ":memory:"})
