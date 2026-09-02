@@ -18,6 +18,7 @@ from trove.services.retrieval import (
     RetrievalDoc,
 )
 
+pytestmark = pytest.mark.integration
 PG_URL = os.environ.get("PG_TEST_URL")
 
 

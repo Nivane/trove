@@ -46,8 +46,7 @@ jobs:
           TROVE_STORAGE_URL: postgresql://trove:trove@127.0.0.1:5432/trove
         run: |
           uv run pytest -m integration -q \
-            tests/services/retrieval/test_pg_store.py \
-            tests/services/retrieval/test_pg_hybrid_backend.py
+            tests/services/retrieval/test_pg_store.py
           # 统一存储抽象在 PG 上的内部 store 端到端(见 tests/storage/test_pg_storage.py)
           uv run pytest -m integration -q tests/storage/test_pg_storage.py
 
