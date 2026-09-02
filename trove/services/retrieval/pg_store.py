@@ -95,7 +95,7 @@ class PgHybridStore(HybridStore):
                     await cur.execute(
                         f"CREATE INDEX IF NOT EXISTS documents_sparse ON "
                         f"{_SCHEMA_NS}.documents "
-                        f"USING hnsw (sparse vector_sparsevec_cosine_ops)")
+                        f"USING hnsw (sparse sparsevec_cosine_ops)")
                 # Sparse channel: prefer pg_bm25 (true BM25), else tsvector GIN.
                 try:
                     await cur.execute("CREATE EXTENSION IF NOT EXISTS pg_bm25")

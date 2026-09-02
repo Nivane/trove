@@ -55,6 +55,7 @@ from trove.workflow.nodes.gen_sql import (
     make_validate,
     render_cache_prefix,
     render_entities,
+    render_episodes,
     render_lessons,
     render_metrics,
     render_profile,
