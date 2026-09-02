@@ -341,7 +341,10 @@ async def init_kb(kb, registry, llm, config, datasource, *,
             f"Pass overwrite=true to re-initialize.",
             datasource=datasource,
         )
-    model = (config.target if config else "") or "openai/gpt-4o"
+    # 起草类任务用快速模型(如 deepseek-chat,无 CoT):推理模型的 reasoning
+    # tokens 计入计费且挤占 max_tokens,正文被截断——注解起草/合成示例这类
+    # 结构化文本产出不需要推理模型,model_fast 更快更省。未配置则回退 target。
+    model = (config.model_fast if config else "") or (config.target if config else "") or "openai/gpt-4o"
     docs_tables = load_docs_tables(Path(docs)) if docs else {}
     probed: dict = {}
     try:
