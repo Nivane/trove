@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,8 @@ def _use_postgres(storage_url: str | None) -> bool:
     )
 
 
-def build_checkpointer(
+@asynccontextmanager
+async def build_checkpointer(
     home_dir: str | Path,
     storage_url: str | None = None,
 ) -> AsyncIterator[Any]:
@@ -54,10 +56,17 @@ def build_checkpointer(
     if _use_postgres(url):
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-        return AsyncPostgresSaver.from_conn_string(url)
+        # 进入后必须先 setup() 建表(checkpoints 等);漏掉会在首次读写时报
+        # "relation checkpoints does not exist"。
+        async with AsyncPostgresSaver.from_conn_string(url) as saver:
+            await saver.setup()
+            yield saver
+    else:
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-    home = Path(home_dir).expanduser()
-    home.mkdir(parents=True, exist_ok=True)
-    return AsyncSqliteSaver.from_conn_string(str(home / CHECKPOINT_DB_NAME))
+        home = Path(home_dir).expanduser()
+        home.mkdir(parents=True, exist_ok=True)
+        async with AsyncSqliteSaver.from_conn_string(
+            str(home / CHECKPOINT_DB_NAME)
+        ) as saver:
+            yield saver

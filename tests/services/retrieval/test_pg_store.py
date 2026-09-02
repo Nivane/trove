@@ -59,7 +59,7 @@ async def test_pg_recall_with_ann_and_fts(store):
     ]
     await store.index_many(docs)
     hits = await store.recall("贷款 平均 金额", k=3, datasource="ds")
-    assert hits and hits[0].doc_id == "ds:a.yml:e1"
+    assert hits and hits[0].doc_id == "e1"
 
 
 async def test_pg_sparse_channel_and_meta():
@@ -69,6 +69,7 @@ async def test_pg_sparse_channel_and_meta():
 
     class FakeHybridEmbedder:
         dim = 16
+        sparse_dim = 1000
 
         async def embed_hybrid(self, texts):
             import math
@@ -79,7 +80,8 @@ async def test_pg_sparse_channel_and_meta():
                 sparse = {}
                 for ch in t:
                     dense[ord(ch) % self.dim] += 1.0
-                    sparse[ord(ch)] = sparse.get(ord(ch), 0.0) + 1.0
+                    sparse[ord(ch) % self.sparse_dim] = (
+                        sparse.get(ord(ch) % self.sparse_dim, 0.0) + 1.0)
                 norm = math.sqrt(sum(v * v for v in dense)) or 1.0
                 out.append(([v / norm for v in dense], sparse))
             return out
@@ -98,7 +100,7 @@ async def test_pg_sparse_channel_and_meta():
         ])
         hits, meta = await s.recall(
             "贷款 平均 金额", k=3, datasource="ds", return_meta=True)
-        assert hits and hits[0].doc_id == "ds:a.yml:e1"
+        assert hits and hits[0].doc_id == "e1"
         assert len(meta["branch_sizes"]) == 3  # keyword + dense + sparse
     finally:
         await s.clear("ds")

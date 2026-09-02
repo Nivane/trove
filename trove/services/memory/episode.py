@@ -71,7 +71,7 @@ _LEXICAL_GATE = 0.5           # 词面门槛(纯词面部署 = 旧行为)
 _COSINE_GATE = 0.55           # 语义门槛:OR 语义——任一门过即召回
 
 _EMBED_COL_SQLITE = "ALTER TABLE episodes ADD COLUMN embedding BLOB"
-_EMBED_COL_PG = "ALTER TABLE episodes ADD COLUMN embedding BYTEA"
+_EMBED_COL_PG = "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS embedding BYTEA"
 
 
 def _pack_embedding(vec: list[float]) -> bytes:

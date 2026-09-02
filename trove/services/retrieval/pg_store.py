@@ -97,7 +97,11 @@ class PgHybridStore(HybridStore):
                         f"{_SCHEMA_NS}.documents "
                         f"USING hnsw (sparse sparsevec_cosine_ops)")
                 # Sparse channel: prefer pg_bm25 (true BM25), else tsvector GIN.
+                # 用 savepoint 包裹 bm25 尝试:CREATE EXTENSION 失败会把整个事务
+                # 置为 aborted,后续 GIN 回退也报 InFailedSqlTransaction——回滚到
+                # savepoint 恢复事务状态后再建 GIN 索引。
                 try:
+                    await cur.execute("SAVEPOINT sp_bm25")
                     await cur.execute("CREATE EXTENSION IF NOT EXISTS pg_bm25")
                     opts = "content = 'text'"
                     if self._fts_tokenizer:
@@ -107,9 +111,11 @@ class PgHybridStore(HybridStore):
                     await cur.execute(
                         f"CREATE INDEX {_BM25_IDX} ON {_SCHEMA_NS}.documents "
                         f"USING bm25 (id, content) WITH ({opts})")
+                    await cur.execute("RELEASE SAVEPOINT sp_bm25")
                     self._fts_mode = "bm25"
                 except Exception as e:  # pg_bm25 not available -> native FTS
                     logger.warning("pg_bm25 unavailable (%s); using tsvector GIN", e)
+                    await cur.execute("ROLLBACK TO SAVEPOINT sp_bm25")
                     await cur.execute(
                         f"CREATE INDEX IF NOT EXISTS documents_tsv ON "
                         f"{_SCHEMA_NS}.documents USING GIN(tsv)")
