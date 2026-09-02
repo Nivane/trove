@@ -27,5 +27,3 @@ htmlcov/
 
 # Node modules (root-level vite cache; frontend/ has its own .gitignore)
 node_modules/
-
-docs/
