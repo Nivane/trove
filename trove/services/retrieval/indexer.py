@@ -31,24 +31,19 @@ logger = get_logger(__name__)
 _SCHEMA_SOURCE_PREFIX = "schema:"
 
 
-def _schema_snapshot(connectors: Any, datasource: str) -> dict:
+def _schema_snapshot(schema: Any) -> dict:
     """Stable JSON snapshot of physical schema for change detection."""
-    try:
-        schema = connectors.get_schema(datasource)
-    except Exception as e:
-        logger.warning("schema snapshot failed for %s: %s", datasource, e)
-        return {}
     out: dict = {}
     for t in schema.tables:
         cols = {
             c.name: {
-                "type": c.datatype,
+                "type": c.type,
                 "pk": bool(c.primary_key),
                 "fk": c.foreign_key if hasattr(c, "foreign_key") else None,
             }
             for c in t.columns
         }
-        out[t.name] = {"columns": cols, "rows": getattr(t, "row_count", None)}
+        out[t.name] = {"columns": cols, "rows": getattr(t, "row_count_estimate", None)}
     return out
 
 
@@ -117,7 +112,12 @@ class Indexer:
         return ""
 
     async def index_schema(self, datasource: str, rebuild: bool = False) -> int:
-        snapshot = _schema_snapshot(self._connectors, datasource)
+        try:
+            schema = await self._connectors.get_schema(datasource)
+        except Exception as e:
+            logger.warning("schema snapshot failed for %s: %s", datasource, e)
+            return 0
+        snapshot = _schema_snapshot(schema)
         if not snapshot:
             return 0
         digest = hashlib.sha256(
