@@ -189,6 +189,66 @@ class TestAggregate:
         )
         assert match_fast_template("What is the average approved amount?", [t], ["loans"])
 
+    def test_year_condition_rejects_whereless_aggregate(self):
+        """问题带年份/日期条件但模板无 WHERE → 拒绝快径(防丢过滤)。
+
+        "1996 年发放的贷款平均金额" 命中无 WHERE 的 AVG(amount) 模板会
+        丢掉 1996 过滤,返回全量均值——必须 miss,交正常链路带出条件。
+        """
+        t = hit(
+            question="What is the average loan amount?",
+            sql="SELECT AVG(amount) FROM loans",
+            tags=["loans", "amount", "aggregation"],
+            aggregate=True,
+        )
+        assert match_fast_template(
+            "What is the average loan amount for loans issued in 1996?",
+            [t], ["loans"],
+        ) is None
+
+    def test_date_condition_rejects_whereless_aggregate(self):
+        t = hit(
+            question="What is the average loan amount?",
+            sql="SELECT AVG(amount) FROM loans",
+            tags=["loans", "amount", "aggregation"],
+            aggregate=True,
+        )
+        assert match_fast_template(
+            "What is the average loan amount approved on 1996-01-15?",
+            [t], ["loans"],
+        ) is None
+
+    def test_enum_condition_rejects_whereless_aggregate(self):
+        """无 WHERE 模板不能吃带属性/枚举条件的聚合问题(如 card type 过滤)。"""
+        t = hit(
+            question="What is the average loan amount?",
+            sql="SELECT AVG(amount) FROM loans",
+            tags=["loans", "amount", "aggregation"],
+            aggregate=True,
+        )
+        assert match_fast_template(
+            "What is the average loan amount for gold cards?",
+            [t], ["loans"],
+        ) is None
+
+    def test_region_condition_rejects_whereless_aggregate(self):
+        """按区域分组/过滤的聚合问题不得被无 WHERE 模板抢答。"""
+        t = hit(
+            question="What is the average loan amount?",
+            sql="SELECT AVG(amount) FROM loans",
+            tags=["loans", "amount", "aggregation"],
+            aggregate=True,
+        )
+        assert match_fast_template(
+            "What is the average loan amount by region?",
+            [t], ["loans"],
+        ) is None
+
+    def test_plain_aggregate_still_hits(self):
+        """无日期条件时,无 WHERE 的聚合模板照常命中(回归保护)。"""
+        m = match_fast_template("What is the maximum amount?", [MAX_AMOUNT], ["loans"])
+        assert m and m["sql"] == "SELECT MAX(amount) FROM loans"
+
 
 class TestDateRange:
     def test_year_hit(self):
@@ -221,6 +281,71 @@ class TestDateRange:
 
     def test_before_year_mismatch(self):
         assert match_fast_template("How many loans were approved before 1996?", [BEFORE], ["loans"]) is None
+
+
+class TestGroupOrderGuard:
+    """分组/排序意图守卫:带 per/each/按…分/ordered by 等问题绝不能被
+    单表全局聚合模板抢答(丢分组/排序语义)→ 一律 miss 交回正常链路。"""
+
+    def test_total_per_region_not_hijacked_by_plain_sum(self):
+        """「total amount per region」不得命中 SELECT SUM(amount) 全局模板。"""
+        m = match_fast_template(
+            "Show the total amount of loans issued per region, ordered by total descending",
+            [MAX_AMOUNT, BARE], ["loans", "students"],
+        )
+        assert m is None
+
+    def test_per_grouping_misses(self):
+        m = match_fast_template(
+            "What is the total amount of loans per district?", [MAX_AMOUNT], ["loans"],
+        )
+        assert m is None
+
+    def test_each_grouping_misses(self):
+        m = match_fast_template(
+            "How many records are there in each county?", [BARE], ["students"],
+        )
+        assert m is None
+
+    def test_ordered_by_misses(self):
+        m = match_fast_template(
+            "What is the total amount ordered by date?", [MAX_AMOUNT], ["loans"],
+        )
+        assert m is None
+
+    def test_desc_misses(self):
+        m = match_fast_template(
+            "Show the total amount descending?", [MAX_AMOUNT], ["loans"],
+        )
+        assert m is None
+
+    def test_plain_aggregate_still_hits(self):
+        """无分组/排序信号的平凡聚合题照常快径。"""
+        m = match_fast_template("What is the maximum amount?", [MAX_AMOUNT], ["loans"])
+        assert m and m["sql"] == "SELECT MAX(amount) FROM loans"
+
+    def test_bare_count_still_hits(self):
+        m = match_fast_template("How many students are there?", [BARE], ["students"])
+        assert m and m["sql"] == "SELECT COUNT(*) FROM students"
+
+    def test_zh_grouping_misses(self):
+        zh_hit = hit(
+            question="学生表中各地区的平均工资是多少？",
+            sql="SELECT AVG(grade) FROM students",
+            tags=["学生", "grade", "聚合"],
+            aggregate=True,
+        )
+        assert match_fast_template("学生表中各地区的平均工资", [zh_hit], ["students"]) is None
+
+    def test_zh_plain_aggregate_still_hits(self):
+        zh_hit = hit(
+            question="成绩的平均值是多少？",
+            sql="SELECT AVG(grade) FROM students",
+            tags=["学生", "grade", "聚合"],
+            aggregate=True,
+        )
+        m = match_fast_template("学生的平均成绩是多少？", [zh_hit], ["students"])
+        assert m and m["sql"] == "SELECT AVG(grade) FROM students"
 
 
 class TestZh:

@@ -40,6 +40,21 @@ FAST_PATH_MAX_QUESTION_LEN = 120  # 超过一律 miss(长问句交给正常链�
 
 _CJK_RE = re.compile(r"[一-鿿]")
 
+# 分组/排序意图信号:问题要求按某维度分组(per/each/for each/按…分/每个/
+# 各地区)或按某列排序(ordered by/sorted by/desc/asc/top N/排名/前 N)时,
+# 快径必须 miss——命中任何单表聚合模板都会丢分组/排序语义(如「total amount
+# per region」被 SELECT SUM(amount) 模板抢答成全局总和)。带这些信号 → 交回
+# query_sketch + 语义编译器(能正确产出 GROUP BY / ORDER BY)的正常链路。
+_GROUP_INTENT_RE = re.compile(
+    r"\bper\b|\beach\b|for each|按.{0,6}分|每个|各地区|哪个|哪些|\bwhich\b",
+    re.I,
+)
+_ORDER_INTENT_RE = re.compile(
+    r"\border(?:ed)?\s+by\b|\bsorted\s+by\b|\bdesc(?:ending)?\b|\basc(?:ending)?\b"
+    r"|\btop\s+\d+\b|排名|前\s*\d+",
+    re.I,
+)
+
 # 聚合意图词:en 按词边界正则匹配短语,zh 按子串。短语越长优先(排序在编译时处理)。
 _AGG_WORDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "COUNT": (("how many", "total number", "number of", "count"),
@@ -204,7 +219,7 @@ def _match_enum_filter(hit: ExampleHit, question: str, table: str, is_zh: bool) 
 
 
 def _match_aggregate(hit: ExampleHit, question: str, table: str, agg: str,
-                     is_zh: bool) -> bool:
+                     is_zh: bool, has_where: bool) -> bool:
     """聚合模板(MAX/MIN/AVG/SUM,含日期 earliest/latest):意图词 + desc 锚定。"""
     if not _has_agg_word(question, agg, is_zh):
         return False
@@ -222,7 +237,25 @@ def _match_aggregate(hit: ExampleHit, question: str, table: str, agg: str,
         _tokens(_strip_agg_phrases(hit.question))
         - _STRUCT_EN - {_norm_token(table.lower())}
     )
-    return _desc_overlap(required, _tokens(question))
+    if not _desc_overlap(required, _tokens(question)):
+        return False
+    # 残条件守卫(仅无 WHERE 模板):模板 SQL 没有过滤,就不能覆盖问题里的
+    # 任何条件——剥离 结构词+聚合词+表名+desc 重叠词 后问题仍有剩余 token
+    # ("by region"/"for gold cards"/"issued in 1996") → 拒绝快径,交正常
+    # 链路带出条件。模板 SQL 自带 WHERE 时信任模板,不做残条件检查。
+    if not has_where:
+        q_tokens = _tokens(question) - _STRUCT_EN - _ALL_EN_AGG - {
+            _norm_token(table.lower()),
+        }
+        # desc 重叠词在模板里已覆盖(共享 token 或 ≥4 前缀) → 从残条件中剔除
+        covered = {
+            t for t in q_tokens
+            if t in required or any(
+                len(r) >= 4 and len(t) >= 4 and t[:4] == r[:4] for r in required)
+        }
+        if q_tokens - covered:
+            return False
+    return True
 
 
 def _match_date_range(hit: ExampleHit, question: str, table: str, is_zh: bool) -> bool:
@@ -285,6 +318,14 @@ def match_fast_template(
     q = (question or "").strip()
     if not q or len(q) > max_len or not matched_tables:
         return None
+    # 分组/排序意图守卫:模板快径只服务「单表全局聚合」的平凡题。问题要求
+    # 分组(per/each/按…分/每个/各地区)或排序(ordered by/desc/asc/top N)
+    # 时,任何模板(形状检查已排除带 GROUP/ORDER 的模板)都无法表达该语义
+    # ——命中只会丢分组/排序,静默产出错误的全局聚合(如「total amount per
+    # region」被 SELECT SUM(amount) 抢答)。带这些信号一律 miss,交回
+    # query_sketch + 语义编译器(能正确产出 GROUP BY / ORDER BY)。
+    if _GROUP_INTENT_RE.search(q) or _ORDER_INTENT_RE.search(q):
+        return None
     matched_lower = {t.lower() for t in matched_tables if t}
     is_zh = bool(_CJK_RE.search(q))
     for hit in hits:
@@ -295,10 +336,16 @@ def match_fast_template(
             continue
         if not _table_anchored(table, q, matched_lower):
             continue
+        # 条件守卫:问题带年份/日期过滤,但模板 SQL 无 WHERE → 拒绝快径。
+        # "1996 年发放的贷款平均金额" 不得命中 "AVG(amount) FROM loan"
+        # (无过滤的模板 SQL 会把 1996 条件丢掉);date_range 家族自会接手,
+        # 这里只兜底无 WHERE 的聚合/裸计数模板。
+        if not has_where and (_YEAR_RE.search(q) or _DATE_LITERAL_RE.search(q)):
+            continue
         if hit.date_range:
             matched = _match_date_range(hit, q, table, is_zh)
         elif hit.aggregate or agg in ("MAX", "MIN", "AVG", "SUM"):
-            matched = _match_aggregate(hit, q, table, agg, is_zh)
+            matched = _match_aggregate(hit, q, table, agg, is_zh, has_where)
         elif has_where:
             matched = _match_enum_filter(hit, q, table, is_zh)
         else:
