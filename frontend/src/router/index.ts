@@ -46,6 +46,11 @@ export const router = createRouter({
           component: () => import('../views/admin/AuditView.vue'),
         },
         {
+          path: 'checkpoints',
+          name: 'admin-checkpoints',
+          component: () => import('../views/admin/CheckpointsView.vue'),
+        },
+        {
           path: 'datasources',
           name: 'admin-datasources',
           component: () => import('../views/admin/DatasourcesView.vue'),

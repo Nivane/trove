@@ -287,6 +287,109 @@ async def list_all_sessions(
     return {"sessions": sessions}
 
 
+# ── Checkpoint management (time-travel timeline / replay) ─
+
+
+def _checkpointer(request: Request):
+    ckpt = getattr(request.app.state, "checkpointer", None)
+    if ckpt is not None:
+        return ckpt
+    # 兜底:编译后的图上自带 checkpointer(测试等未显式注入组件的场景)。
+    graphs = getattr(request.app.state, "graphs", None) or {}
+    for graph in graphs.values():
+        ckpt = getattr(graph, "checkpointer", None)
+        if ckpt is not None:
+            return ckpt
+    return None
+
+
+async def _session_or_404(request: Request, session_id: str) -> dict:
+    try:
+        return await request.app.state.session_manager.load_session(session_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+
+
+@router.get("/admin/sessions/{session_id}/checkpoints")
+async def list_session_checkpoints(
+    session_id: str,
+    request: Request,
+    limit: int = Query(default=200, ge=1, le=1000),
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """One session's graph-checkpoint timeline (newest first).
+
+    Each row = one saved WorkflowState snapshot: the node that produced it,
+    the run_id, and a glance at the most diagnostic state fields. The full
+    snapshot is one endpoint away (detail).
+    """
+    checkpointer = _checkpointer(request)
+    if checkpointer is None:
+        raise HTTPException(status_code=404, detail="checkpointer not configured")
+    await _session_or_404(request, session_id)
+    from trove.services.checkpoint_view import list_thread
+
+    checkpoints = await list_thread(checkpointer, session_id, limit=limit)
+    return {"session_id": session_id, "checkpoints": checkpoints}
+
+
+@router.get("/admin/sessions/{session_id}/checkpoints/{checkpoint_id}")
+async def get_session_checkpoint(
+    session_id: str,
+    checkpoint_id: str,
+    request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Full state snapshot at one checkpoint (audit / debug view)."""
+    checkpointer = _checkpointer(request)
+    if checkpointer is None:
+        raise HTTPException(status_code=404, detail="checkpointer not configured")
+    await _session_or_404(request, session_id)
+    from trove.services.checkpoint_view import get_checkpoint
+
+    entry = await get_checkpoint(checkpointer, session_id, checkpoint_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"checkpoint not found: {checkpoint_id}")
+    return entry
+
+
+@router.post("/admin/sessions/{session_id}/checkpoints/{checkpoint_id}/resume")
+async def resume_session_checkpoint(
+    session_id: str,
+    checkpoint_id: str,
+    request: Request,
+    body: dict | None = None,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Replay the graph from an arbitrary checkpoint (time-travel resume).
+
+    Body (optional): ``{"workflow": "reflection"}`` — which graph to run
+    (defaults to ``reflection``). Replays from the checkpoint forward on the
+    same thread and returns the final-state summary; a re-entered HITL
+    interrupt reports ``hitl_status="pending"`` for the standard resume flow.
+    """
+    checkpointer = _checkpointer(request)
+    if checkpointer is None:
+        raise HTTPException(status_code=404, detail="checkpointer not configured")
+    await _session_or_404(request, session_id)
+    workflow = (body or {}).get("workflow") or "reflection"
+    manager = request.app.state.session_manager
+    try:
+        graph = manager._get_graph(workflow)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"unknown workflow: {workflow}")
+    from trove.services.checkpoint_view import replay_from
+
+    summary = await replay_from(graph, session_id, checkpoint_id, workflow)
+    if summary["error"]:
+        raise HTTPException(status_code=400, detail=summary["error"])
+    await _audit(request, "checkpoint.resume", admin, 200,
+                 {"session_id": session_id, "checkpoint_id": checkpoint_id,
+                  "workflow": workflow})
+    return {"session_id": session_id, "checkpoint_id": checkpoint_id,
+            "workflow": workflow, "summary": summary}
+
+
 # ── KB lesson approval (per-lesson confirm/reject) ───────
 
 

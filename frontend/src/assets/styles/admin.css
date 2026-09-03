@@ -1095,3 +1095,112 @@
     flex-wrap: wrap;
   }
 }
+
+/* ── Checkpoints view (timeline / snapshot / resume) ───────────── */
+
+.ckpt-session-select {
+  max-width: 460px;
+}
+.ckpt-summary {
+  min-width: 0;
+}
+.ckpt-question {
+  font-size: var(--fs-sm);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+.ckpt-sql {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-2xs);
+  color: var(--color-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+.ckpt-tags {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.run-id {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+.ckpt-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-dim);
+  font-size: var(--fs-sm);
+}
+.ckpt-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  margin-bottom: 16px;
+  font-size: var(--fs-sm);
+}
+.dim {
+  color: var(--color-dim);
+}
+.ckpt-summary-block {
+  margin-bottom: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.ckpt-block-title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+.ckpt-kv {
+  display: flex;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  padding: 2px 0;
+}
+.ckpt-kv-val {
+  color: var(--color-text);
+  overflow-wrap: anywhere;
+}
+.ckpt-json,
+.ckpt-sql-block {
+  background: var(--color-surface-alt, #f5f6f8);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-2xs);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 360px;
+  overflow: auto;
+}
+.ckpt-warn {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-warn-bg, #fff7e6);
+  color: var(--color-warn, #b26a00);
+  font-size: var(--fs-sm);
+  margin-bottom: 12px;
+}
+.ckpt-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-danger-bg, #fef0f0);
+  color: var(--color-danger, #b42318);
+  font-size: var(--fs-sm);
+  margin-bottom: 12px;
+}
+.ckpt-resume-md {
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+}

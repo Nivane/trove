@@ -178,6 +178,7 @@ import {
   ScrollText,
   SlidersHorizontal,
   Cpu,
+  History,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -210,6 +211,7 @@ const systemItems: {
 }[] = [
   { path: '/admin/model-config', label: 'modelConfig', icon: Cpu },
   { path: '/admin/audit', label: 'audit', icon: ScrollText },
+  { path: '/admin/checkpoints', label: 'checkpoints', icon: History },
   { path: '/admin/settings', label: 'systemSettings', icon: SlidersHorizontal },
 ]
 

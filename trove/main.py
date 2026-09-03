@@ -331,6 +331,7 @@ async def create_app_components(
         "lineage": lineage,
         "graphs": graphs,
         "session_manager": session_manager,
+        "checkpointer": checkpointer,
         "maintenance": MaintenanceService(
             session_store, checkpointer, config.retention,
         ),
