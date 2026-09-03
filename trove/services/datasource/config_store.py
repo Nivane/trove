@@ -36,6 +36,7 @@ def to_dict(cfg: DatasourceConfig) -> dict:
         "retrieval_backend": cfg.retrieval_backend or "builtin",
         "embedder_backend": cfg.embedder_backend or "",
         "embedding_model": cfg.embedding_model or "",
+        "embedding_dims": int(cfg.embedding_dims or 1536),
         "embedding_sparse_dims": int(cfg.embedding_sparse_dims or 0),
         "rrf_k": int(cfg.rrf_k or 60),
         "rrf_weights": dict(cfg.rrf_weights or {}),
@@ -43,6 +44,8 @@ def to_dict(cfg: DatasourceConfig) -> dict:
         "rerank_endpoint": cfg.rerank_endpoint or "",
         "vector_backend": cfg.vector_backend or "sqlite",
         "vector_dsn": cfg.vector_dsn or "",
+        "retrieval_dsn": cfg.retrieval_dsn or "",
+        "fts_tokenizer": cfg.fts_tokenizer or "",
     }
 
 
@@ -56,6 +59,7 @@ def from_dict(data: dict) -> DatasourceConfig:
         retrieval_backend=str(data.get("retrieval_backend") or "builtin"),
         embedder_backend=str(data.get("embedder_backend") or ""),
         embedding_model=str(data.get("embedding_model") or ""),
+        embedding_dims=int(data.get("embedding_dims") or 1536),
         embedding_sparse_dims=int(data.get("embedding_sparse_dims") or 0),
         rrf_k=int(data.get("rrf_k") or 60),
         rrf_weights=dict(data.get("rrf_weights") or {}),
@@ -63,6 +67,8 @@ def from_dict(data: dict) -> DatasourceConfig:
         rerank_endpoint=str(data.get("rerank_endpoint") or ""),
         vector_backend=str(data.get("vector_backend") or "sqlite"),
         vector_dsn=str(data.get("vector_dsn") or ""),
+        retrieval_dsn=str(data.get("retrieval_dsn") or ""),
+        fts_tokenizer=str(data.get("fts_tokenizer") or ""),
         # 旧 yml 无 id 字段(迁移):确定性回填,保证重启间稳定且幂等。
         ds_id=data.get("id") or backfill_ds_id(data["type"], data["name"]),
     )

@@ -44,9 +44,11 @@ def _parser() -> argparse.ArgumentParser:
 async def main_index(argv: list[str]) -> None:
     args = _parser().parse_args(argv)
     from trove.main import _load_config, create_app_components
-    from trove.core.config import build_checkpointer
+    from trove.storage.checkpoint_store import build_checkpointer
 
-    cfg_args = types.SimpleNamespace(datasource=args.datasource or "", config=None, model=None)
+    # 组件以持久化数据源启动(boot_register);目标列表从 config_store 取,
+    # 不把 --datasource 名透传给 setup_datasource(它只认 demo / scheme:// URL)。
+    cfg_args = types.SimpleNamespace(datasource="", config=None, model=None)
     config = await _load_config(cfg_args)
     async with build_checkpointer(config.home) as checkpointer:
         components = await create_app_components(cfg_args, config, checkpointer)
