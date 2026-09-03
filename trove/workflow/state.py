@@ -130,6 +130,14 @@ class WorkflowState(BaseModel):
     # context 片段)。非管线消费,仅 step 事件透传给前端右侧分析面板。
     link_detail: dict[str, Any] = Field(default_factory=dict)
 
+    # KB 检索来源标识(builtin / pg_hybrid / hybrid / rag):schema_linking 与
+    # gen_sql 写入,仅 step 事件透传给前端分析面板展示,不参与管线判定。
+    retrieval_backend: str = ""
+
+    # 情景记忆(episodes)检索通道标识(lexical / hybrid):gen_sql 写入,
+    # 仅 step 事件透传给前端分析面板展示,不参与管线判定。
+    memory_backend: str = ""
+
     # 复杂度分级(gen_sql 写入,reflect 读取):"simple"/"standard"/"complex",
     # 驱动负载削减开关(经典子图/跳多候选/跳裁决);修正轮强制 standard
     complexity: str = "standard"

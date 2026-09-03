@@ -518,6 +518,7 @@ def _make_gen_sql_node(
         # 查询结果(成功 SQL 是最强 few-shot 锚,失败 + 修正要点防重犯)。
         # 统一走 memory facade;未启用/无用户时为空,静默降级。
         episode_items: list[dict[str, Any]] = []
+        memory_backend = ""
         if (
             services.memory is not None and datasource and state.user_id
             and services.memory.enabled
@@ -536,9 +537,14 @@ def _make_gen_sql_node(
                      "sql": e.content.get("sql", ""),
                      "verdict": e.content.get("verdict", ""),
                      "correction_history": e.content.get("correction_history", []),
-                     "score": e.score}
+                     "score": e.score,
+                     "channels": list(getattr(e, "channels", []) or [])}
                     for e in _eps
                 ]
+                # 情景记忆通道标记:任一条目走了混合(词面+向量) → hybrid
+                _chans = {c for it in episode_items for c in it.get("channels", [])}
+                if episode_items:
+                    memory_backend = "hybrid" if "hybrid" in _chans else "lexical"
             except Exception as e:
                 logger.warning(
                     "Episode memory retrieval failed (%s): %s", datasource, e)
@@ -789,6 +795,19 @@ def _make_gen_sql_node(
             # 不享受快径的 reflect 跳过
             "fast_path": False,
         }
+
+        # 情景记忆通道标记(best-effort,无 episodes 命中为空)
+        if memory_backend:
+            update["memory_backend"] = memory_backend
+
+        # 检索来源标识:内置 SQLite FTS5 镜像 vs pg_hybrid 统一检索库
+        # (仅作分析面板展示,不参与生成逻辑)。
+        if services.kb is not None and datasource:
+            try:
+                update["retrieval_backend"] = services.kb.retrieval_backend_label(
+                    datasource)
+            except Exception:
+                update["retrieval_backend"] = "builtin"
 
         if kb_exact_match is not None:
             # KB 精确命中:直接用标准 SQL,跳过模型生成(避免歧义变体)

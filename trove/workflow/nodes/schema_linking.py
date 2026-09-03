@@ -430,6 +430,17 @@ def make_schema_linking(
             retry_round=retry_round,
         )
 
+        # 检索来源标识:内置 SQLite FTS5 镜像 vs pg_hybrid 统一检索库
+        # (仅作分析面板展示,不参与语义边界判定)。
+        if kb is not None and datasource:
+            try:
+                rb = kb.retrieval_backend_label(datasource)
+            except Exception:
+                rb = "builtin"
+            update["retrieval_backend"] = rb
+            if isinstance(update.get("link_detail"), dict):
+                update["link_detail"]["retrieval_backend"] = rb
+
         if term_hits:
             hits = [
                 {

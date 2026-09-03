@@ -950,6 +950,7 @@ class SessionManager:
                 h.get("term") for h in kh if h.get("kind") == "term"
             ]
             detail["link_detail"] = delta.get("link_detail")
+            detail["retrieval_backend"] = delta.get("retrieval_backend", "")
         elif node_name == "query_sketch":
             detail["plan"] = delta.get("plan", "")
         elif node_name == "gen_sql":
@@ -957,6 +958,8 @@ class SessionManager:
             detail["attempts"] = delta.get("attempts", 1)
             detail["retry"] = retry
             detail["reason"] = reason
+            detail["retrieval_backend"] = delta.get("retrieval_backend", "")
+            detail["memory_backend"] = delta.get("memory_backend", "")
             if delta.get("context_usage"):
                 detail["context_usage"] = delta["context_usage"]
         elif node_name == "execute_sql":

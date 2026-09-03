@@ -13,6 +13,10 @@ export interface StepView {
   rowCount?: number | null
   timeMs?: number | null
   text?: string
+  /** 该步骤使用的 KB 检索后端名(builtin / pg_hybrid / hybrid / rag)。 */
+  backend?: string
+  /** gen_sql: 情景记忆(episodes)检索通道(lexical / hybrid)。 */
+  memoryBackend?: string
   /** schema_linking: 匹配与来源结构化摘要(右侧分析面板渲染)。 */
   link?: {
     tables: string[]
@@ -93,6 +97,8 @@ export function extractStep(payload: StepPayload): StepView {
     const sql = str(get(payload, 'sql'))
     view.label = 'SQL'
     if (sql) view.sql = sql
+    view.backend = str(get(payload, 'retrieval_backend'))
+    view.memoryBackend = str(get(payload, 'memory_backend'))
     const attempts = Number(get(payload, 'attempts') ?? 1)
     const reason = str(get(payload, 'reason'))
     const extras: string[] = []
@@ -114,6 +120,7 @@ export function extractStep(payload: StepPayload): StepView {
   }
 
   if (node === 'schema_linking') {
+    view.backend = str(get(payload, 'retrieval_backend'))
     const tables = get(payload, 'matched_tables')
     if (Array.isArray(tables) && tables.length) {
       view.text = tables.join(', ')
@@ -181,6 +188,31 @@ export function extractStep(payload: StepPayload): StepView {
   }
 
   return view
+}
+
+/** Human-readable label for the KB retrieval backend used by a step. */
+export function backendLabel(backend: string, lang: string): string {
+  if (!backend) return ''
+  const zh: Record<string, string> = {
+    builtin: '内置 FTS5 (SQLite)',
+    pg_hybrid: 'PG 混合检索 (FTS+向量+RRF)',
+    hybrid: '混合检索',
+    rag: '向量检索',
+  }
+  const en: Record<string, string> = {
+    builtin: 'builtin FTS5 (SQLite)',
+    pg_hybrid: 'PG hybrid (FTS+vector+RRF)',
+    hybrid: 'hybrid',
+    rag: 'vector',
+  }
+  return lang === 'zh' ? (zh[backend] ?? backend) : (en[backend] ?? backend)
+}
+
+/** i18n key for the episodic-memory channel label (lexical / hybrid). */
+export function memoryLabelKey(
+  backend: string,
+): 'memoryHybrid' | 'memoryLexical' {
+  return backend === 'hybrid' ? 'memoryHybrid' : 'memoryLexical'
 }
 
 /** Display duration in a compact form. */

@@ -1275,6 +1275,24 @@ button:disabled {
   background: var(--accent-soft);
   border-color: transparent;
 }
+.chip-backend {
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: help;
+  margin-left: var(--sp-1);
+}
+.chip-memory {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  cursor: help;
+  margin-left: var(--sp-1);
+}
 .chip-src {
   color: var(--text-tertiary);
   font-size: 10px;

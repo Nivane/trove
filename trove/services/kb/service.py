@@ -524,6 +524,17 @@ class KbService:
         except Exception:
             return None
 
+    def retrieval_backend_label(self, datasource: str) -> str:
+        """该数据源实际生效的检索后端名(builtin / hybrid / rag / pg_hybrid)。
+
+        供 schema_linking / gen_sql 步骤在分析面板标识检索来源:builtin
+        即本地 SQLite FTS5 镜像;pg_hybrid 为统一 PG 检索库(FTS+向量+RRF)。
+        """
+        backend = self._backend_for(datasource)
+        if backend is None:
+            return "builtin"
+        return getattr(backend, "name", "") or "builtin"
+
     @property
     def enabled(self) -> bool:
         return self.kb_dir.is_dir()

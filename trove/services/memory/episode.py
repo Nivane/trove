@@ -349,6 +349,9 @@ class EpisodeStore:
                 status="confirmed",
                 score=round(score, 4),
                 created_at=r[12], updated_at=r[13],
+                # 检索通道标记(观察用):query 成功嵌入且候选带向量 →
+                # 混合;否则纯词面。供 gen_sql 步骤徽标展示。
+                channels=["hybrid"] if query_vec is not None else ["lexical"],
                 # ⑦ touch 契约:idempotency_key = "question\x1fsql",读路径
                 # 命中后按此键刷新最近使用时间(生命周期信号)。
                 idempotency_key=f"{q_text}\x1f{sql}",

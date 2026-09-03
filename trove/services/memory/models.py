@@ -49,6 +49,9 @@ class MemoryEntry:
     last_used_at: str = ""
     hit_count: int = 0
     idempotency_key: str = ""
+    # 检索通道标记(观察用):episode 条目记录本命中实际使用的通道
+    # ("lexical" 纯词面 / "hybrid" 词面+向量)。其余 kind 为空。
+    channels: list[str] = field(default_factory=list)
 
 
 @dataclass

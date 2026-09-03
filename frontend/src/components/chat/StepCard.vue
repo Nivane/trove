@@ -3,6 +3,8 @@
     <summary>
       <span class="step-dot" />
       <span class="step-node">{{ displayLabel }}</span>
+      <span v-if="view.backend" class="chip chip-backend" :title="t('retrievalBackend', ui.lang)">{{ backendLabel(view.backend, ui.lang) }}</span>
+      <span v-if="view.memoryBackend" class="chip chip-memory" :title="t('memoryBackend', ui.lang)">{{ t(memoryLabelKey(view.memoryBackend), ui.lang) }}</span>
       <span v-if="attempt > 1" class="step-attempt">· {{ t('attempt', ui.lang, attempt) }}</span>
       <span v-if="elapsedMs != null" class="step-elapsed">{{ elapsedMs }}</span>
       <span v-else-if="status !== 'done' && liveMs != null" class="step-elapsed live">{{
@@ -75,7 +77,7 @@ import { LoaderCircle } from 'lucide-vue-next'
 import MarkdownView from './MarkdownView.vue'
 import SqlBlock from './SqlBlock.vue'
 import { useUiStore } from '../../stores/ui'
-import { extractStep, stepLabel, fmtMs } from '../../utils/steps'
+import { extractStep, stepLabel, backendLabel, memoryLabelKey, fmtMs } from '../../utils/steps'
 import type { StepCard as StepCardType } from '../../stores/chat'
 import { t } from '../../i18n'
 
