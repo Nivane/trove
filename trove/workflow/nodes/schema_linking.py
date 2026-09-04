@@ -45,6 +45,8 @@ _PROGRESSIVE_THRESHOLD = (
 _QUOTED_RE = re.compile(r"['\"]([^'\"]{2,30})['\"]")
 _CAPITALIZED_RE = re.compile(r"\b[A-Z][a-zA-Z]{2,}\b")
 _ALL_CAPS_RE = re.compile(r"\b[A-Z]{2,}\b")
+# 中文字符(供 CJK 检索分支:问题含中文 → 指标召回可作为零锚定的补充证据)
+_CJK_RE = re.compile(r"[一-鿿]")
 
 
 def _dedup_tables(hits: list[TermHit]) -> list[str]:
@@ -311,11 +313,16 @@ async def _semantic_linking(
     # 指标相关性选择 + 图链接(P4):metric 命中沿 metric.datasets 扩展表锚,
     # 相关性选择的指标(带口径)替换"全量渲染锚定 metrics"。只在已有锚定时
     # 生效——零锚定仍走 no_semantic_match 拒绝,不被指标复活(语义优先边界)。
+    # 例外:中文问题(词元切分不到)在 dataset 零锚定时允许指标召回拉回锚点
+    # ——指标别名/定义经字符重叠命中(见 _score_metric CJK 分支),此时指标
+    # 本身就是"已声明语义"的证据,不是无关召回。无关问题仍零命中 → 拒绝。
     metric_hits: list[Any] = []
-    if matched and kb is not None and datasource:
+    if kb is not None and datasource and (
+        matched or _CJK_RE.search(state.question)
+    ):
         try:
             family = await kb.metric_family(
-                state.question, datasource, matched_tables=matched)
+                state.question, datasource, matched_tables=matched or None)
             metric_hits = family.get("metrics") or []
             expanded = family.get("tables") or []
             if expanded and set(expanded) != set(matched):

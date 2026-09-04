@@ -185,6 +185,24 @@ async def test_no_match_not_resurrected_by_metric(tmp_path):
     assert base["matched_tables"] == []
 
 
+async def test_cjk_zero_anchor_recalled_by_metric(tmp_path):
+    """中文问题零 dataset 锚定 → 指标经字符重叠召回锚回数据集。
+
+    「贷款平均金额是多少」词元切分不到 loan(dataset 描述"贷款"纯中文、
+    字段名全英文),但指标"平均贷款金额"的定义/别名经 CJK 字符 bigram
+    重叠被召回,沿 metric.datasets 把 loan 拉回锚定——不再 no_semantic_match,
+    也无需为每个年份新建指标。
+    """
+    kb = await _kb(tmp_path)
+    q = "贷款平均金额是多少"
+    state = _state(q)
+    term_hits = await kb.search_terms(q, "demo")
+    base = await _semantic_linking(
+        state, kb, None, _SemanticLayer(), term_hits, q, "demo")
+    assert "loan" in base["matched_tables"]
+    assert base.get("refusal") is None
+
+
 async def test_render_context_without_metric_hits_keeps_full_metrics():
     model = _SemanticLayer().model()
     ctx = _render_semantic_context(model, ["loan"], None, "loan", metric_hits=None)

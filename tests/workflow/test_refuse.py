@@ -173,6 +173,31 @@ class TestUncoveredRefusal:
         assert out["refusal"]["conflict"] is True
         assert not SemanticManager(kb).drafts("demo")["pending"]
 
+    async def test_refusal_same_expression_conflict_no_write(self, kb):
+        """表达式去重:草稿指标与既有指标同表达式签名(不同名)→ 冲突,不写库。
+
+        这是「不同年份都要重新建项」的根治点:loan_count_in_2020 与既有
+        loan_count_per_year 都是 COUNT(loan.loan_id),时间/枚举值应是过滤
+        条件而非指标本体——拒绝按值拆分入库。
+        """
+        from trove.services.semantic_layer.manage import SemanticManager
+        dedup_yaml = METRIC_DRAFT_YAML.replace(
+            "avg_loan_amount", "loan_count_in_2020").replace(
+            "AVG(loan.amount)", "COUNT(loan.loan_id)")
+        node = make_refuse(
+            ScriptedLLM([dedup_yaml]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "2020年发放了多少笔贷款?",
+                     "plan": {"aggregation": "COUNT(loan.loan_id)",
+                              "answer_columns": ["COUNT(loan.loan_id)"]}},
+        ))
+        assert out["refusal"]["conflict"] is True
+        assert not SemanticManager(kb).drafts("demo")["pending"]
+
     async def test_refusal_with_compile_miss_reason_in_message(self, kb):
         """refusal 带 compile_miss 分因 → 拒绝文案具体到缺失组件,reason 契约不变。"""
         node = make_refuse(

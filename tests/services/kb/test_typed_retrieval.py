@@ -114,6 +114,30 @@ async def test_metrics_unrelated_returns_empty(tmp_path):
     assert await kb.search_metrics("今天天气怎么样", "demo", limit=5) == []
 
 
+def test_score_metric_cjk_char_overlap_recalls():
+    """中文问题词元切分不到 → 指标定义经字符 bigram 桥接召回(CJK 分支)。
+
+    无年份硬编码指标时,「1994年发放了多少笔贷款」应锚到通用计数指标
+    (定义"每年发放的贷款笔数"字符重叠 ≥0.35),而不是按年份新建指标。
+    """
+    from trove.services.kb.service import _score_metric
+    q = "1994年发放了多少笔贷款"
+    p = {
+        "name": "loan_count_per_year",
+        "aliases": ["每年贷款次数"],
+        "definition": "每年发放的贷款笔数",
+        "expression": "COUNT(loan.loan_id)",
+        "datasets": ["loan"],
+    }
+    score = _score_metric(q, p)
+    assert score is not None and score > 0.0
+    # 无关中文问题(无任何业务词字符重叠)→ 仍不命中
+    unrelated = {"name": "loan_count_per_year", "aliases": ["每年贷款次数"],
+                 "definition": "每年发放的贷款笔数", "expression": "COUNT(loan.loan_id)",
+                 "datasets": ["loan"]}
+    assert _score_metric("今天天气怎么样", unrelated) is None
+
+
 async def test_metrics_table_filter_drops_unmatched(tmp_path):
     kb = _mk_kb(tmp_path)
     await kb.ensure_synced("demo")

@@ -698,17 +698,54 @@ def _inject_time_condition(
 
 
 def _plan_metric_time_dimension(plan: dict[str, Any] | None, model) -> str | None:
-    """plan 命中的首个 metric 声明的 agg_time_dimension(否则 None)。"""
+    """plan 命中的首个 metric 的时间维度锚点(agg_time_dimension 或数据集内唯一时间字段)。
+
+    优先 metric 显式声明的 ``agg_time_dimension``;未声明时回退到该 metric
+    锚定数据集(**非整个 matched 集**)内的唯一时间字段——多表匹配场景下
+    matched 常有多个时间字段,``resolve_time_field`` 因不唯一无法判定,
+    导致时间条件注入失败、覆盖内年份题漏过滤。聚合表达式候选(含 ``(``)
+    按聚合签名匹配 metric,不再跳过。
+    """
     if not plan or model is None:
         return None
     candidates = [str(plan.get("aggregation") or "").strip()]
     candidates += [str(ac).strip() for ac in (plan.get("answer_columns") or [])]
+    from trove.services.semantic_layer.compiler import (
+        _agg_signature,
+        _is_time_field,
+        _sig_compatible,
+    )
+
     for cand in candidates:
-        if not cand or "(" in cand:
-            continue  # 表达式候选跳过,只认裸度量名
+        if not cand:
+            continue
+        sig = _agg_signature(cand) if "(" in cand else None
         for m in model.metrics:
-            if m.name.strip().lower() == cand.lower() and m.agg_time_dimension:
+            name_match = (
+                "(" not in cand and m.name.strip().lower() == cand.lower()
+            )
+            m_sig = _agg_signature(m.expression) if sig is not None else None
+            sig_match = (
+                sig is not None
+                and m_sig is not None
+                and _sig_compatible(sig, m_sig)
+            )
+            if not (name_match or sig_match):
+                continue
+            if m.agg_time_dimension:
                 return m.agg_time_dimension
+            # 回退:metric 锚定数据集内唯一时间字段(优先于 matched 全局唯一)
+            if m.datasets:
+                ds_names = [str(d).lower() for d in m.datasets]
+                fields: list[tuple[str, Any]] = []
+                for d in model.datasets:
+                    if d.name.lower() not in ds_names:
+                        continue
+                    for f in d.fields:
+                        if _is_time_field(f):
+                            fields.append((d.name, f))
+                if len(fields) == 1:
+                    return f"{fields[0][0]}.{fields[0][1].name}"
     return None
 
 

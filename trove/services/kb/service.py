@@ -293,14 +293,24 @@ def _score_metric(question: str, payload: dict) -> float | None:
     name_hit = 1.0 if (
         name in question or _term_word_overlap(name, question) >= 0.5
     ) else 0.0
-    alias_hit = 1.0 if any(a and a in question for a in aliases) else 0.0
+    # CJK 问题:别名用字符 bigram 桥接(词元切分不到中文)。子串命中仍最强;
+    # 中文字符重叠 ≥0.4 视为同义——"1994年发放了多少笔贷款"↔"每年贷款次数"
+    # 这类措辞差异在词元层全灭,但字符重叠能锚到 loan 数据集。
+    cjk = bool(_CJK_RE.search(question))
+    alias_hit = 1.0 if any(
+        (a and a in question)
+        or (cjk and _char_overlap(a, question) >= 0.4)
+        for a in aliases
+    ) else 0.0
     def_overlap = max(
         _term_word_overlap(definition, question) if definition else 0.0,
         _char_overlap(definition, question) if definition else 0.0,
     )
     index_text = " ".join([name, *aliases, definition, str(payload.get("expression") or "")])
     sim = coverage_score(question, index_text)
-    if name_hit == 0.0 and alias_hit == 0.0 and def_overlap < 0.5 and sim < 0.45:
+    # CJK 问题放宽定义重叠门(0.35):中文指标定义常被词元切分漏掉,字符重叠是主通道
+    def_gate = 0.35 if cjk else 0.5
+    if name_hit == 0.0 and alias_hit == 0.0 and def_overlap < def_gate and sim < 0.45:
         return None
     return 3.0 * name_hit + 2.0 * alias_hit + 1.5 * def_overlap + sim
 

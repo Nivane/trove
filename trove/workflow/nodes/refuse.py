@@ -122,6 +122,24 @@ def _detect_conflict(model, draft: dict[str, Any]) -> str:
         if refs and any(d not in declared_datasets for d in refs):
             bad = [d for d in refs if d not in declared_datasets]
             return f"引用了未声明的数据集 {bad}"
+        # 表达式去重:草稿指标与已有指标聚合签名兼容(如 COUNT(loan.loan_id)
+        # 与既有 loan_count 系列)→ 视为重复定义。年份/枚举值应是过滤条件,
+        # 不是指标本体——拒绝把「loan_count_in_2020」这类按值拆分的指标入库。
+        if model is not None:
+            from trove.services.semantic_layer.compiler import (
+                _agg_signature,
+                _sig_compatible,
+            )
+            draft_sig = _agg_signature(expr)
+            if draft_sig is not None:
+                for m in model.metrics:
+                    m_sig = _agg_signature(m.expression)
+                    if m_sig is not None and _sig_compatible(draft_sig, m_sig):
+                        return (
+                            f"已有同表达式指标「{m.name}」"
+                            f"({m.expression})——时间/枚举等过滤值应是查询条件,"
+                            "请勿按值新建指标"
+                        )
         return ""
     if kind == "field":
         name = str(draft.get("name") or "").strip()

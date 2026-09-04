@@ -43,10 +43,40 @@ def test_plan_metric_time_dimension_prefers_declared():
     model = _model_with_two_time_fields()
     plan = {"aggregation": "loan_count", "answer_columns": ["loan_count"]}
     assert _plan_metric_time_dimension(plan, model) == "loan.date"
-    # 表达式候选(带括号)不认;无 metric 命中 → None
+    # 表达式候选(带括号)按聚合签名匹配到 metric → 同样能定位时间锚点
     assert _plan_metric_time_dimension(
-        {"aggregation": "count(loan.loan_id)"}, model) is None
+        {"aggregation": "count(loan.loan_id)"}, model) == "loan.date"
+    # 未命中任何 metric → None
     assert _plan_metric_time_dimension({"aggregation": "nope"}, model) is None
+
+
+def test_plan_metric_time_dimension_falls_back_to_dataset_unique_time():
+    """metric 未声明 agg_time_dimension 时,回退到其锚定数据集内的唯一
+    时间字段(而不是要求 matched 全局唯一)——多表匹配也能注入。"""
+    model = SemanticModel(
+        name="fin",
+        datasets=[
+            SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                _field("loan_id"), _field("date", "Date"),
+            ]),
+            SemanticDataset(name="account", primary_key=["account_id"], fields=[
+                _field("account_id"), _field("date", "Date"),
+            ]),
+        ],
+        metrics=[
+            SemanticMetric("loan_count_per_year", "COUNT(loan.loan_id)",
+                           datasets=["loan"]),
+        ],
+    )
+    # 多表 matched(loan.date + account.date 两个时间字段)也能锚定 loan.date
+    plan = {"aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"]}
+    assert _plan_metric_time_dimension(plan, model) == "loan.date"
+    fixed = _inject_time_condition(
+        dict(plan), "2025-01-01 ~ 2025-01-15", model,
+        ["loan", "account"])
+    assert fixed is not None
+    assert fixed["conditions"][0]["field"] == "loan.date"
 
 
 def test_inject_time_condition_uses_agg_time_dimension_with_multiple_time_fields():
