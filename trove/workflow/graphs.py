@@ -1406,6 +1406,19 @@ def _route_after_confirm_draft(state: WorkflowState) -> Literal["parse_date", "o
     return "parse_date"
 
 
+def _route_after_refuse(state: WorkflowState) -> Literal["parse_date", "output"]:
+    """refuse 分流:A 档自动确认成功 → 回 parse_date 重答;否则输出引导。
+
+    refuse 自动确认时设置 auto_confirmed=True + question 替换(本问重跑);
+    普通拒绝/冲突/无 draft 保持 clarification_question → 走 output 终止。
+    """
+    if state.error or state.auto_confirm_rounds <= 0:
+        return "output"
+    if state.auto_confirmed:
+        return "parse_date"
+    return "output"
+
+
 def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     """Shared wiring: START → route_intent → query pipeline or answer nodes."""
     g.add_node("route_intent", make_route_intent(
@@ -1586,8 +1599,12 @@ def _build_reflection(
     ))
     if clarify:
         g.add_node("clarify", make_clarify())
-        g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
-        g.add_edge("refuse", "output")
+        g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
+        g.add_conditional_edges(
+            "refuse",
+            _route_after_refuse,
+            {"parse_date": "parse_date", "output": "output"},
+        )
         g.add_conditional_edges(
             "schema_linking",
             _route_semantic_gate_after_linking,
@@ -1624,8 +1641,12 @@ def _build_reflection(
     else:
         if query_sketch:
             g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
-            g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
-            g.add_edge("refuse", "output")
+            g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
+            g.add_conditional_edges(
+                "refuse",
+                _route_after_refuse,
+                {"parse_date": "parse_date", "output": "output"},
+            )
             g.add_conditional_edges(
                 "schema_linking",
                 _route_semantic_gate_after_linking_fast_match,
@@ -1642,8 +1663,12 @@ def _build_reflection(
                 {"refuse": "refuse", "gen_sql": "gen_sql"},
             )
         else:
-            g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
-            g.add_edge("refuse", "output")
+            g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
+            g.add_conditional_edges(
+                "refuse",
+                _route_after_refuse,
+                {"parse_date": "parse_date", "output": "output"},
+            )
             g.add_conditional_edges(
                 "schema_linking",
                 _route_semantic_gate_after_linking_fast_match,
@@ -1731,8 +1756,12 @@ def _build_fixed(
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
-    g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer))
-    g.add_edge("refuse", "output")
+    g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
+    g.add_conditional_edges(
+        "refuse",
+        _route_after_refuse,
+        {"parse_date": "parse_date", "output": "output"},
+    )
     if clarify:
         g.add_node("clarify", make_clarify())
         g.add_conditional_edges(

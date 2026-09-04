@@ -297,6 +297,175 @@ draft:
         assert pending[0]["payload"]["expression"] == "region"
 
 
+class TestAutoConfirmPhysicalColumn:
+    """A 档自动确认:字段草稿命中物理表真实列 → 直接入库,无需人工确认。"""
+
+    def _students_model(self) -> SemanticModel:
+        """students 数据集(对应 sqlite_registry 物理表),缺 county 字段。"""
+        f = lambda name: SemanticField(name=name, expression=name)  # noqa: E731
+        return SemanticModel(
+            name="school",
+            datasets=[
+                SemanticDataset(name="students", source="students", fields=[
+                    f("id"), f("name"), f("grade")]),
+            ],
+            metrics=[],
+        )
+
+    def _seed_students_semantics(self, kb) -> None:
+        """KB semantics.yml 预置 students 数据集(auto_apply_field 依赖已声明数据集)。"""
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        (kb.kb_dir / "test_db").mkdir(parents=True, exist_ok=True)
+        (kb.semantics_path("test_db")).write_text(
+            "semantic_model:\n"
+            "- name: school\n"
+            "  datasets:\n"
+            "  - name: students\n"
+            "    source: students\n"
+            "    primary_key: [id]\n"
+            "    fields:\n"
+            "    - name: id\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}\n"
+            "    - name: name\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}\n"
+            "    - name: grade\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}\n",
+            encoding="utf-8",
+        )
+
+    FIELD_DRAFT = """\
+draft:
+  kind: field
+  name: students.county
+  expression: county
+  synonyms: [county, 县]
+  definition: student county
+  datatype: String
+"""
+
+    async def test_field_matching_physical_column_auto_confirmed(self, kb, sqlite_registry):
+        """字段命中物理列 → auto_apply_field 直接入库,无 pending,state 置重答信号。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        self._seed_students_semantics(kb)
+        node = make_refuse(
+            ScriptedLLM([self.FIELD_DRAFT]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(self._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "counties of students?",
+                     "plan": {"tables": ["students"], "answer_columns": ["students.county"]}},
+        ))
+        # 自动确认:无 pending 草稿,已 applied 入库
+        manager = SemanticManager(kb)
+        assert out["auto_confirmed"] is True
+        assert not manager.drafts("test_db")["pending"]
+        model = manager.model("test_db", dialect="sqlite")
+        ds = next(d for d in model.datasets if d.name == "students")
+        assert any(f.name == "county" for f in ds.fields)
+        # 重答信号:替换问题 + intent=query + 清 refusal
+        assert out["intent"] == "query"
+        assert out["question"] == "counties of students?"
+        assert out["refusal"] is None
+        assert out["intent_evidence"]["auto_confirm"] is True
+
+    async def test_field_not_in_physical_schema_stays_pending(self, kb, sqlite_registry):
+        """字段不在物理表 → 退回 pending 草稿(人工确认)。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        ghost = self.FIELD_DRAFT.replace("county", "ghost_column")
+        node = make_refuse(
+            ScriptedLLM([ghost]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(self._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "q", "plan": {}},
+        ))
+        assert out["auto_confirmed"] is False
+        pending = SemanticManager(kb).drafts("test_db")["pending"]
+        assert len(pending) == 1
+        assert pending[0]["name"] == "students.ghost_column"
+
+    async def test_mechanical_metric_auto_confirmed(self, kb, sqlite_registry):
+        """B 档:机械聚合指标(COUNT/SUM/AVG 值无关)→ 编译+真实执行验证后自动确认。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        self._seed_students_semantics(kb)
+        metric_yaml = """\
+draft:
+  kind: metric
+  name: avg_grade
+  expression: AVG(students.grade)
+  synonyms: [平均成绩, average grade]
+  definition: students average grade
+  datasets: [students]
+"""
+        node = make_refuse(
+            ScriptedLLM([metric_yaml]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(self._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "average grade?",
+                     "plan": {"aggregation": "AVG(students.grade)",
+                              "answer_columns": ["AVG(students.grade)"]}},
+        ))
+        manager = SemanticManager(kb)
+        assert out["auto_confirmed"] is True
+        assert not manager.drafts("test_db")["pending"]
+        model = manager.model("test_db", dialect="sqlite")
+        assert any(m.name == "avg_grade" for m in model.metrics)
+        assert out["intent_evidence"]["auto_confirm"] is True
+
+    async def test_non_mechanical_metric_stays_pending(self, kb, sqlite_registry):
+        """非机械聚合(值被写死进指标)→ 退回 pending 走人工。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        value_baked = """\
+draft:
+  kind: metric
+  name: female_client_count
+  expression: COUNT(CASE WHEN students.name = 'Alice' THEN 1 END)
+  synonyms: [alice count]
+  definition: count of Alice students
+  datasets: [students]
+"""
+        node = make_refuse(
+            ScriptedLLM([value_baked]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(self._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "q", "plan": {}},
+        ))
+        assert out["auto_confirmed"] is False
+        pending = SemanticManager(kb).drafts("test_db")["pending"]
+        assert len(pending) == 1
+        assert pending[0]["kind"] == "metric"
+
+    async def test_no_connectors_falls_back_to_pending(self, kb):
+        """无 connectors(物理 schema 不可达)→ 保守退回 pending,不自动确认。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        node = make_refuse(
+            ScriptedLLM([self.FIELD_DRAFT]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(self._students_model()),
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "q", "plan": {}},
+        ))
+        assert out["auto_confirmed"] is False
+        pending = SemanticManager(kb).drafts("test_db")["pending"]
+        assert len(pending) == 1
+
+
 class TestChatConfirmDraft:
     """对话内草稿确认(管理员):refuse 草稿 → confirm_draft 节点 → 替换上一问。"""
 

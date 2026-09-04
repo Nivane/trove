@@ -209,6 +209,11 @@ class WorkflowState(BaseModel):
     # 置位后图路由到 refuse 节点,终止本轮(不执行),产出反问文案。
     refusal: dict[str, Any] | None = None
 
+    # A 档自动确认:refuse 将「物理列字段」草稿直接入库(列经 catalog 验证)
+    # 后置位 → 图路由回 parse_date 重答。auto_confirm_rounds 防同问反复自确认。
+    auto_confirmed: bool = False
+    auto_confirm_rounds: int = 0
+
     # 语义优先(Phase A):数据源未初始化语义模型(决策 2/3)→ 整体拒绝,提示 /kb init。
     no_model: bool = False
 

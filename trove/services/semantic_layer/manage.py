@@ -492,6 +492,55 @@ class SemanticManager:
         await self._kb.force_sync(datasource)
         return dict(draft)
 
+    async def auto_apply(
+        self, datasource: str, kind: str, name: str,
+        payload: dict[str, Any] | None = None, note: str = "refuse-auto-confirm",
+    ) -> dict[str, Any]:
+        """A/B 档:机械声明(物理列字段 / 机械聚合指标)直接应用,跳过 pending。
+
+        refuse 节点对通过确定性验证门(物理列存在 / 聚合可编译+真实执行
+        shape 过)的 metric/field 草稿直接入库——无需人工确认。复用
+        _apply_draft 的全部校验(表达式解析/数据集存在),并在
+        semantic_drafts.yml 留 status=applied 的审计记录(可回滚可追溯)。
+        """
+        self._check_datasource(datasource)
+        if kind not in _KINDS:
+            raise ValueError(f"kind 必须为 {sorted(_KINDS)} 之一")
+        semantics = self._semantics_path(datasource)
+        data = _load_yaml(semantics) if semantics.exists() else {}
+        entry: dict[str, Any] = {
+            "id": uuid.uuid4().hex[:12],
+            "kind": kind,
+            "action": "upsert",
+            "name": name,
+            "payload": payload or None,
+            "note": note or "",
+            "status": "applied",
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        try:
+            _apply_draft(data, entry, None)
+        except ValueError as e:
+            raise ValueError(f"{kind} 自动确认失败: {e}") from e
+        if "version" not in data and "semantic_model" in data:
+            data["version"] = "0.2.0.dev0"
+        _dump_yaml(semantics, data)
+        path = self._drafts_path(datasource)
+        drafts_data = _load_yaml(path)
+        drafts = list(drafts_data.get("drafts", [])) if isinstance(drafts_data, dict) else []
+        drafts.append(entry)
+        _dump_yaml(path, {"drafts": drafts})
+        await self._kb.force_sync(datasource)
+        return dict(entry)
+
+    async def auto_apply_field(
+        self, datasource: str, name: str, payload: dict[str, Any] | None = None,
+        note: str = "refuse-auto-confirm",
+    ) -> dict[str, Any]:
+        """A 档便捷入口:字段直接应用(auto_apply 的 field 特化)。"""
+        return await self.auto_apply(
+            datasource, "field", name, payload=payload, note=note)
+
     async def reject_draft(self, datasource: str, draft_id: str) -> dict[str, Any]:
         """驳回:仅标记 rejected,不改 semantics.yml。"""
         self._check_datasource(datasource)
