@@ -133,6 +133,28 @@ class TestUncoveredRefusal:
         assert len(pending) == 1
         assert pending[0]["payload"]["expression"] == "AVG(loan.amount)"
 
+    async def test_refusal_admin_hint(self, kb):
+        """管理员会话 → 拒绝文案追加"直接回复确认"提示。"""
+        node = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo", is_admin=True,
+            refusal={"reason": "uncovered", "question": "平均贷款金额是多少?",
+                     "plan": {"aggregation": "AVG(loan.amount)",
+                              "answer_columns": ["AVG(loan.amount)"]}},
+        ))
+        assert "直接回复" in out["clarification_question"]
+        non_admin = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "平均贷款金额是多少?",
+                     "plan": {"aggregation": "AVG(loan.amount)",
+                              "answer_columns": ["AVG(loan.amount)"]}},
+        ))
+        assert "直接回复" not in non_admin["clarification_question"]
+
     async def test_refusal_same_name_conflict_no_write(self, kb):
         """与现有模型同名 → 冲突,不写库,文案提示人工补充。"""
         from trove.services.semantic_layer.manage import SemanticManager
@@ -248,6 +270,121 @@ draft:
         assert len(pending) == 1
         assert pending[0]["kind"] == "field"
         assert pending[0]["payload"]["expression"] == "region"
+
+
+class TestChatConfirmDraft:
+    """对话内草稿确认(管理员):refuse 草稿 → confirm_draft 节点 → 替换上一问。"""
+
+    async def _seed_pending_draft(self, kb, question="平均贷款金额是多少?"):
+        """用 refuse 节点产出一个 pending metric 草稿。"""
+        from trove.workflow.nodes.refuse import make_refuse
+
+        node = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": question,
+                     "plan": {"aggregation": "AVG(loan.amount)",
+                              "answer_columns": ["AVG(loan.amount)"]}},
+        ))
+        return out["refusal"]["draft_entry"]
+
+    async def test_non_admin_gets_guidance(self, kb):
+        """非管理员 → 引导文案,不改动草稿。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        from trove.workflow.nodes.confirm_draft import make_confirm_draft
+
+        await self._seed_pending_draft(kb)
+        node = make_confirm_draft(kb=kb)
+        out = await node(make_state(datasource="demo", history="user: 平均贷款金额是多少?\nassistant: ..."))
+        assert "管理员" in out["intent_answer"]
+        assert SemanticManager(kb).drafts("demo")["pending"]
+
+    async def test_no_pending_draft_guidance(self, kb):
+        """没有待确认草稿 → 引导文案。"""
+        from trove.workflow.nodes.confirm_draft import make_confirm_draft
+
+        node = make_confirm_draft(kb=kb)
+        out = await node(make_state(
+            datasource="demo", is_admin=True,
+            history="user: 平均贷款金额是多少?\nassistant: ...",
+        ))
+        assert "没有待确认" in out["intent_answer"]
+
+    async def test_admin_confirm_substitutes_previous_question(self, kb):
+        """管理员确认 → 草稿 applied → 替换上一问 + intent=query 重跑管线。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+        from trove.workflow.nodes.confirm_draft import make_confirm_draft
+
+        await self._seed_pending_draft(kb)
+        node = make_confirm_draft(kb=kb)
+        out = await node(make_state(
+            datasource="demo", is_admin=True,
+            history="user: 平均贷款金额是多少?\nassistant: 需要确认草稿",
+            question="确认",
+        ))
+        assert out["question"] == "平均贷款金额是多少?"
+        assert out["intent"] == "query"
+        assert out["intent_evidence"]["confirm_draft"] is True
+        pending = SemanticManager(kb).drafts("demo")["pending"]
+        assert pending == []  # applied
+        model = SemanticManager(kb).model("demo", dialect="sqlite")
+        assert any(m.name == "avg_loan_amount" for m in model.metrics)
+
+    async def test_graph_routes_confirm_to_confirm_draft(self, tmp_path, sqlite_registry, catalog):
+        """图路由:confirm 意图 → confirm_draft 节点(非管理员 → 引导,不跑管线)。"""
+        from trove.services.kb.service import KbService
+        from trove.workflow.graphs import build_graphs
+        from trove.workflow.nodes.confirm_draft import make_confirm_draft
+        from trove.workflow.state import WorkflowState
+
+        kb = KbService(tmp_path / "proj")
+        provider = await self._provider_light(tmp_path, kb)
+        graphs = build_graphs(
+            self._services_light(provider),
+            multi_candidate=False, query_sketch=False, agentic=False,
+        )
+        llm = ExhaustingLLM(["confirm"])  # intent 分类返回 confirm
+        from trove.workflow.graphs import GraphServices
+        from trove.core.config import AgentConfig
+
+        services = GraphServices(
+            llm=llm, catalog=catalog, connectors=sqlite_registry,
+            config=AgentConfig(target="mock/model", semantic_first=True, language="zh"),
+            kb=kb, semantic_layer=provider,
+        )
+        graphs2 = build_graphs(
+            services, multi_candidate=False, query_sketch=False, agentic=False,
+        )
+        final = await graphs2["reflection"].ainvoke(WorkflowState(
+            session_id="s1", question="确认", lang="zh", datasource="demo",
+            is_admin=False,
+            history="user: 平均贷款金额是多少?\nassistant: 请确认草稿",
+        ))
+        assert "管理员" in (final["intent_answer"] or final["final_response"])
+        assert final["sql"] == ""
+
+    async def _provider_light(self, tmp_path, kb):
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
+        (kb.semantics_path("demo")).write_text(_SCHOOL_SEMANTICS, encoding="utf-8")
+        return SemanticLayerProvider(
+            tmp_path / "semantic", "demo",
+            kb_semantics_path=kb.semantics_path("demo"),
+            table_exists=lambda t: True, dialect="sqlite",
+        )
+
+    def _services_light(self, provider):
+        from trove.core.config import AgentConfig
+        from trove.workflow.graphs import GraphServices
+        return GraphServices(
+            llm=ExhaustingLLM([]), config=AgentConfig(target="mock/model"),
+            semantic_layer=provider,
+        )
 
 
 class TestRefuseConfirmReanswerLoop:
@@ -448,3 +585,19 @@ draft:
             WorkflowState(session_id="s1", question="q")) == "fast_match"
         assert _route_semantic_gate_after_linking_gen_sql(
             WorkflowState(session_id="s1", question="q")) == "gen_sql"
+
+    async def test_route_after_confirm_draft(self):
+        """confirm_draft 分流:确认成功(替换上一问)→ 继续管线;引导 → output。"""
+        from trove.workflow.graphs import _route_after_confirm_draft
+        from trove.workflow.state import WorkflowState
+
+        continue_run = WorkflowState(
+            session_id="s1", question="上一问", intent="query")
+        assert _route_after_confirm_draft(continue_run) == "parse_date"
+
+        guidance = WorkflowState(
+            session_id="s1", question="确认", intent_answer="仅管理员可操作")
+        assert _route_after_confirm_draft(guidance) == "output"
+
+        error = WorkflowState(session_id="s1", question="确认", error="boom")
+        assert _route_after_confirm_draft(error) == "output"

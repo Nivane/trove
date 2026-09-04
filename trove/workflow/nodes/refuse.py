@@ -261,6 +261,13 @@ def make_refuse(
         else:
             shown = draft if draft is not None else None
             message = _uncovered_message(state.lang, reason_detail, shown)
+        # 管理员在对话中即可确认(无需离开会话);非管理员提示走管理端
+        if state.is_admin and draft is not None and not conflict:
+            message += L(
+                state.lang,
+                "\n（管理员：直接回复「确认」即可在对话中采纳该草稿并立即重答。）",
+                "\n(Admins: reply \"confirm\" to approve this draft and get the answer immediately.)",
+            )
         return {
             "clarification_question": message,
             "refusal": {

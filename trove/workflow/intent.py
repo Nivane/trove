@@ -38,6 +38,7 @@ class Intent(str, Enum):
     WRITE = "write"
     CHITCHAT = "chitchat"
     CORRECTION = "correction"
+    CONFIRM = "confirm"
 
 
 # ── 既有信号:metadata 强/弱(原样保留)──────────────────────────
@@ -177,6 +178,28 @@ def has_strong_correction(question: str) -> bool:
     return not _CORRECTION_SUBSTANCE.search(question)
 
 
+# ── 草稿确认:管理员在对话中采纳语义扩展(走 refuse 的 pending draft)──────
+
+_CONFIRM_RE = re.compile(
+    r"^(?:"
+    r"确认(?:草稿|这个草稿|这个|吧|一下)?"
+    r"|同意|批准|认可|采纳"
+    r"|approve(?: it)?|confirm(?: the draft| it)?|yes|ok"
+    r")\s*[。．.!！?？]?\s*$",
+    re.I,
+)
+
+
+def has_strong_confirm(question: str) -> bool:
+    """草稿确认强信号:整句即确认语(高精度,宁漏勿误)。
+
+    只接受独立成句的确认(确认/同意/批准/approve…),避免把"确认贷款金额"
+    "通过率"等数据问题误判为确认操作。具体权限/草稿存在性在 confirm_draft
+    节点内二次校验。
+    """
+    return bool(_CONFIRM_RE.match((question or "").strip()))
+
+
 def has_followup_signal(question: str, history: str) -> bool:
     """省略式追问信号:短问题 + 指代词(或 呢/吗 结尾)+ 有历史。"""
     q = (question or "").strip()
@@ -208,6 +231,8 @@ def classify_intent(question: str) -> Intent | None:
     """
     if has_strong_write(question):
         return Intent.WRITE
+    if has_strong_confirm(question):
+        return Intent.CONFIRM
     for pattern in _STRONG_COMPILED:
         if pattern.search(question):
             return Intent.METADATA
@@ -242,6 +267,7 @@ def verify_intent(
     *,
     strong_match: bool = False,
     write_signal: bool = False,
+    confirm_signal: bool = False,
     chitchat_signal: bool = False,
     correction_signal: bool = False,
     followup_signal: bool = False,
@@ -253,13 +279,16 @@ def verify_intent(
 ) -> Intent:
     """Deterministic verification of the LLM's intent verdict.
 
-    Priority: write (safety) > elliptical follow-up > pure feedback >
-    metadata evidence > LLM write/correction trust > permissive QUERY.
+    Priority: write (safety) > draft confirm > elliptical follow-up >
+    pure feedback > metadata evidence > LLM write/correction trust >
+    permissive QUERY.
 
     Args:
         llm_intent: The LLM's five-way classification.
         strong_match: A strong metadata regex fired on the question.
         write_signal: A mutation verb + data object is present.
+        confirm_signal: A draft-confirmation phrase fired on the question
+            (admin chat-confirm flow, see has_strong_confirm).
         chitchat_signal: Pure chitchat template hit, no data words.
         correction_signal: Pure-feedback phrase hit, no substance.
         followup_signal: Short elliptical question with referential
@@ -277,6 +306,10 @@ def verify_intent(
     # 安全第一:写意图正则命中 → 无条件拒绝(即使 LLM 判 query)
     if write_signal:
         return Intent.WRITE
+    # 草稿确认:高精度确认词 + 有历史上下文 → 路由到对话内确认节点
+    # (节点内部再做管理员权限 + 草稿存在性二次校验)
+    if confirm_signal and history_present:
+        return Intent.CONFIRM
     # 省略式追问(指代词/短问尾 + 历史)→ 需补全后继续
     if followup_signal and history_present:
         return Intent.CORRECTION

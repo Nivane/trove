@@ -46,6 +46,7 @@ from trove.workflow.state import GenSQLState, WorkflowState
 
 from trove.workflow.nodes.schema_linking import make_schema_linking
 from trove.workflow.nodes.refuse import make_refuse
+from trove.workflow.nodes.confirm_draft import make_confirm_draft
 from trove.workflow.nodes.parse_date import make_parse_date
 from trove.workflow.nodes.clarify import make_clarify
 from trove.workflow.nodes.query_sketch import make_query_sketch
@@ -90,6 +91,7 @@ from trove.workflow.intent import (
     classify_intent,
     has_followup_signal,
     has_strong_chitchat,
+    has_strong_confirm,
     has_strong_correction,
     has_strong_write,
     has_weak_signal,
@@ -1178,6 +1180,7 @@ def make_route_intent(
         write_sig = has_strong_write(question)
         chit_sig = has_strong_chitchat(question)
         corr_sig = has_strong_correction(question)
+        confirm_sig = has_strong_confirm(question)
         followup = has_followup_signal(question, state.history)
         weak_sig = has_weak_signal(question)
 
@@ -1246,6 +1249,7 @@ def make_route_intent(
                 # 返回 write/chitchat/correction,不能拿"任意强意图"充数
                 strong_match=strong == Intent.METADATA,
                 write_signal=write_sig,
+                confirm_signal=confirm_sig,
                 chitchat_signal=chit_sig,
                 correction_signal=corr_sig,
                 followup_signal=followup,
@@ -1267,6 +1271,7 @@ def make_route_intent(
             "write_signal": write_sig,
             "chitchat_signal": chit_sig,
             "correction_signal": corr_sig,
+            "confirm_signal": confirm_sig,
             "followup_signal": followup,
             "history_present": bool(state.history),
             "weak_signal": weak_sig,
@@ -1390,6 +1395,17 @@ def _route_after_intent(state: WorkflowState) -> str:
     return state.intent
 
 
+def _route_after_confirm_draft(state: WorkflowState) -> Literal["parse_date", "output"]:
+    """confirm_draft 分流:已确认并替换上一问 → 继续 query 管线;否则输出引导。
+
+    confirm_draft 成功后设置 intent="query" + question=上一问;失败/无权限
+    设置 intent_answer → 走 output 终止本轮。
+    """
+    if state.error or state.intent_answer:
+        return "output"
+    return "parse_date"
+
+
 def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     """Shared wiring: START → route_intent → query pipeline or answer nodes."""
     g.add_node("route_intent", make_route_intent(
@@ -1410,6 +1426,10 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     g.add_node("answer_reject", answer_reject)
     g.add_node("answer_chitchat", answer_chitchat)
     g.add_node("answer_correction", answer_correction)
+    # 对话内草稿确认(管理员):确认后替换上一问继续 query 管线,或输出引导
+    g.add_node("confirm_draft", make_confirm_draft(
+        kb=services.kb, connectors=services.connectors,
+    ))
     g.add_edge(START, "route_intent")
     g.add_conditional_edges(
         "route_intent",
@@ -1420,11 +1440,17 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
             "write": "answer_reject",
             "chitchat": "answer_chitchat",
             "correction": "answer_correction",
+            "confirm": "confirm_draft",
         },
     )
     g.add_edge("answer_reject", "output")
     g.add_edge("answer_chitchat", "output")
     g.add_edge("answer_correction", "output")
+    g.add_conditional_edges(
+        "confirm_draft",
+        _route_after_confirm_draft,
+        {"parse_date": "parse_date", "output": "output"},
+    )
     g.add_edge("parse_date", "schema_linking")
     g.add_edge("answer_metadata", "metadata_check")
     g.add_conditional_edges(

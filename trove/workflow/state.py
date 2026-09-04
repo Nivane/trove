@@ -71,6 +71,9 @@ class WorkflowState(BaseModel):
     # 工具需要 analyst/admin)。None/空 = 未启用角色过滤(全部工具可见)。
     tool_roles: list[str] | None = None
 
+    # 管理员会话位(由 SessionManager 注入):gate 对话内草稿确认等管理动作。
+    is_admin: bool = False
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 

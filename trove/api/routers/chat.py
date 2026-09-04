@@ -182,7 +182,10 @@ async def chat(
 
     async def events():
         yield {"type": "session", "data": {"session_id": session.session_id}}
-        async for event in manager.ask_stream(session, body.question, body.workflow, datasource=ds):
+        async for event in manager.ask_stream(
+            session, body.question, body.workflow, datasource=ds,
+            is_admin=user["role"] == "admin",
+        ):
             payload = {k: v for k, v in event.items() if k != "type"}
             yield {"type": event["type"], "data": payload}
 

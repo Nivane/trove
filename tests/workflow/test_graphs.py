@@ -2001,6 +2001,7 @@ class TestRouteIntentObservability:
             "write_signal": False,
             "chitchat_signal": False,
             "correction_signal": False,
+            "confirm_signal": False,
             "followup_signal": False,
             "history_present": False,
             "weak_signal": True,

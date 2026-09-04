@@ -326,6 +326,7 @@ class SessionManager:
         question: str,
         workflow_name: str = DEFAULT_WORKFLOW,
         datasource: str | None = None,
+        is_admin: bool = False,
     ) -> WorkflowState:
         """Process a natural language question through a compiled graph.
 
@@ -335,6 +336,8 @@ class SessionManager:
             workflow_name: Which graph to run ("reflection", "fixed", "empty").
             datasource: Datasource name for this request; empty/None keeps
                 the current default-datasource behavior.
+            is_admin: Whether the caller is an admin (enables chat-side
+                draft confirmation etc.).
 
         Returns:
             The final WorkflowState (final_response, sql, row_count, verdict, ...).
@@ -365,6 +368,7 @@ class SessionManager:
             datasource=datasource or "",
             user_id=session.user_id,
             tool_roles=self._user_tool_roles(session.user_id),
+            is_admin=is_admin,
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -622,6 +626,7 @@ class SessionManager:
         question: str,
         workflow_name: str = DEFAULT_WORKFLOW,
         datasource: str | None = None,
+        is_admin: bool = False,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream a query response as graph events.
 
@@ -673,6 +678,7 @@ class SessionManager:
             datasource=datasource or "",
             user_id=session.user_id,
             tool_roles=self._user_tool_roles(session.user_id),
+            is_admin=is_admin,
         )
         self._begin_trace(state)
         self._trace_run_start(state)

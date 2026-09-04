@@ -6,6 +6,7 @@ from trove.workflow.intent import (
     classify_intent,
     has_followup_signal,
     has_strong_chitchat,
+    has_strong_confirm,
     has_strong_correction,
     has_strong_write,
     has_weak_signal,
@@ -237,3 +238,32 @@ class TestVerifyIntent:
         """LLM 判 correction(正则未命中)→ 有历史则信任(重跑上一问)。"""
         assert verify_intent(Intent.CORRECTION, history_present=True) == Intent.CORRECTION
         assert verify_intent(Intent.CORRECTION, history_present=False) == Intent.QUERY
+
+
+class TestConfirmSignals:
+    """对话内草稿确认(管理员采纳语义扩展)意图检测。"""
+
+    def test_strong_confirm_phrases(self):
+        for q in ["确认", "确认吧", "确认一下", "确认草稿", "同意", "批准",
+                  "approve", "confirm", "approve it", "yes"]:
+            assert has_strong_confirm(q) is True, q
+
+    def test_confirm_with_data_substance_is_query(self):
+        """带数据实质/长尾的"确认"不是草稿确认——可能是普通数据问题。"""
+        for q in ["确认一下贷款金额", "确认下最高的地区", "确认这个口径",
+                  "确认今年所有贷款", "各地区的通过率"]:
+            assert has_strong_confirm(q) is False, q
+
+    def test_non_confirm_not_detected(self):
+        for q in ["哪个地区平均贷款最高", "谢谢", "那北京呢", "通过", ""]:
+            assert has_strong_confirm(q) is False, q
+
+    def test_classify_routes_confirm(self):
+        assert classify_intent("确认") == Intent.CONFIRM
+        assert classify_intent("approve") == Intent.CONFIRM
+        assert classify_intent("确认一下贷款金额") is None
+
+    def test_verify_confirm_requires_history(self):
+        """确认意图必须有历史(确认的是上一问的草稿)。"""
+        assert verify_intent(Intent.QUERY, confirm_signal=True, history_present=True) == Intent.CONFIRM
+        assert verify_intent(Intent.QUERY, confirm_signal=True, history_present=False) == Intent.QUERY
