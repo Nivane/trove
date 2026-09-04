@@ -1,0 +1,12 @@
+User question: {{ question }}
+{% if time_context %}
+Resolved time range: {{ time_context }}
+{% endif %}
+Generated SQL:
+{{ sql }}
+Result columns: {{ columns }}
+Total rows returned: {{ total_rows }}
+Rows:
+{{ rows }}
+
+Call the plot_chart tool to decide whether a chart is warranted and its spec.

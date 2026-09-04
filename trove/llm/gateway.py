@@ -190,12 +190,18 @@ class LLMGateway:
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any | None = None,
         temperature: float = 0.0,
         max_tokens: int = 16000,
         metadata: dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Chat with tool-calling support; returns the full message.
+
+        Args:
+            tool_choice: Optional forced tool-selection hint (e.g.
+                {"type": "function", "function": {"name": "plot_chart"}});
+                None keeps the default "auto" behavior.
 
         Returns:
             {"content": str, "tool_calls": [{"id", "name", "arguments"}]}
@@ -221,7 +227,7 @@ class LLMGateway:
             }
             if tools:
                 kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+                kwargs["tool_choice"] = tool_choice or "auto"
             if response_format:
                 kwargs["response_format"] = response_format
             if metadata:

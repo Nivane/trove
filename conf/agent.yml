@@ -30,6 +30,9 @@ agent:
   insights: true
   # 执行后 LLM 用一句话生成结论摘要,置于回答开头(结论前置)
   conclusion: true
+  # 图表 LLM 判定:让 LLM 决定是否画图 + 图表类型 + 维度/度量列(单次
+  # plot_chart 工具调用,失败回退确定性推断)。false = 纯启发式(infer_chart)。
+  chart_llm: true
   # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
   # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
   # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。

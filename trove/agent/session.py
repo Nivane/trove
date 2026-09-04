@@ -989,6 +989,8 @@ class SessionManager:
             detail["semantics"] = delta.get("semantics", "")
         elif node_name == "insights":
             detail["insights"] = delta.get("insights", [])
+        elif node_name == "chart":
+            detail["chart"] = delta.get("chart")
         elif node_name == "conclusion":
             detail["conclusion"] = delta.get("conclusion", "")
         elif node_name == "hitl":

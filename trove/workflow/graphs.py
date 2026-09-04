@@ -1573,7 +1573,7 @@ def _build_reflection(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
-    g.add_node("chart", make_chart(semantic_layer=services.semantic_layer))
+    g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
     g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 
@@ -1726,7 +1726,7 @@ def _build_fixed(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
-    g.add_node("chart", make_chart(semantic_layer=services.semantic_layer))
+    g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
     g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
 

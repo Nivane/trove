@@ -101,6 +101,7 @@ class AgentConfig:
     hitl: bool = False  # 执行前人工确认(LangGraph interrupt; 需 checkpointer)
     insights: bool = False  # 执行后 LLM 基于结果生成洞察
     conclusion: bool = False  # 执行后 LLM 用一句话生成结论摘要(置于回答开头)
+    chart_llm: bool = False  # 图表 LLM 判定:是否画图 + 类型 + 维度/度量列(失败回退确定性推断)
     result_cache: bool = False  # 精确问题结果缓存(进程内存;命中直接返回已验证答案,跳过 HITL 确认)
     decompose_llm_judge: bool = True  # 多任务拆解 LLM 判断层:规则未命中但疑似多步时花一次 LLM 判断;false = 纯正则门控
     # 结果限制(管理台可配):答案表格单次展示行数 / 查询结果行数上限
@@ -342,6 +343,7 @@ class ConfigLoader:
             hitl=agent_section.get("hitl", False),
             insights=agent_section.get("insights", False),
             conclusion=agent_section.get("conclusion", False),
+            chart_llm=agent_section.get("chart_llm", False),
             result_cache=agent_section.get("result_cache", False),
             result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
             result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),

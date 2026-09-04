@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from trove.core.config import AgentConfig
 from trove.services.viz.echarts import build_echarts_option
 from trove.services.viz.infer import build_chart, infer_chart, is_numeric_column
 from trove.services.viz.spark import render_ascii_bar
@@ -329,3 +330,216 @@ class TestChartNodeSemanticHints:
         )
         out = await node(state)
         assert out["chart"]["type"] == "bar"
+
+
+class _ChartToolGateway:
+    """LLM gateway mock that answers a chat_full tool call with plot_chart args."""
+
+    def __init__(self, decision: dict):
+        self.decision = decision
+        self.calls = []
+
+    async def chat(self, model, messages, **kwargs):
+        return "OK"
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        import json as _json
+
+        self.calls.append({"model": model, "tools": tools, "kwargs": kwargs})
+        return {
+            "content": "",
+            "tool_calls": [
+                {"id": "1", "name": "plot_chart", "arguments": _json.dumps(self.decision)},
+            ],
+        }
+
+
+class TestChartLLMDecision:
+    """LLM 判定图表:是否画图 + 类型 + 维度/度量列,失败回退确定性推断。"""
+
+    async def _node(self, gateway, chart_llm=True):
+        config = AgentConfig(target="mock/model")
+        config.chart_llm = chart_llm
+        return make_chart(llm=gateway, config=config, semantic_layer=None)
+
+    async def test_llm_bar_decision_builds_payload(self):
+        gateway = _ChartToolGateway({
+            "chartable": True, "chart_type": "bar",
+            "dimension": "region", "measures": ["amount"],
+        })
+        node = await self._node(gateway)
+        state = WorkflowState(
+            session_id="s1", question="各地区贷款金额",
+            columns=["region", "amount"],
+            rows=[["east", 100], ["west", 200]],
+            row_count=2, complexity="simple",
+        )
+        out = await node(state)
+        assert out["chart"]["type"] == "bar"
+        assert out["chart"]["categories"] == ["east", "west"]
+        assert out["chart"]["series"][0]["data"] == [100.0, 200.0]
+        assert gateway.calls  # 走了一次工具调用
+
+    async def test_llm_line_decision_with_time_hint(self):
+        gateway = _ChartToolGateway({
+            "chartable": True, "chart_type": "line",
+            "dimension": "bucket", "measures": ["v"],
+        })
+        node = await self._node(gateway)
+        state = WorkflowState(
+            session_id="s1", question="趋势",
+            columns=["bucket", "v"],
+            rows=[["P1", 10], ["P2", 20]],
+            row_count=2, complexity="standard",
+        )
+        out = await node(state)
+        assert out["chart"]["type"] == "line"
+
+    async def test_llm_no_chart_clears(self):
+        gateway = _ChartToolGateway({"chartable": False})
+        node = await self._node(gateway)
+        state = WorkflowState(
+            session_id="s1", question="平均贷款金额",
+            columns=["avg"], rows=[[100]], row_count=1,
+        )
+        out = await node(state)
+        assert out["chart"] is None
+
+    async def test_llm_invalid_dimension_falls_back(self):
+        """LLM 判定用了不存在的列 → 校验失败 → 回退确定性推断。"""
+        gateway = _ChartToolGateway({
+            "chartable": True, "chart_type": "bar",
+            "dimension": "nope", "measures": ["amount"],
+        })
+        node = await self._node(gateway)
+        state = WorkflowState(
+            session_id="s1", question="各地区贷款金额",
+            columns=["region", "amount"],
+            rows=[["east", 100], ["west", 200]],
+            row_count=2,
+        )
+        out = await node(state)
+        assert out["chart"]["type"] == "bar"  # 确定性回退
+
+    async def test_llm_exception_falls_back(self):
+        """LLM 调用异常 → 确定性推断兜底,不阻断链路。"""
+        class _Boom:
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                raise RuntimeError("boom")
+
+        node = make_chart(
+            llm=_Boom(), config=AgentConfig(target="mock/model", chart_llm=True),
+        )
+        state = WorkflowState(
+            session_id="s1", question="各地区贷款金额",
+            columns=["region", "amount"],
+            rows=[["east", 100], ["west", 200]],
+            row_count=2,
+        )
+        out = await node(state)
+        assert out["chart"]["type"] == "bar"
+
+    async def test_chart_llm_disabled_uses_deterministic(self):
+        """chart_llm=False → 纯确定性推断,零 LLM 调用。"""
+        gateway = _ChartToolGateway({"chartable": False})
+        node = await self._node(gateway, chart_llm=False)
+        state = WorkflowState(
+            session_id="s1", question="各地区贷款金额",
+            columns=["region", "amount"],
+            rows=[["east", 100], ["west", 200]],
+            row_count=2,
+        )
+        out = await node(state)
+        assert out["chart"]["type"] == "bar"
+        assert not gateway.calls
+
+    async def test_no_llm_uses_deterministic(self):
+        node = make_chart(llm=None)
+        state = WorkflowState(
+            session_id="s1", question="各地区贷款金额",
+            columns=["region", "amount"],
+            rows=[["east", 100], ["west", 200]],
+            row_count=2,
+        )
+        out = await node(state)
+        assert out["chart"]["type"] == "bar"
+
+
+class TestChartTool:
+    """plot_chart 工具:注册 + 校验 + 载荷组装。"""
+
+    def test_chart_from_decision_valid(self):
+        from trove.services.viz.tool import chart_from_decision
+
+        payload, err = chart_from_decision(
+            ["region", "amount"],
+            [["east", 100], ["west", 200]],
+            {"chartable": True, "chart_type": "bar", "dimension": "region", "measures": ["amount"]},
+            title="各地区",
+        )
+        assert err == ""
+        assert payload["type"] == "bar"
+        assert payload["categories"] == ["east", "west"]
+
+    def test_chart_from_decision_no_chart(self):
+        from trove.services.viz.tool import chart_from_decision
+
+        payload, err = chart_from_decision(
+            ["avg"], [[100]],
+            {"chartable": False},
+        )
+        assert payload is None and err == ""
+
+    def test_chart_from_decision_invalid_dimension(self):
+        from trove.services.viz.tool import chart_from_decision
+
+        payload, err = chart_from_decision(
+            ["region", "amount"],
+            [["east", 100]],
+            {"chartable": True, "chart_type": "bar", "dimension": "nope", "measures": ["amount"]},
+        )
+        assert payload is None and "not a result column" in err
+
+    def test_chart_from_decision_invalid_type(self):
+        from trove.services.viz.tool import chart_from_decision
+
+        payload, err = chart_from_decision(
+            ["region", "amount"],
+            [["east", 100]],
+            {"chartable": True, "chart_type": "scatter", "dimension": "region", "measures": ["amount"]},
+        )
+        assert payload is None and "chart_type" in err
+
+    def test_chart_from_decision_non_numeric_measure(self):
+        from trove.services.viz.tool import chart_from_decision
+
+        payload, err = chart_from_decision(
+            ["region", "name"],
+            [["east", "bob"], ["west", "amy"]],
+            {"chartable": True, "chart_type": "bar", "dimension": "region", "measures": ["name"]},
+        )
+        assert payload is None and "not numeric" in err
+
+    async def test_registry_handler_sets_payload(self):
+        from trove.services.viz.tool import build_chart_registry
+
+        registry = build_chart_registry(
+            ["region", "amount"],
+            [["east", 100], ["west", 200]],
+            title="各地区",
+        )
+        handler = registry.handlers()["plot_chart"]
+        obs = await handler({
+            "chartable": True, "chart_type": "bar",
+            "dimension": "region", "measures": ["amount"],
+        })
+        assert obs.startswith("OK ")
+        assert registry.chart_payload["type"] == "bar"
+
+    async def test_registry_handler_no_chart_sets_none(self):
+        from trove.services.viz.tool import build_chart_registry
+
+        registry = build_chart_registry(["region", "amount"], [["east", 100]])
+        handler = registry.handlers()["plot_chart"]
+        assert await handler({"chartable": False}) == "NO_CHART"
+        assert registry.chart_payload is None
