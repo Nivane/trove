@@ -379,6 +379,7 @@ class TestChartLLMDecision:
         assert out["chart"]["categories"] == ["east", "west"]
         assert out["chart"]["series"][0]["data"] == [100.0, 200.0]
         assert gateway.calls  # 走了一次工具调用
+        assert out["chart_source"] == "llm"
 
     async def test_llm_line_decision_with_time_hint(self):
         gateway = _ChartToolGateway({
@@ -420,6 +421,7 @@ class TestChartLLMDecision:
         )
         out = await node(state)
         assert out["chart"]["type"] == "bar"  # 确定性回退
+        assert out["chart_source"] == "deterministic"
 
     async def test_llm_exception_falls_back(self):
         """LLM 调用异常 → 确定性推断兜底,不阻断链路。"""

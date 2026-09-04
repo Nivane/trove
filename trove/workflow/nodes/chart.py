@@ -168,7 +168,7 @@ def make_chart(
         if llm is not None and config is not None and config.chart_llm:
             try:
                 payload = await _llm_chart(state, llm, config, hints)
-                return {"chart": payload}
+                return {"chart": payload, "chart_source": "llm"}
             except Exception as e:
                 logger.warning("LLM chart decision failed (%s); falling back", e)
         try:
@@ -176,6 +176,6 @@ def make_chart(
             payload = build_chart(state.columns, state.rows, spec, state.question)
         except Exception:
             return {}  # 图表推断失败绝不阻断输出链路
-        return {"chart": payload}
+        return {"chart": payload, "chart_source": "deterministic"}
 
     return chart

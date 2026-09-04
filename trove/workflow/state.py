@@ -237,6 +237,11 @@ class WorkflowState(BaseModel):
     #  "measures"};None = 无需图表/未生成。
     chart: dict[str, Any] | None = None
 
+    # 图表判定来源(chart 节点写入,仅 step 事件透传给前端侧边栏展示):
+    # "llm" = LLM plot_chart 工具判定;"deterministic" = 失败回退确定性
+    # infer_chart;空 = 未产生图表。
+    chart_source: str = ""
+
     # HITL 状态(hitl 节点):"" = 未参与/未开启;"pending" = 已中断等待确认;
     # "approved" = 用户批准继续执行;"rejected" = 用户否决(中止,不再执行)。
     hitl_status: str = ""

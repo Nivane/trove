@@ -311,6 +311,33 @@ class TestStructuredSteps:
         assert steps["reflect"]["detail"]["verdict"] == "OK"
         assert steps["schema_linking"]["detail"]["matched_tables"]
 
+    async def test_step_details_carry_extended_artifacts(self, tmp_home, sqlite_registry):
+        """侧边栏扩展字段:意图证据/规则链/投票/编译决策透传。"""
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
+            query_sketch=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        steps = {}
+        async for event in manager.ask_stream(
+            session=session, question="What students are in Alameda county?",
+        ):
+            if event["type"] == "step":
+                steps[event["node"]] = event
+
+        # route_intent: 证据链完整透传
+        ev = steps["route_intent"]["detail"]["intent_evidence"]
+        assert isinstance(ev, dict)
+        assert "llm_verdict" in ev
+        # validate: 确定性规则链全过信号
+        assert steps["validate"]["detail"]["rules_passed"] is True
+        # reflect: 重试计数与强制标记
+        assert steps["reflect"]["detail"]["retry_count"] == 0
+        assert steps["reflect"]["detail"]["forced"] is False
+        # chart: 判定来源透传(本环境确定性回退)
+        assert steps["chart"]["detail"]["chart_source"] == "deterministic"
+
     async def test_correction_step_marks_retry(self, tmp_home, sqlite_registry):
         manager = self._manager(
             tmp_home, sqlite_registry,

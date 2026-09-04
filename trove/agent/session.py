@@ -949,6 +949,8 @@ class SessionManager:
             detail["intent"] = delta.get("intent", "query")
             detail["llm"] = delta.get("llm")
             detail["intent_evidence"] = delta.get("intent_evidence")
+        elif node_name == "parse_date":
+            detail["time_context"] = delta.get("time_context", "")
         elif node_name == "schema_linking":
             detail["matched_tables"] = delta.get("matched_tables", [])
             kh = delta.get("kb_hits", []) if isinstance(delta.get("kb_hits"), list) else []
@@ -959,6 +961,13 @@ class SessionManager:
             detail["retrieval_backend"] = delta.get("retrieval_backend", "")
         elif node_name == "query_sketch":
             detail["plan"] = delta.get("plan", "")
+            detail["plan_validation"] = delta.get("plan_validation")
+            detail["compile_meta"] = delta.get("compile_meta")
+            detail["compiled"] = delta.get("compiled", False)
+        elif node_name == "fast_match":
+            detail["sql"] = delta.get("sql", "")
+            detail["fast_path"] = delta.get("fast_path", False)
+            detail["complexity"] = delta.get("complexity", "")
         elif node_name == "gen_sql":
             detail["sql"] = format_sql(delta.get("sql", ""), dialect)
             detail["attempts"] = delta.get("attempts", 1)
@@ -966,6 +975,7 @@ class SessionManager:
             detail["reason"] = reason
             detail["retrieval_backend"] = delta.get("retrieval_backend", "")
             detail["memory_backend"] = delta.get("memory_backend", "")
+            detail["complexity"] = delta.get("complexity", "")
             if delta.get("context_usage"):
                 detail["context_usage"] = delta["context_usage"]
         elif node_name == "execute_sql":
@@ -977,24 +987,56 @@ class SessionManager:
             detail["error"] = reason
             detail["analysis"] = delta.get("error_analysis", "")
             detail["rollback"] = delta.get("rollback_target", "")
+            detail["fix_mode"] = delta.get("fix_mode", "")
+            detail["last_progress"] = delta.get("last_progress", "")
+            detail["no_progress_rounds"] = delta.get("no_progress_rounds", 0)
+            versions = delta.get("sql_versions") or []
+            if isinstance(versions, list) and versions:
+                detail["sql_versions"] = [{
+                    "round": v.get("round", i + 1),
+                    "issues": v.get("issues") or [],
+                    "error": (v.get("error") or "")[:80],
+                } for i, v in enumerate(versions)]
         elif node_name == "select":
             detail["consensus"] = delta.get("consensus", True)
+            detail["selection"] = delta.get("selection")
+            detail["confidence"] = delta.get("confidence", 0.0)
         elif node_name == "validate":
             detail["reason"] = reason
             detail["retry"] = retry
+            detail["rules_passed"] = delta.get("rules_passed", False)
+            detail["validation_hits"] = delta.get("validation_hits") or []
         elif node_name == "reflect":
             detail["verdict"] = delta.get("verdict", "")
             detail["reason"] = delta.get("reason", "")
+            detail["forced"] = delta.get("forced", False)
+            detail["retry_count"] = delta.get("retry_count", retry)
+            detail["semantic_retries"] = delta.get("semantic_retries", 0)
         elif node_name == "semantics":
             detail["semantics"] = delta.get("semantics", "")
         elif node_name == "insights":
             detail["insights"] = delta.get("insights", [])
         elif node_name == "chart":
             detail["chart"] = delta.get("chart")
+            detail["chart_source"] = delta.get("chart_source", "")
         elif node_name == "conclusion":
             detail["conclusion"] = delta.get("conclusion", "")
         elif node_name == "hitl":
             detail["hitl_status"] = delta.get("hitl_status", "")
+        elif node_name == "refuse":
+            detail["refusal"] = delta.get("refusal")
+            detail["clarification_question"] = delta.get("clarification_question", "")
+        elif node_name == "clarify":
+            detail["clarification_question"] = delta.get("clarification_question", "")
+        elif node_name in ("answer_reject", "answer_chitchat", "answer_correction", "answer_metadata", "confirm_draft"):
+            detail["intent_answer"] = delta.get("intent_answer", "")
+            if node_name == "confirm_draft" and delta.get("intent"):
+                detail["intent"] = delta.get("intent")
+                detail["intent_evidence"] = delta.get("intent_evidence")
+        elif node_name == "metadata_check":
+            detail["reason"] = reason
+            detail["retry"] = retry
+            detail["error"] = reason
         elif node_name == "output":
             detail["final"] = True
 

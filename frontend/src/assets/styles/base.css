@@ -1275,6 +1275,37 @@ button:disabled {
   background: var(--accent-soft);
   border-color: transparent;
 }
+.chip-signal {
+  color: var(--text-primary);
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+}
+.chip-exact {
+  color: var(--ok-text, #2f9e44);
+  background: var(--ok-bg, color-mix(in srgb, #2f9e44 12%, transparent));
+  border-color: transparent;
+}
+.chip-warn {
+  color: var(--warn-text, #e8590c);
+  background: var(--warn-bg, color-mix(in srgb, #e8590c 12%, transparent));
+  border-color: transparent;
+}
+.chip-fast,
+.chip-forced {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+.chip-llm {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+.chip-deterministic {
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+}
 .chip-backend {
   color: var(--text-primary);
   background: var(--surface-raised);
