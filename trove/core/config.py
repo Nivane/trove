@@ -80,6 +80,22 @@ class RetentionConfig:
 
 
 @dataclass
+class AttributionConfig:
+    """Business-level attribution / root-cause analysis settings.
+
+    ``enabled``: attribution intent must fire for any cost to be incurred;
+    ordinary retrieval never touches the attribution node.
+    ``max_hops``: drill-down depth cap (1 = dimension breakdown only,
+    2 = drill into the top contributor for one more level).
+    ``max_dimensions``: candidate-dimension cap in the attribution plan.
+    """
+
+    enabled: bool = True
+    max_hops: int = 2
+    max_dimensions: int = 3
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -128,6 +144,8 @@ class AgentConfig:
     # 记忆子系统配置(统一 memory facade):情景记忆/自动示例/偏好提取/
     # 自动晋升/画像注入等渐进开关。见 trove.services.memory.models.MemoryConfig。
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    # 业务级归因/根因分析:为什么类问题的多跳下钻 + 贡献率 + 瀑布图。
+    attribution: AttributionConfig = field(default_factory=AttributionConfig)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -324,6 +342,14 @@ class ConfigLoader:
             retention_days=retention_days,
         )
 
+        # Parse attribution (business-level root-cause analysis)
+        attr_raw = agent_section.get("attribution", {}) or {}
+        attribution = AttributionConfig(
+            enabled=bool(attr_raw.get("enabled", True)),
+            max_hops=max(1, int(attr_raw.get("max_hops", 2))),
+            max_dimensions=max(1, int(attr_raw.get("max_dimensions", 3))),
+        )
+
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
@@ -360,6 +386,7 @@ class ConfigLoader:
                 for k, v in (agent_section.get("schema_budget_tokens", {}) or {}).items()
             },
             memory=memory,
+            attribution=attribution,
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

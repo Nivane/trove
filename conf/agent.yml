@@ -33,6 +33,14 @@ agent:
   # 图表 LLM 判定:让 LLM 决定是否画图 + 图表类型 + 维度/度量列(单次
   # plot_chart 工具调用,失败回退确定性推断)。false = 纯启发式(infer_chart)。
   chart_llm: true
+  # 业务级归因/根因分析:为什么类问题("为什么营收下降"/"哪个地区贡献最大")
+  # 的多跳下钻——当前期 vs 基期对比 + 维度贡献率 + 瀑布图。
+  # 仅归因意图命中时触发,普通取数不经过。narrative 走 node_models.attribution
+  # 覆盖,缺省回落 model_fast(与 insights 一致)。
+  # attribution:
+  #   enabled: true
+  #   max_hops: 2
+  #   max_dimensions: 3
   # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
   # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
   # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。

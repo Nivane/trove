@@ -75,6 +75,7 @@ from trove.workflow.nodes.output import output
 from trove.workflow.nodes.semantics import make_semantics
 from trove.workflow.nodes.hitl import make_hitl
 from trove.workflow.nodes.insights import make_insights
+from trove.workflow.nodes.attribution import make_attribution
 from trove.workflow.nodes.conclusion import make_conclusion
 from trove.workflow.nodes.chart import make_chart
 from trove.workflow.nodes.answer import make_answer_metadata
@@ -89,6 +90,7 @@ from trove.core.i18n import L
 from trove.workflow.intent import (
     Intent,
     classify_intent,
+    has_attribution_signal,
     has_followup_signal,
     has_strong_chitchat,
     has_strong_confirm,
@@ -1108,7 +1110,7 @@ def _route_after_hitl(state: WorkflowState) -> str:
     return "execute_sql"
 
 
-def _route_after_reflect(state: WorkflowState) -> Literal["analyze_error", "answer_metadata", "insights"]:
+def _route_after_reflect(state: WorkflowState) -> Literal["analyze_error", "answer_metadata", "attribution", "insights"]:
     # Termination is guaranteed by reflect itself: it only returns RETRY
     # while retry_count < MAX_REFLECT_RETRIES (then forces OK).
     if state.error:
@@ -1116,7 +1118,9 @@ def _route_after_reflect(state: WorkflowState) -> Literal["analyze_error", "answ
     if state.no_sql:
         return "answer_metadata"
     if state.verdict != "RETRY":
-        return "insights"
+        # 归因问题(attribution_plan 置位)→ attribution 节点多跳下钻,
+        # 否则原路径 insights。attribution 节点对无计划透传,链路不中断。
+        return "attribution" if state.attribution_plan else "insights"
     # RETRY goes through the diagnose-and-decide node: the LLM judges the
     # failure root cause and picks the rollback target.
     return "analyze_error"
@@ -1183,6 +1187,7 @@ def make_route_intent(
         confirm_sig = has_strong_confirm(question)
         followup = has_followup_signal(question, state.history)
         weak_sig = has_weak_signal(question)
+        attr_sig = has_attribution_signal(question)
 
         llm_intent: Intent | None = None
         llm_detail: dict[str, Any] | None = None
@@ -1258,6 +1263,7 @@ def make_route_intent(
                 mentioned_table=mentioned_table,
                 term_hit=term_hit,
                 data_signal=data_signal,
+                attribution_signal=attr_sig,
             )
         else:
             # LLM 不可用 → 纯正则直路由(高置信信号直接生效,与旧语义一致);
@@ -1268,6 +1274,7 @@ def make_route_intent(
         evidence = {
             "strong_match": strong is not None,
             "data_signal": data_signal,
+            "attribution_signal": attr_sig,
             "write_signal": write_sig,
             "chitchat_signal": chit_sig,
             "correction_signal": corr_sig,
@@ -1354,6 +1361,7 @@ def make_route_intent(
                     evidence2 = {
                         "strong_match": strong2 == Intent.METADATA,
                         "data_signal": data2,
+                        "attribution_signal": has_attribution_signal(prev),
                         "write_signal": has_strong_write(prev),
                         "chitchat_signal": has_strong_chitchat(prev),
                         "correction_signal": has_strong_correction(prev),
@@ -1449,6 +1457,7 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
         _route_after_intent,
         {
             "query": "parse_date",
+            "attribution": "parse_date",
             "metadata": "answer_metadata",
             "write": "answer_reject",
             "chitchat": "answer_chitchat",
@@ -1586,6 +1595,10 @@ def _build_reflection(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("attribution", make_attribution(
+        services.llm, services.config or AgentConfig(),
+        connectors=services.connectors, semantic_layer=services.semantic_layer,
+    ))
     g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
     g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
@@ -1724,8 +1737,9 @@ def _build_reflection(
     g.add_conditional_edges(
         "reflect",
         _route_after_reflect,
-        {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "insights": "insights"},
+        {"analyze_error": "analyze_error", "answer_metadata": "answer_metadata", "attribution": "attribution", "insights": "insights"},
     )
+    g.add_edge("attribution", "insights")
     g.add_edge("insights", "chart")
     g.add_edge("chart", "conclusion")
     g.add_edge("conclusion", "output")
@@ -1751,6 +1765,10 @@ def _build_fixed(
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
     g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("attribution", make_attribution(
+        services.llm, services.config or AgentConfig(),
+        connectors=services.connectors, semantic_layer=services.semantic_layer,
+    ))
     g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
     g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
     g.add_node("output", output)
@@ -1790,9 +1808,10 @@ def _build_fixed(
     g.add_edge("execute_sql", "validate")
     g.add_conditional_edges(
         "validate",
-        _make_route_after_feedback("output", "gen_sql", "insights"),
-        {"gen_sql": "gen_sql", "insights": "insights", "output": "output"},
+        _make_route_after_feedback("output", "gen_sql", "attribution"),
+        {"gen_sql": "gen_sql", "attribution": "attribution", "output": "output"},
     )
+    g.add_edge("attribution", "insights")
     g.add_edge("insights", "chart")
     g.add_edge("chart", "conclusion")
     g.add_edge("conclusion", "output")

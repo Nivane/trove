@@ -839,6 +839,12 @@ def make_query_sketch(
             "query_sketch/system",
             lang=state.lang,
         )
+        # 归因意图:追加归因计划指导(为什么/贡献/根因问题)——主线 SQL 仍
+        # 正常规划,plan_json 里额外带 "attribution" 块供归因节点多跳下钻。
+        if state.intent == "attribution":
+            system_prompt = (
+                f"{system_prompt}\n\n{render('query_sketch/attribution', lang=state.lang)}"
+            )
         # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
         skill_block = render_skills("query_sketch", lang=state.lang)
         if skill_block:
@@ -966,6 +972,12 @@ def make_query_sketch(
                 "plan_validation": {"status": "ok"},
                 "dialect": dialect,
             }
+            # 归因意图:plan_json 里的 "attribution" 块(目标指标/维度/基准/
+            # 深度)带出到状态,供 reflect OK 后 attribution 节点多跳下钻。
+            # 编译器按 extra=ignore 忽略该未知键,主线 SQL 规划不受影响。
+            attr_block = plan_json.get("attribution") if isinstance(plan_json, dict) else None
+            if state.intent == "attribution" and isinstance(attr_block, dict) and attr_block:
+                update["attribution_plan"] = attr_block
             # 受限选择编译:覆盖内问题编译器拼出权威 SQL 并注入 plan,
             # gen_sql 遵从(确定性通道);MISS → 拒绝(语义优先唯一通道)。
             # 先在解析边界强类型化(形态错误 → None → 回退 raw-dict 流,

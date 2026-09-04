@@ -1998,6 +1998,7 @@ class TestRouteIntentObservability:
         assert delta["intent_evidence"] == {
             "strong_match": True,
             "data_signal": False,
+            "attribution_signal": False,
             "write_signal": False,
             "chitchat_signal": False,
             "correction_signal": False,

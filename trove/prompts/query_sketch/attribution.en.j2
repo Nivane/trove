@@ -1,0 +1,18 @@
+This is a "why / attribution / root-cause" business question. Besides the normal
+query plan, you MUST also output an "attribution" object (the attribution plan)
+in the JSON:
+"attribution": {
+  "target_metric": "a declared metric name (e.g. loan amount, must resolve in
+                    the semantic model)",
+  "dimensions": ["dimension field", ...],  // drill-down order, 1-2 items;
+                                            // must be declared fields
+  "baseline": "prev_period | yoy | share", // MoM / YoY / share (share when
+                                            // there is no time field)
+  "depth": 1 or 2,                          // 2 = drill into the top
+                                            // contributor one more level
+  "focus": "optional: restrict to one segment (e.g. East), omit if none"
+}
+Also output the normal query plan (tables/aggregation/answer_columns, etc.) —
+the main SQL answers the metric itself, and the attribution plan is handed to
+the attribution node for multi-hop drill-down. target_metric and dimensions
+must reference real declared metrics/fields in the semantic model, never invent.

@@ -1,0 +1,12 @@
+本问题是「为什么/归因/根因」类业务问题。除正常查询计划外,还必须在 JSON
+里输出一个 "attribution" 对象(归因计划),结构:
+"attribution": {
+  "target_metric": "已声明度量名(如 loan amount / 贷款金额,必须能在语义模型解析)",
+  "dimensions": ["维度字段", ...],   // 下钻顺序,1~2 个;必须是已声明字段
+  "baseline": "prev_period | yoy | share",  // 环比 / 同比 / 占比(无时间则 share)
+  "depth": 1 或 2,                       // 2 = 对 top 贡献者再下钻一层
+  "focus": "可选:限定某个分项(如 华东),没有则省略"
+}
+同时照常输出查询计划的 tables/aggregation/answer_columns 等——主线 SQL 回答
+指标本身,归因计划交给归因节点做多跳下钻。target_metric 与 dimensions 必须
+引用语义模型中真实存在的度量与字段,不要编造。

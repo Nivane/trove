@@ -237,6 +237,19 @@ class WorkflowState(BaseModel):
     # 置于回答开头(结论前置)。空 = 未生成(未开启/无 SQL/失败)。
     conclusion: str = ""
 
+    # 业务级归因计划(query_sketch 产出):{"target_metric", "dimensions",
+    # "baseline", "depth", "focus"}。置位后 reflect OK → attribution 节点
+    # 多跳下钻(整体Δ → 维度分解 → top 贡献者下钻)。
+    attribution_plan: dict[str, Any] | None = None
+
+    # 归因结果(attribution 节点产出):{"total_delta", "table", "narrative",
+    # "hops", "dimensions", "baseline", "chart"}。None = 未触发/未生成。
+    attribution: dict[str, Any] | None = None
+
+    # 归因多跳观测(attribution 节点写入):每跳 SQL + 结果摘要,供日志/
+    # 前端分析面板(同 link_detail 模式,不参与管线判定)。
+    attribution_hops: list[dict[str, Any]] = Field(default_factory=list)
+
     # 图表(chart 节点):确定性推断的 ECharts 可消费字典
     # {"type": line|bar|pie, "title", "dimension", "categories", "series",
     #  "measures"};None = 无需图表/未生成。

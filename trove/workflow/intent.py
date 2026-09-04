@@ -11,6 +11,11 @@ Intents:
   - correction: feedback on the previous answer (pure feedback →
                re-run the previous question) or an elliptical follow-up
                ("那北京呢?") → rewritten with history then routed onward
+  - attribution: a "why / contribution / root-cause" business question
+               ("为什么营收下降"、"哪个地区贡献最大") — still walks the
+               query main chain (parse_date → schema_linking → ...), but
+               downstream query_sketch/attribution nodes act on the
+               attribution plan instead of plain SQL generation
 
 Layers:
   1. The LLM classifies with a tiny five-way prompt (when available);
@@ -39,6 +44,7 @@ class Intent(str, Enum):
     CHITCHAT = "chitchat"
     CORRECTION = "correction"
     CONFIRM = "confirm"
+    ATTRIBUTION = "attribution"
 
 
 # ── 既有信号:metadata 强/弱(原样保留)──────────────────────────
@@ -178,6 +184,46 @@ def has_strong_correction(question: str) -> bool:
     return not _CORRECTION_SUBSTANCE.search(question)
 
 
+# ── 归因:为什么/贡献/驱动类业务问题(走 query 主链,产出归因计划)──────
+
+# 触发词:为什么 / 归因 / 贡献 / 根因 / 驱动 等。单独命中不足以判归因——
+# 「为什么天是蓝的」是 chitchat,必须同时命中数据词(变化词或业务指标词),
+# 保证"有明确 metric/实体"才进入归因(设计文档的 data_signal 门禁)。
+_ATTRIBUTION_TRIGGER = re.compile(
+    r"为什么|为何|归因|根因|贡献|主要(?:原因|因素|影响|来自)|导致|驱动|由于|"
+    r"\bwhy\b|\bdue to\b|\bdriven by\b|\broot cause\b|\bcontribut\w*\b|"
+    r"\battribute\b|\bbecause of\b|\breason for\b",
+    re.I,
+)
+# 数据词:变化词(为什么…下降) + 业务指标/实体词(贡献/营收/利润…)。
+# 「最大/最高/最多」归入数据词:「哪个地区贡献最大」= 典型归因问题。
+_ATTRIBUTION_DATA = re.compile(
+    r"下降|上升|上涨|下滑|增长|减少|增加|下跌|波动|变化|回升|回落|"
+    r"最大|最高|最多|最低|"
+    r"营收|利润|业绩|销售|金额|数量|贷款|订单|用户|客户|交易|余额|额度|增速|"
+    r"\b(?:decline|declined|drop|dropped|fall|fell|rise|rose|increase|increased|"
+    r"decrease|decreased|grow|growth|change|revenue|profit|sales|amount|volume|"
+    r"loan|order|user|customer|transaction|balance|highest|lowest|most)\b",
+    re.I,
+)
+
+
+def has_attribution_signal(question: str) -> bool:
+    """归因/根因问题强信号:触发词 + 数据词双命中。
+
+    双命中保证不误伤 chitchat(「为什么天是蓝的」无数据词)与普通查询
+    (「哪个地区金额最高」命中最大/金额但无触发词)。归因 intent 仍走
+    query 主链,只让下游 query_sketch 产出归因计划、attribution 节点
+    多跳下钻——不改变取数主流程。
+    """
+    if not (question or "").strip():
+        return False
+    return bool(
+        _ATTRIBUTION_TRIGGER.search(question)
+        and _ATTRIBUTION_DATA.search(question)
+    )
+
+
 # ── 草稿确认:管理员在对话中采纳语义扩展(走 refuse 的 pending draft)──────
 
 _CONFIRM_RE = re.compile(
@@ -227,7 +273,8 @@ def last_user_question(history: str) -> str | None:
 def classify_intent(question: str) -> Intent | None:
     """Strong-signal classification; None when no strong signal fires.
 
-    Priority: write > metadata > chitchat > correction (safety first).
+    Priority: write > confirm > metadata > attribution > chitchat >
+    correction (safety first).
     """
     if has_strong_write(question):
         return Intent.WRITE
@@ -236,6 +283,8 @@ def classify_intent(question: str) -> Intent | None:
     for pattern in _STRONG_COMPILED:
         if pattern.search(question):
             return Intent.METADATA
+    if has_attribution_signal(question):
+        return Intent.ATTRIBUTION
     if has_strong_chitchat(question):
         return Intent.CHITCHAT
     if has_strong_correction(question):
@@ -276,12 +325,13 @@ def verify_intent(
     mentioned_table: bool = False,
     term_hit: bool = False,
     data_signal: bool = False,
+    attribution_signal: bool = False,
 ) -> Intent:
     """Deterministic verification of the LLM's intent verdict.
 
     Priority: write (safety) > draft confirm > elliptical follow-up >
-    pure feedback > metadata evidence > LLM write/correction trust >
-    permissive QUERY.
+    pure feedback > metadata evidence > attribution signal > LLM
+    write/correction trust > permissive QUERY.
 
     Args:
         llm_intent: The LLM's five-way classification.
@@ -299,6 +349,9 @@ def verify_intent(
         term_hit: The question hits a known business term.
         data_signal: The question carries a data-question signal
             (count/list/percent/ordered patterns from workflow.rules).
+        attribution_signal: The question is a "why/contribution/root-cause"
+            business question (trigger + data words, see
+            has_attribution_signal).
 
     Returns:
         The verified intent.
@@ -320,6 +373,11 @@ def verify_intent(
         return Intent.METADATA
     if strong_match and not data_signal:
         return Intent.METADATA
+    # 归因:触发词 + 数据词双命中(has_attribution_signal 内嵌 data 门禁)。
+    # 放 metadata 之后、write/chitchat 信任之前——metadata 优先(「为什么
+    # 口径这么定义」是 metadata),归因其次(「为什么营收下降」走 query 主链)。
+    if attribution_signal:
+        return Intent.ATTRIBUTION
     if llm_intent == Intent.WRITE:
         return Intent.WRITE
     # 闲聊信号独立路由(LLM 不可用/误判时也生效)——数据词防护在

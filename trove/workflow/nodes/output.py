@@ -20,7 +20,7 @@ from trove.core.i18n import L
 from trove.llm.observability import record_span
 from trove.services.limits import get_result_limits
 from trove.services.sql.format import format_sql
-from trove.services.viz.spark import render_ascii_bar
+from trove.services.viz.spark import render_ascii_bar, render_waterfall_ascii
 from trove.workflow.state import WorkflowState
 
 
@@ -153,6 +153,48 @@ def _build_details(state: WorkflowState) -> str:
     return "\n".join(parts).strip()
 
 
+def _build_attribution_section(state: WorkflowState) -> str:
+    """归因分析区块:叙事 + 归因表 + 瀑布图(ASCII 兜底)。
+
+    全部来自 state.attribution(attribution 节点产物);字段缺失即跳过对应
+    小节。叙事缺失只出表(分析本身照常可见),不阻断回答。
+    """
+    attr = state.attribution or {}
+    lang = state.lang
+    parts: list[str] = [f"### {L(lang, '归因分析', 'Attribution')}\n"]
+
+    if attr.get("narrative"):
+        parts.append(f"{attr['narrative']}\n")
+
+    # 瀑布图(ECharts 主 / ASCII 兜底)——与主结果图表独立区块
+    chart = attr.get("chart")
+    if chart:
+        ascii_chart = render_waterfall_ascii(chart, lang)
+        if ascii_chart:
+            parts.append(f"\n{ascii_chart}\n")
+
+    table = attr.get("table") or []
+    if table:
+        baseline_label = {
+            "prev_period": "基期" if lang == "zh" else "Base",
+            "yoy": "去年同期" if lang == "zh" else "YoY",
+            "share": "本期" if lang == "zh" else "Current",
+        }.get(str(attr.get("baseline") or ""), "基期")
+        parts.append(f"| {L(lang, '维度', 'Dimension')} | {baseline_label} | "
+                     f"{L(lang, '当前', 'Current')} | {L(lang, '变化量', 'Δ')} | "
+                     f"{L(lang, '贡献率', 'Contribution')} |")
+        parts.append("| --- | --- | --- | --- | --- |")
+        for it in table:
+            parts.append(
+                f"| {it.get('dim', '')} | {it.get('base', 0.0):g} | "
+                f"{it.get('current', 0.0):g} | {it.get('delta', 0.0):g} | "
+                f"{it.get('contribution', 0.0):+.1%} |"
+            )
+        parts.append("\n")
+
+    return "\n".join(parts).strip()
+
+
 async def output(state: WorkflowState) -> dict[str, Any]:
     """Format results into Markdown from the workflow state."""
     _record_result(state)
@@ -217,6 +259,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
         for insight in state.insights:
             parts.append(f"- {insight}")
         parts.append("\n")
+
+    # 归因分析(业务级根因:为什么/贡献类问题的多跳下钻结果)
+    if state.attribution:
+        attr_parts = _build_attribution_section(state)
+        if attr_parts:
+            parts.append(attr_parts + "\n")
 
     # 4. Collapsible technical details (SQL / semantics / meta)
     details = _build_details(state)
