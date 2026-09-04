@@ -810,6 +810,8 @@ class SessionManager:
                                 pending_summary = {
                                     "session_id": session.session_id,
                                     "question": value.get("question", state.question),
+                                    "rewritten_question": state.rewritten_question,
+                                    "datasource": state.datasource,
                                     "sql": value.get("sql", ""),
                                     "semantics": value.get("semantics", ""),
                                     "row_count": -1,
@@ -907,6 +909,8 @@ class SessionManager:
             error_summary = {
                 "session_id": session.session_id,
                 "question": state.question,
+                "rewritten_question": state.rewritten_question,
+                "datasource": state.datasource,
                 "sql": merged.get("sql", ""),
                 "row_count": merged.get("row_count", -1),
                 "verdict": "",
@@ -1806,6 +1810,8 @@ class SessionManager:
             "session_id": final.session_id,
             "run_id": final.run_id,
             "question": final.question,
+            "rewritten_question": final.rewritten_question,
+            "datasource": final.datasource,
             "sql": final.sql,
             "row_count": final.row_count,
             "verdict": final.verdict,

@@ -113,6 +113,9 @@ class TestAskStream:
         assert sql_event["node"] == "gen_sql"
         done_event = events[-1]
         assert done_event["summary"]["sql"] == "SELECT name FROM students;"
+        # 侧边栏扩展字段透传:改写痕迹(无改写为空)与数据源名(未指定时空)
+        assert done_event["summary"]["rewritten_question"] == ""
+        assert "datasource" in done_event["summary"]
 
     async def test_stream_emits_begin_events_before_steps(self, session_manager):
         """Node-start events let the UI show the currently-executing step."""

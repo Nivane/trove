@@ -509,7 +509,7 @@ export const useChatStore = defineStore('chat', {
       await this.send(q)
     },
 
-    async rateTurn(index: number, vote: 1 | -1) {
+    async rateTurn(index: number, vote: 1 | -1, reason?: string) {
       const t = this.turns[index]
       if (!t || !t.question) return
       const summary = t.summary
@@ -517,7 +517,12 @@ export const useChatStore = defineStore('chat', {
         question: t.question,
         vote,
       }
-      if (t.answer) body.note = t.answer.slice(0, 800)
+      // 负评带原因标签:优先 reason,否则回退答案摘要
+      if (reason) {
+        body.note = reason
+      } else if (t.answer) {
+        body.note = t.answer.slice(0, 800)
+      }
       if (summary?.sql) body.sql_snippet = summary.sql
       if (summary?.run_id) body.run_id = summary.run_id
       try {

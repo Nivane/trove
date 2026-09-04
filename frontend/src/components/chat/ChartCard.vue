@@ -2,25 +2,45 @@
   <div v-if="option || chart" class="chart-card">
     <div class="chart-head">
       <div class="chart-title">{{ titleText }}</div>
-      <div v-if="specs.length > 1" class="chart-type-switch" role="group">
-        <button
-          v-for="tp in specs"
-          :key="tp"
-          class="chart-type-btn"
-          :class="{ active: selected === tp }"
-          @click="selected = tp"
-        >
-          {{ t(chartTypeKey(tp), ui.lang) }}
+      <div class="chart-head-actions">
+        <div v-if="specs.length > 1" class="chart-type-switch" role="group">
+          <button
+            v-for="tp in specs"
+            :key="tp"
+            class="chart-type-btn"
+            :class="{ active: selected === tp }"
+            @click="selected = tp"
+          >
+            {{ t(chartTypeKey(tp), ui.lang) }}
+          </button>
+        </div>
+        <button class="chart-download-btn" :title="t('downloadPng', ui.lang)" @click="downloadPng">
+          <Download :size="14" />
         </button>
       </div>
     </div>
     <div ref="el" class="chart-canvas" />
+    <div v-if="drillChips.length > 2" class="chart-drill">
+      <span class="chart-drill-label">{{ t('chartDrill', ui.lang) }}</span>
+      <div class="chart-drill-chips">
+        <button
+          v-for="c in drillChips"
+          :key="c"
+          class="chart-drill-chip"
+          :title="t('chartDrillHint', ui.lang)"
+          @click="drillInto(c)"
+        >
+          {{ c }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, computed, nextTick } from 'vue'
 import * as echarts from 'echarts'
+import { Download } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/ui'
 import { t, messages } from '../../i18n'
 import {
@@ -40,6 +60,11 @@ const props = defineProps<{
   option: Record<string, unknown> | null | undefined
 }>()
 
+const emit = defineEmits<{
+  /** 分类下钻:生成追问问题(复用现有 follow-up 补全路由)。 */
+  ask: [question: string]
+}>()
+
 const ui = useUiStore()
 const el = ref<HTMLDivElement>()
 let chartInstance: echarts.ECharts | null = null
@@ -48,6 +73,17 @@ const ALL_TYPES = ['line', 'bar', 'pie'] as const
 type ChartType = (typeof ALL_TYPES)[number]
 
 const selected = ref<ChartType>('bar')
+
+/** 分类下钻 chips:展示最多前 6 个分类,点击生成追问。 */
+const drillChips = computed(() =>
+  (props.chart?.categories ?? []).slice(0, 6),
+)
+
+function drillInto(cat: string) {
+  // 带原问题上下文组成完整追问:纯「只看X」无指代词/呢吗,会被当成独立
+  // 问题;拼上原问题后走普通 query 路由即可命中。
+  emit('ask', `只看${cat}的数据，${titleText.value}`)
+}
 
 /** Types the switcher offers for the current payload. */
 const specs = computed<ChartType[]>(() => {
@@ -123,6 +159,20 @@ function render() {
       ? applyChartTheme({ ...props.option, title: undefined })
       : null
   if (opt) chartInstance.setOption(opt, true)
+}
+
+/** 导出当前图表为 PNG(基于当前渲染的画布)。 */
+function downloadPng() {
+  if (!chartInstance) return
+  const url = chartInstance.getDataURL({
+    type: 'png',
+    pixelRatio: 2,
+    backgroundColor: '#fff',
+  })
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `trove-chart-${Date.now()}.png`
+  a.click()
 }
 
 onMounted(async () => {

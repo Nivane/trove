@@ -248,6 +248,14 @@ async function submit() {
   await chat.send(q)
 }
 
+/** 外部填入草稿(空态示例问题点按填入,不直接发送)。 */
+function fillDraft(q: string) {
+  draft.value = q
+  void nextTick(autoGrow)
+}
+
+defineExpose({ fillDraft })
+
 function onGlobalKey(e: KeyboardEvent) {
   if (e.key === 'Escape' && plusOpen.value) {
     plusOpen.value = false

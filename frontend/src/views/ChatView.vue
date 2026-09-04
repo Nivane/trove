@@ -22,7 +22,18 @@
           {{ t('noDatasources', ui.lang) }}
         </div>
         <div v-if="!chat.turns.length" class="empty-center">
-          <Composer />
+          <Composer ref="emptyComposer" />
+          <div v-if="ui.datasourceList.length" class="empty-examples">
+            <div class="empty-examples-title">{{ t('examples', ui.lang) }}</div>
+            <button
+              v-for="ex in exampleQuestions"
+              :key="ex"
+              class="empty-example-btn"
+              @click="fillExample(ex)"
+            >
+              {{ ex }}
+            </button>
+          </div>
         </div>
       <template v-else>
         <div ref="messageList" class="message-list">
@@ -82,6 +93,15 @@
               </button>
             </div>
             <div class="assistant-turn">
+              <div v-if="turn.summary?.rewritten_question && turn.summary.rewritten_question !== turn.question" class="rewrite-note">
+                {{ t('rewriteNote', ui.lang) }}<span class="rewrite-note-q">{{ turn.summary.rewritten_question }}</span>
+              </div>
+              <div v-if="turn.summary?.datasource" class="answer-meta">
+                <span class="ds-badge" :title="t('dsBadge', ui.lang)">
+                  <Database :size="12" :stroke-width="2" />
+                  {{ turn.summary.datasource }}
+                </span>
+              </div>
               <div
                 v-if="turn.answer || turn.synthesis"
                 class="answer"
@@ -114,6 +134,7 @@
                 <ChartCard
                   :chart="turn.summary.chart"
                   :option="turn.summary.chart_option"
+                  @ask="askChartFollowUp"
                 />
               </div>
               <div
@@ -124,10 +145,20 @@
               </div>
               <div v-if="turn.error" class="error-box">
                 <span>{{ turn.error }}</span>
-                <button class="retry-btn" @click="chat.retry()">
-                  <RefreshRight :size="14" />
-                  {{ t('retry', ui.lang) }}
-                </button>
+                <div class="error-actions">
+                  <button class="retry-btn" @click="chat.retry()">
+                    <RefreshRight :size="14" />
+                    {{ t('retry', ui.lang) }}
+                  </button>
+                  <button class="retry-btn" @click="rephraseLast(i)">
+                    <Pencil :size="14" />
+                    {{ t('rephrase', ui.lang) }}
+                  </button>
+                  <button v-if="auth.isAdmin" class="retry-btn" @click="gotoAdmin">
+                    <Settings :size="14" />
+                    {{ t('gotoAdmin', ui.lang) }}
+                  </button>
+                </div>
               </div>
               <div v-if="turn.status === 'done'" class="rating-row">
                 <button
@@ -163,6 +194,19 @@
                 >
                   <ThumbsDown :size="14" />
                 </button>
+              </div>
+              <div v-if="ratingReasonsFor === i" class="rating-reasons">
+                <div class="rating-reasons-title">{{ t('ratingReasonsTitle', ui.lang) }}</div>
+                <div class="rating-reasons-list">
+                  <button
+                    v-for="r in ratingReasons"
+                    :key="r.key"
+                    class="rating-reason-btn"
+                    @click="rateWithReason(i, r.key)"
+                  >
+                    {{ r.label }}
+                  </button>
+                </div>
               </div>
               <div v-if="regenerateId === i" class="regenerate-confirm">
                 <span class="regenerate-confirm-text">{{
@@ -200,6 +244,8 @@ import {
   Pencil,
   ArrowUp,
   X,
+  Database,
+  Settings,
 } from 'lucide-vue-next'
 import { RefreshRight } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
@@ -211,21 +257,50 @@ import MarkdownView from '../components/chat/MarkdownView.vue'
 import Composer from '../components/chat/Composer.vue'
 import { useChatStore } from '../stores/chat'
 import { useUiStore } from '../stores/ui'
+import { useAuthStore } from '../stores/auth'
+import { router } from '../router'
 import { t } from '../i18n'
 import { copyText } from '../utils/format'
 import type { Turn } from '../stores/chat'
 
 const chat = useChatStore()
 const ui = useUiStore()
+const auth = useAuthStore()
 const messageList = ref<HTMLDivElement>()
+const emptyComposer = ref<InstanceType<typeof Composer> | null>(null)
 const editingId = ref(-1)
 const editDraft = ref('')
 const editEls = ref<HTMLTextAreaElement[]>([])
 const copiedId = ref(-1)
 const userCopiedId = ref(-1)
 const regenerateId = ref(-1)
+const ratingReasonsFor = ref(-1)
 
 const analysisToggleTitle = computed(() => t('analysisToggle', ui.lang))
+
+const ratingReasons = computed(() => [
+  { key: 'filter', label: t('ratingReasonFilter', ui.lang) },
+  { key: 'value', label: t('ratingReasonValue', ui.lang) },
+  { key: 'chart', label: t('ratingReasonChart', ui.lang) },
+  { key: 'off', label: t('ratingReasonOff', ui.lang) },
+])
+
+const exampleQuestions = computed(() => [
+  t('example1', ui.lang),
+  t('example2', ui.lang),
+  t('example3', ui.lang),
+])
+
+async function fillExample(q: string) {
+  // 填入输入框让用户确认/修改后自己发送(不直接提交)
+  emptyComposer.value?.fillDraft(q)
+}
+
+/** 图表下钻追问:发给后端,复用省略式追问补全路由(指代词+历史)。 */
+async function askChartFollowUp(q: string) {
+  if (chat.streaming || !q.trim()) return
+  await chat.send(q.trim())
+}
 
 function isLastTurn(i: number): boolean {
   return i === chat.turns.length - 1
@@ -235,7 +310,28 @@ async function rate(turn: Turn, vote: 1 | -1) {
   if (turn.rating === vote) return
   const index = chat.turns.indexOf(turn)
   if (index < 0) return
+  if (vote === -1) {
+    // 点踩 → 先弹出原因标签,不立即提交
+    ratingReasonsFor.value = ratingReasonsFor.value === index ? -1 : index
+    return
+  }
+  ratingReasonsFor.value = -1
   await chat.rateTurn(index, vote)
+}
+
+async function rateWithReason(index: number, reasonKey: string) {
+  const reason = ratingReasons.value.find((r) => r.key === reasonKey)?.label
+  ratingReasonsFor.value = -1
+  await chat.rateTurn(index, -1, reason)
+}
+
+function rephraseLast(i: number) {
+  // 换问法 = 直接编辑当前问题的气泡重新发送
+  startEdit(i)
+}
+
+function gotoAdmin() {
+  void router.push('/admin')
 }
 
 function askRegenerate(i: number) {

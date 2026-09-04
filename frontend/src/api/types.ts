@@ -13,6 +13,10 @@ export interface DoneSummary {
   session_id?: string
   run_id?: string
   question?: string
+  /** 意图层改写痕迹:省略式追问/纯反馈替换上一问时的原始问题。 */
+  rewritten_question?: string
+  /** 回答所用数据源名。 */
+  datasource?: string
   sql?: string
   row_count?: number
   verdict?: string
