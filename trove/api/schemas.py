@@ -22,6 +22,30 @@ class ResumeRequest(BaseModel):
     workflow: str = "reflection"
 
 
+class SemanticQueryFilter(BaseModel):
+    """单个行级过滤条件(field/op/value)。"""
+
+    field: str
+    op: str = "="
+    value: Any = None
+
+
+class SemanticQueryRequest(BaseModel):
+    """POST /v1/semantic/query body — 声明式语义查询。
+
+    metrics/dimensions/time_grain/filters 全部须解析到已声明模型条目;
+    任一不解析 → 422(严格,不猜测)。
+    """
+
+    datasource: str | None = None  # None = registry default
+    metrics: list[str] = Field(min_length=1)
+    dimensions: list[str] = Field(default_factory=list)
+    time_grain: dict[str, Any] | None = None
+    filters: list[SemanticQueryFilter] = Field(default_factory=list)
+    order_by: list[dict[str, Any]] = Field(default_factory=list)
+    limit: int | None = Field(default=None, ge=1)
+
+
 class SessionCreateResponse(BaseModel):
     session_id: str
 
