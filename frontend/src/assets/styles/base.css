@@ -666,6 +666,17 @@ button:disabled {
   color: var(--text-tertiary);
   font-size: var(--fs-2xs);
 }
+.ds-opt-name {
+  font-weight: 500;
+}
+.ds-opt-type {
+  margin-left: var(--sp-2);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+}
 .chat-ds-fallback {
   color: var(--amber-500);
   font-size: var(--fs-2xs);
@@ -1970,8 +1981,23 @@ button:disabled {
   color: var(--accent);
   font-weight: 500;
 }
+.plus-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plus-item-type {
+  margin-left: var(--sp-1);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+  flex-shrink: 0;
+}
 .plus-check {
   margin-left: auto;
+  flex-shrink: 0;
 }
 .uploading-label {
   margin-left: auto;

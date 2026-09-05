@@ -49,7 +49,8 @@
           @click="selectDatasource(ds.name)"
         >
           <Database :size="14" :stroke-width="2" />
-          <span>{{ ds.name }}</span>
+          <span class="plus-item-name">{{ ds.name }}</span>
+          <span class="plus-item-type">{{ dsTypeLabel(ds.type) }}</span>
           <Check
             v-if="ds.name === currentDatasource"
             class="plus-check"
@@ -105,6 +106,7 @@ import { useUiStore } from '../../stores/ui'
 import { apiFetch } from '../../api/http'
 import { notifyError } from '../../utils/notify'
 import { t } from '../../i18n'
+import { dsTypeLabel } from '../../utils/format'
 
 const chat = useChatStore()
 const ui = useUiStore()

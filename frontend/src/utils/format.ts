@@ -11,6 +11,20 @@ export function trunc(s: string, n = 24): string {
   return s.length > n ? s.slice(0, n) + '…' : s
 }
 
+/** 数据源类型 → 展示名(未知类型原样透出)。 */
+export function dsTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    demo: 'Demo',
+    sqlite: 'SQLite',
+    mysql: 'MySQL',
+    doris: 'Doris',
+    postgres: 'PostgreSQL',
+    clickhouse: 'ClickHouse',
+    duckdb: 'DuckDB',
+  }
+  return labels[type] ?? type
+}
+
 export function fmtDuration(ms: number | undefined): string {
   if (ms === undefined) return ''
   if (ms < 1000) return `${ms}ms`

@@ -21,7 +21,8 @@
               :label="ds.name"
               :value="ds.name"
             >
-              <span>{{ ds.name }}</span>
+              <span class="ds-opt-name">{{ ds.name }}</span>
+              <span class="ds-opt-type">{{ dsTypeLabel(ds.type) }}</span>
               <span v-if="ds.default" class="chat-ds-default">
                 {{ t('dsDefault', ui.lang) }}
               </span>
@@ -291,7 +292,7 @@ import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
 import { router } from '../router'
 import { t } from '../i18n'
-import { copyText } from '../utils/format'
+import { copyText, dsTypeLabel } from '../utils/format'
 import type { Turn } from '../stores/chat'
 
 const chat = useChatStore()

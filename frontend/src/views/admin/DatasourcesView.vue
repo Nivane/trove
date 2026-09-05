@@ -71,7 +71,7 @@
                   <span class="ds-name">{{ row.name }}</span>
                   <span v-if="row.default" class="pill pill-accent">default</span>
                 </div>
-                <span class="ds-type">{{ row.type }}</span>
+                <span class="ds-type">{{ dsTypeLabel(row.type) }}</span>
               </div>
             </div>
           </template>
@@ -297,6 +297,7 @@ import { apiDelete, apiGet, apiPost, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
+import { dsTypeLabel } from '../../utils/format'
 import type { DatasourceInfo } from '../../api/types'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
 
