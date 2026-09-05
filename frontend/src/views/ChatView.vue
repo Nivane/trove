@@ -3,6 +3,37 @@
     <Sidebar />
     <div class="chat-main">
       <div class="chat-col">
+        <div v-if="ui.datasourceList.length" class="chat-ds-bar">
+          <div class="chat-ds-label">
+            <Database :size="14" :stroke-width="2" />
+            <span>{{ t('datasource', ui.lang) }}</span>
+          </div>
+          <el-select
+            :model-value="ui.activeDatasource"
+            class="chat-ds-select"
+            size="small"
+            :placeholder="t('dsSelectPlaceholder', ui.lang)"
+            @change="onDatasourceChange"
+          >
+            <el-option
+              v-for="ds in ui.datasourceList"
+              :key="ds.name"
+              :label="ds.name"
+              :value="ds.name"
+            >
+              <span>{{ ds.name }}</span>
+              <span v-if="ds.default" class="chat-ds-default">
+                {{ t('dsDefault', ui.lang) }}
+              </span>
+            </el-option>
+          </el-select>
+          <span
+            v-if="!ui.hasDatasource && ui.datasource"
+            class="chat-ds-fallback"
+          >
+            {{ t('dsFallback', ui.lang) }}
+          </span>
+        </div>
         <button
           v-if="chat.turns.length"
           class="analysis-toggle"
@@ -277,6 +308,10 @@ const regenerateId = ref(-1)
 const ratingReasonsFor = ref(-1)
 
 const analysisToggleTitle = computed(() => t('analysisToggle', ui.lang))
+
+function onDatasourceChange(name: string) {
+  ui.setDatasource(name)
+}
 
 const ratingReasons = computed(() => [
   { key: 'filter', label: t('ratingReasonFilter', ui.lang) },

@@ -136,6 +136,16 @@ export const useChatStore = defineStore('chat', {
       try {
         const body = await apiGet(`/v1/sessions/${sid}`)
         this.turns = restoreTurns(body.messages ?? [])
+        // 会话级数据源记忆:服务端消息元数据为准(跨设备一致),
+        // 本地按会话存储兜底。
+        const ui = useUiStore()
+        const ds = lastTurnDatasource(this.turns)
+        if (ds && ui.datasourceList.some((d) => d.name === ds)) {
+          ui.setDatasource(ds)
+          ui.rememberSessionDatasource(sid)
+        } else {
+          ui.restoreSessionDatasource(sid)
+        }
       } catch {
         this.turns = []
       }
@@ -256,6 +266,8 @@ export const useChatStore = defineStore('chat', {
       this.streaming = false
       this.batchRunning = false
       this.controller = null
+      // 记住本轮实际使用的数据源,便于切回该会话时恢复
+      useUiStore().rememberSessionDatasource(this.sessionId)
       await this.listSessions()
     },
 
@@ -558,6 +570,15 @@ interface StoredMessage {
   role: string
   content: string
   metadata?: Record<string, unknown>
+}
+
+/** 最近一个有数据源记录的 turn(会话元数据为准,从尾往前找)。 */
+function lastTurnDatasource(turns: Turn[]): string {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const ds = turns[i].summary?.datasource
+    if (ds) return ds
+  }
+  return ''
 }
 
 /** Rebuild chat turns from GET /v1/sessions/{id} messages.

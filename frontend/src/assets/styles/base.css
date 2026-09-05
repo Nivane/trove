@@ -627,6 +627,52 @@ button:disabled {
   text-align: center;
   flex-shrink: 0;
 }
+/* ── 顶部常驻数据源选择器 ── */
+.chat-ds-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  padding-right: 52px; /* 让开右上角分析面板开关 */
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--chat-bg) 82%, transparent);
+  backdrop-filter: blur(8px);
+  flex-shrink: 0;
+  z-index: 6;
+}
+.chat-ds-label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.chat-ds-select {
+  width: auto;
+  min-width: 140px;
+  max-width: 260px;
+}
+.chat-ds-select .el-select__wrapper {
+  min-height: 30px;
+  box-shadow: 0 0 0 1px var(--border-subtle) inset;
+}
+.chat-ds-select .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+}
+.chat-ds-default {
+  margin-left: var(--sp-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+}
+.chat-ds-fallback {
+  color: var(--amber-500);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .empty-center {
   flex: 1;
   display: flex;
