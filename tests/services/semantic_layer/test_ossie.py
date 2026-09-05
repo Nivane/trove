@@ -258,6 +258,51 @@ def test_parse_relationship_cardinality():
     assert model.relationships[0].cardinality == ""
 
 
+def test_parse_relationship_fan_out():
+    m2n = FULL_STRUCTURE.replace(
+        "      - name: loan_to_account\n        from: loan\n        to: account",
+        "      - name: loan_to_account\n        from: loan\n        to: account\n"
+        "        cardinality: M:N\n        fan_out: dedup",
+    )
+    model = parse_ossie(m2n, preferred_dialect="sqlite")
+    assert model.relationships[0].fan_out == "dedup"
+
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+    assert model.relationships[0].fan_out == ""
+
+
+def test_parse_time_spine():
+    with_spine = FULL_STRUCTURE.replace(
+        "    metrics:",
+        "    time_spine:\n"
+        "      field: loan.date\n"
+        "      granularity: month\n"
+        "      fill: '0'\n"
+        "    metrics:",
+    )
+    model = parse_ossie(with_spine, preferred_dialect="sqlite")
+    assert model.time_spine is not None
+    assert model.time_spine.field == "loan.date"
+    assert model.time_spine.granularity == "month"
+    assert model.time_spine.fill == "0"
+
+    model = parse_ossie(FULL_STRUCTURE, preferred_dialect="sqlite")
+    assert model.time_spine is None
+
+
+def test_parse_time_spine_invalid_grain_defaults():
+    with_bad = FULL_STRUCTURE.replace(
+        "    metrics:",
+        "    time_spine:\n"
+        "      field: loan.date\n"
+        "      granularity: decade\n"
+        "    metrics:",
+    )
+    model = parse_ossie(with_bad, preferred_dialect="sqlite")
+    assert model.time_spine is not None
+    assert model.time_spine.granularity == "month"
+
+
 def test_parse_relationship_with_unknown_endpoint_dropped():
     bad = FULL_STRUCTURE.replace(
         "        from: loan\n        to: account",

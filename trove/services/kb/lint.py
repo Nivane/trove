@@ -233,9 +233,21 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
         if not str(r.get("cardinality") or "").strip():
             issues.append(f"关系「{r.get('name', '')}」未声明基数(cardinality),编译器将保守 MISS")
         if str(r.get("cardinality") or "").strip().upper() == "M:N":
-            issues.append(
-                f"关系「{r.get('name', '')}」为 M:N 多对多,编译期将拒绝 fan-out"
-                "(如确属多对多,建议改为 1:N + 中间表显式建模)")
+            fan = str(r.get("fan_out") or "").strip().lower()
+            if fan == "dedup":
+                issues.append(
+                    f"关系「{r.get('name', '')}」为 M:N 且 fan_out=dedup:编译期以 "
+                    "SELECT DISTINCT 子查询消除整行重复(仅适用纯关联/桥接表的"
+                    "精确重复行;同键多行请建模为 1:N + 中间表)")
+            elif fan.startswith("bridge:"):
+                issues.append(
+                    f"关系「{r.get('name', '')}」声明 fan_out={fan},但 bridge "
+                    "豁免未实现,编译器仍会拒绝 fan-out")
+            else:
+                issues.append(
+                    f"关系「{r.get('name', '')}」为 M:N 多对多,编译期将拒绝 fan-out"
+                    "(如确属多对多:建议改为 1:N + 中间表显式建模,"
+                    "或声明 fan_out=dedup 显式豁免)")
         rel_pairs.add(frozenset((str(r.get("from", "")), str(r.get("to", "")))))
 
     _lint_path_ambiguity(issues, model, ds_names)

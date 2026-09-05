@@ -104,8 +104,15 @@ class SemanticRelationship:
 
     cardinality: 从 ``to`` 侧看 ``from`` 侧(ER 惯例)——
         "1:N"=一个 to 对应多个 from(默认,由 many→one 构造推断)、
-        "1:1"、显式 "M:N" 表示多对多:编译器将拒绝经它编译(编译期拒
-        fan-out,交回 LLM 通道 + 规则链兜底)。
+        "1:1"、显式 "M:N" 表示多对多。
+
+    fan_out: M:N 边的显式豁免方式——空(默认)= 编译期拒 fan-out
+        (行倍增,回交 LLM + 规则链兜底);``dedup`` = 编译期把 from
+        侧包成 ``SELECT DISTINCT *`` 子查询,消除关联/桥接表里的整行
+        重复(精确重复行是唯一安全、免额外建模的去重情形);
+        ``bridge:<dataset>`` 保留(未来:走已预聚合桥表,支持同键多行)。
+        genuinely 多对多(同键多行且每行语义不同)应建模为 1:N + 中间
+        表(编译器完全支持),而不是豁免。
     """
 
     name: str
@@ -114,6 +121,7 @@ class SemanticRelationship:
     from_columns: list[str] = field(default_factory=list)
     to_columns: list[str] = field(default_factory=list)
     cardinality: str = ""  # ""(安全,默认) | "1:N" | "1:1" | "M:N"
+    fan_out: str = ""  # "" | "dedup" | "bridge:<dataset>"
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)
 
@@ -138,12 +146,27 @@ class SemanticDataset:
 
 
 @dataclass
+class TimeSpine:
+    """模型级时间轴声明(OSSIE ``time_spine``):空档补全的时间序列。
+
+    field: 声明的时间字段(``dataset.field`` 或裸列名)。
+    granularity: 序列粒度(year/quarter/month/week/day)。
+    fill: 缺期填充策略——"none"(默认,显示 NULL) | "0" | "previous"。
+    """
+
+    field: str = ""
+    granularity: str = "month"
+    fill: str = "none"
+
+
+@dataclass
 class SemanticModel:
     """One parsed semantic model (OSSIE `semantic_model` entry).
 
     version: OSSIE 文档级 ``version``(semantic_model 上方,透传)。
     examples: model 级 ai_context.examples(示例问句)。
     custom_extensions: model 级 vendor 扩展(透传保留)。
+    time_spine: 模型级时间轴声明(见 TimeSpine);空 = 不启用空档填充。
     """
 
     name: str = ""
@@ -155,3 +178,4 @@ class SemanticModel:
     version: str = ""
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)
+    time_spine: TimeSpine | None = None

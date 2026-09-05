@@ -149,12 +149,20 @@ def _relationship_to_dict(r: SemanticRelationship) -> dict[str, Any]:
         "from_columns": list(r.from_columns),
         "to_columns": list(r.to_columns),
         "cardinality": r.cardinality,
+        "fan_out": r.fan_out,
         "examples": list(r.examples),
         "custom_extensions": list(r.custom_extensions),
     }
 
 
 def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
+    spine = None
+    if m.time_spine is not None:
+        spine = {
+            "field": m.time_spine.field,
+            "granularity": m.time_spine.granularity,
+            "fill": m.time_spine.fill,
+        }
     return {
         "name": m.name,
         "description": m.description,
@@ -165,6 +173,7 @@ def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
         "version": m.version,
         "examples": list(m.examples),
         "custom_extensions": list(m.custom_extensions),
+        "time_spine": spine,
     }
 
 

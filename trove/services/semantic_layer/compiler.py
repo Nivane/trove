@@ -28,7 +28,11 @@ from trove.services.semantic_layer.models import (
     SemanticModel,
 )
 from trove.services.semantic_layer.plan import GRAINS, parse_ordering
-from trove.services.semantic_layer.timegrain import date_trunc
+from trove.services.semantic_layer.timegrain import (
+    date_trunc,
+    spine_fill_expr,
+    time_spine_periods,
+)
 
 
 def _is_many_to_many(cardinality: str) -> bool:
@@ -98,6 +102,7 @@ class JoinEdge:
     to_column: str
     declared: bool
     cardinality: str = ""  # 空 = 安全(many→one);"M:N" = 编译期拒 fan-out
+    fan_out: str = ""  # 空 | "dedup" | "bridge:<dataset>"(M:N 显式豁免)
 
 
 @dataclass
@@ -122,6 +127,7 @@ class JoinResolution:
     fan_out: bool = False
     unknown_cardinality: bool = False
     ambiguous: bool = False
+    dedup_edges: list["JoinEdge"] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
@@ -150,6 +156,7 @@ class JoinResolver:
                 edges.append(JoinEdge(
                     r.from_, r.to, fc, tc, declared=True,
                     cardinality=(r.cardinality or "").upper(),
+                    fan_out=(r.fan_out or "").strip().lower(),
                 ))
         return edges
 
@@ -251,13 +258,21 @@ class JoinResolver:
         tree: list[JoinEdge] = []
         fan_out = False
         unknown_card = False
+        dedup_edges: list[JoinEdge] = []
         for child, (parent, edge) in parent_edge.items():
             if not leads_to_needed(child):
                 continue
             tree.append(edge)
             if _is_many_to_many(edge.cardinality):
-                # P5.2:多对多经此边联(在 needed 路径上)→ 编译期拒 fan-out
-                fan_out = True
+                # P5.2:多对多经此边联(在 needed 路径上)→ 除非建模师显式豁免:
+                # dedup = 编译期把 from 侧包 SELECT DISTINCT * 子查询消除行倍增;
+                # bridge 保留未实现 → 仍拒。否则编译期拒 fan-out。
+                if edge.fan_out == "dedup":
+                    dedup_edges.append(edge)
+                elif edge.fan_out.startswith("bridge:"):
+                    fan_out = True  # bridge 豁免未实现 → 保守拒绝
+                else:
+                    fan_out = True
             elif not (edge.cardinality or "").strip():
                 # 边在联路径上但基数未声明 → many→one 无从判定,保守 MISS
                 unknown_card = True
@@ -299,7 +314,7 @@ class JoinResolver:
         return JoinResolution(
             clauses=clauses, tree_edges=tree, extra_tables=extra,
             fan_out=fan_out, unknown_cardinality=unknown_card,
-            ambiguous=ambiguous)
+            ambiguous=ambiguous, dedup_edges=dedup_edges)
 
     @staticmethod
     def render(resolution: JoinResolution) -> str:
@@ -362,12 +377,12 @@ def _explicit_join_edges(
         except Exception:
             return None, True
 
-    rel_edges: list[tuple[str, str, str, str, str]] = []
+    rel_edges: list[tuple[str, str, str, str, str, str]] = []
     for r in model.relationships:
         for fc, tc in zip(r.from_columns or [], r.to_columns or []):
             rel_edges.append(
                 (r.from_.lower(), r.to.lower(), fc.lower(), tc.lower(),
-                 (r.cardinality or "").upper()))
+                 (r.cardinality or "").upper(), (r.fan_out or "").strip().lower()))
     out: list[JoinEdge] = []
     for tree in parsed:
         eqs = list(tree.find_all(exp.EQ))
@@ -384,17 +399,17 @@ def _explicit_join_edges(
         if not (lt and lc and rt and rc):
             return None, True
         matched = None
-        for f, t, fc, tc, card in rel_edges:
+        for f, t, fc, tc, card, fan in rel_edges:
             if (f == lt and t == rt and fc == lc and tc == rc) or (
                 f == rt and t == lt and fc == rc and tc == lc
             ):
-                matched = (f, t, fc, tc, card)
+                matched = (f, t, fc, tc, card, fan)
                 break
         if matched is None:
             return None, True
         out.append(JoinEdge(
             matched[0], matched[1], matched[2], matched[3],
-            declared=True, cardinality=matched[4],
+            declared=True, cardinality=matched[4], fan_out=matched[5],
         ))
     return (out if out else None), True
 
@@ -1263,7 +1278,16 @@ class SemanticCompiler:
             if pred:
                 where_parts.append(pred)
 
-        sql = "SELECT " + ", ".join(projections) + f"\nFROM {anchor}"
+        # M:N dedup 豁免:fan_out="dedup" 的 from 侧包 SELECT DISTINCT * 子查询
+        # (关联/桥接表),消除行倍增——编译期确定性,不靠规则链事后兜底。
+        dedup_tables = {e.from_ for e in joins if e.fan_out == "dedup"}
+
+        def _src(table: str) -> str:
+            if table in dedup_tables:
+                return f"(SELECT DISTINCT * FROM {table}) AS {table}"
+            return table
+
+        sql = "SELECT " + ", ".join(projections) + f"\nFROM {_src(anchor)}"
         joined = {anchor}
         for edge in joins:
             # BFS 树序:每条边连接一个已入表与一个新表 → JOIN 目标 = 未入者
@@ -1271,7 +1295,7 @@ class SemanticCompiler:
             if new_t in joined:
                 continue  # 防御:理论上不触发
             clause = f"{edge.from_}.{edge.from_column} = {edge.to}.{edge.to_column}"
-            sql += f"\nJOIN {new_t} ON {clause}"
+            sql += f"\nJOIN {_src(new_t)} ON {clause}"
             joined.add(new_t)
         if where_parts:
             sql += "\nWHERE " + " AND ".join(where_parts)
@@ -1315,6 +1339,20 @@ class SemanticCompiler:
         # 到外层(窗口 ORDER BY 由 analysis 决定),LIMIT 也只落在外层。
         analysis = plan.get("analysis")
         limit = plan.get("limit")
+        # 时间轴空档补全(time_spine):模型声明 + 时间分桶 + 可从条件推导
+        # 时间范围 → 包一层 spine LEFT JOIN 填充缺期。analysis 存在时不
+        # 叠加(窗口包装优先);范围不可推/无 spine → 常规路径(无填充)。
+        spine_applied = False
+        if (
+            analysis is None
+            and tg_field is not None
+            and self._model.time_spine is not None
+        ):
+            spine_sql = self._apply_spine(
+                sql, plan, tg_field, tg_expr, proj_display, proj_ref, limit)
+            if isinstance(spine_sql, str):
+                sql = spine_sql
+                spine_applied = True
         if analysis:
             wrapped = self._apply_analysis(
                 sql, plan, matched_set, analysis, limit,
@@ -1323,7 +1361,7 @@ class SemanticCompiler:
             if isinstance(wrapped, CompileMiss):
                 return wrapped
             sql = wrapped
-        else:
+        elif not spine_applied:
             if order_parts:
                 sql += "\nORDER BY " + ", ".join(order_parts)
             if limit is not None:
@@ -1560,6 +1598,143 @@ class SemanticCompiler:
             return str(tg.get("grain") or "").strip().lower()
         return ""
 
+    # ── 时间轴空档补全(time_spine)─────────────────────────────
+    #
+    # 模型声明 time_spine + 时间分桶 + 可从过滤条件推导时间范围时,把聚合
+    # 结果 LEFT JOIN 到按 grain 生成的密集周期表(spine),缺期按 fill 策略
+    # 补全(0 / previous / none)。任何前置缺失 → None(回退常规路径,无填充)。
+    # spine 的 period 与内层分桶表达式同源(同一 date_trunc 套在生成日期上),
+    # 保证 ``t._period = spine.period`` 跨方言匹配。
+
+    @staticmethod
+    def _parse_date_span(value: Any) -> tuple[str, str] | None:
+        """把条件值解析成日期跨度(lo, hi);识别 ISO 日期 / YYYY / YYYY-MM。"""
+        from datetime import date as _date, timedelta
+
+        v = str(value or "").strip()
+        if not v:
+            return None
+        try:
+            d = _date.fromisoformat(v)
+            return d.isoformat(), d.isoformat()
+        except ValueError:
+            pass
+        if re.fullmatch(r"\d{4}", v):
+            y = int(v)
+            return f"{y:04d}-01-01", f"{y:04d}-12-31"
+        if re.fullmatch(r"\d{4}-\d{2}", v):
+            y, m = int(v[:4]), int(v[5:7])
+            if not 1 <= m <= 12:
+                return None
+            lo = _date(y, m, 1)
+            nxt = _date(y + 1, 1, 1) if m == 12 else _date(y, m + 1, 1)
+            hi = nxt - timedelta(days=1)
+            return lo.isoformat(), hi.isoformat()
+        return None
+
+    def _spine_bounds(
+        self, plan: dict[str, Any], tg_field: tuple[str, Any],
+    ) -> tuple[str, str] | None:
+        """从时间过滤条件推导 spine 范围;缺任一边界 → None(不填充)。"""
+        from datetime import date as _date
+
+        lo: str | None = None
+        hi: str | None = None
+        for cond in plan.get("conditions") or []:
+            if not isinstance(cond, dict):
+                continue
+            resolved = self._resolve_field(
+                str(cond.get("field") or "").strip(), self._matched_set)
+            if resolved is None or resolved != tg_field:
+                continue
+            span = self._parse_date_span(cond.get("value"))
+            if span is None:
+                continue
+            s_lo, s_hi = span
+            op = str(cond.get("op") or "=").strip().lower()
+            if op in ("=", "==", "in", "between"):
+                lo = s_lo if lo is None else min(lo, s_lo)
+                hi = s_hi if hi is None else max(hi, s_hi)
+            elif op in (">=", ">"):
+                lo = s_lo if lo is None else max(lo, s_lo)
+            elif op in ("<=", "<"):
+                hi = s_hi if hi is None else min(hi, s_hi)
+        if lo is None or hi is None:
+            return None
+        try:
+            if _date.fromisoformat(hi) < _date.fromisoformat(lo):
+                return None
+        except ValueError:
+            return None
+        return lo, hi
+
+    def _apply_spine(
+        self,
+        inner_sql: str,
+        plan: dict[str, Any],
+        tg_field: tuple[str, Any],
+        tg_expr: str,
+        proj_display: list[str],
+        proj_ref: list[Any],
+        limit: Any,
+    ) -> str | None:
+        """把聚合内层包成 spine LEFT JOIN;不适用 → None(常规路径)。"""
+        spine = self._model.time_spine
+        if spine is None:
+            return None
+        # 时间分桶投影列索引(须存在才能给内层加 _period 别名)
+        time_idx = next(
+            (i for i, r in enumerate(proj_ref)
+             if isinstance(r, tuple) and r and r[0] == "__tg__"),
+            None,
+        )
+        if time_idx is None:
+            return None
+        bounds = self._spine_bounds(plan, tg_field)
+        if bounds is None:
+            return None
+        lo, hi = bounds
+        dialect = self._dialect or "sqlite"
+        periods = time_spine_periods(lo, hi, spine.granularity, dialect)
+        if periods is None:
+            return None
+
+        from sqlglot import exp, parse_one
+
+        try:
+            inner = parse_one(inner_sql, read=dialect)
+        except Exception:
+            return None
+        if not isinstance(inner, exp.Select):
+            return None
+        new_projs = []
+        for j, p in enumerate(inner.expressions):
+            new_projs.append(
+                exp.alias_(p.this if isinstance(p, exp.Alias) else p, f"_c{j}"))
+        inner.set("expressions", new_projs)
+        inner_text = inner.sql(dialect=dialect)
+
+        fill = spine.fill
+        outer_cols: list[str] = []
+        for j, pd in enumerate(proj_display):
+            if j == time_idx:
+                outer_cols.append(f"spine.period AS {pd}")
+                continue
+            if isinstance(proj_ref[j], SemanticMetric):
+                outer_cols.append(
+                    f"{spine_fill_expr(f't._c{j}', fill)} AS {pd}")
+            else:
+                outer_cols.append(f"t._c{j} AS {pd}")
+        outer = (
+            "SELECT " + ", ".join(outer_cols)
+            + f"\nFROM (\n{periods}\n) AS spine"
+            + f"\nLEFT JOIN (\n{inner_text}\n) AS t ON t._c{time_idx} = spine.period"
+            + "\nORDER BY spine.period"
+        )
+        if limit is not None:
+            outer += f"\nLIMIT {int(limit)}"
+        return outer
+
 
 def validate_compiled_sql(
     sql: str, model: SemanticModel, matched: list[str],
@@ -1593,6 +1768,11 @@ def validate_compiled_sql(
         parent = node.parent
         if parent is not None and parent.key in ("from", "join"):
             from_tables.add(node.name.lower())
+    # 派生表/子查询别名也算合法列限定符(spine/窗口外层 ``t.`` / ``spine.``)
+    for node in tree.find_all(exp.Subquery):
+        parent = node.parent
+        if parent is not None and parent.key in ("from", "join") and node.alias:
+            from_tables.add(str(node.alias).lower())
     dangling = sorted({
         c.table.lower() for c in tree.find_all(exp.Column)
         if c.table and c.table.lower() not in from_tables

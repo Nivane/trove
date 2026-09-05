@@ -23,6 +23,7 @@ from trove.services.semantic_layer.models import (
     SemanticMetric,
     SemanticModel,
     SemanticRelationship,
+    TimeSpine,
     _clean_extensions,
 )
 
@@ -210,6 +211,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             from_columns=from_cols,
             to_columns=to_cols,
             cardinality=str(r.get("cardinality") or "").strip().upper(),
+            fan_out=str(r.get("fan_out") or "").strip().lower(),
             examples=r_examples,
             custom_extensions=_clean_extensions(r.get("custom_extensions")),
         ))
@@ -217,6 +219,22 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
     ai = top.get("ai_context") or {}
     instructions_txt = ai.get("instructions", "") if isinstance(ai, dict) else ""
     model_examples = ai.get("examples", []) if isinstance(ai, dict) else []
+
+    spine = None
+    ts = top.get("time_spine") or {}
+    if isinstance(ts, dict) and ts.get("field"):
+        grain = str(ts.get("granularity") or "month").strip().lower()
+        if grain not in {"year", "quarter", "month", "week", "day"}:
+            logger.warning("time_spine.granularity %r invalid; defaulting to month", grain)
+            grain = "month"
+        fill = str(ts.get("fill") or "none").strip().lower()
+        if fill not in {"none", "0", "previous"}:
+            fill = "none"
+        spine = TimeSpine(
+            field=str(ts["field"]).strip(),
+            granularity=grain,
+            fill=fill,
+        )
 
     metrics: list[SemanticMetric] = []
     for m in top.get("metrics", []) or []:
@@ -250,4 +268,5 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
         version=version,
         examples=model_examples,
         custom_extensions=_clean_extensions(top.get("custom_extensions")),
+        time_spine=spine,
     )
