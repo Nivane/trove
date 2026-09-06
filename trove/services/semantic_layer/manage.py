@@ -104,6 +104,7 @@ def _field_to_dict(f: SemanticField) -> dict[str, Any]:
         "synonyms": list(f.synonyms),
         "semantic_role": f.semantic_role,
         "enum_display": dict(f.enum_display),
+        "value_aliases": {k: list(v) for k, v in f.value_aliases.items()},
         "label": f.label,
         "examples": list(f.examples),
         "custom_extensions": list(f.custom_extensions),
@@ -277,6 +278,16 @@ def _apply_field(model: dict[str, Any], action: str, name: str,
     display = payload.get("enum_display")
     if isinstance(display, dict) and display:
         field["enum_display"] = {str(k): str(v) for k, v in display.items()}
+    # 值语义字典(多标签):value_aliases → {code: [别名]}(兼容 list/逗号串)。
+    val_aliases = payload.get("value_aliases") or {}
+    if isinstance(val_aliases, dict) and val_aliases:
+        field.setdefault("ai_context", {})["value_aliases"] = {
+            str(code): (
+                list(labels) if isinstance(labels, (list, tuple))
+                else [str(l).strip() for l in str(labels).split(",") if str(l).strip()]
+            )
+            for code, labels in val_aliases.items()
+        }
     # OSSIE v0.2.0.dev0 扩展面:label / examples / custom_extensions
     if payload.get("label"):
         field["label"] = str(payload["label"])
@@ -292,8 +303,15 @@ def _apply_field(model: dict[str, Any], action: str, name: str,
     if idx is not None:
         old = ds["fields"][idx]
         _carryover(old, field, "datatype", "semantic_role", "enum_display",
-                   "label", "examples", "custom_extensions", "ai_context",
-                   "dimension", "description")
+                   "value_aliases", "label", "examples", "custom_extensions",
+                   "ai_context", "dimension", "description")
+        # value_aliases 存在旧 ai_context 里(嵌套),新字段未带时从旧合并,
+        # 避免只改同义词的 upsert 丢值词典。
+        if isinstance(old.get("ai_context"), dict):
+            old_va = old["ai_context"].get("value_aliases")
+            new_ai = field.setdefault("ai_context", {})
+            if old_va and "value_aliases" not in new_ai:
+                new_ai["value_aliases"] = old_va
         ds["fields"][idx] = field
     else:
         ds["fields"].append(field)

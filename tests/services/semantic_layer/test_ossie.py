@@ -521,3 +521,31 @@ semantic_model:
     gender = model.datasets[0].fields[0]
     assert gender.semantic_role == "enum"
     assert gender.enum_display == {"F": "female", "M": "male"}
+
+
+def test_parse_value_aliases():
+    """ai_context.value_aliases 多标签值词典解析(list 与逗号串两种形态)。"""
+    yaml_text = """
+semantic_model:
+  - name: m
+    datasets:
+      - name: loan
+        fields:
+          - name: status
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: status
+            semantic_role: enum
+            enum_display: {A: finished, no problems, C: running, no problems}
+            ai_context:
+              value_aliases:
+                A: ["fully paid", "paid off"]
+                C: "still running, in progress"
+"""
+    model = parse_ossie(yaml_text, preferred_dialect="sqlite")
+    status = model.datasets[0].fields[0]
+    assert status.value_aliases == {
+        "A": ["fully paid", "paid off"],
+        "C": ["still running", "in progress"],
+    }

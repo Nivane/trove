@@ -244,6 +244,14 @@ def _render_semantic_context(
                     mapping = ", ".join(
                         f"{k}={v}" for k, v in f.enum_display.items())
                     bits.append(f"enum {{{mapping}}}")
+                if getattr(f, "value_aliases", None):
+                    # 值语义字典(多标签):evidence/建模期沉淀的别名,扩展示例问法
+                    # 词到存储值的桥(weekly issuance → POPLATEK TYDNE)。同样渲染
+                    # 给生成通道,避免 agent 瞎猜值。
+                    alias_txt = "; ".join(
+                        f"{k} ≈ {', '.join(labels)}"
+                        for k, labels in f.value_aliases.items())
+                    bits.append(f"value_aliases {{{alias_txt}}}")
                 lines.append("  - " + " | ".join(bits))
         if not use_selected:
             anchored = [m for m in model.metrics if m.datasets and name in m.datasets]

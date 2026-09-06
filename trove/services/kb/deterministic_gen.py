@@ -145,6 +145,63 @@ def _insert_measure(word: str, description: str) -> str:
     return word + name
 
 
+# profiling 噪音后缀:schema_notes 描述里偶发嵌入 probe 统计
+# (``; values range from 0 to 5`` / ``; 1% NULL, 41 distinct values.``)。
+# 指标命名前剥掉,避免 "total Integer values range from..." 这类垃圾名。
+# 处理见 _clean_desc(按分号切段丢弃 noise 段)。
+
+
+def _clean_desc(desc: str) -> str:
+    """剥掉描述里的 probe 统计噪音 + 尾标点 → 干净业务描述。
+
+    schema_notes 描述偶发嵌入 ``; values range from 0 to 5`` /
+    ``; 1% NULL, 41 distinct values`` 等 probe 统计段,按分号切段后丢弃
+    noise 段(首段保留)。避免生成 "total Integer values range from..."
+    这类垃圾指标名。
+    """
+    d = str(desc or "").strip()
+    segments = re.split(r"[;；]", d)
+    keep: list[str] = []
+    for i, seg in enumerate(segments):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if i > 0 and re.match(
+            r"^(?:values\s+range\s+from\b|[\d.]+\s*%\s+NULL\b"
+            r"|\d+\s+distinct\s+values\b|(?:min|max|range|distinct)\s*[:=])",
+            seg, re.I,
+        ):
+            continue  # probe 统计噪音段
+        keep.append(seg)
+    return "; ".join(keep).rstrip(".;，。! ").strip()
+
+
+_JUNK_DESC = {"not useful", "unknown", "n/a", "na", "tbd", "-", "none"}
+
+
+def _is_junk_measure_col(name: str, desc: str) -> bool:
+    """是否垃圾/不可加总列:垃圾描述、id/code 引用列、高 NULL 引用列。
+
+    这类列不该生成 SUM/AVG 指标("total not useful"、"sum of counterparty
+    account number")——生成的指标既污染 metric 目录又误导编译匹配。
+    """
+    d = desc.lower()
+    if not d or d in _JUNK_DESC:
+        return True
+    if "not useful" in d or "unknown" in d or "n/a" in d:
+        return True
+    if "mostly null" in d or "majority null" in d or "mostly empty" in d:
+        return True
+    if any(k in d for k in (
+        " account number", " account no", "bank code", " identifier",
+        " id number", " unique code", " code of",
+    )):
+        return True
+    if re.search(r"(^|_)(id|code)(_|$)", name.lower()):
+        return True
+    return False
+
+
 def generate_terms(
     tables: list[dict[str, Any]], lang: str = "en",
 ) -> list[dict[str, Any]]:
@@ -184,24 +241,29 @@ def generate_terms(
 
         for col in table.get("columns", []):
             col_name = col.get("name", "")
-            desc = str(col.get("description", "") or "").strip()
+            desc = _clean_desc(str(col.get("description", "") or "").strip())
             col_type = str(col.get("type", "") or "").lower()
             if not desc or _is_id_column(col_name, desc):
                 continue
+            if _is_junk_measure_col(col_name, desc):
+                continue  # 垃圾/引用列不产 SUM/AVG 指标(见 _is_junk_measure_col)
             if lang == "en" and _CJK_RE.search(desc):
                 continue  # 中文描述无法确定性翻译成英文 → 视为无描述
             if any(m in col_type for m in _NUMERIC_TYPES):
+                # "average average salary" 去重:描述以 "average " 开头时剥掉
+                # 前导词再套聚合前缀。
+                avg_desc = re.sub(r"^average\s+", "", desc, flags=re.I)
                 if lang == "en":
                     terms.append({
-                        "term": f"total {desc}",
-                        "aliases": [f"sum of {desc}"],
+                        "term": f"total {avg_desc}",
+                        "aliases": [f"sum of {avg_desc}"],
                         "mapping": f"SUM({tref}.{col_name})",
                         "tables": [name],
                         "definition": f"sum of {desc} over all records",
                     })
                     terms.append({
-                        "term": f"average {desc}",
-                        "aliases": [f"avg {desc}"],
+                        "term": f"average {avg_desc}",
+                        "aliases": [f"avg {avg_desc}"],
                         "mapping": f"AVG({tref}.{col_name})",
                         "tables": [name],
                         "definition": f"average {desc} over all records",

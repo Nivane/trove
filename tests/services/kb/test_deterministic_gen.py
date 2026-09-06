@@ -127,6 +127,34 @@ class TestGenerateTerms:
         assert terms[0]["mapping"] == "COUNT(*)"
 
 
+    def test_english_terms_strip_profile_noise_and_junk(self):
+        """C 档 kb init 质量:probe 统计噪音剥掉 + 垃圾/引用列不产 SUM/AVG。"""
+        tables = [{
+            "name": "district",
+            "description": "district stats",
+            "columns": [
+                {"name": "district_id", "type": "int",
+                 "description": "Unique district identifier; values range from 1 to 77.", "enums": []},
+                {"name": "A11", "type": "int",
+                 "description": "average salary of district residents; values range from 8110 to 12541; 76 distinct values.", "enums": []},
+                {"name": "A9", "type": "int",
+                 "description": "not useful", "enums": []},
+                {"name": "code_col", "type": "int",
+                 "description": "Counterparty account number; mostly NULL", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        terms = generate_terms(tables, lang="en")
+        names = [t["term"] for t in terms]
+        # 噪音后缀被剥掉:"average average salary" → "average salary ..."
+        assert "average salary of district residents" in names
+        assert "total salary of district residents" in names
+        # 垃圾列(A9 "not useful" / 引用列)不产 SUM/AVG
+        assert not any("not useful" in n for n in names)
+        assert not any("Counterparty" in n for n in names)
+        assert not any("values range" in n for n in names)
+
+
 class TestGenerateTemplates:
     def test_count_template_per_table(self):
         templates = generate_templates(TABLES, lang="zh")

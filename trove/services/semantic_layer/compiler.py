@@ -696,34 +696,75 @@ def _literal(value: Any) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def _enum_code_for(text: str, enum_display: dict[str, str]) -> str | None:
-    """人类值/码 → 规范 code(经 enum_display 双向匹配,大小写不敏感)。
+_VALUE_STOPWORDS = {
+    "a", "an", "the", "of", "for", "in", "on", "with", "to", "and", "or",
+    "per", "by", "is", "are", "what", "how", "that", "this", "each", "its",
+    "from", "at", "as", "all",
+}
 
-    先按 code 键匹配(identity 命中返回原键,保 SQL 用库里存的写法),
-    再按可读词值匹配(``male``/``男性`` → ``M``),最后词级兜底:label 词集
-    与输入词集互相子集(``weekly`` ↔ "weekly statements")且唯一命中才采纳;
-    多 label 同命中(如裸 "statements" 同时是 monthly/weekly 的子集)→ None,
-    调用方保守 MISS(值歧义,不猜)。
+
+def _value_tokens(text: str) -> set[str]:
+    """值/标签词元:小写、去停用词、去复数 s(statement↔statements 归一)。
+
+    与 provider 的字段同义词 token 化同款朴素处理——单复数差异不再阻断
+    "monthly statement issuance" ↔ "monthly statements" 的匹配。
+    """
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {
+        w[:-1] if w.endswith("s") and not w.endswith("ss") else w
+        for w in words if w not in _VALUE_STOPWORDS
+    }
+
+
+def _enum_code_for(
+    text: str,
+    enum_display: dict[str, str],
+    value_aliases: dict[str, list[str]] | None = None,
+) -> str | None:
+    """人类值/码 → 规范 code(经 enum_display + value_aliases 双向匹配)。
+
+    匹配优先级:
+    1. code 键 identity(大小写不敏感)→ 返回原键(保库里存的写法);
+    2. label 精确(enum_display 主标签或 value_aliases 别名,全角冒号同义);
+    3. 词级兜底:label 词集与输入词集互相子集(**复数/停用词归一后**,
+       ``weekly issuance`` ↔ "weekly statements"),唯一命中才采纳;
+    4. 多 code 同命中(裸 "withdrawal" 同时是 VYDAJ/VYBER 的子集)→ None,
+       调用方保守 MISS(值歧义,不猜)——绝不静默选错 code。
+
+    ``value_aliases``:字段级 ``{code: [业务别名]}``(kb init/建模期从
+    证据或人工标注沉淀的多标签值词典),扩展示例问法到存储值的确定性桥。
     """
     low = (text or "").strip().lower()
     if not low:
         return None
-    for code, _label in enum_display.items():
+    for code in enum_display:
         if str(code).lower() == low:
             return str(code)
+    aliases = {str(code): list(labels or []) for code, labels in (value_aliases or {}).items()}
     for code, label in enum_display.items():
         if str(label).strip().lower() == low:
             return str(code)
-    in_tokens = set(re.findall(r"[a-z0-9]+", low))
+    for code, labels in aliases.items():
+        if any(str(l).strip().lower() == low for l in labels):
+            return code
+    in_tokens = _value_tokens(low)
     if not in_tokens:
         return None
     matches: list[str] = []
     for code, label in enum_display.items():
-        label_tokens = set(re.findall(r"[a-z0-9]+", str(label).strip().lower()))
+        label_tokens = _value_tokens(str(label))
         if not label_tokens:
             continue
         if label_tokens <= in_tokens or in_tokens <= label_tokens:
             matches.append(str(code))
+    for code, labels in aliases.items():
+        for label in labels:
+            label_tokens = _value_tokens(str(label))
+            if not label_tokens:
+                continue
+            if label_tokens <= in_tokens or in_tokens <= label_tokens:
+                if str(code) not in matches:
+                    matches.append(str(code))
     if len(matches) == 1:
         return matches[0]
     return None
@@ -737,19 +778,23 @@ def _strip_quotes(text: str) -> str:
     return s
 
 
-def _normalize_enum_value(value: Any, enum_display: dict[str, str]) -> Any | None:
+def _normalize_enum_value(
+    value: Any,
+    enum_display: dict[str, str],
+    value_aliases: dict[str, list[str]] | None = None,
+) -> Any | None:
     """枚举字段的 condition 值 → 规范 code;任一元素无法归一 → None。
 
     - enum_display 为空 → 原样透传(未声明词表,无归一依据);
-    - 标量(可带引号)→ 单个归一;
+    - 标量(可带引号)→ 单个归一(经 enum_display + value_aliases);
     - ``('C', 'D')`` 列表 → 逐元素归一。
     归一失败返回 None,调用方保守 MISS——绝不静默产出 ``gender='male'``
     这类 0 行 SQL(值不在声明词表 = 未覆盖,交拒绝/扩展流程)。
     """
-    if not enum_display:
+    if not enum_display and not value_aliases:
         return value
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return _enum_code_for(str(value), enum_display)
+        return _enum_code_for(str(value), enum_display, value_aliases)
     s = str(value).strip()
     if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
         parts = [p.strip() for p in s[1:-1].split(",") if p.strip()]
@@ -757,14 +802,14 @@ def _normalize_enum_value(value: Any, enum_display: dict[str, str]) -> Any | Non
             return None
         out: list[str] = []
         for p in parts:
-            code = _enum_code_for(_strip_quotes(p), enum_display)
+            code = _enum_code_for(_strip_quotes(p), enum_display, value_aliases)
             if code is None:
                 return None
             out.append(code)
         # 列表元素带引号:后续 _literal 的已字面量正则才能透传,产出
         # IN ('F', 'M') 而非 IN (F, M)(裸标识符会解析成列引用)。
         return "(" + ", ".join(f"'{c.replace(chr(39), chr(39) * 2)}'" for c in out) + ")"
-    return _enum_code_for(_strip_quotes(s), enum_display)
+    return _enum_code_for(_strip_quotes(s), enum_display, value_aliases)
 
 
 def _agg_signature(expr_text: str) -> tuple[str, frozenset[str]] | None:
@@ -1277,8 +1322,9 @@ class SemanticCompiler:
             # 枚举字段:值经 enum_display 归一(male/男性 → 'M');无法归一
             # → 软 MISS:跳过该条件,LLM 通道按 plan 文本处理(值语义缺口
             # 是词表问题,不是结构错误——骨架保真校验仍守住其余条件)。
-            if resolved[1].enum_display:
-                normalized = _normalize_enum_value(value, resolved[1].enum_display)
+            if resolved[1].enum_display or resolved[1].value_aliases:
+                normalized = _normalize_enum_value(
+                    value, resolved[1].enum_display, resolved[1].value_aliases)
                 if normalized is None:
                     self._record_soft("enum_value_unresolved", field_ref)
                     continue
@@ -1321,8 +1367,9 @@ class SemanticCompiler:
             if resolved_h is None:
                 self._record_soft("unresolved_filter_field", field_ref)
                 continue
-            if resolved_h[1].enum_display:
-                normalized_h = _normalize_enum_value(value, resolved_h[1].enum_display)
+            if resolved_h[1].enum_display or resolved_h[1].value_aliases:
+                normalized_h = _normalize_enum_value(
+                    value, resolved_h[1].enum_display, resolved_h[1].value_aliases)
                 if normalized_h is None:
                     self._record_soft("enum_value_unresolved", field_ref)
                     continue

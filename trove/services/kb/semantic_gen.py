@@ -25,6 +25,7 @@ exactly like kb init / kb learn do for the rest of the KB.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from trove.core.types import SchemaInfo, TableInfo
@@ -156,18 +157,55 @@ def _metrics_from_terms(terms: list[dict[str, Any]] | None) -> list[dict[str, An
     return out
 
 
+def _parse_enum_entries(
+    values_text: str,
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """schema_notes enums 文本 → (enum_display, value_aliases)。
+
+    兼容三种条目形态:
+    - ``CODE=label`` / ``CODE：label``(LLM 草稿/人工标注)→ {code: label};
+    - ``CODE=label1|label2`` → 主标签进 enum_display,其余进 value_aliases
+      (值语义字典的多标签别名);
+    - 裸 ``V1; V2``(probe 原始值)→ 恒等 {v: v}(确定性骨架)。
+
+    同 code 多条目合并;空/超限值跳过。``value_aliases`` 只在存在显式
+    ``|`` 别名时产出——恒等 probe 不产生噪音别名。
+    """
+    display: dict[str, str] = {}
+    aliases: dict[str, list[str]] = {}
+    for entry in (values_text or "").split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "=" in entry or "：" in entry:
+            code, _, label_part = entry.partition("=" if "=" in entry else "：")
+            code = code.strip()
+            label_part = label_part.strip()
+            labels = [l.strip() for l in re.split(r"[|｜]", label_part) if l.strip()]
+            if not code or not labels:
+                continue
+            if code not in display:
+                display[code] = labels[0]
+            if len(labels) > 1:
+                extra = [l for l in labels[1:] if l != display.get(code)]
+                if extra:
+                    aliases.setdefault(code, [])
+                    for l in extra:
+                        if l not in aliases[code]:
+                            aliases[code].append(l)
+        else:
+            display[entry] = entry
+    return display, aliases
+
+
 def _enum_display_from_values(values_text: str) -> dict[str, str]:
-    """probe 的 ``"v1; v2"`` → 恒等 enum_display ``{v: v}``(值收编到字段)。
+    """probe 的 ``"v1; v2"`` / ``"CODE=label"`` → enum_display 字典。
 
     恒等映射是确定性骨架:LLM 语义起草层把可读词补进 value 侧
     ({F: female}),code 键保持不变。空/超限值被跳过。
     """
-    out: dict[str, str] = {}
-    for v in (values_text or "").split(";"):
-        v = v.strip()
-        if v:
-            out[v] = v
-    return out
+    display, _aliases = _parse_enum_entries(values_text)
+    return display
 
 
 def generate_semantic_document(
@@ -215,8 +253,11 @@ def _apply_enum_roles(
     datasets: list[dict[str, Any]],
     enums: dict[str, dict[str, str]],
 ) -> None:
-    """probe 结果落位:低基数列 → semantic_role=enum + 恒等 enum_display。
+    """probe 结果落位:低基数列 → semantic_role=enum + enum_display。
 
+    支持 schema_notes 的 ``CODE=label`` 标注:带标签的枚举生成可读
+    enum_display,``CODE=label1|label2`` 的额外别名沉淀为
+    ``ai_context.value_aliases``(值语义字典,编译器词级匹配用)。
     只作用于文本/维度列(取值已知),不动 identifier/measure/time 列。
     """
     by_name = {str(d.get("name")): d for d in datasets}
@@ -229,10 +270,13 @@ def _apply_enum_roles(
             field = field_by_name.get(col_name)
             if field is None:
                 continue
-            display = _enum_display_from_values(values_text)
+            display, aliases = _parse_enum_entries(values_text)
             if not display:
                 continue
             # 仅提升原 dimension 列(identifier/measure/time 保持角色不动)
             if str(field.get("semantic_role") or "") in ("", "dimension"):
                 field["semantic_role"] = "enum"
             field["enum_display"] = display
+            if aliases:
+                ai = field.setdefault("ai_context", {})
+                ai["value_aliases"] = aliases

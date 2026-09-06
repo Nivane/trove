@@ -156,6 +156,19 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
                 str(k): str(v) for k, v in display.items()
                 if isinstance(display, dict)
             } if isinstance(display, dict) else {}
+            # 值语义字典(多标签):ai_context.value_aliases → {code: [别名]}。
+            # 兼容 "code: 别名,别名" 的紧凑形式与已解析的 list 形式。
+            raw_aliases = {}
+            ai = f.get("ai_context") or {}
+            if isinstance(ai, dict):
+                raw_aliases = ai.get("value_aliases") or {}
+            value_aliases: dict[str, list[str]] = {}
+            for code, labels in raw_aliases.items():
+                if not isinstance(labels, (list, tuple, set)):
+                    labels = re.split(r"[,，;]", str(labels))
+                cleaned = [str(l).strip() for l in labels if str(l).strip()]
+                if cleaned:
+                    value_aliases[str(code)] = cleaned
             fields.append(SemanticField(
                 name=f["name"],
                 expression=expr,
@@ -165,6 +178,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
                 synonyms=f_synonyms,
                 semantic_role=role,
                 enum_display=enum_display,
+                value_aliases=value_aliases,
                 label=str(f.get("label", "") or "").strip(),
                 examples=f_examples,
                 custom_extensions=_clean_extensions(f.get("custom_extensions")),

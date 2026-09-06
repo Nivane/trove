@@ -168,6 +168,84 @@ def test_enum_value_code_passthrough():
     assert "WHERE client.gender = 'M'" in result.sql
 
 
+def test_enum_value_plural_normalized():
+    """复数归一:label "monthly statements" ↔ 输入 "monthly statement issuance"(词级子集)。"""
+    model = _client_model()
+    model.datasets[0].fields.append(
+        SemanticField(name="frequency", expression="frequency",
+                      datatype="String", semantic_role="enum",
+                      enum_display={"W": "weekly statements", "M": "monthly statements"}))
+    plan = {
+        "tables": ["client"],
+        "aggregation": "number of clients",
+        "answer_columns": ["number of clients"],
+        "conditions": [{"field": "client.frequency", "op": "=", "value": "monthly statement issuance"}],
+    }
+    result = _compile(plan, ["client"], model=model)
+    assert result is not None
+    assert "WHERE client.frequency = 'M'" in result.sql
+    # "weekly issuance" 需要同义词桥(issuance↔statements),纯复数归一到不了
+    # → 歧义/未命中,交软 MISS 逃生梯(不猜错 code)
+    plan2 = dict(plan)
+    plan2["conditions"] = [{"field": "client.frequency", "op": "=", "value": "weekly issuance"}]
+    from trove.services.semantic_layer.compiler import PartialCompile
+    res = SemanticCompiler(model).compile_detailed(plan2, ["client"])
+    assert isinstance(res, PartialCompile)
+
+
+def test_enum_value_aliases_multi_label():
+    """值语义字典:value_aliases 多标签把问法词桥到存储 code。"""
+    from trove.services.semantic_layer.compiler import _enum_code_for
+
+    display = {"A": "finished, no problems", "C": "running, no problems"}
+    aliases = {
+        "A": ["fully paid", "paid off", "no issue"],
+        "C": ["still running", "running ok", "in progress"],
+    }
+    assert _enum_code_for("fully paid with no issue", display, aliases) == "A"
+    assert _enum_code_for("still running", display, aliases) == "C"
+    assert _enum_code_for("running contracts", display, aliases) is None  # C/D 歧义不猜
+    assert _enum_code_for("finished", display, aliases) == "A"
+    assert _enum_code_for("in progress", display, aliases) == "C"
+    assert _enum_code_for("no problems", display, aliases) is None  # A/C 歧义
+
+
+def test_enum_value_aliases_never_guess_wrong_code():
+    """值别名不引入静默错配:多 code 共享词 → 歧义返回 None(交逃生梯)。"""
+    from trove.services.semantic_layer.compiler import _enum_code_for
+
+    display = {"PRIJEM": "credit", "VYDAJ": "debit", "VYBER": "withdrawal"}
+    aliases = {
+        "VYDAJ": ["withdrawal from account"],
+        "VYBER": ["withdrawal", "cash withdrawal"],
+    }
+    # "withdrawals non-credit card" → PRIJEM(credit)/VYDAJ/VYBER 都有词命中 → 歧义
+    assert _enum_code_for("withdrawals non-credit card", display, aliases) is None
+    # 明确词 → 唯一命中
+    assert _enum_code_for("credit", display, aliases) == "PRIJEM"
+    assert _enum_code_for("cash withdrawal", display, aliases) == "VYBER"
+
+
+def test_enum_value_aliases_used_in_compile():
+    """编译器 conditions 路径并入 value_aliases 归一。"""
+    model = _client_model()
+    model.datasets[0].fields.append(
+        SemanticField(name="status", expression="status",
+                      datatype="String", semantic_role="enum",
+                      enum_display={"A": "finished, no problems", "C": "running, no problems"},
+                      value_aliases={"A": ["fully paid", "no issue"],
+                                     "C": ["still running"]}))
+    plan = {
+        "tables": ["client"],
+        "aggregation": "number of clients",
+        "answer_columns": ["number of clients"],
+        "conditions": [{"field": "client.status", "op": "=", "value": "fully paid"}],
+    }
+    result = _compile(plan, ["client"], model=model)
+    assert result is not None
+    assert "WHERE client.status = 'A'" in result.sql
+
+
 def test_enum_value_list_normalized():
     """IN 列表逐元素归一。"""
     model = _client_model()

@@ -88,6 +88,12 @@ class SemanticField:
     synonyms: list[str] = field(default_factory=list)
     semantic_role: str = ""  # identifier | measure | dimension | enum | time
     enum_display: dict[str, str] = field(default_factory=dict)
+    # 值语义字典(多标签):``{code: [业务别名]}``——扩展示例问法词到存储值
+    # 的确定性桥("weekly issuance" → POPLATEK TYDNE)。kb init 从 schema_notes
+    # 的 ``CODE=label`` 标注/值别名沉淀,或建模期人工/证据标注。编译器
+    # ``_enum_code_for`` 在 enum_display 基础上并入这些别名做词级匹配;
+    # 多 code 同命中 → 保守 MISS(值歧义,不猜)。
+    value_aliases: dict[str, list[str]] = field(default_factory=dict)
     label: str = ""
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)

@@ -221,3 +221,27 @@ def test_enum_roles_round_trip_through_parse():
     )
     assert status.semantic_role == "enum"
     assert status.enum_display == {"A": "A", "B": "B"}
+
+
+def test_enum_labeled_entries_produce_display_and_aliases():
+    """schema_notes ``CODE=label`` / ``CODE=label1|label2`` → enum_display + value_aliases。"""
+    enums = {"loan": {"status": "A=finished, no problems; C=running|still running|in progress"}}
+    doc = generate_semantic_document(_financial_schema(), enums=enums)
+    datasets = {d["name"]: d for d in doc["semantic_model"][0]["datasets"]}
+    status = next(f for f in datasets["loan"]["fields"] if f["name"] == "status")
+    assert status["enum_display"] == {
+        "A": "finished, no problems", "C": "running"}
+    assert status["ai_context"]["value_aliases"] == {
+        "C": ["still running", "in progress"]}
+
+
+def test_parse_enum_entries_identity_and_labeled():
+    """裸值恒等;CODE=label 取主标签;| 分隔多别名。"""
+    from trove.services.kb.semantic_gen import _parse_enum_entries
+
+    display, aliases = _parse_enum_entries("A; B")
+    assert display == {"A": "A", "B": "B"} and aliases == {}
+
+    display, aliases = _parse_enum_entries("F=female|women; M=male")
+    assert display == {"F": "female", "M": "male"}
+    assert aliases == {"F": ["women"]}
