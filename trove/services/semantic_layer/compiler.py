@@ -539,6 +539,24 @@ class CompileMiss:
     component: str = ""
 
 
+@dataclass
+class PartialCompile:
+    """编译产物(骨架):可解析部分已权威编译,未解析组件留给生成通道补齐。
+
+    分级逃生梯:软 MISS(词表/值/口径未声明)不再整体拒绝——已解析的
+    join/过滤/分组编译成骨架 SQL,未解析组件进 ``miss_parts``,消费方
+    (query_sketch)注入 gen_sql 让 LLM 补缺,回答照常交付而非硬停。
+
+    - ``sql``:骨架 SQL(权威的 join/过滤/分组,LLM 不得改动)。
+    - ``block``:注入 gen_sql 的提示块(骨架 + 未解析组件清单)。
+    - ``miss_parts``:未解析组件列表 ``[{reason, component}]``(学习/归因用)。
+    """
+
+    sql: str
+    block: str
+    miss_parts: list[dict[str, str]] = field(default_factory=list)
+
+
 # 编译失败原因全集(新增 MISS 分支必须进此集合,保证 eval 归因闭合)
 MISS_REASONS = frozenset({
     "no_plan_or_matched",
@@ -572,6 +590,77 @@ MISS_REASONS = frozenset({
     "limit_without_order",
     "guardrail_rejected",
 })
+
+# 硬 MISS(结构性,拒绝是保护):放行会产出行倍增/笛卡尔/引用未覆盖表/
+# 坏定义(派生环/深度/未解析)或越出逻辑宇宙的 SQL。这些是建模错误或
+# 覆盖外,必须暴露给 refuse 扩展流程。**该集合是路由判定唯一权威**——
+# 新增 MISS 分支时必须归入其中一边。
+HARD_MISS_REASONS = frozenset({
+    "no_plan_or_matched",
+    "metric_anchor_unmatched",
+    "nothing_compilable",
+    "fan_out",
+    "unknown_cardinality",
+    "unreachable_table",
+    "ambiguous_join_path",
+    "derived_cycle",
+    "derived_depth",
+    "derived_unresolved",
+    "limit_without_order",
+    "guardrail_rejected",
+})
+
+# 软 MISS(词表/值/口径缺失):组件不在声明模型内但**跳过它继续编译**
+# 可解析部分是安全的——未解析部分交回生成通道(LLM 按 plan 文本补齐),
+# 由骨架保真校验 + rules 链 + 版本回归兜底。软 MISS 不触发拒绝。
+SOFT_MISS_REASONS = frozenset({
+    "no_metric_match",
+    "unresolved_answer_column",
+    "unresolved_filter_field",
+    "invalid_op",
+    "missing_filter_value",
+    "enum_value_unresolved",
+    "having_metric_unknown",
+    "having_without_aggregation",
+    "bad_time_grain",
+    "time_field_not_declared",
+    "time_field_not_temporal",
+    "time_grain_without_aggregation",
+    "analysis_unsupported_type",
+    "analysis_metric_unknown",
+    "analysis_partition_unresolved",
+    "analysis_order_unresolved",
+    "analysis_time_required",
+    "analysis_invalid",
+})
+
+
+def is_hard_miss(reason: str) -> bool:
+    """MISS reason → 是否硬 MISS(结构性,必须拒绝)。未分类原因按硬处理。"""
+    if reason in HARD_MISS_REASONS:
+        return True
+    if reason in SOFT_MISS_REASONS:
+        return False
+    # 未知 reason 默认硬——宁可拒绝,不冒险产错 SQL;eval 归因会暴露漏分类。
+    return True
+
+
+def _partial_block(sql: str, miss_parts: list[dict[str, str]]) -> str:
+    """骨架提示块:权威部分(必须照抄)+ 未覆盖组件清单(LLM 自行补齐)。"""
+    lines = [
+        "Compiled skeleton (authoritative — preserve these joins, filters and "
+        "grouping exactly; only fill the gaps below):"
+    ]
+    lines.append(f"```sql\n{sql}\n```")
+    lines.append(
+        "Components NOT covered by the semantic model — generate these "
+        "yourself from the query plan:"
+    )
+    for p in miss_parts:
+        component = str(p.get("component") or "").strip()
+        suffix = f": {component}" if component else ""
+        lines.append(f"- {p.get('reason', '')}{suffix}")
+    return "\n".join(lines)
 
 
 def _qualified(tbl: str, expr: str, force_qualify: bool = True) -> str:
@@ -979,6 +1068,18 @@ class SemanticCompiler:
         res = self.compile_detailed(plan, matched, force_dialect)
         return res if isinstance(res, CompileResult) else None
 
+    def _record_soft(self, reason: str, component: str) -> None:
+        """记录一条软 MISS(词表/值/口径缺失),跳过该组件继续编译。
+
+        组件必须属于 SOFT_MISS_REASONS——硬 MISS 走 return 路径不经过这里,
+        归类错误会在 eval 归因与 refuse 路由中被发现。同 (reason, component)
+        去重:aggregation 与 answer_columns 可能命中同一候选,骨架提示块
+        与 miss_parts 不应重复罗列同一缺口。
+        """
+        entry = {"reason": reason, "component": component}
+        if entry not in self._soft_misses:
+            self._soft_misses.append(entry)
+
     def compile_detailed(
         self,
         plan: dict[str, Any] | None,
@@ -998,15 +1099,20 @@ class SemanticCompiler:
         matched_set = {str(t) for t in matched}
         self._matched_set = matched_set
         self._dialect = force_dialect or "sqlite"
+        # 软 MISS 收集器:每次编译重置。软 MISS 只记录组件并跳过,不提前返回;
+        # 结束时若有可编译成分 → PartialCompile(骨架),否则以首个软 MISS 为
+        # 具体拒绝分因(见 nothing_compilable 分支)。
+        self._soft_misses: list[dict[str, str]] = []
 
         agg_declared = str(plan.get("aggregation") or "").strip().lower() not in ("", "none", "无")
         matched_pairs, miss_candidates = self._match_metrics(plan)
-        if miss_candidates:
-            # 聚合候选有签名但无兼容度量 → 严格 MISS(逐候选分因)
-            return CompileMiss("no_metric_match", ", ".join(miss_candidates))
+        for cand in miss_candidates:
+            # 聚合候选有签名但无兼容度量 → 软 MISS(跳过该候选继续编译,
+            # 已命中的度量照常进骨架;全都没命中 → nothing_compilable 兜底)。
+            self._record_soft("no_metric_match", cand)
         is_agg = bool(matched_pairs)
         if agg_declared and not is_agg:
-            return CompileMiss("no_metric_match", str(plan.get("aggregation") or ""))
+            self._record_soft("no_metric_match", str(plan.get("aggregation") or ""))
         for _cand, m in matched_pairs:
             if m.datasets and m.datasets[0] not in matched_set:
                 # metric 锚定表不在 matched → 生成的 SQL 会引用未覆盖表 → 严格 MISS
@@ -1020,20 +1126,29 @@ class SemanticCompiler:
         tg = plan.get("time_grain")
         if tg:
             if not isinstance(tg, dict):
-                return CompileMiss("bad_time_grain", str(tg))
-            field_ref = str(tg.get("field") or "").strip()
-            grain = str(tg.get("grain") or "").strip().lower()
-            if grain not in GRAINS:
-                return CompileMiss("bad_time_grain", grain)
-            resolved_t = self._resolve_field(field_ref, matched_set)
-            if resolved_t is None:
-                return CompileMiss("time_field_not_declared", field_ref)
-            tf = resolved_t[1]
-            if not (tf.is_time or (tf.datatype or "").lower() in _TEMPORAL_DTYPES):
-                return CompileMiss("time_field_not_temporal", field_ref)
-            tg_field, tg_grain = resolved_t, grain
-            tg_expr = date_trunc(
-                _qualified(resolved_t[0], tf.expression), grain, self._dialect)
+                # 时间分桶组件无法解析 → 软 MISS:跳过,时间列按普通维度输出
+                self._record_soft("bad_time_grain", str(tg))
+                tg = None
+            else:
+                field_ref = str(tg.get("field") or "").strip()
+                grain = str(tg.get("grain") or "").strip().lower()
+                if grain not in GRAINS:
+                    self._record_soft("bad_time_grain", grain)
+                    tg = None
+                else:
+                    resolved_t = self._resolve_field(field_ref, matched_set)
+                    if resolved_t is None:
+                        self._record_soft("time_field_not_declared", field_ref)
+                        tg = None
+                    else:
+                        tf = resolved_t[1]
+                        if not (tf.is_time or (tf.datatype or "").lower() in _TEMPORAL_DTYPES):
+                            self._record_soft("time_field_not_temporal", field_ref)
+                            tg = None
+                        else:
+                            tg_field, tg_grain = resolved_t, grain
+                            tg_expr = date_trunc(
+                                _qualified(resolved_t[0], tf.expression), grain, self._dialect)
 
         # 投影按 answer_columns 顺序原位替换聚合项为度量表达式,按度量名
         # 去重(aggregation 与 answer_columns 同度量只投影一次——保旧
@@ -1097,7 +1212,9 @@ class SemanticCompiler:
                         proj_display.append(metric.name)
                         proj_ref.append(metric)
                     continue
-                return CompileMiss("unresolved_answer_column", ac)
+                # 列不在声明字段(且不是度量名)→ 软 MISS:跳过该列,其余投影照常
+                self._record_soft("unresolved_answer_column", ac)
+                continue
             out_cols.append(resolved)
             disp = _display_for_ac(ac, resolved)
             if tg_field is not None and resolved == tg_field:
@@ -1125,9 +1242,13 @@ class SemanticCompiler:
             proj_ref.append(m0)
         if tg_field is not None:
             if not is_agg:
-                # 时间分桶必须伴随聚合意图(裸度量名兜底可能中途转聚合题)
-                return CompileMiss("time_grain_without_aggregation", tg_grain)
-            if not tg_seen:
+                # 时间分桶必须伴随聚合意图(裸度量名兜底可能中途转聚合题);
+                # 无聚合 → 软 MISS:不注入分桶列。已在投影里完成的分桶替换保留
+                # (按时间分组的列表查询,gen_sql 按 plan 文本补聚合)。
+                self._record_soft("time_grain_without_aggregation", tg_grain)
+                if not tg_seen:
+                    tg_field = None
+            elif not tg_seen:
                 # 时间字段不在 answer_columns → 分桶表达式插在维度列之后、度量之前
                 pos = last_dim_idx + 1 if last_dim_idx is not None else 0
                 projections.insert(pos, tg_expr)
@@ -1138,23 +1259,29 @@ class SemanticCompiler:
         filters: list[tuple[str, Any, str, Any]] = []
         for cond in plan.get("conditions") or []:
             if not isinstance(cond, dict):
-                return CompileMiss("unresolved_filter_field", str(cond))
+                self._record_soft("unresolved_filter_field", str(cond))
+                continue
             field_ref = str(cond.get("field") or "").strip()
             op = str(cond.get("op") or "=").strip().lower()
             value = cond.get("value")
             resolved = self._resolve_field(field_ref, matched_set)
             if resolved is None:
-                return CompileMiss("unresolved_filter_field", field_ref)
+                self._record_soft("unresolved_filter_field", field_ref)
+                continue
             if op not in _COMPILE_OPS:
-                return CompileMiss("invalid_op", op)
+                self._record_soft("invalid_op", op)
+                continue
             if value is None:
-                return CompileMiss("missing_filter_value", field_ref)
+                self._record_soft("missing_filter_value", field_ref)
+                continue
             # 枚举字段:值经 enum_display 归一(male/男性 → 'M');无法归一
-            # → 保守 MISS(值不在声明词表 = 未覆盖,绝不静默产出 0 行 SQL)。
+            # → 软 MISS:跳过该条件,LLM 通道按 plan 文本处理(值语义缺口
+            # 是词表问题,不是结构错误——骨架保真校验仍守住其余条件)。
             if resolved[1].enum_display:
                 normalized = _normalize_enum_value(value, resolved[1].enum_display)
                 if normalized is None:
-                    return CompileMiss("enum_value_unresolved", field_ref)
+                    self._record_soft("enum_value_unresolved", field_ref)
+                    continue
                 value = normalized
             filters.append((resolved[0], resolved[1], op, value))
 
@@ -1164,42 +1291,55 @@ class SemanticCompiler:
         having_parts: list[str] = []
         for h in plan.get("having") or []:
             if not isinstance(h, dict):
-                return CompileMiss("having_metric_unknown", str(h))
+                self._record_soft("having_metric_unknown", str(h))
+                continue
             metric_ref = str(h.get("metric") or "").strip()
             field_ref = str(h.get("field") or "").strip()
             if bool(metric_ref) == bool(field_ref):
-                return CompileMiss(
+                self._record_soft(
                     "having_metric_unknown", f"field={field_ref} metric={metric_ref}")
+                continue
             op = str(h.get("op") or "=").strip().lower()
             value = h.get("value")
             if op not in _COMPILE_OPS:
-                return CompileMiss("invalid_op", op)
+                self._record_soft("invalid_op", op)
+                continue
             if value is None:
-                return CompileMiss("missing_filter_value", field_ref or metric_ref)
+                self._record_soft("missing_filter_value", field_ref or metric_ref)
+                continue
             if metric_ref:
                 metric = self._metric_by_name(metric_ref)
                 if metric is None:
-                    return CompileMiss("having_metric_unknown", metric_ref)
+                    self._record_soft("having_metric_unknown", metric_ref)
+                    continue
                 expr = self._inline_metric(metric)
                 if isinstance(expr, CompileMiss):
-                    return expr
+                    return expr  # 派生度量结构坏 → 硬 MISS(度量定义问题)
                 having_parts.append(f"{expr} {op.upper()} {_literal(value)}")
                 continue
             resolved_h = self._resolve_field(field_ref, matched_set)
             if resolved_h is None:
-                return CompileMiss("unresolved_filter_field", field_ref)
+                self._record_soft("unresolved_filter_field", field_ref)
+                continue
             if resolved_h[1].enum_display:
                 normalized_h = _normalize_enum_value(value, resolved_h[1].enum_display)
                 if normalized_h is None:
-                    return CompileMiss("enum_value_unresolved", field_ref)
+                    self._record_soft("enum_value_unresolved", field_ref)
+                    continue
                 value = normalized_h
             filters.append((resolved_h[0], resolved_h[1], op, value))
         if having_parts and not is_agg:
-            # 度量级 HAVING 只作用于聚合题;列表题挂 HAVING 是退化计划 → 严格 MISS
-            return CompileMiss("having_without_aggregation", "")
+            # 度量级 HAVING 只作用于聚合题;列表题挂 HAVING 是退化计划 → 软 MISS
+            self._record_soft("having_without_aggregation", "")
 
-        if not projections and not filters:
-            # 无可编译成分(简单问题由 fast_match/普通通道覆盖)
+        if not projections:
+            # 无投影 = 无 SELECT 列(SELECT 恒需要列):计划完全由未解析聚合
+            # 构成,骨架 SQL 无从谈起。若唯一成分全是软 MISS → 以**第一个
+            # 具体缺口**作为拒绝分因(不笼统返回 nothing_compilable)——
+            # refuse/eval 归因到真正缺的 metric/字段。
+            if self._soft_misses:
+                first = self._soft_misses[0]
+                return CompileMiss(first["reason"], first["component"])
             return CompileMiss("nothing_compilable", "")
 
         # FROM/join:以 **plan 声明的 tables** 为准(LLM 落地校验过的权威表
@@ -1359,8 +1499,11 @@ class SemanticCompiler:
                 projections, proj_display, proj_ref, tg_field, order_parts,
             )
             if isinstance(wrapped, CompileMiss):
-                return wrapped
-            sql = wrapped
+                # 分析意图无法解析 → 软 MISS:回退内层聚合 SQL,分析意图仍保留
+                # 在 plan 文本交给 gen_sql 通道,不整体拒绝。
+                self._record_soft(wrapped.reason, wrapped.component)
+            else:
+                sql = wrapped
         elif not spine_applied:
             if order_parts:
                 sql += "\nORDER BY " + ", ".join(order_parts)
@@ -1374,6 +1517,15 @@ class SemanticCompiler:
             "fix dialect or formatting if the schema demands it):\n"
             f"```sql\n{sql}\n```"
         )
+        if self._soft_misses:
+            # 软 MISS 已收集但仍有可编译成分 → 骨架(PartialCompile):
+            # 可解析部分权威化,未解析组件留给生成通道,不再整体拒绝。
+            miss_parts = list(self._soft_misses)
+            return PartialCompile(
+                sql=sql,
+                block=_partial_block(sql, miss_parts),
+                miss_parts=miss_parts,
+            )
         return CompileResult(sql=sql, block=block)
 
     # ── 窗口分析编译(plan.analysis)────────────────────────────
@@ -1882,3 +2034,121 @@ def compiled_sql_matches(
         "generated SQL does not preserve the compiled SQL's result shape "
         "(changed aggregation, filter values, projection, or joins)"
     )
+
+
+# ── Partial 骨架保真校验 ──────────────────────────────────────
+#
+# 软 MISS 分级逃生梯的守卫:骨架 SQL 的 join 边 / WHERE 条件 / GROUP BY
+# 宽度必须在生成 SQL 中保留(LLM 只被允许**补**未覆盖组件,不得改/删权威
+# 骨架)。投影列不比较(LLM 需补未解析部分);分桶表达式跨方言差异不比较
+# (GROUP BY 只比宽度)。任一 SQL 解析失败 → 保守放行。
+
+
+def _skeleton_join_edges(tree) -> set[frozenset[tuple[str, str]]]:
+    """JOIN 边集合:每条边 = {((表,列), (表,列))}(无序对,方向无关)。"""
+    from sqlglot import exp
+
+    out: set[frozenset[tuple[str, str]]] = set()
+    for j in tree.args.get("joins") or []:
+        on = j.args.get("on")
+        if on is None:
+            continue
+        for node in on.walk():
+            if not isinstance(node, exp.EQ):
+                continue
+            sides = []
+            for side in (node.this, node.expression):
+                if isinstance(side, exp.Column):
+                    sides.append((
+                        str(side.table or "").lower(),
+                        str(side.name).lower(),
+                    ))
+            if len(sides) == 2:
+                out.add(frozenset(sides))
+    return out
+
+
+def _skeleton_where(tree) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
+    """WHERE 条件集合:(列集, 操作符, 字面量值元组)。"""
+    from sqlglot import exp
+
+    out: set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]] = set()
+    where = tree.args.get("where")
+    if where is None:
+        return out
+    for node in where.walk():
+        if not isinstance(node, exp.Binary):
+            continue
+        cols = frozenset(
+            (str(c.table or "").lower(), str(c.name).lower())
+            for c in node.find_all(exp.Column)
+        )
+        vals = tuple(sorted(
+            str(l.this) for l in node.expression.find_all(exp.Literal)))
+        out.add((cols, str(node.key), vals))
+    return out
+
+
+def _skeleton_col_in(skel_col: tuple[str, str], gen_cols) -> bool:
+    """骨架列是否被生成条件列覆盖:表名一致,或任一侧未限定(按列名匹配)。"""
+    st, sc = skel_col
+    for gt, gc in gen_cols:
+        if gc == sc and (gt == st or not gt or not st):
+            return True
+    return False
+
+
+def skeleton_preserved(
+    skeleton: str,
+    generated: str,
+    generated_dialect: str = "sqlite",
+) -> tuple[bool, str]:
+    """Partial 骨架保真校验:join 边/WHERE 条件/分组宽度必须保留。
+
+    与 ``compiled_sql_matches`` 的差别:投影列不参与比较(LLM 需补未解析
+    组件),join 顺序、分桶表达式方言差异被容忍。任一 SQL 解析失败/非
+    SELECT → 保守放行(True)。
+    """
+    if not skeleton or not generated:
+        return True, ""
+
+    from sqlglot import exp, parse_one
+
+    def _select(q):
+        if isinstance(q, exp.With):
+            q = q.this
+        return q if isinstance(q, exp.Select) else None
+
+    try:
+        stree = parse_one(skeleton, read=generated_dialect)
+        gtree = parse_one(generated, read=generated_dialect)
+    except Exception:
+        return True, ""
+    s = _select(stree)
+    g = _select(gtree)
+    if s is None or g is None:
+        return True, ""
+
+    missing_joins = _skeleton_join_edges(s) - _skeleton_join_edges(g)
+    if missing_joins:
+        return False, "generated SQL dropped a skeleton join"
+
+    gen_where = _skeleton_where(g)
+    for cols, op, vals in _skeleton_where(s):
+        if not any(
+            gop == op and gvals == vals
+            and all(_skeleton_col_in(c, gcols) for c in cols)
+            for gcols, gop, gvals in gen_where
+        ):
+            return False, "generated SQL dropped a skeleton filter condition"
+
+    def _group_count(q) -> int:
+        grp = q.args.get("group")
+        if grp is None:
+            return 0
+        return len(grp.expressions or [])
+
+    if _group_count(g) < _group_count(s):
+        return False, "generated SQL dropped a grouping dimension from the skeleton"
+
+    return True, ""

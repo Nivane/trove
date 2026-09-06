@@ -40,11 +40,12 @@ export interface StepView {
     rewritten?: boolean
     substituted?: boolean
   }
-  /** query_sketch: 编译决策(compiled/miss)与计划校验。 */
+  /** query_sketch: 编译决策(compiled/partial/miss)与计划校验。 */
   compile?: {
     outcome?: string
     missReason?: string
     missComponent?: string
+    partialReasons?: string[]
   }
   planValidation?: {
     status?: string
@@ -257,6 +258,9 @@ export function extractStep(payload: StepPayload): StepView {
         outcome: str(cm.outcome),
         missReason: str(cm.miss_reason),
         missComponent: str(cm.miss_component),
+        partialReasons: Array.isArray(cm.partial_reasons)
+          ? (cm.partial_reasons as string[])
+          : undefined,
       }
     }
     const pv = get(payload, 'plan_validation') as

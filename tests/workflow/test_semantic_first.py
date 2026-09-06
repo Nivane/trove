@@ -347,6 +347,116 @@ class TestQuerySketchSemanticFirst:
         assert out["compiled"] is True
         assert "WHERE" not in out["compiled_sql"]  # 未注入区间条件
 
+    async def test_query_sketch_soft_miss_partial_proceeds(self):
+        """分级逃生梯:软 MISS(未声明的枚举值)不再拒绝——骨架注入 plan,
+        compiled=True + compile_partial=True,回答照常生成。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        # loan 带 enum_display 的 status 字段:值 'Z' 不在词表 → enum_value_unresolved
+        f = lambda name, **kw: SemanticField(name=name, expression=name, **kw)  # noqa: E731
+        model = SemanticModel(
+            name="fin",
+            datasets=[SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                f("loan_id"), f("account_id"), f("amount"),
+                f("status", semantic_role="enum", enum_display={"A": "active", "B": "closed"}),
+            ])],
+            metrics=[
+                SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
+                               datasets=["loan"]),
+            ],
+        )
+        node = make_query_sketch(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [{"field": "loan.status", "op": "=", "value": "Z"}],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(model),
+        )
+        out = await node(make_state(question="状态为 Z 的贷款数?", matched_tables=["loan"]))
+        # 不拒绝:照常走 gen_sql(骨架路径)
+        assert "refusal" not in out
+        assert out["compiled"] is True
+        assert out["compile_partial"] is True
+        # 骨架 SQL 含权威部分(度量投影);未覆盖条件留给 LLM 补
+        assert "COUNT(loan.loan_id)" in out["compiled_sql"]
+        assert out["compile_meta"]["outcome"] == "partial"
+        # plan 文本带骨架提示块 + 未覆盖组件清单
+        assert "Compiled skeleton (authoritative" in out["plan"]
+        assert "enum_value_unresolved: loan.status" in out["plan"]
+        # 未覆盖组件结构化记录(学习/归因)
+        assert out["compile_misses"] == [
+            {"reason": "enum_value_unresolved", "component": "loan.status"}]
+
+    async def test_query_sketch_soft_miss_filter_field_partial(self):
+        """未声明过滤字段 → 软 MISS 骨架,同样不拒绝。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        node = make_query_sketch(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [{"field": "loan.ghost_col", "op": "=", "value": "x"}],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(self._demo_model()),
+        )
+        out = await node(make_state(question="?", matched_tables=["loan"]))
+        assert "refusal" not in out
+        assert out["compile_partial"] is True
+        assert out["compile_meta"]["outcome"] == "partial"
+        assert "unresolved_filter_field: loan.ghost_col" in out["plan"]
+
+    async def test_query_sketch_hard_miss_still_refuses(self):
+        """硬 MISS(结构性)仍拒绝——fan_out/二义/未覆盖表不逃生。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        # metric 完全未命中 + 无其他可解析成分 → 首个软 MISS 作为拒绝分因
+        node = make_query_sketch(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan"],
+                "aggregation": "sum(loan.ghost)",
+                "answer_columns": ["sum(loan.ghost)"],
+                "conditions": [],
+            })]),
+            AgentConfig(target="mock/model", semantic_first=True),
+            semantic_layer=FakeProvider(self._demo_model()),
+        )
+        out = await node(make_state(question="贷款总额?", matched_tables=["loan"]))
+        assert out["refusal"] is not None
+        assert out["compile_meta"]["outcome"] == "miss"
+        assert out["compile_meta"]["miss_reason"] == "no_metric_match"
+
     async def test_query_sketch_writes_compile_meta_both_paths(self):
         """编译决策观测:命中与 MISS 都写 compile_meta(eval hit-rate 闭环数据源)。"""
         from trove.workflow.nodes.query_sketch import make_query_sketch

@@ -183,8 +183,14 @@ def test_enum_value_list_normalized():
     assert "client.gender IN ('F', 'M')" in result.sql
 
 
-def test_enum_value_unresolved_is_strict_miss():
-    """值不在声明词表 → 保守 MISS(绝不静默产出 0 行 SQL)。"""
+def test_enum_value_unresolved_is_soft_partial_compile():
+    """值不在声明词表 → 软 MISS(分级逃生梯):不再整体拒绝。
+
+    编译产出 PartialCompile 骨架——可解析部分(度量/投影)权威化,未归一
+    的过滤值留给生成通道按 plan 文本处理,由骨架保真校验 + rules 链兜底。
+    """
+    from trove.services.semantic_layer.compiler import PartialCompile
+
     model = _client_model()
     plan = {
         "tables": ["client"],
@@ -193,9 +199,96 @@ def test_enum_value_unresolved_is_strict_miss():
         "conditions": [{"field": "client.gender", "op": "=", "value": "x"}],
     }
     res = SemanticCompiler(model).compile_detailed(plan, ["client"])
-    from trove.services.semantic_layer.compiler import CompileMiss
-    assert isinstance(res, CompileMiss)
-    assert res.reason == "enum_value_unresolved"
+    assert isinstance(res, PartialCompile)
+    # 可解析部分仍在骨架里(度量投影保留)
+    assert "COUNT(client.client_id)" in res.sql
+    # 未解析条件被跳过,骨架 SQL 不包含该过滤(留给 LLM 补)
+    assert "gender" not in res.sql
+    # miss_parts 记录具体缺口:reason slug + 组件
+    assert any(
+        p["reason"] == "enum_value_unresolved" and p["component"] == "client.gender"
+        for p in res.miss_parts
+    )
+    # 骨架提示块带「未覆盖组件清单」
+    assert "Compiled skeleton (authoritative" in res.block
+    assert "enum_value_unresolved: client.gender" in res.block
+    # 旧契约(compile_from_plan)对 partial 仍返回 None
+    assert SemanticCompiler(model).compile_from_plan(plan, ["client"]) is None
+
+
+def test_partial_keeps_resolved_metric_drops_unresolved_filter():
+    """多组件 plan:可解析部分(度量)编译,未声明字段过滤软 MISS 跳过。"""
+    from trove.services.semantic_layer.compiler import PartialCompile
+
+    plan = {
+        "tables": ["loan"],
+        "aggregation": "number of loan records",
+        "answer_columns": ["number of loan records"],
+        "conditions": [
+            {"field": "loan.amount", "op": ">", "value": 1000},   # 可解析
+            {"field": "loan.ghost_col", "op": "=", "value": "x"},  # 未声明
+        ],
+    }
+    res = SemanticCompiler(_demo_model()).compile_detailed(plan, ["loan"])
+    assert isinstance(res, PartialCompile)
+    assert "loan.amount > 1000" in res.sql
+    assert "ghost_col" not in res.sql
+    assert any(
+        p["reason"] == "unresolved_filter_field" and p["component"] == "loan.ghost_col"
+        for p in res.miss_parts
+    )
+
+
+def test_partial_multi_metric_keeps_resolved_ones():
+    """多度量候选:已命中的进骨架,未命中的记录为 no_metric_match 软 MISS。"""
+    from trove.services.semantic_layer.compiler import PartialCompile
+
+    plan = {
+        "tables": ["loan"],
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["count(loan.loan_id)", "sum(loan.ghost)"],
+        "conditions": [],
+    }
+    res = SemanticCompiler(_demo_model()).compile_detailed(plan, ["loan"])
+    assert isinstance(res, PartialCompile)
+    assert "COUNT(loan.loan_id)" in res.sql
+    assert "ghost" not in res.sql
+    assert any(
+        p["reason"] == "no_metric_match" and "sum(loan.ghost)" in p["component"]
+        for p in res.miss_parts
+    )
+
+
+def test_partial_time_grain_drop_keeps_rest():
+    """时间分桶组件不可解析 → 软 MISS:分桶丢弃,其余照常编译。"""
+    from trove.services.semantic_layer.compiler import PartialCompile
+
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.ghost_date", "grain": "year"},
+    }
+    res = SemanticCompiler(_demo_model()).compile_detailed(plan, ["loan"])
+    assert isinstance(res, PartialCompile)
+    assert "loan.date" in res.sql          # 时间列按普通维度输出
+    assert "strftime" not in res.sql       # 分桶未应用
+    assert any(p["reason"] == "time_field_not_declared" for p in res.miss_parts)
+
+
+def test_partial_analysis_fallback_to_inner_sql():
+    """窗口分析意图无法解析 → 软 MISS:回退内层聚合 SQL,不整体拒绝。"""
+    from trove.services.semantic_layer.compiler import PartialCompile
+
+    plan = {
+        "aggregation": "sum(loan.amount)",
+        "answer_columns": ["loan.date", "sum(loan.amount)"],
+        "time_grain": {"field": "loan.date", "grain": "month"},
+        "analysis": {"type": "mom", "metric": "ghost_metric"},
+    }
+    res = SemanticCompiler(_demo_model()).compile_detailed(plan, ["loan"])
+    assert isinstance(res, PartialCompile)
+    assert "SUM(loan.amount)" in res.sql
+    assert any(p["reason"] == "analysis_metric_unknown" for p in res.miss_parts)
 
 
 def test_enum_value_ignored_when_no_enum_display():
@@ -1097,3 +1190,108 @@ def test_ordering_with_time_grain_uses_bucketed_expr():
     result = _compile(plan, ["loan"])
     assert result is not None
     assert result.sql.endswith("ORDER BY strftime('%Y-%m', loan.date) DESC")
+
+
+# ── 骨架保真校验(skeleton_preserved)─────────────────────────
+
+_SKELETON = (
+    "SELECT district.A3, SUM(loan.amount)\n"
+    "FROM loan\n"
+    "JOIN account ON loan.account_id = account.account_id\n"
+    "JOIN district ON account.district_id = district.district_id\n"
+    "WHERE loan.status = 'A'\n"
+    "GROUP BY district.A3"
+)
+
+
+def _skel(gen):
+    from trove.services.semantic_layer.compiler import skeleton_preserved
+    return skeleton_preserved(_SKELETON, gen)
+
+
+def test_skeleton_preserved_exact_reproduction():
+    assert _skel(_SKELETON) == (True, "")
+
+
+def test_skeleton_preserved_allows_added_projection():
+    """骨架保真:投影列允许 LLM 补缺(partial 的核心:只锁 join/过滤/分组)。"""
+    gen = (
+        "SELECT district.A3, SUM(loan.amount), COUNT(loan.loan_id)\n"
+        "FROM loan\n"
+        "JOIN account ON loan.account_id = account.account_id\n"
+        "JOIN district ON account.district_id = district.district_id\n"
+        "WHERE loan.status = 'A'\n"
+        "GROUP BY district.A3"
+    )
+    ok, _why = _skel(gen)
+    assert ok
+
+
+def test_skeleton_preserved_rejects_dropped_join():
+    gen = (
+        "SELECT district.A3, SUM(loan.amount)\n"
+        "FROM loan\n"
+        "JOIN district ON loan.account_id = district.district_id\n"
+        "WHERE loan.status = 'A'\n"
+        "GROUP BY district.A3"
+    )
+    ok, why = _skel(gen)
+    assert not ok and "join" in why
+
+
+def test_skeleton_preserved_rejects_dropped_filter():
+    gen = (
+        "SELECT district.A3, SUM(loan.amount)\n"
+        "FROM loan\n"
+        "JOIN account ON loan.account_id = account.account_id\n"
+        "JOIN district ON account.district_id = district.district_id\n"
+        "GROUP BY district.A3"
+    )
+    ok, why = _skel(gen)
+    assert not ok and "filter" in why
+
+
+def test_skeleton_preserved_rejects_dropped_group_dimension():
+    gen = (
+        "SELECT SUM(loan.amount)\n"
+        "FROM loan\n"
+        "JOIN account ON loan.account_id = account.account_id\n"
+        "JOIN district ON account.district_id = district.district_id\n"
+        "WHERE loan.status = 'A'"
+    )
+    ok, why = _skel(gen)
+    assert not ok and "group" in why
+
+
+def test_skeleton_preserved_allows_join_order_change():
+    """JOIN 顺序调整不触发 drift(表对边集合比较,方向无关)。"""
+    gen = (
+        "SELECT district.A3, SUM(loan.amount)\n"
+        "FROM loan\n"
+        "JOIN district ON account.district_id = district.district_id\n"
+        "JOIN account ON loan.account_id = account.account_id\n"
+        "WHERE loan.status = 'A'\n"
+        "GROUP BY district.A3"
+    )
+    ok, _why = _skel(gen)
+    assert ok
+
+
+def test_skeleton_preserved_unparseable_passes():
+    from trove.services.semantic_layer.compiler import skeleton_preserved
+    ok, _why = skeleton_preserved("SELECT 1", "NOT A QUERY !!!")
+    assert ok
+
+
+def test_hard_soft_miss_classification():
+    """路由判定:硬 MISS 拒绝,软 MISS 逃生(见 HARD/SOFT_MISS_REASONS)。"""
+    from trove.services.semantic_layer.compiler import is_hard_miss
+
+    assert is_hard_miss("fan_out") is True
+    assert is_hard_miss("ambiguous_join_path") is True
+    assert is_hard_miss("metric_anchor_unmatched") is True
+    assert is_hard_miss("no_metric_match") is False
+    assert is_hard_miss("enum_value_unresolved") is False
+    assert is_hard_miss("unresolved_filter_field") is False
+    # 未分类原因默认硬(宁可拒绝,不产错 SQL)
+    assert is_hard_miss("mystery_reason") is True

@@ -153,7 +153,13 @@ def _result_entry(
     if final is not None:
         entry.update({
             "pred_sql": final.sql or "",
-            "path": "compiled" if getattr(final, "compiled", False) else "llm",
+            # path 归因:partial(软 MISS 骨架)→ 单独一类(编译通道的
+            # 分级逃生梯,区别于全量 compiled 与裸 llm 生成)。
+            "path": (
+                "partial"
+                if getattr(final, "compile_partial", False)
+                else ("compiled" if getattr(final, "compiled", False) else "llm")
+            ),
             "compile_meta": getattr(final, "compile_meta", {}) or {},
             "kb_hits": final.kb_hits,
             "retries": final.retry_count,

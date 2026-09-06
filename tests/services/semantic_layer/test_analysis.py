@@ -10,7 +10,11 @@ import sqlite3
 
 import pytest
 
-from trove.services.semantic_layer.compiler import CompileMiss, SemanticCompiler
+from trove.services.semantic_layer.compiler import (
+    CompileMiss,
+    PartialCompile,
+    SemanticCompiler,
+)
 from trove.services.semantic_layer.models import (
     SemanticDataset,
     SemanticField,
@@ -127,8 +131,11 @@ class TestRunningTotal:
     def test_running_total_needs_time(self):
         plan = _base_agg()
         plan["analysis"] = {"type": "running_total"}
-        miss = _compile(plan)
-        assert isinstance(miss, CompileMiss) and miss.reason == "analysis_time_required"
+        res = _compile(plan)
+        # 软 MISS:分析缺时间维度 → 回退内层聚合,不整体拒绝
+        assert isinstance(res, PartialCompile)
+        assert any(p["reason"] == "analysis_time_required" for p in res.miss_parts)
+        assert "SUM(loan.amount)" in res.sql
 
 
 class TestMomYoyPct:
@@ -193,36 +200,39 @@ class TestLimit:
 
 
 class TestAnalysisMiss:
+    """分析组件软 MISS → PartialCompile 骨架(回退内层聚合),不整体拒绝。"""
+
+    def _soft_miss_reason(self, plan):
+        res = _compile(plan)
+        assert isinstance(res, PartialCompile), f"expected partial, got {res!r}"
+        assert "SUM(loan.amount)" in res.sql  # 内层聚合仍编译
+        return [p["reason"] for p in res.miss_parts]
+
     def test_unsupported_type(self):
         plan = _base_agg()
         plan["analysis"] = {"type": "pivot"}
-        miss = _compile(plan)
-        assert isinstance(miss, CompileMiss) and miss.reason == "analysis_unsupported_type"
+        assert "analysis_unsupported_type" in self._soft_miss_reason(plan)
 
     def test_unknown_metric(self):
         plan = _base_agg()
         plan["analysis"] = {"type": "share", "metric": "nonexistent"}
-        miss = _compile(plan)
-        assert isinstance(miss, CompileMiss) and miss.reason == "analysis_metric_unknown"
+        assert "analysis_metric_unknown" in self._soft_miss_reason(plan)
 
     def test_multiple_metrics_analysis_miss(self):
         plan = _base_agg()
         plan["answer_columns"] = ["district.A3", "sum(loan.amount)", "count(loan.loan_id)"]
         plan["analysis"] = {"type": "share"}
-        miss = _compile(plan)
-        assert isinstance(miss, CompileMiss) and miss.reason == "analysis_metric_unknown"
+        assert "analysis_metric_unknown" in self._soft_miss_reason(plan)
 
     def test_unresolved_order(self):
         plan = _base_agg(dim_cols=["loan.date"], time_grain={"field": "loan.date", "grain": "month"})
         plan["analysis"] = {"type": "mom", "order_by": "loan.nonexistent"}
-        miss = _compile(plan)
-        assert isinstance(miss, CompileMiss) and miss.reason == "analysis_order_unresolved"
+        assert "analysis_order_unresolved" in self._soft_miss_reason(plan)
 
     def test_unresolved_partition(self):
         plan = _base_agg()
         plan["analysis"] = {"type": "rank", "partition_by": ["loan.bogus"]}
-        miss = _compile(plan)
-        assert isinstance(miss, CompileMiss) and miss.reason == "analysis_partition_unresolved"
+        assert "analysis_partition_unresolved" in self._soft_miss_reason(plan)
 
     def test_analysis_guardrail_passes(self):
         """分析产物仍过 validate_compiled_sql 守门(不引用连接树外表)。"""

@@ -124,6 +124,13 @@ class WorkflowState(BaseModel):
     compiled_sql: str = ""
     compiled: bool = False
 
+    # 分级逃生梯(软 MISS 骨架):compiled=True 但 compile_partial=True 时,
+    # compiled_sql 是权威**骨架**(join/过滤/分组),未覆盖组件由生成通道补齐;
+    # execute_sql 对 partial 走骨架保真校验而非全量照抄校验。compile_misses
+    # 记录未覆盖组件 [{reason, component}](学习/归因)。
+    compile_partial: bool = False
+    compile_misses: list[dict[str, str]] = Field(default_factory=list)
+
     # 编译决策观测(query_sketch 恒写):{outcome: compiled|miss, miss_reason,
     # miss_component, plan_typed, semantic_layer}——eval 统计 compile
     # hit-rate 与 MISS 分因的闭环数据源;RunTracer 自动 dump 进 run log。

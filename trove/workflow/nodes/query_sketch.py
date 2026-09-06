@@ -20,6 +20,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import render_skills
+from trove.services.semantic_layer.compiler import PartialCompile
 from trove.services.semantic_layer.plan import PlanQuery, parse_plan_query
 from trove.workflow.state import WorkflowState
 
@@ -754,13 +755,18 @@ def _compile_semantic(
     matched: list[str],
     semantic_layer,
     dialect: str = "sqlite",
-) -> tuple[tuple[str, str] | None, CompileMiss | None]:
+) -> tuple[CompileResult | PartialCompile | None, CompileMiss | None]:
     """语义层覆盖内 → ((权威 SQL, 提示块), None);MISS → (None, CompileMiss)。
 
     受限选择编译:plan 的 metric/group_by/filters 必须全部解析到已声明
     metric/field/relationship,AND guardrail 放行才注入 gen_sql;否则原样
     走现有通道。全程确定性,零额外 LLM 调用。miss reason(结构化分因)
     带出供 query_sketch/refuse/eval 归因——不再被丢弃成笼统「uncovered」。
+
+    分级逃生梯(soften over-rejection):软 MISS(词表/值/口径未声明)不整体
+    拒绝——编译器产出 ``PartialCompile`` 骨架(可解析部分权威化),消费方
+    注入 gen_sql 让 LLM 补缺并照常回答;只有硬 MISS(结构性:fan-out/二义/
+    未覆盖表/坏定义)才返回 CompileMiss 触发 refuse。
 
     入参可为强类型 PlanQuery(query_sketch 解析后的 AST)或 raw dict——
     编译器内部统一按 dict 流处理,两条路径产物字节级一致。dialect 来自
@@ -769,6 +775,7 @@ def _compile_semantic(
     from trove.services.semantic_layer.compiler import (
         CompileMiss,
         CompileResult,
+        PartialCompile,
         SemanticCompiler,
         validate_compiled_sql,
     )
@@ -792,7 +799,7 @@ def _compile_semantic(
                 "Compiled SQL rejected by guardrail: %s", "; ".join(violations))
             return None, CompileMiss(
                 "guardrail_rejected", "; ".join(violations))
-        return (result.sql, result.block), None
+        return result, None
     except Exception as e:
         logger.warning("Semantic compilation failed: %s", e)
         return None, CompileMiss("guardrail_rejected", str(e)[:200])
@@ -987,12 +994,23 @@ def make_query_sketch(
                 plan_query if plan_query is not None else plan_json,
                 state.matched_tables, semantic_layer, dialect,
             )
-            # 编译决策观测:恒写(命中/MISS/短路),eval hit-rate 归因闭环。
+            # 编译决策观测:恒写(compiled/partial/miss),eval hit-rate 归因闭环。
+            # 软 MISS 不再整体拒绝——编译器产出 PartialCompile 骨架,回答照常
+            # 交付,未覆盖组件清单(partial_reasons)供学习与归因。
+            is_partial = isinstance(compiled, PartialCompile)
             compile_meta = {
-                "outcome": "compiled" if compiled is not None else "miss",
+                "outcome": (
+                    "partial"
+                    if is_partial
+                    else ("compiled" if compiled is not None else "miss")
+                ),
                 "plan_typed": plan_query is not None,
                 "semantic_layer": semantic_layer is not None,
             }
+            if is_partial:
+                compile_meta["partial_reasons"] = [
+                    m.get("reason") for m in compiled.miss_parts
+                ]
             if compiled is not None:
                 compile_meta.update(miss_reason="", miss_component="")
             elif miss is not None:
@@ -1007,14 +1025,19 @@ def make_query_sketch(
                 compile_meta.update(miss_reason="unknown", miss_component="")
             update["compile_meta"] = compile_meta
             if compiled is not None:
-                compiled_sql, block = compiled
+                block = compiled.block
                 update["plan"] = f"{plan}\n\n{block}" if plan else block
-                update["compiled_sql"] = compiled_sql
+                update["compiled_sql"] = compiled.sql
                 update["compiled"] = True
+                if is_partial:
+                    # 分级逃生梯:软 MISS 组件注入状态(execute_sql 走骨架保真
+                    # 校验;不置 refusal——本回答照常生成,不是硬停)。
+                    update["compile_partial"] = True
+                    update["compile_misses"] = list(compiled.miss_parts)
             else:
-                # 语义优先(Phase B,决策 4):编译 MISS 不再静默降级裸表——
-                # 计划有真实意图但组件未覆盖 → 拒绝信号,图路由到 refuse 节点
-                # (LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞计划
+                # 语义优先(Phase B,决策 4):硬 MISS(结构性)不静默降级裸表——
+                # 计划有真实意图但组件结构性未覆盖 → 拒绝信号,图路由到 refuse
+                # 节点(LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞计划
                 # 不拒绝,gen_sql 从 semantic_context 照常生成。
                 if _plan_has_intent(plan_json):
                     refusal = {

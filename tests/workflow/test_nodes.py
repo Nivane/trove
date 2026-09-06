@@ -1542,6 +1542,55 @@ class TestExecuteSQLCompileDrift:
         ))
         assert update["row_count"] == 1  # 未走 drift 门,正常执行(聚合 1 行)
 
+    async def test_partial_skeleton_preserved_allows_added_projection(
+            self, sqlite_registry):
+        """partial 骨架:join/过滤/分组保留 + 投影补缺 → 不触发 drift,照常执行。"""
+        node = make_execute_sql(sqlite_registry)
+        skeleton = (
+            "SELECT COUNT(name)\n"
+            "FROM students\n"
+            "WHERE students.grade = 95"
+        )
+        generated = (
+            "SELECT COUNT(name), MAX(students.grade)\n"
+            "FROM students\n"
+            "WHERE students.grade = 95"
+        )
+        state = make_state(
+            sql=generated,
+            compiled=True,
+            compile_partial=True,
+            compiled_sql=skeleton,
+        )
+        update = await node(state)
+        assert update["row_count"] == 1  # 投影被补全后正常执行
+        assert "COMPILE_DRIFT" not in update
+
+    async def test_partial_skeleton_dropped_join_blocks(self, sqlite_registry):
+        """partial 骨架:LLM 删掉骨架 join → 打回 gen_sql(骨架保真校验)。"""
+        node = make_execute_sql(sqlite_registry)
+        skeleton = (
+            "SELECT students.grade, COUNT(name)\n"
+            "FROM students\n"
+            "JOIN classes ON students.class_id = classes.id\n"
+            "GROUP BY students.grade"
+        )
+        generated = (  # 删了 join
+            "SELECT students.grade, COUNT(name)\n"
+            "FROM students\n"
+            "GROUP BY students.grade"
+        )
+        state = make_state(
+            sql=generated,
+            compiled=True,
+            compile_partial=True,
+            compiled_sql=skeleton,
+        )
+        update = await node(state)
+        assert "COMPILE_DRIFT" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["row_count"] == -1
+
 
 class TestExecuteSQLTransientRetry:
     """执行瞬态重试：连接抖动重跑同一 SQL；SQL 错误不重试。"""

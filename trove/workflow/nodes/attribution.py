@@ -187,7 +187,10 @@ def _compile_hop(
     维度字段(非聚合列 → GROUP BY),末段为度量名(裸名 → 度量投影)。
     """
     try:
-        from trove.services.semantic_layer.compiler import CompileMiss, SemanticCompiler
+        from trove.services.semantic_layer.compiler import (
+            CompileResult,
+            SemanticCompiler,
+        )
 
         model = semantic_layer.model()
         if model is None:
@@ -203,7 +206,8 @@ def _compile_hop(
             "conditions": conds,
         }
         result = compiler.compile_detailed(plan, list(matched), force_dialect=dialect)
-        if isinstance(result, CompileMiss):
+        # 归因下钻需要完整编译(软 MISS 骨架不算——跳一跳不能建立在缺组件上)
+        if not isinstance(result, CompileResult):
             return None
         return result.sql
     except Exception as e:

@@ -17,6 +17,7 @@ from typing import Any
 
 from trove.services.semantic_layer.compiler import (
     CompileMiss,
+    PartialCompile,
     SemanticCompiler,
     _agg_signature,
     _sig_compatible,
@@ -181,6 +182,12 @@ def build_and_compile(
     if isinstance(result, CompileMiss):
         raise SemanticQueryError(
             f"compilation failed: {result.reason} ({result.component})")
+    if isinstance(result, PartialCompile):
+        # 声明式 API 保持严格契约:「未声明即 422」。partial 是 NL 通道的
+        # 分级逃生梯产物,API 客户端显式请求的组件必须全部解析。
+        details = "; ".join(
+            f"{p.get('reason')}: {p.get('component')}" for p in result.miss_parts)
+        raise SemanticQueryError(f"compilation incomplete: {details}")
     violations = validate_compiled_sql(result.sql, model, list(matched))
     if violations:
         raise SemanticQueryError("guardrail rejected: " + "; ".join(violations))

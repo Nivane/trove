@@ -18,7 +18,10 @@ from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
-from trove.services.semantic_layer.compiler import compiled_sql_matches
+from trove.services.semantic_layer.compiler import (
+    compiled_sql_matches,
+    skeleton_preserved,
+)
 from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState, budget_exhausted
 
@@ -66,8 +69,13 @@ def make_execute_sql(
         # 复现编译器拼出的权威 SQL——偏离(改聚合/加别名/调 join 等)直接
         # 打回 gen_sql 重生成,而不是把被 LLM 改坏的 SQL 拿去执行。该偏离
         # 进入统一修正轮(analyze_error 确定性短路径 + versions 回归链)。
+        # 分级逃生梯:partial(软 MISS 骨架)走骨架保真校验——join/过滤/分组
+        # 必须保留,投影允许 LLM 补缺。
         if state.compiled and state.compiled_sql:
-            ok, why = compiled_sql_matches(state.compiled_sql, state.sql, state.dialect)
+            if state.compile_partial:
+                ok, why = skeleton_preserved(state.compiled_sql, state.sql, state.dialect)
+            else:
+                ok, why = compiled_sql_matches(state.compiled_sql, state.sql, state.dialect)
             if not ok:
                 logger.info("compile drift for %r: %s", state.question[:80], why)
                 return _compile_drift_failure(state, max_retries)

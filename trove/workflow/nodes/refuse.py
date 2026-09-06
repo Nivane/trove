@@ -283,7 +283,7 @@ async def _mechanical_metric_ok(
     if not name or not expr:
         return ""
     from trove.services.semantic_layer.compiler import (
-        CompileMiss,
+        CompileResult,
         SemanticCompiler,
         _agg_signature,
         validate_compiled_sql,
@@ -346,7 +346,9 @@ async def _mechanical_metric_ok(
     try:
         result = SemanticCompiler(probe).compile_detailed(
             plan, [ds_name], force_dialect=dialect)
-        if isinstance(result, CompileMiss):
+        # B 档自动确认要求**完整编译**(软 MISS 骨架不算——机械聚合指标必须
+        # 全解析才可免人工入库)。
+        if not isinstance(result, CompileResult):
             return ""
         if validate_compiled_sql(result.sql, probe, [ds_name]):
             return ""

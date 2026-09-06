@@ -99,6 +99,10 @@
           <span class="k">{{ t('compileMissReason', ui.lang) }}</span>
           <span class="mono">{{ view.compile.missReason }}</span>
         </div>
+        <div v-if="view.compile?.partialReasons?.length" class="link-row">
+          <span class="k">{{ t('compilePartialReasons', ui.lang) }}</span>
+          <span class="mono">{{ view.compile.partialReasons.join(', ') }}</span>
+        </div>
         <div v-if="view.planValidation" class="link-row">
           <span class="k">{{ t('planCheck', ui.lang) }}</span>
           <span class="v">{{ view.planValidation.status ?? '—' }}</span>
