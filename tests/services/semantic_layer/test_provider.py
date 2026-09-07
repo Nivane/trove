@@ -262,6 +262,56 @@ def test_kb_metric_overrides_directory_source(tmp_path, semantic_dir):
     assert metrics["total_loan_amount"].definition == "KB authoritative"
 
 
+# ── 模型级扩展面合并透传(此前被 merge 路径静默丢弃)────────────
+
+SPINE_MODEL = """
+version: "0.2.0.dev0"
+semantic_model:
+  - name: financial_analytics
+    ai_context:
+      examples: ["total loans by month"]
+    custom_extensions:
+      - vendor_name: trove
+        data: "audit:2026"
+    datasets:
+      - name: loan
+        source: financial.loan
+        primary_key: [loan_id]
+        fields:
+          - name: date
+            expression: {dialects: [{dialect: ANSI_SQL, expression: date}]}
+    metrics:
+      - name: total_amount
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+    time_spine:
+      field: loan.date
+      granularity: month
+      fill: "0"
+"""
+
+
+def test_merge_preserves_model_level_fields(tmp_path, semantic_dir):
+    """KB(override)与配置目录(base)合并时,模型级字段不丢失。"""
+    kb_path = Path(tmp_path) / "kb" / "financial" / "semantics.yml"
+    kb_path.parent.mkdir(parents=True, exist_ok=True)
+    kb_path.write_text(SPINE_MODEL, encoding="utf-8")
+    _write(semantic_dir, SAMPLE)
+    p = SemanticLayerProvider(semantic_dir, "financial", kb_semantics_path=kb_path)
+
+    m = p.model()
+    assert m is not None
+    assert m.time_spine is not None
+    assert m.time_spine.field == "loan.date"
+    assert m.time_spine.granularity == "month"
+    assert m.time_spine.fill == "0"
+    assert m.version == "0.2.0.dev0"
+    assert m.examples == ["total loans by month"]
+    assert any(e["vendor_name"] == "trove" for e in m.custom_extensions)
+    # 数据集/度量仍按名合并
+    assert {d.name for d in m.datasets} == {"loan", "account"}
+    assert {x.name for x in m.metrics} == {"total_loan_amount", "avg_loan_per_account", "total_amount"}
+
+
 # ── 漂移检测(声明模型 vs 实时 catalog)──────────────────────
 
 DRIFT_MODEL = """

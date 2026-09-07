@@ -86,6 +86,11 @@ def _merge_models(base: SemanticModel, override: SemanticModel) -> SemanticModel
         metrics=metrics,
         datasets=list(datasets.values()),
         relationships=list(relationships.values()),
+        # 模型级扩展面透传(此前被合并路径静默丢弃):KB(override)优先。
+        version=override.version or base.version,
+        examples=override.examples or base.examples,
+        custom_extensions=override.custom_extensions or base.custom_extensions,
+        time_spine=override.time_spine or base.time_spine,
     )
 
 
