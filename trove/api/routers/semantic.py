@@ -54,14 +54,47 @@ def _resolve_datasource(request: Request, name: str) -> str:
     return name
 
 
+async def _semantic_drift(request: Request, ds: str, dialect: str) -> dict[str, Any]:
+    """实时 catalog vs 语义模型声明的漂移报告(admin 展示用,零 LLM)。
+
+    语义层是权威可答边界,声明的表/字段/键/关系端点与物理 schema 不一致
+    (stale)时在管理端提示重跑 ``/kb init`` 或修正声明;catalog 获取失败 →
+    空报告(不误报)。
+    """
+    from pathlib import Path
+
+    from trove.services.semantic_layer.provider import SemanticLayerProvider
+
+    try:
+        adapter = await _registry(request).get(ds)
+        schema = await adapter.get_schema()
+    except Exception:
+        return {"stale": False}
+    catalog = {
+        t.name.lower(): {c.name.lower() for c in t.columns}
+        for t in schema.tables
+    }
+    provider = SemanticLayerProvider(
+        directory=Path.cwd() / ".trove" / "semantic" / ds,
+        datasource=ds,
+        dialect=dialect,
+        catalog=catalog,
+        kb_semantics_path=_kb(request).semantics_path(ds),
+    )
+    return provider.drift()
+
+
 @router.get("/admin/semantic/{name}")
 async def semantic_detail(
     name: str, request: Request, admin: dict = Depends(require_admin),
 ) -> dict:
-    """One datasource's semantic model + lint issues + draft queue."""
+    """One datasource's semantic model + lint issues + draft queue + drift."""
     ds = _resolve_datasource(request, name)
     await _kb(request).ensure_synced(ds)
-    return {"semantic": await _manager(request).detail(ds, dialect=await _dialect(request, ds))}
+    dialect = await _dialect(request, ds)
+    result = await _manager(request).detail(ds, dialect=dialect)
+    result["drift"] = await _semantic_drift(request, ds, dialect)
+    return {"semantic": result}
 
 
 @router.post("/admin/semantic/{name}/drafts", status_code=201)

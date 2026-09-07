@@ -241,6 +241,10 @@ async def create_app_components(
         ds_name = connector_registry.default_name or "default"
         schema = await adapter.get_schema()
         known_tables = {t.name.lower() for t in schema.tables}
+        catalog = {
+            t.name.lower(): {c.name.lower() for c in t.columns}
+            for t in schema.tables
+        }
         semantic_dir = (
             Path.cwd() / config.semantic_layer_path / ds_name
             if config.semantic_layer_path else Path.cwd() / ".trove" / "semantic" / ds_name
@@ -251,6 +255,7 @@ async def create_app_components(
             dialect=adapter.dialect(),
             table_exists=lambda t: t.lower() in known_tables,
             kb_semantics_path=kb.semantics_path(ds_name),
+            catalog=catalog,
         )
         if semantic_layer.enabled:
             logger.info(

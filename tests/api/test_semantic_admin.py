@@ -8,6 +8,8 @@ confirm, plus the usual auth/404 guards.
 
 from __future__ import annotations
 
+import yaml
+
 
 async def test_semantic_detail(client, api_kb):
     """GET detail returns the parsed model, lint issues and an empty draft queue."""
@@ -23,6 +25,49 @@ async def test_semantic_detail(client, api_kb):
     assert sem["drafts"]["pending"] == []
     assert sem["drafts"]["applied"] == []
     assert sem["drafts"]["rejected"] == []
+    # 声明与实时 catalog(students 表)一致 → 不漂移
+    assert sem["drift"]["stale"] is False
+
+
+async def test_semantic_detail_drift_detected(client, api_app, api_kb):
+    """声明了 catalog 里不存在的表/字段 → drift.stale=True 且明细可读。"""
+    kb = api_app.state.kb
+    path = kb.kb_dir / "test_db" / "semantics.yml"
+    drifted = yaml.safe_dump({
+        "version": "0.2.0.dev0",
+        "semantic_model": [{
+            "name": "test_db",
+            "datasets": [
+                {
+                    "name": "students",
+                    "fields": [
+                        {"name": "grade", "datatype": "Integer",
+                         "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "grade"}]}},
+                        {"name": "ghost", "datatype": "String",
+                         "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "ghost"}]}},
+                    ],
+                },
+                {"name": "courses", "source": "courses", "primary_key": ["course_id"]},
+            ],
+            "metrics": [{
+                "name": "平均成绩",
+                "description": "学生平均分",
+                "expression": {
+                    "dialects": [{"dialect": "ANSI_SQL", "expression": "AVG(students.grade)"}],
+                },
+            }],
+        }],
+    }, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    path.write_text(drifted, encoding="utf-8")
+    await kb.ensure_synced("test_db")
+
+    resp = await client.get("/v1/admin/semantic/test_db")
+    assert resp.status_code == 200, resp.text
+    drift = resp.json()["semantic"]["drift"]
+    assert drift["stale"] is True
+    assert drift["gone_tables"] == ["courses"]
+    assert drift["missing_fields"] == {"students": ["ghost"]}
+    assert drift["missing_keys"] == {}
 
 
 async def test_semantic_detail_unknown_ds_404(client):

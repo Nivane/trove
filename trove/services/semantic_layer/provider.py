@@ -6,16 +6,27 @@ re-parsed only when mtime/size changes — lazy "real-time": the next
 question sees the change, no polling or sync. Validation drops bad
 metrics, and a broken file falls back to the last known good model;
 the provider never raises into the question flow.
+
+When a ``catalog`` snapshot (table → column names) is supplied, the
+provider additionally reports **schema drift** (``drift()`` / ``stale``):
+declared datasets/fields/keys/relationship endpoints that no longer
+match the live schema. The semantic layer is the authoritative answer
+boundary, so drift is surfaced (admin) instead of silently producing
+authoritative-but-wrong SQL.
 """
 import logging
 import re
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from sqlglot import Dialect, ErrorLevel, parse_one
 
 from trove.services.kb.service import TermHit
-from trove.services.semantic_layer.models import SemanticMetric, SemanticModel
+from trove.services.semantic_layer.models import (
+    SemanticDataset,
+    SemanticMetric,
+    SemanticModel,
+)
 from trove.services.semantic_layer.ossie import parse_ossie
 
 logger = logging.getLogger(__name__)
@@ -25,6 +36,18 @@ _STOPWORDS = {
     "per", "by", "is", "are", "what", "how", "many", "much", "does", "do",
 }
 _WORD_RE = re.compile(r"[A-Za-z]+")
+
+# 裸列标识符(漂移校验只对「表达式 = 单列名」的字段做列存在性比对,
+# 复杂表达式无法确定性判定,跳过)。
+_BARE_COL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+_EMPTY_DRIFT = {
+    "stale": False,
+    "gone_tables": [],
+    "missing_fields": {},
+    "missing_keys": {},
+    "relationship_breaks": [],
+}
 
 
 def _tokens(text: str) -> set[str]:
@@ -79,6 +102,11 @@ class SemanticLayerProvider:
             real table; metrics referencing unknown datasets are dropped.
         dialect: Adapter dialect for expression validation and
             dialect-aware parsing.
+        catalog: Optional live-schema snapshot ``{table: {columns}}``
+            (table/column names case-insensitive) for drift detection;
+            absent → drift reporting disabled (empty report).
+        kb_semantics_path: Path to the datasource's KB semantics.yml
+            (single source of truth); merged over the directory assets.
     """
 
     def __init__(
@@ -89,6 +117,7 @@ class SemanticLayerProvider:
         table_exists: Callable[[str], bool] | None = None,
         dialect: str = "sqlite",
         kb_semantics_path: str | Path | None = None,
+        catalog: dict[str, set[str]] | None = None,
     ) -> None:
         self.directory = Path(directory)
         self.datasource = datasource
@@ -97,6 +126,11 @@ class SemanticLayerProvider:
         self._parser = parser or (
             lambda text: parse_ossie(text, preferred_dialect=dialect))
         self._table_exists = table_exists
+        self._catalog = (
+            {str(t).lower(): {str(c).lower() for c in cols}
+             for t, cols in (catalog or {}).items()}
+            if catalog else None
+        )
         try:
             Dialect.get_or_raise(dialect)
             self._read = dialect
@@ -106,6 +140,7 @@ class SemanticLayerProvider:
         self._parsed: SemanticModel | None = None  # last known good
         self._validated: list[SemanticMetric] | None = None
         self._field_index: dict[str, list[tuple[str, str]]] | None = None
+        self._drift: dict[str, Any] | None = None  # 漂移报告缓存(模型变才重算)
 
     @property
     def enabled(self) -> bool:
@@ -143,6 +178,7 @@ class SemanticLayerProvider:
             return
         self._validated = self._validate(self._parsed.metrics)
         self._field_index = None  # 惰性重建(首次 field_candidates 时才建)
+        self._drift = None  # 模型变了 → 漂移报告下次访问时重算
 
     def _validate(self, metrics: list[SemanticMetric]) -> list[SemanticMetric]:
         """逐条校验:括号配平 + SQLGlot 解析 + 数据集存在性。坏条目丢弃。"""
@@ -189,6 +225,104 @@ class SemanticLayerProvider:
             return None
         self._reload()
         return self._parsed
+
+    # ── Drift(模型声明 vs 实时 schema)──────────────────────────
+
+    @staticmethod
+    def _physical_table(d: SemanticDataset) -> str:
+        """数据集 → 物理表名(去 schema 前缀,小写);source 空回退数据集名。"""
+        src = (d.source or "").strip()
+        if not src:
+            src = d.name
+        return src.rsplit(".", 1)[-1].strip().lower()
+
+    def _compute_drift(self, model: SemanticModel | None) -> dict[str, Any]:
+        """零 LLM 漂移比对:声明的表/字段/键/关系端点 vs catalog 快照。
+
+        只对「字段表达式 = 裸列名」的字段做列存在性校验(复杂表达式无法
+        确定性判定,跳过)。``stale=True`` 表示至少一个声明组件已与物理
+        schema 不一致 → admin 应提示重跑 ``/kb init`` 或修正声明。
+        """
+        report: dict[str, Any] = {
+            "stale": False,
+            "gone_tables": [],
+            "missing_fields": {},
+            "missing_keys": {},
+            "relationship_breaks": [],
+        }
+        if model is None:
+            return report
+        catalog = self._catalog or {}
+        table_of: dict[str, str] = {}
+        for d in model.datasets:
+            phys = self._physical_table(d)
+            table_of[d.name] = phys
+            cols = catalog.get(phys)
+            if cols is None:
+                report["gone_tables"].append(d.name)
+                report["stale"] = True
+                continue
+            missing: list[str] = []
+            for f in d.fields:
+                expr = f.expression.strip().strip('`"[]')
+                if _BARE_COL_RE.match(expr) and expr.lower() not in cols:
+                    missing.append(f.name)
+            if missing:
+                report["missing_fields"][d.name] = sorted(missing)
+                report["stale"] = True
+            key_missing: list[str] = []
+            for k in (d.primary_key or []):
+                if k and k.lower() not in cols and k not in key_missing:
+                    key_missing.append(k)
+            for keys in (d.unique_keys or []):
+                for k in keys:
+                    if k and k.lower() not in cols and k not in key_missing:
+                        key_missing.append(k)
+            if key_missing:
+                report["missing_keys"][d.name] = sorted(key_missing)
+                report["stale"] = True
+        report["gone_tables"].sort()
+        for r in model.relationships:
+            problems: list[str] = []
+            f_phys = table_of.get(r.from_, r.from_)
+            fcols = catalog.get(f_phys)
+            if fcols is None:
+                problems.append(f"table {f_phys} gone")
+            else:
+                for c in (r.from_columns or []):
+                    if c.lower() not in fcols:
+                        problems.append(f"{r.from_}.{c}")
+            t_phys = table_of.get(r.to, r.to)
+            tcols = catalog.get(t_phys)
+            if tcols is None:
+                problems.append(f"table {t_phys} gone")
+            else:
+                for c in (r.to_columns or []):
+                    if c.lower() not in tcols:
+                        problems.append(f"{r.to}.{c}")
+            if problems:
+                report["relationship_breaks"].append({
+                    "name": r.name, "detail": "; ".join(problems)})
+                report["stale"] = True
+        return report
+
+    def drift(self) -> dict[str, Any]:
+        """语义模型 vs 实时 catalog 的漂移报告(零 LLM,确定性)。
+
+        catalog 未提供/模型不可用 → 空报告(不 stale)。结果按模型缓存,
+        模型文件变化后下次访问重算。
+        """
+        if not self.enabled or not self._catalog:
+            return dict(_EMPTY_DRIFT)
+        self._reload()
+        if self._drift is None:
+            self._drift = self._compute_drift(self._parsed)
+        return dict(self._drift)
+
+    @property
+    def stale(self) -> bool:
+        """模型是否已漂移:声明的表/字段/键/关系端点与实时 schema 不一致。"""
+        return bool(self.drift().get("stale"))
 
     def terms_for(
         self,

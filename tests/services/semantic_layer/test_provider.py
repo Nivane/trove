@@ -262,6 +262,101 @@ def test_kb_metric_overrides_directory_source(tmp_path, semantic_dir):
     assert metrics["total_loan_amount"].definition == "KB authoritative"
 
 
+# ── 漂移检测(声明模型 vs 实时 catalog)──────────────────────
+
+DRIFT_MODEL = """
+semantic_model:
+  - name: financial_analytics
+    datasets:
+      - name: loan
+        source: financial.loan
+        primary_key: [loan_id]
+        fields:
+          - name: amount
+            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}
+          - name: account_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+      - name: account
+        source: financial.account
+        primary_key: [account_id]
+        fields:
+          - name: account_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: account_id}]}
+    relationships:
+      - name: loan_account
+        from: loan
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+    metrics:
+      - name: total_amount
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(loan.amount)}]}
+"""
+
+_CLEAN_CATALOG = {
+    "loan": {"amount", "account_id", "loan_id"},
+    "account": {"account_id"},
+}
+
+
+def _drift_provider(tmp_path, catalog):
+    kb_path = Path(tmp_path) / "kb" / "fin" / "semantics.yml"
+    kb_path.parent.mkdir(parents=True, exist_ok=True)
+    kb_path.write_text(DRIFT_MODEL, encoding="utf-8")
+    return SemanticLayerProvider(
+        Path(tmp_path) / "empty", "fin", kb_semantics_path=kb_path, catalog=catalog)
+
+
+def test_drift_empty_without_catalog(tmp_path):
+    p = SemanticLayerProvider(tmp_path / "missing", "financial")
+    assert p.drift()["stale"] is False
+    assert p.stale is False
+    assert p.drift()["gone_tables"] == []
+
+
+def test_drift_clean_model(tmp_path):
+    p = _drift_provider(tmp_path, _CLEAN_CATALOG)
+    report = p.drift()
+    assert report["stale"] is False
+    assert report["gone_tables"] == []
+    assert report["missing_fields"] == {}
+    assert report["missing_keys"] == {}
+    assert report["relationship_breaks"] == []
+    assert p.stale is False
+
+
+def test_drift_gone_table(tmp_path):
+    # catalog 缺 loan 表 → gone + 关系端点失效
+    p = _drift_provider(tmp_path, {"account": {"account_id"}})
+    report = p.drift()
+    assert report["stale"] is True
+    assert report["gone_tables"] == ["loan"]
+    breaks = {b["name"] for b in report["relationship_breaks"]}
+    assert breaks == {"loan_account"}
+
+
+def test_drift_missing_fields_and_keys(tmp_path):
+    # loan 表在,但 account_id/主键列缺失
+    p = _drift_provider(tmp_path, {"loan": {"amount"}, "account": {"account_id"}})
+    report = p.drift()
+    assert report["stale"] is True
+    assert report["missing_fields"] == {"loan": ["account_id"]}
+    assert report["missing_keys"] == {"loan": ["loan_id"]}
+    breaks = {b["name"] for b in report["relationship_breaks"]}
+    assert breaks == {"loan_account"}
+
+
+def test_drift_recomputed_on_reload(tmp_path):
+    p = _drift_provider(tmp_path, _CLEAN_CATALOG)
+    assert p.drift()["stale"] is False
+    # 改写模型:新增不存在的表 → 下次访问重算
+    kb_path = p._kb_path
+    kb_path.write_text(DRIFT_MODEL.replace("financial.loan", "financial.gone"), encoding="utf-8")
+    report = p.drift()
+    assert report["stale"] is True
+    assert report["gone_tables"] == ["loan"]
+
+
 def test_field_hits_maps_question_word_to_field(tmp_path):
     p = SemanticLayerProvider(tmp_path / "empty", "financial",
                               kb_semantics_path=_kb_path(tmp_path))

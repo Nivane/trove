@@ -82,11 +82,48 @@
         <span v-else-if="enabled" class="pill pill-ok">
           {{ t('semNoIssues', ui.lang) }}
         </span>
+        <span v-if="driftStale" class="pill pill-danger">
+          {{ t('semDriftStale', ui.lang) }} · {{ driftSummary }}
+        </span>
       </div>
       <ul v-if="enabled && issues.length" class="issue-list">
         <li v-for="(issue, i) in issues" :key="i" class="issue-item">
           <AlertCircle :size="13" />
           <span>{{ issue }}</span>
+        </li>
+      </ul>
+      <ul v-if="driftStale" class="issue-list">
+        <li
+          v-for="(tbl, i) in drift.gone_tables"
+          :key="`gt-${i}`"
+          class="issue-item"
+        >
+          <AlertTriangle :size="13" />
+          <span>{{ t('semDriftTableGone', ui.lang) }}: {{ tbl }}</span>
+        </li>
+        <li
+          v-for="([dsName, cols], i) in Object.entries(drift.missing_fields)"
+          :key="`mf-${i}`"
+          class="issue-item"
+        >
+          <AlertTriangle :size="13" />
+          <span>{{ dsName }} {{ t('semDriftFieldsGone', ui.lang) }}: {{ cols.join(', ') }}</span>
+        </li>
+        <li
+          v-for="([dsName, cols], i) in Object.entries(drift.missing_keys)"
+          :key="`mk-${i}`"
+          class="issue-item"
+        >
+          <AlertTriangle :size="13" />
+          <span>{{ dsName }} {{ t('semDriftKeysGone', ui.lang) }}: {{ cols.join(', ') }}</span>
+        </li>
+        <li
+          v-for="(rel, i) in drift.relationship_breaks"
+          :key="`rb-${i}`"
+          class="issue-item"
+        >
+          <AlertTriangle :size="13" />
+          <span>{{ t('semDriftRelBreak', ui.lang) }}: {{ rel.name }} ({{ rel.detail }})</span>
         </li>
       </ul>
       <div v-if="!enabled" class="empty-note">
@@ -711,6 +748,7 @@ import {
   Columns3,
   Inbox,
   AlertCircle,
+  AlertTriangle,
   Pencil,
   Trash2,
   Check,
@@ -766,6 +804,13 @@ interface SemanticDraft {
   status: 'pending' | 'applied' | 'rejected'
   created_at: string
 }
+interface SemanticDrift {
+  stale: boolean
+  gone_tables: string[]
+  missing_fields: Record<string, string[]>
+  missing_keys: Record<string, string[]>
+  relationship_breaks: { name: string; detail: string }[]
+}
 interface SemanticDetail {
   enabled: boolean
   model: SemanticModel | null
@@ -775,6 +820,7 @@ interface SemanticDetail {
     applied: SemanticDraft[]
     rejected: SemanticDraft[]
   }
+  drift?: SemanticDrift
 }
 
 const ui = useUiStore()
@@ -790,6 +836,27 @@ const connected = computed(() =>
 )
 const enabled = computed(() => !!detail.value?.enabled)
 const issues = computed(() => detail.value?.issues || [])
+const NO_DRIFT: SemanticDrift = {
+  stale: false,
+  gone_tables: [],
+  missing_fields: {},
+  missing_keys: {},
+  relationship_breaks: [],
+}
+const drift = computed<SemanticDrift>(() => detail.value?.drift || NO_DRIFT)
+const driftStale = computed(() => drift.value.stale)
+const driftSummary = computed(() => {
+  const d = drift.value
+  if (!d.stale) return ''
+  const parts: string[] = []
+  if (d.gone_tables.length) parts.push(`${d.gone_tables.length} 表缺失`)
+  const missCount = Object.values(d.missing_fields).reduce((n, v) => n + v.length, 0)
+  if (missCount) parts.push(`${missCount} 字段缺失`)
+  const keyCount = Object.values(d.missing_keys).reduce((n, v) => n + v.length, 0)
+  if (keyCount) parts.push(`${keyCount} 键列缺失`)
+  if (d.relationship_breaks.length) parts.push(`${d.relationship_breaks.length} 关系失效`)
+  return parts.join(' · ')
+})
 const model = computed(() => detail.value?.model || null)
 const metrics = computed(() => model.value?.metrics || [])
 const datasets = computed(() => model.value?.datasets || [])
