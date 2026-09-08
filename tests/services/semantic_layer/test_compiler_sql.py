@@ -785,17 +785,57 @@ def test_filter_on_unconnected_matched_table_is_miss():
 
 
 def test_compile_miss_on_unknown_cardinality():
-    """P0-3:联路径上出现未声明基数的关系 → 保守 MISS(不赌 many→one)。"""
+    """P0-3:联路径上出现未声明基数、且 to 侧非声明唯一键的关系 → 保守 MISS。"""
     model = _demo_model()
     model.relationships[1] = SemanticRelationship(
         "account_to_district", "account", "district",
         from_columns=["district_id"], to_columns=["district_id"])  # 空基数
+    model.datasets[2] = SemanticDataset(name="district", primary_key=[], fields=[
+        _field("district_id"), _field("A3"),
+    ])  # district_id 不再声明为主键 → 唯一键推断不可用
     plan = {
         "aggregation": "count(loan.loan_id)",
         "answer_columns": ["district.A3", "count(loan.loan_id)"],
     }
     assert SemanticCompiler(model).compile_from_plan(
         plan, ["loan", "district", "account"]) is None
+
+
+def test_compile_ok_when_to_side_is_declared_unique_key():
+    """唯一键推断基数:空基数关系的 to_columns 精确等于声明 primary_key →
+    many→one 数学上确定,无需补 cardinality 也放行(消除 unknown_cardinality
+    覆盖损失)。"""
+    model = _demo_model()
+    model.relationships[1] = SemanticRelationship(
+        "account_to_district", "account", "district",
+        from_columns=["district_id"], to_columns=["district_id"])  # 空基数,但 district_id 是主键
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+    }
+    result = SemanticCompiler(model).compile_from_plan(
+        plan, ["loan", "district", "account"])
+    assert result is not None
+    assert "JOIN district ON account.district_id = district.district_id" in result.sql
+
+
+def test_compile_ok_when_to_side_in_unique_keys():
+    """唯一键推断基数:to_columns 命中 unique_keys(非主键)同样放行。"""
+    model = _demo_model()
+    model.relationships[1] = SemanticRelationship(
+        "account_to_district", "account", "district",
+        from_columns=["district_id"], to_columns=["district_id"])  # 空基数
+    model.datasets[2] = SemanticDataset(
+        name="district", primary_key=["other_id"],
+        unique_keys=[["district_id"], ["A3"]],
+        fields=[_field("district_id"), _field("A3"), _field("other_id")],
+    )
+    plan = {
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["district.A3", "count(loan.loan_id)"],
+    }
+    assert SemanticCompiler(model).compile_from_plan(
+        plan, ["loan", "district", "account"]) is not None
 
 
 def test_compile_ok_when_cardinality_declared():
@@ -1059,14 +1099,26 @@ def test_compiled_sql_matches_rejects_structural_deviation():
 
 
 def test_compiled_sql_matches_conservative_passthrough():
-    """保守方向:跨方言 / 解析失败 / 空 SQL → 放行(不误伤合法微调)。"""
+    """保守方向:解析失败 / 空 SQL → 放行(不误伤合法微调)。"""
     from trove.services.semantic_layer.compiler import compiled_sql_matches
 
-    assert compiled_sql_matches(
-        "SELECT COUNT(x) FROM t", "SELECT SUM(y) FROM t", "mysql")[0] is True
     assert compiled_sql_matches("SELECT 1", "not a query", "sqlite")[0] is True
     assert compiled_sql_matches("", "", "sqlite")[0] is True
     assert compiled_sql_matches("SELECT COUNT(x) FROM t", "", "sqlite")[0] is True
+
+
+def test_compiled_sql_matches_cross_dialect_guard():
+    """跨方言守卫:归一后结构偏离(改聚合函数)仍打回,等价 SQL 放行——
+    不再因方言非 sqlite 就整组放行。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    assert compiled_sql_matches(
+        "SELECT COUNT(x) FROM t", "SELECT SUM(y) FROM t", "mysql")[0] is False
+    assert compiled_sql_matches(
+        "SELECT COUNT(x) FROM t", "SELECT COUNT(x) FROM t", "mysql")[0] is True
+    assert compiled_sql_matches(
+        "SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t",
+        "SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t", "mysql")[0] is True
 
 
 # ── 时间粒度分桶 ─────────────────────────────────────────

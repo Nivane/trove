@@ -22,6 +22,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlglot import exp, parse_one, transpile
+
 from trove.services.semantic_layer.models import (
     SemanticDataset,
     SemanticMetric,
@@ -139,6 +141,40 @@ class JoinResolver:
 
     def __init__(self, model: SemanticModel | None = None):
         self._model = model
+        # 数据集按名索引(唯一键推断基数用)。
+        self._ds_by_name: dict[str, SemanticDataset] = {}
+        # 声明基数缺失但 to 侧构成唯一键的边(关系级推断,按列对展开)。
+        self._unique_backed: set[tuple[str, str, str, str]] = set()
+        if model is not None:
+            # getattr 兜底:schema_linking 等消费方可能传入鸭子类型模型
+            # (有 datasets/metrics 但无 relationships 的测试替身/代理)。
+            for d in getattr(model, "datasets", None) or []:
+                self._ds_by_name[d.name] = d
+            for r in getattr(model, "relationships", None) or []:
+                if self._relationship_to_is_unique(r):
+                    for fc, tc in zip(r.from_columns or [], r.to_columns or []):
+                        self._unique_backed.add((
+                            str(r.from_).lower(), str(fc).lower(),
+                            str(r.to).lower(), str(tc).lower()))
+
+    def _relationship_to_is_unique(self, r: Any) -> bool:
+        """关系 to 侧列是否构成已声明唯一键(primary_key / unique_keys)。
+
+        唯一键推断只作为**声明基数缺失时**的安全放行依据:to_columns 精确
+        (有序)等于 primary_key 或任一 unique_keys → 一行 to 至多对应一行
+        from,many→one 数学上确定,无需建模师补 ``cardinality`` 字段。
+        """
+        if not getattr(r, "to_columns", None):
+            return False
+        ds = self._ds_by_name.get(r.to)
+        if ds is None:
+            return False
+        to_cols = [str(c) for c in r.to_columns]
+        if [str(c) for c in (ds.primary_key or [])] == to_cols:
+            return True
+        return any(
+            [str(c) for c in uk] == to_cols for uk in ds.unique_keys or []
+        )
 
     # ── Edge sources ───────────────────────────────────────
 
@@ -275,7 +311,14 @@ class JoinResolver:
                     fan_out = True
             elif not (edge.cardinality or "").strip():
                 # 边在联路径上但基数未声明 → many→one 无从判定,保守 MISS
-                unknown_card = True
+                # (宁可交 LLM,不赌安全)——除非 to 侧构成声明唯一键:
+                # unique_keys/primary_key 推断成立时 many→one 确定,放行。
+                key = (
+                    edge.from_.lower(), edge.from_column.lower(),
+                    edge.to.lower(), edge.to_column.lower(),
+                )
+                if key not in self._unique_backed:
+                    unknown_card = True
 
         # P2 路径二义性:相关子图里 root→任一 needed 表存在 >1 条简单路径。
         # BFS 先到先得选边不可审计(图有环/双路由时可能选到语义错误路径),
@@ -866,6 +909,10 @@ class SemanticCompiler:
         # 时间分桶的方言渲染、裸列解析锚定都依赖这两个会话态。
         self._dialect: str = "sqlite"
         self._matched_set: set[str] = set()
+        # 裸列歧义消歧锚:已命中 metric 表达式的 (table, column) 引用集合。
+        # 同名列跨数据集(如 loan.amount vs trans.amount)时,歧义候选优先
+        # 锚定到命中度量的数据集(compile_detailed 开头由 matched_pairs 设置)。
+        self._field_anchor: set[tuple[str, str]] = set()
 
     # ── component resolution ─────────────────────────────
 
@@ -1033,13 +1080,47 @@ class SemanticCompiler:
                 needed.update(m.datasets)
         return needed
 
+    def _set_field_anchor(
+        self, matched_pairs: list[tuple[str, SemanticMetric]],
+    ) -> None:
+        """按已命中度量的表达式限定列引用构建裸列消歧锚。
+
+        ``SUM(loan.amount)`` → {('loan', 'amount')}:查询里裸 ``amount`` 在
+        matched 内跨数据集同名时,优先锚定命中度量所在数据集。只收带表限定
+        的列(裸标识符是派生度量名引用,非物理列)。
+        """
+        self._field_anchor = set()
+        for _cand, m in matched_pairs:
+            try:
+                tree = parse_one(m.expression)
+            except Exception:
+                continue
+            for c in tree.find_all(exp.Column):
+                if c.table and c.name:
+                    self._field_anchor.add(
+                        (str(c.table).lower(), str(c.name).lower()))
+
     def _resolve_field(self, ref: str, matched: set[str]) -> tuple[str, Any] | None:
         """列引用(``col`` / ``table.col``)→ (dataset, field);找不到 → None。
 
         先按字段名精确匹配;未命中时追加同数据集内 **synonyms 唯一命中**
         (如 ``district.region`` → 字段 ``A3``)——补偿 query_sketch 直接写别名列
-        的场景。歧义(多个同义字段)不猜,转 None 走 LLM 通道。
+        的场景。歧义(多个同义字段)优先用已命中度量的表达式锚定消歧
+        (``_field_anchor``),锚定后仍多个/无锚 → None 走 LLM 通道,不猜。
         """
+
+        def _anchor_unique(cands: list[tuple[str, Any]]) -> tuple[str, Any] | None:
+            if len(cands) == 1:
+                return cands[0]
+            if self._field_anchor:
+                anchored = [
+                    c for c in cands
+                    if (c[0].lower(), str(c[1].name).lower()) in self._field_anchor
+                ]
+                if len(anchored) == 1:
+                    return anchored[0]
+            return None
+
         ref = (ref or "").strip()
         if not ref or ref == "*" or "(" in ref:
             return None
@@ -1054,20 +1135,21 @@ class SemanticCompiler:
                 if ds == tbl
                 and any(s.lower() == col.lower() for s in f.synonyms if s)
             ]
-            return cands[0] if len(cands) == 1 else None
+            return _anchor_unique(cands)
 
         hits = [
             (ds, f) for (ds, _n), f in self._fields.items()
             if ds in matched and f.name == ref
         ]
-        if len(hits) == 1:
-            return hits[0]
+        exact = _anchor_unique(hits)
+        if exact is not None:
+            return exact
         cands = [
             (ds, f) for (ds, _n), f in self._fields.items()
             if ds in matched
             and any(s.lower() == ref.lower() for s in f.synonyms if s)
         ]
-        return cands[0] if len(cands) == 1 else None
+        return _anchor_unique(cands)
 
     def _render_metric_filter(
         self, metric: SemanticMetric, matched_set: set[str],
@@ -1151,6 +1233,8 @@ class SemanticCompiler:
 
         agg_declared = str(plan.get("aggregation") or "").strip().lower() not in ("", "none", "无")
         matched_pairs, miss_candidates = self._match_metrics(plan)
+        # 裸列歧义消歧锚:命中度量的表达式限定列 → 同名列跨数据集时锚定。
+        self._set_field_anchor(matched_pairs)
         for cand in miss_candidates:
             # 聚合候选有签名但无兼容度量 → 软 MISS(跳过该候选继续编译,
             # 已命中的度量照常进骨架;全都没命中 → nothing_compilable 兜底)。
@@ -1250,6 +1334,7 @@ class SemanticCompiler:
                     if isinstance(proj, CompileMiss):
                         return proj
                     matched_pairs.append((ac, metric))  # 供锚点选择/兜底
+                    self._set_field_anchor(matched_pairs)  # 新命中度量并入消歧锚
                     is_agg = True
                     if metric.name not in seen_metrics:
                         seen_metrics.add(metric.name)
@@ -2062,17 +2147,28 @@ def compiled_sql_matches(
     改 join → 打回;COUNT(*) vs COUNT(col)、别名、格式、大小写 → 通过
     (与编译 SQL 语义等价,不是回归)。签名缺失(解析失败等)→ 保守放行。
 
+    跨方言:非 sqlite 方言先 sqlglot transpile 归一到 sqlite 再比签名
+    (方言函数名/类型转换差异归一后不误伤,守卫在 PG/MySQL 上不再直接
+    放行)。transpile 失败 → 保守放行,不引入新拒绝向量。
+
     保守方向(避免误伤合法微调,返回 (True, "")):
-      - 任一 SQL 解析失败/异常或非查询;
-      - 目标方言不是 sqlite(编译方言):跨方言的函数/类型转换差异无法
-        与实质偏离可靠区分,放行由 execute→rules 兜底。
+      - 任一 SQL 解析失败/异常或非查询。
     """
     if not compiled or not generated:
         return True, ""
-    if (generated_dialect or "sqlite").lower() != "sqlite":
-        return True, ""
-    base = _compiled_sql_sig(compiled, "sqlite")
-    other = _compiled_sql_sig(generated, "sqlite")
+    dialect = (generated_dialect or "sqlite").lower()
+    base_text, gen_text = compiled, generated
+    if dialect != "sqlite":
+        try:
+            base_sql = transpile(compiled, read=dialect, write="sqlite")
+            gen_sql = transpile(generated, read=dialect, write="sqlite")
+        except Exception:
+            return True, ""
+        if not base_sql or not gen_sql:
+            return True, ""
+        base_text, gen_text = base_sql[0], gen_sql[0]
+    base = _compiled_sql_sig(base_text, "sqlite")
+    other = _compiled_sql_sig(gen_text, "sqlite")
     if base is None or other is None:
         return True, ""
     if base == other:
