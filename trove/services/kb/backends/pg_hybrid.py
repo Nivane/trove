@@ -93,6 +93,49 @@ class PgHybridKbBackend:
             query, k=max(limit * 2, 8), rerank_k=limit * 4, datasource=datasource)
         return [h for h in hits if h.kind == "schema_doc"][:limit]
 
+    # ── 索引钩子(KbService 在镜像同步后调用)──────────────
+    # 契约与 rag 后端一致:KbService 只认这三个鸭子类型钩子,没有就静默跳过。
+    # 本后端是**默认生产后端**,却长期一个都没实现 —— KB 写入对统一检索库
+    # 完全不可见。这不是"少召回几条"而是**静默陈旧**:_recall 只在结果为空
+    # 时回退 builtin,库一旦被索引过,写入前的那份旧文档就把 fresh 的兜底
+    # 压住了;此后新增的条目永远召不回来,而检索看上去一切正常。
+
+    async def index_file(
+        self, datasource: str, source_file: str,
+        entries: list[tuple[str, str, dict]],
+    ) -> None:
+        """重建该文件在检索库的文档:先删该文件的旧文档,再写入新的。
+
+        与 ``Indexer.index_kb`` 同构(同文本、同 ``kind``、同 ``item_key``
+        即 doc_id)——增量写入与全量索引必须产出逐字段一致的文档,否则同一
+        条目会随"最后是谁写的"而不同。
+        """
+        from trove.services.retrieval.indexer import kb_item_text
+        from trove.services.retrieval.store import RetrievalDoc
+
+        docs: list[RetrievalDoc] = []
+        for kind, item_key, payload in entries:
+            text = kb_item_text(kind, payload)
+            if not text:
+                continue
+            docs.append(RetrievalDoc(
+                content=text, datasource=datasource, kind="kb",
+                source_file=source_file, item_key=item_key,
+            ))
+        # 先删后写:条目被改写或从 YAML 移除时,旧文档不能留下
+        # (留下的旧 doc_id 映射不回 kb_items,只会白占召回位)。
+        await self._store.delete_source(datasource, source_file)
+        if docs:
+            await self._store.index_many(docs)
+
+    async def delete_file(self, datasource: str, source_file: str) -> None:
+        """文件从磁盘移除 → 该文件的文档一并清掉。"""
+        await self._store.delete_source(datasource, source_file)
+
+    async def clear(self, datasource: str) -> None:
+        """delete_kb → 清空该数据源的全部文档。"""
+        await self._store.clear(datasource)
+
     # ── recall: unified store → kb_items payloads ────────
 
     async def _expand_keyword(self, question: str, datasource: str) -> str | None:
