@@ -19,6 +19,7 @@ import pytest
 
 from trove.services.semantic_layer.contract import (
     PlanContract,
+    PlanSignature,
     contract_from_wire,
     contract_to_wire,
     render_contract,
@@ -82,6 +83,13 @@ class TestWireTransport:
             ),
             where=(( (("district", "a3"),), "eq", ("Prague",)),),
             group_by_width=1,
+            signature=PlanSignature(
+                projections=("avg",),
+                tables=("loan", "account", "district"),
+                conds=(("eq", ("Prague",)),),
+                joins=2,
+                groups=1,
+            ),
             gaps=({"reason": "no_metric_match", "component": "loan.amount"},),
             partial=True,
         )
@@ -155,6 +163,13 @@ class TestWireTransport:
         {"skeleton_sql": "SELECT 1", "gaps": [["not", "a", "dict"]]},
         {"skeleton_sql": "SELECT 1", "group_by_width": -1},
         {"skeleton_sql": "SELECT 1", "group_by_width": "2"},
+        # 签名形状异常 —— 整份契约作废,不能只丢签名(那就成了被削弱的校验)
+        {"skeleton_sql": "SELECT 1", "signature": "count"},
+        {"skeleton_sql": "SELECT 1", "signature": {"projections": "count"}},
+        {"skeleton_sql": "SELECT 1", "signature": {"conds": [{"op": "eq"}]}},
+        {"skeleton_sql": "SELECT 1", "signature": {"conds": [{"op": "eq", "values": "x"}]}},
+        {"skeleton_sql": "SELECT 1", "signature": {"joins": -1}},
+        {"skeleton_sql": "SELECT 1", "signature": {"groups": "1"}},
     ])
     def test_malformed_wire_yields_none_not_a_partial_contract(self, bad):
         """形状异常 → None(没有契约),**不是**"解出能解的部分"。
@@ -168,6 +183,31 @@ class TestWireTransport:
         """只有 skeleton_sql 也能还原 —— 全量编译没有缺口/结构是常态。"""
         contract = contract_from_wire({"skeleton_sql": "SELECT 1"})
         assert contract == PlanContract(skeleton_sql="SELECT 1")
+
+    def test_absent_signature_key_means_no_signature(self):
+        """``signature`` 缺席 / 显式 null 是**合法取值**(抽取失败),不是形状错误。
+
+        这正是三态解码存在的理由:``None`` 必须能和"这个键根本没法解"区分开
+        —— 前者放行并记录,后者让整份契约作废。混为一谈就会把"编译器抽不出
+        结构"变成"校验读到空结构 → 全部保真"。
+        """
+        for wire in ({"skeleton_sql": "SELECT 1"}, {"skeleton_sql": "SELECT 1", "signature": None}):
+            contract = contract_from_wire(wire)
+            assert contract is not None and contract.signature is None
+
+    @pytest.mark.parametrize("bad", [
+        {"skeleton_sql": "SELECT 1", "signature": {}},
+        # SELECT 至少有一个投影,空 projections 只可能来自坏 wire 或坏编译器
+        {"skeleton_sql": "SELECT 1", "signature": {"projections": [], "tables": ["t"]}},
+    ])
+    def test_degenerate_signature_is_rejected(self, bad):
+        """空投影的签名是**退化**取值,当形状错误处理。
+
+        真实签名永远至少一个投影(``SELECT`` 必须有投影列表)。放它过去会让
+        照抄校验拿"零投影"去比任何生成 SQL → 必然不匹配 → 每轮都打回重生成。
+        宁可作废整份契约(退回现抽的兼容路径),也不要一个必然误伤的判据。
+        """
+        assert contract_from_wire(bad) is None
 
 
 class TestCompilerPopulatesContract:
@@ -216,6 +256,58 @@ class TestCompilerPopulatesContract:
         # gaps 与 miss_parts 同源同形(学习/归因消费的是同一份数据)
         assert result.contract.gaps == tuple(result.miss_parts)
         assert "enum_value_unresolved" in render_contract(result.contract)
+
+    def test_shape_signature_is_captured(self):
+        """全量编译的照抄判据在编译期抽好(校验侧不再反推)。"""
+        from trove.services.semantic_layer.compiler import build_contract
+
+        contract = build_contract(
+            "SELECT district.A3, AVG(loan.amount)\n"
+            "FROM loan\n"
+            "JOIN account ON loan.account_id = account.account_id\n"
+            "WHERE district.A3 = 'Prague'\n"
+            "GROUP BY district.A3",
+            "sqlite",
+        )
+        assert contract is not None
+        signature = contract.signature
+        assert signature is not None
+        # 投影只留聚合函数名(列名/别名/格式不参与 —— 抹平等价改写)
+        assert signature.projections == (None, "avg")
+        assert signature.tables == ("account", "loan")
+        assert signature.conds == (("eq", ("Prague",)),)
+        assert signature.joins == 1
+        assert signature.groups == 1
+
+    def test_signature_does_not_depend_on_the_read_dialect(self):
+        """签名与方言无关 —— 这是 A1 敢删 transpile 归一的依据。
+
+        签名每一项都在 parse 期定形(``DATE_FORMAT`` 与 ``strftime`` 一样只是
+        "无聚合的投影")。哪天某方言把聚合认成普通函数,这条会红,那时才需要
+        把归一请回来。
+        """
+        from trove.services.semantic_layer.compiler import build_contract
+
+        sql = "SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t GROUP BY 1"
+        sigs = {
+            build_contract(sql, d).signature
+            for d in ("sqlite", "mysql", "clickhouse")
+        }
+        assert len(sigs) == 1
+        assert sigs.pop().projections == (None, "count")
+
+    def test_unparseable_compiled_sql_yields_no_signature(self):
+        """编译器自己的 SQL 解析不了 → 契约仍在,但签名明确为 None。
+
+        ``None`` 是**信号**(校验侧据此记录并放行),不是"零结构"—— 后者会让
+        照抄校验拿空结构去比,悄悄放松。
+        """
+        from trove.services.semantic_layer.compiler import build_contract
+
+        contract = build_contract("not a query", "sqlite")
+        assert contract is not None
+        assert contract.signature is None
+        assert contract.join_edges == () and contract.where == ()
 
     def test_canonical_order_is_deterministic(self):
         """集合语义 → 有序表示:同一 plan 两次编译,字节级一致。

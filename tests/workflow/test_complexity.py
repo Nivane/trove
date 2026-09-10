@@ -127,12 +127,26 @@ def test_missing_aggregation_is_simple():
 def test_wrong_typed_keys_are_conservative():
     """错型键(不可信输入)→ 一律 standard,不崩不冒进。"""
     plan = {"tables": "students", "joins": 42, "aggregation": 3,
-            "answer_columns": "name", "ordering": ["x"]}
+            "answer_columns": "name", "ordering": 42}
     assert grade_complexity(plan, ["students"], term_hit=True) == "standard"
     # 单个错型键也足以降级
     assert grade_complexity({"tables": "students"}, ["students"], term_hit=True) == "standard"
     assert grade_complexity({"tables": ["students"], "joins": 42},
                             ["students"], term_hit=True) == "standard"
+
+
+def test_both_ordering_shapes_are_legal():
+    """ordering 两种形态都算合法形状(A1-10)。
+
+    松 dict 流里是字符串("grade DESC");A1-10 之后 plan_json 恒为强类型计划
+    的 dump,ordering 归一成 ``[{"column","direction"}]`` 列表。列表形态是
+    **归一的结果而非不可信输入**,不该把它误判成错型而降级到 standard
+    (simple 档会多做候选池 + LLM 裁决,那是无谓的额外调用)。
+    """
+    str_plan = dict(SIMPLE_PLAN, ordering="count desc")
+    list_plan = dict(SIMPLE_PLAN, ordering=[{"column": "count", "direction": "desc"}])
+    assert grade_complexity(str_plan, ["students"], term_hit=True) == "simple"
+    assert grade_complexity(list_plan, ["students"], term_hit=True) == "simple"
 
 
 def test_kb_hit_signal_satisfies_semantic_clause():

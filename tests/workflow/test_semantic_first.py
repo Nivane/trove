@@ -524,6 +524,42 @@ class TestQuerySketchSemanticFirst:
         assert out["compile_meta"]["miss_reason"] == "no_semantic_layer"
         assert out["compile_meta"]["semantic_layer"] is False
 
+    async def test_compile_result_carries_its_source_plan(self):
+        """A1-9:产物带回**编译它的那份计划**——引用同一性,不是长得一样的一份。
+
+        用 ``is`` 断言:要的是同一个对象。P0-3 的教训正是"用这个 metric"≠
+        "被校验过的那个 metric";编译产物能在交付时说出自己的来处,这条链
+        才算接上。松 dict 入口(旧调用方/兜底)编译照常,来处为 None。
+        """
+        from trove.services.semantic_layer.plan import parse_plan_query
+        from trove.workflow.nodes.query_sketch import _compile_semantic
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        provider = FakeProvider(self._demo_model())
+        raw_plan = {
+            "tables": ["loan"],
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+        }
+        plan = parse_plan_query(raw_plan)
+        assert plan is not None
+        compiled, miss = _compile_semantic(plan, ["loan"], provider, "sqlite")
+        assert miss is None and compiled is not None
+        assert compiled.source_plan is plan
+
+        # 松 dict 入参:编译产物一样,但"来处"是 None(不是经 IR 校验的计划)
+        compiled_raw, miss_raw = _compile_semantic(raw_plan, ["loan"], provider, "sqlite")
+        assert miss_raw is None and compiled_raw is not None
+        assert compiled_raw.source_plan is None
+
 
 class TestProgressiveSchemaLinking:
     """A3:反思轮放大候选——阈值放宽 + 上限提升,首轮行为不变。"""

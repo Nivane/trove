@@ -13,6 +13,7 @@ import json
 import re
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
 
 from trove.core.config import AgentConfig
@@ -50,6 +51,29 @@ def _parse_plan(response: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _ordering_text(ordering: Any) -> str:
+    """排序渲染:强类型 dump(list[dict])与模型直出的字符串都能读。
+
+    A1-10 之后 plan 文本由强类型对象渲染,ordering 已归一为
+    ``[{"column","direction"}]``;``str(list)`` 会把它渲染成 Python repr
+    (带引号的字典字面量),对 gen_sql 是噪音,这里显式拼成 ``col dir``。
+    旧形态(字符串/list[str])仍照旧渲染——渲染器不设形状前提。
+    """
+    if isinstance(ordering, str):
+        return ordering
+    if isinstance(ordering, list):
+        parts: list[str] = []
+        for o in ordering:
+            if not isinstance(o, dict):
+                parts.append(str(o))
+                continue
+            col = str(o.get("column") or "").strip()
+            if col:
+                parts.append(f"{col} {str(o.get('direction') or 'asc').strip()}")
+        return ", ".join(parts)
+    return str(ordering)
+
+
 def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
     """结构化计划 → 注入 gen_sql 提示词的文本(条件逐行,作用域显式)。"""
     zh = lang == "zh"
@@ -70,7 +94,11 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
             note = f"（{c['note']}）" if zh and c.get("note") else f" ({c['note']})" if c.get("note") else ""
             lines.append(f"  - {c.get('field')} {c.get('op')} {c.get('value')}{note}")
     if data.get("aggregation"):
-        lines.append(("聚合: " if zh else "Aggregation: ") + str(data["aggregation"]))
+        agg = data["aggregation"]
+        # 多聚合列表形态(模型偶发)→ 按表达式逐项渲染,别把 Python repr
+        # 塞进 gen_sql 的提示词(它照计划写 SQL,repr 是纯噪音)
+        text = ", ".join(str(a) for a in agg) if isinstance(agg, list) else str(agg)
+        lines.append(("聚合: " if zh else "Aggregation: ") + text)
     time_grain = data.get("time_grain")
     if isinstance(time_grain, dict) and time_grain.get("field"):
         grain = str(time_grain.get("grain") or "")
@@ -97,7 +125,7 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
             f" · scope: {scope}"
         )
     if data.get("ordering"):
-        lines.append(("排序: " if zh else "Ordering: ") + str(data["ordering"]))
+        lines.append(("排序: " if zh else "Ordering: ") + _ordering_text(data["ordering"]))
     if data.get("answer_columns"):
         lines.append(
             ("输出列: " if zh else "Answer columns: ") + ", ".join(map(str, data["answer_columns"]))
@@ -118,10 +146,26 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
     return "\n".join(lines)
 
 
-def _plan_text(response: str, lang: str) -> str:
-    """LLM 回复 → 计划文本:JSON 结构化渲染,解析失败回退散文原文。"""
+def _prose(response: str) -> str:
+    """LLM 回复的散文回退(剥掉可能的 markdown 围栏)。"""
+    text = (response or "").strip()
+    m = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
+    return (m.group(1) if m else text).strip()
+
+
+def _typed_plan(response: str) -> PlanQuery | None:
+    """LLM 回复 → 强类型计划。**这里是计划形状的唯一判定点**。
+
+    经 ``PlanQuery`` 校验后才算"计划":能进编译器(它只吃 PlanQuery)、能跑
+    列检查(那些读 ``answer_columns``)、能确定性渲染。JSON 解析失败**或**
+    形状不是计划(``parse_plan_query`` → None)→ 返回 None,调用方把原始文本
+    当散文注入 gen_sql,并把这件降级记出来。
+
+    改造前这里只做 JSON 解析(``_parse_plan``),形状从不校验 —— 于是"模型
+    输出了一坨 JSON"和"模型给了一份计划"在下游完全同形。
+    """
     data = _parse_plan(response)
-    return _render_plan(data, lang) if data is not None else (response or "").strip()
+    return parse_plan_query(data) if data is not None else None
 
 
 def validate_plan(
@@ -773,7 +817,9 @@ def _compile_semantic(
     未覆盖表/坏定义)才返回 CompileMiss 触发 refuse。
 
     入参可为强类型 PlanQuery(query_sketch 解析后的 AST)或 raw dict——
-    编译器内部统一按 dict 流处理,两条路径产物字节级一致。dialect 来自
+    编译器内部统一按 dict 流处理。强类型入参另做一件事:产物带回
+    ``source_plan``(A1-9 引用同一性),调用方据此知道这份 SQL 编译自
+    哪份计划;raw dict 入参(旧调用方/兜底)带回 ``None``。dialect 来自
     state(适配器),驱动时间分桶等方言感知渲染。
     """
     from trove.services.semantic_layer.compiler import (
@@ -784,8 +830,9 @@ def _compile_semantic(
         validate_compiled_sql,
     )
 
-    if isinstance(plan, PlanQuery):
-        plan = plan.to_dict()
+    typed = plan if isinstance(plan, PlanQuery) else None
+    if typed is not None:
+        plan = typed.to_dict()
     if plan is None or not matched or semantic_layer is None:
         return None, CompileMiss("no_plan_or_matched", "")
     try:
@@ -803,7 +850,7 @@ def _compile_semantic(
                 "Compiled SQL rejected by guardrail: %s", "; ".join(violations))
             return None, CompileMiss(
                 "guardrail_rejected", "; ".join(violations))
-        return result, None
+        return replace(result, source_plan=typed), None
     except Exception as e:
         logger.warning("Semantic compilation failed: %s", e)
         return None, CompileMiss("guardrail_rejected", str(e)[:200])
@@ -924,8 +971,9 @@ def make_query_sketch(
             # 自修正一次,仍失败则丢弃 plan(gen_sql 无 plan 照常生成,
             # 校验只拦截幻觉列,不让它变成 gen_sql 的钦点指令)
             raw = await call_query_sketch(base_correction)
-            plan_json = _parse_plan(raw)
-            plan = _plan_text(raw, state.lang)
+            plan_query = _typed_plan(raw)
+            plan_json = plan_query.to_dict() if plan_query is not None else None
+            plan = _render_plan(plan_json, state.lang) if plan_query is not None else _prose(raw)
             errors = validate_plan(plan_json, schema_map)
             if errors:
                 fix_correction = (
@@ -934,8 +982,12 @@ def make_query_sketch(
                     + "Fix the plan so every table and column reference exists in the schema."
                 )
                 raw = await call_query_sketch(fix_correction)
-                plan_json = _parse_plan(raw)
-                plan = _plan_text(raw, state.lang)
+                plan_query = _typed_plan(raw)
+                plan_json = plan_query.to_dict() if plan_query is not None else None
+                plan = (
+                    _render_plan(plan_json, state.lang)
+                    if plan_query is not None else _prose(raw)
+                )
                 errors = validate_plan(plan_json, schema_map)
             if errors:
                 logger.info("Plan dropped after validation: %s", "; ".join(errors))
@@ -949,6 +1001,15 @@ def make_query_sketch(
                 return update
             if not plan:
                 return {}
+            # 形态不合 typed IR 的计划(模型输出 JSON 但结构不是计划)降级为
+            # 散文:它进不了编译(编译器只吃 PlanQuery),也跑不了列检查(那些
+            # 读 answer_columns)。降级可以,但不能无声——下面按 plan_typed
+            # 记进 compile_meta,validate 节点再按 plan_json is None 记一笔。
+            if plan_query is None:
+                logger.info(
+                    "plan is not a typed plan (prose fallback) for %r",
+                    state.question[:80],
+                )
             # 语义级计数纠正(优先):「X 的用户数量/人数」→ count(distinct 实体)。
             # query_sketch 常把实体计数误译成 count(loan.loan_id) 的记录计数,这里
             # 在 plan→gen 之间确定性纠偏——gen 遵守规则 19 也不会做错。
@@ -977,6 +1038,12 @@ def make_query_sketch(
                 if timed is not None:
                     plan_json = timed
                     plan = _render_plan(plan_json, state.lang)
+            # 纠正是确定性变换(dict → dict),shape 不变——所以重解析对
+            # canonical dict 是幂等的(三个纠正函数只写聚合表达式/answer_columns/
+            # conditions/plan_field,全是 IR 认的形状)。上面若发生过降级,
+            # plan_json 为 None,这里也仍为 None。
+            if plan_json is not None:
+                plan_query = parse_plan_query(plan_json)
             update = {
                 "plan": plan,
                 "plan_json": plan_json,
@@ -991,13 +1058,21 @@ def make_query_sketch(
                 update["attribution_plan"] = attr_block
             # 受限选择编译:覆盖内问题编译器拼出权威 SQL 并注入 plan,
             # gen_sql 遵从(确定性通道);MISS → 拒绝(语义优先唯一通道)。
-            # 先在解析边界强类型化(形态错误 → None → 回退 raw-dict 流,
-            # 与改造前字节级一致)。
-            plan_query = parse_plan_query(plan_json)
+            # 只递强类型计划(A1-10 双路合一):plan_query 为 None ⟺ plan_json
+            # 为 None(散文档),此时没什么可编译的,没必要再拿松 dict 试一次。
             compiled, miss = _compile_semantic(
-                plan_query if plan_query is not None else plan_json,
-                state.matched_tables, semantic_layer, dialect,
+                plan_query, state.matched_tables, semantic_layer, dialect,
             )
+            # 引用同一性(A1-9):产物须带回它编译自的那份计划。None 而
+            # plan_json 非 None = 某条路径把 IR 不认的形状喂进了编译器——
+            # 那时列检查/复杂度读的 dict 与编译用的形状不是一份东西,回答
+            # 照常交付但这件事必须说出来(降级可以说,但不能不说)。
+            if compiled is not None and compiled.source_plan is None and plan_json is not None:
+                logger.warning(
+                    "compiled SQL without a source plan identity for %r "
+                    "(compiled from an unvalidated plan shape)",
+                    state.question[:80],
+                )
             # 编译决策观测:恒写(compiled/partial/miss),eval hit-rate 归因闭环。
             # 软 MISS 不再整体拒绝——编译器产出 PartialCompile 骨架,回答照常
             # 交付,未覆盖组件清单(partial_reasons)供学习与归因。

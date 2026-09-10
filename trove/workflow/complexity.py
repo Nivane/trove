@@ -12,8 +12,11 @@ answer_columns ≤ 3、聚合 ≤ 2、matched_tables ≤ 2,且必须有术语或
 命中(term_hit or kb_hit)。complex 判据同步调高:≥3 表、聚合 ≥ 3、
 plan 被校验丢弃。
 
-判据:plan_json 是 query_sketch 产出的自由格式 JSON(结构信号,最硬);matched_tables
-是 schema_linking 的锚定表(语义信号)。所有访问均防御式:缺失/错型键取保守侧
+判据:plan_json 是 query_sketch 产出的结构化计划(结构信号,最硬);matched_tables
+是 schema_linking 的锚定表(语义信号)。A1-10 之后它恒为强类型计划
+(``PlanQuery.to_dict()``)的 dump —— 键齐、类型稳定;这里的类型表仍然保留,
+因为历史 checkpoint 里的 state 与新 plan 同形不同源(旧记录是模型直出的松
+dict),而本函数对两者都要给出保守结论。所有访问均防御式:缺失/错型键取保守侧
 (complex 判据里缺失视为不命中,simple 判据里缺失视为不满足),任何解析问题
 只可能把结果推向 standard/complex,不会推向 simple。
 
@@ -56,14 +59,17 @@ def _aggregation_count(plan: dict[str, Any]) -> int:
     return count
 
 
-# 各键的合法类型:错型输入(如 tables="students"、joins=42)视为不可信 → standard
+# 各键的合法类型:错型输入(如 tables="students"、joins=42)视为不可信 → standard。
+# ordering 两形态都收:模型直出的松 dict 里是字符串("grade DESC"),A1-10 之后
+# plan_json 是强类型计划的 dump,ordering 归一为 [{"column","direction"}] 列表
+# —— 两种都是"合法形状",不该因为归一而把 simple 计划错判成不可信。
 _KEY_TYPES: dict[str, type | tuple[type, ...]] = {
     "tables": list,
     "joins": (str, list),
     "conditions": list,
     "aggregation": (str, list),
     "extreme": (str, dict),
-    "ordering": str,
+    "ordering": (str, list),
     "answer_columns": list,
 }
 

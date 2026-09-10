@@ -1632,6 +1632,48 @@ class TestExecuteSQLCompileDrift:
         assert update["retry_count"] == 1
         assert update["row_count"] == -1
 
+    async def test_shape_check_reads_the_signature_not_the_sql(self, sqlite_registry):
+        """全量编译:判定读契约里的**签名**,不再把 compiled_sql 解析一遍。
+
+        生产里两者恒等(签名就是编译期从那串 SQL 抽的),所以这条刻意让它们
+        矛盾:``compiled_sql`` 与生成 SQL 逐字相同(照抄无偏离,反推路径必
+        放行),而契约签名说"权威形状是 SUM"。只有真的在读签名才会打回。
+        """
+        from trove.services.semantic_layer.contract import PlanSignature
+
+        node = make_execute_sql(sqlite_registry)
+        state = make_state(
+            sql="SELECT COUNT(name) FROM students",
+            compiled=True,
+            compiled_sql="SELECT COUNT(name) FROM students",
+            contract=contract_to_wire(PlanContract(
+                skeleton_sql="SELECT COUNT(name) FROM students",
+                # 契约说权威投影是 sum(手工构造的矛盾,生产里不会出现)
+                signature=PlanSignature(projections=("sum",), tables=("students",)),
+            )),
+        )
+        update = await node(state)
+        assert "COMPILE_DRIFT" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["row_count"] == -1
+
+    async def test_generated_sql_unparseable_is_blocked(self, sqlite_registry):
+        """生成 SQL 解析不了 → 打回重生成(A1 收口的 fail-open)。
+
+        这条走的是**编译通道缺席**的路径:没有契约可依时退回 compiled_sql 现抽,
+        生成 SQL 仍解析不了 —— 改造前这里静默放行,现在必须打回。
+        """
+        node = make_execute_sql(sqlite_registry)
+        state = make_state(
+            sql="NOT A QUERY !!!",
+            compiled=True,
+            compiled_sql="SELECT COUNT(name) FROM students",
+        )
+        update = await node(state)
+        assert "COMPILE_DRIFT" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["row_count"] == -1
+
     async def test_absent_contract_falls_back_to_compiled_sql(self, sqlite_registry):
         """契约缺席(旧 checkpoint / wire 形状异常)→ 退回 compiled_sql。
 
@@ -1968,6 +2010,11 @@ class TestQuerySketch:
         # execute_sql —— 校验不再把 compiled_sql 用 AST 反推回结构。
         assert update["contract"]["skeleton_sql"] == update["compiled_sql"]
         assert update["contract"]["partial"] is False
+        # A1:形状签名也在编译期随契约交接(校验侧不再拿 compiled_sql 反推)
+        assert update["contract"]["signature"] == {
+            "projections": ["count"], "tables": ["loan"],
+            "conds": [], "joins": 0, "groups": 0,
+        }
         assert render_contract(
             contract_from_wire(update["contract"])
         ) in update["plan"]
@@ -2139,6 +2186,42 @@ class TestValidateRules:
         node = make_validate_rules()
         update = await node(make_state(question="average grade", row_count=0))
         # 全过 → 正向信号 rules_passed,供 reflect 决定是否跳过 LLM 裁决
+        assert update == {"rules_passed": True}
+
+    async def test_prose_plan_surfaces_the_skipped_column_guards(self):
+        """散文计划(plan_json=None)+ 有结果列 → 列检查被跳过这事必须说出来。
+
+        A1-3 之前:``answer_columns_mismatch`` / ``extra_columns_mismatch`` 对
+        None 一律返回 [],于是模型只要不按 JSON 输出,**整层列守卫静默消失**
+        —— 回答照常交付,外部完全看不出来。这条锁住"降级可说"。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = make_state(
+            question="average grade",
+            sql="SELECT AVG(grade) FROM students",
+            columns=["AVG(grade)"],
+            rows=[[88.0]],
+            row_count=1,
+            plan_json=None,  # 模型输出了散文
+        )
+        update = await node(state)
+        assert update["rules_passed"] is True  # 不拦,回答照常
+        assert update["plan_validation"]["status"] == "untyped"
+        # 不进 validation_hits:那个通道的语义是"被规则拦过",是 eval 恢复
+        # 归因的判据,混进非拦截事件会污染它(trove/eval/replay.py)
+        assert "validation_hits" not in update
+
+    async def test_no_result_columns_is_not_reported_as_degraded(self):
+        """没有结果列 = 列检查无从谈起(快径/未启用 query_sketch 的路径),
+        不该被记一笔 —— 否则每道快径题都会带上"降级"信号。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(make_state(
+            question="average grade", sql="SELECT 1", row_count=0,
+        ))
         assert update == {"rules_passed": True}
 
     async def test_extra_columns_rule_gives_feedback(self):
@@ -2920,8 +3003,75 @@ class TestPlanValidation:
         update = await node(make_state())
         assert llm.calls == 2
         assert "invalid" in llm.prompts[1]  # 修正提示携带具体错误
-        assert update["plan_json"] == {"tables": ["loan"], "answer_columns": ["amount"]}
+        # A1-10:采纳的 plan_json 是**强类型计划的 dump**,不是模型原始 dict——
+        # 键齐、类型稳定,复杂度分级/列检查/编译器读到的是同一形状。
+        assert update["plan_json"] == {
+            "tables": ["loan"],
+            "joins": "",
+            "conditions": [],
+            "aggregation": "",
+            "ordering": [],
+            "answer_columns": ["amount"],
+            "having": [],
+            "plan_field": "",
+        }
         assert update["plan_validation"]["status"] == "ok"
+
+    async def test_node_json_that_is_not_a_plan_degrades_to_prose(self):
+        """A1-10:JSON 但形状不是计划 → 整份按散文注入,plan_json 为 None。
+
+        改造前这里只做 JSON 解析:一坨 JSON 和一份计划在下游完全同形——宽松
+        dict 会流进编译器、列检查与复杂度分级。现在形状判定只有一处
+        (``_typed_plan``),不合形状就整体降级,并且降级是可观测的
+        (``compile_meta.plan_typed == False``,validate 节点再记一笔列检查缺席)。
+        """
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return '{"conditions": 5}'  # 顶层键错型:不是计划
+
+        node = make_query_sketch(
+            LLM(), AgentConfig(target="m"), agentic=False,
+            connectors=self._connectors(),
+        )
+        update = await node(make_state())
+        assert update["plan_json"] is None
+        assert update["plan"] == '{"conditions": 5}'  # 原始文本原样注入 gen_sql
+        assert update["compile_meta"]["plan_typed"] is False
+
+    async def test_node_plan_text_is_rendered_from_the_typed_plan(self):
+        """A1-10:注入 gen_sql 的计划文本由强类型对象确定性渲染。
+
+        同一份计划无论模型怎么措辞(围栏/键序/多余键),渲染出的文本一致——
+        gen_sql 看到的 plan 因此可比、可回归;多余键不渲染,围栏不残留。
+        """
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                return (
+                    "```json\n"
+                    '{"answer_columns": ["avg(amount)"], "tables": ["loan"],'
+                    ' "aggregation": "avg(amount)", "unused_key": 1,'
+                    ' "ordering": [{"column": "amount", "direction": "desc"}]}\n'
+                    "```"
+                )
+
+        node = make_query_sketch(
+            LLM(), AgentConfig(target="m"), agentic=False,
+            connectors=self._connectors(),
+        )
+        update = await node(make_state(lang="en"))
+        # 排序渲染是判别点:原始 dict 形态会把它渲染成 Python repr
+        # (``[{'column': 'amount', 'direction': 'desc'}]``),强类型 dump 归一为
+        # ``column direction``;未声明的键不渲染,围栏不残留。
+        assert update["plan"] == (
+            "Tables: loan\nAggregation: avg(amount)\nOrdering: amount desc\n"
+            "Answer columns: avg(amount)"
+        )
+        assert "unused_key" not in update["plan"]
+        assert update["compile_meta"]["plan_typed"] is True
 
     async def test_query_sketch_prompt_includes_evidence(self):
         """P0-1:query_sketch 起草 answer_columns 时能看到官方 evidence。"""
@@ -2973,6 +3123,7 @@ class TestValidateRulesNode:
             question="average loan amount",
             sql="SELECT AVG(amount) FROM loan",
             columns=["avg"], rows=[[123.4]], row_count=1, lang="en",
+            plan_json={"answer_columns": ["avg"]},  # 有类型化计划 → 列检查跑过
         )
         update = await node(state)
         assert update == {"rules_passed": True}
@@ -3007,7 +3158,14 @@ class TestValidateRulesNode:
         )
         assert await node(state) == {"rules_passed": True}
 
-    async def test_answer_columns_no_plan_skips(self):
+    async def test_answer_columns_no_plan_skips_with_a_visible_marker(self):
+        """散文计划 → 列检查无可依之据,**跳过但留下标记**(A1-3)。
+
+        改造前这条断言的是 ``update == {"rules_passed": True}`` —— 检查和
+        它的缺席在返回值上完全同形。现在"跳过"这件事自己是个信号:
+        ``plan_validation.status == "untyped"`` + 一条 info 日志。不拦题
+        (散文计划是既有的静默降级路径,收严会改变答题率),但不再无声。
+        """
         from trove.workflow.nodes.validate import make_validate_rules
 
         node = make_validate_rules(max_retries=3)
@@ -3017,7 +3175,9 @@ class TestValidateRulesNode:
             columns=["avg"], rows=[[123.4]], row_count=1, lang="en",
             plan_json=None,
         )
-        assert await node(state) == {"rules_passed": True}
+        update = await node(state)
+        assert update["rules_passed"] is True
+        assert update["plan_validation"]["status"] == "untyped"
 
 
 class TestMakeSQLTools:

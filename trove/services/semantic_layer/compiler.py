@@ -22,11 +22,13 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from sqlglot import exp, parse_one, transpile
+from sqlglot import exp, parse_one
 
+from trove.core.logging import get_logger
 from trove.services.semantic_layer.contract import (
     JoinEdge,
     PlanContract,
+    PlanSignature,
     WhereCond,
 )
 from trove.services.semantic_layer.models import (
@@ -34,12 +36,14 @@ from trove.services.semantic_layer.models import (
     SemanticMetric,
     SemanticModel,
 )
-from trove.services.semantic_layer.plan import GRAINS, parse_ordering
+from trove.services.semantic_layer.plan import GRAINS, PlanQuery, parse_ordering
 from trove.services.semantic_layer.timegrain import (
     date_trunc,
     spine_fill_expr,
     time_spine_periods,
 )
+
+logger = get_logger(__name__)
 
 
 def _is_many_to_many(cardinality: str) -> bool:
@@ -595,15 +599,23 @@ def resolve_time_field(
 
 @dataclass
 class CompileResult:
-    """编译产物:权威 SQL + 权威交接契约。
+    """编译产物:权威 SQL + 权威交接契约 + 来处。
 
     散文提示块不再单独存字段 —— 它是 ``render_contract(contract)`` 的纯渲染,
     存成两个字段只会给两者留下漂移的空间(Phase A 要消除的正是这种"同一意图
     多份表示")。
+
+    ``source_plan`` 相反:它不是同一意图的第二份表示,而是**产物的身份**
+    (A1-9)——P0-3 要的引用同一性("用这个 metric" = 被校验过的那个 metric)。
+    调用方拿到产物即可回答"这份 SQL 是哪份计划编译出来的",不必假设它
+    就是自己刚递进去的那一份。只在进程内交接:强类型对象不上 LangGraph
+    wire(checkpointer 的 serde 白名单,见 contract.py 的实测表),wire 形状
+    仍由 ``contract_to_wire`` 给出。
     """
 
     sql: str
     contract: PlanContract
+    source_plan: "PlanQuery | None" = None
 
 
 @dataclass
@@ -631,11 +643,14 @@ class PartialCompile:
     - ``contract``:权威交接契约(注入块 = ``render_contract(contract)``)。
     - ``miss_parts``:未解析组件列表 ``[{reason, component}]``(学习/归因用)。
       与 ``contract.gaps`` 同源同形。
+    - ``source_plan``:骨架由哪份计划编译而来(A1-9,同 ``CompileResult``):
+      ``None`` = 兜底入口(松 dict / 旧调用方),不是经 IR 校验的计划。
     """
 
     sql: str
     contract: PlanContract
     miss_parts: list[dict[str, str]] = field(default_factory=list)
+    source_plan: "PlanQuery | None" = None
 
 
 # 编译失败原因全集(新增 MISS 分支必须进此集合,保证 eval 归因闭合)
@@ -2124,41 +2139,34 @@ def validate_compiled_sql(
     return []
 
 
-def _compiled_sql_sig(sql: str, dialect: str = "sqlite"):
-    """编译 SQL 的结构签名(照抄校验的判据)。
-
-    忽略列名/星号/别名/格式——只保留「改了就必然改变结果」的形状信号:
-      - 投影列数 + 每列聚合函数名(COUNT(*) 与 COUNT(col) 同签名,
-        编译器把 count(*) 归一到声明的 COUNT(col) 是合法等价);
-      - 引用的表集合 + JOIN 数量;
-      - WHERE 条件序列:每个条件 = (操作符, 字面量值元组)(改过滤值必改签名);
-      - GROUP BY 列数。
-    解析失败/非查询 → None(调用方保守放行)。
-    """
-    from sqlglot import exp, parse_one
-
-    try:
-        tree = parse_one(sql, read=dialect)
-    except Exception:
-        return None
+def _inner_select(tree):
+    """Query → 顶层 SELECT(带 CTE 的取主查询);非查询 → None。"""
     if not isinstance(tree, exp.Query):
         return None
     if isinstance(tree, exp.With):
         tree = tree.this
-    select = tree if isinstance(tree, exp.Select) else tree
-    if not isinstance(select, exp.Select):
+    return tree if isinstance(tree, exp.Select) else None
+
+
+def _signature_of(tree) -> PlanSignature | None:
+    """已解析的语法树 → 结果形状签名(判据见 :class:`PlanSignature`)。
+
+    这是**生成 SQL 侧**的抽取入口 —— 生成 SQL 是 LLM 输出,只拿得到字符串。
+    编译侧走 ``_build_contract`` 在编译期抽一次,不再有这个函数参与。
+    """
+    select = _inner_select(tree)
+    if select is None:
         return None
 
-    projections = []
+    projections: list[str | None] = []
     for e in select.expressions or []:
         agg = next((f for f in e.find_all(exp.AggFunc)), None)
         if agg is not None:
-            name = agg.sql().split("(", 1)[0].strip().lower()
-            projections.append(("agg", name))
+            projections.append(agg.sql().split("(", 1)[0].strip().lower())
         else:
-            projections.append(("plain",))
+            projections.append(None)
 
-    tables = set()
+    tables: set[str] = set()
     src_nodes = [select.args.get("from_")] + (select.args.get("joins") or [])
     for s in src_nodes:
         if s is None:
@@ -2178,71 +2186,44 @@ def _compiled_sql_sig(sql: str, dialect: str = "sqlite"):
             )
             conds.append((node.key, vals))
 
-    group_cols = 0
     group = select.args.get("group")
-    if group is not None:
-        group_cols = len(group.expressions or [])
-    return (
-        tuple(projections),
-        tuple(sorted(tables)),
-        tuple(conds),
-        len(select.args.get("joins") or []),
-        group_cols,
+    return PlanSignature(
+        projections=tuple(projections),
+        tables=tuple(sorted(tables)),
+        conds=tuple(conds),
+        joins=len(select.args.get("joins") or []),
+        groups=len(group.expressions or []) if group is not None else 0,
     )
 
 
-def compiled_sql_matches(
-    compiled: str,
-    generated: str,
-    generated_dialect: str = "sqlite",
-) -> tuple[bool, str]:
-    """编译照抄校验:生成的 SQL 是否保留权威编译 SQL 的结果形状。
+def _generated_signature(sql: str, dialect: str) -> PlanSignature | None:
+    """生成 SQL(字符串)→ 签名。解析失败/非查询 → None(调用方判失败)。
 
-    结构签名比较(见 _compiled_sql_sig):改聚合/改过滤值/改投影宽度/
-    改 join → 打回;COUNT(*) vs COUNT(col)、别名、格式、大小写 → 通过
-    (与编译 SQL 语义等价,不是回归)。签名缺失(解析失败等)→ 保守放行。
-
-    跨方言:非 sqlite 方言先 sqlglot transpile 归一到 sqlite 再比签名
-    (方言函数名/类型转换差异归一后不误伤,守卫在 PG/MySQL 上不再直接
-    放行)。transpile 失败 → 保守放行,不引入新拒绝向量。
-
-    保守方向(避免误伤合法微调,返回 (True, "")):
-      - 任一 SQL 解析失败/异常或非查询。
+    注意这里**不做 transpile 归一**:签名每一项都在 parse 期定形,不随 read
+    方言变化(实测 ``DATE_FORMAT``/``date_trunc``/``strftime`` 同签名)。契约
+    与生成 SQL 同属一个业务方言 —— 那是 A1 的结构保证,不再靠运行时把两侧
+    都拎到 sqlite 对齐。
     """
-    if not compiled or not generated:
-        return True, ""
-    dialect = (generated_dialect or "sqlite").lower()
-    base_text, gen_text = compiled, generated
-    if dialect != "sqlite":
-        try:
-            base_sql = transpile(compiled, read=dialect, write="sqlite")
-            gen_sql = transpile(generated, read=dialect, write="sqlite")
-        except Exception:
-            return True, ""
-        if not base_sql or not gen_sql:
-            return True, ""
-        base_text, gen_text = base_sql[0], gen_sql[0]
-    base = _compiled_sql_sig(base_text, "sqlite")
-    other = _compiled_sql_sig(gen_text, "sqlite")
-    if base is None or other is None:
-        return True, ""
-    if base == other:
-        return True, ""
-    return False, (
-        "generated SQL does not preserve the compiled SQL's result shape "
-        "(changed aggregation, filter values, projection, or joins)"
-    )
+    try:
+        tree = parse_one(sql, read=dialect)
+    except Exception:
+        return None
+    return _signature_of(tree)
 
 
-# ── 契约构造 + 骨架保真校验 ────────────────────────────────────
+# ── 契约构造 + 保真校验 ────────────────────────────────────────
 #
-# 软 MISS 分级逃生梯的守卫:骨架 SQL 的 join 边 / WHERE 条件 / GROUP BY
-# 宽度必须在生成 SQL 中保留(LLM 只被允许**补**未覆盖组件,不得改/删权威
-# 骨架)。投影列不比较(LLM 需补未解析部分);分桶表达式跨方言差异不比较
-# (GROUP BY 只比宽度)。任一 SQL 解析失败 → 保守放行。
+# 编译器 → 生成通道的交接与守卫。两条校验都读 :class:`PlanContract`,
+# **不再从编译 SQL 反推结构**:
 #
-# 结构在**编译期**抽取一次(见 _build_contract),执行前的校验读契约对象;
-# 下面三个抽取器因此不再需要"从字符串反推"这条路径。
+# - 全量编译(``compiled_sql_matches``):比结果形状签名 —— 改聚合/改过滤值/
+#   改投影宽度/换表 → 打回;别名、格式、``COUNT(*)`` vs ``COUNT(col)`` → 通过。
+# - 软 MISS(``skeleton_preserved``):比 join 边/WHERE 条件/分组宽度 ——
+#   LLM 只被允许**补**未覆盖组件,不得改/删权威骨架。投影不比较(要补缺),
+#   分桶表达式差异不比较(GROUP BY 只比宽度)。
+#
+# 两侧的差别在**谁解析**:编译侧的结构在编译期就抽进契约(编译器刚拼出的
+# SQL 必然可解析),执行前只剩生成 SQL 需要解析 —— 它是 LLM 输出,只有字符串。
 
 
 def _canon_edge(edge: set) -> JoinEdge:
@@ -2267,34 +2248,48 @@ def _build_contract(
 ) -> PlanContract:
     """权威 SQL → 契约。结构**此刻**抽取(编译器刚拼出的 SQL 必然可解析)。
 
-    解析失败/非 SELECT 时返回只带 ``skeleton_sql`` 的空结构契约 —— 与改造前
-    「抽取不出结构 → 校验放行」一致(改动只搬位置,不搬松紧)。两处 fail-open
-    (``compiled_sql_matches`` / ``skeleton_preserved`` 对不可解析输入的放行)
-    是 A1 的收口项,不在本次范围。
+    解析失败/非 SELECT 时返回只带 ``skeleton_sql`` 的空结构契约 —— 那是
+    **编译器自身有缺陷**(拼出的 SQL 解析不了),不该让下游静默降级:这里
+    当场告警,契约上的 ``signature is None`` 则是留给校验侧的独立信号
+    (``compiled_sql_matches`` 见到它就记录并放行,而不是伪装成"形状相同")。
     """
-    from sqlglot import exp, parse_one
-
     base = PlanContract(skeleton_sql=sql, gaps=tuple(gaps or ()), partial=partial)
     try:
         tree = parse_one(sql, read=dialect or "sqlite")
-    except Exception:
+    except Exception as e:
+        logger.warning("compiled SQL is unparseable (%s): %r", e, sql[:400])
         return base
-    if isinstance(tree, exp.With):
-        tree = tree.this
-    if not isinstance(tree, exp.Select):
+    select = _inner_select(tree)
+    if select is None:
+        logger.warning("compiled SQL is not a SELECT: %r", sql[:400])
         return base
-    group = tree.args.get("group")
-    edges: list[JoinEdge] = sorted({_canon_edge(e) for e in _skeleton_join_edges(tree)})
+    group = select.args.get("group")
+    edges: list[JoinEdge] = sorted({_canon_edge(e) for e in _skeleton_join_edges(select)})
     wheres: list[WhereCond] = sorted(
         (tuple(sorted(cols)), op, vals)
-        for cols, op, vals in _skeleton_where(tree)
+        for cols, op, vals in _skeleton_where(select)
     )
     return replace(
         base,
         join_edges=tuple(edges),
         where=tuple(wheres),
         group_by_width=len(group.expressions or []) if group is not None else 0,
+        signature=_signature_of(select),
     )
+
+
+def build_contract(sql: str, dialect: str = "sqlite") -> PlanContract | None:
+    """编译 SQL 字符串 → 契约。**只在契约缺席时用**(旧 checkpoint、wire 形状
+    异常):此时结构必须现抽,否则校验无据可依。空 SQL → ``None``(没有权威
+    SQL 就谈不上保真,调用方整体跳过 —— 与改造前 ``if not compiled`` 一致)。
+
+    与 ``contract_from_wire`` 的分工:那条是**恢复**(字符串→对象,形状异常
+    即 ``None``,绝不部分解出);这条是**重建**(从权威 SQL 现抽,抽不出结构
+    时 ``signature is None`` 是明确信号)。两条路都通向同一个对象。
+    """
+    if not sql:
+        return None
+    return _build_contract(sql, dialect=dialect or "sqlite")
 
 
 def _skeleton_join_edges(tree) -> set[frozenset[tuple[str, str]]]:
@@ -2352,42 +2347,48 @@ def _skeleton_col_in(skel_col: tuple[str, str], gen_cols) -> bool:
 
 
 def skeleton_preserved(
-    skeleton: str,
+    contract: PlanContract,
     generated: str,
     generated_dialect: str = "sqlite",
 ) -> tuple[bool, str]:
     """Partial 骨架保真校验:join 边/WHERE 条件/分组宽度必须保留。
 
-    与 ``compiled_sql_matches`` 的差别:投影列不参与比较(LLM 需补未解析
-    组件),join 顺序、分桶表达式方言差异被容忍。任一 SQL 解析失败/非
-    SELECT → 保守放行(True)。
+    骨架侧读契约字段(**编译期已抽好**),只有生成 SQL 需要解析 —— 它是
+    LLM 输出。与 ``compiled_sql_matches`` 的差别:投影列不参与比较(LLM 需
+    补未解析组件),join 顺序、分桶表达式方言差异被容忍。
+
+    返回 ``(False, 原因)`` 的两种情况都是**打回重生成**:
+      - 生成 SQL 解析不了(LLM 输出了非 SQL / 方言不符)——它连解析都不行,
+        更谈不上保真;
+      - 生成 SQL 丢了骨架的 join 边 / 过滤条件 / 分组维度。
     """
-    if not skeleton or not generated:
+    if not contract.skeleton_sql or not generated:
         return True, ""
-
-    from sqlglot import exp, parse_one
-
-    def _select(q):
-        if isinstance(q, exp.With):
-            q = q.this
-        return q if isinstance(q, exp.Select) else None
+    if not contract.join_edges and not contract.where and not contract.group_by_width:
+        # 编译期就没抽出结构(编译器自己拼的 SQL 解析不了,见 _build_contract
+        # 的告警):此处的"全保留"是空转。不伪装成通过,显式记录后放行 ——
+        # 拒绝会让这种配置下**所有**问题都失败,那是惩罚用户,不是收口。
+        logger.warning(
+            "skeleton check skipped: contract carries no extracted structure "
+            "(compile-time extraction failed)",
+        )
+        return True, "contract structure unavailable"
 
     try:
-        stree = parse_one(skeleton, read=generated_dialect)
-        gtree = parse_one(generated, read=generated_dialect)
-    except Exception:
-        return True, ""
-    s = _select(stree)
-    g = _select(gtree)
-    if s is None or g is None:
-        return True, ""
+        gtree = parse_one(generated, read=generated_dialect or "sqlite")
+    except Exception as e:
+        return False, f"generated SQL is unparseable: {e}"
 
-    missing_joins = _skeleton_join_edges(s) - _skeleton_join_edges(g)
-    if missing_joins:
+    g = _inner_select(gtree)
+    if g is None:
+        return False, "generated SQL is not a SELECT"
+
+    gen_joins = _skeleton_join_edges(g)
+    if not {frozenset(e) for e in contract.join_edges} <= gen_joins:
         return False, "generated SQL dropped a skeleton join"
 
     gen_where = _skeleton_where(g)
-    for cols, op, vals in _skeleton_where(s):
+    for cols, op, vals in contract.where:
         if not any(
             gop == op and gvals == vals
             and all(_skeleton_col_in(c, gcols) for c in cols)
@@ -2395,13 +2396,49 @@ def skeleton_preserved(
         ):
             return False, "generated SQL dropped a skeleton filter condition"
 
-    def _group_count(q) -> int:
-        grp = q.args.get("group")
-        if grp is None:
-            return 0
-        return len(grp.expressions or [])
-
-    if _group_count(g) < _group_count(s):
+    group = g.args.get("group")
+    gen_groups = len(group.expressions or []) if group is not None else 0
+    if gen_groups < contract.group_by_width:
         return False, "generated SQL dropped a grouping dimension from the skeleton"
 
     return True, ""
+
+
+def compiled_sql_matches(
+    contract: PlanContract,
+    generated: str,
+    generated_dialect: str = "sqlite",
+) -> tuple[bool, str]:
+    """编译照抄校验:生成的 SQL 是否保留权威编译 SQL 的结果形状。
+
+    比的是契约里**编译期抽好的**结果形状签名(见 :class:`PlanSignature`):
+    改聚合/改过滤值/改投影宽度/换表 → 打回;``COUNT(*)`` vs ``COUNT(col)``、
+    别名、格式、大小写 → 通过(与编译 SQL 语义等价,不是回归)。
+
+    生成 SQL 解析不了 → **打回**(它连是不是查询都定不下来,不能算保真)。
+    这是 A1 收口的 fail-open:此前这种情况静默放行。
+
+    唯一仍放行的情况:契约没有签名 —— 那是编译期就抽不出结构(编译器自身
+    缺陷,``_build_contract`` 已当场告警),拒绝会让这种配置下所有问题都失败。
+    """
+    if not contract.skeleton_sql or not generated:
+        return True, ""
+    if contract.signature is None:
+        logger.warning(
+            "copy check skipped: contract has no shape signature "
+            "(compile-time extraction failed)",
+        )
+        return True, ""
+    dialect = (generated_dialect or "sqlite").lower()
+    other = _generated_signature(generated, dialect)
+    if other is None:
+        return False, (
+            "generated SQL could not be parsed as a query — it cannot be "
+            f"verified against the compiled SQL (dialect: {dialect})"
+        )
+    if contract.signature == other:
+        return True, ""
+    return False, (
+        "generated SQL does not preserve the compiled SQL's result shape "
+        "(changed aggregation, filter values, projection, or joins)"
+    )
