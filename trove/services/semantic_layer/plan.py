@@ -229,7 +229,9 @@ class PlanQuery(BaseModel):
     tables: list[str] = Field(default_factory=list)
     joins: str = ""
     conditions: list[PlanCondition] = Field(default_factory=list)
-    aggregation: str = ""
+    # 单一聚合表达式(常态),或多聚合的列表形态(模型偶发;编译器按 str()
+    # 落空走软 MISS,复杂度分级按元素数计数)
+    aggregation: str | list[str] = ""
     extreme: dict[str, Any] | None = None
     ordering: list[PlanOrdering] = Field(default_factory=list)
     answer_columns: list[str] = Field(default_factory=list)
@@ -238,6 +240,11 @@ class PlanQuery(BaseModel):
     analysis: PlanAnalysis | None = None
     limit: int | None = None
     plan_field: str = ""
+    # 归因计划(为什么/归因类问题 prompt 显式要求的附加块)。编译器不消费,
+    # 由 attribution 节点多跳下钻读取;这里**不透明持有**——形状宽松(非 dict
+    # → None),不因它把整份计划打回散文:改造前它同样不影响其他字段的可用性,
+    # 收紧只会把今天答得出的归因题变成答不出。
+    attribution: dict[str, Any] | None = None
 
     @field_validator("tables", mode="before")
     @classmethod
@@ -255,15 +262,28 @@ class PlanQuery(BaseModel):
 
     @field_validator("aggregation", mode="before")
     @classmethod
-    def _agg(cls, v: Any) -> str:
-        # 与 dict 流 str(plan.get("aggregation") or "") 语义对齐
-        return "" if v is None else str(v)
+    def _agg(cls, v: Any) -> str | list[str]:
+        # 与 dict 流 str(plan.get("aggregation") or "") 语义对齐:标量照旧 str()。
+        # **列表按原形保留**(模型偶发把多个聚合写成数组):压成一个字符串等于
+        # 造一个谁也解析不了的聚合表达式,而且会让复杂度分级把 3 个聚合数成 1 个
+        # —— simple 档跳过候选池与 LLM 裁决,那是放松守卫的方向。
+        if v is None:
+            return ""
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        return str(v)
 
     @field_validator("extreme", mode="before")
     @classmethod
     def _extreme(cls, v: Any) -> dict[str, Any] | None:
         # extreme 编译器不消费,非 dict 宽松置空
         return v if isinstance(v, dict) else None
+
+    @field_validator("attribution", mode="before")
+    @classmethod
+    def _attribution(cls, v: Any) -> dict[str, Any] | None:
+        # 空 dict 与错型同样置空(与"带出 attribution_plan"的 truthy 判据对齐)
+        return v if isinstance(v, dict) and v else None
 
     @field_validator("conditions", "having", mode="before")
     @classmethod

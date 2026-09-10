@@ -19,6 +19,7 @@ from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
 from trove.services.semantic_layer.compiler import (
+    build_contract,
     compiled_sql_matches,
     skeleton_preserved,
 )
@@ -73,18 +74,18 @@ def make_execute_sql(
         # 分级逃生梯:partial(软 MISS 骨架)走骨架保真校验——join/过滤/分组
         # 必须保留,投影允许 LLM 补缺。
         if state.compiled and state.compiled_sql:
-            # 权威 SQL 从**契约**取(Phase A0):同一份结构不必再经"编译期
-            # 序列化成字符串 → 这里反推回来"的往返。契约缺席(旧 checkpoint /
-            # wire 形状异常)时退回 state.compiled_sql —— 与改造前逐字一致,
-            # 不会因为读不到契约就静默放松校验。
+            # 权威结构从**契约**取(Phase A0):同一份结构不必再经"编译期
+            # 序列化成字符串 → 这里反推回来"的往返。A1 把结构在编译期抽好
+            # (join 边/过滤/分组/形状签名),这里只解析生成 SQL 一条。
+            # 契约缺席(旧 checkpoint / wire 形状异常)→ 退回 compiled_sql
+            # 现抽一份 —— 与改造前逐字一致,不会因为读不到契约就静默放松。
             contract = contract_from_wire(state.contract)
-            skeleton_sql = (
-                contract.skeleton_sql if contract is not None else state.compiled_sql
-            )
+            if contract is None:
+                contract = build_contract(state.compiled_sql, state.dialect)
             if state.compile_partial:
-                ok, why = skeleton_preserved(skeleton_sql, state.sql, state.dialect)
+                ok, why = skeleton_preserved(contract, state.sql, state.dialect)
             else:
-                ok, why = compiled_sql_matches(skeleton_sql, state.sql, state.dialect)
+                ok, why = compiled_sql_matches(contract, state.sql, state.dialect)
             if not ok:
                 logger.info("compile drift for %r: %s", state.question[:80], why)
                 return _compile_drift_failure(state, max_retries)

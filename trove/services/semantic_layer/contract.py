@@ -10,6 +10,13 @@ SQL 比。于是结构经历「→ 字符串 →(LLM)→ 字符串 → 反推」
 散文(`render_contract`)降级为这个对象的纯渲染 —— 信息只减不增,有 golden
 断言锁住。
 
+**A1:结构在编译期抽取一次,校验不再反推。** 全量编译的照抄校验比的是结果
+形状签名(:class:`PlanSignature`)—— 投影/表集/过滤/连接数/分组宽度。这份签名
+同样在这里抽好(编译器拼出的 SQL 必然可解析),校验侧只解析**生成**的那条
+SQL(它是 LLM 输出,只能拿到字符串)。签名抽取失败时 ``signature`` 为 ``None``,
+含义是"编译器自己的 SQL 解析不了" —— 那不该悄悄放行,由编译期日志 + 校验侧
+的显式记录共同暴露(见 compiler._build_contract / compiled_sql_matches)。
+
 **为什么字段是有序元组、且要经 wire 转换。** 契约要跨节点边界,而 LangGraph
 在**每个超级步**把 state 交给 checkpointer 序列化。实测(langgraph 的
 ``JsonPlusSerializer``,与本仓库实际用的 saver 同一份实现)::
@@ -44,6 +51,7 @@ __all__ = [
     "Col",
     "JoinEdge",
     "WhereCond",
+    "PlanSignature",
     "PlanContract",
     "render_contract",
     "contract_to_wire",
@@ -59,6 +67,33 @@ WhereCond = tuple[tuple[Col, ...], str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
+class PlanSignature:
+    """编译 SQL 的结果形状签名 —— 照抄校验(全量编译)的判据。
+
+    刻意**粗糙**:只留「改了就必然改变结果」的信号,把「等价改写」全部抹平,
+    否则守卫会变成误伤机器。
+
+    - ``projections``:每个投影的聚合函数名,无聚合写 ``None``。**不含列名**
+      —— 编译器把 ``count(*)`` 归一到声明的 ``COUNT(col)`` 是合法等价。
+    - ``tables``:FROM/JOIN 里直接引用的表名(升序)。
+    - ``conds``:WHERE 的每个二元条件 ``(算子, 字面量元组)``。**不含列名**
+      —— 过滤值一变签名必变,列重写不算偏离。
+    - ``joins`` / ``groups``:JOIN 个数、GROUP BY 表达式个数。
+
+    注意签名**与方言无关**:上面每项都在 parse 阶段定形,不随 read 方言变化
+    (``DATE_FORMAT`` 与 ``date_trunc`` 一样只是"无聚合的投影")。所以契约按
+    编译方言抽一次即可,校验侧不必再把两侧都 transpile 到 sqlite 对齐——
+    "契约与生成 SQL 同方言"在 A1 之后是**结构保证**,不是运行时假设。
+    """
+
+    projections: tuple[str | None, ...] = ()
+    tables: tuple[str, ...] = ()
+    conds: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    joins: int = 0
+    groups: int = 0
+
+
+@dataclass(frozen=True)
 class PlanContract:
     """编译器产出的权威交接。
 
@@ -66,6 +101,9 @@ class PlanContract:
     - ``join_edges``:必须保留的 JOIN 边(集合语义;有序元组,见模块 docstring)。
     - ``where``:必须保留的过滤条件(集合语义)。
     - ``group_by_width``:必须保留的分组宽度。
+    - ``signature``:全量编译的照抄判据(见 :class:`PlanSignature`)。``None``
+      = 编译期抽取失败(编译器拼出的 SQL 解析不了,正常不该发生)—— 校验侧
+      据此显式记录并放行,不伪装成"形状相同"。
     - ``gaps``:语义模型未覆盖、需生成通道自行补齐的组件。形状与
       ``PartialCompile.miss_parts`` 一致 —— 本来就是同一份数据
       (``{reason, component}``,两个键都由编译器写死,不是自由文本),
@@ -77,6 +115,7 @@ class PlanContract:
     join_edges: tuple[JoinEdge, ...] = ()
     where: tuple[WhereCond, ...] = ()
     group_by_width: int = 0
+    signature: PlanSignature | None = None
     gaps: tuple[dict[str, str], ...] = ()
     partial: bool = False
 
@@ -115,6 +154,21 @@ def render_contract(contract: PlanContract) -> str:
     return "\n".join(lines)
 
 
+def signature_to_wire(signature: PlanSignature | None) -> dict[str, Any] | None:
+    """签名 → 纯 JSON(``None`` 原样透传:它是"抽取失败"的明确取值)。"""
+    if signature is None:
+        return None
+    return {
+        "projections": list(signature.projections),
+        "tables": list(signature.tables),
+        "conds": [
+            {"op": op, "values": list(vals)} for op, vals in signature.conds
+        ],
+        "joins": signature.joins,
+        "groups": signature.groups,
+    }
+
+
 def contract_to_wire(contract: PlanContract) -> dict[str, Any]:
     """契约 → 可跨节点边界的纯 JSON 形状(见模块 docstring)。
 
@@ -129,6 +183,7 @@ def contract_to_wire(contract: PlanContract) -> dict[str, Any]:
             for cols, op, vals in contract.where
         ],
         "group_by_width": contract.group_by_width,
+        "signature": signature_to_wire(contract.signature),
         "gaps": [dict(g) for g in contract.gaps],
         "partial": contract.partial,
     }
@@ -189,6 +244,50 @@ def _decode_gaps(raw: Any) -> tuple[dict[str, str], ...] | None:
     return tuple(out)
 
 
+def _decode_signature(raw: Any) -> PlanSignature | None | str:
+    """签名解码。三态:``None``(确实没有签名)/ ``PlanSignature`` / 字符串
+    ``"invalid"``(形状异常)。
+
+    三态是必要的:``{"signature": null}`` 是合法且有意义的值(抽取失败),
+    不能和"这个键根本没法解"混为一谈 —— 后者必须让整个契约作废。
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return "invalid"
+    projections_raw = raw.get("projections", [])
+    tables_raw = raw.get("tables", [])
+    conds_raw = raw.get("conds", [])
+    if not all(isinstance(x, list) for x in (projections_raw, tables_raw, conds_raw)):
+        return "invalid"
+    if not projections_raw:
+        # 真实签名至少一个投影(SELECT 必有投影列表)。空投影只可能来自坏
+        # wire 或坏编译器,放它过去 = 拿一个必然不匹配的判据去打回每一条生成
+        # SQL —— 比缺签名危险得多。
+        return "invalid"
+    conds: list[tuple[str, tuple[str, ...]]] = []
+    for item in conds_raw:
+        if not isinstance(item, dict):
+            return "invalid"
+        vals = item.get("values")
+        if not isinstance(vals, list):
+            return "invalid"
+        conds.append((str(item.get("op") or ""), tuple(str(v) for v in vals)))
+    joins, groups = raw.get("joins", 0), raw.get("groups", 0)
+    for n in (joins, groups):
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            return "invalid"
+    return PlanSignature(
+        projections=tuple(
+            None if p is None else str(p) for p in projections_raw
+        ),
+        tables=tuple(str(t) for t in tables_raw),
+        conds=tuple(conds),
+        joins=joins,
+        groups=groups,
+    )
+
+
 def contract_from_wire(wire: Any) -> PlanContract | None:
     """wire → 契约。**形状异常一律返回 ``None``**(不是"解出能解的部分")。
 
@@ -208,11 +307,15 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
     width = wire.get("group_by_width", 0)
     if not isinstance(width, int) or isinstance(width, bool) or width < 0:
         return None
+    signature = _decode_signature(wire.get("signature"))
+    if isinstance(signature, str):  # "invalid"
+        return None
     return PlanContract(
         skeleton_sql=sql,
         join_edges=join_edges,
         where=where,
         group_by_width=width,
+        signature=signature,
         gaps=gaps,
         partial=bool(wire.get("partial")),
     )

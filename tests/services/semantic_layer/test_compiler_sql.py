@@ -1058,6 +1058,17 @@ def test_simple_metric_type_keeps_expression_verbatim():
 
 
 # ── 编译照抄校验(compiled_sql_matches)───────────────────────
+#
+# A1 起签名从**契约**取(编译期已抽好),只有生成 SQL 现解析 —— 这里因此
+# 一律先 build_contract 再比,不再有"传两个字符串"的入口。
+
+
+def _contract(sql: str, dialect: str = "sqlite"):
+    from trove.services.semantic_layer.compiler import build_contract
+
+    contract = build_contract(sql, dialect)
+    assert contract is not None
+    return contract
 
 
 def test_compiled_sql_matches_ignores_formatting():
@@ -1065,7 +1076,7 @@ def test_compiled_sql_matches_ignores_formatting():
     from trove.services.semantic_layer.compiler import compiled_sql_matches
 
     ok, why = compiled_sql_matches(
-        "SELECT COUNT(loan.loan_id)\nFROM loan",
+        _contract("SELECT COUNT(loan.loan_id)\nFROM loan"),
         "select count(loan.loan_id) from loan",
         "sqlite",
     )
@@ -1079,7 +1090,7 @@ def test_compiled_sql_matches_tolerates_count_normalization():
     from trove.services.semantic_layer.compiler import compiled_sql_matches
 
     ok, _ = compiled_sql_matches(
-        "SELECT COUNT(loan.loan_id)\nFROM loan",
+        _contract("SELECT COUNT(loan.loan_id)\nFROM loan"),
         "SELECT COUNT(*) FROM loan",
         "sqlite",
     )
@@ -1090,37 +1101,69 @@ def test_compiled_sql_matches_rejects_structural_deviation():
     """改聚合函数 / 改过滤值 / 改投影宽度 / 换表 → 结果形状必然改变 → 打回。"""
     from trove.services.semantic_layer.compiler import compiled_sql_matches
 
-    base = "SELECT COUNT(loan.loan_id) FROM loan"
+    base = _contract("SELECT COUNT(loan.loan_id) FROM loan")
     assert compiled_sql_matches(base, "SELECT SUM(loan.amount) FROM loan", "sqlite")[0] is False
     assert compiled_sql_matches(base, "SELECT COUNT(loan.loan_id) FROM trans", "sqlite")[0] is False
     assert compiled_sql_matches(
-        "SELECT a FROM t WHERE x = 'A'",
+        _contract("SELECT a FROM t WHERE x = 'A'"),
         "SELECT a FROM t WHERE x = 'a'", "sqlite")[0] is False
     assert compiled_sql_matches(
-        "SELECT a, b FROM t", "SELECT a FROM t", "sqlite")[0] is False
+        _contract("SELECT a, b FROM t"), "SELECT a FROM t", "sqlite")[0] is False
 
 
 def test_compiled_sql_matches_conservative_passthrough():
-    """保守方向:解析失败 / 空 SQL → 放行(不误伤合法微调)。"""
+    """仍放行的只剩"没有可比对象":空 SQL(两侧)与编译期就没抽出签名。
+
+    生成 SQL 解析不了**不再**在这条里 —— 那是 A1 收口的 fail-open,见
+    test_compiled_sql_matches_rejects_unparseable_generated。
+    """
+    from trove.services.semantic_layer.compiler import build_contract, compiled_sql_matches
+
+    assert compiled_sql_matches(_contract("SELECT 1"), "", "sqlite")[0] is True
+    assert build_contract("", "sqlite") is None
+    # 编译器自己的 SQL 解析不了(非查询)→ 契约无签名 → 记录并放行
+    no_sig = build_contract("not a query", "sqlite")
+    assert no_sig is not None and no_sig.signature is None
+    assert compiled_sql_matches(no_sig, "SELECT 1", "sqlite")[0] is True
+
+
+def test_compiled_sql_matches_rejects_unparseable_generated():
+    """生成 SQL 解析不了 → 打回(A1:sleeping fail-open 收口)。
+
+    此前这种情况静默放行 —— 生成通道只要输出一段非 SQL,照抄校验就整个
+    失效。它连是不是查询都定不下来,不能算保真。
+    """
     from trove.services.semantic_layer.compiler import compiled_sql_matches
 
-    assert compiled_sql_matches("SELECT 1", "not a query", "sqlite")[0] is True
-    assert compiled_sql_matches("", "", "sqlite")[0] is True
-    assert compiled_sql_matches("SELECT COUNT(x) FROM t", "", "sqlite")[0] is True
+    ok, why = compiled_sql_matches(
+        _contract("SELECT COUNT(x) FROM t"), "not a query at all", "sqlite",
+    )
+    assert ok is False
+    assert "parse" in why.lower()
 
 
 def test_compiled_sql_matches_cross_dialect_guard():
-    """跨方言守卫:归一后结构偏离(改聚合函数)仍打回,等价 SQL 放行——
-    不再因方言非 sqlite 就整组放行。"""
+    """跨方言守卫:非 sqlite 方言下结构偏离仍打回,等价 SQL 放行。
+
+    A1 起不再 transpile 到 sqlite 对齐 —— 契约在编译方言里抽签名的,而签名
+    每一项都在 parse 期定形(``DATE_FORMAT`` 与 ``strftime`` 一样只是"无聚合
+    的投影"),方言不参与签名取值。这条锁住"去掉 transpile 没削弱守卫"。
+    """
     from trove.services.semantic_layer.compiler import compiled_sql_matches
 
     assert compiled_sql_matches(
-        "SELECT COUNT(x) FROM t", "SELECT SUM(y) FROM t", "mysql")[0] is False
+        _contract("SELECT COUNT(x) FROM t", "mysql"),
+        "SELECT SUM(y) FROM t", "mysql")[0] is False
     assert compiled_sql_matches(
-        "SELECT COUNT(x) FROM t", "SELECT COUNT(x) FROM t", "mysql")[0] is True
+        _contract("SELECT COUNT(x) FROM t", "mysql"),
+        "SELECT COUNT(x) FROM t", "mysql")[0] is True
     assert compiled_sql_matches(
-        "SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t",
+        _contract("SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t", "mysql"),
         "SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t", "mysql")[0] is True
+    # 同形状换写法(方言函数替换)也是等价 —— 签名不看函数名之外的方言细节
+    assert compiled_sql_matches(
+        _contract("SELECT DATE_FORMAT(d, '%Y-%m'), COUNT(x) FROM t", "mysql"),
+        "SELECT strftime('%Y-%m', d), COUNT(x) FROM t", "mysql")[0] is True
 
 
 # ── 时间粒度分桶 ─────────────────────────────────────────
@@ -1337,8 +1380,15 @@ _SKELETON = (
 
 
 def _skel(gen):
-    from trove.services.semantic_layer.compiler import skeleton_preserved
-    return skeleton_preserved(_SKELETON, gen)
+    """骨架侧走契约(编译期抽好),生成侧现解析 —— A1 之后的真实调用形状。"""
+    from trove.services.semantic_layer.compiler import (
+        build_contract,
+        skeleton_preserved,
+    )
+
+    contract = build_contract(_SKELETON, "sqlite")
+    assert contract is not None and contract.join_edges
+    return skeleton_preserved(contract, gen)
 
 
 def test_skeleton_preserved_exact_reproduction():
@@ -1409,10 +1459,38 @@ def test_skeleton_preserved_allows_join_order_change():
     assert ok
 
 
-def test_skeleton_preserved_unparseable_passes():
-    from trove.services.semantic_layer.compiler import skeleton_preserved
-    ok, _why = skeleton_preserved("SELECT 1", "NOT A QUERY !!!")
-    assert ok
+def test_skeleton_preserved_rejects_unparseable_generated():
+    """生成 SQL 解析不了 → 打回(A1:sleeping fail-open 收口)。
+
+    改造前这里 ``return True, ""`` —— 骨架保真校验对"输出不是 SQL"的生成
+    结果完全失效,而那正是软 MISS 路径上最需要兜住的情况。
+    """
+    from trove.services.semantic_layer.compiler import (
+        build_contract,
+        skeleton_preserved,
+    )
+
+    contract = build_contract(_SKELETON, "sqlite")
+    ok, why = skeleton_preserved(contract, "NOT A QUERY !!!")
+    assert ok is False and "parse" in why.lower()
+
+
+def test_skeleton_preserved_without_extracted_structure_passes_with_reason():
+    """契约没抽出结构(编译器自身的 SQL 解析不了)→ 记录并放行。
+
+    拒绝会让这种配置下**所有**软 MISS 问题都失败 —— 那是惩罚用户,不是收口。
+    但也不能伪装成"保真通过":返回的说明文本里写明结构不可用。
+    """
+    from trove.services.semantic_layer.compiler import (
+        build_contract,
+        skeleton_preserved,
+    )
+
+    contract = build_contract("not a query", "sqlite")
+    assert contract is not None and not contract.join_edges
+    ok, why = skeleton_preserved(contract, _SKELETON)
+    assert ok is True
+    assert why == "contract structure unavailable"
 
 
 def test_hard_soft_miss_classification():

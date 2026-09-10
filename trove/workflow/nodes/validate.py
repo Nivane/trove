@@ -5,6 +5,11 @@ execution errors (shared retry budget): the regenerated SQL gets the
 concrete rule reason in its prompt. This is the code-side counterpart
 to the LLM reflect judge — what can be checked deterministically
 should not be left to the model.
+
+层2 的列检查以 query_sketch 的结构化计划为输入,所以它**可能没有输入**:
+散文计划(模型没按 JSON 输出)下 ``plan_json is None``,两个检查函数一律返回
+``[]``。此时本节点写 ``plan_validation.status = "untyped"`` 并记日志 —— 降级
+可以说,但不能不说(A1-3)。
 """
 
 from __future__ import annotations
@@ -13,10 +18,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.core.i18n import L
+from trove.core.logging import get_logger
 from trove.llm.observability import record_span
 from trove.workflow.nodes.query_sketch import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
+
+logger = get_logger(__name__)
 
 
 def make_validate_rules(
@@ -118,6 +126,36 @@ def make_validate_rules(
                 }],
                 "rules_passed": False,
             }
+        # 列检查"本该跑却跑不了"——必须说出来。
+        #
+        # answer_columns_mismatch / extra_columns_mismatch 都以 ``plan_json``
+        # 为输入,而它在散文计划(query_sketch 没按 JSON 输出)下是 None;两个
+        # 函数对 None 一律返回 [],于是**整层列守卫静默消失**。回答照常交付,
+        # 只是少了那道闸,而且外部看不出来。
+        #
+        # 判据用 ``columns`` 而不是"有没有 plan":没有结果列就无所谓列检查
+        # (快径/未启用 query_sketch 的路径都落在这一侧),不该被记一笔。
+        # 注意 ``compiled=True`` 不会走到这里——它只在 plan_json 是 dict 时置位
+        # (query_sketch.py),那条路由契约负责校验。
+        #
+        # 状态写进已有的 ``plan_validation`` 通道:query_sketch 用同一字段报
+        # "dropped"(plan 没过 schema 校验,此时 plan 被清空、列检查同样无从跑)
+        # / "ok"。**不写 validation_hits** —— 那个通道的语义是"被规则拦过",
+        # 是 eval 恢复机制归因的判据(trove/eval/replay.py::_tried_recovery),
+        # 混进非拦截事件会污染归因。
+        if state.plan_json is None and state.columns:
+            logger.info(
+                "column guards skipped (no typed plan) for %r",
+                state.question[:80],
+            )
+            return {
+                "rules_passed": True,
+                "plan_validation": {
+                    "status": "untyped",
+                    "reason": "no typed plan — answer/extra column checks skipped",
+                },
+            }
+
         # 全过:确定性规则链 + 层2 计划检查全通过 → 显式正向信号,
         # reflect 据此(配合复杂度)决定是否跳过 LLM 裁决。
         return {"rules_passed": True}
