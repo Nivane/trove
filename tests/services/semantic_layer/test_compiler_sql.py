@@ -6,6 +6,7 @@ plan 的 metric/group_by/filters 全部落到已声明模型条目时才编译;�
 import pytest
 
 from trove.services.semantic_layer.compiler import SemanticCompiler
+from trove.services.semantic_layer.contract import render_contract
 from trove.services.semantic_layer.models import (
     SemanticDataset,
     SemanticField,
@@ -70,7 +71,7 @@ def test_aggregate_by_dimension_with_filter():
     assert "JOIN district ON account.district_id = district.district_id" in sql
     assert "WHERE district.A3 = 'Prague'" in sql
     assert "GROUP BY district.A3" in sql
-    assert "authoritative" in result.block
+    assert "authoritative" in render_contract(result.contract)
 
 
 def test_simple_count_single_table():
@@ -288,8 +289,9 @@ def test_enum_value_unresolved_is_soft_partial_compile():
         for p in res.miss_parts
     )
     # 骨架提示块带「未覆盖组件清单」
-    assert "Compiled skeleton (authoritative" in res.block
-    assert "enum_value_unresolved: client.gender" in res.block
+    block = render_contract(res.contract)
+    assert "Compiled skeleton (authoritative" in block
+    assert "enum_value_unresolved: client.gender" in block
     # 旧契约(compile_from_plan)对 partial 仍返回 None
     assert SemanticCompiler(model).compile_from_plan(plan, ["client"]) is None
 

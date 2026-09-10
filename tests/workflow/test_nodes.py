@@ -13,6 +13,12 @@ import pytest
 from trove.core.config import AgentConfig
 from trove.core.types import DatasourceConfig
 from trove.services.datasource.registry import ConnectorRegistry
+from trove.services.semantic_layer.contract import (
+    PlanContract,
+    contract_from_wire,
+    contract_to_wire,
+    render_contract,
+)
 from trove.workflow.state import WorkflowState
 from trove.llm.gateway import LLMGateway
 
@@ -1591,6 +1597,59 @@ class TestExecuteSQLCompileDrift:
         assert update["retry_count"] == 1
         assert update["row_count"] == -1
 
+    async def test_contract_is_what_the_check_reads(self, sqlite_registry):
+        """契约在场 → 校验读契约的骨架,不再从 compiled_sql 反推结构。
+
+        生产里两者恒等(契约的 skeleton_sql 就是 compiled.sql),所以这条
+        刻意让它们**不同** —— 只有真的在读契约,判定才会跟着契约走。它锁
+        的是"读哪一份",不是某条校验规则:A1 把判定改成读结构化字段后,
+        这条依然成立。
+        """
+        node = make_execute_sql(sqlite_registry)
+        skeleton = (
+            "SELECT COUNT(name)\n"
+            "FROM students\n"
+            "JOIN classes ON students.class_id = classes.id"
+        )
+        generated = "SELECT COUNT(name)\nFROM students"  # 丢了 join
+        state = make_state(
+            sql=generated,
+            compiled=True,
+            compile_partial=True,
+            # 与契约不同的 compiled_sql:若仍从字符串反推,这个恰好相等,
+            # 会放行 —— 判定必须来自契约。
+            compiled_sql=generated,
+            contract=contract_to_wire(PlanContract(
+                skeleton_sql=skeleton,
+                partial=True,
+                join_edges=(
+                    (("classes", "id"), ("students", "class_id")),
+                ),
+            )),
+        )
+        update = await node(state)
+        assert "COMPILE_DRIFT" in update["error_feedback"]
+        assert update["retry_count"] == 1
+        assert update["row_count"] == -1
+
+    async def test_absent_contract_falls_back_to_compiled_sql(self, sqlite_registry):
+        """契约缺席(旧 checkpoint / wire 形状异常)→ 退回 compiled_sql。
+
+        读不到契约 = 明确的"没有契约",不是"能解多少解多少"。退回老路径的
+        松紧与改造前逐字一致:既不静默放松(那样是 fail-open),也不因为缺
+        字段就拒答。
+        """
+        node = make_execute_sql(sqlite_registry)
+        state = make_state(
+            sql="SELECT SUM(name) FROM students",
+            compiled=True,
+            compiled_sql="SELECT COUNT(name)\nFROM students",
+            contract={"skeleton_sql": ""},  # 形状异常 → contract_from_wire 给 None
+        )
+        update = await node(state)
+        assert "COMPILE_DRIFT" in update["error_feedback"]
+        assert update["retry_count"] == 1
+
 
 class TestExecuteSQLTransientRetry:
     """执行瞬态重试：连接抖动重跑同一 SQL；SQL 错误不重试。"""
@@ -1905,6 +1964,13 @@ class TestQuerySketch:
         assert update["compiled"] is True
         assert update["compiled_sql"] == "SELECT COUNT(loan.loan_id)\nFROM loan"
         assert "Compiled SQL (authoritative" in update["plan"]
+        # Phase A0:注入文本是契约的渲染,契约本体(wire 形状)随 state 交给
+        # execute_sql —— 校验不再把 compiled_sql 用 AST 反推回结构。
+        assert update["contract"]["skeleton_sql"] == update["compiled_sql"]
+        assert update["contract"]["partial"] is False
+        assert render_contract(
+            contract_from_wire(update["contract"])
+        ) in update["plan"]
 
     async def test_query_sketch_misses_uncovered_question(self):
         """metric 不在模型(宇宙外)→ 严格 MISS,不置位 compiled,plan 原样。"""
