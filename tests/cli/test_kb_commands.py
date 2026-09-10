@@ -66,8 +66,33 @@ class TestKbInit:
         assert "refusing" in result
         assert (kb.kb_dir / ds / "schema_notes.yml").read_text(encoding="utf-8") == "tables: []\n"
 
-    async def test_init_overwrite_regenerates_existing_files(self, kb, sqlite_registry):
-        """--overwrite:重新生成已存在的 KB 文件(旧 flat semantics 迁移路径)。"""
+    async def test_init_overwrite_without_baseline_asks_before_replacing(
+        self, kb, sqlite_registry,
+    ):
+        """存量 KB(没有 .generated 基线)第一次 --overwrite:**不猜,不写**。
+
+        C2 之前这里直接覆盖。改前必红的行为:文件被重写、旧内容消失。
+        """
+        ds = sqlite_registry.default_name
+        (kb.kb_dir / ds).mkdir(parents=True)
+        legacy = "terms:\n  - term: 旧术语\n    mapping: COUNT(*)\n"
+        (kb.kb_dir / ds / "semantics.yml").write_text(legacy, encoding="utf-8")
+
+        llm = LLMGateway(mock_response=TABLES_DOC)
+        reg = make_reg(kb, connector_registry=sqlite_registry, llm_gateway=llm,
+                       config=AgentConfig(target="mock/model"))
+        result = await reg.get("kb").handler("init --overwrite")
+
+        assert "no baseline" in result
+        assert "force" in result and "keep as-is" in result, "两个选项都要说出来"
+        assert (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8") == legacy, (
+            "没有基线就不能合并 → 一个字节都不该动"
+        )
+
+    async def test_init_overwrite_force_regenerates_and_establishes_baseline(
+        self, kb, sqlite_registry,
+    ):
+        """--force:覆盖写(今天的行为),**并建立基线** —— 从这一次起合并才可用。"""
         ds = sqlite_registry.default_name
         (kb.kb_dir / ds).mkdir(parents=True)
         (kb.kb_dir / ds / "semantics.yml").write_text(
@@ -76,11 +101,13 @@ class TestKbInit:
         llm = LLMGateway(mock_response=TABLES_DOC)
         reg = make_reg(kb, connector_registry=sqlite_registry, llm_gateway=llm,
                        config=AgentConfig(target="mock/model"))
-        result = await reg.get("kb").handler("init --overwrite")
+        result = await reg.get("kb").handler("init --overwrite --force")
         assert "Initialized" in result
         text = (kb.kb_dir / ds / "semantics.yml").read_text(encoding="utf-8")
         assert "semantic_model" in text
         assert "COUNT(students.id)" in text
+        baseline = kb.kb_dir / ds / ".generated" / "semantics.yml"
+        assert baseline.exists(), "重新生成一次之后,后续 init 才有祖先可合并"
 
 
 # LLM 只起草表格注释(描述+枚举含义);terms/examples 由代码确定性生成。
@@ -923,6 +950,26 @@ class TestKbMigrate:
         assert "needs migration" in out
         assert "no digest (unknown)" in out  # 无从判断,不能压成"没改过"
 
+    async def test_check_says_whether_re_init_can_merge(self, kb):
+        """体检必须回答"重新生成会不会吞掉我的东西" —— 这是人拍板时唯一
+        关心的那一个问题。"""
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "schema_notes.yml").write_text(
+            "tables:\n  - name: loan\n    description: 贷款记录\n    columns: []\n",
+            encoding="utf-8",
+        )
+        reg = make_reg(kb)
+
+        out = await reg.get("kb").handler("migrate --check")
+        assert "CANNOT merge (no baseline)" in out
+
+        # 生成过一次之后(有基线)→ 同一份体检改口
+        kb.init_notes([{"name": "loan", "description": "gen", "columns": []}],
+                      "demo", overwrite=True, force=True)
+        out = await reg.get("kb").handler("migrate --check")
+        assert "re-init merges" in out
+
     async def test_check_writes_nothing(self, kb):
         """体检是只读的 —— 迁移会改人的资产,必须有一次显式的"我同意"。"""
         ds_dir = kb.kb_dir / "demo"
@@ -955,7 +1002,22 @@ class TestKbMigrate:
         assert f"format {FORMAT_VERSION}" in out
 
     async def test_bare_migrate_does_not_pretend_to_apply(self, kb):
+        """裸 migrate 只报现状 + 两个选项,**不写盘、不花钱**。
+
+        迁移会改人的资产,必须有一次显式的"我同意";`migrate` 这个动词本身
+        不该是那次同意。
+        """
         reg = make_reg(kb)
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        asset = ds_dir / "schema_notes.yml"
+        asset.write_text("tables: []\n", encoding="utf-8")
+        before = asset.stat().st_mtime
+
         out = await reg.get("kb").handler("migrate")
+
         assert "--check" in out
-        assert "overwrite" in out
+        assert "keep as-is" in out and "regenerate" in out, "两个选项都要摆出来"
+        assert "--force" in out, "往前走的那一步要说清怎么敲"
+        assert asset.read_text(encoding="utf-8") == "tables: []\n"
+        assert asset.stat().st_mtime == before

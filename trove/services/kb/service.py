@@ -49,6 +49,8 @@ from trove.services.kb.ossie_format import (
     qualify_mapping,
     terms_to_ossie_document,
 )
+from trove.services.kb.baseline import backup_asset, read_baseline, write_baseline
+from trove.services.kb.merge import entry_count, merge3
 from trove.services.kb.provenance import (
     AssetMeta,
     body_edited,
@@ -588,6 +590,10 @@ class KbService:
         # 样子**,所以这个 dict 是"磁盘和镜像不一致"的**唯一**诚实记录 ——
         # 没有它,拒绝就只是一行日志,而运维看到的仍是一个"正常"的 KB。
         self.refused_assets: dict[str, str] = {}
+        # 本次三方合并的逐文件报告(C2):合并了多少条、留下了哪些冲突。
+        # 累加、由调用方 take 走 —— 与 refused_assets 同一套"服务记账,
+        # 调用方呈现"的做法。
+        self.merge_reports: list[dict] = []
 
     def _backend_for(self, datasource: str):
         """该数据源的检索后端;builtin/未配置/解析失败 → None。"""
@@ -1816,6 +1822,9 @@ class KbService:
                 # 只读体检,不该依赖"同步恰好跑过"。两个字段因此分工明确:
                 # 这里是"该不该拒绝",refused_assets 是"镜像实际采纳了没有"。
                 "refused": check_format(meta),
+                # 有基线 → 下一次 --overwrite 会**合并**(人的编辑存活);
+                # 没有 → 只能保留现状或强制重生成,这是人拍板时的关键信息。
+                "has_baseline": read_baseline(yml) is not None,
             })
         return report
 
@@ -1993,34 +2002,125 @@ class KbService:
 
     def _init_file(
         self, filename: str, section: str, items: list[dict], datasource: str,
-        overwrite: bool = False, generator: str = "kb_init",
+        overwrite: bool = False, generator: str = "kb_init", force: bool = False,
     ) -> bool:
-        """Write a KB file, refusing to overwrite an existing one."""
-        ds_dir = self.kb_dir / datasource
-        ds_dir.mkdir(parents=True, exist_ok=True)
-        path = ds_dir / filename
-        if path.exists() and not overwrite:
-            logger.info("%s/%s already exists; refusing to overwrite", datasource, filename)
-            return False
-        path.write_text(dump_asset({section: items}, generator), encoding="utf-8")
-        return True
+        """Write a KB file, refusing to overwrite an existing one.
+
+        文件已存在且 ``overwrite`` → **三方合并**(C2):盘上的文件是 ours,
+        这次生成的是 theirs,``.generated/<file>`` 是上一次生成方的输出。
+        人的编辑按条目存活,冲突进 ``merge_reports``。
+
+        没有基线就不能合并 —— 此时**不写**(``force`` 才覆盖)。这一条是
+        "绝不覆盖一份自己合并不了的文件"的兜底;正常情况下 ``merge_blockers``
+        已经在写盘前把这种情况拦下来并给出可执行的处置。
+        """
+        return self._init_write(
+            filename, {section: items}, datasource,
+            overwrite=overwrite, generator=generator, force=force,
+        )
 
     def _init_doc(
         self, filename: str, doc: dict, datasource: str,
-        overwrite: bool = False, generator: str = "kb_init",
+        overwrite: bool = False, generator: str = "kb_init", force: bool = False,
     ) -> bool:
         """Write a full YAML document as-is(顶层键保留,如 OSSIE ``version``)。"""
+        return self._init_write(
+            filename, doc, datasource,
+            overwrite=overwrite, generator=generator, force=force,
+        )
+
+    def _init_write(
+        self, filename: str, doc: dict, datasource: str, *,
+        overwrite: bool, generator: str, force: bool,
+    ) -> bool:
         ds_dir = self.kb_dir / datasource
         ds_dir.mkdir(parents=True, exist_ok=True)
         path = ds_dir / filename
-        if path.exists() and not overwrite:
+        if not path.exists():
+            self._write_init(path, doc, generator, baseline=doc)
+            return True
+        if not overwrite:
             logger.info("%s/%s already exists; refusing to overwrite", datasource, filename)
             return False
-        path.write_text(dump_asset(doc, generator), encoding="utf-8")
+        refusal = self._disk_asset_refusal(path)
+        if refusal:
+            # 磁盘上那份比本版 Trove 更新:覆盖它等于用旧解释改写新资产。
+            logger.error("%s/%s not written: %s", datasource, filename, refusal)
+            self.refused_assets[f"{datasource}/{filename}"] = refusal
+            return False
+        base = read_baseline(path)
+        if force or base is None:
+            if base is None and not force:
+                logger.error(
+                    "%s/%s has no baseline — refusing to replace it (see kb migrate)",
+                    datasource, filename,
+                )
+                return False
+            merged = doc  # 强制重生成 = 覆盖,今天的行为
+        else:
+            ours = _load_asset(path).doc
+            result = merge3(base, ours, doc, filename)
+            merged = result.doc
+            self.merge_reports.append({"file": filename, **result.as_dict()})
+            if result.conflicts:
+                logger.warning(
+                    "%s/%s merged with %d conflict(s) kept on our side",
+                    datasource, filename, len(result.conflicts),
+                )
+            backup_asset(path)
+        # 基线写的是**生成方的输出**,不是合并结果:祖先必须是纯生成物,否则
+        # 人的编辑会混进祖先,下一轮生成就会名正言顺地覆盖它们。
+        self._write_init(path, merged, generator, baseline=doc)
         return True
+
+    def _write_init(
+        self, path: Path, doc: dict, generator: str, *, baseline: dict,
+    ) -> None:
+        _write_doc(path, doc, generator)
+        write_baseline(path, baseline)
+
+    @staticmethod
+    def _disk_asset_refusal(path: Path) -> str | None:
+        """盘上这份资产能不能被覆盖(读不出来 / 格式更新 → 不能)。"""
+        try:
+            return check_format(_load_asset(path).meta)
+        except Exception:
+            return None
+
+    def merge_blockers(
+        self, datasource: str, filenames: list[str],
+    ) -> list[dict]:
+        """已存在、但**没有基线**所以不能自动合并的文件(需人拍板)。
+
+        写盘前调用:``kb init --overwrite`` 不该把"合并不了"变成一个静默的
+        半成品(三个文件合并了两个)。返回空 = 可以安全合并。
+        """
+        ds_dir = self.kb_dir / datasource
+        blockers: list[dict] = []
+        for filename in filenames:
+            path = ds_dir / filename
+            if not path.exists() or read_baseline(path) is not None:
+                continue
+            try:
+                asset = _load_asset(path)
+            except Exception as e:
+                blockers.append({"file": filename, "entries": 0, "error": str(e)})
+                continue
+            blockers.append({
+                "file": filename,
+                "entries": entry_count(asset.doc, filename),
+                "edited": body_edited(asset.doc),
+            })
+        return blockers
+
+    def take_merge_reports(self) -> list[dict]:
+        """取走并清空本次合并的报告(调用方负责呈现给用户)。"""
+        reports, self.merge_reports = self.merge_reports, []
+        return reports
 
     def init_schema_notes(
         self, schema: SchemaInfo, datasource: str, overwrite: bool = False,
+        force: bool = False,
     ) -> bool:
         """Generate a schema_notes.yml skeleton for the given datasource.
 
@@ -2038,24 +2138,31 @@ class KbService:
                 ],
                 "metrics": [],
             })
-        return self._init_file("schema_notes.yml", "tables", tables, datasource, overwrite)
+        return self._init_file(
+            "schema_notes.yml", "tables", tables, datasource,
+            overwrite, force=force)
 
     def init_notes(
         self, tables: list[dict], datasource: str, overwrite: bool = False,
+        force: bool = False,
     ) -> bool:
         """Write an annotated schema_notes.yml (LLM-assisted /kb init)."""
-        return self._init_file("schema_notes.yml", "tables", tables, datasource, overwrite)
+        return self._init_file(
+            "schema_notes.yml", "tables", tables, datasource,
+            overwrite, force=force)
 
     def init_terms(
         self, terms: list[dict], datasource: str, overwrite: bool = False,
+        force: bool = False,
     ) -> bool:
         """Write a semantics.yml as an OSSIE semantic_model (LLM-assisted /kb init)."""
         doc = terms_to_ossie_document(terms, model_name=datasource)
         return self._init_doc(
-            "semantics.yml", doc, datasource, overwrite)
+            "semantics.yml", doc, datasource, overwrite, force=force)
 
     def init_semantics(
         self, doc: dict, datasource: str, overwrite: bool = False,
+        force: bool = False,
     ) -> bool:
         """Write a semantics.yml from a full OSSIE semantic_model document.
 
@@ -2065,10 +2172,13 @@ class KbService:
         顶层键(如 OSSIE ``version``)原样写盘(完整文档)。
         """
         return self._init_doc(
-            "semantics.yml", doc, datasource, overwrite)
+            "semantics.yml", doc, datasource, overwrite, force=force)
 
     def init_examples(
         self, examples: list[dict], datasource: str, overwrite: bool = False,
+        force: bool = False,
     ) -> bool:
         """Write an examples.yml (LLM-assisted /kb init)."""
-        return self._init_file("examples.yml", "examples", examples, datasource, overwrite)
+        return self._init_file(
+            "examples.yml", "examples", examples, datasource,
+            overwrite, force=force)
