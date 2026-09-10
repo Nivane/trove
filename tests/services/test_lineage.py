@@ -129,3 +129,143 @@ class TestLineageService:
         assert cell == {"producers": [], "consumers": []}
         assert await svc.table_upstream("financial", "loan") == []
         assert await svc.table_downstream("financial", "loan") == []
+
+
+async def _sync_row(svc: LineageService) -> dict:
+    """lineage_sync 里那条同步记录(直接读库,不走服务接口)。"""
+    import aiosqlite
+
+    async with aiosqlite.connect(str(svc.db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        async with await db.execute(
+            "SELECT file_path, mtime, size, digest FROM lineage_sync",
+        ) as cursor:
+            row = await cursor.fetchone()
+    return dict(row)
+
+
+async def _definition_row(svc: LineageService, name: str) -> dict:
+    import aiosqlite
+
+    async with aiosqlite.connect(str(svc.db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        async with await db.execute(
+            "SELECT sql, kind, created_at, updated_at FROM lineage_definitions "
+            "WHERE datasource = ? AND name = ?", ("financial", name),
+        ) as cursor:
+            row = await cursor.fetchone()
+    assert row is not None, f"{name} 没进镜像"
+    return dict(row)
+
+
+class TestDefinitionsSyncDigest:
+    """定义文件同步的判据是内容摘要,不是 mtime(C3)。"""
+
+    async def test_same_mtime_different_content_resyncs(self, tmp_path):
+        """mtime 相同、内容不同 → 定义必须重新同步(改前必红)。"""
+        import os
+
+        svc = LineageService(tmp_path)
+        path = svc.definitions_yaml("financial")
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "definitions:\n"
+            "  - sql: |\n"
+            "      CREATE VIEW first_view AS SELECT amount FROM loan\n"
+        )
+        await svc.ensure_synced("financial")
+        assert await svc.table_upstream("financial", "first_view")
+
+        # 内容换成另一个视图名,mtime 按原样写回(cp -p / rsync -t 的效果)
+        stat = path.stat()
+        path.write_text(
+            "definitions:\n"
+            "  - sql: |\n"
+            "      CREATE VIEW second_view AS SELECT amount FROM loan\n"
+        )
+        os.utime(path, (stat.st_atime, stat.st_mtime))
+        await svc.ensure_synced("financial")
+
+        assert await svc.table_upstream("financial", "second_view"), (
+            "mtime 相等不该让同步跳过 —— 判据是内容摘要"
+        )
+        assert not await svc.table_upstream("financial", "first_view"), (
+            "重建式同步:旧定义必须消失,不能两份都留着"
+        )
+
+    async def test_unchanged_content_is_a_noop(self, tmp_path):
+        """内容没变 → 不重建(判据换成摘要,不能变成"每次都重灌")。
+
+        重建是 DELETE 全量 + 重新 INSERT,`updated_at` 会跟着变 —— 拿它当
+        观测点,不用打桩就能看出重建有没有发生。
+        """
+        svc = LineageService(tmp_path)
+        path = svc.definitions_yaml("financial")
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "definitions:\n"
+            "  - sql: |\n"
+            "      CREATE VIEW stable_view AS SELECT amount FROM loan\n"
+        )
+        await svc.ensure_synced("financial")
+        first = await _definition_row(svc, "stable_view")
+
+        await svc.ensure_synced("financial")
+        assert await _definition_row(svc, "stable_view") == first, (
+            "内容没变就不该重建 —— updated_at 动了说明重灌了一遍"
+        )
+
+    async def test_digest_column_is_backfilled_for_legacy_db(self, tmp_path):
+        """旧库(2 列 lineage_sync)升级:就地补列 + 按 mtime 可信度回填。
+
+        回填的用处不是"表里多个字段",是**升级本身不重建**:补上摘要后判据
+        立刻命中,已入库的定义原样留着(updated_at 不动)。不回填就会白白
+        删一遍再灌一遍。
+        """
+        import aiosqlite
+
+        svc = LineageService(tmp_path)
+        path = svc.definitions_yaml("financial")
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "definitions:\n"
+            "  - sql: |\n"
+            "      CREATE VIEW legacy_view AS SELECT amount FROM loan\n"
+        )
+        # 升级前的镜像:定义已入库、同步表只有两列,文件此后没动过
+        svc.lineage_dir.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(str(svc.db_path)) as db:
+            await db.execute(
+                "CREATE TABLE lineage_definitions (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "datasource TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, "
+                "sql TEXT NOT NULL, dialect TEXT NOT NULL DEFAULT 'sqlite', "
+                "digest_json TEXT NOT NULL, created_at TEXT NOT NULL, "
+                "updated_at TEXT NOT NULL, UNIQUE(datasource, name))")
+            await db.execute(
+                "CREATE TABLE lineage_query_log (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "datasource TEXT NOT NULL, shard TEXT NOT NULL, sql TEXT NOT NULL, "
+                "dialect TEXT NOT NULL DEFAULT 'sqlite', digest_json TEXT NOT NULL, "
+                "first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, "
+                "runs INTEGER NOT NULL DEFAULT 1, UNIQUE(datasource, shard))")
+            await db.execute(
+                "CREATE TABLE lineage_sync (file_path TEXT PRIMARY KEY, mtime REAL NOT NULL)")
+            await db.execute(
+                "INSERT INTO lineage_definitions (datasource, name, kind, sql, dialect, "
+                "digest_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("financial", "legacy_view", "create_view",
+                 "CREATE VIEW legacy_view AS SELECT amount FROM loan", "sqlite",
+                 "null", "2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00"),
+            )
+            await db.execute(
+                "INSERT INTO lineage_sync (file_path, mtime) VALUES (?, ?)",
+                (str(path), path.stat().st_mtime),
+            )
+            await db.commit()
+
+        await svc.ensure_synced("financial")
+        row = await _sync_row(svc)
+        assert row["digest"], "mtime 对得上 → 摘要可信,应就地补上"
+        assert row["size"] == path.stat().st_size
+        assert (await _definition_row(svc, "legacy_view"))["updated_at"] == (
+            "2020-01-01T00:00:00+00:00"
+        ), "摘要已补上 → 判据命中 → 不该重建这份没变过的定义"
