@@ -20,8 +20,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
 from sqlglot import Dialect, ErrorLevel, parse_one
 
+from trove.services.kb.provenance import check_format, read_meta
 from trove.services.kb.service import TermHit
 from trove.services.semantic_layer.models import (
     SemanticDataset,
@@ -169,6 +171,21 @@ class SemanticLayerProvider:
         key = tuple((f, f.stat().st_mtime_ns, f.stat().st_size) for f in files)
         if key == self._key and self._parsed is not None:
             return  # 文件未变 → 命中缓存
+        # 版本门(C1):比代码新的语义资产**整份不采纳**,保留 last-known-good。
+        #
+        # 这里不"只跳过这一份":semantics.yml 是单一真源,directory 里的文件
+        # 是补充源 —— 跳过真源、采纳补充源,等于把语义模型**整个换掉**,而
+        # 换来的正是"上次我们读懂的样子"之外的东西,比不换更糟。拒绝 = 退回
+        # 上一次读懂的状态,并在日志里点名(镜像侧的拒绝同样会标进 kb_status)。
+        refusal = self._refusal(files)
+        if refusal:
+            self._key = key  # 已按这份内容判过,不必每轮重判
+            logger.error(
+                "Semantic asset refused for %s: %s — keeping last known good",
+                self.datasource, refusal,
+            )
+            return
+
         self._key = key
         try:
             merged: SemanticModel | None = None
@@ -191,6 +208,31 @@ class SemanticLayerProvider:
         self._effective = replace(self._parsed, metrics=list(self._validated))
         self._field_index = None  # 惰性重建(首次 field_candidates 时才建)
         self._drift = None  # 模型变了 → 漂移报告下次访问时重算
+
+    def _refusal(self, files: list[Path]) -> str | None:
+        """版本门:任一资产的格式比本代码新 → 拒绝原因,否则 ``None``。
+
+        语义资产是**唯一的**权威来源(编译器的表达式、join、口径全从这里
+        出),所以读它的前一步必须是"这份文件是我能解释的那一版吗"。按旧
+        解释读一份新格式文件,产出的不是"少读了几个字段",而是一个错的语义
+        模型 —— 而错的语义模型会直接内联进权威 SQL。
+
+        无 `_meta` / 老格式放行(存量库按当前解释读,迁移是人显式触发)。
+        只解析顶层的 `_meta`:资产文件小,而这条路径已被 mtime 缓存键挡在
+        每轮之外。
+        """
+        for f in files:
+            try:
+                doc = yaml.safe_load(f.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                # 读不动 / YAML 坏了 → 交给下面的解析器按老路径报错,不在门里拦。
+                # 只吞这两类:吞宽了,门里自己的编程错误会伪装成"资产没问题",
+                # 于是门静默失效 —— 那正是这道门要防的事。
+                continue
+            refusal = check_format(read_meta(doc))
+            if refusal:
+                return f"{f.name}: {refusal}"
+        return None
 
     def _validate(self, metrics: list[SemanticMetric]) -> list[SemanticMetric]:
         """逐条校验:括号配平 + SQLGlot 解析 + 数据集存在性。坏条目丢弃。"""

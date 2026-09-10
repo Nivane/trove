@@ -49,6 +49,29 @@ async def kb_status(
     return {"enabled": kb.enabled, "items": await kb.list_items()}
 
 
+@router.get("/kb/assets")
+async def kb_assets(
+    request: Request, datasource: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """每份 KB 资产的来源与格式体检(只读;C1)。
+
+    回答"这份文件谁生成的、改没改过、是不是比代码新"。``refused`` 非空的
+    资产**没有被镜像采用** —— 镜像里是上一次读懂的样子,所以"KB 看起来正常"
+    和"磁盘上的文件被采纳了"是两件事,这个接口是唯一能分开它们的入口。
+    """
+    kb = _kb(request)
+    ds = _datasource(request, datasource)
+    return {
+        "datasource": ds,
+        "assets": kb.asset_report(ds),
+        "refused": {
+            rel: reason for rel, reason in kb.refused_assets.items()
+            if rel.startswith(f"{ds}/")
+        },
+    }
+
+
 @router.get("/kb/rules")
 async def list_rules(
     request: Request, user: dict = Depends(get_current_user),
@@ -141,6 +164,7 @@ async def draft_example(
     ds = _datasource(request, datasource)
     res = await _kb(request).draft_example(
         body.question, body.sql, ds, tags=body.tags, note="",
+        generator="user_feedback",
     )
     if res.get("status") == "invalid":
         raise HTTPException(status_code=400, detail="question and sql are required")

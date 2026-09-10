@@ -196,3 +196,47 @@ class TestTableNotes:
     async def test_table_notes_missing_404(self, kb_client):
         resp = await kb_client.get("/v1/kb/tables/nope/notes")
         assert resp.status_code == 404
+
+
+class TestKbAssets:
+    """GET /v1/kb/assets —— 资产来源与格式体检(C1,只读)。"""
+
+    async def test_reports_seeded_assets(self, kb_client):
+        resp = await kb_client.get("/v1/kb/assets?datasource=test_db")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["datasource"] == "test_db"
+        assert body["refused"] == {}
+        by_file = {a["file"]: a for a in body["assets"]}
+        # 种子里是手写的 YAML(无 `_meta`)→ format 0,"改没改过"无从判断
+        assert by_file["schema_notes.yml"]["format"] == 0
+        assert by_file["schema_notes.yml"]["edited"] is None
+
+    async def test_refused_asset_is_reported(self, kb_client, api_kb):
+        """比代码新的资产:不进镜像,且必须在报告里点名。
+
+        镜像里留着上一次读懂的样子 —— 没有这份报告,"KB 看起来正常"和
+        "磁盘上的文件被采纳了"就分不开。
+        """
+        import yaml as _y
+
+        from trove.services.kb.provenance import META_KEY, FORMAT_VERSION, dump_asset
+
+        ds_dir = api_kb.state.kb.kb_dir / "test_db"
+        doc = _y.safe_load((ds_dir / "schema_notes.yml").read_text(encoding="utf-8"))
+        before = await api_kb.state.kb.list_items()
+
+        future = dump_asset(doc, "trove-from-the-future")
+        future = _y.safe_load(future)
+        future[META_KEY]["format"] = FORMAT_VERSION + 5
+        (ds_dir / "schema_notes.yml").write_text(
+            _y.safe_dump(future, allow_unicode=True, sort_keys=False), encoding="utf-8",
+        )
+        await api_kb.state.kb.force_sync("test_db")
+
+        resp = await kb_client.get("/v1/kb/assets?datasource=test_db")
+        body = resp.json()
+        assert "test_db/schema_notes.yml" in body["refused"]
+        assert str(FORMAT_VERSION + 5) in body["refused"]["test_db/schema_notes.yml"]
+        # 镜像没被换掉
+        assert await api_kb.state.kb.list_items() == before

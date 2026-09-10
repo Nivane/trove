@@ -903,3 +903,59 @@ GROUP BY county
         result = await reg.get("kb").handler("learn")
         assert "repair" in result.lower() or "parse" in result.lower()
         assert kb.pending_draft is None
+
+
+class TestKbMigrate:
+    """/kb migrate --check:只读的资产版本体检(C1)。"""
+
+    async def test_check_reports_legacy_as_needing_migration(self, kb):
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True)
+        # 存量文件:没有 `_meta` → format 0
+        (ds_dir / "schema_notes.yml").write_text(
+            "tables:\n  - name: loan\n    description: 贷款记录\n    columns: []\n",
+            encoding="utf-8",
+        )
+        reg = make_reg(kb)
+        out = await reg.get("kb").handler("migrate --check")
+        assert "schema_notes.yml" in out
+        assert "format 0" in out
+        assert "needs migration" in out
+        assert "no digest (unknown)" in out  # 无从判断,不能压成"没改过"
+
+    async def test_check_writes_nothing(self, kb):
+        """体检是只读的 —— 迁移会改人的资产,必须有一次显式的"我同意"。"""
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True)
+        notes = ds_dir / "schema_notes.yml"
+        notes.write_text("tables: []\n", encoding="utf-8")
+        before = notes.read_text(encoding="utf-8")
+
+        reg = make_reg(kb)
+        await reg.get("kb").handler("migrate --check")
+        assert notes.read_text(encoding="utf-8") == before
+        assert not (ds_dir / ".generated").exists()
+
+    async def test_check_reports_human_edits(self, kb):
+        """人改过的资产必须点名:它是"合并"而非"覆盖"的理由。"""
+        from trove.services.kb.provenance import FORMAT_VERSION, META_KEY, stamp
+
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True)
+        stamped = stamp({"tables": [{"name": "loan", "description": "生成方写的"}]}, "kb_init")
+        stamped["tables"][0]["description"] = "人改的"  # 正文变了,摘要没跟着变
+        import yaml as _y
+
+        (ds_dir / "schema_notes.yml").write_text(
+            _y.safe_dump(stamped, allow_unicode=True, sort_keys=False), encoding="utf-8",
+        )
+        reg = make_reg(kb)
+        out = await reg.get("kb").handler("migrate --check")
+        assert "hand-edited" in out
+        assert f"format {FORMAT_VERSION}" in out
+
+    async def test_bare_migrate_does_not_pretend_to_apply(self, kb):
+        reg = make_reg(kb)
+        out = await reg.get("kb").handler("migrate")
+        assert "--check" in out
+        assert "overwrite" in out
