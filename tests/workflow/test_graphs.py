@@ -984,6 +984,32 @@ class TestClarifyRouting:
         # 查询计划到达了 gen_sql 的生成 prompt
         assert "Query plan" in llm.calls[2][-1]["content"]
 
+    async def test_plan_block_survives_a_starved_context_budget(
+            self, sqlite_registry, catalog):
+        """预算再小,plan 块也必须进 prompt —— 契约是规格,不是补充材料。
+
+        改前 plan 是 score 0.0 / priority 8 的可裁剪块:预算紧张时被
+        assemble_context 整块丢掉,而 execute_sql 仍按编译产物校验 ——
+        gen_sql 可能从未见过计划,却被判"偏离计划"。要裁就裁 KB 材料,
+        它们才是补充信息。
+        """
+        llm = RecordingLLM(["query", "plan: use students", VALID_SQL, "OK"])
+        starved = AgentConfig(
+            target="mock/model",
+            context_budget_tokens={"simple": 1, "standard": 1, "complex": 1},
+        )
+        graphs = build(
+            make_services(llm, catalog, sqlite_registry, config=starved),
+            query_sketch=True,
+        )
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["row_count"] == 5
+        prompt = llm.calls[2][-1]["content"]
+        assert "Query plan" in prompt
+        assert "use students" in prompt
+        plan_usage = [u for u in final["context_usage"] if u["name"] == "plan"]
+        assert plan_usage and plan_usage[0]["included"] is True
+
 
 class TestRollbackRouting:
     """失败即判断：LLM 诊断根因并决定回退目标，带上下文重跑。"""

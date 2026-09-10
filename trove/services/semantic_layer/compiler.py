@@ -19,11 +19,16 @@ from __future__ import annotations
 
 import re
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlglot import exp, parse_one, transpile
 
+from trove.services.semantic_layer.contract import (
+    JoinEdge,
+    PlanContract,
+    WhereCond,
+)
 from trove.services.semantic_layer.models import (
     SemanticDataset,
     SemanticMetric,
@@ -590,10 +595,15 @@ def resolve_time_field(
 
 @dataclass
 class CompileResult:
-    """编译产物:权威 SQL + 渲染给 gen_sql 的提示块。"""
+    """编译产物:权威 SQL + 权威交接契约。
+
+    散文提示块不再单独存字段 —— 它是 ``render_contract(contract)`` 的纯渲染,
+    存成两个字段只会给两者留下漂移的空间(Phase A 要消除的正是这种"同一意图
+    多份表示")。
+    """
 
     sql: str
-    block: str  # ``Compiled SQL (authoritative)`` 段
+    contract: PlanContract
 
 
 @dataclass
@@ -618,12 +628,13 @@ class PartialCompile:
     (query_sketch)注入 gen_sql 让 LLM 补缺,回答照常交付而非硬停。
 
     - ``sql``:骨架 SQL(权威的 join/过滤/分组,LLM 不得改动)。
-    - ``block``:注入 gen_sql 的提示块(骨架 + 未解析组件清单)。
+    - ``contract``:权威交接契约(注入块 = ``render_contract(contract)``)。
     - ``miss_parts``:未解析组件列表 ``[{reason, component}]``(学习/归因用)。
+      与 ``contract.gaps`` 同源同形。
     """
 
     sql: str
-    block: str
+    contract: PlanContract
     miss_parts: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -713,24 +724,6 @@ def is_hard_miss(reason: str) -> bool:
         return False
     # 未知 reason 默认硬——宁可拒绝,不冒险产错 SQL;eval 归因会暴露漏分类。
     return True
-
-
-def _partial_block(sql: str, miss_parts: list[dict[str, str]]) -> str:
-    """骨架提示块:权威部分(必须照抄)+ 未覆盖组件清单(LLM 自行补齐)。"""
-    lines = [
-        "Compiled skeleton (authoritative — preserve these joins, filters and "
-        "grouping exactly; only fill the gaps below):"
-    ]
-    lines.append(f"```sql\n{sql}\n```")
-    lines.append(
-        "Components NOT covered by the semantic model — generate these "
-        "yourself from the query plan:"
-    )
-    for p in miss_parts:
-        component = str(p.get("component") or "").strip()
-        suffix = f": {component}" if component else ""
-        lines.append(f"- {p.get('reason', '')}{suffix}")
-    return "\n".join(lines)
 
 
 def _qualified(tbl: str, expr: str, force_qualify: bool = True) -> str:
@@ -1703,21 +1696,24 @@ class SemanticCompiler:
                     return CompileMiss("limit_without_order", str(limit))
                 sql += f"\nLIMIT {int(limit)}"
 
-        block = (
-            "Compiled SQL (authoritative — generate exactly this SQL; only "
-            "fix dialect or formatting if the schema demands it):\n"
-            f"```sql\n{sql}\n```"
-        )
+        # Phase A0:交接对象在这里成型 —— 结构**此刻**抽取一次(编译器刚拼出的
+        # SQL 必然可解析),随契约带下去;执行前的校验改读它,不再从字符串反推。
+        # 提示散文不单独存:消费方一律经 render_contract(contract) 取,信息
+        # 只减不增,也就不存在"块与契约不一致"的状态。
         if self._soft_misses:
             # 软 MISS 已收集但仍有可编译成分 → 骨架(PartialCompile):
             # 可解析部分权威化,未解析组件留给生成通道,不再整体拒绝。
             miss_parts = list(self._soft_misses)
             return PartialCompile(
                 sql=sql,
-                block=_partial_block(sql, miss_parts),
+                contract=_build_contract(
+                    sql, dialect=self._dialect, partial=True, gaps=miss_parts),
                 miss_parts=miss_parts,
             )
-        return CompileResult(sql=sql, block=block)
+        return CompileResult(
+            sql=sql,
+            contract=_build_contract(sql, dialect=self._dialect),
+        )
 
     # ── 窗口分析编译(plan.analysis)────────────────────────────
     #
@@ -2238,12 +2234,67 @@ def compiled_sql_matches(
     )
 
 
-# ── Partial 骨架保真校验 ──────────────────────────────────────
+# ── 契约构造 + 骨架保真校验 ────────────────────────────────────
 #
 # 软 MISS 分级逃生梯的守卫:骨架 SQL 的 join 边 / WHERE 条件 / GROUP BY
 # 宽度必须在生成 SQL 中保留(LLM 只被允许**补**未覆盖组件,不得改/删权威
 # 骨架)。投影列不比较(LLM 需补未解析部分);分桶表达式跨方言差异不比较
 # (GROUP BY 只比宽度)。任一 SQL 解析失败 → 保守放行。
+#
+# 结构在**编译期**抽取一次(见 _build_contract),执行前的校验读契约对象;
+# 下面三个抽取器因此不再需要"从字符串反推"这条路径。
+
+
+def _canon_edge(edge: set) -> JoinEdge:
+    """无序边(``frozenset`` / ``set`` 的 ``{(表,列), (表,列)}``)→ 规范有序元组。
+
+    集合语义不变,只是把迭代顺序固定下来:渲染与 golden 断言才能逐字可复现。
+    单元素集合(自连接 ``a.x = a.x``,抽取器长度判定下真会出现)写成两端相同,
+    与 ``frozenset({c})`` 等价。
+    """
+    cols = sorted(edge)
+    if len(cols) == 1:
+        cols = [cols[0], cols[0]]
+    return (cols[0], cols[1])
+
+
+def _build_contract(
+    sql: str,
+    *,
+    dialect: str = "sqlite",
+    partial: bool = False,
+    gaps: list[dict[str, str]] | None = None,
+) -> PlanContract:
+    """权威 SQL → 契约。结构**此刻**抽取(编译器刚拼出的 SQL 必然可解析)。
+
+    解析失败/非 SELECT 时返回只带 ``skeleton_sql`` 的空结构契约 —— 与改造前
+    「抽取不出结构 → 校验放行」一致(改动只搬位置,不搬松紧)。两处 fail-open
+    (``compiled_sql_matches`` / ``skeleton_preserved`` 对不可解析输入的放行)
+    是 A1 的收口项,不在本次范围。
+    """
+    from sqlglot import exp, parse_one
+
+    base = PlanContract(skeleton_sql=sql, gaps=tuple(gaps or ()), partial=partial)
+    try:
+        tree = parse_one(sql, read=dialect or "sqlite")
+    except Exception:
+        return base
+    if isinstance(tree, exp.With):
+        tree = tree.this
+    if not isinstance(tree, exp.Select):
+        return base
+    group = tree.args.get("group")
+    edges: list[JoinEdge] = sorted({_canon_edge(e) for e in _skeleton_join_edges(tree)})
+    wheres: list[WhereCond] = sorted(
+        (tuple(sorted(cols)), op, vals)
+        for cols, op, vals in _skeleton_where(tree)
+    )
+    return replace(
+        base,
+        join_edges=tuple(edges),
+        where=tuple(wheres),
+        group_by_width=len(group.expressions or []) if group is not None else 0,
+    )
 
 
 def _skeleton_join_edges(tree) -> set[frozenset[tuple[str, str]]]:

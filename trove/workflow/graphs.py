@@ -702,10 +702,6 @@ def _make_gen_sql_node(
             optional_blocks["profile"] = [
                 ContextItem(key="profile", text=profile_text, score=0.0),
             ]
-        if state.plan:
-            optional_blocks["plan"] = [
-                ContextItem(key="plan", text=state.plan, score=0.0),
-            ]
         if state.history:
             # 历史拆成逐轮条目:score = 相关度(与问句词重叠) + 最近度——
             # 预算内保留最相关的轮次,而非整块全有全无
@@ -721,14 +717,27 @@ def _make_gen_sql_node(
             n = count_tokens(text)
             return max(1, int(n * cal)) if cal > 0 else n
 
+        # plan(含编译器契约块)是**规格而非补充材料**,不参与预算裁剪:
+        # 先按实际成本预留额度,再让其余块在剩余预算里竞争。否则预算紧张时
+        # 整个块被丢掉,而 execute_sql 仍按编译产物校验 —— gen_sql 可能
+        # 从未见过计划却被判"偏离计划"。要裁就裁 KB 材料(few_shots/
+        # lessons/episodes),它们才是补充信息。
+        plan_block = state.plan or ""
+        plan_cost = _count(plan_block) if plan_block else 0
         included, context_usage = assemble_context(
             optional_blocks,
             {"few_shots": 1, "user_facts": 2, "rules": 3, "term_notes": 4,
              "metrics": 5, "entities": 6, "lessons": 7, "episodes": 8,
-             "plan": 8, "history": 9, "profile": 10},
-            budget,
+             "history": 9, "profile": 10},
+            max(0, budget - plan_cost),
             count=_count,
         )
+        if plan_block:
+            included["plan"] = ["plan"]
+            context_usage.append({
+                "name": "plan", "tokens": plan_cost, "included": True,
+                "items_total": 1, "items_included": 1,
+            })
         # 按预算选中的 item key 过滤各源列表(保留检索顺序)
         def _trim(block: str, prefix: str, items: list[Any]) -> list[Any]:
             keys = set(included.get(block, ()))

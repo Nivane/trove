@@ -21,6 +21,10 @@ from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import render_skills
 from trove.services.semantic_layer.compiler import PartialCompile
+from trove.services.semantic_layer.contract import (
+    contract_to_wire,
+    render_contract,
+)
 from trove.services.semantic_layer.plan import PlanQuery, parse_plan_query
 from trove.workflow.state import WorkflowState
 
@@ -1025,8 +1029,13 @@ def make_query_sketch(
                 compile_meta.update(miss_reason="unknown", miss_component="")
             update["compile_meta"] = compile_meta
             if compiled is not None:
-                block = compiled.block
-                update["plan"] = f"{plan}\n\n{block}" if plan else block
+                # 注入文本是契约的纯渲染;对象本身随 wire 形状落到 state,
+                # 供 execute_sql 的校验读取(不再从 SQL 字符串反推结构)。
+                update["plan"] = (
+                    f"{plan}\n\n{render_contract(compiled.contract)}"
+                    if plan else render_contract(compiled.contract)
+                )
+                update["contract"] = contract_to_wire(compiled.contract)
                 update["compiled_sql"] = compiled.sql
                 update["compiled"] = True
                 if is_partial:

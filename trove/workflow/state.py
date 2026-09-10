@@ -131,6 +131,13 @@ class WorkflowState(BaseModel):
     compile_partial: bool = False
     compile_misses: list[dict[str, str]] = Field(default_factory=list)
 
+    # 编译器交接契约(Phase A)的 wire 形状:join 边/过滤/分组宽度 + 缺口列表。
+    # 校验读它,不再把 compiled_sql 用 AST 反推回结构。**必须是纯 JSON**
+    # (str/int/list/dict):state 每步都过 checkpointer,而实测 frozenset 套
+    # 元组会被静默清空成 None、自定义类型会被拦(见 contract.py 模块注释)。
+    # 转换一律走 contract_to_wire / contract_from_wire。
+    contract: dict[str, Any] | None = None
+
     # 编译决策观测(query_sketch 恒写):{outcome: compiled|miss, miss_reason,
     # miss_component, plan_typed, semantic_layer}——eval 统计 compile
     # hit-rate 与 MISS 分因的闭环数据源;RunTracer 自动 dump 进 run log。
