@@ -304,12 +304,20 @@ def _backfill_pks(tables: list[dict], schema) -> None:
                 ).get(col.get("name", ""), False)
 
 
+#: /kb init 生成的文件。合并的预检(merge_blockers)按这份清单逐个过。
+INIT_FILES = ["schema_notes.yml", "semantics.yml", "examples.yml"]
+
+
 async def init_kb(kb, registry, llm, config, datasource, *,
                   overwrite: bool = False, docs: str = "", lang: str = "en",
+                  force: bool = False,
                   progress: Callable[[dict], None] | None = None) -> str:
     """LLM-assisted KB initialization (shared by REPL /kb init and the
     admin API). No-LLM → plain schema skeleton. Refuses to overwrite an
     initialized datasource unless overwrite=True.
+
+    ``overwrite=True`` **不是覆盖**:已存在的文件走三方合并(C2),人的编辑
+    按条目存活。只有 ``force=True`` 才是"重新生成、覆盖"。
 
     ``progress``: 可选进度回调,签名 ``progress({"stage", "progress", "detail"})``,
     供异步任务(admin /kb/init → 202 + 轮询状态)上报进度。
@@ -325,6 +333,15 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     # (多源必触发——新注册源即默认的 T3 minor 下错写更隐蔽)
     _report("schema", 3, f"读取数据源 schema")
     schema = await registry.get_schema(datasource)
+    # 合并不了就在**花钱之前**拦下来:一次 init 是几十次 LLM 调用,跑到写盘
+    # 才发现"没有基线"等于白付。这里也是唯一能给出完整处置建议的位置。
+    if overwrite and not force:
+        would_write = INIT_FILES if llm is not None else ["schema_notes.yml"]
+        blockers = kb.merge_blockers(datasource, would_write)
+        if blockers:
+            raise DatasourceError(
+                _no_baseline_message(datasource, blockers), datasource=datasource,
+            )
     if llm is None:
         if kb.init_schema_notes(schema, datasource, overwrite=overwrite):
             return (f"Created .trove/kb/{datasource}/schema_notes.yml skeleton. "
@@ -404,11 +421,70 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     # 异常)只会落在"全无"(写盘前)或"全有"(写盘后),杜绝半成品——
     # 半成品会让 UI 误判已初始化、又补不了缺失文件。
     _report("write", 95, "写盘")
-    kb.init_notes(all_tables, datasource, overwrite=overwrite)
-    kb.init_semantics(semantic_doc, datasource, overwrite=overwrite)
-    kb.init_examples(examples, datasource, overwrite=overwrite)
+    kb.init_notes(all_tables, datasource, overwrite=overwrite, force=force)
+    kb.init_semantics(semantic_doc, datasource, overwrite=overwrite, force=force)
+    kb.init_examples(examples, datasource, overwrite=overwrite, force=force)
     await kb.force_sync(datasource)
     _report("done", 100, "完成")
-    return (f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
-            f"{len(terms)} terms, {len(examples)} templates. "
-            f"Review the drafts, then /kb reload.")
+    summary = (f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
+               f"{len(terms)} terms, {len(examples)} templates. "
+               f"Review the drafts, then /kb reload.")
+    merged = kb.take_merge_reports()
+    if merged:
+        summary += "\n" + _merge_summary(merged)
+    return summary
+
+
+def _no_baseline_message(datasource: str, blockers: list[dict]) -> str:
+    """没有基线时的两个选项(design §3.3):不猜,说清楚代价。"""
+    lines = [
+        f".trove/kb/{datasource}/ has file(s) this run cannot safely merge into — "
+        f"no baseline (.trove/kb/{datasource}/.generated/):",
+    ]
+    for b in blockers:
+        if b.get("error"):
+            lines.append(f"  {b['file']}: unreadable ({b['error']})")
+            continue
+        state = {True: "hand-edited", False: "as generated", None: "unknown"}[b["edited"]]
+        lines.append(f"  {b['file']}: {b['entries']} entries, {state}")
+    lines.append(
+        "Without the generator's last output there is no way to tell your edits from "
+        "the generator's changes, so nothing is written. Two options:"
+    )
+    lines.append(
+        "  1. keep as-is (default) — the files stay exactly as they are; nothing is lost. "
+        "Only new files are created."
+    )
+    lines.append(
+        "  2. force regenerate — pass force=true (CLI: /kb init --overwrite --force). "
+        "This replaces the listed files outright: anything in them the generator does "
+        "not reproduce (your annotations, hand-written examples) is gone, and a baseline "
+        "is established so later re-inits merge instead of replace."
+    )
+    return "\n".join(lines)
+
+
+def _merge_summary(reports: list[dict]) -> str:
+    """合并结果的人话(C2):留下多少、新增多少、哪些说不清要人看。"""
+    lines: list[str] = []
+    for r in reports:
+        bits = []
+        for key, label in (("updated", "updated"), ("added", "added"),
+                           ("kept", "kept (your edits)"), ("removed", "removed")):
+            if r.get(key):
+                bits.append(f"{r[key]} {label}")
+        detail = ", ".join(bits) or "no changes"
+        line = f"  {r['file']}: merged — {detail}"
+        if r.get("conflicts"):
+            line += f", {len(r['conflicts'])} conflict(s) kept on your side"
+        lines.append(line)
+    conflicts = [
+        (r["file"], c) for r in reports for c in (r.get("conflicts") or [])
+    ]
+    if conflicts:
+        lines.append("Conflicts (your version was kept — review and adjust if needed):")
+        for filename, c in conflicts[:10]:
+            lines.append(f"  {filename} {c['path']}: kept yours, the generator proposed otherwise")
+        if len(conflicts) > 10:
+            lines.append(f"  … and {len(conflicts) - 10} more")
+    return "\n".join(lines)

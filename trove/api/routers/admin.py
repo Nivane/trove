@@ -796,6 +796,9 @@ async def kb_init_datasource_async(name: str, request: Request,
     config = request.app.state.config
     lock = KbInitLock(kb.kb_dir / ".locks")
     overwrite = bool((body or {}).get("overwrite"))
+    # force = 覆盖写(今天的行为)。默认的 overwrite 是**合并**:人的编辑按条目
+    # 存活;没有基线时(存量 KB)合并无从谈起,会带着两个选项报错,由人决定。
+    force = bool((body or {}).get("force"))
     task_id = task["id"]
 
     async def _run() -> None:
@@ -804,7 +807,7 @@ async def kb_init_datasource_async(name: str, request: Request,
                 summary = await init_kb(
                     kb, registry,
                     llm=llm_gateway, config=config,
-                    datasource=name, overwrite=overwrite,
+                    datasource=name, overwrite=overwrite, force=force,
                     progress=lambda u: init_tasks.update(task_id, **u),
                 )
             init_tasks.done(task_id, summary)
