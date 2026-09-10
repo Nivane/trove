@@ -16,6 +16,7 @@ authoritative-but-wrong SQL.
 """
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -144,6 +145,7 @@ class SemanticLayerProvider:
         self._key: tuple | None = None  # [(path, mtime_ns, size)] 缓存键
         self._parsed: SemanticModel | None = None  # last known good
         self._validated: list[SemanticMetric] | None = None
+        self._effective: SemanticModel | None = None  # _parsed + 仅保留已校验 metric
         self._field_index: dict[str, list[tuple[str, str]]] | None = None
         self._drift: dict[str, Any] | None = None  # 漂移报告缓存(模型变才重算)
 
@@ -182,6 +184,11 @@ class SemanticLayerProvider:
             )
             return
         self._validated = self._validate(self._parsed.metrics)
+        # 对外视图 = 解析结果 + **仅保留已校验的 metric**。datasets/relationships
+        # /模型级字段原样透传(漂移报告仍读 self._parsed,坏 metric 的告警不丢)。
+        # 不这样做的话,编译器会拿 model() 对着 provider 自己都丢弃的条目做匹配,
+        # 把坏表达式(如未配平括号)内联进权威 SQL。
+        self._effective = replace(self._parsed, metrics=list(self._validated))
         self._field_index = None  # 惰性重建(首次 field_candidates 时才建)
         self._drift = None  # 模型变了 → 漂移报告下次访问时重算
 
@@ -221,7 +228,11 @@ class SemanticLayerProvider:
         return list(self._validated or [])
 
     def model(self) -> SemanticModel | None:
-        """当前解析出的完整 SemanticModel(datasets/relationships/metrics)。
+        """当前 SemanticModel(datasets/relationships + **已校验**的 metrics)。
+
+        metrics 与 metrics() 同源:被 _validate 丢弃的条目(括号不配平 /
+        解析失败 / 引用未声明数据集)不出现在这里。否则消费方(编译器、上下文
+        渲染、漂移之外的读方)会对着 provider 自己都丢弃的条目做匹配。
 
         不可用 → None;解析失败保留 last-known-good(与 metrics() 同一
         缓存路径)。
@@ -229,7 +240,7 @@ class SemanticLayerProvider:
         if not self.enabled:
             return None
         self._reload()
-        return self._parsed
+        return self._effective
 
     # ── Drift(模型声明 vs 实时 schema)──────────────────────────
 
