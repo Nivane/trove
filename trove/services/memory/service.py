@@ -244,6 +244,7 @@ class MemoryService:
             await self.kb.draft_example(
                 question, sql, scope.datasource,
                 tags=["auto"], note="auto-captured successful query",
+                generator="memory",
             )
         except Exception as e:
             logger.debug("Auto-example draft failed: %s", e)
@@ -269,6 +270,7 @@ class MemoryService:
                         "evidence": f"question: {question[:120]}",
                     },
                     scope.datasource,
+                    generator="memory",
                 )
             except Exception as e:
                 logger.debug("Correction lesson capture failed: %s", e)
@@ -316,6 +318,7 @@ class MemoryService:
                     "evidence": f"question: {question[:120]}",
                 },
                 scope.datasource,
+                generator="memory",
             )
         except Exception as e:
             logger.debug("Failure-lesson append failed: %s", e)

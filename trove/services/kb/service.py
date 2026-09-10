@@ -48,6 +48,14 @@ from trove.services.kb.ossie_format import (
     qualify_mapping,
     terms_to_ossie_document,
 )
+from trove.services.kb.provenance import (
+    AssetMeta,
+    body_edited,
+    check_format,
+    dump_asset,
+    needs_migration,
+    read_meta,
+)
 
 logger = get_logger(__name__)
 
@@ -403,10 +411,36 @@ def _fuse_extra_sim(sim: float, extra: float, alpha: float = 0.5) -> float:
 # ── YAML parsing ─────────────────────────────────────────
 
 
+def _load_asset(path: Path) -> tuple[str, dict, AssetMeta]:
+    """读 + 解析 + 来源块 —— KB 资产的**唯一读入口**。
+
+    把"读文件"与"解释内容"分开,版本门才有地方站:拒绝一份比自己新的
+    资产,必须在**解释它之前**发生(解释完再拒绝,等于已经按旧规则读过
+    一遍了)。
+    """
+    text = path.read_text(encoding="utf-8")
+    doc = yaml.safe_load(text) or {}
+    return text, doc, read_meta(doc)
+
+
+def _write_doc(path: Path, doc: dict, generator: str) -> None:
+    """写回一份 KB YAML —— Trove 侧**唯一**的写入口(`_meta` 自动重打)。
+
+    每条写路径都必须经这里:摘要没跟着正文更新,文件下次读回就会被判成
+    "人改过"。而"哪些是人的编辑"正是三方合并(C2)唯一的分界依据 —— 一个
+    漏打的写入口会让整批机器写入伪装成人的编辑,于是每次生成都报冲突。
+    """
+    path.write_text(dump_asset(doc, generator), encoding="utf-8")
+
+
 def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
     """Parse one YAML file into (kind, item_key, payload) entries."""
-    text = path.read_text(encoding="utf-8")
-    data = yaml.safe_load(text) or {}
+    text, data, _meta = _load_asset(path)
+    return _entries_of(path, text, data)
+
+
+def _entries_of(path: Path, text: str, data: dict) -> list[tuple[str, str, dict]]:
+    """已解析的 YAML → 镜像条目(按文件名分派;未知文件名 → 零条目)。"""
     entries: list[tuple[str, str, dict]] = []
 
     if path.name == "schema_notes.yml":
@@ -460,9 +494,9 @@ def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
 
     elif path.name == "rules.yml":
         for rule in data.get("rules", []):
-            text = str(rule.get("rule", "")).strip()
-            if text:
-                entries.append(("rule", text, {"rule": text}))
+            rule_text = str(rule.get("rule", "")).strip()
+            if rule_text:
+                entries.append(("rule", rule_text, {"rule": rule_text}))
 
     elif path.name == "lessons.yml":
         for lesson in data.get("lessons", []):
@@ -524,6 +558,10 @@ class KbService:
         self._backend_resolver = backend_resolver
         # /kb learn draft awaiting user confirmation
         self.pending_draft: dict[str, Any] | None = None
+        # 被版本门拒绝的资产:rel_path → 原因(C1)。镜像里留着**上一次读懂的
+        # 样子**,所以这个 dict 是"磁盘和镜像不一致"的**唯一**诚实记录 ——
+        # 没有它,拒绝就只是一行日志,而运维看到的仍是一个"正常"的 KB。
+        self.refused_assets: dict[str, str] = {}
 
     def _backend_for(self, datasource: str):
         """该数据源的检索后端;builtin/未配置/解析失败 → None。"""
@@ -668,13 +706,27 @@ class KbService:
             return
 
         try:
-            entries = _parse_file(yml)
+            text, doc, meta = _load_asset(yml)
         except Exception as e:
             # Never block queries on a broken KB file — keep the old mirror.
             logger.warning(
                 "KB file %s failed to parse; keeping previous mirror: %s", yml, e,
             )
             return
+
+        # 版本门(C1):比自己新的格式**拒绝**,连同它的镜像一起不写。
+        # 按旧解释读一份新格式文件,产出的不是"少读了几个字段",而是一个
+        # 错的语义模型 —— 而它会进编译器、进权威 SQL、进答案。保留旧镜像
+        # 而不是清空:文件是新的、代码是旧的这种状态下,旧镜像至少是
+        # "上一次我们读懂了的样子"。
+        refusal = check_format(meta)
+        if refusal:
+            logger.error("KB asset %s refused: %s", rel_path, refusal)
+            self.refused_assets[rel_path] = refusal
+            return
+        self.refused_assets.pop(rel_path, None)
+
+        entries = _entries_of(yml, text, doc)
 
         await db.execute(
             "DELETE FROM kb_items WHERE datasource = ? AND source_file = ?",
@@ -1334,7 +1386,9 @@ class KbService:
         scored.sort(key=lambda l: l.get("score", 0.0), reverse=True)
         return scored[:limit]
 
-    async def append_lesson(self, entry: dict, datasource: str) -> None:
+    async def append_lesson(
+        self, entry: dict, datasource: str, *, generator: str = "append",
+    ) -> None:
         """Record a lesson candidate (pending until confirmed).
 
         教训卫生:与已存在的教训(含 pending)近义重复(embedding ≥ 阈值)或
@@ -1358,7 +1412,9 @@ class KbService:
             if near_duplicate(new_text, _lesson_text(lesson)):
                 logger.info("Lesson dedup: near-duplicate of existing lesson — skipped")
                 return
-        await self._append_entry("lessons.yml", "lessons", entry, datasource)
+        await self._append_entry(
+            "lessons.yml", "lessons", entry, datasource, generator=generator,
+        )
 
     async def rate_lesson(self, entry: dict, datasource: str) -> dict:
         """Record a user up/down vote, upserting a lesson keyed by `question`.
@@ -1394,10 +1450,7 @@ class KbService:
         if entry.get("sql_snippet"):
             existing["sql_snippet"] = entry["sql_snippet"]
         data["lessons"] = lessons
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, "kb_rate")
         await self.force_sync()
         # 好评闭环:upvote + 有效 SQL → 自动草拟参考示例(pending)待 admin 确认。
         # 与 lesson 的 Hint Bank 记录互补:lesson 记模式/教训,example 记标准 SQL。
@@ -1426,10 +1479,7 @@ class KbService:
             if not lesson.get("confirmed"):
                 lesson["confirmed"] = True
                 confirmed += 1
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, "kb_confirm_lessons")
         await self.force_sync(datasource)
         return confirmed
 
@@ -1447,6 +1497,7 @@ class KbService:
     async def draft_example(
         self, question: str, sql: str, datasource: str,
         tags: list[str] | None = None, note: str = "",
+        *, generator: str = "draft_example",
     ) -> dict:
         """好评问答 → 待确认参考示例(pending: True 写 examples.yml)。
 
@@ -1477,10 +1528,7 @@ class KbService:
             draft["note"] = note
         examples.append(draft)
         data["examples"] = examples
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, generator)
         await self.force_sync(datasource)
         return {"status": "drafted", "draft": draft}
 
@@ -1501,10 +1549,7 @@ class KbService:
             if ex.get("pending"):
                 ex.pop("pending", None)
                 confirmed += 1
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, "kb_confirm_examples")
         if confirmed:
             await self.force_sync(datasource)
         return confirmed
@@ -1516,10 +1561,7 @@ class KbService:
         kept = [ex for ex in data.get("examples", []) if not ex.get("pending")]
         rejected = len(data.get("examples", [])) - len(kept)
         data["examples"] = kept
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, "kb_reject_examples")
         if rejected:
             await self.force_sync(datasource)
         return rejected
@@ -1551,10 +1593,7 @@ class KbService:
                 break
         if not found:
             return False
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, "kb_confirm_lesson")
         await self.force_sync(datasource)
         return True
 
@@ -1572,10 +1611,7 @@ class KbService:
         data["lessons"] = [l for l in lessons if l.get("pattern") != pattern]
         if len(data["lessons"]) == before:
             return False
-        path.write_text(
-            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, "kb_reject_lesson")
         await self.force_sync(datasource)
         return True
 
@@ -1609,10 +1645,7 @@ class KbService:
                 lesson["confirmed"] = True
                 promoted = True
             data["lessons"] = lessons
-            path.write_text(
-                yaml.safe_dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False),
-                encoding="utf-8",
-            )
+            _write_doc(path, data, "kb_lesson_promotion")
             await self.force_sync(datasource)
             return {
                 "updated": True, "pattern": pattern,
@@ -1657,6 +1690,45 @@ class KbService:
             grouped.setdefault(row["datasource"], {})[row["kind"]] = row["n"]
         return grouped
 
+    def asset_report(self, datasource: str) -> list[dict]:
+        """该数据源每份 YAML 资产的来源信息(C1,管理端只读)。
+
+        回答四个运维问题:谁生成的、什么时候、内容格式第几版、生成之后**人
+        动过没有**。``edited`` 三态,``None`` = 无从判断(存量文件没有摘要),
+        不能压成 ``False`` —— "不知道"和"没改过"在合并里是两条不同的路。
+
+        读不动的文件不在这里报错(``read_meta`` 已降级为 format 0);真正
+        被版本门拒绝的走 ``refused``。
+        """
+        ds_dir = self.kb_dir / datasource
+        if not ds_dir.is_dir():
+            return []
+        report: list[dict] = []
+        for yml in sorted(ds_dir.glob("*.yml")):
+            try:
+                _text, doc, meta = _load_asset(yml)
+            except Exception as e:
+                report.append({
+                    "file": yml.name, "format": None, "generator": "",
+                    "trove": "", "generated_at": "", "edited": None,
+                    "error": str(e),
+                })
+                continue
+            report.append({
+                "file": yml.name,
+                "format": meta.format,
+                "generator": meta.generator,
+                "trove": meta.trove,
+                "generated_at": meta.generated_at,
+                "edited": body_edited(doc),
+                "needs_migration": needs_migration(meta),
+                # 从文件本身算,不看内存里"上次同步拒绝过没有" —— 这个方法是
+                # 只读体检,不该依赖"同步恰好跑过"。两个字段因此分工明确:
+                # 这里是"该不该拒绝",refused_assets 是"镜像实际采纳了没有"。
+                "refused": check_format(meta),
+            })
+        return report
+
     async def kb_status(self, datasource: str) -> dict:
         """Init/state summary of one datasource's KB (admin API).
 
@@ -1669,6 +1741,12 @@ class KbService:
             "initialized": len(files) == 3,
             "files": files,
             "items": items,
+            "assets": self.asset_report(datasource),
+            # 被拒绝的资产:镜像与磁盘不一致的显式证据(见 refused_assets)。
+            "refused_assets": {
+                rel: reason for rel, reason in self.refused_assets.items()
+                if rel.startswith(f"{datasource}/")
+            },
         }
 
     async def list_term_entries(self, datasource: str) -> list[dict]:
@@ -1739,11 +1817,17 @@ class KbService:
 
     # ── Evolution (human-confirmed writes) ────────────────
 
-    async def append_example(self, entry: dict[str, Any], datasource: str) -> None:
+    async def append_example(
+        self, entry: dict[str, Any], datasource: str, *, generator: str = "append",
+    ) -> None:
         """Append a reference-SQL/template entry to the datasource's examples.yml."""
-        await self._append_entry("examples.yml", "examples", entry, datasource)
+        await self._append_entry(
+            "examples.yml", "examples", entry, datasource, generator=generator,
+        )
 
-    async def append_term(self, entry: dict[str, Any], datasource: str) -> None:
+    async def append_term(
+        self, entry: dict[str, Any], datasource: str, *, generator: str = "append_term",
+    ) -> None:
         """Append a business term to the datasource's semantics.yml (OSSIE format).
 
         flat 请求体(term/aliases/mapping/tables/definition)在此转换为
@@ -1771,32 +1855,31 @@ class KbService:
             append_term_to_document(data, entry)
         else:
             data = terms_to_ossie_document([entry], model_name=datasource)
-        path.write_text(
-            yaml.safe_dump(
-                data, default_flow_style=False, allow_unicode=True, sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
+        _write_doc(path, data, generator)
         await self.force_sync()
 
     async def _append_entry(
         self, filename: str, section: str, entry: dict, datasource: str,
+        generator: str = "append",
     ) -> None:
+        """追加一条并重写整份文件(带新 `_meta`)。
+
+        `_meta.digest` 覆盖**刚写下的正文**(含这次 append)——"Trove 自己写
+        过"与"之后被人动过"因此分得开。基线(C2 的 `.generated/`)不在这里
+        更新:它是**生成器**的产物,而这里是人的动作(/kb learn、确认草稿、
+        记忆子系统);两者的差正是"哪些是人的编辑"。
+        """
         ds_dir = self.kb_dir / datasource
         ds_dir.mkdir(parents=True, exist_ok=True)
         path = ds_dir / filename
         data = {}
         if path.exists():
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        # 旧 `_meta` 由 dump_asset 整块替换(摘要按不含 `_meta` 的正文算)
         items = list(data.get(section, []))
         items.append(entry)
         data[section] = items
-        path.write_text(
-            yaml.safe_dump(
-                data, default_flow_style=False, allow_unicode=True, sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
+        path.write_text(dump_asset(data, generator), encoding="utf-8")
         await self.force_sync()
 
     # ── Initialization ────────────────────────────────────
@@ -1820,7 +1903,7 @@ class KbService:
 
     def _init_file(
         self, filename: str, section: str, items: list[dict], datasource: str,
-        overwrite: bool = False,
+        overwrite: bool = False, generator: str = "kb_init",
     ) -> bool:
         """Write a KB file, refusing to overwrite an existing one."""
         ds_dir = self.kb_dir / datasource
@@ -1829,18 +1912,12 @@ class KbService:
         if path.exists() and not overwrite:
             logger.info("%s/%s already exists; refusing to overwrite", datasource, filename)
             return False
-        path.write_text(
-            yaml.safe_dump(
-                {section: items},
-                default_flow_style=False, allow_unicode=True, sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
+        path.write_text(dump_asset({section: items}, generator), encoding="utf-8")
         return True
 
     def _init_doc(
         self, filename: str, doc: dict, datasource: str,
-        overwrite: bool = False,
+        overwrite: bool = False, generator: str = "kb_init",
     ) -> bool:
         """Write a full YAML document as-is(顶层键保留,如 OSSIE ``version``)。"""
         ds_dir = self.kb_dir / datasource
@@ -1849,12 +1926,7 @@ class KbService:
         if path.exists() and not overwrite:
             logger.info("%s/%s already exists; refusing to overwrite", datasource, filename)
             return False
-        path.write_text(
-            yaml.safe_dump(
-                doc, default_flow_style=False, allow_unicode=True, sort_keys=False,
-            ),
-            encoding="utf-8",
-        )
+        path.write_text(dump_asset(doc, generator), encoding="utf-8")
         return True
 
     def init_schema_notes(
