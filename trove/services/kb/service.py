@@ -16,6 +16,7 @@ layout) are auto-migrated into a datasource subdirectory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -71,9 +72,14 @@ _CREATE_ITEMS = """CREATE TABLE IF NOT EXISTS kb_items (
     source_file TEXT NOT NULL
 )"""
 
+# 陈旧判定表。`digest` 是判据(文件字节的 sha256),`mtime`/`size` 只作诊断:
+# "文件 3 分钟前改过、镜像说 2 小时前同步"是有用的线索,但拿它们判"要不要
+# 重新同步"就会被 `cp -p` / `rsync -t` / 挂载层缓存骗过去。
 _CREATE_SYNC = """CREATE TABLE IF NOT EXISTS kb_sync (
     file_path TEXT PRIMARY KEY,
-    mtime REAL NOT NULL
+    mtime REAL NOT NULL,
+    size INTEGER,
+    digest TEXT
 )"""
 
 # kb_items 的 FTS5 稀疏镜像(contentless + UNINDEXED 元数据列)。
@@ -411,16 +417,36 @@ def _fuse_extra_sim(sim: float, extra: float, alpha: float = 0.5) -> float:
 # ── YAML parsing ─────────────────────────────────────────
 
 
-def _load_asset(path: Path) -> tuple[str, dict, AssetMeta]:
+@dataclass(frozen=True)
+class Asset:
+    """一次读盘的全部产物(正文文本 / 解析结果 / 来源块 / 字节摘要)。"""
+
+    text: str
+    doc: dict
+    meta: AssetMeta
+    digest: str
+    size: int
+
+
+def _load_asset(path: Path) -> Asset:
     """读 + 解析 + 来源块 —— KB 资产的**唯一读入口**。
 
     把"读文件"与"解释内容"分开,版本门才有地方站:拒绝一份比自己新的
     资产,必须在**解释它之前**发生(解释完再拒绝,等于已经按旧规则读过
     一遍了)。
+
+    ``digest`` 是**文件字节**的 sha256(不是"读出来的文本"再编码 ——
+    ``read_text`` 会把 CRLF 归一成 LF,那样摘要就不是磁盘上那份内容的摘要
+    了)。陈旧判据(C3)靠它:整数摘要没有浮点语义,``cp -p`` / ``rsync -t``
+    / 挂载层缓存造成的 mtime 相等再也骗不过同步。
     """
-    text = path.read_text(encoding="utf-8")
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    text = raw.decode("utf-8")
     doc = yaml.safe_load(text) or {}
-    return text, doc, read_meta(doc)
+    return Asset(
+        text=text, doc=doc, meta=read_meta(doc), digest=digest, size=len(raw),
+    )
 
 
 def _write_doc(path: Path, doc: dict, generator: str) -> None:
@@ -435,8 +461,8 @@ def _write_doc(path: Path, doc: dict, generator: str) -> None:
 
 def _parse_file(path: Path) -> list[tuple[str, str, dict]]:
     """Parse one YAML file into (kind, item_key, payload) entries."""
-    text, data, _meta = _load_asset(path)
-    return _entries_of(path, text, data)
+    asset = _load_asset(path)
+    return _entries_of(path, asset.text, asset.doc)
 
 
 def _entries_of(path: Path, text: str, data: dict) -> list[tuple[str, str, dict]]:
@@ -697,21 +723,31 @@ class KbService:
         self, db: aiosqlite.Connection, yml: Path, datasource: str,
     ) -> None:
         rel_path = f"{datasource}/{yml.name}"
-        mtime = yml.stat().st_mtime
-        cursor = await db.execute(
-            "SELECT mtime FROM kb_sync WHERE file_path = ?", (rel_path,),
-        )
-        row = await cursor.fetchone()
-        if row is not None and row[0] == mtime:
-            return
-
         try:
-            text, doc, meta = _load_asset(yml)
+            asset = _load_asset(yml)
         except Exception as e:
             # Never block queries on a broken KB file — keep the old mirror.
             logger.warning(
                 "KB file %s failed to parse; keeping previous mirror: %s", yml, e,
             )
+            return
+        text, doc, meta = asset.text, asset.doc, asset.meta
+
+        # 陈旧判定 = **内容摘要**相等(C3),不是 mtime 相等。
+        #
+        # 旧判据 `row[0] == yml.stat().st_mtime` 的问题不是"精度"而 是它
+        # 判的是**代理指标**:`cp -p` / `rsync -t` / 挂载层缓存 / 备份还原
+        # 都能让一份改过的文件保持 mtime,于是镜像停在旧内容上,而下游拿它
+        # 当"当前 KB"用。摘要判的是内容本身,没有这个缝隙。
+        #
+        # mtime 仍写进表里,但**不参与判定** —— 它是诊断线索("文件 3 分钟前
+        # 改过,镜像却说 2 小时前同步"),不是判据。
+        mtime = yml.stat().st_mtime
+        cursor = await db.execute(
+            "SELECT digest FROM kb_sync WHERE file_path = ?", (rel_path,),
+        )
+        row = await cursor.fetchone()
+        if row is not None and row[0] == asset.digest:
             return
 
         # 版本门(C1):比自己新的格式**拒绝**,连同它的镜像一起不写。
@@ -744,8 +780,9 @@ class KbService:
             )
         await self._sync_file_fts(db, datasource, yml.name, entries)
         await db.execute(
-            "INSERT OR REPLACE INTO kb_sync (file_path, mtime) VALUES (?, ?)",
-            (rel_path, mtime),
+            "INSERT OR REPLACE INTO kb_sync (file_path, mtime, size, digest) "
+            "VALUES (?, ?, ?, ?)",
+            (rel_path, mtime, asset.size, asset.digest),
         )
         await db.commit()
         # 向量索引在镜像事务外(embedding 是慢 LLM 调用,不阻塞镜像写事务;
@@ -870,6 +907,10 @@ class KbService:
         or missing ``kb_fts`` virtual table (pre-FTS mirrors). Old mirrors that
         already carry the datasource column but predate kb_fts would otherwise
         keep a broken write path (INSERT INTO kb_fts → no such table).
+
+        `kb_sync.digest`(C3)则**不重建**:那一列可以就地补。见
+        :meth:`_backfill_sync_digests` —— 重建的代价不是重读 YAML,是重算
+        embedding(计费),而升级不该让每个人付一次这笔钱。
         """
         cursor = await db.execute("PRAGMA table_info(kb_items)")
         columns = {row[1] for row in await cursor.fetchall()}
@@ -883,12 +924,60 @@ class KbService:
             await db.execute("DROP TABLE IF EXISTS kb_fts")
             await db.execute("DROP TABLE IF EXISTS kb_vectors")
             columns = set()
+        if columns:
+            sync_cursor = await db.execute("PRAGMA table_info(kb_sync)")
+            sync_columns = {row[1] for row in await sync_cursor.fetchall()}
+            if sync_columns and "digest" not in sync_columns:
+                await self._backfill_sync_digests(db)
         if not columns:
             await db.execute(_CREATE_ITEMS)
             await db.execute(_CREATE_SYNC)
             await db.execute(_CREATE_FTS)
             await db.execute(CREATE_VECTORS)
             await db.commit()
+
+    async def _backfill_sync_digests(self, db: aiosqlite.Connection) -> None:
+        """给旧镜像的 `kb_sync` 补 `size`/`digest` 两列(就地,不重建)。
+
+        为什么不重建:重建会让每个文件都"看起来是新内容"→ 重新解析 + **重算
+        embedding**(计费 LLM 调用)。升级不该让每个人付一次这笔钱。
+
+        补法:旧行的 `mtime` 是它当年唯一能给的保证 —— 拿它跟磁盘现状比。
+        相等 → 这份文件自那次同步后没被动过,摘要可信、直接补上;不等 →
+        摘要留空,交给下一次同步正常重读(那本来就是判据要求的行为)。
+
+        `ALTER TABLE ADD COLUMN` 在这里是安全的:调用点已经探测过列不存在。
+        (SQLite 没有 `ADD COLUMN IF NOT EXISTS`,所以探测必须在前 —— 迁移器
+        C4 会把这种方言差异收进后端翻译,这里先做对。)
+        """
+        cursor = await db.execute("SELECT file_path, mtime FROM kb_sync")
+        rows = await cursor.fetchall()
+        await db.execute("ALTER TABLE kb_sync ADD COLUMN size INTEGER")
+        await db.execute("ALTER TABLE kb_sync ADD COLUMN digest TEXT")
+        backfilled = 0
+        for file_path, mtime in rows:
+            datasource, _, name = str(file_path).partition("/")
+            yml = self.kb_dir / datasource / name
+            if not yml.is_file():
+                continue
+            try:
+                stat = yml.stat()
+                if stat.st_mtime != mtime:
+                    continue
+                asset = _load_asset(yml)
+            except Exception:
+                continue
+            await db.execute(
+                "UPDATE kb_sync SET size = ?, digest = ? WHERE file_path = ?",
+                (asset.size, asset.digest, file_path),
+            )
+            backfilled += 1
+        await db.commit()
+        if backfilled:
+            logger.info(
+                "KB mirror: backfilled content digests for %d unchanged file(s)",
+                backfilled,
+            )
 
     # ── Retrieval ─────────────────────────────────────────
 
@@ -1706,7 +1795,8 @@ class KbService:
         report: list[dict] = []
         for yml in sorted(ds_dir.glob("*.yml")):
             try:
-                _text, doc, meta = _load_asset(yml)
+                asset = _load_asset(yml)
+                meta = asset.meta
             except Exception as e:
                 report.append({
                     "file": yml.name, "format": None, "generator": "",
@@ -1720,7 +1810,7 @@ class KbService:
                 "generator": meta.generator,
                 "trove": meta.trove,
                 "generated_at": meta.generated_at,
-                "edited": body_edited(doc),
+                "edited": body_edited(asset.doc),
                 "needs_migration": needs_migration(meta),
                 # 从文件本身算,不看内存里"上次同步拒绝过没有" —— 这个方法是
                 # 只读体检,不该依赖"同步恰好跑过"。两个字段因此分工明确:

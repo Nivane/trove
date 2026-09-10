@@ -21,6 +21,7 @@ YAML is synced lazily by mtime, mirroring KbService.ensure_synced.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -67,9 +68,12 @@ _CREATE_LOG = """CREATE TABLE IF NOT EXISTS lineage_query_log (
     UNIQUE(datasource, shard)
 )"""
 
+# 与 KB 镜像同一判据(C3):`digest` 是文件字节的 sha256,mtime/size 只作诊断。
 _CREATE_SYNC = """CREATE TABLE IF NOT EXISTS lineage_sync (
     file_path TEXT PRIMARY KEY,
-    mtime REAL NOT NULL
+    mtime REAL NOT NULL,
+    size INTEGER,
+    digest TEXT
 )"""
 
 
@@ -117,6 +121,8 @@ class LineageService:
             else self.root / ".trove" / LINEAGE_DIR_NAME
         )
         self.db_path = self.lineage_dir / "lineage.sqlite"
+        # 进程内一次性判定:补列只需成功一次,而 _conn 在每次 ingest 上都要开。
+        self._sync_has_digest = False
 
     def definitions_yaml(self, datasource: str) -> Path:
         return self.lineage_dir / datasource / "definitions.yml"
@@ -127,8 +133,45 @@ class LineageService:
         await conn.execute(_CREATE_DEFS)
         await conn.execute(_CREATE_LOG)
         await conn.execute(_CREATE_SYNC)
+        if not self._sync_has_digest:
+            await self._add_sync_digest_columns(conn)
+            self._sync_has_digest = True
         await conn.commit()
         return conn
+
+    async def _add_sync_digest_columns(self, conn: aiosqlite.Connection) -> None:
+        """给旧库补 `lineage_sync` 的两列(就地,不重建)。
+
+        补列而不是重建:重建会让每个 datasource 的定义"看起来是新的"→ 重解析
+        + 重发 lineage 变更事件,而升级本身没改任何定义。
+
+        旧行的 `mtime` 是它当年唯一能给的保证 —— 相等则摘要可信、直接补上;
+        不等则留空,交给下一次同步正常重读。`ALTER TABLE ADD COLUMN` 只可能在
+        探测到列缺失后执行(SQLite 没有 `ADD COLUMN IF NOT EXISTS`;这个方言
+        差异在 C4 的迁移器里会收进后端翻译)。
+        """
+        async with await conn.execute("PRAGMA table_info(lineage_sync)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if not columns or "digest" in columns:
+            return
+        await conn.execute("ALTER TABLE lineage_sync ADD COLUMN size INTEGER")
+        await conn.execute("ALTER TABLE lineage_sync ADD COLUMN digest TEXT")
+        async with await conn.execute(
+            "SELECT file_path, mtime FROM lineage_sync",
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for file_path, mtime in rows:
+            path = Path(str(file_path))
+            try:
+                if path.stat().st_mtime != mtime:
+                    continue
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            await conn.execute(
+                "UPDATE lineage_sync SET size = ?, digest = ? WHERE file_path = ?",
+                (len(raw), hashlib.sha256(raw).hexdigest(), file_path),
+            )
 
     # ── Ingest ────────────────────────────────────────────
 
@@ -225,18 +268,23 @@ class LineageService:
         """Copy definitions.yml entries into the SQLite store (mtime gated)."""
         path = self.definitions_yaml(datasource)
         try:
-            mtime = path.stat().st_mtime
+            raw = path.read_bytes()
         except FileNotFoundError:
             return
+        # 判据 = 内容摘要,不是 mtime(C3):`cp -p` / `rsync -t` / 挂载层缓存
+        # 都能让改过的文件保持 mtime,于是定义停在上一次读到的样子。mtime 仍
+        # 写进表里,但只作诊断。
+        file_digest = hashlib.sha256(raw).hexdigest()
+        mtime = path.stat().st_mtime
         conn = await self._conn()
         try:
             async with await conn.execute(
-                "SELECT mtime FROM lineage_sync WHERE file_path = ?", (str(path),),
+                "SELECT digest FROM lineage_sync WHERE file_path = ?", (str(path),),
             ) as cursor:
                 row = await cursor.fetchone()
-            if row is not None and row[0] == mtime:
+            if row is not None and row[0] == file_digest:
                 return
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load(raw.decode("utf-8")) or {}
             entries = data.get("definitions", []) or []
             # Rebuild from source: stale entries from this datasource are dropped
             await conn.execute(
@@ -286,9 +334,11 @@ class LineageService:
                         ),
                     )
             await conn.execute(
-                "INSERT INTO lineage_sync (file_path, mtime) VALUES (?, ?) "
-                "ON CONFLICT(file_path) DO UPDATE SET mtime = excluded.mtime",
-                (str(path), mtime),
+                "INSERT INTO lineage_sync (file_path, mtime, size, digest) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(file_path) DO UPDATE SET "
+                "mtime = excluded.mtime, size = excluded.size, "
+                "digest = excluded.digest",
+                (str(path), mtime, len(raw), file_digest),
             )
             await conn.commit()
             logger.info("lineage: synced definitions for %s (%d entries)", datasource, len(entries))
