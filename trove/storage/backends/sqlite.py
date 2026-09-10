@@ -63,6 +63,7 @@ class SqliteBackend(StorageBackend):
             db_path = db_path[len("sqlite://"):]
         self.db_path = db_path or ":memory:"
         self._conn: aiosqlite.Connection | None = None
+        self._init_op_scope()
 
     async def _connect(self) -> aiosqlite.Connection:
         if self._conn is not None:
@@ -78,24 +79,55 @@ class SqliteBackend(StorageBackend):
         self, sql: str, params: tuple = (), *, need_lastrowid: bool = False,
     ) -> StorageCursor:
         conn = await self._connect()
-        cur = await conn.execute(sql, params)
+        await self._op_begin()
+        try:
+            cur = await conn.execute(sql, params)
+        except BaseException:
+            await self._op_abort()   # 失败即收口:半成品回滚 + 释放作用域
+            raise
         return _SqliteCursor(cur)
 
     async def executemany(self, sql: str, seq_of_params: list[tuple]) -> None:
         conn = await self._connect()
-        await conn.executemany(sql, seq_of_params)
-        await conn.commit()
+        await self._op_begin()
+        try:
+            await conn.executemany(sql, seq_of_params)
+            await conn.commit()
+        except BaseException:
+            await self._op_abort()
+            raise
+        finally:
+            await self._op_end()
 
     async def executescript(self, script: str) -> None:
+        """多语句 DDL:自身即一个操作(aiosqlite 会在脚本前隐式 COMMIT)。"""
         conn = await self._connect()
-        await conn.executescript(script)
+        await self._op_begin()
+        try:
+            await conn.executescript(script)
+        except BaseException:
+            await self._op_abort()
+            raise
+        finally:
+            await self._op_end()
+
+    async def rollback_pending(self) -> None:
+        """回滚未提交写入。``in_transaction`` 是本地状态(sqlite3 只在 DML 前
+        自动 BEGIN),所以纯读操作这里不产生任何往返。"""
+        if self._conn is not None and self._conn.in_transaction:
+            await self._conn.rollback()
 
     async def commit(self) -> None:
         if self._conn is not None:
             await self._conn.commit()
+        await self._op_end()
 
     async def close(self) -> None:
-        """无操作:保留缓存连接(内存库依赖单连接存续,store 每操作调用)。"""
+        """结束操作作用域(未提交 → 回滚),不关闭连接:内存库依赖单连接存续。"""
+        if not self._owns_op():
+            return
+        await self.rollback_pending()
+        await self._op_end()
 
     async def dispose(self) -> None:
         """真正的资源释放(进程退出/显式清理时调用)。"""
