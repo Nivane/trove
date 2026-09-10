@@ -18,10 +18,16 @@ import aiosqlite
 from trove.core.logging import get_logger
 from trove.services.kb.backends.dense import cosine
 from trove.services.retrieval.store import HybridStore, RetrievalDoc, RetrievalHit
+from trove.storage.migrations import (
+    SQLITE,
+    AddColumn,
+    Migration,
+    apply_migrations,
+)
 
 logger = get_logger(__name__)
 
-_SCHEMA = """
+_DOCUMENTS_TABLE = """
 CREATE TABLE IF NOT EXISTS documents (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_id TEXT UNIQUE NOT NULL,
@@ -29,14 +35,20 @@ CREATE TABLE IF NOT EXISTS documents (
     kind TEXT NOT NULL,
     source_file TEXT NOT NULL DEFAULT '',
     content TEXT NOT NULL,
-    embedding BLOB,
-    sparse BLOB
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(content, content_rowid);
-CREATE INDEX IF NOT EXISTS idx_documents_ds ON documents(datasource);
-"""
+    embedding BLOB
+)"""
+_DOC_FTS = "CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(content, content_rowid)"
+_DOC_DS_INDEX = "CREATE INDEX IF NOT EXISTS idx_documents_ds ON documents(datasource)"
 
-_ALTER_SPARSE = "ALTER TABLE documents ADD COLUMN sparse BLOB"
+#: 检索库的表结构版本。v1 = documents/doc_fts/索引;v2 = 稀疏通道的 sparse
+#: 列。v1 里**不含** sparse 是刻意的:那是 v1 当年的真实形状,新库和存量库
+#: 因此走同一条路径(存量库的 CREATE 是空操作,列由 v2 补上)。
+RETRIEVAL_MIGRATIONS = [
+    Migration(version=1, description="documents 表与 FTS 镜像",
+              ops=[_DOCUMENTS_TABLE, _DOC_FTS, _DOC_DS_INDEX]),
+    Migration(version=2, description="sparse 稀疏通道列",
+              ops=[AddColumn("documents", "sparse", "BLOB", "BYTEA")]),
+]
 
 
 def _pack(vec: list[float]) -> bytes:
@@ -87,13 +99,8 @@ class SqliteHybridStore(HybridStore):
 
     async def _ensure(self) -> None:
         async with aiosqlite.connect(self._db) as db:
-            await db.executescript(_SCHEMA)
-            # 既有库无 sparse 列时补列(幂等)。
-            try:
-                await db.execute(_ALTER_SPARSE)
-            except Exception:
-                pass
-            await db.commit()
+            await apply_migrations(
+                db, "retrieval", RETRIEVAL_MIGRATIONS, dialect=SQLITE)
 
     async def index(self, doc: RetrievalDoc) -> None:
         await self.index_many([doc])

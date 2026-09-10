@@ -29,6 +29,7 @@ import aiosqlite
 
 from trove.core.logging import get_logger
 from trove.services.memory.models import MemoryEntry, MemoryScope
+from trove.storage.migrations import AddColumn, Migration
 
 logger = get_logger(__name__)
 
@@ -70,8 +71,15 @@ _LEXICAL_WEIGHT = 0.4         # 词面通道权重(始终可用)
 _LEXICAL_GATE = 0.5           # 词面门槛(纯词面部署 = 旧行为)
 _COSINE_GATE = 0.55           # 语义门槛:OR 语义——任一门过即召回
 
-_EMBED_COL_SQLITE = "ALTER TABLE episodes ADD COLUMN embedding BLOB"
-_EMBED_COL_PG = "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS embedding BYTEA"
+#: episodes 的表结构版本。v1 = 建表(索引一并);v2 = 向量列(hybrid 检索
+#: 起)。向量列此前是"每次打开试一次 ALTER 再吞掉异常",现在是一条迁移:
+#: 跑过一次就记下来,不再探测。
+EPISODE_MIGRATIONS = [
+    Migration(version=1, description="episodes 表与索引",
+              ops=[EPISODES_TABLE_SQL, _EPISODE_UNIQ, _EPISODE_SCOPE]),
+    Migration(version=2, description="embedding 向量列",
+              ops=[AddColumn("episodes", "embedding", "BLOB", "BYTEA")]),
+]
 
 
 def _pack_embedding(vec: list[float]) -> bytes:
@@ -132,20 +140,13 @@ class EpisodeStore:
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
             return
-        from trove.storage.backends.base import script_statements
+        from trove.storage.migrations import SQLITE, POSTGRES, apply_migrations
 
-        await self._backend.executescript(
-            script_statements([EPISODES_TABLE_SQL, _EPISODE_UNIQ, _EPISODE_SCOPE])
-        )
-        # 幂等加列:老库升级路径(SQLite BLOB / PG BYTEA);已存在 → 忽略
-        # (两后端对重复列分别抛 OperationalError / ProgrammingError)。
         is_pg = "Postgres" in type(self._backend).__name__
-        try:
-            await self._backend.execute(
-                _EMBED_COL_PG if is_pg else _EMBED_COL_SQLITE)
-            await self._backend.commit()
-        except Exception:
-            pass
+        await apply_migrations(
+            self._backend, "memory", EPISODE_MIGRATIONS,
+            dialect=POSTGRES if is_pg else SQLITE,
+        )
         self._schema_ready = True
 
     def _embedder(self, datasource: str) -> Any | None:

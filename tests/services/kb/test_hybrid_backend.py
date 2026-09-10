@@ -17,6 +17,7 @@ from trove.services.kb.backends.fts import (
 from trove.services.kb.backends.hybrid import HybridBackend
 from trove.services.kb.backends.registry import resolver_from_configs
 from trove.services.kb.service import KbService
+from trove.storage.migrations import StorageSchemaTooNew
 
 SEMANTICS = """
 semantic_model:
@@ -150,7 +151,12 @@ class TestFtsMirror:
         assert rows == []
 
     async def test_mirror_rebuild_keeps_fts_consistent(self, kb, kb_dir):
-        """缺 datasource 列的旧镜像重建时 kb_fts 一并重建。"""
+        """缺 datasource 列的旧镜像重建时 kb_fts 一并重建。
+
+        旧的形态要**连版本记录一起伪造**:C4 之前建的镜像由旧代码写下,
+        那时的库根本没有 `trove_schema` 这一行。只换表不抹版本记录,描述的
+        是一个不可能存在的状态 —— 一个"已经在 v1 却说自己的列是旧的"库。
+        """
         _write_kb(kb_dir)
         await kb.ensure_synced("financial")
         async with aiosqlite.connect(kb.db_path) as db:
@@ -162,11 +168,55 @@ class TestFtsMirror:
                 "SELECT id, kind, item_key, payload, source_file FROM kb_items")
             await db.execute("DROP TABLE kb_items")
             await db.execute("ALTER TABLE old_items RENAME TO kb_items")
+            await db.execute("DROP TABLE trove_schema")
             await db.commit()
         await kb.ensure_synced("financial")
         rows = await kb._rows(
             "SELECT rowid FROM kb_fts WHERE datasource = 'financial'")
         assert len(rows) == 7  # 3 example + 2 lesson + 2 metric(分型导入)
+
+    async def test_current_mirror_is_not_rebuilt(self, kb, kb_dir):
+        """**版本记录在案就不再探测** —— 这是 C4 换掉"每次打开 PRAGMA"的凭据。
+
+        把表偷走(旧实现会据此判定"形状是旧的"→ 重建)但保留版本记录:
+        重建不该发生。可观测的差别是**重新索引**:重建会清掉 kb_sync,
+        于是每份 YAML 都"变了",触发一轮付费 embedding —— 而它们一个字
+        都没改。
+        """
+        _write_kb(kb_dir)
+        await kb.ensure_synced("financial")
+        async with aiosqlite.connect(kb.db_path) as db:
+            await db.execute("DROP TABLE kb_fts")
+            await db.commit()
+
+        calls: list[str] = []
+
+        async def _spy(datasource, source_file, entries):
+            calls.append(source_file)
+
+        kb._index_vectors_for_file = _spy  # type: ignore[method-assign]
+        await kb.ensure_synced("financial")
+        assert calls == [], (
+            "版本在案 → 不探测、不重建:kb_fts 由建表语句补回,而不是整库重建"
+        )
+        rows = await kb._rows(
+            "SELECT rowid FROM kb_fts WHERE datasource = 'financial'")
+        assert rows == [], "少了 content 的 FTS 镜像不会自己长回来(要下一次同步)"
+
+    async def test_a_newer_mirror_is_refused(self, kb, kb_dir):
+        """库比代码新 → 拒绝,并给出可执行的出路(镜像是派生物,删了能重算)。"""
+        from trove.storage.migrations import SQLITE, write_version
+
+        _write_kb(kb_dir)
+        await kb.ensure_synced("financial")
+        async with aiosqlite.connect(kb.db_path) as db:
+            await write_version(db, "kb_mirror", 99, dialect=SQLITE)
+            await db.commit()
+
+        with pytest.raises(StorageSchemaTooNew) as excinfo:
+            await kb.ensure_synced("financial")
+        assert "99" in str(excinfo.value)
+        assert "delete" in str(excinfo.value)
 
 
 class TestDispatch:
