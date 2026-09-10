@@ -40,7 +40,13 @@ _REJECT = {"reject", "no", "n", "cancel", "0", "false"}
 
 
 def _normalize(decision: Any) -> str:
-    """Map an arbitrary resume payload to "approved" / "rejected" / ""."""
+    """任意 resume 载荷 → "approved" / "rejected" / "unrecognized"。
+
+    未识别的载荷一律 **不批准**:HITL 是执行前的安全门,失手放行(执行了没人
+    确认过的 SQL)与失手拒绝(请用户再说一次)代价不对称。此前未识别载荷
+    (``{}``、``null``、未知字符串、数字)全部落到 ``approved``,任何畸形
+    resume 请求都能静默穿过人工确认门。
+    """
     if isinstance(decision, bool):
         return "approved" if decision else "rejected"
     if isinstance(decision, dict):
@@ -53,7 +59,7 @@ def _normalize(decision: Any) -> str:
             return "approved"  # approve_all also approves the current task
         if d in _REJECT:
             return "rejected"
-    return "approved"  # explicit resume implies approval unless it is a clear rejection
+    return "unrecognized"
 
 
 def make_hitl(
@@ -108,6 +114,21 @@ def make_hitl(
                     "已取消该查询的执行(人工否决 SQL)。"
                     if state.lang == "zh"
                     else "Query execution cancelled (SQL rejected by user)."
+                ),
+            }
+        if status == "unrecognized":
+            # 未获确认 → 不执行。走与显式否决相同的取消路由
+            # (_route_after_hitl 按 hitl_status == "rejected" 分流),但如实
+            # 说明是「确认指令没被识别」,不谎称用户否决过。
+            logger.warning(
+                "HITL resume payload unrecognized (%r); not executing SQL", decision)
+            return {
+                "hitl_status": "rejected",
+                "intent_answer": (
+                    "未识别到确认指令,已放弃执行该查询。请重新确认后再试。"
+                    if state.lang == "zh"
+                    else "Unrecognized confirmation; the query was not executed. "
+                         "Please confirm again."
                 ),
             }
         return {"hitl_status": "approved"}

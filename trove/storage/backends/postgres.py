@@ -198,6 +198,7 @@ class PostgresBackend(StorageBackend):
         self._dsn = dsn
         self._schema = schema
         self._conn: Any = None
+        self._init_op_scope()
 
     async def _connect(self) -> None:
         if self._conn is not None and not self._conn.closed:
@@ -223,21 +224,36 @@ class PostgresBackend(StorageBackend):
         sql = _normalize_ddl(sql)
         sql, needs_returning = _rewrite_insert(sql, need_lastrowid)
         sql = _translate_placeholders(sql)
-        cur = self._conn.cursor()
-        if needs_returning:
+        await self._op_begin()
+        try:
+            cur = self._conn.cursor()
+            if needs_returning:
+                await cur.execute(sql, params)
+                row = await cur.fetchone()
+                lastrowid = int(row[0]) if row else None
+                return _PgCursor(cur, lastrowid=lastrowid)
             await cur.execute(sql, params)
-            row = await cur.fetchone()
-            lastrowid = int(row[0]) if row else None
-            return _PgCursor(cur, lastrowid=lastrowid)
-        await cur.execute(sql, params)
-        return _PgCursor(cur)
+            return _PgCursor(cur)
+        except BaseException:
+            # PG 的语句错误会让整个事务进入 aborted 状态:不在此收口,后续
+            # 所有语句都会以 InFailedSqlTransaction 失败,直到有人回滚 ——
+            # 而共享连接上"有人"就是另一个无关的请求。
+            await self._op_abort()
+            raise
 
     async def executemany(self, sql: str, seq_of_params: list[tuple]) -> None:
         await self._connect()
         sql = _translate_placeholders(_normalize_ddl(sql))
-        cur = self._conn.cursor()
-        await cur.executemany(sql, seq_of_params)
-        await self._conn.commit()
+        await self._op_begin()
+        try:
+            cur = self._conn.cursor()
+            await cur.executemany(sql, seq_of_params)
+            await self._conn.commit()
+        except BaseException:
+            await self._op_abort()
+            raise
+        finally:
+            await self._op_end()
 
     async def executescript(self, script: str) -> None:
         """多语句脚本(DDL)。psycopg 单次 execute 可跑多语句(非参数化)。"""
@@ -245,16 +261,40 @@ class PostgresBackend(StorageBackend):
         script = _normalize_ddl(script)
         # 去掉只含分号/空白的尾部(避免空语句报错)
         cleaned = _strip_trailing_semicolons(script)
-        if cleaned.strip():
-            await self._conn.execute(cleaned)
-        await self._conn.commit()
+        await self._op_begin()
+        try:
+            if cleaned.strip():
+                await self._conn.execute(cleaned)
+            await self._conn.commit()
+        except BaseException:
+            await self._op_abort()
+            raise
+        finally:
+            await self._op_end()
+
+    async def rollback_pending(self) -> None:
+        """回滚未提交写入。transaction_status 是本地状态(由上一次命令结果更新),
+        判断本身不产生往返;仅在事务确实打开时才发 ROLLBACK。"""
+        from psycopg.pq import TransactionStatus
+
+        if (
+            self._conn is not None
+            and not self._conn.closed
+            and self._conn.info.transaction_status != TransactionStatus.IDLE
+        ):
+            await self._conn.rollback()
 
     async def commit(self) -> None:
         if self._conn is not None:
             await self._conn.commit()
+        await self._op_end()
 
     async def close(self) -> None:
-        """无操作:保留缓存连接(store 每操作调用,避免断连)。"""
+        """结束操作作用域(未提交 → 回滚),不关闭连接。"""
+        if not self._owns_op():
+            return
+        await self.rollback_pending()
+        await self._op_end()
 
     async def dispose(self) -> None:
         if self._conn is not None and not self._conn.closed:

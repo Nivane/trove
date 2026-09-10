@@ -191,6 +191,84 @@ def test_model_none_when_disabled(tmp_path):
     assert p.model() is None
 
 
+# ── model() 必须只暴露通过校验的 metric ──────────────────────
+#
+# _validate 会丢弃「括号不配平 / SQLGlot 解析失败 / 引用未声明数据集」的
+# metric;metrics() 返回校验后的表,model() 却曾返回未校验的 _parsed。于是
+# 编译器拿 model() 对着 provider 自己都丢弃的条目做匹配,把坏表达式内联进
+# 权威 SQL。model() 的 docstring 本就声明与 metrics() 同一缓存路径。
+
+def test_model_metrics_exclude_dropped(semantic_dir, caplog):
+    """括号不配平的 metric 被丢弃后,model() 也不得暴露它。"""
+    _write(semantic_dir, SAMPLE.replace("SUM(loan.amount)", "SUM((", 1))
+    p = SemanticLayerProvider(semantic_dir, "financial")
+
+    with caplog.at_level("WARNING"):
+        assert [m.name for m in p.metrics()] == ["avg_loan_per_account"]
+    assert [m.name for m in p.model().metrics] == ["avg_loan_per_account"], (
+        "model() 暴露了 _validate 已丢弃的 metric —— 编译器会拿它匹配并内联"
+    )
+
+
+def test_model_metrics_exclude_unknown_dataset(semantic_dir):
+    """引用未声明数据集的 metric 同样不得出现在 model() 里。"""
+    _write(semantic_dir, TWO_DATASET_METRICS)
+    p = SemanticLayerProvider(
+        semantic_dir, "financial", table_exists=lambda t: t == "account")
+
+    assert [m.name for m in p.metrics()] == ["metric_on_account"]
+    assert [m.name for m in p.model().metrics] == ["metric_on_account"]
+
+
+def test_compiler_cannot_match_dropped_metric(semantic_dir, caplog):
+    """端到端:编译器拿到 model() 后不得再匹配到已丢弃的 metric。
+
+    修复前 result.sql 会把坏表达式 ``SUM((`` 内联进权威编译产物。
+    """
+    from trove.services.semantic_layer.compiler import (
+        CompileMiss, CompileResult, SemanticCompiler,
+    )
+
+    _write(semantic_dir, SAMPLE.replace("SUM(loan.amount)", "SUM((", 1))
+    p = SemanticLayerProvider(semantic_dir, "financial")
+    plan = {"tables": ["loan"], "aggregation": "total_loan_amount",
+            "answer_columns": ["total_loan_amount"]}
+
+    with caplog.at_level("WARNING"):
+        result = SemanticCompiler(p.model()).compile_detailed(plan, ["loan"])
+    assert isinstance(result, CompileMiss), (
+        f"已丢弃的 metric 仍被编译: {getattr(result, 'sql', result)}"
+    )
+    assert result.reason == "no_metric_match"
+
+
+def test_compiler_still_matches_valid_metric(semantic_dir):
+    """防过度拒绝:通过校验的 metric 照常可编译。"""
+    from trove.services.semantic_layer.compiler import (
+        CompileMiss, SemanticCompiler,
+    )
+
+    _write(semantic_dir, SAMPLE)
+    p = SemanticLayerProvider(semantic_dir, "financial")
+    plan = {"tables": ["loan"], "aggregation": "total_loan_amount",
+            "answer_columns": ["total_loan_amount"]}
+
+    result = SemanticCompiler(p.model()).compile_detailed(plan, ["loan"])
+    assert not isinstance(result, CompileMiss), result
+    assert "SUM(loan.amount)" in result.sql
+
+
+def test_model_view_is_cached_and_keeps_model_level_fields(semantic_dir):
+    """校验视图是缓存的同一对象,且模型级字段(instructions 等)不被丢掉。"""
+    _write(semantic_dir, SAMPLE)
+    p = SemanticLayerProvider(semantic_dir, "financial")
+
+    first = p.model()
+    assert first is p.model(), "每次调用都应返回缓存的同一视图,不重建"
+    assert [d.name for d in first.datasets] == ["loan", "account"]
+    assert first.instructions == "Use this model for banking and loan analysis"
+
+
 # ── 单一真源:KB semantics.yml 合并(P4)──────────────────────
 
 KB_MODEL = """

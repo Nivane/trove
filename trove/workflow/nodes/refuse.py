@@ -264,8 +264,8 @@ async def _mechanical_metric_ok(
     通过 → 返回 ``dataset 名``(可直接自动确认);否则返回 ""。
     验证门 = 编译通过 + 表可达 + _agg_signature 兼容 + 真实执行(shape 规则):
 
-      1. 表达式是单个机械聚合(count/sum/avg),值无关(无 FILTER/WHERE/
-         子查询把过滤值写死进指标);
+      1. 表达式是**单个**机械聚合(count/sum/avg)——多聚合算式不算——且值无关
+         (无 FILTER/WHERE/子查询把过滤值写死进指标);
       2. 单数据集、已声明、物理表存在(表可达),引用列在物理表中存在;
       3. 把草稿指标临时并入模型副本,走权威编译器 compile_detailed
          + guardrail(编译通过、投影表守卫、签名兼容)——编译器 MISS 即拒;
@@ -291,8 +291,11 @@ async def _mechanical_metric_ok(
     from trove.services.semantic_layer.models import SemanticMetric, SemanticModel
 
     # 1) 机械聚合 + 值无关
+    # 签名是「全量聚合」元组(见 compiler._agg_signature):单聚合才是机械性的
+    # 必要条件——SUM(a)/COUNT(b) 这类算式不是值无关的机械聚合,自动确认会放过
+    # 一个语义未经人审的派生度量。
     sig = _agg_signature(expr)
-    if sig is None or sig[0] not in _MECHANICAL_AGGS:
+    if sig is None or len(sig) != 1 or sig[0][0] not in _MECHANICAL_AGGS:
         return ""
     try:
         tree = parse_one(expr, error_level=ErrorLevel.RAISE)
@@ -320,7 +323,7 @@ async def _mechanical_metric_ok(
     if tbl is None or (tbl.row_count_estimate or 0) > _AUTO_EXEC_MAX_ROWS:
         return ""
     phys_cols = {c.name.lower() for c in tbl.columns}
-    sig_cols = {c.rsplit(".", 1)[-1].lower() for c in sig[1]}
+    sig_cols = {c.rsplit(".", 1)[-1].lower() for c in sig[0][1]}
     if sig_cols - phys_cols:
         return ""  # 引用列不在物理表 → 表不可达/列不存在
 
@@ -366,7 +369,7 @@ async def _mechanical_metric_ok(
     if not res.columns or not res.rows:
         return ""
     reason, _hits = verify(
-        "what is the " + sig[0] + "?",
+        "what is the " + sig[0][0] + "?",
         result.sql, res.columns, res.rows, len(res.rows), lang="en")
     if reason:
         return ""

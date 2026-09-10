@@ -196,6 +196,55 @@ class JoinResolver:
                 ))
         return edges
 
+    # ── Cardinality guard ──────────────────────────────────
+
+    def _classify_edges(
+        self, edges: list[JoinEdge],
+    ) -> tuple[bool, bool, list[JoinEdge]]:
+        """逐边判基数:→ (fan_out, unknown_cardinality, dedup_edges)。
+
+        fan_out / unknown_cardinality 是边的**物理性质**(行倍增;many→one 无
+        从判定),与「谁选的这条路径」无关:BFS 树和 ``plan.joins`` 显式树都
+        必须过这一关。只在 BFS 分支做检查曾让 LLM 自己吐出 joins 即可绕过
+        行倍增守卫,静默产出错数 SQL。
+        """
+        fan_out = False
+        unknown_card = False
+        dedup_edges: list[JoinEdge] = []
+        for edge in edges:
+            if _is_many_to_many(edge.cardinality):
+                # P5.2:多对多经此边联(在联路径上)→ 除非建模师显式豁免:
+                # dedup = 编译期把 from 侧包 SELECT DISTINCT * 子查询消除行倍增;
+                # bridge 保留未实现 → 仍拒。否则编译期拒 fan-out。
+                if edge.fan_out == "dedup":
+                    dedup_edges.append(edge)
+                else:
+                    fan_out = True  # 含 bridge:<dataset>(豁免未实现 → 保守拒)
+            elif not (edge.cardinality or "").strip():
+                # 边在联路径上但基数未声明 → many→one 无从判定,保守 MISS
+                # (宁可交 LLM,不赌安全)——除非 to 侧构成声明唯一键:
+                # unique_keys/primary_key 推断成立时 many→one 确定,放行。
+                key = (
+                    edge.from_.lower(), edge.from_column.lower(),
+                    edge.to.lower(), edge.to_column.lower(),
+                )
+                if key not in self._unique_backed:
+                    unknown_card = True
+        return fan_out, unknown_card, dedup_edges
+
+    def guard_edge_cardinality(self, edges: list[JoinEdge]) -> str | None:
+        """对一批**已选定**的联表边跑基数守卫 → 首个拒绝原因,放行则 None。
+
+        与 ``resolve()`` 内部同源,供 ``plan.joins`` 显式路径复用:显式路径只
+        替代「路径怎么选」,不豁免边本身的基数约束。
+        """
+        fan_out, unknown_card, _ = self._classify_edges(edges)
+        if fan_out:
+            return "fan_out"
+        if unknown_card:
+            return "unknown_cardinality"
+        return None
+
     # ── Resolution ─────────────────────────────────────────
 
     def resolve(
@@ -292,33 +341,11 @@ class JoinResolver:
             return memo[node]
 
         tree: list[JoinEdge] = []
-        fan_out = False
-        unknown_card = False
-        dedup_edges: list[JoinEdge] = []
         for child, (parent, edge) in parent_edge.items():
             if not leads_to_needed(child):
                 continue
             tree.append(edge)
-            if _is_many_to_many(edge.cardinality):
-                # P5.2:多对多经此边联(在 needed 路径上)→ 除非建模师显式豁免:
-                # dedup = 编译期把 from 侧包 SELECT DISTINCT * 子查询消除行倍增;
-                # bridge 保留未实现 → 仍拒。否则编译期拒 fan-out。
-                if edge.fan_out == "dedup":
-                    dedup_edges.append(edge)
-                elif edge.fan_out.startswith("bridge:"):
-                    fan_out = True  # bridge 豁免未实现 → 保守拒绝
-                else:
-                    fan_out = True
-            elif not (edge.cardinality or "").strip():
-                # 边在联路径上但基数未声明 → many→one 无从判定,保守 MISS
-                # (宁可交 LLM,不赌安全)——除非 to 侧构成声明唯一键:
-                # unique_keys/primary_key 推断成立时 many→one 确定,放行。
-                key = (
-                    edge.from_.lower(), edge.from_column.lower(),
-                    edge.to.lower(), edge.to_column.lower(),
-                )
-                if key not in self._unique_backed:
-                    unknown_card = True
+        fan_out, unknown_card, dedup_edges = self._classify_edges(tree)
 
         # P2 路径二义性:相关子图里 root→任一 needed 表存在 >1 条简单路径。
         # BFS 先到先得选边不可审计(图有环/双路由时可能选到语义错误路径),
@@ -855,8 +882,20 @@ def _normalize_enum_value(
     return _enum_code_for(_strip_quotes(s), enum_display, value_aliases)
 
 
-def _agg_signature(expr_text: str) -> tuple[str, frozenset[str]] | None:
-    """聚合表达式 → (函数名, 全限定列引用集合) 签名,用于 metric 对账。
+# 聚合签名 = 表达式里**全部**聚合函数的有序 (函数名, 全限定列集, DISTINCT)。
+_AggSig = tuple[tuple[str, frozenset[str], bool], ...]
+
+
+def _agg_signature(expr_text: str) -> _AggSig | None:
+    """聚合表达式 → 全量聚合签名,用于 metric 对账。无聚合 → None。
+
+    曾只取 ``funcs[0]`` 并把列集按**交集**比对,三条静默错数通道:
+
+    - ``SUM(a)/COUNT(*)`` 只看到首函数 ``SUM(a)`` → 比值题命中声明的
+      ``SUM(a)``,plan 整式被丢弃、换成被声明度量的表达式,编译成功而 SQL
+      只算了分子(丢其余聚合 = 丢算式本身);
+    - ``COUNT(DISTINCT x)`` 与 ``COUNT(x)`` 同签名 → 去重计数被普通计数顶替;
+    - ``SUM(a + b)`` 与 ``SUM(a)`` 列集相交 → 两个不同度量判为同一个。
 
     列引用带表前缀(``loan.amount``):只按裸列名匹配会把 trans.amount
     误认成 loan.amount。空列集(COUNT(*))是通配(见 _sig_compatible)。
@@ -870,23 +909,36 @@ def _agg_signature(expr_text: str) -> tuple[str, frozenset[str]] | None:
     funcs = list(tree.find_all(exp.AggFunc))
     if not funcs:
         return None
-    f = funcs[0]
-    name = f.sql().split("(", 1)[0].strip().lower()
-    cols = frozenset(
-        (f"{c.table}.{c.name}" if c.table else c.name).lower()
-        for c in f.find_all(exp.Column) if c.name
-    )
-    return name, cols
+    out: list[tuple[str, frozenset[str], bool]] = []
+    for f in funcs:
+        out.append((
+            f.sql().split("(", 1)[0].strip().lower(),
+            frozenset(
+                (f"{c.table}.{c.name}" if c.table else c.name).lower()
+                for c in f.find_all(exp.Column) if c.name
+            ),
+            bool(f.find(exp.Distinct)),
+        ))
+    return tuple(out)
 
 
-def _sig_compatible(a: tuple[str, frozenset[str]], b: tuple[str, frozenset[str]]) -> bool:
-    """函数名相同;列集一侧为空(COUNT(*) 通配)即视为兼容。"""
-    if a[0] != b[0]:
+def _sig_compatible(a: _AggSig, b: _AggSig) -> bool:
+    """逐聚合函数比对:个数、函数名、DISTINCT、列集全等(一侧空集即通配)。
+
+    列集用**相等**而非相交:``SUM(a + b)`` 与 ``SUM(a)`` 相交但不等,是不同
+    度量。``COUNT(*)`` 的空列集是唯一有意的放宽——行数度量与 ``COUNT(col)``
+    互认,是既有设计。
+    """
+    if len(a) != len(b):
         return False
-    acols, bcols = a[1], b[1]
-    if not acols or not bcols:
-        return True
-    return bool(acols & bcols)
+    for (a_name, a_cols, a_dist), (b_name, b_cols, b_dist) in zip(a, b):
+        if a_name != b_name or a_dist != b_dist:
+            return False
+        if not a_cols or not b_cols:
+            continue  # COUNT(*) 通配
+        if a_cols != b_cols:
+            return False
+    return True
 
 
 class SemanticCompiler:
@@ -1499,6 +1551,7 @@ class SemanticCompiler:
         # 每条 join 必须是已声明 relationship(路径选择而非造边);非空但未
         # 声明/不成左深树 → 严格 MISS,不静默忽略后 BFS 改道。
         explicit, joins_present = _explicit_join_edges(plan.get("joins"), self._model)
+        resolver = JoinResolver(self._model)
         if joins_present:
             if explicit is None:
                 return CompileMiss(
@@ -1511,13 +1564,19 @@ class SemanticCompiler:
             if tree is None:
                 return CompileMiss(
                     "ambiguous_join_path", "explicit joins not a connected tree")
+            # 基数守卫与 BFS 分支同源:显式路径只替代「路径怎么选」,不豁免边的
+            # 物理性质(M:N 行倍增 / many→one 无从判定)。否则 LLM 自己吐 joins
+            # 即可绕过行倍增守卫、静默编译出重复计数 SQL。
+            cardinality_miss = resolver.guard_edge_cardinality(tree)
+            if cardinality_miss is not None:
+                return CompileMiss(cardinality_miss, ", ".join(matched))
             joins = tree
         else:
             # 查询实际需要的表 = 组件引用的表(非 query_sketch 全集):决定联表树
             # 保留与歧义作用域,避免误列的共享维度(district)触发虚假二义
             # 或被多余联入。
             needed = self._plan_needed_tables(plan, matched_pairs, matched_set)
-            resolution = JoinResolver(self._model).resolve(
+            resolution = resolver.resolve(
                 list(join_tables), root=anchor, needed=needed)
             if resolution.fan_out:
                 # P5.2:M:N 边在联路径上 → 编译期拒(行倍增),严格 MISS 回 LLM

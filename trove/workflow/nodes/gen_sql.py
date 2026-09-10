@@ -983,14 +983,24 @@ def lint_tool_descriptions(tools: list[dict[str, Any]]) -> list[str]:
             problems.append(f"{name}: description too long ({len(desc)} > {DESC_MAX_CHARS})")
     return problems
 
-# 工具结果 memoization:同一数据源同一 SQL 的 probe/check 结果在修正轮间共享。
-# cache 由调用方(graphs.py 的 gen_sql 节点闭包)持有 → 跨修正轮复用;
-# None = 不缓存(单发/测试直调保持每次真实执行)。带 TTL 防止跨问题陈旧。
+# 工具结果 memoization:同一数据源同一 SQL 的 probe/check 结果在**同一次运行
+# 的修正轮间**共享。cache 由调用方(graphs.py 的 gen_sql 节点闭包)持有,但图
+# 在启动时只编译一次 → 该 dict 是进程级的,只有把 run_id 放进键才能收束到
+# 「一次运行」。None = 不缓存(单发/测试直调保持每次真实执行)。带 TTL 兜底。
 PROBE_CACHE_TTL_S = 60.0
 
 
-def _cache_key(datasource: str, sql: str, kind: str, limit: int) -> tuple[str, str, str, int]:
-    return (datasource or "", sql or "", kind, limit)
+def _cache_key(
+    datasource: str, sql: str, kind: str, limit: int, run_id: str,
+) -> tuple[str, str, str, int, str]:
+    """缓存键 = (数据源, SQL, 工具, 取数上限, **运行**)。
+
+    run_id 是作用域而非标识:同一运行的多轮修正必须命中同一条目(否则缓存
+    失去意义),不同运行必须互不可见。缺了它,一次运行会把上一次运行的观测
+    (最多 TTL 陈旧)当成事实喂给模型——数据已变时模型据此改 SQL、判"0 行 =
+    过滤值不存在",而真正的执行在 execute_sql(新鲜),两者背离无法解释。
+    """
+    return (datasource or "", sql or "", kind, limit, run_id or "")
 
 
 def _cache_get(probe_cache: dict | None, key) -> str | None:
@@ -1028,6 +1038,7 @@ def build_sql_registry(
     complexity: str = "complex",
     roles: list[str] | None = None,
     user_id: str = "",
+    run_id: str = "",
     probe_cache: dict | None = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
@@ -1056,7 +1067,11 @@ def build_sql_registry(
             三件套懒激活)。省去大量 schema token 与工具注意力开销。
         roles: 用户角色列表(ToolSpec ACL 过滤;None = 不启用角色过滤)。
         user_id: 审计字段(查询归因到人)。
-        probe_cache: 跨修正轮共享的 probe/check 结果缓存 dict;None = 不缓存。
+        run_id: 本次运行的 uuid(SessionManager 生成)→ probe_cache 的作用域。
+            同一运行的多轮修正同键复用;不同运行互不可见。为空则退化为
+            「整个进程一个作用域」(仅测试直调,生产路径恒有值)。
+        probe_cache: 同一运行内跨修正轮共享的 probe/check 结果缓存 dict;
+            None = 不缓存。
     """
     from trove.llm.agent_loop import ToolRegistry
 
@@ -1142,7 +1157,7 @@ def build_sql_registry(
     async def probe_tool(arguments: dict) -> str:
         # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
         sql_text = arguments.get("sql", "")
-        key = _cache_key(datasource, sql_text, "probe", PROBE_LIMIT)
+        key = _cache_key(datasource, sql_text, "probe", PROBE_LIMIT, run_id)
         cached = _cache_get(probe_cache, key)
         if cached is not None:
             await _audit("probe", sql_text, "(cache hit) " + cached[:200])
@@ -1159,7 +1174,7 @@ def build_sql_registry(
     async def check_tool(arguments: dict) -> str:
         # 确定性规则校验:probe 之后、定稿之前,把"判断"变成硬规则
         sql_text = arguments.get("sql", "")
-        key = _cache_key(datasource, sql_text, "check", CHECK_RESULT_LIMIT)
+        key = _cache_key(datasource, sql_text, "check", CHECK_RESULT_LIMIT, run_id)
         cached = _cache_get(probe_cache, key)
         if cached is not None:
             # 命中缓存 → 跳过重执行与规则校验(hits 已归因过),只回文本

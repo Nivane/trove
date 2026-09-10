@@ -191,6 +191,19 @@ class PgHybridStore(HybridStore):
         finally:
             await conn.close()
 
+    async def delete_kind(self, datasource: str, kind: str) -> None:
+        await self._ensure()
+        conn = await self._connect()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"DELETE FROM {_SCHEMA_NS}.documents "
+                    "WHERE datasource = %s AND kind = %s",
+                    (datasource, kind))
+            await conn.commit()
+        finally:
+            await conn.close()
+
     async def clear(self, datasource: str) -> None:
         await self._ensure()
         conn = await self._connect()

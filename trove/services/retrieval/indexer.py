@@ -31,6 +31,31 @@ logger = get_logger(__name__)
 _SCHEMA_SOURCE_PREFIX = "schema:"
 
 
+def kb_item_text(kind: str, payload: dict) -> str:
+    """KB 条目 → 可检索文本(空串 = 该条目不入检索库)。
+
+    **单一实现**:全量索引(``Indexer.index_kb``)与增量写入
+    (``PgHybridKbBackend.index_file``)都走这里。两处各写一份的话,同一个
+    条目按 CLI 索引和按 KB 写入落库的文本会不同 —— 检索质量随"谁最后写的"
+    漂移,且无法复现。
+    """
+    if kind in ("example", "template", "lesson", "metric", "entity"):
+        return fts_item_text(kind, payload)
+    # term/table/rule: compact readable text for dense + FTS recall
+    if kind == "term":
+        bits = [payload.get("term"), *payload.get("aliases", [])]
+        if payload.get("definition"):
+            bits.append(payload["definition"])
+        if payload.get("mapping"):
+            bits.append(f"maps to {payload['mapping']}")
+        return " ".join(str(b) for b in bits if b)
+    if kind == "table":
+        return fts_item_text("table", payload) or json.dumps(payload, ensure_ascii=False)
+    if kind == "rule":
+        return str(payload.get("rule") or payload.get("text") or "")
+    return ""
+
+
 def _schema_snapshot(schema: Any) -> dict:
     """Stable JSON snapshot of physical schema for change detection."""
     out: dict = {}
@@ -77,7 +102,10 @@ class Indexer:
 
     async def index_kb(self, datasource: str, rebuild: bool = False) -> int:
         if rebuild:
-            await self._store.delete_source(datasource, "kb")
+            # 按 kind 清,不是 delete_source(datasource, "kb"):KB 文档落库时
+            # source_file 是 YAML 文件名,"kb" 谁都匹配不上 —— 删除空转,旧
+            # 文档原地留下,rebuild 也就永远修不好(见 test_indexer_rebuild)。
+            await self._store.delete_kind(datasource, "kb")
         items = await self._kb.iter_items(datasource)
         docs: list[RetrievalDoc] = []
         for it in items:
@@ -93,23 +121,7 @@ class Indexer:
         return len(docs)
 
     def _kb_text(self, item: dict) -> str:
-        kind = item["kind"]
-        payload = item["payload"]
-        if kind in ("example", "template", "lesson", "metric", "entity"):
-            return fts_item_text(kind, payload)
-        # term/table/rule: compact readable text for dense + FTS recall
-        if kind == "term":
-            bits = [payload.get("term"), *payload.get("aliases", [])]
-            if payload.get("definition"):
-                bits.append(payload["definition"])
-            if payload.get("mapping"):
-                bits.append(f"maps to {payload['mapping']}")
-            return " ".join(str(b) for b in bits if b)
-        if kind == "table":
-            return fts_item_text("table", payload) or json.dumps(payload, ensure_ascii=False)
-        if kind == "rule":
-            return str(payload.get("rule") or payload.get("text") or "")
-        return ""
+        return kb_item_text(item["kind"], item["payload"])
 
     async def index_schema(self, datasource: str, rebuild: bool = False) -> int:
         try:

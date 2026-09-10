@@ -74,8 +74,21 @@ class ConnectorRegistry:
     repeatedly run the same SELECT within and across questions (drafts,
     verification, follow-ups). execute() keeps a bounded short-TTL cache
     keyed on (datasource, normalized SQL) so identical reads skip the
-    database. Writes never enter the cache (execute_unsafe bypasses it),
-    so cached entries only ever mirror immutable query results.
+    database. Writes never enter the cache (execute_unsafe bypasses it).
+
+    The cache is a **freshness trade-off, not a correctness guarantee**:
+    a hit means "this exact SELECT ran against this datasource less than
+    ``result_cache_ttl_s`` ago" — it does not mean the rows are current.
+    Any other writer (another process, an ETL job, the user's own app)
+    can change the data inside that window, and Trove's own writes
+    bypassing the cache does not make the data immutable.
+
+    What the cache *does* guarantee is identity: a datasource whose
+    meaning changed is a different cache. Registration and removal both
+    drop that name's entries, so repointing a datasource at another
+    database (admin edits the URL and re-registers under the same name —
+    same ``ds_id`` by design, different physical data) never serves the
+    old database's rows.
     """
 
     def __init__(
@@ -127,6 +140,10 @@ class ConnectorRegistry:
         config = self._ensure_identity(config)
         adapter = await self.prepare(config)
         prev = self._adapters.get(config.name)
+        # 名字是缓存键的一部分,而注册可以**换掉名字背后的库**(管理端改 URL
+        # 重注册 —— ds_id 不变,因为那按设计是"同一个数据源换地址")。旧库的
+        # 行必须在这里失效,否则 TTL 内 execute_sql 会拿旧库的结果当答案。
+        self._invalidate_result_cache(config.name)
         try:
             self._activate(config, adapter, set_default)
         except BaseException:
@@ -238,6 +255,7 @@ class ConnectorRegistry:
         adapter = self._adapters.pop(name)
         self._ds_ids.pop(name, None)
         self._datasource_info.pop(name, None)
+        self._invalidate_result_cache(name)
         await adapter.disconnect()
 
         if self._default_name == name:
@@ -336,6 +354,16 @@ class ConnectorRegistry:
                 self._result_cache, key=lambda k: self._result_cache[k][0],
             )
             self._result_cache.pop(oldest, None)
+
+    def _invalidate_result_cache(self, name: str) -> None:
+        """丢弃某数据源的全部结果缓存条目(注册/注销时调用)。
+
+        键的第一段就是数据源名,所以按名过滤即可;命中数统计不清零(它是
+        进程级健康指标,不是"当前条目"的一部分)。
+        """
+        stale = [k for k in self._result_cache if k[0] == name]
+        for k in stale:
+            self._result_cache.pop(k, None)
 
     def result_cache_stats(self) -> dict[str, int]:
         """缓存命中统计(诊断/测试):当前条目数 + 累计命中数。"""

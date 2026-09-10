@@ -228,6 +228,19 @@ class TestHITLNormalize:
     def test_maps_decision(self, decision, expected):
         assert _normalize(decision) == expected
 
+    @pytest.mark.parametrize("decision", [
+        {}, None, "", "   ", "maybe", "yess", 0, 1, 2, 3.5, [], ["yes"],
+        {"foo": "bar"}, {"decision": None}, {"decision": "maybe"},
+        {"decision": {}}, {"approve": None},
+    ])
+    def test_unrecognized_payload_is_not_approval(self, decision):
+        """未识别载荷不得判为批准 —— HITL 是执行前的安全门。
+
+        此前所有未识别载荷({}、null、未知字符串、数字)都落到 approved,
+        任何畸形 resume 请求都能静默穿过人工确认门执行 SQL。
+        """
+        assert _normalize(decision) == "unrecognized"
+
 
 class TestGraphHITLFlow:
     """端到端:reflection 图 + HITL 中断 → resume 批准 → 执行 → 洞察。"""
@@ -327,6 +340,39 @@ class TestGraphHITLFlow:
         assert final["row_count"] == -1  # 未执行
         assert "取消" in final["intent_answer"]
         assert "取消" in final["final_response"]
+
+    async def test_resume_unrecognized_payload_does_not_execute(
+        self, sqlite_registry, enabled_config,
+    ):
+        """畸形 resume 载荷 → 不执行 SQL,且如实说明「未获确认」。
+
+        脚本只给 3 条 LLM 响应(route/gen_sql/semantics):一旦真的执行下去,
+        后续 reflect/insights 会取空响应而炸——所以「跑完且 row_count==-1」
+        本身就是「没有执行」的证据。
+        """
+        llm = RecordingLLM([
+            "query",
+            "```sql\nSELECT name FROM students;\n```",
+            "这条 SQL 查询所有学生姓名",
+        ])
+        graph = build_graphs(
+            GraphServices(
+                llm=llm, connectors=sqlite_registry,semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
+                config=enabled_config,
+            ),
+            checkpointer=InMemorySaver(),
+            multi_candidate=False, query_sketch=False, agentic=False,
+        )["reflection"]
+        cfg = {"configurable": {"thread_id": "hitl-bad-payload"}}
+        result = await graph.ainvoke(make_state(session_id="hitl-bad-payload"), cfg)
+        assert "__interrupt__" in result
+
+        final = await graph.ainvoke(Command(resume={"kind": "whatever"}), cfg)
+        assert final["hitl_status"] == "rejected"
+        assert final["row_count"] == -1, "畸形载荷批准了执行"
+        # 如实说明「没识别到确认」,不得谎称「人工否决」——用户并没有否决
+        assert "未识别" in final["intent_answer"]
+        assert "人工否决" not in final["intent_answer"]
 
     async def test_insights_disabled_skips(self, sqlite_registry, enabled_config):
         """insights 关闭 → 洞察节点透传,输出无洞察段。"""

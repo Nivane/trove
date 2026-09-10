@@ -156,6 +156,16 @@ class HybridStore(ABC):
         ...
 
     @abstractmethod
+    async def delete_kind(self, datasource: str, kind: str) -> None:
+        """删除某数据源某一类文档(如全部 ``kb`` 文档)。
+
+        与 ``delete_source`` 的区别是粒度轴:KB 语料的边界是 ``kind`` 而不是
+        文件名 —— 条目可能来自**已不存在**的文件,按现存文件名逐个删,恰好
+        删不掉它们(rebuild 清理失效的根因)。
+        """
+        ...
+
+    @abstractmethod
     async def clear(self, datasource: str) -> None:
         ...
 

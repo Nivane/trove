@@ -147,6 +147,20 @@ class SqliteHybridStore(HybridStore):
             )
             await db.commit()
 
+    async def delete_kind(self, datasource: str, kind: str) -> None:
+        await self._ensure()
+        async with aiosqlite.connect(self._db) as db:
+            await db.execute(
+                "DELETE FROM doc_fts WHERE rowid IN ("
+                "SELECT rowid FROM documents WHERE datasource = ? AND kind = ?)",
+                (datasource, kind),
+            )
+            await db.execute(
+                "DELETE FROM documents WHERE datasource = ? AND kind = ?",
+                (datasource, kind),
+            )
+            await db.commit()
+
     async def clear(self, datasource: str) -> None:
         await self._ensure()
         async with aiosqlite.connect(self._db) as db:
