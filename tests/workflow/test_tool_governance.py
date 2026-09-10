@@ -5,14 +5,16 @@ Item 11 的落地:描述质量是函数调用精度的第一杠杆。本测试�
   2. 黄金路由:给定问题场景,唯一正确的工具能被识别(描述可路由);
   3. ACL:allowed_roles 裁剪 defs/handlers,catalog 工具按角色隐藏;
   4. 自适应工具集:simple/standard/complex 按复杂度挂载不同工具;
-  5. probe/check 结果缓存跨注册表共享。
+  5. probe/check 结果缓存的作用域 = 单次运行(跨修正轮共享,不跨运行)。
 """
 
 import json
 
 import pytest
 
+from trove.core.types import DatasourceConfig
 from trove.llm.agent_loop import ToolRegistry
+from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.nodes.gen_sql import (
     DESC_DONT_MARKER,
     DESC_EXAMPLE_MARKER,
@@ -215,25 +217,103 @@ class TestComplexityTiers:
         ]
 
 
+_COUNT_SQL = "SELECT COUNT(*) AS n FROM students"
+
+
+@pytest.fixture
+async def uncached_registry():
+    """与 sqlite_registry 同构,但**关闭 registry 层结果缓存**。
+
+    probe_cache(gen_sql)与 ConnectorRegistry._result_cache 是两层独立缓存,
+    TTL 同为 60s。本类只考察上层作用域,必须关掉下层:否则「重新执行」拿到的
+    仍是下层的旧行,观测不到任何差异(这正是实现本修复时踩到的坑)。
+    """
+    registry = ConnectorRegistry(result_cache_ttl_s=0)
+    config = DatasourceConfig(
+        name="test_db", type="sqlite",
+        connection_params={"path": ":memory:"}, default=True,
+    )
+    adapter = await registry.register(config, set_default=True)
+    await adapter.execute(
+        "CREATE TABLE students (id INTEGER PRIMARY KEY, name TEXT, "
+        "grade INTEGER, county TEXT)")
+    await adapter.execute(
+        "INSERT INTO students (name, grade, county) VALUES "
+        "('Alice', 95, 'Alameda'), ('Bob', 88, 'Alameda'), "
+        "('Carol', 92, 'Orange'), ('Dave', 75, 'Orange'), ('Eve', 99, 'Los Angeles')")
+    yield registry
+    await registry.unregister("test_db")
+
+
+async def _add_frank(registry) -> None:
+    """真实写入一行 → 把「命中旧缓存」与「重新执行」区分开。"""
+    adapter = await registry.get()
+    await adapter.execute(
+        "INSERT INTO students (name, grade, county) VALUES ('Frank', 81, 'Orange')")
+
+
 class TestProbeMemoization:
-    async def test_probe_result_cached_across_registries(self, sqlite_registry):
-        """同一数据源同一 SQL 的 probe 结果跨注册表共享(修正轮间不重执行)。"""
+    """probe/check 结果 memoization:作用域 = **单次运行**(跨修正轮),不是全进程。
+
+    缓存 dict 由 gen_sql 节点闭包持有,而图在启动时只编译一次 → 该 dict 是
+    进程级的。因此 run_id 必须进缓存键:run_id 每次运行一个 uuid
+    (:class:`SessionManager` 生成),于是「跨修正轮复用」的原本设计意图不变
+    (同一 run 的所有轮次同键),而跨运行 / 跨会话 / 跨用户的复用被消除。
+    """
+
+    async def test_probe_result_shared_across_correction_rounds(
+        self, uncached_registry,
+    ):
+        """同一次运行的多轮修正共享同一观测(不重执行)—— 缓存的原本理由。"""
         cache: dict = {}
         r1 = build_sql_registry(
-            sqlite_registry, "How many students?", "en", "sqlite",
-            probe_cache=cache,
+            uncached_registry, "How many students?", "en", "sqlite",
+            probe_cache=cache, run_id="run-1",
         )
+        first = await r1.handlers()["probe_query"]({"sql": _COUNT_SQL})
+        assert json.loads(first)["rows"] == [["5"]]
+
+        await _add_frank(uncached_registry)
+
         r2 = build_sql_registry(
-            sqlite_registry, "How many students?", "en", "sqlite",
-            probe_cache=cache,
+            uncached_registry, "How many students?", "en", "sqlite",
+            probe_cache=cache, run_id="run-1",
         )
-        h1 = r1.handlers()["probe_query"]
-        h2 = r2.handlers()["probe_query"]
-        sql = "SELECT name FROM students"
-        first = await h1({"sql": sql})
-        second = await h2({"sql": sql})
-        assert second == first
-        # 缓存以 (datasource, sql, kind, limit) 为键,第二次注册表命中同一条目。
-        # build_sql_registry 默认 datasource=""(与调用处一致)。
-        assert (_cache_key("", sql, "probe", 10)) in cache
-        assert cache[(_cache_key("", sql, "probe", 10))][1] == first
+        second = await r2.handlers()["probe_query"]({"sql": _COUNT_SQL})
+        assert second == first  # 命中缓存 → 与首轮逐字一致(陈旧但不跨运行)
+        assert (_cache_key("", _COUNT_SQL, "probe", 10, "run-1")) in cache
+
+    async def test_probe_result_not_reused_across_runs(self, uncached_registry):
+        """不同运行 → 不复用:重新执行,观测到变更后的真实数据。
+
+        缓存的作用域是「同一次运行的多轮修正」,不是全进程。进程级共享会把
+        上一次运行的观测喂给下一次运行——数据已变时,模型会基于不存在的行数
+        / 值做生成决策(定 SQL、判"0 行 = 过滤值写错了"),而真正的执行在
+        execute_sql(新鲜):观测与事实背离无法解释。
+        """
+        cache: dict = {}
+        r1 = build_sql_registry(
+            uncached_registry, "How many students?", "en", "sqlite",
+            probe_cache=cache, run_id="run-1",
+        )
+        first = json.loads(await r1.handlers()["probe_query"]({"sql": _COUNT_SQL}))
+        assert first["rows"] == [["5"]]
+
+        await _add_frank(uncached_registry)
+
+        r2 = build_sql_registry(
+            uncached_registry, "How many students?", "en", "sqlite",
+            probe_cache=cache, run_id="run-2",
+        )
+        second = json.loads(await r2.handlers()["probe_query"]({"sql": _COUNT_SQL}))
+        assert second["rows"] == [["6"]]  # 重新执行 → 看到新行
+
+    async def test_cache_key_carries_run_scope(self):
+        """缓存键含运行维度(隔离的最小机制)。"""
+        assert _cache_key("", _COUNT_SQL, "probe", 10, "run-1") != _cache_key(
+            "", _COUNT_SQL, "probe", 10, "run-2")
+        assert _cache_key("", _COUNT_SQL, "probe", 10, "run-1") == _cache_key(
+            "", _COUNT_SQL, "probe", 10, "run-1")
+        # kind 仍参与去重:probe 与 check 取数上限不同,不可互相顶替
+        assert _cache_key("", _COUNT_SQL, "probe", 10, "run-1") != _cache_key(
+            "", _COUNT_SQL, "check", 50, "run-1")

@@ -245,6 +245,7 @@ async def _run_candidate_subagent(
         complexity=state.complexity,
         roles=state.tool_roles or None,
         user_id=state.user_id,
+        run_id=state.run_id,  # 与主 agent 同一作用域:同运行的观测可互相复用
         probe_cache=probe_cache,
     )
     prompt = build_sql_prompt_from_state(rotated)
@@ -831,7 +832,9 @@ def _make_gen_sql_node(
             # 任务自适应工具集(complexity 分档):standard → validate+probe+
             # check;complex → 全量含 catalog(search/lookup/explain)。角色
             # ACL 按 state.tool_roles 裁剪;probe_cache 在节点闭包持有 →
-            # 修正轮间共享同一 SQL 的 probe/check 结果(防重复执行)。
+            # 本运行的修正轮间共享同一 SQL 的 probe/check 结果(防重复执行)。
+            # run_id 传入 = 缓存作用域:闭包 dict 是进程级的(图只编译一次),
+            # 键里带 run_id 才不会把上一次运行的观测喂给本次运行。
             registry = build_sql_registry(
                 services.connectors, sub_state.question, sub_state.lang, dialect,
                 matched_tables=state.matched_tables or None,
@@ -839,6 +842,7 @@ def _make_gen_sql_node(
                 complexity=complexity,
                 roles=state.tool_roles or None,
                 user_id=state.user_id,
+                run_id=state.run_id,
                 probe_cache=probe_cache,
             )
 
