@@ -59,11 +59,25 @@ from trove.services.kb.provenance import (
     needs_migration,
     read_meta,
 )
+from trove.storage.migrations import (
+    SQLITE,
+    StorageSchemaTooNew,
+    columns_of,
+    ensure_version_table,
+    read_version,
+    table_exists,
+    write_version,
+)
 
 logger = get_logger(__name__)
 
 KB_DIR_NAME = "kb"
 LEGACY_DIR_NAME = "legacy"
+
+#: 镜像在 `trove_schema` 里的 store 名与结构版本。镜像是**派生物**,所以它
+#: 不需要逐版迁移 —— 它只需要知道"我是哪一版生成的"(见 _ensure_mirror_schema)。
+_MIRROR_STORE = "kb_mirror"
+_MIRROR_VERSION = 1
 
 _CREATE_ITEMS = """CREATE TABLE IF NOT EXISTS kb_items (
     id INTEGER PRIMARY KEY,
@@ -907,40 +921,57 @@ class KbService:
             logger.info("KB migrated %s → %s/", yml.name, target)
 
     async def _ensure_mirror_schema(self, db: aiosqlite.Connection) -> None:
-        """Create mirror tables; rebuild if the schema predates a feature.
+        """建镜像表;版本不符 → 拒绝或重建。**探测只发生在收养那一刻。**
 
-        Rebuild triggers: missing ``datasource`` column (pre-multi-datasource)
-        or missing ``kb_fts`` virtual table (pre-FTS mirrors). Old mirrors that
-        already carry the datasource column but predate kb_fts would otherwise
-        keep a broken write path (INSERT INTO kb_fts → no such table).
+        镜像**是派生物**:它的每一行都能从 YAML 重新算出来,所以版本不符的
+        处置是重建而不是逐版迁移(能重算的东西不需要迁移)。需要精细迁移的
+        是不可重算的东西:会话、用户事实、episodes、审计日志。
 
-        `kb_sync.digest`(C3)则**不重建**:那一列可以就地补。见
+        版本记录到位之后（``_MIRROR_STORE`` 有行)不再探测列 —— 这正是 C4
+        要换掉的东西:"每次打开都 PRAGMA"变成"这个库已经在 vN 了"。
+
+        `kb_sync.digest`(C3)在收养时**不重建**:那一列可以就地补。见
         :meth:`_backfill_sync_digests` —— 重建的代价不是重读 YAML,是重算
         embedding(计费),而升级不该让每个人付一次这笔钱。
         """
-        cursor = await db.execute("PRAGMA table_info(kb_items)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        fts_cursor = await db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_fts'")
-        has_fts = (await fts_cursor.fetchone()) is not None
-        if columns and (("datasource" not in columns) or not has_fts):
+        current = await read_version(db, _MIRROR_STORE, dialect=SQLITE)
+        if current == 0:
+            current = await self._adopt_mirror(db)
+        if current > _MIRROR_VERSION:
+            raise StorageSchemaTooNew(
+                f"KB mirror is at schema v{current} but this build only knows "
+                f"v{_MIRROR_VERSION} — it was written by a newer Trove. Upgrade "
+                f"Trove, or delete {self.db_path} to rebuild the mirror from "
+                f"the YAML assets (the mirror is a derived index, not a source "
+                f"of truth)."
+            )
+        await ensure_version_table(db, dialect=SQLITE)
+        for sql in (_CREATE_ITEMS, _CREATE_SYNC, _CREATE_FTS, CREATE_VECTORS):
+            await db.execute(sql)
+        await write_version(db, _MIRROR_STORE, _MIRROR_VERSION, dialect=SQLITE)
+        await db.commit()
+
+    async def _adopt_mirror(self, db: aiosqlite.Connection) -> int:
+        """存量镜像的收养:探测**一次**,此后再也不探测。
+
+        返回收养后的版本(0 表示已被清空、待重建)。这里的判据与 C4 之前
+        逐次探测时完全一致(缺 ``datasource`` 列 / 缺 ``kb_fts`` → 重建),
+        区别只在于它现在只发生一次。
+        """
+        if not await table_exists(db, "kb_items", dialect=SQLITE):
+            return 0                                   # 空库:版本 0,往下建表
+        has_fts = await table_exists(db, "kb_fts", dialect=SQLITE)
+        columns = set(await columns_of(db, "kb_items", dialect=SQLITE))
+        if "datasource" not in columns or not has_fts:
             logger.info("Rebuilding KB mirror (missing datasource column / kb_fts)")
-            await db.execute("DROP TABLE kb_items")
-            await db.execute("DROP TABLE IF EXISTS kb_sync")
-            await db.execute("DROP TABLE IF EXISTS kb_fts")
-            await db.execute("DROP TABLE IF EXISTS kb_vectors")
-            columns = set()
-        if columns:
-            sync_cursor = await db.execute("PRAGMA table_info(kb_sync)")
-            sync_columns = {row[1] for row in await sync_cursor.fetchall()}
-            if sync_columns and "digest" not in sync_columns:
-                await self._backfill_sync_digests(db)
-        if not columns:
-            await db.execute(_CREATE_ITEMS)
-            await db.execute(_CREATE_SYNC)
-            await db.execute(_CREATE_FTS)
-            await db.execute(CREATE_VECTORS)
+            for table in ("kb_items", "kb_sync", "kb_fts", "kb_vectors"):
+                await db.execute(f"DROP TABLE IF EXISTS {table}")
             await db.commit()
+            return 0
+        sync_columns = set(await columns_of(db, "kb_sync", dialect=SQLITE))
+        if sync_columns and "digest" not in sync_columns:
+            await self._backfill_sync_digests(db)
+        return _MIRROR_VERSION
 
     async def _backfill_sync_digests(self, db: aiosqlite.Connection) -> None:
         """给旧镜像的 `kb_sync` 补 `size`/`digest` 两列(就地,不重建)。

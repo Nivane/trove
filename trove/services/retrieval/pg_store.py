@@ -20,6 +20,13 @@ from typing import Any
 from trove.core.logging import get_logger
 from trove.services.kb.backends.dense import Embedder
 from trove.services.retrieval.store import HybridStore, RetrievalDoc, RetrievalHit
+from trove.storage.migrations import (
+    POSTGRES,
+    AddColumn,
+    Migration,
+    apply_migrations,
+    ensure_column,
+)
 
 logger = get_logger(__name__)
 
@@ -59,18 +66,17 @@ class PgHybridStore(HybridStore):
 
         return await psycopg.AsyncConnection.connect(self._dsn)
 
-    async def _ensure(self) -> None:
-        if self._ensured:
-            return
-        conn = await self._connect()
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(f"CREATE SCHEMA IF NOT EXISTS {_SCHEMA_NS}")
-                await cur.execute(f"CREATE EXTENSION IF NOT EXISTS vector")
-                sparse_col = (
-                    f", sparse sparsevec({self._sparse_dim})" if self._sparse_dim else "")
-                await cur.execute(
-                    f"""CREATE TABLE IF NOT EXISTS {_SCHEMA_NS}.documents (
+    def _base_migrations(self) -> list[Migration]:
+        """v1 = 表与索引。
+
+        **版本号与配置无关**:向量维度与稀疏开关都是配置,配置不该让库"变新"
+        (见 ``storage/migrations`` 模块文档)。所以 ``sparse`` 不在 v1 里 ——
+        它是配置驱动的可选通道,走 :func:`ensure_column`。
+        """
+        return [Migration(version=1, description="documents 表与索引", ops=[
+            f"CREATE SCHEMA IF NOT EXISTS {_SCHEMA_NS}",
+            "CREATE EXTENSION IF NOT EXISTS vector",
+            f"""CREATE TABLE IF NOT EXISTS {_SCHEMA_NS}.documents (
                         id TEXT PRIMARY KEY,
                         datasource TEXT NOT NULL,
                         kind TEXT NOT NULL,
@@ -78,20 +84,29 @@ class PgHybridStore(HybridStore):
                         content TEXT NOT NULL,
                         tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
                         embedding vector({self._dims})
-                        {sparse_col}
-                    )""")
+                    )""",
+            f"CREATE INDEX IF NOT EXISTS documents_ds ON "
+            f"{_SCHEMA_NS}.documents(datasource)",
+            f"CREATE INDEX IF NOT EXISTS documents_vec ON "
+            f"{_SCHEMA_NS}.documents USING hnsw (embedding vector_cosine_ops)",
+        ])]
+
+    async def _ensure(self) -> None:
+        if self._ensured:
+            return
+        conn = await self._connect()
+        try:
+            await apply_migrations(
+                conn, "retrieval", self._base_migrations(), dialect=POSTGRES)
+            async with conn.cursor() as cur:
                 if self._sparse_dim:
-                    # 既有表没有 sparse 列时补列(幂等)+ HNSW 索引。
-                    await cur.execute(
-                        f"ALTER TABLE {_SCHEMA_NS}.documents "
-                        f"ADD COLUMN IF NOT EXISTS sparse sparsevec({self._sparse_dim})")
-                await cur.execute(
-                    f"CREATE INDEX IF NOT EXISTS documents_ds ON "
-                    f"{_SCHEMA_NS}.documents(datasource)")
-                await cur.execute(
-                    f"CREATE INDEX IF NOT EXISTS documents_vec ON "
-                    f"{_SCHEMA_NS}.documents USING hnsw (embedding vector_cosine_ops)")
-                if self._sparse_dim:
+                    # 稀疏通道是配置驱动的:有列才建 HNSW 索引。
+                    await ensure_column(
+                        conn,
+                        AddColumn(f"{_SCHEMA_NS}.documents", "sparse", "BLOB",
+                                  f"sparsevec({self._sparse_dim})"),
+                        dialect=POSTGRES,
+                    )
                     await cur.execute(
                         f"CREATE INDEX IF NOT EXISTS documents_sparse ON "
                         f"{_SCHEMA_NS}.documents "
