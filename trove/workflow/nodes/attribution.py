@@ -171,7 +171,7 @@ def _waterfall_chart(
     }
 
 
-# ── SQL 构造(复用语义编译器:hops 走确定性编译,失败即降级)────────
+# ── SQL 构造(复用语义编译器:hops 由编译器直接产出,失败即降级)────────
 
 def _compile_hop(
     semantic_layer: Any,

@@ -35,7 +35,7 @@ Raw-LLM agents write SQL from raw DDL — they are confidently wrong about busin
 
 Trove follows the semantic-layer route taken by Cortex-Analyst-style products, with a twist that keeps answers flowing:
 
-- **Full coverage → deterministic compile.** The plan is compiled against declared metrics, fields and relationships — the SQL is authoritative, not suggested.
+- **Full coverage → compile.** The plan is compiled against declared metrics, fields and relationships — the SQL is authoritative, not suggested.
 - **Partial coverage → compile a skeleton, let the agent fill the gaps.** When only words, values or definitions are missing (a soft miss), joins, filters and grouping are compiled authoritatively, and the generation agent fills the uncovered parts — then a skeleton-fidelity check guards execution.
 - **Structural miss → refuse, extend, re-answer.** When the model structurally cannot cover the question (unknown table, ambiguous join, fan-out), Trove refuses — and drafts a model extension for you to confirm in one step. The refusal *is* the modeling signal; coverage grows with use.
 
