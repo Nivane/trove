@@ -118,8 +118,8 @@ class WorkflowState(BaseModel):
     # 供 eval 归因「plan 层拦了什么」
     plan_validation: dict[str, Any] = Field(default_factory=dict)
 
-    # 语义层确定性编译(query_sketch 写入):覆盖内问题时编译器拼出权威 SQL
-    # 骨架,注入 plan(gen_sql 遵从);compiled 标记走「确定性编译」通道,
+    # 语义层编译(query_sketch 写入):覆盖内问题时编译器拼出权威 SQL
+    # 骨架,注入 plan(gen_sql 遵从);compiled 标记走「编译」通道,
     # 供 eval path: compiled|llm 归因。
     compiled_sql: str = ""
     compiled: bool = False
