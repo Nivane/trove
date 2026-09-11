@@ -74,7 +74,6 @@ def _sanitized(cfg: DatasourceConfig) -> dict:
         "vector_dsn": cfg.vector_dsn or "",
         "retrieval_dsn": cfg.retrieval_dsn or "",
         "embedding_dims": cfg.embedding_dims or 1536,
-        "embedding_sparse_dims": int(cfg.embedding_sparse_dims or 0),
         "fts_tokenizer": cfg.fts_tokenizer or "",
     }
 
@@ -134,7 +133,6 @@ def _vector_config(body: dict, ds_type: str = "") -> dict:
         "retrieval_dsn": (body.get("retrieval_dsn") or "").strip(),
         "embedder_backend": (body.get("embedder_backend") or "").strip(),
         "embedding_dims": int(body.get("embedding_dims") or 1536),
-        "embedding_sparse_dims": int(body.get("embedding_sparse_dims") or 0),
         "fts_tokenizer": (body.get("fts_tokenizer") or "").strip(),
     }
 

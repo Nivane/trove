@@ -16,13 +16,19 @@ from trove.services.retrieval.store import RetrievalHit
 
 
 class FakeStore:
-    def __init__(self, hits):
+    def __init__(self, hits, n_docs=None):
         self._hits = hits
+        # 默认对齐返回的 hit 数;要模拟大库就显式传 n_docs。
+        self._n_docs = len(hits) if n_docs is None else n_docs
         self.calls = []
+
+    async def count(self, datasource):
+        return self._n_docs
 
     async def recall(self, query, k=20, rerank_k=40, datasource="", keyword_text=None,
                      return_meta=False):
-        self.calls.append({"query": query, "keyword_text": keyword_text})
+        self.calls.append({"query": query, "k": k, "rerank_k": rerank_k,
+                           "keyword_text": keyword_text})
         return self._hits
 
 
@@ -116,6 +122,35 @@ async def test_search_schema_docs_returns_only_schema_doc_hits():
     docs = await backend.search_schema_docs("卡 平均", "ds", limit=5)
     assert [d.doc_id for d in docs] == ["schema:card"]
     assert docs[0].content == "CARD 表: 客户卡"
+    # schema_doc 每表一条、在库里占比极小,若按 limit*2 裁候选会被数量占优的
+    # kb 文档整批挤出 → 窗口必须按全库规模取。
+    assert store.calls[-1]["k"] == 2
+
+
+@pytest.mark.parametrize("total,limit,expected", [
+    (0, 5, (0, 0)),                        # 空库:不去 recall,交给 builtin 兜底
+    (1, 5, (1, 1)),                        # 一条也是全量
+    (262, 3, (262, 262)),                  # 小库:全量候选,不裁剪
+    (2000, 3, (2000, 2000)),               # 恰在上限:仍走全量
+    (2001, 3, (18, 36)),                   # 刚过上限:按 limit*6 裁
+    (500000, 10, (60, 120)),               # 大库:limit 主导
+    (500000, 1, (8, 16)),                  # limit 很小时托底 _RECALL_MIN
+])
+async def test_recall_window_size_adaptive(total, limit, expected):
+    """小库不裁(全量候选),大库按 limit 倍数裁;窗口按**全库**计数。
+
+    小库裁剪只会白丢候选:几百行的全扫是免费的,而 ANN 的价值是避免扫描。
+    """
+    backend = PgHybridKbBackend(FakeKb([]), FakeStore([], n_docs=total))
+    assert await backend._recall_window(limit, "ds") == expected
+
+
+async def test_empty_corpus_skips_store_recall():
+    """空库时不该拿着 k=0 去问 store(会白跑一次 embed + 查询)。"""
+    store = FakeStore([], n_docs=0)
+    backend = PgHybridKbBackend(FakeKb([]), store)
+    assert await backend._recall(("example",), "q", "ds", 5) == ([], {})
+    assert store.calls == []
 
 
 def test_effective_backend_upgrades_to_pg_hybrid_when_viable():

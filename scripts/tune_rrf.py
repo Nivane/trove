@@ -2,12 +2,12 @@
 
 用法:
   uv run python scripts/tune_rrf.py --gold evalsets/retrieval.jsonl \
-      --datasource demo [--k 10] [--sparse]
+      --datasource demo [--k 10]
 
-按 ``keyword / dense / sparse`` 三路权重与 RRF k 做小网格搜索(精排关闭,
-隔离融合本身的质量),以 MRR@k 为主目标、Recall@k 为辅,输出最优参数 JSON,
-可直接写回 ``datasources.yml`` 的 ``rrf_weights`` / ``rrf_k`` 字段。网格偏
-小以保证秒级完成;生产可按结果在最优邻域再加密一轮。
+按 ``keyword / dense`` 两路权重与 RRF k 做小网格搜索(精排关闭,隔离融合
+本身的质量),以 MRR@k 为主目标、Recall@k 为辅,输出最优参数 JSON,可直接
+写回 ``datasources.yml`` 的 ``rrf_weights`` / ``rrf_k`` 字段。网格偏小以保证
+秒级完成;生产可按结果在最优邻域再加密一轮。
 """
 
 from __future__ import annotations
@@ -70,14 +70,12 @@ async def main() -> None:
         gold = dict(list(gold.items())[: args.limit])
     store, ds = await _build_store(args)
     top_k = args.k
-    n_channels = 3 if store._sparse_dim else 2
-    names = ("keyword", "dense", "sparse")[:n_channels]
+    names = ("keyword", "dense")
 
-    # 网格:keyword 主导词面、dense 主导语义;sparse 略降权(corvid 惯例)。
+    # 网格:keyword 主导词面、dense 主导语义,两路互相制衡。
     grid = {
         "keyword": (0.5, 1.0, 1.5),
-        "dense": (0.7, 1.0),
-        "sparse": (0.0, 0.5, 0.7),
+        "dense": (0.7, 1.0, 1.5),
     }
     ks = (40, 60, 100)
 

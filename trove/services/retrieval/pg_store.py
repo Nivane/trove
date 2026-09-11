@@ -11,6 +11,11 @@ extension is unavailable (non-ParadeDB image) the store degrades gracefully to a
 native ``tsvector`` GIN index so the rest of the pipeline keeps working. Schema
 lives in the ``trove_retrieval`` schema so it never collides with business
 tables.
+
+存量库可能残留已退役的 learned-sparse 列(``sparse`` + ``documents_sparse``
+索引):那是由配置驱动的可选列,按 ``storage/migrations`` 的规则**不占版本号、
+也不做破坏性迁移** —— 代码停止读写即可,列留原地(新行写 NULL)。给新库建表
+时不再创建它。
 """
 
 from __future__ import annotations
@@ -22,10 +27,8 @@ from trove.services.kb.backends.dense import Embedder
 from trove.services.retrieval.store import HybridStore, RetrievalDoc, RetrievalHit
 from trove.storage.migrations import (
     POSTGRES,
-    AddColumn,
     Migration,
     apply_migrations,
-    ensure_column,
 )
 
 logger = get_logger(__name__)
@@ -38,12 +41,12 @@ class PgHybridStore(HybridStore):
     def __init__(
         self, dsn: str, embedder: Embedder | None, reranker: Any | None,
         dims: int = 1536, fts_tokenizer: str | None = None,
-        sparse_dim: int = 0, rrf_k: int = 60,
+        rrf_k: int = 60,
         rrf_weights: dict[str, float] | None = None,
         recorder: Any | None = None,
     ) -> None:
         super().__init__(
-            embedder, reranker, sparse_dim=sparse_dim, rrf_k=rrf_k,
+            embedder, reranker, rrf_k=rrf_k,
             rrf_weights=rrf_weights, recorder=recorder)
         self._dsn = dsn
         self._dims = dims
@@ -55,12 +58,6 @@ class PgHybridStore(HybridStore):
     def _lit(vec: list[float]) -> str:
         return "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
 
-    def _lit_sparse(self, sparse: dict[int, float]) -> str:
-        if not sparse:
-            return ""
-        body = ",".join(f"{i}:{float(v):.6f}" for i, v in sorted(sparse.items()))
-        return f"{{{body}}}/{self._sparse_dim}"
-
     async def _connect(self):
         import psycopg
 
@@ -69,9 +66,10 @@ class PgHybridStore(HybridStore):
     def _base_migrations(self) -> list[Migration]:
         """v1 = 表与索引。
 
-        **版本号与配置无关**:向量维度与稀疏开关都是配置,配置不该让库"变新"
-        (见 ``storage/migrations`` 模块文档)。所以 ``sparse`` 不在 v1 里 ——
-        它是配置驱动的可选通道,走 :func:`ensure_column`。
+        **版本号与配置无关**:向量维度是配置,配置不该让库"变新"(见
+        ``storage/migrations`` 模块文档)。退役的 sparse 列当年走的也是
+        "配置驱动、不占版本号"那条路,所以它同样不进 v1 —— 存量库里的残留列
+        由代码停止读写来退役,不靠迁移删。
         """
         return [Migration(version=1, description="documents 表与索引", ops=[
             f"CREATE SCHEMA IF NOT EXISTS {_SCHEMA_NS}",
@@ -99,19 +97,7 @@ class PgHybridStore(HybridStore):
             await apply_migrations(
                 conn, "retrieval", self._base_migrations(), dialect=POSTGRES)
             async with conn.cursor() as cur:
-                if self._sparse_dim:
-                    # 稀疏通道是配置驱动的:有列才建 HNSW 索引。
-                    await ensure_column(
-                        conn,
-                        AddColumn(f"{_SCHEMA_NS}.documents", "sparse", "BLOB",
-                                  f"sparsevec({self._sparse_dim})"),
-                        dialect=POSTGRES,
-                    )
-                    await cur.execute(
-                        f"CREATE INDEX IF NOT EXISTS documents_sparse ON "
-                        f"{_SCHEMA_NS}.documents "
-                        f"USING hnsw (sparse sparsevec_cosine_ops)")
-                # Sparse channel: prefer pg_bm25 (true BM25), else tsvector GIN.
+                # Keyword channel: prefer pg_bm25 (true BM25), else tsvector GIN.
                 # 用 savepoint 包裹 bm25 尝试:CREATE EXTENSION 失败会把整个事务
                 # 置为 aborted,后续 GIN 回退也报 InFailedSqlTransaction——回滚到
                 # savepoint 恢复事务状态后再建 GIN 索引。
@@ -151,44 +137,23 @@ class PgHybridStore(HybridStore):
                 for doc in docs:
                     doc_id = doc.item_key or f"{doc.kind}:{doc.source_file}"
                     emb = doc.embedding
-                    sparse = None
                     if emb is None:
-                        if hasattr(self._embedder, "embed_hybrid"):
-                            emb, sparse = (
-                                await self._embedder.embed_hybrid([doc.content]))[0]
-                        else:
-                            emb = await self._embed(doc.content)
-                            if self._sparse_dim and hasattr(self._embedder, "embed_sparse"):
-                                sparse = (
-                                    await self._embedder.embed_sparse([doc.content]))[0]
+                        emb = await self._embed(doc.content)
                     if len(emb) != self._dims:
                         # pad/truncate to declared dims for a stable index
                         if len(emb) < self._dims:
                             emb = emb + [0.0] * (self._dims - len(emb))
                         else:
                             emb = emb[: self._dims]
-                    sparse_lit = (
-                        self._lit_sparse(sparse) if sparse and self._sparse_dim else None)
-                    if self._sparse_dim:
-                        await cur.execute(
-                            f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
-                        await cur.execute(
-                            f"""INSERT INTO {_SCHEMA_NS}.documents
-                            (id, datasource, kind, source_file, content, embedding, sparse)
-                            VALUES (%s, %s, %s, %s, %s, %s::vector, %s::sparsevec)""",
-                            (doc_id, doc.datasource, doc.kind, doc.source_file,
-                             doc.content, self._lit(emb), sparse_lit),
-                        )
-                    else:
-                        await cur.execute(
-                            f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
-                        await cur.execute(
-                            f"""INSERT INTO {_SCHEMA_NS}.documents
-                            (id, datasource, kind, source_file, content, embedding)
-                            VALUES (%s, %s, %s, %s, %s, %s::vector)""",
-                            (doc_id, doc.datasource, doc.kind, doc.source_file,
-                             doc.content, self._lit(emb)),
-                        )
+                    await cur.execute(
+                        f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
+                    await cur.execute(
+                        f"""INSERT INTO {_SCHEMA_NS}.documents
+                        (id, datasource, kind, source_file, content, embedding)
+                        VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                        (doc_id, doc.datasource, doc.kind, doc.source_file,
+                         doc.content, self._lit(emb)),
+                    )
             await conn.commit()
         finally:
             await conn.close()
@@ -228,6 +193,21 @@ class PgHybridStore(HybridStore):
                     f"DELETE FROM {_SCHEMA_NS}.documents WHERE datasource = %s",
                     (datasource,))
             await conn.commit()
+        finally:
+            await conn.close()
+
+    async def count(self, datasource: str) -> int:
+        await self._ensure()
+        conn = await self._connect()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT count(*) FROM {_SCHEMA_NS}.documents "
+                    "WHERE datasource = %s",
+                    (datasource,),
+                )
+                row = await cur.fetchone()
+            return int(row[0]) if row else 0
         finally:
             await conn.close()
 
@@ -278,25 +258,9 @@ class PgHybridStore(HybridStore):
         finally:
             await conn.close()
 
-    async def _sparse_ann_ids(self, sparse: dict[int, float], k: int) -> list[str]:
-        if not sparse or not self._sparse_dim:
-            return []
-        await self._ensure()
-        conn = await self._connect()
-        try:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    f"""SELECT id FROM {_SCHEMA_NS}.documents
-                    WHERE datasource = %s AND sparse IS NOT NULL
-                    ORDER BY sparse <=> %s::sparsevec LIMIT %s""",
-                    (self._ds, self._lit_sparse(sparse), k),
-                )
-                rows = await cur.fetchall()
-            return [r[0] for r in rows]
-        finally:
-            await conn.close()
-
-    async def _load(self, doc_ids: list[str]) -> list[RetrievalHit]:
+    async def _load(
+        self, doc_ids: list[str], scores: dict[str, float],
+    ) -> list[RetrievalHit]:
         if not doc_ids:
             return []
         await self._ensure()
@@ -312,14 +276,13 @@ class PgHybridStore(HybridStore):
             by_id = {r[0]: r for r in rows}
         finally:
             await conn.close()
-        order = {d: i for i, d in enumerate(doc_ids)}
         out = []
         for doc_id in doc_ids:
             r = by_id.get(doc_id)
             if r is None:
                 continue
             out.append(RetrievalHit(
-                doc_id=doc_id, content=r[1], score=1.0 / (1 + order[doc_id]),
+                doc_id=doc_id, content=r[1], score=scores.get(doc_id, 0.0),
                 kind=r[2]))
         return out
 

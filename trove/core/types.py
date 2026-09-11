@@ -151,24 +151,21 @@ class DatasourceConfig:
     # 写 datasources.yml 即切换。
     retrieval_backend: str = "builtin"
     # 稠密通道 embedding 提供方:""/"api" → 经 LLM 网关的 GatewayEmbedder
-    # (需凭证);"bge-m3" → 本地 BgeM3Embedder(FlagEmbedding,一个模型同时
-    # 出 dense + sparse,无需凭证,推荐用于混合检索)。空 embedding_model
-    # 时 rag 退化为纯稀疏,与 hybrid 同行为。
+    # (需凭证);"bge-m3" → 本地 BgeM3Embedder(FlagEmbedding,无需凭证,推荐
+    # 用于混合检索)。空 embedding_model 时 rag 退化为纯稀疏,与 hybrid 同行为。
     embedder_backend: str = ""
     # rag 的稠密通道:embedding 模型名(经 LLM 网关,需凭证;空 → rag 退化
     # 纯稀疏,与 hybrid 同行为)。
     embedding_model: str = ""
-    # 稀疏(learned-sparse)通道最大维度:bge-m3 lexical 词汇表约 250k;
-    # 0 = 关闭 sparse 路(纯 keyword+dense 两路)。
-    embedding_sparse_dims: int = 0
     # RRF 融合常数 k(标准 60):fuse = sum(weight / (k + rank))。
     rrf_k: int = 60
-    # RRF 每路权重:{"keyword": .., "dense": .., "sparse": ..};缺省 = 等权 1.0。
+    # RRF 每路权重:{"keyword": .., "dense": ..};缺省 = 等权 1.0。
     rrf_weights: dict[str, float] = field(default_factory=dict)
-    # 精排后端:""/"auto"(端点→bge→cosine 近似→确定性) | "none"(跳过) |
-    # "deterministic"(n-gram coverage) | "bge"(本地 FlagReranker) |
-    # "http"(rerank_endpoint 的 Cohere/TEI 兼容 API) | "cross-encoder"
-    # (embedder cosine 近似)。
+    # 精排后端:**""/"auto"/"none" = 不精排(默认)** —— 默认档曾是确定性
+    # n-gram coverage,与下游 _rank_examples 的 _sim 同函数同源,融合等于原值,
+    # 纯重复计算。显式配 | "deterministic"(n-gram coverage) | "bge"(本地
+    # FlagReranker) | "http"(rerank_endpoint 的 Cohere/TEI 兼容 API) |
+    # "cross-encoder"(有端点走端点,否则 embedder cosine 近似)。
     rerank_backend: str = ""
     # http 精排端点(Cohere/TEI 兼容 /rerank);留空且 rerank_backend="" 时
     # 按 auto 顺序选择。

@@ -1,4 +1,4 @@
-"""RAG backend tests — sparse(FTS5/BM25)+ dense(embedding)双通道 RRF。
+"""RAG backend tests — keyword(FTS5/BM25)+ dense(embedding)双通道 RRF。
 
 覆盖:向量镜像同步/删除传播/RRF 融合/硬门保持/降级链/config 持久化/
 gateway embedding mock。测试用确定性 hashed n-gram 作为 fake embedder

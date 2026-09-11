@@ -32,21 +32,19 @@ def test_roundtrip(tmp_path):
 
 
 def test_roundtrip_retrieval_tuning_fields(tmp_path):
-    """混合检索调优字段(embedder/sparse/rrf/rerank)必须 survive save→load。"""
+    """混合检索调优字段(embedder/rrf/rerank)必须 survive save→load。"""
     store = ConfigStore(tmp_path / "datasources.yml")
     cfg = DatasourceConfig(
         name="r", type="postgres", retrieval_dsn="postgresql://x",
         embedder_backend="bge-m3", embedding_model="BAAI/bge-m3",
-        embedding_sparse_dims=250000, rrf_k=100,
-        rrf_weights={"keyword": 1.5, "dense": 1.0, "sparse": 0.7},
+        rrf_k=100, rrf_weights={"keyword": 1.5, "dense": 1.0},
         rerank_backend="bge", rerank_endpoint="https://x/rerank",
     )
     store.save_configs([cfg])
     loaded = store.load_configs()[0]
     assert loaded.embedder_backend == "bge-m3"
-    assert loaded.embedding_sparse_dims == 250000
     assert loaded.rrf_k == 100
-    assert loaded.rrf_weights == {"keyword": 1.5, "dense": 1.0, "sparse": 0.7}
+    assert loaded.rrf_weights == {"keyword": 1.5, "dense": 1.0}
     assert loaded.rerank_backend == "bge"
     assert loaded.rerank_endpoint == "https://x/rerank"
 
@@ -57,7 +55,6 @@ def test_roundtrip_retrieval_tuning_defaults(tmp_path):
     store.save_configs([_cfg("a")])
     loaded = store.load_configs()[0]
     assert loaded.embedder_backend == ""
-    assert loaded.embedding_sparse_dims == 0
     assert loaded.rrf_k == 60
     assert loaded.rrf_weights == {}
     assert loaded.rerank_backend == ""
