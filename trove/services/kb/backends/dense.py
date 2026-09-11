@@ -80,18 +80,15 @@ class GatewayEmbedder:
 
 
 class BgeM3Embedder:
-    """本地 learned-sparse Embedder:FlagEmbedding 的 bge-m3,一个模型同时出
-    dense + sparse(lexical 权重)。
+    """本地稠密 Embedder:FlagEmbedding 的 bge-m3。
 
-    稀疏通道的"业内更强做法"(learned sparse,替代纯 BM25):bge-m3 的 lexical
-    权重是学出来的词表加权,兼有词面匹配与语义相关。模型本地运行,无需 LLM
-    凭证(依赖 ``uv sync --extra bge``)。dense/sparse 各一次 encode 会重复计算,
-    故提供 ``embed_hybrid`` 一次出两路,store 的索引/召回都优先走它。
+    模型本地运行,无需 LLM 凭证(依赖 ``uv sync --extra bge``)。曾经同时出
+    learned-sparse(lexical 权重)供第三路召回,该通道已退役:它与本路同属一个
+    backbone 的 head,不构成 RRF 需要的独立信号。
     """
 
-    def __init__(self, model: str = "BAAI/bge-m3", sparse_dim: int = 250000):
+    def __init__(self, model: str = "BAAI/bge-m3"):
         self._model = model
-        self._sparse_dim = int(sparse_dim or 250000)
         self._backend: Any = None
 
     def _load(self) -> Any:
@@ -105,49 +102,23 @@ class BgeM3Embedder:
             self._backend = BGEM3FlagModel(self._model, use_fp16=False)
         return self._backend
 
-    def _clip(self, weights: dict) -> dict[int, float]:
-        """lexical 权重 → {int 词表 id: float},维度上限裁剪。"""
-        out: dict[int, float] = {}
-        for k, v in weights.items():
-            i = int(k)
-            if i < self._sparse_dim:
-                out[i] = float(v)
-        return out
-
-    async def embed_hybrid(
-        self, texts: list[str],
-    ) -> list[tuple[list[float], dict[int, float]]]:
-        out = self._load().encode(texts, return_dense=True, return_sparse=True)
-        dense = [list(map(float, v)) for v in out["dense_vecs"]]
-        sparse = [self._clip(lw) for lw in out["lexical_weights"]]
-        return list(zip(dense, sparse))
-
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        return [d for d, _ in await self.embed_hybrid(texts)]
-
-    async def embed_sparse(self, texts: list[str]) -> list[dict[int, float]]:
-        return [s for _, s in await self.embed_hybrid(texts)]
-
-
-def sparse_supported(embedder: Any) -> bool:
-    """embedder 是否提供 learned-sparse 通道(embed_sparse / embed_hybrid)。"""
-    return embedder is not None and (
-        hasattr(embedder, "embed_sparse") or hasattr(embedder, "embed_hybrid"))
+        out = self._load().encode(texts, return_dense=True)
+        return [list(map(float, v)) for v in out["dense_vecs"]]
 
 
 def build_embedder(cfg: Any, gateway: Any) -> Any:
-    """按数据源配置构造稠密/稀疏 Embedder(与 factory / registry 共享)。
+    """按数据源配置构造稠密 Embedder(与 factory / registry 共享)。
 
     - ``embedder_backend`` in {"bge-m3", "bge"} → 本地 BgeM3Embedder
-      (dense + sparse,无需凭证;稀疏维数取 embedding_sparse_dims)。
+      (无需凭证)。
     - 否则 ``embedding_model`` 非空 → GatewayEmbedder(LLM 网关)。
     - 空 → None(纯稀疏/退化路径)。
     """
     backend = str(getattr(cfg, "embedder_backend", "") or "").strip().lower()
     model = str(getattr(cfg, "embedding_model", "") or "").strip()
-    sparse_dim = int(getattr(cfg, "embedding_sparse_dims", 0) or 0)
     if backend in ("bge-m3", "bge"):
-        return BgeM3Embedder(model=model or "BAAI/bge-m3", sparse_dim=sparse_dim)
+        return BgeM3Embedder(model=model or "BAAI/bge-m3")
     if model:
         return GatewayEmbedder(gateway, model)
     return None

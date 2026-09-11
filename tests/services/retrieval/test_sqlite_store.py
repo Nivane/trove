@@ -96,3 +96,30 @@ async def test_cross_encoder_reranker_used(store):
     ])
     hits = await store.recall("贷款 平均 金额", k=2, datasource="ds")
     assert hits and hits[0].doc_id == "e1"
+
+
+async def test_recall_score_is_normalized_rrf(store):
+    """无精排时命中 score = 归一化 RRF 分,而不是只留下名次。
+
+    丢掉分数会让下游 ``_fuse_extra_sim``(0.5 权重)拿到一个和检索质量无关
+    的常量,RRF 就退化成纯粹的 rank。
+    """
+    store._reranker = None
+    await store.index_many([
+        RetrievalDoc(content="贷款 平均 金额 怎么 计算", datasource="ds",
+                     kind="kb", source_file="a.yml", item_key="e1"),
+        RetrievalDoc(content="地区 分布 与 账户 数量", datasource="ds",
+                     kind="kb", source_file="a.yml", item_key="e2"),
+        RetrievalDoc(content="足球 比赛 直播 时间", datasource="ds",
+                     kind="kb", source_file="a.yml", item_key="e3"),
+    ])
+    hits, meta = await store.recall(
+        "贷款 平均 金额", k=3, datasource="ds", return_meta=True)
+    assert hits[0].doc_id == "e1"
+    assert hits[0].score == pytest.approx(1.0)
+    scores = [h.score for h in hits]
+    assert all(0.0 <= s <= 1.0 for s in scores)
+    assert scores == sorted(scores, reverse=True)
+    # 无精排 → 最终序就是 RRF 序
+    assert [h.doc_id for h in hits] == meta["rrf_ids"][:len(hits)]
+    assert meta["rerank_used"] is False

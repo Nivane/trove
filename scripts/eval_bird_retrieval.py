@@ -14,8 +14,11 @@ schema_notes 表集合内。金标文档 = ``kind='table'`` 的 KB item(item_key
 
 **为什么要做分路消融**:``eval_hybrid_retrieval.py`` 只对比精排前后;回答「为什么
 要混合而不是单路」需要**同金标、同查询集**下对比 keyword-only / dense-only / RRF。
-这里直接调用 store 的三个通道原语再自行融合,而不是用 ``rrf_weights=0`` 关通道——
+这里直接调用 store 的通道原语再自行融合,而不是用 ``rrf_weights=0`` 关通道——
 后者仍会在 ``rrf_fuse`` 里为 0 权重通道建立 score=0 的条目,污染排序。
+
+learned-sparse 第三路已退役(与 dense 同属一个 backbone 的 head,不构成独立
+信号),消融因此只剩 keyword / dense 两路。
 
 零 LLM 成本、零网络(embedder 走本地 bge-m3)。
 """
@@ -35,7 +38,7 @@ from trove.services.kb.service import KbService
 from trove.services.retrieval.factory import build_store
 from trove.services.retrieval.indexer import Indexer
 from trove.services.retrieval.metrics import evaluate
-from trove.services.retrieval.store import rrf_fuse
+from trove.services.retrieval.store import normalize_scores, rrf_scores
 
 
 def parse_args() -> argparse.Namespace:
@@ -117,7 +120,6 @@ async def main() -> None:
         type="mysql",
         embedder_backend="bge-m3",
         embedding_dims=1024,
-        embedding_sparse_dims=250000,
         fts_tokenizer="en_stem",
         retrieval_dsn="",          # 空 → SqliteHybridStore(无需起 PG)
         rerank_backend="deterministic",
@@ -138,16 +140,15 @@ async def main() -> None:
     async def ranked_for(query: str, channels: tuple[str, ...]) -> list[str]:
         """复刻 HybridStore.recall 的通道逻辑,但可挑选通道子集。"""
         kw = query.strip() or query
-        vector, sparse = await store._embed_hybrid(query)
+        vector = await store._embed(query)
         lists: list[list[str]] = []
         if "keyword" in channels:
             lists.append(await store._fts_ids(kw, rerank_k))
         if "dense" in channels:
             lists.append(await store._ann_ids(vector, rerank_k))
-        if "sparse" in channels and sparse is not None and store._sparse_dim:
-            lists.append(await store._sparse_ann_ids(sparse, rerank_k))
-        fused = rrf_fuse(lists, k=store._rrf_k)
-        hits = await store._load(fused)
+        scores = rrf_scores(lists, k=store._rrf_k)
+        fused = sorted(scores, key=lambda d: scores[d], reverse=True)
+        hits = await store._load(fused, normalize_scores(scores))
         if args.rerank and store._reranker is not None and hits:
             hits = await store._reranker.rerank(query, hits, rerank_k)
         return [h.doc_id for h in hits[:top_k]]
@@ -168,11 +169,11 @@ async def main() -> None:
     await run("keyword-only", ("keyword",))
     await run("dense-only", ("dense",))
     await run("keyword+dense", ("keyword", "dense"))
-    await run("三路 RRF(生产)", ("keyword", "dense", "sparse"))
+    await run("双路 RRF(生产)", ("keyword", "dense"))
 
     if args.rerank:
         print("\n=== 精排前后(生产三路) ===")
-        await run("三路 RRF(精排前)", ("keyword", "dense", "sparse"))
+        await run("双路 RRF(精排前)", ("keyword", "dense"))
 
 
 if __name__ == "__main__":

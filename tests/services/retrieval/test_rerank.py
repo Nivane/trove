@@ -10,7 +10,12 @@ from trove.services.retrieval.rerank import (
     CrossEncoderReranker,
     DeterministicReranker,
 )
-from trove.services.retrieval.store import RetrievalHit, rrf_fuse
+from trove.services.retrieval.store import (
+    RetrievalHit,
+    normalize_scores,
+    rrf_fuse,
+    rrf_scores,
+)
 
 
 class FakeEmbedder:
@@ -75,6 +80,30 @@ def test_rrf_fuse_single_channel():
 def test_rrf_fuse_respects_weights():
     fused = rrf_fuse([["a", "b"], ["b", "a"]], k=60, weights=[1.0, 10.0])
     assert fused[0] == "b"
+
+
+def test_rrf_scores_spread_is_narrow():
+    """RRF 分本身压缩在极窄区间 —— 这正是必须归一化的理由。"""
+    scores = rrf_scores([["a", "b", "c"], ["a", "c", "b"]], k=60)
+    assert len(set(scores.values())) > 1
+    assert max(scores.values()) - min(scores.values()) < 0.05
+
+
+def test_normalize_scores_spreads_to_unit_range():
+    scores = normalize_scores({"a": 0.033, "b": 0.030, "c": 0.022})
+    assert scores["a"] == pytest.approx(1.0)
+    assert scores["c"] == pytest.approx(0.0)
+    assert scores["b"] == pytest.approx((0.030 - 0.022) / 0.011)
+
+
+def test_normalize_scores_all_equal_is_one():
+    """全等(或只有一条)没有可分辨的相对信息 → 一律 1.0,而不是 0。"""
+    assert normalize_scores({"a": 0.03, "b": 0.03}) == {"a": 1.0, "b": 1.0}
+    assert normalize_scores({"a": 0.03}) == {"a": 1.0}
+
+
+def test_normalize_scores_empty():
+    assert normalize_scores({}) == {}
 
 
 def test_bge_reranker_requires_flag_embedding():

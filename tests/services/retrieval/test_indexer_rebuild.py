@@ -44,9 +44,6 @@ class FakeEmbed:
     async def embed(self, texts):
         return [det_embed(t) for t in texts]
 
-    async def embed_hybrid(self, texts):
-        return [(det_embed(t), None) for t in texts]
-
 
 @pytest.fixture
 async def indexed(tmp_path):

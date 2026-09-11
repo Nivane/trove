@@ -5,7 +5,6 @@ from trove.services.kb.backends.dense import (
     BgeM3Embedder,
     GatewayEmbedder,
     build_embedder,
-    sparse_supported,
 )
 from trove.services.retrieval import (
     BgeReranker,
@@ -27,22 +26,30 @@ def test_build_embedder_api():
 
 
 def test_build_embedder_bge_m3():
-    emb = build_embedder(
-        _cfg(embedder_backend="bge-m3", embedding_sparse_dims=250000), gateway=None)
+    emb = build_embedder(_cfg(embedder_backend="bge-m3"), gateway=None)
     assert isinstance(emb, BgeM3Embedder)
-    assert sparse_supported(emb)
 
 
 def test_build_embedder_none_when_no_model():
     assert build_embedder(_cfg(), gateway=None) is None
 
 
-def test_reranker_auto_default_deterministic():
-    assert isinstance(_reranker_for(_cfg(), None), DeterministicReranker)
-
-
-def test_reranker_none_backend():
+def test_reranker_default_is_off():
+    """默认不精排:默认档曾是确定性 n-gram,与下游 _sim 同源,纯重复计算。"""
+    assert _reranker_for(_cfg(), None) is None
+    assert _reranker_for(_cfg(rerank_backend="auto"), None) is None
     assert _reranker_for(_cfg(rerank_backend="none"), None) is None
+
+
+def test_reranker_deterministic_still_opt_in():
+    assert isinstance(
+        _reranker_for(_cfg(rerank_backend="deterministic"), None),
+        DeterministicReranker)
+
+
+def test_reranker_unknown_backend_disables():
+    """未知后端名不该悄悄打开一个精排器。"""
+    assert _reranker_for(_cfg(rerank_backend="wat"), None) is None
 
 
 def test_reranker_bge_backend():
@@ -57,18 +64,16 @@ def test_reranker_http_backend():
 
 
 def test_channel_cfg_roundtrip():
-    cfg = _cfg(embedding_sparse_dims=250000, rrf_k=100,
-               rrf_weights={"keyword": 1.5, "sparse": 0.7})
-    sparse_dim, rrf_k, weights = channel_cfg(cfg)
-    assert (sparse_dim, rrf_k) == (250000, 100)
-    assert weights == {"keyword": 1.5, "sparse": 0.7}
+    cfg = _cfg(rrf_k=100, rrf_weights={"keyword": 1.5, "dense": 1.0})
+    rrf_k, weights = channel_cfg(cfg)
+    assert rrf_k == 100
+    assert weights == {"keyword": 1.5, "dense": 1.0}
 
 
-async def test_build_store_sqlite_recorder_and_sparse(tmp_path):
-    cfg = _cfg(embedder_backend="bge-m3", embedding_sparse_dims=1000)
+async def test_build_store_sqlite_recorder(tmp_path):
+    cfg = _cfg(embedder_backend="bge-m3")
     store = build_store(cfg, None, tmp_path)
     assert isinstance(store, SqliteHybridStore)
-    assert store._sparse_dim == 1000
     assert store._recorder is not None
 
 

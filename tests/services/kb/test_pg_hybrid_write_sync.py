@@ -61,9 +61,6 @@ class FakeEmbed:
     async def embed(self, texts):
         return [det_embed(t) for t in texts]
 
-    async def embed_hybrid(self, texts):
-        return [(v, None) for v in (det_embed(t) for t in texts)]
-
 
 def _write_kb(kb_dir, ds="financial"):
     d = kb_dir / ds

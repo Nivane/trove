@@ -1,17 +1,20 @@
-"""Unified hybrid retrieval store — sparse BM25 + dense ANN + learned-sparse ANN + RRF + rerank.
+"""Unified hybrid retrieval store — keyword BM25 + dense ANN + RRF (+ optional rerank).
 
-Phase 2 of the hybrid-retrieval upgrade. A single retrieval DB (PostgreSQL,
-config ``retrieval_dsn``) holds:
+A single retrieval DB (PostgreSQL, config ``retrieval_dsn``) holds:
 
 - a ``tsvector``/``pg_bm25`` column (BM25-ish / true BM25) for the keyword recall,
-- a ``pgvector`` dense column with an HNSW ANN index for semantic recall,
-- an optional ``pgvector`` ``sparsevec`` column (learned sparse, e.g. bge-m3
-  lexical) with an HNSW index for the learned-sparse channel — the industry
-  "stronger-than-BM25" sparse path.
+- a ``pgvector`` dense column with an HNSW ANN index for semantic recall.
+
+两路是**真正独立**的信号(词法 vs 语义),这正是 RRF 的前提。曾经的第三路
+learned-sparse(bge-m3 lexical)已移除:它与 dense 同属一个模型的 head,不构成
+独立信号;它唯一不可替代的场景是跨语言(词法通道在语言不匹配时归零),而
+本项目以「KB 内容语言 = 问题语言」为约束,跨语言不在目标范围内(见 CLAUDE.md)。
 
 ``recall`` runs the channels in parallel, fuses with Reciprocal Rank Fusion
-(RRF, optional per-channel weights + configurable ``k``), then a pluggable
-reranker does the coarse→fine (精排) pass. A pluggable ``recorder`` captures
+(RRF, optional per-channel weights + configurable ``k``), then an optional
+pluggable reranker does the coarse→fine (精排) pass — 默认无精排:默认档曾是
+确定性 n-gram,与下游 ``_rank_examples`` 的 ``_sim`` 同函数同源,融合等于原值,
+纯重复劳动(见 ``retrieval/factory._reranker_for``)。A pluggable ``recorder`` captures
 per-query hit meta (branch sizes / RRF order / rerank order) for the feedback
 loop (see ``trove.services.retrieval.query_log``).
 
@@ -38,7 +41,7 @@ logger = get_logger(__name__)
 
 RRF_K = 60
 
-_CHANNEL_NAMES = ("keyword", "dense", "sparse")
+_CHANNEL_NAMES = ("keyword", "dense")
 
 
 @dataclass
@@ -47,8 +50,7 @@ class RetrievalDoc:
 
     ``id`` is a stable key (usually ``f"{kind}:{source_file}:{item_key}"``)
     so re-indexing is idempotent. ``embedding`` is optional — the store
-    embeds ``content`` when omitted (and computes the learned-sparse vector
-    from ``content`` too when the embedder supports it).
+    embeds ``content`` when omitted.
     """
 
     content: str
@@ -77,15 +79,19 @@ class Reranker(Protocol):
         ...
 
 
-def rrf_fuse(
+def rrf_scores(
     ranked_lists: list[list[str]], k: int = RRF_K,
     weights: list[float] | None = None,
-) -> list[str]:
-    """Reciprocal Rank Fusion over multiple ranked id lists.
+) -> dict[str, float]:
+    """Reciprocal Rank Fusion 的 **分数**(id → fused score)。
 
     Each list is already ordered best→worst. ``weights`` aligns with the lists
-    (default all 1.0); score = sum(weight / (k + rank)). Returns ids ordered by
-    fused score descending (ties by first seen).
+    (default all 1.0); score = sum(weight / (k + rank)).
+
+    与 :func:`rrf_fuse` 同算法、不同产出:调用方既要顺序(cut 到 top-k),也要
+    分数(进 ``_fuse_extra_sim`` 当门内特征)。分开返回是因为 RRF 分**天然压缩**
+    ——2 路 k=60 时 raw 落在 [0.022, 0.033],直接当相似度用等于常量偏移。
+    要进融合的分数先过 :func:`normalize_scores`。
     """
     if weights is None:
         weights = [1.0] * len(ranked_lists)
@@ -95,31 +101,57 @@ def rrf_fuse(
             continue
         for rank, doc_id in enumerate(ranked, start=1):
             scores[doc_id] = scores.get(doc_id, 0.0) + w / (k + rank)
+    return scores
+
+
+def normalize_scores(scores: dict[str, float]) -> dict[str, float]:
+    """min-max 归一化到 [0,1];空集或全等 → 全 1.0。
+
+    全等(只召回一条、或各路排序完全一致)时 max == min,若归成 0.0 会把
+    "最相关"读成"最不相关" —— 退回 1.0 表示"候选中最好的那个"。
+    """
+    if not scores:
+        return {}
+    lo = min(scores.values())
+    hi = max(scores.values())
+    if hi <= lo:
+        return {doc_id: 1.0 for doc_id in scores}
+    span = hi - lo
+    return {doc_id: (v - lo) / span for doc_id, v in scores.items()}
+
+
+def rrf_fuse(
+    ranked_lists: list[list[str]], k: int = RRF_K,
+    weights: list[float] | None = None,
+) -> list[str]:
+    """Reciprocal Rank Fusion over multiple ranked id lists.
+
+    Returns ids ordered by fused score descending (ties by first seen).
+    """
+    scores = rrf_scores(ranked_lists, k=k, weights=weights)
     return sorted(scores, key=lambda d: scores[d], reverse=True)
 
 
 class HybridStore(ABC):
-    """Hybrid retrieval store interface (sparse keyword + dense + learned-sparse + rerank)."""
+    """Hybrid retrieval store interface (keyword + dense + RRF + optional rerank)."""
 
     def __init__(
         self,
         embedder: Embedder | None,
         reranker: Reranker | None,
         *,
-        sparse_dim: int = 0,
         rrf_k: int = RRF_K,
         rrf_weights: dict[str, float] | None = None,
         recorder: Any | None = None,
     ) -> None:
         self._embedder = embedder
         self._reranker = reranker
-        self._sparse_dim = int(sparse_dim or 0)
         self._rrf_k = int(rrf_k or RRF_K)
         self._rrf_weights = rrf_weights or {}
         self._recorder = recorder
 
     def _channel_weights(self, n: int) -> list[float]:
-        """每路 RRF 权重(按 keyword/dense/sparse 顺序对齐通道)。"""
+        """每路 RRF 权重(按 keyword/dense 顺序对齐通道)。"""
         return [
             float(self._rrf_weights.get(_CHANNEL_NAMES[i], 1.0)) for i in range(n)
         ]
@@ -129,19 +161,6 @@ class HybridStore(ABC):
             raise RuntimeError("no embedder configured for hybrid store")
         vectors = await self._embedder.embed([text])
         return vectors[0]
-
-    async def _embed_hybrid(self, text: str) -> tuple[list[float], dict[int, float] | None]:
-        """稠密 + learned-sparse 一次出;不支持 sparse → (dense, None)。"""
-        if self._embedder is None:
-            raise RuntimeError("no embedder configured for hybrid store")
-        if hasattr(self._embedder, "embed_hybrid"):
-            dense, sparse = (await self._embedder.embed_hybrid([text]))[0]
-            return dense, sparse if self._sparse_dim else None
-        dense = (await self._embedder.embed([text]))[0]
-        sparse = None
-        if self._sparse_dim and hasattr(self._embedder, "embed_sparse"):
-            sparse = (await self._embedder.embed_sparse([text]))[0]
-        return dense, sparse
 
     @abstractmethod
     async def index(self, doc: RetrievalDoc) -> None:
@@ -170,6 +189,16 @@ class HybridStore(ABC):
         ...
 
     @abstractmethod
+    async def count(self, datasource: str) -> int:
+        """该数据源在检索库里的文档总数(**跨 kind**)。
+
+        调用方用它决定要不要裁剪召回:ANN/HNSW 存在的意义是避免扫描,
+        几百行的全扫是免费的,裁剪只会白丢候选。注意必须按**全库**计数而非
+        某一 kind —— 通道的 top-k 是在全库上取的,按单 kind 计数会低估候选
+        池,让占比小的 kind(schema_doc、lesson)被大 kind 挤空。
+        """
+
+    @abstractmethod
     async def _fts_ids(self, text: str, k: int) -> list[str]:
         ...
 
@@ -177,13 +206,12 @@ class HybridStore(ABC):
     async def _ann_ids(self, vector: list[float], k: int) -> list[str]:
         ...
 
-    async def _sparse_ann_ids(self, sparse: dict[int, float], k: int) -> list[str]:
-        """learned-sparse 近邻 top-k。默认实现 = 空(未启用 sparse 路);
-        PgHybridStore / SqliteHybridStore 在有 sparse 列时覆写。"""
-        return []
-
     @abstractmethod
-    async def _load(self, doc_ids: list[str]) -> list[RetrievalHit]:
+    async def _load(
+        self, doc_ids: list[str], scores: dict[str, float],
+    ) -> list[RetrievalHit]:
+        """按 ``doc_ids`` 顺序装载命中,``score`` 取 ``scores``(已归一化的
+        RRF 分)。装载顺序 = RRF 序,分数与顺序同源,不在这里另造一个。"""
         ...
 
     async def recall(
@@ -195,28 +223,29 @@ class HybridStore(ABC):
         keyword_text: str | None = None,
         return_meta: bool = False,
     ) -> list[RetrievalHit] | tuple[list[RetrievalHit], dict]:
-        """Recall: keyword ∪ dense ∪ (learned-sparse) → weighted RRF → rerank → top-k.
+        """Recall: keyword ∪ dense → weighted RRF → (可选)rerank → top-k.
 
         ``keyword_text`` overrides the string used for the keyword channel (e.g.
         KB term-alias expanded) while ``query`` stays the embedding input.
         ``datasource`` scopes the recall to one source. ``return_meta=True``
         returns ``(hits, meta)`` where meta carries branch sizes / RRF order /
         rerank order / latency — the feedback-loop + eval surface.
+
+        命中 ``score`` = **归一化后的 RRF 分**(无精排时)或精排分(有精排时)。
+        归一化是必须的:RRF 分压缩在极窄区间,直接当相似度会让下游
+        ``_fuse_extra_sim`` 的 0.5 权重退化成常量偏移,压平确定性信号。
         """
         self._ds = datasource
         t0 = time.perf_counter()
         kw = (keyword_text or query).strip() or query
-        vector, sparse = await self._embed_hybrid(query)
+        vector = await self._embed(query)
         fts_ids = await self._fts_ids(kw, rerank_k)
         ann_ids = await self._ann_ids(vector, rerank_k)
         channels: list[list[str]] = [fts_ids, ann_ids]
-        sparse_ids: list[str] = []
-        if sparse is not None and self._sparse_dim:
-            sparse_ids = await self._sparse_ann_ids(sparse, rerank_k)
-            channels.append(sparse_ids)
-        fused = rrf_fuse(
+        fused_scores = rrf_scores(
             channels, k=self._rrf_k, weights=self._channel_weights(len(channels)))
-        candidates = await self._load(fused)
+        fused = sorted(fused_scores, key=lambda d: fused_scores[d], reverse=True)
+        candidates = await self._load(fused, normalize_scores(fused_scores))
         rrf_ids = [c.doc_id for c in candidates]
         rerank_used = False
         if self._reranker is not None and candidates:

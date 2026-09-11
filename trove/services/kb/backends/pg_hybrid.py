@@ -3,7 +3,7 @@
 This is the default backend (replacing ``rag``) for any datasource that has a
 hybrid retrieval store (``retrieval_dsn`` or a postgres business DB + an
 embedding model). It reuses the unified ``HybridStore`` (PostgreSQL FTS +
-pgvector ANN + RRF + rerank) for example/lesson recall, then maps the returned
+pgvector ANN + RRF) for example/lesson recall, then maps the returned
 ``doc_id`` (== kb_items.item_key) back to the parsed mirror and re-ranks with
 the existing deterministic gates (``_rank_examples`` / ``_rank_lessons``).
 
@@ -26,6 +26,11 @@ logger = get_logger(__name__)
 
 _RECALL_MULTIPLIER = 6
 _RECALL_MIN = 8
+
+#: 候选全量扫描的规模上限(检索库内该数据源的文档数)。低于它就不裁召回:
+#: ANN/HNSW 的价值是避免扫描,几百行的全扫是免费的,裁了只会白丢候选。
+#: 超过它才按 limit 倍数裁,这时 ANN 才开始真正省钱。
+_EXHAUSTIVE_SCAN_MAX = 2000
 
 
 class PgHybridKbBackend:
@@ -50,9 +55,7 @@ class PgHybridKbBackend:
         per_table: bool = False,
     ) -> list[Any]:
         items, sims = await self._recall(
-            ("example", "template"), question, datasource,
-            max(limit * _RECALL_MULTIPLIER, _RECALL_MIN),
-        )
+            ("example", "template"), question, datasource, limit)
         if not items:
             return await self._kb._search_examples(
                 question, datasource, limit,
@@ -68,9 +71,7 @@ class PgHybridKbBackend:
         tables: list[str] | None = None, all_tables: list[str] | None = None,
     ) -> list[dict]:
         items, sims = await self._recall(
-            ("lesson",), question, datasource,
-            max(limit * _RECALL_MULTIPLIER, _RECALL_MIN),
-        )
+            ("lesson",), question, datasource, limit)
         if not items:
             return await self._kb._search_lessons(
                 question, datasource, limit,
@@ -89,8 +90,15 @@ class PgHybridKbBackend:
         """
         if self._store is None:
             return []
+        # schema_doc 每表一条,在库里占比极小,而 store.recall 是在**全库**上取
+        # top-k 的:按 limit*2 裁候选,它会被数量占优的 kb 文档整批挤出去
+        # (实测 262 条库里挑 10 条,8 条 schema_doc 未必进得去)。同样按库规模
+        # 自适应 —— 小库全量召回后再按 kind 过滤。
+        recall_k, pool_k = await self._recall_window(limit, datasource)
+        if not recall_k:
+            return []
         hits = await self._store.recall(
-            query, k=max(limit * 2, 8), rerank_k=limit * 4, datasource=datasource)
+            query, k=recall_k, rerank_k=pool_k, datasource=datasource)
         return [h for h in hits if h.kind == "schema_doc"][:limit]
 
     # ── 索引钩子(KbService 在镜像同步后调用)──────────────
@@ -163,13 +171,35 @@ class PgHybridKbBackend:
                 seen.append(w)
         return f"{question} {' '.join(seen)}".strip()
 
+    async def _recall_window(self, limit: int, datasource: str) -> tuple[int, int]:
+        """(k, rerank_k):小库不裁剪(全量候选),大库按 limit 倍数裁;空库 (0, 0)。
+
+        窗口必须按**全库**文档数算,不是按目标 kind 的条数:通道的 top-k 是在
+        全库上取的,按 kind 计数会低估候选池,让占比小的 kind 被挤空。
+        """
+        total = await self._store.count(datasource)
+        if total <= 0:
+            return 0, 0
+        if total <= _EXHAUSTIVE_SCAN_MAX:
+            return total, total
+        budget = max(limit * _RECALL_MULTIPLIER, _RECALL_MIN)
+        return budget, budget * 2
+
     async def _recall(
-        self, kinds: tuple[str, ...], question: str, datasource: str, recall_limit: int,
+        self, kinds: tuple[str, ...], question: str, datasource: str, limit: int,
     ) -> tuple[list[tuple[int, dict]], dict[int, float]]:
-        """Recall from the hybrid store, map doc_id → kb_items, filter by kind."""
+        """Recall from the hybrid store, map doc_id → kb_items, filter by kind.
+
+        候选窗口按库规模自适应(见 :meth:`_recall_window`):小库召回全量,下游
+        确定性门看到的是**全部**候选,hybrid 与 builtin 的差别只剩排序信号
+        (检索分进 ``_fuse_extra_sim``),不再有"裁掉本该命中的例子"这一项。
+        """
         try:
+            recall_k, pool_k = await self._recall_window(limit, datasource)
+            if not recall_k:
+                return [], {}
             hits = await self._store.recall(
-                question, k=recall_limit, rerank_k=recall_limit * 2,
+                question, k=recall_k, rerank_k=pool_k,
                 datasource=datasource,
                 keyword_text=await self._expand_keyword(question, datasource),
             )
