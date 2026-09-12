@@ -91,7 +91,9 @@ export function chartChrome(base: Partial<Record<string, unknown>> = {}) {
       extraCssText:
         'border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,.12);',
     },
-    grid: { left: 40, right: 20, top: 36, bottom: 32 },
+    // containLabel:把轴标签算进 grid 的布局 —— 否则 8 位数的标签
+    // (30,000,000) 会被 left:40 的画布边界裁掉左边,只剩「0,000」。
+    grid: { left: 8, right: 16, top: 36, bottom: 32, containLabel: true },
     // keep whatever the caller already set for these keys
     ...base,
   }

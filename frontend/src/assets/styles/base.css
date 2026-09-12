@@ -1235,7 +1235,11 @@ button:disabled {
 .step-card summary {
   display: flex;
   align-items: center;
+  /* 行满时让孩子换行,而不是挤压节点名 —— 中文的最小内容宽度是「一个字」,
+     压下去会变成「生/成/SQL」竖排(chip 已 nowrap,不能被压)。 */
+  flex-wrap: wrap;
   gap: var(--sp-2);
+  row-gap: var(--sp-1);
   padding: var(--sp-2) var(--sp-3);
   cursor: pointer;
   list-style: none;
@@ -1270,6 +1274,9 @@ button:disabled {
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--text-primary);
+  /* 节点名是这一行的锚点,永不被压缩(压缩中文会逐字换行) */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .step-attempt {
   font-size: var(--fs-xs);
@@ -2535,6 +2542,8 @@ button:disabled {
   background: var(--surface-muted);
   padding: 1px var(--sp-2);
   border-radius: 999px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* ── Chart ──────────────────────────────────────────── */
