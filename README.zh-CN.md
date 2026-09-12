@@ -15,6 +15,12 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
 
+<br>
+
+<img src="docs/assets/hero-chat.png" width="880" alt="Trove 对话界面:一句自然语言提问,得到结论、图表,以及右侧 12 步的分析过程">
+
+<sub><i>一次提问的完整链路——经过验证的 SQL、图表,以及每一步推理过程,全部可见。</i></sub>
+
 </div>
 
 ---
@@ -159,6 +165,12 @@ flowchart LR
     DRIFT -->|"stale"| STALE["drift report → rebuild / re-init<br/>preserves reviewed assets"]
     STALE --> KB
 ```
+
+<p align="center">
+<img src="docs/assets/hero-semantic.png" width="880" alt="Trove 语义层管理端:44 个指标、8 个数据集、56 个字段已声明,以及 10 条待审批">
+</p>
+
+<sub><i>治理面——模型声明了什么,以及还有什么等待人工确认。</i></sub>
 
 ## 能力清单
 
