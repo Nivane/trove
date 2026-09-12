@@ -9,6 +9,24 @@ export interface ChartSpec {
   measures?: string[]
 }
 
+export interface ErrorInfo {
+  /** 失败归类:gave_up / too_complex / permission / datasource / model /
+   *  query / mismatch / unclear / unknown —— 决定卡片文案与是否可重试。 */
+  kind?: string
+  title?: string
+  explanation?: string
+  suggestion?: string
+  retryable?: boolean
+  detail?: {
+    /** 原始错误文本(内部措辞),仅管理员折叠区展示。 */
+    raw?: string
+    node?: string
+    error_class?: string
+    domain?: string
+    [k: string]: unknown
+  }
+}
+
 export interface DoneSummary {
   session_id?: string
   run_id?: string
@@ -22,6 +40,9 @@ export interface DoneSummary {
   verdict?: string
   reason?: string
   error?: string
+  /** 错误呈现层产物:用户可见的标题/解释/建议 + 机器细节。前端渲染错误卡片,
+   *  不解析错误 markdown、不重猜类别。 */
+  error_info?: ErrorInfo
   final_response?: string
   columns?: string[]
   /** 完整查询结果(受后端 result_max_rows 约束;下载用,不放回答案表格)。 */

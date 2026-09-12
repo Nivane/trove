@@ -303,6 +303,11 @@ class WorkflowState(BaseModel):
     # graceful degradation channel: first node failure message wins
     error: str = ""
 
+    # 错误呈现层(services/errors/present.present_error)的产物:用户可见的
+    # 标题/解释/下一步 + 机器细节(error_class/node/raw)。output 节点写入,
+    # 随 summary 到前端渲染错误卡片——前端不解析 markdown、不猜类别。
+    error_info: dict[str, Any] = Field(default_factory=dict)
+
     # execution-error feedback: execute_sql failures route back to gen_sql
     # with this message (shared retry budget); cleared on success
     error_feedback: str = ""

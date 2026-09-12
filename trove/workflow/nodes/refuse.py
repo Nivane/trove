@@ -46,60 +46,164 @@ def _no_model_message(lang: str) -> str:
     )
 
 
+# ── 编译 MISS 分因 → 人话 ────────────────────────────────
+# reason slug 是机器语言(compiler 的 CompileMiss.reason)。面向用户的文案
+# 说清「问题里的什么概念没被声明」,slug 只留在日志与 refusal 契约里。
+_MISS_COPY: dict[str, tuple[str, str]] = {
+    "no_metric_match": ("指标(如 {c})", "the metric (e.g. {c})"),
+    "metric_anchor_unmatched": ("指标口径", "the metric definition"),
+    "unresolved_answer_column": ("查询要输出的字段", "the field the query must output"),
+    "unresolved_filter_field": ("筛选条件用到的字段", "the field used by a filter"),
+    "enum_value_unresolved": ("筛选值对应的字段", "the field behind a filter value"),
+    "missing_filter_value": ("筛选值对应的字段", "the field behind a filter value"),
+    "invalid_op": ("比较操作符对应的口径", "the comparison operator's definition"),
+    "having_metric_unknown": ("筛选条件用到的指标(如 {c})", "the metric used by a filter (e.g. {c})"),
+    "having_without_aggregation": ("筛选条件所依赖的分组口径", "the grouping behind a filter"),
+    "unknown_cardinality": ("表之间的关联关系(基数未声明)", "how the tables relate (cardinality undeclared)"),
+    "fan_out": ("表之间的聚合口径(直接联表会重复计数)", "the aggregation path between tables (a plain join double-counts)"),
+    "unreachable_table": ("问题涉及的表(与已声明模型不连通)", "the table involved (it is not linked to the declared model)"),
+    "ambiguous_join_path": ("表之间唯一的关联路径(存在多条)", "a single join path between the tables (several exist)"),
+    "derived_cycle": ("派生指标的循环定义", "a circular derived-metric definition"),
+    "derived_depth": ("派生指标的层级(嵌套过深)", "the derived-metric nesting (too deep)"),
+    "derived_unresolved": ("派生指标的表达式", "the derived-metric expression"),
+    "no_plan_or_matched": ("数据表", "the table"),
+    "nothing_compilable": ("数据表与字段", "the tables and fields"),
+    "limit_without_order": ("排序口径(要取前 N 条,却没说什么算靠前)", "the ordering (the question asks for the top N but not by what)"),
+    "guardrail_rejected": ("计算方式", "the computation"),
+    "no_semantic_match": ("概念(指标、字段或筛选口径)", "the concepts (metrics, fields, or filter calibers)"),
+    "uncovered": ("概念(指标、字段或筛选口径)", "the concepts (metrics, fields, or filter calibers)"),
+}
+
+
+def _miss_phrase(lang: str, reason: str, component: str = "") -> str:
+    """未知 slug 退回泛化说法 —— 宁可笼统也不把内部 slug 摆给用户。"""
+    pair = _MISS_COPY.get(reason)
+    if pair is None:
+        return L(lang, "概念(指标、字段或筛选口径)", "the concepts (metrics, fields, or filter calibers)")
+    template = pair[0] if lang == "zh" else pair[1]
+    return template.replace("{c}", component) if "{c}" in template else template
+
+
+def _draft_name(draft: dict[str, Any]) -> str:
+    return str(draft.get("name") or "")
+
+
+def _draft_expr(draft: dict[str, Any]) -> str:
+    return str(draft.get("expression") or "")
+
+
+def _draft_what(lang: str, draft: dict[str, Any]) -> str:
+    """草稿的类别用业务词说:字段 / 指标(而非 kind=field/metric)。"""
+    return (
+        L(lang, "字段", "field")
+        if draft.get("kind") == "field"
+        else L(lang, "指标", "metric")
+    )
+
+
 def _uncovered_message(lang: str, reason: str, draft: dict[str, Any] | None,
                        conflict: bool = False) -> str:
+    """缺声明的用户文案:说清缺什么、你能做什么。
+
+    ``reason`` 可以是编译分因 slug 或 ``slug: component``(refuse 节点拼的),
+    一律翻译成人话;YAML 内部键(kind= / expression=)不进用户视野。
+    """
+    slug, _, component = reason.partition(":")
+    component = component.strip()
+    what = _miss_phrase(lang, slug.strip(), component)
     if draft is None:
         return L(
             lang,
-            f"当前语义模型缺少回答此问题所需的声明（{reason}）。"
-            "请在管理端补充模型声明（metric/字段），然后重发此问题。",
-            f"The semantic model is missing a declaration needed to answer "
-            f"this question ({reason}). Add the missing metric/field in the "
-            f"admin console, then re-ask.",
+            f"当前语义模型缺少回答这个问题所需的声明：{what}，"
+            "因此暂时无法生成查询。\n"
+            "请管理员在管理端的数据源语义模型里补充该声明，然后重新提问。",
+            f"The semantic model is missing the declaration this question "
+            f"needs: {what}. No query could be built.\n"
+            "Ask an admin to add it in the datasource's semantic model, then "
+            "ask again.",
         )
-    name = draft.get("name", "")
-    expr = draft.get("expression", "")
-    lines = [f"- kind={draft.get('kind', '?')}, name={name}, expression={expr}"]
+
+    lines: list[str] = []
+    if _draft_name(draft):
+        lines.append(
+            L(
+                lang,
+                f"- {_draft_what(lang, draft)}名称：{_draft_name(draft)}",
+                f"- {_draft_what(lang, draft)} name: {_draft_name(draft)}",
+            )
+        )
+    if _draft_expr(draft):
+        lines.append(
+            L(
+                lang,
+                f"- 计算方式：{_draft_expr(draft)}",
+                f"- Expression: {_draft_expr(draft)}",
+            )
+        )
     syns = draft.get("synonyms") or []
     if syns:
-        lines.append("- synonyms: " + ", ".join(map(str, syns)))
+        lines.append(
+            L(
+                lang,
+                f"- 识别用词：{', '.join(map(str, syns))}",
+                f"- Recognised as: {', '.join(map(str, syns))}",
+            )
+        )
+    body = "\n".join(lines)
+
     if conflict:
         return L(
             lang,
-            f"当前语义模型缺少回答此问题所需的声明（{reason}）。"
-            f"已尝试生成草稿但与现有模型冲突（同名定义/表达式不可解析/"
-            "数据集未声明），未写入：\n"
-            + "\n".join(lines) + "\n请在管理端人工补充声明。",
-            f"The semantic model is missing a declaration needed to answer "
-            f"this question ({reason}). A draft was attempted but conflicts "
-            f"with the current model (duplicate name / unparseable expression "
-            f"/ undeclared dataset) and was NOT written:\n"
-            + "\n".join(lines) + "\nPlease add the declaration manually.",
+            f"当前语义模型缺少回答这个问题所需的声明：{what}。\n"
+            "系统尝试自动起草了一份补充声明，但它与现有模型冲突"
+            "（重名 / 表达式无法解析 / 引用了未声明的数据集），因此没有写入：\n"
+            f"{body}\n"
+            "请管理员在管理端手动补充，然后重新提问。",
+            f"The semantic model is missing the declaration this question "
+            f"needs: {what}.\n"
+            "A draft declaration was attempted but conflicts with the current "
+            "model (duplicate name / unparseable expression / undeclared "
+            "dataset), so it was not written:\n"
+            f"{body}\n"
+            "Ask an admin to add it manually, then ask again.",
         )
     return L(
         lang,
-        f"当前语义模型缺少回答此问题所需的声明（{reason}）。"
-        f"已生成扩展草稿：\n"
-        + "\n".join(lines)
-        + "\n请到管理端确认该草稿（确认后立即重答）；确认前不会生成 SQL。",
-        f"The semantic model is missing a declaration needed to answer this "
-        f"question ({reason}). An extension draft was generated:\n"
-        + "\n".join(lines)
-        + "\nConfirm the draft in the admin console (it will be re-answered "
-        "immediately after confirmation); no SQL is generated until then.",
+        f"当前语义模型缺少回答这个问题所需的声明：{what}。\n"
+        "系统已自动起草一份补充声明，等待管理员确认：\n"
+        f"{body}\n"
+        "请到管理端确认这份草稿（确认后会立即重新回答）；确认之前不会生成查询。",
+        f"The semantic model is missing the declaration this question needs: "
+        f"{what}.\n"
+        "A draft declaration was generated and is waiting for review:\n"
+        f"{body}\n"
+        "Confirm it in the admin console (the question is re-answered right "
+        "after); no query runs until then.",
     )
 
 
 def _auto_confirmed_message(lang: str, reason: str, draft: dict[str, Any] | None) -> str:
     """A/B 档自动确认文案:物理列字段/机械聚合指标已验证入库,正在重答。"""
-    name = str(draft.get("name", "")) if draft else ""
-    expr = str(draft.get("expression", "")) if draft else ""
-    lines = []
+    local = reason.split(":", 1)[0].strip()
+    what = _miss_phrase(lang, local)
+    lines: list[str] = []
     if draft:
-        lines.append(f"- kind={draft.get('kind', '?')}, name={name}, expression={expr}")
-        syns = draft.get("synonyms") or []
-        if syns:
-            lines.append("- synonyms: " + ", ".join(map(str, syns)))
+        if _draft_name(draft):
+            lines.append(
+                L(
+                    lang,
+                    f"- {_draft_what(lang, draft)}名称：{_draft_name(draft)}",
+                    f"- {_draft_what(lang, draft)} name: {_draft_name(draft)}",
+                )
+            )
+        if _draft_expr(draft):
+            lines.append(
+                L(
+                    lang,
+                    f"- 计算方式：{_draft_expr(draft)}",
+                    f"- Expression: {_draft_expr(draft)}",
+                )
+            )
     gate = L(
         lang,
         "该字段已在物理表中确认存在"
@@ -111,12 +215,12 @@ def _auto_confirmed_message(lang: str, reason: str, draft: dict[str, Any] | None
     )
     return L(
         lang,
-        f"已自动补充声明（{reason}）：\n"
+        f"回答这个问题需要{what}，系统已自动补充声明：\n"
         + ("\n".join(lines) + "\n" if lines else "")
-        + f"{gate}，已直接入库，正在重新回答你的问题。",
-        f"Declaration auto-added ({reason}):\n"
+        + f"{gate}，已直接写入语义模型，正在重新回答你的问题。",
+        f"Answering this needs {what}; the declaration was added automatically:\n"
         + ("\n".join(lines) + "\n" if lines else "")
-        + f"{gate}, applied directly, and your question is being re-answered.",
+        + f"{gate} and written to the semantic model — re-answering your question now.",
     )
 
 

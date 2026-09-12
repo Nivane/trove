@@ -18,6 +18,7 @@ from typing import Any
 
 from trove.core.i18n import L
 from trove.llm.observability import record_span
+from trove.services.errors import present_error
 from trove.services.limits import get_result_limits
 from trove.services.sql.format import format_sql
 from trove.services.viz.spark import render_ascii_bar, render_waterfall_ascii
@@ -43,6 +44,32 @@ def _record_result(state: WorkflowState) -> None:
         },
     ):
         pass
+
+
+def _error_response(state: WorkflowState) -> tuple[str, dict[str, Any]]:
+    """失败路径的对外呈现:标题/解释/下一步 + 折叠的内部细节。
+
+    返回 (markdown, error_info)。error_info 走 summary 到前端——用户可见
+    那部分由 present_error 保证不含流水线词汇,原始文本一字不动地留在
+    detail.raw 里,折叠区与日志仍可归因。
+    """
+    lang = state.lang
+    info = present_error(state.error, lang=lang)
+    head = (
+        f"**{L(lang, '错误', 'Error')}**: {info['title']}\n\n"
+        f"{info['explanation']}\n\n"
+        f"{info['suggestion']}\n"
+    )
+    body = (
+        f"**{L(lang, '内部诊断信息', 'Internal diagnostics')}**\n\n"
+        f"- {L(lang, '错误类别', 'Error class')}: `{info['detail']['error_class']}`\n"
+        f"- {L(lang, '失败节点', 'Failed node')}: `{info['detail']['node']}`\n"
+        f"- {L(lang, '原始信息', 'Raw message')}: `{info['detail']['raw']}`\n"
+    )
+    markdown = head + "\n" + _details_wrap(
+        L(lang, "技术细节", "Technical details"), body,
+    ) + "\n"
+    return markdown, info
 
 
 def _details_wrap(summary: str, body: str) -> str:
@@ -216,8 +243,8 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     display_rows = limits.display_rows
 
     if state.error:
-        response = f"**{L(lang, '错误', 'Error')}**: {state.error}\n"
-        return {"final_response": response}
+        response, error_info = _error_response(state)
+        return {"final_response": response, "error_info": error_info}
 
     parts: list[str] = []
 

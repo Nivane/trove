@@ -193,7 +193,8 @@ export function extractStep(payload: StepPayload): StepView {
         'weak_signal',
         'history_present',
       ]) {
-        if (ev[key]) signals.push(key.replace(/_signal$/, '').replace(/_/g, ' '))
+        // 原始信号键交给 label 层翻译(见 signalLabel) —— 这里不做文案。
+        if (ev[key]) signals.push(key)
       }
       view.intentEvidence = {
         signals,
@@ -456,21 +457,261 @@ export function extractStep(payload: StepPayload): StepView {
 }
 
 /** Human-readable label for the KB retrieval backend used by a step. */
+function pick(
+  lang: string,
+  zh: Record<string, string>,
+  en: Record<string, string>,
+  value: string,
+): string {
+  return (lang === 'zh' ? zh[value] : en[value]) ?? value
+}
+
+/** 检索方式用业务词说;底层实现(FTS5/RRF)留在 title 里给需要的人。 */
 export function backendLabel(backend: string, lang: string): string {
   if (!backend) return ''
-  const zh: Record<string, string> = {
-    builtin: '内置 FTS5 (SQLite)',
-    pg_hybrid: 'PG 混合检索 (FTS+向量+RRF)',
-    hybrid: '混合检索',
-    rag: '向量检索',
-  }
-  const en: Record<string, string> = {
-    builtin: 'builtin FTS5 (SQLite)',
-    pg_hybrid: 'PG hybrid (FTS+vector+RRF)',
-    hybrid: 'hybrid',
-    rag: 'vector',
-  }
-  return lang === 'zh' ? (zh[backend] ?? backend) : (en[backend] ?? backend)
+  return pick(lang, _BACKEND, _BACKEND_EN, backend)
+}
+
+/** 检索后端的技术名 —— 悬停提示,不占面板正文。 */
+export function backendDetail(backend: string, lang: string): string {
+  if (!backend) return ''
+  return pick(lang, _BACKEND_DETAIL, _BACKEND_DETAIL_EN, backend)
+}
+
+const _BACKEND: Record<string, string> = {
+  builtin: '关键词检索',
+  pg_hybrid: '混合检索',
+  hybrid: '混合检索',
+  rag: '向量检索',
+}
+const _BACKEND_EN: Record<string, string> = {
+  builtin: 'keyword search',
+  pg_hybrid: 'hybrid search',
+  hybrid: 'hybrid search',
+  rag: 'vector search',
+}
+const _BACKEND_DETAIL: Record<string, string> = {
+  builtin: '内置 FTS5 (SQLite) 全文检索',
+  pg_hybrid: 'PG 混合检索 (FTS + 向量 + RRF)',
+  hybrid: '关键词 + 向量混合检索',
+  rag: '向量检索',
+}
+const _BACKEND_DETAIL_EN: Record<string, string> = {
+  builtin: 'built-in FTS5 (SQLite) full-text search',
+  pg_hybrid: 'PG hybrid (FTS + vector + RRF)',
+  hybrid: 'keyword + vector hybrid',
+  rag: 'vector search',
+}
+
+/** route_intent 证据信号:后端键名 → 人话。 */
+const _SIGNAL: Record<string, string> = {
+  strong_match: '强匹配',
+  weak_signal: '弱匹配',
+  data_signal: '数据问句',
+  write_signal: '写操作',
+  chitchat_signal: '闲聊',
+  correction_signal: '纠错反馈',
+  confirm_signal: '确认草稿',
+  followup_signal: '追问',
+  history_present: '有历史上下文',
+}
+const _SIGNAL_EN: Record<string, string> = {
+  strong_match: 'strong match',
+  weak_signal: 'weak match',
+  data_signal: 'data question',
+  write_signal: 'write op',
+  chitchat_signal: 'chitchat',
+  correction_signal: 'correction',
+  confirm_signal: 'confirm draft',
+  followup_signal: 'follow-up',
+  history_present: 'history',
+}
+
+/** 信号标签;后端新增而前端未收录的信号退化成可读词,不露下划线键名。 */
+export function signalLabel(signal: string, lang: string): string {
+  if (!signal) return ''
+  const known = lang === 'zh' ? _SIGNAL[signal] : _SIGNAL_EN[signal]
+  if (known) return known
+  return signal.replace(/_signal$/, '').replace(/_/g, ' ')
+}
+
+/** 复杂度分级(simple / standard / complex)。 */
+export function complexityLabel(value: string, lang: string): string {
+  return pick(
+    lang,
+    { simple: '简单', standard: '常规', complex: '复杂' },
+    { simple: 'simple', standard: 'standard', complex: 'complex' },
+    value,
+  )
+}
+
+/** 语义编译结果(compiled / partial / miss)。 */
+export function compileOutcomeLabel(value: string, lang: string): string {
+  return pick(
+    lang,
+    { compiled: '已编译', partial: '部分编译', miss: '未编译' },
+    { compiled: 'compiled', partial: 'partially compiled', miss: 'not compiled' },
+    value,
+  )
+}
+
+/** 计划校验状态(ok / dropped)。 */
+export function planStatusLabel(value: string, lang: string): string {
+  return pick(
+    lang,
+    { ok: '通过', dropped: '已丢弃' },
+    { ok: 'passed', dropped: 'dropped' },
+    value,
+  )
+}
+
+/** 修复模式:fixer 定点修 / revisor 语义重写。 */
+export function fixModeLabel(value: string, lang: string): string {
+  return pick(
+    lang,
+    { fixer: '定点修复', revisor: '语义重写', none: '无需修复' },
+    { fixer: 'targeted fix', revisor: 'semantic rewrite', none: 'no fix needed' },
+    value,
+  )
+}
+
+/** 回归进展(versions.py 的回归状态机)。 */
+export function progressLabel(value: string, lang: string): string {
+  return pick(
+    lang,
+    {
+      first: '首次失败',
+      invalid: '原地打转',
+      none: '无进展',
+      shift: '问题转移',
+      improved: '有进展',
+      'validator-conflict': '校验误报复现',
+    },
+    {
+      first: 'first failure',
+      invalid: 'same error again',
+      none: 'no progress',
+      shift: 'problem shifted',
+      improved: 'progress',
+      'validator-conflict': 'validator false alarm',
+    },
+    value,
+  )
+}
+
+/** 编译未覆盖分因(compiler 的 CompileMiss.reason)。 */
+const _MISS: Record<string, string> = {
+  no_metric_match: '缺少指标声明',
+  metric_anchor_unmatched: '指标口径对不上',
+  unresolved_answer_column: '输出字段未声明',
+  unresolved_filter_field: '筛选字段未声明',
+  enum_value_unresolved: '筛选值没有对应字段',
+  missing_filter_value: '筛选值没有对应字段',
+  invalid_op: '比较口径未声明',
+  having_metric_unknown: '筛选指标未声明',
+  having_without_aggregation: '缺少分组口径',
+  unknown_cardinality: '表关系基数未声明',
+  fan_out: '联表会重复计数',
+  unreachable_table: '表与模型不连通',
+  ambiguous_join_path: '联表路径不唯一',
+  derived_cycle: '派生指标循环定义',
+  derived_depth: '派生指标嵌套过深',
+  derived_unresolved: '派生指标表达式缺失',
+  no_plan_or_matched: '没匹配到数据表',
+  nothing_compilable: '没有可编译的表与字段',
+  limit_without_order: '缺少排序口径',
+  guardrail_rejected: '计算方式被护栏拦下',
+  no_semantic_match: '概念未建模',
+  uncovered: '概念未建模',
+}
+const _MISS_EN: Record<string, string> = {
+  no_metric_match: 'no metric declared',
+  metric_anchor_unmatched: 'metric anchor unmatched',
+  unresolved_answer_column: 'output field undeclared',
+  unresolved_filter_field: 'filter field undeclared',
+  enum_value_unresolved: 'no field for filter value',
+  missing_filter_value: 'no field for filter value',
+  invalid_op: 'comparison not declared',
+  having_metric_unknown: 'filter metric undeclared',
+  having_without_aggregation: 'no grouping declared',
+  unknown_cardinality: 'join cardinality undeclared',
+  fan_out: 'join double-counts',
+  unreachable_table: 'table not linked to the model',
+  ambiguous_join_path: 'ambiguous join path',
+  derived_cycle: 'circular derived metric',
+  derived_depth: 'derived metric too deep',
+  derived_unresolved: 'derived metric expression missing',
+  no_plan_or_matched: 'no table matched',
+  nothing_compilable: 'nothing to compile',
+  limit_without_order: 'no ordering declared',
+  guardrail_rejected: 'computation blocked by guardrail',
+  no_semantic_match: 'concept not modeled',
+  uncovered: 'concept not modeled',
+}
+
+/** 未覆盖分因;编译器新加的 slug 原样露出(管理端要拿去对日志),不编造。 */
+export function missReasonLabel(reason: string, lang: string): string {
+  return pick(lang, _MISS, _MISS_EN, reason)
+}
+
+/** 上下文预算块(context_budget.py 的块名)。 */
+export function blockLabel(block: string, lang: string): string {
+  const known =
+    lang === 'zh' ? _BLOCK[block] : _BLOCK_EN[block]
+  return known ?? block.replace(/_/g, ' ')
+}
+const _BLOCK: Record<string, string> = {
+  few_shots: '示例',
+  rules: '规则',
+  term_notes: '术语备注',
+  metrics: '指标',
+  entities: '实体',
+  lessons: '经验',
+  episodes: '历史问答',
+  plan: '计划',
+  history: '对话历史',
+  user_facts: '用户偏好',
+  profile: '准确率画像',
+}
+const _BLOCK_EN: Record<string, string> = {
+  few_shots: 'examples',
+  rules: 'rules',
+  term_notes: 'term notes',
+  metrics: 'metrics',
+  entities: 'entities',
+  lessons: 'lessons',
+  episodes: 'episodes',
+  plan: 'plan',
+  history: 'history',
+  user_facts: 'user facts',
+  profile: 'profile',
+}
+
+/** 校验规则号 → 规则族(F1 形状 / F2 过滤 / F3 取值 / F4 排序)。 */
+export function ruleLabel(rule: string, lang: string): string {
+  // 规则号有 `F1-b` 与 `F1_shape` 两种写法(历史遗留),都按族取前缀
+  const family = rule.split(/[-_]/)[0]
+  const known =
+    lang === 'zh' ? _RULE_FAMILY[family] : _RULE_FAMILY_EN[family]
+  return known ?? rule
+}
+const _RULE_FAMILY: Record<string, string> = {
+  F1: '形状',
+  F2: '过滤条件',
+  F3: '取值',
+  F4: '排序',
+  count: '计数形状',
+  answer: '输出列',
+  extra: '多余列',
+}
+const _RULE_FAMILY_EN: Record<string, string> = {
+  F1: 'shape',
+  F2: 'filters',
+  F3: 'values',
+  F4: 'ordering',
+  count: 'count shape',
+  answer: 'answer columns',
+  extra: 'extra columns',
 }
 
 /** i18n key for the episodic-memory channel label (lexical / hybrid). */
@@ -478,6 +719,13 @@ export function memoryLabelKey(
   backend: string,
 ): 'memoryHybrid' | 'memoryLexical' {
   return backend === 'hybrid' ? 'memoryHybrid' : 'memoryLexical'
+}
+
+/** Display a context-budget token count compactly. */
+export function fmtTokens(tokens: number | null | undefined): string {
+  if (tokens === null || tokens === undefined) return ''
+  if (tokens < 1000) return `${tokens} tokens`
+  return `${(tokens / 1000).toFixed(1)}k tokens`
 }
 
 /** Display duration in a compact form. */

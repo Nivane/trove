@@ -12,6 +12,7 @@ import { notifyError } from '../utils/notify'
 import { telemetry, newRequestId } from '../utils/telemetry'
 import type {
   DoneSummary,
+  ErrorInfo,
   HitlPayload,
   SseEvent,
   StepPayload,
@@ -43,6 +44,8 @@ export interface Turn {
   summary: DoneSummary | null
   status: 'streaming' | 'done' | 'error' | 'hitl'
   error?: string
+  /** 结构化错误(summary.error_info):错误卡片渲染这份,而非解析 error 文本。 */
+  errorInfo?: ErrorInfo
   hitlBatch?: boolean
   hitlActionsShown?: boolean
   rating?: 1 | -1 | null
@@ -358,6 +361,7 @@ export const useChatStore = defineStore('chat', {
               t.answer += (t.answer ? '\n\n' : '') + answerAdd
             }
             if (summary) t.summary = summary
+            if (summary?.error_info) t.errorInfo = summary.error_info
             if (summary?.sql && !t.steps.some((s) => s.node === 'gen_sql')) {
               t.steps.push({
                 node: 'gen_sql',
@@ -371,14 +375,16 @@ export const useChatStore = defineStore('chat', {
           break
         }
         case 'error': {
+          // 原始串照旧留给诊断(telemetry / 反馈上报),呈现一律走 error_info。
+          const summary = (ev.data as { summary?: DoneSummary }).summary
           const msg = String(
             ev.data.error ??
               ev.data.message ??
+              summary?.error ??
               ev.data.content ??
-              (ev.data as { summary?: { error?: string } }).summary?.error ??
               '',
           )
-          this._failTurn(msg || 'unknown error')
+          this._failTurn(msg || 'unknown error', summary?.error_info)
           break
         }
         default:
@@ -388,10 +394,11 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    _failTurn(message: string) {
+    _failTurn(message: string, errorInfo?: ErrorInfo) {
       const t = this.currentTurn
       if (t) {
         t.error = message
+        if (errorInfo) t.errorInfo = errorInfo
         t.status = 'error'
         t.live = []
       }
@@ -609,6 +616,7 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
           final_response: summary.final_response || m.content,
         }
         t.answer = summary.final_response || m.content
+        if (summary.error_info) t.errorInfo = summary.error_info
         // 分析面板只服务"当前直播轮次":历史会话不重建步骤/日志,
         // 只保留 answer/summary(消息体渲染 SQL 与图表用),保证点开
         // 历史会话时右侧没有可展开的分析过程。

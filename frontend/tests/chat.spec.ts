@@ -352,3 +352,73 @@ describe('chat store — SSE event state machine', () => {
     expect('datasource' in body).toBe(false)
   })
 })
+
+// ── 失败轮次的呈现接线:结构化错误随事件进来,卡片据此渲染 ──────────
+describe('chat store — failed turn carries structured error', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+  })
+
+  function streamingTurn(chat: ReturnType<typeof useChatStore>) {
+    chat.turns.push({
+      question: 'q',
+      thoughts: [],
+      steps: [],
+      answer: '',
+      summary: null,
+      status: 'streaming',
+    })
+    return chat.currentTurn!
+  }
+
+  const INFO = {
+    kind: 'gave_up',
+    title: '这次没能给出可靠结果',
+    explanation: '系统自动修正了 3 轮,仍然没能算稳。',
+    retryable: true,
+    detail: { raw: '回退目标 schema_linking 连续失败', node: 'schema_linking' },
+  }
+
+  it('captures error_info from an error event alongside the raw message', () => {
+    const chat = useChatStore()
+    const turn = streamingTurn(chat)
+    chat.onEvent({
+      type: 'error',
+      data: { error: 'boom', summary: { error: 'boom', error_info: INFO } },
+    })
+    expect(turn.status).toBe('error')
+    expect(turn.errorInfo?.title).toBe(INFO.title)
+    // 原始串照旧保留给诊断,不被结构化文案顶掉
+    expect(turn.error).toBe('boom')
+  })
+
+  it('captures error_info from a done event so the card still renders', () => {
+    const chat = useChatStore()
+    const turn = streamingTurn(chat)
+    chat.onEvent({
+      type: 'done',
+      data: {
+        summary: {
+          final_response: '**错误**: 回退目标 schema_linking 连续失败',
+          error: '回退目标 schema_linking 连续失败',
+          error_info: INFO,
+        },
+      },
+    })
+    expect(turn.errorInfo?.title).toBe(INFO.title)
+  })
+
+  it('restores error_info with a persisted session', async () => {
+    const { restoreTurns } = await import('../src/stores/chat')
+    const turns = restoreTurns([
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '**错误**: boom',
+        metadata: { summary: { error: 'boom', error_info: INFO, final_response: '' } },
+      },
+    ] as never)
+    expect(turns[0].errorInfo?.title).toBe(INFO.title)
+  })
+})

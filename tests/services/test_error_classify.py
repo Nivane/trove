@@ -151,6 +151,26 @@ class TestTagging:
         assert {"SQL_PERMISSION", "DS_AUTH", "LLM_SERVICE", "TOOL_RUNTIME",
                 "ARGS_SCHEMA"} <= DETERMINISTIC_DEAD_END
 
+    def test_explicit_tag_wins_over_lexicon(self):
+        """标签是上游的既定判定:文本本身无关键词时也不得降级为 UNKNOWN。"""
+        verdict = classify_error("[ERR:DS_AUTH] denied", context="workflow")
+        assert verdict.cls.id == "DS_AUTH"
+        assert "tag" in verdict.signals
+
+    def test_explicit_tag_wins_over_contradicting_wording(self):
+        """措辞与标签冲突时以标签为准(下游不该按措辞重猜)。"""
+        verdict = classify_error(
+            "[ERR:SQL_TIMEOUT] connection refused", context="workflow",
+        )
+        assert verdict.cls.id == "SQL_TIMEOUT"
+
+    def test_unknown_tag_falls_through_to_lexicon(self):
+        """未注册的标签不是权威 —— 照常走词典。"""
+        verdict = classify_error(
+            "[ERR:NOT_A_CLASS] no such table: loans", context="sql",
+        )
+        assert verdict.cls.id == "SQL_SCHEMA_MISSING"
+
 
 class TestValidateArguments:
     PARAMS = {

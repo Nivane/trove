@@ -57,7 +57,7 @@
                 <span class="status-k">{{ t('failedStep', ui.lang) }}</span>
                 <span class="status-node">{{ lastFailedLabel || t('error', ui.lang) }}</span>
               </div>
-              <div v-if="currentTurn.error" class="status-hint">{{ currentTurn.error }}</div>
+              <div v-if="failureTitle" class="status-hint">{{ failureTitle }}</div>
             </div>
           </template>
           <template v-else-if="currentTurn.status === 'done' && currentTurn.steps.length">
@@ -129,6 +129,7 @@ import { useChatStore } from '../../stores/chat'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { stepLabel, fmtMs } from '../../utils/steps'
+import { errorCard } from '../../utils/errors'
 
 const chat = useChatStore()
 const ui = useUiStore()
@@ -213,6 +214,17 @@ const lastFailedLabel = computed(() => {
   if (!t?.steps.length) return ''
   const last = t.steps[t.steps.length - 1]
   return last.label || stepLabel(last.node, ui.lang)
+})
+
+/** 失败原因一句话:错误卡片同一份文案,面板不另起一套措辞。
+ *  结构化错误用短标题(状态栏要的是"发生了什么");老会话只有原始串,
+ *  那就照实显示 —— 总比什么都不说强。 */
+const failureTitle = computed(() => {
+  const t = currentTurn.value
+  if (!t) return ''
+  const card = errorCard({ error: t.error, error_info: t.errorInfo }, ui.lang)
+  if (t.errorInfo) return card?.title || ''
+  return card?.explanation || card?.title || t.error || ''
 })
 
 const summaryTotal = computed(() => {
