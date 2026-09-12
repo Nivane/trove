@@ -1817,6 +1817,7 @@ class SessionManager:
             "verdict": final.verdict,
             "reason": final.reason,
             "error": final.error,
+            "error_info": final.error_info,
             "kb_hits": final.kb_hits,
             "semantics": final.semantics,
             "insights": final.insights,

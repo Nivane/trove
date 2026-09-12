@@ -1137,7 +1137,6 @@ button:disabled {
   color: var(--text-tertiary);
 }
 .status-node {
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
   color: var(--text-primary);
   font-weight: 600;
@@ -1151,7 +1150,8 @@ button:disabled {
 .status-hint {
   margin-top: var(--sp-1);
   font-size: var(--fs-xs);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 .status-ok-icon {
   color: var(--ok);
@@ -1267,8 +1267,9 @@ button:disabled {
   flex-shrink: 0;
 }
 .step-node {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-primary);
 }
 .step-attempt {
   font-size: var(--fs-xs);
@@ -1350,15 +1351,14 @@ button:disabled {
   font-size: var(--fs-sm);
 }
 .link-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
   align-items: baseline;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
 }
 .link-row .k {
   color: var(--text-tertiary);
-  flex-shrink: 0;
-  min-width: 128px;
+  white-space: nowrap;
 }
 .link-row .v {
   color: var(--text-primary);
@@ -1382,8 +1382,13 @@ button:disabled {
   background: var(--surface-muted);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-family: var(--font-mono);
   font-size: 12px;
+  white-space: nowrap;
+}
+/* 标识符(表名/字段名/规则号)才穿等宽字体 */
+.chip-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 .chip-term {
   color: var(--accent);
@@ -1422,11 +1427,10 @@ button:disabled {
   border-color: var(--border-strong);
 }
 .chip-backend {
-  color: var(--text-primary);
+  color: var(--text-secondary);
   background: var(--surface-raised);
   border-color: var(--border-strong);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   cursor: help;
   margin-left: var(--sp-1);
 }
@@ -1434,8 +1438,7 @@ button:disabled {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: transparent;
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   cursor: help;
   margin-left: var(--sp-1);
 }
@@ -1443,6 +1446,22 @@ button:disabled {
   color: var(--text-tertiary);
   font-size: 10px;
   cursor: help;
+}
+.ver-list {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+}
+.ver-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.ver-round {
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  min-width: 3.5rem;
 }
 .link-log {
   margin-top: var(--sp-1);
@@ -1709,40 +1728,108 @@ button:disabled {
   font-size: var(--fs-sm);
 }
 
-/* ── Error ──────────────────────────────────────────── */
-.error-box {
-  background: var(--danger-bg);
-  color: var(--danger-text);
-  border: 1px solid transparent;
+/* ── Error card ─────────────────────────────────────
+   A failed turn is explained, not dumped: what happened / what you can do.
+   The raw internal message is folded away for admins (ErrorCard.vue). */
+.error-card {
+  max-width: 46rem;
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid color-mix(in srgb, var(--danger) 65%, transparent);
   border-radius: var(--r-md);
+  background: var(--surface-raised);
   padding: var(--sp-3) var(--sp-4);
   font-size: var(--fs-sm);
+}
+.error-head {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  flex-wrap: wrap;
 }
-.error-actions {
-  display: inline-flex;
-  gap: var(--sp-2);
-  margin-left: auto;
+.error-icon {
+  color: var(--danger);
   flex-shrink: 0;
 }
-.retry-btn {
-  background: transparent;
-  color: var(--danger-text);
-  border: 1px solid var(--border-default);
-  border-radius: 999px;
-  padding: 2px var(--sp-3);
-  font-size: var(--fs-xs);
+.error-title {
   font-weight: 600;
+  color: var(--text-primary);
+}
+.error-text {
+  margin: var(--sp-2) 0 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.error-hint {
+  margin: var(--sp-2) 0 0;
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}
+.error-detail {
+  margin-top: var(--sp-3);
+}
+.error-detail > summary {
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+.error-detail-list {
+  margin: var(--sp-2) 0 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+}
+.error-detail-list dt {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.error-detail-list dd {
+  margin: 0;
+  color: var(--text-secondary);
+  min-width: 0;
+}
+.error-detail-list dd.mono {
+  font-family: var(--font-mono);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.error-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+}
+.error-btn {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  padding: 3px var(--sp-3);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  font-family: inherit;
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  flex-shrink: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
 }
-.retry-btn:hover {
-  background: var(--surface-raised);
+.error-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+.error-btn-primary {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: var(--accent-soft);
+}
+.error-btn-primary:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 /* ── Streaming ──────────────────────────────────────── */

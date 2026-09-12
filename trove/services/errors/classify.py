@@ -218,6 +218,9 @@ _ANY = frozenset({""})
 
 # (pattern, class_id, allowed_contexts|None)
 _LEXICON: list[tuple[re.Pattern, str, frozenset[str] | None]] = []
+
+# tag_error 打的标签:文本前置的显式类别,优先于词典措辞匹配。
+_TAG_RE = re.compile(r"^\s*\[ERR:([A-Z_]+)\]")
 _RULES: list[tuple[str, str, frozenset[str] | None]] = [
     # ── LLM 层(仅 LLM 上下文,避免 SQL 文本里数字误伤) ─────
     (r"rate.?\s?limit|too many requests|quota exceeded|throttl|status.?code.?429|\b429\b",
@@ -383,7 +386,17 @@ def classify_error(
         exc: 原始异常(强类型信号:HTTP 状态码/内建异常/驱动类型名)。
         context: 故障面——"llm" | "sql" | "tool" | "workflow";决定
             LLM/SQL 专属词典的生效范围,避免跨层误分类。
+
+    已显式打标(``[ERR:<id>]``)的文本以标签为准:标签是上游(``tag_error``)
+    的既定判定,下游按措辞重猜会把「[ERR:DS_AUTH] 拒绝访问」这类无关键词的
+    文本降级成 UNKNOWN。
     """
+    tagged = _TAG_RE.match(text or "")
+    if tagged:
+        cls = CLASSES.get(tagged.group(1))
+        if cls is not None:
+            return ClassifiedError(cls, signals=[cls.id, "tag"])
+
     strong = _status_class(exc, context)
     if strong is not None and strong.id != "UNKNOWN":
         return ClassifiedError(strong, signals=[type(exc).__name__])

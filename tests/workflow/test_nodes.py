@@ -2585,6 +2585,37 @@ class TestOutput:
         assert "**Error**" in response
         assert "3 attempts" in response
 
+    async def test_error_state_emits_structured_error_info(self):
+        """错误路径同时给出 error_info:前端据此渲染卡片(不解析 markdown)。"""
+        update = await output(make_state(
+            error="回退目标 schema_linking 连续失败且无档可升，优雅降级", lang="zh"))
+        info = update["error_info"]
+        assert info["kind"] == "gave_up"
+        assert info["retryable"] is True
+        visible = info["title"] + info["explanation"] + info["suggestion"]
+        for internal in ("schema_linking", "优雅降级", "无档可升", "回退目标"):
+            assert internal not in visible
+        assert info["detail"]["node"] == "schema_linking"
+
+    async def test_error_headline_is_plain_language_with_tech_in_details(self):
+        """答案正文说人话;内部词汇降级进 <details> 供排查。"""
+        update = await output(make_state(
+            error="连续 3 轮修复无进展(invalid),停止迭代,优雅降级", lang="zh"))
+        response = update["final_response"]
+        assert "**错误**" in response
+        assert "没能给出可靠结果" in response
+        # 细节区保留原始文本(CLI 会把它摊平展示)
+        assert "<details>" in response
+        assert "无进展" in response.split("<details>", 1)[1]
+        # 朝向用户的解释段不得出现内部词汇
+        head = response.split("<details>", 1)[0]
+        assert "无进展" not in head
+        assert "优雅降级" not in head
+
+    async def test_error_info_present_for_deterministic_dead_end(self):
+        update = await output(make_state(error="[ERR:DS_AUTH] denied", lang="zh"))
+        assert update["error_info"]["retryable"] is False
+
     async def test_kb_hits_rendered(self):
         state = make_state(
             row_count=0,

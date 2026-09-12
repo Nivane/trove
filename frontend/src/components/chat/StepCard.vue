@@ -5,9 +5,9 @@
       <span class="step-node">{{ displayLabel }}</span>
       <span v-if="view.fastPath" class="chip chip-fast">{{ t('fastPathChip', ui.lang) }}</span>
       <span v-if="view.kbExact" class="chip chip-exact">{{ t('kbExactChip', ui.lang) }}</span>
-      <span v-if="view.complexity" class="chip chip-complexity">{{ view.complexity }}</span>
+      <span v-if="view.complexity" class="chip chip-complexity">{{ complexityLabel(view.complexity, ui.lang) }}</span>
       <span v-if="view.forced" class="chip chip-forced">{{ t('forcedChip', ui.lang) }}</span>
-      <span v-if="view.backend" class="chip chip-backend" :title="t('retrievalBackend', ui.lang)">{{ backendLabel(view.backend, ui.lang) }}</span>
+      <span v-if="view.backend" class="chip chip-backend" :title="t('retrievalBackend', ui.lang) + '：' + backendDetail(view.backend, ui.lang)">{{ backendLabel(view.backend, ui.lang) }}</span>
       <span v-if="view.memoryBackend" class="chip chip-memory" :title="t('memoryBackend', ui.lang)">{{ t(memoryLabelKey(view.memoryBackend), ui.lang) }}</span>
       <span v-if="attempt > 1" class="step-attempt">· {{ t('attempt', ui.lang, attempt) }}</span>
       <span v-if="elapsedMs != null" class="step-elapsed">{{ elapsedMs }}</span>
@@ -21,10 +21,10 @@
         <div class="link-row">
           <span class="k">{{ t('matchedTables', ui.lang) }}</span>
           <span v-if="view.link.tables.length" class="chips">
-            <span v-for="tb in view.link.tables" :key="tb" class="chip">
+            <span v-for="tb in view.link.tables" :key="tb" class="chip chip-id">
               {{ tb }}
               <span v-if="view.link.notesTables.includes(tb)" class="chip-src" :title="t('srcSchemaNotes', ui.lang)">
-                notes
+                {{ t('hasNotes', ui.lang) }}
               </span>
             </span>
           </span>
@@ -46,7 +46,7 @@
         </div>
         <div v-if="view.link.relations" class="link-row">
           <span class="k">{{ t('srcRelations', ui.lang) }}</span>
-          <span class="v">{{ t('yes', ui.lang) }}</span>
+          <span class="v">{{ t('declared', ui.lang) }}</span>
         </div>
         <div v-if="view.text && view.text !== (view.link.tables.join(', '))" class="link-log">
           <details>
@@ -61,7 +61,7 @@
         <div class="link-row">
           <span class="k">{{ t('intentSignals', ui.lang) }}</span>
           <span v-if="view.intentEvidence.signals.length" class="chips">
-            <span v-for="s in view.intentEvidence.signals" :key="s" class="chip chip-signal">{{ s }}</span>
+            <span v-for="s in view.intentEvidence.signals" :key="s" class="chip chip-signal">{{ signalLabel(s, ui.lang) }}</span>
           </span>
           <span v-else class="v">—</span>
         </div>
@@ -90,22 +90,22 @@
           <span class="k">{{ t('compileOutcome', ui.lang) }}</span>
           <span class="chips">
             <span class="chip" :class="view.compile.outcome === 'compiled' ? 'chip-exact' : 'chip-warn'">
-              {{ view.compile.outcome ?? '—' }}
+              {{ compileOutcomeLabel(view.compile.outcome ?? '', ui.lang) }}
             </span>
-            <span v-if="view.compile.missComponent" class="chip">{{ view.compile.missComponent }}</span>
+            <span v-if="view.compile.missComponent" class="chip chip-id" :title="view.compile.missComponent">{{ t('compileMissComponent', ui.lang) }}</span>
           </span>
         </div>
         <div v-if="view.compile?.missReason" class="link-row">
           <span class="k">{{ t('compileMissReason', ui.lang) }}</span>
-          <span class="mono">{{ view.compile.missReason }}</span>
+          <span class="v" :title="view.compile.missReason">{{ missReasonLabel(view.compile.missReason, ui.lang) }}</span>
         </div>
         <div v-if="view.compile?.partialReasons?.length" class="link-row">
           <span class="k">{{ t('compilePartialReasons', ui.lang) }}</span>
-          <span class="mono">{{ view.compile.partialReasons.join(', ') }}</span>
+          <span class="v">{{ view.compile.partialReasons.map((r) => missReasonLabel(r, ui.lang)).join('、') }}</span>
         </div>
         <div v-if="view.planValidation" class="link-row">
           <span class="k">{{ t('planCheck', ui.lang) }}</span>
-          <span class="v">{{ view.planValidation.status ?? '—' }}</span>
+          <span class="v">{{ planStatusLabel(view.planValidation.status ?? '', ui.lang) }}</span>
         </div>
         <div v-if="view.planValidation?.errors?.length" class="link-row">
           <span class="k">{{ t('planCheckErrors', ui.lang) }}</span>
@@ -139,8 +139,8 @@
         <div class="link-row">
           <span class="k">{{ t('ruleHits', ui.lang) }}</span>
           <span class="chips">
-            <span v-for="(h, i) in view.validationHits" :key="i" class="chip chip-warn" :title="h.reason">
-              {{ h.rule }}
+            <span v-for="(h, i) in view.validationHits" :key="i" class="chip chip-warn" :title="`${h.rule} — ${h.reason ?? ''}`">
+              {{ ruleLabel(h.rule ?? '', ui.lang) }}
             </span>
           </span>
         </div>
@@ -151,15 +151,19 @@
         <div class="link-row">
           <span class="k">{{ t('fixMode', ui.lang) }}</span>
           <span class="chips">
-            <span v-if="view.fixMode" class="chip">{{ view.fixMode }}</span>
-            <span v-if="view.lastProgress" class="chip" :class="view.lastProgress === 'improved' ? 'chip-exact' : 'chip-warn'">{{ view.lastProgress }}</span>
+            <span v-if="view.fixMode" class="chip">{{ fixModeLabel(view.fixMode, ui.lang) }}</span>
+            <span v-if="view.lastProgress" class="chip" :class="view.lastProgress === 'improved' ? 'chip-exact' : 'chip-warn'">{{ progressLabel(view.lastProgress, ui.lang) }}</span>
             <span v-if="view.noProgressRounds" class="chip chip-warn">{{ t('noProgress', ui.lang, view.noProgressRounds) }}</span>
           </span>
         </div>
         <div v-if="view.sqlVersions?.length" class="link-row">
           <span class="k">{{ t('sqlVersions', ui.lang) }}</span>
-          <span class="mono">
-            {{ view.sqlVersions.map((v) => `#${v.round}[${(v.issues || []).join(',') || (v.error || '?')}]`).join(' → ') }}
+          <span class="chips ver-list">
+            <span v-for="(v, vi) in view.sqlVersions" :key="vi" class="ver-item">
+              <span class="ver-round">{{ t('version', ui.lang, v.round ?? vi + 1) }}</span>
+              <span v-for="iss in v.issues" :key="iss" class="chip chip-warn" :title="iss">{{ ruleLabel(iss, ui.lang) }}</span>
+              <span v-if="!(v.issues || []).length" class="chip chip-warn" :title="v.error || ''">{{ t('execError', ui.lang) }}</span>
+            </span>
           </span>
         </div>
       </div>
@@ -203,7 +207,11 @@
       <MarkdownView v-else-if="view.text" :source="view.text" />
       <div v-else-if="view.contextUsage?.length" class="kv-line">
         <span class="k">{{ t('contextUsage', ui.lang) }}</span>
-        <span class="mono">{{ view.contextUsage.map((c) => `${c.block}:${c.tokens}`).join(', ') }}</span>
+        <span class="chips">
+          <span v-for="c in view.contextUsage" :key="c.block" class="chip">
+            {{ blockLabel(c.block ?? '', ui.lang) }} {{ fmtTokens(c.tokens) }}
+          </span>
+        </span>
       </div>
       <div v-else-if="status !== 'done'" class="step-empty">
         <LoaderCircle :size="13" class="spin" />
@@ -220,7 +228,24 @@ import { LoaderCircle } from 'lucide-vue-next'
 import MarkdownView from './MarkdownView.vue'
 import SqlBlock from './SqlBlock.vue'
 import { useUiStore } from '../../stores/ui'
-import { extractStep, stepLabel, backendLabel, memoryLabelKey, fmtMs } from '../../utils/steps'
+import {
+  extractStep,
+  stepLabel,
+  backendLabel,
+  backendDetail,
+  memoryLabelKey,
+  complexityLabel,
+  signalLabel,
+  compileOutcomeLabel,
+  missReasonLabel,
+  planStatusLabel,
+  fixModeLabel,
+  progressLabel,
+  blockLabel,
+  ruleLabel,
+  fmtTokens,
+  fmtMs,
+} from '../../utils/steps'
 import type { StepCard as StepCardType } from '../../stores/chat'
 import { t } from '../../i18n'
 

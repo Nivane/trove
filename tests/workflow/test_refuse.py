@@ -199,7 +199,7 @@ class TestUncoveredRefusal:
         assert not SemanticManager(kb).drafts("demo")["pending"]
 
     async def test_refusal_with_compile_miss_reason_in_message(self, kb):
-        """refusal 带 compile_miss 分因 → 拒绝文案具体到缺失组件,reason 契约不变。"""
+        """refusal 带 compile_miss 分因 → 文案说人话(缺什么 + 怎么办),契约不变。"""
         node = make_refuse(
             ScriptedLLM([METRIC_DRAFT_YAML]),
             AgentConfig(target="mock/model"),
@@ -215,11 +215,51 @@ class TestUncoveredRefusal:
                                  "component": "AVG(loan.amount)"},
             },
         ))
-        # 用户文案具体到「缺哪个组件」(不再笼统 uncovered)
-        assert "no_metric_match" in out["clarification_question"]
-        assert "AVG(loan.amount)" in out["clarification_question"]
+        msg = out["clarification_question"]
+        # 缺失组件仍是定位线索(带出具体表达式),但不再以内部 slug 呈现
+        assert "AVG(loan.amount)" in msg
+        assert "no_metric_match" not in msg
+        assert "指标" in msg
         # 上游契约不变:refusal["reason"] 仍是原始 reason,供机器匹配/聚合
         assert out["refusal"]["reason"] == "uncovered"
+
+    async def test_refusal_copy_free_of_model_internals(self, kb):
+        """面向用户的文案不得出现 YAML 内部键(kind= / expression= / name=)。"""
+        node = make_refuse(
+            ScriptedLLM([METRIC_DRAFT_YAML]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "平均贷款金额是多少?",
+                     "plan": {"aggregation": "AVG(loan.amount)",
+                              "answer_columns": ["AVG(loan.amount)"]}},
+        ))
+        msg = out["clarification_question"]
+        for leak in ("kind=", "expression=", "name=", "datasets="):
+            assert leak not in msg, msg
+        # 人话:说清缺什么、去哪补
+        assert "语义模型" in msg and "管理端" in msg
+
+    async def test_conflict_copy_explains_without_yaml_keys(self, kb):
+        """冲突路径同样说人话:草稿未写入 + 冲突原因 + 去哪补。"""
+        bad = METRIC_DRAFT_YAML.replace("AVG(loan.amount)", "AVG(loan.amount")
+        node = make_refuse(
+            ScriptedLLM([bad]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "平均贷款金额是多少?",
+                     "plan": {"aggregation": "AVG(loan.amount)"}},
+        ))
+        msg = out["clarification_question"]
+        assert out["refusal"]["conflict"] is True
+        for leak in ("kind=", "expression=", "name="):
+            assert leak not in msg, msg
+        assert "未写入" in msg or "没有写入" in msg
 
     async def test_refusal_unparseable_expr_conflict(self, kb):
         """表达式不可解析 → 冲突,不写库。"""

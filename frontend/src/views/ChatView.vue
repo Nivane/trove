@@ -135,7 +135,7 @@
                 </span>
               </div>
               <div
-                v-if="turn.answer || turn.synthesis"
+                v-if="(turn.answer || turn.synthesis) && !cards[i]"
                 class="answer"
                 :class="{ streaming: turn.status === 'streaming' }"
               >
@@ -175,23 +175,13 @@
               >
                 <HitlCard :batch="!!turn.hitlBatch" />
               </div>
-              <div v-if="turn.error" class="error-box">
-                <span>{{ turn.error }}</span>
-                <div class="error-actions">
-                  <button class="retry-btn" @click="chat.retry()">
-                    <RefreshRight :size="14" />
-                    {{ t('retry', ui.lang) }}
-                  </button>
-                  <button class="retry-btn" @click="rephraseLast(i)">
-                    <Pencil :size="14" />
-                    {{ t('rephrase', ui.lang) }}
-                  </button>
-                  <button v-if="auth.isAdmin" class="retry-btn" @click="gotoAdmin">
-                    <Settings :size="14" />
-                    {{ t('gotoAdmin', ui.lang) }}
-                  </button>
-                </div>
-              </div>
+              <ErrorCard
+                v-if="cards[i]"
+                :card="cards[i]!"
+                @retry="chat.retry()"
+                @rephrase="rephraseLast(i)"
+                @admin="gotoAdmin"
+              />
               <div v-if="turn.status === 'done'" class="rating-row">
                 <button
                   class="rate-btn"
@@ -277,27 +267,25 @@ import {
   ArrowUp,
   X,
   Database,
-  Settings,
 } from 'lucide-vue-next'
-import { RefreshRight } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import Sidebar from '../components/layout/Sidebar.vue'
 import AnalysisPanel from '../components/chat/AnalysisPanel.vue'
 import ChartCard from '../components/chat/ChartCard.vue'
+import ErrorCard from '../components/chat/ErrorCard.vue'
 import HitlCard from '../components/chat/HitlCard.vue'
 import MarkdownView from '../components/chat/MarkdownView.vue'
 import Composer from '../components/chat/Composer.vue'
 import { useChatStore } from '../stores/chat'
 import { useUiStore } from '../stores/ui'
-import { useAuthStore } from '../stores/auth'
 import { router } from '../router'
 import { t } from '../i18n'
 import { copyText, dsTypeLabel } from '../utils/format'
+import { errorCard } from '../utils/errors'
 import type { Turn } from '../stores/chat'
 
 const chat = useChatStore()
 const ui = useUiStore()
-const auth = useAuthStore()
 const messageList = ref<HTMLDivElement>()
 const emptyComposer = ref<InstanceType<typeof Composer> | null>(null)
 const editingId = ref(-1)
@@ -309,6 +297,14 @@ const regenerateId = ref(-1)
 const ratingReasonsFor = ref(-1)
 
 const analysisToggleTitle = computed(() => t('analysisToggle', ui.lang))
+
+// 失败轮次的错误卡片:后端给结构化 error_info 就照它渲染,没给(老会话)
+// 退回脚手架文案 —— 两者都不解析错误 markdown。
+const cards = computed(() =>
+  chat.turns.map((turn) =>
+    errorCard({ error: turn.error, error_info: turn.errorInfo }, ui.lang),
+  ),
+)
 
 function onDatasourceChange(name: string) {
   ui.setDatasource(name)
