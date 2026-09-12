@@ -15,6 +15,12 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
 
+<br>
+
+<img src="docs/assets/hero-chat.png" width="880" alt="Trove's chat UI: a plain-language question answered with a summary, a bar chart, and the 12-step analysis trail on the right">
+
+<sub><i>One question, end to end — verified SQL, a chart, and every step of the reasoning, visible.</i></sub>
+
 </div>
 
 ---
@@ -159,6 +165,12 @@ flowchart LR
     DRIFT -->|"stale"| STALE["drift report → rebuild / re-init<br/>preserves reviewed assets"]
     STALE --> KB
 ```
+
+<p align="center">
+<img src="docs/assets/hero-semantic.png" width="880" alt="Trove's semantic-layer admin: 44 metrics, 8 datasets and 56 fields declared in the model, with a 10-item pending-approval queue">
+</p>
+
+<sub><i>The governance surface — what the model declares, and what is still waiting for a human to confirm.</i></sub>
 
 ## What You Get
 
