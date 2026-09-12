@@ -11,7 +11,6 @@ import io
 from trove.tracing.runlog import MAX_RUN_LOGS, create_tracer, get_tracer
 from trove.tracing.local import configure_trace_store, get_run
 
-
 def _events(run_id):
     return get_run(run_id)["events"]
 
@@ -110,6 +109,77 @@ class TestRunTracerSpanTree:
         assert len(span_end["output"]["rows"]) < 100
         log_text = (tmp_path / "runs" / "r5.log").read_text(encoding="utf-8")
         assert "…" in log_text  # 截断标记
+
+
+class TestNodeTokenTracking:
+    def test_llm_event_carries_normalized_tokens(self, tmp_path):
+        """llm 事件带归一化 tokens(prompt+completion=total)。"""
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("t1")
+        tracer.start_run({"question": "q"})
+        sid = tracer.node_start("gen_sql", {})
+        tracer.llm(
+            "gen_sql", "m", [{"role": "user", "content": "hi"}], "SELECT 1", 10,
+            usage={"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+        )
+        tracer.node_end(sid, {"sql": "SELECT 1"})
+        tracer.finish({})
+
+        llm_ev = next(e for e in _events("t1") if e["kind"] == "llm")
+        assert llm_ev["tokens"] == {"prompt": 120, "completion": 30, "total": 150}
+        # 无 usage → 事件里 tokens 为 None(不写空对象)
+        configure_trace_store(tmp_path)
+        tracer2 = create_tracer("t2")
+        tracer2.start_run({"question": "q"})
+        sid2 = tracer2.node_start("gen_sql", {})
+        tracer2.llm("gen_sql", "m", [], "SELECT 2", 5)
+        tracer2.node_end(sid2, {})
+        tracer2.finish({})
+        llm_ev2 = next(e for e in _events("t2") if e["kind"] == "llm")
+        assert llm_ev2["tokens"] is None
+
+    def test_node_end_aggregates_child_spans(self, tmp_path):
+        """span_end 携带节点累计 token(含子 span);子 span 合并进父节点。"""
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("t3")
+        tracer.start_run({"question": "q"})
+        outer = tracer.node_start("gen_sql", {})
+        inner = tracer.node_start("generate", {})
+        tracer.llm(
+            "generate", "m", [], "sql", 1,
+            usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+        )
+        tracer.node_end(inner, {})
+        tracer.llm(
+            "gen_sql", "m", [], "sql", 1,
+            usage={"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+        )
+        tracer.node_end(outer, {"sql": "sql"})
+        tracer.finish({})
+
+        ends = {e["span_id"]: e for e in _events("t3") if e["kind"] == "span_end"}
+        inner_end = next(e for e in _events("t3")
+                         if e["kind"] == "span_end" and e["span_id"] == inner)
+        outer_end = ends[outer]
+        assert inner_end["tokens"] == {"prompt": 100, "completion": 20, "total": 120}
+        # 外层 = 子 span 的 120 + 自身 60 = 180
+        assert outer_end["tokens"] == {"prompt": 150, "completion": 30, "total": 180}
+
+    def test_run_log_lines_show_tokens(self, tmp_path):
+        """run 日志的 llm 行与节点段尾都带 token 摘要。"""
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("t4")
+        tracer.start_run({"question": "q"})
+        sid = tracer.node_start("gen_sql", {})
+        tracer.llm(
+            "gen_sql", "m", [], "SELECT 1", 10,
+            usage={"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15},
+        )
+        tracer.node_end(sid, {})
+        tracer.finish({})
+        log_text = (tmp_path / "runs" / "t4.log").read_text(encoding="utf-8")
+        assert "tok 12+3=15" in log_text  # llm 行
+        assert "=15" in log_text          # 节点段尾累计
 
 
 class TestRunTracerVerbose:

@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
                    help="datasource name(默认 = 配置的默认源)")
     p.add_argument("--k", type=int, default=10, help="主目标截断点")
     p.add_argument("--limit", type=int, default=0, help="0 = 全部")
+    p.add_argument("--scorecard", default="",
+                   help="把最优指标写为 scorecard json(供 eval_gate 对比)")
     return p.parse_args()
 
 
@@ -115,6 +117,28 @@ async def main() -> None:
     for score, w, k, m in results[:5]:
         print(f"  mrr@{top_k}={score:.3f} recall={m['recall@k'][top_k]:.0%} "
               f"weights={w} k={k}")
+
+    if args.scorecard:
+        from trove.eval.gate import DEFAULT_TOLERANCE
+
+        scorecard = {
+            "source": "tune_rrf",
+            "datasource": ds,
+            "queries": len(gold),
+            "k": top_k,
+            "rrf_weights": weights,
+            "rrf_k": rrf_k,
+            "metrics": {
+                **{f"recall@{k}": round(m["recall@k"][k], 4)
+                   for k in m["recall@k"]},
+                **{f"ndcg@{k}": round(m["ndcg@k"][k], 4) for k in m["ndcg@k"]},
+                "mrr": round(m["mrr"], 4),
+                "zero_recall": float(m["zero_recall"]),
+            },
+        }
+        Path(args.scorecard).write_text(
+            json.dumps(scorecard, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\nscorecard → {args.scorecard}", flush=True)
 
 
 if __name__ == "__main__":

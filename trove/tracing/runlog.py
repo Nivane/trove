@@ -102,6 +102,21 @@ def _fmt_state(state: dict[str, Any] | None, indent: str) -> list[str]:
     return [f"{indent}{k} = {_fmt(v)}" for k, v in state.items()]
 
 
+def _norm_tokens(usage: dict[str, Any] | None) -> dict[str, int]:
+    """网关 usage → 统一 {prompt, completion, total}(全 0/缺失 → {})。
+
+    兼容 litellm 原始键(prompt_tokens/…)与内部累计键(prompt/…)。
+    """
+    if not usage:
+        return {}
+    prompt = int(usage.get("prompt_tokens") or usage.get("prompt") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("completion") or 0)
+    total = int(usage.get("total_tokens") or usage.get("total") or 0)
+    if not (prompt or completion or total):
+        return {}
+    return {"prompt": prompt, "completion": completion, "total": total}
+
+
 class RunTracer:
     """Per-run recorder: JSONL span tree + run log file + optional echo."""
 
@@ -114,6 +129,7 @@ class RunTracer:
         self._stack: list[str] = []          # 打开的节点 span(栈顶=当前节点)
         self._spans: dict[str, float] = {}   # span_id -> monotonic 开始时间
         self._span_names: dict[str, str] = {}  # span_id -> 节点名
+        self._span_tokens: dict[str, dict[str, int]] = {}  # span_id -> 累计 token(含子 span)
         self._node_seq = 0
         self._log_fh: TextIO | None = None
         self._log_path: Path | None = None
@@ -234,6 +250,7 @@ class RunTracer:
         self._stack.append(span_id)
         self._spans[span_id] = time.monotonic()
         self._span_names[span_id] = name
+        self._span_tokens[span_id] = {"prompt": 0, "completion": 0, "total": 0}
         self._write_event({
             "kind": "span_start",
             "span_id": span_id,
@@ -249,21 +266,33 @@ class RunTracer:
         return span_id
 
     def node_end(self, span_id: str, output: Any = None) -> None:
-        """节点结束:关 span,写日志段尾(输出 + 耗时)。"""
+        """节点结束:关 span,写日志段尾(输出 + 耗时 + 累计 token)。"""
         output = _to_dict(output)
         depth = len(self._stack)
         start = self._spans.pop(span_id, None)
         self._span_names.pop(span_id, None)
+        # 节点累计 token(含本节点 llm 调用 + 子 span 合并);合并进父 span
+        tokens = self._span_tokens.pop(span_id, {"prompt": 0, "completion": 0, "total": 0})
         if span_id in self._stack:
             self._stack.remove(span_id)
+            if self._stack:
+                parent = self._stack[-1]
+                acc = self._span_tokens.setdefault(
+                    parent, {"prompt": 0, "completion": 0, "total": 0},
+                )
+                for k in ("prompt", "completion", "total"):
+                    acc[k] += tokens[k]
         elapsed_ms = int((time.monotonic() - start) * 1000) if start is not None else 0
+        has_tokens = tokens.get("total", 0) > 0
         self._write_event({
             "kind": "span_end",
             "span_id": span_id,
             "output": _truncate(output),
             "elapsed_ms": elapsed_ms,
+            "tokens": tokens if has_tokens else None,
         })
-        lines = [f"└─ out ({elapsed_ms}ms):"]
+        token_suffix = f" · tok {tokens['prompt']}+{tokens['completion']}={tokens['total']}" if has_tokens else ""
+        lines = [f"└─ out ({elapsed_ms}ms){token_suffix}:"]
         lines.extend(_fmt_state(output, "│   "))
         self._emit(depth, lines)
 
@@ -272,10 +301,21 @@ class RunTracer:
     def llm(
         self, node: str, model: str, messages: list[dict[str, Any]], output: str,
         elapsed_ms: int, temperature: float = 0.0, reasoning: str = "",
+        usage: dict[str, Any] | None = None,
     ) -> None:
-        """一次 LLM 调用:完整 messages/output/reasoning 进日志与 span 树。"""
+        """一次 LLM 调用:完整 messages/output/reasoning 进日志与 span 树。
+
+        usage(网关 token 计数)归一化后写入 llm 事件,并累计进当前节点
+        span 的 token 桶(node_end 时随 span 一起落盘)。"""
+        tokens = _norm_tokens(usage)
         parent_id = self._stack[-1] if self._stack else None
         depth = len(self._stack)
+        if parent_id and tokens:
+            acc = self._span_tokens.setdefault(
+                parent_id, {"prompt": 0, "completion": 0, "total": 0},
+            )
+            for k in ("prompt", "completion", "total"):
+                acc[k] += tokens[k]
         self._write_event({
             "kind": "llm",
             "node": node,
@@ -286,8 +326,10 @@ class RunTracer:
             "temperature": temperature,
             "reasoning": reasoning[:1000],
             "parent_id": parent_id,
+            "tokens": tokens or None,
         })
-        lines = [f"├─ · llm {model} · {elapsed_ms}ms · temp {temperature}"]
+        token_suffix = f" · tok {tokens['prompt']}+{tokens['completion']}={tokens['total']}" if tokens else ""
+        lines = [f"├─ · llm {model} · {elapsed_ms}ms · temp {temperature}{token_suffix}"]
         for msg in messages:
             lines.append(f"│   [{msg.get('role', '?')}]")
             content = str(msg.get("content", ""))

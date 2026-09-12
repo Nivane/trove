@@ -45,6 +45,8 @@ Datasource extras (install on demand): `uv sync --extra mysql|clickhouse|duckdb|
 
 Eval script `scripts/eval_bird.py` (real MySQL + full reflection pipeline): **cost-sensitive — do not launch eval runs without explicit user instruction**. Helper scripts: `distill_lessons.py` (distill Hint Bank lessons from eval failures), `import_golden_examples.py`, `import_bird_descriptions.py`, `probe_enums.py`, `import_sqlite_to_mysql.py`, `init_postgres_demo.py` (BIRD demo → PostgreSQL).
 
+**离线评测回归门**:`scripts/eval_gate.py`(纯文件对比,零 LLM/网络)把 baseline 结果文件与 current 结果文件按指标对比——EX/编译命中率/完成率/恢复率/gold 精确匹配/token 成本——方向 + 容差判定,存在回归即退出码 1 把改动拦下(CI/提交前可挂)。消费三类产物:results.jsonl(eval_bird 判定条目)/ replay.jsonl(offline_eval record)/ scorecard json(`--scorecard` 由 `tune_rrf.py` / `eval_hybrid_retrieval.py` / `eval_bird_retrieval.py` / `offline_eval.py replay` 输出检索与 RRF 指标)。`--tol metric=val` 覆盖容差(`0.10-r` = 相对量),`--json` 输出机器可读判定,`--min-n` 防样本不足。核心在 `trove/eval/gate.py`(metrics_from_entries / compare_metrics / render_report,纯函数可单测)。
+
 ## Architecture
 
 ### Workflow layer `trove/workflow/` (core)

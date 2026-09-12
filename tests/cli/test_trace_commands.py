@@ -76,3 +76,23 @@ class TestTraceSpanTree:
         assert generate_line.startswith("│")  # 子节点缩进
         assert any("SELECT 1" in l for l in lines)      # LLM 输出可见
         assert any("verdict=OK" in l for l in lines)    # finish 保留
+
+    async def test_replay_renders_node_tokens(self, trace_home):
+        """span_end 带 tokens 时,节点头与 llm 行都渲染 token 摘要。"""
+        add_event("r1", {"kind": "run", "question": "q", "session_id": "s"})
+        add_event("r1", {"kind": "span_start", "span_id": "r1:1", "parent_id": None,
+                         "name": "gen_sql", "seq": 1, "input": {}})
+        add_event("r1", {"kind": "llm", "node": "gen_sql", "model": "m",
+                         "messages": [], "output": "SELECT 1", "elapsed_ms": 100,
+                         "parent_id": "r1:1",
+                         "tokens": {"prompt": 120, "completion": 30, "total": 150}})
+        add_event("r1", {"kind": "span_end", "span_id": "r1:1",
+                         "output": {"sql": "SELECT 1"}, "elapsed_ms": 10,
+                         "tokens": {"prompt": 120, "completion": 30, "total": 150}})
+        add_event("r1", {"kind": "finish", "summary": {"verdict": "OK"}})
+
+        result = await make_reg().get("trace").handler("")
+        assert "120+30=150 tok" in result   # llm 行
+        # 节点头:gen_sql 行的 token 摘要
+        gen_line = next(l for l in result.splitlines() if "gen_sql" in l and "├─" in l)
+        assert "120+30=150" in gen_line

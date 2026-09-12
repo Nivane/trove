@@ -41,6 +41,8 @@ def parse_args() -> argparse.ArgumentParser:
 
     rep = sub.add_parser("replay", help="零 LLM 回放打分")
     rep.add_argument("--input", default=str(DEFAULT_OUTPUT))
+    rep.add_argument("--scorecard", default="",
+                     help="把评分指标写为 scorecard json(供 eval_gate 对比)")
     return parser
 
 
@@ -158,7 +160,30 @@ def cmd_replay(args) -> int:
     if not entries:
         print(f"no entries in {args.input}", file=sys.stderr)
         return 2
-    print(render_scorecard(score_replay(entries)))
+    score = score_replay(entries)
+    print(render_scorecard(score))
+    if args.scorecard:
+        import json as _json
+        from pathlib import Path as _Path
+
+        metrics = {
+            "completion": score["completion_rate"],
+            "correctness": score["correctness"],
+            "recovery": score["recovery_rate"],
+            "consensus_rate": score["consensus_rate"],
+            "avg_confidence": score["avg_confidence"],
+            "avg_tokens": score["avg_tokens"],
+            "total_tokens": float(score["total_tokens"]),
+            "n": float(score["n"]),
+        }
+        if score.get("gold_match") is not None:
+            metrics["gold_match"] = score["gold_match"]
+        _Path(args.scorecard).write_text(
+            _json.dumps({"source": "offline_eval_replay", "metrics": metrics},
+                        ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"\nscorecard → {args.scorecard}", flush=True)
     return 0
 
 

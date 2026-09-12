@@ -590,9 +590,11 @@ def _record_local_call(
                 elapsed_ms=elapsed_ms,
                 temperature=temperature,
                 reasoning=reasoning,
+                usage=usage,
             )
             return
         from trove.tracing.local import add_event
+        from trove.tracing.runlog import _norm_tokens
         add_event(run_id, {
             "kind": "llm",
             "node": (metadata or {}).get("node", ""),
@@ -600,6 +602,8 @@ def _record_local_call(
             "messages": messages,
             "output": output,
             "elapsed_ms": elapsed_ms,
+            "usage": usage,
+            "tokens": _norm_tokens(usage) or None,
         })
     except Exception:
         pass

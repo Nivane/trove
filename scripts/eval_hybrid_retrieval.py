@@ -30,6 +30,8 @@ def parse_args() -> argparse.Namespace:
                    help="datasource name(默认 = 配置的默认源)")
     p.add_argument("--limit", type=int, default=0, help="0 = 全部")
     p.add_argument("--k", default="1,3,5,10", help="评估截断点(逗号分隔)")
+    p.add_argument("--scorecard", default="",
+                   help="把 RRF/精排指标写为 scorecard json(供 eval_gate 对比)")
     return p.parse_args()
 
 
@@ -104,6 +106,29 @@ async def main() -> None:
     print(f"  rerank(精排后): {_fmt(evaluate(gold, rerank_ranked, ks), ks)}")
     for q, ranked in list(rerank_ranked.items())[:10]:
         print(f"    - {q[:40]!r} → {ranked[:5]}")
+
+    if args.scorecard:
+        rrf_m = evaluate(gold, rrf_ranked, ks)
+        rk_m = evaluate(gold, rerank_ranked, ks)
+        scorecard = {
+            "source": "eval_hybrid_retrieval",
+            "datasource": ds,
+            "queries": len(gold),
+            "metrics": {
+                "mrr": round(rrf_m["mrr"], 4),
+                "rerank_mrr": round(rk_m["mrr"], 4),
+                "zero_recall": float(rrf_m["zero_recall"]),
+                **{f"recall@{k}": round(rrf_m["recall@k"][k], 4)
+                   for k in rrf_m["recall@k"]},
+                **{f"rerank_recall@{k}": round(rk_m["recall@k"][k], 4)
+                   for k in rk_m["recall@k"]},
+                **{f"ndcg@{k}": round(rrf_m["ndcg@k"][k], 4)
+                   for k in rrf_m["ndcg@k"]},
+            },
+        }
+        Path(args.scorecard).write_text(
+            json.dumps(scorecard, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\nscorecard → {args.scorecard}", flush=True)
 
 
 if __name__ == "__main__":

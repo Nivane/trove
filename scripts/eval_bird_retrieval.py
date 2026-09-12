@@ -51,6 +51,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--k", default="1,3,5,10")
     p.add_argument("--rerank", action="store_true",
                    help="额外跑一遍带精排(默认只跑 RRF 序,快)")
+    p.add_argument("--scorecard", default="",
+                   help="把双路 RRF 指标写为 scorecard json(供 eval_gate 对比)")
     return p.parse_args()
 
 
@@ -169,11 +171,29 @@ async def main() -> None:
     await run("keyword-only", ("keyword",))
     await run("dense-only", ("dense",))
     await run("keyword+dense", ("keyword", "dense"))
-    await run("双路 RRF(生产)", ("keyword", "dense"))
+    rrf_m = await run("双路 RRF(生产)", ("keyword", "dense"))
 
     if args.rerank:
         print("\n=== 精排前后(生产三路) ===")
         await run("双路 RRF(精排前)", ("keyword", "dense"))
+
+    if args.scorecard:
+        scorecard = {
+            "source": "eval_bird_retrieval",
+            "datasource": args.datasource,
+            "queries": len(gold),
+            "metrics": {
+                "mrr": round(rrf_m["mrr"], 4),
+                "zero_recall": float(rrf_m["zero_recall"]),
+                **{f"recall@{k}": round(rrf_m["recall@k"][k], 4)
+                   for k in rrf_m["recall@k"]},
+                **{f"ndcg@{k}": round(rrf_m["ndcg@k"][k], 4)
+                   for k in rrf_m["ndcg@k"]},
+            },
+        }
+        Path(args.scorecard).write_text(
+            json.dumps(scorecard, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\nscorecard → {args.scorecard}", flush=True)
 
 
 if __name__ == "__main__":
