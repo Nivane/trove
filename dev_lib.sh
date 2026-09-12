@@ -7,7 +7,9 @@ mkdir -p "$DEV_DIR"
 pidfile() { echo "$DEV_DIR/$1.pid"; }
 logfile() { echo "$DEV_DIR/$1.log"; }
 
-port_pids() { lsof -ti "tcp:$1" 2>/dev/null || true; }
+# 只取 LISTEN 侧:不带 -sTCP:LISTEN 时 lsof 会把连到该端口的客户端(浏览器标签页)
+# 一并列出,kill_by_port 就会顺手把它们杀掉 —— 开着页面的情况下重启前端会崩掉标签页。
+port_pids() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null || true; }
 
 kill_by_port() {
   local port="$1" name="$2" pids
