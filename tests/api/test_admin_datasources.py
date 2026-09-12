@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.helpers.kb import ossie_semantics_yaml
+
 
 async def test_register_list_delete(client, api_app, tmp_path):
     resp = await client.post("/v1/admin/datasources",
@@ -118,6 +120,45 @@ async def test_list_without_kb_mirror(client, api_app):
     assert resp.status_code == 200
     test_db = next(d for d in resp.json()["datasources"] if d["name"] == "test_db")
     assert test_db["kb_initialized"] is True
+
+
+async def test_disconnected_datasource_reports_real_kb_state(client, api_app):
+    """断开态数据源(只在 datasources.yml 里、不在 registry)也要报**真实** KB 状态。
+
+    占位实现把 ``kb_initialized`` 硬编码成 False、``kb_items`` 硬编码成 {},
+    并不读盘 —— 于是一份完好的 KB 在管理台看起来像丢了。「连不上」和
+    「KB 没建」是两件事,前者报 status,后者要如实读盘。
+    """
+    from trove.core.types import DatasourceConfig
+
+    api_app.state.config_store.save_configs([
+        DatasourceConfig(name="offline", type="sqlite",
+                         connection_params={"path": ":memory:"}, credentials={},
+                         default=False),
+    ])
+    assert not api_app.state.connector_registry.is_registered("offline")
+
+    # 该源 KB 已初始化(三个关键文件齐全),只是连接不上
+    ds_dir = api_app.state.kb.kb_dir / "offline"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in {
+        "schema_notes.yml": "tables:\n  - name: t\n    description: d\n    columns: []\n    metrics: []\n",
+        "semantics.yml": ossie_semantics_yaml([{
+            "term": "行数",
+            "aliases": ["count"],
+            "mapping": "COUNT(t.id)",
+            "tables": ["t"],
+            "definition": "表 t 的行数",
+        }]),
+        "examples.yml": "examples:\n  - question: q\n    sql: SELECT 1\n    tags: []\n",
+    }.items():
+        (ds_dir / name).write_text(content, encoding="utf-8")
+
+    listed = (await client.get("/v1/admin/datasources")).json()["datasources"]
+    offline = next(d for d in listed if d["name"] == "offline")
+    assert offline["status"] == "disconnected"
+    assert offline["kb_initialized"] is True
+    assert offline["kb_items"], "断开态也要报真实 KB 条目,不是占位 {}"
 
 
 async def test_register_bad_url_400(client):

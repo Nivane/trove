@@ -194,7 +194,8 @@ def create_app(components: dict) -> FastAPI:
         """Liveness + real dependency checks.
 
         200: 存储可用(数据源/LLM 异常降级为 "degraded",仍 200 — 进程活着
-        但不完整);503: 内部存储不可达。LLM 只报配置状态,不做计费探测。
+        但不完整);503: 内部存储不可达。LLM 只报事实(mock/target/providers),
+        不下"能不能用"的结论,也不做计费探测。
         """
         checks: dict = {}
 
@@ -252,10 +253,20 @@ def create_app(components: dict) -> FastAPI:
             ds_checks = dict(await asyncio.gather(*(_ping_one(n) for n in names)))
         checks["datasources"] = ds_checks
 
+        # LLM 只报**事实**,不下"能不能用"的结论:providers 是
+        # conf/agent.yml 里的 providers[](自定义 api_base/api_key 覆盖),
+        # 为空时 litellm 照常回落到环境变量(DEEPSEEK_API_KEY 等),服务可用。
+        # 把"providers 为空"读成"未配置"会报出假故障 —— 凭证怎么解析是
+        # litellm 的事,这里不猜。
         gateway = getattr(app.state, "llm_gateway", None)
         providers = getattr(gateway, "_providers", None)
+        config = getattr(app.state, "config", None)
         checks["llm"] = {
-            "configured": bool(providers),
+            "mock": bool(
+                getattr(gateway, "_mock_response", None)
+                or getattr(gateway, "_mock_stream_chunks", None)
+            ),
+            "target": getattr(config, "target", "") or "",
             "providers": len(providers) if providers else 0,
         }
 

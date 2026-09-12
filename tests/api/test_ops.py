@@ -21,8 +21,12 @@ class TestHealth:
         assert body["checks"]["storage"]["ok"] is True
         # sqlite_registry fixture: one connected in-memory adapter
         assert body["checks"]["datasources"] == {"test_db": {"ok": True}}
-        # mock gateway has no providers — reported, not pinged
-        assert body["checks"]["llm"] == {"configured": False, "providers": 0}
+        # LLM 只报事实(mock / target / providers),不下"能不能用"的结论:
+        # providers 为 0 不代表不可用 —— litellm 会回落到环境变量
+        # (DEEPSEEK_API_KEY 等),凭证解析是它的事,这里不猜。
+        assert body["checks"]["llm"] == {
+            "mock": True, "target": "mock/model", "providers": 0,
+        }
 
     async def test_health_storage_down_503(self, api_app, anon_client, monkeypatch):
         class DeadBackend:

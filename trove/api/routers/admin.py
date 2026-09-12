@@ -468,6 +468,7 @@ async def list_admin_datasources(request: Request, admin: dict = Depends(require
     await kb.ensure_synced(None)
     configs = _store(request).load_configs()
     cfg_of = {c.name: c for c in configs}
+    items = await kb.list_items()  # 一次查完,循环里别再逐个源查
     out = []
     for info in registry.list_info():
         cfg = cfg_of.get(info["name"])
@@ -477,14 +478,19 @@ async def list_admin_datasources(request: Request, admin: dict = Depends(require
             "status": "connected",
             **merged,
             "kb_initialized": kb.kb_initialized(info["name"]),
-            "kb_items": (await kb.list_items()).get(info["name"], {}),
+            "kb_items": items.get(info["name"], {}),
         })
     registered = {d["name"] for d in out}
     for cfg in configs:
         if cfg.name not in registered:
             out.append({
                 **_sanitized(cfg), "type": cfg.type,
-                "status": "disconnected", "kb_initialized": False, "kb_items": {},
+                # 断开态也如实读盘:连不上(status)和 KB 没建(kb_initialized)
+                # 是两件事。占位 False 会把后者一起否掉,让一份完好的 KB
+                # 在管理台看起来像丢了。
+                "status": "disconnected",
+                "kb_initialized": kb.kb_initialized(cfg.name),
+                "kb_items": items.get(cfg.name, {}),
             })
     return {"datasources": out}
 
