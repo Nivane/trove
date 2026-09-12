@@ -87,6 +87,33 @@ class TestGatewayWiring:
         )
         assert get("anything") is None
 
+    def test_record_local_call_feeds_active_tracer(self, tmp_path):
+        """有活跃 RunTracer 时,usage 归一化进 llm 事件(llm 行带 token)。"""
+        from trove.llm.gateway import _record_local_call
+        from trove.tracing.local import configure_trace_store, get_run
+        from trove.tracing.runlog import create_tracer
+
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("rt1")
+        tracer.start_run({"question": "q"})
+        sid = tracer.node_start("query_sketch", {})
+        _record_local_call(
+            model="test/model",
+            messages=[{"role": "user", "content": "hi"}],
+            output="plan",
+            metadata={"run_id": "rt1", "node": "query_sketch"},
+            elapsed_ms=10,
+            usage={"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        )
+        tracer.node_end(sid, {"plan": "plan"})
+        tracer.finish({})
+
+        llm_ev = next(e for e in get_run("rt1")["events"] if e["kind"] == "llm")
+        assert llm_ev["tokens"] == {"prompt": 4, "completion": 2, "total": 6}
+        span_end = next(e for e in get_run("rt1")["events"] if e["kind"] == "span_end")
+        assert span_end["tokens"] == {"prompt": 4, "completion": 2, "total": 6}
+        assert get("rt1") == {"prompt": 4, "completion": 2, "total": 6}
+
 
 class TestRunSummary:
     async def test_done_summary_carries_total_elapsed(self, session_manager):

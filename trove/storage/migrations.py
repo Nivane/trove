@@ -104,9 +104,13 @@ async def _fetchone(target: Any, sql: str, params: tuple = ()) -> Any:
 
 async def table_exists(target: Any, table: str, *, dialect: str) -> bool:
     if dialect == POSTGRES:
-        # to_regclass 返回 NULL 而不是抛错(不存在的表是正常情况,不是异常)
-        return await _fetchone(
-            target, f"SELECT to_regclass({_ph(dialect)})", (table,)) is not None
+        # to_regclass 返回 NULL 而不是抛错(不存在的表是正常情况,不是异常)。
+        # 但 SELECT 恒有一行 —— fetchone 拿到的是 (None,) 元组,判断必须落在
+        # 值上:拿元组判 ``is not None`` 会永远为真,于是版本表不存在时也去
+        # SELECT 它 → UndefinedTable(空库的首建路径)。
+        row = await _fetchone(
+            target, f"SELECT to_regclass({_ph(dialect)})", (table,))
+        return row is not None and row[0] is not None
     return await _fetchone(
         target,
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",

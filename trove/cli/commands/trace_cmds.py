@@ -12,9 +12,11 @@ from trove.cli.slash_registry import SlashRegistry, SlashCommand
 
 def _render_llm(event: dict, depth: int = 0) -> list[str]:
     prefix = "│ " * depth
+    tokens = event.get("tokens") or {}
+    tok = f" · {tokens.get('prompt', 0)}+{tokens.get('completion', 0)}={tokens.get('total', 0)} tok" if tokens.get("total") else ""
     lines = [
         f"{prefix}├─ [llm] {event.get('node', '')} · {event.get('model', '')} · "
-        f"{event.get('elapsed_ms', 0)}ms",
+        f"{event.get('elapsed_ms', 0)}ms{tok}",
     ]
     for msg in event.get("messages", []):
         content = str(msg.get("content", ""))[:300]
@@ -79,6 +81,9 @@ def _render_span(node: dict, depth: int) -> list[str]:
     head = f"{prefix}├─ [{node['seq']}] {node['name']}"
     if node["end"] is not None:
         head += f" · {node['end'].get('elapsed_ms', 0)}ms"
+        tokens = node["end"].get("tokens") or {}
+        if tokens.get("total"):
+            head += f" · {tokens.get('prompt', 0)}+{tokens.get('completion', 0)}={tokens.get('total', 0)} tok"
     lines = [head]
     for llm in node["llms"]:
         lines.extend(_render_llm(llm, depth + 1))
