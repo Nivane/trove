@@ -486,6 +486,17 @@ def answer_columns_mismatch(
         str(ac).strip() for ac in (plan_json.get("answer_columns") or [])
         if str(ac or "").strip() and str(ac).strip() not in ("*", "") and "(" not in str(ac)
     ]
+    # 计划自己声明了 time_grain 的字段必然渲染成分桶列,而且常带别名
+    # (``DATE_FORMAT(loan.date,'%Y') AS year``)——结果列名里再也找不到该
+    # 字段的字面引用。它与含 `(` 的表达式同属"按名字对不上"的一类,从 refs
+    # 摘掉:留着它会把一条**忠实实现了计划**的 SQL 判成背离计划,而代价不是
+    # 一次重试——回退重跑只会重生同一个计划,爬完梯子就优雅降级,把一个已经
+    # 算对的结果丢掉。只有 field 没有 grain 是半截声明,不算分桶,照旧对账。
+    tg = plan_json.get("time_grain")
+    if isinstance(tg, dict) and str(tg.get("grain") or "").strip():
+        field = str(tg.get("field") or "").strip().lower()
+        if field:
+            refs = [r for r in refs if r.lower() != field]
     if not refs:
         return []
     lower_result = {str(c).lower() for c in result_columns}
