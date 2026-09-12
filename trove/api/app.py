@@ -216,6 +216,17 @@ def create_app(components: dict) -> FastAPI:
             except Exception as e:
                 storage_ok = False
                 checks["storage"] = {"ok": False, "error": type(e).__name__}
+            finally:
+                # 归还操作作用域:execute() 取锁,只有 commit()/close() 释放。
+                # 漏掉这一步,锁会留在**本次请求的 task** 名下;而作用域是按
+                # task 复用的,所以此后每个请求(各是一个 task)的存储操作都会
+                # 阻塞到 _OP_LOCK_TIMEOUT_S(60s)才抛错 —— 探针自己 2s 就先超时,
+                # 表现为「每次 health 都报存储挂了」,实则是它自己锁死了整个进程。
+                # 收口失败不该把探针变成 500(health 是 liveness 端点)。
+                try:
+                    await backend.close()
+                except Exception:
+                    logger.warning("health: close storage scope failed", exc_info=True)
 
         # 业务数据源:逐个 SELECT 1(绕结果缓存、跳过未连接的)。
         # 错误只报类型名,不回传驱动原文(避免凭据/主机信息入响应)。

@@ -1,5 +1,7 @@
 """Ops endpoints: real health checks, X-Request-ID, Prometheus metrics."""
 
+import asyncio
+
 import pytest
 
 from trove.core.errors import SQLExecutionError
@@ -40,6 +42,37 @@ class TestHealth:
         assert body["status"] == "unavailable"
         # 只报类型名,不回传驱动原文(凭据/主机信息不进响应)
         assert body["checks"]["storage"] == {"ok": False, "error": "RuntimeError"}
+
+    async def test_health_probe_releases_storage_scope(
+        self, api_app, anon_client, session_manager
+    ):
+        """存储探针必须归还操作作用域(execute 后 commit()/close())。
+
+        探针只 ``execute("SELECT 1")`` + ``fetchone()`` 而不收口时,
+        ``_op_lock`` 永远留在探针那个 task 名下。作用域是**按 task 复用**的
+        (base.py ``_op_begin``),所以同一 task 里看不出问题;而真实服务里
+        每个请求各是一个 task —— 此后**任何**存储操作都会阻塞到
+        ``_OP_LOCK_TIMEOUT_S``(60s)才抛错,表现为 /v1/sessions 等接口 500。
+
+        生产由 ``create_app`` 注入 session_store(main.py:323);fixture 没传,
+        这里补上,否则探针走 "no backend" 跳过分支,泄漏永远测不出来。
+        """
+        api_app.state.session_store = session_manager._store
+        backend = session_manager._store._backend
+
+        resp = await anon_client.get("/v1/health")
+        assert resp.status_code == 200
+
+        assert backend._op_owner is None, "health 探针泄漏了存储操作作用域"
+
+        # 跨 task:换一个 task 做存储操作,必须立刻拿到作用域(2s 上限把
+        # 60s 的锁超时变成快速失败)。
+        async def another_request():
+            cursor = await backend.execute("SELECT 1")
+            await cursor.fetchone()
+            await backend.close()
+
+        await asyncio.wait_for(asyncio.create_task(another_request()), timeout=2)
 
     async def test_health_degraded_datasource(self, api_app, anon_client, monkeypatch):
         class BrokenAdapter:
