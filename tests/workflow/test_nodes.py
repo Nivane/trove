@@ -2930,6 +2930,42 @@ class TestPlanValidation:
         plan3 = {"answer_columns": ["date"]}
         assert answer_columns_mismatch(plan3, ["update_date"]) != []
 
+    def test_answer_columns_mismatch_time_grain_aliased_bucket_passes(self):
+        """计划自己声明了 time_grain 的字段,别名一遮不该判冲突。
+
+        上一条测的是**没别名**的形态——结果列名就是表达式原文,``loan.date``
+        作为子串自然命中(驱动在无别名时回填表达式文本)。真实 gen_sql 写的是
+        ``DATE_FORMAT(loan.date,'%Y') AS year``:结果列名只剩 ``year``,子串
+        消失 → 假阳性 → 回退重跑 → 计划原样重生 → 同样的错 → 优雅降级,
+        一个**已经算对的 3 行结果**被丢掉。
+        """
+        from trove.workflow.nodes.query_sketch import answer_columns_mismatch
+        plan = {
+            "answer_columns": ["loan.date", "count(loan.loan_id)"],
+            "time_grain": {"field": "loan.date", "grain": "year"},
+        }
+        assert answer_columns_mismatch(plan, ["year", "num_loans"]) == []
+        # 分桶呈现成别的名字同样放行(桶名是生成器定的,不该猜)
+        assert answer_columns_mismatch(plan, ["年份", "num_loans"]) == []
+
+        # 豁免只覆盖 time_grain 点名的那个字段:未分桶的缺失列仍然拦
+        plan2 = {
+            "answer_columns": ["account_id", "loan.date"],
+            "time_grain": {"field": "loan.date", "grain": "year"},
+        }
+        assert answer_columns_mismatch(plan2, ["year", "num_loans"]) != []
+
+        # 没有 time_grain 声明 → 原语义不变,整体背离计划仍判冲突
+        plan3 = {"answer_columns": ["loan.date", "count(loan.loan_id)"]}
+        assert answer_columns_mismatch(plan3, ["year", "num_loans"]) != []
+
+        # 只有 field 没有 grain(半截声明)→ 不算分桶,不豁免
+        plan4 = {
+            "answer_columns": ["loan.date", "count(loan.loan_id)"],
+            "time_grain": {"field": "loan.date"},
+        }
+        assert answer_columns_mismatch(plan4, ["year", "num_loans"]) != []
+
     @staticmethod
     def _connectors():
         """带 loan/account 两表的 connectors mock(触发落地校验)。"""
