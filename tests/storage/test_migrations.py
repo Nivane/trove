@@ -114,6 +114,42 @@ class TestDialectTranslation:
         )
 
 
+class TestTableExistsPostgres:
+    """PG 方言的 ``to_regclass`` 探测:不存在的表返回的是一行 ``(NULL,)``。
+
+    判断必须落在**值**上而不是行元组上 —— 拿 ``(None,) is not None`` 判永远
+    为真,空库首建时 ``read_version`` 就会去 SELECT 不存在的 ``trove_schema``
+    → UndefinedTable(CI 真实 PG 上抓到的回归,SQLite 侧测不到:它的探测在
+    无行时返回 None,恰好判对了)。
+    """
+
+    class _Cursor:
+        def __init__(self, value):
+            self._value = value
+
+        async def fetchone(self):
+            return self._value
+
+    class _FakeTarget:
+        def __init__(self, existing: bool):
+            self._existing = existing
+
+        async def execute(self, sql, params=()):
+            # to_regclass:存在的表返回 oid,不存在的表返回 NULL(仍是一行)
+            return TestTableExistsPostgres._Cursor(
+                (16384,) if self._existing else (None,))
+
+    async def test_missing_table_is_not_seen_as_existing(self):
+        assert await table_exists(
+            self._FakeTarget(existing=False), "trove_schema",
+            dialect=POSTGRES) is False
+
+    async def test_existing_table_is_detected(self):
+        assert await table_exists(
+            self._FakeTarget(existing=True), "trove_schema",
+            dialect=POSTGRES) is True
+
+
 class TestDirection:
     async def test_database_newer_than_code_is_refused(self, conn):
         """验收 #8:库版本 > 代码已知 → 拒绝,并且什么都不执行。"""
