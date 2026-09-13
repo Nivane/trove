@@ -138,6 +138,7 @@ def format_entry(
     rollback_target: str = "", fix_mode: str = "", n_candidates: int = 0,
     tokens: dict[str, int] | None = None, elapsed_ms: int = 0,
     gold_sql: str = "", kb_hits: list | None = None,
+    qid: str = "",
 ) -> dict[str, Any]:
     """把一次运行折叠成回放条目(录制侧最小契约)。"""
     return {
@@ -149,7 +150,7 @@ def format_entry(
         "rollback_target": rollback_target, "fix_mode": fix_mode,
         "n_candidates": n_candidates, "tokens": tokens or {},
         "elapsed_ms": elapsed_ms, "gold_sql": gold_sql,
-        "kb_hits": kb_hits or [],
+        "kb_hits": kb_hits or [], "qid": qid,
     }
 
 

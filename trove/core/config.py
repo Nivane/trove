@@ -80,6 +80,25 @@ class RetentionConfig:
 
 
 @dataclass
+class EvalConfig:
+    """离线评测回归门(opt-in,默认不进 CI)。
+
+    ``gate_enabled``: 置 true 才允许自动化(CI)跑回归门;本地手动跑
+    scripts/eval_gate.py 不受此开关约束(除非显式 --ci)。
+    ``questions_path`` / ``baseline_path``: 可复现基线产物(固定问题集 +
+    基线结果),由 scripts/build_eval_baseline.py 从 dev.json 确定性重建。
+    ``min_n``: 当前结果样本量下限(低于则数据不足,不判回归)。
+    ``tolerances``: 单指标容差覆盖(同 eval_gate --tol)。
+    """
+
+    gate_enabled: bool = False
+    questions_path: str = "eval/baseline/questions.jsonl"
+    baseline_path: str = "eval/baseline/results.jsonl"
+    min_n: int = 0
+    tolerances: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class AttributionConfig:
     """Business-level attribution / root-cause analysis settings.
 
@@ -146,6 +165,8 @@ class AgentConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     # 业务级归因/根因分析:为什么类问题的多跳下钻 + 贡献率 + 瀑布图。
     attribution: AttributionConfig = field(default_factory=AttributionConfig)
+    # 离线评测回归门配置(opt-in;默认不进 CI)。见 EvalConfig。
+    eval: EvalConfig = field(default_factory=EvalConfig)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -350,6 +371,19 @@ class ConfigLoader:
             max_dimensions=max(1, int(attr_raw.get("max_dimensions", 3))),
         )
 
+        # Parse eval gate (top-level section, not under agent:)
+        eval_raw = resolved.get("eval", {}) or {}
+        eval_conf = EvalConfig(
+            gate_enabled=bool(eval_raw.get("gate_enabled", False)),
+            questions_path=str(eval_raw.get("questions_path", "eval/baseline/questions.jsonl")),
+            baseline_path=str(eval_raw.get("baseline_path", "eval/baseline/results.jsonl")),
+            min_n=max(0, int(eval_raw.get("min_n", 0))),
+            tolerances={
+                str(k): str(v)
+                for k, v in (eval_raw.get("tolerances", {}) or {}).items()
+            },
+        )
+
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
@@ -387,6 +421,7 @@ class ConfigLoader:
             },
             memory=memory,
             attribution=attribution,
+            eval=eval_conf,
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,
