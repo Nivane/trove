@@ -1,0 +1,58 @@
+name: eval-gate
+
+# 离线评测回归门 — 默认不进 CI,opt-in:
+#   1) 仓库 → Settings → Environments/Secrets 置 env TROVE_RUN_EVAL_GATE=1,
+#      随后每次 push/PR 自动跑本工作流;或
+#   2) 手动触发: Actions → eval-gate → Run workflow(workflow_dispatch)。
+# 额外要求:conf/agent.yml 里 eval.gate_enabled 必须为 true(配置即开关),
+# 否则 job 整体跳过——防止未开启门禁时白跑。
+#
+# 零 LLM/零网络:只做可复现基线产物的完整性检查(解析/字段/覆盖/指标
+# 可计算)与基线的自比对(Δ=0)。真库 A/B(eval_bird)与 LLM 录制属于
+# 成本敏感操作,留在本地/手动 workflow_dispatch,不进自动路径。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || env.TROVE_RUN_EVAL_GATE == '1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Gate enabled?
+        id: gate
+        run: |
+          uv run python - <<'PY'
+          from trove.core.config import ConfigLoader
+          enabled = ConfigLoader.load_agent_config().eval.gate_enabled
+          print("eval.gate_enabled =", enabled)
+          with open("$GITHUB_OUTPUT", "a") as f:
+              f.write(f"gate_enabled={str(enabled).lower()}\n")
+          PY
+
+      - name: Baseline integrity (zero LLM)
+        if: steps.gate.outputs.gate_enabled == 'true'
+        run: uv run python scripts/eval_baseline.py check --json
+
+      - name: Baseline self-compare gate
+        if: steps.gate.outputs.gate_enabled == 'true'
+        run: |
+          uv run python scripts/eval_gate.py --ci --json \
+            --baseline eval/baseline/results.jsonl \
+            --current eval/baseline/results.jsonl
+
+      - name: Skip notice (gate disabled)
+        if: steps.gate.outputs.gate_enabled != 'true'
+        run: echo "eval.gate_enabled=false — regression gate 未开启,跳过(设置后自动生效)"

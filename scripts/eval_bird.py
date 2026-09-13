@@ -132,7 +132,7 @@ def record_result(entry: dict, path: Path | None = None) -> None:
 
 def _result_entry(
     run_id: str, question: str, evidence: str, gold_sql: str, verdict: str,
-    final: WorkflowState | None = None,
+    final: WorkflowState | None = None, qid: str = "",
 ) -> dict:
     """逐题判定条目;final 缺失(崩溃)时不带 pred/kb/retries 字段。
 
@@ -145,11 +145,14 @@ def _result_entry(
       rollback_target  — 打回目标(gen_sql/query_sketch/schema_linking)
       validation_hits  — 通过前被哪些确定性规则拦过(含 answer-columns 层)
       n_candidates     — 进入执行投票的候选数(1 = 单候选直出)
+      qid              — 基线问题集对账键(有 eval/baseline/questions.jsonl 时)
     """
     entry: dict[str, Any] = {
         "run_id": run_id, "question": question, "evidence": evidence,
         "gold_sql": gold_sql, "verdict": verdict,
     }
+    if qid:
+        entry["qid"] = qid
     if final is not None:
         entry.update({
             "pred_sql": final.sql or "",
@@ -316,6 +319,23 @@ async def main() -> None:
     questions = slice_questions(questions, limit=args.limit, start=args.start)
     print(f"评估 {args.db_id}: {len(questions)} 题", flush=True)
 
+    # 基线问题集对账键(qid):有 eval/baseline/questions.jsonl 时把本轮
+    # results.jsonl 按问题文本映射回 qid,与可复现基线可对账(gate 覆盖检查用)。
+    baseline_qids: list[dict[str, Any]] = []
+    try:
+        from trove.eval.baseline import load_jsonl
+
+        baseline_qids = load_jsonl(Path.cwd() / "eval" / "baseline" / "questions.jsonl")
+    except Exception:  # noqa: BLE001 — 无基线问题集只是少 qid 字段
+        baseline_qids = []
+
+    def _qid_of(question: str) -> str:
+        if not baseline_qids:
+            return ""
+        from trove.eval.baseline import match_qid
+
+        return match_qid(question, baseline_qids) or ""
+
     config = ConfigLoader.load_agent_config("conf/agent.yml")
     try:
         kb_root = resolve_kb_root(args.kb_dir, args.db_id)
@@ -428,6 +448,7 @@ async def main() -> None:
             })
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "CRASH",
+                qid=_qid_of(question),
             ) | {"error": f"crash: {str(e)[:200]}"})
             log(f"[{i}/{len(questions)}] ✗ 崩溃: {str(e)[:70]}")
             continue
@@ -439,6 +460,7 @@ async def main() -> None:
             failures["gold_error"] += 1
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "GOLD_ERROR", final,
+                qid=_qid_of(question),
             ) | {"error": str(e)[:200]})
             log(f"[{i}/{len(questions)}] ✗ gold 执行失败: {question[:40]}... ({e})")
             continue
@@ -452,7 +474,7 @@ async def main() -> None:
             })
             done(_result_entry(
                 run_id, question, evidence, gold_sql,
-                classify_pred_error(final.error), final,
+                classify_pred_error(final.error), final, qid=_qid_of(question),
             ) | {"error": final.error[:200]})
             log(f"[{i}/{len(questions)}] ✗ {final.error[:70]}")
             continue
@@ -461,6 +483,7 @@ async def main() -> None:
             failures["execution"] += 1
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "EMPTY_SQL", final,
+                qid=_qid_of(question),
             ) | {"error": "空 SQL（意图可能误路由）"})
             log(f"[{i}/{len(questions)}] ✗ 空 SQL（意图可能误路由）")
             continue
@@ -470,6 +493,7 @@ async def main() -> None:
             matched += 1
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "MATCH", final,
+                qid=_qid_of(question),
             ))
             log(f"[{i}/{len(questions)}] ✓ {question[:50]}... (retry {final.retry_count})")
         else:
@@ -481,6 +505,7 @@ async def main() -> None:
             })
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "MISMATCH", final,
+                qid=_qid_of(question),
             ) | {"error": f"mismatch (pred {len(pred_rows)} rows, gold {len(gold_rows)} rows)"})
             log(f"[{i}/{len(questions)}] ✗ 结果不一致: {question[:50]}... "
                 f"(pred {len(pred_rows)} rows, gold {len(gold_rows)} rows, retry {final.retry_count})")

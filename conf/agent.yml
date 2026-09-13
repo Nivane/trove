@@ -118,3 +118,19 @@ agent:
     #   preferences: 90
     #   facts: 180
     #   retrieval_log: 90
+
+# ── 离线评测回归门(默认不进 CI,opt-in 可配)──
+# eval_bird 是成本敏感的真库评测;回归门默认只在本地手动跑
+# (scripts/eval_gate.py,不受 gate_enabled 约束)。要把门接进 CI:先把
+# gate_enabled 置 true 提交,再用 .github/workflows/eval-gate.yml
+# (workflow_dispatch 手动触发,或仓库 env 置 TROVE_RUN_EVAL_GATE=1 后
+# 随 push/PR 自动跑)——该工作流零 LLM,只做基线完整性与自比对。
+# 可复现基线产物见 eval/baseline/(固定问题集 + 基线结果),由
+# scripts/build_eval_baseline.py 从 dev.json 确定性重建,保证可比。
+eval:
+  gate_enabled: false
+  questions_path: eval/baseline/questions.jsonl
+  baseline_path: eval/baseline/results.jsonl
+  min_n: 10
+  # 容差覆盖(同 eval_gate --tol,metric=val;空 = gate 内置默认)
+  tolerances: {}

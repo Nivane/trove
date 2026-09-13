@@ -38,36 +38,71 @@ from trove.eval.gate import (
 
 def parse_args() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--baseline", required=True, help="基线结果文件(results/replay/scorecard)")
-    p.add_argument("--current", required=True, help="本次结果文件(同上)")
+    p.add_argument("--baseline", default=None, help="基线结果文件(results/replay/scorecard);"
+                                                    "缺省 = conf/agent.yml eval.baseline_path")
+    p.add_argument("--current", default=None, help="本次结果文件(同上);缺省 = .trove/eval/results.jsonl")
+    p.add_argument("--ci", action="store_true",
+                   help="自动化(CI)模式:conf/agent.yml eval.gate_enabled=false 时拒绝执行"
+                        "(默认关,不进 CI;手动本地跑不用此标志)")
     p.add_argument("--tol", action="append", default=[],
                    help="覆盖单指标容差,如 --tol ex=0.02(可多次)")
     p.add_argument("--ignore", action="append", default=[],
                    help="跳过判定的指标,如 --ignore avg_tokens(可多次)")
-    p.add_argument("--min-n", type=int, default=0,
-                   help="当前结果样本量下限(低于则视为数据不足,报错退出)")
+    p.add_argument("--min-n", type=int, default=None,
+                   help="当前结果样本量下限(低于则视为数据不足,报错退出);"
+                        "缺省 = conf/agent.yml eval.min_n")
     p.add_argument("--json", action="store_true",
                    help="只输出 JSON 判定结果(便于 CI 解析)")
     return p.parse_args()
 
 
+def _load_eval_conf() -> tuple[dict, bool]:
+    """从 conf/agent.yml 读 eval 段(容错:配置缺失/解析失败 → 全默认)。
+
+    Returns:
+        (defaults_dict, gate_enabled)
+    """
+    try:
+        from trove.core.config import ConfigLoader
+
+        conf = ConfigLoader.load_agent_config()
+        return {
+            "baseline": conf.eval.baseline_path,
+            "min_n": conf.eval.min_n,
+            "tolerances": dict(conf.eval.tolerances),
+        }, conf.eval.gate_enabled
+    except Exception:  # noqa: BLE001 — 手动跑不因配置坏而拦
+        return {"baseline": "", "min_n": 0, "tolerances": {}}, False
+
+
 def main() -> int:
     args = parse_args()
-    baseline = score_from_file(args.baseline)
-    current = score_from_file(args.current)
+    defaults, gate_enabled = _load_eval_conf()
+
+    if args.ci and not gate_enabled:
+        print("error: 回归门未开启(conf/agent.yml eval.gate_enabled=false);"
+              "如需接入 CI 先置 true 提交", file=sys.stderr)
+        return 2
+
+    baseline_path = args.baseline or defaults["baseline"]
+    current_path = args.current or ".trove/eval/results.jsonl"
+    min_n = args.min_n if args.min_n is not None else int(defaults["min_n"])
+
+    baseline = score_from_file(baseline_path)
+    current = score_from_file(current_path)
 
     if not baseline and not current:
-        print(f"error: 两个文件都没有可解析的指标 — baseline={args.baseline} current={args.current}",
+        print(f"error: 两个文件都没有可解析的指标 — baseline={baseline_path} current={current_path}",
               file=sys.stderr)
         return 2
 
     n_cur = int(current.get("n", 0))
-    if args.min_n and n_cur < args.min_n:
-        print(f"error: 当前样本量 {n_cur} < --min-n {args.min_n}(数据不足,不能下结论)",
+    if min_n and n_cur < min_n:
+        print(f"error: 当前样本量 {n_cur} < --min-n {min_n}(数据不足,不能下结论)",
               file=sys.stderr)
         return 2
 
-    tolerances: dict[str, str] = {}
+    tolerances: dict[str, str] = dict(defaults["tolerances"])
     for item in args.tol:
         key, _, val = item.partition("=")
         tolerances[key] = val
@@ -77,13 +112,13 @@ def main() -> int:
         tolerances=tolerances,
         ignore=set(args.ignore),
     )
-    report.baseline_label = Path(args.baseline).name
-    report.current_label = Path(args.current).name
+    report.baseline_label = Path(baseline_path).name
+    report.current_label = Path(current_path).name
 
     if args.json:
         print(json.dumps({
-            "baseline": args.baseline,
-            "current": args.current,
+            "baseline": baseline_path,
+            "current": current_path,
             "passed": report.passed,
             "regressions": [
                 {

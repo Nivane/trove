@@ -57,6 +57,50 @@ def _load_questions(path: str) -> list[str]:
     return [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
 
+def _load_inline_gold(path: str) -> dict[str, str]:
+    """从问题文件(jsonl,含 gold_sql/sql 字段)提取内联 gold。
+
+    供可复现基线直接复用:eval/baseline/questions.jsonl 每行自带 gold_sql,
+    录制时不必再单独传 --gold。
+    """
+    p = Path(path)
+    if p.suffix != ".jsonl" or not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        q = (e.get("question", "") or "").strip()
+        sql = (e.get("gold_sql") or e.get("sql") or "").strip()
+        if q and sql:
+            out[q] = sql
+    return out
+
+
+def _load_qids(path: str) -> dict[str, str]:
+    """问题文件(jsonl,含 qid 字段)→ {question: qid}(基线对账键)。"""
+    p = Path(path)
+    if p.suffix != ".jsonl" or not p.exists():
+        return {}
+    out: dict[str, str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            e = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        q = (e.get("question", "") or "").strip()
+        qid = (e.get("qid") or "").strip()
+        if q and qid:
+            out[q] = qid
+    return out
+
+
 def _load_gold(path: str | None) -> dict[str, str]:
     if not path:
         return {}
@@ -85,8 +129,10 @@ async def cmd_record(args) -> int:
     if not questions:
         print("no questions", file=sys.stderr)
         return 2
-    gold = _load_gold(args.gold)
-    print(f"录制 {len(questions)} 题 → {args.output}", flush=True)
+    gold = {**_load_inline_gold(args.questions), **_load_gold(args.gold)}
+    qids = _load_qids(args.questions)
+    print(f"录制 {len(questions)} 题 → {args.output} "
+          f"(gold {len(gold)} 条)", flush=True)
 
     config = ConfigLoader.load_agent_config("conf/agent.yml")
     registry = ConnectorRegistry()
@@ -145,6 +191,7 @@ async def cmd_record(args) -> int:
             elapsed_ms=int((time.monotonic() - t0) * 1000),
             gold_sql=gold.get(question, ""),
             kb_hits=final.kb_hits or [],
+            qid=qids.get(question, ""),
         )
         append_entry(args.output, entry)
         print(f"  [{i}/{len(questions)}] {entry['verdict']} "
