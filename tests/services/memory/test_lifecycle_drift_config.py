@@ -73,6 +73,87 @@ async def test_schema_drift_detects_new_table(tmp_path, kb):
     assert report["column_changes"]["loan"]["added"] == ["status"]
 
 
+async def test_schema_drift_uses_column_sets(tmp_path, kb):
+    """真实 CatalogService 路径(column_sets):列漂移可检出。
+
+    回归:CatalogService.list_tables 只返回列*数量*,旧实现逐列迭代会
+    TypeError 被吞掉 → 生产周期巡检恒为空报告。
+    """
+    kb.kb_dir.mkdir(parents=True)
+    ds_dir = kb.kb_dir / "demo"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    (ds_dir / "schema_notes.yml").write_text(
+        "tables:\n"
+        "  - name: loan\n"
+        "    columns:\n"
+        "      - name: amount\n",
+        encoding="utf-8",
+    )
+    await kb.ensure_synced("demo")
+
+    class _Catalog:
+        async def column_sets(self, datasource):
+            return {"loan": {"amount", "status"}, "new_table": {"id"}}
+
+    report = await detect_drift("demo", kb, _Catalog())
+    assert "new_table" in report["new_tables"]
+    assert report["column_changes"]["loan"]["added"] == ["status"]
+
+
+async def test_schema_drift_count_only_catalog_no_false_gone(tmp_path, kb):
+    """count-only catalog:表集合仍可比对,列变化不误报,表不当成 gone。"""
+    kb.kb_dir.mkdir(parents=True)
+    ds_dir = kb.kb_dir / "demo"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    (ds_dir / "schema_notes.yml").write_text(
+        "tables:\n"
+        "  - name: loan\n"
+        "    columns:\n"
+        "      - name: amount\n"
+        "  - name: account\n"
+        "    columns:\n"
+        "      - name: id\n",
+        encoding="utf-8",
+    )
+    await kb.ensure_synced("demo")
+
+    class _Catalog:
+        async def list_tables(self, datasource):
+            return [
+                {"name": "loan", "columns": 3},
+                {"name": "account", "columns": 5},
+            ]
+
+    report = await detect_drift("demo", kb, _Catalog())
+    assert report["new_tables"] == []
+    assert report["gone_tables"] == []
+    assert report["column_changes"] == {}
+
+
+async def test_schema_drift_case_insensitive(tmp_path, kb):
+    """大小写差异不产生假漂移(物理库列大小写保留 vs YAML 手写)。"""
+    kb.kb_dir.mkdir(parents=True)
+    ds_dir = kb.kb_dir / "demo"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    (ds_dir / "schema_notes.yml").write_text(
+        "tables:\n"
+        "  - name: Loan\n"
+        "    columns:\n"
+        "      - name: Amount\n",
+        encoding="utf-8",
+    )
+    await kb.ensure_synced("demo")
+
+    class _Catalog:
+        async def column_sets(self, datasource):
+            return {"loan": {"amount", "status"}}
+
+    report = await detect_drift("demo", kb, _Catalog())
+    assert report["gone_tables"] == []
+    assert report["column_changes"]["loan"]["added"] == ["status"]
+    assert report["column_changes"]["loan"]["removed"] == []
+
+
 def test_config_parses_memory_section(tmp_path):
     cfg_file = tmp_path / "agent.yml"
     cfg_file.write_text(

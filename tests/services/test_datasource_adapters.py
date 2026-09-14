@@ -312,6 +312,13 @@ class TestCatalogService:
         assert tables[0]["name"] == "students"
         assert tables[0]["columns"] == 4
 
+    async def test_column_sets(self, sqlite_registry):
+        from trove.services.datasource.catalog import CatalogService
+        catalog = CatalogService(sqlite_registry)
+
+        sets = await catalog.column_sets()
+        assert sets == {"students": {"id", "name", "grade", "county"}}
+
     async def test_table_detail(self, sqlite_registry):
         from trove.services.datasource.catalog import CatalogService
         catalog = CatalogService(sqlite_registry)
