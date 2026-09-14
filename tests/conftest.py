@@ -136,6 +136,10 @@ def _reset_trace_store(monkeypatch):
     reset_token_accounting()
     from trove.llm.token_calibration import reset as reset_token_calibration
     reset_token_calibration()
+    # run_id contextvar 同样会随 create_tracer 泄漏跨测试(同一主上下文),
+    # 重置回 None,日志过滤器渲染为 "-"。
+    from trove.core.request_id import run_id_var
+    run_id_var.set(None)
     from trove.llm import observability as _obs
     _obs._client = None
     for key in (

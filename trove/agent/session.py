@@ -1277,6 +1277,12 @@ class SessionManager:
             "error": final.error,
             "summary": self._state_summary(final),
         }
+        # 持久化 per-run token 用量(get 不弹栈,调用方 _run_stats 稍后
+        # 一次性 pop 结算):崩溃/重启后成本历史仍可查,不再只活在进程内
+        # tally 与一次性 done 事件里。
+        usage = self._peek_tokens(final.run_id)
+        if usage:
+            metadata["token_usage"] = usage
         if task is not None:
             metadata["task_id"] = task.task_id
         assistant_msg = Message(
@@ -1920,6 +1926,21 @@ class SessionManager:
         })
 
     # ── Token usage ──────────────────────────────────────
+
+    @staticmethod
+    def _peek_tokens(run_id: str) -> dict[str, int] | None:
+        """Non-popping peek at a run's token tally (None when absent).
+
+        Used by _record_exchange to persist per-run cost into the session
+        message metadata; the caller's _run_stats still pops and settles
+        the tally so it never leaks across questions."""
+        if not run_id:
+            return None
+        try:
+            from trove.llm.token_accounting import get as _get_usage
+            return _get_usage(run_id)
+        except Exception:  # noqa: BLE001 — 记账失败不阻断消息持久化
+            return None
 
     @staticmethod
     def _run_stats(run_id: str, run_start: float) -> dict[str, Any]:
