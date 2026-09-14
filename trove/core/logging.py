@@ -43,7 +43,8 @@ def _setup_root_logger() -> None:
     handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: [req=%(request_id)s] %(message)s",
+        fmt="%(asctime)s [%(levelname)s] %(name)s: "
+            "[req=%(request_id)s run=%(run_id)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)

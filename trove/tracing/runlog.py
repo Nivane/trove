@@ -35,7 +35,14 @@ _registry: dict[str, "RunTracer"] = {}
 def create_tracer(
     run_id: str, verbose: bool = False, stream: TextIO | None = None,
 ) -> "RunTracer":
-    """Create and register the per-run tracer (one per run)."""
+    """Create and register the per-run tracer (one per run).
+
+    Sets the run_id contextvar so every stderr log line emitted while this
+    question executes carries the same run_id (runlog → logging correlation);
+    the value persists for the caller's context (overwritten per run)."""
+    from trove.core.request_id import run_id_var
+
+    run_id_var.set(run_id)
     tracer = RunTracer(run_id, verbose=verbose, stream=stream)
     _registry[run_id] = tracer
     return tracer

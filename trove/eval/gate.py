@@ -87,6 +87,7 @@ class GateReport:
     current_label: str = ""
     metrics: list[MetricResult] = field(default_factory=list)
     unpaired: list[str] = field(default_factory=list)
+    denominator_notes: list[str] = field(default_factory=list)
 
     @property
     def regressions(self) -> list[MetricResult]:
@@ -204,6 +205,10 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
         "consensus_rate": _rate(len(cons), len(judged)),
         "avg_retries": round(avg_retries, 3),
         "n": float(n),
+        # 可判定题数(EX 分母):gold 失败/崩溃题被平移出分子分母,单独
+        # 暴露给门禁做分母稳定性检查——两次对比的样本结构不同,结论
+        # 就不完全可比(gate.py 仅告警不拦截,min_n 管样本量下限)。
+        "n_judged": float(len(judged)),
     }
     if gold_match is not None:
         metrics["gold_match"] = round(gold_match, 4)
@@ -246,7 +251,7 @@ def compare_metrics(
     ignore = ignore or set()
     report = GateReport()
     for metric, base in sorted(baseline.items()):
-        if metric in ignore or metric == "n":
+        if metric in ignore or metric in ("n", "n_judged"):
             continue
         cur = current.get(metric)
         if cur is None:
@@ -272,7 +277,34 @@ def compare_metrics(
     for metric in current:
         if metric not in baseline and metric not in ignore:
             report.unpaired.append(metric)
+    _check_denominator(report, baseline, current)
     return report
+
+
+#: 可判定题数(EX 分母)的相对漂移阈值:超过即视为样本结构不同,告警不拦截
+#: (gold SQL 批量损坏/数据源 schema 变更会导致 GOLD_ERROR 平移分母,
+#:  这是对比失真的信号,但门禁不应因样本增减本身而拦)
+DENOMINATOR_DRIFT_WARN = 0.20
+
+
+def _check_denominator(
+    report: GateReport,
+    baseline: dict[str, float],
+    current: dict[str, float],
+) -> None:
+    """分母稳定性检查:GOLD_ERROR/CRASH 平移 judged 数,样本结构不同时
+    指标对比失真——记录告警(render_report / --json 均透出)。"""
+    base = baseline.get("n_judged")
+    cur = current.get("n_judged")
+    if not base or not cur:
+        return  # scorecard json / 单侧缺指标 → 无意义
+    drift = abs(cur - base) / base
+    if drift >= DENOMINATOR_DRIFT_WARN:
+        report.denominator_notes.append(
+            f"EX 可判定题数漂移 {base:.0f} → {cur:.0f}"
+            f"(相对 {drift * 100:.0f}% ≥ {DENOMINATOR_DRIFT_WARN * 100:.0f}%):"
+            "样本结构不同,指标对比仅供参考(gold 失败/崩溃平移了分母)"
+        )
 
 
 def render_report(report: GateReport) -> str:
@@ -293,6 +325,11 @@ def render_report(report: GateReport) -> str:
     if report.unpaired:
         lines.append("")
         lines.append("无基线不可比: " + ", ".join(sorted(set(report.unpaired))))
+    if report.denominator_notes:
+        lines.append("")
+        lines.append("⚠ 样本结构告警(不拦截):")
+        for note in report.denominator_notes:
+            lines.append(f"    - {note}")
     lines.append("")
     if report.passed:
         lines.append(f"✅ 通过 — {len(report.metrics)} 项指标无回归")

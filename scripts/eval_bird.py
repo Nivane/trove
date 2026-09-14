@@ -146,6 +146,8 @@ def _result_entry(
       validation_hits  — 通过前被哪些确定性规则拦过(含 answer-columns 层)
       n_candidates     — 进入执行投票的候选数(1 = 单候选直出)
       qid              — 基线问题集对账键(有 eval/baseline/questions.jsonl 时)
+      tokens           — 进程级记账弹栈的 token 用量(由 done() 注入,
+                         与 replay 条目同构,gate 的 token 指标对真评估生效)
     """
     entry: dict[str, Any] = {
         "run_id": run_id, "question": question, "evidence": evidence,
@@ -400,7 +402,18 @@ async def main() -> None:
 
         oracle/scaling 随条目记录(每个 done 都渲染当前 state),让 oracle
         A/B 与缩放 A/B 可以从 results.jsonl 直接切片。
+
+        token 用量在判定点弹栈注入(与 SessionManager._run_stats 同一把
+        tally):覆盖崩溃/GOLD_ERROR/生成失败等全部路径,崩溃题也可能
+        已产生 LLM 调用,不能只记成功题。
         """
+        try:
+            from trove.llm.token_accounting import pop as _pop_usage
+            usage = _pop_usage(run_id) or {}
+        except Exception:  # noqa: BLE001 — 记账失败不阻断判定
+            usage = {}
+        if usage:
+            entry["tokens"] = usage
         entry.setdefault("oracle", bool(state.oracle_tables))
         entry.setdefault("scaling", args.scaling)
         results.append(entry)

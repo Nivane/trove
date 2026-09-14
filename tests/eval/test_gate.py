@@ -44,6 +44,16 @@ class TestMetricsFromEntries:
         assert round(m["compile_hit"], 3) == 0.667
         assert m["n"] == 5
 
+    def test_eval_bird_entries_with_tokens(self):
+        """eval_bird 判定条目带 tokens(进程级记账注入)→ token 指标生效。"""
+        rows = [
+            _eval_entry("MATCH", tokens={"prompt": 800, "completion": 100, "total": 900}),
+            _eval_entry("MISMATCH", tokens={"prompt": 600, "completion": 50, "total": 650}),
+        ]
+        m = metrics_from_entries(rows)
+        assert m["total_tokens"] == 1550
+        assert m["avg_tokens"] == 775
+
     def test_replay_entries_completion_and_gold(self):
         rows = [
             {"run_id": "r1", "question": "q1", "pred_sql": "SELECT 1",
@@ -70,6 +80,7 @@ class TestMetricsFromEntries:
         m = metrics_from_entries([])
         assert m["ex"] == 0.0
         assert m["n"] == 0.0
+        assert m["n_judged"] == 0.0
 
     def test_recovery_rate(self):
         rows = [
@@ -139,6 +150,44 @@ class TestCompareMetrics:
         assert "回归门禁" in text
         assert "REGRESS" in text
         assert "拦截" in text
+
+
+class TestDenominatorStability:
+    def test_n_judged_recorded(self):
+        rows = [
+            _eval_entry("MATCH"),
+            _eval_entry("GOLD_ERROR"),  # 不进可判定
+            _eval_entry("MISMATCH"),
+        ]
+        m = metrics_from_entries(rows)
+        assert m["n"] == 3
+        assert m["n_judged"] == 2
+
+    def test_no_drift_no_note(self):
+        base = {"ex": 0.8, "n_judged": 100.0}
+        cur = {"ex": 0.75, "n_judged": 110.0}  # +10% < 20%
+        report = compare_metrics(base, cur)
+        assert report.denominator_notes == []
+        assert report.passed is False  # ex 回归照常拦截
+
+    def test_drift_warns_but_does_not_block(self):
+        base = {"ex": 0.8, "n_judged": 100.0}
+        cur = {"ex": 0.82, "n_judged": 60.0}  # -40% ≥ 20% 阈值
+        report = compare_metrics(base, cur)
+        assert len(report.denominator_notes) == 1
+        assert "可判定题数漂移" in report.denominator_notes[0]
+        # 告警不拦截:所有指标 OK
+        assert report.passed is True
+        # n_judged 本身不参与逐指标对比(纯信息量)
+        assert all(m.metric != "n_judged" for m in report.metrics)
+
+    def test_denominator_note_rendered(self):
+        base = {"ex": 0.8, "n_judged": 100.0}
+        cur = {"ex": 0.82, "n_judged": 40.0}
+        report = compare_metrics(base, cur)
+        text = render_report(report)
+        assert "样本结构告警" in text
+        assert "100 → 40" in text
 
 
 class TestFileIO:

@@ -201,3 +201,11 @@ class TestRunSummary:
         # tally is popped after the run — no leakage into later questions
         from trove.llm.token_accounting import _usage
         assert _usage == {}
+        # 持久化:token_usage 同时落进 session 消息 metadata(get 不弹栈),
+        # 崩溃/重启后成本历史仍可查,不只在一次性 done 事件里
+        reloaded = await manager._store.load_session(session.session_id)
+        assistant = [m for m in reloaded.messages if m.role == "assistant"]
+        assert assistant
+        meta_usage = assistant[-1].metadata.get("token_usage")
+        assert meta_usage is not None
+        assert meta_usage["total"] == usage["total"]

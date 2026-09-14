@@ -114,12 +114,15 @@ def main() -> int:
     )
     report.baseline_label = Path(baseline_path).name
     report.current_label = Path(current_path).name
+    for note in report.denominator_notes:
+        print(f"⚠ {note}", file=sys.stderr)
 
     if args.json:
         print(json.dumps({
             "baseline": baseline_path,
             "current": current_path,
             "passed": report.passed,
+            "denominator_notes": report.denominator_notes,
             "regressions": [
                 {
                     "metric": m.metric,
