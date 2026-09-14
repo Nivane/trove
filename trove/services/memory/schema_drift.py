@@ -16,8 +16,10 @@ from typing import Any
 async def detect_drift(datasource: str, kb: Any, catalog: Any) -> dict[str, Any]:
     """Compare live schema vs KB schema_notes; return a drift report.
 
-    Pure deterministic comparison. ``catalog.list_tables`` returns table
-    dicts with ``name``/``columns``. KB table notes come from
+    Pure deterministic comparison. ``catalog`` is queried through
+    ``column_sets`` (preferred; full column names in one fetch — e.g.
+    ``CatalogService.column_sets``) or a ``list_tables`` that returns
+    table dicts with a ``columns`` list. KB table notes come from
     ``KbService.table_notes`` (keyed by table name) after ``ensure_synced``.
 
     Returns::
@@ -39,9 +41,7 @@ async def detect_drift(datasource: str, kb: Any, catalog: Any) -> dict[str, Any]
         pass
     live = {}
     try:
-        for t in await catalog.list_tables(datasource):
-            name = str(t.get("name", ""))
-            live[name] = {c.get("name") for c in t.get("columns", []) if c.get("name")}
+        live = await _live_column_sets(catalog, datasource)
     except Exception:
         return report
 
@@ -58,15 +58,53 @@ async def detect_drift(datasource: str, kb: Any, catalog: Any) -> dict[str, Any]
     report["new_tables"] = sorted(set(live) - set(kb_tables))
     report["gone_tables"] = sorted(set(kb_tables) - set(live))
     for table in sorted(set(live) & set(kb_tables)):
-        added = sorted(live[table] - kb_tables[table])
-        removed = sorted(kb_tables[table] - live[table])
+        live_cols = live[table]
+        if live_cols is None:
+            continue  # 列集合未知(count-only catalog)→ 列漂移不可判,别误报
+        added = sorted(live_cols - kb_tables[table])
+        removed = sorted(kb_tables[table] - live_cols)
         if added or removed:
             report["column_changes"][table] = {"added": added, "removed": removed}
     return report
 
 
+async def _live_column_sets(catalog: Any, datasource: str) -> dict[str, set[str] | None]:
+    """Live schema as ``{table: {column}}``, lowercased for comparison.
+
+    Prefers ``catalog.column_sets`` (full column names in one fetch);
+    falls back to ``list_tables`` entries with a real ``columns`` list.
+    A count-only ``columns`` (e.g. ``CatalogService.list_tables`` returns
+    ``len(t.columns)``) cannot report column drift — the table is kept in
+    the key set (so it is not misreported as gone) but marked ``None`` so
+    its column changes are skipped.
+    """
+    column_sets = getattr(catalog, "column_sets", None)
+    if column_sets is not None:
+        raw = await column_sets(datasource)
+        return {
+            str(t).lower(): {str(c).lower() for c in cols}
+            for t, cols in raw.items()
+        }
+    live: dict[str, set[str] | None] = {}
+    for t in await catalog.list_tables(datasource):
+        name = str(t.get("name", "")).lower()
+        if not name:
+            continue
+        cols = t.get("columns", [])
+        if not isinstance(cols, list):
+            live[name] = None
+            continue
+        live[name] = {str(c.get("name", "")).lower() for c in cols if c.get("name")}
+    return live
+
+
 def _kb_column_set(kb: Any, datasource: str) -> dict[str, set[str]]:
-    """从 schema_notes.yml 解析 表名 → 列名集合(表/列全量,无描述过滤)。"""
+    """从 schema_notes.yml 解析 表名 → 列名集合(表/列全量,无描述过滤)。
+
+    表/列名统一小写,与 ``_live_column_sets`` 的归一化口径一致,避免
+    大小写差异造成假漂移(物理库列大小写保留、schema_notes 手写大小写
+    不一的场景)。
+    """
     import yaml
 
     path = kb.kb_dir / datasource / "schema_notes.yml"
@@ -75,9 +113,9 @@ def _kb_column_set(kb: Any, datasource: str) -> dict[str, set[str]]:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     out: dict[str, set[str]] = {}
     for table in data.get("tables", []):
-        name = str(table.get("name", ""))
+        name = str(table.get("name", "")).lower()
         if not name:
             continue
-        cols = {str(c.get("name", "")) for c in table.get("columns", []) if c.get("name")}
+        cols = {str(c.get("name", "")).lower() for c in table.get("columns", []) if c.get("name")}
         out[name] = cols
     return out

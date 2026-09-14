@@ -85,6 +85,22 @@ class CatalogService:
             for t in tables
         ]
 
+    async def column_sets(
+        self,
+        datasource: str | None = None,
+    ) -> dict[str, set[str]]:
+        """Live schema as ``{table: {column}}`` (one schema fetch).
+
+        Schema-drift detection needs the full column-name set to compare
+        against the KB's ``schema_notes.yml``; ``list_tables`` only
+        returns column *counts*, which is not enough.
+        """
+        schema = await self._registry.get_schema(datasource)
+        return {
+            t.name: {c.name for c in t.columns}
+            for t in schema.tables
+        }
+
     async def table_detail(
         self,
         table_name: str,
