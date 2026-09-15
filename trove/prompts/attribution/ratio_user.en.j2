@@ -1,0 +1,21 @@
+User question: {{ question }}
+Target ratio metric: {{ metric }}
+Breakdown dimension: {{ dimension }}
+Comparison baseline: {{ baseline }}
+Overall rate change (total_delta): {{ total_delta }}
+
+Decomposition summary (effects; the three sum exactly to total_delta):
+{% if effects %}
+- Within-group effect (rate changes of the groups themselves): {{ "%.4g" | format(effects.within) }}
+- Composition effect (mix/structure change in group shares): {{ "%.4g" | format(effects.composition) }}
+- Interaction effect: {{ "%.4g" | format(effects.interaction) }}
+{% endif %}
+
+Contribution table (dimension | base rate | current rate | base weight | current weight | within | composition | interaction | contribution):
+{{ table }}
+
+Based on this table, give a concise attribution conclusion and the top
+contributing factors, citing the table numbers strictly. Crucially, say
+whether the overall rate change comes mostly from "within-group rate
+changes" or from "composition/mix shifts" (changes in group shares) — this
+is the key insight for ratio metrics that differs from additive totals.

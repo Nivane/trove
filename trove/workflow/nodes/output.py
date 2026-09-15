@@ -184,7 +184,8 @@ def _build_attribution_section(state: WorkflowState) -> str:
     """归因分析区块:叙事 + 归因表 + 瀑布图(ASCII 兜底)。
 
     全部来自 state.attribution(attribution 节点产物);字段缺失即跳过对应
-    小节。叙事缺失只出表(分析本身照常可见),不阻断回答。
+    小节。叙事缺失只出表(分析本身照常可见),不阻断回答。比率指标
+    (kind == "ratio")渲染率/权重列 + 三效应汇总行。
     """
     attr = state.attribution or {}
     lang = state.lang
@@ -192,6 +193,25 @@ def _build_attribution_section(state: WorkflowState) -> str:
 
     if attr.get("narrative"):
         parts.append(f"{attr['narrative']}\n")
+
+    # 比率指标的三效应汇总(本征/结构/交叉 = 总变化)
+    is_ratio = str(attr.get("kind") or "") == "ratio"
+    effects = attr.get("effects")
+    if is_ratio and isinstance(effects, dict):
+        eff_lines = []
+        if lang == "zh":
+            eff_lines = [
+                f"- {L(lang, '本征效应', 'Within effect')}: {effects.get('within', 0.0):g}",
+                f"- {L(lang, '结构效应', 'Composition effect')}: {effects.get('composition', 0.0):g}",
+                f"- {L(lang, '交叉效应', 'Interaction effect')}: {effects.get('interaction', 0.0):g}",
+            ]
+        else:
+            eff_lines = [
+                f"- Within effect: {effects.get('within', 0.0):g}",
+                f"- Composition effect: {effects.get('composition', 0.0):g}",
+                f"- Interaction effect: {effects.get('interaction', 0.0):g}",
+            ]
+        parts.append("\n".join(eff_lines) + "\n")
 
     # 瀑布图(ECharts 主 / ASCII 兜底)——与主结果图表独立区块
     chart = attr.get("chart")
@@ -207,16 +227,35 @@ def _build_attribution_section(state: WorkflowState) -> str:
             "yoy": "去年同期" if lang == "zh" else "YoY",
             "share": "本期" if lang == "zh" else "Current",
         }.get(str(attr.get("baseline") or ""), "基期")
-        parts.append(f"| {L(lang, '维度', 'Dimension')} | {baseline_label} | "
-                     f"{L(lang, '当前', 'Current')} | {L(lang, '变化量', 'Δ')} | "
-                     f"{L(lang, '贡献率', 'Contribution')} |")
-        parts.append("| --- | --- | --- | --- | --- |")
-        for it in table:
-            parts.append(
-                f"| {it.get('dim', '')} | {it.get('base', 0.0):g} | "
-                f"{it.get('current', 0.0):g} | {it.get('delta', 0.0):g} | "
-                f"{it.get('contribution', 0.0):+.1%} |"
-            )
+        if is_ratio:
+            parts.append(f"| {L(lang, '维度', 'Dimension')} | "
+                         f"{L(lang, '基期率', 'Base rate')} | "
+                         f"{L(lang, '当前率', 'Current rate')} | "
+                         f"{L(lang, '基期权重', 'Base weight')} | "
+                         f"{L(lang, '当前权重', 'Current weight')} | "
+                         f"{L(lang, '变化量', 'Δ')} | "
+                         f"{L(lang, '贡献率', 'Contribution')} |")
+            parts.append("| --- | --- | --- | --- | --- | --- | --- |")
+            for it in table:
+                parts.append(
+                    f"| {it.get('dim', '')} | {it.get('base_rate', 0.0):g} | "
+                    f"{it.get('current_rate', 0.0):g} | "
+                    f"{it.get('base_weight', 0.0):.1%} | "
+                    f"{it.get('current_weight', 0.0):.1%} | "
+                    f"{it.get('delta', 0.0):g} | "
+                    f"{it.get('contribution', 0.0):g} |"
+                )
+        else:
+            parts.append(f"| {L(lang, '维度', 'Dimension')} | {baseline_label} | "
+                         f"{L(lang, '当前', 'Current')} | {L(lang, '变化量', 'Δ')} | "
+                         f"{L(lang, '贡献率', 'Contribution')} |")
+            parts.append("| --- | --- | --- | --- | --- |")
+            for it in table:
+                parts.append(
+                    f"| {it.get('dim', '')} | {it.get('base', 0.0):g} | "
+                    f"{it.get('current', 0.0):g} | {it.get('delta', 0.0):g} | "
+                    f"{it.get('contribution', 0.0):+.1%} |"
+                )
         parts.append("\n")
 
     return "\n".join(parts).strip()

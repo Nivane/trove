@@ -107,11 +107,23 @@ class AttributionConfig:
     ``max_hops``: drill-down depth cap (1 = dimension breakdown only,
     2 = drill into the top contributor for one more level).
     ``max_dimensions``: candidate-dimension cap in the attribution plan.
+    ``probe_dimensions``: data-driven dimension pre-selection — probe each
+        candidate dim (≥2) with both-period GROUP BY and pick the one with
+        the largest Σ|delta| as the primary breakdown (LLM order no longer
+        trusted blindly). Extra cost = (n_dims − 1) × 2 cheap queries.
+    ``ratio_decomposition``: for ratio/rate metrics (AVG, A/B, SAFE_DIVIDE),
+        decompose the overall change into within-group (rate) effect +
+        composition (mix/structure) effect + interaction (shift-share), and
+        attribute each group accordingly — instead of the wrong "additive"
+        contribution math. Degrades to share attribution when either period
+        has no data.
     """
 
     enabled: bool = True
     max_hops: int = 2
     max_dimensions: int = 3
+    probe_dimensions: bool = True
+    ratio_decomposition: bool = True
 
 
 @dataclass
@@ -369,6 +381,8 @@ class ConfigLoader:
             enabled=bool(attr_raw.get("enabled", True)),
             max_hops=max(1, int(attr_raw.get("max_hops", 2))),
             max_dimensions=max(1, int(attr_raw.get("max_dimensions", 3))),
+            probe_dimensions=bool(attr_raw.get("probe_dimensions", True)),
+            ratio_decomposition=bool(attr_raw.get("ratio_decomposition", True)),
         )
 
         # Parse eval gate (top-level section, not under agent:)

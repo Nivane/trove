@@ -25,6 +25,9 @@ from trove.workflow.intent import (
 from trove.workflow.nodes.attribution import (
     _base_period,
     _contribution,
+    _metric_ratio_parts,
+    _ratio_share,
+    _shift_share,
     _waterfall_chart,
     make_attribution,
 )
@@ -180,6 +183,83 @@ class TestAttributionIntent:
         """写意图与 metadata 强信号优先级高于归因。"""
         assert classify_intent("删除为什么会导致数据下降的表") == Intent.WRITE
         assert classify_intent("口径的定义是什么") == Intent.METADATA
+
+
+# ── ratio metric detection + shift-share decomposition ──────
+
+class TestRatioMetricParts:
+    def test_avg_detected_as_ratio(self):
+        """AVG(x) → (SUM(x), COUNT(x)),分子/分母同为表限定表达式。"""
+        parts = _metric_ratio_parts(type("M", (), {"expression": "AVG(students.grade)"})())
+        assert parts == ("SUM(students.grade)", "COUNT(students.grade)")
+
+    def test_division_detected_as_ratio(self):
+        parts = _metric_ratio_parts(
+            type("M", (), {"expression": "SUM(loan.amount) / SUM(loan.count)"})())
+        assert parts == ("SUM(loan.amount)", "SUM(loan.count)")
+
+    def test_safe_divide_detected_as_ratio(self):
+        parts = _metric_ratio_parts(
+            type("M", (), {"expression": "SAFE_DIVIDE(SUM(a), SUM(b))"})())
+        assert parts == ("SUM(a)", "SUM(b)")
+
+    def test_additive_metrics_are_not_ratio(self):
+        for expr in ("SUM(students.grade)", "COUNT(students.id)",
+                     "MIN(students.grade)", "MAX(students.grade)",
+                     "COUNT(DISTINCT students.id)"):
+            assert _metric_ratio_parts(
+                type("M", (), {"expression": expr})()) is None, expr
+
+    def test_none_metric_returns_none(self):
+        assert _metric_ratio_parts(None) is None
+        assert _metric_ratio_parts(type("M", (), {"expression": ""})()) is None
+
+
+class TestShiftShare:
+    def test_exact_identity_three_effects_sum_to_delta(self):
+        """within + composition + interaction 精确等于 ΔR(带符号)。"""
+        base = {"A": (100, 10), "B": (90, 10)}
+        cur = {"A": (120, 10), "B": (90, 15)}
+        dec = _shift_share(base, cur)
+        e = dec["effects"]
+        assert e["delta"] == pytest.approx(dec["cur_total"] - dec["base_total"])
+        assert e["within"] + e["composition"] + e["interaction"] == pytest.approx(e["delta"])
+        # 各组 contribution 之和 = ΔR
+        assert sum(r["contribution"] for r in dec["rows"]) == pytest.approx(e["delta"])
+
+    def test_missing_dim_treated_as_zero(self):
+        """只在一期出现的分组按另一期 (0,0) 计,恒等式仍成立。"""
+        base = {"A": (100, 10), "C": (50, 5)}
+        cur = {"A": (120, 10), "B": (90, 15)}
+        dec = _shift_share(base, cur)
+        e = dec["effects"]
+        assert e["within"] + e["composition"] + e["interaction"] == pytest.approx(e["delta"])
+        assert sum(r["contribution"] for r in dec["rows"]) == pytest.approx(e["delta"])
+
+    def test_sorted_by_abs_contribution(self):
+        dec = _shift_share({"A": (100, 10), "B": (90, 10)}, {"A": (120, 10), "B": (90, 15)})
+        abs_conts = [abs(r["contribution"]) for r in dec["rows"]]
+        assert abs_conts == sorted(abs_conts, reverse=True)
+
+    def test_pure_mix_shift_zero_within(self):
+        """各组率不变、仅占比变化 → within=0,变化全来自 composition。"""
+        base = {"A": (10, 10), "B": (9, 10)}   # 率 1.0 / 0.9
+        cur = {"A": (20, 20), "B": (9, 10)}    # 率不变,但 A 权重翻倍
+        dec = _shift_share(base, cur)
+        e = dec["effects"]
+        assert e["within"] == pytest.approx(0.0)
+        assert e["within"] + e["composition"] + e["interaction"] == pytest.approx(e["delta"])
+
+
+class TestRatioShare:
+    def test_numerator_share_sum_to_one(self):
+        dec = _ratio_share({"A": (120, 10), "B": (90, 15)})
+        assert sum(r["contribution"] for r in dec["rows"]) == pytest.approx(1.0)
+        assert dec["cur_total"] == pytest.approx(210 / 25)
+
+    def test_empty_inputs(self):
+        assert _ratio_share({})["rows"] == []
+        assert _ratio_share({})["cur_total"] == 0.0
 
 
 # ── attribution node ─────────────────────────────────────────
@@ -373,6 +453,189 @@ class TestAttributionNode:
         assert attr["table"]
 
 
+@pytest.fixture
+async def two_period_registry(tmp_path):
+    """两期数据的测试库(loan: amount + region + product + issued),支持环比 shift-share。"""
+    from trove.core.types import DatasourceConfig
+    from trove.services.datasource.registry import ConnectorRegistry
+    from tests.conftest import make_test_semantic_provider
+
+    registry = ConnectorRegistry()
+    config = DatasourceConfig(
+        name="test_db", type="sqlite",
+        connection_params={"path": ":memory:"}, default=True,
+    )
+    adapter = await registry.register(config, set_default=True)
+    await adapter.execute(
+        "CREATE TABLE loan (id INTEGER PRIMARY KEY, amount REAL, region TEXT, product TEXT, issued DATE)"
+    )
+    # 基期 2023-12:华东量大(2 笔)、华南量小(1 笔)
+    await adapter.execute(
+        "INSERT INTO loan (amount, region, product, issued) VALUES "
+        "(80,'East','X','2023-12-05'), (80,'East','Y','2023-12-06'), "
+        "(50,'South','X','2023-12-10')"
+    )
+    # 当前 2024-01:华东占比重下降、华南上升(结构变化),各组率也变化
+    await adapter.execute(
+        "INSERT INTO loan (amount, region, product, issued) VALUES "
+        "(80,'East','X','2024-01-05'), "
+        "(40,'South','X','2024-01-10'), (40,'South','Y','2024-01-12')"
+    )
+    registry._test_semantic_provider = await make_test_semantic_provider(
+        registry, tmp_path / "kb")
+    yield registry
+    await registry.close_all()
+
+
+class TestAttributionRatio:
+    async def test_ratio_metric_share_baseline(self, attr_registry):
+        """比率度量 + share 基线:贡献 = 分子占比(无基期不可拆)。"""
+        llm = RecordingLLM(["平均成绩主要由 Alameda 贡献"])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        out = await node(make_attr_state(
+            attribution_plan={
+                "target_metric": "avg of students.grade",
+                "dimensions": ["students.county"],
+                "baseline": "share",
+                "depth": 1,
+            },
+        ))
+        attr = out["attribution"]
+        assert attr["kind"] == "ratio"
+        assert attr.get("effects") is None  # share 基线无率变化可拆
+        # 分子占比之和 = 1
+        assert sum(r["contribution"] for r in attr["table"]) == pytest.approx(1.0)
+        # 行含率与权重
+        assert "base_rate" in attr["table"][0]
+        assert "current_weight" in attr["table"][0]
+
+    async def test_ratio_metric_prev_period_shift_share(self, two_period_registry):
+        """比率度量 + 环比:shift-share 分解出本征/结构/交叉三效应。"""
+        llm = RecordingLLM(["下降主要来自结构效应"])
+        node = make_attribution(
+            llm, on_config(), connectors=two_period_registry,
+            semantic_layer=two_period_registry._test_semantic_provider,
+        )
+        out = await node(WorkflowState(
+            session_id="s1", run_id="r1", question="为什么平均贷款额度下降",
+            lang="zh", matched_tables=["loan"], dialect="sqlite",
+            datasource="test_db",
+            attribution_plan={
+                "target_metric": "avg of loan.amount",
+                "dimensions": ["loan.region"],
+                "baseline": "prev_period",
+                "depth": 1,
+            },
+            time_context="2024-01-01 ~ 2024-01-31",
+        ))
+        attr = out["attribution"]
+        assert attr["kind"] == "ratio"
+        effects = attr["effects"]
+        assert effects is not None
+        # 三效应之和精确等于 total_delta
+        assert (
+            effects["within"] + effects["composition"] + effects["interaction"]
+            == pytest.approx(effects["delta"])
+        )
+        assert attr["total_delta"] == pytest.approx(effects["delta"])
+        # 基期:华东 2 笔(率80)+ 华南 1 笔(率50)→ 80*2/3 + 50*1/3 = 70
+        # 当前:华东 1 笔(率80)+ 华南 2 笔(率40)→ 80*1/3 + 40*2/3 ≈ 53.33
+        assert effects["base_rate"] == pytest.approx(70.0, abs=1e-6)
+        assert effects["current_rate"] == pytest.approx(160 / 3, abs=1e-6)
+        # 瀑布图为率分解形态(5 段:基期/本征/结构/交叉/当前)
+        assert attr["chart"]["type"] == "waterfall"
+        assert attr["chart"]["categories"] == ["基期", "本征效应", "结构效应", "交叉效应", "当前"]
+
+    async def test_ratio_drilldown(self, two_period_registry):
+        """比率度量 + depth=2:对 top 贡献者下钻第二个维度。"""
+        llm = RecordingLLM(["下钻"])
+        node = make_attribution(
+            llm, on_config(), connectors=two_period_registry,
+            semantic_layer=two_period_registry._test_semantic_provider,
+        )
+        out = await node(WorkflowState(
+            session_id="s1", run_id="r1", question="为什么平均贷款额度下降",
+            lang="zh", matched_tables=["loan"], dialect="sqlite",
+            datasource="test_db",
+            attribution_plan={
+                "target_metric": "avg of loan.amount",
+                "dimensions": ["loan.region", "loan.product"],
+                "baseline": "prev_period",
+                "depth": 2,
+            },
+            time_context="2024-01-01 ~ 2024-01-31",
+        ))
+        attr = out["attribution"]
+        assert "drilldown" in attr
+        assert attr["drilldown"]["table"]
+
+
+class TestAttributionDimensionProbe:
+    async def test_probe_reorders_to_stronger_dim(self, two_period_registry):
+        """维度预选:计划顺序 [product, region],但 region 解释力更强 →
+        probe 后主拆维度应为 region。"""
+        llm = RecordingLLM(["下降主要来自区域结构变化"])
+        node = make_attribution(
+            llm, on_config(), connectors=two_period_registry,
+            semantic_layer=two_period_registry._test_semantic_provider,
+        )
+        out = await node(WorkflowState(
+            session_id="s1", run_id="r1", question="为什么平均贷款额度下降",
+            lang="zh", matched_tables=["loan"], dialect="sqlite",
+            datasource="test_db",
+            attribution_plan={
+                "target_metric": "avg of loan.amount",
+                "dimensions": ["loan.product", "loan.region"],
+                "baseline": "prev_period",
+                "depth": 1,
+            },
+            time_context="2024-01-01 ~ 2024-01-31",
+        ))
+        attr = out["attribution"]
+        # 主拆维度应为解释力更强的 region(product 率变化小)
+        assert attr["dimensions"][0] == "loan.region"
+        assert attr["kind"] == "ratio"
+        assert attr["effects"] is not None
+
+    async def test_probe_skipped_single_dim(self, attr_registry):
+        """单维时无探测(也没有可重排的)。"""
+        llm = RecordingLLM(["x"])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider,
+        )
+        out = await node(make_attr_state())
+        assert out["attribution"]["dimensions"] == ["students.county"]
+
+    async def test_probe_disabled_keeps_plan_order(self, two_period_registry):
+        """probe_dimensions=False → 保持计划顺序,不探测。"""
+        llm = RecordingLLM(["x"])
+        node = make_attribution(
+            llm, on_config(
+                attribution=type(AgentConfig().attribution)(
+                    enabled=True, probe_dimensions=False)),
+            connectors=two_period_registry,
+            semantic_layer=two_period_registry._test_semantic_provider,
+        )
+        out = await node(WorkflowState(
+            session_id="s1", run_id="r1", question="为什么平均贷款额度下降",
+            lang="zh", matched_tables=["loan"], dialect="sqlite",
+            datasource="test_db",
+            attribution_plan={
+                "target_metric": "avg of loan.amount",
+                "dimensions": ["loan.product", "loan.region"],
+                "baseline": "prev_period",
+                "depth": 1,
+            },
+            time_context="2024-01-01 ~ 2024-01-31",
+        ))
+        attr = out["attribution"]
+        assert attr["dimensions"][0] == "loan.product"
+
+
 # ── output rendering ─────────────────────────────────────────
 
 class TestOutputAttribution:
@@ -401,6 +664,30 @@ class TestOutputAttribution:
         assert "主要是华东地区贡献" in out["final_response"]
         assert "华东" in out["final_response"] and "-20" in out["final_response"]
         assert "-60.0%" in out["final_response"]
+
+    async def test_renders_ratio_attribution_section(self):
+        state = WorkflowState(
+            session_id="s1",
+            question="为什么平均额度下降",
+            attribution={
+                "kind": "ratio",
+                "narrative": "主要是华南占比上升且率下滑",
+                "baseline": "prev_period",
+                "effects": {"within": -0.05, "composition": -0.1, "interaction": -0.02},
+                "table": [
+                    {"dim": "华南", "base_rate": 0.5, "current_rate": 0.4,
+                     "base_weight": 0.33, "current_weight": 0.67,
+                     "delta": -0.1, "contribution": -0.12},
+                ],
+            },
+        )
+        out = await output(state)
+        assert "归因分析" in out["final_response"]
+        assert "本征效应" in out["final_response"]
+        assert "结构效应" in out["final_response"]
+        assert "交叉效应" in out["final_response"]
+        assert "基期率" in out["final_response"] and "当前率" in out["final_response"]
+        assert "67.0%" in out["final_response"]  # 权重渲染为百分比
 
     async def test_no_attribution_no_section(self):
         state = WorkflowState(session_id="s1", question="q")

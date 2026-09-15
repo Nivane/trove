@@ -41,6 +41,8 @@ agent:
   #   enabled: true
   #   max_hops: 2
   #   max_dimensions: 3
+  #   probe_dimensions: true   # 数据驱动维度预选(≥2 维时按 Σ|delta| 选主拆维度)
+  #   ratio_decomposition: true  # 比率指标 shift-share 分解(本征/结构/交叉)
   # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
   # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
   # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。

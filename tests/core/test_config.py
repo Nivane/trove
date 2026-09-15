@@ -276,6 +276,28 @@ class TestModelTiering:
         config = ConfigLoader.load_agent_config(str(config_file))
         assert config.result_cache is True
 
+    def test_attribution_defaults(self):
+        cfg = AgentConfig()
+        assert cfg.attribution.probe_dimensions is True
+        assert cfg.attribution.ratio_decomposition is True
+        assert cfg.attribution.max_hops == 2
+
+    def test_attribution_loaded_from_yaml(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  attribution:\n"
+            "    max_hops: 3\n"
+            "    max_dimensions: 4\n"
+            "    probe_dimensions: false\n"
+            "    ratio_decomposition: false\n"
+        )
+        config = ConfigLoader.load_agent_config(str(config_file))
+        assert config.attribution.max_hops == 3
+        assert config.attribution.max_dimensions == 4
+        assert config.attribution.probe_dimensions is False
+        assert config.attribution.ratio_decomposition is False
+
     @pytest.mark.parametrize("model_fast,complexity,expected", [
         ("", "simple", "mock/target"),            # 未配置 fast → 不分档
         ("", "complex", "mock/target"),

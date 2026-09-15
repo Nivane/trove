@@ -1,0 +1,19 @@
+用户问题: {{ question }}
+目标比率指标: {{ metric }}
+分解维度: {{ dimension }}
+对比基准: {{ baseline }}
+整体率变化(total_delta): {{ total_delta }}
+
+分解汇总(effects,三者之和精确等于 total_delta):
+{% if effects %}
+- 本征效应(各组自身率变化贡献): {{ "%.4g" | format(effects.within) }}
+- 结构效应(组间占比/结构变化贡献): {{ "%.4g" | format(effects.composition) }}
+- 交叉效应: {{ "%.4g" | format(effects.interaction) }}
+{% endif %}
+
+归因表(维度 | 基期率 | 当前率 | 基期权重 | 当前权重 | 本征 | 结构 | 交叉 | 贡献率):
+{{ table }}
+
+请基于以上归因表给出精炼的归因结论与主要贡献因素,严格引用表中数字。
+重点说明:整体率变化更多来自「各组自身率变化(本征)」还是「结构/组合
+变化(各组占比变动)」——这是比率型指标区别于总量指标的核心洞察。
