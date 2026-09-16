@@ -65,6 +65,11 @@ export const router = createRouter({
           name: 'admin-settings',
           component: () => import('../views/admin/SettingsView.vue'),
         },
+        {
+          path: 'jobs',
+          name: 'admin-jobs',
+          component: () => import('../views/admin/JobsView.vue'),
+        },
       ],
     },
   ],

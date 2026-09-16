@@ -88,6 +88,10 @@ agent:
     active_grace_min: 10
     max_checkpoints_per_thread: 50
     sweep_interval_hours: 24
+  # 定时任务调度 tick 轮询间隔(秒);serve 内置后台 tick 执行到期 job。
+  # <=0 = 关闭内置调度(此时需另起 `trove-cli schedule --daemon`)。注意:
+  # 内置 tick 与 CLI daemon 二选一,别同时跑(会双跑到期 job)。
+  scheduler_poll_seconds: 30
   # ── 统一内部存储(StorageBackend 抽象)──
   # Trove 自身状态(会话/任务/用户事实/记忆/认证/设置/作业/血缘/检索日志/
   # checkpointer)默认走 SQLite(内存/本地);生产 PostgreSQL 通过环境变量

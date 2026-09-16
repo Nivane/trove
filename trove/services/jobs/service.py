@@ -96,6 +96,61 @@ class JobsService:
         await self.store.save_job(job)
         return job
 
+    async def update_job(
+        self,
+        job_id: str,
+        *,
+        name: str | None = None,
+        question: str | None = None,
+        schedule: str | None = None,
+        schedule_type: str | None = None,
+        datasource: str | None = None,
+        workflow: str | None = None,
+        alert_expr: str | None = None,
+        alert_channel: str | None = None,
+        alert_cooldown_min: int | None = None,
+        enabled: bool | None = None,
+    ) -> Job | None:
+        """Update mutable job fields (None = unchanged).
+
+        Schedule changes recompute next_run_at when the job is enabled;
+        a new schedule that does not parse leaves the job unchanged and
+        returns None.
+        """
+        job = await self.store.get_job(job_id)
+        if job is None:
+            return None
+        st = schedule_type or job.schedule_type
+        if st not in ("interval", "cron"):
+            return None
+        sc = schedule or job.schedule
+        # 新调度须可解析(即使 job 停用也要校验,否则下次启用拿不到 run time)。
+        if not compute_next_run(st, sc):
+            return None
+        if name is not None:
+            job.name = name.strip() or job.name
+        if question is not None:
+            job.question = question.strip()
+        if schedule is not None:
+            job.schedule = schedule.strip()
+        if schedule_type is not None:
+            job.schedule_type = st
+        if datasource is not None:
+            job.datasource = datasource
+        if workflow is not None:
+            job.workflow = workflow or "reflection"
+        if alert_expr is not None:
+            job.alert_expr = alert_expr.strip()
+        if alert_channel is not None:
+            job.alert_channel = alert_channel.strip()
+        if alert_cooldown_min is not None:
+            job.alert_cooldown_min = max(0, int(alert_cooldown_min))
+        if enabled is not None:
+            job.enabled = bool(enabled)
+        job.next_run_at = compute_next_run(job.schedule_type, job.schedule) if job.enabled else ""
+        await self.store.save_job(job)
+        return job
+
     # ── scheduling ticks ─────────────────────────────────
 
     async def due_jobs(self, now: datetime | None = None) -> list[Job]:

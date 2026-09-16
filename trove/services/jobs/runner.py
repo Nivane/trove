@@ -37,6 +37,7 @@ class SchedulerRunner:
             try:
                 final = await self.session_manager.ask(
                     session, job.question, job.workflow,
+                    datasource=job.datasource or None,
                 )
                 if getattr(final, "hitl_status", "") == "pending":
                     final = await self.session_manager.resume(
@@ -85,6 +86,16 @@ class SchedulerRunner:
             except Exception:
                 pass
             return {"job_id": job.id, "name": job.name, "error": str(e)[:200]}
+
+    async def run_job_now(self, job_id: str) -> dict[str, Any] | None:
+        """Run a job immediately (manual trigger), regardless of schedule.
+
+        Returns the run summary, or None when the job does not exist.
+        """
+        job = await self.jobs.get_job(job_id)
+        if job is None:
+            return None
+        return await self.run_job(job)
 
     async def tick(self, now: datetime | None = None) -> list[dict[str, Any]]:
         """Run all currently due jobs; returns per-job summaries."""

@@ -171,6 +171,35 @@ class DatasourcesPut(BaseModel):
     datasources: list[str] = Field(default_factory=list)
 
 
+class JobCreate(BaseModel):
+    """POST /v1/admin/jobs body — a scheduled question (cron/interval + alert)."""
+
+    question: str = Field(min_length=1)
+    schedule: str = Field(min_length=1, description="cron expr or interval minutes")
+    schedule_type: Literal["interval", "cron"] = "interval"
+    name: str = ""
+    datasource: str = "demo"
+    workflow: str = "reflection"
+    alert_expr: str = ""
+    alert_channel: str = ""
+    alert_cooldown_min: int = Field(default=30, ge=0)
+
+
+class JobPatch(BaseModel):
+    """PATCH /v1/admin/jobs/{id} body (all fields optional)."""
+
+    name: str | None = None
+    question: str | None = Field(default=None, min_length=1)
+    schedule: str | None = None
+    schedule_type: Literal["interval", "cron"] | None = None
+    datasource: str | None = None
+    workflow: str | None = None
+    alert_expr: str | None = None
+    alert_channel: str | None = None
+    alert_cooldown_min: int | None = Field(default=None, ge=0)
+    enabled: bool | None = None
+
+
 class SettingsUpdate(BaseModel):
     """PUT /v1/admin/settings body — partial flat updates keyed by the
     settings schema (e.g. `llm.default_model`, `app.hitl`)."""

@@ -318,6 +318,17 @@ async def create_app_components(
     # ── Maintenance (retention sweeps: daemon tick + serve lifespan) ──
     from trove.services.maintenance import MaintenanceService
 
+    # ── Scheduled jobs (cron/interval + threshold alerts) ──
+    # 与 CLI `trove-cli job/schedule` 共用同一存储与服务;serve 内置调度
+    # tick(lifespan 后台任务),不再需要另起 daemon。JobStore 落在
+    # config.home 下,与 CLI 的 Path.cwd() 语义对齐(prod 容器里即工作目录)。
+    from trove.services.jobs.runner import SchedulerRunner
+    from trove.services.jobs.service import JobsService
+    from trove.services.jobs.store import JobStore
+
+    jobs = JobsService(JobStore(config.home))
+    scheduler = SchedulerRunner(session_manager, jobs, lang=config.language)
+
     return {
         "config": config,
         "session_store": session_store,
@@ -337,6 +348,8 @@ async def create_app_components(
         "graphs": graphs,
         "session_manager": session_manager,
         "checkpointer": checkpointer,
+        "jobs": jobs,
+        "scheduler": scheduler,
         "maintenance": MaintenanceService(
             session_store, checkpointer, config.retention,
         ),
@@ -566,6 +579,12 @@ async def async_main_serve(argv: list[str]) -> None:
             await server.serve()
         finally:
             await components["connector_registry"].close_all()
+            jobs = components.get("jobs")
+            if jobs is not None:
+                try:
+                    await jobs.store.dispose()
+                except Exception:
+                    pass
 
 
 def main_serve(argv: list[str] | None = None) -> None:

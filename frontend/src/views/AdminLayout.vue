@@ -179,6 +179,7 @@ import {
   SlidersHorizontal,
   Cpu,
   History,
+  Clock,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -202,6 +203,7 @@ const manageItems: {
   { path: '/admin/datasources', label: 'datasources', icon: Database },
   { path: '/admin/kb', label: 'kb', icon: Library },
   { path: '/admin/semantic', label: 'semanticLayer', icon: Layers3 },
+  { path: '/admin/jobs', label: 'jobs', icon: Clock },
 ]
 
 const systemItems: {

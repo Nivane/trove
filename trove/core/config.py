@@ -184,6 +184,8 @@ class AgentConfig:
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
     tracing: TracingConfig = field(default_factory=TracingConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
+    # 定时任务调度 tick 轮询间隔(秒);serve 内置后台 tick 用。<=0 = 关闭内置调度。
+    scheduler_poll_seconds: int = 30
     raw: dict[str, Any] = field(default_factory=dict)
 
     def model_for(self, complexity: str) -> str:
@@ -441,6 +443,8 @@ class ConfigLoader:
             datasources=datasources,
             tracing=tracing,
             retention=retention,
+            scheduler_poll_seconds=max(
+                0, int(agent_section.get("scheduler_poll_seconds", 30))),
             raw=resolved,
         )
 
