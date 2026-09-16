@@ -149,3 +149,57 @@ def test_lifespan_startup_sweep_does_not_block_serve():
         # ...and serve must answer while the sweep is still blocked in-flight
         assert c.get("/v1/health").status_code == 200
         maint.release.set()
+
+
+def test_lifespan_job_tick_fires():
+    """Scheduler tick: shortened poll interval lets the background loop run.
+
+    The tick task exits immediately when no scheduler is wired in, so the
+    api-suite shape (no scheduler component) never starts a loop; this test
+    wires a fake scheduler and confirms due jobs are picked up.
+    """
+
+    class _FakeJobs:
+        def __init__(self) -> None:
+            self.ticks = 0
+
+        async def tick(self):
+            self.ticks += 1
+            return []
+
+    components = _components()
+    components["scheduler"] = _FakeJobs()
+    components["config"] = SimpleNamespace(
+        scheduler_poll_seconds=1,
+        retention=RetentionConfig(sweep_interval_hours=0),
+    )
+    app = create_app(components)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        # tick 循环先 sleep(poll) 再执行;轮询等待首个 tick(最长 3s)。
+        _wait_until(lambda: components["scheduler"].ticks >= 1, timeout_s=3.0)
+    assert components["scheduler"].ticks >= 1
+
+
+def test_lifespan_job_tick_disabled_when_poll_zero():
+    """scheduler_poll_seconds <= 0 → tick loop never starts (no side effects)."""
+
+    class _FakeJobs:
+        def __init__(self) -> None:
+            self.ticks = 0
+
+        async def tick(self):
+            self.ticks += 1
+            return []
+
+    components = _components()
+    components["scheduler"] = _FakeJobs()
+    components["config"] = SimpleNamespace(
+        scheduler_poll_seconds=0,
+        retention=RetentionConfig(sweep_interval_hours=0),
+    )
+    app = create_app(components)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        time.sleep(0.3)
+    assert components["scheduler"].ticks == 0

@@ -243,6 +243,12 @@ Ops endpoints (no auth, no sensitive data):
 - Every response carries `X-Request-ID`, echoed into every log line of that request.
 - Client abort cancels end-to-end: the graph task is cancelled and the adapter's driver-level interrupt fires (sqlite3 / psycopg / MySQL `KILL QUERY` / duckdb).
 
+Scheduled jobs (admin, `/v1/admin/jobs`):
+
+- **`serve` runs an embedded scheduler tick** — due jobs execute automatically (poll interval `agent.scheduler_poll_seconds`, default 30s). Do not run `trove-cli schedule --daemon` alongside `serve` (double execution).
+- `POST /v1/admin/jobs` — create a scheduled question (cron/interval) with an optional threshold alert (`row_count >= 5` / `value > 1000` / `col:<name> <op> <n>` / `no_rows` / `verdict == <x>`), channel `console` or `webhook:<url>`, cooldown minutes.
+- `GET/PATCH/DELETE /v1/admin/jobs/{id}`, `POST /v1/admin/jobs/{id}/run` (run now), `GET /v1/admin/jobs/{id}/runs` (history). The admin UI exposes all of this under **定时任务 / Scheduled jobs**.
+
 ### MCP server
 
 ```bash

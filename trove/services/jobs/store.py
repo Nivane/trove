@@ -143,6 +143,17 @@ class JobStore:
         await self._ensure_schema()
         return self._backend
 
+    async def dispose(self) -> None:
+        """Release the backend's shared connection (process/test teardown).
+
+        aiosqlite's worker thread is non-daemon — without closing the
+        connection the process hangs on exit.
+        """
+        try:
+            await self._backend.dispose()
+        except Exception:
+            pass
+
     async def _ensure_schema(self) -> None:
         if self._schema_ready:
             return
@@ -271,3 +282,26 @@ class JobStore:
             "alert_sent": bool(row[5]), "row_count": row[6],
             "verdict": row[7], "result": json.loads(row[8] or "{}"),
         }
+
+    async def list_runs(self, job_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Run history for a job (newest first), for the status UI."""
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                """SELECT id, started_at, finished_at, status, alert_triggered,
+                   alert_sent, row_count, verdict, result_json
+                   FROM runs WHERE job_id = ? ORDER BY id DESC LIMIT ?""",
+                (job_id, max(1, min(int(limit), 200))),
+            )
+            rows = [r async for r in cursor]
+        finally:
+            await conn.close()
+        return [
+            {
+                "id": r[0], "started_at": r[1], "finished_at": r[2],
+                "status": r[3], "alert_triggered": bool(r[4]),
+                "alert_sent": bool(r[5]), "row_count": r[6],
+                "verdict": r[7], "result": json.loads(r[8] or "{}"),
+            }
+            for r in rows
+        ]

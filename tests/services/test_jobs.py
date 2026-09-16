@@ -163,12 +163,14 @@ class FakeSessionManager:
     def __init__(self, finals):
         self._finals = list(finals)
         self.asked = []
+        self.asked_datasources = []
 
     async def start_session(self):
         return object()
 
-    async def ask(self, session, question, workflow):
+    async def ask(self, session, question, workflow, datasource=None):
         self.asked.append(question)
+        self.asked_datasources.append(datasource)
         return self._finals.pop(0) if self._finals else self._finals[-1]
 
     async def resume(self, session, decision, workflow):
@@ -198,6 +200,15 @@ class TestRunner:
         assert summary["row_count"] == 1
         assert summary["alert"] == ""
         assert manager.asked == ["q"]
+        assert manager.asked_datasources == ["demo"]
+
+    async def test_run_job_passes_job_datasource(self, tmp_path):
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval", datasource="financial")
+        manager = FakeSessionManager([_final_state()])
+        runner = SchedulerRunner(manager, svc)
+        await runner.run_job(job)
+        assert manager.asked_datasources == ["financial"]
 
     async def test_run_job_triggers_alert(self, tmp_path):
         svc = JobsService(JobStore(tmp_path))

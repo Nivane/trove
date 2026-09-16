@@ -57,6 +57,32 @@ async def _purge_auth(app: FastAPI) -> None:
         logger.warning("[auth] hygiene purge failed: %s", e)
 
 
+async def _job_tick(app: FastAPI) -> None:
+    """Background loop: run due scheduled jobs every scheduler_poll_seconds.
+
+    Mirrors the maintenance sweep pattern: never blocks, exceptions are
+    caught and logged, and the loop exits silently when scheduling is
+    disabled (poll <= 0) or no scheduler is wired in (CLI/embedded use).
+    """
+    config = getattr(app.state, "config", None)
+    poll = getattr(config, "scheduler_poll_seconds", 30)
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler is None or poll <= 0:
+        return
+    while True:
+        await asyncio.sleep(poll)
+        try:
+            results = await scheduler.tick()
+            if results:
+                logger.info(
+                    "[jobs] tick: %d due job(s) — %s",
+                    len(results),
+                    [f"{r.get('name', '?')}={r.get('status', '?')}" for r in results],
+                )
+        except Exception as e:
+            logger.warning("[jobs] scheduler tick failed: %s", e)
+
+
 async def _periodic_sweep(app: FastAPI) -> None:
     """Background loop: run retention sweep every sweep_interval_hours."""
     config = getattr(app.state, "config", None)
@@ -91,6 +117,7 @@ async def _lifespan(app: FastAPI):
     sweep_task: asyncio.Task | None = None
     startup_task: asyncio.Task | None = None
     purge_task = asyncio.create_task(_purge_auth(app))
+    job_tick_task: asyncio.Task | None = None
     if maintenance is not None:
         # 启动 sweep 不阻塞 serve:后台任务,内部自包异常防护
         async def _startup_sweep() -> None:
@@ -102,10 +129,12 @@ async def _lifespan(app: FastAPI):
 
         startup_task = asyncio.create_task(_startup_sweep())
         sweep_task = asyncio.create_task(_periodic_sweep(app))
+    # 定时任务调度 tick(与 CLI daemon 二选一,别同时跑到期 job)
+    job_tick_task = asyncio.create_task(_job_tick(app))
     try:
         yield
     finally:
-        for task in (sweep_task, startup_task, purge_task):
+        for task in (sweep_task, startup_task, purge_task, job_tick_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -124,6 +153,7 @@ def create_app(components: dict) -> FastAPI:
     from trove.api.deps import NullAuth
     from trove.api.routers import admin as admin_router
     from trove.api.routers import auth as auth_router
+    from trove.api.routers import jobs as jobs_router
 
     auth = components.get("auth")
     if auth is None:
@@ -136,6 +166,7 @@ def create_app(components: dict) -> FastAPI:
     if not isinstance(auth, NullAuth):
         app.include_router(auth_router.router, prefix="/v1")
         app.include_router(admin_router.router, prefix="/v1")
+        app.include_router(jobs_router.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
