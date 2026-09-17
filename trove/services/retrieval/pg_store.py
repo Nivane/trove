@@ -278,12 +278,13 @@ class PgHybridStore(HybridStore):
         conn = await self._connect()
         try:
             async with conn.cursor() as cur:
-                # ef_search 是查询时参数(SET LOCAL 会话内生效,psycopg3 隐式
-                # 事务中作用于本次查询);0 = 用索引默认。
+                # ef_search 是查询时参数;SET 不接受参数占位符($1 报语法错),
+                # 用 set_config(..., is_local=true) —— 等同 SET LOCAL,会话内
+                # 生效且支持参数绑定;0 = 用索引默认。
                 if self._hnsw_ef_search:
                     await cur.execute(
-                        "SET LOCAL hnsw.ef_search = %s",
-                        (self._hnsw_ef_search,),
+                        "SELECT set_config('hnsw.ef_search', %s, true)",
+                        (str(self._hnsw_ef_search),),
                     )
                 await cur.execute(
                     f"""SELECT id FROM {_SCHEMA_NS}.documents
