@@ -71,6 +71,15 @@ def channel_cfg(cfg: Any) -> tuple[int, dict[str, float]]:
     )
 
 
+def hnsw_cfg(cfg: Any) -> tuple[int, int, int]:
+    """(hnsw_m, hnsw_ef_construction, hnsw_ef_search) HNSW 参数(0 = 默认)。"""
+    return (
+        int(getattr(cfg, "hnsw_m", 0) or 0),
+        int(getattr(cfg, "hnsw_ef_construction", 0) or 0),
+        int(getattr(cfg, "hnsw_ef_search", 0) or 0),
+    )
+
+
 def build_store(cfg: Any, gateway: Any, home: str | Path) -> Any:
     """Return a HybridStore for one datasource config.
 
@@ -89,10 +98,13 @@ def build_store(cfg: Any, gateway: Any, home: str | Path) -> Any:
         from trove.services.kb.backends.dense import _vector_dsn
         dsn = _vector_dsn(cfg)
     if dsn:
+        m, ef_construction, ef_search = hnsw_cfg(cfg)
         return PgHybridStore(
             dsn, embedder=embedder, reranker=reranker, dims=dims,
             rrf_k=rrf_k, rrf_weights=rrf_weights,
             recorder=recorder,
+            hnsw_m=m, hnsw_ef_construction=ef_construction,
+            hnsw_ef_search=ef_search,
         )
     return SqliteHybridStore.for_home(
         home, embedder, reranker,

@@ -12,8 +12,8 @@ from trove.services.retrieval.rerank import (
 )
 from trove.services.retrieval.store import (
     RetrievalHit,
-    normalize_scores,
     rrf_fuse,
+    rrf_order_scores,
     rrf_scores,
 )
 
@@ -89,21 +89,36 @@ def test_rrf_scores_spread_is_narrow():
     assert max(scores.values()) - min(scores.values()) < 0.05
 
 
-def test_normalize_scores_spreads_to_unit_range():
-    scores = normalize_scores({"a": 0.033, "b": 0.030, "c": 0.022})
+def test_rrf_order_scores_spreads_to_unit_range():
+    scores = rrf_order_scores(["a", "b", "c"])
     assert scores["a"] == pytest.approx(1.0)
-    assert scores["c"] == pytest.approx(0.0)
-    assert scores["b"] == pytest.approx((0.030 - 0.022) / 0.011)
+    assert scores["c"] == pytest.approx(1.0 / 3)
+    assert scores["b"] == pytest.approx(2.0 / 3)
 
 
-def test_normalize_scores_all_equal_is_one():
-    """全等(或只有一条)没有可分辨的相对信息 → 一律 1.0,而不是 0。"""
-    assert normalize_scores({"a": 0.03, "b": 0.03}) == {"a": 1.0, "b": 1.0}
-    assert normalize_scores({"a": 0.03}) == {"a": 1.0}
+def test_rrf_order_scores_single_is_one():
+    """只有一条候选时没有可分辨的相对信息 → 一律 1.0,而不是 0。"""
+    assert rrf_order_scores(["a"]) == {"a": 1.0}
 
 
-def test_normalize_scores_empty():
-    assert normalize_scores({}) == {}
+def test_rrf_order_scores_top_always_one_across_sizes():
+    """top 恒为 1.0、与候选数无关 —— 跨查询可比,不受候选数/分数分布影响。"""
+    assert rrf_order_scores(["a", "b"])["a"] == pytest.approx(1.0)
+    assert rrf_order_scores(["a", "b", "c", "d", "e"])["a"] == pytest.approx(1.0)
+    assert rrf_order_scores(["a", "b", "c", "d", "e"])["e"] == pytest.approx(0.2)
+
+
+def test_rrf_order_scores_empty():
+    assert rrf_order_scores([]) == {}
+
+
+def test_rrf_order_scores_monotonic_with_fusion():
+    """排序位分数与 RRF 融合序严格单调:融合 top 得最高分。"""
+    fused = rrf_fuse([["x", "y", "z"], ["y", "x", "w"]])
+    scores = rrf_order_scores(fused)
+    vals = [scores[d] for d in fused]
+    assert vals == sorted(vals, reverse=True)
+    assert scores[fused[0]] == pytest.approx(1.0)
 
 
 def test_bge_reranker_requires_flag_embedding():

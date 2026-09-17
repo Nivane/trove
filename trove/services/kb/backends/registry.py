@@ -106,6 +106,7 @@ def resolver_from_configs(
             from trove.services.retrieval.factory import (
                 _reranker_for,
                 channel_cfg,
+                hnsw_cfg,
             )
             from trove.services.retrieval.query_log import QueryLogRecorder
 
@@ -121,12 +122,15 @@ def resolver_from_configs(
                 from trove.services.kb.backends.dense import _vector_dsn
                 dsn = _vector_dsn(cfg)
             if dsn:
+                m, ef_construction, ef_search = hnsw_cfg(cfg)
                 store = PgHybridStore(
                     dsn, embedder=embedder, reranker=reranker,
                     dims=int(getattr(cfg, "embedding_dims", 1536) or 1536),
                     fts_tokenizer=str(getattr(cfg, "fts_tokenizer", "") or "en_stem"),
                     rrf_k=rrf_k,
                     rrf_weights=rrf_weights, recorder=recorder,
+                    hnsw_m=m, hnsw_ef_construction=ef_construction,
+                    hnsw_ef_search=ef_search,
                 )
             else:
                 # SQLite 兜底须与索引器同一 home(否则检索库为空);取 kb 目录父级

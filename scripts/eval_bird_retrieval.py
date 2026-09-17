@@ -38,7 +38,7 @@ from trove.services.kb.service import KbService
 from trove.services.retrieval.factory import build_store
 from trove.services.retrieval.indexer import Indexer
 from trove.services.retrieval.metrics import evaluate
-from trove.services.retrieval.store import normalize_scores, rrf_scores
+from trove.services.retrieval.store import rrf_order_scores, rrf_scores
 
 
 def parse_args() -> argparse.Namespace:
@@ -150,7 +150,7 @@ async def main() -> None:
             lists.append(await store._ann_ids(vector, rerank_k))
         scores = rrf_scores(lists, k=store._rrf_k)
         fused = sorted(scores, key=lambda d: scores[d], reverse=True)
-        hits = await store._load(fused, normalize_scores(scores))
+        hits = await store._load(fused, rrf_order_scores(fused))
         if args.rerank and store._reranker is not None and hits:
             hits = await store._reranker.rerank(query, hits, rerank_k)
         return [h.doc_id for h in hits[:top_k]]
