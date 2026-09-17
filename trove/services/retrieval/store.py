@@ -91,7 +91,8 @@ def rrf_scores(
     与 :func:`rrf_fuse` 同算法、不同产出:调用方既要顺序(cut 到 top-k),也要
     分数(进 ``_fuse_extra_sim`` 当门内特征)。分开返回是因为 RRF 分**天然压缩**
     ——2 路 k=60 时 raw 落在 [0.022, 0.033],直接当相似度用等于常量偏移。
-    要进融合的分数先过 :func:`normalize_scores`。
+    要进融合的分数用 :func:`rrf_order_scores` 按排序位映射,不要对 raw 做
+    min-max(见该函数注释)。
     """
     if weights is None:
         weights = [1.0] * len(ranked_lists)
@@ -104,20 +105,23 @@ def rrf_scores(
     return scores
 
 
-def normalize_scores(scores: dict[str, float]) -> dict[str, float]:
-    """min-max 归一化到 [0,1];空集或全等 → 全 1.0。
+def rrf_order_scores(doc_ids: list[str]) -> dict[str, float]:
+    """把 RRF 融合后的**排序**映射成 [0,1] 分数(id → score)。
 
-    全等(只召回一条、或各路排序完全一致)时 max == min,若归成 0.0 会把
-    "最相关"读成"最不相关" —— 退回 1.0 表示"候选中最好的那个"。
+    RRF 原始分压缩在 [w/(k+1), w/(k+n)] 的窄带里,对它做 per-query min-max
+    归一化有两个坑:候选极少(2~5 条)时所有分被顶到 ≈1.0,检索信号退化成
+    常量偏移(``_fuse_extra_sim`` 的 0.5 权重直接作废);候选多时 top 分又被
+    单条低分 outliers 压缩,且跨查询不可比(每次独立重新标定)。
+
+    这里按**排序位**线性映射:共 N 个候选,第 r 名得 (N - r + 1) / N ——
+    top 恒为 1.0(与候选数无关、跨查询可比),尾部落近 0(查询内全展开),
+    与 RRF 顺序严格单调。RRF 本身就是纯排序融合,用排序位而非原始值做
+    分数,语义自洽。
     """
-    if not scores:
+    n = len(doc_ids)
+    if not n:
         return {}
-    lo = min(scores.values())
-    hi = max(scores.values())
-    if hi <= lo:
-        return {doc_id: 1.0 for doc_id in scores}
-    span = hi - lo
-    return {doc_id: (v - lo) / span for doc_id, v in scores.items()}
+    return {doc_id: (n - rank + 1) / n for rank, doc_id in enumerate(doc_ids, 1)}
 
 
 def rrf_fuse(
@@ -231,9 +235,9 @@ class HybridStore(ABC):
         returns ``(hits, meta)`` where meta carries branch sizes / RRF order /
         rerank order / latency — the feedback-loop + eval surface.
 
-        命中 ``score`` = **归一化后的 RRF 分**(无精排时)或精排分(有精排时)。
-        归一化是必须的:RRF 分压缩在极窄区间,直接当相似度会让下游
-        ``_fuse_extra_sim`` 的 0.5 权重退化成常量偏移,压平确定性信号。
+        命中 ``score`` = **排序位映射后的 RRF 分**(无精排时)或精排分(有精排时)。
+        不用 min-max 是因为它在候选少时把分数顶平(见 :func:`rrf_order_scores`),
+        会让下游 ``_fuse_extra_sim`` 的 0.5 权重退化成常量偏移,压平确定性信号。
         """
         self._ds = datasource
         t0 = time.perf_counter()
@@ -245,7 +249,7 @@ class HybridStore(ABC):
         fused_scores = rrf_scores(
             channels, k=self._rrf_k, weights=self._channel_weights(len(channels)))
         fused = sorted(fused_scores, key=lambda d: fused_scores[d], reverse=True)
-        candidates = await self._load(fused, normalize_scores(fused_scores))
+        candidates = await self._load(fused, rrf_order_scores(fused))
         rrf_ids = [c.doc_id for c in candidates]
         rerank_used = False
         if self._reranker is not None and candidates:

@@ -92,3 +92,41 @@ async def test_pg_two_channel_meta(store):
     assert len(meta["branch_sizes"]) == 2  # keyword + dense
     assert await store.count("ds") == 2
     assert await store.count("other") == 0
+
+
+async def test_pg_hnsw_params_rebuild_index_and_query():
+    """HNSW 参数:配置后 _ensure 重建索引 WITH(m=, ef_construction=),查询时
+    SET LOCAL hnsw.ef_search。SQL 不合法会在这里直接报错。"""
+    if not PG_URL:
+        pytest.skip("PG_TEST_URL not set")
+    s = PgHybridStore(
+        PG_URL, None, None, dims=16,
+        hnsw_m=8, hnsw_ef_construction=32, hnsw_ef_search=8)
+    await s.clear("ds")
+
+    class FakeEmbedder:
+        dim = 16
+
+        async def embed(self, texts):
+            import math
+
+            out = []
+            for t in texts:
+                vec = [0.0] * self.dim
+                for ch in t:
+                    vec[ord(ch) % self.dim] += 1.0
+                norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+                out.append([v / norm for v in vec])
+            return out
+
+    s._embedder = FakeEmbedder()
+    await s.index_many([
+        RetrievalDoc(content="贷款 平均 金额 怎么 计算", datasource="ds",
+                     kind="kb", source_file="a.yml", item_key="e1"),
+        RetrievalDoc(content="足球 比赛 比分 直播", datasource="ds",
+                     kind="kb", source_file="a.yml", item_key="e2"),
+    ])
+    hits = await s.recall("贷款 平均 金额", k=3, datasource="ds")
+    assert hits and hits[0].doc_id == "e1"
+    assert all(h.score <= 1.0 for h in hits)
+    await s.clear("ds")

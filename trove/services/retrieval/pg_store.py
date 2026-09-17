@@ -44,6 +44,9 @@ class PgHybridStore(HybridStore):
         rrf_k: int = 60,
         rrf_weights: dict[str, float] | None = None,
         recorder: Any | None = None,
+        hnsw_m: int = 0,
+        hnsw_ef_construction: int = 0,
+        hnsw_ef_search: int = 0,
     ) -> None:
         super().__init__(
             embedder, reranker, rrf_k=rrf_k,
@@ -51,12 +54,28 @@ class PgHybridStore(HybridStore):
         self._dsn = dsn
         self._dims = dims
         self._fts_tokenizer = fts_tokenizer
+        self._hnsw_m = int(hnsw_m or 0)
+        self._hnsw_ef_construction = int(hnsw_ef_construction or 0)
+        self._hnsw_ef_search = int(hnsw_ef_search or 0)
         self._ensured = False
         self._fts_mode: str = "bm25"
 
     @staticmethod
     def _lit(vec: list[float]) -> str:
         return "[" + ",".join(f"{float(x):.8f}" for x in vec) + "]"
+
+    def _hnsw_opts_sql(self) -> str:
+        """HNSW 索引 WITH 子句参数(配置驱动;全零 → 空串 = 用 pgvector 默认)。
+
+        ``CREATE INDEX ... USING hnsw ... WITH (m=.., ef_construction=..)`` 的
+        参数在建索引时固化,改配置必须 DROP 后重建才生效 —— 见 :meth:`_ensure`。
+        """
+        parts = []
+        if self._hnsw_m:
+            parts.append(f"m = {self._hnsw_m}")
+        if self._hnsw_ef_construction:
+            parts.append(f"ef_construction = {self._hnsw_ef_construction}")
+        return ", ".join(parts)
 
     async def _connect(self):
         import psycopg
@@ -121,6 +140,18 @@ class PgHybridStore(HybridStore):
                         f"CREATE INDEX IF NOT EXISTS documents_tsv ON "
                         f"{_SCHEMA_NS}.documents USING GIN(tsv)")
                     self._fts_mode = "tsvector"
+                # HNSW 索引参数是配置驱动的(WITH 子句在建索引时固化):migration v1
+                # 建的默认索引不含它们,配置后必须 DROP + 重建才生效 —— 与 bm25
+                # 索引的 DROP+CREATE 同策略(每次进程启动重建一次,可接受)。
+                hnsw_opts = self._hnsw_opts_sql()
+                if hnsw_opts:
+                    await cur.execute(
+                        f"DROP INDEX IF EXISTS {_SCHEMA_NS}.documents_vec")
+                    await cur.execute(
+                        f"CREATE INDEX documents_vec ON {_SCHEMA_NS}.documents "
+                        f"USING hnsw (embedding vector_cosine_ops) WITH ({hnsw_opts})")
+                    logger.info(
+                        "rebuilt HNSW index with WITH(%s)", hnsw_opts)
             await conn.commit()
         finally:
             await conn.close()
@@ -247,6 +278,13 @@ class PgHybridStore(HybridStore):
         conn = await self._connect()
         try:
             async with conn.cursor() as cur:
+                # ef_search 是查询时参数(SET LOCAL 会话内生效,psycopg3 隐式
+                # 事务中作用于本次查询);0 = 用索引默认。
+                if self._hnsw_ef_search:
+                    await cur.execute(
+                        "SET LOCAL hnsw.ef_search = %s",
+                        (self._hnsw_ef_search,),
+                    )
                 await cur.execute(
                     f"""SELECT id FROM {_SCHEMA_NS}.documents
                     WHERE datasource = %s

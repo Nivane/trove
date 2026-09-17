@@ -187,3 +187,11 @@ class DatasourceConfig:
     # pg_bm25 分词器(仅混合检索 PG 后端):中文 KB 设 "chinese"(jieba),英文/通用设
     # "en_stem"(默认);ParadeDB 镜像内置 pg_bm25 扩展,本字段透传进 BM25 索引 WITH 子句。
     fts_tokenizer: str = "en_stem"
+    # pgvector HNSW 索引参数(仅混合检索 PG 后端):m(每节点最大连接数)与
+    # ef_construction(建索引贪心搜索宽度)在索引创建时生效;ef_search 为查询时
+    # 的候选队列宽度(越大召回越高、越慢)。0/空 = pgvector 默认(m=16,
+    # ef_construction=64,ef_search=40)。任一项配置后,每次进程启动的 _ensure
+    # 会重建向量索引以应用新参数(与 pg_bm25 索引的 DROP+CREATE 同策略)。
+    hnsw_m: int = 0
+    hnsw_ef_construction: int = 0
+    hnsw_ef_search: int = 0

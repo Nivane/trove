@@ -98,11 +98,11 @@ async def test_cross_encoder_reranker_used(store):
     assert hits and hits[0].doc_id == "e1"
 
 
-async def test_recall_score_is_normalized_rrf(store):
-    """无精排时命中 score = 归一化 RRF 分,而不是只留下名次。
+async def test_recall_score_is_rank_order_rrf(store):
+    """无精排时命中 score = 排序位映射后的 RRF 分,而不是只留下名次。
 
-    丢掉分数会让下游 ``_fuse_extra_sim``(0.5 权重)拿到一个和检索质量无关
-    的常量,RRF 就退化成纯粹的 rank。
+    保留分数是给下游 ``_fuse_extra_sim``(0.5 权重)一个和检索质量相关的量
+    —— 若只留名次,融合就退化成纯 rank 常量。
     """
     store._reranker = None
     await store.index_many([
