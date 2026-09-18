@@ -788,12 +788,12 @@ draft:
         assert llm.calls == 3  # intent + query_sketch + refuse 草稿,无 gen_sql/reflect
 
     async def test_covered_plan_not_routed_to_refuse(self):
-        """覆盖内计划 → _route_after_query_sketch 走 gen_sql(不误拒)。"""
+        """覆盖内计划 → _route_after_query_sketch 走 gen 链入口(不误拒)。"""
         from trove.workflow.graphs import _route_after_query_sketch
         from trove.workflow.state import WorkflowState
 
         covered = WorkflowState(session_id="s1", question="q", compiled=True)
-        assert _route_after_query_sketch(covered) == "gen_sql"
+        assert _route_after_query_sketch(covered) == "gen_retrieve"
 
         refused = WorkflowState(session_id="s1", question="q",
                                 refusal={"reason": "uncovered", "question": "q"})
@@ -818,7 +818,7 @@ draft:
         assert _route_semantic_gate_after_linking_fast_match(
             WorkflowState(session_id="s1", question="q")) == "fast_match"
         assert _route_semantic_gate_after_linking_gen_sql(
-            WorkflowState(session_id="s1", question="q")) == "gen_sql"
+            WorkflowState(session_id="s1", question="q")) == "gen_retrieve"
 
     async def test_route_after_confirm_draft(self):
         """confirm_draft 分流:确认成功(替换上一问)→ 继续管线;引导 → output。"""

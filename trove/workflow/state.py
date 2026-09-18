@@ -155,6 +155,15 @@ class WorkflowState(BaseModel):
     # 仅 step 事件透传给前端分析面板展示,不参与管线判定。
     memory_backend: str = ""
 
+    # gen_retrieve 产物:检索与信号采集结果(纯 JSON 结构,跨节点传递)。
+    # 检查点保留中间态,让 gen_retrieve → gen_assemble → gen_generate
+    # 分步可观测;仅下游 gen 链消费,不参与管线判定。
+    gen_ctx: dict[str, Any] | None = None
+
+    # gen_assemble 产物:预算裁剪后的生成输入(GenSQLState 的 dict 形态,
+    # 由 gen_generate 重建后执行生成)。
+    gen_sub_state: dict[str, Any] | None = None
+
     # 复杂度分级(gen_sql 写入,reflect 读取):"simple"/"standard"/"complex",
     # 驱动负载削减开关(经典子图/跳多候选/跳裁决);修正轮强制 standard
     complexity: str = "standard"

@@ -768,6 +768,32 @@ class SessionManager:
                     stream_events.put_nowait(("error", exc))
 
             producer = asyncio.ensure_future(_produce())
+
+            # gen 链三段(gen_retrieve/gen_assemble/gen_generate)合并为单一
+            # gen_sql 步:step/--print 契约不变(一次生成 = 一个 gen_sql 步),
+            # begin 事件仍按三段出(UI 实时进度更细)。
+            GEN_STAGE_NODES = ("gen_retrieve", "gen_assemble", "gen_generate")
+            pending_gen: dict[str, Any] | None = None
+
+            def _flush_gen_step():
+                """冲掉缓冲的 gen 段合并步;无缓冲则空转。"""
+                nonlocal pending_gen, seq
+                if pending_gen is None:
+                    return
+                g_delta = pending_gen["delta"]
+                g_elapsed = int((_time.monotonic() - pending_gen["start"]) * 1000)
+                seq += 1
+                reason = merged.get("error_feedback", "")
+                retry = merged.get("retry_count", 0)
+                yield self._step_event(
+                    seq, "gen_sql", g_delta, g_elapsed, reason, retry, lang,
+                    merged.get("dialect", ""),
+                )
+                if g_delta.get("sql"):
+                    yield {"type": "sql", "node": "gen_sql",
+                           "content": format_sql(g_delta["sql"], merged.get("dialect", ""))}
+                pending_gen = None
+
             try:
                 begin_seq = 0
                 while True:
@@ -777,6 +803,8 @@ class SessionManager:
                         yield {"type": "begin", "node": payload, "seq": begin_seq}
                         continue
                     if kind == "end":
+                        for ev in _flush_gen_step():
+                            yield ev
                         break
                     if kind == "error":
                         raise payload
@@ -784,7 +812,11 @@ class SessionManager:
 
                     # HITL 中断:图在执行前暂停 —— 发出确认事件并停止本轮流。
                     # 调用方展示 SQL+语义后,用 resume() 继续同一线程。
+                    # 防御:中断前冲掉仍在缓冲的 gen_sql 步(正常路径里 semantics
+                    # 已先行冲掉,此处兜底极端图/中断场景)。
                     if "__interrupt__" in update:
+                        for ev in _flush_gen_step():
+                            yield ev
                         interrupts = update["__interrupt__"]
                         for entry in interrupts:
                             value = getattr(entry, "value", None)
@@ -851,6 +883,22 @@ class SessionManager:
                     for node_name, delta in update.items():
                         if not delta:  # guard nodes returning {} surface as None
                             continue
+
+                        # gen 链三段缓冲合并:到达下一非 gen 节点时统一冲为
+                        # 一个 gen_sql 步(gen 在流中总是连续,缓冲天然成块)。
+                        if node_name in GEN_STAGE_NODES:
+                            if pending_gen is None:
+                                pending_gen = {
+                                    "delta": {},
+                                    "start": _time.monotonic(),
+                                }
+                            pending_gen["delta"].update(delta)
+                            merged.update(delta)
+                            continue
+
+                        # 先冲掉缓冲的 gen_sql 步,再处理当前非 gen 节点
+                        for ev in _flush_gen_step():
+                            yield ev
 
                         # 上一节点阶段耗时（更新到达间隔）
                         now = _time.monotonic()
