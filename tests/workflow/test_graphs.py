@@ -267,6 +267,84 @@ class TestFewShotRotation:
         assert _rotate_few_shots(empty, 1) is empty
 
 
+# ── gen 链三段拆分(gen_retrieve → gen_assemble → gen_generate) ──
+
+
+class TestGenStageChain:
+    """gen_sql 单节点拆三段后:中间态经 gen_ctx / gen_sub_state 逐段传递。"""
+
+    def _chain(self, llm):
+        services = make_services(llm, config=AgentConfig(target="mock/model"))
+        sub = build_gen_sql_subgraph(services)
+        return (
+            graphs_module.make_gen_retrieve(services),
+            graphs_module.make_gen_assemble(services),
+            graphs_module.make_gen_generate(services, sub, agentic=False),
+        )
+
+    async def test_stages_flow_state_to_state(self):
+        llm = RecordingLLM(["```sql\nSELECT name FROM students;\n```"])
+        retrieve, assemble, generate = self._chain(llm)
+        state = make_state(question="list students", schema_context="CREATE TABLE students (name TEXT)")
+
+        r1 = await retrieve(state)
+        assert "gen_ctx" in r1
+        assert r1["complexity"] in ("simple", "standard", "complex")
+        assert r1["fast_path"] is False
+
+        s2 = state.model_copy(update=r1)
+        r2 = await assemble(s2)
+        assert "gen_sub_state" in r2
+        assert "context_usage" in r2
+        assert "cache_prefix_tokens" in r2
+        # 中间态纯 JSON,可过 checkpointer(pydantic 模型字段类型约束)
+        s3 = s2.model_copy(update=r2)
+        assert WorkflowState.model_validate(s3.model_dump()).gen_sub_state == r2["gen_sub_state"]
+
+        r3 = await generate(s3)
+        assert r3["sql"]
+        assert r3["dialect"] == "sqlite"
+        # 三段独立产出的键合流后与旧单节点输出等价
+        merged = {**r1, **r2, **r3}
+        assert merged["sql"] == "SELECT name FROM students;"
+        assert merged["complexity"] == r1["complexity"]
+
+    async def test_composite_matches_chained_stages(self, tmp_path, demo_registry):
+        """兼容复合节点(_make_gen_sql_node)输出与三段链一致。"""
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        semantic_dir = tmp_path / "semantic" / "demo"
+        semantic_dir.mkdir(parents=True)
+        (semantic_dir / "model.yml").write_text(TestGenSQLSemanticLayerTerms.OSSIE_SAMPLE)
+        provider = SemanticLayerProvider(semantic_dir, "demo")
+
+        llm = RecordingLLM(["```sql\nSELECT SUM(amount) FROM loan;\n```"])
+        sub = build_gen_sql_subgraph(make_services(llm))
+        services = make_services(llm, connectors=demo_registry, semantic_layer=provider)
+        state = make_state(
+            question="What is the total loans volume?",
+            matched_tables=["loan"],
+        )
+
+        # 三段链逐段喂 state 合流
+        r1 = await graphs_module.make_gen_retrieve(services)(state)
+        r2 = await graphs_module.make_gen_assemble(services)(state.model_copy(update=r1))
+        r3 = await graphs_module.make_gen_generate(services, sub, agentic=False)(
+            state.model_copy(update={**r1, **r2}))
+        chained = {**r1, **r2, **r3}
+
+        # 兼容复合节点同一输入同一产出
+        llm2 = RecordingLLM(["```sql\nSELECT SUM(amount) FROM loan;\n```"])
+        sub2 = build_gen_sql_subgraph(make_services(RecordingLLM([])))
+        node = graphs_module._make_gen_sql_node(
+            make_services(llm2, connectors=demo_registry, semantic_layer=provider), sub2,
+        )
+        out = await node(state)
+
+        assert out["sql"] == chained["sql"]
+        assert "total_loan_amount" in " ".join(
+            str(m.get("content", "")) for m in llm2.calls[-1])
+
+
 class TestGenSQLSubgraph:
     async def test_single_valid_generation(self):
         sub = build_gen_sql_subgraph(make_services(RecordingLLM([VALID_SQL])))

@@ -340,30 +340,15 @@ def build_gen_sql_subgraph(
 # ── Main graph nodes ─────────────────────────────────────
 
 
-def _make_gen_sql_node(
-    services: GraphServices,
-    subgraph: CompiledStateGraph,
-    subgraph_alt: CompiledStateGraph | None = None,
-    alt_subgraphs: list[CompiledStateGraph] | None = None,
-    agentic: bool = True,
-):
-    """gen_sql node — agentic by default: a ReAct loop where the model
-    validates SQL via the validate_sql tool and ends when IT judges the
-    SQL ready (model-driven termination). Content-only first response
-    behaves exactly like the classic single-shot generation.
+def make_gen_retrieve(services: GraphServices):
+    """gen_retrieve — 检索与信号采集(零生成)。
 
-    Multi-candidate mode (subgraph_alt / alt_subgraphs given): extra
-    candidates are generated at higher temperatures and stored in
-    state.candidates for the consensus select node's execution voting.
-    alt_subgraphs (one per temperature) takes precedence over
-    subgraph_alt; subgraph_alt alone yields a single candidate.
+    dialect 探测 + 复杂度分级 + KB 六路检索(示例/规则/教训/术语/指标/实体)
+    + 实时语义层 term 合并 + 用户事实/情景记忆/失败画像 + KB 精确命中判定。
+    全部产物落 gen_ctx(纯 JSON,checkpoint 安全),由 gen_assemble 消费。
     """
-    # 跨修正轮的 probe/check 结果缓存:闭包持有 → 同一次运行的多轮修正共享
-    # (registry 每轮重建,缓存独立于 registry 存活)。TTL 内同一数据源同一
-    # SQL 不重复执行;容量封顶防无限膨胀。
-    probe_cache: dict[Any, Any] = {}
 
-    async def gen_sql(state: WorkflowState) -> dict[str, Any]:
+    async def gen_retrieve(state: WorkflowState) -> dict[str, Any]:
         if state.error:
             return {}
 
@@ -385,12 +370,11 @@ def _make_gen_sql_node(
 
         few_shots: list[dict[str, Any]] = []
         term_notes: list[dict[str, Any]] = []
-        example_hits = []
         lessons: list[dict[str, Any]] = []
         rules: list[str] = []
-        metric_hits: list[Any] = []
-        entity_hits: list[Any] = []
-        # 证据层锚:schema linking 的 matched_tables(实时语义层也要用)
+        metric_items: list[dict[str, Any]] = []
+        entity_items: list[dict[str, Any]] = []
+        example_hits: list[dict[str, Any]] = []
         matched = list(state.matched_tables or [])
         # 复杂度分级(纯函数,零 IO/LLM):结构信号(plan) + 语义信号(锚定表)。
         # 修正轮强制 standard,保证修正循环行为不变;simple 用于跳过多候选等。
@@ -453,7 +437,7 @@ def _make_gen_sql_node(
             for r in _kb_results[1:]:  # 首个异常(原顺序)→ 中止节点,同旧语义
                 if isinstance(r, BaseException):
                     raise r
-            example_hits, rules, lessons, term_hits, metric_hits, entity_hits = _kb_results
+            raw_examples, rules, lessons, term_hits, metric_hits, entity_hits = _kb_results
 
             # 模板参数化(A1):template 且 SQL 含 {{var}} 时,确定性静态分析
             # 出参数类型/声明列/枚举样例值,注入 few-shot(LLM 据此填真实值,
@@ -480,10 +464,36 @@ def _make_gen_sql_node(
                         pass
                 return shot
 
-            few_shots = [_shot(h) for h in example_hits]
+            few_shots = [_shot(h) for h in raw_examples]
             term_notes = [
                 {"term": h.term, "mapping": h.mapping, "definition": h.definition}
                 for h in term_hits
+            ]
+            example_hits = [
+                {
+                    "question": h.question, "sql": h.sql,
+                    "tags": list(getattr(h, "tags", []) or []),
+                    "template": bool(getattr(h, "template", False)),
+                    "score": float(getattr(h, "score", 0) or 0),
+                }
+                for h in raw_examples
+            ]
+            metric_items = [
+                {
+                    "name": m.name, "expression": m.expression,
+                    "definition": m.definition,
+                    "score": float(getattr(m, "score", 0) or 0),
+                }
+                for m in metric_hits
+            ]
+            entity_items = [
+                {
+                    "field": e.field, "dataset": e.dataset, "role": e.role,
+                    "enum_values": list(getattr(e, "enum_values", []) or []),
+                    "enum_labels": list(getattr(e, "enum_labels", []) or []),
+                    "score": float(getattr(e, "score", 0) or 0),
+                }
+                for e in entity_hits
             ]
 
         # 实时语义层 metric 作为 term 源(KB 优先,同名去重):
@@ -581,9 +591,75 @@ def _make_gen_sql_node(
         kb_exact_match: dict[str, Any] | None = None
         if not in_correction and example_hits:
             for h in example_hits:
-                if _word_overlap(state.question, h.question) >= KB_EXACT_OVERLAP and h.sql:
-                    kb_exact_match = {"question": h.question, "sql": h.sql}
+                if _word_overlap(state.question, h["question"]) >= KB_EXACT_OVERLAP and h["sql"]:
+                    kb_exact_match = {"question": h["question"], "sql": h["sql"]}
                     break
+
+        gen_ctx: dict[str, Any] = {
+            "dialect": dialect,
+            "complexity": complexity,
+            "in_correction": in_correction,
+            "few_shots": few_shots,
+            "term_notes": term_notes,
+            "lessons": lessons,
+            "rules": rules,
+            "metrics": metric_items,
+            "entities": entity_items,
+            "user_facts": user_fact_items,
+            "episodes": episode_items,
+            "profile": profile_text,
+            "examples": example_hits,
+            "kb_exact_match": kb_exact_match,
+        }
+        update: dict[str, Any] = {
+            "gen_ctx": gen_ctx,
+            "complexity": complexity,
+            # gen_sql 是权威生成路径:清掉陈旧快径标记,重生成的修正轮
+            # 不享受快径的 reflect 跳过
+            "fast_path": False,
+        }
+        # 情景记忆通道标记(best-effort,无 episodes 命中为空)
+        if memory_backend:
+            update["memory_backend"] = memory_backend
+        # 检索来源标识:内置 SQLite FTS5 镜像 vs pg_hybrid 统一检索库
+        # (仅作分析面板展示,不参与生成逻辑)。
+        if services.kb is not None and datasource:
+            try:
+                update["retrieval_backend"] = services.kb.retrieval_backend_label(
+                    datasource)
+            except Exception:
+                update["retrieval_backend"] = "builtin"
+        return update
+
+    return gen_retrieve
+
+
+def make_gen_assemble(services: GraphServices):
+    """gen_assemble — 预算裁剪与生成输入装配(零检索/零生成)。
+
+    消费 gen_ctx:按复杂度分档预算组装 context 块(item 级裁剪)、schema
+    预算化裁剪、构造 GenSQLState 并序列化为 gen_sub_state 供生成节点
+    重建。plan 是规格而非补充材料,先预留额度再让其余块竞争。
+    """
+
+    async def gen_assemble(state: WorkflowState) -> dict[str, Any]:
+        if state.error:
+            return {}
+        ctx = state.gen_ctx or {}
+        if not ctx:
+            return {}
+        dialect = ctx["dialect"]
+        complexity = ctx["complexity"]
+        few_shots: list[dict[str, Any]] = ctx["few_shots"] or []
+        term_notes: list[dict[str, Any]] = ctx["term_notes"] or []
+        lessons: list[dict[str, Any]] = ctx["lessons"] or []
+        rules: list[str] = ctx["rules"] or []
+        metric_items: list[dict[str, Any]] = ctx["metrics"] or []
+        entity_items: list[dict[str, Any]] = ctx["entities"] or []
+        user_fact_items: list[dict[str, Any]] = ctx["user_facts"] or []
+        episode_items: list[dict[str, Any]] = ctx["episodes"] or []
+        profile_text: str = ctx.get("profile") or ""
+        example_hits: list[dict[str, Any]] = ctx["examples"] or []
 
         # Context budget: optional blocks filled by priority; within each
         # block, items are selected by relevance score, all capped at a
@@ -597,12 +673,12 @@ def _make_gen_sql_node(
         optional_blocks: dict[str, list[ContextItem]] = {}
         if few_shots:
             # 每表/每条示例带 KB 相关度分数(score 降序=检索顺序)——预算
-            # 内保留最相关条目,而非整块丢弃。getattr 兼容无 score 的桩。
+            # 内保留最相关条目,而非整块丢弃。
             optional_blocks["few_shots"] = [
                 ContextItem(
                     key=f"shot{i}",
                     text=render_shots([s]),
-                    score=float(getattr(h, "score", 0) or 0),
+                    score=float(h.get("score") or 0),
                 )
                 for i, (h, s) in enumerate(zip(example_hits, few_shots))
             ]
@@ -630,36 +706,21 @@ def _make_gen_sql_node(
                 )
                 for i, t in enumerate(term_notes)
             ]
-        if metric_hits:
-            metric_items = [
-                {
-                    "name": m.name, "expression": m.expression,
-                    "definition": m.definition, "score": m.score,
-                }
-                for m in metric_hits
-            ]
+        if metric_items:
             optional_blocks["metrics"] = [
                 ContextItem(
                     key=f"metric{i}",
                     text=render_metrics([m]),
-                    score=float(m["score"] or 0),
+                    score=float(m.get("score") or 0),
                 )
                 for i, m in enumerate(metric_items)
             ]
-        if entity_hits:
-            entity_items = [
-                {
-                    "field": e.field, "dataset": e.dataset, "role": e.role,
-                    "enum_values": e.enum_values, "enum_labels": e.enum_labels,
-                    "score": e.score,
-                }
-                for e in entity_hits
-            ]
+        if entity_items:
             optional_blocks["entities"] = [
                 ContextItem(
                     key=f"entity{i}",
                     text=render_entities([e]),
-                    score=float(e["score"] or 0),
+                    score=float(e.get("score") or 0),
                 )
                 for i, e in enumerate(entity_items)
             ]
@@ -750,8 +811,8 @@ def _make_gen_sql_node(
         user_facts = _trim("user_facts", "ufact", user_fact_items)
         episodes = _trim("episodes", "ep", episode_items)
         profile = profile_text if "profile" in included else ""
-        metrics = _trim("metrics", "metric", metric_items) if metric_hits else None
-        entities = _trim("entities", "entity", entity_items) if entity_hits else None
+        metrics = _trim("metrics", "metric", metric_items) if metric_items else None
+        entities = _trim("entities", "entity", entity_items) if entity_items else None
         # history 是逐轮条目:按预算保留的轮次重拼回字符串注入
         history_trimmed = ""
         if "history" in included:
@@ -799,29 +860,54 @@ def _make_gen_sql_node(
         # 字符估算会系统性低估多字节语言),前缀文本同时复用为缓存断点。
         cache_prefix_text = render_cache_prefix(dialect, schema_for_gen)
         cache_prefix_tokens = count_tokens(cache_prefix_text)
+        return {
+            "gen_sub_state": sub_state.model_dump(),
+            "context_usage": context_usage,
+            "cache_prefix_tokens": cache_prefix_tokens,
+        }
+
+    return gen_assemble
+
+
+def make_gen_generate(
+    services: GraphServices,
+    subgraph: CompiledStateGraph,
+    subgraph_alt: CompiledStateGraph | None = None,
+    alt_subgraphs: list[CompiledStateGraph] | None = None,
+    agentic: bool = True,
+):
+    """gen_generate — SQL 生成与候选共识池装配。
+
+    消费 gen_retrieve/gen_assemble 的产物(gen_ctx / gen_sub_state):
+    - KB 精确命中 → 直接采用标准 SQL,跳过模型生成;
+    - agentic 默认:ReAct loop 模型自校验并自定终止,护栏/空手降级到
+      经典 generate→validate 子图;
+    - multi-candidate:extra generations at higher temperatures stored in
+      state.candidates for the consensus select node's execution voting。
+    """
+    # 跨修正轮的 probe/check 结果缓存:闭包持有 → 同一次运行的多轮修正共享
+    # (registry 每轮重建,缓存独立于 registry 存活)。TTL 内同一数据源同一
+    # SQL 不重复执行;容量封顶防无限膨胀。
+    probe_cache: dict[Any, Any] = {}
+
+    async def gen_generate(state: WorkflowState) -> dict[str, Any]:
+        if state.error:
+            return {}
+        ctx = state.gen_ctx or {}
+        if not ctx or not state.gen_sub_state:
+            return {}
+        sub_state = GenSQLState.model_validate(state.gen_sub_state)
+        dialect = ctx["dialect"]
+        complexity = ctx["complexity"]
+        in_correction = bool(ctx.get("in_correction"))
+        kb_exact_match: dict[str, Any] | None = ctx.get("kb_exact_match")
+        example_hits: list[dict[str, Any]] = ctx.get("examples") or []
+
         update: dict[str, Any] = {
             "dialect": dialect,
             "candidates": [],
-            "context_usage": context_usage,
-            "cache_prefix_tokens": cache_prefix_tokens,
-            "complexity": complexity,
-            # gen_sql 是权威生成路径:清掉陈旧快径标记,重生成的修正轮
-            # 不享受快径的 reflect 跳过
             "fast_path": False,
         }
-
-        # 情景记忆通道标记(best-effort,无 episodes 命中为空)
-        if memory_backend:
-            update["memory_backend"] = memory_backend
-
-        # 检索来源标识:内置 SQLite FTS5 镜像 vs pg_hybrid 统一检索库
-        # (仅作分析面板展示,不参与生成逻辑)。
-        if services.kb is not None and datasource:
-            try:
-                update["retrieval_backend"] = services.kb.retrieval_backend_label(
-                    datasource)
-            except Exception:
-                update["retrieval_backend"] = "builtin"
 
         if kb_exact_match is not None:
             # KB 精确命中:直接用标准 SQL,跳过模型生成(避免歧义变体)
@@ -861,7 +947,7 @@ def _make_gen_sql_node(
             # 拆稳定块打 ephemeral 断点(跨调用复用)。前缀校验/回退在
             # loop 内部——这里只受配置开关门控,关闭时整串单块。
             cache_prefix = (
-                cache_prefix_text
+                render_cache_prefix(dialect, sub_state.schema_context)
                 if (services.config or AgentConfig()).prompt_caching
                 else None
             )
@@ -871,21 +957,22 @@ def _make_gen_sql_node(
                 has_probe=services.connectors is not None,
                 full_rules=complexity != "simple",
             )
+            model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
             result = None
             try:
                 result = await run_agent_loop(
-                services.llm, model,
-                system=system_text,
-                user=prompt,
-                cache_prefix=cache_prefix,
-                registry=registry,
-                tool_timeout_s=20.0,
-                time_budget_s=120.0,
-                max_rounds=8,  # ④ 早期轮转 [compacted] 摘要后护栏放宽
-                max_total_tokens=2500,
-                metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
-                temperature=generation_temperature(state.retry_count),
-            )
+                    services.llm, model,
+                    system=system_text,
+                    user=prompt,
+                    cache_prefix=cache_prefix,
+                    registry=registry,
+                    tool_timeout_s=20.0,
+                    time_budget_s=120.0,
+                    max_rounds=8,  # ④ 早期轮转 [compacted] 摘要后护栏放宽
+                    max_total_tokens=2500,
+                    metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
+                    temperature=generation_temperature(state.retry_count),
+                )
             except Exception as e:
                 logger.warning("Agentic gen_sql failed (%s); falling back to classic", e)
                 result = None
@@ -1048,12 +1135,49 @@ def _make_gen_sql_node(
                 update["candidates"] = candidates
         if example_hits:
             update["kb_hits"] = [
-                {"kind": "example", "question": h.question, "sql": h.sql, "tags": h.tags}
+                {"kind": "example", "question": h["question"], "sql": h["sql"], "tags": h["tags"]}
                 for h in example_hits
             ]
         return update
 
+    return gen_generate
+
+
+def _make_gen_sql_node(
+    services: GraphServices,
+    subgraph: CompiledStateGraph,
+    subgraph_alt: CompiledStateGraph | None = None,
+    alt_subgraphs: list[CompiledStateGraph] | None = None,
+    agentic: bool = True,
+):
+    """Compatibility composite: gen_retrieve → gen_assemble → gen_generate.
+
+    The reflection/fixed graphs wire the three stages as separate nodes for
+    finer checkpointing and step observability; this composite keeps the old
+    single-call contract for direct-node callers and tests.
+    """
+    retrieve = make_gen_retrieve(services)
+    assemble = make_gen_assemble(services)
+    generate = make_gen_generate(
+        services, subgraph, subgraph_alt=subgraph_alt,
+        alt_subgraphs=alt_subgraphs, agentic=agentic,
+    )
+
+    async def gen_sql(state: WorkflowState) -> dict[str, Any]:
+        if state.error:
+            return {}
+        update: dict[str, Any] = {}
+        for step in (retrieve, assemble, generate):
+            if state.error:
+                break
+            if update:
+                state = state.model_copy(update=update)
+            update.update(await step(state))
+        return update
+
     return gen_sql
+
+
 
 
 # ── Main graph builders ──────────────────────────────────
@@ -1562,24 +1686,24 @@ def _route_semantic_gate_after_linking_fast_match(
 
 def _route_semantic_gate_after_linking_gen_sql(
     state: WorkflowState,
-) -> Literal["refuse", "gen_sql"]:
+) -> Literal["refuse", "gen_retrieve"]:
     if state.error or state.no_model or state.refusal:
         return "refuse"
-    return "gen_sql"
+    return "gen_retrieve"
 
 
-def _route_after_query_sketch(state: WorkflowState) -> Literal["refuse", "gen_sql"]:
-    """Query-sketch 后:编译 MISS / 无语义模型 → refuse;否则 gen_sql。"""
+def _route_after_query_sketch(state: WorkflowState) -> Literal["refuse", "gen_retrieve"]:
+    """Query-sketch 后:编译 MISS / 无语义模型 → refuse;否则 gen 链入口。"""
     if state.error or state.no_model or state.refusal:
         return "refuse"
-    return "gen_sql"
+    return "gen_retrieve"
 
 
-def _route_after_clarify_gen_sql(state: WorkflowState) -> Literal["gen_sql", "output"]:
+def _route_after_clarify_gen_sql(state: WorkflowState) -> Literal["gen_retrieve", "output"]:
     """Clarification needed → ask the user; otherwise proceed to generation."""
     if state.error or state.clarification_question:
         return "output"
-    return "gen_sql"
+    return "gen_retrieve"
 
 
 def _build_reflection(
@@ -1596,10 +1720,17 @@ def _build_reflection(
         kb=services.kb, connectors=services.connectors,
         semantic_layer=services.semantic_layer,
     ))
-    g.add_node("gen_sql", _make_gen_sql_node(
+    # gen 链拆三段:检索/信号采集(gen_retrieve)→ 预算裁剪与输入装配
+    # (gen_assemble)→ 生成与候选共识池(gen_generate)。中间态落
+    # gen_ctx / gen_sub_state 过检查点,分步可观测、可独立测试。
+    g.add_node("gen_retrieve", make_gen_retrieve(services))
+    g.add_node("gen_assemble", make_gen_assemble(services))
+    g.add_node("gen_generate", make_gen_generate(
         services, subgraph, subgraph_alt=subgraph_alt,
         alt_subgraphs=alt_subgraphs, agentic=agentic,
     ))
+    g.add_edge("gen_retrieve", "gen_assemble")
+    g.add_edge("gen_assemble", "gen_generate")
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
@@ -1651,18 +1782,18 @@ def _build_reflection(
             g.add_conditional_edges(
                 "query_sketch",
                 _route_after_query_sketch,
-                {"refuse": "refuse", "gen_sql": "gen_sql"},
+                {"refuse": "refuse", "gen_retrieve": "gen_retrieve"},
             )
         else:
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_gen_sql,
-                {"gen_sql": "fast_match", "output": "output"},
+                {"gen_retrieve": "fast_match", "output": "output"},
             )
             g.add_conditional_edges(
                 "fast_match",
-                _make_route_after_fast_match("gen_sql"),
-                {"execute_sql": "execute_sql", "gen_sql": "gen_sql"},
+                _make_route_after_fast_match("gen_retrieve"),
+                {"execute_sql": "execute_sql", "gen_retrieve": "gen_retrieve"},
             )
     else:
         if query_sketch:
@@ -1686,7 +1817,7 @@ def _build_reflection(
             g.add_conditional_edges(
                 "query_sketch",
                 _route_after_query_sketch,
-                {"refuse": "refuse", "gen_sql": "gen_sql"},
+                {"refuse": "refuse", "gen_retrieve": "gen_retrieve"},
             )
         else:
             g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
@@ -1702,13 +1833,13 @@ def _build_reflection(
             )
             g.add_conditional_edges(
                 "fast_match",
-                _make_route_after_fast_match("gen_sql"),
-                {"execute_sql": "execute_sql", "gen_sql": "gen_sql"},
+                _make_route_after_fast_match("gen_retrieve"),
+                {"execute_sql": "execute_sql", "gen_retrieve": "gen_retrieve"},
             )
     # 生成路径:gen_sql → semantics(说明语义) → hitl(人工确认) → execute。
     # hitl 被用户否决 → 直接 output(不执行);批准/未开启 → execute_sql。
     # 确定性快径(fast_match)仍直达 execute_sql,跳过生成级别的确认。
-    g.add_edge("gen_sql", "semantics")
+    g.add_edge("gen_generate", "semantics")
     g.add_edge("semantics", "hitl")
     g.add_conditional_edges(
         "hitl",
@@ -1727,7 +1858,8 @@ def _build_reflection(
         services.llm, services.config or AgentConfig(), rollback_ladder=rollback_ladder,
     ))
     analyze_targets = {
-        "gen_sql": "gen_sql",
+        # rollback 语义目标名保持不变("gen_sql"),实际路由到 gen 链入口
+        "gen_sql": "gen_retrieve",
         "answer_metadata": "answer_metadata",
         "output": "output",
     }
@@ -1771,7 +1903,12 @@ def _build_fixed(
         kb=services.kb, connectors=services.connectors,
         semantic_layer=services.semantic_layer,
     ))
-    g.add_node("gen_sql", _make_gen_sql_node(services, subgraph, agentic=agentic))
+    # gen 链拆三段:检索/装配/生成(与 reflection 同构;fixed 无裁决循环)。
+    g.add_node("gen_retrieve", make_gen_retrieve(services))
+    g.add_node("gen_assemble", make_gen_assemble(services))
+    g.add_node("gen_generate", make_gen_generate(services, subgraph, agentic=agentic))
+    g.add_edge("gen_retrieve", "gen_assemble")
+    g.add_edge("gen_assemble", "gen_generate")
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows)))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
@@ -1803,15 +1940,15 @@ def _build_fixed(
         g.add_conditional_edges(
             "clarify",
             _route_after_clarify_gen_sql,
-            {"gen_sql": "gen_sql", "output": "output"},
+            {"gen_retrieve": "gen_retrieve", "output": "output"},
         )
     else:
         g.add_conditional_edges(
             "schema_linking",
             _route_semantic_gate_after_linking_gen_sql,
-            {"refuse": "refuse", "gen_sql": "gen_sql"},
+            {"refuse": "refuse", "gen_retrieve": "gen_retrieve"},
         )
-    g.add_edge("gen_sql", "semantics")
+    g.add_edge("gen_generate", "semantics")
     g.add_edge("semantics", "hitl")
     g.add_conditional_edges(
         "hitl",
@@ -1821,8 +1958,8 @@ def _build_fixed(
     g.add_edge("execute_sql", "validate")
     g.add_conditional_edges(
         "validate",
-        _make_route_after_feedback("output", "gen_sql", "attribution"),
-        {"gen_sql": "gen_sql", "attribution": "attribution", "output": "output"},
+        _make_route_after_feedback("output", "gen_retrieve", "attribution"),
+        {"gen_retrieve": "gen_retrieve", "attribution": "attribution", "output": "output"},
     )
     g.add_edge("attribution", "insights")
     g.add_edge("insights", "chart")
