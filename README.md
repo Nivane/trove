@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-2700%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-3200%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -74,7 +74,7 @@ flowchart TB
     end
 
     subgraph core["Trove core"]
-        wf["LangGraph pipeline<br/>intent → linking → sketch → gen_sql<br/>→ execute → reflect"]
+        wf["LangGraph pipeline<br/>intent → linking → sketch → gen_sql<br/>→ execute → reflect → attribution → insights"]
         semantic["Semantic layer<br/>semantics.yml · compiler · guardrails"]
         kb["Knowledge base<br/>terms · examples · rules · lessons"]
         memory["Memory<br/>episodes · preferences · profiles"]
@@ -130,7 +130,7 @@ flowchart TB
     COMP -->|"soft miss (word / value / definition)"| SKEL["PartialCompile skeleton<br/>joins · filters · grouping authoritative"]
     COMP -->|"hard miss (structural)"| REFUSE
 
-    SQL --> GEN["gen_sql agent<br/>validate_sql · probe · check_result"]
+    SQL --> GEN["gen_sql agent<br/>retrieve → assemble → generate<br/>validate_sql · probe · check_result"]
     SKEL --> GEN
     REFUSE -->|"draft confirmed → re-enter"| PD
 
@@ -139,7 +139,10 @@ flowchart TB
     CHK -->|"violation"| FIX["analyze_error<br/>diagnose & rollback"]
     FIX --> SKETCH
     CHK -->|"pass"| REFLECT["reflect adjudication<br/>+ SQL version regression"]
-    REFLECT --> OUT["answer + charts + insights"]
+    REFLECT --> ATTR{"why / root-cause?"}
+    ATTR -->|"yes"| DRILL["attribution<br/>multi-hop drill-down<br/>contribution · waterfall"]
+    ATTR -->|"no"| OUT["answer + charts + insights"]
+    DRILL --> OUT
 ```
 
 ### How it learns (and stays governed)
@@ -177,15 +180,17 @@ flowchart LR
 - **Semantic-first boundary with graded answers** — full compile when covered; a compiled skeleton with agent-filled gaps on soft misses; refuse + one-click model extension on structural misses.
 - **Deterministic self-validation** — a zero-LLM rule chain (shape / filters / values / ordering), AST firewall (read-only whitelist, DML interception), optional EXPLAIN row guard, and a reflection cycle with SQL version regression across retries.
 - **Fast path and agentic path** — simple questions take a deterministic KB-template fast path; complex ones upgrade to an agentic ReAct loop (`validate_sql` / `probe_query` / `check_result` tools, decides when it is done); ambiguous ones generate multiple candidates and vote.
-- **A knowledge base that learns per datasource** — `/kb init` drafts schema notes + a semantic model + deterministic terms and templates; confirmed Q&A becomes reference SQL; corrections distill into a Hint Bank; drift detection reports when the model falls behind the schema.
+- **Root-cause attribution on why-questions** — "why did revenue drop?" gets a multi-hop drill-down: current vs prior period, dimension breakdown, then into the top contributor. Contribution math is deterministic (zero LLM), the primary split dimension is chosen **by the data** (largest Σ|Δ|, not LLM order), and ratio metrics decompose by shift-share into within-group / mix / interaction effects; only the narrative is generated, and it may cite the contribution table and nothing else.
+- **A knowledge base that learns per datasource** — `/kb init` drafts schema notes + a semantic model + deterministic terms and templates; confirmed Q&A becomes reference SQL; corrections distill into a Hint Bank; drift detection reports when the model falls behind the schema (also as a zero-LLM cron/CI script).
 - **Unified cross-session memory** — episodic recall, auto-extracted user preferences, per user × datasource profiles; automatic content always lands `pending` until an admin confirms.
 - **Governance as a feature** — YAML is the single source of truth (git-reviewable, diff-able); every executed tool call is audited; HITL approval optional; admin console for KB init, draft review and drift reports.
-- **Analysis you can audit** — the web UI shows the reasoning trail: schema-linking matches, compile decisions, rule-chain results, agent tool calls, and fix reasons.
+- **Analysis you can audit** — the web UI shows the reasoning trail: schema-linking matches, compile decisions, rule-chain results, agent tool calls, and fix reasons. Generation is itself three checkpointed stages — retrieval → context assembly → generation — separately observable and testable, merged back into a single `gen_sql` step for the UI / CLI / streaming contract.
+- **Errors that explain themselves** — a failed run returns a plain-language card (what happened, what to try, whether retrying is worth it) instead of leaking internal node names and error slugs; raw diagnostics fold away and are shown to admins only.
 - **Web UI + REST API** — Vue SPA chat with streaming, tables, charts and HITL dialogs; everything under `/v1`, including a declarative semantic query endpoint (`/v1/semantic/query`) that compiles plans straight against the semantic model.
 - **MCP server** — expose NL→SQL as tools and resources over stdio / SSE / streamable-http for Claude Code and other MCP clients.
 - **Multi-engine, one pattern** — SQLite, PostgreSQL, MySQL, Doris, ClickHouse, DuckDB adapters with a per-datasource KB; unified internal storage on PostgreSQL in production (SQLite fallback in tests), with an admin checkpoint timeline to resume any run from any node.
 - **LLM-agnostic and bilingual** — litellm gateway (OpenAI / DeepSeek / Anthropic / any compatible endpoint), per-node model tiers (cheap model for sketches, strong model for reflection), unified `zh` / `en` interaction.
-- **Observable and interruptible** — real-dependency health checks, Prometheus metrics, request-id tracing, optional Langfuse; cancelling a query stops the datasource driver itself, not just the awaiting coroutine.
+- **Observable and interruptible** — real-dependency health checks, Prometheus metrics, request-id + run-id log correlation, per-run token cost persisted into session history (still readable after a crash or restart), optional Langfuse; cancelling a query stops the datasource driver itself, not just the awaiting coroutine.
 
 ## Quick Start
 
@@ -277,7 +282,7 @@ Tools: `ask_data` · `list_datasources` · `kb_status`. Resources (read-only): `
 | ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` | `uv sync --extra duckdb` |
 
-Each database evolves its own knowledge base under `.trove/kb/<database>/`. To add a datasource, implement the `DatabaseAdapter` methods and register it in `registry.py`.
+Each database evolves its own knowledge base under `.trove/kb/<database>/`. To add a datasource, implement the `DatabaseAdapter` methods and register it in `registry.py`. Step-by-step MySQL / Doris onboarding (admin console and local REPL paths): [`docs/mysql-doris-quickstart.md`](docs/mysql-doris-quickstart.md) (Chinese).
 
 ## Security (read-only execution)
 
@@ -305,6 +310,8 @@ agent:
   model_fast: deepseek/deepseek-chat   # cheap tier: sketches, semantics, insights
   language: zh                         # interaction language: zh / en
   semantic_first: true                 # semantic model is the only answerable boundary
+  # attribution:                       # why-question root-cause drill-down (on by default)
+  #   max_hops: 2                      # 1 = dimension breakdown only, 2 = + top-contributor drill
   # node_models:                       # per-node overrides (query_sketch / reflect / ...)
   #   query_sketch: deepseek/deepseek-chat
   memory:
@@ -324,16 +331,37 @@ uv run python scripts/eval_bird.py --db-id financial \
   [--limit 10] [--verbose]
 ```
 
-Verdicts land in `.trove/eval/results.jsonl`, failures in `failures.jsonl`; batch-distill failures into lessons with `scripts/distill_lessons.py`. No canned numbers here — measure against your own questions, your own semantic model, your own schema. (Full test suite: ~2700 tests, mocked LLM, zero network and zero API keys.)
+Per-question verdicts — each with its `qid` and the tokens it cost — land in `.trove/eval/results.jsonl`, failures in `failures.jsonl`; batch-distill failures into lessons with `scripts/distill_lessons.py`. No canned numbers here — measure against your own questions, your own semantic model, your own schema.
+
+### Offline replay (record once, score for free)
+
+`scripts/offline_eval.py record` runs a question set with real credentials and writes the trajectory; `replay` scores it with **zero LLM calls** — completion, correctness, token cost, failure recovery — so prompt and rule changes can be iterated without paying per attempt:
+
+```bash
+uv run python scripts/offline_eval.py record --questions qs.txt --output .trove/eval/replay.jsonl
+uv run python scripts/offline_eval.py replay --input .trove/eval/replay.jsonl
+```
+
+### Regression gate (zero LLM, opt-in)
+
+`scripts/eval_gate.py` compares a baseline result file with the current one and **exits 1 on a regression**: EX, compile-hit rate, completion, recovery, gold exact match and token cost — each with its own direction and tolerance (`--tol ex=0.02`, or relative `--tol ex=0.10-r`), plus `--min-n` against under-sized samples and `--json` for CI. It consumes three artifact kinds: `results.jsonl` (eval_bird), `replay.jsonl` (offline replay), and the `--scorecard` JSON the retrieval / RRF evals emit.
+
+A reproducible baseline ships in `eval/baseline/` — a fixed question set plus results, reconciled by stable `qid` — with `scripts/build_eval_baseline.py` to (re)build it and `scripts/eval_baseline.py check` to verify it is intact and fully covered. The gate is **off by default** (`eval.gate_enabled: false`), and so is its CI workflow: `.github/workflows/eval-gate.yml` runs only on `workflow_dispatch` or when `TROVE_RUN_EVAL_GATE=1`, and skips itself unless the config switch is on.
+
+### Retrieval evals
+
+Retrieval quality has its own zero-LLM scripts: `eval_retrieval.py` (recall, substructure coverage and budget pressure — lexical vs gold-table-anchored), `eval_hybrid_retrieval.py` (per-channel ablation), `eval_bird_retrieval.py` (table-level schema recall on BIRD) and `tune_rrf.py` (RRF weight grid) — the latter three can emit a scorecard for the gate.
 
 ## Development
 
 ```bash
-uv run pytest                     # full suite (~2700 tests, zero network/keys)
+uv run pytest                     # full suite (~3300 tests, mocked LLM, zero network/keys)
 uv run pytest tests/workflow/     # LangGraph graphs and nodes
 uv run pytest tests/services/kb/  # knowledge base
 uv run pytest -m "not slow"       # skip slow tests
 ```
+
+Zero-LLM ops scripts: `scripts/lint_kb.py` (KB quality check, optional live enum probe), `scripts/check_drift.py` (declared semantics vs live schema — exit 0/1/2 for cron or CI alerting), `scripts/check_kb_anti_cheat.py` (fails if a KB template copies gold SQL).
 
 Code layout: `trove/workflow/` (LangGraph graphs, nodes, deterministic rule chain) · `trove/services/` (datasource adapters, KB, semantic layer, memory, SQL) · `trove/llm/` (litellm gateway, agent loop) · `trove/storage/` (unified backend: sessions, audit, checkpoints) · `trove/agent/` (session orchestration) · `trove/cli/` (REPL and commands).
 
@@ -351,7 +379,7 @@ Deeper architecture notes live in `CLAUDE.md`; REST API docs at `/v1/docs` when 
 
 **Which LLM do I need?** Any litellm-compatible model. Quality guidance: strong models for reflection/adjudication, cheap ones for planning and insights (per-node tiers in `conf/agent.yml`). Note that the demo REPL answers only if LLM credentials are present — there is no silent "mock answer" fallback.
 
-**How does the semantic model stay honest as the schema drifts?** Runtime guards (compile guardrails, table-existence validation) keep behavior safe; an active drift check compares declarations against the live schema and reports `stale` in the admin console, where rebuilding via `/kb init` preserves human-reviewed definitions.
+**How does the semantic model stay honest as the schema drifts?** Runtime guards (compile guardrails, table-existence validation) keep behavior safe; an active drift check compares declarations against the live schema and reports `stale` in the admin console, where rebuilding via `/kb init` preserves human-reviewed definitions. The same check runs headless as `scripts/check_drift.py` (zero LLM, exit code 0/1/2) for a cron job or CI alert.
 
 ## Contributing
 
