@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-2700%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-3200%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -74,7 +74,7 @@ flowchart TB
     end
 
     subgraph core["Trove core"]
-        wf["LangGraph pipeline<br/>intent → linking → sketch → gen_sql<br/>→ execute → reflect"]
+        wf["LangGraph pipeline<br/>intent → linking → sketch → gen_sql<br/>→ execute → reflect → attribution → insights"]
         semantic["Semantic layer<br/>semantics.yml · compiler · guardrails"]
         kb["Knowledge base<br/>terms · examples · rules · lessons"]
         memory["Memory<br/>episodes · preferences · profiles"]
@@ -130,7 +130,7 @@ flowchart TB
     COMP -->|"soft miss (word / value / definition)"| SKEL["PartialCompile skeleton<br/>joins · filters · grouping authoritative"]
     COMP -->|"hard miss (structural)"| REFUSE
 
-    SQL --> GEN["gen_sql agent<br/>validate_sql · probe · check_result"]
+    SQL --> GEN["gen_sql agent<br/>retrieve → assemble → generate<br/>validate_sql · probe · check_result"]
     SKEL --> GEN
     REFUSE -->|"draft confirmed → re-enter"| PD
 
@@ -139,7 +139,10 @@ flowchart TB
     CHK -->|"violation"| FIX["analyze_error<br/>diagnose & rollback"]
     FIX --> SKETCH
     CHK -->|"pass"| REFLECT["reflect adjudication<br/>+ SQL version regression"]
-    REFLECT --> OUT["answer + charts + insights"]
+    REFLECT --> ATTR{"why / root-cause?"}
+    ATTR -->|"yes"| DRILL["attribution<br/>multi-hop drill-down<br/>contribution · waterfall"]
+    ATTR -->|"no"| OUT["answer + charts + insights"]
+    DRILL --> OUT
 ```
 
 ### 如何学习(并保持受治理)
@@ -177,15 +180,17 @@ flowchart LR
 - **语义优先边界 + 分级作答** — 覆盖内全量编译;软 MISS 编译骨架、agent 补缺;结构性 MISS 拒绝 + 一键模型扩展重答。
 - **确定性自校验** — 零 LLM 规则链(形态/过滤/取值/排序)、AST 防火墙(只读白名单、拦截 DML)、可选 EXPLAIN 行数守卫、带 SQL 版本回归的反思循环。
 - **快径与智能体双路径** — 简单问题走确定性 KB 模板快径;复杂问题升级到 agentic ReAct 循环(`validate_sql` / `probe_query` / `check_result` 工具,由模型自行判定完成);歧义问题多候选生成 + 投票。
-- **按数据源自学习的知识库** — `/kb init` 起草 schema 注释 + 语义模型 + 确定性术语与模板;确认过的问答成为 reference SQL;纠正蒸馏进 Hint Bank;漂移检测在模型落后于 schema 时报警。
+- **为什么类问题的根因归因** — 「为什么营收下降?」得到多跳下钻:当前期 vs 基期、维度拆解,再下钻到最大贡献项。贡献率计算是确定性的(零 LLM),主拆维度**由数据决定**(Σ|Δ| 最大者,而非盲信 LLM 顺序);比率指标按 shift-share 分解为本征/结构/交叉三效应;只有叙事由 LLM 生成,且只允许引用归因表中的数字。
+- **按数据源自学习的知识库** — `/kb init` 起草 schema 注释 + 语义模型 + 确定性术语与模板;确认过的问答成为 reference SQL;纠正蒸馏进 Hint Bank;漂移检测在模型落后于 schema 时报警(同一检查也有零 LLM 的 cron/CI 脚本)。
 - **统一跨会话记忆** — episodic 召回、自动提取的用户偏好、per user × datasource 画像;自动内容一律 `pending` 至管理员确认。
 - **治理即特性** — YAML 是唯一真源(git 可审、可 diff);每次执行的工具调用都进审计;可选 HITL 人工确认;管理端提供 KB init、草稿审批与漂移报告。
-- **可审计的分析轨迹** — Web UI 展示推理全过程:schema-linking 匹配、编译决策、规则链结果、agent 工具调用与修复原因。
+- **可审计的分析轨迹** — Web UI 展示推理全过程:schema-linking 匹配、编译决策、规则链结果、agent 工具调用与修复原因。生成本身是三个带 checkpoint 的阶段——检索 → 上下文装配 → 生成——分步可观测、可独立测试,同时对 UI / CLI / 流式契约仍合并为单一 `gen_sql` 步。
+- **会解释自己的错误** — 失败的一轮返回一张人话卡片(发生了什么、可以怎么办、重试是否有意义),不再把内部节点名与错误 slug 泄漏到界面上;原始诊断收进折叠区,仅管理员可见。
 - **Web UI + REST API** — Vue SPA 对话(流式、表格、图表、HITL 对话框);一切在 `/v1` 之下,含声明式语义查询端点 `/v1/semantic/query`——直接把结构化计划编译到语义模型,不走对话管线。
 - **MCP server** — 通过 stdio / SSE / streamable-http 把 NL→SQL 暴露为工具与资源,供 Claude Code 等 MCP 客户端使用。
 - **多引擎、同一套模式** — SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB 适配器 + 每数据源独立 KB;内部统一存储在 PG(生产)/ SQLite(测试回退);管理端 checkpoint 时间轴支持从任意节点续跑。
 - **LLM 无关、双语统一** — litellm 网关(OpenAI / DeepSeek / Anthropic / 任意兼容端点),每节点模型分层(草稿用便宜模型、反思用强模型),统一 `zh` / `en` 交互。
-- **可观测、可中断** — 真实依赖健康检查、Prometheus 指标、request-id 日志关联、可选 Langfuse;取消查询会中断数据源驱动本身,而不只是挂起的协程。
+- **可观测、可中断** — 真实依赖健康检查、Prometheus 指标、request-id + run-id 日志关联、每轮 token 成本落进会话历史(崩溃/重启后仍可查)、可选 Langfuse;取消查询会中断数据源驱动本身,而不只是挂起的协程。
 
 ## 快速开始
 
@@ -243,6 +248,12 @@ cd frontend && npm run build              # 生产构建 → frontend/dist/
 - 每个响应携带 `X-Request-ID`,并出现在该请求的每一行日志里。
 - 客户端中止端到端取消:图任务被取消,适配器的驱动级中断被触发(sqlite3 / psycopg / MySQL `KILL QUERY` / duckdb)。
 
+定时任务(管理端,`/v1/admin/jobs`):
+
+- **`serve` 内置调度 tick** — 到点的任务自动执行(轮询间隔 `agent.scheduler_poll_seconds`,默认 30s)。不要在 `serve` 之外并行跑 `trove-cli schedule --daemon`(会重复执行)。
+- `POST /v1/admin/jobs` — 创建定时提问(cron / interval),可选阈值告警(`row_count >= 5` / `value > 1000` / `col:<name> <op> <n>` / `no_rows` / `verdict == <x>`),通道 `console` 或 `webhook:<url>`,以及冷却分钟数。
+- `GET/PATCH/DELETE /v1/admin/jobs/{id}`、`POST /v1/admin/jobs/{id}/run`(立即执行)、`GET /v1/admin/jobs/{id}/runs`(历史)。管理台在 **定时任务 / Scheduled jobs** 下提供全部能力。
+
 ### MCP server
 
 ```bash
@@ -271,7 +282,7 @@ uv run trove mcp --transport streamable-http --host 0.0.0.0 --port 8001 --token 
 | ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` | `uv sync --extra duckdb` |
 
-每个数据库在 `.trove/kb/<database>/` 下沉淀自己的知识库。新增数据源:实现 `DatabaseAdapter` 方法并在 `registry.py` 注册。
+每个数据库在 `.trove/kb/<database>/` 下沉淀自己的知识库。新增数据源:实现 `DatabaseAdapter` 方法并在 `registry.py` 注册。MySQL / Doris 的逐步接入指南(管理台与本地 REPL 两条路径):[`docs/mysql-doris-quickstart.md`](docs/mysql-doris-quickstart.md)。
 
 ## 安全(只读执行)
 
@@ -299,6 +310,8 @@ agent:
   model_fast: deepseek/deepseek-chat   # 便宜档:草稿、语义、洞察
   language: zh                         # 交互语言:zh / en
   semantic_first: true                 # 语义模型是唯一可答边界
+  # attribution:                       # 为什么类问题的根因下钻(默认开)
+  #   max_hops: 2                      # 1 = 仅维度拆解,2 = 再下钻最大贡献项
   # node_models:                       # 每节点模型覆盖(query_sketch / reflect / …)
   #   query_sketch: deepseek/deepseek-chat
   memory:
@@ -318,16 +331,37 @@ uv run python scripts/eval_bird.py --db-id financial \
   [--limit 10] [--verbose]
 ```
 
-逐题判定落 `.trove/eval/results.jsonl`,失败在 `failures.jsonl`;用 `scripts/distill_lessons.py` 批量蒸馏失败为 lessons。这里不放任何现成数字——请对着你自己的问题、你自己的语义模型、你自己的 schema 来量。(全量测试:~2700 个,mocked LLM,零网络零 key。)
+逐题判定——每条带 `qid` 与消耗的 token——落 `.trove/eval/results.jsonl`,失败在 `failures.jsonl`;用 `scripts/distill_lessons.py` 批量蒸馏失败为 lessons。这里不放任何现成数字——请对着你自己的问题、你自己的语义模型、你自己的 schema 来量。
+
+### 离线回放(录一次,之后免费打分)
+
+`scripts/offline_eval.py record` 用真凭证跑一遍问题集并录下轨迹;`replay` **零 LLM 调用**打分——完成率/正确率/token 成本/失败恢复率——改提示词和规则时可以反复迭代而不必每次付费:
+
+```bash
+uv run python scripts/offline_eval.py record --questions qs.txt --output .trove/eval/replay.jsonl
+uv run python scripts/offline_eval.py replay --input .trove/eval/replay.jsonl
+```
+
+### 回归门(零 LLM,opt-in)
+
+`scripts/eval_gate.py` 把基线结果文件与本次结果文件对比,**变差即退出码 1**:EX、编译命中率、完成率、恢复率、gold 精确匹配与 token 成本——每项各有方向和容差(`--tol ex=0.02`,或相对量 `--tol ex=0.10-r`),`--min-n` 拒绝样本不足,`--json` 供 CI 解析。它吃三类产物:`results.jsonl`(eval_bird)、`replay.jsonl`(离线回放)、以及检索/RRF 脚本 `--scorecard` 输出的 JSON。
+
+可复现基线落在 `eval/baseline/`——固定问题集 + 结果,按稳定 `qid` 对账——用 `scripts/build_eval_baseline.py`(重)建、`scripts/eval_baseline.py check` 校验完整性与覆盖。回归门**默认关**(`eval.gate_enabled: false`),它的 CI workflow 同样默认不跑:`.github/workflows/eval-gate.yml` 仅在 `workflow_dispatch` 或置 `TROVE_RUN_EVAL_GATE=1` 时触发,且配置开关未开时整体跳过。
+
+### 检索评测
+
+检索质量有独立的零 LLM 脚本:`eval_retrieval.py`(召回 / 子结构覆盖 / 预算挤占,词法与 gold 表锚定两个口径)、`eval_hybrid_retrieval.py`(分路消融)、`eval_bird_retrieval.py`(BIRD 表级 schema 召回)、`tune_rrf.py`(RRF 权重网格)——后三者可输出 scorecard 交给回归门。
 
 ## 开发
 
 ```bash
-uv run pytest                     # 全量(~2700 测试,零网络/零 key)
+uv run pytest                     # 全量(~3300 测试,mocked LLM,零网络/零 key)
 uv run pytest tests/workflow/     # LangGraph 图与节点
 uv run pytest tests/services/kb/  # 知识库
 uv run pytest -m "not slow"       # 跳过慢测试
 ```
+
+零 LLM 运维脚本:`scripts/lint_kb.py`(KB 质量检查,可选实时枚举探测)、`scripts/check_drift.py`(声明语义 vs 实时 schema,退出码 0/1/2 供 cron 或 CI 告警)、`scripts/check_kb_anti_cheat.py`(KB 模板若抄了 gold SQL 即失败)。
 
 代码布局:`trove/workflow/`(LangGraph 图、节点、确定性规则链)· `trove/services/`(数据源适配器、KB、语义层、记忆、SQL)· `trove/llm/`(litellm 网关、agent 循环)· `trove/storage/`(统一后端:会话、审计、checkpoint)· `trove/agent/`(会话编排)· `trove/cli/`(REPL 与命令)。
 
@@ -345,7 +379,7 @@ uv run pytest -m "not slow"       # 跳过慢测试
 
 **需要什么 LLM?** 任意 litellm 兼容模型。质量建议:强模型做反思/裁决,便宜模型做规划与洞察(`conf/agent.yml` 每节点分档)。注意:demo REPL 没有 LLM 凭证就不作答——不存在静默的「mock 答案」回退。
 
-**schema 漂移了,语义模型怎么保持诚实?** 运行时守卫(编译 guardrail、表存在性校验)保证行为安全;主动漂移检查把声明与实时 schema 对比,在管理端报 `stale`——此时用 `/kb init` 重建会保留人工审过的定义。
+**schema 漂移了,语义模型怎么保持诚实?** 运行时守卫(编译 guardrail、表存在性校验)保证行为安全;主动漂移检查把声明与实时 schema 对比,在管理端报 `stale`——此时用 `/kb init` 重建会保留人工审过的定义。同一检查也能无头运行:`scripts/check_drift.py`(零 LLM,退出码 0/1/2)适合挂 cron 或 CI 告警。
 
 ## 参与贡献
 
