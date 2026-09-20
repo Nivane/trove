@@ -1166,6 +1166,54 @@ def test_compiled_sql_matches_cross_dialect_guard():
         "SELECT strftime('%Y-%m', d), COUNT(x) FROM t", "mysql")[0] is True
 
 
+def test_compiled_sql_matches_rejects_aggregate_column_drift():
+    """改聚合的目标列(SEM为语义不同的度量)→ 结果必然改变 → 打回。
+
+    旧签名只留聚合函数名:``SUM(loan.amount)`` → ``SUM(loan.balance)``
+    同函数同表被静默放行 —— 权威 SQL 的度量被换掉,照抄校验却声称"保真"。
+    """
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    base = _contract("SELECT SUM(loan.amount) FROM loan")
+    assert compiled_sql_matches(base, "SELECT SUM(loan.balance) FROM loan", "sqlite")[0] is False
+    # 换到的表也变 → 同样打回(表集与列集都偏离)
+    assert compiled_sql_matches(base, "SELECT SUM(trans.amount) FROM loan", "sqlite")[0] is False
+
+
+def test_compiled_sql_matches_rejects_filter_column_drift():
+    """改过滤列但保留算子+值 → 旧签名完全一致 → 静默放行;现在打回。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    base = _contract("SELECT a FROM t WHERE region = 'A'")
+    assert compiled_sql_matches(base, "SELECT a FROM t WHERE status = 'A'", "sqlite")[0] is False
+
+
+def test_compiled_sql_matches_rejects_dimension_projection_drift():
+    """改无聚合投影列(SELECT region → SELECT country)→ 输出语义变了 → 打回。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    base = _contract("SELECT district.A3, COUNT(loan.loan_id) FROM loan")
+    assert compiled_sql_matches(
+        base, "SELECT district.A1, COUNT(loan.loan_id) FROM loan", "sqlite")[0] is False
+
+
+def test_compiled_sql_matches_rejects_aggregate_arity_drift():
+    """聚合列数变(``SUM(a + b)`` → ``SUM(a)``)→ 不同度量 → 打回(非空列集数量不等)。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    base = _contract("SELECT SUM(loan.amount + loan.balance) FROM loan")
+    assert compiled_sql_matches(base, "SELECT SUM(loan.amount) FROM loan", "sqlite")[0] is False
+
+
+def test_compiled_sql_matches_tolerates_bare_column_qualification():
+    """裸列 vs 限定列是合法等价(单表查询省略表名)→ 放行,不误伤。"""
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+
+    base = _contract("SELECT SUM(loan.amount) FROM loan WHERE loan.region = 'A'")
+    assert compiled_sql_matches(
+        base, "SELECT SUM(amount) FROM loan WHERE region = 'A'", "sqlite")[0] is True
+
+
 # ── 时间粒度分桶 ─────────────────────────────────────────
 
 def test_time_grain_month_replaces_projection_and_group_by():

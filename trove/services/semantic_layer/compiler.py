@@ -2153,18 +2153,33 @@ def _signature_of(tree) -> PlanSignature | None:
 
     这是**生成 SQL 侧**的抽取入口 —— 生成 SQL 是 LLM 输出,只拿得到字符串。
     编译侧走 ``_build_contract`` 在编译期抽一次,不再有这个函数参与。
+
+    投影/过滤的列身份也进签名(``SUM(a)`` → ``SUM(b)``、``WHERE region='A'``
+    → ``WHERE status='A'`` 会静默换结果,不能算"保真")。列按 (表, 列) 小写、
+    去重排序成规范形,比较时由 ``PlanSignature.matches`` 宽容裸列/限定列差异。
     """
     select = _inner_select(tree)
     if select is None:
         return None
 
-    projections: list[str | None] = []
+    projections: list[tuple[str | None, tuple[tuple[str, str], ...]]] = []
     for e in select.expressions or []:
         agg = next((f for f in e.find_all(exp.AggFunc)), None)
         if agg is not None:
-            projections.append(agg.sql().split("(", 1)[0].strip().lower())
+            fn = agg.sql().split("(", 1)[0].strip().lower()
+            cols = tuple(sorted({
+                (str(c.table or "").lower(), str(c.name).lower())
+                for c in agg.find_all(exp.Column) if c.name
+            }))
+            projections.append((fn, cols))
         else:
-            projections.append(None)
+            # 无聚合的投影(维度/表达式):列身份同样是"改了就必然改变结果"
+            # 的信号 —— ``SELECT region`` vs ``SELECT country`` 不该放行。
+            cols = tuple(sorted({
+                (str(c.table or "").lower(), str(c.name).lower())
+                for c in e.find_all(exp.Column) if c.name
+            }))
+            projections.append((None, cols))
 
     tables: set[str] = set()
     src_nodes = [select.args.get("from_")] + (select.args.get("joins") or [])
@@ -2175,16 +2190,20 @@ def _signature_of(tree) -> PlanSignature | None:
         if t is not None:
             tables.add(t.name.lower())
 
-    conds: list[tuple[str, tuple[str, ...]]] = []
+    conds: list[tuple[tuple[tuple[str, str], ...], str, tuple[str, ...]]] = []
     where = select.args.get("where")
     if where is not None:
         for node in where.walk():
             if not isinstance(node, exp.Binary):
                 continue
+            cols = tuple(sorted({
+                (str(c.table or "").lower(), str(c.name).lower())
+                for c in node.find_all(exp.Column) if c.name
+            }))
             vals = tuple(
                 str(l.this) for l in node.expression.find_all(exp.Literal)
             )
-            conds.append((node.key, vals))
+            conds.append((cols, node.key, vals))
 
     group = select.args.get("group")
     return PlanSignature(
@@ -2216,8 +2235,9 @@ def _generated_signature(sql: str, dialect: str) -> PlanSignature | None:
 # 编译器 → 生成通道的交接与守卫。两条校验都读 :class:`PlanContract`,
 # **不再从编译 SQL 反推结构**:
 #
-# - 全量编译(``compiled_sql_matches``):比结果形状签名 —— 改聚合/改过滤值/
-#   改投影宽度/换表 → 打回;别名、格式、``COUNT(*)`` vs ``COUNT(col)`` → 通过。
+# - 全量编译(``compiled_sql_matches``):比结果形状签名 —— 改聚合/改过滤值/改
+#   投影宽度/换表/改投影或过滤列身份 → 打回;别名、格式、``COUNT(*)`` vs
+#   ``COUNT(col)``、裸列 vs 限定列 → 通过。
 # - 软 MISS(``skeleton_preserved``):比 join 边/WHERE 条件/分组宽度 ——
 #   LLM 只被允许**补**未覆盖组件,不得改/删权威骨架。投影不比较(要补缺),
 #   分桶表达式差异不比较(GROUP BY 只比宽度)。
@@ -2412,8 +2432,9 @@ def compiled_sql_matches(
     """编译照抄校验:生成的 SQL 是否保留权威编译 SQL 的结果形状。
 
     比的是契约里**编译期抽好的**结果形状签名(见 :class:`PlanSignature`):
-    改聚合/改过滤值/改投影宽度/换表 → 打回;``COUNT(*)`` vs ``COUNT(col)``、
-    别名、格式、大小写 → 通过(与编译 SQL 语义等价,不是回归)。
+    改聚合/改过滤值/改投影宽度/换表/改投影或过滤**列身份** → 打回;
+    别名、格式、大小写、``COUNT(*)`` vs ``COUNT(col)``、裸列 vs 限定列
+    (与编译 SQL 语义等价,不是回归)。
 
     生成 SQL 解析不了 → **打回**(它连是不是查询都定不下来,不能算保真)。
     这是 A1 收口的 fail-open:此前这种情况静默放行。
@@ -2436,9 +2457,9 @@ def compiled_sql_matches(
             "generated SQL could not be parsed as a query — it cannot be "
             f"verified against the compiled SQL (dialect: {dialect})"
         )
-    if contract.signature == other:
+    if contract.signature.matches(other):
         return True, ""
     return False, (
         "generated SQL does not preserve the compiled SQL's result shape "
-        "(changed aggregation, filter values, projection, or joins)"
+        "(changed aggregation, filter columns/values, projection, or joins)"
     )

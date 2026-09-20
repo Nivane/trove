@@ -1649,7 +1649,7 @@ class TestExecuteSQLCompileDrift:
             contract=contract_to_wire(PlanContract(
                 skeleton_sql="SELECT COUNT(name) FROM students",
                 # 契约说权威投影是 sum(手工构造的矛盾,生产里不会出现)
-                signature=PlanSignature(projections=("sum",), tables=("students",)),
+                signature=PlanSignature(projections=(("sum", ()),), tables=("students",)),
             )),
         )
         update = await node(state)
@@ -2012,7 +2012,8 @@ class TestQuerySketch:
         assert update["contract"]["partial"] is False
         # A1:形状签名也在编译期随契约交接(校验侧不再拿 compiled_sql 反推)
         assert update["contract"]["signature"] == {
-            "projections": ["count"], "tables": ["loan"],
+            "projections": [["count", [["loan", "loan_id"]]]],
+            "tables": ["loan"],
             "conds": [], "joins": 0, "groups": 0,
         }
         assert render_contract(

@@ -71,13 +71,19 @@ class PlanSignature:
     """编译 SQL 的结果形状签名 —— 照抄校验(全量编译)的判据。
 
     刻意**粗糙**:只留「改了就必然改变结果」的信号,把「等价改写」全部抹平,
-    否则守卫会变成误伤机器。
+    否则守卫会变成误伤机器。列级信息是这条原则的**补全**:投影/过滤的列身份
+    也是"改了就必然改变结果"的信号(``SUM(loan.amount)`` → ``SUM(loan.balance)``、
+    ``WHERE region='A'`` → ``WHERE status='A'`` 会静默换结果)。比较经
+    :meth:`matches`,而不是 ``==`` —— 用宽容规则把真正的等价改写(裸列 vs
+    限定列、``COUNT(*)`` vs ``COUNT(col)``)放行,把列身份漂移打回。
 
-    - ``projections``:每个投影的聚合函数名,无聚合写 ``None``。**不含列名**
-      —— 编译器把 ``count(*)`` 归一到声明的 ``COUNT(col)`` 是合法等价。
+    - ``projections``:每个投影 ``(聚合函数名, 列集)``;无聚合的投影 = 
+      ``(None, 列集)``。列集按 (表, 列) 小写、去重排序。``COUNT(*)`` 的空
+      列集是通配 —— 与 ``COUNT(col)`` 互认(编译器把 count(*) 归一为声明
+      度量的合法等价)。
     - ``tables``:FROM/JOIN 里直接引用的表名(升序)。
-    - ``conds``:WHERE 的每个二元条件 ``(算子, 字面量元组)``。**不含列名**
-      —— 过滤值一变签名必变,列重写不算偏离。
+    - ``conds``:WHERE 的每个二元条件 ``(涉及列集, 算子, 字面量值元组)``。
+      过滤**列**与值都在签名里 —— 改过滤列或改值都改变结果,必须打回。
     - ``joins`` / ``groups``:JOIN 个数、GROUP BY 表达式个数。
 
     注意签名**与方言无关**:上面每项都在 parse 阶段定形,不随 read 方言变化
@@ -86,11 +92,68 @@ class PlanSignature:
     "契约与生成 SQL 同方言"在 A1 之后是**结构保证**,不是运行时假设。
     """
 
-    projections: tuple[str | None, ...] = ()
+    projections: tuple[tuple[str | None, tuple[Col, ...]], ...] = ()
     tables: tuple[str, ...] = ()
-    conds: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    conds: tuple[tuple[tuple[Col, ...], str, tuple[str, ...]], ...] = ()
     joins: int = 0
     groups: int = 0
+
+    @staticmethod
+    def _col_matches(skel: Col, gen: Col) -> bool:
+        """单列匹配:列名一致,且表名一致或任一侧未限定(裸列 vs 限定列)。"""
+        st, sc = skel
+        gt, gc = gen
+        return gc == sc and (gt == st or not gt or not st)
+
+    @classmethod
+    def _cols_match(cls, skel: tuple[Col, ...], gen: tuple[Col, ...]) -> bool:
+        """列集匹配(逐元素覆盖 + 数量相等;空集通配)。
+
+        ``COUNT(*)`` 一侧空列集 = 通配:与 ``COUNT(col)`` 互认。非空时两侧
+        数量必须相等(``SUM(a + b)`` 与 ``SUM(a)`` 是不同的度量),且每个骨架
+        列都要被一个生成列覆盖(裸列 vs 限定列由 ``_col_matches`` 宽容)。
+        """
+        if not skel or not gen:
+            return True
+        if len(skel) != len(gen):
+            return False
+        unmatched = list(gen)
+        for sc in skel:
+            hit = next(
+                (i for i, gc in enumerate(unmatched)
+                 if cls._col_matches(sc, gc)),
+                None,
+            )
+            if hit is None:
+                return False
+            unmatched.pop(hit)
+        return True
+
+    def matches(self, other: "PlanSignature") -> bool:
+        """容忍等价改写的形状比对(取代 ``==``)。
+
+        ``==`` 在投影/过滤列上逐字相等,会把「编译器写 ``loan.amount``、生成
+        侧写裸 ``amount``」这类合法等价误判成偏离。这里在列级用宽容规则、
+        聚合列用空集通配,函数/表/算子/值/数量仍逐项相等 —— 松紧的边界是
+        「改列名写法(等价)放行,改列身份(偏离)打回」。
+        """
+        if len(self.projections) != len(other.projections):
+            return False
+        for (a_fn, a_cols), (b_fn, b_cols) in zip(self.projections, other.projections):
+            if a_fn != b_fn:
+                return False
+            if not self._cols_match(a_cols, b_cols):
+                return False
+        if self.tables != other.tables:
+            return False
+        if len(self.conds) != len(other.conds):
+            return False
+        for (a_cols, a_op, a_vals), (b_cols, b_op, b_vals) in zip(self.conds, other.conds):
+            if a_op != b_op or a_vals != b_vals:
+                return False
+            if not self._cols_match(a_cols, b_cols):
+                return False
+        return self.joins == other.joins and self.groups == other.groups
 
 
 @dataclass(frozen=True)
@@ -159,10 +222,13 @@ def signature_to_wire(signature: PlanSignature | None) -> dict[str, Any] | None:
     if signature is None:
         return None
     return {
-        "projections": list(signature.projections),
+        "projections": [
+            [fn, [list(c) for c in cols]] for fn, cols in signature.projections
+        ],
         "tables": list(signature.tables),
         "conds": [
-            {"op": op, "values": list(vals)} for op, vals in signature.conds
+            {"cols": [list(c) for c in cols], "op": op, "values": list(vals)}
+            for cols, op, vals in signature.conds
         ],
         "joins": signature.joins,
         "groups": signature.groups,
@@ -265,22 +331,44 @@ def _decode_signature(raw: Any) -> PlanSignature | None | str:
         # wire 或坏编译器,放它过去 = 拿一个必然不匹配的判据去打回每一条生成
         # SQL —— 比缺签名危险得多。
         return "invalid"
-    conds: list[tuple[str, tuple[str, ...]]] = []
+    projections: list[tuple[str | None, tuple[Col, ...]]] = []
+    for item in projections_raw:
+        # 每项 = [函数名, [[表, 列], ...]](旧 wire 的形状是裸字符串 → 判坏)
+        if not isinstance(item, list) or len(item) != 2:
+            return "invalid"
+        fn, cols_raw = item
+        if fn is not None and not isinstance(fn, str):
+            return "invalid"
+        if not isinstance(cols_raw, list):
+            return "invalid"
+        cols = [_decode_col(c) for c in cols_raw]
+        if any(c is None for c in cols):
+            return "invalid"
+        projections.append((
+            None if fn is None else str(fn),
+            tuple(c for c in cols if c is not None),
+        ))
+    conds: list[tuple[tuple[Col, ...], str, tuple[str, ...]]] = []
     for item in conds_raw:
         if not isinstance(item, dict):
             return "invalid"
-        vals = item.get("values")
-        if not isinstance(vals, list):
+        cols_raw, op, vals_raw = item.get("cols"), item.get("op"), item.get("values")
+        if not isinstance(cols_raw, list) or not isinstance(vals_raw, list):
             return "invalid"
-        conds.append((str(item.get("op") or ""), tuple(str(v) for v in vals)))
+        cols = [_decode_col(c) for c in cols_raw]
+        if any(c is None for c in cols):
+            return "invalid"
+        conds.append((
+            tuple(c for c in cols if c is not None),
+            str(op or ""),
+            tuple(str(v) for v in vals_raw),
+        ))
     joins, groups = raw.get("joins", 0), raw.get("groups", 0)
     for n in (joins, groups):
         if not isinstance(n, int) or isinstance(n, bool) or n < 0:
             return "invalid"
     return PlanSignature(
-        projections=tuple(
-            None if p is None else str(p) for p in projections_raw
-        ),
+        projections=tuple(projections),
         tables=tuple(str(t) for t in tables_raw),
         conds=tuple(conds),
         joins=joins,

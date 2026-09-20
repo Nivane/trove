@@ -84,9 +84,9 @@ class TestWireTransport:
             where=(( (("district", "a3"),), "eq", ("Prague",)),),
             group_by_width=1,
             signature=PlanSignature(
-                projections=("avg",),
+                projections=(("avg", (("loan", "amount"),)),),
                 tables=("loan", "account", "district"),
-                conds=(("eq", ("Prague",)),),
+                conds=(( (("district", "a3"),), "eq", ("Prague",)),),
                 joins=2,
                 groups=1,
             ),
@@ -168,8 +168,14 @@ class TestWireTransport:
         {"skeleton_sql": "SELECT 1", "signature": {"projections": "count"}},
         {"skeleton_sql": "SELECT 1", "signature": {"conds": [{"op": "eq"}]}},
         {"skeleton_sql": "SELECT 1", "signature": {"conds": [{"op": "eq", "values": "x"}]}},
+        {"skeleton_sql": "SELECT 1", "signature": {"conds": [{"cols": "x", "op": "eq", "values": []}]}},
         {"skeleton_sql": "SELECT 1", "signature": {"joins": -1}},
         {"skeleton_sql": "SELECT 1", "signature": {"groups": "1"}},
+        # 新投影形状 [函数名, 列集] 的坏形态:旧 wire 的裸字符串、列集非列表、
+        # 列不是 [表, 列] 对 —— 一律判坏(整份契约作废,不静默弱化校验)
+        {"skeleton_sql": "SELECT 1", "signature": {"projections": ["avg"]}},
+        {"skeleton_sql": "SELECT 1", "signature": {"projections": [["avg", "loan.amount"]]}},
+        {"skeleton_sql": "SELECT 1", "signature": {"projections": [["avg", [["loan", "amount", "x"]]]]}},
     ])
     def test_malformed_wire_yields_none_not_a_partial_contract(self, bad):
         """形状异常 → None(没有契约),**不是**"解出能解的部分"。
@@ -272,10 +278,13 @@ class TestCompilerPopulatesContract:
         assert contract is not None
         signature = contract.signature
         assert signature is not None
-        # 投影只留聚合函数名(列名/别名/格式不参与 —— 抹平等价改写)
-        assert signature.projections == (None, "avg")
+        # 投影留聚合函数名 + 列集(别名/格式不参与 —— 抹平等价改写)
+        assert signature.projections == (
+            (None, (("district", "a3"),)),
+            ("avg", (("loan", "amount"),)),
+        )
         assert signature.tables == ("account", "loan")
-        assert signature.conds == (("eq", ("Prague",)),)
+        assert signature.conds == (( (("district", "a3"),), "eq", ("Prague",)),)
         assert signature.joins == 1
         assert signature.groups == 1
 
@@ -294,7 +303,10 @@ class TestCompilerPopulatesContract:
             for d in ("sqlite", "mysql", "clickhouse")
         }
         assert len(sigs) == 1
-        assert sigs.pop().projections == (None, "count")
+        assert sigs.pop().projections == (
+            (None, (("", "d"),)),
+            ("count", (("", "x"),)),
+        )
 
     def test_unparseable_compiled_sql_yields_no_signature(self):
         """编译器自己的 SQL 解析不了 → 契约仍在,但签名明确为 None。
