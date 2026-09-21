@@ -97,7 +97,8 @@ class GitKb:
         if repo is None:
             return {"committed": False, "reason": "no-repo"}
 
-        ds_dir = self.kb_dir / datasource
+        # kb_dir 可能是相对路径(如 KbService('.')),relative_to 需要绝对路径。
+        ds_dir = (self.kb_dir / datasource).resolve()
         if deleted:
             rel_dir = str(ds_dir.relative_to(repo))
             rels = [rel_dir]

@@ -209,6 +209,22 @@ async def test_git_kb_disabled_never_commits(git_repo: Path):
     assert _git(git_repo, "log", "--oneline").stdout.strip() == ""
 
 
+async def test_relative_kb_dir_still_commits(git_repo: Path, monkeypatch):
+    """kb_dir 以相对路径构造(如 KbService('.') )时也能正确提交。"""
+    monkeypatch.chdir(git_repo)
+    kb = KbService(".", git_kb=True)  # kb_dir = "./.trove/kb" 相对路径
+    kb.kb_dir.mkdir(parents=True, exist_ok=True)
+    (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
+
+    await kb.append_term(
+        {"term": "相对路径", "mapping": "AVG(loan.amount)", "tables": ["loan"]},
+        "demo", generator="test",
+    )
+
+    log = _git(git_repo, "log", "--oneline", "-1").stdout.strip()
+    assert "append term" in log
+
+
 def test_commit_falls_back_when_no_identity(tmp_path: Path, monkeypatch):
     """无 git 身份配置时,commit 兜底机器身份,审计历史不断。"""
     # 隔离全局 git 配置(本机有 user.name/email,不清掉测不到兜底路径)
