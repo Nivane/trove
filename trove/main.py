@@ -195,7 +195,8 @@ async def create_app_components(
 
     resolve_backend, bind_kb = resolver_from_configs(
         config_store.load_configs(), embedder_factory=_embedder_for)
-    kb = KbService(Path.cwd(), backend_resolver=resolve_backend)
+    kb = KbService(Path.cwd(), backend_resolver=resolve_backend,
+                   git_kb=config.git_kb)
     bind_kb(kb)
 
     # ── User facts (per-user memory: ~/.trove/user_facts.db) ──

@@ -481,6 +481,9 @@ class SemanticManager:
         data["drafts"] = drafts
         _dump_yaml(path, data)
         await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource, f"semantic: draft {action} {kind} {name}",
+            files=["semantic_drafts.yml"])
         return dict(entry)
 
     def _find_draft(self, datasource: str, draft_id: str) -> tuple[dict[str, Any], Path]:
@@ -517,6 +520,11 @@ class SemanticManager:
         drafts = self._drafts_with(datasource, draft)
         self._save_drafts(path, drafts)
         await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource,
+            f"semantic: confirm {draft.get('kind')} {draft.get('name')} "
+            f"(draft {draft_id})",
+            files=["semantics.yml", "semantic_drafts.yml"])
         return dict(draft)
 
     async def auto_apply(
@@ -558,6 +566,9 @@ class SemanticManager:
         drafts.append(entry)
         _dump_yaml(path, {"drafts": drafts})
         await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource, f"semantic: auto-apply {kind} {name}",
+            files=["semantics.yml", "semantic_drafts.yml"])
         return dict(entry)
 
     async def auto_apply_field(
@@ -578,6 +589,9 @@ class SemanticManager:
         drafts = self._drafts_with(datasource, draft)
         self._save_drafts(path, drafts)
         await self._kb.force_sync(datasource)
+        await self._kb.git_commit(
+            datasource, f"semantic: reject draft {draft_id}",
+            files=["semantic_drafts.yml"])
         return dict(draft)
 
     def _drafts_with(self, datasource: str, updated: dict[str, Any]) -> list[dict[str, Any]]:

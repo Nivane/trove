@@ -1,0 +1,19 @@
+lessons:
+- pattern: '计划校验: answer_columns [''loan.amount''] conflict with result columns [''A3'',
+    ''max_loan_amount'']。查询计划的 answer_columns 与执行结果列不'
+  note: '计划校验: answer_columns [''loan.amount''] conflict with result columns [''A3'',
+    ''max_loan_amount'']。查询计划的 answer_columns 与执行结果列不符——重新规划并修正输出列。'
+  sql_snippet: 'SELECT district.A3, MAX(loan.amount) AS max_loan_amount
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    JOIN district ON account.district_id = district.district_id
+
+    GROUP BY district.A3'
+  confidence: 0.5
+  source: correction
+  evidence: 'question: 每个地区的最高的贷款金额'
+  confirmed: false
+  created_at: '2026-09-03T08:39:38.035888+00:00'

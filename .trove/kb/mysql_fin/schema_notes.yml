@@ -1,0 +1,1040 @@
+tables:
+- name: account
+  description: Bank account master data with statement frequency, district, and creation
+    date.
+  columns:
+  - name: account_id
+    description: Unique account identifier; values range from 1 to 11382.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 4500
+      min: 1
+      max: 11382
+  - name: district_id
+    description: District identifier referencing the district where the account is
+      located; values range from 1 to 77.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 77
+      min: 1
+      max: 77
+  - name: frequency
+    description: Statement issuance frequency; all-caps textual codes.
+    enums:
+    - POPLATEK MESICNE=monthly issuance
+    - POPLATEK TYDNE=weekly issuance
+    - POPLATEK PO OBRATU=after transaction
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 3
+      min_len: 14
+      max_len: 18
+      shape: all_caps
+      sample:
+      - POPLATEK MESICNE
+      - POPLATEK TYDNE
+      - POPLATEK PO OBRATU
+      top_values:
+      - - POPLATEK MESICNE
+        - 4167
+      - - POPLATEK TYDNE
+        - 240
+      - - POPLATEK PO OBRATU
+        - 93
+  - name: date
+    description: Date the account was created; values range from 1993-01-01 to 1997-12-29.
+    enums: []
+    type: date
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 1535
+      min: 1993-01-01
+      max: 1997-12-29
+  metrics: []
+  row_count: 4500
+- name: card
+  description: Card details linked to client-account dispositions, including card
+    type and issue date.
+  columns:
+  - name: card_id
+    description: Unique card identifier; values range from 1 to 1247.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 892
+      min: 1
+      max: 1247
+  - name: disp_id
+    description: Identifier of the associated disposition; values range from 9 to
+      13660.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 892
+      min: 9
+      max: 13660
+  - name: type
+    description: Card type; lowercase text values.
+    enums:
+    - gold=gold (card type)
+    - classic=classic (card type)
+    - junior=junior (card type)
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 3
+      min_len: 4
+      max_len: 7
+      shape: text
+      sample:
+      - gold
+      - classic
+      - junior
+      top_values:
+      - - classic
+        - 659
+      - - junior
+        - 145
+      - - gold
+        - 88
+  - name: issued
+    description: Date the card was issued; values range from 1993-11-07 to 1998-12-29.
+    enums: []
+    type: date
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 607
+      min: 1993-11-07
+      max: 1998-12-29
+  metrics: []
+  row_count: 892
+- name: client
+  description: Bank client demographic data including gender, birth date, and residential
+    district.
+  columns:
+  - name: client_id
+    description: Unique client identifier; values range from 1 to 13998.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 5369
+      min: 1
+      max: 13998
+  - name: gender
+    description: Client gender; single capital letter.
+    enums:
+    - F=female
+    - M=male
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 2
+      min_len: 1
+      max_len: 1
+      shape: capital
+      sample:
+      - F
+      - M
+      top_values:
+      - - M
+        - 2724
+      - - F
+        - 2645
+  - name: birth_date
+    description: Client date of birth; values range from 1911-08-20 to 1987-09-27.
+    enums: []
+    type: date
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 4738
+      min: 1911-08-20
+      max: 1987-09-27
+  - name: district_id
+    description: District identifier referencing the district where the client resides;
+      values range from 1 to 77.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 77
+      min: 1
+      max: 77
+  metrics: []
+  row_count: 5369
+- name: disp
+  description: Disposition links between clients and accounts, indicating ownership
+    or authorized-user type.
+  columns:
+  - name: disp_id
+    description: Unique disposition identifier; values range from 1 to 13690.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 5369
+      min: 1
+      max: 13690
+  - name: client_id
+    description: Client identifier in the disposition; values range from 1 to 13998.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 5369
+      min: 1
+      max: 13998
+  - name: account_id
+    description: Account identifier in the disposition; values range from 1 to 11382.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 4500
+      min: 1
+      max: 11382
+  - name: type
+    description: Type of disposition relationship; all-caps codes.
+    enums:
+    - OWNER=owner of the account
+    - DISPONENT=disponent (authorized user)
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 2
+      min_len: 5
+      max_len: 9
+      shape: all_caps
+      sample:
+      - OWNER
+      - DISPONENT
+      top_values:
+      - - OWNER
+        - 4500
+      - - DISPONENT
+        - 869
+  metrics: []
+  row_count: 5369
+- name: district
+  description: Geographic district reference data with demographic and socio-economic
+    attributes.
+  columns:
+  - name: district_id
+    description: Unique district identifier; values range from 1 to 77.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 77
+      min: 1
+      max: 77
+  - name: A2
+    description: official name of the district (Czech)
+    enums:
+    - Hl.m. Praha=Prague
+    - Benesov=Benesov
+    - Beroun=Beroun
+    - Kladno=Kladno
+    - Kolin=Kolin
+    - Kutna Hora=Kutna Hora
+    - Melnik=Melnik
+    - Mlada Boleslav=Mlada Boleslav
+    - Nymburk=Nymburk
+    - Praha - vychod=Praha East
+    - Praha - zapad=Praha West
+    - Pribram=Pribram
+    - Rakovnik=Rakovnik
+    - Ceske Budejovice=Ceske Budejovice
+    - Cesky Krumlov=Cesky Krumlov
+    - Jindrichuv Hradec=Jindrichuv Hradec
+    - Pelhrimov=Pelhrimov
+    - Pisek=Pisek
+    - Prachatice=Prachatice
+    - Strakonice=Strakonice
+    - Tabor=Tabor
+    - Domazlice=Domazlice
+    - Cheb=Cheb
+    - Karlovy Vary=Karlovy Vary
+    - Klatovy=Klatovy
+    - Plzen - mesto=Plzen - mesto
+    - Plzen - jih=Plzen - jih
+    - Plzen - sever=Plzen - sever
+    - Rokycany=Rokycany
+    - Sokolov=Sokolov
+    - Tachov=Tachov
+    - Ceska Lipa=Ceska Lipa
+    - Decin=Decin
+    - Chomutov=Chomutov
+    - Jablonec n. Nisou=Jablonec n. Nisou
+    - Liberec=Liberec
+    - Litomerice=Litomerice
+    - Louny=Louny
+    - Most=Most
+    - Teplice=Teplice
+    - Usti nad Labem=Usti nad Labem
+    - Havlickuv Brod=Havlickuv Brod
+    - Hradec Kralove=Hradec Kralove
+    - Chrudim=Chrudim
+    - Jicin=Jicin
+    - Nachod=Nachod
+    - Pardubice=Pardubice
+    - Rychnov nad Kneznou=Rychnov nad Kneznou
+    - Semily=Semily
+    - Svitavy=Svitavy
+    - Trutnov=Trutnov
+    - Usti nad Orlici=Usti nad Orlici
+    - Blansko=Blansko
+    - Brno - mesto=Brno - mesto
+    - Brno - venkov=Brno - venkov
+    - Breclav=Breclav
+    - Hodonin=Hodonin
+    - Jihlava=Jihlava
+    - Kromeriz=Kromeriz
+    - Prostejov=Prostejov
+    - Trebic=Trebic
+    - Uherske Hradiste=Uherske Hradiste
+    - Vyskov=Vyskov
+    - Zlin=Zlin
+    - Znojmo=Znojmo
+    - Zdar nad Sazavou=Zdar nad Sazavou
+    - Bruntal=Bruntal
+    - Frydek - Mistek=Frydek - Mistek
+    - Jesenik=Jesenik
+    - Karvina=Karvina
+    - Novy Jicin=Novy Jicin
+    - Olomouc=Olomouc
+    - Opava=Opava
+    - Ostrava - mesto=Ostrava - mesto
+    - Prerov=Prerov
+    - Sumperk=Sumperk
+    - Vsetin=Vsetin
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 77
+      min_len: 4
+      max_len: 19
+      shape: text
+      sample:
+      - Hl.m. Praha
+      - Benesov
+      - Beroun
+      - Kladno
+      - Kolin
+  - name: A3
+    description: geographic region of the district (e.g. east Bohemia)
+    enums:
+    - Prague=Prague
+    - central Bohemia=central Bohemia
+    - south Bohemia=south Bohemia
+    - west Bohemia
+    - north Bohemia
+    - east Bohemia
+    - south Moravia
+    - north Moravia
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 8
+      min_len: 6
+      max_len: 15
+      shape: text
+      sample:
+      - Prague
+      - central Bohemia
+      - south Bohemia
+      - west Bohemia
+      - north Bohemia
+      top_values:
+      - - south Moravia
+        - 14
+      - - central Bohemia
+        - 12
+      - - east Bohemia
+        - 11
+      - - north Moravia
+        - 11
+      - - north Bohemia
+        - 10
+      - - west Bohemia
+        - 10
+      - - south Bohemia
+        - 8
+      - - Prague
+        - 1
+  - name: A4
+    description: number of inhabitants of the district
+    enums:
+    - 1204953=1204953
+    - 88884=88884
+    - 75232=75232
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 77
+      min_len: 5
+      max_len: 7
+      shape: numeric
+      sample:
+      - '1204953'
+      - '88884'
+      - '75232'
+      - '149893'
+      - '95616'
+  - name: A5
+    description: number of municipalities with fewer than 499 inhabitants
+    enums:
+    - 0=0
+    - 80=80
+    - 55=55
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 53
+      min_len: 1
+      max_len: 3
+      shape: numeric
+      sample:
+      - '0'
+      - '80'
+      - '55'
+      - '63'
+      - '65'
+  - name: A6
+    description: number of municipalities with 500 to 1999 inhabitants
+    enums:
+    - 0=0
+    - 26=26
+    - 29=29
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 36
+      min_len: 1
+      max_len: 2
+      shape: numeric
+      sample:
+      - '0'
+      - '26'
+      - '29'
+      - '30'
+      - '23'
+  - name: A7
+    description: number of municipalities with 2000 to 9999 inhabitants
+    enums:
+    - 0=0
+    - 6=6
+    - 4=4
+    - '1'
+    - '7'
+    - '9'
+    - '10'
+    - '2'
+    - '3'
+    - '5'
+    - '8'
+    - '18'
+    - '14'
+    - '20'
+    - '13'
+    - '11'
+    - '12'
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 17
+      min_len: 1
+      max_len: 2
+      shape: numeric
+      sample:
+      - '0'
+      - '6'
+      - '4'
+      - '1'
+      - '7'
+      top_values:
+      - - '4'
+        - 12
+      - - '6'
+        - 11
+      - - '7'
+        - 10
+      - - '5'
+        - 9
+      - - '10'
+        - 5
+      - - '3'
+        - 5
+      - - '8'
+        - 5
+      - - '0'
+        - 4
+      - - '1'
+        - 3
+      - - '2'
+        - 3
+  - name: A8
+    description: number of municipalities with more than 10000 inhabitants
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 6
+      min: 0
+      max: 5
+  - name: A9
+    description: not useful
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 11
+      min: 1
+      max: 11
+  - name: A10
+    description: ratio of urban inhabitants in the district
+    enums: []
+    type: double
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 70
+      min: 33.9
+      max: 100.0
+  - name: A11
+    description: average salary of district residents
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 76
+      min: 8110
+      max: 12541
+  - name: A12
+    description: unemployment rate in 1995
+    enums: []
+    type: double
+    primary_key: false
+    stats:
+      null_ratio: 0.013
+      distinct: 41
+      min: 0.2
+      max: 7.3
+  - name: A13
+    description: unemployment rate in 1996
+    enums: []
+    type: double
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 73
+      min: 0.43
+      max: 9.4
+  - name: A14
+    description: number of entrepreneurs per 1000 inhabitants
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 44
+      min: 81
+      max: 167
+  - name: A15
+    description: number of committed crimes in 1995
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.013
+      distinct: 75
+      min: 818
+      max: 85677
+  - name: A16
+    description: number of committed crimes in 1996
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 76
+      min: 888
+      max: 99107
+  metrics: []
+  row_count: 77
+- name: loan
+  description: Loans granted to clients with repayment schedule and status.
+  columns:
+  - name: loan_id
+    description: Unique identifier of the loan.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 682
+      min: 4959
+      max: 7308
+  - name: account_id
+    description: Identifier of the account to which the loan is tied.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 682
+      min: 2
+      max: 11362
+  - name: date
+    description: Date when the loan was granted.
+    enums: []
+    type: date
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 559
+      min: 1993-07-05
+      max: 1998-12-08
+  - name: amount
+    description: Loan amount in monetary units; values range from 4980 to 590820.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 645
+      min: 4980
+      max: 590820
+  - name: duration
+    description: Loan duration in months, ranging from 12 to 60.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 5
+      min: 12
+      max: 60
+  - name: payments
+    description: Monthly repayment amount for the loan.
+    enums: []
+    type: double
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 577
+      min: 304.0
+      max: 9910.0
+  - name: status
+    description: Loan status as a single capital letter; A/B are finished contracts,
+      C/D running contracts, D indicates arrears.
+    enums:
+    - A=finished contract, no problems
+    - B=finished contract, loan not paid
+    - D=running contract, client in debt
+    - C
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 4
+      min_len: 1
+      max_len: 1
+      shape: capital
+      sample:
+      - A
+      - B
+      - D
+      - C
+      top_values:
+      - - C
+        - 403
+      - - A
+        - 203
+      - - D
+        - 45
+      - - B
+        - 31
+  metrics: []
+  row_count: 682
+- name: order
+  description: Payment orders created by accounts including destination and purpose.
+  columns:
+  - name: order_id
+    description: Unique identifier of the payment order.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 6471
+      min: 29401
+      max: 46338
+  - name: account_id
+    description: Identifier of the account responsible for the order.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 3758
+      min: 1
+      max: 11362
+  - name: bank_to
+    description: Destination bank code, stored as two uppercase letters.
+    enums:
+    - YZ=destination bank code
+    - ST=destination bank code
+    - QR=destination bank code
+    - WX
+    - CD
+    - AB
+    - UV
+    - GH
+    - IJ
+    - KL
+    - EF
+    - MN
+    - OP
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 13
+      min_len: 2
+      max_len: 2
+      shape: all_caps
+      sample:
+      - YZ
+      - ST
+      - QR
+      - WX
+      - CD
+      top_values:
+      - - QR
+        - 531
+      - - YZ
+        - 521
+      - - AB
+        - 519
+      - - WX
+        - 515
+      - - ST
+        - 511
+      - - KL
+        - 500
+      - - UV
+        - 499
+      - - IJ
+        - 496
+      - - GH
+        - 487
+      - - OP
+        - 485
+  - name: account_to
+    description: Recipient account number; values range from 399 to 99994199.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 6446
+      min: 399
+      max: 99994199
+  - name: amount
+    description: Amount of the payment order in monetary units.
+    enums: []
+    type: double
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 4412
+      min: 1.0
+      max: 14882.0
+  - name: k_symbol
+    description: Purpose or classification of the order; uppercase code, can be empty.
+    enums:
+    - SIPO=household payment
+    - UVER=loan payment
+    - =no code
+    - POJISTNE
+    - LEASING
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 5
+      min_len: 0
+      max_len: 8
+      shape: all_caps
+      sample:
+      - SIPO
+      - UVER
+      - ''
+      - POJISTNE
+      - LEASING
+      top_values:
+      - - SIPO
+        - 3502
+      - - ''
+        - 1379
+      - - UVER
+        - 717
+      - - POJISTNE
+        - 532
+      - - LEASING
+        - 341
+  metrics: []
+  row_count: 6471
+- name: trans
+  description: Account transactions with type, operation, amount, balance, and optional
+    counterparty details.
+  columns:
+  - name: trans_id
+    description: Unique identifier of the transaction.
+    enums: []
+    type: int
+    primary_key: true
+    stats:
+      null_ratio: 0.0
+      distinct: 1056320
+      min: 1
+      max: 3682987
+  - name: account_id
+    description: Identifier of the account on which the transaction took place.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 4500
+      min: 1
+      max: 11382
+  - name: date
+    description: Date of the transaction; values range from 1993-01-01 to 1998-12-31.
+    enums: []
+    type: date
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 2191
+      min: 1993-01-01
+      max: 1998-12-31
+  - name: type
+    description: Transaction type code in uppercase.
+    enums:
+    - PRIJEM=credit/income
+    - VYDAJ=expense
+    - VYBER=withdrawal
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 3
+      min_len: 5
+      max_len: 6
+      shape: all_caps
+      sample:
+      - PRIJEM
+      - VYDAJ
+      - VYBER
+      top_values:
+      - - VYDAJ
+        - 634571
+      - - PRIJEM
+        - 405083
+      - - VYBER
+        - 16666
+  - name: operation
+    description: Description of the transaction operation in uppercase, may contain
+      spaces; NULL when not specified.
+    enums:
+    - VKLAD=deposit/credit
+    - PREVOD Z UCTU=transfer from account (debit)
+    - PREVOD NA UCET=transfer to account (credit)
+    - VYBER
+    - VYBER KARTOU
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.173
+      distinct: 5
+      min_len: 5
+      max_len: 14
+      shape: all_caps
+      sample:
+      - VKLAD
+      - PREVOD Z UCTU
+      - PREVOD NA UCET
+      - VYBER
+      - VYBER KARTOU
+      top_values:
+      - - VYBER
+        - 434918
+      - - PREVOD NA UCET
+        - 208283
+      - - VKLAD
+        - 156743
+      - - PREVOD Z UCTU
+        - 65226
+      - - VYBER KARTOU
+        - 8036
+  - name: amount
+    description: Transaction amount in monetary units; values range from 0 to 87400.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 35890
+      min: 0
+      max: 87400
+  - name: balance
+    description: Account balance after the transaction; can be negative.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.0
+      distinct: 111042
+      min: -41126
+      max: 209637
+  - name: k_symbol
+    description: Purpose or classification of the transaction in uppercase; NULL when
+      not classified.
+    enums:
+    - SIPO=household payment
+    - SLUZBY=services payment
+    - UVER=loan payment
+    - ' '
+    - POJISTNE
+    - DUCHOD
+    - UROK
+    - SANKC. UROK
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.456
+      distinct: 8
+      min_len: 1
+      max_len: 11
+      shape: all_caps
+      sample:
+      - SIPO
+      - SLUZBY
+      - UVER
+      - ' '
+      - POJISTNE
+      top_values:
+      - - UROK
+        - 183114
+      - - SLUZBY
+        - 155832
+      - - SIPO
+        - 118065
+      - - ' '
+        - 53433
+      - - DUCHOD
+        - 30338
+      - - POJISTNE
+        - 18500
+      - - UVER
+        - 13580
+      - - SANKC. UROK
+        - 1577
+  - name: bank
+    description: Counterparty bank code, stored as two uppercase letters; mostly NULL.
+    enums:
+    - AB=counterparty bank code
+    - YZ=counterparty bank code
+    - ST=counterparty bank code
+    - QR
+    - WX
+    - CD
+    - UV
+    - KL
+    - GH
+    - OP
+    - IJ
+    - EF
+    - MN
+    type: text
+    primary_key: false
+    stats:
+      null_ratio: 0.741
+      distinct: 13
+      min_len: 2
+      max_len: 2
+      shape: all_caps
+      sample:
+      - AB
+      - YZ
+      - ST
+      - QR
+      - WX
+      top_values:
+      - - QR
+        - 22285
+      - - AB
+        - 21720
+      - - ST
+        - 21711
+      - - YZ
+        - 21582
+      - - GH
+        - 21499
+      - - EF
+        - 21293
+      - - KL
+        - 21234
+      - - UV
+        - 21167
+      - - OP
+        - 21094
+      - - IJ
+        - 20525
+  - name: account
+    description: Counterparty account number; mostly NULL.
+    enums: []
+    type: int
+    primary_key: false
+    stats:
+      null_ratio: 0.72
+      distinct: 7665
+      min: 0
+      max: 99994199
+  metrics: []
+  row_count: 1056320

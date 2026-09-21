@@ -1,0 +1,1335 @@
+semantic_model:
+- name: mysql_fin
+  datasets:
+  - name: account
+    source: financial.account
+    primary_key:
+    - account_id
+    fields:
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: frequency
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: frequency
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        POPLATEK MESICNE: monthly statements
+        POPLATEK TYDNE: weekly statements
+        POPLATEK PO OBRATU: statements after transaction
+      ai_context:
+        synonyms:
+        - statement frequency
+        - statements
+        - statement issuance
+        - issuance
+        value_aliases:
+          POPLATEK MESICNE:
+          - monthly issuance
+          - monthly statement issuance
+          - issued monthly
+          - monthly statements issued
+          POPLATEK TYDNE:
+          - weekly issuance
+          - weekly statement issuance
+          - issued weekly
+          - weekly statements issued
+          POPLATEK PO OBRATU:
+          - issuance after transaction
+          - statement issued after transaction
+          - issuance after each transaction
+          - after each transaction
+          - after transaction
+          - statement issuance after each transaction
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: Date
+      semantic_role: time
+  - name: card
+    source: financial.card
+    primary_key:
+    - card_id
+    fields:
+    - name: card_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: card_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: disp_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: disp_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        gold: gold
+        classic: classic
+        junior: junior
+      ai_context:
+        value_aliases:
+          gold:
+          - high level credit card
+          - high-level
+          - gold card
+          - premium
+          classic:
+          - standard
+          - classic card
+          - basic
+          junior:
+          - junior card
+          - youth
+          - young card
+    - name: issued
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: issued
+      datatype: Date
+      semantic_role: time
+  - name: client
+    source: financial.client
+    primary_key:
+    - client_id
+    fields:
+    - name: client_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: client_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: gender
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: gender
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        F: female
+        M: male
+      ai_context:
+        value_aliases:
+          F:
+          - female clients
+          - female customers
+          - women
+          - woman
+          - female accounts
+          M:
+          - male clients
+          - male customers
+          - men
+          - man
+          - male accounts
+    - name: birth_date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: birth_date
+      datatype: Date
+      semantic_role: time
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: age
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM client.birth_date)
+      datatype: Integer
+      semantic_role: dimension
+      description: client age computed from birth date
+  - name: disp
+    source: financial.disp
+    primary_key:
+    - disp_id
+    fields:
+    - name: disp_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: disp_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: client_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: client_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        OWNER: OWNER
+        DISPONENT: DISPONENT
+      ai_context:
+        value_aliases:
+          OWNER:
+          - owner
+          - account owner
+          - eligible for loans
+          - owns the account
+          - account holder
+          DISPONENT:
+          - disponent
+          - authorized user
+          - not eligible
+          - not the owner
+  - name: district
+    source: financial.district
+    primary_key:
+    - district_id
+    fields:
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      semantic_role: identifier
+    - name: A2
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A2
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - district name
+        - district
+        - area name
+      description: official name of the district (Czech); used for district-level
+        filters
+    - name: A3
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A3
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        Prague: Prague
+        central Bohemia: central Bohemia
+        south Bohemia: south Bohemia
+        west Bohemia: west Bohemia
+        north Bohemia: north Bohemia
+        east Bohemia: east Bohemia
+        south Moravia: south Moravia
+        north Moravia: north Moravia
+      ai_context:
+        synonyms:
+        - region
+        - area
+        - region name
+      description: geographic region of the district (e.g. east Bohemia)
+    - name: A4
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A4
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - number of inhabitants
+        - inhabitants
+        - population
+        - residents
+      description: number of inhabitants of the district
+    - name: A5
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A5
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - municipalities less than 499 inhabitants
+      description: number of municipalities with fewer than 499 inhabitants
+    - name: A6
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A6
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - municipalities 500 to 1999 inhabitants
+      description: number of municipalities with 500 to 1999 inhabitants
+    - name: A7
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A7
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        '0': '0'
+        '6': '6'
+        '4': '4'
+        '1': '1'
+        '7': '7'
+        '9': '9'
+        '10': '10'
+        '2': '2'
+        '3': '3'
+        '5': '5'
+        '8': '8'
+        '18': '18'
+        '14': '14'
+        '20': '20'
+        '13': '13'
+        '11': '11'
+        '12': '12'
+    - name: A8
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A8
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - municipalities over 10000 inhabitants
+      description: number of municipalities with more than 10000 inhabitants
+    - name: A9
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A9
+      datatype: Integer
+      semantic_role: measure
+      description: not useful
+    - name: A10
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A10
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - ratio of urban inhabitants
+        - urban population ratio
+        - urbanization ratio
+      description: ratio of urban inhabitants in the district
+    - name: A11
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A11
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - average salary
+        - average income
+        - salary
+        - income
+      description: average salary of district residents
+    - name: A12
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A12
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - unemployment rate 1995
+        - unemployment rate in 1995
+      description: unemployment rate in 1995
+    - name: A13
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A13
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - unemployment rate 1996
+        - unemployment rate in 1996
+      description: unemployment rate in 1996
+    - name: A14
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A14
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - entrepreneurs per 1000 inhabitants
+        - number of entrepreneurs
+      description: number of entrepreneurs per 1000 inhabitants
+    - name: A15
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A15
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - crimes committed in 1995
+        - committed crimes 1995
+        - crime count
+        - crimes
+      description: number of committed crimes in 1995
+    - name: A16
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A16
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - crimes committed in 1996
+        - committed crimes 1996
+        - crime count 1996
+      description: number of committed crimes in 1996
+  - name: loan
+    source: financial.loan
+    primary_key:
+    - loan_id
+    fields:
+    - name: loan_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: loan_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - loan reference
+        - loan number
+      description: Unique identifier of the loan.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - account reference
+        - account number
+      description: Account that holds the loan.
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - grant date
+        - loan start date
+      description: Date the loan was granted.
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - borrowed amount
+        - principal
+      description: Total amount borrowed on the loan.
+    - name: duration
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: duration
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - loan term
+        - repayment period
+      description: Loan duration in months.
+    - name: payments
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: payments
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - monthly payment
+        - installment amount
+      description: Monthly repayment amount.
+    - name: status
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: status
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        A: finished, no problems
+        B: finished, loan not paid
+        D: running, client in debt
+        C: running, no problems
+      ai_context:
+        synonyms:
+        - repayment state
+        - loan state
+        value_aliases:
+          A:
+          - contract finished, no problems
+          - fully paid
+          - fully paid no issue
+          - paid off
+          - contract finished
+          - finished with no issue
+          B:
+          - finished, loan not paid
+          - finished unpaid
+          - loan not paid
+          C:
+          - running, no problems
+          - still running
+          - running contract ok
+          - running ok
+          - running contract
+          - running contract, ok so far
+          - contract running, ok
+          D:
+          - running, client in debt
+          - in debt
+          - client in debt
+          - running and in debt
+          - running contract, client in debt
+      description: Repayment status code of the loan.
+  - name: order
+    source: financial.order
+    primary_key:
+    - order_id
+    fields:
+    - name: order_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: order_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - order reference
+        - payment order number
+      description: Unique identifier of the payment order.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - originating account
+        - payer account
+        - source account
+      description: Account that placed the payment order.
+    - name: bank_to
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: bank_to
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        YZ: bank YZ
+        ST: bank ST
+        QR: bank QR
+        WX: bank WX
+        CD: bank CD
+        AB: bank AB
+        UV: bank UV
+        GH: bank GH
+        IJ: bank IJ
+        KL: bank KL
+        EF: bank EF
+        MN: bank MN
+        OP: bank OP
+      ai_context:
+        synonyms:
+        - recipient bank
+        - destination bank
+        - counterparty bank
+      description: Bank code of the account receiving the payment.
+    - name: account_to
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_to
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - recipient account
+        - destination account
+        - counterparty account
+      description: Account receiving the payment.
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - payment amount
+        - order amount
+      description: Amount of the payment order.
+    - name: k_symbol
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: k_symbol
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        SIPO: household bill payment
+        UVER: loan payment
+        POJISTNE: insurance payment
+        LEASING: leasing payment
+      ai_context:
+        synonyms:
+        - payment purpose
+        - payment category
+        - transaction purpose
+      description: Purpose or type of the payment order.
+  - name: trans
+    source: financial.trans
+    primary_key:
+    - trans_id
+    fields:
+    - name: trans_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: trans_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - transaction reference
+        - transaction number
+      description: Unique identifier of the transaction.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - transaction account
+        - source account
+        - affected account
+      description: Account on which the transaction was recorded.
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - transaction date
+        - posting date
+      description: Date the transaction was recorded.
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        PRIJEM: credit
+        VYDAJ: debit
+        VYBER: withdrawal
+      ai_context:
+        synonyms:
+        - transaction direction
+        - credit debit indicator
+        value_aliases:
+          PRIJEM:
+          - credit
+          - incoming
+          - incoming credit
+          - deposit
+          VYDAJ:
+          - withdrawal
+          - withdrawal from account
+          - debit withdrawal
+          - outgoing debit
+          - withdrawals
+          VYBER:
+          - withdrawal
+          - cash withdrawal
+          - atm withdrawal
+          - cash machine withdrawal
+          - withdrawals
+      description: Indicates whether the transaction is credit, debit, or withdrawal.
+    - name: operation
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: operation
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        VKLAD: cash deposit
+        PREVOD Z UCTU: transfer from account
+        PREVOD NA UCET: transfer to account
+        VYBER: withdrawal
+        VYBER KARTOU: card withdrawal
+      ai_context:
+        synonyms:
+        - transaction channel
+        - transaction method
+        - operation kind
+        value_aliases:
+          VKLAD:
+          - cash deposit
+          - deposit
+          - cash in
+          PREVOD Z UCTU:
+          - transfer from account
+          - transfer out
+          - outgoing transfer
+          - transfer from
+          PREVOD NA UCET:
+          - transfer to account
+          - transfer in
+          - incoming transfer
+          - transfer to
+          VYBER:
+          - withdrawal in cash
+          - cash withdrawal
+          - withdrawal
+          VYBER KARTOU:
+          - credit card withdrawal
+          - card withdrawal
+          - card payment
+          - withdrawal by card
+          - withdrawal by credit card
+          - credit card
+      description: Channel or method used to perform the transaction.
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - transaction amount
+        - transaction value
+      description: Amount of money moved in the transaction.
+    - name: balance
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: balance
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - balance after transaction
+        - account balance
+        - running balance
+      description: Account balance after the transaction.
+    - name: k_symbol
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: k_symbol
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        SIPO: household bill payment
+        SLUZBY: services payment
+        UVER: loan payment
+        POJISTNE: insurance payment
+        DUCHOD: pension
+        UROK: interest
+        SANKC. UROK: penalty interest
+      ai_context:
+        synonyms:
+        - payment purpose
+        - transaction category
+        - payment type
+      description: Purpose or category of the transaction.
+    - name: bank
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: bank
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        AB: bank AB
+        YZ: bank YZ
+        ST: bank ST
+        QR: bank QR
+        WX: bank WX
+        CD: bank CD
+        UV: bank UV
+        KL: bank KL
+        GH: bank GH
+        OP: bank OP
+        IJ: bank IJ
+        EF: bank EF
+        MN: bank MN
+      ai_context:
+        synonyms:
+        - counterparty bank
+        - other bank
+        - bank code
+      description: Bank code of the counterparty account.
+    - name: account
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - counterparty account
+        - other account
+        - matching account
+      description: Counterparty account involved in the transaction.
+  relationships:
+  - name: account_to_district
+    from: account
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    cardinality: 1:N
+  - name: card_to_disp
+    from: card
+    to: disp
+    from_columns:
+    - disp_id
+    to_columns:
+    - disp_id
+    cardinality: 1:N
+  - name: client_to_district
+    from: client
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    cardinality: 1:N
+  - name: disp_to_client
+    from: disp
+    to: client
+    from_columns:
+    - client_id
+    to_columns:
+    - client_id
+    cardinality: 1:N
+  - name: disp_to_account
+    from: disp
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: loan_to_account
+    from: loan
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: order_to_account
+    from: order
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: trans_to_account
+    from: trans
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  metrics:
+  - name: average Account balance after the transaction; can be negative
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(trans.balance)
+    description: average Account balance after the transaction; can be negative over
+      all records
+    ai_context:
+      synonyms:
+      - avg Account balance after the transaction; can be negative
+  - name: average Amount of the payment order in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG("order".amount)
+    description: average Amount of the payment order in monetary units over all records
+    ai_context:
+      synonyms:
+      - avg Amount of the payment order in monetary units
+  - name: average Loan amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.amount)
+    description: average Loan amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - avg Loan amount in monetary units
+  - name: average Loan duration in months, ranging from 12 to 60
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.duration)
+    description: average Loan duration in months, ranging from 12 to 60 over all records
+    ai_context:
+      synonyms:
+      - avg Loan duration in months, ranging from 12 to 60
+  - name: average Monthly repayment amount for the loan
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.payments)
+    description: average Monthly repayment amount for the loan over all records
+    ai_context:
+      synonyms:
+      - avg Monthly repayment amount for the loan
+  - name: average Transaction amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(trans.amount)
+    description: average Transaction amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - avg Transaction amount in monetary units
+  - name: average number of committed crimes in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A15)
+    description: average number of committed crimes in 1995 over all records
+    ai_context:
+      synonyms:
+      - avg number of committed crimes in 1995
+  - name: average number of committed crimes in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A16)
+    description: average number of committed crimes in 1996 over all records
+    ai_context:
+      synonyms:
+      - avg number of committed crimes in 1996
+  - name: average number of entrepreneurs per 1000 inhabitants
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A14)
+    description: average number of entrepreneurs per 1000 inhabitants over all records
+    ai_context:
+      synonyms:
+      - avg number of entrepreneurs per 1000 inhabitants
+  - name: average number of municipalities with more than 10000 inhabitants
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A8)
+    description: average number of municipalities with more than 10000 inhabitants
+      over all records
+    ai_context:
+      synonyms:
+      - avg number of municipalities with more than 10000 inhabitants
+  - name: average ratio of urban inhabitants in the district
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A10)
+    description: average ratio of urban inhabitants in the district over all records
+    ai_context:
+      synonyms:
+      - avg ratio of urban inhabitants in the district
+  - name: average salary of district residents
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A11)
+    description: average average salary of district residents over all records
+    ai_context:
+      synonyms:
+      - avg salary of district residents
+  - name: average unemployment rate in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A12)
+    description: average unemployment rate in 1995 over all records
+    ai_context:
+      synonyms:
+      - avg unemployment rate in 1995
+  - name: average unemployment rate in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A13)
+    description: average unemployment rate in 1996 over all records
+    ai_context:
+      synonyms:
+      - avg unemployment rate in 1996
+  - name: average year of Client date of birth
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM client.birth_date))
+    description: average year of Client date of birth
+    ai_context:
+      synonyms:
+      - Client date of birth average year
+  - name: average year of Date of the transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM trans.date))
+    description: average year of Date of the transaction
+    ai_context:
+      synonyms:
+      - Date of the transaction average year
+  - name: average year of Date the account was created
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM account.date))
+    description: average year of Date the account was created
+    ai_context:
+      synonyms:
+      - Date the account was created average year
+  - name: average year of Date the card was issued
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM card.issued))
+    description: average year of Date the card was issued
+    ai_context:
+      synonyms:
+      - Date the card was issued average year
+  - name: average year of Date when the loan was granted
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM loan.date))
+    description: average year of Date when the loan was granted
+    ai_context:
+      synonyms:
+      - Date when the loan was granted average year
+  - name: number of account records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(account.account_id)
+    description: total number of records in the account table
+    ai_context:
+      synonyms:
+      - account count
+  - name: number of card records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(card.card_id)
+    description: total number of records in the card table
+    ai_context:
+      synonyms:
+      - card count
+  - name: number of client records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(client.client_id)
+    description: total number of records in the client table
+    ai_context:
+      synonyms:
+      - client count
+  - name: number of disp records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(disp.disp_id)
+    description: total number of records in the disp table
+    ai_context:
+      synonyms:
+      - disp count
+  - name: number of district records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(district.district_id)
+    description: total number of records in the district table
+    ai_context:
+      synonyms:
+      - district count
+  - name: number of loan records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(loan.loan_id)
+    description: total number of records in the loan table
+    ai_context:
+      synonyms:
+      - loan count
+  - name: number of order records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT("order".order_id)
+    description: total number of records in the order table
+    ai_context:
+      synonyms:
+      - order count
+  - name: number of trans records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(trans.trans_id)
+    description: total number of records in the trans table
+    ai_context:
+      synonyms:
+      - trans count
+  - name: total Account balance after the transaction; can be negative
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(trans.balance)
+    description: sum of Account balance after the transaction; can be negative over
+      all records
+    ai_context:
+      synonyms:
+      - sum of Account balance after the transaction; can be negative
+  - name: total Amount of the payment order in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM("order".amount)
+    description: sum of Amount of the payment order in monetary units over all records
+    ai_context:
+      synonyms:
+      - sum of Amount of the payment order in monetary units
+  - name: total Loan amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.amount)
+    description: sum of Loan amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - sum of Loan amount in monetary units
+  - name: total Loan duration in months, ranging from 12 to 60
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.duration)
+    description: sum of Loan duration in months, ranging from 12 to 60 over all records
+    ai_context:
+      synonyms:
+      - sum of Loan duration in months, ranging from 12 to 60
+  - name: total Monthly repayment amount for the loan
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.payments)
+    description: sum of Monthly repayment amount for the loan over all records
+    ai_context:
+      synonyms:
+      - sum of Monthly repayment amount for the loan
+  - name: total Transaction amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(trans.amount)
+    description: sum of Transaction amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - sum of Transaction amount in monetary units
+  - name: total number of committed crimes in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A15)
+    description: sum of number of committed crimes in 1995 over all records
+    ai_context:
+      synonyms:
+      - sum of number of committed crimes in 1995
+  - name: total number of committed crimes in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A16)
+    description: sum of number of committed crimes in 1996 over all records
+    ai_context:
+      synonyms:
+      - sum of number of committed crimes in 1996
+  - name: total number of entrepreneurs per 1000 inhabitants
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A14)
+    description: sum of number of entrepreneurs per 1000 inhabitants over all records
+    ai_context:
+      synonyms:
+      - sum of number of entrepreneurs per 1000 inhabitants
+  - name: total number of municipalities with more than 10000 inhabitants
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A8)
+    description: sum of number of municipalities with more than 10000 inhabitants
+      over all records
+    ai_context:
+      synonyms:
+      - sum of number of municipalities with more than 10000 inhabitants
+  - name: total ratio of urban inhabitants in the district
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A10)
+    description: sum of ratio of urban inhabitants in the district over all records
+    ai_context:
+      synonyms:
+      - sum of ratio of urban inhabitants in the district
+  - name: total salary of district residents
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A11)
+    description: sum of average salary of district residents over all records
+    ai_context:
+      synonyms:
+      - sum of salary of district residents
+  - name: total unemployment rate in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A12)
+    description: sum of unemployment rate in 1995 over all records
+    ai_context:
+      synonyms:
+      - sum of unemployment rate in 1995
+  - name: total unemployment rate in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A13)
+    description: sum of unemployment rate in 1996 over all records
+    ai_context:
+      synonyms:
+      - sum of unemployment rate in 1996
+  - name: max_loan_amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: MAX(loan.amount)
+    ai_context:
+      synonyms:
+      - 最高贷款金额
+    description: 所有贷款记录中金额的最大值。
+  - name: loan_count_per_year
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(loan.loan_id)
+    ai_context:
+      synonyms:
+      - 每年贷款次数
+    description: 每年发放的贷款笔数
+  - name: loan_count_in_2020
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(loan.loan_id)
+    ai_context:
+      synonyms:
+      - 2020 年发放了多少笔贷款
+    description: 统计2020年发放的贷款总笔数。
+version: 0.2.0.dev0

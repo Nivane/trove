@@ -76,6 +76,11 @@ agent:
   # (search_values / lookup_schema / explain_plan) 始终注册,agent 可触达物理
   # schema 作值确认 / 结构懒加载 / 执行计划辅助(不替代语义边界判定)。
   semantic_first: true
+  # KB 语义文件 git 版本管理(语义即代码):KB YAML 写操作(init/learn/草稿
+  # 确认·驳回·自动应用/lesson 确认/删除)后自动 commit,git log 即审计历史,
+  # git diff/revert 即评审/回滚。best-effort:KB 不在 git 工作树内/无变更/
+  # 失败 → 静默跳过,绝不影响写入。false = 关闭(不产生任何提交)。
+  git_kb: true
   # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
   observability:
     tracing:

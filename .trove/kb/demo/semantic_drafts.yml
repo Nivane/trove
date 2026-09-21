@@ -1,0 +1,16 @@
+drafts:
+- id: 635854961adf
+  kind: field
+  action: upsert
+  name: district.region
+  payload:
+    expression: district.A3
+    synonyms:
+    - 地区
+    - region
+    - 区域
+    description: 贷款账户所属客户所在地区的名称,用于按地区分组统计。
+    datatype: String
+  note: refuse:哪个地区的平均贷款金额最高?
+  status: pending
+  created_at: '2026-09-12T03:57:18+00:00'

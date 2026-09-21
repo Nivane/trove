@@ -1,0 +1,1367 @@
+semantic_model:
+- name: demo
+  datasets:
+  - name: account
+    source: account
+    primary_key:
+    - account_id
+    fields:
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - account id
+        - account number
+      description: Unique identifier for a bank account.
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - branch district
+        - account district
+      description: District where the account was opened.
+    - name: frequency
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: frequency
+      datatype: String
+      ai_context:
+        synonyms:
+        - statement frequency
+        value_aliases:
+          POPLATEK MESICNE:
+          - monthly issuance
+          - monthly statement issuance
+          - issued monthly
+          - monthly statements issued
+          POPLATEK TYDNE:
+          - weekly issuance
+          - weekly statement issuance
+          - issued weekly
+          - weekly statements issued
+          POPLATEK PO OBRATU:
+          - issuance after transaction
+          - statement issued after transaction
+          - issuance after each transaction
+          - after each transaction
+          - after transaction
+          - statement issuance after each transaction
+      description: Frequency at which account statements are issued.
+      semantic_role: enum
+      enum_display:
+        POPLATEK MESICNE: monthly
+        POPLATEK TYDNE: weekly
+        POPLATEK PO OBRATU: after each transaction
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: String
+      ai_context:
+        synonyms:
+        - creation date
+        - date opened
+      description: Date the account was created.
+  - name: card
+    source: card
+    primary_key:
+    - card_id
+    fields:
+    - name: card_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: card_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - card id
+        - card number
+      description: Unique identifier for a bank card.
+    - name: disp_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: disp_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - disposition id
+        - cardholder disposition
+      description: References the disposition linking a client to an account.
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      ai_context:
+        synonyms:
+        - card type
+        - card class
+        value_aliases:
+          gold:
+          - high level credit card
+          - high-level
+          - gold card
+          - premium
+          classic:
+          - standard
+          - classic card
+          - basic
+          junior:
+          - junior card
+          - youth
+          - young card
+      description: Type of card, such as classic, gold, or junior.
+      semantic_role: enum
+      enum_display:
+        gold: gold card
+        classic: classic card
+        junior: junior card
+    - name: issued
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: issued
+      datatype: String
+      ai_context:
+        synonyms:
+        - issue date
+        - date issued
+      description: Date the card was issued.
+  - name: client
+    source: client
+    primary_key:
+    - client_id
+    fields:
+    - name: client_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: client_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - customer id
+        - client number
+      description: Unique identifier for a bank client.
+    - name: gender
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: gender
+      datatype: String
+      ai_context:
+        synonyms:
+        - sex
+        value_aliases:
+          F:
+          - female clients
+          - female customers
+          - women
+          - woman
+          - female accounts
+          M:
+          - male clients
+          - male customers
+          - men
+          - man
+          - male accounts
+      description: Client's gender.
+      semantic_role: enum
+      enum_display:
+        F: female
+        M: male
+    - name: birth_date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: birth_date
+      datatype: String
+      ai_context:
+        synonyms:
+        - date of birth
+        - dob
+      description: Client's date of birth.
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - home district
+        - residence district
+      description: District where the client lives.
+  - name: disp
+    source: disp
+    primary_key:
+    - disp_id
+    fields:
+    - name: disp_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: disp_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - disposition id
+      description: Unique identifier for a client-account relationship.
+    - name: client_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: client_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - client id
+        - customer id
+      description: Client involved in the disposition.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - account id
+        - account number
+      description: Account involved in the disposition.
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      ai_context:
+        synonyms:
+        - disposition type
+        - account role
+        value_aliases:
+          OWNER:
+          - owner
+          - account owner
+          - eligible for loans
+          - owns the account
+          - account holder
+          DISPONENT:
+          - disponent
+          - authorized user
+          - not eligible
+          - not the owner
+      description: Type of disposition, such as owner or authorized user.
+      semantic_role: enum
+      enum_display:
+        OWNER: account owner
+        DISPONENT: disponent (authorized user)
+  - name: district
+    source: district
+    primary_key:
+    - district_id
+    fields:
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - district id
+      description: Unique identifier for a district.
+    - name: A2
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A2
+      datatype: String
+      ai_context:
+        synonyms:
+        - district name
+      description: Name of the district.
+      semantic_role: enum
+      enum_display:
+        Hl.m. Praha: capital city Prague
+        Benesov: Benesov district
+        Beroun: Beroun district
+    - name: A3
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A3
+      datatype: String
+      ai_context:
+        synonyms:
+        - region
+      description: Region in which the district is located.
+      semantic_role: enum
+      enum_display:
+        Prague: Prague region
+        central Bohemia: Central Bohemia region
+        south Bohemia: South Bohemia region
+        west Bohemia: west Bohemia
+        north Bohemia: north Bohemia
+        east Bohemia: east Bohemia
+        south Moravia: south Moravia
+        north Moravia: north Moravia
+    - name: A4
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A4
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - population
+        - inhabitants
+      description: Total number of inhabitants in the district.
+    - name: A5
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A5
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - municipalities under 500
+        - towns under 500
+      description: Number of municipalities with fewer than 500 inhabitants.
+    - name: A6
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A6
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - municipalities 500-1999
+        - towns 500-1999
+      description: Number of municipalities with 500 to 1999 inhabitants.
+    - name: A7
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A7
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - municipalities 2000-9999
+        - towns 2000-9999
+      description: Number of municipalities with 2000 to 9999 inhabitants.
+    - name: A8
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A8
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - municipalities over 10000
+        - towns over 10000
+      description: Number of municipalities with more than 10000 inhabitants.
+    - name: A9
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A9
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - number of cities
+        - cities
+      description: Number of cities in the district.
+    - name: A10
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A10
+      datatype: Float
+      ai_context:
+        synonyms:
+        - urban ratio
+        - urbanization ratio
+      description: Ratio of inhabitants living in urban areas.
+    - name: A11
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A11
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - average salary
+        - mean salary
+      description: Average salary in the district.
+    - name: A12
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A12
+      datatype: Float
+      ai_context:
+        synonyms:
+        - unemployment rate 95
+        - unemployment 1995
+      description: Unemployment rate in 1995.
+    - name: A13
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A13
+      datatype: Float
+      ai_context:
+        synonyms:
+        - unemployment rate 96
+        - unemployment 1996
+      description: Unemployment rate in 1996.
+    - name: A14
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A14
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - entrepreneurs per 1000
+        - business owners per 1000
+      description: Number of entrepreneurs per 1000 inhabitants.
+    - name: A15
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A15
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - crimes 95
+        - crime count 1995
+      description: Number of committed crimes in 1995.
+    - name: A16
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A16
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - crimes 96
+        - crime count 1996
+      description: Number of committed crimes in 1996.
+  - name: loan
+    source: loan
+    primary_key:
+    - loan_id
+    fields:
+    - name: loan_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: loan_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - loan number
+        - loan identifier
+      description: Unique identifier for each loan.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - account number
+        - account identifier
+      description: Identifier of the account associated with the loan.
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: String
+      ai_context:
+        synonyms:
+        - loan date
+        - origination date
+      description: Date when the loan was granted or recorded.
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - loan amount
+        - principal
+      description: Total amount borrowed for the loan.
+    - name: duration
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: duration
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - loan term
+        - length
+      description: Duration of the loan in months or agreed period.
+    - name: payments
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: payments
+      datatype: Float
+      ai_context:
+        synonyms:
+        - monthly payment
+        - installment
+      description: Amount paid periodically for the loan, usually monthly.
+    - name: status
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: status
+      datatype: String
+      ai_context:
+        synonyms:
+        - loan status
+        - repayment status
+        value_aliases:
+          A:
+          - contract finished, no problems
+          - fully paid
+          - fully paid no issue
+          - paid off
+          - contract finished
+          - finished with no issue
+          B:
+          - finished, loan not paid
+          - finished unpaid
+          - loan not paid
+          C:
+          - running, no problems
+          - still running
+          - running contract ok
+          - running ok
+          - running contract
+          - running contract, ok so far
+          - contract running, ok
+          D:
+          - running, client in debt
+          - in debt
+          - client in debt
+          - running and in debt
+          - running contract, client in debt
+      description: Classification of the loan repayment condition.
+      semantic_role: enum
+      enum_display:
+        A: loan finished, no problems
+        B: loan finished, loan not paid
+        D: loan running, loan not paid
+        C: C
+  - name: order
+    source: order
+    primary_key:
+    - order_id
+    fields:
+    - name: order_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: order_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - order number
+        - payment order id
+      description: Unique identifier for each payment order.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - source account
+        - account number
+      description: Account from which the payment order is issued.
+    - name: bank_to
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: bank_to
+      datatype: String
+      ai_context:
+        synonyms:
+        - recipient bank
+        - destination bank
+      description: Bank identifier of the recipient account.
+      semantic_role: enum
+      enum_display:
+        YZ: bank code
+        ST: bank code
+        QR: bank code
+        WX: WX
+        CD: CD
+        AB: AB
+        UV: UV
+        GH: GH
+        IJ: IJ
+        KL: KL
+        EF: EF
+        MN: MN
+        OP: OP
+    - name: account_to
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_to
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - recipient account
+        - destination account
+      description: Account number of the payment recipient.
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Float
+      ai_context:
+        synonyms:
+        - order amount
+        - payment amount
+      description: Amount of money transferred by the order.
+    - name: k_symbol
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: k_symbol
+      datatype: String
+      ai_context:
+        synonyms:
+        - payment type
+        - purpose code
+      description: Classification or purpose code for the payment order.
+      semantic_role: enum
+      enum_display:
+        SIPO: household payment
+        UVER: loan payment
+        POJISTNE: POJISTNE
+        LEASING: LEASING
+  - name: trans
+    source: trans
+    primary_key:
+    - trans_id
+    fields:
+    - name: trans_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: trans_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - transaction id
+        - transaction number
+      description: Unique identifier for each transaction.
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      ai_context:
+        synonyms:
+        - account number
+        - account identifier
+      description: Account on which the transaction was performed.
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: String
+      ai_context:
+        synonyms:
+        - transaction date
+        - posting date
+      description: Date when the transaction occurred.
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      ai_context:
+        synonyms:
+        - transaction type
+        - debit credit
+        value_aliases:
+          PRIJEM:
+          - credit
+          - incoming
+          - incoming credit
+          - deposit
+          VYDAJ:
+          - withdrawal
+          - withdrawal from account
+          - debit withdrawal
+          - outgoing debit
+          - withdrawals
+          VYBER:
+          - withdrawal
+          - cash withdrawal
+          - atm withdrawal
+          - cash machine withdrawal
+          - withdrawals
+      description: General type of transaction, such as debit or credit.
+      semantic_role: enum
+      enum_display:
+        PRIJEM: credit/income
+        VYDAJ: debit/expense
+        VYBER: withdrawal
+    - name: operation
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: operation
+      datatype: String
+      ai_context:
+        synonyms:
+        - operation type
+        - transaction mode
+        value_aliases:
+          VKLAD:
+          - cash deposit
+          - deposit
+          - cash in
+          PREVOD Z UCTU:
+          - transfer from account
+          - transfer out
+          - outgoing transfer
+          - transfer from
+          PREVOD NA UCET:
+          - transfer to account
+          - transfer in
+          - incoming transfer
+          - transfer to
+          VYBER:
+          - withdrawal in cash
+          - cash withdrawal
+          - withdrawal
+          VYBER KARTOU:
+          - credit card withdrawal
+          - card withdrawal
+          - card payment
+          - withdrawal by card
+          - withdrawal by credit card
+          - credit card
+      description: Detailed operational mode or channel of the transaction.
+      semantic_role: enum
+      enum_display:
+        VKLAD: cash deposit
+        PREVOD Z UCTU: transfer from account
+        PREVOD NA UCET: transfer to account
+        VYBER: VYBER
+        VYBER KARTOU: VYBER KARTOU
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Float
+      ai_context:
+        synonyms:
+        - transaction amount
+        - value
+      description: Amount of money involved in the transaction.
+    - name: balance
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: balance
+      datatype: Float
+      ai_context:
+        synonyms:
+        - account balance
+        - running balance
+      description: Account balance after the transaction was recorded.
+    - name: k_symbol
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: k_symbol
+      datatype: String
+      ai_context:
+        synonyms:
+        - purpose code
+        - transaction purpose
+      description: Code describing the purpose or characteristic of the transaction.
+      semantic_role: enum
+      enum_display:
+        SIPO: household payment
+        SLUZBY: services
+        UVER: loan payment
+        POJISTNE: POJISTNE
+        DUCHOD: DUCHOD
+        UROK: UROK
+        SANKC. UROK: SANKC. UROK
+    - name: bank
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: bank
+      datatype: String
+      ai_context:
+        synonyms:
+        - counterparty bank
+        - bank code
+      description: Bank identifier of the counterparty account.
+      semantic_role: enum
+      enum_display:
+        AB: bank code
+        YZ: bank code
+        ST: bank code
+        QR: QR
+        WX: WX
+        CD: CD
+        UV: UV
+        KL: KL
+        GH: GH
+        OP: OP
+        IJ: IJ
+        EF: EF
+        MN: MN
+    - name: account
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account
+      datatype: String
+      ai_context:
+        synonyms:
+        - counterparty account
+        - account number
+      description: Account identifier of the counterparty in the transaction.
+      semantic_role: enum
+      enum_display:
+        '41403269': '41403269'
+        '87144583': '87144583'
+        '66487163': '66487163'
+        '0': '0'
+        '89597016': '89597016'
+        '13943797': '13943797'
+        '83084338': '83084338'
+        '24485939': '24485939'
+        '59972357': '59972357'
+        '89899795': '89899795'
+        '26693541': '26693541'
+        '5848086': '5848086'
+        '66297393': '66297393'
+        '37390208': '37390208'
+        '150186': '150186'
+        '44486999': '44486999'
+        '34452903': '34452903'
+        '12510681': '12510681'
+        '93210345': '93210345'
+        '18686104': '18686104'
+  relationships:
+  - name: account_to_district
+    from: account
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    cardinality: 1:N
+  - name: card_to_disp
+    from: card
+    to: disp
+    from_columns:
+    - disp_id
+    to_columns:
+    - disp_id
+    cardinality: 1:N
+  - name: client_to_district
+    from: client
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    cardinality: 1:N
+  - name: disp_to_client
+    from: disp
+    to: client
+    from_columns:
+    - client_id
+    to_columns:
+    - client_id
+    cardinality: 1:N
+  - name: disp_to_account
+    from: disp
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: loan_to_account
+    from: loan
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: order_to_account
+    from: order
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: trans_to_account
+    from: trans
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  metrics:
+  - name: average Account balance after transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(trans.balance)
+    description: average Account balance after transaction over all records
+    ai_context:
+      synonyms:
+      - avg Account balance after transaction
+  - name: average Loan amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.amount)
+    description: average Loan amount over all records
+    ai_context:
+      synonyms:
+      - avg Loan amount
+  - name: average Loan duration in months
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.duration)
+    description: average Loan duration in months over all records
+    ai_context:
+      synonyms:
+      - avg Loan duration in months
+  - name: average Opaque numeric column A10
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A10)
+    description: average Opaque numeric column A10 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A10
+  - name: average Opaque numeric column A11
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A11)
+    description: average Opaque numeric column A11 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A11
+  - name: average Opaque numeric column A12
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A12)
+    description: average Opaque numeric column A12 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A12
+  - name: average Opaque numeric column A13
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A13)
+    description: average Opaque numeric column A13 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A13
+  - name: average Opaque numeric column A14
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A14)
+    description: average Opaque numeric column A14 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A14
+  - name: average Opaque numeric column A15
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A15)
+    description: average Opaque numeric column A15 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A15
+  - name: average Opaque numeric column A16
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A16)
+    description: average Opaque numeric column A16 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A16
+  - name: average Opaque numeric column A4
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A4)
+    description: average Opaque numeric column A4 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A4
+  - name: average Opaque numeric column A5
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A5)
+    description: average Opaque numeric column A5 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A5
+  - name: average Opaque numeric column A6
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A6)
+    description: average Opaque numeric column A6 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A6
+  - name: average Opaque numeric column A7
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A7)
+    description: average Opaque numeric column A7 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A7
+  - name: average Opaque numeric column A8
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A8)
+    description: average Opaque numeric column A8 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A8
+  - name: average Opaque numeric column A9
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A9)
+    description: average Opaque numeric column A9 over all records
+    ai_context:
+      synonyms:
+      - avg Opaque numeric column A9
+  - name: average Payment amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG("order".amount)
+    description: average Payment amount over all records
+    ai_context:
+      synonyms:
+      - avg Payment amount
+  - name: average Regular payment amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.payments)
+    description: average Regular payment amount over all records
+    ai_context:
+      synonyms:
+      - avg Regular payment amount
+  - name: average Transaction amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(trans.amount)
+    description: average Transaction amount over all records
+    ai_context:
+      synonyms:
+      - avg Transaction amount
+  - name: number of account records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(account.account_id)
+    description: total number of records in the account table
+    ai_context:
+      synonyms:
+      - account count
+  - name: number of card records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(card.card_id)
+    description: total number of records in the card table
+    ai_context:
+      synonyms:
+      - card count
+  - name: number of client records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(client.client_id)
+    description: total number of records in the client table
+    ai_context:
+      synonyms:
+      - client count
+  - name: number of disp records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(disp.disp_id)
+    description: total number of records in the disp table
+    ai_context:
+      synonyms:
+      - disp count
+  - name: number of district records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(district.district_id)
+    description: total number of records in the district table
+    ai_context:
+      synonyms:
+      - district count
+  - name: number of loan records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(loan.loan_id)
+    description: total number of records in the loan table
+    ai_context:
+      synonyms:
+      - loan count
+  - name: number of order records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT("order".order_id)
+    description: total number of records in the order table
+    ai_context:
+      synonyms:
+      - order count
+  - name: number of trans records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(trans.trans_id)
+    description: total number of records in the trans table
+    ai_context:
+      synonyms:
+      - trans count
+  - name: total Account balance after transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(trans.balance)
+    description: sum of Account balance after transaction over all records
+    ai_context:
+      synonyms:
+      - sum of Account balance after transaction
+  - name: total Loan amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.amount)
+    description: sum of Loan amount over all records
+    ai_context:
+      synonyms:
+      - sum of Loan amount
+  - name: total Loan duration in months
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.duration)
+    description: sum of Loan duration in months over all records
+    ai_context:
+      synonyms:
+      - sum of Loan duration in months
+  - name: total Opaque numeric column A10
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A10)
+    description: sum of Opaque numeric column A10 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A10
+  - name: total Opaque numeric column A11
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A11)
+    description: sum of Opaque numeric column A11 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A11
+  - name: total Opaque numeric column A12
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A12)
+    description: sum of Opaque numeric column A12 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A12
+  - name: total Opaque numeric column A13
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A13)
+    description: sum of Opaque numeric column A13 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A13
+  - name: total Opaque numeric column A14
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A14)
+    description: sum of Opaque numeric column A14 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A14
+  - name: total Opaque numeric column A15
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A15)
+    description: sum of Opaque numeric column A15 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A15
+  - name: total Opaque numeric column A16
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A16)
+    description: sum of Opaque numeric column A16 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A16
+  - name: total Opaque numeric column A4
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A4)
+    description: sum of Opaque numeric column A4 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A4
+  - name: total Opaque numeric column A5
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A5)
+    description: sum of Opaque numeric column A5 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A5
+  - name: total Opaque numeric column A6
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A6)
+    description: sum of Opaque numeric column A6 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A6
+  - name: total Opaque numeric column A7
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A7)
+    description: sum of Opaque numeric column A7 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A7
+  - name: total Opaque numeric column A8
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A8)
+    description: sum of Opaque numeric column A8 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A8
+  - name: total Opaque numeric column A9
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A9)
+    description: sum of Opaque numeric column A9 over all records
+    ai_context:
+      synonyms:
+      - sum of Opaque numeric column A9
+  - name: total Payment amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM("order".amount)
+    description: sum of Payment amount over all records
+    ai_context:
+      synonyms:
+      - sum of Payment amount
+  - name: total Regular payment amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.payments)
+    description: sum of Regular payment amount over all records
+    ai_context:
+      synonyms:
+      - sum of Regular payment amount
+  - name: total Transaction amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(trans.amount)
+    description: sum of Transaction amount over all records
+    ai_context:
+      synonyms:
+      - sum of Transaction amount

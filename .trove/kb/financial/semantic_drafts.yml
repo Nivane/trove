@@ -1,0 +1,15 @@
+drafts:
+- id: 3c363ab35acf
+  kind: metric
+  action: upsert
+  name: max_loan_amount
+  payload:
+    expression: MAX(loan.amount)
+    synonyms:
+    - 最高的贷款金额
+    definition: 所有贷款记录中金额的最大值
+    datasets:
+    - loan
+  note: refuse:最高的贷款金额
+  status: applied
+  created_at: '2026-09-02T09:57:03+00:00'

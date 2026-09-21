@@ -1,0 +1,211 @@
+drafts:
+- id: 8cd30b15fbb6
+  kind: metric
+  action: upsert
+  name: loan_count_per_year
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 每年贷款次数
+    definition: 每年发放的贷款笔数
+    datasets:
+    - loan
+  note: refuse:每年贷款次数
+  status: applied
+  created_at: '2026-08-24T09:32:28+00:00'
+- id: dfa76c45d4be
+  kind: metric
+  action: upsert
+  name: loan_count_per_year
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 每年贷款次数
+    definition: 每年发放的贷款记录总数
+    datasets:
+    - loan
+  note: refuse:每年贷款次数
+  status: pending
+  created_at: '2026-08-24T09:36:19+00:00'
+- id: 85e103045ba8
+  kind: metric
+  action: upsert
+  name: loan_count_per_year
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 每年贷款次数
+    definition: 每年发放的贷款记录总数
+    datasets:
+    - loan
+  note: refuse:每年贷款次数
+  status: pending
+  created_at: '2026-08-24T09:36:31+00:00'
+- id: 2a65c4caa828
+  kind: metric
+  action: upsert
+  name: loan_count_per_year
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 每年贷款次数
+    definition: 每年发放的贷款笔数
+    datasets:
+    - loan
+  note: refuse:每年贷款次数
+  status: pending
+  created_at: '2026-08-24T09:51:04+00:00'
+- id: 64e110ccb8a6
+  kind: metric
+  action: upsert
+  name: number_of_male_clients
+  payload:
+    expression: COUNT(client.client_id) FILTER (WHERE client.gender = 'M')
+    synonyms:
+    - 有多少男性用户
+    definition: 统计性别为男性的客户记录总数。
+    datasets:
+    - client
+  note: refuse:有多少男性用户
+  status: applied
+  created_at: '2026-08-27T01:17:45+00:00'
+- id: 8b1f973b50be
+  kind: metric
+  action: upsert
+  name: number_of_male_clients
+  payload:
+    expression: COUNT(client.client_id) FILTER (WHERE client.gender = 'M')
+    synonyms:
+    - 有多少男性用户
+    definition: 统计性别为男性的客户记录数量。
+    datasets:
+    - client
+  note: refuse:有多少男性用户
+  status: pending
+  created_at: '2026-08-27T01:31:04+00:00'
+- id: 89f3967f6bb6
+  kind: metric
+  action: upsert
+  name: number_of_male_clients
+  payload:
+    expression: COUNT(client.client_id) FILTER (WHERE client.gender = 'M')
+    synonyms:
+    - 有多少男性用户
+    definition: 统计性别为男性的客户记录数量。
+    datasets:
+    - client
+  note: refuse:有多少男性用户
+  status: pending
+  created_at: '2026-08-27T01:31:13+00:00'
+- id: 31cb157a96d7
+  kind: metric
+  action: upsert
+  name: number_of_female_clients
+  payload:
+    expression: COUNT(client.client_id) FILTER (WHERE client.gender = 'F')
+    synonyms:
+    - 有多少女性用户
+    definition: 统计性别为女性的客户记录总数。
+    datasets:
+    - client
+  note: refuse:有多少女性用户
+  status: applied
+  created_at: '2026-08-27T01:37:28+00:00'
+- id: cb91f49b440e
+  kind: field
+  action: upsert
+  name: client.age
+  payload:
+    expression: EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM client.birth_date)
+    synonyms:
+    - age
+    description: The age of the client calculated from their birth date.
+    datatype: Integer
+  note: "refuse:\"question\": \"Provide the IDs and age of the client with high level\
+    \ credit card, which is eligible for loans.\",\n    \"evid"
+  status: pending
+  created_at: '2026-08-27T02:45:20+00:00'
+- id: 27f57fe98612
+  kind: field
+  action: upsert
+  name: client.age
+  payload:
+    expression: EXTRACT(YEAR FROM CURRENT_DATE) - EXTRACT(YEAR FROM client.birth_date)
+    synonyms:
+    - age
+    description: The age of the client calculated from their birth date.
+    datatype: Integer
+  note: "refuse:\"question\": \"Provide the IDs and age of the client with high level\
+    \ credit card, which is eligible for loans.\",\n    \"evid"
+  status: pending
+  created_at: '2026-08-27T02:49:02+00:00'
+- id: 3ce801eebc4d
+  kind: metric
+  action: upsert
+  name: max_loan_amount
+  payload:
+    expression: MAX(loan.amount)
+    synonyms:
+    - 最高贷款金额
+    definition: 所有贷款记录中金额的最大值。
+    datasets:
+    - loan
+  note: refuse:最高贷款金额
+  status: applied
+  created_at: '2026-09-03T10:36:45+00:00'
+- id: c2fa89d00d5b
+  kind: field
+  action: upsert
+  name: district.district_name
+  payload:
+    expression: district.A2
+    synonyms:
+    - Prague
+    - 布拉格
+    description: The name of the district where the client lives.
+    datatype: String
+  note: refuse:How many loans were issued in 1997 for clients living in Prague?
+  status: pending
+  created_at: '2026-09-03T11:11:48+00:00'
+- id: 4ed0299b96b7
+  kind: metric
+  action: upsert
+  name: loan_count_in_2020
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 2020 年发放了多少笔贷款
+    definition: 统计2020年发放的贷款总笔数。
+    datasets:
+    - loan
+  note: refuse:2020 年发放了多少笔贷款?
+  status: applied
+  created_at: '2026-09-04T05:55:16+00:00'
+- id: 7be87618f404
+  kind: metric
+  action: upsert
+  name: loan_count_in_1997
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 1997 年发放了多少笔贷款
+    definition: 统计1997年发放的贷款总笔数
+    datasets:
+    - loan
+  note: refuse:1997 年发放了多少笔贷款?
+  status: pending
+  created_at: '2026-09-04T05:57:01+00:00'
+- id: a8a00a3a78c6
+  kind: metric
+  action: upsert
+  name: loan_count_in_1994
+  payload:
+    expression: COUNT(loan.loan_id)
+    synonyms:
+    - 1994 年发放了多少笔贷款
+    definition: 统计1994年发放的贷款笔数
+    datasets:
+    - loan
+  note: refuse:1994 年发放了多少笔贷款?
+  status: pending
+  created_at: '2026-09-04T06:15:59+00:00'

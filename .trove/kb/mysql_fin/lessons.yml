@@ -1,0 +1,85 @@
+lessons:
+- pattern: '候选 SQL 结果不一致(2 组,每组 [1, 1] 票):主候选 [SELECT COUNT(district.district_id)
+    FROM district JOIN client ON client.district_id = '
+  note: 候选 SQL 结果不一致(2 组,每组 [1, 1] 票):主候选 [SELECT COUNT(district.district_id) FROM
+    district JOIN client ON client.district_id = district.district_id WHERE client.gender
+    = 'F' AND district.A11 > 6000 AND distr
+  sql_snippet: 'SELECT COUNT(DISTINCT district.district_id)
+
+    FROM district
+
+    JOIN client ON client.district_id = district.district_id
+
+    WHERE client.gender = ''F'' AND district.A11 > 6000 AND district.A11 < 10000'
+  confirmed: false
+- pattern: '[ERR:SQL_WRITEOP] [DS_001] Trove is read-only: SQL could not be parsed;
+    treat as a syntax error, not a permission denial'
+  note: '[ERR:SQL_WRITEOP] [DS_001] Trove is read-only: SQL could not be parsed; treat
+    as a syntax error, not a permission denial'
+  sql_snippet: 'SELECT COUNT(account.account_id)
+
+    FROM account
+
+    JOIN district ON account.district_id = district.district_id
+
+    JOIN loan ON loan.account_id = account.account_id
+
+    WHERE loan.status = ''C'' AND district.distric'
+  confirmed: false
+- pattern: '[ERR:SQL_WRITEOP] [DS_001] Trove is read-only: SQL could not be parsed;
+    treat as a syntax error, not a permission denial'
+  note: '[ERR:SQL_WRITEOP] [DS_001] Trove is read-only: SQL could not be parsed; treat
+    as a syntax error, not a permission denial'
+  sql_snippet: "SELECT\n  COUNT(account.account_id)\nFROM account\nJOIN district\n\
+    \  ON account.district_id = district.district_id\nJOIN loan\n  ON loan.account_id\
+    \ = account.account_id\nWHERE\n  loan.status IN ('C', 'D')  AND"
+  confirmed: false
+- pattern: '计划校验: answer_columns [''loan.date''] conflict with result columns [''year'',
+    ''total_amount'']。查询计划的 answer_columns 与执行结果列不符——'
+  note: '计划校验: answer_columns [''loan.date''] conflict with result columns [''year'',
+    ''total_amount'']。查询计划的 answer_columns 与执行结果列不符——重新规划并修正输出列。'
+  sql_snippet: SELECT DATE_FORMAT(loan.date, '%Y') AS year, SUM(loan.amount) AS total_amount
+    FROM loan GROUP BY DATE_FORMAT(loan.date, '%Y') ORDER BY year
+  confirmed: false
+  created_at: '2026-08-27T02:44:31.477715+00:00'
+- pattern: '校验规则: [F2-a] 问题提到性别(male/female),但 SQL 没有任何 gender/sex 过滤条件,也不含按 birth_number
+    推断性别的写法——检查是否漏了性别条件。'
+  note: '校验规则: [F2-a] 问题提到性别(male/female),但 SQL 没有任何 gender/sex 过滤条件,也不含按 birth_number
+    推断性别的写法——检查是否漏了性别条件。'
+  sql_snippet: SELECT AVG(duration) FROM loan
+  confidence: 0.5
+  source: correction
+  evidence: 'question: Compare the average loan duration between male and female clients,
+    which gender has longer loans?'
+  confirmed: false
+  created_at: '2026-09-03T11:11:22.286909+00:00'
+- question: 1994-1996 每年发放了多少笔贷款?
+  note: "### 结论\n\n1994年发放101笔，1995年90笔，1996年117笔。\n\n\n**图表**: 1994-1996 每年发放了多少笔贷款?\n\
+    ```\n1994  ████████████████████ 101\n1995  ██████████████████ 90\n1996  ████████████████████████\
+    \ 117\n```\n\n<details>\n<summary>结果明细</summary>\n\n### 结果 (3 行)\n\n| year | num_loans\
+    \ |\n| --- | --- |\n| 1994 | 101 |\n| 1995 | 90 |\n| 1996 | 117 |\n</details>\n\
+    \n### 洞察\n\n- 1994-1996年贷款发放量呈V型波动，1995年降至最低的90笔，较1994年减少11笔。\n- 1996年贷款发放量回升至117笔，为三年最高，较1995年增长30%。\n\
+    - 三年间年度贷款发放量在90至117笔之间，整体规模相对稳定。\n\n\n<details>\n<summary>查看 SQL 与详情</summary>\n\
+    \n### 生成的 SQL\n\n```sql\nSELECT\n  YEAR(CAST(loan.date AS DATE)) AS year,\n  COUNT(loan.loan_id)\
+    \ AS num_loans\nFROM loan\nWHERE\n  loan.date >= '1994-01-01' AND loan.date <=\
+    \ '1996-12-31'\nGROUP BY\n  YEAR(CAST(loan.date AS DATE))\nORDER BY\n  year\n\
+    ```\n\n### 语义说明\n\n这条查询统计的是 1994 到 1996 这三年里，每年各发放了多少笔贷款。它从贷款表（loan）中取出每笔贷款的日期和编号，"
+  sql_snippet: 'SELECT YEAR(loan.date) AS year, COUNT(loan.loan_id) AS num_loans
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date <= ''1996-12-31''
+
+    GROUP BY YEAR(loan.date)
+
+    ORDER BY year'
+  upvotes: 3
+  downvotes: 0
+  confirmed: false
+  updated_at: '2026-09-12T03:47:48.087708+00:00'
+_meta:
+  format: 1
+  generator: kb_rate
+  trove: 0.1.0
+  digest: sha256:35c269b8fe10bb21cbf6106ff4634463c0df6c1aa1608060f5f20cb76e78c1dd
+  generated_at: '2026-09-12T03:47:48.087772+00:00'

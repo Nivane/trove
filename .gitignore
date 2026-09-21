@@ -20,7 +20,16 @@ htmlcov/
 # Secrets & local state
 .env
 .trove_history
-.trove
+# KB 语义源文件纳入 git 版本管理（语义即代码）：每个数据源的 YAML（schema_notes/
+# semantics/examples/lessons/semantic_drafts）被跟踪；其余 .trove 状态（镜像
+# kb.sqlite、init 锁、生成器基线 .generated/ 等）保持忽略。
+.trove/*
+!.trove/kb/
+.trove/kb/*
+!.trove/kb/*/
+.trove/kb/.locks/
+.trove/kb/*/.generated/
+!.trove/kb/*/*.yml
 
 # Local dev process state (PID / logs)
 .dev/

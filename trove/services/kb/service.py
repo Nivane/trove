@@ -16,6 +16,7 @@ layout) are auto-migrated into a datasource subdirectory.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -589,6 +590,7 @@ class KbService:
         project_root: str | Path,
         kb_dir: str | Path | None = None,
         backend_resolver: Callable[[str], Any] | None = None,
+        git_kb: bool = True,
     ):
         self.kb_dir = (
             Path(kb_dir) if kb_dir is not None
@@ -598,6 +600,10 @@ class KbService:
         # 按数据源解析检索后端(builtin → None 走本类现有逻辑);
         # 检索失败/未配置一律退化 builtin,不阻断生成。
         self._backend_resolver = backend_resolver
+        # git 版本管理(语义即代码):KB YAML 写操作后自动 commit,git log 即审计
+        # 历史。best-effort:非 git 仓库/无变更/失败 → 静默跳过,绝不影响写入。
+        from trove.services.kb.git_versioning import GitKb
+        self.git = GitKb(self.kb_dir, enabled=git_kb) if git_kb else None
         # /kb learn draft awaiting user confirmation
         self.pending_draft: dict[str, Any] | None = None
         # 被版本门拒绝的资产:rel_path → 原因(C1)。镜像里留着**上一次读懂的
@@ -899,6 +905,21 @@ class KbService:
         for datasource, source_file in purged:
             await self._delete_vectors(datasource, source_file)
         await self.ensure_synced(default_datasource)
+
+    # ── Git versioning (semantics-as-code audit trail) ─────
+
+    async def git_commit(self, datasource: str, message: str,
+                         files: list[str] | None = None,
+                         deleted: bool = False) -> dict:
+        """Best-effort auto-commit of the datasource's KB YAML files.
+
+        No-op (never raises) when git versioning is disabled, the KB lives
+        outside a git work tree, or there is nothing to commit.
+        """
+        if self.git is None:
+            return {"committed": False, "reason": "disabled"}
+        return await asyncio.to_thread(
+            self.git.commit, datasource, message, files, deleted)
 
     def _datasource_dirs(self) -> list[Path]:
         """Subdirectories of kb_dir (each named after a datasource)."""
@@ -1578,6 +1599,7 @@ class KbService:
         data["lessons"] = lessons
         _write_doc(path, data, "kb_rate")
         await self.force_sync()
+        await self.git_commit(datasource, f"kb: rate lesson ({question})")
         # 好评闭环:upvote + 有效 SQL → 自动草拟参考示例(pending)待 admin 确认。
         # 与 lesson 的 Hint Bank 记录互补:lesson 记模式/教训,example 记标准 SQL。
         drafted = False
@@ -1607,6 +1629,7 @@ class KbService:
                 confirmed += 1
         _write_doc(path, data, "kb_confirm_lessons")
         await self.force_sync(datasource)
+        await self.git_commit(datasource, "kb: confirm pending lessons")
         return confirmed
 
     # ── 参考示例草稿(好评闭环:用户好评 + SQL → pending 示例 → admin 确认) ──
@@ -1656,6 +1679,7 @@ class KbService:
         data["examples"] = examples
         _write_doc(path, data, generator)
         await self.force_sync(datasource)
+        await self.git_commit(datasource, f"kb: draft example ({question[:60]})")
         return {"status": "drafted", "draft": draft}
 
     async def list_pending_examples(self, datasource: str) -> list[dict]:
@@ -1678,6 +1702,7 @@ class KbService:
         _write_doc(path, data, "kb_confirm_examples")
         if confirmed:
             await self.force_sync(datasource)
+            await self.git_commit(datasource, "kb: confirm pending examples")
         return confirmed
 
     async def reject_pending_examples(self, datasource: str) -> int:
@@ -1690,6 +1715,7 @@ class KbService:
         _write_doc(path, data, "kb_reject_examples")
         if rejected:
             await self.force_sync(datasource)
+            await self.git_commit(datasource, "kb: reject pending examples")
         return rejected
         """One lesson by exact pattern match, or None."""
         path = self.kb_dir / datasource / "lessons.yml"
@@ -1721,6 +1747,7 @@ class KbService:
             return False
         _write_doc(path, data, "kb_confirm_lesson")
         await self.force_sync(datasource)
+        await self.git_commit(datasource, f"kb: confirm lesson ({pattern})")
         return True
 
     async def reject_lesson(self, datasource: str, pattern: str) -> bool:
@@ -1739,6 +1766,7 @@ class KbService:
             return False
         _write_doc(path, data, "kb_reject_lesson")
         await self.force_sync(datasource)
+        await self.git_commit(datasource, f"kb: reject lesson ({pattern})")
         return True
 
     async def update_lesson_confidence(
@@ -1773,6 +1801,9 @@ class KbService:
             data["lessons"] = lessons
             _write_doc(path, data, "kb_lesson_promotion")
             await self.force_sync(datasource)
+            await self.git_commit(
+                datasource, f"kb: update lesson confidence ({pattern})",
+                files=["lessons.yml"])
             return {
                 "updated": True, "pattern": pattern,
                 "confidence": new_conf, "promoted": promoted,
@@ -1944,6 +1975,7 @@ class KbService:
                     "DELETE FROM kb_sync WHERE file_path LIKE ?", (f"{datasource}/%",))
                 await db.commit()
         await self._clear_vectors(datasource)
+        await self.git_commit(datasource, f"kb: delete KB ({datasource})", deleted=True)
 
     # ── Evolution (human-confirmed writes) ────────────────
 
@@ -1987,6 +2019,9 @@ class KbService:
             data = terms_to_ossie_document([entry], model_name=datasource)
         _write_doc(path, data, generator)
         await self.force_sync()
+        await self.git_commit(
+            datasource, f"kb: append term ({entry.get('term', '')})",
+            files=["semantics.yml"])
 
     async def _append_entry(
         self, filename: str, section: str, entry: dict, datasource: str,
@@ -2011,6 +2046,7 @@ class KbService:
         data[section] = items
         path.write_text(dump_asset(data, generator), encoding="utf-8")
         await self.force_sync()
+        await self.git_commit(datasource, f"kb: append {filename} ({entry.get('question') or entry.get('pattern') or ''})")
 
     # ── Initialization ────────────────────────────────────
 

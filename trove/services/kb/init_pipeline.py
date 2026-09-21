@@ -344,6 +344,8 @@ async def init_kb(kb, registry, llm, config, datasource, *,
             )
     if llm is None:
         if kb.init_schema_notes(schema, datasource, overwrite=overwrite):
+            await kb.force_sync(datasource)
+            await kb.git_commit(datasource, f"kb init: {datasource} (schema skeleton)")
             return (f"Created .trove/kb/{datasource}/schema_notes.yml skeleton. "
                     f"Fill in table/column descriptions, then /kb reload.")
         raise DatasourceError(
@@ -425,6 +427,7 @@ async def init_kb(kb, registry, llm, config, datasource, *,
     kb.init_semantics(semantic_doc, datasource, overwrite=overwrite, force=force)
     kb.init_examples(examples, datasource, overwrite=overwrite, force=force)
     await kb.force_sync(datasource)
+    await kb.git_commit(datasource, f"kb init: {datasource}")
     _report("done", 100, "完成")
     summary = (f"Initialized .trove/kb/{datasource}/: {len(all_tables)} tables annotated, "
                f"{len(terms)} terms, {len(examples)} templates. "

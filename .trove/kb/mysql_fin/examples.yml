@@ -1,0 +1,2188 @@
+examples:
+- template: true
+  question: How many records are in the account table?
+  sql: SELECT COUNT(*) FROM account
+  tags:
+  - account
+  - count
+  - aggregation
+- template: true
+  question: How many account records are there for each Statement issuance frequency;
+    all-caps textual codes.?
+  sql: SELECT frequency, COUNT(*) FROM account GROUP BY frequency
+  tags:
+  - account
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the card table?
+  sql: SELECT COUNT(*) FROM card
+  tags:
+  - card
+  - count
+  - aggregation
+- template: true
+  question: How many card records are there for each Card type; lowercase text values.?
+  sql: SELECT type, COUNT(*) FROM card GROUP BY type
+  tags:
+  - card
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the client table?
+  sql: SELECT COUNT(*) FROM client
+  tags:
+  - client
+  - count
+  - aggregation
+- template: true
+  question: How many client records are there for each Client gender; single capital
+    letter.?
+  sql: SELECT gender, COUNT(*) FROM client GROUP BY gender
+  tags:
+  - client
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the disp table?
+  sql: SELECT COUNT(*) FROM disp
+  tags:
+  - disp
+  - count
+  - aggregation
+- template: true
+  question: How many disp records are there for each Type of disposition relationship;
+    all-caps codes.?
+  sql: SELECT type, COUNT(*) FROM disp GROUP BY type
+  tags:
+  - disp
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the district table?
+  sql: SELECT COUNT(*) FROM district
+  tags:
+  - district
+  - count
+  - aggregation
+- template: true
+  question: How many district records are there for each District name; text values.?
+  sql: SELECT A2, COUNT(*) FROM district GROUP BY A2
+  tags:
+  - district
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the loan table?
+  sql: SELECT COUNT(*) FROM loan
+  tags:
+  - loan
+  - count
+  - aggregation
+- template: true
+  question: How many loan records are there for each Loan status as a single capital
+    letter; A/B are finished contracts, C/D running contracts, D indicates arrears.?
+  sql: SELECT status, COUNT(*) FROM loan GROUP BY status
+  tags:
+  - loan
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the order table?
+  sql: SELECT COUNT(*) FROM "order"
+  tags:
+  - order
+  - count
+  - aggregation
+- template: true
+  question: How many order records are there for each Destination bank code, stored
+    as two uppercase letters.?
+  sql: SELECT bank_to, COUNT(*) FROM "order" GROUP BY bank_to
+  tags:
+  - order
+  - group
+  - aggregation
+- template: true
+  question: How many records are in the trans table?
+  sql: SELECT COUNT(*) FROM trans
+  tags:
+  - trans
+  - count
+  - aggregation
+- template: true
+  question: How many trans records are there for each Transaction type code in uppercase.?
+  sql: SELECT type, COUNT(*) FROM trans GROUP BY type
+  tags:
+  - trans
+  - group
+  - aggregation
+- template: true
+  question: How many account records are there in district?
+  sql: SELECT COUNT(*) FROM account JOIN district ON account.district_id = district.district_id
+  tags:
+  - account
+  - district
+  - join
+  - aggregation
+- template: true
+  question: How many account records are there for each District name; text values.
+    of district?
+  sql: SELECT district.A2, COUNT(*) FROM account JOIN district ON account.district_id
+    = district.district_id GROUP BY district.A2
+  tags:
+  - account
+  - district
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many account records are monthly issuance?
+  sql: SELECT COUNT(*) FROM account WHERE frequency = 'POPLATEK MESICNE'
+  tags:
+  - account
+  - frequency
+  - filter
+  - aggregation
+- template: true
+  question: How many account records are weekly issuance?
+  sql: SELECT COUNT(*) FROM account WHERE frequency = 'POPLATEK TYDNE'
+  tags:
+  - account
+  - frequency
+  - filter
+  - aggregation
+- template: true
+  question: How many account records are after transaction?
+  sql: SELECT COUNT(*) FROM account WHERE frequency = 'POPLATEK PO OBRATU'
+  tags:
+  - account
+  - frequency
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the earliest Date the account was created; values range from 1993-01-01
+    to 1997-12-29.?
+  sql: SELECT MIN(date) FROM account
+  tags:
+  - account
+  - date
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the latest Date the account was created; values range from 1993-01-01
+    to 1997-12-29.?
+  sql: SELECT MAX(date) FROM account
+  tags:
+  - account
+  - date
+  - aggregation
+- template: true
+  question: How many card records are there in disp?
+  sql: SELECT COUNT(*) FROM card JOIN disp ON card.disp_id = disp.disp_id
+  tags:
+  - card
+  - disp
+  - join
+  - aggregation
+- template: true
+  question: How many card records are there for each Type of disposition relationship;
+    all-caps codes. of disp?
+  sql: SELECT disp.type, COUNT(*) FROM card JOIN disp ON card.disp_id = disp.disp_id
+    GROUP BY disp.type
+  tags:
+  - card
+  - disp
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many card records are gold (card type)?
+  sql: SELECT COUNT(*) FROM card WHERE type = 'gold'
+  tags:
+  - card
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many card records are classic (card type)?
+  sql: SELECT COUNT(*) FROM card WHERE type = 'classic'
+  tags:
+  - card
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many card records are junior (card type)?
+  sql: SELECT COUNT(*) FROM card WHERE type = 'junior'
+  tags:
+  - card
+  - type
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the earliest Date the card was issued; values range from 1993-11-07
+    to 1998-12-29.?
+  sql: SELECT MIN(issued) FROM card
+  tags:
+  - card
+  - issued
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the latest Date the card was issued; values range from 1993-11-07
+    to 1998-12-29.?
+  sql: SELECT MAX(issued) FROM card
+  tags:
+  - card
+  - issued
+  - aggregation
+- template: true
+  question: How many client records are there in district?
+  sql: SELECT COUNT(*) FROM client JOIN district ON client.district_id = district.district_id
+  tags:
+  - client
+  - district
+  - join
+  - aggregation
+- template: true
+  question: How many client records are there for each District name; text values.
+    of district?
+  sql: SELECT district.A2, COUNT(*) FROM client JOIN district ON client.district_id
+    = district.district_id GROUP BY district.A2
+  tags:
+  - client
+  - district
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many client records are female?
+  sql: SELECT COUNT(*) FROM client WHERE gender = 'F'
+  tags:
+  - client
+  - gender
+  - filter
+  - aggregation
+- template: true
+  question: How many client records are male?
+  sql: SELECT COUNT(*) FROM client WHERE gender = 'M'
+  tags:
+  - client
+  - gender
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the earliest Client date of birth; values range from 1911-08-20
+    to 1987-09-27.?
+  sql: SELECT MIN(birth_date) FROM client
+  tags:
+  - client
+  - birth_date
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the latest Client date of birth; values range from 1911-08-20
+    to 1987-09-27.?
+  sql: SELECT MAX(birth_date) FROM client
+  tags:
+  - client
+  - birth_date
+  - aggregation
+- template: true
+  question: How many disp records are there in client?
+  sql: SELECT COUNT(*) FROM disp JOIN client ON disp.client_id = client.client_id
+  tags:
+  - disp
+  - client
+  - join
+  - aggregation
+- template: true
+  question: How many disp records are there for each Client gender; single capital
+    letter. of client?
+  sql: SELECT client.gender, COUNT(*) FROM disp JOIN client ON disp.client_id = client.client_id
+    GROUP BY client.gender
+  tags:
+  - disp
+  - client
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many disp records are there in account?
+  sql: SELECT COUNT(*) FROM disp JOIN account ON disp.account_id = account.account_id
+  tags:
+  - disp
+  - account
+  - join
+  - aggregation
+- template: true
+  question: How many disp records are there for each Statement issuance frequency;
+    all-caps textual codes. of account?
+  sql: SELECT account.frequency, COUNT(*) FROM disp JOIN account ON disp.account_id
+    = account.account_id GROUP BY account.frequency
+  tags:
+  - disp
+  - account
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many disp records are owner of the account?
+  sql: SELECT COUNT(*) FROM disp WHERE type = 'OWNER'
+  tags:
+  - disp
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many disp records are disponent (authorized user)?
+  sql: SELECT COUNT(*) FROM disp WHERE type = 'DISPONENT'
+  tags:
+  - disp
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are Prague?
+  sql: SELECT COUNT(*) FROM district WHERE A2 = 'Hl.m. Praha'
+  tags:
+  - district
+  - A2
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are Benesov?
+  sql: SELECT COUNT(*) FROM district WHERE A2 = 'Benesov'
+  tags:
+  - district
+  - A2
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are Beroun?
+  sql: SELECT COUNT(*) FROM district WHERE A2 = 'Beroun'
+  tags:
+  - district
+  - A2
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are Prague?
+  sql: SELECT COUNT(*) FROM district WHERE A3 = 'Prague'
+  tags:
+  - district
+  - A3
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are central Bohemia?
+  sql: SELECT COUNT(*) FROM district WHERE A3 = 'central Bohemia'
+  tags:
+  - district
+  - A3
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are south Bohemia?
+  sql: SELECT COUNT(*) FROM district WHERE A3 = 'south Bohemia'
+  tags:
+  - district
+  - A3
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are west Bohemia?
+  sql: SELECT COUNT(*) FROM district WHERE A3 = 'west Bohemia'
+  tags:
+  - district
+  - A3
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are north Bohemia?
+  sql: SELECT COUNT(*) FROM district WHERE A3 = 'north Bohemia'
+  tags:
+  - district
+  - A3
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 1204953?
+  sql: SELECT COUNT(*) FROM district WHERE A4 = '1204953'
+  tags:
+  - district
+  - A4
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 88884?
+  sql: SELECT COUNT(*) FROM district WHERE A4 = '88884'
+  tags:
+  - district
+  - A4
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 75232?
+  sql: SELECT COUNT(*) FROM district WHERE A4 = '75232'
+  tags:
+  - district
+  - A4
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 0?
+  sql: SELECT COUNT(*) FROM district WHERE A5 = '0'
+  tags:
+  - district
+  - A5
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 80?
+  sql: SELECT COUNT(*) FROM district WHERE A5 = '80'
+  tags:
+  - district
+  - A5
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 55?
+  sql: SELECT COUNT(*) FROM district WHERE A5 = '55'
+  tags:
+  - district
+  - A5
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 0?
+  sql: SELECT COUNT(*) FROM district WHERE A6 = '0'
+  tags:
+  - district
+  - A6
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 26?
+  sql: SELECT COUNT(*) FROM district WHERE A6 = '26'
+  tags:
+  - district
+  - A6
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 29?
+  sql: SELECT COUNT(*) FROM district WHERE A6 = '29'
+  tags:
+  - district
+  - A6
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 0?
+  sql: SELECT COUNT(*) FROM district WHERE A7 = '0'
+  tags:
+  - district
+  - A7
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 6?
+  sql: SELECT COUNT(*) FROM district WHERE A7 = '6'
+  tags:
+  - district
+  - A7
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 4?
+  sql: SELECT COUNT(*) FROM district WHERE A7 = '4'
+  tags:
+  - district
+  - A7
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 1?
+  sql: SELECT COUNT(*) FROM district WHERE A7 = '1'
+  tags:
+  - district
+  - A7
+  - filter
+  - aggregation
+- template: true
+  question: How many district records are 7?
+  sql: SELECT COUNT(*) FROM district WHERE A7 = '7'
+  tags:
+  - district
+  - A7
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Integer values range from 0 to 5; 6 distinct values.?
+  sql: SELECT MAX(A8) FROM district
+  tags:
+  - district
+  - A8
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Integer values range from 0 to 5; 6 distinct values.?
+  sql: SELECT MIN(A8) FROM district
+  tags:
+  - district
+  - A8
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Integer values range from 0 to 5; 6 distinct values.?
+  sql: SELECT AVG(A8) FROM district
+  tags:
+  - district
+  - A8
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Integer values range from 0 to 5; 6 distinct values.?
+  sql: SELECT SUM(A8) FROM district
+  tags:
+  - district
+  - A8
+  - aggregation
+- template: true
+  question: How many district records have Integer values range from 0 to 5; 6 distinct
+    values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A8 > 0
+  tags:
+  - district
+  - A8
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Integer values range from 1 to 11; 11 distinct values.?
+  sql: SELECT MAX(A9) FROM district
+  tags:
+  - district
+  - A9
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Integer values range from 1 to 11; 11 distinct values.?
+  sql: SELECT MIN(A9) FROM district
+  tags:
+  - district
+  - A9
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Integer values range from 1 to 11; 11 distinct values.?
+  sql: SELECT AVG(A9) FROM district
+  tags:
+  - district
+  - A9
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Integer values range from 1 to 11; 11 distinct values.?
+  sql: SELECT SUM(A9) FROM district
+  tags:
+  - district
+  - A9
+  - aggregation
+- template: true
+  question: How many district records have Integer values range from 1 to 11; 11 distinct
+    values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A9 > 0
+  tags:
+  - district
+  - A9
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Numeric values range from 33.9 to 100.0; 70 distinct
+    values.?
+  sql: SELECT MAX(A10) FROM district
+  tags:
+  - district
+  - A10
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Numeric values range from 33.9 to 100.0; 70 distinct
+    values.?
+  sql: SELECT MIN(A10) FROM district
+  tags:
+  - district
+  - A10
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Numeric values range from 33.9 to 100.0; 70 distinct
+    values.?
+  sql: SELECT AVG(A10) FROM district
+  tags:
+  - district
+  - A10
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Numeric values range from 33.9 to 100.0; 70 distinct
+    values.?
+  sql: SELECT SUM(A10) FROM district
+  tags:
+  - district
+  - A10
+  - aggregation
+- template: true
+  question: How many district records have Numeric values range from 33.9 to 100.0;
+    70 distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A10 > 0
+  tags:
+  - district
+  - A10
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Integer values range from 8110 to 12541; 76 distinct
+    values.?
+  sql: SELECT MAX(A11) FROM district
+  tags:
+  - district
+  - A11
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Integer values range from 8110 to 12541; 76 distinct
+    values.?
+  sql: SELECT MIN(A11) FROM district
+  tags:
+  - district
+  - A11
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Integer values range from 8110 to 12541; 76 distinct
+    values.?
+  sql: SELECT AVG(A11) FROM district
+  tags:
+  - district
+  - A11
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Integer values range from 8110 to 12541; 76 distinct
+    values.?
+  sql: SELECT SUM(A11) FROM district
+  tags:
+  - district
+  - A11
+  - aggregation
+- template: true
+  question: How many district records have Integer values range from 8110 to 12541;
+    76 distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A11 > 0
+  tags:
+  - district
+  - A11
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Numeric values range from 0.2 to 7.3; 1% NULL, 41
+    distinct values.?
+  sql: SELECT MAX(A12) FROM district
+  tags:
+  - district
+  - A12
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Numeric values range from 0.2 to 7.3; 1% NULL, 41
+    distinct values.?
+  sql: SELECT MIN(A12) FROM district
+  tags:
+  - district
+  - A12
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Numeric values range from 0.2 to 7.3; 1% NULL, 41
+    distinct values.?
+  sql: SELECT AVG(A12) FROM district
+  tags:
+  - district
+  - A12
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Numeric values range from 0.2 to 7.3; 1% NULL, 41 distinct
+    values.?
+  sql: SELECT SUM(A12) FROM district
+  tags:
+  - district
+  - A12
+  - aggregation
+- template: true
+  question: How many district records have Numeric values range from 0.2 to 7.3; 1%
+    NULL, 41 distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A12 > 0
+  tags:
+  - district
+  - A12
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Numeric values range from 0.43 to 9.4; 73 distinct
+    values.?
+  sql: SELECT MAX(A13) FROM district
+  tags:
+  - district
+  - A13
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Numeric values range from 0.43 to 9.4; 73 distinct
+    values.?
+  sql: SELECT MIN(A13) FROM district
+  tags:
+  - district
+  - A13
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Numeric values range from 0.43 to 9.4; 73 distinct
+    values.?
+  sql: SELECT AVG(A13) FROM district
+  tags:
+  - district
+  - A13
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Numeric values range from 0.43 to 9.4; 73 distinct values.?
+  sql: SELECT SUM(A13) FROM district
+  tags:
+  - district
+  - A13
+  - aggregation
+- template: true
+  question: How many district records have Numeric values range from 0.43 to 9.4;
+    73 distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A13 > 0
+  tags:
+  - district
+  - A13
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Integer values range from 81 to 167; 44 distinct values.?
+  sql: SELECT MAX(A14) FROM district
+  tags:
+  - district
+  - A14
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Integer values range from 81 to 167; 44 distinct values.?
+  sql: SELECT MIN(A14) FROM district
+  tags:
+  - district
+  - A14
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Integer values range from 81 to 167; 44 distinct values.?
+  sql: SELECT AVG(A14) FROM district
+  tags:
+  - district
+  - A14
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Integer values range from 81 to 167; 44 distinct values.?
+  sql: SELECT SUM(A14) FROM district
+  tags:
+  - district
+  - A14
+  - aggregation
+- template: true
+  question: How many district records have Integer values range from 81 to 167; 44
+    distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A14 > 0
+  tags:
+  - district
+  - A14
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Integer values range from 818 to 85677; 1% NULL, 75
+    distinct values.?
+  sql: SELECT MAX(A15) FROM district
+  tags:
+  - district
+  - A15
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Integer values range from 818 to 85677; 1% NULL, 75
+    distinct values.?
+  sql: SELECT MIN(A15) FROM district
+  tags:
+  - district
+  - A15
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Integer values range from 818 to 85677; 1% NULL, 75
+    distinct values.?
+  sql: SELECT AVG(A15) FROM district
+  tags:
+  - district
+  - A15
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Integer values range from 818 to 85677; 1% NULL, 75
+    distinct values.?
+  sql: SELECT SUM(A15) FROM district
+  tags:
+  - district
+  - A15
+  - aggregation
+- template: true
+  question: How many district records have Integer values range from 818 to 85677;
+    1% NULL, 75 distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A15 > 0
+  tags:
+  - district
+  - A15
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Integer values range from 888 to 99107; 76 distinct
+    values.?
+  sql: SELECT MAX(A16) FROM district
+  tags:
+  - district
+  - A16
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Integer values range from 888 to 99107; 76 distinct
+    values.?
+  sql: SELECT MIN(A16) FROM district
+  tags:
+  - district
+  - A16
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Integer values range from 888 to 99107; 76 distinct
+    values.?
+  sql: SELECT AVG(A16) FROM district
+  tags:
+  - district
+  - A16
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Integer values range from 888 to 99107; 76 distinct
+    values.?
+  sql: SELECT SUM(A16) FROM district
+  tags:
+  - district
+  - A16
+  - aggregation
+- template: true
+  question: How many district records have Integer values range from 888 to 99107;
+    76 distinct values. greater than 0?
+  sql: SELECT COUNT(*) FROM district WHERE A16 > 0
+  tags:
+  - district
+  - A16
+  - filter
+  - aggregation
+- template: true
+  question: How many loan records are there in account?
+  sql: SELECT COUNT(*) FROM loan JOIN account ON loan.account_id = account.account_id
+  tags:
+  - loan
+  - account
+  - join
+  - aggregation
+- template: true
+  question: How many loan records are there for each Statement issuance frequency;
+    all-caps textual codes. of account?
+  sql: SELECT account.frequency, COUNT(*) FROM loan JOIN account ON loan.account_id
+    = account.account_id GROUP BY account.frequency
+  tags:
+  - loan
+  - account
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many loan records are finished contract, no problems?
+  sql: SELECT COUNT(*) FROM loan WHERE status = 'A'
+  tags:
+  - loan
+  - status
+  - filter
+  - aggregation
+- template: true
+  question: How many loan records are finished contract, loan not paid?
+  sql: SELECT COUNT(*) FROM loan WHERE status = 'B'
+  tags:
+  - loan
+  - status
+  - filter
+  - aggregation
+- template: true
+  question: How many loan records are running contract, client in debt?
+  sql: SELECT COUNT(*) FROM loan WHERE status = 'D'
+  tags:
+  - loan
+  - status
+  - filter
+  - aggregation
+- template: true
+  question: How many loan records are C?
+  sql: SELECT COUNT(*) FROM loan WHERE status = 'C'
+  tags:
+  - loan
+  - status
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the earliest Date when the loan was granted.?
+  sql: SELECT MIN(date) FROM loan
+  tags:
+  - loan
+  - date
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the latest Date when the loan was granted.?
+  sql: SELECT MAX(date) FROM loan
+  tags:
+  - loan
+  - date
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Loan amount in monetary units; values range from 4980
+    to 590820.?
+  sql: SELECT MAX(amount) FROM loan
+  tags:
+  - loan
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Loan amount in monetary units; values range from 4980
+    to 590820.?
+  sql: SELECT MIN(amount) FROM loan
+  tags:
+  - loan
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Loan amount in monetary units; values range from 4980
+    to 590820.?
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - loan
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Loan amount in monetary units; values range from 4980
+    to 590820.?
+  sql: SELECT SUM(amount) FROM loan
+  tags:
+  - loan
+  - amount
+  - aggregation
+- template: true
+  question: How many loan records have Loan amount in monetary units; values range
+    from 4980 to 590820. greater than 0?
+  sql: SELECT COUNT(*) FROM loan WHERE amount > 0
+  tags:
+  - loan
+  - amount
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Loan duration in months, ranging from 12 to 60.?
+  sql: SELECT MAX(duration) FROM loan
+  tags:
+  - loan
+  - duration
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Loan duration in months, ranging from 12 to 60.?
+  sql: SELECT MIN(duration) FROM loan
+  tags:
+  - loan
+  - duration
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Loan duration in months, ranging from 12 to 60.?
+  sql: SELECT AVG(duration) FROM loan
+  tags:
+  - loan
+  - duration
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Loan duration in months, ranging from 12 to 60.?
+  sql: SELECT SUM(duration) FROM loan
+  tags:
+  - loan
+  - duration
+  - aggregation
+- template: true
+  question: How many loan records have Loan duration in months, ranging from 12 to
+    60. greater than 0?
+  sql: SELECT COUNT(*) FROM loan WHERE duration > 0
+  tags:
+  - loan
+  - duration
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Monthly repayment amount for the loan.?
+  sql: SELECT MAX(payments) FROM loan
+  tags:
+  - loan
+  - payments
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Monthly repayment amount for the loan.?
+  sql: SELECT MIN(payments) FROM loan
+  tags:
+  - loan
+  - payments
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Monthly repayment amount for the loan.?
+  sql: SELECT AVG(payments) FROM loan
+  tags:
+  - loan
+  - payments
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Monthly repayment amount for the loan.?
+  sql: SELECT SUM(payments) FROM loan
+  tags:
+  - loan
+  - payments
+  - aggregation
+- template: true
+  question: How many loan records have Monthly repayment amount for the loan. greater
+    than 0?
+  sql: SELECT COUNT(*) FROM loan WHERE payments > 0
+  tags:
+  - loan
+  - payments
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are there in account?
+  sql: SELECT COUNT(*) FROM "order" JOIN account ON "order".account_id = account.account_id
+  tags:
+  - order
+  - account
+  - join
+  - aggregation
+- template: true
+  question: How many order records are there for each Statement issuance frequency;
+    all-caps textual codes. of account?
+  sql: SELECT account.frequency, COUNT(*) FROM "order" JOIN account ON "order".account_id
+    = account.account_id GROUP BY account.frequency
+  tags:
+  - order
+  - account
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many order records are destination bank code?
+  sql: SELECT COUNT(*) FROM "order" WHERE bank_to = 'YZ'
+  tags:
+  - order
+  - bank_to
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are destination bank code?
+  sql: SELECT COUNT(*) FROM "order" WHERE bank_to = 'ST'
+  tags:
+  - order
+  - bank_to
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are destination bank code?
+  sql: SELECT COUNT(*) FROM "order" WHERE bank_to = 'QR'
+  tags:
+  - order
+  - bank_to
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are WX?
+  sql: SELECT COUNT(*) FROM "order" WHERE bank_to = 'WX'
+  tags:
+  - order
+  - bank_to
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are CD?
+  sql: SELECT COUNT(*) FROM "order" WHERE bank_to = 'CD'
+  tags:
+  - order
+  - bank_to
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are household payment?
+  sql: SELECT COUNT(*) FROM "order" WHERE k_symbol = 'SIPO'
+  tags:
+  - order
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are loan payment?
+  sql: SELECT COUNT(*) FROM "order" WHERE k_symbol = 'UVER'
+  tags:
+  - order
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are =no code?
+  sql: SELECT COUNT(*) FROM "order" WHERE k_symbol = '=no code'
+  tags:
+  - order
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are POJISTNE?
+  sql: SELECT COUNT(*) FROM "order" WHERE k_symbol = 'POJISTNE'
+  tags:
+  - order
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many order records are LEASING?
+  sql: SELECT COUNT(*) FROM "order" WHERE k_symbol = 'LEASING'
+  tags:
+  - order
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Amount of the payment order in monetary units.?
+  sql: SELECT MAX(amount) FROM "order"
+  tags:
+  - order
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Amount of the payment order in monetary units.?
+  sql: SELECT MIN(amount) FROM "order"
+  tags:
+  - order
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Amount of the payment order in monetary units.?
+  sql: SELECT AVG(amount) FROM "order"
+  tags:
+  - order
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Amount of the payment order in monetary units.?
+  sql: SELECT SUM(amount) FROM "order"
+  tags:
+  - order
+  - amount
+  - aggregation
+- template: true
+  question: How many order records have Amount of the payment order in monetary units.
+    greater than 0?
+  sql: SELECT COUNT(*) FROM "order" WHERE amount > 0
+  tags:
+  - order
+  - amount
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are there in account?
+  sql: SELECT COUNT(*) FROM trans JOIN account ON trans.account_id = account.account_id
+  tags:
+  - trans
+  - account
+  - join
+  - aggregation
+- template: true
+  question: How many trans records are there for each Statement issuance frequency;
+    all-caps textual codes. of account?
+  sql: SELECT account.frequency, COUNT(*) FROM trans JOIN account ON trans.account_id
+    = account.account_id GROUP BY account.frequency
+  tags:
+  - trans
+  - account
+  - join
+  - group
+  - aggregation
+- template: true
+  question: How many trans records are credit/income?
+  sql: SELECT COUNT(*) FROM trans WHERE type = 'PRIJEM'
+  tags:
+  - trans
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are expense?
+  sql: SELECT COUNT(*) FROM trans WHERE type = 'VYDAJ'
+  tags:
+  - trans
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are withdrawal?
+  sql: SELECT COUNT(*) FROM trans WHERE type = 'VYBER'
+  tags:
+  - trans
+  - type
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are deposit/credit?
+  sql: SELECT COUNT(*) FROM trans WHERE operation = 'VKLAD'
+  tags:
+  - trans
+  - operation
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are transfer from account (debit)?
+  sql: SELECT COUNT(*) FROM trans WHERE operation = 'PREVOD Z UCTU'
+  tags:
+  - trans
+  - operation
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are transfer to account (credit)?
+  sql: SELECT COUNT(*) FROM trans WHERE operation = 'PREVOD NA UCET'
+  tags:
+  - trans
+  - operation
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are VYBER?
+  sql: SELECT COUNT(*) FROM trans WHERE operation = 'VYBER'
+  tags:
+  - trans
+  - operation
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are VYBER KARTOU?
+  sql: SELECT COUNT(*) FROM trans WHERE operation = 'VYBER KARTOU'
+  tags:
+  - trans
+  - operation
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are household payment?
+  sql: SELECT COUNT(*) FROM trans WHERE k_symbol = 'SIPO'
+  tags:
+  - trans
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are services payment?
+  sql: SELECT COUNT(*) FROM trans WHERE k_symbol = 'SLUZBY'
+  tags:
+  - trans
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are loan payment?
+  sql: SELECT COUNT(*) FROM trans WHERE k_symbol = 'UVER'
+  tags:
+  - trans
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are POJISTNE?
+  sql: SELECT COUNT(*) FROM trans WHERE k_symbol = 'POJISTNE'
+  tags:
+  - trans
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are DUCHOD?
+  sql: SELECT COUNT(*) FROM trans WHERE k_symbol = 'DUCHOD'
+  tags:
+  - trans
+  - k_symbol
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are counterparty bank code?
+  sql: SELECT COUNT(*) FROM trans WHERE bank = 'AB'
+  tags:
+  - trans
+  - bank
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are counterparty bank code?
+  sql: SELECT COUNT(*) FROM trans WHERE bank = 'YZ'
+  tags:
+  - trans
+  - bank
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are counterparty bank code?
+  sql: SELECT COUNT(*) FROM trans WHERE bank = 'ST'
+  tags:
+  - trans
+  - bank
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are QR?
+  sql: SELECT COUNT(*) FROM trans WHERE bank = 'QR'
+  tags:
+  - trans
+  - bank
+  - filter
+  - aggregation
+- template: true
+  question: How many trans records are WX?
+  sql: SELECT COUNT(*) FROM trans WHERE bank = 'WX'
+  tags:
+  - trans
+  - bank
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the earliest Date of the transaction; values range from 1993-01-01
+    to 1998-12-31.?
+  sql: SELECT MIN(date) FROM trans
+  tags:
+  - trans
+  - date
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the latest Date of the transaction; values range from 1993-01-01
+    to 1998-12-31.?
+  sql: SELECT MAX(date) FROM trans
+  tags:
+  - trans
+  - date
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Transaction amount in monetary units; values range
+    from 0 to 87400.?
+  sql: SELECT MAX(amount) FROM trans
+  tags:
+  - trans
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Transaction amount in monetary units; values range
+    from 0 to 87400.?
+  sql: SELECT MIN(amount) FROM trans
+  tags:
+  - trans
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Transaction amount in monetary units; values range
+    from 0 to 87400.?
+  sql: SELECT AVG(amount) FROM trans
+  tags:
+  - trans
+  - amount
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Transaction amount in monetary units; values range from
+    0 to 87400.?
+  sql: SELECT SUM(amount) FROM trans
+  tags:
+  - trans
+  - amount
+  - aggregation
+- template: true
+  question: How many trans records have Transaction amount in monetary units; values
+    range from 0 to 87400. greater than 0?
+  sql: SELECT COUNT(*) FROM trans WHERE amount > 0
+  tags:
+  - trans
+  - amount
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Account balance after the transaction; can be negative.?
+  sql: SELECT MAX(balance) FROM trans
+  tags:
+  - trans
+  - balance
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Account balance after the transaction; can be negative.?
+  sql: SELECT MIN(balance) FROM trans
+  tags:
+  - trans
+  - balance
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Account balance after the transaction; can be negative.?
+  sql: SELECT AVG(balance) FROM trans
+  tags:
+  - trans
+  - balance
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Account balance after the transaction; can be negative.?
+  sql: SELECT SUM(balance) FROM trans
+  tags:
+  - trans
+  - balance
+  - aggregation
+- template: true
+  question: How many trans records have Account balance after the transaction; can
+    be negative. greater than 0?
+  sql: SELECT COUNT(*) FROM trans WHERE balance > 0
+  tags:
+  - trans
+  - balance
+  - filter
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the maximum Counterparty account number; mostly NULL.?
+  sql: SELECT MAX(account) FROM trans
+  tags:
+  - trans
+  - account
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the minimum Counterparty account number; mostly NULL.?
+  sql: SELECT MIN(account) FROM trans
+  tags:
+  - trans
+  - account
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the average Counterparty account number; mostly NULL.?
+  sql: SELECT AVG(account) FROM trans
+  tags:
+  - trans
+  - account
+  - aggregation
+- template: true
+  aggregate: true
+  question: What is the total Counterparty account number; mostly NULL.?
+  sql: SELECT SUM(account) FROM trans
+  tags:
+  - trans
+  - account
+  - aggregation
+- template: true
+  question: How many trans records have Counterparty account number; mostly NULL.
+    greater than 0?
+  sql: SELECT COUNT(*) FROM trans WHERE account > 0
+  tags:
+  - trans
+  - account
+  - filter
+  - aggregation
+- question: How many accounts are there for each statement frequency?
+  sql: SELECT frequency, COUNT(*) FROM account GROUP BY frequency ORDER BY COUNT(*)
+    DESC
+  tags:
+  - account
+  - aggregation
+  - group by
+  - order by
+  template: true
+- question: How many accounts were created in 1997?
+  sql: SELECT COUNT(*) FROM account WHERE account.date >= '1997-01-01' AND account.date
+    < '1998-01-01'
+  tags:
+  - account
+  - date-range filter
+  - aggregation
+  template: true
+- question: How many accounts are located in each region?
+  sql: SELECT district.A3, COUNT(account.account_id) FROM account JOIN district ON
+    account.district_id = district.district_id GROUP BY district.A3 ORDER BY COUNT(account.account_id)
+    DESC
+  tags:
+  - account
+  - district
+  - join
+  - aggregation
+  - group by
+  - order by
+  template: true
+- question: How many cards of each type have been issued?
+  sql: SELECT type, COUNT(*) FROM card GROUP BY type ORDER BY COUNT(*) DESC
+  tags:
+  - card
+  - aggregation
+  - group by
+  - order by
+  template: true
+- question: How many cards were issued in 1998?
+  sql: SELECT COUNT(*) FROM card WHERE card.issued >= '1998-01-01' AND card.issued
+    < '1999-01-01'
+  tags:
+  - card
+  - date-range filter
+  - aggregation
+  template: true
+- question: How many cards were issued on accounts created in 1996?
+  sql: SELECT COUNT(*) FROM card JOIN disp ON card.disp_id = disp.disp_id JOIN account
+    ON disp.account_id = account.account_id WHERE account.date >= '1996-01-01' AND
+    account.date < '1997-01-01'
+  tags:
+  - card
+  - disp
+  - account
+  - join
+  - date-range filter
+  - aggregation
+  template: true
+- question: How many clients are female and how many are male?
+  sql: SELECT gender, COUNT(*) FROM client GROUP BY gender ORDER BY COUNT(*) DESC
+  tags:
+  - client
+  - aggregation
+  - group by
+  - order by
+  template: true
+- question: How many clients were born since 1980?
+  sql: SELECT COUNT(*) FROM client WHERE client.birth_date >= '1980-01-01'
+  tags:
+  - client
+  - date-range filter
+  - aggregation
+  template: true
+- question: How many female clients own at least one account?
+  sql: SELECT COUNT(DISTINCT client.client_id) FROM client JOIN disp ON client.client_id
+    = disp.client_id WHERE client.gender = 'F' AND disp.type = 'OWNER'
+  tags:
+  - client
+  - disp
+  - join
+  - aggregation
+  - where
+  template: true
+- question: How many dispositions of each type exist?
+  sql: SELECT type, COUNT(*) FROM disp GROUP BY type ORDER BY COUNT(*) DESC
+  tags:
+  - disp
+  - aggregation
+  - group by
+  - order by
+  template: true
+- question: Which accounts have more than one disposition?
+  sql: SELECT account_id, COUNT(*) FROM disp GROUP BY account_id HAVING COUNT(*) >
+    1 ORDER BY COUNT(*) DESC
+  tags:
+  - disp
+  - aggregation
+  - group by
+  - having
+  - order by
+  template: true
+- question: Which clients are linked to the most dispositions?
+  sql: SELECT client_id, COUNT(*) FROM disp GROUP BY client_id ORDER BY COUNT(*) DESC
+    LIMIT 10
+  tags:
+  - disp
+  - aggregation
+  - group by
+  - order by
+  - limit
+  template: true
+- question: How many districts are in each region?
+  sql: SELECT A3, COUNT(*) FROM district GROUP BY A3 ORDER BY COUNT(*) DESC
+  tags:
+  - district
+  - aggregation
+  - group by
+  - order by
+  template: true
+- question: Which regions contain more than one district?
+  sql: SELECT A3, COUNT(*) FROM district GROUP BY A3 HAVING COUNT(*) > 1 ORDER BY
+    COUNT(*) DESC
+  tags:
+  - district
+  - aggregation
+  - group by
+  - having
+  - order by
+  template: true
+- question: What are the first 10 district names in alphabetical order?
+  sql: SELECT district_id, A2 FROM district ORDER BY A2 ASC LIMIT 10
+  tags:
+  - district
+  - order by
+  - limit
+  template: true
+- question: How many loans are there for each loan status?
+  sql: SELECT status, COUNT(*) FROM loan GROUP BY status ORDER BY COUNT(*) DESC
+  tags:
+  - loan
+  - group-by
+  - order-by
+  template: true
+- question: What is the average amount and average duration of loans grouped by status?
+  sql: SELECT status, AVG(amount), AVG(duration) FROM loan GROUP BY status
+  tags:
+  - loan
+  - aggregation
+  - group-by
+  template: true
+- question: Which 5 loans in 1997 had the largest amounts?
+  sql: SELECT loan_id, account_id, date, amount, duration, payments, status FROM loan
+    WHERE date >= '1997-01-01' AND date < '1998-01-01' ORDER BY amount DESC LIMIT
+    5
+  tags:
+  - loan
+  - date-range
+  - order-limit
+  template: true
+- question: How many transactions of each type occurred in 1998?
+  sql: SELECT type, COUNT(*) FROM trans WHERE date >= '1998-01-01' AND date < '1999-01-01'
+    GROUP BY type ORDER BY COUNT(*) DESC
+  tags:
+  - trans
+  - date-range
+  - group-by
+  template: true
+- question: What are the 10 largest individual transactions in 1998?
+  sql: SELECT trans_id, account_id, date, type, operation, amount, balance, k_symbol
+    FROM trans WHERE date >= '1998-01-01' AND date < '1999-01-01' ORDER BY amount
+    DESC LIMIT 10
+  tags:
+  - trans
+  - date-range
+  - order-limit
+  template: true
+- question: Which loan accounts have the most transactions? Show the top 10.
+  sql: SELECT loan.loan_id, loan.account_id, loan.status, COUNT(trans.trans_id) FROM
+    loan JOIN trans ON loan.account_id = trans.account_id GROUP BY loan.loan_id, loan.account_id,
+    loan.status ORDER BY COUNT(trans.trans_id) DESC LIMIT 10
+  tags:
+  - loan
+  - trans
+  - join
+  - group-by
+  - order-limit
+  template: true
+- question: Which region has the highest average loan amount?
+  sql: SELECT MAX(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: 最高贷款金额
+  sql: SELECT MAX(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: 每个区域的最高贷款金额，以及对应的图表
+  sql: 'SELECT d.A3 AS region, MAX(l.amount) AS max_loan_amount
+
+    FROM loan l
+
+    JOIN account a ON l.account_id = a.account_id
+
+    JOIN district d ON a.district_id = d.district_id
+
+    GROUP BY d.A3'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average amount  grouped by status?
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average amount and average duration of loans grouped by status?
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average amount and average duration of loans grouped by their
+    status?"
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: average duration of loans
+  sql: SELECT AVG(duration) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average amount and average duration of loans grouped by their
+    status?
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: Show the total amount of loans issued per region, ordered by total descending
+  sql: SELECT SUM(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: Show me the highest loan amount for each region
+  sql: SELECT MAX(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average loan amount for loans issued in 1996?
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average loan amount for loans issued in all time
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average loan amount for loans issued in 1996?
+  sql: 'SELECT AVG(loan.amount)
+
+    FROM loan
+
+    WHERE loan.date >= ''1996-01-01'' AND loan.date < ''1997-01-01'''
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: What is the average loan amount overall?
+  sql: SELECT AVG(amount) FROM loan
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: Show the total amount of loans issued per region, ordered by total descending
+  sql: 'SELECT district.district_id, SUM(loan.amount)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    JOIN district ON account.district_id = district.district_id
+
+    GROUP BY district.district_id
+
+    ORDER BY SUM(loan.amount) DESC'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: Show the avg amount of loans issued per region, ordered by avg descending
+  sql: 'SELECT account.district_id, AVG(loan.amount)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    GROUP BY account.district_id
+
+    ORDER BY AVG(loan.amount) DESC'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: 2020 年发放了多少笔贷款?
+  sql: 'SELECT COUNT(loan.loan_id)
+
+    FROM loan
+
+    WHERE loan.date >= ''2020-01-01'' AND loan.date < ''2021-01-01'''
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: how many loans issued in 1994
+  sql: 'SELECT COUNT(loan.loan_id)
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date < ''1995-01-01'''
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: how many loans issued  from  1994 to 2000 each year?
+  sql: 'SELECT DATE_FORMAT(loan.date, ''%Y''), COUNT(loan.loan_id)
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date < ''2001-01-01''
+
+    GROUP BY DATE_FORMAT(loan.date, ''%Y'')'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: 只看1994的数据，how many loans issued  from  1994 to 2000 each year?
+  sql: 'SELECT DATE_FORMAT(loan.date, ''%Y''), COUNT(loan.loan_id)
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date < ''2001-01-01''
+
+    GROUP BY DATE_FORMAT(loan.date, ''%Y'')'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: "\"question\": \"Between 1/1/1995 and 12/31/1997, how many loans in the\
+    \ amount of at least 250,000 per account that chose monthly statement issuance\
+    \ were approved?\",\n    \"evidence\": \"Frequency = 'POPLATEK MESICNE' stands\
+    \ for monthly issurance\""
+  sql: 'SELECT COUNT(loan.loan_id)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    WHERE loan.date >= ''1995-01-01'' AND loan.date <= ''1997-12-31'' AND loan.amount
+    >= 250000 AND account.frequency = ''POPLATEK MESICNE'''
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- template: true
+  question: How many accounts in a given region issue statements after transaction?
+  sql: 'SELECT COUNT(account.account_id)
+
+    FROM account
+
+    JOIN district ON account.district_id = district.district_id
+
+    WHERE district.A3 = ''{{region}}'' AND account.frequency = ''{{frequency}}'''
+  tags:
+  - account
+  - district
+  - join
+  - count
+  - region
+  - frequency
+  - filter
+  - aggregation
+- template: true
+  question: How many female clients live in districts whose average salary is between
+    two bounds?
+  sql: 'SELECT COUNT(DISTINCT client.client_id)
+
+    FROM client
+
+    JOIN district ON client.district_id = district.district_id
+
+    WHERE client.gender = ''{{gender}}'' AND district.A11 > {{lo}} AND district.A11
+    < {{hi}}'
+  tags:
+  - client
+  - district
+  - join
+  - count
+  - gender
+  - salary
+  - filter
+  - aggregation
+- template: true
+  question: What percentage of loan amount has a given repayment status?
+  sql: 'SELECT CAST(SUM(CASE WHEN loan.status = ''{{status}}'' THEN loan.amount ELSE
+    0 END) AS DOUBLE) * 100 / SUM(loan.amount)
+
+    FROM loan'
+  tags:
+  - loan
+  - percentage
+  - status
+  - aggregation
+- template: true
+  question: What percentage of loans below a given amount are still running?
+  sql: 'SELECT CAST(SUM(loan.status = ''{{status}}'') AS DOUBLE) * 100 / COUNT(loan.account_id)
+
+    FROM loan
+
+    WHERE loan.amount < {{threshold}}'
+  tags:
+  - loan
+  - percentage
+  - status
+  - filter
+  - aggregation
+- template: true
+  question: What is the percentage of male clients in a region?
+  sql: 'SELECT CAST(SUM(client.gender = ''{{gender}}'') AS DOUBLE) * 100 / COUNT(client.client_id)
+
+    FROM client
+
+    JOIN district ON client.district_id = district.district_id
+
+    WHERE district.A3 = ''{{region}}'''
+  tags:
+  - client
+  - district
+  - join
+  - percentage
+  - gender
+  - region
+  - aggregation
+- template: true
+  question: List the account with the lowest approved loan amount in a given year?
+  sql: 'SELECT loan.account_id
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    WHERE YEAR(loan.date) = {{year}}
+
+    ORDER BY loan.amount ASC
+
+    LIMIT 1'
+  tags:
+  - loan
+  - account
+  - join
+  - lowest
+  - order
+  - limit
+  - year
+  - filter
+- template: true
+  question: List the account with the highest approved loan amount in a given year?
+  sql: 'SELECT loan.account_id
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    WHERE YEAR(loan.date) = {{year}}
+
+    ORDER BY loan.amount DESC
+
+    LIMIT 1'
+  tags:
+  - loan
+  - account
+  - join
+  - highest
+  - order
+  - limit
+  - year
+  - filter
+- template: true
+  question: In the district with the second-highest number of crimes in 1995, how
+    many male clients are there?
+  sql: "SELECT COUNT(client.client_id)\nFROM client\nJOIN district ON client.district_id\
+    \ = district.district_id\nWHERE client.gender = '{{gender}}'\n  AND district.A15\
+    \ = (SELECT A15 FROM district ORDER BY A15 DESC LIMIT 1 OFFSET 1)"
+  tags:
+  - client
+  - district
+  - join
+  - count
+  - gender
+  - crimes
+  - subquery
+  - extreme
+- template: true
+  question: What was the growth rate of the total amount of loans between two years?
+  sql: 'SELECT CAST((SUM(CASE WHEN YEAR(loan.date) = {{year2}} THEN loan.amount ELSE
+    0 END) - SUM(CASE WHEN YEAR(loan.date) = {{year1}} THEN loan.amount ELSE 0 END))
+    AS DOUBLE) * 100 / SUM(CASE WHEN YEAR(loan.date) = {{year1}} THEN loan.amount
+    ELSE 0 END)
+
+    FROM loan'
+  tags:
+  - loan
+  - growth
+  - year
+  - percentage
+  - aggregation
+- template: true
+  question: What is the percentage increase of the unemployment rate from 1995 to
+    1996 for loans that are running with client in debt?
+  sql: 'SELECT CAST((district.A13 - district.A12) AS DOUBLE) * 100 / district.A12
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    JOIN district ON account.district_id = district.district_id
+
+    WHERE loan.status = ''{{status}}'''
+  tags:
+  - loan
+  - account
+  - district
+  - join
+  - unemployment
+  - growth
+  - percentage
+  - filter
+- template: true
+  question: Which account holders have transactions on a given channel with amount
+    below the average in a year?
+  sql: "SELECT trans.account_id\nFROM trans\nJOIN account ON trans.account_id = account.account_id\n\
+    WHERE YEAR(trans.date) = {{year}} AND trans.operation = '{{operation}}'\n  AND\
+    \ trans.amount < (SELECT AVG(trans.amount) FROM trans WHERE YEAR(trans.date) =\
+    \ {{year}})"
+  tags:
+  - trans
+  - account
+  - join
+  - below average
+  - subquery
+  - operation
+  - year
+  - filter
+- question: 1994-1996 年发放了多少笔贷款?
+  sql: 'SELECT COUNT(loan.loan_id)
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date <= ''1996-12-31'''
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: 1994-1996 每年发放了多少笔贷款?
+  sql: 'SELECT YEAR(loan.date) AS year, COUNT(loan.loan_id) AS num_loans
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date <= ''1996-12-31''
+
+    GROUP BY YEAR(loan.date)
+
+    ORDER BY year'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+- question: 1994-1997 每年贷款金额
+  sql: 'SELECT YEAR(loan.date) AS year, SUM(loan.amount) AS total_amount
+
+    FROM loan
+
+    WHERE loan.date >= ''1994-01-01'' AND loan.date <= ''1997-12-31''
+
+    GROUP BY YEAR(loan.date)
+
+    ORDER BY year'
+  tags:
+  - auto
+  pending: true
+  template: false
+  note: auto-captured successful query
+_meta:
+  format: 1
+  generator: memory
+  trove: 0.1.0
+  digest: sha256:80b5ec1658eeb23fb5e2005b06175158862b71976324a509b71d0e576ec61f62
+  generated_at: '2026-09-12T04:24:28.910352+00:00'
