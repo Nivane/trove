@@ -6,6 +6,22 @@ lesson confirm, delete) auto-commits the affected datasource's YAML so
 free from git itself. The industry pattern is *config-as-code*: the
 semantic model lives in the repo, not in a database.
 
+Versioning guardrails (beyond plain auto-commit):
+
+- **Pre-commit lint gate** — a ``lint`` callback can refuse the commit
+  and roll back staging when the staged semantics carry structural
+  issues (bad expressions / duplicate definitions / bad relationships).
+  Bad semantics never enter the audit history.
+- **Structured metadata** — ``trailers`` append git trailers to the
+  commit message (``Generator:``, ``Approved-by:``), so ``git blame``
+  can trace who approved and what produced each change.
+- **Atomic commits** — each logical write passes its full file list
+  (e.g. semantics.yml + semantic_drafts.yml in one commit), so a change
+  is reversible as a single unit.
+- **history / rollback** — the admin API can list the datasource's
+  commits and restore its KB files to any past commit (new commit, the
+  history is never rewritten).
+
 Design constraints:
 
 - **Single source of truth stays the YAML** — git only records snapshots
@@ -27,7 +43,7 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +97,27 @@ class GitKb:
     # ── public API ────────────────────────────────────────
 
     def commit(self, datasource: str, message: str,
-               files: Iterable[str] | None = None, deleted: bool = False) -> dict:
+               files: Iterable[str] | None = None, deleted: bool = False,
+               lint: Callable[[list[Path]], list[str]] | None = None,
+               trailers: dict[str, str] | None = None) -> dict:
         """Stage the datasource's KB YAML files and commit them.
 
         ``files``: explicit relative filenames (e.g. ``["semantics.yml"]``);
         default = all ``*.yml`` in the datasource dir. ``deleted=True``
         stages the whole datasource dir as removed (``delete_kb``). 
+
+        ``lint``: optional pre-commit gate — called with the staged file
+        paths; if it returns any issue, the commit is **refused** and the
+        staging is rolled back (files stay modified on disk, just not
+        committed). This keeps bad semantics out of the audit history.
+
+        ``trailers``: structured metadata appended as git trailers to the
+        commit message (e.g. ``{"Approved-by": "admin", "Generator": "kb"}``)
+        so the audit trail carries who approved / what produced the change.
+
         Best-effort: returns a status dict, never raises. Reasons:
         ``disabled`` / ``no-repo`` / ``nothing-to-commit`` /
-        ``commit-failed``.
+        ``lint-failed`` / ``commit-failed``.
         """
         if not self.enabled:
             return {"committed": False, "reason": "disabled"}
@@ -125,6 +153,15 @@ class GitKb:
         if diff.returncode == 0:
             return {"committed": False, "reason": "nothing-to-commit"}
 
+        # 变更门禁:lint 不过 → 拒绝提交并回滚暂存(文件保留在工作区改动)。
+        if lint is not None:
+            issues = self._lint_staged(repo, ds_dir, files, deleted, lint)
+            if issues:
+                self._run(repo, "reset", "-q", "--", *rels)
+                return {"committed": False, "reason": "lint-failed", "issues": issues}
+
+        message = self._with_trailers(message, trailers)
+
         # 先按 git 自身配置的身份提交(用户有 identity 就用用户的);失败再兜底
         # 机器身份。兜底只在无全局/仓库 identity 时触发,审计历史不会中断。
         result = self._run(repo, "commit", "-m", message, "--", *rels)
@@ -147,6 +184,127 @@ class GitKb:
 
         logger.info("git_kb: committed %s (%s)", message, datasource)
         return {"committed": True, "reason": "ok"}
+
+    def _lint_staged(self, repo: Path, ds_dir: Path, files: Iterable[str] | None,
+                     deleted: bool, lint: Callable[[list[Path]], list[str]]) -> list[str]:
+        """Lint the staged file paths (working-tree content) before commit.
+
+        只 lint 本次操作涉及的、且确实被暂存的文件;删除场景无内容可 lint。
+        """
+        if deleted:
+            return []
+        if files is not None:
+            paths = [ds_dir / f for f in files if (ds_dir / f).exists()]
+        else:
+            paths = sorted(ds_dir.glob(_KB_YML)) if ds_dir.is_dir() else []
+        try:
+            return lint(paths)
+        except Exception as e:
+            logger.warning("git_kb: lint callback failed: %s", e)
+            return []
+
+    def _with_trailers(self, message: str, trailers: dict[str, str] | None) -> str:
+        """把结构化元数据以 git trailer 追加到 commit message 正文。
+
+        git log --format='%(trailers)' / %(trailers:unfold) 可直接解析,
+        `git show -s --format=%B` 原样可见。
+        """
+        if not trailers:
+            return message
+        lines = [f"{k}: {v}" for k, v in trailers.items() if k and v]
+        if not lines:
+            return message
+        return f"{message}\n\n" + "\n".join(lines)
+
+    # ── audit history ─────────────────────────────────────
+
+    def history(self, datasource: str, limit: int = 50) -> list[dict]:
+        """该数据源 KB 文件的提交历史(git log,按时间倒序)。
+
+        返回 [{sha, subject, author, date, trailers}] ;非 git 环境 → []。
+        """
+        repo = self._repo_root()
+        if repo is None:
+            return []
+        ds_dir = (self.kb_dir / datasource).resolve()
+        if not ds_dir.is_dir():
+            return []
+        rels = [str(p.relative_to(repo)) for p in sorted(ds_dir.glob(_KB_YML))]
+        if not rels:
+            return []
+        fmt = "%H%x00%an%x00%aI%x00%s%x00%(trailers:unfold)"
+        result = self._run(
+            repo, "log", f"-{max(1, limit)}", f"--format={fmt}",
+            "--date=iso-strict", "--", *rels,
+        )
+        if result is None or result.returncode != 0:
+            return []
+        entries: list[dict] = []
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            parts = line.split("\x00", 4)
+            if len(parts) != 5:
+                continue
+            sha, author, date, subject, trailers = parts
+            entries.append({
+                "sha": sha,
+                "author": author,
+                "date": date,
+                "subject": subject,
+                "trailers": trailers,
+            })
+        return entries
+
+    def rollback(self, datasource: str, sha: str, message: str = "kb rollback",
+                 trailers: dict[str, str] | None = None) -> dict:
+        """把该数据源 KB 文件回滚到指定 commit 的状态(新建提交,不改写历史)。
+
+        ``sha``: 目标 commit(该数据源文件的任一历史版本)。用 ``git restore
+        --source <sha> -- <files>`` 恢复工作区+暂存,再提交一条 rollback。
+        Best-effort;返回 status dict,绝不抛异常。
+        """
+        if not self.enabled:
+            return {"rolled_back": False, "reason": "disabled"}
+        repo = self._repo_root()
+        if repo is None:
+            return {"rolled_back": False, "reason": "no-repo"}
+        verify = self._run(repo, "rev-parse", "--verify", f"{sha}^{{commit}}")
+        if verify is None or verify.returncode != 0:
+            return {"rolled_back": False, "reason": "bad-sha"}
+        ds_dir = (self.kb_dir / datasource).resolve()
+        if not ds_dir.is_dir():
+            return {"rolled_back": False, "reason": "no-datasource-dir"}
+        rels = [str(p.relative_to(repo)) for p in sorted(ds_dir.glob(_KB_YML))]
+        if not rels:
+            return {"rolled_back": False, "reason": "nothing-to-restore"}
+
+        restored = self._run(repo, "restore", "--source", sha, "--", *rels)
+        if restored is None or restored.returncode != 0:
+            return {"rolled_back": False, "reason": "restore-failed"}
+        # restore 只改工作区;stage 后提交。
+        staged = self._run(repo, "add", "--", *rels)
+        diff = self._run(repo, "diff", "--cached", "--quiet", "--", *rels)
+        if staged is None or diff is None:
+            return {"rolled_back": False, "reason": "git-unavailable"}
+        if diff.returncode == 0:
+            return {"rolled_back": False, "reason": "nothing-to-restore"}
+        full = self._with_trailers(message, trailers)
+        result = self._run(repo, "commit", "-m", full, "--", *rels)
+        if result is None:
+            return {"rolled_back": False, "reason": "git-unavailable"}
+        if result.returncode != 0 and self._needs_identity_fallback(result):
+            name, email = self._parse_author()
+            result = self._run(
+                repo, "-c", f"user.name={name}", "-c", f"user.email={email}",
+                "commit", "-m", full, "--", *rels,
+            )
+        if result is None or result.returncode != 0:
+            logger.warning("git_kb: rollback commit failed (%s): %s",
+                           sha, result.stderr.strip() if result is not None else "git unavailable")
+            return {"rolled_back": False, "reason": "commit-failed"}
+        logger.info("git_kb: rolled back %s to %s", datasource, sha)
+        return {"rolled_back": True, "reason": "ok"}
 
     def _needs_identity_fallback(self, result: subprocess.CompletedProcess) -> bool:
         """git 报「没有 identity」时才需要兜底身份。"""

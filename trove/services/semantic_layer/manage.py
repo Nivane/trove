@@ -453,6 +453,7 @@ class SemanticManager:
     async def create_draft(
         self, datasource: str, kind: str, action: str, name: str,
         payload: dict[str, Any] | None = None, note: str = "",
+        actor: str = "",
     ) -> dict[str, Any]:
         """建 pending 草稿(semantic_drafts.yml)。不碰 semantics.yml。"""
         self._check_datasource(datasource)
@@ -483,7 +484,8 @@ class SemanticManager:
         await self._kb.force_sync(datasource)
         await self._kb.git_commit(
             datasource, f"semantic: draft {action} {kind} {name}",
-            files=["semantic_drafts.yml"])
+            files=["semantic_drafts.yml"],
+            trailers={"Generator": "semantic.draft", "Approved-by": actor} if actor else None)
         return dict(entry)
 
     def _find_draft(self, datasource: str, draft_id: str) -> tuple[dict[str, Any], Path]:
@@ -500,6 +502,7 @@ class SemanticManager:
 
     async def confirm_draft(
         self, datasource: str, draft_id: str, dialect: str | None = None,
+        actor: str = "",
     ) -> dict[str, Any]:
         """审批通过:应用到 semantics.yml → 标记 applied → 刷新镜像。"""
         self._check_datasource(datasource)
@@ -524,12 +527,15 @@ class SemanticManager:
             datasource,
             f"semantic: confirm {draft.get('kind')} {draft.get('name')} "
             f"(draft {draft_id})",
-            files=["semantics.yml", "semantic_drafts.yml"])
+            files=["semantics.yml", "semantic_drafts.yml"],
+            lint=self._kb.semantics_lint(datasource, dialect or "sqlite"),
+            trailers={"Generator": "semantic.confirm", "Approved-by": actor} if actor else None)
         return dict(draft)
 
     async def auto_apply(
         self, datasource: str, kind: str, name: str,
         payload: dict[str, Any] | None = None, note: str = "refuse-auto-confirm",
+        actor: str = "",
     ) -> dict[str, Any]:
         """A/B 档:机械声明(物理列字段 / 机械聚合指标)直接应用,跳过 pending。
 
@@ -568,7 +574,9 @@ class SemanticManager:
         await self._kb.force_sync(datasource)
         await self._kb.git_commit(
             datasource, f"semantic: auto-apply {kind} {name}",
-            files=["semantics.yml", "semantic_drafts.yml"])
+            files=["semantics.yml", "semantic_drafts.yml"],
+            lint=self._kb.semantics_lint(datasource),
+            trailers={"Generator": "refuse.auto_apply", "Approved-by": actor} if actor else None)
         return dict(entry)
 
     async def auto_apply_field(
@@ -579,7 +587,8 @@ class SemanticManager:
         return await self.auto_apply(
             datasource, "field", name, payload=payload, note=note)
 
-    async def reject_draft(self, datasource: str, draft_id: str) -> dict[str, Any]:
+    async def reject_draft(self, datasource: str, draft_id: str,
+                           actor: str = "") -> dict[str, Any]:
         """驳回:仅标记 rejected,不改 semantics.yml。"""
         self._check_datasource(datasource)
         draft, path = self._find_draft(datasource, draft_id)
@@ -591,7 +600,8 @@ class SemanticManager:
         await self._kb.force_sync(datasource)
         await self._kb.git_commit(
             datasource, f"semantic: reject draft {draft_id}",
-            files=["semantic_drafts.yml"])
+            files=["semantic_drafts.yml"],
+            trailers={"Generator": "semantic.reject", "Approved-by": actor} if actor else None)
         return dict(draft)
 
     def _drafts_with(self, datasource: str, updated: dict[str, Any]) -> list[dict[str, Any]]:

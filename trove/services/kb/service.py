@@ -910,8 +910,13 @@ class KbService:
 
     async def git_commit(self, datasource: str, message: str,
                          files: list[str] | None = None,
-                         deleted: bool = False) -> dict:
+                         deleted: bool = False,
+                         lint=None, trailers: dict[str, str] | None = None) -> dict:
         """Best-effort auto-commit of the datasource's KB YAML files.
+
+        ``lint``: optional pre-commit gate (see ``GitKb.commit``) —
+        a callable ``(list[Path]) -> list[str]``; issues refuse the commit.
+        ``trailers``: structured metadata appended to the commit message.
 
         No-op (never raises) when git versioning is disabled, the KB lives
         outside a git work tree, or there is nothing to commit.
@@ -919,7 +924,47 @@ class KbService:
         if self.git is None:
             return {"committed": False, "reason": "disabled"}
         return await asyncio.to_thread(
-            self.git.commit, datasource, message, files, deleted)
+            self.git.commit, datasource, message, files, deleted, lint, trailers)
+
+    async def git_history(self, datasource: str, limit: int = 50) -> list[dict]:
+        """该数据源 KB 文件的提交历史(管理端展示)。"""
+        if self.git is None:
+            return []
+        return await asyncio.to_thread(self.git.history, datasource, limit)
+
+    async def git_rollback(self, datasource: str, sha: str, message: str = "kb rollback",
+                           trailers: dict[str, str] | None = None) -> dict:
+        """回滚该数据源 KB 到指定 commit(新建提交)。"""
+        if self.git is None:
+            return {"rolled_back": False, "reason": "disabled"}
+        return await asyncio.to_thread(
+            self.git.rollback, datasource, sha, message, trailers)
+
+    def semantics_lint(self, datasource: str, dialect: str = "sqlite"):
+        """Pre-commit 门禁:lint 该数据源语义模型,坏语义拒绝入库。
+
+        复用管理端 issues() 的同一套 lint_semantics;提交前对将要写盘的
+        semantics.yml 做静态校验,保证坏表达式/重复定义/坏关系永不进入
+        git 审计历史。返回 ``(paths) -> list[str]`` 供 GitKb.commit 调用。
+        """
+        from trove.services.kb.lint import lint_semantics
+
+        def _lint(paths) -> list[str]:
+            issues: list[str] = []
+            for p in paths:
+                if p.name != "semantics.yml" or not p.exists():
+                    continue
+                try:
+                    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                except Exception as e:
+                    issues.append(f"semantics.yml 无法解析: {e}")
+                    continue
+                for entry in data.get("semantic_model", []) or []:
+                    if isinstance(entry, dict):
+                        issues += lint_semantics(entry, dialect=dialect)
+            return issues
+
+        return _lint
 
     def _datasource_dirs(self) -> list[Path]:
         """Subdirectories of kb_dir (each named after a datasource)."""
@@ -2046,7 +2091,10 @@ class KbService:
         data[section] = items
         path.write_text(dump_asset(data, generator), encoding="utf-8")
         await self.force_sync()
-        await self.git_commit(datasource, f"kb: append {filename} ({entry.get('question') or entry.get('pattern') or ''})")
+        await self.git_commit(
+            datasource,
+            f"kb: append {filename} ({entry.get('question') or entry.get('pattern') or ''})",
+            files=[filename])
 
     # ── Initialization ────────────────────────────────────
 

@@ -271,3 +271,76 @@ async def test_drafts_audited(client, api_app, api_kb):
     } for e in entries)
     confirms = await api_app.state.auth.list_audit(action="semantic.draft.confirm")
     assert any(e["username"] == "admin" and e["details"]["id"] == draft_id for e in confirms)
+
+
+# ── git 版本管理: history / rollback 端点 ────────────────
+
+
+async def test_history_no_git_returns_empty(client, api_app, api_kb):
+    """非 git 环境(测试默认 tmp 目录)→ history 返回空列表而非报错。"""
+    resp = await client.get("/v1/admin/semantic/test_db/history")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["datasource"] == "test_db"
+    assert body["history"] == []
+
+
+async def test_rollback_no_git_400(client, api_app, api_kb):
+    """非 git 环境 → rollback 400 并给出 reason。"""
+    resp = await client.post("/v1/admin/semantic/test_db/rollback",
+                             json={"sha": "abc" * 7})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["rolled_back"] is False
+
+
+async def test_history_and_rollback_with_git(api_app, api_kb, client, tmp_path):
+    """git 仓库内:history 列出提交,rollback 回到旧版本(经真实 API)。"""
+    # 把 KB 放进一个真正的 git 仓库
+    import subprocess
+
+    from trove.services.kb.git_versioning import GitKb
+
+    kb = api_app.state.kb
+    repo = tmp_path / "gitkbrepo"
+    kb_dir_rel = kb.kb_dir.relative_to(repo) if kb.kb_dir.is_relative_to(repo) else None
+    # 迁移:把整个 kb_dir 移到 git repo 内重建(api_app 已用 tmp_path/proj)
+    if not kb_dir_rel:
+        new_kb_dir = repo / ".trove" / "kb"
+        new_kb_dir.mkdir(parents=True, exist_ok=True)
+        for ds in ("test_db",):
+            src = kb.kb_dir / ds
+            if src.exists():
+                import shutil
+                shutil.copytree(src, new_kb_dir / ds, dirs_exist_ok=True)
+        kb.kb_dir = new_kb_dir  # 指向 git 仓库内的 KB
+        kb.git = GitKb(kb.kb_dir, enabled=True)  # 重建绑定新 kb_dir 的 GitKb
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Tester"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@x"], check=True)
+
+    # 初始 commit(v0)
+    GitKb(kb.kb_dir, enabled=True).commit("test_db", "semantic: v0")
+
+    # 管理端加指标并确认 → v1
+    resp = await client.post("/v1/admin/semantic/test_db/drafts", json={
+        "kind": "metric", "action": "upsert",
+        "name": "回滚指标", "payload": {"expression": "COUNT(students.id)"},
+    })
+    draft_id = resp.json()["draft"]["id"]
+    await client.post(f"/v1/admin/semantic/test_db/drafts/{draft_id}/confirm")
+
+    history = (await client.get("/v1/admin/semantic/test_db/history")).json()["history"]
+    assert any("confirm" in h["subject"] for h in history)
+    v0_sha = history[-1]["sha"]
+
+    # 回滚到 v0 → 新指标消失
+    resp = await client.post("/v1/admin/semantic/test_db/rollback", json={"sha": v0_sha})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["rolled_back"] is True
+
+    detail = (await client.get("/v1/admin/semantic/test_db")).json()["semantic"]
+    assert all(m["name"] != "回滚指标" for m in detail["model"]["metrics"])
+
+    # rollback 本身也是一条 commit(审计链完整)
+    history2 = (await client.get("/v1/admin/semantic/test_db/history")).json()["history"]
+    assert history2[0]["subject"].startswith("kb rollback")

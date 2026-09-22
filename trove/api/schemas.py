@@ -133,6 +133,16 @@ class SemanticDraftCreate(BaseModel):
     note: str = ""
 
 
+class SemanticRollbackRequest(BaseModel):
+    """POST /v1/admin/semantic/{ds}/rollback body — 回滚到指定 commit。
+
+    sha 必须是该数据源 KB 文件的真实历史 commit(git log 返回的 sha)。
+    """
+
+    sha: str = Field(min_length=1, description="目标 commit sha")
+    message: str = ""  # 可选:rollback 提交的自定义消息
+
+
 class LoginRequest(BaseModel):
     """POST /v1/auth/login body."""
 

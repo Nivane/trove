@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trove.api.deps import require_admin
-from trove.api.schemas import SemanticDraftCreate
+from trove.api.schemas import SemanticDraftCreate, SemanticRollbackRequest
 
 router = APIRouter()
 
@@ -97,6 +97,49 @@ async def semantic_detail(
     return {"semantic": result}
 
 
+@router.get("/admin/semantic/{name}/history")
+async def semantic_history(
+    name: str, request: Request, admin: dict = Depends(require_admin),
+) -> dict:
+    """该数据源 KB 文件的 git 提交历史(管理端变更时间线)。
+
+    语义即代码:每次写操作都产生一条 commit,这里把 git log 直接暴露
+    给管理端。非 git 环境(dev 常见)返回空列表,不报错。
+    """
+    ds = _resolve_datasource(request, name)
+    limit = request.query_params.get("limit", "50")
+    try:
+        limit = max(1, min(200, int(limit)))
+    except ValueError:
+        limit = 50
+    history = await _kb(request).git_history(ds, limit=limit)
+    return {"datasource": ds, "history": history}
+
+
+@router.post("/admin/semantic/{name}/rollback")
+async def semantic_rollback(
+    name: str, body: SemanticRollbackRequest, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """回滚该数据源 KB 到指定 commit(新建提交,不改写历史)。
+
+    ``sha`` 必须是该数据源 KB 文件的真实历史 commit;git 环境缺失/坏
+    sha → 400。回滚同样以一条新 commit 落盘,审计链完整。
+    """
+    ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
+    result = await _kb(request).git_rollback(
+        ds, body.sha, message=body.message or f"kb rollback {ds}",
+        trailers={"Generator": "semantic.rollback", "Approved-by": actor} if actor else None,
+    )
+    if not result.get("rolled_back"):
+        raise HTTPException(status_code=400, detail=result)
+    await _audit(request, "semantic.rollback", admin, 200, {
+        "datasource": ds, "sha": body.sha,
+    })
+    return {"rolled_back": True, "datasource": ds, "sha": body.sha}
+
+
 @router.post("/admin/semantic/{name}/drafts", status_code=201)
 async def create_semantic_draft(
     name: str, body: SemanticDraftCreate, request: Request,
@@ -104,9 +147,11 @@ async def create_semantic_draft(
 ) -> dict:
     """Create a pending draft (semantic_drafts.yml). semantics.yml untouched."""
     ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
     try:
         draft = await _manager(request).create_draft(
-            ds, body.kind, body.action, body.name, body.payload or None, body.note)
+            ds, body.kind, body.action, body.name, body.payload or None, body.note,
+            actor=actor)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await _audit(request, "semantic.draft.create", admin, 201, {
@@ -122,9 +167,10 @@ async def confirm_semantic_draft(
 ) -> dict:
     """Approve: apply the draft to semantics.yml, mark applied, re-sync."""
     ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
     try:
         draft = await _manager(request).confirm_draft(
-            ds, draft_id, dialect=await _dialect(request, ds))
+            ds, draft_id, dialect=await _dialect(request, ds), actor=actor)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -142,8 +188,9 @@ async def reject_semantic_draft(
 ) -> dict:
     """Reject: mark rejected (semantics.yml untouched)."""
     ds = _resolve_datasource(request, name)
+    actor = str(admin.get("username", ""))
     try:
-        draft = await _manager(request).reject_draft(ds, draft_id)
+        draft = await _manager(request).reject_draft(ds, draft_id, actor=actor)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

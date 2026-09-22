@@ -241,3 +241,191 @@ def test_commit_falls_back_when_no_identity(tmp_path: Path, monkeypatch):
     assert result["committed"] is True
     author = _git(repo, "log", "-1", "--format=%an <%ae>").stdout.strip()
     assert "trove" in author
+
+
+# ── 优化 1: commit 前 lint 门禁 ──────────────────────────
+
+
+def test_commit_refused_by_lint_gate(git_repo: Path):
+    """lint 发现问题 → commit 拒绝,暂存回滚,文件保留在工作区改动。"""
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text(
+        "semantic_model:\n  - name: demo\n    datasets:\n"
+        "      - name: loan\n        fields:\n"
+        "          - name: amount\n"
+        "            expression: {dialects: [{dialect: ANSI_SQL, expression: amount}]}\n",
+        encoding="utf-8")
+
+    def bad_lint(paths):
+        return ["指标「x」重复定义"]  # 永远报错
+
+    result = GitKb(kb.kb_dir, enabled=True).commit(
+        "demo", "semantic: broken", lint=bad_lint)
+
+    assert result["committed"] is False
+    assert result["reason"] == "lint-failed"
+    assert "重复定义" in result["issues"][0]
+    # 暂存已回滚 → 没有 commit,但文件仍修改于工作区
+    assert _git(git_repo, "log", "--oneline").stdout.strip() == ""
+    status = _git(git_repo, "status", "--porcelain", "--untracked-files=all").stdout
+    assert "semantics.yml" in status
+
+
+def test_commit_passes_clean_lint(git_repo: Path):
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+
+    result = GitKb(kb.kb_dir, enabled=True).commit(
+        "demo", "semantic: ok", lint=lambda paths: [])
+
+    assert result["committed"] is True
+
+
+async def test_confirm_draft_goes_through_semantics_lint(git_repo: Path):
+    """confirm 提交前跑真实 semantics lint:坏语义文件提交被拒。"""
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text(
+        "semantic_model: []\n", encoding="utf-8")
+    GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: init")
+
+    from trove.services.semantic_layer.manage import SemanticManager
+    manager = SemanticManager(kb)
+    # 走 confirm 全链路:正常 metric 确认成功(有 lint 也不误伤)
+    await manager.create_draft(
+        "demo", "metric", "upsert", "good_metric",
+        {"expression": "COUNT(loan.loan_id)"}, note="test")
+    draft = manager.drafts("demo")["pending"][0]
+    await manager.confirm_draft("demo", draft["id"], dialect="sqlite")
+    assert "confirm metric good_metric" in _git(git_repo, "log", "--oneline").stdout
+
+    # 现在写一份真正坏的文件(重复指标定义)→ semantics_lint 拒绝入库
+    import yaml
+    bad = {
+        "semantic_model": [{
+            "name": "demo",
+            "metrics": [
+                {"name": "m", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]}},
+                {"name": "m", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(loan.loan_id)"}]}},
+            ],
+        }],
+    }
+    kb.semantics_path("demo").write_text(
+        yaml.safe_dump(bad, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    issues = kb.semantics_lint("demo", dialect="sqlite")([kb.semantics_path("demo")])
+    assert any("重复定义" in i for i in issues)
+
+    result = GitKb(kb.kb_dir, enabled=True).commit(
+        "demo", "semantic: should-be-refused",
+        lint=kb.semantics_lint("demo", dialect="sqlite"))
+    assert result["committed"] is False
+    assert result["reason"] == "lint-failed"
+    assert "should-be-refused" not in _git(git_repo, "log", "--oneline").stdout
+
+
+# ── 优化 5: 结构化元数据 trailers ────────────────────────
+
+
+def test_commit_carries_trailers(git_repo: Path):
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+
+    result = GitKb(kb.kb_dir, enabled=True).commit(
+        "demo", "semantic: confirm metric x",
+        trailers={"Generator": "semantic.confirm", "Approved-by": "admin@x"})
+
+    assert result["committed"] is True
+    body = _git(git_repo, "log", "-1", "--format=%B").stdout
+    assert "Generator: semantic.confirm" in body
+    assert "Approved-by: admin@x" in body
+    trailers = _git(git_repo, "log", "-1", "--format=%(trailers)").stdout
+    assert "Generator:" in trailers and "Approved-by:" in trailers
+
+
+async def test_confirm_draft_records_actor(git_repo: Path):
+    kb = _kb_with_git(git_repo)
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    manager = SemanticManager(kb)
+    await manager.create_draft(
+        "demo", "metric", "upsert", "avg_amount",
+        {"expression": "AVG(loan.amount)"}, note="test")
+    draft = manager.drafts("demo")["pending"][0]
+    await manager.confirm_draft("demo", draft["id"], dialect="sqlite", actor="alice")
+
+    body = _git(git_repo, "log", "-1", "--format=%B").stdout
+    assert "Approved-by: alice" in body
+
+
+# ── 优化 3: history / rollback ───────────────────────────
+
+
+async def test_history_lists_commits(git_repo: Path):
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v1")
+    kb.semantics_path("demo").write_text(
+        "semantic_model:\n  - name: demo\n", encoding="utf-8")
+    GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v2")
+
+    history = await kb.git_history("demo")
+
+    assert len(history) >= 2
+    assert history[0]["subject"] == "semantic: v2"
+    assert history[1]["subject"] == "semantic: v1"
+    assert history[0]["sha"] and history[0]["author"]
+
+
+async def test_rollback_restores_previous_content(git_repo: Path):
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v1")
+    v1 = _git(git_repo, "log", "-1", "--format=%H").stdout.strip()
+    kb.semantics_path("demo").write_text(
+        "semantic_model:\n  - name: demo\n    metrics:\n      - name: m\n",
+        encoding="utf-8")
+    GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v2")
+
+    result = await kb.git_rollback("demo", v1, trailers={"Generator": "test"})
+
+    assert result["rolled_back"] is True
+    content = kb.semantics_path("demo").read_text(encoding="utf-8")
+    assert "metrics" not in content  # 回到 v1 状态
+    assert _git(git_repo, "log", "-1", "--format=%B").stdout.strip().startswith("kb rollback")
+
+
+async def test_rollback_bad_sha_fails(git_repo: Path):
+    kb = _kb_with_git(git_repo)
+    kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
+    GitKb(kb.kb_dir, enabled=True).commit("demo", "semantic: v1")
+
+    result = await kb.git_rollback("demo", "deadbeef" * 5)
+
+    assert result["rolled_back"] is False
+    assert result["reason"] == "bad-sha"
+
+
+# ── 优化 4: 原子提交(一次逻辑变更 = 一条 commit) ────────
+
+
+async def test_confirm_is_single_atomic_commit(git_repo: Path):
+    """confirm 同时写 semantics.yml + semantic_drafts.yml → 一条 commit。"""
+    kb = _kb_with_git(git_repo)
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    manager = SemanticManager(kb)
+    await manager.create_draft(
+        "demo", "metric", "upsert", "atomic_m",
+        {"expression": "SUM(loan.amount)"}, note="test")
+    before = _git(git_repo, "log", "--oneline").stdout.count("\n") + 1
+    draft = manager.drafts("demo")["pending"][0]
+    await manager.confirm_draft("demo", draft["id"], dialect="sqlite")
+
+    after = _git(git_repo, "log", "--oneline").stdout.count("\n") + 1
+    assert after == before + 1
+    # 一条 commit 同时包含两个文件
+    files = _git(git_repo, "log", "-1", "--name-only", "--format=").stdout.split()
+    assert any(f.endswith("semantics.yml") for f in files)
+    assert any(f.endswith("semantic_drafts.yml") for f in files)
