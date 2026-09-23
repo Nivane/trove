@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trove.api.deps import get_current_user, require_datasource
+from trove.api.deps import check_api_rate, get_current_user, require_datasource
 from trove.api.schemas import SemanticQueryRequest
 from trove.services.semantic_layer.query import (
     SemanticQuery,
@@ -59,6 +59,7 @@ async def semantic_query(
     body: SemanticQueryRequest,
     request: Request,
     user: dict = Depends(get_current_user),
+    _rate: None = Depends(check_api_rate),
 ) -> dict[str, Any]:
     ds = await require_datasource(request, body.datasource, user)
     kb = _kb(request)

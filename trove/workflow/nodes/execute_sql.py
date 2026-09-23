@@ -38,8 +38,9 @@ def make_execute_sql(
     timeout_ms: int = 30000,
     max_retries: int = 10,
     lineage=None,
-    explain_row_guard: bool = False,
+    explain_row_guard: bool = True,
     explain_max_rows: int = 50_000_000,
+    explain_hard_max_rows: int = 1_000_000_000,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -51,6 +52,11 @@ def make_execute_sql(
             once exhausted, failures degrade gracefully via state.error.
         lineage: Optional LineageService — successful queries are recorded
             as downstream (consumer) lineage facts for the datasource.
+        explain_row_guard: EXPLAIN 行数估算守卫开关(默认开)。执行前
+            EXPLAIN 估算最重算子行数,超 ``explain_max_rows`` 打回 gen_sql
+            加 LIMIT/收窄;超 ``explain_hard_max_rows`` 直接拒绝。
+        explain_max_rows: 软上限——超过则打回重生成(仍可能修正后执行)。
+        explain_hard_max_rows: 硬上限——超过直接拒绝(不烧 LLM 重生成)。
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -91,17 +97,35 @@ def make_execute_sql(
                 return _compile_drift_failure(state, max_retries)
 
         # EXPLAIN 行数估算守卫(fail-open):执行前 EXPLAIN 估算最重算子
-        # 行数,超上限打回 gen_sql 加 LIMIT/收窄。无法解析方言/EXPLAIN
-        # 失败/未超限 → 放行,不阻断链路。
+        # 行数,按三档处置——未超软限放行;超软限打回 gen_sql 加 LIMIT/收窄;
+        # 超硬限直接拒绝(不烧 LLM 重生成循环)。无法解析方言/EXPLAIN
+        # 失败 → 放行,不阻断链路(真正边界在数据库侧只读角色 + LIMIT)。
         if explain_row_guard and connectors is not None:
             try:
                 plan = await connectors.explain(state.sql, state.datasource or None)
-                from trove.services.sql.row_guard import is_over_limit
+                from trove.services.sql.row_guard import estimate_max_rows
 
-                if is_over_limit(state.dialect, plan, explain_max_rows):
+                est = estimate_max_rows(state.dialect, plan)
+                if est is not None and est > explain_hard_max_rows:
                     logger.info(
-                        "row guard hit for %r: est > %d",
-                        state.question[:80], explain_max_rows,
+                        "row guard HARD hit for %r: est %d > hard cap %d",
+                        state.question[:80], est, explain_hard_max_rows,
+                    )
+                    return {
+                        "error": (
+                            f"[ERR:ROW_GUARD] The EXPLAIN plan estimates "
+                            f"{est} rows — far beyond the {explain_hard_max_rows}-row "
+                            "hard cap. This query would scan an unbounded result "
+                            "set, so it was not executed."
+                        ),
+                        "columns": [],
+                        "rows": [],
+                        "row_count": -1,
+                    }
+                if est is not None and est > explain_max_rows:
+                    logger.info(
+                        "row guard hit for %r: est %d > soft cap %d",
+                        state.question[:80], est, explain_max_rows,
                     )
                     return _execution_failure(
                         state,

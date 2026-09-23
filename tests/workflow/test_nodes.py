@@ -1548,6 +1548,62 @@ class TestExecuteSQLCompileDrift:
         ))
         assert update["row_count"] == 1  # 未走 drift 门,正常执行(聚合 1 行)
 
+
+class TestExecuteSQLRowGuard:
+    """EXPLAIN 行数守卫三档处置:放行 / 打回加 LIMIT / 硬限直接拒绝。"""
+
+    class _FakeConnectors:
+        """mysql 方言的 EXPLAIN 表格行;execute 记录是否真的执行过。"""
+
+        dialect = "mysql"
+
+        def __init__(self, est_rows):
+            self._rows = [(1, "ALL", "t", est_rows)]
+            self.executed = 0
+
+        async def explain(self, sql, datasource=None):
+            from trove.core.types import QueryResult
+
+            return QueryResult(
+                columns=["id", "select_type", "table", "rows"],
+                rows=self._rows,
+            )
+
+        async def execute(self, sql, datasource=None):
+            self.executed += 1
+            from trove.core.types import QueryResult
+
+            return QueryResult(columns=["a"], rows=[["x"]], row_count=1)
+
+    async def test_below_soft_cap_executes(self):
+        node = make_execute_sql(self._FakeConnectors(1_000), explain_row_guard=True,
+                                explain_max_rows=50_000_000, explain_hard_max_rows=1_000_000_000)
+        update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
+        assert update["row_count"] == 1
+
+    async def test_above_soft_cap_feeds_back_for_narrowing(self):
+        node = make_execute_sql(self._FakeConnectors(100_000_000), explain_row_guard=True,
+                                explain_max_rows=50_000_000, explain_hard_max_rows=1_000_000_000)
+        update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
+        assert "error" not in update
+        assert "ROW_GUARD" in update["error_feedback"]
+        assert update["retry_count"] == 1
+
+    async def test_above_hard_cap_rejects_without_llm_retry(self):
+        node = make_execute_sql(self._FakeConnectors(5_000_000_000), explain_row_guard=True,
+                                explain_max_rows=50_000_000, explain_hard_max_rows=1_000_000_000)
+        update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
+        # 硬限:直接 error,不打回 gen_sql(不烧 LLM 重生成预算)
+        assert "ROW_GUARD" in update["error"]
+        assert "error_feedback" not in update
+        assert "not executed" in update["error"]
+
+    async def test_guard_off_skips_explain(self):
+        connectors = self._FakeConnectors(5_000_000_000)
+        node = make_execute_sql(connectors, explain_row_guard=False)
+        update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
+        assert update["row_count"] == 1
+
     async def test_partial_skeleton_preserved_allows_added_projection(
             self, sqlite_registry):
         """partial 骨架:join/过滤/分组保留 + 投影补缺 → 不触发 drift,照常执行。"""
@@ -3443,6 +3499,19 @@ class TestSearchValues:
         data = json.loads(out)
         assert data["ok"] and data["hits"] == {}
 
+    async def test_quote_keyword_cannot_break_out_of_literal(self, sqlite_registry):
+        """keyword 含单引号不得逃逸出 LIKE 字面量(注入守卫)。
+
+        ``x' OR 1=1 -- `` 若未翻倍转义会闭合字符串字面量、把 ``OR 1=1``
+        变成真实条件(全表命中);转义后按字面匹配 → 0 命中。
+        """
+        assert _like_pattern("x' OR 1=1 -- ") == "%x'' OR 1=1 -- %"
+        out = await search_values(
+            sqlite_registry, "students", "x' OR 1=1 -- ", column="county",
+        )
+        data = json.loads(out)
+        assert data["ok"] and data["values"] == []
+
     async def test_unknown_table_and_column_fold_to_error(self, sqlite_registry):
         out = await search_values(sqlite_registry, "missing", "x")
         assert json.loads(out)["ok"] is False
@@ -3901,6 +3970,48 @@ class TestCatalogOnDemand:
         assert "catalog" not in names
         assert "probe_query" not in names
         assert "validate_sql" in names
+
+    async def test_catalog_tools_role_gated(self, sqlite_registry):
+        """catalog 工具 ACL:仅 analyst/admin 角色可见;'user' 被裁剪。
+
+        之前 role_resolver 未接线 → 所有角色的 agent 都能拿到物理 schema
+        探索工具;现在按 roles 过滤(见 build_sql_registry 的 roles 参数)。
+        """
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        # analyst / admin:发现工具可见,调用后三件套解锁
+        for roles in (["analyst"], ["admin"], ["analyst", "admin"]):
+            registry = build_sql_registry(
+                sqlite_registry, "How many students?", "en", "sqlite",
+                complexity="complex", roles=roles,
+            )
+            names = [d["function"]["name"] for d in registry.defs()]
+            assert "catalog" in names, roles
+            await registry.handlers()["catalog"]({"target": "confirm county"})
+            names2 = [d["function"]["name"] for d in registry.defs()]
+            assert {"search_values", "lookup_schema", "explain_plan"} <= set(names2), roles
+
+        # 普通 user:发现工具与三件套全部不可见,handlers 里也不存在
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="complex", roles=["user"],
+        )
+        names = [d["function"]["name"] for d in registry.defs()]
+        assert "catalog" not in names
+        assert "search_values" not in names
+        assert "lookup_schema" not in names
+        assert "explain_plan" not in names
+        handlers = registry.handlers()
+        assert "catalog" not in handlers
+        assert "search_values" not in handlers
+
+        # 未启用角色过滤(None)保持旧行为:全部可见
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="complex",
+        )
+        names = [d["function"]["name"] for d in registry.defs()]
+        assert "catalog" in names
 
     async def test_system_prompt_no_tool_defs_duplication(self):
         """system 模板瘦身:不再内嵌工具描述(职责回到工具定义本身)。"""

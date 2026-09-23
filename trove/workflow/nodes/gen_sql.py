@@ -845,8 +845,16 @@ def _like_pattern(keyword: str) -> str:
 
     用 ``!`` 作 ESCAPE 字符而非反斜杠:反斜杠在 MySQL(解释转义)与
     SQLite(不解释转义)的字面量处理不一致,``!`` 在两方言都是单字符。
+    单引号按 SQL 字面量规则翻倍转义(ESCAPE 子句只对 %/_ 生效,引号必须
+    翻倍处理)——否则 keyword 里的 ``'`` 会闭合 LIKE 字符串字面量造成注入
+    (``x' OR 1=1 -- `` 会从字面量里逃逸成真实条件)。
     """
-    escaped = keyword.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    escaped = (
+        keyword.replace("'", "''")
+        .replace("!", "!!")
+        .replace("%", "!%")
+        .replace("_", "!_")
+    )
     return f"%{escaped}%"
 
 

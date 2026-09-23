@@ -212,7 +212,12 @@ async def upload_file(
     import aiosqlite
     conn = await aiosqlite.connect(str(db_path))
     try:
-        col_defs = ", ".join(f'"{c}" {t}' for c, t in zip(header, col_types))
+        # 列名是上传文件里的外部输入:引号标识符内按 SQLite 规则翻倍转义
+        # 内嵌双引号,否则 header 里的 ``"`` 会闭合标识符并注入 DDL。
+        col_defs = ", ".join(
+            f'"{c.replace(chr(34), chr(34) * 2)}" {t}'
+            for c, t in zip(header, col_types)
+        )
         await conn.execute(f"CREATE TABLE data ({col_defs})")
         placeholders = ", ".join(["?"] * cols)
         for row in rows:

@@ -122,3 +122,39 @@ async def require_datasource(
     elif datasource and datasource != default_name:
         raise HTTPException(status_code=403, detail=f"datasource not allowed: {datasource}")
     return target
+
+
+async def check_api_rate(
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> None:
+    """业务端点限流(按 user 的进程内令牌桶 + 日历日配额)。
+
+    配置读 ``app.state.config``(admin 设置热更新即时生效);0 = 关闭。
+    限流命中 → 429 + Retry-After。先过每分钟桶,再计日配额(被限流的
+    请求不计入当日配额)。
+    """
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    config = getattr(request.app.state, "config", None)
+    if limiter is None:
+        return
+    rpm = getattr(config, "api_rate_per_minute", 0) if config is not None else 0
+    daily = getattr(config, "api_daily_quota", 0) if config is not None else 0
+    if rpm <= 0 and daily <= 0:
+        return
+    key = f"user:{user['id']}"
+    if rpm > 0:
+        allowed, retry_after = limiter.allow(key, rpm)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="too many requests — slow down",
+                headers={"Retry-After": str(retry_after)},
+            )
+    if daily > 0:
+        allowed_daily, _reset = limiter.allow_daily(key, daily)
+        if not allowed_daily:
+            raise HTTPException(
+                status_code=429,
+                detail="daily request quota exceeded — try again tomorrow",
+            )

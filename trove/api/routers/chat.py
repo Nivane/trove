@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trove.api.deps import get_current_user, require_datasource
+from trove.api.deps import check_api_rate, get_current_user, require_datasource
 from trove.api.schemas import ChatRequest, RenameRequest, ResumeRequest, SessionCreateResponse
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
@@ -164,7 +164,8 @@ async def clear_session(
 
 @router.post("/chat")
 async def chat(
-    body: ChatRequest, request: Request, user: dict = Depends(get_current_user)
+    body: ChatRequest, request: Request, user: dict = Depends(get_current_user),
+    _rate: None = Depends(check_api_rate),
 ):
     manager = _manager(request)
     if body.session_id:

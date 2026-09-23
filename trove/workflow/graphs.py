@@ -1731,7 +1731,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -1909,7 +1909,7 @@ def _build_fixed(
     g.add_node("gen_generate", make_gen_generate(services, subgraph, agentic=agentic))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows)))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))

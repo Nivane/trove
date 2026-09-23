@@ -158,11 +158,22 @@ class AgentConfig:
     # 结果限制(管理台可配):答案表格单次展示行数 / 查询结果行数上限
     result_display_rows: int = 50
     result_max_rows: int = 1000
-    # EXPLAIN 行数估算守卫(默认关,开则每次最终执行前 EXPLAIN 估算最重算子
-    # 行数,超 explain_max_rows 打回 gen_sql 加 LIMIT/收窄。fail-open:无法
-    # 解析方言/EXPLAIN 失败 → 放行)。见 trove/services/sql/row_guard.py。
-    explain_row_guard: bool = False
+    # API 速率限制(进程内令牌桶,按 user):每分钟请求数 / 每日请求配额。
+    # 0 = 关闭。防单用户耗尽 LLM 成本(见 trove/services/ratelimit.py)。
+    api_rate_per_minute: int = 30
+    api_daily_quota: int = 300
+    # EXPLAIN 行数估算守卫(默认开):每次最终执行前 EXPLAIN 估算最重算子
+    # 行数,按三档处置——
+    #   est ≤ explain_max_rows:放行;
+    #   explain_max_rows < est ≤ explain_hard_max_rows:打回 gen_sql 加
+    #     LIMIT/收窄后重生成;
+    #   est > explain_hard_max_rows:直接拒绝(不烧 LLM 重生成循环)。
+    # fail-open(无法解析方言/EXPLAIN 失败 → 放行):本守卫是纵深防御的
+    # 体验层,不是安全边界(真正的边界在数据库侧只读角色 + LIMIT/LEAST)。
+    # 见 trove/services/sql/row_guard.py。
+    explain_row_guard: bool = True
     explain_max_rows: int = 50_000_000
+    explain_hard_max_rows: int = 1_000_000_000
     # Prompt caching:对支持显式断点的 provider(anthropic)在 system / 稳定前缀
     # / 工具定义上打 cache_control 断点;OpenAI 系自动缓存无需断点,其他
     # provider 由 gateway 剥掉断点(行为等价,只是没有缓存收益)。默认开——
@@ -428,9 +439,13 @@ class ConfigLoader:
             result_cache=agent_section.get("result_cache", False),
             result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
             result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),
-            explain_row_guard=bool(agent_section.get("explain_row_guard", False)),
+            api_rate_per_minute=max(0, int(agent_section.get("api_rate_per_minute", 30))),
+            api_daily_quota=max(0, int(agent_section.get("api_daily_quota", 300))),
+            explain_row_guard=bool(agent_section.get("explain_row_guard", True)),
             explain_max_rows=max(
                 1000, int(agent_section.get("explain_max_rows", 50_000_000))),
+            explain_hard_max_rows=max(
+                1000, int(agent_section.get("explain_hard_max_rows", 1_000_000_000))),
             prompt_caching=agent_section.get("prompt_caching", True),
             context_budget_tokens={
                 str(k): max(0, int(v))

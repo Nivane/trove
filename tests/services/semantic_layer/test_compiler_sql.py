@@ -262,6 +262,49 @@ def test_enum_value_list_normalized():
     assert "client.gender IN ('F', 'M')" in result.sql
 
 
+def test_literal_canonicalizes_never_passes_through():
+    """值字面量规范重排:用户文本绝不能原样透传成 SQL 片段。
+
+    "已字面量形态"的字符串(如 ``' OR 1=1 -- '``)若原样嵌入,会在
+    ``expr op value`` 位置构成注入面;现在一律剥引号→反转义→重新转义,
+    输出恒为单个规范字面量。
+    """
+    from trove.services.semantic_layer.compiler import _literal
+
+    assert _literal("'C'") == "'C'"
+    assert _literal("'O''Brien'") == "'O''Brien'"
+    assert _literal("' OR 1=1 -- '") == "' OR 1=1 -- '"
+    assert _literal("' OR '1'='1") == "''' OR ''1''=''1'"
+    assert _literal("'x' UNION SELECT 1 -- '") == "'''x'' UNION SELECT 1 -- '''"
+    assert _literal("('F', 'M')") == "('F', 'M')"
+    assert _literal("(1, 2)") == "(1, 2)"
+    assert _literal("('F') OR 1=1") == "'(''F'') OR 1=1'"
+    assert _literal("1") == "1"
+    assert _literal("NULL") == "NULL"
+    assert _literal("F") == "'F'"
+
+
+def test_compiled_filter_with_malicious_value_stays_single_literal():
+    """恶意 filter 值经编译后 WHERE 仍是单个比较,不产出额外条件。"""
+    from sqlglot import exp, parse_one
+
+    plan = {
+        "tables": ["loan"],
+        "aggregation": "count(loan.loan_id)",
+        "answer_columns": ["count(loan.loan_id)"],
+        "conditions": [{"field": "loan.status", "op": "=",
+                        "value": "' OR 1=1 -- '"}],
+    }
+    result = _compile(plan, ["loan"])
+    assert result is not None
+    tree = parse_one(result.sql)
+    where = tree.find(exp.Where)
+    eqs = list(where.find_all(exp.EQ)) if where else []
+    ors = list(where.find_all(exp.Or)) if where else []
+    assert len(eqs) == 1 and not ors
+    assert "loan.status = ' OR 1=1 -- '" in result.sql
+
+
 def test_enum_value_unresolved_is_soft_partial_compile():
     """值不在声明词表 → 软 MISS(分级逃生梯):不再整体拒绝。
 

@@ -306,6 +306,24 @@ async def create_app_components(
     # ── Session Manager ───────────────────────────────────
     # Langfuse 采用 per-run handler(确定性 trace_id = run_id,见
     # SessionManager._run_config)——不在此创建全局 handler,避免双 trace。
+
+    async def _resolve_user_roles(user_id: str) -> list[str]:
+        """user_id → 工具 ACL 角色(gen_sql catalog 工具的可见性裁决)。
+
+        admin 隐含 analyst 能力;其他用户按其声明角色返回(默认 'user'
+        拿不到 search_values/lookup_schema/explain_plan 等物理 schema
+        探索工具)。查询失败 → 空角色 = 全部工具不可见(保守 fail-closed)。
+        """
+        try:
+            row = await auth.store.get_user_by_id(int(user_id))
+        except (TypeError, ValueError):
+            return []
+        if row is None:
+            return []
+        if row.get("role") == "admin":
+            return ["admin", "analyst"]
+        return [row.get("role") or "user"]
+
     session_manager = SessionManager(
         config=config,
         session_store=session_store,
@@ -314,6 +332,7 @@ async def create_app_components(
         kb=kb,
         connectors=connector_registry,
         memory=memory,
+        role_resolver=_resolve_user_roles,
     )
 
     # ── Maintenance (retention sweeps: daemon tick + serve lifespan) ──
@@ -330,6 +349,11 @@ async def create_app_components(
     jobs = JobsService(JobStore(config.home))
     scheduler = SchedulerRunner(session_manager, jobs, lang=config.language)
 
+    # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
+    from trove.services.ratelimit import RateLimiter
+
+    rate_limiter = RateLimiter()
+
     return {
         "config": config,
         "session_store": session_store,
@@ -341,6 +365,7 @@ async def create_app_components(
         "config_store": config_store,
         "catalog_service": catalog_service,
         "kb": kb,
+        "rate_limiter": rate_limiter,
         "user_facts": user_facts,
         "memory": memory,
         "indexer": indexer,
@@ -656,36 +681,53 @@ def mcp_parser() -> argparse.ArgumentParser:
     return parser
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+async def _mcp_identity_for(
+    transport: str, host: str, token: str | None, auth,
+) -> dict[str, Any] | None:
+    """MCP 通道鉴权:网络绑定必须带 token,且 token 必须是真实用户 token。
+
+    返回解析出的用户 dict(HTTP transport + token 已配置时);stdio 本地
+    挂载或 loopback + 无 token → None(不设限)。
+
+    Raises:
+        SystemExit: 非 loopback 网络绑定无 token,或 token 无效。
+    """
+    if transport == "stdio":
+        return None
+    if host not in _LOOPBACK_HOSTS and not token:
+        raise SystemExit(
+            "MCP network bind requires --token (bearer auth) — refusing "
+            "to expose an open MCP endpoint. Use stdio for local mounts."
+        )
+    if not token:
+        return None
+    identity = None
+    if auth is not None:
+        identity = await auth.resolve_token(token)
+    if identity is None:
+        raise SystemExit(
+            "MCP --token is not a valid Trove user token — create one in "
+            "the admin UI (admin → users → tokens) and pass it here."
+        )
+    return identity
+
+
 def _build_mcp_auth_middleware(token: str | None):
-    """Optional bearer-token gate for HTTP transports.
+    """Bearer-token gate for MCP HTTP transports.
 
     Returns a Starlette middleware that enforces 'Authorization: Bearer
     <token>' on every request when ``token`` is set; passes through
-    untouched when no token is configured. health/metadata endpoints are
-    not exempted so that unauthorized clients fail fast.
+    untouched when no token is configured. Network binds are required to
+    set ``--token`` (see async_main_mcp), and the token must resolve to a
+    real Trove user so the server can enforce per-user datasource grants.
+    health/metadata endpoints are not exempted so that unauthorized
+    clients fail fast.
     """
     if not token:
         return None
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.middleware import Middleware
-    from starlette.responses import JSONResponse
-
-    expected = f"Bearer {token}"
-
-    class _BearerMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            auth = request.headers.get("Authorization", "")
-            if auth != expected:
-                return JSONResponse(
-                    status_code=401,
-                    content={"error": "unauthorized: missing or invalid bearer token"},
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return await call_next(request)
-
-    return Middleware(_BearerMiddleware)
-
-
 async def async_main_mcp(argv: list[str]) -> None:
     """Async main for 'trove mcp' (MCP server over stdio / sse / streamable-http)."""
     args = mcp_parser().parse_args(argv)
@@ -694,8 +736,13 @@ async def async_main_mcp(argv: list[str]) -> None:
         components = await create_app_components(args, config, checkpointer)
         from trove.mcp.server import build_mcp_server
 
-        server = build_mcp_server(components)
         transport = args.transport
+        # 网络绑定 = 安全边界:非 loopback 必须带 bearer token(fail-closed),
+        # 不再默认裸奔;stdio 本地挂载保持无鉴权(本机进程可信)。
+        identity = await _mcp_identity_for(
+            transport, args.host, args.token, components.get("auth"),
+        )
+        server = build_mcp_server(components, identity=identity)
         try:
             if transport == "stdio":
                 await server.run_stdio_async()

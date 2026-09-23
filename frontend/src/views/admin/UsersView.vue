@@ -220,6 +220,7 @@
         <el-form-item :label="t('role', ui.lang)">
           <el-select v-model="dlgForm.role" class="ds-select">
             <el-option :label="t('userRole', ui.lang)" value="user" />
+            <el-option :label="t('analystRole', ui.lang)" value="analyst" />
             <el-option :label="t('adminRole', ui.lang)" value="admin" />
           </el-select>
         </el-form-item>

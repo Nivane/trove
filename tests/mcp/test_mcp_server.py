@@ -275,3 +275,135 @@ async def test_ask_data_prompt(mcp_components):
         server, "ask_data", datasource="test_db", question="有多少学生?",
     )
     assert "test_db" in text and "有多少学生?" in text
+
+
+# ── 权限:非 admin identity 按数据源 grants 过滤 ──────────────────
+
+class _FakeAuth:
+    """最小 auth 替身:get_datasources 按 user_id 返回 grants。"""
+
+    def __init__(self, grants_by_user: dict):
+        self._grants = grants_by_user
+
+    async def get_datasources(self, user_id):
+        return list(self._grants.get(user_id, []))
+
+
+def _server_with_identity(components, auth, identity):
+    from trove.mcp.server import build_mcp_server
+
+    return build_mcp_server({**components, "auth": auth}, identity=identity)
+
+
+async def test_non_admin_with_grants_can_query_granted_only(mcp_components):
+    """非 admin 身份:ask_data 只能查 grants 允许的数据源。"""
+    auth = _FakeAuth({1: ["test_db"]})
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "user", "username": "bob"},
+    )
+    ok = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?", datasource="test_db")
+    assert ok["sql"] and ok["row_count"] == 5
+
+    blocked = await _invoke(server, "ask_data",
+        question="count rows", datasource="other_db")
+    assert blocked.get("error") == "datasource not allowed"
+
+
+async def test_non_admin_list_scoped_by_grants(mcp_components):
+    """list_datasources / datasources_resource 只列 grants 内的源。"""
+    auth = _FakeAuth({1: ["test_db"]})
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "user", "username": "bob"},
+    )
+    payload = await _invoke(server, "list_datasources")
+    assert {d["name"] for d in payload["datasources"]} == {"test_db"}
+
+    text = await _read(server, "trove://datasources")
+    assert "test_db" in text
+
+
+async def test_non_admin_kb_status_and_resources_gated(mcp_components):
+    auth = _FakeAuth({1: ["test_db"]})
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "user", "username": "bob"},
+    )
+    # grants 内 → 正常状态
+    ok = await _invoke(server, "kb_status", datasource="test_db")
+    assert ok["connected"] is True
+    # grants 外 → 拒绝而非泄露状态
+    denied = await _invoke(server, "kb_status", datasource="other_db")
+    assert "not allowed" in denied.get("error", "")
+    text = await _read(server, "trove://other_db/semantics")
+    assert "datasource not allowed" in text
+
+
+async def test_admin_identity_unrestricted(mcp_components):
+    """admin identity:与无身份一致,全量可见可答。"""
+    auth = _FakeAuth({1: []})
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "admin", "username": "root"},
+    )
+    payload = await _invoke(server, "list_datasources")
+    assert "test_db" in {d["name"] for d in payload["datasources"]}
+    ok = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?", datasource="test_db")
+    assert ok["sql"] and ok["row_count"] == 5
+
+
+async def test_empty_grants_only_default_datasource(mcp_components):
+    """空 grants(非 admin)→ 只放行默认数据源(与 require_datasource 同语义)。"""
+    auth = _FakeAuth({1: []})
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "user", "username": "bob"},
+    )
+    # 省略 datasource → 默认源
+    ok = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?")
+    assert ok["sql"] and ok["row_count"] == 5
+    # 显式指定非默认源 → 拒绝
+    blocked = await _invoke(server, "ask_data",
+        question="count rows", datasource="other_db")
+    assert blocked.get("error") == "datasource not allowed"
+
+
+async def test_identity_without_auth_default_only(mcp_components):
+    """有身份但缺 auth 服务 → 按"空 grants"处理:只放行默认源。"""
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components, identity={"id": 1, "role": "user"})
+    payload = await _invoke(server, "list_datasources")
+    assert {d["name"] for d in payload["datasources"]} == {"test_db"}
+    ok = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?")
+    assert ok["sql"] and ok["row_count"] == 5
+    blocked = await _invoke(server, "ask_data",
+        question="count rows", datasource="other_db")
+    assert blocked.get("error") == "datasource not allowed"
+
+
+# ── 通道鉴权:trove mcp --token 解析(fail-closed)────────────────
+
+class _TokenAuth:
+    async def resolve_token(self, raw):
+        return {"id": 1, "role": "admin"} if raw == "valid" else None
+
+
+async def test_mcp_identity_for():
+    from trove.main import _mcp_identity_for
+
+    # stdio 本地挂载 → 无身份(不设限)
+    assert await _mcp_identity_for("stdio", "127.0.0.1", None, None) is None
+    # loopback + 无 token → 允许(本地开发),但不解析身份
+    assert await _mcp_identity_for("sse", "127.0.0.1", None, None) is None
+    # 非 loopback 网络绑定 + 无 token → 拒绝(fail-closed)
+    with pytest.raises(SystemExit):
+        await _mcp_identity_for("sse", "0.0.0.0", None, None)
+    # 无效 token → 拒绝
+    with pytest.raises(SystemExit):
+        await _mcp_identity_for("sse", "0.0.0.0", "bad", _TokenAuth())
+    # 有效 token → 解析出身份(供 grants 校验)
+    ident = await _mcp_identity_for("sse", "0.0.0.0", "valid", _TokenAuth())
+    assert ident == {"id": 1, "role": "admin"}
+    # loopback + token → 同样解析身份(可选鉴权)
+    assert await _mcp_identity_for("sse", "127.0.0.1", "valid", _TokenAuth()) is not None

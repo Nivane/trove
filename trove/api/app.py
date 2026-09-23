@@ -141,15 +141,22 @@ async def _lifespan(app: FastAPI):
                     await task
 
 
-def create_app(components: dict) -> FastAPI:
-    """Build the FastAPI app from a components dict (see main.py)."""
+def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
+    """Build the FastAPI app from a components dict (see main.py).
+
+    ``allow_null_auth`` — opt-in escape hatch for embedded/test callers
+    that intentionally run every request as a synthetic local admin.
+    Default False: an app without an ``auth`` component fails closed
+    (RuntimeError) so nobody accidentally ships auth-disabled. ``trove
+    serve`` always injects a real AuthService and never needs this flag.
+    """
     app = FastAPI(title="Trove API", version="0.1.0", docs_url="/v1/docs", lifespan=_lifespan)
     for name, value in components.items():
         setattr(app.state, name, value)
 
     # Auth: real service → mount /v1/auth (+ /v1/admin when present);
-    # missing → NullAuth fallback so embedded/stray callers keep working
-    # (every request runs as synthetic local admin, loud one-time warning).
+    # missing → refuse to start unless the caller explicitly opted into
+    # the NullAuth local-admin fallback (embedded/test only).
     from trove.api.deps import NullAuth
     from trove.api.routers import admin as admin_router
     from trove.api.routers import auth as auth_router
@@ -157,6 +164,12 @@ def create_app(components: dict) -> FastAPI:
 
     auth = components.get("auth")
     if auth is None:
+        if not allow_null_auth:
+            raise RuntimeError(
+                "create_app requires an 'auth' component (AuthService) — "
+                "refusing to start auth-disabled. Embedded/test callers that "
+                "intend the local-admin fallback must pass allow_null_auth=True."
+            )
         auth = NullAuth()
         app.state.auth = auth
         logger.warning(

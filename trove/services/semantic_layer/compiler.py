@@ -749,18 +749,99 @@ def _qualified(tbl: str, expr: str, force_qualify: bool = True) -> str:
     return f"{tbl}.{ex}"
 
 
-_ALREADY_LITERAL_RE = re.compile(
-    r"^\s*(?:'[^']*'|\"[^\"]*\"|[+-]?\d+(?:\.\d+)?|\([^)]*\)|NULL|TRUE|FALSE|true|false)\s*$",
-    re.I,
-)
+def _split_value_list(text: str) -> tuple[list[str], bool]:
+    """按顶层逗号拆括号值列表(``'C', 'D'``),尊重引号内的逗号与翻倍引号。
+
+    ``''`` 成对出现视为引号串内的转义(不结束串)。括号不配对或出现空
+    元素 → ``([], False)``,调用方整体拒绝。
+    """
+    parts: list[str] = []
+    cur: list[str] = []
+    i, n = 0, len(text)
+    quote: str | None = None
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            if ch == quote:
+                if i + 1 < n and text[i + 1] == quote:
+                    cur.append(ch)
+                    cur.append(ch)
+                    i += 2
+                    continue
+                quote = None
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            cur.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            parts.append("".join(cur).strip())
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    if quote is not None:
+        return [], False
+    parts.append("".join(cur).strip())
+    if any(p == "" for p in parts):
+        return [], False
+    return parts, True
+
+
+def _canonical_literal(s: str) -> str | None:
+    """把"已带字面量形态"的字符串规范重排为转义后的 SQL 字面量。
+
+    支持:引号串 ``'C'``/``"C"``、数值、``NULL/TRUE/FALSE``、括号值列表
+    ``('C', 'D')``(逐元素递归经 ``_literal`` 规范化)。任一形态无法
+    安全解析 → None,调用方回退保守转义路径。
+
+    这是 ``_literal`` 的安全边界:用户文本**绝不**被当作 SQL 片段原样
+    透传——旧实现靠正则整串匹配后放行,一旦匹配(如 ``' OR 1=1 -- '``)
+    即把用户字符串原封不动嵌进 SQL;现在一律剥引号 → 反转义 → 重新转义,
+    输出恒为单个规范字面量。
+    """
+    s = s.strip()
+    if not s:
+        return None
+    if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+        parts, ok = _split_value_list(s[1:-1])
+        if not ok:
+            return None
+        items: list[str] = []
+        for p in parts:
+            lit = _literal(p)
+            if lit is None:
+                return None
+            items.append(lit)
+        return "(" + ", ".join(items) + ")"
+    q = s[0]
+    if len(s) >= 2 and q in "'\"" and s[-1] == q:
+        body = s[1:-1]
+        if q == "'":
+            if body.count("'") % 2:
+                return None
+            body = body.replace("''", "'")
+        elif '"' in body:
+            # 双引号串内出现未转义引号 → 无法安全确认形态,保守拒绝
+            return None
+        return "'" + body.replace("'", "''") + "'"
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", s):
+        return s
+    if s.upper() in {"NULL", "TRUE", "FALSE"}:
+        return s.upper()
+    return None
 
 
 def _literal(value: Any) -> str:
     """WHERE 值字面量:字符串加单引号并转义,数值原样。
 
     plan 的 condition value 可能已带引号(``'C'``)、是值列表(``('C', 'D')``)
-    或数字——此时原样透传,避免二次加引号(``'('C', 'D')'`` 会把 IN 列表
-    变成字符串字面量,SQL 语义错误)。
+    或数字——这些形态经 :func:`_canonical_literal` 解析后**规范重排**,
+    其余一律保守转义加引号。绝不原样透传用户文本。
     """
     if value is None:
         return "NULL"
@@ -769,8 +850,9 @@ def _literal(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     s = str(value)
-    if _ALREADY_LITERAL_RE.match(s):
-        return s
+    canonical = _canonical_literal(s)
+    if canonical is not None:
+        return canonical
     return "'" + s.replace("'", "''") + "'"
 
 

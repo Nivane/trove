@@ -76,7 +76,10 @@ def test_lifespan_startup_runs_auth_purge():
     """Startup spawns a best-effort auth purge task even without a
     maintenance component (auth hygiene must not depend on retention)."""
     auth = _FakeAuth()
-    app = create_app({"session_manager": object(), "connector_registry": _FakeRegistry()})
+    app = create_app(
+        {"session_manager": object(), "connector_registry": _FakeRegistry()},
+        allow_null_auth=True,
+    )
     app.state.auth = auth
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200

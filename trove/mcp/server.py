@@ -24,6 +24,12 @@
 语义优先(Phase B)天然生效:无语义模型的数据源 ask_data 会明确拒绝并
 提示 /kb init;未覆盖查询 → 拒绝 + draft。``trove mcp`` 命令以 stdio
 transport 启动(供 Claude Code / 其他 MCP 客户端本地挂载)。
+
+**权限边界**:MCP 通道默认不带用户身份——stdio 本地挂载视作本机可信
+(等价 admin);HTTP transport 由 ``main.py`` 把 ``--token`` 解析为真实
+用户 token 后传入 ``identity``,本模块据此做数据源 grant 校验(与
+``api/deps.require_datasource`` 同语义:空 grants 只放行默认源,非空
+grants 是严格 allowlist)。identity 缺失时保持旧行为(不设限)。
 """
 from __future__ import annotations
 
@@ -34,8 +40,14 @@ from fastmcp import FastMCP
 _SESSION_CACHE_MAX = 200
 
 
-def build_mcp_server(components: dict) -> FastMCP:
-    """components(create_app_components 产物)→ 已注册工具的 FastMCP server。"""
+def build_mcp_server(
+    components: dict, identity: dict[str, Any] | None = None,
+) -> FastMCP:
+    """components(create_app_components 产物)→ 已注册工具的 FastMCP server。
+
+    ``identity`` — 调用者用户 dict(``{"id", "role", ...}``);None/role=admin
+    → 不设限(本地 stdio 等价 admin);非 admin → 数据源按 grants 过滤。
+    """
     session_manager = components["session_manager"]
     connector_registry = components["connector_registry"]
     kb = components["kb"]
@@ -58,13 +70,53 @@ def build_mcp_server(components: dict) -> FastMCP:
             sessions.pop(next(iter(sessions)), None)
         return sid, session
 
-    def _datasources_visible() -> list[dict[str, Any]]:
-        """已注册且有语义模型的数据源(语义优先:唯一可答边界 = semantics.yml)。"""
+    # ── 数据源授权(与 deps.require_datasource 同语义)────────────────
+    async def _granted() -> tuple[bool, set[str]]:
+        """(是否受限, 允许集)。受限=False → 不设限(admin/无身份)。
+
+        非 admin 身份:grants 非空 = 严格 allowlist;空 grants = 只放行默认
+        源(单数据源部署无需配 grant 即可用)。**有身份但无 auth 服务** →
+        受限且允许集为空,按"空 grants"语义处理(只放行默认源)——绝不把
+        拿不到授权依据的身份当作 admin 全放行。
+        """
+        if identity is None or identity.get("role") == "admin":
+            return False, set()
+        auth = components.get("auth")
+        if auth is None:
+            return True, set()
+        try:
+            grants = await auth.get_datasources(identity.get("id"))
+        except Exception:
+            return True, set()
+        return True, set(grants or [])
+
+    async def _authorize_datasource(datasource: str | None) -> str | None:
+        """解析并授权目标数据源;不允许 → None(调用方给友好拒绝)。"""
+        target = (datasource or "").strip() or connector_registry.default_name
+        if not target:
+            return None
+        restricted, allowed = await _granted()
+        if not restricted:
+            return target
+        if allowed:
+            return target if target in allowed else None
+        return target if target == connector_registry.default_name else None
+
+    async def _datasources_visible() -> list[dict[str, Any]]:
+        """已注册且有语义模型且当前身份可见的数据源。"""
+        restricted, allowed = await _granted()
+        default = connector_registry.default_name
         out: list[dict[str, Any]] = []
         for info in connector_registry.list_info():
             name = str(info.get("name") or "")
             if not name:
                 continue
+            if restricted:
+                if allowed:
+                    if name not in allowed:
+                        continue
+                elif name != default:
+                    continue
             try:
                 has_semantics = kb.semantics_path(name).exists()
             except Exception:
@@ -119,31 +171,36 @@ def build_mcp_server(components: dict) -> FastMCP:
     # 的工具底座;resources 只读、无副作用,客户端可静态拉取比对口径。
 
     @mcp.resource("trove://datasources")
-    def datasources_resource() -> str:
+    async def datasources_resource() -> str:
         """Connected & KB-initialized datasources (read-only inventory)."""
         lines = [
             f"- {d['name']} (has_semantics={d.get('has_semantics', False)})"
-            for d in _datasources_visible()
+            for d in await _datasources_visible()
         ]
         return "\n".join(lines) if lines else "(no answerable datasources)"
+
+    async def _resource_for(datasource: str, which: str) -> str:
+        ds = (datasource or "").strip()
+        if not _ds_name_safe(ds):
+            return "(invalid datasource name)"
+        if await _authorize_datasource(ds) is None:
+            return f"(datasource not allowed: {ds})"
+        path = (
+            kb.schema_notes_path(ds) if which == "schema" else kb.semantics_path(ds)
+        )
+        return _read_kb_file(path)
 
     @mcp.resource("trove://{datasource}/schema")
     async def schema_resource(datasource: str) -> str:
         """schema_notes.yml content for the datasource — table/column/metric
         annotation (read-only data, no side effects)."""
-        ds = (datasource or "").strip()
-        if not _ds_name_safe(ds):
-            return "(invalid datasource name)"
-        return _read_kb_file(kb.schema_notes_path(ds))
+        return await _resource_for(datasource, "schema")
 
     @mcp.resource("trove://{datasource}/semantics")
     async def semantics_resource(datasource: str) -> str:
         """semantics.yml content for the datasource — the OSSIE semantic model
         (datasets + metrics, the single answerability boundary) as read-only data."""
-        ds = (datasource or "").strip()
-        if not _ds_name_safe(ds):
-            return "(invalid datasource name)"
-        return _read_kb_file(kb.semantics_path(ds))
+        return await _resource_for(datasource, "semantics")
 
     # ── prompts(MCP 三原语之三:可复用模板——标准化的提示词工作流)─────────
     # 客户端可直接拉起这些模板,把"查数据源"的规范流程固化成提示词,
@@ -191,9 +248,19 @@ def build_mcp_server(components: dict) -> FastMCP:
         if not question:
             return {"error": "question is required"}
         sid, session = await _get_session(session_id)
+        target = await _authorize_datasource(datasource)
+        if target is None:
+            requested = (datasource or "").strip() or connector_registry.default_name
+            return {
+                "session_id": sid,
+                "error": "datasource not allowed",
+                "refusal": (
+                    f"datasource not allowed for the MCP identity: {requested}"
+                ),
+            }
         try:
             state = await session_manager.ask(
-                session=session, question=question, datasource=datasource,
+                session=session, question=question, datasource=target,
             )
         except Exception as e:
             return {"session_id": sid, "error": f"ask failed: {e}"}
@@ -209,17 +276,24 @@ def build_mcp_server(components: dict) -> FastMCP:
         }
 
     @mcp.tool()
-    def list_datasources() -> dict[str, Any]:
+    async def list_datasources() -> dict[str, Any]:
         """List datasources that are connected AND have a semantic model —
-        the ones answerable via ask_data (semantic-first: no model = not answerable)."""
-        return {"datasources": _datasources_visible()}
+        the ones answerable via ask_data (semantic-first: no model = not answerable).
+        Scoped to the caller's grants for a non-admin MCP identity."""
+        return {"datasources": await _datasources_visible()}
 
     @mcp.tool()
-    def kb_status(datasource: str) -> dict[str, Any]:
+    async def kb_status(datasource: str) -> dict[str, Any]:
         """Return connection / KB-init / semantic-model status for one datasource —
         use to decide whether to initialize the KB (kb init) first."""
         if not (datasource or "").strip():
             return {"error": "datasource is required"}
-        return _kb_status(datasource.strip())
+        ds = datasource.strip()
+        if await _authorize_datasource(ds) is None:
+            return {
+                "datasource": ds,
+                "error": f"datasource not allowed: {ds}",
+            }
+        return _kb_status(ds)
 
     return mcp

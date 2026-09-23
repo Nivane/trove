@@ -76,7 +76,7 @@ def test_lifespan_startup_sweep_runs_and_exits_clean():
     test exiting without exception/warning).
     """
     maint = _FakeMaintenance()
-    app = create_app(_components(maintenance=maint, interval_hours=24))
+    app = create_app(_components(maintenance=maint, interval_hours=24), allow_null_auth=True)
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
         _wait_until(lambda: maint.calls >= 1)  # startup sweep runs in background
@@ -85,15 +85,32 @@ def test_lifespan_startup_sweep_runs_and_exits_clean():
 
 def test_lifespan_without_maintenance_is_noop():
     """Shape B: api-test shape (no maintenance/config) -> zero side effects."""
-    app = create_app({"session_manager": object(), "connector_registry": _FakeRegistry()})
+    app = create_app(
+        {"session_manager": object(), "connector_registry": _FakeRegistry()},
+        allow_null_auth=True,
+    )
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
+
+
+def test_create_app_without_auth_fails_closed():
+    """缺 auth 组件默认拒绝启动(不再静默降级为 local admin)。"""
+    import pytest
+
+    with pytest.raises(RuntimeError, match="auth"):
+        create_app({"session_manager": object(), "connector_registry": _FakeRegistry()})
+    # 显式 opt-in 才走 NullAuth 本地管理员兜底
+    app = create_app(
+        {"session_manager": object(), "connector_registry": _FakeRegistry()},
+        allow_null_auth=True,
+    )
+    assert app.state.auth is not None
 
 
 def test_lifespan_interval_zero_startup_sweep_only():
     """Shape C: interval<=0 -> startup sweep still runs once, no periodic task."""
     maint = _FakeMaintenance()
-    app = create_app(_components(maintenance=maint, interval_hours=0))
+    app = create_app(_components(maintenance=maint, interval_hours=0), allow_null_auth=True)
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
         _wait_until(lambda: maint.calls >= 1)
@@ -115,7 +132,7 @@ def test_lifespan_periodic_sweep_fires(monkeypatch):
         await real_sleep(0.05 if delay >= 3600 else delay)
 
     monkeypatch.setattr("trove.api.app.asyncio.sleep", short_sleep)
-    app = create_app(_components(maintenance=maint, interval_hours=1))
+    app = create_app(_components(maintenance=maint, interval_hours=1), allow_null_auth=True)
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
         time.sleep(0.4)  # several periodic iterations at 0.05s/loop
@@ -143,7 +160,7 @@ def test_lifespan_startup_sweep_does_not_block_serve():
             return {"orphans": 0, "pruned": 0, "sweep": "scanned=0"}
 
     maint = _BlockingMaintenance()
-    app = create_app(_components(maintenance=maint, interval_hours=0))
+    app = create_app(_components(maintenance=maint, interval_hours=0), allow_null_auth=True)
     with TestClient(app) as c:
         _wait_until(lambda: maint.started.is_set())  # sweep task started...
         # ...and serve must answer while the sweep is still blocked in-flight
@@ -173,7 +190,7 @@ def test_lifespan_job_tick_fires():
         scheduler_poll_seconds=1,
         retention=RetentionConfig(sweep_interval_hours=0),
     )
-    app = create_app(components)
+    app = create_app(components, allow_null_auth=True)
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
         # tick 循环先 sleep(poll) 再执行;轮询等待首个 tick(最长 3s)。
@@ -198,7 +215,7 @@ def test_lifespan_job_tick_disabled_when_poll_zero():
         scheduler_poll_seconds=0,
         retention=RetentionConfig(sweep_interval_hours=0),
     )
-    app = create_app(components)
+    app = create_app(components, allow_null_auth=True)
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
         time.sleep(0.3)

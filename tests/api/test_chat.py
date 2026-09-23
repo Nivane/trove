@@ -230,7 +230,10 @@ class TestChatHITLResume:
             graphs=graphs,
             llm_gateway=gateway,
         )
-        app = create_app({"session_manager": manager, "connector_registry": sqlite_registry})
+        app = create_app(
+            {"session_manager": manager, "connector_registry": sqlite_registry},
+            allow_null_auth=True,
+        )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]
@@ -315,7 +318,10 @@ class TestChatTasks:
                 "query", SQL, "OK",
             ],
         )
-        app = create_app({"session_manager": manager, "connector_registry": sqlite_registry})
+        app = create_app(
+            {"session_manager": manager, "connector_registry": sqlite_registry},
+            allow_null_auth=True,
+        )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]
@@ -362,7 +368,10 @@ class TestChatTasks:
             ],
             hitl=True,
         )
-        app = create_app({"session_manager": manager, "connector_registry": sqlite_registry})
+        app = create_app(
+            {"session_manager": manager, "connector_registry": sqlite_registry},
+            allow_null_auth=True,
+        )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             session_id = (await c.post("/v1/sessions")).json()["session_id"]

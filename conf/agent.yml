@@ -11,11 +11,13 @@ agent:
   # node_models:
   #   query_sketch: deepseek/deepseek-chat
   #   reflect: deepseek/deepseek-reasoner
-  # EXPLAIN 行数估算守卫(默认关):每次最终执行前 EXPLAIN 估算最重算子行数,
-  # 超 explain_max_rows 打回 gen_sql 加 LIMIT/收窄。fail-open(方言不可解析/
-  # EXPLAIN 失败 → 放行)。防分析 agent 误跑超大扫描/笛卡尔积。
+  # EXPLAIN 行数估算守卫(默认开):每次最终执行前 EXPLAIN 估算最重算子行数,
+  # 三档处置——est ≤ explain_max_rows 放行;超软限打回 gen_sql 加 LIMIT/收窄;
+  # 超 explain_hard_max_rows 硬限直接拒绝(不烧 LLM 重生成循环)。fail-open
+  # (方言不可解析/EXPLAIN 失败 → 放行)。防分析 agent 误跑超大扫描/笛卡尔积。
   # explain_row_guard: true
   # explain_max_rows: 50000000
+  # explain_hard_max_rows: 1000000000
   # 交互语言: zh(默认) / en — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
   # 不按问题的中英文自动检测
   language: zh
@@ -65,6 +67,10 @@ agent:
   # 大窗口用起来(历史/多轮/schema 全量才是大窗口的主战场),请谨慎。
   # context_budget_tokens: {simple: 1500, standard: 2500, complex: 8000}
   # schema_budget_tokens: {simple: 900, standard: 1800, complex: 6000}
+  # API 限流(进程内,按 user;0 = 关闭):每分钟请求数 / 每日请求配额。
+  # 防单用户耗尽 LLM 成本;管理端设置页可热更新,即时生效。
+  # api_rate_per_minute: 30
+  # api_daily_quota: 300
   # OSSIE 语义层目录(相对项目根,按 datasource 名取子目录 .trove/semantic/<datasource>/):
   # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
   # 仅作补充源——唯一真源 = 数据源的 KB semantics.yml(/kb init 生成 + 人审)。

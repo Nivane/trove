@@ -47,6 +47,9 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     # Results (范例:答案表格展示行数 / 查询结果行数上限)
     "app.result_display_rows": ("result_display_rows", "range", (1, 500)),
     "app.result_max_rows": ("result_max_rows", "range", (1, 50000)),
+    # API 限流(进程内,按 user;0 = 关闭):每分钟请求数 / 每日请求配额
+    "app.api_rate_per_minute": ("api_rate_per_minute", "range", (0, 1000)),
+    "app.api_daily_quota": ("api_daily_quota", "range", (0, 100000)),
 }
 
 

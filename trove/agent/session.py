@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import re
 from collections.abc import Callable
 from typing import Any, AsyncIterator
@@ -99,6 +100,7 @@ class SessionManager:
         # 统一记忆 facade(情景记忆/观测回流/偏好提取/画像);None = 记忆关闭
         self._memory = memory
         # 用户角色解析(user_id → roles;None/异常 = 不启用工具 ACL 过滤)
+        # 可为同步或异步 callable(SessionManager 在 async 上下文调用)。
         self._role_resolver = role_resolver
         self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
         self._task_stores: dict[str, TaskStore] = {}  # session_id → TaskStore (惰性,同一会话 .db)
@@ -115,12 +117,15 @@ class SessionManager:
         for task_store in self._task_stores.values():
             await task_store.dispose()
 
-    def _user_tool_roles(self, user_id: str | None) -> list[str] | None:
+    async def _user_tool_roles(self, user_id: str | None) -> list[str] | None:
         """解析用户角色列表(工具 ACL 用);无 resolver/失败 → None = 全可见。"""
         if self._role_resolver is None or not user_id:
             return None
         try:
-            return self._role_resolver(user_id)
+            res = self._role_resolver(user_id)
+            if inspect.isawaitable(res):
+                res = await res
+            return res
         except Exception:
             return None
 
@@ -367,7 +372,7 @@ class SessionManager:
             lang=self.config.language,
             datasource=datasource or "",
             user_id=session.user_id,
-            tool_roles=self._user_tool_roles(session.user_id),
+            tool_roles=await self._user_tool_roles(session.user_id),
             is_admin=is_admin,
         )
         self._begin_trace(state)
@@ -677,7 +682,7 @@ class SessionManager:
             lang=self.config.language,
             datasource=datasource or "",
             user_id=session.user_id,
-            tool_roles=self._user_tool_roles(session.user_id),
+            tool_roles=await self._user_tool_roles(session.user_id),
             is_admin=is_admin,
         )
         self._begin_trace(state)
