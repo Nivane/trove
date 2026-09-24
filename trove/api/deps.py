@@ -84,10 +84,41 @@ async def get_current_user(
 
 
 async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    """Admin-only guard (403 for non-admin roles)."""
+    """Admin-only guard (403 for non-admin roles).
+
+    同时执行 token 级最小权限:受限 token(声明了 scopes)必须在 scopes
+    里带 ``admin`` 才能访问管理端点;未声明 scopes 的 token(= 不限)沿用
+    角色裁决。这样为 admin 账号签发的 query 专用 token 不会意外获得管理权。
+    """
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="admin privileges required")
+    scopes = user.get("scopes") or []
+    if scopes and "admin" not in scopes:
+        raise HTTPException(
+            status_code=403,
+            detail="token lacks the 'admin' scope (restricted token)",
+        )
     return user
+
+
+def require_scope(*required: str):
+    """Route-level token scope gate (dependency factory).
+
+    语义:token 未声明 scopes(存量/不限) → 放行;声明了 scopes 的受限
+    token → 必须命中至少一个 required scope,否则 403。配合
+    ``require_admin`` 的 admin scope,``["query"]`` 的 token 可查不可管。
+    """
+
+    async def _check(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+        scopes = user.get("scopes") or []
+        if scopes and not (set(scopes) & set(required)):
+            raise HTTPException(
+                status_code=403,
+                detail=f"token lacks required scope(s): {', '.join(sorted(required))}",
+            )
+        return user
+
+    return _check
 
 
 async def require_datasource(

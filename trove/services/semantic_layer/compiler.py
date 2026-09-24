@@ -26,7 +26,6 @@ from sqlglot import exp, parse_one
 
 from trove.core.logging import get_logger
 from trove.services.semantic_layer.contract import (
-    JoinEdge,
     PlanContract,
     PlanSignature,
     WhereCond,
@@ -905,7 +904,7 @@ def _enum_code_for(
         if str(label).strip().lower() == low:
             return str(code)
     for code, labels in aliases.items():
-        if any(str(l).strip().lower() == low for l in labels):
+        if any(str(ln).strip().lower() == low for ln in labels):
             return code
     in_tokens = _value_tokens(low)
     if not in_tokens:
@@ -1721,7 +1720,7 @@ class SemanticCompiler:
         if where_parts:
             sql += "\nWHERE " + " AND ".join(where_parts)
         if is_agg and gb_exprs:
-            sql += f"\nGROUP BY " + ", ".join(gb_exprs)
+            sql += "\nGROUP BY " + ", ".join(gb_exprs)
         if having_parts:
             sql += "\nHAVING " + " AND ".join(having_parts)
         # 排序(呈现层,宽处理):metric 名 → 内联表达式;字段 → 限定表达式
@@ -2283,7 +2282,7 @@ def _signature_of(tree) -> PlanSignature | None:
                 for c in node.find_all(exp.Column) if c.name
             }))
             vals = tuple(
-                str(l.this) for l in node.expression.find_all(exp.Literal)
+                str(ln.this) for ln in node.expression.find_all(exp.Literal)
             )
             conds.append((cols, node.key, vals))
 
@@ -2434,7 +2433,7 @@ def _skeleton_where(tree) -> set[tuple[frozenset[tuple[str, str]], str, tuple[st
             for c in node.find_all(exp.Column)
         )
         vals = tuple(sorted(
-            str(l.this) for l in node.expression.find_all(exp.Literal)))
+            str(ln.this) for ln in node.expression.find_all(exp.Literal)))
         out.add((cols, str(node.key), vals))
     return out
 

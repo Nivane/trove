@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 from trove.core.logging import get_logger
-from trove.services.datasource.catalog import CatalogService
 from trove.services.kb.backends.fts import fts_item_text
 from trove.services.retrieval.store import HybridStore, RetrievalDoc
 

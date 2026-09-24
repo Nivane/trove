@@ -20,7 +20,6 @@ YAML is synced lazily by mtime, mirroring KbService.ensure_synced.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from dataclasses import asdict

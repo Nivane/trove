@@ -4,7 +4,6 @@ LLM 只补 synonyms/description;任何新增列/表/键/表达式被消费端剥
 (白名单),解析失败保持原结构(增强是锦上添花)。
 """
 
-import pytest
 
 from trove.services.kb.semantic_draft import (
     apply_annotations,

@@ -394,7 +394,7 @@ class TestKbInitLLM:
 
         llm = ScriptedLLM()
         reg = self._reg(kb, sqlite_registry, llm)
-        result = await reg.get("kb").handler("init")
+        await reg.get("kb").handler("init")
 
         ds = sqlite_registry.default_name
         assert (kb.kb_dir / ds / "semantics.yml").exists()
@@ -817,7 +817,7 @@ class TestKbLearn:
         ds = sqlite_registry.default_name
         assert not (kb.kb_dir / ds / "examples.yml").exists()  # nothing written yet
 
-        result2 = await reg.get("kb").handler("learn --yes")
+        await reg.get("kb").handler("learn --yes")
         assert (kb.kb_dir / ds / "examples.yml").exists()
         assert (kb.kb_dir / ds / "semantics.yml").exists()
         assert kb.pending_draft is None
@@ -887,7 +887,7 @@ GROUP BY county
 
         llm = ScriptedLLM()
         reg = make_reg(kb, llm_gateway=llm, current_session=self._session_with_exchange())
-        result = await reg.get("kb").handler("learn")
+        await reg.get("kb").handler("learn")
         assert kb.pending_draft is not None
         assert kb.pending_draft["example"]["question"] == "学生们的平均成绩是多少"
         assert len(llm.calls) == 2  # draft + repair round
@@ -985,7 +985,7 @@ class TestKbMigrate:
 
     async def test_check_reports_human_edits(self, kb):
         """人改过的资产必须点名:它是"合并"而非"覆盖"的理由。"""
-        from trove.services.kb.provenance import FORMAT_VERSION, META_KEY, stamp
+        from trove.services.kb.provenance import FORMAT_VERSION, stamp
 
         ds_dir = kb.kb_dir / "demo"
         ds_dir.mkdir(parents=True)

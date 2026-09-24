@@ -25,7 +25,6 @@ from trove.core.types import (
     Task,
 )
 from trove.core.config import AgentConfig
-from trove.core.errors import SessionError
 from trove.core.logging import get_logger
 from trove.storage.session_store import SessionStore
 from trove.storage.task_store import TaskStore
@@ -88,6 +87,7 @@ class SessionManager:
         connectors=None,
         memory=None,
         role_resolver: Callable[[str], list[str] | None] | None = None,
+        auth=None,
     ):
         self.config = config
         self._store = session_store
@@ -102,6 +102,8 @@ class SessionManager:
         # 用户角色解析(user_id → roles;None/异常 = 不启用工具 ACL 过滤)
         # 可为同步或异步 callable(SessionManager 在 async 上下文调用)。
         self._role_resolver = role_resolver
+        # 审计服务(None = CLI/嵌入环境无 auth,查询审计跳过)
+        self._auth = auth
         self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
         self._task_stores: dict[str, TaskStore] = {}  # session_id → TaskStore (惰性,同一会话 .db)
         # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
@@ -1348,8 +1350,46 @@ class SessionManager:
         # 统一记忆 write-back(情景记忆 + 观测回流 + 失败教训),替代旧的
         # _capture_lessons 单通道;老方法保留供直接调用方(测试)使用。
         await self._observe_memory(final)
+        # 查询执行审计:谁、问了什么、执行了什么 SQL、结果如何。best-effort。
+        await self._audit_query(session, final)
         # 结果缓存写钩子(覆盖 ask / resume / ask_stream 三路径)
         self._maybe_cache_exchange(session, final)
+
+    async def _audit_query(self, session: Session, final: WorkflowState) -> None:
+        """查询执行审计 —— ``query.execute`` 写入 audit_log。
+
+        管理端 /admin/audit 可据此回答「谁在什么时候查了什么」。
+        best-effort:审计写失败绝不阻断回答;无 auth 服务(CLI/嵌入)跳过。
+        """
+        if self._auth is None:
+            return
+        try:
+            user = None
+            uid = final.user_id or session.user_id
+            if uid:
+                try:
+                    row = await self._auth.store.get_user_by_id(int(uid))
+                    if row is not None:
+                        user = {"id": row["id"], "username": row["username"]}
+                except (TypeError, ValueError):
+                    user = None
+            await self._auth.record_audit(
+                "query.execute",
+                user=user,
+                details={
+                    "session_id": final.session_id,
+                    "run_id": final.run_id,
+                    "question": (final.question or "")[:2000],
+                    "sql": (final.sql or "")[:8000],
+                    "datasource": final.datasource or "",
+                    "verdict": final.verdict,
+                    "row_count": final.row_count,
+                    "execution_time_ms": final.execution_time_ms,
+                    "error": (final.error or "")[:2000],
+                },
+            )
+        except Exception as e:  # 审计失败绝不影响查询链路
+            logger.debug("query audit skipped (%s): %s", type(e).__name__, e)
 
     async def _observe_memory(self, final: WorkflowState) -> None:
         """观测回流:情景记忆记录 + 成功→示例草稿 + 修正/失败→pending 教训。

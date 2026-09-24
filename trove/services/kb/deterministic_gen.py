@@ -40,7 +40,7 @@ def _parse_date_range(range_vals: list) -> tuple[int, int, str] | None:
     if not lo or not hi:
         return None
     if re.fullmatch(r"\d{6}", lo) and re.fullmatch(r"\d{6}", hi):
-        fmt, width = "yymmdd", 2
+        fmt = "yymmdd"
         start = 1900 + int(lo[:2])
         end = 1900 + int(hi[:2])
     elif (
@@ -49,7 +49,7 @@ def _parse_date_range(range_vals: list) -> tuple[int, int, str] | None:
     ) or (
         re.fullmatch(r"\d{8}", lo) and re.fullmatch(r"\d{8}", hi)
     ):
-        fmt, width = "ymd", 4
+        fmt = "ymd"
         start = int(lo[:4])
         end = int(hi[:4])
     else:

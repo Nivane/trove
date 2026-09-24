@@ -1,6 +1,5 @@
 """fast_match 纯匹配函数 + 节点 gate 测试(零 LLM、零网络)。"""
 
-import pytest
 
 from trove.core.config import AgentConfig
 from trove.services.kb.service import ExampleHit

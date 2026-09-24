@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from trove.services.admin_settings.service import (
     MASK,

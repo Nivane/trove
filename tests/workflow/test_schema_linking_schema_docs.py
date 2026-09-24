@@ -7,7 +7,6 @@ query_sketch can anchor columns/enum values. Only the pg_hybrid backend supplies
 these docs; other backends return [] and the context is untouched.
 """
 
-import pytest
 
 from trove.services.retrieval.store import RetrievalHit
 from trove.workflow.nodes.schema_linking import _semantic_linking

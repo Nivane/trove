@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import aiosqlite
 
 from trove.core.logging import get_logger
 from trove.services.memory.models import MemoryEntry, MemoryScope

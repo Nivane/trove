@@ -154,7 +154,7 @@ async def _trial_ok(registry: Any, datasource: str | None, sql: str) -> bool:
     """
     wrapped = f"SELECT * FROM ({sql}) t LIMIT 1"
     try:
-        result = await asyncio.wait_for(
+        await asyncio.wait_for(
             registry.execute(wrapped, datasource), timeout=TRIAL_TIMEOUT_S,
         )
         return True

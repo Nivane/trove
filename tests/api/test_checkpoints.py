@@ -8,7 +8,6 @@ this file wires its own app with a checkpointer-backed graph.
 from __future__ import annotations
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 
 
 class _CyclingGateway:

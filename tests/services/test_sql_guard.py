@@ -127,6 +127,15 @@ class TestDmlDdlRejected:
         ok, _ = check_readonly("SELEC * FORM t", dialect="sqlite")
         assert ok is False
 
+    def test_parse_error_fail_open(self):
+        """执行路径的 fail-open:解析失败 ≠ 权限违规,放行(真实边界在
+        数据库侧只读角色,不因方言盲区误伤合法 SQL)。"""
+        ok, reasons = check_readonly(
+            "SELECT (1 + 2", dialect="sqlite", fail_on_parse_error=False,
+        )
+        assert ok is True
+        assert reasons == []
+
 
 class TestIntoOutfileRejected:
     def test_into_outfile(self):

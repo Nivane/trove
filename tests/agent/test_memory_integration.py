@@ -7,7 +7,6 @@ answer path (memory failures must never affect the response).
 
 from __future__ import annotations
 
-import pytest
 
 from trove.services.memory.models import MemoryConfig, MemoryScope
 from trove.services.memory.service import MemoryService
@@ -128,7 +127,7 @@ async def test_correction_promotes_once_not_double(tmp_home, sqlite_registry):
     async def _spy(datasource, pattern, *, evidence_kind="repeated_correction", count=1):
         calls.append((datasource, pattern, evidence_kind))
 
-    memory.promote_lesson = _spy  # noqa: instance spy
+    memory.promote_lesson = _spy
     manager = SessionManager(
         config=AgentConfig(home=str(tmp_home)),
         session_store=SessionStore(home_dir=str(tmp_home)),

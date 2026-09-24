@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from trove.core.types import SchemaInfo, TableInfo
 from trove.core.logging import get_logger
 from trove.services.datasource.registry import ConnectorRegistry
 

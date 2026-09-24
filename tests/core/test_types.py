@@ -1,6 +1,5 @@
 """Core type definitions tests."""
 
-import uuid
 
 from trove.core.types import (
     Message,
@@ -9,7 +8,6 @@ from trove.core.types import (
     SchemaInfo,
     TableInfo,
     ColumnInfo,
-    Capabilities,
     DatasourceConfig,
 )
 

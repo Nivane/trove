@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from trove.services.lineage.parse import analyze_query, normalization_key
 from trove.services.lineage.service import LineageService

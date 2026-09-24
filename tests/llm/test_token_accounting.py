@@ -132,7 +132,6 @@ class TestRunSummary:
 
     async def test_done_summary_includes_token_usage(self, tmp_home, agent_config, sqlite_registry):
         """A gateway reporting usage lands in the done summary as token_usage."""
-        import pytest as _pytest
         from trove.agent.session import SessionManager
         from trove.storage.session_store import SessionStore
         from trove.workflow.graphs import GraphServices, build_graphs

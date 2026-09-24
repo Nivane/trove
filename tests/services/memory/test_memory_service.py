@@ -123,7 +123,7 @@ async def test_retrieve_touches_read_hits(memory):
     async def _spy(scope, question, sql=""):
         calls.append((scope.user_id, question, sql))
 
-    memory.episodes.touch = _spy  # noqa: instance spy
+    memory.episodes.touch = _spy
     entries = await memory.retrieve(
         SCOPE, "sales by month", kinds=["episode"], limit=3)
     assert len(entries) == 1

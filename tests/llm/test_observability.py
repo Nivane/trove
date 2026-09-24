@@ -179,7 +179,6 @@ class TestTraceRootDimensions:
     ):
         """Gap 1+3: _run_config 注入 langfuse_* 根级 metadata + per-run handler。"""
         from trove.workflow.state import WorkflowState
-        captured = {}
         monkeypatch.setattr(
             "trove.agent.session.SessionManager._langfuse_callbacks",
             staticmethod(lambda run_id: ["LF-CB"]),

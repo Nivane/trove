@@ -51,6 +51,8 @@ def check_readonly(
     sql: str,
     dialect: str = "",
     allowed_tables: set[str] | None = None,
+    *,
+    fail_on_parse_error: bool = True,
 ) -> tuple[bool, list[str]]:
     """检查 SQL 是否只读且合规。
 
@@ -59,6 +61,11 @@ def check_readonly(
         dialect: 目标方言(sqlglot;反引号标识符自动回退 mysql)。
         allowed_tables: 允许引用的业务表集合(小写归一)。None 时只拒绝
             元数据表,业务表全放行;给定集合时业务表必须 ∈ 集合。
+        fail_on_parse_error: 解析失败(方言识别不出)时是否拒绝。True
+            (生成期工具用)按语法错误处理——模型/用户可见需修正;False
+            (最终执行路径用)fail-open 放行——解析失败不等于权限违规,
+            真实边界在数据库侧只读角色,不因 sqlglot 方言盲区误伤已通过
+            语义校验的 SQL。
 
     Returns:
         (ok, reasons):ok=False 时 reasons 给出全部拒绝原因(深度防御,
@@ -70,10 +77,13 @@ def check_readonly(
 
     parsed = _parse(sql, dialect)
     if parsed is None:
-        return False, ["SQL could not be parsed; treat as a syntax error, not a permission denial"]
+        reason = "SQL could not be parsed; treat as a syntax error, not a permission denial"
+        if fail_on_parse_error:
+            return False, [reason]
+        logger.warning("read-only guard: unparseable SQL treated as fail-open")
+        return True, []
 
     try:
-        import sqlglot
         from sqlglot import exp
     except ImportError:
         logger.warning("sqlglot not available; read-only guard disabled")

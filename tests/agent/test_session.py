@@ -129,7 +129,6 @@ class TestAskStream:
             events.append(event)
 
         begins = [e for e in events if e["type"] == "begin"]
-        steps = [e for e in events if e["type"] == "step"]
         assert begins, "expected node-start events"
         # intel routing is the first executed node
         assert begins[0]["node"] == "route_intent"
@@ -214,7 +213,6 @@ class TestConversationHistory:
         from trove.core.config import AgentConfig
         from trove.storage.session_store import SessionStore
         from trove.agent.session import SessionManager
-        from trove.workflow.state import WorkflowState
 
         captured = []
 
@@ -1165,3 +1163,67 @@ class TestCrossTurnStateReset:
             f"turn2 不应携带上轮 refusal: {final2.refusal}"
         )
         assert "loan" in final2.matched_tables
+
+
+class TestQueryAudit:
+    """查询执行审计:谁、问了什么、执行了什么 SQL、结果如何 → audit_log。"""
+
+    def _manager_with_auth(self, auth):
+        from trove.agent.session import SessionManager
+
+        return SessionManager(None, None, None, None, auth=auth)
+
+    async def test_audit_records_entry_with_user(self):
+        class _Store:
+            async def get_user_by_id(self, uid):
+                return {"id": 7, "username": "bob"}
+
+        class _Auth:
+            def __init__(self):
+                self.entries = []
+                self.store = _Store()
+
+            async def record_audit(self, action, user=None, method="",
+                                   path="", status=None, details=None):
+                self.entries.append({"action": action, "user": user, "details": details})
+
+        auth = _Auth()
+        manager = self._manager_with_auth(auth)
+        final = WorkflowState(
+            session_id="s1", run_id="r1", user_id="7",
+            question="平均成绩?", sql="SELECT AVG(grade) FROM students",
+            datasource="demo", verdict="OK", row_count=1, execution_time_ms=1.5,
+        )
+        session = type("S", (), {"user_id": "7"})()
+
+        await manager._audit_query(session, final)
+
+        assert len(auth.entries) == 1
+        entry = auth.entries[0]
+        assert entry["action"] == "query.execute"
+        assert entry["user"] == {"id": 7, "username": "bob"}
+        d = entry["details"]
+        assert d["question"] == "平均成绩?"
+        assert d["sql"] == "SELECT AVG(grade) FROM students"
+        assert d["datasource"] == "demo"
+        assert d["verdict"] == "OK"
+        assert d["row_count"] == 1
+        assert d["run_id"] == "r1"
+
+    async def test_audit_skipped_without_auth(self):
+        manager = self._manager_with_auth(None)
+        final = WorkflowState(session_id="s1", question="q")
+        await manager._audit_query(type("S", (), {"user_id": "7"})(), final)
+        # 无 auth → 不调用任何东西,静默跳过
+
+    async def test_audit_never_blocks_on_auth_failure(self):
+        class _Auth:
+            store = None
+
+            async def record_audit(self, *a, **k):
+                raise RuntimeError("audit db down")
+
+        manager = self._manager_with_auth(_Auth())
+        final = WorkflowState(session_id="s1", question="q", user_id="7")
+        await manager._audit_query(type("S", (), {"user_id": "7"})(), final)
+        # 审计写失败被吞,查询链路不受影响

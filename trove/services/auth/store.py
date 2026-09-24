@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import aiosqlite
 
 from trove.core.logging import get_logger
 
@@ -53,7 +52,8 @@ CREATE TABLE IF NOT EXISTS tokens (
     expires_at TEXT,
     revoked INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    last_used_at TEXT
+    last_used_at TEXT,
+    scopes_json TEXT NOT NULL DEFAULT '[]'
 )
 """
 
@@ -101,7 +101,7 @@ INDEX_SQL = [
 USER_COLS = ("id", "username", "password_hash", "role", "display_name",
              "disabled", "created_at", "updated_at")
 TOKEN_COLS = ("id", "token_hash", "user_id", "label", "expires_at",
-              "revoked", "created_at", "last_used_at")
+              "revoked", "created_at", "last_used_at", "scopes_json")
 AUDIT_COLS = ("id", "ts", "user_id", "username", "action", "method",
               "path", "status", "details_json")
 
@@ -142,7 +142,25 @@ class AppDbStore:
              AUDIT_LOG_TABLE_SQL, LOGIN_ATTEMPTS_TABLE_SQL, *INDEX_SQL]
         )
         await self._backend.executescript(script)
+        await self._ensure_token_scopes_column()
         self._schema_ready = True
+
+    async def _ensure_token_scopes_column(self) -> None:
+        """存量库幂等补列 ``scopes_json``(schema additive-only,无迁移框架)。
+
+        SQLite 不支持 ``ADD COLUMN IF NOT EXISTS``(仅 MySQL/Postgres),
+        两条后端共用一条路径:直接 ALTER + 吞「列已存在」(SQLite 报
+        duplicate column,Postgres 报 already exists)。其他错误照抛。
+        """
+        try:
+            await self._backend.execute(
+                "ALTER TABLE tokens ADD COLUMN scopes_json TEXT NOT NULL DEFAULT '[]'"
+            )
+            await self._backend.commit()
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate column" not in msg and "already exists" not in msg:
+                raise
 
     @staticmethod
     def _user_row(row: tuple) -> dict[str, Any]:
@@ -150,7 +168,13 @@ class AppDbStore:
 
     @staticmethod
     def _token_row(row: tuple) -> dict[str, Any]:
-        return dict(zip(TOKEN_COLS, row))
+        d = dict(zip(TOKEN_COLS, row))
+        try:
+            d["scopes"] = json.loads(d["scopes_json"]) if d["scopes_json"] else []
+        except (TypeError, ValueError):
+            d["scopes"] = []
+        del d["scopes_json"]
+        return d
 
     @staticmethod
     def _audit_row(row: tuple) -> dict[str, Any]:
@@ -279,20 +303,22 @@ class AppDbStore:
 
     async def insert_token(
         self, token_hash: str, user_id: int, label: str = "",
-        expires_at: str | None = None,
+        expires_at: str | None = None, scopes: list[str] | None = None,
     ) -> dict[str, Any]:
         ts = now_iso()
+        scopes_json = json.dumps(list(scopes or []), ensure_ascii=False)
         conn = await self._conn()
         try:
             cursor = await conn.execute(
                 "INSERT INTO tokens (token_hash, user_id, label, expires_at, "
-                "revoked, created_at) VALUES (?, ?, ?, ?, 0, ?)",
-                (token_hash, user_id, label, expires_at, ts),
+                "revoked, created_at, scopes_json) VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (token_hash, user_id, label, expires_at, ts, scopes_json),
                 need_lastrowid=True,
             )
             await conn.commit()
             return self._token_row((
-                cursor.lastrowid, token_hash, user_id, label, expires_at, 0, ts, None,
+                cursor.lastrowid, token_hash, user_id, label, expires_at, 0, ts,
+                None, scopes_json,
             ))
         finally:
             await conn.close()

@@ -20,7 +20,7 @@ from trove.core.logging import get_logger
 from trove.storage.session_store import SessionStore
 from trove.storage.checkpoint_store import build_checkpointer
 from trove.llm.gateway import LLMGateway
-from trove.services.datasource.registry import ConnectorRegistry, register_adapter
+from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.demo_setup import setup_demo_datasource
 from trove.workflow.graphs import GraphServices, build_graphs
@@ -333,6 +333,7 @@ async def create_app_components(
         connectors=connector_registry,
         memory=memory,
         role_resolver=_resolve_user_roles,
+        auth=auth,
     )
 
     # ── Maintenance (retention sweeps: daemon tick + serve lifespan) ──
@@ -472,15 +473,6 @@ async def async_main_repl():
         finally:
             await repl.cleanup()
             await components["connector_registry"].close_all()
-
-
-def main_repl():
-    """Entry point for 'trove' command (REPL mode)."""
-    try:
-        asyncio.run(async_main_repl())
-    except KeyboardInterrupt:
-        print("\nGoodbye!")
-        sys.exit(0)
 
 
 async def _run_index(argv: list[str]) -> None:

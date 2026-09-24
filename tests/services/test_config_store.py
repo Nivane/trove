@@ -1,4 +1,3 @@
-from pathlib import Path
 import pytest
 
 from trove.services.datasource.config_store import ConfigStore, boot_register
@@ -107,7 +106,6 @@ def test_load_missing_file(tmp_path):
 
 
 async def test_boot_register_registers_and_skips_bad(sqlite_registry, tmp_path):
-    store = ConfigStore(tmp_path / "datasources.yml")
     good = DatasourceConfig(name="good", type="sqlite",
                             connection_params={"path": ":memory:"}, credentials={}, default=True)
     bad = DatasourceConfig(name="bad", type="mysql",

@@ -5,7 +5,6 @@
 - "Relevant metrics" 块(带口径)替换逐 dataset 全量渲染 Metrics;
 - 零锚定不被指标复活(语义优先边界,no_semantic_match 拒绝保留)。
 """
-import pytest
 
 from trove.services.kb.service import KbService
 from trove.workflow.nodes.schema_linking import (

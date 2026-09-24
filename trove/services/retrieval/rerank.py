@@ -20,7 +20,6 @@ fused candidates by a finer relevance signal. Implementations:
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import aiohttp

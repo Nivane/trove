@@ -8,7 +8,6 @@ registry observer hooks.
 import asyncio
 import time
 
-import pytest
 
 from trove.llm.agent_loop import ToolRegistry, run_agent_loop
 
@@ -673,7 +672,7 @@ class TestErrorClassificationWiring:
             {"content": None, "tool_calls": [{"id": "c1", "name": "boom", "arguments": "{}"}]},
             {"content": "done", "tool_calls": []},
         ])
-        result = await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
+        await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
         assert calls["n"] == 1                   # 未盲目重试
         assert "[ERR:TOOL_RUNTIME]" in llm.calls[1][-1]["content"]
 

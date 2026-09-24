@@ -88,7 +88,7 @@ def fts_item_text(kind: str, payload: dict) -> str:
             *[str(s) for s in payload.get("synonyms", [])],
             payload.get("description"),
             *[str(e) for e in payload.get("enum_values", [])],
-            *[str(l) for l in payload.get("enum_labels", [])],
+            *[str(ln) for ln in payload.get("enum_labels", [])],
             payload.get("dataset"),
         )
     return ""

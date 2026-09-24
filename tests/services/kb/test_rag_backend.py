@@ -187,7 +187,8 @@ class TestRagBackend:
         assert lessons[0]["pattern"] == "no such table: loans"
 
     async def test_dense_failure_degrades_to_sparse(self, tmp_path):
-        kb = await _rag_kb(tmp_path)
+        # 先 seed + sync(只读过程无返回值;不做赋值 → 不引未用变量)。
+        await _rag_kb(tmp_path)
 
         class BrokenEmbed:
             async def embed(self, texts):

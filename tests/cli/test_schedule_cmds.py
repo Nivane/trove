@@ -16,7 +16,6 @@ def _run(coro):
 @pytest.mark.asyncio
 async def test_job_add_list_cancel(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    ctx = _job_local({})
 
     await main_job(["add", "每月贷款总额是多少", "--interval", "60", "--alert", "row_count >= 5"])
     await main_job(["list"])

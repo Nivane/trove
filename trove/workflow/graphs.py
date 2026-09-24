@@ -86,7 +86,6 @@ from trove.workflow.nodes.terminal import (
     answer_correction,
     answer_reject,
 )
-from trove.core.i18n import L
 from trove.workflow.intent import (
     Intent,
     classify_intent,
@@ -728,14 +727,14 @@ def make_gen_assemble(services: GraphServices):
             optional_blocks["lessons"] = [
                 ContextItem(
                     key=f"lesson{i}",
-                    text=render_lessons([l]),
-                    score=float(l.get("score") or relevance_score(
-                        " ".join([str(l.get("pattern", "")), str(l.get("note", "")),
-                                  str(l.get("sql_snippet", ""))]),
+                    text=render_lessons([ln]),
+                    score=float(ln.get("score") or relevance_score(
+                        " ".join([str(ln.get("pattern", "")), str(ln.get("note", "")),
+                                  str(ln.get("sql_snippet", ""))]),
                         state.question,
                     ) or 0),
                 )
-                for i, l in enumerate(lessons)
+                for i, ln in enumerate(lessons)
             ]
         if user_fact_items:
             optional_blocks["user_facts"] = [

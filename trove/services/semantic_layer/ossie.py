@@ -166,7 +166,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             for code, labels in raw_aliases.items():
                 if not isinstance(labels, (list, tuple, set)):
                     labels = re.split(r"[,，;]", str(labels))
-                cleaned = [str(l).strip() for l in labels if str(l).strip()]
+                cleaned = [str(ln).strip() for ln in labels if str(ln).strip()]
                 if cleaned:
                     value_aliases[str(code)] = cleaned
             fields.append(SemanticField(

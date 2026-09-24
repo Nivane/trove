@@ -284,7 +284,7 @@ def _apply_field(model: dict[str, Any], action: str, name: str,
         field.setdefault("ai_context", {})["value_aliases"] = {
             str(code): (
                 list(labels) if isinstance(labels, (list, tuple))
-                else [str(l).strip() for l in str(labels).split(",") if str(l).strip()]
+                else [str(ln).strip() for ln in str(labels).split(",") if str(ln).strip()]
             )
             for code, labels in val_aliases.items()
         }

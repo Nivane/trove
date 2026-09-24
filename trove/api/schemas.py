@@ -173,6 +173,12 @@ class TokenCreate(BaseModel):
 
     label: str = ""
     ttl_hours: int | None = Field(default=None, ge=1)
+    scopes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Token 作用域 allowlist(如 [\"query\"]);空 = 不限(用户全部权限)"
+        ),
+    )
 
 
 class DatasourcesPut(BaseModel):

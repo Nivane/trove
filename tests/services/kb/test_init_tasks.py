@@ -60,7 +60,7 @@ class TestInitTaskStore:
         store.done(t1["id"], "ok")
         t2 = store.create("b", "")
         store.done(t2["id"], "ok")
-        t3 = store.create("c", "")  # running,不应被容量清理
+        store.create("c", "")  # running,不应被容量清理
         store._prune_locked()
         assert store.by_datasource("c") is not None
         assert store.by_datasource("c")["status"] == "running"
@@ -69,7 +69,6 @@ class TestInitTaskStore:
 class TestInitProgressCallback:
     async def test_init_kb_reports_progress(self, tmp_path, sqlite_registry, monkeypatch):
         """init_kb 的 progress 回调在各阶段上报 stage/progress。"""
-        import yaml
 
         from trove.core.config import AgentConfig
         from trove.llm.gateway import LLMGateway

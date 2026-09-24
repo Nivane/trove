@@ -6,7 +6,6 @@ import pytest
 
 from trove.services.memory.models import MemoryScope
 from trove.services.memory.preferences import (
-    HIGH_CONFIDENCE,
     PreferenceStore,
     build_extract_prompt,
     extract_and_store,

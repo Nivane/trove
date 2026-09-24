@@ -1,7 +1,6 @@
 """Tests for the retrieval query hit log recorder (local SQLite, aiosqlite)."""
 
 import aiosqlite
-import pytest
 
 from trove.services.retrieval.query_log import QueryLogRecorder
 

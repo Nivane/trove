@@ -3,7 +3,6 @@
 import asyncio
 from types import SimpleNamespace
 
-import pytest
 
 from trove.core.config import AgentConfig
 from trove.workflow.state import WorkflowState, GenSQLState
@@ -136,7 +135,7 @@ semantic_model:
 
     async def test_kb_terms_take_precedence_on_duplicate_names(self, tmp_path, demo_registry):
         """同名 term:KB 在先在先,实时语义层同名不覆盖。"""
-        from trove.services.kb.service import KbService, TermHit
+        from trove.services.kb.service import KbService
         from trove.services.semantic_layer.provider import SemanticLayerProvider
 
         # KB:同名 term,映射不同(KB 口径优先)
@@ -978,7 +977,6 @@ class TestSubagentDelegation:
     async def test_agentic_multicandidate_uses_parallel_subagents(self, sqlite_registry, catalog):
         """agentic + multi_candidate:每个备选 = 独立 subagent loop,候选池
         进入 select 共识投票(主 + 4 subagent 全走 chat_full)。"""
-        sql = "SELECT name FROM students ORDER BY name;"
         llm = AgenticLLM([
             "query",
             {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},  # 主 agent

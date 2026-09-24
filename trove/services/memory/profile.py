@@ -8,7 +8,6 @@ optional generation hint when the same user repeatedly fails on a source
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from typing import Any
 
@@ -60,7 +59,6 @@ async def build_profile(
 
     patterns: Counter = Counter()
     ok_questions: list[str] = []
-    retries = 0
     for question, verdict, corr in rows:
         profile["totals"]["total"] += 1
         verdict = verdict or ""

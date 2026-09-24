@@ -168,6 +168,27 @@ async def test_list_tokens_metadata_only(auth):
     assert all("token_hash" not in t or t["token_hash"] for t in tokens)
 
 
+async def test_token_scopes_roundtrip(auth):
+    """受限 token:scopes 存/取一致,resolve 附到用户 dict。"""
+    u = await auth.create_user("bob", "pw")
+    raw, record = await auth.create_token(u["id"], label="query-only", scopes=["query"])
+    assert record["scopes"] == ["query"]
+    resolved = await auth.resolve_token(raw)
+    assert resolved["scopes"] == ["query"]
+
+    listed = await auth.list_tokens(u["id"])
+    assert listed[0]["scopes"] == ["query"]
+
+
+async def test_token_scopes_default_unrestricted(auth):
+    """未声明 scopes 的存量 token = 不限(空列表),行为不变。"""
+    u = await auth.create_user("bob", "pw")
+    raw, record = await auth.create_token(u["id"], label="legacy")
+    assert record["scopes"] == []
+    resolved = await auth.resolve_token(raw)
+    assert resolved["scopes"] == []
+
+
 # ── Login rate limiting ───────────────────────────────────
 
 

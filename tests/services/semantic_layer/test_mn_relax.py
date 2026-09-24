@@ -3,7 +3,6 @@
 默认 M:N 仍编译期拒绝(fan-out 行倍增);建模师显式声明 fan_out=dedup 后,
 编译器把 from 侧包成 ``SELECT DISTINCT *`` 子查询消除行倍增。
 """
-import pytest
 
 from trove.services.semantic_layer.compiler import (
     CompileMiss,

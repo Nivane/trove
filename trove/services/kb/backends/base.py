@@ -8,10 +8,7 @@ search 方法与 KbService 的公开方法同签名,返回类型与 builtin 一�
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from trove.services.kb.service import ExampleHit, TermHit
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable

@@ -26,7 +26,6 @@ that succeeded).
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
 from typing import Any
@@ -841,7 +840,6 @@ def make_attribution(
                     "share": "占比" if state.lang == "zh" else "share",
                 }[baseline]
                 try:
-                    start = time.monotonic()
                     prompt_kwargs = dict(
                         question=state.question,
                         metric=metric_name,

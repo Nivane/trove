@@ -9,10 +9,7 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-from datetime import datetime, timezone
 
-from trove.core.config import RetentionConfig
 from trove.core.logging import get_logger
 from trove.services.maintenance import MaintenanceService, SweepStats
 

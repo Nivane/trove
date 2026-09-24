@@ -13,14 +13,14 @@ from trove.core.logging import get_logger
 from trove.prompts import render
 # init 管线(起草/修复/合成/回填)迁至 services/kb/init_pipeline.py,REPL
 # 与 admin API 共用;_parse_init_tables/_recover_init_tables 与 chunk 常量
-# 在此 re-export 保持测试导入面不变。
+# 在此 re-export 保持测试导入面不变(noqa: 它们在本模块不直接使用)。
 from trove.services.kb.init_pipeline import (
-    INIT_CHUNK_TABLES,
-    INIT_MAX_TOKENS,
+    INIT_CHUNK_TABLES,  # noqa: F401
+    INIT_MAX_TOKENS,  # noqa: F401
     _parse_draft,
-    _parse_init_tables,
+    _parse_init_tables,  # noqa: F401
     _recover_draft,
-    _recover_init_tables,
+    _recover_init_tables,  # noqa: F401
     init_kb,
 )
 
@@ -144,13 +144,13 @@ def register_kb_commands(registry: SlashRegistry, context: dict) -> None:
 
         await kb.ensure_synced(datasource)
         all_lessons = await kb.list_lessons(datasource, confirmed_only=False)
-        confirmed = [l for l in all_lessons if l.get("confirmed")]
-        pending = [l for l in all_lessons if not l.get("confirmed")]
+        confirmed = [ln for ln in all_lessons if ln.get("confirmed")]
+        pending = [ln for ln in all_lessons if not ln.get("confirmed")]
         lines = [f"Hint Bank ({datasource}): {len(confirmed)} confirmed, {len(pending)} pending"]
-        for l in confirmed[:10]:
-            lines.append(f"  ✓ {l.get('pattern', '')}")
-        for l in pending[:10]:
-            lines.append(f"  ? {l.get('pattern', '')}  （/kb lessons --yes 确认）")
+        for ln in confirmed[:10]:
+            lines.append(f"  ✓ {ln.get('pattern', '')}")
+        for ln in pending[:10]:
+            lines.append(f"  ? {ln.get('pattern', '')}  （/kb lessons --yes 确认）")
         if pending:
             lines.append("Pending lessons were auto-captured from successful corrections.")
         return "\n".join(lines)

@@ -235,9 +235,6 @@ async def _fallback_answer(
             sections.append(L(lang, "尚无该对象的数据血缘记录。", "No lineage records for this object yet."))
 
     if mentioned and catalog:
-        notes = {}
-        if kb is not None and ds:
-            notes = await kb.table_notes([t["name"] for t in mentioned], ds)
         for t in mentioned[:5]:
             lines = [L(lang, f"表 {t['name']}（{t['columns']} 列）：", f"Table {t['name']} ({t['columns']} columns):")]
             detail = await catalog.table_detail(t["name"])

@@ -4,7 +4,6 @@
 图链接)/ P6(类型加权打分)。词法门决定"是否返回",coverage 只在门内排序;
 identifier/time 结构列不做原始名子串匹配(与 schema_linking 同哲学)。
 """
-import pytest
 
 from trove.services.kb.service import KbService
 

@@ -200,11 +200,11 @@ async def create_token(
 ) -> dict:
     await _user_or_404(request, user_id)
     raw, record = await _auth(request).create_token(
-        user_id, label=body.label, ttl_hours=body.ttl_hours
+        user_id, label=body.label, ttl_hours=body.ttl_hours, scopes=body.scopes,
     )
     await _audit(request, "admin.token.create", admin, 201,
-                 {"user_id": user_id, "label": body.label})
-    return {"token": raw, "expires_at": record["expires_at"]}
+                 {"user_id": user_id, "label": body.label, "scopes": body.scopes})
+    return {"token": raw, "expires_at": record["expires_at"], "scopes": record["scopes"]}
 
 
 @router.get("/admin/users/{user_id}/tokens")

@@ -17,7 +17,6 @@ Cron example (hourly reindex of all datasources)::
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import types
 

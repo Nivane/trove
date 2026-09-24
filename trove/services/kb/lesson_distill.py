@@ -54,8 +54,8 @@ def dedupe_by_pattern(
 ) -> list[dict[str, Any]]:
     """按 pattern 去重(大小写不敏感):已有教训与批内重复都跳过。"""
     seen = {
-        str(l.get("pattern", "")).strip().lower()
-        for l in existing if str(l.get("pattern", "")).strip()
+        str(ln.get("pattern", "")).strip().lower()
+        for ln in existing if str(ln.get("pattern", "")).strip()
     }
     fresh: list[dict[str, Any]] = []
     for e in entries:

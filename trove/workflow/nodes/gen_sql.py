@@ -215,7 +215,7 @@ def render_terms(terms: list[dict[str, Any]]) -> str:
 def render_lessons(lessons: list[dict[str, Any]]) -> str:
     """教训段文本（token 估算用）——与 gen_sql/user 模板格式一致。"""
     return "".join(
-        f"- {l.get('pattern', '')}: {l.get('note', '')}\n" for l in lessons
+        f"- {ln.get('pattern', '')}: {ln.get('note', '')}\n" for ln in lessons
     )
 
 
@@ -268,7 +268,7 @@ def render_entities(entities: list[dict[str, Any]]) -> str:
             line += f" role={e['role']}"
         if e.get("enum_values"):
             pairs = [
-                f"{c}={l}" for c, l in zip(
+                f"{c}={ln}" for c, ln in zip(
                     e["enum_values"], e.get("enum_labels") or [],
                 )
             ]
@@ -405,7 +405,6 @@ def _parse_error_with_position(e, sql: str, dialect: str) -> str:
     """
     base = f"Parse error: {e}"
     try:
-        import sqlglot
         errors = getattr(e, "errors", None) or []
         detail = errors[0] if errors else None
         if detail is None or not isinstance(detail, dict):
@@ -1462,7 +1461,6 @@ def make_sql_tools(
     registry 形态见 build_sql_registry;本函数为向后兼容保留——返回
     纯定义列表 + handler 字典(不含 finish 工具)。
     """
-    from trove.llm.agent_loop import ToolRegistry
 
     registry = build_sql_registry(
         connectors, question, lang, dialect, finish=False,

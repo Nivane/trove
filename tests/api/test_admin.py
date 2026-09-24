@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 
 class TestAdminAuthz:
@@ -114,8 +113,6 @@ class TestDatasourceGrants:
         api_kb seeds test_db's KB: T5 起非 admin 门禁 = granted ∧ init'd,
         默认源未 init 时 bob 同样看不见。
         """
-        bob = await auth_service.authenticate("bob", "bobpw")
-
         # bob sees only default (test_db, init'd via api_kb)
         ds = (await user_client.get("/v1/catalog/datasources")).json()["datasources"]
         assert [d["name"] for d in ds] == ["test_db"]

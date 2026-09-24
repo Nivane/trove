@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from trove.core.config import AgentConfig
 from trove.services.semantic_layer.models import (

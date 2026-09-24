@@ -226,7 +226,7 @@ def test_compiler_cannot_match_dropped_metric(semantic_dir, caplog):
     修复前 result.sql 会把坏表达式 ``SUM((`` 内联进权威编译产物。
     """
     from trove.services.semantic_layer.compiler import (
-        CompileMiss, CompileResult, SemanticCompiler,
+        CompileMiss, SemanticCompiler,
     )
 
     _write(semantic_dir, SAMPLE.replace("SUM(loan.amount)", "SUM((", 1))

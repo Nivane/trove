@@ -11,7 +11,6 @@ YAML 文件名(``examples.yml``),``"kb"`` 与谁都对不上:删除空转,旧文
 这条陈旧路径不会自曝。
 """
 
-import pathlib
 import sqlite3
 
 import aiosqlite

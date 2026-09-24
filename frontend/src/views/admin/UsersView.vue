@@ -278,12 +278,17 @@
           :min="0"
           :placeholder="t('tokenTtl', ui.lang)"
         />
+        <el-input
+          v-model="tokenForm.scopes"
+          :placeholder="t('tokenScopes', ui.lang)"
+          clearable
+        />
         <el-button type="primary" :loading="tokenBusy" @click="createToken">
           <Plus :size="15" class="btn-icon" />
           {{ t('createToken', ui.lang) }}
         </el-button>
       </div>
-      <div class="token-hint">{{ t('tokenTtlHint', ui.lang) }}</div>
+      <div class="token-hint">{{ t('tokenTtlHint', ui.lang) }} · {{ t('tokenScopesHint', ui.lang) }}</div>
       <div class="token-list">
         <div v-if="!tokens.length && !tokenBusy" class="empty-note">
           {{ t('noTokens', ui.lang) }}
@@ -300,6 +305,9 @@
               {{ fmtDateTime(tk.created_at) }}
               <template v-if="tk.expires_at">
                 · {{ t('expiresAt', ui.lang) }} {{ fmtDateTime(tk.expires_at) }}
+              </template>
+              <template v-if="tk.scopes?.length">
+                · {{ t('tokenScopes', ui.lang) }}: {{ tk.scopes.join(', ') }}
               </template>
             </span>
           </div>
@@ -348,6 +356,7 @@ interface TokenRow {
   revoked?: number | boolean
   created_at?: string
   expires_at?: string | null
+  scopes?: string[]
 }
 
 interface UserRow {
@@ -406,6 +415,7 @@ const tokenCopied = ref(false)
 const tokenForm = reactive({
   label: '',
   ttl: 0,
+  scopes: '',
 })
 
 function avatar(row: UserRow): string {
@@ -542,7 +552,7 @@ async function openTokens(row: UserRow) {
   tokenTarget.value = row
   tokens.value = []
   tokenRaw.value = ''
-  Object.assign(tokenForm, { label: '', ttl: 0 })
+  Object.assign(tokenForm, { label: '', ttl: 0, scopes: '' })
   tokensOpen.value = true
   await loadTokens()
 }
@@ -570,11 +580,16 @@ async function createToken() {
       {
         label: tokenForm.label,
         ttl_hours: tokenForm.ttl > 0 ? tokenForm.ttl : undefined,
+        scopes: tokenForm.scopes
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
       },
     )
     tokenRaw.value = body.token as string
     tokenForm.label = ''
     tokenForm.ttl = 0
+    tokenForm.scopes = ''
     notifySuccess(t('tokenCreatedOk', ui.lang))
     await loadTokens()
   } catch (e) {

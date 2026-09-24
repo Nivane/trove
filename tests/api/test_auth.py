@@ -156,3 +156,49 @@ class TestTokenEnforcement:
             "/v1/auth/me", headers={"Authorization": f"Bearer {user_token}"}
         )
         assert resp.status_code == 401
+
+
+class TestTokenScopes:
+    """受限 token:scopes 为最小权限 allowlist,路由级裁决。"""
+
+    async def _mint(self, auth_service, username: str, scopes: list[str]):
+        user = await auth_service.authenticate(username, "bobpw" if username == "bob" else "adminpw")
+        raw, _ = await auth_service.create_token(
+            user["id"], label=f"scoped-{username}", scopes=scopes,
+        )
+        return raw
+
+    async def test_query_scope_can_chat_not_admin(self, anon_client, auth_service):
+        """admin 账号签发 query 专用 token:可查会话面,不可管(403)。"""
+        token = await self._mint(auth_service, "admin", ["query"])
+        headers = {"Authorization": f"Bearer {token}"}
+
+        ok = await anon_client.get("/v1/sessions", headers=headers)
+        assert ok.status_code == 200  # 查询面放行
+
+        denied = await anon_client.get("/v1/admin/audit", headers=headers)
+        assert denied.status_code == 403  # 管理面被 token scope 拦下
+
+    async def test_admin_scope_can_admin_not_query(self, anon_client, auth_service):
+        """scopes=['admin']:管理端点放行,查询面 403。"""
+        token = await self._mint(auth_service, "admin", ["admin"])
+        headers = {"Authorization": f"Bearer {token}"}
+
+        ok = await anon_client.get("/v1/admin/audit", headers=headers)
+        assert ok.status_code == 200
+
+        denied = await anon_client.get("/v1/sessions", headers=headers)
+        assert denied.status_code == 403
+
+    async def test_unrestricted_token_unaffected(self, anon_client, auth_service, admin_token):
+        """未声明 scopes 的存量 token 行为不变:两面都放行。"""
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        assert (await anon_client.get("/v1/sessions", headers=headers)).status_code == 200
+        assert (await anon_client.get("/v1/admin/audit", headers=headers)).status_code == 200
+
+    async def test_query_scope_token_for_non_admin_user(self, anon_client, auth_service):
+        """普通用户 + query scope:查询面正常,管理面本就 403(角色 + scope 双栅栏)。"""
+        token = await self._mint(auth_service, "bob", ["query"])
+        headers = {"Authorization": f"Bearer {token}"}
+        assert (await anon_client.get("/v1/sessions", headers=headers)).status_code == 200
+        assert (await anon_client.get("/v1/admin/audit", headers=headers)).status_code == 403

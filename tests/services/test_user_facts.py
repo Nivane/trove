@@ -196,7 +196,7 @@ class TestMemoryLifecycle:
 
     async def test_recency_ranks_fresh_first_on_tie(self, svc):
         a = await svc.add("alice", "demo", "营收 = 净收入")
-        b = await svc.add("alice", "demo", "营收 = 含税口径")
+        await svc.add("alice", "demo", "营收 = 含税口径")
         await self._backdate(svc, a["id"], days=150)  # 同相关度,更旧 → 排后
         hits = await svc.search("alice", "demo", "营收")
         assert hits[0]["fact"] == "营收 = 含税口径"

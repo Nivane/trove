@@ -73,6 +73,35 @@ def make_execute_sql(
         if connectors is None:
             return {"error": "No datasource registry available."}
 
+        # AST 级只读防火墙兜底(最终执行路径的最后一道防线):gen_sql 的
+        # validate/explain 工具已校验过,但绕开 gen_sql 直达执行的 SQL
+        # (API 直执行 / job payload / MCP 工具等)必须在这里被拦下——写语句
+        # /data-modifying CTE/元数据表侦察/危险函数一律硬拒,不回生成炉
+        # (安全违规不是可修正的生成缺陷)。解析失败 fail-open(方言盲区
+        # 不等于权限违规;真实边界在数据库侧只读角色)。
+        try:
+            from trove.services.sql.guard import check_readonly
+
+            ok, reasons = check_readonly(
+                state.sql, state.dialect or "", fail_on_parse_error=False,
+            )
+            if not ok:
+                logger.warning(
+                    "SQL guard rejected %r: %s",
+                    state.question[:80], "; ".join(reasons),
+                )
+                return {
+                    "error": (
+                        "[ERR:SQL_GUARD] The SQL was blocked by the read-only "
+                        f"guard: {'; '.join(reasons)}"
+                    ),
+                    "columns": [],
+                    "rows": [],
+                    "row_count": -1,
+                }
+        except Exception as e:
+            logger.warning("SQL guard skipped (fail-open): %s", e)
+
         # 编译照抄校验(确定性 diff,执行前):compiled 通道的 SQL 必须等价
         # 复现编译器拼出的权威 SQL——偏离(改聚合/加别名/调 join 等)直接
         # 打回 gen_sql 重生成,而不是把被 LLM 改坏的 SQL 拿去执行。该偏离

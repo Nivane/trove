@@ -5,7 +5,6 @@
 """
 
 from trove.services.semantic_layer.plan import (
-    PlanQuery,
     parse_ordering,
     parse_plan_query,
 )

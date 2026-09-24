@@ -20,7 +20,6 @@ from trove.core.logging import get_logger
 from trove.core.metrics import MetricsTimer, record_llm_call
 from trove.services.errors import classify_error
 from trove.llm.observability import get_client
-from trove.llm.call_log import record_call
 
 logger = get_logger(__name__)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 
 async def _new_session(client) -> str:

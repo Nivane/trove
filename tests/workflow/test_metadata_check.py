@@ -1,6 +1,5 @@
 """Metadata answer validation tests — hallucination rules + LLM judge."""
 
-import pytest
 
 from trove.workflow.nodes.metadata_check import (
     find_hallucinations,

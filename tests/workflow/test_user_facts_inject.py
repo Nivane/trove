@@ -8,7 +8,6 @@ another datasource's facts never do.
 
 from __future__ import annotations
 
-import pytest
 
 from trove.core.config import AgentConfig
 from trove.services.datasource.catalog import CatalogService

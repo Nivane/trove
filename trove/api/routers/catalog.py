@@ -122,7 +122,6 @@ def _infer_sql_type(values: list[str]) -> str:
     value parses as a float, text otherwise. Booleans (t/f, true/false,
     0/1) are stored as INTEGER for natural SQL comparisons.
     """
-    parsed_bool = True
     non_empty = [v for v in values if v != ""]
     if non_empty and all(v.lower() in ("true", "false", "t", "f") for v in non_empty):
         return "INTEGER"
@@ -130,7 +129,6 @@ def _infer_sql_type(values: list[str]) -> str:
         try:
             int(v)
         except ValueError:
-            parsed_bool = False
             break
     else:
         if non_empty:

@@ -11,7 +11,7 @@ exposed per job for the management UI.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 

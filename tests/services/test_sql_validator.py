@@ -1,6 +1,5 @@
 """SQL validator tests."""
 
-import pytest
 
 from trove.services.sql.validator import SQLValidator, ValidationResult, DANGEROUS_KEYWORDS
 

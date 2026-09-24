@@ -15,6 +15,7 @@ score when either language overlaps.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uff00-\uffef]")
 _EN_RE = re.compile(r"[a-z0-9_]+")
@@ -81,7 +82,7 @@ def history_items(
     history: str,
     question: str,
     prefix: str = "turn",
-) -> list["ContextItem"]:
+) -> list[Any]:
     """历史轮 → 预算条目:score = 相关度 + 最近度加权。
 
     摘要([summary])内容浓缩、相关度普遍偏低,给一个小的最近度加成

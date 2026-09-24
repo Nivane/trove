@@ -97,7 +97,7 @@ class TestBuiltInCommands:
 
 class TestCommandHandlersWithContext:
     async def test_clear_with_session(self, tmp_home):
-        from trove.core.types import Message, Session
+        from trove.core.types import Message
         from trove.storage.session_store import SessionStore
 
         store = SessionStore(home_dir=str(tmp_home))

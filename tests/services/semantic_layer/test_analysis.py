@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
 
 from trove.services.semantic_layer.compiler import (
     CompileMiss,

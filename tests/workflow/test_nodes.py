@@ -710,7 +710,6 @@ class TestSQLHelpers:
 
     def test_fix_prompt_injects_target_hint(self):
         """带位置的语法错误 → fix prompt 明示只修那一处,不整句重构。"""
-        from trove.prompts import render
 
         errs = ["Parse error: Unexpected token at line 1, col 14 near token 't'"]
         prompt = build_fix_prompt("SELECT * FRM t", errs, lang="en")
@@ -1494,6 +1493,58 @@ class TestExecuteSQL:
         node = make_execute_sql(sqlite_registry)
         update = await node(make_state(sql="SELECT 1", error="upstream failed"))
         assert update == {}
+
+    async def test_write_sql_hard_rejected(self, sqlite_registry):
+        """AST 防火墙兜底:写语句直达执行路径 → 硬拒,不进修正炉。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(make_state(sql="UPDATE students SET grade = 'A' WHERE id = 1"))
+        assert "error" in update
+        assert "SQL_GUARD" in update["error"]
+        assert "only SELECT queries are allowed" in update["error"]
+        assert update["row_count"] == -1
+        assert "error_feedback" not in update  # 不回炉重生成
+
+    async def test_meta_table_sql_hard_rejected(self, sqlite_registry):
+        """元数据表侦察面:sqlite_master 查询 → 硬拒。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(make_state(sql="SELECT name FROM sqlite_master"))
+        assert "error" in update
+        assert "SQL_GUARD" in update["error"]
+        assert "metadata/system table" in update["error"]
+
+    async def test_dangerous_function_sql_hard_rejected(self, sqlite_registry):
+        """危险函数(SLEEP 资源耗尽面)在最终执行路径同样被拦下。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(make_state(sql="SELECT SLEEP(10)"))
+        assert "error" in update
+        assert "SQL_GUARD" in update["error"]
+
+    async def test_data_modifying_cte_hard_rejected(self, sqlite_registry):
+        """顶层 SELECT 内藏 DELETE 的 CTE → 整树扫描拦下(非只查顶层)。"""
+        node = make_execute_sql(sqlite_registry)
+        update = await node(
+            make_state(sql="WITH doomed AS (DELETE FROM students RETURNING *) SELECT * FROM doomed")
+        )
+        assert "error" in update
+        assert "SQL_GUARD" in update["error"]
+
+    async def test_firewall_blocks_before_execution(self, sqlite_registry, monkeypatch):
+        """防火墙命中时绝不动连接器(硬拒在 EXPLAIN/execute 之前)。"""
+        calls = []
+
+        class SpyConnectors:
+            async def explain(self, *a, **k):
+                calls.append("explain")
+                raise AssertionError("should not be reached")
+
+            async def execute(self, *a, **k):
+                calls.append("execute")
+                raise AssertionError("should not be reached")
+
+        node = make_execute_sql(SpyConnectors(), explain_row_guard=True)
+        update = await node(make_state(sql="DELETE FROM students"))
+        assert "error" in update
+        assert calls == []
 
 
 class TestExecuteSQLCompileDrift:
@@ -3061,10 +3112,12 @@ class TestPlanValidation:
 
         class _C:
             async def get_schema(self, datasource=None):
-                table = lambda name, cols: types.SimpleNamespace(
-                    name=name,
-                    columns=[types.SimpleNamespace(name=c) for c in cols],
-                )
+                def table(name, cols):
+                    return types.SimpleNamespace(
+                        name=name,
+                        columns=[types.SimpleNamespace(name=c) for c in cols],
+                    )
+
                 return types.SimpleNamespace(tables=[
                     table("loan", ["account_id", "amount", "date", "status"]),
                     table("account", ["account_id", "district_id", "frequency"]),
@@ -3607,7 +3660,7 @@ class TestReflectAdaptiveSkip:
 
         llm = LLM()
         node = make_reflect(llm, AgentConfig(target="mock/model", reflect_skip="simple"))
-        update = await node(make_state(
+        await node(make_state(
             rules_passed=True, complexity="standard",
             sql="SELECT COUNT(*) AS n FROM students",
             row_count=2, columns=["n"], rows=[[1], [2]],

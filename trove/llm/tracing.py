@@ -31,7 +31,7 @@ def configure_tracing(tracing: TracingConfig) -> None:
     if not tracing.enabled:
         return
 
-    from trove.llm.observability import langfuse_enabled, get_logger as _unused
+    from trove.llm.observability import langfuse_enabled
     from trove.core.logging import get_logger as _get_logger
 
     _logger = _get_logger(__name__)

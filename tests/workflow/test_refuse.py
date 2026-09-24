@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 
-import yaml
 
 import pytest
 
@@ -572,15 +571,10 @@ class TestChatConfirmDraft:
         """图路由:confirm 意图 → confirm_draft 节点(非管理员 → 引导,不跑管线)。"""
         from trove.services.kb.service import KbService
         from trove.workflow.graphs import build_graphs
-        from trove.workflow.nodes.confirm_draft import make_confirm_draft
         from trove.workflow.state import WorkflowState
 
         kb = KbService(tmp_path / "proj")
         provider = await self._provider_light(tmp_path, kb)
-        graphs = build_graphs(
-            self._services_light(provider),
-            multi_candidate=False, query_sketch=False, agentic=False,
-        )
         llm = ExhaustingLLM(["confirm"])  # intent 分类返回 confirm
         from trove.workflow.graphs import GraphServices
         from trove.core.config import AgentConfig

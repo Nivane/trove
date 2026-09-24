@@ -1,14 +1,11 @@
 """Config loading tests."""
 
-import os
-from pathlib import Path
 
 import pytest
 
 from trove.core.config import (
     ConfigLoader,
     AgentConfig,
-    ProjectConfig,
     PROJECT_CONFIG_WHITELIST,
 )
 from trove.core.errors import ConfigError
@@ -327,7 +324,7 @@ def test_retention_config_defaults():
 
 def test_retention_config_from_yaml(tmp_path):
     """agent.yml 的 retention 段被正确解析(含 0=关闭 语义)。"""
-    from trove.core.config import ConfigLoader, AgentConfig
+    from trove.core.config import ConfigLoader
 
     yml = tmp_path / "agent.yml"
     yml.write_text(

@@ -14,7 +14,6 @@ import datetime
 import json
 from pathlib import Path
 
-import aiosqlite
 
 from trove.core.logging import get_logger
 

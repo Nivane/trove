@@ -117,7 +117,6 @@ def relationships_from_schema(
     rels: list[dict[str, Any]] = []
     seen: set[frozenset[str]] = set()
     for tname, table in tables.items():
-        target_cols = {c.name for c in table.columns}
         for col in table.columns:
             if not col.name.endswith("_id") or len(col.name) <= 3:
                 continue
@@ -181,18 +180,18 @@ def _parse_enum_entries(
             code, _, label_part = entry.partition("=" if "=" in entry else "：")
             code = code.strip()
             label_part = label_part.strip()
-            labels = [l.strip() for l in re.split(r"[|｜]", label_part) if l.strip()]
+            labels = [ln.strip() for ln in re.split(r"[|｜]", label_part) if ln.strip()]
             if not code or not labels:
                 continue
             if code not in display:
                 display[code] = labels[0]
             if len(labels) > 1:
-                extra = [l for l in labels[1:] if l != display.get(code)]
+                extra = [ln for ln in labels[1:] if ln != display.get(code)]
                 if extra:
                     aliases.setdefault(code, [])
-                    for l in extra:
-                        if l not in aliases[code]:
-                            aliases[code].append(l)
+                    for ln in extra:
+                        if ln not in aliases[code]:
+                            aliases[code].append(ln)
         else:
             display[entry] = entry
     return display, aliases

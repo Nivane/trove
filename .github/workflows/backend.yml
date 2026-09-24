@@ -62,3 +62,12 @@ jobs:
         run: uv sync --extra postgres
       - name: Import smoke
         run: uv run python -c "import trove.main; print('import ok')"
+      # 静态质量门禁:pyflakes 未用/未定义名 + pycodestyle 错误级
+      # (配置见 pyproject.toml [tool.ruff];E501 行长不拦)。
+      - name: Ruff lint gate
+        run: uv run ruff check trove tests
+      # 依赖漏洞扫描(OSV):导出锁定依赖清单交给 pip-audit 比对公开漏洞库。
+      - name: Dependency vulnerability scan
+        run: |
+          uv export --no-hashes -o /tmp/requirements.txt
+          uvx pip-audit -r /tmp/requirements.txt

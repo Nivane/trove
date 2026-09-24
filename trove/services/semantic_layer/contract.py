@@ -44,7 +44,7 @@ SQL(它是 LLM 输出,只能拿到字符串)。签名抽取失败时 ``signature
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 __all__ = [

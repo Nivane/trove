@@ -12,17 +12,12 @@ returns a partial state update.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from trove.prompts import render
-from trove.prompts.skills import render_skills
-from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
-from trove.services.kb.service import KbService, TableNotes, TermHit
+from trove.services.kb.service import KbService, TermHit
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState

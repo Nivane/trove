@@ -21,7 +21,6 @@ async def test_lifecycle_purges_user_facts(tmp_path, kb):
     from trove.services.user_facts.service import UserFactsService
 
     facts = UserFactsService(tmp_path / "facts.db")
-    scope = MemoryScope(datasource="demo", user_id="u")
     await facts.add("u", "demo", "use 30-day average")
     assert len(await facts.list("u")) == 1
 

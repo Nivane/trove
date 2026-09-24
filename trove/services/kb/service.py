@@ -356,15 +356,15 @@ def _score_entity(question: str, payload: dict) -> float | None:
     field = str(payload.get("field") or "")
     synonyms = [str(s) for s in payload.get("synonyms", []) or []]
     enums = [str(e) for e in payload.get("enum_values", []) or []]
-    enum_labels = [str(l) for l in payload.get("enum_labels", []) or []]
+    enum_labels = [str(ln) for ln in payload.get("enum_labels", []) or []]
     description = str(payload.get("description") or "")
     role = str(payload.get("role") or "").strip().lower()
     structural = role in ("identifier", "time") or bool(payload.get("is_time"))
     field_hit = bool(field) and field in question and not structural
     syn_hit = any(s and s in question for s in synonyms)
     enum_hit = any(
-        (e and e in question) or (l and l in question)
-        for e, l in zip(enums, enum_labels)
+        (e and e in question) or (ln and ln in question)
+        for e, ln in zip(enums, enum_labels)
     ) or any(e and e in question for e in enums)
     desc_overlap = _char_overlap(description, question) if description else 0.0
     index_text = " ".join([
@@ -1507,7 +1507,7 @@ class KbService:
         )
         lessons = [json.loads(row["payload"]) for row in rows]
         if confirmed_only:
-            lessons = [l for l in lessons if l.get("confirmed")]
+            lessons = [ln for ln in lessons if ln.get("confirmed")]
         return lessons
 
     async def search_lessons(
@@ -1543,7 +1543,7 @@ class KbService:
         if not self.enabled:
             return []
         lessons = await self.list_lessons(datasource)
-        items = [(i, l) for i, l in enumerate(lessons)]
+        items = [(i, ln) for i, ln in enumerate(lessons)]
         return await self._rank_lessons(
             question, datasource, items, limit, tables, all_tables)
 
@@ -1575,7 +1575,7 @@ class KbService:
             lesson["score"] = sim * (1 + 0.25 * votes) * _recency_factor(
                 lesson.get("updated_at") or lesson.get("created_at"))
             scored.append(lesson)
-        scored.sort(key=lambda l: l.get("score", 0.0), reverse=True)
+        scored.sort(key=lambda ln: ln.get("score", 0.0), reverse=True)
         return scored[:limit]
 
     async def append_lesson(
@@ -1621,7 +1621,7 @@ class KbService:
         if path.exists():
             data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         lessons = list(data.get("lessons", []))
-        existing = next((l for l in lessons if l.get("question") == question), None)
+        existing = next((ln for ln in lessons if ln.get("question") == question), None)
         if existing is None:
             lesson = {
                 "question": question,
@@ -1762,6 +1762,8 @@ class KbService:
             await self.force_sync(datasource)
             await self.git_commit(datasource, "kb: reject pending examples")
         return rejected
+
+    async def get_lesson(self, datasource: str, pattern: str) -> dict | None:
         """One lesson by exact pattern match, or None."""
         path = self.kb_dir / datasource / "lessons.yml"
         if not path.exists():
@@ -1806,7 +1808,7 @@ class KbService:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         lessons = data.get("lessons", [])
         before = len(lessons)
-        data["lessons"] = [l for l in lessons if l.get("pattern") != pattern]
+        data["lessons"] = [ln for ln in lessons if ln.get("pattern") != pattern]
         if len(data["lessons"]) == before:
             return False
         _write_doc(path, data, "kb_reject_lesson")

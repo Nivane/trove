@@ -16,7 +16,6 @@ fresh 的 builtin 兜底压住。用户确认了新例子 / 改了口径,检索�
 import sqlite3
 
 import aiosqlite
-import pytest
 
 from trove.services.kb.backends.pg_hybrid import PgHybridKbBackend
 from trove.services.kb.embeddings import embed as det_embed

@@ -8,7 +8,6 @@ pipeline never blocks on planning.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -21,7 +20,11 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import render_skills
-from trove.services.semantic_layer.compiler import PartialCompile
+from trove.services.semantic_layer.compiler import (
+    CompileMiss,
+    CompileResult,
+    PartialCompile,
+)
 from trove.services.semantic_layer.contract import (
     contract_to_wire,
     render_contract,
@@ -834,9 +837,6 @@ def _compile_semantic(
     state(适配器),驱动时间分桶等方言感知渲染。
     """
     from trove.services.semantic_layer.compiler import (
-        CompileMiss,
-        CompileResult,
-        PartialCompile,
         SemanticCompiler,
         validate_compiled_sql,
     )

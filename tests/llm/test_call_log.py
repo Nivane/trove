@@ -1,6 +1,5 @@
 """Local LLM call log tests — zero-config trace of prompt/response."""
 
-import json
 
 from trove.llm.call_log import record_call, read_recent
 

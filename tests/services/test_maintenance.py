@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from trove.core.config import RetentionConfig
 from trove.core.types import Message
@@ -83,7 +82,6 @@ async def test_sweep_removes_oldest_beyond_quota(tmp_home):
         group = [s for s in remaining if s["user_id"] == f"user{u}"]
         assert len(group) == 20
     # checkpoint 级联:被删 session 的 thread_id 都调了 adelete_thread
-    deleted_expected = {f"user{u}" for u in range(5)}
     # 找到被删的 session_id:105 个 id 减剩余 100
     remaining_ids = {s["session_id"] for s in remaining}
     gone = set(ids) - remaining_ids

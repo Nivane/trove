@@ -1,6 +1,5 @@
 """check_api_rate 依赖:按 user 的令牌桶 + 日配额,命中 → 429。"""
 
-import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 

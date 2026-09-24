@@ -14,12 +14,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trove.api.deps import check_api_rate, get_current_user, require_datasource
+from trove.api.deps import check_api_rate, get_current_user, require_datasource, require_scope
 from trove.api.schemas import ChatRequest, RenameRequest, ResumeRequest, SessionCreateResponse
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
 
-router = APIRouter()
+# 查询/会话面:受限 token 需要声明 ``query`` scope 才能访问(admin scope
+# 管理端点由 require_admin 单独裁决)。未声明 scopes 的 token 不限。
+router = APIRouter(dependencies=[Depends(require_scope("query"))])
 
 
 def _manager(request: Request):

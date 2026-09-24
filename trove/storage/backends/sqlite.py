@@ -13,7 +13,6 @@ tests that pass a ``tmp_path / "x.db"`` keep working unchanged.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, AsyncIterator
 

@@ -176,9 +176,17 @@ class AuthService:
 
     async def create_token(
         self, user_id: int, label: str = "", ttl_hours: int | None = None,
+        scopes: list[str] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Issue an opaque Bearer token. Returns ``(raw_token, record)`` —
-        the raw token is shown exactly once."""
+        the raw token is shown exactly once.
+
+        Args:
+            scopes: Token 作用域 allowlist(如 ``["query"]``)。None/空列表 =
+                不限(等价用户全部权限,存量 token 行为);非空 = 受限,
+                只放行声明了所需 scope 的路由(路由级依赖,见
+                ``api.deps.require_scope``)。
+        """
         expires_at = None
         if ttl_hours is not None:
             expires_at = (
@@ -186,7 +194,8 @@ class AuthService:
             ).isoformat()
         raw = "trove_" + secrets.token_urlsafe(32)
         record = await self.store.insert_token(
-            _hash_token(raw), user_id, label=label, expires_at=expires_at
+            _hash_token(raw), user_id, label=label, expires_at=expires_at,
+            scopes=scopes,
         )
         return raw, record
 
@@ -270,7 +279,11 @@ class AuthService:
 
     async def resolve_token(self, raw_token: str) -> dict[str, Any] | None:
         """Resolve a Bearer token to a user, or None (unknown/revoked/
-        expired/disabled user). Touches last_used_at on success."""
+        expired/disabled user). Touches last_used_at on success.
+
+        Returns the public user dict plus ``scopes`` (token 作用域;空列表 =
+        不限)——路由级 scope 依赖据此做最小权限裁决。
+        """
         if not raw_token:
             return None
         record = await self.store.get_token_by_hash(_hash_token(raw_token))
@@ -287,7 +300,9 @@ class AuthService:
         if user is None or user["disabled"]:
             return None
         await self.store.touch_token(record["id"])
-        return _public_user(user)
+        public = _public_user(user)
+        public["scopes"] = list(record.get("scopes") or [])
+        return public
 
     # ── Datasource grants ─────────────────────────────────
 

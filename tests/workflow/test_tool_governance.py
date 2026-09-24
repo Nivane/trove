@@ -13,11 +13,8 @@ import json
 import pytest
 
 from trove.core.types import DatasourceConfig
-from trove.llm.agent_loop import ToolRegistry
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.nodes.gen_sql import (
-    DESC_DONT_MARKER,
-    DESC_EXAMPLE_MARKER,
     DESC_USE_MARKER,
     _cache_key,
     lint_tool_descriptions,
@@ -161,13 +158,10 @@ class TestACLRoleFiltering:
 
     async def test_calling_hidden_tool_folds_to_unknown(self, sqlite_registry):
         """模型调用被 ACL 裁掉的工具 → 按 unknown 折叠回喂,不执行。"""
-        calls: list[str] = []
-
         class Connectors:
             async def get_schema(self, *a, **k):
                 return None
 
-        from trove.workflow.nodes.gen_sql import make_sql_tools
         # 直接构造:受约束 registry 手动挂一个 handler 计数
         registry = build_sql_registry(
             sqlite_registry, "q", "en", "sqlite", roles=["user"], finish=False,

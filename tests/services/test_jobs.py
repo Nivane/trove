@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from trove.services.jobs.alerts import evaluate_alert
 from trove.services.jobs.notify import build_notifier, ConsoleNotifier, WebhookNotifier

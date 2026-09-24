@@ -331,7 +331,7 @@ async def init_kb(kb, registry, llm, config, datasource, *,
 
     # 显式传 datasource:admin 可初始化非默认源,无参会解析到默认源
     # (多源必触发——新注册源即默认的 T3 minor 下错写更隐蔽)
-    _report("schema", 3, f"读取数据源 schema")
+    _report("schema", 3, "读取数据源 schema")
     schema = await registry.get_schema(datasource)
     # 合并不了就在**花钱之前**拦下来:一次 init 是几十次 LLM 调用,跑到写盘
     # 才发现"没有基线"等于白付。这里也是唯一能给出完整处置建议的位置。
