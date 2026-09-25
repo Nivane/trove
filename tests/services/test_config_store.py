@@ -105,6 +105,24 @@ def test_load_missing_file(tmp_path):
     assert ConfigStore(tmp_path / "nope.yml").load_configs() == []
 
 
+def test_roundtrip_allowed_tables(tmp_path):
+    """执行期表白名单必须 survive save→load(重启恢复授权边界依赖)。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    cfg = DatasourceConfig(
+        name="a", type="sqlite",
+        connection_params={"path": "/tmp/x.db"},
+        allowed_tables=["Students", "loan"],
+    )
+    store.save_configs([cfg])
+    assert store.load_configs()[0].allowed_tables == ["Students", "loan"]
+
+
+def test_allowed_tables_default_empty(tmp_path):
+    store = ConfigStore(tmp_path / "datasources.yml")
+    store.save_configs([_cfg("a")])
+    assert store.load_configs()[0].allowed_tables == []
+
+
 async def test_boot_register_registers_and_skips_bad(sqlite_registry, tmp_path):
     good = DatasourceConfig(name="good", type="sqlite",
                             connection_params={"path": ":memory:"}, credentials={}, default=True)

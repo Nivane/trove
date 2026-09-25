@@ -195,3 +195,8 @@ class DatasourceConfig:
     hnsw_m: int = 0
     hnsw_ef_construction: int = 0
     hnsw_ef_search: int = 0
+    # 表级授权白名单(执行期):非空时,Trove 只允许查询这些业务表(小写,
+    # 大小写不敏感);空 = 不限制(仅保持元数据表拒绝)。持久化在
+    # datasources.yml,由管理端在注册时配置;作为执行层纵深授权,与生成层
+    # 的 allowlist 相互印证。真正的权限边界仍在数据库侧只读角色。
+    allowed_tables: list[str] = field(default_factory=list)

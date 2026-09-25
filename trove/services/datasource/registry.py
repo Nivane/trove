@@ -102,6 +102,8 @@ class ConnectorRegistry:
         self._ds_ids: dict[str, str] = {}
         # Display-safe connection info per datasource (no credentials).
         self._datasource_info: dict[str, dict[str, Any]] = {}
+        # 执行期表级授权白名单(name → 小写表名集合);缺席 = 不限制。
+        self._allowed_tables: dict[str, set[str]] = {}
         # (datasource, normalized SQL) → (stored_at, QueryResult)
         self._result_cache: dict[tuple, tuple[float, QueryResult]] = {}
         self._result_cache_ttl_s = result_cache_ttl_s
@@ -234,6 +236,8 @@ class ConnectorRegistry:
             "type": config.type,
             "connection": _sanitize_connection(config.connection_params),
         }
+        # 表级授权随配置激活:非空 → 执行期白名单;空 → 清除限制。
+        self.set_allowed_tables(config.name, config.allowed_tables)
 
         if set_default or config.default or self._default_name is None:
             self._default_name = config.name
@@ -255,6 +259,7 @@ class ConnectorRegistry:
         adapter = self._adapters.pop(name)
         self._ds_ids.pop(name, None)
         self._datasource_info.pop(name, None)
+        self._allowed_tables.pop(name, None)
         self._invalidate_result_cache(name)
         await adapter.disconnect()
 
@@ -315,7 +320,11 @@ class ConnectorRegistry:
         """
         adapter = await self.get(datasource)
         # 测试替身等轻量 adapter 可能缺 dialect — getattr 防御
-        self._guard_read_only(sql, getattr(adapter, "dialect", lambda: "")())
+        self._guard_read_only(
+            sql,
+            getattr(adapter, "dialect", lambda: "")(),
+            self._allowed_tables.get(adapter.name),
+        )
         key = (
             adapter.name,
             re.sub(r"\s+", " ", sql.strip()).upper(),
@@ -396,22 +405,28 @@ class ConnectorRegistry:
         key space is the same as execute's).
         """
         adapter = await self.get(datasource)
-        self._guard_read_only(sql, adapter.dialect())
+        self._guard_read_only(sql, adapter.dialect(), self._allowed_tables.get(adapter.name))
         prefix = "EXPLAIN QUERY PLAN" if adapter.dialect() == "sqlite" else "EXPLAIN"
         return await adapter.execute(f"{prefix} {sql}")
 
     @staticmethod
-    def _guard_read_only(sql: str, dialect: str = "") -> None:
+    def _guard_read_only(
+        sql: str, dialect: str = "", allowed_tables: set[str] | None = None,
+    ) -> None:
         """Reject non-SELECT statements (AST-level read-only firewall).
 
         统一执行入口的只读门:execute / explain 共用。AST 整树检查,
         覆盖关键词正则与「只查顶层」都绕不过去的手法——data-modifying
         CTE(WITH x AS (DELETE ...) SELECT)、注释拆分 DEL/**/ETE、
         危险函数(SLEEP/LOAD_FILE)、元数据表侦察(sqlite_master 等)。
+
+        ``allowed_tables`` 非空时,执行期同时做表级授权(仅这些业务表可
+        被引用)——把生成工具层的 allowlist 下沉到真实执行路径,封堵绕过
+        gen_sql 工具直接调用 registry 的入口(MCP / semantic_query 等)。
         """
         from trove.services.sql.guard import check_readonly
 
-        ok, reasons = check_readonly(sql, dialect)
+        ok, reasons = check_readonly(sql, dialect, allowed_tables)
         if not ok:
             raise DatasourceError(
                 message="Trove is read-only: " + "; ".join(reasons[:3])
@@ -431,6 +446,29 @@ class ConnectorRegistry:
     def list_names(self) -> list[str]:
         """List all registered datasource names."""
         return list(self._adapters.keys())
+
+    def set_allowed_tables(
+        self, name: str, tables: list[str] | set[str] | None,
+    ) -> None:
+        """Pin the execution-time table allowlist for a datasource.
+
+        Non-empty → only these business tables (case-insensitive) may be
+        referenced by SQL reaching the adapter; ``None``/empty clears the
+        restriction (metadata tables stay denied regardless). The real
+        authorization boundary remains the database-side read-only role;
+        this is the application-layer funnel that closes the gap between
+        the generation tools (which already allowlist) and the final
+        execution path.
+        """
+        cleaned = {t.strip().lower() for t in (tables or []) if t and t.strip()}
+        if cleaned:
+            self._allowed_tables[name] = cleaned
+        else:
+            self._allowed_tables.pop(name, None)
+
+    def allowed_tables(self, name: str) -> set[str] | None:
+        """The configured allowlist for a datasource (None = unrestricted)."""
+        return self._allowed_tables.get(name)
 
     def list_info(self) -> list[dict[str, Any]]:
         """List registered datasources with display-safe connection info.

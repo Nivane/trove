@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -75,7 +76,27 @@ def _sanitized(cfg: DatasourceConfig) -> dict:
         "retrieval_dsn": cfg.retrieval_dsn or "",
         "embedding_dims": cfg.embedding_dims or 1536,
         "fts_tokenizer": cfg.fts_tokenizer or "",
+        "allowed_tables": list(cfg.allowed_tables or []),
     }
+
+
+def _parse_allowed_tables(body: dict) -> list[str]:
+    """Parse the execution-time table allowlist from a request body.
+
+    Accepts a list or a comma/newline-separated string (admin form).
+    Absent/empty = no restriction (execution still denies metadata tables).
+    """
+    raw = body.get("allowed_tables")
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        raw = re.split(r"[,\n]", raw)
+    if not isinstance(raw, list):
+        raise HTTPException(
+            status_code=400,
+            detail="allowed_tables must be a list of table names",
+        )
+    return [str(t).strip() for t in raw if str(t).strip()]
 
 
 def _retrieval_backend(body: dict) -> str:
@@ -544,7 +565,10 @@ async def create_datasource(request: Request, body: dict,
             cfg = registry.ensure_identity(cfg)
         except DatasourceError as e:
             raise HTTPException(status_code=400, detail=str(e))
-    cfg = dataclasses.replace(cfg, **_vector_config(body, cfg.type))
+    cfg = dataclasses.replace(
+        cfg, allowed_tables=_parse_allowed_tables(body),
+        **_vector_config(body, cfg.type),
+    )
 
     # 冲突先行：同名不同身份 → 409，绝不静默覆盖（连接探测前就拒绝）。
     existing = _existing_identities(request)
@@ -652,6 +676,7 @@ async def get_admin_datasource(name: str, request: Request,
             "default": bool(cfg.default),
             "status": "connected" if registry.is_registered(name) else "disconnected",
             "kb_initialized": kb.kb_initialized(name),
+            "allowed_tables": list(cfg.allowed_tables or []),
         }
     }
 
@@ -686,6 +711,10 @@ async def update_datasource(name: str, body: dict, request: Request,
         new_cfg = parse_datasource_url(url)
         new_cfg = dataclasses.replace(
             new_cfg, name=cfg.name, default=cfg.default, ds_id=cfg.ds_id,
+            allowed_tables=(
+                _parse_allowed_tables(body)
+                if "allowed_tables" in body else list(cfg.allowed_tables or [])
+            ),
             **_vector_config(body, new_cfg.type),
         )
         new_cfg = registry.ensure_identity(new_cfg)

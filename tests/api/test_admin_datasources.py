@@ -100,6 +100,45 @@ async def test_register_rag_requires_embedding_model(client, api_app):
     assert bad_vb.status_code == 400
 
 
+async def test_register_with_allowed_tables(client, api_app):
+    """执行期表白名单:注册时接收、持久化、列表暴露、注册即生效。"""
+    resp = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "scopeddb", "url": "sqlite://:memory:",
+              "allowed_tables": ["students", "Loan"]},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["datasource"]["allowed_tables"] == ["students", "Loan"]
+    persisted = next(
+        c for c in api_app.state.config_store.load_configs()
+        if c.name == "scopeddb")
+    assert persisted.allowed_tables == ["students", "Loan"]
+    assert api_app.state.connector_registry.allowed_tables("scopeddb") == {
+        "students", "loan"}
+    listed = (await client.get("/v1/admin/datasources")).json()["datasources"]
+    entry = next(d for d in listed if d["name"] == "scopeddb")
+    assert entry["allowed_tables"] == ["students", "Loan"]
+
+
+async def test_register_allowed_tables_string_form(client, api_app):
+    resp = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "csvdb", "url": "sqlite://:memory:",
+              "allowed_tables": "a, b\nc"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["datasource"]["allowed_tables"] == ["a", "b", "c"]
+
+
+async def test_register_allowed_tables_bad_type_400(client):
+    resp = await client.post(
+        "/v1/admin/datasources",
+        json={"name": "badscope", "url": "sqlite://:memory:",
+              "allowed_tables": 123},
+    )
+    assert resp.status_code == 400
+
+
 async def test_list_without_kb_mirror(client, api_app):
     """KB 目录存在但 kb.sqlite 镜像未建（挂载 .trove 的真实生产形态）→ 列表不 500，
     kb_initialized 仍正确（从 YAML 文件判定，不依赖镜像）。"""

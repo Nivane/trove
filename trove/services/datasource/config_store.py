@@ -18,6 +18,7 @@ import yaml
 
 from trove.core.errors import DatasourceError
 from trove.core.types import DatasourceConfig
+from trove.services.datasource import secrets
 from trove.services.datasource.naming import backfill_ds_id, new_ds_id
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,35 @@ def to_dict(cfg: DatasourceConfig) -> dict:
         "vector_dsn": cfg.vector_dsn or "",
         "retrieval_dsn": cfg.retrieval_dsn or "",
         "fts_tokenizer": cfg.fts_tokenizer or "",
+        "allowed_tables": list(cfg.allowed_tables or []),
     }
+
+
+def _key_dir(path: Path) -> Path:
+    """Secret key lives beside datasources.yml (self-contained workspace)."""
+    return path.parent
+
+
+def _encrypt_config(cfg: DatasourceConfig, key_dir: Path) -> DatasourceConfig:
+    """Encrypt secrets before they hit disk (see services.datasource.secrets)."""
+    return replace(
+        cfg,
+        connection_params=secrets.encrypt_mapping(cfg.connection_params, key_dir),
+        credentials=secrets.encrypt_mapping(cfg.credentials, key_dir, all_values=True),
+        vector_dsn=secrets.encrypt_value(cfg.vector_dsn, key_dir),
+        retrieval_dsn=secrets.encrypt_value(cfg.retrieval_dsn, key_dir),
+    )
+
+
+def _decrypt_config(cfg: DatasourceConfig, key_dir: Path) -> DatasourceConfig:
+    """Decrypt secrets on load; legacy plaintext values pass through."""
+    return replace(
+        cfg,
+        connection_params=secrets.decrypt_mapping(cfg.connection_params, key_dir),
+        credentials=secrets.decrypt_mapping(cfg.credentials, key_dir),
+        vector_dsn=secrets.decrypt_value(cfg.vector_dsn, key_dir),
+        retrieval_dsn=secrets.decrypt_value(cfg.retrieval_dsn, key_dir),
+    )
 
 
 def from_dict(data: dict) -> DatasourceConfig:
@@ -67,6 +96,7 @@ def from_dict(data: dict) -> DatasourceConfig:
         vector_dsn=str(data.get("vector_dsn") or ""),
         retrieval_dsn=str(data.get("retrieval_dsn") or ""),
         fts_tokenizer=str(data.get("fts_tokenizer") or ""),
+        allowed_tables=list(data.get("allowed_tables") or []),
         # 旧 yml 无 id 字段(迁移):确定性回填,保证重启间稳定且幂等。
         ds_id=data.get("id") or backfill_ds_id(data["type"], data["name"]),
     )
@@ -109,6 +139,7 @@ class ConfigStore:
                 )
             try:
                 cfg = from_dict(d)
+                cfg = _decrypt_config(cfg, _key_dir(self.path))
             except KeyError as e:
                 name = d.get("name", "<unknown>")
                 raise DatasourceError(
@@ -140,7 +171,7 @@ class ConfigStore:
                     datasource=cfg.name,
                 )
             seen_ids.add(ds_id)
-            normalized.append(replace(cfg, ds_id=ds_id))
+            normalized.append(_encrypt_config(replace(cfg, ds_id=ds_id), _key_dir(self.path)))
         payload = yaml.safe_dump(
             {"datasources": [to_dict(c) for c in normalized]},
             allow_unicode=True, sort_keys=False,
