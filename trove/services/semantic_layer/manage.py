@@ -23,7 +23,7 @@ import yaml
 from sqlglot import ErrorLevel, exp, parse_one
 
 from trove.services.datasource.naming import is_path_safe
-from trove.services.kb.lint import lint_semantics
+from trove.services.kb.lint import lint_semantics, lint_semantics_document
 from trove.services.kb.service import KbService
 from trove.services.semantic_layer.models import (
     SemanticDataset,
@@ -75,6 +75,19 @@ def _check_expr(expr: str, dialect: str | None, label: str) -> None:
         raise ValueError(f"{label} 表达式无法解析: {e}") from e
     if isinstance(tree, exp.Alias):
         raise ValueError(f"{label} 表达式无法解析(语法错误)")
+
+
+def _reject_bad_semantics(data: dict[str, Any], dialect: str | None) -> None:
+    """写盘前门禁:坏语义拒绝持久化,而不只是拒绝进 git 审计历史。
+
+    git 的 pre-commit lint 只能保证坏语义不落进 commit —— 那时文件已
+    ``_dump_yaml`` 写盘、``force_sync`` 进了运行时检索。这里把同一套
+    ``lint_semantics`` 前移到写盘之前:issues 非空即 ``raise``,不落盘、
+    不刷新镜像,坏语义永不进入运行时。git 侧门禁保留作第二道兜底。
+    """
+    issues = lint_semantics_document(data, dialect=dialect or "sqlite")
+    if issues:
+        raise ValueError("语义校验未通过,拒绝写入: " + "; ".join(issues))
 
 
 def _clean_synonyms(raw: Any) -> list[str]:
@@ -518,6 +531,7 @@ class SemanticManager:
         # 新建文档补齐 OSSIE v0.2.0.dev0 文档级 version(已存在则保留)
         if "version" not in data and "semantic_model" in data:
             data["version"] = "0.2.0.dev0"
+        _reject_bad_semantics(data, dialect)
         _dump_yaml(semantics, data)
         draft["status"] = "applied"
         drafts = self._drafts_with(datasource, draft)
@@ -565,6 +579,7 @@ class SemanticManager:
             raise ValueError(f"{kind} 自动确认失败: {e}") from e
         if "version" not in data and "semantic_model" in data:
             data["version"] = "0.2.0.dev0"
+        _reject_bad_semantics(data, None)
         _dump_yaml(semantics, data)
         path = self._drafts_path(datasource)
         drafts_data = _load_yaml(path)
