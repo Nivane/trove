@@ -947,7 +947,7 @@ class KbService:
         semantics.yml 做静态校验,保证坏表达式/重复定义/坏关系永不进入
         git 审计历史。返回 ``(paths) -> list[str]`` 供 GitKb.commit 调用。
         """
-        from trove.services.kb.lint import lint_semantics
+        from trove.services.kb.lint import lint_semantics_document
 
         def _lint(paths) -> list[str]:
             issues: list[str] = []
@@ -959,9 +959,7 @@ class KbService:
                 except Exception as e:
                     issues.append(f"semantics.yml 无法解析: {e}")
                     continue
-                for entry in data.get("semantic_model", []) or []:
-                    if isinstance(entry, dict):
-                        issues += lint_semantics(entry, dialect=dialect)
+                issues += lint_semantics_document(data, dialect=dialect)
             return issues
 
         return _lint

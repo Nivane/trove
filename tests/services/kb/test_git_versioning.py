@@ -429,3 +429,67 @@ async def test_confirm_is_single_atomic_commit(git_repo: Path):
     files = _git(git_repo, "log", "-1", "--name-only", "--format=").stdout.split()
     assert any(f.endswith("semantics.yml") for f in files)
     assert any(f.endswith("semantic_drafts.yml") for f in files)
+
+
+# ── 门禁前移:坏语义在写盘前被拒(不只是拒绝进 git) ──────
+
+
+def _seed_empty_semantics(kb: KbService) -> str:
+    ds_dir = kb.kb_dir / "demo"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    path = kb.semantics_path("demo")
+    path.write_text("semantic_model: []\n", encoding="utf-8")
+    return path.read_text(encoding="utf-8")
+
+
+async def test_confirm_draft_rejects_bad_semantics_before_write(tmp_path: Path):
+    """lint 不过的草稿在 confirm 时被拒:不写盘、不刷新镜像、草稿仍 pending。"""
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    kb = KbService(tmp_path / "proj")
+    before = _seed_empty_semantics(kb)
+    manager = SemanticManager(kb)
+    # unique_keys 引用未声明的列 → lint_semantics 报错,但 _apply_draft 不拦。
+    draft = await manager.create_draft(
+        "demo", "dataset", "upsert", "courses",
+        {"source": "courses", "unique_keys": [["ghost_col"]]})
+
+    with pytest.raises(ValueError, match="拒绝写入"):
+        await manager.confirm_draft("demo", draft["id"], dialect="sqlite")
+
+    # 磁盘未被改写;草稿未被标记 applied
+    assert kb.semantics_path("demo").read_text(encoding="utf-8") == before
+    assert manager.drafts("demo")["pending"][0]["id"] == draft["id"]
+    assert manager.drafts("demo")["applied"] == []
+
+
+async def test_auto_apply_rejects_bad_semantics_before_write(tmp_path: Path):
+    """auto_apply 同样在写盘前拦截坏语义(refuse 节点据此退回 pending 草稿)。"""
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    kb = KbService(tmp_path / "proj")
+    before = _seed_empty_semantics(kb)
+
+    with pytest.raises(ValueError, match="拒绝写入"):
+        await SemanticManager(kb).auto_apply(
+            "demo", "dataset", "courses",
+            {"source": "courses", "unique_keys": [["ghost_col"]]})
+
+    assert kb.semantics_path("demo").read_text(encoding="utf-8") == before
+
+
+async def test_confirm_draft_clean_semantics_still_writes(tmp_path: Path):
+    """门禁不误伤:干净草稿照常写盘并进 git 审计历史。"""
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    kb = KbService(tmp_path / "proj")
+    _seed_empty_semantics(kb)
+    manager = SemanticManager(kb)
+    draft = await manager.create_draft(
+        "demo", "metric", "upsert", "avg_amount",
+        {"expression": "AVG(loan.amount)", "datasets": ["loan"]})
+
+    await manager.confirm_draft("demo", draft["id"], dialect="sqlite")
+
+    assert "avg_amount" in kb.semantics_path("demo").read_text(encoding="utf-8")
+    assert manager.drafts("demo")["applied"][0]["name"] == "avg_amount"

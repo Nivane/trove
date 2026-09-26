@@ -275,6 +275,21 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
     return issues
 
 
+def lint_semantics_document(data: dict[str, Any], dialect: str = "mysql") -> list[str]:
+    """Lint a full ``semantics.yml`` document (every ``semantic_model`` entry).
+
+    ``lint_semantics`` takes a single OSSIE model mapping; this is the
+    document-level wrapper shared by the admin issues view, the git
+    pre-commit gate and the pre-write gate — so all three judge exactly
+    the same bytes.
+    """
+    issues: list[str] = []
+    for entry in (data or {}).get("semantic_model", []) or []:
+        if isinstance(entry, dict):
+            issues += lint_semantics(entry, dialect=dialect)
+    return issues
+
+
 def _lint_metric_filter(
     issues: list[str], m: dict[str, Any], ds_fields: dict[str, set[str]],
     dialect: str,
