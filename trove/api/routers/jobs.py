@@ -49,6 +49,9 @@ def _serialize(job) -> dict[str, Any]:
         "alert_expr": job.alert_expr,
         "alert_channel": job.alert_channel,
         "alert_cooldown_min": job.alert_cooldown_min,
+        # Non-empty → `question` is a label only and `workflow`/`alert_expr`
+        # do not apply: the run is decided by the decision engine.
+        "decision_rule": job.decision_rule,
         "next_run_at": job.next_run_at,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -86,6 +89,36 @@ def _channel_error(channel: str) -> str | None:
     return None
 
 
+def _rule_error(request: Request, datasource: str, rule_id: str) -> str | None:
+    """400 message for an unusable decision rule reference; None when fine.
+
+    Checked here rather than in JobsService so the service needs no KB: the
+    router already holds ``app.state.kb``. A dangling reference has to be
+    rejected at write time — the runner would otherwise discover it on every
+    tick and fail the same way forever.
+    """
+    from trove.services.decision.rules import RuleError
+
+    rule_id = (rule_id or "").strip()
+    if not rule_id:
+        return None
+    kb = getattr(request.app.state, "kb", None)
+    if kb is None:
+        return f"decision rules unavailable: no KB for datasource {datasource!r}"
+    try:
+        doc = kb.load_decisions(datasource)
+    except RuleError as e:
+        return f"decisions.yml for {datasource!r} is invalid: {e}"
+    ids = [r.id for r in doc.rules]
+    if rule_id not in ids:
+        known = ", ".join(ids) or "(none declared)"
+        return f"unknown decision_rule {rule_id!r} for {datasource!r} (declared: {known})"
+    rule = next(r for r in doc.rules if r.id == rule_id)
+    if not rule.enabled:
+        return f"decision_rule {rule_id!r} is disabled"
+    return None
+
+
 @router.get("/admin/jobs")
 async def list_jobs(
     request: Request,
@@ -111,6 +144,9 @@ async def create_job(
     channel_err = _channel_error(body.alert_channel)
     if channel_err:
         raise HTTPException(status_code=400, detail=channel_err)
+    rule_err = _rule_error(request, body.datasource, body.decision_rule)
+    if rule_err:
+        raise HTTPException(status_code=400, detail=rule_err)
     job = await _jobs(request).create_job(
         body.question,
         body.schedule.strip(),
@@ -121,6 +157,7 @@ async def create_job(
         alert_expr=body.alert_expr,
         alert_channel=body.alert_channel,
         alert_cooldown_min=body.alert_cooldown_min,
+        decision_rule=body.decision_rule,
     )
     if job is None:
         raise HTTPException(status_code=400, detail="invalid job definition")
@@ -141,7 +178,7 @@ async def update_job(
     job_id: str, body: JobPatch, request: Request,
     admin: dict = Depends(require_admin),
 ) -> dict:
-    await _job_or_404(request, job_id)
+    existing = await _job_or_404(request, job_id)
     if body.schedule is not None or body.schedule_type is not None:
         schedule_err = _validate_schedule(
             body.schedule_type or "interval", body.schedule or "1",
@@ -152,6 +189,13 @@ async def update_job(
         channel_err = _channel_error(body.alert_channel)
         if channel_err:
             raise HTTPException(status_code=400, detail=channel_err)
+    if body.decision_rule is not None:
+        # Validate against the datasource the job will *have*, so editing
+        # datasource and rule in one PATCH is judged as the end state.
+        rule_err = _rule_error(
+            request, body.datasource or existing.datasource, body.decision_rule)
+        if rule_err:
+            raise HTTPException(status_code=400, detail=rule_err)
     job = await _jobs(request).update_job(
         job_id,
         name=body.name,
@@ -163,6 +207,7 @@ async def update_job(
         alert_expr=body.alert_expr,
         alert_channel=body.alert_channel,
         alert_cooldown_min=body.alert_cooldown_min,
+        decision_rule=body.decision_rule,
         enabled=body.enabled,
     )
     if job is None:

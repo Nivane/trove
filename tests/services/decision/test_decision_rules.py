@@ -69,9 +69,13 @@ class TestParse:
         assert [r.id for r in doc.rules] == ["loan-drop"]
 
     def test_empty_document(self):
+        """Empty is not an issue: it is what a placeholder file looks like,
+        and a whole-document write is the only way to remove the last rule —
+        so flagging it would make that rule undeletable."""
         doc = parse_document(None)
         assert doc.rules == []
-        assert lint_document(doc) == ["decisions.yml declares no rules"]
+        assert lint_document(doc) == []
+        assert parse_document({"version": 3}).version == 3
 
 
 class TestLint:

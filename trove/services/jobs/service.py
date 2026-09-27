@@ -55,7 +55,10 @@ class JobsService:
         alert_expr: str = "",
         alert_channel: str = "",
         alert_cooldown_min: int = 30,
+        decision_rule: str = "",
     ) -> Job | None:
+        # A decision job carries `question` only as a human label — the run
+        # never asks it. Still required, so the jobs list stays readable.
         if not question.strip():
             return None
         if schedule_type not in ("interval", "cron"):
@@ -73,6 +76,7 @@ class JobsService:
             alert_expr=alert_expr.strip(),
             alert_channel=alert_channel.strip(),
             alert_cooldown_min=alert_cooldown_min,
+            decision_rule=decision_rule.strip(),
             next_run_at=next_run,
         )
         await self.store.save_job(job)
@@ -109,6 +113,7 @@ class JobsService:
         alert_expr: str | None = None,
         alert_channel: str | None = None,
         alert_cooldown_min: int | None = None,
+        decision_rule: str | None = None,
         enabled: bool | None = None,
     ) -> Job | None:
         """Update mutable job fields (None = unchanged).
@@ -145,6 +150,8 @@ class JobsService:
             job.alert_channel = alert_channel.strip()
         if alert_cooldown_min is not None:
             job.alert_cooldown_min = max(0, int(alert_cooldown_min))
+        if decision_rule is not None:
+            job.decision_rule = decision_rule.strip()
         if enabled is not None:
             job.enabled = bool(enabled)
         job.next_run_at = compute_next_run(job.schedule_type, job.schedule) if job.enabled else ""
@@ -182,9 +189,11 @@ class JobsService:
     async def finish_run(
         self, run_id: int, status: str, alert_triggered: bool,
         alert_sent: bool, row_count: int | None, verdict: str,
+        result_json: dict[str, Any] | None = None,
     ) -> None:
         await self.store.finish_run(
             run_id, status, alert_triggered, alert_sent, row_count, verdict,
+            result_json,
         )
 
     # ── alerting ─────────────────────────────────────────
@@ -204,12 +213,30 @@ class JobsService:
             row_count=state.get("row_count") or 0,
             verdict=state.get("verdict") or "",
         )
-        notify = ver.triggered and not await self._in_cooldown(job)
-        return {"triggered": ver.triggered, "message": ver.message, "notify": notify}
+        return await self.evaluate_outcome(job, ver.triggered, ver.message)
+
+    async def evaluate_outcome(
+        self, job: Job, triggered: bool, message: str,
+    ) -> dict[str, Any]:
+        """Apply dedup to an already-decided verdict.
+
+        Split out from :meth:`evaluate` because the decision path judges a
+        run with the decision engine, not with ``job.alert_expr`` — calling
+        ``evaluate`` there would re-run the (typically empty) threshold
+        expression and throw the verdict away. Cooldown is the only part of
+        the alerting contract that is the same for both paths, so it lives
+        here and both callers share it.
+        """
+        notify = triggered and not await self._in_cooldown(job)
+        return {"triggered": triggered, "message": message, "notify": notify}
 
     async def _in_cooldown(self, job: Job) -> bool:
-        recent = await self.store.recent_run(job.id)
-        if not recent or not recent.get("alert_triggered") or not recent.get("finished_at"):
+        # `last_alert_run`, not `recent_run`: the caller is itself inside a
+        # run whose row already exists (record_run happens first), so the
+        # newest row of any kind is always the in-flight one — asking for it
+        # makes this always False and the dedup a no-op.
+        recent = await self.store.last_alert_run(job.id)
+        if not recent or not recent.get("finished_at"):
             return False
         try:
             last = datetime.fromisoformat(recent["finished_at"])
@@ -232,6 +259,9 @@ class JobsService:
             "job_name": job.name,
             "question": job.question,
             "expr": job.alert_expr,
+            # A decision job has no threshold expression — the rule id is what
+            # tells the receiver which rule fired. Empty for ordinary jobs.
+            "decision_rule": job.decision_rule,
             "message": message,
             "payload": payload,
         }

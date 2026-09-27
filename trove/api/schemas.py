@@ -199,6 +199,12 @@ class JobCreate(BaseModel):
     alert_expr: str = ""
     alert_channel: str = ""
     alert_cooldown_min: int = Field(default=30, ge=0)
+    decision_rule: str = Field(
+        default="",
+        description="Decision rule id from the datasource's decisions.yml; "
+                    "non-empty runs the deterministic decision engine instead "
+                    "of the NL pipeline (alert_expr is then unused)",
+    )
 
 
 class JobPatch(BaseModel):
@@ -213,7 +219,25 @@ class JobPatch(BaseModel):
     alert_expr: str | None = None
     alert_channel: str | None = None
     alert_cooldown_min: int | None = Field(default=None, ge=0)
+    decision_rule: str | None = None
     enabled: bool | None = None
+
+
+class DecisionDocBody(BaseModel):
+    """PUT /v1/admin/decisions body — replaces a datasource's whole
+    ``decisions.yml``.
+
+    ``rules`` is intentionally untyped: the rule schema is owned by
+    ``services.decision.rules`` (which owns the lint messages), and mirroring
+    it here would give the API a second, drifting copy. The document is
+    parsed by the same ``parse_document`` the file reader uses, so an
+    invalid body fails identically however it arrives.
+    """
+
+    datasource: str = Field(min_length=1)
+    rules: list[dict[str, Any]] = Field(default_factory=list)
+    version: int = 1
+    message: str = ""
 
 
 class SettingsUpdate(BaseModel):

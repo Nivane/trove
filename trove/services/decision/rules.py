@@ -322,10 +322,14 @@ def rule_to_dict(rule: DecisionRule) -> dict[str, Any]:
 
 
 def lint_document(doc: DecisionDoc) -> list[str]:
-    """All rules' issues, flattened (document-level checks included)."""
+    """Every issue that must block a write, flattened across the document.
+
+    A document with no rules is *not* an issue: it is the state of a file
+    ``kb init`` has only laid down, and — since a whole-document PUT is the
+    only way to remove a rule — the only way to delete the last one. Callers
+    that want to point emptiness out (the admin list does) say so themselves.
+    """
     issues: list[str] = []
-    if not doc.rules:
-        issues.append("decisions.yml declares no rules")
     for rule in doc.rules:
         issues.extend(lint_rule(rule))
     return issues

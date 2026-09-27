@@ -22,16 +22,28 @@ MAX_RESULT_ROWS = 200
 
 
 class SchedulerRunner:
-    def __init__(self, session_manager, jobs: JobsService, lang: str = "zh"):
+    def __init__(self, session_manager, jobs: JobsService, lang: str = "zh",
+                 decision=None):
         self.session_manager = session_manager
         self.jobs = jobs
         self.lang = lang
+        #: ``DecisionService`` (duck-typed) or None. Without it a decision job
+        #: is reported as an error rather than run through the NL pipeline —
+        #: answering the job's `question` label with the LLM would produce a
+        #: plausible-looking verdict that has nothing to do with the rule.
+        self.decision = decision
 
     async def run_job(self, job: Job, now: datetime | None = None) -> dict[str, Any]:
         """Execute one job end-to-end and return its run summary."""
+        if job.decision_rule:
+            return await self._run_decision(job, now)
+
         run = Run(job_id=job.id)
         run_id = await self.jobs.record_run(job, run)
-        summary: dict[str, Any] = {"job_id": job.id, "name": job.name, "error": ""}
+        summary: dict[str, Any] = {
+            "job_id": job.id, "name": job.name, "error": "", "status": "error",
+            "row_count": 0, "alert": "", "alert_sent": False,
+        }
         try:
             session = await self.session_manager.start_session()
             try:
@@ -46,8 +58,8 @@ class SchedulerRunner:
             except Exception as e:
                 logger.exception("job %s question failed", job.id)
                 await self.jobs.finish_run(run_id, "error", False, False, 0, "")
-                await self.jobs.advance(job, now)
-                return {"job_id": job.id, "name": job.name, "error": str(e)[:200]}
+                summary["error"] = str(e)[:200]
+                return summary
 
             state = {
                 "columns": list(getattr(final, "columns", [])),
@@ -70,7 +82,6 @@ class SchedulerRunner:
                 run_id, status, triggered, sent,
                 row_count, state["verdict"],
             )
-            await self.jobs.advance(job, now)
             summary.update({
                 "status": status,
                 "row_count": row_count,
@@ -85,7 +96,105 @@ class SchedulerRunner:
                 await self.jobs.finish_run(run_id, "error", False, False, 0, "")
             except Exception:
                 pass
-            return {"job_id": job.id, "name": job.name, "error": str(e)[:200]}
+            summary["error"] = str(e)[:200]
+            return summary
+        finally:
+            # Unconditional on purpose: a job whose schedule never advances
+            # stays due, so the next tick re-runs it and re-sends the alert —
+            # forever. Anything that raises between here and `record_run`
+            # (a Decimal in the evidence, a broken notifier) must not be able
+            # to strand the schedule like that.
+            await self._advance(job, now)
+
+    async def _advance(self, job: Job, now: datetime | None) -> None:
+        """Advance the job's next run time; a failure is logged, never raised
+        (raising here would escape `tick` and take the scheduler loop down)."""
+        try:
+            await self.jobs.advance(job, now)
+        except Exception:
+            logger.exception("job %s failed to advance", job.id)
+
+    async def _run_decision(self, job: Job, now: datetime | None) -> dict[str, Any]:
+        """Run one decision job: fetch by rule, judge deterministically, store
+        the evidence.
+
+        The NL pipeline is never entered — a decision run must be replayable
+        and must not depend on the model. `advance` is again unconditional,
+        for the same reason as the NL path.
+        """
+        summary: dict[str, Any] = {
+            "job_id": job.id, "name": job.name, "error": "", "status": "error",
+            "row_count": 0, "alert": "", "alert_sent": False,
+            "rule_id": job.decision_rule,
+        }
+        run = Run(job_id=job.id)
+        run_id = await self.jobs.record_run(job, run)
+        try:
+            rule = await self._load_rule(job)
+            outcome = await self.decision.evaluate(rule, job.datasource, now)
+            # The decision engine never writes a business DB and never raises
+            # out here: a failure comes back as `error` and is recorded as a
+            # run status, which is the entire audit trail for this path.
+            triggered = bool(outcome.triggered)
+            error = outcome.error or ""
+            sent = False
+            if error:
+                status = "error"
+            else:
+                status = "alert" if triggered else "ok"
+                verdict = await self.jobs.evaluate_outcome(
+                    job, triggered, outcome.message)
+                sent = False
+                if verdict["notify"]:
+                    sent = await self.jobs.dispatch(
+                        job, outcome.message,
+                        {"rule_id": job.decision_rule,
+                         "evidence": outcome.evidence},
+                    )
+            rows = outcome.evidence.get("evidence", {}).get("row_count") or 0
+            await self.jobs.finish_run(
+                run_id, status, triggered, sent,
+                0 if error else int(rows), job.decision_rule,
+                result_json=outcome.evidence,
+            )
+            summary.update({
+                "status": status,
+                "row_count": 0 if error else int(rows),
+                "error": error,
+                "alert": outcome.message if triggered else "",
+                "alert_sent": sent,
+            })
+            return summary
+        except Exception as e:
+            logger.exception("decision job %s crashed", job.id)
+            try:
+                await self.jobs.finish_run(run_id, "error", False, False, 0,
+                                           job.decision_rule)
+            except Exception:
+                pass
+            summary["error"] = str(e)[:200]
+            return summary
+        finally:
+            await self._advance(job, now)
+
+    async def _load_rule(self, job: Job):
+        """``job.decision_rule`` from the KB of ``job.datasource``.
+
+        A dangling reference is a hard error, not a skip: the job was created
+        against a rule that has since been renamed or deleted, and reporting
+        "nothing wrong today" for it would be the worst possible outcome.
+        """
+        kb = getattr(self.decision, "kb", None)
+        if kb is None:
+            raise RuntimeError("decision service has no KB to load rules from")
+        rule = kb.get_decision(job.datasource, job.decision_rule)
+        if rule is None:
+            raise RuntimeError(
+                f"decision rule {job.decision_rule!r} not found for datasource "
+                f"{job.datasource!r}")
+        if not rule.enabled:
+            raise RuntimeError(f"decision rule {job.decision_rule!r} is disabled")
+        return rule
 
     async def run_job_now(self, job_id: str) -> dict[str, Any] | None:
         """Run a job immediately (manual trigger), regardless of schedule.
