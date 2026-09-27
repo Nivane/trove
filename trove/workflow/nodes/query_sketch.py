@@ -817,6 +817,7 @@ def _compile_semantic(
     matched: list[str],
     semantic_layer,
     dialect: str = "sqlite",
+    allowed_tables: set[str] | None = None,
 ) -> tuple[CompileResult | PartialCompile | None, CompileMiss | None]:
     """语义层覆盖内 → ((权威 SQL, 提示块), None);MISS → (None, CompileMiss)。
 
@@ -851,7 +852,9 @@ def _compile_semantic(
         if model is None:
             return None, CompileMiss("no_plan_or_matched", "no semantic model")
 
-        result = SemanticCompiler(model).compile_detailed(
+        result = SemanticCompiler(
+            model, allowed_tables=allowed_tables,
+        ).compile_detailed(
             plan, list(matched), force_dialect=dialect)
         if isinstance(result, CompileMiss):
             return None, result
@@ -1071,8 +1074,19 @@ def make_query_sketch(
             # gen_sql 遵从(确定性通道);MISS → 拒绝(语义优先唯一通道)。
             # 只递强类型计划(A1-10 双路合一):plan_query 为 None ⟺ plan_json
             # 为 None(散文档),此时没什么可编译的,没必要再拿松 dict 试一次。
+            # 执行期表授权前移:取该数据源 allowlist(与 registry 执行守卫同一
+            # 份)交给编译器,越界数据集编译期即 MISS。
+            allowed_tables = None
+            if connectors is not None:
+                try:
+                    _ds = state.datasource or getattr(connectors, "default_name", None)
+                    if _ds:
+                        allowed_tables = connectors.allowed_tables(_ds)
+                except Exception:
+                    allowed_tables = None
             compiled, miss = _compile_semantic(
                 plan_query, state.matched_tables, semantic_layer, dialect,
+                allowed_tables=allowed_tables,
             )
             # 引用同一性(A1-9):产物须带回它编译自的那份计划。None 而
             # plan_json 非 None = 某条路径把 IR 不认的形状喂进了编译器——

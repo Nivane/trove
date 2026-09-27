@@ -138,12 +138,20 @@ class SemanticDataset:
 
     unique_keys: OSSIE ``unique_keys`` — 数组的数组,每个都是唯一键
         (单列或复合)。与 primary_key 同构,消费端可作为联表/去重依据。
+
+    row_filter: 数据集级行级安全(RLS)声明——一条恒真的布尔 SQL 谓词
+        (如 ``status = 'A'`` / ``region = 'EU'``),编译期注入到**每个**
+        引用该数据集的 FROM/JOIN 的顶层 WHERE(数据集 JOIN 均为内连接,
+        顶层过滤与联前过滤等价)。列须解析到本数据集的已声明字段(lint
+        拦截);空 = 无行级限制。这是**声明层**授权,不替代数据库侧只读
+        角色/行级安全(执行期 allowlist 仍兜底)。
     """
 
     name: str
     source: str = ""  # physical table reference (schema.table)
     primary_key: list[str] = field(default_factory=list)
     unique_keys: list[list[str]] = field(default_factory=list)
+    row_filter: str = ""
     description: str = ""
     synonyms: list[str] = field(default_factory=list)
     fields: list[SemanticField] = field(default_factory=list)

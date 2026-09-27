@@ -192,6 +192,7 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
                 for keys in (d.get("unique_keys") or [])
                 if isinstance(keys, list) and keys
             ],
+            row_filter=str(d.get("row_filter") or "").strip(),
             description=d.get("description", "") or "",
             synonyms=ds_synonyms,
             fields=fields,

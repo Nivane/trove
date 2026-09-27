@@ -323,6 +323,50 @@ class TestLintSemantics:
         issues = lint_semantics(model)
         assert any("unique_keys 引用未声明的列 email" in i for i in issues)
 
+    def test_row_filter_undeclared_column_flagged(self):
+        model = {
+            "datasets": [{"name": "loan",
+                          "fields": [{"name": "loan_id"}, {"name": "status"}],
+                          "row_filter": "ghost_col = 'A'"}],
+            "relationships": [],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("row_filter 引用未声明的列 ghost_col" in i for i in issues)
+
+    def test_row_filter_other_table_flagged(self):
+        model = {
+            "datasets": [
+                {"name": "loan", "fields": [{"name": "loan_id"}],
+                 "row_filter": "account.region = 'EU'"},
+                {"name": "account", "fields": [{"name": "region"}]},
+            ],
+            "relationships": [],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("row_filter 引用了其他表" in i for i in issues)
+
+    def test_row_filter_unparseable_flagged(self):
+        model = {
+            "datasets": [{"name": "loan", "fields": [{"name": "status"}],
+                          "row_filter": "status = = "}],
+            "relationships": [],
+            "metrics": [],
+        }
+        issues = lint_semantics(model)
+        assert any("row_filter 无法解析" in i for i in issues)
+
+    def test_row_filter_clean_passes(self):
+        model = {
+            "datasets": [{"name": "loan",
+                          "fields": [{"name": "loan_id"}, {"name": "status"}],
+                          "row_filter": "loan.status = 'A'"}],
+            "relationships": [],
+            "metrics": [],
+        }
+        assert lint_semantics(model) == []
+
     def test_metric_datatype_invalid_flagged(self):
         model = {
             "datasets": [],

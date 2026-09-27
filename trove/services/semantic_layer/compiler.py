@@ -665,6 +665,7 @@ MISS_REASONS = frozenset({
     "fan_out",
     "unknown_cardinality",
     "unreachable_table",
+    "table_not_allowed",
     "ambiguous_join_path",
     "derived_cycle",
     "derived_depth",
@@ -697,6 +698,7 @@ HARD_MISS_REASONS = frozenset({
     "fan_out",
     "unknown_cardinality",
     "unreachable_table",
+    "table_not_allowed",
     "ambiguous_join_path",
     "derived_cycle",
     "derived_depth",
@@ -1038,7 +1040,7 @@ class SemanticCompiler:
     现有 LLM 生成通道。这保证编译通过的 SQL 永远落在「逻辑宇宙」内。
     """
 
-    def __init__(self, model: SemanticModel):
+    def __init__(self, model: SemanticModel, allowed_tables: set[str] | None = None):
         self._model = model
         self._fields: dict[tuple[str, str], Any] = {}  # (dataset, field) → field
         self._datasets: dict[str, SemanticDataset] = {}
@@ -1046,6 +1048,12 @@ class SemanticCompiler:
             self._datasets[d.name] = d
             for f in d.fields:
                 self._fields[(d.name, f.name)] = f
+        # 执行期表授权白名单(与 registry/执行守卫同一份):非空时,编译期
+        # 就拒绝引用越界数据集——把授权从「执行期事后拒」前移到「编译期不产」。
+        # None/空 = 不限制(仅执行期元数据表拒绝照旧)。
+        self._allowed_tables = (
+            {t.lower() for t in allowed_tables} if allowed_tables else None
+        )
         # 每次 compile 调用开头赋值(force_dialect / matched):派生内联与
         # 时间分桶的方言渲染、裸列解析锚定都依赖这两个会话态。
         self._dialect: str = "sqlite"
@@ -1059,6 +1067,36 @@ class SemanticCompiler:
 
     def metrics(self) -> list[SemanticMetric]:
         return list(self._model.metrics)
+
+    def _dataset_allowed(self, name: str) -> bool:
+        """数据集(或其物理 source)是否在执行期授权白名单内;无白名单 = 放行。"""
+        if self._allowed_tables is None:
+            return True
+        ds = self._datasets.get(name)
+        source = (ds.source or name) if ds is not None else name
+        return (
+            name.lower() in self._allowed_tables
+            or source.lower() in self._allowed_tables
+        )
+
+    def _row_filter_sql(self, table: str) -> str | None:
+        """数据集 row_filter → 注入用谓词(裸列限定到本表);无声明 → None。
+
+        解析失败原样注入而不静默丢弃:声明层 lint 已在写盘前拦截,这里若
+        仍遇到坏谓词,宁可由执行期报语法错,也不能**少一个安全条件**。
+        """
+        ds = self._datasets.get(table)
+        rf = (ds.row_filter if ds is not None else "").strip()
+        if not rf:
+            return None
+        try:
+            tree = parse_one(rf, read=self._dialect or "sqlite")
+        except Exception:
+            return f"({rf})"
+        for col in tree.find_all(exp.Column):
+            if not col.table:
+                col.set("table", exp.to_identifier(table, quoted=False))
+        return f"({tree.sql(dialect=self._dialect)})"
 
     def _metric_by_name(self, name: str | None) -> SemanticMetric | None:
         """按度量名精确匹配(大小写不敏感)。派生度量名引用/裸名候选共用。"""
@@ -1634,6 +1672,13 @@ class SemanticCompiler:
                 anchor = m.datasets[0]
                 break
 
+        # 编译期授权门禁:执行期表 allowlist 前移——越界数据集当场 MISS,
+        # 不产出必然被执行守卫拒绝的 SQL(把「执行期事后拒」变成「编译期不产」)。
+        if self._allowed_tables is not None:
+            for _t in join_tables:
+                if not self._dataset_allowed(_t):
+                    return CompileMiss("table_not_allowed", _t)
+
         resolution = None
         joins: list[JoinEdge] = []
         # 权威联表路径(plan.joins):query_sketch 显式声明的路径优先,免 BFS 猜。
@@ -1697,6 +1742,20 @@ class SemanticCompiler:
                 return miss
             if pred:
                 where_parts.append(pred)
+
+        # 声明层行级安全(RLS):数据集 row_filter 注入顶层 WHERE。数据集 JOIN
+        # 均为内连接(仅时间轴用 LEFT JOIN,作用在派生表上),顶层过滤与联前
+        # 过滤等价;放进顶层还让交接契约覆盖它——gen_sql 丢弃该谓词会被
+        # compiled_sql_matches 保真校验拦下,不会静默丢一个安全条件。
+        rls_tables: list[str] = [anchor]
+        for edge in joins:
+            for _t in (edge.from_, edge.to):
+                if _t not in rls_tables:
+                    rls_tables.append(_t)
+        for _t in rls_tables:
+            rf = self._row_filter_sql(_t)
+            if rf:
+                where_parts.append(rf)
 
         # M:N dedup 豁免:fan_out="dedup" 的 from 侧包 SELECT DISTINCT * 子查询
         # (关联/桥接表),消除行倍增——编译期确定性,不靠规则链事后兜底。

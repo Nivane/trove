@@ -5,7 +5,7 @@ plan 的 metric/group_by/filters 全部落到已声明模型条目时才编译;�
 """
 import pytest
 
-from trove.services.semantic_layer.compiler import SemanticCompiler
+from trove.services.semantic_layer.compiler import CompileMiss, SemanticCompiler
 from trove.services.semantic_layer.contract import render_contract
 from trove.services.semantic_layer.models import (
     SemanticDataset,
@@ -1591,8 +1591,98 @@ def test_hard_soft_miss_classification():
     assert is_hard_miss("fan_out") is True
     assert is_hard_miss("ambiguous_join_path") is True
     assert is_hard_miss("metric_anchor_unmatched") is True
+    assert is_hard_miss("table_not_allowed") is True
     assert is_hard_miss("no_metric_match") is False
     assert is_hard_miss("enum_value_unresolved") is False
     assert is_hard_miss("unresolved_filter_field") is False
     # 未分类原因默认硬(宁可拒绝,不产错 SQL)
     assert is_hard_miss("mystery_reason") is True
+
+
+# ── 声明层 RLS:dataset.row_filter 编译期注入顶层 WHERE ────────
+
+
+def test_row_filter_injected_single_table():
+    model = _demo_model()
+    model.datasets[0].row_filter = "status = 'A'"  # loan
+    res = SemanticCompiler(model).compile_detailed(
+        {"aggregation": "count(loan.loan_id)", "answer_columns": ["count(loan.loan_id)"]},
+        ["loan"])
+    assert not isinstance(res, CompileMiss)
+    # 裸列被限定到本表,谓词进顶层 WHERE
+    assert "(loan.status = 'A')" in res.sql
+    assert "WHERE" in res.sql
+
+
+def test_row_filter_injected_on_join():
+    model = _demo_model()
+    model.datasets[0].row_filter = "status = 'A'"  # loan
+    plan = {
+        "tables": ["loan", "district"],
+        "aggregation": "avg(loan.amount)",
+        "answer_columns": ["district.A3", "avg(loan.amount)"],
+        "conditions": [{"field": "district.A3", "op": "=", "value": "Prague"}],
+    }
+    res = SemanticCompiler(model).compile_detailed(plan, ["loan", "district"])
+    assert not isinstance(res, CompileMiss)
+    assert "(loan.status = 'A')" in res.sql
+    assert "WHERE district.A3 = 'Prague'" in res.sql
+
+
+def test_row_filter_captured_in_contract():
+    """注入的 RLS 谓词进交接契约 → gen_sql 丢弃会被保真校验拦下。"""
+    model = _demo_model()
+    model.datasets[0].row_filter = "status = 'A'"
+    res = SemanticCompiler(model).compile_detailed(
+        {"aggregation": "count(loan.loan_id)", "answer_columns": ["count(loan.loan_id)"]},
+        ["loan"])
+    assert not isinstance(res, CompileMiss)
+    assert any(
+        any(col[1] == "status" for col in cols)
+        for cols, _op, _vals in res.contract.where
+    )
+
+
+def test_row_filter_only_injects_for_used_datasets():
+    """未被查询引用的数据集的 row_filter 不进入 WHERE(只在树内注入)。"""
+    model = _demo_model()
+    model.datasets[0].row_filter = "status = 'A'"  # loan(未用)
+    model.datasets[1].row_filter = "frequency = 'M'"  # account
+    res = SemanticCompiler(model).compile_detailed(
+        {"answer_columns": ["account.frequency"]}, ["account"])
+    assert not isinstance(res, CompileMiss)
+    assert "(account.frequency = 'M')" in res.sql
+    assert "loan.status" not in res.sql
+
+
+# ── 编译期授权门禁:allowed_tables 前移 ──────────────────────
+
+
+def test_allowed_tables_gate_rejects_out_of_scope_table():
+    model = _demo_model()
+    plan = {
+        "tables": ["loan", "district"],
+        "aggregation": "avg(loan.amount)",
+        "answer_columns": ["district.A3", "avg(loan.amount)"],
+    }
+    res = SemanticCompiler(model, allowed_tables={"loan"}).compile_detailed(
+        plan, ["loan", "district"])
+    assert isinstance(res, CompileMiss)
+    assert res.reason == "table_not_allowed"
+    assert res.component == "district"
+
+
+def test_allowed_tables_gate_permits_in_scope():
+    model = _demo_model()
+    res = SemanticCompiler(model, allowed_tables={"loan"}).compile_detailed(
+        {"aggregation": "count(loan.loan_id)", "answer_columns": ["count(loan.loan_id)"]},
+        ["loan"])
+    assert not isinstance(res, CompileMiss)
+    assert "FROM loan" in res.sql
+
+
+def test_allowed_tables_absent_means_no_restriction():
+    res = SemanticCompiler(_demo_model()).compile_detailed(
+        {"aggregation": "count(loan.loan_id)", "answer_columns": ["count(loan.loan_id)"]},
+        ["loan"])
+    assert not isinstance(res, CompileMiss)
