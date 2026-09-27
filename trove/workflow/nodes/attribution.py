@@ -27,11 +27,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import date, timedelta
 from typing import Any
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
+from trove.core.periods import base_period as _base_period
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.workflow.state import WorkflowState
@@ -88,54 +88,6 @@ def _contribution(
             it["contribution"] = it["delta"] / total_abs
     items.sort(key=lambda x: abs(x["contribution"]), reverse=True)
     return items
-
-
-def _base_period(
-    time_context: str,
-    baseline: str,
-) -> tuple[tuple[str, str], tuple[str, str]] | None:
-    """当前期 + 基期(从 parse_date 的 time_context 确定性派生)。
-
-    time_context: "YYYY-MM-DD ~ YYYY-MM-DD"。基期派生:
-      - prev_period:往前推一个等长窗口(环比);
-      - yoy:往前推 1 年(同比,月/日钳制);
-      - share:无基期(占比归因,返回 None)。
-    格式非法/无时间 → None(调用方降级 share)。
-    """
-    import re
-
-    m = re.match(r"^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$", (time_context or "").strip())
-    if not m:
-        return None
-    try:
-        start = date.fromisoformat(m.group(1))
-        end = date.fromisoformat(m.group(2))
-    except ValueError:
-        return None
-    if baseline == "share":
-        return None
-    if baseline == "yoy":
-        base_start = _shift_months(start, -12)
-        base_end = _shift_months(end, -12)
-    else:  # prev_period
-        span = (end - start).days + 1
-        base_end = start - timedelta(days=1)
-        base_start = base_end - timedelta(days=span - 1)
-    return (
-        (start.isoformat(), end.isoformat()),
-        (base_start.isoformat(), base_end.isoformat()),
-    )
-
-
-def _shift_months(d: date, n: int) -> date:
-    """d + n 个月,日钳制到目标月长度(与 parse_date 同款)。"""
-    import calendar
-
-    month_index = d.year * 12 + (d.month - 1) + n
-    year, month = divmod(month_index, 12)
-    month += 1
-    day = min(d.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
 
 
 def _waterfall_chart(
