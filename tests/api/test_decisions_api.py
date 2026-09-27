@@ -244,6 +244,112 @@ class TestPut:
         assert kb.semantics_path("demo").read_text(encoding="utf-8") == "sentinel: true\n"
 
 
+RAW = """\
+# 规则文件由管理端维护 —— 注释解释了每条阈值是怎么定下来的,
+# 结构化往返会把它丢掉,所以编辑器整份文件读写。
+version: 1
+rules:
+  - id: loan-drop
+    name: 贷款余额环比下滑
+    window: 本月
+    subject:
+      metrics: [loan_balance]
+      dimensions: [region]
+    baseline:
+      kind: prev_period
+    scope: per_dimension
+    conditions:
+      - delta_pct < -0.1
+"""
+
+
+class TestRawText:
+    """The editor's file-shaped read/write pair.
+
+    It exists so the admin UI needs no YAML parser of its own, which means
+    the write path accepts a shape the structured path never sees — the lint
+    gate has to hold here too.
+    """
+
+    async def test_raw_returns_the_file_verbatim(self, admin_client, decisions_app):
+        path = decisions_app.state.kb.decisions_path("demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(RAW, encoding="utf-8")
+        r = await admin_client.get("/v1/admin/decisions/raw?datasource=demo")
+        assert r.status_code == 200, r.text
+        assert r.json()["text"] == RAW
+
+    async def test_raw_is_empty_for_a_datasource_with_no_file(self, admin_client):
+        r = await admin_client.get("/v1/admin/decisions/raw?datasource=demo")
+        assert r.status_code == 200
+        assert r.json()["text"] == ""
+
+    async def test_raw_wins_over_a_rule_actually_named_raw(
+            self, admin_client, decisions_app):
+        """`/raw` is registered before `/{rule_id}`; a rule with that id would
+        otherwise shadow the editor's only read."""
+        _write(decisions_app, [{**RULE, "id": "raw"}])
+        r = await admin_client.get("/v1/admin/decisions/raw?datasource=demo")
+        assert r.status_code == 200
+        assert "text" in r.json()
+
+    async def test_saving_text_writes_the_rules_it_declares(
+            self, admin_client, decisions_app):
+        r = await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo", "text": RAW})
+        assert r.status_code == 200, r.text
+        rule = decisions_app.state.kb.load_decisions("demo").rules[0]
+        assert rule.id == "loan-drop"
+        assert rule.conditions == ["delta_pct < -0.1"]
+
+    async def test_a_save_canonicalizes_the_file(self, admin_client, decisions_app):
+        """Read is verbatim, write is not — pinned deliberately.
+
+        The write goes through ``_write_doc``, the KB's single write entry
+        point, which re-stamps ``_meta``. Writing the text back untouched to
+        keep the comments would leave the digest stale and the next read
+        would report the file as human-edited. If comment preservation is
+        ever added, it has to come with a digest story — and update this.
+        """
+        await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo", "text": RAW})
+        back = await admin_client.get("/v1/admin/decisions/raw?datasource=demo")
+        text = back.json()["text"]
+        assert "注释解释了每条阈值" not in text
+        assert "loan-drop" in text
+        assert yaml.safe_load(text)["_meta"]["digest"]
+
+    async def test_text_still_passes_the_lint_gate(self, admin_client, decisions_app):
+        """A rule that can never fire is refused on the raw path exactly as on
+        the structured one — otherwise the editor is a lint bypass."""
+        r = await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo",
+            "text": RAW.replace("kind: prev_period", "kind: none"),
+        })
+        assert r.status_code == 400
+        assert decisions_app.state.kb.load_decisions("demo").rules == []
+
+    async def test_text_that_is_not_yaml_is_400(self, admin_client, decisions_app):
+        r = await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo", "text": "rules: [{"})
+        assert r.status_code == 400
+        assert "yaml" in r.json()["detail"].lower()
+
+    async def test_text_that_is_not_a_mapping_is_400(self, admin_client):
+        r = await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo", "text": "- just\n- a\n- list\n"})
+        assert r.status_code == 400
+
+    async def test_exactly_one_of_rules_or_text(self, admin_client):
+        both = await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo", "rules": [RULE], "text": RAW})
+        assert both.status_code == 400
+        assert "exactly one" in both.json()["detail"]
+        neither = await admin_client.put("/v1/admin/decisions", json={
+            "datasource": "demo"})
+        assert neither.status_code == 400
+
+
 class TestAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get(

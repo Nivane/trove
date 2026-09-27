@@ -62,7 +62,11 @@
         </el-table-column>
         <el-table-column :label="t('jobAlertExpr', ui.lang)" min-width="160">
           <template #default="{ row }">
-            <span v-if="row.alert_expr" class="cell-mono">{{ row.alert_expr }}</span>
+            <span v-if="row.decision_rule" class="cell-mono">
+              <span class="pill pill-neutral">{{ t('jobDecisionRule', ui.lang) }}</span>
+              {{ row.decision_rule }}
+            </span>
+            <span v-else-if="row.alert_expr" class="cell-mono">{{ row.alert_expr }}</span>
             <span v-else class="dim">—</span>
           </template>
         </el-table-column>
@@ -158,7 +162,24 @@
             :placeholder="form.schedule_type === 'cron' ? '0 9 * * *' : '30'"
           />
         </el-form-item>
-        <el-form-item :label="t('jobAlertExpr', ui.lang)">
+        <el-form-item :label="t('jobDecisionRule', ui.lang)">
+          <el-select v-model="form.decision_rule" clearable class="job-rule-select">
+            <el-option label="—" value="" />
+            <el-option
+              v-for="r in rulesForDatasource"
+              :key="r.id"
+              :label="r.name ? `${r.name} (${r.id})` : r.id"
+              :value="r.id"
+              :disabled="!r.enabled"
+            />
+          </el-select>
+          <div class="job-field-hint">{{ t('jobDecisionRuleHint', ui.lang) }}</div>
+          <div v-if="rulesError" class="job-field-hint job-field-warn">{{ rulesError }}</div>
+        </el-form-item>
+        <el-form-item
+          v-if="!form.decision_rule"
+          :label="t('jobAlertExpr', ui.lang)"
+        >
           <el-input v-model="form.alert_expr" :placeholder="t('jobAlertHint', ui.lang)" />
         </el-form-item>
         <el-form-item :label="t('jobAlertChannel', ui.lang)">
@@ -220,7 +241,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { History, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { apiGet, apiPatch, apiPost, apiDelete } from '../../api/http'
@@ -243,6 +264,7 @@ interface JobRow {
   alert_expr: string
   alert_channel: string
   alert_cooldown_min: number
+  decision_rule: string
   next_run_at: string
   created_at: string
   updated_at: string
@@ -290,8 +312,38 @@ const emptyForm = {
   alert_expr: '',
   alert_channel: '',
   alert_cooldown_min: 30,
+  decision_rule: '',
 }
 const form = reactive({ ...emptyForm })
+
+interface RuleOption {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+const rules = ref<RuleOption[]>([])
+const rulesError = ref('')
+
+// Only the rules of the datasource this job points at can compile — the
+// semantic model is per-datasource, so the list is filtered rather than
+// offering every rule in the project.
+const rulesForDatasource = computed(() => rules.value)
+
+async function loadRules() {
+  rulesError.value = ''
+  rules.value = []
+  const ds = form.datasource
+  if (!ds) return
+  try {
+    const body = await apiGet(`/v1/admin/decisions?datasource=${encodeURIComponent(ds)}`)
+    rules.value = (body.rules ?? []) as RuleOption[]
+  } catch (e) {
+    // A datasource with no decisions.yml, or a corrupt one, shows as a hint —
+    // creating a job must stay possible (a plain question job needs no rule).
+    rulesError.value = e instanceof Error ? e.message : String(e)
+  }
+}
 
 function runClass(status: string): string {
   if (status === 'ok') return 'pill-ok'
@@ -336,6 +388,7 @@ function openCreate() {
   const def = datasources.value.find((d) => d.default)
   form.datasource = def?.name || datasources.value[0]?.name || ''
   dialogOpen.value = true
+  void loadRules()
 }
 
 function openEdit(row: JobRow) {
@@ -349,9 +402,21 @@ function openEdit(row: JobRow) {
     alert_expr: row.alert_expr,
     alert_channel: row.alert_channel,
     alert_cooldown_min: row.alert_cooldown_min,
+    decision_rule: row.decision_rule || '',
   })
   dialogOpen.value = true
+  void loadRules()
 }
+
+// The rule list is per-datasource, so switching datasource reloads it and
+// drops a rule that no longer belongs to the selected one.
+watch(() => form.datasource, () => {
+  if (!dialogOpen.value) return
+  if (form.decision_rule && !rules.value.some((r) => r.id === form.decision_rule)) {
+    form.decision_rule = ''
+  }
+  void loadRules()
+})
 
 async function save() {
   if (!form.question.trim()) return
@@ -363,9 +428,10 @@ async function save() {
       datasource: form.datasource,
       schedule_type: form.schedule_type,
       schedule: form.schedule,
-      alert_expr: form.alert_expr,
+      alert_expr: form.decision_rule ? '' : form.alert_expr,
       alert_channel: form.alert_channel,
       alert_cooldown_min: form.alert_cooldown_min,
+      decision_rule: form.decision_rule,
     }
     if (editing.value) {
       await apiPatch(`/v1/admin/jobs/${editing.value.id}`, payload)

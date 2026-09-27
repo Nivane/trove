@@ -97,6 +97,22 @@ async def list_decisions(
     }
 
 
+@router.get("/admin/decisions/raw")
+async def get_decisions_raw(
+    request: Request, datasource: str, admin: dict = Depends(require_admin),
+) -> dict:
+    """``decisions.yml`` as text, for the editor.
+
+    Declared **before** ``/{rule_id}`` — Starlette matches routes in
+    registration order, so the other way round this would be swallowed by the
+    rule-id pattern and answer 404. Returns "" for a datasource with no file
+    yet: an empty editor is the right starting point, and ``save`` creates it.
+    """
+    path = _kb(request).decisions_path(datasource)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    return {"datasource": datasource, "text": text}
+
+
 @router.get("/admin/decisions/{rule_id}")
 async def get_decision(
     rule_id: str, request: Request, datasource: str,
@@ -136,8 +152,29 @@ async def put_decisions(
     bypass here: adding one would only move the enforcement, not remove it.
     """
     kb = _kb(request)
+    if (body.rules is None) == (body.text is None):
+        raise HTTPException(
+            status_code=400,
+            detail="send exactly one of 'rules' (structured) or 'text' (raw YAML)",
+        )
+    data: dict[str, Any] = body.model_dump()
+    if body.text is not None:
+        import yaml
+
+        try:
+            parsed = yaml.safe_load(body.text)
+        except yaml.YAMLError as e:
+            raise HTTPException(status_code=400, detail=f"invalid YAML: {e}")
+        if parsed is not None and not isinstance(parsed, dict):
+            # ``dict.update`` would raise TypeError on a list and surface as a
+            # 500 — the editor is a free-text box, so this is a typo away.
+            raise HTTPException(
+                status_code=400,
+                detail=f"decisions.yml must be a mapping, got {type(parsed).__name__}",
+            )
+        data.update(parsed or {})
     try:
-        doc = parse_document(body.model_dump())
+        doc = parse_document(data)
     except RuleError as e:
         raise HTTPException(status_code=400, detail=str(e))
     actor = str((admin or {}).get("username", ""))

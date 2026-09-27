@@ -232,10 +232,22 @@ class DecisionDocBody(BaseModel):
     it here would give the API a second, drifting copy. The document is
     parsed by the same ``parse_document`` the file reader uses, so an
     invalid body fails identically however it arrives.
+
+    ``text`` is the raw YAML file, for callers that edit the document as
+    text. It exists so the admin editor needs no YAML parser of its own.
+    Exactly one of the two.
+
+    Note the asymmetry: the **read** (``GET /admin/decisions/raw``) is the
+    file verbatim, comments included, but the **write** goes through
+    ``KbService._write_doc`` — the KB's single write entry point, which
+    re-stamps ``_meta``. So a save canonicalizes the file and the comments
+    in it do not survive. Bypassing that to preserve them would leave the
+    digest stale, which the next read would report as "a human edited this".
     """
 
     datasource: str = Field(min_length=1)
-    rules: list[dict[str, Any]] = Field(default_factory=list)
+    rules: list[dict[str, Any]] | None = None
+    text: str | None = None
     version: int = 1
     message: str = ""
 
