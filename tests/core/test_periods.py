@@ -7,8 +7,6 @@ functions were extracted to ``trove.core.periods`` (attribution keeps a
 
 from datetime import date, timedelta
 
-import pytest
-
 from trove.core.periods import base_period, shift_months
 from trove.workflow.nodes.parse_date import format_time_range, parse_time_range
 

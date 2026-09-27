@@ -16,7 +16,7 @@ properties matter here and neither is visible from the decision tests:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 
