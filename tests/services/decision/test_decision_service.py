@@ -15,7 +15,7 @@ import yaml
 
 from trove.core.types import DatasourceConfig
 from trove.services.decision.rules import parse_rule
-from trove.services.decision.service import DecisionError, DecisionService
+from trove.services.decision.service import DecisionService
 from trove.services.kb.service import KbService
 
 NOW = datetime(2026, 9, 27, 10, 0, 0)
