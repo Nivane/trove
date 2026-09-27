@@ -549,3 +549,38 @@ semantic_model:
         "A": ["fully paid", "paid off"],
         "C": ["still running", "in progress"],
     }
+
+
+def test_parse_dataset_row_filter():
+    """声明层 RLS:dataset.row_filter 解析为模型字段。"""
+    yaml_text = """
+semantic_model:
+  - name: fin
+    datasets:
+      - name: client
+        source: client
+        primary_key: [client_id]
+        row_filter: "region = 'EU'"
+        fields:
+          - name: client_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: client_id}]}
+          - name: region
+            expression: {dialects: [{dialect: ANSI_SQL, expression: region}]}
+    metrics: []
+"""
+    model = parse_ossie(yaml_text, preferred_dialect="sqlite")
+    assert model.datasets[0].row_filter == "region = 'EU'"
+
+
+def test_parse_dataset_row_filter_defaults_empty():
+    model = parse_ossie("""
+semantic_model:
+  - name: fin
+    datasets:
+      - name: client
+        fields:
+          - name: client_id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: client_id}]}
+    metrics: []
+""", preferred_dialect="sqlite")
+    assert model.datasets[0].row_filter == ""

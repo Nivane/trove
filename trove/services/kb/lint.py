@@ -202,6 +202,10 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
                 if str(k) not in declared:
                     issues.append(
                         f"表 {ds_name} unique_keys 引用未声明的列 {k}")
+        _lint_row_filter(
+            issues, ds_name, str(d.get("row_filter") or "").strip(),
+            declared, dialect,
+        )
         for ext in d.get("custom_extensions") or []:
             if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
                 issues.append(f"表 {ds_name} custom_extensions 缺 vendor_name")
@@ -288,6 +292,35 @@ def lint_semantics_document(data: dict[str, Any], dialect: str = "mysql") -> lis
         if isinstance(entry, dict):
             issues += lint_semantics(entry, dialect=dialect)
     return issues
+
+
+def _lint_row_filter(
+    issues: list[str], ds_name: str, row_filter: str,
+    declared: set[str], dialect: str,
+) -> None:
+    """数据集 row_filter(RLS)必须可解析,且只引用本数据集的已声明字段。
+
+    编译期会把该谓词注入引用此数据集的每个 FROM/JOIN 顶层 WHERE;引用
+    其他表/未声明列会让任一问题都编译失败(或更糟,静默少一个安全条件)。
+    在声明层拦下,别等查询期。
+    """
+    if not row_filter:
+        return
+    tree = _parse(row_filter, dialect)
+    if tree is None:
+        issues.append(f"表 {ds_name} row_filter 无法解析: {row_filter[:60]}")
+        return
+    declared_lower = {str(f).lower() for f in declared}
+    for col in tree.find_all(exp.Column):
+        col_name = (col.name or "").lower()
+        col_table = (col.table or "").lower()
+        if col_table and col_table != ds_name.lower():
+            issues.append(
+                f"表 {ds_name} row_filter 引用了其他表 {col.table}.{col.name}"
+                "(行级过滤只能限定本数据集)")
+        elif col_name not in declared_lower:
+            issues.append(
+                f"表 {ds_name} row_filter 引用未声明的列 {col.name}")
 
 
 def _lint_metric_filter(

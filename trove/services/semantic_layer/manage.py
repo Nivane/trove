@@ -130,6 +130,7 @@ def _dataset_to_dict(d: SemanticDataset) -> dict[str, Any]:
         "source": d.source,
         "primary_key": list(d.primary_key),
         "unique_keys": [list(k) for k in d.unique_keys],
+        "row_filter": d.row_filter,
         "description": d.description,
         "synonyms": list(d.synonyms),
         "fields": [_field_to_dict(f) for f in d.fields],
@@ -353,6 +354,8 @@ def _apply_dataset(model: dict[str, Any], action: str, name: str,
            if isinstance(keys, list) and keys]
     if uks:
         ds["unique_keys"] = uks
+    if payload.get("row_filter"):
+        ds["row_filter"] = str(payload["row_filter"]).strip()
     examples = [str(e) for e in (payload.get("examples") or []) if str(e).strip()]
     if examples:
         ai = ds.setdefault("ai_context", {})
@@ -367,8 +370,8 @@ def _apply_dataset(model: dict[str, Any], action: str, name: str,
         # 仅改元数据时保留既有 fields(不在 payload 里重复声明)
         if not payload.get("fields") and old.get("fields"):
             ds["fields"] = old["fields"]
-        _carryover(old, ds, "unique_keys", "examples", "custom_extensions",
-                   "ai_context", "description", "fields")
+        _carryover(old, ds, "unique_keys", "row_filter", "examples",
+                   "custom_extensions", "ai_context", "description", "fields")
         model["datasets"][idx] = ds
     else:
         model["datasets"].append(ds)

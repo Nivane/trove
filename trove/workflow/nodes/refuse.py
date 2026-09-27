@@ -62,6 +62,7 @@ _MISS_COPY: dict[str, tuple[str, str]] = {
     "unknown_cardinality": ("表之间的关联关系(基数未声明)", "how the tables relate (cardinality undeclared)"),
     "fan_out": ("表之间的聚合口径(直接联表会重复计数)", "the aggregation path between tables (a plain join double-counts)"),
     "unreachable_table": ("问题涉及的表(与已声明模型不连通)", "the table involved (it is not linked to the declared model)"),
+    "table_not_allowed": ("该数据源授权范围外的表", "a table outside this datasource's authorized scope"),
     "ambiguous_join_path": ("表之间唯一的关联路径(存在多条)", "a single join path between the tables (several exist)"),
     "derived_cycle": ("派生指标的循环定义", "a circular derived-metric definition"),
     "derived_depth": ("派生指标的层级(嵌套过深)", "the derived-metric nesting (too deep)"),
