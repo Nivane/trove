@@ -198,7 +198,15 @@ def lint_rule(rule: DecisionRule) -> list[str]:
     where = f"rule {rule.id!r}"
 
     if not rule.subject.metrics:
-        issues.append(f"{where}: subject.metrics must name at least one metric")
+        issues.append(f"{where}: subject.metrics must name a metric")
+    elif len(rule.subject.metrics) > 1:
+        # The condition vocabulary is singular (`current` / `baseline` /
+        # `delta`), so a second metric would have nowhere to bind. Rejecting
+        # beats silently judging only the first.
+        issues.append(
+            f"{where}: exactly one metric per rule (got "
+            f"{len(rule.subject.metrics)}) — 'current'/'delta' are singular; "
+            "split into separate rules instead")
     if rule.severity not in SEVERITIES:
         issues.append(
             f"{where}: severity must be one of {', '.join(SEVERITIES)} "
@@ -232,6 +240,16 @@ def lint_rule(rule: DecisionRule) -> list[str]:
         issues.append(
             f"{where}: emit is ignored when scope is 'aggregate' "
             "(a single row is either triggered or not)")
+    if rule.scope == "aggregate" and rule.subject.dimensions:
+        # The subject's dimensions *are* the group-by, so the query returns
+        # one row per group while an aggregate rule looks up the single
+        # ``""`` label — every variable reads Unknown and the rule can never
+        # fire. Silently dead is the one outcome worth blocking here.
+        issues.append(
+            f"{where}: scope 'aggregate' judges one row but "
+            f"subject.dimensions ({', '.join(rule.subject.dimensions)}) makes "
+            "the query group — drop them, filter instead, or use scope "
+            "'per_dimension'")
 
     if not rule.conditions:
         issues.append(f"{where}: at least one condition is required")

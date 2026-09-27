@@ -80,7 +80,14 @@ class TestLint:
 
     def test_metric_required(self):
         issues = lint_rule(rule(subject={"metrics": [], "dimensions": ["region"]}))
-        assert any("at least one metric" in i for i in issues)
+        assert any("must name a metric" in i for i in issues)
+
+    def test_exactly_one_metric(self):
+        """`current`/`delta` are singular — a second metric has nowhere to
+        bind, so reject rather than silently judging only the first."""
+        issues = lint_rule(rule(subject={"metrics": ["a", "b"],
+                                         "dimensions": ["region"]}))
+        assert any("exactly one metric" in i for i in issues)
 
     def test_unknown_severity(self):
         assert any("severity" in i for i in lint_rule(rule(severity="loud")))
@@ -93,6 +100,7 @@ class TestLint:
                    for i in lint_rule(rule(baseline={"kind": "literal"})))
         assert lint_rule(rule(
             baseline={"kind": "literal", "value": 1000},
+            subject={"metrics": ["m"]},
             conditions=["current < baseline"],
             scope="aggregate",
         )) == []
@@ -106,8 +114,17 @@ class TestLint:
         assert any("at least one subject dimension" in i for i in issues)
 
     def test_aggregate_rule_cannot_use_emit(self):
-        issues = lint_rule(rule(scope="aggregate", emit="all"))
+        issues = lint_rule(rule(scope="aggregate", emit="all",
+                                subject={"metrics": ["m"]}))
         assert any("emit is ignored" in i for i in issues)
+
+    def test_aggregate_rule_cannot_declare_dimensions(self):
+        """The dimensions *are* the group-by, so the query returns one row per
+        group while the rule looks up a single aggregate row — every variable
+        reads Unknown and the rule can never fire. Blocking it at lint time is
+        the difference between a rejected rule and a silently dead one."""
+        issues = lint_rule(rule(scope="aggregate", emit="any"))
+        assert any("subject.dimensions" in i for i in issues)
 
     def test_top_k_only_with_emit_top_k(self):
         assert any("top_k is only meaningful" in i for i in lint_rule(rule(top_k=5)))
