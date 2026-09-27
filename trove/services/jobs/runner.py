@@ -130,8 +130,9 @@ class SchedulerRunner:
         run = Run(job_id=job.id)
         run_id = await self.jobs.record_run(job, run)
         try:
-            rule = await self._load_rule(job)
-            outcome = await self.decision.evaluate(rule, job.datasource, now)
+            rule, rule_digest = await self._load_rule(job)
+            outcome = await self.decision.evaluate(
+                rule, job.datasource, now, rule_digest=rule_digest)
             # The decision engine never writes a business DB and never raises
             # out here: a failure comes back as `error` and is recorded as a
             # run status, which is the entire audit trail for this path.
@@ -177,24 +178,31 @@ class SchedulerRunner:
         finally:
             await self._advance(job, now)
 
-    async def _load_rule(self, job: Job):
-        """``job.decision_rule`` from the KB of ``job.datasource``.
+    async def _load_rule(self, job: Job) -> tuple[Any, str]:
+        """``(rule, document digest)`` for ``job.decision_rule``.
 
         A dangling reference is a hard error, not a skip: the job was created
         against a rule that has since been renamed or deleted, and reporting
         "nothing wrong today" for it would be the worst possible outcome.
+
+        The digest comes from the same read as the rule — a decision run has
+        no trace behind it, so the run record is the whole audit trail, and
+        "which version of the rule judged this" is half of what it must
+        answer. Reading the document directly (rather than ``get_decision``,
+        which loads it again) keeps the two from disagreeing.
         """
         kb = getattr(self.decision, "kb", None)
         if kb is None:
             raise RuntimeError("decision service has no KB to load rules from")
-        rule = kb.get_decision(job.datasource, job.decision_rule)
+        doc = kb.load_decisions(job.datasource)
+        rule = next((r for r in doc.rules if r.id == job.decision_rule), None)
         if rule is None:
             raise RuntimeError(
                 f"decision rule {job.decision_rule!r} not found for datasource "
                 f"{job.datasource!r}")
         if not rule.enabled:
             raise RuntimeError(f"decision rule {job.decision_rule!r} is disabled")
-        return rule
+        return rule, doc.digest
 
     async def run_job_now(self, job_id: str) -> dict[str, Any] | None:
         """Run a job immediately (manual trigger), regardless of schedule.

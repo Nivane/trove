@@ -332,8 +332,16 @@ class DecisionService:
 
     async def evaluate_rule(
         self, rule: DecisionRule, datasource: str, now: datetime | None = None,
+        *, rule_digest: str = "",
     ) -> DecisionOutcome:
-        """Evaluate one rule. Raises ``DecisionError`` when it cannot be judged."""
+        """Evaluate one rule. Raises ``DecisionError`` when it cannot be judged.
+
+        ``rule_digest`` is the ``decisions.yml`` byte digest the rule was read
+        from — the caller has it (it loaded the document) and the evidence
+        needs it, because for a decision run the evidence *is* the audit
+        trail: without it, "this fired on the 10% threshold" is unanswerable
+        once the threshold is edited.
+        """
         # Lint blocks this at the write time, but a hand-edited decisions.yml
         # reaches here un-linted, and the failure mode is a rule that reads
         # Unknown forever — indistinguishable from "nothing wrong today".
@@ -373,9 +381,11 @@ class DecisionService:
 
         evidence = {
             "rule_id": rule.id,
+            "rule_digest": rule_digest,
             "rule_name": rule.describe(),
             "severity": rule.severity,
             "owner_role": rule.owner_role,
+            "model_version": cur_info.get("version", ""),
             "window_expr": rule.window,
             "periods": {
                 "current": list(cur_window) if cur_window else None,
@@ -528,6 +538,7 @@ class DecisionService:
 
     async def evaluate(
         self, rule: DecisionRule, datasource: str, now: datetime | None = None,
+        *, rule_digest: str = "",
     ) -> DecisionOutcome:
         """``evaluate_rule`` with every failure folded into ``error``.
 
@@ -537,20 +548,25 @@ class DecisionService:
         ``error`` — visible, and never a notification.
         """
         try:
-            return await self.evaluate_rule(rule, datasource, now)
+            return await self.evaluate_rule(rule, datasource, now,
+                                            rule_digest=rule_digest)
         except (DecisionError, RuleError, DecisionExprError) as e:
             logger.warning("decision rule %s failed: %s", rule.id, e)
-            return DecisionOutcome(
-                triggered=False, message="", rule_id=rule.id,
-                severity=rule.severity, error=str(e)[:300],
-                evidence={"rule_id": rule.id, "error": str(e)[:300],
-                          "provenance": {"datasource": datasource}},
-            )
+            return self._failed(rule, datasource, e, rule_digest)
         except Exception as e:  # pragma: no cover - defensive
             logger.exception("decision rule %s crashed", rule.id)
-            return DecisionOutcome(
-                triggered=False, message="", rule_id=rule.id,
-                severity=rule.severity, error=str(e)[:300],
-                evidence={"rule_id": rule.id, "error": str(e)[:300],
-                          "provenance": {"datasource": datasource}},
-            )
+            return self._failed(rule, datasource, e, rule_digest)
+
+    @staticmethod
+    def _failed(
+        rule: DecisionRule, datasource: str, e: Exception, rule_digest: str,
+    ) -> DecisionOutcome:
+        # The digest is recorded on failures too: "which version of the rule
+        # could not be judged" is the first question when one starts erroring.
+        return DecisionOutcome(
+            triggered=False, message="", rule_id=rule.id,
+            severity=rule.severity, error=str(e)[:300],
+            evidence={"rule_id": rule.id, "rule_digest": rule_digest,
+                      "error": str(e)[:300],
+                      "provenance": {"datasource": datasource}},
+        )

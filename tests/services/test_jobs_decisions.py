@@ -55,14 +55,23 @@ class FakeSessionManager:
         raise AssertionError("a decision job must not resume the NL pipeline")
 
 
-class FakeKb:
-    def __init__(self, rule=RULE):
-        self.rule = rule
-        self.asked: list[tuple[str, str]] = []
+class FakeDoc:
+    def __init__(self, rules, digest="sha256:deadbeef"):
+        self.rules = list(rules)
+        self.digest = digest
 
-    def get_decision(self, datasource, rule_id):
-        self.asked.append((datasource, rule_id))
-        return self.rule
+
+class FakeKb:
+    """The runner reads the whole document, not just the rule — the digest it
+    records as "which version judged this" has to come from the same read."""
+
+    def __init__(self, rule=RULE, digest="sha256:deadbeef"):
+        self.doc = FakeDoc([] if rule is None else [rule], digest)
+        self.asked: list[str] = []
+
+    def load_decisions(self, datasource):
+        self.asked.append(datasource)
+        return self.doc
 
 
 class FakeDecision:
@@ -73,8 +82,8 @@ class FakeDecision:
         self.kb = kb if kb is not None else FakeKb()
         self.calls: list[tuple] = []
 
-    async def evaluate(self, rule, datasource, now=None):
-        self.calls.append((rule, datasource, now))
+    async def evaluate(self, rule, datasource, now=None, *, rule_digest=""):
+        self.calls.append((rule, datasource, now, rule_digest))
         return self.outcome
 
 
@@ -121,7 +130,7 @@ class TestRunJobForks:
         decision = FakeDecision(_triggered())
         runner = SchedulerRunner(FakeSessionManager(), svc, decision=decision)
         await runner.run_job(job, NOW)
-        assert decision.kb.asked == [("financial", "loan-drop")]
+        assert decision.kb.asked == ["financial"]
 
     async def test_a_normal_job_still_goes_to_the_pipeline(self, svc):
         """The fork is opt-in: an empty decision_rule keeps the old path."""
@@ -167,6 +176,18 @@ class TestEvidenceIsStored:
         assert runs[0]["verdict"] == "loan-drop"
         assert runs[0]["result"]["evidence"]["sql_current"] == "SELECT ..."
         assert runs[0]["result"]["rows"][0]["dim"] == "华东"
+
+    async def test_the_rule_digest_is_handed_to_the_engine(self, svc):
+        """"This fired on the 10% threshold" has to stay answerable after the
+        threshold is edited — and for a decision run the evidence is the only
+        place that can say which version of the file judged it."""
+        job = await _job(svc)
+        decision = FakeDecision(_triggered())
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=decision)
+        await runner.run_job(job, NOW)
+
+        assert decision.kb.asked == ["demo"]
+        assert decision.calls[0][3] == "sha256:deadbeef"
 
     async def test_unserializable_evidence_does_not_strand_the_schedule(self, svc):
         """Postgres returns Decimal/datetime. If storing evidence raised, the

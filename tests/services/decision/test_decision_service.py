@@ -333,6 +333,20 @@ class TestAgainstTheKb:
         assert out.evidence["rule_id"] == "loan-drop"
         assert out.evidence["rule_name"] == "贷款余额环比下滑"
 
+    async def test_the_digest_lands_in_the_evidence(self, svc):
+        """The card must answer "which version of the rule judged this" —
+        and the digest is on the document, so the caller passes it in."""
+        out = await svc.evaluate(rule(), "demo", NOW, rule_digest="sha256:abc")
+        assert out.evidence["rule_digest"] == "sha256:abc"
+        assert out.evidence["model_version"] == ""
+
+    async def test_a_failed_evaluation_records_the_digest_too(self, svc):
+        """When a rule starts erroring, "which version" is the first question."""
+        broken = rule(window="没有一个这样的时间词")
+        out = await svc.evaluate(broken, "demo", NOW, rule_digest="sha256:abc")
+        assert out.error
+        assert out.evidence["rule_digest"] == "sha256:abc"
+
 
 class TestLocalDateAnchor:
     async def test_window_follows_the_injected_clock_not_the_wall_clock(self, svc):
