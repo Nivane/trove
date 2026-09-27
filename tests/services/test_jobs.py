@@ -141,6 +141,40 @@ class TestCooldown:
         assert ev["triggered"] is True
         assert ev["notify"] is False  # cooldown suppresses notify
 
+    async def test_cooldown_survives_the_runner_sequence(self, tmp_path):
+        """The hand-built row above never catches this: in a real run the
+        in-flight row is inserted *before* the verdict is known, so it is the
+        newest row at check time. Asking `recent_run` for the cooldown anchor
+        therefore always answered "the run you are inside" — which never
+        alerts — and the dedup was silently a no-op."""
+        from trove.services.jobs.runner import SchedulerRunner
+
+        class _M:
+            async def start_session(self):
+                return object()
+
+            async def ask(self, session, question, workflow, datasource=None):
+                from trove.workflow.state import WorkflowState
+
+                return WorkflowState(session_id="s", question=question,
+                                     columns=["a"], rows=[["1"]], row_count=5,
+                                     verdict="OK")
+
+            async def resume(self, session, decision, workflow):
+                raise AssertionError("not hitl")
+
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job(
+            "q", "5", "interval", alert_expr="row_count >= 3",
+            alert_cooldown_min=30, alert_channel="console",
+        )
+        runner = SchedulerRunner(_M(), svc)
+        first = await runner.run_job(job)
+        second = await runner.run_job(job)
+        assert first["alert_sent"] is True
+        assert second["status"] == "alert"
+        assert second["alert_sent"] is False
+
     async def test_alert_notify_outside_cooldown(self, tmp_path):
         svc = JobsService(JobStore(tmp_path))
         job = await svc.create_job("q", "5", "interval", alert_expr="row_count >= 3")

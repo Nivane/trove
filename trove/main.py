@@ -348,7 +348,16 @@ async def create_app_components(
     from trove.services.jobs.store import JobStore
 
     jobs = JobsService(JobStore(config.home))
-    scheduler = SchedulerRunner(session_manager, jobs, lang=config.language)
+    # `decision` is optional: without it a decision job would have to be
+    # reported as an error rather than quietly run as an NL question — the
+    # service resolves the semantic model per job.datasource itself, so no
+    # datasource-bound provider is injected here.
+    from trove.services.decision.service import DecisionService
+
+    scheduler = SchedulerRunner(
+        session_manager, jobs, lang=config.language,
+        decision=DecisionService(connector_registry, kb),
+    )
 
     # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
     from trove.services.ratelimit import RateLimiter

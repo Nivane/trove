@@ -201,6 +201,110 @@ class TestJobRunsHistory:
         assert (await admin_client.get("/v1/admin/jobs/nope/runs")).status_code == 404
 
 
+class TestDecisionRuleReference:
+    """A dangling rule reference must be rejected at write time — the runner
+    would otherwise fail the same way on every tick, forever."""
+
+    @staticmethod
+    def _write_rules(app, datasource="demo", rules=None):
+        import yaml
+
+        rules = rules if rules is not None else [{
+            "id": "loan-drop", "name": "贷款余额环比下滑", "window": "本月",
+            "subject": {"metrics": ["loan_balance"], "dimensions": ["region"]},
+            "baseline": {"kind": "prev_period"},
+            "scope": "per_dimension",
+            "conditions": ["delta_pct < -0.1"],
+        }]
+        path = app.state.kb.decisions_path(datasource)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            yaml.safe_dump({"version": 1, "rules": rules}, allow_unicode=True),
+            encoding="utf-8")
+
+    async def test_create_with_a_declared_rule(self, admin_client, jobs_app):
+        self._write_rules(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "贷款余额环比", "schedule": "30",
+            "datasource": "demo", "decision_rule": "loan-drop",
+        })
+        assert r.status_code == 201, r.text
+        assert r.json()["job"]["decision_rule"] == "loan-drop"
+
+    async def test_create_rejects_an_undeclared_rule(self, admin_client, jobs_app):
+        self._write_rules(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "decision_rule": "nope",
+        })
+        assert r.status_code == 400
+        assert "nope" in r.json()["detail"]
+        assert "loan-drop" in r.json()["detail"]      # says what *is* declared
+
+    async def test_create_rejects_a_rule_with_no_decisions_file(
+            self, admin_client, jobs_app):
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "decision_rule": "loan-drop",
+        })
+        assert r.status_code == 400
+        assert "none declared" in r.json()["detail"]
+
+    async def test_create_rejects_a_disabled_rule(self, admin_client, jobs_app):
+        self._write_rules(jobs_app, rules=[{
+            "id": "loan-drop", "name": "n", "enabled": False, "window": "本月",
+            "subject": {"metrics": ["loan_balance"]},
+            "baseline": {"kind": "prev_period"},
+            "conditions": ["current > 0"],
+        }])
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "decision_rule": "loan-drop",
+        })
+        assert r.status_code == 400
+        assert "disabled" in r.json()["detail"]
+
+    async def test_create_surfaces_a_corrupt_decisions_file(
+            self, admin_client, jobs_app):
+        """A file that will not parse is not "no rules" — a job created
+        against it would fail on the first tick with nobody the wiser."""
+        path = jobs_app.state.kb.decisions_path("demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("rules: [{id: a}, {id: a}]", encoding="utf-8")
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "decision_rule": "a",
+        })
+        assert r.status_code == 400
+        assert "invalid" in r.json()["detail"]
+
+    async def test_a_plain_job_needs_no_rule(self, admin_client, jobs_app):
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30",
+        })
+        assert r.status_code == 201
+        assert r.json()["job"]["decision_rule"] == ""
+
+    async def test_patch_can_attach_and_detach(self, admin_client, jobs_app):
+        self._write_rules(jobs_app)
+        job = await _make_job(jobs_app)
+        assert job.decision_rule == ""
+
+        attached = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "decision_rule": "loan-drop"})
+        assert attached.status_code == 200, attached.text
+        assert attached.json()["job"]["decision_rule"] == "loan-drop"
+
+        detached = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "decision_rule": ""})
+        assert detached.json()["job"]["decision_rule"] == ""
+
+    async def test_patch_rejects_an_undeclared_rule(self, admin_client, jobs_app):
+        self._write_rules(jobs_app)
+        job = await _make_job(jobs_app)
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "decision_rule": "nope"})
+        assert r.status_code == 400
+        # ...and the job is untouched
+        assert (await jobs_app.state.jobs.get_job(job.id)).decision_rule == ""
+
+
 class TestJobAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get("/v1/admin/jobs")).status_code == 403

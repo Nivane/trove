@@ -40,7 +40,12 @@ _CREATE_JOBS = """CREATE TABLE IF NOT EXISTS jobs (
     alert_cooldown_min INTEGER NOT NULL DEFAULT 30,
     next_run_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- Non-empty = this job runs the decision engine, not the NL pipeline.
+    -- MUST stay the last column: _row_to_job reads positionally and SQLite's
+    -- ALTER TABLE ADD COLUMN can only append, so a column inserted mid-list
+    -- would land at a different index in a migrated DB than in a fresh one.
+    decision_rule TEXT DEFAULT ''
 )"""
 
 _CREATE_RUNS = """CREATE TABLE IF NOT EXISTS runs (
@@ -79,6 +84,10 @@ class Job:
     next_run_at: str = ""
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
+    #: Non-empty = run the decision engine on this rule instead of the NL
+    #: pipeline. Defaults to "" so a job row written before this field
+    #: existed still reads back as an ordinary question job.
+    decision_rule: str = ""
 
 
 @dataclass
@@ -112,6 +121,7 @@ def _job_to_row(job: Job) -> tuple:
         job.next_run_at,
         job.created_at,
         job.updated_at,
+        job.decision_rule,
     )
 
 
@@ -122,6 +132,9 @@ def _row_to_job(row) -> Job:
         enabled=bool(row[7]), alert_expr=row[8], alert_channel=row[9],
         alert_cooldown_min=row[10], next_run_at=row[11] or "",
         created_at=row[12], updated_at=row[13],
+        # No len() guard: _ensure_schema guarantees the column exists, and a
+        # silent "" here would turn a decision job into an NL question.
+        decision_rule=row[14] or "",
     )
 
 
@@ -159,6 +172,22 @@ class JobStore:
         from trove.storage.backends.base import script_statements
 
         await self._backend.executescript(script_statements([_CREATE_JOBS, _CREATE_RUNS]))
+        # `jobs` predates the migration framework (bare CREATE TABLE IF NOT
+        # EXISTS), so there is no version row to hang a step off. The column
+        # is added by probe instead: idempotent on every open, and a no-op
+        # once present. Never let a failure pass silently — an un-added
+        # column turns a decision job back into an NL question.
+        from trove.storage.migrations import POSTGRES, SQLITE, AddColumn, ensure_column
+
+        is_pg = "Postgres" in type(self._backend).__name__
+        added = await ensure_column(
+            self._backend,
+            AddColumn("jobs", "decision_rule", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
+            dialect=POSTGRES if is_pg else SQLITE,
+        )
+        # ensure_column is a plain write, not a migration step — the caller commits.
+        if added:
+            await self._backend.commit()
         self._schema_ready = True
 
     # ── jobs ─────────────────────────────────────────────
@@ -170,8 +199,9 @@ class JobStore:
             await conn.execute(
                 """INSERT INTO jobs (id, name, question, datasource, workflow,
                    schedule_type, schedule, enabled, alert_expr, alert_channel,
-                   alert_cooldown_min, next_run_at, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   alert_cooldown_min, next_run_at, created_at, updated_at,
+                   decision_rule)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, question=excluded.question,
                      datasource=excluded.datasource, workflow=excluded.workflow,
@@ -179,7 +209,8 @@ class JobStore:
                      enabled=excluded.enabled, alert_expr=excluded.alert_expr,
                      alert_channel=excluded.alert_channel,
                      alert_cooldown_min=excluded.alert_cooldown_min,
-                     next_run_at=excluded.next_run_at, updated_at=excluded.updated_at""",
+                     next_run_at=excluded.next_run_at, updated_at=excluded.updated_at,
+                     decision_rule=excluded.decision_rule""",
                 _job_to_row(job),
             )
             await conn.commit()
@@ -245,17 +276,28 @@ class JobStore:
     async def finish_run(
         self, run_id: int, status: str, alert_triggered: bool,
         alert_sent: bool, row_count: int | None = None, verdict: str = "",
+        result_json: dict[str, Any] | None = None,
     ) -> None:
+        """Close a run row. ``result_json`` is written only when given — the
+        NL path stores its evidence through ``start_run`` and passes nothing.
+
+        A decision run has no LangGraph trace, so this column *is* its audit
+        record; ``default=str`` keeps one unserializable value (a stray
+        Decimal from Postgres, say) from aborting the write — an exception
+        here would strand the job's schedule and re-fire the alert forever.
+        """
         conn = await self._conn()
         try:
-            await conn.execute(
-                """UPDATE runs SET finished_at=?, status=?, alert_triggered=?,
-                   alert_sent=?, row_count=?, verdict=? WHERE id=?""",
-                (
-                    now_iso(), status, 1 if alert_triggered else 0,
-                    1 if alert_sent else 0, row_count, verdict, run_id,
-                ),
-            )
+            sql = """UPDATE runs SET finished_at=?, status=?, alert_triggered=?,
+                   alert_sent=?, row_count=?, verdict=?"""
+            args: list[Any] = [
+                now_iso(), status, 1 if alert_triggered else 0,
+                1 if alert_sent else 0, row_count, verdict,
+            ]
+            if result_json is not None:
+                sql += ", result_json=?"
+                args.append(json.dumps(result_json, ensure_ascii=False, default=str))
+            await conn.execute(sql + " WHERE id=?", (*args, run_id))
             await conn.commit()
         finally:
             await conn.close()
@@ -268,6 +310,38 @@ class JobStore:
                 """SELECT id, started_at, finished_at, status, alert_triggered,
                    alert_sent, row_count, verdict, result_json
                    FROM runs WHERE job_id = ? ORDER BY id DESC LIMIT 1""",
+                (job_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        finally:
+            await conn.close()
+        if not row:
+            return None
+        return {
+            "id": row[0], "started_at": row[1], "finished_at": row[2],
+            "status": row[3], "alert_triggered": bool(row[4]),
+            "alert_sent": bool(row[5]), "row_count": row[6],
+            "verdict": row[7], "result": json.loads(row[8] or "{}"),
+        }
+
+    async def last_alert_run(self, job_id: str) -> dict[str, Any] | None:
+        """Newest *finished* run that fired an alert — the cooldown anchor.
+
+        Deliberately not ``recent_run``: the runner records a run row before
+        it evaluates, so at cooldown-check time the newest row of any kind is
+        always the run currently in flight (``alert_triggered`` 0,
+        ``finished_at`` NULL). Asking for that one makes the cooldown a no-op
+        and every tick re-sends the alert.
+        """
+        conn = await self._conn()
+        try:
+            async with await conn.execute(
+                """SELECT id, started_at, finished_at, status, alert_triggered,
+                   alert_sent, row_count, verdict, result_json
+                   FROM runs
+                   WHERE job_id = ? AND alert_triggered = 1
+                     AND finished_at IS NOT NULL
+                   ORDER BY id DESC LIMIT 1""",
                 (job_id,),
             ) as cursor:
                 row = await cursor.fetchone()

@@ -180,6 +180,7 @@ import {
   Cpu,
   History,
   Clock,
+  Gavel,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -204,6 +205,7 @@ const manageItems: {
   { path: '/admin/kb', label: 'kb', icon: Library },
   { path: '/admin/semantic', label: 'semanticLayer', icon: Layers3 },
   { path: '/admin/jobs', label: 'jobs', icon: Clock },
+  { path: '/admin/decisions', label: 'decisions', icon: Gavel },
 ]
 
 const systemItems: {

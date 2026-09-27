@@ -160,6 +160,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     from trove.api.deps import NullAuth
     from trove.api.routers import admin as admin_router
     from trove.api.routers import auth as auth_router
+    from trove.api.routers import decisions as decisions_router
     from trove.api.routers import jobs as jobs_router
 
     auth = components.get("auth")
@@ -180,6 +181,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(auth_router.router, prefix="/v1")
         app.include_router(admin_router.router, prefix="/v1")
         app.include_router(jobs_router.router, prefix="/v1")
+        app.include_router(decisions_router.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")

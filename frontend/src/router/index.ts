@@ -70,6 +70,11 @@ export const router = createRouter({
           name: 'admin-jobs',
           component: () => import('../views/admin/JobsView.vue'),
         },
+        {
+          path: 'decisions',
+          name: 'admin-decisions',
+          component: () => import('../views/admin/DecisionsView.vue'),
+        },
       ],
     },
   ],

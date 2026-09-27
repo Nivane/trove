@@ -49,6 +49,30 @@ def _jobs_service() -> JobsService:
     return JobsService(JobStore(Path.cwd()))
 
 
+def _rule_error(datasource: str, rule_id: str) -> str | None:
+    """Why this rule reference is unusable; None when fine.
+
+    Mirrors the API router's check (which uses ``app.state.kb``) — the CLI
+    has no app, so it opens the same cwd-rooted KB the runner will read. The
+    reference is validated here because a dangling one would otherwise fail
+    identically on every tick, forever.
+    """
+    from trove.services.decision.rules import RuleError
+    from trove.services.kb.service import KbService
+
+    try:
+        doc = KbService(Path.cwd()).load_decisions(datasource)
+    except RuleError as e:
+        return f"decisions.yml for {datasource!r} is invalid: {e}"
+    rule = next((r for r in doc.rules if r.id == rule_id), None)
+    if rule is None:
+        known = ", ".join(r.id for r in doc.rules) or "(none declared)"
+        return f"unknown --rule {rule_id!r} for {datasource!r} (declared: {known})"
+    if not rule.enabled:
+        return f"decision rule {rule_id!r} is disabled"
+    return None
+
+
 def _job_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trove job", description="Scheduled jobs")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -63,6 +87,11 @@ def _job_parser() -> argparse.ArgumentParser:
     add.add_argument("--alert", default="", help='Alert rule, e.g. "row_count >= 5"')
     add.add_argument("--channel", default="console", help="console | webhook:<url>")
     add.add_argument("--cooldown", type=int, default=30, help="Alert cooldown minutes")
+    add.add_argument(
+        "--rule", default="",
+        help="Decision rule id from .trove/kb/<datasource>/decisions.yml "
+             "(runs the deterministic decision engine; --alert is then unused)",
+    )
 
     add.add_argument("--list", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("list", help="List scheduled jobs")
@@ -84,6 +113,11 @@ async def main_job(argv: list[str]) -> None:
         if schedule_type == "interval" and int(args.interval or 0) < 1:
             print("add: --interval >= 1 or provide --cron")
             sys.exit(1)
+        if args.rule:
+            err = _rule_error(args.datasource, args.rule)
+            if err:
+                print(f"add: {err}")
+                sys.exit(1)
         job = await jobs.create_job(
             args.question,
             schedule,
@@ -94,6 +128,7 @@ async def main_job(argv: list[str]) -> None:
             alert_expr=args.alert,
             alert_channel=args.channel,
             alert_cooldown_min=args.cooldown,
+            decision_rule=args.rule,
         )
         if job is None:
             print(f"add: invalid schedule {schedule!r} ({schedule_type})")
