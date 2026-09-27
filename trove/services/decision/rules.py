@@ -260,6 +260,49 @@ def lint_rule(rule: DecisionRule) -> list[str]:
     return issues
 
 
+def rule_to_dict(rule: DecisionRule) -> dict[str, Any]:
+    """``DecisionRule`` → the YAML mapping it was parsed from.
+
+    Round-trips through ``parse_rule``: the API accepts rule bodies as JSON
+    and writes them back as YAML, so the two directions must agree on the
+    shape or every save through the UI would reshape the file.
+    """
+    out: dict[str, Any] = {"id": rule.id}
+    if rule.name:
+        out["name"] = rule.name
+    if not rule.enabled:
+        out["enabled"] = False
+    out["severity"] = rule.severity
+    if rule.owner_role:
+        out["owner_role"] = rule.owner_role
+    if rule.window:
+        out["window"] = rule.window
+    subject: dict[str, Any] = {"metrics": list(rule.subject.metrics)}
+    if rule.subject.dimensions:
+        subject["dimensions"] = list(rule.subject.dimensions)
+    if rule.subject.filters:
+        subject["filters"] = [dict(f) for f in rule.subject.filters]
+    if rule.subject.time_grain:
+        subject["time_grain"] = dict(rule.subject.time_grain)
+    if rule.subject.limit is not None:
+        subject["limit"] = rule.subject.limit
+    out["subject"] = subject
+    baseline: dict[str, Any] = {"kind": rule.baseline.kind}
+    if rule.baseline.value is not None:
+        baseline["value"] = rule.baseline.value
+    out["baseline"] = baseline
+    if rule.scope != "aggregate":
+        out["scope"] = rule.scope
+    if rule.emit != "any":
+        out["emit"] = rule.emit
+    if rule.emit == "top_k":
+        out["top_k"] = rule.top_k
+    conds = list(rule.conditions)
+    out["conditions"] = {rule.condition_mode: conds} if rule.condition_mode != "all" \
+        else conds
+    return out
+
+
 def lint_document(doc: DecisionDoc) -> list[str]:
     """All rules' issues, flattened (document-level checks included)."""
     issues: list[str] = []

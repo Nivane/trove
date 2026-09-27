@@ -51,14 +51,16 @@ class FileSpec:
 
 
 #: 参与合并的资产。不在表里的文件按**整份文档**合并(通用规则)。
-#: ``rules.yml`` 是纯人工文件(没有任何写入器),不参与生成侧合并 ——
-#: 显式列成 ``None`` 而不是"漏了",这样它永远不会被误当成生成物。
+#: ``rules.yml`` / ``decisions.yml`` 是纯人工文件(没有任何生成器产出它们),
+#: 不参与生成侧合并 —— 显式列成 ``None`` 而不是"漏了",这样它们永远不会被
+#: 误当成生成物。
 FILE_SPECS: dict[str, FileSpec | None] = {
     "schema_notes.yml": FileSpec("tables", "name"),
     "semantics.yml": FileSpec("semantic_model", "name"),
     "examples.yml": FileSpec("examples", "question"),
     "lessons.yml": FileSpec("lessons", "pattern"),
     "rules.yml": None,
+    "decisions.yml": None,
 }
 
 #: 冲突种类(报告里原样出现,别改字面量)。

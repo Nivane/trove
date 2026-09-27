@@ -40,6 +40,7 @@ from trove.services.decision.rules import (
     lint_rule,
     parse_document,
     parse_rule,
+    rule_to_dict,
 )
 
 __all__ = [
@@ -63,4 +64,5 @@ __all__ = [
     "parse_condition",
     "parse_document",
     "parse_rule",
+    "rule_to_dict",
 ]

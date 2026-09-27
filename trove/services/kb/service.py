@@ -17,6 +17,7 @@ layout) are auto-migrated into a datasource subdirectory.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import re
@@ -31,6 +32,14 @@ import aiosqlite
 import yaml
 
 from trove.core.logging import get_logger
+from trove.services.decision.rules import (
+    DecisionDoc,
+    DecisionRule,
+    RuleError,
+    lint_document,
+    parse_document,
+    rule_to_dict as _rule_to_dict,
+)
 
 _CJK_RE = re.compile(r"[一-鿿]")
 from trove.core.types import SchemaInfo
@@ -647,6 +656,10 @@ class KbService:
         """该数据源的 schema_notes.yml 文件(表/字段/指标口径注释)。"""
         return self.kb_dir / datasource / "schema_notes.yml"
 
+    def decisions_path(self, datasource: str) -> Path:
+        """该数据源的 decisions.yml 文件(决策规则,人工编写)。"""
+        return self.kb_dir / datasource / "decisions.yml"
+
     # ── Sync ──────────────────────────────────────────────
 
     async def iter_items(
@@ -963,6 +976,94 @@ class KbService:
             return issues
 
         return _lint
+
+    # ── Decision rules ────────────────────────────────────
+
+    def load_decisions(self, datasource: str) -> DecisionDoc:
+        """该数据源的决策规则(``decisions.yml``)。
+
+        走 `_load_asset` 这个唯一读入口,因此拿到**文件字节的 sha256**
+        (``digest``)——决策 run 的证据里记下它,才能回答"这次触发是哪一版
+        规则判的"。缺文件返回空文档:调用方按 id 查不到规则才是"规则不存在"
+        的判据,一次 fail loud 就够,不必在两层各报一次错。
+
+        刻意**不进 `_entries_of`**:决策规则不是会被检索的 KB 内容,进镜像
+        只会污染混合检索索引(它跟提问没有语义相关性,却会被词面命中)。
+
+        Raises:
+            RuleError: 文件存在但结构非法(坏规则绝不能被当成"没有规则")。
+        """
+        path = self.decisions_path(datasource)
+        if not path.exists():
+            return DecisionDoc(rules=[])
+        try:
+            asset = _load_asset(path)
+        except Exception as e:
+            raise RuleError(f"decisions.yml 无法解析: {e}") from e
+        doc = parse_document(asset.doc)
+        doc.digest = asset.digest
+        doc.meta = dataclasses.asdict(asset.meta)
+        return doc
+
+    def get_decision(self, datasource: str, rule_id: str) -> DecisionRule | None:
+        """按 id 取一条规则(未找到 → None)。"""
+        for rule in self.load_decisions(datasource).rules:
+            if rule.id == rule_id:
+                return rule
+        return None
+
+    def decisions_lint(self, datasource: str):
+        """Pre-commit 门禁:lint 决策规则,坏规则拒绝进入 git 审计历史。
+
+        与 `semantics_lint` 同形,返回 ``(paths) -> list[str]`` 供 GitKb.commit
+        调用。写盘前的第一道门禁在 `save_decisions` 里——这里是 git 侧兜底:
+        即便有人绕过了写入器直接改盘再提交,坏规则也进不了历史。
+        """
+
+        def _lint(paths) -> list[str]:
+            issues: list[str] = []
+            for p in paths:
+                if p.name != "decisions.yml" or not p.exists():
+                    continue
+                try:
+                    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                    issues += lint_document(parse_document(data))
+                except Exception as e:
+                    issues.append(f"decisions.yml 无法解析: {e}")
+            return issues
+
+        return _lint
+
+    async def save_decisions(
+        self, datasource: str, doc: DecisionDoc, message: str = "",
+        trailers: dict[str, str] | None = None,
+    ) -> dict:
+        """写回整份 ``decisions.yml`` —— **写盘前 lint 门禁**。
+
+        与 `semantic_layer/manage._reject_bad_semantics` 同一取向:坏规则
+        拒绝持久化,而不只是拒绝进 git。理由相同——一份能落盘但跑不起来的
+        规则,只会变成一条永远不触发的定时任务,没有任何人会发现。
+
+        ``git_commit`` 必须显式传 ``files=["decisions.yml"]``:默认行为是
+        把该数据源目录下所有 ``*.yml`` 一起暂存,那会把别人尚未提交的
+        semantics.yml 改动卷进这次"规则变更"提交里。
+        """
+        issues = lint_document(doc)
+        if issues:
+            raise RuleError("决策规则校验未通过,拒绝写入: " + "; ".join(issues))
+
+        data: dict = {"version": doc.version, "rules": [_rule_to_dict(r) for r in doc.rules]}
+        path = self.decisions_path(datasource)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_doc(path, data, "decisions")
+        await self.force_sync()
+        return await self.git_commit(
+            datasource,
+            message or f"kb: update decision rules ({len(doc.rules)} rule(s))",
+            files=["decisions.yml"],
+            lint=self.decisions_lint(datasource),
+            trailers=trailers,
+        )
 
     def _datasource_dirs(self) -> list[Path]:
         """Subdirectories of kb_dir (each named after a datasource)."""
