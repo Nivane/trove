@@ -3,6 +3,7 @@
 
 from trove.core.config import AgentConfig
 from trove.services.kb.service import ExampleHit
+from trove.services.semantic_layer.models import SemanticDataset, SemanticModel
 from trove.workflow.nodes.fast_match import (
     FAST_PATH_MAX_QUESTION_LEN,
     make_fast_match,
@@ -417,11 +418,33 @@ def node_state(**kw):
     return WorkflowState(**defaults)
 
 
-async def run_node(state, kb=None, connectors=None, config=None):
+class FakeSemantic:
+    """SemanticLayerProvider 的最小替身:只暴露 .model()。
+
+    注意是**方法**不是 property —— 与真实 provider(``provider.py:272``)一致,
+    全仓按 ``semantic_layer.model()`` 调用。
+    """
+
+    def __init__(self, model=None, raises=None):
+        self._model = model
+        self._raises = raises
+
+    def model(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._model
+
+
+def sem_model(*datasets):
+    return SemanticModel(name="m", datasets=list(datasets))
+
+
+async def run_node(state, kb=None, connectors=None, config=None, semantic=None):
     node = make_fast_match(
         kb=kb or FakeKB([BARE]),
         connectors=connectors or FakeConnectors(),
         config=config,
+        semantic=semantic,
     )
     return await node(state)
 
@@ -471,4 +494,52 @@ class TestNodeGates:
 
     async def test_miss_writes_nothing(self):
         out = await run_node(node_state(matched_tables=["students"], question="who is John"))
+        assert out == {}
+
+
+# ── RLS:快径不过编译器,声明层行级安全必须在此补注入 ─────────
+
+
+class TestFastPathRLS:
+    """回归:``row_filter`` 曾在快径上失效 —— 模板命中直接产出 SQL,不过编译
+    器,于是声明了行级安全的数据集被统计**全表**。(BARE 模板 = 全域
+    ``SELECT COUNT(*) FROM students``;声明 RLS 后必须带谓词。)"""
+
+    async def test_row_filter_injected_on_fast_path(self):
+        sem = FakeSemantic(sem_model(
+            SemanticDataset(name="students", row_filter="county = 'A'"),
+        ))
+        out = await run_node(node_state(matched_tables=["students"]), semantic=sem)
+        assert out["fast_path"] is True
+        assert "county = 'A'" in out["sql"]
+        # kb_hits 里回显的 SQL 必须与执行用的一致,否则前端展示与实跑不符
+        assert out["kb_hits"][0]["sql"] == out["sql"]
+
+    async def test_no_rls_model_leaves_sql_untouched(self):
+        sem = FakeSemantic(sem_model(SemanticDataset(name="students")))
+        out = await run_node(node_state(matched_tables=["students"]), semantic=sem)
+        assert out["sql"] == "SELECT COUNT(*) FROM students"
+
+    async def test_no_semantic_provider_keeps_legacy_behaviour(self):
+        out = await run_node(node_state(matched_tables=["students"]), semantic=None)
+        assert out["sql"] == "SELECT COUNT(*) FROM students"
+
+    async def test_injection_failure_falls_back_to_slow_path(self):
+        """无法确认 RLS 生效时放弃快径 —— 快径是优化,授权不是。"""
+        sem = FakeSemantic(raises=RuntimeError("provider down"))
+        assert await run_node(node_state(matched_tables=["students"]), semantic=sem) == {}
+
+    async def test_unparseable_template_sql_falls_back(self):
+        """坏模板 SQL:注入器拒绝 → miss → 交回编译路径(那里正常注入)。"""
+        bad = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students WHERE ((",
+            tags=["students", "count", "aggregation"],
+        )
+        sem = FakeSemantic(sem_model(
+            SemanticDataset(name="students", row_filter="county = 'A'"),
+        ))
+        out = await run_node(
+            node_state(matched_tables=["students"]), kb=FakeKB([bad]), semantic=sem,
+        )
         assert out == {}

@@ -35,6 +35,7 @@ from trove.services.semantic_layer.models import (
     SemanticMetric,
     SemanticModel,
 )
+from trove.services.semantic_layer import rls
 from trove.services.semantic_layer.plan import GRAINS, PlanQuery, parse_ordering
 from trove.services.semantic_layer.timegrain import (
     date_trunc,
@@ -1082,21 +1083,11 @@ class SemanticCompiler:
     def _row_filter_sql(self, table: str) -> str | None:
         """数据集 row_filter → 注入用谓词(裸列限定到本表);无声明 → None。
 
-        解析失败原样注入而不静默丢弃:声明层 lint 已在写盘前拦截,这里若
-        仍遇到坏谓词,宁可由执行期报语法错,也不能**少一个安全条件**。
+        渲染规则与快径共用一份实现(``rls.render_row_filter``)。此前这里是
+        唯一实现,而快径不过编译器 —— 声明层授权在快径上失效(见 rls 模块
+        docstring)。
         """
-        ds = self._datasets.get(table)
-        rf = (ds.row_filter if ds is not None else "").strip()
-        if not rf:
-            return None
-        try:
-            tree = parse_one(rf, read=self._dialect or "sqlite")
-        except Exception:
-            return f"({rf})"
-        for col in tree.find_all(exp.Column):
-            if not col.table:
-                col.set("table", exp.to_identifier(table, quoted=False))
-        return f"({tree.sql(dialect=self._dialect)})"
+        return rls.render_row_filter(self._datasets.get(table), self._dialect, table)
 
     def _metric_by_name(self, name: str | None) -> SemanticMetric | None:
         """按度量名精确匹配(大小写不敏感)。派生度量名引用/裸名候选共用。"""

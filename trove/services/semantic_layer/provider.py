@@ -30,6 +30,7 @@ from trove.services.semantic_layer.models import (
     SemanticMetric,
     SemanticModel,
 )
+from trove.services.semantic_layer import rls
 from trove.services.semantic_layer.ossie import parse_ossie
 
 logger = logging.getLogger(__name__)
@@ -288,11 +289,12 @@ class SemanticLayerProvider:
 
     @staticmethod
     def _physical_table(d: SemanticDataset) -> str:
-        """数据集 → 物理表名(去 schema 前缀,小写);source 空回退数据集名。"""
-        src = (d.source or "").strip()
-        if not src:
-            src = d.name
-        return src.rsplit(".", 1)[-1].strip().lower()
+        """数据集 → 物理表名(去 schema 前缀,小写);source 空回退数据集名。
+
+        规则与 RLS 注入的表名映射共用一份实现(``rls.physical_table``)——
+        "哪个物理表属于哪个数据集"必须只有一种答案。
+        """
+        return rls.physical_table(d)
 
     def _compute_drift(self, model: SemanticModel | None) -> dict[str, Any]:
         """零 LLM 漂移比对:声明的表/字段/键/关系端点 vs catalog 快照。

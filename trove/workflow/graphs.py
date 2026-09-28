@@ -1764,6 +1764,7 @@ def _build_reflection(
     g.add_node("fast_match", make_fast_match(
         kb=services.kb, connectors=services.connectors,
         config=services.config or AgentConfig(),
+        semantic=services.semantic_layer,
     ))
     if clarify:
         g.add_node("clarify", make_clarify())

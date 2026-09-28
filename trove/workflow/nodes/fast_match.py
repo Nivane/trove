@@ -16,6 +16,10 @@
      (防 "maximum amount" 模板命中 "maximum duration" 问题)。
 
 miss 静默降级到正常链路——miss 成本(多一轮 LLM)远低于误命中成本(错 SQL)。
+
+**RLS**:快径不过编译器,故命中后由本节点自行按语义模型的 ``row_filter``
+注入行级谓词(``semantic_layer/rls.py``,与编译路径共用一份实现)。注入失败
+一律当作 miss 交回编译路径——快径是优化,授权不是。
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from trove.core.logging import get_logger
 from trove.llm.observability import record_span
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import ExampleHit, KbService
+from trove.services.semantic_layer import rls
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -363,12 +368,18 @@ def make_fast_match(
     kb: KbService | None = None,
     connectors: ConnectorRegistry | None = None,
     config: AgentConfig | None = None,
+    semantic: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the fast-match node: hit → inject template SQL, skip the LLM path.
 
     Miss (or any gate) → empty update: the pipeline continues to the query_sketch
     unchanged. Correction rounds never fast-path (KB standard SQL already
     failed; templates are the same deterministic family).
+
+    ``semantic``: ``SemanticLayerProvider``(取 ``.model()``)。命中后按其声明的
+    ``row_filter`` 注入 RLS —— 快径**不过编译器**,不在此补注入则声明层授权
+    在快径上失效(统计全表)。注入失败 → 当作 miss 交回编译路径,那里会正常
+    注入;绝不带着未确认 RLS 的 SQL 继续执行。
     """
 
     async def fast_match(state: WorkflowState) -> dict[str, Any]:
@@ -406,22 +417,37 @@ def make_fast_match(
         m = match_fast_template(state.question, hits, list(state.matched_tables or []))
         if m is None:
             return {}
+        sql = m["sql"]
+        rls_applied = False
+        try:
+            model = semantic.model() if semantic is not None else None
+            if model is not None and rls.declared_rls(model):
+                sql = rls.inject_row_filters(sql, model, dialect)
+                rls_applied = True
+        except rls.RLSInjectionError as exc:
+            # 无法确认 RLS 生效 → 放弃快径,回落编译路径(那里正常注入)。
+            # 快径是优化,授权不是;宁慢不错。
+            logger.warning("fast_match RLS 注入失败,放弃快径: %s", exc)
+            return {}
+        except Exception as exc:  # noqa: BLE001 — 提供方异常同样不得静默放行
+            logger.warning("fast_match 语义模型不可用,放弃快径: %s", exc)
+            return {}
         # 模板快径命中进 langfuse(无 Langfuse 时 no-op)
         with record_span(
             "kb.template_hit",
             input={"question": state.question, "template": m["question"], "tags": m["tags"]},
         ) as span:
             if span is not None:
-                span.update(output={"sql": m["sql"]})
+                span.update(output={"sql": sql, "rls_applied": rls_applied})
         return {
-            "sql": m["sql"],
+            "sql": sql,
             "dialect": dialect,
             "fast_path": True,
             "complexity": "simple",
             "kb_hits": [{
                 "kind": "template",
                 "question": m["question"],
-                "sql": m["sql"],
+                "sql": sql,
                 "tags": m["tags"],
                 "source": "fast_path",
             }],
