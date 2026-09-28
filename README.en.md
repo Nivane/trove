@@ -423,11 +423,17 @@ uv run python scripts/offline_eval.py record --questions qs.txt --output .trove/
 uv run python scripts/offline_eval.py replay --input .trove/eval/replay.jsonl
 ```
 
-### Regression gate (zero LLM, opt-in)
+### Regression gate (zero LLM, on by default)
 
 `scripts/eval_gate.py` compares a baseline result file with the current one and **exits 1 on a regression**: EX, compile-hit rate, completion, recovery, gold exact match and token cost — each with its own direction and tolerance (`--tol ex=0.02`, or relative `--tol ex=0.10-r`), plus `--min-n` against under-sized samples and `--json` for CI. It consumes three artifact kinds: `results.jsonl` (eval_bird), `replay.jsonl` (offline replay), and the `--scorecard` JSON the retrieval / RRF evals emit.
 
-A reproducible baseline ships in `eval/baseline/` — a fixed question set plus results, reconciled by stable `qid` — with `scripts/build_eval_baseline.py` to (re)build it and `scripts/eval_baseline.py check` to verify it is intact and fully covered. The gate is **off by default** (`eval.gate_enabled: false`), and so is its CI workflow: `.github/workflows/eval-gate.yml` runs only on `workflow_dispatch` or when `TROVE_RUN_EVAL_GATE=1`, and skips itself unless the config switch is on.
+A reproducible baseline ships in `eval/baseline/` — a fixed question set (32 questions), its results (32/32) and a **pinned metric snapshot (`scorecard.json`)** — reconciled by stable `qid`, produced or migrated by `scripts/build_eval_baseline.py` and checked by `scripts/eval_baseline.py check --require-full`.
+
+The gate is **on by default** (`eval.gate_enabled: true`). `.github/workflows/eval-gate.yml` runs on every push/PR in three layers, each catching a different class of breakage: baseline integrity (`--require-full`) → zero-LLM replay → gate verdict. Zero LLM, zero network, zero database.
+
+The verdict compares **two moments**: the `scorecard.json` pinned in the repo, and one computed now in CI. It never compares the baseline against itself — `--baseline X --current X` is identically Δ=0 and can never go red, which is a gate in name only.
+
+⚠️ **What it catches is a broken anchor** (missing baseline entries, a drifted scoring definition, a tampered frozen artifact) — **not a worse model**. Accuracy regressions need the real database plus an LLM, so they stay on manual `workflow_dispatch`; a full 32-question run costs roughly 1.7M tokens.
 
 ### Retrieval evals
 

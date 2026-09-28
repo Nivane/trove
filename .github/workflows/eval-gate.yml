@@ -1,15 +1,31 @@
 name: eval-gate
 
-# 离线评测回归门 — 默认不进 CI,opt-in:
-#   1) 仓库 → Settings → Environments/Secrets 置 env TROVE_RUN_EVAL_GATE=1,
-#      随后每次 push/PR 自动跑本工作流;或
-#   2) 手动触发: Actions → eval-gate → Run workflow(workflow_dispatch)。
-# 额外要求:conf/agent.yml 里 eval.gate_enabled 必须为 true(配置即开关),
-# 否则 job 整体跳过——防止未开启门禁时白跑。
+# 离线评测回归门 — PR 常态跑,零 LLM / 零网络 / 零数据库。
 #
-# 零 LLM/零网络:只做可复现基线产物的完整性检查(解析/字段/覆盖/指标
-# 可计算)与基线的自比对(Δ=0)。真库 A/B(eval_bird)与 LLM 录制属于
-# 成本敏感操作,留在本地/手动 workflow_dispatch,不进自动路径。
+# 开关只有一个:conf/agent.yml 的 eval.gate_enabled(配置即开关)。
+# 这里**不再**要求仓库级 TROVE_RUN_EVAL_GATE=1。那个开关的本意是「防止
+# 未开启门禁时白跑」,但本工作流每一步都是零成本,没有成本需要防;而它的
+# 实际后果是门默认不跑 —— 一个建好了却没开的门,正是 G1。
+#
+# 三步各挡一类问题:
+#   1. 基线完整性(--require-full) → 产物可对账、32 题全覆盖
+#   2. 零 LLM 回放                → 用当前评分代码重算冻结产物的指标
+#   3. 门判定(钉住 vs 现在)      → 评分口径漂了、或基线被误改了,就红
+#
+# ⚠️ **这三步挡的不是「模型变差了」。** 准确率回归要真库 + LLM,那部分留
+# 手动 workflow_dispatch(这点原设计是对的,保留)。本门挡的是「锚点坏了」:
+# 基线缺题、评分口径漂移、冻结产物被改。把这里的绿读成「准确率没问题」
+# 是误读 —— 所以写在这里,而不是留在读代码的人脑子里。
+#
+# 为什么第 3 步不是「基线自己跟自己比」:`--baseline X --current X` 恒等
+# Δ=0,永远不会红,那是冒充回归门(设计 I7)。要能红,两边必须来自不同
+# 时刻 —— 一边是仓库里钉住的 scorecard,一边是现在算出来的。
+#
+# 改了基线(补题 / 重录)就要重新钉 scorecard,否则本门会红:
+#   uv run python scripts/offline_eval.py replay \
+#     --input eval/baseline/results.jsonl \
+#     --scorecard eval/baseline/scorecard.json
+# 这个红是**对的** —— 锚点换了,门当然要重新表态,而不是继承旧表态。
 on:
   workflow_dispatch:
   push:
@@ -19,7 +35,6 @@ on:
 jobs:
   baseline:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || env.TROVE_RUN_EVAL_GATE == '1' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,17 +57,29 @@ jobs:
               f.write(f"gate_enabled={str(enabled).lower()}\n")
           PY
 
-      - name: Baseline integrity (zero LLM)
+      # 1. 基线完整性:32 题全覆盖、qid 可对账、指标可计算。缺题是硬问题。
+      - name: 基线完整性(零 LLM)
         if: steps.gate.outputs.gate_enabled == 'true'
-        run: uv run python scripts/eval_baseline.py check --json
+        run: uv run python scripts/eval_baseline.py check --require-full
 
-      - name: Baseline self-compare gate
+      # 2. 零 LLM 回放:把**冻结的** 32 题结果过一遍当前评分代码。
+      #    不重跑 agent(要 LLM),只重算指标 —— 所以它测的是评分口径,
+      #    不是模型水平。产物落到 runner 临时目录,不污染工作区。
+      - name: 零 LLM 回放(冻结题集 × 当前评分代码)
+        if: steps.gate.outputs.gate_enabled == 'true'
+        run: |
+          uv run python scripts/offline_eval.py replay \
+            --input eval/baseline/results.jsonl \
+            --scorecard "$RUNNER_TEMP/current-scorecard.json"
+
+      # 3. 门判定:钉住的 scorecard vs 现算的。容差用默认值(不改判据)。
+      - name: 门判定(钉住 vs 现在)
         if: steps.gate.outputs.gate_enabled == 'true'
         run: |
           uv run python scripts/eval_gate.py --ci --json \
-            --baseline eval/baseline/results.jsonl \
-            --current eval/baseline/results.jsonl
+            --baseline eval/baseline/scorecard.json \
+            --current "$RUNNER_TEMP/current-scorecard.json"
 
       - name: Skip notice (gate disabled)
         if: steps.gate.outputs.gate_enabled != 'true'
-        run: echo "eval.gate_enabled=false — regression gate 未开启,跳过(设置后自动生效)"
+        run: echo "eval.gate_enabled=false — 回归门未开启,跳过(置 true 后自动生效)"

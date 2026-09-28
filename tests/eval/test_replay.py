@@ -94,6 +94,42 @@ class TestScoreReplay:
         assert s["gold_match"] == pytest.approx(0.5, abs=1e-3)
         assert s["gold_n"] == 2
 
+    def test_ex_counts_only_match_over_judged(self):
+        """EX 的分母是**可判题**(含各类错误),不是全部条目。"""
+        rows = [
+            _entry(verdict="MATCH"),
+            _entry(verdict="MISMATCH"),
+            _entry(verdict="EXECUTION_ERROR"),   # 报错即算错,进分母
+            _entry(verdict="GENERATION_ERROR"),  # 同上
+            _entry(verdict="EMPTY_SQL"),         # 同上
+            _entry(verdict="OK"),                # replay 档判定,**不进**分母
+        ]
+        s = score_replay(rows)
+        assert (s["ex_hit"], s["ex_judged"]) == (1, 5)
+        assert s["ex"] == pytest.approx(0.2, abs=1e-3)
+
+    def test_ex_moves_when_only_verdicts_change(self):
+        """**反退化性质**:只改 verdict、别的字段一概不动,EX 必须跟着动。
+
+        这是这个指标存在的全部理由。它挡的是一种具体的坏门:记分卡里
+        每一项量的都是"过程"(跑完没有 / 候选一致没有 / 花了多少 token),
+        于是把一条 MATCH 改成 MISMATCH,所有指标纹丝不动 —— 门对"答案对错"
+        是瞎的,而它看起来是在跑。
+        """
+        before = [_entry(verdict="MATCH")] * 4
+        after = [_entry(verdict="MATCH")] * 2 + [_entry(verdict="MISMATCH")] * 2
+        a, b = score_replay(before), score_replay(after)
+
+        assert a["ex"] == 1.0 and b["ex"] == pytest.approx(0.5, abs=1e-3)
+        # 过程类指标**不该**动 —— 它们量的本来就不是对错
+        assert a["completion_rate"] == b["completion_rate"]
+        assert a["consensus_rate"] == b["consensus_rate"]
+        assert a["total_tokens"] == b["total_tokens"]
+
+    def test_ex_is_zero_on_empty(self):
+        s = score_replay([])
+        assert s["ex"] == 0.0 and s["ex_judged"] == 0
+
     def test_recovery_rate(self):
         rows = [
             _entry(retry_count=2, verdict="OK"),        # 尝试且成功

@@ -81,17 +81,25 @@ class RetentionConfig:
 
 @dataclass
 class EvalConfig:
-    """离线评测回归门(opt-in,默认不进 CI)。
+    """离线评测回归门(**默认开**,与其余能力的默认关相反)。
 
-    ``gate_enabled``: 置 true 才允许自动化(CI)跑回归门;本地手动跑
-    scripts/eval_gate.py 不受此开关约束(除非显式 --ci)。
+    ``gate_enabled``: 唯一的开关。置 false 才跳过;本地手动跑
+    scripts/eval_gate.py 不受它约束(除非显式 --ci)。
+
+    **为什么默认值是 True**:本门跑在 CI/离线,零 LLM 零网络零数据库,
+    误判的代价只是 CI 变红重跑一次。零成本的门没有理由默认关 —— 默认关
+    的门等于没有门。留 False 的话,任何一处配置缺失(整段 ``eval:`` 被删、
+    换机器、嵌进别的项目)都会让门**静默退回关闭**而没有任何信号;要关它
+    就该是一次显式动作。
+
     ``questions_path`` / ``baseline_path``: 可复现基线产物(固定问题集 +
-    基线结果),由 scripts/build_eval_baseline.py 从 dev.json 确定性重建。
+    基线结果)。由 scripts/build_eval_baseline.py 从 BIRD dev.json 重建,
+    或(没有数据集时)复用已有问题集、只迁移结果。
     ``min_n``: 当前结果样本量下限(低于则数据不足,不判回归)。
     ``tolerances``: 单指标容差覆盖(同 eval_gate --tol)。
     """
 
-    gate_enabled: bool = False
+    gate_enabled: bool = True
     questions_path: str = "eval/baseline/questions.jsonl"
     baseline_path: str = "eval/baseline/results.jsonl"
     min_n: int = 0
@@ -414,7 +422,9 @@ class ConfigLoader:
         # Parse eval gate (top-level section, not under agent:)
         eval_raw = resolved.get("eval", {}) or {}
         eval_conf = EvalConfig(
-            gate_enabled=bool(eval_raw.get("gate_enabled", False)),
+            # 缺省 True —— 与 EvalConfig 的默认值同口径。整段 eval: 缺失时
+            # 门仍开着:关它必须是显式写 false,不能靠"配置不在"顺手关掉。
+            gate_enabled=bool(eval_raw.get("gate_enabled", True)),
             questions_path=str(eval_raw.get("questions_path", "eval/baseline/questions.jsonl")),
             baseline_path=str(eval_raw.get("baseline_path", "eval/baseline/results.jsonl")),
             min_n=max(0, int(eval_raw.get("min_n", 0))),

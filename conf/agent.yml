@@ -136,16 +136,22 @@ agent:
     #   facts: 180
     #   retrieval_log: 90
 
-# ── 离线评测回归门(默认不进 CI,opt-in 可配)──
-# eval_bird 是成本敏感的真库评测;回归门默认只在本地手动跑
-# (scripts/eval_gate.py,不受 gate_enabled 约束)。要把门接进 CI:先把
-# gate_enabled 置 true 提交,再用 .github/workflows/eval-gate.yml
-# (workflow_dispatch 手动触发,或仓库 env 置 TROVE_RUN_EVAL_GATE=1 后
-# 随 push/PR 自动跑)——该工作流零 LLM,只做基线完整性与自比对。
-# 可复现基线产物见 eval/baseline/(固定问题集 + 基线结果),由
-# scripts/build_eval_baseline.py 从 dev.json 确定性重建,保证可比。
+# ── 离线评测回归门(**默认开**)──
+# 与其余能力的「默认关」相反,理由是成本与阻断性不同:本门跑在 CI/离线,
+# 零 LLM 零网络零数据库,误判的代价只是 CI 变红重跑一次。**零成本的门
+# 没有理由默认关** —— 默认关的门等于没有门,那正是 G1 的现状。
+#
+# 本开关是唯一的开关:.github/workflows/eval-gate.yml 每次 push/PR 都触发,
+# 读到这里为 false 就整体跳过。不再需要仓库级 TROVE_RUN_EVAL_GATE=1。
+#
+# 真库 A/B(eval_bird,要 LLM)仍留手动 workflow_dispatch,不进自动路径。
+#
+# 基线产物见 eval/baseline/:questions.jsonl(固定问题集,32 题)+
+# results.jsonl(基线判定,32/32)+ scorecard.json(**钉住的指标快照**,
+# 门判定的一侧)。三者要一起动:改了基线就要重钉 scorecard,否则门会红
+# —— 这个红是对的,锚点换了门就该重新表态。
 eval:
-  gate_enabled: false
+  gate_enabled: true
   questions_path: eval/baseline/questions.jsonl
   baseline_path: eval/baseline/results.jsonl
   min_n: 10

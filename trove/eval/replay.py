@@ -45,6 +45,37 @@ def sql_exact_match(pred: str, gold: str) -> bool:
 
 # ── 评分(纯函数,确定性,零 LLM/网络/DB)──────────────────────
 
+#: 判定字段的可聚合取值。**这一份是唯一定义**:``gate.metrics_from_entries``
+#: 与 ``score_replay`` 都要按同一套口径判 EX,各写一遍必然漂移 —— 而漂移的
+#: 后果是 "门算出来的 ex" 与 "基线钉住的 ex" 对不上,红得莫名其妙。
+#: 定义放在 replay(被 gate 依赖)而非 gate:gate 已经 import replay。
+JUDGED_VERDICTS = {
+    "MATCH", "MISMATCH", "GENERATION_ERROR", "EXECUTION_ERROR", "EMPTY_SQL",
+}
+#: replay.jsonl 的"跑通"判定(无 DB 执行档,靠自洽)
+OK_VERDICTS = {"OK", "MATCH", "EMPTY"}
+
+
+def ex_rate(entries: Iterable[dict[str, Any]]) -> tuple[float, int, int]:
+    """(命中率, 命中数, 可判题数) —— **执行准确率**,零 DB 聚合。
+
+    ``verdict`` 是**录制当时**执行比对定下的结论,所以它虽然是"结果"字段,
+    聚合它却不需要任何数据库或 LLM —— 这正是它该进 CI 门的原因。
+
+    为什么必须有这个指标:``score_replay`` 原有的 completion / correctness
+    量的是**过程**(跑完没有、候选一致没有),没有任何一项读 ``verdict``。
+    结果是:把 8 条 MATCH 改成 MISMATCH,记分卡**一条指标都不动**,门照样
+    绿。一个对"对错"瞎的门,不是回归门。
+
+    分母含 GENERATION_ERROR / EXECUTION_ERROR / EMPTY_SQL —— 报错即算错,
+    与 ``gate.metrics_from_entries`` 同口径。
+    """
+    rows = [e for e in entries if e.get("verdict") in JUDGED_VERDICTS]
+    hit = sum(1 for e in rows if e.get("verdict") == "MATCH")
+    if not rows:
+        return 0.0, 0, 0
+    return round(hit / len(rows), 4), hit, len(rows)
+
 
 def _completed(e: dict[str, Any]) -> bool:
     """任务完成:有 SQL 且最终判定非硬失败。"""
@@ -74,15 +105,21 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """对录制条目集合做离线打分(空集返回全零 + n=0)。
 
     Returns:
-        dict: n / completion_rate / correctness(自洽) / gold_match(若有
-        gold_sql) / avg_tokens / total_tokens / recovery_rate /
-        avg_confidence / consensus_rate / avg_candidates。
+        dict: n / ex(执行准确率) / completion_rate / correctness(自洽) /
+        gold_match(若有 gold_sql) / avg_tokens / total_tokens /
+        recovery_rate / avg_confidence / consensus_rate / avg_candidates。
+
+    ``ex`` 与 ``correctness`` 是**两件事**,别混:``correctness`` 量的是
+    「生成过程自洽吗」(共识达成、候选池非空),``ex`` 量的是「答案对吗」
+    (执行结果与 gold 一致)。过程自洽不等于答案正确 —— 一个高 consensus
+    的错答案会让 correctness 很好看而 ex 持平。
     """
     rows = list(entries)
     n = len(rows)
     if n == 0:
         return {
-            "n": 0, "completion_rate": 0.0, "correctness": 0.0,
+            "n": 0, "ex": 0.0, "ex_hit": 0, "ex_judged": 0,
+            "completion_rate": 0.0, "correctness": 0.0,
             "gold_match": None, "avg_tokens": 0, "total_tokens": 0,
             "recovery_rate": 0.0, "avg_confidence": 0.0,
             "consensus_rate": 0.0, "avg_candidates": 0.0,
@@ -111,8 +148,11 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
     cons = [e for e in completed if e.get("consensus") is True]
     cands = [int(e.get("n_candidates") or 0) for e in rows]
 
+    ex, ex_hit, ex_judged = ex_rate(rows)
+
     return {
         "n": n,
+        "ex": ex, "ex_hit": ex_hit, "ex_judged": ex_judged,
         "completion_rate": round(len(completed) / n, 4),
         "correctness": round(len(self_consistent) / n, 4),
         "gold_match": gold_match,
@@ -185,6 +225,8 @@ def render_scorecard(score: dict[str, Any]) -> str:
     gold_line = f"{gm:.1%}" if gm is not None else "n/a(未提供 gold)"
     return (
         f"离线回放记分卡(n={score['n']})\n"
+        f"  执行准确率(EX)          {score['ex']:.1%}"
+        f"({score.get('ex_hit', 0)}/{score.get('ex_judged', 0)} 可判题)\n"
         f"  完成率(completion)     {score['completion_rate']:.1%}\n"
         f"  自洽正确率(correctness) {score['correctness']:.1%}\n"
         f"  gold 精确匹配           {gold_line}\n"

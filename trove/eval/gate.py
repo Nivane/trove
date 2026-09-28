@@ -25,12 +25,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-#: 可判定题 verdict 集合(与 eval_bird 归因切片一致;gold 失败/崩溃题不计)
-_VERDICTS_JUDGED = {
-    "MATCH", "MISMATCH", "GENERATION_ERROR", "EXECUTION_ERROR", "EMPTY_SQL",
-}
-#: replay.jsonl 的完成判定(离线档无 DB 执行,靠自洽)
-_VERDICTS_OK = {"OK", "MATCH", "EMPTY"}
+# 判定集合**不在这里定义** —— 从 replay 取,与 score_replay 的 ex 共用一份。
+# 两处各写一遍的后果不是"重复",是**漂移**:门算出的 ex 与基线钉住的 ex
+# 用了不同的分母,红得没有原因,而排查方向会被引到完全错误的地方。
+# (无循环依赖:replay 不 import 任何 trove 模块。)
+from trove.eval.replay import JUDGED_VERDICTS as _VERDICTS_JUDGED
+from trove.eval.replay import OK_VERDICTS as _VERDICTS_OK
 
 #: 更高更好的指标(准确率/覆盖率类)
 HIGHER_BETTER = {

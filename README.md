@@ -423,11 +423,17 @@ uv run python scripts/offline_eval.py record --questions qs.txt --output .trove/
 uv run python scripts/offline_eval.py replay --input .trove/eval/replay.jsonl
 ```
 
-### 回归门(零 LLM,opt-in)
+### 回归门(零 LLM,默认开)
 
 `scripts/eval_gate.py` 把基线结果文件与本次结果文件对比,**变差即退出码 1**:EX、编译命中率、完成率、恢复率、gold 精确匹配与 token 成本——每项各有方向和容差(`--tol ex=0.02`,或相对量 `--tol ex=0.10-r`),`--min-n` 拒绝样本不足,`--json` 供 CI 解析。它吃三类产物:`results.jsonl`(eval_bird)、`replay.jsonl`(离线回放)、以及检索/RRF 脚本 `--scorecard` 输出的 JSON。
 
-可复现基线落在 `eval/baseline/`——固定问题集 + 结果,按稳定 `qid` 对账——用 `scripts/build_eval_baseline.py`(重)建、`scripts/eval_baseline.py check` 校验完整性与覆盖。回归门**默认关**(`eval.gate_enabled: false`),它的 CI workflow 同样默认不跑:`.github/workflows/eval-gate.yml` 仅在 `workflow_dispatch` 或置 `TROVE_RUN_EVAL_GATE=1` 时触发,且配置开关未开时整体跳过。
+可复现基线落在 `eval/baseline/`——固定问题集(32 题)+ 结果(32/32)+ **钉住的指标快照 `scorecard.json`**——按稳定 `qid` 对账,用 `scripts/build_eval_baseline.py` 生成或迁移、`scripts/eval_baseline.py check --require-full` 校验完整性与覆盖。
+
+回归门**默认开**(`eval.gate_enabled: true`),`.github/workflows/eval-gate.yml` 每次 push/PR 触发,三层各挡一类问题:基线完整性(`--require-full`)→ 零 LLM 回放 → 门判定。零 LLM、零网络、零数据库。
+
+门判定比较的是**两个时刻**:一边是仓库里钉住的 `scorecard.json`,一边是 CI 现算的。不拿基线跟自己比——`--baseline X --current X` 恒等 Δ=0,永远不会红,那是冒充回归门。
+
+⚠️ **它挡的是「锚点坏了」(基线缺题、评分口径漂移、冻结产物被改),不是「模型变差了」**——后者要真库 + LLM,留在手动 `workflow_dispatch`,跑一轮 32 题约 170 万 token,请自行确认成本。
 
 ### 检索评测
 

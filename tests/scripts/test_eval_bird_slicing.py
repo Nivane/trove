@@ -214,3 +214,87 @@ class _DummyState:
     rollback_target = "gen_sql"
     validation_hits = [{"rule": "answer-columns"}]
     candidates = ["SELECT 1", "SELECT 2"]
+
+
+class TestLoadQuestions:
+    """问题来源选择:基线问题集(带 qid/gold_sql)vs BIRD dev.json(带 SQL)。
+
+    这层存在的理由是「跑分与回归门读同一份文件」。弄错来源不会报错,只会
+    安静地评另一批题 —— 所以来源判定要单独测。
+    """
+
+    @staticmethod
+    def _args(**kw):
+        import argparse
+
+        base = dict(questions=None, dev_json=None, db_id="financial", qids=None)
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    def test_questions_jsonl_is_used_verbatim(self, tmp_path):
+        from scripts.eval_bird import load_questions
+
+        p = tmp_path / "q.jsonl"
+        p.write_text(
+            json.dumps({"qid": "financial-0001", "db_id": "financial",
+                        "question": "q1", "gold_sql": "SELECT 1"}) + "\n",
+            encoding="utf-8",
+        )
+        rows = load_questions(self._args(questions=str(p)))
+        assert [r["qid"] for r in rows] == ["financial-0001"]
+        assert rows[0]["gold_sql"] == "SELECT 1"
+
+    def test_dev_json_sql_key_is_normalized_to_gold_sql(self, tmp_path):
+        """dev.json 的字段叫 SQL,基线叫 gold_sql —— 在这里抹平。"""
+        from scripts.eval_bird import load_questions
+
+        p = tmp_path / "dev.json"
+        p.write_text(json.dumps([{"db_id": "financial", "question": "q1",
+                                  "SQL": "SELECT 42"}]), encoding="utf-8")
+        rows = load_questions(self._args(dev_json=str(p)))
+        assert rows[0]["gold_sql"] == "SELECT 42"
+
+    def test_db_id_filters_both_sources(self, tmp_path):
+        from scripts.eval_bird import load_questions
+
+        p = tmp_path / "dev.json"
+        p.write_text(json.dumps([
+            {"db_id": "financial", "question": "a", "SQL": "SELECT 1"},
+            {"db_id": "other", "question": "b", "SQL": "SELECT 2"},
+        ]), encoding="utf-8")
+        assert len(load_questions(self._args(dev_json=str(p)))) == 1
+
+    def test_qids_selects_exact_questions(self, tmp_path):
+        """点名比位置切片稳:问题集重排不会静默换题。"""
+        from scripts.eval_bird import load_questions
+
+        p = tmp_path / "q.jsonl"
+        p.write_text("\n".join(
+            json.dumps({"qid": f"financial-{i:04d}", "db_id": "financial",
+                        "question": f"q{i}", "gold_sql": "SELECT 1"})
+            for i in (10, 11, 12)
+        ), encoding="utf-8")
+        rows = load_questions(self._args(questions=str(p),
+                                         qids="financial-0012,financial-0010"))
+        assert [r["qid"] for r in rows] == ["financial-0012", "financial-0010"]
+
+    def test_unknown_qid_is_an_error_not_a_silent_skip(self, tmp_path):
+        """点名了却不跑 → 一轮"成功"的评测 + 一份没补上的基线,退出码 0。"""
+        from scripts.eval_bird import load_questions
+
+        p = tmp_path / "q.jsonl"
+        p.write_text(json.dumps({"qid": "financial-0001", "db_id": "financial",
+                                 "question": "q", "gold_sql": "SELECT 1"}) + "\n",
+                     encoding="utf-8")
+        with pytest.raises(SystemExit) as e:
+            load_questions(self._args(questions=str(p), qids="financial-9999"))
+        assert e.value.code == 2
+
+    def test_missing_dev_json_points_at_questions_flag(self, tmp_path):
+        """BIRD 数据集不在仓库,默认路径在裸机上必然不存在 —— 裸
+        FileNotFoundError 会让人以为是自己路径写错。"""
+        from scripts.eval_bird import load_questions
+
+        with pytest.raises(SystemExit) as e:
+            load_questions(self._args(dev_json=str(tmp_path / "nope.json")))
+        assert e.value.code == 2

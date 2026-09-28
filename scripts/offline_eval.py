@@ -214,6 +214,10 @@ def cmd_replay(args) -> int:
         from pathlib import Path as _Path
 
         metrics = {
+            # ex 必须在:它是**唯一**对"答案对错"敏感的指标(其余量的是
+            # 过程)。不加它,门对 verdict 字段是瞎的 —— 把 8 条 MATCH 改成
+            # MISMATCH,记分卡一条都不动。
+            "ex": score["ex"],
             "completion": score["completion_rate"],
             "correctness": score["correctness"],
             "recovery": score["recovery_rate"],

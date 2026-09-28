@@ -1,0 +1,15 @@
+{
+  "source": "offline_eval_replay",
+  "metrics": {
+    "ex": 0.5,
+    "completion": 0.9375,
+    "correctness": 0.1875,
+    "recovery": 1.0,
+    "consensus_rate": 0.6667,
+    "avg_confidence": 0.0,
+    "avg_tokens": 90555.5,
+    "total_tokens": 1720554.0,
+    "n": 32.0,
+    "gold_match": 0.0
+  }
+}

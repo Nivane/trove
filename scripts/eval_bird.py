@@ -9,6 +9,11 @@ Usage:
     uv run python scripts/eval_bird.py --db-id financial \
         --dev-json /path/to/MINIDEV/dev.json \
         --datasource mysql://root:root@127.0.0.1:3306/financial
+
+    # 补基线:直接读固定问题集,与回归门同源(不需要 dev.json)
+    uv run python scripts/eval_bird.py --db-id financial \
+        --questions eval/baseline/questions.jsonl \
+        --qids financial-0482,financial-0483,...
 """
 
 import argparse
@@ -42,6 +47,10 @@ from trove.workflow.state import WorkflowState
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dev-json", default="/Users/zhaolipan/Downloads/minidev/MINIDEV/mini_dev_mysql.json")
+    parser.add_argument("--questions", default=None,
+                        help="问题集 JSONL(如 eval/baseline/questions.jsonl)。"
+                             "给了就用它,**不再读 dev.json** —— 跑分与回归门"
+                             "因此读同一份文件,dev.json 不再是第二个事实源")
     parser.add_argument("--db-id", default="financial")
     parser.add_argument("--datasource", default="mysql://root:root@127.0.0.1:3306/financial")
     parser.add_argument("--kb-dir", default=None,
@@ -54,6 +63,10 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=0, help="Only evaluate N questions (0 = all)")
     parser.add_argument("--start", type=int, default=0,
                         help="Skip the first N questions (applied before --limit)")
+    parser.add_argument("--qids", default=None,
+                        help="只跑这些 qid(逗号分隔,如补基线时点名缺的题)。"
+                             "按位置切片(--start/--limit)在问题集重排后会**静默"
+                             "跑错题**,点名不会。给定的 qid 有任何一个不存在即报错")
     parser.add_argument("--no-evidence", action="store_true",
                         help="Don't append the official evidence hint to the question")
     parser.add_argument("--oracle", action="store_true",
@@ -310,14 +323,63 @@ async def _run_with_steps(graph, state: WorkflowState, tracer=None) -> WorkflowS
     return final
 
 
+def load_questions(args) -> list[dict[str, Any]]:
+    """问题来源:``--questions`` 的 JSONL(基线问题集)或 BIRD dev.json。
+
+    **基线问题集优先是故意的**:它每行自带 ``gold_sql`` 与 ``qid``,于是
+    「跑一轮打分」与「回归门对账」读的是同一份文件。dev.json 只是它的
+    上游,不该同时充当第二个事实源 —— 两份文件一旦分叉,基线对的是哪批
+    题就说不清了。
+
+    差异只有 gold 字段名(dev.json 叫 ``SQL``,基线叫 ``gold_sql``),在
+    这里抹平,调用方不必知道来源。
+    """
+    if args.questions:
+        src = Path(args.questions)
+        rows = [
+            json.loads(line)
+            for line in src.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    else:
+        src = Path(args.dev_json)
+        if not src.exists():
+            # 仓库不带 BIRD 数据集(体积 + 许可),默认路径在裸机上必然不存在。
+            # 裸 FileNotFoundError 会让人以为是自己路径写错;指向 --questions
+            # 才是这个仓库里的正常走法。
+            print(
+                f"error: 找不到 {src}\n"
+                f"  BIRD dev.json 不在仓库里。跑固定问题集请改用:\n"
+                f"    --questions eval/baseline/questions.jsonl",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        rows = json.loads(src.read_text(encoding="utf-8"))
+
+    rows = [q for q in rows if q.get("db_id") == args.db_id]
+    if not rows:
+        print(f"{src.name} 中没有 db_id={args.db_id} 的问题")
+        sys.exit(1)
+    for q in rows:
+        q["gold_sql"] = q.get("gold_sql") or q.get("SQL") or ""
+
+    wanted = [s.strip() for s in (args.qids or "").split(",") if s.strip()]
+    if wanted:
+        by_qid = {q.get("qid"): q for q in rows}
+        unknown = [qid for qid in wanted if qid not in by_qid]
+        if unknown:
+            # 报错而非静默跳过:点名了却不跑,结果是一轮"成功"的评测 +
+            # 一份没被补上的基线,而退出码是 0。
+            print(f"问题集中不存在这些 qid: {unknown}", file=sys.stderr)
+            sys.exit(2)
+        rows = [by_qid[qid] for qid in wanted]
+    return rows
+
+
 async def main() -> None:
     args = parse_args()
 
-    dev = json.loads(Path(args.dev_json).read_text(encoding="utf-8"))
-    questions = [q for q in dev if q.get("db_id") == args.db_id]
-    if not questions:
-        print(f"dev.json 中没有 db_id={args.db_id} 的问题")
-        sys.exit(1)
+    questions = load_questions(args)
     questions = slice_questions(questions, limit=args.limit, start=args.start)
     print(f"评估 {args.db_id}: {len(questions)} 题", flush=True)
 
@@ -331,12 +393,17 @@ async def main() -> None:
     except Exception:  # noqa: BLE001 — 无基线问题集只是少 qid 字段
         baseline_qids = []
 
-    def _qid_of(question: str) -> str:
+    def _qid_of(row: dict[str, Any]) -> str:
+        # 行自带 qid(基线问题集来源)时直接用:文本匹配是 dev.json 来源的
+        # 补丁,有稳定 id 就不该再走模糊匹配 —— 匹配不上等于静默丢一题的
+        # 对账关系,而覆盖检查只会看到"少一条"。
+        if row.get("qid"):
+            return str(row["qid"])
         if not baseline_qids:
             return ""
         from trove.eval.baseline import match_qid
 
-        return match_qid(question, baseline_qids) or ""
+        return match_qid(row.get("question", ""), baseline_qids) or ""
 
     config = ConfigLoader.load_agent_config("conf/agent.yml")
     try:
@@ -426,7 +493,7 @@ async def main() -> None:
     for i, q in enumerate(questions, 1):
         question = q["question"]
         evidence = q.get("evidence", "") if not args.no_evidence else ""
-        gold_sql = q["SQL"]
+        gold_sql = q["gold_sql"]
         # run_id 唯一(含时间戳):traces.jsonl 与 /trace 回放按 run 隔离,
         # 同一题反复评估不会把多轮执行的事件混进一个 run
         run_id = f"eval-{i}-{int(time.time())}"
@@ -461,7 +528,7 @@ async def main() -> None:
             })
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "CRASH",
-                qid=_qid_of(question),
+                qid=_qid_of(q),
             ) | {"error": f"crash: {str(e)[:200]}"})
             log(f"[{i}/{len(questions)}] ✗ 崩溃: {str(e)[:70]}")
             continue
@@ -473,7 +540,7 @@ async def main() -> None:
             failures["gold_error"] += 1
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "GOLD_ERROR", final,
-                qid=_qid_of(question),
+                qid=_qid_of(q),
             ) | {"error": str(e)[:200]})
             log(f"[{i}/{len(questions)}] ✗ gold 执行失败: {question[:40]}... ({e})")
             continue
@@ -487,7 +554,7 @@ async def main() -> None:
             })
             done(_result_entry(
                 run_id, question, evidence, gold_sql,
-                classify_pred_error(final.error), final, qid=_qid_of(question),
+                classify_pred_error(final.error), final, qid=_qid_of(q),
             ) | {"error": final.error[:200]})
             log(f"[{i}/{len(questions)}] ✗ {final.error[:70]}")
             continue
@@ -496,7 +563,7 @@ async def main() -> None:
             failures["execution"] += 1
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "EMPTY_SQL", final,
-                qid=_qid_of(question),
+                qid=_qid_of(q),
             ) | {"error": "空 SQL（意图可能误路由）"})
             log(f"[{i}/{len(questions)}] ✗ 空 SQL（意图可能误路由）")
             continue
@@ -506,7 +573,7 @@ async def main() -> None:
             matched += 1
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "MATCH", final,
-                qid=_qid_of(question),
+                qid=_qid_of(q),
             ))
             log(f"[{i}/{len(questions)}] ✓ {question[:50]}... (retry {final.retry_count})")
         else:
@@ -518,7 +585,7 @@ async def main() -> None:
             })
             done(_result_entry(
                 run_id, question, evidence, gold_sql, "MISMATCH", final,
-                qid=_qid_of(question),
+                qid=_qid_of(q),
             ) | {"error": f"mismatch (pred {len(pred_rows)} rows, gold {len(gold_rows)} rows)"})
             log(f"[{i}/{len(questions)}] ✗ 结果不一致: {question[:50]}... "
                 f"(pred {len(pred_rows)} rows, gold {len(gold_rows)} rows, retry {final.retry_count})")
