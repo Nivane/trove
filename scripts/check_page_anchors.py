@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
-"""校验 docs/index.html 里的 file:line 锚点是否仍指向同一处代码。
+"""校验文档站（docs/**/*.html）里的 file:line 锚点是否仍指向同一处代码。
 
 能力站点把每条能力锚到 Trove 源码的具体行（`compiler.py:634` → GitHub blob#L634）。
 源码一改行号就漂，而漂掉的链接比没有链接更糟——读者点过去看到的是别的代码。
 这个脚本按「基准提交里那一行的原文」去目标版本里找同一行：找得到就报（或改写）
 新行号，找不到就报 UNRESOLVED 交给人处理。
 
-    python3 scripts/check_page_anchors.py                  # 只检查；有漂移/失效则退出码 1
-    python3 scripts/check_page_anchors.py --write          # 就地改写行号与两个结构性计数
-    python3 scripts/check_page_anchors.py --at origin/main # 指定比对版本（默认 origin/main）
+四类问题，各自的抓法不同：
+  漂移   基准里有、目标里换了位置 —— 按行文比对，可 --write 自动改写
+  失效   基准里那一行的原文在目标里已找不到（代码被删改）—— 只能人工处理
+  存疑   锚点里的符号名没出现在所引的那一行 —— 专抓「出生即写错」
+  死链   站内 href/src 指向的文件不存在 —— 页面改名/搬家后的典型腐坏
 
-基准提交记在 HTML 里：`anchor-base: <sha>`。--write 会连同行号一起把它更新到目标
-版本 —— 这两件事必须同步：只改行号不改基准，下次再跑就会拿已经改好的行号去旧基准
-里取原文，把锚点改到完全错误的位置。
+「存疑」这一类是因为前两类**抓不到它**：新写的锚点若基准与当前相同，比对恒等、
+永远报告干净——错的行号会一直错下去。所以另做一次内容核对，见 check_file。
+
+    python3 scripts/check_page_anchors.py             # 只检查；有问题则退出码 1
+    python3 scripts/check_page_anchors.py --write     # 就地改写行号与两个结构性计数
+    python3 scripts/check_page_anchors.py --at HEAD   # 指定比对版本（默认 main）
+
+默认比对 main 而不是 origin/main：页面链接写的是 blob/main/...，也就是**会被发布的
+那条分支**。本地 main 领先 origin 时（提交后未推送），拿 origin/main 比对会把按新
+代码写的行号误报成漂移。
+
+基准提交逐页记在 HTML 里：`anchor-base: <sha>`。--write 会连同行号一起把它更新到
+目标版本 —— 这两件事必须同步：只改行号不改基准，下次再跑就会拿已经改好的行号去旧
+基准里取原文，把锚点改到完全错误的位置。
 
 想让它在提交前提醒一句（**不阻断**提交——这是个多人共用的仓库，别因为页面漂移
 挡住别人的正常提交）：
@@ -50,10 +63,20 @@ def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+_BLOB_CACHE: dict[tuple[str, str, str], list[str] | None] = {}
+
+
 def blob(repo: Path, rev: str, path: str) -> list[str] | None:
-    """某个版本下某个文件的全部行；文件不存在返回 None。"""
-    r = git(repo, "show", f"{rev}:{path}")
-    return r.stdout.splitlines() if r.returncode == 0 else None
+    """某个版本下某个文件的全部行；文件不存在返回 None。
+
+    带缓存：全站 20+ 页会反复引用同一批文件（graphs.py、main.py…），
+    每次都 fork 一个 git 进程纯属浪费。
+    """
+    key = (str(repo), rev, path)
+    if key not in _BLOB_CACHE:
+        r = git(repo, "show", f"{rev}:{path}")
+        _BLOB_CACHE[key] = r.stdout.splitlines() if r.returncode == 0 else None
+    return _BLOB_CACHE[key]
 
 
 def _false_flags(lines: list[str], def_idx: int) -> set[str]:
@@ -153,44 +176,71 @@ def structural_counts(repo: Path, rev: str) -> dict[str, int | None]:
     return counts
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--html", default=str(ROOT / "docs" / "index.html"))
-    ap.add_argument("--repo", default=str(ROOT))
-    ap.add_argument("--at", default="origin/main", help="比对的目标版本")
-    ap.add_argument("--baseline", default="", help="基准提交（默认从 HTML 读）")
-    ap.add_argument("--write", action="store_true", help="就地改写漂移的行号")
-    args = ap.parse_args()
+LINK_RE = re.compile(r'(?:href|src)="(?!#|https?:|mailto:|//)([^"#?]+)(?:[#?][^"]*)?"')
 
-    repo = Path(args.repo).expanduser()
-    if not (repo / ".git").exists():
-        print(f"× 不是 git 仓库: {repo}", file=sys.stderr)
-        return 2
 
-    html_path = Path(args.html)
-    html = html_path.read_text(encoding="utf-8")
+def check_links(doc: Path, html: str) -> list[tuple[str, str]]:
+    """站内链接与静态资源是否都存在。
 
-    base = args.baseline
-    if not base:
-        m = BASE_RE.search(html)
-        if not m:
-            print("× HTML 里没有 anchor-base，且未传 --baseline", file=sys.stderr)
-            return 2
+    文档站最典型的腐坏方式不是锚点漂移，是**死链**——页面改名、搬家、删页之后，
+    指向它的链接还留在别处，而且没人会发现。所以和锚点一样纳入校验。
+
+    只查相对路径；外链（http/https/mailto）与纯锚点（#）跳过，它们不由本仓库保证。
+    """
+    bad: list[tuple[str, str]] = []
+    for m in LINK_RE.finditer(html):
+        target = m.group(1).strip()
+        if not target:
+            continue
+        dest = (doc.parent / target).resolve()
+        if not dest.exists():
+            bad.append((target, "目标不存在"))
+    return bad
+
+
+def check_file(
+    doc: Path, repo: Path, at: str, write: bool, counts: dict[str, int | None]
+) -> tuple[list, list, list, list, list, str | None]:
+    """校验单个页面。
+
+    返回 (漂移, 失效, 计数漂移, 死链, 存疑, 改写后的 HTML 或 None)。
+    """
+    html = doc.read_text(encoding="utf-8")
+
+    base = ""
+    m = BASE_RE.search(html)
+    if m:
         base = m.group(1)
-
-    if git(repo, "rev-parse", "--verify", args.at).returncode != 0:
-        print(f"× 版本不存在: {args.at}", file=sys.stderr)
-        return 2
-
-    anchors = list(ANCHOR_RE.finditer(html))
-    if not anchors:
-        print("× 没找到任何锚点，检查 HTML 结构是否变了", file=sys.stderr)
-        return 2
 
     drifted: list[tuple[str, int, int]] = []
     unresolved: list[tuple[str, int, str]] = []
+    suspect: list[tuple[str, int, str]] = []
     resolved: dict[tuple[str, int], int | None] = {}
     reported: set[tuple[str, int]] = set()
+    anchors = list(ANCHOR_RE.finditer(html))
+
+    # 有锚点但没写 anchor-base：无从比对，报出来而不是猜一个基准。
+    if anchors and not base:
+        unresolved.append(("(整页)", 0, "有锚点但缺 anchor-base，无法比对"))
+        return drifted, unresolved, [], [], suspect, None
+
+    # 锚点「出生即写错」是上面那套基准比对抓不到的：新写的锚点若基准与当前一致，
+    # 比对恒等、永远报告干净。所以另做一次**内容核对**——ref-line 里是纯标识符
+    # （ASCII 名字）时，要求它确实出现在所引用的那一行里。中文描述无法自动判断，
+    # 跳过而非猜测。
+    for m in anchors:
+        sym_m = re.search(r'<span class="ref-line">([^<]*)</span>', m.group("body"))
+        if not sym_m:
+            continue
+        sym = sym_m.group(1).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", sym):
+            continue
+        path, line = m.group("path"), int(m.group("line"))
+        dst = blob(repo, at, path)
+        if dst is None or not (0 < line <= len(dst)):
+            continue  # 交给上面的基准比对去报
+        if sym not in dst[line - 1]:
+            suspect.append((path, line, sym))
 
     for m in anchors:
         path, old = m.group("path"), int(m.group("line"))
@@ -201,7 +251,7 @@ def main() -> int:
         else:
             new = None
             src = blob(repo, base, path)
-            dst = blob(repo, args.at, path)
+            dst = blob(repo, at, path)
             if src is not None and dst is not None and 0 < old <= len(src):
                 needle = src[old - 1].strip()
                 if needle:
@@ -217,7 +267,7 @@ def main() -> int:
             resolved[key] = new
 
         # 同一 (path, old) 可能被页面引用多次（如 compiler.py:634 出现两处），
-        # 报告去重，只报一次。
+        # 报告去重，只报一次。注意：**只在报告处去重**，改写必须逐处做。
         if new is None or new == old or key in reported:
             continue
         reported.add(key)
@@ -228,8 +278,8 @@ def main() -> int:
     # （一处写 compiler.py:634、另一处写别的），第二处就被漏掉、留下陈旧锚点 ——
     # 恰恰是这个脚本要防的东西。改成对每个锚点独立改写。
     out = html
-    base_used = base  # 报告里要显示**实际比对用的**基准，不是改写后的新基准
-    if args.write and drifted:
+    base_used = base
+    if write and drifted:
         fix = {k: v for k, v in resolved.items() if v is not None and v != k[1]}
 
         def _rewrite(m: re.Match[str]) -> str:
@@ -244,49 +294,102 @@ def main() -> int:
 
         # anchor-base 必须与改写**同一步**更新。否则下次再跑，会拿已经改好的
         # 行号去旧基准里取原文，二次改写成完全错误的位置 —— 这个坑我踩过。
-        new_base = git(repo, "rev-parse", "--short", args.at).stdout.strip()
+        new_base = git(repo, "rev-parse", "--short", at).stdout.strip()
         if new_base and new_base != base:
             out = out.replace(base, new_base)
             base = new_base
 
-    # ── 结构性计数 ──
-    counts = structural_counts(repo, args.at)
+    # ── 结构性计数（只有首页有；其余页面没有即跳过）──
     count_drift: list[tuple[str, int, int]] = []
     for m in COUNT_RE.finditer(html):
         kind, num = m.group("kind"), int(m.group("num"))
         actual = counts.get(kind)
         if actual is not None and actual != num:
             count_drift.append((kind, num, actual))
-            if args.write:
+            if write:
                 out = out.replace(m.group(0), m.group(0).replace(f">{num}<", f">{actual}<"))
 
-    # ── 报告 ──
+    dead = check_links(doc, html)
+
+    changed = out if (write and (drifted or count_drift)) else None
+    return drifted, unresolved, count_drift, dead, suspect, changed
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--docs-dir", default=str(ROOT / "docs"), help="文档站根目录")
+    ap.add_argument("--repo", default=str(ROOT))
+    # 默认比对 main 而不是 origin/main：页面里的链接写的是 blob/main/...
+    # 也就是**会被发布的那条分支**。本地 main 领先 origin 时（提交后未推送），
+    # 拿 origin/main 比对会把「按新代码写的行号」误报成漂移。
+    ap.add_argument("--at", default="main", help="比对的目标版本")
+    ap.add_argument("--write", action="store_true", help="就地改写漂移的行号")
+    args = ap.parse_args()
+
+    repo = Path(args.repo).expanduser()
+    if not (repo / ".git").exists():
+        print(f"× 不是 git 仓库: {repo}", file=sys.stderr)
+        return 2
+    if git(repo, "rev-parse", "--verify", args.at).returncode != 0:
+        print(f"× 版本不存在: {args.at}", file=sys.stderr)
+        return 2
+
+    docs_dir = Path(args.docs_dir)
+    pages = sorted(p for p in docs_dir.rglob("*.html") if "_probe" not in p.name)
+    if not pages:
+        print(f"× {docs_dir} 下没有 HTML", file=sys.stderr)
+        return 2
+
+    counts = structural_counts(repo, args.at)
     label = {"nodes": "主图节点", "adapters": "方言适配器"}
-    print(f"锚点 {len(anchors)} 处  ·  基准 {base_used}  →  {args.at}")
 
-    for path, old, new in drifted:
-        print(f"  漂移  {path}:{old} → :{new}")
-    for path, old, why in unresolved:
-        print(f"  失效  {path}:{old}  {why}")
-    for kind, old, new in count_drift:
-        print(f"  计数  {label.get(kind, kind)}: {old} → {new}")
+    total_anchors = total_bad = 0
+    dirty: list[tuple[Path, str]] = []
 
-    bad = len(drifted) + len(unresolved) + len(count_drift)
-    if not bad:
-        print("  ✓ 全部锚点仍然指向原处")
+    for doc in pages:
+        rel = doc.relative_to(docs_dir)
+        drifted, unresolved, count_drift, dead, suspect, changed = check_file(
+            doc, repo, args.at, args.write, counts
+        )
+        total_anchors += len(ANCHOR_RE.findall(doc.read_text(encoding="utf-8")))
+        bad = (
+            len(drifted)
+            + len(unresolved)
+            + len(count_drift)
+            + len(dead)
+            + len(suspect)
+        )
+        total_bad += bad
+        if not bad:
+            continue
+
+        print(f"\n{rel}")
+        for path, old, new in drifted:
+            print(f"  漂移  {path}:{old} → :{new}")
+        for path, old, why in unresolved:
+            print(f"  失效  {path}:{old}  {why}")
+        for kind, old, new in count_drift:
+            print(f"  计数  {label.get(kind, kind)}: {old} → {new}")
+        for path, line, sym in suspect:
+            print(f"  存疑  {path}:{line}  该行未见 `{sym}`（锚点可能出生即写错）")
+        for target, why in dead:
+            print(f"  死链  {target}  {why}")
+
+        if changed is not None:
+            doc.write_text(changed, encoding="utf-8")
+            dirty.append((rel, f"{len(drifted)} 处行号、{len(count_drift)} 处计数"))
+
+    print(f"\n{len(pages)} 个页面  ·  {total_anchors} 处锚点  ·  比对 {args.at}")
+    if not total_bad:
+        print("  ✓ 锚点与站内链接全部有效")
         return 0
 
-    if args.write:
-        html_path.write_text(out, encoding="utf-8")
-        print(f"\n已改写 {html_path}（{len(drifted)} 处行号，{len(count_drift)} 处计数）")
-        if unresolved:
-            print("注意：失效锚点无法自动修复，需要人工改指或删除：")
-            for path, old, why in unresolved:
-                print(f"  - {path}:{old}  {why}")
-        if base != base_used:
-            print(f"anchor-base 已同步更新：{base_used} → {base}")
-    else:
-        print("\n加 --write 就地改写（失效锚点仍需人工处理）")
+    if dirty:
+        print(f"\n已改写 {len(dirty)} 个文件：")
+        for rel, what in dirty:
+            print(f"  {rel}（{what}）")
+    if not args.write:
+        print("\n加 --write 就地改写行号与计数（失效锚点、死链仍需人工处理）")
     return 1
 
 

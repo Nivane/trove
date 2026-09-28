@@ -1,0 +1,869 @@
+/* Trove 文档站共享样式 —— 单一真源。
+   原为 docs/index.html 的内联 <style>，抽出以便多页共用；首页也外链这一份。
+   Token 继承 frontend/src/assets/styles/tokens.css 的 zinc + indigo。 */
+
+/* ── Tokens: 继承 trove/frontend/src/assets/styles/tokens.css 的 zinc + indigo，
+      深色档由同一组 primitives 推出（产品本身是 light-only）。
+      语义色编码语义层的编译分级：ok=命中 / warn=软 MISS / danger=硬 MISS。 ── */
+:root {
+  --canvas: #fafafa;
+  --raised: #ffffff;
+  --muted: #f4f4f5;
+  --hover: #ececef;
+  --border-subtle: #e4e4e7;
+  --border-default: #d4d4d8;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary: #8b8b94;
+  --accent: #4f46e5;
+  --accent-bright: #6366f1;
+  --accent-soft: #eef2ff;
+  --accent-line: rgba(99, 102, 241, 0.35);
+  --ok: #15803d;      --ok-bg: #dcfce7;
+  --warn: #b45309;    --warn-bg: #fef3c7;
+  --danger: #dc2626;  --danger-bg: #fee2e2;
+  --code-bg: #f4f4f5;
+  --shadow-sm: 0 1px 3px rgba(24,24,27,.06), 0 1px 2px rgba(24,24,27,.04);
+  --shadow-md: 0 4px 6px -1px rgba(24,24,27,.06), 0 2px 4px -2px rgba(24,24,27,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #09090b;
+    --raised: #131316;
+    --muted: #1c1c21;
+    --hover: #27272a;
+    --border-subtle: #27272a;
+    --border-default: #3f3f46;
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --accent: #818cf8;
+    --accent-bright: #a5b4fc;
+    --accent-soft: #1e1b4b;
+    --accent-line: rgba(129, 140, 248, 0.4);
+    --ok: #4ade80;      --ok-bg: #052e16;
+    --warn: #fbbf24;    --warn-bg: #3b2408;
+    --danger: #f87171;  --danger-bg: #3f1212;
+    --code-bg: #1c1c21;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
+    --shadow-md: 0 4px 8px -2px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"] {
+  --canvas: #09090b;
+  --raised: #131316;
+  --muted: #1c1c21;
+  --hover: #27272a;
+  --border-subtle: #27272a;
+  --border-default: #3f3f46;
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --accent: #818cf8;
+  --accent-bright: #a5b4fc;
+  --accent-soft: #1e1b4b;
+  --accent-line: rgba(129, 140, 248, 0.4);
+  --ok: #4ade80;      --ok-bg: #052e16;
+  --warn: #fbbf24;    --warn-bg: #3b2408;
+  --danger: #f87171;  --danger-bg: #3f1212;
+  --code-bg: #1c1c21;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
+  --shadow-md: 0 4px 8px -2px rgba(0,0,0,.5);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: "IBM Plex Sans", ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono, code, kbd {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── Shell ─────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-block: 0 96px;
+  padding-inline: 24px;
+}
+@media (min-width: 1100px) {
+  .shell { grid-template-columns: 176px minmax(0, 1fr); gap: 0 56px; }
+}
+.col { min-width: 0; max-width: 760px; }
+
+/* ── Rail ──────────────────────────────────────────────── */
+.rail { display: none; }
+@media (min-width: 1100px) {
+  .rail {
+    display: block;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding-block: 96px 32px;
+    border-right: 1px solid var(--border-subtle);
+  }
+}
+.rail nav { display: flex; flex-direction: column; gap: 2px; padding-right: 20px; }
+.rail a {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border-left: 2px solid transparent;
+}
+.rail a:hover { background: var(--muted); color: var(--text-primary); text-decoration: none; }
+.rail .rail-group {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 16px 10px 4px;
+  font-weight: 600;
+}
+.rail .rail-group:first-child { padding-top: 6px; }
+
+/* ── Hero ──────────────────────────────────────────────── */
+.hero { padding-block: 88px 0; }
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: .06em;
+  color: var(--text-tertiary);
+  margin-bottom: 22px;
+}
+.eyebrow .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok);
+  flex: none;
+}
+h1 {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", ui-sans-serif, sans-serif;
+  font-size: clamp(40px, 7vw, 62px);
+  line-height: 1.02;
+  letter-spacing: -0.022em;
+  font-weight: 600;
+  margin: 0 0 22px;
+  text-wrap: balance;
+}
+.lede {
+  font-size: 19px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-width: 40em;
+  margin: 0 0 30px;
+}
+.lede strong { color: var(--text-primary); font-weight: 600; }
+
+.en {
+  max-width: 44em;
+  padding: 20px 22px;
+  border-left: 2px solid var(--accent-line);
+  background: var(--raised);
+  border-radius: 0 6px 6px 0;
+  font-size: 14.5px;
+  line-height: 1.68;
+  color: var(--text-secondary);
+}
+.en .en-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  display: block;
+  margin-bottom: 7px;
+}
+
+/* ── 首屏文档入口 ──────────────────────────────────────── */
+/* 侧栏 rail 在 1100px 以下整个隐藏，所以文档入口不能只放在 rail 里：
+   窄屏读者会完全没有去文档的路。 */
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 26px;
+}
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 17px;
+  border-radius: 6px;
+  font-size: 14.5px;
+  font-weight: 500;
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--accent);
+}
+.cta:hover, .cta:focus-visible {
+  background: var(--accent-bright);
+  border-color: var(--accent-bright);
+  color: #fff;
+  text-decoration: none;
+}
+.cta.ghost {
+  background: var(--raised);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+.cta.ghost:hover, .cta.ghost:focus-visible {
+  background: var(--muted);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+/* ── 可复现数字条 ──────────────────────────────────────── */
+.repro {
+  margin-top: 40px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+}
+.repro-item {
+  padding: 18px 20px 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.repro-n {
+  font-family: "Familjen Grotesk", sans-serif;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+}
+.repro-k { font-size: 13px; color: var(--text-secondary); }
+.repro-cmd {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  background: var(--code-bg);
+  padding: 2px 7px;
+  border-radius: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* ── Sections ──────────────────────────────────────────── */
+section { padding-top: 84px; scroll-margin-top: 24px; }
+.sec-head { margin-bottom: 34px; }
+.sec-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 500;
+  display: block;
+  margin-bottom: 10px;
+}
+h2 {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: clamp(27px, 4vw, 34px);
+  line-height: 1.14;
+  letter-spacing: -0.018em;
+  font-weight: 600;
+  margin: 0 0 14px;
+  text-wrap: balance;
+}
+h3 {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: 20px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  font-weight: 600;
+  margin: 0;
+  text-wrap: balance;
+}
+h4 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  letter-spacing: -0.005em;
+}
+.sec-intro { color: var(--text-secondary); margin: 0; max-width: 42em; }
+p { margin: 0 0 14px; }
+p:last-child { margin-bottom: 0; }
+
+/* ── 主图管线 ──────────────────────────────────────────── */
+.pipeline {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--raised);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.pipe-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-subtle);
+  align-items: baseline;
+}
+.pipe-row:first-child { border-top: 0; }
+@media (max-width: 620px) {
+  .pipe-row { grid-template-columns: 1fr; gap: 7px; }
+}
+.pipe-phase {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pipe-nodes { display: flex; flex-wrap: wrap; gap: 6px; }
+.node {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--muted);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.node.is-gate { background: var(--warn-bg); border-color: transparent; color: var(--warn); }
+.node.is-out  { background: var(--ok-bg);   border-color: transparent; color: var(--ok); }
+.node.is-loop { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+/* 默认关闭的可选分支：不画进主图计数，但真实存在于代码里 */
+.node.is-opt  { background: transparent; border-style: dashed; border-color: var(--border-default); color: var(--text-tertiary); }
+.pipe-note {
+  padding: 13px 18px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--muted);
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.legend { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+
+/* ── 分级逃生梯 ────────────────────────────────────────── */
+.tiers { display: flex; flex-direction: column; gap: 10px; }
+.tier {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 18px;
+  padding: 16px 18px;
+  border-radius: 8px;
+  background: var(--raised);
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  align-items: start;
+}
+@media (max-width: 620px) { .tier { grid-template-columns: 1fr; gap: 8px; } }
+.tier.hit  { border-left-color: var(--ok); }
+.tier.soft { border-left-color: var(--warn); }
+.tier.hard { border-left-color: var(--danger); }
+.tier-tag {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  padding-top: 2px;
+}
+.tier.hit  .tier-tag { color: var(--ok); }
+.tier.soft .tier-tag { color: var(--warn); }
+.tier.hard .tier-tag { color: var(--danger); }
+.tier-body { font-size: 14.5px; color: var(--text-secondary); }
+.tier-body b { color: var(--text-primary); font-weight: 600; }
+
+/* ── 能力行 ────────────────────────────────────────────── */
+.group { margin-bottom: 46px; }
+.group:last-child { margin-bottom: 0; }
+.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--border-default);
+  margin-bottom: 4px;
+}
+.group-idx {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.cap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  padding: 17px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.cap-name {
+  font-weight: 600;
+  font-size: 15.5px;
+  letter-spacing: -0.005em;
+}
+.cap-mech { font-size: 14.5px; color: var(--text-secondary); }
+.cap-mech code {
+  font-size: 13px;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text-primary);
+}
+.cap-where { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.ref {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--muted);
+  border: 1px solid var(--border-subtle);
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+a.ref:hover { border-color: var(--accent-line); color: var(--accent); text-decoration: none; }
+.ref-line { color: var(--accent); }
+
+/* ── 截图 ──────────────────────────────────────────────── */
+.shots { display: flex; flex-direction: column; gap: 26px; }
+figure { margin: 0; }
+figure img {
+  width: 100%;
+  max-width: 100%;
+  display: block;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--raised);
+  box-shadow: var(--shadow-md);
+}
+figcaption {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.55;
+}
+
+/* ── 代码块 ────────────────────────────────────────────── */
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 15px 17px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.72;
+  margin: 0 0 14px;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+.cmt { color: var(--text-tertiary); }
+
+/* ── 定位声明 ──────────────────────────────────────────── */
+.claim {
+  padding: 24px 26px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.claim p {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.claim .en-line {
+  margin-top: 12px;
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ── 路标 ──────────────────────────────────────────────── */
+.road { display: flex; flex-direction: column; gap: 0; }
+.road-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.road-item:first-child { border-top: 1px solid var(--border-subtle); }
+.road-n {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  padding-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.road-body p { font-size: 14.5px; color: var(--text-secondary); margin: 7px 0 0; }
+.road-crit {
+  font-size: 13px !important;
+  color: var(--text-tertiary) !important;
+  margin-top: 9px !important;
+}
+.road-crit span {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-right: 7px;
+}
+
+/* ── 表格 ──────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border-subtle); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 460px; }
+th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--border-subtle); }
+th {
+  font-size: 11.5px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  background: var(--muted);
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.mono, th.mono { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
+
+/* ── Footer ────────────────────────────────────────────── */
+footer {
+  margin-top: 92px;
+  padding-top: 30px;
+  border-top: 1px solid var(--border-default);
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+footer .foot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 26px 40px;
+  margin-bottom: 26px;
+}
+footer h4 { font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-tertiary); }
+footer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+footer .attribution {
+  padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  line-height: 1.7;
+}
+footer .attribution p { margin: 0 0 8px; }
+footer .attribution p:last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+/* ══════════════════════════════════════════════════════════
+   文档站（多页）
+   首页用 .shell + .rail（页内锚点目录）；文档页用 .doc-shell +
+   .doc-nav（跨页站点导航，由 assets/nav.js 注入）。两者共用上面的
+   token 与排版，不另起一套视觉。
+   ══════════════════════════════════════════════════════════ */
+
+.doc-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-inline: 24px;
+  padding-block: 0 96px;
+}
+@media (min-width: 1000px) {
+  .doc-shell { grid-template-columns: 218px minmax(0, 1fr); gap: 0 56px; }
+}
+
+/* ── 站点导航 ──────────────────────────────────────────── */
+.doc-nav {
+  padding-block: 22px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 6px;
+}
+@media (min-width: 1000px) {
+  .doc-nav {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding-block: 46px 36px;
+    margin-bottom: 0;
+    border-bottom: 0;
+    border-right: 1px solid var(--border-subtle);
+  }
+}
+.doc-brand {
+  display: block;
+  padding: 0 10px 16px;
+  font-family: "Familjen Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--text-primary);
+}
+.doc-brand:hover { text-decoration: none; }
+.doc-brand small {
+  display: block;
+  margin-top: 3px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.doc-nav nav { display: flex; flex-direction: column; gap: 1px; padding-right: 16px; }
+
+/* 窄屏折叠：23 条链接全铺开会把正文推到屏幕外 */
+.nav-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.nav-fold > summary::-webkit-details-marker { display: none; }
+.nav-fold > summary::after {
+  content: "";
+  margin-left: auto;
+  width: 6px; height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform .18s ease;
+}
+.nav-fold[open] > summary::after { transform: rotate(-135deg); }
+.nav-fold > summary:hover { background: var(--muted); color: var(--text-primary); }
+@media (min-width: 1000px) {
+  .nav-fold > summary { display: none; }
+}
+.doc-nav .nav-group {
+  padding: 17px 10px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.doc-nav .nav-group:first-child { padding-top: 4px; }
+.doc-nav a {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 5px;
+  border-left: 2px solid transparent;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+.doc-nav a:hover {
+  background: var(--muted);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.doc-nav a.is-current {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ── 正文栏 ────────────────────────────────────────────── */
+.doc-col { min-width: 0; max-width: 812px; }
+.doc-head { padding-block: 46px 0; }
+.doc-head h1 {
+  font-size: clamp(30px, 4.6vw, 40px);
+  margin-bottom: 15px;
+}
+.doc-head .lede { font-size: 17px; margin-bottom: 0; }
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 15px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+.crumbs a { color: var(--text-secondary); }
+.crumbs .sep { color: var(--border-default); }
+
+/* 文档页的标题间距比首页紧：阅读是纵向连续的，不需要每节都留 84px */
+.doc-col :is(h2, h3, h4) { scroll-margin-top: 20px; }
+.doc-col h2 {
+  margin: 58px 0 16px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+.doc-col > .doc-head + h2,
+.doc-col > h2:first-child { margin-top: 40px; }
+.doc-col h3 { margin: 34px 0 12px; }
+.doc-col h4 { margin: 26px 0 10px; }
+.doc-col h2 + h3, .doc-col h2 + p, .doc-col h2 + .table-wrap { margin-top: 0; }
+
+.doc-col ul, .doc-col ol { margin: 0 0 16px; padding-left: 22px; }
+.doc-col li { margin-bottom: 7px; }
+.doc-col li:last-child { margin-bottom: 0; }
+.doc-col li::marker { color: var(--text-tertiary); }
+.doc-col ul ul, .doc-col ol ol, .doc-col ul ol, .doc-col ol ul { margin: 7px 0 0; }
+
+.doc-col hr {
+  margin: 44px 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 表格在文档里出现得多，给它一点呼吸 */
+.doc-col .table-wrap { margin: 0 0 20px; }
+.doc-col table { font-size: 13.5px; }
+.doc-col th, .doc-col td { padding: 10px 14px; vertical-align: top; }
+
+/* ── 提示块 ────────────────────────────────────────────── */
+.callout {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0 0 20px;
+  padding: 15px 18px;
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--raised);
+  font-size: 14.5px;
+  line-height: 1.66;
+  color: var(--text-secondary);
+}
+.callout .callout-tag {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.callout p { margin: 0 0 8px; }
+.callout p:last-child { margin-bottom: 0; }
+.callout code { background: var(--code-bg); }
+.callout.note { border-left-color: var(--accent); }
+.callout.note .callout-tag { color: var(--accent); }
+/* 带底色的一档去掉其余三边：底色本身就是边界，再加一圈重色反而糊成一团 */
+.callout.warn { border: 0; border-left: 3px solid var(--warn); background: var(--warn-bg); }
+.callout.warn .callout-tag { color: var(--warn); }
+.callout.danger { border: 0; border-left: 3px solid var(--danger); background: var(--danger-bg); }
+.callout.danger .callout-tag { color: var(--danger); }
+.callout.ok { border: 0; border-left: 3px solid var(--ok); background: var(--ok-bg); }
+.callout.ok .callout-tag { color: var(--ok); }
+
+/* ── 上下页 ────────────────────────────────────────────── */
+.doc-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 68px;
+  padding-top: 26px;
+  border-top: 1px solid var(--border-subtle);
+}
+.doc-pager a {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 17px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-primary);
+}
+.doc-pager a:hover {
+  border-color: var(--accent-line);
+  background: var(--muted);
+  text-decoration: none;
+}
+.doc-pager .dir {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.doc-pager .to { font-size: 14.5px; font-weight: 500; }
+.doc-pager .is-next { text-align: right; align-items: flex-end; }
+
+.doc-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin-top: 52px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+
+/* ── 本页目录 ──────────────────────────────────────────── */
+/* 放在正文开头而不是右栏：右栏在 1180px 总宽下放不下（218 导航 + 812 正文已占满），
+   而长页面（工作流 27 个节点、配置全 key）确实需要它。 */
+.doc-toc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 34px 0 0;
+  padding: 15px 19px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--muted);
+}
+.doc-toc .toc-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 7px;
+}
+.doc-toc a {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+.doc-toc a:hover { color: var(--accent); text-decoration: none; }
+.doc-toc a.toc-3 { padding-left: 15px; font-size: 13px; color: var(--text-tertiary); }
+
+/* 目录后面紧跟的 h2 不必再画顶部分隔线 */
+.doc-toc + h2, .doc-toc + .doc-head + h2 { border-top: 0; padding-top: 0; margin-top: 44px; }
+
+/* 文档页里的源码锚点与首页同款，只是不换行时更容易读 */
+.doc-col .ref { white-space: nowrap; }

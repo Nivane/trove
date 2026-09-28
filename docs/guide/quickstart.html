@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 快速上手：零配置跑通内置 demo 数据源，再用 docker compose 起完整平台，最后接入你自己的数据库。">
+<title>快速上手 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>入门<span class="sep">/</span>快速上手
+      </div>
+      <h1>快速上手</h1>
+      <p class="lede">
+        先零配置跑通内置的 demo 数据源，看清它怎么回答一个问题；
+        再用 docker compose 起完整平台，最后接入你自己的库。
+        全程不需要准备任何数据——demo 连数据带知识库都随仓库提供。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="prereq">前置条件</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>项</th><th>要求</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Python</td><td class="mono">≥ 3.12</td><td>用 <a href="https://docs.astral.sh/uv/">uv</a> 管理依赖</td></tr>
+          <tr><td>Node</td><td class="mono">≥ 22</td><td>只有平台方式（前端）需要；纯 REPL / API 不需要</td></tr>
+          <tr><td>LLM 凭证</td><td>一个 API key</td><td>真实问答必需——SQL 生成与反思是模型做的</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么必须有 LLM</span>
+      <div>
+        <p>Trove 把<strong>能确定的都确定下来</strong>——join 路径、枚举值、时间分桶、口径、安全边界都由语义模型和确定性规则算，不花模型一分钱。
+        但问句到查询计划那一步是语言理解，必须有模型。</p>
+        <p>没有凭证时程序仍能启动（<code>/kb init</code> 退化为纯骨架），只是问不出可用的答案。这不是降级运行，是缺了必需件。</p>
+      </div>
+    </div>
+
+    <h2 id="five-min">五分钟：跑通内置 demo</h2>
+
+    <p>
+      仓库自带一个 BIRD 金融数据集（Berka / PKDD'99 捷克银行数据，8 张表）作为 demo 数据源
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/demo.py#L247">demo.py:247 <span class="ref-line">create_demo_database</span></a>。
+      它的知识库也随仓库提供（<code>.trove/kb/demo/</code> 下的几个 YAML），所以这一步<strong>不需要 <code>/kb init</code></strong>。
+    </p>
+
+    <h3>1. 装依赖</h3>
+
+<pre><code>git clone https://github.com/Nivane/trove.git
+cd trove
+uv sync</code></pre>
+
+    <h3>2. 给一个 LLM 凭证</h3>
+
+    <p>在仓库根建一个 <code>.env</code>，或直接导出环境变量。默认目标是 DeepSeek：</p>
+
+<pre><code>echo 'DEEPSEEK_API_KEY=sk-...' &gt;&gt; .env</code></pre>
+
+    <p>
+      换别的厂商不用改代码：模型走 litellm 网关，改 <code>conf/agent.yml</code> 的 <code>agent.target</code> 即可
+      （<code>openai/gpt-4o</code>、<code>anthropic/claude-...</code>，或任何兼容端点）。
+      见 <a href="../reference/config.html">配置参考</a>。
+    </p>
+
+    <h3>3. 提问</h3>
+
+<pre><code>uv run trove --datasource demo</code></pre>
+
+    <p>进 REPL 后直接问：</p>
+
+<pre><code>&gt; Which region has the highest average loan amount?</code></pre>
+
+    <p>想脚本化调用（stdin 进、JSON 出）：</p>
+
+<pre><code>echo "Which region has the highest average loan amount?" \
+  | uv run trove-cli --datasource demo --print</code></pre>
+
+    <p>
+      两个入口共用同一套管线：<code>trove</code> 是交互 REPL
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L788">main.py:788 <span class="ref-line">main_repl</span></a>，
+      <code>trove-cli</code> 是管道模式
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L502">main.py:502 <span class="ref-line">async_main_cli</span></a>。
+    </p>
+
+    <h3>4. 看看它凭什么这么答</h3>
+
+    <p>REPL 里这几条命令值得先跑一遍，它们解释了答案是怎么来的：</p>
+
+<pre><code>/kb list      # 这个数据源的 KB 里有什么
+/trace        # 回放最近一次 run 的完整轨迹
+/help         # 全部斜杠命令</code></pre>
+
+    <h2 id="platform">平台方式：docker compose</h2>
+
+    <p>
+      要多人用、要管理台、要不碰命令行，就用 compose。它起四个容器：PostgreSQL（业务库 + 向量 + 全文检索同实例）、
+      一次性灌数、后端 API、前端 SPA。
+    </p>
+
+<pre><code>docker compose up --build</code></pre>
+
+    <p>
+      然后打开 <code>http://localhost:8080/</code>，用 <code>admin / admin123</code> 登录。
+      compose 栈默认已把 demo 数据灌进 PostgreSQL，可以直接在界面上提问。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">两件事必须改</span>
+      <div>
+        <p><strong>admin 密码</strong>：<code>admin123</code> 只写在 compose 文件里供本地演练，生产用 <code>TROVE_ADMIN_PASSWORD</code> 环境变量覆盖。</p>
+        <p><strong>LLM 凭证</strong>：容器里默认没有。取消 <code>docker-compose.yml</code> 中挂载 <code>~/.trove/conf</code> 那行的注释，或直接给容器注入 API key。</p>
+      </div>
+    </div>
+
+    <p>前后端是两个独立镜像，可以分别重建——前端改动不必等后端：</p>
+
+<pre><code>docker compose build frontend     # 只重建前端
+docker compose restart backend    # 只重启后端，前端容器不受影响
+docker compose down</code></pre>
+
+    <p>完整的部署拓扑、环境变量清单与两种存储后端的差别，见 <a href="deploy.html">安装部署</a>。</p>
+
+    <h2 id="your-data">接入你自己的数据库</h2>
+
+    <p>三步，缺一不可。第二步是这个产品最容易被跳过、也最不能跳过的一步。</p>
+
+    <h3>① 连接</h3>
+
+    <p>给一个数据库 URL 即可（本地方式是 <code>--datasource</code>，平台方式在管理台注册）：</p>
+
+<pre><code>uv run trove --datasource postgres://user:pass@host:5432/mydb</code></pre>
+
+    <p>
+      支持 SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB，驱动按需懒加载，
+      装哪个用哪个（<code>uv sync --extra postgres</code> 等）。注册表见
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">_ADAPTER_REGISTRY</span></a>。
+    </p>
+
+    <h3>② 建模</h3>
+
+<pre><code>/kb init</code></pre>
+
+    <p>
+      它会连上你的实时 schema，起草表/列注释，并<strong>确定性地</strong>生成语义模型骨架、术语与示例模板：
+      能算出来的部分不交给模型，模型只负责措辞。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L311">init_pipeline.py:311 <span class="ref-line">init_kb</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">没有模型就没有答案</span>
+      <div>
+        <p>这一步做完之前，Trove 会<strong>拒绝</strong>回答——不是报错，是明确告诉你缺什么。</p>
+        <p>这是设计而非缺陷：语义模型就是「可答边界」。一个不声明口径就敢算数的问数工具，你敢信它的数字吗？
+        被拒时它会顺手起草一份扩展草稿，你确认一下就能继续问。</p>
+      </div>
+    </div>
+
+    <h3>③ 提问</h3>
+
+    <p>
+      然后正常提问即可。答对的可以沉淀（<code>/kb learn</code> → 管理端确认 → 下次直接命中），
+      答错的会被蒸馏成教训进 Hint Bank。准确率随使用增长，靠的是这个闭环，不是换个更大的模型。
+    </p>
+
+    <p>原理见 <a href="../capabilities/kb.html">知识库</a> 与 <a href="../capabilities/semantic.html">语义层</a>。</p>
+
+    <h2 id="next">接下来</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>这套东西的核心概念（语义模型、可答边界、快径、逃生梯）</td><td><a href="concepts.html">产品概念</a></td></tr>
+          <tr><td>各数据源的具体接法、只读账号怎么配</td><td><a href="datasource.html">接入数据源</a></td></tr>
+          <tr><td>一次提问在系统里到底走了哪些步骤</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>出问题看哪里</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>
