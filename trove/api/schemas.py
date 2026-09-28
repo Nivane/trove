@@ -104,6 +104,36 @@ class LessonConfirmResponse(BaseModel):
     confirmed: int
 
 
+class SkillCreate(BaseModel):
+    """POST /v1/admin/skills/draft body — admin-authored org skill (pending).
+
+    Mirrors the KB lessons/examples gate: drafts never reach prompts or the
+    load_skill tool until an admin confirms.
+    """
+
+    name: str = Field(min_length=1, description="lowercase-hyphen name (safe file dir)")
+    description: str = Field(min_length=1)
+    triggers: dict[str, Any] = Field(default_factory=dict)
+    tier: Literal["required", "available"] = "available"
+    lang: Literal["en", "zh"] = "en"
+    source: str = "admin"
+    body: str = Field(min_length=1)
+
+
+class SkillLlmDraftRequest(BaseModel):
+    """POST /v1/admin/skills/llm-draft body — LLM drafts the skill body."""
+
+    name: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    node: str = ""  # empty = global (applies to all nodes)
+    purpose: str = Field(min_length=1)
+    lang: Literal["en", "zh"] = "en"
+
+
+class SkillTierUpdate(BaseModel):
+    tier: Literal["required", "available"]
+
+
 class FactCreate(BaseModel):
     """POST /v1/facts body — user-level memory (preference / caliber)."""
 

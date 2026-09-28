@@ -168,6 +168,7 @@ class GraphServices:
     semantic_layer: Any | None = None  # optional live semantic provider (OSSIE)
     lineage: Any | None = None  # optional data lineage service (metadata + execute recording)
     memory: Any | None = None  # optional unified memory facade (episodes/prefs/profile)
+    skills: Any | None = None  # optional org skill assets (methodology, admin-managed)
 
 
 def _rotate_few_shots(sub_state: GenSQLState, offset: int) -> GenSQLState:
@@ -938,6 +939,7 @@ def make_gen_generate(
                 user_id=state.user_id,
                 run_id=state.run_id,
                 probe_cache=probe_cache,
+                skills=services.skills,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
@@ -956,6 +958,16 @@ def make_gen_generate(
                 has_probe=services.connectors is not None,
                 full_rules=complexity != "simple",
             )
+            # 方法论 skill:required 档 org skill 全量注入(org 约定必须遵守),
+            # available 档只广告描述 + load_skill 按需取正文(注册表已挂工具)。
+            skills = services.skills
+            if skills is not None:
+                skill_block = skills.render_skills("gen_sql", lang=sub_state.lang)
+                if skill_block:
+                    system_text = f"{system_text}\n\n{skill_block}"
+                avail = skills.available_skills_block("gen_sql", lang=sub_state.lang)
+                if avail:
+                    system_text = f"{system_text}\n\n{avail}"
             model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
             result = None
             try:
@@ -1767,7 +1779,7 @@ def _build_reflection(
             {"refuse": "refuse", "clarify": "clarify"},
         )
         if query_sketch:
-            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
+            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer, skills=services.skills))
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_query_sketch,
@@ -1796,7 +1808,7 @@ def _build_reflection(
             )
     else:
         if query_sketch:
-            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer))
+            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer, skills=services.skills))
             g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
             g.add_conditional_edges(
                 "refuse",
@@ -1855,6 +1867,7 @@ def _build_reflection(
     )
     g.add_node("analyze_error", make_analyze_error(
         services.llm, services.config or AgentConfig(), rollback_ladder=rollback_ladder,
+        skills=services.skills,
     ))
     analyze_targets = {
         # rollback 语义目标名保持不变("gen_sql"),实际路由到 gen 链入口

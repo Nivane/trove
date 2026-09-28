@@ -181,6 +181,7 @@ import {
   History,
   Clock,
   Gavel,
+  BookOpenCheck,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -206,6 +207,7 @@ const manageItems: {
   { path: '/admin/semantic', label: 'semanticLayer', icon: Layers3 },
   { path: '/admin/jobs', label: 'jobs', icon: Clock },
   { path: '/admin/decisions', label: 'decisions', icon: Gavel },
+  { path: '/admin/skills', label: 'skills', icon: BookOpenCheck },
 ]
 
 const systemItems: {

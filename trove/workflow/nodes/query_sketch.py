@@ -876,8 +876,15 @@ def make_query_sketch(
     agentic: bool = True,
     connectors=None,
     semantic_layer=None,
+    skills=None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
-    """Build the query_sketch node bound to an LLM gateway."""
+    """Build the query_sketch node bound to an LLM gateway.
+
+    Args:
+        skills: Optional SkillService — when present, merges admin-managed
+            org methodology skills (required tier) into the system prompt;
+            absent → only the built-in code skills (backward compatible).
+    """
 
     async def query_sketch(state: WorkflowState) -> dict[str, Any]:
         # Upstream failure — pass through
@@ -917,8 +924,13 @@ def make_query_sketch(
             system_prompt = (
                 f"{system_prompt}\n\n{render('query_sketch/attribution', lang=state.lang)}"
             )
-        # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
-        skill_block = render_skills("query_sketch", lang=state.lang)
+        # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt;
+        # 有 SkillService 时合并 org 技能(required 档全量注入)。
+        skill_block = (
+            skills.render_skills("query_sketch", lang=state.lang)
+            if skills is not None
+            else render_skills("query_sketch", lang=state.lang)
+        )
         if skill_block:
             system_prompt = f"{system_prompt}\n\n{skill_block}"
         llm_detail: dict[str, Any] | None = None

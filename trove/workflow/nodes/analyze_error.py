@@ -306,6 +306,7 @@ def make_analyze_error(
     llm: LLMGateway,
     config: AgentConfig,
     rollback_ladder: tuple[str, ...] = DEFAULT_ROLLBACK_LADDER,
+    skills=None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the diagnose-and-decide node bound to an LLM gateway.
 
@@ -313,6 +314,9 @@ def make_analyze_error(
         rollback_ladder: Ordered rollback targets available in the graph
             (e.g. without the query_sketch node, query_sketch is absent from the
             ladder and can never be picked).
+        skills: Optional SkillService — when present, merges admin-managed
+            org methodology skills (required tier) into the system prompt;
+            absent → only the built-in code skills (backward compatible).
     """
     ladder = list(rollback_ladder)
 
@@ -356,8 +360,13 @@ def make_analyze_error(
             # 失败诊断走 fast 档(未配置 fast → 回退 target)
             model = config.node_models.get("analyze_error") or config.model_fast or config.target or "openai/gpt-4o"
             system_prompt = render("analyze_error/system", lang=state.lang)
-            # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt
-            skill_block = render_skills("analyze_error", lang=state.lang)
+            # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt;
+            # 有 SkillService 时合并 org 技能(required 档全量注入)。
+            skill_block = (
+                skills.render_skills("analyze_error", lang=state.lang)
+                if skills is not None
+                else render_skills("analyze_error", lang=state.lang)
+            )
             if skill_block:
                 system_prompt = f"{system_prompt}\n\n{skill_block}"
             raw_error = state.error_feedback or state.reason

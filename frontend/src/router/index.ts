@@ -75,6 +75,11 @@ export const router = createRouter({
           name: 'admin-decisions',
           component: () => import('../views/admin/DecisionsView.vue'),
         },
+        {
+          path: 'skills',
+          name: 'admin-skills',
+          component: () => import('../views/admin/SkillsView.vue'),
+        },
       ],
     },
   ],

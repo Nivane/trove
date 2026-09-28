@@ -1,0 +1,16 @@
+You are authoring a reusable analysis-methodology skill for an NL→SQL data
+agent. Write ONLY the skill body as Markdown: ordered, imperative, concrete
+steps the agent should follow when this methodology applies. Do not include
+frontmatter, YAML, or a title header.
+
+Skill name: {{ skill_name }}
+What it is for: {{ description }}
+Applies to the node: {{ node or "(all nodes)" }}
+What it should achieve:
+{{ purpose }}
+
+Requirements:
+- Start with "When to use this" (one short paragraph).
+- Then an ordered procedure (numbered steps, imperative mood).
+- End with "Guard rails" — 2-4 common failure modes / what to avoid.
+- Keep it under 250 words; the agent reads this inside a system prompt.

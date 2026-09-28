@@ -1047,6 +1047,7 @@ def build_sql_registry(
     user_id: str = "",
     run_id: str = "",
     probe_cache: dict | None = None,
+    skills: Any = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -1137,6 +1138,37 @@ def build_sql_registry(
             "required": ["sql"],
         },
     )
+
+    # 方法论 skill 按需加载(available 档):已确认的 org skill 只以描述
+    # 广告(<available_skills> 块,graphs 侧拼),正文靠 load_skill 按需取。
+    # 不依赖 connectors——即使降级为纯语法工具集也保留。无可用 skill 时
+    # 不注册——不给模型暴露无意义的工具。
+    if skills is not None and skills.has_available_for("gen_sql"):
+        async def load_skill_tool(arguments: dict) -> str:
+            name = (arguments.get("skill_name") or "").strip()
+            if not name:
+                return "skill_name is required"
+            return skills.load_skill_content(name, lang)
+
+        registry.register(
+            "load_skill", load_skill_tool,
+            description=(
+                "Load a methodology skill's full instructions on demand. Use "
+                "when: a skill advertised in <available_skills> applies to the "
+                "current task — read it before drafting. Do NOT use when: no "
+                "advertised skill is relevant (loading an irrelevant skill "
+                "wastes a round). "
+                "Example: load_skill(skill_name=\"<name>\") -> the skill body."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_name": {"type": "string", "description": "Name of the skill to load"},
+                },
+                "required": ["skill_name"],
+            },
+            level="core",
+        )
 
     if connectors is None:
         return registry

@@ -199,6 +199,13 @@ async def create_app_components(
                    git_kb=config.git_kb)
     bind_kb(kb)
 
+    # ── Org skill assets (methodology, admin-managed) ──────
+    # `.trove/skills/<name>/SKILL.md`:org 级分析方法论资产,LLM 草稿/管理端
+    # 确认后才进入 prompt(required 档注入 / available 档 load_skill 按需)。
+    # 与 KB 同款「草稿 → 确认」门禁,无技能时零开销(空目录即空 render)。
+    from trove.services.skills.service import SkillService
+    skills = SkillService(Path.cwd() / ".trove" / "skills", llm=llm_gateway)
+
     # ── User facts (per-user memory: ~/.trove/user_facts.db) ──
     # 独立于数据源级 KB 的用户级记忆层:偏好/口径事实,按用户+数据源
     # 隔离,注入 gen_sql 个性化上下文(多用户共用时每人有自己的口径)。
@@ -300,6 +307,7 @@ async def create_app_components(
         semantic_layer=semantic_layer,
         lineage=lineage,
         memory=memory,
+        skills=skills,
     )
     graphs = build_graphs(services, checkpointer=checkpointer)
 
@@ -381,6 +389,7 @@ async def create_app_components(
         "indexer": indexer,
         "hybrid_store": hybrid_store,
         "lineage": lineage,
+        "skills": skills,
         "graphs": graphs,
         "session_manager": session_manager,
         "checkpointer": checkpointer,
