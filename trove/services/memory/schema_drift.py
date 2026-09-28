@@ -27,14 +27,31 @@ async def detect_drift(datasource: str, kb: Any, catalog: Any) -> dict[str, Any]
         {
           "datasource", "new_tables": [...], "gone_tables": [...],
           "column_changes": {"<table>": {"added": [...], "removed": [...]}},
+          "status": "ok" | "skipped", "skip_reason": str | None,
         }
+
+    ``status``/``skip_reason`` 是新增字段(2026-09-28)。**在此之前**,catalog
+    不可达与 KB 缺失都走 ``return report`` 返回一份空报告,与「确实无漂移」
+    在返回值上**完全无法区分** —— 下游把「没查成」读成「没问题」,CI 因此
+    在连不上库时报绿。归一化到 :mod:`trove.services.drift` 的前提就是这条
+    信息必须从源头带出来,而不是让适配层去猜本函数的内部路径。
+    读取 ``new_tables`` / ``gone_tables`` / ``column_changes`` 的调用方不受
+    影响(键与类型均未变)。
     """
     report: dict[str, Any] = {
         "datasource": datasource,
         "new_tables": [],
         "gone_tables": [],
         "column_changes": {},
+        "status": "ok",
+        "skip_reason": None,
     }
+
+    def _skip(reason: str) -> dict[str, Any]:
+        report["status"] = "skipped"
+        report["skip_reason"] = reason
+        return report
+
     try:
         await kb.ensure_synced(default_datasource=datasource)
     except Exception:
@@ -43,17 +60,19 @@ async def detect_drift(datasource: str, kb: Any, catalog: Any) -> dict[str, Any]
     try:
         live = await _live_column_sets(catalog, datasource)
     except Exception:
-        return report
+        return _skip("catalog_unreachable")
 
     # KB 列集合直接解析 schema_notes.yml(不经过 table_notes:后者只保留
     # 有描述的列,无描述列会被丢掉 → 产生误报的列漂移)。
-    kb_tables = {}
     try:
         kb_tables = _kb_column_set(kb, datasource)
     except Exception:
-        pass
+        return _skip("kb_unreadable")
     if not kb_tables:
-        return report
+        # 三种成因必须分开:没有 schema_notes.yml(没建过 KB)与文件在但
+        # 表集合为空(声明为空)对运维是两个完全不同的动作。
+        path = kb.kb_dir / datasource / "schema_notes.yml"
+        return _skip("kb_empty" if path.exists() else "kb_missing")
 
     report["new_tables"] = sorted(set(live) - set(kb_tables))
     report["gone_tables"] = sorted(set(kb_tables) - set(live))

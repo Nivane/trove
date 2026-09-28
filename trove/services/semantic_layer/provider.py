@@ -51,6 +51,11 @@ _EMPTY_DRIFT = {
     "missing_fields": {},
     "missing_keys": {},
     "relationship_breaks": [],
+    # status/skip_reason(2026-09-28 新增):空报告此前与「确实无漂移」不可
+    # 区分 —— 语义模型没配、catalog 没给、模型解析失败三条路径都产出同一份
+    # 全空字典。归一化到 trove.services.drift 要求这条信息显式带出。
+    "status": "ok",
+    "skip_reason": None,
 }
 
 
@@ -309,8 +314,13 @@ class SemanticLayerProvider:
             "missing_fields": {},
             "missing_keys": {},
             "relationship_breaks": [],
+            "status": "ok",
+            "skip_reason": None,
         }
         if model is None:
+            # 模型缺失/解析失败 → 无从比对。**不得**冒充「无漂移」。
+            report["status"] = "skipped"
+            report["skip_reason"] = "no_semantic_model"
             return report
         catalog = self._catalog or {}
         table_of: dict[str, str] = {}
@@ -372,8 +382,13 @@ class SemanticLayerProvider:
         catalog 未提供/模型不可用 → 空报告(不 stale)。结果按模型缓存,
         模型文件变化后下次访问重算。
         """
-        if not self.enabled or not self._catalog:
-            return dict(_EMPTY_DRIFT)
+        if not self.enabled:
+            return {**_EMPTY_DRIFT, "status": "skipped",
+                    "skip_reason": "no_semantic_model"}
+        if not self._catalog:
+            # 没有 catalog 快照 = 没拿到活库 schema,比对无法进行。
+            return {**_EMPTY_DRIFT, "status": "skipped",
+                    "skip_reason": "no_catalog"}
         self._reload()
         if self._drift is None:
             self._drift = self._compute_drift(self._parsed)

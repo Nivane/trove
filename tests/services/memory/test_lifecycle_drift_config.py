@@ -72,6 +72,102 @@ async def test_schema_drift_detects_new_table(tmp_path, kb):
     assert report["column_changes"]["loan"]["added"] == ["status"]
 
 
+class TestSchemaDriftStatus:
+    """I3 的源头:`detect_drift` 必须区分「没查成」与「确实无漂移」。
+
+    在此之前这两者返回**逐字节相同**的全空字典,下游(CI、巡检)必然把
+    前者读成后者。这几条测试钉住那条曾经不存在的区分。
+    """
+
+    def _write_notes(self, kb, body: str) -> None:
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "schema_notes.yml").write_text(body, encoding="utf-8")
+
+    async def test_clean_report_is_ok(self, kb):
+        self._write_notes(kb, "tables:\n  - name: loan\n    columns:\n      - name: amount\n")
+
+        class _Catalog:
+            async def list_tables(self, datasource):
+                return [{"name": "loan", "columns": [{"name": "amount"}]}]
+
+        report = await detect_drift("demo", kb, _Catalog())
+        assert report["status"] == "ok"
+        assert report["skip_reason"] is None
+        assert report["new_tables"] == [] and report["gone_tables"] == []
+
+    async def test_catalog_unreachable_is_skipped_not_clean(self, kb):
+        """catalog 抛异常 → skipped,而不是一份看起来干净的空报告。"""
+        self._write_notes(kb, "tables:\n  - name: loan\n    columns:\n      - name: amount\n")
+
+        class _Catalog:
+            async def list_tables(self, datasource):
+                raise RuntimeError("connection refused")
+
+        report = await detect_drift("demo", kb, _Catalog())
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "catalog_unreachable"
+        # 空报告的形状与「确实无漂移」一样 —— 正因如此才必须有 status
+        assert report["new_tables"] == [] and report["gone_tables"] == []
+        assert report["column_changes"] == {}
+
+    async def test_missing_schema_notes_is_skipped(self, kb):
+        """没建过 KB(文件不存在)→ kb_missing。"""
+        class _Catalog:
+            async def list_tables(self, datasource):
+                return [{"name": "loan", "columns": [{"name": "amount"}]}]
+
+        report = await detect_drift("demo", kb, _Catalog())
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "kb_missing"
+
+    async def test_empty_schema_notes_is_distinct_from_missing(self, kb):
+        """文件在但没声明任何表 → kb_empty。
+
+        「没建 KB」与「KB 建了但是空的」对运维是两个不同动作,不能合并
+        成一个原因。
+        """
+        self._write_notes(kb, "tables: []\n")
+
+        class _Catalog:
+            async def list_tables(self, datasource):
+                return [{"name": "loan", "columns": [{"name": "amount"}]}]
+
+        report = await detect_drift("demo", kb, _Catalog())
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "kb_empty"
+
+    async def test_unreadable_schema_notes_is_skipped(self, kb):
+        """YAML 损坏 → kb_unreadable(此前被 ``except Exception: pass`` 吞掉,
+        与「没声明表」不可区分)。"""
+        self._write_notes(kb, "tables: [unclosed\n")
+
+        class _Catalog:
+            async def list_tables(self, datasource):
+                return [{"name": "loan", "columns": [{"name": "amount"}]}]
+
+        report = await detect_drift("demo", kb, _Catalog())
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "kb_unreadable"
+
+    async def test_legacy_keys_unchanged(self, kb):
+        """向后兼容:四个旧键的类型与语义均未变。"""
+        self._write_notes(kb, "tables:\n  - name: loan\n    columns:\n      - name: amount\n")
+
+        class _Catalog:
+            async def list_tables(self, datasource):
+                return [{"name": "loan", "columns": [{"name": "amount"}]},
+                        {"name": "extra", "columns": [{"name": "id"}]}]
+
+        report = await detect_drift("demo", kb, _Catalog())
+        assert report["datasource"] == "demo"
+        assert isinstance(report["new_tables"], list)
+        assert isinstance(report["gone_tables"], list)
+        assert isinstance(report["column_changes"], dict)
+        assert report["new_tables"] == ["extra"]
+
+
 async def test_schema_drift_uses_column_sets(tmp_path, kb):
     """真实 CatalogService 路径(column_sets):列漂移可检出。
 

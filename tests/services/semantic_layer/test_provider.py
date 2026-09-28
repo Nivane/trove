@@ -474,6 +474,56 @@ def test_drift_missing_fields_and_keys(tmp_path):
     assert breaks == {"loan_account"}
 
 
+class TestDriftStatus:
+    """I3 的语义层源头:``status`` 描述**查没查成**,``stale`` 描述**结果**。
+
+    两者正交 —— ``stale=True`` 配 ``status=ok``(查了,有漂移)与
+    ``stale=False`` 配 ``status=skipped``(没查成)都是合法组合。混为一谈
+    正是此前 CI 在连不上库时报绿的原因。
+    """
+
+    def test_no_semantic_layer_is_skipped_not_clean(self, tmp_path):
+        p = SemanticLayerProvider(tmp_path / "missing", "financial")
+        report = p.drift()
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "no_semantic_model"
+        # 空报告的形状没变 —— 只是现在它不再冒充「干净」
+        assert report["stale"] is False
+
+    def test_catalog_absent_is_skipped(self, tmp_path):
+        """模型在,但没有活库 schema 快照 → 无从比对。"""
+        p = _drift_provider(tmp_path, None)
+        report = p.drift()
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "no_catalog"
+
+    def test_clean_model_is_ok(self, tmp_path):
+        report = _drift_provider(tmp_path, _CLEAN_CATALOG).drift()
+        assert report["status"] == "ok"
+        assert report["skip_reason"] is None
+        assert report["stale"] is False
+
+    def test_drift_found_is_still_ok(self, tmp_path):
+        """查到漂移 ≠ 没查成。status 说的是「查过了」。"""
+        report = _drift_provider(tmp_path, {"account": {"account_id"}}).drift()
+        assert report["stale"] is True
+        assert report["status"] == "ok"
+        assert report["skip_reason"] is None
+
+    def test_unparseable_model_is_skipped(self, tmp_path):
+        """模型文件损坏 → 解析失败 → 不得冒充「无漂移」。"""
+        kb_path = Path(tmp_path) / "kb" / "fin" / "semantics.yml"
+        kb_path.parent.mkdir(parents=True, exist_ok=True)
+        kb_path.write_text("datasets: [unclosed\n", encoding="utf-8")
+        p = SemanticLayerProvider(
+            Path(tmp_path) / "empty", "fin",
+            kb_semantics_path=kb_path, catalog=_CLEAN_CATALOG)
+        report = p.drift()
+        assert report["status"] == "skipped"
+        assert report["skip_reason"] == "no_semantic_model"
+        assert report["stale"] is False
+
+
 def test_drift_recomputed_on_reload(tmp_path):
     p = _drift_provider(tmp_path, _CLEAN_CATALOG)
     assert p.drift()["stale"] is False
