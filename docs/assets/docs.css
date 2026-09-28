@@ -105,44 +105,15 @@ a:focus-visible, button:focus-visible {
   padding-block: 0 96px;
   padding-inline: 24px;
 }
-@media (min-width: 1100px) {
-  .shell { grid-template-columns: 176px minmax(0, 1fr); gap: 0 56px; }
+/* 首页与文档页共用同一套左侧导航（.doc-nav，由 assets/nav.js 注入），
+   所以栏宽与断点也必须跟 .doc-shell 一致 —— 否则同一份导航在两处
+   会是两种宽度，长条目在窄栏里折行。 */
+@media (min-width: 1000px) {
+  .shell { grid-template-columns: 218px minmax(0, 1fr); gap: 0 56px; }
 }
 .col { min-width: 0; max-width: 760px; }
-
-/* ── Rail ──────────────────────────────────────────────── */
-.rail { display: none; }
-@media (min-width: 1100px) {
-  .rail {
-    display: block;
-    position: sticky;
-    top: 0;
-    align-self: start;
-    max-height: 100vh;
-    overflow-y: auto;
-    padding-block: 96px 32px;
-    border-right: 1px solid var(--border-subtle);
-  }
-}
-.rail nav { display: flex; flex-direction: column; gap: 2px; padding-right: 20px; }
-.rail a {
-  display: block;
-  padding: 5px 10px;
-  border-radius: 5px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  border-left: 2px solid transparent;
-}
-.rail a:hover { background: var(--muted); color: var(--text-primary); text-decoration: none; }
-.rail .rail-group {
-  font-size: 11px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: var(--text-tertiary);
-  padding: 16px 10px 4px;
-  font-weight: 600;
-}
-.rail .rail-group:first-child { padding-top: 6px; }
+/* 导航的起始位置也不覆盖：首页与文档页用同一份 .doc-nav 的 padding，
+   两边的品牌块落在同一个高度上。 */
 
 /* ── Hero ──────────────────────────────────────────────── */
 .hero { padding-block: 88px 0; }
@@ -583,9 +554,9 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* ══════════════════════════════════════════════════════════
    文档站（多页）
-   首页用 .shell + .rail（页内锚点目录）；文档页用 .doc-shell +
-   .doc-nav（跨页站点导航，由 assets/nav.js 注入）。两者共用上面的
-   token 与排版，不另起一套视觉。
+   首页用 .shell（正文栏 760px），文档页用 .doc-shell（正文栏 812px）——
+   唯一区别是正文栏宽；左侧导航两边都是同一个 .doc-nav（assets/nav.js 注入），
+   所以栏宽、断点、视觉一套，不另起。共用上面的 token 与排版。
    ══════════════════════════════════════════════════════════ */
 
 .doc-shell {
