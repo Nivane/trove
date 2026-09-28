@@ -1,0 +1,1464 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 能力地图：语义优先的 NL→SQL 对话式数据 Agent。数据能力与 Agent 能力逐条给出机制说明与可核对的源码位置。">
+<title>Trove 能力地图</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+
+<style>
+/* ── Tokens: 继承 trove/frontend/src/assets/styles/tokens.css 的 zinc + indigo，
+      深色档由同一组 primitives 推出（产品本身是 light-only）。
+      语义色编码语义层的编译分级：ok=命中 / warn=软 MISS / danger=硬 MISS。 ── */
+:root {
+  --canvas: #fafafa;
+  --raised: #ffffff;
+  --muted: #f4f4f5;
+  --hover: #ececef;
+  --border-subtle: #e4e4e7;
+  --border-default: #d4d4d8;
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-tertiary: #8b8b94;
+  --accent: #4f46e5;
+  --accent-bright: #6366f1;
+  --accent-soft: #eef2ff;
+  --accent-line: rgba(99, 102, 241, 0.35);
+  --ok: #15803d;      --ok-bg: #dcfce7;
+  --warn: #b45309;    --warn-bg: #fef3c7;
+  --danger: #dc2626;  --danger-bg: #fee2e2;
+  --code-bg: #f4f4f5;
+  --shadow-sm: 0 1px 3px rgba(24,24,27,.06), 0 1px 2px rgba(24,24,27,.04);
+  --shadow-md: 0 4px 6px -1px rgba(24,24,27,.06), 0 2px 4px -2px rgba(24,24,27,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --canvas: #09090b;
+    --raised: #131316;
+    --muted: #1c1c21;
+    --hover: #27272a;
+    --border-subtle: #27272a;
+    --border-default: #3f3f46;
+    --text-primary: #f4f4f5;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --accent: #818cf8;
+    --accent-bright: #a5b4fc;
+    --accent-soft: #1e1b4b;
+    --accent-line: rgba(129, 140, 248, 0.4);
+    --ok: #4ade80;      --ok-bg: #052e16;
+    --warn: #fbbf24;    --warn-bg: #3b2408;
+    --danger: #f87171;  --danger-bg: #3f1212;
+    --code-bg: #1c1c21;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
+    --shadow-md: 0 4px 8px -2px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"] {
+  --canvas: #09090b;
+  --raised: #131316;
+  --muted: #1c1c21;
+  --hover: #27272a;
+  --border-subtle: #27272a;
+  --border-default: #3f3f46;
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --accent: #818cf8;
+  --accent-bright: #a5b4fc;
+  --accent-soft: #1e1b4b;
+  --accent-line: rgba(129, 140, 248, 0.4);
+  --ok: #4ade80;      --ok-bg: #052e16;
+  --warn: #fbbf24;    --warn-bg: #3b2408;
+  --danger: #f87171;  --danger-bg: #3f1212;
+  --code-bg: #1c1c21;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.4);
+  --shadow-md: 0 4px 8px -2px rgba(0,0,0,.5);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text-primary);
+  font-family: "IBM Plex Sans", ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 16px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono, code, kbd {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── Shell ─────────────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding-block: 0 96px;
+  padding-inline: 24px;
+}
+@media (min-width: 1100px) {
+  .shell { grid-template-columns: 176px minmax(0, 1fr); gap: 0 56px; }
+}
+.col { min-width: 0; max-width: 760px; }
+
+/* ── Rail ──────────────────────────────────────────────── */
+.rail { display: none; }
+@media (min-width: 1100px) {
+  .rail {
+    display: block;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    max-height: 100vh;
+    overflow-y: auto;
+    padding-block: 96px 32px;
+    border-right: 1px solid var(--border-subtle);
+  }
+}
+.rail nav { display: flex; flex-direction: column; gap: 2px; padding-right: 20px; }
+.rail a {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border-left: 2px solid transparent;
+}
+.rail a:hover { background: var(--muted); color: var(--text-primary); text-decoration: none; }
+.rail .rail-group {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 16px 10px 4px;
+  font-weight: 600;
+}
+.rail .rail-group:first-child { padding-top: 6px; }
+
+/* ── Hero ──────────────────────────────────────────────── */
+.hero { padding-block: 88px 0; }
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: .06em;
+  color: var(--text-tertiary);
+  margin-bottom: 22px;
+}
+.eyebrow .dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ok);
+  flex: none;
+}
+h1 {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", ui-sans-serif, sans-serif;
+  font-size: clamp(40px, 7vw, 62px);
+  line-height: 1.02;
+  letter-spacing: -0.022em;
+  font-weight: 600;
+  margin: 0 0 22px;
+  text-wrap: balance;
+}
+.lede {
+  font-size: 19px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-width: 40em;
+  margin: 0 0 30px;
+}
+.lede strong { color: var(--text-primary); font-weight: 600; }
+
+.en {
+  max-width: 44em;
+  padding: 20px 22px;
+  border-left: 2px solid var(--accent-line);
+  background: var(--raised);
+  border-radius: 0 6px 6px 0;
+  font-size: 14.5px;
+  line-height: 1.68;
+  color: var(--text-secondary);
+}
+.en .en-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  display: block;
+  margin-bottom: 7px;
+}
+
+/* ── 可复现数字条 ──────────────────────────────────────── */
+.repro {
+  margin-top: 40px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+}
+.repro-item {
+  padding: 18px 20px 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.repro-n {
+  font-family: "Familjen Grotesk", sans-serif;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  font-variant-numeric: tabular-nums;
+}
+.repro-k { font-size: 13px; color: var(--text-secondary); }
+.repro-cmd {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  background: var(--code-bg);
+  padding: 2px 7px;
+  border-radius: 4px;
+  align-self: flex-start;
+  max-width: 100%;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* ── Sections ──────────────────────────────────────────── */
+section { padding-top: 84px; scroll-margin-top: 24px; }
+.sec-head { margin-bottom: 34px; }
+.sec-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  font-weight: 500;
+  display: block;
+  margin-bottom: 10px;
+}
+h2 {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: clamp(27px, 4vw, 34px);
+  line-height: 1.14;
+  letter-spacing: -0.018em;
+  font-weight: 600;
+  margin: 0 0 14px;
+  text-wrap: balance;
+}
+h3 {
+  font-family: "Familjen Grotesk", "IBM Plex Sans", sans-serif;
+  font-size: 20px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  font-weight: 600;
+  margin: 0;
+  text-wrap: balance;
+}
+h4 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  letter-spacing: -0.005em;
+}
+.sec-intro { color: var(--text-secondary); margin: 0; max-width: 42em; }
+p { margin: 0 0 14px; }
+p:last-child { margin-bottom: 0; }
+
+/* ── 主图管线 ──────────────────────────────────────────── */
+.pipeline {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--raised);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.pipe-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-subtle);
+  align-items: baseline;
+}
+.pipe-row:first-child { border-top: 0; }
+@media (max-width: 620px) {
+  .pipe-row { grid-template-columns: 1fr; gap: 7px; }
+}
+.pipe-phase {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.pipe-nodes { display: flex; flex-wrap: wrap; gap: 6px; }
+.node {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--muted);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.node.is-gate { background: var(--warn-bg); border-color: transparent; color: var(--warn); }
+.node.is-out  { background: var(--ok-bg);   border-color: transparent; color: var(--ok); }
+.node.is-loop { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+/* 默认关闭的可选分支：不画进主图计数，但真实存在于代码里 */
+.node.is-opt  { background: transparent; border-style: dashed; border-color: var(--border-default); color: var(--text-tertiary); }
+.pipe-note {
+  padding: 13px 18px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--muted);
+  font-size: 13px;
+  color: var(--text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.legend { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+
+/* ── 分级逃生梯 ────────────────────────────────────────── */
+.tiers { display: flex; flex-direction: column; gap: 10px; }
+.tier {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 18px;
+  padding: 16px 18px;
+  border-radius: 8px;
+  background: var(--raised);
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  align-items: start;
+}
+@media (max-width: 620px) { .tier { grid-template-columns: 1fr; gap: 8px; } }
+.tier.hit  { border-left-color: var(--ok); }
+.tier.soft { border-left-color: var(--warn); }
+.tier.hard { border-left-color: var(--danger); }
+.tier-tag {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  padding-top: 2px;
+}
+.tier.hit  .tier-tag { color: var(--ok); }
+.tier.soft .tier-tag { color: var(--warn); }
+.tier.hard .tier-tag { color: var(--danger); }
+.tier-body { font-size: 14.5px; color: var(--text-secondary); }
+.tier-body b { color: var(--text-primary); font-weight: 600; }
+
+/* ── 能力行 ────────────────────────────────────────────── */
+.group { margin-bottom: 46px; }
+.group:last-child { margin-bottom: 0; }
+.group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--border-default);
+  margin-bottom: 4px;
+}
+.group-idx {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.cap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  padding: 17px 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.cap-name {
+  font-weight: 600;
+  font-size: 15.5px;
+  letter-spacing: -0.005em;
+}
+.cap-mech { font-size: 14.5px; color: var(--text-secondary); }
+.cap-mech code {
+  font-size: 13px;
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text-primary);
+}
+.cap-where { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.ref {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--muted);
+  border: 1px solid var(--border-subtle);
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+a.ref:hover { border-color: var(--accent-line); color: var(--accent); text-decoration: none; }
+.ref-line { color: var(--accent); }
+
+/* ── 截图 ──────────────────────────────────────────────── */
+.shots { display: flex; flex-direction: column; gap: 26px; }
+figure { margin: 0; }
+figure img {
+  width: 100%;
+  max-width: 100%;
+  display: block;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--raised);
+  box-shadow: var(--shadow-md);
+}
+figcaption {
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  line-height: 1.55;
+}
+
+/* ── 代码块 ────────────────────────────────────────────── */
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 15px 17px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.72;
+  margin: 0 0 14px;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+.cmt { color: var(--text-tertiary); }
+
+/* ── 定位声明 ──────────────────────────────────────────── */
+.claim {
+  padding: 24px 26px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+.claim p {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.claim .en-line {
+  margin-top: 12px;
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+/* ── 路标 ──────────────────────────────────────────────── */
+.road { display: flex; flex-direction: column; gap: 0; }
+.road-item {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.road-item:first-child { border-top: 1px solid var(--border-subtle); }
+.road-n {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  padding-top: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.road-body p { font-size: 14.5px; color: var(--text-secondary); margin: 7px 0 0; }
+.road-crit {
+  font-size: 13px !important;
+  color: var(--text-tertiary) !important;
+  margin-top: 9px !important;
+}
+.road-crit span {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-right: 7px;
+}
+
+/* ── 表格 ──────────────────────────────────────────────── */
+.table-wrap { overflow-x: auto; border: 1px solid var(--border-subtle); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; min-width: 460px; }
+th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--border-subtle); }
+th {
+  font-size: 11.5px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  background: var(--muted);
+}
+tbody tr:last-child td { border-bottom: 0; }
+td.mono, th.mono { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; }
+
+/* ── Footer ────────────────────────────────────────────── */
+footer {
+  margin-top: 92px;
+  padding-top: 30px;
+  border-top: 1px solid var(--border-default);
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+footer .foot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 26px 40px;
+  margin-bottom: 26px;
+}
+footer h4 { font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-tertiary); }
+footer ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+footer .attribution {
+  padding-top: 20px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  line-height: 1.7;
+}
+footer .attribution p { margin: 0 0 8px; }
+footer .attribution p:last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <aside class="rail">
+    <nav>
+      <span class="rail-group">全貌</span>
+      <a href="#what">它是什么</a>
+      <a href="#why">为什么语义优先</a>
+      <a href="#flow">一次问答走完的链路</a>
+      <span class="rail-group">数据能力</span>
+      <a href="#data">六组数据侧能力</a>
+      <span class="rail-group">Agent 能力</span>
+      <a href="#agent">十二项 Agent 侧能力</a>
+      <span class="rail-group">边界</span>
+      <a href="#safety">确定性安全层</a>
+      <a href="#eval">怎么验证</a>
+      <span class="rail-group">向前</span>
+      <a href="#road">路标</a>
+    </nav>
+  </aside>
+
+  <main class="col">
+
+    <!-- ══ 首屏 ══ -->
+    <header class="hero">
+      <span class="eyebrow"><span class="dot"></span>开源 · Apache-2.0 · Python 3.12 / LangGraph / Vue</span>
+      <h1>Trove 能力地图</h1>
+      <p class="lede">
+        把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>。
+        Trove 把确定性押在<strong>语义模型、节点化工作流与确定性安全层</strong>上，
+        只把真正需要模型的那一段交给 LLM——所以跨厂商、跨方言下行为可预期。
+      </p>
+
+      <div class="en">
+        <span class="en-label">English summary</span>
+        Trove is a conversational data agent that turns a natural-language question into explainable SQL,
+        a chart and a written conclusion. It is <b>semantic-first</b>: an OSSIE semantic model defines what is
+        answerable, a deterministic compiler resolves joins, enums, time buckets and derived metrics, and a
+        27-node LangGraph workflow generates, validates, executes and reflects — with an agentic ReAct loop
+        driving SQL generation. This page lists what it does; every capability links to the file that implements it.
+      </div>
+
+      <div class="repro">
+        <div class="repro-item">
+          <span class="repro-n" data-count="nodes">27</span>
+          <span class="repro-k">主图节点（默认配置）</span>
+          <span class="repro-cmd">graphs.py · _build_reflection</span>
+        </div>
+        <div class="repro-item">
+          <span class="repro-n" data-count="adapters">6</span>
+          <span class="repro-k">方言适配器</span>
+          <span class="repro-cmd">datasource/registry.py</span>
+        </div>
+        <div class="repro-item">
+          <span class="repro-n">3500+</span>
+          <span class="repro-k">条测试 · 零网络零密钥</span>
+          <span class="repro-cmd">uv run pytest</span>
+        </div>
+        <div class="repro-item">
+          <span class="repro-n">0</span>
+          <span class="repro-k">LLM 调用的回归门</span>
+          <span class="repro-cmd">scripts/eval_gate.py</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ══ 它是什么 ══ -->
+    <section id="what">
+      <div class="sec-head">
+        <span class="sec-label">全貌 · 01</span>
+        <h2>它是什么</h2>
+        <p class="sec-intro">
+          一个可自托管的问数分析 Agent：接入你自己的库，用自然语言提问，拿到 SQL、图表和一段有依据的结论。
+          提问与修正会沉淀进该数据源的知识库，准确率随使用增长。
+        </p>
+      </div>
+
+      <pre><code><span class="cmt"># 内置 BIRD 金融演示数据源，装完即可问</span>
+uv run trove --datasource demo
+
+<span class="cmt"># 一次性提问，输出 JSON</span>
+echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print
+
+<span class="cmt"># 前后端分离部署，浏览器访问 http://localhost:8080</span>
+docker compose up --build</code></pre>
+
+      <div class="shots" style="margin-top:28px">
+        <figure>
+          <img src="assets/hero-chat.png" alt="Trove 问答界面：左侧会话列表，中间提问与回答，右侧展示生成的 SQL、结果表格与图表">
+          <figcaption>一次问答的完整交付：答案正文、可展开的 SQL、结果表格与图表同屏。</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ══ 为什么语义优先 ══ -->
+    <section id="why">
+      <div class="sec-head">
+        <span class="sec-label">全貌 · 02</span>
+        <h2>为什么语义优先</h2>
+        <p class="sec-intro">
+          大多数问数系统的准确率上限押在模型和检索上。Trove 换了一个问题：
+          <b>这个数据源到底能回答什么</b>——把这件事用一份可读的语义模型写清楚，
+          先划定边界，再谈生成。
+        </p>
+      </div>
+
+      <div class="shots" style="margin-bottom:32px">
+        <figure>
+          <img src="assets/hero-semantic.png" alt="Trove 语义模型管理界面：数据集、指标与字段口径的图形化展示">
+          <figcaption>语义模型（<code class="mono">semantics.yml</code>）：数据集与指标的口径写在一处，生成与校验都以它为准。</figcaption>
+        </figure>
+      </div>
+
+      <p style="margin-bottom:22px">
+        语义模型是生成的主视角，也是可答边界。但它不是一道全有全无的闸门——
+        编译结果是<b>分级</b>的，能答多少答多少，答不了的说清楚为什么：
+      </p>
+
+      <div class="tiers">
+        <div class="tier hit">
+          <span class="tier-tag">命中 HIT</span>
+          <div class="tier-body">
+            <b>编译器直接产出 SQL。</b>join 路径解析、枚举词归一、时间分桶、派生指标与比率指标递归内联，
+            全部在确定性代码里完成，不走模型。
+          </div>
+        </div>
+        <div class="tier soft">
+          <span class="tier-tag">软 MISS</span>
+          <div class="tier-body">
+            <b>产出骨架，按计划补齐。</b>词表、枚举值、未声明口径这类缺口会留下
+            <code>PartialCompile</code>：能解析的部分（join、过滤、分组）先权威化，
+            剩余组件交给生成节点按计划文本补齐，回答照常交付。
+          </div>
+        </div>
+        <div class="tier hard">
+          <span class="tier-tag">硬 MISS</span>
+          <div class="tier-body">
+            <b>拒绝，并反问怎么把模型扩起来。</b>结构性缺口——fan-out、join 二义、未覆盖的表、坏掉的派生定义——
+            拒绝硬猜，改为向用户澄清口径，并把这次澄清沉淀成语义模型的扩展建议。
+          </div>
+        </div>
+      </div>
+
+      <div class="cap-where" style="margin-top:18px">
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L634">compiler.py:634 <span class="ref-line">PartialCompile</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L735">compiler.py:735 <span class="ref-line">is_hard_miss</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1409">compiler.py:1409 <span class="ref-line">骨架产出</span></a>
+      </div>
+    </section>
+
+    <!-- ══ 链路 ══ -->
+    <section id="flow">
+      <div class="sec-head">
+        <span class="sec-label">全貌 · 03</span>
+        <h2>一次问答走完的链路</h2>
+        <p class="sec-intro">
+          主图是 LangGraph 上的 27 个节点（默认配置）。节点名与图中一致，可以直接对着代码读。
+          虚线框的 <code>clarify</code> 是可选分支，需显式开启 <code>build_graphs(clarify=True)</code> 才挂上——
+          生产入口只传 checkpointer，走默认值，所以不算在 27 里。
+        </p>
+      </div>
+
+      <div class="pipeline">
+        <div class="pipe-row">
+          <span class="pipe-phase">入口与路由</span>
+          <div class="pipe-nodes">
+            <span class="node">route_intent</span><span class="node">parse_date</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">语义门禁</span>
+          <div class="pipe-nodes">
+            <span class="node">schema_linking</span>
+            <span class="node is-gate">refuse</span>
+            <span class="node is-gate is-opt">clarify</span>
+            <span class="node is-gate">confirm_draft</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">确定性快径</span>
+          <div class="pipe-nodes">
+            <span class="node">fast_match</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">规划与生成</span>
+          <div class="pipe-nodes">
+            <span class="node">query_sketch</span><span class="node">gen_retrieve</span>
+            <span class="node">gen_assemble</span><span class="node">gen_generate</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">执行与校验</span>
+          <div class="pipe-nodes">
+            <span class="node">execute_sql</span><span class="node">select</span><span class="node">validate</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">反思与错因回滚</span>
+          <div class="pipe-nodes">
+            <span class="node is-loop">reflect</span><span class="node is-loop">analyze_error</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">语义复核与人工确认</span>
+          <div class="pipe-nodes">
+            <span class="node">semantics</span><span class="node">hitl</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">交付</span>
+          <div class="pipe-nodes">
+            <span class="node is-out">insights</span><span class="node is-out">attribution</span>
+            <span class="node is-out">chart</span><span class="node is-out">conclusion</span>
+            <span class="node is-out">output</span>
+          </div>
+        </div>
+        <div class="pipe-row">
+          <span class="pipe-phase">旁路</span>
+          <div class="pipe-nodes">
+            <span class="node">answer_metadata</span><span class="node">metadata_check</span>
+            <span class="node">answer_reject</span><span class="node">answer_chitchat</span>
+            <span class="node">answer_correction</span>
+          </div>
+        </div>
+        <div class="pipe-note">
+          <span class="legend"><i style="background:var(--warn)"></i>门禁 / 需澄清</span>
+          <span class="legend"><i style="background:var(--accent)"></i>失败回环重生成</span>
+          <span class="legend"><i style="background:var(--ok)"></i>面向用户的交付</span>
+          <span class="legend"><i style="border:1px dashed var(--border-default)"></i>可选分支，默认关闭</span>
+        </div>
+      </div>
+
+      <div class="cap-where" style="margin-top:16px">
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1580">graphs.py:1580 <span class="ref-line">主图装配</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py">rules.py <span class="ref-line">确定性校验规则链</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">versions.py <span class="ref-line">SQL 版本链 / 回归硬检查</span></a>
+      </div>
+    </section>
+
+    <!-- ══ 数据能力 ══ -->
+    <section id="data">
+      <div class="sec-head">
+        <span class="sec-label">数据能力</span>
+        <h2>六组数据侧能力</h2>
+        <p class="sec-intro">
+          每一组都给出机制与实现位置。行号指向仓库 <code class="mono">main</code> 分支，
+          可直接跳过去读源码。
+        </p>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">01</span>
+          <h3>语义层——可答边界写成一份可读的文件</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            语义模型存的是 <b>Apache OSSIE</b> 核心规范的 <code>semantic_model</code>：datasets 与 metrics，
+            指标表达式按方言分写（<code>expression.dialects</code>），表达式里的表是全限定的，
+            指标归属哪个数据集由 <code>dataset.field</code> 引用反推——不需要人再手填一遍。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/">trove/services/kb/ <span class="ref-line">semantics.yml</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/">semantic_layer/</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            <b>编译边界是分级逃生梯，不是全有全无。</b>硬缺口（fan-out、join 二义、未覆盖表）才拒绝并反问扩展模型；
+            软缺口（未声明的指标/字段/枚举值、时间分桶）留骨架给生成节点补齐。详见上文「为什么语义优先」。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L634">compiler.py:634</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L147">compiler.py:147 <span class="ref-line">JoinResolver</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L171">contract.py:171 <span class="ref-line">miss_parts 契约</span></a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            语义校验节点在出结果前复核口径：问的是不是这个指标、时间窗口对不对、比率的分母是不是该排除的那一批。
+            不一致就回炉，而不是把一段看着像样的答案交出去。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/semantics.py">nodes/semantics.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">02</span>
+          <h3>知识库——YAML 是唯一真源，人确认才算数</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            每个数据源一套 YAML：<code>schema_notes</code> / <code>semantics</code> / <code>examples</code> /
+            <code>rules</code> / <code>lessons</code>。SQLite 镜像只服务于运行时检索，改内容改 YAML。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/">trove/services/kb/</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            <b>双轨门禁。</b>系统自动沉淀的参考示例与经验教训一律落 <code>pending</code>，
+            未经确认不进检索——人写的知识和机器猜的知识不混在一起。命中检索时才算「活过」，
+            长期没人用到的自动老化退役。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L570">service.py:570 <span class="ref-line">pending 不入检索</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1599">service.py:1599 <span class="ref-line">confirmed_only</span></a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            <b>题库式初始化与质检。</b><code>kb init</code> 起草 schema 注释与确定性规则（词表、模板），
+            <code>kb learn</code> 走「模型起草 → 人确认 → 落库」，另有静态质检脚本与在线枚举探测兜底。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/lint_kb.py">scripts/lint_kb.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/profiling.py">kb/profiling.py <span class="ref-line">取值画像</span></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">03</span>
+          <h3>检索——两路召回，融合权重可调可评</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            关键词通道（Postgres 侧 <code>pg_bm25</code>、SQLite 侧 FTS5）与稠密通道（pgvector HNSW / 余弦）
+            各自召回，再用加权 RRF 融合（<code>rrf_k</code> 默认 60，权重按通道名配）。
+            精排默认关闭：默认档的覆盖度打分与下游排序用的是同一个函数，关掉反而让检索信号更纯。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L67">factory.py:67 <span class="ref-line">通道配置</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/rerank.py">retrieval/rerank.py</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            召回窗口按库规模自适应：小库全量候选不裁剪，超过阈值才按 <code>limit × 6</code> 收窄。
+            命中分数归一化到 [0,1] 再进下游，避免融合分被压成常量偏移。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py">retrieval/pg_store.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/metrics.py">retrieval/metrics.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">04</span>
+          <h3>多数据源——一个注册表，驱动按需加载</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            六个方言适配器：SQLite、MySQL、Doris、PostgreSQL、ClickHouse、DuckDB。新增库实现
+            <code>DatabaseAdapter</code> 并在注册表登记即可，驱动懒加载，不装就不用装。
+            能力探测决定哪些功能对该库生效，而不是假设所有库都一样。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">适配器注册表</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/base.py">adapters/base.py <span class="ref-line">抽象基类</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/docs/mysql-doris-quickstart.md">接入指南</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            管理端注册数据源时当场连接探测，失败直接报原因；注册后跑一次知识库初始化，
+            用户端只看到「已连接且已建模」的数据源。多数据源配置持久化，重启自动恢复。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py">api/routers/admin.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/init_postgres_demo.py">scripts/init_postgres_demo.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">05</span>
+          <h3>内部状态——一个存储抽象，两档后端</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            会话、任务、用户事实、记忆情节、鉴权、作业、血缘、查询日志、图检查点，全部走同一个
+            <code>StorageBackend</code>：生产用 Postgres，本地与测试回落 SQLite。
+            SQLite 方言（<code>?</code> 占位符、自增主键、<code>INSERT OR REPLACE</code>）由 Postgres 后端翻译，
+            上层 SQL 只写一份。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/base.py">storage/backends/base.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/postgres.py">backends/postgres.py</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            <b>版本化迁移，两条不变量：</b>每个操作单独幂等（所以历史库接入 = 从 0 重放，全新库、老库、
+            失败重试走同一条代码路径），版本号只反映历史、不反映配置（否则改个开关就会让老库看起来「更新」）。
+            代码比库旧时直接报错，而不是让缺列的 SELECT 静默丢数据。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/migrations.py">storage/migrations.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">06</span>
+          <h3>评测基建——回归判定不花一分钱</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            <b>离线回放。</b>把一次真实运行的每问判定落盘，之后纯文件对比即可复算指标，
+            零 LLM、零网络——所以它可以挂在提交前，而不会有人因为「跑一次太贵」把它跳过。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L73">eval/replay.py:73</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py">scripts/offline_eval.py</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            <b>回归门。</b>baseline 与 current 按指标逐项比：执行准确率、编译命中率、完成率、恢复率、
+            与金标准的精确匹配、token 成本——带方向和容差，出现回归即以退出码 1 拦下改动。
+            样本不足会拒绝出判定，避免拿三条样本宣布胜利。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">eval/gate.py:240 <span class="ref-line">compare_metrics</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py">scripts/eval_gate.py</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            检索侧还有独立的分路消融与权重网格调参脚本，表级召回与融合权重可以分别验证，
+            不必先跑完整生成链路。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_hybrid_retrieval.py">eval_hybrid_retrieval.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/tune_rrf.py">tune_rrf.py</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ Agent 能力 ══ -->
+    <section id="agent">
+      <div class="sec-head">
+        <span class="sec-label">Agent 能力</span>
+        <h2>十二项 Agent 侧能力</h2>
+        <p class="sec-intro">
+          按工具调用、工作流、规划、多候选、状态、长任务、人在环、评估、可观测这九条线组织，
+          另补记忆分层、上下文工程与安全边界三项。
+        </p>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">01</span><h3>工具调用与工具治理</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            工具注册表 + <code>ToolSpec</code>：每个工具声明所需权限级别与可见角色，
+            定义按角色裁剪后才交给模型。<b>越权调用不会报错</b>——运行时把它折叠成「未知工具」，
+            模型看到的是「没有这个工具」，而不是一道可以试探的墙。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L183">agent_loop.py:183 <span class="ref-line">visible_to</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L315">agent_loop.py:315 <span class="ref-line">按角色裁剪</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L519">agent_loop.py:519 <span class="ref-line">越权折叠</span></a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            生成节点用 ReAct 循环，模型自己决定什么时候收工——<code>max_rounds</code> 只是安全护栏，
+            不是停止条件。工具并行派发、单工具超时与重试、空手而归时降级回经典「生成→校验重试」子图。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L369">agent_loop.py:369 <span class="ref-line">max_rounds=8</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py">nodes/gen_sql.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">02</span><h3>工作流编排</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            LangGraph 主图 27 节点，节点是<code>make_&lt;name&gt;(services…)</code> 工厂返回的
+            <code>async def node(state) -&gt; dict</code>，服务在构图时绑进闭包；每个节点只回写自己关心的字段，
+            出错则原样透传。意图路由把「问数据」和「问元数据」分成两条路，后者自带一轮自校验。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1580">graphs.py:1580</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py">workflow/state.py</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            反思不是「再问一次模型」：每次失败都会记录 SQL 与结果签名，和上一版做确定性比对，
+            产出「这版没修对 / 毫无进展 / 问题转移了」这类具体反馈，再决定是否回炉——
+            同一段代码，零 LLM。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">workflow/versions.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">03</span><h3>规划：先出计划，再写 SQL</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            查询规划是条件节点：产出一份计划（输出列、过滤、分组、口径），按优先级注入生成上下文，
+            生成节点跟着计划走。同时把 schema 段做成稳定缓存前缀并单独设预算，宽表大库下
+            被裁掉的结构由工具按需懒加载——省 token，也避免结构全量塞进窗口。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/query_sketch.py">nodes/query_sketch.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L118">graphs.py:118 <span class="ref-line">schema 预算</span></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">04</span><h3>多候选与投票</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            候选子代理并行生成多份 SQL，再进共识节点做执行投票：全票一致、单一多数、或分裂——
+            分裂就带着分歧点回炉。相似问法轮换少样本示例，避免每次都从同一个角度想。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L221">graphs.py:221 <span class="ref-line">候选子代理</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/select.py">nodes/select.py <span class="ref-line">共识投票</span></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">05</span><h3>状态管理与时间旅行</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            图检查点按存储后端选型：配了 Postgres 就用 Postgres 存档，否则落本地 SQLite。
+            管理端可以列出某条会话的全部检查点，并从任意一个<code>replay_from</code> 重放——
+            复盘一次错误回答时，不必靠猜。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/checkpoint_store.py">storage/checkpoint_store.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/checkpoint_view.py#L128">checkpoint_view.py:128 <span class="ref-line">replay_from</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py">api/routers/admin.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">06</span><h3>长任务与定时</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            定时任务支持 CRUD、调度计算、运行记录与告警，带冷却时间避免告警风暴。
+            调度器对会话管理器是鸭子类型的，所以测试里可以塞假实现；
+            服务进程内嵌一个 tick 自动跑，人不用额外守一个 daemon。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/service.py#L40">jobs/service.py:40</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L24">jobs/runner.py:24</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/jobs.py">api/routers/jobs.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">07</span><h3>人在环（HITL）</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            确认节点可在执行前拦下 SQL 交给人过目。载荷无法识别时<b>默认拒绝</b>而不是放行——
+            这道门只在能读懂输入时才开。定时任务跑的时候自动放行，人不在场也不卡死。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">08</span><h3>评估</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            见上文「评测基建」：离线回放 + 带方向容差的回归门 + 检索分路消融。三层都可零成本复跑，
+            所以评估是提交前的一步，不是发布前的一次豪赌。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/">trove/eval/</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml">.github/workflows/eval-gate.yml</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">09</span><h3>可观测</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            运行追踪器维护一棵 span 树，并给每个节点单独累计 token——所以「这次回答贵在哪一步」
+            是一个可以查的量，不是估算。链路回调挂在 LangGraph 节点元数据上，
+            外部追踪（Langfuse）与本地运行日志共用同一套埋点。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L139">runlog.py:139 <span class="ref-line">span token 桶</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L308">runlog.py:308</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py">llm/observability.py</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            每次回答还留一份决策审计与数据血缘记录：用了哪份语义模型、命中哪条规则、结论建立在哪些表上。
+            出问题时可以往回查，而不是只看到一个数字。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/">services/decision · services/lineage</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">10</span><h3>记忆分层</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            会话内记忆之上，还有跨会话的<b>情节记忆</b>：把「问过什么 → 生成了什么 SQL → 判定如何 →
+            修正过什么」存下来，下次相似提问直接作为锚点或反例。召回走词面与语义的 OR 门——
+            任一门过即召回，没有 embedder 的部署退化为纯词面，行为可预期。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L68">episode.py:68 <span class="ref-line">权重与门限</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L114">episode.py:114</a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            记忆分层收口在一个门面里：写入（情节）、读取（统一分发）、生命周期（保留期清理 + 结构漂移检测）、
+            用户画像（正确率、失败模式、已确认偏好）。<b>自动写入一律 pending</b>，
+            高置信偏好才进用户事实——人工确认这道闸不绕。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L179">memory/service.py:179 <span class="ref-line">observe</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L388">service.py:388 <span class="ref-line">run_lifecycle</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/promotion.py">promotion.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">11</span><h3>上下文工程</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            生成提示的内容不是一股脑塞进去的：先按问题复杂度选档（简单 1500 / 标准 2500 / 复杂 4000 token），
+            再按优先级装块（少样本 → 用户事实 → 规则 → 术语 → 指标 → 实体 → 教训 → 情节 → 计划 → 历史 → 画像），
+            块内还能按相关度逐条裁剪。预算不够时知道该先丢谁。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L115">graphs.py:115 <span class="ref-line">分档预算</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L134">context_budget.py:134 <span class="ref-line">条目级装配</span></a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            组织级方法论以「技能」形式管理，两档注入：<code>required</code> 的正文进对应节点的系统提示，
+            <code>available</code> 的只播广告，模型需要时用工具取正文——不相关的能力就不占窗口。
+            和组织知识库同一套门禁：草稿未经确认不生效。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py">services/skills/service.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py">api/routers/skills.py</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head"><span class="group-idx">12</span><h3>确定性安全边界</h3></div>
+        <div class="cap">
+          <div class="cap-mech">
+            「能不能执行」不交给模型判断，见下一节。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="#safety">↓ 确定性安全层</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 安全 ══ -->
+    <section id="safety">
+      <div class="sec-head">
+        <span class="sec-label">边界</span>
+        <h2>确定性安全层</h2>
+        <p class="sec-intro">
+          问数系统要落地，安全边界不能是提示词里的一句请求。以下是已经实现并在链路上生效的机制——
+          它们全部是代码，不是模型行为。
+        </p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:34%">机制</th><th>做什么</th><th class="mono" style="width:26%">位置</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>只读语句防火墙</td>
+              <td>对 SQL 做 AST 解析后判定，非只读语句在执行前被拒——不靠关键字黑名单。</td>
+              <td class="mono">services/sql/guard.py:50</td>
+            </tr>
+            <tr>
+              <td>执行代价护栏</td>
+              <td>执行前用 EXPLAIN 估算扫描行数，超软阈值打回生成节点补 LIMIT 或收窄过滤，超硬阈值直接拒绝。</td>
+              <td class="mono">services/sql/row_guard.py</td>
+            </tr>
+            <tr>
+              <td>工具权限</td>
+              <td>工具按角色裁剪，越权调用在运行时折叠为「未知工具」。</td>
+              <td class="mono">llm/agent_loop.py:183</td>
+            </tr>
+            <tr>
+              <td>外部数据隔离</td>
+              <td>只有来自数据库单元格的内容才会被扫描注入模式，命中即隔离后再进提示——知识库里人确认过的内容不在此列。</td>
+              <td class="mono">llm/injection.py:57 · :65</td>
+            </tr>
+            <tr>
+              <td>执行前人工确认</td>
+              <td>可选节点，SQL 执行前交人过目；载荷无法识别时默认拒绝。</td>
+              <td class="mono">workflow/nodes/hitl.py:65</td>
+            </tr>
+            <tr>
+              <td>模型预算护栏</td>
+              <td>ReAct 循环受轮次、墙钟时间、累计 token 三重约束，触顶即降级回经典子图，不会无限烧下去。</td>
+              <td class="mono">llm/agent_loop.py:369 · :374 · :375</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ══ 怎么验证 ══ -->
+    <section id="eval">
+      <div class="sec-head">
+        <span class="sec-label">边界</span>
+        <h2>怎么验证，而不是信谁的数字</h2>
+        <p class="sec-intro">
+          这个页面<b>不给准确率数字</b>。问数系统的准确率高度依赖数据集、方言、语义模型完备度，
+          不同口径的数字放在一起没有意义——而且换个数据源就作废。所以这里给的是复现路径。
+        </p>
+      </div>
+
+      <p style="margin-bottom:18px">仓库自带一条完整链路，你可以用自己的题、接自己的库跑一遍：</p>
+
+      <pre><code><span class="cmt"># 1. 内置 BIRD 金融演示数据源，零配置先看效果</span>
+uv run trove --datasource demo
+
+<span class="cmt"># 2. 接上你自己的库（MySQL / Doris / PostgreSQL / ClickHouse / DuckDB）</span>
+uv run python scripts/lint_kb.py --db-id &lt;你的库&gt; \
+    --datasource mysql://user:pass@host:3306/dbname
+
+<span class="cmt"># 3. 换成你的题目集跑评测，代价敏感，按需手动跑</span>
+uv run python scripts/eval_bird.py --kb-dir &lt;你的 KB 目录&gt;
+
+<span class="cmt"># 4. 拿到 baseline 后，之后每次改动都过一遍零成本回归门</span>
+uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;</code></pre>
+
+      <p style="color:var(--text-secondary);font-size:14.5px">
+        第 4 步是这套评测设计的关键：判定落盘之后，回归检查不调用任何模型、不碰网络，
+        所以它可以进 CI，也可以在你提交前顺手跑一次。
+      </p>
+    </section>
+
+    <!-- ══ 路标 ══ -->
+    <section id="road">
+      <div class="sec-head">
+        <span class="sec-label">向前</span>
+        <h2>路标</h2>
+        <p class="sec-intro">
+          正在推进的八个方向。这里写的是<b>方向与判据</b>——一个方向做到什么程度算做到了，
+          而不是承诺日期。
+        </p>
+      </div>
+
+      <div class="road">
+        <div class="road-item">
+          <span class="road-n">01</span>
+          <div class="road-body">
+            <h4>语义漂移治理</h4>
+            <p>业务口径会变，语义模型会旧。让「模型与真实数据已经对不上」这件事被自动发现、可定位到具体条目。</p>
+            <p class="road-crit"><span>判据</span>漂移报告能精确到数据集/字段/指标条目，且不依赖人工巡检。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">02</span>
+          <div class="road-body">
+            <h4>执行画像</h4>
+            <p>把每次执行的代价与形态沉淀成画像：哪些查询在变慢、哪类问法代价最高，让优化有据可依。</p>
+            <p class="road-crit"><span>判据</span>画像数据来自真实执行观测，且采集本身不给查询增加可感知开销。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">03</span>
+          <div class="road-body">
+            <h4>已验证查询资产</h4>
+            <p>被人确认过的正确答案应当可复用、可溯源，成为知识库里的一等资产，而不是一次性消耗品。</p>
+            <p class="road-crit"><span>判据</span>复用不改变现有匹配判据的去向，且每条资产可追溯到它的确认人。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">04</span>
+          <div class="road-body">
+            <h4>可核验闭环</h4>
+            <p>结论不仅要给 SQL，还要能说明它凭什么成立——把校验过程也变成可复核的产物。</p>
+            <p class="road-crit"><span>判据</span>任意一条交付结论，都能沿着证据链走回原始数据。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">05</span>
+          <div class="road-body">
+            <h4>语义分支评审</h4>
+            <p>同一份语义模型的多条演进路线，应当可以并行比对后再合入，而不是只能线性覆盖。</p>
+            <p class="road-crit"><span>判据</span>分支评审的结论对最终合入有约束力，而非仅供参考。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">06</span>
+          <div class="road-body">
+            <h4>身份鉴权与字段脱敏</h4>
+            <p>把可答边界从「这个数据源能答什么」推进到「这个人能看什么」——行列级权限在语义层表达。</p>
+            <p class="road-crit"><span>判据</span>权限判定发生在编译期而非结果后置过滤，越权字段不进入模型上下文。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">07</span>
+          <div class="road-body">
+            <h4>成本归因与预算</h4>
+            <p>让每一次问答的 token 花在哪一步、为什么花，成为可查账、可设限的量。</p>
+            <p class="road-crit"><span>判据</span>归因覆盖全部模型调用路径，不存在「不产生记录」的调用。</p>
+          </div>
+        </div>
+        <div class="road-item">
+          <span class="road-n">08</span>
+          <div class="road-body">
+            <h4>不可信数据输入边界</h4>
+            <p>数据库里的内容来自外部世界，不该被当成指令。把这条边界收口到一处，而不是散落在各个调用点。</p>
+            <p class="road-crit"><span>判据</span>隔离动作有唯一渲染收口点，新增数据源自动继承，无需逐个接线。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 定位 ══ -->
+    <section id="pos">
+      <div class="sec-head">
+        <span class="sec-label">定位</span>
+        <h2>这套设计押在哪</h2>
+      </div>
+      <div class="claim">
+        <p>把确定性押在可编排的节点化工作流、多库多模型抽象与确定性安全策略层上，而不是押在模型与检索的单点强度上——所以跨厂商、跨方言下行为更可预期。</p>
+        <p class="en-line">
+          Design bet: put determinism in an orchestratable node graph, a multi-database / multi-model abstraction,
+          and a deterministic safety layer — rather than in the strength of one model or one retriever.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <div class="foot-grid">
+        <div>
+          <h4>仓库</h4>
+          <ul>
+            <li><a href="https://github.com/Nivane/trove">github.com/Nivane/trove</a></li>
+            <li><a href="https://github.com/Nivane/trove#readme">README（含快速开始）</a></li>
+            <li><a href="https://github.com/Nivane/trove/blob/main/docs/mysql-doris-quickstart.md">接入你自己的数据源</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>自己跑一遍</h4>
+          <ul>
+            <li><code class="mono">uv sync</code></li>
+            <li><code class="mono">uv run pytest</code></li>
+            <li><code class="mono">uv run trove --datasource demo</code></li>
+          </ul>
+        </div>
+        <div>
+          <h4>许可</h4>
+          <ul>
+            <li>Apache License 2.0</li>
+            <li>Python ≥ 3.12</li>
+            <li>自托管，数据不出你的库</li>
+          </ul>
+        </div>
+      </div>
+      <div class="attribution">
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">1e706cd</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 1e706cd</code></p>
+        <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
+        <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
+      </div>
+    </footer>
+
+  </main>
+</div>
+
+</body>
+</html>
