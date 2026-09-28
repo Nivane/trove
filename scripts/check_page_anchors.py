@@ -10,7 +10,9 @@
     python3 scripts/check_page_anchors.py --write          # 就地改写行号与两个结构性计数
     python3 scripts/check_page_anchors.py --at origin/main # 指定比对版本（默认 origin/main）
 
-基准提交记在 HTML 里：`anchor-base: <sha>`。--write 后请同步更新它。
+基准提交记在 HTML 里：`anchor-base: <sha>`。--write 会连同行号一起把它更新到目标
+版本 —— 这两件事必须同步：只改行号不改基准，下次再跑就会拿已经改好的行号去旧基准
+里取原文，把锚点改到完全错误的位置。
 
 想让它在提交前提醒一句（**不阻断**提交——这是个多人共用的仓库，别因为页面漂移
 挡住别人的正常提交）：
@@ -187,16 +189,15 @@ def main() -> int:
 
     drifted: list[tuple[str, int, int]] = []
     unresolved: list[tuple[str, int, str]] = []
-    out = html
-    seen: dict[tuple[str, int], int | None] = {}
+    resolved: dict[tuple[str, int], int | None] = {}
     reported: set[tuple[str, int]] = set()
 
     for m in anchors:
         path, old = m.group("path"), int(m.group("line"))
 
         key = (path, old)
-        if key in seen:
-            new = seen[key]
+        if key in resolved:
+            new = resolved[key]
         else:
             new = None
             src = blob(repo, base, path)
@@ -213,21 +214,40 @@ def main() -> int:
                     unresolved.append((path, old, "(空行或纯空白，无法定位)"))
             else:
                 unresolved.append((path, old, "(基准或目标版本里没有该文件/该行)"))
-            seen[key] = new
+            resolved[key] = new
 
-        # 同一 (path, old) 在页面里可能出现多次（如 graphs.py:1580 被引用两处），
-        # 只报一次、只改一次，避免同一行被重复处理。
+        # 同一 (path, old) 可能被页面引用多次（如 compiler.py:634 出现两处），
+        # 报告去重，只报一次。
         if new is None or new == old or key in reported:
             continue
         reported.add(key)
         drifted.append((path, old, new))
-        if args.write:
-            tag = m.group(0)
-            fixed = tag.replace(f"#L{old}", f"#L{new}")
-            fixed = re.sub(
-                rf"(?<=[:\w]){old}(?=[\s<])", str(new), fixed, count=1
-            )
-            out = out.replace(tag, fixed)
+
+    # 改写必须**逐处**做。早先的写法是「按 (path, old) 去重后 out.replace(tag, ...)」，
+    # 但 replace 只匹配完全相同的标签串，而同一行的两处引用可见文字往往不同
+    # （一处写 compiler.py:634、另一处写别的），第二处就被漏掉、留下陈旧锚点 ——
+    # 恰恰是这个脚本要防的东西。改成对每个锚点独立改写。
+    out = html
+    base_used = base  # 报告里要显示**实际比对用的**基准，不是改写后的新基准
+    if args.write and drifted:
+        fix = {k: v for k, v in resolved.items() if v is not None and v != k[1]}
+
+        def _rewrite(m: re.Match[str]) -> str:
+            old_s = m.group("line")
+            new = fix.get((m.group("path"), int(old_s)))
+            if new is None:
+                return m.group(0)
+            tag = m.group(0).replace(f"#L{old_s}", f"#L{new}")
+            return re.sub(rf"(?<=[:\w]){old_s}(?=[\s<])", str(new), tag, count=1)
+
+        out = ANCHOR_RE.sub(_rewrite, html)
+
+        # anchor-base 必须与改写**同一步**更新。否则下次再跑，会拿已经改好的
+        # 行号去旧基准里取原文，二次改写成完全错误的位置 —— 这个坑我踩过。
+        new_base = git(repo, "rev-parse", "--short", args.at).stdout.strip()
+        if new_base and new_base != base:
+            out = out.replace(base, new_base)
+            base = new_base
 
     # ── 结构性计数 ──
     counts = structural_counts(repo, args.at)
@@ -242,7 +262,7 @@ def main() -> int:
 
     # ── 报告 ──
     label = {"nodes": "主图节点", "adapters": "方言适配器"}
-    print(f"锚点 {len(anchors)} 处  ·  基准 {base}  →  {args.at}")
+    print(f"锚点 {len(anchors)} 处  ·  基准 {base_used}  →  {args.at}")
 
     for path, old, new in drifted:
         print(f"  漂移  {path}:{old} → :{new}")
@@ -263,8 +283,8 @@ def main() -> int:
             print("注意：失效锚点无法自动修复，需要人工改指或删除：")
             for path, old, why in unresolved:
                 print(f"  - {path}:{old}  {why}")
-        if drifted or count_drift:
-            print(f"别忘了把 HTML 里的 anchor-base 更新为 {args.at}")
+        if base != base_used:
+            print(f"anchor-base 已同步更新：{base_used} → {base}")
     else:
         print("\n加 --write 就地改写（失效锚点仍需人工处理）")
     return 1
