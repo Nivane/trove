@@ -45,7 +45,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L780">main.py:780 <span class="ref-line">main_mcp</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L665">main.py:665 <span class="ref-line">--transport</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L56">server.py:56 <span class="ref-line">FastMCP</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L64">server.py:64 <span class="ref-line">FastMCP</span></a>
     </p>
 
     <div class="table-wrap">
@@ -113,7 +113,14 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L74">server.py:74 <span class="ref-line">_granted</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L111">server.py:111 <span class="ref-line">_authorize_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L68">policy.py:68 <span class="ref-line">Principal</span></a>
+    </p>
+
+    <p>
+      授权判定<strong>不在这里实现</strong>：本模块只解析目标数据源、把主体挂上，结论问
+      <code>services/authz/policy.py</code>。MCP 与 HTTP 两侧共用同一份策略——
+      此前各有一份手抄并且已经漂移过。
     </p>
 
     <p>
@@ -140,9 +147,9 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L235">server.py:235 <span class="ref-line">ask_data</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L279">server.py:279 <span class="ref-line">list_datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L286">server.py:286 <span class="ref-line">kb_status</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L251">server.py:251 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L295">server.py:295 <span class="ref-line">list_datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L302">server.py:302 <span class="ref-line">kb_status</span></a>
     </p>
 
     <p>
@@ -157,8 +164,8 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L40">server.py:40 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L151">server.py:151 <span class="ref-line">_ds_name_safe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L48">server.py:48 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L167">server.py:167 <span class="ref-line">_ds_name_safe</span></a>
     </p>
 
     <h2 id="resources">三个 resource</h2>
@@ -177,9 +184,9 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L173">server.py:173 <span class="ref-line">datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L193">server.py:193 <span class="ref-line">schema</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L199">server.py:199 <span class="ref-line">semantics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L189">server.py:189 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L209">server.py:209 <span class="ref-line">schema</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L215">server.py:215 <span class="ref-line">semantics</span></a>
     </p>
 
     <p>
@@ -204,8 +211,8 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L209">server.py:209 <span class="ref-line">datasource_guide</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L224">server.py:224 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L225">server.py:225 <span class="ref-line">datasource_guide</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L240">server.py:240 <span class="ref-line">ask_data</span></a>
     </p>
 
     <h2 id="visible">语义优先也在这里生效</h2>
@@ -215,7 +222,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L105">server.py:105 <span class="ref-line">_datasources_visible</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L122">server.py:122 <span class="ref-line">_datasources_visible</span></a>
     </p>
 
     <p>
@@ -260,7 +267,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5e1bb36</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

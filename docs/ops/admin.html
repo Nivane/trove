@@ -75,13 +75,29 @@
     </div>
 
     <p>
-      grants 的语义值得记牢：<strong>非 admin 的 grants 非空时是严格白名单；
-      为空时只放行默认数据源</strong>。所以「忘了授权」是安全的一侧，
-      不会意外地把所有数据源放出去。
+      grants 有<strong>三种</strong>取值，是三个不同的语义，别混：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>取值</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">None</td><td><strong>拿不到授权依据</strong> → 拒绝一切，不查任何数据源</td></tr>
+          <tr><td class="mono">空集合</td><td>有依据、依据为空 → 只放行默认数据源</td></tr>
+          <tr><td class="mono">非空集合</td><td>严格白名单</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三种取值都落在「安全的一侧」：忘了授权不会放出全部数据源，读不到授权依据也不会退化成放行。
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L149">deps.py:149 <span class="ref-line">grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L68">policy.py:68 <span class="ref-line">Principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L156">deps.py:156 <span class="ref-line">require_datasource</span></a>
     </p>
 
     <h2 id="datasources">数据源与 KB</h2>
@@ -270,7 +286,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5e1bb36</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

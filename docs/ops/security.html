@@ -142,7 +142,7 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L158">deps.py:158 <span class="ref-line">check_api_rate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L193">deps.py:193 <span class="ref-line">check_api_rate</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L180">config.py:180 <span class="ref-line">api_rate_per_minute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/ratelimit.py#L24">ratelimit.py:24 <span class="ref-line">TokenBucket</span></a>
     </p>
@@ -162,8 +162,8 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L172">app.py:172 <span class="ref-line">auth is None</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L58">deps.py:58 <span class="ref-line">get_current_user</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L104">deps.py:104 <span class="ref-line">require_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L73">deps.py:73 <span class="ref-line">get_current_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L137">deps.py:137 <span class="ref-line">require_scope</span></a>
     </p>
 
     <p>
@@ -201,13 +201,23 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L149">deps.py:149 <span class="ref-line">grants</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L68">policy.py:68 <span class="ref-line">Principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L156">deps.py:156 <span class="ref-line">require_datasource</span></a>
     </p>
 
     <p>
-      数据源 grants 的语义有一个细节：<strong>非 admin 的 grants 非空时是严格白名单</strong>；
-      为空时只放行默认数据源。也就是说「忘了授权」不会意外放出全部数据源。
+      数据源 grants 的语义是<strong>三值</strong>的，而且三值都落在安全的一侧：
+      <code>None</code>（拿不到授权依据）<strong>拒绝一切</strong>；空集合只放行默认数据源；
+      非空集合是严格白名单。所以「忘了授权」和「读不到授权依据」都不会退化成放行。
     </p>
+
+    <div class="callout note">
+      <span class="callout-tag">判定只有一份实现</span>
+      <div>
+        <p>这套策略统一在 <code>services/authz/policy.py</code>，HTTP 侧与 MCP 侧都调它。
+        此前两处各有一份手抄，已经漂移过——<strong>同一个策略抄两遍就会有两套行为</strong>，这正是收口要解决的问题。</p>
+      </div>
+    </div>
 
     <h2 id="secrets">凭证与加密</h2>
 
@@ -305,7 +315,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 5e1bb36</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>
