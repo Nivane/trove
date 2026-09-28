@@ -287,3 +287,37 @@ class SettingsUpdate(BaseModel):
     settings schema (e.g. `llm.default_model`, `app.hitl`)."""
 
     values: dict[str, Any] = Field(default_factory=dict)
+
+
+class DriftResolveRequest(BaseModel):
+    """POST /v1/admin/drift/{id}/resolve | /waive body.
+
+    ``reason`` 必填且非空 —— 无理由的 resolve 等于删记录:条目会从待办里
+    消失,而「为什么它可以不管了」没有任何地方留下。豁免尤其需要它:豁免
+    是**对立场的断言**,再次检出不会重开,所以理由就是这条决定的全部痕迹。
+
+    ``by`` 只在没有登录身份时(测试替身)才被采用;真实请求以 token 里的
+    用户名为准 —— 让请求体自称操作者,审计就等于没有审计。
+    """
+
+    reason: str = Field(min_length=1)
+    by: str = ""
+
+
+class DriftDeclareRequest(BaseModel):
+    """POST /v1/admin/drift/external body — 承接 L4 口径漂移。
+
+    L4(上游改了聚合逻辑/口径)没有检测器:物理 schema 可以完全不变,任何
+    确定性比对都看不见。所以这条路径的存在不是权宜之计,是分类学的一部分
+    —— 系统能做的只有承接并留痕。
+
+    ``subject`` 会过 ``normalize_subject``,与检测器产出共用同一套规范化,
+    否则它与 ``touched_subjects`` 的交集永远为空、门禁形同虚设。
+    """
+
+    datasource: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    kind: str = "semantics_changed"
+    detail: dict[str, Any] = Field(default_factory=dict)
+    severity: Literal["info", "warning", "critical"] = "warning"
+    author: str = ""

@@ -235,11 +235,11 @@ def collect(
     也不产出半真报告。这与 ``verifiable-loop`` 里"CI 静默通过比红更危险"
     是同一条原则。
     """
-    parts: list[DriftReport] = []
+    parts: list[tuple[str, DriftReport]] = []
     if schema_report is not None:
-        parts.append(from_schema_drift(schema_report, datasource))
+        parts.append((L1, from_schema_drift(schema_report, datasource)))
     if semantic_report is not None:
-        parts.append(from_semantic_drift(semantic_report, datasource))
+        parts.append((L2, from_semantic_drift(semantic_report, datasource)))
 
     if not parts:
         return DriftReport(
@@ -247,15 +247,22 @@ def collect(
             generated_at=_now(), skip_reason="no_detector_ran",
         )
 
-    skipped = [p for p in parts if p.status != RUN_OK]
+    skipped = [p for _, p in parts if p.status != RUN_OK]
     if skipped:
         reasons = ",".join(sorted({p.skip_reason or "unspecified" for p in skipped}))
+        # ``levels_verified`` 留空:未完成的检测什么都没验证。哪怕 L1 那一路
+        # 跑完且干净,它的结论也没有 L2 兜底 —— 半份结论单独采信正是 I3 要挡的。
         return DriftReport(
             datasource=datasource, status=RUN_SKIPPED, items=[],
             generated_at=_now(), skip_reason=reasons,
         )
 
-    items = [i for p in parts for i in p.items]
+    # verified = 「这一级的检测器**真的跑了并给出了结论**」。没有语义层的
+    # datasource 其 semantic_report 为 None(L2 那路压根没进 parts)——
+    # 于是 L2 不在 verified 里,门禁不会把「没有契约可违反」误当成「契约成立」。
     return DriftReport(
-        datasource=datasource, status=RUN_OK, items=items, generated_at=_now(),
+        datasource=datasource, status=RUN_OK,
+        items=[i for _, p in parts for i in p.items],
+        generated_at=_now(),
+        levels_verified=frozenset(lv for lv, _ in parts),
     )

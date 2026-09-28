@@ -106,6 +106,10 @@ class DriftItem:
         if not self.subject:
             raise ValueError("DriftItem.subject must be non-empty")
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"level": self.level, "kind": self.kind, "subject": self.subject,
+                "severity": self.severity, "detail": dict(self.detail)}
+
 
 @dataclass(frozen=True)
 class ImpactSet:
@@ -150,6 +154,16 @@ class DriftReport:
     这正是 I3:「空报告 ≠ 无漂移」。两个现有检测器在 catalog 不可达时都返回
     空报告(``schema_drift.py:46`` / ``provider._compute_drift`` 的 ``model
     is None`` 分支),调用方若不区分,就会把「没查成」读成「没问题」。
+
+    ``levels_verified`` 是 ``status`` 之外**第二道** I3 防线。``status`` 只说
+    「这次检测整体完成了吗」,说不了「哪几级真的查了」。一次只请求 L1 的检测
+    是 ``ok`` 的,但它对 L2 一无所知;一份 datasource 没有语义层的 ``ok``
+    报告,对 L2 同样一无所知。门禁若只看 ``ok``,这两种情况都会被读成
+    「L2 干净」。
+
+    所以名字是 **verified** 而不是 checked:它列的是「本次**验证通过**的
+    级别」。``skipped`` 的检测恒为空集 —— 未完成的检测什么都没验证,
+    哪怕其中一路跑完了也一样(那半份结论没有兜底,不能单独采信)。
     """
 
     datasource: str
@@ -159,6 +173,11 @@ class DriftReport:
     skip_reason: str | None = None
     new_count: int = 0
     error: str | None = None
+    levels_verified: frozenset[str] = frozenset()
+
+    def verified(self, level: str) -> bool:
+        """该级别是否**在本次检测中被验证通过**。门禁的 coverage 判定入口。"""
+        return self.status == RUN_OK and level in self.levels_verified
 
     @property
     def ok(self) -> bool:
@@ -169,6 +188,25 @@ class DriftReport:
 
     def blocking(self) -> list[DriftItem]:
         return [i for i in self.items if i.severity in BLOCKING_SEVERITIES]
+
+    def to_dict(self) -> dict[str, Any]:
+        """对外形状 —— API 与 CLI **共用这一份**。
+
+        两个前门各写一遍 ``to_dict`` 是漂移的温床:``levels_verified`` 这种
+        后加的字段会只出现在其中一边,而消费方看不出少了的那个键意味着什么。
+        """
+        return {
+            "datasource": self.datasource,
+            "status": self.status,
+            "skip_reason": self.skip_reason,
+            "generated_at": self.generated_at,
+            "detected": len(self.items),
+            "new_count": self.new_count,
+            # 门禁的输入:哪几级**验证通过**了。只有 status=ok 不够 ——
+            # 一次只查了 L1 的 ok 报告,对 L2 一无所知。
+            "levels_verified": sorted(self.levels_verified),
+            "items": [i.to_dict() for i in self.items],
+        }
 
 
 @dataclass(frozen=True)
@@ -229,10 +267,17 @@ BLOCK = "block"
 def normalize_subject(raw: str) -> str:
     """主体名规范化 —— 落库键与 coverage 判定**必须**共用这一份。
 
-    规则:小写、去引号/反引号/方括号、去 ``schema.`` 前缀差异、压空白。
-    ``public.orders.id`` 与 ``orders.id`` 归一到同一主体:物理 schema 前缀
-    在语义层是可选的(见 ``rls.physical_table``),不归一会让同一处漂移在
-    两条检测路径下产生两个 subject。
+    规则:小写、去引号/反引号/方括号(逐段)、压空白;三段及以上取末两段 ——
+    ``public.orders.id`` 与 ``orders.id`` 归一到同一主体。物理 schema 前缀在
+    语义层是可选的(见 ``rls.physical_table``),不归一会让同一处漂移在两条
+    检测路径下产生两个 subject。
+
+    **两段输入是歧义的,且这里的取舍是「保留两段」**:``public.orders`` 既可
+    读作 ``schema.table`` 也可读作 ``table.column``,没有 schema 清单就无法从
+    字面上判定。两个方向的代价完全不对称 —— 保留只是让一对本应合并的主体各
+    占一行(可见、可查);剥离则会把 ``orders.id`` 与 ``users.id`` 一起塌成
+    ``id``,不同表的同名列合并成一条记录,``seen_count`` 与影响面从此都在说谎。
+    所以宁可少合并,不可错合并。
     """
     s = str(raw or "").strip()
     if not s:
@@ -241,7 +286,8 @@ def normalize_subject(raw: str) -> str:
     # 引号必须**逐段**剥:``"orders"."id"`` 只在整串首尾剥会剩 ``orders"."id``。
     parts = [p.strip().strip('`"[]').strip() for p in s.split(".")]
     parts = [p for p in parts if p]
-    # 去 schema 前缀:保留最后两段(table.column)或一段(table)
+    # 三段以上才剥 schema:保留最后两段(table.column)或一段(table)。
+    # 恰好两段时**不剥** —— 见上面「少合并,不错合并」。
     if len(parts) > 2:
         parts = parts[-2:]
     return ".".join(parts)

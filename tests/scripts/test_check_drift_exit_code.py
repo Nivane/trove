@@ -8,6 +8,7 @@ CI 判断依据。于是「catalog 连不上 → 报告全空 → dirty=False �
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -39,8 +40,11 @@ def _l1(**over):
 
 
 def _rep(kb_report, semantic=None, name="demo"):
-    return {"kb": kb_report, "semantic": semantic,
-            "drift": collect(kb_report, semantic, name)}
+    """``decide`` 的输入形状 —— 走真的 ``collect``,不手搓 DriftReport。
+
+    手搓会让这些测试与合流逻辑脱钩:哪天 ``collect`` 改了判定,测试仍然绿。
+    """
+    return {"drift": collect(kb_report, semantic, name)}
 
 
 # ── 修掉的那条 ──────────────────────────────────────────────────────
@@ -146,3 +150,63 @@ def test_render_human_clean_path_unchanged(cd, capsys):
     out, _ = capsys.readouterr()
     assert "KB drift: OK" in out
     assert "Semantic drift: n/a (no semantic layer)" in out
+
+
+def test_render_human_lists_both_levels_from_the_unified_items(cd, capsys):
+    """渲染的是**合流后**的证据流 —— 两条路的发现出现在同一段输出里。"""
+    kb = _l1(new_tables=["brand_new"], gone_tables=["legacy"],
+             column_changes={"orders": {"added": ["amount"], "removed": ["old"]}})
+    sem = {"stale": True, "gone_tables": ["sales"],
+           "missing_fields": {"orders": ["region"]},
+           "missing_keys": {"orders": ["id"]},
+           "relationship_breaks": [{"name": "r1", "detail": "orders gone"}],
+           "status": "ok", "skip_reason": None}
+    cd._render_human(cd.decide({"demo": _rep(kb, sem)}, errors=[])[0])
+    out, _ = capsys.readouterr()
+
+    assert "  + new table: brand_new" in out
+    assert "  - gone table: legacy" in out
+    assert "  + orders.amount added" in out
+    assert "  - orders.old removed" in out
+    assert "  - gone dataset: sales" in out
+    assert "  - orders missing field: region" in out
+    assert "  - orders missing key: id" in out
+    assert "  - relationship r1: orders gone" in out
+    assert "KB drift: DRIFT" in out and "Semantic drift: DRIFT" in out
+
+
+def test_render_item_never_silently_drops_an_unknown_kind(cd):
+    """检测器将来新增 kind 时,输出里仍要看得见 —— 静默丢弃 = 发现消失。"""
+    line = cd._render_item({"level": "L3", "kind": "value_not_anchorable",
+                            "subject": "orders.status", "severity": "warning",
+                            "detail": {}})
+    assert "orders.status" in line and "value_not_anchorable" in line
+
+
+# ── payload 契约 ────────────────────────────────────────────────────
+
+def test_payload_carries_levels_verified(cd):
+    """门禁的输入。
+
+    ``status=ok`` 只说「整体跑完了」,说不了「哪几级真验证过」—— 一个没查
+    L2 的 ok 报告若只暴露 status,消费方会读成「L2 干净」。
+    """
+    payload, _ = cd.decide({"demo": _rep(_l1())}, errors=[])
+    drift = payload["datasources"]["demo"]["drift"]
+    assert drift["status"] == "ok"
+    assert drift["levels_verified"] == ["L1"], "没有语义层 → L2 未验证"
+
+
+def test_payload_marks_l1_l2_verified_when_both_ran(cd):
+    sem = {"stale": False, "gone_tables": [], "missing_fields": {},
+           "missing_keys": {}, "relationship_breaks": [],
+           "status": "ok", "skip_reason": None}
+    payload, _ = cd.decide({"demo": _rep(_l1(), sem)}, errors=[])
+    assert payload["datasources"]["demo"]["drift"]["levels_verified"] == ["L1", "L2"]
+
+
+def test_payload_is_json_serializable(cd):
+    """``--json`` 直接 ``json.dumps`` 它;塞进去一个 dataclass 会在运行时炸。"""
+    kb = _l1(gone_tables=["legacy"])
+    payload, _ = cd.decide({"demo": _rep(kb, name="demo")}, errors=[])
+    json.dumps(payload)  # 不抛即通过

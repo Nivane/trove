@@ -39,28 +39,19 @@ from pathlib import Path
 from trove.services.datasource.config_store import ConfigStore
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
-from trove.services.drift import collect
+from trove.services.drift import DriftService
 from trove.services.kb.service import KbService, resolve_kb_root
-from trove.services.memory.schema_drift import detect_drift
 
 
-class _DictCatalog:
-    """Adapter-shaped catalog over an already-fetched live schema."""
+async def _check_datasource(name: str, cfg, kb) -> dict:
+    """跑一次检测。**本函数只做接线**,检测/合流/落库都在 ``DriftService``。
 
-    def __init__(self, data: dict[str, set[str]]) -> None:
-        self._data = data
-
-    async def column_sets(self, datasource: str) -> dict[str, set[str]]:
-        return self._data
-
-
-async def _live_catalog(adapter) -> dict[str, set[str]]:
-    schema = await adapter.get_schema()
-    return {t.name: {c.name for c in t.columns} for t in schema.tables}
-
-
-async def _check_datasource(name: str, cfg, kb, kb_dir: str | None,
-                            verbose: bool) -> dict:
+    在 2026-09-28 之前这里自己串了两个检测器,于是同一个「合流」逻辑在
+    本脚本与 API 里各有一份;更要紧的是结果**不落库** —— cron 每天跑,
+    每天都报同一批名字,分不出「新漂移」与「已知未处理」。走服务层之后
+    这两件事一起解决:一份合流实现,``first_seen_at`` / ``seen_count``
+    让「昨天就有」与「刚冒出来」在数据上分开。
+    """
     registry = ConnectorRegistry()
     try:
         if getattr(cfg, "type", "") == "demo":
@@ -68,29 +59,42 @@ async def _check_datasource(name: str, cfg, kb, kb_dir: str | None,
             await setup_demo_datasource(registry, set_default=False)
         else:
             await registry.register(cfg)
-        adapter = await registry.get(name)
-        catalog = await _live_catalog(adapter)
-        dialect = adapter.dialect() or "sqlite"
 
-        kb_report = await detect_drift(name, kb, _DictCatalog(catalog))
+        async def schema_provider(datasource: str) -> dict[str, set[str]]:
+            adapter = await registry.get(datasource)
+            schema = await adapter.get_schema()
+            return {
+                str(t.name).lower(): {str(c.name).lower() for c in t.columns}
+                for t in schema.tables
+            }
 
-        semantic = None  # 该数据源没有语义层 = 不适用,不是「查失败」
-        semantics_path = kb.semantics_path(name)
-        if semantics_path.exists():
+        async def semantic_factory(datasource: str, catalog: dict[str, set[str]]):
+            """没有 ``semantics.yml`` → None:该库没有语义层 = **不适用**。
+
+            与「有语义层但读不出来」必须分开 —— 后者会以 skipped 传上来,
+            前者不该让一个从没建过语义层的库永远报错。
+            """
+            path = kb.semantics_path(datasource)
+            if not path.exists():
+                return None
             from trove.services.semantic_layer.provider import SemanticLayerProvider
-            provider = SemanticLayerProvider(
-                directory=Path.cwd() / ".trove" / "semantic" / name,
-                datasource=name,
-                dialect=dialect,
-                kb_semantics_path=semantics_path,
-                catalog={t.lower(): {c.lower() for c in cols}
-                         for t, cols in catalog.items()},
-            )
-            semantic = provider.drift()
 
-        # 合流:两条路的报告 → 一份带 status 的证据流(I3 的落地点)
-        drift = collect(kb_report, semantic, name)
-        return {"kb": kb_report, "semantic": semantic, "drift": drift}
+            adapter = await registry.get(datasource)
+            return SemanticLayerProvider(
+                directory=Path.cwd() / ".trove" / "semantic" / datasource,
+                datasource=datasource,
+                dialect=adapter.dialect() or "sqlite",
+                kb_semantics_path=path,
+                catalog=catalog,
+            )
+
+        svc = DriftService(Path.cwd(), kb=kb, schema_provider=schema_provider,
+                           semantic_factory=semantic_factory)
+        try:
+            drift = await svc.detect(name)
+        finally:
+            await svc.dispose()
+        return {"drift": drift}
     finally:
         await registry.close_all()
 
@@ -117,8 +121,7 @@ async def _run(args) -> tuple[dict, int]:
     errors = []
     for cfg in configs:
         try:
-            reports[cfg.name] = await _check_datasource(
-                cfg.name, cfg, kb, args.kb_dir, args.verbose)
+            reports[cfg.name] = await _check_datasource(cfg.name, cfg, kb)
         except Exception as e:
             errors.append(f"{cfg.name}: {e}")
 
@@ -143,7 +146,8 @@ def decide(reports: dict, errors: list[str]) -> tuple[dict, int]:
         if drift.items:
             dirty[name] = rep
 
-    payload = {"datasources": reports}
+    payload = {"datasources": {n: {"drift": rep["drift"].to_dict()}
+                               for n, rep in reports.items()}}
     if incomplete:
         payload["incomplete"] = incomplete
     if errors:
@@ -189,43 +193,58 @@ def _render_human(result: dict) -> None:
             print(f"  - {e}", file=sys.stderr)
         return
     for name, rep in sorted(result.get("datasources", {}).items()):
-        kb = rep["kb"]
-        drift = rep.get("drift")
+        drift = rep["drift"]
+        status = drift["status"]
+        verified = set(drift.get("levels_verified") or ())
+        items = drift.get("items") or []
+        by_level = {lv: [i for i in items if i["level"] == lv]
+                    for lv in ("L1", "L2")}
+
         print(f"== {name} ==")
-        if drift is not None and not drift.ok:
-            print(f"KB drift: 未检查 ({drift.skip_reason})")
-        else:
-            kb_dirty = bool(kb["new_tables"] or kb["gone_tables"]
-                            or kb["column_changes"])
-            print(f"KB drift: {'OK' if not kb_dirty else 'DRIFT'}")
-        for t in kb["new_tables"]:
-            print(f"  + new table: {t}")
-        for t in kb["gone_tables"]:
-            print(f"  - gone table: {t}")
-        for table, ch in kb["column_changes"].items():
-            for c in ch["added"]:
-                print(f"  + {table}.{c} added")
-            for c in ch["removed"]:
-                print(f"  - {table}.{c} removed")
-        sem = rep["semantic"]
-        if sem is None:
-            print("Semantic drift: n/a (no semantic layer)")
-        elif isinstance(sem, dict) and "stale" in sem:
-            if sem.get("status") == "skipped":
-                print(f"Semantic drift: 未检查 ({sem.get('skip_reason')})")
-            else:
-                status = "STALE" if sem["stale"] else "OK"
-                print(f"Semantic drift: {status}")
-            for t in sem.get("gone_tables", []):
-                print(f"  - gone dataset: {t}")
-            for ds, fields in sem.get("missing_fields", {}).items():
-                print(f"  - {ds} missing fields: {fields}")
-            for ds, keys in sem.get("missing_keys", {}).items():
-                print(f"  - {ds} missing keys: {keys}")
-            for rb in sem.get("relationship_breaks", []):
-                print(f"  - relationship {rb.get('name')}: {rb.get('detail')}")
-        else:
-            print(f"Semantic drift: {sem.get('detail', 'n/a')}")  # type: ignore[union-attr]
+
+        # 每一级单独说「查了没有」。整体 status=ok 只说明**被请求的那些级**
+        # 跑完了 —— 一个只跑了 L1 的 ok 报告对 L2 一无所知,不能渲染成 OK。
+        for level, label in (("L1", "KB drift"), ("L2", "Semantic drift")):
+            if status != "ok":
+                print(f"{label}: 未检查 ({drift.get('skip_reason')})")
+                continue
+            if level not in verified:
+                # CLI 恒请求全级别,所以 L2 不在 verified 里只有一个原因:
+                # 该数据源没有 semantics.yml —— 不适用,不是失败。
+                print(f"{label}: n/a (no semantic layer)")
+                continue
+            found = by_level[level]
+            print(f"{label}: {'OK' if not found else 'DRIFT'}")
+            for i in found:
+                print(_render_item(i))
+
+
+def _render_item(item: dict) -> str:
+    """一条漂移证据 → 一行人类可读。
+
+    渲染的是**合流后的统一形态**,不是原检测器的形状 —— 这正是本脚本改用
+    ``DriftService`` 的意义:两条路在这里已经相加过了。原字段在 ``detail``
+    里,所以渲染仍然精确(``+ new table: x`` 而不是笼统的 ``+ x``)。
+    """
+    d, kind = item.get("detail") or {}, item["kind"]
+    if kind == "table_added":
+        return f"  + new table: {d.get('table')}"
+    if kind == "table_removed":
+        return f"  - gone table: {d.get('table')}"
+    if kind == "column_added":
+        return f"  + {d.get('table')}.{d.get('column')} added"
+    if kind == "column_removed":
+        return f"  - {d.get('table')}.{d.get('column')} removed"
+    if kind == "dataset_table_missing":
+        return f"  - gone dataset: {d.get('dataset')}"
+    if kind == "field_column_missing":
+        return f"  - {d.get('dataset')} missing field: {d.get('field')}"
+    if kind == "key_column_missing":
+        return f"  - {d.get('dataset')} missing key: {d.get('key')}"
+    if kind == "relationship_broken":
+        return f"  - relationship {d.get('relationship')}: {d.get('problems')}"
+    # 未知 kind 也要出得来:静默丢弃等于让检测器的发现消失。
+    return f"  - [{item['level']}] {item['subject']} ({kind})"
 
 
 if __name__ == "__main__":

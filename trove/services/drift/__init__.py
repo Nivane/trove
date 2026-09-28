@@ -10,6 +10,10 @@
   :class:`DriftItem`;原报告降为 ``detail``,不丢。
 - :mod:`~trove.services.drift.adapters` —— 两个检测器 → :class:`DriftItem`
   的映射,含 ``skipped`` 的显式传递(I3:空报告 ≠ 无漂移)。
+- :mod:`~trove.services.drift.store` —— ``semantic_drift`` + ``drift_run``
+  两张表,首次可见时间与处置留痕(I5 幂等;重现已解决项 = 回归)。
+- :mod:`~trove.services.drift.service` —— :class:`DriftService`,检测/查询/
+  处置的唯一入口,schema 获取注入以便脱库测试。
 
 **四级分类学**(判据:语义模型对物理世界做过的承诺是否仍成立)::
 
@@ -54,6 +58,17 @@ from trove.services.drift.models import (
     SemanticChange,
     normalize_subject,
 )
+from trove.services.drift.service import (
+    RESOLVABLE_FROM,
+    SUPPORTED_LEVELS,
+    DriftError,
+    DriftNotFound,
+    DriftService,
+    ExternalDrift,
+    IllegalTransition,
+    UnknownLevel,
+)
+from trove.services.drift.store import DriftStore
 
 __all__ = [
     # models
@@ -66,4 +81,8 @@ __all__ = [
     "SemanticChange", "GateDecision", "normalize_subject",
     # adapters
     "collect", "from_schema_drift", "from_semantic_drift",
+    # store / service
+    "DriftStore", "DriftService", "ExternalDrift",
+    "SUPPORTED_LEVELS", "RESOLVABLE_FROM",
+    "DriftError", "UnknownLevel", "DriftNotFound", "IllegalTransition",
 ]

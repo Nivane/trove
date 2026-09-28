@@ -18,7 +18,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from trove.api.routers import catalog, chat, facts, kb, semantic, semantic_query
+from trove.api.routers import (
+    catalog,
+    chat,
+    drift,
+    facts,
+    kb,
+    semantic,
+    semantic_query,
+)
 from trove.core.errors import DatasourceError, SessionError
 from trove.core.logging import get_logger
 from trove.core.metrics import (
@@ -184,6 +192,8 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(jobs_router.router, prefix="/v1")
         app.include_router(skills_router.router, prefix="/v1")
         app.include_router(decisions_router.router, prefix="/v1")
+        # 漂移面是管理动作(改状态、下豁免、承接外部声明),与 semantic 同档。
+        app.include_router(drift.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
