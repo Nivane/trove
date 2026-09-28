@@ -130,6 +130,15 @@ class AttributionConfig:
 class AgentConfig:
     """Top-level agent configuration."""
 
+    def __post_init__(self) -> None:
+        # home 在此归一化为绝对路径。下游有多个消费者直接拿 Path(config.home)
+        # 用(JobStore / MemoryService / 检索 indexer / trace store),而字面量
+        # "~" 在 POSIX 里只是普通目录名 —— Path("~/.trove") 是**相对**路径,
+        # 会相对 cwd 解析,于是从仓库根跑一次就在项目下建出 ./~/.trove/,
+        # trace 与 run 日志静默写进那里(真家目录的 traces.jsonl 停在原地)。
+        # 收在配置这一处,所有现有与未来的消费者同时免疫,不必逐个补 expanduser。
+        self.home = str(Path(self.home).expanduser())
+
     home: str = "~/.trove"
     target: str = ""  # default model e.g. "openai/gpt-4o"
     model_fast: str = ""  # 快速档模型: simple/standard 复杂度走此模型(未配置 = 不分档,全走 target)

@@ -30,9 +30,14 @@ def configure_trace_store(home_dir: str | Path | None) -> None:
     """Enable the local trace store into the given trove home directory.
 
     Passing None disables it (tests need a deterministic off switch —
-    the store home is process-global)."""
+    the store home is process-global).
+
+    The path is expanduser'd here as defense in depth: this is a
+    process-global that accepts a home from any caller (scripts pass
+    ``Path.home() / ".trove"``, the app passes ``config.home``). A literal
+    "~" would resolve relative to cwd and scatter traces into ./~."""
     global _configured_home
-    _configured_home = str(home_dir) if home_dir is not None else None
+    _configured_home = str(Path(home_dir).expanduser()) if home_dir is not None else None
 
 
 def is_configured() -> bool:

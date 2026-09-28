@@ -68,3 +68,15 @@ class TestTraceStore:
         # 坏行被丢弃,不再阻塞后续写入
         add_event("r1", {"kind": "finish", "summary": {}})
         assert [e["kind"] for e in get_run("r1")["events"]] == ["run", "finish"]
+
+
+class TestStoreDirExpansion:
+    def test_tilde_home_is_expanded_not_cwd_relative(self):
+        """字面量 ~ 路径必须展开 —— 否则相对 cwd 解析,在项目下建出 ./~。"""
+        from trove.tracing.local import store_dir
+
+        configure_trace_store("~/.trove")
+        d = store_dir()
+        assert d is not None
+        assert d.is_absolute()
+        assert "~" not in str(d)

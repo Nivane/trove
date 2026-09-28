@@ -374,3 +374,29 @@ class TestPerNodeModel:
         cfg = ConfigLoader.load_agent_config(str(conf))
         assert cfg.node_models == {"query_sketch": "openai/gpt-4o-mini", "reflect": "deepseek/reasoner"}
         assert cfg.model_for_node("query_sketch", "complex") == "openai/gpt-4o-mini"
+
+
+class TestHomeNormalization:
+    """home 必须是展开后的绝对路径。
+
+    Path("~/.trove") 是**相对**路径("~" 只是普通目录名),只有 expanduser()
+    才会换成家目录。这个裸字符串曾被直接喂给 trace store,于是从仓库根跑的
+    每一次 REPL/serve 都在 cwd 下建出 ./~/.trove/。归一化收在配置层这一处,
+    所有下游消费者(含未来新增的)同时受益。
+    """
+
+    def test_default_home_is_expanded(self):
+        from pathlib import Path
+
+        cfg = AgentConfig()
+        assert "~" not in cfg.home
+        assert Path(cfg.home).is_absolute()
+
+    def test_yaml_without_home_key_yields_expanded_home(self, tmp_path):
+        from pathlib import Path
+
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert "~" not in cfg.home
+        assert Path(cfg.home).is_absolute()
