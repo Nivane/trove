@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 评测与回归门：离线回放（零 LLM 零网络）、指标口径与方向容差、三类产物的消费方式、退出码语义，以及检索/RRF 评测脚本。">
+<title>评测与回归门 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>运维<span class="sep">/</span>评测与回归门
+      </div>
+      <h1>评测与回归门</h1>
+      <p class="lede">
+        问数系统的改动有个共同难题：<strong>你怎么知道这次改动没让系统变差？</strong>
+        凭感觉不行，跑一次端到端评测很贵。这一页讲 Trove 用的第三条路：
+        纯文件的回归门——零 LLM、零网络。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="shape">三层结构</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>件</th><th>成本</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>录制与回放</strong></td>
+            <td class="mono">trove/eval/replay.py</td>
+            <td>零</td>
+          </tr>
+          <tr>
+            <td><strong>指标与对比</strong></td>
+            <td class="mono">trove/eval/gate.py</td>
+            <td>零（纯函数）</td>
+          </tr>
+          <tr>
+            <td><strong>端到端评测</strong></td>
+            <td class="mono">scripts/eval_bird.py</td>
+            <td><strong>花钱</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      设计意图是让<strong>绝大多数改动不需要走到第三层</strong>。
+      第一、二层是把「已经跑过的结果」变成可反复对账的数据。
+    </p>
+
+    <h2 id="replay">录制与回放</h2>
+
+    <p>
+      跑一次真实评测时，每一轮的轨迹被录下来；之后就可以离线回放打分，
+      不调用任何模型、不连任何网络。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L104">replay.py:104 <span class="ref-line">score_replay</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L39">replay.py:39 <span class="ref-line">sql_exact_match</span></a>
+    </p>
+
+    <p>
+      <code>sql_exact_match</code> 用的是 <strong>SQLGlot 结构级</strong>比较，不是字符串比较——
+      大小写、空白、别名写法的差异不该算作不同。同理，一致性判断里
+      「可判定的 verdict」集合是<strong>唯一定义</strong>，被门与回放共用，
+      避免两处口径分叉。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L52">replay.py:52 <span class="ref-line">JUDGED_VERDICTS</span></a>
+    </p>
+
+    <p>
+      回放产物落在 <code>.trove/eval/replay.jsonl</code>。
+    </p>
+
+    <h2 id="metrics">指标口径</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>指标</th><th>怎么算</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>EX</strong></td><td>可判定条目里 <code>MATCH</code> 的占比</td></tr>
+          <tr><td><strong>编译命中率</strong></td><td>带 <code>compile_meta</code> 的条目里 outcome 为 compiled 的占比</td></tr>
+          <tr><td><strong>完成率</strong></td><td>最终交付了答案的占比</td></tr>
+          <tr><td><strong>恢复率</strong></td><td>尝试过恢复的条目里成功恢复的占比</td></tr>
+          <tr><td><strong>gold 精确匹配</strong></td><td>仅回放条目（有 gold_sql 的）</td></tr>
+          <tr><td><strong>token 成本</strong></td><td>平均每问 token 数</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L117">gate.py:117 <span class="ref-line">metrics_from_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">gate.py:240 <span class="ref-line">compare_metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L310">gate.py:310 <span class="ref-line">render_report</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">每个指标都得声明「哪个方向是变好」</span>
+      <div>
+        <p>EX 涨了是好事，平均 token 涨了是坏事。所以指标被分成 HIGHER_BETTER 与
+        LOWER_BETTER 两个集合——没有这个声明，回归判定根本无法自动化。</p>
+        <p>这是「门」能成立的前提：<strong>「变差」必须是一个可计算的方向</strong>，而不是评审时的印象。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L36">gate.py:36 <span class="ref-line">HIGHER_BETTER</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L47">gate.py:47 <span class="ref-line">DEFAULT_TOLERANCE</span></a>
+    </p>
+
+    <h3>容差：绝对量或相对量</h3>
+
+    <p>
+      指标在小样本上本来就会抖，所以对比带容差。容差可以写成绝对量（<code>0.02</code>）
+      或相对量（后缀 <code>-r</code>，如 <code>0.10-r</code> 表示允许 10% 的相对波动）。
+    </p>
+
+    <p>
+      token 成本这类量级跨度大的指标适合相对量——「涨了 100 个 token」在 1000 的基数和
+      10000 的基数下意义完全不同。
+    </p>
+
+    <h3>分母漂移会告警，但不会拦</h3>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L287">gate.py:287 <span class="ref-line">DENOMINATOR_DRIFT_WARN</span></a>
+    </p>
+
+    <p>
+      如果两次运行的样本量差得太多（默认 20%），门会<strong>警告但不判回归</strong>。
+      这个区分很重要：样本量变化会让所有指标失去可比性，但把它当成回归拦住提交会误伤
+      （比如你只是加了几道题）。告警把判断权交回给人。
+    </p>
+
+    <h2 id="consume">门消费哪三类产物</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>产物</th><th>来源</th><th>内容</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">results.jsonl</td>
+            <td><code>eval_bird.py</code></td>
+            <td>逐题判定条目（含 run_id，可反查轨迹）</td>
+          </tr>
+          <tr>
+            <td class="mono">replay.jsonl</td>
+            <td><code>offline_eval.py replay</code></td>
+            <td>回放记录</td>
+          </tr>
+          <tr>
+            <td class="mono">scorecard json</td>
+            <td><code>tune_rrf.py</code> / <code>eval_hybrid_retrieval.py</code> / <code>eval_bird_retrieval.py</code></td>
+            <td>检索与 RRF 指标</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L346">gate.py:346 <span class="ref-line">load_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L117">eval_bird.py:117 <span class="ref-line">RESULTS_PATH</span></a>
+    </p>
+
+    <p>
+      注意 <code>scorecard</code> 不是门的参数，而是<strong>上游脚本的输出旗标</strong>；
+      门统一通过 <code>--baseline</code> / <code>--current</code> 消费它们。
+      这意味着<strong>改检索参数也会被门拦住</strong>，不需要跑端到端评测。
+    </p>
+
+    <h2 id="cli">怎么用</h2>
+
+    <pre><code>python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;
+python scripts/eval_gate.py ... --tol ex=0.02          # 覆盖单项容差
+python scripts/eval_gate.py ... --min-n 20             # 样本不足直接判为不可比
+python scripts/eval_gate.py ... --json                 # 机器可读，供 CI 解析
+python scripts/eval_gate.py ... --ci                   # CI 模式</code></pre>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>退出码</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">0</td><td>全部指标在容差内（或无回归）</td></tr>
+          <tr><td class="mono">1</td><td><strong>存在回归</strong>——把改动拦下</td></tr>
+          <tr><td class="mono">2</td><td>用法/输入错误，或样本不足</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L47">eval_gate.py:47 <span class="ref-line">--tol</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L51">eval_gate.py:51 <span class="ref-line">--min-n</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L54">eval_gate.py:54 <span class="ref-line">--json</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L44">eval_gate.py:44 <span class="ref-line">--ci</span></a>
+    </p>
+
+    <p>
+      缺省参数从 <code>conf/agent.yml</code> 的 <code>eval</code> 段读，
+      所以本地不用每次敲一长串。挂到 CI 或提交前钩子上即可自动拦截回归。
+    </p>
+
+    <h2 id="retrieval-eval">检索侧的评测脚本</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>脚本</th><th>测什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">eval_retrieval.py</td><td>KB 检索召回率 + 子结构覆盖 + 预算挤占</td></tr>
+          <tr><td class="mono">eval_hybrid_retrieval.py</td><td>Recall@k / MRR / nDCG@k，精排前后对比</td></tr>
+          <tr><td class="mono">eval_bird_retrieval.py</td><td>BIRD 表级 schema 召回 + 分路消融</td></tr>
+          <tr><td class="mono">tune_rrf.py</td><td>RRF 权重/k 网格调优</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      这四个都是<strong>零 LLM 成本</strong>的，可以随便跑。参数详见
+      <a href="../capabilities/retrieval.html#eval">混合检索 · 评测</a>。
+    </p>
+
+    <h2 id="eval-bird">端到端评测：花钱的那个</h2>
+
+    <div class="callout warn">
+      <span class="callout-tag">不要随手跑</span>
+      <div>
+        <p><code>scripts/eval_bird.py</code> 走完整反思管线、连真库、调真模型——它是<b>计费</b>的。仓库里对此有明确约定：<strong>没有明确指令不要启动评测运行</strong>。</p>
+        <p>日常改动应当先过回归门；只有在需要重新建立 baseline 或验证一个大改动时才跑端到端。</p>
+      </div>
+    </div>
+
+    <p>
+      它的产物除了结果文件，还有一份 <code>failures.jsonl</code> 供
+      <code>distill_lessons.py</code> 蒸馏成教训草案（默认 pending，需人确认）。
+      逐题条目里带 <code>run_id</code>，可以据此找到那一轮的完整轨迹日志。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L116">eval_bird.py:116 <span class="ref-line">FAILURES_PATH</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L27">offline_eval.py:27 <span class="ref-line">DEFAULT_OUTPUT</span></a>
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>检索指标的具体含义</td><td><a href="../capabilities/retrieval.html#eval">混合检索 · 评测</a></td></tr>
+          <tr><td>失败轨迹怎么回放</td><td><a href="observability.html">可观测性</a></td></tr>
+          <tr><td>另一类离线门（漂移）</td><td><a href="drift.html">数据漂移治理</a></td></tr>
+          <tr><td>eval 段的配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

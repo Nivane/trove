@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 可观测性：健康检查的三态语义、Prometheus 指标、本地 trace 与 run log、Langfuse 集成，以及出问题时从哪一步开始查。">
+<title>可观测性 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>运维<span class="sep">/</span>可观测性
+      </div>
+      <h1>可观测性</h1>
+      <p class="lede">
+        这一页回答两个问题：<strong>系统现在健康吗</strong>，
+        以及<strong>刚才那个答案是怎么来的</strong>。前者靠健康检查与指标，后者靠轨迹。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="health">健康检查：三态，不是两态</h2>
+
+    <p>
+      探活端点返回三种状态，区分「完全不可用」与「部分降级」：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>状态</th><th>HTTP</th><th>触发条件</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">unavailable</td>
+            <td class="mono">503</td>
+            <td>内部存储不可达——服务真的没法工作</td>
+          </tr>
+          <tr>
+            <td class="mono">degraded</td>
+            <td class="mono">200</td>
+            <td>存储正常，但某个数据源连不上</td>
+          </tr>
+          <tr>
+            <td class="mono">ok</td>
+            <td class="mono">200</td>
+            <td>都正常</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L250">app.py:250 <span class="ref-line">health</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L44">app.py:44 <span class="ref-line">_HEALTH_PING_TIMEOUT_S</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么数据源挂了不返回 503</span>
+      <div>
+        <p>一个数据源连不上，不该让编排系统把这个实例摘掉——其他数据源还是好的，而且这个数据源可能只是临时网络抖动。</p>
+        <p>所以它降级为 200 + <code>degraded</code>，把判断权交给监控侧。反之存储不可达是真的没法服务，必须 503。</p>
+      </div>
+    </div>
+
+    <p>
+      探活本身有 2 秒超时——健康检查不该因为下游慢而挂住，那样探活会从「发现问题」变成「制造问题」。
+    </p>
+
+    <h2 id="metrics">Prometheus 指标</h2>
+
+    <p>
+      <code>/v1/metrics</code> 输出 Prometheus 文本格式。它是<strong>免鉴权</strong>的，
+      理由是单进程 serve 的计数不敏感，而抓取端通常不便于携带用户 token。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L341">app.py:341 <span class="ref-line">metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L160">metrics.py:160 <span class="ref-line">render_metrics</span></a>
+    </p>
+
+    <p>
+      如果部署形态会把这个端口暴露到不可信网络，那就应该在反向代理层收掉这个路径——
+      这是部署决策，不是代码里的默认值能替你决定的。
+    </p>
+
+    <h2 id="traces">轨迹：两种粒度</h2>
+
+    <p>
+      系统同时维护两份轨迹记录，用途不同：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th>本地 trace</th><th>run log</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>位置</strong></td>
+            <td class="mono">{home}/traces.jsonl</td>
+            <td class="mono">{home}/runs/{run_id}.log</td>
+          </tr>
+          <tr>
+            <td><strong>粒度</strong></td>
+            <td>结构化事件（run / step / llm / finish）</td>
+            <td>人类可读的详细过程</td>
+          </tr>
+          <tr>
+            <td><strong>保留</strong></td>
+            <td>最新 2000 行（超出丢最旧）</td>
+            <td>最新 50 个 run</td>
+          </tr>
+          <tr>
+            <td><strong>用途</strong></td>
+            <td>批量分析、程序消费</td>
+            <td><code>/trace</code> 回放、排查具体一轮</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/local.py#L24">local.py:24 <span class="ref-line">MAX_LINES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L25">runlog.py:25 <span class="ref-line">MAX_RUN_LOGS</span></a>
+    </p>
+
+    <p>
+      两者都<strong>有界</strong>——这是刻意的。一个把磁盘写满的可观测性系统，
+      最终会变成一个可用性事故。丢最旧的是最简单的有界策略。
+    </p>
+
+    <p>
+      run id 被注入到日志上下文里，所以每行日志都带 <code>[req=... run=...]</code>，
+      可以直接 grep 出一轮请求的全部日志。<code>results.jsonl</code> 里的每条判定也带
+      <code>run_id</code>，从「哪道题错了」到「那一轮发生了什么」是一条可走的路径。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L45">runlog.py:45 <span class="ref-line">run_id_var</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/logging.py#L40">logging.py:40 <span class="ref-line">setLevel</span></a>
+    </p>
+
+    <h3>回放一轮</h3>
+
+    <pre><code>/trace            # 回放最近一轮的完整轨迹
+/trace list       # 列出可回放的轮次</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/trace_cmds.py#L180">trace_cmds.py:180 <span class="ref-line">trace</span></a>
+    </p>
+
+    <h2 id="langfuse">Langfuse：可选的上报</h2>
+
+    <p>
+      配置了凭证时，同一批事件也会发往 Langfuse。启用条件是
+      <strong>两个环境变量同时存在</strong>，配置里另有一个总开关。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L40">observability.py:40 <span class="ref-line">langfuse_enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L31">observability.py:31 <span class="ref-line">langfuse_trace_id</span></a>
+    </p>
+
+    <p>
+      trace id 由 run id 推导（去掉横杠），所以两套系统里的标识是同一个——
+      「本地日志里这一轮」与「Langfuse 里这一轮」不用做映射。
+    </p>
+
+    <p>
+      凭证缺失时是<strong>静默不启用</strong>，不是启动失败。理由是一致的：
+      追踪是增强能力，不该成为运行的前提。测试环境里相关环境变量会被主动清掉，
+      保证测试不试图外连。
+    </p>
+
+    <h2 id="hooks">事件从哪来：观察者中间件</h2>
+
+    <p>
+      追踪不在每个 LLM 调用点埋，而在 agent 循环的<strong>观察者中间件</strong>里。
+      默认有一个恒在的观察者，负责把事件分发到 run log 与 Langfuse。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L222">agent_loop.py:222 <span class="ref-line">_observers</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L285">agent_loop.py:285 <span class="ref-line">add_observer</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L335">agent_loop.py:335 <span class="ref-line">_trace_observer</span></a>
+    </p>
+
+    <p>
+      这样做的直接好处是：新增一个可观测性后端不需要改任何调用点，
+      注册一个观察者即可。间接好处是「漏埋点」这类问题从根上消失了。
+    </p>
+
+    <h2 id="debug">出问题时的排查顺序</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>现象</th><th>先看哪</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>服务整体不可用</td>
+            <td><code>/v1/health</code> 的状态与其中的存储 ping 结果</td>
+          </tr>
+          <tr>
+            <td>某个数据源问不出来</td>
+            <td>health 里的数据源检查段；再跑 <code>check_drift.py</code></td>
+          </tr>
+          <tr>
+            <td>答案内容不对</td>
+            <td><strong>先查 query_sketch 节点的输出</strong>——输出列往往是被计划定死的，而不是生成阶段选错的</td>
+          </tr>
+          <tr>
+            <td>想知道某一轮为什么这么答</td>
+            <td><code>/trace</code> 回放，看模型当时拿到的上下文与工具返回</td>
+          </tr>
+          <tr>
+            <td>准确率整体下滑</td>
+            <td>回归门对比（<a href="eval.html">评测与回归门</a>），而不是逐个案例猜</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-tag">一个具体的排查经验</span>
+      <div>
+        <p>输出列不对时，<strong>先看计划，不要先看生成的 SQL</strong>。用户消息里那句「Query plan (follow it…)」的权重高于系统提示里的规则——生成节点的行为是「照计划执行」。</p>
+        <p>所以计划里 <code>answer_columns</code> 写错了，生成阶段会忠实地把错误执行出来。去改提示词是白费力气。</p>
+      </div>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>轨迹里的每个节点是什么</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>日志与审计的区别</td><td><a href="security.html">安全边界</a></td></tr>
+          <tr><td>定时任务出问题</td><td><a href="admin.html">运维管理</a></td></tr>
+          <tr><td>trace 相关配置</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

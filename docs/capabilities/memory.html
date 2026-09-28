@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 记忆子系统：情节记忆、用户偏好、自动晋升、画像与保留策略——所有自动写入要么是 pending 草稿，要么是自包含记录。">
+<title>记忆子系统 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>Agent 能力<span class="sep">/</span>记忆子系统
+      </div>
+      <h1>记忆子系统</h1>
+      <p class="lede">
+        把散落在各处的记忆收成<strong>一个门面</strong>：情节、偏好、画像、生命周期。
+        它的核心约束只有一条——<strong>自动写入不越过人工确认</strong>，
+        但「事实记录」与「可复用知识」被区别对待。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="why">为什么需要一个门面</h2>
+
+    <p>
+      记忆不是一种东西。至少有三类，它们的写入时机、可信度、失效方式完全不同：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>记什么</th><th>可信度</th><th>谁能改</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>情节</strong></td>
+            <td>问过什么 → 生成了什么 SQL → 判定结果 → 改过几轮</td>
+            <td>事实记录，不声称正确</td>
+            <td>系统自动</td>
+          </tr>
+          <tr>
+            <td><strong>偏好</strong></td>
+            <td>用户表达过的长期口径与习惯</td>
+            <td>模型抽取，可能抽错</td>
+            <td>高置信直接生效，低置信待确认</td>
+          </tr>
+          <tr>
+            <td><strong>知识</strong></td>
+            <td>可复用的示例与教训</td>
+            <td>必须人工确认</td>
+            <td>草稿自动、生效靠人</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      在此之前这些记忆各写各的，读的地方也各取各的。门面
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L41">service.py:41 <span class="ref-line">MemoryService</span></a>
+      把它们收成一个读写口，统一<b>失败不阻塞查询</b>：任何一次记忆读写出问题，
+      都只落日志，不影响这次问答。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L15">service.py:15 <span class="ref-line">New automatic memory</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">「pending 或自包含」不是「一律 pending」</span>
+      <div>
+        <p>源码的自述比常见转述更精确：自动写入的东西要么是 <strong>pending 草稿</strong>（等管理员确认），要么是<strong>自包含记录</strong>（只对产生它的那个用户可见、不会被当成知识复用）。</p>
+        <p>情节记忆属于后者——它是「当时发生了什么」的事实记录，按 <code>(数据源, 用户)</code> 隔离，不参与跨用户的知识复用。把它和「可复用的示例/教训」混为一谈，会得出「记忆子系统会自动污染知识库」的错误结论。</p>
+      </div>
+    </div>
+
+    <h2 id="config">开关：渐进启用</h2>
+
+    <p>
+      记忆默认开在最保守的一档上，每一层都能单独关。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>开关</th><th>默认</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">enabled</td><td class="mono">true</td><td>总开关</td></tr>
+          <tr><td class="mono">episodes</td><td class="mono">true</td><td>情节记忆</td></tr>
+          <tr><td class="mono">auto_examples</td><td class="mono">true</td><td>成功问答 → pending 示例草稿</td></tr>
+          <tr><td class="mono">auto_preferences</td><td class="mono">true</td><td>会话压缩时抽取偏好</td></tr>
+          <tr><td class="mono">promotion</td><td class="mono"><strong>false</strong></td><td>自动晋升（见下）——<strong>默认关</strong></td></tr>
+          <tr><td class="mono">promotion_threshold</td><td class="mono">0.8</td><td>晋升所需置信度</td></tr>
+          <tr><td class="mono">profile_boost</td><td class="mono">false</td><td>把用户失败画像作为最低优先级提示注入</td></tr>
+          <tr><td class="mono">schema_drift_check</td><td class="mono">true</td><td>周期性对比实时 schema 与 KB</td></tr>
+          <tr><td class="mono">retention_days</td><td class="mono">空</td><td><strong>空 = 不清理</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/models.py#L58">models.py:58 <span class="ref-line">MemoryConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/models.py#L21">models.py:21 <span class="ref-line">MemoryScope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/models.py#L33">models.py:33 <span class="ref-line">MemoryEntry</span></a>
+    </p>
+
+    <p>
+      注意 <code>retention_days</code> 的默认值语义：<strong>空字典意味着永不清理</strong>，
+      不是「用默认天数清理」。这是一个刻意的默认——数据保留策略应该由部署方明确声明，
+      而不是由一个库替你决定。
+    </p>
+
+    <h2 id="episodes">情节记忆：跨会话的「问过什么」</h2>
+
+    <p>
+      存在 <code>~/.trove/memory/episodes.sqlite</code>，按
+      <code>(datasource, user_id, question, sql)</code> 去重，所以同一问题的反复提问不会堆成垃圾。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L114">episode.py:114 <span class="ref-line">EpisodeStore</span></a>
+    </p>
+
+    <h3>召回：词面与语义的 OR 门</h3>
+
+    <p>
+      检索走<strong>两路并联</strong>：词面相关度与向量余弦各设一道门槛，
+      <strong>任一门通过就召回</strong>。这个 OR 而不是 AND 的选择是有意的——
+      两种失败模式不对称：漏掉一条有用经验，比多带一条不相关经验代价大得多。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>常量</th><th>值</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">_LEXICAL_GATE</td><td class="mono">0.5</td><td>词面门槛（纯词面部署时等同旧行为）</td></tr>
+          <tr><td class="mono">_COSINE_GATE</td><td class="mono">0.55</td><td>语义门槛</td></tr>
+          <tr><td class="mono">_COSINE_WEIGHT</td><td class="mono">0.6</td><td>融合时语义通道权重</td></tr>
+          <tr><td class="mono">_LEXICAL_WEIGHT</td><td class="mono">0.4</td><td>融合时词面通道权重</td></tr>
+          <tr><td class="mono">_SEARCH_WINDOW</td><td class="mono">500</td><td>候选窗口</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L68">episode.py:68 <span class="ref-line">_COSINE_WEIGHT</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L70">episode.py:70 <span class="ref-line">_LEXICAL_GATE</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L71">episode.py:71 <span class="ref-line">_COSINE_GATE</span></a>
+    </p>
+
+    <p>
+      总分是 <code>0.6·余弦 + 0.4·词面</code>，再加一个<strong>温和的最近度衰减</strong>——
+      30 天半衰，权重只有 0.2。衰减刻意做得很轻：问数场景里，半年前的一条正确口径
+      通常仍然是对的，不该因为「旧」被埋掉。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L333">episode.py:333 <span class="ref-line">score</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L302">episode.py:302 <span class="ref-line">_decay</span></a>
+    </p>
+
+    <p>
+      没有配置 embedding 的数据源<strong>退化为纯词面路径</strong>，不是报错也不是空结果——
+      旧行为原样保留。这是这个仓库反复出现的模式：向量是增强，不是前提。
+    </p>
+
+    <h3>进上下文时是什么</h3>
+
+    <p>
+      召回的情节作为 <code>episodes</code> 块进生成上下文，但成功的和失败的<strong>用法相反</strong>：
+      成功的 SQL 作为少样本锚点，失败记录连同修正历史作为反例。只放成功的会让模型看不到边界，
+      只放失败的会让它学不到正确写法。
+    </p>
+
+    <h2 id="preferences">偏好：会话压缩时抽取</h2>
+
+    <p>
+      偏好的抽取时机是<strong>会话压缩</strong>，不是每一轮。理由很实际：
+      一次性请求和闲聊里根本没有持久偏好，只有一段对话的全局特征才能暴露「这个人习惯怎么看数」。
+    </p>
+
+    <p>
+      草稿存在 <code>~/.trove/memory/preferences.sqlite</code>，由 LLM 抽取
+      （提示词模板 <code>memory/preference_extract.{en,zh}.j2</code>，跟随提问语言）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/preferences.py#L243">preferences.py:243 <span class="ref-line">extract_and_store</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/preferences.py#L44">preferences.py:44 <span class="ref-line">HIGH_CONFIDENCE</span></a>
+    </p>
+
+    <h3>两条出路，按置信度分</h3>
+
+    <ul>
+      <li><strong>置信度 ≥ 0.9</strong> —— 直接写进该用户的 <code>user_facts</code>，下一轮就生效。</li>
+      <li><strong>低于阈值</strong> —— 落成 pending 草稿，等管理员在 <code>/admin/memory/preferences</code> 确认或拒绝。</li>
+    </ul>
+
+    <p>
+      为什么高置信可以直通？因为 <code>user_facts</code> 是<strong>按用户隔离</strong>的：
+      一条「我习惯看日均值」抽错了，影响的是这个人自己的下一次提问，不会污染别人，
+      也不会进知识库。这是「自包含」的一个实例——风险范围决定了要不要人工确认。
+    </p>
+
+    <p>
+      抽取前还有一道<strong>噪音过滤</strong>：闲聊、一次性请求、不含持久口径的句子被直接丢掉，
+      而不是低置信存起来。存下来只会让待确认列表变成噪音。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/preferences.py#L61">preferences.py:61 <span class="ref-line">is_usable_preference</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/preferences.py#L275">preferences.py:275 <span class="ref-line">HIGH_CONFIDENCE</span></a>
+    </p>
+
+    <h2 id="promotion">自动晋升：默认关的那一档</h2>
+
+    <p>
+      这是整个子系统里唯一「自动把草稿变成生效知识」的通道，因此<strong>默认关闭</strong>。
+      它的机制是一个证据累加器：某条 pending 教训被反复印证，置信度就会涨，
+      越过阈值后自动确认。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>证据类型</th><th>每次增量</th><th>当前接了吗</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">repeated_correction</td><td class="mono">0.3</td><td><strong>已接</strong>（唯一调用点）</td></tr>
+          <tr><td class="mono">upvote</td><td class="mono">0.4</td><td>已定义，未接线</td></tr>
+          <tr><td class="mono">lesson_reuse_pass</td><td class="mono">0.25</td><td>已定义，未接线</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/promotion.py#L33">promotion.py:33 <span class="ref-line">_EVIDENCE_DELTA</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/promotion.py#L47">promotion.py:47 <span class="ref-line">apply_evidence</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/promotion.py#L55">promotion.py:55 <span class="ref-line">maybe_promote</span></a>
+    </p>
+
+    <p>
+      晋升条件除阈值外还有一条：净好评 ≥ 3。两条满足其一即可。
+      晋升动作本身是调用 <code>KbService.update_lesson_confidence</code>——
+      写的是 <code>lessons.yml</code> 里的置信度字段，所以<strong>仍然可审计、可回退</strong>。
+      自动化的边界到此为止：它调整的是「这条已验证过的教训有多可信」，而不是无中生有一条知识。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1918">kb/service.py:1918 <span class="ref-line">update_lesson_confidence</span></a>
+    </p>
+
+    <h2 id="observations">一次问答结束后，写回什么</h2>
+
+    <p>
+      问答结束时的写回分四类，全部走 <code>observe</code>：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L179">service.py:179 <span class="ref-line">observe</span></a>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>触发条件</th><th>写什么</th><th>状态</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>每一轮（情节开启时）</td><td>情节记录</td><td>自包含</td></tr>
+          <tr><td>判定为 OK / EMPTY 且有 SQL</td><td>示例草稿</td><td><strong>pending</strong></td></tr>
+          <tr><td>出现过纠正</td><td>教训草稿</td><td><strong>pending</strong></td></tr>
+          <tr><td>硬失败</td><td>LLM 蒸馏出的教训草稿</td><td><strong>pending</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      第三、四类的区别在成本上：纠正历史是<strong>免费的</strong>——用户已经把正确答案说出来了，
+      直接记下即可；硬失败没有正确答案可参考，得花一次 LLM 调用把问题蒸馏成一条可复用的教训。
+      蒸馏结果还要过一道噪音过滤，避免把「这个问题本身就问得不清楚」记成教训。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/lesson_distill.py#L79">lesson_distill.py:79 <span class="ref-line">is_noise_lesson</span></a>
+    </p>
+
+    <h3>门禁守在哪</h3>
+
+    <p>
+      「pending 不进检索」不是靠约定，是靠检索侧的过滤：
+      示例检索显式跳过 <code>pending</code> 标记的条目；教训列表默认只返回 confirmed
+      （<code>list_lessons(confirmed_only=True)</code>）。写侧可以放心地多写草稿，
+      读侧永远只读已确认的。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L570">kb/service.py:570 <span class="ref-line">pending</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1599">kb/service.py:1599 <span class="ref-line">list_lessons</span></a>
+    </p>
+
+    <h2 id="lifecycle">生命周期与漂移</h2>
+
+    <p>
+      一个周期任务负责清理与体检，间隔由配置决定，默认 24 小时一次。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L388">service.py:388 <span class="ref-line">run_lifecycle</span></a>
+    </p>
+
+    <ul>
+      <li><strong>保留清理</strong>——情节、偏好草稿、用户事实、检索日志四类各自按 <code>retention_days</code> 过期。<strong>没配就不清</strong>，四个目标都遵守这一条。</li>
+      <li><strong>结构漂移</strong>——对比实时 catalog 与 KB 的 <code>schema_notes.yml</code>，找出新增的表、消失的表、变更的列。纯代码，零 LLM。详见 <a href="../ops/drift.html">数据漂移治理</a>。</li>
+    </ul>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/schema_drift.py#L16">schema_drift.py:16 <span class="ref-line">detect_drift</span></a>
+    </p>
+
+    <h2 id="profile">画像：用户 × 数据源</h2>
+
+    <p>
+      按 <code>(用户, 数据源)</code> 汇总正确率、失败模式与已提交事实，供管理员查看。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/profile.py#L17">profile.py:17 <span class="ref-line">build_profile</span></a>
+    </p>
+
+    <p>
+      它也可以反过来影响生成——把「这个人在这张表上反复失败的模式」作为提示注入。
+      但这条默认关闭，且优先级排在最末（priority 10），只有在预算还有余量时才进得去。
+      顺序本身就是态度：<strong>画像是一种弱信号，不该挤掉规则和术语</strong>。
+    </p>
+
+    <h2 id="wiring">接在哪</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>位置</th><th>做什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>装配</td><td>构造门面并注入工作流服务集</td></tr>
+          <tr><td>生成节点</td><td>读情节块进上下文</td></tr>
+          <tr><td>会话层</td><td>一轮结束后调 <code>observe</code>；无门面时回落到旧的单路径捕获</td></tr>
+          <tr><td>API 启动</td><td>周期任务跑 <code>run_lifecycle</code></td></tr>
+          <tr><td>管理端</td><td>画像与偏好草稿的查看/确认/拒绝</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1394">session.py:1394 <span class="ref-line">_observe_memory</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1269">session.py:1269 <span class="ref-line">_capture_lessons</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L94">app.py:94 <span class="ref-line">_periodic_sweep</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">别把它改成自动注入</span>
+      <div>
+        <p>「让记忆自动生效、不用人工确认」看起来是个明显的改进，实际上会把知识库变成模型输出的回音室——一旦某条错误教训被自动确认，它会持续影响后续所有生成，而且没有人知道它是什么时候进来的。</p>
+        <p>情节记忆是例外不是漏洞：它记录事实、按用户隔离、不参与知识复用。这条边界值得保持。</p>
+      </div>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

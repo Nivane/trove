@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove API 参考：端点分类清单、鉴权依赖、SSE 流式对话与 HITL 恢复，以及为什么活文档在 /v1/docs 而不在这里。">
+<title>API 参考 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>参考<span class="sep">/</span>API 参考
+      </div>
+      <h1>API 参考</h1>
+      <p class="lede">
+        <strong>先看这一句</strong>：这份文档不是 API 的完整定义，
+        完整定义在 <code>trove serve</code> 自带的 <code>/v1/docs</code>。
+        这一页给的是分类、鉴权方式与场景示例——手抄一遍端点必然与代码脱节。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="live">活文档在哪</h2>
+
+    <p>
+      服务启动后打开 <code>http://&lt;host&gt;:&lt;port&gt;/v1/docs</code>，那是 FastAPI
+      自动生成的 OpenAPI 界面：每个端点的参数、请求体、响应模型都在那里，
+      且<strong>随代码实时更新</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L161">app.py:161 <span class="ref-line">docs_url</span></a>
+    </p>
+
+    <p>
+      所有路由都在 <code>/v1</code> 前缀下。后端是纯 JSON API，不托管页面
+      （前端由独立容器发布，nginx 反代 <code>/v1</code>）。
+    </p>
+
+    <h2 id="auth">鉴权</h2>
+
+    <p>
+      认证走 Bearer token。依赖分几个层次，按需叠加：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>依赖</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">get_current_user</td><td>解析 token → 用户</td></tr>
+          <tr><td class="mono">require_admin</td><td>要求 admin 角色</td></tr>
+          <tr><td class="mono">require_scope</td><td>要求 token 带某个 scope（如 <code>query</code>）</td></tr>
+          <tr><td class="mono">require_datasource</td><td>校验对该数据源的授权</td></tr>
+          <tr><td class="mono">check_api_rate</td><td>限流与日配额</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L58">deps.py:58 <span class="ref-line">get_current_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L86">deps.py:86 <span class="ref-line">require_admin</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L124">deps.py:124 <span class="ref-line">require_datasource</span></a>
+    </p>
+
+    <p>
+      注意有两类端点<strong>不走用户鉴权</strong>，这是刻意的：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>为什么免鉴权</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">/v1/health</td><td>探活必须能被编排系统直接调用</td></tr>
+          <tr><td class="mono">/v1/metrics</td><td>抓取端通常不便于携带用户 token</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="groups">端点分类</h2>
+
+    <h3>对话</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">POST /v1/chat</td><td>流式对话（SSE）</td></tr>
+          <tr><td class="mono">POST /v1/sessions/{id}/resume</td><td>HITL 恢复——把确认结果送回图上继续</td></tr>
+          <tr><td class="mono">GET /v1/sessions…</td><td>会话列表、详情、历史</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L167">chat.py:167 <span class="ref-line">chat</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L124">chat.py:124 <span class="ref-line">resume</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/sse.py#L17">sse.py:17 <span class="ref-line">sse_response</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">SSE 是手写的，没有引入额外依赖</span>
+      <div>
+        <p>对话是流式的，用的是标准的 Server-Sent Events，但<strong>没有依赖
+        <code>sse-starlette</code></strong>——一个几十行的辅助函数就够了。</p>
+        <p>「恢复」这个端点值得注意：HITL 暂停后，图是<strong>真的停在那个检查点上</strong>，
+        恢复不是重新跑一遍，而是从断点继续。</p>
+      </div>
+    </div>
+
+    <h3>元数据与目录</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /v1/datasources</td><td>可见的数据源列表</td></tr>
+          <tr><td class="mono">GET /v1/tables</td><td>表清单</td></tr>
+          <tr><td class="mono">GET /v1/tables/{name}</td><td>表详情</td></tr>
+          <tr><td class="mono">GET /v1/ddl</td><td>建表语句</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>知识库</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /v1/kb/status</td><td>KB 状态</td></tr>
+          <tr><td class="mono">GET /v1/kb/rules</td><td>规则列表</td></tr>
+          <tr><td class="mono">POST /v1/kb/lessons</td><td>提交教训（<strong>写入即 pending</strong>）</td></tr>
+          <tr><td class="mono">GET /v1/kb/examples/pending</td><td>待确认示例</td></tr>
+          <tr><td class="mono">POST /v1/kb/lessons/confirm</td><td>确认教训</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      注意「提交教训」这个端点的语义：它是<strong>用户反馈通道</strong>，
+      写进去的条目默认 pending，不会立刻影响检索。见<a href="../capabilities/kb.html#gate">知识库 · 门禁</a>。
+    </p>
+
+    <h3>语义层</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">POST /v1/semantic/query</td><td>声明式查询——<strong>严格契约，未声明即 422</strong></td></tr>
+          <tr><td class="mono">GET /v1/semantic</td><td>语义模型详情</td></tr>
+          <tr><td class="mono">GET /v1/semantic/history</td><td>变更历史</td></tr>
+          <tr><td class="mono">POST /v1/semantic/drafts…</td><td>草案的创建 / 批准 / 驳回</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L148">semantic.py:148 <span class="ref-line">drafts</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L57">semantic_query.py:57 <span class="ref-line">semantic/query</span></a>
+    </p>
+
+    <p>
+      <code>POST /v1/semantic/query</code> 与对话链路走同一个语义层，但契约更严：
+      遇到软 MISS 不降级，直接返回 422。理由见
+      <a href="../capabilities/semantic.html#api">语义层 · 声明式 API</a>——
+      程序调用方无法判断哪些部分是权威的、哪些是模型补的。
+    </p>
+
+    <h3>管理端</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>分组</th><th>内容</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">/v1/admin/users</td><td>用户与 token</td></tr>
+          <tr><td class="mono">/v1/admin/datasources</td><td>数据源注册、测试、KB 初始化</td></tr>
+          <tr><td class="mono">/v1/admin/jobs</td><td>定时任务 CRUD 与运行历史</td></tr>
+          <tr><td class="mono">/v1/admin/skills</td><td>Skills 草案、确认、tier</td></tr>
+          <tr><td class="mono">/v1/admin/drift</td><td>漂移检测与处置</td></tr>
+          <tr><td class="mono">/v1/admin/decisions</td><td>决策规则</td></tr>
+          <tr><td class="mono">/v1/admin/audit</td><td>审计日志</td></tr>
+          <tr><td class="mono">/v1/admin/memory…</td><td>画像与偏好草稿</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      管理端路由<strong>只在存在真实认证组件时才挂载</strong>——这是 fail-closed 的一部分。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L190">app.py:190 <span class="ref-line">include_router</span></a>
+    </p>
+
+    <h2 id="cors">关于 CORS</h2>
+
+    <p>
+      后端<strong>没有 CORSMiddleware</strong>。这不是遗漏：
+    </p>
+
+    <ul>
+      <li>生产形态下前端与 <code>/v1</code> 同源（nginx 反代）。</li>
+      <li>开发形态下由 Vite dev server 代理 <code>/v1</code> 到后端。</li>
+    </ul>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/vite.config.ts#L12">vite.config.ts:12 <span class="ref-line">proxy</span></a>
+    </p>
+
+    <p>
+      两种形态下浏览器视角都没有跨域。如果你想把前端部署到另一个域名，
+      需要在网关层处理，而不是期望后端开 CORS 头——<strong>当前后端不会发那些头</strong>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>给 AI 客户端接入</td><td><a href="mcp.html">MCP 集成</a></td></tr>
+          <tr><td>命令行入口</td><td><a href="cli.html">CLI 参考</a></td></tr>
+          <tr><td>鉴权与限流的设计</td><td><a href="../ops/security.html">安全边界</a></td></tr>
+          <tr><td>部署形态</td><td><a href="../guide/deploy.html">安装部署</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

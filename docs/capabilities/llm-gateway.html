@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove LLM 网关：litellm 之上的统一入口、模型选择优先级、providers 与 ${ENV_VAR} 替换、三种调用形态，以及工具注册表与追踪。">
+<title>LLM 网关 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>Agent 能力<span class="sep">/</span>LLM 网关
+      </div>
+      <h1>LLM 网关</h1>
+      <p class="lede">
+        全系统只有一个地方直接跟模型说话。<a href="agent.html#tools">工具治理</a>与
+        <a href="agent.html#loop">agent 循环</a>都建在它上面。这一页讲它管什么、
+        模型怎么选、以及为什么它要暴露三种不同的调用形态。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="why">为什么要有一个网关层</h2>
+
+    <p>
+      底层是 litellm，也就是说「支持哪些模型厂商」这个问题大部分被 litellm 回答了。
+      网关层存在不是为了再包一层，而是为了收口四件散在各处会出事的事情：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>收口的事</th><th>不收口会怎样</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>模型选择</td>
+            <td>各节点各写默认值，改一次模型要改十几处</td>
+          </tr>
+          <tr>
+            <td>凭证解析</td>
+            <td>API key 散在代码与配置里，容易进版本库</td>
+          </tr>
+          <tr>
+            <td>token 用量</td>
+            <td>预算控制（见下）没有数据来源</td>
+          </tr>
+          <tr>
+            <td>追踪</td>
+            <td>每个调用点都要自己埋点，必漏</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L52">gateway.py:52 <span class="ref-line">LLMGateway</span></a>
+    </p>
+
+    <h2 id="model">模型选择：三级优先</h2>
+
+    <p>
+      选择顺序是：命令行 <code>--model</code> &gt; 项目配置 <code>conf/agent.yml</code> &gt;
+      用户配置 <code>~/.trove/conf/agent.yml</code>。前者用于临时实验，
+      后者用于个人偏好，中间那个是项目约定。
+    </p>
+
+    <p>
+      配置里通常有两个模型位：一个主力、一个快速档
+      （<code>target</code> 与 <code>model_fast</code>）。
+      分档的意义是让便宜的操作不要用贵的模型——比如某些只需要判断「这是不是一句问数」的地方。
+    </p>
+
+    <h2 id="providers">providers 与凭证</h2>
+
+    <p>
+      <code>providers</code> 是一个列表，每项可以带自定义的 <code>api_base</code>——
+      这是接私有部署或代理网关的入口。其中的凭证字段支持 <code>${ENV_VAR}</code> 占位，
+      在加载时展开成环境变量值。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L99">gateway.py:99 <span class="ref-line">set_providers</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L263">config.py:263 <span class="ref-line">resolve_env_vars</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">占位符不是语法糖，是防泄漏机制</span>
+      <div>
+        <p>写 <code>api_key: ${DEEPSEEK_API_KEY}</code> 而不是把 key 直接贴进 YAML，
+        意味着<strong>这个文件可以安全地进版本库</strong>。配置文件一旦可以被提交，
+        「配置漂移」这件事才有办法被 review。</p>
+        <p><code>providers</code> 为空时 litellm 照常回落到环境变量（如 <code>DEEPSEEK_API_KEY</code>），
+        所以最小配置下你只需要 export 一个 key。</p>
+      </div>
+    </div>
+
+    <h2 id="forms">三种调用形态</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>用途</th><th>返回</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">chat</td>
+            <td>最常用：给提示，要文本</td>
+            <td>字符串</td>
+          </tr>
+          <tr>
+            <td class="mono">chat_full</td>
+            <td>需要工具调用能力时</td>
+            <td>内容 + 工具调用 + 尽力而为的 token 用量</td>
+          </tr>
+          <tr>
+            <td class="mono">chat_stream</td>
+            <td>面向用户的流式输出</td>
+            <td>增量片段</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L105">gateway.py:105 <span class="ref-line">chat</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L187">gateway.py:187 <span class="ref-line">chat_full</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L277">gateway.py:277 <span class="ref-line">chat_stream</span></a>
+    </p>
+
+    <p>
+      <code>chat_full</code> 的用量是「尽力而为」的：不同厂商返回的用量字段并不统一，
+      拿不到时它不会报错。这一点在下游是有影响的——token 预算因此是一道<b>软</b>闸门，
+      不是精确计费器。
+    </p>
+
+    <h2 id="mock">测试模式</h2>
+
+    <p>
+      网关可以带一个 <code>mock_response</code> 构造。设了之后，所有调用直接返回这个字符串，
+      不碰网络、不需要任何 key。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/gateway.py#L72">gateway.py:72 <span class="ref-line">mock_response</span></a>
+    </p>
+
+    <p>
+      这个模式是仓库「零 key、零网络、全 mock」测试约束的支点：整套 3700+ 测试
+      跑起来不产生任何 API 费用，也不依赖外网。没有它，CI 要么花钱要么不可靠。
+    </p>
+
+    <h2 id="registry">工具注册表</h2>
+
+    <p>
+      工具不是散装函数，而是注册到一张表里，每项带一份<strong>声明</strong>：
+      名字、说明、参数 schema、所需权限、对哪些角色可见。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L138">agent_loop.py:138 <span class="ref-line">ToolSpec</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L206">agent_loop.py:206 <span class="ref-line">ToolRegistry</span></a>
+    </p>
+
+    <p>
+      注册表在把工具列表交给模型<strong>之前</strong>按角色裁剪。越权的调用不会返回
+      「权限不足」，而是被折叠成「未知工具」——模型于是换一条路，而不是开始试探边界。
+      这个设计在<a href="agent.html#tools">工具治理</a>里有展开。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L519">agent_loop.py:519 <span class="ref-line">visible_to</span></a>
+    </p>
+
+    <h3>生成节点实际拿到哪些工具</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>工具</th><th>注册条件</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">validate_sql</td><td>总是</td><td>SQL 语法校验（SQLGlot）</td></tr>
+          <tr><td class="mono">finish</td><td>总是</td><td>显式收工，SQL 作为载荷交出来</td></tr>
+          <tr><td class="mono">probe_query</td><td>standard / complex 档</td><td>只读试跑，看结果长什么样</td></tr>
+          <tr><td class="mono">check_result</td><td>standard / complex 档</td><td>试跑后过规则链校验</td></tr>
+          <tr><td class="mono">search_values</td><td>标准档以上 + analyst/admin 角色</td><td>确认某个枚举值在库里怎么写</td></tr>
+          <tr><td class="mono">lookup_schema</td><td>标准档以上 + analyst/admin 角色</td><td>懒加载表结构</td></tr>
+          <tr><td class="mono">explain_plan</td><td>标准档以上 + analyst/admin 角色</td><td>看执行计划</td></tr>
+          <tr><td class="mono">load_skill</td><td>存在 confirmed 的 available skill</td><td>按需取 skill 正文</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1036">gen_sql.py:1036 <span class="ref-line">build_sql_registry</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">catalog 工具是「生成辅助」，不是「语义边界」</span>
+      <div>
+        <p>后三个工具让模型能以只读方式摸到物理 schema。它们存在的理由是：
+        值确认、结构懒加载、执行计划——这些确实需要看真实数据库。</p>
+        <p>但它们<strong>不参与可答边界的判定</strong>。边界由语义层说了算，
+        模型能看见物理表不等于它可以绕开语义模型去查。这两件事在实现上分开，是刻意的。</p>
+      </div>
+    </div>
+
+    <h2 id="trace">追踪</h2>
+
+    <p>
+      追踪在 agent 循环的<strong>观察者中间件</strong>里发生，不在每个调用点。
+      默认有一个恒在的观察者，把事件写进本地 run log；配了 Langfuse 凭证时，
+      同一个观察者再往 Langfuse 发一份。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L361">agent_loop.py:361 <span class="ref-line">run_agent_loop</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L40">observability.py:40 <span class="ref-line">langfuse_enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L62">observability.py:62 <span class="ref-line">build_callback_handler</span></a>
+    </p>
+
+    <p>
+      Langfuse 的启用条件是<strong>两个环境变量同时存在</strong>
+      （public key 与 secret key），配置里只有一个总开关。这样凭证缺失时是静默不启用，
+      而不是启动失败——追踪是增强能力，不该成为启动的前提。
+    </p>
+
+    <p>
+      trace id 由 run id 推导而来（去掉横杠），所以「按 run_id 找这一轮发生了什么」
+      在这两套系统里是同一个标识。详见<a href="../ops/observability.html">可观测性</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L31">observability.py:31 <span class="ref-line">langfuse_trace_id</span></a>
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>循环怎么驱动、预算怎么设</td><td><a href="agent.html#loop">Agent 能力 · 生成循环</a></td></tr>
+          <tr><td>Skills 的按需加载</td><td><a href="skills.html">Skills</a></td></tr>
+          <tr><td>provider 与模型配置怎么写</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+          <tr><td>日志、trace、健康检查</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

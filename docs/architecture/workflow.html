@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 查询工作流：默认 27 个节点逐个说明、意图分流的三条路、语义门禁与分级逃生梯、结果校验的规则链，以及失败后的回滚阶梯。">
+<title>查询工作流 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>架构<span class="sep">/</span>查询工作流
+      </div>
+      <h1>查询工作流</h1>
+      <p class="lede">
+        一句话提问进来，经过 <strong>27 个节点</strong>，一个答案出去。
+        这一页把图拆开：哪些节点是主干、哪些是分支、失败时系统怎么决定「再试一次」
+        还是「退回上一轮」。节点的实测行号都在，可以逐个点去核对。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="shape">图的形状</h2>
+
+    <p>
+      图的装配入口是 <code>build_graphs</code>，默认走 <code>reflection</code> 这张图
+      （另外两张是 <code>fixed</code>——直通不反思，与 <code>empty</code>——调试用空转）。
+      生产调用只传检查点，其余开关取默认值。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1197">graphs.py:1197 <span class="ref-line">build_graphs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1720">graphs.py:1720 <span class="ref-line">_build_reflection</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L305">graphs.py:305 <span class="ref-line">build_gen_sql_subgraph</span></a>
+    </p>
+
+    <p>
+      主干大致是这条线：
+    </p>
+
+    <pre><code>START → route_intent → parse_date → schema_linking
+      → [语义门禁] → fast_match → query_sketch → gen_sql 三节点 → semantics → hitl
+      → execute_sql → select → validate → reflect
+      → [分析错误 → 回滚重试] 或 → insights → chart → conclusion → output</code></pre>
+
+    <p>
+      注意 <code>gen_sql</code> 在顶层不是三个节点，而是一个<strong>子图</strong>——
+      它内部有自己的 <code>generate</code> / <code>validate</code>。子图有独立的装配函数，
+      所以「agentic 循环」与「经典生成-校验重试」两种形态可以共用同一批上游节点。
+    </p>
+
+    <h2 id="nodes">27 个节点</h2>
+
+    <p>
+      下表按 <code>add_node</code> 的注册顺序列出。默认配置（不传开关）下就是这 27 个。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>节点</th><th>做什么</th><th>注册位置</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">route_intent</td><td>七分类意图判定，决定走哪条路</td><td>graphs.py:1580</td></tr>
+          <tr><td class="mono">parse_date</td><td>把「上个月」这类相对时间落成具体区间</td><td>graphs.py:1585</td></tr>
+          <tr><td class="mono">answer_metadata</td><td>元数据问答（有哪些表、某表什么结构）</td><td>graphs.py:1586</td></tr>
+          <tr><td class="mono">metadata_check</td><td>元数据答案的自校验，不通过则重答</td><td>graphs.py:1590</td></tr>
+          <tr><td class="mono">answer_reject</td><td>拒绝并说明原因（终态答案节点）</td><td>graphs.py:1595</td></tr>
+          <tr><td class="mono">answer_chitchat</td><td>闲聊兜底（终态答案节点）</td><td>graphs.py:1596</td></tr>
+          <tr><td class="mono">answer_correction</td><td>用户纠正上一轮答案（终态答案节点）</td><td>graphs.py:1597</td></tr>
+          <tr><td class="mono">confirm_draft</td><td>对话内确认语义模型草案，确认后重答原问题</td><td>graphs.py:1599</td></tr>
+          <tr><td class="mono">schema_linking</td><td>算出问题涉及哪些表 → <code>matched_tables</code></td><td>graphs.py:1730</td></tr>
+          <tr><td class="mono">gen_retrieve</td><td>并行检索 KB：示例、教训、术语、指标、实体</td><td>graphs.py:1737</td></tr>
+          <tr><td class="mono">gen_assemble</td><td>把检索结果按预算装进生成提示</td><td>graphs.py:1738</td></tr>
+          <tr><td class="mono">gen_generate</td><td>生成 SQL（agentic 循环或经典子图）</td><td>graphs.py:1739</td></tr>
+          <tr><td class="mono">execute_sql</td><td>执行，含只读校验与骨架保真校验</td><td>graphs.py:1745</td></tr>
+          <tr><td class="mono">select</td><td>多候选共识投票（拿执行结果投票）</td><td>graphs.py:1746</td></tr>
+          <tr><td class="mono">validate</td><td>确定性规则链校验结果</td><td>graphs.py:1747</td></tr>
+          <tr><td class="mono">reflect</td><td>反思裁决：这一轮该继续还是回退</td><td>graphs.py:1748</td></tr>
+          <tr><td class="mono">semantics</td><td>把 SQL 解释成人话（供人看懂与 HITL 确认）</td><td>graphs.py:1750</td></tr>
+          <tr><td class="mono">hitl</td><td>人在环：执行前拦下 SQL 等确认</td><td>graphs.py:1751</td></tr>
+          <tr><td class="mono">insights</td><td>从结果里提炼要点</td><td>graphs.py:1752</td></tr>
+          <tr><td class="mono">attribution</td><td>归因类问题的分析</td><td>graphs.py:1753</td></tr>
+          <tr><td class="mono">chart</td><td>判断要不要画图、画什么图</td><td>graphs.py:1757</td></tr>
+          <tr><td class="mono">conclusion</td><td>生成结论段落</td><td>graphs.py:1758</td></tr>
+          <tr><td class="mono">output</td><td>汇总成最终答案</td><td>graphs.py:1759</td></tr>
+          <tr><td class="mono">fast_match</td><td>模板快径：命中则跳过整个生成链路</td><td>graphs.py:1764</td></tr>
+          <tr><td class="mono">refuse</td><td>语义门禁拒绝 + 起草扩展草案</td><td>graphs.py:1771</td></tr>
+          <tr><td class="mono">query_sketch</td><td>出查询计划，并尝试语义编译</td><td>graphs.py:1783</td></tr>
+          <tr><td class="mono">analyze_error</td><td>失败分析，决定回滚到哪一轮</td><td>graphs.py:1869</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <code>clarify</code> 不在这张表里：它只在显式传入 <code>clarify=True</code> 时才挂上
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1770">graphs.py:1770 <span class="ref-line">clarify</span></a>）。
+      把它算进来的话是 28 个——但那是非默认口径。
+    </p>
+
+    <h2 id="intent">意图分流：一条主路，两条岔路</h2>
+
+    <p>
+      路由节点把问题分成七类（问数 / 元数据 / 写操作 / 闲聊 / 纠错 / 确认 / 归因），
+      但图上只有三条走向：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>意图</th><th>去哪</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>问数 / 归因</td>
+            <td>主干（<code>parse_date → schema_linking → …</code>）</td>
+            <td>归因也是问数，只是问题复杂些</td>
+          </tr>
+          <tr>
+            <td>元数据</td>
+            <td><code>answer_metadata → metadata_check</code> 自校验环</td>
+            <td>「有哪些表」不该走 SQL 生成，且有独立的自我校验</td>
+          </tr>
+          <tr>
+            <td>闲聊 / 纠错 / 确认 / 写操作</td>
+            <td>各自终态答案节点</td>
+            <td>这些有确定答案，不需要生成 SQL</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1295">graphs.py:1295 <span class="ref-line">make_route_intent</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1549">graphs.py:1549 <span class="ref-line">_route_after_intent</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1565">graphs.py:1565 <span class="ref-line">_route_after_refuse</span></a>
+    </p>
+
+    <p>
+      写操作是被<strong>显式拦下并拒绝</strong>的，而不是「生成一个写 SQL 然后被数据库拒绝」。
+      拒写在意图层就发生——这是一道保险，真正的安全边界在别处（见<a href="../ops/security.html">安全边界</a>）。
+    </p>
+
+    <h2 id="gate">语义门禁：三条出口</h2>
+
+    <p>
+      <code>schema_linking</code> 之后有一个条件分支，它有三种可能的结果。
+      这段逻辑看起来只是路由，其实是「语义优先」这个产品定位的落点：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1679">graphs.py:1679 <span class="ref-line">_route_semantic_gate_after_linking</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1690">graphs.py:1690 <span class="ref-line">_route_semantic_gate_after_linking_fast_match</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1698">graphs.py:1698 <span class="ref-line">_route_semantic_gate_after_linking_gen_sql</span></a>
+    </p>
+
+    <p>
+      三种结果分别对应：<strong>硬 MISS → refuse</strong>（拒绝并引导扩展模型）、
+      <strong>正常 → 继续</strong>（快径或生成）、<strong>数据源没有语义模型 → refuse</strong>。
+      软 MISS 不走这条分支——它跟着计划一起流下去，产出骨架。
+    </p>
+
+    <p>
+      细节在<a href="../capabilities/semantic.html">语义层</a>与<a href="../guide/concepts.html">产品概念</a>。
+    </p>
+
+    <h2 id="validate">结果校验：规则链，不是模型判断</h2>
+
+    <p>
+      执行完之后，结果要过一条<strong>确定性规则链</strong>。规则按注册顺序执行，
+      <strong>第一条失败的规则胜出</strong>——顺序就是优先级，最具体、最便宜的在前面。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py#L212">rules.py:212 <span class="ref-line">Rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py#L232">rules.py:232 <span class="ref-line">verify</span></a>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>族</th><th>检查什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>F1 形状</td><td>「最高是多少」这类单值问题必须只返回一行一列</td></tr>
+          <tr><td>F4 排序</td><td>问题里说了「最高/最低/前几」，SQL 里得有对应的排序</td></tr>
+          <tr><td>F2 过滤</td><td>问题里点名的实体，必须在 SQL 条件里出现</td></tr>
+          <tr><td>F3 取值</td><td>类型、唯一性、取值范围是否合理</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      这些都是纯代码、零 LLM 的判断。它们的价值不只是「省一次模型调用」，而是
+      <strong>可回归测试、且换模型不退化</strong>——一条规则写对了，它永远对。
+    </p>
+
+    <h2 id="rollback">回滚阶梯：失败之后怎么走</h2>
+
+    <p>
+      失败会进入 <code>analyze_error</code>，由它决定回滚到哪一步。
+      这里最容易犯的错是「无脑重试」——那会让系统在两轮之间来回振荡，烧钱且不收敛。
+      所以每一轮的 SQL 与<strong>结果签名</strong>都被记下来，跟上一轮做确定性比对。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py#L60">versions.py:60 <span class="ref-line">record_version</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py#L32">versions.py:32 <span class="ref-line">result_sig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py#L89">versions.py:89 <span class="ref-line">regression_state</span></a>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>判定</th><th>含义</th><th>含义背后的动作</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>无效修复</strong></td>
+            <td>改了 SQL 但结果签名没变</td>
+            <td>这一轮白改，反馈里要明说「你刚才那个改动没生效」</td>
+          </tr>
+          <tr>
+            <td><strong>没有进步</strong></td>
+            <td>结果变了，但规则链仍然失败在同一处</td>
+            <td>问题不在被改的地方，别再沿着这条线试</td>
+          </tr>
+          <tr>
+            <td><strong>问题漂移</strong></td>
+            <td>原来失败的点过去了，却冒出一个新的失败点</td>
+            <td>可能是修一个坏一个，需要警惕</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py#L126">versions.py:126 <span class="ref-line">regression_report</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1261">graphs.py:1261 <span class="ref-line">_route_after_reflect</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么「反馈」比「重试次数」重要</span>
+      <div>
+        <p>同一个模型、同样的提示，重试一次大概率得到同样的错误。真正让它改变方向的是<b>告诉它上一次错在哪</b>——而这恰恰是不该让模型自己判断的部分：模型倾向于认为自己上次是对的。</p>
+        <p>所以这里的反馈是算出来的，不是感觉出来的。</p>
+      </div>
+    </div>
+
+    <p>
+      重试有硬上限。<code>MAX_REFLECT_RETRIES</code> 是执行错误、规则失败、一致性、
+      裁决共享的一个总闸——到顶就交付当前最好的结果，并把不确定性说清楚，
+      而不是无限循环。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L112">graphs.py:112 <span class="ref-line">MAX_REFLECT_RETRIES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1254">graphs.py:1254 <span class="ref-line">_route_after_hitl</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1706">graphs.py:1706 <span class="ref-line">_route_after_query_sketch</span></a>
+    </p>
+
+    <h2 id="budget">上下文预算</h2>
+
+    <p>
+      生成提示的容量按问题复杂度分档。分档不是「大概估一下」，而是三个写死的常量：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>档位</th><th>token 预算</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>simple</td><td class="mono">1500</td></tr>
+          <tr><td>standard</td><td class="mono">2500</td></tr>
+          <tr><td>complex</td><td class="mono">4000</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L115">graphs.py:115 <span class="ref-line">COMPLEXITY_BUDGET_TOKENS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L134">context_budget.py:134 <span class="ref-line">assemble_context</span></a>
+    </p>
+
+    <p>
+      预算由若干信息块竞争，块有优先级（少样本示例与用户事实最高，画像最低）。
+      装块之后还有一层<strong>块内裁剪</strong>——优先级决定「哪个块先被看到」，
+      相关度决定「块里哪几条先被看到」。设计意图见
+      <a href="../capabilities/agent.html#context">Agent 能力 · 上下文工程</a>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>生成节点内部的 agentic 循环</td><td><a href="../capabilities/agent.html">Agent 能力总览</a></td></tr>
+          <tr><td>语义门禁与硬/软 MISS 的完整判据</td><td><a href="../capabilities/semantic.html">语义层</a></td></tr>
+          <tr><td>每一步怎么观测、出问题看哪</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+          <tr><td>节点的输入输出状态定义</td><td><a href="../reference/api.html">API 参考</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

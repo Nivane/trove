@@ -24,7 +24,7 @@
 <br>
 <br>
 
-📖 **[能力地图](https://nivane.github.io/trove/)** —— 六组数据侧能力 + 十二项 Agent 侧能力,每条机制都锚到具体源码行 · [MySQL / Doris 接入指南](docs/mysql-doris-quickstart.md)
+📖 **[能力地图](https://nivane.github.io/trove/)** —— 六组数据侧能力 + 十二项 Agent 侧能力,每条机制都锚到具体源码行 · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -340,7 +340,7 @@ uv run trove mcp --transport streamable-http --host 0.0.0.0 --port 8001 --token 
 | ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` | `uv sync --extra duckdb` |
 
-每个数据库在 `.trove/kb/<database>/` 下沉淀自己的知识库(schema 注释 / 语义模型 / 示例 / 规则 / 教训)。新增数据源:实现 `DatabaseAdapter` 方法并在 `registry.py` 注册,驱动按需懒加载。MySQL / Doris 的逐步接入指南(管理台与本地 REPL 两条路径):[`docs/mysql-doris-quickstart.md`](docs/mysql-doris-quickstart.md)。
+每个数据库在 `.trove/kb/<database>/` 下沉淀自己的知识库(schema 注释 / 语义模型 / 示例 / 规则 / 教训)。新增数据源:实现 `DatabaseAdapter` 方法并在 `registry.py` 注册,驱动按需懒加载。逐步接入指南(MySQL / Doris / PostgreSQL / ClickHouse / DuckDB,含管理台与本地 REPL 两条路径):[接入数据源](https://nivane.github.io/trove/guide/datasource.html)。
 
 ## 安全(只读执行)
 

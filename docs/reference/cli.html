@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve/admin/job/schedule/maintenance/index 子命令，以及 REPL 里的全部斜杠命令。">
+<title>CLI 参考 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>参考<span class="sep">/</span>CLI 参考
+      </div>
+      <h1>CLI 参考</h1>
+      <p class="lede">
+        两个命令：<code>trove</code>（交互与运维）和 <code>trove-cli</code>（一次性提问）。
+        这一页列出全部子命令与 REPL 斜杠命令。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="entry">两个入口</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>命令</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">trove</td>
+            <td>REPL / serve / mcp / admin / job / schedule / maintenance</td>
+          </tr>
+          <tr>
+            <td class="mono">trove-cli</td>
+            <td>一次性提问，配合 <code>--print</code> 输出 JSON</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L79">pyproject.toml:79 <span class="ref-line">trove</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L788">main.py:788 <span class="ref-line">main_repl</span></a>
+    </p>
+
+    <h2 id="trove-cli">trove-cli</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>参数</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">--datasource / -d</td><td>数据源名或 URL</td></tr>
+          <tr><td class="mono">--config / -f</td><td>指定配置文件</td></tr>
+          <tr><td class="mono">--model / -m</td><td>覆盖模型（优先级最高）</td></tr>
+          <tr><td class="mono">--print / -p</td><td>一次性输出 JSON 后退出</td></tr>
+          <tr><td class="mono">--workflow / -w</td><td><code>reflection</code> / <code>fixed</code> / <code>empty</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print</code></pre>
+
+    <div class="callout note">
+      <span class="callout-tag">三个 workflow 分别是什么</span>
+      <div>
+        <p><code>reflection</code> 是默认的完整图；<code>fixed</code> 直通不反思（用于对照实验）；
+        <code>empty</code> 是调试用的空转。排查「是不是反思环节引入的问题」时，切到
+        <code>fixed</code> 跑一遍是很有用的手段。</p>
+      </div>
+    </div>
+
+    <h2 id="subcommands">trove 的子命令</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>子命令</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">serve</td><td>启动 HTTP 服务</td></tr>
+          <tr><td class="mono">mcp</td><td>启动 MCP 服务（见 <a href="mcp.html">MCP 集成</a>）</td></tr>
+          <tr><td class="mono">admin</td><td>用户与授权管理</td></tr>
+          <tr><td class="mono">job</td><td>定时任务增删查</td></tr>
+          <tr><td class="mono">schedule</td><td>调度器（<code>--once</code> / <code>--daemon</code>）</td></tr>
+          <tr><td class="mono">maintenance</td><td>会话维护：<code>run</code> / <code>status</code></td></tr>
+          <tr><td class="mono">index</td><td>索引：<code>kb</code> / <code>schema</code> / <code>sync</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L504">main.py:504 <span class="ref-line">sys.argv</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/schedule_cmds.py#L172">schedule_cmds.py:172 <span class="ref-line">--daemon</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/maintenance_cmds.py#L22">maintenance_cmds.py:22 <span class="ref-line">run</span></a>
+    </p>
+
+    <h3>serve</h3>
+
+    <pre><code>trove serve [--host 127.0.0.1] [--port 8000]</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L570">main.py:570 <span class="ref-line">--host</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L571">main.py:571 <span class="ref-line">--port</span></a>
+    </p>
+
+    <h3>job / schedule</h3>
+
+    <pre><code>trove job add | list | cancel
+trove schedule --once        # 跑一轮到期任务后退出
+trove schedule --daemon      # 常驻循环</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/schedule_cmds.py#L80">schedule_cmds.py:80 <span class="ref-line">add</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/schedule_cmds.py#L171">schedule_cmds.py:171 <span class="ref-line">--once</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">daemon 与 serve 内置调度二选一</span>
+      <div>
+        <p><code>trove serve</code> 自带调度 tick。再起一个 <code>schedule --daemon</code>
+        会让任务跑两遍。详见<a href="../ops/admin.html#jobs">运维管理 · 定时任务</a>。</p>
+      </div>
+    </div>
+
+    <h3>admin</h3>
+
+    <pre><code>trove admin create-user | reset-password | list-users
+            disable-user | enable-user | grant | revoke | facts</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/admin_cmds.py#L172">admin_cmds.py:172 <span class="ref-line">create-user</span></a>
+    </p>
+
+    <h2 id="repl">REPL 斜杠命令</h2>
+
+    <h3>会话</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>命令</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">/help</td><td>列出全部命令</td></tr>
+          <tr><td class="mono">/exit</td><td>退出</td></tr>
+          <tr><td class="mono">/clear</td><td>清空当前会话上下文</td></tr>
+          <tr><td class="mono">/compact</td><td>压缩上下文（会触发偏好抽取）</td></tr>
+          <tr><td class="mono">/tasks</td><td>查看后台任务</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/session_cmds.py#L53">session_cmds.py:53 <span class="ref-line">help</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/session_cmds.py#L73">session_cmds.py:73 <span class="ref-line">compact</span></a>
+    </p>
+
+    <h3>系统</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>命令</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">/model</td><td>切换模型</td></tr>
+          <tr><td class="mono">/datasource</td><td>切换数据源</td></tr>
+          <tr><td class="mono">/init</td><td>初始化</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/system_cmds.py#L55">system_cmds.py:55 <span class="ref-line">model</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/system_cmds.py#L61">system_cmds.py:61 <span class="ref-line">datasource</span></a>
+    </p>
+
+    <h3>知识库</h3>
+
+    <pre><code>/kb init              # 起草 schema 注释 + 确定性词表/模板
+/kb list              # 看现有条目
+/kb reload            # 改完 YAML 后重载
+/kb migrate           # 迁移到 OSSIE 语义模型格式
+/kb lessons           # 查看教训
+/kb learn [--yes]     # 从上一轮沉淀一条示例</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/kb_cmds.py#L329">kb_cmds.py:329 <span class="ref-line">kb</span></a>
+    </p>
+
+    <h3>元数据与轨迹</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>命令</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">/tables</td><td>列出表</td></tr>
+          <tr><td class="mono">/table_schema</td><td>看某表结构</td></tr>
+          <tr><td class="mono">/schemas</td><td>列出 schema</td></tr>
+          <tr><td class="mono">/databases</td><td>列出数据库</td></tr>
+          <tr><td class="mono">/facts</td><td>查看已确认的用户事实</td></tr>
+          <tr><td class="mono">/trace [list]</td><td>回放最近一轮的完整轨迹</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/metadata_cmds.py#L82">metadata_cmds.py:82 <span class="ref-line">tables</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/facts_cmds.py#L57">facts_cmds.py:57 <span class="ref-line">facts</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/trace_cmds.py#L180">trace_cmds.py:180 <span class="ref-line">trace</span></a>
+    </p>
+
+    <h2 id="scripts">附带脚本</h2>
+
+    <p>
+      仓库的 <code>scripts/</code> 下有一批运维与评测脚本。分两类：
+    </p>
+
+    <h3>零成本（随时可跑）</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>脚本</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">lint_kb.py</td><td>KB 静态检查（+ 可选活库枚举比对）</td></tr>
+          <tr><td class="mono">check_kb_anti_cheat.py</td><td>检查模板是否抄了 gold SQL</td></tr>
+          <tr><td class="mono">check_drift.py</td><td>数据漂移门禁</td></tr>
+          <tr><td class="mono">check_page_anchors.py</td><td>本文档站的锚点与死链校验</td></tr>
+          <tr><td class="mono">eval_gate.py</td><td>回归门（纯文件对比）</td></tr>
+          <tr><td class="mono">eval_retrieval.py 等</td><td>检索评测</td></tr>
+          <tr><td class="mono">tune_rrf.py</td><td>RRF 参数网格调优</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>会花钱（按需）</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>脚本</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">eval_bird.py</td><td>端到端 EX 评测——<strong>不要随手跑</strong></td></tr>
+          <tr><td class="mono">distill_lessons.py</td><td>从失败中蒸馏教训（调 LLM）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>数据准备（一次性）</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>脚本</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">init_postgres_demo.py</td><td>BIRD 金融 demo 灌入 PostgreSQL（幂等）</td></tr>
+          <tr><td class="mono">import_sqlite_to_mysql.py</td><td>BIRD SQLite 导入 MySQL</td></tr>
+          <tr><td class="mono">import_bird_descriptions.py</td><td>BIRD 官方描述导入 schema_notes</td></tr>
+          <tr><td class="mono">probe_enums.py</td><td>探测枚举值写入 schema_notes</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>HTTP 接口</td><td><a href="api.html">API 参考</a></td></tr>
+          <tr><td>MCP 三种传输</td><td><a href="mcp.html">MCP 集成</a></td></tr>
+          <tr><td>命令背后的配置</td><td><a href="config.html">配置参考</a></td></tr>
+          <tr><td>定时任务的行为细节</td><td><a href="../ops/admin.html#jobs">运维管理</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

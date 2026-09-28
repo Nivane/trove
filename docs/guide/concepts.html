@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 产品概念：语义模型如何定义可答边界、硬/软 MISS 的分级逃生梯、两条确定性快径、知识库五件套与人工确认门禁。">
+<title>产品概念 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>入门<span class="sep">/</span>产品概念
+      </div>
+      <h1>产品概念</h1>
+      <p class="lede">
+        这一页解释 Trove 与「Text2SQL」的差别在哪：它不把问题直接翻译成 SQL，
+        而是先判断<strong>这个问题能不能答、按谁的口径答</strong>，然后才生成。
+        理解这套概念之后，后面所有页面的设计取舍都会变得理所当然。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="semantic">语义模型：可答边界的来源</h2>
+
+    <p>
+      每个数据源有一份 <code>semantics.yml</code>，它不是「提示词素材」，而是这个数据源的
+      <strong>契约</strong>：哪些指标存在、每个指标怎么算、哪些字段是维度、表之间怎么关联。
+      文件格式遵循 Apache OSSIE 的 core spec——顶层是 <code>semantic_model</code>，
+      下面挂 <code>datasets</code> 与 <code>metrics</code>，指标表达式按方言分别给出：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/ossie_format.py#L40">ossie_format.py:40 <span class="ref-line">dialects</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/ossie_format.py#L76">ossie_format.py:76 <span class="ref-line">semantic_model</span></a>
+    </p>
+
+    <p>
+      这里有一个容易忽略但很关键的机制：<strong>一个指标属于哪些数据集，是算出来的，不是声明的</strong>。
+      解析器拿指标表达式去过一遍 SQL 语法树，凡是被表名限定的列，其表名若在已声明的数据集里，
+      就记一笔归属：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L68">ossie.py:68 <span class="ref-line">_dataset_refs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/ossie.py#L108">ossie.py:108 <span class="ref-line">parse_ossie</span></a>
+    </p>
+
+    <p>
+      为什么值得这么做：如果归属靠人手写，它就会和表达式本身<b>分叉</b>——改了公式忘了改归属，
+      系统就会在一个错误的表集上算这个指标。从表达式反推则不可能分叉，而且反推不出来
+      （表达式里全是裸列、没有任何表限定）时它会<strong>报错而不是猜</strong>。
+      这也解释了为什么指标表达式必须写成表限定形式：<code>loans.amount</code>，不是 <code>amount</code>。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">单一真源</span>
+      <div>
+        <p>语义模型的真源是 KB 里的 <code>semantics.yml</code>（由 <code>/kb init</code> 起草、人审确认）。配置目录下的语义文件只作补充，不覆盖它——两个真源等于没有真源。</p>
+      </div>
+    </div>
+
+    <h2 id="boundary">可答边界：不是「全有全无」</h2>
+
+    <p>
+      有了语义模型，就能在生成之前判断一个问题的命运。编译器的判定结果有三种，而不是两种：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>结果</th><th>含义</th><th>下游动作</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>编译成功</strong></td>
+            <td>计划被完整翻译成 SQL，可解析部分全部权威化</td>
+            <td>直接执行，生成通道基本不参与</td>
+          </tr>
+          <tr>
+            <td><strong>软 MISS</strong></td>
+            <td>词表/取值/口径未声明，但结构是清楚的</td>
+            <td>产出<strong>骨架</strong>，交给生成通道补齐，回答照常交付</td>
+          </tr>
+          <tr>
+            <td><strong>硬 MISS</strong></td>
+            <td>结构性问题：会产出错误的行集</td>
+            <td><strong>拒绝</strong>并反问，引导扩展语义模型</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1036">compiler.py:1036 <span class="ref-line">SemanticCompiler</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1380">compiler.py:1380 <span class="ref-line">compile_detailed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L622">compiler.py:622 <span class="ref-line">CompileMiss</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L635">compiler.py:635 <span class="ref-line">PartialCompile</span></a>
+    </p>
+
+    <h3>哪些算硬 MISS</h3>
+
+    <p>
+      分界线只有一条：<strong>放行它，会不会算出一个看起来对、其实错的数</strong>。会，就是硬 MISS。
+      典型的是这四类结构性问题：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>reason</th><th>为什么放行会出错</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">fan_out</td>
+            <td>一对多 join 把被聚合的行复制了多份，聚合结果被放大</td>
+          </tr>
+          <tr>
+            <td class="mono">ambiguous_join_path</td>
+            <td>两张表之间有多条关联路径，选错一条就是另一个口径</td>
+          </tr>
+          <tr>
+            <td class="mono">unreachable_table</td>
+            <td>问题涉及的表不在本次匹配集里，生成会引用未覆盖的表</td>
+          </tr>
+          <tr>
+            <td class="mono">derived_cycle</td>
+            <td>派生指标的定义成环/超深/悬空，展开它没有意义</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L695">compiler.py:695 <span class="ref-line">HARD_MISS_REASONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L714">compiler.py:714 <span class="ref-line">SOFT_MISS_REASONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L657">compiler.py:657 <span class="ref-line">MISS_REASONS</span></a>
+    </p>
+
+    <p>
+      判定函数有一个刻意的默认值：<strong>遇到不认识的 reason 一律按硬处理</strong>。
+      宁可多拒绝一次、让人来确认，也不要把一个没见过的结构性问题当软问题放过去。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L736">compiler.py:736 <span class="ref-line">is_hard_miss</span></a>
+    </p>
+
+    <h2 id="ladder">分级逃生梯</h2>
+
+    <p>
+      拒绝是最后手段，不是第一反应。Trove 的边界是<strong>分级</strong>的：能救的救，救不了的才拦。
+    </p>
+
+    <h3>软 MISS：产出骨架，而不是停摆</h3>
+
+    <p>
+      软 MISS 意味着「结构我们懂了，只是某个词没登记」。这时编译器不会整体放弃，
+      而是把能权威化的部分（join 路径、过滤条件、分组）编译成骨架固化下来，
+      未解析的组件留给生成通道按计划文本补齐。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">骨架是「半成品」还是「约束」？</span>
+      <div>
+        <p>关键在于执行前还有一道<strong>骨架保真校验</strong>：生成通道补完的那条 SQL，必须仍然保留骨架里的 join 边、WHERE 条件与分组宽度。少一个 join、丢一个过滤，校验不通过，SQL 不放行。</p>
+        <p>所以软 MISS 不是「降级成裸表生成」，是「权威部分被钉住，剩下的填空不许改动已钉住的部分」。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L121">execute_sql.py:121 <span class="ref-line">skeleton_preserved</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L2500">compiler.py:2500 <span class="ref-line">skeleton_preserved</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L160">contract.py:160 <span class="ref-line">PlanContract</span></a>
+    </p>
+
+    <h3>硬 MISS：拒绝 + 反问 + 扩展模型</h3>
+
+    <p>
+      硬 MISS 走的是<strong>反问扩展</strong>这条路——拒绝不是终点，是引导用户把语义模型补全：
+    </p>
+
+    <ol>
+      <li>路由短路到 <code>refuse</code> 节点，携带结构化的分因（是 fan-out？还是 join 二义？）。</li>
+      <li>LLM 依据分因草拟一份<strong>最小扩展草案</strong>——要补什么字段、什么指标、什么枚举值。</li>
+      <li>草案先做冲突检测，再作为 <code>pending</code> 草稿写入 <code>semantic_drafts.yml</code>，<strong>不碰 <code>semantics.yml</code></strong>。</li>
+      <li>管理端确认后应用到 <code>semantics.yml</code> 并刷新镜像。</li>
+      <li>用户的原始问题重新作答——这一次它落在边界之内了。</li>
+    </ol>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L484">refuse.py:484 <span class="ref-line">make_refuse</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/semantic_draft.py#L229">semantic_draft.py:229 <span class="ref-line">draft_refusal_extension</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L396">manage.py:396 <span class="ref-line">SemanticManager</span></a>
+    </p>
+
+    <p>
+      「管理端确认」在主路径之外还有一条<strong>自动档</strong>：如果草案补的字段能在物理 catalog 里直接找到、
+      或者补的指标能通过机械的聚合验证，系统会直接落库，不再等人点确认。这条路的边界写死在代码里，
+      认不出的仍然回到人工那一档。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L576">refuse.py:576 <span class="ref-line">A 档 = 物理列字段</span></a>
+    </p>
+
+    <h2 id="fast">两条快径，别混为一谈</h2>
+
+    <p>
+      系统里有两种「不调用模型直接出 SQL」的机制。它们经常被当成同一件事，但触发条件、
+      依据、风险模型完全不同：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th>模板快径</th><th>KB 精确命中</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>依据</strong></td>
+            <td><code>examples.yml</code> 里 <code>kind='template'</code> 的条目</td>
+            <td><code>examples.yml</code> 里语义等价的问答对</td>
+          </tr>
+          <tr>
+            <td><strong>触发</strong></td>
+            <td>问题与模板<strong>四重硬约束</strong>全部满足</td>
+            <td>词重叠 ≥ <span class="mono">0.95</span></td>
+          </tr>
+          <tr>
+            <td><strong>产出</strong></td>
+            <td>把参数填进模板 SQL</td>
+            <td>直接复用示例 SQL</td>
+          </tr>
+          <tr>
+            <td><strong>兜底</strong></td>
+            <td>任一约束不满足即放弃</td>
+            <td>修正轮禁用（避免复读错误答案）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      模板快径的四重约束是：SQL 形状合格（单表、无 JOIN/子查询/CTE、无 GROUP/ORDER/LIMIT、单聚合）、
+      问题含聚合意图词、表锚定一致、有家族证据。它是零 LLM 零网络的纯函数，
+      所以能在毫秒级给出答案，而且答案天然可解释——命中了哪条模板，是查得出来的。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/fast_match.py#L367">fast_match.py:367 <span class="ref-line">make_fast_match</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/fast_match.py#L136">fast_match.py:136 <span class="ref-line">template_sql_shape_ok</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L152">graphs.py:152 <span class="ref-line">KB_EXACT_OVERLAP</span></a>
+    </p>
+
+    <p>
+      模板快径只用 <code>kind='template'</code> 的条目——这是 KB 防作弊约束的直接体现：
+      模板是 <code>/kb init</code> 的确定性产物，人往里塞的东西不会成为快径依据。
+    </p>
+
+    <h2 id="kb">知识库：五个文件，三种角色</h2>
+
+    <p>
+      KB 不是一堆配置，是<strong>按「谁写、谁能改」分工的五个文件</strong>：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>文件</th><th>内容</th><th>谁来写</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">schema_notes.yml</td>
+            <td>表/列的语义注释</td>
+            <td><code>/kb init</code> 起草，人可改</td>
+          </tr>
+          <tr>
+            <td class="mono">semantics.yml</td>
+            <td>语义模型（数据集 + 指标）</td>
+            <td><code>/kb init</code> 起草，人可改</td>
+          </tr>
+          <tr>
+            <td class="mono">examples.yml</td>
+            <td>问答对与模板</td>
+            <td><code>/kb init</code> + <code>/kb learn</code>，人审</td>
+          </tr>
+          <tr>
+            <td class="mono">rules.yml</td>
+            <td>生成时必须遵守的规则文本</td>
+            <td><strong>纯人工，没有写入器</strong></td>
+          </tr>
+          <tr>
+            <td class="mono">lessons.yml</td>
+            <td>教训（失败模式与规避）</td>
+            <td>蒸馏路径懒创建，两档确认</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L3">service.py:3 <span class="ref-line">human-editable</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L308">init_pipeline.py:308 <span class="ref-line">INIT_FILES</span></a>
+    </p>
+
+    <p>
+      两个值得记住的细节。其一：<strong><code>/kb init</code> 只产出三个文件</strong>
+      （<code>schema_notes.yml</code>、<code>semantics.yml</code>、<code>examples.yml</code>），
+      <code>lessons.yml</code> 是后续反馈路径首次写入时才创建的——刚初始化完的 KB 里没有它，是正常的。
+      其二：<code>rules.yml</code> 是唯一没有程序化写入器的文件，它只能由人编写，
+      这意味着它承载的是<strong>组织口径</strong>而不是系统推断。
+    </p>
+
+    <h2 id="gate">人工确认门禁：pending 不进检索</h2>
+
+    <p>
+      凡是系统自动生成的内容——好评问答、修正记录、蒸馏教训、自动回写的样例——
+      统一以 <code>pending</code> 落盘。读侧有明确的过滤器：<strong>pending 的示例与未确认的教训，
+      根本不参与检索</strong>，等于不存在。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L570">service.py:570 <span class="ref-line">pending 草稿不参与检索</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1609">service.py:1609 <span class="ref-line">confirmed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1817">service.py:1817 <span class="ref-line">pending</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">这道门禁是刻意不可绕过的</span>
+      <div>
+        <p>「自动回写 → 自动注入」是个很诱人的闭环，但它会让 KB 被自己的输出污染：一次错误的修正变成教训，
+        下次生成照着这条教训走，再产出一个错误答案、再蒸馏出一条教训。几轮之后没人说得清 KB 里哪些是真的。</p>
+        <p>所以确认门禁不是流程负担，是<strong>防污染的必要代价</strong>。记忆子系统里唯一豁免的是「情节记忆」——
+        它记录的是「当时发生了什么」这类客观事实，不是可复用的知识。</p>
+      </div>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>先跑起来看效果</td><td><a href="quickstart.html">快速上手</a></td></tr>
+          <tr><td>把语义模型写得更好</td><td><a href="../capabilities/semantic.html">语义层</a></td></tr>
+          <tr><td>KB 五个文件的具体格式与检索</td><td><a href="../capabilities/kb.html">知识库</a></td></tr>
+          <tr><td>一次提问在图上经过了什么</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

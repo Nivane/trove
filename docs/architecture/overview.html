@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 系统架构：五层分层与各自的职责边界、一次问答的数据流、两档存储后端与可插拔数据源适配器的设计取舍。">
+<title>系统架构 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>架构<span class="sep">/</span>系统架构
+      </div>
+      <h1>系统架构</h1>
+      <p class="lede">
+        这一页讲 Trove 的<strong>分层与边界</strong>：代码分成哪几块、每块的职责是什么、
+        为什么有些看起来该放一起的东西被刻意分开了。具体到「一次提问经过了哪些节点」
+        在<a href="workflow.html">查询工作流</a>。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="layers">五层</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>目录</th><th>职责</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>接口层</strong></td>
+            <td class="mono">trove/api/</td>
+            <td>HTTP 路由、鉴权依赖、SSE 流式输出</td>
+          </tr>
+          <tr>
+            <td><strong>工作流层</strong></td>
+            <td class="mono">trove/workflow/</td>
+            <td>LangGraph 图、节点、确定性规则链、版本比对</td>
+          </tr>
+          <tr>
+            <td><strong>服务层</strong></td>
+            <td class="mono">trove/services/</td>
+            <td>知识库、语义层、记忆、检索、数据源、任务、认证</td>
+          </tr>
+          <tr>
+            <td><strong>模型层</strong></td>
+            <td class="mono">trove/llm/</td>
+            <td>litellm 网关、agent 循环骨架、追踪</td>
+          </tr>
+          <tr>
+            <td><strong>存储层</strong></td>
+            <td class="mono">trove/storage/</td>
+            <td>内部状态的统一后端抽象与版本化迁移</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      值得说明的是<strong>服务层与工作流层的关系</strong>：工作流层不含业务知识，
+      它只负责「按什么顺序、带什么上下文去调用服务」。所以同一个 KbService，
+      对话链路、评测脚本、MCP 通道都在用，而它们的编排方式各不相同。
+    </p>
+
+    <h2 id="entry">两个入口，一张图</h2>
+
+    <p>
+      进程入口有两个：REPL / CLI（<code>trove</code>、<code>trove-cli</code>）与
+      HTTP 服务（<code>trove serve</code>）。它们最终都汇到同一张 LangGraph 图上——
+      图不是在每个入口各建一份，而是由统一的工厂装配。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1197">graphs.py:1197 <span class="ref-line">build_graphs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1720">graphs.py:1720 <span class="ref-line">_build_reflection</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L312">main.py:312 <span class="ref-line">build_graphs</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么「27 个节点」这个数字要较真</span>
+      <div>
+        <p><code>build_graphs</code> 有若干个默认关闭的开关（<code>clarify</code>、<code>query_sketch</code>、<code>agentic</code>、<code>multi_candidate</code>…）。生产调用只传了 <code>checkpointer</code>，其余全取默认值——所以对外报的节点数必须是<b>默认口径</b>下的那张图。</p>
+        <p>把 <code>clarify</code> 算进去会得到 28。它确实存在，但只在显式开启时挂上。读者照着自己跑一遍，看到的应该是 27。</p>
+      </div>
+    </div>
+
+    <h2 id="services">服务的装配与注入</h2>
+
+    <p>
+      节点是<strong>工厂函数</strong>：<code>make_xxx(services...) -&gt; async def node(state)</code>。
+      依赖在构图时被绑进闭包，运行期节点不需要去任何全局注册表里找东西。
+      这样做的好处很直接：测试可以给某个节点单独注入假的 LLM 或假的连接器，
+      而不必启动整个系统。
+    </p>
+
+    <p>
+      服务集合本身是一个 <code>GraphServices</code> 对象，由 <code>main.py</code> 在启动时装配。
+      图拿到的是已经构造好的实例，而不是构造参数——装配逻辑与流程逻辑因此可以分开演进。
+    </p>
+
+    <h2 id="flow">一次提问的数据流</h2>
+
+    <p>
+      从高一层看，一次问答经过这几个阶段（细节在<a href="workflow.html">查询工作流</a>）：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>阶段</th><th>产出</th><th>是否用 LLM</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>意图路由</td>
+            <td>判定这是问数 / 元数据 / 闲聊 / 纠错 / 写操作…</td>
+            <td>是</td>
+          </tr>
+          <tr>
+            <td>语义链接</td>
+            <td>这个问题涉及哪些表（<code>matched_tables</code>）</td>
+            <td>检索为主，确定性过滤为辅</td>
+          </tr>
+          <tr>
+            <td>快径尝试</td>
+            <td>命中模板则直接出 SQL</td>
+            <td><strong>否</strong></td>
+          </tr>
+          <tr>
+            <td>计划与编译</td>
+            <td>查询计划 → 权威 SQL 或骨架</td>
+            <td>计划用，编译不用</td>
+          </tr>
+          <tr>
+            <td>生成</td>
+            <td>SQL（agentic 循环，带工具自校验）</td>
+            <td>是</td>
+          </tr>
+          <tr>
+            <td>执行与校验</td>
+            <td>结果集 + 规则链判定</td>
+            <td><strong>否</strong></td>
+          </tr>
+          <tr>
+            <td>反思与回滚</td>
+            <td>判定这一轮是否进步，决定重试还是回退</td>
+            <td>是（判定有确定性版本比对兜底）</td>
+          </tr>
+          <tr>
+            <td>解释与交付</td>
+            <td>人话解释、图表、结论</td>
+            <td>是</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      这张表里「是否用 LLM」那一列是这套架构的核心信息：<strong>越靠近正确性判断的环节，
+      越不该用 LLM</strong>。结果对不对由规则链判、这一轮有没有变好由版本比对判——
+      只有理解和表达交给模型。
+    </p>
+
+    <h2 id="storage">内部状态：一个抽象，两档后端</h2>
+
+    <p>
+      会话、任务、用户事实、记忆、认证、设置、任务调度、血缘、查询日志、图检查点——
+      这些东西此前散在多个 SQLite 文件里，现在统一到一个 <code>StorageBackend</code> 抽象后面。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L138">sqlite.py:138 <span class="ref-line">build_backend</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L166">sqlite.py:166 <span class="ref-line">resolve_backend</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/checkpoint_store.py#L38">checkpoint_store.py:38 <span class="ref-line">build_checkpointer</span></a>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>场景</th><th>后端</th><th>怎么选中</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>生产</td>
+            <td>PostgreSQL</td>
+            <td>设了 <code>TROVE_STORAGE_URL</code></td>
+          </tr>
+          <tr>
+            <td>本地 / 测试</td>
+            <td>SQLite</td>
+            <td>未设该变量时的兜底</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两个后端共用同一套 store 代码，靠的是后端自己做 SQL 方言翻译：
+      <code>?</code> 占位符转 <code>%s</code>、<code>AUTOINCREMENT</code> 转
+      <code>IDENTITY</code>、需要 <code>lastrowid</code> 时改写成
+      <code>INSERT ... RETURNING id</code>。这让上层 store 不必写两份 SQL。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">两件刻意「不上」这个抽象的东西</span>
+      <div>
+        <p><strong>KB 镜像</strong>与<strong>业务数据源适配器</strong>留在外面。前者依赖 FTS5 虚拟表（PostgreSQL 生产走 pg_hybrid 检索后端，是另一条路）；后者是用户的数据，本来就不该被 Trove 的内部存储抽象管。</p>
+        <p>也就是说：这个抽象管的是「Trove 自己的状态」，不是「所有数据库访问」。</p>
+      </div>
+    </div>
+
+    <p>
+      迁移是<strong>版本化</strong>的，并且有两条不变量：每个操作各自幂等（这才让「从 0 重放」
+      与「存量库接入」走同一条代码路径），以及版本号反映历史而非配置。
+      第二条的意思见<a href="../capabilities/retrieval.html">混合检索</a>里那个退役列的例子。
+    </p>
+
+    <h2 id="datasource">数据源：一个注册表，驱动按需加载</h2>
+
+    <p>
+      数据源适配器由一张注册表管理。驱动是<strong>懒导入</strong>的——
+      导入注册表本身不需要装任何 extras，只有真正去连某个类型的库时才要求对应的驱动包。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">_ADAPTER_REGISTRY</span></a>
+    </p>
+
+    <p>
+      所以「Trove 支持哪些数据源」的答案不是写死在文档里的一句话，而是注册表的 key 集合
+      （检查器会数它）。新增一个方言的工作量集中在实现 <code>DatabaseAdapter</code> 的几个方法：
+      连接、执行、取 schema、上报能力、声明方言。
+    </p>
+
+    <h2 id="api">接口层</h2>
+
+    <p>
+      HTTP 服务由工厂函数构造，OpenAPI 文档挂在 <code>/v1/docs</code>——
+      也就是说<strong>接口清单有一份活文档</strong>，不必手抄进站点。
+      这也是<a href="../reference/api.html">API 参考</a>只给分类清单与场景的原因。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L152">app.py:152 <span class="ref-line">create_app</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L161">app.py:161 <span class="ref-line">FastAPI</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L250">app.py:250 <span class="ref-line">health</span></a>
+    </p>
+
+    <p>
+      鉴权是 <strong>fail-closed</strong> 的：没有认证组件时服务拒绝启动，而不是「裸奔运行并打条警告」。
+      这条规则在<a href="../ops/security.html">安全边界</a>里展开。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>27 个节点逐个讲 + 分支与回滚</td><td><a href="workflow.html">查询工作流</a></td></tr>
+          <tr><td>五层里的服务层具体有什么</td><td><a href="../capabilities/data.html">数据能力</a> / <a href="../capabilities/agent.html">Agent 能力</a></td></tr>
+          <tr><td>部署形态与容器拓扑</td><td><a href="../guide/deploy.html">安装部署</a></td></tr>
+          <tr><td>存储后端的配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

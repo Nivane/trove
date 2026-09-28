@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 混合检索详解：为什么是两路而不是三路、加权 RRF 与分数归一化、召回窗口按库规模自适应、精排为何默认关闭，以及零 LLM 的检索评测。">
+<title>混合检索 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>混合检索
+      </div>
+      <h1>混合检索</h1>
+      <p class="lede">
+        知识库里的东西再多，检索不到就等于没有。<a href="kb.html">知识库</a>讲的是内容怎么来，
+        这一页讲<strong>内容怎么被找出来</strong>——以及三个不那么显然的设计决定。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="two">为什么是两路，而不是三路</h2>
+
+    <p>
+      混合检索的常见形态是三路：关键词、稠密向量、外加一路「学习到的稀疏向量」（比如 bge-m3 的
+      lexical head）。Trove 只有两路，第三路被<strong>主动退役</strong>了。
+    </p>
+
+    <p>
+      理由不是效果不好，而是<strong>信号不独立</strong>：learned-sparse 与 dense 出自同一个
+      backbone，是同一模型的两个 head。RRF 融合的前提是「各路会犯不同的错」，
+      同源的两路会一起犯错、一起漏掉同一个东西——融合它们只是把同一个判断投了两票。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L42">store.py:42 <span class="ref-line">RRF_K</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L44">store.py:44 <span class="ref-line">_CHANNEL_NAMES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L139">store.py:139 <span class="ref-line">HybridStore</span></a>
+    </p>
+
+    <p>
+      退役第三路时保留了一个痕迹：SQLite 兜底存储的迁移列表里，<code>sparse</code> 列与它的迁移步骤
+      仍然在（版本 2）。因为<strong>版本号记的是历史，不是配置</strong>——删掉一个迁移步骤，
+      会让停留在旧版本的数据库看起来「比代码还新」，从而触发拒绝启动的保护。
+      一个不再使用的列，比一个错乱的版本号便宜得多。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L53">sqlite_store.py:53 <span class="ref-line">Migration</span></a>
+    </p>
+
+    <h2 id="channels">两路各自怎么做</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>通道</th><th>生产（PostgreSQL）</th><th>兜底（SQLite）</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>keyword</strong></td>
+            <td>pg_bm25（ParadeDB 的 BM25 索引），不可用时退化到 tsvector + GIN</td>
+            <td>FTS5 虚拟表 + <code>bm25()</code> 排序</td>
+          </tr>
+          <tr>
+            <td><strong>dense</strong></td>
+            <td>pgvector HNSW 索引，ANN 查询</td>
+            <td>Python 内做余弦相似度</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py#L245">pg_store.py:245 <span class="ref-line">_fts_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py#L276">pg_store.py:276 <span class="ref-line">_ann_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L168">sqlite_store.py:168 <span class="ref-line">_fts_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L184">sqlite_store.py:184 <span class="ref-line">_ann_ids</span></a>
+    </p>
+
+    <p>
+      两路并行执行，各自返回一个有序的 id 列表，然后交给融合。
+      注意返回的是<b>顺序</b>而不是分数——这是 RRF 的关键，见下节。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L221">store.py:221 <span class="ref-line">recall</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L248">store.py:248 <span class="ref-line">channels</span></a>
+    </p>
+
+    <h2 id="rrf">加权 RRF 与一个必须做的归一化</h2>
+
+    <p>
+      RRF（Reciprocal Rank Fusion）把多路排序合成一个分数：
+      <code>score = Σ weight / (k + rank)</code>。它只用排名不用原始分，
+      所以不需要把 BM25 的分数和余弦相似度校准到同一个尺度——这是它比「加权求和」更稳的原因。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L82">store.py:82 <span class="ref-line">rrf_scores</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L157">store.py:157 <span class="ref-line">_channel_weights</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L66">factory.py:66 <span class="ref-line">channel_cfg</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">RRF 原始分不能用，原因很具体</span>
+      <div>
+        <p>两路、<code>k=60</code> 时，RRF 的原始分落在 <strong>[0.022, 0.033]</strong> 这个极窄的区间里。这意味着：把它当成相似度直接往下传，任何一个「和相似度做加权」的下游都会退化成一个<b>常量偏移</b>——0.5 的权重乘上去只是给所有候选加了个同样的数，排序完全没受影响。</p>
+        <p>所以命中分数在离开检索层之前会被<strong>按排序位归一化到 [0,1]</strong>：第 1 名恒为 1.0，其余线性递减。这样下游的融合权重才真的有作用。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L108">store.py:108 <span class="ref-line">rrf_order_scores</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L127">store.py:127 <span class="ref-line">rrf_fuse</span></a>
+    </p>
+
+    <h2 id="window">召回窗口按库规模自适应</h2>
+
+    <p>
+      一个容易被忽略的性能陷阱：如果每次都把全部候选拿出来排序，KB 小的时候没问题，
+      大了之后每次检索都会变成全表扫描。
+    </p>
+
+    <p>
+      这里的做法是按数据源的文档总数分档。总数不超过 <strong>2000</strong> 时，
+      不裁剪、全量参与融合——因为库里总共就这么点东西，裁剪反而可能把一个本该命中的条目挡在外面。
+      超过之后才按 <code>limit × 6</code> 开窗（并保底 8 条）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L33">pg_hybrid.py:33 <span class="ref-line">_EXHAUSTIVE_SCAN_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L27">pg_hybrid.py:27 <span class="ref-line">_RECALL_MULTIPLIER</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L174">pg_hybrid.py:174 <span class="ref-line">_recall_window</span></a>
+    </p>
+
+    <h2 id="rerank">精排：能力都有，但默认关闭</h2>
+
+    <p>
+      精排（rerank）接在融合之后，用更贵的模型对候选重新排序。Trove 实现了三种后端，
+      但<strong>默认一个都不用</strong>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>rerank_backend</th><th>行为</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">（留空）/ auto / none</td><td>不精排——<strong>默认</strong></td></tr>
+          <tr><td class="mono">deterministic</td><td>确定性 n-gram 覆盖率打分</td></tr>
+          <tr><td class="mono">bge</td><td>本地 BGE 交叉编码器</td></tr>
+          <tr><td class="mono">http / cross-encoder</td><td>远程精排服务</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L30">factory.py:30 <span class="ref-line">_reranker_for</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/rerank.py#L41">rerank.py:41 <span class="ref-line">DeterministicReranker</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/rerank.py#L97">rerank.py:97 <span class="ref-line">CrossEncoderReranker</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">默认关闭是一次「删掉重复计算」而不是「砍功能」</span>
+      <div>
+        <p>默认档曾经是确定性 n-gram 精排。问题在于：下游 <code>_rank_examples</code> 的相似度函数
+        和这个精排器用的是<strong>同一个函数、同样的源文本</strong>。融合两个同源的量等于原值——
+        那一级排序对结果没有任何影响，纯属把同一份计算做两遍。</p>
+        <p>关掉它之后，下游拿到的检索信号反而更「纯」了：一个来自检索、一个来自确定性打分，两者真的在互补。</p>
+      </div>
+    </div>
+
+    <p>
+      另外，精排失败不会让检索失败——它有兜底，退回融合顺序。
+      这一点是刻意的：一个可选的增强环节，不该成为整条链路的单点。
+    </p>
+
+    <h2 id="backend">后端怎么选</h2>
+
+    <p>
+      检索后端的切换是<strong>能力探测</strong>而不是硬编码的数据源类型判断：
+      配置里没指定时，如果这个数据源有独立的检索库 DSN，或者业务库本身是 PostgreSQL 且带向量能力，
+      就升级到 pg_hybrid 后端；否则用内置的 SQLite 路径。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/registry.py#L40">registry.py:40 <span class="ref-line">_effective_backend</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L36">pg_hybrid.py:36 <span class="ref-line">PgHybridKbBackend</span></a>
+    </p>
+
+    <p>
+      pg_hybrid 后端还带一个优雅退化：如果这个数据源从未建立索引（库里没有它的文档），
+      示例与教训的检索会落回内置路径，而不是返回空。刚接入、还没索引完的数据源不会「突然什么都搜不到」。
+    </p>
+
+    <h2 id="eval">评测：这部分完全不需要花 LLM 的钱</h2>
+
+    <p>
+      检索评测是<strong>零 LLM 成本</strong>的——它比对的是「该被召回的东西有没有被召回」，
+      跟生成质量无关。所以这部分可以放心反复跑，也是回归门能覆盖的指标来源。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>脚本</th><th>测什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">eval_hybrid_retrieval.py</td>
+            <td>Recall@k / MRR / nDCG@k，并给出精排前后的对比</td>
+          </tr>
+          <tr>
+            <td class="mono">eval_bird_retrieval.py</td>
+            <td>表级 schema 召回 + <strong>分路消融</strong>（keyword-only / dense-only / 融合，同一金标对比）</td>
+          </tr>
+          <tr>
+            <td class="mono">tune_rrf.py</td>
+            <td>在网格上搜 <code>rrf_k</code> 与各通道权重，以 MRR 为主目标</td>
+          </tr>
+          <tr>
+            <td class="mono">eval_retrieval.py</td>
+            <td>召回率 + 子结构覆盖 + 预算挤占</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/metrics.py#L54">metrics.py:54 <span class="ref-line">evaluate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/metrics.py#L26">metrics.py:26 <span class="ref-line">mrr</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/metrics.py#L35">metrics.py:35 <span class="ref-line">ndcg_at_k</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/metrics.py#L15">metrics.py:15 <span class="ref-line">DEFAULT_KS</span></a>
+    </p>
+
+    <p>
+      分路消融值得单独说一句：它是<strong>直接调通道原语</strong>对比的，而不是把某一路的权重设成 0。
+      用权重 0 来「关闭」一路会混入 RRF 本身的效应（那一路的排名仍然存在、只是不加权），
+      得到的不再是「只有 dense 时效果如何」这个问题的答案。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird_retrieval.py#L54">eval_bird_retrieval.py:54 <span class="ref-line">--scorecard</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/tune_rrf.py#L33">tune_rrf.py:33 <span class="ref-line">--scorecard</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_hybrid_retrieval.py#L33">eval_hybrid_retrieval.py:33 <span class="ref-line">--scorecard</span></a>
+    </p>
+
+    <p>
+      这些脚本的 <code>--scorecard</code> 产物是回归门的输入之一——也就是说，
+      <strong>改检索参数会被离线门拦住</strong>，不需要跑一次花钱的端到端评测。详见
+      <a href="../ops/eval.html">评测与回归门</a>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>被检索的内容长什么样</td><td><a href="kb.html">知识库</a></td></tr>
+          <tr><td>检索参数配在哪（不是 agent.yml）</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+          <tr><td>回归门怎么消费 scorecard</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
+          <tr><td>检索日志记了什么</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

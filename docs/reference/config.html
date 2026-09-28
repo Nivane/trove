@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 配置参考：conf/agent.yml 全部 key、代码默认值、环境变量清单，以及一个常见误区——检索参数配在数据源而不是 agent.yml 里。">
+<title>配置参考 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>参考<span class="sep">/</span>配置参考
+      </div>
+      <h1>配置参考</h1>
+      <p class="lede">
+        配置分三处：<code>conf/agent.yml</code>（全局）、<code>.trove/datasources.yml</code>
+        （每个数据源）、以及环境变量。这一页把三处说明白，并指出一个常见的找错地方。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="where">配置放在哪</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>文件</th><th>管什么</th><th>优先级</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">./conf/agent.yml</td>
+            <td>全局：模型、开关、记忆、评测</td>
+            <td>高</td>
+          </tr>
+          <tr>
+            <td class="mono">~/.trove/conf/agent.yml</td>
+            <td>同上，作为个人覆盖</td>
+            <td>低（前者优先）</td>
+          </tr>
+          <tr>
+            <td class="mono">.trove/datasources.yml</td>
+            <td><strong>每个数据源</strong>：连接、检索参数</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td class="mono">~/.trove/settings.db</td>
+            <td>管理台改的运行时设置</td>
+            <td>启动时合入</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L1">conf/agent.yml:1 <span class="ref-line">搜索顺序</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L37">config.py:37 <span class="ref-line">CONFIG_SEARCH_PATHS</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">最常见的找错地方</span>
+      <div>
+        <p><code>rrf_k</code>、<code>rrf_weights</code>、<code>rerank_backend</code>、<code>rerank_endpoint</code>
+        <strong>不在 <code>agent.yml</code> 里</strong>——它们是<strong>每个数据源</strong>的配置，
+        写在各数据源条目下。</p>
+        <p>理由很自然：不同库的检索特性不同，一套全局权重不可能对谁都最优。这也正是
+        <a href="../capabilities/retrieval.html">混合检索</a>那套调参脚本产出「可以写回
+        <code>datasources.yml</code>」的原因。</p>
+      </div>
+    </div>
+
+    <h2 id="agent">agent 段：常用项</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">target</td><td>—</td><td>主力模型</td></tr>
+          <tr><td class="mono">model_fast</td><td>—</td><td>轻量任务用的快速模型</td></tr>
+          <tr><td class="mono">language</td><td class="mono">zh</td><td>回答语言</td></tr>
+          <tr><td class="mono">semantic_first</td><td class="mono">true</td><td>语义优先：无语义模型的数据源整体拒绝</td></tr>
+          <tr><td class="mono">hitl</td><td class="mono">false</td><td>执行前人工确认</td></tr>
+          <tr><td class="mono">date_parser</td><td class="mono">true</td><td>相对时间解析</td></tr>
+          <tr><td class="mono">insights / conclusion / chart_llm</td><td class="mono">false</td><td>要点、结论、图表三个增强节点</td></tr>
+          <tr><td class="mono">result_cache</td><td class="mono">false</td><td>结果缓存</td></tr>
+          <tr><td class="mono">reflect_skip</td><td class="mono">simple</td><td>哪一档复杂度可以跳过反思</td></tr>
+          <tr><td class="mono">git_kb</td><td class="mono">true</td><td>KB 变更走 git 提交，留审计历史</td></tr>
+          <tr><td class="mono">scheduler_poll_seconds</td><td class="mono">30</td><td>内置调度轮询间隔；≤0 关闭</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L4">conf/agent.yml:4 <span class="ref-line">target</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L84">conf/agent.yml:84 <span class="ref-line">semantic_first</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L30">conf/agent.yml:30 <span class="ref-line">hitl</span></a>
+    </p>
+
+    <p>
+      注意<strong>代码默认值与配置文件里的值可能不同</strong>。比如 <code>reflect_skip</code>
+      在代码里是 <code>simple</code>，配置里写的是 <code>standard</code>；
+      <code>insights</code> 等在代码里是 <code>False</code>，配置里开启了。
+      以配置文件为准（它覆盖代码默认），但排查时要知道有两层。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L138">config.py:138 <span class="ref-line">AgentConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L63">conf/agent.yml:63 <span class="ref-line">reflect_skip</span></a>
+    </p>
+
+    <h2 id="memory">memory 段</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">enabled</td><td class="mono">true</td><td>记忆子系统总开关</td></tr>
+          <tr><td class="mono">episodes</td><td class="mono">true</td><td>情节记忆</td></tr>
+          <tr><td class="mono">auto_examples</td><td class="mono">true</td><td>成功问答回写成 pending 示例</td></tr>
+          <tr><td class="mono">auto_preferences</td><td class="mono">true</td><td>偏好抽取</td></tr>
+          <tr><td class="mono">promotion</td><td class="mono">false</td><td><strong>自动晋升</strong>（默认关）</td></tr>
+          <tr><td class="mono">promotion_threshold</td><td class="mono">0.8</td><td>晋升阈值</td></tr>
+          <tr><td class="mono">profile_boost</td><td class="mono">false</td><td>把画像作为生成提示（默认关）</td></tr>
+          <tr><td class="mono">schema_drift_check</td><td class="mono">true</td><td>周期漂移检测</td></tr>
+          <tr><td class="mono">retention_days</td><td><em>空</em></td><td><strong>空 = 不清理</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L127">conf/agent.yml:127 <span class="ref-line">auto_examples</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L129">conf/agent.yml:129 <span class="ref-line">promotion</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/models.py#L58">models.py:58 <span class="ref-line">MemoryConfig</span></a>
+    </p>
+
+    <p>
+      两个默认关闭的开关值得单独说：
+      <strong><code>promotion</code></strong> 是「证据够了就自动把 pending 教训转正」，
+      默认关是为了保护人工门禁；<strong><code>profile_boost</code></strong> 是把用户画像
+      注入生成提示，默认关是因为画像的优先级最低、收益不确定。
+    </p>
+
+    <h2 id="eval">eval 段</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">gate_enabled</td><td class="mono">true</td><td>回归门总开关</td></tr>
+          <tr><td class="mono">questions_path</td><td class="mono">eval/baseline/questions.jsonl</td><td>基线问题集</td></tr>
+          <tr><td class="mono">baseline_path</td><td class="mono">eval/baseline/results.jsonl</td><td>基线结果</td></tr>
+          <tr><td class="mono">min_n</td><td class="mono">10</td><td>样本下限，不足则判为不可比</td></tr>
+          <tr><td class="mono">tolerances</td><td class="mono">{}</td><td>逐指标容差覆盖</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L154">conf/agent.yml:154 <span class="ref-line">gate_enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L102">config.py:102 <span class="ref-line">gate_enabled</span></a>
+    </p>
+
+    <p>
+      <code>--ci</code> 模式下如果 <code>gate_enabled</code> 是 false，门会拒绝执行而不是放行——
+      「门被关掉了」不该被 CI 读成「通过」。
+    </p>
+
+    <h2 id="retention-cfg">retention 段</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">max_sessions_per_user</td><td class="mono">100</td><td>每用户会话配额，0 = 关闭</td></tr>
+          <tr><td class="mono">active_grace_min</td><td class="mono">10</td><td>活跃宽限期（分钟）</td></tr>
+          <tr><td class="mono">max_checkpoints_per_thread</td><td class="mono">50</td><td>每线程检查点上限</td></tr>
+          <tr><td class="mono">sweep_interval_hours</td><td class="mono">24</td><td>清扫间隔，≤0 = 关闭</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L98">conf/agent.yml:98 <span class="ref-line">max_sessions_per_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L73">config.py:73 <span class="ref-line">RetentionConfig</span></a>
+    </p>
+
+    <h2 id="env">环境变量</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>变量</th><th>作用</th><th>默认</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">TROVE_ADMIN_PASSWORD</td><td>初始管理员密码</td><td>随机生成并打印一次</td></tr>
+          <tr><td class="mono">TROVE_STORAGE_URL</td><td>内部状态存储后端</td><td>未设 → SQLite</td></tr>
+          <tr><td class="mono">TROVE_SECRET_KEY</td><td>连接串加密密钥（Fernet）</td><td>—</td></tr>
+          <tr><td class="mono">TROVE_TOKEN_TTL_HOURS</td><td>token 有效期</td><td class="mono">720</td></tr>
+          <tr><td class="mono">TROVE_LOGIN_MAX_ATTEMPTS</td><td>登录失败次数上限</td><td class="mono">5</td></tr>
+          <tr><td class="mono">TROVE_LOGIN_WINDOW_MINUTES</td><td>登录限流窗口</td><td class="mono">15</td></tr>
+          <tr><td class="mono">TROVE_GIT_KB_AUTHOR</td><td>KB git 提交作者</td><td class="mono">trove &lt;trove@local&gt;</td></tr>
+          <tr><td class="mono">TROVE_MCP_TOKEN</td><td>MCP HTTP 传输的 bearer token</td><td>—</td></tr>
+          <tr><td class="mono">LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST</td><td>追踪上报</td><td>两个 key 都设才启用</td></tr>
+          <tr><td class="mono">&lt;厂商&gt;_API_KEY</td><td>模型凭证</td><td>litellm 回落解析</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/secrets.py#L123">secrets.py:123 <span class="ref-line">TROVE_SECRET_KEY</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L65">service.py:65 <span class="ref-line">TROVE_TOKEN_TTL_HOURS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/git_versioning.py#L70">git_versioning.py:70 <span class="ref-line">TROVE_GIT_KB_AUTHOR</span></a>
+    </p>
+
+    <p>
+      配置文件里可以写 <code>${ENV_VAR}</code> 占位符，加载时展开。
+      凭证建议一律走这个形式，这样配置文件本身可以安全提交。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L263">config.py:263 <span class="ref-line">resolve_env_vars</span></a>
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>命令行参数</td><td><a href="cli.html">CLI 参考</a></td></tr>
+          <tr><td>接口清单</td><td><a href="api.html">API 参考</a></td></tr>
+          <tr><td>记忆开关的语义</td><td><a href="../capabilities/memory.html#config">记忆子系统 · 配置</a></td></tr>
+          <tr><td>检索参数配在哪</td><td><a href="../capabilities/retrieval.html">混合检索</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

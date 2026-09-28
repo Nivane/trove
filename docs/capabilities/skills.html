@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove Skills：跨数据源的方法论资产，两级注入（required 全量注入 / available 按需加载）、pending 确认门禁、以及管理端 API。">
+<title>Skills · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>Agent 能力<span class="sep">/</span>Skills
+      </div>
+      <h1>Skills</h1>
+      <p class="lede">
+        Skills 是<strong>组织的方法论</strong>：怎么规划一个查询、怎么诊断一次失败、某个口径在本组织里到底怎么算。
+        它与知识库的分界很清楚——知识库装<strong>某个数据源的事实</strong>，
+        Skills 装<strong>跨数据源通用做法</strong>。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="boundary">放哪：Skills 还是 KB？</h2>
+
+    <p>
+      这是使用中最常被问的问题，判据只有一条：<strong>这条知识换一个数据源还成立吗？</strong>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>内容</th><th>放哪</th><th>理由</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>「<code>loan.amount</code> 单位是元」</td>
+            <td>KB</td>
+            <td>这是某张表的字段事实</td>
+          </tr>
+          <tr>
+            <td>「比率类指标的分母要排除已核销」</td>
+            <td>KB（<code>rules.yml</code>）或 skills</td>
+            <td>取决于它是这个库的口径还是全组织的口径</td>
+          </tr>
+          <tr>
+            <td>「遇到多跳问题先确定事实表再补维度表」</td>
+            <td><strong>Skills</strong></td>
+            <td>换任何库都成立的方法论</td>
+          </tr>
+          <tr>
+            <td>「执行报字段不存在时先查 schema 再改，不要猜列名」</td>
+            <td><strong>Skills</strong></td>
+            <td>诊断方法，与具体表无关</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      代码里自带的三个 code skill 正好是后两类的例子：<code>plan_query</code>（怎么规划）、
+      <code>align_schema</code>（怎么对齐 schema）、<code>diagnose_failure</code>（怎么诊断失败）。
+      它们放在 <code>trove/prompts/skills/</code> 下，随代码走，是事实上的必需品。
+    </p>
+
+    <h2 id="sources">两个来源，合并渲染</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>来源</th><th>位置</th><th>谁能改</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>code skills</strong></td>
+            <td class="mono">trove/prompts/skills/</td>
+            <td>改代码（只读资产，事实上的 required）</td>
+          </tr>
+          <tr>
+            <td><strong>org skills</strong></td>
+            <td class="mono">.trove/skills/&lt;name&gt;/SKILL.md</td>
+            <td>管理端，走确认门禁</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L56">service.py:56 <span class="ref-line">SkillService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L127">service.py:127 <span class="ref-line">list_code_skills</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L109">service.py:109 <span class="ref-line">list_org</span></a>
+    </p>
+
+    <h2 id="tiers">两级注入：全量注入 vs 按需加载</h2>
+
+    <p>
+      每个 skill 声明自己的注入级别。这个选择直接影响生成提示的长度，
+      而提示长度直接影响成本与注意力分配——所以不该「全都塞进去」。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>tier</th><th>进什么</th><th>什么时候用</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>required</strong></td>
+            <td>正文<strong>全文</strong>注入到匹配节点的系统提示里</td>
+            <td>每次都该遵守的硬约束（如「不许猜列名」）</td>
+          </tr>
+          <tr>
+            <td><strong>available</strong></td>
+            <td>只把<strong>描述</strong>作为 <code>&lt;available_skills&gt;</code> 块广告出去，正文按需取</td>
+            <td>场景性的方法论，多数提问用不上</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L40">service.py:40 <span class="ref-line">_TIERS</span></a>
+    </p>
+
+    <p>
+      <code>required</code> 级的 skill 不是全局生效的——它可以声明 <code>triggers.node</code>
+      来限定只注入到某几个节点（查询计划、失败分析、agentic 生成）。
+      没写 <code>triggers.node</code> 的才是全局。这个粒度是有必要的：
+      「怎么诊断失败」这条方法论对规划节点毫无用处，注进去只会稀释它的注意力。
+    </p>
+
+    <h3>按需加载怎么工作</h3>
+
+    <p>
+      available 级的 skill 靠一个工具取正文。这个工具<strong>只在真的有 confirmed 的
+      available skill 时才注册</strong>——没有的时候，模型看到的工具列表里根本没有它。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1147">gen_sql.py:1147 <span class="ref-line">load_skill_tool</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1036">gen_sql.py:1036 <span class="ref-line">build_sql_registry</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">「零工具噪音」是个设计目标</span>
+      <div>
+        <p>一个用不到的工具不是中性的——它会占提示空间，还会给模型多一个犹豫的选项。所以这套系统里工具的注册普遍是条件的：按复杂度档位、按角色、按「有没有内容可返回」。</p>
+        <p>这和<a href="agent.html#tools">工具治理</a>是同一个思路的两面。</p>
+      </div>
+    </div>
+
+    <h2 id="gate">确认门禁：草案不进提示</h2>
+
+    <p>
+      org skill 的写入走的是和 KB 教训/示例<strong>同一套门禁</strong>：
+      新建即 <code>pending</code>，<strong>待确认的草案既不会进提示、也不会出现在
+      <code>load_skill</code> 工具的可取范围里</strong>——等于不存在。
+    </p>
+
+    <p>
+      这条一致性很重要：Skills 直接写进系统提示，影响力比 KB 条目更大。
+      如果草案能进提示，那「AI 自己写方法论给自己看」就成了一个自我强化的回路。
+    </p>
+
+    <h2 id="draft">起草：LLM 帮忙，但只到草案为止</h2>
+
+    <p>
+      管理端可以用 LLM 起草一份 skill。起草用的提示模板按语言分开：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/skills/draft.zh.j2">prompts/skills/draft.zh.j2 <span class="ref-line">起草模板</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/skills/draft.en.j2">prompts/skills/draft.en.j2 <span class="ref-line">draft template</span></a>
+    </p>
+
+    <p>
+      但起草的产物落在 <code>pending</code>，需要人确认。这个边界和 KB 是同一句话：
+      <strong>模型可以提议，不能决定</strong>。
+    </p>
+
+    <h2 id="api">管理端 API</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /admin/skills</td><td>列出全部（含 code 与 org）</td></tr>
+          <tr><td class="mono">GET /admin/skills/org</td><td>只列 org skills</td></tr>
+          <tr><td class="mono">POST /admin/skills/draft</td><td>手工创建草案</td></tr>
+          <tr><td class="mono">POST /admin/skills/llm-draft</td><td>让 LLM 起草一份草案</td></tr>
+          <tr><td class="mono">GET /admin/skills/{name}/body</td><td>读正文</td></tr>
+          <tr><td class="mono">POST /admin/skills/{name}/confirm</td><td>确认——<strong>此时才可能进入提示</strong></td></tr>
+          <tr><td class="mono">POST /admin/skills/{name}/reject</td><td>驳回</td></tr>
+          <tr><td class="mono">POST /admin/skills/{name}/tier</td><td>改注入级别</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L49">skills.py:49 <span class="ref-line">draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L64">skills.py:64 <span class="ref-line">llm_draft_skill</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L92">skills.py:92 <span class="ref-line">confirm</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L120">skills.py:120 <span class="ref-line">tier</span></a>
+    </p>
+
+    <p>
+      前端对应「Skills」页面。修改 <code>tier</code> 是一个值得留意的操作：
+      把一个 available 的 skill 提成 required，等于给每次生成都加一段固定文本——
+      确认它真的每次都用得上再提。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>工具治理与 agent 循环</td><td><a href="agent.html">Agent 能力总览</a></td></tr>
+          <tr><td>KB 的两档门禁（同一套机制）</td><td><a href="kb.html">知识库</a></td></tr>
+          <tr><td>上下文预算怎么分配给各信息块</td><td><a href="../architecture/workflow.html#budget">查询工作流 · 上下文预算</a></td></tr>
+          <tr><td>模型与 provider 配置</td><td><a href="llm-gateway.html">LLM 网关</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

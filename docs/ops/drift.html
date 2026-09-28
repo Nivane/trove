@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 数据漂移治理：四级分类（结构/引用/语义/口径）、检测如何落库、幂等重检与回归重开、影响面快照，以及 resolve/waive/外部声明的处置流程。">
+<title>数据漂移治理 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>运维<span class="sep">/</span>数据漂移治理
+      </div>
+      <h1>数据漂移治理</h1>
+      <p class="lede">
+        KB 描述的是「我们以为数据长什么样」，数据库会变。漂移治理要回答的不是
+        「变了没有」，而是<strong>「变了之后哪些答案不再可信、该怎么处置」</strong>。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="levels">四级分类：能自动检测的只有前两级</h2>
+
+    <p>
+      漂移被分成四级。这个分类的价值在于<strong>明确说出哪些不检测</strong>——
+      比含糊地声称「全面监控」诚实，也更有用。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>级别</th><th>含义</th><th>能否自动检测</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>L1 结构漂移</strong></td>
+            <td>表/列还在不在——对象存在性</td>
+            <td>✅ 比对 KB <code>schema_notes.yml</code> 与活库</td>
+          </tr>
+          <tr>
+            <td><strong>L2 引用漂移</strong></td>
+            <td>语义模型里引用的表/字段是否还可达</td>
+            <td>✅ 由语义层 provider 计算</td>
+          </tr>
+          <tr>
+            <td><strong>L3 语义漂移</strong></td>
+            <td>取值是否还能锚定、关系是否可加</td>
+            <td>⚠️ 需要活库探测</td>
+          </tr>
+          <tr>
+            <td><strong>L4 口径漂移</strong></td>
+            <td>业务的算法改了（如坏账定义变了）</td>
+            <td>❌ <strong>不检测</strong>，只承接外部声明</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L36">models.py:36 <span class="ref-line">L1</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L49">service.py:49 <span class="ref-line">SUPPORTED_LEVELS</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么把 L4 明确写成「不检测」</span>
+      <div>
+        <p>「本季度的不良率口径改了」这件事，<strong>数据库里没有任何痕迹</strong>——
+        表和列都没变，变的是一句业务定义。任何声称能自动发现它的系统都是在猜。</p>
+        <p>所以 L4 的设计是<strong>承接</strong>：接受外部声明（来自数据治理流程或人的通知），
+        把它记成一条漂移条目，然后走同一套影响面与处置流程。承认边界，然后在这个边界内做到最好。</p>
+      </div>
+    </div>
+
+    <h2 id="detect">检测与落库</h2>
+
+    <p>
+      检测的唯一入口是一个服务类。检测结果会<strong>落库</strong>——这一点是这次改造的核心：
+      漂移从「报完即忘」变成了有状态的、可处置的条目。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L91">service.py:91 <span class="ref-line">DriftService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L130">service.py:130 <span class="ref-line">detect</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/schema_drift.py#L16">schema_drift.py:16 <span class="ref-line">detect_drift</span></a>
+    </p>
+
+    <p>
+      存储层有两条值得单独说的设计。第一，<strong>幂等</strong>：以
+      <code>(datasource, level, kind, subject)</code> 做唯一键，重检只刷新「最后见到时间」与
+      「见过几次」，不会产生重复条目。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/store.py#L63">store.py:63 <span class="ref-line">_SEMANTIC_DRIFT_SQL</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/store.py#L105">store.py:105 <span class="ref-line">_migrations</span></a>
+    </p>
+
+    <p>
+      第二，<strong>已解决的条目再次被检出 = 回归</strong>，会重新打开为 <code>open</code>。
+      这一条很关键：如果没有它，「已解决」会变成一个谎言——
+      修好的问题又出现了，而系统还显示一切正常。
+      被显式豁免（<code>waived</code>）的条目则保持豁免，不再打扰。
+    </p>
+
+    <h3>检测没跑完 ≠ 没有漂移</h3>
+
+    <p>
+      这是最容易出事的地方。拿不到活库 schema 时，系统不会报告「干净」，
+      而是标记为 <code>skipped</code>——本次检测只写一行运行记录，不碰任何条目。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L176">models.py:176 <span class="ref-line">levels_verified</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L178">models.py:178 <span class="ref-line">verified</span></a>
+    </p>
+
+    <p>
+      报告里带一个「哪些级别真的被验证过」的集合，调用方可以据此区分
+      「检查过且没问题」与「没检查成」。<strong>把「不知道」和「没问题」分开</strong>，
+      是这个模块里最值得学的一个设计。
+    </p>
+
+    <h2 id="lifecycle">条目状态与处置</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>状态</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">open</td><td>检出，待处理</td></tr>
+          <tr><td class="mono">acknowledged</td><td>已看到，处理中</td></tr>
+          <tr><td class="mono">resolved</td><td>已解决（<strong>再次出现会重开</strong>）</td></tr>
+          <tr><td class="mono">waived</td><td>已知且接受，不再提醒</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L43">models.py:43 <span class="ref-line">STATUS_OPEN</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L240">service.py:240 <span class="ref-line">resolve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L261">service.py:261 <span class="ref-line">declare_external</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">处理必须给理由，这是硬约束</span>
+      <div>
+        <p><code>resolve</code> 强制要求一个 reason，代码里的原话是「无理由的 resolve 等于删记录」。</p>
+        <p>这条约束防的是一种很常见的退化：把「关掉告警」当成「解决问题」。
+        半年后有人问「这个漂移当时怎么处理的」，理由字段是唯一的答案。</p>
+      </div>
+    </div>
+
+    <h2 id="impact">影响面：发现时冻结的快照</h2>
+
+    <p>
+      一条漂移的危害程度取决于<strong>有多少东西依赖它</strong>：
+      哪些指标引用了消失的列、哪些示例用了它、哪些规则提到它。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>维度</th><th>内容</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">metrics</td><td>受影响的指标</td></tr>
+          <tr><td class="mono">examples</td><td>引用了它的 KB 示例</td></tr>
+          <tr><td class="mono">rules</td><td>提到它的规则</td></tr>
+          <tr><td class="mono">lessons</td><td>相关的教训</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L122">models.py:122 <span class="ref-line">metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L225">service.py:225 <span class="ref-line">impact</span></a>
+    </p>
+
+    <p>
+      影响面读的是<strong>发现时冻结的快照</strong>，不实时重算。因为「当时影响面有多大」
+      是处置决策的依据，事后重算会随着 KB 的修改而漂移，让记录失去意义。
+    </p>
+
+    <h2 id="api">API 与门禁脚本</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">POST /admin/drift/check</td><td>跑一次检测</td></tr>
+          <tr><td class="mono">GET /admin/drift</td><td>列出条目</td></tr>
+          <tr><td class="mono">GET /admin/drift/runs</td><td>运行历史</td></tr>
+          <tr><td class="mono">POST /admin/drift/{id}/resolve</td><td>解决（需 reason）</td></tr>
+          <tr><td class="mono">POST /admin/drift/{id}/waive</td><td>豁免</td></tr>
+          <tr><td class="mono">POST /admin/drift/external</td><td>登记外部声明的漂移（L4 入口）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L162">drift.py:162 <span class="ref-line">check</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L180">drift.py:180 <span class="ref-line">503</span></a>
+    </p>
+
+    <p>
+      检测端点有<strong>未完成就返回 503</strong> 的约定，而不是「200 + 空列表」。
+      理由和上面 skipped 一样：一个空列表会被读成「没有问题」。
+    </p>
+
+    <p>
+      命令行门禁脚本 <code>scripts/check_drift.py</code> 的退出码分三档：
+      <code>0</code> 干净且<strong>每一项检查都真的跑了</strong>、<code>1</code> 发现漂移、
+      <code>2</code> 出错<strong>或任一检查未能完成</strong>。第二档那个限定词是关键——
+      它让「没检查成」不会被 CI 当成通过。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/check_drift.py#L46">check_drift.py:46 <span class="ref-line">_check_datasource</span></a>
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>KB 的 schema_notes 是什么</td><td><a href="../capabilities/kb.html">知识库</a></td></tr>
+          <tr><td>语义模型引用不达会怎样</td><td><a href="../capabilities/semantic.html">语义层</a></td></tr>
+          <tr><td>管理端怎么处置</td><td><a href="admin.html">运维管理</a></td></tr>
+          <tr><td>其他离线门禁脚本</td><td><a href="eval.html">评测与回归门</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

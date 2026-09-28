@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove MCP 集成：三种 transport（stdio / sse / streamable-http）、网络绑定的 fail-closed 鉴权、三个 tool、三个 resource 与两个 prompt。">
+<title>MCP 集成 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>参考<span class="sep">/</span>MCP 集成
+      </div>
+      <h1>MCP 集成</h1>
+      <p class="lede">
+        Trove 可以把问数能力作为 <strong>MCP 服务</strong>暴露给 AI 客户端
+        （Claude Desktop / Cursor / Claude Code 等）。这一页讲三种传输方式、
+        鉴权边界，以及对外暴露的 3 个 tool、3 个 resource、2 个 prompt。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="start">启动</h2>
+
+    <pre><code>trove mcp                                  # stdio（默认）
+trove mcp --transport sse --port 8001
+trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L780">main.py:780 <span class="ref-line">main_mcp</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L665">main.py:665 <span class="ref-line">--transport</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L56">server.py:56 <span class="ref-line">FastMCP</span></a>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>transport</th><th>典型用途</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">stdio</td>
+            <td>本地挂载——Claude Desktop / Cursor / Claude Code 直接拉起进程</td>
+          </tr>
+          <tr><td class="mono">sse</td><td>HTTP 传输，Server-Sent Events</td></tr>
+          <tr><td class="mono">streamable-http</td><td>HTTP 传输（<code>http</code> 是它的别名）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="auth">鉴权：网络绑定必须带 token</h2>
+
+    <p>
+      这里有一条 fail-closed 的硬规则：<strong>绑定到非回环地址时，必须提供
+      <code>--token</code>，否则直接拒绝启动</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L710">main.py:710 <span class="ref-line">_LOOPBACK_HOSTS</span></a>
+    </p>
+
+    <p>
+      这个 token 不是随便一个字符串，而是<strong>必须能被解析成真实的 Trove 用户</strong>——
+      解析失败也拒绝启动。也就是说 MCP 通道的鉴权复用同一套用户体系，
+      没有第二套凭证。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L728">main.py:728 <span class="ref-line">_build_mcp_auth_middleware</span></a>
+    </p>
+
+    <p>
+      HTTP 传输下带 Bearer 中间件，<strong>连 health 端点也不豁免</strong>——
+      未授权的客户端应当快速失败，而不是从一个开放的探活端点推断出服务存在。
+    </p>
+
+    <h3>身份语义</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>传输</th><th>身份</th><th>数据源可见性</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">stdio</td>
+            <td>视作本机可信（等价 admin）</td>
+            <td>全部</td>
+          </tr>
+          <tr>
+            <td class="mono">HTTP + token</td>
+            <td>token 对应的用户</td>
+            <td>按 grants 校验，与 HTTP API 同语义</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L74">server.py:74 <span class="ref-line">_granted</span></a>
+    </p>
+
+    <p>
+      「stdio 视作本机可信」是合理的：能拉起这个进程的人本来就有本机权限。
+      但这也意味着<strong>不要把 stdio 形态包装成一个别人能远程触发的服务</strong>。
+    </p>
+
+    <h2 id="tools">三个 tool</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>tool</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">ask_data</td>
+            <td>问一个问题，走完整链路</td>
+          </tr>
+          <tr><td class="mono">list_datasources</td><td>列出当前身份可见的数据源</td></tr>
+          <tr><td class="mono">kb_status</td><td>看某个数据源的 KB 状态</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L235">server.py:235 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L279">server.py:279 <span class="ref-line">list_datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L286">server.py:286 <span class="ref-line">kb_status</span></a>
+    </p>
+
+    <p>
+      <code>ask_data</code> 的返回里除了答案还带 <code>sql</code>、<code>row_count</code>、
+      <code>verdict</code>，以及 <code>refusal</code> / <code>no_model</code> 两个状态位。
+      后两者很重要——<strong>拒绝回答与「数据源没有语义模型」不是同一种失败</strong>，
+      客户端应当能区分并给出不同的提示。
+    </p>
+
+    <p>
+      多轮对话在进程内按 session 缓存（上限 200），数据源名做了路径穿越防护。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L40">server.py:40 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L151">server.py:151 <span class="ref-line">_ds_name_safe</span></a>
+    </p>
+
+    <h2 id="resources">三个 resource</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>URI</th><th>内容</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">trove://datasources</td><td>可用数据源清单</td></tr>
+          <tr><td class="mono">trove://{datasource}/schema</td><td>该数据源的表结构</td></tr>
+          <tr><td class="mono">trove://{datasource}/semantics</td><td>该数据源的语义模型</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L173">server.py:173 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L193">server.py:193 <span class="ref-line">schema</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L199">server.py:199 <span class="ref-line">semantics</span></a>
+    </p>
+
+    <p>
+      resource 与 tool 的区别在这里体现得很清楚：<code>ask_data</code> 是<strong>动作</strong>，
+      而语义模型是<strong>可以读的上下文</strong>。把语义模型作为 resource 暴露，
+      意味着客户端可以把「这个库有哪些指标」直接放进模型上下文，
+      从而在提问之前就知道边界在哪。
+    </p>
+
+    <h2 id="prompts">两个 prompt</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>prompt</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">datasource_guide</td><td>介绍某个数据源该怎么问</td></tr>
+          <tr><td class="mono">ask_data</td><td>把一个自然语言意图转成 <code>ask_data</code> 调用</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L209">server.py:209 <span class="ref-line">datasource_guide</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L224">server.py:224 <span class="ref-line">ask_data</span></a>
+    </p>
+
+    <h2 id="visible">语义优先也在这里生效</h2>
+
+    <p>
+      可见数据源清单和 HTTP 侧遵循同一条规则：<strong>没有语义模型的数据源不出现在清单里</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L105">server.py:105 <span class="ref-line">_datasources_visible</span></a>
+    </p>
+
+    <p>
+      客户端因此不会看到一个「问什么都会失败」的数据源。
+      这是<a href="../guide/concepts.html">语义优先</a>在接口层的体现：
+      可答边界不只影响生成，也影响<strong>暴露什么</strong>。
+    </p>
+
+    <h2 id="client">客户端配置示例</h2>
+
+    <pre><code>{
+  "mcpServers": {
+    "trove": {
+      "command": "uv",
+      "args": ["run", "trove", "mcp"],
+      "cwd": "/path/to/trove"
+    }
+  }
+}</code></pre>
+
+    <p>
+      stdio 形态下客户端会自动拉起进程，不需要预先启动服务。
+      记得 <code>cwd</code> 要指向仓库根——配置与 <code>.trove/</code> 都是相对它解析的。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>HTTP 接口</td><td><a href="api.html">API 参考</a></td></tr>
+          <tr><td>token 怎么签发</td><td><a href="../ops/admin.html#users">运维管理</a></td></tr>
+          <tr><td>语义优先的完整含义</td><td><a href="../guide/concepts.html">产品概念</a></td></tr>
+          <tr><td>授予数据源访问权</td><td><a href="../ops/security.html#auth">安全边界</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

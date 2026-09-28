@@ -24,7 +24,7 @@
 <br>
 <br>
 
-📖 **[Capability map](https://nivane.github.io/trove/)** — six groups of data-side capability and twelve agent-side ones, each mechanism anchored to the source line that implements it · [MySQL / Doris onboarding](docs/mysql-doris-quickstart.md)
+📖 **[Capability map](https://nivane.github.io/trove/)** — six groups of data-side capability and twelve agent-side ones, each mechanism anchored to the source line that implements it · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -340,7 +340,7 @@ Binding to a non-loopback address **without** `--token` makes the server refuse 
 | ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
 | DuckDB | `duckdb:///path/to.duckdb` | `uv sync --extra duckdb` |
 
-Each database evolves its own knowledge base under `.trove/kb/<database>/` (schema notes / semantic model / examples / rules / lessons). To add a datasource, implement the `DatabaseAdapter` methods and register it in `registry.py`; drivers are imported lazily. Step-by-step MySQL / Doris onboarding (admin console and local REPL paths): [`docs/mysql-doris-quickstart.md`](docs/mysql-doris-quickstart.md) (Chinese).
+Each database evolves its own knowledge base under `.trove/kb/<database>/` (schema notes / semantic model / examples / rules / lessons). To add a datasource, implement the `DatabaseAdapter` methods and register it in `registry.py`; drivers are imported lazily. Step-by-step onboarding for MySQL / Doris / PostgreSQL / ClickHouse / DuckDB (admin console and local REPL paths): [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html) (Chinese).
 
 ## Security (read-only execution)
 

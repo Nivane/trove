@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 数据能力总览：语义层、知识库、混合检索、多数据源接入、统一存储与评测基建六组能力的机制与设计取舍。">
+<title>数据能力总览 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>数据能力总览
+      </div>
+      <h1>数据能力总览</h1>
+      <p class="lede">
+        <a href="../index.html#data">首页的六组数据能力</a>在这里展开。
+        「数据能力」指的是<strong>让系统知道数据是什么意思</strong>的那一层——
+        它决定了可答边界在哪、答案可不可信。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="map">六组能力对照</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>能力组</th><th>一句话机制</th><th>详解</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>01</td>
+            <td>语义层</td>
+            <td>把计划确定性地编译成 SQL，编不动的地方明确拒绝或留骨架</td>
+            <td><a href="semantic.html">语义层</a></td>
+          </tr>
+          <tr>
+            <td>02</td>
+            <td>知识库</td>
+            <td>五个 YAML 按「谁能写」分工，自动写入一律 pending</td>
+            <td><a href="kb.html">知识库</a></td>
+          </tr>
+          <tr>
+            <td>03</td>
+            <td>混合检索</td>
+            <td>关键词 + 向量两路，加权 RRF 融合，分数归一化</td>
+            <td><a href="retrieval.html">混合检索</a></td>
+          </tr>
+          <tr>
+            <td>04</td>
+            <td>多数据源</td>
+            <td>一个注册表，驱动懒加载，注册即连接探测</td>
+            <td><a href="#adapters">本页</a></td>
+          </tr>
+          <tr>
+            <td>05</td>
+            <td>统一存储</td>
+            <td>内部状态一个抽象两档后端，迁移版本化且各自幂等</td>
+            <td><a href="#storage">本页</a></td>
+          </tr>
+          <tr>
+            <td>06</td>
+            <td>评测基建</td>
+            <td>离线回放 + 带方向容差的回归门，判定不花钱</td>
+            <td><a href="../ops/eval.html">评测与回归门</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="theme">一条贯穿的取舍：确定性优先</h2>
+
+    <p>
+      六组能力背后是同一个判断准则——<strong>能用代码算准的，不要交给模型</strong>。
+      这不是对模型能力的怀疑，而是三个具体的好处：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>好处</th><th>在企业问数场景里意味着什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>可解释</td>
+            <td>「这个数怎么来的」有确定答案：哪个指标、哪条 join 路径、哪条规则放行</td>
+          </tr>
+          <tr>
+            <td>可回归</td>
+            <td>改动能被离线门拦住，而不是「看起来好像没变差」</td>
+          </tr>
+          <tr>
+            <td>换模型不退化</td>
+            <td>确定性部分的行为不随模型版本漂移</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      所以在这套系统里：join 路径由语义层算
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L148">compiler.py:148 <span class="ref-line">JoinResolver</span></a>）、
+      编不动的地方有结构化的分因
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L635">compiler.py:635 <span class="ref-line">PartialCompile</span></a>）、
+      检索先做表锚定过滤再排序
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1492">service.py:1492 <span class="ref-line">keep</span></a>）、
+      回归对比是纯函数
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">gate.py:240 <span class="ref-line">compare_metrics</span></a>）。
+    </p>
+
+    <h2 id="adapters">04 多数据源：注册表与懒加载</h2>
+
+    <p>
+      数据源类型由一张注册表管理。关键设计是<strong>驱动懒导入</strong>：
+      导入注册表本身不要求装任何数据库驱动，只有真正去连某类库时才要求对应的包。
+      所以「支持六种数据源」不会让基础安装背上六个驱动的依赖。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">_ADAPTER_REGISTRY</span></a>
+    </p>
+
+    <p>
+      管理端注册一个数据源时是<strong>事务性</strong>的：先连接探测成功，才落库，
+      才进注册表；任何一步失败都回滚，并以 400 报出原因。
+      这样不会出现「配置里有一个连不上的源」这种半成品状态。
+      完整流程见<a href="../guide/datasource.html">接入数据源</a>。
+    </p>
+
+    <h2 id="storage">05 统一存储：抽象管什么、不管什么</h2>
+
+    <p>
+      会话、任务、记忆、认证、设置、调度、检查点等内部状态，统一在一个
+      <code>StorageBackend</code> 抽象后面，由环境变量在后端之间切换。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L138">sqlite.py:138 <span class="ref-line">build_backend</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L166">sqlite.py:166 <span class="ref-line">resolve_backend</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">这个抽象刻意不覆盖两样东西</span>
+      <div>
+        <p><strong>知识库镜像</strong>与 <strong>业务数据源</strong>留在抽象之外。前者因为 PostgreSQL 生产环境走的是另一条检索后端，后者因为用户的数据本来就不归 Trove 的状态管理管。</p>
+        <p>换句话说，它管的是「Trove 自己的状态」。把边界划在这里，是为了避免它膨胀成一个「所有数据库访问都要经过」的中间层——那种中间层最后会什么都抽象不好。</p>
+      </div>
+    </div>
+
+    <h2 id="eval">06 评测基建：不花钱的判定</h2>
+
+    <p>
+      这一组能力的目标很具体：<strong>让「这次改动有没有让系统变差」这个问题可以在不调用模型的前提下回答</strong>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>件</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">eval/replay.py</td>
+            <td>录制轨迹离线回放打分（零 LLM、零网络）</td>
+          </tr>
+          <tr>
+            <td class="mono">eval/gate.py</td>
+            <td>纯函数：指标口径化 → 对比 → Markdown 记分卡</td>
+          </tr>
+          <tr>
+            <td class="mono">scripts/eval_gate.py</td>
+            <td>把 baseline 与 current 结果文件对比，有回归即退出码 1</td>
+          </tr>
+          <tr>
+            <td class="mono">检索评测脚本</td>
+            <td>Recall@k / MRR / nDCG，输出可被门消费的 scorecard</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L117">gate.py:117 <span class="ref-line">metrics_from_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L104">replay.py:104 <span class="ref-line">score_replay</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L310">gate.py:310 <span class="ref-line">render_report</span></a>
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>可答边界在概念上怎么理解</td><td><a href="../guide/concepts.html">产品概念</a></td></tr>
+          <tr><td>怎么接入自己的库</td><td><a href="../guide/datasource.html">接入数据源</a></td></tr>
+          <tr><td>回归门具体怎么用</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
+          <tr><td>数据变了怎么发现</td><td><a href="../ops/drift.html">数据漂移治理</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 运维管理：用户与 grant 授权、数据源与 KB 初始化、定时任务（内嵌 tick 与 daemon 二选一）、记忆运维、保留策略与周期维护。">
+<title>运维管理 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>运维<span class="sep">/</span>运维管理
+      </div>
+      <h1>运维管理</h1>
+      <p class="lede">
+        管理端负责四件事：<strong>谁能用</strong>（用户与授权）、
+        <strong>能用什么</strong>（数据源与 KB）、<strong>自动跑什么</strong>（定时任务）、
+        以及<strong>留下什么</strong>（记忆与保留策略）。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="users">用户与凭据</h2>
+
+    <p>
+      初始管理员的密码由 <code>TROVE_ADMIN_PASSWORD</code> 决定；不提供时随机生成一个
+      20 位密码，<strong>只在首次引导时打印一次</strong>。所以第一次启动的输出要留住。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L150">main.py:150 <span class="ref-line">TROVE_ADMIN_PASSWORD</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L95">service.py:95 <span class="ref-line">token_urlsafe</span></a>
+    </p>
+
+    <p>
+      用户管理走 <code>/admin/users</code> 一组端点（增删改查）。每个用户可以签发多个 token
+      （便于轮换与按用途区分），token 形如 <code>trove_</code> + 32 字节随机串，
+      默认有效期 720 小时。密码用 PBKDF2 哈希存储。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L161">admin.py:161 <span class="ref-line">users</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L195">service.py:195 <span class="ref-line">token_urlsafe</span></a>
+    </p>
+
+    <h3>三个层次，别混</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>作用</th><th>在哪管</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>账号角色</strong></td><td>admin / 非 admin，决定能否进管理端</td><td>用户页面</td></tr>
+          <tr><td><strong>数据源授权（grants）</strong></td><td>这个用户能问哪些源</td><td>用户页面</td></tr>
+          <tr><td><strong>工具 ACL</strong></td><td>analyst 角色，决定 catalog 工具可见性</td><td>运行时角色解析</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      grants 的语义值得记牢：<strong>非 admin 的 grants 非空时是严格白名单；
+      为空时只放行默认数据源</strong>。所以「忘了授权」是安全的一侧，
+      不会意外地把所有数据源放出去。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L149">deps.py:149 <span class="ref-line">grants</span></a>
+    </p>
+
+    <h2 id="datasources">数据源与 KB</h2>
+
+    <p>
+      注册流程在<a href="../guide/datasource.html">接入数据源</a>里讲了。这里补充管理端的操作要点：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>操作</th><th>注意</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>注册</td>
+            <td>注册即探测，失败 400 并给出原因；同名不同身份会 409 拒绝</td>
+          </tr>
+          <tr>
+            <td>KB 初始化</td>
+            <td>异步任务（返回 202），可查状态；会调 LLM，有成本</td>
+          </tr>
+          <tr>
+            <td>KB 重载</td>
+            <td>改完 YAML 后必须重载，否则跑的还是旧镜像</td>
+          </tr>
+          <tr>
+            <td>测试连接</td>
+            <td>非破坏性探测，排障时先用它</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L536">admin.py:536 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L809">admin.py:809 <span class="ref-line">kb</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L751">admin.py:751 <span class="ref-line">test-connection</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">KB 的确认队列在这里</span>
+      <div>
+        <p>自动回写的示例、蒸馏出的教训、自动学习的偏好，都停在 pending 等确认。
+        这个队列是管理端最该定期看的东西——<strong>它直接影响准确率</strong>，
+        而且积压久了会让人忘记上下文，确认质量下降。</p>
+      </div>
+    </div>
+
+    <h2 id="jobs">定时任务</h2>
+
+    <p>
+      定时任务就是「按计划重复问一个问题」。它复用同一条查询链路，
+      只是多了调度、告警与冷却。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/service.py#L40">service.py:40 <span class="ref-line">JobsService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/store.py#L3">store.py:3 <span class="ref-line">jobs.sqlite</span></a>
+    </p>
+
+    <p>
+      支持 interval 与 cron 两种调度。告警评估在任务跑完后进行，带<strong>冷却窗口</strong>
+      （默认 30 分钟）——否则一个持续异常每轮都报，很快就会没人看。
+    </p>
+
+    <h3>两个容易出事的地方</h3>
+
+    <div class="callout warn">
+      <span class="callout-tag">① 内嵌 tick 与 CLI daemon 不能同时跑</span>
+      <div>
+        <p><code>trove serve</code> 在生命周期里自带一个调度 tick（默认每 30 秒扫一次），
+        <strong>不需要另起 <code>trove-cli schedule --daemon</code></strong>。
+        两个一起跑会把到期的任务执行两遍。</p>
+        <p>想让 serve 不调度，把轮询间隔设为 ≤0，改用外部 daemon。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L351">main.py:351 <span class="ref-line">内置调度</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L68">app.py:68 <span class="ref-line">_job_tick</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L220">config.py:220 <span class="ref-line">scheduler_poll_seconds</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">② 定时任务会自动批准 HITL</span>
+      <div>
+        <p>任务跑出来的 SQL 如果停在待确认状态，调度器会直接以「批准」继续——
+        否则无人值守的任务会永远卡住。</p>
+        <p>这意味着<strong>开 HITL 的任务不会得到人工复核</strong>。如果你的场景需要「定时跑但结果要人看过才能用」，
+        应该用告警+通知，而不是 HITL。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L56">runner.py:56 <span class="ref-line">approve</span></a>
+    </p>
+
+    <p>
+      结果集有行数上限（200 行），避免一个失控的任务把大结果灌进通知里。
+    </p>
+
+    <h2 id="memory">记忆运维</h2>
+
+    <p>
+      记忆子系统有三块需要管理端介入的地方：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>端点</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET /admin/memory/profile</td><td>按（用户 × 数据源）看正确率、失败模式、已确认事实</td></tr>
+          <tr><td class="mono">GET /admin/memory/preferences</td><td>自动学到的偏好草稿</td></tr>
+          <tr><td class="mono">POST .../confirm · .../reject</td><td>逐条处置</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1139">admin.py:1139 <span class="ref-line">profile</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L1162">admin.py:1162 <span class="ref-line">preferences</span></a>
+    </p>
+
+    <p>
+      偏好草稿的来源是会话压缩时的 LLM 抽取：高置信度的候选直接进 <code>user_facts</code>，
+      低置信度的落到待确认队列。<strong>明确的一律不自动注入</strong>——
+      详见<a href="../capabilities/memory.html">记忆子系统</a>。
+    </p>
+
+    <h2 id="retention">保留策略与周期维护</h2>
+
+    <p>
+      默认<strong>不清理任何东西</strong>。清理需要显式配 <code>retention_days</code>，
+      否则那些字段是空的（配置里对应项是注释掉的）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/models.py#L75">models.py:75 <span class="ref-line">retention_days</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L388">service.py:388 <span class="ref-line">run_lifecycle</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么默认是不清理</span>
+      <div>
+        <p>默认清理是危险的方向：一个配错的保留期会静默删掉数据，而「没清理」最坏只是占磁盘。
+        对一套以「积累知识、越用越准」为卖点的系统来说，默认删数据的代价更大。</p>
+      </div>
+    </div>
+
+    <p>
+      周期维护是另一件事——会话数量配额、孤儿会话、检查点深度、过期清扫。
+      这些有独立的默认值（如每用户 100 个会话、24 小时一轮清扫），
+      由服务的周期任务驱动。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/maintenance.py#L326">maintenance.py:326 <span class="ref-line">run_all</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L114">app.py:114 <span class="ref-line">run_lifecycle</span></a>
+    </p>
+
+    <p>
+      注意「会话维护」与「记忆保留」是<strong>两套独立的东西</strong>：
+      前者管会话与检查点的数量（默认开），后者管记忆内容的过期（默认关）。
+      混在一起理解会得出错误的预期。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>授权与安全的设计</td><td><a href="security.html">安全边界</a></td></tr>
+          <tr><td>记忆分层与门禁</td><td><a href="../capabilities/memory.html">记忆子系统</a></td></tr>
+          <tr><td>定时任务用到的 CLI</td><td><a href="../reference/cli.html">CLI 参考</a></td></tr>
+          <tr><td>相关配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

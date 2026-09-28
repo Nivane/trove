@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 安全边界：只读执行的三层门、限流与日配额、连接串加密、审计日志，以及人在环的默认拒绝与认证的 fail-closed 设计。">
+<title>安全边界 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>运维<span class="sep">/</span>安全边界
+      </div>
+      <h1>安全边界</h1>
+      <p class="lede">
+        问数系统要执行<strong>模型生成的 SQL</strong>。这一页讲 Trove 怎么把这件事变安全：
+        只读的三层门、限流、加密、审计，以及几处刻意选择「失败时拒绝」而不是「失败时放行」的地方。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="readonly">只读执行：三层门</h2>
+
+    <p>
+      「只允许 SELECT」这句话在三个不同层次上被检查，而不是只在一个地方：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>做法</th><th>拦什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>① 关键词正则</td>
+            <td>廉价的首层筛查</td>
+            <td>明显带 DML/DDL 关键字的语句</td>
+          </tr>
+          <tr>
+            <td>② AST 防火墙</td>
+            <td>SQLGlot 解析成语法树后整树扫描</td>
+            <td>数据修改型 CTE、<code>SELECT ... INTO OUTFILE</code> 等伪装成 SELECT 的写操作</td>
+          </tr>
+          <tr>
+            <td>③ 执行器统一门</td>
+            <td>最终执行入口再查一次</td>
+            <td>任何绕过前两层的路径</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/guard.py#L50">guard.py:50 <span class="ref-line">check_readonly</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/guard.py#L100">guard.py:100 <span class="ref-line">find_all</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L413">registry.py:413 <span class="ref-line">_guard_read_only</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么必须做到 AST 级</span>
+      <div>
+        <p>正则挡不住这种：<code>WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x</code>。
+        它以 <code>WITH</code> 开头、含 <code>SELECT</code>，看起来人畜无害，实际在删数据。</p>
+        <p>要发现它只能真的解析成语法树，然后<strong>扫描整棵树的 DML/DDL 节点</strong>——
+        而不是只看第一个词。</p>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-tag">真正的边界在数据库侧</span>
+      <div>
+        <p>代码里对这一点写得很直白：<strong>真正的授权边界仍然是数据库侧的只读角色</strong>。
+        三层门是纵深防御，不是「有了它就可以给写权限」的理由。</p>
+        <p>给 Trove 一个只会 SELECT 的账号，是这里性价比最高的一件事。账号怎么建见
+        <a href="../guide/datasource.html#readonly">接入数据源</a>。</p>
+      </div>
+    </div>
+
+    <h3>执行侧的资源上限</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>限制</th><th>值</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>试跑取数</td><td class="mono">10 行</td><td>agentic 循环里的 <code>probe_query</code></td></tr>
+          <tr><td>试跑超时</td><td class="mono">5 秒</td><td>探测不该拖垮循环</td></tr>
+          <tr><td>规则校验取数</td><td class="mono">50 行</td><td>规则只消费行数/首行值/列形状，50 足够</td></tr>
+          <tr><td>执行超时</td><td class="mono">30 秒</td><td>正式执行的默认上限</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L592">gen_sql.py:592 <span class="ref-line">PROBE_LIMIT</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L594">gen_sql.py:594 <span class="ref-line">PROBE_TIMEOUT_S</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L797">gen_sql.py:797 <span class="ref-line">CHECK_RESULT_LIMIT</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/executor.py#L36">executor.py:36 <span class="ref-line">timeout_ms</span></a>
+    </p>
+
+    <p>
+      注意<strong>试跑超时（5s）与执行超时（30s）是两个不同的数</strong>。
+      一个模型自发的探测不该占用正式执行的预算，卡住它就该快速失败、换个思路。
+    </p>
+
+    <h2 id="ratelimit">限流与配额</h2>
+
+    <p>
+      业务端点按用户限流，两个维度叠加：每分钟的令牌桶，加上每日总配额。
+      被限流拒绝的请求<strong>不计入日配额</strong>——这一点是对的，
+      否则一次突发会把当天的额度烧光。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>维度</th><th>默认</th><th>关掉</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>每分钟请求</td><td class="mono">30</td><td>设为 0</td></tr>
+          <tr><td>每日配额</td><td class="mono">300</td><td>设为 0</td></tr>
+          <tr><td>登录尝试</td><td>5 次 / 15 分钟</td><td>环境变量调整</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L158">deps.py:158 <span class="ref-line">check_api_rate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L180">config.py:180 <span class="ref-line">api_rate_per_minute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/ratelimit.py#L24">ratelimit.py:24 <span class="ref-line">TokenBucket</span></a>
+    </p>
+
+    <p>
+      限流是<strong>进程内</strong>实现。单实例部署下这是准的；多实例部署时每个实例各限各的，
+      实际额度会翻倍——这是当前实现的一个已知边界，需要严格限流时应在网关层再做一层。
+    </p>
+
+    <h2 id="auth">认证与授权</h2>
+
+    <p>
+      鉴权是 <strong>fail-closed</strong> 的：没有认证组件时服务拒绝启动，而不是裸奔运行并打条警告。
+      这条设计在<a href="../architecture/overview.html#api">系统架构</a>里也提到了——
+      它是「宁可起不来，也不要静默地不安全」。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L172">app.py:172 <span class="ref-line">auth is None</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L58">deps.py:58 <span class="ref-line">get_current_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L104">deps.py:104 <span class="ref-line">require_scope</span></a>
+    </p>
+
+    <p>
+      授权有两个层次，容易混淆，值得分清：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>概念</th><th>是什么</th><th>用处</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>账号角色</strong></td>
+            <td><code>admin</code> 或非 admin</td>
+            <td>决定能不能进管理端</td>
+          </tr>
+          <tr>
+            <td><strong>工具 ACL 角色</strong></td>
+            <td><code>analyst</code>（admin 隐含）</td>
+            <td>决定生成时能看见哪些 catalog 工具</td>
+          </tr>
+          <tr>
+            <td><strong>数据源 grants</strong></td>
+            <td>用户 ↔ 数据源的授权表</td>
+            <td>决定能问哪些源</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <code>analyst</code> <strong>不是一种账号角色</strong>——没有「analyst 账号」这种东西。
+      它是工具可见性的过滤键：授予后，生成节点里那几个能摸物理 schema 的工具才对这个人可见。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L149">deps.py:149 <span class="ref-line">grants</span></a>
+    </p>
+
+    <p>
+      数据源 grants 的语义有一个细节：<strong>非 admin 的 grants 非空时是严格白名单</strong>；
+      为空时只放行默认数据源。也就是说「忘了授权」不会意外放出全部数据源。
+    </p>
+
+    <h2 id="secrets">凭证与加密</h2>
+
+    <p>
+      数据源连接串里的密码在<strong>落盘前加密</strong>（<code>TROVE_SECRET_KEY</code> 作为密钥）。
+      加密值带 <code>enc:v1:</code> 前缀标记；没有前缀的是旧版明文，
+      读时透传、下次写时自动加密。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/secrets.py#L123">secrets.py:123 <span class="ref-line">TROVE_SECRET_KEY</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/secrets.py#L39">secrets.py:39 <span class="ref-line">enc:v1</span></a>
+    </p>
+
+    <p>
+      这个「带前缀标记 + 向后兼容」的形态让迁移不需要一次性的批处理：
+      存量明文能继续用，随着配置被重新保存自然加密完成。
+    </p>
+
+    <p>
+      模型 API key 建议走环境变量或配置文件里的 <code>${ENV_VAR}</code> 占位符——
+      这样配置文件本身可以进版本库。详见<a href="../reference/config.html">配置参考</a>。
+    </p>
+
+    <h2 id="audit">审计</h2>
+
+    <p>
+      管理操作会写入审计日志，管理端有查询端点。另外，检索层有自己的查询日志
+      （<code>retrieval_log</code>），记录每次检索的分支大小、融合 top、精排 top 与耗时。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L317">service.py:317 <span class="ref-line">record_audit</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L278">admin.py:278 <span class="ref-line">audit</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/query_log.py#L23">query_log.py:23 <span class="ref-line">retrieval_log</span></a>
+    </p>
+
+    <p>
+      生成阶段还会记录 <code>sql_audit</code> 行（版本、用户、工具、SQL），
+      所以「谁在什么时候让系统执行了什么 SQL」是有据可查的。
+    </p>
+
+    <h2 id="hitl">人在环：默认不执行</h2>
+
+    <p>
+      HITL 开启后，SQL 在执行前被拦下交给人确认。这里有一条贯穿全站的原则的又一次体现：
+      <strong>认不出来就拒绝</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L45">hitl.py:45 <span class="ref-line">未识别的载荷一律</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L80">hitl.py:80 <span class="ref-line">hitl</span></a>
+    </p>
+
+    <p>
+      恢复载荷解析不出来时，节点不会「当作批准」——它会明确拒绝执行并记录原因。
+      这个方向的选择很好理解：一个签名验不过的批准，比没有批准更可疑。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>什么时候跳过 HITL</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>配置里没开</td><td>—</td></tr>
+          <tr><td>没有 SQL 可执行</td><td>没什么可确认的</td></tr>
+          <tr><td>上游已经出错</td><td>执行路径根本不会走</td></tr>
+          <tr><td>处于修正轮</td><td>第一轮已经确认过意图了</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      定时任务走同一条路但<strong>自动放行</strong>——否则无人值守的任务会永远卡住。
+      这个区别写在调度器里，不在提示词里。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>只读账号怎么建</td><td><a href="../guide/datasource.html#readonly">接入数据源</a></td></tr>
+          <tr><td>用户、授权、审计的管理界面</td><td><a href="admin.html">运维管理</a></td></tr>
+          <tr><td>日志与轨迹</td><td><a href="observability.html">可观测性</a></td></tr>
+          <tr><td>限流与相关配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

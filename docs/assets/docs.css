@@ -774,6 +774,9 @@ footer .attribution p:last-child { margin-bottom: 0; }
   letter-spacing: .07em;
   text-transform: uppercase;
 }
+/* 标签列是 auto 宽：标签写长一点（「为什么规则文件要纯人工到这个地步」），
+   窄屏上它会吃掉半屏，把正文挤成每行四五个字。与 .tier 同款处理，塌成上下。 */
+@media (max-width: 620px) { .callout { grid-template-columns: minmax(0, 1fr); gap: 6px; } }
 .callout p { margin: 0 0 8px; }
 .callout p:last-child { margin-bottom: 0; }
 .callout code { background: var(--code-bg); }
@@ -836,16 +839,20 @@ footer .attribution p:last-child { margin-bottom: 0; }
 /* 放在正文开头而不是右栏：右栏在 1180px 总宽下放不下（218 导航 + 812 正文已占满），
    而长页面（工作流 27 个节点、配置全 key）确实需要它。 */
 .doc-toc {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   margin: 34px 0 0;
   padding: 15px 19px 16px;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: var(--muted);
 }
+/* 目录条目多时排两列。长页面的目录能占掉半屏，把正文推到折叠线以下，
+   而目录本身是「扫一眼」的东西，不该抢正文的位置。窄屏仍单列。 */
+@media (min-width: 620px) {
+  .doc-toc { columns: 2; column-gap: 26px; }
+}
 .doc-toc .toc-label {
+  display: block;
+  column-span: all;
   font-family: "IBM Plex Mono", monospace;
   font-size: 10.5px;
   font-weight: 600;
@@ -855,6 +862,8 @@ footer .attribution p:last-child { margin-bottom: 0; }
   margin-bottom: 7px;
 }
 .doc-toc a {
+  display: block;
+  break-inside: avoid;
   font-size: 13.5px;
   color: var(--text-secondary);
   padding: 2px 0;

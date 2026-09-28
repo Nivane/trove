@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 安装部署：docker compose 拓扑（PostgreSQL + 后端 + 前端）、两套镜像的独立重建、本地开发态、依赖 extras 与环境变量清单。">
+<title>安装部署 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>入门<span class="sep">/</span>安装部署
+      </div>
+      <h1>安装部署</h1>
+      <p class="lede">
+        三种跑法：<strong>本地 REPL</strong>（最快看到效果）、
+        <strong>compose 全套</strong>（前后端 + 数据库，接近生产形态）、
+        <strong>独立进程</strong>（后端 <code>trove serve</code> + 前端 dev server，改代码时用）。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="quick">最快路径</h2>
+
+    <p>
+      内置了一个 BIRD 金融 demo 数据源，不需要连任何外部库、不需要灌数据：
+    </p>
+
+    <pre><code>uv sync                                    # Python ≥ 3.12
+uv run trove --datasource demo             # REPL</code></pre>
+
+    <p>
+      一次性输出 JSON（适合脚本调用）：
+    </p>
+
+    <pre><code>echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print</code></pre>
+
+    <p>
+      真实对话需要模型凭证。凭证放项目根的 <code>.env</code>（自动加载、已在
+      <code>.gitignore</code> 里）或直接导出环境变量，例如 <code>DEEPSEEK_API_KEY</code>。
+    </p>
+
+    <p>
+      解释器的版本要求写在 <code>pyproject.toml</code> 里：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L11">pyproject.toml:11 <span class="ref-line">requires-python</span></a>
+    </p>
+
+    <h2 id="compose">compose 拓扑</h2>
+
+    <p>
+      默认业务栈是 <strong>PostgreSQL</strong>——不是「随便选了个库」，
+      而是因为用的 <code>paradedb</code> 镜像把三件事放在同一个实例里：
+      业务表、pgvector 向量、pg_bm25 全文检索。这样
+      <a href="../capabilities/retrieval.html">混合检索</a>的两路通道不需要跨系统。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>服务</th><th>作用</th><th>对外端口</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">postgres</td>
+            <td>业务数据 + 向量 + 全文检索（ParadeDB 镜像）</td>
+            <td>内部</td>
+          </tr>
+          <tr>
+            <td class="mono">db-init</td>
+            <td>一次性灌入 BIRD 金融 demo 数据，幂等，跑完即退</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td class="mono">backend</td>
+            <td><code>trove serve</code>，纯 JSON API，所有路由在 <code>/v1</code> 下</td>
+            <td class="mono">8000</td>
+          </tr>
+          <tr>
+            <td class="mono">frontend</td>
+            <td>nginx 托管 SPA 并反代 <code>/v1</code> 到后端</td>
+            <td class="mono">8080</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      访问 <code>http://localhost:8080/</code>。后端那 8000 端口只作调试用
+      （可以直接 curl API），日常入口是前端。
+    </p>
+
+    <pre><code>docker compose up --build     # 构建并启动
+docker compose down           # 停止并移除容器</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L17">docker-compose.yml:17 <span class="ref-line">paradedb</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L43">docker-compose.yml:43 <span class="ref-line">init_postgres_demo</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L55">docker-compose.yml:55 <span class="ref-line">serve</span></a>
+    </p>
+
+    <h3>两个镜像，各自独立重建</h3>
+
+    <p>
+      前后端是<strong>分开构建的镜像</strong>，不是一次构建出一个整体。
+      这不是为了「微服务好看」，而是为了改动的实际代价：
+      改一次前端文案不该重装 Python 依赖，改一次后端逻辑也不该重新 npm build。
+    </p>
+
+    <pre><code>docker compose build frontend    # 只重建前端
+docker compose build backend     # 只重建后端
+docker compose restart backend   # 只重启后端，前端容器不受影响</code></pre>
+
+    <p>
+      前端镜像走多阶段构建：Node 阶段 <code>npm ci</code> + <code>npm run build</code>，
+      产物拷进 nginx 运行时镜像，所以最终镜像里没有 Node 工具链。
+      nginx 配置里两件事最关键——反代与 SPA 回退：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/Dockerfile#L7">frontend/Dockerfile:7 <span class="ref-line">AS build</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/Dockerfile#L17">frontend/Dockerfile:17 <span class="ref-line">nginx</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/nginx.conf#L32">frontend/nginx.conf:32 <span class="ref-line">proxy_pass</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/frontend/nginx.conf#L17">frontend/nginx.conf:17 <span class="ref-line">try_files</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么后端不需要 CORS 中间件</span>
+      <div>
+        <p>生产形态下前端与 <code>/v1</code> <strong>同源</strong>（nginx 反代），浏览器视角里没有跨域。
+        开发形态下由 Vite 的 dev server 代理 <code>/v1</code> 到后端，同样没有跨域。</p>
+        <p>所以后端不开 CORS 不是遗漏——引入它反而会多一个需要维护的开放面。</p>
+      </div>
+    </div>
+
+    <h2 id="login">登录与初始凭据</h2>
+
+    <p>
+      compose 里写了 <code>admin123</code>，这<strong>只用于本地演练</strong>。
+      生产要由 <code>TROVE_ADMIN_PASSWORD</code> 环境变量控制；不提供时系统会
+      随机生成一个 20 位密码并<strong>只打印一次</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L63">docker-compose.yml:63 <span class="ref-line">TROVE_ADMIN_PASSWORD</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L150">main.py:150 <span class="ref-line">TROVE_ADMIN_PASSWORD</span></a>
+    </p>
+
+    <p>
+      数据源与 KB 的持久化靠挂载 <code>./.trove</code> 卷——KB 里的 YAML、
+      记忆、任务定义都在这里。<strong>这个目录是资产的实体</strong>，容器可以随时重建，它不行。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/docker-compose.yml#L71">docker-compose.yml:71 <span class="ref-line">.trove</span></a>
+    </p>
+
+    <h2 id="dev">本地开发态</h2>
+
+    <p>
+      后端与前端各跑一个进程，前端走 HMR：
+    </p>
+
+    <pre><code>uv run trove serve                      # 后端 :8000
+cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 后端</code></pre>
+
+    <p>
+      <code>serve</code> 的参数可以改绑定地址，默认是本机回环：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L570">main.py:570 <span class="ref-line">--host</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L571">main.py:571 <span class="ref-line">--port</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L585">main.py:585 <span class="ref-line">async_main_serve</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">默认绑定回环是有意的</span>
+      <div>
+        <p><code>127.0.0.1</code> 是默认值而不是 <code>0.0.0.0</code>。要对外提供服务必须显式改，
+        而改了之后就该同时考虑认证、限流与网络边界——见<a href="../ops/security.html">安全边界</a>。</p>
+      </div>
+    </div>
+
+    <h2 id="extras">依赖 extras：按需安装</h2>
+
+    <p>
+      数据库驱动不放进基础依赖。这样「支持六种数据源」不会让所有人都背上六个驱动的安装成本。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>extras</th><th>装什么</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">postgres</td><td>psycopg + langgraph checkpoint-postgres</td><td>业务库 + 向量检索 + 检查点</td></tr>
+          <tr><td class="mono">mysql</td><td>aiomysql</td><td>MySQL 协议</td></tr>
+          <tr><td class="mono">doris</td><td>aiomysql</td><td>Doris 复用 MySQL 协议驱动</td></tr>
+          <tr><td class="mono">clickhouse</td><td>clickhouse-connect</td><td>ClickHouse</td></tr>
+          <tr><td class="mono">duckdb</td><td>duckdb</td><td>本地分析型文件库</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>uv sync --extra mysql --extra doris</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L47">pyproject.toml:47 <span class="ref-line">postgres</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L55">pyproject.toml:55 <span class="ref-line">doris</span></a>
+    </p>
+
+    <h2 id="storage">存储后端怎么选</h2>
+
+    <p>
+      内部状态（会话、记忆、任务、检查点…）跑在哪，由一个环境变量决定：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>变量</th><th>设置时</th><th>未设置时</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">TROVE_STORAGE_URL</td>
+            <td>PostgreSQL 后端（生产）</td>
+            <td>SQLite 兜底（本地 / 测试）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L156">sqlite.py:156 <span class="ref-line">STORAGE_URL_ENV</span></a>
+    </p>
+
+    <p>
+      注意这个变量管的是 <strong>Trove 自己的状态</strong>，不是你的业务数据源。
+      业务数据源由管理端注册、持久化到 <code>.trove/datasources.yml</code>，
+      重启时自动恢复注册。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/config_store.py#L26">config_store.py:26 <span class="ref-line">DEFAULT_PATH</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L164">main.py:164 <span class="ref-line">boot_register</span></a>
+    </p>
+
+    <h2 id="env">环境变量速查</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>变量</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">TROVE_ADMIN_PASSWORD</td><td>初始管理员密码；不设则随机生成并打印一次</td></tr>
+          <tr><td class="mono">TROVE_STORAGE_URL</td><td>内部状态的存储后端（PostgreSQL / 不设用 SQLite）</td></tr>
+          <tr><td class="mono">TROVE_SECRET_KEY</td><td>连接串密码的加密密钥（Fernet）</td></tr>
+          <tr><td class="mono">TROVE_TOKEN_TTL_HOURS</td><td>登录 token 有效期，默认 720 小时</td></tr>
+          <tr><td class="mono">TROVE_GIT_KB_AUTHOR</td><td>KB git 提交使用的作者身份</td></tr>
+          <tr><td class="mono">LANGFUSE_PUBLIC_KEY / SECRET_KEY</td><td>两个都设才启用 Langfuse 追踪</td></tr>
+          <tr><td class="mono">&lt;厂商&gt;_API_KEY</td><td>模型凭证，由 litellm 回落解析</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      配置文件里也可以写 <code>${ENV_VAR}</code> 占位符，加载时展开成环境变量值——
+      这样配置文件本身可以安全地进版本库。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L263">config.py:263 <span class="ref-line">resolve_env_vars</span></a>
+    </p>
+
+    <p>
+      配置的搜索顺序是项目内 <code>./conf/agent.yml</code> 优先，其次
+      <code>~/.trove/conf/agent.yml</code>。管理台里改的运行时设置存在
+      <code>~/.trove/settings.db</code>，启动时合入——也就是说<strong>文件是基线，界面改动是覆盖层</strong>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>接自己的数据库</td><td><a href="datasource.html">接入数据源</a></td></tr>
+          <tr><td>所有配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+          <tr><td>命令行参数</td><td><a href="../reference/cli.html">CLI 参考</a></td></tr>
+          <tr><td>上线前的安全项</td><td><a href="../ops/security.html">安全边界</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

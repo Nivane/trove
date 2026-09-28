@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 知识库详解：五个 YAML 的分工、/kb init 的确定性产物与降级路径、检索的确定性过滤与打分、profiling 取值画像、lint 检查与 pending/confirmed 门禁。">
+<title>知识库 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>知识库
+      </div>
+      <h1>知识库</h1>
+      <p class="lede">
+        语义层负责<strong>编译</strong>，知识库负责<strong>喂给它原料</strong>：指标口径、字段含义、枚举取值、
+        可复用的问答对、以及踩过的坑。这一页讲这些原料从哪来、怎么被检索到、以及为什么不能自动写进去。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="files">五个文件，按「谁能写」分工</h2>
+
+    <p>
+      KB 的形态是一组 YAML，人可读可改，也是唯一真源。运行时另有一份 SQLite 镜像
+      （<code>kb.sqlite</code>，带 FTS5 虚拟表）——但镜像<strong>只服务检索</strong>，
+      删掉它可以从 YAML 重建，反过来则不行。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>文件</th><th>承载什么</th><th>写入方</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">schema_notes.yml</td>
+            <td>表/列注释、枚举取值、统计画像</td>
+            <td><code>/kb init</code> 起草，人可改</td>
+          </tr>
+          <tr>
+            <td class="mono">semantics.yml</td>
+            <td>语义模型（数据集 / 指标 / 字段 / 关系）</td>
+            <td><code>/kb init</code> 起草，人审</td>
+          </tr>
+          <tr>
+            <td class="mono">examples.yml</td>
+            <td>问答对（<code>example</code>）与模板（<code>template</code>）</td>
+            <td><code>/kb init</code> + <code>/kb learn</code> + 反馈回写</td>
+          </tr>
+          <tr>
+            <td class="mono">rules.yml</td>
+            <td>生成时必须遵守的规则文本</td>
+            <td><strong>纯人工——代码里没有任何写入器</strong></td>
+          </tr>
+          <tr>
+            <td class="mono">lessons.yml</td>
+            <td>失败模式与规避方法</td>
+            <td>蒸馏/反馈路径懒创建，两档确认</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L3">service.py:3 <span class="ref-line">human-editable</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L488">service.py:488 <span class="ref-line">_parse_file</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/merge.py#L54">merge.py:54 <span class="ref-line">纯人工文件</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么 rules.yml 要「纯人工」到这个地步</span>
+      <div>
+        <p>合并逻辑里对它的处理是<strong>原样保留</strong>，没有任何生成器会产出它。这不是疏忽，是分工：<code>schema_notes</code> 与 <code>semantics</code> 描述的是<b>数据长什么样</b>，可以从库里探测出来；<code>rules</code> 描述的是<b>组织要求怎么算</b>，库里没有这个信息。</p>
+        <p>把它交给 LLM 起草，等于让模型替组织定口径——那是它不该有的权力。</p>
+      </div>
+    </div>
+
+    <h2 id="init">/kb init：能确定性生成的才生成</h2>
+
+    <p>
+      初始化一个数据源的 KB，走的是一条<strong>确定性优先</strong>的流水线。
+      顺序上先做不花钱的部分，再让 LLM 润色：
+    </p>
+
+    <ol>
+      <li>读活库 schema（表、列、类型）。</li>
+      <li>没有 LLM 凭证时的<strong>降级路径</strong>：只写一份 <code>schema_notes.yml</code> 骨架并返回提示，让人补注释后 <code>/kb reload</code>。</li>
+      <li>枚举采样与列统计画像（这一步会真的查库）。</li>
+      <li>LLM 起草表/列注释。</li>
+      <li>确定性生成词表与模板——<code>generate_terms</code> / <code>generate_templates</code>。</li>
+      <li>合成示例，生成语义模型结构。</li>
+      <li>LLM 起草同义词与描述。</li>
+      <li>原子写盘：三个文件连续写、中间不 await——避免留下写了一半的 KB。</li>
+    </ol>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L311">init_pipeline.py:311 <span class="ref-line">init_kb</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/deterministic_gen.py#L205">deterministic_gen.py:205 <span class="ref-line">generate_terms</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/deterministic_gen.py#L358">deterministic_gen.py:358 <span class="ref-line">generate_templates</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/semantic_gen.py#L210">semantic_gen.py:210 <span class="ref-line">generate_semantic_document</span></a>
+    </p>
+
+    <p>
+      产出的文件是三个：<code>schema_notes.yml</code>、<code>semantics.yml</code>、<code>examples.yml</code>。
+      <code>rules.yml</code> 与 <code>lessons.yml</code> <strong>不在其中</strong>——
+      前者的原因是上面说的分工，后者是反馈路径首次写入时才创建。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/init_pipeline.py#L308">init_pipeline.py:308 <span class="ref-line">INIT_FILES</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">防作弊约束的形状</span>
+      <div>
+        <p>这条流水线的产物边界，就是「什么算真实的准确率提升」的边界：<strong>凡是 <code>/kb init</code> 不能确定性生成的内容，手工塞进去都不算</strong>。特别是把评测集的 gold SQL 抄进 <code>examples.yml</code>——那不是系统变准了，是答案被泄露了。</p>
+        <p>相应地，模板快径也只用 <code>kind='template'</code> 的条目，因为那是确定性产物，人塞的东西进不了这条快径。</p>
+      </div>
+    </div>
+
+    <h2 id="learn">/kb learn：把一次好的问答固化下来</h2>
+
+    <p>
+      交互式的沉淀路径是半自动的：模型从上一轮对话起草一条示例（外加候选术语），
+      把草稿<strong>展示出来</strong>，只有用户明确确认才写盘。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/kb_cmds.py#L49">kb_cmds.py:49 <span class="ref-line">_cmd_learn</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L2128">service.py:2128 <span class="ref-line">append_example</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L2136">service.py:2136 <span class="ref-line">append_term</span></a>
+    </p>
+
+    <p>
+      注意这里的确认与后面的「两档门禁」不是同一件事：<code>/kb learn --yes</code> 是<strong>当下的</strong>人工确认，
+      写进去就是 confirmed；而自动回写的示例进来时是 pending，需要另一次确认。
+      区别在来源——人当场看过并点过头的，和系统自己觉得不错的，不该同等对待。
+    </p>
+
+    <h2 id="retrieval">检索：先确定性过滤，再打分</h2>
+
+    <p>
+      检索的入口在图上（一次问答会并行取示例、教训、术语、指标、实体），
+      每条通道内部都遵循同一条原则：<strong>先用确定性规则排除不可能的，再排序</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L407">graphs.py:407 <span class="ref-line">search_examples</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1411">service.py:1411 <span class="ref-line">search_examples</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1469">service.py:1469 <span class="ref-line">_rank_examples</span></a>
+    </p>
+
+    <p>
+      最重要的那条过滤是<strong>表锚定</strong>：语义链接阶段已经算出了这个问题涉及哪些表
+      （<code>matched_tables</code>），那么一条示例如果提到了别的表，它就不该被检索到——
+      哪怕文字上再像。这是一个纯确定性的判断，不依赖任何模型。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1492">service.py:1492 <span class="ref-line">keep</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L395">service.py:395 <span class="ref-line">_lesson_table_ok</span></a>
+    </p>
+
+    <p>
+      排序分由几路信号合成：术语命中、标签命中、词重叠、表锚定加分，
+      再乘上聚合/日期模板的折扣（模板类示例的泛化性弱一些，不该压过具体示例）。
+      与检索通道给出的相似度做融合时，权重是 0.5——这个数字是刻意的中庸值，
+      因为确定性打分和向量相似度各有所长，谁压倒谁都不合适。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L273">service.py:273 <span class="ref-line">_score_example</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L433">service.py:433 <span class="ref-line">_fuse_extra_sim</span></a>
+    </p>
+
+    <p>
+      教训的排序多两个因子：<strong>投票</strong>与<strong>时效</strong>。
+      一条被反复验证有效的教训应当排前面，一条很久没被触发的教训应当淡出——
+      后者用衰减函数实现，而不是靠人工清理。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1649">service.py:1649 <span class="ref-line">_rank_lessons</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L416">service.py:416 <span class="ref-line">_recency_factor</span></a>
+    </p>
+
+    <h2 id="mirror">镜像与 FTS</h2>
+
+    <p>
+      YAML 是给人读的，逐条扫描它做检索太慢，所以运行时维护一份 SQLite 镜像。
+      FTS5 虚拟表是 contentless 的——它只存索引，元数据列标为 UNINDEXED，
+      rowid 与镜像表的主键对齐。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L114">service.py:114 <span class="ref-line">_CREATE_FTS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1088">service.py:1088 <span class="ref-line">_ensure_mirror_schema</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L874">service.py:874 <span class="ref-line">_sync_file_fts</span></a>
+    </p>
+
+    <p>
+      在 PostgreSQL 生产环境里，检索不走这条 SQLite 路径，而是切到 pg_hybrid 后端——
+      切换逻辑见 <a href="retrieval.html">混合检索</a>。两者的分界点是配置与能力探测，
+      不是数据源类型。
+    </p>
+
+    <h2 id="profiling">取值画像：让「枚举」这件事有依据</h2>
+
+    <p>
+      很多问数错误来自取值层的误解：「华东区」到底是 <code>'华东'</code> 还是 <code>'east'</code>？
+      状态字段有哪些合法值？这些不属于 schema，但决定了 SQL 里的字面量写什么。
+    </p>
+
+    <p>
+      画像流程对每个可疑列做一次取值采样，取 Top-K 高频值与频次，连同形状判断
+      （是枚举？是 ID？是自由文本？）一起合并进 <code>schema_notes.yml</code> 的 <code>stats</code>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/profiling.py#L31">profiling.py:31 <span class="ref-line">TOP_VALUES_LIMIT</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/profiling.py#L55">profiling.py:55 <span class="ref-line">detect_shape</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/profiling.py#L195">profiling.py:195 <span class="ref-line">_probe_top_values</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/profiling.py#L253">profiling.py:253 <span class="ref-line">merge_into_stats</span></a>
+    </p>
+
+    <p>
+      独立脚本 <code>scripts/probe_enums.py</code> 做同一件事，但带两道护栏：
+      行数上限与超时。因为「对一亿行的大表做全表 GROUP BY」是一个很容易写出来、
+      又很容易把生产库拖垮的操作。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/enum_probe.py#L25">enum_probe.py:25 <span class="ref-line">DEFAULT_MAX_ROWS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/enum_probe.py#L36">enum_probe.py:36 <span class="ref-line">probe_enums</span></a>
+    </p>
+
+    <h2 id="lint">lint：把 KB 的问题在提问之前发现</h2>
+
+    <p>
+      <code>scripts/lint_kb.py</code> 是这个仓库里唯一一个<strong>专门挑 KB 毛病</strong>的工具。
+      它检查的都是「不报错但会一直悄悄降低准确率」的问题：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>类别</th><th>典型问题</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>静态</td>
+            <td>术语 mapping 引用了不存在的列；对 ID 类列写 SUM/AVG；示例 SQL 解析不了、引用了不存在的表、含写操作</td>
+          </tr>
+          <tr>
+            <td>静态</td>
+            <td>纯中文问题（英文检索不可达）；列描述为空；教训的 pattern 过长或 note 为空</td>
+          </tr>
+          <tr>
+            <td>需要活库</td>
+            <td>schema_notes 里声明的枚举值漏了库里真实存在的值（如 <code>loan.status</code> 少了一个 <code>'C'</code>）</td>
+          </tr>
+          <tr>
+            <td>需要活库</td>
+            <td>库里存在但 KB 完全没记录的列</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/lint_kb.py#L47">lint_kb.py:47 <span class="ref-line">check_enums</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/lint_kb.py#L75">lint_kb.py:75 <span class="ref-line">check_undocumented_columns</span></a>
+    </p>
+
+    <p>
+      最后一条尤其值得注意：<strong>漏掉一个枚举值不会让任何查询报错</strong>，
+      它只会让「状态 = C 的那批」这类问题永远算错——因为编译器认为 <code>'C'</code> 不是一个合法取值。
+      这类错误没有报错信号，只能靠主动比对发现。
+    </p>
+
+    <h2 id="gate">两档门禁：pending 不进检索</h2>
+
+    <p>
+      所有自动写入的内容默认是 <code>pending</code>。读侧的过滤器是硬的：
+      待确认的示例直接跳过，教训列表默认只返回 confirmed。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L570">service.py:570 <span class="ref-line">pending 草稿不参与检索</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1599">service.py:1599 <span class="ref-line">confirmed_only</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1689">service.py:1689 <span class="ref-line">setdefault</span></a>
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>门禁档</th><th>内容</th><th>确认方式</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>同步确认</td>
+            <td><code>/kb learn</code> 的草稿</td>
+            <td>用户当场看见并加 <code>--yes</code></td>
+          </tr>
+          <tr>
+            <td>异步确认</td>
+            <td>自动回写的示例、蒸馏出的教训、自动偏好</td>
+            <td>管理端列表逐条或批量确认</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1763">service.py:1763 <span class="ref-line">confirm_pending_lessons</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1837">service.py:1837 <span class="ref-line">confirm_pending_examples</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1899">service.py:1899 <span class="ref-line">reject_lesson</span></a>
+    </p>
+
+    <h2 id="language">一条会咬人的约束：KB 语言要跟着问题语言走</h2>
+
+    <p>
+      这是一个实测过一次的定性结论，值得写在这里而不是埋在文档角落：
+      <strong>KB 内容的语言应当与提问语言一致</strong>。用中文 KB 去回答英文问题时，
+      准确率会明显下降，而且主要缺口不在生成、在<strong>少样本检索的命中</strong>——
+      检索不到对的示例，后面再强也没用。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">这是设计约束，不是运行期检查</span>
+      <div>
+        <p>代码里<strong>没有</strong>任何地方会强制或警告语言不匹配。它写在约束文档里，靠使用者和 lint 的「纯中文问题」检查来兜。所以如果你换了提问语言，记得配套重建 KB。</p>
+        <p>相关但不同的一件事：<code>scripts/check_kb_anti_cheat.py</code> 会做三级比对（字符串归一化、语法树相等、字面量盲化后结构相等）来抓「模板抄 gold SQL」——它只查 <code>template: true</code> 的条目，因为人工确认的示例按设计允许接近 gold。</p>
+      </div>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>KB 内容怎么被编译成 SQL</td><td><a href="semantic.html">语义层</a></td></tr>
+          <tr><td>两路召回与 RRF 融合的具体参数</td><td><a href="retrieval.html">混合检索</a></td></tr>
+          <tr><td>自动回写的完整路径与记忆分层</td><td><a href="memory.html">记忆子系统</a></td></tr>
+          <tr><td>数据漂移了 KB 怎么知道</td><td><a href="../ops/drift.html">数据漂移治理</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 语义层详解：编译器如何把计划编译成权威 SQL、硬/软 MISS 的全部判据、骨架保真校验，以及行级安全（RLS）的注入时机。">
+<title>语义层 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>语义层
+      </div>
+      <h1>语义层</h1>
+      <p class="lede">
+        <a href="data.html">数据能力</a>的第一组。语义层回答的是：
+        <strong>一句话问题里哪些部分可以被权威地翻译成 SQL，哪些不能</strong>。
+        能翻译的部分不交给模型，不能翻译的部分明确说出来——这一页讲这套判定是怎么做的。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="role">语义层的职责边界</h2>
+
+    <p>
+      先把一件事说清楚，因为这里最容易误会：<strong>语义层不是「更好的提示词」</strong>。
+      提示词影响的是模型输出的概率分布，而语义层做的是<b>编译</b>——把结构化的计划
+      确定性地翻译成 SQL，同一份计划永远得到同一条 SQL。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th>语义层做</th><th>语义层不做</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>指标口径</td>
+            <td>把指标展开成它声明的表达式</td>
+            <td>猜一个没声明过的指标该怎么算</td>
+          </tr>
+          <tr>
+            <td>表关联</td>
+            <td>按声明的 relationship 求 join 路径</td>
+            <td>在两条都说得通的路径里选一条</td>
+          </tr>
+          <tr>
+            <td>行集正确性</td>
+            <td>识别会放大/复制行的 join，拒绝它</td>
+            <td>生成一条「大概对」的 SQL 让人自己发现</td>
+          </tr>
+          <tr>
+            <td>权限</td>
+            <td>把声明的行过滤谓词注入每个引用该表的查询</td>
+            <td>替代数据库侧的只读角色</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="model">语义模型的结构</h2>
+
+    <p>
+      语义模型由四类构件组成。它们的关系是：数据集提供表，关系提供边，
+      字段提供可用的列，指标提供算法。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L177">models.py:177 <span class="ref-line">SemanticModel</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L30">models.py:30 <span class="ref-line">SemanticMetric</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L67">models.py:67 <span class="ref-line">SemanticField</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L103">models.py:103 <span class="ref-line">SemanticRelationship</span></a>
+    </p>
+
+    <p>
+      关系上有一个字段值得单独说：<code>fan_out</code>。它在模型里是显式声明的，
+      而不是运行期推断的——因为「这条边会不会放大行数」是关于业务的判断，
+      数据库的元数据里没有这个信息。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L130">models.py:130 <span class="ref-line">fan_out</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L129">models.py:129 <span class="ref-line">cardinality</span></a>
+    </p>
+
+    <h2 id="compile">编译：三态产出</h2>
+
+    <p>
+      编译入口有两个。新契约返回三态（成功 / <code>CompileMiss</code> / <code>PartialCompile</code>），
+      旧契约为了字节级向后兼容只返回两态（任何 MISS 都返回 <code>None</code>）：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1380">compiler.py:1380 <span class="ref-line">compile_detailed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1358">compiler.py:1358 <span class="ref-line">compile_from_plan</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1036">compiler.py:1036 <span class="ref-line">SemanticCompiler</span></a>
+    </p>
+
+    <p>
+      <code>PartialCompile</code> 是这套设计里最特别的一个产物。它同时携带三样东西：
+      已经编译好的骨架 SQL、一份交给生成通道的<strong>交接契约</strong>、以及未解析组件的清单。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L635">compiler.py:635 <span class="ref-line">PartialCompile</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L160">contract.py:160 <span class="ref-line">PlanContract</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L203">contract.py:203 <span class="ref-line">render_contract</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">契约的用途不是「描述」，是「约束」</span>
+      <div>
+        <p>契约会被渲染成一段文字注入生成提示，但它的作用不是告诉模型「我们做了什么」，而是划定<strong>不许改动的部分</strong>。模型补完的 SQL 事后要按同一份契约校验。</p>
+      </div>
+    </div>
+
+    <h2 id="miss">硬与软的完整判据</h2>
+
+    <p>
+      分类的权威是这三个集合。每条 reason 落在哪个集合里，是从「放行它会不会产出一个错的数」推导出来的：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L657">compiler.py:657 <span class="ref-line">MISS_REASONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L695">compiler.py:695 <span class="ref-line">HARD_MISS_REASONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L714">compiler.py:714 <span class="ref-line">SOFT_MISS_REASONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L736">compiler.py:736 <span class="ref-line">is_hard_miss</span></a>
+    </p>
+
+    <h3>硬 MISS 逐条</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>reason</th><th>触发条件</th><th>放行会怎样</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">fan_out</td>
+            <td>join 路径上存在声明的行倍增边</td>
+            <td>被聚合的明细行被复制，金额类指标成倍放大</td>
+          </tr>
+          <tr>
+            <td class="mono">unknown_cardinality</td>
+            <td>边的基数未声明，无从判断是否倍增</td>
+            <td>不确定就等于有风险——宁可拒绝</td>
+          </tr>
+          <tr>
+            <td class="mono">ambiguous_join_path</td>
+            <td>两表间存在多条连通路径，或显式 joins 不构成连通树</td>
+            <td>选错路径 = 用另一个口径算，结果看着正常但是错的</td>
+          </tr>
+          <tr>
+            <td class="mono">unreachable_table</td>
+            <td>投影表守卫：产物引用的表不在连接树内</td>
+            <td>SQL 引用了一张没被 join 进来的表</td>
+          </tr>
+          <tr>
+            <td class="mono">table_not_allowed</td>
+            <td>引用了数据集白名单之外的表</td>
+            <td>越界访问</td>
+          </tr>
+          <tr>
+            <td class="mono">derived_cycle / derived_depth / derived_unresolved</td>
+            <td>派生指标成环、展开超过深度上限、或定义悬空</td>
+            <td>展开它没有终点，或展开成一个空表达式</td>
+          </tr>
+          <tr>
+            <td class="mono">metric_anchor_unmatched</td>
+            <td>指标的锚定表不在本次匹配到的表里</td>
+            <td>生成的 SQL 会引用未覆盖的表</td>
+          </tr>
+          <tr>
+            <td class="mono">limit_without_order</td>
+            <td>要求 LIMIT 但没有排序依据</td>
+            <td>取到哪些行是不确定的</td>
+          </tr>
+          <tr>
+            <td class="mono">nothing_compilable</td>
+            <td>兜底：一个成分都编译不出来</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td class="mono">guardrail_rejected</td>
+            <td>编译产物未通过语义侧护栏校验</td>
+            <td>产物本身越界</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      判定 fan-out 的地方分两处：显式 joins 走 <code>guard_edge_cardinality</code>，
+      自动寻路走 BFS，路径上遇到倍增边即拒绝。派生指标的展开深度上限是 5 层。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L210">compiler.py:210 <span class="ref-line">_classify_edges</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L244">compiler.py:244 <span class="ref-line">guard_edge_cardinality</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1148">compiler.py:1148 <span class="ref-line">_MAX_INLINE_DEPTH</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L148">compiler.py:148 <span class="ref-line">JoinResolver</span></a>
+    </p>
+
+    <h3>软 MISS 逐条</h3>
+
+    <p>
+      软 MISS 的共同点是：<strong>结构是清楚的，只是某个词/值/口径没登记</strong>。
+      这类问题可以带着缺口继续走，因为缺口的位置是已知的。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>reason</th><th>缺什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">no_metric_match</td><td>问题里的聚合意图没有对应的已声明指标</td></tr>
+          <tr><td class="mono">bad_time_grain / time_field_not_declared / time_field_not_temporal</td><td>时间分桶的粒度未声明、字段不是时间类型</td></tr>
+          <tr><td class="mono">unresolved_answer_column</td><td>要输出的列没有在语义模型里登记</td></tr>
+          <tr><td class="mono">unresolved_filter_field / invalid_op / missing_filter_value</td><td>过滤字段未声明、算子不适用、比较值缺失</td></tr>
+          <tr><td class="mono">enum_value_unresolved</td><td>用到了某个枚举值，但它不在该字段的已声明取值里</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      收集软 MISS 的入口是 <code>_record_soft</code>——它只记录，不中断编译，
+      所以一次编译能把所有缺口都收集齐，而不是修一个报一个。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1368">compiler.py:1368 <span class="ref-line">_record_soft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1853">compiler.py:1853 <span class="ref-line">PartialCompile</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">一个准确度上的细节</span>
+      <div>
+        <p><code>is_hard_miss</code> 是 reason → 软硬分类的<strong>权威判定函数</strong>，但运行时的路由并不是靠调用它决定的，而是靠编译产物的类型：拿到 <code>CompileMiss</code> 就走拒绝路径，拿到 <code>PartialCompile</code> 就走骨架路径。</p>
+        <p>这个区分在写扩展或调试时很重要——想知道「为什么这次拒绝了」，看的是产出的类型与它携带的 reason，而不是去追 <code>is_hard_miss</code> 的调用点。</p>
+      </div>
+    </div>
+
+    <h2 id="fidelity">骨架保真校验</h2>
+
+    <p>
+      软 MISS 放行之后，生成通道会拿到骨架和契约去补全 SQL。执行之前有一道校验，
+      它比对的是三样东西：<strong>join 边、WHERE 条件、分组宽度</strong>。
+      投影列不参与比对——补全本来就可能调整输出列，那不是破坏契约。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L2500">compiler.py:2500 <span class="ref-line">skeleton_preserved</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L2558">compiler.py:2558 <span class="ref-line">compiled_sql_matches</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L121">execute_sql.py:121 <span class="ref-line">skeleton_preserved</span></a>
+    </p>
+
+    <p>
+      校验有两种失败方式：SQL 解析不了，或者解析出来发现丢了骨架里的东西。
+      两种都会把这一轮打回重生成，而不是带着一个已破坏权威性的 SQL 去执行。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L126">execute_sql.py:126 <span class="ref-line">_compile_drift_failure</span></a>
+    </p>
+
+    <h2 id="rls">行级安全：在编译期注入</h2>
+
+    <p>
+      数据集可以声明一个 <code>row_filter</code>——一个恒真的布尔 SQL 谓词。
+      编译时，每个引用该数据集的查询都会被注入这个谓词到顶层 WHERE。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L154">models.py:154 <span class="ref-line">row_filter</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/rls.py#L73">rls.py:73 <span class="ref-line">inject_row_filters</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/rls.py#L49">rls.py:49 <span class="ref-line">render_row_filter</span></a>
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">fail-closed，不是 fail-open</span>
+      <div>
+        <p>注入失败时（谓词渲染不出来、SQL 结构不认），系统<strong>放弃这条路径</strong>而不是跳过过滤。快径命中模板后也要单独注入一次——它不经过编译器，所以必须自己补上这一步，注入失败就退回编译路径。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/rls.py#L30">rls.py:30 <span class="ref-line">RLSInjectionError</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/fast_match.py#L421">fast_match.py:421 <span class="ref-line">rls_applied</span></a>
+    </p>
+
+    <p>
+      但这份机制有一条明确的边界，不该被误读成安全保证：
+      <strong>声明层的行过滤不替代数据库侧的只读角色</strong>。它的作用是让「同一个语义模型下的所有查询」
+      口径一致，而不是防止有人绕过 Trove 直接连库。
+    </p>
+
+    <h2 id="api">声明式 API 的严格契约</h2>
+
+    <p>
+      如果是通过声明式 API 调语义层（而不是走对话工作流），契约会变得更严格：
+      遇到 <code>PartialCompile</code> 直接返回 422，而不是降级补全。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/query.py#L180">query.py:180 <span class="ref-line">compile_detailed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/query.py#L185">query.py:185 <span class="ref-line">PartialCompile</span></a>
+    </p>
+
+    <p>
+      理由很直接：程序调用方拿到一个「补全过的」SQL，它无法判断哪些部分是权威的、哪些是模型填的。
+      而对话场景里用户可以看见解释、可以追问。所以<strong>同一个语义层，两种调用方，两套契约</strong>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>概念层面的可答边界与逃生梯</td><td><a href="../guide/concepts.html">产品概念</a></td></tr>
+          <tr><td>指标、字段、枚举从哪来（KB 五件套）</td><td><a href="kb.html">知识库</a></td></tr>
+          <tr><td>编译器在图上哪一步被调用</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>拒绝之后管理端怎么处置</td><td><a href="../ops/admin.html">运维管理</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 接入数据源：MySQL / Doris / PostgreSQL / ClickHouse / DuckDB / SQLite 的注册流程、驱动 extras、只读账号建议，以及决定准确率的三件事。">
+<title>接入数据源 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>入门<span class="sep">/</span>接入数据源
+      </div>
+      <h1>接入数据源</h1>
+      <p class="lede">
+        把 Trove 接到你自己的库上。这一页讲两种接入方式（管理端 / 本地 CLI）、
+        六种数据源各自的注意点、以及<strong>决定准确率的那三件事</strong>——
+        它们比选哪个模型重要得多。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="prep">前置条件</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>项</th><th>要求</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Python</td><td>≥ 3.12</td></tr>
+          <tr><td>Node</td><td>仅在改前端时需要（<code>^22.13.0 || &gt;= 24.0.0</code>）</td></tr>
+          <tr><td>模型凭证</td><td><code>/kb init</code> 起草注释时需要；没有凭证会走骨架降级路径</td></tr>
+          <tr><td>数据库账号</td><td><strong>强烈建议只读账号</strong>——理由见下</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="install">第一步：装驱动</h2>
+
+    <p>
+      驱动是 extras，按目标库选着装。Doris 复用 MySQL 协议驱动，所以两个 extra 的内容是一样的：
+    </p>
+
+    <pre><code>uv sync --extra mysql --extra doris      # MySQL + Doris
+uv sync --extra postgres                 # PostgreSQL（业务库 + 向量）
+uv sync --extra clickhouse               # ClickHouse
+uv sync --extra duckdb                   # DuckDB</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/pyproject.toml#L55">pyproject.toml:55 <span class="ref-line">doris</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">_ADAPTER_REGISTRY</span></a>
+    </p>
+
+    <p>
+      导入注册表本身不需要任何驱动——适配器模块在 <code>connect()</code> 里才导入驱动，
+      缺包时报错信息里会直接给出该跑哪条 <code>uv sync</code>。
+    </p>
+
+    <h2 id="urls">连接串</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>scheme</th><th>默认端口</th><th>示例</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">mysql</td><td class="mono">3306</td><td class="mono">mysql://user:pw@host:3306/db</td></tr>
+          <tr><td class="mono">doris</td><td class="mono">9030</td><td class="mono">doris://user:pw@host:9030/db</td></tr>
+          <tr><td class="mono">postgres</td><td class="mono">5432</td><td class="mono">postgres://user:pw@host:5432/db</td></tr>
+          <tr><td class="mono">clickhouse</td><td class="mono">8123</td><td class="mono">clickhouse://user:pw@host:8123/db</td></tr>
+          <tr><td class="mono">sqlite</td><td>—</td><td class="mono">sqlite:///path/to.db</td></tr>
+          <tr><td class="mono">duckdb</td><td>—</td><td class="mono">duckdb:///path/to.duckdb</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/urls.py#L29">urls.py:29 <span class="ref-line">parse_datasource_url</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">数据源的名字从哪来</span>
+      <div>
+        <p>网络 URL 的数据源名 = <strong>库名</strong>；文件型（SQLite / DuckDB）用 scheme 作名字，
+        所以它们都叫 <code>sqlite</code> / <code>duckdb</code>。这个名字决定了 KB 目录
+        （<code>.trove/kb/&lt;name&gt;/</code>），<strong>改 URL 的库名等于换一个 KB</strong>，注意不要无意中改掉。</p>
+      </div>
+    </div>
+
+    <h2 id="register">第二步：注册（两种方式）</h2>
+
+    <h3>方式 A：管理端（推荐，适合平台化）</h3>
+
+    <ol>
+      <li>admin 登录 → 数据源页面 → 注册（内置 demo 或填 URL）。</li>
+      <li>注册是<strong>事务性</strong>的：先连接探测，成功才落库、才进注册表。失败返回 400 并说明原因。</li>
+      <li>对该源执行 <code>kb/init</code>——LLM 起草 schema 注释 + 确定性生成词表与模板。</li>
+      <li>用户端下拉/列表里才出现这个源（非 admin 还需要 grants 授权）。</li>
+    </ol>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L536">admin.py:536 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L591">admin.py:591 <span class="ref-line">prepare</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L573">admin.py:573 <span class="ref-line">409</span></a>
+    </p>
+
+    <p>
+      同名但连接信息不同的注册会被<strong>拒绝（409）而不是静默覆盖</strong>——
+      覆盖一个数据源等于让它背后的 KB 对错库，这个错误很难事后发现。
+    </p>
+
+    <h3>方式 B：本地 CLI（适合自己试）</h3>
+
+    <pre><code>uv run trove --datasource mysql://root:root@127.0.0.1:3306/financial
+# 进 REPL 后
+/kb init</code></pre>
+
+    <p>
+      本地方式不写 <code>.trove/datasources.yml</code>，适合一次性探索。
+      要长期用还是走管理端注册，这样重启后自动恢复。
+    </p>
+
+    <h2 id="doris">Doris 的三个差异</h2>
+
+    <p>
+      Doris 适配器继承自 MySQL 适配器——协议相同，所以流程完全一样，只有三处不同：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>差异</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>URL scheme</td><td><code>doris://</code>（而不是 <code>mysql://</code>）</td></tr>
+          <tr><td>默认端口</td><td><code>9030</code>（FE 的 MySQL 协议端口），不是 3306</td></tr>
+          <tr><td>探活方式</td><td>FE 不支持 <code>COM_PING</code>，所以用 <code>SELECT 1</code> 代替</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/doris.py#L23">doris.py:23 <span class="ref-line">DorisAdapter</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/doris.py#L20">doris.py:20 <span class="ref-line">DEFAULT_PORT</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/doris.py#L37">doris.py:37 <span class="ref-line">_ping_reconnect</span></a>
+    </p>
+
+    <p>
+      连接时会探测并上报能力（是否支持事务、CTE、窗口函数），方言声明为 <code>doris</code>。
+      这些能力位会影响生成策略——比如不支持 CTE 时不该生成 CTE。
+    </p>
+
+    <h2 id="accuracy">第三步：决定准确率的三件事</h2>
+
+    <p>
+      这是这一页最重要的部分。换模型带来的差异，通常小于下面三件事做得好不好：
+    </p>
+
+    <h3>① <code>/kb init</code> 是根基</h3>
+
+    <p>
+      它决定了系统对这个库的初始理解：每张表每个字段是什么意思、有哪些指标、哪些枚举取值。
+      做完之后<strong>通读一遍生成的 YAML</strong>——LLM 起草的注释会有想当然的地方，
+      而错误的字段注释比没有注释更糟，因为它会被当真。
+    </p>
+
+    <h3>② 校准 <code>semantics.yml</code></h3>
+
+    <p>
+      指标口径必须由懂业务的人确认。特别是：
+    </p>
+
+    <ul>
+      <li>指标的表达式是不是<strong>表限定</strong>的（<code>loans.amount</code>，不是 <code>amount</code>）——否则数据集归属推导不出来。</li>
+      <li>关系边上的 <code>fan_out</code> 有没有正确标注——标错会导致该拒绝的没拒绝。</li>
+    </ul>
+
+    <h3>③ 用 <code>/kb learn</code> 沉淀</h3>
+
+    <p>
+      每次得到一个好答案，把它固化成示例。这是准确率增长的主要来源，
+      而且它<strong>跟着使用增长</strong>，不需要重新训练任何东西。
+    </p>
+
+    <p>
+      系统还有一条自校验闭环会帮你发现错误答案：生成的 SQL 会被实际执行、结果会过规则链、
+      这一轮有没有进步会被版本比对判定。发现的问题会变成 pending 的教训或示例，
+      等你确认。详见<a href="../capabilities/kb.html">知识库</a>。
+    </p>
+
+    <h2 id="readonly">权限：只读账号怎么给</h2>
+
+    <p>
+      Trove 在执行层有多重只读保护，但<strong>真正的安全边界是数据库侧的只读角色</strong>。
+      代码里对此有明确说明，不要把它当成「有防火墙就够了」。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/guard.py#L50">guard.py:50 <span class="ref-line">check_readonly</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L413">registry.py:413 <span class="ref-line">_guard_read_only</span></a>
+    </p>
+
+    <p>
+      MySQL / Doris 侧的典型做法：
+    </p>
+
+    <pre><code>CREATE USER 'trove_ro'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON financial.* TO 'trove_ro'@'%';
+-- 可选：限制单条查询的扫描量与超时
+SET GLOBAL max_execution_time = 30000;          -- MySQL 8
+SET GLOBAL sql_mode = 'ONLY_FULL_GROUP_BY';     -- 让含糊的分组直接报错</code></pre>
+
+    <p>
+      另外建议给这个账号配<strong>资源组/查询审计</strong>，因为 Trove 会执行模型生成的 SQL——
+      这些都是 <code>SELECT</code>，但复杂度不可控。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">不要给写权限</span>
+      <div>
+        <p>即使 Trove 有三层写保护（关键词正则、AST 防火墙、执行器统一门），
+        给一个只会 SELECT 的账号仍然是最省心的防线：<strong>被绕过的代价是零</strong>。</p>
+        <p>表级白名单（<code>allowed_tables</code>）是另一道可选收紧，在管理端配置。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L450">registry.py:450 <span class="ref-line">set_allowed_tables</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/intent.py#L107">intent.py:107 <span class="ref-line">has_strong_write</span></a>
+    </p>
+
+    <h2 id="check">接入后自检</h2>
+
+    <pre><code>uv run python scripts/lint_kb.py --db-id &lt;name&gt;
+# 加上活库探测（会比对枚举值与真实 DISTINCT）
+uv run python scripts/lint_kb.py --db-id &lt;name&gt; --datasource &lt;url&gt;</code></pre>
+
+    <p>
+      lint 会挑出「不报错但一直悄悄降低准确率」的问题：术语指向不存在的列、
+      示例 SQL 解析不了、声明的枚举值漏了真实存在的取值等等。
+      完整清单见<a href="../capabilities/kb.html#lint">知识库 · lint</a>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>先跑一遍看看</td><td><a href="quickstart.html">快速上手</a></td></tr>
+          <tr><td>可答边界与逃生梯的概念</td><td><a href="concepts.html">产品概念</a></td></tr>
+          <tr><td>KB 五个文件的格式</td><td><a href="../capabilities/kb.html">知识库</a></td></tr>
+          <tr><td>安全边界的三层设计</td><td><a href="../ops/security.html">安全边界</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

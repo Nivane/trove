@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove Agent 能力总览：工具治理、ReAct 生成循环、检查点与时间旅行、人在环、记忆分层与上下文工程，每条给出机制与源码位置。">
+<title>Agent 能力总览 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>Agent 能力<span class="sep">/</span>Agent 能力总览
+      </div>
+      <h1>Agent 能力总览</h1>
+      <p class="lede">
+        <a href="../index.html#agent">首页的十二组能力</a>在这里展开成可执行的细节。
+        组织逻辑是<strong>四层</strong>：模型能碰什么（工具治理）、模型怎么被驱动（循环与预算）、
+        跑砸了怎么办（时间旅行与回滚）、跨会话留下什么（记忆与技能）。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="layers">四层，不是一个循环</h2>
+
+    <p>
+      大多数「Text2SQL Agent」的叙事是一句话：让模型调用工具、自己纠错、直到满意。这句话是对的，
+      但它描述的是<strong>第二层</strong>。一个能长期跑在生产上的问数 Agent，四层缺一不可——
+      而且越往下越不该交给模型。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>层</th><th>要解决的问题</th><th>确定性占比</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>① 工具治理</strong></td>
+            <td>模型能看见哪些工具、越权时发生什么</td>
+            <td>全部——注册与裁剪在构图时完成，运行期零判断</td>
+          </tr>
+          <tr>
+            <td><strong>② 循环与预算</strong></td>
+            <td>怎么驱动、什么时候停、烧多少</td>
+            <td>骨架确定，<strong>停止条件交给模型</strong></td>
+          </tr>
+          <tr>
+            <td><strong>③ 时间旅行与回滚</strong></td>
+            <td>这一轮改坏了，怎么回到上一轮</td>
+            <td>全部——版本比对与回滚是纯代码</td>
+          </tr>
+          <tr>
+            <td><strong>④ 记忆与技能</strong></td>
+            <td>跨会话留下什么、下次怎么用上</td>
+            <td>检索是确定性的，写入要过人工确认</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">一条贯穿全站的原则</span>
+      <div>
+        <p>能把判断变成代码的地方，就不要变成提示词。这不是「不信任模型」，而是：<strong>确定性规则可解释、可回归测试、且换模型不退化</strong>。</p>
+        <p>所以 join 路径由语义层算、结果对不对由规则链判、这一轮有没有进步由版本比对判——模型只负责它真正不可替代的那件事：把一句话理解成一个查询意图。</p>
+      </div>
+    </div>
+
+    <h2 id="map">十二组能力对照表</h2>
+
+    <p>下表是首页十二组能力的索引。前三列是「在哪读」，最后一列指向本页或相邻的详解页。</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>能力组</th><th>一句话机制</th><th>详解</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>01</td><td>工具调用与工具治理</td><td>工具声明可见角色，越权折叠为「未知工具」</td><td><a href="#tools">本页</a></td></tr>
+          <tr><td>02</td><td>工作流编排</td><td>节点工厂 + 意图分流两条路</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>03</td><td>规划</td><td>先出计划再写 SQL，schema 段独立预算</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>04</td><td>多候选与投票</td><td>并行多份 SQL → 执行共识投票</td><td><a href="#consensus">本页</a></td></tr>
+          <tr><td>05</td><td>状态管理与时间旅行</td><td>检查点按存储后端选型，可回放任意一步</td><td><a href="#timeline">本页</a></td></tr>
+          <tr><td>06</td><td>长任务与定时</td><td>调度器鸭子类型可测，进程内嵌 tick</td><td><a href="../ops/admin.html">运维管理</a></td></tr>
+          <tr><td>07</td><td>人在环</td><td>执行前拦 SQL，载荷认不出就默认拒绝</td><td><a href="#hitl">本页</a></td></tr>
+          <tr><td>08</td><td>评估</td><td>离线回放 + 带方向容差的回归门</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
+          <tr><td>09</td><td>可观测</td><td>span 树 + 每节点 token 累计</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+          <tr><td>10</td><td>记忆分层</td><td>门面收口，自动写入一律 pending 或自包含</td><td><a href="memory.html">记忆子系统</a></td></tr>
+          <tr><td>11</td><td>上下文工程</td><td>分档预算 + 优先级装块 + 块内裁剪</td><td><a href="#context">本页</a></td></tr>
+          <tr><td>12</td><td>确定性安全边界</td><td>只读 AST 防火墙 + 限流 + 审计</td><td><a href="../ops/security.html">安全边界</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="tools">① 工具治理：越权不是一道墙，是「没有这个工具」</h2>
+
+    <p>
+      每个工具在注册时声明自己需要什么权限级别、对哪些角色可见。这份定义在交给模型<strong>之前</strong>
+      就按角色裁剪过了：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L138">agent_loop.py:138 <span class="ref-line">ToolSpec</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L183">agent_loop.py:183 <span class="ref-line">visible_to</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L206">agent_loop.py:206 <span class="ref-line">ToolRegistry</span></a>
+    </p>
+
+    <p>
+      有意思的是<strong>越权时发生什么</strong>。运行时不会返回「权限不足」——
+      那样等于告诉模型「这里有一扇门，只是你没钥匙」，而模型会开始试探。
+      它把越权调用折叠成「未知工具」：
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L519">agent_loop.py:519 <span class="ref-line">visible_to</span></a>
+    </p>
+
+    <p>
+      模型看到的是「没有这个工具」，于是它换一条路，而不是在墙上撞。这是一个小设计，
+      但它决定了权限系统是「引导」还是「对抗」。
+    </p>
+
+    <h3>工具清单按档位懒注册</h3>
+
+    <p>
+      工具不是一次性全给。简单问题只给 SQL 语法校验和收工工具，标准/复杂档才解锁只读执行探测与规则链校验；
+      能以只读方式摸到物理 schema 的三个枚举/结构/执行计划工具，还额外要求 analyst 或 admin 角色。
+      完整清单与各自的注册条件见 <a href="llm-gateway.html#registry">LLM 网关 · 工具注册表</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1036">gen_sql.py:1036 <span class="ref-line">build_sql_registry</span></a>
+    </p>
+
+    <h2 id="loop">② 生成循环：护栏不是停止条件</h2>
+
+    <p>
+      生成节点走一个 ReAct 循环。关键的设计选择是：<strong>由模型自己决定什么时候收工</strong>，
+      而不是「跑到没有工具调用为止」或「跑满 N 轮」。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L361">agent_loop.py:361 <span class="ref-line">run_agent_loop</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L369">agent_loop.py:369 <span class="ref-line">max_rounds</span></a>
+    </p>
+
+    <p>
+      <code>max_rounds</code> 是护栏而不是目标：正常收敛的循环根本碰不到它。真正让模型停下来的，
+      是它调用 <code>finish</code> 把最终 SQL 作为载荷交出来——见下面的收工协议。
+    </p>
+
+    <h3>四道预算，全在图上可调</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>预算</th><th>默认值</th><th>触顶后</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">tool_timeout_s</td><td class="mono">20.0</td><td>该次工具调用返回超时错误，循环继续</td></tr>
+          <tr><td class="mono">time_budget_s</td><td class="mono">120.0</td><td>整轮停止</td></tr>
+          <tr><td class="mono">max_rounds</td><td class="mono">8</td><td>整轮停止</td></tr>
+          <tr><td class="mono">max_total_tokens</td><td class="mono">2500</td><td>整轮停止</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L980">graphs.py:980 <span class="ref-line">tool_timeout_s</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L983">graphs.py:983 <span class="ref-line">max_total_tokens</span></a>
+    </p>
+
+    <p>
+      任何一道触顶，或者循环空手而归，都会<strong>降级回经典子图</strong>——「生成 → 校验 → 重试」
+      那条确定性的老路。所以 agentic 循环是加速器而不是单点依赖：它失灵时系统还在，只是慢一点。
+    </p>
+
+    <h3>收工协议：为什么要有 <code>finish</code></h3>
+
+    <p>
+      靠「模型不再调用工具了」来判断结束是脆的：模型可能只是忘了、或者话说了一半。
+      所以这里把收工做成一个<strong>显式工具</strong>，模型必须把 SQL 作为参数交出来，
+      而且载荷要过校验才被接受。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L253">agent_loop.py:253 <span class="ref-line">add_finish_tool</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L302">agent_loop.py:302 <span class="ref-line">validate_finish</span></a>
+    </p>
+
+    <p>
+      好处是「结束」变成了一个有内容、可校验、可记录的事件，而不是一个静默的推断。
+    </p>
+
+    <h2 id="consensus">④ 多候选与共识投票</h2>
+
+    <p>
+      对中等以上复杂度的问题，图上会并行跑多个候选子代理，各自生成一份 SQL，然后由共识节点
+      <strong>实际执行</strong>并投票——全票一致就直接采用，单一多数采用多数，分裂则带着分歧点回炉。
+    </p>
+
+    <p>
+      投票看的是执行结果而不是 SQL 文本。两份写法不同但结果一致的 SQL，在这个判据下是同一票——
+      这正是我们想要的：要的是对的数据，不是对的字面。
+    </p>
+
+    <p>
+      顺带的一个细节：相似问法会轮换少样本示例。否则每次都从同一个角度切入，候选之间的多样性会塌掉，
+      投票也就失去了意义。
+    </p>
+
+    <h2 id="timeline">⑤ 检查点与时间旅行</h2>
+
+    <p>
+      每一步都落检查点，落哪种存储由后端决定——PostgreSQL 生产环境走 <code>AsyncPostgresSaver</code>，
+      本地与测试走 SQLite。
+    </p>
+
+    <p>
+      这让「回放任意一步」成为可能：出问题时不必猜，直接从某个检查点重放，
+      看当时模型拿到的是什么上下文、工具返回了什么。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">这解决的是可解释性的最后一公里</span>
+      <div>
+        <p>「这个数字是怎么算出来的」有很多层答案：SQL 在这里、规则链的判定在这里、语义层的口径在这里。但「<strong>当时它为什么这么想</strong>」只能靠回放。</p>
+        <p>时间旅行是把 Agent 从「不可复现」变成「可复现」的那一步——没有它，剩下的可解释性都只是事后解释。</p>
+      </div>
+    </div>
+
+    <h2 id="hitl">⑦ 人在环：默认拒绝</h2>
+
+    <p>
+      开启后，SQL 在执行前被拦下来交给人确认。这里有一条值得注意的默认值：
+      <strong>载荷认不出来就拒绝</strong>，而不是放行。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">hitl.py:65 <span class="ref-line">make_hitl</span></a>
+    </p>
+
+    <p>
+      定时任务走同一条路，但自动放行——否则无人值守的任务会永远卡在确认上。
+      这两者的区别写在调度器里，不在提示词里。
+    </p>
+
+    <h2 id="context">⑪ 上下文工程：按优先级装进预算</h2>
+
+    <p>
+      生成提示不是把所有能塞的都塞进去。上下文按<strong>复杂度分档</strong>给了 token 预算，
+      各个信息块按优先级竞争这些预算，块内再按相关度裁剪条目。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>档位</th><th>预算</th><th>典型问题</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>simple</td><td class="mono">1500</td><td>单表、单聚合、无歧义</td></tr>
+          <tr><td>standard</td><td class="mono">2500</td><td>需要 join、有过滤或分组</td></tr>
+          <tr><td>complex</td><td class="mono">4000</td><td>多跳、时间窗口、口径歧义</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L134">context_budget.py:134 <span class="ref-line">assemble_context</span></a>
+    </p>
+
+    <p>
+      优先级顺序本身说明了这套系统的价值排序：少样本示例与用户事实最高，
+      其次是规则、术语、指标；计划与历史排在中后段；用户画像排最低，只在预算有余量时才进。
+      完整顺序见 <a href="../architecture/workflow.html#budget">查询工作流 · 上下文预算</a>。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>27 个节点逐个讲、分支与回滚阶梯</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>记忆分层：情节、偏好、晋升、画像</td><td><a href="memory.html">记忆子系统</a></td></tr>
+          <tr><td>Skills：两级注入与确认门禁</td><td><a href="skills.html">Skills</a></td></tr>
+          <tr><td>模型选择、providers、工具注册表</td><td><a href="llm-gateway.html">LLM 网关</a></td></tr>
+          <tr><td>数据侧的能力（语义层、知识库、检索）</td><td><a href="data.html">数据能力总览</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

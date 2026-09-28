@@ -188,10 +188,14 @@ def check_links(doc: Path, html: str) -> list[tuple[str, str]]:
     只查相对路径；外链（http/https/mailto）与纯锚点（#）跳过，它们不由本仓库保证。
     """
     bad: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for m in LINK_RE.finditer(html):
         target = m.group(1).strip()
-        if not target:
+        # 同一个目标常在一页里出现多次（导航、正文、页脚各一次），
+        # 报一次就够 —— 列表要能当待办用，重复项只会稀释它。
+        if not target or target in seen:
             continue
+        seen.add(target)
         dest = (doc.parent / target).resolve()
         if not dest.exists():
             bad.append((target, "目标不存在"))
@@ -256,8 +260,21 @@ def check_file(
                 needle = src[old - 1].strip()
                 if needle:
                     hits = [i + 1 for i, ln in enumerate(dst) if ln.strip() == needle]
-                    if hits:
+                    # 同一段文字常在一处以上（嵌套调用、同一常量在多分支里重复），
+                    # 缩进不同但 strip 后一致。早先只取 hits[0] 会把本来正确的
+                    # 锚点报成漂移：graphs.py 的 `tool_timeout_s=20.0,` 在 275 与
+                    # 980 各有一份，980 被误判成「漂到了 275」——而如果真按它改写，
+                    # 就把对的锚点改到错的为止。
+                    if old in hits:
+                        # 所引那一行的文字现在仍然对得上 ⇒ 没漂。最保守也最正确：
+                        # 若 dst[old-1] 正是这句，内容就还在原处，不存在漂移。
+                        new = old
+                    elif len(hits) == 1:
                         new = hits[0]
+                    elif hits:
+                        unresolved.append(
+                            (path, old, f"{needle}（目标里有 {len(hits)} 行同文，无法确定是哪一处）")
+                        )
                     else:
                         unresolved.append((path, old, needle))
                 else:
