@@ -27,15 +27,23 @@ transport 启动(供 Claude Code / 其他 MCP 客户端本地挂载)。
 
 **权限边界**:MCP 通道默认不带用户身份——stdio 本地挂载视作本机可信
 (等价 admin);HTTP transport 由 ``main.py`` 把 ``--token`` 解析为真实
-用户 token 后传入 ``identity``,本模块据此做数据源 grant 校验(与
-``api/deps.require_datasource`` 同语义:空 grants 只放行默认源,非空
-grants 是严格 allowlist)。identity 缺失时保持旧行为(不设限)。
+用户 token 后传入 ``identity``,本模块据此做数据源 grant 校验。identity
+缺失时保持旧行为(不设限)。
+
+grant 判定的实现**不在本模块** —— 唯一实现在
+``services/authz/policy.py``,与 ``api/deps.require_datasource`` 共用同一份。
+本模块只负责把 ``identity`` 交给策略、拿回一个 ``Principal``。
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastmcp import FastMCP
+
+from trove.services.authz.policy import Policy, Principal, visible_datasources
+
+logger = logging.getLogger(__name__)
 
 _SESSION_CACHE_MAX = 200
 
@@ -55,6 +63,18 @@ def build_mcp_server(
 
     mcp = FastMCP("trove")
 
+    if identity is not None and components.get("auth") is None:
+        # 有身份却拿不到 grants 表 → 该身份会被判「无授权依据」而一律拒绝,
+        # 表现为 list_datasources 返回空。空列表读起来像「一个数据源都没有」,
+        # 与真实原因差得很远,所以这里必须出声(不静默降级)。
+        # 生产不可达:identity 由 main._mcp_identity_for 通过 auth.resolve_token
+        # 产出,没有 auth 就没有 identity。
+        logger.warning(
+            "MCP got an identity but no auth component — every datasource "
+            "will be denied for user %r (no way to resolve grants)",
+            identity.get("id"),
+        )
+
     # 进程内会话注册表:session_id → Session(ask_data 多轮复用)
     sessions: dict[str, Any] = {}
 
@@ -70,53 +90,49 @@ def build_mcp_server(
             sessions.pop(next(iter(sessions)), None)
         return sid, session
 
-    # ── 数据源授权(与 deps.require_datasource 同语义)────────────────
-    async def _granted() -> tuple[bool, set[str]]:
-        """(是否受限, 允许集)。受限=False → 不设限(admin/无身份)。
+    # ── 数据源授权 ────────────────────────────────────────────────
+    # 判定**不在这里**:唯一实现在 services/authz/policy.py。本模块原先那套
+    # `(是否受限, 允许集)` 与 api/deps.require_datasource 是同一策略的两份手抄,
+    # 且已经漂移 —— 见 policy.py 模块 docstring。
+    #
+    # 每次判定都重新解析主体 —— **不要缓存**。
+    #
+    # identity(token 解析出来的用户)进程内确实不变,但主体里带的 grants 是**存
+    # 在库里的可变状态**:管理台撤掉一个数据源授权,缓存住的主体要等到进程重启
+    # 才生效,等于撤销授权不生效。代价是每次判定多一次 grants 读 —— 与转调前的
+    # `_granted()` 同量级,不是新开销。
+    policy = Policy(components.get("auth"))
 
-        非 admin 身份:grants 非空 = 严格 allowlist;空 grants = 只放行默认
-        源(单数据源部署无需配 grant 即可用)。**有身份但无 auth 服务** →
-        受限且允许集为空,按"空 grants"语义处理(只放行默认源)——绝不把
-        拿不到授权依据的身份当作 admin 全放行。
-        """
-        if identity is None or identity.get("role") == "admin":
-            return False, set()
-        auth = components.get("auth")
-        if auth is None:
-            return True, set()
-        try:
-            grants = await auth.get_datasources(identity.get("id"))
-        except Exception:
-            return True, set()
-        return True, set(grants or [])
+    async def _principal() -> Principal:
+        if identity is None:
+            return Policy.local_admin()
+        return await policy.principal_for(identity)
 
     async def _authorize_datasource(datasource: str | None) -> str | None:
         """解析并授权目标数据源;不允许 → None(调用方给友好拒绝)。"""
         target = (datasource or "").strip() or connector_registry.default_name
         if not target:
             return None
-        restricted, allowed = await _granted()
-        if not restricted:
-            return target
-        if allowed:
-            return target if target in allowed else None
-        return target if target == connector_registry.default_name else None
+        principal = await _principal()
+        allowed = principal.allows_datasource(
+            target, connector_registry.default_name,
+        )
+        return target if allowed else None
 
     async def _datasources_visible() -> list[dict[str, Any]]:
         """已注册且有语义模型且当前身份可见的数据源。"""
-        restricted, allowed = await _granted()
-        default = connector_registry.default_name
+        principal = await _principal()
+        infos = connector_registry.list_info()
+        allowed = set(visible_datasources(
+            principal,
+            (str(i.get("name") or "") for i in infos),
+            connector_registry.default_name,
+        ))
         out: list[dict[str, Any]] = []
-        for info in connector_registry.list_info():
+        for info in infos:
             name = str(info.get("name") or "")
-            if not name:
+            if not name or name not in allowed:
                 continue
-            if restricted:
-                if allowed:
-                    if name not in allowed:
-                        continue
-                elif name != default:
-                    continue
             try:
                 has_semantics = kb.semantics_path(name).exists()
             except Exception:

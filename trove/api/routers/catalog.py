@@ -9,9 +9,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 
-from trove.api.deps import get_current_user, require_datasource
+from trove.api.deps import get_current_user, get_principal, require_datasource
 from trove.core.errors import DatasourceError
 from trove.core.types import DatasourceConfig
+from trove.services.authz.policy import visible_datasources
 
 router = APIRouter()
 
@@ -38,15 +39,13 @@ async def list_datasources(
         # status 恒为 "connected"：catalog 数据只来自 registry，而 registry 只持有已连接
         # 的数据源；断开态（仅 datasources.yml 里的配置）只出现在管理端列表
         info["status"] = "connected"
-    if user["role"] == "admin":
+    principal = await get_principal(request, user)
+    if principal.is_admin:
+        # admin 连未初始化的一并看到(管理台要用),所以不走下面的可见性过滤
         return {"datasources": infos}
-    auth = request.app.state.auth
-    grants = await auth.get_datasources(user["id"])
-    if not grants:
-        default_name = registry.default_name
-        allowed = {default_name} if default_name else set()
-    else:
-        allowed = set(grants)
+    allowed = set(visible_datasources(
+        principal, (i.get("name") or "" for i in infos), registry.default_name,
+    ))
     return {"datasources": [
         i for i in infos
         if i.get("name") in allowed and i["kb_initialized"]

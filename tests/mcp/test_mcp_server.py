@@ -366,16 +366,31 @@ async def test_empty_grants_only_default_datasource(mcp_components):
     assert blocked.get("error") == "datasource not allowed"
 
 
-async def test_identity_without_auth_default_only(mcp_components):
-    """有身份但缺 auth 服务 → 按"空 grants"处理:只放行默认源。"""
+async def test_identity_without_auth_denies_everything(mcp_components):
+    """有身份但缺 auth 服务 → **一律拒绝**,不是只放行默认源。
+
+    (2026-09-29 语义变更,取代 ``test_identity_without_auth_default_only``)
+
+    原实现把这种情况按"空 grants"处理,注释写的理由是"绝不把拿不到授权依据
+    的身份当作 admin 全放行" —— **意图对,机制错**。空 grants 不是拒绝,是
+    「有依据且依据为空」,它仍然放行默认源。若该用户真实 grants 是 ``{sales}``
+    而默认源恰好是 ``financial``,那么一次拿不到依据就把他**提权**到了
+    financial。拿不到依据只有一种正确处理:不查任何数据源
+    (``policy.Principal.grants is None``)。
+
+    生产不可达 —— identity 只能由 ``main._mcp_identity_for`` 经
+    ``auth.resolve_token`` 产出,没有 auth 就没有 identity。这条守的是**构造层**
+    的语义:不允许"缺依赖"被翻译成任何一个授权结论。
+    """
     from trove.mcp.server import build_mcp_server
 
     server = build_mcp_server(mcp_components, identity={"id": 1, "role": "user"})
     payload = await _invoke(server, "list_datasources")
-    assert {d["name"] for d in payload["datasources"]} == {"test_db"}
-    ok = await _invoke(server, "ask_data",
+    assert payload["datasources"] == []
+    # 连默认源都不放行 —— 这正是与旧语义的分界
+    omitted = await _invoke(server, "ask_data",
         question="What students are in Alameda county?")
-    assert ok["sql"] and ok["row_count"] == 5
+    assert omitted.get("error") == "datasource not allowed"
     blocked = await _invoke(server, "ask_data",
         question="count rows", datasource="other_db")
     assert blocked.get("error") == "datasource not allowed"

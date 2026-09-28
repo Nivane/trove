@@ -19,6 +19,8 @@ from typing import Any
 
 from fastapi import Depends, Header, HTTPException, Request
 
+from trove.services.authz.policy import Policy, Principal, scopes_allow
+
 logger = logging.getLogger(__name__)
 
 LOCAL_ADMIN = {
@@ -55,6 +57,19 @@ def _get_auth(request: Request) -> Any:
     return auth
 
 
+def _policy(request: Request) -> Policy:
+    """本 app 的策略实例(单例)。
+
+    判定规则本身在 ``services/authz/policy.py``;这里只是拿到那份实现,
+    不在这层再写一次判定 —— 见该模块 docstring 的「四份副本」。
+    """
+    policy = getattr(request.app.state, "policy", None)
+    if policy is None:
+        policy = Policy(_get_auth(request))
+        request.app.state.policy = policy
+    return policy
+
+
 async def get_current_user(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -83,6 +98,25 @@ async def get_current_user(
     return user
 
 
+async def get_principal(
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> Principal:
+    """本请求的授权主体(带 grants),按需构造并缓存在 ``request.state``。
+
+    惰性是有意的:构造要读一次 grants 表,而多数端点(管理台、KB、facts)
+    根本不判数据源。每次请求都预先读一遍是白付的。
+
+    缺失时构造而非报错 —— 直调 ``require_datasource`` 的调用方(路由里已有
+    ``Depends(get_current_user)``)不该被迫再走一遍依赖注入。
+    """
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        principal = await _policy(request).principal_for(user)
+        request.state.principal = principal
+    return principal
+
+
 async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     """Admin-only guard (403 for non-admin roles).
 
@@ -92,8 +126,7 @@ async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dic
     """
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="admin privileges required")
-    scopes = user.get("scopes") or []
-    if scopes and "admin" not in scopes:
+    if not scopes_allow(user.get("scopes"), "admin"):
         raise HTTPException(
             status_code=403,
             detail="token lacks the 'admin' scope (restricted token)",
@@ -110,8 +143,7 @@ def require_scope(*required: str):
     """
 
     async def _check(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-        scopes = user.get("scopes") or []
-        if scopes and not (set(scopes) & set(required)):
+        if not scopes_allow(user.get("scopes"), *required):
             raise HTTPException(
                 status_code=403,
                 detail=f"token lacks required scope(s): {', '.join(sorted(required))}",
@@ -133,6 +165,16 @@ async def require_datasource(
     registry default (single-datasource deployments need no grant setup);
     non-empty grants are a strict allowlist.
 
+    ``grants`` 为 None(拿不到授权依据)时**拒绝**,不放行默认源 —— 三种取值
+    的语义见 :class:`~trove.services.authz.policy.Principal`。
+
+    判定本身在策略层(``services/authz/policy.py``)。这里只做三件事:解析目标
+    数据源、把主体挂到 ``request.state.principal``、问策略要一个结论。
+
+    主体挂在 request 上是为了 P3 —— ``Authorizer`` 要把它从请求边界带进
+    ``WorkflowState`` 才能在执行 SQL 前再验一次(设计 §5.1)。**P1 还没有接这段
+    线**:图内节点目前拿不到 principal,这是 P3 的活。
+
     Returns the resolved datasource name (the router may pass the same
     value through its own resolution).
     """
@@ -142,16 +184,9 @@ async def require_datasource(
     if not target:
         raise HTTPException(status_code=400, detail="no active datasource")
 
-    if user["role"] == "admin":
-        return target
-
-    auth = _get_auth(request)
-    grants = await auth.get_datasources(user["id"])
-    if grants:
-        if target not in grants:
-            raise HTTPException(status_code=403, detail=f"datasource not allowed: {target}")
-    elif datasource and datasource != default_name:
-        raise HTTPException(status_code=403, detail=f"datasource not allowed: {datasource}")
+    principal = await get_principal(request, user)
+    if not principal.allows_datasource(target, default_name):
+        raise HTTPException(status_code=403, detail=f"datasource not allowed: {target}")
     return target
 
 

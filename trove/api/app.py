@@ -186,6 +186,12 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
             "AUTH DISABLED — no auth service in components; "
             "requests run as synthetic local admin"
         )
+
+    # 授权策略:挂在**生效的** auth 上(含上面的 NullAuth 兜底)。放在这里而不是
+    # 让调用方传,是为了让 embedded / 测试路径也走同一份,不会各自 new 一个。
+    from trove.services.authz.policy import Policy
+    app.state.policy = components.get("policy") or Policy(auth)
+
     if not isinstance(auth, NullAuth):
         app.include_router(auth_router.router, prefix="/v1")
         app.include_router(admin_router.router, prefix="/v1")
