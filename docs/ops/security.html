@@ -246,6 +246,111 @@
       </div>
     </div>
 
+    <h2 id="enforce">执行前的授权门</h2>
+
+    <p>
+      上面那套判定此前挂在<strong>路由的装饰器</strong>上，语义是「这个<em>端点</em>需要授权」。
+      于是任何不经路由的入口——API 直执行、job 载荷、CLI、MCP——都绕开了它。
+      现在它被下沉到<strong>执行前的最后一米</strong>：
+      <code>execute_sql</code> 节点里，无论 SQL 从哪来都要过这一道。
+    </p>
+
+    <p>
+      拒绝是<strong>终止</strong>，不是一次修正轮。让模型重写十遍也改不掉「这个用户没有这张表的权限」，
+      只会烧掉共享的修正预算，所以拒绝不喂回生成节点。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L161">execute_sql.py:161 <span class="ref-line">执行前的最后一米</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py">enforcer.py <span class="ref-line">Authorizer</span></a>
+    </p>
+
+    <p>
+      表级判定默认<strong>只警告不拦</strong>（<code>authz.table_enforcement: warn</code>）。
+      原因很实在：存量 grants 只到数据源级，直接拒绝会让正常查询大面积 403，
+      把一次安全改进做成事故。先跑一段收集「哪些表会被拒」，再切 <code>enforce</code>。
+      数据源级判定与「必须有主体」不受这个开关影响，恒为拒绝。
+    </p>
+
+    <p>
+      被拒的次数按<strong>原因</strong>计数（<code>trove_authz_deny_total{reason}</code>），
+      不按人：单看总数读不出「是没配主体，还是表没授权」，而这两者的处置方向相反
+      ——一个是部署没接好，一个是该加 grants。计数记在<strong>执行节点</strong>而不是判定服务里，
+      因为同一个判定函数也服务于「只判定不执行」的调用，那些没有落库
+      （与成本轨「节点记才等于这条查询落库了」同一条纪律）。
+    </p>
+
+    <h2 id="masking">字段级脱敏</h2>
+
+    <p>
+      RLS 管行，此前<strong>没人管列</strong>——手机号、身份证、邮箱照样出到前端与模型上下文。
+      现在在语义层声明字段的脱敏模式，SQL 验证之后、任何模型节点之前改写结果值。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>模式</th><th>结果</th><th>用在</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">partial</td><td class="mono">138****8888</td><td>还要能对上人的场景（客服报号）</td></tr>
+          <tr><td class="mono">hash</td><td class="mono">sha256(salt+值) 前 12 位</td><td>要能分组/去重但不要原文（同一值仍映射到同一串）</td></tr>
+          <tr><td class="mono">null</td><td class="mono">—</td><td>只当存在性用</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/masking.py#L339">masking.py:339 <span class="ref-line">Masker.apply</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/masking.py">nodes/masking.py <span class="ref-line">脱敏节点</span></a>
+    </p>
+
+    <p>
+      绕开脱敏看原文靠 <strong>scope 而不是 role</strong>：持 <code>pii</code> 的账号可以按原文取，
+      而 <code>admin</code> 不自动获得这个能力——管理员的身份是「能改配置」，不是「能看身份证号」。
+      每一次绕开都会写一条 <code>masking.bypass</code> 审计。
+    </p>
+
+    <p>
+      三条边界值得知道：脱敏按<strong>投影位置</strong>匹配，所以 <code>SELECT *</code> 与
+      函数/聚合投影（<code>sum(amount)</code>）拿不到位置，走的是列名兜底或有意不脱敏；
+      模型与 salt 读不出来时<strong>拒绝执行</strong>，不降级为明文；
+      值本身不写日志、不写审计——审计只记「对哪些字段用了哪种模式」。
+    </p>
+
+    <h2 id="on-behalf-of">以用户身份重放</h2>
+
+    <p>
+      排障时最常问的一句是「用户 A 看到的到底是什么」。此前只能借账号。
+      现在 admin 可以在自己的会话里带 <code>on_behalf_of</code> 重放：
+    </p>
+
+    <pre><code>POST /v1/chat  { "question": "...", "on_behalf_of": "user:42" }</code></pre>
+
+    <p>
+      四道校验在流开始之前跑完：发起人是 admin、会话属于发起人、目标用户存在、
+      subject 类型只认 <code>user:</code>。缺一道，这就是一条 admin 的越权读取通道。
+      重放期间<strong>发起人的 scopes 全部不参与判定</strong>——目标用户的权限才是这个视图该有的全部，
+      「减掉 pii 一项」是一张永远列不全的清单。
+    </p>
+
+    <p>
+      审计双记：<code>authz.on_behalf_of</code> 记「谁发起了一次重放」，
+      <code>query.execute</code> 的 details 里另带一条 <code>on_behalf_of</code>——排障的人先翻的是查询记录，
+      只在另一张表里记一次意味着要拼两张表才知道当时的身份。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py">chat.py <span class="ref-line">_replay_subject</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py">session.py <span class="ref-line">_replay_wire</span></a>
+    </p>
+
+    <p>
+      前端会在答案上方标出「已脱敏字段 N」；<code>bypass</code> 的那次单独显示为「原文」——
+      那次字段表是空的，写出来会读成「本次没脱敏」，而事实恰好相反。
+      表头命中的列也有标记，名字对不上就不标（宁可少标，不给没被改写的列打上标记）。
+    </p>
+
     <h2 id="secrets">凭证与加密</h2>
 
     <p>
@@ -285,6 +390,30 @@
     <p>
       生成阶段还会记录 <code>sql_audit</code> 行（版本、用户、工具、SQL），
       所以「谁在什么时候让系统执行了什么 SQL」是有据可查的。
+    </p>
+
+    <p>
+      身份与脱敏这条链上另有四条：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>action</th><th>记的是</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">authz.deny</td><td>执行期的拒绝：哪个数据源、哪张表、什么原因</td></tr>
+          <tr><td class="mono">authz.on_behalf_of</td><td>谁发起了一次以他人身份的重放</td></tr>
+          <tr><td class="mono">masking.applied</td><td>哪些字段被改写成哪种模式（<strong>不记值</strong>）</td></tr>
+          <tr><td class="mono">masking.bypass</td><td>谁按原文读走了数据（持 <code>pii</code> scope 的那次）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      「改写了哪些字段」与「谁看了原文」分开记，而不是合成一条：一次 bypass 的运行字段表是空的，
+      合并之后最该留痕的那次读取会表现成「这次没脱敏」。
+      <code>applied</code> 与「脱敏节点跑了但没改动」也不等价——前者说明结果里确实有被改写的列。
     </p>
 
     <h2 id="hitl">人在环：默认不执行</h2>

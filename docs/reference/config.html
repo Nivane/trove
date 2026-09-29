@@ -186,6 +186,80 @@
       「门被关掉了」不该被 CI 读成「通过」。
     </p>
 
+    <h2 id="authz-cfg">authz 段：执行前的授权门</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">table_enforcement</td>
+            <td class="mono">warn</td>
+            <td>表级判定（A3）的档位：<code>warn</code> 只记日志与指标、放行；<code>enforce</code> 拒绝</td>
+          </tr>
+          <tr>
+            <td class="mono">require_principal</td>
+            <td class="mono">true</td>
+            <td>执行路径缺主体时拒绝；关掉等于整层强制点不装配</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两个键都可以写在顶层或 <code>agent:</code> 段内，两种写法等价。
+    </p>
+
+    <p>
+      这个开关只影响<strong>表级</strong>判定。数据源级判定（A2，「这个用户能不能用这个源」）
+      与「必须有主体」（A1）不受它影响，恒为拒绝——读错这个开关只会让 A3 变宽，
+      不会把鉴权关掉。默认 <code>warn</code> 也不是心软：存量 grants 只到数据源级，
+      直接 <code>enforce</code> 会把正常查询大面积 403，先跑一段收集「哪些表会被拒」。
+      细节见<a href="../ops/security.html#enforce">安全</a>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L83">config.py:83 <span class="ref-line">AuthzConfig</span></a>
+    </p>
+
+    <h2 id="masking-cfg">masking 段：字段级脱敏</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>key</th><th>默认</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">enabled</td>
+            <td class="mono">true</td>
+            <td>是否装配脱敏节点；关掉只影响这一步，不改变任何声明</td>
+          </tr>
+          <tr>
+            <td class="mono">hash_salt_ref</td>
+            <td><em>空</em></td>
+            <td>部署级 salt 引用（<code>env:NAME</code>）；模型级 <code>masking.hash_salt_ref</code> 优先</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>masking:
+  enabled: true
+  hash_salt_ref: env:TROVE_MASK_SALT</code></pre>
+
+    <p>
+      <code>hash_salt_ref</code> 是<strong>引用而不是值</strong>：salt 走环境变量，
+      不进 YAML、不进 git。两处都解析不出来而确有字段声明了 <code>hash</code> 模式时，
+      执行被拒绝——按设计不得降级为明文。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L106">config.py:106 <span class="ref-line">MaskingConfig</span></a>
+    </p>
+
     <h2 id="retention-cfg">retention 段</h2>
 
     <div class="table-wrap">

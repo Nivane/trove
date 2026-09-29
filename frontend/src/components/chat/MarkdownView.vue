@@ -11,6 +11,7 @@
         :headers="b.headers"
         :rows="b.rows"
         :download-rows="resultRows"
+        :masking="masking"
       />
       <SqlBlock v-else-if="b.type === 'sql'" :code="b.code" />
       <details v-else-if="b.type === 'details'" class="answer-details">
@@ -30,6 +31,7 @@
               :headers="inner.headers"
               :rows="inner.rows"
               :download-rows="resultRows"
+              :masking="masking"
             />
             <SqlBlock v-else-if="inner.type === 'sql'" :code="inner.code" />
           </template>
@@ -43,6 +45,7 @@
 import { computed } from 'vue'
 import DataTable from './DataTable.vue'
 import SqlBlock from './SqlBlock.vue'
+import type { MaskingReport } from '../../utils/masking'
 import { tokenize } from '../../utils/blocks'
 import { renderMarkdown, stripAsciiChart } from '../../utils/markdown'
 
@@ -50,6 +53,8 @@ const props = defineProps<{
   source: string
   /** 完整查询结果(可选,供结果表格"按查询结果下载")。 */
   resultRows?: unknown[][] | null
+  /** 字段级脱敏报告:表头据此标出被改写的列(P6)。 */
+  masking?: MaskingReport | null
 }>()
 
 const cleaned = computed(() => stripAsciiChart(props.source || ''))

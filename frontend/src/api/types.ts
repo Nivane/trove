@@ -27,6 +27,8 @@ export interface ErrorInfo {
   }
 }
 
+import type { MaskingReport } from '../utils/masking'
+
 export interface DoneSummary {
   session_id?: string
   run_id?: string
@@ -55,6 +57,9 @@ export interface DoneSummary {
   total_elapsed_ms?: number
   token_usage?: { prompt?: number; completion?: number; total?: number }
   cached?: boolean
+  /** 字段级脱敏报告(设计 §6.2):`{fields: {字段名: 模式}, bypass}`。
+   *  `null`/缺省 = 脱敏节点没跑(该部署没配);`bypass` = 本次以原文返回。 */
+  masking_applied?: MaskingReport | null
 }
 
 export interface StepPayload {

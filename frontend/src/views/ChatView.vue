@@ -128,10 +128,29 @@
               <div v-if="turn.summary?.rewritten_question && turn.summary.rewritten_question !== turn.question" class="rewrite-note">
                 {{ t('rewriteNote', ui.lang) }}<span class="rewrite-note-q">{{ turn.summary.rewritten_question }}</span>
               </div>
-              <div v-if="turn.summary?.datasource" class="answer-meta">
-                <span class="ds-badge" :title="t('dsBadge', ui.lang)">
+              <div
+                v-if="turn.summary?.datasource || maskingBadge(turn.summary?.masking_applied)"
+                class="answer-meta"
+              >
+                <span v-if="turn.summary?.datasource" class="ds-badge" :title="t('dsBadge', ui.lang)">
                   <Database :size="12" :stroke-width="2" />
                   {{ turn.summary.datasource }}
+                </span>
+                <!-- 脱敏提示:数据被改写了而改写本身无声,不说一句就会被读成真实值。
+                     两态分开显示 —— 「已脱敏 N 字段」与「本次原文」(bypass 的
+                     fields 是空的,却恰恰是最该说一句的那次)。 -->
+                <span
+                  v-if="maskingBadge(turn.summary?.masking_applied)"
+                  class="mask-badge"
+                  :class="maskingBadge(turn.summary?.masking_applied)?.kind"
+                  :title="
+                    maskingBadge(turn.summary?.masking_applied)?.kind === 'bypass'
+                      ? t('bypassBadgeTip', ui.lang)
+                      : t('maskedColTip', ui.lang)
+                  "
+                >
+                  <Lock :size="12" :stroke-width="2" />
+                  {{ maskLabel(turn.summary?.masking_applied) }}
                 </span>
               </div>
               <div
@@ -142,6 +161,7 @@
                 <MarkdownView
                 :source="turn.answer || turn.synthesis || ''"
                 :result-rows="turn.summary?.rows ?? null"
+                :masking="turn.summary?.masking_applied ?? null"
               />
                 <span
                   v-if="turn.status === 'streaming'"
@@ -267,6 +287,7 @@ import {
   ArrowUp,
   X,
   Database,
+  Lock,
 } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
 import Sidebar from '../components/layout/Sidebar.vue'
@@ -275,6 +296,8 @@ import ChartCard from '../components/chat/ChartCard.vue'
 import ErrorCard from '../components/chat/ErrorCard.vue'
 import HitlCard from '../components/chat/HitlCard.vue'
 import MarkdownView from '../components/chat/MarkdownView.vue'
+import { maskingBadge } from '../utils/masking'
+import type { MaskingReport } from '../utils/masking'
 import Composer from '../components/chat/Composer.vue'
 import { useChatStore } from '../stores/chat'
 import { useUiStore } from '../stores/ui'
@@ -286,6 +309,16 @@ import type { Turn } from '../stores/chat'
 
 const chat = useChatStore()
 const ui = useUiStore()
+
+/** 脱敏徽标的文案。bypass 不走「已脱敏 N 字段」—— 那次 field 是空的,
+ *  写出来会读成「本次没脱敏」,而事实是**以原文返回**。 */
+function maskLabel(report: MaskingReport | null | undefined): string {
+  const badge = maskingBadge(report)
+  if (!badge) return ''
+  return badge.kind === 'bypass'
+    ? t('bypassBadge', ui.lang)
+    : `${t('maskedBadge', ui.lang)} ${badge.count}`
+}
 const messageList = ref<HTMLDivElement>()
 const emptyComposer = ref<InstanceType<typeof Composer> | null>(null)
 const editingId = ref(-1)

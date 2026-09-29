@@ -31,11 +31,13 @@
             <th
               v-for="(h, j) in headers"
               :key="h"
-              :class="{ numeric: isNumericCol(j) }"
+              :class="{ numeric: isNumericCol(j), masked: j in maskedCols }"
+              :title="j in maskedCols ? t('maskedColTip', ui.lang) : undefined"
               @click="toggleSort(j)"
             >
               <span class="th-inner">
                 {{ h }}
+                <EyeOff v-if="j in maskedCols" :size="11" class="masked-icon" />
                 <span v-if="sortCol === j" class="sort-arrow">{{
                   sortDir === 1 ? '▲' : '▼'
                 }}</span>
@@ -48,7 +50,7 @@
             <td
               v-for="(cell, j) in row"
               :key="j"
-              :class="{ numeric: isNumericCol(j) }"
+              :class="{ numeric: isNumericCol(j), masked: j in maskedCols }"
               :title="String(cell ?? '')"
             >
               {{ fmtCell(cell) }}
@@ -96,6 +98,9 @@ import {
   ArrowLeft,
   ArrowRight,
 } from '@element-plus/icons-vue'
+import { EyeOff } from 'lucide-vue-next'
+import type { MaskingReport } from '../../utils/masking'
+import { maskedColumnModes } from '../../utils/masking'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, notifyError } from '../../utils/notify'
@@ -105,8 +110,13 @@ const props = defineProps<{
   rows: unknown[][]
   /** 完整查询结果(供下载):未提供时回退到展示的 rows。 */
   downloadRows?: unknown[][] | null
+  /** 字段级脱敏报告:命中名字的列会被标出(P6)。 */
+  masking?: MaskingReport | null
 }>()
 const ui = useUiStore()
+
+/** 列下标 → 模式。名字对不上就不标(见 utils/masking 的取舍说明)。 */
+const maskedCols = computed(() => maskedColumnModes(props.headers, props.masking))
 
 const PAGE_SIZE = 50
 const filter = ref('')
