@@ -19,6 +19,23 @@ from trove.workflow.state import WorkflowState
 
 DEFAULT = "test_db"
 
+
+def _warn_total() -> float:
+    """warn 计数器的**值**(所有数据源求和)。
+
+    读值而不是数行:注册表是进程级的,同文件里先跑的 warn 用例已经把那条序列
+    建出来了 —— 数行只会数出「序列存不存在」,而这里要问的是「这一笔记上没有」。
+    ``_created`` 伴随序列不会被误取(前缀带下划线,不是 ``{``)。
+    """
+    from trove.core.metrics import render_metrics
+
+    return sum(
+        float(line.rsplit(" ", 1)[1])
+        for line in render_metrics().decode().splitlines()
+        if line.startswith("trove_authz_table_warn_total{")
+    )
+
+
 #: 语义层声明过的表。``students`` 在 ``sqlite_registry`` 里真实存在;
 #: ``salaries`` 不在声明里 —— A3 要挡的就是后者。
 _DECLARED = {"students"}
@@ -192,6 +209,41 @@ class TestDenyMetric:
         after = render_metrics().decode().count('reason="table"')
 
         assert after == before
+
+    async def test_a_warn_pass_is_counted_on_its_own_series(self):
+        """warn 命中有**自己**的计数器 —— §8.2 观察期要的是量,日志给不了。
+
+        一行一条的日志答不了「切 enforce 会打挂多少」。这条计数器是那个分母,
+        而它与拒绝计数**分家**:并进去,运维读到的告警率里会混进一半没被拦的查询。
+        """
+        before = _warn_total()
+        node = _node(_SpyConnectors(), authorizer=_authorizer(mode="warn"))
+        await node(_state(sql="SELECT * FROM salaries", principal=_user()))
+
+        assert _warn_total() == before + 1
+
+    async def test_an_enforced_denial_does_not_count_as_a_warn_pass(self):
+        """enforce 期被拦下的那一次**不**记 warn —— 它根本没被放行。
+
+        两条口径混了,「warn 期会放行多少」这个数就会把已经拦掉的那些也算进去,
+        切档的决策会偏保守到不敢切。
+        """
+        before = _warn_total()
+        node = _node(_SpyConnectors(), authorizer=_authorizer(mode="enforce"))
+        await node(_state(sql="SELECT * FROM salaries", principal=_user()))
+
+        assert _warn_total() == before
+
+    async def test_a_clean_pass_does_not_count_as_a_warn_pass(self):
+        """没命中未声明表就不记 —— 「放行了且没越界」不是观察期的信号。
+
+        ``students`` 在 ``_DECLARED`` 里,所以这次既没拒也没记。
+        """
+        before = _warn_total()
+        node = _node(_SpyConnectors(), authorizer=_authorizer(mode="warn"))
+        await node(_state(sql="SELECT count(*) FROM students", principal=_user()))
+
+        assert _warn_total() == before
 
 
 # ── 未装配与形状 ─────────────────────────────────────────────────

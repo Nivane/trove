@@ -1577,11 +1577,20 @@ class SessionManager:
             logger.debug("query audit skipped (%s): %s", type(e).__name__, e)
 
     async def _audit_authz(self, session: Session, final: WorkflowState) -> None:
-        """授权 / 脱敏审计 —— ``authz.deny`` · ``masking.applied`` · ``masking.bypass``。
+        """授权 / 脱敏审计 —— ``authz.deny`` · ``authz.table_warn`` ·
+        ``masking.applied`` · ``masking.bypass``。
 
-        三条动作回答三个不同的问题:「谁被拦了」「哪些列被改写了」「谁看了
-        原文」。后两条**不能合并** —— 一次持 ``pii`` 的 bypass 运行 ``fields``
-        是空的(什么都没改),合并之后最该留痕的那次会表现成「这次没脱敏」。
+        四条动作回答四个不同的问题:「谁被拦了」「哪些表被**放行**了」
+        「哪些列被改写了」「谁看了原文」。两两都**不能合并**:
+
+        - ``deny`` 与 ``table_warn`` —— 一次 warn 命中是 ``allowed=True``,
+          合并进拒绝会让「谁被拦了」这个答案里混进一半没被拦的人。
+        - ``applied`` 与 ``bypass`` —— 一次持 ``pii`` 的 bypass 运行 ``fields``
+          是空的(什么都没改),合并之后最该留痕的那次会表现成「这次没脱敏」。
+
+        ``table_warn`` 是 §8.2 观察期的落点:warn 判定只进日志的话,「一周里
+        哪些表会被拒」收不齐(一行一条的日志答不了聚合问题)。门看见了越界
+        **并放行**,比一次干脆的拒绝更值得留痕。
 
         **只记字段名与模式,不记值**(设计 §6.3)。审计表长期留存、管理端可列、
         会进备份;把值写进去等于把脱敏要防的那份数据再抄一份明文,而且没有
@@ -1602,6 +1611,21 @@ class SessionManager:
                         "datasource": decision.get("datasource")
                         or final.datasource or "",
                         "reason": decision.get("reason") or "",
+                        "tables": list(decision.get("narrowed_tables") or []),
+                    },
+                )
+            elif decision.get("narrowed_tables"):
+                # warn 期(§8.2)的 A3 放行:allowed=True,但命中了未声明的表。
+                # 表**名**只在这里落库 —— 计数器上放不下(基数无限),而这里正是
+                # 「哪些表会被拒」唯一答得全的地方。
+                await self._auth.record_audit(
+                    "authz.table_warn",
+                    user=user,
+                    details={
+                        "session_id": final.session_id,
+                        "run_id": final.run_id,
+                        "datasource": decision.get("datasource")
+                        or final.datasource or "",
                         "tables": list(decision.get("narrowed_tables") or []),
                     },
                 )

@@ -127,6 +127,16 @@ if _HAVE_CLIENT:
         ["reason"],
         registry=_REGISTRY,
     )
+    # warn 期(§8.2)的 A3 放行**另起一条**,不并进上面那条:放行不是拒绝,并进去
+    # 会让运维读到的告警率里混进一半根本没被拦的查询。这条回答的是「**量**」——
+    # 多频繁、在哪个数据源上,也就是「切 enforce 会打挂多少」的分母。
+    # 表**名**不在这里(见 ``record_authz_table_warn``)。
+    AUTHZ_TABLE_WARN = Counter(
+        "trove_authz_table_warn_total",
+        "A3 table-level passes in warn mode, by datasource.",
+        ["datasource"],
+        registry=_REGISTRY,
+    )
     # 记的是「对哪个字段用了哪种模式」,不是「改了多少行/多少值」:行数是查询
     # 的属性(已有 sql 指标),而字段名 + 模式是**声明面的事实** —— 运维要回答
     # 的是「这台机器上还有哪些列在明文进出」,按值或按行记都答不了这个。
@@ -315,8 +325,8 @@ def record_authz_deny(reason: str) -> None:
     而本函数是值域的定义处(同 ``record_masking_applied`` / ``record_sql_kill``)。
     放它进去等于用一次静默的基数增长换一个没人会看的序列。
 
-    只在 ``allowed=False`` 时调用。warn 期(§8.2)的 A3 放行记的是
-    ``narrowed_tables``,不是拒绝。
+    只在 ``allowed=False`` 时调用。warn 期(§8.2)的 A3 放行走
+    ``record_authz_table_warn``。
     """
     if not _HAVE_CLIENT or reason not in AUTHZ_DENY_REASONS:
         return
@@ -324,6 +334,29 @@ def record_authz_deny(reason: str) -> None:
         AUTHZ_DENY.labels(reason=reason).inc()
     except Exception as e:
         logger.debug("authz deny metric record failed: %s", e)
+
+
+def record_authz_table_warn(datasource: str) -> None:
+    """记一次 **warn 期放行的 A3 表级判定**(设计 §8.2)。
+
+    只在「命中未声明表、但档位是 warn 所以放行」时调用 —— 也就是
+    ``decision.allowed and decision.narrowed_tables`` 的那一格。
+
+    **表名不进标签**:``record_sql_budget_decision`` 已立此纪律,并且点名了表名
+    (基数无限)。§8.2 要的「哪些表会被拒」是**名字**,名字在审计行里
+    (``authz.table_warn`` 的 ``tables`` 字段)—— 那是行数据,随库增长无所谓;
+    放进标签则是把监控系统自己拖垮(同路由用模板而不是原始 URL)。这条计数器
+    回答**量**:切 enforce 会打挂多少、打挂谁家的库。
+
+    空源名兜底成 ``"default"``(同 ``record_sql_degraded``):没解析出源名不是
+    漏记的理由 —— 漏了这一笔,分子就少了,而它是决策的分子。
+    """
+    if not _HAVE_CLIENT:
+        return
+    try:
+        AUTHZ_TABLE_WARN.labels(datasource=datasource or "default").inc()
+    except Exception as e:
+        logger.debug("authz table warn metric record failed: %s", e)
 
 
 def record_masking_applied(field: str, mode: str) -> None:

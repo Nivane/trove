@@ -20,6 +20,7 @@ from __future__ import annotations
 from trove.core import metrics as metrics_mod
 from trove.core.metrics import (
     record_authz_deny,
+    record_authz_table_warn,
     record_masking_applied,
     record_sql_budget_decision,
     record_sql_degraded,
@@ -188,3 +189,50 @@ class TestAuthzDenyMetrics:
 
         assert _series("trove_authz_deny_total", reason="p5_unknown") == []
         assert _series("trove_authz_deny_total", reason="") == []
+
+
+class TestAuthzTableWarnMetric:
+    """warn 期放行的 A3 判定 —— **独立一条**,不混进拒绝计数。
+
+    §8.2 的迁移路径是「先跑一周收集哪些表会被拒」,而 warn 的判定
+    ``allowed=True`` 单看布尔读不出任何东西。这条计数器回答**量**:多频繁、
+    在哪个数据源上。表**名**不在这里 —— 见 ``test_table_names_never_become_labels``。
+    """
+
+    def test_a_warn_pass_is_counted_under_the_datasource(self):
+        record_authz_table_warn("fin_warn_db")
+
+        assert _series("trove_authz_table_warn_total", datasource="fin_warn_db")
+
+    def test_a_warn_pass_is_not_a_denial(self):
+        """放行不是拒绝 —— 混进同一个系列,运维的告警率里会混进一半没被拦的查询。
+
+        比的是**前后差**而不是「拒绝计数为空」:注册表是进程级的,同文件里
+        别的用例早就记过拒绝(同 ``test_an_unknown_reason_is_not_a_deny`` 用
+        独有标签值隔离的同一件事)。
+        """
+        before = _series("trove_authz_deny_total")
+        record_authz_table_warn("fin_warn_only")
+
+        assert _series("trove_authz_deny_total") == before
+
+    def test_a_missing_datasource_still_records(self):
+        """兜底成 ``default``(同 ``record_sql_degraded``):没解析出源名不是漏记的理由。"""
+        before = _series("trove_authz_table_warn_total", datasource="default")
+        record_authz_table_warn("")
+
+        assert len(_series("trove_authz_table_warn_total", datasource="default")) == (
+            len(before) + 1
+        )
+
+    def test_table_names_never_become_labels(self):
+        """表名不进标签 —— ``record_sql_budget_decision`` 已立此纪律,它点名了表名。
+
+        §8.2 要的「哪些表会被拒」是**名字**,名字在审计行里
+        (``authz.table_warn`` 的 ``tables`` 字段):那是行数据,基数随库增长而增长
+        无所谓;放进标签则是把监控系统自己拖垮(同路由用模板而不是原始 URL)。
+        """
+        record_authz_table_warn("fin_warn_labels")
+
+        (line,) = _series("trove_authz_table_warn_total", datasource="fin_warn_labels")
+        assert line.count("=") == 1, f"这个计数器只该有 datasource 一个标签: {line}"

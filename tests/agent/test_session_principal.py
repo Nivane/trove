@@ -450,6 +450,47 @@ class TestAuthzAudit:
 
         assert [e for e in auth.audits if e["action"] == "authz.deny"] == []
 
+    async def test_a_warn_pass_is_audited_under_its_own_action(self, manager_with_auth):
+        """放行的那一笔要**落库**,不是只进日志。
+
+        §8.2 的观察期靠日志是收不齐的:一行一条的日志答不了「一周里哪些表」。
+        审计表答得了,而且这正是它该记的事 —— 门看见了越界**并放行了**,比一次
+        干脆的拒绝更值得留痕。
+        """
+        from trove.workflow.state import WorkflowState
+
+        manager, _ = manager_with_auth
+        auth = _bind(manager, users={7: USER_ROW})
+        final = WorkflowState(
+            session_id="s1", question="q", user_id="7",
+            authz_decision={
+                "allowed": True, "reason": "",
+                "narrowed_tables": ["salaries", "bonuses"], "datasource": "test_db",
+            },
+        )
+
+        await manager._audit_authz(Session(session_id="s1", user_id="7"), final)
+
+        entry = next(e for e in auth.audits if e["action"] == "authz.table_warn")
+        assert entry["details"]["tables"] == ["salaries", "bonuses"]
+        assert entry["details"]["datasource"] == "test_db"
+        assert entry["user"] == {"id": 7, "username": "alice"}
+
+    async def test_a_clean_pass_writes_neither(self, manager_with_auth):
+        """没命中就不写 —— 「放行了且没越界」不是审计事件,是常态。"""
+        from trove.workflow.state import WorkflowState
+
+        manager, _ = manager_with_auth
+        auth = _bind(manager, users={7: USER_ROW})
+        final = WorkflowState(
+            session_id="s1", question="q", user_id="7",
+            authz_decision={"allowed": True, "reason": "", "narrowed_tables": []},
+        )
+
+        await manager._audit_authz(Session(session_id="s1", user_id="7"), final)
+
+        assert [e for e in auth.audits if e["action"].startswith("authz.")] == []
+
     async def test_masking_applied_records_fields_never_values(
         self, manager_with_auth,
     ):

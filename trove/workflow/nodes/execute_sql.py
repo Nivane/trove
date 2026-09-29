@@ -17,6 +17,7 @@ from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.core.metrics import (
     record_authz_deny,
+    record_authz_table_warn,
     record_sql_budget_decision,
     record_sql_degraded,
     record_sql_kill,
@@ -199,10 +200,18 @@ def make_execute_sql(
                     **authz_extra,
                 }
             if decision.narrowed_tables:
-                # warn 期(§8.2)的主要产物:放行了,但记下「哪些表会被拒」
+                # warn 期(§8.2)的主要产物:放行了,但记下「哪些表会被拒」。
+                # 三条出口各答一个问题,缺一条这个观察期就白跑:
+                #   日志 → 这一次的现场;计数器 → 量(切 enforce 会打挂多少);
+                #   审计行(agent/session.py 的 authz.table_warn)→ 名字(哪些表)。
+                # 名字**不**进计数器:表名基数无限(记在这里同 record_authz_deny
+                # 与拒绝计数分家的理由 —— 放行不是拒绝,并进去会污染告警率)。
                 logger.warning(
                     "authz table warning for %r: %s (mode=warn)",
                     state.question[:80], ", ".join(decision.narrowed_tables),
+                )
+                record_authz_table_warn(
+                    state.datasource or getattr(connectors, "default_name", "") or ""
                 )
 
         # 指标用的数据源名:与血缘、终止、证据同一个解析(state.datasource → 默认源)。
