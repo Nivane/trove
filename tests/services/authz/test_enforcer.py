@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from trove.services.authz.enforcer import AuthzDecision, Authorizer
+from trove.services.authz.enforcer import AuthzDecision, Authorizer, referenced_tables
 from trove.services.authz.policy import Principal
 
 #: 一个声明了 orders / customers 的语义模型对应的物理表名集合。
@@ -205,6 +205,57 @@ class TestTableGate:
     def test_a3_is_skipped_when_caller_passes_no_sql_and_no_tables(self):
         """既没有表清单也没有 SQL → 无从判定 → 不拦(A1/A2 已过)。"""
         assert _authorizer().check(_user(), datasource=DEFAULT, default=DEFAULT).allowed
+
+
+# ── CTE 别名不是表 ────────────────────────────────────────────────
+
+
+class TestCteAliasIsNotATable:
+    """``FROM <cte>`` 在 sqlglot 里同样是 ``exp.Table``。
+
+    不排除 CTE 名,就会把别名当成物理表送进 A3 —— 在 enforce 下造成**与权限
+    无关**的误拒(有 CTE 的合法查询一律被拦)。列限定符那一半此前已防住,
+    ``FROM`` 这一半没有。同仓 ``services/sql/guard.py`` 是正确写法,两份判据
+    必须同源。
+    """
+
+    def test_referenced_tables_excludes_the_cte_name(self):
+        assert referenced_tables(
+            "WITH selected AS (SELECT id FROM orders) SELECT * FROM selected",
+            "mysql",
+        ) == {"orders"}
+
+    def test_a_legitimate_cte_query_is_not_denied(self):
+        """用户可见后果:这条查询没碰任何未声明表,不该被拒。"""
+        d = _authorizer().check(
+            _user(), datasource=DEFAULT,
+            sql=(
+                "WITH big AS (SELECT * FROM orders WHERE amt > 100) "
+                "SELECT count(*) FROM big"
+            ),
+            default=DEFAULT,
+        )
+        assert d.allowed is True, f"CTE 名被当成未声明表: {d.narrowed_tables}"
+
+    def test_nested_ctes_are_excluded_too(self):
+        assert referenced_tables(
+            "WITH a AS (SELECT id FROM orders), "
+            "b AS (SELECT id FROM a) SELECT * FROM b",
+            "mysql",
+        ) == {"orders"}
+
+    def test_undeclared_table_inside_a_cte_body_is_still_caught(self):
+        """排除别名不能把 CTE 体里的真表一起排掉 —— 否则这道门就成了摆设。"""
+        d = _authorizer().check(
+            _user(), datasource=DEFAULT,
+            sql=(
+                "WITH ok AS (SELECT * FROM orders) "
+                "SELECT * FROM ok JOIN payroll ON ok.id = payroll.id"
+            ),
+            default=DEFAULT,
+        )
+        assert d.allowed is False
+        assert d.narrowed_tables == ["payroll"]
 
 
 # ── 配置 ─────────────────────────────────────────────────────────

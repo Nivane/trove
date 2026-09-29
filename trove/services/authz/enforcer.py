@@ -180,6 +180,11 @@ def referenced_tables(sql: str, dialect: str = "") -> set[str] | None:
 
     取的是 FROM/JOIN 的目标表,不是列限定符:列限定符可能指向 CTE 别名,
     当成表名会误报。子查询/联表里的表都会被 ``find_all`` 收进来。
+
+    **CTE 别名同样不是表**:``FROM <cte>`` 在 sqlglot 里也是 ``exp.Table``,
+    不排除就会把别名送进 A3,在有 CTE 的库上造成与权限无关的误拒。CTE 体里
+    的真表仍会被收进来(排除的是别名,不是内容)。与
+    ``services/sql/guard.py`` 的判据同源 —— 两处对「SQL 触及哪些表」必须一致。
     """
     from sqlglot import exp, parse_one
 
@@ -191,7 +196,12 @@ def referenced_tables(sql: str, dialect: str = "") -> set[str] | None:
         return None
     if tree is None:
         return None
-    return {_base_name(t.name) for t in tree.find_all(exp.Table) if t.name}
+    cte_names = {c.alias.lower() for c in tree.find_all(exp.CTE) if c.alias}
+    return {
+        _base_name(t.name)
+        for t in tree.find_all(exp.Table)
+        if t.name and _base_name(t.name) not in cte_names
+    }
 
 
 def _base_name(table: str) -> str:
