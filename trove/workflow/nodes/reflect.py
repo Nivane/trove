@@ -418,11 +418,10 @@ def _build_reflect_prompt(
 
     Thin wrapper over the ``reflect/user`` Jinja template.
     """
-    sample = ""
-    if sample_rows:
-        sample = "\n".join(
-            str(row) for row in sample_rows[:5]
-        )
+    # 抽样行**结构化**交出去(前 5 行):隔离核按结构逐叶处理,一个坏单元格
+    # 只换掉自己(设计稿 §6-5)。拼接在模板里,渲染文本逐字节不变——
+    # ``str(row)`` 的列表字面量与 Jinja ``join`` 的逐项 soft_str 等价。
+    sample = sample_rows[:5] if sample_rows else []
     # schema 上限 10000 字符:裁决需要足够 schema 才能判断连接/过滤是否
     # 成立(实测 600 连联表都看不清)。推理模型把预算花在 reasoning 上导致
     # content 为空的失败已由 _reask_verdict 极简重问 + 强制放行兜底。

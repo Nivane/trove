@@ -15,7 +15,7 @@ Generated SQL:
 Result columns: {{ columns }}
 Total rows returned: {{ total_rows }}
 Sample rows (first 5):
-{{ sample }}
+{# sample 是行列表(逐格隔离);传拼好的文本会被按字符拆开 #}{{ sample | join("\n") }}
 
 Does this result correctly answer the user's question?
 Respond with OK, RETRY: <reason>, EMPTY, or NO_SQL: <reason>.

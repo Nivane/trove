@@ -76,14 +76,17 @@ def _semantic_time_hints(semantic_layer: Any, matched_tables: list[str]) -> dict
     return {"time_columns": names} if names else None
 
 
-def _rows_preview(state: WorkflowState) -> str:
-    """给 LLM 判定的行预览(带截断警示,前 N 行、查询顺序)。"""
-    rows_text = "\n".join(
-        " | ".join(str(cell) for cell in row)
-        for row in state.rows[:MAX_CHART_ROWS]
-    )
+def _rows_preview(state: WorkflowState) -> tuple[list[list], str]:
+    """给 LLM 判定的行预览:返回 **(结构化行, 截断警示)**,前 N 行、查询顺序。
+
+    两件东西分开交,是为了让隔离核按结构逐叶处理行(设计稿 §6-5):迁移前
+    警示拼在行文本尾部,整块是一个字符串,一个坏单元格会连警示一起吃掉。
+    模板负责把两者拼回原位,渲染文本逐字节不变
+    (tests/prompts/test_rows_render_bytes_unchanged.py)。
+    """
+    rows = state.rows[:MAX_CHART_ROWS]
     if state.row_count <= MAX_CHART_ROWS:
-        return rows_text
+        return rows, ""
     note = (
         f"\nNote: only the first {MAX_CHART_ROWS} of {state.row_count} rows "
         "shown, in query order (may be unsorted)."
@@ -91,7 +94,7 @@ def _rows_preview(state: WorkflowState) -> str:
         f"\n注意：仅展示 {state.row_count} 行中的前 {MAX_CHART_ROWS} 行，"
         "为查询返回顺序（可能未排序）。"
     )
-    return rows_text + note
+    return rows, note
 
 
 async def _llm_chart(
@@ -110,6 +113,7 @@ async def _llm_chart(
         hints=hints, title=state.question,
     )
     model = config.model_for_node("chart", state.complexity)
+    rows, rows_note = _rows_preview(state)
     user_prompt = render(
         "chart/user",
         lang=state.lang,
@@ -117,7 +121,8 @@ async def _llm_chart(
         sql=state.sql,
         columns=state.columns,
         total_rows=state.row_count,
-        rows=_rows_preview(state),
+        rows=rows,
+        rows_note=rows_note,
     )
     response = await llm.chat_full(
         model=model,

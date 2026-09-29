@@ -7,6 +7,6 @@
 结果列: {{ columns }}
 返回行数: {{ total_rows }}
 数据行:
-{{ rows }}
+{# rows 是行列表(逐格隔离);传拼好的文本会被按字符拆开 #}{{ rows | map("join", " | ") | join("\n") }}{{ rows_note }}
 
 请调用 plot_chart 工具判定是否需要图表以及图表规格。

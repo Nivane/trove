@@ -42,10 +42,11 @@ def make_conclusion(
         if not state.rows:
             return {}
 
-        rows_text = "\n".join(
-            " | ".join(str(cell) for cell in row)
-            for row in state.rows[:MAX_CONCLUSION_ROWS]
-        )
+        # 交给模板的是**结构化行**,不是拼好的文本:回喂前的隔离核按结构逐叶
+        # 替换,一个坏单元格不会吃掉整段预览(连带把 row_count / columns 的
+        # 判断依据一起带走)。拼接由模板承担,渲染文本逐字节不变
+        # (tests/prompts/test_rows_render_bytes_unchanged.py)。
+        rows = state.rows[:MAX_CONCLUSION_ROWS]
         # 预览截断警示:仅展示前 N 行且为查询顺序(可能未排序)——避免 LLM
         # 从部分预览推断全局极值(前 20 行里"最高"未必真是全局最高)。
         rows_note = ""
@@ -71,7 +72,7 @@ def make_conclusion(
                 sql=state.sql,
                 columns=state.columns,
                 total_rows=state.row_count,
-                rows=rows_text,
+                rows=rows,
                 rows_note=rows_note,
             )
             response = await llm.chat(

@@ -47,9 +47,11 @@ class TestRenderIsolation:
             in body
         )
 
-    def test_oversized_value_isolated_conservatively(self):
-        # 逐字审查不了的长文本按保守方向整体作废(不会漏扫)
-        out = _conclusion(rows="x" * 70000)
+    def test_oversized_cell_isolated_conservatively(self):
+        # 逐字审查不了的长文本按保守方向整体作废(不会漏扫)。单元格作废,
+        # 同一行的其余单元格与其余行照常(结构化迁移后的粒度,设计稿 §6-5)。
+        out = _conclusion(rows=[["Alameda", "x" * 70000], ["Orange", 7]])
         assert ISOLATED_MARKER in out
+        assert "Alameda" in out and "Orange" in out
         body = render_metrics().decode()
         assert 'pattern="oversized"' in body

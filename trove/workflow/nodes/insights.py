@@ -40,10 +40,9 @@ def make_insights(
         if not state.rows:
             return {}
 
-        rows_text = "\n".join(
-            " | ".join(str(cell) for cell in row)
-            for row in state.rows[:MAX_INSIGHT_ROWS]
-        )
+        # 结构化行,不是拼好的文本:隔离核按结构逐叶替换,一个坏单元格不会
+        # 吃掉整段预览(设计稿 §6-5)。拼接在模板里,渲染文本逐字节不变。
+        rows = state.rows[:MAX_INSIGHT_ROWS]
         # 预览截断警示:仅展示前 N 行且为查询顺序(可能未排序)——避免 LLM
         # 从部分预览推断全局极值(前 20 行里"最高"未必真是全局最高)。
         rows_note = ""
@@ -69,7 +68,7 @@ def make_insights(
                 sql=state.sql,
                 columns=state.columns,
                 total_rows=state.row_count,
-                rows=rows_text,
+                rows=rows,
                 rows_note=rows_note,
             )
             response = await llm.chat(
