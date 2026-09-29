@@ -73,9 +73,16 @@ async def ckpt_api_app(api_app, sqlite_registry, agent_config, tmp_path):
 
 
 async def _run_one_question(client, ckpt_api_app):
-    """Create a session and run one question; return the session_id."""
+    """Create a session and run one question; return the session_id.
+
+    ``user_id`` 用**真实存在的用户 id**,不是字面量 ``"admin"``:API 面的会话
+    恒为 ``str(user["id"])``(``create_session``),而主体解析把「用户表里查不到」
+    读成「没有主体」→ 执行层拒绝(A1)。一个假 user_id 的会话在带 auth 的装配下
+    根本跑不出结果 —— 这层纸只在那份 session_manager 不带 auth 的夹具下糊得住。
+    """
     manager = ckpt_api_app.state.session_manager
-    session = await manager.start_session(project_cwd=".", user_id="admin")
+    admin = await ckpt_api_app.state.auth.store.get_user_by_username("admin")
+    session = await manager.start_session(project_cwd=".", user_id=str(admin["id"]))
     await manager.ask(session, "Which county has most students?")
     return session.session_id
 

@@ -103,6 +103,25 @@ class AuthzConfig:
 
 
 @dataclass
+class MaskingConfig:
+    """字段级脱敏的部署配置(设计 §7.2)。
+
+    ``enabled``: 是否装配脱敏节点。**默认 true** —— 与 ``authz.require_principal``
+    同一个取向:默认值是「保护开着」。关掉它是嵌入场景的显式选择,不是省事的
+    缺省。注意关掉只影响**这一步**,不改变任何声明(模型里的 ``mask`` 照旧
+    解析、照旧序列化,重新打开即生效)。
+
+    ``hash_salt_ref``: 部署级 salt 引用(``env:NAME``),模型级
+    ``masking.hash_salt_ref`` 优先。两处都解析不出来而确有 ``hash`` 字段要应用
+    → 拒绝执行(§10:不得降级为明文)。**这是引用不是值**:salt 走环境变量 /
+    secrets,不进 YAML、不进 git 版本。
+    """
+
+    enabled: bool = True
+    hash_salt_ref: str = ""
+
+
+@dataclass
 class BudgetConfig:
     """执行画像的成本轨(设计 §6.3 / §5.2)。
 
@@ -262,6 +281,8 @@ class AgentConfig:
     eval: EvalConfig = field(default_factory=EvalConfig)
     # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
     authz: AuthzConfig = field(default_factory=AuthzConfig)
+    # 字段级脱敏:开关 + 部署级 salt 引用。见 MaskingConfig(默认开)。
+    masking: MaskingConfig = field(default_factory=MaskingConfig)
     # 执行画像的成本轨:阈值 + 估算不可得时的方向。见 BudgetConfig。
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     config_mutable: bool = True
@@ -509,6 +530,27 @@ class ConfigLoader:
                 budget_raw.get("on_unestimable", "degrade")).strip().lower(),
         )
 
+        # 执行前授权门 + 字段级脱敏(设计 §7.2)。
+        # 两段都取自**顶层**(与 eval 同款,设计 §7.2 的示例就是顶层键),同时
+        # 兼容仓库主流的 ``agent:`` 内嵌写法 —— 两种写法读到的都是同一份意图,
+        # 只认一种会让另一种静默失效,而"配置写了不生效"是排障最贵的一类。
+        #
+        # ⚠️ authz 这一段是**补 P3 的漏**:``AuthzConfig`` 当时加了字段与默认值,
+        # 却没有在加载器里读 YAML,于是 ``agent.yml`` 里写的 table_enforcement
+        # 永远不生效(恒取默认 warn)。masking 接进来时顺手补上 —— 它比 masking
+        # 更危险:一个写了 ``enforce`` 的部署以为自己开着表级判定,其实没有。
+        authz_raw = resolved.get("authz", {}) or agent_section.get("authz", {}) or {}
+        authz_conf = AuthzConfig(
+            table_enforcement=str(
+                authz_raw.get("table_enforcement", "warn")).strip().lower(),
+            require_principal=bool(authz_raw.get("require_principal", True)),
+        )
+        masking_raw = resolved.get("masking", {}) or agent_section.get("masking", {}) or {}
+        masking_conf = MaskingConfig(
+            enabled=bool(masking_raw.get("enabled", True)),
+            hash_salt_ref=str(masking_raw.get("hash_salt_ref", "") or "").strip(),
+        )
+
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
@@ -553,6 +595,8 @@ class ConfigLoader:
             attribution=attribution,
             eval=eval_conf,
             budget=budget_conf,
+            authz=authz_conf,
+            masking=masking_conf,
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

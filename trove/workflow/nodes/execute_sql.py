@@ -16,6 +16,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.core.metrics import (
+    record_authz_deny,
     record_sql_budget_decision,
     record_sql_degraded,
     record_sql_kill,
@@ -188,6 +189,11 @@ def make_execute_sql(
                     state.question[:80], decision.reason,
                     state.datasource or connectors.default_name,
                 )
+                # 拒绝计数记在**这里**,不记在 ``Authorizer`` 里:同一个
+                # ``check`` 也服务于「只判定不执行」的调用,而那些没有落库。
+                # 记在服务层会把它们算进拒绝率,运维拿这个数报警会打到空处
+                # (与成本轨「节点记才等于这条查询落库了」同一条纪律)。
+                record_authz_deny(decision.reason)
                 return {
                     "error": _authz_message(decision),
                     **authz_extra,

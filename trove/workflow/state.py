@@ -105,6 +105,17 @@ class WorkflowState(BaseModel):
     # None = 这一轮**没装配成本轨**(嵌入场景显式关掉),不是「判过了、很便宜」。
     execution_evidence: dict[str, Any] | None = None
 
+    # 字段级脱敏的报告(masking 节点的产物,设计 §6.2):
+    # ``{"fields": {字段名: 模式}, "bypass": bool}``。
+    #
+    # **比设计原文多一个 ``bypass`` 位**:§6.2 记的是 ``{field: mode}``,但调用方
+    # (前端提示 / 审计)分不清「没有可脱敏的字段」与「整段被 scope 跳过」——
+    # 前者是声明面的事实,后者是**有人持 pii 读走了原文**,两者对运营的含义相反。
+    # 形态与 ``Masker.apply`` 的报告一致,链路里只有一种报告形状。
+    #
+    # None = 这一步**没跑**(没有结果集 / 装配关掉),不是「跑了、什么都没改」。
+    masking_applied: dict[str, Any] | None = None
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 

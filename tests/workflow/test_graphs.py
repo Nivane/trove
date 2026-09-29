@@ -1487,6 +1487,100 @@ class TestFixedGraph:
         assert len(llm.calls) == 3  # intent + 初稿 + 修正稿
 
 
+def _declare_mask(provider, dataset: str, field: str, mask: str = "partial"):
+    """把测试语义模型里的某个字段改成声明了 ``mask`` 的,返回**原 provider**。
+
+    改的是 ``provider.model()`` 返回的那个对象(provider 内部缓存的就是它,
+    每次 ``model()`` 给的都是同一个),而 registry 夹具是函数级的 —— 不会
+    污染别的用例。**不另造替身**:``schema_linking`` 要读 ``enabled`` /
+    渲染上下文,替身少一个面就会被判成"没有语义模型"而走拒绝路径,测试看
+    起来在测脱敏,其实整条链路根本没跑起来。
+    """
+    for ds in provider.model().datasets:
+        if ds.name != dataset:
+            continue
+        for f in ds.fields:
+            if f.name == field:
+                f.mask = mask
+    return provider
+
+
+class TestMaskingWiring:
+    """脱敏节点长在**两条**图的正路上(A10 · I5)。
+
+    位置断言用端到端做,而不是读图结构:能证明「这条路径上确实脱敏了」的是
+    **LLM 手里的入参**。抽掉 ``validate → masking`` 这条边、或把节点挪到
+    ``reflect`` 之后,这里的断言必须立刻变红 —— 否则它就是一条看着安心的
+    结构测试。
+
+    ``county`` 是夹具里真实存在的一列(``Alameda`` / ``Orange`` /
+    ``Los Angeles``),脱敏成 ``A*****a`` 这样的形状:既能断言原文没进提示词,
+    也能断言**脱敏后的值确实进了**提示词(证明这一步不是"把数据整个藏起来")。
+    """
+
+    SQL = "SELECT county, COUNT(*) AS n FROM students GROUP BY county"
+    RAW = "Alameda"
+    MASKED = "A*****a"
+
+    def _graphs(self, sqlite_registry, catalog, workflow: str):
+        llm = RecordingLLM(["query", f"```sql\n{self.SQL};\n```", "OK"])
+        provider = _declare_mask(
+            sqlite_registry._test_semantic_provider, "students", "county",
+        )
+        graphs = build(make_services(
+            llm, catalog, sqlite_registry, semantic_layer=provider,
+        ))
+        return llm, graphs
+
+    def _prompt_text(self, llm) -> str:
+        return "\n".join(
+            str(m.get("content", "")) for call in llm.calls for m in call
+        )
+
+    async def test_the_reflection_graph_masks_before_the_model_sees_rows(
+        self, sqlite_registry, catalog,
+    ):
+        """I5:``reflect`` 读 ``state.rows``,它拿到的必须是脱敏后的行。"""
+        llm, graphs = self._graphs(sqlite_registry, catalog, "reflection")
+
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="Count students by county"),
+        )
+
+        assert final["error"] == ""
+        assert final["masking_applied"]["fields"] == {"county": "partial"}
+        assert self.RAW not in str(final["rows"]), "结果集本身也该是脱敏的"
+        assert self.MASKED in str(final["rows"])
+        text = self._prompt_text(llm)
+        assert self.MASKED in text, "脱敏后的值该照常进上下文(不是把数据藏起来)"
+        assert self.RAW not in text, "原文进了 LLM 提示词 —— I5 的失效点"
+
+    async def test_the_fixed_graph_masks_too(self, sqlite_registry, catalog):
+        """没有 reflect 的图同样要脱敏 —— 后置步只在一条路上发生就是洞。"""
+        llm, graphs = self._graphs(sqlite_registry, catalog, "fixed")
+
+        final = await graphs["fixed"].ainvoke(
+            make_state(question="Count students by county"),
+        )
+
+        assert final["masking_applied"]["fields"] == {"county": "partial"}
+        assert self.RAW not in str(final["rows"])
+
+    async def test_an_undeclared_model_leaves_the_run_untouched(
+        self, sqlite_registry, catalog,
+    ):
+        """A11:没声明 ``mask`` 的模型,整图行为与升级前一致(原文照常出)。"""
+        llm = RecordingLLM(["query", f"```sql\n{self.SQL};\n```", "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="Count students by county"),
+        )
+
+        assert final["masking_applied"] == {"fields": {}, "bypass": False}
+        assert self.RAW in str(final["rows"])
+
+
 class TestEmptyGraph:
     async def test_pass_through(self):
         graphs = build(make_services(RecordingLLM([])))

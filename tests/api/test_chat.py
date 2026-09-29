@@ -183,6 +183,82 @@ class TestChat:
         assert resp.json()["status"] == "ok"
 
 
+class TestOnBehalfOf:
+    """P5 / 设计 §5.6 —— ``POST /v1/chat {"on_behalf_of": "user:42"}``。
+
+    重放是**读别人数据的通道**,所以校验全在**跑起来之前**:非 admin 403、
+    目标不存在 404、形状不认识 400、不是自己的会话 403。四种错法都必须在
+    SSE 开始之前挡掉 —— 流一旦开始,状态码已经发出去了,错误只能变成事件。
+    """
+
+    async def test_non_admin_is_forbidden(self, user_client, user_token, auth_service):
+        bob = await auth_service.store.get_user_by_username("bob")
+        resp = await user_client.post(
+            "/v1/chat",
+            json={"question": "hi", "on_behalf_of": f"user:{bob['id']}"},
+        )
+        assert resp.status_code == 403
+
+    async def test_missing_target_is_404(self, client):
+        resp = await client.post(
+            "/v1/chat", json={"question": "hi", "on_behalf_of": "user:99999"},
+        )
+        assert resp.status_code == 404
+
+    async def test_unknown_subject_type_is_400(self, client):
+        """``group:3`` 不认识 —— 拒绝,不猜(不静默按自己的身份跑)。"""
+        resp = await client.post(
+            "/v1/chat", json={"question": "hi", "on_behalf_of": "group:3"},
+        )
+        assert resp.status_code == 400
+
+    async def test_replay_in_a_foreign_session_is_403(self, client, user_client, auth_service):
+        """重放只能在**自己的**会话里做。
+
+        会话层按**会话主人**的 role 复核发起人(它拿不到别的身份),所以
+        「admin 在别人的会话里重放」在两层的判定会打架 —— 与其让内层拒绝、
+        外层放行,不如在门口就说清楚。
+        """
+        bob = await auth_service.store.get_user_by_username("bob")
+        created = (await user_client.post("/v1/sessions")).json()["session_id"]
+        resp = await client.post(
+            "/v1/chat",
+            json={
+                "session_id": created, "question": "hi",
+                "on_behalf_of": f"user:{bob['id']}",
+            },
+        )
+        assert resp.status_code == 403
+
+    async def test_admin_replay_streams_as_the_target(self, client, auth_service):
+        """happy path:重放跑完,并在审计里留下「谁借了谁的身份」。"""
+        bob = await auth_service.store.get_user_by_username("bob")
+        created = (await client.post("/v1/sessions")).json()["session_id"]
+
+        resp = await client.post(
+            "/v1/chat",
+            json={
+                "session_id": created, "question": "What students are in Alameda county?",
+                "on_behalf_of": f"user:{bob['id']}",
+            },
+        )
+
+        assert resp.status_code == 200
+        events = parse_sse(resp.text)
+        assert events[-1][0] == "done"
+        audit = await auth_service.list_audit(action="authz.on_behalf_of")
+        assert len(audit) == 1
+        details = audit[0]["details"]
+        assert details["on_behalf_of"] == str(bob["id"])
+        assert details["actor"] == "1"          # bootstrap admin
+
+    async def test_plain_chat_is_unaffected(self, client):
+        """不传 ``on_behalf_of`` 的老客户端行为一字不变。"""
+        resp = await client.post("/v1/chat", json={"question": "hello"})
+        assert resp.status_code == 200
+        assert parse_sse(resp.text)[-1][0] == "done"
+
+
 class TestChatHITLResume:
     """HITL:chat 流发出 hitl 事件暂停;POST /resume 以决定继续。"""
 

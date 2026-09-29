@@ -13,6 +13,9 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     workflow: str = "reflection"
     datasource: str | None = None  # target datasource (None = registry default)
+    #: 重放(设计 §5.6):admin 以目标用户身份看数据。``user:42`` / ``42``。
+    #: 仅 admin、仅自己的会话;目标必须是已存在的用户。见 routers/chat._replay_subject
+    on_behalf_of: str | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -20,6 +23,10 @@ class ResumeRequest(BaseModel):
 
     decision: Any = Field(description="HITL 决定:yes/approve 或 no/reject,或任意 resume 载荷")
     workflow: str = "reflection"
+    #: 与 chat 同参数:**HITL 中断必须带着重放一起续跑** —— 中断前是按目标
+    #: 用户跑的一半流程,续跑时不带重放就会用发起人自己的权限把剩下半程跑完
+    #: (一次运行里换身份,比整个跑错更糟)。
+    on_behalf_of: str | None = None
 
 
 class SemanticQueryFilter(BaseModel):

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from trove.core import metrics as metrics_mod
 from trove.core.metrics import (
+    record_authz_deny,
+    record_masking_applied,
     record_sql_budget_decision,
     record_sql_degraded,
     record_sql_kill,
@@ -109,3 +111,80 @@ class TestNoClient:
 
         monkeypatch.setattr(metrics_mod, "SQL_DEGRADED", _Exploding())
         record_sql_degraded("p5_unit_db")  # 不抛即通过
+
+
+class TestMaskingMetrics:
+    """脱敏指标:`{field, mode}` 两组低基数标签(设计 §9.2 / §5.5)。
+
+    标签选 ``field`` 而不是行数/值,是因为运维要回答的是「这台机器上还有哪些列
+    在明文进出」—— 按行或按值记都答不了这个。字段名来自语义层声明(人工维护),
+    不来自用户输入,基数可控。
+    """
+
+    def test_a_rewrite_carries_field_and_mode(self):
+        record_masking_applied("p4_phone_a", "partial")
+
+        assert _series(
+            "trove_masking_applied_total", field="p4_phone_a", mode="partial",
+        )
+
+    def test_an_empty_report_is_not_a_rewrite(self):
+        """空字段名/空模式不成序列 —— 它只可能来自一个坏报告。
+
+        与 ``record_sql_kill`` 的 ``""`` 同一条纪律:让「没发生」混进分布,
+        运维读到的每一个数字都要打折。
+        """
+        record_masking_applied("", "partial")   # 没有字段名
+        record_masking_applied("p4_phone_b", "")  # 没有模式
+
+        assert _series("trove_masking_applied_total", field="", mode="partial") == []
+        assert _series("trove_masking_applied_total", field="p4_phone_b") == []
+
+    def test_bypass_is_not_counted_here(self):
+        """``bypass`` 不进这个计数器 —— 它走审计(§6.3),答的是「谁看过原文」。
+
+        这里没有 ``mode="bypass"`` 这种序列:模式的值域是 ``partial`` /
+        ``hash`` / ``null``(声明面的事实),而 bypass 是**运行期的一次决定**,
+        两者混在一个系列里,「有多少列在脱敏」这个数会被决策次数污染。
+        """
+        record_masking_applied("p4_phone_c", "bypass")
+
+        assert _series("trove_masking_applied_total", field="p4_phone_c") == []
+
+
+class TestAuthzDenyMetrics:
+    """授权拒绝指标:``{reason}`` 一组低基数标签(设计 §9.2 / P5)。
+
+    标签取 ``reason`` 而不是表名/SQL:值是**闭集**(``AuthzDecision.reason`` 的
+    四个取值 + 拒绝的语义),而表名与 SQL 文本来自用户输入,基数是无限的。
+    这条与 ``record_sql_budget_decision`` 同一条纪律:枚举进标签,原文不进。
+
+    ``allowed`` 那一侧**不在这里** —— warn 期的 A3 判定记的是
+    ``narrowed_tables``(§8.2 要「先跑一周收集哪些表会被拒」),它的出口是日志
+    与 ``state.authz_decision``,不是拒绝计数:把「放行了但记了一笔」算进拒绝,
+    运维读到的告警率里会混进一半根本没被拦的查询。
+    """
+
+    def test_a_deny_carries_its_reason(self):
+        record_authz_deny("no_principal")
+
+        assert _series("trove_authz_deny_total", reason="no_principal")
+
+    def test_every_declared_reason_fits_the_label_domain(self):
+        """值域内的每个 reason 都记得进去 —— 守卫不能顺手吃掉真话。"""
+        for reason in sorted(metrics_mod.AUTHZ_DENY_REASONS):
+            record_authz_deny(reason)
+            assert _series("trove_authz_deny_total", reason=reason)
+
+    def test_an_unknown_reason_is_not_a_deny(self):
+        """域外的 reason 不记 —— 它只可能来自一个新加的原因没同步到这里。
+
+        与 ``MASKING_MODES`` 同一条纪律:值域是这个计数器定义的,服务层新增
+        原因时**这里要有意识地跟着改一次**,而不是让一个自由字符串变成标签
+        (那是基数失控的入口)。
+        """
+        record_authz_deny("p5_unknown")
+        record_authz_deny("")
+
+        assert _series("trove_authz_deny_total", reason="p5_unknown") == []
+        assert _series("trove_authz_deny_total", reason="") == []

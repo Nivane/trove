@@ -97,6 +97,10 @@ class SemanticField:
     label: str = ""
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)
+    #: 字段级脱敏声明(设计 §5.5):``""`` | ``none`` | ``partial`` | ``hash``
+    #: | ``null``。空串与 ``none`` 同义(存量兼容,A11)——缺省不是 ``partial``
+    #: 之类「有效果」的值:一个没声明过的模型不该在升级后开始改写结果。
+    mask: str = ""
 
 
 @dataclass
@@ -174,6 +178,32 @@ class TimeSpine:
 
 
 @dataclass
+class MaskingPolicy:
+    """模型级脱敏策略(设计 §5.5 / §6.1)。
+
+    ``default_policy``: 不持 ``bypass_scopes`` 的主体的待遇 —— ``apply``
+    (默认,脱敏) | ``bypass``(原样)。admin **不自动 bypass**(§5.5):
+    看原文要显式持 scope,这样「谁签发过看得见原文的凭证」在 token 侧
+    就有记录。
+
+    ``hash_salt_ref``: 指向 salt 的**引用**(如 ``env:TROVE_MASK_SALT``),
+    不是 salt 本身 —— 值走 secrets,不进 YAML、不进 git 版本。模型级为空
+    时运行时回落到部署配置 ``masking.hash_salt_ref``;两处都解析不出来而
+    又有 ``hash`` 字段在场 → 拒绝执行(§10:不得降级为明文)。
+
+    ``bypass_scopes`` 用**原始集合求交**判定,不走 ``scopes_allow`` ——
+    「空 scopes = 不限」那条规则是给路由门的存量兼容准备的,方向是宽;
+    PII 披露没有下层兜底(§8.1 判据),空 scopes 在这里必须意味着
+    「没有 pii」,否则每一个存量 token 和 ``on_behalf_of`` 重放都会
+    直接看到原文。
+    """
+
+    default_policy: str = "apply"
+    bypass_scopes: list[str] = field(default_factory=list)
+    hash_salt_ref: str = ""
+
+
+@dataclass
 class SemanticModel:
     """One parsed semantic model (OSSIE `semantic_model` entry).
 
@@ -193,3 +223,5 @@ class SemanticModel:
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)
     time_spine: TimeSpine | None = None
+    #: 模型级脱敏策略(见 MaskingPolicy);缺省 = 不脱敏(存量兼容,A11)
+    masking: MaskingPolicy = field(default_factory=MaskingPolicy)

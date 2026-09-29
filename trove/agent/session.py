@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import inspect
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, AsyncIterator
 
 from trove.core.types import (
@@ -120,7 +120,10 @@ class SessionManager:
         for task_store in self._task_stores.values():
             await task_store.dispose()
 
-    async def _principal_wire(self, session: Session) -> dict[str, Any] | None:
+    async def _principal_wire(
+        self, session: Session, *, scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
+    ) -> dict[str, Any] | None:
         """本轮提问者的授权主体(wire 形状);``None`` = **没有主体** → 执行层拒绝。
 
         **每次 ask 现算,不存进 Session。** grants 会变(管理台加/撤授权),而会话
@@ -138,32 +141,111 @@ class SessionManager:
         刻意**不采纳** ``ask(is_admin=...)`` 那个入参:它由调用方给出,而主体是
         权限判定的依据。让一个入参就能把主体抬成 admin,等于给「绕过用户表提权」
         开了个口子 —— 判定只认 auth 存储。
+
+        ``scopes`` 相反:**只认调用方传进来的**。它不是授权依据而是凭证自带的
+        声明(由 ``auth.resolve_token`` 在网关/路由层解析),会话表里没有这一列,
+        所以必须一路透传。缺省空集合 —— CLI / jobs / 测试本就无凭证,行为不变。
+
+        ``on_behalf_of`` 是**重放**(设计 §5.6):admin 排障时要看「用户 A 到底
+        看到什么」。它传的是**目标用户 id**,主体由此变成目标(subject / role /
+        grants 全是目标的),``on_behalf_of`` 字段留发起人。三条 fail-closed 见
+        :meth:`_replay_wire`;本方法这一层的判据是**会话主人的 role 读自 auth
+        存储** —— 不认任何「我是 admin」的入参(同 P3 §三 ②)。
         """
         if self._auth is None:
             # 没有 auth 服务(嵌入 / 测试 / 未启用多用户)→ 本机可信身份,与
             # deps.NullAuth、mcp.build_mcp_server(identity=None) 同口径。
-            return principal_to_wire(Policy.local_admin())
+            # 这两条本机分支**不带 scopes**:没有 auth 就没有凭证解析层,token
+            # 根本到不了这里(不是「丢弃」,是上游不存在)。
+            # 重放例外:没有 auth 就没有用户表,目标必然是空的 —— 静默退回本机
+            # 管理员会让调用方以为看到的是目标视图,实际是全量视图(**危险方向**)。
+            return None if on_behalf_of else principal_to_wire(Policy.local_admin())
         uid = (session.user_id or "").strip()
         if not uid:
             return None
         if uid == LOCAL_SUBJECT:
             # Session.user_id 的默认值 —— 本地 CLI / stdio MCP 没有远程身份。
             # 用户表主键是整数,真实用户撞不上这个字符串(见 LOCAL_SUBJECT)。
-            return principal_to_wire(Policy.local_admin())
+            # 同理:哨兵不是「某个 admin 账号」,没有可记的发起人 → 重放拒绝。
+            return None if on_behalf_of else principal_to_wire(Policy.local_admin())
         try:
             row = await self._auth.store.get_user_by_id(int(uid))
         except (TypeError, ValueError):
             return None  # 既不是用户 id 也不是本地哨兵 —— 无从判定,不猜
         if row is None:
             return None  # 用户已删除 / 建会话后被清理
+        if on_behalf_of is not None:
+            return await self._replay_wire(session, row, on_behalf_of)
         # 取依据这步只走 Policy(全仓唯一的 get_datasources 调用点);存储故障
         # 照抛不捕获 —— 基础设施故障不是授权结论(见 Policy.principal_for)。
-        # scopes 留空 = 不限:会话路径没有 token,与 scopes_allow 同语义。
+        # scopes 原样透传;空集合的含义由消费方决定(**不是**「不限」—— 脱敏的
+        # bypass 判据把空集合读作「没有 pii」,见 MaskingPolicy)。
         principal = await Policy(self._auth).principal_for({
             "id": row.get("id"),
             "role": row.get("role") or "user",
-            "scopes": (),
+            "scopes": tuple(scopes or ()),
         })
+        return principal_to_wire(principal)
+
+    async def _replay_wire(
+        self, session: Session, actor_row: dict[str, Any], target: str,
+    ) -> dict[str, Any] | None:
+        """重放主体(设计 §5.6 / A8);``None`` = 拒绝。
+
+        三条 fail-closed,每一条都对应一种「静默降级成放行」的写法:
+
+        * **发起人必须是 admin**,判据是 auth 存储里的 role。不认入参、不认
+          ``is_admin``(同 P3 §三 ②的取舍:一个入参就能换身份,等于给提权开口子)。
+        * **目标必须存在**,不存在就拒绝。不退回「按自己的身份跑」—— 那会把
+          「目标已删除」渲染成一次正常的全量视图。
+        * **发起人的 scopes 一律丢掉**。§5.6 的 A8:重放不可与 ``pii`` bypass
+          叠加,「按目标用户的权限走(含脱敏)」。保留 admin 的 scope 会让这个
+          功能直接变成「借用户 A 的名字读原文」,而它要防的正是这个。
+          目标自己的 scope 无从知晓(scope 属于 token,不属于用户表),所以只能
+          取空集 —— 方向偏严:重放视图只会比目标真人的视图**更**脱敏。
+
+        目标 id 收 ``"7"`` 与 ``"user:7"`` 两种写法(后者是 API 的拼写);
+        ``"group:3"`` 之类**不认识的形状一律拒绝**,不猜 —— 多一种主体类型时
+        这里必须有意识地改一次。
+        """
+        if str(actor_row.get("role") or "user") != "admin":
+            return None
+        raw = str(target).strip()
+        if raw.startswith("user:"):
+            raw = raw[len("user:"):].strip()
+        try:
+            target_id = int(raw)
+        except (TypeError, ValueError):
+            return None
+        target_row = await self._auth.store.get_user_by_id(target_id)
+        if target_row is None:
+            return None
+        principal = await Policy(self._auth).principal_for(
+            {
+                "id": target_row.get("id"),
+                "role": target_row.get("role") or "user",
+                # A8:空 scopes —— 发起人的 scope 不进来,目标的 scope 也不假装知道
+                "scopes": (),
+            },
+            on_behalf_of=str(actor_row.get("id")),
+        )
+        # 审计:重放的全部正当性都建立在留痕上(§5.6 的「审计双记」)。
+        # best-effort —— 审计写失败不该把一次已授权的调试查询打回。
+        try:
+            await self._auth.record_audit(
+                "authz.on_behalf_of",
+                user={
+                    "id": actor_row.get("id"),
+                    "username": actor_row.get("username", ""),
+                },
+                details={
+                    "actor": str(actor_row.get("id")),
+                    "on_behalf_of": str(target_row.get("id")),
+                    "session_id": session.session_id,
+                },
+            )
+        except Exception as e:  # noqa: BLE001 —— 审计失败不影响判定的结论
+            logger.debug("on_behalf_of audit skipped (%s): %s", type(e).__name__, e)
         return principal_to_wire(principal)
 
     async def _user_tool_roles(self, user_id: str | None) -> list[str] | None:
@@ -381,6 +463,8 @@ class SessionManager:
         workflow_name: str = DEFAULT_WORKFLOW,
         datasource: str | None = None,
         is_admin: bool = False,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> WorkflowState:
         """Process a natural language question through a compiled graph.
 
@@ -392,6 +476,9 @@ class SessionManager:
                 the current default-datasource behavior.
             is_admin: Whether the caller is an admin (enables chat-side
                 draft confirmation etc.).
+            scopes: Scopes carried by the caller's token (from
+                ``auth.resolve_token``); they land on the principal and are
+                what masking's bypass judgment reads. None = no credential.
 
         Returns:
             The final WorkflowState (final_response, sql, row_count, verdict, ...).
@@ -423,14 +510,18 @@ class SessionManager:
             user_id=session.user_id,
             tool_roles=await self._user_tool_roles(session.user_id),
             is_admin=is_admin,
-            principal=await self._principal_wire(session),
+            principal=await self._principal_wire(
+                session, scopes=scopes, on_behalf_of=on_behalf_of,
+            ),
         )
         self._begin_trace(state)
         self._trace_run_start(state)
 
         # 精确结果缓存:同会话同问句直接返回上次结果(0 LLM)。命中跳过
         # HITL 确认——首次运行该问题已人工确认过。
-        cached = self._cache_get(self._cache_key(session, question, datasource))
+        cached = self._cache_get(
+            self._cache_key(session, question, datasource, state.principal),
+        )
         if cached is not None:
             self._record_cache_hit(session, run_id, question, cached)
             final = self._cached_final(
@@ -540,6 +631,8 @@ class SessionManager:
         session: Session,
         decision: Any,
         workflow_name: str = DEFAULT_WORKFLOW,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> WorkflowState:
         """Non-streaming HITL resume (compat layer).
 
@@ -549,7 +642,10 @@ class SessionManager:
         """
         content = ""
         summary: dict[str, Any] = {}
-        async for ev in self.resume_stream(session, decision, workflow_name):
+        async for ev in self.resume_stream(
+            session, decision, workflow_name, scopes=scopes,
+            on_behalf_of=on_behalf_of,
+        ):
             if ev.get("type") in ("done", "error"):
                 content = ev.get("content", "")
                 summary = ev.get("summary") or {}
@@ -560,6 +656,8 @@ class SessionManager:
         session: Session,
         decision: Any,
         workflow_name: str = DEFAULT_WORKFLOW,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """HITL resume as an event stream (same shapes as /v1/chat).
 
@@ -586,7 +684,9 @@ class SessionManager:
                 run_id=run_id,
                 user_id=session.user_id,
                 datasource=pending.get("datasource", ""),
-                principal=await self._principal_wire(session),
+                principal=await self._principal_wire(
+                session, scopes=scopes, on_behalf_of=on_behalf_of,
+            ),
             )
             config = self._run_config(session, run_id, stub, workflow_name)
             config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
@@ -663,7 +763,8 @@ class SessionManager:
                     continue
                 async for ev in self._run_one_task(
                     session, graph, workflow_name, store, current, target,
-                    final.lang, auto_approve=True,
+                    final.lang, auto_approve=True, scopes=scopes,
+                    on_behalf_of=on_behalf_of,
                 ):
                     if ev.get("type") in ("done", "error") and ev.get("summary"):
                         self._merge_run_stats(batch_stats, ev["summary"])
@@ -683,6 +784,8 @@ class SessionManager:
         workflow_name: str = DEFAULT_WORKFLOW,
         datasource: str | None = None,
         is_admin: bool = False,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream a query response as graph events.
 
@@ -705,13 +808,19 @@ class SessionManager:
         # ── 任务层:跨轮推进(解释器)→ 多任务拆解 → 普通单任务 ──
         action = await self._interpret_followup(session, question)
         if action.get("action") != "none":
-            async for ev in self._run_task_action(session, graph, question, action, workflow_name, datasource=datasource):
+            async for ev in self._run_task_action(
+                session, graph, question, action, workflow_name,
+                datasource=datasource, scopes=scopes, on_behalf_of=on_behalf_of,
+            ):
                 yield ev
             return
 
         tasks = await self._decompose_tasks(session, question)
         if tasks:
-            async for ev in self._run_task_sequence(session, graph, question, tasks, workflow_name, datasource=datasource):
+            async for ev in self._run_task_sequence(
+                session, graph, question, tasks, workflow_name,
+                datasource=datasource, scopes=scopes, on_behalf_of=on_behalf_of,
+            ):
                 yield ev
             return
 
@@ -735,7 +844,9 @@ class SessionManager:
             user_id=session.user_id,
             tool_roles=await self._user_tool_roles(session.user_id),
             is_admin=is_admin,
-            principal=await self._principal_wire(session),
+            principal=await self._principal_wire(
+                session, scopes=scopes, on_behalf_of=on_behalf_of,
+            ),
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -771,7 +882,9 @@ class SessionManager:
 
         # 精确结果缓存:同会话同问句直接产出结果事件(0 LLM),形状与
         # 实跑路径一致(sql → result → done);命中跳过 HITL 确认。
-        cached = self._cache_get(self._cache_key(session, state.question, state.datasource))
+        cached = self._cache_get(
+            self._cache_key(session, state.question, state.datasource, state.principal),
+        )
         if cached is not None:
             import time as _time
             self._record_cache_hit(session, run_id, state.question, cached)
@@ -1402,8 +1515,32 @@ class SessionManager:
         await self._observe_memory(final)
         # 查询执行审计:谁、问了什么、执行了什么 SQL、结果如何。best-effort。
         await self._audit_query(session, final)
+        # 授权与脱敏审计:被拦了 / 改了哪些字段 / 谁看了原文(设计 §6.3)。
+        # 与上一行同一个汇合点 —— 四条运行路径都走 _record_exchange。
+        await self._audit_authz(session, final)
         # 结果缓存写钩子(覆盖 ask / resume / ask_stream 三路径)
         self._maybe_cache_exchange(session, final)
+
+    async def _audit_user(
+        self, session: Session, final: WorkflowState,
+    ) -> dict[str, Any] | None:
+        """审计行上的 ``user`` —— 由 ``user_id`` 回查出的 ``{id, username}``。
+
+        ``None`` 表示**查无此人**(或 id 不是数字:CLI / 嵌入场景里 user_id
+        是自由文本)。不编一个 ``{"id": uid}`` 顶上:审计表的 user 列是对着
+        用户表读的,塞一个查不到的外键进去,排障时看到的是一个点不开的名字。
+        """
+        assert self._auth is not None  # 调用方已判空
+        uid = final.user_id or session.user_id
+        if not uid:
+            return None
+        try:
+            row = await self._auth.store.get_user_by_id(int(uid))
+        except (TypeError, ValueError):
+            return None
+        if row is None:
+            return None
+        return {"id": row["id"], "username": row["username"]}
 
     async def _audit_query(self, session: Session, final: WorkflowState) -> None:
         """查询执行审计 —— ``query.execute`` 写入 audit_log。
@@ -1414,32 +1551,89 @@ class SessionManager:
         if self._auth is None:
             return
         try:
-            user = None
-            uid = final.user_id or session.user_id
-            if uid:
-                try:
-                    row = await self._auth.store.get_user_by_id(int(uid))
-                    if row is not None:
-                        user = {"id": row["id"], "username": row["username"]}
-                except (TypeError, ValueError):
-                    user = None
+            details: dict[str, Any] = {
+                "session_id": final.session_id,
+                "run_id": final.run_id,
+                "question": (final.question or "")[:2000],
+                "sql": (final.sql or "")[:8000],
+                "datasource": final.datasource or "",
+                "verdict": final.verdict,
+                "row_count": final.row_count,
+                "execution_time_ms": final.execution_time_ms,
+                "error": (final.error or "")[:2000],
+            }
+            # 重放的**双记**(设计 §5.6):authz.on_behalf_of 记的是「谁发起了
+            # 一次重放」,这一条记的是「这条 SQL 是以谁的身份跑的」—— 排障时
+            # 先被翻出来的是查询记录,只在另一张表里记一次意味着要拼两张表
+            # 才知道当时的身份。
+            if (final.principal or {}).get("on_behalf_of"):
+                details["on_behalf_of"] = final.principal["on_behalf_of"]
             await self._auth.record_audit(
                 "query.execute",
-                user=user,
-                details={
-                    "session_id": final.session_id,
-                    "run_id": final.run_id,
-                    "question": (final.question or "")[:2000],
-                    "sql": (final.sql or "")[:8000],
-                    "datasource": final.datasource or "",
-                    "verdict": final.verdict,
-                    "row_count": final.row_count,
-                    "execution_time_ms": final.execution_time_ms,
-                    "error": (final.error or "")[:2000],
-                },
+                user=await self._audit_user(session, final),
+                details=details,
             )
         except Exception as e:  # 审计失败绝不影响查询链路
             logger.debug("query audit skipped (%s): %s", type(e).__name__, e)
+
+    async def _audit_authz(self, session: Session, final: WorkflowState) -> None:
+        """授权 / 脱敏审计 —— ``authz.deny`` · ``masking.applied`` · ``masking.bypass``。
+
+        三条动作回答三个不同的问题:「谁被拦了」「哪些列被改写了」「谁看了
+        原文」。后两条**不能合并** —— 一次持 ``pii`` 的 bypass 运行 ``fields``
+        是空的(什么都没改),合并之后最该留痕的那次会表现成「这次没脱敏」。
+
+        **只记字段名与模式,不记值**(设计 §6.3)。审计表长期留存、管理端可列、
+        会进备份;把值写进去等于把脱敏要防的那份数据再抄一份明文,而且没有
+        TTL。best-effort:写失败绝不阻断回答;无 auth 服务跳过。
+        """
+        if self._auth is None:
+            return
+        try:
+            user = await self._audit_user(session, final)
+            decision = final.authz_decision or {}
+            if decision and not decision.get("allowed"):
+                await self._auth.record_audit(
+                    "authz.deny",
+                    user=user,
+                    details={
+                        "session_id": final.session_id,
+                        "run_id": final.run_id,
+                        "datasource": decision.get("datasource")
+                        or final.datasource or "",
+                        "reason": decision.get("reason") or "",
+                        "tables": list(decision.get("narrowed_tables") or []),
+                    },
+                )
+            report = final.masking_applied
+            if not report:
+                # None = 这一步**没跑**(与「跑了但没改动」两回事);两条都不写。
+                return
+            if report.get("bypass"):
+                await self._auth.record_audit(
+                    "masking.bypass",
+                    user=user,
+                    details={
+                        "session_id": final.session_id,
+                        "run_id": final.run_id,
+                        "datasource": final.datasource or "",
+                    },
+                )
+                return
+            fields = dict(report.get("fields") or {})
+            if fields:
+                await self._auth.record_audit(
+                    "masking.applied",
+                    user=user,
+                    details={
+                        "session_id": final.session_id,
+                        "run_id": final.run_id,
+                        "datasource": final.datasource or "",
+                        "fields": fields,
+                    },
+                )
+        except Exception as e:  # 审计失败绝不影响查询链路
+            logger.debug("authz audit skipped (%s): %s", type(e).__name__, e)
 
     async def _observe_memory(self, final: WorkflowState) -> None:
         """观测回流:情景记忆记录 + 成功→示例草稿 + 修正/失败→pending 教训。
@@ -1639,6 +1833,8 @@ class SessionManager:
         tasks: list[Task],
         workflow_name: str,
         datasource: str | None = None,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """多任务单轮连跑:逐条执行,事件流中插入 task 快照事件。
 
@@ -1668,7 +1864,7 @@ class SessionManager:
                 continue
             async for ev in self._run_one_task(
                 session, graph, workflow_name, store, current, target,
-                self.config.language, datasource=datasource,
+                self.config.language, datasource=datasource, scopes=scopes,
             ):
                 if ev.get("type") in ("done", "error") and ev.get("summary"):
                     self._merge_run_stats(batch_stats, ev["summary"])
@@ -1695,6 +1891,8 @@ class SessionManager:
         datasource: str | None = None,
         *,
         auto_approve: bool = False,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """执行单个子任务并流式产出事件(in_progress → 事件流 → 终态标记)。"""
         task.status = "in_progress"
@@ -1716,7 +1914,9 @@ class SessionManager:
             auto_approve=auto_approve,
             datasource=datasource or "",
             user_id=session.user_id,
-            principal=await self._principal_wire(session),
+            principal=await self._principal_wire(
+                session, scopes=scopes, on_behalf_of=on_behalf_of,
+            ),
             # 步骤间共享:继承上一步 schema linking 锚定的表(schema_linking
             # 节点会与本次新匹配合并,KB 检索与 C1 规则据此锚定)
             matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],
@@ -1767,6 +1967,8 @@ class SessionManager:
         action: dict,
         workflow_name: str,
         datasource: str | None = None,
+        scopes: Iterable[str] | None = None,
+        on_behalf_of: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """执行跨轮任务操作:continue_next / redo / skip / add。"""
         lang = self.config.language
@@ -1840,7 +2042,7 @@ class SessionManager:
         batch_stats: dict[str, Any] = {}
         async for ev in self._run_one_task(
             session, graph, workflow_name, store, tasks, target, lang,
-            datasource=datasource,
+            datasource=datasource, scopes=scopes, on_behalf_of=on_behalf_of,
         ):
             if ev.get("type") in ("done", "error") and ev.get("summary"):
                 self._merge_run_stats(batch_stats, ev["summary"])
@@ -1980,6 +2182,15 @@ class SessionManager:
             "matched_tables": list(final.matched_tables),
             "chart": final.chart,
             "chart_option": chart_option,
+            # 脱敏报告进 summary:`rows` 在这里,「这些行被改写成了什么样」也得
+            # 在这里。少了它,命中路径重建出的 state 就没有报告 —— 前端标记
+            # (P6)与 ``masking.applied`` 审计一起失效,而数据照样交付。三态
+            # 照原样透出:None = 这一步没跑。
+            "masking_applied": final.masking_applied,
+            # 主体同理:缓存命中不跑图,``query.execute`` 的重放双记只能从
+            # summary 里读回「这份数据是以谁的身份产出的」。键里已按主体隔离,
+            # 这里透出来是为了**记录对**,不是为了分流。
+            "principal": final.principal,
         }
 
     # ── Result cache (exact-question, in-process) ────────
@@ -1995,16 +2206,32 @@ class SessionManager:
     def _cache_enabled(self) -> bool:
         return bool(self.config.result_cache)
 
-    def _cache_key(self, session: Session, question: str, datasource: str | None = None) -> tuple:
-        """键 = (会话, 数据源, 归一化问句)。数据源隔离:同一问句在不同
-        库上是不同问题。"""
+    def _cache_key(
+        self,
+        session: Session,
+        question: str,
+        datasource: str | None = None,
+        principal: dict[str, Any] | None = None,
+    ) -> tuple:
+        """键 = (会话, 数据源, 归一化问句, 主体)。数据源隔离:同一问句在不同
+        库上是不同问题。
+
+        第四个分量是**视图**:缓存里存着 ``rows``(数据本身),而同一会话里
+        同一句问句可以有两个视图 —— 会话主人自己问,与他以目标身份重放
+        (``on_behalf_of``)。两者的脱敏范围不同(甚至一个 bypass 一个不),
+        共用一个键等于把一份视图的行走另一份视图交付出去。
+
+        主体取自**已解析的** ``principal`` 而不是 ``on_behalf_of`` 入参:重放
+        时入参是发起人、主体是目标,而这份数据属于后者。无 auth / CLI 场景
+        ``principal`` 为 None → 分量是空串,与改动前同一行为。"""
         ds = datasource or ""
         if not ds and self._connectors is not None:
             try:
                 ds = self._connectors.default_name or ""
             except Exception:
                 ds = ""
-        return (session.session_id, ds, self._normalize_question(question))
+        subject = str((principal or {}).get("subject") or "")
+        return (session.session_id, ds, self._normalize_question(question), subject)
 
     def _cache_get(self, key: tuple) -> dict[str, Any] | None:
         hit = self._result_cache.get(key)
@@ -2039,7 +2266,7 @@ class SessionManager:
                 span.update(output={"summary": cached})
 
     def _maybe_cache_exchange(self, session: Session, final: WorkflowState) -> None:
-        """结果缓存写门:启用 ∧ 无错误/反馈 ∧ 裁决可缓存 ∧ SQL 非空。
+        """结果缓存写门:启用 ∧ 无错误/反馈 ∧ 裁决可缓存 ∧ SQL 非空 ∧ 未 bypass。
 
         错误/RETRY/NO_SQL 不缓存(下次同问需要重新跑);OK/EMPTY 且真
         实执行过(SQL 非空、row_count ≥ 0)才写。
@@ -2052,10 +2279,21 @@ class SessionManager:
             return
         if not (final.sql or "").strip() or final.row_count < 0:
             return
+        # ``bypass`` 的运行**不写缓存**:那一次把原文交出去了(持 pii 的
+        # principal),而缓存里的是 ``rows`` 本身。留在内存里意味着下一条同问
+        # 在 TTL 内直接把原文再端一次,且**不再过脱敏节点** —— 而重跑一遍会
+        # 按此刻的 scope 重新判一次。代价只是重复提问多打一次库。
+        if (final.masking_applied or {}).get("bypass"):
+            return
         summary = self._state_summary(final)
         summary["cached"] = True
         summary["dialect"] = final.dialect
-        self._cache_put(self._cache_key(session, final.question, final.datasource), summary)
+        self._cache_put(
+            self._cache_key(
+                session, final.question, final.datasource, final.principal,
+            ),
+            summary,
+        )
 
     def _cached_final(
         self, cached: dict[str, Any], run_id: str, history: str, lang: str,

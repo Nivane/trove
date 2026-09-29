@@ -121,6 +121,7 @@ def _field_to_dict(f: SemanticField) -> dict[str, Any]:
         "label": f.label,
         "examples": list(f.examples),
         "custom_extensions": list(f.custom_extensions),
+        "mask": f.mask,
     }
 
 
@@ -189,6 +190,12 @@ def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
         "examples": list(m.examples),
         "custom_extensions": list(m.custom_extensions),
         "time_spine": spine,
+        # 形状即 OSSIE 形状(无 dialects 嵌套)→ 管理页看得见、可原样回灌
+        "masking": {
+            "default_policy": m.masking.default_policy,
+            "bypass_scopes": list(m.masking.bypass_scopes),
+            "hash_salt_ref": m.masking.hash_salt_ref,
+        },
     }
 
 

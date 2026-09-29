@@ -71,6 +71,7 @@ from trove.workflow.nodes.fast_match import make_fast_match
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.nodes.select import make_select_consensus
 from trove.workflow.nodes.validate import make_validate_rules
+from trove.workflow.nodes.masking import make_masking
 from trove.workflow.nodes.reflect import make_reflect
 from trove.workflow.nodes.output import output
 from trove.workflow.nodes.semantics import make_semantics
@@ -1896,6 +1897,13 @@ def _build_reflection(
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
+    # 脱敏节点(设计 §5.5 G4 / I5)。位置是**判定过、LLM 之前**:放在 select
+    # 里会被快径跳过(select 无候选时直接返回),放在 validate 之前会让规则链
+    # 对着改写过的数据下结论。见 nodes/masking.py 的模块注释。
+    g.add_node("masking", make_masking(
+        semantic_layer=services.semantic_layer,
+        config=services.config or AgentConfig(),
+    ))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL):生成 SQL → 解释 → 确认 → 执行 → 洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
@@ -2038,11 +2046,14 @@ def _build_reflection(
     # 执行/规则失败 → analyze_error 诊断 → 重生成。execute_sql 自守预算
     # (耗尽走 state.error、成功清 feedback),循环必然终止:error_feedback
     # 置位 ⇒ 诊断后重生成;下一轮要么清掉要么降级。
+    # 成功分支先进 masking 再进 reflect:脱敏是**无条件**的后置步,不是某个
+    # 分支的待遇(与 P2 修的 G3 同一条纪律:后置步只在一条路上发生 = 洞)。
     g.add_conditional_edges(
         "validate",
-        _make_route_after_feedback("output", "analyze_error", "reflect"),
-        {"analyze_error": "analyze_error", "reflect": "reflect", "output": "output"},
+        _make_route_after_feedback("output", "analyze_error", "masking"),
+        {"analyze_error": "analyze_error", "masking": "masking", "output": "output"},
     )
+    g.add_edge("masking", "reflect")
     g.add_conditional_edges(
         "reflect",
         _route_after_reflect,
@@ -2124,11 +2135,17 @@ def _build_fixed(
         {"execute_sql": "execute_sql", "output": "output"},
     )
     g.add_edge("execute_sql", "validate")
+    # 与 reflection 同构:成功分支先脱敏再交下游(此处下游是 attribution)。
+    g.add_node("masking", make_masking(
+        semantic_layer=services.semantic_layer,
+        config=services.config or AgentConfig(),
+    ))
     g.add_conditional_edges(
         "validate",
-        _make_route_after_feedback("output", "gen_retrieve", "attribution"),
-        {"gen_retrieve": "gen_retrieve", "attribution": "attribution", "output": "output"},
+        _make_route_after_feedback("output", "gen_retrieve", "masking"),
+        {"gen_retrieve": "gen_retrieve", "masking": "masking", "output": "output"},
     )
+    g.add_edge("masking", "attribution")
     g.add_edge("attribution", "insights")
     g.add_edge("insights", "chart")
     g.add_edge("chart", "conclusion")

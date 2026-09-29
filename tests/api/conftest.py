@@ -86,6 +86,11 @@ async def api_app(sqlite_registry, session_manager, tmp_path, auth_service):
     kb = KbService(tmp_path / "proj")
     kb.kb_dir.mkdir(parents=True)
     await kb.ensure_synced(None)  # build the mirror schema, as serve's lifespan does
+    # 生产装配里 SessionManager 带 auth(trove/main.py),测试这份默认不带 ——
+    # 于是主体解析走「没有 auth → 本机可信」。P5 的重放要求发起人**可核**
+    # (会话层按会话主人的 role 复核,判定只认 auth 存储),所以这里补上,
+    # 与 tests/agent/test_session_principal.py 的 _bind 同一手法。
+    session_manager._auth = auth_service
     app = create_app({
         "session_manager": session_manager,
         "catalog_service": CatalogService(sqlite_registry),

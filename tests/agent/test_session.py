@@ -956,7 +956,9 @@ class TestResultCache:
         session = await manager.start_session(project_cwd="/tmp/p")
         await manager.ask(session=session, question=self.Q)
         calls = llm.calls
-        key = manager._cache_key(session, self.Q)
+        # 键里含「以谁的身份」(本条无 auth → 本机管理员),测试不手写键,
+        # 直接取那一条 —— 意图是「把这条缓存变老」,不是复述键的形状。
+        key = next(iter(manager._result_cache))
         old_cached_at = manager._result_cache[key]["cached_at"]
         manager._result_cache[key]["cached_at"] -= RESULT_CACHE_TTL_S + 1.0
         await manager.ask(session=session, question=self.Q)  # TTL 过期 → 惰性淘汰 → 重新跑
@@ -1003,8 +1005,6 @@ class TestResultCache:
 
     async def test_hitl_enabled_hit_skips_confirmation(self, tmp_home):
         """HITL 开启时缓存命中照常返回:读钩子在图执行之前,中断不触发。"""
-        import time
-
         from trove.core.config import AgentConfig
         from trove.storage.session_store import SessionStore
         from trove.agent.session import SessionManager
@@ -1018,30 +1018,47 @@ class TestResultCache:
                         "verdict": "OK", "final_response": "answer",
                         "__interrupt__": [type("I", (), {"value": {"kind": "confirm_sql"}})()]}
 
+        # store 必须 dispose:aiosqlite 的 worker 是**非 daemon 线程**,连接
+        # 不关就活到解释器退出,而 CPython 关停时会一直等它 —— 表现为
+        # 「测试跑完了,进程不退出」。本用例自建 store(不走 fixture),所以
+        # 这份清理得自己写;图一旦真跑过(未命中),检查点连接会让它必现。
+        store = SessionStore(home_dir=str(tmp_home))
         manager = SessionManager(
             config=AgentConfig(home=str(tmp_home), result_cache=True, hitl=True),
-            session_store=SessionStore(home_dir=str(tmp_home)),
+            session_store=store,
             graphs={"reflection": HitlGraph()},
             llm_gateway=None,
         )
-        session = await manager.start_session(project_cwd="/tmp/p")
-        q = "How many students?"
-        # 首次运行已人工确认过 → 结果在缓存里
-        manager._result_cache[manager._cache_key(session, q)] = {
-            "summary": {
-                "session_id": session.session_id, "question": q, "sql": "SELECT 1",
-                "row_count": 1, "verdict": "OK", "reason": "", "error": "",
-                "kb_hits": [], "semantics": "", "insights": [],
-                "hitl_status": "ok", "final_response": "answer",
-                "cached": True, "dialect": "sqlite",
-            },
-            "cached_at": time.time(),
-        }
-        final = await manager.ask(session=session, question=q)
-        assert final.sql == "SELECT 1"
-        assert final.verdict == "OK"
-        assert not invoked  # 图从未执行 → HITL 中断未触发
-        assert session.messages[-1].role == "assistant"  # 交换照常记录
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            q = "How many students?"
+            # 首次运行已人工确认过 → 结果在缓存里。走**生产写门**写进去,不手写
+            # 键与 summary 形状:手写意味着测试复述一遍实现(键里有哪些分量、
+            # summary 该带哪些字段),实现一改测试就假红,而它想验的是「命中不
+            # 走图」。
+            #
+            # ``principal`` 要与本 manager 解析出来的那个一致 —— 键里带主体
+            # (P5 加的视图分量),本 manager 无 auth → 解析结果是本机管理员。
+            # 不填就是 None(空主体),写进去的键与查找时的键对不上,测试会从
+            # 「命中」变成「实跑」,而那正是它要排除的路径。
+            from trove.services.authz.policy import Policy, principal_to_wire
+            from trove.workflow.state import WorkflowState
+
+            seeded = WorkflowState(
+                session_id=session.session_id, question=q, user_id=session.user_id,
+                sql="SELECT 1", row_count=1, verdict="OK", dialect="sqlite",
+                final_response="answer",
+                principal=principal_to_wire(Policy.local_admin()),
+            )
+            manager._maybe_cache_exchange(session, seeded)
+            assert manager._result_cache  # 种子里没有 → 下面「未命中」就白验了
+            final = await manager.ask(session=session, question=q)
+            assert final.sql == "SELECT 1"
+            assert final.verdict == "OK"
+            assert not invoked  # 图从未执行 → HITL 中断未触发
+            assert session.messages[-1].role == "assistant"  # 交换照常记录
+        finally:
+            await store.dispose()
 
 
 async def _no_action(*args, **kwargs):

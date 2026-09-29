@@ -7,16 +7,28 @@
   - 列描述留空(如 district A 列 description: '')
   - lessons pattern 过长/note 为空
   - 纯中文示例对英文问题检索不可达
+  - 字段级脱敏声明非法(值域越界 / hash 无 salt 引用)
 """
+
+from pathlib import Path
+
+import pytest
+import yaml
 
 from trove.services.kb.lint import (
     lint_examples,
     lint_lessons,
     lint_semantics,
+    lint_semantics_document,
     lint_terms,
     lint_tables,
     parse_enum_values,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: 哨兵:区分「字段没有 mask 键」(存量,A11)与「mask 的值是 None」(裸 null)。
+_MISSING = object()
 
 SCHEMA = {
     "loan": {"loan_id", "amount", "duration", "status"},
@@ -500,3 +512,127 @@ class TestLintSemantics:
             ],
         }
         assert lint_semantics(clean) == []
+
+
+class TestLintMask:
+    """字段级脱敏声明(设计 §5.5 / §10 / §11 R6)。
+
+    两条规则:
+      1. ``mask`` 值域校验(``none | partial | hash | null``;**省略该键** =
+         不脱敏,存量模型走这条,不得误报);
+      2. 模型里有 ``hash`` 字段 → 必须声明**可解析的 salt 引用**
+         (``masking.hash_salt_ref``)—— 无 salt 的 hash 可被彩虹表还原,
+         不得降级为明文。
+
+    salt 引用只认**模型级**声明。lint 是纯函数,三个调用点(管理端 issues /
+    git pre-commit 门禁 / 写盘前门禁)按 ``lint_semantics_document`` 的约定
+    判**同一份字节**;把部署配置引进来,同一份文档在不同机器上结论不同,而
+    git 门禁恰恰要在没有密钥的 CI 上跑。模型级引用不是密文,写进 YAML 不泄漏。
+    """
+
+    @staticmethod
+    def _model(fields: list[dict], masking: dict | None = None) -> dict:
+        model: dict = {
+            "name": "crm",
+            "datasets": [{"name": "customers", "fields": fields}],
+            "relationships": [],
+            "metrics": [],
+        }
+        if masking is not None:
+            model["masking"] = masking
+        return model
+
+    @staticmethod
+    def _field(mask) -> dict:
+        field = {"name": "phone", "expression": {"dialects": [
+            {"dialect": "ANSI_SQL", "expression": "phone"}]}}
+        if mask is not _MISSING:
+            field["mask"] = mask
+        return field
+
+    @pytest.mark.parametrize("value", ["", "none", "partial", "null"])
+    def test_valid_values_pass(self, value):
+        assert lint_semantics(self._model([self._field(value)])) == []
+
+    @pytest.mark.parametrize("value", ["bogus", "full", "sha256", "redact", 5])
+    def test_invalid_value_flagged(self, value):
+        issues = lint_semantics(self._model([self._field(value)]))
+
+        assert any("phone" in i and "mask" in i for i in issues)
+
+    def test_bare_yaml_null_flagged(self):
+        """``mask: null``(裸写)被 PyYAML 解析成 None,作者本意多半是 ``null``
+        模式 —— 解析器不猜(猜错方向就是静默不脱敏),由门禁拦下并提示加引号。"""
+        issues = lint_semantics(self._model([self._field(None)]))
+
+        assert any("mask" in i and '"null"' in i for i in issues)
+
+    def test_undefined_mask_key_is_not_flagged(self):
+        """A11:没有 mask 键的字段(全部存量模型)不得被误报。"""
+        assert lint_semantics(self._model([self._field(_MISSING)])) == []
+
+    def test_hash_without_salt_ref_flagged(self):
+        issues = lint_semantics(self._model([self._field("hash")]))
+
+        assert any("customers.phone" in i and "hash" in i and "salt" in i
+                   for i in issues)
+
+    def test_hash_with_empty_salt_ref_flagged(self):
+        model = self._model(
+            [self._field("hash")],
+            {"default_policy": "apply", "bypass_scopes": [], "hash_salt_ref": ""})
+
+        issues = lint_semantics(model)
+
+        assert any("salt" in i for i in issues)
+
+    def test_hash_with_salt_ref_passes(self):
+        model = self._model(
+            [self._field("hash")],
+            {"default_policy": "apply", "bypass_scopes": ["pii"],
+             "hash_salt_ref": "env:TROVE_MASK_SALT"})
+
+        assert lint_semantics(model) == []
+
+    def test_partial_needs_no_salt(self):
+        """只有 hash 要 salt —— partial 是可人工核对的掩码,没有彩虹表问题。"""
+        assert lint_semantics(self._model([self._field("partial")])) == []
+
+    def test_salt_issue_is_reported_once_per_model(self):
+        model = self._model([self._field("hash"), self._field("hash")])
+        model["datasets"][0]["fields"][1] = {
+            "name": "id_card", "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "id_card"}]},
+            "mask": "hash"}
+
+        issues = lint_semantics(model)
+
+        salt_issues = [i for i in issues if "salt" in i]
+        assert len(salt_issues) == 1
+        assert "customers.phone" in salt_issues[0]
+        assert "customers.id_card" in salt_issues[0]
+
+    def test_document_level_masking_flagged(self):
+        """``masking`` 挂在模型入口下(与 time_spine 同层),文档顶层是哑的。
+
+        设计稿 §5.5 注释写「semantics.yml 顶层」,单模型文件里读起来像文档
+        顶层;解析器只认模型入口,写错层会被静默忽略 —— 而静默忽略 =
+        静默不脱敏,所以在这里报出来。
+        """
+        doc = {
+            "masking": {"default_policy": "bypass"},
+            "semantic_model": [{"name": "crm", "datasets": [], "metrics": []}],
+        }
+
+        issues = lint_semantics_document(doc)
+
+        assert any("masking" in i and "semantic_model" in i for i in issues)
+
+    @pytest.mark.parametrize("datasource", ["demo", "financial", "mysql_fin"])
+    def test_stock_semantics_document_is_clean(self, datasource):
+        """A11:存量 semantics.yml 整份 lint 结果不变(新规则不得误报)。"""
+        path = (_REPO_ROOT / ".trove" / "kb" / datasource / "semantics.yml")
+
+        assert lint_semantics_document(
+            yaml.safe_load(path.read_text(encoding="utf-8")), dialect="sqlite") == []
+

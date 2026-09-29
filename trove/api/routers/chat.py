@@ -34,6 +34,44 @@ def _assert_owned(session, user: dict) -> None:
         raise HTTPException(status_code=404, detail=f"session not found: {session.session_id}")
 
 
+async def _replay_subject(
+    request: Request, raw: str | None, user: dict, session=None
+) -> str | None:
+    """校验并归一化 ``on_behalf_of`` → 目标用户 id;``None`` = 不重放。
+
+    四道校验都必须在**SSE 开始之前**跑完:流一旦开出去,状态码已经发出去了,
+    再发现「你不是 admin」只能变成一条事件,客户端读不到 403。
+
+    * 非 admin → 403。这是 API 面的门;判定点(会话层)会用 auth 存储里的 role
+      再核一次 —— 上层挡不住就等于没挡(P3 的论点是全仓的),两层都留着。
+    * 不是自己的会话 → 403。会话层只能按**会话主人**复核发起人,与其让内层
+      拒绝、外层放行(错误变成一条难以归因的事件),不如在门口说清楚。
+    * 形状不认识(``group:3`` / 空) → 400。**不猜**。
+    * 目标不存在 → 404。与「会话不存在」同口径:重放一个不存在的用户没有意义,
+      而静默退回按自己的身份跑会让调用方以为看到的是目标视图。
+    """
+    if raw is None:
+        return None
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="on_behalf_of requires an admin token")
+    if session is not None and session.user_id != str(user.get("id")):
+        raise HTTPException(
+            status_code=403, detail="on_behalf_of is only allowed in your own session"
+        )
+    target = raw.strip()
+    if target.startswith("user:"):
+        target = target[len("user:"):].strip()
+    if not target.isdigit():
+        raise HTTPException(status_code=400, detail=f"unsupported subject: {raw!r}")
+    auth = getattr(request.app.state, "auth", None)
+    row = None
+    if auth is not None:
+        row = await auth.store.get_user_by_id(int(target))
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"user not found: {target}")
+    return str(row["id"])
+
+
 async def _load_or_404(request: Request, session_id: str, user: dict):
     try:
         session = await _manager(request).load_session(session_id)
@@ -133,9 +171,13 @@ async def resume_session(
     """
     session = await _load_or_404(request, session_id, user)
     manager = _manager(request)
+    replay = await _replay_subject(request, body.on_behalf_of, user, session)
 
     async def events():
-        async for event in manager.resume_stream(session, body.decision, body.workflow):
+        async for event in manager.resume_stream(
+            session, body.decision, body.workflow, scopes=user.get("scopes"),
+            on_behalf_of=replay,
+        ):
             payload = {k: v for k, v in event.items() if k != "type"}
             yield {"type": event["type"], "data": payload}
 
@@ -182,12 +224,15 @@ async def chat(
     # foreign/missing sessions keep their documented 404 (no existence
     # disclosure) instead of being preempted by a 403
     ds = await require_datasource(request, body.datasource, user)
+    replay = await _replay_subject(request, body.on_behalf_of, user, session)
 
     async def events():
         yield {"type": "session", "data": {"session_id": session.session_id}}
         async for event in manager.ask_stream(
             session, body.question, body.workflow, datasource=ds,
             is_admin=user["role"] == "admin",
+            scopes=user.get("scopes"),
+            on_behalf_of=replay,
         ):
             payload = {k: v for k, v in event.items() if k != "type"}
             yield {"type": event["type"], "data": payload}

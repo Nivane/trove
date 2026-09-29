@@ -21,6 +21,7 @@ from trove.services.authz.policy import (
     scopes_allow,
     visible_datasources,
 )
+from trove.services.semantic_layer.models import MaskingPolicy
 
 TROVE_ROOT = Path(trove.__file__).parent
 
@@ -113,6 +114,121 @@ class TestScopesAllow:
         p = Principal(subject="1", scopes=frozenset({"query"}))
         assert p.has_scope("query") is True
         assert p.has_scope("admin") is False
+
+
+# ── PII bypass:与「空 = 不限」**相反**的一条门(设计 §5.5 / §5.6)────
+
+
+class TestMayBypassMasking:
+    """``may_bypass_masking`` —— 持 ``bypass_scopes`` 之一或 ``default_policy ==
+    "bypass"`` 才看原文。
+
+    这条门与本文件上面那条规则**刻意相反**:``scopes_allow`` 的「空 scopes = 不限」
+    是给路由门的存量兼容(方向宽);这里空 scopes 必须意味着「没有 pii」——
+    否则每个存量 token、以及 §5.6 的 ``on_behalf_of`` 重放,都直接看到原文。
+    下面 ``test_empty_scopes_are_not_unrestricted`` / ``test_decision_never_goes_
+    through_scopes_allow`` 两条就是这条方向的守卫。
+    """
+
+    @staticmethod
+    def _policy(**overrides):
+        return MaskingPolicy(**overrides)
+
+    def test_holding_a_bypass_scope_bypasses(self):
+        p = Principal(subject="7", scopes=frozenset({"pii"}))
+        assert Policy.may_bypass_masking(p, self._policy(bypass_scopes=["pii"])) is True
+
+    def test_any_one_of_the_declared_scopes_suffices(self):
+        p = Principal(subject="7", scopes=frozenset({"gdpr"}))
+        policy = self._policy(bypass_scopes=["pii", "gdpr"])
+        assert Policy.may_bypass_masking(p, policy) is True
+
+    def test_other_scopes_do_not_bypass(self):
+        p = Principal(subject="7", scopes=frozenset({"query", "export"}))
+        assert Policy.may_bypass_masking(p, self._policy(bypass_scopes=["pii"])) is False
+
+    def test_empty_scopes_are_not_unrestricted(self):
+        """**本类最重要的一条。** 空 scopes 走 ``scopes_allow`` 会被读成"不限" ——
+        那是存量 token 全量看原文,也是 §5.6 重放通道的洞。"""
+        p = Principal(subject="7", scopes=frozenset())
+        assert Policy.may_bypass_masking(p, self._policy(bypass_scopes=["pii"])) is False
+        assert scopes_allow(p.scopes, "pii") is True, "前提没变:scopes_allow 仍是宽的那条"
+
+    def test_admin_does_not_bypass_without_the_scope(self):
+        """§8.4:admin 是运维角色,不是数据授权角色。"""
+        p = Principal(subject="1", role="admin")
+        assert Policy.may_bypass_masking(p, self._policy(bypass_scopes=["pii"])) is False
+
+    def test_replayed_principal_is_judged_by_its_own_scopes(self):
+        """§5.6:重放按目标用户的权限走 —— ``on_behalf_of`` 不构成豁免。"""
+        replayed = Principal(subject="42", scopes=frozenset(), on_behalf_of="7")
+        assert Policy.may_bypass_masking(replayed, self._policy(bypass_scopes=["pii"])) is False
+        allowed = Principal(subject="42", scopes=frozenset({"pii"}), on_behalf_of="7")
+        assert Policy.may_bypass_masking(allowed, self._policy(bypass_scopes=["pii"])) is True
+
+    def test_default_policy_bypass_applies_to_everyone(self):
+        p = Principal(subject="7", scopes=frozenset())
+        assert Policy.may_bypass_masking(p, self._policy(default_policy="bypass")) is True
+
+    @pytest.mark.parametrize("declared", ["apply", "", "BY PASS", "warn"])
+    def test_only_the_exact_bypass_value_bypasses(self, declared):
+        """认不出的取值一律按 apply(判据缺失的方向是严),不做大小写/近义猜测。"""
+        p = Principal(subject="7", scopes=frozenset())
+        assert Policy.may_bypass_masking(p, self._policy(default_policy=declared)) is False
+
+    def test_bypass_scopes_are_not_built_in(self):
+        """``pii`` 只在模型声明了它的时候才算数 —— 口令不是内建的。"""
+        p = Principal(subject="7", scopes=frozenset({"pii"}))
+        assert Policy.may_bypass_masking(p, self._policy()) is False
+
+    def test_blank_declared_scope_never_matches(self):
+        """声明表里的空串不能被当成"任意 scope"的通行符。"""
+        p = Principal(subject="7", scopes=frozenset({"", "query"}))
+        assert Policy.may_bypass_masking(p, self._policy(bypass_scopes=[""])) is False
+
+    def test_missing_policy_is_fail_closed(self):
+        p = Principal(subject="7", scopes=frozenset({"pii"}))
+        assert Policy.may_bypass_masking(p, None) is False
+
+    def test_scalar_bypass_scopes_declaration_grants_nothing(self):
+        """声明写成了标量(``bypass_scopes: pii``)时不能按字符拆成 ``{p,i}`` ——
+        那既不放行 ``pii``,又会在有人真持 ``p`` 时意外放行。按"没声明"处理。"""
+        class _Scalar:
+            bypass_scopes = "pii"
+            default_policy = "apply"
+
+        assert Policy.may_bypass_masking(Principal(subject="7", scopes=frozenset({"pii"})),
+                                         _Scalar()) is False
+        assert Policy.may_bypass_masking(Principal(subject="8", scopes=frozenset({"p"})),
+                                         _Scalar()) is False
+
+    def test_decision_never_goes_through_scopes_allow(self, monkeypatch):
+        """**不许走 ``scopes_allow`` / ``has_scope``**(任务书的硬约束)。
+
+        把这两条路径改成抛异常:判定仍然要得出正确结论 —— 一旦谁"顺手"改成
+        委托 ``has_scope``,空 scopes 立刻变回"不限",这条测试就是那道闸。
+        """
+        from trove.services.authz import policy as policy_module
+
+        def boom(*args, **kwargs):  # pragma: no cover - 被调用即失败
+            raise AssertionError("may_bypass_masking 不得走 scopes_allow/has_scope")
+
+        monkeypatch.setattr(policy_module, "scopes_allow", boom)
+        monkeypatch.setattr(Principal, "has_scope", boom)
+        holder = Principal(subject="7", scopes=frozenset({"pii"}))
+        empty = Principal(subject="8", scopes=frozenset())
+
+        assert Policy.may_bypass_masking(holder, self._policy(bypass_scopes=["pii"])) is True
+        assert Policy.may_bypass_masking(empty, self._policy(bypass_scopes=["pii"])) is False
+
+    def test_usable_from_class_and_instance(self):
+        """设计 §7.1 写的是实例方法,实现与 ``has_scope`` 同款走 staticmethod ——
+        两种调法都要能用(调用点不必先构造 Policy)。"""
+        p = Principal(subject="7", scopes=frozenset({"pii"}))
+        policy = self._policy(bypass_scopes=["pii"])
+        assert Policy().may_bypass_masking(p, policy) is True
+        assert Policy.may_bypass_masking(p, policy) is True
+
 
 
 # ── 构造主体(全仓唯一的 get_datasources 调用点)────────────────────

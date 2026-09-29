@@ -163,6 +163,37 @@ class TestTableGate:
         assert update["authz_decision"]["reason"] == "table"
 
 
+class TestDenyMetric:
+    """拒绝计数记在**节点**上,不记在 ``Authorizer`` 里(设计 §9.2 / P5)。
+
+    同一个 ``check`` 在「这条 SQL 要不要落库」的判定里跑一次,记在这里就等于
+    记「这次执行被闸门拦了」;记在服务层则会把所有**只判定不执行**的调用
+    (探针、预检、将来的「先问一句能不能查」)一起算进拒绝率 —— 那些调用没有
+    落库,运维拿这个数报警会打到空处。与 ``trove_sql_budget_decisions_total``
+    只在执行节点记是同一条纪律。
+    """
+
+    async def test_a_table_denial_is_counted(self):
+        from trove.core.metrics import render_metrics
+
+        node = _node(_SpyConnectors(), authorizer=_authorizer(mode="enforce"))
+        await node(_state(sql="SELECT * FROM salaries", principal=_user()))
+
+        text = render_metrics().decode()
+        assert 'trove_authz_deny_total{reason="table"}' in text
+
+    async def test_a_warn_pass_is_not_a_denial(self):
+        """warn 期放行的 A3 判定**不**进拒绝计数 —— 它没有被拦,只是被记了。"""
+        from trove.core.metrics import render_metrics
+
+        before = render_metrics().decode().count('reason="table"')
+        node = _node(_SpyConnectors(), authorizer=_authorizer(mode="warn"))
+        await node(_state(sql="SELECT * FROM salaries", principal=_user()))
+        after = render_metrics().decode().count('reason="table"')
+
+        assert after == before
+
+
 # ── 未装配与形状 ─────────────────────────────────────────────────
 
 

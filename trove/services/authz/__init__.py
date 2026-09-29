@@ -2,12 +2,11 @@
 
 - :mod:`~trove.services.authz.policy` —— 策略唯一实现(主体模型与判定规则)。
 - :mod:`~trove.services.authz.enforcer` —— 执行层强制点(执行 SQL 前的最后一米)。
-
-字段级脱敏 ``Masker`` 见设计文档
-``2026-09-28-agent-identity-masking-design.md`` 的 P4。
+- :mod:`~trove.services.authz.masking` —— 字段级脱敏(结果集后置改写,设计 P4)。
 """
 
 from trove.services.authz.enforcer import AuthzDecision, Authorizer
+from trove.services.authz.masking import Masker, MaskingError
 from trove.services.authz.policy import (
     Policy,
     Principal,
@@ -18,6 +17,8 @@ from trove.services.authz.policy import (
 __all__ = [
     "AuthzDecision",
     "Authorizer",
+    "Masker",
+    "MaskingError",
     "Policy",
     "Principal",
     "principal_from_wire",

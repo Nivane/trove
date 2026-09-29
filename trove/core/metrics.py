@@ -117,6 +117,26 @@ if _HAVE_CLIENT:
         ["datasource", "result"],
         registry=_REGISTRY,
     )
+    # 记的是「闸门因何拒绝」,不是「谁被拒了」:被拒的人是高基数(用户)且审计
+    # 面已有一条 query.execute + 一条 authz.deny,指标这边要回答的是
+    # 「这台机器上拒绝的主因是什么」—— 单看一个总数读不出是没配主体还是表没授权,
+    # 而那两条的处置方向完全不同(一个是部署没接好,一个是该加 grants)。
+    AUTHZ_DENY = Counter(
+        "trove_authz_deny_total",
+        "Execution-time authorization denials, by reason.",
+        ["reason"],
+        registry=_REGISTRY,
+    )
+    # 记的是「对哪个字段用了哪种模式」,不是「改了多少行/多少值」:行数是查询
+    # 的属性(已有 sql 指标),而字段名 + 模式是**声明面的事实** —— 运维要回答
+    # 的是「这台机器上还有哪些列在明文进出」,按值或按行记都答不了这个。
+    # 基数可控:字段名来自语义层声明(人工维护),不是用户输入。
+    MASKING_APPLIED = Counter(
+        "trove_masking_applied_total",
+        "Field-level masking rewrites, by declared field and mode.",
+        ["field", "mode"],
+        registry=_REGISTRY,
+    )
 
 
 def _short_model(model: str) -> str:
@@ -241,6 +261,56 @@ def record_sql_kill(datasource: str, result: str) -> None:
         SQL_KILL.labels(datasource=datasource or "default", result=result).inc()
     except Exception as e:
         logger.debug("sql kill metric record failed: %s", e)
+
+
+#: 脱敏模式的**值域**(``services/authz/masking.STRICTNESS`` 的键)。
+#: 刻意不 import 那一份:``core`` 是底层,不该依赖 ``services``;而且这里要的是
+#: 「计数器接受哪些标签值」,是一个观测契约 —— 服务层新增一种模式时,**这里应该
+#: 有意识地跟着改一次**,而不是被自动继承。
+MASKING_MODES = frozenset({"partial", "hash", "null"})
+
+
+#: 拒绝原因的**值域**(``services/authz/enforcer.AuthzDecision.reason``)。
+#: 与 ``MASKING_MODES`` 同一条纪律:不 import 那一份 —— ``core`` 不该依赖
+#: ``services``,而且这里要的是「计数器接受哪些标签值」这个**观测契约**:
+#: 服务层新增一种拒绝原因时,这里应该被有意识地改一次。
+AUTHZ_DENY_REASONS = frozenset({"no_principal", "datasource", "table", "unresolved"})
+
+
+def record_authz_deny(reason: str) -> None:
+    """记一次**执行前授权门的拒绝**(设计 §9.2 / P5)。
+
+    域外的 reason **不记**:它只可能来自「新增了一种拒绝原因,没同步到这里」,
+    而本函数是值域的定义处(同 ``record_masking_applied`` / ``record_sql_kill``)。
+    放它进去等于用一次静默的基数增长换一个没人会看的序列。
+
+    只在 ``allowed=False`` 时调用。warn 期(§8.2)的 A3 放行记的是
+    ``narrowed_tables``,不是拒绝。
+    """
+    if not _HAVE_CLIENT or reason not in AUTHZ_DENY_REASONS:
+        return
+    try:
+        AUTHZ_DENY.labels(reason=reason).inc()
+    except Exception as e:
+        logger.debug("authz deny metric record failed: %s", e)
+
+
+def record_masking_applied(field: str, mode: str) -> None:
+    """记一次**实际发生**的字段改写(设计 §9.2 / §5.5)。
+
+    空字段名/域外模式**不记**:前者只可能来自一个坏报告,后者不是一次改写 ——
+    尤其 ``bypass``:它意味着**有人持 scope 读走了原文**,是审计面的事实
+    (§6.3 的 ``masking.bypass`` 进 ``audit_log``),不是脱敏计数。混进同一个
+    系列,「有多少列在脱敏」会被决策次数污染,而审计要回答的「谁看过原文」
+    计数器又答不了。守卫放在本函数而不在调用点:值域是这个计数器定义的
+    (同 ``record_sql_kill`` 与 ``""`` 的纪律)。
+    """
+    if not _HAVE_CLIENT or not field or mode not in MASKING_MODES:
+        return
+    try:
+        MASKING_APPLIED.labels(field=field, mode=mode).inc()
+    except Exception as e:
+        logger.debug("masking metric record failed: %s", e)
 
 
 def render_metrics() -> bytes:

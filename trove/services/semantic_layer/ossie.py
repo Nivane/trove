@@ -9,7 +9,10 @@ Reads the parts relevant to NL→SQL plus the spec's extensibility surface:
   ai_context synonyms/examples) — business metrics;
 - `custom_extensions` (vendor_name + data) — preserved/passed through;
 - model-level `ai_context` (instructions / synonyms / examples) and the
-  top-level `version` string.
+  top-level `version` string;
+- field-level `mask` + model-level `masking` (default_policy /
+  bypass_scopes / hash_salt_ref) — the masking **declaration**; applying it
+  to result sets is `authz/masking.py` (P4).
 """
 import logging
 import re
@@ -18,6 +21,7 @@ import yaml
 from sqlglot import exp, parse_one
 
 from trove.services.semantic_layer.models import (
+    MaskingPolicy,
     SemanticDataset,
     SemanticField,
     SemanticMetric,
@@ -105,6 +109,33 @@ def _ai_context(entity: dict) -> tuple[str, list[str], list[str]]:
     return "", [], []
 
 
+def _masking_policy(raw: object) -> MaskingPolicy:
+    """模型级 ``masking`` 块 → MaskingPolicy;坏形状一律退回缺省。
+
+    这是**声明**的解析,不是安全判定点:坏的 ``default_policy`` 回落
+    ``apply``(= 脱敏,取安全的一侧,与 time_spine 的坏 granularity 回落
+    month 同法);坏形状不抛 —— 抛出去会让 provider 丢掉 last-known-good,
+    把一处笔误放大成整个语义模型消失。
+    """
+    mk = raw if isinstance(raw, dict) else {}
+    policy = str(mk.get("default_policy") or "apply").strip().lower()
+    if policy not in {"apply", "bypass"}:
+        logger.warning(
+            "masking.default_policy %r invalid; defaulting to apply", policy)
+        policy = "apply"
+    raw_scopes = mk.get("bypass_scopes") or []
+    if isinstance(raw_scopes, str):
+        # 裸标量 ``bypass_scopes: pii`` 是**一个** scope,不是 ['p','i','i']
+        raw_scopes = [raw_scopes]
+    if not isinstance(raw_scopes, (list, tuple)):
+        raw_scopes = []
+    return MaskingPolicy(
+        default_policy=policy,
+        bypass_scopes=[str(s).strip() for s in raw_scopes if str(s).strip()],
+        hash_salt_ref=str(mk.get("hash_salt_ref") or "").strip(),
+    )
+
+
 def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel:
     """Parse an Ossie semantic model YAML into SemanticModel.
 
@@ -127,6 +158,13 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
     if not isinstance(top, dict):
         raise ValueError("semantic_model entry must be a mapping")
     version = str(data.get("version") or "").strip()
+
+    # 脱敏策略挂在**模型入口**下(与 time_spine / ai_context 同层):文档顶层
+    # 是被忽略的,而静默忽略 = 静默不脱敏 —— 出声,并在 lint 侧拦写盘。
+    if "masking" in data and "masking" not in top:
+        logger.warning(
+            "masking at document top level is ignored; declare it under "
+            "semantic_model[0] (same level as time_spine)")
 
     declared = {d.get("name") for d in top.get("datasets", []) or [] if d.get("name")}
 
@@ -182,6 +220,12 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
                 label=str(f.get("label", "") or "").strip(),
                 examples=f_examples,
                 custom_extensions=_clean_extensions(f.get("custom_extensions")),
+                # 值域归一化到小写:解析结果只有**一种**拼写,比较/展示/往返
+                # 都无歧义;门禁按同一规则判(大小写不敏感),不会出现「门禁
+                # 放过、运行时看不懂」这种两处不一致。
+                # 裸 ``mask: null`` 是 None → 空串(不脱敏);猜成 null 模式会
+                # 让「作者本来没写」也变成最强脱敏,由 lint 拦下而不是猜。
+                mask=str(f.get("mask") or "").strip().lower(),
             ))
         datasets.append(SemanticDataset(
             name=name,
@@ -251,6 +295,9 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
             fill=fill,
         )
 
+    # 模型级脱敏策略(缺省 = 惰性:A11 存量模型行为不变)
+    masking = _masking_policy(top.get("masking"))
+
     metrics: list[SemanticMetric] = []
     for m in top.get("metrics", []) or []:
         # 与原实现一致:metric 缺可用的 expression 是结构性问题 → 抛错
@@ -284,4 +331,5 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
         examples=model_examples,
         custom_extensions=_clean_extensions(top.get("custom_extensions")),
         time_spine=spine,
+        masking=masking,
     )

@@ -26,12 +26,16 @@ admin / scope 分支。四份今天结论一致纯属维护纪律,而漂移**已
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:  # 只用于类型标注:策略模块保持零运行时依赖(见 may_bypass_masking)
+    from trove.services.semantic_layer.models import MaskingPolicy
 
 __all__ = [
     "LOCAL_SUBJECT",
     "Policy",
     "Principal",
+    "may_bypass_masking",
     "principal_from_wire",
     "principal_to_wire",
     "scopes_allow",
@@ -82,6 +86,46 @@ def scopes_allow(scopes: Iterable[str] | None, *required: str) -> bool:
     if not declared:
         return True
     return bool(declared & set(required))
+
+
+def may_bypass_masking(principal: "Principal", policy: "MaskingPolicy | None") -> bool:
+    """这个主体能不能看 PII 原文(设计 §5.5 / §7.1)。
+
+    规则两条,与 :func:`scopes_allow` 的宽方向**刻意相反**:
+
+    1. ``principal.scopes`` 与 ``policy.bypass_scopes`` **原始集合求交**非空 → True;
+    2. 否则 ``policy.default_policy == "bypass"`` → True;其余(含认不出的取值)→ False。
+
+    **第 1 条为什么不能用 ``scopes_allow`` / ``has_scope``。** 那条规则的
+    「空 scopes = 不限」是给**路由门**准备的存量兼容:早于 ``scopes`` 字段签发的
+    token 不该因为新增字段而失效,方向是**宽**。这条门的空 scopes 必须意味着
+    「没有 pii」—— 否则每一个存量 token 都直接看到原文;更要命的是设计 §5.6 的
+    ``on_behalf_of`` 重放(admin 排障)也会一起看原文,那个功能就成了 admin 的
+    越权读取通道。判据沿用 §8.1:有兜底的方向可以宽(路由门),没兜底的方向必须
+    严(PII 披露)。所以这里只做集合运算,不调 ``scopes_allow``。
+
+    ``role`` 不参与判定(§8.4):admin 是**运维**角色不是**数据授权**角色,看原文
+    要显式持 scope —— 这样「谁签发过看得见原文的凭证」在 token 侧就有记录。
+
+    刻意不 import ``MaskingPolicy``(只在 ``TYPE_CHECKING`` 下引):本函数只读
+    ``bypass_scopes`` / ``default_policy`` 两个属性,duck typing 够用,而
+    ``policy.py`` 是**唯一实现**模块,运行时依赖越少越好。``policy=None``
+    (没有声明)按「不 bypass」处理 —— 判据缺失的方向是严。
+    """
+    if policy is None:
+        return False
+    raw = getattr(policy, "bypass_scopes", None)
+    if isinstance(raw, str):
+        # 声明写成了标量(YAML 里少一层列表 -- 解析层若没拦住)。按「一个都
+        # 没声明」处理,而不是把字符串拆成字符集:后者会悄悄放行一个谁也不
+        # 认识的 scope 集合,前者只是不给 bypass(方向仍是严)。
+        raw = ()
+    declared = {str(scope).strip() for scope in (raw or ())}
+    declared.discard("")
+    if declared & set(principal.scopes or ()):
+        return True
+    default = str(getattr(policy, "default_policy", "") or "").strip().lower()
+    return default == "bypass"
 
 
 @dataclass(frozen=True)
@@ -306,6 +350,11 @@ class Policy:
     @staticmethod
     def has_scope(principal: Principal, *required: str) -> bool:
         return principal.has_scope(*required)
+
+    @staticmethod
+    def may_bypass_masking(principal: Principal, policy: "MaskingPolicy | None") -> bool:
+        """委托 :func:`may_bypass_masking`(规则只有一份)。"""
+        return may_bypass_masking(principal, policy)
 
     @staticmethod
     def visible_datasources(

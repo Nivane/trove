@@ -23,6 +23,9 @@ from trove.services.kb.lesson_distill import MAX_PATTERN_LEN
 
 _ID_LIKE_SUFFIXES = ("_id", "_to", "_from", "_code", "id")
 
+#: 字段级脱敏值域(设计 §5.5)。空串 = 未声明;存量模型没有 ``mask`` 键(A11)。
+_VALID_MASKS = {"", "none", "partial", "hash", "null"}
+
 
 def parse_enum_values(enum_text: str) -> set[str]:
     """枚举文本 → 取值集合(兼容三种来源格式):
@@ -255,6 +258,7 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
         rel_pairs.add(frozenset((str(r.get("from", "")), str(r.get("to", "")))))
 
     _lint_path_ambiguity(issues, model, ds_names)
+    _lint_mask(issues, model)
 
     # 命名约定 FK → 已声明数据集 但未声明关系:编译器「matched 但连不上」
     # 会产出 FROM anchor 无 JOIN 的非法 SQL(被投影表守卫拦成 MISS)。
@@ -288,10 +292,75 @@ def lint_semantics_document(data: dict[str, Any], dialect: str = "mysql") -> lis
     the same bytes.
     """
     issues: list[str] = []
+    if "masking" in (data or {}):
+        # masking 挂在模型入口下(与 time_spine 同层);设计稿 §5.5 注释的
+        # 「semantics.yml 顶层」是单模型文件的松散说法。写错层会被解析器
+        # 静默忽略 = 静默不脱敏,所以在写盘前拦下而不是留给运行时。
+        issues.append(
+            "文档顶层的 masking 会被忽略 —— 请写在 semantic_model[0] 下"
+            "(与 time_spine 同层)")
     for entry in (data or {}).get("semantic_model", []) or []:
         if isinstance(entry, dict):
             issues += lint_semantics(entry, dialect=dialect)
     return issues
+
+
+def _lint_mask(issues: list[str], model: dict[str, Any]) -> None:
+    """字段级脱敏声明(设计 §5.5 / §10 / §11 R6)。两条规则:
+
+    1. **值域**:``mask`` 只能取 ``none | partial | hash | null``;**省略该键**
+       = 不脱敏(存量模型走这条,不得误报)。裸 ``mask: null`` 会被 YAML 解析
+       成 None,而作者本意多半是 ``null`` 模式 —— 解析器不猜(猜错方向就是
+       静默不脱敏),这里拦下并提示加引号。
+    2. **hash 必须有 salt**:无 salt 的 hash 可被彩虹表还原(R6),不得降级为
+       明文。只对 ``hash`` 要 —— ``partial`` 是可人工核对的掩码,没有这个问题。
+
+    salt 引用只认**模型级** ``masking.hash_salt_ref``:lint 是纯函数,三个调用
+    点(管理端 issues / git pre-commit 门禁 / 写盘前门禁)判**同一份字节**。
+    部署配置的兜底是**运行时**的事,引进来会让同一份文档在不同机器上结论
+    不同 —— 而 pre-commit 门禁恰恰要在没有密钥的 CI 上跑。引用不是密文,
+    写进 YAML 不泄漏(salt 的**值**才走 secrets)。
+    """
+    hash_fields: list[str] = []
+    for d in model.get("datasets", []) or []:
+        if not isinstance(d, dict):
+            continue
+        ds_name = str(d.get("name", ""))
+        for f in d.get("fields", []) or []:
+            if not isinstance(f, dict) or "mask" not in f:
+                continue  # 未声明 → 惰性(A11)
+            raw = f.get("mask")
+            if raw is None:
+                # 键在、值是 YAML 的 null:作者本意多半是 ``null`` 模式,而
+                # 解析器给的是空串(不脱敏)—— 最严的声明变成什么都不做,
+                # 必须在这里拦下,而不是等运行期。
+                issues.append(
+                    f"表 {ds_name}.{f.get('name', '')} mask 非法: None"
+                    "(裸 null 会被 YAML 解析成空值 = 不脱敏,"
+                    "高敏列请写 \"null\";如本意是不脱敏请省略该键)")
+                continue
+            value = str(raw).strip().lower()
+            if value not in _VALID_MASKS:
+                issues.append(
+                    f"表 {ds_name}.{f.get('name', '')} mask 非法: {raw!r}"
+                    "(应为 none | partial | hash | null,省略该键 = 不脱敏)")
+                continue
+            if value == "hash":
+                hash_fields.append(f"{ds_name}.{f.get('name', '')}")
+    if hash_fields and not _hash_salt_ref(model):
+        issues.append(
+            "字段 " + "、".join(hash_fields) + " 声明 mask: hash,"
+            "但模型未声明可解析的 salt 引用(masking.hash_salt_ref 为空)——"
+            "无 salt 的 hash 可被彩虹表还原,请在模型级声明引用"
+            "(如 env:TROVE_MASK_SALT)")
+
+
+def _hash_salt_ref(model: dict[str, Any]) -> str:
+    """模型级 salt 引用(空 = 未声明)。"""
+    masking = model.get("masking")
+    if not isinstance(masking, dict):
+        return ""
+    return str(masking.get("hash_salt_ref") or "").strip()
 
 
 def _lint_row_filter(

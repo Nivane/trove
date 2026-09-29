@@ -294,6 +294,8 @@ def build_mcp_server(
         try:
             state = await session_manager.ask(
                 session=session, question=question, datasource=target,
+                # 凭证上的 scopes 随请求走(identity=None 时无凭证层,不传)
+                scopes=(identity or {}).get("scopes"),
             )
         except Exception as e:
             return {"session_id": sid, "error": f"ask failed: {e}"}

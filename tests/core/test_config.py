@@ -465,3 +465,67 @@ class TestHomeNormalization:
         cfg = ConfigLoader.load_agent_config(str(conf))
         assert "~" not in cfg.home
         assert Path(cfg.home).is_absolute()
+
+
+class TestMaskingAndAuthzConfig:
+    """``masking:`` / ``authz:`` 两块 YAML 必须真的进 ``AgentConfig``(设计 §7.2)。
+
+    ⚠️ 这一组钉的是**补 P3 的漏**:``AuthzConfig`` 的字段与默认值当时就加好了,
+    加载器却从没构造过它 —— YAML 里写了 ``authz:`` 也恒取默认(warn/true),一处
+    **静默失效的安全配置**:把 table_enforcement 改成 enforce 的人会以为闸门落
+    下来了,实际上没有。所以断言的不是「解析得对不对」,是「配置面的开关连到了
+    运行时」—— 这类洞只有把 YAML 喂进加载器才照得出来,``AuthzConfig()`` 直接
+    构造的测试永远发现不了。
+    """
+
+    def test_masking_block_is_parsed(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "masking:\n  enabled: false\n  hash_salt_ref: env:TROVE_MASK_SALT\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.masking.enabled is False
+        assert cfg.masking.hash_salt_ref == "env:TROVE_MASK_SALT"
+
+    def test_masking_block_reads_nested_under_agent(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "  masking:\n    enabled: false\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.masking.enabled is False
+
+    def test_authz_block_is_parsed(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "authz:\n  table_enforcement: enforce\n  require_principal: false\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.authz.table_enforcement == "enforce"
+        assert cfg.authz.require_principal is False
+
+    def test_authz_enum_is_normalized(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "authz:\n  table_enforcement: '  ENFORCE  '\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.authz.table_enforcement == "enforce"
+
+    def test_absent_blocks_keep_the_protective_defaults(self, tmp_path):
+        """缺席 = 闸门与脱敏都**开着**(默认值是「保护开着」,关它必须显式写)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.masking.enabled is True
+        assert cfg.masking.hash_salt_ref == ""
+        assert cfg.authz.require_principal is True
+        assert cfg.authz.table_enforcement == "warn"
