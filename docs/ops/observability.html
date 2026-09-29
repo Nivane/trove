@@ -141,6 +141,8 @@
           <tr><td class="mono">trove_sql_budget_decisions_total</td><td class="mono">datasource, source, verdict</td><td>成本判定走了哪一档、判成什么</td></tr>
           <tr><td class="mono">trove_sql_degraded_total</td><td class="mono">datasource</td><td><strong>一点估算依据都没有</strong>就执行了（I2 的可见形态）</td></tr>
           <tr><td class="mono">trove_sql_kill_total</td><td class="mono">datasource, result</td><td>超时后的主动终止：发出去了没有</td></tr>
+          <tr><td class="mono">trove_authz_deny_total</td><td class="mono">reason</td><td>执行前授权门拒绝的原因分布（无主体 / 数据源 / 表 / 判不了）——两种处置方向相反：部署没接好，还是 grants 该加</td></tr>
+          <tr><td class="mono">trove_masking_applied_total</td><td class="mono">field, mode</td><td>哪些字段在用哪种模式脱敏（字段名来自语义层声明，基数可控）</td></tr>
         </tbody>
       </table>
     </div>

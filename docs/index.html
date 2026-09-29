@@ -743,6 +743,26 @@ docker compose up --build</code></pre>
               <td>ReAct 循环受轮次、墙钟时间、累计 token 三重约束，触顶即降级回经典子图，不会无限烧下去。</td>
               <td class="mono">llm/agent_loop.py:369 · :374 · :375</td>
             </tr>
+            <tr>
+              <td>执行前授权门</td>
+              <td>表级授权在执行前判定：主体解析不出来、数据源未授权、SQL 引到了未授权的表，三种都拒绝执行。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a></td>
+            </tr>
+            <tr>
+              <td>字段级脱敏</td>
+              <td>结果集在进模型上下文之前按语义层声明改写（partial / hash / null）；声明了 <code>hash</code> 却取不到 salt 即拒绝执行，不降级为明文。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/masking.py#L326">services/authz/masking.py:326 <span class="ref-line">Masker</span></a></td>
+            </tr>
+            <tr>
+              <td>以用户身份重放</td>
+              <td>admin 可代目标用户跑一次：目标的主体、角色与 grants 生效，重放者自己的 scopes 整体丢弃；四道校验都在 SSE 开始之前跑完。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L37">api/routers/chat.py:37 <span class="ref-line">_replay_subject</span></a></td>
+            </tr>
+            <tr>
+              <td>授权与脱敏审计</td>
+              <td>拒绝、字段改写、凭 scope 读原文三类各记一条（只记字段名与模式，从不记值）；拒绝另按原因计数。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1579">agent/session.py:1579 <span class="ref-line">_audit_authz</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L280">core/metrics.py:280 <span class="ref-line">record_authz_deny</span></a></td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -836,8 +856,8 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
           <span class="road-n">06</span>
           <div class="road-body">
             <h4>身份鉴权与字段脱敏</h4>
-            <p>把可答边界从「这个数据源能答什么」推进到「这个人能看什么」——行列级权限在语义层表达。</p>
-            <p class="road-crit"><span>判据</span>权限判定发生在编译期而非结果后置过滤，越权字段不进入模型上下文。</p>
+            <p>把可答边界从「这个数据源能答什么」推进到「这个人能看什么」——先落执行前的表级授权门与字段级脱敏，再谈编译期收窄。</p>
+            <p class="road-crit"><span>判据</span>判定落在<strong>执行前</strong>而不是结果后置过滤：未授权的表不发出查询，越权字段不进入模型上下文（脱敏在 LLM 之前），每一次拒绝、改写与凭 scope 读原文都留下审计。</p>
           </div>
         </div>
         <div class="road-item">

@@ -474,7 +474,7 @@ Deeper architecture notes live in `CLAUDE.md`; REST API docs at `/v1/docs` when 
 
 ## Roadmap
 
-Directions and their acceptance criteria live in [the capability map's roadmap section](https://nivane.github.io/trove/#road) — each one states what "done" means rather than a date. Two have already landed: drift governance (structure and reference levels, distinguishing "no drift" from "could not check") and row filters (dataset-level `row_filter` injected at compile time, one implementation shared by the fast and compile paths). Still ahead: narrowing the boundary to *who* can see what (identity and field level), verified query assets, semantic branch review, cost attribution, and an untrusted-input boundary.
+Directions and their acceptance criteria live in [the capability map's roadmap section](https://nivane.github.io/trove/#road) — each one states what "done" means rather than a date. Three have already landed: drift governance (structure and reference levels, distinguishing "no drift" from "could not check") and row filters (dataset-level `row_filter` injected at compile time, one implementation shared by the fast and compile paths), and identity & field level (an execution-time table-level gate, field-level masking before the rows reach the model, replay-as-another-user, plus audit and metrics). Still ahead: verified query assets, semantic branch review, cost attribution, and an untrusted-input boundary.
 
 ## Contributing
 
