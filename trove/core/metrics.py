@@ -1,9 +1,11 @@
 """Process metrics — in-process Prometheus registry (single-process serve).
 
-Counters/histograms for the three hot paths worth watching in production:
-HTTP traffic (middleware in api/app.py), LLM calls (hooks in llm/gateway.py),
-and datasource SQL executions (hooks in datasource/registry.py). Exposed at
-`GET /v1/metrics` in the standard Prometheus text format.
+Counters/histograms for the hot paths worth watching in production: HTTP
+traffic (middleware in api/app.py), LLM calls (hooks in llm/gateway.py),
+datasource SQL executions (hooks in datasource/registry.py), and the execution
+cost track — budget verdicts / degraded executions / kill outcomes (hooks in
+workflow/nodes/execute_sql.py). Exposed at `GET /v1/metrics` in the standard
+Prometheus text format.
 
 Labels are deliberately low-cardinality (route template, not raw URL —
 the middleware uses the matched route path so `/v1/sessions/{id}` stays
@@ -83,6 +85,38 @@ if _HAVE_CLIENT:
         ["datasource"],
         registry=_REGISTRY,
     )
+    # ── 执行画像的成本轨(设计 §9.2 / R1)──────────────────
+    #
+    # 三条都**只在 `workflow/nodes/execute_sql.py` 记**,不在 BudgetService /
+    # describe_cost 里记:同一套 estimate/decide 在「生成前问价」时也会跑一遍,
+    # 在服务层记会把**问价的**和**真跑了的**混成一个数 —— 问价不碰数据库,真跑
+    # 了的那条可能打爆生产库,两者的运维含义相反。节点记才等于「这条查询落库了」。
+    SQL_BUDGET_DECISIONS = Counter(
+        "trove_sql_budget_decisions_total",
+        "Cost-track verdicts at the execution node, by datasource/source/verdict.",
+        ["datasource", "source", "verdict"],
+        registry=_REGISTRY,
+    )
+    # 降级**执行**。为什么单开一个而不从 verdict 推:verdict="degrade" 混着两种
+    # 成因 —— (1) 一点估算依据都没有(保守预算,I2,R1 要的正是这一个);(2) 画像档
+    # 估出这是张大表(P2 接的依据,降级恰恰是因为**有**依据)。混在一起会把「有依据、
+    # 按大表处置」记成「没有护栏」;后者单独看得用
+    # decisions{source="metadata",verdict="degrade"}。另一个差别是时点:decisions
+    # 在**判定**时记(含没跑成的 reject),本计数器只记**执行**(没落库的不算)。
+    SQL_DEGRADED = Counter(
+        "trove_sql_degraded_total",
+        "Executions with no cost estimate (conservative budget), by datasource.",
+        ["datasource"],
+        registry=_REGISTRY,
+    )
+    # 注意这个计数器回答的是「终止指令**发出去**了没有」,不是「查询停下来了没有」:
+    # kill_sent 只到「交给了驱动、驱动没报错」为止(见 terminate.KILL_SENT)。
+    SQL_KILL = Counter(
+        "trove_sql_kill_total",
+        "Kill attempt outcome after a query timed out, by datasource/result.",
+        ["datasource", "result"],
+        registry=_REGISTRY,
+    )
 
 
 def _short_model(model: str) -> str:
@@ -155,6 +189,58 @@ def record_sql_cache_hit(datasource: str) -> None:
         SQL_CACHE_HITS.labels(datasource=datasource or "default").inc()
     except Exception as e:
         logger.debug("sql cache metric record failed: %s", e)
+
+
+def record_sql_budget_decision(datasource: str, source: str, verdict: str) -> None:
+    """一次成本判定(设计 §9.2 / R1)。``verdict`` 三档都记 —— 含没跑成的 reject。
+
+    两个枚举作为标签进得来,是因为它们的值域是**闭的**(``CostEstimate.source`` /
+    ``BudgetDecision.verdict`` 各有三个取值);SQL 文本、表名、错误原文一律不进
+    标签 —— 基数是无限的,进去就是把监控系统自己拖垮(与路由用模板而不是原始
+    URL 同一条纪律)。
+    """
+    if not _HAVE_CLIENT:
+        return
+    try:
+        SQL_BUDGET_DECISIONS.labels(
+            datasource=datasource or "default", source=source, verdict=verdict,
+        ).inc()
+    except Exception as e:  # metrics must never break the request path
+        logger.debug("sql budget decision metric record failed: %s", e)
+
+
+def record_sql_degraded(datasource: str) -> None:
+    """一条**没有估算依据**的执行(设计 §9.2 / R1 / I2)。
+
+    与 ``verdict="degrade"`` 不是同一件事 —— 差别见 ``SQL_DEGRADED`` 上的注释。
+    """
+    if not _HAVE_CLIENT:
+        return
+    try:
+        SQL_DEGRADED.labels(datasource=datasource or "default").inc()
+    except Exception as e:
+        logger.debug("sql degraded metric record failed: %s", e)
+
+
+def record_sql_kill(datasource: str, result: str) -> None:
+    """超时后那一次终止尝试的结果(设计 §9.2 / §10 / I4)。
+
+    ``result`` 的值域见 ``services/sql/terminate.py``:``kill_sent`` /
+    ``kill_unsupported`` / ``kill_failed``。
+
+    ``result=""`` **不记**:那是「**没试过**」(没装终止器 / 这条查询没超时),不是
+    一种终止结果。记一个空串等于让「我们根本没接这条轨」混进结果分布,而它与
+    「这个方言不支持终止」对运维的含义相反 —— 前者是我们漏接了一步,后者是库
+    不给这个能力。守卫放在本函数而不是调用点:值域是这个计数器定义的,任何调用
+    方都不该有办法往一个「没有结果」的结果里记一笔(同 ``degraded`` 与 ``""``、
+    ``as_of_basis`` 与「没查过」的三态纪律)。
+    """
+    if not _HAVE_CLIENT or not result:
+        return
+    try:
+        SQL_KILL.labels(datasource=datasource or "default", result=result).inc()
+    except Exception as e:
+        logger.debug("sql kill metric record failed: %s", e)
 
 
 def render_metrics() -> bytes:

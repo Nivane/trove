@@ -11,8 +11,10 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from trove.core.types import (
+    BASIS_UNVERIFIABLE,
     Capabilities,
     QueryResult,
+    ReadonlyProbe,
     SchemaInfo,
     TableProfile,
     positive_int,
@@ -115,6 +117,21 @@ class DatabaseAdapter(ABC):
     # 缺省 False 是安全方向:调用方退到「无法主动终止,asyncio cancel 已是
     # 能做的全部」(§10)。
     supports_interrupt: bool = False
+
+    async def probe_readonly(self) -> ReadonlyProbe:
+        """这个连接上的账号是不是**确实只能读**(设计 §4 I1)。缺省:**不知道**。
+
+        缺省值只有 ``None/unverifiable`` 一个诚实选项:
+
+        * ``True`` 是谎 —— 把「我们没实现」渲染成「已确认只读」,等于替一道
+          并不存在的硬边界背书,而 I1 的全部价值就是那道边界真的存在;
+        * ``False`` 是误报 —— 一个没实现探测的适配器并不是「写得动」。
+
+        实现者只允许走**查权限表**这条路(``SHOW GRANTS`` / ``system.grants`` /
+        ``information_schema``),**永远不要试写一条「必然失败」的写语句**:它的
+        必然性正来自「账号只读」这个待证假设,账号其实可写时它会真的写进去。
+        """
+        return ReadonlyProbe(None, BASIS_UNVERIFIABLE, "no probe implemented")
 
     async def table_profiles(self) -> dict[str, TableProfile]:
         """批量表级画像,键为表名(设计 §9.2)。

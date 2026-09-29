@@ -83,6 +83,35 @@
       探活本身有 2 秒超时——健康检查不该因为下游慢而挂住，那样探活会从「发现问题」变成「制造问题」。
     </p>
 
+    <h3>每个数据源还带一条 <code>readonly</code></h3>
+
+    <p>
+      数据源条目里除了 <code>ok</code>，还有一个只读自检结论。它<strong>不参与</strong>
+      <code>ok</code> 与顶层 <code>status</code>——「连不上」和「只读边界其实不在」的修法毫无关系
+      （一个查连接，一个改授权），折进同一个词，监控上就再也分不出是哪一种，而只有后者是安全问题。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th><code>verified</code></th><th><code>basis</code></th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">true</td><td class="mono">grants</td><td>查了权限表，有正面依据表明这个账号写不了</td></tr>
+          <tr><td class="mono">false</td><td class="mono">grants</td><td><strong>有证据表明写得动</strong>——硬边界不存在，启动时会 WARN</td></tr>
+          <tr><td class="mono">null</td><td class="mono">unverifiable</td><td>这个方言没有角色概念（SQLite / DuckDB 是文件权限），查无可查</td></tr>
+          <tr><td class="mono">null</td><td class="mono">probe_failed</td><td>查了，没查成（权限不足 / 超时 / 连接断）</td></tr>
+          <tr><td class="mono">null</td><td class="mono">not_probed</td><td>启动自检没覆盖到这个源（启动后新注册的）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <code>null</code> <strong>不是「安全」</strong>。把「没查成」渲染成 <code>true</code>，等于替一道
+      并不存在的边界背书——那正是这个自检要防的事。授权原文（库名、账号、表名）只进日志，
+      不进响应：这个端点免鉴权。
+    </p>
+
     <h2 id="metrics">Prometheus 指标</h2>
 
     <p>
@@ -94,6 +123,53 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L347">app.py:347 <span class="ref-line">metrics</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L160">metrics.py:160 <span class="ref-line">render_metrics</span></a>
     </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>指标</th><th>标签</th><th>回答的问题</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">trove_http_requests_total</td><td class="mono">method, path, status</td><td>接口被谁打、结果如何（path 用路由模板，不是原始 URL）</td></tr>
+          <tr><td class="mono">trove_http_request_duration_seconds</td><td class="mono">method, path</td><td>接口慢在哪</td></tr>
+          <tr><td class="mono">trove_http_requests_inflight</td><td class="mono">—</td><td>此刻在处理的请求数</td></tr>
+          <tr><td class="mono">trove_llm_calls_total</td><td class="mono">provider, model, status</td><td>模型调用次数与成败</td></tr>
+          <tr><td class="mono">trove_llm_call_duration_seconds</td><td class="mono">provider, model</td><td>模型往返时间</td></tr>
+          <tr><td class="mono">trove_sql_queries_total</td><td class="mono">datasource, status</td><td>真落库的查询：哪个源、成没成</td></tr>
+          <tr><td class="mono">trove_sql_query_duration_seconds</td><td class="mono">datasource</td><td>查询耗时分布</td></tr>
+          <tr><td class="mono">trove_sql_cache_hits_total</td><td class="mono">datasource</td><td>结果缓存省下了多少往返</td></tr>
+          <tr><td class="mono">trove_sql_budget_decisions_total</td><td class="mono">datasource, source, verdict</td><td>成本判定走了哪一档、判成什么</td></tr>
+          <tr><td class="mono">trove_sql_degraded_total</td><td class="mono">datasource</td><td><strong>一点估算依据都没有</strong>就执行了（I2 的可见形态）</td></tr>
+          <tr><td class="mono">trove_sql_kill_total</td><td class="mono">datasource, result</td><td>超时后的主动终止：发出去了没有</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <code>budget_decisions</code> 的 <code>source</code> 是 <code>explain</code> /
+      <code>metadata</code> / <code>conservative</code>，<code>verdict</code> 是
+      <code>allow</code> / <code>degrade</code> / <code>reject</code>。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">三条执行画像的指标都记在<strong>执行节点</strong></span>
+      <div>
+        <p>
+          不记在预算服务里：同一套估算在「生成前问价」（<code>describe_cost</code>）时也会跑一遍，
+          在服务层记会把<strong>问价的</strong>和<strong>真跑了的</strong>混成一个数——问价不碰数据库，
+          真跑了的那条可能打爆生产库，两者的运维含义相反。
+        </p>
+        <p>
+          <code>degraded</code> 单开一个而不从 <code>verdict=degrade</code> 推：后者混着两种成因——
+          一点依据都没有（这个计数器数的就是它），以及画像档估出这是张大表（降级恰恰是因为
+          <em>有</em>依据）。混在一起会把「有依据、按大表处置」记成「没有护栏」。
+        </p>
+        <p>
+          <code>kill_total</code> 回答的是「终止指令<strong>发出去</strong>了没有」，不是「查询停下来了没有」：
+          <code>kill_sent</code> 只到「交给了驱动、驱动没报错」为止。
+        </p>
+      </div>
+    </div>
 
     <p>
       如果部署形态会把这个端口暴露到不可信网络，那就应该在反向代理层收掉这个路径——

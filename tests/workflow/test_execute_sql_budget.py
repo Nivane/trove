@@ -18,8 +18,9 @@
 
 from __future__ import annotations
 
+from trove.core.metrics import render_metrics
 from trove.core.types import QueryResult
-from trove.services.sql.budget import BudgetService, ExecutionBudget
+from trove.services.sql.budget import BudgetService, ExecutionBudget, describe_cost
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.state import WorkflowState
 
@@ -707,3 +708,168 @@ class TestTerminationOnTimeout:
         ev = result["execution_evidence"]
         assert ev["terminated"] is None
         assert ev["kill"] == ""
+
+
+# ── 执行画像指标(设计 §9.2 / R1 · P5)────────────────────
+
+
+def _counter(name: str, **labels: str) -> float | None:
+    """从 ``/v1/metrics`` 的文本里取一条序列的值;这条序列不存在 → ``None``。
+
+    读文本而不是私有 ``_value``:与运维抓到的是同一份东西(顺带钉住标签真的
+    渲染出来了)。**每条用例用各自的数据源名**:注册表是进程级的,同一个名字
+    会被别的用例累加,而「1」和「上一次留下的 1」在断言上长得一样。
+    """
+    text = render_metrics().decode()
+    for line in text.splitlines():
+        if not line.startswith(name + "{"):
+            continue
+        if all(f'{k}="{v}"' in line for k, v in labels.items()):
+            return float(line.rsplit(" ", 1)[1])
+    return None
+
+
+class TestExecutionMetrics:
+    """三条计数器**只在执行节点**落账(设计 §9.2 / R1)。
+
+    记录点在节点而不在 ``BudgetService`` / ``describe_cost``:同一套判定在「生成
+    前问价」时也会发生(问价工具与执行节点逐字调用同一个 ``estimate``/``decide``),
+    在服务层记会把**问价的**和**真跑了的**混成一个数 —— 于是「这条查询到底跑没
+    跑」再也答不上来,而那正是上线后用 estimated/scanned 校准估算器时唯一的分母
+    (R2)。节点记才等于「这条查询落库了」。
+    """
+
+    async def test_a_degraded_execution_is_counted_on_both_counters(self):
+        """降级执行的**两侧**都记:判定(conservative + degrade)与执行(degraded)。
+
+        R1 点名的就是第二个 —— 「降级被当成没护栏」的一半是「看不见」。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(spy, budget=_no_basis_budget(spy))
+
+        await node(_state(datasource="p5_degrade_db"))
+
+        assert _counter("trove_sql_degraded_total", datasource="p5_degrade_db") == 1
+        assert _counter(
+            "trove_sql_budget_decisions_total",
+            datasource="p5_degrade_db", source="conservative", verdict="degrade",
+        ) == 1
+
+    async def test_an_allow_execution_is_not_a_degradation(self):
+        """有依据、放行 → 决策落在 explain + allow,降级计数一条都不该有。
+
+        降级计数若恒记就不再是 R1 要的信号 —— 一个恒为真的字段没人会看(与 P2
+        修掉的「sqlite 上每条查询都 degraded」同一条理由)。
+        """
+        spy = _SpyConnectors(explain_rows=1_000)
+        node = make_execute_sql(spy, budget=_mysql_budget(spy))
+
+        await node(_state(dialect="mysql", datasource="p5_allow_db"))
+
+        assert _counter("trove_sql_degraded_total", datasource="p5_allow_db") is None
+        assert _counter(
+            "trove_sql_budget_decisions_total",
+            datasource="p5_allow_db", source="explain", verdict="allow",
+        ) == 1
+
+    async def test_a_reject_is_a_decision_but_never_a_degradation(self):
+        """``on_unestimable=reject`` 的部署:判了(conservative + reject)但**没跑**。
+
+        决策计数含没跑的那些(否则 reject 这一档永远不出现在分布里);
+        降级计数只计**执行事实** —— 记在决策那一步会把「拒绝了」说成「降级跑了」,
+        而这两句话对运维的含义相反(前者什么也没发生,后者一条无依据的查询落了库)。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(
+            spy, budget=_no_basis_budget(spy, on_unestimable="reject"),
+        )
+
+        await node(_state(datasource="p5_reject_db"))
+
+        assert spy.executed == []
+        assert _counter(
+            "trove_sql_budget_decisions_total",
+            datasource="p5_reject_db", source="conservative", verdict="reject",
+        ) == 1
+        assert _counter("trove_sql_degraded_total", datasource="p5_reject_db") is None
+
+    async def test_a_metadata_estimate_over_the_soft_cap_is_not_counted_here(self):
+        """画像档超软限 → ``verdict=degrade``,但**不是** R1 说的那种降级。
+
+        这是本能力里一个有意收窄的口径:``trove_sql_degraded_total`` 对齐的是答案
+        里那个同名字段 ``degraded``(``est.degraded`` —— 「**没有**估算依据」,I2),
+        而不是 ``verdict=degrade``(「按既有依据降级执行」)。两者在画像档上分叉:
+        ``verdict=degrade`` 混合了两种成因 —— (1) 一点依据都没有(保守预算,I2),
+        (2) 画像说这是张大表(P2 新接的依据,降级是因为**有**依据才降)。
+
+        混在一起会把「有依据、按大表处置」记成「没有护栏」—— 而后者才是 R1 要
+        人看见的东西。分开之后两条都还在:前者看这个计数器,后者看
+        ``trove_sql_budget_decisions_total{source="metadata",verdict="degrade"}``。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(
+            spy, budget=_profile_budget(spy, _ProfileSpy(rows=600_000_000)),
+        )
+
+        await node(_state(datasource="p5_metadata_degrade_db"))
+
+        assert _counter("trove_sql_degraded_total", datasource="p5_metadata_degrade_db") is None
+        assert _counter(
+            "trove_sql_budget_decisions_total",
+            datasource="p5_metadata_degrade_db", source="metadata", verdict="degrade",
+        ) == 1
+
+    async def test_a_kill_result_is_counted_when_there_was_one(self, monkeypatch):
+        """超时 + 有终止结论 → 按 ``result`` 计数(§10 / I4)。
+
+        这是 R1 的兄弟:降级是「没护栏」看得见,终止是「放弃了之后发生了什么」
+        看得见 —— ``kill_failed`` 与 ``kill_unsupported`` 混成一个数,运维看到
+        的东西完全不同。
+        """
+        spy = _TimeoutConnectors()
+        node = _timeout_node(spy, _TerminatorSpy("kill_failed"), monkeypatch)
+
+        await node(_state(datasource="p5_kill_db"))
+
+        assert _counter(
+            "trove_sql_kill_total", datasource="p5_kill_db", result="kill_failed",
+        ) == 1
+
+    async def test_a_kill_that_was_never_attempted_is_not_counted(self, monkeypatch):
+        """没装终止器 → ``kill == ""`` → **不成一条序列**。
+
+        「没试过」不是终止结果的一种:记一个空串会让「我们没接这条轨」混进结果
+        分布,而它与「这个方言不支持」对运维的含义相反(前者是我们没接,后者
+        是库不给这个能力)。这里连``result=""`` 那条都不许出现。
+        """
+        spy = _TimeoutConnectors()
+        node = _timeout_node(spy, None, monkeypatch)
+
+        await node(_state(datasource="p5_no_kill_db"))
+
+        assert _counter("trove_sql_kill_total", datasource="p5_no_kill_db") is None
+
+    async def test_asking_for_a_price_is_not_an_execution(self):
+        """问价(``describe_cost``)与执行共用同一套判定,但只有后者进执行计数。
+
+        本能力最容易接错的一处:``estimate`` / ``decide`` 是同一份代码,记录点若
+        放在服务层,「生成前问一次价」就会和「真跑了一条查询」进同一个数 —— 而
+        问价**不碰数据库**,真跑了的那条可能打爆生产库,两者的运维含义相反。
+
+        第二半跑同一个数据源:证明上面那两条否定不是数据源名写错导致的空断言。
+        """
+        spy = _SpyConnectors()
+        budget = _no_basis_budget(spy)
+
+        quote = await describe_cost(
+            "SELECT name FROM students", budget=budget,
+            datasource="p5_quote_db", dialect="sqlite",
+        )
+        assert quote["verdict"] == "degrade", "判定确实发生了(否则这条用例是空的)"
+        assert _counter("trove_sql_budget_decisions_total", datasource="p5_quote_db") is None
+        assert _counter("trove_sql_degraded_total", datasource="p5_quote_db") is None
+
+        node = make_execute_sql(spy, budget=budget)
+        await node(_state(datasource="p5_quote_db"))
+
+        assert _counter("trove_sql_degraded_total", datasource="p5_quote_db") == 1

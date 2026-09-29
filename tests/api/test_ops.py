@@ -19,8 +19,14 @@ class TestHealth:
         body = resp.json()
         assert body["status"] == "ok"
         assert body["checks"]["storage"]["ok"] is True
-        # sqlite_registry fixture: one connected in-memory adapter
-        assert body["checks"]["datasources"] == {"test_db": {"ok": True}}
+        # sqlite_registry fixture: one connected in-memory adapter.
+        # ``readonly`` 与 ``ok`` 并列而不折进去(见下面 writable 那条用例)。
+        assert body["checks"]["datasources"] == {
+            "test_db": {
+                "ok": True,
+                "readonly": {"verified": None, "basis": "not_probed"},
+            },
+        }
         # LLM 只报事实(mock / target / providers),不下"能不能用"的结论:
         # providers 为 0 不代表不可用 —— litellm 会回落到环境变量
         # (DEEPSEEK_API_KEY 等),凭证解析是它的事,这里不猜。
@@ -98,6 +104,58 @@ class TestHealth:
         assert body["status"] == "degraded"
         assert body["checks"]["datasources"]["broken"]["ok"] is False
         assert body["checks"]["datasources"]["test_db"]["ok"] is True
+
+    async def test_health_readonly_not_probed_when_selfcheck_never_ran(
+        self, anon_client
+    ):
+        """自检没跑过 → ``not_probed``。**不是 True**。
+
+        api_app 走 ASGITransport,不触发 lifespan,所以启动自检没执行。这时
+        唯一诚实的答案是「自检没覆盖到这个源」—— 报 ``True`` 就是替一道没人
+        验过的边界背书,而这正是 I1 要防的那个谎。
+        """
+        resp = await anon_client.get("/v1/health")
+        readonly = resp.json()["checks"]["datasources"]["test_db"]["readonly"]
+        assert readonly == {"verified": None, "basis": "not_probed"}
+
+    async def test_health_readonly_reports_verified_true(self, api_app, anon_client):
+        from trove.core.types import BASIS_GRANTS, ReadonlyProbe
+
+        api_app.state.readonly_probes = {
+            "test_db": ReadonlyProbe(True, BASIS_GRANTS, "1 grant line(s)"),
+        }
+        resp = await anon_client.get("/v1/health")
+        assert resp.json()["checks"]["datasources"]["test_db"]["readonly"] == {
+            "verified": True,
+            "basis": "grants",
+        }
+
+    async def test_health_writable_account_is_not_a_datasource_fault(
+        self, api_app, anon_client
+    ):
+        """「账号写得动」与「连不上」是两种故障,不能长得一样。
+
+        ``ok`` / ``status`` 说的是「这个源现在能不能用」;「只读边界其实不在」
+        是**另一件事**:一个重启就好,一个得改授权。折进 ``ok``,监控上就再也
+        分不出是哪一种 —— 而只有后者是安全问题。
+
+        ``detail`` 里的授权原文(库名/账号/表名)也不进响应:health 免鉴权。
+        """
+        from trove.core.types import BASIS_GRANTS, ReadonlyProbe
+
+        api_app.state.readonly_probes = {
+            "test_db": ReadonlyProbe(
+                False, BASIS_GRANTS, "GRANT INSERT ON `shop`.* TO 'trove'"
+            ),
+        }
+        resp = await anon_client.get("/v1/health")
+        body = resp.json()
+        entry = body["checks"]["datasources"]["test_db"]
+        assert entry["ok"] is True
+        assert body["status"] == "ok"
+        assert entry["readonly"] == {"verified": False, "basis": "grants"}
+        assert "GRANT" not in resp.text
+        assert "shop" not in resp.text
 
 
 class TestRequestId:

@@ -1,12 +1,14 @@
 """PostgreSQL adapter tests — unit (fake driver) + integration (PG_TEST_URL)."""
 
 import os
+import re
 import uuid
 from types import SimpleNamespace
 
 import pytest
 
 from trove.core.errors import DatasourceError, SQLExecutionError
+from trove.core.types import BASIS_GRANTS, BASIS_PROBE_FAILED
 from trove.services.datasource.adapters import postgres as pg_module
 from trove.services.datasource.adapters.postgres import (
     PostgresAdapter,
@@ -215,6 +217,237 @@ class TestPostgresAdapter:
         with pytest.raises(DatasourceError) as exc_info:
             await adapter.connect()
         assert "uv sync --extra postgres" in str(exc_info.value)
+
+
+# ── Readonly probe (设计 §4 I1)───────────────────────────
+
+
+class TestPostgresReadonlyProbe:
+    """只读自检的 PG 实现(设计 §4 I1)。
+
+    与 MySQL 那份的**分工不同**:MySQL 拿到的是一行行「授权原文」,PG 拿到的
+    是**三个计数**(可达的超管角色 / 属主关系 / 写权限条目)。计数没法像授权
+    原文那样整条留在 detail 里,所以这一档的每条用例都断言 detail 里出现的
+    **具体数字** —— 形状一错(假驱动少包一层,「三列一行」变成「三个整数」),
+    数字就对不上,用例不会因为「遍历到的东西里没有关键字」而假绿。MySQL 那边
+    正是这么假绿过的(见 ``TestMySQLReadonlyProbe._probe_conn``)。
+    """
+
+    @staticmethod
+    def _probe_conn(row):
+        """一个已连上、且下一次 cursor 会吐出这一行的连接。
+
+        ``[[row]]``:内层 ``row`` 是**三列一行**,外层才是 ``FakeCursor`` 记的
+        一次 ``fetchall`` 的返回值(= 行的列表)。PG 的 ``connect`` 不发查询
+        (没有版本探测),所以探测用的就是**第一个** cursor。
+        """
+        return FakeConn(cursor_specs=[([[row]], None, None)])
+
+    @staticmethod
+    def _failing_conn(error):
+        """两次取 cursor 都失败:第一次直接探(该抛),第二次经编排器(该折)。"""
+        return FakeConn(cursor_specs=[([], None, error)] * 2)
+
+    def _adapter(self, monkeypatch, conn):
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        return adapter
+
+    async def test_a_read_only_account_is_verified(self, monkeypatch):
+        conn = self._probe_conn([0, 0, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is True, "只读账号必须被判成只读"
+        assert probe.basis == BASIS_GRANTS, "只有查了权限表才配叫 verified"
+
+    async def test_an_account_that_can_write_is_reported_as_writable(self, monkeypatch):
+        conn = self._probe_conn([0, 0, 2])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is False, "写得动的账号不能被说成只读"
+        # 依据要留在 detail 里:数字对不上就说明三列被读串了
+        assert "2 write privilege" in probe.detail
+
+    async def test_a_superuser_is_not_a_read_only_boundary(self, monkeypatch):
+        """超管是**独立于 GRANT** 的一条写路径:一条授权都没授,照样能写。"""
+        conn = self._probe_conn([1, 0, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is False
+        assert "superuser" in probe.detail
+
+    async def test_owning_one_relation_is_enough_to_write(self, monkeypatch):
+        """**这条最容易漏**:属主天然可写,跟 GRANT 一点关系都没有。
+
+        一个「0 写权限」的账号完全可能是某张表的属主 —— 只看权限表就会把它
+        报成只读。所以属主是独立的一项。
+        """
+        conn = self._probe_conn([0, 1, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is False
+        assert "owns 1 relation" in probe.detail
+
+    async def test_the_probe_sends_exactly_one_read_only_statement(self, monkeypatch):
+        """**探测绝不试写**(§4 I1 的实施取舍)。
+
+        设计稿给的另一条路是「尝试一条必然失败的写语句」—— 它「必然失败」的
+        前提正是「账号只读」这个待证假设。账号其实可写时,那条语句会**真的写
+        进去**:一个探测变成一次生产写入。
+
+        钉法比 MySQL 那边要绕一点:PG 的这条查询里**必须**出现
+        ``'INSERT'``/``'UPDATE'`` 这些词(它们是 ``privilege_type`` 的取值),
+        所以不能直接扫关键字。改钉两条更硬的性质:整个探测**只有一条语句、
+        且以 ``SELECT`` 开头**;把字符串字面量摘掉之后,写语句的关键词一个都
+        不剩。
+
+        「摘字面量」之后再按**词边界**扫:摘完还剩 ``grantee`` 这个列名,
+        按子串扫会把 ``grantee`` 里的 ``grant`` 认成 GRANT 语句 —— 这条断言
+        写第一版时就是这么假红的。
+        """
+        conn = self._probe_conn([0, 0, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        assert len(conn.cursors) == 1, "探测只该取一个 cursor"
+        sent = [sql for sql, _ in conn.cursors[0].executed]
+        assert len(sent) == 1, sent
+        assert sent[0].lstrip().upper().startswith("SELECT"), sent[0]
+
+        without_literals = re.sub(r"'[^']*'", "''", sent[0]).upper()
+        found = re.findall(
+            r"\b(?:INSERT|UPDATE|DELETE|TRUNCATE|CREATE|DROP|ALTER|GRANT|REVOKE)\b",
+            without_literals,
+        )
+        assert found == [], (found, sent[0])
+
+    async def test_the_query_covers_public_and_inherited_and_column_grants(
+        self, monkeypatch,
+    ):
+        """查询本身要覆盖三条**除「直接授予当前角色」之外**的写路径。
+
+        这是唯一能钉住它们的用例:假驱动给什么数就是什么数,把
+        ``grantee = current_user``(那正是 §4 I1 草稿的写法)改回来,上面所有
+        用例照样全绿 —— 而线上会把一个**通过组角色拿到 INSERT** 的账号报成
+        只读。所以这里断言 SQL 文本:
+
+        * ``'PUBLIC'`` —— ``GRANT ... TO PUBLIC`` 的行 ``grantee`` 是字面量
+          ``'PUBLIC'``,不等于 ``current_user``;
+        * ``pg_has_role`` —— 授予**我所属的角色**的权限,行上写的是那个角色名;
+        * ``column_privileges`` —— 列级授权不在 ``table_privileges`` 里。
+        """
+        conn = self._probe_conn([0, 0, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        sql = conn.cursors[0].executed[0][0]
+        assert "grantee = 'PUBLIC'" in sql
+        assert "pg_has_role" in sql
+        assert "column_privileges" in sql
+        assert "table_privileges" in sql
+        # 三项各自独立的来源,少一项就漏判一类
+        for source in ("rolsuper", "relowner", "privilege_type"):
+            assert source in sql, source
+        assert "grantee = current_user" not in sql, "那可漏掉继承与 PUBLIC"
+
+    async def test_the_privilege_test_is_an_exact_match_not_a_keyword_scan(
+        self, monkeypatch,
+    ):
+        """权限判据必须是 ``privilege_type`` 的**精确取值匹配**,不是扫关键字。
+
+        这是 MySQL 那条陷阱在 PG 上的对应物:``GRANT SELECT ON public.insert_log``
+        里的 ``insert_log`` 是**表名**。整行(或表名拼权限)扫关键字的实现会把
+        一个纯只读账号报成可写 —— 方向上是保守的(误报),但同样是错,而且会
+        让真出现的那条 WARN 失去意义。
+
+        为什么在这里是**文本断言**而不是行为断言:PG 的过滤在 SQL 里做(一次
+        往返、只回三列),假驱动给什么数就是什么数,看不到这句 SQL 干了什么 ——
+        所以只能钉 SQL 文本。这条与 ``test_the_query_covers_...`` 一起,把
+        「查询被悄悄改窄/改歪」这一类改动挡在测试这一层。
+        """
+        conn = self._probe_conn([0, 0, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        sql = conn.cursors[0].executed[0][0]
+        assert "privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')" in sql
+        assert "privilege_type IN ('INSERT', 'UPDATE')" in sql
+        assert "LIKE" not in sql.upper(), "扫关键字就会把表名当成权限"
+
+    async def test_an_empty_result_is_not_read_only(self, monkeypatch):
+        """一行都没拿到 → **取不到**,不是「确认只读」。
+
+        最可能的解释是这条路径没拿到东西(驱动/方言/被包装),而不是「这个账号
+        什么都不能干」。往 ``True`` 倒就是替一道并不存在的边界背书。
+        """
+        conn = FakeConn(cursor_specs=[([], None, None)])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        with pytest.raises(DatasourceError):
+            await adapter.probe_readonly()
+
+    async def test_a_short_row_raises(self, monkeypatch):
+        """列数不对(这里少一列)→ 抛,不猜缺的是哪一列。"""
+        conn = self._probe_conn([0, 0])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        with pytest.raises(DatasourceError):
+            await adapter.probe_readonly()
+
+    async def test_more_than_one_row_raises(self, monkeypatch):
+        """多行 → 抛。这条查询**结构上**只该回一行,回两行说明问错了东西。"""
+        conn = FakeConn(cursor_specs=[([[0, 0, 0], [1, 0, 0]], None, None)])
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        with pytest.raises(DatasourceError):
+            await adapter.probe_readonly()
+
+    async def test_non_count_values_raise(self, monkeypatch):
+        """三列必须是计数。``True``/``"0"``/``None`` 都不是 —— 一个读不出来的
+        值就是「取不到」,不能当成 0 用。"""
+        for bad in ([True, 0, 0], [0, "0", 0], [0, 0, None], [0, -1, 0]):
+            conn = self._probe_conn(bad)
+            adapter = self._adapter(monkeypatch, conn)
+            await adapter.connect()
+            with pytest.raises(DatasourceError):
+                await adapter.probe_readonly()
+
+    async def test_a_failing_query_is_folded_by_the_orchestrator(self, monkeypatch):
+        """查询被拒(权限不足)/ 连接断 → 适配器**如实抛**,由 ``readonly.probe``
+        折成 ``probe_failed``。
+
+        在这里吞掉它,就等于让「没查成」消失在实现里 —— 而它折出来的是一个
+        看得见、会 WARN 的状态。
+        """
+        conn = self._failing_conn(RuntimeError("permission denied for table pg_class"))
+        adapter = self._adapter(monkeypatch, conn)
+        await adapter.connect()
+
+        with pytest.raises(RuntimeError):
+            await adapter.probe_readonly()
+
+        from trove.services.datasource import readonly
+
+        probe = await readonly.probe(adapter)
+        assert probe.verified is None
+        assert probe.basis == BASIS_PROBE_FAILED
 
 
 # ── Integration tests (PG_TEST_URL, skipped when unset) ──

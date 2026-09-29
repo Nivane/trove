@@ -246,6 +246,49 @@ SET GLOBAL sql_mode = 'ONLY_FULL_GROUP_BY';     -- 让含糊的分组直接报�
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/intent.py#L107">intent.py:107 <span class="ref-line">has_strong_write</span></a>
     </p>
 
+    <h3>其他方言怎么建这个账号</h3>
+
+    <pre><code>-- PostgreSQL:默认 PUBLIC 对所有表有 CONNECT,但没有 SELECT
+CREATE ROLE trove_ro LOGIN PASSWORD '...';
+GRANT USAGE ON SCHEMA public TO trove_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO trove_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO trove_ro;</code></pre>
+
+    <pre><code>-- ClickHouse:READ 是组别名(含 SELECT/SHOW/DESCRIBE 等),比逐条 SELECT 稳
+CREATE USER trove_ro IDENTIFIED BY '...';
+GRANT READ ON *.* TO trove_ro;
+-- 引擎侧再兜一层:这个用户即使写出写语句,也会被配额/只读设置拦下
+ALTER USER trove_ro SETTINGS readonly = 1;</code></pre>
+
+    <p>
+      PostgreSQL 那三行的关键在第三行：<strong>默认权限</strong>。少了它，今天建的表都只读，
+      明天新建的表默认给 <code>PUBLIC</code> 什么都不加、但 Trove 也就查不到——看起来像权限
+      没配好，实则是漏了这条。
+    </p>
+
+    <h3>配好之后：让它自己确认一遍</h3>
+
+    <p>
+      启动时 Trove 会自己查一遍权限表，确认这个账号确实写不了，并把结论挂在探活端点上
+      （<code>readonly</code> 字段）。它<strong>不会</strong>靠「试写一条语句」来验证——
+      那条语句「必然失败」的前提正是「账号只读」这个还没被证明的假设，账号其实可写时它会真的写进去。
+      三种取值与结论口径见 <a href="../ops/observability.html#health">可观测性</a>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方言</th><th>自检查什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>MySQL / Doris</td><td><code>SHOW GRANTS</code>，看权限清单里有没有写权限（表名撞上关键字不算）</td></tr>
+          <tr><td>PostgreSQL</td><td>是否超级用户、是否是表的属主（属主天然可写）、<code>table_privileges</code> 里的写权限</td></tr>
+          <tr><td>ClickHouse</td><td><code>system.grants</code>，展开角色继承后再看有没有写权限</td></tr>
+          <tr><td>SQLite / DuckDB</td><td>查不了——没有角色概念，边界是文件权限，结论是「无从判断」</td></tr>
+        </tbody>
+      </table>
+    </div>
+
     <h2 id="check">接入后自检</h2>
 
     <pre><code>uv run python scripts/lint_kb.py --db-id &lt;name&gt;

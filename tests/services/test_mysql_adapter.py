@@ -6,6 +6,7 @@ import uuid
 import pytest
 
 from trove.core.errors import DatasourceError, SQLExecutionError
+from trove.core.types import BASIS_GRANTS, BASIS_PROBE_FAILED
 from trove.services.datasource.adapters.mysql import MySQLAdapter
 
 
@@ -259,6 +260,152 @@ class TestMySQLAdapter:
         with pytest.raises(DatasourceError) as exc_info:
             await adapter.connect()
         assert "uv sync --extra mysql" in str(exc_info.value)
+
+
+class TestMySQLReadonlyProbe:
+    """只读自检的 MySQL 实现(设计 §4 I1)。
+
+    ``SHOW GRANTS`` 的一行长这样::
+
+        GRANT SELECT, SHOW VIEW ON `db`.* TO `u`@`%` WITH GRANT OPTION
+
+    权限清单在 ``GRANT`` 与 `` ON `` 之间,**后面还有表名和账号名**。整行扫关键字
+    会把 ``... ON `db`.`insert_log` ...`` 里的表名认成一个写权限 —— 于是一个纯
+    只读账号被判成可写。下面第二条用例就是钉这个。
+    """
+
+    @staticmethod
+    def _probe_conn(grants):
+        """一个已经连上、且下一次 cursor 会吐出这些授权的连接。
+
+        ``[[g] for g in grants]`` 是**行**的列表(SHOW GRANTS 一行一列),外面
+        那层才是 ``FakeCursor`` 记的一次 ``fetchall`` 返回值 —— 少包一层的话
+        ``fetchall`` 会直接吐出一行,而 ``probe_readonly`` 遍历到的就成了**这行
+        字符串的字符**。写这个 helper 时就是这么错的:``'GRANT ...'`` 变成 ``'G'``,
+        只读那几条用例因为 ``'G'`` 里当然没有写关键字而**全绿** —— 假驱动把形状
+        说错了,测试就少测一层。
+        """
+        rows = [[g] for g in grants]
+        return FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),  # connect 的版本探测
+            ([rows], None, None),        # SHOW GRANTS 的一次 fetchall
+        ])
+
+    async def test_a_read_only_account_is_verified(self, monkeypatch):
+        conn = self._probe_conn([
+            "GRANT SELECT, SHOW VIEW ON `db`.* TO `u`@`%`",
+            "GRANT USAGE ON *.* TO `u`@`%`",
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is True, "只读账号必须被判成只读"
+        assert probe.basis == BASIS_GRANTS
+
+    async def test_a_table_name_is_not_a_privilege(self, monkeypatch):
+        """**这条是这一层的核心陷阱**:``GRANT SELECT ON `db`.`insert_log```
+        里的 ``insert_log`` 是表名,不是 INSERT 权限。
+
+        整行匹配关键字的实现会把一个纯只读账号报成「写得动」—— 方向上是保守的
+        (误报故障),但同样是错,而且会让真出现的那条 WARN 失去意义。
+        """
+        conn = self._probe_conn([
+            "GRANT SELECT ON `db`.`insert_log` TO `u`@`%`",
+            "GRANT SELECT ON `db`.`create_table_audit` TO `u`@`%`",
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        assert (await adapter.probe_readonly()).verified is True
+
+    async def test_an_account_that_can_write_is_reported_as_writable(self, monkeypatch):
+        conn = self._probe_conn([
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON `db`.* TO `u`@`%`",
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is False, "写得动的账号不能被说成只读"
+        assert "INSERT" in probe.detail  # 依据要留在 detail 里,便于排查
+
+    async def test_all_privileges_counts_as_writable(self, monkeypatch):
+        conn = self._probe_conn(["GRANT ALL PRIVILEGES ON *.* TO `u`@`%`"])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        assert (await adapter.probe_readonly()).verified is False
+
+    async def test_grant_option_is_not_a_read_only_boundary(self, monkeypatch):
+        """``WITH GRANT OPTION`` 的账号**能自己把 INSERT 授给自己**。
+
+        所以它不是一道只读边界 —— 今天没写权限不代表明天没有,而 I1 断言的正是
+        「这道边界存在」。判成 ``False`` 会让它在启动日志里 WARN 一次,那是这里
+        唯一安全的失败方向。
+        """
+        conn = self._probe_conn([
+            "GRANT SELECT ON `db`.* TO `u`@`%` WITH GRANT OPTION",
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        assert (await adapter.probe_readonly()).verified is False
+
+    async def test_the_probe_never_sends_a_write_statement(self, monkeypatch):
+        """**探测绝不试写**(§4 I1 的实施取舍)。
+
+        设计稿给的另一条路是「尝试一条必然失败的写语句」—— 它「必然失败」的前提
+        正是「账号只读」这个待证假设。账号其实可写时,那条语句会**真的写进去**:
+        一个探测变成了生产写入。这条用例把「只查权限表」钉死在实现上。
+        """
+        conn = self._probe_conn(["GRANT SELECT ON `db`.* TO `u`@`%`"])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        sent = [sql for sql, _ in conn.cursors[1].executed]
+        assert sent == ["SHOW GRANTS"], sent
+        upper = sent[0].upper()
+        for verb in ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER"):
+            assert verb not in upper
+
+    async def test_no_rows_at_all_is_unknown_not_read_only(self, monkeypatch):
+        """一条授权都没看到 → **不知道**,不是「确认只读」。
+
+        空结果最可能的解释是这条路径没拿到东西(驱动/权限/方言),而不是「这个
+        账号什么都不能干」。往 ``True`` 倒就是替一道边界背书。
+        """
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),
+            ([], None, None),
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is None
+        assert probe.basis == BASIS_PROBE_FAILED
+
+    async def test_an_operator_error_is_folded_by_the_orchestrator(self, monkeypatch):
+        """查询被拒(权限不足)→ 适配器如实抛,由 ``readonly.probe`` 折成不知道。"""
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),
+            ([], None, RuntimeError("SHOW GRANTS command denied")),
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        with pytest.raises(RuntimeError):
+            await adapter.probe_readonly()
+
+        from trove.services.datasource import readonly
+        probe = await readonly.probe(adapter)
+        assert probe.verified is None
+        assert probe.basis == BASIS_PROBE_FAILED
 
 
 # ── Integration tests (MYSQL_TEST_URL, skipped when unset) ──

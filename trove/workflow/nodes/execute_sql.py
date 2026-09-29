@@ -15,6 +15,11 @@ from typing import Any
 
 from trove.core.i18n import L
 from trove.core.logging import get_logger
+from trove.core.metrics import (
+    record_sql_budget_decision,
+    record_sql_degraded,
+    record_sql_kill,
+)
 from trove.services.authz.enforcer import Authorizer, referenced_tables
 from trove.services.authz.policy import principal_from_wire
 from trove.services.datasource.registry import ConnectorRegistry
@@ -194,6 +199,16 @@ def make_execute_sql(
                     state.question[:80], ", ".join(decision.narrowed_tables),
                 )
 
+        # 指标用的数据源名:与血缘、终止、证据同一个解析(state.datasource → 默认源)。
+        # 三处各解析一次,就会出现「指标记的是默认源、线索记的是另一个」这种对不上
+        # 的账 —— 而这类账的排查成本随部署里的数据源数量上升。
+        #
+        # 用 getattr 而不是直接取属性:``connectors`` 是鸭子类型(节点只需要
+        # ``execute``),手上没有 ``default_name`` 的替身不该因为「记一次指标」而
+        # 炸掉整条执行路径 —— 指标不能拖垮请求路径这条纪律,在这里落到「连取值
+        # 都不许抛」。
+        metric_datasource = state.datasource or getattr(connectors, "default_name", "") or ""
+
         # 成本轨(设计 §5.1 / §5.2)—— 权限轨之后、落库之前。
         #
         # 排序有讲究:授权判定放在**前面**,因为被拒的查询不该再去 EXPLAIN。
@@ -207,6 +222,14 @@ def make_execute_sql(
         budget_extra: dict[str, Any] = {}
         if budget is not None:
             est, decision, effective_budget = await _judge_budget(budget, state)
+            # 成本判定落账(设计 §9.2 / R1)。记录点**在节点、不在 BudgetService**:
+            # 同一套 ``estimate``/``decide`` 在 ``describe_cost``(生成前问价)里也
+            # 会跑一遍,在服务层记会把「问价的」和「真跑了的」混成一个数 —— 问价
+            # 不碰数据库,真跑了的那条可能打爆生产库。节点记才等于「这条查询落库了」。
+            #
+            # 判定一经作出就记(在下面几个 return 之前):reject 也是判定结果,
+            # 漏掉它,这个分布就答不出「被拒的那些是哪一档判的」。
+            record_sql_budget_decision(metric_datasource, est.source, decision.verdict)
             if decision.verdict == "reject":
                 budget_extra["execution_evidence"] = execution_evidence(
                     est, decision, effective_budget,
@@ -264,6 +287,12 @@ def make_execute_sql(
 
             limit_applied: int | None = None
             if decision.verdict == "degrade":
+                if est.degraded:
+                    # R1 的落点。口径是 ``est.degraded``(**没有**估算依据,I2 ——
+                    # 与答案里那个同名字段同义),不是 ``verdict="degrade"``:后者
+                    # 还含画像档超软限那种「有依据、按大表处置」的降级,把它记成
+                    # 「没有护栏」正是 R1 要防的那类误读(见 metrics.SQL_DEGRADED)。
+                    record_sql_degraded(metric_datasource)
                 # 路径 3(无法估算)是本方案改的**唯一**一处行为:存量在这里
                 # 放行,现在改为「加 LIMIT 执行 + 留痕」(§5.2 / I2 / I6)。
                 limited = force_limit(
@@ -310,10 +339,12 @@ def make_execute_sql(
                 # 这个方言支不支持」在答案里一个字都没有。
                 timeout_evidence = budget_extra.get("execution_evidence")
                 if timeout_evidence is not None:
+                    kill = await _terminate(terminator, state, connectors)
                     timeout_evidence["terminated"] = "timeout"
-                    timeout_evidence["kill"] = await _terminate(
-                        terminator, state, connectors,
-                    )
+                    timeout_evidence["kill"] = kill
+                    # 与证据同一份结论,不另问一次终止(§10:不重试 kill)。
+                    # 没试过就没有结论 —— ``""`` 由 record_sql_kill 自己挡掉。
+                    record_sql_kill(metric_datasource, kill)
                 elif terminator is not None:
                     # 没装成本轨就没有证据块可落(与画像、报价同开关)。终止照发,
                     # 但要留痕 —— 静默丢弃一个「查询被主动终止」的事实,

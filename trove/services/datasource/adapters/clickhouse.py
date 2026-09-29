@@ -6,6 +6,7 @@ asyncio.to_thread so the async pipeline never blocks the loop.
 Introspection via system tables:
   - system.tables: name + total_rows
   - system.columns: name / type / is_in_primary_key (ORDER BY key)
+  - system.grants + system.role_grants: read-only role self-check (§4 I1)
 
 The driver is imported lazily so the adapter module stays importable
 without `uv sync --extra clickhouse`.
@@ -20,9 +21,12 @@ from dataclasses import replace
 from typing import Any
 
 from trove.core.types import (
+    BASIS_GRANTS,
+    BASIS_PROBE_FAILED,
     Capabilities,
     ColumnInfo,
     QueryResult,
+    ReadonlyProbe,
     SchemaInfo,
     TableInfo,
     TableProfile,
@@ -88,6 +92,116 @@ def _get_driver():
             message="clickhouse-connect is not installed — run `uv sync --extra clickhouse`",
             datasource="",
         ) from e
+
+
+# ── 只读角色自检(设计 §4 I1)──────────────────────────────
+
+#: 算「写得动」的 ``access_type`` 字面量。**组别名与细粒度权限两种表示都要认**:
+#:
+#: * ``WRITE`` / ``READ`` 是**组别名**(``GRANT WRITE ON db.*`` 一把就是整组)。
+#:   只读账号那侧对应的组别名是 ``READ``,它**不在**这个集合里 —— 进来就会让
+#:   每个只读账号都被报成写得动,而那句 WARN 的全部价值来自它只在真能写时出现。
+#: * ``INSERT`` / ``ALTER`` … 是**细粒度**权限。两种表示在真实授权里都会出现
+#:   (``GRANT ALL`` 展开出来的是这一批),只认一种就会漏。
+#:
+#: 划线标准是**这条权限能不能改数据或改结构**。刻意不收的:
+#:
+#: * ``SYSTEM`` / ``KILL QUERY`` / ``KILL TRANSACTION`` —— 改的是**服务端状态**
+#:   或别人的查询,不是数据。收了会让一批真的只读账号(给监控用的那种)在启动
+#:   日志里 WARN,而一次没有依据的 WARN 会让真出现的那次也没人看。
+#: * ``SHOW`` / ``SELECT`` / ``READ`` / ``dictGet`` / ``BACKUP`` —— 都是读。
+#: * ``CLUSTER`` / ``FILE`` / ``URL`` / ``S3`` …(表函数与外部源)—— 读外部,
+#:   不写本库。
+#:
+#: ``OPTIMIZE`` 收进来是被这条线逼出来的:它不改行,但会**按 TTL 真的删数据**
+#: (``OPTIMIZE … FINAL`` 会物化 TTL),而只读边界该挡住的东西正是「数据会变」。
+#: ``UNDROP TABLE`` 同理 —— 把删掉的表救回来也是改结构。
+_CLICKHOUSE_WRITE_ACCESS_TYPES: tuple[str, ...] = (
+    "WRITE",
+    "INSERT",
+    "ALTER",
+    "CREATE",
+    "DROP",
+    "TRUNCATE",
+    "OPTIMIZE",
+    "UNDROP TABLE",
+)
+
+#: 上面三个父类型底下还有一批**子类型**,它们是同一个 Enum16 里**并列的独立取值**
+#: (``system.grants.access_type`` 的枚举里能看到 ``ALTER UPDATE`` / ``ALTER
+#: DELETE`` / ``ALTER TABLE`` / ``CREATE TABLE`` / ``DROP TABLE`` …)。
+#:
+#: 只比上面那 8 个字面量是不够的:一个「能改数据、但只授了 ``ALTER DELETE``」
+#: 的账号会被数成**零条写权限**,于是 ``verified=true`` —— 而那正是这个探测唯一
+#: 不许犯的错(替一道并不存在的边界背书)。
+#:
+#: 用前缀而不是把子类型列全:它们在版本之间会增删(25.12 的枚举里,以这三个词
+#: 开头的取值除了三个父类型本身还有 67 个 —— 光 ALTER 一家的子类型就 48 个),
+#: 列全了就是一枚版本炸弹:名字在某个版本上不存在,整条查询会被直接拒掉,探测
+#: 于是**永远**只能报「不知道」。前缀不会:``toString`` 作用在 Enum16 上是合法的
+#: (实测 25.12;``upper(access_type)`` 那种写法才是 code 43)。方向也是单边的:
+#: **只会多报写得动,不会少报**。
+_CLICKHOUSE_WRITE_ACCESS_PREFIXES: tuple[str, ...] = ("ALTER", "CREATE", "DROP")
+
+
+def _write_predicate() -> str:
+    """写权限的判定条件。**只此一份** —— 计数与证据列必须问同一个问题。
+
+    两处各写一份的话,它们会在某次改动里分叉,而分叉的形态是「计数说有写权限、
+    证据列出的是另一批」,看日志的人只会更糊涂。
+    """
+    literals = ", ".join(f"'{t}'" for t in _CLICKHOUSE_WRITE_ACCESS_TYPES)
+    prefixes = [
+        f"toString(access_type) LIKE '{p}%'" for p in _CLICKHOUSE_WRITE_ACCESS_PREFIXES
+    ]
+    return " OR ".join([f"access_type IN ({literals})", *prefixes])
+
+
+def _readonly_probe_sql() -> str:
+    """自检发出的**唯一**一条查询。返回「授权总数 / 写权限数 / 写权限类型名」。
+
+    * ``access_type`` 只能用**字面量**直接比:这一列是 ``Enum16``,不是 String,
+      ``upper(access_type)`` 在真库上直接报 code 43(实测 25.12)。代价是比不出
+      子类型,那部分交给前缀(见上)。
+    * ``WITH RECURSIVE`` 展开角色继承 —— ``system.grants`` 只列「授给这个用户」
+      和「授给这个角色」两种行,继承**不会**自动展开。少了它,一个通过角色拿到
+      ``INSERT`` 的账号会被判成只读,那是这个探测最危险的方向。
+    * 三个数一次往返拿全,不是三次:``readonly.PROBE_TIMEOUT_S`` 只有 3 秒,而
+      三个数都在同一张表上,分开查只是把同一遍扫描付三遍。
+    """
+    predicate = _write_predicate()
+    return (
+        "WITH RECURSIVE roles AS (\n"
+        "    SELECT granted_role_name AS r FROM system.role_grants\n"
+        "    WHERE user_name = currentUser()\n"
+        "    UNION ALL\n"
+        "    SELECT rg.granted_role_name FROM system.role_grants rg\n"
+        "    JOIN roles ON rg.user_name = roles.r\n"
+        ")\n"
+        "SELECT count() AS total,\n"
+        f"       countIf({predicate}) AS writes,\n"
+        "       arrayStringConcat(arraySort(groupUniqArrayIf(\n"
+        f"           toString(access_type), {predicate})), ', ') AS hits\n"
+        "FROM system.grants\n"
+        "WHERE (user_name = currentUser() OR role_name IN (SELECT r FROM roles))"
+    )
+
+
+#: 这条查询**覆盖不到什么**(都是知道并接受的,不是没想到):
+#:
+#: * ``is_partial_revoke`` —— 不做处理。被部分撤销的写权限仍然会被数成一条写
+#:   权限,于是写计数偏高、结论偏向 ``False``(报「写得动」)。方向是安全的:
+#:   宁可多一次 WARN,不可少一次。真要做对,得把 ``is_partial_revoke = 0``
+#:   加进条件 —— 但那是把「撤销」的语义(DCL 的授予/撤销顺序)搬进这个探测里,
+#:   收益是少一次 WARN,不值。
+#: * ``access_object`` 与 ``database`` / ``table`` 的作用域 —— 不看。判定只问
+#:   「这个账号**有没有**写权限」,不问「写在哪个库」:I1 断言的是「这道边界
+#:   存在」,而一个能写别的库的账号并不是只读账号。代价是**不知道**这条写权限
+#:   是不是落在本数据源那个库上,所以 WARN 里给不出该改哪一条授权。
+#: * 服务端那条查询的**终止** —— 探测不带 ``query_id``(它不进 ``_inflight``,
+#:   见 §7.3 的登记处),所以 3 秒超时收回的只是本地等待,服务端那条查询会自己
+#:   跑完。它是只读且极廉价的聚合,这里不接 P4 的终止路径。
+_READONLY_PROBE_SQL = _readonly_probe_sql()
 
 
 class ClickHouseAdapter(DatabaseAdapter):
@@ -372,4 +486,60 @@ class ClickHouseAdapter(DatabaseAdapter):
             supports_transactions=False,  # ClickHouse has no multi-statement transactions
             supports_json_type=True,
             dialect="clickhouse",
+        )
+
+    async def probe_readonly(self) -> ReadonlyProbe:
+        """``system.grants``:这个账号到底能不能写(设计 §4 I1)。
+
+        **只查权限表,绝不试写**。设计稿给的另一条路是「尝试一条必然失败的写
+        语句」—— 它「必然失败」的前提正是「账号只读」这个待证假设:账号其实可写
+        时,那条语句会**真的写进去**,一个探测变成一次生产写入。
+
+        一次往返拿三个数(见 ``_READONLY_PROBE_SQL``):授权总数、写权限数、
+        写权限的类型名。判定只看前两个,**证据取第三个** —— ``detail`` 只进日志,
+        但「凭什么说它写得动」得答得出来。
+
+        不接异常:查询被拒/连接断了,**如实往上抛**,由 ``readonly.probe`` 折成
+        ``probe_failed``。在这里吞掉它就等于让「没查成」消失在实现里。
+
+        自己折的只有**形状**那一处:聚合查询必然回一行三列,真回来别的形状说明
+        这条路上拿到的不是它该拿到的东西(驱动换了、结果被拍平了)—— 那时候说
+        「不知道」,不说「只读」。
+        """
+        if not self._client or not self._connected:
+            raise DatasourceError(message="Not connected", datasource=self.name)
+
+        def _run() -> Any:
+            return self._client.query(_READONLY_PROBE_SQL).result_rows
+
+        rows = await asyncio.to_thread(_run)
+
+        row = rows[0] if rows else None
+        if (
+            not isinstance(row, (list, tuple))
+            or len(row) < 3
+            or not all(isinstance(v, int) for v in row[:2])
+        ):
+            return ReadonlyProbe(
+                None, BASIS_PROBE_FAILED,
+                f"system.grants probe returned an unexpected shape: {rows!r:.160}",
+            )
+        total, writes, hits = row
+
+        if total == 0:
+            # 一行授权都没有 ≠ 什么都不能干:更可能是这个账号的权限不来自 SQL
+            # 授权(那它在这张表里就看不见)。零行支持不了任何结论 —— 往 True
+            # 倒就是替一道并不存在的边界背书,而这正是 I1 要防的那个谎。
+            return ReadonlyProbe(
+                None, BASIS_PROBE_FAILED,
+                "system.grants has no rows for the connected user",
+            )
+        if writes:
+            return ReadonlyProbe(
+                False, BASIS_GRANTS,
+                f"{writes} of {total} grant(s) are write access types: {hits}",
+            )
+        return ReadonlyProbe(
+            True, BASIS_GRANTS,
+            f"{total} grant(s), none of them a write access type",
         )

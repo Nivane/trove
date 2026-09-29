@@ -120,6 +120,33 @@
       一个模型自发的探测不该占用正式执行的预算，卡住它就该快速失败、换个思路。
     </p>
 
+    <h3>自检：怎么确认那道边界真的在</h3>
+
+    <p>
+      「边界在数据库侧」这句话本身得有人验。启动时 Trove 会问每个数据源一句：
+      这个账号到底能不能写？结论会 WARN 到日志，并作为每个源的
+      <code>readonly</code> 字段出现在<a href="observability.html#health">探活端点</a>上。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">它绝不「试写一条语句」</span>
+      <div>
+        <p>
+          用一条「必然失败的写语句」来验证只读，是最容易想到也最不该做的事：
+          它「必然失败」的前提，正是「账号只读」这个<strong>还没有被证明的假设</strong>。
+          账号其实可写时，那条语句会<strong>真的写进去</strong>——一个探测变成一次生产写入。
+        </p>
+        <p>所以自检只查权限表：MySQL/Doris 走 <code>SHOW GRANTS</code>，PostgreSQL 查
+        <code>pg_roles</code> / <code>pg_class</code> / <code>table_privileges</code>，
+        ClickHouse 查 <code>system.grants</code>（含角色继承展开）。一个字都不写。</p>
+      </div>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/readonly.py">datasource/readonly.py <span class="ref-line">自检编排</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/types.py">core/types.py <span class="ref-line">ReadonlyProbe</span></a>
+    </p>
+
     <h2 id="ratelimit">限流与配额</h2>
 
     <p>

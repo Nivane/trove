@@ -12,6 +12,7 @@ These are SYNC tests on purpose: TestClient brings its own event loop
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 
@@ -91,6 +92,60 @@ def test_lifespan_without_maintenance_is_noop():
     )
     with TestClient(app) as c:
         assert c.get("/v1/health").status_code == 200
+
+
+def test_lifespan_runs_readonly_selfcheck(caplog):
+    """启动自检(设计 §4 I1):每个源问一遍账号能不能写,结果挂在 app.state。
+
+    这条自检**同步等**(不像 sweep 那样丢后台):后台跑的话进程会先开始收
+    请求,那几秒 health 只能报 ``not_probed``,可它不是「没探过」是「正在
+    探」—— 同一个 basis 说两件事,就又是一种谎。代价是启动多等一个往返
+    (单源 3s 有界、并发),而这个往返换来的是:进程一开始收请求,答案就在。
+    """
+    from trove.core.types import BASIS_GRANTS, ReadonlyProbe
+
+    class _WritableAdapter:
+        name = "shop"
+        is_connected = True
+
+        async def execute(self, sql):
+            return None  # health 的 SELECT 1 探针:这个源本身是好的
+
+        async def probe_readonly(self):
+            # detail 带上授权原文:它只该进日志,不该进响应(health 免鉴权)
+            return ReadonlyProbe(False, BASIS_GRANTS, "GRANT INSERT ON `shop`.*")
+
+    class _ProbeRegistry(_FakeRegistry):
+        def __init__(self):
+            self._adapters = {"shop": _WritableAdapter()}
+
+        def list_names(self):
+            return list(self._adapters)
+
+        async def get(self, name):
+            return self._adapters[name]
+
+    components = _components()
+    components["connector_registry"] = _ProbeRegistry()
+    app = create_app(components, allow_null_auth=True)
+    with TestClient(app) as c:
+        # 进到这里意味着 lifespan 的 startup 段已经跑完 —— 自检是同步等的,
+        # 所以不必轮询:答不出结论就不该开始服务。
+        result = app.state.readonly_probes["shop"]
+        assert result.verified is False
+        # 钉**级别**而不只是文案:caplog.text 把 INFO 也收进来,只断言文案的话
+        # 「这条降级成 INFO」这个变异会活下来(就是不显眼了,而它恰恰要显眼)。
+        marked = [
+            r for r in caplog.records
+            if r.name == "trove.api.app" and "verified=false" in r.getMessage()
+        ]
+        assert marked, "自检结论没进日志"
+        assert marked[0].levelno >= logging.WARNING
+        # 结论进 health,但 detail 不进(GRANT 原文里有库名与账号名)
+        resp = c.get("/v1/health")
+        entry = resp.json()["checks"]["datasources"]["shop"]
+        assert entry["readonly"] == {"verified": False, "basis": "grants"}
+        assert "GRANT" not in resp.text
 
 
 def test_create_app_without_auth_fails_closed():

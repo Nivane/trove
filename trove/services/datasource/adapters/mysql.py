@@ -16,9 +16,12 @@ from collections.abc import Callable
 from typing import Any
 
 from trove.core.types import (
+    BASIS_GRANTS,
+    BASIS_PROBE_FAILED,
     Capabilities,
     ColumnInfo,
     QueryResult,
+    ReadonlyProbe,
     SchemaInfo,
     TableInfo,
     TableProfile,
@@ -35,6 +38,37 @@ from trove.services.datasource.adapters.base import (
 logger = get_logger(__name__)
 
 DEFAULT_PORT = 3306
+
+#: ``SHOW GRANTS`` 里算「写得动」的权限名。
+#:
+#: 只看 `` ON `` **之前**那一段(权限清单真正所在的位置):表名与账号名都在它
+#: 后面,``GRANT SELECT ON `db`.`insert_log``` 里的 ``insert_log`` 是表名 ——
+#: 整行扫关键字的实现会把一个纯只读账号报成可写。
+#:
+#: ``LOCK TABLES`` / ``REFERENCES`` 也收进来:它们不改数据,但都不是只读边界
+#: 该有的东西,而 I1 断言的正是「这道边界存在」。
+_MYSQL_WRITE_PRIVILEGES = frozenset({
+    "ALL PRIVILEGES", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+    "TRUNCATE", "CREATE TEMPORARY TABLES", "LOCK TABLES", "REFERENCES",
+})
+
+
+def _mysql_write_grants(grant_lines: list[str]) -> list[str]:
+    """从 ``SHOW GRANTS`` 的行里挑出带写权限的那几条(整行返回,便于留依据)。"""
+    hits = []
+    for line in grant_lines:
+        upper = str(line).upper()
+        privileges, _, tail = upper.partition(" ON ")
+        names = {
+            p.strip()
+            for p in privileges.removeprefix("GRANT ").split(",")
+            if p.strip()
+        }
+        # ``WITH GRANT OPTION`` 的账号能**自己把 INSERT 授给自己**:今天没写权限
+        # 不代表明天没有,所以它不是一道只读边界(它在 `` ON `` 之后,单独看)。
+        if names & _MYSQL_WRITE_PRIVILEGES or "WITH GRANT OPTION" in tail:
+            hits.append(str(line))
+    return hits
 
 
 class MySQLAdapter(DatabaseAdapter):
@@ -190,6 +224,43 @@ class MySQLAdapter(DatabaseAdapter):
                 await cursor.close()
         finally:
             side.close()
+
+    async def probe_readonly(self) -> ReadonlyProbe:
+        """``SHOW GRANTS``(设计 §4 I1)。
+
+        **只查权限表,绝不试写**。设计稿给的另一条路是「尝试一条必然失败的写
+        语句」—— 它「必然失败」的前提正是「账号只读」这个待证假设;账号其实可写
+        时,那条语句会真的写进去,一个探测变成一次生产写入。
+
+        用不带 ``FOR`` 的 ``SHOW GRANTS``:它就是这个账号自己的授权,而且是
+        MySQL 与 Doris 都认的形式(Doris 的 ``information_schema`` 是 FE 虚拟表,
+        不代表真实权限;``SHOW GRANTS`` 才是它的权威源)。
+
+        不接异常:查询被拒/连接断了,**如实往上抛**,由 ``readonly.probe`` 折成
+        ``probe_failed``。在这里吞掉它就等于让「没查成」消失在实现里。
+        """
+        await self._ensure_connected()
+        cursor = await self._conn.cursor()
+        try:
+            await cursor.execute("SHOW GRANTS")
+            rows = await cursor.fetchall()
+        finally:
+            await cursor.close()
+
+        grants = [str(r[0]) for r in rows if r and r[0] is not None]
+        if not grants:
+            # 一条都没看到 ≠ 什么都不能干:更可能是这条路径没拿到东西。往 True
+            # 倒就是替一道并不存在的边界背书,而这正是 I1 要防的那个谎。
+            return ReadonlyProbe(
+                None, BASIS_PROBE_FAILED, "SHOW GRANTS returned no rows",
+            )
+        writes = _mysql_write_grants(grants)
+        if writes:
+            return ReadonlyProbe(False, BASIS_GRANTS, "; ".join(writes))
+        return ReadonlyProbe(
+            True, BASIS_GRANTS,
+            f"{len(grants)} grant line(s), none of them a write privilege",
+        )
 
     async def _ping_reconnect(self) -> None:
         """Reconnect if the underlying connection went stale.

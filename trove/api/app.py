@@ -37,6 +37,8 @@ from trove.core.metrics import (
     render_metrics,
 )
 from trove.core.request_id import request_id_var
+from trove.core.types import BASIS_NOT_PROBED, BASIS_PROBE_FAILED
+from trove.services.datasource.readonly import describe, probe_all
 
 logger = get_logger(__name__)
 
@@ -119,8 +121,47 @@ async def _periodic_sweep(app: FastAPI) -> None:
         await _purge_auth(app)
 
 
+async def _readonly_selfcheck(app: FastAPI) -> None:
+    """启动自检:每个数据源连的账号**是不是确实只能读**(设计 §4 I1)。
+
+    权限轨整体是 fail-open(§2.3),这条不改 —— 但「真正的边界在数据库侧的
+    只读角色上」这句话本身得有人验。这就是那个验证:问清楚,然后照实说。
+
+    **同步等,不丢后台**(与上面两个 sweep/tick 循环相反,是有意的):丢后台
+    会让进程先开始收请求,而那几秒里 health 只能报 ``not_probed`` —— 可它
+    不是「没探过」,是「正在探」,同一个 basis 说两件事,就又是一种谎。代价
+    是启动多等一个往返(单源 3s 有界、各源并发);换来的是「进程一开始收
+    请求,答案就已经在了」。
+
+    为什么不在每次 health 现场问:那是一次权限表往返,而 health 是编排器
+    秒级轮询的端点 —— 探针会变成对数据库的持续加压。
+
+    永不抛:自检是护栏,护栏故障不阻断启动(I6)。
+    """
+    registry = getattr(app.state, "connector_registry", None)
+    if registry is None:
+        return
+    try:
+        results = await probe_all(registry)
+    except Exception as e:  # probe_all 自己吞错;这里兜的是它将来改了
+        logger.warning("readonly self-check failed: %s", e)
+        return
+    app.state.readonly_probes = results
+    for name, result in sorted(results.items()):
+        line = f"datasource {name}: {describe(result)}"
+        if result.verified is False or result.basis == BASIS_PROBE_FAILED:
+            # 两个方向都值得有人看一眼:「边界不在」是安全问题,「没能确认」
+            # 是这句断言当下没有依据 —— 都不是 ``unverifiable``(那个是这个
+            # 方言的已知属性,SQLite/DuckDB 每次启动都会命中,报 WARN 就是噪声)。
+            logger.warning("%s", line)
+        else:
+            logger.info("%s", line)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # 只读角色自检:同步跑完再开始服务(理由见函数 docstring)
+    await _readonly_selfcheck(app)
     maintenance = getattr(app.state, "maintenance", None)
     sweep_task: asyncio.Task | None = None
     startup_task: asyncio.Task | None = None
@@ -315,6 +356,22 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
                     return name, {"ok": False, "error": type(e).__name__}
 
             ds_checks = dict(await asyncio.gather(*(_ping_one(n) for n in names)))
+
+            # 只读自检的结论**并进同一个源的条目,但不参与 ok**(设计 §4 I1)。
+            #
+            # ``ok`` / 顶层 ``status`` 说的是「这个源现在能不能用」;「只读边界
+            # 其实不存在」是另一件事 —— 一个重启/查连接,一个改授权,修法毫无
+            # 关系。折进 ok,监控上就再也分不出是哪一种,而只有后者是安全问题
+            # (P5 的取舍:不为了让它显眼,把两种故障渲染成同一种)。
+            #
+            # 没探过(启动自检没跑 / 这个源是启动后注册的)报 ``not_probed``,
+            # 绝不报 ``verified: true``。
+            probes = getattr(app.state, "readonly_probes", None) or {}
+            for name, entry in ds_checks.items():
+                hit = probes.get(name)
+                entry["readonly"] = hit.to_health() if hit is not None else {
+                    "verified": None, "basis": BASIS_NOT_PROBED,
+                }
         checks["datasources"] = ds_checks
 
         # LLM 只报**事实**,不下"能不能用"的结论:providers 是

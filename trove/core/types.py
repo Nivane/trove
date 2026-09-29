@@ -206,6 +206,50 @@ class Capabilities:
     dialect: str = ""
 
 
+# ── 只读角色自检(设计 §4 I1)──────────────────────────────
+#
+# 同 ``TableProfile`` 的理由放在这里:它是**适配器的返回类型**,落在服务层会让
+# ``adapters/base.py`` 反向依赖上层。
+
+#: ``ReadonlyProbe.basis`` 的四个取值。**为什么不是「一个布尔」**:I1 要断言的
+#: 是一道硬边界**确实存在**,而「不知道」与「确认只读」在布尔里同形 —— 把前者
+#: 说成后者,等于替一道并不存在的边界背书(与 ``as_of_basis`` / ``kill`` 同一
+#: 套三态纪律)。四个值各自对应一种**不同的修法**,所以它们不能合并:
+#:
+#: * ``grants``       查了权限表,有正面依据 —— 唯一能支撑结论的 basis
+#: * ``unverifiable`` 这个方言根本没有角色概念(SQLite / DuckDB 是文件权限)
+#: * ``probe_failed`` 查了,没查成(权限不足 / 超时 / 连接断)
+#: * ``not_probed``   启动自检时还没有这个源(admin 后注册的)
+BASIS_GRANTS = "grants"
+BASIS_UNVERIFIABLE = "unverifiable"
+BASIS_PROBE_FAILED = "probe_failed"
+BASIS_NOT_PROBED = "not_probed"
+
+
+@dataclass(frozen=True)
+class ReadonlyProbe:
+    """数据源账号是否**确实只能读**(设计 §4 I1)。
+
+    ``verified`` 是三值而不是布尔:``True`` = 有正面证据表明写不了,
+    ``False`` = 有正面证据表明**写得动**(硬边界不存在,该 WARN),
+    ``None`` = 没查成 / 这个方言查不了。看 ``basis`` 才知道是哪种。
+    """
+
+    #: True / False / None(不知道)—— None 不是「安全」
+    verified: bool | None
+    basis: str
+    #: 人话依据,**只进日志**。不进健康检查响应,见 :meth:`to_health`。
+    detail: str = ""
+
+    def to_health(self) -> dict:
+        """健康检查里的形状。``detail`` **刻意不在这里**。
+
+        健康检查的既有纪律是「错误只报类型名,不回传驱动原文」(避免凭据/主机
+        信息入响应);而这个 detail 还会带上库里的对象名与授权原文。
+        """
+        return {"verified": self.verified, "basis": self.basis}
+
+
 # ── Datasource Config ────────────────────────────────────
 
 

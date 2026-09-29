@@ -3,12 +3,14 @@
 import asyncio
 import logging
 import os
+import re
 import threading
 import uuid
 
 import pytest
 
 from trove.core.errors import DatasourceError, SQLExecutionError
+from trove.core.types import BASIS_GRANTS, BASIS_PROBE_FAILED
 from trove.services.datasource.adapters import clickhouse as ch_module
 from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
 
@@ -33,11 +35,13 @@ class FakeClient:
     就是「KILL 发出去、服务端没这个 id、查询照跑、证据却写 kill_sent」。
     """
 
-    def __init__(self, scripted=None, *, blocking=None, command_error=None):
+    def __init__(self, scripted=None, *, blocking=None, command_error=None,
+                 query_error=None):
         # scripted: list of FakeResult returned per query() call
         self._scripted = list(scripted or [])
         self._blocking = blocking          # threading.Event: 卡住 query 用
         self._command_error = command_error
+        self._query_error = query_error    # 查询被拒(权限不足等)用
         self.queries = []
         self.settings = []
         self.transport_settings = []       # 真驱动不看它,这里留着证明没人该用它
@@ -49,6 +53,8 @@ class FakeClient:
         self.queries.append((sql, parameters))
         self.settings.append(settings)
         self.transport_settings.append(transport_settings)
+        if self._query_error is not None:
+            raise self._query_error
         if self._blocking is not None:
             self._blocking.wait(timeout=10)
         return self._scripted.pop(0) if self._scripted else FakeResult([], [])
@@ -98,6 +104,11 @@ def make_adapter(monkeypatch, driver=None, config=None):
         },
     )
     return adapter, driver
+
+
+def _squash(sql: str) -> str:
+    """把 SQL 压成单空格分隔的一行 —— 断结构时不想被换行和缩进绊住。"""
+    return " ".join(sql.split())
 
 
 class TestClickHouseAdapter:
@@ -346,6 +357,274 @@ class TestClickHouseTermination:
         assert side.command_attempts == 1, "同一条查询只终止一次(§10)"
 
 
+class TestClickHouseReadonlyProbe:
+    """只读自检的 ClickHouse 实现(设计 §4 I1)。
+
+    与 MySQL 那份是同一件事的两种方言写法,但 CH 这里多两个**方言特有**的坑,
+    各有一条用例钉着:
+
+    * ``system.grants.access_type`` 是 ``Enum16``(**不是 String**)——
+      ``upper(access_type)`` 在真库上直接报错(code 43,实测 25.12),所以只能
+      拿字面量去比;
+    * 权限可以**通过角色**拿到,而 ``system.grants`` 只列出「授给这个用户」和
+      「授给这个角色」两种行,角色继承不会自动展开 —— 少了递归展开,一个「通过
+      角色拿到 INSERT」的账号会被判成只读,那正是最危险的方向。
+    """
+
+    #: 真容器上实测的那一行形状:``clickhouse`` 账号 41 条授权(``GRANT ALL``
+    #: 展开后的样子),其中 8 条是写权限。假驱动喂的就是这个数。
+    REAL_WRITABLE = (41, 8, "ALTER, CREATE, DROP, INSERT, OPTIMIZE, TRUNCATE, UNDROP TABLE, WRITE")
+
+    #: 这一版**必须认**的写权限:组别名(``WRITE``)+ 细粒度权限 + 父类型本身。
+    #: 这里**写死在用例这一侧**,不是去遍历实现里那个常量 —— 遍历它是自问自答:
+    #: 把常量收窄成只剩 ``INSERT``,断言照样全绿,而真库上一个只授了 ``TRUNCATE``
+    #: 的账号会被判成只读(``verified=true``,替一道不存在的边界背书)。
+    #: 「哪些算写得动」是**设计决定**,所以它得写在用例这一侧。
+    REQUIRED_WRITE_TYPES = (
+        "WRITE", "INSERT", "ALTER", "CREATE", "DROP", "TRUNCATE", "OPTIMIZE",
+        "UNDROP TABLE",
+    )
+
+    #: 父类型底下的**子类型**(``ALTER UPDATE`` / ``ALTER DELETE`` / ``ALTER
+    #: TABLE`` …)在 ``system.grants`` 里是并列的独立取值,只比字面量会漏掉它们。
+    REQUIRED_WRITE_PREFIXES = ("ALTER", "CREATE", "DROP")
+
+    @staticmethod
+    def _probe_client(total, writes, hits=""):
+        """一个已经连上、``system.grants`` 探测会回这一行结果的 client。
+
+        ``(total, writes, hits)`` 是**照真驱动实测的形状**写的:这条探测是聚合
+        查询,真库上 ``query(...).result_rows`` 回来的是「一行三列」的 list of
+        tuple,``hits`` 是**一个完整字符串**(实测:``(41, 8, 'ALTER, CREATE, …')``)。
+
+        最容易写错的就是这一层:把 ``result_rows`` 直接写成那个字符串,
+        ``result_rows[0]`` 拿到的就成了**第一个字符** —— 而「只读账号」那几条
+        用例会因为字符里当然没有 'INSERT' 而**全绿**。假驱动把形状说错一分,
+        测试就少测一分。
+        """
+        return FakeClient([
+            FakeResult(["total", "writes", "hits"], [(total, writes, hits)]),
+        ])
+
+    async def test_a_read_only_account_is_verified(self, monkeypatch):
+        """只读账号的授权行**照样是行**(``total`` 不为零),但写计数为零 → 正面依据。
+
+        三态里 ``True`` 只能建立在正面依据上:这里依据是「查到了这个账号的授权,
+        数下来一条写权限都没有」,不是「没查成」。
+        """
+        client = self._probe_client(3, 0, "")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is True, "只读账号必须被判成只读"
+        assert probe.basis == BASIS_GRANTS
+
+    async def test_the_read_and_write_group_aliases_are_understood(self, monkeypatch):
+        """``READ`` / ``WRITE`` 是 CH 的**组别名**,``SELECT`` / ``INSERT`` 是细粒度权限。
+
+        两种表示都要认:只读账号的授权里可能只出现 ``READ``(一个组别名),
+        可写账号也可能只出现 ``WRITE``。所以 ``'WRITE'`` 必须在写集合里,
+        ``'READ'`` **必须不在** —— 它进写集合的话,每个只读账号都会被报成
+        「写得动」,而那句 WARN 的全部价值来自它只在真能写的时候出现。
+
+        这一条断的是**发出去的那串字面量**,不是脚本喂回来的结论:假驱动不执行
+        SQL,它没法表达「这行 READ 会不会命中 IN 列表」。字面量在真库上的行为
+        (Enum16 能不能这么比、比得对不对)由真库集成用例兜底。
+        """
+        client = self._probe_client(1, 0, "")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+        sql = client.queries[0][0]
+
+        assert probe.verified is True
+        assert "'WRITE'" in sql, "WRITE 组别名不在写集合里 —— 只授了 WRITE 的账号会被判成只读"
+        assert "'READ'" not in sql, "READ 是读组别名,进了写集合就会把只读账号报成写得动"
+
+    async def test_an_account_that_can_write_is_reported_as_writable(self, monkeypatch):
+        """写得动 → ``False`` + **依据**。
+
+        依据留在 ``detail`` 里:只说「有 8 条写权限」不够,得说清是哪几种 ——
+        运维看到这条 WARN 之后要判断的是「这账号该不该有这些权限」。
+        ``hits`` 是**整条取出来的字符串**,不是它的某个字符。
+        """
+        total, writes, hits = self.REAL_WRITABLE
+        client = self._probe_client(total, writes, hits)
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is False, "写得动的账号不能被说成只读"
+        assert probe.basis == BASIS_GRANTS
+        assert hits in probe.detail, "依据要整条带出,不能只剩一个计数"
+        assert str(writes) in probe.detail
+
+    async def test_every_declared_write_access_type_reaches_the_wire(self, monkeypatch):
+        """声明「写得动」的类型,就必须真的拿它去查 —— 这是假驱动的盲区。
+
+        假驱动不执行 SQL,脚本说 ``writes=1`` 就是 1:所以「写权限集合被收窄」
+        在上面几条用例里**完全看不出来**。收窄的后果只在真库上出现 —— 一个只授了
+        ``ALTER`` 的账号会被判成只读(而 ``verified=true`` 是一句替边界背书的话)。
+        所以这里把模块常量与真正发出去的 SQL 钉在一起。
+
+        ``toString(access_type) LIKE 'ALTER%'`` 那几个前缀同理:父类型
+        (``ALTER`` / ``CREATE`` / ``DROP``)底下还有一批**子类型**
+        (``ALTER UPDATE`` / ``ALTER DELETE`` / ``CREATE TABLE`` …),它们在
+        ``system.grants`` 里是**独立取值**。只比那 8 个字面量,一个「能改数据但
+        没有父类型」的账号会被判成只读 —— 所以这一层也要在线上有。
+        """
+        client = self._probe_client(1, 0, "")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        sql = client.queries[0][0]
+        assert set(ch_module._CLICKHOUSE_WRITE_ACCESS_TYPES) == set(self.REQUIRED_WRITE_TYPES), (
+            "写权限集合被改变了 —— 要改就得连着这条用例一起改,别让它悄悄变窄"
+        )
+        assert set(ch_module._CLICKHOUSE_WRITE_ACCESS_PREFIXES) == set(self.REQUIRED_WRITE_PREFIXES)
+        missing = [t for t in self.REQUIRED_WRITE_TYPES if f"'{t}'" not in sql]
+        assert missing == [], f"这些写权限类型没有进 SQL:{missing}"
+        for prefix in self.REQUIRED_WRITE_PREFIXES:
+            assert f"LIKE '{prefix}%'" in _squash(sql), (
+                f"{prefix} 的子类型没有覆盖 —— 只授了 {prefix} TABLE / "
+                f"{prefix} UPDATE 这类细粒度权限的账号会被判成只读"
+            )
+
+    async def test_permissions_that_come_through_a_role_are_in_scope(self, monkeypatch):
+        """**通过角色拿到 INSERT 的用户不能被判成只读** —— 这是最危险的方向。
+
+        ``system.grants`` 只会列出「授给这个用户」和「授给这个角色」两种行;角色
+        继承**不会**自动展开。少一次递归展开,查询就只看得到 ``user_name =
+        currentUser()`` 那几行,于是一个通过角色可写的账号在启动日志里是
+        ``verified=true``。这一次是**替一道并不存在的边界背书**,而 I1 的全部
+        价值就是那道边界真的存在。
+
+        假驱动不执行 SQL,所以这一条钉的是**发出去的那段递归展开本身**(它在
+        25.12 上实测可用,形态与设计稿一致)。
+        """
+        client = self._probe_client(1, 1, "INSERT")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        sql = _squash(client.queries[0][0])
+        assert (
+            "WITH RECURSIVE roles AS ( "
+            "SELECT granted_role_name AS r FROM system.role_grants "
+            "WHERE user_name = currentUser() UNION ALL "
+            "SELECT rg.granted_role_name FROM system.role_grants rg "
+            "JOIN roles ON rg.user_name = roles.r )"
+        ) in sql, "角色继承没有递归展开 —— 通过角色可写的账号会被判成只读"
+        # 展开出来的角色要真的用在那条过滤条件里,否则递归只是白跑一趟
+        assert "role_name IN (SELECT r FROM roles)" in sql
+
+    async def test_the_probe_never_sends_a_write_statement(self, monkeypatch):
+        """**探测只查权限表,绝不试写**(§4 I1 的实施取舍)。
+
+        设计稿给的另一条路是「尝试一条必然失败的写语句」—— 它「必然失败」的前提
+        正是「账号只读」这个待证假设:账号其实可写时,那条语句会**真的写进去**,
+        一个探测变成一次生产写入。
+
+        断的是**真正发出去的那串文本**:把引号里的字面量摘掉之后,剩下的部分不许
+        再出现任何写/结构动词。``'INSERT'`` 这些词只许以**字面量**的身份出现 ——
+        它们是 IN 列表里的比较值,不是语句。
+        """
+        client = self._probe_client(3, 0, "")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+        await adapter.probe_readonly()
+
+        assert len(client.queries) == 1, "探测只发一条查询(3 秒的预算)与一次往返"
+        sql = client.queries[0][0]
+        assert ";" not in sql, "一次一条语句"
+        without_literals = re.sub(r"'[^']*'", "''", sql).upper()
+        statement_verbs = (
+            "INSERT", "ALTER", "CREATE", "DROP", "TRUNCATE", "OPTIMIZE",
+            "UPDATE", "DELETE", "RENAME", "ATTACH", "DETACH", "GRANT", "REVOKE",
+        )
+        # 按**整词**比,不按子串:这条 SQL 里 ``granted_role_name`` 与
+        # ``system.role_grants`` 本身就含 'GRANT' —— 子串比对会把两个列名当成
+        # 语句动词(第一版就是这么写的,红在了自己的列名上)。
+        for verb in statement_verbs:
+            assert not re.search(rf"\b{verb}\b", without_literals), (
+                f"{verb} 出现在字面量之外 —— 探测里不许有语句动词"
+            )
+        # 语句在真驱动上走的是 command(),查询走 query():探测一次都不该碰前者
+        assert client.commands == [] and client.command_attempts == 0
+        # 引号里那串动词都在:它们是比较值,上面那条 strip 之后看不见它们
+        assert "'INSERT'" in sql
+
+    async def test_no_grants_at_all_is_unknown_not_read_only(self, monkeypatch):
+        """一行授权都没有 → **不知道**,不是「确认只读」。
+
+        空结果能有的解释不止一种:这个账号的权限可能根本不来自 SQL 授权(那它
+        在这张表里就看不见),也可能这条路径没拿到东西。而 ``verified=true`` 是
+        一句替边界背书的话 —— 它只能建立在**正面依据**上,不能建立在「没查到」上。
+        这一条与 MySQL 的 ``SHOW GRANTS`` 空结果同构。
+        """
+        client = self._probe_client(0, 0, "")
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+
+        probe = await adapter.probe_readonly()
+
+        assert probe.verified is None
+        assert probe.basis == BASIS_PROBE_FAILED
+        assert probe.detail, "「没查成」也要留下说得出口的理由"
+
+    async def test_an_unexpected_result_shape_is_unknown_not_read_only(self, monkeypatch):
+        """形状不对 → **不知道**,同样不往 ``True`` 倒。
+
+        这条探测是聚合查询,必然回「一行三列」。真回来别的形状,说明这条路上拿到
+        的不是它该拿到的东西(驱动换了、结果被拍平了)—— 那时候默认「没有写
+        权限」就是把一个未知当成一句保证。
+
+        **注意这不吞异常**:查询自己炸掉是另一条路径,那条如实往上抛(见下一条)。
+        这里挡的只是「查询明明回来了,但不是我认识的那个形状」。
+        """
+        for rows in ([], (1, 2, 3)):  # 空结果 / 被拍平成一行三列(少了外层那层)
+            client = FakeClient([FakeResult(["total", "writes", "hits"], rows)])
+            adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+            await adapter.connect()
+
+            probe = await adapter.probe_readonly()
+
+            assert probe.verified is None, f"形状 {rows!r} 被当成了结论"
+            assert probe.basis == BASIS_PROBE_FAILED
+
+    async def test_a_denied_query_is_folded_by_the_orchestrator(self, monkeypatch):
+        """查询被拒(权限不足)→ 适配器**如实抛**,折异常是 ``readonly.probe`` 的事。
+
+        适配器在这里吞掉它就等于让「没查成」消失在实现里:调用方看到的都是
+        ``None``,但原因(``Not enough privileges`` 还是结果形状不对)只有抛出来
+        才留得住 —— 两者的修法不一样。
+        """
+        client = FakeClient(query_error=RuntimeError(
+            "Code: 497. DB::Exception: Not enough privileges",
+        ))
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(client))
+        await adapter.connect()
+
+        with pytest.raises(RuntimeError, match="Not enough privileges"):
+            await adapter.probe_readonly()
+
+        from trove.services.datasource import readonly
+        probe = await readonly.probe(adapter)
+        assert probe.verified is None
+        assert probe.basis == BASIS_PROBE_FAILED
+
+    async def test_the_probe_before_connect_raises(self, monkeypatch):
+        """没连上就不探 —— 与 ``get_schema`` / ``table_profiles`` 同一条判空。"""
+        adapter, _ = make_adapter(monkeypatch)
+        with pytest.raises(DatasourceError):
+            await adapter.probe_readonly()
+
+
 # ── Integration tests (CLICKHOUSE_TEST_URL, skipped when unset) ──
 
 
@@ -358,6 +637,44 @@ class TestClickHouseIntegration:
             pytest.skip("CLICKHOUSE_TEST_URL not set")
         from trove.services.datasource.urls import parse_datasource_url
         return parse_datasource_url(url)
+
+    # ── 只读自检(§4 I1)─────────────────────────────────
+
+    async def test_the_real_account_is_reported_as_writable(self, clickhouse_env):
+        """真库上**唯一能证伪**的那一支:这个账号写得动,探测必须说 ``False``。
+
+        为什么非真库不可:
+
+        * 上面那些单测喂的都是脚本,证明不了这条查询在真服务器上**跑得通**。
+          这个方言上最容易写错的一处(``Enum16`` 列上套字符串函数)在假驱动上
+          完全不报错,只在真库上报 code 43 —— 那会让探测在每次启动时静默退化成
+          「不知道」,看起来却一切正常。
+        * 另一支(只读账号 → ``True``)在这台容器上**验不了**:这个账号没有
+          ``CREATE USER`` 权限(code 497),造不出一个只读账号来,所以那一支只能
+          用假驱动覆盖。这里验的是能验的那一半,别把它当成两边都验过了。
+
+        断言 ``False`` 而不是「不是 ``True``」:``None``(没查成)也必须让这条
+        用例红 —— 探测在真库上退化成「不知道」,等于这道自检从来没有生效。
+        """
+        from trove.services.datasource import readonly
+
+        params = clickhouse_env.connection_params
+        adapter = ClickHouseAdapter(name="readonly_probe", config={**params})
+        await adapter.connect()
+        try:
+            probe = await adapter.probe_readonly()
+            folded = await readonly.probe(adapter)  # 启动路径上真正跑的那一层
+        finally:
+            await adapter.disconnect()
+
+        assert probe.verified is False, (
+            "真库上这个账号有写权限(实测 41 条授权里 8 条是写权限),探测却给出 "
+            f"{probe.verified!r}:{probe.detail}"
+        )
+        assert probe.basis == BASIS_GRANTS
+        assert probe.detail, "写得动就得说得出依据"
+        assert folded.verified is False, "折了一层之后结论不能变"
+        assert folded.basis == BASIS_GRANTS
 
     # ── 终止(P4)─────────────────────────────────────────
 
