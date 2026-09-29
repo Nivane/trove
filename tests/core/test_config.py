@@ -170,6 +170,71 @@ class TestLoadAgentConfig:
         assert config.context_budget_tokens == {}
         assert config.schema_budget_tokens == {}
 
+    def test_budget_loaded_from_yaml(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  budget:\n"
+            "    timeout_ms: 45000\n"
+            "    soft_scan_rows: 1000000\n"
+            "    hard_scan_rows: 9000000\n"
+            "    assume_max_scan_bytes: 1073741824\n"
+            "    on_unestimable: reject\n"
+        )
+
+        config = ConfigLoader.load_agent_config(str(config_file))
+        b = config.budget
+        assert b.timeout_ms == 45_000
+        assert b.soft_scan_rows == 1_000_000
+        assert b.hard_scan_rows == 9_000_000
+        assert b.assume_max_scan_bytes == 1024**3
+        assert b.on_unestimable == "reject"
+
+    def test_budget_defaults_match_the_market_profile(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text("agent:\n  target: openai/gpt-4o\n")
+
+        b = ConfigLoader.load_agent_config(str(config_file)).budget
+        assert b.timeout_ms == 30_000
+        assert b.soft_scan_rows == 50_000_000
+        assert b.hard_scan_rows == 1_000_000_000
+        assert b.assume_max_scan_bytes == 20 * 1024**3
+        # 方向默认必须**不是** reject:§8.3 C —— 过严的护栏会被绕过
+        # (用户去直连库),那连观测都没有了
+        assert b.on_unestimable == "degrade"
+
+    def test_legacy_explain_caps_feed_the_budget_thresholds(self, tmp_path):
+        """兼容读取:旧键 ``explain_max_rows`` / ``explain_hard_max_rows``
+        已由 ``agent.budget.*`` 取代(留痕不删),数值原封不动搬过来。
+
+        没有这一条,存量部署升级后阈值会**静默回到默认值** —— 一个改过上限的
+        环境会突然按 50M/1B 判定,而没人察觉。
+        """
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  explain_max_rows: 7000000\n"
+            "  explain_hard_max_rows: 70000000\n"
+        )
+
+        b = ConfigLoader.load_agent_config(str(config_file)).budget
+        assert b.soft_scan_rows == 7_000_000
+        assert b.hard_scan_rows == 70_000_000
+
+    def test_budget_wins_over_legacy_keys(self, tmp_path):
+        """两个键都在时以 budget 为准 —— 阈值只能有一个来源。"""
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  explain_max_rows: 7000000\n"
+            "  budget:\n"
+            "    soft_scan_rows: 8000000\n"
+        )
+
+        b = ConfigLoader.load_agent_config(str(config_file)).budget
+        assert b.soft_scan_rows == 8_000_000
+        assert b.hard_scan_rows == 1_000_000_000  # 未覆盖的那档仍回落到旧键/默认
+
     def test_load_invalid_yaml_raises(self, tmp_path):
         config_file = tmp_path / "agent.yml"
         config_file.write_text("agent: [unclosed\n")

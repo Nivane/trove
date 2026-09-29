@@ -92,6 +92,19 @@ class WorkflowState(BaseModel):
     # 复用等于把判定变成一次性的。
     authz_decision: dict[str, Any] | None = None
 
+    # 执行画像的成本轨快照(design §6.2 ``ExecutionEvidence`` 的 dict 形态):
+    # 估算依据 / 阈值 / 是否降级 / 实际加上的 LIMIT。供输出渲染降级提示与
+    # 事后校准估算器(I7)。
+    #
+    # 同 ``principal`` 的取舍:**不存 dataclass** —— state 每步过一次
+    # checkpointer 序列化,未注册的 dataclass 会被静默降级成 dict,而这里还
+    # 嵌套了一个 ``ExecutionBudget``,降级后 ``budget.max_rows`` 照样读得出来,
+    # 读者看不出类型已经掉了。以 wire 形状为唯一形状,顺便与 ``authz_decision``
+    # 同一套接法。
+    #
+    # None = 这一轮**没装配成本轨**(嵌入场景显式关掉),不是「判过了、很便宜」。
+    execution_evidence: dict[str, Any] | None = None
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 

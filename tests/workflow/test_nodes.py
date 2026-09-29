@@ -1541,7 +1541,14 @@ class TestExecuteSQL:
                 calls.append("execute")
                 raise AssertionError("should not be reached")
 
-        node = make_execute_sql(SpyConnectors(), explain_row_guard=True)
+        # 装配成本轨,让「防火墙在 EXPLAIN 之前」这条断言仍然有意义 ——
+        # budget=None 时压根没有 EXPLAIN,那样断言就空了。
+        connectors = SpyConnectors()
+        from trove.services.sql.budget import BudgetService, ExecutionBudget
+
+        node = make_execute_sql(
+            connectors, budget=BudgetService(ExecutionBudget(), explain=connectors.explain),
+        )
         update = await node(make_state(sql="DELETE FROM students"))
         assert "error" in update
         assert calls == []
@@ -1600,6 +1607,22 @@ class TestExecuteSQLCompileDrift:
         assert update["row_count"] == 1  # 未走 drift 门,正常执行(聚合 1 行)
 
 
+def _mysql_budget(connectors):
+    """装一条只走 EXPLAIN 档的成本轨(mysql 有解析器),阈值取市场默认值。
+
+    与 ``graphs._build_budget`` 同一种接法,只是不读配置 —— 这里要固定住数值
+    才能断言「超了哪一档」。
+    """
+    from trove.services.sql.budget import BudgetService, ExecutionBudget
+
+    return BudgetService(
+        ExecutionBudget(
+            max_rows=1000, soft_scan_rows=50_000_000, hard_scan_rows=1_000_000_000,
+        ),
+        explain=connectors.explain,
+    )
+
+
 class TestExecuteSQLRowGuard:
     """EXPLAIN 行数守卫三档处置:放行 / 打回加 LIMIT / 硬限直接拒绝。"""
 
@@ -1627,22 +1650,22 @@ class TestExecuteSQLRowGuard:
             return QueryResult(columns=["a"], rows=[["x"]], row_count=1)
 
     async def test_below_soft_cap_executes(self):
-        node = make_execute_sql(self._FakeConnectors(1_000), explain_row_guard=True,
-                                explain_max_rows=50_000_000, explain_hard_max_rows=1_000_000_000)
+        spy = self._FakeConnectors(1_000)
+        node = make_execute_sql(spy, budget=_mysql_budget(spy))
         update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
         assert update["row_count"] == 1
 
     async def test_above_soft_cap_feeds_back_for_narrowing(self):
-        node = make_execute_sql(self._FakeConnectors(100_000_000), explain_row_guard=True,
-                                explain_max_rows=50_000_000, explain_hard_max_rows=1_000_000_000)
+        spy = self._FakeConnectors(100_000_000)
+        node = make_execute_sql(spy, budget=_mysql_budget(spy))
         update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
         assert "error" not in update
         assert "ROW_GUARD" in update["error_feedback"]
         assert update["retry_count"] == 1
 
     async def test_above_hard_cap_rejects_without_llm_retry(self):
-        node = make_execute_sql(self._FakeConnectors(5_000_000_000), explain_row_guard=True,
-                                explain_max_rows=50_000_000, explain_hard_max_rows=1_000_000_000)
+        spy = self._FakeConnectors(5_000_000_000)
+        node = make_execute_sql(spy, budget=_mysql_budget(spy))
         update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
         # 硬限:直接 error,不打回 gen_sql(不烧 LLM 重生成预算)
         assert "ROW_GUARD" in update["error"]
@@ -1651,7 +1674,7 @@ class TestExecuteSQLRowGuard:
 
     async def test_guard_off_skips_explain(self):
         connectors = self._FakeConnectors(5_000_000_000)
-        node = make_execute_sql(connectors, explain_row_guard=False)
+        node = make_execute_sql(connectors)  # budget 未装配 = 不判成本
         update = await node(make_state(sql="SELECT a FROM t", dialect="mysql"))
         assert update["row_count"] == 1
 

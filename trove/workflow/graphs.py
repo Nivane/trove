@@ -25,11 +25,12 @@ from typing import Any, Literal
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from trove.core.config import AgentConfig
+from trove.core.config import AgentConfig, BudgetConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
+from trove.services.limits import get_result_limits
 from trove.services.kb.service import KbService
 from trove.llm.agent_loop import run_agent_loop
 from trove.workflow.context_budget import (
@@ -1744,6 +1745,47 @@ def _build_authorizer(services: "GraphServices"):
     )
 
 
+def _build_budget(services: "GraphServices"):
+    """执行画像的成本轨(设计 §5.1 / §5.2)。``None`` = 未装配,不判也不算。
+
+    ``explain_row_guard`` 是**唯一**的开关,沿用旧名:它一直是「要不要在执行前
+    做成本判定」的意思,只是旧实现在判不出来时放行。置 false 的数据源(纯 stdio
+    本地库、嵌入调用)行为与改造前逐字一致 —— 不加 LIMIT。
+
+    阈值一律从 ``config.budget`` 取(:class:`BudgetConfig` 已兼容读取旧键),
+    **不给本函数任何数值参数** —— 阈值只能有一个来源,两处各存一份迟早漂移。
+
+    与 ``_build_authorizer`` 同一种「能力未接即跳过该档」的接法:元数据画像
+    (P2)未接 → 降级链的第 2 档自然跳过,不会假装查过。
+    """
+    from trove.services.sql.budget import BudgetService, ExecutionBudget
+
+    config = services.config or AgentConfig()
+    if not getattr(config, "explain_row_guard", True):
+        return None
+    connectors = services.connectors
+    if connectors is None:
+        return None
+
+    budget_config = getattr(config, "budget", None) or BudgetConfig()
+    explain = getattr(connectors, "explain", None)
+    return BudgetService(
+        ExecutionBudget(
+            max_rows=get_result_limits().max_rows,
+            timeout_ms=int(budget_config.timeout_ms),
+            soft_scan_rows=int(budget_config.soft_scan_rows),
+            hard_scan_rows=int(budget_config.hard_scan_rows),
+            assume_max_scan_bytes=int(budget_config.assume_max_scan_bytes),
+            on_unestimable=str(budget_config.on_unestimable),
+        ),
+        # 直接绑 registry 的方法:它本身就是 ``(sql, datasource)`` 形状,
+        # 由 BudgetService 每轮把 ``state.datasource`` 传下去。
+        explain=explain,
+        # parse_explain 用默认的 row_guard.estimate_max_rows(不传)。
+        # metadata 留给 P2 —— 未接时第 2 档跳过,方向仍是保守。
+    )
+
+
 def _route_after_query_sketch(state: WorkflowState) -> Literal["refuse", "gen_retrieve"]:
     """Query-sketch 后:编译 MISS / 无语义模型 → refuse;否则 gen 链入口。"""
     if state.error or state.no_model or state.refusal:
@@ -1783,7 +1825,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows), authorizer=_build_authorizer(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=_build_budget(services), authorizer=_build_authorizer(services)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -1963,7 +2005,7 @@ def _build_fixed(
     g.add_node("gen_generate", make_gen_generate(services, subgraph, agentic=agentic))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows), authorizer=_build_authorizer(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=_build_budget(services), authorizer=_build_authorizer(services)))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))

@@ -61,7 +61,7 @@ def _authorizer(mode: str = "enforce", declared=_DECLARED) -> Authorizer:
 
 
 def _node(spy: _SpyConnectors, **kwargs):
-    return make_execute_sql(spy, explain_row_guard=False, **kwargs)
+    return make_execute_sql(spy, **kwargs)  # budget 未装配 = 不判成本(本文件考授权)
 
 
 def _user(grants=frozenset({DEFAULT})) -> dict:

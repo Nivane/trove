@@ -20,6 +20,14 @@ from trove.services.authz.policy import principal_from_wire
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
+from trove.services.sql.budget import (
+    BudgetDecision,
+    BudgetService,
+    CostEstimate,
+    ExecutionBudget,
+    execution_evidence,
+    force_limit,
+)
 from trove.services.semantic_layer.compiler import (
     build_contract,
     compiled_sql_matches,
@@ -40,9 +48,7 @@ def make_execute_sql(
     timeout_ms: int = 30000,
     max_retries: int = 10,
     lineage=None,
-    explain_row_guard: bool = True,
-    explain_max_rows: int = 50_000_000,
-    explain_hard_max_rows: int = 1_000_000_000,
+    budget: BudgetService | None = None,
     authorizer: Authorizer | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
@@ -55,11 +61,12 @@ def make_execute_sql(
             once exhausted, failures degrade gracefully via state.error.
         lineage: Optional LineageService — successful queries are recorded
             as downstream (consumer) lineage facts for the datasource.
-        explain_row_guard: EXPLAIN 行数估算守卫开关(默认开)。执行前
-            EXPLAIN 估算最重算子行数,超 ``explain_max_rows`` 打回 gen_sql
-            加 LIMIT/收窄;超 ``explain_hard_max_rows`` 直接拒绝。
-        explain_max_rows: 软上限——超过则打回重生成(仍可能修正后执行)。
-        explain_hard_max_rows: 硬上限——超过直接拒绝(不烧 LLM 重生成)。
+        budget: 执行画像的成本轨(设计 §5.1 / §5.2)。执行前估算代价 → 三档
+            处置(allow / degrade / reject),估算不可得时**加 LIMIT 降级执行**
+            并把 ``ExecutionEvidence`` 写进 state。``None`` = **未装配强制
+            点**,不判也不算 —— 嵌入场景(纯 stdio 本地库)显式关掉它,行为
+            与改造前逐字一致。注意这与「判过了、放行」不是一回事,本节点不会
+            假装自己判过。
         authorizer: 执行前授权门(设计 §5.3 / G2)。``None`` = **未装配强制点**,
             不判——生产图恒装配一个(见 ``graphs.py``)。注意这与「判过了、
             放行」不是一回事,本节点不会假装自己判过。
@@ -131,48 +138,6 @@ def make_execute_sql(
                 logger.info("compile drift for %r: %s", state.question[:80], why)
                 return _compile_drift_failure(state, max_retries)
 
-        # EXPLAIN 行数估算守卫(fail-open):执行前 EXPLAIN 估算最重算子
-        # 行数,按三档处置——未超软限放行;超软限打回 gen_sql 加 LIMIT/收窄;
-        # 超硬限直接拒绝(不烧 LLM 重生成循环)。无法解析方言/EXPLAIN
-        # 失败 → 放行,不阻断链路(真正边界在数据库侧只读角色 + LIMIT)。
-        if explain_row_guard and connectors is not None:
-            try:
-                plan = await connectors.explain(state.sql, state.datasource or None)
-                from trove.services.sql.row_guard import estimate_max_rows
-
-                est = estimate_max_rows(state.dialect, plan)
-                if est is not None and est > explain_hard_max_rows:
-                    logger.info(
-                        "row guard HARD hit for %r: est %d > hard cap %d",
-                        state.question[:80], est, explain_hard_max_rows,
-                    )
-                    return {
-                        "error": (
-                            f"[ERR:ROW_GUARD] The EXPLAIN plan estimates "
-                            f"{est} rows — far beyond the {explain_hard_max_rows}-row "
-                            "hard cap. This query would scan an unbounded result "
-                            "set, so it was not executed."
-                        ),
-                        "columns": [],
-                        "rows": [],
-                        "row_count": -1,
-                    }
-                if est is not None and est > explain_max_rows:
-                    logger.info(
-                        "row guard hit for %r: est %d > soft cap %d",
-                        state.question[:80], est, explain_max_rows,
-                    )
-                    return _execution_failure(
-                        state,
-                        "[ERR:ROW_GUARD] The EXPLAIN plan estimates a result "
-                        f"larger than {explain_max_rows} rows. Narrow the query "
-                        "(add filters / aggregation, or a LIMIT) so it returns a "
-                        "bounded result set.",
-                        max_retries,
-                    )
-            except Exception as e:
-                logger.warning("EXPLAIN row guard skipped (fail-open): %s", e)
-
         # 执行前授权门(设计 §5.3 / G2)—— **执行前的最后一米**。放在这里而不是
         # 更靠前,是因为上面几道守卫都只在「这一轮反正要跑」的假设下才有意义:
         # 授权是唯一一道会改变「要不要执行」的判定,它之后紧接着就是落库。
@@ -215,15 +180,104 @@ def make_execute_sql(
                     state.question[:80], ", ".join(decision.narrowed_tables),
                 )
 
+        # 成本轨(设计 §5.1 / §5.2)—— 权限轨之后、落库之前。
+        #
+        # 排序有讲究:授权判定放在**前面**,因为被拒的查询不该再去 EXPLAIN。
+        # EXPLAIN 本身要落库(它就是一条查询),在一片 deny 的部署里那是一整条
+        # 噪声链路;而反过来不成立 —— 成本判定不影响「要不要执行」的资格。
+        #
+        # 与权限轨**方向相反**且刻意如此(§8.1):权限轨有下层兜底(DB 只读角色),
+        # 误拒会阻断正常业务 → fail-open;成本轨没有下层兜底(只读角色不阻止一条
+        # 扫 10TB 的 SELECT),误放行的代价是打爆生产库 → fail-closed。
+        executed_sql = state.sql
+        budget_extra: dict[str, Any] = {}
+        if budget is not None:
+            est, decision, effective_budget = await _judge_budget(budget, state)
+            if decision.verdict == "reject":
+                budget_extra["execution_evidence"] = execution_evidence(
+                    est, decision, effective_budget,
+                )
+                if decision.over == "hard":
+                    # 硬限:重写也降不下来,不烧 LLM 重生成预算
+                    logger.info(
+                        "budget HARD hit for %r: est %d > hard cap %d",
+                        state.question[:80], est.estimated_rows or -1,
+                        effective_budget.hard_scan_rows,
+                    )
+                    return {
+                        "error": (
+                            "[ERR:ROW_GUARD] The EXPLAIN plan estimates "
+                            f"{est.estimated_rows} rows — far beyond the "
+                            f"{effective_budget.hard_scan_rows}-row hard cap. "
+                            "This query would scan an unbounded result set, so "
+                            "it was not executed."
+                        ),
+                        "columns": [],
+                        "rows": [],
+                        "row_count": -1,
+                        **authz_extra,
+                        **budget_extra,
+                    }
+                if decision.over != "soft":
+                    # 无法估算 + 本部署配置为拒绝(§8.3 C)。**不打回重生成**:
+                    # 估算不出来是因为这个方言没有解析器,不是这条 SQL 写得不好,
+                    # 重写十遍还是估算不出来 —— 那只会烧掉共享修正预算。
+                    logger.info(
+                        "budget: 无估算依据且 on_unestimable=reject,%r 未执行",
+                        state.question[:80],
+                    )
+                    return {
+                        "error": f"[ERR:ROW_GUARD] {decision.reason}",
+                        "columns": [],
+                        "rows": [],
+                        "row_count": -1,
+                        **authz_extra,
+                        **budget_extra,
+                    }
+                logger.info(
+                    "budget soft cap hit for %r: est %d > soft cap %d",
+                    state.question[:80], est.estimated_rows or -1,
+                    effective_budget.soft_scan_rows,
+                )
+                return _execution_failure(
+                    state,
+                    "[ERR:ROW_GUARD] The EXPLAIN plan estimates a result "
+                    f"larger than {effective_budget.soft_scan_rows} rows. Narrow "
+                    "the query (add filters / aggregation, or a LIMIT) so it "
+                    "returns a bounded result set.",
+                    max_retries,
+                ) | authz_extra | budget_extra
+
+            limit_applied: int | None = None
+            if decision.verdict == "degrade":
+                # 路径 3(无法估算)是本方案改的**唯一**一处行为:存量在这里
+                # 放行,现在改为「加 LIMIT 执行 + 留痕」(§5.2 / I2 / I6)。
+                limited = force_limit(
+                    state.sql, state.dialect or "", effective_budget.max_rows,
+                )
+                if limited is not None:
+                    executed_sql, limit_applied = limited.sql, limited.limit
+                else:
+                    # I6 与 I2 的边界:加不上就不拦(不阻断链路),但**不谎称**
+                    # 加了 —— ``limit_applied=None`` 配上 ``degraded=True`` 就是
+                    # 「已降级、且这条没边界」的准确表达。
+                    logger.warning(
+                        "budget: 无法为 %r 加上 LIMIT(方言解析不了),按原样执行",
+                        state.question[:80],
+                    )
+            budget_extra["execution_evidence"] = execution_evidence(
+                est, decision, effective_budget, limit_applied=limit_applied,
+            )
+
         result = None
         timeout_s = timeout_ms / 1000.0
         retryable = _TRANSIENT_RETRIES  # 瞬时连接抖动的小重试预算(同一条 SQL)
         retry_backoff_s = _TRANSIENT_BACKOFF_S
         while True:
             try:
-                with record_span("tool.execute_sql", input=state.sql) as span:
+                with record_span("tool.execute_sql", input=executed_sql) as span:
                     result = await asyncio.wait_for(
-                        connectors.execute(state.sql, state.datasource or None),
+                        connectors.execute(executed_sql, state.datasource or None),
                         timeout=timeout_s,
                     )
                     if span is not None:
@@ -264,11 +318,13 @@ def make_execute_sql(
 
         # 血缘捕获:成功执行的查询记录为消费方(downstream)事实。
         # 失败永远不记录(重试轮的正确 SQL 由最终成功的一次独占)。
+        # 记的是**真正执行的那条**(降级时带 LIMIT)—— 血缘要能解释「线上到底
+        # 跑的是什么」,记生成的原串会让降级永远查不出来。
         if lineage is not None:
             try:
                 ds = state.datasource or connectors.default_name or ""
                 if ds:
-                    await lineage.record_query(state.sql, ds, state.dialect)
+                    await lineage.record_query(executed_sql, ds, state.dialect)
             except Exception as e:  # 血缘失败绝不阻断查询链路
                 logger.warning("lineage record failed: %s", e)
 
@@ -282,6 +338,7 @@ def make_execute_sql(
             "execution_time_ms": result.execution_time_ms,
             "error_feedback": "",  # success clears previous feedback
             **authz_extra,
+            **budget_extra,
         }
 
     return execute_sql
@@ -292,6 +349,36 @@ def make_execute_sql(
 # 恢复;SQL 自身错误(语法/缺列)重跑必死,不做无谓的 sleep。
 _TRANSIENT_RETRIES = 2
 _TRANSIENT_BACKOFF_S = 0.5
+
+
+async def _judge_budget(
+    budget: BudgetService, state: WorkflowState,
+) -> tuple[CostEstimate, BudgetDecision, ExecutionBudget]:
+    """估算 + 判定;护栏自身故障 → 保守降级,不 raise(设计 §4 I6)。
+
+    I6 是 I2 的**边界**而不是它的反面:可以「不拦」,不可以「不拦还说没事」。
+    所以这里的兜底是**保守降级**而不是放行 —— 守卫自己炸了的时候,恰恰是最
+    没有理由相信这次查询便宜的时候。
+
+    兜底也要给出预算对象(而不是让服务自己报):服务已经不自证可用了,再回头
+    问它阈值就等于把炸掉的那部分又用了一次。默认 :class:`ExecutionBudget` 是
+    配置里那套保守值,方向正确。
+    """
+    try:
+        est = await budget.estimate(
+            state.datasource or "", state.sql, state.dialect or "",
+            # P2 起由元数据画像供表名;P1 未接画像,这一档本就跳过,给空即可。
+            None,
+        )
+        return est, budget.decide(est), budget.budget
+    except Exception as e:
+        logger.warning("budget track failed (%s) — 降级执行(conservative)", e)
+        est = CostEstimate(None, None, "conservative", True, {"error": str(e)})
+        return (
+            est,
+            BudgetDecision("degrade", "", f"预算判定不可用({e}),按保守预算降级执行。"),
+            ExecutionBudget(),
+        )
 
 
 def _authz_message(decision) -> str:

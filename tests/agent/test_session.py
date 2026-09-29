@@ -57,6 +57,31 @@ class TestAsk:
         assert state.verdict == "OK"
         assert state.error == ""
 
+    async def test_degraded_execution_is_recorded_end_to_end(self, session_manager):
+        """§12 A2(执行画像 P1 那一半):估算不可得 → 降级执行且**留痕**。
+
+        sqlite 有 adapter 但**没有 EXPLAIN 解析器**(``row_guard._PARSERS``
+        只覆盖 postgres/duckdb/mysql/doris)→ 降级链走到底 → 路径 3 → 加 LIMIT
+        执行 + ``degraded=true``。
+
+        这条跑的是**整图**,不是节点单测 —— 单测能证明节点会记,只有整图能
+        证明装配线(``graphs._build_budget``)真的把它接上了。
+        """
+        session = await session_manager.start_session(project_cwd="/tmp/p1")
+        state = await session_manager.ask(
+            session=session,
+            question="What students are in Alameda county?",
+            workflow_name="reflection",
+        )
+        ev = state.execution_evidence
+        assert ev is not None, "整图路径没装配成本轨 —— 接线断了"
+        assert ev["degraded"] is True
+        assert ev["source"] == "conservative"
+        assert ev["limit_applied"] == 1000
+        # 展示给用户的 SQL 仍是生成的那条:LIMIT 是部署级执行策略,不是这个
+        # 问题的答案(见 tests/workflow/test_execute_sql_budget.py)
+        assert state.sql == "SELECT name FROM students;"
+
     async def test_ask_appends_messages(self, session_manager):
         session = await session_manager.start_session(project_cwd="/tmp/p1")
         await session_manager.ask(

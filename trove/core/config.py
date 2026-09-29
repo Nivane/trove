@@ -103,6 +103,32 @@ class AuthzConfig:
 
 
 @dataclass
+class BudgetConfig:
+    """执行画像的成本轨(设计 §6.3 / §5.2)。
+
+    与 ``explain_row_guard`` / ``explain_max_rows`` / ``explain_hard_max_rows``
+    的关系:那三个键**已被本组取代**(留痕不删,见 ``load_config`` 的兼容读取),
+    数值原封不动搬过来 —— 设计 §9.2 明说「现有软/硬上限的数值」不修改。
+
+    取代的理由是那套键名把「守卫在做什么」写成了「用哪个手段做」:三档处置一直
+    都在,只是第 1 档(EXPLAIN)有时拿不到依据,而拿不到时旧实现在放行。现在
+    手段是可替换的(§5.2 降级链),配置该描述的是**阈值与方向**。
+
+    ``on_unestimable``: 估算不可得时的方向。``degrade``(默认)—— 加 LIMIT
+    降级执行 + 留痕;``reject`` —— 直接拒绝。设计 §8.3 C 选 degrade 的理由:
+    过严的护栏会被绕过(用户去直连库),那连观测都没有了。
+    """
+
+    timeout_ms: int = 30_000
+    soft_scan_rows: int = 50_000_000
+    hard_scan_rows: int = 1_000_000_000
+    #: 估算不可得时的保守预算(设计 §11 R2:默认 20GB 可能过松,上线后按
+    #: estimated/scanned 的差值校准,逐步收紧)
+    assume_max_scan_bytes: int = 20 * 1024**3
+    on_unestimable: str = "degrade"
+
+
+@dataclass
 class EvalConfig:
     """离线评测回归门(**默认开**,与其余能力的默认关相反)。
 
@@ -236,6 +262,8 @@ class AgentConfig:
     eval: EvalConfig = field(default_factory=EvalConfig)
     # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
     authz: AuthzConfig = field(default_factory=AuthzConfig)
+    # 执行画像的成本轨:阈值 + 估算不可得时的方向。见 BudgetConfig。
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -446,6 +474,7 @@ class ConfigLoader:
 
         # Parse eval gate (top-level section, not under agent:)
         eval_raw = resolved.get("eval", {}) or {}
+        budget_raw = agent_section.get("budget", {}) or {}
         eval_conf = EvalConfig(
             # 缺省 True —— 与 EvalConfig 的默认值同口径。整段 eval: 缺失时
             # 门仍开着:关它必须是显式写 false,不能靠"配置不在"顺手关掉。
@@ -457,6 +486,27 @@ class ConfigLoader:
                 str(k): str(v)
                 for k, v in (eval_raw.get("tolerances", {}) or {}).items()
             },
+        )
+
+        budget_conf = BudgetConfig(
+            timeout_ms=max(1000, int(budget_raw.get("timeout_ms", agent_section.get(
+                # 超时只有一个来源:budget.timeout_ms 缺席时沿用顶层的
+                # agent.timeout_ms —— 执行画像把「查询超时」收进了预算,
+                # 但存量配置写在顶层,搬过来而不是留两处
+                "timeout_ms", 30_000)))),
+            soft_scan_rows=max(1000, int(budget_raw.get(
+                "soft_scan_rows",
+                # 兼容读取:agent.explain_max_rows 已被 agent.budget.* 取代
+                # (留痕不删,数值原封不动)。两个键都在时以 budget 为准 ——
+                # 阈值只能有一个来源,两处各存一份迟早漂移。
+                agent_section.get("explain_max_rows", 50_000_000)))),
+            hard_scan_rows=max(1000, int(budget_raw.get(
+                "hard_scan_rows",
+                agent_section.get("explain_hard_max_rows", 1_000_000_000)))),
+            assume_max_scan_bytes=max(0, int(
+                budget_raw.get("assume_max_scan_bytes", 20 * 1024**3))),
+            on_unestimable=str(
+                budget_raw.get("on_unestimable", "degrade")).strip().lower(),
         )
 
         return AgentConfig(
@@ -502,6 +552,7 @@ class ConfigLoader:
             memory=memory,
             attribution=attribution,
             eval=eval_conf,
+            budget=budget_conf,
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,
