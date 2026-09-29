@@ -45,9 +45,9 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1197">graphs.py:1197 <span class="ref-line">build_graphs</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1720">graphs.py:1720 <span class="ref-line">_build_reflection</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L305">graphs.py:305 <span class="ref-line">build_gen_sql_subgraph</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1213">graphs.py:1213 <span class="ref-line">build_graphs</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1866">graphs.py:1866 <span class="ref-line">_build_reflection</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L310">graphs.py:310 <span class="ref-line">build_gen_sql_subgraph</span></a>
     </p>
 
     <p>
@@ -77,40 +77,40 @@
           <tr><th>节点</th><th>做什么</th><th>注册位置</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">route_intent</td><td>七分类意图判定，决定走哪条路</td><td>graphs.py:1580</td></tr>
-          <tr><td class="mono">parse_date</td><td>把「上个月」这类相对时间落成具体区间</td><td>graphs.py:1585</td></tr>
-          <tr><td class="mono">answer_metadata</td><td>元数据问答（有哪些表、某表什么结构）</td><td>graphs.py:1586</td></tr>
-          <tr><td class="mono">metadata_check</td><td>元数据答案的自校验，不通过则重答</td><td>graphs.py:1590</td></tr>
-          <tr><td class="mono">answer_reject</td><td>拒绝并说明原因（终态答案节点）</td><td>graphs.py:1595</td></tr>
-          <tr><td class="mono">answer_chitchat</td><td>闲聊兜底（终态答案节点）</td><td>graphs.py:1596</td></tr>
-          <tr><td class="mono">answer_correction</td><td>用户纠正上一轮答案（终态答案节点）</td><td>graphs.py:1597</td></tr>
-          <tr><td class="mono">confirm_draft</td><td>对话内确认语义模型草案，确认后重答原问题</td><td>graphs.py:1599</td></tr>
-          <tr><td class="mono">schema_linking</td><td>算出问题涉及哪些表 → <code>matched_tables</code></td><td>graphs.py:1730</td></tr>
-          <tr><td class="mono">gen_retrieve</td><td>并行检索 KB：示例、教训、术语、指标、实体</td><td>graphs.py:1737</td></tr>
-          <tr><td class="mono">gen_assemble</td><td>把检索结果按预算装进生成提示</td><td>graphs.py:1738</td></tr>
-          <tr><td class="mono">gen_generate</td><td>生成 SQL（agentic 循环或经典子图）</td><td>graphs.py:1739</td></tr>
-          <tr><td class="mono">execute_sql</td><td>执行，含只读校验与骨架保真校验</td><td>graphs.py:1745</td></tr>
-          <tr><td class="mono">select</td><td>多候选共识投票（拿执行结果投票）</td><td>graphs.py:1746</td></tr>
-          <tr><td class="mono">validate</td><td>确定性规则链校验结果</td><td>graphs.py:1747</td></tr>
-          <tr><td class="mono">reflect</td><td>反思裁决：这一轮该继续还是回退</td><td>graphs.py:1748</td></tr>
-          <tr><td class="mono">semantics</td><td>把 SQL 解释成人话（供人看懂与 HITL 确认）</td><td>graphs.py:1750</td></tr>
-          <tr><td class="mono">hitl</td><td>人在环：执行前拦下 SQL 等确认</td><td>graphs.py:1751</td></tr>
-          <tr><td class="mono">insights</td><td>从结果里提炼要点</td><td>graphs.py:1752</td></tr>
-          <tr><td class="mono">attribution</td><td>归因类问题的分析</td><td>graphs.py:1753</td></tr>
-          <tr><td class="mono">chart</td><td>判断要不要画图、画什么图</td><td>graphs.py:1757</td></tr>
-          <tr><td class="mono">conclusion</td><td>生成结论段落</td><td>graphs.py:1758</td></tr>
-          <tr><td class="mono">output</td><td>汇总成最终答案</td><td>graphs.py:1759</td></tr>
-          <tr><td class="mono">fast_match</td><td>模板快径：命中则跳过整个生成链路</td><td>graphs.py:1764</td></tr>
-          <tr><td class="mono">refuse</td><td>语义门禁拒绝 + 起草扩展草案</td><td>graphs.py:1771</td></tr>
-          <tr><td class="mono">query_sketch</td><td>出查询计划，并尝试语义编译</td><td>graphs.py:1783</td></tr>
-          <tr><td class="mono">analyze_error</td><td>失败分析，决定回滚到哪一轮</td><td>graphs.py:1869</td></tr>
+          <tr><td class="mono">route_intent</td><td>七分类意图判定，决定走哪条路</td><td>graphs.py:1596</td></tr>
+          <tr><td class="mono">parse_date</td><td>把「上个月」这类相对时间落成具体区间</td><td>graphs.py:1601</td></tr>
+          <tr><td class="mono">answer_metadata</td><td>元数据问答（有哪些表、某表什么结构）</td><td>graphs.py:1602</td></tr>
+          <tr><td class="mono">metadata_check</td><td>元数据答案的自校验，不通过则重答</td><td>graphs.py:1606</td></tr>
+          <tr><td class="mono">answer_reject</td><td>拒绝并说明原因（终态答案节点）</td><td>graphs.py:1611</td></tr>
+          <tr><td class="mono">answer_chitchat</td><td>闲聊兜底（终态答案节点）</td><td>graphs.py:1612</td></tr>
+          <tr><td class="mono">answer_correction</td><td>用户纠正上一轮答案（终态答案节点）</td><td>graphs.py:1613</td></tr>
+          <tr><td class="mono">confirm_draft</td><td>对话内确认语义模型草案，确认后重答原问题</td><td>graphs.py:1615</td></tr>
+          <tr><td class="mono">schema_linking</td><td>算出问题涉及哪些表 → <code>matched_tables</code></td><td>graphs.py:1880</td></tr>
+          <tr><td class="mono">gen_retrieve</td><td>并行检索 KB：示例、教训、术语、指标、实体</td><td>graphs.py:1887</td></tr>
+          <tr><td class="mono">gen_assemble</td><td>把检索结果按预算装进生成提示</td><td>graphs.py:1888</td></tr>
+          <tr><td class="mono">gen_generate</td><td>生成 SQL（agentic 循环或经典子图）</td><td>graphs.py:1889</td></tr>
+          <tr><td class="mono">execute_sql</td><td>执行，含只读校验与骨架保真校验</td><td>graphs.py:1896</td></tr>
+          <tr><td class="mono">select</td><td>多候选共识投票（拿执行结果投票）</td><td>graphs.py:1897</td></tr>
+          <tr><td class="mono">validate</td><td>确定性规则链校验结果</td><td>graphs.py:1898</td></tr>
+          <tr><td class="mono">reflect</td><td>反思裁决：这一轮该继续还是回退</td><td>graphs.py:1899</td></tr>
+          <tr><td class="mono">semantics</td><td>把 SQL 解释成人话（供人看懂与 HITL 确认）</td><td>graphs.py:1901</td></tr>
+          <tr><td class="mono">hitl</td><td>人在环：执行前拦下 SQL 等确认</td><td>graphs.py:1902</td></tr>
+          <tr><td class="mono">insights</td><td>从结果里提炼要点</td><td>graphs.py:1903</td></tr>
+          <tr><td class="mono">attribution</td><td>归因类问题的分析</td><td>graphs.py:1904</td></tr>
+          <tr><td class="mono">chart</td><td>判断要不要画图、画什么图</td><td>graphs.py:1908</td></tr>
+          <tr><td class="mono">conclusion</td><td>生成结论段落</td><td>graphs.py:1909</td></tr>
+          <tr><td class="mono">output</td><td>汇总成最终答案</td><td>graphs.py:1910</td></tr>
+          <tr><td class="mono">fast_match</td><td>模板快径：命中则跳过整个生成链路</td><td>graphs.py:1915</td></tr>
+          <tr><td class="mono">refuse</td><td>语义门禁拒绝 + 起草扩展草案</td><td>graphs.py:1922</td></tr>
+          <tr><td class="mono">query_sketch</td><td>出查询计划，并尝试语义编译</td><td>graphs.py:1934</td></tr>
+          <tr><td class="mono">analyze_error</td><td>失败分析，决定回滚到哪一轮</td><td>graphs.py:2020</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
       <code>clarify</code> 不在这张表里：它只在显式传入 <code>clarify=True</code> 时才挂上
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1770">graphs.py:1770 <span class="ref-line">clarify</span></a>）。
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1921">graphs.py:1921 <span class="ref-line">clarify</span></a>）。
       把它算进来的话是 28 个——但那是非默认口径。
     </p>
 
@@ -147,9 +147,9 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1295">graphs.py:1295 <span class="ref-line">make_route_intent</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1549">graphs.py:1549 <span class="ref-line">_route_after_intent</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1565">graphs.py:1565 <span class="ref-line">_route_after_refuse</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1311">graphs.py:1311 <span class="ref-line">make_route_intent</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1565">graphs.py:1565 <span class="ref-line">_route_after_intent</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1581">graphs.py:1581 <span class="ref-line">_route_after_refuse</span></a>
     </p>
 
     <p>
@@ -165,9 +165,9 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1679">graphs.py:1679 <span class="ref-line">_route_semantic_gate_after_linking</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1690">graphs.py:1690 <span class="ref-line">_route_semantic_gate_after_linking_fast_match</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1698">graphs.py:1698 <span class="ref-line">_route_semantic_gate_after_linking_gen_sql</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1695">graphs.py:1695 <span class="ref-line">_route_semantic_gate_after_linking</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1706">graphs.py:1706 <span class="ref-line">_route_semantic_gate_after_linking_fast_match</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1714">graphs.py:1714 <span class="ref-line">_route_semantic_gate_after_linking_gen_sql</span></a>
     </p>
 
     <p>
@@ -252,7 +252,7 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py#L126">versions.py:126 <span class="ref-line">regression_report</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1261">graphs.py:1261 <span class="ref-line">_route_after_reflect</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1277">graphs.py:1277 <span class="ref-line">_route_after_reflect</span></a>
     </p>
 
     <div class="callout note">
@@ -270,9 +270,9 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L112">graphs.py:112 <span class="ref-line">MAX_REFLECT_RETRIES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1254">graphs.py:1254 <span class="ref-line">_route_after_hitl</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1706">graphs.py:1706 <span class="ref-line">_route_after_query_sketch</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L113">graphs.py:113 <span class="ref-line">MAX_REFLECT_RETRIES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1270">graphs.py:1270 <span class="ref-line">_route_after_hitl</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1852">graphs.py:1852 <span class="ref-line">_route_after_query_sketch</span></a>
     </p>
 
     <h2 id="budget">上下文预算</h2>
@@ -295,7 +295,7 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L115">graphs.py:115 <span class="ref-line">COMPLEXITY_BUDGET_TOKENS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L116">graphs.py:116 <span class="ref-line">COMPLEXITY_BUDGET_TOKENS</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L134">context_budget.py:134 <span class="ref-line">assemble_context</span></a>
     </p>
 
@@ -325,7 +325,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 8ff70b6</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>
