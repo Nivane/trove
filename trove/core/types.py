@@ -102,6 +102,62 @@ class SchemaInfo:
     tables: list[TableInfo] = field(default_factory=list)
 
 
+# ── 执行画像(execution profile)───────────────────────────
+#
+# 放在这里而不是 ``services/datasource/profile.py``:``TableProfile`` 是
+# **适配器的返回类型**,与 ``TableInfo`` / ``Capabilities`` 同级。落在服务层会让
+# ``adapters/base.py`` 反向依赖上层模块 —— 依赖方向颠倒,而且第一个想在下层复用
+# 它的人会踩坑。``profile.py`` 仍然 re-export,设计 §7.1 的导入路径不变。
+
+
+@dataclass(frozen=True)
+class TableProfile:
+    """表级画像。**任何字段不可得时为 ``None``** —— 不可得 ≠ 0(§6.1)。
+
+    ``capabilities`` 说的是**这个适配器实现了哪些字段的采集**,不是「这一行恰好
+    有值」:某张表统计信息没收集时 ``row_count`` 是 ``None``,而 ``"row_count"``
+    仍在集合里。反过来会让「这张表缺统计」被误诊成「这个库不支持行数」,把运维
+    引到错误的修法上(§8.2 B)。
+    """
+
+    table: str
+    #: 行数。归一入口是既有 ``TableInfo.row_count_estimate``
+    row_count: int | None = None
+    bytes: int | None = None
+    #: ISO8601;数据新鲜度的核心字段
+    last_modified: str | None = None
+    last_analyzed: str | None = None
+    partition_column: str | None = None
+    partition_count: int | None = None
+    #: 最新分区值(判断数据截止)
+    latest_partition: str | None = None
+    #: 本适配器**实际实现**的字段子集(§8.2 B)
+    capabilities: frozenset[str] = frozenset()
+
+    def supports(self, capability: str) -> bool:
+        return capability in self.capabilities
+
+
+def positive_int(value: Any) -> int | None:
+    """正值 → int;``None`` / 0 / 负数 / 非数 → ``None``(**没有依据**)。
+
+    **0 不是依据。** 画像返回 0 最可能的原因是统计信息没收集,而不是「这张表确实
+    是空的」;当成 0 会让一条扫全表的查询被判成零成本 —— 方向恰好是**放宽**,而
+    这正是成本轨要修的方向。
+
+    ``None`` / 0 语义一致化的地方不止一处(``R1``:成本轨估算、画像求和、
+    适配器归一),**三处用同一条判据**,所以它在这里而不是任一侧 —— 各存一份的
+    版本迟早在其中一处被「顺手修好」,而不变量就那样没了。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 @dataclass
 class QueryResult:
     """Unified query result from any datasource adapter."""

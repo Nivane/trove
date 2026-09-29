@@ -23,6 +23,8 @@ from trove.core.types import (
     QueryResult,
     SchemaInfo,
     TableInfo,
+    TableProfile,
+    positive_int,
 )
 from trove.core.errors import DatasourceError, SQLExecutionError
 from trove.core.logging import get_logger
@@ -47,6 +49,10 @@ def _get_driver():
 
 class ClickHouseAdapter(DatabaseAdapter):
     """ClickHouse database adapter via clickhouse-connect (sync → to_thread)."""
+
+    # ``total_rows`` 与 ``total_bytes`` 同在 ``system.tables`` 一行里 —— 基线的
+    # 一次查询顺带就拿到了字节数,不需要第二个往返。
+    profile_capabilities = frozenset({"row_count", "bytes"})
 
     def __init__(self, name: str = "clickhouse", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
@@ -160,6 +166,38 @@ class ClickHouseAdapter(DatabaseAdapter):
             return SchemaInfo(tables=tables)
 
         return await asyncio.to_thread(_introspect)
+
+    async def table_profiles(self) -> dict[str, TableProfile]:
+        """画像:行数 + 字节数,一次 ``system.tables`` 查询(§8.2 B 的方言实现)。
+
+        覆盖基线的理由不是「基类算不出行数」,而是**同一次查询里多一列就有字节
+        数**:字节数正是成本轨最想要的量纲(``assume_max_scan_bytes`` 用的就是
+        bytes),而基线给的只是行数。
+
+        列名显式写进 SQL 而不是 ``SELECT *``:``system.tables`` 是个上百列的系统
+        表,取宽了在集群上是很贵的。
+        """
+        if not self._client or not self._connected:
+            raise DatasourceError(message="Not connected", datasource=self.name)
+
+        caps = self.profile_capabilities
+
+        def _profile() -> dict[str, TableProfile]:
+            res = self._client.query(
+                "SELECT name, total_rows, total_bytes FROM system.tables "
+                "WHERE database = currentDatabase() AND name NOT LIKE '.%'"
+            )
+            return {
+                str(name): TableProfile(
+                    table=str(name),
+                    row_count=positive_int(total_rows),
+                    bytes=positive_int(total_bytes),
+                    capabilities=caps,
+                )
+                for name, total_rows, total_bytes in res.result_rows
+            }
+
+        return await asyncio.to_thread(_profile)
 
     async def get_capabilities(self) -> Capabilities:
         return Capabilities(

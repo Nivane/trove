@@ -44,6 +44,9 @@ def _get_driver():
 class DuckDBAdapter(DatabaseAdapter):
     """DuckDB database adapter via duckdb (sync → to_thread)."""
 
+    # get_schema 对每张表跑一次 SELECT COUNT(*)(精确值,不是估算)。
+    profile_capabilities = frozenset({"row_count"})
+
     def __init__(self, name: str = "duckdb", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._db_path: str = self.config.get("path", ":memory:")

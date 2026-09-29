@@ -57,15 +57,28 @@ class TestAsk:
         assert state.verdict == "OK"
         assert state.error == ""
 
-    async def test_degraded_execution_is_recorded_end_to_end(self, session_manager):
-        """§12 A2(执行画像 P1 那一半):估算不可得 → 降级执行且**留痕**。
+    async def test_profile_backed_estimate_reaches_the_graph_end_to_end(
+        self, session_manager,
+    ):
+        """§12 A2:估算依据**真的**从装配线流到了 state。
 
-        sqlite 有 adapter 但**没有 EXPLAIN 解析器**(``row_guard._PARSERS``
-        只覆盖 postgres/duckdb/mysql/doris)→ 降级链走到底 → 路径 3 → 加 LIMIT
-        执行 + ``degraded=true``。
+        sqlite 有 adapter 但**没有 EXPLAIN 解析器**(``row_guard._PARSERS`` 只覆盖
+        postgres/duckdb/mysql/doris)→ 降级链退到第 2 档元数据画像 → 拿到
+        ``students`` 的行数 → 干净放行,**不加 LIMIT**。
 
-        这条跑的是**整图**,不是节点单测 —— 单测能证明节点会记,只有整图能
-        证明装配线(``graphs._build_budget``)真的把它接上了。
+        这条跑的是**整图**,不是节点单测。单测能证明节点会记,只有整图能证明
+        ``graphs._build_budget`` 把画像服务接上了 —— 而且这里断言的是
+        ``source == "metadata"``:它同时证明了 **表名从 SQL 解出来了**、
+        **画像查到了**、**适配器的行数传下来了** 三件事,比只断言「记了一笔」
+        强得多。
+
+        ⚠️ P2 之前这条断言的是相反的结果(``conservative`` + ``degraded=true``
+        + ``limit_applied=1000``):那时没有第 2 档,这两个方言**每条查询**都落
+        保守预算,``degraded`` 恒为真以至于失去信号意义。那条路径今天仍然存在
+        ——「一个表名都解不出来」或「适配器报不出画像」时就会走到,
+        由 ``tests/workflow/test_execute_sql_budget.py::TestDegradedExecution``
+        与 ``TestMetadataTier::test_unparseable_sql_falls_through_to_conservative``
+        覆盖。
         """
         session = await session_manager.start_session(project_cwd="/tmp/p1")
         state = await session_manager.ask(
@@ -75,11 +88,11 @@ class TestAsk:
         )
         ev = state.execution_evidence
         assert ev is not None, "整图路径没装配成本轨 —— 接线断了"
-        assert ev["degraded"] is True
-        assert ev["source"] == "conservative"
-        assert ev["limit_applied"] == 1000
-        # 展示给用户的 SQL 仍是生成的那条:LIMIT 是部署级执行策略,不是这个
-        # 问题的答案(见 tests/workflow/test_execute_sql_budget.py)
+        assert ev["source"] == "metadata"
+        assert ev["degraded"] is False
+        assert ev["limit_applied"] is None
+        assert ev["estimated_rows"] and ev["estimated_rows"] > 0
+        # 展示给用户的 SQL 仍是生成的那条:没降级就不该有任何改写
         assert state.sql == "SELECT name FROM students;"
 
     async def test_ask_appends_messages(self, session_manager):

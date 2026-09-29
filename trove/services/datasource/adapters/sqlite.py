@@ -29,6 +29,9 @@ logger = get_logger(__name__)
 class SQLiteAdapter(DatabaseAdapter):
     """SQLite database adapter via aiosqlite (async)."""
 
+    # get_schema 用 SELECT COUNT(*)(精确值,不是估算)。
+    profile_capabilities = frozenset({"row_count"})
+
     def __init__(self, name: str = "sqlite", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._db_path: str = self.config.get("path", ":memory:")

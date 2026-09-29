@@ -44,6 +44,11 @@ class MySQLAdapter(DatabaseAdapter):
     default_port = DEFAULT_PORT
     driver_hint = "`uv sync --extra mysql`"
 
+    # get_schema 取 information_schema.TABLES 的 TABLE_ROWS;注意它的 SQL 写了
+    # IFNULL(TABLE_ROWS, 0) —— 「统计缺失」与「空表」在**源头**就同形,靠
+    # positive_int 在画像侧一次性归一到「没有依据」。
+    profile_capabilities = frozenset({"row_count"})
+
     def __init__(self, name: str = "mysql", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._conn: Any = None

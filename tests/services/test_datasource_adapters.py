@@ -337,6 +337,50 @@ class TestCatalogService:
         catalog = CatalogService(sqlite_registry)
         assert await catalog.table_detail("nonexistent") is None
 
+    async def test_table_profile_forwards(self, sqlite_registry):
+        """执行画像 §9.2 的转发面:管理端拿得到表级画像。
+
+        ``capabilities`` 导出成**有序列表**而不是它内部的 frozenset —— 这个字典
+        要过 JSON。集合序列化成数组是稳定契约,不是实现细节泄漏。
+        """
+        from trove.services.datasource.catalog import CatalogService
+        catalog = CatalogService(sqlite_registry)
+
+        p = await catalog.table_profile("students")
+        assert p["table"] == "students"
+        assert p["row_count"] and p["row_count"] > 0
+        assert "row_count" in p["capabilities"]
+        assert p["latest_partition"] is None  # SQLite 给不出,就是 None
+
+    async def test_table_profile_of_an_unknown_table_is_not_an_error(
+        self, sqlite_registry,
+    ):
+        """不认识的表 → 一张空画像,不是 404,更不是异常。
+
+        「没有这张表」是信息,「查询失败了」是故障 —— 混成一个错误码,调用方
+        就分不出该提示用户改名还是该重试。
+        """
+        from trove.services.datasource.catalog import CatalogService
+        catalog = CatalogService(sqlite_registry)
+
+        p = await catalog.table_profile("nope")
+        assert p["table"] == "nope"
+        assert p["row_count"] is None
+        assert p["capabilities"] == []
+
+    async def test_freshness_admits_unknown_rather_than_guessing(
+        self, sqlite_registry,
+    ):
+        """I5:SQLite 报不出 ``last_modified`` → ``as_of`` 是 None 且
+        ``basis="unknown"``,**不得用查询时间冒充**。"""
+        from trove.services.datasource.catalog import CatalogService
+        catalog = CatalogService(sqlite_registry)
+
+        f = await catalog.freshness(tables=["students"])
+        assert f["as_of"] is None
+        assert f["basis"] == "unknown"
+        assert f["datasource"] == "test_db"  # 留空 → 解析成 registry 的默认数据源
+
     async def test_search_tables(self, sqlite_registry):
         from trove.services.datasource.catalog import CatalogService
         catalog = CatalogService(sqlite_registry)

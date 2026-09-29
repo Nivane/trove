@@ -64,6 +64,9 @@ def _conninfo(config: dict[str, Any], credentials: dict[str, str] | None = None)
 class PostgresAdapter(DatabaseAdapter):
     """PostgreSQL database adapter via psycopg (async)."""
 
+    # get_schema 取 pg_class.reltuples。
+    profile_capabilities = frozenset({"row_count"})
+
     def __init__(self, name: str = "postgres", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._conn: Any = None

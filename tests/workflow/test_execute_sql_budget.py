@@ -86,6 +86,128 @@ def _no_basis_budget(spy, **over) -> BudgetService:
     )
 
 
+def _profile_budget(spy, profile, **over) -> BudgetService:
+    """P2:第 1 档(EXPLAIN)拿不到解析器,由**元数据画像**供第 2 档。
+
+    这正是 sqlite / clickhouse 今天的样子 —— 也是 P2 存在的理由:那两个方言在
+    P1 之后**每条查询**都落保守预算,``degraded`` 恒为真,信号退化成噪声。
+    """
+    return BudgetService(
+        ExecutionBudget(max_rows=1000, **over),
+        explain=spy.explain,
+        parse_explain=lambda dialect, res: None,
+        metadata=profile,
+    )
+
+
+class _ProfileSpy:
+    """记录画像被问了什么(数据源 + 涉及的表),并按设定作答。
+
+    表名是**从 SQL 里解出来的** —— 画像按表行数求和,不知道表名就无从查起。
+    """
+
+    def __init__(self, rows=None) -> None:
+        self.rows = rows
+        self.asked: list[tuple[str, list[str]]] = []
+
+    def __call__(self, datasource, tables):
+        self.asked.append((datasource, sorted(tables or [])))
+        return self.rows
+
+
+# ── 第 2 档:元数据画像(P2)──────────────────────────────
+
+class TestMetadataTier:
+    """画像档接上之后,**小表查询不再被降级** —— 这是 P2 真正买到的东西。
+
+    P1 之后 sqlite/clickhouse 的每条查询都走保守预算,``degraded`` 恒为真。一个
+    恒为真的字段不是信号,是噪声:没人会去看它。有了画像,只有真的估不出来时
+    才降级。
+    """
+
+    async def test_the_sql_tables_are_extracted_and_asked_about(self):
+        """表名从 SQL 里解出来再问画像 —— 顺带钉住数据源是**当前这一轮**的。
+
+        多数据源部署里漏掉数据源,A 库的行数会被当成 B 库的(与
+        ``BudgetService._from_explain`` 同一条理由)。
+        """
+        spy = _SpyConnectors()
+        profile = _ProfileSpy(rows=100)
+        node = make_execute_sql(spy, budget=_profile_budget(spy, profile))
+
+        state = _state(
+            datasource="analytics",
+            sql="SELECT s.name FROM students s JOIN grades g ON s.id = g.sid",
+        )
+        result = await node(state)
+
+        assert profile.asked == [("analytics", ["grades", "students"])]
+        assert result["execution_evidence"]["source"] == "metadata"
+
+    async def test_a_small_table_is_not_degraded_at_all(self):
+        """画像说这张表只有 100 行 → 干净放行,不加 LIMIT、不记 degraded。
+
+        执行下去的 SQL 与生成的那条**完全一致** —— 「没降级」这件事在
+        connector 收到的那条串上看得见。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(
+            spy, budget=_profile_budget(spy, _ProfileSpy(rows=100)),
+        )
+        result = await node(_state())
+
+        ev = result["execution_evidence"]
+        assert ev["verdict"] == "allow"
+        assert ev["degraded"] is False
+        assert ev["limit_applied"] is None
+        assert spy.executed == ["SELECT name FROM students"]
+
+    async def test_a_big_table_degrades_with_a_limit_not_a_regeneration(self):
+        """画像估出 6 亿行(超软限、未超硬限)→ 加 LIMIT 执行,**不打回重生成**。
+
+        打回重生成在这里是个不收敛的环:画像看不见 LIMIT,重写十遍估值不变。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(
+            spy, budget=_profile_budget(spy, _ProfileSpy(rows=600_000_000)),
+        )
+        result = await node(_state())
+
+        ev = result["execution_evidence"]
+        assert ev["verdict"] == "degrade"
+        assert ev["limit_applied"] == 1000
+        assert "LIMIT 1000" in spy.executed[0].upper()
+        # 没有回写 error_feedback = 没有打回 gen_sql(成功路径会把它清空)
+        assert result["error_feedback"] == ""
+
+    async def test_over_the_hard_cap_is_terminal(self):
+        """画像是**粗**估算,但 1B 行这个量级不需要精确 —— 超硬限直接拒。"""
+        spy = _SpyConnectors()
+        node = make_execute_sql(
+            spy, budget=_profile_budget(spy, _ProfileSpy(rows=5_000_000_000)),
+        )
+        result = await node(_state())
+
+        assert result["error"].startswith("[ERR:ROW_GUARD]")
+        assert spy.executed == []  # 没有落库
+
+    async def test_unparseable_sql_falls_through_to_conservative(self):
+        """解不出表名(方言语法太怪)→ 画像无从查起 → 保守预算,**不是放行**。
+
+        这条是 P2 与 P1 的接缝:第 2 档够不着不等于管道断了,后面的第 3 档还在。
+        """
+        spy = _SpyConnectors()
+        profile = _ProfileSpy(rows=100)
+        node = make_execute_sql(spy, budget=_profile_budget(spy, profile))
+
+        result = await node(_state(sql="SELECT FROM WHERE (("))
+
+        assert profile.asked == []  # 没表名可问
+        ev = result["execution_evidence"]
+        assert ev["source"] == "conservative"
+        assert ev["degraded"] is True
+
+
 # ── 降级执行:路径 3 的唯一行为变更 ────────────────────────
 
 

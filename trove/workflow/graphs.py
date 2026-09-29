@@ -1755,9 +1755,10 @@ def _build_budget(services: "GraphServices"):
     阈值一律从 ``config.budget`` 取(:class:`BudgetConfig` 已兼容读取旧键),
     **不给本函数任何数值参数** —— 阈值只能有一个来源,两处各存一份迟早漂移。
 
-    与 ``_build_authorizer`` 同一种「能力未接即跳过该档」的接法:元数据画像
-    (P2)未接 → 降级链的第 2 档自然跳过,不会假装查过。
+    与 ``_build_authorizer`` 同一种「能力未接即跳过该档」的接法:适配器报不出
+    画像时第 2 档自然跳过,不会假装查过。
     """
+    from trove.services.datasource.profile import ProfileService
     from trove.services.sql.budget import BudgetService, ExecutionBudget
 
     config = services.config or AgentConfig()
@@ -1782,7 +1783,14 @@ def _build_budget(services: "GraphServices"):
         # 由 BudgetService 每轮把 ``state.datasource`` 传下去。
         explain=explain,
         # parse_explain 用默认的 row_guard.estimate_max_rows(不传)。
-        # metadata 留给 P2 —— 未接时第 2 档跳过,方向仍是保守。
+        #
+        # metadata(第 2 档,P2):画像服务自己也是 ``(datasource, tables)`` 形状,
+        # 同样直接绑。有了它,sqlite / clickhouse 这类没有 EXPLAIN 解析器的方言
+        # 不再**每条查询**都落保守预算 —— 一个恒为真的 degraded 字段不是信号。
+        #
+        # 画像带 TTL 缓存与超时跳过(§10),所以这里为每张图建一个实例即可:
+        # 缓存按图存活,不会把每次执行都变成一次全库抓取。
+        metadata=ProfileService(connectors).estimate_rows,
     )
 
 

@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from trove.core.logging import get_logger
+from trove.core.types import positive_int as _positive
 from trove.services.limits import DEFAULT_MAX_ROWS
 from trove.services.sql import row_guard
 
@@ -140,10 +141,11 @@ class BudgetService:
             ``connectors.explain`` —— 它是规划不是取数,毫秒级。
         parse_explain: ``(dialect, QueryResult) -> int | None``;默认
             :func:`row_guard.estimate_max_rows`(**不改它的 fail-open 语义**)。
-        metadata: ``(tables) -> int | None``(可 async),表行数画像的求和入口。
-            **P2 才供得上**;未接时这一档直接跳过 → 保守预算。与
-            ``_build_authorizer`` 的 ``declared_tables`` 同一种「能力未接即
-            跳过该档」的接法。
+        metadata: ``(datasource, tables) -> int | None``(可 async),表行数画像的
+            求和入口。与 ``explain`` 同参:**带数据源** —— 少了它,多数据源部署
+            里画像查的是默认库,行数来自 A 库而 SQL 跑在 B 库上。未接时这一档
+            直接跳过 → 保守预算(与 ``_build_authorizer`` 的 ``declared_tables``
+            同一种「能力未接即跳过该档」的接法)。
 
     三个依赖都是**可注入的可调用对象**而不是具体服务:降级链是纯逻辑,不该为了
     测它去起一个数据库(§12 A9:零 LLM、零网络)。
@@ -155,7 +157,7 @@ class BudgetService:
         *,
         explain: Callable[[str, str], Any] | None = None,
         parse_explain: Callable[[str, Any], int | None] | None = None,
-        metadata: Callable[[list[str]], Any] | None = None,
+        metadata: Callable[[str, list[str]], Any] | None = None,
     ) -> None:
         self.budget = budget or ExecutionBudget()
         self._explain = explain
@@ -176,7 +178,7 @@ class BudgetService:
             return CostEstimate(rows, None, "explain", False,
                                 {"datasource": datasource, "dialect": dialect})
 
-        rows = await self._from_metadata(known_tables)
+        rows = await self._from_metadata(datasource, known_tables)
         if rows is not None:
             return CostEstimate(rows, None, "metadata", False,
                                 {"datasource": datasource, "tables": known_tables})
@@ -210,12 +212,20 @@ class BudgetService:
             logger.warning("budget: EXPLAIN 估算不可用(%s),降级到下一档", e)
             return None
 
-    async def _from_metadata(self, tables: list[str]) -> int | None:
-        """第 2 档:元数据画像(表行数之和)。P2 供数;未接/查不到 → None。"""
+    async def _from_metadata(
+        self, datasource: str, tables: list[str],
+    ) -> int | None:
+        """第 2 档:元数据画像(表行数之和)。未接 / 一个表都不认识 → ``None``。
+
+        这一档是**粗**的:按表行数求和,看不见 WHERE、看不见投影、更看不见
+        LIMIT。粗到不能用来打回重生成(那不收敛,见 :meth:`decide`),但用来
+        判断「这条查询是不是在扫一张十亿行的表」绰绰有余 —— 而那正是本模块
+        唯一想拦的东西。
+        """
         if self._metadata is None or not tables:
             return None
         try:
-            return _positive(await _maybe_await(self._metadata(tables)))
+            return _positive(await _maybe_await(self._metadata(datasource, tables)))
         except Exception as e:
             logger.warning("budget: 元数据画像不可用(%s),降级到保守预算", e)
             return None
@@ -250,6 +260,22 @@ class BudgetService:
         if rows <= b.soft_scan_rows:
             return BudgetDecision("allow")
         if rows <= b.hard_scan_rows:
+            if est.source == "metadata":
+                # 画像档的估算**只能降级,不能打回重生成** —— 那是一个不收敛的环。
+                #
+                # 画像按表行数求和,看不见 WHERE、看不见投影、更看不见 LIMIT:
+                # ``SELECT name FROM big LIMIT 10`` 与不带 LIMIT 的估算是同一个
+                # 数。打回 gen_sql 之后下一轮判定完全相同,再打回……直到烧完
+                # max_retries —— 在 ClickHouse(最需要护栏的大表方言)上就是每个
+                # 查询白烧十轮 LLM 再失败。
+                #
+                # EXPLAIN 档不受影响:加 LIMIT 计划会变,环是收敛的(§5.2 的处置
+                # 表对那一档依然逐字成立)。
+                return BudgetDecision(
+                    "degrade", "",
+                    f"按元数据画像估算涉及 {rows} 行(表行数之和,看不见过滤条件),"
+                    f"超过软上限 {b.soft_scan_rows} —— 按保守方式加 LIMIT 执行。",
+                )
             return BudgetDecision(
                 "reject", "soft",
                 f"估算扫描 {rows} 行,超过软上限 {b.soft_scan_rows} —— 打回重生成,"
@@ -363,22 +389,6 @@ def _existing_limit(tree: Any) -> int | None:
 
 
 # ── 小工具 ────────────────────────────────────────────────
-
-
-def _positive(value: Any) -> int | None:
-    """正值 → int;``None`` / 0 / 负数 / 非数 → ``None``(没有依据)。
-
-    **0 不是依据。** 画像返回 0 最可能的原因是统计信息没收集,而不是「这张表
-    确实是空的」;把它当成 0 会让一条扫全表的查询被判成零成本 —— 方向恰好是
-    **放宽**,而这正是本模块要修的那个方向。``None`` 会让它退到保守路径。
-    """
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return None
-    return n if n > 0 else None
 
 
 async def _maybe_await(value: Any) -> Any:

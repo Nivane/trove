@@ -51,8 +51,59 @@ def _token_variants(token: str) -> list[str]:
 class CatalogService:
     """Browsing and search service for database metadata."""
 
-    def __init__(self, registry: ConnectorRegistry):
+    def __init__(self, registry: ConnectorRegistry, profile=None):
         self._registry = registry
+        # 惰性建:画像服务带 TTL 缓存,一个 catalog 实例一份 —— 每次调用新建
+        # 会让缓存形同虚设,而画像的每次抓取都是一次真实查询(§10)。
+        self._profile = profile
+
+    @property
+    def profile(self):
+        """画像服务(执行画像 §7.1 / §9.2 的转发落点)。"""
+        if self._profile is None:
+            from trove.services.datasource.profile import ProfileService
+
+            self._profile = ProfileService(self._registry)
+        return self._profile
+
+    async def table_profile(
+        self, table_name: str, datasource: str | None = None,
+    ) -> dict[str, Any]:
+        """表级画像(执行画像 §6.1)。
+
+        不可得的字段就是 ``None`` —— **不可得 ≠ 0**(§6.1):用 0 或空串冒充
+        「已知」,下游会把它当成一个真实的观测值。``capabilities`` 导出为有序
+        列表(这个字典要过 JSON),它说的是**适配器实现了哪些字段的采集**,
+        不是「这一行恰好有值」。
+        """
+        p = await self.profile.table_profile(datasource or "", table_name)
+        return {
+            "table": p.table,
+            "row_count": p.row_count,
+            "bytes": p.bytes,
+            "last_modified": p.last_modified,
+            "last_analyzed": p.last_analyzed,
+            "partition_column": p.partition_column,
+            "partition_count": p.partition_count,
+            "latest_partition": p.latest_partition,
+            "capabilities": sorted(p.capabilities),
+        }
+
+    async def freshness(
+        self, tables: list[str], datasource: str | None = None,
+    ) -> dict[str, Any]:
+        """所引用表的新鲜度聚合,供答案的 ``data_as_of``(§6.1 / §8.4)。
+
+        ``basis="unknown"`` + ``as_of=None`` 是**合法且常见**的返回值(I5):
+        报不出来就说报不出来,不用查询时间冒充数据截止时间。
+        """
+        f = await self.profile.freshness(datasource or "", tables)
+        return {
+            "datasource": f.datasource,
+            "as_of": f.as_of,
+            "basis": f.basis,
+            "stale_tables": list(f.stale_tables),
+        }
 
     async def list_tables(
         self,

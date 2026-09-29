@@ -15,7 +15,7 @@ from typing import Any
 
 from trove.core.i18n import L
 from trove.core.logging import get_logger
-from trove.services.authz.enforcer import Authorizer
+from trove.services.authz.enforcer import Authorizer, referenced_tables
 from trove.services.authz.policy import principal_from_wire
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
@@ -367,8 +367,15 @@ async def _judge_budget(
     try:
         est = await budget.estimate(
             state.datasource or "", state.sql, state.dialect or "",
-            # P2 起由元数据画像供表名;P1 未接画像,这一档本就跳过,给空即可。
-            None,
+            # 表名是元数据画像档的**入口**:画像按表行数求和,不知道表名就无从
+            # 查起。解不出表名(``None``)或解析失败都不是问题 —— 那一档本来就
+            # 会跳过,后面还有保守预算接着。
+            #
+            # 用 authz 那份 ``referenced_tables`` 而不是另写一个:两处对「SQL 触及
+            # 了哪些表」的判断必须一致,不一致的那天会出现「授权认为查了 A 表、
+            # 成本估算认为没查」这种谁也说不清的账。代价是二次 sqlglot 解析,
+            # 毫秒级。
+            referenced_tables(state.sql, state.dialect or ""),
         )
         return est, budget.decide(est), budget.budget
     except Exception as e:

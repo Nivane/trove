@@ -105,6 +105,63 @@ class TestDecide:
         assert BudgetService().decide(est, BUDGET).verdict == "degrade"
 
 
+class TestCoarseEstimatesCannotFeedBack:
+    """画像档(路径 2)的估算**只能降级,不能打回重生成**。
+
+    §5.2 的处置表把「soft < est ≤ hard」一律写作 reject + 打回 gen_sql 加
+    LIMIT。那条规则对 EXPLAIN 档成立:加了 LIMIT 计划会变,下一轮估算更小,
+    是一个**收敛**的环。
+
+    对画像档不成立。画像按**表行数求和**,看不见 WHERE、看不见投影、更看不见
+    LIMIT —— ``SELECT name FROM big_table LIMIT 10`` 与不带 LIMIT 的估算是
+    **同一个数**。于是打回重生成之后下一轮判定完全相同,再打回……直到烧完
+    ``max_retries``。在 ClickHouse(恰恰是最需要护栏的大表方言)上,这意味着
+    每个查询白烧十轮 LLM 再失败。
+
+    硬限不受这条约束:它是**终局**(不重生成),没有环可谈。
+    """
+
+    def test_metadata_over_soft_degrades_instead_of_rejecting(self):
+        est = CostEstimate(BUDGET.soft_scan_rows + 1, None, "metadata", False, {})
+        d = BudgetService().decide(est, BUDGET)
+        assert d.verdict == "degrade"
+        assert d.over == ""
+        assert d.reason
+
+    def test_metadata_over_hard_still_rejects(self):
+        """超过硬限时粗估算也是决定性的 —— 1B 行这个量级不需要精确。"""
+        est = CostEstimate(BUDGET.hard_scan_rows + 1, None, "metadata", False, {})
+        d = BudgetService().decide(est, BUDGET)
+        assert d.verdict == "reject"
+        assert d.over == "hard"
+
+    def test_metadata_under_soft_is_allowed_without_a_limit(self):
+        """路径 2 真正买到的东西:小表查询**不再被降级**。
+
+        存量(与 P1 之后)这两个方言每条查询都落保守预算 → degraded 恒为真,
+        degraded 从信号退化成噪声。有了画像,小表就是干净放行。
+        """
+        est = CostEstimate(1_000, None, "metadata", False, {})
+        d = BudgetService().decide(est, BUDGET)
+        assert d.verdict == "allow"
+        assert d.over == ""
+
+    def test_explain_over_soft_is_unaffected(self):
+        """EXPLAIN 档保留打回重生成 —— 那是现有行为(§8.5 保留双上限)。"""
+        est = CostEstimate(BUDGET.soft_scan_rows + 1, None, "explain", False, {})
+        assert BudgetService().decide(est, BUDGET).verdict == "reject"
+
+    def test_metadata_degrades_even_though_it_has_a_basis(self):
+        """「有依据」与「要降级」不矛盾 —— ``degraded`` 说的是**有没有依据**。
+
+        画像给了依据,所以 ``degraded=False``;但它粗到只能当地板用,所以要加
+        LIMIT。两个字段各说各的事,调用方靠 ``limit_applied`` 知道边界在哪。
+        """
+        est = CostEstimate(BUDGET.soft_scan_rows + 1, None, "metadata", False, {})
+        assert est.degraded is False
+        assert BudgetService().decide(est, BUDGET).verdict == "degrade"
+
+
 # ── estimate:降级链 ───────────────────────────────────────
 
 
@@ -113,7 +170,7 @@ class TestDegradationChain:
         svc = BudgetService(
             explain=lambda sql, ds=None: _qresult([(5000,)]),
             parse_explain=lambda dialect, res: 5000,
-            metadata=lambda tables: 10**9,  # 粗估算,不该被采用
+            metadata=lambda ds, tables: 10**9,  # 粗估算,不该被采用
         )
         est = await svc.estimate("db", "SELECT 1", "postgres", ["t"])
         assert est.source == "explain"
@@ -125,7 +182,7 @@ class TestDegradationChain:
         svc = BudgetService(
             explain=lambda sql, ds=None: _qresult([("Seq Scan on t",)]),
             parse_explain=lambda dialect, res: None,
-            metadata=lambda tables: 2_000_000,
+            metadata=lambda ds, tables: 2_000_000,
         )
         est = await svc.estimate("db", "SELECT 1", "postgres", ["t"])
         assert est.source == "metadata"
@@ -150,12 +207,28 @@ class TestDegradationChain:
         assert est.source == "conservative"
         assert called == []
 
+    async def test_metadata_is_asked_for_the_current_datasource(self):
+        """画像要**带数据源**问(与 ``explain`` 同参)。
+
+        少了它,多数据源部署里画像查的是默认库:行数来自 A 库、SQL 跑在 B 库上,
+        估算与执行对不上,而两边的日志都看不出这件事 —— 典型的安静错判。
+        """
+        seen: list[tuple[str, list[str]]] = []
+
+        def metadata(datasource, tables):
+            seen.append((datasource, list(tables)))
+            return 1
+
+        svc = BudgetService(metadata=metadata)
+        await svc.estimate("warehouse_b", "SELECT 1", "postgres", ["t"])
+        assert seen == [("warehouse_b", ["t"])]
+
     async def test_metadata_returning_zero_is_not_a_basis(self):
         """画像返回 0 不等于「这张表没有数据」——多半是统计信息没收集。
 
         当成 0 会让一条扫全表的查询被判成零成本,方向恰好是**放宽**。
         """
-        svc = BudgetService(metadata=lambda tables: 0)
+        svc = BudgetService(metadata=lambda ds, tables: 0)
         est = await svc.estimate("db", "SELECT 1", "postgres", ["t"])
         assert est.source == "conservative"
         assert est.degraded is True
@@ -165,7 +238,7 @@ class TestDegradationChain:
         def boom(sql, ds=None):
             raise RuntimeError("EXPLAIN not supported")
 
-        svc = BudgetService(explain=boom, metadata=lambda tables: 42)
+        svc = BudgetService(explain=boom, metadata=lambda ds, tables: 42)
         est = await svc.estimate("db", "SELECT 1", "postgres", ["t"])
         assert est.source == "metadata"
 
