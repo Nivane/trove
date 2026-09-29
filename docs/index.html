@@ -475,9 +475,9 @@ docker compose up --build</code></pre>
             模型看到的是「没有这个工具」，而不是一道可以试探的墙。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L219">agent_loop.py:219 <span class="ref-line">visible_to</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L351">agent_loop.py:351 <span class="ref-line">按角色裁剪</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L555">agent_loop.py:555 <span class="ref-line">越权折叠</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L244">agent_loop.py:244 <span class="ref-line">visible_to</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L376">agent_loop.py:376 <span class="ref-line">按角色裁剪</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L580">agent_loop.py:580 <span class="ref-line">越权折叠</span></a>
           </div>
         </div>
         <div class="cap">
@@ -486,7 +486,7 @@ docker compose up --build</code></pre>
             不是停止条件。工具并行派发、单工具超时与重试、空手而归时降级回经典「生成→校验重试」子图。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L405">agent_loop.py:405 <span class="ref-line">max_rounds=8</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L430">agent_loop.py:430 <span class="ref-line">max_rounds=8</span></a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py">nodes/gen_sql.py</a>
           </div>
         </div>
@@ -756,7 +756,7 @@ docker compose up --build</code></pre>
             <tr>
               <td>不可信内容隔离</td>
               <td>值进入模型上下文只有两条通道，两条都过同一个隔离核：命中注入短语即把<strong>整个值</strong>作废成中性标记，而不是剪掉命中的那一段（模型不能以为自己拿到的是不完整但可用的数据）。截断排在隔离<strong>之后</strong>，否则长文本里的注入串会被从中间切断、正则漏判。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L62">llm/untrusted.py:62 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L70">llm/agent_loop.py:70 <span class="ref-line">_model_observation</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L62">llm/untrusted.py:62 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">llm/agent_loop.py:89 <span class="ref-line">_model_observation</span></a></td>
             </tr>
             <tr>
               <td>以用户身份重放</td>
@@ -927,7 +927,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         </div>
       </div>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">c993810</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: c993810</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">c3effbf</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: c3effbf</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>
