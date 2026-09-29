@@ -20,6 +20,7 @@ from typing import Any
 
 from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
+from trove.llm.agent_loop import observation_text
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.services.errors import is_transient, tag_error
@@ -754,14 +755,21 @@ async def probe_query(
     timeout_s: float = PROBE_TIMEOUT_S,
     allowed_tables: set[str] | None = None,
     datasource: str | None = None,
-) -> str:
-    """只读执行探针:真实执行草稿 SQL,返回短 JSON 观测串。
+) -> dict[str, Any]:
+    """只读执行探针:真实执行草稿 SQL,返回短观测**对象**(原样单元格)。
 
     模型在定稿前用它快速验证:行数规模、列形状、过滤值是否命中
     (如最高级问题是否 0 行、自造过滤值是否有数据)。**永不抛异常**
     ——任何失败都折叠成 ``{"ok": false, "error": ...}`` 观测。
 
     观测形状: ``{"ok", "row_count", "columns"[:20], "rows"[:5], "error"}``
+
+    **返回对象而非 JSON 串**,是安全契约的一半:外部内容的隔离收在回喂口
+    (``agent_loop._model_observation``),那里按结构逐叶替换——一个坏单元格
+    只作废自己那一格。工具若先拼成字符串再交出去,结构就没了,核只能整块
+    作废:``row_count``/``columns`` 与其余行会被一起吃掉(设计稿 §5.1 粒度
+    规则、§8-2)。所以这里做的是**形状**变换(``_short_value`` 缩短防刷屏),
+    不是安全变换。
 
     Args:
         allowed_tables: 允许引用的业务表集合(schema 快照可用时传入)。
@@ -771,25 +779,15 @@ async def probe_query(
         allowed_tables=allowed_tables, datasource=datasource,
     )
     if not obs["ok"]:
-        return json.dumps(obs)
-    from trove.llm.injection import isolate_cells
-
-    rows: list[list[str]] = []
-    flagged = 0
-    for r in obs["rows"][:PROBE_SAMPLE_ROWS]:
-        isolated, n = isolate_cells([_short_value(v) for v in r])
-        rows.append(isolated)
-        flagged += n
-    payload: dict[str, Any] = {
+        return {"ok": False, "error": obs["error"]}
+    return {
         "ok": True,
         "row_count": obs["row_count"],
         "columns": obs["columns"],
-        "rows": rows,
+        "rows": [
+            [_short_value(v) for v in r] for r in obs["rows"][:PROBE_SAMPLE_ROWS]
+        ],
     }
-    # 内容隔离可观测性:命中注入模式(如 DB 单元格含 "ignore previous")
-    if flagged:
-        payload["injection_flagged"] = flagged
-    return json.dumps(payload)
 
 
 # ── check_result tool (deterministic rule verification) ──
@@ -864,7 +862,7 @@ async def search_values(
     column: str | None = None,
     timeout_s: float = PROBE_TIMEOUT_S,
     datasource: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     """按关键词检索真实值:定位脏值/格式变体/拼写差异。
 
     - column 给定:在该列做大小写不敏感 LIKE,返回匹配的 DISTINCT 值;
@@ -873,32 +871,34 @@ async def search_values(
 
     标识符取自已校验的 schema(无注入面);LIKE 通配符按字面转义。
     **永不抛异常**——失败折叠成 ``{"ok": false, "error": ...}``。
+
+    返回对象而非 JSON 串:值与行的隔离收在回喂口(见 ``probe_query`` 的
+    说明),``values`` 里是**原样**检索值。
     """
     if connectors is None:
-        return json.dumps({"ok": False, "error": "no datasource available"})
+        return {"ok": False, "error": "no datasource available"}
     table = (table or "").strip()
     keyword = (keyword or "").strip()
     if not table or not keyword:
-        return json.dumps({"ok": False, "error": "table and keyword are required"})
+        return {"ok": False, "error": "table and keyword are required"}
 
     schema = await connectors.get_schema(datasource)
     target = next(
         (t for t in schema.tables if t.name.lower() == table.lower()), None,
     )
     if target is None:
-        return json.dumps({"ok": False, "error": f"table '{table}' not found"})
+        return {"ok": False, "error": f"table '{table}' not found"}
 
     if column:
         cols = [c.name for c in target.columns if c.name.lower() == column.lower()]
         if not cols:
-            return json.dumps({"ok": False, "error": f"column '{column}' not found in '{table}'"})
+            return {"ok": False, "error": f"column '{column}' not found in '{table}'"}
         obs = await _search_one(connectors, table, cols[0], keyword, timeout_s, datasource)
         if not obs["ok"]:
-            return json.dumps(obs)
-        # 工具契约:始终返回 JSON 串(_search_one 返回 dict,单列路径不得泄漏)
-        return json.dumps({
+            return {"ok": False, "error": obs["error"]}
+        return {
             "ok": True, "table": table, "column": cols[0], "values": obs["values"],
-        })
+        }
 
     # 未指定列:扫描前 N 列,返回 column → 匹配值 映射。
     # 单列失败不能静默吞掉(否则方言/类型错误会被谎报成"无匹配"),
@@ -913,13 +913,13 @@ async def search_values(
         elif first_error is None:
             first_error = obs.get("error")
     if first_error and not hits:
-        return json.dumps({"ok": False, "error": first_error})
+        return {"ok": False, "error": first_error}
     if not hits:
-        return json.dumps({
+        return {
             "ok": True, "table": table, "hits": {},
             "note": f"no column contains a value matching '{keyword}'",
-        })
-    return json.dumps({"ok": True, "table": table, "hits": hits})
+        }
+    return {"ok": True, "table": table, "hits": hits}
 
 
 async def _search_one(
@@ -943,13 +943,10 @@ async def _search_one(
         from trove.services.sql.sanitize import sanitize_error_text
 
         return {"ok": False, "error": f"execution failed: {sanitize_error_text(str(e))}"}
-    from trove.llm.injection import isolate_cells
-
-    values, flagged = isolate_cells(_short_value(r[0]) for r in (result.rows or []))
-    out: dict[str, Any] = {"ok": True, "values": values}
-    if flagged:
-        out["injection_flagged"] = flagged
-    return out
+    return {
+        "ok": True,
+        "values": [_short_value(r[0]) for r in (result.rows or [])],
+    }
 
 
 # ── Tool factory (gen_sql ReAct 循环的工具集合) ─────────
@@ -1010,24 +1007,29 @@ def _cache_key(
     return (datasource or "", sql or "", kind, limit, run_id or "")
 
 
-def _cache_get(probe_cache: dict | None, key) -> str | None:
-    """读取缓存条目,命中且未过期 → 返回;否则 None。"""
+def _cache_get(probe_cache: dict | None, key) -> Any:
+    """读取缓存条目,命中且未过期 → 返回;否则 None。
+
+    返回类型是 ``Any`` 而非 ``str``:probe 存的是**观测对象**,check 存的是
+    规则结论文本。缓存不该顺手把对象序列化掉——那等于在缓存边界上把粒度
+    丢掉(见 ``probe_tool``)。
+    """
     if probe_cache is None:
         return None
     entry = probe_cache.get(key)
     if entry is None:
         return None
-    ts, text = entry
+    ts, value = entry
     if time.monotonic() - ts > PROBE_CACHE_TTL_S:
         return None
-    return text
+    return value
 
 
-def _cache_put(probe_cache: dict | None, key, text: str) -> None:
+def _cache_put(probe_cache: dict | None, key, value: Any) -> None:
     """写入缓存(封顶:超限丢最旧,防无限膨胀)。"""
     if probe_cache is None:
         return
-    probe_cache[key] = (time.monotonic(), text)
+    probe_cache[key] = (time.monotonic(), value)
     if len(probe_cache) > 256:
         oldest = min(probe_cache, key=lambda k: probe_cache[k][0])
         probe_cache.pop(oldest, None)
@@ -1188,32 +1190,40 @@ def build_sql_registry(
             return None
         return {t.name.lower() for t in schema.tables}
 
-    async def _audit(tool: str, sql_text: str, result: str) -> None:
+    async def _audit(tool: str, sql_text: str, result: Any) -> None:
         """一行结构化审计:工具版本 + 用户 + 工具 + 问题 + SQL + 结果签名。
 
         与 runlog 的工具 span 互补:span 用于本次运行的诊断回放,这里给
         长期日志一条可 grep 的摘要(多租户 SaaS 的查询审计起点)。用户与
         工具版本使审计可按人/按版本归因,定位"谁问了什么、用了哪个版本
         的行为"。
+
+        ``result`` 被序列化而非要求调用方先转文本:审计要的是**观测的
+        系统侧原文**,不是回喂模型的那一份(那份过了隔离)。工具既然返回
+        对象,序列化就该发生在消费端——否则每个 handler 都要重复一遍
+        ``dumps``,正是收口点要消灭的东西。
         """
         logger.info(
             "sql_audit version=%s user=%r tool=%s question=%r sql=%r result=%s",
-            SQL_TOOL_VERSION, user_id, tool, question[:80], sql_text[:300], result[:200],
+            SQL_TOOL_VERSION, user_id, tool, question[:80], sql_text[:300],
+            observation_text(result)[:200],
         )
 
-    async def probe_tool(arguments: dict) -> str:
+    async def probe_tool(arguments: dict) -> dict:
         # 只读执行探针:模型定稿前快速验证草稿 SQL 的形状与行数
         sql_text = arguments.get("sql", "")
         key = _cache_key(datasource, sql_text, "probe", PROBE_LIMIT, run_id)
         cached = _cache_get(probe_cache, key)
         if cached is not None:
-            await _audit("probe", sql_text, "(cache hit) " + cached[:200])
+            await _audit("probe", sql_text, "(cache hit) " + observation_text(cached))
             return cached
         result = await probe_query(
             connectors, sql_text, dialect,
             allowed_tables=await _allowed_tables(),
             datasource=datasource or None,
         )
+        # 缓存**观测对象**:存文本会让命中路径退回整块作废——同一份数据在
+        # 首次调用与命中调用上精度不同,而模型无从察觉(§8-2)。
         _cache_put(probe_cache, key, result)
         await _audit("probe", sql_text, result)
         return result
@@ -1237,7 +1247,7 @@ def build_sql_registry(
         await _audit("check", sql_text, text)
         return text
 
-    async def search_tool(arguments: dict) -> str:
+    async def search_tool(arguments: dict) -> dict:
         # 值检索:定位脏值/格式变体/拼写差异,锚定过滤值到真实数据
         table = arguments.get("table", "")
         result = await search_values(

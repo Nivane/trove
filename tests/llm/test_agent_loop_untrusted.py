@@ -162,3 +162,68 @@ class TestControlValuesNeverIsolated:
         assert result["content"] == sql
         # 命中的观测不改变工具历史(审计面留原文)
         assert POISON in result["tool_history"][0]["observation"]
+
+
+class TestStructuredObservation:
+    """handler 返回**结构化对象**时,核逐叶隔离:一个坏单元格不再吃掉整行。
+
+    这是"工具契约 str → 结构化"的验收(设计稿 §5.3/§6-4)。手写 ``isolate_cells``
+    退休之后,粒度必须由**回喂口**接住 —— 否则比迁移前更差:那两个手写点当初
+    会逐格替换,只留整块作废等于精度倒退(§8-2)。
+    """
+
+    async def test_poisoned_cell_does_not_eat_the_row(self):
+        async def probe(arguments: dict) -> dict:
+            return {
+                "ok": True, "row_count": 2, "columns": ["name"],
+                "rows": [["Alameda"], [POISON]],
+            }
+
+        llm, _ = await _run(
+            [_call("probe", {}), {"content": "done", "tool_calls": []}],
+            probe=probe,
+        )
+        seen = json.loads(llm.calls[1][-1]["content"])
+        assert seen["rows"] == [["Alameda"], [ISOLATED_MARKER]]
+        # 同一载荷里的其他字段一字不改:坏的是那一格,不是这条观测
+        assert seen["row_count"] == 2
+        assert seen["columns"] == ["name"]
+        assert seen["ok"] is True
+
+    async def test_clean_structured_observation_byte_identical(self):
+        """干净的结构化返回值 → 序列化后与 handler 自己 dumps 的字节一致。"""
+        payload = {"ok": True, "row_count": 3, "columns": ["name", "county"],
+                   "rows": [["Alice", "Alameda"], ["Bob", "Orange"]]}
+
+        async def probe(arguments: dict) -> dict:
+            return payload
+
+        llm, _ = await _run(
+            [_call("probe", {}), {"content": "done", "tool_calls": []}],
+            probe=probe,
+        )
+        assert llm.calls[1][-1]["content"] == json.dumps(payload)
+
+    async def test_structured_observation_audit_stays_text(self):
+        """审计面(tool_history)拿到的是系统侧原文文本,不是容器对象。"""
+        async def probe(arguments: dict) -> dict:
+            return {"ok": True, "rows": [[POISON]]}
+
+        _, result = await _run(
+            [_call("probe", {}), {"content": "done", "tool_calls": []}],
+            probe=probe,
+        )
+        entry = result["tool_history"][0]["observation"]
+        assert isinstance(entry, str)
+        assert POISON in entry
+
+    async def test_structured_observation_still_truncated(self):
+        """截断照旧在隔离之后(结构化路径不能绕开护栏)。"""
+        async def probe(arguments: dict) -> dict:
+            return {"ok": True, "rows": [["x" * 2000]]}
+
+        llm, _ = await _run(
+            [_call("probe", {}), {"content": "done", "tool_calls": []}],
+            probe=probe,
+        )
+        assert "[truncated" in llm.calls[1][-1]["content"]

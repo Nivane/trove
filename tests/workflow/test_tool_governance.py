@@ -8,8 +8,6 @@ Item 11 的落地:描述质量是函数调用精度的第一杠杆。本测试�
   5. probe/check 结果缓存的作用域 = 单次运行(跨修正轮共享,不跨运行)。
 """
 
-import json
-
 import pytest
 
 from trove.core.types import DatasourceConfig
@@ -265,7 +263,7 @@ class TestProbeMemoization:
             probe_cache=cache, run_id="run-1",
         )
         first = await r1.handlers()["probe_query"]({"sql": _COUNT_SQL})
-        assert json.loads(first)["rows"] == [["5"]]
+        assert first["rows"] == [["5"]]
 
         await _add_frank(uncached_registry)
 
@@ -290,7 +288,7 @@ class TestProbeMemoization:
             uncached_registry, "How many students?", "en", "sqlite",
             probe_cache=cache, run_id="run-1",
         )
-        first = json.loads(await r1.handlers()["probe_query"]({"sql": _COUNT_SQL}))
+        first = await r1.handlers()["probe_query"]({"sql": _COUNT_SQL})
         assert first["rows"] == [["5"]]
 
         await _add_frank(uncached_registry)
@@ -299,7 +297,7 @@ class TestProbeMemoization:
             uncached_registry, "How many students?", "en", "sqlite",
             probe_cache=cache, run_id="run-2",
         )
-        second = json.loads(await r2.handlers()["probe_query"]({"sql": _COUNT_SQL}))
+        second = await r2.handlers()["probe_query"]({"sql": _COUNT_SQL})
         assert second["rows"] == [["6"]]  # 重新执行 → 看到新行
 
     async def test_cache_key_carries_run_scope(self):

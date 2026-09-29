@@ -15,14 +15,19 @@ previous instructions...")。扫描命中即把该值替换成中性标记——
 工具回喂前)。旧边界的两处错:①"只扫 probe/search"漏掉了十几条同样把外部
 内容送进提示词的路;②"LLM 自生成不在此列"是一条洗白通道 —— 模型会把外部
 内容回声到自己的输出里。本模块只留模式表与 ``ISOLATED_MARKER``,扫描入口
-``scan_injection`` 供隔离核调用;``isolate_cells`` 是存量手写调用点的兼容层,
-随两个手写调用点一起退休(设计稿 §5.4)。
+``scan_injection`` 供隔离核调用。
+
+**2026-09-29 二次取代(设计稿 §6-4,P4)**:``isolate_cells`` 已随两个手写
+调用点(``gen_sql.probe_query`` / ``_search_one``)一起**删除**。它曾经是
+"谁记得谁调用"的手写批量隔离;退休后调用方一律把**原始值**交给回喂口
+(``agent_loop._model_observation``),由核按结构逐叶隔离——批量循环在这里
+没有位置了。想隔离一个列表,交给 ``untrusted.isolate_tree``。
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any
 
 ISOLATED_MARKER = "[data: content isolated]"
 
@@ -74,21 +79,3 @@ def scan_injection(text: Any) -> list[str]:
     if not s:
         return []
     return [name for name, rx in _PATTERNS if rx.search(s)]
-
-
-def isolate_cells(values: Iterable[Any]) -> tuple[list[str], int]:
-    """批量隔离:命中注入模式的单元值替换为中性标记。
-
-    Returns:
-        (隔离后值列表, 命中数)。命中计数用于工具载荷的可观测性字段。
-    """
-    out: list[str] = []
-    flagged = 0
-    for v in values:
-        s = str(v)
-        if scan_injection(s):
-            out.append(ISOLATED_MARKER)
-            flagged += 1
-        else:
-            out.append(s)
-    return out, flagged

@@ -36,7 +36,10 @@ from trove.services.errors import classify_error, validate_arguments
 
 logger = get_logger(__name__)
 
-ToolHandler = Callable[[dict[str, Any]], Awaitable[str]]
+# 工具 handler 返回值:文本,或**结构化对象**(dict/list——现取的外部行数据)。
+# 结构化不是为了好看:隔离核按"传入值的结构粒度"工作,handler 把行数据拼成
+# 字符串再交出来,一个坏单元格就会让整块观测作废(设计稿 §5.1 粒度规则/§8-2)。
+ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 # (name, arguments, observation, elapsed_ms, error, run_id)
 Observer = Callable[[str, dict[str, Any], str, float, str | None, str], None]
 
@@ -58,6 +61,22 @@ def _truncate_observation(obs: str, limit: int = MAX_OBSERVATION_CHARS) -> str:
     return obs[:limit] + f"\n…[truncated {len(obs) - limit} chars]"
 
 
+def observation_text(value: Any) -> str:
+    """工具返回值 → **系统侧文本**:审计 / transcript / 观察者用这一份。
+
+    工具契约的另一半(前半是"返回值可以是对象",见 ``ToolHandler``):容器
+    由消费端序列化,handler 不再各自 ``dumps``。默认参数保证与迁移前
+    handler 自己 ``dumps`` 的字节一致——干净观测逐字节不变。``default=str``
+    是给新工具兜底的:适配器吐 ``Decimal``/``datetime`` 时不该让整条观测炸掉。
+
+    ⚠️ 这份文本**没过隔离**:往回喂模型的那条路上,``_model_observation``
+    先对对象做隔离再调本函数。审计面保留原文是有意的(出了事故要看现场)。
+    """
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, default=str)
+
+
 def _tool_label(registry: ToolRegistry, name: str) -> str:
     """指标 var 标签:只认**注册过的**工具名。
 
@@ -72,16 +91,22 @@ def _model_observation(
     registry: ToolRegistry,
     limit: int = MAX_OBSERVATION_CHARS,
 ) -> str:
-    """工具返回值 → 喂回模型的观测文本:隔离 → 截断(设计稿 §5.3)。
+    """工具返回值 → 喂回模型的观测文本:隔离 → 序列化 → 截断(设计稿 §5.3)。
 
     工具回喂的**唯一**收口点:新增工具自动继承,不需要各自接线。工具现取的
     外部内容(库里的行、检索值)是外部不可信内容,命中注入模式即作废。
+
+    **隔离按值的结构粒度生效**:handler 返回容器就逐叶隔离(一个坏单元格
+    不吃掉整行),返回拼好的文本只能整块作废(精度降档,不是安全破口)。
 
     **只作用于喂回模型的那一份**:``tool_history`` / ``transcript`` / 观察者
     拿到的是原文(审计面要留证据),``finish`` 载荷(最终 SQL 等**控制值**)
     根本不走这条路径 —— 产物不是输入,隔离它是篡改。
     """
-    observation, hits = isolate_tree(res["observation"])
+    # 取 handler 的**原始**返回值(可能是容器);错误路径只给文本,退回到
+    # ``observation``。两条路都必须是"未经隔离的系统侧原文"。
+    raw = res.get("value", res["observation"])
+    observation, hits = isolate_tree(raw)
     if hits:
         var = _tool_label(registry, str(res["tc"]["name"]))
         for pattern in hits:
@@ -89,7 +114,7 @@ def _model_observation(
         logger.warning(
             "tool observation isolation: tool=%s patterns=%s", var, ",".join(hits),
         )
-    return _truncate_observation(observation, limit)
+    return _truncate_observation(observation_text(observation), limit)
 
 
 def _round_digest(round_no: int, msgs: list[dict[str, Any]]) -> str:
@@ -579,8 +604,12 @@ async def run_agent_loop(
                     observation = await asyncio.wait_for(coro, timeout)
                 else:
                     observation = await coro
+                # 两个字段各管一头:``value`` 是 handler 的原样返回,交给回喂口
+                # 隔离(容器 → 逐叶);``observation`` 是系统侧文本,审计 /
+                # transcript / 观察者 / 自动定稿判定都用它,与迁移前同名同型。
                 return {
-                    "tc": tc, "arguments": arguments, "observation": observation,
+                    "tc": tc, "arguments": arguments,
+                    "value": observation, "observation": observation_text(observation),
                     "elapsed_ms": (time.monotonic() - start) * 1000,
                     "error": None, "finish_ok": False,
                 }
