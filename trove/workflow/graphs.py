@@ -229,6 +229,8 @@ async def _run_candidate_subagent(
     mode: str = "",
     rotation: int = 1,
     probe_cache: dict | None = None,
+    budget: Any = None,
+    profiles: Any = None,
 ) -> str | None:
     """独立 subagent 并行打磨单个备选候选("主 agent 规划 + subagent 执行")。
 
@@ -248,6 +250,8 @@ async def _run_candidate_subagent(
         user_id=state.user_id,
         run_id=state.run_id,  # 与主 agent 同一作用域:同运行的观测可互相复用
         probe_cache=probe_cache,
+        budget=budget,
+        profiles=profiles,
     )
     prompt = build_sql_prompt_from_state(rotated)
     # ① Prompt caching:与主路径同策略——前缀校验在 agent_loop 内部,
@@ -876,8 +880,13 @@ def make_gen_generate(
     subgraph_alt: CompiledStateGraph | None = None,
     alt_subgraphs: list[CompiledStateGraph] | None = None,
     agentic: bool = True,
+    budget: Any = None,
+    profiles: Any = None,
 ):
     """gen_generate — SQL 生成与候选共识池装配。
+
+    生成前问价(执行画像 §7.2)需要 ①:``budget``/``profiles`` 非空才给模型挂
+    ``describe_cost``(未装配 = 没这道门,而不是判过了)。
 
     消费 gen_retrieve/gen_assemble 的产物(gen_ctx / gen_sub_state):
     - KB 精确命中 → 直接采用标准 SQL,跳过模型生成;
@@ -941,6 +950,8 @@ def make_gen_generate(
                 run_id=state.run_id,
                 probe_cache=probe_cache,
                 skills=services.skills,
+                budget=budget,
+                profiles=profiles,
             )
 
             prompt = build_sql_prompt_from_state(sub_state)
@@ -1102,6 +1113,7 @@ def make_gen_generate(
                             services, state, sub_state.model_copy(deep=True),
                             dialect, temperature=t, mode=m, rotation=idx + 1,
                             probe_cache=probe_cache,
+                            budget=budget, profiles=profiles,
                         )
                         for idx, (t, m) in enumerate(schedule)
                     ),
@@ -1161,6 +1173,8 @@ def _make_gen_sql_node(
     subgraph_alt: CompiledStateGraph | None = None,
     alt_subgraphs: list[CompiledStateGraph] | None = None,
     agentic: bool = True,
+    budget: Any = None,
+    profiles: Any = None,
 ):
     """Compatibility composite: gen_retrieve → gen_assemble → gen_generate.
 
@@ -1173,6 +1187,7 @@ def _make_gen_sql_node(
     generate = make_gen_generate(
         services, subgraph, subgraph_alt=subgraph_alt,
         alt_subgraphs=alt_subgraphs, agentic=agentic,
+        budget=budget, profiles=profiles,
     )
 
     async def gen_sql(state: WorkflowState) -> dict[str, Any]:
@@ -1745,7 +1760,27 @@ def _build_authorizer(services: "GraphServices"):
     )
 
 
-def _build_budget(services: "GraphServices"):
+def _build_profile(services: "GraphServices"):
+    """执行画像的表级事实(设计 §6)。``None`` = 未装配,不查。
+
+    与 ``_build_budget`` 同开关(``explain_row_guard``)同 connectors:预算的
+    第 2 档、生成前的报价、答案里的数据新鲜度,读的是**同一份画像**。分头建
+    实例 = 分头抓库 + 分头缓存,同一个问题会问三遍适配器。
+
+    ``ProfileService`` 自带 TTL 缓存与超时跳过(§10),所以按图建一个实例即可
+    —— 缓存跟着图活,不会把每次执行都变成一次全库抓取。
+    """
+    from trove.services.datasource.profile import ProfileService
+
+    config = services.config or AgentConfig()
+    if not getattr(config, "explain_row_guard", True):
+        return None
+    if services.connectors is None:
+        return None
+    return ProfileService(services.connectors)
+
+
+def _build_budget(services: "GraphServices", profile=None):
     """执行画像的成本轨(设计 §5.1 / §5.2)。``None`` = 未装配,不判也不算。
 
     ``explain_row_guard`` 是**唯一**的开关,沿用旧名:它一直是「要不要在执行前
@@ -1758,7 +1793,6 @@ def _build_budget(services: "GraphServices"):
     与 ``_build_authorizer`` 同一种「能力未接即跳过该档」的接法:适配器报不出
     画像时第 2 档自然跳过,不会假装查过。
     """
-    from trove.services.datasource.profile import ProfileService
     from trove.services.sql.budget import BudgetService, ExecutionBudget
 
     config = services.config or AgentConfig()
@@ -1767,6 +1801,9 @@ def _build_budget(services: "GraphServices"):
     connectors = services.connectors
     if connectors is None:
         return None
+    # 画像实例优先用调用方传进来的(与报价、新鲜度共用一份缓存);直接调本函数
+    # 的老路径自己建一个,行为与改造前一致。
+    profile = profile if profile is not None else _build_profile(services)
 
     budget_config = getattr(config, "budget", None) or BudgetConfig()
     explain = getattr(connectors, "explain", None)
@@ -1787,10 +1824,7 @@ def _build_budget(services: "GraphServices"):
         # metadata(第 2 档,P2):画像服务自己也是 ``(datasource, tables)`` 形状,
         # 同样直接绑。有了它,sqlite / clickhouse 这类没有 EXPLAIN 解析器的方言
         # 不再**每条查询**都落保守预算 —— 一个恒为真的 degraded 字段不是信号。
-        #
-        # 画像带 TTL 缓存与超时跳过(§10),所以这里为每张图建一个实例即可:
-        # 缓存按图存活,不会把每次执行都变成一次全库抓取。
-        metadata=ProfileService(connectors).estimate_rows,
+        metadata=profile.estimate_rows if profile is not None else None,
     )
 
 
@@ -1817,6 +1851,10 @@ def _build_reflection(
     clarify: bool = False,
     agentic: bool = True,
 ) -> StateGraph:
+    # 画像实例先造,三处共用:预算第 2 档、生成前报价、答案里的新鲜度。
+    # 同一个 ProfileService = 同一份 TTL 缓存(§11 R3)。
+    profile = _build_profile(services)
+    budget = _build_budget(services, profile)
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         kb=services.kb, connectors=services.connectors,
@@ -1830,10 +1868,11 @@ def _build_reflection(
     g.add_node("gen_generate", make_gen_generate(
         services, subgraph, subgraph_alt=subgraph_alt,
         alt_subgraphs=alt_subgraphs, agentic=agentic,
+        budget=budget, profiles=profile,
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=_build_budget(services), authorizer=_build_authorizer(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -2002,6 +2041,9 @@ def _build_fixed(
     clarify: bool = False,
     agentic: bool = True,
 ) -> StateGraph:
+    # 与 reflection 同一份画像实例(见 _build_reflection 注释)。
+    profile = _build_profile(services)
+    budget = _build_budget(services, profile)
     g = StateGraph(WorkflowState)
     g.add_node("schema_linking", make_schema_linking(
         kb=services.kb, connectors=services.connectors,
@@ -2010,10 +2052,11 @@ def _build_fixed(
     # gen 链拆三段:检索/装配/生成(与 reflection 同构;fixed 无裁决循环)。
     g.add_node("gen_retrieve", make_gen_retrieve(services))
     g.add_node("gen_assemble", make_gen_assemble(services))
-    g.add_node("gen_generate", make_gen_generate(services, subgraph, agentic=agentic))
+    g.add_node("gen_generate", make_gen_generate(
+        services, subgraph, agentic=agentic, budget=budget, profiles=profile))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=_build_budget(services), authorizer=_build_authorizer(services)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))

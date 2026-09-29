@@ -333,3 +333,69 @@ class TestRegistrySeam:
     def test_is_constructible_from_a_registry_alone(self):
         """生产只传 registry —— 其余全有默认值,免得装配处抄一遍常量。"""
         assert ProfileService(_FakeRegistry()).ttl_s == 300
+
+
+class TestFailuresAreCachedToo:
+    """§11 R3:故障也要缓存 —— 否则一个坏后端让**每次回答**都等满超时。
+
+    缓存住失败不是「假装成功」:返回的仍是空画像(退保守预算),变的只是
+    「多久问一次」。窗口比正常 TTL 短得多 —— 后端恢复了要尽快能恢复,
+    30 秒的陈旧远比每次 2 秒的等待便宜。
+    """
+
+    async def _always_slow(self, *, explode=False):
+        import asyncio
+
+        class _Slow(_FakeRegistry):
+            async def get_schema(self, datasource=None):
+                self.calls += 1
+                if explode:
+                    raise RuntimeError("registry is on fire")
+                await asyncio.sleep(5)
+                return SchemaInfo(tables=[_table("a", 100)])
+
+        return _Slow()
+
+    async def test_a_timing_out_source_is_asked_once_not_twice(self):
+        reg = await self._always_slow()
+        now = [0.0]
+        svc = ProfileService(reg, timeout_s=0.01, ttl_s=300, clock=lambda: now[0])
+
+        assert await svc.estimate_rows("db", ["a"]) is None
+        assert await svc.estimate_rows("db", ["a"]) is None
+        assert reg.calls == 1, "坏后端被问了两次 —— 每次回答都要再等满超时"
+
+    async def test_an_exploding_source_is_asked_once_not_twice(self):
+        """故障与超时同等对待:两者都是「这一档暂时没依据」。"""
+        reg = await self._always_slow(explode=True)
+        now = [0.0]
+        svc = ProfileService(reg, timeout_s=0.01, ttl_s=300, clock=lambda: now[0])
+
+        assert await svc.estimate_rows("db", ["a"]) is None
+        assert await svc.estimate_rows("db", ["a"]) is None
+        assert reg.calls == 1
+
+    async def test_the_source_is_retried_once_the_window_expires(self):
+        """窗口过后必须**重试** —— 永久记住失败就是永久放弃这份依据。"""
+        reg = await self._always_slow()
+        now = [0.0]
+        svc = ProfileService(reg, timeout_s=0.01, ttl_s=300, clock=lambda: now[0])
+
+        await svc.estimate_rows("db", ["a"])
+        now[0] = 31.0
+        await svc.estimate_rows("db", ["a"])
+        assert reg.calls == 2
+
+    async def test_a_stale_profile_is_still_served_during_the_window(self):
+        """窗口内返回**旧值**而不是空 —— 有过一次真实观测就别丢掉它。"""
+        reg = _FakeRegistry([_table("a", 100)])
+        now = [0.0]
+        svc = ProfileService(reg, timeout_s=0.01, ttl_s=300, clock=lambda: now[0])
+        assert await svc.estimate_rows("db", ["a"]) == 100
+
+        reg._explode = True
+        now[0] = 301.0  # 正缓存过期 → 抓取失败 → 进负缓存
+        assert await svc.estimate_rows("db", ["a"]) == 100
+        now[0] = 310.0  # 负缓存窗口内
+        assert await svc.estimate_rows("db", ["a"]) == 100
+        assert reg.calls == 2

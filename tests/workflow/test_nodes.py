@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from trove.core.config import AgentConfig
-from trove.core.types import DatasourceConfig
+from trove.core.types import DatasourceConfig, QueryResult
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.semantic_layer.contract import (
     PlanContract,
@@ -2846,6 +2846,165 @@ class TestOutput:
         assert "### 结果 (1 行)" in response
 
 
+def _evidence(**over) -> dict:
+    """一条执行证据(wire 形状),默认是「有依据、放行、没截断」。"""
+    ev = {
+        "estimated_rows": 100,
+        "estimated_bytes": None,
+        "source": "metadata",
+        "degraded": False,
+        "verdict": "allow",
+        "reason": "",
+        "limit_applied": None,
+        "scanned_rows": None,
+        "data_as_of": None,
+        "as_of_basis": "",
+        "budget": {"max_rows": 1000, "soft_scan_rows": 1_000_000,
+                   "hard_scan_rows": 100_000_000},
+    }
+    ev.update(over)
+    return ev
+
+
+class TestDegradationNotice:
+    """A2/I2/R1:降级与截断必须在**答案里**看得见,不是只写进日志。
+
+    「看不见的降级等于没有降级」——用户拿到一张少了行的表,却没有任何线索
+    说明它为什么少,这正是本能力要消灭的那种安静错判。
+    """
+
+    async def test_a_capped_result_says_it_was_capped(self):
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(
+                verdict="degrade", limit_applied=1000,
+                reason="画像估出 6 亿行,超过软限。",
+            ),
+        )
+        response = (await output(state))["final_response"]
+        assert "截断" in response or "上限" in response
+        assert "1000" in response
+
+    async def test_the_notice_comes_before_the_conclusion(self):
+        """提示在结论**之上**:结论是第一位要读的,读者得先知道它被削过。"""
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            conclusion="共有 3 个县。",
+            execution_evidence=_evidence(
+                verdict="degrade", limit_applied=1000, reason="超软限。"),
+        )
+        response = (await output(state))["final_response"]
+        assert response.index("上限") < response.index("### 结论")
+
+    async def test_degraded_without_a_bound_says_so(self):
+        """``degraded=True`` 且 ``limit_applied=None``:没依据、也没加上边界。
+
+        这是最需要说出口的一格 —— 我们既不知道代价,也没能给它加个上限。
+        只说「已截断」是错的(根本没截),什么都不说更错。
+        """
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(degraded=True, verdict="degrade"),
+        )
+        response = (await output(state))["final_response"]
+        assert "无法估算" in response
+        assert "截断" not in response
+
+    async def test_a_clean_run_has_no_notice(self):
+        """有依据、放行、没截断 → 不加任何提示(提示多了就没人看)。"""
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(),
+        )
+        response = (await output(state))["final_response"]
+        for word in ("降级", "截断", "无法估算"):
+            assert word not in response
+
+    async def test_english_rendering(self):
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="en",
+            execution_evidence=_evidence(
+                verdict="degrade", limit_applied=1000, degraded=True),
+        )
+        response = (await output(state))["final_response"]
+        assert "1000" in response
+        assert "unknown" in response.lower() or "estimate" in response.lower()
+
+    async def test_no_evidence_no_notice(self):
+        """没装成本轨(嵌入场景)→ 无声,不假装判过。"""
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh")
+        response = (await output(state))["final_response"]
+        for word in ("降级", "截断", "无法估算"):
+            assert word not in response
+
+    async def test_the_error_path_renders_no_notice(self):
+        """错误路径没有结果可交付 —— 提示只会是噪声。"""
+        state = make_state(
+            error="[ERR:ROW_GUARD] denied", lang="zh",
+            execution_evidence=_evidence(degraded=True, verdict="reject"),
+        )
+        response = (await output(state))["final_response"]
+        assert "无法估算" not in response
+
+
+class TestFreshnessLine:
+    """A4/I5/R5:``data_as_of`` 与它的口径**一起**展示;未知时明说「无从判断」。"""
+
+    async def test_the_value_is_shown_with_its_basis(self):
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(
+                data_as_of="2026-09-01", as_of_basis="latest_partition"),
+        )
+        response = (await output(state))["final_response"]
+        assert "2026-09-01" in response
+        # R5:光有值会被读成「已更新到此刻」,口径必须同行
+        assert "分区" in response
+
+    async def test_last_modified_basis_is_labelled_differently(self):
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="en",
+            execution_evidence=_evidence(
+                data_as_of="2026-08-30", as_of_basis="last_modified"),
+        )
+        response = (await output(state))["final_response"]
+        assert "2026-08-30" in response
+        assert "last modified" in response.lower()
+        assert "partition" not in response.lower()
+
+    async def test_unknown_says_unknown_not_nothing(self):
+        """I5:查过但不知道 → 明确写「无从判断」。**沉默也是一种谎**:用户会把
+        「没提」读成「没问题」。"""
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(as_of_basis="unknown"),
+        )
+        response = (await output(state))["final_response"]
+        assert "无从判断" in response
+
+    async def test_never_looked_up_renders_nothing(self):
+        """``as_of_basis=""`` = 没查过。这与「查过但不知道」是两回事,不能混。"""
+        state = make_state(
+            columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(as_of_basis=""),
+        )
+        response = (await output(state))["final_response"]
+        assert "无从判断" not in response
+        assert "数据截止" not in response
+
+    async def test_the_line_sits_outside_the_collapsed_details(self):
+        """R5 的展示前提:读结果的人**不展开详情**也能看到它。"""
+        state = make_state(
+            sql="SELECT 1", columns=["c"], rows=[["a"]], row_count=1, lang="zh",
+            execution_evidence=_evidence(
+                data_as_of="2026-09-01", as_of_basis="latest_partition"),
+        )
+        response = (await output(state))["final_response"]
+        head = response.split("<details>", 1)[0]
+        assert "2026-09-01" in head
+
+
 class TestSemanticPromptGuards:
     """① query_sketch 作用域原则 + ③ reflect 条件完整性检查(冷启动语义防线)。
 
@@ -3999,6 +4158,117 @@ class TestDatasourceRouting:
             assert out["rows"] == [["from_b"]]
         finally:
             await reg.close_all()
+
+
+class TestDescribeCostTool:
+    """``describe_cost`` 工具(执行画像 §7.2 / P3):生成**前**先问价。
+
+    这个工具与 ``execute_sql`` 共用同一套判定,区别只在时点。它要在模型写
+    SQL 之前可见 —— 所以走常驻注册(不是 catalog 懒激活):解锁一次才可见的
+    工具,等于把问价挪到生成之后,正好错过它唯一要省的那次往返。
+
+    ``budget`` 未注入 = 这个部署没装配成本轨 → **不挂工具**(同 execute_sql
+    的「未装配 ≠ 判过了」):挂一个没有阈值的报价工具,只会让模型拿到一句
+    「允许」而以为有人判过。
+    """
+
+    @staticmethod
+    def _recording_budget(rows=1_000):
+        """记录被问了什么、按设定作答的预算服务替身。"""
+        from trove.services.sql.budget import BudgetService, ExecutionBudget
+
+        seen: list[tuple] = []
+
+        async def explain(sql, datasource=None):
+            return QueryResult(
+                columns=["id", "select_type", "table", "rows"],
+                rows=[(1, "ALL", "t", rows)], row_count=1, execution_time_ms=1,
+            )
+
+        svc = BudgetService(
+            ExecutionBudget(max_rows=1000),
+            explain=explain, parse_explain=lambda d, r: rows,
+        )
+        real_estimate = svc.estimate
+
+        async def estimate(datasource, sql, dialect, tables=None):
+            seen.append((datasource, sql, dialect, list(tables or [])))
+            return await real_estimate(datasource, sql, dialect, tables)
+
+        svc.estimate = estimate
+        svc.seen = seen
+        return svc
+
+    async def test_offered_when_a_budget_service_is_injected(self, sqlite_registry):
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="complex", budget=self._recording_budget(),
+        )
+        names = [d["function"]["name"] for d in registry.defs()]
+        assert "describe_cost" in names
+
+        raw = await registry.handlers()["describe_cost"](
+            {"sql": "SELECT name FROM students"},
+        )
+        report = json.loads(raw)
+        assert report["verdict"] == "allow"
+        assert report["estimated_rows"] == 1_000
+        assert [t["name"] for t in report["tables"]] == ["students"]
+
+    async def test_absent_without_a_budget_service(self, sqlite_registry):
+        """没装配成本轨就不挂这个工具 —— 不是「挂了但恒返回允许」。"""
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="complex",
+        )
+        assert "describe_cost" not in [d["function"]["name"] for d in registry.defs()]
+        assert "describe_cost" not in registry.handlers()
+
+    async def test_simple_tier_has_no_price_check(self, sqlite_registry):
+        """simple 档连执行类工具都不挂 —— 一句 COUNT 不需要先问价。"""
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="simple", budget=self._recording_budget(),
+        )
+        assert "describe_cost" not in [d["function"]["name"] for d in registry.defs()]
+
+    async def test_prices_the_runs_datasource_and_dialect(self, sqlite_registry):
+        """报价必须带**这一轮**的数据源与方言。
+
+        少了数据源,多数据源部署里估的是另一个库的代价 —— 而报价本身看不出
+        这件事,模型会拿着 A 库的价格去决定 B 库的查询。
+        """
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        budget = self._recording_budget()
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="complex", datasource="analytics", budget=budget,
+        )
+        await registry.handlers()["describe_cost"]({"sql": "SELECT name FROM students"})
+
+        datasource, _sql, dialect, tables = budget.seen[0]
+        assert datasource == "analytics"
+        assert dialect == "sqlite"
+        assert tables == ["students"]
+
+    async def test_empty_sql_is_an_error_not_a_price(self, sqlite_registry):
+        from trove.workflow.nodes.gen_sql import build_sql_registry
+
+        budget = self._recording_budget()
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            complexity="complex", budget=budget,
+        )
+        out = json.loads(await registry.handlers()["describe_cost"]({}))
+        assert out["ok"] is False
+        assert budget.seen == []
 
 
 class TestCatalogOnDemand:

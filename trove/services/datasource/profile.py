@@ -46,6 +46,11 @@ DEFAULT_TTL_S = 300.0
 #: 单次画像抓取的超时(秒)。超时 → 跳过这一档,退到下一档。
 DEFAULT_TIMEOUT_S = 2.0
 
+#: 抓取失败后的静默窗口(秒,§11 R3)。比正常 TTL 短一个量级:坏后端不会让
+#: 每次回答都等满 ``DEFAULT_TIMEOUT_S``,而后端恢复后最多 30 秒就能重新用上
+#: 真实依据。窗口内**仍然如实返回旧值**(有过真实观测就别丢),不伪造新值。
+DEFAULT_NEGATIVE_TTL_S = 30.0
+
 #: ``as_of`` 的两个口径。分区表优先 ``latest_partition``(§8.4 C):
 #: 分区表上的 ``last_modified`` 反映的是**元数据变更**(可能是加了个分区),
 #: 不代表数据新鲜。
@@ -83,6 +88,8 @@ class ProfileService:
             基础剖面。**这一层是可选的** —— 没有它,第 2 档照样工作。
         ttl_s: 缓存 TTL。
         timeout_s: 单次抓取超时;超时 → ``None``(退下一档)。
+        negative_ttl_s: **失败**的记忆时长(§11 R3)。坏后端不记忆的话,每次
+            回答都要再等满一次 ``timeout_s``。置 0 = 不记忆(退到改造前行为)。
         clock: 注入时钟,供测试免 sleep。
     """
 
@@ -93,15 +100,21 @@ class ProfileService:
         profiles: dict[str, TableProfile] | None = None,
         ttl_s: float = DEFAULT_TTL_S,
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        negative_ttl_s: float = DEFAULT_NEGATIVE_TTL_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._registry = registry
         self._profiles = dict(profiles or {})
         self.ttl_s = float(ttl_s)
         self.timeout_s = float(timeout_s)
+        self.negative_ttl_s = float(negative_ttl_s)
         self._clock = clock
         # 缓存键必须含数据源:多数据源部署里漏掉它,A 库的行数会被当成 B 库的
         self._cache: dict[str, tuple[float, dict[str, TableProfile]]] = {}
+        # 失败记忆:键 → 可以再问的**时刻**。与正缓存分开两本账,因为两者的
+        # 期限语义不同 —— 混在一起要么让故障记 5 分钟(恢复得太慢),要么让
+        # 好数据 30 秒就过期(白抓)。
+        self._retry_at: dict[str, float] = {}
 
     # ── 成本轨第 2 档 ─────────────────────────────────────
 
@@ -208,6 +221,10 @@ class ProfileService:
         cached = self._cache.get(key)
         if cached is not None and now - cached[0] < self.ttl_s:
             return cached[1]
+        # 刚失败过:不再问(§11 R3)。返回**旧值**(有的话)—— 一次真实观测
+        # 比一次 2 秒的等待值钱,而且它不会比「空」更误导人。
+        if now < self._retry_at.get(key, 0.0):
+            return cached[1] if cached else {}
 
         try:
             profiles = await asyncio.wait_for(
@@ -216,14 +233,22 @@ class ProfileService:
         except asyncio.TimeoutError:
             # §10:画像很慢时跳过 —— 它是增强,不该拖慢主链路
             logger.warning("profile: 抓取超时(>%.1fs),本档跳过", self.timeout_s)
+            self._remember_failure(key, now)
             return cached[1] if cached else {}
         except Exception as e:
             # I6:画像故障退到下一档,不打断查询链路
             logger.warning("profile: 抓取失败(%s),本档跳过", e)
+            self._remember_failure(key, now)
             return cached[1] if cached else {}
 
         self._cache[key] = (now, profiles)
+        self._retry_at.pop(key, None)
         return profiles
+
+    def _remember_failure(self, key: str, now: float) -> None:
+        """记下「这个数据源刚坏过」。窗口设为 0 = 不记忆(改造前的行为)。"""
+        if self.negative_ttl_s > 0:
+            self._retry_at[key] = now + self.negative_ttl_s
 
     async def _load(self, datasource: str) -> dict[str, TableProfile]:
         """表画像的来源链(§8.2 B):适配器 → schema → 显式覆盖。

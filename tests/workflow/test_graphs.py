@@ -1,6 +1,7 @@
 """LangGraph topology tests: subgraph retry loop, reflect loop, degradation."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 
@@ -349,6 +350,107 @@ class TestGenStageChain:
         assert out["sql"] == chained["sql"]
         assert "total_loan_amount" in " ".join(
             str(m.get("content", "")) for m in llm2.calls[-1])
+
+
+class TestDescribeCostWiring:
+    """执行画像 §7.2「生成前先问价」真的接到了模型手上。
+
+    ``build_sql_registry`` 有单测证明「传 budget 就会挂工具」;这里要证明的是
+    **装配线**接上了 —— ``graphs._build_profile`` / ``_build_budget`` 造出来的
+    实例一路流到 ``make_gen_generate`` → 注册表 → 模型。少了这一段,工具写得
+    再对也没有任何一条真实路径会挂上它。
+    """
+
+    async def test_the_model_can_price_a_query_before_writing_it(
+        self, sqlite_registry, catalog,
+    ):
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "describe_cost",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        reports = [
+            m["content"] for msgs in llm.calls for m in msgs
+            if m.get("role") == "tool" and "verdict" in str(m.get("content"))
+        ]
+        assert reports, "装配线没把 describe_cost 挂给模型"
+        report = json.loads(reports[0])
+        assert report["verdict"] == "allow"
+        # sqlite 没有 EXPLAIN 解析器 → 退到元数据档,但**有依据**:
+        # 行数来自画像,degraded 为假。这正是 §7.2 报价该有的样子。
+        assert report["source"] == "metadata"
+        assert report["degraded"] is False
+        assert report["estimated_rows"] == 5
+        assert [t["name"] for t in report["tables"]] == ["students"]
+        assert report["tables"][0]["row_count"] == 5
+
+    async def test_no_guard_no_price_tool(self, sqlite_registry, catalog):
+        """``explain_row_guard`` 关掉 = 这道门没装 —— 模型连工具都看不到。
+
+        与 ``execute_sql`` 的「未装配 ≠ 判过了」同一条:没装门就不能让模型以为
+        自己问过价了,否则它会把「没有报价」当成「报价通过」。
+        """
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "describe_cost",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},
+        ])
+        config = AgentConfig(target="mock/model", explain_row_guard=False)
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=config),
+                       agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+
+        assert final["sql"] == "SELECT name FROM students;"
+        observations = [
+            str(m.get("content")) for msgs in llm.calls for m in msgs
+            if m.get("role") == "tool"
+        ]
+        assert any("Unknown tool: describe_cost" in o for o in observations)
+
+    def test_no_profile_without_connectors(self):
+        assert graphs_module._build_profile(
+            make_services(RecordingLLM([]), connectors=None)) is None
+
+    def test_no_profile_when_the_execution_guard_is_off(self, sqlite_registry):
+        services = make_services(
+            RecordingLLM([]), connectors=sqlite_registry,
+            config=AgentConfig(target="mock/model", explain_row_guard=False),
+        )
+        assert graphs_module._build_profile(services) is None
+
+    async def test_the_budget_and_the_quote_share_one_profile_service(self):
+        """同一个实例 = 同一份缓存;分头建两个就是分头抓库(§11 R3)。"""
+
+        class _SpyProfile:
+            def __init__(self):
+                self.seen = []
+
+            async def estimate_rows(self, datasource, tables):
+                self.seen.append((datasource, tuple(tables)))
+                return 4242  # 契约是「行数之和」,不是逐表字典
+
+        spy = _SpyProfile()
+        services = make_services(
+            RecordingLLM([]), connectors=SimpleNamespace(explain=None))
+        budget = graphs_module._build_budget(services, spy)
+        assert budget is not None
+        est = await budget.estimate(
+            "demo", "SELECT * FROM students", "sqlite", ["students"])
+        assert spy.seen == [("demo", ("students",))], "预算没走传进来的画像实例"
+        assert est.estimated_rows == 4242
 
 
 class TestGenSQLSubgraph:
@@ -2432,6 +2534,30 @@ class TestFastPathGraph:
         assert final["verdict"] == "OK"
         assert final["reason"] == "fast path deterministic template match (kb init)"
         assert len(llm.calls) == 1
+
+    async def test_the_fast_path_still_pays_the_cost_gate(
+        self, sqlite_registry, catalog, tmp_path,
+    ):
+        """A6:确定性模板命中**不豁免**预算判定(防与能力⑥交叉出漏洞)。
+
+        快径绕过的是生成与裁决(零 LLM),不是执行前的成本门 —— 模板 SQL 也
+        可能扫全表。这里把软限压到 1 行,让一条 COUNT 也超限:证据里必须出现
+        降级与边界,而 SQL 仍然是模板原文(``state.sql`` 不写回加 LIMIT 的版本)。
+        """
+        from trove.core.config import BudgetConfig
+
+        kb = _FastPathKB(tmp_path, sqlite_registry.default_name).kb
+        cfg = AgentConfig(target="mock/model", budget=BudgetConfig(soft_scan_rows=1))
+        llm = RecordingLLM(["query"])
+        graphs = build(make_services(llm, catalog, sqlite_registry, kb=kb, config=cfg))
+        final = await graphs["reflection"].ainvoke(
+            make_state(question="How many students are there?")
+        )
+        assert final["fast_path"] is True
+        ev = final["execution_evidence"]
+        assert ev["verdict"] == "degrade"
+        assert ev["limit_applied"] == 1000  # 预算里的 max_rows
+        assert final["sql"] == "SELECT COUNT(*) FROM students"
 
     async def test_fast_path_disabled_by_config(self, sqlite_registry, catalog, tmp_path):
         """fast_path 配置关闭 → 快径不启用,走正常链路。"""

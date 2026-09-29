@@ -1048,6 +1048,8 @@ def build_sql_registry(
     run_id: str = "",
     probe_cache: dict | None = None,
     skills: Any = None,
+    budget: Any = None,
+    profiles: Any = None,
 ):
     """gen_sql ReAct 循环的注册表工厂:返回注册表(已注册工具 + 归因切片)。
 
@@ -1080,6 +1082,12 @@ def build_sql_registry(
             「整个进程一个作用域」(仅测试直调,生产路径恒有值)。
         probe_cache: 同一运行内跨修正轮共享的 probe/check 结果缓存 dict;
             None = 不缓存。
+        budget: 成本轨的预算服务(执行画像 §7.2)。给了才挂 ``describe_cost``
+            —— 报价要有阈值才有 verdict 可言;None = 这个部署没装配成本轨,
+            工具**不出现**(与 execute_sql 的「未装配 ≠ 判过了」同一条)。
+            判定用它、不用另建一个:报价说允许、执行被拒是比不报价更糟的答案。
+        profiles: 画像服务(可选),给报价补上每张表的行数/字节数。未接不影响
+            判定,只是 ``tables`` 里的数字为 null(「不可得 ≠ 0」)。
     """
     from trove.llm.agent_loop import ToolRegistry
 
@@ -1477,6 +1485,56 @@ def build_sql_registry(
             level="catalog",
             roles=["analyst", "admin"],
         )
+
+    if tier in ("standard", "complex") and budget is not None:
+        # ④ 生成**前**问价(执行画像 §7.2):与 catalog 三件套不同,它**常驻**
+        # 而不是懒激活。懒激活要模型先调一次 catalog 才看得见,而问价的全部
+        # 价值在于它发生在写 SQL 之前 —— 藏在解锁后面等于挪到生成之后,正好
+        # 错过它唯一要省的那次往返(生成 → 被打回 → 重新生成)。
+        from trove.services.sql.budget import describe_cost
+
+        async def describe_cost_tool(arguments: dict) -> str:
+            sql_text = (arguments.get("sql") or "").strip()
+            if not sql_text:
+                return '{"ok": false, "error": "sql is required"}'
+            report = await describe_cost(
+                sql_text,
+                budget=budget,
+                datasource=datasource,
+                dialect=dialect,
+                # 与 explain_plan 同一份 allowlist:报价也不该为越权表付一次
+                # EXPLAIN(EXPLAIN 本身是查询,要被授权范围约束)。
+                allowed_tables=await _allowed_tables(),
+                profiles=profiles,
+            )
+            out = json.dumps(report)
+            await _audit("cost", sql_text, out)
+            return out
+
+        registry.register(
+            "describe_cost", describe_cost_tool,
+            description=(
+                "Price a SELECT before committing to it: estimated scan rows, "
+                "the budget verdict (allow/degrade/reject) and the tables it "
+                "would touch. Read-only, no row data, one EXPLAIN. Use when: "
+                "the draft is a big join / wide scan / multi-table aggregate "
+                "and you would rather narrow it NOW than have execution reject "
+                "it and lose a whole regeneration round. Do NOT use when: the "
+                "query is small, or already bounded by filters and LIMIT. "
+                "Example: describe_cost(sql=\"SELECT * FROM orders o JOIN "
+                "clients c ON o.client_id=c.id\") -> {\"verdict\":\"reject\","
+                "\"estimated_rows\":42000000,\"reason\":\"...\"}."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "sql": {"type": "string", "description": "The SQL to price (read-only)"},
+                },
+                "required": ["sql"],
+            },
+            level="catalog",
+            roles=["analyst", "admin"],
+        )
     return registry
 
 
@@ -1487,16 +1545,23 @@ def make_sql_tools(
     dialect: str,
     matched_tables: list[str] | None = None,
     datasource: str = "",
+    *,
+    budget: Any = None,
+    profiles: Any = None,
 ) -> tuple[list[dict], dict[str, Callable[[dict[str, Any]], Awaitable[str]]], list[dict]]:
     """gen_sql ReAct 循环的工具工厂(legacy 形态):返回 (tools, handlers, hits_sink)。
 
     registry 形态见 build_sql_registry;本函数为向后兼容保留——返回
     纯定义列表 + handler 字典(不含 finish 工具)。
+
+    ``budget`` / ``profiles`` 与 registry 形态同义(见 build_sql_registry);
+    两条入口必须给出同一套工具,否则「legacy 只差按需注入」这句话就不成立了。
     """
 
     registry = build_sql_registry(
         connectors, question, lang, dialect, finish=False,
         matched_tables=matched_tables, datasource=datasource,
+        budget=budget, profiles=profiles,
     )
     # legacy 契约:返回全量工具集(含 catalog 三件套)——激活全部懒注册,
     # 保持与 registry 形态的差异只在"是否按需注入"。

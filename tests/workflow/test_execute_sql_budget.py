@@ -419,3 +419,130 @@ class TestCoexistsWithAuthorizer:
         assert "AUTHZ_NO_PRINCIPAL" in update["error"]
         assert explained == [], "被拒的 SQL 不该被 EXPLAIN"
         assert spy.executed == []
+
+
+# ── 答案里的 data_as_of / scanned_rows(设计 §6.2 / §8.4)────────
+
+
+class _FreshnessSpy:
+    """画像服务的**新鲜度那一半**:记录问了哪几张表,按设定作答。
+
+    ``estimate_rows`` 与 ``freshness`` 在生产里是同一个 ``ProfileService``
+    的两个方法(共用一份 TTL 缓存,见 ``graphs._build_profile``)—— 这里拆成
+    两个对象只是为了让每条断言只钉一件事。
+    """
+
+    def __init__(self, result=None, *, boom: bool = False) -> None:
+        self.result = result
+        self.boom = boom
+        self.asked: list[tuple[str, list[str]]] = []
+
+    async def freshness(self, datasource, tables):
+        self.asked.append((datasource, sorted(tables or [])))
+        if self.boom:
+            raise RuntimeError("profile backend down")
+        from trove.services.datasource.profile import DatasetFreshness
+
+        return self.result or DatasetFreshness(datasource=datasource)
+
+
+class TestFreshnessEvidence:
+    """I5:``data_as_of`` 要么是真的(带口径),要么是 ``null`` + 「无从判断」。
+
+    三个状态必须分得开,因为下游要据此渲染三句不同的话:
+
+    * ``as_of_basis=""`` —— **没查过**(没装画像)。不能渲染成「无从判断」:
+      那是在说「我查了,查不到」,而我们根本没查。
+    * ``as_of_basis="unknown"`` —— 查过了,**无从判断**(I5 的落点)。
+    * ``as_of_basis="latest_partition"`` —— 有值,**且必须跟口径一起展示**
+      (R5:值的语义靠口径限定,单看值会被读成「数据已更新到此刻」)。
+    """
+
+    async def test_data_as_of_arrives_with_the_basis_that_produced_it(self):
+        """有依据 → 值 + 口径一起落进证据,并问的是**这一轮的数据源**。"""
+        spy = _SpyConnectors()
+        fresh = _FreshnessSpy()
+        from trove.services.datasource.profile import DatasetFreshness
+
+        fresh.result = DatasetFreshness(
+            datasource="analytics", as_of="2026-09-01", basis="latest_partition",
+        )
+        node = make_execute_sql(
+            spy, budget=_profile_budget(spy, _ProfileSpy(rows=10)), profiles=fresh,
+        )
+        result = await node(_state(
+            datasource="analytics",
+            sql="SELECT s.name FROM students s JOIN grades g ON s.id = g.sid",
+        ))
+
+        ev = result["execution_evidence"]
+        assert fresh.asked == [("analytics", ["grades", "students"])]
+        assert ev["data_as_of"] == "2026-09-01"
+        assert ev["as_of_basis"] == "latest_partition"
+
+    async def test_unknown_freshness_is_null_and_never_the_query_time(self):
+        """I5 的正题:查过了但没有依据 → ``null`` + ``"unknown"``。
+
+        绝不能拿「查询时刻」冒充 —— 那会让用户以为数据新鲜到刚刚,而事实是
+        我们**不知道**它截止到什么时候。这里断言的就是「不是那个时刻」。
+        """
+        spy = _SpyConnectors()
+        fresh = _FreshnessSpy()  # DatasetFreshness(datasource=..., as_of=None)
+        node = make_execute_sql(
+            spy, budget=_profile_budget(spy, _ProfileSpy(rows=10)), profiles=fresh,
+        )
+        result = await node(_state())
+
+        ev = result["execution_evidence"]
+        assert fresh.asked, "装配了画像却不问,和没装一样"
+        assert ev["data_as_of"] is None
+        assert ev["as_of_basis"] == "unknown"
+        assert "2026" not in str(ev["data_as_of"])  # 任何时刻都不是答案
+
+    async def test_without_a_profile_service_nothing_is_claimed(self):
+        """没装画像 = 没查过。三个状态里的第一个,不能和「无从判断」混同。"""
+        spy = _SpyConnectors()
+        node = make_execute_sql(spy, budget=_profile_budget(spy, _ProfileSpy(rows=10)))
+        result = await node(_state())
+
+        ev = result["execution_evidence"]
+        assert ev["data_as_of"] is None
+        assert ev["as_of_basis"] == ""
+
+    async def test_a_broken_freshness_lookup_does_not_block_the_query(self):
+        """I6:画像是**增强**,自己炸了不该把查询一起带走(§10)。
+
+        但也不能因此变成「没查过」—— 我们确实试过了,答案是「无从判断」。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(
+            spy,
+            budget=_profile_budget(spy, _ProfileSpy(rows=10)),
+            profiles=_FreshnessSpy(boom=True),
+        )
+        result = await node(_state())
+
+        assert spy.executed == ["SELECT name FROM students"]
+        assert result["row_count"] == 1
+        ev = result["execution_evidence"]
+        assert ev["data_as_of"] is None
+        assert ev["as_of_basis"] == "unknown"
+
+    async def test_returned_rows_are_not_passed_off_as_scanned_rows(self):
+        """I7/A5:两者分开落库 —— 返回行数**不是**扫描量的替代品。
+
+        把 ``result.row_count`` 记成 ``scanned_rows`` 会让 P4 之后的校准
+        (估算 vs 实际)建在一个系统性偏小的数上:扫了一亿行、聚合出三行,
+        差值会把估算器一路往小调 —— 正是本能力要防的那类「错得像个答案」。
+
+        适配器报不出扫描量时,这里就必须是 ``None``(说不出就知道不知道)。
+        """
+        spy = _SpyConnectors()
+        node = make_execute_sql(spy, budget=_profile_budget(spy, _ProfileSpy(rows=10)))
+        result = await node(_state())
+
+        ev = result["execution_evidence"]
+        assert ev["scanned_rows"] is None
+        assert result["row_count"] == 1  # 真返回了一行 —— 但没有拿它冒充
+        assert ev["estimated_rows"] == 10
+        assert ev["estimated_rows"] != ev["scanned_rows"] or ev["scanned_rows"] is None

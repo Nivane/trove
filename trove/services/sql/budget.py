@@ -48,6 +48,7 @@ __all__ = [
     "CostEstimate",
     "ExecutionBudget",
     "LimitedSql",
+    "describe_cost",
     "execution_evidence",
     "force_limit",
 ]
@@ -288,6 +289,146 @@ class BudgetService:
         )
 
 
+# ── describe_cost:生成前先问价(§7.2)──────────────────────
+
+
+async def describe_cost(
+    sql: str,
+    *,
+    budget: BudgetService,
+    datasource: str = "",
+    dialect: str = "",
+    tables: Iterable[str] | None = None,
+    profiles: Any = None,
+    allowed_tables: set[str] | None = None,
+) -> dict[str, Any]:
+    """给一条 SQL 报价:估算 + 处置结论 + 涉及的表(设计 §7.2)。
+
+    **用途**是省掉一次往返:agent 在写复杂查询**之前**先问一句代价,超限就当场
+    改小;不问的话,代价要等到执行节点才被发现,那时已经烧了一整轮生成,还要
+    再烧一轮重生成(当下 G6 的双份 LLM 调用)。所以这个工具要在生成**前**可见
+    —— 藏在懒激活后面等于把问价挪到生成之后,正好错过它唯一要省的东西。
+
+    与执行节点的关系:**同一套判定,两个时点**。这里调的是 :meth:`BudgetService.estimate`
+    与 :meth:`BudgetService.decide`,与 ``execute_sql`` 逐字相同 —— 报价与放行
+    若各判一次,模型会拿到一个「说允许、跑起来被拒」的答案,比不报价更糟。
+
+    只读、零 LLM;SQL 先过 ``check_readonly``。解析失败**fail-open**(与执行路径
+    同一条政策:方言盲区不等于权限违规,而且这里不执行任何东西,真边界在数据库
+    侧只读角色)。写语句**不给报价**:返回 ``verdict="reject"`` 且**不去 EXPLAIN**
+    —— EXPLAIN 本身就是一条要在库里跑的查询,为一条注定被拒的语句付它不是防御,
+    是开销。
+
+    Args:
+        sql: 待报价的 SQL。
+        budget: 预算服务。**必填** —— 没有它就没有阈值,也就没有 verdict 可言;
+            未装配成本轨的部署(vendor 嵌入场景)不应该挂出这个工具。
+        datasource / dialect: 与执行时**同一轮**的数据源与方言。少传数据源,
+            多数据源部署里估的是另一个库的代价。
+        tables: 涉及的表;``None`` → 从 SQL 解析(与 authz/预算同一份
+            ``referenced_tables``,三处对「触及哪些表」必须一致)。
+        profiles: 画像服务(鸭子类型,只用 ``table_profile``)。未接 → 表清单
+            照给,数字全 ``None``(「不可得 ≠ 0」)。
+        allowed_tables: 授权范围内的表名,透传给只读校验的 allowlist。
+
+    Returns:
+        §7.2 的 wire 形状。**没有 error 字段** —— 拒绝也是一种答复:写语句、
+        无法估算、超硬限都走 ``verdict`` + ``reason``,模型不必学两套读法。
+
+        两个"没有"要分清:``source=""`` 是**没估过**(只读校验挡下),
+        ``degraded=True`` 是**估了但没依据**(退保守预算)。
+    """
+    from trove.services.sql.guard import check_readonly
+
+    text = (sql or "").strip()
+    names = _cost_tables(text, dialect, tables)
+
+    ok, reasons = check_readonly(
+        text, dialect or "", allowed_tables, fail_on_parse_error=False,
+    )
+    if not ok:
+        return {
+            "estimated_rows": None,
+            "estimated_bytes": None,
+            "source": "",
+            # 不是「降级」:没有估算被做出来,也就无从降级 —— 报了 True 会让
+            # 调用方以为还有一份保守预算在兜着。
+            "degraded": False,
+            "verdict": "reject",
+            "tables": [],
+            "reason": f"这条 SQL 没有通过只读校验:{'; '.join(reasons)}",
+        }
+
+    try:
+        est = await budget.estimate(datasource, text, dialect, names)
+        decision = budget.decide(est)
+    except Exception as e:
+        # I6:问价工具自己炸了不该把异常抛进生成循环。保守作答 —— 与
+        # ``execute_sql._judge_budget`` 同一方向:守卫不可信时,恰恰最没有理由
+        # 相信这次查询便宜。方向取设计 §8.3 C 的默认(degrade),因为读不到这个
+        # 服务的配置(它已经不可用了)。
+        logger.warning("describe_cost: 预算判定不可用(%s) — 按保守预算作答", e)
+        return {
+            "estimated_rows": None,
+            "estimated_bytes": None,
+            "source": "conservative",
+            "degraded": True,
+            "verdict": "degrade",
+            "tables": await _cost_table_facts(profiles, datasource, names),
+            "reason": f"预算判定不可用({e}),按保守预算处理。",
+        }
+
+    return {
+        # I7:这两个数是**估算**,与执行后的实际分开落库(evidence 里的
+        # scanned_rows / returned_rows),合并成一个字段就没法校估算器了。
+        "estimated_rows": est.estimated_rows,
+        "estimated_bytes": est.estimated_bytes,
+        "source": est.source,
+        "degraded": est.degraded,
+        "verdict": decision.verdict,
+        "tables": await _cost_table_facts(profiles, datasource, names),
+        "reason": decision.reason,
+    }
+
+
+def _cost_tables(sql: str, dialect: str, tables: Iterable[str] | None) -> list[str]:
+    """这条 SQL 触及的表(排序、小写、去 schema 前缀)。
+
+    复用 authz 的 ``referenced_tables`` 而不是另写一个解析:授权、预算、报价
+    三处对「查了哪些表」必须给出同一个答案 —— 不一致的那天会出现「授权认为查了
+    A 表、报价认为没查」这种谁也说不清的账。解析不出来 → 空清单(报价里多一个
+    猜出来的表名,比少一个更危险)。
+    """
+    if tables is None:
+        from trove.services.authz.enforcer import referenced_tables
+
+        found = referenced_tables(sql, dialect or "")
+        return sorted(found or ())
+    return sorted({str(t or "").strip().lower() for t in tables if str(t or "").strip()})
+
+
+async def _cost_table_facts(
+    profiles: Any, datasource: str, names: list[str],
+) -> list[dict[str, Any]]:
+    """每表一行:名字 + 画像里的行数/字节数,取不到就是 ``None``。
+
+    画像查不到时**仍然给出表名** —— 名字是从 SQL 解出来的,不依赖画像;把整条
+    记录省掉会让模型以为这句 SQL 没碰任何表。
+    """
+    out: list[dict[str, Any]] = []
+    for name in names:
+        row_count = size = None
+        if profiles is not None:
+            try:
+                profile = await _maybe_await(profiles.table_profile(datasource, name))
+                row_count = _positive(getattr(profile, "row_count", None))
+                size = _positive(getattr(profile, "bytes", None))
+            except Exception as e:
+                logger.warning("describe_cost: 表画像不可用(%s)", e)
+        out.append({"name": name, "row_count": row_count, "bytes": size})
+    return out
+
+
 # ── 强制 LIMIT(降级执行的落点)────────────────────────────
 
 
@@ -346,6 +487,9 @@ def execution_evidence(
     budget: ExecutionBudget,
     *,
     limit_applied: int | None = None,
+    data_as_of: str | None = None,
+    as_of_basis: str = "",
+    scanned_rows: int | None = None,
 ) -> dict[str, Any]:
     """本次执行的**证据**,写进 state 随答案回给用户(设计 §6.2 / R1)。
 
@@ -362,9 +506,22 @@ def execution_evidence(
 
     ``budget`` 整份带上:阈值是配置,而配置会改,证据是历史。不带上它,事后
     无从判断这条查询是被哪一套阈值判的。
+
+    ``as_of_basis`` 同样有三个状态,别把前两个混成一个(与 :func:`describe_cost`
+    的 ``source=""`` / ``degraded`` 同一套纪律):
+
+    * ``""`` —— **没查过**(没装画像)。说「无从判断」是撒谎:我们没判断过。
+    * ``"unknown"`` —— 查过了,**无从判断**(I5)。这一句才是可以直接讲给用户的。
+    * ``"last_modified" | "latest_partition"`` —— 有值,且**必须跟值一起展示**
+      (R5:单看值会被读成「数据已更新到此刻」,口径才是它的含义)。
+
+    ``scanned_rows`` 现在是 ``None``:适配器还没人报得出真实的扫描量(P4 的
+    ``QueryTerminator`` 会补)。**不用返回行数冒充** —— 扫一亿行聚合出三行
+    时两者差着七个数量级,拿返回行数去校准估算器会把估算一路调小,方向恰好
+    是反的。
     """
     return {
-        # I7:估算与实际分开记录(实际由 P2/P4 补 ``scanned_rows``)
+        # I7:估算与实际分开记录
         "estimated_rows": est.estimated_rows,
         "estimated_bytes": est.estimated_bytes,
         "source": est.source,
@@ -372,6 +529,9 @@ def execution_evidence(
         "verdict": decision.verdict,
         "reason": decision.reason,
         "limit_applied": limit_applied,
+        "scanned_rows": scanned_rows,
+        "data_as_of": data_as_of,
+        "as_of_basis": as_of_basis,
         "budget": asdict(budget),
     }
 

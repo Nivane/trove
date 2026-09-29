@@ -50,6 +50,7 @@ def make_execute_sql(
     lineage=None,
     budget: BudgetService | None = None,
     authorizer: Authorizer | None = None,
+    profiles: Any = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -70,6 +71,11 @@ def make_execute_sql(
         authorizer: 执行前授权门(设计 §5.3 / G2)。``None`` = **未装配强制点**,
             不判——生产图恒装配一个(见 ``graphs.py``)。注意这与「判过了、
             放行」不是一回事,本节点不会假装自己判过。
+        profiles: 画像服务(设计 §8.4 / I5),只用到 ``freshness``:成功路径上
+            问一次「这份数据截止到什么时候」,连同口径写进执行证据。``None``
+            = 没查过(证据里 ``as_of_basis=""``),不是「查过但不知道」
+            (那是 ``"unknown"``)。只有 ``budget`` 装了才有证据块可落,与
+            ``graphs._build_profile`` 同开关同实例(共用一份 TTL 缓存)。
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -328,6 +334,16 @@ def make_execute_sql(
             except Exception as e:  # 血缘失败绝不阻断查询链路
                 logger.warning("lineage record failed: %s", e)
 
+        # 数据截止时间(§8.4 / I5):与成本估算共用同一份画像。放在**执行之后**
+        # —— 它回答不了「要不要执行」,只有结果要交付时才需要说清「这份数据
+        # 截止到什么时候」。故障不阻断(I6),但也**不冒充「没查过」**:试过了,
+        # 答案是「无从判断」。
+        evidence = budget_extra.get("execution_evidence")
+        if evidence is not None:
+            evidence["data_as_of"], evidence["as_of_basis"] = await _freshness(
+                profiles, state, executed_sql,
+            )
+
         result_limits = get_result_limits()
         return {
             "columns": result.columns,
@@ -386,6 +402,29 @@ async def _judge_budget(
             BudgetDecision("degrade", "", f"预算判定不可用({e}),按保守预算降级执行。"),
             ExecutionBudget(),
         )
+
+
+async def _freshness(
+    profiles: Any, state: WorkflowState, executed_sql: str,
+) -> tuple[str | None, str]:
+    """(数据截止时间, 口径);未装配 → ``(None, "")``,故障 → ``(None, "unknown")``。
+
+    问的表名取自**真正执行的那条**(降级时带 LIMIT)—— 与血缘同一条理由:证据
+    要能解释「线上到底跑的是什么」。LIMIT 不改写所引用的表,但这一条纪律不该
+    因为「这次恰好没差」而放松。
+
+    I6:画像查不动是常事(远端库慢/后端抖),不该把已经拿到结果的查询一起带走。
+    """
+    if profiles is None:
+        return None, ""
+    try:
+        fresh = await profiles.freshness(
+            state.datasource or "", referenced_tables(executed_sql, state.dialect or ""),
+        )
+        return getattr(fresh, "as_of", None), str(getattr(fresh, "basis", "") or "unknown")
+    except Exception as e:
+        logger.warning("freshness lookup failed (%s) — 答案按「无从判断」标注", e)
+        return None, "unknown"
 
 
 def _authz_message(decision) -> str:

@@ -112,6 +112,105 @@ def _build_results_table(
     return "\n".join(parts)
 
 
+#: ``as_of_basis`` → 展示名。**不翻译的口径照实报原文**(见下方),宁可生僻
+#: 也不能换一个名字 —— 口径名是这句话的全部含义(R5)。
+_BASIS_LABELS: dict[str, tuple[str, str]] = {
+    "last_modified": ("最后修改时间", "last modified"),
+    "latest_partition": ("最新分区", "latest partition"),
+}
+
+
+def _degradation_notice(state: WorkflowState) -> str:
+    """降级执行提示(设计 §6.2 / I2 / R1),置顶在结论之上。
+
+    **看不见的降级等于没有降级**:用户拿到一张少了几行的表,却没有任何线索
+    说明它为什么少。四种组合各自说各自的话 —— 尤其是 ``degraded=True`` 且
+    ``limit_applied=None`` 那一格(没依据、也没加上边界),它是唯一一格
+    「连截断都没做到」的,不能借用「已截断」的话术。
+
+    放行(``verdict != "degrade"``)一律无声:提示给多了就没人看了。
+    """
+    ev = state.execution_evidence or {}
+    if str(ev.get("verdict") or "") != "degrade":
+        return ""
+    lang = state.lang
+    limit = ev.get("limit_applied")
+    degraded = bool(ev.get("degraded"))
+    est = ev.get("estimated_rows")
+    soft = (ev.get("budget") or {}).get("soft_scan_rows")
+
+    if limit is not None:
+        if degraded:
+            body = L(
+                lang,
+                f"本次查询的扫描量无法估算;已为结果加上行数上限(最多 {limit} 行)。",
+                "the scan size could not be estimated; the result was capped at "
+                f"{limit} rows.",
+            )
+        else:
+            body = L(
+                lang,
+                f"本次查询估算扫描 {est} 行,超过本部署的 {soft} 行软限;"
+                f"已为结果加上行数上限(最多 {limit} 行)。",
+                f"this query is estimated to scan {est} rows, over this "
+                f"deployment's {soft}-row soft cap; the result was capped at "
+                f"{limit} rows.",
+            )
+    elif degraded:
+        body = L(
+            lang,
+            "本次查询的扫描量无法估算,也没能加上行数上限 —— 本次查询的代价未知。",
+            "the scan size could not be estimated and no row cap could be "
+            "applied — the cost of this query is unknown.",
+        )
+    else:
+        body = L(
+            lang,
+            f"本次查询估算扫描 {est} 行,超过本部署的软限,但没能加上行数上限 "
+            "—— 结果可能过大。",
+            f"this query is estimated to scan {est} rows, over this "
+            "deployment's soft cap, but no row cap could be applied — the "
+            "result may be very large.",
+        )
+    return L(
+        lang,
+        f"> ⚠️ **降级执行**:{body}\n",
+        f"> ⚠️ **Degraded execution**: {body}\n",
+    )
+
+
+def _freshness_line(state: WorkflowState) -> str:
+    """数据截止时间(设计 §8.4 / I5 / R5);不复述就返回 ""。
+
+    三个状态**必须分得开**(与 ``execution_evidence`` 里的三态一一对应):
+
+    * ``basis=""`` —— 没查过(没装画像)→ 一个字都不说。说「无从判断」是撒谎:
+      那是在讲「我查了但查不到」,而我们根本没查。
+    * ``basis="unknown"`` —— 查过了,无从判断 → **明写**。沉默也是一种谎:
+      用户会把「没提」读成「没问题」。
+    * 有值 —— 值与口径**同行**(R5):单看一个 ``2026-09-01`` 会被读成
+      「数据已更新到此刻」,口径才是它的含义。
+    """
+    ev = state.execution_evidence or {}
+    basis = str(ev.get("as_of_basis") or "")
+    if not basis:
+        return ""
+    lang = state.lang
+    if basis == "unknown":
+        return L(
+            lang,
+            "*数据截止时间:无从判断(画像里没有可用的依据)*\n",
+            "*Data as of: unknown (no usable basis in the table profile)*\n",
+        )
+    label = _BASIS_LABELS.get(basis)
+    shown = (label[0] if lang == "zh" else label[1]) if label else basis
+    return L(
+        lang,
+        f"*数据截止时间:{ev.get('data_as_of')}(依据:{shown})*\n",
+        f"*Data as of: {ev.get('data_as_of')} (basis: {shown})*\n",
+    )
+
+
 def _build_details(state: WorkflowState) -> str:
     """Technical detail section (SQL / semantics / assessment / meta).
 
@@ -138,9 +237,22 @@ def _build_details(state: WorkflowState) -> str:
             line += f" — {state.reason}"
         parts.append(line + "\n")
 
-    # Metadata
+    # Metadata + 成本证据。I7:估算给出来;实际扫描量适配器报不出时**不写**,
+    # 详情区里一行恒为「未知」的数字只会训练人忽略这一整块。
+    meta_lines: list[str] = []
     if state.execution_time_ms:
-        parts.append(f"\n---\n*{L(lang, '执行耗时', 'Execution time')}: {state.execution_time_ms:.0f}ms*")
+        meta_lines.append(L(
+            lang,
+            f"执行耗时: {state.execution_time_ms:.0f}ms",
+            f"Execution time: {state.execution_time_ms:.0f}ms",
+        ))
+    estimated = (state.execution_evidence or {}).get("estimated_rows")
+    if estimated is not None:
+        meta_lines.append(L(
+            lang, f"估算扫描行数: {estimated}", f"Estimated scan rows: {estimated}",
+        ))
+    if meta_lines:
+        parts.append("\n---\n" + "\n".join(f"*{line}*" for line in meta_lines))
 
     # Multi-candidate disagreement → low-confidence note
     if not state.consensus:
@@ -287,6 +399,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
 
     parts: list[str] = []
 
+    # 0. 降级提示 — 必须在结论**之上**:结论是要读的第一句,读者得先知道它
+    #    的数据被削过(I2 / R1)。
+    notice = _degradation_notice(state)
+    if notice:
+        parts.append(notice)
+
     # 1. Conclusion — LLM one-sentence direct answer (结论前置)
     if state.conclusion:
         parts.append(f"### {L(lang, '结论', 'Conclusion')}\n")
@@ -318,6 +436,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     else:
         # No execution data — this is the "empty" workflow case
         parts.append(L(lang, "(未执行任何查询)\n", "(No query executed)\n"))
+
+    # 3b. 数据截止时间 —— 紧挨着结果。**在折叠区之外**:读结果的人不展开详情
+    #     也该看到它(R5 的展示前提)。
+    freshness = _freshness_line(state)
+    if freshness:
+        parts.append(freshness)
 
     # Insights (执行后 LLM 生成的洞察)
     if state.insights:

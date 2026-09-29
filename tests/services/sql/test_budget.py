@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import pytest
 
-from trove.core.types import QueryResult
+from trove.core.types import QueryResult, TableProfile
 from trove.services.sql.budget import (
     BudgetService,
     CostEstimate,
     ExecutionBudget,
+    describe_cost,
     force_limit,
 )
 
@@ -313,3 +314,180 @@ class TestForceLimit:
 
     def test_empty_sql_returns_none(self):
         assert force_limit("", "postgres", 1000) is None
+
+
+# ── describe_cost:生成前先问价(§7.2 / P3)──────────────────
+
+
+class _CostProfiles:
+    """画像替身:只实现 ``describe_cost`` 用的那一面(``table_profile``)。
+
+    断言「问的是**这一轮**的数据源」——多数据源部署里漏掉它,A 库的表画像
+    会跟着 B 库的估算一起回来,而两边都看不出这件事。
+    """
+
+    def __init__(self, profiles: dict | None = None) -> None:
+        self._profiles = profiles or {}
+        self.asked: list[tuple[str, str]] = []
+
+    async def table_profile(self, datasource, table):
+        self.asked.append((datasource, table))
+        return self._profiles.get(table) or TableProfile(table=table)
+
+
+def _profiles(**by_table) -> _CostProfiles:
+    return _CostProfiles({
+        name: TableProfile(table=name, **kw) for name, kw in by_table.items()
+    })
+
+
+def _explained_rows(rows: int, seen: list | None = None):
+    """``connectors.explain`` 的替身:能报行数、也记下被问了什么。"""
+    async def explain(sql, datasource=None):
+        if seen is not None:
+            seen.append(sql)
+        return _qresult([(1, "ALL", "t", rows)],
+                        columns=["id", "select_type", "table", "rows"])
+    return explain
+
+
+def _pricing_budget(rows: int | None = None, **over) -> BudgetService:
+    """三档里选一档:``rows`` 给了就是 EXPLAIN 档,没给就是无依据档。"""
+    if rows is None:
+        return BudgetService(ExecutionBudget(max_rows=1000, **over))
+    return BudgetService(
+        ExecutionBudget(max_rows=1000, **over),
+        explain=_explained_rows(rows), parse_explain=lambda d, r: rows,
+    )
+
+
+class TestDescribeCostShape:
+    """§7.2 的 wire 形状就是接口契约:多一个字段、少一个字段都是改动。
+
+    这个 dict 直接进模型的上下文,字段名是它能读到的全部信息 —— 形状漂移
+    不会报错,只会让模型按旧名字取到一个 ``None``。
+    """
+
+    async def test_returns_exactly_the_documented_keys(self):
+        out = await describe_cost(
+            "SELECT name FROM students", budget=_pricing_budget(1_000),
+            datasource="db", dialect="mysql",
+        )
+        assert set(out) == {
+            "estimated_rows", "estimated_bytes", "source", "degraded",
+            "verdict", "tables", "reason",
+        }
+
+    async def test_reports_the_estimate_and_the_verdict(self):
+        out = await describe_cost(
+            "SELECT name FROM students", budget=_pricing_budget(1_000),
+            datasource="db", dialect="mysql",
+        )
+        assert out["estimated_rows"] == 1_000
+        assert out["source"] == "explain"
+        assert out["degraded"] is False
+        assert out["verdict"] == "allow"
+
+    async def test_the_tables_it_would_touch_carry_their_profile_numbers(self):
+        """表清单从 SQL 解出来,数字从画像取 —— 两者**分别**可缺。"""
+        profiles = _profiles(students={"row_count": 800, "bytes": 4096})
+        out = await describe_cost(
+            "SELECT s.name FROM students s JOIN grades g ON s.id = g.sid",
+            budget=_pricing_budget(1_000), datasource="db", dialect="mysql",
+            profiles=profiles,
+        )
+        assert out["tables"] == [
+            {"name": "grades", "row_count": None, "bytes": None},
+            {"name": "students", "row_count": 800, "bytes": 4096},
+        ]
+        assert profiles.asked == [("db", "grades"), ("db", "students")]
+
+    async def test_a_table_nobody_knows_has_no_numbers_not_zeros(self):
+        """查不到是 ``None``(§6.1「不可得 ≠ 0」)—— 0 在这里是个假依据。"""
+        out = await describe_cost(
+            "SELECT * FROM ghosts", budget=_pricing_budget(1_000),
+            datasource="db", dialect="mysql", profiles=_profiles(),
+        )
+        assert out["tables"] == [{"name": "ghosts", "row_count": None, "bytes": None}]
+
+    async def test_no_profile_service_still_names_the_tables(self):
+        """画像没装配 ≠ 表清单也没有 —— 后者是从 SQL 解出来的,不依赖画像。"""
+        out = await describe_cost(
+            "SELECT * FROM students", budget=_pricing_budget(1_000),
+            datasource="db", dialect="mysql",
+        )
+        assert out["tables"] == [{"name": "students", "row_count": None, "bytes": None}]
+
+    async def test_unparseable_sql_yields_no_table_claim(self):
+        """解不出表名 → 空清单,而不是把整条 SQL 当成表名报出去。"""
+        out = await describe_cost(
+            "SELECT FROM WHERE ((", budget=_pricing_budget(1_000), dialect="mysql",
+        )
+        assert out["tables"] == []
+
+
+class TestDescribeCostRefusesWhatItCannotPrice:
+    """问价工具的第一条职责是**只给能跑的 SQL 报价**。"""
+
+    async def test_a_write_statement_is_refused_without_being_explained(self):
+        """写语句不给报价:**不去 EXPLAIN 它**。
+
+        EXPLAIN 本身要落库(它就是一条查询)。为一条注定被拒的写语句付一次
+        EXPLAIN,等于把拒绝变成了额外开销。
+        """
+        seen: list[str] = []
+        budget = BudgetService(
+            ExecutionBudget(max_rows=1000),
+            explain=_explained_rows(1, seen), parse_explain=lambda d, r: 1,
+        )
+        out = await describe_cost(
+            "DELETE FROM students", budget=budget, dialect="mysql",
+        )
+        assert seen == []
+        assert out["verdict"] == "reject"
+        assert out["estimated_rows"] is None
+        assert out["reason"]
+
+    async def test_the_rejection_says_why_so_the_model_can_fix_it(self):
+        out = await describe_cost(
+            "UPDATE students SET grade = 0", budget=_pricing_budget(1_000),
+            dialect="mysql",
+        )
+        assert out["degraded"] is False  # 不是「降级了」,是「没给报价」
+        assert out["source"] == ""       # 也没有估算来源可言
+        assert "只读" in out["reason"] or "read-only" in out["reason"]
+
+    async def test_unparseable_sql_is_not_a_read_only_violation(self):
+        """解析失败 fail-open(与执行路径同一条政策):方言盲区 ≠ 权限违规。
+
+        真进去之后它会落在「无依据」那档,而不是被误报成写语句。
+        """
+        out = await describe_cost(
+            "SELECT FROM WHERE ((", budget=_pricing_budget(1_000), dialect="mysql",
+        )
+        assert out["verdict"] != "reject"
+
+    async def test_no_basis_is_degraded_and_shows_the_conservative_bytes(self):
+        """无依据要**说出来**(I2),并把保守预算的字节数一并给出。"""
+        budget = _pricing_budget(None, assume_max_scan_bytes=123, on_unestimable="degrade")
+        out = await describe_cost("SELECT 1", budget=budget, dialect="mysql")
+        assert out["source"] == "conservative"
+        assert out["degraded"] is True
+        assert out["verdict"] == "degrade"
+        assert out["estimated_bytes"] == 123
+        assert out["estimated_rows"] is None
+
+    async def test_strict_deployments_report_reject_instead_of_degrade(self):
+        """§8.3 C:``on_unestimable=reject`` 的部署里,无依据就是拒绝。"""
+        budget = _pricing_budget(None, on_unestimable="reject")
+        out = await describe_cost("SELECT 1", budget=budget, dialect="mysql")
+        assert out["verdict"] == "reject"
+
+    async def test_over_the_hard_cap_reports_reject_with_the_threshold(self):
+        """顶到硬限 → 拒绝,且理由里带上阈值(模型要据此重写)。"""
+        out = await describe_cost(
+            "SELECT * FROM big", budget=_pricing_budget(5_000_000_000), dialect="mysql",
+        )
+        assert out["verdict"] == "reject"
+        assert out["estimated_rows"] == 5_000_000_000
+        assert "1000000000" in out["reason"] or "1_000_000_000" in out["reason"]
