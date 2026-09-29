@@ -33,6 +33,7 @@ from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.kb.service import KbService
 from trove.llm.agent_loop import run_agent_loop
+from trove.llm.untrusted import screen_derived
 from trove.workflow.context_budget import (
     ContextItem,
     assemble_context,
@@ -1492,6 +1493,14 @@ def make_route_intent(
                 try:
                     rewritten = await _rewrite_followup(state.question, state)
                 except Exception:
+                    rewritten = ""
+                # 出生点筛查:重写 prompt 带着 history(含上一轮结果包的数据预览),
+                # 产物却会被当成 ``question`` —— 白名单里"用户本人的话"那个身份 ——
+                # 用进下游每一段提示词。不在这里查,历史数据就能借模型的回声洗成
+                # "用户说的"。命中即**弃用**(与重写失败同一条路:回落引导话术),
+                # 而不是替换成标记 —— 下游要的是一句能答的问题。
+                rewritten, _hits = screen_derived(rewritten, site="followup_rewrite")
+                if _hits:
                     rewritten = ""
                 if rewritten and rewritten != state.question:
                     intent2, evidence2, detail2 = await _classify(rewritten, state)

@@ -30,6 +30,8 @@ import time
 from typing import Any, Awaitable, Callable
 
 from trove.core.logging import get_logger
+from trove.core.metrics import record_prompt_isolation
+from trove.llm.untrusted import isolate_tree
 from trove.services.errors import classify_error, validate_arguments
 
 logger = get_logger(__name__)
@@ -54,6 +56,40 @@ def _truncate_observation(obs: str, limit: int = MAX_OBSERVATION_CHARS) -> str:
     if len(obs) <= limit:
         return obs
     return obs[:limit] + f"\n…[truncated {len(obs) - limit} chars]"
+
+
+def _tool_label(registry: ToolRegistry, name: str) -> str:
+    """指标 var 标签:只认**注册过的**工具名。
+
+    未知工具名是模型给的字符串(基数无限),进标签就是把监控系统交给模型;
+    与路由用模板而不是原始 URL、成本指标不记 SQL 文本同一条纪律。
+    """
+    return name if registry.spec(name) is not None else "unknown"
+
+
+def _model_observation(
+    res: dict[str, Any],
+    registry: ToolRegistry,
+    limit: int = MAX_OBSERVATION_CHARS,
+) -> str:
+    """工具返回值 → 喂回模型的观测文本:隔离 → 截断(设计稿 §5.3)。
+
+    工具回喂的**唯一**收口点:新增工具自动继承,不需要各自接线。工具现取的
+    外部内容(库里的行、检索值)是外部不可信内容,命中注入模式即作废。
+
+    **只作用于喂回模型的那一份**:``tool_history`` / ``transcript`` / 观察者
+    拿到的是原文(审计面要留证据),``finish`` 载荷(最终 SQL 等**控制值**)
+    根本不走这条路径 —— 产物不是输入,隔离它是篡改。
+    """
+    observation, hits = isolate_tree(res["observation"])
+    if hits:
+        var = _tool_label(registry, str(res["tc"]["name"]))
+        for pattern in hits:
+            record_prompt_isolation("tool", var, pattern)
+        logger.warning(
+            "tool observation isolation: tool=%s patterns=%s", var, ",".join(hits),
+        )
+    return _truncate_observation(observation, limit)
 
 
 def _round_digest(round_no: int, msgs: list[dict[str, Any]]) -> str:
@@ -709,7 +745,7 @@ async def run_agent_loop(
                 messages.append({
                     "role": "tool",
                     "tool_call_id": res["tc"]["id"],
-                    "content": _truncate_observation(res["observation"]),
+                    "content": _model_observation(res, registry),
                 })
                 return _finish_result(round_no, answered=True)
 
@@ -735,7 +771,7 @@ async def run_agent_loop(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": _truncate_observation(observation),
+                "content": _model_observation(res, registry),
             })
             recent_sigs.append(
                 f"{tc['name']}|"
