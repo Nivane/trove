@@ -137,6 +137,15 @@ if _HAVE_CLIENT:
         ["field", "mode"],
         registry=_REGISTRY,
     )
+    # 记的是「哪个通道、哪个变量、命中哪条模式」,**不记原文** —— 原文本身
+    # 就是要被隔离掉的不可信内容,进指标/日志等于把注入换个地方存着。
+    # 变量名基数可控(render: 模板参数名;tool: 工具名),通道只有两条(设计稿 §5)。
+    PROMPT_ISOLATION = Counter(
+        "trove_prompt_isolation_total",
+        "Untrusted values isolated before reaching a model, by channel/var/pattern.",
+        ["channel", "var", "pattern"],
+        registry=_REGISTRY,
+    )
 
 
 def _short_model(model: str) -> str:
@@ -277,6 +286,28 @@ MASKING_MODES = frozenset({"partial", "hash", "null"})
 AUTHZ_DENY_REASONS = frozenset({"no_principal", "datasource", "table", "unresolved"})
 
 
+#: 隔离通道的**值域**(设计稿 §5.2/§5.3):模板渲染 / 工具回喂 —— 值**进入模型
+#: 上下文**的位置,有且仅有这两条(守卫测试枚举全仓 llm 调用点)。
+#: ``derive`` 不是第三条入口,它记的是**派生值出生点**的处置(``screen_derived``):
+#: 那里没有值进入提示词,有的是一个 LLM 产物被赋予"用户原话"的身份。
+#: 与 ``MASKING_MODES`` 同一条纪律:新增通道时这里应该有意识地改一次。
+ISOLATION_CHANNELS = frozenset({"render", "tool", "derive"})
+
+#: 派生值出生点的**值域**(``llm/untrusted.screen_derived`` 的 ``site``)。
+#: 这里就是"哪些地方会把 LLM 产物当作用户原话"的清单 —— 目前只有一处。
+#: 站点名是代码常量(不来自模型),但仍然闭集登记:新增出生点应当**有意识地**
+#: 来这里加一笔,顺带回答"我们一共开了几个这样的口子"。
+ISOLATION_SITES = frozenset({"followup_rewrite"})
+
+#: 隔离命中的**值域**(``llm/injection._PATTERNS`` 的模式名 + ``llm/untrusted``
+#: 的超长保守项)。不 import 那一份 —— ``core`` 是底层,而且这里要的是
+#: 「计数器接受哪些标签值」这个观测契约:模式表增删一条,这里要有意识地跟着改。
+ISOLATION_PATTERNS = frozenset({
+    "ignore_previous", "disregard_prior", "forget_instructions", "role_switch",
+    "system_prompt", "zh_ignore", "zh_override", "oversized",
+})
+
+
 def record_authz_deny(reason: str) -> None:
     """记一次**执行前授权门的拒绝**(设计 §9.2 / P5)。
 
@@ -311,6 +342,25 @@ def record_masking_applied(field: str, mode: str) -> None:
         MASKING_APPLIED.labels(field=field, mode=mode).inc()
     except Exception as e:
         logger.debug("masking metric record failed: %s", e)
+
+
+def record_prompt_isolation(channel: str, var: str, pattern: str) -> None:
+    """记一次**实际发生**的外部值隔离(设计稿 §5.4)。
+
+    空变量名 / 域外通道 / 域外模式**不记**:后两者只可能来自「新增了一条通道或
+    模式,没同步到这里」,而本函数是值域的定义处(同 ``record_authz_deny``)。
+    ``channel="derive"`` 时 ``var`` 是站点名,同样要在 ``ISOLATION_SITES`` 里 ——
+    否则「哪些出生点在处置派生值」这个问题就没有一个可读的答案。
+    不记原文 —— 原文正是要被隔离掉的东西。
+    """
+    if (not _HAVE_CLIENT or not var or channel not in ISOLATION_CHANNELS
+            or pattern not in ISOLATION_PATTERNS
+            or (channel == "derive" and var not in ISOLATION_SITES)):
+        return
+    try:
+        PROMPT_ISOLATION.labels(channel=channel, var=var, pattern=pattern).inc()
+    except Exception as e:
+        logger.debug("prompt isolation metric record failed: %s", e)
 
 
 def render_metrics() -> bytes:
