@@ -1566,6 +1566,48 @@ class TestMaskingWiring:
         assert final["masking_applied"]["fields"] == {"county": "partial"}
         assert self.RAW not in str(final["rows"])
 
+    async def test_the_consensus_feedback_is_masked_before_the_model_sees_it(
+        self, sqlite_registry, catalog,
+    ):
+        """共识失败的反馈文本里带**结果值**,而那条路不经过本节点。
+
+        路由是 ``select`` → ``validate``(见 error_feedback 直通)→
+        ``analyze_error``,``masking`` 挂在 ``validate`` 的**成功**分支上。
+        所以这一条不是"再测一遍脱敏",是测**脱敏在第二次出现的位置**。
+
+        端到端做的第二个理由:单测直接构造 ``select`` 节点,所以
+        ``graphs.py`` 里 ``semantic_layer=`` 那行被拆掉时单测全绿 —— 值会
+        悄悄退回明文。只有拿 LLM 手里的入参才能钉住接线。
+        """
+        llm = RecordingLLM([
+            "query",
+            VALID_SQL,                                                    # p1 主（5行）
+            "```sql\nSELECT name FROM students WHERE 0;\n```",            # p1 备1（0行）
+            "```sql\nSELECT name FROM students LIMIT 1;\n```",            # p1 备2（1行）
+            "```sql\nSELECT name FROM students LIMIT 2;\n```",            # p1 备3（2行）
+            "```sql\nSELECT name FROM students LIMIT 3;\n```",            # p1 备4（3行）
+            "TARGET: gen_sql",                                            # p1 诊断
+            VALID_SQL,                                                    # p2 主
+            "```sql\nSELECT name FROM students ORDER BY name;\n```",
+            "```sql\nSELECT name FROM students ORDER BY name DESC;\n```",
+            "```sql\nSELECT name FROM students ORDER BY name ASC;\n```",
+            "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```",
+            "OK",
+        ])
+        provider = _declare_mask(
+            sqlite_registry._test_semantic_provider, "students", "name",
+        )
+        graphs = build(
+            make_services(llm, catalog, sqlite_registry, semantic_layer=provider),
+            multi_candidate=True,
+        )
+        await graphs["reflection"].ainvoke(make_state())
+
+        diag = llm.calls[6][-1]["content"]
+        assert "候选 SQL 结果不一致" in diag          # 反馈照常发出
+        assert "Alice" not in diag and "Bob" not in diag
+        assert "A***e" in diag                       # 脱敏后的值照常进(不是藏了)
+
     async def test_an_undeclared_model_leaves_the_run_untouched(
         self, sqlite_registry, catalog,
     ):

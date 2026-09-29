@@ -11,6 +11,17 @@ This is the deterministic counterpart to the LLM judge: execution
 agreement is the strongest signal available without ground truth.
 
 Order in the graph: execute_sql → select → validate → route.
+
+**Preview values are masked before they are joined.** The disagreement
+feedback carries concrete result values, and that string does not only
+reach the next prompt: it also rides ``correction_history`` into the
+regeneration prompt, into the episodes table (and its embedding), and out
+to the SSE stream. ``masking`` sits on ``validate``'s *success* branch, so
+this path never passes through it. Masking after the join is not an option
+— once the values are one string, the column positions that say *which*
+values are declared fields are gone. So the masker runs here, on the rows,
+before ``_preview_rows`` turns them into text. With no semantic layer, or
+no declared ``mask``, the preview is byte-identical to before.
 """
 
 from __future__ import annotations
@@ -19,10 +30,15 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.core.config import AgentConfig
 from trove.core.i18n import L
+from trove.core.logging import get_logger
+from trove.services.authz.masking import MaskingError, build_masker
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
+
+log = get_logger(__name__)
 
 
 def _normalize_rows(rows: list[list[Any]]) -> list[tuple[str, ...]]:
@@ -49,6 +65,8 @@ def make_select_consensus(
     timeout_ms: int = 30000,
     max_retries: int = 10,
     adopt_after_tie_rounds: int = 3,
+    semantic_layer: Any | None = None,
+    config: AgentConfig | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the consensus select node.
 
@@ -56,6 +74,9 @@ def make_select_consensus(
         connectors: Registry used to execute the candidate SQLs.
         timeout_ms: Timeout for each candidate execution.
         max_retries: Shared correction budget (same semantics as execute).
+        semantic_layer: Only ``model()`` is used — it supplies the masking
+            declarations for the preview. Same shape as ``make_masking``.
+        config: Deployment config (``masking.enabled`` / ``hash_salt_ref``).
         adopt_after_tie_rounds: Tie rounds before adaptive degradation —
             when the pool has accumulated N rounds of votes without a
             majority, further regeneration has diminishing returns, so the
@@ -71,6 +92,11 @@ def make_select_consensus(
       - any tie routes back to gen_sql with the concrete groups; at the
         retry cap the primary is delivered with a low-confidence mark.
     """
+
+    # Same construction point as the masking node — one rule for both roads
+    # (the rows shown to the user, and the rows quoted in this feedback).
+    # ``None`` = masking disabled deployment-wide → previews stay as they were.
+    apply_masking = build_masker(semantic_layer=semantic_layer, config=config)
 
     async def select(state: WorkflowState) -> dict[str, Any]:
         # Upstream failure / pending feedback / no candidates — pass through
@@ -161,26 +187,67 @@ def make_select_consensus(
                                                       "filtered": filtered,
                                                       "degraded": "repeated-tie",
                                                       "confidence": confidence}}
+        def preview(
+            rows: list[list[Any]],
+            columns: list[str],
+            sql: str,
+            contract: dict[str, Any] | None,
+        ) -> str:
+            """Rows → preview text, masked **before** the join.
+
+            Each candidate is masked against **its own** ``columns``/``sql``:
+            masking resolves output positions by matching the projection, and
+            the wrong SQL would map one candidate's column modes onto another
+            candidate's values. The contract is the primary's compilation
+            artifact, so only the primary gets it — handing it to an alternate
+            would be right only by coincidence of matching widths.
+            """
+            if apply_masking is None:
+                return _preview_rows(rows)
+            try:
+                masked, _ = apply_masking(
+                    rows, columns,
+                    principal=state.principal,
+                    sql=sql,
+                    contract=contract,
+                )
+            except MaskingError as e:
+                # Unreadable model is a *fault*, not "no declarations" — the
+                # masking node refuses outright (nothing else guards the exit);
+                # here the deliverable is a diagnostic hint, not a result set,
+                # so the proportionate action is to withhold the values and
+                # keep the run alive. The SQL stays: the retry still has a
+                # handle.
+                log.warning(
+                    "select preview withheld for run %s (datasource %r): %s",
+                    state.run_id, state.datasource, e,
+                )
+                return L(state.lang, "[值已省略]", "[values withheld]")
+            return _preview_rows(masked)
+
+        primary_preview = preview(state.rows, state.columns, state.sql, state.contract)
         others = []
         for _key, members in ranked:
             sql, qr = members[0]
             if qr is None:
                 continue  # primary 组(其 SQL 与结果已在主候选段给出)
-            others.append(f"[{_compact_sql(sql)}] → {_preview_rows(qr.rows)}")
+            others.append(
+                f"[{_compact_sql(sql)}] → {preview(qr.rows, qr.columns, sql, None)}"
+            )
             if len(others) >= 2:
                 break
         feedback = L(
             state.lang,
             (
                 f"候选 SQL 结果不一致({len(votes)} 组,每组 {list(votes.values())} 票):"
-                f"主候选 [{_compact_sql(state.sql)}] → {_preview_rows(state.rows)};"
+                f"主候选 [{_compact_sql(state.sql)}] → {primary_preview};"
                 f"{'; '.join(others)}。"
                 f"执行结果分组投票无法形成多数——选择最符合问题的解释并重新生成。"
             ),
             (
                 f"Candidate SQL variants returned different results "
                 f"({len(votes)} groups, votes {list(votes.values())}): "
-                f"primary [{_compact_sql(state.sql)}] → {_preview_rows(state.rows)}; "
+                f"primary [{_compact_sql(state.sql)}] → {primary_preview}; "
                 f"{'; '.join(others)}. "
                 f"Execution grouping produced no majority — choose the "
                 f"interpretation that best matches the question and regenerate."

@@ -40,11 +40,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from trove.core.config import AgentConfig, MaskingConfig
+from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.core.metrics import record_masking_applied
-from trove.services.authz.masking import Masker, MaskingError
-from trove.services.authz.policy import principal_from_wire
+from trove.services.authz.masking import MaskingError, build_masker
 from trove.workflow.state import WorkflowState
 
 log = get_logger(__name__)
@@ -73,20 +72,12 @@ def make_masking(
             可做,A11)。
         config: 读 ``masking.enabled`` 与部署级 ``masking.hash_salt_ref``。
     """
-    cfg = (config or AgentConfig()).masking or MaskingConfig()
-    masker = Masker(default_salt_ref=cfg.hash_salt_ref)
-
-    def _model():
-        """语义模型;读不出来 → 抛 ``MaskingError``(由调用方转成拒绝)。"""
-        if semantic_layer is None:
-            return None
-        try:
-            return semantic_layer.model()
-        except Exception as e:  # noqa: BLE001 —— provider 的异常类型不承诺稳定
-            raise MaskingError(f"语义模型读不出来,无法确认脱敏声明: {e}") from e
+    # 构造收在 build_masker 里(与 select 的预览脱敏共用同一份规则)。
+    # ``None`` = 部署级关闭 → 节点整体惰性。
+    apply_masking = build_masker(semantic_layer=semantic_layer, config=config)
 
     async def masking(state: WorkflowState) -> dict[str, Any]:
-        if not cfg.enabled:
+        if apply_masking is None:
             return {}
         if not state.rows:
             # 没有结果集(未执行 / 空表 / 已在上一步失败)→ 没有可改写的行,
@@ -94,12 +85,9 @@ def make_masking(
             # 的结论」是两种状态(同 execution_evidence 的三态纪律)。
             return {}
         try:
-            rows, report = masker.apply(
+            rows, report = apply_masking(
                 state.rows, state.columns,
-                model=_model(),
-                # 主体缺失 → 传 None:Masker 照常脱敏(没有依据可 bypass,
-                # 安全方向是多脱敏)。**不是**「没有主体就放行」。
-                principal=principal_from_wire(state.principal),
+                principal=state.principal,
                 sql=state.sql,
                 contract=state.contract,
             )

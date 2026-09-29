@@ -3,6 +3,12 @@
 import pytest
 
 from trove.core.types import QueryResult
+from trove.services.semantic_layer.models import (
+    MaskingPolicy,
+    SemanticDataset,
+    SemanticField,
+    SemanticModel,
+)
 from trove.workflow.nodes.select import _normalize_rows, make_select_consensus
 from trove.workflow.state import WorkflowState
 
@@ -340,3 +346,142 @@ class TestConfidence:
             candidates=["SELECT v FROM t WHERE 0"], retry_count=10,
         ))
         assert update["selection"]["confidence"] == pytest.approx(1 / 2)
+
+
+# ── 预览值脱敏:error_feedback 绕开 masking 节点的那条路 ──────────────
+
+RAW_PHONE = "13800138888"        # 与设计 §5.5 同一个形状
+RAW_PHONE_ALT = "13900139999"
+MASKED_PHONE = "138****8888"
+MASKED_PHONE_ALT = "139****9999"
+
+
+def _masking_model(*, mask: str = "partial") -> SemanticModel:
+    return SemanticModel(
+        name="m",
+        datasets=[
+            SemanticDataset(
+                name="customers",
+                source="customers",
+                fields=[SemanticField(name="phone", expression="phone", mask=mask)],
+            )
+        ],
+        masking=MaskingPolicy(),
+    )
+
+
+class _Provider:
+    """最小语义层替身 —— 节点只调 ``model()``。"""
+
+    def __init__(self, model) -> None:
+        self._model = model
+
+    def model(self):
+        return self._model
+
+
+class _BoomProvider:
+    def model(self):
+        raise RuntimeError("provider exploded")
+
+
+class TestPreviewMasking:
+    """共识失败的反馈文本里,**结果值必须在 join 之前脱敏**。
+
+    这条旁路绕开的是 ``masking`` 节点本身:``select`` 产生 ``error_feedback``
+    → ``validate`` 见它直通(``validate.py:46``)→ 路由去 ``analyze_error``。
+    而 ``masking`` 挂在 ``validate`` 的**成功**分支上,这条路根本不经过它。
+
+    值也不止进一个 prompt:同一个字符串还顺 ``correction_history`` 进
+    ``gen_sql`` 的重生成提示、**落进 episodes 表并算 embedding**
+    (``episode.py:48`` / ``:170``)、被蒸馏成 lessons。所以这是写进记忆库的
+    持久化,不是一次性的提示词泄漏。
+
+    三条边界:声明过的字段被改写、没声明的逐字节不变(A11 惰性)、脱敏不可
+    用时**省略值**而非照常显示(§10「降级即泄漏」)。
+
+    接线前的行为由既有的
+    ``TestSelectNode::test_disagreement_feedback_carries_candidates_and_values``
+    守着(不传语义层 → 逐字节不变),不在这里重复。
+    """
+
+    async def _feedback(self, node, *, state):
+        update = await node(state)
+        assert "error" not in update, update
+        return update["error_feedback"]
+
+    async def test_declared_field_is_masked_before_join(self):
+        connectors = FakeConnectors([
+            QueryResult(columns=["phone"], rows=[[RAW_PHONE_ALT]], row_count=1),
+        ])
+        node = make_select_consensus(
+            connectors, semantic_layer=_Provider(_masking_model()),
+        )
+        fb = await self._feedback(node, state=make_state(
+            sql="SELECT phone FROM customers",
+            columns=["phone"], rows=[[RAW_PHONE]], row_count=1,
+            candidates=["SELECT phone FROM customers WHERE 0"],
+            lang="en",
+        ))
+        assert RAW_PHONE not in fb and RAW_PHONE_ALT not in fb
+        # 改写了,不是整段丢掉 —— 模型还看得见两边的具体差异
+        assert MASKED_PHONE in fb and MASKED_PHONE_ALT in fb
+
+    async def test_undeclared_field_is_byte_identical(self):
+        """A11 惰性:模型里没有 ``mask`` 声明 → 预览与接线前逐字节一致。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["phone"], rows=[[RAW_PHONE_ALT]], row_count=1),
+        ])
+        node = make_select_consensus(
+            connectors, semantic_layer=_Provider(_masking_model(mask="")),
+        )
+        fb = await self._feedback(node, state=make_state(
+            sql="SELECT phone FROM customers",
+            columns=["phone"], rows=[[RAW_PHONE]], row_count=1,
+            candidates=["SELECT phone FROM customers WHERE 0"],
+            lang="en",
+        ))
+        assert RAW_PHONE in fb and RAW_PHONE_ALT in fb
+
+    async def test_alternate_is_masked_against_its_own_projection(self):
+        """每个候选按**自己的** SQL 取投影位置,不共用主候选的。
+
+        构造:声明字段只出现在**备选**的结果里。用主候选的投影去套备选的
+        值,位置表里根本没有 phone 这一列,于是原值原样漏进反馈 —— 这条
+        正是「拿 A 的列套 B 的值」的反例。
+        """
+        connectors = FakeConnectors([
+            QueryResult(columns=["phone"], rows=[[RAW_PHONE_ALT]], row_count=1),
+        ])
+        node = make_select_consensus(
+            connectors, semantic_layer=_Provider(_masking_model()),
+        )
+        fb = await self._feedback(node, state=make_state(
+            sql="SELECT county FROM customers",
+            columns=["county"], rows=[["nanking"]], row_count=1,
+            candidates=["SELECT phone FROM customers WHERE 0"],
+            lang="en",
+        ))
+        assert RAW_PHONE_ALT not in fb
+        assert MASKED_PHONE_ALT in fb
+        assert "nanking" in fb          # 主候选那条没声明 → 原样
+
+    async def test_masking_failure_withholds_values(self):
+        """读不出语义模型 = 故障,不是"没有声明面"。
+
+        与 ``masking`` 节点取同一个方向(§10):不确定就不显示。但**不中止
+        整个 run** —— 这里交付的是诊断提示不是结果集,安全动作是省略值,
+        不是拒绝这次问答。反馈仍要给出两边 SQL,让重试有据可依。
+        """
+        connectors = FakeConnectors([
+            QueryResult(columns=["phone"], rows=[[RAW_PHONE_ALT]], row_count=1),
+        ])
+        node = make_select_consensus(connectors, semantic_layer=_BoomProvider())
+        fb = await self._feedback(node, state=make_state(
+            sql="SELECT phone FROM customers",
+            columns=["phone"], rows=[[RAW_PHONE]], row_count=1,
+            candidates=["SELECT phone FROM customers WHERE 0"],
+            lang="en",
+        ))
+        assert RAW_PHONE not in fb and RAW_PHONE_ALT not in fb
+        assert "WHERE 0" in fb          # 结构还在,重试有据可依

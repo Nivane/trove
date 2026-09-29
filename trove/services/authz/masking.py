@@ -80,16 +80,17 @@ from __future__ import annotations
 import hashlib
 import os
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import sqlglot
 from sqlglot import exp
 
+from trove.core.config import AgentConfig, MaskingConfig
 from trove.core.logging import get_logger
-from trove.services.authz.policy import Policy, Principal
+from trove.services.authz.policy import Policy, Principal, principal_from_wire
 from trove.services.semantic_layer.models import SemanticModel
 
-__all__ = ["Masker", "MaskingError", "resolve_salt_ref"]
+__all__ = ["Masker", "MaskingError", "build_masker", "resolve_salt_ref"]
 
 log = get_logger(__name__)
 
@@ -436,6 +437,64 @@ class Masker:
             self._default_salt_ref or ""
         ).strip()
         return resolve_salt_ref(ref)
+
+
+# ── 构造点(唯一) ────────────────────────────────────────────────
+
+
+def build_masker(
+    *,
+    semantic_layer: Any | None = None,
+    config: Any | None = None,
+) -> Callable[..., tuple[list[list[Any]], dict[str, Any]]] | None:
+    """配置 + 语义层 → 一个「结果集 → 脱敏结果集 + 报告」的口。
+
+    **为什么要有这个函数。** ``nodes/masking.py``(交付给人看的那条路)与
+    ``nodes/select.py``(写进 ``error_feedback`` 文本的那条路)必须按**同一份
+    规则**改写同一份结果集。两处各自拼一个 ``Masker`` 会漂移成「两条路按不同
+    模式改写」——而漂移掉的那一侧是安全侧。所以构造收在这里:调用方只决定
+    **在哪一步调**,不重述**怎么建**。
+
+    ``principal`` 取 **wire 形状**(``state.principal`` 原样),转换放在这里 ——
+    两个调用方手里都只有 wire,判定输入的形状就不该有第二种可能。
+
+    Returns:
+        ``None`` = 部署级关闭(``masking.enabled`` 为假)。调用方据此**整段
+        跳过**,而不是每次进来再判一次开关:开关的语义只在这一个地方读。
+    """
+    cfg = (config or AgentConfig()).masking or MaskingConfig()
+    if not cfg.enabled:
+        return None
+    masker = Masker(default_salt_ref=cfg.hash_salt_ref)
+
+    def _model() -> SemanticModel | None:
+        """语义模型;读不出来 → 抛 ``MaskingError``,由调用方决定怎么办。"""
+        if semantic_layer is None:
+            return None
+        try:
+            return semantic_layer.model()
+        except Exception as e:  # noqa: BLE001 —— provider 的异常类型不承诺稳定
+            raise MaskingError(f"语义模型读不出来,无法确认脱敏声明: {e}") from e
+
+    def apply(
+        rows: list[list[Any]],
+        columns: list[str],
+        *,
+        principal: dict[str, Any] | None,
+        sql: str | None = None,
+        contract: dict[str, Any] | None = None,
+    ) -> tuple[list[list[Any]], dict[str, Any]]:
+        return masker.apply(
+            rows, columns,
+            model=_model(),
+            # 主体缺失 → 传 None:Masker 照常脱敏(没有依据可 bypass,安全的
+            # 方向是多脱敏)。**不是**「没有主体就放行」。
+            principal=principal_from_wire(principal),
+            sql=sql,
+            contract=contract,
+        )
+
+    return apply
 
 
 def _match(

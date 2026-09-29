@@ -1904,7 +1904,15 @@ def _build_reflection(
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
-    g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
+    # 语义层/配置一并传入:共识失败的反馈文本里带结果值,而那条路走的是
+    # analyze_error(validate 的成功分支才到 masking,这条路不经过)。预览值
+    # 在 join 前脱敏 —— 见 nodes/select.py 模块注释与 nodes/masking.py 的
+    # 「为什么在 validate 之后」。
+    g.add_node("select", make_select_consensus(
+        services.connectors, max_retries=MAX_REFLECT_RETRIES,
+        semantic_layer=services.semantic_layer,
+        config=services.config or AgentConfig(),
+    ))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 脱敏节点(设计 §5.5 G4 / I5)。位置是**判定过、LLM 之前**:放在 select
     # 里会被快径跳过(select 无候选时直接返回),放在 validate 之前会让规则链
