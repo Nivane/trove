@@ -219,7 +219,12 @@ async def create_app_components(
     # 统一记忆服务:情景记忆(跨会话过去查询)、成功→示例草稿、修正/失败→
     # pending 教训、偏好自动提取、生命周期清理。全部渐进开关(agent.yml
     # 的 agent.memory 段),任何失败静默降级,不阻断查询。
+    from trove.services.drift import DriftStore
     from trove.services.memory.service import MemoryService
+    # 漂移落库:后台周期巡检此前只把结果打进日志,**在跑但白跑**。接上同一个
+    # drift store 之后,巡检与 ``/v1/admin/drift`` 读写的是同一个文件 ——
+    # 项目根按 drift 路由那条既有口径反推(``kb_dir`` → ``<root>/.trove/kb``),
+    # 两处各推各的会推出两个目录,表现成「巡检跑了但管理端一条都看不到」。
     memory = MemoryService(
         config.home,
         config.memory,
@@ -229,6 +234,7 @@ async def create_app_components(
         connectors=connector_registry,
         catalog=catalog_service,
         config_resolver=config_store,
+        drift_store=DriftStore(Path(kb.kb_dir).parent.parent),
     )
 
     # ── Data lineage (optional: .trove/lineage/) — definitions.yml lazy

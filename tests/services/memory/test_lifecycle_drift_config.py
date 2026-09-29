@@ -16,6 +16,20 @@ def kb(tmp_path):
     return KbService(tmp_path / "proj")
 
 
+class _OneDatasource:
+    """``config_resolver`` 的最小替身:只回答「有哪几个数据源」。
+
+    与 ``DatasourceConfigStore.load_configs`` 一致是**同步**的 ——
+    ``_datasource_names`` 就是这么调的。
+    """
+
+    def load_configs(self):
+        class _Cfg:
+            name = "demo"
+
+        return [_Cfg()]
+
+
 async def test_lifecycle_purges_user_facts(tmp_path, kb):
     # 死代码修复验证:run_lifecycle 现在真正调用 user_facts.purge_expired
     from trove.services.user_facts.service import UserFactsService
@@ -166,6 +180,105 @@ class TestSchemaDriftStatus:
         assert isinstance(report["gone_tables"], list)
         assert isinstance(report["column_changes"], dict)
         assert report["new_tables"] == ["extra"]
+
+
+class TestDriftLandsInTheStore:
+    """P6:后台周期跑出来的漂移必须**落库**,不能只进 ``logger.info``。
+
+    ``api/app.py`` 的巡检一直在跑 L1,结果只进日志 —— 没有可查询的行、没有
+    退出码、没有告警。**在跑,但白跑**:跑一周也答不了「哪个库漂过」。
+    """
+
+    def _kb_with_notes(self, kb) -> None:
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "schema_notes.yml").write_text(
+            "tables:\n  - name: loan\n    columns:\n      - name: amount\n",
+            encoding="utf-8",
+        )
+
+    def _catalog(self):
+        class _Catalog:
+            async def list_tables(self, datasource):
+                return [
+                    {"name": "loan", "columns": [{"name": "amount"}]},
+                    {"name": "new_table", "columns": [{"name": "id"}]},
+                ]
+
+        return _Catalog()
+
+    def _svc(self, tmp_path, kb, store):
+        cfg = MemoryConfig(enabled=True, schema_drift_check=True)
+        return MemoryService(
+            tmp_path / "home", cfg, kb=kb, catalog=self._catalog(),
+            drift_store=store, config_resolver=_OneDatasource(),
+        )
+
+    async def test_a_drifted_datasource_leaves_rows(self, tmp_path, kb):
+        from trove.services.drift.store import DriftStore
+
+        self._kb_with_notes(kb)
+        store = DriftStore(tmp_path)
+        await self._svc(tmp_path, kb, store).detect_schema_drift()
+
+        subjects = {row.subject for row in await store.list_items("demo")}
+        assert "new_table" in subjects
+
+    async def test_a_clean_run_still_leaves_a_run_row(self, tmp_path, kb):
+        """干净也要留一行 —— 「查过了没问题」与「根本没查」是两回事。
+
+        这正是 I3 反复要挡的那种静默:不记干净的那次,历史里就只剩有漂移的
+        那几次,读起来像「这个库一直在漂」,而真相可能是「只查过三次」。
+        """
+        from trove.services.drift.store import DriftStore
+
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        ds_dir = kb.kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "schema_notes.yml").write_text(
+            "tables:\n  - name: loan\n    columns:\n      - name: amount\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+
+        class _Clean:
+            async def list_tables(self, datasource):
+                return [{"name": "loan", "columns": [{"name": "amount"}]}]
+
+        store = DriftStore(tmp_path)
+        cfg = MemoryConfig(enabled=True, schema_drift_check=True)
+        svc = MemoryService(tmp_path / "home", cfg, kb=kb, catalog=_Clean(),
+                            drift_store=store, config_resolver=_OneDatasource())
+        await svc.detect_schema_drift()
+
+        assert await store.list_runs("demo"), "干净的一次也该留下 run 行"
+        assert await store.list_items("demo") == []
+
+    async def test_without_a_store_nothing_breaks(self, tmp_path, kb):
+        """没接 store 时照旧工作 —— 库外调用方(测试、脚本)不该被这条改动绊住。"""
+        self._kb_with_notes(kb)
+        svc = MemoryService(tmp_path / "home", MemoryConfig(enabled=True),
+                            kb=kb, catalog=self._catalog(),
+                            config_resolver=_OneDatasource())
+        stats = await svc.detect_schema_drift()
+
+        assert "demo" in stats["datasources"]
+
+    async def test_a_broken_store_does_not_break_the_sweep(self, tmp_path, kb):
+        """落库失败不能拖垮巡检 —— 生命周期是 best-effort。"""
+        self._kb_with_notes(kb)
+
+        class _Broken:
+            async def record(self, report, **kwargs):
+                raise RuntimeError("disk on fire")
+
+        svc = MemoryService(tmp_path / "home", MemoryConfig(enabled=True), kb=kb,
+                            catalog=self._catalog(), drift_store=_Broken(),
+                            config_resolver=_OneDatasource())
+        stats = await svc.detect_schema_drift()
+
+        assert "demo" in stats["datasources"]
 
 
 async def test_schema_drift_uses_column_sets(tmp_path, kb):

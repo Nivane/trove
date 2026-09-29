@@ -52,6 +52,7 @@ class MemoryService:
         connectors: Any | None = None,
         catalog: Any | None = None,
         config_resolver: Any | None = None,
+        drift_store: Any | None = None,
     ):
         self.home = Path(home).expanduser()
         self.config = config or MemoryConfig()
@@ -63,6 +64,11 @@ class MemoryService:
         # 数据源级配置(默认数据源 / retrieval 后端等),用于 schema_drift
         # 与生命周期。可空——缺失时相关能力静默降级。
         self.config_resolver = config_resolver
+        # 漂移落库(``services/drift`` 的 DriftStore)。可空:库外调用方
+        # (测试、脚本)不接也照常工作,只是检出结果回到「只进日志」。
+        # **注入而不是就地构造**:drift 存的是 ``<项目根>/.trove/drift``,
+        # 而本服务的 ``home`` 是 ``~/.trove`` —— 拿 home 当项目根会写错地方。
+        self.drift_store = drift_store
         # ⑤ 数据源级 embedder 工厂(复用 datasources.yml 的 embedder_backend /
         # embedding_model 配置,与 KB 稠密通道同一 build_embedder);按数据源
         # 缓存实例,缺失(无配置/无网关)的数据源走纯词面路径。
@@ -446,7 +452,17 @@ class MemoryService:
             return 0
 
     async def detect_schema_drift(self) -> dict[str, Any]:
-        """Live schema vs KB schema_notes drift (zero LLM)."""
+        """Live schema vs KB schema_notes drift (zero LLM).
+
+        检出即**落库**(接了 ``drift_store`` 时,走 ``drift`` 模块既有的写入
+        路径与 ``drift_run``/条目两张表)。此前这条只进 ``logger.info`` ——
+        在跑,但白跑:没有可查询的行,跑一周也答不了「哪个库漂过」。
+
+        **落库的是全部数据源,返回的只是有漂移的那些**,两个方向各自正确:
+        落库要的是「查过了」的完整证据(含干净的一次,否则历史里只剩有漂移的
+        那几次,读起来像这个库一直在漂);返回给调用方的是「要不要吭声」,
+        干净的不该让它吭声。
+        """
         if self.kb is None or self.catalog is None:
             return {"skipped": True, "reason": "kb/catalog unavailable"}
         from trove.services.memory.schema_drift import detect_drift
@@ -455,11 +471,32 @@ class MemoryService:
         for ds in self._datasource_names():
             try:
                 report = await detect_drift(ds, self.kb, self.catalog)
-                if report["new_tables"] or report["gone_tables"] or report["column_changes"]:
-                    reports[ds] = report
             except Exception as e:
                 logger.warning("Drift check failed for %s: %s", ds, e)
+                continue
+            await self._record_drift(ds, report)
+            if report["new_tables"] or report["gone_tables"] or report["column_changes"]:
+                reports[ds] = report
         return {"datasources": reports}
+
+    async def _record_drift(self, datasource: str, report: dict[str, Any]) -> None:
+        """把一次检测归一化后写进 drift store(best-effort)。
+
+        失败只记 warning,不往上抛:生命周期巡检是 best-effort,落库写不进去
+        不该让整轮清理跟着失败(同 ``run_lifecycle`` 里其余几段的处置)。
+
+        归一化走 ``drift.adapters.from_schema_drift`` —— 那份适配器认得
+        ``detect_drift`` 的 ``status``/``skip_reason``,所以「没查成」在这里
+        同样落成一条 skipped 的 run,不会被洗成「无漂移」。
+        """
+        if self.drift_store is None:
+            return
+        try:
+            from trove.services.drift.adapters import from_schema_drift
+
+            await self.drift_store.record(from_schema_drift(report, datasource))
+        except Exception as e:
+            logger.warning("Drift persist failed for %s: %s", datasource, e)
 
     def _datasource_names(self) -> list[str]:
         if self.config_resolver is not None:
