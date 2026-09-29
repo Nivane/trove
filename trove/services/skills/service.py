@@ -33,6 +33,8 @@ from typing import Any
 
 import yaml
 
+from trove.llm.injection import scan_injection
+from trove.prompts.skills import fence_org_skill
 from trove.prompts.skills import render_skills as _code_render
 
 # name = lowercase letters/digits + hyphens; also a safe directory name.
@@ -190,7 +192,7 @@ class SkillService:
         self.skill_path(name).write_text(
             f"---\n{frontmatter}\n---\n\n{body}\n", encoding="utf-8",
         )
-        return self.read_skill(name)
+        return self._with_scan(self.read_skill(name))
 
     async def draft_with_llm(
         self, name: str, description: str, node: str, purpose: str, lang: str = "en",
@@ -232,12 +234,39 @@ class SkillService:
         entry = self.read_skill(name)
         return entry if entry and "error" not in entry else None
 
+    @staticmethod
+    def _scan_entry(entry: dict) -> list[str]:
+        """注入形状的模式名列表(空 = 干净)。扫的是**投递面**:描述 + 正文。
+
+        两档都扫 —— required 档投正文,available 档只投描述(``<available_skills>``
+        广告块);只扫正文会留下"同一个缺口换个 tier 就绕过去"的路。
+        """
+        return scan_injection(f"{entry.get('description', '')}\n{entry.get('body', '')}")
+
+    def scan_skill(self, name: str) -> list[str]:
+        """按名字扫一份 skill(不存在 → 空)。"""
+        entry = self._load_meta(name)
+        return self._scan_entry(entry) if entry else []
+
+    @classmethod
+    def _with_scan(cls, entry: dict) -> dict:
+        """写入口的返回值统一挂上扫描结果 —— **只报不改**。
+
+        两个写入口(``create`` / ``confirm``)都挂:草稿落盘时就报一次,管理员
+        在**决定之前**看见;确认时再报一次,兜住"草稿到确认之间被改过"。
+        正文是指令性文本,写它的人此刻在场 —— 是唯一能判断"这句是有意写的还是
+        被灌进来的"的一方。把扫描放运行期只会静默毁内容(实测:一句话让整份
+        方法论变成 ``[data: content isolated]``);放在这里则是一次可读的提示,
+        看完确认,登记即豁免。
+        """
+        entry["injection_hits"] = cls._scan_entry(entry)
+        return entry
+
     def confirm(self, name: str) -> dict:
         """Admin confirmation: pending draft → confirmed (enters retrieval)."""
-        entry = self._load_meta(name)
-        if entry is None:
+        if self._load_meta(name) is None:
             raise KeyError(f"skill not found: {name}")
-        return self._rewrite_status(name, "confirmed")
+        return self._with_scan(self._rewrite_status(name, "confirmed"))
 
     def reject(self, name: str) -> dict:
         """Admin rejection: delete the draft directory."""
@@ -304,7 +333,10 @@ class SkillService:
         body = self.get_body(name, lang)
         if not body:
             return f"Skill '{name}' has no content."
-        return f"# {name}\n\n{body}"
+        # 与 required 档**同一策略**:围栏 + 标注来源,不做内容净化。
+        # 此前这条路把正文当数据交给隔离核,整值作废 —— 同一份内容两档两种
+        # 相反处置,没有安全依据(而且 required 档本来就是原文进 system prompt)。
+        return fence_org_skill(name, f"# {name}\n\n{body}")
 
     def _applies_to(self, entry: dict, node: str) -> bool:
         triggers = entry.get("triggers") or {}
@@ -342,7 +374,9 @@ class SkillService:
                 continue
             body = self.get_body(entry["name"], lang)
             if body:
-                blocks.append(body)
+                # org 正文围栏 + 标注来源(不改内容)。代码内置技能不经此处 ——
+                # 它们随代码走,是可信模板,没有"哪个管理员确认的"这回事。
+                blocks.append(fence_org_skill(entry["name"], body))
         return "\n\n".join(blocks)
 
     # ── On-demand loading (available tier, agentic gen_sql) ──

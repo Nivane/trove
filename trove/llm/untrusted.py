@@ -59,6 +59,32 @@ def is_trusted_var(name: str) -> bool:
     return name in _TRUSTED_VARS
 
 
+class AdminConfirmed(str):
+    """第三档信任级:**人确认过的配置文本**(org skill 正文)。
+
+    前两档是「用户原话」(`_TRUSTED_VARS` 按**参数名**放行)与「数据」(扫,
+    命中整值作废)。这一档两者都不是:
+
+    * 不是数据 —— 它由管理员确认后落库(`status == "confirmed"`),信任级等同
+      system prompt。对**指令性**文本做整值作废,处置与语义相反:实测一句
+      「忽略之前的指令」会让整份方法论变成 ``[data: content isolated]``。
+      一句话毁掉一份方法论是误伤,不是安全。
+    * 不是用户原话 —— 它不该冒充 ``question``,所以不能走 `_TRUSTED_VARS`。
+
+    所以第三档要有自己的类型。**放行的依据是登记**(调用方显式构造这个类型),
+    不是内容长相 —— 与白名单同一条纪律:要放行必须显式登记。
+
+    安全属性来自**写入关口**(确认时筛查、给人看),不来自运行期扫指令文本。
+    围栏与来源标注由提示词层负责(`prompts/skills.render_org_skill_block`),
+    让模型与事后审计都能分辨「这条指令来自哪份配置」。
+    """
+
+
+def is_admin_confirmed(value: Any) -> bool:
+    """是否为登记过的配置文本(提示词层围栏前的判断点)。"""
+    return isinstance(value, AdminConfirmed)
+
+
 def isolate_tree(value: Any) -> tuple[Any, list[str]]:
     """递归隔离:str 叶子命中即整值替换,容器逐叶递归,其余类型原样。
 
@@ -97,6 +123,9 @@ def _note(hits: list[str], name: str) -> None:
 
 
 def _walk(value: Any, hits: list[str]) -> Any:
+    # 登记过的配置文本先判:它是 str 的子类,顺序反了就会被当成数据作废。
+    if isinstance(value, AdminConfirmed):
+        return value
     if isinstance(value, str):
         return _isolate_str(value, hits)
     if isinstance(value, (list, tuple)):

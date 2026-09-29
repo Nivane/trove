@@ -19,7 +19,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
-from trove.prompts.skills import render_skills
+from trove.prompts.skills import append_skill_block, render_skills
 from trove.services.semantic_layer.compiler import (
     CompileMiss,
     CompileResult,
@@ -931,8 +931,7 @@ def make_query_sketch(
             if skills is not None
             else render_skills("query_sketch", lang=state.lang)
         )
-        if skill_block:
-            system_prompt = f"{system_prompt}\n\n{skill_block}"
+        system_prompt = append_skill_block(system_prompt, skill_block)
         llm_detail: dict[str, Any] | None = None
 
         async def call_query_sketch(correction: str) -> str:

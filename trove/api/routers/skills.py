@@ -57,7 +57,8 @@ async def draft_skill(
         entry = _skills(request).create(body.model_dump())
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": entry["status"], "name": entry["name"], "skill": entry}
+    return {"status": entry["status"], "name": entry["name"],
+            "injection_hits": entry["injection_hits"], "skill": entry}
 
 
 @router.post("/admin/skills/llm-draft", status_code=201)
@@ -73,7 +74,8 @@ async def llm_draft_skill(
         )
     except (ValueError, RuntimeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"status": entry["status"], "name": entry["name"], "skill": entry}
+    return {"status": entry["status"], "name": entry["name"],
+            "injection_hits": entry["injection_hits"], "skill": entry}
 
 
 @router.get("/admin/skills/{name}/body")
@@ -95,12 +97,17 @@ async def confirm_skill(
     request: Request,
     user: dict = Depends(require_admin),
 ) -> dict:
-    """Confirm a pending skill — it becomes active for prompts/tools."""
+    """Confirm a pending skill — it becomes active for prompts/tools.
+
+    ``injection_hits`` 是确认关口的扫描结果(命中模式名,空 = 干净)。
+    **报而不拦**:内容是指令性的,只有写它的人能判断那句话是不是有意写的。
+    """
     try:
         entry = _skills(request).confirm(name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
-    return {"name": name, "status": entry["status"]}
+    return {"name": name, "status": entry["status"],
+            "injection_hits": entry["injection_hits"]}
 
 
 @router.post("/admin/skills/{name}/reject")

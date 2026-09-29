@@ -68,6 +68,7 @@ from trove.workflow.nodes.gen_sql import (
     render_user_facts,
 )
 from trove.prompts import render
+from trove.prompts.skills import append_skill_block
 from trove.workflow.nodes.fast_match import make_fast_match
 from trove.workflow.nodes.execute_sql import make_execute_sql
 from trove.workflow.nodes.select import make_select_consensus
@@ -976,12 +977,10 @@ def make_gen_generate(
             # available 档只广告描述 + load_skill 按需取正文(注册表已挂工具)。
             skills = services.skills
             if skills is not None:
-                skill_block = skills.render_skills("gen_sql", lang=sub_state.lang)
-                if skill_block:
-                    system_text = f"{system_text}\n\n{skill_block}"
-                avail = skills.available_skills_block("gen_sql", lang=sub_state.lang)
-                if avail:
-                    system_text = f"{system_text}\n\n{avail}"
+                system_text = append_skill_block(
+                    system_text, skills.render_skills("gen_sql", lang=sub_state.lang))
+                system_text = append_skill_block(
+                    system_text, skills.available_skills_block("gen_sql", lang=sub_state.lang))
             model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
             result = None
             try:

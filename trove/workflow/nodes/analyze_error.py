@@ -22,7 +22,7 @@ from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
-from trove.prompts.skills import render_skills
+from trove.prompts.skills import append_skill_block, render_skills
 from trove.services.errors import DETERMINISTIC_DEAD_END, classify_error, ErrorClass
 from trove.workflow.nodes.execute_sql import COMPILE_DRIFT_TAG
 from trove.workflow.state import WorkflowState
@@ -367,8 +367,7 @@ def make_analyze_error(
                 if skills is not None
                 else render_skills("analyze_error", lang=state.lang)
             )
-            if skill_block:
-                system_prompt = f"{system_prompt}\n\n{skill_block}"
+            system_prompt = append_skill_block(system_prompt, skill_block)
             raw_error = state.error_feedback or state.reason
             # 版本链/回归检查基于未打标的引擎文本(保持跨轮稳定比较)——详见
             # 上文;诊断 prompt 用打标文本([ERR:<id>]):机器类对 LLM 可见,
