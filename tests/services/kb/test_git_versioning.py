@@ -233,6 +233,11 @@ def test_commit_falls_back_when_no_identity(tmp_path: Path, monkeypatch):
     repo = tmp_path / "noid"
     repo.mkdir()
     _git(repo, "init", "-q")
+    # 清配置**不够**:git 还会从系统自动探测 ``user@host`` 并把提交做成功,
+    # 兜底路径就永远不触发(本机实测 author 会是 ``zhaolipan@<host>``)。
+    # ``useConfigOnly`` 关掉自动探测,让「无身份」真的无身份 —— 这正是本测试
+    # 想构造的前提。不清它,这条测试只在探测不出身份的机器上才过。
+    _git(repo, "config", "user.useConfigOnly", "true")
     kb = _kb_with_git(repo)
     kb.semantics_path("demo").write_text("semantic_model: []\n", encoding="utf-8")
 
