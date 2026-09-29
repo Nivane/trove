@@ -48,7 +48,7 @@
 
       <div class="repro">
         <div class="repro-item">
-          <span class="repro-n" data-count="nodes">27</span>
+          <span class="repro-n" data-count="nodes">28</span>
           <span class="repro-k">主图节点（默认配置）</span>
           <span class="repro-cmd">graphs.py · _build_reflection</span>
         </div>
@@ -238,7 +238,7 @@ docker compose up --build</code></pre>
       </div>
 
       <div class="cap-where" style="margin-top:16px">
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1596">graphs.py:1596 <span class="ref-line">主图装配</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1597">graphs.py:1597 <span class="ref-line">主图装配</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py">rules.py <span class="ref-line">确定性校验规则链</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">versions.py <span class="ref-line">SQL 版本链 / 回归硬检查</span></a>
       </div>
@@ -501,7 +501,7 @@ docker compose up --build</code></pre>
             出错则原样透传。意图路由把「问数据」和「问元数据」分成两条路，后者自带一轮自校验。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1596">graphs.py:1596</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1597">graphs.py:1597</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py">workflow/state.py</a>
           </div>
         </div>
@@ -527,7 +527,7 @@ docker compose up --build</code></pre>
           </div>
           <div class="cap-where">
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/query_sketch.py">nodes/query_sketch.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L119">graphs.py:119 <span class="ref-line">schema 预算</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L120">graphs.py:120 <span class="ref-line">schema 预算</span></a>
           </div>
         </div>
       </div>
@@ -540,7 +540,7 @@ docker compose up --build</code></pre>
             分裂就带着分歧点回炉。相似问法轮换少样本示例，避免每次都从同一个角度想。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L222">graphs.py:222 <span class="ref-line">候选子代理</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L223">graphs.py:223 <span class="ref-line">候选子代理</span></a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/select.py">nodes/select.py <span class="ref-line">共识投票</span></a>
           </div>
         </div>
@@ -666,7 +666,7 @@ docker compose up --build</code></pre>
             块内还能按相关度逐条裁剪。预算不够时知道该先丢谁。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L116">graphs.py:116 <span class="ref-line">分档预算</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L117">graphs.py:117 <span class="ref-line">分档预算</span></a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L134">context_budget.py:134 <span class="ref-line">条目级装配</span></a>
           </div>
         </div>
@@ -902,7 +902,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         </div>
       </div>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">8ff70b6</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 8ff70b6</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">721d3da</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 721d3da</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>
