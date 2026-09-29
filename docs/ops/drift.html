@@ -198,6 +198,20 @@
       是处置决策的依据，事后重算会随着 KB 的修改而漂移，让记录失去意义。
     </p>
 
+    <div class="callout warn">
+      <span class="callout-tag">现状：形状与读取口已落地，写入口未接</span>
+      <div>
+        <p>上面这张表目前是<strong>契约</strong>，不是现有能力。</p>
+        <p>四个维度、<code>ImpactSet</code> 形状、读取 API（<code>impact()</code>）都已实现，
+        并有测试正面钉住。但<strong>填充它的 <code>ImpactResolver</code> 尚未接线</strong>：
+        落库时 <code>store.record(report)</code> 不传 <code>impact=</code>，
+        <code>store.py</code> 于是回退到空 <code>ImpactSet</code>，
+        <code>affected</code> 列恒为 <code>{}</code>。</p>
+        <p>所以「哪些指标引用了消失的列」今天问不出来。要等 <code>ImpactResolver</code>
+        接上才有答案——在那之前，任何按影响面排序或过滤的界面都是在读空集。</p>
+      </div>
+    </div>
+
     <h2 id="api">API 与门禁脚本</h2>
 
     <div class="table-wrap">

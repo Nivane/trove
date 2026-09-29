@@ -280,6 +280,20 @@
       （与成本轨「节点记才等于这条查询落库了」同一条纪律）。
     </p>
 
+    <p>
+      <strong>放行的那些要分开记</strong>。观察期最要紧的数不是「拒了多少」（此时恒为 0），
+      而是「<em>本来会拒</em>多少」——所以 <code>warn</code> 期的命中单记一条
+      <code>trove_authz_table_warn_total{datasource}</code>，与拒绝计数<strong>分家</strong>：
+      并进同一个系列，运维读到的告警率里会混进一半根本没被拦的查询。
+      这条计数器回答<strong>量</strong>；<strong>名字</strong>（哪些表会被拒）落在审计行的
+      <code>authz.table_warn</code> 上——表名不进指标标签，基数随库增长而无限
+      （同「路由用模板而不是原始 URL」）。
+    </p>
+    <p>
+      观察期只靠日志是收不齐的：一行一条的日志答不了「一周里哪些表」这个聚合问题。
+      三条出口各答一个问题——日志给现场，计数器给量，审计行给名字。
+    </p>
+
     <h2 id="masking">字段级脱敏</h2>
 
     <p>
@@ -403,6 +417,7 @@
         </thead>
         <tbody>
           <tr><td class="mono">authz.deny</td><td>执行期的拒绝：哪个数据源、哪张表、什么原因</td></tr>
+          <tr><td class="mono">authz.table_warn</td><td><code>warn</code> 期<strong>放行</strong>了未声明的表：数据源 + 表名清单。门看见了越界并让行——比一次干脆的拒绝更值得留痕，也是「哪些表会被拒」唯一答得全的地方</td></tr>
           <tr><td class="mono">authz.on_behalf_of</td><td>谁发起了一次以他人身份的重放</td></tr>
           <tr><td class="mono">masking.applied</td><td>哪些字段被改写成哪种模式（<strong>不记值</strong>）</td></tr>
           <tr><td class="mono">masking.bypass</td><td>谁按原文读走了数据（持 <code>pii</code> scope 的那次）</td></tr>

@@ -814,6 +814,11 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
           正在推进的八个方向。这里写的是<b>方向与判据</b>——一个方向做到什么程度算做到了，
           而不是承诺日期。
         </p>
+        <p class="sec-intro">
+          每条判据下面另有一行<b>装置</b>：靠什么保证它，以及<b>那个装置今天缺哪一块</b>。
+          没有装置句的判据只能靠人工复核，就没法用来排期——所以八条<b>目前都还没有走完</b>，
+          每条的缺口都写在下面，不藏在「进行中」里。
+        </p>
       </div>
 
       <div class="road">
@@ -823,6 +828,8 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>语义漂移治理</h4>
             <p>业务口径会变，语义模型会旧。让「模型与真实数据已经对不上」这件事被自动发现、可定位到具体条目。</p>
             <p class="road-crit"><span>判据</span>漂移报告能精确到数据集/字段/指标条目，且不依赖人工巡检。</p>
+            <p class="road-crit"><span>装置</span>分层检查器 L1–L4 + <code>scripts/check_drift.py</code>（零 LLM，退出码 0/1/2，区分「没漂移」与「没查成」）。后台周期检测落进同一个漂移库，与 <code>/v1/admin/drift</code> 读写同一份文件。<b>缺出口</b>：门禁脚本还没进 CI——「不依赖人工巡检」今天只在前台成立。</p>
+            <p class="road-crit"><span>已补</span>后台周期检测的出口。此前结果只进 <code>logger.info</code>——<b>在跑，但白跑</b>：没有可查询的行、没有退出码、没有告警，跑一周也答不了「哪个库漂过」。现走 <code>drift</code> 模块既有的写入路径（<code>drift_run</code> + 条目两张表），归一化用那份认得 <code>status</code>/<code>skip_reason</code> 的适配器，所以「没查成」不会被洗成「无漂移」。<b>落库的是全部数据源、返回的只是有漂移的那些</b>：落库要「查过了」的完整证据（含干净的一次，否则历史里只剩有漂移的那几次，读起来像这个库一直在漂）；返回给调用方的是「要不要吭声」。</p>
           </div>
         </div>
         <div class="road-item">
@@ -831,6 +838,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>执行画像</h4>
             <p>把每次执行的代价与形态沉淀成画像：哪些查询在变慢、哪类问法代价最高，让优化有据可依。</p>
             <p class="road-crit"><span>判据</span>画像数据来自真实执行观测，且采集本身不给查询增加可感知开销。</p>
+            <p class="road-crit"><span>装置</span>执行证据的三态形状已落地（没查过 / 查过但不知道 / 有值），并有测试禁止拿返回行数冒充扫描量。<b>缺观测面</b>：扫描量这一格六个方言都还没读，<code>scanned_rows</code> 恒空——「来自真实执行观测」今天只对行数成立。</p>
           </div>
         </div>
         <div class="road-item">
@@ -839,6 +847,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>已验证查询资产</h4>
             <p>被人确认过的正确答案应当可复用、可溯源，成为知识库里的一等资产，而不是一次性消耗品。</p>
             <p class="road-crit"><span>判据</span>复用不改变现有匹配判据的去向，且每条资产可追溯到它的确认人。</p>
+            <p class="road-crit"><span>装置</span>确认 / 拒绝生命周期已走 git 审计（<code>kb: confirm pending examples</code>）。<b>缺字段</b>：示例资产没有「确认人」这一列，确认是一次性批量提交——判据后半句今天不可达。</p>
           </div>
         </div>
         <div class="road-item">
@@ -847,6 +856,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>可核验闭环</h4>
             <p>结论不仅要给 SQL，还要能说明它凭什么成立——把校验过程也变成可复核的产物。</p>
             <p class="road-crit"><span>判据</span>任意一条交付结论，都能沿着证据链走回原始数据。</p>
+            <p class="road-crit"><span>装置</span>证据链的下半段已落地（执行证据：估算 / 实际 / 三态新鲜度）。<b>缺上半段</b>：从结论出发回走到执行这一段还没有——「任意一条」今天不成立。</p>
           </div>
         </div>
         <div class="road-item">
@@ -855,6 +865,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>语义分支评审</h4>
             <p>同一份语义模型的多条演进路线，应当可以并行比对后再合入，而不是只能线性覆盖。</p>
             <p class="road-crit"><span>判据</span>分支评审的结论对最终合入有约束力，而非仅供参考。</p>
+            <p class="road-crit"><span>装置</span><b>还没有。</b>「有约束力的评审」所需的形状（<code>GateDecision</code> / <code>SemanticChange</code>）已定义在漂移治理模块里，但<b>没有任何实现与调用点</b>——判据今天不可达，这条是八条里离得最远的一格。</p>
           </div>
         </div>
         <div class="road-item">
@@ -863,6 +874,9 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>身份鉴权与字段脱敏</h4>
             <p>把可答边界从「这个数据源能答什么」推进到「这个人能看什么」——先落执行前的表级授权门与字段级脱敏，再谈编译期收窄。</p>
             <p class="road-crit"><span>判据</span>判定落在<strong>执行前</strong>而不是结果后置过滤：未授权的表不发出查询，越权字段不进入模型上下文（脱敏在 LLM 之前），每一次拒绝、改写与凭 scope 读原文都留下审计。</p>
+            <p class="road-crit"><span>装置</span>执行前的 <code>AuthzEnforcer</code>（A1 数据源 → A2 主体 → A3 表级三道） + LLM 前的 <code>Masker</code> + 审计日志与指标，都已在执行路径上。<b>剩一处缺口</b>：表级门默认 <code>warn</code>（命中只放行、不拦）——切档要等观察期的误伤数据，那要真部署才收得到。</p>
+            <p class="road-crit"><span>已修</span>解析把 CTE 名当成物理表（<code>FROM &lt;cte&gt;</code> 与 <code>exp.Table</code> 同形）。后果是<b>与权限无关</b>的误拒：只要查询里有 CTE 就可能被拦，基线实测 32 题里 2 题命中。已与 <code>services/sql/guard.py</code> 的判据同源，修后基线 0 命中。</p>
+            <p class="road-crit"><span>已补</span><code>warn</code> 命中的遥测出口。此前只有一行日志与 <code>state.authz_decision</code>——「跑一周看哪些表会被拒」收不齐（一行一条的日志答不了聚合问题）。现为三条出口，各答一个问题：日志给现场，<code>trove_authz_table_warn_total{datasource}</code> 给<b>量</b>（切 enforce 会打挂多少），审计行 <code>authz.table_warn</code> 给<b>名字</b>。计数器与拒绝计数<b>分家</b>——混在一起，告警率里会有一半根本没被拦的查询；表名<b>不进标签</b>（基数随库增长而无限），名字落在审计行上。</p>
           </div>
         </div>
         <div class="road-item">
@@ -871,6 +885,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>成本归因与预算</h4>
             <p>让每一次问答的 token 花在哪一步、为什么花，成为可查账、可设限的量。</p>
             <p class="road-crit"><span>判据</span>归因覆盖全部模型调用路径，不存在「不产生记录」的调用。</p>
+            <p class="road-crit"><span>装置</span>LLM 调用点清单的 AST 枚举测试（枚举 <code>.chat</code> / <code>.chat_full</code> / <code>.chat_stream</code>）。<b>两个盲区</b>：全部 32 个调用点里仍有不记账的；且清单只枚举「谁在调模型」，看不见 prompt 的字符串构造——调用点没变、投递内容变了，它不红。</p>
           </div>
         </div>
         <div class="road-item">
@@ -878,7 +893,9 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
           <div class="road-body">
             <h4>不可信数据输入边界</h4>
             <p>数据库里的内容来自外部世界，不该被当成指令。值进入模型上下文只有两条通道——模板渲染与工具回喂；隔离收成<strong>一个核</strong>钉在这两条上，不靠调用点自觉。</p>
-            <p class="road-crit"><span>判据</span>新增数据源、新增提示词参数<strong>默认被扫</strong>，要放行必须显式登记；第三条路不存在，且由 LLM 调用点清单枚举保证。</p>
+            <p class="road-crit"><span>判据</span>新增数据源、新增提示词参数<strong>默认被扫</strong>，要放行必须显式登记；第三条路不存在——<b>调用点</b>由 LLM 调用点清单枚举保证，<b>往 prompt 上挂内容</b>由单一门保证。</p>
+            <p class="road-crit"><span>装置</span>隔离核（<code>llm/untrusted.py</code>）+ 19 个名字的白名单（<b>默认扫</b>，放行必须显式登记，理由写进表里）+ 第三档信任级 <code>AdminConfirmed</code>（豁免来自<b>登记</b>，不来自内容长相）+ 守卫与快照测试。org skill 的追加只留一个门：<code>fence_org_skill</code> 围栏兼标注来源，<code>append_skill_block</code> 是唯一追加点。</p>
+            <p class="road-crit"><span>已修</span>组织级 skill 正文此前是散落的 f-string 追加——既不经过模板渲染、也不经过工具回喂，隔离核的两条通道都够不着它；两档处置还相反：required 档原文进 system prompt（零扫描），available 档经隔离核<b>整值作废</b>，一句话让整份方法论变成 <code>[data: content isolated]</code>。现已两档同策略：<b>围栏 + 来源标注、不净化内容</b>——指令性文本的可信来自人确认过的登记。写入关口另扫一遍投递面（描述 + 正文，两档都扫），命中在响应里报给管理员（<code>injection_hits</code>，<b>报而不拦</b>）。清单的盲区（只看得见「谁在调模型」，看不见字符串怎么拼）已写进那份测试的文档串，由单一门补，不靠扩清单。</p>
           </div>
         </div>
       </div>
