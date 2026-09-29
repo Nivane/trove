@@ -27,7 +27,10 @@ from trove.core.types import (
 )
 from trove.core.errors import DatasourceError, SQLExecutionError
 from trove.core.logging import get_logger
-from trove.services.datasource.adapters.base import DatabaseAdapter
+from trove.services.datasource.adapters.base import (
+    INTERRUPT_TIMEOUT_S,
+    DatabaseAdapter,
+)
 
 logger = get_logger(__name__)
 
@@ -131,19 +134,35 @@ class MySQLAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
-    async def interrupt(self) -> None:
+    supports_interrupt = True
+
+    async def interrupt(self) -> bool:
         """KILL QUERY via a side connection (a busy connection can't serve it).
 
         Best-effort and bounded: thread-id lookup may be sync or coroutine
-        across aiomysql versions, and any failure just logs at debug —
+        across aiomysql versions, and any failure just logs at warning —
         the cancellation unwind must never hang.
+
+        返回 False 的两种情形在调用方看来是同一件事(**终止没能发出**):
+        旁路连接建不起来、``KILL QUERY`` 被执行被拒。上游据此记
+        ``kill_failed`` 并 WARN,原因看日志。
+
+        「查不到 thread id / 没连接」**不算失败**(见 ``_kill_query``):那是
+        「本就无可取消」,与基类契约一致。
         """
         try:
-            await asyncio.wait_for(self._kill_query(), timeout=2.0)
+            await asyncio.wait_for(self._kill_query(), timeout=INTERRUPT_TIMEOUT_S)
         except Exception as e:
-            logger.debug("MySQL interrupt failed (best-effort): %s", e)
+            logger.warning("MySQL interrupt failed: %s", e)
+            return False
+        return True
 
     async def _kill_query(self) -> None:
+        """发 KILL QUERY;发不出去就 raise,由 ``interrupt`` 折成 False。
+
+        **「没有在飞的查询」不算失败**(与基类契约一致):查不到 thread id /
+        没连接时直接返回,那是「本就无可取消」。真正的失败往下抛。
+        """
         if self._conn is None:
             return
         getter = getattr(self._conn, "thread_id", None)

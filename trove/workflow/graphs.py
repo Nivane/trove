@@ -1780,6 +1780,27 @@ def _build_profile(services: "GraphServices"):
     return ProfileService(services.connectors)
 
 
+def _build_terminator(services: "GraphServices"):
+    """超时后的主动终止(设计 §7.3 / §10 / I4)。``None`` = 未装配,不问。
+
+    与 ``_build_profile`` / ``_build_budget`` 同开关同 connectors —— 三者本来
+    就是同一条执行轨的三段(算成本 → 按成本裁 → 超时收尾)。分头开关只会造出
+    「有预算判定、却没人管那条超时查询」这种半装配态,而它看起来跟装好了一模
+    一样:查询照样超时,只是没人知道它停没停。
+
+    ``QueryTerminator`` 只是**观测点**(它读适配器已有的 ``interrupt`` 结果,
+    不另发一次 kill);实例无状态,按图建一个即可。
+    """
+    from trove.services.sql.terminate import QueryTerminator
+
+    config = services.config or AgentConfig()
+    if not getattr(config, "explain_row_guard", True):
+        return None
+    if services.connectors is None:
+        return None
+    return QueryTerminator(services.connectors)
+
+
 def _build_budget(services: "GraphServices", profile=None):
     """执行画像的成本轨(设计 §5.1 / §5.2)。``None`` = 未装配,不判也不算。
 
@@ -1872,7 +1893,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -2056,7 +2077,7 @@ def _build_fixed(
         services, subgraph, agentic=agentic, budget=budget, profiles=profile))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))

@@ -60,16 +60,77 @@ def _error_response(state: WorkflowState) -> tuple[str, dict[str, Any]]:
         f"{info['explanation']}\n\n"
         f"{info['suggestion']}\n"
     )
+    warning = _still_running_notice(state)
+    if warning:
+        head += f"\n{warning}"
     body = (
         f"**{L(lang, '内部诊断信息', 'Internal diagnostics')}**\n\n"
         f"- {L(lang, '错误类别', 'Error class')}: `{info['detail']['error_class']}`\n"
         f"- {L(lang, '失败节点', 'Failed node')}: `{info['detail']['node']}`\n"
         f"- {L(lang, '原始信息', 'Raw message')}: `{info['detail']['raw']}`\n"
     )
+    kill_line = _kill_detail_line(state)
+    if kill_line:
+        body += kill_line
     markdown = head + "\n" + _details_wrap(
         L(lang, "技术细节", "Technical details"), body,
     ) + "\n"
     return markdown, info
+
+
+#: 终止结果 → 这一行怎么说(设计 §7.3 / §10 / I4)。**三态各说各的**:
+#: 表里没有 ``""`` —— 没试过就没有这一行,而不是一行写着「未知」的话。
+#: 措辞刻意不写「已终止」:``kill_sent`` 只表示指令交出去了,服务端有没有停
+#: 我们不知道(``QueryTerminator`` 的返回值就这么定的),这里不许替它加码。
+_KILL_DETAIL: dict[str, tuple[str, str]] = {
+    "kill_sent": ("已发出终止指令(服务端未经确认)",
+                  "stop signal sent (not acknowledged by the server)"),
+    "kill_unsupported": ("该数据源不支持主动终止查询",
+                         "this datasource cannot be asked to stop a query"),
+    "kill_failed": ("终止指令未能发出", "the stop signal could not be sent"),
+}
+
+#: 后果是「那条查询还在跑」的两种终止结果 —— 它们才配一句正文告警。
+#: ``kill_sent`` 不在其中:指令出去了,用户没有要做的动作,喊一声只是噪音。
+_MAY_STILL_BE_RUNNING = ("kill_unsupported", "kill_failed")
+
+
+def _kill_of(state: WorkflowState) -> str:
+    """超时路径写下的终止结果;``""`` = 没试过(或这一轮没超时)。"""
+    return str((state.execution_evidence or {}).get("kill") or "")
+
+
+def _still_running_notice(state: WorkflowState) -> str:
+    """**正文**告警:查询可能还在数据源上跑(超时才可能发生)。
+
+    为什么值得单独一句:超时在用户那里只是「这次没结果」,而在数据源那边可能
+    多了一条正在跑的查询 —— 前者只能重试,后者得有人去处理。这两种处境要能
+    一眼分开。
+    """
+    kill = _kill_of(state)
+    if kill not in _MAY_STILL_BE_RUNNING:
+        return ""
+    lang = state.lang
+    reason = _KILL_DETAIL[kill][0 if lang == "zh" else 1]
+    return L(
+        lang,
+        f"> ⚠️ **这次超时的查询可能仍在数据源上运行**:{reason}。\n",
+        "> ⚠️ **The query from this run may still be running on the "
+        f"datasource**: {reason}.\n",
+    )
+
+
+def _kill_detail_line(state: WorkflowState) -> str:
+    """内部细节区那一行(操作者在折叠区看);没试过则没有这一行。"""
+    kill = _kill_of(state)
+    label = _KILL_DETAIL.get(kill)
+    if label is None:
+        return ""
+    lang = state.lang
+    return (
+        f"- {L(lang, '超时后的终止', 'Termination after timeout')}: "
+        f"`{kill}` — {label[0 if lang == 'zh' else 1]}\n"
+    )
 
 
 def _details_wrap(summary: str, body: str) -> str:

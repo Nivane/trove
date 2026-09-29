@@ -27,7 +27,10 @@ from trove.core.types import (
 )
 from trove.core.errors import DatasourceError, SQLExecutionError
 from trove.core.logging import get_logger
-from trove.services.datasource.adapters.base import DatabaseAdapter
+from trove.services.datasource.adapters.base import (
+    INTERRUPT_TIMEOUT_S,
+    DatabaseAdapter,
+)
 
 logger = get_logger(__name__)
 
@@ -112,13 +115,26 @@ class PostgresAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
-    async def interrupt(self) -> None:
-        """psycopg AsyncConnection.cancel() — 服务端取消在跑查询(psycopg 3.1+)。"""
+    supports_interrupt = True
+
+    async def interrupt(self) -> bool:
+        """psycopg AsyncConnection.cancel() — 服务端取消在跑查询(psycopg 3.1+)。
+
+        与设计 §7.3 的 ``pg_cancel_backend(pid)`` 有一处**有意不同**:协议级的
+        CancelRequest 直接打在**当前这条连接**的后端上,不需要先从
+        ``pg_stat_activity`` 查出 pid 再拼一条 SQL —— 少一次往返,也少掉
+        R4 里「打错 pid 杀错会话」的整类风险(那个 pid 是别人给的,这个是
+        连接自己带走的)。
+        """
         try:
             if self._conn is not None and hasattr(self._conn, "cancel"):
-                await self._conn.cancel()
+                await asyncio.wait_for(
+                    self._conn.cancel(), timeout=INTERRUPT_TIMEOUT_S,
+                )
         except Exception as e:
-            logger.debug("PostgreSQL interrupt failed (best-effort): %s", e)
+            logger.warning("PostgreSQL interrupt failed: %s", e)
+            return False
+        return True
 
     async def _ensure_connected(self) -> None:
         """Ensure a live connection, transparently reconnecting a stale one.

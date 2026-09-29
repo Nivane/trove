@@ -24,7 +24,10 @@ from trove.core.types import (
 )
 from trove.core.errors import DatasourceError, SQLExecutionError
 from trove.core.logging import get_logger
-from trove.services.datasource.adapters.base import DatabaseAdapter
+from trove.services.datasource.adapters.base import (
+    INTERRUPT_TIMEOUT_S,
+    DatabaseAdapter,
+)
 
 logger = get_logger(__name__)
 
@@ -80,13 +83,25 @@ class DuckDBAdapter(DatabaseAdapter):
             self._conn = None
         self._connected = False
 
-    async def interrupt(self) -> None:
-        """duckdb conn.interrupt() — 跨线程停止正在执行的语句。"""
+    supports_interrupt = True
+
+    async def interrupt(self) -> bool:
+        """duckdb conn.interrupt() — 跨线程停止正在执行的语句。
+
+        ``to_thread`` 必须设界:线程一旦卡在驱动里,``wait_for`` 只能收回等待,
+        收不回那个线程(与 ``execute`` 本身同一个性质)。但至少不能让它把
+        取消解栈也一起拖住。
+        """
         try:
             if self._conn is not None:
-                await asyncio.to_thread(self._conn.interrupt)
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._conn.interrupt),
+                    timeout=INTERRUPT_TIMEOUT_S,
+                )
         except Exception as e:
-            logger.debug("DuckDB interrupt failed (best-effort): %s", e)
+            logger.warning("DuckDB interrupt failed: %s", e)
+            return False
+        return True
 
     async def execute(self, sql: str) -> QueryResult:
         if not self._conn or not self._connected:

@@ -8,6 +8,7 @@ not just the awaiting coroutine.
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -37,3 +38,25 @@ class TestSqliteCancel:
         result = await sqlite_registry.execute("SELECT 1", "test_db")
         assert result.rows == [[1]]
         assert sqlite_registry.result_cache_stats()["hits"] >= 1
+
+    async def test_a_failed_interrupt_reports_false_and_warns(
+        self, sqlite_registry, caplog,
+    ):
+        """终止发不出去 → ``False`` + **WARNING**,且异常不逃出去(§10 / I4)。
+
+        这条钉的是 P4 修的根因:存量的 ``interrupt`` 把失败吞进
+        ``logger.debug``,于是「终止到底发出去没有」连日志里都查不到,而它正是
+        超时证据要说清的那件事。返回 False 才让上游能记 ``kill_failed``。
+
+        失败面是真的:连接在查询期间被关掉(或底层坏了)时,``aiosqlite`` 的
+        ``_conn`` 属性**抛** ``ValueError`` 而不是返回 None —— 于是
+        ``getattr(..., None)`` 的默认值救不了它,异常会一路冒到取消解栈里。
+        ``interrupt`` 的「永不抛」契约就是为这种时候准备的。
+        """
+        adapter = await sqlite_registry.get("test_db")
+        await adapter._conn.close()  # 只有底层连接坏掉这一种真实失败面
+
+        with caplog.at_level(logging.WARNING):
+            assert await adapter.interrupt() is False
+
+        assert any("interrupt failed" in r.message for r in caplog.records)

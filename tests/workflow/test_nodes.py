@@ -2747,6 +2747,61 @@ class TestOutput:
         update = await output(make_state(error="[ERR:DS_AUTH] denied", lang="zh"))
         assert update["error_info"]["retryable"] is False
 
+
+class TestTerminationLine:
+    """超时之后「那条查询到底停没停」必须读得到(P4 / §7.3 / §10 / I4)。
+
+    这是 P4 的可见面。超时在用户那里只是「这次没结果」,但在数据源那边可能还
+    多了一条正在跑的查询 —— 前者用户只能重试,后者用户得去处理。所以三态各自
+    说各自的话,一句都不许借用:
+
+    * **没试过**(``""``)→ 一个字都不说。说「不支持」是把「我们没接这条轨」
+      说成一个关于数据库的事实。
+    * **发出去了**(``kill_sent``)→ 内部细节区一行;正文不出现。它是「指令
+      离开我们这里了」,不是「服务端停了」,不该在正文里被读成后者。
+    * **没停掉**(``kill_unsupported`` / ``kill_failed``)→ **正文告警**。
+      这两句的后果一样(查询可能还在跑),区别只在原因,而原因进细节区。
+    """
+
+    @staticmethod
+    def _timed_out(**ev):
+        return make_state(
+            error="[ERR:SQL_TIMEOUT] 查询超时（30000ms）", lang="zh",
+            # 只有超时路径会写 kill(P4);所以这一条的存在本身就等于
+            # terminated == "timeout",不必再判一次。
+            execution_evidence={"verdict": "allow", "degraded": False,
+                                "terminated": "timeout", "kill": "", **ev},
+        )
+
+    @staticmethod
+    def _split(response: str) -> tuple[str, str]:
+        """正文 / 折叠的内部细节 —— ``test_error_headline_...`` 的同一把尺子。"""
+        head, _, detail = response.partition("<details>")
+        return head, detail
+
+    async def test_a_sent_kill_is_a_detail_line_not_a_warning(self):
+        response = (await output(self._timed_out(kill="kill_sent")))["final_response"]
+        head, detail = self._split(response)
+
+        assert "kill_sent" in detail
+        assert "kill_sent" not in head
+        assert "⚠️" not in head, "发出了终止指令,用户没有要做的动作"
+
+    @pytest.mark.parametrize("kill", ["kill_unsupported", "kill_failed"])
+    async def test_a_query_that_may_still_be_running_is_said_up_front(self, kill):
+        response = (await output(self._timed_out(kill=kill)))["final_response"]
+        head, detail = self._split(response)
+
+        assert "可能仍在数据源上运行" in head
+        assert kill in detail
+
+    async def test_a_kill_that_was_never_attempted_says_nothing(self):
+        """没装终止器 = 没试过。沉默是这里唯一诚实的说法。"""
+        response = (await output(self._timed_out()))["final_response"]
+
+        assert "终止" not in response
+        assert "kill_" not in response
+
     async def test_kb_hits_rendered(self):
         state = make_state(
             row_count=0,

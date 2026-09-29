@@ -101,12 +101,17 @@ class SQLiteAdapter(DatabaseAdapter):
                 db_error=str(e),
             ) from e
 
-    async def interrupt(self) -> None:
+    supports_interrupt = True
+
+    async def interrupt(self) -> bool:
         """sqlite3 interrupt — 跨线程取消底层正在执行的语句。
 
         注意:aiosqlite 的 interrupt() 是排队到同一个工作线程,查询
         卡住时永远排不到;必须从事件循环线程直接调底层 sqlite3
         连接的 interrupt()(sqlite3 明确支持跨线程调用)。
+
+        不设 ``wait_for`` 界:这条调用是同步的(只置一个标志位就返回),
+        没有任何可等待的东西可以超时 —— 给它套一层超时是装饰,不是保护。
         """
         try:
             if self._conn is not None:
@@ -114,7 +119,11 @@ class SQLiteAdapter(DatabaseAdapter):
                 if raw is not None:
                     raw.interrupt()
         except Exception as e:
-            logger.debug("SQLite interrupt failed (best-effort): %s", e)
+            # warning 而非 debug:debug 意味着「这条路径出问题没人看得见」,
+            # 而终止发不出去正是超时证据要说清的事(§10)
+            logger.warning("SQLite interrupt failed: %s", e)
+            return False
+        return True
 
     async def get_schema(self) -> SchemaInfo:
         if not self._conn:

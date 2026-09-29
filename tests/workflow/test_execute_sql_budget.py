@@ -546,3 +546,164 @@ class TestFreshnessEvidence:
         assert result["row_count"] == 1  # 真返回了一行 —— 但没有拿它冒充
         assert ev["estimated_rows"] == 10
         assert ev["estimated_rows"] != ev["scanned_rows"] or ev["scanned_rows"] is None
+
+
+# ── 超时后的主动终止(P4 / 设计 §7.3 / §10 / I4)─────────
+
+class _TimeoutConnectors(_SpyConnectors):
+    """一条永远跑不完的查询 —— ``wait_for`` 会掐掉它,适配器侧收到取消。"""
+
+    async def execute(self, sql, datasource=None):
+        self.executed.append(sql)
+        import asyncio
+
+        await asyncio.sleep(60)
+
+
+class _TerminatorSpy:
+    """记录「被要求终止谁」,并按设定报一种结果(§7.3 / §10)。"""
+
+    def __init__(self, kind: str = "kill_sent", *, boom: bool = False) -> None:
+        self.kind = kind
+        self.boom = boom
+        self.asked: list[str] = []
+
+    async def terminate(self, datasource):
+        self.asked.append(datasource)
+        if self.boom:
+            raise RuntimeError("terminator exploded")
+        from trove.services.sql.terminate import TerminationResult
+
+        return TerminationResult(str(datasource or ""), self.kind)
+
+
+def _failure_message(update) -> str:
+    """这条失败去了哪:修正预算内进 ``error_feedback``,耗尽才落 ``error``。
+
+    「超时」这件事本身与它走哪条路无关 —— 断言要认得两个桶,否则测试钉的是
+    修正预算而不是超时语义。
+    """
+    return update.get("error") or update.get("error_feedback", "")
+
+
+def _timeout_node(spy, terminator, monkeypatch, **over):
+    """超时路径的节点:重试预算与退避清零,只留「超时 → 收尾」这一段。"""
+    from trove.workflow.nodes import execute_sql as mod
+
+    monkeypatch.setattr(mod, "_TRANSIENT_RETRIES", 0)
+    monkeypatch.setattr(mod, "_TRANSIENT_BACKOFF_S", 0.0)
+    return make_execute_sql(
+        spy,
+        timeout_ms=1,
+        max_retries=over.pop("max_retries", 10),
+        budget=_no_basis_budget(spy),
+        terminator=terminator,
+        **over,
+    )
+
+
+class TestTerminationOnTimeout:
+    """I4:**超时必须主动终止**,并且这件事要能被看见(§10)。
+
+    设计原本让 ``QueryTerminator`` 自己发 kill,而超时路径上适配器的
+    ``execute`` 已经发过了(``asyncio.wait_for`` 取消的正是它)—— 照设计做
+    就是同一条查询发两次 kill,而 §10 明说不重试 kill。所以这一层的职责是
+    **如实报告那一次的结果**,而不是再发一次。
+    """
+
+    async def test_a_timed_out_query_records_how_it_was_terminated(
+        self, monkeypatch,
+    ):
+        spy = _TimeoutConnectors()
+        term = _TerminatorSpy("kill_sent")
+        node = _timeout_node(spy, term, monkeypatch)
+
+        result = await node(_state())
+
+        assert _failure_message(result).startswith("[ERR:SQL_TIMEOUT]")
+        assert term.asked == [DEFAULT], "超时却不问终止,等于没接"
+        ev = result["execution_evidence"]
+        assert ev["terminated"] == "timeout"
+        assert ev["kill"] == "kill_sent"
+
+    async def test_a_dialect_that_cannot_be_killed_says_exactly_that(
+        self, monkeypatch,
+    ):
+        """§10 那格:不支持就记 ``kill_unsupported`` + 放弃等待 ——
+        **不是** ``kill_failed``(那是「试了没成」,要人去看)。
+        """
+        spy = _TimeoutConnectors()
+        node = _timeout_node(spy, _TerminatorSpy("kill_unsupported"), monkeypatch)
+
+        result = await node(_state())
+
+        assert result["execution_evidence"]["kill"] == "kill_unsupported"
+
+    async def test_a_failed_kill_is_recorded_not_hidden(self, monkeypatch):
+        spy = _TimeoutConnectors()
+        node = _timeout_node(spy, _TerminatorSpy("kill_failed"), monkeypatch)
+
+        result = await node(_state())
+
+        assert result["execution_evidence"]["kill"] == "kill_failed"
+
+    async def test_termination_waits_until_the_retry_budget_is_spent(
+        self, monkeypatch,
+    ):
+        """重试还在预算内就发终止 = 自己打自己下一次尝试。
+
+        §10 的「不重试 kill」在这里是同一个道理的两面:只在**真的放弃**那一次
+        终止,不在每一次超时都终止。
+        """
+        spy = _TimeoutConnectors()
+        term = _TerminatorSpy()
+        from trove.workflow.nodes import execute_sql as mod
+
+        monkeypatch.setattr(mod, "_TRANSIENT_RETRIES", 2)
+        monkeypatch.setattr(mod, "_TRANSIENT_BACKOFF_S", 0.0)
+        node = make_execute_sql(
+            spy, timeout_ms=1, budget=_no_basis_budget(spy), terminator=term,
+        )
+
+        result = await node(_state())
+
+        assert _failure_message(result).startswith("[ERR:SQL_TIMEOUT]")
+        assert len(spy.executed) == 3, "三次尝试都用掉了才放弃"
+        assert len(term.asked) == 1, "每一次超时都终止会把下一次尝试一起杀掉"
+
+    async def test_without_a_terminator_nothing_is_claimed(self, monkeypatch):
+        """没装终止器 = **没试过**。第三个状态,不能写成「不支持」也不能写成
+        「失败」—— 那两种都是查过之后的结论。
+        """
+        spy = _TimeoutConnectors()
+        node = _timeout_node(spy, None, monkeypatch)
+
+        result = await node(_state())
+
+        assert _failure_message(result).startswith("[ERR:SQL_TIMEOUT]")
+        ev = result["execution_evidence"]
+        assert ev["terminated"] == "timeout"
+        assert ev["kill"] == ""
+
+    async def test_a_broken_terminator_does_not_replace_the_timeout(
+        self, monkeypatch,
+    ):
+        """I6:终止是**收尾**,它自己炸了不能把「查询超时」换成别的错。"""
+        spy = _TimeoutConnectors()
+        node = _timeout_node(spy, _TerminatorSpy(boom=True), monkeypatch)
+
+        result = await node(_state())
+
+        assert _failure_message(result).startswith("[ERR:SQL_TIMEOUT]")
+        assert result["execution_evidence"]["kill"] == "kill_failed"
+
+    async def test_a_successful_query_never_claims_termination(self):
+        """跑完的查询没有「终止」这回事:两个字段都必须是「没有」。"""
+        spy = _SpyConnectors()
+        node = make_execute_sql(spy, budget=_no_basis_budget(spy))
+
+        result = await node(_state())
+
+        ev = result["execution_evidence"]
+        assert ev["terminated"] is None
+        assert ev["kill"] == ""

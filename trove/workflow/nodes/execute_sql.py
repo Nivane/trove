@@ -51,6 +51,7 @@ def make_execute_sql(
     budget: BudgetService | None = None,
     authorizer: Authorizer | None = None,
     profiles: Any = None,
+    terminator: Any = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -76,6 +77,13 @@ def make_execute_sql(
             = 没查过(证据里 ``as_of_basis=""``),不是「查过但不知道」
             (那是 ``"unknown"``)。只有 ``budget`` 装了才有证据块可落,与
             ``graphs._build_profile`` 同开关同实例(共用一份 TTL 缓存)。
+        terminator: 终止服务(设计 §7.3 / I4 / §10)。**只在放弃那一次**问它
+            —— 重试预算还没用完就终止,等于把下一次尝试也杀掉。它做的事是
+            「报告那条查询有没有被主动终止」而不是「再发一次 kill」:超时路径上
+            适配器的 ``execute`` 已经发过了(``asyncio.wait_for`` 取消的正是
+            它),而 §10 明说不重试 kill。``None`` = **没试过**(证据里
+            ``kill=""``),不是「不支持」也不是「失败」—— 那两种都是查过之后
+            的结论。
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -296,6 +304,23 @@ def make_execute_sql(
                     await asyncio.sleep(retry_backoff_s)
                     retry_backoff_s = min(retry_backoff_s * 2, 4.0)
                     continue
+                # 真的放弃了才问终止(I4 / §10):适配器侧已经发过一次取消
+                # (wait_for 取消的就是它),这里要的是**那一次的结果**——
+                # 它在存量代码里被吞进了 logger.debug,所以「发没发出去、
+                # 这个方言支不支持」在答案里一个字都没有。
+                timeout_evidence = budget_extra.get("execution_evidence")
+                if timeout_evidence is not None:
+                    timeout_evidence["terminated"] = "timeout"
+                    timeout_evidence["kill"] = await _terminate(
+                        terminator, state, connectors,
+                    )
+                elif terminator is not None:
+                    # 没装成本轨就没有证据块可落(与画像、报价同开关)。终止照发,
+                    # 但要留痕 —— 静默丢弃一个「查询被主动终止」的事实,
+                    # 正是 I2 要禁止的那类沉默
+                    logger.warning(
+                        "execute_sql: 已终止超时查询但无执行证据块可落(未装配成本轨)"
+                    )
                 return _execution_failure(
                     state,
                     "[ERR:SQL_TIMEOUT] "
@@ -305,7 +330,7 @@ def make_execute_sql(
                         f"Query timed out after {timeout_ms}ms",
                     ),
                     max_retries,
-                ) | authz_extra
+                ) | authz_extra | budget_extra
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -365,6 +390,39 @@ def make_execute_sql(
 # 恢复;SQL 自身错误(语法/缺列)重跑必死,不做无谓的 sleep。
 _TRANSIENT_RETRIES = 2
 _TRANSIENT_BACKOFF_S = 0.5
+
+#: 终止服务报不出来时记的值。**「试了没成」而不是「不支持」**:终止器自己炸了
+#: 不等于这个方言没有终止能力,记成 ``kill_unsupported`` 会把一个运行时故障
+#: 说成一个静态事实,I4 的证据就失真了。
+_KILL_FAILED = "kill_failed"
+
+
+async def _terminate(
+    terminator: Any, state: WorkflowState, connectors: Any,
+) -> str:
+    """问终止服务那条查询有没有被主动终止(设计 §7.3 / §10);永不抛。
+
+    ``""`` = 没装终止器(**没试过**):与「试过了,这个方言不支持」是两件事,
+    不能合并 —— 合并之后「我们根本没接这条轨」会伪装成「这个库不支持」,
+    而这两句话对运维的含义完全相反。
+
+    数据源名沿用血缘那处同一个解析(``state.datasource`` → 默认源):证据里
+    要写清**终止的是哪个源**,让空串一路漏进去会把「默认源」和「不知道是谁」
+    记成同一个样子。
+
+    ``QueryTerminator`` 自己承诺永不抛,这里仍兜一层(I6):调用点已经在
+    「查询超时」的收尾路径上,再让一个护栏异常把它换成一个别的错误,是最没
+    有收益的失败方式。
+    """
+    if terminator is None:
+        return ""
+    try:
+        datasource = state.datasource or connectors.default_name or ""
+        result = await terminator.terminate(datasource)
+        return str(getattr(result, "kind", "") or _KILL_FAILED)
+    except Exception as e:
+        logger.warning("execute_sql: 终止服务故障(%s),按未确认处理", e)
+        return _KILL_FAILED
 
 
 async def _judge_budget(

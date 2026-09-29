@@ -490,6 +490,8 @@ def execution_evidence(
     data_as_of: str | None = None,
     as_of_basis: str = "",
     scanned_rows: int | None = None,
+    terminated: str | None = None,
+    kill: str = "",
 ) -> dict[str, Any]:
     """本次执行的**证据**,写进 state 随答案回给用户(设计 §6.2 / R1)。
 
@@ -515,10 +517,25 @@ def execution_evidence(
     * ``"last_modified" | "latest_partition"`` —— 有值,且**必须跟值一起展示**
       (R5:单看值会被读成「数据已更新到此刻」,口径才是它的含义)。
 
-    ``scanned_rows`` 现在是 ``None``:适配器还没人报得出真实的扫描量(P4 的
-    ``QueryTerminator`` 会补)。**不用返回行数冒充** —— 扫一亿行聚合出三行
+    ``scanned_rows`` 仍是 ``None``:适配器还没人报得出真实的扫描量。P3 曾记
+    「P4 的 ``QueryTerminator`` 会补」——**P4 没有补,而且补不了**:那个模块
+    暴露的是在飞查询的**身份**(给它一个能精确点名的 id),不是它的扫描计数;
+    后者要么读 ``system.processes.read_rows``(CH),要么等 ``EXPLAIN ANALYZE``,
+    是另一个观测点(设计 §17.8)。**不用返回行数冒充** —— 扫一亿行聚合出三行
     时两者差着七个数量级,拿返回行数去校准估算器会把估算一路调小,方向恰好
     是反的。
+
+    ``terminated`` 与 ``kill`` 是**两件事**,别合并(P4):
+
+    * ``terminated`` —— 查询**为什么结束**:``None``(正常跑完)或
+      ``"timeout"``。设计 §6.2 的值域里还有 ``"budget_exceeded"``,但今天
+      **没有生产者**:唯一的飞行中预算是墙钟 ``timeout_ms``,扫描量是**事前**
+      估算,没有任何中途成本测量。按本方案一贯的纪律,没有生产者就不写进值域
+      —— 造一个永远不出现的取值,等于给读者一个假的可能性空间。
+    * ``kill`` —— 那条查询**有没有被主动终止**,三个状态分得开:
+      ``""`` 没试过(没装终止器);``"kill_unsupported"`` 试过,这个数据源
+      没有这个能力(静态事实);``"kill_sent"`` / ``"kill_failed"`` 发出去
+      且驱动没报错 / 试了没成。
     """
     return {
         # I7:估算与实际分开记录
@@ -532,6 +549,8 @@ def execution_evidence(
         "scanned_rows": scanned_rows,
         "data_as_of": data_as_of,
         "as_of_basis": as_of_basis,
+        "terminated": terminated,
+        "kill": kill,
         "budget": asdict(budget),
     }
 

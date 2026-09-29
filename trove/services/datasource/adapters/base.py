@@ -18,6 +18,11 @@ from trove.core.types import (
     positive_int,
 )
 
+#: 适配器自身终止调用的界(秒)。它是「等驱动确认把取消发出去」的耐心,不是
+#: 业务参数 —— 所以六个方言共用一个数,不放进配置。超界即放弃等待并如实
+#: 返回 False(§10:不发第二次 kill,上层 ``QueryTerminator`` 另有硬超时兜底)。
+INTERRUPT_TIMEOUT_S = 2.0
+
 
 class DatabaseAdapter(ABC):
     """Uniform interface for all database connectors.
@@ -61,7 +66,7 @@ class DatabaseAdapter(ABC):
         """
         ...
 
-    async def interrupt(self) -> None:
+    async def interrupt(self) -> bool:
         """Best-effort cancellation of the in-flight query (no-op default).
 
         Adapters whose driver exposes a cross-task cancel (sqlite3
@@ -70,8 +75,17 @@ class DatabaseAdapter(ABC):
         just the awaiting coroutine. Implementations must be bounded
         and must never raise — the caller is already unwinding a
         cancellation.
+
+        Returns:
+            True when the cancellation was handed to the driver without
+            complaint **or when there was nothing in flight to cancel**;
+            False when the driver reported a failure. It is deliberately
+            *not* a confirmation that the server stopped — that would take
+            another round trip (see ``services/sql/terminate.py``). The
+            base default returns False: nothing was sent, and the
+            capability is not declared (``supports_interrupt``).
         """
-        return None
+        return False
 
     @abstractmethod
     async def get_schema(self) -> SchemaInfo:
@@ -90,6 +104,17 @@ class DatabaseAdapter(ABC):
     # (dataclass 默认就是 ``None``),替子类宣布「本库支持行数」会让第三方适配器
     # 带着一个谎出去。填了行数的适配器各自声明一行即可。
     profile_capabilities: frozenset[str] = frozenset()
+
+    # ── 终止能力(§7.3 / §10 / I4)────────────────────────
+    #
+    # 与 ``profile_capabilities`` 同一条纪律:**显式声明,不从行为反推**。
+    # 声明 True 而 ``interrupt`` 是基类空实现 → 超时证据会写下 ``kill_sent``,
+    # 而其实一个字都没发;声明 False 而其实实现了 → 能力白写且无人发现。
+    # 两个方向都由 ``tests/services/test_adapter_interrupt_contract.py`` 钉住。
+    #
+    # 缺省 False 是安全方向:调用方退到「无法主动终止,asyncio cancel 已是
+    # 能做的全部」(§10)。
+    supports_interrupt: bool = False
 
     async def table_profiles(self) -> dict[str, TableProfile]:
         """批量表级画像,键为表名(设计 §9.2)。

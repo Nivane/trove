@@ -453,6 +453,89 @@ class TestDescribeCostWiring:
         assert est.estimated_rows == 4242
 
 
+async def _noop_interrupt():
+    """「取消掉了」的适配器侧回话;真实契约是 True = 交给驱动且没抱怨。"""
+    return True
+
+
+class TestTerminatorWiring:
+    """超时终止也走装配线(P4 / §7.3 / §10 / I4)。
+
+    ``make_execute_sql`` 的用例证明了「给了终止器就会在放弃那一次问它」;这里
+    证明的是**真的会给**。缺了这一段,``execute_sql`` 里的终止分支在真实路径上
+    永远走不到 —— 那正是 P4 之前的状态(适配器发得出取消,只是没人看得见)。
+
+    开关与 ``_build_profile`` / ``_build_budget`` 同一个(``explain_row_guard``)
+    同 connectors:它们本来就是同一条执行轨的三段,分头开关只会造出「有预算没
+    终止」这类半装配态。
+    """
+
+    @staticmethod
+    def _capture(monkeypatch):
+        """拦下 ``make_execute_sql``,留下每次接线的关键字参数。
+
+        断言的是**节点真正拿到的东西**,而不是我调用了某个私有函数 ——
+        中间少传一层,这里就会掉。
+        """
+        seen: list[dict] = []
+        real = graphs_module.make_execute_sql
+
+        def spy(connectors, **kwargs):
+            seen.append({"connectors": connectors, **kwargs})
+            return real(connectors, **kwargs)
+
+        monkeypatch.setattr(graphs_module, "make_execute_sql", spy)
+        return seen
+
+    def test_no_terminator_without_connectors(self):
+        assert graphs_module._build_terminator(
+            make_services(RecordingLLM([]), connectors=None)) is None
+
+    def test_no_terminator_when_the_execution_guard_is_off(self, sqlite_registry):
+        services = make_services(
+            RecordingLLM([]), connectors=sqlite_registry,
+            config=AgentConfig(target="mock/model", explain_row_guard=False),
+        )
+        assert graphs_module._build_terminator(services) is None
+
+    async def test_the_terminator_asks_the_same_registry_the_node_executes_on(
+        self,
+    ):
+        """终止器问的必须是**执行用的那个** registry —— 换一个实例就等于让
+        「终止」和「执行」各说各话(会话不在同一份连接表里,杀谁都说不准)。
+        """
+
+        class _StubRegistry:
+            default_name = "demo"
+
+            def __init__(self):
+                self.asked: list[str] = []
+
+            async def get(self, name):
+                self.asked.append(name)
+                return SimpleNamespace(supports_interrupt=True,
+                                       interrupt=_noop_interrupt)
+
+        registry = _StubRegistry()
+        terminator = graphs_module._build_terminator(
+            make_services(RecordingLLM([]), connectors=registry))
+
+        assert terminator is not None
+        assert (await terminator.terminate("demo")).kind == "kill_sent"
+        assert registry.asked == ["demo"]
+
+    async def test_both_graphs_hand_it_to_execute_sql(
+        self, sqlite_registry, catalog, monkeypatch,
+    ):
+        seen = self._capture(monkeypatch)
+        build(make_services(RecordingLLM([]), catalog, sqlite_registry))
+
+        nodes = [k for k in seen if k.get("terminator") is not None]
+        assert len(nodes) == 2, f"reflection / fixed 两条图都该接到:{seen}"
+        for kwargs in nodes:
+            assert kwargs["connectors"] is sqlite_registry
+
+
 class TestGenSQLSubgraph:
     async def test_single_valid_generation(self):
         sub = build_gen_sql_subgraph(make_services(RecordingLLM([VALID_SQL])))
