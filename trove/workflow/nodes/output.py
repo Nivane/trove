@@ -16,6 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from trove.agent.answer_source import AnswerSource
+from trove.agent.answer_source import resolve as resolve_answer_source
+from trove.agent.answer_source import source_line as render_source_line
 from trove.core.i18n import L
 from trove.llm.observability import record_span
 from trove.services.errors import present_error
@@ -272,6 +275,24 @@ def _freshness_line(state: WorkflowState) -> str:
     )
 
 
+def _answer_source(state: WorkflowState) -> AnswerSource | None:
+    """本轮答案的来源档位;``None`` = 没有可披露的答案。**判定只在这里发生一次**。
+
+    门是 ``state.sql``:来源说的是**这条答案**怎么来的 —— 没执行过查询(元数据
+    问答、澄清反问、空跑)就没有可说的;错误路径同理,那里交付的是错误卡片,不是
+    答案。这条门必须和渲染同源:两处各判一次,迟早出现「行说已认证、字段说生成」
+    —— 那比不披露更坏。
+
+    统计段(``runs`` / ``p50_ms``)今天一律缺席:两个数在台账里(设计 §6.2 的
+    ``AssetLedger``),读取侧还没接线。**不猜、不编**——文案本身不依赖统计,拿不到
+    就退化成只报档位那一档(见 ``answer_source.source_line``);接线后把两个数传
+    进来即可,这个函数不用动。
+    """
+    if not state.sql:
+        return None
+    return resolve_answer_source(state)
+
+
 def _build_details(state: WorkflowState) -> str:
     """Technical detail section (SQL / semantics / assessment / meta).
 
@@ -456,6 +477,9 @@ async def output(state: WorkflowState) -> dict[str, Any]:
 
     if state.error:
         response, error_info = _error_response(state)
+        # 错误路径**不**写 answer_source:档位说的是「这条**答案**是怎么来的」,
+        # 而这一轮交付的是错误卡片(它自带错误类别与下一步,见 _error_response),
+        # 没有答案就没有来源。不写 = 保持本轮输入全量重置后的空串。
         return {"final_response": response, "error_info": error_info}
 
     parts: list[str] = []
@@ -504,6 +528,13 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     if freshness:
         parts.append(freshness)
 
+    # 3c. 答案来源(设计 §7.3)—— 与截止时间同一位置、同一理由:一条讲数据来
+    #     自哪一刻,一条讲答案来自哪条路径,都是读者不展开详情也该看到的东西。
+    #     I6:档位只由 _answer_source 判定一次,渲染与 state 字段同源。
+    source = _answer_source(state)
+    if source is not None:
+        parts.append(render_source_line(source, lang=state.lang))
+
     # Insights (执行后 LLM 生成的洞察)
     if state.insights:
         parts.append(f"### {L(lang, '洞察', 'Insights')}\n")
@@ -527,4 +558,9 @@ async def output(state: WorkflowState) -> dict[str, Any]:
 
     response = "\n".join(parts)
 
-    return {"final_response": response}
+    # 档位单独落进 state:markdown 里那一行是给人读的,这个字段是给机器读的
+    # (SSE 的 summary / 前端视觉区分 / 台账落账)。两者同源同上文,不许各判一次。
+    return {
+        "final_response": response,
+        "answer_source": source.value if source is not None else "",
+    }

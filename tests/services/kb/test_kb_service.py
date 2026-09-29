@@ -12,6 +12,7 @@ import pytest
 
 from trove.core.types import SchemaInfo, TableInfo, ColumnInfo
 from trove.services.kb.service import (
+    ExamplesFileUnreadable,
     KbService,
     _bigrams,
     _score_example,
@@ -1099,3 +1100,227 @@ class TestPendingExampleDrafts:
         }, "demo")
         assert res["example_drafted"] is False
         assert await kb.list_pending_examples("demo") == []
+
+    async def test_pending_example_with_governance_block_is_still_not_retrieved(
+        self, kb, kb_dir,
+    ):
+        """I4 回归:带治理块的 pending 也不进检索,哪怕它自称 certified。
+
+        这条钉的是**两个维度的正交**:pending 管「有没有人确认」,governance
+        管「凭据是什么」。手写了 governance 块的草稿最容易被误当成已确认
+        (它看起来比普通草稿"更完整"),所以正面钉一条 —— loader 的 pending
+        跳过必须发生在治理字段之前,而且与治理字段的内容无关。
+        """
+        ds_dir = kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "examples.yml").write_text(
+            "examples:\n"
+            "  - question: 自称已认证的草稿\n"
+            "    sql: SELECT SUM(amount) FROM loan\n"
+            "    pending: true\n"
+            "    governance:\n"
+            "      status: certified\n"
+            "      approved_by: alice\n"
+            '      approved_at: "2026-09-28T10:00:00Z"\n',
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("demo")
+
+        # 盘上确实有它(admin 审阅通道看得见),但检索侧看不见
+        pending = await kb.list_pending_examples("demo")
+        assert [ex["question"] for ex in pending] == ["自称已认证的草稿"]
+        hits = await kb.search_examples("自称已认证的草稿", "demo", limit=5)
+        assert not any(h.question == "自称已认证的草稿" for h in hits)
+
+
+class TestUnreadableExamplesAreNeverOverwritten:
+    """``examples.yml`` 读不通时,三条写路径**一个字节都不许动**。
+
+    三条写路径共用一个陷阱:``_read_examples`` 把「读不出来」和「文件不存在」
+    都化成 ``{}``,而写路径拿到 ``{}`` 之后照写不误 —— 于是一份**暂时读不通**
+    的资产库被覆盖成空文档。YAML 读不通的触发条件很平常:别处并发写了一半、
+    一次坏合并、一个手抖的缩进。
+
+    最危险的是 ``draft_example``:它由**用户点赞**触发(``rate_lesson`` →
+    ``draft_example``),没有 admin 在环里,而且返回值是 ``{"status":
+    "drafted"}`` —— 622 条资产归零这件事,在响应里和日志里都看不出来。
+
+    所以三条路径的期望都是**抛错**:写不成就说写不成。这与 I3(降权不删除)
+    同一条纪律 —— 这套能力的资产是"资产库说了算",而一个会静默清空自己的
+    资产库没有资格说这句话。
+    """
+
+    #: 语法坏掉的 YAML(制表符不能用于缩进)。
+    BROKEN = "examples:\n\t- question: 坏掉的文件\n  sql: SELECT 1\n"
+
+    @pytest.fixture
+    def broken_kb(self, kb, kb_dir):
+        ds_dir = kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "examples.yml").write_text(self.BROKEN, encoding="utf-8")
+        return kb
+
+    def _assert_untouched(self, kb):
+        path = kb.kb_dir / "demo" / "examples.yml"
+        assert path.read_text(encoding="utf-8") == self.BROKEN
+
+    async def test_draft_example_refuses_and_leaves_the_file_alone(self, broken_kb):
+        with pytest.raises(ExamplesFileUnreadable):
+            await broken_kb.draft_example("新问题", "SELECT 1", "demo")
+        self._assert_untouched(broken_kb)
+
+    async def test_confirm_refuses_and_leaves_the_file_alone(self, broken_kb):
+        with pytest.raises(ExamplesFileUnreadable):
+            await broken_kb.confirm_pending_examples("demo", actor="alice")
+        self._assert_untouched(broken_kb)
+
+    async def test_reject_refuses_and_leaves_the_file_alone(self, broken_kb):
+        with pytest.raises(ExamplesFileUnreadable):
+            await broken_kb.reject_pending_examples("demo")
+        self._assert_untouched(broken_kb)
+
+    async def test_a_missing_file_is_still_fine_to_write(self, kb, kb_dir):
+        """反面:文件**不存在**不是错误 —— 首次写入必须照常。
+
+        两种「读到 ``{}``」要分开:不存在的文件写得,读不通的文件写不得。
+        合并成一条判断就会把"第一次写资产库"也一起挡掉。
+        """
+        (kb_dir / "demo").mkdir(parents=True, exist_ok=True)
+        res = await kb.draft_example("第一个例子", "SELECT 1", "demo")
+        assert res["status"] == "drafted"
+
+    async def test_reading_paths_still_fail_open(self, broken_kb):
+        """读路径维持 open:文件坏了,检索退化成"没有示例",而不是整轮报错。
+
+        失败模式表里「治理块格式坏 → open」是同一条:坏元数据不该让数据源
+        不可用。**写路径closed、读路径open** 正是这张表的意思 —— 破坏数据的
+        事不许做,读不到就少给一点。
+        """
+        assert await broken_kb.list_pending_examples("demo") == []
+
+
+class TestExampleGovernanceLoading:
+    """治理块的读端:YAML 里写下的凭据如何变成 ExampleHit 的字段(§6.1 / I5)。
+
+    这里走**真实加载路径**(写文件 → ensure_synced → 检索),而不是直接调
+    ``governance_of``:纯函数的用例在 test_governance.py,那边红了说明推断规则
+    错,这边红了说明字段没穿过 loader/mirror —— 分得开才好定位。
+    """
+
+    GOVERNED_EXAMPLES = """
+examples:
+  - question: 认证过的贷款总额
+    sql: SELECT SUM(amount) FROM loan
+    governance:
+      status: certified
+      owner: alice
+      approved_by: alice
+      approved_at: "2026-09-28T10:00:00Z"
+      source: human
+  - question: 自称认证但没有日期
+    sql: SELECT COUNT(*) FROM loan
+    governance:
+      status: certified
+      approved_by: bob
+  - question: 存量没有治理块
+    sql: SELECT MAX(amount) FROM loan
+"""
+
+    @pytest.fixture
+    def governed_kb(self, kb, kb_dir):
+        ds_dir = kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "examples.yml").write_text(
+            self.GOVERNED_EXAMPLES, encoding="utf-8")
+        return kb
+
+    async def _hit(self, kb, question: str):
+        hits = await kb.search_examples(question, "demo", limit=5)
+        return next(h for h in hits if h.question == question)
+
+    async def test_certified_block_survives_the_loading_path(self, governed_kb):
+        """人写在 YAML 里的认证必须原样到检索侧 —— 否则治理只是盘上装饰。"""
+        await governed_kb.ensure_synced("demo")
+
+        hit = await self._hit(governed_kb, "认证过的贷款总额")
+
+        assert hit.status == "certified"
+        assert hit.approved_by == "alice"
+        assert hit.approved_at == "2026-09-28T10:00:00Z"
+        assert hit.source == "human"
+
+    async def test_certified_without_date_loads_as_draft(self, governed_kb):
+        """I5 在真实加载路径上生效:缺日期 → draft(加载期降级,不报错)。
+
+        报错会让**整份 examples.yml** 不可用 —— 一条坏元数据拖垮一个数据源的
+        全部示例。降级只损失这一条的权重,方向也与 I6 一致(宁可标低)。
+        """
+        await governed_kb.ensure_synced("demo")
+
+        hit = await self._hit(governed_kb, "自称认证但没有日期")
+
+        assert hit.status == "draft"
+        assert hit.approved_by == "bob"  # 保留线索,供管理端修
+
+    async def test_stock_entry_without_block_loads_as_draft_from_kb_init(
+        self, governed_kb,
+    ):
+        """同一份文件里,有块的和没块的各按各的规则走(I1 存量推断)。"""
+        await governed_kb.ensure_synced("demo")
+
+        hit = await self._hit(governed_kb, "存量没有治理块")
+
+        assert hit.status == "draft"
+        assert hit.source == "kb_init"
+
+
+class TestComposedCandidatesCarryNoCredential:
+    """组合候选(`kb.compose` 的 JOIN×WHERE)不得继承原子的认证。
+
+    组合是**机器拼出来的结构推测**(拼接两个原子模板,再由 gen_sql 兜底验证),
+    盘上不存在这条资产、也没有任何人验过它。让它继承原子的 ``certified``,等于
+    用一次字符串拼接伪造出一个人工背书 —— 这正是治理维度最该防的失效模式。
+    """
+
+    JOINED = (
+        "SELECT COUNT(*) FROM loan JOIN account "
+        "ON loan.account_id = account.account_id"
+    )
+    FILTERED = "SELECT COUNT(*) FROM loan WHERE status = 'A'"
+    COMPOSED = JOINED + " WHERE loan.status = 'A'"
+
+    CERTIFIED_EXAMPLES = f"""
+examples:
+  - question: How many loans per account
+    sql: {JOINED}
+    template: true
+    governance:
+      status: certified
+      approved_by: alice
+      approved_at: "2026-09-28T10:00:00Z"
+  - question: How many loans with status A
+    sql: {FILTERED}
+    template: true
+    governance:
+      status: certified
+      approved_by: alice
+      approved_at: "2026-09-28T10:00:00Z"
+"""
+
+    async def test_composed_candidate_is_draft_while_atoms_are_certified(
+        self, kb, kb_dir,
+    ):
+        ds_dir = kb_dir / "demo"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "examples.yml").write_text(
+            self.CERTIFIED_EXAMPLES, encoding="utf-8")
+        await kb.ensure_synced("demo")
+
+        hits = await kb.search_examples("How many loans per account", "demo", limit=5)
+
+        # 前提:组合真的发生了 —— 否则下面的断言是空转
+        by_sql = {h.sql: h for h in hits}
+        assert self.COMPOSED in by_sql, "组合未发生,先怀疑 compose 而不是治理字段"
+        assert by_sql[self.JOINED].status == "certified"
+        assert by_sql[self.COMPOSED].status == "draft"
+        assert by_sql[self.COMPOSED].approved_by == ""

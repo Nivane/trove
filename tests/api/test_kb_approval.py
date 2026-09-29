@@ -33,6 +33,78 @@ class TestUserFeedbackChannel:
         assert resp.status_code == 401
 
 
+class TestAdminExampleCertification:
+    """示例确认要**留下批准人**,且坏文件要**拒绝**而不是 500。
+
+    两条都是"确认"这个动作的契约,而不是加载侧的:治理字段怎么读由
+    ``test_kb_service.py`` 管,这里管的是**走 API 走一遍能不能留下记录**。
+
+    ``actor`` 以前没有从 router 传下去(函数签名有这个参数,没人给),于是
+    接口上一按"确认",资产只是清了 pending、**没有认证记录** —— 整个认证
+    能力从 API 走不到。这类"参数齐全但没人传"的缺口在单测里看不出来:
+    service 层的用例都是自己传 ``actor=`` 的。
+    """
+
+    async def _draft_one(self, user_client):
+        resp = await user_client.post("/v1/kb/examples/draft", json={
+            "question": "东区贷款总额是多少",
+            "sql": "SELECT SUM(amount) FROM loan WHERE district='East'",
+        })
+        assert resp.status_code == 201
+        assert resp.json()["status"] == "drafted"
+
+    async def test_confirm_certifies_with_the_approving_admin(
+        self, api_kb, user_client, client,
+    ):
+        await self._draft_one(user_client)
+        assert (await client.post("/v1/kb/examples/confirm")).status_code == 200
+
+        from trove.services.kb.service import yaml
+        path = api_kb.state.kb.kb_dir / "test_db" / "examples.yml"
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        drafted = next(
+            ex for ex in doc["examples"]
+            if ex["question"] == "东区贷款总额是多少"
+        )
+        assert "pending" not in drafted
+        gov = drafted["governance"]
+        assert gov["status"] == "certified"
+        assert gov["approved_by"] == "admin"
+        assert gov["approved_at"]
+
+    async def test_confirm_refuses_a_corrupt_file_with_409(
+        self, api_kb, user_client, client,
+    ):
+        """读不通的 ``examples.yml`` → 409,不是 500,更不是 200。
+
+        500 说"我们坏了"(运维问题),而真相是"这个请求按当前文件状态不能
+        执行"(调用方问题),且报错本身要能被人拿去做动作。200 更坏 ——
+        它会真的把资产库覆盖掉(见 service 侧同名测试)。
+        """
+        await self._draft_one(user_client)
+        path = api_kb.state.kb.kb_dir / "test_db" / "examples.yml"
+        broke = "examples:\n\t- question: 坏文件\n"
+        path.write_text(broke, encoding="utf-8")
+
+        resp = await client.post("/v1/kb/examples/confirm")
+        assert resp.status_code == 409
+        assert path.read_text(encoding="utf-8") == broke
+
+    async def test_a_refused_certification_is_409_too(self, api_kb, user_client, client):
+        """认证门拒绝(坏 SQL)→ 同样是 409,且带上**哪一条**不过。
+
+        admin 要拿这条信息去改 SQL;只说"失败了"等于让他自己去找 622 条里
+        是哪一条。
+        """
+        await user_client.post("/v1/kb/examples/draft", json={
+            "question": "把学生删掉",
+            "sql": "DELETE FROM students",
+        })
+        resp = await client.post("/v1/kb/examples/confirm")
+        assert resp.status_code == 409
+        assert "把学生删掉" in resp.json()["detail"]
+
+
 class TestAdminPerLessonApproval:
     async def test_confirm_one_lesson(self, api_kb, user_client, client):
         # api_kb seeds lessons.yml with one pending lesson (KB_SEED)

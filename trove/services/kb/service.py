@@ -51,6 +51,12 @@ from trove.services.kb.embeddings import (
     near_duplicate,
     rerank_score,
 )
+from trove.services.kb.governance import (
+    CERTIFIED,
+    ExampleCertificationError,
+    certification_issues,
+    governance_of,
+)
 from trove.services.kb.ossie_format import (
     append_term_to_document,
     ossie_to_entity_payloads,
@@ -156,6 +162,14 @@ class ExampleHit:
     score: float = 0.0
     aggregate: bool = False
     date_range: bool = False
+    # 治理维度(设计 §6.1)。**全部可选,缺省即 draft** —— 存量资产一个字段都不用改,
+    # 也不用写回文件:下次该资产被确认时自然补齐。这里是唯一一处「缺省值即语义」
+    # 的字段:draft 不是「未知」,是「还没人背书」,两者对检索的含义相同。
+    status: str = "draft"  # draft | certified | deprecated
+    owner: str = ""
+    approved_by: str = ""
+    approved_at: str = ""
+    source: str = ""  # human | memory | kb_init | user_feedback
 
 
 @dataclass
@@ -475,6 +489,19 @@ def _load_asset(path: Path) -> Asset:
     )
 
 
+class ExamplesFileUnreadable(ValueError):
+    """``examples.yml`` 存在但读不通,写路径拒绝动它(失败模式表:closed)。
+
+    继承 ``ValueError``:与 ``append_term`` 的空 mapping 守卫、``governance.
+    ExampleCertificationError`` 同族(输入状态不允许这次写入 → 拒绝),只
+    catch ``ValueError`` 的调用方也能兜住。
+
+    **为什么不「尽力而为」地继续写**:写路径的全部依据都是刚读出来的那份
+    ``data``。读不出来时它退化成了 ``{}``,照写就是拿一个空文档覆盖整份资产
+    库。这里唯一安全的动作是不写 —— 文件原样留着,人和 git 都还能救它。
+    """
+
+
 def _write_doc(path: Path, doc: dict, generator: str) -> None:
     """写回一份 KB YAML —— Trove 侧**唯一**的写入口(`_meta` 自动重打)。
 
@@ -578,6 +605,11 @@ def _entries_of(path: Path, text: str, data: dict) -> list[tuple[str, str, dict]
                 "template": bool(example.get("template")),
                 "aggregate": bool(example.get("aggregate")),
                 "date_range": bool(example.get("date_range")),
+                # 治理字段(设计 §6.1)。**推断在这里、不写在文件里**(I1):
+                # 存量 622 条一条都不用改。挂在 payload 上是因为下游所有
+                # ExampleHit 都由 payload 构造(`ExampleHit(**p)`),builtin/
+                # hybrid/rag 三个后端共用这一条路 —— 另开一条路就得记得改三处。
+                **governance_of(example),
             }))
 
     return entries
@@ -1779,12 +1811,33 @@ class KbService:
     # ── 参考示例草稿(好评闭环:用户好评 + SQL → pending 示例 → admin 确认) ──
 
     @staticmethod
-    def _read_examples(path) -> dict:
+    def _read_examples(path, *, strict: bool = False) -> dict:
+        """``examples.yml`` → dict。``strict=True`` 时读不通就抛,不给默认值。
+
+        **为什么读侧要有两种姿态**:这里把「文件不存在」和「文件读不通」都化
+        成 ``{}``,对**读**是对的(坏文件退化成"没有示例",数据源仍然可用,
+        与失败模式表「格式坏 → open」一致),对**写**是灾难 —— 写路径拿到
+        ``{}`` 之后照写,一份暂时读不通的资产库就被覆盖成空文档。624 条资产
+        的触发器可以只是一次并发写了一半、一次坏合并、一个手抖的缩进。
+
+        所以写路径传 ``strict=True``:写不成就说写不成,不拿默认值当事实。
+        """
         if path.exists():
             try:
-                return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            except Exception:
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except Exception as exc:
+                if strict:
+                    raise ExamplesFileUnreadable(
+                        f"{path} 存在但解析失败,YAML 读不通时拒绝写入"
+                        "(照写会把整份资产库覆盖成空文档): "
+                        f"{type(exc).__name__}: {exc}") from exc
                 return {}
+            if not isinstance(data, dict):
+                if strict:
+                    raise ExamplesFileUnreadable(
+                        f"{path} 的顶层不是映射(是 {type(data).__name__}),拒绝写入")
+                return {}
+            return data
         return {}
 
     async def draft_example(
@@ -1797,6 +1850,11 @@ class KbService:
         与 lessons 的两级确认同构:草稿不参与检索(loader 跳过 pending),
         admin 确认后清除 pending 才成为可复用参考 SQL。同 question+sql
         已存在(含已确认)→ 不重复追加,返回 exists。
+
+        **这里刻意不设认证门**(门在 ``confirm_pending_examples``):草稿是待审
+        状态,提前拒绝只会让"用户反馈了一条错 SQL"这件事消失在日志里 —— 而它
+        恰恰是把它改对的线索。门要挡的是"它被当成可信答案执行",那只发生在
+        确认之后。
         """
         question = (question or "").strip()
         sql = (sql or "").strip()
@@ -1805,7 +1863,7 @@ class KbService:
         ds_dir = self.kb_dir / datasource
         ds_dir.mkdir(parents=True, exist_ok=True)
         path = ds_dir / "examples.yml"
-        data = self._read_examples(path)
+        data = self._read_examples(path, strict=True)
         examples = list(data.get("examples", []))
         for ex in examples:
             if ex.get("question") == question and ex.get("sql") == sql:
@@ -1834,25 +1892,82 @@ class KbService:
             dict(ex) for ex in data.get("examples", []) if ex.get("pending")
         ]
 
-    async def confirm_pending_examples(self, datasource: str) -> int:
-        """确认全部 pending 示例(清除 pending 标志,进入检索)。"""
+    async def confirm_pending_examples(
+        self, datasource: str, *, actor: str = "",
+    ) -> int:
+        """确认全部 pending 示例:过认证门 → 清 pending → 补治理块(认证)。
+
+        ``actor``:批准人(管理端 token 的 username)。**拿不到就不写认证记录**
+        —— I5 要求 certified 必须有人,而"不知道是谁"时唯一的诚实姿态是不认;
+        写一条只有 ``approved_at`` 没有 ``approved_by`` 的半记录,只会让台账上
+        多出一批看不出问题的假认证。日志会为这件事发声,免得漏传 ``actor``
+        表现成"确认了但资产永远是 draft",而没有任何地方看得出原因。
+
+        认证门(§7.2 / G5)在**写盘之前**跑,不过门整批拒绝、文件一个字节都不
+        动:确认后的示例会进 ``fast_match`` 被直接执行,而认证是人的显式动作,
+        必须过门(失败模式表:closed)。草稿阶段不设门(见 ``draft_example``)。
+        """
         path = self.kb_dir / datasource / "examples.yml"
-        data = self._read_examples(path)
+        data = self._read_examples(path, strict=True)
+        pending = [ex for ex in data.get("examples", []) if ex.get("pending")]
+
+        refusals: list[str] = []
+        for ex in pending:
+            issues = certification_issues(str(ex.get("sql", "")))
+            if issues:
+                refusals.append(f"「{ex.get('question', '')}」: " + "; ".join(issues))
+        if refusals:
+            raise ExampleCertificationError(
+                f"{datasource} 的待确认示例未通过认证门,拒绝确认"
+                "(坏 SQL 进资产库后会被快径直接执行): " + " | ".join(refusals))
+
+        if not actor:
+            logger.warning(
+                "kb confirm %s: no actor given; %d example(s) confirmed but NOT "
+                "certified (I5 requires an approver) — pass actor=<username>",
+                datasource, len(pending),
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
         confirmed = 0
-        for ex in data.get("examples", []):
-            if ex.get("pending"):
-                ex.pop("pending", None)
-                confirmed += 1
+        for ex in pending:
+            ex.pop("pending", None)
+            confirmed += 1
+            if not actor:
+                continue
+            # 治理块"自然补齐"(§6.1):存量与旧草稿都在这一刻拿到认证记录。
+            # source 保留草稿带来的来路;没有就留空 —— 确认这个动作是人的,
+            # 但资产的**来路**不因此变成 human。
+            gov = ex.get("governance")
+            gov = dict(gov) if isinstance(gov, dict) else {}
+            # 用 governance.CERTIFIED 而不是字面量:写端与读端(I5 的值域校验)
+            # 必须指同一个常量 —— 哪天有人写错一个字母,读端只会把它降成
+            # draft,盘上看起来毫无异常,没人会发现认证没生效。
+            gov["status"] = CERTIFIED
+            gov["approved_by"] = actor
+            gov["approved_at"] = now
+            if not gov.get("owner"):
+                gov["owner"] = actor  # §6.1:owner = 首次确认者
+            gov.setdefault("source", "")
+            ex["governance"] = gov
         _write_doc(path, data, "kb_confirm_examples")
         if confirmed:
             await self.force_sync(datasource)
-            await self.git_commit(datasource, "kb: confirm pending examples")
+            # files= 显式限定:默认会把该数据源目录下所有 *.yml 一起暂存,那会
+            # 把别人尚未提交的 semantics.yml 改动卷进这次"示例确认"提交里 ——
+            # 而这次提交带着 Approved-by,卷进来的改动就变成了「经过批准」。
+            # 同 `save_decisions` 的理由,这里多一层审计含义。
+            await self.git_commit(
+                datasource, "kb: confirm pending examples",
+                files=["examples.yml"],
+                trailers={"Generator": "kb", "Approved-by": actor},
+            )
         return confirmed
 
     async def reject_pending_examples(self, datasource: str) -> int:
         """拒绝(删除)全部 pending 示例。"""
         path = self.kb_dir / datasource / "examples.yml"
-        data = self._read_examples(path)
+        data = self._read_examples(path, strict=True)
         kept = [ex for ex in data.get("examples", []) if not ex.get("pending")]
         rejected = len(data.get("examples", [])) - len(kept)
         data["examples"] = kept

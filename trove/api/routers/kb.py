@@ -176,9 +176,15 @@ async def confirm_pending_examples(
     request: Request, datasource: str | None = None,
     user: dict = Depends(require_admin),
 ) -> dict:
-    """确认全部 pending 示例(清除 pending 标志,进入检索)。"""
+    """确认全部 pending 示例(清除 pending 标志,进入检索)。
+
+    必须传 ``actor``:确认是**人的背书**,而 I5 要求 certified 必须有人。
+    不传的话资产只清 pending、拿不到认证记录 —— 治理能力在接口上等于不存在,
+    而 service 层的用例都是自己传 actor 的,这条路测不出来。
+    """
     ds = _datasource(request, datasource)
-    return {"confirmed": await _kb(request).confirm_pending_examples(ds)}
+    actor = str(user.get("username", ""))
+    return {"confirmed": await _kb(request).confirm_pending_examples(ds, actor=actor)}
 
 
 @router.post("/kb/examples/reject", response_model=LessonConfirmResponse)

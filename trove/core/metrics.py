@@ -156,6 +156,28 @@ if _HAVE_CLIENT:
         ["channel", "var", "pattern"],
         registry=_REGISTRY,
     )
+    # 资产台账的使用计数(设计稿 §9.2)。**问句与 asset_key 一律不进标签** ——
+    # 同一句问句的措辞变体是无限的,键又是个哈希:进去就是把监控系统自己拖垮
+    # (与 record_sql_budget_decision 的表格纪律、路由用模板而不是原始 URL 同一条)。
+    # 三个标签都是闭集:datasource 来自已配置的数据源,verdict ∈ {OK,EMPTY,ERROR},
+    # path ∈ {fast_path,retrieval}。要按资产看,去看台账本体(:mod:`trove.services.kb.ledger`)。
+    ASSET_RUNS = Counter(
+        "trove_asset_runs_total",
+        "Verified-asset uses recorded in the ledger, by datasource/verdict/path.",
+        ["datasource", "verdict", "path"],
+        registry=_REGISTRY,
+    )
+    # 台账**落账/读取失败**的次数。这条存在的唯一原因是 I2:统计失败按设计
+    # **不打断查询**,于是它对调用方完全不可见 —— 没有一个独立的计数器,
+    # 台账可以 100% 坏掉而监控上一片安静。理由分 store(库/连接问题)与
+    # invalid(调用方传了域外的 verdict/path):两者的处置方向相反,一个是修
+    # 存储,一个是改代码,混成一个数就读不出该动哪边(同 AUTHZ_DENY 的分法)。
+    ASSET_LEDGER_FAILURES = Counter(
+        "trove_asset_ledger_failures_total",
+        "Asset ledger writes/reads that failed, by datasource/reason.",
+        ["datasource", "reason"],
+        registry=_REGISTRY,
+    )
 
 
 def _short_model(model: str) -> str:
@@ -394,6 +416,59 @@ def record_prompt_isolation(channel: str, var: str, pattern: str) -> None:
         PROMPT_ISOLATION.labels(channel=channel, var=var, pattern=pattern).inc()
     except Exception as e:
         logger.debug("prompt isolation metric record failed: %s", e)
+
+
+#: 台账失败原因的**值域**(``services/kb/ledger`` 的两条失败路径)。
+#: 与 ``AUTHZ_DENY_REASONS`` 同一条纪律:不 import 那一份 —— ``core`` 是底层,
+#: 不该依赖 ``services``;而且这里要的是「计数器接受哪些标签值」这个**观测契约**:
+#: 台账新增一种失败路径时,这里应该有意识地跟着改一次。
+ASSET_LEDGER_FAILURE_REASONS = frozenset({"store", "invalid"})
+
+#: 台账 verdict / path 的**值域**(``services/kb/ledger`` 的 ``VERDICTS`` /
+#: ``PATHS``)。这里**尤其**不能 import:``ledger`` 反过来要 import 本模块
+#: (记账要+1),互相 import 会成环。有测试钉住两份值域相等 —— 漂移的表现是
+#: 「落了账但指标没记」,一个从两个方向都查不出来的缺口。
+ASSET_LEDGER_VERDICTS = frozenset({"OK", "EMPTY", "ERROR"})
+ASSET_LEDGER_PATHS = frozenset({"fast_path", "retrieval"})
+
+
+def record_asset_use(datasource: str, verdict: str, path: str) -> None:
+    """记一次**成功落账**的资产使用(设计稿 §9.2 / I2)。
+
+    只在台账真的写进去之后调用 —— 没落账的那一笔走
+    ``record_asset_ledger_failure``:两者混在一起的话,「资产被用了多少次」
+    会把写失败也当成用过。
+
+    域外的 verdict/path **不记**:本函数是值域的定义处(同 ``record_authz_deny``),
+    而它们的域与 ``services/kb/ledger`` 的枚举是同一份契约。放进去等于用一次
+    静默的基数增长换一个没人会看的序列。
+    """
+    if not _HAVE_CLIENT or verdict not in ASSET_LEDGER_VERDICTS \
+            or path not in ASSET_LEDGER_PATHS:
+        return
+    try:
+        ASSET_RUNS.labels(
+            datasource=datasource or "default", verdict=verdict, path=path,
+        ).inc()
+    except Exception as e:
+        logger.debug("asset runs metric record failed: %s", e)
+
+
+def record_asset_ledger_failure(datasource: str, reason: str) -> None:
+    """记一次**台账没能落账**的失败(I2 的唯一可见面)。
+
+    域外的 reason 不记(同 ``record_authz_deny``)。空源名兜底成 ``"default"``:
+    没解析出源名不是漏记的理由 —— 漏了这一笔,「台账坏了多少」的分子就少了,
+    而这条计数器**是**那个分子。
+    """
+    if not _HAVE_CLIENT or reason not in ASSET_LEDGER_FAILURE_REASONS:
+        return
+    try:
+        ASSET_LEDGER_FAILURES.labels(
+            datasource=datasource or "default", reason=reason,
+        ).inc()
+    except Exception as e:
+        logger.debug("asset ledger failure metric record failed: %s", e)
 
 
 def render_metrics() -> bytes:

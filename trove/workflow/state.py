@@ -259,6 +259,13 @@ class WorkflowState(BaseModel):
     # kb_exact_match——模板是确定性产物,不是模型解释。
     fast_path: bool = False
 
+    # 答案来源档位(output 节点判定,设计 §6.4):certified / compiled / generated。
+    # **空 = 没有可披露的答案**(元数据问答 / 澄清反问 / 错误路径),不是「未知」。
+    # 与 ``fast_path`` 同族(都答「这条答案是怎么来的」),区别是这里存**判定结果**:
+    # 档位只在 output 一处判定(``agent/answer_source.resolve``),SSE、前端、台账
+    # 都读这一个字段 —— 各判一次迟早出现两处不一致,而披露的不一致等于没披露。
+    answer_source: str = ""
+
     # schema_linking artifacts
     matched_tables: list[str] = Field(default_factory=list)
     schema_context: str = ""

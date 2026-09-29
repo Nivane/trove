@@ -203,6 +203,27 @@ class AttributionConfig:
 
 
 @dataclass
+class AssetsConfig:
+    """可信查询资产的台账配置(设计稿 §9.2 的 ``agent.assets.*``)。
+
+    只管**统计**那一侧(``runs`` / ``p50_ms`` 落在独立库里)。治理字段
+    (``owner`` / ``approved_by`` / ``status``)是资产属性、随 ``examples.yml``
+    走 git,没有可配项;排序降权的阈值属于治理策略,不在这里。
+
+    ``usage_enabled``: 落账总开关。默认**开** —— 统计是纯增量的旁路,
+    失败也不进主链路(I2),关掉它就等于放弃了「哪些资产从没被用过」这个
+    唯一能回答"该淘汰谁"的数据。
+
+    ``events_retention_days``: 明细表保留期(天),``<=0`` = 不清理。分位数
+    只能从明细算,但只增不减的表最后没人敢动。清理后 ``p50_ms`` 是**保留窗口
+    内**的 p50,``runs`` 是终身计数、不随之回退。
+    """
+
+    usage_enabled: bool = True
+    events_retention_days: int = 90
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -285,6 +306,9 @@ class AgentConfig:
     masking: MaskingConfig = field(default_factory=MaskingConfig)
     # 执行画像的成本轨:阈值 + 估算不可得时的方向。见 BudgetConfig。
     budget: BudgetConfig = field(default_factory=BudgetConfig)
+    # 可信查询资产的**统计**侧(台账库的位置与保留期)。见 AssetsConfig。
+    # 治理字段本身没有可配项 —— 它们是资产属性,随 examples.yml 走 git。
+    assets: AssetsConfig = field(default_factory=AssetsConfig)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)
@@ -550,6 +574,16 @@ class ConfigLoader:
             enabled=bool(masking_raw.get("enabled", True)),
             hash_salt_ref=str(masking_raw.get("hash_salt_ref", "") or "").strip(),
         )
+        # 可信查询资产的台账(设计 §9.2)。同样**顶层与 ``agent:`` 内嵌两种写法
+        # 都认**。这一段的写法是照着上面 authz 的教训来的:加了字段与默认值却
+        # 不在加载器里读 YAML,配置就永远不生效(恒取默认),而那是排障最贵的
+        # 一类问题。``<=0`` = 不清理明细,与 AssetsConfig 的语义一致。
+        assets_raw = resolved.get("assets", {}) or agent_section.get("assets", {}) or {}
+        assets_conf = AssetsConfig(
+            usage_enabled=bool(assets_raw.get("usage_enabled", True)),
+            events_retention_days=max(
+                0, int(assets_raw.get("events_retention_days", 90))),
+        )
 
         return AgentConfig(
             home=agent_section.get("home", "~/.trove"),
@@ -597,6 +631,7 @@ class ConfigLoader:
             budget=budget_conf,
             authz=authz_conf,
             masking=masking_conf,
+            assets=assets_conf,
             config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
             datasources=datasources,

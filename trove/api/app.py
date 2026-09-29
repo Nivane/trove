@@ -29,6 +29,8 @@ from trove.api.routers import (
 )
 from trove.core.errors import DatasourceError, SessionError
 from trove.core.logging import get_logger
+from trove.services.kb.governance import ExampleCertificationError
+from trove.services.kb.service import ExamplesFileUnreadable
 from trove.core.metrics import (
     MetricsTimer,
     http_inflight_dec,
@@ -256,6 +258,23 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     @app.exception_handler(DatasourceError)
     async def _datasource_error(request: Request, exc: DatasourceError) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    # KB 写入被拒(认证门不过 / examples.yml 读不通)。409 而不是 500:请求的
+    # 形状没问题,是**被写的对象当前不支持这次写入** —— 500 说"服务坏了",
+    # 会把人送去查日志;409 带着原因回去,调用方才知道要改哪里(SQL 换成只读、
+    # 或先把那个坏 YAML 修好)。两条都是 ValueError 子类,但**不**按 ValueError
+    # 兜底捕获:那是毯子,会把真正的编程错误也报成 409。
+    @app.exception_handler(ExampleCertificationError)
+    async def _certification_refused(
+        request: Request, exc: ExampleCertificationError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(ExamplesFileUnreadable)
+    async def _examples_unreadable(
+        request: Request, exc: ExamplesFileUnreadable,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     # ── Middleware ──────────────────────────────────────────────
     # 装饰器后加的在外层:request-id 最外(所有路径都带响应头/日志关联),

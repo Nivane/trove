@@ -2192,6 +2192,9 @@ class SessionManager:
             "row_count": final.row_count,
             "verdict": final.verdict,
             "reason": final.reason,
+            # 答案来源档位(output 节点判定;设计 §7.3):前端据此做视觉区分,
+            # 传输层(``sse.with_answer_source``)还会把它提到事件顶层。
+            "answer_source": final.answer_source,
             "error": final.error,
             "error_info": final.error_info,
             "kb_hits": final.kb_hits,

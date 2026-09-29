@@ -360,6 +360,11 @@ def match_fast_template(
                 "sql": hit.sql,
                 "question": hit.question,
                 "tags": list(hit.tags),
+                # 治理状态随命中一起交出去:输出层的答案来源档位(certified /
+                # generated)判的就是它,而 ExampleHit 到此为止 —— 下游只见得到
+                # 拍平后的 SQL。**交状态而不是交档位**:判定只该有一处
+                # (``agent/answer_source``),本节点是证据的产地,不是判官。
+                "status": hit.status,
             }
     return None
 
@@ -450,6 +455,10 @@ def make_fast_match(
                 "sql": sql,
                 "tags": m["tags"],
                 "source": "fast_path",
+                # 治理状态留在 kb_hits 里:输出层没有 ExampleHit,只能从这里读回
+                # 「命中的模板有没有人背书」。缺这个键 = 判定不出 = 保守标
+                # generated(I6),所以连 draft 也要照原样带出去,不能过滤成空。
+                "status": m["status"],
             }],
         }
 
