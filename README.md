@@ -295,7 +295,7 @@ cd frontend && npm run build              # 生产构建 → frontend/dist/
 运维端点(无鉴权、无敏感数据):
 
 - `GET /v1/health` — 真实依赖检查:探测内部存储与每个已连接数据源(`SELECT 1`),报告 LLM 配置存在性(不发起计费探测)。服务中返回 `200` + `"status": "ok" | "degraded"`;内部存储不可达返回 `503`。
-- `GET /v1/metrics` — Prometheus 文本格式:按路由/状态的 HTTP、按 provider/model 的 LLM 调用与 token、按数据源的 SQL 执行、in-flight 计数。
+- `GET /v1/metrics` — Prometheus 文本格式:按路由/状态的 HTTP、按 provider/model/status 的 LLM 调用次数与耗时(`trove_llm_calls_total` / `trove_llm_call_duration_seconds`)、按数据源的 SQL 执行、in-flight 计数。
 - `POST /v1/semantic/query` — 声明式语义查询 API:把结构化计划直接编译到语义模型,不经对话管线。
 - 每个响应携带 `X-Request-ID`,并出现在该请求的每一行日志里。
 - 客户端中止端到端取消:图任务被取消,适配器的驱动级中断被触发(sqlite3 / psycopg / MySQL `KILL QUERY` / duckdb)。
@@ -474,7 +474,7 @@ CI(`.github/workflows/backend.yml`)跑同一套测试(非 integration 档,零网
 
 ## 路标
 
-正在推进的方向与判据写在[能力地图的路标一节](https://nivane.github.io/trove/#road)——每条都给出「做到什么程度算做到了」,而不是日期。其中三条已经落地:漂移治理(结构层与引用层检测,并且区分「没漂移」和「没查成」)、行过滤(数据集级 `row_filter` 在编译期注入,快径与编译路径共用一份实现)、身份与字段级(执行前的表级授权门、LLM 前的字段级脱敏、以用户身份重放,以及审计与指标)。仍在路上的是已验证查询资产、语义分支评审、成本归因与不可信数据输入边界。
+正在推进的方向与判据写在[能力地图的路标一节](https://nivane.github.io/trove/#road)——每条都给出「做到什么程度算做到了」,而不是日期。八条里判据已经达成的有三条:**语义漂移治理**(结构层与引用层两条检测都在跑,并且区分「没漂移」和「没查成」)、**身份鉴权与字段脱敏**(执行前的表级授权门、LLM 前的字段级脱敏、以用户身份重放,以及审计与指标;数据集级 `row_filter` 在编译期注入,快径与编译路径共用一份实现)、**不可信数据输入边界**(值进入模型上下文只有模板渲染与工具回喂两条通道,隔离收在一个核上钉住,由 LLM 调用点清单枚举保证「第三条路不存在」)。仍在路上的是执行画像、已验证查询资产、可核验闭环、语义分支评审与成本归因。
 
 ## 参与贡献
 

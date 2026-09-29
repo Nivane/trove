@@ -751,7 +751,7 @@ docker compose up --build</code></pre>
             <tr>
               <td>字段级脱敏</td>
               <td>结果集在进模型上下文之前按语义层声明改写（partial / hash / null）；声明了 <code>hash</code> 却取不到 salt 即拒绝执行，不降级为明文。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/masking.py#L326">services/authz/masking.py:326 <span class="ref-line">Masker</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/masking.py#L327">services/authz/masking.py:327 <span class="ref-line">Masker</span></a></td>
             </tr>
             <tr>
               <td>不可信内容隔离</td>
@@ -927,7 +927,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         </div>
       </div>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">c3effbf</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: c3effbf</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">de8dbac</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: de8dbac</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>
