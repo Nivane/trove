@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 
@@ -156,6 +156,31 @@ def positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return n if n > 0 else None
+
+
+def timestamp_str(value: Any) -> str | None:
+    """时间戳 → ISO 字符串;不可得 → ``None``(同 ``positive_int`` 的时间形式)。
+
+    两个坑都属于「用某个字面量冒充了一个值」:
+
+    * **MySQL 的零日期** ``0000-00-00 00:00:00`` 是它表示「没设置」的写法。
+      放过去会流进 ``freshness`` 的 ``min()``,把整片数据的截止时间拉到公元 0 年
+      —— 而且格式正确、看不出来。
+    * **驱动给的是对象不是字符串**:aiomysql / psycopg 对 DATETIME 列返回
+      ``datetime``。直接塞进 ``as_of: str`` 会得到 repr,比 ``None`` 更糟 ——
+      它长得像有值。
+
+    引擎给的**字符串原样带出**:覆盖各家方言的格式要写解析器,猜错的代价是谎报
+    一个更精确的时间;原样带出不会比真实值更新(比较方向见 ``freshness``)。
+    """
+    if isinstance(value, date):  # datetime 是 date 的子类,一起命中
+        return value.isoformat()
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text.startswith("0000-00-00"):
+        return None
+    return text
 
 
 @dataclass

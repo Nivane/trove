@@ -316,3 +316,84 @@ class TestMySQLIntegration:
             await cur.execute(f"DROP DATABASE IF EXISTS `{test_db}`")
             await cur.close()
             admin.close()
+
+
+class TestMySQLProfile:
+    """MySQL 的画像字段(执行画像 §8.2 B / §14.12)。
+
+    两个字段都有**官方文档写明的失效方式**,所以这里的测试是照着文档写的:
+
+    * ``DATA_LENGTH``:For InnoDB, it is "the approximate amount of space
+      allocated for the clustered index" —— 对 InnoDB 就是表本身,量纲与
+      PG 的 ``pg_relation_size`` 对齐(都只算数据,不算二级索引)。
+    * ``UPDATE_TIME``:"displays a timestamp value for the last UPDATE, INSERT,
+      or DELETE performed on InnoDB tables **that are not partitioned**",
+      而且 "Timestamps are not persisted when the server is restarted or when
+      the table is evicted from the InnoDB data dictionary cache."
+      → 缺失是常态,不是异常;缺失时必须说「不可得」。
+    """
+
+    async def test_missing_stats_are_none_not_zero(self, monkeypatch):
+        """``TABLE_ROWS`` 为 NULL(统计没收集)时不能报 0。
+
+        存量在**源头**就同形了 —— SQL 写着 ``IFNULL(TABLE_ROWS, 0)``:
+        「统计缺失」和「空表」在到达适配器之前就已经长得一模一样,下游再怎么
+        归一也分不出。修法是把 NULL 原样带出来。
+        """
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),          # connect: SELECT VERSION()
+            ([[("t", None)], []], None, None),   # 画像表清单 + 列(空)
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        schema = await adapter.get_schema()
+        assert schema.tables[0].row_count_estimate is None
+
+        sql = " ".join(s for c in conn.cursors for s, _ in c.executed)
+        assert "IFNULL" not in sql
+
+    async def test_profile_reports_bytes_and_last_modified(self, monkeypatch):
+        from datetime import datetime
+
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),          # connect: SELECT VERSION()
+            ([
+                [("events", 5_000_000, 12 * 1024**3, datetime(2026, 9, 28, 3, 15, 9))],
+            ], None, None),                      # table_profiles
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        p = (await adapter.table_profiles())["events"]
+        assert p.row_count == 5_000_000
+        assert p.bytes == 12 * 1024**3
+        assert p.last_modified == "2026-09-28T03:15:09"
+
+        sql = " ".join(s for c in conn.cursors for s, _ in c.executed)
+        assert "DATA_LENGTH" in sql
+        assert "UPDATE_TIME" in sql
+
+    async def test_absent_timestamps_are_not_values(self, monkeypatch):
+        """分区表 / 从未更新 / 零日期 —— 三种「没值」都要落到 ``None``。
+
+        零日期那一行是本测试的重点:``0000-00-00 00:00:00`` 读起来像一个值,
+        放过去会流进 ``freshness`` 的 ``min()``,把整片数据的截止时间拉到公元
+        0 年 —— 格式还是对的,用户看不出来。
+        """
+        conn = FakeConn(cursor_specs=[
+            ([["8.0.36"]], None, None),          # connect: SELECT VERSION()
+            ([
+                [("partitioned", 100, 4096, None),
+                 ("never_updated", 100, 4096, "0000-00-00 00:00:00")],
+            ], None, None),                      # table_profiles
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        profiles = await adapter.table_profiles()
+        for name in ("partitioned", "never_updated"):
+            assert profiles[name].last_modified is None, name
+            assert profiles[name].bytes == 4096, name
+        # 时间戳缺了,但**能力还在** —— 「这张表没有值」不是「这个库给不出」
+        assert "last_modified" in profiles["partitioned"].capabilities

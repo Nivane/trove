@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import Any
 
 from trove.core.types import (
@@ -20,6 +21,9 @@ from trove.core.types import (
     QueryResult,
     SchemaInfo,
     TableInfo,
+    TableProfile,
+    positive_int,
+    timestamp_str,
 )
 from trove.core.errors import DatasourceError, SQLExecutionError
 from trove.core.logging import get_logger
@@ -44,10 +48,21 @@ class MySQLAdapter(DatabaseAdapter):
     default_port = DEFAULT_PORT
     driver_hint = "`uv sync --extra mysql`"
 
-    # get_schema 取 information_schema.TABLES 的 TABLE_ROWS;注意它的 SQL 写了
-    # IFNULL(TABLE_ROWS, 0) —— 「统计缺失」与「空表」在**源头**就同形,靠
-    # positive_int 在画像侧一次性归一到「没有依据」。
-    profile_capabilities = frozenset({"row_count"})
+    # get_schema 取 information_schema.TABLES 的 row_count / DATA_LENGTH /
+    # UPDATE_TIME。三者都有文档写明的失效方式 —— 行数在统计未收集时是 NULL、
+    # 字节数只算聚簇索引、时间戳只对非分区 InnoDB 表给值且重启后不持久 ——
+    # 所以一律经 positive_int / timestamp_str 归一:不可得就是 None。
+    profile_capabilities = frozenset({"row_count", "bytes", "last_modified"})
+
+    #: 画像的额外列:(SQL 列名, 字段名, 取值归一函数)。
+    #: **声明与实现同源** —— ``table_profiles`` 从这个元组生成 SELECT 列清单。
+    #: 继承者若给不出这些列(Doris 的 information_schema 是 FE 虚拟表,这两列
+    #: 的值无从验证),把它清空即可,连查都不会去查 —— 免得能力矩阵说没有、
+    #: 实现照样去查、值再流进 data_as_of。
+    _PROFILE_COLS: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
+        ("DATA_LENGTH", "bytes", positive_int),
+        ("UPDATE_TIME", "last_modified", timestamp_str),
+    )
 
     def __init__(self, name: str = "mysql", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
@@ -222,7 +237,7 @@ class MySQLAdapter(DatabaseAdapter):
         cursor = await self._conn.cursor()
         try:
             await cursor.execute(
-                "SELECT TABLE_NAME, IFNULL(TABLE_ROWS, 0) FROM information_schema.TABLES "
+                "SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES "
                 "WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME"
             )
             table_rows = await cursor.fetchall()
@@ -248,7 +263,8 @@ class MySQLAdapter(DatabaseAdapter):
                     name=tname,
                     schema=str(self.config.get("database", "")),
                     columns=columns,
-                    row_count_estimate=int(row_count or 0),
+                    # 原样带出 NULL —— 「统计缺失」与「空表」必须是两个值
+                    row_count_estimate=positive_int(row_count),
                 ))
         except DatasourceError:
             raise
@@ -261,6 +277,44 @@ class MySQLAdapter(DatabaseAdapter):
             await cursor.close()
 
         return SchemaInfo(tables=tables)
+
+    async def table_profiles(self) -> dict[str, TableProfile]:
+        """画像:行数 + 表字节数 + 最近写入时间(§8.2 B 的方言实现)。
+
+        一次 ``information_schema.TABLES`` 拿全。**不与 ``get_schema`` 合并**:
+        列信息是每表一次 ``COLUMNS`` 查询,画像要的三个量一次就够,合并等于每次
+        刷新都付一遍架构内省的钱(§10)。
+
+        ``UPDATE_TIME`` 取到值时是**下界**(I_S 的统计列默认缓存 24h,change
+        buffer 又会让它偏旧),方向安全:宁可说「数据截至更早」,不可说更新。
+        """
+        await self._ensure_connected()
+        caps = self.profile_capabilities
+        cols = ["TABLE_NAME", "TABLE_ROWS", *(c for c, _, _ in self._PROFILE_COLS)]
+
+        cursor = await self._conn.cursor()
+        try:
+            await cursor.execute(
+                f"SELECT {', '.join(cols)} FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME"
+            )
+            rows = await cursor.fetchall()
+        except Exception as e:
+            raise DatasourceError(
+                message=f"{self.label} profile introspection failed: {e}",
+                datasource=self.name,
+            ) from e
+        finally:
+            await cursor.close()
+
+        out: dict[str, TableProfile] = {}
+        for row in rows:
+            name, table_rows, *extras = row
+            fields: dict[str, Any] = {"row_count": positive_int(table_rows)}
+            for (_, field, coerce), raw in zip(self._PROFILE_COLS, extras):
+                fields[field] = coerce(raw)
+            out[str(name)] = TableProfile(table=str(name), capabilities=caps, **fields)
+        return out
 
     async def get_capabilities(self) -> Capabilities:
         try:

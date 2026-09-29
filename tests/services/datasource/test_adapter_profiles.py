@@ -130,7 +130,24 @@ class TestAdapterCapabilityMatrix:
     """六个适配器各自声明什么 —— **矩阵是显式的,不是推出来的**。
 
     这既是能力矩阵本身,也是防回归:新加适配器忘了声明时,这里会红。
+
+    逐条写死而不是「推」,是因为这张矩阵是**承诺书**:下游照它决定要不要依赖
+    某个字段、运维照它决定往哪儿修。写死的代价是改的时候要动测试 —— 那正是
+    我们想要的摩擦。
     """
+
+    #: 适配器 → 它实现的字段采集。
+    EXPECTED = {
+        SQLiteAdapter: {"row_count"},
+        DuckDBAdapter: {"row_count"},
+        PostgresAdapter: {"row_count", "bytes", "last_analyzed"},
+        MySQLAdapter: {"row_count", "bytes", "last_modified"},
+        DorisAdapter: {"row_count"},
+        ClickHouseAdapter: {
+            "row_count", "bytes", "partition_column",
+            "partition_count", "latest_partition",
+        },
+    }
 
     @pytest.mark.parametrize(
         "adapter_cls",
@@ -144,14 +161,35 @@ class TestAdapterCapabilityMatrix:
             "却没有声明 row_count —— 未声明会让调用方以为这个库给不出行数"
         )
 
-    def test_clickhouse_goes_beyond_the_schema_baseline(self):
-        """ClickHouse 的 ``system.tables`` 同一次查询里就有 ``total_bytes``。
+    @pytest.mark.parametrize("adapter_cls,expected", EXPECTED.items())
+    def test_the_declared_field_set_is_exactly_this(self, adapter_cls, expected):
+        assert set(adapter_cls.profile_capabilities) == expected
 
-        这是逐 adapter 实现的**收益**:统一查 information_schema 的路线在
-        ClickHouse 上连表都没有,只能退化成「支持最小的那个」(§8.2 A 的否决理由)。
+    def test_doris_narrows_what_it_inherits(self):
+        """Doris 走 MySQL 协议 → 继承 ``MySQLAdapter``。**能力矩阵不跟着继承。**
+
+        ``DATA_LENGTH`` / ``UPDATE_TIME`` 在 Doris 上是 FE 虚拟表里的列,值的
+        行为无从验证(§8.2 B 只声明验证过的)。默认全拿就是替它承诺两个没人验过
+        的字段 —— 而 ``UPDATE_TIME`` 一旦给垃圾值,就会变成对外的 ``data_as_of``。
         """
-        assert "bytes" in ClickHouseAdapter.profile_capabilities
-        assert "bytes" not in MySQLAdapter.profile_capabilities  # 尚未实现
+        assert DorisAdapter.profile_capabilities < MySQLAdapter.profile_capabilities
+        assert DorisAdapter._PROFILE_COLS == ()
+
+    def test_postgres_declares_no_last_modified(self):
+        """PG 的目录里**没有**「数据最后修改时间」这个字段,所以不声明。
+
+        它有 ``last_analyze`` —— 那是「什么时候统计的」。拿近义字段顶替是最好
+        蒙混的一种谎:值是真的,含义是错的。两个字段各自的含义就写在这里。
+        """
+        assert "last_modified" not in PostgresAdapter.profile_capabilities
+        assert "last_analyzed" in PostgresAdapter.profile_capabilities
+
+    @pytest.mark.parametrize("adapter_cls", [MySQLAdapter, DorisAdapter])
+    def test_the_mysql_family_declares_exactly_what_its_query_selects(self, adapter_cls):
+        """声明与实现同源 —— 矩阵里多一个字段,SQL 就得跟着多一列,反之亦然。"""
+        declared = set(adapter_cls.profile_capabilities)
+        selected = {"row_count"} | {field for _, field, _ in adapter_cls._PROFILE_COLS}
+        assert declared == selected
 
 
 # ── ClickHouse:第一处超出基线的方言实现 ───────────────────
@@ -170,7 +208,10 @@ class FakeClient:
 
     def query(self, sql, parameters=None):
         self.queries.append((sql, parameters))
-        return self._scripted.pop(0) if self._scripted else FakeResult([], [])
+        item = self._scripted.pop(0) if self._scripted else FakeResult([], [])
+        if isinstance(item, Exception):  # 让测试能脚本化"这条查询自己挂了"
+            raise item
+        return item
 
     def close(self):
         self.closed = True
@@ -198,8 +239,9 @@ def _ch_adapter(monkeypatch, scripted):
 class TestClickHouseProfile:
     async def test_reports_bytes_alongside_rows(self, monkeypatch):
         adapter, client = _ch_adapter(monkeypatch, [
-            FakeResult(["name", "total_rows", "total_bytes"],
-                       [("events", 5_000_000, 12 * 1024**3)]),
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("events", 5_000_000, 12 * 1024**3, "")]),
+            FakeResult(["table", "partition_count", "latest_partition"], []),
         ])
         adapter._connected = True
         adapter._client = client
@@ -207,25 +249,39 @@ class TestClickHouseProfile:
         profiles = await adapter.table_profiles()
         assert profiles["events"].row_count == 5_000_000
         assert profiles["events"].bytes == 12 * 1024**3
-        assert profiles["events"].capabilities == frozenset({"row_count", "bytes"})
+        assert profiles["events"].capabilities == frozenset({
+            "row_count", "bytes", "partition_column",
+            "partition_count", "latest_partition",
+        })
 
-    async def test_one_query_for_the_whole_schema(self, monkeypatch):
-        """批量取,不是每张表一个往返 —— 画像是增强,不该拖慢主链路(§10)。"""
+    async def test_constant_round_trips_not_one_per_table(self, monkeypatch):
+        """批量取:**常数次**往返(两次系统表查询),不是每张表一次。
+
+        画像是增强,不该拖慢主链路(§10)。两次而不是一次是因为行数/字节在
+        ``system.tables``、分区在 ``system.parts``,两个来源互不依赖 —— 合成
+        一个 JOIN 会让分区块的失败连带丢掉行数(见下面那条降级测试)。
+        """
         adapter, client = _ch_adapter(monkeypatch, [
-            FakeResult(["name", "total_rows", "total_bytes"],
-                       [("a", 1, 10), ("b", 2, 20)]),
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("a", 1, 10, ""), ("b", 2, 20, "")]),
+            FakeResult(["table", "partition_count", "latest_partition"], []),
         ])
         adapter._connected = True
         adapter._client = client
 
         await adapter.table_profiles()
-        assert len(client.queries) == 1
+        assert len(client.queries) == 2
 
     async def test_null_engine_stats_yield_none_not_zero(self, monkeypatch):
-        """ClickHouse 对从未写入过的表返回 0/None —— 两者都当**没有依据**。"""
+        """ClickHouse 对从未写入过的表返回 0/None —— 两者都当**没有依据**。
+
+        ``total_rows`` / ``total_bytes`` 都是 ``Nullable``(「取不到就是 NULL」),
+        用 0 冒充「已知」会把一条扫全表的查询判成零成本。
+        """
         adapter, client = _ch_adapter(monkeypatch, [
-            FakeResult(["name", "total_rows", "total_bytes"],
-                       [("empty", 0, 0), ("nulled", None, None)]),
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("empty", 0, 0, ""), ("nulled", None, None, "")]),
+            FakeResult(["table", "partition_count", "latest_partition"], []),
         ])
         adapter._connected = True
         adapter._client = client
@@ -235,3 +291,94 @@ class TestClickHouseProfile:
         assert profiles["nulled"].bytes is None
         # 字段没有值 ≠ 能力不存在(见 TestBaseContract 的第一条)
         assert "bytes" in profiles["empty"].capabilities
+
+    async def test_reports_partitions(self, monkeypatch):
+        """分区是 ClickHouse 上**唯一**诚实的新鲜度信号(§8.4 A)。
+
+        ``last_modified`` 在这个引擎上反映的是元数据变更(加了个分区、改了
+        TTL),不代表数据到哪儿了;而 ``system.parts.partition`` 就是分区键的
+        取值 —— ``toYYYYMM(dt)`` 之下就是 ``202609``。
+        """
+        adapter, client = _ch_adapter(monkeypatch, [
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("events", 5_000_000, 12 * 1024**3, "toYYYYMM(dt)")]),
+            FakeResult(["table", "partition_count", "latest_partition"],
+                       [("events", 30, "202609")]),
+        ])
+        adapter._connected = True
+        adapter._client = client
+
+        p = (await adapter.table_profiles())["events"]
+        assert p.partition_column == "toYYYYMM(dt)"
+        assert p.partition_count == 30
+        assert p.latest_partition == "202609"
+        assert p.last_modified is None  # 不拿元数据变更时间冒充数据时间
+
+    async def test_unpartitioned_tables_carry_no_partition_facts(self, monkeypatch):
+        """没分区的表在 ``system.parts`` 里的分区名是 ``tuple()`` —— 那是**哨兵**,
+        不是值。
+
+        放过去就是 I5 的反面:``freshness`` 会把字面量 ``tuple()`` 当成截止时间
+        报给用户,而那比 ``null`` 更糟 —— 它看起来是个答案。
+        """
+        adapter, client = _ch_adapter(monkeypatch, [
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("plain", 100, 4096, "")]),
+            FakeResult(["table", "partition_count", "latest_partition"],
+                       [("plain", 1, "tuple()")]),
+        ])
+        adapter._connected = True
+        adapter._client = client
+
+        p = (await adapter.table_profiles())["plain"]
+        assert p.row_count == 100
+        assert p.bytes == 4096
+        assert p.partition_column is None
+        assert p.partition_count is None
+        assert p.latest_partition is None
+
+    async def test_multi_expression_partition_keys_have_no_latest(self, monkeypatch):
+        """分区键是多个表达式时,**不给** ``latest_partition``。
+
+        ``max(partition)`` 是字符串比较。单键时 ``202609`` 这种取值可比;多键时
+        ``partition`` 是 ``('202609', 'apac')`` 这样的序列化元组,取最大值得到的
+        是任意一个分区,而不是最新的那个 —— 报出去就是把一个随机分区说成数据的
+        截止点。分区**数量**不受影响,照报。
+
+        判据是纯语法的(分区键里有逗号),不做日期嗅探(§14.10 的同类理由):
+        误判方向只能是"少报一个 latest_partition",即低估。
+        """
+        adapter, client = _ch_adapter(monkeypatch, [
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("multi", 100, 4096, "(toYYYYMM(dt), region)")]),
+            FakeResult(["table", "partition_count", "latest_partition"],
+                       [("multi", 2, "('202609', 'apac')")]),
+        ])
+        adapter._connected = True
+        adapter._client = client
+
+        p = (await adapter.table_profiles())["multi"]
+        assert p.partition_count == 2
+        assert p.latest_partition is None
+        assert p.partition_column == "(toYYYYMM(dt), region)"
+
+    async def test_a_broken_parts_query_keeps_the_cheap_fields(self, monkeypatch):
+        """分区查询失败(权限/版本)→ 退到"没有分区信息",**不丢掉行数与字节**。
+
+        这里刻意**不**整体失败:``system.parts`` 是这条链上更贵的那个查询,
+        失败了不该把已经拿到的行数/字节一起扔了 —— 那会让第 2 档整个失效、
+        直接掉到保守预算。少一个字段不是放行:估算与预算照旧生效。
+        """
+        adapter, client = _ch_adapter(monkeypatch, [
+            FakeResult(["name", "total_rows", "total_bytes", "partition_key"],
+                       [("events", 5_000_000, 12 * 1024**3, "toYYYYMM(dt)")]),
+            RuntimeError("system.parts: Access denied"),
+        ])
+        adapter._connected = True
+        adapter._client = client
+
+        p = (await adapter.table_profiles())["events"]
+        assert p.row_count == 5_000_000
+        assert p.bytes == 12 * 1024**3
+        assert p.partition_count is None
+        assert p.latest_partition is None

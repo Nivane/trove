@@ -21,6 +21,9 @@ from trove.core.types import (
     QueryResult,
     SchemaInfo,
     TableInfo,
+    TableProfile,
+    positive_int,
+    timestamp_str,
 )
 from trove.core.errors import DatasourceError, SQLExecutionError
 from trove.core.logging import get_logger
@@ -64,8 +67,11 @@ def _conninfo(config: dict[str, Any], credentials: dict[str, str] | None = None)
 class PostgresAdapter(DatabaseAdapter):
     """PostgreSQL database adapter via psycopg (async)."""
 
-    # get_schema 取 pg_class.reltuples。
-    profile_capabilities = frozenset({"row_count"})
+    # 三处来源:pg_class.reltuples(行数)、pg_relation_size(字节)、
+    # pg_stat_user_tables.last_analyze(统计收集时间)。
+    # **没有 last_modified**:PG 的目录里没有「数据最后修改时间」这个字段,
+    # 不拿 last_analyze 顶替 —— 那是「什么时候统计的」,不是「数据到哪儿了」。
+    profile_capabilities = frozenset({"row_count", "bytes", "last_analyzed"})
 
     def __init__(self, name: str = "postgres", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
@@ -211,7 +217,9 @@ class PostgresAdapter(DatabaseAdapter):
                         name=tname,
                         schema=str(self.config.get("database", "")),
                         columns=columns,
-                        row_count_estimate=int(row_count or 0),
+                        # reltuples 在「从未 VACUUM/ANALYZE 过」时是 -1(官方
+                        # 文档的哨兵),不是 0 —— 原样透出会让 catalog 报 -1 行。
+                        row_count_estimate=positive_int(row_count),
                     ))
         except DatasourceError:
             raise
@@ -222,6 +230,55 @@ class PostgresAdapter(DatabaseAdapter):
             ) from e
 
         return SchemaInfo(tables=tables)
+
+    async def table_profiles(self) -> dict[str, TableProfile]:
+        """画像:行数 + 表字节数 + 统计收集时间(§8.2 B 的方言实现)。
+
+        **不与 ``get_schema`` 合并**:``get_schema`` 的列信息是每表一个往返,
+        而画像要的三个量一次目录扫描就够。合并看着省事,代价是每次画像刷新
+        (TTL 5min)都付一遍架构内省的钱(§10)。
+
+        ``pg_relation_size`` 而不是 ``pg_total_relation_size``:后者含索引与
+        TOAST,而这里要的是「顺序读这张表要碰多少字节」的量纲。用总量会高估一次
+        不带索引的扫描。
+
+        分区表(``relkind = 'p'``)本身没有存储,行数与字节都会是「没有依据」;
+        真正的量在各分区上 —— 分区是 ``relkind = 'r'``,和普通表一起出现在
+        结果里。
+        """
+        await self._ensure_connected()
+        caps = self.profile_capabilities
+        try:
+            async with self._conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT c.relname, c.reltuples::bigint AS row_count, "
+                    "pg_relation_size(c.oid) AS bytes, "
+                    "s.last_analyze "
+                    "FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid "
+                    "WHERE n.nspname = current_schema() AND c.relkind = 'r' "
+                    "ORDER BY c.relname"
+                )
+                rows = await cur.fetchall()
+        except DatasourceError:
+            raise
+        except Exception as e:
+            raise DatasourceError(
+                message=f"PostgreSQL profile introspection failed: {e}",
+                datasource=self.name,
+            ) from e
+
+        return {
+            str(name): TableProfile(
+                table=str(name),
+                row_count=positive_int(row_count),
+                bytes=positive_int(size),
+                last_analyzed=timestamp_str(last_analyzed),
+                capabilities=caps,
+            )
+            for name, row_count, size, last_analyzed in rows
+        }
 
     async def get_capabilities(self) -> Capabilities:
         return Capabilities(

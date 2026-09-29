@@ -162,3 +162,38 @@ class TestDorisAdapter:
         with pytest.raises(DatasourceError) as exc_info:
             await adapter.connect()
         assert "uv sync --extra doris" in str(exc_info.value)
+
+
+class TestDorisProfile:
+    """Doris **显式收窄**它继承来的画像能力(§8.2 B)。
+
+    Doris 走 MySQL 协议,所以 ``DorisAdapter(MySQLAdapter)`` —— 继承带来一个
+    默认全拿的画像实现。但 §8.2 B 要的是**逐方言实现 + 显式声明**,继承必须
+    是「显式收窄」:
+
+    * ``DATA_LENGTH`` / ``UPDATE_TIME`` 在 Doris 上住在 FE 的
+      ``information_schema`` 虚拟表里,值的行为**无从验证**(没有实例可证)。
+      能力矩阵替它承诺一个没人验过的字段,就是那句「支持最小的那个」的反面
+      —— 声明得比实际能给的更多。
+    * 其中 ``UPDATE_TIME`` 更危险:它一旦返回垃圾值(而不是 NULL),就会流进
+      ``freshness`` 被当成**数据的截止时间**报给用户(I5)。
+    """
+
+    async def test_only_row_count_is_declared_and_queried(self, monkeypatch):
+        conn = FakeConn([
+            ([("3.0.1",)], None),        # connect → SELECT VERSION()
+            ([], None),                  # 画像前置 _ping_reconnect → SELECT 1
+            ([[("students", 1000)]], None),  # table_profiles
+        ])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        profiles = await adapter.table_profiles()
+        assert profiles["students"].row_count == 1000
+        assert profiles["students"].capabilities == frozenset({"row_count"})
+        assert profiles["students"].bytes is None
+        assert profiles["students"].last_modified is None
+
+        sql = " ".join(s for c in conn.cursors for s, _ in c.executed)
+        assert "DATA_LENGTH" not in sql
+        assert "UPDATE_TIME" not in sql

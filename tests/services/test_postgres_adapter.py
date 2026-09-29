@@ -267,3 +267,67 @@ class TestPostgresIntegration:
             async with admin.cursor() as cur:
                 await cur.execute(f'DROP DATABASE IF EXISTS "{test_db}"')
             await admin.close()
+
+
+class TestPostgresProfile:
+    """PostgreSQL 的画像字段(执行画像 §8.2 B / §14.12)。
+
+    这一档要的两个字段都有**官方文档背书的哨兵值**,不是猜的:
+
+    * ``pg_class.reltuples``:「If the table has never yet been vacuumed or
+      analyzed, reltuples contains -1 indicating that the row count is unknown.」
+      存量写 ``int(row_count or 0)`` —— -1 是真值,于是**对外报 -1 行**:
+      ``catalog`` 原样透出、检索文档写成 ``(approx -1 rows)``、``refuse`` 的
+      自动执行阈值拿 ``-1 > 上限`` 判成「小表」。方向恰好是放宽。
+    * ``pg_stat_user_tables.last_analyze``:没收集过统计就是 NULL。它同时是
+      「上面那个行数为什么不作数」的**说明** —— 所以是独立字段,不是装饰。
+    """
+
+    async def test_missing_stats_are_none_not_negative(self, monkeypatch):
+        conn = FakeConn(cursor_specs=[([
+            [("never_analyzed", -1)],
+            [("id", "integer", "NO", "PRI")],
+        ], None, None)])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        schema = await adapter.get_schema()
+        assert schema.tables[0].row_count_estimate is None
+
+    async def test_profile_reports_bytes_and_last_analyzed(self, monkeypatch):
+        from datetime import datetime
+
+        conn = FakeConn(cursor_specs=[([
+            [("events", 5_000_000, 12 * 1024**3, datetime(2026, 9, 20, 8, 0))],
+        ], None, None)])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        p = (await adapter.table_profiles())["events"]
+        assert p.row_count == 5_000_000
+        assert p.bytes == 12 * 1024**3
+        assert p.last_analyzed == "2026-09-20T08:00:00"
+        # PG 的目录里**没有**「数据最后修改时间」这个字段:不声明,也不编一个。
+        assert p.last_modified is None
+
+        sql = " ".join(s for c in conn.cursors for s, _ in c.executed)
+        assert "pg_relation_size" in sql
+        assert "last_analyze" in sql
+
+    async def test_bytes_survive_where_row_counts_do_not(self, monkeypatch):
+        """没 analyze 的表:行数与统计时间都没有,但**字节数还在**。
+
+        这是两条来源的差别,不是遗漏:``pg_relation_size`` 读的是文件系统的
+        事实,不依赖统计收集。成本轨因此在统计缺失时仍有一个真实的量纲可用,
+        不必直接掉到保守预算 —— 降级链的第 2 档本来就是为这种时刻准备的。
+        """
+        conn = FakeConn(cursor_specs=[([
+            [("ghost", -1, 8 * 1024 * 1024, None)],
+        ], None, None)])
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        p = (await adapter.table_profiles())["ghost"]
+        assert p.row_count is None
+        assert p.bytes == 8 * 1024 * 1024
+        assert p.last_analyzed is None

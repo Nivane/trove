@@ -132,6 +132,44 @@ class TestDuckDBAdapter:
         executed = " ".join(sql for sql, _ in conn.executed)
         assert "PRAGMA table_info" in executed
 
+    async def test_an_exactly_counted_empty_table_stays_zero(self, monkeypatch):
+        """精确计数为 0 时**保持 0** —— 这是本方言与另外几个的分别。
+
+        §14.12 记的是「四个适配器把不知道写成了 0」;读代码之后不成立的是
+        duckdb 这一条:它跑的是 ``SELECT COUNT(*)``(精确值),``COUNT(*)``
+        不会返回 NULL,0 就是真值「这张表是空的」。把真值抹成 ``None`` 是另一种
+        谎 —— 而且为了一个不会发生的 NULL 去改,代价是让这条路径多一个可能抛
+        异常的分支(``int(None)``),它跑在查询主链路上,不能失败。
+
+        真正把 0 当「没有依据」的是**画像层**(``positive_int``):它不知道、
+        也不该知道这个值是精确的还是统计估算的,判据只有「正数才算依据」。
+        代价是一条打在空表上的查询被加 LIMIT —— 方向安全。
+
+        这是**特征测试**:写下来时它就是绿的,作用是钉住这条刻意的非对称,
+        免得下一个人照着「0 不是依据」把它顺手改掉。
+        """
+        def one_pass():
+            # duckdb_tables() → count(*) → PRAGMA table_info,一轮一次架构内省
+            return [
+                FakeRelation([("table_name",)], [("empty_t",)]),
+                FakeRelation([("count",)], [(0,)]),
+                FakeRelation(
+                    [("cid",), ("name",), ("type",), ("notnull",), ("dflt",), ("pk",)],
+                    [(0, "id", "INTEGER", True, None, False)],
+                ),
+            ]
+
+        conn = FakeConn(one_pass() + one_pass())
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+
+        table = (await adapter.get_schema()).tables[0]
+        assert table.row_count_estimate == 0  # 真值:这张表就是空的
+
+        # table_profiles 的基线实现复用 get_schema → 再走一轮
+        profiles = await adapter.table_profiles()
+        assert profiles["empty_t"].row_count is None  # 画像层:不作为依据
+
     async def test_get_capabilities(self, monkeypatch):
         adapter, _ = make_adapter(monkeypatch)
         caps = await adapter.get_capabilities()

@@ -27,6 +27,13 @@ class DorisAdapter(MySQLAdapter):
     default_port = DEFAULT_PORT
     driver_hint = "`uv sync --extra doris`"
 
+    # 画像能力**显式收窄**:继承 MySQL 的实现,但不继承它的能力矩阵。
+    # DATA_LENGTH / UPDATE_TIME 在 Doris 上是 FE 虚拟表里的列,值的行为无从
+    # 验证(§8.2 B:声明只写验证过的),而 UPDATE_TIME 一旦给垃圾值就会变成
+    # 对外的 data_as_of。清空 _PROFILE_COLS 之后连查都不会去查。
+    profile_capabilities = frozenset({"row_count"})
+    _PROFILE_COLS: tuple = ()
+
     def __init__(self, name: str = "doris", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
 
