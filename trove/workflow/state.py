@@ -74,6 +74,24 @@ class WorkflowState(BaseModel):
     # 管理员会话位(由 SessionManager 注入):gate 对话内草稿确认等管理动作。
     is_admin: bool = False
 
+    # 提问者的授权主体 —— **wire 形状**(见 authz/policy.principal_to_wire),
+    # 由 SessionManager 从已鉴权的请求注入。执行层强制点
+    # (authz/enforcer.Authorizer)读它做执行前的最后一道判定。
+    #
+    # **刻意不存 Principal dataclass**:state 每个超级步都过 checkpointer 一次
+    # 序列化,而未注册的 dataclass 会被 JsonPlusSerializer 降级成普通 dict
+    # (LANGGRAPH_STRICT_MSGPACK=true 下直接拦)。降级后的 dict 没有
+    # .allows_datasource(),而那是判定点唯一要调的东西 —— 安全判定点不该拿到
+    # 意料之外的形状。同 contract.py 的取舍。
+    #
+    # None = **没有主体** → 执行层拒绝(I2/I7),不是「不设限」。
+    principal: dict[str, Any] | None = None
+
+    # 执行层判定的快照(authz/enforcer.AuthzDecision 的 dict 形态),供审计与
+    # 可观测。**只读快照,不参与判定** —— 判定一律用 principal 现算,拿旧结论
+    # 复用等于把判定变成一次性的。
+    authz_decision: dict[str, Any] | None = None
+
     # 交互语言(配置驱动: config.language,zh/en;不按问题语言检测)
     lang: str = "zh"
 

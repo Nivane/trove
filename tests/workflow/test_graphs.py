@@ -14,6 +14,8 @@ from trove.workflow.graphs import (
     build_graphs,
 )
 
+from tests.helpers.authz import local_admin_principal  # noqa: E402
+
 VALID_SQL = "```sql\nSELECT name FROM students;\n```"
 INVALID_SQL = "```sql\nSELEC * FROM students;\n```"
 
@@ -76,6 +78,11 @@ def make_services(llm, catalog=None, connectors=None, kb=None, config=None,
 
 def make_state(**kwargs):
     defaults = {"session_id": "s1", "question": "Average grade by county"}
+    # 本机可信身份(设计 §9.4 的夹具迁移)。这些用例跑的是**整图**,途中会过
+    # 执行前的授权门;没有主体时 I2 一律拒绝。此处给的是 CLI / 嵌入调用在
+    # 生产里真实持有的那条身份,不是给测试开的豁免口子 —— 拒绝路径的用例
+    # 显式传 principal=None。
+    defaults.setdefault("principal", local_admin_principal())
     defaults.update(kwargs)
     return WorkflowState(**defaults)
 

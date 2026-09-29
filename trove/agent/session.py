@@ -49,6 +49,7 @@ from trove.agent.tasks import (
 
 from trove.core.i18n import L
 from trove.prompts import render
+from trove.services.authz.policy import LOCAL_SUBJECT, Policy, principal_to_wire
 from trove.services.sql.format import format_sql
 from trove.workflow.state import WorkflowState
 
@@ -118,6 +119,52 @@ class SessionManager:
         await self._store.dispose()
         for task_store in self._task_stores.values():
             await task_store.dispose()
+
+    async def _principal_wire(self, session: Session) -> dict[str, Any] | None:
+        """本轮提问者的授权主体(wire 形状);``None`` = **没有主体** → 执行层拒绝。
+
+        **每次 ask 现算,不存进 Session。** grants 会变(管理台加/撤授权),而会话
+        会被持久化、能存活数天 —— 把主体钉在会话上等于让「撤权」对老会话永远
+        不生效,那是一个安静的提权窗口。路由层同样是每请求现算
+        (``deps.get_principal`` 缓存在 ``request.state`` 上,不是 session 上)。
+
+        形态取 ``authz.policy.principal_to_wire`` 的产物(dict),不是
+        ``Principal`` 本身 —— 理由见 ``WorkflowState.principal`` 的注释:state
+        每步都过一次 checkpointer 序列化,未注册的 dataclass 会被降级成 dict。
+
+        ``None`` 是 I7 的「没有依据」,**不是「不设限」**。要表示不设限只有两条
+        路:本机可信身份,或 ``role="admin"``(见 :class:`Principal` 的三行表)。
+
+        刻意**不采纳** ``ask(is_admin=...)`` 那个入参:它由调用方给出,而主体是
+        权限判定的依据。让一个入参就能把主体抬成 admin,等于给「绕过用户表提权」
+        开了个口子 —— 判定只认 auth 存储。
+        """
+        if self._auth is None:
+            # 没有 auth 服务(嵌入 / 测试 / 未启用多用户)→ 本机可信身份,与
+            # deps.NullAuth、mcp.build_mcp_server(identity=None) 同口径。
+            return principal_to_wire(Policy.local_admin())
+        uid = (session.user_id or "").strip()
+        if not uid:
+            return None
+        if uid == LOCAL_SUBJECT:
+            # Session.user_id 的默认值 —— 本地 CLI / stdio MCP 没有远程身份。
+            # 用户表主键是整数,真实用户撞不上这个字符串(见 LOCAL_SUBJECT)。
+            return principal_to_wire(Policy.local_admin())
+        try:
+            row = await self._auth.store.get_user_by_id(int(uid))
+        except (TypeError, ValueError):
+            return None  # 既不是用户 id 也不是本地哨兵 —— 无从判定,不猜
+        if row is None:
+            return None  # 用户已删除 / 建会话后被清理
+        # 取依据这步只走 Policy(全仓唯一的 get_datasources 调用点);存储故障
+        # 照抛不捕获 —— 基础设施故障不是授权结论(见 Policy.principal_for)。
+        # scopes 留空 = 不限:会话路径没有 token,与 scopes_allow 同语义。
+        principal = await Policy(self._auth).principal_for({
+            "id": row.get("id"),
+            "role": row.get("role") or "user",
+            "scopes": (),
+        })
+        return principal_to_wire(principal)
 
     async def _user_tool_roles(self, user_id: str | None) -> list[str] | None:
         """解析用户角色列表(工具 ACL 用);无 resolver/失败 → None = 全可见。"""
@@ -376,6 +423,7 @@ class SessionManager:
             user_id=session.user_id,
             tool_roles=await self._user_tool_roles(session.user_id),
             is_admin=is_admin,
+            principal=await self._principal_wire(session),
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -538,6 +586,7 @@ class SessionManager:
                 run_id=run_id,
                 user_id=session.user_id,
                 datasource=pending.get("datasource", ""),
+                principal=await self._principal_wire(session),
             )
             config = self._run_config(session, run_id, stub, workflow_name)
             config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
@@ -686,6 +735,7 @@ class SessionManager:
             user_id=session.user_id,
             tool_roles=await self._user_tool_roles(session.user_id),
             is_admin=is_admin,
+            principal=await self._principal_wire(session),
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -1666,6 +1716,7 @@ class SessionManager:
             auto_approve=auto_approve,
             datasource=datasource or "",
             user_id=session.user_id,
+            principal=await self._principal_wire(session),
             # 步骤间共享:继承上一步 schema linking 锚定的表(schema_linking
             # 节点会与本次新匹配合并,KB 检索与 C1 规则据此锚定)
             matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],

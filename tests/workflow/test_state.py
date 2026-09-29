@@ -3,6 +3,11 @@
 import pytest
 from pydantic import ValidationError
 
+from trove.services.authz.policy import (
+    Principal,
+    principal_from_wire,
+    principal_to_wire,
+)
 from trove.workflow.state import (
     WorkflowState,
     GenSQLState,
@@ -65,6 +70,59 @@ class TestWorkflowState:
         )
         restored = WorkflowState.model_validate_json(state.model_dump_json())
         assert restored == state
+
+
+class TestPrincipalFields:
+    """执行层强制点要在图内拿到主体 —— 形状必须跨得过 checkpointer。
+
+    设计 §6.2 原写 ``principal: Principal | None``,实测那是 ``contract.py``
+    记录过的坑(见 ``TestPrincipalWire``)。这里守的是**状态层的形状**:存进去
+    的是 wire 字典,跨过节点边界还是同一个 wire 字典,能原样还原成主体。
+    """
+
+    def test_defaults_to_no_principal(self):
+        state = WorkflowState(session_id="s1", question="q")
+        assert state.principal is None
+        assert state.authz_decision is None
+
+    def test_principal_wire_survives_json_round_trip(self):
+        p = Principal(subject="7", scopes=frozenset({"pii"}), grants=frozenset({"sales"}))
+        state = WorkflowState(
+            session_id="s1", question="q", principal=principal_to_wire(p),
+        )
+        restored = WorkflowState.model_validate_json(state.model_dump_json())
+        assert principal_from_wire(restored.principal) == p
+
+    def test_survives_the_real_checkpointer_serde(self):
+        """真 serde 往返,断言回来还是同一形态的 wire。"""
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        p = Principal(subject="7", grants=frozenset({"sales"}))
+        state = WorkflowState(
+            session_id="s1", question="q", principal=principal_to_wire(p),
+        )
+        serde = JsonPlusSerializer()
+        back = serde.loads_typed(serde.dumps_typed(state.model_dump()))
+        assert type(back["principal"]) is dict, "主体被降级/变形了"
+        assert principal_from_wire(back["principal"]) == p
+
+    def test_a_principal_object_is_rejected_at_construction(self):
+        """把 dataclass 直接塞进 state 要**当场**炸,而不是留到执行层才炸。
+
+        执行层拿到它时已经跨过 checkpointer,那时它可能已经是个普通 dict ——
+        报错的地方离出错的地方隔了整条链路。
+        """
+        with pytest.raises(ValidationError):
+            WorkflowState(session_id="s1", question="q", principal=Principal(subject="7"))
+
+    def test_authz_decision_is_a_plain_snapshot(self):
+        """决策快照是纯 JSON(供审计与可观测),不参与判定。"""
+        state = WorkflowState(
+            session_id="s1", question="q",
+            authz_decision={"allowed": False, "reason": "table", "narrowed_tables": ["salary"]},
+        )
+        restored = WorkflowState.model_validate_json(state.model_dump_json())
+        assert restored.authz_decision["narrowed_tables"] == ["salary"]
 
 
 class TestGenSQLState:

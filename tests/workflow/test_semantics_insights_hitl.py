@@ -12,6 +12,8 @@ from trove.workflow.nodes.insights import make_insights
 from trove.workflow.nodes.conclusion import make_conclusion
 from trove.workflow.state import WorkflowState
 
+from tests.helpers.authz import local_admin_principal
+
 
 class RecordingLLM:
     """Scripted LLM (content-only); records call messages."""
@@ -37,6 +39,11 @@ def make_state(**kwargs):
         "lang": "zh",
         "sql": "SELECT AVG(grade) FROM students;",
     }
+    # 本机可信身份(设计 §9.4 的夹具迁移)。这些用例跑的是**整图**,途中会过
+    # 执行前的授权门;没有主体时 I2 一律拒绝。此处给的是 CLI / 嵌入调用在
+    # 生产里真实持有的那条身份,不是给测试开的豁免口子 —— 拒绝路径的用例
+    # 显式传 principal=None。
+    defaults.setdefault("principal", local_admin_principal())
     defaults.update(kwargs)
     return WorkflowState(**defaults)
 

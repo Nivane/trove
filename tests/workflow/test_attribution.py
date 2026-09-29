@@ -34,6 +34,8 @@ from trove.workflow.nodes.attribution import (
 from trove.workflow.nodes.query_sketch import make_query_sketch
 from trove.workflow.nodes.output import output
 from trove.workflow.state import WorkflowState
+
+from tests.helpers.authz import local_admin_principal
 from trove.services.viz.spark import render_waterfall_ascii
 
 
@@ -331,6 +333,11 @@ def make_attr_state(**kwargs):
             "depth": 1,
         },
     }
+    # 本机可信身份(设计 §9.4 的夹具迁移)。这些用例跑的是**整图**,途中会过
+    # 执行前的授权门;没有主体时 I2 一律拒绝。此处给的是 CLI / 嵌入调用在
+    # 生产里真实持有的那条身份,不是给测试开的豁免口子 —— 拒绝路径的用例
+    # 显式传 principal=None。
+    defaults.setdefault("principal", local_admin_principal())
     defaults.update(kwargs)
     return WorkflowState(**defaults)
 

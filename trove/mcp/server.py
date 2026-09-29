@@ -41,7 +41,12 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from trove.services.authz.policy import Policy, Principal, visible_datasources
+from trove.services.authz.policy import (
+    LOCAL_SUBJECT,
+    Policy,
+    Principal,
+    visible_datasources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +84,22 @@ def build_mcp_server(
     sessions: dict[str, Any] = {}
 
     async def _get_session(session_id: str | None) -> tuple[str, Any]:
-        """返回 (effective_session_id, Session)。传入的 id 已注册 → 复用。"""
+        """返回 (effective_session_id, Session)。传入的 id 已注册 → 复用。
+
+        **会话挂在调用者名下**(``identity["id"]``),不是默认的 ``"local"``:
+        执行前的授权门在 ``execute_sql`` 里读 ``state.principal``,而主体正是
+        会话层从 ``session.user_id`` 现算的。挂错人,那道门判的就是另一个人 ——
+        今天 A2 已经在工具边界上用真身份判过、看不出差别,但任何**将来**依赖
+        身份的执行期判定(表级 / 行级 / 脱敏)会被静默绕过,且看不出绕过。
+
+        ``identity=None``(stdio 本地挂载)落到 ``LOCAL_SUBJECT`` —— 与
+        :meth:`Policy.local_admin` 同口径,即本机可信身份。
+        """
         if session_id and session_id in sessions:
             return session_id, sessions[session_id]
-        session = await session_manager.start_session()
+        session = await session_manager.start_session(
+            user_id=str(identity["id"]) if identity else LOCAL_SUBJECT,
+        )
         sid = session_id or session.session_id
         sessions[sid] = session
         # 容量保护:超出后丢弃最旧(会话在 SessionStore 仍可 load_session 找回)
@@ -289,6 +306,9 @@ def build_mcp_server(
             "datasource": state.datasource,
             "no_model": state.no_model,
             "refusal": state.refusal,
+            # 执行期错误(含 [ERR:AUTHZ_*] 拒绝)**必须带回去**:丢掉它,
+            # 被拒的调用就是「空 answer + 空 verdict」,读起来像模型没答。
+            "error": state.error,
         }
 
     @mcp.tool()

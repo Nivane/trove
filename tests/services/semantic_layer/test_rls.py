@@ -140,3 +140,36 @@ class TestDeclaredRls:
 
     def test_none_model(self):
         assert rls.declared_rls(None) == []
+
+
+# ── declared_tables ───────────────────────────────────────
+
+
+class TestDeclaredTables:
+    """A3 的判定基准:语义模型声明过的表名集合。
+
+    取**数据集名与物理表名两边** —— SQL 里两种写法都会出现(编译器拼的是物理表,
+    快径模板与手写 SQL 可能用数据集名),只收一边会把另一半误判成「声明之外」。
+    """
+
+    def test_includes_dataset_name_and_physical_table(self):
+        m = model(ds(name="orders", source="public.orders_tbl"))
+        assert rls.declared_tables(m) == {"orders", "orders_tbl"}
+
+    def test_source_empty_falls_back_to_dataset_name(self):
+        """``source`` 为空时物理表就是数据集名 —— 不要报出空字符串。"""
+        assert rls.declared_tables(model(ds(name="orders"))) == {"orders"}
+
+    def test_name_and_source_collapse_to_one_entry(self):
+        m = model(ds(name="orders", source="orders"))
+        assert rls.declared_tables(m) == {"orders"}
+
+    def test_lowercased(self):
+        m = model(ds(name="Orders", source="DB.Orders"))
+        assert rls.declared_tables(m) == {"orders"}
+
+    def test_none_model_declares_nothing(self):
+        assert rls.declared_tables(None) == set()
+
+    def test_model_without_datasets_declares_nothing(self):
+        assert rls.declared_tables(model()) == set()

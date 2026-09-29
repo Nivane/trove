@@ -80,6 +80,29 @@ class RetentionConfig:
 
 
 @dataclass
+class AuthzConfig:
+    """执行前授权门(设计 §7.2)。
+
+    ``table_enforcement``: 表级判定(A3)的档位。
+
+    - ``warn``(默认)—— 命中声明之外的表只记日志/metric,放行。设计 §8.2
+      选它的理由:存量 grants 只到数据源级,直接 enforce 会让**正常查询大面积
+      403**,把一次安全改进做成事故。先跑一周收集「哪些表会被拒」。
+    - ``enforce`` —— 拒绝。
+
+    数据源级判定(A2)与「必须有主体」(A1)**不受这个开关影响**,恒为拒绝。
+    读错这个开关只是让 A3 变宽,不会关掉鉴权。
+
+    ``require_principal``: 执行路径缺主体时是否拒绝。**默认 true**,且不提供
+    「缺主体就放行」的档位 —— 那正是 I2 要防的东西。本开关只影响**是否装配**
+    强制点,供不接语义层的嵌入场景显式关掉整层;生产恒为 true。
+    """
+
+    table_enforcement: str = "warn"
+    require_principal: bool = True
+
+
+@dataclass
 class EvalConfig:
     """离线评测回归门(**默认开**,与其余能力的默认关相反)。
 
@@ -211,6 +234,8 @@ class AgentConfig:
     attribution: AttributionConfig = field(default_factory=AttributionConfig)
     # 离线评测回归门配置(opt-in;默认不进 CI)。见 EvalConfig。
     eval: EvalConfig = field(default_factory=EvalConfig)
+    # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
+    authz: AuthzConfig = field(default_factory=AuthzConfig)
     config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
     datasources: list[DatasourceServiceConfig] = field(default_factory=list)

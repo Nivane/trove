@@ -279,13 +279,21 @@ async def test_ask_data_prompt(mcp_components):
 # ── 权限:非 admin identity 按数据源 grants 过滤 ──────────────────
 
 class _FakeAuth:
-    """最小 auth 替身:get_datasources 按 user_id 返回 grants。"""
+    """最小 auth 替身:grants 表 + 用户表(`store` 走同一个对象)。
 
-    def __init__(self, grants_by_user: dict):
+    用户表可以留空 —— 那就等价于「这个人查不到」,会话层据此判定**没有主体**。
+    """
+
+    def __init__(self, grants_by_user: dict, users: dict | None = None):
         self._grants = grants_by_user
+        self._users = users or {}
+        self.store = self
 
     async def get_datasources(self, user_id):
         return list(self._grants.get(user_id, []))
+
+    async def get_user_by_id(self, uid):
+        return self._users.get(uid)
 
 
 def _server_with_identity(components, auth, identity):
@@ -421,3 +429,63 @@ async def test_mcp_identity_for():
     assert ident == {"id": 1, "role": "admin"}
     # loopback + token → 同样解析身份(可选鉴权)
     assert await _mcp_identity_for("sse", "127.0.0.1", "valid", _TokenAuth()) is not None
+
+
+# ── 会话挂在谁名下:执行层判定的依据 ────────────────────────────
+#
+# 执行前的授权门(设计 §5.3 / G2)在 ``execute_sql`` 里读 ``state.principal``,
+# 而这个主体由 ``SessionManager._principal_wire`` 从 ``session.user_id`` 现算。
+# 于是 MCP 这条链路有一个容易漏的地方:MCP 自己有一个 ``identity``,但会话是
+# ``start_session()`` 造的 —— 不把身份传下去,会话就挂在 ``"local"`` 这个
+# 「本机可信」哨兵上,执行层那道门判的是**另一个人**。
+
+
+def _wire_auth(components, auth):
+    """把 auth 接到 session_manager 上 —— 生产里 main.py 就是这么接的。"""
+    components["session_manager"]._auth = auth
+    return auth
+
+
+async def test_ask_data_session_is_opened_for_the_caller(mcp_components):
+    """MCP 会话必须挂在调用者名下,不是 ``"local"``。
+
+    今天这条差异还看不出后果(A2 已在工具边界上用真身份判过),但执行层那道
+    门是新加的判定点:它读到的身份若不是调用者,任何**将来**依赖身份的执行期
+    判定(表级、行级、脱敏)在 MCP 路径上都会被静默绕过,而且看不出绕过。
+    """
+    auth = _wire_auth(mcp_components, _FakeAuth(
+        {1: ["test_db"]},
+        users={1: {"id": 1, "username": "bob", "role": "user"}},
+    ))
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "user", "username": "bob"},
+    )
+    out = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?", datasource="test_db")
+
+    session = await mcp_components["session_manager"].load_session(
+        out["session_id"], ".",
+    )
+    assert session.user_id == "1", (
+        f"会话挂在 {session.user_id!r} 上 —— 执行层将拿它当判定依据"
+    )
+
+
+async def test_ask_data_denies_when_the_identity_has_no_user_row(mcp_components):
+    """身份解析不出来 → **执行层拒绝**,不是「退回本机管理员」。
+
+    I7 的方向:拿不到依据不等于依据为空。若会话仍挂在 ``"local"`` 上,同一次
+    调用会被判成本机可信身份**放行**,而调用者明明是拿 token 进来的 ——
+    这条用例就是在钉这个区别。
+    """
+    auth = _wire_auth(mcp_components, _FakeAuth({1: ["test_db"]}, users={}))
+    server = _server_with_identity(
+        mcp_components, auth, {"id": 1, "role": "user", "username": "bob"},
+    )
+    out = await _invoke(server, "ask_data",
+        question="What students are in Alameda county?", datasource="test_db")
+
+    assert out["row_count"] != 5, "被拒的查询竟然执行了"
+    assert "AUTHZ_NO_PRINCIPAL" in out.get("error", ""), (
+        "拒绝原因没回到调用者 —— 空 answer + 空 verdict 读起来像「模型没答」"
+    )

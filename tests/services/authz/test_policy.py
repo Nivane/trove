@@ -7,6 +7,7 @@ I1 / I6 / I7 与验收项 A1。
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,8 @@ import trove
 from trove.services.authz.policy import (
     Policy,
     Principal,
+    principal_from_wire,
+    principal_to_wire,
     scopes_allow,
     visible_datasources,
 )
@@ -212,6 +215,101 @@ class TestVisibleDatasources:
     def test_no_evidence_sees_nothing(self):
         p = Principal(subject="1", grants=None)
         assert visible_datasources(p, ["a", "b"], "a") == []
+
+
+# ── wire 形状:主体要跨 checkpointer ─────────────────────────────
+
+
+class TestPrincipalWire:
+    """``Principal`` 跨节点边界的形状(设计 §6.2 的落地修正)。
+
+    §6.2 原写 ``principal: Principal | None`` 直接进 ``WorkflowState``。实测
+    这是**踩了 ``contract.py`` 记录过的同一个坑**:LangGraph 每个超级步都拿
+    state 过一次序列化,``JsonPlusSerializer`` 对未注册的 dataclass 在非严格
+    模式下降级、在 ``LANGGRAPH_STRICT_MSGPACK=true`` 下**直接拦掉**。降级的
+    形态是**普通 dict** —— 而安全判定点恰好调 ``.allows_datasource()``,拿到
+    dict 就是 ``AttributeError``。安全判定点不该拿到意料之外的形状。
+
+    所以主体按 ``contract_to_wire`` / ``contract_from_wire`` 的既有先例走
+    纯 JSON 形状。**三种 grants 取值必须原样活过往返** —— 把 ``frozenset()``
+    塌成 ``None`` 就是把「依据为空」读成「没有依据」,方向恰好相反。
+    """
+
+    def test_none_principal_stays_none(self):
+        assert principal_to_wire(None) is None
+        assert principal_from_wire(None) is None
+
+    @pytest.mark.parametrize(
+        "grants",
+        [None, frozenset(), frozenset({"a", "b"})],
+        ids=["none", "empty", "nonempty"],
+    )
+    def test_round_trip_preserves_the_three_grants_states(self, grants):
+        """三种取值是三个语义,往返不得塌陷成两种。"""
+        p = Principal(
+            subject="7", role="user", scopes=frozenset({"pii"}),
+            grants=grants, on_behalf_of="42",
+        )
+        back = principal_from_wire(principal_to_wire(p))
+        assert back == p
+        assert (back.grants is None) is (grants is None)
+
+    def test_admin_round_trips(self):
+        p = Principal(subject="1", role="admin")
+        assert principal_from_wire(principal_to_wire(p)) == p
+
+    def test_wire_is_json_safe(self):
+        """wire 里不得留下 frozenset / tuple —— 那正是跨不过边界的形状。"""
+        wire = principal_to_wire(
+            Principal(subject="1", scopes=frozenset({"a"}), grants=frozenset({"b"}))
+        )
+        json.dumps(wire)  # 不抛 = 纯 JSON
+        assert isinstance(wire["scopes"], list)
+        assert isinstance(wire["grants"], list)
+
+    def test_wire_never_serializes_the_dataclass_itself(self):
+        """回归门:别再把 dataclass 塞进 state。"""
+        wire = principal_to_wire(Principal(subject="1"))
+        assert type(wire) is dict
+        assert not isinstance(wire, Principal)
+
+    def test_malformed_wire_is_no_principal_not_a_guess(self):
+        """形状异常 → ``None``(= 没有主体 → 拒绝),不尽量解出一部分。
+
+        「尽量解出」在这里是**放宽**:缺 grants 的半个主体会被读成
+        ``grants=None``(拒绝一切,方向对)或漏掉 role(丢掉 admin),
+        两种都不是调用方想要的东西。``None`` 是明确的「没有主体」信号。
+        """
+        for bad in (
+            {"subject": "1", "role": 3},          # role 不是字符串
+            {"role": "user"},                      # 缺 subject
+            "not-a-dict",
+            ["subject"],
+            {"subject": "1", "scopes": "pii"},     # scopes 不是列表
+            {"subject": "1", "grants": {"a": 1}},  # grants 不是列表
+        ):
+            assert principal_from_wire(bad) is None, bad
+
+    def test_unknown_keys_are_ignored(self):
+        """向前兼容:多出来的键不该让整个主体作废(旧代码读新 checkpoint)。"""
+        p = principal_from_wire({"subject": "1", "role": "user", "future": 1})
+        assert p is not None and p.subject == "1"
+
+    def test_survives_the_real_checkpointer_serializer(self):
+        """真 serde 往返 —— 这才是「跨节点边界」的实际执行者。
+
+        关键断言是**回来还是同一形态**:不是 dataclass、也不是被降级的
+        dict,而是能原样 ``principal_from_wire`` 回主体的那份 wire。
+        """
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        serde = JsonPlusSerializer()
+        for grants in (None, frozenset(), frozenset({"a"})):
+            p = Principal(subject="7", scopes=frozenset({"pii"}), grants=grants)
+            wire = principal_to_wire(p)
+            back = serde.loads_typed(serde.dumps_typed(wire))
+            assert type(back) is dict, f"被降级成了 {type(back)}"
+            assert principal_from_wire(back) == p
 
 
 # ── I1:策略只有一个实现 ───────────────────────────────────────────

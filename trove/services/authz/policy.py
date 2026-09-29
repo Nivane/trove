@@ -28,7 +28,27 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-__all__ = ["Policy", "Principal", "scopes_allow", "visible_datasources"]
+__all__ = [
+    "LOCAL_SUBJECT",
+    "Policy",
+    "Principal",
+    "principal_from_wire",
+    "principal_to_wire",
+    "scopes_allow",
+    "visible_datasources",
+]
+
+#: 「本机可信身份」的主体名 —— CLI / stdio MCP / ``allow_null_auth`` 的嵌入调用。
+#:
+#: 与 ``core/types.Session.user_id`` 的默认值、``api/deps.LOCAL_ADMIN["id"]``
+#: 是同一个哨兵值,所以定义在这里而不是让各处再写一遍字面量:会话层要靠它
+#: 判断「这一轮到底有没有远程身份」(见 ``agent/session._principal_wire``),
+#: 三处各写各的迟早会漂移成一个安全的空洞。
+#:
+#: 安全前提:**用户表主键是整数**(``store.get_user_by_id(int(uid))``),真实
+#: 用户永远造不出这个字符串。改身份存储(比如换成 UUID 主键或允许自定义
+#: 用户名作 id)时必须重新确认这条。
+LOCAL_SUBJECT = "local"
 
 
 def visible_datasources(
@@ -157,6 +177,85 @@ class Principal:
         return replace(self, **changes)
 
 
+def principal_to_wire(principal: "Principal | None") -> dict[str, Any] | None:
+    """主体 → 纯 JSON 形状(str/int/list/dict),跨节点边界用。
+
+    **为什么不直接把 dataclass 放进 state。** 设计 §6.2 原写
+    ``principal: Principal | None``,实测踩了 ``contract.py`` 记录过的同一个
+    坑:LangGraph 每个超级步都拿 state 过一次 ``JsonPlusSerializer``,未注册的
+    dataclass 在非严格模式下降级、在 ``LANGGRAPH_STRICT_MSGPACK=true`` 下被拦。
+    降级形态是**普通 dict** —— 而执行层的判定点恰好调
+    ``.allows_datasource()``,拿到 dict 就是 ``AttributeError``。安全判定点
+    不该拿到意料之外的形状,所以形状由这里钉死。
+
+    集合排序后落成 list:迭代顺序固定,checkpoint 之间可比、测试可断言。
+    """
+    if principal is None:
+        return None
+    return {
+        "subject": principal.subject,
+        "role": principal.role,
+        "scopes": sorted(principal.scopes),
+        # 三种取值原样保留 —— None / [] / [...] 是三个语义,塌陷即改向
+        "grants": None if principal.grants is None else sorted(principal.grants),
+        "on_behalf_of": principal.on_behalf_of,
+    }
+
+
+def principal_from_wire(data: Any) -> "Principal | None":
+    """wire → 主体;形状异常一律 ``None``(= 没有主体 → 拒绝)。
+
+    **不「尽量解出一部分」**:半个主体在这里不是宽容,是**放宽** —— 漏掉
+    ``role`` 会丢掉 admin,漏掉 ``grants`` 会把「有依据」读成「没有依据」
+    (方向恰好相反)。``None`` 是明确的「没有主体」信号,由调用方按 I7 拒绝。
+    这与 ``contract_from_wire`` 的取舍一致。
+    """
+    if not isinstance(data, dict):
+        return None
+    subject = data.get("subject")
+    role = data.get("role", "user")
+    if not isinstance(subject, str) or not subject:
+        return None
+    if not isinstance(role, str) or not role:
+        return None
+    scopes = _str_frozenset(data.get("scopes", ()))
+    if scopes is None:
+        return None
+    raw_grants = data.get("grants")
+    if raw_grants is None:
+        grants: frozenset[str] | None = None
+    else:
+        grants = _str_frozenset(raw_grants)
+        if grants is None:
+            return None
+    on_behalf_of = data.get("on_behalf_of")
+    if on_behalf_of is not None and not isinstance(on_behalf_of, str):
+        return None
+    # 未知键忽略:旧代码读新 checkpoint 不该因为多一个字段而整个作废
+    return Principal(
+        subject=subject,
+        role=role,
+        scopes=scopes,
+        grants=grants,
+        on_behalf_of=on_behalf_of,
+    )
+
+
+def _str_frozenset(value: Any) -> frozenset[str] | None:
+    """字符串集合的 wire 形状 → frozenset;不是字符串序列则 ``None``。
+
+    ``str`` 本身是可迭代的,不先排除会把它拆成单个字符的集合 —— 那是把
+    一个明显的形状错误静默翻译成一个看起来很合理的主体。
+    """
+    if isinstance(value, (str, bytes)) or not isinstance(
+        value, (list, tuple, set, frozenset)
+    ):
+        return None
+    if not all(isinstance(item, str) for item in value):
+        return None
+    return frozenset(value)
+
+
 class Policy:
     """构造 :class:`Principal` 并列出可见数据源。
 
@@ -202,7 +301,7 @@ class Policy:
 
         与 ``deps.LOCAL_ADMIN`` / ``mcp`` 的「无 identity = 不设限」同口径。
         """
-        return Principal(subject="local", role="admin")
+        return Principal(subject=LOCAL_SUBJECT, role="admin")
 
     @staticmethod
     def has_scope(principal: Principal, *required: str) -> bool:

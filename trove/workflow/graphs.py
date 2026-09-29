@@ -1703,6 +1703,47 @@ def _route_semantic_gate_after_linking_gen_sql(
     return "gen_retrieve"
 
 
+def _build_authorizer(services: "GraphServices"):
+    """执行层强制点(设计 §5.3 / G2)。``None`` = 未装配,不判。
+
+    A3 的基准取自语义模型声明过的表名(``rls.declared_tables``)——仓库的
+    grants 只到数据源级,没有数据集级授权源,所以 A3 挡的是**声明之外的表**,
+    即绕开语义层直摸物理表。编译路径与快径产出的 SQL 只引用声明过的表,不会
+    被误伤。
+
+    取模型失败(提供方不可用/类型错误)一律降级为「无基准」→ A3 跳过,**并打
+    warning**:P2 实施时踩过「宽 except 把编程错误吞成静默 miss」的坑(设计
+    §14 P2 记录),A3 的基准缺失必须是看得见的。A1/A2 不受影响,仍然生效。
+    """
+    from trove.services.authz.enforcer import Authorizer
+    from trove.services.semantic_layer import rls
+
+    config = services.config or AgentConfig()
+    authz_config = getattr(config, "authz", None)
+    if authz_config is not None and not authz_config.require_principal:
+        return None
+    provider = services.semantic_layer
+
+    def _declared(datasource: str | None) -> set[str] | None:
+        if provider is None:
+            return None  # 未接语义层 → 无基准,A3 跳过
+        try:
+            return rls.declared_tables(provider.model())
+        except Exception as e:
+            logger.warning(
+                "authz A3 basis unavailable (semantic model unreadable) for "
+                "datasource %r: %s — table-level check skipped, datasource-level "
+                "authorization still enforced",
+                datasource, e,
+            )
+            return None
+
+    return Authorizer(
+        declared_tables=_declared,
+        mode=getattr(authz_config, "table_enforcement", "warn"),
+    )
+
+
 def _route_after_query_sketch(state: WorkflowState) -> Literal["refuse", "gen_retrieve"]:
     """Query-sketch 后:编译 MISS / 无语义模型 → refuse;否则 gen 链入口。"""
     if state.error or state.no_model or state.refusal:
@@ -1742,7 +1783,7 @@ def _build_reflection(
     ))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows), authorizer=_build_authorizer(services)))
     g.add_node("select", make_select_consensus(services.connectors, max_retries=MAX_REFLECT_RETRIES))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     g.add_node("reflect", make_reflect(services.llm, services.config or AgentConfig(), max_retries=MAX_REFLECT_RETRIES))
@@ -1922,7 +1963,7 @@ def _build_fixed(
     g.add_node("gen_generate", make_gen_generate(services, subgraph, agentic=agentic))
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
-    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows)))
+    g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, explain_row_guard=bool((services.config or AgentConfig()).explain_row_guard), explain_max_rows=int((services.config or AgentConfig()).explain_max_rows), explain_hard_max_rows=int((services.config or AgentConfig()).explain_hard_max_rows), authorizer=_build_authorizer(services)))
     g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))

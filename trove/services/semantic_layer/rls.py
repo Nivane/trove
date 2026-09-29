@@ -46,6 +46,32 @@ def declared_rls(model: SemanticModel | None) -> list[SemanticDataset]:
     return [d for d in model.datasets if (d.row_filter or "").strip()]
 
 
+def declared_tables(model: SemanticModel | None) -> set[str]:
+    """语义模型**声明过的**表名集合(小写,去 schema 前缀)。
+
+    这是执行层表级判定(authz 设计 §5.3 A3)的基准:SQL 触及的表必须落在这个
+    集合里。仓库的 grants 只到数据源级,没有数据集级授权源,所以 A3 挡的是
+    **声明之外的表** —— 绕开语义层直摸物理表。
+
+    **数据集名与物理表名都收**:编译器拼的是物理表名(``source``),而快径模板
+    与手写 SQL 可能用数据集名(``name``),只收一边会把另一半误判成「声明之外
+    的表」,那是误伤。
+
+    与 :func:`_dataset_for` 是同一个映射的两个方向 —— 那边由表名找数据集,
+    这边把两个名字都列出来。
+    """
+    if model is None:
+        return set()
+    names: set[str] = set()
+    for dataset in model.datasets:
+        if dataset.name.strip():
+            names.add(dataset.name.strip().lower())
+        physical = physical_table(dataset)
+        if physical:
+            names.add(physical)
+    return names
+
+
 def render_row_filter(
     dataset: SemanticDataset | None, dialect: str, qualifier: str,
 ) -> str | None:

@@ -15,6 +15,8 @@ from typing import Any
 
 from trove.core.i18n import L
 from trove.core.logging import get_logger
+from trove.services.authz.enforcer import Authorizer
+from trove.services.authz.policy import principal_from_wire
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.limits import get_result_limits
 from trove.services.errors import is_transient, tag_error
@@ -41,6 +43,7 @@ def make_execute_sql(
     explain_row_guard: bool = True,
     explain_max_rows: int = 50_000_000,
     explain_hard_max_rows: int = 1_000_000_000,
+    authorizer: Authorizer | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the execute_sql node bound to a connector registry.
 
@@ -57,6 +60,9 @@ def make_execute_sql(
             加 LIMIT/收窄;超 ``explain_hard_max_rows`` 直接拒绝。
         explain_max_rows: 软上限——超过则打回重生成(仍可能修正后执行)。
         explain_hard_max_rows: 硬上限——超过直接拒绝(不烧 LLM 重生成)。
+        authorizer: 执行前授权门(设计 §5.3 / G2)。``None`` = **未装配强制点**,
+            不判——生产图恒装配一个(见 ``graphs.py``)。注意这与「判过了、
+            放行」不是一回事,本节点不会假装自己判过。
 
     Returns:
         Async node function taking WorkflowState and returning a partial update.
@@ -167,6 +173,48 @@ def make_execute_sql(
             except Exception as e:
                 logger.warning("EXPLAIN row guard skipped (fail-open): %s", e)
 
+        # 执行前授权门(设计 §5.3 / G2)—— **执行前的最后一米**。放在这里而不是
+        # 更靠前,是因为上面几道守卫都只在「这一轮反正要跑」的假设下才有意义:
+        # 授权是唯一一道会改变「要不要执行」的判定,它之后紧接着就是落库。
+        #
+        # 无论 SQL 从哪来(编译器 / 快径 / API 直执行 / job payload)都过这里:
+        # 存量的授权是路由的装饰器(``Depends(require_datasource)``),语义是
+        # 「这个**端点**需要授权」,于是任何不经路由的入口都绕开了它。
+        #
+        # 拒绝**不可修正** —— 与只读门同理,不喂回 gen_sql 重生成:让模型重写
+        # 十遍也改不掉「这个用户没有这张表的权限」,只会烧掉共享修正预算。
+        authz_extra: dict[str, Any] = {}
+        if authorizer is not None:
+            decision = authorizer.check(
+                principal_from_wire(state.principal),
+                datasource=state.datasource or "",
+                sql=state.sql,
+                default=connectors.default_name,
+                dialect=state.dialect or "",
+            )
+            authz_extra["authz_decision"] = {
+                "allowed": decision.allowed,
+                "reason": decision.reason,
+                "narrowed_tables": list(decision.narrowed_tables),
+                "datasource": state.datasource or connectors.default_name or "",
+            }
+            if not decision.allowed:
+                logger.warning(
+                    "authz denied %r: %s (datasource=%r)",
+                    state.question[:80], decision.reason,
+                    state.datasource or connectors.default_name,
+                )
+                return {
+                    "error": _authz_message(decision),
+                    **authz_extra,
+                }
+            if decision.narrowed_tables:
+                # warn 期(§8.2)的主要产物:放行了,但记下「哪些表会被拒」
+                logger.warning(
+                    "authz table warning for %r: %s (mode=warn)",
+                    state.question[:80], ", ".join(decision.narrowed_tables),
+                )
+
         result = None
         timeout_s = timeout_ms / 1000.0
         retryable = _TRANSIENT_RETRIES  # 瞬时连接抖动的小重试预算(同一条 SQL)
@@ -197,7 +245,7 @@ def make_execute_sql(
                         f"Query timed out after {timeout_ms}ms",
                     ),
                     max_retries,
-                )
+                ) | authz_extra
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -212,7 +260,7 @@ def make_execute_sql(
                     continue
                 return _execution_failure(
                     state, tag_error(str(e), context="sql"), max_retries,
-                )
+                ) | authz_extra
 
         # 血缘捕获:成功执行的查询记录为消费方(downstream)事实。
         # 失败永远不记录(重试轮的正确 SQL 由最终成功的一次独占)。
@@ -233,6 +281,7 @@ def make_execute_sql(
             "row_count": result.row_count,
             "execution_time_ms": result.execution_time_ms,
             "error_feedback": "",  # success clears previous feedback
+            **authz_extra,
         }
 
     return execute_sql
@@ -243,6 +292,38 @@ def make_execute_sql(
 # 恢复;SQL 自身错误(语法/缺列)重跑必死,不做无谓的 sleep。
 _TRANSIENT_RETRIES = 2
 _TRANSIENT_BACKOFF_S = 0.5
+
+
+def _authz_message(decision) -> str:
+    """授权拒绝 → 用户可见文案,带 ``[ERR:<class>]`` 前缀供 analyze_error 分流。
+
+    文案刻意**不复述 SQL、不列声明之外的全部表名**(``table`` 那档除外,它要
+    告诉人「哪张表被挡了」才有用) —— 拒绝信息不该顺带泄漏被拒者的可见范围。
+    """
+    tag = decision.error_tag()
+    if decision.reason == "no_principal":
+        detail = (
+            "This run carries no authenticated identity, so the query was not "
+            "executed. Authorization is checked before execution, not at the "
+            "route — an execution path without an identity has no basis to "
+            "authorize against."
+        )
+    elif decision.reason == "datasource":
+        detail = (
+            "This identity is not authorized for the requested datasource, so "
+            "the query was not executed."
+        )
+    elif decision.reason == "table":
+        detail = (
+            "This identity is not authorized to query: "
+            f"{', '.join(decision.narrowed_tables)}. The query was not executed."
+        )
+    else:
+        detail = (
+            "The query could not be parsed, so it could not be authorized; it "
+            "was not executed."
+        )
+    return f"[ERR:{tag}] {detail}"
 
 
 def _is_transient(exc: BaseException) -> bool:
