@@ -15,11 +15,16 @@ from trove.prompts import render
 
 
 def build_distill_prompt(failure: dict[str, Any]) -> str:
-    """失败记录 → 蒸馏提示词(含 gold 与 pred 对照)。"""
+    """失败记录 → 蒸馏提示词(含 gold 与 pred 对照)。
+
+    模板变量叫 ``failure_evidence`` 而不是 ``evidence``:后者是**语义层/KB 的
+    证据**(可信白名单里的名字),这里是 eval 失败记录里的证据,**含真实数据**,
+    必须按数据扫(设计稿 §4.2 的歧义名处置)。
+    """
     return render(
         "lesson_distill/user",
         question=failure.get("question", ""),
-        evidence=failure.get("evidence", ""),
+        failure_evidence=failure.get("evidence", ""),
         gold_sql=failure.get("gold_sql", ""),
         pred_sql=failure.get("pred_sql", ""),
         error=failure.get("error", ""),
