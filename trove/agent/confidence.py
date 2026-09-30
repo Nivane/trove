@@ -140,13 +140,15 @@ def sql_confidence(
     ``state.sql`` 为空 ⟹ ``(0.0, [])``:没有答案就没有分数(I4),而不是 0 分。
 
     **``source`` 为什么是参数,而不是自己从 state 里读**:因为**写这个字段的
-    正是 ``output`` 自己** —— ``:565`` 的返回字典里那句 ``"answer_source": ...``
-    是它唯一的写点,而它在 ``:531`` 就把档位读出来了:读在自己那次写之前。
+    正是 ``output`` 自己** —— 它返回字典里那句 ``"answer_source": ...`` 是这个
+    字段**唯一**的写点,而它**读**档位的那一行(``source = _answer_source(state)``)
+    在同一次调用里更靠前 —— 读在自己那次写之前。
     ``output`` 是终局节点,哪条路由进来都只跑一次,所以函数里自读到的永远是字段
-    默认值 ``""``(``state.py:267``),而不是**刚判定出来的那一档** ——
+    默认值 ``""``(``state.py`` 里 ``answer_source: str = ""`` 那个字段),而不是
+    **刚判定出来的那一档** ——
     ``AnswerSource("")`` 只会抛 ValueError,不是"读到了但读错了"。
     参数化让档位只有一个来源:``output`` 里那个**已经判好**的
-    ``_answer_source(state)``,与 ``_build_details(state, source)`` 用的是同一个
+    ``_answer_source(state)``,与 ``_build_details`` 用的是同一个
     值。判一次,用两处。
     """
     if not state.sql:
