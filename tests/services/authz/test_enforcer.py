@@ -285,3 +285,29 @@ class TestDecision:
         d = AuthzDecision(True)
         with pytest.raises(Exception):
             d.allowed = False  # type: ignore[misc]
+
+
+def test_the_deny_reasons_are_the_metric_label_domain():
+    """拒绝原因与指标接受的标签值必须是**同一份契约**。
+
+    链条是 ``Authorizer.check()`` → ``decision.reason`` →
+    ``execute_sql`` 的 ``record_authz_deny(decision.reason)``,而
+    ``record_authz_deny`` 会**静默丢弃**域外的 reason(``record_authz_deny``
+    是值域的定义处,见 ``core/metrics.py``)。两侧各有一张手抄表,谁也没钉住谁。
+
+    漂移的表现是「拦了但没计数」—— 一个从两个方向都查不出来的缺口:看板
+    上这条规则的拒绝率是 0,运维以为没触发,实际是每次触发都掉在地上。
+    ``error_tag()`` 也一样:未登记的 reason 退化成通用的 ``AUTHZ_DENIED``,
+    连答案里的错误码都指不出是哪一道门拒的。
+
+    (同 ``tests/services/kb/test_ledger.py`` 的台账枚举钉子。)
+    """
+    from trove.core import metrics as metrics_mod
+    from trove.services.authz import enforcer as enforcer_mod
+
+    assert set(enforcer_mod._ERROR_TAGS) == metrics_mod.AUTHZ_DENY_REASONS
+    # 兜底码不能是某个登记过的码 —— 否则"未登记"与某个具体原因在答案里同形。
+    assert "AUTHZ_DENIED" not in set(enforcer_mod._ERROR_TAGS.values())
+    # 每个 reason 有自己的码(§10):两个原因共用一个码,错误码就区分不出拒在哪。
+    tags = list(enforcer_mod._ERROR_TAGS.values())
+    assert len(tags) == len(set(tags))

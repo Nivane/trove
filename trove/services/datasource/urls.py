@@ -4,6 +4,7 @@ Supported schemes:
   mysql://[user[:password]@]host[:port]/database      (default port 3306)
   doris://[user[:password]@]host[:port]/database     (default port 9030)
   postgres://[user[:password]@]host[:port]/database  (default port 5432)
+  postgresql://...                                    (同上,别名)
   clickhouse://[user[:password]@]host[:port]/database (default port 8123)
   sqlite://path/to/file.db | sqlite://:memory:
   duckdb://path/to/file.duckdb | duckdb://:memory:
@@ -25,6 +26,12 @@ DEFAULT_PORTS = {
 
 FILE_SCHEMES = ("sqlite", "duckdb")
 
+# 同一个东西的两个拼法:``postgresql`` 是 libpq/psycopg 的标准 URI 拼法
+# (任何一份 PG 连接串文档、本仓 CI 与集成测试的 PG_TEST_URL 都用它),
+# ``postgres`` 是短写。规范名是 ``postgres`` —— 别名在这里归一,不让
+# 下游到处判两个值。
+SCHEME_ALIASES = {"postgresql": "postgres"}
+
 
 def parse_datasource_url(url: str) -> DatasourceConfig:
     """Parse a scheme:// URL into a DatasourceConfig.
@@ -33,7 +40,7 @@ def parse_datasource_url(url: str) -> DatasourceConfig:
         DatasourceError: Unknown scheme, missing database, or invalid port.
     """
     parsed = urlparse(url)
-    scheme = parsed.scheme.lower()
+    scheme = SCHEME_ALIASES.get(parsed.scheme.lower(), parsed.scheme.lower())
 
     if scheme in DEFAULT_PORTS:
         if not parsed.hostname:
