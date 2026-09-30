@@ -1936,7 +1936,8 @@ def _build_reflection(
         connectors=services.connectors, semantic_layer=services.semantic_layer,
     ))
     g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
-    g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
+    g.add_node("conclusion", make_conclusion(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -2123,7 +2124,8 @@ def _build_fixed(
         connectors=services.connectors, semantic_layer=services.semantic_layer,
     ))
     g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
-    g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
+    g.add_node("conclusion", make_conclusion(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)

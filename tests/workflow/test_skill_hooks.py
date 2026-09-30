@@ -90,6 +90,7 @@ def _org_skill(tmp_path, node, body="ORG-METHOD-BODY", tier="required", **trigge
 FACTORIES_REQUIRING_SKILLS: list[str] = [
     "make_validate_rules",
     "make_insights",
+    "make_conclusion",
 ]
 
 
@@ -218,3 +219,21 @@ async def test_insights_hook_backward_compatible():
     # 逐字相等:没有围栏块时,门 append_skill_block 必须**原样**返回入参 ——
     # 这是"既有行为逐位不变"这条全局约束在这个挂点上的可执行形式。
     assert llm.system_of() == render("insights/system", lang="zh")
+
+
+async def test_conclusion_hook_injects_org_skill(tmp_path):
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.conclusion import make_conclusion
+
+    llm = RecordingLLM(response="结论一句")
+    # conclusion 默认 False(config.py:260),同 Task 8 的 insights。
+    node = make_conclusion(llm, AgentConfig(target="m", conclusion=True),
+                           skills=_org_skill(tmp_path, "conclusion"))
+
+    state = WorkflowState(
+        session_id="s1", question="q", lang="zh", sql="SELECT 1",
+        columns=["a"], rows=[[1]], row_count=1,
+    )
+    await node(state)
+    assert llm.calls, "conclusion 没调到 LLM —— gate 早返了,按真实条件补 state"
+    assert "ORG-METHOD-BODY" in llm.system_of()
