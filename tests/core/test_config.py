@@ -529,3 +529,17 @@ class TestMaskingAndAuthzConfig:
         assert cfg.masking.hash_salt_ref == ""
         assert cfg.authz.require_principal is True
         assert cfg.authz.table_enforcement == "warn"
+
+
+class TestConfidenceScoreFlag:
+    def test_defaults_on(self, tmp_path):
+        """默认开:零成本(纯函数),与 answer_source 一致 —— 那个没有开关。"""
+        p = tmp_path / "agent.yml"
+        p.write_text("agent:\n  target: mock/model\n")
+        assert ConfigLoader.load_agent_config(str(p)).confidence_score is True
+
+    def test_explicit_off(self, tmp_path):
+        """急停开关:配置里显式 false 要读得到(它是唯一的急停手段)。"""
+        p = tmp_path / "agent.yml"
+        p.write_text("agent:\n  target: mock/model\n  confidence_score: false\n")
+        assert ConfigLoader.load_agent_config(str(p)).confidence_score is False

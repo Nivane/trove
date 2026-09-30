@@ -1090,6 +1090,8 @@ async def put_settings(
     # 结果限制热更新同步到 pipeline 节点可读的进程级注册表
     from trove.services.limits import set_result_limits
     set_result_limits(config.result_max_rows, config.result_display_rows)
+    from trove.agent.confidence import set_confidence_enabled
+    set_confidence_enabled(config.confidence_score)
     # hot-swap gateway providers so key/base changes apply without restart
     gateway = getattr(request.app.state, "llm_gateway", None)
     if gateway is not None and "llm.providers" in coerced:

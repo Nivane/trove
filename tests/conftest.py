@@ -142,6 +142,8 @@ def _reset_trace_store(monkeypatch):
     run_id_var.set(None)
     from trove.llm import observability as _obs
     _obs._client = None
+    from trove.agent.confidence import reset_confidence_flag
+    reset_confidence_flag()
     for key in (
         "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST",
         "LANGFUSE_AUTH_CHECK",

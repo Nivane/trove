@@ -260,6 +260,11 @@ class AgentConfig:
     conclusion: bool = False  # 执行后 LLM 用一句话生成结论摘要(置于回答开头)
     chart_llm: bool = False  # 图表 LLM 判定:是否画图 + 类型 + 维度/度量列(失败回退确定性推断)
     result_cache: bool = False  # 精确问题结果缓存(进程内存;命中直接返回已验证答案,跳过 HITL 确认)
+    # 答案级置信度披露(设计 2026-09-30 §6.2):默认开。零成本(纯函数,不调模型、
+    # 不查库),与 answer_source 一致 —— 那个没有开关。留开关是为了万一「数字
+    # 诱导过度信任」被观测到时有急停手段;关掉 = **完整回退**到枚举披露形态
+    # (不是「什么都不显示」),见 confidence.render_line 的分流。
+    confidence_score: bool = True
     decompose_llm_judge: bool = True  # 多任务拆解 LLM 判断层:规则未命中但疑似多步时花一次 LLM 判断;false = 纯正则门控
     # 结果限制(管理台可配):答案表格单次展示行数 / 查询结果行数上限
     result_display_rows: int = 50
@@ -607,6 +612,7 @@ class ConfigLoader:
             conclusion=agent_section.get("conclusion", False),
             chart_llm=agent_section.get("chart_llm", False),
             result_cache=agent_section.get("result_cache", False),
+            confidence_score=bool(agent_section.get("confidence_score", True)),
             result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
             result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),
             api_rate_per_minute=max(0, int(agent_section.get("api_rate_per_minute", 30))),
