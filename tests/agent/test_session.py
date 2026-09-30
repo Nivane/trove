@@ -379,6 +379,30 @@ class TestStructuredSteps:
         # chart: 判定来源透传(本环境确定性回退)
         assert steps["chart"]["detail"]["chart_source"] == "deterministic"
 
+    def test_step_event_carries_validator_hits(self):
+        """validate 步的 detail 要带 **org validator 通道**,与 ``validation_hits``
+        并列 —— 那条是规则链(eval 归因的判据),这条是管理员的质检信号。
+
+        它是"判不了"唯一能被读到的地方(用户屏幕按设计不收 ``verdict: None``)。
+        没有它,P3/P4 的质检统计只能回去翻 run log 的文本。``reason`` 必须一起
+        透传:数分布靠原因码,不靠判词。
+        """
+        from trove.agent.session import SessionManager
+
+        hit = {"name": "credit-guard", "verdict": None, "severity": "advisory",
+               "reason": "truncated_rows", "message": "判不了", "mode": "deterministic"}
+        detail = SessionManager._step_event(
+            1, "validate", {"rules_passed": True, "validator_hits": [hit]},
+            12, "", 0,
+        )["detail"]
+        assert detail["validator_hits"] == [hit]
+
+        # 未接 SkillService 的图不带该键 —— 形状与 validation_hits 一致,总是列表
+        empty = SessionManager._step_event(
+            1, "validate", {"rules_passed": True}, 1, "", 0,
+        )["detail"]
+        assert empty["validator_hits"] == []
+
     async def test_correction_step_marks_retry(self, tmp_home, sqlite_registry):
         manager = self._manager(
             tmp_home, sqlite_registry,

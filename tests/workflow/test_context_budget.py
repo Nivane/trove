@@ -2,7 +2,6 @@
 
 from trove.workflow.context_budget import (
     ContextItem,
-    assemble_blocks,
     assemble_context,
     count_tokens,
     estimate_tokens,
@@ -31,28 +30,6 @@ class TestCountTokens:
     def test_cjk_not_undercounted(self):
         # 中文绝不会比 4 字符/token 的口径更低(避免低估超预算)
         assert count_tokens("中" * 400) >= 100
-
-
-class TestAssembleBlocks:
-    def test_priority_fill_within_budget(self):
-        blocks = {"a": "x" * 100, "b": "y" * 100, "c": "z" * 100}
-        included, usage = assemble_blocks(
-            blocks, {"a": 1, "b": 2, "c": 3}, budget_tokens=60, count=estimate_tokens,
-        )
-        # a (25) + b (25) = 50 ≤ 60；c (25) 超预算
-        assert included == {"a", "b"}
-        by_name = {u["name"]: u for u in usage}
-        assert by_name["c"]["included"] is False
-        assert by_name["a"]["included"] is True
-
-    def test_all_included_when_plenty(self):
-        blocks = {"a": "x" * 10, "b": "y" * 10}
-        included, usage = assemble_blocks(blocks, {"a": 1, "b": 2}, budget_tokens=1000)
-        assert included == {"a", "b"}
-        assert all(u["included"] for u in usage)
-
-    def test_empty_blocks(self):
-        assert assemble_blocks({}, {}, 100) == (set(), [])
 
 
 class TestAssembleContext:

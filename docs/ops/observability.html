@@ -67,8 +67,8 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L297">app.py:297 <span class="ref-line">health</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L46">app.py:46 <span class="ref-line">_HEALTH_PING_TIMEOUT_S</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L316">app.py:316 <span class="ref-line">health</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L48">app.py:48 <span class="ref-line">_HEALTH_PING_TIMEOUT_S</span></a>
     </p>
 
     <div class="callout note">
@@ -120,8 +120,8 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L404">app.py:404 <span class="ref-line">metrics</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L399">metrics.py:399 <span class="ref-line">render_metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L423">app.py:423 <span class="ref-line">metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L474">metrics.py:474 <span class="ref-line">render_metrics</span></a>
     </p>
 
     <div class="table-wrap">
@@ -249,12 +249,15 @@
 
     <p>
       配置了凭证时，同一批事件也会发往 Langfuse。启用条件是
-      <strong>两个环境变量同时存在</strong>，配置里另有一个总开关。
+      <strong>两个环境变量同时存在</strong>；配置里的
+      <code>observability.tracing.enabled</code> 不参与「开」，只负责
+      <strong>撤回</strong>：设为 <code>false</code> 时，凭证齐全也不上报。
+      缺省是不撤回——少写一个 <code>observability</code> 段不该等于静默停录。
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L40">observability.py:40 <span class="ref-line">langfuse_enabled</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L31">observability.py:31 <span class="ref-line">langfuse_trace_id</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L63">observability.py:63 <span class="ref-line">langfuse_enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py#L54">observability.py:54 <span class="ref-line">langfuse_trace_id</span></a>
     </p>
 
     <p>
@@ -345,7 +348,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 74c5c6c</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 04bf7f3</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

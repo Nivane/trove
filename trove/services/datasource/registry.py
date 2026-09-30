@@ -387,10 +387,10 @@ class ConnectorRegistry:
     ) -> QueryResult:
         """Execute SQL bypassing the read-only guard.
 
-        Escape hatch for explicit write-permission paths (SQLExecutor
-        DANGEROUS mode, admin tooling). The query pipeline must never
-        use this — writes only happen here when the user opted into
-        `permission dangerous`.
+        **今天没有调用方** —— 唯一的调用方曾是 ``services/sql/executor.py``
+        的 DANGEROUS 模式,该文件已删除。保留它是给写操作入口留一个已命名
+        位置(而不是让未来的调用方各自绕过守卫);谁调用它,谁负责那一层
+        的权限判定 —— 守卫是应用层纵深防御,数据库层只读角色才是边界。
         """
         adapter = await self.get(datasource)
         return await adapter.execute(sql)

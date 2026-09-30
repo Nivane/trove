@@ -581,7 +581,7 @@ class TestChatConfirmDraft:
 
         services = GraphServices(
             llm=llm, catalog=catalog, connectors=sqlite_registry,
-            config=AgentConfig(target="mock/model", semantic_first=True, language="zh"),
+            config=AgentConfig(target="mock/model", language="zh"),
             kb=kb, semantic_layer=provider,
         )
         graphs2 = build_graphs(
@@ -680,7 +680,7 @@ class TestRefuseConfirmReanswerLoop:
                 "answer_columns": ["AVG(loan.amount)"], "conditions": []}
         query_sketch = make_query_sketch(
             ScriptedLLM([json.dumps(plan)]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeEnabledProvider(),
         )
         update = await query_sketch(make_state(
@@ -742,7 +742,7 @@ class TestReflectionGraphRouting:
         from trove.workflow.graphs import GraphServices
         return GraphServices(
             llm=llm, catalog=catalog, connectors=connectors,
-            config=AgentConfig(target="mock/model", semantic_first=True, language="zh"),
+            config=AgentConfig(target="mock/model", language="zh"),
             kb=kb, semantic_layer=provider,
         )
 

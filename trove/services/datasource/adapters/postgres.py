@@ -381,7 +381,11 @@ class PostgresAdapter(DatabaseAdapter):
         try:
             async with self._conn.cursor() as cur:
                 await cur.execute(sql)
-                rows = await cur.fetchall()
+                # 不产记录的语句(CREATE/INSERT/UPDATE)在 psycopg3 里
+                # fetchall() 会抛 ProgrammingError,而 MySQL/SQLite 的驱动
+                # 只回空列表 —— description 为 None 就是「这条语句没有结果集」,
+                # 按同一个口径回空列空行,别让同一个 QueryResult 契约因方言而异。
+                rows = await cur.fetchall() if cur.description else []
                 columns = [d.name for d in (cur.description or [])]
                 elapsed_ms = (time.monotonic() - start) * 1000
         except asyncio.CancelledError:

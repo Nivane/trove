@@ -46,6 +46,24 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      # 0. KB 禁背题 —— **不设 if**,与上面那条门相反。
+      #
+      # CLAUDE.md 写着「绝不把 BIRD gold SQL 塞进 examples.yml」,在此之前
+      # 它只有文字(和一把没人触发的尺子)。这里把它变成每次 PR 的一道门。
+      #
+      # 为什么**不**挂在 eval.gate_enabled 上:被那个开关挡住的门,正是本文件
+      # 开头抱怨的 G1(建好了却没开)。这条检查零 LLM / 零网络 / 零数据库,
+      # 没有成本需要防;而且它问的是「KB 还诚实吗」,不是「模型变差了吗」——
+      # 后者才是 gate_enabled 的管辖范围。
+      #
+      # 为什么排在 1/2/3 之前:后面几步失败会让 job 停在这里之前的步,把这条
+      # 检查的结论吞掉 —— 那就得先修完评测门才知道 KB 有问题,两轮往返。
+      #
+      # 比对基准是 eval/baseline/questions.jsonl(仓库里那份冻结题集),
+      # 不是设计仓库的 test-questions.json:CI 只有仓库。两者 32/32 逐字节一致。
+      - name: KB 禁背题(零 LLM)
+        run: uv run python scripts/check_kb_anti_cheat.py
+
       - name: Gate enabled?
         id: gate
         run: |

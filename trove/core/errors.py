@@ -12,48 +12,31 @@ from typing import Any
 # ── Error Code Constants ─────────────────────────────────
 
 class ErrorCode:
-    """Machine-readable error codes: {DOMAIN}_{NNN}"""
+    """Machine-readable error codes: {DOMAIN}_{NNN}
+
+    只登记**真的会被抛出**的码。码号是身份的一部分,删掉一个不留位 ——
+    编进答案里的 ``code`` 字段是给调用方 switch 的,一个永远不会出现的
+    码不是"预留",是让读者以为这条路径存在。
+    """
 
     # Chat / Session
     CHAT_SESSION_NOT_FOUND = "CHAT_001"
-    CHAT_INVALID_MESSAGE = "CHAT_002"
-    CHAT_COMPACT_FAILED = "CHAT_003"
 
     # SQL
     SQL_INVALID_SYNTAX = "SQL_001"
-    SQL_DIALECT_INCOMPATIBLE = "SQL_002"
     SQL_TABLE_NOT_FOUND = "SQL_003"
-    SQL_EXECUTION_TIMEOUT = "SQL_004"
-    SQL_PERMISSION_DENIED = "SQL_005"
-
-    # Knowledge Base
-    KB_NOT_BUILT = "KB_001"
-    KB_BUILD_INTERRUPTED = "KB_002"
-    KB_EMBED_MODEL_UNAVAILABLE = "KB_003"
 
     # Datasource
     DS_CONNECTION_FAILED = "DS_001"
     DS_ALREADY_EXISTS = "DS_002"
-    DS_UNSUPPORTED_TYPE = "DS_003"
 
     # Auth
-    AUTH_USER_ID_MISSING = "AUTH_001"
-    AUTH_CONFIG_IMMUTABLE = "AUTH_002"
     AUTH_INVALID_CREDENTIALS = "AUTH_003"
-    AUTH_TOKEN_INVALID = "AUTH_004"
     AUTH_FORBIDDEN = "AUTH_005"
     AUTH_USER_EXISTS = "AUTH_006"
-    AUTH_TOO_MANY_ATTEMPTS = "AUTH_007"
-
-    # MCP
-    MCP_SERVER_UNREACHABLE = "MCP_001"
-    MCP_TOOL_CALL_FAILED = "MCP_002"
-    MCP_INVALID_FILTER = "MCP_003"
 
     # LLM
     LLM_PROVIDER_UNAVAILABLE = "LLM_001"
-    LLM_MODEL_NOT_FOUND = "LLM_002"
-    LLM_TOKEN_LIMIT = "LLM_003"
 
     # System
     SYS_CONFIG_LOAD_FAILED = "SYS_001"

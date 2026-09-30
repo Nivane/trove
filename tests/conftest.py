@@ -144,6 +144,9 @@ def _reset_trace_store(monkeypatch):
     _obs._client = None
     from trove.agent.confidence import reset_confidence_flag
     reset_confidence_flag()
+    # tracing 的配置侧总闸也是进程级全局:某个测试用 enabled=False 跑过
+    # configure_tracing 之后,后续测试即使有凭证也会被静默抑制。
+    _obs.set_tracing_suppressed(False)
     for key in (
         "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST",
         "LANGFUSE_AUTH_CHECK",

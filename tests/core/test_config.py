@@ -110,23 +110,6 @@ class TestLoadAgentConfig:
         config = ConfigLoader.load_agent_config(str(config_file))
         assert config.providers[0].litellm_params["api_key"] == "sk-test"
 
-    def test_load_with_datasources(self, tmp_path):
-        config_file = tmp_path / "agent.yml"
-        config_file.write_text(
-            "agent:\n"
-            "  services:\n"
-            "    datasources:\n"
-            "      - name: prod\n"
-            "        type: postgres\n"
-            "        connection:\n"
-            "          host: localhost\n"
-        )
-
-        config = ConfigLoader.load_agent_config(str(config_file))
-        assert len(config.datasources) == 1
-        assert config.datasources[0].name == "prod"
-        assert config.datasources[0].type == "postgres"
-
     def test_load_with_semantic_layer_path(self, tmp_path):
         config_file = tmp_path / "agent.yml"
         config_file.write_text(
@@ -543,3 +526,69 @@ class TestConfidenceScoreFlag:
         p = tmp_path / "agent.yml"
         p.write_text("agent:\n  target: mock/model\n  confidence_score: false\n")
         assert ConfigLoader.load_agent_config(str(p)).confidence_score is False
+
+
+class TestLyingConfigKeys:
+    """conf/agent.yml 里写了、代码却不读的键 —— 每一条都是「改它没用」的谎言。
+
+    这类键比死代码危险:死代码只是占地方,假开关在有人依赖它的那一刻收钱。
+    """
+
+    def test_decompose_llm_judge_from_yaml_is_honoured(self, tmp_path):
+        """写 false 必须真的关掉 LLM 判断层(否则这条键就是摆设)。
+
+        改前必红:字段声明在 AgentConfig 上、读取点在 session.py,唯独加载器
+        的构造调用里漏了它 —— 于是 yaml 写什么都不生效,永远停在默认 True。
+        """
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n  decompose_llm_judge: false\n",
+            encoding="utf-8",
+        )
+        assert ConfigLoader.load_agent_config(str(conf)).decompose_llm_judge is False
+
+    def test_decompose_llm_judge_defaults_to_on(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        assert ConfigLoader.load_agent_config(str(conf)).decompose_llm_judge is True
+
+    def test_tracing_default_is_not_suppressed(self):
+        """tracing.enabled 缺省 True = 不抑制(与「保护开着」同一条原则)。
+
+        凭证才是真正的开关:没人会误配 LANGFUSE_*。这个键的职责是撤回,
+        所以缺省必须是「不撤回」—— 否则少写一个 observability 段就等于
+        静默停录,那是观测系统最坏的失败形态。
+        """
+        from trove.core.config import TracingConfig
+
+        assert TracingConfig().enabled is True
+
+    def test_tracing_default_survives_the_yaml_loader(self, tmp_path):
+        """缺省要走**加载器那条路**验证,不能只测 dataclass。
+
+        改前必红:字段缺省是 True,加载器却写 ``.get("enabled", False)``
+        —— 一份没有 observability 段的配置加载出来是 False。只测
+        ``TracingConfig()`` 的话,这个不一致永远看不见:字段自己是对的,
+        是"从 yaml 到字段"这一段在撒谎。三处缺省(字段 / 加载器 /
+        ``observability._suppressed``)必须同向。
+        """
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.tracing.enabled is True
+
+        # 空 observability 段同理(与"少写整段"是同一类误配)。
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n  observability: {}\n",
+            encoding="utf-8",
+        )
+        assert ConfigLoader.load_agent_config(str(conf)).tracing.enabled is True
+
+    def test_tracing_disabled_in_yaml_reaches_the_config(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "  observability:\n    tracing:\n      enabled: false\n",
+            encoding="utf-8",
+        )
+        assert ConfigLoader.load_agent_config(str(conf)).tracing.enabled is False

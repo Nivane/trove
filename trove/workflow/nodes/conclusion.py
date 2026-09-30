@@ -20,6 +20,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.prompts.skills import append_skill_block, render_skills
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -30,8 +31,14 @@ MAX_CONCLUSION_ROWS = 20  # 注入给 LLM 的最多数据行(截断避免超长)
 def make_conclusion(
     llm: LLMGateway,
     config: AgentConfig,
+    skills: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
-    """Build the conclusion node bound to an LLM gateway."""
+    """Build the conclusion node bound to an LLM gateway.
+
+    ``skills`` (optional ``SkillService``): confirmed org methodology
+    skills matching this node are appended to the system prompt —
+    结论写法(先结论后证据、标注口径与样本量)是组织口径,不是模型能力。
+    """
 
     async def conclusion(state: WorkflowState) -> dict[str, Any]:
         if state.error or not state.sql or state.row_count < 0:
@@ -78,7 +85,13 @@ def make_conclusion(
             response = await llm.chat(
                 model=model,
                 messages=[
-                    {"role": "system", "content": render("conclusion/system", lang=state.lang)},
+                    # 原地改,不是插入:这是这条 system 消息的唯一来源。
+                    {"role": "system", "content": append_skill_block(
+                        render("conclusion/system", lang=state.lang),
+                        skills.render_skills("conclusion", **state.skill_ctx())
+                        if skills is not None
+                        else render_skills("conclusion", **state.skill_ctx()),
+                    )},
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=16000,

@@ -52,21 +52,18 @@ class ProviderConfig:
 
 
 @dataclass
-class DatasourceServiceConfig:
-    """Datasource service config (from agent.yml)."""
-
-    name: str
-    type: str
-    connection: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class TracingConfig:
     """Observability / tracing configuration."""
 
-    enabled: bool = False
-    providers: list[dict[str, Any]] = field(default_factory=list)
-    capture: dict[str, bool] = field(default_factory=dict)
+    # 缺省 True 的含义是**不抑制**,不是「强制开」:真正决定录不录的是 .env 里的
+    # LANGFUSE_* 凭证(没人会误配),这个键的职责是**撤回** —— enabled: false 时
+    # 即便凭证在也不录(不想把问句文本送出本机时,配置上必须真的拦得住)。
+    #
+    # 这个缺省必须与全局闸门 observability._suppressed 的缺省一致,否则「配置文件
+    # 里没写 observability 段」会变成静默停录 —— 观测系统最坏的失败形态就是不报错
+    # 地什么都不记。装了包只用 ~/.trove/conf/agent.yml 的用户正好落在这一档
+    # (搜索顺序见 CONFIG_SEARCH_PATHS)。
+    enabled: bool = True
 
 
 @dataclass
@@ -244,9 +241,6 @@ class AgentConfig:
     node_models: dict[str, str] = field(default_factory=dict)
     language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
     semantic_layer_path: str = ""  # OSSIE 语义层目录(相对项目根),空 = 关闭
-    # 语义优先(Phase B):语义模型是唯一可答边界——未覆盖=拒绝+反问扩展;
-    # 无模型=拒绝并提示 /kb init(决策 2/3)。旧裸表路径已从查询图删除。
-    semantic_first: bool = True
     # KB 语义文件 git 版本管理(语义即代码):KB YAML 写操作(init/learn/草稿
     # 确认·驳回·自动应用/lesson 确认/删除)后自动 commit,git log 即审计历史。
     # best-effort:KB 不在 git 工作树内/无变更/失败 → 静默跳过,绝不影响写入。
@@ -314,9 +308,7 @@ class AgentConfig:
     # 可信查询资产的**统计**侧(台账库的位置与保留期)。见 AssetsConfig。
     # 治理字段本身没有可配项 —— 它们是资产属性,随 examples.yml 走 git。
     assets: AssetsConfig = field(default_factory=AssetsConfig)
-    config_mutable: bool = True
     providers: list[ProviderConfig] = field(default_factory=list)
-    datasources: list[DatasourceServiceConfig] = field(default_factory=list)
     tracing: TracingConfig = field(default_factory=TracingConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
     # 定时任务调度 tick 轮询间隔(秒);serve 内置后台 tick 用。<=0 = 关闭内置调度。
@@ -462,24 +454,14 @@ class ConfigLoader:
                 litellm_params=p.get("litellm_params", {}),
             ))
 
-        # Parse datasources from services
-        services = agent_section.get("services", {})
-        datasources = []
-        for ds in services.get("datasources", []):
-            datasources.append(DatasourceServiceConfig(
-                name=ds.get("name", ""),
-                type=ds.get("type", ""),
-                connection=ds.get("connection", {}),
-            ))
-
         # Parse tracing
+        # 缺省 True = 不抑制,与 TracingConfig.enabled 的字段缺省、与全局闸门
+        # observability._suppressed 的缺省三处一致。写成 False 的话,少写一个
+        # observability 段的配置会在凭证齐全时静默停录 —— 观测系统最坏的失败
+        # 形态就是不报错地什么都不记。
         obs = agent_section.get("observability", {})
         tracing_raw = obs.get("tracing", {})
-        tracing = TracingConfig(
-            enabled=tracing_raw.get("enabled", False),
-            providers=tracing_raw.get("providers", []),
-            capture=obs.get("capture", {}),
-        )
+        tracing = TracingConfig(enabled=tracing_raw.get("enabled", True))
 
         # Parse retention
         retention_raw = agent_section.get("retention", {})
@@ -494,7 +476,7 @@ class ConfigLoader:
         mem_raw = agent_section.get("memory", {}) or {}
         mem_retention_raw = mem_raw.get("retention_days", {}) or {}
         retention_days: dict[str, int | None] = {}
-        for k in ("episodes", "preferences", "facts", "retrieval_log", "lessons"):
+        for k in ("episodes", "preferences", "facts", "retrieval_log"):
             if k in mem_retention_raw and mem_retention_raw[k] is not None:
                 try:
                     retention_days[k] = int(mem_retention_raw[k])
@@ -601,7 +583,6 @@ class ConfigLoader:
             },
             language=agent_section.get("language", "zh"),
             semantic_layer_path=agent_section.get("semantic_layer_path", ""),
-            semantic_first=agent_section.get("semantic_first", True),
             git_kb=agent_section.get("git_kb", True),
             date_parser=agent_section.get("date_parser", True),
             fast_path=agent_section.get("fast_path", True),
@@ -613,6 +594,7 @@ class ConfigLoader:
             chart_llm=agent_section.get("chart_llm", False),
             result_cache=agent_section.get("result_cache", False),
             confidence_score=bool(agent_section.get("confidence_score", True)),
+            decompose_llm_judge=agent_section.get("decompose_llm_judge", True),
             result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
             result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),
             api_rate_per_minute=max(0, int(agent_section.get("api_rate_per_minute", 30))),
@@ -638,9 +620,7 @@ class ConfigLoader:
             authz=authz_conf,
             masking=masking_conf,
             assets=assets_conf,
-            config_mutable=agent_section.get("config_mutable", True),
             providers=providers,
-            datasources=datasources,
             tracing=tracing,
             retention=retention,
             scheduler_poll_seconds=max(

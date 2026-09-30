@@ -1,8 +1,10 @@
 # Skill manifest: node-triggered methodology blocks.
-# Each skill declares deterministic trigger conditions; a skill matches when
-# every trigger field matches the node context (scalar equality, or list
-# membership for OR semantics). Matched skills are rendered into the node's
-# system prompt via render_skills().
+# Matched skills are rendered into the node's system prompt via render_skills().
+#
+# 触发语义见 prompts/skills/match_trigger —— 唯一的实现:
+#   - 标量相等,或列表包含(OR)
+#   - role:列表对列表,**有交集即命中**;值缺失(None/[])一律不命中
+#   - node 始终必须相等
 
 - name: plan_query
   description: >
@@ -22,13 +24,3 @@
     contract and the target mapping).
   triggers:
     node: analyze_error
-
-- name: align_schema
-  description: >
-    Schema-alignment methodology for the schema_linking node's LLM call:
-    decide table/column necessity by question coverage, prefer populated
-    columns over name-matching empty ones, metric tables over entity-only
-    tables, and join-path awareness. Supplements the base
-    schema_alignment/system template (which defines the JSON contract).
-  triggers:
-    node: schema_linking

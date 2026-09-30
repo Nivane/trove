@@ -383,7 +383,6 @@ agent:
   target: deepseek/deepseek-reasoner   # litellm 模型串
   model_fast: deepseek/deepseek-chat   # 便宜档:草稿、语义、洞察
   language: zh                         # 交互语言:zh / en
-  semantic_first: true                 # 语义模型是唯一可答边界
   # explain_row_guard: true            # EXPLAIN 行数守卫(默认开)
   # explain_max_rows: 50000000         # 超软限打回重生成
   # explain_hard_max_rows: 1000000000  # 超硬限直接拒绝

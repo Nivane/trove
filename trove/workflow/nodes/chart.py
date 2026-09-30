@@ -30,6 +30,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.prompts.skills import append_skill_block, render_skills
 from trove.services.semantic_layer.compiler import _is_time_field
 from trove.services.viz.infer import build_chart, infer_chart
 from trove.services.viz.tool import CHART_TOOL_NAME, build_chart_registry
@@ -102,11 +103,15 @@ async def _llm_chart(
     llm: LLMGateway,
     config: AgentConfig,
     hints: dict | None,
+    skills: Any | None = None,
 ) -> dict[str, Any] | None:
     """单次强制 plot_chart 工具调用:LLM 判定是否画图 + 图表规格。
 
     返回构建好的 chart payload;LLM 明确 chartable=false → None。任何异常
     向上抛,由调用方回退确定性推断。
+
+    ``skills`` 由 ``make_chart`` 透传 —— system prompt 在这里组装,所以挂点
+    也只能落在这里。本函数全仓只有 ``make_chart`` 一个调用方。
     """
     registry = build_chart_registry(
         state.columns, state.rows,
@@ -127,7 +132,13 @@ async def _llm_chart(
     response = await llm.chat_full(
         model=model,
         messages=[
-            {"role": "system", "content": render("chart/system", lang=state.lang)},
+            # 原地改,不是插入:这是这条 system 消息的唯一来源。
+            {"role": "system", "content": append_skill_block(
+                render("chart/system", lang=state.lang),
+                skills.render_skills("chart", **state.skill_ctx())
+                if skills is not None
+                else render_skills("chart", **state.skill_ctx()),
+            )},
             {"role": "user", "content": user_prompt},
         ],
         tools=registry.defs(),
@@ -161,7 +172,10 @@ def make_chart(
     llm: LLMGateway | None = None,
     config: AgentConfig | None = None,
     semantic_layer: Any = None,
+    skills: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
+    """``skills`` (optional ``SkillService``) 透传给 ``_llm_chart`` —— 图表
+    选型口径(什么时候折线、什么时候条形)是组织口径,不是模型能力。"""
     async def chart(state: WorkflowState) -> dict[str, Any]:
         if state.error or not state.columns or state.row_count == 0:
             # 降级/空结果 → 清掉陈旧图表(重跑修正轮可能换结果)
@@ -172,7 +186,7 @@ def make_chart(
         # LLM 判定路径(配置开启 + 有 LLM):失败一律回退确定性推断
         if llm is not None and config is not None and config.chart_llm:
             try:
-                payload = await _llm_chart(state, llm, config, hints)
+                payload = await _llm_chart(state, llm, config, hints, skills=skills)
                 return {"chart": payload, "chart_source": "llm"}
             except Exception as e:
                 logger.warning("LLM chart decision failed (%s); falling back", e)

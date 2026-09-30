@@ -34,6 +34,7 @@ from trove.core.logging import get_logger
 from trove.core.periods import base_period as _base_period
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.prompts.skills import append_skill_block, render_skills
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -541,6 +542,7 @@ def make_attribution(
     config: AgentConfig,
     connectors=None,
     semantic_layer=None,
+    skills: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the attribution node bound to services.
 
@@ -549,6 +551,10 @@ def make_attribution(
         config: AgentConfig (attribution.enabled / max_hops / node model).
         connectors: ConnectorRegistry used to run hop queries (None → skip).
         semantic_layer: Live semantic provider (metrics/dimensions/time).
+        skills: Optional ``SkillService`` — confirmed org methodology skills
+            matching this node join the narrative system prompt. 883 行的
+            方法论写死在代码里,而选 shift-share 还是贡献度分解**是口径不是
+            算法**:代码提供方法,组织决定什么时候用哪个。
     """
 
     async def attribution(state: WorkflowState) -> dict[str, Any]:
@@ -811,7 +817,13 @@ def make_attribution(
                     response = await llm.chat(
                         model=model,
                         messages=[
-                            {"role": "system", "content": render("attribution/system", lang=state.lang)},
+                            # 原地改,不是插入:这是这条 system 消息的唯一来源。
+                            {"role": "system", "content": append_skill_block(
+                                render("attribution/system", lang=state.lang),
+                                skills.render_skills("attribution", **state.skill_ctx())
+                                if skills is not None
+                                else render_skills("attribution", **state.skill_ctx()),
+                            )},
                             {"role": "user", "content": render(
                                 prompt_name,
                                 lang=state.lang,

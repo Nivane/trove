@@ -238,7 +238,7 @@ docker compose up --build</code></pre>
       </div>
 
       <div class="cap-where" style="margin-top:16px">
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1605">graphs.py:1605 <span class="ref-line">主图装配</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1619">graphs.py:1619 <span class="ref-line">主图装配</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py">rules.py <span class="ref-line">确定性校验规则链</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">versions.py <span class="ref-line">SQL 版本链 / 回归硬检查</span></a>
       </div>
@@ -314,8 +314,8 @@ docker compose up --build</code></pre>
             长期没人用到的自动老化退役。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L570">service.py:570 <span class="ref-line">pending 不入检索</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1599">service.py:1599 <span class="ref-line">confirmed_only</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L596">service.py:596 <span class="ref-line">pending 不入检索</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1630">service.py:1630 <span class="ref-line">confirmed_only</span></a>
           </div>
         </div>
         <div class="cap">
@@ -501,7 +501,7 @@ docker compose up --build</code></pre>
             出错则原样透传。意图路由把「问数据」和「问元数据」分成两条路，后者自带一轮自校验。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1605">graphs.py:1605</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1619">graphs.py:1605</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py">workflow/state.py</a>
           </div>
         </div>
@@ -667,7 +667,7 @@ docker compose up --build</code></pre>
           </div>
           <div class="cap-where">
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L119">graphs.py:119 <span class="ref-line">分档预算</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L134">context_budget.py:134 <span class="ref-line">条目级装配</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L102">context_budget.py:102 <span class="ref-line">条目级装配</span></a>
           </div>
         </div>
         <div class="cap">
@@ -756,7 +756,7 @@ docker compose up --build</code></pre>
             <tr>
               <td>不可信内容隔离</td>
               <td>值进入模型上下文只有两条通道，两条都过同一个隔离核：命中注入短语即把<strong>整个值</strong>作废成中性标记，而不是剪掉命中的那一段（模型不能以为自己拿到的是不完整但可用的数据）。截断排在隔离<strong>之后</strong>，否则长文本里的注入串会被从中间切断、正则漏判。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L88">llm/untrusted.py:88 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">llm/agent_loop.py:89 <span class="ref-line">_model_observation</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L83">llm/untrusted.py:83 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">llm/agent_loop.py:89 <span class="ref-line">_model_observation</span></a></td>
             </tr>
             <tr>
               <td>以用户身份重放</td>
@@ -766,7 +766,7 @@ docker compose up --build</code></pre>
             <tr>
               <td>授权与脱敏审计</td>
               <td>拒绝、字段改写、凭 scope 读原文三类各记一条（只记字段名与模式，从不记值）；拒绝另按原因计数。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1579">agent/session.py:1579 <span class="ref-line">_audit_authz</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L321">core/metrics.py:321 <span class="ref-line">record_authz_deny</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1584">agent/session.py:1584 <span class="ref-line">_audit_authz</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L343">core/metrics.py:343 <span class="ref-line">record_authz_deny</span></a></td>
             </tr>
           </tbody>
         </table>
@@ -944,7 +944,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         </div>
       </div>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">74c5c6c</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 74c5c6c</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">e5f844e</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: e5f844e</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>

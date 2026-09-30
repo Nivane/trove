@@ -173,3 +173,49 @@ class TestSettingsService:
         )
         assert errors == []
         assert coerced["llm.providers"][0]["litellm_params"]["api_key"] == "sk-new"
+
+
+class TestCliModelPrecedence:
+    """`--model` 与 settings.db 撞同一个 config.target 时的胜者。
+
+    README 承诺「CLI --model > conf/agent.yml」,而管理台的 llm.default_model 是
+    第三条覆盖层。它赢过 yaml 是对的,赢过命令行这一次性的显式意图是错的。
+
+    这里测的是 apply_runtime_overrides —— create_app_components 调的那一个函数,
+    两层覆盖的**顺序**就写在它里面。所以抽掉里面的 CLI 重放,下面第一个用例必红。
+    (残留缺口:若有人绕过这个函数直接调 apply_overrides,测试看不到。)
+    """
+
+    def test_cli_model_wins_over_db_override(self):
+        from types import SimpleNamespace
+
+        from trove.main import apply_runtime_overrides
+
+        config = AgentConfig(target="openai/gpt-4o")  # conf/agent.yml
+        apply_runtime_overrides(
+            config, SimpleNamespace(model="anthropic/claude"),
+            {"llm.default_model": "deepseek/deepseek-chat"},
+        )
+        assert config.target == "anthropic/claude"  # CLI > DB > yaml
+
+    def test_db_override_still_wins_over_yaml(self):
+        """不给 --model 时,管理台的值照旧压过 agent.yml。"""
+        from types import SimpleNamespace
+
+        from trove.main import apply_runtime_overrides
+
+        config = AgentConfig(target="openai/gpt-4o")
+        apply_runtime_overrides(
+            config, SimpleNamespace(model=None),
+            {"llm.default_model": "deepseek/deepseek-chat"},
+        )
+        assert config.target == "deepseek/deepseek-chat"
+
+    def test_no_overrides_keeps_yaml_value(self):
+        from types import SimpleNamespace
+
+        from trove.main import apply_runtime_overrides
+
+        config = AgentConfig(target="openai/gpt-4o")
+        apply_runtime_overrides(config, SimpleNamespace(model=None), None)
+        assert config.target == "openai/gpt-4o"

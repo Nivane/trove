@@ -970,6 +970,9 @@ def make_gen_generate(
                 run_id=state.run_id,
                 probe_cache=probe_cache,
                 skills=services.skills,
+                # load_skill 的触发器判定读它 —— 与下方广告块同一个 ctx 源。
+                # 漏传 = role/lang 类收窄恒不匹配:广告点了名、按名调过去被拒。
+                skill_ctx=state.skill_ctx(),
                 budget=budget,
                 profiles=profiles,
             )
@@ -994,10 +997,14 @@ def make_gen_generate(
             # available 档只广告描述 + load_skill 按需取正文(注册表已挂工具)。
             skills = services.skills
             if skills is not None:
+                # ctx 取自外层 WorkflowState 而非 sub_state:GenSQLState 只带
+                # lang/datasource/complexity,没有 intent/tool_roles —— 用它拼
+                # ctx 会让这两类 trigger 在 gen_sql 上恒不命中,正是本任务在
+                # 修的那类静默失效。
                 system_text = append_skill_block(
-                    system_text, skills.render_skills("gen_sql", lang=sub_state.lang))
+                    system_text, skills.render_skills("gen_sql", **state.skill_ctx()))
                 system_text = append_skill_block(
-                    system_text, skills.available_skills_block("gen_sql", lang=sub_state.lang))
+                    system_text, skills.available_skills_block("gen_sql", **state.skill_ctx()))
             model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
             result = None
             try:
@@ -1945,7 +1952,8 @@ def _build_reflection(
         semantic_layer=services.semantic_layer,
         config=services.config or AgentConfig(),
     ))
-    g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("validate", make_validate_rules(
+        max_retries=MAX_REFLECT_RETRIES, skills=services.skills))
     # 脱敏节点(设计 §5.5 G4 / I5)。位置是**判定过、LLM 之前**:放在 select
     # 里会被快径跳过(select 无候选时直接返回),放在 validate 之前会让规则链
     # 对着改写过的数据下结论。见 nodes/masking.py 的模块注释。
@@ -1957,13 +1965,18 @@ def _build_reflection(
     # 说明语义 + 执行前人工确认(HITL):生成 SQL → 解释 → 确认 → 执行 → 洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
-    g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("insights", make_insights(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("attribution", make_attribution(
         services.llm, services.config or AgentConfig(),
         connectors=services.connectors, semantic_layer=services.semantic_layer,
+        skills=services.skills,
     ))
-    g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
-    g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
+    g.add_node("chart", make_chart(
+        llm=services.llm, config=services.config or AgentConfig(),
+        semantic_layer=services.semantic_layer, skills=services.skills))
+    g.add_node("conclusion", make_conclusion(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)
@@ -2138,17 +2151,23 @@ def _build_fixed(
     g.add_edge("gen_retrieve", "gen_assemble")
     g.add_edge("gen_assemble", "gen_generate")
     g.add_node("execute_sql", make_execute_sql(services.connectors, max_retries=MAX_REFLECT_RETRIES, lineage=services.lineage, timeout_ms=int((services.config or AgentConfig()).budget.timeout_ms), budget=budget, authorizer=_build_authorizer(services), profiles=profile, terminator=_build_terminator(services)))
-    g.add_node("validate", make_validate_rules(max_retries=MAX_REFLECT_RETRIES))
+    g.add_node("validate", make_validate_rules(
+        max_retries=MAX_REFLECT_RETRIES, skills=services.skills))
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
-    g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("insights", make_insights(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("attribution", make_attribution(
         services.llm, services.config or AgentConfig(),
         connectors=services.connectors, semantic_layer=services.semantic_layer,
+        skills=services.skills,
     ))
-    g.add_node("chart", make_chart(llm=services.llm, config=services.config or AgentConfig(), semantic_layer=services.semantic_layer))
-    g.add_node("conclusion", make_conclusion(services.llm, services.config or AgentConfig()))
+    g.add_node("chart", make_chart(
+        llm=services.llm, config=services.config or AgentConfig(),
+        semantic_layer=services.semantic_layer, skills=services.skills))
+    g.add_node("conclusion", make_conclusion(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("output", output)
 
     _add_intent_routing(g, services)

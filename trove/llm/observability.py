@@ -27,6 +27,29 @@ logger = get_logger(__name__)
 
 _client = None  # lazy singleton
 
+#: 配置侧总闸 —— 由 ``configure_tracing`` 按 agent.yml 的
+#: ``observability.tracing.enabled`` 设置。
+#:
+#: 语义是**抑制**而不是**启用**,这一点是刻意的:缺省 ``False``(= 没被配置
+#: 关掉),所以从不调用 ``configure_tracing`` 的路径(测试、纯 CLI 子命令)
+#: 行为与以前完全一致。反过来若缺省为"未启用",那么任何漏调配置的入口都会
+#: **静默停录** —— 一个观测系统最不该有的失败形态就是不报错地什么都不记。
+#:
+#: 于是 ``enabled: true`` 的含义是"不要抑制"(凭证在就录,不在就没有),
+#: ``enabled: false`` 才是"就算有凭证也别录"——后者是这条开关存在的理由:
+#: 不想把问句文本送到第三方时,它必须真的拦得住。
+_suppressed = False
+
+
+def set_tracing_suppressed(suppressed: bool) -> None:
+    """设置配置侧总闸(``configure_tracing`` 调用;测试用 ``False`` 复位)。"""
+    global _suppressed
+    _suppressed = bool(suppressed)
+
+
+def tracing_suppressed() -> bool:
+    return _suppressed
+
 
 def langfuse_trace_id(run_id: str) -> str:
     """Langfuse 合法 trace id = 32 位小写 hex。
@@ -38,6 +61,14 @@ def langfuse_trace_id(run_id: str) -> str:
 
 
 def langfuse_enabled() -> bool:
+    """凭证在 **且** 没被配置关掉。
+
+    每个录制入口(``get_client`` / ``build_callback_handler`` /
+    ``record_span`` / ``record_run_finish``)都走这一个判定,所以
+    ``observability.tracing.enabled: false`` 是一处生效、处处生效。
+    """
+    if _suppressed:
+        return False
     return bool(
         os.environ.get("LANGFUSE_PUBLIC_KEY")
         and os.environ.get("LANGFUSE_SECRET_KEY")

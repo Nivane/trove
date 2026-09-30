@@ -89,7 +89,3 @@ class MemoryConfig:
     @property
     def promotion_enabled(self) -> bool:
         return self.enabled and self.promotion
-
-    @property
-    def profile_enabled(self) -> bool:
-        return self.enabled and self.profile_boost

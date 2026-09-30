@@ -390,6 +390,12 @@ class WorkflowState(BaseModel):
     # 供日志/eval 归因「哪条断言拦了什么」
     validation_hits: list[dict] = Field(default_factory=list)
 
+    #: org validator 档的逐条判定 —— 与 ``validation_hits`` **分开**是因为
+    #: 后者的语义是"被规则拦过"(eval 恢复机制归因的判据,见
+    #: trove/eval/replay.py::_tried_recovery)。advisory 判词与"判不了"
+    #: 都不是拦截事件,混进去会污染归因。
+    validator_hits: list[dict] = Field(default_factory=list)
+
     # agent 自检通过次数(gen_generate 写,每轮覆盖不累加;降级到经典子图时
     # 显式写 0 —— 那条路径交付的 SQL 没经过 check_result)。今天通过时 hits
     # 为空,零痕迹;置信度要用它当正面证据(设计 §5.4-2)。
@@ -451,6 +457,27 @@ class WorkflowState(BaseModel):
 
     # output artifact
     final_response: str = ""
+
+    def skill_ctx(self) -> dict[str, Any]:
+        """skill 触发的上下文维度 —— 与 ``triggers`` 的字段名一一对应。
+
+        收成一个方法而不是在每个节点各拼一次：**漏传一个维度不会报错**，
+        只会让那一类 trigger 永远不命中。这不是假想的风险 ——
+        ``_match_org`` / ``match_trigger`` 早就按 ctx 逐字段匹配写好了，而
+        三个调用点一个 ctx 都没传，于是任何非 ``node`` 的 trigger 从写下
+        那天起就没生效过，外部完全看不出来。
+
+        ``lang`` 在里面**是有意的**：它既绑 ``render_skills`` 的具名形参
+        （决定渲染哪种语言的正文），又是触发维度（只对某种语言的问题挂）。
+        调用方写 ``render_skills(node, **state.skill_ctx())`` 时两者同时满足。
+        """
+        return {
+            "intent": self.intent,
+            "complexity": self.complexity,
+            "role": self.tool_roles,
+            "lang": self.lang,
+            "datasource": self.datasource,
+        }
 
 
 class GenSQLState(BaseModel):
