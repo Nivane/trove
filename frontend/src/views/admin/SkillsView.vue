@@ -47,9 +47,15 @@
         </el-table-column>
         <el-table-column :label="t('skillsTier', ui.lang)" width="110">
           <template #default="{ row }">
-            <el-tag v-if="row.source !== 'code'" size="small" :type="row.tier === 'required' ? 'warning' : 'info'" effect="plain">
-              {{ row.tier === 'required' ? t('skillsRequired', ui.lang) : t('skillsAvailable', ui.lang) }}
-            </el-tag>
+            <!-- title 挂在包一层的 span 上:el-tag 不把未知 attr 透传到根元素,
+                 直接写在它上面等于没写(实测 attributes() 里没有 title)。 -->
+            <span v-if="row.source !== 'code'"
+                  :title="row.tier === 'validator' ? t('skillsValidatorHint', ui.lang) : ''"
+            >
+              <el-tag size="small" :type="tierTagType(row.tier)" effect="plain">
+                {{ tierLabel(row.tier) }}
+              </el-tag>
+            </span>
             <span v-else class="pill pill-neutral">{{ t('skillsRequired', ui.lang) }}</span>
           </template>
         </el-table-column>
@@ -68,7 +74,7 @@
                 {{ t('skillsReject', ui.lang) }}
               </el-button>
               <el-button
-                v-if="row.status === 'confirmed'"
+                v-if="row.status === 'confirmed' && row.tier !== 'validator'"
                 size="small"
                 plain
                 @click="toggleTier(row)"
@@ -182,6 +188,20 @@ function statusLabel(s: string): string {
   if (s === 'confirmed') return t('skillsStatusConfirmed', ui.lang)
   if (s === 'pending') return t('skillsStatusPending', ui.lang)
   return t('skillsStatusRejected', ui.lang)
+}
+
+// validator 是**第三档**,不是"没选 required 的 available" —— 它按结果断言
+// 运行、正文从不投给模型。此前落到 available 分支上,显示的是别人的名字。
+function tierLabel(tier: string): string {
+  if (tier === 'required') return t('skillsRequired', ui.lang)
+  if (tier === 'validator') return t('skillsValidator', ui.lang)
+  return t('skillsAvailable', ui.lang)
+}
+
+function tierTagType(tier: string): string {
+  if (tier === 'required') return 'warning'
+  if (tier === 'validator') return 'danger'
+  return 'info'
 }
 
 async function load() {
