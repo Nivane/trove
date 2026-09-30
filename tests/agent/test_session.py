@@ -277,7 +277,8 @@ class TestConversationHistory:
 
 
 class TestStructuredSteps:
-    def _manager(self, tmp_home, sqlite_registry, responses, **build_kwargs):
+    def _manager(self, tmp_home, sqlite_registry, responses,
+                 multi_candidate=False, **build_kwargs):
         from trove.core.config import AgentConfig
         from trove.services.datasource.catalog import CatalogService
         from trove.storage.session_store import SessionStore
@@ -306,7 +307,8 @@ class TestStructuredSteps:
         return SessionManager(
             config=config,
             session_store=SessionStore(home_dir=str(tmp_home)),
-            graphs=build_graphs(services, multi_candidate=False, **build_kwargs),
+            graphs=build_graphs(services, multi_candidate=multi_candidate,
+                                **build_kwargs),
             llm_gateway=llm,
         )
 
@@ -516,6 +518,10 @@ class TestSelectCorrectionEvent:
         assert events[-1]["type"] == "done"
         correction = next(e for e in events if e["type"] == "correction")
         assert "候选 SQL 结果不一致" in correction["content"]
+        # 只准说过程事实。判分那半句(删掉的「——本答案置信度低」)已由
+        # confidence.py 的票率折损接管:同一件事不两处说,而且两处会打架
+        # —— 票率只是若干折扣之一,折完的分数可能并不低。
+        assert "置信度" not in correction["content"]
 
         # lang=en 配置:中文问题也出英文 correction
         en_manager = await self._manager(tmp_home, language="en")
@@ -527,6 +533,7 @@ class TestSelectCorrectionEvent:
             events.append(event)
         correction = next(e for e in events if e["type"] == "correction")
         assert "Candidate SQLs disagreed" in correction["content"]
+        assert "confidence" not in correction["content"].lower()
 
 
 class TestHistorySummaryFusion:
@@ -1282,3 +1289,129 @@ class TestQueryAudit:
         final = WorkflowState(session_id="s1", question="q", user_id="7")
         await manager._audit_query(type("S", (), {"user_id": "7"})(), final)
         # 审计写失败被吞,查询链路不受影响
+
+
+class TestConfidenceInSummary:
+    """SSE / 历史回放 / runlog 读的都是 ``_state_summary`` —— 落在这里,
+    三个消费方一次全有(设计 §6.3)。
+
+    复用 ``TestStructuredSteps`` 的 ``_manager`` 装配（内含 ``CatalogService`` /
+    ``SessionStore`` / ``build_graphs`` / 脚本化 LLM）。
+
+    **故意不写成 ``class TestConfidenceInSummary(TestStructuredSteps)``**：pytest 会把一个
+    ``Test*`` 基类的用例在子类里**再收集一遍** —— 那 4 条断言会成对出现在报告里，
+    跑两遍、计数翻倍，却没有任何一条多测到了什么。只取装配函数就够了。
+    ``_manager`` 直接取基类那个函数：它在子类里被绑定后子类实例坐进它的 ``self``
+    （该形参在 ``_manager`` 体内未被使用），其余形参位次不受影响。
+    **不要**再套一层 ``staticmethod``：``staticmethod`` 只是不再自动填 ``self``，
+    并不改变函数的参数表 —— 套上之后 ``self`` 落空、实参整体左移一格，最后报出
+    ``TypeError: ... missing 1 required positional argument: 'responses'``，
+    一个与真实原因毫不相干的错。
+    """
+
+    _manager = TestStructuredSteps._manager
+
+    async def test_done_event_summary_carries_the_three_fields(
+        self, tmp_home, sqlite_registry,
+    ):
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
+            query_sketch=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        events = []
+        async for event in manager.ask_stream(
+            session=session, question="What students are in Alameda county?",
+        ):
+            events.append(event)
+
+        summary = events[-1]["summary"]
+        assert events[-1]["type"] == "done"
+        assert summary["sql_confidence"] > 0
+        assert summary["confidence"] > 0
+        assert summary["confidence"] <= summary["sql_confidence"]
+        assert isinstance(summary["confidence_evidence"], list)
+
+    async def test_select_step_detail_reads_the_nested_vote_share(
+        self, tmp_home, sqlite_registry,
+    ):
+        """``detail['confidence']`` 今天恒为 ``0.0``:它读 ``delta['confidence']``,
+        而票率写在 ``delta['selection']['confidence']`` 里(设计 §6.3)。改读嵌套键。
+
+        **注意这不是一个显示 bug。** 实现期核实:渲染 select 置信度的那个 chip
+        (``frontend/src/components/chat/StepCard.vue:126``)读的是
+        ``view.selection.confidence`` ← ``payload.selection.confidence``,而
+        ``get()``(``frontend/src/utils/steps.ts:90-97``)**先查 ``payload.detail``**,
+        ``session.py:1228`` 早已把 ``delta["selection"]`` 原样放了进去 ——
+        票率一直显示正确。恒 ``0.0`` 的是另一个字段,它的前端落点
+        ``view.confidence``(``steps.ts`` 里 ``view.confidence = conf`` 那一行)**全仓库无读取方**。
+        所以本行要做,但理由是**字段诚实**:它已随 SSE / 历史回放 / runlog
+        外发,留着一个恒 ``0.0`` 会误导将来的消费方(前端那个死字段记入 P2)。
+
+        **必须 ``multi_candidate=True`` + 7 条脚本**(本行原稿如此。Task 9 派发前
+        曾据「单候选也记票型」把它改短过 —— 那次更正**是错的**,理由见下方)。
+
+        票率恒为 ``confidence == 1.0``,走的是 ``select.py`` 的
+        ``if len(ranked) == 1:``(全员一致那一档)。Task 2 正是把这条分支从
+        ``return {}`` 改成返回完整的 ``selection`` 增量(``confidence: 1.0``)。
+
+        > **为什么短脚本不够(Task 9 派发前的第二次更正)**:上一次更正的前提是
+        > 「单候选也记票型 ⟹ 两种配置落在同一条分支」—— **这个前提是错的**。
+        > ``select`` 开头有一句 ``if state.error or state.error_feedback or not
+        > state.candidates: return {}``,而 ``candidates`` 只装**备选**池(主候选
+        > 那一组是 select 自己从 ``state.sql`` 建的)。默认的
+        > ``multi_candidate=False`` ⟹ ``graphs.py`` 里 ``alt_subgraphs = None``
+        > ⟹ ``subgraph_alt is None`` ⟹ 池子**永远是空的** ⟹ select 每轮都在第一
+        > 句 return,``selection`` **一次都没写过**。
+        > 上一版推演说「跑不跑都是 1.0」,而真相是**不跑就永远是 0.0**:
+        > ``session.py`` 的 ``detail["confidence"] = delta.get("confidence", 0.0)``
+        > 在取不到时给的是 ``0.0`` —— 上一版连症状都预测错了(它写的是 ``None``)。
+        >
+        > ``len(ranked) == 1`` 的正确读法是「**主候选与全部备选一致**」,不是
+        > 「只有一个候选」;两者只在**有备选**时才是一回事。``select`` 那个早退
+        > 守卫还有个副作用值得记住:``graphs.py`` 每轮把 ``candidates`` 清成
+        > ``[]``,所以**第 2 轮起 select 基本不投票** —— 同样的错读法在多轮场景
+        > 里会得出「第 2 轮的 selection 是本轮的」,而它其实是第 1 轮留下的
+        > (Task 5 为此给 ``update`` 补了 ``"selection": {}``)。
+        """
+        # 脚本给 7 条:意图 + 主候选生成 + 4 个备选生成 + reflect。**4 这个数是从
+        # 代码上算出来的**:``graphs.py`` 的 ``alt_subgraphs`` 用
+        # ``_candidate_schedule(max(scaling, 1) - 1)``,``scaling`` 默认 5 ⟹ 4 个备选
+        # 子图。(全仓**没有**一条断言 ``len(llm.calls) == 7`` 的既有用例 —— 本行
+        # 原稿说「与既有同形样本一致」,那个样本不存在,数本身是对的。)
+        # ``Scripted`` 用 ``next(it)``:**短了是 StopIteration,长了只是没人取**
+        # —— 两头不对称,所以按顺序给足。
+        #
+        # ⚠️ 备选那 4 条**必须与主候选文本不同**(比较键是
+        # ``" ".join(sql.split()).lower()``,大小写/空白折叠):``graphs.py`` 在
+        # 入池前会 ``if key in seen: continue`` 把与主候选重复的备选丢掉,
+        # ``seen`` 初值就是主候选。4 条备选全写成主候选原句,池子会**空着**
+        # 出这个节点 —— ``select`` 开头的 ``not state.candidates`` 守卫随即
+        # 早退 ``{}``,``session.py`` 又把空 delta 整条跳过(``if not delta:
+        # continue``),于是**连 select 步骤事件都没有**,用例会红在
+        # ``KeyError: 'select'`` 上 —— 一个看起来像图坏了、其实是用例喂错的
+        # 症状(本行原稿的脚本正是这样,已按实况修正)。加上限定名的同一句
+        # 既可入池、结果集又与主候选一致:票型落在「全员一致」那一档,
+        # 票率 = 1.0。
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["query",
+             "```sql\nSELECT name FROM students;\n```",
+             "```sql\nSELECT students.name FROM students;\n```",
+             "```sql\nSELECT students.name FROM students;\n```",
+             "```sql\nSELECT students.name FROM students;\n```",
+             "```sql\nSELECT students.name FROM students;\n```",
+             "OK"],
+            query_sketch=False,
+            multi_candidate=True,   # 没有备选就没有投票 —— 见本用例的 docstring
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        steps = {}
+        async for event in manager.ask_stream(
+            session=session, question="What students are in Alameda county?",
+        ):
+            if event["type"] == "step":
+                steps[event["node"]] = event
+
+        assert steps["select"]["detail"]["confidence"] == pytest.approx(1.0)

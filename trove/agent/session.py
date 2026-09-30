@@ -1100,7 +1100,11 @@ class SessionManager:
                         if node_name == "select" and "consensus" in delta and not delta["consensus"]:
                             yield {
                                 "type": "correction", "node": "select",
-                                "content": L(lang, "候选 SQL 结果不一致——本答案置信度低", "Candidate SQLs disagreed — low confidence answer"),
+                                # 只报**过程事实**(备选与主候选结果不一致)。判分那半句
+                                # (「本答案置信度低」)交给 confidence.py 的票率折损 ——
+                                # 同一件事不两处说,而且两处会打架:票率只是若干折扣
+                                # 之一,折完的分数可能并不低。分数在答案自己的披露行上。
+                                "content": L(lang, "候选 SQL 结果不一致", "Candidate SQLs disagreed"),
                             }
                         if delta.get("error_feedback"):
                             yield {
@@ -1222,7 +1226,12 @@ class SessionManager:
         elif node_name == "select":
             detail["consensus"] = delta.get("consensus", True)
             detail["selection"] = delta.get("selection")
-            detail["confidence"] = delta.get("confidence", 0.0)
+            # 票率写在 selection 字典**内部**(select.py),顶层没有这个键 ——
+            # 早先读顶层,于是这个字段恒 0.0(设计 §6.3;不是显示 bug ——
+            # 渲染用的那个 chip 走 selection,一直是对的,见上方测试的说明)。
+            detail["confidence"] = (
+                delta.get("selection") or {}
+            ).get("confidence", 0.0)
         elif node_name == "validate":
             detail["reason"] = reason
             detail["retry"] = retry
@@ -2195,6 +2204,12 @@ class SessionManager:
             # 答案来源档位(output 节点判定;设计 §7.3):前端据此做视觉区分,
             # 传输层(``sse.with_answer_source``)还会把它提到事件顶层。
             "answer_source": final.answer_source,
+            # 答案级置信度(设计 2026-09-30):SSE / 历史回放 / runlog 同源同读。
+            # 0.0 = 没有可披露的答案(元数据/反问/错误路径),与 answer_source
+            # 的空串同一套三态 —— 不是「置信度 0」。
+            "sql_confidence": final.sql_confidence,
+            "confidence": final.confidence,
+            "confidence_evidence": final.confidence_evidence,
             "error": final.error,
             "error_info": final.error_info,
             "kb_hits": final.kb_hits,
