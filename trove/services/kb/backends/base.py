@@ -58,24 +58,3 @@ class RetrievalBackend(Protocol):
         schema_doc channel simply omit this method; callers duck-type it.
         """
         ...
-
-
-@runtime_checkable
-class SearchIndexBackend(RetrievalBackend, Protocol):
-    """检索 + 索引同步后端(rag):镜像同步后重建/删除该数据源的向量。
-
-    KbService 在 kb_items/kb_fts 同步完成后按需调用(duck-type 检测,
-    缺失 = 无向量索引,如 builtin/hybrid)。
-    """
-
-    async def index_file(
-        self, datasource: str, source_file: str,
-        entries: list[tuple[str, str, dict]],
-    ) -> None:
-        """重建一个文件的向量索引(YAML 条目 → embedding → upsert)。"""
-
-    async def delete_file(self, datasource: str, source_file: str) -> None:
-        """删除一个文件的向量(删除传播)。"""
-
-    async def clear(self, datasource: str) -> None:
-        """清空一个数据源的全部向量(delete_kb)。"""

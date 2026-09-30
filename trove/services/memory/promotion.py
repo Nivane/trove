@@ -16,17 +16,7 @@ revertible by an admin.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
-
-
-@dataclass
-class PromotionEvidence:
-    """One nudge toward promotion; ``kind`` drives the delta."""
-
-    kind: str          # lesson_reuse_pass | upvote | repeated_correction
-    note: str = ""
-    delta: float = 0.0
 
 
 # 每次支持证据的置信度增量(经验值,可调)。
@@ -57,20 +47,3 @@ def maybe_promote(lesson: dict[str, Any], threshold: float) -> bool:
     confidence = float(lesson.get("confidence") or 0.0)
     net_votes = int(lesson.get("upvotes") or 0) - int(lesson.get("downvotes") or 0)
     return confidence >= threshold or net_votes >= 3
-
-
-@dataclass
-class PromotionLedger:
-    """进程内证据账本(可选;也可直接从 lessons.yml 读 confidence)。"""
-
-    by_key: dict[str, list[PromotionEvidence]] = field(default_factory=dict)
-
-    def bump(self, key: str, evidence: PromotionEvidence) -> float:
-        entries = self.by_key.setdefault(key, [])
-        entries.append(evidence)
-        conf = 0.0
-        for e in entries:
-            conf = apply_evidence(conf, e.kind, len([
-                x for x in entries if x.kind == e.kind
-            ]))
-        return conf
