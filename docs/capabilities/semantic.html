@@ -39,6 +39,14 @@
     <h2 id="role">语义层的职责边界</h2>
 
     <p>
+      语义模型存在 <code>semantics.yml</code> 里，采用 <strong>Apache OSSIE 核心规范的
+      <code>semantic_model</code> 结构</strong>（datasets + metrics，表达式按方言声明、表名限定）。
+      这是唯一被读取的格式：更早的扁平 <code>terms:</code> 写法<strong>已经不再读取</strong>——
+      解析出来是零条，只留一条迁移警告。手里有旧格式的库，重跑一次
+      <code>/kb init --overwrite</code> 再生成即可。
+    </p>
+
+    <p>
       先把一件事说清楚，因为这里最容易误会：<strong>语义层不是「更好的提示词」</strong>。
       提示词影响的是模型输出的概率分布，而语义层做的是<b>编译</b>——把结构化的计划
       确定性地翻译成 SQL，同一份计划永远得到同一条 SQL。
@@ -152,6 +160,11 @@
         </thead>
         <tbody>
           <tr>
+            <td class="mono">no_plan_or_matched</td>
+            <td>没有查询计划、没有匹配到表，或者压根没有语义模型——编译无从开始</td>
+            <td>没有可编译的起点：放行等于让后面每一步都建立在猜测上</td>
+          </tr>
+          <tr>
             <td class="mono">fan_out</td>
             <td>join 路径上存在声明的行倍增边</td>
             <td>被聚合的明细行被复制，金额类指标成倍放大</td>
@@ -235,9 +248,48 @@
           <tr><td class="mono">unresolved_answer_column</td><td>要输出的列没有在语义模型里登记</td></tr>
           <tr><td class="mono">unresolved_filter_field / invalid_op / missing_filter_value</td><td>过滤字段未声明、算子不适用、比较值缺失</td></tr>
           <tr><td class="mono">enum_value_unresolved</td><td>用到了某个枚举值，但它不在该字段的已声明取值里</td></tr>
+          <tr><td class="mono">having_metric_unknown / having_without_aggregation</td><td>HAVING 里点了一个没有声明的指标，或者压根没有可据以过滤的聚合</td></tr>
+          <tr><td class="mono">time_grain_without_aggregation</td><td>要按时间分桶，但没有可以分桶的聚合</td></tr>
+          <tr><td class="mono">analysis_*（六条，见下）</td><td>窗口 / 分析函数这一段没解析出来</td></tr>
         </tbody>
       </table>
     </div>
+
+    <p>
+      软 MISS 一共 18 条，表里按「缺什么」归了类；完整的闭集在
+      <code>SOFT_MISS_REASONS</code> 里，新增 MISS 分支时必须归入软硬两边之一。
+    </p>
+
+    <h4>窗口与分析函数</h4>
+
+    <p>
+      语义计划里可以带一段 <code>analysis</code>，编译期展开成窗口函数。支持六种：
+      <code>share</code>（占整体比例）、<code>running_total</code>（累计）、
+      <code>mom</code> / <code>yoy</code>（环比 / 同比增量）、<code>pct_change</code>（变化率）、
+      <code>rank</code>（排名）。它们都是<strong>单度量</strong>的——窗口计算围绕一个度量展开，
+      所以计划里必须恰好有一个聚合度量投影。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>reason</th><th>缺什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">analysis_unsupported_type</td><td>类型不在上面六种里，或写成了一个数组 / 空值</td></tr>
+          <tr><td class="mono">analysis_metric_unknown</td><td>点名的度量没声明，或聚合度量不止一个</td></tr>
+          <tr><td class="mono">analysis_partition_unresolved</td><td>分组维度（PARTITION BY 的依据）没解析出来</td></tr>
+          <tr><td class="mono">analysis_order_unresolved</td><td>排序依据没解析出来——累计 / 环比 / 同比没有它就无从下手</td></tr>
+          <tr><td class="mono">analysis_time_required</td><td>这类分析必须沿时间轴走，但计划里没有时间维度</td></tr>
+          <tr><td class="mono">analysis_invalid</td><td>这段 <code>analysis</code> 的形状本身不对（不是对象、内层 SQL 解析不出来）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      注意这些全是<strong>软</strong> MISS：窗口那一段交回生成通道按计划文本补齐，
+      内层的分组与过滤仍然由编译器权威产出。缺一段不该让整条查询停摆。
+    </p>
 
     <p>
       收集软 MISS 的入口是 <code>_record_soft</code>——它只记录，不中断编译，
@@ -338,6 +390,7 @@
         <tbody>
           <tr><td>概念层面的可答边界与逃生梯</td><td><a href="../guide/concepts.html">产品概念</a></td></tr>
           <tr><td>指标、字段、枚举从哪来（KB 五件套）</td><td><a href="kb.html">知识库</a></td></tr>
+          <tr><td>同一份模型还有别的消费者吗</td><td><a href="decisions.html">判定规则</a></td></tr>
           <tr><td>编译器在图上哪一步被调用</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
           <tr><td>拒绝之后管理端怎么处置</td><td><a href="../ops/admin.html">运维管理</a></td></tr>
         </tbody>

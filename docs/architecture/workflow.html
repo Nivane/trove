@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 查询工作流：默认 27 个节点逐个说明、意图分流的三条路、语义门禁与分级逃生梯、结果校验的规则链，以及失败后的回滚阶梯。">
+<meta name="description" content="Trove 查询工作流：默认 28 个节点逐个说明、意图分流的三条路、语义门禁与分级逃生梯、结果校验的规则链，以及失败后的回滚阶梯。">
 <title>查询工作流 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -28,7 +28,7 @@
       </div>
       <h1>查询工作流</h1>
       <p class="lede">
-        一句话提问进来，经过 <strong>27 个节点</strong>，一个答案出去。
+        一句话提问进来，经过 <strong>28 个节点</strong>，一个答案出去。
         这一页把图拆开：哪些节点是主干、哪些是分支、失败时系统怎么决定「再试一次」
         还是「退回上一轮」。节点的实测行号都在，可以逐个点去核对。
       </p>
@@ -56,7 +56,7 @@
 
     <pre><code>START → route_intent → parse_date → schema_linking
       → [语义门禁] → fast_match → query_sketch → gen_sql 三节点 → semantics → hitl
-      → execute_sql → select → validate → reflect
+      → execute_sql → select → validate → masking → reflect
       → [分析错误 → 回滚重试] 或 → insights → chart → conclusion → output</code></pre>
 
     <p>
@@ -65,10 +65,10 @@
       所以「agentic 循环」与「经典生成-校验重试」两种形态可以共用同一批上游节点。
     </p>
 
-    <h2 id="nodes">27 个节点</h2>
+    <h2 id="nodes">28 个节点</h2>
 
     <p>
-      下表按 <code>add_node</code> 的注册顺序列出。默认配置（不传开关）下就是这 27 个。
+      下表按 <code>add_node</code> 的注册顺序列出。默认配置（不传开关）下就是这 28 个。
     </p>
 
     <div class="table-wrap">
@@ -77,33 +77,34 @@
           <tr><th>节点</th><th>做什么</th><th>注册位置</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">route_intent</td><td>七分类意图判定，决定走哪条路</td><td>graphs.py:1597</td></tr>
-          <tr><td class="mono">parse_date</td><td>把「上个月」这类相对时间落成具体区间</td><td>graphs.py:1602</td></tr>
-          <tr><td class="mono">answer_metadata</td><td>元数据问答（有哪些表、某表什么结构）</td><td>graphs.py:1603</td></tr>
-          <tr><td class="mono">metadata_check</td><td>元数据答案的自校验，不通过则重答</td><td>graphs.py:1607</td></tr>
-          <tr><td class="mono">answer_reject</td><td>拒绝并说明原因（终态答案节点）</td><td>graphs.py:1612</td></tr>
-          <tr><td class="mono">answer_chitchat</td><td>闲聊兜底（终态答案节点）</td><td>graphs.py:1613</td></tr>
-          <tr><td class="mono">answer_correction</td><td>用户纠正上一轮答案（终态答案节点）</td><td>graphs.py:1614</td></tr>
-          <tr><td class="mono">confirm_draft</td><td>对话内确认语义模型草案，确认后重答原问题</td><td>graphs.py:1616</td></tr>
-          <tr><td class="mono">schema_linking</td><td>算出问题涉及哪些表 → <code>matched_tables</code></td><td>graphs.py:1881</td></tr>
-          <tr><td class="mono">gen_retrieve</td><td>并行检索 KB：示例、教训、术语、指标、实体</td><td>graphs.py:1888</td></tr>
-          <tr><td class="mono">gen_assemble</td><td>把检索结果按预算装进生成提示</td><td>graphs.py:1889</td></tr>
-          <tr><td class="mono">gen_generate</td><td>生成 SQL（agentic 循环或经典子图）</td><td>graphs.py:1890</td></tr>
-          <tr><td class="mono">execute_sql</td><td>执行，含只读校验与骨架保真校验</td><td>graphs.py:1897</td></tr>
-          <tr><td class="mono">select</td><td>多候选共识投票（拿执行结果投票）</td><td>graphs.py:1898</td></tr>
-          <tr><td class="mono">validate</td><td>确定性规则链校验结果</td><td>graphs.py:1899</td></tr>
-          <tr><td class="mono">reflect</td><td>反思裁决：这一轮该继续还是回退</td><td>graphs.py:1907</td></tr>
-          <tr><td class="mono">semantics</td><td>把 SQL 解释成人话（供人看懂与 HITL 确认）</td><td>graphs.py:1909</td></tr>
-          <tr><td class="mono">hitl</td><td>人在环：执行前拦下 SQL 等确认</td><td>graphs.py:1910</td></tr>
-          <tr><td class="mono">insights</td><td>从结果里提炼要点</td><td>graphs.py:1911</td></tr>
-          <tr><td class="mono">attribution</td><td>归因类问题的分析</td><td>graphs.py:1912</td></tr>
-          <tr><td class="mono">chart</td><td>判断要不要画图、画什么图</td><td>graphs.py:1916</td></tr>
-          <tr><td class="mono">conclusion</td><td>生成结论段落</td><td>graphs.py:1917</td></tr>
-          <tr><td class="mono">output</td><td>汇总成最终答案</td><td>graphs.py:1918</td></tr>
-          <tr><td class="mono">fast_match</td><td>模板快径：命中则跳过整个生成链路</td><td>graphs.py:1923</td></tr>
-          <tr><td class="mono">refuse</td><td>语义门禁拒绝 + 起草扩展草案</td><td>graphs.py:1930</td></tr>
-          <tr><td class="mono">query_sketch</td><td>出查询计划，并尝试语义编译</td><td>graphs.py:1942</td></tr>
-          <tr><td class="mono">analyze_error</td><td>失败分析，决定回滚到哪一轮</td><td>graphs.py:2028</td></tr>
+          <tr><td class="mono">route_intent</td><td>七分类意图判定，决定走哪条路</td><td>graphs.py:1645</td></tr>
+          <tr><td class="mono">parse_date</td><td>把「上个月」这类相对时间落成具体区间</td><td>graphs.py:1650</td></tr>
+          <tr><td class="mono">answer_metadata</td><td>元数据问答（有哪些表、某表什么结构）</td><td>graphs.py:1651</td></tr>
+          <tr><td class="mono">metadata_check</td><td>元数据答案的自校验，不通过则重答</td><td>graphs.py:1655</td></tr>
+          <tr><td class="mono">answer_reject</td><td>拒绝并说明原因（终态答案节点）</td><td>graphs.py:1660</td></tr>
+          <tr><td class="mono">answer_chitchat</td><td>闲聊兜底（终态答案节点）</td><td>graphs.py:1661</td></tr>
+          <tr><td class="mono">answer_correction</td><td>用户纠正上一轮答案（终态答案节点）</td><td>graphs.py:1662</td></tr>
+          <tr><td class="mono">confirm_draft</td><td>对话内确认语义模型草案，确认后重答原问题</td><td>graphs.py:1664</td></tr>
+          <tr><td class="mono">schema_linking</td><td>算出问题涉及哪些表 → <code>matched_tables</code></td><td>graphs.py:1929</td></tr>
+          <tr><td class="mono">gen_retrieve</td><td>并行检索 KB：示例、教训、术语、指标、实体</td><td>graphs.py:1936</td></tr>
+          <tr><td class="mono">gen_assemble</td><td>把检索结果按预算装进生成提示</td><td>graphs.py:1937</td></tr>
+          <tr><td class="mono">gen_generate</td><td>生成 SQL（agentic 循环或经典子图）</td><td>graphs.py:1938</td></tr>
+          <tr><td class="mono">execute_sql</td><td>执行，含只读校验与骨架保真校验</td><td>graphs.py:1945</td></tr>
+          <tr><td class="mono">select</td><td>多候选共识投票（拿执行结果投票）</td><td>graphs.py:1950</td></tr>
+          <tr><td class="mono">validate</td><td>确定性规则链校验结果</td><td>graphs.py:1955</td></tr>
+          <tr><td class="mono">masking</td><td>字段级脱敏：结果出库、进任何 LLM 节点之前改写</td><td>graphs.py:1960</td></tr>
+          <tr><td class="mono">reflect</td><td>反思裁决：这一轮该继续还是回退</td><td>graphs.py:1964</td></tr>
+          <tr><td class="mono">semantics</td><td>把 SQL 解释成人话（供人看懂与 HITL 确认）</td><td>graphs.py:1966</td></tr>
+          <tr><td class="mono">hitl</td><td>人在环：执行前拦下 SQL 等确认</td><td>graphs.py:1967</td></tr>
+          <tr><td class="mono">insights</td><td>从结果里提炼要点</td><td>graphs.py:1968</td></tr>
+          <tr><td class="mono">attribution</td><td>归因类问题的分析</td><td>graphs.py:1970</td></tr>
+          <tr><td class="mono">chart</td><td>判断要不要画图、画什么图</td><td>graphs.py:1975</td></tr>
+          <tr><td class="mono">conclusion</td><td>生成结论段落</td><td>graphs.py:1978</td></tr>
+          <tr><td class="mono">output</td><td>汇总成最终答案</td><td>graphs.py:1980</td></tr>
+          <tr><td class="mono">fast_match</td><td>模板快径：命中则跳过整个生成链路</td><td>graphs.py:1985</td></tr>
+          <tr><td class="mono">query_sketch</td><td>出查询计划，并尝试语义编译</td><td>graphs.py:2033</td></tr>
+          <tr><td class="mono">refuse</td><td>语义门禁拒绝 + 起草扩展草案</td><td>graphs.py:2034</td></tr>
+          <tr><td class="mono">analyze_error</td><td>失败分析，决定回滚到哪一轮</td><td>graphs.py:2090</td></tr>
         </tbody>
       </table>
     </div>
@@ -111,7 +112,7 @@
     <p>
       <code>clarify</code> 不在这张表里：它只在显式传入 <code>clarify=True</code> 时才挂上
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1990">graphs.py:1990 <span class="ref-line">clarify</span></a>）。
-      把它算进来的话是 28 个——但那是非默认口径。
+      把它算进来的话是 29 个——但那是非默认口径。
     </p>
 
     <h2 id="intent">意图分流：一条主路，两条岔路</h2>
@@ -209,6 +210,16 @@
     <p>
       这些都是纯代码、零 LLM 的判断。它们的价值不只是「省一次模型调用」，而是
       <strong>可回归测试、且换模型不退化</strong>——一条规则写对了，它永远对。
+    </p>
+
+    <p>
+      规则链之后是 <code>masking</code>：结果还在，但按语义模型里逐字段声明的
+      <code>partial</code> / <code>hash</code> / <code>null</code> 改写一遍，然后才交给
+      任何面向模型的节点。顺序是刻意的——<strong>先判原始数据对不对，再脱敏给人看</strong>：
+      规则链看的是真实值，脱敏后下游拿到的才是该给人看的形态。它在图上是独立节点而不是
+      挂在 <code>select</code> 后面的一个步骤，因为在快径命中时 <code>select</code> 会直接返回，
+      挂在里面的后置步根本不会执行。失败方向取严：该脱敏而 salt 或语义模型读不出来，
+      <strong>拒绝这次查询</strong>，不降级放行。
     </p>
 
     <h2 id="rollback">回滚阶梯：失败之后怎么走</h2>

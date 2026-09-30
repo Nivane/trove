@@ -246,10 +246,16 @@
         <tbody>
           <tr><td class="mono">repeated_correction</td><td class="mono">0.3</td><td><strong>已接</strong></td></tr>
           <tr><td class="mono">upvote</td><td class="mono">0.4</td><td><strong>已接</strong>（<code>POST /v1/kb/ratings</code> 点赞）</td></tr>
-          <tr><td class="mono">lesson_reuse_pass</td><td class="mono">0.25</td><td>已定义，未接线</td></tr>
         </tbody>
       </table>
     </div>
+
+    <p>
+      表里只有两条，是<strong>按「真的有产出方」筛过的</strong>：曾经还有一条
+      <code>lesson_reuse_pass</code>（教训被复用且当轮成功），但没有任何代码产生这种证据，
+      且与 <code>repeated_correction</code> 语义重叠（同一件事可能加两次分），已删。
+      登记一个没有产出方的证据类型，等于给这条通道留一个永远为 0 的加数。
+    </p>
 
     <p>
       教训在 <code>lessons.yml</code> 里有两种写法：失败蒸馏与人工追加按

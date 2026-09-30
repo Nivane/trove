@@ -102,6 +102,8 @@
           <tr><td class="mono">reflect_skip</td><td class="mono">simple</td><td>哪一档复杂度可以跳过反思</td></tr>
           <tr><td class="mono">git_kb</td><td class="mono">true</td><td>KB 变更走 git 提交，留审计历史</td></tr>
           <tr><td class="mono">scheduler_poll_seconds</td><td class="mono">30</td><td>内置调度轮询间隔；≤0 关闭</td></tr>
+          <tr><td class="mono">confidence_score</td><td class="mono">true</td><td>答案级置信度披露；关掉 = 退回枚举式披露</td></tr>
+          <tr><td class="mono">observability.tracing.enabled</td><td class="mono">true</td><td>追踪<strong>撤回</strong>开关：false 时即便凭证齐全也不录</td></tr>
         </tbody>
       </table>
     </div>
@@ -120,6 +122,8 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L224">config.py:224 <span class="ref-line">AgentConfig</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L261">config.py:261 <span class="ref-line">confidence_score</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L55">config.py:55 <span class="ref-line">TracingConfig</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L67">conf/agent.yml:67 <span class="ref-line">reflect_skip</span></a>
     </p>
 
@@ -168,7 +172,7 @@
           <tr><td class="mono">gate_enabled</td><td class="mono">true</td><td>回归门总开关</td></tr>
           <tr><td class="mono">questions_path</td><td class="mono">eval/baseline/questions.jsonl</td><td>基线问题集</td></tr>
           <tr><td class="mono">baseline_path</td><td class="mono">eval/baseline/results.jsonl</td><td>基线结果</td></tr>
-          <tr><td class="mono">min_n</td><td class="mono">10</td><td>样本下限，不足则判为不可比</td></tr>
+          <tr><td class="mono">min_n</td><td class="mono">0</td><td>样本下限，不足则判为不可比（0 = 不设限；<code>conf/agent.yml</code> 示例里写的是 10）</td></tr>
           <tr><td class="mono">tolerances</td><td class="mono">{}</td><td>逐指标容差覆盖</td></tr>
         </tbody>
       </table>
@@ -294,7 +298,6 @@
           <tr><td class="mono">TROVE_LOGIN_MAX_ATTEMPTS</td><td>登录失败次数上限</td><td class="mono">5</td></tr>
           <tr><td class="mono">TROVE_LOGIN_WINDOW_MINUTES</td><td>登录限流窗口</td><td class="mono">15</td></tr>
           <tr><td class="mono">TROVE_GIT_KB_AUTHOR</td><td>KB git 提交作者</td><td class="mono">trove &lt;trove@local&gt;</td></tr>
-          <tr><td class="mono">TROVE_MCP_TOKEN</td><td>MCP HTTP 传输的 bearer token</td><td>—</td></tr>
           <tr><td class="mono">LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST</td><td>追踪上报</td><td>两个 key 都设才启用</td></tr>
           <tr><td class="mono">&lt;厂商&gt;_API_KEY</td><td>模型凭证</td><td>litellm 回落解析</td></tr>
         </tbody>

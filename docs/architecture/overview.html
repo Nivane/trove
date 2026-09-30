@@ -94,10 +94,10 @@
     </p>
 
     <div class="callout note">
-      <span class="callout-tag">为什么「27 个节点」这个数字要较真</span>
+      <span class="callout-tag">为什么「28 个节点」这个数字要较真</span>
       <div>
-        <p><code>build_graphs</code> 有若干个默认关闭的开关（<code>clarify</code>、<code>query_sketch</code>、<code>agentic</code>、<code>multi_candidate</code>…）。生产调用只传了 <code>checkpointer</code>，其余全取默认值——所以对外报的节点数必须是<b>默认口径</b>下的那张图。</p>
-        <p>把 <code>clarify</code> 算进去会得到 28。它确实存在，但只在显式开启时挂上。读者照着自己跑一遍，看到的应该是 27。</p>
+        <p><code>build_graphs</code> 的开关默认值并不一致：<code>agentic</code>、<code>multi_candidate</code>、<code>query_sketch</code> 默认<b>开</b>，只有 <code>clarify</code> 默认关。生产调用只传了 <code>checkpointer</code>，其余全取默认值——所以对外报的节点数必须是<b>默认口径</b>下的那张图。</p>
+        <p>把 <code>clarify</code> 算进去会得到 29。它确实存在，但只在显式开启时挂上；反过来，把某个默认开的开关当成关，报出来的数也会偏低。读者照着自己跑一遍，看到的应该是 28。</p>
       </div>
     </div>
 
@@ -180,14 +180,23 @@
     <h2 id="storage">内部状态：一个抽象，两档后端</h2>
 
     <p>
-      会话、任务、用户事实、记忆、认证、设置、任务调度、血缘、查询日志、图检查点——
+      会话、任务、用户事实、记忆、认证、设置、任务调度、查询日志——
       这些东西此前散在多个 SQLite 文件里，现在统一到一个 <code>StorageBackend</code> 抽象后面。
+    </p>
+
+    <p>
+      另有两处是另一回事——不是被排除，而是机制本来就不同：
+      <strong>图检查点</strong>用 LangGraph 自带的 saver（认同一个
+      <code>TROVE_STORAGE_URL</code> 开关，但不经过这套 store 代码），
+      <strong>血缘库</strong>是服务自管的一份 SQLite 镜像。
+      两处的后端选择跟着同一个开关走，代码路径却各是各的。
     </p>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L138">sqlite.py:138 <span class="ref-line">build_backend</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/sqlite.py#L166">sqlite.py:166 <span class="ref-line">resolve_backend</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/checkpoint_store.py#L38">checkpoint_store.py:38 <span class="ref-line">build_checkpointer</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/lineage/service.py#L122">service.py:122 <span class="ref-line">lineage.sqlite</span></a>
     </p>
 
     <div class="table-wrap">
@@ -218,7 +227,7 @@
     </p>
 
     <div class="callout warn">
-      <span class="callout-tag">两件刻意「不上」这个抽象的东西</span>
+      <span class="callout-tag">另外两件刻意「不上」这个抽象的东西</span>
       <div>
         <p><strong>KB 镜像</strong>与<strong>业务数据源适配器</strong>留在外面。前者依赖 FTS5 虚拟表（PostgreSQL 生产走 pg_hybrid 检索后端，是另一条路）；后者是用户的数据，本来就不该被 Trove 的内部存储抽象管。</p>
         <p>也就是说：这个抽象管的是「Trove 自己的状态」，不是「所有数据库访问」。</p>
@@ -275,7 +284,7 @@
           <tr><th>想了解</th><th>去哪</th></tr>
         </thead>
         <tbody>
-          <tr><td>27 个节点逐个讲 + 分支与回滚</td><td><a href="workflow.html">查询工作流</a></td></tr>
+          <tr><td>28 个节点逐个讲 + 分支与回滚</td><td><a href="workflow.html">查询工作流</a></td></tr>
           <tr><td>五层里的服务层具体有什么</td><td><a href="../capabilities/data.html">数据能力</a> / <a href="../capabilities/agent.html">Agent 能力</a></td></tr>
           <tr><td>部署形态与容器拓扑</td><td><a href="../guide/deploy.html">安装部署</a></td></tr>
           <tr><td>存储后端的配置项</td><td><a href="../reference/config.html">配置参考</a></td></tr>

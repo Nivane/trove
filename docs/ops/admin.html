@@ -49,7 +49,7 @@
     </p>
 
     <p>
-      用户管理走 <code>/admin/users</code> 一组端点（增删改查）。每个用户可以签发多个 token
+      用户管理走 <code>/v1/admin/users</code> 一组端点（增删改查）。每个用户可以签发多个 token
       （便于轮换与按用途区分），token 形如 <code>trove_</code> + 32 字节随机串，
       默认有效期 720 小时。密码用 PBKDF2 哈希存储。
     </p>
@@ -122,7 +122,7 @@
           </tr>
           <tr>
             <td>KB 重载</td>
-            <td>改完 YAML 后必须重载，否则跑的还是旧镜像</td>
+            <td>同样是 202 + task_id；无条件重读全部 YAML，重建镜像<b>并把条目重推给检索后端</b></td>
           </tr>
           <tr>
             <td>测试连接</td>
@@ -136,6 +136,20 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L536">admin.py:536 <span class="ref-line">datasources</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L809">admin.py:809 <span class="ref-line">kb</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L751">admin.py:751 <span class="ref-line">test-connection</span></a>
+    </p>
+
+    <p>
+      重载不是「改完 YAML 的必经步骤」：下一次提问会按<strong>内容摘要</strong>判断文件动没动过，
+      动过就重读，镜像与检索库一起更新（pg_hybrid / rag 有索引钩子，builtin 直接读镜像，没有推送这一步）。
+      重载的价值在<strong>无条件</strong>——它先清空同步摘要表再全量重读，
+      所以能修「镜像认为文件没变、检索库却落后」这类不一致。
+      它与初始化共用同一个按数据源键控的任务槽：同源已有任务在跑时返回 409，而不是排队等。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L901">admin.py:901 <span class="ref-line">kb/reload</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L933">service.py:933 <span class="ref-line">force_sync</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L111">pg_hybrid.py:111 <span class="ref-line">index_file</span></a>
     </p>
 
     <div class="callout note">
@@ -212,8 +226,8 @@
           <tr><th>端点</th><th>作用</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">GET /admin/memory/profile</td><td>按（用户 × 数据源）看正确率、失败模式、已确认事实</td></tr>
-          <tr><td class="mono">GET /admin/memory/preferences</td><td>自动学到的偏好草稿</td></tr>
+          <tr><td class="mono">GET /v1/admin/memory/profile</td><td>按（用户 × 数据源）看正确率、失败模式、已确认事实</td></tr>
+          <tr><td class="mono">GET /v1/admin/memory/preferences</td><td>自动学到的偏好草稿</td></tr>
           <tr><td class="mono">POST .../confirm · .../reject</td><td>逐条处置</td></tr>
         </tbody>
       </table>

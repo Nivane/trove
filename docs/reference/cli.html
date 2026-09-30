@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve/admin/job/schedule/maintenance/index 子命令，以及 REPL 里的全部斜杠命令。">
+<meta name="description" content="Trove CLI 参考：trove 与 trove-cli 两个入口、serve/admin/job/schedule/maintenance 子命令（<code>index</code> 归 <code>trove-cli</code>），以及 REPL 里的全部斜杠命令。">
 <title>CLI 参考 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -102,7 +102,7 @@
           <tr><td class="mono">job</td><td>定时任务增删查</td></tr>
           <tr><td class="mono">schedule</td><td>调度器（<code>--once</code> / <code>--daemon</code>）</td></tr>
           <tr><td class="mono">maintenance</td><td>会话维护：<code>run</code> / <code>status</code></td></tr>
-          <tr><td class="mono">index</td><td>索引：<code>kb</code> / <code>schema</code> / <code>sync</code></td></tr>
+          <tr><td class="mono">index</td><td>索引：<code>kb</code> / <code>schema</code> / <code>sync</code>——<strong>只属于 <code>trove-cli</code> 入口</strong>，<code>trove index …</code> 不认它</td></tr>
         </tbody>
       </table>
     </div>
@@ -119,7 +119,7 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L604">main.py:604 <span class="ref-line">--host</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L631">main.py:631 <span class="ref-line">--port</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L605">main.py:605 <span class="ref-line">--port</span></a>
     </p>
 
     <h3>job / schedule</h3>

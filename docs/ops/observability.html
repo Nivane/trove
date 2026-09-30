@@ -144,9 +144,21 @@
           <tr><td class="mono">trove_authz_deny_total</td><td class="mono">reason</td><td>执行前授权门拒绝的原因分布（无主体 / 数据源 / 表 / 判不了）——两种处置方向相反：部署没接好，还是 grants 该加</td></tr>
           <tr><td class="mono">trove_authz_table_warn_total</td><td class="mono">datasource</td><td><code>warn</code> 期命中未声明表<strong>但放行</strong>的次数——「切 enforce 会打挂多少」的分母。与拒绝计数分家：混进去，告警率里会有一半根本没被拦的查询。<strong>表名不在标签上</strong>（基数无限），名字在审计行的 <code>authz.table_warn</code></td></tr>
           <tr><td class="mono">trove_masking_applied_total</td><td class="mono">field, mode</td><td>哪些字段在用哪种模式脱敏（字段名来自语义层声明，基数可控）</td></tr>
+          <tr><td class="mono">trove_prompt_isolation_total</td><td class="mono">channel, var, pattern</td><td>进入模型上下文之前被隔离的外部值（<code>render</code> 模板渲染 / <code>tool</code> 工具回喂 / <code>derive</code> 派生值出生点）——<strong>原文不进标签</strong>，原文正是要被隔离掉的东西</td></tr>
+          <tr><td class="mono">trove_asset_runs_total</td><td class="mono">datasource, verdict, path</td><td>已验证资产（台账）被用了多少次、什么结局、走快径还是检索</td></tr>
+          <tr><td class="mono">trove_asset_ledger_failures_total</td><td class="mono">datasource, reason</td><td>台账落账/读取失败——统计失败按设计<strong>不打断查询</strong>，所以这是它唯一的可见面；<code>reason</code> 分 <code>store</code>（存储）与 <code>invalid</code>（调用方传了域外的值），处置方向相反</td></tr>
         </tbody>
       </table>
     </div>
+
+    <p>
+      资产那两条的标签都是<strong>闭集</strong>（<code>verdict</code> ∈
+      <code>OK</code> / <code>EMPTY</code> / <code>ERROR</code>，<code>path</code> ∈
+      <code>fast_path</code> / <code>retrieval</code>）：问句与资产键不进标签——
+      同一句问句的措辞变体是无限的，进去就是把监控系统自己拖垮。要按资产看细节，
+      去看台账本体。隔离那条同理：变量名基数可控（模板参数名 / 工具名），
+      而外部值的原文一律不记。
+    </p>
 
     <p>
       <code>budget_decisions</code> 的 <code>source</code> 是 <code>explain</code> /
@@ -198,7 +210,7 @@
           </tr>
           <tr>
             <td><strong>粒度</strong></td>
-            <td>结构化事件（run / step / llm / finish）</td>
+            <td>结构化事件（<code>run</code> / <code>span_start</code> / <code>span_end</code> / <code>llm</code> / <code>tool</code> / <code>step</code> / <code>finish</code>）</td>
             <td>人类可读的详细过程</td>
           </tr>
           <tr>
@@ -208,16 +220,24 @@
           </tr>
           <tr>
             <td><strong>用途</strong></td>
-            <td>批量分析、程序消费</td>
-            <td><code>/trace</code> 回放、排查具体一轮</td>
+            <td>批量分析、程序消费、<code>/trace</code> 回放（读的就是这一份）</td>
+            <td>直接读 / grep，排查具体一轮</td>
           </tr>
         </tbody>
       </table>
     </div>
 
     <p>
+      本地 trace 里的节点 span（<code>span_start</code> / <code>span_end</code>）把一次节点执行
+      框起来，<code>llm</code> 与 <code>tool</code> 事件靠 <code>parent_id</code> 挂到所属节点下——
+      所以 <code>/trace</code> 渲染出来的是一棵树（OTel trace 的形状），不是一列平铺的事件。
+      <code>step</code> 是旧式事件，仍然照写，为的是早先录下的轨迹还能回放。
+    </p>
+
+    <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/local.py#L24">local.py:24 <span class="ref-line">MAX_LINES</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L25">runlog.py:25 <span class="ref-line">MAX_RUN_LOGS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L262">runlog.py:262 <span class="ref-line">span_start</span></a>
     </p>
 
     <p>
@@ -240,6 +260,11 @@
 
     <pre><code>/trace            # 回放最近一轮的完整轨迹
 /trace list       # 列出可回放的轮次</code></pre>
+
+    <p>
+      这是 REPL 的斜杠命令（在 <code>trove</code> 交互会话里敲），不是 HTTP 端点：
+      轨迹文件在进程本机，管理端没有读它的路由。
+    </p>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/trace_cmds.py#L180">trace_cmds.py:180 <span class="ref-line">trace</span></a>
@@ -348,7 +373,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 04bf7f3</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: a7e121f</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

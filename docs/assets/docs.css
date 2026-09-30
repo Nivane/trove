@@ -612,7 +612,7 @@ footer .attribution p:last-child { margin-bottom: 0; }
 }
 .doc-nav nav { display: flex; flex-direction: column; gap: 1px; padding-right: 16px; }
 
-/* 窄屏折叠：23 条链接全铺开会把正文推到屏幕外 */
+/* 窄屏折叠：25 条链接全铺开会把正文推到屏幕外 */
 .nav-fold > summary {
   display: flex;
   align-items: center;
@@ -808,7 +808,7 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* ── 本页目录 ──────────────────────────────────────────── */
 /* 放在正文开头而不是右栏：右栏在 1180px 总宽下放不下（218 导航 + 812 正文已占满），
-   而长页面（工作流 27 个节点、配置全 key）确实需要它。 */
+   而长页面（工作流 28 个节点、配置全 key）确实需要它。 */
 .doc-toc {
   margin: 34px 0 0;
   padding: 15px 19px 16px;

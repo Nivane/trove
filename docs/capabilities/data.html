@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 数据能力总览：语义层、知识库、混合检索、多数据源接入、统一存储与评测基建六组能力的机制与设计取舍。">
+<meta name="description" content="Trove 数据能力总览：语义层、判定规则、知识库、混合检索、多数据源接入、统一存储与评测基建七组能力的机制与设计取舍。">
 <title>数据能力总览 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -28,7 +28,7 @@
       </div>
       <h1>数据能力总览</h1>
       <p class="lede">
-        <a href="../index.html#data">首页的六组数据能力</a>在这里展开。
+        <a href="../index.html#data">首页的七组数据能力</a>在这里展开。
         「数据能力」指的是<strong>让系统知道数据是什么意思</strong>的那一层——
         它决定了可答边界在哪、答案可不可信。
       </p>
@@ -36,7 +36,7 @@
 
     <nav class="doc-toc" data-toc></nav>
 
-    <h2 id="map">六组能力对照</h2>
+    <h2 id="map">七组能力对照</h2>
 
     <div class="table-wrap">
       <table>
@@ -52,30 +52,36 @@
           </tr>
           <tr>
             <td>02</td>
+            <td>判定规则</td>
+            <td>同一份语义模型换个问法：「算不算有问题」，定时求值且零 LLM</td>
+            <td><a href="decisions.html">判定规则</a></td>
+          </tr>
+          <tr>
+            <td>03</td>
             <td>知识库</td>
             <td>五个 YAML 按「谁能写」分工，自动写入一律 pending</td>
             <td><a href="kb.html">知识库</a></td>
           </tr>
           <tr>
-            <td>03</td>
+            <td>04</td>
             <td>混合检索</td>
             <td>关键词 + 向量两路，加权 RRF 融合，分数归一化</td>
             <td><a href="retrieval.html">混合检索</a></td>
           </tr>
           <tr>
-            <td>04</td>
+            <td>05</td>
             <td>多数据源</td>
             <td>一个注册表，驱动懒加载，注册即连接探测</td>
             <td><a href="#adapters">本页</a></td>
           </tr>
           <tr>
-            <td>05</td>
+            <td>06</td>
             <td>统一存储</td>
             <td>内部状态一个抽象两档后端，迁移版本化且各自幂等</td>
             <td><a href="#storage">本页</a></td>
           </tr>
           <tr>
-            <td>06</td>
+            <td>07</td>
             <td>评测基建</td>
             <td>离线回放 + 带方向容差的回归门，判定不花钱</td>
             <td><a href="../ops/eval.html">评测与回归门</a></td>
@@ -87,7 +93,7 @@
     <h2 id="theme">一条贯穿的取舍：确定性优先</h2>
 
     <p>
-      六组能力背后是同一个判断准则——<strong>能用代码算准的，不要交给模型</strong>。
+      七组能力背后是同一个判断准则——<strong>能用代码算准的，不要交给模型</strong>。
       这不是对模型能力的怀疑，而是三个具体的好处：
     </p>
 
@@ -213,6 +219,7 @@
           <tr><td>怎么接入自己的库</td><td><a href="../guide/datasource.html">接入数据源</a></td></tr>
           <tr><td>回归门具体怎么用</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
           <tr><td>数据变了怎么发现</td><td><a href="../ops/drift.html">数据漂移治理</a></td></tr>
+          <tr><td>怎么让系统每天自己判「有没有问题」</td><td><a href="decisions.html">判定规则</a></td></tr>
         </tbody>
       </table>
     </div>

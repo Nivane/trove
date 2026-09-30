@@ -1,7 +1,7 @@
 /* Trove 文档站导航 —— 零构建：每页只放一个占位元素，导航由这里注入。
  *
- * 为什么用注入而不是把 sidebar 复制到每页：23 页各抄一份 HTML，改一次导航
- * 要改 23 处，漏掉的那页就开始骗人。这里只有一份真源。
+ * 为什么用注入而不是把 sidebar 复制到每页：25 页各抄一份 HTML，改一次导航
+ * 要改 25 处，漏掉的那页就开始骗人。这里只有一份真源。
  *
  * 路径全部相对：站点发布在 https://nivane.github.io/trove/ 这样的子路径下，
  * 写死 /guide/... 会在本地和子路径部署两种情况下都指错。脚本从自己的 src
@@ -40,7 +40,8 @@
         { href: "capabilities/data.html", text: "数据能力总览" },
         { href: "capabilities/semantic.html", text: "语义层" },
         { href: "capabilities/kb.html", text: "知识库" },
-        { href: "capabilities/retrieval.html", text: "混合检索" }
+        { href: "capabilities/retrieval.html", text: "混合检索" },
+        { href: "capabilities/decisions.html", text: "判定规则" }
       ]
     },
     {
@@ -109,7 +110,7 @@
   // ── 站点导航 ─────────────────────────────────────────────
   var host = document.querySelector("[data-nav]");
   if (host) {
-    // 23 条链接在小屏上会把正文推到屏幕外，所以窄屏折进 <details>。
+    // 25 条链接在小屏上会把正文推到屏幕外，所以窄屏折进 <details>。
     // 桌面端由 CSS 隐藏 summary、并由下面 openNav() 强制展开——不能只靠 CSS，
     // 因为闭合的 <details> 内容在多数浏览器里无法用样式重新显示。
     var html = [

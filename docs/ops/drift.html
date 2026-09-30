@@ -61,7 +61,7 @@
           <tr>
             <td><strong>L3 语义漂移</strong></td>
             <td>取值是否还能锚定、关系是否可加</td>
-            <td>⚠️ 需要活库探测</td>
+            <td>❌ <strong>尚未实现</strong>（判据上需要活库探测）</td>
           </tr>
           <tr>
             <td><strong>L4 口径漂移</strong></td>
@@ -73,8 +73,16 @@
     </div>
 
     <p>
+      L3 那一格写的是<strong>判据上的可能性</strong>，不是现状：要锚定取值得先探测活库，
+      而这条探测还没接——今天真正实现的检测器只有 L1、L2（<code>SUPPORTED_LEVELS</code>）。
+      并且请求一个未实现的级别会被<strong>明确报错</strong>，而不是返回一份空报告：
+      「L3 干净」与「L3 没跑」在报告上必须是两件事，这正是这一层其余设计的前提。
+    </p>
+
+    <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/models.py#L36">models.py:36 <span class="ref-line">L1</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L49">service.py:49 <span class="ref-line">SUPPORTED_LEVELS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L176">service.py:176 <span class="ref-line">UnknownLevel</span></a>
     </p>
 
     <div class="callout note">
@@ -116,6 +124,30 @@
       这一条很关键：如果没有它，「已解决」会变成一个谎言——
       修好的问题又出现了，而系统还显示一切正常。
       被显式豁免（<code>waived</code>）的条目则保持豁免，不再打扰。
+    </p>
+
+    <h3>后台巡检：serve 自己只会跑 L1</h3>
+
+    <p>
+      <code>trove serve</code> 带一条后台巡检（<code>retention.sweep_interval_hours</code>，
+      默认 24 小时）。它挂在记忆子系统的生命周期清理上，顺带跑一次
+      <code>detect_schema_drift()</code>（开关 <code>memory.schema_drift_check</code>，默认开）
+      ——<strong>只跑 L1</strong>：拿 KB 的 <code>schema_notes.yml</code> 比活库列集合。
+      想跑 L2（语义引用）得有人在 API 或 <code>check_drift.py</code> 上显式触发。
+    </p>
+
+    <p>
+      两个细节决定这条巡检有没有用。第一，它和 <code>/v1/admin/drift</code>
+      读写<strong>同一个 drift 库</strong>（组装时注入同一个 <code>DriftStore</code>）——
+      两处各建各的库，表现就是「巡检跑了，管理端一条也看不到」。
+      第二，<strong>落库的是全部数据源，返回的只是有漂移的那些</strong>：
+      干净的一次也要留痕，否则历史里只剩有漂移的 run，读起来像这个库一直在漂。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L118">app.py:118 <span class="ref-line">run_lifecycle</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L454">memory/service.py:454 <span class="ref-line">detect_schema_drift</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L234">main.py:234 <span class="ref-line">drift_store</span></a>
     </p>
 
     <h3>检测没跑完 ≠ 没有漂移</h3>
@@ -206,7 +238,7 @@
         并有测试正面钉住。但<strong>填充它的 <code>ImpactResolver</code> 尚未接线</strong>：
         落库时 <code>store.record(report)</code> 不传 <code>impact=</code>，
         <code>store.py</code> 于是回退到空 <code>ImpactSet</code>，
-        <code>affected</code> 列恒为 <code>{}</code>。</p>
+        <code>affected</code> 列因此恒为空（四个维度都是空列表）。</p>
         <p>所以「哪些指标引用了消失的列」今天问不出来。要等 <code>ImpactResolver</code>
         接上才有答案——在那之前，任何按影响面排序或过滤的界面都是在读空集。</p>
       </div>
@@ -220,19 +252,27 @@
           <tr><th>端点</th><th>作用</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">POST /admin/drift/check</td><td>跑一次检测</td></tr>
-          <tr><td class="mono">GET /admin/drift</td><td>列出条目</td></tr>
-          <tr><td class="mono">GET /admin/drift/runs</td><td>运行历史</td></tr>
-          <tr><td class="mono">POST /admin/drift/{id}/resolve</td><td>解决（需 reason）</td></tr>
-          <tr><td class="mono">POST /admin/drift/{id}/waive</td><td>豁免</td></tr>
-          <tr><td class="mono">POST /admin/drift/external</td><td>登记外部声明的漂移（L4 入口）</td></tr>
+          <tr><td class="mono">POST /v1/admin/drift/check</td><td>跑一次检测</td></tr>
+          <tr><td class="mono">GET /v1/admin/drift</td><td>列出条目</td></tr>
+          <tr><td class="mono">GET /v1/admin/drift/{id}</td><td>单条详情 + 影响面快照</td></tr>
+          <tr><td class="mono">GET /v1/admin/drift/runs</td><td>运行历史（含 <code>skipped</code> 的轮次）</td></tr>
+          <tr><td class="mono">POST /v1/admin/drift/{id}/resolve</td><td>解决（需 reason）</td></tr>
+          <tr><td class="mono">POST /v1/admin/drift/{id}/waive</td><td>豁免</td></tr>
+          <tr><td class="mono">POST /v1/admin/drift/external</td><td>登记外部声明的漂移（L4 入口）</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
+      端点都挂在 <code>/v1</code> 前缀下（与其他路由一致）。除
+      <code>/external</code> 从请求体取 <code>datasource</code> 外，其余都要带
+      <code>?datasource=&lt;名字&gt;</code>——条目按数据源隔离，没有「默认源」可用。
+    </p>
+
+    <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L162">drift.py:162 <span class="ref-line">check</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L180">drift.py:180 <span class="ref-line">503</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/drift.py#L225">drift.py:225 <span class="ref-line">drift_detail</span></a>
     </p>
 
     <p>
@@ -243,7 +283,7 @@
     <p>
       命令行门禁脚本 <code>scripts/check_drift.py</code> 的退出码分三档：
       <code>0</code> 干净且<strong>每一项检查都真的跑了</strong>、<code>1</code> 发现漂移、
-      <code>2</code> 出错<strong>或任一检查未能完成</strong>。第二档那个限定词是关键——
+      <code>2</code> 出错<strong>或任一检查未能完成</strong>。最后那句限定词是关键——
       它让「没检查成」不会被 CI 当成通过。
     </p>
 
@@ -270,7 +310,7 @@
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: a7e121f</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

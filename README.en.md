@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-3700%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-4800%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -86,7 +86,7 @@ flowchart TB
         kb["Knowledge base<br/>terms · examples · rules · lessons"]
         decision["Decision layer<br/>threshold rules in model vocabulary"]
         memory["Memory<br/>episodes · preferences · profiles"]
-        skills["Skills<br/>org methodology · two tiers"]
+        skills["Skills<br/>org methodology · two injection tiers + validator assertions"]
         llm["LLM gateway<br/>litellm · any provider"]
         admin["Admin & governance<br/>kb init · draft review · drift"]
     end
@@ -121,7 +121,7 @@ flowchart TB
 
 ### How a question becomes an answer
 
-The main graph is **27 nodes** on LangGraph (default configuration; `clarify` — dashed below — is an optional branch that only attaches when you build with `build_graphs(clarify=True)`, so it is not counted in the 27).
+The main graph is **28 nodes** on LangGraph (default configuration; `clarify` — dashed below — is an optional branch that only attaches when you build with `build_graphs(clarify=True)`, so it is not counted in the 28).
 
 ```mermaid
 flowchart TB
@@ -157,7 +157,8 @@ flowchart TB
     SEL --> CHK{"validate<br/>zero-LLM rule chain<br/>shape · filters · values · ordering"}
     CHK -->|"violation"| FIX["analyze_error<br/>diagnose & rollback"]
     FIX --> SKETCH
-    CHK -->|"pass"| REFLECT["reflect adjudication<br/>+ SQL version regression"]
+    CHK -->|"pass"| MASK["masking<br/>field-level redaction (before any LLM)"]
+    MASK --> REFLECT["reflect adjudication<br/>+ SQL version regression"]
     REFLECT -->|"not accepted"| FIX
     REFLECT --> ATTR{"why / root-cause?"}
     ATTR -->|"yes"| DRILL["attribution<br/>multi-hop drill-down<br/>contribution · waterfall"]
@@ -232,7 +233,8 @@ flowchart LR
 - **Semantics as code** — every KB write auto-commits, so `git log` is the audit history and `git diff` / `git revert` are review and rollback; commits can carry `Generator` / `Approved-by` trailers. Bad semantics are refused before they reach disk — and the commit gate catches them too.
 - **Declarative row filters** — a dataset can declare a `row_filter` (a boolean predicate) in the semantic model, injected at compile time into the top-level WHERE of every query touching that dataset. **The fast path and the compile path share one injection implementation**, so "the fast path forgot the filter" cannot happen. It constrains what a dataset may answer — it is not a substitute for a read-only role on the database side.
 - **Unified cross-session memory** — episodic recall, auto-extracted user preferences, per user × datasource profiles; automatic content always lands `pending` until an admin confirms.
-- **Org-level methodology skills** — cross-datasource methodology (how to plan, how to diagnose, org conventions) managed as SKILLs with two injection tiers: `required` bodies go into the matching node's system prompt, `available` ones are merely advertised and loaded on demand through `load_skill`; drafts still need admin confirmation. Datasource facts belong in the KB; methodology belongs in skills.
+- **Org-level methodology skills** — cross-datasource methodology (how to plan, how to diagnose, org conventions) managed as SKILLs; drafts still need admin confirmation. **Two injection tiers**: `required` bodies go into the matching node's system prompt, `available` ones are merely advertised in the generation node and loaded on demand through `load_skill`. **A third tier, `validator`, is not injected at all** — it takes the org's own assertions and checks them against the query result (aggregate-level, zero LLM, reusing the decision-rule expression engine), returning a three-valued verdict — **pass / violation / cannot-tell** — where `blocking` stops the answer and `advisory` rides along as a footnote. "Cannot-tell" holds its own value on purpose: collapsing it into pass is reporting all-clear without having checked, and collapsing it into violation blocks a correct result because the check could not run — both are worse than not checking. Datasource facts belong in the KB; methodology belongs in skills.
+- **Answer-level confidence disclosure (disclosure only, never behavior)** — the answer carries a score built from **tier baselines + named adjustments**: the baseline comes from the answer's source (certified reuse / reuse / semantic compile / generated — four bands that do not overlap, so a score reads back its own tier), and the adjustments are a few explicitly-reasoned additions (each soft MISS gap −0.05, agent self-check all-clear +0.10, degraded to the classic subgraph −0.10, strong retrieval evidence +0.05). **These weights are judgment, not calibrated probabilities** — the code says so too, and nobody gets to describe them as calibrated. The score enters no conditional branch: turn the switch off and run it again, and the SQL, row count, verdict and answer source are byte-identical.
 - **Governance as a feature** — YAML is the single source of truth (git-reviewable, diff-able); every executed tool call is audited; HITL approval optional; admin console for KB init, draft review, drift reports, decision rules and skills.
 - **Analysis you can audit** — the web UI shows the reasoning trail: schema-linking matches, compile decisions, rule-chain results, agent tool calls, and fix reasons. Generation is itself three checkpointed stages — retrieval → context assembly → generation — separately observable and testable, merged back into a single `gen_sql` step for the UI / CLI / streaming contract.
 - **Errors that explain themselves** — a failed run returns a plain-language card (what happened, what to try, whether retrying is worth it) instead of leaking internal node names and error slugs; raw diagnostics fold away and are shown to admins only.
@@ -353,6 +355,7 @@ For a data agent to ship, the security boundary cannot be a request written in a
 | Execution-cost guard | EXPLAIN estimates the heaviest operator's row count before execution: over the soft limit (default 50M) the query goes back to generation to add `LIMIT` / narrow filters; over the hard limit (default 1B) it is refused outright, without burning an LLM regeneration round |
 | Tool permissions | Tools are trimmed by role before the model sees them; a call to an invisible tool is folded into "unknown tool" at runtime — the model sees that the tool does not exist, not a wall it can probe |
 | External-data isolation | Content coming from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt — human-confirmed KB content is exempt by design |
+| Field-level redaction | Declared per field in the semantic model as `partial` / `hash` / `null`, rewritten **as the result leaves the database and before any model-facing node**. It is a graph node of its own rather than a step hung off `select` — on a fast-path hit `select` returns early, so a post-step inside it would never run at all; and it sits **after** the rule chain, so the raw data is judged for correctness first and only then redacted for human eyes. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the whole query is refused rather than let through unredacted |
 | Pre-execution human check | Optional node: review the SQL before it runs; if the payload cannot be understood, the default is to refuse, not to let it through |
 | Model budget guard | The ReAct loop is bounded by rounds, wall-clock time and cumulative tokens; on hitting a limit it degrades to the classic subgraph instead of burning on |
 | Credentials encrypted at rest | Passwords / tokens in datasource config are stored Fernet-encrypted (`enc:v1:…`); the key comes from `TROVE_SECRET_KEY`, or a `0600` `secret.key` is generated next to the config |
@@ -389,6 +392,7 @@ agent:
   # api_rate_per_minute: 30            # per-user rate limit (0 = off)
   # api_daily_quota: 300               # daily quota (0 = off)
   git_kb: true                         # auto-commit KB writes
+  # confidence_score: true             # answer-level confidence disclosure (on by default; process-level, needs a restart)
   # attribution:                       # why-question root-cause drill-down (on by default)
   #   max_hops: 2                      # 1 = dimension breakdown only, 2 = + top-contributor drill
   # node_models:                       # per-node overrides (query_sketch / reflect / ...)
@@ -441,7 +445,7 @@ Retrieval quality has its own zero-LLM scripts: `eval_retrieval.py` (recall, sub
 ## Development
 
 ```bash
-uv run pytest                     # full suite (~3700 tests, mocked LLM, zero network/keys)
+uv run pytest                     # full suite (~4800 tests, mocked LLM, zero network/keys)
 uv run pytest tests/workflow/     # LangGraph graphs and nodes
 uv run pytest tests/services/kb/  # knowledge base
 uv run pytest -m "not slow"       # skip slow tests
@@ -473,7 +477,22 @@ Deeper architecture notes live in `CLAUDE.md`; REST API docs at `/v1/docs` when 
 
 ## Roadmap
 
-Directions and their acceptance criteria live in [the capability map's roadmap section](https://nivane.github.io/trove/#road) — each one states what "done" means rather than a date. Three have already landed: drift governance (structure and reference levels, distinguishing "no drift" from "could not check") and row filters (dataset-level `row_filter` injected at compile time, one implementation shared by the fast and compile paths), and identity & field level (an execution-time table-level gate, field-level masking before the rows reach the model, replay-as-another-user, plus audit and metrics). Still ahead: verified query assets, semantic branch review, cost attribution, and an untrusted-input boundary.
+Directions and their acceptance criteria live in [the capability map's roadmap section](https://nivane.github.io/trove/#road) — each one states what "done" means rather than a date.
+
+**None of the eight is finished yet.** Where each one actually stands (no ranking):
+
+| Direction | Where it stands |
+|---|---|
+| 01 Semantic drift governance | Both the structural and the reference level run, and they distinguish "no drift" from "could not check"; the periodic background check lands in the drift store (same file as `/v1/admin/drift`). Missing: the gate script is not in CI yet |
+| 02 Execution profiling | The shape of execution evidence and its three-valued semantics are settled; but the scan-volume cell is still unread for all six dialects, `scanned_rows` is permanently empty |
+| 03 Verified query assets | The governance dimensions (`status` / `owner` / `approved_by` / `approved_at` / `source`) are written into `examples.yml` entry by entry as items are confirmed, `certified` must have a person behind it (I5), and a batch that fails the certification gate is refused whole — "every asset traces back to whoever confirmed it" holds. Missing: the ledger — `AssetLedger` (`runs` / `p50_ms`) is implemented and pinned by tests, but **has no production constructor**, and `status` does not yet weight retrieval |
+| 04 Verifiable closed loop | The first link (execution evidence) has landed; "any conclusion walks back to the raw rows" does not yet |
+| 05 Semantic branch review | Not started |
+| 06 Identity, auth and field masking | The pre-execution table-level gate, field-level masking before the rows reach the model, replay-as-another-user, audit and metrics have all landed; the parser defect that mistook CTE names for tables is fixed, and the telemetry outlet for `warn` hits is in place (a counter for volume, an audit row for the table name). Missing: the table-level gate still defaults to `warn` — flipping it needs false-positive data from an observation period, and that takes a real deployment |
+| 07 Cost attribution and budgets | Accounting covers the main path; of all 32 model call sites, some still produce no record |
+| 08 Untrusted-input boundary | Both channels and the isolation core have landed and are pinned by tests; org-level skill bodies used to be spliced into the system prompt as raw strings, bypassing both channels — now folded into a single gate (fencing + provenance marking, same policy for both tiers), and the confirmation gate scans once more and reports hits to the admin; the enumeration's blind spot about "how the string gets assembled" is recorded in that test's docstring |
+
+Putting this list in the README rather than just saying "three have landed" is deliberate: a roadmap earns its keep by being usable for scheduling, and a criterion that says "done" when it is not is far more harmful than one that says "not done".
 
 ## Contributing
 

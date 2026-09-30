@@ -37,7 +37,7 @@
         Trove is a conversational data agent that turns a natural-language question into explainable SQL,
         a chart and a written conclusion. It is <b>semantic-first</b>: an OSSIE semantic model defines what is
         answerable, a deterministic compiler resolves joins, enums, time buckets and derived metrics, and a
-        27-node LangGraph workflow generates, validates, executes and reflects — with an agentic ReAct loop
+        28-node LangGraph workflow generates, validates, executes and reflects — with an agentic ReAct loop
         driving SQL generation. This page lists what it does; every capability links to the file that implements it.
       </div>
 
@@ -160,9 +160,9 @@ docker compose up --build</code></pre>
         <span class="sec-label">全貌 · 03</span>
         <h2>一次问答走完的链路</h2>
         <p class="sec-intro">
-          主图是 LangGraph 上的 27 个节点（默认配置）。节点名与图中一致，可以直接对着代码读。
+          主图是 LangGraph 上的 28 个节点（默认配置）。节点名与图中一致，可以直接对着代码读。
           虚线框的 <code>clarify</code> 是可选分支，需显式开启 <code>build_graphs(clarify=True)</code> 才挂上——
-          生产入口只传 checkpointer，走默认值，所以不算在 27 里。
+          生产入口只传 checkpointer，走默认值，所以不算在 28 里。
         </p>
       </div>
 
@@ -196,21 +196,22 @@ docker compose up --build</code></pre>
           </div>
         </div>
         <div class="pipe-row">
+          <span class="pipe-phase">语义复核与人工确认</span>
+          <div class="pipe-nodes">
+            <span class="node">semantics</span><span class="node">hitl</span>
+          </div>
+        </div>
+        <div class="pipe-row">
           <span class="pipe-phase">执行与校验</span>
           <div class="pipe-nodes">
             <span class="node">execute_sql</span><span class="node">select</span><span class="node">validate</span>
+            <span class="node">masking</span>
           </div>
         </div>
         <div class="pipe-row">
           <span class="pipe-phase">反思与错因回滚</span>
           <div class="pipe-nodes">
             <span class="node is-loop">reflect</span><span class="node is-loop">analyze_error</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">语义复核与人工确认</span>
-          <div class="pipe-nodes">
-            <span class="node">semantics</span><span class="node">hitl</span>
           </div>
         </div>
         <div class="pipe-row">
@@ -248,7 +249,7 @@ docker compose up --build</code></pre>
     <section id="data">
       <div class="sec-head">
         <span class="sec-label">数据能力</span>
-        <h2>六组数据侧能力</h2>
+        <h2>七组数据侧能力</h2>
         <p class="sec-intro">
           每一组都给出机制与实现位置。行号指向仓库 <code class="mono">main</code> 分支，
           可直接跳过去读源码。
@@ -296,6 +297,48 @@ docker compose up --build</code></pre>
       <div class="group">
         <div class="group-head">
           <span class="group-idx">02</span>
+          <h3>判定规则——同一份语义模型，回答「算不算有问题」</h3>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            规则用语义模型的词表说话：一个 metric、一组 filter、一个自然语言窗口、一个基线，
+            外加「什么算超标」的布尔表达式。定时任务按规则求值，<b>全程零 LLM</b>——
+            于是「昨天为什么报红」可以从输入重放出来，而不是重跑一次对话看它今天心情如何。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L133">decision/service.py:133 <span class="ref-line">DecisionService</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L60">decision/rules.py:60 <span class="ref-line">DecisionRule</span></a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            条件是<b>不可信输入</b>（任何能写 KB 的人都能改），所以绝不过 <code>eval()</code>：
+            手写分词器 + 递归下降，变量表与函数表都是闭集，拼错的变量名在<b>解析期</b>就报错。
+            求值是<b>三值</b>的——通过 / 违反 / <b>判不了</b>：只有两值时，「缺基期」会让
+            <code>not (x &gt; y)</code> 为真，一条「没数据就报警」的规则反而会在数据缺失那刻触发。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L70">decision/expr.py:70 <span class="ref-line">VARIABLES 闭集</span></a>
+          </div>
+        </div>
+        <div class="cap">
+          <div class="cap-mech">
+            规则存 <code>.trove/kb/&lt;源&gt;/decisions.yml</code>，每次改动是一个可 review 的提交；
+            写盘前无条件过 lint，拦的是那类<b>会安静地永不触发</b>的写法（比如聚合规则上给了维度——
+            查询会分组，而聚合规则只读那个空标签行，每个变量都成 Unknown）。判定失败永远<b>响亮</b>：
+            一条静默不触发的定时规则，和一个健康的规则从外面看完全一样。
+          </div>
+          <div class="cap-where">
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L191">decision/rules.py:191 <span class="ref-line">lint_rule</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L58">routers/decisions.py:58 <span class="ref-line">管理端接口</span></a>
+            <a href="capabilities/decisions.html">判定规则（详解）</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-head">
+          <span class="group-idx">03</span>
           <h3>知识库——YAML 是唯一真源，人确认才算数</h3>
         </div>
         <div class="cap">
@@ -332,7 +375,7 @@ docker compose up --build</code></pre>
 
       <div class="group">
         <div class="group-head">
-          <span class="group-idx">03</span>
+          <span class="group-idx">04</span>
           <h3>检索——两路召回，融合权重可调可评</h3>
         </div>
         <div class="cap">
@@ -360,7 +403,7 @@ docker compose up --build</code></pre>
 
       <div class="group">
         <div class="group-head">
-          <span class="group-idx">04</span>
+          <span class="group-idx">05</span>
           <h3>多数据源——一个注册表，驱动按需加载</h3>
         </div>
         <div class="cap">
@@ -389,7 +432,7 @@ docker compose up --build</code></pre>
 
       <div class="group">
         <div class="group-head">
-          <span class="group-idx">05</span>
+          <span class="group-idx">06</span>
           <h3>内部状态——一个存储抽象，两档后端</h3>
         </div>
         <div class="cap">
@@ -418,7 +461,7 @@ docker compose up --build</code></pre>
 
       <div class="group">
         <div class="group-head">
-          <span class="group-idx">06</span>
+          <span class="group-idx">07</span>
           <h3>评测基建——回归判定不花一分钱</h3>
         </div>
         <div class="cap">
@@ -435,7 +478,8 @@ docker compose up --build</code></pre>
           <div class="cap-mech">
             <b>回归门。</b>baseline 与 current 按指标逐项比：执行准确率、编译命中率、完成率、恢复率、
             与金标准的精确匹配、token 成本——带方向和容差，出现回归即以退出码 1 拦下改动。
-            样本不足会拒绝出判定，避免拿三条样本宣布胜利。
+            设了 <code>eval.min_n</code>（代码默认 0 = 不设限，<code>conf/agent.yml</code> 示例里是 10）
+            就多一道样本量下限：当前样本不足时直接拒绝出判定，避免拿三条样本宣布胜利。
           </div>
           <div class="cap-where">
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">eval/gate.py:240 <span class="ref-line">compare_metrics</span></a>
@@ -476,7 +520,7 @@ docker compose up --build</code></pre>
           </div>
           <div class="cap-where">
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L244">agent_loop.py:244 <span class="ref-line">visible_to</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L376">agent_loop.py:376 <span class="ref-line">按角色裁剪</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L372">agent_loop.py:372 <span class="ref-line">defs 按角色裁剪</span></a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L580">agent_loop.py:580 <span class="ref-line">越权折叠</span></a>
           </div>
         </div>
@@ -496,12 +540,12 @@ docker compose up --build</code></pre>
         <div class="group-head"><span class="group-idx">02</span><h3>工作流编排</h3></div>
         <div class="cap">
           <div class="cap-mech">
-            LangGraph 主图 27 节点，节点是<code>make_&lt;name&gt;(services…)</code> 工厂返回的
+            LangGraph 主图 28 节点，节点是<code>make_&lt;name&gt;(services…)</code> 工厂返回的
             <code>async def node(state) -&gt; dict</code>，服务在构图时绑进闭包；每个节点只回写自己关心的字段，
             出错则原样透传。意图路由把「问数据」和「问元数据」分成两条路，后者自带一轮自校验。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1652">graphs.py:1605</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1652">graphs.py:1652</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py">workflow/state.py</a>
           </div>
         </div>
@@ -621,11 +665,15 @@ docker compose up --build</code></pre>
         </div>
         <div class="cap">
           <div class="cap-mech">
-            每次回答还留一份决策审计与数据血缘记录：用了哪份语义模型、命中哪条规则、结论建立在哪些表上。
-            出问题时可以往回查，而不是只看到一个数字。
+            定时任务可以挂<strong>判定规则</strong>：窗口（自然语言）→ 编译成权威 SQL → 跑数 →
+            对结果求值，产出一个带证据的判定。全程零 LLM、纯函数加只读查询，
+            所以「为什么今天报红」是可以从输入重放出来的。判定失败永远<strong>响亮地失败</strong>——
+            一条静默不触发的定时规则，和一个健康的规则从外面看没有区别。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/">services/decision · services/lineage</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L133">service.py:133 <span class="ref-line">DecisionService</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py">decision/expr.py</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py">routers/decisions.py</a>
           </div>
         </div>
       </div>
@@ -672,8 +720,10 @@ docker compose up --build</code></pre>
         </div>
         <div class="cap">
           <div class="cap-mech">
-            组织级方法论以「技能」形式管理，两档注入：<code>required</code> 的正文进对应节点的系统提示，
-            <code>available</code> 的只播广告，模型需要时用工具取正文——不相关的能力就不占窗口。
+            组织级方法论以「技能」形式管理，三档：<code>required</code> 的正文进对应节点的系统提示，
+            <code>available</code> 的只播广告、模型需要时用工具取正文——不相关的能力就不占窗口；
+            <code>validator</code> 的正文<strong>从不进模型</strong>，它是一份给引擎跑的断言清单，
+            在结果交付前逐条判<strong>通过 / 违反 / 判不了</strong>。
             和组织知识库同一套门禁：草稿未经确认不生效。
           </div>
           <div class="cap-where">
@@ -716,37 +766,32 @@ docker compose up --build</code></pre>
             <tr>
               <td>只读语句防火墙</td>
               <td>对 SQL 做 AST 解析后判定，非只读语句在执行前被拒——不靠关键字黑名单。</td>
-              <td class="mono">services/sql/guard.py:50</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/guard.py#L50">services/sql/guard.py:50 <span class="ref-line">check_readonly</span></a></td>
             </tr>
             <tr>
               <td>执行代价护栏</td>
-              <td>执行前用 EXPLAIN 估算扫描行数，超软阈值打回生成节点补 LIMIT 或收窄过滤，超硬阈值直接拒绝。</td>
-              <td class="mono">services/sql/row_guard.py</td>
+              <td>执行前估算扫描行数（EXPLAIN 档，拿不到则退到元数据画像档），三路径判定：放行 / 降级加 LIMIT 执行 / 拒绝。<strong>估算不出来时走降级，而不是放行</strong>——没有下层兜底，所以这一轨 fail-closed。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/budget.py#L136">services/sql/budget.py:136 <span class="ref-line">BudgetService</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/budget.py#L236">:236 <span class="ref-line">decide</span></a></td>
             </tr>
             <tr>
               <td>工具权限</td>
               <td>工具按角色裁剪，越权调用在运行时折叠为「未知工具」。</td>
-              <td class="mono">llm/agent_loop.py:183</td>
-            </tr>
-            <tr>
-              <td>外部数据隔离</td>
-              <td>只有来自数据库单元格的内容才会被扫描注入模式，命中即隔离后再进提示——知识库里人确认过的内容不在此列。</td>
-              <td class="mono">llm/injection.py:57 · :65</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L580">llm/agent_loop.py:580 <span class="ref-line">角色裁剪</span></a></td>
             </tr>
             <tr>
               <td>执行前人工确认</td>
               <td>可选节点，SQL 执行前交人过目；载荷无法识别时默认拒绝。</td>
-              <td class="mono">workflow/nodes/hitl.py:65</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">workflow/nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a></td>
             </tr>
             <tr>
               <td>模型预算护栏</td>
               <td>ReAct 循环受轮次、墙钟时间、累计 token 三重约束，触顶即降级回经典子图，不会无限烧下去。</td>
-              <td class="mono">llm/agent_loop.py:369 · :374 · :375</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L430">llm/agent_loop.py:430 <span class="ref-line">max_rounds</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L435">:435 <span class="ref-line">time_budget_s</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L436">:436 <span class="ref-line">max_total_tokens</span></a></td>
             </tr>
             <tr>
               <td>执行前授权门</td>
-              <td>表级授权在执行前判定：主体解析不出来、数据源未授权、SQL 引到了未授权的表，三种都拒绝执行。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a></td>
+              <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>A1/A2 恒拒</strong>；<strong>A3 默认只 warn</strong>（放行但记下被挡的表）——存量 grants 只到数据源级，直接拒绝会把正常查询大面积 403，所以先跑一段收集清单，<code>authz.table_enforcement</code> 切 <code>enforce</code> 才真拦。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L80">core/config.py:80 <span class="ref-line">AuthzConfig</span></a></td>
             </tr>
             <tr>
               <td>字段级脱敏</td>
@@ -828,7 +873,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>语义漂移治理</h4>
             <p>业务口径会变，语义模型会旧。让「模型与真实数据已经对不上」这件事被自动发现、可定位到具体条目。</p>
             <p class="road-crit"><span>判据</span>漂移报告能精确到数据集/字段/指标条目，且不依赖人工巡检。</p>
-            <p class="road-crit"><span>装置</span>分层检查器 L1–L4 + <code>scripts/check_drift.py</code>（零 LLM，退出码 0/1/2，区分「没漂移」与「没查成」）。后台周期检测落进同一个漂移库，与 <code>/v1/admin/drift</code> 读写同一份文件。<b>缺出口</b>：门禁脚本还没进 CI——「不依赖人工巡检」今天只在前台成立。</p>
+            <p class="road-crit"><span>装置</span>分类学列了 L1–L4（结构 / 引用 / 语义 / 口径），门禁脚本 <code>scripts/check_drift.py</code> 实际渲染 L1–L2（零 LLM，退出码 0/1/2，区分「没漂移」与「没查成」——只跑了 L1 的 ok 报告不许写成 OK）。后台周期检测落进同一个漂移库，与 <code>/v1/admin/drift</code> 读写同一份文件。<b>缺出口</b>：门禁脚本还没进 CI——「不依赖人工巡检」今天只在前台成立。</p>
             <p class="road-crit"><span>已补</span>后台周期检测的出口。此前结果只进 <code>logger.info</code>——<b>在跑，但白跑</b>：没有可查询的行、没有退出码、没有告警，跑一周也答不了「哪个库漂过」。现走 <code>drift</code> 模块既有的写入路径（<code>drift_run</code> + 条目两张表），归一化用那份认得 <code>status</code>/<code>skip_reason</code> 的适配器，所以「没查成」不会被洗成「无漂移」。<b>落库的是全部数据源、返回的只是有漂移的那些</b>：落库要「查过了」的完整证据（含干净的一次，否则历史里只剩有漂移的那几次，读起来像这个库一直在漂）；返回给调用方的是「要不要吭声」。</p>
           </div>
         </div>
@@ -847,7 +892,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>已验证查询资产</h4>
             <p>被人确认过的正确答案应当可复用、可溯源，成为知识库里的一等资产，而不是一次性消耗品。</p>
             <p class="road-crit"><span>判据</span>复用不改变现有匹配判据的去向，且每条资产可追溯到它的确认人。</p>
-            <p class="road-crit"><span>装置</span>确认 / 拒绝生命周期已走 git 审计（<code>kb: confirm pending examples</code>）。<b>缺字段</b>：示例资产没有「确认人」这一列，确认是一次性批量提交——判据后半句今天不可达。</p>
+            <p class="road-crit"><span>装置</span>治理维度（<code>status</code> / <code>owner</code> / <code>approved_by</code> / <code>approved_at</code> / <code>source</code>）随确认逐条写入 <code>examples.yml</code>，<code>certified</code> 必须有人，认证门不过整批拒绝——「每条资产可追溯到它的确认人」<b>已成立</b>。<b>缺的是台账</b>：<code>AssetLedger</code>（<code>runs</code> / <code>p50_ms</code>）已实现、有测试钉住，但没有任何生产构造点；且 <code>status</code> 还没参与检索加权。</p>
           </div>
         </div>
         <div class="road-item">
@@ -874,7 +919,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>身份鉴权与字段脱敏</h4>
             <p>把可答边界从「这个数据源能答什么」推进到「这个人能看什么」——先落执行前的表级授权门与字段级脱敏，再谈编译期收窄。</p>
             <p class="road-crit"><span>判据</span>判定落在<strong>执行前</strong>而不是结果后置过滤：未授权的表不发出查询，越权字段不进入模型上下文（脱敏在 LLM 之前），每一次拒绝、改写与凭 scope 读原文都留下审计。</p>
-            <p class="road-crit"><span>装置</span>执行前的 <code>AuthzEnforcer</code>（A1 数据源 → A2 主体 → A3 表级三道） + LLM 前的 <code>Masker</code> + 审计日志与指标，都已在执行路径上。<b>剩一处缺口</b>：表级门默认 <code>warn</code>（命中只放行、不拦）——切档要等观察期的误伤数据，那要真部署才收得到。</p>
+            <p class="road-crit"><span>装置</span>执行前的 <code>Authorizer</code>（A1 主体 → A2 数据源 → A3 表级三道） + LLM 前的 <code>Masker</code> + 审计日志与指标，都已在执行路径上。<b>剩一处缺口</b>：表级门默认 <code>warn</code>（命中只放行、不拦）——切档要等观察期的误伤数据，那要真部署才收得到。</p>
             <p class="road-crit"><span>已修</span>解析把 CTE 名当成物理表（<code>FROM &lt;cte&gt;</code> 与 <code>exp.Table</code> 同形）。后果是<b>与权限无关</b>的误拒：只要查询里有 CTE 就可能被拦，基线实测 32 题里 2 题命中。已与 <code>services/sql/guard.py</code> 的判据同源，修后基线 0 命中。</p>
             <p class="road-crit"><span>已补</span><code>warn</code> 命中的遥测出口。此前只有一行日志与 <code>state.authz_decision</code>——「跑一周看哪些表会被拒」收不齐（一行一条的日志答不了聚合问题）。现为三条出口，各答一个问题：日志给现场，<code>trove_authz_table_warn_total{datasource}</code> 给<b>量</b>（切 enforce 会打挂多少），审计行 <code>authz.table_warn</code> 给<b>名字</b>。计数器与拒绝计数<b>分家</b>——混在一起，告警率里会有一半根本没被拦的查询；表名<b>不进标签</b>（基数随库增长而无限），名字落在审计行上。</p>
           </div>

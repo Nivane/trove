@@ -124,8 +124,11 @@
 
     <p>
       「边界在数据库侧」这句话本身得有人验。启动时 Trove 会问每个数据源一句：
-      这个账号到底能不能写？结论会 WARN 到日志，并作为每个源的
-      <code>readonly</code> 字段出现在<a href="observability.html#health">探活端点</a>上。
+      这个账号到底能不能写？结论照实分级写进日志——<strong>确认可写</strong>与<strong>没探成</strong>是
+      WARN，其余是 INFO；并作为每个源的 <code>readonly</code> 字段出现在
+      <a href="observability.html#health">探活端点</a>上。
+      只读也报 INFO 而不是 WARN：「这个方言没有角色概念」这类结论在 SQLite / DuckDB 上
+      每次启动都会命中，一条每次都响的告警只会训练人忽略它。
     </p>
 
     <div class="callout warn">
@@ -143,8 +146,8 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/readonly.py">datasource/readonly.py <span class="ref-line">自检编排</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/types.py">core/types.py <span class="ref-line">ReadonlyProbe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/readonly.py#L64">datasource/readonly.py:64 <span class="ref-line">probe_all</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/types.py#L230">core/types.py:230 <span class="ref-line">ReadonlyProbe</span></a>
     </p>
 
     <h2 id="ratelimit">限流与配额</h2>
@@ -188,7 +191,7 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L215">app.py:215 <span class="ref-line">auth is None</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L219">app.py:219 <span class="ref-line">auth is None</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L73">deps.py:73 <span class="ref-line">get_current_user</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L137">deps.py:137 <span class="ref-line">require_scope</span></a>
     </p>
@@ -205,12 +208,12 @@
         <tbody>
           <tr>
             <td><strong>账号角色</strong></td>
-            <td><code>admin</code> 或非 admin</td>
-            <td>决定能不能进管理端</td>
+            <td><code>users.role</code>：<code>user</code> / <code>analyst</code> / <code>admin</code>（管理端用户表单就这三项）</td>
+            <td><code>admin</code> 决定能不能进管理端</td>
           </tr>
           <tr>
             <td><strong>工具 ACL 角色</strong></td>
-            <td><code>analyst</code>（admin 隐含）</td>
+            <td>从账号角色推出：<code>admin</code> 恒带 <code>analyst</code>，其余原样透传</td>
             <td>决定生成时能看见哪些 catalog 工具</td>
           </tr>
           <tr>
@@ -223,11 +226,15 @@
     </div>
 
     <p>
-      <code>analyst</code> <strong>不是一种账号角色</strong>——没有「analyst 账号」这种东西。
-      它是工具可见性的过滤键：授予后，生成节点里那几个能摸物理 schema 的工具才对这个人可见。
+      <code>analyst</code> 是账号角色里的一项，但它与 <code>admin</code> 不是一类东西：
+      <strong>它不带来任何数据授权</strong>——能问哪些源照旧由 grants 决定，
+      它只决定生成时那几个能摸物理 schema 的工具（<code>catalog</code> 及其解锁的
+      <code>search_values</code> / <code>lookup_schema</code> / <code>explain_plan</code>）对这个账号可不可见。
+      方向是单向的：<code>admin</code> 隐含 <code>analyst</code>，反过来不成立——<code>analyst</code> 进不了管理端。
     </p>
 
     <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L321">main.py:321 <span class="ref-line">_resolve_user_roles</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L132">policy.py:132 <span class="ref-line">Principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L156">deps.py:156 <span class="ref-line">require_datasource</span></a>
     </p>
@@ -261,8 +268,29 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L163">execute_sql.py:163 <span class="ref-line">执行前的最后一米</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py">enforcer.py <span class="ref-line">Authorizer</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L162">execute_sql.py:162 <span class="ref-line">执行前的最后一米</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">enforcer.py:84 <span class="ref-line">Authorizer</span></a>
+    </p>
+
+    <p>
+      一个例外要单独说：声明式接口 <code>POST /v1/semantic/query</code> 不经过工作流，
+      它自己编译、自己交给注册表执行。它拿到的是<strong>路由层的数据源授权</strong>与注册表那道
+      <strong>只读 AST 门</strong>，但上面这道执行前授权门与字段级脱敏都不在它的路径上
+      ——两者都长在 workflow 的节点里。这不是漏接，是那条路的定位（严格契约、未声明即 422）；
+      只是评估它的暴露面时要按「授权到数据源一级」来算。
+    </p>
+
+    <p>
+      还有 <code>authz.require_principal</code>（默认 <code>true</code>）。它<strong>不是</strong>
+      「缺主体就放行」的档位——那种档位不存在，缺主体恒拒；它管的是这个强制点<strong>装不装</strong>：
+      置 false 时整层不装配，留给不接语义层的嵌入场景，生产恒为 true。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L64">semantic_query.py:64 <span class="ref-line">require_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L92">semantic_query.py:92 <span class="ref-line">execute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L99">config.py:99 <span class="ref-line">require_principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1788">graphs.py:1788 <span class="ref-line">require_principal</span></a>
     </p>
 
     <p>
@@ -307,6 +335,7 @@
           <tr><th>模式</th><th>结果</th><th>用在</th></tr>
         </thead>
         <tbody>
+          <tr><td class="mono">none / ""</td><td class="mono">原样</td><td>缺省值：没声明就不改写；<code>none</code> 与空串同义（存量兼容），写出来只是把「这里确实不脱敏」记下来</td></tr>
           <tr><td class="mono">partial</td><td class="mono">138****8888</td><td>还要能对上人的场景（客服报号）</td></tr>
           <tr><td class="mono">hash</td><td class="mono">sha256(salt+值) 前 12 位</td><td>要能分组/去重但不要原文（同一值仍映射到同一串）</td></tr>
           <tr><td class="mono">null</td><td class="mono">—</td><td>只当存在性用</td></tr>
@@ -316,7 +345,7 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/masking.py#L340">masking.py:340 <span class="ref-line">Masker.apply</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/masking.py">nodes/masking.py <span class="ref-line">脱敏节点</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/masking.py#L62">nodes/masking.py:62 <span class="ref-line">make_masking</span></a>
     </p>
 
     <p>
@@ -332,6 +361,81 @@
       值本身不写日志、不写审计——审计只记「对哪些字段用了哪种模式」。
     </p>
 
+    <h2 id="isolation">不可信内容隔离</h2>
+
+    <p>
+      模型上下文里混着大量不是 Trove 写的文本：库里的单元格、检索回来的值、工具返回的内容。
+      这些外部值进上下文只有<strong>两条结构性通道</strong>——渲染提示词时的参数插值，
+      与工具返回值回喂——两条都过同一个隔离核。收口在核上而不是在每个调用点上，
+      是因为「谁记得谁调用」的写法漏一条就是一个洞：新增模板变量或新增工具会自动继承，不需要各自接线。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>通道</th><th>位置</th><th>怎么过核</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>模板渲染</td><td>插值进提示词之前</td><td>逐个参数过核，白名单放行</td></tr>
+          <tr><td>工具回喂</td><td>工具返回值写进 messages 之前</td><td>按返回值的结构逐叶过核</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">loader.py:71 <span class="ref-line">_isolate_vars</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">agent_loop.py:89 <span class="ref-line">_model_observation</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L83">untrusted.py:83 <span class="ref-line">isolate_tree</span></a>
+    </p>
+
+    <p>
+      信任分类只有三条规则，其余<strong>默认按数据扫</strong>：用户本人的话不隔离（隔离它等于篡改需求）；
+      经人确认后落库的结构化知识（语义层、KB）按参数名放行；系统自身的标量与枚举同理。
+      重点在「其余」：白名单之外一律进扫描，新增参数不会因为忘了登记而裸奔。
+    </p>
+
+    <p>
+      <strong>「是谁生成的」不构成信任理由</strong>：模型自己的产物（计划、反思、SQL、记忆）照样扫。
+      这一条推翻过更早的边界声明（旧版只扫 probe / search 返回的单元格），因为它有两处错：
+      漏掉了十几条同样把外部内容送进提示词的路；而「LLM 自生成的不在此列」是一条洗白通道
+      ——模型会把外部内容回声到自己的输出里，下一轮它就成了「模型自己说的」。
+    </p>
+
+    <p>
+      处置是<strong>整值作废</strong>，不是剪掉命中的那一段：命中即把整个值换成中性标记
+      （<code>[data: content isolated]</code>）。剪一半会让模型以为自己拿到的是「不完整但可用」的数据，
+      而它已经不可信了。隔离按值的结构粒度生效——传单元格列表就逐格判，传拼好的大文本只能整块作废，
+      所以调用方应尽量把结构化值交给回喂口。超长值（64KB 以上）无法逐字审查，同样按保守方向整值作废。
+    </p>
+
+    <p>
+      另有一档不是数据：<code>AdminConfirmed</code>——管理员确认过的配置文本（org skill 正文）。
+      它按<strong>类型</strong>放行，不按内容长相，因为对指令性文本做整值作废处置与语义相反：
+      一句「忽略之前的指令」会把整份方法论变成标记。它的安全来自写入关口（确认时筛查、给人看），
+      不来自运行期扫指令文本。
+    </p>
+
+    <p>
+      还有一处值得点名：追问改写这类<strong>派生值</strong>——模型产出的问题，字面走的是
+      <code>question</code> 这个「用户原话」参数，却不是用户说的。它在<strong>诞生点</strong>单独筛一次，
+      命中就弃用改写、回落到引导话术。不筛就是一条洗白通道：外部数据 → 模型回声 → 下一轮被当成用户说的。
+    </p>
+
+    <p>
+      隔离只作用于<strong>喂回模型的那一份</strong>：工具历史、transcript 与观察者拿到的是原文
+      ——审计面要留证据；<code>finish</code> 载荷（最终 SQL 这类控制值）根本不走这条路，产物不是输入，
+      隔离它是篡改。命中会记一条 <code>trove_prompt_isolation_total{channel,var,pattern}</code>：
+      通道与模式名是闭集，工具名下越界的一律记成 <code>unknown</code>——模型给的名字基数无限，
+      不能进标签。不记原文，原文正是要被隔离掉的东西。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L57">untrusted.py:57 <span class="ref-line">is_trusted_var</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L62">untrusted.py:62 <span class="ref-line">AdminConfirmed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L94">untrusted.py:94 <span class="ref-line">screen_derived</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/injection.py#L32">injection.py:32 <span class="ref-line">ISOLATED_MARKER</span></a>
+    </p>
+
     <h2 id="on-behalf-of">以用户身份重放</h2>
 
     <p>
@@ -345,7 +449,9 @@
       四道校验在流开始之前跑完：发起人是 admin、会话属于发起人、目标用户存在、
       subject 类型只认 <code>user:</code>。缺一道，这就是一条 admin 的越权读取通道。
       重放期间<strong>发起人的 scopes 全部不参与判定</strong>——目标用户的权限才是这个视图该有的全部，
-      「减掉 pii 一项」是一张永远列不全的清单。
+      「减掉 pii 一项」是一张永远列不全的清单。目标自己的 scopes 也不假装知道：
+      scope 属于 token 而不属于用户表，读不到就取空集。方向因此偏严——
+      重放视图只会比目标本人的视图<strong>更</strong>脱敏，不会更宽。
     </p>
 
     <p>
@@ -355,8 +461,9 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py">chat.py <span class="ref-line">_replay_subject</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py">session.py <span class="ref-line">_replay_wire</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L37">chat.py:37 <span class="ref-line">_replay_subject</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L190">session.py:190 <span class="ref-line">_replay_wire</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L228">session.py:228 <span class="ref-line">scopes</span></a>
     </p>
 
     <p>
@@ -402,12 +509,21 @@
     </p>
 
     <p>
-      生成阶段还会记录 <code>sql_audit</code> 行（版本、用户、工具、SQL），
-      所以「谁在什么时候让系统执行了什么 SQL」是有据可查的。
+      生成阶段还会往<strong>日志流</strong>里写 <code>sql_audit</code> 行（版本、用户、工具、问题、SQL、结果签名）
+      ——它在日志里、不在审计表里，按前缀 grep 就能捞「谁在什么时候让系统执行了什么」；
+      落库的那份对应记录是 <code>query.execute</code>（问题、SQL、数据源、判定、行数、耗时、错误），
+      两条互补：一条进日志平台，一条进管理端可查的审计表。
     </p>
 
     <p>
-      身份与脱敏这条链上另有四条：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1217">gen_sql.py:1217 <span class="ref-line">sql_audit</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1559">session.py:1559 <span class="ref-line">_audit_query</span></a>
+    </p>
+
+    <p>
+      身份与脱敏这条链上另有五条。其中四条由同一个后置审计写——它们记的是运行结果里的
+      判定报告与脱敏报告，得等结果回来；<code>authz.on_behalf_of</code> 早在重放主体解析出来时就写了，
+      那时还没有结果可等。
     </p>
 
     <div class="table-wrap">
@@ -440,7 +556,8 @@
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L45">hitl.py:45 <span class="ref-line">未识别的载荷一律</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L80">hitl.py:80 <span class="ref-line">hitl</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L74">hitl.py:74 <span class="ref-line">hitl</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L79">hitl.py:79 <span class="ref-line">state.auto_approve</span></a>
     </p>
 
     <p>
@@ -454,6 +571,7 @@
           <tr><th>什么时候跳过 HITL</th><th>为什么</th></tr>
         </thead>
         <tbody>
+          <tr><td>状态带 <code>auto_approve</code></td><td>批内「确认并继续全部」之后的剩余子任务——那次确认已经覆盖了整批</td></tr>
           <tr><td>配置里没开</td><td>—</td></tr>
           <tr><td>没有 SQL 可执行</td><td>没什么可确认的</td></tr>
           <tr><td>上游已经出错</td><td>执行路径根本不会走</td></tr>
@@ -465,6 +583,12 @@
     <p>
       定时任务走同一条路但<strong>自动放行</strong>——否则无人值守的任务会永远卡住。
       这个区别写在调度器里，不在提示词里。
+    </p>
+
+    <p>
+      另有一条状态旁路：批内「确认并继续全部」之后，剩余子任务带 <code>auto_approve</code>
+      直接标成 <code>approved</code>——人已经为整批确认过一次，逐个再问一遍只是把同一份确认念 N 遍。
+      它与定时任务的自动放行是两回事，一条写在状态里，一条写在调度器里，所以两处都得看。
     </p>
 
     <h2 id="next">继续读</h2>

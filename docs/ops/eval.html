@@ -108,13 +108,23 @@
           <tr><td><strong>完成率</strong></td><td>最终交付了答案的占比</td></tr>
           <tr><td><strong>恢复率</strong></td><td>尝试过恢复的条目里成功恢复的占比</td></tr>
           <tr><td><strong>gold 精确匹配</strong></td><td>仅回放条目（有 gold_sql 的）</td></tr>
-          <tr><td><strong>token 成本</strong></td><td>平均每问 token 数</td></tr>
+          <tr><td><strong>共识率 / 置信度</strong></td><td>可判定条目里多候选投票达成共识的占比，与平均置信度</td></tr>
+          <tr><td><strong>平均重试</strong></td><td>每题平均重试次数（<strong>更低更好</strong>）</td></tr>
+          <tr><td><strong>token 成本</strong></td><td><code>avg_tokens</code> 与 <code>total_tokens</code>——只有带 token 记账的条目进分母</td></tr>
+          <tr><td><strong>检索指标</strong></td><td><code>mrr</code> / <code>recall@k</code> / <code>ndcg@k</code> / <code>zero_recall</code>——只在 scorecard 产物里出现</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
+      条目数 <code>n</code> 与可判定题数 <code>n_judged</code> <strong>不参与判定</strong>：
+      它们是分母，不是成绩。只出现在一侧的指标进「无基线不可比」清单，同样不拦。
+    </p>
+
+    <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L117">gate.py:117 <span class="ref-line">metrics_from_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L205">gate.py:205 <span class="ref-line">consensus_rate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L254">gate.py:254 <span class="ref-line">n_judged</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">gate.py:240 <span class="ref-line">compare_metrics</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L310">gate.py:310 <span class="ref-line">render_report</span></a>
     </p>
@@ -177,8 +187,8 @@
           </tr>
           <tr>
             <td class="mono">scorecard json</td>
-            <td><code>tune_rrf.py</code> / <code>eval_hybrid_retrieval.py</code> / <code>eval_bird_retrieval.py</code></td>
-            <td>检索与 RRF 指标</td>
+            <td><code>tune_rrf.py</code> / <code>eval_hybrid_retrieval.py</code> / <code>eval_bird_retrieval.py</code> / <code>offline_eval.py replay --scorecard</code></td>
+            <td>检索与 RRF 指标；回放那条给的是评分指标（CI 用它重算冻结基线）</td>
           </tr>
         </tbody>
       </table>
@@ -187,6 +197,7 @@
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L346">gate.py:346 <span class="ref-line">load_entries</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L117">eval_bird.py:117 <span class="ref-line">RESULTS_PATH</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L44">offline_eval.py:44 <span class="ref-line">--scorecard</span></a>
     </p>
 
     <p>
@@ -195,13 +206,39 @@
       这意味着<strong>改检索参数也会被门拦住</strong>，不需要跑端到端评测。
     </p>
 
+    <h2 id="baseline">冻结基线：门要有锚点才拦得住</h2>
+
+    <p>
+      回归门比的是「两个时刻」，所以仓库里钉着一份<strong>可复现的基线</strong>
+      （<code>eval/baseline/</code>）：<code>questions.jsonl</code> 是固定题集（每行带
+      <code>qid</code>、<code>evidence</code>、<code>gold_sql</code>），
+      <code>results.jsonl</code> 是这批题的历史判定条目，<code>scorecard.json</code>
+      是从后者算出并钉住的指标。<code>conf/agent.yml</code> 的
+      <code>eval.baseline_path</code> 默认就指向 <code>eval/baseline/results.jsonl</code>，
+      所以 <code>--baseline</code> 不填也有锚点。
+    </p>
+
+    <p>
+      <code>eval_baseline.py check --require-full</code> 校验这份基线还成不成立：
+      题集字段完整、qid 可对账、指标算得出来、没有冗余与重复判定。缺题在默认档只是告警，
+      <code>--require-full</code> 把它升级成硬问题——CI 用严格档，因为「少了几题的基线」
+      会让所有比例悄悄换了分母。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_baseline.py#L36">eval_baseline.py:36 <span class="ref-line">--require-full</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/baseline.py#L133">baseline.py:133 <span class="ref-line">check_integrity</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L164">conf/agent.yml:164 <span class="ref-line">baseline_path</span></a>
+    </p>
+
     <h2 id="cli">怎么用</h2>
 
-    <pre><code>python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;
-python scripts/eval_gate.py ... --tol ex=0.02          # 覆盖单项容差
-python scripts/eval_gate.py ... --min-n 20             # 样本不足直接判为不可比
-python scripts/eval_gate.py ... --json                 # 机器可读，供 CI 解析
-python scripts/eval_gate.py ... --ci                   # CI 模式</code></pre>
+    <pre><code>uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;
+uv run python scripts/eval_gate.py ... --tol ex=0.02        # 覆盖单项容差
+uv run python scripts/eval_gate.py ... --ignore avg_tokens  # 跳过某项指标
+uv run python scripts/eval_gate.py ... --min-n 20           # 样本不足直接判为不可比
+uv run python scripts/eval_gate.py ... --json               # 机器可读，供 CI 解析
+uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></pre>
 
     <div class="table-wrap">
       <table>
@@ -211,13 +248,14 @@ python scripts/eval_gate.py ... --ci                   # CI 模式</code></pre>
         <tbody>
           <tr><td class="mono">0</td><td>全部指标在容差内（或无回归）</td></tr>
           <tr><td class="mono">1</td><td><strong>存在回归</strong>——把改动拦下</td></tr>
-          <tr><td class="mono">2</td><td>用法/输入错误，或样本不足</td></tr>
+          <tr><td class="mono">2</td><td>用法/输入错误、样本不足，或 <code>--ci</code> 下门未开启</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L47">eval_gate.py:47 <span class="ref-line">--tol</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L49">eval_gate.py:49 <span class="ref-line">--ignore</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L51">eval_gate.py:51 <span class="ref-line">--min-n</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L54">eval_gate.py:54 <span class="ref-line">--json</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L44">eval_gate.py:44 <span class="ref-line">--ci</span></a>
@@ -226,6 +264,71 @@ python scripts/eval_gate.py ... --ci                   # CI 模式</code></pre>
     <p>
       缺省参数从 <code>conf/agent.yml</code> 的 <code>eval</code> 段读，
       所以本地不用每次敲一长串。挂到 CI 或提交前钩子上即可自动拦截回归。
+      <code>--ci</code> 是给自动化用的那一档：<code>eval.gate_enabled</code> 为
+      <code>false</code> 时它拒绝执行（退出码 2）——一个建好了却没开的门，
+      在流水线里会静默变绿，这比没有门更糟。
+    </p>
+
+    <h2 id="ci">CI 里跑什么</h2>
+
+    <p>
+      <code>.github/workflows/eval-gate.yml</code> 每个 PR 都跑，四步全部零 LLM、零网络：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>步</th><th>命令</th><th>挡什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>KB 禁背题</strong></td>
+            <td class="mono">check_kb_anti_cheat.py</td>
+            <td>KB 可检索示例里出现 gold SQL 的拷贝（模板命中即违规，人工条目命中只告警）</td>
+          </tr>
+          <tr>
+            <td><strong>基线完整性</strong></td>
+            <td class="mono">eval_baseline.py check --require-full</td>
+            <td>基线缺题、qid 对不上、指标算不出来</td>
+          </tr>
+          <tr>
+            <td><strong>零 LLM 回放</strong></td>
+            <td class="mono">offline_eval.py replay --input eval/baseline/results.jsonl</td>
+            <td>用<strong>当前</strong>评分代码重算那批冻结产物</td>
+          </tr>
+          <tr>
+            <td><strong>门判定</strong></td>
+            <td class="mono">eval_gate.py --ci --json</td>
+            <td>钉住的 scorecard vs 现算的：评分口径漂了、基线被误改了，就红</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      最后一步成立的关键是<strong>两边来自不同时刻</strong>：一边是仓库里钉住的
+      <code>eval/baseline/scorecard.json</code>，一边是用当前评分代码从冻结结果重算出来的。
+      同一个文件自己跟自己比恒等 Δ=0，那是在冒充回归门。
+    </p>
+
+    <p>
+      但要说清楚<strong>这四步挡的不是「模型变差了」</strong>：准确率回归要真库加模型，
+      仍然只能手动跑 <code>eval_bird.py</code>。这道门挡的是「锚点坏了」——基线缺题、
+      评分口径漂移、冻结产物被改。把这里的绿读成「准确率没问题」是误读。
+    </p>
+
+    <p>
+      禁背题那步不设开关：它零成本，问的也是「KB 还诚实吗」，与「模型变差了吗」是两回事；
+      其余三步只在 <code>eval.gate_enabled</code>（<code>conf/agent.yml</code>）为
+      <code>true</code> 时跑，置 <code>false</code> 会打印一行 skip notice，
+      而不是无声跳过。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L65">eval-gate.yml:65 <span class="ref-line">check_kb_anti_cheat</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L81">eval-gate.yml:81 <span class="ref-line">--require-full</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L97">eval-gate.yml:97 <span class="ref-line">--ci</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L44">eval_gate.py:44 <span class="ref-line">--ci</span></a>
     </p>
 
     <h2 id="retrieval-eval">检索侧的评测脚本</h2>
@@ -289,7 +392,7 @@ python scripts/eval_gate.py ... --ci                   # CI 模式</code></pre>
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: a7e121f</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

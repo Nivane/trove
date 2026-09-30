@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 知识库详解：五个 YAML 的分工、/kb init 的确定性产物与降级路径、检索的确定性过滤与打分、profiling 取值画像、lint 检查与 pending/confirmed 门禁。">
+<meta name="description" content="Trove 知识库详解：五个知识文件的分工、同目录的判定规则与草案文件、/kb init 的确定性产物与降级路径、检索的确定性过滤与打分、profiling 取值画像、lint 检查与 pending/confirmed 门禁。">
 <title>知识库 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -35,7 +35,7 @@
 
     <nav class="doc-toc" data-toc></nav>
 
-    <h2 id="files">五个文件，按「谁能写」分工</h2>
+    <h2 id="files">五个知识文件，按「谁能写」分工</h2>
 
     <p>
       KB 的形态是一组 YAML，人可读可改，也是唯一真源。运行时另有一份 SQLite 镜像
@@ -82,6 +82,45 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L3">service.py:3 <span class="ref-line">human-editable</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L514">service.py:514 <span class="ref-line">_parse_file</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/merge.py#L54">merge.py:54 <span class="ref-line">纯人工文件</span></a>
+    </p>
+
+    <h3>同目录下的另外两个文件</h3>
+
+    <p>
+      它们住在同一个目录、同一套 git 版本管理之下，但<strong>不属于上面那五个「知识」文件</strong>——
+      前者是策略不是知识，后者还不是真源。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>文件</th><th>承载什么</th><th>写入方</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">decisions.yml</td>
+            <td>判定规则——同一份语义模型上「算不算有问题」的阈值与条件，供定时任务求值</td>
+            <td>管理端接口整篇替换，<strong>落盘前强制 lint</strong></td>
+          </tr>
+          <tr>
+            <td class="mono">semantic_drafts.yml</td>
+            <td>硬 MISS 反问产出的<strong>待确认</strong>语义模型扩展草案</td>
+            <td>反问路径自动写，确认后才并入 <code>semantics.yml</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1068">service.py:1068 <span class="ref-line">save_decisions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L144">decisions.py:144 <span class="ref-line">put_decisions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L476">manage.py:476 <span class="ref-line">create_draft</span></a>
+    </p>
+
+    <p>
+      把它们折进「知识」里会糊掉一件事：<strong>已确认的事实</strong>与<strong>待确认的变更</strong>
+      不是同一种东西。判定规则与草案各自有别的消费者，也各有自己的确认门。
+      判定规则的完整机制见<a href="decisions.html">判定规则</a>。
     </p>
 
     <div class="callout note">
@@ -254,7 +293,8 @@
     <h2 id="lint">lint：把 KB 的问题在提问之前发现</h2>
 
     <p>
-      <code>scripts/lint_kb.py</code> 是这个仓库里唯一一个<strong>专门挑 KB 毛病</strong>的工具。
+      <code>scripts/lint_kb.py</code> 是<strong>专门挑 KB 毛病</strong>的静态检查工具
+      （另有一把专查「抄 gold」的尺子，见本节末尾）。
       它检查的都是「不报错但会一直悄悄降低准确率」的问题：
     </p>
 
@@ -295,6 +335,32 @@
       这类错误没有报错信号，只能靠主动比对发现。
     </p>
 
+    <p>
+      同一套检查还有个<strong>写盘前的门禁</strong>版本：语义模型的写入路径在落盘之前先跑一遍
+      <code>lint_semantics</code>，只要有 issue 就 <code>raise</code>——不落盘、不刷新检索镜像，
+      坏语义根本进不了 KB。命令行上的 <code>lint_kb.py</code> 是给整套 KB 做体检，
+      这里挡的是「这一次写入」。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">反背题：一把挂在 CI 上的尺子</span>
+      <div>
+        <p>
+          <code>scripts/check_kb_anti_cheat.py</code> 做三级比对（字符串归一化、语法树相等、
+          字面量盲化后结构相等）来抓「KB 里的 SQL 抄了 gold」。<strong>检查范围是所有可检索条目</strong>——
+          <code>pending</code> 草稿按项目规则不进检索，所以跳过，但跳过条数每次都打印，
+          免得「查了 622 条」被读成「全查了」。
+        </p>
+        <p>
+          判定分两档，这是本脚本最容易被误读的地方：<code>template: true</code> 的条目命中 gold 判
+          <strong>违规</strong>（模板是 <code>kb init</code> 确定性生成的，命中只可能是有人塞进去的）；
+          已确认的人工条目命中只<strong>告警不判违规</strong>（捕获的成功案例本来就允许接近 gold），
+          但一定会打出来——那条豁免通道同时也是抄 gold 最省事的形状，静默的豁免等于假绿。
+        </p>
+        <p>零 LLM、零网络、零数据库，已经挂在 CI 上，每个 PR 都跑。</p>
+      </div>
+    </div>
+
     <h2 id="gate">两档门禁：pending 不进检索</h2>
 
     <p>
@@ -334,6 +400,39 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L2013">service.py:2013 <span class="ref-line">reject_lesson</span></a>
     </p>
 
+    <h2 id="governance">资产治理：这条 SQL 是谁确认的</h2>
+
+    <p>
+      确认不只是一个布尔开关。示例条目带五个<strong>治理维度</strong>：
+      <code>status</code>（<code>draft</code> / <code>certified</code> / <code>deprecated</code>）、
+      <code>owner</code>、<code>approved_by</code>、<code>approved_at</code>、<code>source</code>
+      （<code>human</code> / <code>memory</code> / <code>kb_init</code> / <code>user_feedback</code>），
+      在确认的那一刻逐条写进 <code>examples.yml</code>——与 SQL 同一份文件，随 git 一起回滚。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/governance.py#L36">governance.py:36 <span class="ref-line">GOVERNANCE_FIELDS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1894">service.py:1894 <span class="ref-line">confirm_pending_examples</span></a>
+    </p>
+
+    <ul>
+      <li><strong>存量条目不迁移</strong>：库里已有的几百条示例都在加载期推断成 <code>draft</code>，而不是一次性往盘上写几百行 <code>status: draft</code>——那既是没有信息量的写盘，也会让「这条资产被谁验过」的第一次记录变成机器批量盖的章。推断出来的 draft 与写在盘上的 draft 对检索含义完全相同。</li>
+      <li><strong>认证门在写盘之前</strong>：确认走一批之前先校验，坏 SQL 会让<strong>整批</strong>被拒（<code>ExampleCertificationError</code>），不做「跳过坏的、确认其余的」——部分确认会让 confirmed 这个词本身失去意义。配套的一条纪律（I5）：<code>certified</code> 必须有人，机器不能自己给自己背书。</li>
+      <li><strong><code>_meta</code> 来源块</strong>：每份生成物落盘时写 <code>format</code> / <code>generator</code> / <code>generated_at</code> / <code>digest</code>，回答「我是哪一版生成的」和「生成之后有人动过我吗」。读侧有个<strong>版本门</strong>：比自己新的格式直接拒绝——按旧解释读一份新格式的文件，产出的不是一个「少读几个字段」的模型，而是一个错的语义模型，它会进编译器、进权威 SQL、进答案。没有 <code>_meta</code> 的存量文件按 format 0 处理（按当前解释读），所以升级不会一次停摆。</li>
+    </ul>
+
+    <div class="callout warn">
+      <span class="callout-tag">台账已实现，但还没接线</span>
+      <div>
+        <p>
+          <code>AssetLedger</code>（每条资产被用了几次、成没成、p50 耗时）已实现、有测试钉住，
+          但<strong>没有任何生产构造点</strong>——答案是「不猜、不编」：拿不到统计就只报档位那一档，
+          而不是编一个数出来。另外 <code>status</code> 今天只披露、还没参与检索加权。
+        </p>
+        <p>统计不写进 <code>examples.yml</code> 是有理由的：那个目录每次写入都触发一次 git commit，高频运行时数据会把资产库的历史淹在统计噪声里，真正想回看的那次「某条 SQL 被谁改坏了」也就找不到了。</p>
+      </div>
+    </div>
+
     <h2 id="language">一条会咬人的约束：KB 语言要跟着问题语言走</h2>
 
     <p>
@@ -347,7 +446,7 @@
       <span class="callout-tag">这是设计约束，不是运行期检查</span>
       <div>
         <p>代码里<strong>没有</strong>任何地方会强制或警告语言不匹配。它写在约束文档里，靠使用者和 lint 的「纯中文问题」检查来兜。所以如果你换了提问语言，记得配套重建 KB。</p>
-        <p>相关但不同的一件事：<code>scripts/check_kb_anti_cheat.py</code> 会做三级比对（字符串归一化、语法树相等、字面量盲化后结构相等）来抓「模板抄 gold SQL」——它只查 <code>template: true</code> 的条目，因为人工确认的示例按设计允许接近 gold。</p>
+        <p>相关但不同的一件事：<code>scripts/check_kb_anti_cheat.py</code> 那把反背题的尺子（见 lint 一节）。</p>
       </div>
     </div>
 
@@ -363,6 +462,7 @@
           <tr><td>两路召回与 RRF 融合的具体参数</td><td><a href="retrieval.html">混合检索</a></td></tr>
           <tr><td>自动回写的完整路径与记忆分层</td><td><a href="memory.html">记忆子系统</a></td></tr>
           <tr><td>数据漂移了 KB 怎么知道</td><td><a href="../ops/drift.html">数据漂移治理</a></td></tr>
+          <tr><td>同一份语义模型还能用来做什么</td><td><a href="decisions.html">判定规则</a></td></tr>
         </tbody>
       </table>
     </div>

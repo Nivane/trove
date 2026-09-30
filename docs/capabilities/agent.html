@@ -189,6 +189,9 @@
     <p>
       任何一道触顶，或者循环空手而归，都会<strong>降级回经典子图</strong>——「生成 → 校验 → 重试」
       那条确定性的老路。所以 agentic 循环是加速器而不是单点依赖：它失灵时系统还在，只是慢一点。
+      这次降级会作为一个<strong>具名折损</strong>记进答案的置信度（−0.10，见<a href="#confidence">答案怎么背书</a>）——
+      但只在交付的确实是那条降级路径时：如果共识投票后来采纳了某个没经历过降级的候选，
+      扣分就落不到它头上。
     </p>
 
     <h3>收工协议：为什么要有 <code>finish</code></h3>
@@ -261,6 +264,70 @@
       这两者的区别写在调度器里，不在提示词里。
     </p>
 
+    <h2 id="confidence">答案怎么背书：置信度与来源</h2>
+
+    <p>
+      回答里可以带一个分数和一行来源。这两样东西只做一件事——<strong>披露</strong>，
+      它们不进任何条件分支。判据是可验证的：把开关关掉再跑一遍，SQL、行数、裁决、
+      答案来源<strong>逐字节相同</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/confidence.py#L62">confidence.py:62 <span class="ref-line">TIER_BANDS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/answer_source.py#L27">answer_source.py:27 <span class="ref-line">AnswerSource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/confidence.py#L325">confidence.py:325 <span class="ref-line">result_confidence</span></a>
+    </p>
+
+    <h3>分数 = 档位基准 + 具名微调</h3>
+
+    <p>
+      基准看这条答案的来源，四档各占一段<strong>互不重叠</strong>的分数带：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>来源</th><th>是什么</th><th>分数带</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">certified</td><td>复用了一条<strong>已认证</strong>的资产——有人具名背书</td><td class="mono">0.95 – 0.99</td></tr>
+          <tr><td class="mono">reused</td><td>复用了 KB 资产（模板或示例），但没人背书</td><td class="mono">0.88 – 0.94</td></tr>
+          <tr><td class="mono">compiled</td><td>语义编译器拼出的权威 SQL</td><td class="mono">0.70 – 0.87</td></tr>
+          <tr><td class="mono">generated</td><td>模型生成的（含编译回退与软 MISS 骨架）</td><td class="mono">0.05 – 0.69</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      分带刻意不重叠：重叠时「缺口多的 compiled」会落进 generated 的带，分数与档位
+      就互相矛盾了。<strong>不重叠让「一个分数读得回它自己的档」真的成立</strong>——这是可以断言的，
+      不是一句愿望。
+    </p>
+
+    <p>
+      微调是几条<strong>明写理由</strong>的加减：每个软 MISS 缺口 −0.05、agent 自检过规则链 +0.10、
+      主候选降级到单发生成 −0.10、检索证据够强 +0.05。交付结果还有一层乘性折损——
+      多候选不完全一致时按票王得票率、重试预算耗尽后强行交付、查询返回 0 行、
+      执行期降级、被硬限拦下——所以<strong>结果不会比它的 SQL 更可信</strong>，两个数天然自洽。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">这些权重是判断，不是概率</span>
+      <div>
+        <p>代码里逐字写着：<strong>全部是判断，不是量出来的</strong>，不得在任何地方声称它们经过校准。谁把它说成「校准过的置信度」，谁就在编一个不存在的实验。</p>
+        <p>反过来的一条纪律同样重要：<strong>判定不出的，一律倒向最保守的那一档</strong>。把编译器的产物标低，用户少得一点信息；把模型编的标高，用户得到一个不该有的信任。两个方向不对称是刻意的——虚低和虚高一样是在编造机制。</p>
+      </div>
+    </div>
+
+    <h3>怎么开关，显示在哪</h3>
+
+    <p>
+      开关是 <code>agent.confidence_score</code>（默认开）。它是<strong>进程级</strong>的：
+      不在管理端可热更新的设置清单里，要关得改配置再重启——急停要能真的停下来，
+      所以关掉回退的是整个披露形态（分数回到折叠区、披露面换回枚举行），
+      而不是半个功能。两个分数照算照写，只在渲染处分流。
+    </p>
+
     <h2 id="context">⑪ 上下文工程：按优先级装进预算</h2>
 
     <p>
@@ -299,9 +366,9 @@
           <tr><th>想了解</th><th>去哪</th></tr>
         </thead>
         <tbody>
-          <tr><td>27 个节点逐个讲、分支与回滚阶梯</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>28 个节点逐个讲、分支与回滚阶梯</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
           <tr><td>记忆分层：情节、偏好、晋升、画像</td><td><a href="memory.html">记忆子系统</a></td></tr>
-          <tr><td>Skills：两级注入与确认门禁</td><td><a href="skills.html">Skills</a></td></tr>
+          <tr><td>Skills：三档注入（含 validator 事后断言）与确认门禁</td><td><a href="skills.html">Skills</a></td></tr>
           <tr><td>模型选择、providers、工具注册表</td><td><a href="llm-gateway.html">LLM 网关</a></td></tr>
           <tr><td>数据侧的能力（语义层、知识库、检索）</td><td><a href="data.html">数据能力总览</a></td></tr>
         </tbody>

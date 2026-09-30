@@ -10,7 +10,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-3700%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-4800%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -86,7 +86,7 @@ flowchart TB
         kb["Knowledge base<br/>terms · examples · rules · lessons"]
         decision["Decision layer<br/>语义模型词汇的阈值规则"]
         memory["Memory<br/>episodes · preferences · profiles"]
-        skills["Skills<br/>组织级方法论 · 两档注入"]
+        skills["Skills<br/>组织级方法论 · 两档注入 + validator 断言"]
         llm["LLM gateway<br/>litellm · any provider"]
         admin["Admin & governance<br/>kb init · draft review · drift"]
     end
@@ -121,7 +121,7 @@ flowchart TB
 
 ### 一次问答如何发生
 
-主图是 LangGraph 上的 **27 个节点**(按默认配置;下图虚线框里的 `clarify` 是可选分支,需显式 `build_graphs(clarify=True)` 才挂上,不计入 27)。
+主图是 LangGraph 上的 **28 个节点**(按默认配置;下图虚线框里的 `clarify` 是可选分支,需显式 `build_graphs(clarify=True)` 才挂上,不计入 28)。
 
 ```mermaid
 flowchart TB
@@ -157,7 +157,8 @@ flowchart TB
     SEL --> CHK{"validate<br/>零 LLM 规则链<br/>形态 · 过滤 · 取值 · 排序"}
     CHK -->|"违规"| FIX["analyze_error<br/>诊断 & 回滚"]
     FIX --> SKETCH
-    CHK -->|"通过"| REFLECT["reflect 裁决<br/>+ SQL 版本回归"]
+    CHK -->|"通过"| MASK["masking<br/>字段级脱敏(LLM 之前)"]
+    MASK --> REFLECT["reflect 裁决<br/>+ SQL 版本回归"]
     REFLECT -->|"不通过"| FIX
     REFLECT --> ATTR{"为什么 / 根因?"}
     ATTR -->|"是"| DRILL["attribution<br/>多跳下钻<br/>贡献率 · 瀑布"]
@@ -232,7 +233,8 @@ flowchart LR
 - **语义即代码** — KB 的语义文件在每次写操作后自动 git 提交(`git log` 即审计历史,`git diff` / `git revert` 即评审与回滚),提交可带 `Generator` / `Approved-by` trailer;坏语义在写盘前就被拒绝,连提交这一关也拦得住。
 - **声明式行级过滤** — 数据集可在语义模型里声明 `row_filter`(一条恒真布尔谓词),编译期注入到所有引用该数据集的查询顶层 WHERE;**快径与编译路径共用同一份注入实现**——所以「走快径就漏过滤」这类分叉不会发生。它约束的是「这个数据集能答什么」,不等于替代数据库侧的只读角色。
 - **统一跨会话记忆** — episodic 召回、自动提取的用户偏好、per user × datasource 画像;自动内容一律 `pending` 至管理员确认。
-- **组织级方法论技能** — 跨数据源的方法论(怎么规划、怎么诊断、组织口径)以 SKILL 形式管理,两档注入:`required` 正文进对应节点的系统提示,`available` 只在生成节点列出描述、由 `load_skill` 按需取用;草稿同样需管理员确认。数据源事实归 KB,方法论归技能。
+- **组织级方法论技能** — 跨数据源的方法论(怎么规划、怎么诊断、组织口径)以 SKILL 形式管理,草稿同样需管理员确认。**注入两档**:`required` 正文进对应节点的系统提示,`available` 只在生成节点列出描述、由 `load_skill` 按需取用。**第三档 `validator` 不注入**——它拿组织自己的断言去查查询结果(聚合级、零 LLM,复用决策规则的表达式引擎),给**通过 / 违反 / 判不了**三值判定,`blocking` 档拦、`advisory` 档只作为附注进回答。判不了单独占一值:塌成通过是「没查却报平安」,塌成违反是「查不了却拦下正确结果」,两种都比不检查更坏。数据源事实归 KB,方法论归技能。
+- **答案级置信度披露(只披露,不改行为)** — 回答里带一个分数,它由**档位基准 + 具名微调**算成:基准看答案来源(认证复用 / 复用 / 语义编译 / 生成四档,各占一段互不重叠的分数带,所以一个分数读得回它自己的档),微调是几条明写理由的加减(每个软 MISS 缺口 −0.05、agent 自检全过 +0.10、降级到经典子图 −0.10、检索证据强 +0.05)。**这些权重是判断,不是标定过的概率**——代码里也这么写着,谁都不许把它们说成校准值。它不进任何条件分支:把开关关掉跑一遍,SQL、行数、裁决、答案来源逐字节相同。
 - **治理即特性** — YAML 是唯一真源(git 可审、可 diff);每次执行的工具调用都进审计;可选 HITL 人工确认;管理端提供 KB init、草稿审批、漂移报告、决策规则与技能管理。
 - **可审计的分析轨迹** — Web UI 展示推理全过程:schema-linking 匹配、编译决策、规则链结果、agent 工具调用与修复原因。生成本身是三个带 checkpoint 的阶段——检索 → 上下文装配 → 生成——分步可观测、可独立测试,同时对 UI / CLI / 流式契约仍合并为单一 `gen_sql` 步。
 - **会解释自己的错误** — 失败的一轮返回一张人话卡片(发生了什么、可以怎么办、重试是否有意义),不再把内部节点名与错误 slug 泄漏到界面上;原始诊断收进折叠区,仅管理员可见。
@@ -353,6 +355,7 @@ uv run trove mcp --transport streamable-http --host 0.0.0.0 --port 8001 --token 
 | 执行代价护栏 | 执行前用 EXPLAIN 估算最重算子行数:超软限(默认 5000 万)打回生成节点补 `LIMIT` / 收窄过滤,超硬限(默认 10 亿)直接拒绝,不烧一轮 LLM 重生成 |
 | 工具权限 | 工具按角色裁剪后才交给模型;越权调用在运行时折叠成「未知工具」,模型看到的是「没有这个工具」,而不是一道可以试探的墙 |
 | 外部数据隔离 | 来自数据库单元格的内容(以及检索/探测结果)先过注入模式扫描,命中即替换为隔离占位符再进提示——人确认过的 KB 内容不在此列 |
+| 字段级脱敏 | 语义模型里按字段声明 `partial` / `hash` / `null`,在**结果出库、任何面向模型的节点之前**改写。它在图上是独立节点而不是挂在 `select` 后面——快径命中时 `select` 直接返回,挂在里面的后置步根本不会执行;位置在规则链**之后**,先判原始数据对不对,再脱敏给人看。失败方向取严:该脱敏而 salt 或语义模型读不出来,一律拒绝这次查询,不降级放行 |
 | 执行前人工确认 | 可选节点,SQL 执行前交人过目;载荷无法识别时默认拒绝,而不是放行 |
 | 模型预算护栏 | ReAct 循环受轮次、墙钟时间、累计 token 三重约束,触顶即降级回经典子图,不会无限烧下去 |
 | 凭据加密落盘 | 数据源配置里的密码 / token 等敏感字段以 Fernet 加密后存盘(`enc:v1:…`),密钥取环境变量 `TROVE_SECRET_KEY`,缺省则在配置旁生成 `0600` 的 `secret.key` |
@@ -389,6 +392,7 @@ agent:
   # api_rate_per_minute: 30            # 按用户请求限流(0 = 关)
   # api_daily_quota: 300               # 每日配额(0 = 关)
   git_kb: true                         # KB 语义文件写操作自动 git 提交
+  # confidence_score: true             # 答案级置信度披露(默认开;进程级,改了要重启)
   # attribution:                       # 为什么类问题的根因下钻(默认开)
   #   max_hops: 2                      # 1 = 仅维度拆解,2 = 再下钻最大贡献项
   # node_models:                       # 每节点模型覆盖(query_sketch / reflect / …)
@@ -441,7 +445,7 @@ uv run python scripts/offline_eval.py replay --input .trove/eval/replay.jsonl
 ## 开发
 
 ```bash
-uv run pytest                     # 全量(~3700 测试,mocked LLM,零网络/零 key)
+uv run pytest                     # 全量(4800+ 测试,mocked LLM,零网络/零 key)
 uv run pytest tests/workflow/     # LangGraph 图与节点
 uv run pytest tests/services/kb/  # 知识库
 uv run pytest -m "not slow"       # 跳过慢测试
@@ -481,7 +485,7 @@ CI(`.github/workflows/backend.yml`)跑同一套测试(非 integration 档,零网
 |---|---|
 | 01 语义漂移治理 | L1 结构层与 L2 引用层检测都在跑,区分「没漂移」与「没查成」,后台周期检测落进漂移库(与 `/v1/admin/drift` 同一份文件);缺的是门禁脚本还没进 CI |
 | 02 执行画像 | 执行证据的形状与三态语义已定;但扫描量这一格六个方言都还没读,`scanned_rows` 恒为空 |
-| 03 已验证查询资产 | 确认 / 拒绝生命周期与 git 审计已有;缺的是逐条溯源——`ExampleHit` 没有确认人字段,确认是一次性批量提交 |
+| 03 已验证查询资产 | 治理维度(`status` / `owner` / `approved_by` / `approved_at` / `source`)随确认逐条写入 `examples.yml`,`certified` 必须有人(I5),认证门不过整批拒绝——「每条资产可追溯到它的确认人」已成立;缺的是台账:`AssetLedger`(`runs` / `p50_ms`)已实现、有测试钉住,但**没有任何生产构造点**,且 `status` 还没参与检索加权 |
 | 04 可核验闭环 | 证据链第一段(执行证据)已落地;「任意一条结论走回原始数据」还走不通 |
 | 05 语义分支评审 | 尚未开工 |
 | 06 身份鉴权与字段脱敏 | 执行前的表级授权门、LLM 前的字段级脱敏、以用户身份重放、审计与指标都已落地;CTE 名误判成表的解析缺陷已修,`warn` 命中的遥测出口已补(计数器给量、审计行给表名);缺的是表级门默认仍是 `warn`——切档要等观察期的误伤数据,那要真部署才收得到 |

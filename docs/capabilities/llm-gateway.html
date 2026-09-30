@@ -162,7 +162,7 @@
     </p>
 
     <p>
-      这个模式是仓库「零 key、零网络、全 mock」测试约束的支点：整套 3700+ 测试
+      这个模式是仓库「零 key、零网络、全 mock」测试约束的支点：整套 4700+ 测试
       跑起来不产生任何 API 费用，也不依赖外网。没有它，CI 要么花钱要么不可靠。
     </p>
 
@@ -200,13 +200,23 @@
           <tr><td class="mono">finish</td><td>总是</td><td>显式收工，SQL 作为载荷交出来</td></tr>
           <tr><td class="mono">probe_query</td><td>standard / complex 档</td><td>只读试跑，看结果长什么样</td></tr>
           <tr><td class="mono">check_result</td><td>standard / complex 档</td><td>试跑后过规则链校验</td></tr>
-          <tr><td class="mono">search_values</td><td>标准档以上 + analyst/admin 角色</td><td>确认某个枚举值在库里怎么写</td></tr>
-          <tr><td class="mono">lookup_schema</td><td>标准档以上 + analyst/admin 角色</td><td>懒加载表结构</td></tr>
-          <tr><td class="mono">explain_plan</td><td>标准档以上 + analyst/admin 角色</td><td>看执行计划</td></tr>
+          <tr><td class="mono">catalog</td><td>标准档以上 + analyst/admin 角色</td><td>约 200 字节的发现工具：调一次，解锁下面三件套</td></tr>
+          <tr><td class="mono">search_values</td><td>标准档以上 + analyst/admin 角色，<strong>经 <code>catalog</code> 解锁后下一轮可见</strong></td><td>确认某个枚举值在库里怎么写</td></tr>
+          <tr><td class="mono">lookup_schema</td><td>同上，经 <code>catalog</code> 解锁</td><td>懒加载表结构</td></tr>
+          <tr><td class="mono">explain_plan</td><td>同上，经 <code>catalog</code> 解锁</td><td>看执行计划</td></tr>
+          <tr><td class="mono">describe_cost</td><td>标准档以上 + 预算服务在场</td><td>写 SQL <strong>之前</strong>问价：这条大概要扫多少行</td></tr>
           <tr><td class="mono">load_skill</td><td>存在 confirmed 的 available skill</td><td>按需取 skill 正文</td></tr>
         </tbody>
       </table>
     </div>
+
+    <p>
+      三条与「零工具噪音」有关的分寸：三件套<strong>不常驻</strong>——常驻的只是一个约 200 字节的
+      <code>catalog</code> 发现工具，模型确认需要后才解锁，且<strong>下一轮</strong>才可见；省下的是数百 token 的常驻工具定义，
+      而不是能力。反过来，<code>describe_cost</code> 是<strong>常驻</strong>的，因为它全部的价值在于
+      「发生在写 SQL 之前」——藏到解锁后面等于挪到生成之后，正好错过它唯一要省的那次往返
+      （生成 → 被打回 → 重新生成）。
+    </p>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1038">gen_sql.py:1038 <span class="ref-line">build_sql_registry</span></a>

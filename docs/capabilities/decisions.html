@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 判定规则：用语义模型的词表声明「什么算有问题」，定时任务零 LLM 求值，三值逻辑、写盘前 lint 门禁，以及一份可重放的证据。">
+<title>判定规则 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>判定规则
+      </div>
+      <h1>判定规则</h1>
+      <p class="lede">
+        <a href="semantic.html">语义层</a>把「业务口径」写成了机器可读的一份模型。
+        判定规则是它的第二个消费者：同一份模型，用来回答的不是「这个数是多少」，
+        而是<strong>「这个数算不算有问题」</strong>——每天定时跑，零 LLM，产出可重放的证据。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="why">为什么让「告警」也走语义模型</h2>
+
+    <p>
+      常见的做法是给告警单独写一套 SQL，或者干脆让人每天看一眼报表。两种都有各自的代价：
+      单独写的那套 SQL 会<strong>慢慢和真实口径漂开</strong>（改了语义模型，告警没跟着改，
+      于是它开始对旧口径报警）；靠人看则会漏，而且漏得没有记录。
+    </p>
+
+    <p>
+      这里的做法是让规则用<strong>语义模型自己的词表</strong>说话：一个 metric、一组 filter、
+      一个自然语言窗口、一个基线，外加上「什么算超标」的布尔表达式。规则里不出现表名和列名，
+      所以口径改了，规则跟着改——因为两者读的是同一份 <code>semantics.yml</code>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L133">service.py:133 <span class="ref-line">DecisionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L60">rules.py:60 <span class="ref-line">DecisionRule</span></a>
+    </p>
+
+    <h2 id="pipeline">一条规则跑起来是什么样</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>步骤</th><th>做什么</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>窗口解析</td>
+            <td>自然语言窗口（「本月」「上周」）→ 具体日期区间，并经同一入口推出基线区间</td>
+            <td>「本月」在用户提问和规则触发时必须是同一个跨度；两处各写一套解析，迟早不一致</td>
+          </tr>
+          <tr>
+            <td>编译</td>
+            <td>subject（metric + filter + 时间粒度）编译成权威 SQL</td>
+            <td>SQL 由编译器产出，不由人手写——手写的 SQL 就是口径漂移的入口</td>
+          </tr>
+          <tr>
+            <td>取数</td>
+            <td>只读执行当期与基期两条查询</td>
+            <td>走的是注册表的受控通道，非 SELECT 一律拒绝</td>
+          </tr>
+          <tr>
+            <td>求值</td>
+            <td>结果行 × 条件 AST → 触没触发、按维度分组各自的判定</td>
+            <td>纯函数，同样的输入永远是同样的结论</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L333">service.py:333 <span class="ref-line">evaluate_rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L338">rules.py:338 <span class="ref-line">compile_condition</span></a>
+    </p>
+
+    <p>
+      全程没有模型参与。这不是为了省那点 token，而是因为<strong>一个能重放的判定才有资格被追问</strong>：
+      「昨天为什么报红」应该能从输入重新算出来，而不是重跑一次对话看它今天心情如何。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">判定失败永远是响亮的失败</span>
+      <div>
+        <p>兄弟模块（定时任务的告警表达式）可以承受「算不出来就当没告警」——它的输入已经拿到手了，
+        最坏结果只是漏一条通知。判定规则不能：一条<strong>静默永不触发</strong>的定时规则，
+        和一个健康的规则从外面看<strong>完全一样</strong>。</p>
+        <p>所以窗口解析不了、metric 没声明、时间字段缺失，都必须在这一次 run 上留下 <code>error</code> 状态，
+        而不是降级成「今天没问题」。</p>
+      </div>
+    </div>
+
+    <h2 id="expr">条件的表达式语言：为什么不是 eval</h2>
+
+    <p>
+      条件是一小段布尔表达式，例如 <code>delta_pct &gt; 0.2 and row_count &gt;= 100</code>。
+      它存在一个<strong>任何能写 KB 的人都能改</strong>的 YAML 文件里，因此是不可信输入——
+      绝不过 <code>eval()</code>。实现是一个手写的分词器加递归下降解析器，
+      语法是刻意收窄的闭集，求值器只能从调用方给的 scope 字典里读值。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>词</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">current</td><td>当期窗口里的指标值</td></tr>
+          <tr><td class="mono">baseline</td><td>基期窗口里的值；没有基期时是 Unknown</td></tr>
+          <tr><td class="mono">delta / delta_pct</td><td>当期减基期，以及它占基期的比例</td></tr>
+          <tr><td class="mono">contribution</td><td>该维度对全部维度 |delta| 之和的带符号占比（仅按维度分组时存在）</td></tr>
+          <tr><td class="mono">row_count</td><td>当期查询返回的行数</td></tr>
+          <tr><td class="mono">dim</td><td>正在被求值的那一行的维度标签（仅按维度分组时存在）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      函数表同样封死：<code>abs</code>、<code>min</code>、<code>max</code>、<code>pct_change</code>。
+      变量名或函数名拼错是<strong>解析期</strong>的错误，由 lint 报出来——而不是变成一个默默为 Unknown
+      的值，让规则安静地永不触发。这是两条设计里更重要的那条：
+      <strong>把「写错了」和「今天没事」分开</strong>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L70">expr.py:70 <span class="ref-line">VARIABLES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L100">expr.py:100 <span class="ref-line">FUNCTIONS</span></a>
+    </p>
+
+    <h3>三值逻辑，以及它挡掉的具体那个 bug</h3>
+
+    <p>
+      求值结果是 <strong>通过 / 违反 / 判不了</strong> 三种，不是两种。多出来的那一档不是洁癖：
+      在只有两值的情况下，「缺基期」会让 <code>not (x &gt; y)</code> 求值为真——
+      于是<strong>一条基于「没有数据就报警」写法的规则，会在数据缺失的那一刻反而触发</strong>。
+      Unknown 取反还是 Unknown，而 Unknown 在顶层永远不算触发。
+    </p>
+
+    <p>
+      Unknown 是一个单例，它的 <code>__bool__</code> 会抛异常。也就是说，
+      代码里不小心写出的 <code>if value:</code> 会当场炸，而不是把第三值悄悄塌成 False——
+      这类塌陷不会报错，只会让规则少触发几次，没人会注意到。
+    </p>
+
+    <h2 id="schema">规则的形状</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>字段</th><th>取值</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">subject</td><td>metrics / dimensions / filters / time_grain / limit</td><td>语义查询体，与 <code>POST /v1/semantic/query</code> 同形</td></tr>
+          <tr><td class="mono">window</td><td>自然语言时间表达</td><td>与提问走同一个解析入口</td></tr>
+          <tr><td class="mono">baseline.kind</td><td class="mono">prev_period / yoy / literal / none</td><td>基期怎么来；<code>literal</code> 才需要 <code>value</code></td></tr>
+          <tr><td class="mono">scope</td><td class="mono">aggregate / per_dimension</td><td>判一行，还是逐维度判</td></tr>
+          <tr><td class="mono">emit</td><td class="mono">any / all / top_k</td><td>逐维度时报告哪些组；<code>top_k</code> 配 <code>top_k</code> 数值</td></tr>
+          <tr><td class="mono">conditions</td><td>列表（AND）或 <code>{all|any: [...]}</code></td><td>条件表达式</td></tr>
+          <tr><td class="mono">severity</td><td class="mono">info / warning / critical</td><td>进消息前缀，也进证据</td></tr>
+          <tr><td class="mono">owner_role</td><td>字符串</td><td>谁认领这条规则——证据里能看出该找谁</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L29">rules.py:29 <span class="ref-line">BASELINE_KINDS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L31">rules.py:31 <span class="ref-line">EMITS</span></a>
+    </p>
+
+    <h2 id="lint">写盘前的 lint 门禁</h2>
+
+    <p>
+      规则保存时无条件过一遍 lint，不过就整份拒绝写盘。lint 只判<strong>不依赖语义模型就能判</strong>的事情
+      （subject 到底能不能编译，由持有模型的服务去判）。几条值得单独说的规则：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>拦下来的写法</th><th>为什么它必须被拦</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>一条规则里写了两个 metric</td>
+            <td>条件词表是单数的（<code>current</code> / <code>delta</code>），第二个 metric 无处可绑。拒绝，好过悄悄只判第一个</td>
+          </tr>
+          <tr>
+            <td><code>scope: aggregate</code> 却给了 <code>subject.dimensions</code></td>
+            <td>subject 的维度<strong>就是</strong> group by，查询会按组返回多行，而聚合规则去查那个唯一的空标签行——每个变量都读成 Unknown，规则<strong>永远不会触发</strong>。「安静地死掉」正是这里唯一值得拦的结局</td>
+          </tr>
+          <tr>
+            <td>条件用了 <code>baseline</code>，但 <code>baseline.kind</code> 是 <code>none</code></td>
+            <td>同上：永远 Unknown 的规则等于没有规则</td>
+          </tr>
+          <tr>
+            <td>聚合规则上写了 <code>emit</code></td>
+            <td>只有一行，要么触发要么不触发，没有「报告哪几组」这回事</td>
+          </tr>
+          <tr>
+            <td><code>per_dimension</code> 却没给维度</td>
+            <td>没有维度可分组</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L191">rules.py:191 <span class="ref-line">lint_rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1068">kb/service.py:1068 <span class="ref-line">save_decisions</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">lint 是写在写盘那一层的，不是写在 API 那一层</span>
+      <div>
+        <p>API 也调 lint（为了让报错回到编辑界面），但真正的门在 <code>KbService.save_decisions</code>：
+        任何写入路径都得过它。所以「绕过 API 直接改文件」不会绕过门禁，
+        加一个 API 侧的后门也只会挪动强制点，不会取消它。</p>
+        <p>「一份能落盘但跑不起来的规则，只会变成一条永远不触发的定时任务，没有任何人会发现」——
+        这是整个门禁存在的理由。</p>
+      </div>
+    </div>
+
+    <h2 id="job">怎么跟定时任务接上</h2>
+
+    <p>
+      任务带一个 <code>decision_rule</code> 字段（规则 id）。设了它，这次 run 就不走自然语言管线，
+      直接按规则求值；没设则照常是一次问数任务。两条路的运行记录、告警冷却、通知分发是同一套。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L117">runner.py:117 <span class="ref-line">_run_decision</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/service.py#L58">jobs/service.py:58 <span class="ref-line">decision_rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L366">main.py:366 <span class="ref-line">装配</span></a>
+    </p>
+
+    <p>
+      运行记录里的 <code>status</code> 有三态：<code>ok</code> / <code>alert</code> / <code>error</code>。
+      <code>error</code> 的触发条件不是「规则为真」，而是「规则判不了」——它不进通知，
+      但会在运行历史里显形。这正是上面那条「响亮地失败」的落点。
+    </p>
+
+    <h2 id="evidence">证据：一次触发留下了什么</h2>
+
+    <p>
+      触发的判定会带一份证据进运行记录，内容包括：规则的<strong>字节摘要</strong>（这一版规则判的）、
+      当期与基期的具体区间、编译出来的两条 SQL、时间字段名、结果行（截断到 200 行并显式带
+      <code>truncated</code> 标记），以及逐组的 <code>current</code> / <code>baseline</code> /
+      <code>delta</code> / <code>contribution</code> / <code>triggered</code> / <code>matched</code>。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L47">service.py:47 <span class="ref-line">MAX_EVIDENCE_ROWS</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么证据里要记规则摘要</span>
+      <div>
+        <p>因为判定 run 的<strong>证据就是它的审计轨迹</strong>。没有摘要的话，
+        一旦阈值被改，「这条是当时按 10% 判的」这个问题就永远答不出来了——
+        你能看到它触发过，但看不出它当时依据的是什么。</p>
+        <p>失败也一样记摘要：「哪一版规则开始报错了」是它出问题时的第一个问题。</p>
+      </div>
+    </div>
+
+    <p>
+      只有被判定为触发的组才会列出它命中的条件。这条是为 <code>all</code> 模式加的：
+      否则一个只满足一半条件的组，看上去也会像「它触发了」。
+    </p>
+
+    <h2 id="file">规则存在哪</h2>
+
+    <p>
+      <code>.trove/kb/&lt;datasource&gt;/decisions.yml</code>——在 KB 树里，也就是在
+      <a href="kb.html">知识库</a>那套已经受 git 管理的目录里。每一次规则变更都是一个可 review 的提交。
+      写回时显式只暂存这一个文件，避免把别人还没提交的 <code>semantics.yml</code> 改动卷进这次提交。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1013">kb/service.py:1013 <span class="ref-line">load_decisions</span></a>
+    </p>
+
+    <p>
+      但规则<strong>刻意不进检索镜像</strong>。混合检索索引的是「和提问有语义相关性的内容」，
+      而规则跟用户问什么没有关系——让它进索引，只会被词面命中，白白占掉上下文预算
+      （见<a href="retrieval.html">混合检索</a>）。这是「同类的东西不必放在同一个篮子里」的一个例子：
+      它们同属 KB 树，但不同属可检索语料。
+    </p>
+
+    <h2 id="api">管理端接口</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>路径</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions?datasource=</td><td>列出规则，带 lint 问题与「哪些任务引用了它」</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions/raw</td><td>整份 <code>decisions.yml</code> 原文，给编辑器用</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions/{rule_id}</td><td>单条规则 + 它自己的 lint 问题</td></tr>
+          <tr><td class="mono">PUT</td><td class="mono">/v1/admin/decisions</td><td><strong>整份替换</strong>：结构化 <code>rules</code> 或原始 <code>text</code> 二选一</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L59">decisions.py:59 <span class="ref-line">list_decisions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L144">decisions.py:144 <span class="ref-line">put_decisions</span></a>
+    </p>
+
+    <p>
+      接口刻意是<strong>读多写整份</strong>的：没有按条 PATCH。理由是并发编辑同一个文件的合并问题——
+      整份替换让写入是原子的，也让那次 git 提交成为这次修改的精确记录。
+    </p>
+
+    <p>
+      删除一条规则只能靠整份替换（把 <code>rules</code> 里的它去掉）。所以<strong>空文档是合法的</strong>：
+      它是删掉最后一条规则的唯一途径。但列表接口会额外插一句「这个数据源没有声明任何规则」——
+      读者需要知道「没有任何东西被盯着」，而不是把空列表读成「一切正常」。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">删规则前先看 referenced_by</span>
+      <div>
+        <p>列表和单条接口都会回传<strong>哪些定时任务引用了这条规则</strong>。
+        删掉一条仍被任务引用的规则，留下的不是「这个任务安静了」，而是「这个任务每次 tick 都失败」。</p>
+      </div>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>metric / dimension 从哪来</td><td><a href="semantic.html">语义层</a></td></tr>
+          <tr><td>规则文件在 KB 树里的位置与门禁</td><td><a href="kb.html">知识库</a></td></tr>
+          <tr><td>定时任务怎么排期、怎么发通知</td><td><a href="../ops/admin.html">运维管理</a></td></tr>
+          <tr><td>运行记录与指标</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 97f4108</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

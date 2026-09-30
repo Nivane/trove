@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove Skills：跨数据源的方法论资产，两级注入（required 全量注入 / available 按需加载）、pending 确认门禁、以及管理端 API。">
+<meta name="description" content="Trove Skills：跨数据源的方法论资产，三档注入（required 全量注入 / available 按需加载 / validator 事后断言）、pending 确认门禁、以及管理端 API。">
 <title>Skills · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -73,8 +73,8 @@
     </div>
 
     <p>
-      代码里自带的三个 code skill 正好是后两类的例子：<code>plan_query</code>（怎么规划）、
-      <code>align_schema</code>（怎么对齐 schema）、<code>diagnose_failure</code>（怎么诊断失败）。
+      代码里自带的两个 code skill 正好是后两类的例子：<code>plan_query</code>（怎么规划）、
+      <code>diagnose_failure</code>（怎么诊断失败）。
       它们放在 <code>trove/prompts/skills/</code> 下，随代码走，是事实上的必需品。
     </p>
 
@@ -106,11 +106,12 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L165">service.py:165 <span class="ref-line">list_org</span></a>
     </p>
 
-    <h2 id="tiers">两级注入：全量注入 vs 按需加载</h2>
+    <h2 id="tiers">三档：注入、按需、以及不注入只断言</h2>
 
     <p>
-      每个 skill 声明自己的注入级别。这个选择直接影响生成提示的长度，
+      每个 skill 声明自己的档位。这个选择直接影响生成提示的长度，
       而提示长度直接影响成本与注意力分配——所以不该「全都塞进去」。
+      前两档是<strong>给模型读的</strong>，第三档不是。
     </p>
 
     <div class="table-wrap">
@@ -129,6 +130,11 @@
             <td>只把<strong>描述</strong>作为 <code>&lt;available_skills&gt;</code> 块广告出去，正文按需取</td>
             <td>场景性的方法论，多数提问用不上</td>
           </tr>
+          <tr>
+            <td><strong>validator</strong></td>
+            <td><strong>正文从不进模型</strong>——它是一份给引擎执行的断言清单，跑在结果上</td>
+            <td>组织自己不可让步的口径（如「金额不许为负」），要拦在交付前</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -139,7 +145,8 @@
 
     <p>
       <code>required</code> 级的 skill 不是全局生效的——它可以声明 <code>triggers.node</code>
-      来限定只注入到某几个节点（查询计划、失败分析、agentic 生成）。
+      来限定只注入到某几个节点（查询计划、失败分析、agentic 生成，以及展示环的
+      洞察 / 图表 / 结论 / 归因）。
       没写 <code>triggers.node</code> 的才是全局。这个粒度是有必要的：
       「怎么诊断失败」这条方法论对规划节点毫无用处，注进去只会稀释它的注意力。
     </p>
@@ -161,6 +168,41 @@
       <div>
         <p>一个用不到的工具不是中性的——它会占提示空间，还会给模型多一个犹豫的选项。所以这套系统里工具的注册普遍是条件的：按复杂度档位、按角色、按「有没有内容可返回」。</p>
         <p>这和<a href="agent.html#tools">工具治理</a>是同一个思路的两面。</p>
+      </div>
+    </div>
+
+    <h3>validator 怎么运行</h3>
+
+    <p>
+      validator 档是一份<strong>声明</strong>，不是一段提示词：文件里写清要检查什么
+      （<code>checks</code>，逐条带 <code>expr</code> 与可选的 <code>columns</code> / <code>severity</code>），
+      由 <code>validate</code> 节点在规则链那一遍之后执行，<strong>零 LLM</strong>，
+      复用决策规则的同一个表达式引擎。可用的量就是结果自身的聚合：<code>min</code> /
+      <code>max</code> / <code>sum</code> / <code>avg</code> / <code>null_count</code> /
+      <code>row_count</code> / <code>col_count</code>。
+    </p>
+
+    <p>
+      每条断言给三值判定之一：<strong>通过 / 违反 / 判不了</strong>。第三值单独占一格，不塌向任何一边——
+      塌成「通过」是没查却报平安，塌成「违反」是查不了却拦下正确结果，两种都比不检查更坏。
+      判不了还带一个机器可读的原因码（缺列、没声明 <code>columns</code>、结果超出展示窗口、
+      结果本来就为空、列里没有数值、配置写错……）：<strong>「配了却判不了」的占比是这套机制唯一的质量信号</strong>，
+      一句话盖住所有原因就再也数不出分布。
+    </p>
+
+    <p>
+      违反之后怎么处置由 <code>severity</code> 定：<code>blocking</code> 把判词带进
+      <code>error_feedback</code> 回滚重算（判词同时作为一条拦截进 <code>validation_hits</code>），
+      只有预算耗尽时才升级成交付给用户的错误；<code>advisory</code> 不拦，只渲染成回答顶上的一行
+      「⚠️ 口径提示」。<strong>判不了永远不进附注</strong>——它进 <code>validator_hits</code> 供质检统计，
+      但不进用户屏幕：一个高频出现、又多半只说明管理员该改配置的提示，两周内就会把真正有意义的告警一起淹掉。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么另起一遍，而不是规则链的第 N 条规则</span>
+      <div>
+        <p>规则链（<code>verify</code>）是<strong>第一条失败即止、只回一个 reason</strong>，那是给「形状」用的——单值问题的结果必须一行一列。validator 要的是<strong>逐条判定 + 逐条 severity</strong>，一个 reason 装不下，所以它是紧挨着 <code>verify()</code> 的另一遍，不是它的扩展。</p>
+        <p>写入面与执行面共用同一份 <code>severity</code> 闭集。<code>severity: Blocking</code>（大小写错了）既未被拦、也不会被渲染——写入放行、执行侧当未知，正是这类「配了却静默失效」事故的来源，所以两处必须看同一份名单。</p>
       </div>
     </div>
 
@@ -201,14 +243,14 @@
           <tr><th>端点</th><th>作用</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">GET /admin/skills</td><td>列出全部（含 code 与 org）</td></tr>
-          <tr><td class="mono">GET /admin/skills/org</td><td>只列 org skills</td></tr>
-          <tr><td class="mono">POST /admin/skills/draft</td><td>手工创建草案</td></tr>
-          <tr><td class="mono">POST /admin/skills/llm-draft</td><td>让 LLM 起草一份草案</td></tr>
-          <tr><td class="mono">GET /admin/skills/{name}/body</td><td>读正文</td></tr>
-          <tr><td class="mono">POST /admin/skills/{name}/confirm</td><td>确认——<strong>此时才可能进入提示</strong></td></tr>
-          <tr><td class="mono">POST /admin/skills/{name}/reject</td><td>驳回</td></tr>
-          <tr><td class="mono">POST /admin/skills/{name}/tier</td><td>改注入级别</td></tr>
+          <tr><td class="mono">GET /v1/admin/skills</td><td>列出全部（含 code 与 org）</td></tr>
+          <tr><td class="mono">GET /v1/admin/skills/org</td><td>只列 org skills</td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/draft</td><td>手工创建草案</td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/llm-draft</td><td>让 LLM 起草一份草案</td></tr>
+          <tr><td class="mono">GET /v1/admin/skills/{name}/body</td><td>读正文</td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/{name}/confirm</td><td>确认——<strong>此时才可能进入提示</strong></td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/{name}/reject</td><td>驳回</td></tr>
+          <tr><td class="mono">POST /v1/admin/skills/{name}/tier</td><td>在 <code>required</code> ↔ <code>available</code> 之间搬——<strong><code>validator</code> 走不了这个接口</strong></td></tr>
         </tbody>
       </table>
     </div>
@@ -224,6 +266,16 @@
       前端对应「Skills」页面。修改 <code>tier</code> 是一个值得留意的操作：
       把一个 available 的 skill 提成 required，等于给每次生成都加一段固定文本——
       确认它真的每次都用得上再提。
+    </p>
+
+    <p>
+      这个接口只在 <code>required</code> 与 <code>available</code> 两档之间搬。
+      <strong><code>validator</code> 档不在这里切换</strong>——它的 <code>mode</code> /
+      <code>severity</code> / <code>targets</code> / <code>checks</code> 四个字段与 tier
+      必须在 <code>SKILL.md</code> 里一起手写：升档时这些字段还没被投影到条目上，
+      降档时又已经在条目上，两个方向都无法在这条路径上校验，所以两个方向都直接拒。
+      真相是 tier 与那四个字段只能同一次写入。
+      校验本体见 <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L445">service.py:445 <span class="ref-line">set_tier</span></a>。
     </p>
 
     <h2 id="next">继续读</h2>

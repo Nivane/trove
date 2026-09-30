@@ -137,10 +137,10 @@
           <tr><th>端点</th><th>说明</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">GET /v1/datasources</td><td>可见的数据源列表</td></tr>
-          <tr><td class="mono">GET /v1/tables</td><td>表清单</td></tr>
-          <tr><td class="mono">GET /v1/tables/{name}</td><td>表详情</td></tr>
-          <tr><td class="mono">GET /v1/ddl</td><td>建表语句</td></tr>
+          <tr><td class="mono">GET /v1/catalog/datasources</td><td>可见的数据源列表</td></tr>
+          <tr><td class="mono">GET /v1/catalog/tables</td><td>表清单</td></tr>
+          <tr><td class="mono">GET /v1/catalog/tables/{table_name}</td><td>表详情</td></tr>
+          <tr><td class="mono">GET /v1/catalog/tables/{table_name}/ddl</td><td>建表语句</td></tr>
         </tbody>
       </table>
     </div>
@@ -176,9 +176,9 @@
         </thead>
         <tbody>
           <tr><td class="mono">POST /v1/semantic/query</td><td>声明式查询——<strong>严格契约，未声明即 422</strong></td></tr>
-          <tr><td class="mono">GET /v1/semantic</td><td>语义模型详情</td></tr>
-          <tr><td class="mono">GET /v1/semantic/history</td><td>变更历史</td></tr>
-          <tr><td class="mono">POST /v1/semantic/drafts…</td><td>草案的创建 / 批准 / 驳回</td></tr>
+          <tr><td class="mono">GET /v1/admin/semantic/{name}</td><td>语义模型详情（管理端，按数据源名寻址）</td></tr>
+          <tr><td class="mono">GET /v1/admin/semantic/{name}/history</td><td>变更历史</td></tr>
+          <tr><td class="mono">POST /v1/admin/semantic/{name}/drafts…</td><td>草案的创建 / 批准 / 驳回</td></tr>
         </tbody>
       </table>
     </div>
@@ -216,7 +216,7 @@
     </div>
 
     <p>
-      管理端路由<strong>只在存在真实认证组件时才挂载</strong>——这是 fail-closed 的一部分。
+      管理端路由<strong>只在存在真实认证组件时才挂载</strong>（<code>auth</code> / <code>admin</code> / <code>jobs</code> / <code>skills</code> / <code>decisions</code> / <code>drift</code> 六个）——这是 fail-closed 的一部分。语义模型那一组（<code>/v1/admin/semantic/*</code>）挂在门外，但它的<strong>每一条路由都依赖 <code>require_admin</code></strong>，所以挡人的是那条依赖，不是挂载开关；认证被显式关掉（NullAuth）时，所有请求本来就以本地管理员身份运行。
     </p>
 
     <p>

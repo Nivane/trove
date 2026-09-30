@@ -327,6 +327,20 @@
       这意味着它承载的是<strong>组织口径</strong>而不是系统推断。
     </p>
 
+    <p>
+      同一目录下还住着两类文件，它们不算上面这五份：<code>decisions.yml</code>
+      （判定规则，纯人工编写、没有生成器，只有编辑器的写回，见
+      <a href="../capabilities/decisions.html">判定规则</a>）与
+      <code>semantic_drafts.yml</code>（硬 MISS 反问产出的<strong>待确认</strong>扩展草稿，
+      确认后才并入 <code>semantics.yml</code>）。
+      把它们并进「知识」那一栏会混淆「已确认的事实」与「待确认的变更」。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/manage.py#L476">manage.py:476 <span class="ref-line">create_draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L144">decisions.py:144 <span class="ref-line">put_decisions</span></a>
+    </p>
+
     <h2 id="gate">人工确认门禁：pending 不进检索</h2>
 
     <p>
