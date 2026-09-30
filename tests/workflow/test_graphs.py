@@ -908,6 +908,43 @@ class AgenticLLM:
         return self._responses.pop(0)
 
 
+class PassThenBreakAgenticLLM:
+    """第 1 轮 agent 自检通过;第 2 轮 agent loop 崩溃 → 经典子图兜底。
+
+    两条通道分开脚本化:`chat_full` 是 agent loop(第 1 次给 check_result
+    工具调用,之后抛异常),`chat` 是意图/reflect/经典子图生成。
+    """
+
+    PASS_SQL = "SELECT county, AVG(grade) FROM students GROUP BY county"
+    CLASSIC_SQL = "```sql\nSELECT name FROM students;\n```"
+
+    def __init__(self):
+        self.calls = []
+        self.full_calls = 0
+        self._chat = [
+            "query",              # 意图
+            "RETRY: stale pass",  # reflect(第 1 轮)
+            "RETRY: stale pass",  # rejudge(第 1 轮)
+            "TARGET: gen_sql",    # analyze_error:定向回 gen_sql 重生成
+            self.CLASSIC_SQL,     # 第 2 轮:降级后的经典子图生成
+            "OK",                 # reflect(第 2 轮)
+        ]
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append(messages)
+        self.full_calls += 1
+        if self.full_calls > 1:
+            raise RuntimeError("llm down")
+        return {"content": None, "tool_calls": [
+            {"id": "c1", "name": "check_result",
+             "arguments": '{"sql": "%s"}' % self.PASS_SQL},
+        ]}
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append(messages)
+        return self._chat.pop(0)
+
+
 class BrokenAgenticLLM(AgenticLLM):
     """chat_full 永远抛异常（loop 崩溃）；chat 走 classic 脚本化响应。"""
 
@@ -936,6 +973,9 @@ class TestAgenticNodes:
         assert final["error"] == ""
         assert final["sql"] == "SELECT name FROM students;"
         assert final["row_count"] == 5
+        # 降级到经典子图 ⇒ 交付的 SQL 没经过 check_result(经典路径根本不注册
+        # 这个工具)→ 自检通过数必须是 0,而不是"没写过这个键"。
+        assert final["self_check_passed"] == 0
 
     async def test_gen_sql_tool_validation_round(self, sqlite_registry, catalog):
         """gen_sql ReAct：模型先调 validate_sql 工具自检，再交最终 SQL。"""
@@ -1031,6 +1071,28 @@ class TestAgenticNodes:
         # 观测进轨迹:OK + 真实行数;无规则命中 → validation_hits 为空
         assert "OK (3 rows)" in final["reasoning_history"][0]["text"]
         assert final["validation_hits"] == []
+        # 通过时的**唯一**痕迹:check_result 全过 → 正样本计数进 state。
+        # 改回填进 `if registry.check_hits:` 块会让这条归零(hits 恒空)。
+        assert final["self_check_passed"] == 1
+
+    async def test_correction_round_does_not_inherit_a_stale_pass(
+        self, sqlite_registry, catalog,
+    ):
+        """第 1 轮自检通过、第 2 轮 agent loop 崩溃降级到经典子图 —— 交付的
+        是**另一条**从没被 check_result 看过的 SQL,自检通过数必须归零。
+
+        回归:该键原本只在 `if result is not None:` 分支写。降级分支
+        (`else` / `_classic_fallback`)不写 → LangGraph 保留上一轮的值,
+        最终 state 声称一条从未自检的 SQL "通过"了 —— 正是 I6 要防的虚高。
+        """
+        llm = PassThenBreakAgenticLLM()
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        # 前提:第 2 轮确实进了 agent loop 并崩溃(否则钉的不是降级路径)
+        assert llm.full_calls == 2
+        assert final["self_check_passed"] == 0
 
     async def test_gen_sql_check_result_catches_violation(self, sqlite_registry, catalog):
         """count 题草稿按分组展开 → check_result 报 VIOLATION；模型改 SQL；命中记入 validation_hits。"""

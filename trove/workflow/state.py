@@ -374,9 +374,15 @@ class WorkflowState(BaseModel):
     # 供日志/eval 归因「哪条断言拦了什么」
     validation_hits: list[dict] = Field(default_factory=list)
 
-    # agent 自检通过次数(gen_generate 写,每轮覆盖不累加)。今天通过时 hits
-    # 为空,零痕迹;置信度要用它当正面证据(设计 §5.4-2)。0 = 没跑过 agent
-    # 自检(经典子图 / simple 档 / 没调 check_result)。
+    # agent 自检通过次数(gen_generate 写,每轮覆盖不累加;降级到经典子图时
+    # 显式写 0 —— 那条路径交付的 SQL 没经过 check_result)。今天通过时 hits
+    # 为空,零痕迹;置信度要用它当正面证据(设计 §5.4-2)。
+    #
+    # 0 是**两义**的:既表示"跑了自检但一次没通过",也表示"没跑过自检"
+    # (经典子图 / simple 档 / 没调 check_result)。两义对计分都是惰性的 ——
+    # 消费点是真值判定(设计 §5.2 的 +0.10),两种 0 都不加成;而"跑了但没过"
+    # 也不倒扣:规则链没过已由 rules_passed 单独计价,这里再罚是重复计费。
+    # 故**不**为消歧加字段或哨兵值(§8-1「缺席不是坏消息」)。
     self_check_passed: int = 0
 
     # 确定性规则全过信号(validate 节点写入):本轮执行结果通过了

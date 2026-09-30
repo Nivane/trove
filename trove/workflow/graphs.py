@@ -1010,6 +1010,14 @@ def make_gen_generate(
                     update["attempts"] = out["attempts"]
                 if out["error"]:
                     update["error"] = out["error"]
+                # 降级到经典子图 ⇒ 交付的 SQL 没经过 check_result(经典路径根本
+                # 不注册这个工具)。**必须显式写 0**:它是普通 state 通道,不写就
+                # 保留上一轮的值 —— 第 1 轮自检通过、第 2 轮降级,那条没被验证
+                # 的 SQL 会带着上一轮的通过进 state。三个调用点(异常 / 护栏降级
+                # / 空手而归)都走这里,所以写 0 覆盖全部;其中「护栏降级」与
+                # 「空手而归」发生在下面写 check_passed 之后,不写 0 会让**本轮**
+                # 的自检分数留给一条它没检查过的 SQL,同样是虚高(I6)。
+                update["self_check_passed"] = 0
 
             if result is not None:
                 # 估算校准闭环:est 与 actual 同基准——actual(agent_loop 首轮

@@ -342,3 +342,17 @@ class TestSelfCheckLeavesATrace:
         await handler({"sql": "SELECT COUNT(*) FROM students"})
         await handler({"sql": "SELECT COUNT(*) FROM students"})
         assert registry.check_passed == 1
+
+    async def test_unexecutable_sql_is_not_a_pass(self, sqlite_registry):
+        """ERROR 的 hits 也是空的 —— 只按「hits 为空」计数会把**不可执行**
+        记成通过。不可执行是观测失败,不是 SQL 通过了规则链(设计 §8-1):
+        模型若只检查了一条跑不动的语句,不该拿到自检通过的正样本。
+        """
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+        )
+        text = await registry.handlers()["check_result"](
+            {"sql": "DELETE FROM students"},
+        )
+        assert text.startswith("ERROR")
+        assert registry.check_passed == 0
