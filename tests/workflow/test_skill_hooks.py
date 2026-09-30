@@ -129,6 +129,43 @@ def test_every_graph_binding_passes_skills():
             )
 
 
+def test_every_registry_with_skills_passes_skill_ctx():
+    """带 skills= 的 build_sql_registry 装配点,也必须带 skill_ctx=。
+
+    ``load_skill`` 的判定是**触发器**(role / lang / intent …),而判定要读的
+    ctx 只能由装配处递进去。漏传的后果不是报错,是**恒不匹配**:prompt 里
+    按名点了技能、模型调过去却被拒,白烧一轮 —— 与注册侧漏接线同一类半接线,
+    只是这次断在判定侧。
+
+    这里只认 ``ast.Name`` 形态的调用(见 ``FACTORIES_REQUIRING_SKILLS`` 的
+    同款说明);空清单断言兜住"改名/删调用"造成的永远绿。
+    """
+    import ast
+    import inspect
+
+    from trove.workflow import graphs as graphs_module
+
+    tree = ast.parse(inspect.getsource(graphs_module))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "build_sql_registry"
+    ]
+    assert calls, "graphs.py 里没有 build_sql_registry(...) 的调用 —— 改名了?"
+
+    with_skills = [c for c in calls if "skills" in {k.arg for k in c.keywords}]
+    assert with_skills, (
+        "graphs.py 里没有带 skills= 的 build_sql_registry(...) 调用 —— "
+        "org available skill 的 on-demand 通道断了,清单要跟着看"
+    )
+    for c in with_skills:
+        kw = {k.arg for k in c.keywords}
+        assert "skill_ctx" in kw, (
+            f"graphs.py:{c.lineno} 的 build_sql_registry(...) 带了 skills 却没带 "
+            "skill_ctx —— 触发器里的 role/lang 恒不匹配,广告点名后调过去必被拒"
+        )
+
+
 async def test_gen_sql_node_forwards_skill_ctx(tmp_path):
     """gen_sql 挂点也必须把 ctx 送进去 —— 三个挂点里最不显眼的一个。
 

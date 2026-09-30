@@ -1050,6 +1050,7 @@ def build_sql_registry(
     run_id: str = "",
     probe_cache: dict | None = None,
     skills: Any = None,
+    skill_ctx: dict | None = None,
     budget: Any = None,
     profiles: Any = None,
 ):
@@ -1158,7 +1159,11 @@ def build_sql_registry(
             name = (arguments.get("skill_name") or "").strip()
             if not name:
                 return "skill_name is required"
-            return skills.load_skill_content(name, lang)
+            # 判定与广告同源:``skill_ctx`` 是调用点递进来的 state.skill_ctx()
+            # (``node`` 恒为 gen_sql——注册表只活在 gen_sql 的 ReAct 循环里)。
+            return skills.load_skill_content(
+                name, lang, node="gen_sql", skill_ctx=skill_ctx,
+            )
 
         registry.register(
             "load_skill", load_skill_tool,

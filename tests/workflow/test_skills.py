@@ -358,6 +358,44 @@ def test_load_skill_tool_covers_every_advertised_skill(tmp_path):
     assert not svc.has_available_for("analyze_error")
 
 
+async def test_load_skill_tool_enforces_triggers(tmp_path):
+    """装配链也要过触发器:build_sql_registry → handler → service。
+
+    单测 service 只证明判定本身;装配处漏接 ``skill_ctx`` 会让 role 之类的
+    维度恒不匹配 —— 广告里点了名、按名调过去却被拒,白烧一轮。这条与
+    ``test_load_skill_tool_covers_every_advertised_skill`` 是同一条半接线
+    纪律的两端:那条管**注册**,这条管**判定**。
+    """
+    from trove.workflow.nodes.gen_sql import build_sql_registry
+
+    svc = _org_skills(tmp_path)
+    svc.create({
+        "name": "analyst-tricks", "description": "分析师口径",
+        "triggers": {"role": ["analyst"]}, "tier": "available",
+        "body": "ANALYST-BODY",
+    })
+    svc.confirm("analyst-tricks")
+
+    ctx = {"intent": "query", "complexity": "complex", "role": ["analyst"],
+           "lang": "zh", "datasource": "demo"}
+    registry = build_sql_registry(
+        None, "q", "zh", "sqlite", complexity="complex",
+        skills=svc, skill_ctx=ctx,
+    )
+    handler = registry.handlers()["load_skill"]
+    assert "ANALYST-BODY" in await handler({"skill_name": "analyst-tricks"})
+
+    # 同一份文件、viewer 的 ctx:必须被拒(而不是"反正注册了就放行")
+    viewer_registry = build_sql_registry(
+        None, "q", "zh", "sqlite", complexity="complex",
+        skills=svc, skill_ctx={**ctx, "role": ["viewer"]},
+    )
+    viewer_handler = viewer_registry.handlers()["load_skill"]
+    out = await viewer_handler({"skill_name": "analyst-tricks"})
+    assert "ANALYST-BODY" not in out
+    assert "role" in out
+
+
 def test_available_skills_block_advertises_on_demand_skills(tmp_path):
     """available 档 skill 以描述广告,正文不常驻 prompt。"""
     svc = _org_skills(tmp_path)

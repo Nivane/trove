@@ -23,6 +23,11 @@ Two sources are merged at render time:
     prompt.
 
 Skills without a ``triggers.node`` are global — they apply to every node.
+
+All four delivery paths — required injection, available advertisement,
+validator execution and on-demand ``load_skill`` — share **one** trigger
+predicate (``_trigger_mismatch``). A declared ``role`` / ``lang`` / … narrows
+every path, so naming a skill directly cannot bypass it.
 """
 
 from __future__ import annotations
@@ -460,9 +465,25 @@ class SkillService:
             return override.read_text(encoding="utf-8").strip()
         return entry["body"]
 
-    def load_skill_content(self, name: str, lang: str) -> str:
+    def load_skill_content(
+        self,
+        name: str,
+        lang: str,
+        *,
+        node: str = "gen_sql",
+        skill_ctx: dict | None = None,
+    ) -> str:
         """Full body for the on-demand ``load_skill`` tool. Errors are returned
-        as text so the agent loop sees them without raising."""
+        as text so the agent loop sees them without raising.
+
+        **触发器与其余三条投递路同一个判定**(``_trigger_mismatch``)。点名不是
+        提权:没被广告出来的名字也一样取不到,已确认但 ctx 不匹配的技能同样拿
+        不到正文 —— 否则 ``role`` / ``lang`` 之类的声明就只约束了广告,按名直取
+        即可绕过。
+
+        ``skill_ctx`` 由装配处递入(``state.skill_ctx()``);缺省时除 ``lang``
+        外的维度都不匹配 —— 收窄声明保守不命中,而不是放行。
+        """
         entry = self.read_skill(name)
         if entry is None:
             return f"Skill not found: {name}"
@@ -478,6 +499,13 @@ class SkillService:
                 f"Skill '{name}' is a validator: it checks results, it is not "
                 "instructions to follow. Its criteria are applied "
                 "automatically after execution."
+            )
+        ctx = {**(skill_ctx or {}), "lang": lang}
+        dim = self._trigger_mismatch(entry.get("triggers") or {}, node, ctx)
+        if dim is not None:
+            return (
+                f"Skill '{name}' is not available in this context: its "
+                f"'{dim}' trigger does not match."
             )
         body = self.get_body(name, lang)
         if not body:
@@ -498,21 +526,37 @@ class SkillService:
         target = triggers.get("node")
         return target is None or target == node
 
+    @staticmethod
+    def _trigger_mismatch(
+        triggers: dict, node: str, ctx: dict, *, skip_node: bool = False,
+    ) -> str | None:
+        """第一个不匹配的触发维度名;全匹配返回 ``None``。
+
+        四条投递路(required 注入 / available 广告 / validator 运行 / on-demand
+        取用)共用这一个判定 —— 各写一遍必然漂移,而漂移的表现恰好是本模块最
+        要防的那类事故:配了却静默不生效(或反过来,绕过了声明的收窄)。
+
+        ``skip_node=True`` 留给 validator:它的宿主由 ``targets`` 决定,
+        ``triggers.node`` 在那里是**标记**而不是筛子(见 ``validators_for``)。
+        """
+        declared = triggers.get("node")
+        if not skip_node and declared not in (None, node):
+            return "node"
+        for k, v in triggers.items():
+            if k == "node":
+                continue
+            if not match_trigger(k, v, ctx.get(k)):
+                return k
+        return None
+
     def _match_org(self, node: str, **ctx: object) -> list[dict]:
         """Confirmed org skills matching the node (trigger ctx 逐字段匹配)。"""
-        out = []
-        for entry in self.list_org(confirmed_only=True):
-            triggers = entry.get("triggers") or {}
-            if triggers.get("node") not in (None, node):
-                continue
-            if not all(
-                match_trigger(k, v, ctx.get(k))
-                for k, v in triggers.items()
-                if k != "node"
-            ):
-                continue
-            out.append(entry)
-        return out
+        return [
+            entry
+            for entry in self.list_org(confirmed_only=True)
+            if self._trigger_mismatch(entry.get("triggers") or {}, node, ctx)
+            is None
+        ]
 
     def validators_for(self, node: str, **ctx: object) -> list[dict]:
         """Confirmed ``validator``-tier org skills applying to ``node``.
@@ -536,15 +580,13 @@ class SkillService:
             if entry.get("tier") != "validator":
                 continue
             triggers = entry.get("triggers") or {}
-            declared = triggers.get("node")
-            if not all(
-                match_trigger(k, v, ctx.get(k))
-                for k, v in triggers.items()
-                if k != "node"
-            ):
+            if self._trigger_mismatch(
+                triggers, node, ctx, skip_node=True,
+            ) is not None:
                 continue
             # 副本:调用方要往条目上挂标记,``list_org`` 的条目不许被就地改。
             e = dict(entry)
+            declared = triggers.get("node")
             if declared is not None and declared != node:
                 e["host_mismatch"] = declared
             out.append(e)

@@ -953,6 +953,9 @@ def make_gen_generate(
                 run_id=state.run_id,
                 probe_cache=probe_cache,
                 skills=services.skills,
+                # load_skill 的触发器判定读它 —— 与下方广告块同一个 ctx 源。
+                # 漏传 = role/lang 类收窄恒不匹配:广告点了名、按名调过去被拒。
+                skill_ctx=state.skill_ctx(),
                 budget=budget,
                 profiles=profiles,
             )
