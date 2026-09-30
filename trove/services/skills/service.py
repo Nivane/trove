@@ -28,6 +28,7 @@ Skills without a ``triggers.node`` are global — they apply to every node.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -319,13 +320,27 @@ class SkillService:
 
         - 描述 + 正文:required 档投正文,available 档只投描述(广告块);
         - ``checks[].message``:validator 违反时的判词会进 ``error_feedback``
-          → 进 gen_sql 的 prompt。**投递面变了扫描面就得跟着变** ——
-          validator 档新增了一条投递路,扫描面也必须多扫一处,否则
-          "同一个缺口换个 tier 就绕过去"。
+          → 进 gen_sql 的 prompt;
+        - ``checks[].expr``:``message`` 不是必填,``run_validators`` 在它为空
+          时回落到 ``violated: {expr}`` —— 同一条判词路,而表达式语法收字符串
+          字面量,一棵**能解析**的表达式树同样能夹带散文。
+        **投递面变了扫描面就得跟着变** —— validator 档新增了一条投递路,
+        扫描面也必须多扫一处,否则"同一个缺口换个 tier 就绕过去"。
+
+        形状守卫与 ``run_validators`` 同一套:``checks`` 不是可迭代的、或元素
+        不是 mapping 的一律**跳过**。跳过的依据是"它到不了投递面" —— 运行期
+        以 ``malformed check (expected a mapping)`` 拒它,原文进不了判词;把
+        "畸形"记成一条命中是把两件事混成一件。手写 ``SKILL.md`` 正是绕开
+        ``create`` 的那条路,不守这里就等于让畸形配置在**确认**那一刻炸成 500。
         """
         parts = [str(entry.get("description", "")), str(entry.get("body", ""))]
-        for c in entry.get("checks") or []:
-            parts.append(str((c or {}).get("message", "")))
+        checks = entry.get("checks") or []
+        if isinstance(checks, Iterable):
+            for c in checks:
+                if not isinstance(c, dict):
+                    continue
+                parts.append(str(c.get("expr") or ""))
+                parts.append(str(c.get("message") or ""))
         return scan_injection("\n".join(parts))
 
     def scan_skill(self, name: str) -> list[str]:
@@ -335,10 +350,11 @@ class SkillService:
 
     @classmethod
     def _with_scan(cls, entry: dict) -> dict:
-        """写入口的返回值统一挂上扫描结果 —— **只报不改**。
+        """``create`` 的返回值挂上扫描结果 —— **只报不改**。
 
-        两个写入口(``create`` / ``confirm``)都挂:草稿落盘时就报一次,管理员
-        在**决定之前**看见;确认时再报一次,兜住"草稿到确认之间被改过"。
+        草稿落盘时就报一次,管理员在**决定之前**看见。``confirm`` 用的是同一个
+        扫描(``_scan_entry``)但**不经过这里**:它必须让落盘成为最后一个会抛的
+        步骤,所以先扫后写、再把结果挂上去(见 ``confirm``)。
         正文是指令性文本,写它的人此刻在场 —— 是唯一能判断"这句是有意写的还是
         被灌进来的"的一方。把扫描放运行期只会静默毁内容(实测:一句话让整份
         方法论变成 ``[data: content isolated]``);放在这里则是一次可读的提示,
@@ -349,9 +365,19 @@ class SkillService:
 
     def confirm(self, name: str) -> dict:
         """Admin confirmation: pending draft → confirmed (enters retrieval)."""
-        if self._load_meta(name) is None:
+        entry = self._load_meta(name)
+        if entry is None:
             raise KeyError(f"skill not found: {name}")
-        return self._with_scan(self._rewrite_status(name, "confirmed"))
+        # 落盘是这里**最后一个会抛**的步骤:先扫、后写。原先写的是
+        # ``self._with_scan(self._rewrite_status(...))`` —— 参数先求值,扫描
+        # 一抛 ``status: confirmed`` 就已经在盘上了:管理员看到 500 以为确认
+        # 失败,而这份 skill 已经生效。治理门上写一半比哪一半都糟。
+        # 扫落盘前的 entry 等价:扫描只读 description / body / checks,而
+        # ``_rewrite_status`` 一个都不动。
+        hits = self._scan_entry(entry)
+        entry = self._rewrite_status(name, "confirmed")
+        entry["injection_hits"] = hits
+        return entry
 
     def reject(self, name: str) -> dict:
         """Admin rejection: delete the draft directory."""
