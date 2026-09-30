@@ -287,9 +287,9 @@ def _result_discounts(state: WorkflowState, lang: str) -> list[dict[str, Any]]:
     if state.semantic_retries:
         out.append(_evidence(
             "result", "semantic_retry", _RETRY_DISCOUNT ** state.semantic_retries,
-            L(lang, f"经过 {state.semantic_retries} 轮纯语义重试",
-               f"delivered after {state.semantic_retries} "
-               f"semantic-only retry round(s)"),
+            L(lang, "修正属纯语义重试,比机械错误更可疑",
+               "the correction was a semantic-only retry "
+               "(treated as more suspect than a mechanical error)"),
         ))
     if state.no_progress_rounds:
         out.append(_evidence(

@@ -378,3 +378,28 @@ class TestResultConfidence:
             assert item["kind"] == "result"
             assert item["name"] and item["why"]
             assert 0 < item["effect"] <= 1.0
+
+    def test_semantic_only_retry_is_a_surcharge_not_a_second_round(self):
+        """裁决 29:``semantic_retries ⊆ retry_count`` —— 同一轮被记进两个
+        计数器,这一行是**在轮次折扣之上的追加折扣**,不是第二个轮次。
+
+        所以断言两件事,而不是一件:折扣**确实**两处都收(那是裁决 29 的决定,
+        不是 bug),而文案**不许**把同一轮说成两轮 —— 后者是 Task 7 复审从
+        披露面抓出来的:算术可辩护,渲染不可。
+        """
+        score, ev = result_confidence(
+            make_state(retry_count=1, semantic_retries=1), 0.85)
+        # 0.85 × 0.9(retry) × 0.9(semantic) = 0.6885 —— 追加量有界:最多一个 ×0.9
+        assert score == pytest.approx(0.6885, abs=1e-4)
+        assert {e["name"] for e in ev} == {"retry", "semantic_retry"}
+        semantic = next(e for e in ev if e["name"] == "semantic_retry")
+        assert "轮" not in semantic["why"]   # 文案不许再报一个轮次数
+
+    def test_stalled_discounts_the_score(self):
+        """``no_progress_rounds`` 非零 → 修正已无进展、提前止损(×0.8)。
+
+        这一支此前零覆盖:分支零覆盖的折扣项在回归时不会变红。
+        """
+        score, ev = result_confidence(make_state(no_progress_rounds=2), 0.5)
+        assert score == pytest.approx(0.5 * 0.8, abs=1e-4)
+        assert [e["name"] for e in ev] == ["stalled"]
