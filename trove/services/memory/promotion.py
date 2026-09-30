@@ -20,8 +20,11 @@ from typing import Any
 
 
 # 每次支持证据的置信度增量(经验值,可调)。
+# 只登记**真的有产出方**的证据:upvote 来自 rate_lesson(api/routers/kb.py),
+# repeated_correction 来自会话里的反复纠正(session.py)。曾有一条
+# lesson_reuse_pass(教训被复用且当轮成功)—— 没有任何代码产生这种证据,且
+# 与 repeated_correction 在语义上重叠(同一件事可能加两次分),已删。
 _EVIDENCE_DELTA: dict[str, float] = {
-    "lesson_reuse_pass": 0.25,
     "upvote": 0.4,
     "repeated_correction": 0.3,
 }
