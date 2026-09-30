@@ -225,6 +225,80 @@ async def test_analyze_error_includes_confirmed_org_required_skill(tmp_path):
     assert "组织诊断口径" in captured["messages"][0]["content"]
 
 
+async def test_query_sketch_ctx_reaches_org_trigger(tmp_path):
+    """节点真的把 ctx 递给匹配器:role trigger 跟着 state.tool_roles 变。
+
+    这里用的维度是 ``role`` 而不是 ``lang`` —— ``lang`` 在调用点也可能是
+    ``render_skills`` 的具名形参(改了看不出来),而 ``role`` 只能从 ctx 进
+    去。调用点漏传 ctx 时这个技能恒不命中,整条断言在三种角色下都是"不注入",
+    看起来像"触发器没配"而不是像"接线断了"。
+    """
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.query_sketch import make_query_sketch
+
+    svc = _org_skills(tmp_path)
+    svc.create({
+        "name": "analyst-caliber", "description": "分析师口径",
+        "triggers": {"node": "query_sketch", "role": ["analyst"]},
+        "tier": "required", "body": "## 分析师口径\n先按授信分层再取极值",
+    })
+    svc.confirm("analyst-caliber")
+
+    captured = {}
+
+    class LLM:
+        async def chat(self, model, messages, **kwargs):
+            captured.update(messages=messages)
+            return "plan"
+
+    node = make_query_sketch(LLM(), AgentConfig(target="m"), agentic=False, skills=svc)
+
+    await node(make_state(question="平均成绩是多少", lang="zh", tool_roles=["analyst"]))
+    assert "分析师口径" in captured["messages"][0]["content"]
+
+    await node(make_state(question="平均成绩是多少", lang="zh", tool_roles=["viewer"]))
+    assert "分析师口径" not in captured["messages"][0]["content"]
+
+    # 无角色(CLI 直用 / 未登录)→ 收窄条件保守不命中
+    await node(make_state(question="平均成绩是多少", lang="zh", tool_roles=None))
+    assert "分析师口径" not in captured["messages"][0]["content"]
+
+
+async def test_analyze_error_ctx_reaches_org_trigger(tmp_path):
+    """同上,analyze_error 的挂点也必须把 ctx 递给匹配器。"""
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.analyze_error import make_analyze_error
+
+    svc = _org_skills(tmp_path)
+    svc.create({
+        "name": "analyst-diagnose", "description": "分析师诊断口径",
+        "triggers": {"node": "analyze_error", "role": ["analyst"]},
+        "tier": "required", "body": "## 分析师诊断口径\n先看准入条件再看聚合",
+    })
+    svc.confirm("analyst-diagnose")
+
+    captured = {}
+
+    class LLM:
+        async def chat(self, model, messages, **kwargs):
+            captured.update(messages=messages)
+            return "类型: Filter\n判断: 条件过严\n修正: 放宽\nTARGET: query_sketch"
+
+    node = make_analyze_error(LLM(), AgentConfig(target="m"), skills=svc)
+
+    await node(make_state(
+        sql="SELECT * FROM loan", error_feedback="no rows",
+        schema_context="Table: loan", lang="zh", tool_roles=["analyst"],
+    ))
+    assert "分析师诊断口径" in captured["messages"][0]["content"]
+
+    await node(make_state(
+        sql="SELECT * FROM loan", error_feedback="no rows",
+        schema_context="Table: loan", lang="zh", tool_roles=["viewer"],
+    ))
+    assert "分析师诊断口径" not in captured["messages"][0]["content"]
+
+
 async def test_load_skill_tool_registered_and_serves_confirmed_body(tmp_path):
     """gen_sql 注册表:有 confirmed available skill 时挂 load_skill 工具。"""
     from trove.workflow.nodes.gen_sql import build_sql_registry
@@ -258,6 +332,34 @@ def test_load_skill_tool_absent_without_skills(tmp_path):
     })
     registry = build_sql_registry(None, "q", "en", "sqlite", complexity="complex", skills=svc)
     assert "load_skill" not in {d["function"]["name"] for d in registry.defs()}
+
+
+def test_load_skill_tool_covers_every_advertised_skill(tmp_path):
+    """prompt 里被点名的 skill,它的 load_skill 工具必须真的挂着。
+
+    广告侧带 ctx(``{node, lang: zh}`` 只在中文问题下点名),注册侧**拿不到
+    ctx**——它一跟着 ctx 收窄,模型就会在 prompt 里读到
+    ``load_skill(skill_name="zh-tricks")``,调过去却是 Unknown tool,白烧一轮。
+    所以注册门按**节点**判定,是广告集合的超集。
+    """
+    from trove.workflow.nodes.gen_sql import build_sql_registry
+
+    svc = _org_skills(tmp_path)
+    svc.create({
+        "name": "zh-tricks", "description": "中文问题专用",
+        "triggers": {"node": "gen_sql", "lang": "zh"},
+        "tier": "available", "body": "## 中文专用正文",
+    })
+    svc.confirm("zh-tricks")
+
+    # 广告侧:带 ctx,中文问题下点名它
+    assert 'load_skill(skill_name="zh-tricks")' in svc.available_skills_block("gen_sql", lang="zh")
+    # 注册侧:不带 ctx,工具必须在
+    assert svc.has_available_for("gen_sql")
+    registry = build_sql_registry(None, "q", "en", "sqlite", complexity="complex", skills=svc)
+    assert "load_skill" in {d["function"]["name"] for d in registry.defs()}
+    # 超集 ≠ 无差别:没有 available skill 挂在这个节点上时,照样不注册
+    assert not svc.has_available_for("analyze_error")
 
 
 def test_available_skills_block_advertises_on_demand_skills(tmp_path):

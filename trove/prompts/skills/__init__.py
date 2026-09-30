@@ -83,8 +83,10 @@ def matched_skills(node: str, **ctx: object) -> list[str]:
     """Names of skills whose trigger conditions match node + ctx.
 
     A skill matches when its ``node`` trigger equals ``node`` and every
-    other trigger field equals the corresponding ctx value. Skills without
-    triggers never match.
+    other trigger field matches the corresponding ctx value — per-field
+    semantics live in :func:`match_trigger` (``role`` is list-vs-list
+    intersection; the rest is scalar equality or list membership). Skills
+    without triggers never match.
     """
     out: list[str] = []
     for skill in _load_manifest():

@@ -422,7 +422,7 @@ class WorkflowState(BaseModel):
 
         收成一个方法而不是在每个节点各拼一次：**漏传一个维度不会报错**，
         只会让那一类 trigger 永远不命中。这不是假想的风险 ——
-        ``_match_org`` / ``_match_one`` 早就按 ctx 逐字段匹配写好了，而
+        ``_match_org`` / ``match_trigger`` 早就按 ctx 逐字段匹配写好了，而
         三个调用点一个 ctx 都没传，于是任何非 ``node`` 的 trigger 从写下
         那天起就没生效过，外部完全看不出来。
 

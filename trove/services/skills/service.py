@@ -332,6 +332,12 @@ class SkillService:
         return fence_org_skill(name, f"# {name}\n\n{body}")
 
     def _applies_to(self, entry: dict, node: str) -> bool:
+        """Node-trigger projection: does ``entry`` apply to ``node`` at all?
+
+        The node half of a match, without the other trigger dimensions. Used
+        by ``has_available_for`` as the **superset** gate for tool
+        registration — see that method for why it must not be ctx-aware.
+        """
         triggers = entry.get("triggers") or {}
         target = triggers.get("node")
         return target is None or target == node
@@ -384,7 +390,20 @@ class SkillService:
                 if e.get("tier") == "available"]
 
     def has_available_for(self, node: str) -> bool:
-        return bool(self.available_descriptions(node))
+        """Any confirmed ``available``-tier skill that *could* apply to ``node``.
+
+        Node-trigger matching only, deliberately a **superset** of
+        ``available_skills_block(node, **ctx)``. The one caller registers the
+        ``load_skill`` tool, and it has no ctx to match with: matching the full
+        ctx here would make the registration gate narrower than the
+        advertisement, so a ``{node, lang: zh}`` skill would be named in the
+        prompt while the tool it names was never registered.
+        """
+        return any(
+            self._applies_to(e, node)
+            for e in self.list_org(confirmed_only=True)
+            if e.get("tier") == "available"
+        )
 
     def available_skills_block(self, node: str, lang: str = "en", **ctx: object) -> str:
         """``<available_skills>`` advertisement block for the system prompt."""
