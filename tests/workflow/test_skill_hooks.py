@@ -91,6 +91,7 @@ FACTORIES_REQUIRING_SKILLS: list[str] = [
     "make_validate_rules",
     "make_insights",
     "make_conclusion",
+    "make_chart",
 ]
 
 
@@ -236,4 +237,26 @@ async def test_conclusion_hook_injects_org_skill(tmp_path):
     )
     await node(state)
     assert llm.calls, "conclusion 没调到 LLM —— gate 早返了,按真实条件补 state"
+    assert "ORG-METHOD-BODY" in llm.system_of()
+
+
+async def test_chart_hook_injects_org_skill(tmp_path):
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.chart import make_chart
+
+    llm = RecordingLLM(response="")          # 规格解析会失败 → 回退确定性推断
+    # chart_llm 默认 False(config.py:261):关了它 chart.py:171 整个 LLM 分支
+    # 都不进,直接走确定性推断 —— llm.calls 空,测试却看着像挂点没接。
+    node = make_chart(
+        llm=llm, config=AgentConfig(target="m", chart_llm=True),
+        semantic_layer=None, skills=_org_skill(tmp_path, "chart"),
+    )
+    state = WorkflowState(
+        session_id="s1", question="各地区授信余额", lang="zh",
+        sql="SELECT region, balance FROM credit",
+        columns=["region", "balance"], rows=[["A", 5], ["B", 7]], row_count=2,
+    )
+    await node(state)
+
+    assert llm.calls, "chart 没调到 LLM —— gate 条件不满足,补 state 字段"
     assert "ORG-METHOD-BODY" in llm.system_of()
