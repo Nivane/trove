@@ -39,7 +39,21 @@ from trove.prompts.skills import render_skills as _code_render
 
 # name = lowercase letters/digits + hyphens; also a safe directory name.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_TIERS = ("required", "available")
+_TIERS = ("required", "available", "validator")
+#: 本期**只**驱动 deterministic。``llm`` 档(Datus 式散文检查)是 P5 ——
+#: 本期在**写入面**就挡掉:允许配一份没人跑的配置,等于制造静默失效。
+#: runner 侧仍留一条兜底(手写 SKILL.md 能绕过 create),报"判不了"而不是跳过。
+_VALIDATOR_MODES = ("deterministic",)
+_SEVERITIES = ("blocking", "advisory")
+#: 本期**只**驱动 result。另两个都无处受理:
+#: - ``sql``:run_validators 吃的是结果集,没有"SQL 文本"这个可断言对象;
+#: - ``answer``:output 是图的终点、没有回退边,答案级检查只能 advisory(P5)。
+#: 同 mode —— 声明一个没人管的 target 等于静默失效,当场拒比静默保留好。
+_TARGETS = ("result",)
+
+#: validator 档专属字段 —— 出现在别的档位上就是配置错误(不是宽容地忽略:
+#: 写下去也永远不会生效,当场拒比静默保留一份死配置好)。
+VALIDATOR_FIELDS = ("mode", "severity", "targets", "checks")
 _STATUSES = ("pending", "confirmed", "rejected")
 
 FRONTMATTER_FIELDS = (
@@ -88,7 +102,7 @@ class SkillService:
         if "meta" not in parsed:
             return {"name": name, "error": parsed.get("error", "parse failed")}
         meta = parsed["meta"]
-        return {
+        entry = {
             "name": meta.get("name", name),
             "description": meta.get("description", ""),
             "triggers": meta.get("triggers") or {},
@@ -98,8 +112,16 @@ class SkillService:
             "lang": meta.get("lang", "en"),
             "created_at": meta.get("created_at", ""),
             "updated_at": meta.get("updated_at", ""),
-            "body": parsed["body"],
         }
+        # validator 专属字段**条件带上**:非 validator 档的返回形状保持不变
+        # (既有调用方按 exact dict 断言的话,无条件加键会打碎它们)。
+        if entry["tier"] == "validator":
+            entry["mode"] = meta.get("mode", "deterministic")
+            entry["severity"] = meta.get("severity", "advisory")
+            entry["targets"] = meta.get("targets") or []
+            entry["checks"] = meta.get("checks") or []
+        entry["body"] = parsed["body"]
+        return entry
 
     def list_org(self, confirmed_only: bool = False) -> list[dict]:
         """List org skills (sorted by name); invalid files surface with error."""
@@ -143,6 +165,61 @@ class SkillService:
 
     # ── CRUD (draft → admin confirm/reject) ──────────────
 
+    @staticmethod
+    def _validate_validator_spec(entry: dict) -> dict:
+        """validator 档的写入时校验 —— **全部在落盘前**做。
+
+        运行期才发现配置写错 = validator 静默失效,而静默失效从外面看和
+        "检查通过"一模一样。表达式预解析是这里最重要的一条:它把 `mn >= 0`
+        (拼错)从"永远判不了"变成一条带位置的 400。
+        """
+        from trove.services.decision.expr import (
+            VALIDATOR_VARIABLES,
+            DecisionExprError,
+            parse_condition,
+        )
+
+        mode = entry.get("mode") or "deterministic"
+        if mode not in _VALIDATOR_MODES:
+            raise ValueError(f"mode must be one of {_VALIDATOR_MODES}")
+        severity = entry.get("severity") or "advisory"
+        if severity not in _SEVERITIES:
+            raise ValueError(f"severity must be one of {_SEVERITIES}")
+        # mode 现在只可能是 deterministic,所以 checks 的必填与预解析
+        # 是无条件执行的 —— 不留一个"将来 llm 档再说"的空分支。
+        # (mode=llm 的正文本身就是检查指令,那条通用的 body 非空校验覆盖它。)
+        #
+        # checks 排在 targets 之前:**一条 validator 没有 checks 就什么都判不了**,
+        # 而 targets 有默认语义(本期只有 result);set_tier 这条旁路上的 entry
+        # 两个键都没有(非 validator 档 read_skill 不带 validator 字段),
+        # 先报 targets 会把"这份 skill 根本没有检查"这条最要命的信息盖过去。
+        checks = entry.get("checks") or []
+        if not checks:
+            raise ValueError("checks is required")
+        if not isinstance(checks, list):
+            # 手写 YAML 的标量/mapping 笔误:或者进 enumerate 抛 TypeError
+            # (500),或者按 string key 迭代后死在 ``.get`` 上。契约是
+            # ValueError(400),所以形状在这里就要挡住。
+            raise ValueError("checks must be a list")
+        for i, c in enumerate(checks):
+            if not isinstance(c, dict):
+                raise ValueError(f"checks[{i}] must be a mapping")
+            expr = str(c.get("expr") or "").strip()
+            if not expr:
+                raise ValueError(f"checks[{i}].expr is required")
+            try:
+                parse_condition(expr, VALIDATOR_VARIABLES)
+            except DecisionExprError as exc:
+                raise ValueError(f"checks[{i}].expr: {exc}") from exc
+        targets = entry.get("targets") or []
+        if not isinstance(targets, list) or not targets:
+            raise ValueError("targets must be a non-empty list")
+        for t in targets:
+            if t not in _TARGETS:
+                raise ValueError(f"target must be one of {_TARGETS}")
+        return {"mode": mode, "severity": severity, "targets": targets,
+                "checks": checks}
+
     def create(self, entry: dict) -> dict:
         """Create an org skill as a *pending* draft. Returns the saved entry."""
         name = (entry.get("name") or "").strip()
@@ -162,6 +239,14 @@ class SkillService:
         if (self.root / name / "SKILL.md").exists():
             raise ValueError(f"skill already exists: {name}")
 
+        if tier == "validator":
+            validator_meta = self._validate_validator_spec(entry)
+        else:
+            validator_meta = {}
+            for f in VALIDATOR_FIELDS:
+                if entry.get(f) is not None:
+                    raise ValueError(f"{f} is only valid for tier=validator")
+
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -177,6 +262,7 @@ class SkillService:
             "status": "pending",
             "source": entry.get("source", "admin"),
             "lang": entry.get("lang", "en"),
+            **validator_meta,
             "created_at": now,
             "updated_at": now,
         }
@@ -229,12 +315,18 @@ class SkillService:
 
     @staticmethod
     def _scan_entry(entry: dict) -> list[str]:
-        """注入形状的模式名列表(空 = 干净)。扫的是**投递面**:描述 + 正文。
+        """注入形状的模式名列表(空 = 干净)。扫的是**投递面**。
 
-        两档都扫 —— required 档投正文,available 档只投描述(``<available_skills>``
-        广告块);只扫正文会留下"同一个缺口换个 tier 就绕过去"的路。
+        - 描述 + 正文:required 档投正文,available 档只投描述(广告块);
+        - ``checks[].message``:validator 违反时的判词会进 ``error_feedback``
+          → 进 gen_sql 的 prompt。**投递面变了扫描面就得跟着变** ——
+          validator 档新增了一条投递路,扫描面也必须多扫一处,否则
+          "同一个缺口换个 tier 就绕过去"。
         """
-        return scan_injection(f"{entry.get('description', '')}\n{entry.get('body', '')}")
+        parts = [str(entry.get("description", "")), str(entry.get("body", ""))]
+        for c in entry.get("checks") or []:
+            parts.append(str((c or {}).get("message", "")))
+        return scan_injection("\n".join(parts))
 
     def scan_skill(self, name: str) -> list[str]:
         """按名字扫一份 skill(不存在 → 空)。"""
@@ -274,8 +366,13 @@ class SkillService:
     def set_tier(self, name: str, tier: str) -> dict:
         if tier not in _TIERS:
             raise ValueError(f"tier must be one of {_TIERS}")
-        if self._load_meta(name) is None:
+        entry = self._load_meta(name)
+        if entry is None:
             raise KeyError(f"skill not found: {name}")
+        if tier == "validator":
+            # set_tier 是一条独立的写入路径:不校验就能把一份没有 checks 的
+            # skill 变成 validator —— 它永远不会生效,而且看着像生效了。
+            self._validate_validator_spec(entry)
         return self._rewrite_field(name, {"tier": tier})
 
     def _rewrite_field(self, name: str, updates: dict) -> dict:
@@ -323,6 +420,14 @@ class SkillService:
                 f"Skill '{name}' is not confirmed yet — an admin must confirm "
                 "it before it can be used."
             )
+        if entry.get("tier") == "validator":
+            # 判据不是指令。把它当指令投给模型,等于让被检查者自己念检查
+            # 标准 —— 而且模型可能"顺手"去执行它。
+            return (
+                f"Skill '{name}' is a validator: it checks results, it is not "
+                "instructions to follow. Its criteria are applied "
+                "automatically after execution."
+            )
         body = self.get_body(name, lang)
         if not body:
             return f"Skill '{name}' has no content."
@@ -357,6 +462,17 @@ class SkillService:
                 continue
             out.append(entry)
         return out
+
+    def validators_for(self, node: str, **ctx: object) -> list[dict]:
+        """Confirmed ``validator``-tier org skills applying to ``node``.
+
+        与 ``available_descriptions`` 对称的一档:两者都是一条**投递路**,
+        差别在投递给谁 —— available 投给模型(让它加载),validator 投给
+        引擎(让它运行)。确认门对两者同样有效(``_match_org`` 已只返回
+        confirmed)。
+        """
+        return [e for e in self._match_org(node, **ctx)
+                if e.get("tier") == "validator"]
 
     def render_skills(self, node: str, lang: str = "en", **ctx: object) -> str:
         """Merged methodology blocks for a node's system prompt.
