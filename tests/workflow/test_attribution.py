@@ -459,6 +459,35 @@ class TestAttributionNode:
         assert attr["narrative"] == ""  # 叙事失败不阻断归因表
         assert attr["table"]
 
+    async def test_attribution_hook_injects_org_skill(self, attr_registry, tmp_path):
+        """org 方法论必须出现在归因叙述的 system prompt 里。
+
+        本文件的 ``RecordingLLM`` 收**列表**(``test_attribution.py:269``),
+        不是 ``test_skill_hooks.py`` 那个 ``response=`` 形状 —— 跨文件搬测试
+        时这是第一个会踩的坑。
+        """
+        from trove.services.skills.service import SkillService
+        from trove.workflow.nodes.attribution import make_attribution
+
+        svc = SkillService(tmp_path)
+        svc.create({
+            "name": "org-method", "description": "组织方法论",
+            "triggers": {"node": "attribution"}, "tier": "required",
+            "body": "ORG-METHOD-BODY",
+        })
+        svc.confirm("org-method")          # 未确认的草稿不进 prompt(治理门)
+
+        llm = RecordingLLM(["归因叙述"])
+        node = make_attribution(
+            llm, on_config(), connectors=attr_registry,
+            semantic_layer=attr_registry._test_semantic_provider, skills=svc,
+        )
+        await node(make_attr_state())
+
+        assert llm.calls, "attribution 没调到 LLM —— 早返条件变了,按真实条件补 state"
+        system = next(m["content"] for m in llm.calls[-1] if m["role"] == "system")
+        assert "ORG-METHOD-BODY" in system
+
 
 @pytest.fixture
 async def two_period_registry(tmp_path):

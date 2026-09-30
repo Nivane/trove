@@ -92,6 +92,7 @@ FACTORIES_REQUIRING_SKILLS: list[str] = [
     "make_insights",
     "make_conclusion",
     "make_chart",
+    "make_attribution",
 ]
 
 

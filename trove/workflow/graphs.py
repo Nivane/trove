@@ -1934,6 +1934,7 @@ def _build_reflection(
     g.add_node("attribution", make_attribution(
         services.llm, services.config or AgentConfig(),
         connectors=services.connectors, semantic_layer=services.semantic_layer,
+        skills=services.skills,
     ))
     g.add_node("chart", make_chart(
         llm=services.llm, config=services.config or AgentConfig(),
@@ -2124,6 +2125,7 @@ def _build_fixed(
     g.add_node("attribution", make_attribution(
         services.llm, services.config or AgentConfig(),
         connectors=services.connectors, semantic_layer=services.semantic_layer,
+        skills=services.skills,
     ))
     g.add_node("chart", make_chart(
         llm=services.llm, config=services.config or AgentConfig(),
