@@ -64,8 +64,8 @@ class TestSelectNode:
         )
         update = await node(state)
         assert connectors.executed == ["SELECT v FROM t ORDER BY v"]
-        # SQL / rows 一个字节都没动(只增记录,不改行为)
-        assert "sql" not in update
+        # 整份 update 只有记录一个键 —— SQL / rows 一个字节都没动(只增记录,不改行为)
+        assert set(update) == {"selection"}
         assert update["selection"]["confidence"] == 1.0
         assert update["selection"]["adopted"] is True
         assert update["selection"]["winner"] == "primary"
@@ -106,7 +106,7 @@ class TestSelectNode:
             candidates=["SELECT v FROM t ORDER BY v", "SELECT v FROM t WHERE 0"],
         )
         update = await node(state)
-        assert "sql" not in update          # primary 胜出,SQL 不动
+        assert set(update) == {"selection"}  # primary 胜出,SQL 原样交付
         assert update["selection"]["adopted"] is True
         assert update["selection"]["winner"] == "primary"
         assert update["selection"]["confidence"] == pytest.approx(2 / 3)
@@ -170,7 +170,7 @@ class TestSelectNode:
         )
         update = await node(state)
         # 交付照旧(SQL 与反馈都不动),失败只以 filtered 记录现身
-        assert "sql" not in update and "error_feedback" not in update
+        assert set(update) == {"selection"}
         assert update["selection"]["filtered"][0]["reason"] == "execution-failed"
 
     async def test_pending_feedback_passes_through(self):
@@ -191,7 +191,11 @@ class TestVoteSelection:
         return make_state(**defaults)
 
     async def test_majority_matches_primary_passes(self):
-        """多数派(3 票)与 primary 结果一致 → 无操作。"""
+        """多数派恰是 primary → 记录**票率 4/5** 而非 1.0,SQL 原样交付。
+
+        「有分歧、只是主候选赢了」与「全员一致」不是同一件事:都记 1.0
+        会让结果置信度失去分辨力(设计 §5.4-1)。
+        """
         connectors = FakeConnectors([
             QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # 候选 A: 同 primary
             QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),  # 候选 B: 同 primary
@@ -200,7 +204,7 @@ class TestVoteSelection:
         ])
         node = make_select_consensus(connectors)
         update = await node(self._state(candidates=[f"SELECT id FROM t WHERE {i}" for i in range(4)]))
-        assert "sql" not in update  # primary 原样交付
+        assert set(update) == {"selection"}  # primary 原样交付
         assert update["selection"]["adopted"] is True
         assert list(update["selection"]["votes"].values()) == [4, 1]  # 多数派 4 票
 
@@ -327,7 +331,7 @@ class TestVoteSelection:
         )
         update = await node(state)
         # 过滤后 primary(1) + B(1) 一致 → 通过
-        assert "sql" not in update
+        assert set(update) == {"selection"}
         assert list(update["selection"]["votes"].values()) == [2]
 
     async def test_all_candidates_filtered_passes(self):
@@ -342,9 +346,13 @@ class TestVoteSelection:
             candidates=["SELECT 1", "SELECT boom"],
         )
         update = await node(state)
-        assert "sql" not in update  # 保留 primary
+        assert set(update) == {"selection"}  # 保留 primary,交付字段一个没动
         assert update["selection"]["adopted"] is True
         assert len(update["selection"]["filtered"]) == 2  # 两个候选都出局
+        # 只有 primary 自己一票 = **没有候选为它背书**。confidence 因此是 1.0,
+        # 含义是「没有异议」而非「有印证」;票型本身把这两种情形分开
+        # (`[1]` vs 全员一致时的 `{key: 5}`),改这条语义时这里会红。
+        assert list(update["selection"]["votes"].values()) == [1]
 
     async def test_majority_winner_adopts_with_filtered_report(self):
         """采纳多数派时,selection 详情记录分组与过滤痕迹(eval 归因)。"""
@@ -375,7 +383,7 @@ class TestVoteSelection:
         connectors = OneBoom()
         node = make_select_consensus(connectors)
         update = await node(self._state(candidates=["SELECT boom", "SELECT ok"]))
-        assert "sql" not in update
+        assert set(update) == {"selection"}
         assert connectors.executed == ["SELECT boom", "SELECT ok"]
         assert list(update["selection"]["votes"].values()) == [2]  # 失败者未进组
         assert update["selection"]["filtered"][0]["reason"] == "execution-failed"
