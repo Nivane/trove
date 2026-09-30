@@ -920,6 +920,13 @@ def make_gen_generate(
             "dialect": dialect,
             "candidates": [],
             "fast_path": False,
+            # 本轮**是否**降级。默认必须写在这里(每轮重建 update 时都写),
+            # 不能只靠降级分支补写:普通 state 通道不写就保留上一轮的值,
+            # 第 1 轮降级、第 2 轮正常时会带着 True 进最终 state —— I6 禁止
+            # 用一次没发生在**这条 SQL** 上的降级去折损它(与 self_check_passed
+            # 归零同型、反向)。覆盖到的三条路径:KB 精确命中 / 经典生成不标降级
+            # (它们是配置形态,不是降级);agentic 正常轮不标;只有走兜底才置 True。
+            "generation_degraded": False,
         }
 
         if kb_exact_match is not None:
@@ -1003,6 +1010,10 @@ def make_gen_generate(
 
             async def _classic_fallback() -> None:
                 """经典单发子图生成(异常 / agent loop 空手而归 / 护栏降级兜底)。"""
+                # 降级是可披露的**降低**信号(设计 §5.2 的 −0.10 挂在它上面)。
+                # 三个调用点(异常 / guard_hit / 空手)都汇到这一个闭包,所以
+                # 标记写在这里 —— 写在各调用点上迟早漏一处。
+                update["generation_degraded"] = True
                 out = await subgraph.ainvoke(sub_state)
                 if out["sql"]:
                     update["sql"] = out["sql"]

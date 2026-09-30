@@ -908,6 +908,26 @@ class AgenticLLM:
         return self._responses.pop(0)
 
 
+class GuardLLM:
+    """chat_full 永远返回无效 finish(打转);chat 走经典脚本化响应。"""
+
+    def __init__(self, classic_responses):
+        self._classic = list(classic_responses)
+        self.calls = []
+        self.rounds = 0
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append(messages)
+        self.rounds += 1
+        return {"content": None, "tool_calls": [
+            {"id": f"c{self.rounds}", "name": "finish", "arguments": "{}"},
+        ]}
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append(messages)
+        return self._classic.pop(0)
+
+
 class PassThenBreakAgenticLLM:
     """第 1 轮 agent 自检通过;第 2 轮 agent loop 崩溃 → 经典子图兜底。
 
@@ -938,6 +958,41 @@ class PassThenBreakAgenticLLM:
         return {"content": None, "tool_calls": [
             {"id": "c1", "name": "check_result",
              "arguments": '{"sql": "%s"}' % self.PASS_SQL},
+        ]}
+
+    async def chat(self, model, messages, **kwargs):
+        self.calls.append(messages)
+        return self._chat.pop(0)
+
+
+class DegradeThenSucceedAgenticLLM:
+    """第 1 轮 agent loop 崩溃 → 经典兜底(降级);第 2 轮正常 finish 交付。
+
+    与既有的 `PassThenBreakAgenticLLM` 镜像:那条是「先通过、后降级」,钉
+    `self_check_passed` 的归零;这条是「先降级、后正常」,钉
+    `generation_degraded` 的复位。两条通道分开脚本化,理由同它。
+    """
+
+    def __init__(self):
+        self.calls = []
+        self.full_calls = 0
+        self._chat = [
+            "query",              # 意图
+            VALID_SQL,            # 第 1 轮:崩溃后降级 → 经典子图生成(降级轮的产物)
+            "RETRY: degraded",    # reflect(第 1 轮)
+            "RETRY: degraded",    # rejudge(第 1 轮)
+            "TARGET: gen_sql",    # analyze_error:定向回 gen_sql 重生成
+            "OK",                 # reflect(第 2 轮)
+        ]
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.calls.append(messages)
+        self.full_calls += 1
+        if self.full_calls == 1:
+            raise RuntimeError("llm down")   # 第 1 轮:崩溃 → result=None → 降级
+        return {"content": None, "tool_calls": [
+            {"id": "c1", "name": "finish",
+             "arguments": '{"answer": "```sql\\nSELECT name FROM students;\\n```"}'},
         ]}
 
     async def chat(self, model, messages, **kwargs):
@@ -1175,25 +1230,6 @@ class TestAgenticNodes:
         护栏降级链:agentic ReAct → (guard_hit) → 经典 generate/validate 子图。
         模型反复调 finish 但载荷无效 → 循环无法终止,触发护栏。
         """
-        class GuardLLM:
-            """chat_full 永远返回无效 finish(打转);chat 走经典脚本化响应。"""
-
-            def __init__(self, classic_responses):
-                self._classic = list(classic_responses)
-                self.calls = []
-                self.rounds = 0
-
-            async def chat_full(self, model, messages, tools=None, **kwargs):
-                self.calls.append(messages)
-                self.rounds += 1
-                return {"content": None, "tool_calls": [
-                    {"id": f"c{self.rounds}", "name": "finish", "arguments": "{}"},
-                ]}
-
-            async def chat(self, model, messages, **kwargs):
-                self.calls.append(messages)
-                return self._classic.pop(0)
-
         llm = GuardLLM(["query", VALID_SQL, "OK"])
         graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
         final = await graphs["reflection"].ainvoke(make_state())
@@ -1222,6 +1258,64 @@ class TestAgenticNodes:
         assert final["verdict"] == "OK"
         assert final["row_count"] == 5
         assert llm.chat_count == 2  # route_intent + reflect 各一次单次调用
+
+
+class TestGenerationDegradedMarker:
+    """降级到经典子图是可披露的**降低**信号,而它今天只进 logger。
+
+    设计 §5.2 的 `generation_degraded: −0.10` 挂在它上面 —— 没有这个字段,
+    「agent 自校验了一轮」与「agent 半路放弃、退回单发」在 state 上同形。
+    """
+
+    async def test_guard_hit_marks_degraded(self, sqlite_registry, catalog):
+        """护栏降级 → 标记 True(装配同 test_gen_sql_guard_degrades_to_classic)。"""
+        llm = GuardLLM(["query", VALID_SQL, "OK"])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["sql"] == "SELECT name FROM students;"   # 经典兜底照样产出
+        assert final["generation_degraded"] is True
+
+    async def test_normal_agent_loop_is_not_degraded(self, sqlite_registry, catalog):
+        """正常走完 agent loop(finish 携带合法 SQL)→ 不标降级。
+
+        与上一条成对:只测「降级时是 True」不测「正常时不是 True」,一个恒为
+        True 的常量也能通过。
+        """
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "finish",
+                 "arguments": '{"answer": "```sql\\nSELECT name FROM students;\\n```"}'},
+            ]},
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["sql"]
+        assert final["generation_degraded"] is False
+
+    async def test_second_round_does_not_inherit_degraded(self, sqlite_registry, catalog):
+        """第 1 轮降级、第 2 轮 agent loop 正常交付 —— 最终状态**不许**声称
+        交付的 SQL 是降级产物。
+
+        回归:该键只在 `_classic_fallback` 里写 True、正常路径不写 ⇒ 第 2 轮
+        走正常路径时 LangGraph 保留第 1 轮的 True,一条由 agent 自己生成并
+        自校验的 SQL 被扣上降级折损(§5.2 的 −0.10)。与 `self_check_passed`
+        的陈旧继承**同型、反向** —— 那条是虚高,这条是虚低,而 I6 两个方向
+        都禁。修法是把默认值放进 `update` 初始字典(每轮都写),而不是只靠
+        降级分支补写。
+
+        上面那条单轮用例**钉不住**这个回归:单轮里 state 字段的默认 False 与
+        显式 False 同形,删掉初始字典那一行它照样绿。
+        """
+        llm = DegradeThenSucceedAgenticLLM()
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        # 前提:确实跑了两轮(第 1 轮降级 + 第 2 轮正常),否则钉的不是那条路径
+        assert llm.full_calls == 2
+        assert final["generation_degraded"] is False
 
 
 class TestSubagentDelegation:

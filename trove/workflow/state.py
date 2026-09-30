@@ -385,6 +385,10 @@ class WorkflowState(BaseModel):
     # 故**不**为消歧加字段或哨兵值(§8-1「缺席不是坏消息」)。
     self_check_passed: int = 0
 
+    # agent 循环降级到经典子图(guard 命中 / 空手而归 / 异常)。置信度的
+    # 具名微调 −0.10 挂在它上面(设计 §5.2)——今天这条降级只进 logger。
+    generation_degraded: bool = False
+
     # 确定性规则全过信号(validate 节点写入):本轮执行结果通过了
     # rules.verify 全链 + 层2 计划列检查,无 error/error_feedback。
     # reflect 据此 + 复杂度决定是否跳过 LLM 裁决。
