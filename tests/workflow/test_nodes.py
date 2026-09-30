@@ -4594,6 +4594,10 @@ class TestOrgValidatorTier:
         ))
         assert out["error"] and "出现负值" in out["error"]
         assert "error_feedback" not in out
+        # 预算耗尽这条 return 也会合并 vh —— 只断 error / 无 error_feedback
+        # 的话,把它那里的 `**vh` 删掉这条测试照样绿(第四个 merge site 就只
+        # 由代码形状保护了)。
+        assert out["validator_hits"][0]["verdict"] is False
 
     async def test_advisory_validator_does_not_intercept(self, tmp_path):
         """advisory 绝不能写 validation_hits —— 那个通道是 eval 归因的判据。"""
@@ -4709,3 +4713,32 @@ class TestOrgValidatorTier:
 
         assert out["rules_passed"] is True
         assert out["validator_hits"][0]["verdict"] is True
+
+    async def test_rule_failure_return_carries_no_validator_keys(self, tmp_path):
+        """规则失败短路:这些 return 里**不许**出现 validator 键。
+
+        钉的是**输出契约**,不是运行期的"跳过"。把 validator 一遍提到规则链之前、
+        又不把 vh 并进失败 return,从外面完全看不出来 —— 真正会被后来的"一致性"
+        重构打破的,是这条契约:规则失败返回描述的是一个**正在被重新生成、尚未
+        交付**的 SQL,判定权在规则链手里(最具体的信号先说话);validator 是交付前
+        的结果断言,不该出现在这一轮。test 1-6 覆盖的才是交付判定那侧。
+
+        discriminator:装的 validator 对这个结果**会拦**(balance 有负值),所以
+        "规则路径返回"与"validator 路径返回"在本状态下可区分 ——
+        validation_hits 里是规则级的 "answer-columns",而不是
+        "validator:credit-guard"(后者只有走过 validator 遍才可能出现)。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+            # answer_columns 一个都不在结果列里 → 层2 列检查在 validator 遍之前返回
+            plan_json={"answer_columns": ["amount"]},
+        ))
+
+        assert out["rules_passed"] is False
+        assert out["validation_hits"][0]["rule"] == "answer-columns"
+        assert "validator_hits" not in out
+        assert "error_feedback" in out
