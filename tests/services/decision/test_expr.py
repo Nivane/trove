@@ -227,3 +227,51 @@ class TestAsNumber:
         assert ev("current > 10", current="80.5") is True
         assert ev("current > 10", current="N/A") is False
         assert math.isclose(SCOPE["delta_pct"], -0.2)
+
+
+# ── parameterised identifier closed sets ─────────────────────
+
+def test_parameterised_variables_reject_foreign_identifier():
+    """validator 域的词在决策域里仍须被拒 —— 闭集不许因为参数化而变宽。"""
+    from trove.services.decision.expr import VALIDATOR_VARIABLES
+
+    node = parse_condition("min >= 0", VALIDATOR_VARIABLES)
+    assert node is not None
+    assert node.identifiers() == {"min"}
+
+    with pytest.raises(DecisionExprError):
+        parse_condition("delta > 0", VALIDATOR_VARIABLES)
+    with pytest.raises(DecisionExprError):
+        parse_condition("min >= 0")          # 决策域不认识 min
+
+
+def test_default_variables_unchanged():
+    """不传新参数时与今天逐字等价 —— 参数化是一次重构,不是语义变更。"""
+    assert condition_variables("delta > 0 and current < baseline") == {
+        "delta", "current", "baseline",
+    }
+    assert evaluate_condition("delta > 0", {"delta": 1.0}) is True
+
+
+def test_min_is_both_identifier_and_function():
+    """``min`` 同时是聚合标量与 FUNCTIONS 里的函数名:两种拼法都必须能解析。
+
+    消歧靠语法而非命名 —— 后面跟 ``(`` 是调用,否则是标识符。这条不是
+    巧合而是必须保证的:管理员写 ``min >= 0`` 是读聚合值,写 ``min(0, x)``
+    是取最小值。测试钉住这个共存的合法性。
+    """
+    from trove.services.decision.expr import VALIDATOR_VARIABLES
+
+    assert parse_condition("min >= 0", VALIDATOR_VARIABLES).identifiers() == {"min"}
+    assert parse_condition("min(0, 5) == 0", VALIDATOR_VARIABLES) is not None
+
+
+def test_validator_scope_missing_column_is_unknown_not_false():
+    """缺列 → 求值为 Unknown,且 Unknown 不许被读成假值。"""
+    from trove.services.decision.expr import UNKNOWN, VALIDATOR_VARIABLES
+
+    node = parse_condition("min >= 0", VALIDATOR_VARIABLES)
+    got = node.eval({"row_count": 3.0})
+    assert got is UNKNOWN
+    with pytest.raises(TypeError):
+        bool(got)

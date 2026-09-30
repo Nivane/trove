@@ -927,9 +927,9 @@ def make_query_sketch(
         # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt;
         # 有 SkillService 时合并 org 技能(required 档全量注入)。
         skill_block = (
-            skills.render_skills("query_sketch", lang=state.lang)
+            skills.render_skills("query_sketch", **state.skill_ctx())
             if skills is not None
-            else render_skills("query_sketch", lang=state.lang)
+            else render_skills("query_sketch", **state.skill_ctx())
         )
         system_prompt = append_skill_block(system_prompt, skill_block)
         llm_detail: dict[str, Any] | None = None

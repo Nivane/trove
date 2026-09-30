@@ -77,6 +77,24 @@ VARIABLES: frozenset[str] = frozenset({
     "dim",            # dimension label of the row being evaluated
 })
 
+#: validator 档的标识符闭集 —— **结果域**,与上面的决策域是两套词。
+#:
+#: 同样是闭集,同样在**写入时**就拒掉拼错的变量名(见 SkillService 的
+#: ``_validate_validator_spec``):开放变量集下,``mn >= 0`` 会变成一条永远
+#: 求值为 Unknown 的静默 no-op,而 no-op 从外面看和"检查通过"一模一样。
+#:
+#: ``min`` / ``max`` 与 ``FUNCTIONS`` 里的同名函数**共存**是合法的:消歧靠
+#: 语法(后面跟 ``(`` 是调用,否则是标识符),不需要改名。
+VALIDATOR_VARIABLES: frozenset[str] = frozenset({
+    "min",         # 点名各列合并后的最小值(任一列为负即触发)
+    "max",         # 合并后的最大值
+    "sum",         # 合并后的求和
+    "avg",         # 合并后的均值
+    "null_count",  # 点名各列的 NULL(含行短于列数)计数
+    "row_count",   # 结果行数
+    "col_count",   # 结果列数
+})
+
 #: name → (min arity, max arity or None for variadic). A name absent here is
 #: a parse error, which is how ``trend(n)`` stays reserved rather than half-built.
 FUNCTIONS: dict[str, tuple[int, int | None]] = {
@@ -345,9 +363,11 @@ def _tokenize(text: str) -> list[_Tok]:
 # ── parser ───────────────────────────────────────────────────
 
 class _Parser:
-    def __init__(self, toks: list[_Tok], text: str):
+    def __init__(self, toks: list[_Tok], text: str,
+                 variables: frozenset[str] = VARIABLES):
         self.toks = toks
         self.text = text
+        self.variables = variables
         self.i = 0
 
     # -- token helpers --
@@ -461,8 +481,8 @@ class _Parser:
                 raise DecisionExprError(
                     f"{name}() takes {want} argument(s), got {len(args)}")
             return Call(name, tuple(args))
-        if name not in VARIABLES:
-            known = ", ".join(sorted(VARIABLES))
+        if name not in self.variables:
+            known = ", ".join(sorted(self.variables))
             raise DecisionExprError(
                 f"unknown identifier {name!r} at position {t.pos} — "
                 f"available: {known}")
@@ -472,28 +492,36 @@ class _Parser:
 # ── public API ───────────────────────────────────────────────
 
 @functools.lru_cache(maxsize=512)
-def parse_condition(text: str) -> Node:
+def parse_condition(text: str, variables: frozenset[str] = VARIABLES) -> Node:
     """Condition text → AST. Raises ``DecisionExprError`` when malformed.
 
     Cached: ASTs are immutable and rules are re-parsed on every scheduler
     tick. Parse errors are *not* cached — a rule being edited stays fixable.
+    ``variables`` selects the identifier closed set (decision domain by
+    default, ``VALIDATOR_VARIABLES`` for result-level checks); it is part of
+    the cache key, so the two domains never share a cached AST.
     """
     text = (text or "").strip()
     if not text:
         raise DecisionExprError("condition must not be empty")
-    return _Parser(_tokenize(text), text).parse()
+    return _Parser(_tokenize(text), text, variables).parse()
 
 
-def condition_variables(text: str) -> set[str]:
+def condition_variables(text: str, variables: frozenset[str] = VARIABLES) -> set[str]:
     """Identifiers a condition reads — used by lint to flag, e.g., a
     ``contribution`` test on a rule that produces no dimensions."""
-    return parse_condition(text).identifiers()
+    return parse_condition(text, variables).identifiers()
 
 
-def evaluate_condition(text: str, scope: dict[str, Any]) -> bool:
+def evaluate_condition(text: str, scope: dict[str, Any],
+                       variables: frozenset[str] = VARIABLES) -> bool:
     """True only when the condition is *definitely* satisfied.
 
     Unknown (missing baseline, unparseable value, type mismatch) is False —
     the no-false-positive contract the alert DSL established.
+
+    **validator 不要用这个函数**:它把 Unknown 塌成 False,而 validator 需要
+    区分「判不了」与「违反」。走 ``parse_condition(...).eval(scope)`` 直接拿
+    三值(见 ``trove/services/skills/validators.py``)。
     """
-    return parse_condition(text).eval(scope) is True
+    return parse_condition(text, variables).eval(scope) is True

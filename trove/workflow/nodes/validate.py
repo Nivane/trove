@@ -20,6 +20,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
+from trove.services.skills.validators import VALIDATOR_HOST, run_validators
 from trove.workflow.nodes.query_sketch import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
@@ -29,6 +30,7 @@ logger = get_logger(__name__)
 
 def make_validate_rules(
     max_retries: int = 10,
+    skills: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the validate node.
 
@@ -36,6 +38,12 @@ def make_validate_rules(
         max_retries: Shared correction budget — rule failures feed back
             to gen_sql while retry_count < max_retries; once exhausted,
             failures degrade gracefully via state.error.
+        skills: Optional ``SkillService``. When present, confirmed org
+            skills at ``tier: validator`` run as a **parallel pass** after
+            the deterministic rule chain — blocking verdicts share this
+            node's feedback channel and retry budget (no new node, no new
+            graph edge); advisory verdicts and "cannot evaluate" go to
+            ``state.validator_hits`` only.
 
     The verify_step assertion layer reports structured hits
     (rule name + reason) via state.validation_hits for eval attribution.
@@ -126,6 +134,64 @@ def make_validate_rules(
                 }],
                 "rules_passed": False,
             }
+
+        # ── org validator 档（管理员维护的结果断言）────────────────────
+        #
+        # **位置**：必须在这一段与 untyped 分支之间。untyped 分支是 ``return``
+        # （见下），插在它之后 org validator 会在散文计划下静默消失 —— 而
+        # 散文计划恰恰是确定性守卫最少、最需要它兜底的时候。同理 untyped 与
+        # 全过两条 return 都要**合并**这里的结果，不能各返回各的。
+        #
+        # **为什么是平行一遍而不是往 _RULES 里加规则**：规则链是"第一条失败
+        # 即止、只回一个 reason"，装不下逐条 severity（blocking 拦截 /
+        # advisory 只报告）。复用它的通道，不复用它的形状。
+        org_hits: list[dict[str, Any]] = []
+        if skills is not None:
+            # 宿主名与声明的宿主(``VALIDATOR_HOST``,写入校验与 validators_for
+            # 都用它)共用同一个字面量 —— 两处各写一份字符串正是"声明的宿主"与
+            # "实际调用点"漂移的入口(``align_schema`` 那类事故)。
+            org_hits = run_validators(
+                skills.validators_for(VALIDATOR_HOST, **state.skill_ctx()),
+                columns=state.columns,
+                rows=state.rows,
+                row_count=state.row_count,
+                lang=state.lang,
+            )
+        # 只有**明确违反**的 blocking 才拦。"判不了"(verdict is None)绝不拦 ——
+        # 拿不准就拦下正确结果,比不检查更坏。
+        blocking = [
+            h for h in org_hits
+            if h["severity"] == "blocking" and h["verdict"] is False
+        ]
+        # 有 SkillService 时**总是**重写该字段(零命中即空列表):trigger 维度
+        # 里的 complexity 会被修正轮强制成 standard(graphs.py:390-392),所以
+        # "上一轮命中、这一轮选不出人"是常规路径。不写键 = 上一轮的判词活到
+        # 交付答案上,渲染成一条针对它从未检查过的结果的告警。
+        # skills is None 时逐字保持旧形状(省略键)——那是既有的向后兼容契约。
+        vh = {"validator_hits": org_hits} if skills is not None else {}
+        if blocking:
+            joined = "; ".join(f"[{h['name']}] {h['message']}" for h in blocking)
+            if budget_exhausted(state.retry_count, max_retries):
+                return {"error": joined, "rules_passed": False, **vh}
+            feedback = L(
+                state.lang,
+                f"校验规则: {joined}。",
+                f"Validation rule: {joined}.",
+            )
+            return {
+                "error_feedback": feedback,
+                "retry_count": state.retry_count + 1,
+                "correction_history": [feedback],
+                # 进 validation_hits 是对的 —— 它**确实**是一次拦截,
+                # 语义与 replay 的归因判据相符。
+                "validation_hits": [
+                    {"rule": f"validator:{h['name']}", "reason": h["message"]}
+                    for h in blocking
+                ],
+                "rules_passed": False,
+                **vh,
+            }
+
         # 列检查"本该跑却跑不了"——必须说出来。
         #
         # answer_columns_mismatch / extra_columns_mismatch 都以 ``plan_json``
@@ -154,10 +220,11 @@ def make_validate_rules(
                     "status": "untyped",
                     "reason": "no typed plan — answer/extra column checks skipped",
                 },
+                **vh,
             }
 
         # 全过:确定性规则链 + 层2 计划检查全通过 → 显式正向信号,
         # reflect 据此(配合复杂度)决定是否跳过 LLM 裁决。
-        return {"rules_passed": True}
+        return {"rules_passed": True, **vh}
 
     return validate

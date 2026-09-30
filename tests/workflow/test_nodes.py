@@ -4542,3 +4542,360 @@ class TestCatalogOnDemand:
         # 决策指引仍在(0-row probe = fix)
         assert "Verification protocol" in text
         assert "0-row probe" in text
+
+
+def _validator_service(tmp_path, severity="blocking"):
+    from trove.services.skills.service import SkillService
+
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "credit-guard", "description": "授信余额不得为负",
+        "tier": "validator", "severity": severity, "targets": ["result"],
+        "checks": [{"expr": "min >= 0", "columns": ["balance"], "message": "出现负值"}],
+        "body": "说明",
+    })
+    svc.confirm("credit-guard")
+    return svc
+
+
+class TestOrgValidatorTier:
+    """org validator 档接线:紧挨规则链的**另一遍**,三值处置。
+
+    位置硬要求 —— 必须落在 untyped 分支(plan_json is None)之前:那条分支
+    直接 return,插在它之后 org validator 会在散文计划下静默消失,而散文
+    计划正是确定性守卫最少的时候。
+    """
+
+    async def test_blocking_validator_intercepts(self, tmp_path):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+
+        assert out["rules_passed"] is False
+        assert out["retry_count"] == 1
+        assert "出现负值" in out["error_feedback"]
+        assert out["validation_hits"] == [
+            {"rule": "validator:credit-guard", "reason": "出现负值"},
+        ]
+        assert out["validator_hits"][0]["verdict"] is False
+
+    async def test_blocking_validator_respects_budget(self, tmp_path):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+            retry_count=3,
+        ))
+        assert out["error"] and "出现负值" in out["error"]
+        assert "error_feedback" not in out
+        # 预算耗尽这条 return 也会合并 vh —— 只断 error / 无 error_feedback
+        # 的话,把它那里的 `**vh` 删掉这条测试照样绿(第四个 merge site 就只
+        # 由代码形状保护了)。
+        assert out["validator_hits"][0]["verdict"] is False
+
+    async def test_advisory_validator_does_not_intercept(self, tmp_path):
+        """advisory 绝不能写 validation_hits —— 那个通道是 eval 归因的判据。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10,
+                                   skills=_validator_service(tmp_path, severity="advisory"))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+
+        assert out.get("rules_passed") is True
+        assert "validation_hits" not in out
+        assert "error_feedback" not in out
+        assert out["validator_hits"][0]["verdict"] is False
+
+    async def test_validator_verdict_none_neither_intercepts_nor_notes(self, tmp_path):
+        """判不了 = 不拦截、不进附注,只进审计通道。缺列是高频情形,投到用户
+        面前会把真正有意义的告警一起淹掉。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "amount"], rows=[["A", 5]], row_count=1,
+        ))
+        assert out.get("rules_passed") is True
+        assert out["validator_hits"][0]["verdict"] is None
+
+    async def test_blocking_validator_fires_on_untyped_plan(self, tmp_path):
+        """回归杀手:untyped 分支直接 return,插错位置会让 org validator 在最需要
+        它的场景(散文计划、确定性守卫最少)下静默消失。
+
+        配对的另一半是 ``test_untyped_plan_note_survives_validator_pass``:
+        那条覆盖"不违规时 untyped 记录仍在",两条合起来才说明是**合并**返回
+        而不是各返回各的。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+            plan_json=None,
+        ))
+        assert out["validator_hits"][0]["verdict"] is False
+        assert out["rules_passed"] is False
+
+    async def test_untyped_plan_note_survives_validator_pass(self, tmp_path):
+        """两条信息必须**合并**返回,不能各返回各的 —— untyped 那条记录不能丢。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = _validator_service(tmp_path)
+        svc.create({
+            "name": "rowguard", "description": "至少一行",
+            "tier": "validator", "severity": "advisory", "targets": ["result"],
+            "checks": [{"expr": "row_count > 0", "message": "空结果"}],
+            "body": "说明",
+        })
+        svc.confirm("rowguard")
+        node = make_validate_rules(max_retries=10, skills=svc)
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"],
+            # 必须是**不违规**的结果:credit-guard 一旦判 False 就走拦截分支
+            # (那是上一条测试的地盘),这里要的是"没有违规也别忘了 untyped"。
+            rows=[["A", 5]], row_count=1,
+            plan_json=None,
+        ))
+
+        assert out["plan_validation"]["status"] == "untyped"
+        assert out["rules_passed"] is True
+        # 合并断言(这条测试的名字就是它):untyped 那条返回里必须**同时**
+        # 带着 validator 的判定。只断上面两条的话,把 untyped 分支的 `**vh`
+        # 删掉这条测试照样绿 —— 而"不能各返回各的"正是它要钉的东西。
+        # 两个 validator 在这个状态下都通过,所以这里能一并钉住"全过"。
+        assert len(out["validator_hits"]) == 2
+        assert all(h["verdict"] is True for h in out["validator_hits"])
+
+    async def test_no_skills_service_is_backward_compatible(self):
+        """16 处既有测试与生产默认路径都走 skills=None —— 行为必须逐字不变。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+        # 不带 plan_json → 走的是 untyped 早返那条路,所以返回里**有**
+        # plan_validation。两个面都要断言:只断 rules_passed 的话,
+        # "validator 键泄露到默认路径"不会红。
+        assert out["rules_passed"] is True
+        assert out["plan_validation"]["status"] == "untyped"
+        assert set(out) == {"rules_passed", "plan_validation"}
+
+    async def test_all_pass_merges_validator_hits(self, tmp_path):
+        """typed plan 全过那条 return 也要合并 validator 判定 —— 那才是主路。
+
+        上一条钉的是 untyped 早返(散文计划的兜底)。brief 的 7 条测试没有一条
+        走到**全过**这条 return(要么 plan_json 是 None,要么被判违规拦下),把
+        它的 ``**vh`` 删掉 7 条全绿 —— 而这条正是 query_sketch 出 JSON 时的
+        常态路径。漏在这里,org validator 会在最常走的那条路上静默不上报。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", 5]], row_count=1,
+            plan_json={"answer_columns": ["region", "balance"]},
+        ))
+
+        assert out["rules_passed"] is True
+        assert out["validator_hits"][0]["verdict"] is True
+
+    async def test_rule_failure_return_carries_no_validator_keys(self, tmp_path):
+        """规则失败短路:这些 return 里**不许**出现 validator 键。
+
+        钉的是**输出契约**,不是运行期的"跳过"。把 validator 一遍提到规则链之前、
+        又不把 vh 并进失败 return,从外面完全看不出来 —— 真正会被后来的"一致性"
+        重构打破的,是这条契约:规则失败返回描述的是一个**正在被重新生成、尚未
+        交付**的 SQL,判定权在规则链手里(最具体的信号先说话);validator 是交付前
+        的结果断言,不该出现在这一轮。test 1-6 覆盖的才是交付判定那侧。
+
+        discriminator:装的 validator 对这个结果**会拦**(balance 有负值),所以
+        "规则路径返回"与"validator 路径返回"在本状态下可区分 ——
+        validation_hits 里是规则级的 "answer-columns",而不是
+        "validator:credit-guard"(后者只有走过 validator 遍才可能出现)。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+            # answer_columns 一个都不在结果列里 → 层2 列检查在 validator 遍之前返回
+            plan_json={"answer_columns": ["amount"]},
+        ))
+
+        assert out["rules_passed"] is False
+        assert out["validation_hits"][0]["rule"] == "answer-columns"
+        assert "validator_hits" not in out
+        assert "error_feedback" in out
+
+    async def test_zero_matching_validators_clears_previous_round_hits(self, tmp_path):
+        """本轮零命中 → 必须清掉上一轮的判定,而不是让键缺席。
+
+        "上一轮命中、这一轮不命中"是常规路径:validators_for 按 trigger 维度
+        选人,而 complexity 会被修正轮强制成 standard(graphs.py:390-392)。
+        键缺席时上一轮的 advisory 判词会渲染到本轮结果上 —— 数据对、告警假。
+        """
+        from trove.services.skills.service import SkillService
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = SkillService(tmp_path)
+        svc.create({
+            "name": "complex-only-guard", "description": "只对复杂问题挂",
+            "tier": "validator", "severity": "advisory", "targets": ["result"],
+            "triggers": {"complexity": ["complex"]},
+            "checks": [{"expr": "min >= 0", "columns": ["balance"], "message": "出现负值"}],
+            "body": "说明",
+        })
+        svc.confirm("complex-only-guard")
+        node = make_validate_rules(max_retries=10, skills=svc)
+
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", 5]], row_count=1,
+            # 修正轮把它强制成 standard(graphs.py:390-392)—— 这条 trigger 不再命中
+            complexity="standard",
+            # 上一轮(那时它命中)留下的判定
+            validator_hits=[{"name": "complex-only-guard", "verdict": False,
+                             "severity": "advisory", "message": "出现负值",
+                             "mode": "deterministic"}],
+        ))
+
+        assert out["rules_passed"] is True
+        assert out["validator_hits"] == []
+
+    async def test_unknown_severity_never_blocks_and_never_reaches_the_user(self, tmp_path):
+        """I1 的端到端安全钉:手写文件里 ``severity: Blocking``(大小写笔误)。
+
+        评审实测的旧行为是**两头都不接** —— ``verdict`` 是明确的 ``False``,
+        ``validate.py`` 要 ``severity == "blocking"`` 才拦、``output.py`` 要
+        ``"advisory"`` 才渲染,于是这份检查永远什么都不做,连一条质检记录都
+        不落。修好后它是一条可观测的"判不了":进 ``validator_hits``(管理员
+        看得见),不进 ``validation_hits``(不归因成拦截),不进用户屏幕。
+
+        走真 ``make_validate_rules`` + 真 ``output()``:两个消费者都不动,只
+        让生产者不再静默 —— 这条把"未知 severity 不能拦、不能渲染"从论证
+        变成实测。
+        """
+        from trove.services.skills.service import SkillService
+        from trove.workflow.nodes.output import output
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = SkillService(tmp_path)
+        d = svc.skill_dir("hand-guard")
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\n"
+            "name: hand-guard\n"
+            "description: d\n"
+            "tier: validator\n"
+            "severity: Blocking\n"
+            "targets: [result]\n"
+            "checks:\n"
+            "  - expr: min >= 0\n"
+            "    columns: [balance]\n"
+            "    message: 授信余额出现负值\n"
+            "---\n\n正文\n",
+            encoding="utf-8",
+        )
+        # 手写文件绕过 create 的写入校验 —— create 那条路已经被改动三挡住了
+        svc.confirm("hand-guard")
+
+        state = make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        )
+        out = await make_validate_rules(max_retries=10, skills=svc)(state)
+
+        # 可观测:一条"判不了",原因点名了那个 severity
+        [hit] = out["validator_hits"]
+        assert hit["name"] == "hand-guard"
+        assert hit["verdict"] is None
+        assert "unknown severity" in hit["message"]
+        # 不拦:不走恢复归因通道、不动反馈、规则链照常通过
+        assert out["rules_passed"] is True
+        assert out.get("validation_hits", []) == []
+        assert "error_feedback" not in out
+
+        delivered = state.model_copy(update=out)
+        assert delivered.validation_hits == []
+        response = (await output(delivered))["final_response"]
+        # 判词一个字都不进用户屏幕(附注只收 advisory 的**明确违反**)
+        assert "unknown severity" not in response
+        assert "授信余额出现负值" not in response
+
+
+async def test_output_renders_advisory_validator_note():
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": False, "severity": "advisory",
+        "message": "出现负值", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "出现负值" in out["final_response"]
+    assert "credit-guard" in out["final_response"]
+
+
+async def test_output_hides_unknown_verdicts():
+    """判不了不进用户视线 —— 高频出现会把真正有意义的告警一起淹掉。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": None, "severity": "advisory",
+        "message": "cannot evaluate", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "cannot evaluate" not in out["final_response"]
+
+
+async def test_output_hides_blocking_verdicts_from_the_note():
+    """blocking 违反已经被拦下重算了 —— 能走到 output 的 blocking 判定不该
+    再出一遍提示(它要么是重试耗尽后的交付,要么根本没判 False)。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": False, "severity": "blocking",
+        "message": "出现负值", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "出现负值" not in out["final_response"]
+
+
+async def test_output_passing_verdict_stays_silent():
+    """verdict is True = 通过 = 无声。docstring 写了三条排除,这是没被钉的那条。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": True, "severity": "advisory",
+        "message": "检查通过", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "检查通过" not in out["final_response"]
+    assert "口径提示" not in out["final_response"]
+    assert "Caliber note" not in out["final_response"]
+
+
+async def test_output_no_validator_hits_is_unchanged():
+    from trove.workflow.nodes.output import output
+
+    assert (await output(make_state()))["final_response"] == \
+           (await output(make_state(validator_hits=[])))["final_response"]
+
+    out = await output(make_state(validator_hits=[]))
+    assert "口径提示" not in out["final_response"]
+    assert "Caliber note" not in out["final_response"]

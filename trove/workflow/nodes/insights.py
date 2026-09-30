@@ -18,6 +18,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
+from trove.prompts.skills import append_skill_block, render_skills
 from trove.workflow.state import WorkflowState
 
 logger = get_logger(__name__)
@@ -28,8 +29,15 @@ MAX_INSIGHT_ROWS = 20  # 注入给 LLM 的最多数据行(截断避免超长)
 def make_insights(
     llm: LLMGateway,
     config: AgentConfig,
+    skills: Any | None = None,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
-    """Build the insights node bound to an LLM gateway."""
+    """Build the insights node bound to an LLM gateway.
+
+    ``skills`` (optional ``SkillService``): confirmed org methodology
+    skills matching this node are appended to the system prompt —
+    insights is the node with the least prompt surface (one line) and the
+    most prose-shaped output, so org caliber pays off most here.
+    """
 
     async def insights(state: WorkflowState) -> dict[str, Any]:
         if state.error or not state.sql or state.row_count < 0:
@@ -74,7 +82,13 @@ def make_insights(
             response = await llm.chat(
                 model=model,
                 messages=[
-                    {"role": "system", "content": render("insights/system", lang=state.lang)},
+                    # 原地改,不是插入:这是这条 system 消息的唯一来源。
+                    {"role": "system", "content": append_skill_block(
+                        render("insights/system", lang=state.lang),
+                        skills.render_skills("insights", **state.skill_ctx())
+                        if skills is not None
+                        else render_skills("insights", **state.skill_ctx()),
+                    )},
                     {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=16000,
