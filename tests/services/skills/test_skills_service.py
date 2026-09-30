@@ -655,8 +655,8 @@ def test_scan_entry_survives_every_malformed_check_shape():
     就是**确认**那一刻 —— 扫描崩掉 = 500。
 
     跳过而不是报一条命中:非 dict 的 check 到不了任何投递面(``run_validators``
-    以 ``malformed check (expected a mapping)`` 拒它,原文进不了 ``message``),
-    把"畸形"记成"注入"是把两件事混成一件。"""
+    以 ``reason: malformed_checks`` 拒它,不读它的内容),把"畸形"记成"注入"
+    是把两件事混成一件。"""
     for malformed in (5, "text", [5], {"a": 1}):
         entry = {"description": "d", "body": "b", "checks": malformed}
         assert SkillService._scan_entry(entry) == [], malformed
@@ -665,9 +665,13 @@ def test_scan_entry_survives_every_malformed_check_shape():
 def test_confirm_of_hand_written_validator_with_scalar_checks_succeeds(tmp_path):
     """手写 SKILL.md 里 ``checks: 5`` —— 确认必须**成功**,不是拒绝。
 
-    扫描是只报不改的提示面:确认本身不该因为一份畸形配置而失败。运行期这条
-    检查降级为 ``verdict: None``(判不了)并把 ``check error: malformed check
-    ...`` 记进 validator_hits —— 三值判定已经回答了这种配置,而且不是静默的。
+    扫描是只报不改的提示面:确认本身不该因一份畸形配置而失败。运行期这条检查
+    降级为 ``verdict: None``(判不了)并把 ``reason: malformed_checks`` 记进
+    validator_hits —— 三值判定已经回答了这种配置,而且不是静默的。
+
+    ``checks`` 的形状守卫在求值 ``try`` **之外**,所以这里是 ``malformed_checks``
+    而不是 ``check_error``:它不是"求值抛了异常",是配置写错了。两者的处置
+    不同(改文件 vs 查表达式 bug),原因码也必须分得开。
     """
     svc = SkillService(tmp_path)
     d = svc.skill_dir("hand-guard")

@@ -310,9 +310,9 @@ def test_string_row_count_still_coerces():
 def test_every_none_verdict_carries_a_machine_readable_reason():
     """每条"判不了"都要带 ``reason``:自由文本 message 数不出分布。
 
-    十一种 None 各有各的处置路径(手改文件写错 / 声明了非宿主 / 结果太大 /
-    真缺列),混在一句"缺列或非数值数据"里,运维只能靠猜 —— 而这些都是
-    **管理员侧的配置问题**,本来就该能按类统计。
+    每一种 None 各有各的处置路径(手改文件写错 / 声明了非宿主 / 结果太大 /
+    结果为空 / 真缺列),混在一句"缺列或非数值数据"里,运维只能靠猜 —— 而
+    这些多数是**管理员侧的配置问题**,本来就该能按类统计。
     """
     from trove.services.skills.validators import NONE_REASONS
 
@@ -331,6 +331,7 @@ def test_every_none_verdict_carries_a_machine_readable_reason():
         "missing_column": ([_spec("min >= 0", ["nope"])], ["a"], [[1]], 1),
         "truncated_rows": ([_spec("min >= 0", ["a"])], ["a"], [[1]], 9999),
         "no_columns_declared": ([_spec("min >= 0")], ["a"], [[1]], 1),
+        "empty_result": ([_spec("min >= 0", ["a"])], ["a"], [], 0),
         "non_numeric_data": ([_spec("min >= 0", ["a"])], ["a"], [["N/A"]], 1),
     }
     for expected, (specs, columns, rows, row_count) in cases.items():
@@ -348,22 +349,48 @@ def test_unknown_reason_tracks_scope_degradation():
     两处各写一遍条件必然漂移,而漂移的表现是判词解释错了原因 —— 正是这次
     要修的那个 bug("缺列或非数值数据" 盖住了截断)。所以这条同时断言两侧。
     """
-    from trove.services.skills.validators import _unknown_reason
+    from trove.services.skills.validators import _UNKNOWN_TEXTS, _unknown_reason
 
     checks = [
         ({"columns": ["nope"]}, ["a"], [[1]], 1, "missing_column"),
         ({"columns": []}, ["a"], [[1]], 1, "no_columns_declared"),
         ({"columns": ["a"]}, ["a"], [[1]], 9999, "truncated_rows"),
+        ({"columns": ["a"]}, ["a"], [], 0, "empty_result"),
         ({"columns": ["a"]}, ["a"], [["N/A"]], 1, "non_numeric_data"),
     ]
     for check, columns, rows, row_count, expected in checks:
         scope = build_scope(check, columns, rows, row_count)
         assert scope["min"] is UNKNOWN, expected      # 退化确实发生了
         assert _unknown_reason(check, columns, rows, row_count) == expected
+        # 每个能从这里返回的码都要有兜底判词:run_validators 取译文那一步
+        # 在 try **之外**,少一个键就是 KeyError 冲出管线,而不是降级。
+        assert expected in _UNKNOWN_TEXTS, f"{expected} 没有兜底判词"
 
     # 反向:不退化的 check 不该被判成退化
     ok = {"columns": ["a"]}
     assert build_scope(ok, ["a"], [[1]], 1)["min"] == 1.0
+
+
+def test_empty_result_is_its_own_reason_not_non_numeric():
+    """"一行都没有"与"列里全是非数值"必须分得开。
+
+    前者是这次查询本来就没有结果(过滤条件没匹配上,日常会发生),处置是
+    **什么都不用改**;后者才指向列或数据。合成一格,日常空结果会灌满
+    ``non_numeric_data`` —— 而 None 的原因分布是这套机制唯一的质量信号,
+    一个被日常噪声灌满的桶等于没有信号。
+
+    两者都必须判不了(空结果不能报"通过":没读到值就说通过是"没查却报平安"),
+    差的只是**为什么**。
+    """
+    empty = run_validators(
+        [_spec("min >= 0", ["a"])], columns=["a"], rows=[], row_count=0,
+    )
+    nulls = run_validators(
+        [_spec("min >= 0", ["a"])], columns=["a"], rows=[[None]], row_count=1,
+    )
+    assert empty[0]["verdict"] is None and nulls[0]["verdict"] is None
+    assert empty[0]["reason"] == "empty_result"
+    assert nulls[0]["reason"] == "non_numeric_data"
 
 
 @pytest.mark.parametrize("lang", ["zh", "en"])
