@@ -227,9 +227,14 @@ def _ns(**over) -> argparse.Namespace:
 
 
 def _stub_check(cd, seen: list):
-    """把 ``_check_datasource`` 换成记录器 —— 选源是这里要测的,真建 demo 库不是。"""
+    """把 ``_check_datasource`` 换成记录器 —— 选源是这里要测的,真建 demo 库不是。
+
+    记的是**整个 cfg** 而不是 (name, type):后者对「注册表来的」与「兜底造的」
+    完全一样,断言它就等于断言了一个两种路径都能满足的条件 —— 兜底即使越权,
+    那条测试也照样绿。
+    """
     async def fake(name, cfg, kb):
-        seen.append((name, cfg.type))
+        seen.append(cfg)
         return {"drift": collect(_l1(), None, name)}
     return fake
 
@@ -250,7 +255,7 @@ def test_demo_resolves_without_a_registry(cd, monkeypatch, tmp_path):
 
     payload, code = asyncio.run(cd._run(_ns()))
 
-    assert seen == [("demo", "demo")], "内置 demo 没被认出来"
+    assert [(c.name, c.type) for c in seen] == [("demo", "demo")], "内置 demo 没被认出来"
     assert code == 0
 
 
@@ -259,6 +264,10 @@ def test_registered_demo_still_wins_over_the_fallback(cd, monkeypatch, tmp_path)
 
     ``demo`` 在 ``naming.RESERVED_NAMES`` 里,用户注册不了这个名字,所以
     注册表里的 demo 只可能是内置的那个 —— 这条测的是**优先级**,不是冲突。
+
+    断言特意落在 ``retrieval_backend`` 上:它是那种**只有登记的那份才有**的
+    字段(兜底造出来的 cfg 用的是类默认值)。只断言 name/type 的话,两条路径
+    给出的答案一模一样,测试就失去了它名字里说的那个能力。
     """
     monkeypatch.chdir(tmp_path)
     store = tmp_path / ".trove"
@@ -268,7 +277,8 @@ def test_registered_demo_still_wins_over_the_fallback(cd, monkeypatch, tmp_path)
         "- name: demo\n"
         "  type: demo\n"
         "  connection: {}\n"
-        "  credentials: {}\n",
+        "  credentials: {}\n"
+        "  retrieval_backend: hybrid\n",
         encoding="utf-8",
     )
 
@@ -277,8 +287,8 @@ def test_registered_demo_still_wins_over_the_fallback(cd, monkeypatch, tmp_path)
 
     _, code = asyncio.run(cd._run(_ns()))
 
-    assert seen == [("demo", "demo")]
     assert code == 0
+    assert seen[0].retrieval_backend == "hybrid", "兜底把登记的 demo 顶掉了"
 
 
 def test_unknown_name_still_exits_2(cd, monkeypatch, tmp_path):
