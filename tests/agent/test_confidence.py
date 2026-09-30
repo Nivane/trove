@@ -380,12 +380,12 @@ class TestResultConfidence:
             assert 0 < item["effect"] <= 1.0
 
     def test_semantic_only_retry_is_a_surcharge_not_a_second_round(self):
-        """裁决 29:``semantic_retries ⊆ retry_count`` —— 同一轮被记进两个
-        计数器,这一行是**在轮次折扣之上的追加折扣**,不是第二个轮次。
+        """``semantic_retries ⊆ retry_count`` —— 同一轮被记进两个计数器,
+        这一行是**在轮次折扣之上的追加折扣**,不是第二个轮次(依据是设计
+        §5.3 表里「修正轮」与「纯语义重试」两行各有独立来源,不是重复计费)。
 
-        所以断言两件事,而不是一件:折扣**确实**两处都收(那是裁决 29 的决定,
-        不是 bug),而文案**不许**把同一轮说成两轮 —— 后者是 Task 7 复审从
-        披露面抓出来的:算术可辩护,渲染不可。
+        所以断言两件事,而不是一件:折扣**确实**两处都收,而文案**不许**把
+        同一轮说成两轮 —— 算术可辩护,渲染不可。
         """
         score, ev = result_confidence(
             make_state(retry_count=1, semantic_retries=1), 0.85)
