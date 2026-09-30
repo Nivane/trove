@@ -126,20 +126,14 @@ async def create_app_components(
 
     # ── Runtime settings (DB overrides applied on top of agent.yml) ──
     # 管理台写入 ~/.trove/settings.db;这里在启动时把已存配置合入运行时
-    # AgentConfig(DB 优先)。agent.yml 始终只读。
-    from trove.services.admin_settings.service import apply_overrides
+    # AgentConfig(DB 优先,CLI 最优先——顺序见 apply_runtime_overrides)。
     from trove.services.admin_settings.store import SettingsStore
 
     settings_store = SettingsStore(Path(config.home).expanduser() / "settings.db")
     settings_overrides = await settings_store.get_all()
-    if settings_overrides:
-        apply_overrides(config, settings_overrides)
-        logger.info(
-            "Applied %d runtime settings overrides from settings.db",
-            len(settings_overrides),
-        )
+    apply_runtime_overrides(config, args, settings_overrides)
     # 结果限制镜像进 pipeline 节点可读的进程级注册表(默认 50/1000;
-    # DB 覆盖后 apply_overrides 已改 config,这里统一同步一次)。
+    # DB 覆盖后 config 已改,这里统一同步一次)。
     from trove.services.limits import set_result_limits
     set_result_limits(config.result_max_rows, config.result_display_rows)
 
@@ -440,6 +434,38 @@ def format_print_payload(summary: dict[str, Any], events: list[dict[str, Any]]) 
 # ── Entry Points ──────────────────────────────────────────
 
 
+def apply_cli_model_override(config: AgentConfig, args) -> None:
+    """把命令行 ``--model`` 盖回 ``config.target``。
+
+    只在 ``apply_runtime_overrides`` 里出现是对的:两个覆盖层谁压谁,由那一个
+    函数说了算,不散落在调用点上。调用点各自的顺序反而容易漏。
+    """
+    if getattr(args, "model", None):
+        config.target = args.model
+
+
+def apply_runtime_overrides(
+    config: AgentConfig, args, settings_overrides: dict | None
+) -> None:
+    """把 agent.yml 之外的两层覆盖依次盖到 ``config`` 上 —— **顺序即契约**。
+
+    1. ``settings.db``(管理台存的运行时设置):赢过 agent.yml。
+    2. 命令行 ``--model``:赢过前两层。``_load_config`` 早就应用过一次,这里必须
+       **再应用一次**,否则管理台存过默认模型之后 ``--model`` 就被静默压掉 —— 而
+       README 承诺的是「CLI ``--model`` > conf/agent.yml」。``apply_overrides`` 的
+       docstring 只说「DB wins over yaml」,它本就不该赢过命令行这一次性的显式意图。
+    """
+    if settings_overrides:
+        from trove.services.admin_settings.service import apply_overrides
+
+        apply_overrides(config, settings_overrides)
+        logger.info(
+            "Applied %d runtime settings overrides from settings.db",
+            len(settings_overrides),
+        )
+    apply_cli_model_override(config, args)
+
+
 async def _load_config(args) -> AgentConfig:
     """Load .env and config with CLI overrides applied."""
     from dotenv import load_dotenv
@@ -452,8 +478,7 @@ async def _load_config(args) -> AgentConfig:
     configure_tracing(config.tracing)
     from trove.tracing.local import configure_trace_store
     configure_trace_store(config.home)
-    if args.model:
-        config.target = args.model
+    apply_cli_model_override(config, args)
     return config
 
 

@@ -64,7 +64,15 @@ class DatasourceServiceConfig:
 class TracingConfig:
     """Observability / tracing configuration."""
 
-    enabled: bool = False
+    # 缺省 True 的含义是**不抑制**,不是「强制开」:真正决定录不录的是 .env 里的
+    # LANGFUSE_* 凭证(没人会误配),这个键的职责是**撤回** —— enabled: false 时
+    # 即便凭证在也不录(不想把问句文本送出本机时,配置上必须真的拦得住)。
+    #
+    # 这个缺省必须与全局闸门 observability._suppressed 的缺省一致,否则「配置文件
+    # 里没写 observability 段」会变成静默停录 —— 观测系统最坏的失败形态就是不报错
+    # 地什么都不记。装了包只用 ~/.trove/conf/agent.yml 的用户正好落在这一档
+    # (搜索顺序见 CONFIG_SEARCH_PATHS)。
+    enabled: bool = True
     providers: list[dict[str, Any]] = field(default_factory=list)
     capture: dict[str, bool] = field(default_factory=dict)
 
@@ -603,6 +611,7 @@ class ConfigLoader:
             conclusion=agent_section.get("conclusion", False),
             chart_llm=agent_section.get("chart_llm", False),
             result_cache=agent_section.get("result_cache", False),
+            decompose_llm_judge=agent_section.get("decompose_llm_judge", True),
             result_display_rows=max(1, min(500, int(agent_section.get("result_display_rows", 50)))),
             result_max_rows=max(1, min(50000, int(agent_section.get("result_max_rows", 1000)))),
             api_rate_per_minute=max(0, int(agent_section.get("api_rate_per_minute", 30))),
