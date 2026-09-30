@@ -4542,3 +4542,150 @@ class TestCatalogOnDemand:
         # 决策指引仍在(0-row probe = fix)
         assert "Verification protocol" in text
         assert "0-row probe" in text
+
+
+def _validator_service(tmp_path, severity="blocking"):
+    from trove.services.skills.service import SkillService
+
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "credit-guard", "description": "授信余额不得为负",
+        "tier": "validator", "severity": severity, "targets": ["result"],
+        "checks": [{"expr": "min >= 0", "columns": ["balance"], "message": "出现负值"}],
+        "body": "说明",
+    })
+    svc.confirm("credit-guard")
+    return svc
+
+
+class TestOrgValidatorTier:
+    """org validator 档接线:紧挨规则链的**另一遍**,三值处置。
+
+    位置硬要求 —— 必须落在 untyped 分支(plan_json is None)之前:那条分支
+    直接 return,插在它之后 org validator 会在散文计划下静默消失,而散文
+    计划正是确定性守卫最少的时候。
+    """
+
+    async def test_blocking_validator_intercepts(self, tmp_path):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+
+        assert out["rules_passed"] is False
+        assert out["retry_count"] == 1
+        assert "出现负值" in out["error_feedback"]
+        assert out["validation_hits"] == [
+            {"rule": "validator:credit-guard", "reason": "出现负值"},
+        ]
+        assert out["validator_hits"][0]["verdict"] is False
+
+    async def test_blocking_validator_respects_budget(self, tmp_path):
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=3, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+            retry_count=3,
+        ))
+        assert out["error"] and "出现负值" in out["error"]
+        assert "error_feedback" not in out
+
+    async def test_advisory_validator_does_not_intercept(self, tmp_path):
+        """advisory 绝不能写 validation_hits —— 那个通道是 eval 归因的判据。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10,
+                                   skills=_validator_service(tmp_path, severity="advisory"))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+
+        assert out.get("rules_passed") is True
+        assert "validation_hits" not in out
+        assert "error_feedback" not in out
+        assert out["validator_hits"][0]["verdict"] is False
+
+    async def test_validator_verdict_none_neither_intercepts_nor_notes(self, tmp_path):
+        """判不了 = 不拦截、不进附注,只进审计通道。缺列是高频情形,投到用户
+        面前会把真正有意义的告警一起淹掉。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "amount"], rows=[["A", 5]], row_count=1,
+        ))
+        assert out.get("rules_passed") is True
+        assert out["validator_hits"][0]["verdict"] is None
+
+    async def test_blocking_validator_fires_on_untyped_plan(self, tmp_path):
+        """回归杀手:untyped 分支直接 return,插错位置会让 org validator 在最需要
+        它的场景(散文计划、确定性守卫最少)下静默消失。
+
+        配对的另一半是 ``test_untyped_plan_note_survives_validator_pass``:
+        那条覆盖"不违规时 untyped 记录仍在",两条合起来才说明是**合并**返回
+        而不是各返回各的。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+            plan_json=None,
+        ))
+        assert out["validator_hits"][0]["verdict"] is False
+        assert out["rules_passed"] is False
+
+    async def test_untyped_plan_note_survives_validator_pass(self, tmp_path):
+        """两条信息必须**合并**返回,不能各返回各的 —— untyped 那条记录不能丢。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = _validator_service(tmp_path)
+        svc.create({
+            "name": "rowguard", "description": "至少一行",
+            "tier": "validator", "severity": "advisory", "targets": ["result"],
+            "checks": [{"expr": "row_count > 0", "message": "空结果"}],
+            "body": "说明",
+        })
+        svc.confirm("rowguard")
+        node = make_validate_rules(max_retries=10, skills=svc)
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"],
+            # 必须是**不违规**的结果:credit-guard 一旦判 False 就走拦截分支
+            # (那是上一条测试的地盘),这里要的是"没有违规也别忘了 untyped"。
+            rows=[["A", 5]], row_count=1,
+            plan_json=None,
+        ))
+
+        assert out["plan_validation"]["status"] == "untyped"
+        assert out["rules_passed"] is True
+        # 合并断言(这条测试的名字就是它):untyped 那条返回里必须**同时**
+        # 带着 validator 的判定。只断上面两条的话,把 untyped 分支的 `**vh`
+        # 删掉这条测试照样绿 —— 而"不能各返回各的"正是它要钉的东西。
+        # 两个 validator 在这个状态下都通过,所以这里能一并钉住"全过"。
+        assert len(out["validator_hits"]) == 2
+        assert all(h["verdict"] is True for h in out["validator_hits"])
+
+    async def test_no_skills_service_is_backward_compatible(self):
+        """16 处既有测试与生产默认路径都走 skills=None —— 行为必须逐字不变。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+        # 不带 plan_json → 走的是 untyped 早返那条路,所以返回里**有**
+        # plan_validation。两个面都要断言:只断 rules_passed 的话,
+        # "validator 键泄露到默认路径"不会红。
+        assert out["rules_passed"] is True
+        assert out["plan_validation"]["status"] == "untyped"
+        assert set(out) == {"rules_passed", "plan_validation"}
