@@ -439,6 +439,40 @@ figcaption {
   line-height: 1.55;
 }
 
+/* ── 架构图（Mermaid）──────────────────────────────────── */
+/* 同一张图有两种形态：渲染成功是 SVG，加载失败是 <pre> 里的源码。
+   两种都套在同一张卡片（.diagram-canvas）上——CDN 挂掉时读者看到的
+   是一块有意为之的代码块，而不是一片没头没尾的等宽文本。
+   卡片外观对齐上面的截图：同样的边框、圆角与抬升。 */
+.diagram { margin: 22px 0 18px; }
+.diagram-canvas {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--raised);
+  padding: 18px 16px;
+  overflow-x: auto;
+  box-shadow: var(--shadow-sm);
+}
+/* 源码形态：去掉通用 pre 的底色、内边距与**横向滚动**，让卡片自己当容器。
+   overflow 必须显式改回 visible：通用 pre 带 overflow-x: auto，留着的话
+   窄屏滚的是这一层（svg 在里面被裁），而卡片测不到溢出、滚不动。 */
+.diagram-canvas pre.mermaid {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: visible;
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+/* min-width 是刻意的下限：卡片内宽随视窗变化（约 630–780px），比图窄时
+   与其把字缩到读不了，不如让卡片横向滚动（overflow-x 已开）。天然宽约
+   740px，所以宽视窗下这条不起作用，图就是原尺寸。 */
+.diagram-canvas svg { display: block; margin: 0 auto; min-width: 640px; }
+/* 说明随形态切换：渲染成功时不该再解释「这是源码」，反之亦然 */
+.diagram[data-diagram="rendered"] .cap-source { display: none; }
+.diagram:not([data-diagram="rendered"]) .cap-rendered { display: none; }
+
 /* ── 代码块 ────────────────────────────────────────────── */
 pre {
   background: var(--code-bg);

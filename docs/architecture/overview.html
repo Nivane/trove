@@ -36,6 +36,61 @@
 
     <nav class="doc-toc" data-toc></nav>
 
+    <h2 id="shape">全貌</h2>
+
+    <p>
+      先把形状看一眼，再往下读细节。图上的三个带（入口、编排、能力）加外挂的
+      模型层与状态层，就是下面「五层」那张表的形状——数据源在 Trove 之外，
+      所以不在这五层里。实线是「谁调谁」，虚线是「谁会用到大模型」；
+      两条都不是数据流。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    subgraph entry["入口"]
+        direction LR
+        UI["Web UI"]
+        CLI["CLI / REPL"]
+        SRV["HTTP 服务"]
+        MCP["MCP"]
+    end
+
+    subgraph flow["编排 · trove/workflow"]
+        WF["LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译 → 生成 → 执行与校验 → 反思"]
+    end
+
+    subgraph caps["能力 · trove/services"]
+        direction LR
+        SEM["语义模型"]
+        KB["知识库 + 混合检索"]
+        MEM["记忆 · 判定规则 · Skills"]
+    end
+
+    LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
+    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite"]
+    DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB · SQLite"]
+
+    UI --&gt; SRV
+    SRV --&gt; WF
+    CLI --&gt; WF
+    MCP --&gt; WF
+    WF --&gt; SEM
+    WF --&gt; KB
+    WF --&gt; MEM
+    KB --&gt; DS
+    MEM --&gt; STATE
+    WF -.-&gt; LLM
+    MEM -.-&gt; LLM
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 入口进来，编排决定做什么，能力层干活，落点在状态与数据源。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <h2 id="layers">五层</h2>
 
     <div class="table-wrap">
@@ -79,15 +134,17 @@
       对话链路、评测脚本、MCP 通道都在用，而它们的编排方式各不相同。
     </p>
 
-    <h2 id="entry">两个入口，一张图</h2>
+    <h2 id="entry">多个入口，一张图</h2>
 
     <p>
-      进程入口有两个：REPL / CLI（<code>trove</code>、<code>trove-cli</code>）与
-      HTTP 服务（<code>trove serve</code>）。它们最终都汇到同一张 LangGraph 图上——
+      进程入口有三个：REPL / CLI（<code>trove</code>、<code>trove-cli</code>）、
+      HTTP 服务（<code>trove serve</code>，Web UI 走的是它）与
+      MCP（<code>trove mcp</code>）。它们最终都汇到同一张 LangGraph 图上——
       图不是在每个入口各建一份，而是由统一的工厂装配。
     </p>
 
     <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L109">main.py:109 <span class="ref-line">create_app_components</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1254">graphs.py:1254 <span class="ref-line">build_graphs</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1915">graphs.py:1915 <span class="ref-line">_build_reflection</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L315">main.py:315 <span class="ref-line">build_graphs</span></a>
@@ -310,6 +367,83 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module">
+/* 架构图渲染 —— 只在这一页加载 mermaid，其余页面保持零额外 JS。
+ *
+ * 四个刻意的选择：
+ *   1. 先 parse 再 run。parse 不过时 DOM 原封不动，<pre> 里的源码还留着，
+ *      读者至少能读到图的内容；直接 run 会把一句「Syntax error」画进页面，
+ *      图没了，源码也没了。
+ *   2. 主题色从站点自己的 CSS token 读，不写死 mermaid 默认主题——否则这
+ *      会是全站唯一一块不属于这套配色的区域。（token 取不到时给兜底值，
+ *      变量改名不至于把图变成一片透明。）
+ *   3. 深浅色切换要重渲染：mermaid 把颜色烘进 SVG 里，不重跑就留在旧主题。
+ *      源码一直留在 source 变量里，重渲染就是「清空 → 还原 <pre> → 再 run」。
+ *   4. 任何一步失败都只是 data-diagram 没变成 rendered，CSS 据此把说明切
+ *      成「以上为图源码」——页面不会出现一块白板，也不假装图还在。
+ */
+const fig = document.querySelector("figure.diagram[data-diagram='pending']");
+if (fig) {
+  const canvas = fig.querySelector(".diagram-canvas");
+  const source = canvas.querySelector("pre.mermaid").textContent;
+
+  const token = (name, fallback) => {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue(name)
+      .trim();
+    return v || fallback;
+  };
+
+  async function draw() {
+    const { default: mermaid } = await import(
+      "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
+    );
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "base",
+      fontFamily: getComputedStyle(document.body).fontFamily,
+      themeVariables: {
+        background: token("--raised", "#ffffff"),
+        primaryColor: token("--muted", "#f4f4f5"),
+        primaryTextColor: token("--text-primary", "#18181b"),
+        primaryBorderColor: token("--border-default", "#d4d4d8"),
+        lineColor: token("--text-tertiary", "#8b8b94"),
+        clusterBkg: token("--canvas", "#fafafa"),
+        clusterBorder: token("--border-subtle", "#e4e4e7"),
+        titleColor: token("--text-secondary", "#52525b"),
+        edgeLabelBackground: token("--raised", "#ffffff"),
+        fontSize: "16px",
+      },
+      /* 间距收得比 mermaid 默认（50/50）紧：图的天然宽度决定它会被缩多小，
+         而这张图是「带」的形状，不需要默认那么松。 */
+      flowchart: {
+        htmlLabels: true,
+        curve: "basis",
+        /* 允许按容器宽度缩，但 CSS 给 SVG 设了 min-width 下限（见 docs.css）：
+           窄屏宁可横向滚动，也不把字缩到读不了。宽视窗下卡片够宽，图按天然
+           尺寸显示，等于没缩。 */
+        useMaxWidth: true,
+        nodeSpacing: 30,
+        rankSpacing: 40,
+      },
+    });
+    await mermaid.parse(source);
+    const pre = document.createElement("pre");
+    pre.className = "mermaid";
+    pre.textContent = source;
+    canvas.replaceChildren(pre);
+    await mermaid.run({ nodes: [pre] });
+    fig.dataset.diagram = "rendered";
+  }
+
+  const redraw = () => draw().catch(() => {});
+  redraw();
+  window
+    .matchMedia("(prefers-color-scheme: dark)")
+    .addEventListener("change", redraw);
+}
+</script>
 
 </body>
 </html>
