@@ -23,6 +23,15 @@ Two sources are merged at render time:
     prompt.
 
 Skills without a ``triggers.node`` are global — they apply to every node.
+A blank node (``node: ""``) reads as undeclared too: the field is left unfilled
+far more often than it is meant literally, and treating it as a declaration
+would make the skill never match — indistinguishable, from the outside, from
+not existing.
+
+A third tier, ``validator``, is not an injection tier: its criteria run
+post-hoc against the result (``trove/services/skills/validators.py``) and its
+body is never delivered to the model. It is set by hand in ``SKILL.md`` —
+``set_tier`` only moves between ``required`` and ``available``.
 
 All four delivery paths — required injection, available advertisement,
 validator execution and on-demand ``load_skill`` — share **one** trigger
@@ -70,6 +79,26 @@ FRONTMATTER_FIELDS = (
     "name", "description", "triggers", "tier", "status",
     "source", "lang", "created_at", "updated_at",
 )
+
+
+def _declared_node(triggers: dict) -> Any:
+    """``triggers.node`` 的**声明值** —— 空串 / 纯空白等同**未声明**(返回 None)。
+
+    ``node:``(YAML 留空)解析成 ``None``,``node: ""`` 是同一个意思的另一种
+    写法,而 ``create`` 只在 API 边界上挡后者 —— 手写 SKILL.md 可以带进来,
+    而手写正是本期 P1/P2 唯一的授权路径。当成"已声明"的后果是这条技能
+    **永远不命中**:required 不注入、available 不广告、``load_skill`` 按名也
+    取不到,从任何外部面看都与"没写 node"一样。同一个意思的两种写法不该有
+    相反的行为。
+
+    **非字符串的畸形声明不在此列**:收窄判据在信息不明时按"不命中"处理是
+    保守的一侧,而把它读成未声明会让一条本该收窄的技能变成**全局**。那条
+    留给写入面(或另开一条可观测的降级路),不是这里能顺手决定的。
+    """
+    node = triggers.get("node")
+    if isinstance(node, str) and not node.strip():
+        return None
+    return node
 
 
 class SkillService:
@@ -233,7 +262,9 @@ class SkillService:
         # 一条不变量,两个入口都不留静默结局。
         # P5 的 targets: answer 会让宿主不再是唯一一个节点,那时这条守卫要
         # 跟着放宽(按 target 映射宿主),而不是删掉。
-        declared = (entry.get("triggers") or {}).get("node")
+        # 空串由下面 create 的通用非空校验报(它的话更准:问题是**没填**,
+        # 不是"填了别的节点")——``_declared_node`` 让这里读到 None 就够了。
+        declared = _declared_node(entry.get("triggers") or {})
         if declared is not None and declared != VALIDATOR_HOST:
             raise ValueError(
                 f"triggers.node must be {VALIDATOR_HOST!r} (or omitted) for tier=validator: "
@@ -412,23 +443,31 @@ class SkillService:
         return {"name": name, "status": "rejected"}
 
     def set_tier(self, name: str, tier: str) -> dict:
+        """在 ``required`` ↔ ``available`` 之间搬;``validator`` 只能手写 SKILL.md。
+
+        曾经这里分两个方向校验(升档跑 ``_validate_validator_spec``、降档查
+        四字段残留),但两个方向**恒 400**,而且报的是指错地方的话:
+        ``_load_meta`` 走 ``read_skill``,而后者按**当前** tier 投影 validator
+        四字段 —— 升档时 entry 上根本没有 ``checks``,校验只读到 ``[]``,于是
+        报 "checks is required"(让人去补一个这条路径递不进去的字段);
+        降档时四字段又在,报 "mode is only valid for tier=validator"(让人去删
+        一个删不掉的东西)。真相只有一个:tier 与 mode/severity/targets/checks
+        必须在同一个文件里一起写。与其留一个永远 400、报错还误导的按钮,
+        不如一次说清楚 —— 拒绝的那条不变量没变,变的是它说的人话。
+        """
         if tier not in _TIERS:
             raise ValueError(f"tier must be one of {_TIERS}")
         entry = self._load_meta(name)
         if entry is None:
             raise KeyError(f"skill not found: {name}")
-        if tier == "validator":
-            # set_tier 是一条独立的写入路径:不校验就能把一份没有 checks 的
-            # skill 变成 validator —— 它永远不会生效,而且看着像生效了。
-            self._validate_validator_spec(entry)
-        else:
-            # 反向同理:validator 的四字段在非 validator 档上没有意义,而 tier
-            # 一旦不是 validator,render_skills 就会把正文当**指令**投递 ——
-            # 判据被检查者念出,检查就没了意义。create() 已立了这条,set_tier
-            # 是同一个不变量的另一半。
-            for f in VALIDATOR_FIELDS:
-                if entry.get(f) is not None:
-                    raise ValueError(f"{f} is only valid for tier=validator")
+        if "validator" in (tier, entry.get("tier")):
+            raise ValueError(
+                "tier=validator is set by hand in SKILL.md: its mode / severity / "
+                "targets / checks fields are projected onto the entry by the "
+                "current tier, so neither direction of this switch can validate "
+                f"them. Edit {self.skill_path(name)} and set tier plus those four "
+                "fields together in the frontmatter."
+            )
         return self._rewrite_field(name, {"tier": tier})
 
     def _rewrite_field(self, name: str, updates: dict) -> dict:
@@ -523,7 +562,7 @@ class SkillService:
         registration — see that method for why it must not be ctx-aware.
         """
         triggers = entry.get("triggers") or {}
-        target = triggers.get("node")
+        target = _declared_node(triggers)
         return target is None or target == node
 
     @staticmethod
@@ -539,7 +578,7 @@ class SkillService:
         ``skip_node=True`` 留给 validator:它的宿主由 ``targets`` 决定,
         ``triggers.node`` 在那里是**标记**而不是筛子(见 ``validators_for``)。
         """
-        declared = triggers.get("node")
+        declared = _declared_node(triggers)
         if not skip_node and declared not in (None, node):
             return "node"
         for k, v in triggers.items():
@@ -586,7 +625,7 @@ class SkillService:
                 continue
             # 副本:调用方要往条目上挂标记,``list_org`` 的条目不许被就地改。
             e = dict(entry)
-            declared = triggers.get("node")
+            declared = _declared_node(triggers)
             if declared is not None and declared != node:
                 e["host_mismatch"] = declared
             out.append(e)

@@ -420,13 +420,23 @@ def test_validator_fields_rejected_on_other_tiers(tmp_path):
         })
 
 
-def test_set_tier_to_validator_validates(tmp_path):
-    """set_tier 是一条独立的写入路径 —— 不校验就能把一份没有 checks 的
-    skill 变成 validator,而它永远不会生效。"""
+def test_set_tier_to_validator_refuses_and_names_the_remedy(tmp_path):
+    """升档到 validator 是**结构性**不可能,不是"这份配置还差一个字段"。
+
+    ``read_skill`` 按**当前** tier 投影四个 validator 字段,而 ``_load_meta``
+    正是走的它:升档时 entry 上没有 ``checks``,校验只读到 ``[]``。所以报
+    "checks is required" 是把人指向一个**这条路径递不进去**的字段 —— 补上
+    它再试一次还是同一句话。真相是 tier 只能手写 SKILL.md(四字段一起写),
+    ``set_tier`` 只在 required ↔ available 之间搬。
+    """
     svc = SkillService(tmp_path)
     svc.create({"name": "plain", "description": "d", "tier": "available", "body": "b"})
-    with pytest.raises(ValueError, match="checks is required"):
+    with pytest.raises(ValueError) as ei:
         svc.set_tier("plain", "validator")
+    msg = str(ei.value)
+    assert "SKILL.md" in msg, f"报错要指出改哪个文件: {msg}"
+    assert "checks is required" not in msg, f"别再指向一个递不进去的字段: {msg}"
+    assert svc.read_skill("plain")["tier"] == "available"
 
 
 def test_set_tier_off_validator_refuses_and_changes_nothing(tmp_path):
@@ -438,10 +448,56 @@ def test_set_tier_off_validator_refuses_and_changes_nothing(tmp_path):
     svc = SkillService(tmp_path)
     svc.create(dict(_VALIDATOR))
     svc.confirm("credit-guard")
-    with pytest.raises(ValueError, match="only valid for tier=validator"):
+    with pytest.raises(ValueError) as ei:
         svc.set_tier("credit-guard", "required")
+    assert "SKILL.md" in str(ei.value)
     assert svc.read_skill("credit-guard")["tier"] == "validator"
     assert svc.render_skills("gen_sql") == ""
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_node_trigger_is_undeclared_not_never_matching(tmp_path, blank):
+    """``node: ""``(留空补了引号)是**没填**,不是"声明了一个空节点"。
+
+    ``create`` 在 API 边界上挡空串,所以它只可能从**手写** SKILL.md 进来 ——
+    而手写正是本期 P1/P2 唯一的授权路径。当成"已声明"的后果是**永远不命中**:
+    required 不注入、available 不广告、``load_skill`` 按名也取不到,从任何
+    外部面看都与"这份文件没写 node"一样。``node:``(YAML 留空解析成 None)
+    已经按未声明处理 —— 同一个意思的另一种写法不该有相反的行为。
+    """
+    svc = SkillService(tmp_path)
+    d = svc.skill_dir("blank-node")
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\n"
+        "name: blank-node\n"
+        "description: d\n"
+        "tier: required\n"
+        "status: confirmed\n"
+        f"triggers: {{node: '{blank}'}}\n"
+        "---\n\nBODY\n",
+        encoding="utf-8",
+    )
+    # 三条投递路都要认它:注入 / on-demand / available 的注册门槛。
+    assert "BODY" in svc.render_skills("query_sketch")
+    assert "BODY" in svc.render_skills("gen_sql")
+    assert "BODY" in svc.load_skill_content("blank-node", "en", node="gen_sql")
+    assert svc._applies_to(svc.read_skill("blank-node"), "gen_sql") is True
+
+
+def test_create_rejects_blank_node_but_accepts_omitted(tmp_path):
+    """写入面挡空串,读取面把空串当未声明 —— 两侧不矛盾。
+
+    写入面**能问**(报一句"必须是非空字符串",让人直接把键省掉);读取面
+    **不能问**(手写的文件已经在盘上了,只能解释)。处置不同是因为两侧能做
+    的事不同,而两侧都收在同一个结局上:不会有"配了却永远不命中"的技能。
+    """
+    svc = SkillService(tmp_path)
+    with pytest.raises(ValueError, match="non-empty string"):
+        svc.create({"name": "blank", "description": "d", "tier": "available",
+                    "body": "b", "triggers": {"node": ""}})
+    svc.create({"name": "omitted", "description": "d", "tier": "available", "body": "b"})
+    assert svc.read_skill("omitted")["triggers"] == {}
 
 
 def test_validator_never_in_required_render(tmp_path):
