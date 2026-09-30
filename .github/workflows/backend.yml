@@ -53,7 +53,12 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 是这条门的前提,不是图省事:
+      # 每页的比对基准写在 HTML 里(anchor-base: <sha>),脚本要读**那个提交**的
+      # 原文才能判断锚点漂没漂。浅克隆里那些提交不存在 → 全站误报「失效」。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
@@ -66,6 +71,19 @@ jobs:
       # (配置见 pyproject.toml [tool.ruff];E501 行长不拦)。
       - name: Ruff lint gate
         run: uv run ruff check trove tests
+      # 文档站锚点门:docs/ 里每条 file:line 链接都锚到源码的具体行,代码一移动
+      # 就漂 —— 而漂掉的链接比没有链接更糟,读者点过去看到的是**别的**代码。
+      #
+      # 为什么挂在这:脚本自带的 pre-commit 钩子按设计只**提醒**不阻断(怕挡住
+      # 别人的正常提交)。提醒属于「得记得跑」型的约束,而记得跑的约束都是死的:
+      # 它就是这样在无人察觉下攒到 97 处漂移,直到一次全站归位。CI 是默认路径,
+      # 不需要谁记得。零 LLM / 零网络 / 零数据库,没有成本需要防。
+      #
+      # 比对 HEAD 而不是默认的 main:PR 上 checkout 出来的是合并后的状态(也就是
+      # 未来的 main),而锚点要成立在那个版本上。本地 main 落后时拿 main 比对,
+      # 会把「按新代码写的行号」误判成漂移。
+      - name: Docs anchor gate
+        run: uv run python scripts/check_page_anchors.py --at HEAD
       # 依赖漏洞扫描(OSV):导出锁定依赖清单交给 pip-audit 比对公开漏洞库。
       - name: Dependency vulnerability scan
         run: |

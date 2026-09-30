@@ -10,7 +10,7 @@ Trove is an NL→SQL conversational data agent: natural-language question → La
 
 ```bash
 uv sync                          # install deps (uv, Python >=3.12)
-uv run pytest                    # full suite (~2765 tests, mocked LLM, zero network/keys, ~60s)
+uv run pytest                    # full suite (~4800 tests, mocked LLM, zero network/keys, ~2min)
 uv run pytest tests/workflow/    # graphs and nodes
 uv run pytest tests/workflow/test_nodes.py -k extract_sql   # single test
 uv run pytest tests/services/memory/   # unified memory subsystem (episodes/prefs/promotion)
