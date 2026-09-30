@@ -25,16 +25,6 @@ run_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def get_request_id() -> str | None:
-    """Current request id (None outside a request context)."""
-    return request_id_var.get()
-
-
-def get_run_id() -> str | None:
-    """Current run id (None outside a question run)."""
-    return run_id_var.get()
-
-
 class RequestIdFilter(logging.Filter):
     """Logging filter exposing the contextvar as %(request_id)s."""
 

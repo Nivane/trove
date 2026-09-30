@@ -82,6 +82,21 @@ class TestParseDatasourceUrl:
         cfg = parse_datasource_url("postgres://trove@pg/trove")
         assert cfg.connection_params["port"] == 5432
 
+    def test_postgresql_alias_is_the_same_datasource(self):
+        """``postgresql://``(libpq 标准拼法)与 ``postgres://`` 等价。
+
+        归一发生在解析这一步、且归一成规范名 —— 下游只认 "postgres"
+        一个值,不必到处判两个拼法(集成测试的 PG_TEST_URL 就是长拼法)。
+        """
+        cfg = parse_datasource_url("postgresql://trove:secret@pg:5432/trove")
+        assert cfg.type == "postgres"
+        assert cfg.connection_params == {
+            "host": "pg", "port": 5432, "user": "trove",
+            "password": "secret", "database": "trove",
+        }
+        assert cfg.vector_backend == "pgvector"
+        assert cfg == parse_datasource_url("postgres://trove:secret@pg:5432/trove")
+
     def test_sqlite_file(self):
         cfg = parse_datasource_url("sqlite:///tmp/data.db")
         assert cfg.type == "sqlite"

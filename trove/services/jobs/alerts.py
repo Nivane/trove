@@ -127,9 +127,3 @@ def evaluate_alert(
         return AlertVerdict(matched, msg)
     except Exception:
         return AlertVerdict(False, "")
-
-
-def alert_message(expr: str, columns: list[str] | None = None, rows=None, row_count: int = 0) -> str:
-    """Human summary of a triggered alert (best-effort)."""
-    ver = evaluate_alert(expr, columns=columns, rows=rows, row_count=row_count)
-    return ver.message if ver.message else f"alert triggered: {expr}"

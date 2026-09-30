@@ -467,14 +467,6 @@ class LineageService:
                 consumers.append({"sql": q["sql"], "last_seen": q["last_seen"], "runs": q["runs"]})
         return {"producers": producers, "consumers": consumers}
 
-    async def table_columns_index(self, datasource: str, table: str) -> list[str]:
-        """Columns of ``table`` known from producer definitions (for target matching)."""
-        stored = await self.table_upstream(datasource, table)
-        cols: list[str] = []
-        for d in stored:
-            cols.extend(o["name"] for o in d["outputs"])
-        return sorted({c for c in cols if c})
-
     async def known_tables(self, datasource: str) -> list[str]:
         """Every table name the lineage store knows (produced + consumed).
 
@@ -491,11 +483,3 @@ class LineageService:
         for q in await self._query_log(datasource):
             names.update(q["tables_read"])
         return sorted(names)
-
-
-# ── Convenience parallel helpers (match KB service style) ──
-
-
-async def build_lineage_service(project_root: str | Path) -> LineageService:
-    """Async factory kept for symmetry; construction is synchronous today."""
-    return LineageService(project_root)

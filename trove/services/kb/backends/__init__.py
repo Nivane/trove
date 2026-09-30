@@ -10,10 +10,7 @@
 注册默认后端(builtin 由 KbService 自身实现,hybrid/rag 在此注册)。
 """
 
-from trove.services.kb.backends.base import (
-    RetrievalBackend,
-    SearchIndexBackend,
-)
+from trove.services.kb.backends.base import RetrievalBackend
 from trove.services.kb.backends.hybrid import HybridBackend
 from trove.services.kb.backends.rag import RagBackend
 from trove.services.kb.backends.registry import (
@@ -28,7 +25,6 @@ register_retrieval_backend("rag", RagBackend)
 
 __all__ = [
     "RetrievalBackend",
-    "SearchIndexBackend",
     "HybridBackend",
     "RagBackend",
     "backend_names",

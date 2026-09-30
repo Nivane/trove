@@ -80,11 +80,6 @@ class AdminConfirmed(str):
     """
 
 
-def is_admin_confirmed(value: Any) -> bool:
-    """是否为登记过的配置文本(提示词层围栏前的判断点)。"""
-    return isinstance(value, AdminConfirmed)
-
-
 def isolate_tree(value: Any) -> tuple[Any, list[str]]:
     """递归隔离:str 叶子命中即整值替换,容器逐叶递归,其余类型原样。
 

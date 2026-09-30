@@ -469,8 +469,11 @@ class TestPostgresIntegration:
         params = pg_env.connection_params
         test_db = f"trove_test_{uuid.uuid4().hex[:8]}"
 
+        # autocommit 是这条用例的前提,不是省事:CREATE/DROP DATABASE
+        # 不能在事务块里跑,而 psycopg3 的连接默认 autocommit=False ——
+        # 连接一建就处在隐式事务中,建库必报 ActiveSqlTransaction。
         admin = await psycopg.AsyncConnection.connect(
-            _conninfo({**params, "database": "postgres"})
+            _conninfo({**params, "database": "postgres"}), autocommit=True
         )
         try:
             async with admin.cursor() as cur:

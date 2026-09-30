@@ -23,7 +23,6 @@ node can read it after a single forced tool call (mirrors the
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 from trove.services.viz.infer import (
@@ -129,31 +128,6 @@ def chart_from_decision(
     if payload is None:
         return None, "chart could not be built"
     return payload, ""
-
-
-def make_chart_tool(
-    columns: list[str],
-    rows: list[list[Any]],
-    *,
-    hints: dict | None = None,
-    title: str = "",
-) -> tuple[Callable[[dict[str, Any]], Awaitable[str]], dict[str, Any]]:
-    """Build (handler, def) for the plot_chart tool bound to a result.
-
-    The handler validates the decision and returns a JSON-serialized payload
-    as the observation; a non-chartable or invalid decision returns a
-    reason string prefixed with ``ERROR:`` so callers can fall back.
-    """
-    async def handler(arguments: dict[str, Any]) -> str:
-        payload, reason = chart_from_decision(
-            columns, rows, arguments, hints=hints, title=title)
-        if payload is None and reason:
-            return f"ERROR: {reason}"
-        if payload is None:
-            return "NO_CHART"
-        return "OK " + json.dumps(payload, ensure_ascii=False)
-
-    return handler, chart_tool_def()
 
 
 def build_chart_registry(

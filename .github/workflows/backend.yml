@@ -49,6 +49,11 @@ jobs:
             tests/services/retrieval/test_pg_store.py
           # 统一存储抽象在 PG 上的内部 store 端到端(见 tests/storage/test_pg_storage.py)
           uv run pytest -m integration -q tests/storage/test_pg_storage.py
+          # 版本化迁移的 PG 方言路径(ADD COLUMN IF NOT EXISTS / 失败一步后的
+          # aborted 事务收拾)—— 只在真 PG 上才露头,SQLite 侧测不到。
+          uv run pytest -m integration -q tests/storage/test_migrations_pg.py
+          # PG 适配器的真实连接生命周期(建库/建表/内省)。
+          uv run pytest -m integration -q tests/services/test_postgres_adapter.py
 
   lint:
     runs-on: ubuntu-latest

@@ -2,7 +2,7 @@
 
 The gen_sql prompt has one mandatory core (question + matched schema)
 and several optional blocks (few-shot examples, terminology, lessons,
-plan, history). assemble_blocks fills the optional blocks by priority
+plan, history). assemble_context fills the optional blocks by priority
 until the budget is spent and reports what was included — so the
 pipeline stays bounded on large schemas and observability can show
 exactly what context the model saw.
@@ -97,38 +97,6 @@ class ContextItem:
     key: str
     text: str
     score: float = 0.0
-
-
-def assemble_blocks(
-    blocks: dict[str, str],
-    priorities: dict[str, int],
-    budget_tokens: int,
-    count: Callable[[str], int] = count_tokens,
-) -> tuple[set[str], list[dict[str, Any]]]:
-    """Fill blocks by priority within the token budget.
-
-    Args:
-        blocks: name → rendered text.
-        priorities: name → priority (lower first; missing = lowest).
-        budget_tokens: token cap for the optional blocks.
-        count: token estimator (default count_tokens — real tokenizer).
-
-    Returns:
-        (included names, usage report [{name, tokens, included}]).
-    """
-    ordered = sorted(blocks, key=lambda name: priorities.get(name, 100))
-    used = 0
-    included: set[str] = set()
-    usage: list[dict[str, Any]] = []
-    for name in ordered:
-        cost = count(blocks[name])
-        if used + cost > budget_tokens:
-            usage.append({"name": name, "tokens": cost, "included": False})
-            continue
-        used += cost
-        included.add(name)
-        usage.append({"name": name, "tokens": cost, "included": True})
-    return included, usage
 
 
 def assemble_context(

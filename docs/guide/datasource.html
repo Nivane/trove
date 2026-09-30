@@ -83,7 +83,7 @@ uv sync --extra duckdb                   # DuckDB</code></pre>
         <tbody>
           <tr><td class="mono">mysql</td><td class="mono">3306</td><td class="mono">mysql://user:pw@host:3306/db</td></tr>
           <tr><td class="mono">doris</td><td class="mono">9030</td><td class="mono">doris://user:pw@host:9030/db</td></tr>
-          <tr><td class="mono">postgres</td><td class="mono">5432</td><td class="mono">postgres://user:pw@host:5432/db</td></tr>
+          <tr><td class="mono">postgres<br>postgresql</td><td class="mono">5432</td><td class="mono">postgres://user:pw@host:5432/db</td></tr>
           <tr><td class="mono">clickhouse</td><td class="mono">8123</td><td class="mono">clickhouse://user:pw@host:8123/db</td></tr>
           <tr><td class="mono">sqlite</td><td>—</td><td class="mono">sqlite:///path/to.db</td></tr>
           <tr><td class="mono">duckdb</td><td>—</td><td class="mono">duckdb:///path/to.duckdb</td></tr>
@@ -92,7 +92,7 @@ uv sync --extra duckdb                   # DuckDB</code></pre>
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/urls.py#L29">urls.py:29 <span class="ref-line">parse_datasource_url</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/urls.py#L36">urls.py:36 <span class="ref-line">parse_datasource_url</span></a>
     </p>
 
     <div class="callout note">
@@ -320,7 +320,7 @@ uv run python scripts/lint_kb.py --db-id &lt;name&gt; --datasource &lt;url&gt;</
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 8ff70b6</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e5f844e</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>
