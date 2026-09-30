@@ -927,6 +927,16 @@ def make_gen_generate(
             # 归零同型、反向)。覆盖到的三条路径:KB 精确命中 / 经典生成不标降级
             # (它们是配置形态,不是降级);agentic 正常轮不标;只有走兜底才置 True。
             "generation_degraded": False,
+            # ``selection`` 是同一个道理的**第四个成员**:上面三个都写了默认值
+            # 就是因为它必须每轮复位,漏了就等于没有复位。``select`` 从第 2 轮起
+            # 基本不投票 —— 它开头就是 ``if state.error or state.error_feedback
+            # or not state.candidates: return {}``,而 ``candidates`` 正是这里被
+            # 清成 ``[]`` 的那个字段 —— 所以不清的话 ``selection`` 永远停在第 1
+            # 轮的投票上:下游 ``_sql_adjustments`` 的 ``winner`` 守卫会认错人
+            # (该扣的降级分不扣),Task 7 的票率折扣会拿上一轮的票率折这一轮的
+            # SQL。断言它的用例:``tests/workflow/test_graphs.py``
+            # ``TestSelectionIsRoundScoped``。
+            "selection": {},
         }
 
         if kb_exact_match is not None:

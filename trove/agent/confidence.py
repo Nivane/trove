@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from trove.agent.answer_source import AnswerSource
+from trove.core.i18n import L
 from trove.workflow.state import WorkflowState
 
 _enabled = True
@@ -68,7 +69,21 @@ _COMPILE_MISS_DELTA = -0.05   # 每个软 MISS 缺口
 _SELF_CHECK_DELTA = 0.10      # agent 自检通过(check_result 全过)
 _DEGRADED_DELTA = -0.10       # 降级到经典子图
 _STRONG_RETRIEVAL_DELTA = 0.05
-_STRONG_RETRIEVAL_SCORE = 0.8  # gen_ctx["examples"][0]["score"] 的阈值
+#: 「检索证据强」的阈值。设计 §5.2 的原意是 ``sim ≥ 0.8``,但 ``examples`` 里那个
+#: ``score`` **不是相似度**:它是 ``rerank_score(det, sim) = det + 3.0·sim``
+#: (``services/kb/embeddings.py`` 的 ``_RERANK_WEIGHT``),而 ``det`` 是
+#: ``_score_example(...) -> int`` 的**正整数**(``service.py`` 里 ``if det <= 0:
+#: continue`` 把所有非正的都丢了)⟹ **凡返回的候选,score 一律 ≥ 1.0**。
+#: 于是 0.8 这个阈值**恒真、等于没有条件**:只要 KB 返回了任何一条,它就 +0.05。
+#: 把它写成 0.8 是照抄设计里那个数字,而设计的论证还引了一处「已在
+#: ``graphs.py:485``」的既有阈值 —— 实测那一行是**把 score 抄进 dict 的管道**
+#: (``"score": float(getattr(h, "score", 0) or 0)``),全仓并没有这样一个阈值。
+#:
+#: 落到**真实刻度**上,同一份意图是:``sim ≥ 0.8`` ⟹ ``score ≥ 1 + 3×0.8 = 3.4``。
+#: 这是**下界** —— 满足设计原意的必过,另有一类确定性命中强、语义相似度不高的
+#: 也过。后者正是本行该收的:本行的名字是「检索**证据**强」,确定性锚点同样是
+#: 证据。3.4 与 1.0 之间是真空档:弱候选(``det`` 小、``sim`` 低)确实被挡在外面。
+_STRONG_RETRIEVAL_SCORE = 3.4
 
 
 def _clamp(value: float, lo: float = SCORE_FLOOR, hi: float = SCORE_CEIL) -> float:
@@ -85,19 +100,29 @@ def _evidence(kind: str, name: str, effect: float, why: str) -> dict[str, Any]:
     return {"kind": kind, "name": name, "effect": effect, "why": why}
 
 
-def _sql_adjustments(state: WorkflowState) -> list[dict[str, Any]]:
-    """SQL 置信度的具名微调(正负都记)。"""
+def _sql_adjustments(state: WorkflowState, lang: str) -> list[dict[str, Any]]:
+    """SQL 置信度的具名微调(正负都记)。
+
+    ``why`` 是**给人读的文案**,所以随 ``lang`` 走(设计 §5「文案(i18n,
+    随 ``state.lang``)」)。它是中英混排事故的现场:``why`` 在这里写死中文,
+    而 ``render_line`` 只会按 ``lang`` 换标签与括号 —— 英文用户会读到
+    ``*Confidence: 60% (agent 自检 1 次通过规则链)*``。文案必须有 ``lang``
+    在手,而只有 ``output`` 知道 ``state.lang``,所以一路传进来。
+    """
     out: list[dict[str, Any]] = []
     misses = len(state.compile_misses or [])
     if misses:
         out.append(_evidence(
             "sql", "compile_miss", _COMPILE_MISS_DELTA * misses,
-            f"语义编译有 {misses} 个组件未解析,由模型补齐",
+            L(lang, f"语义编译有 {misses} 个组件未解析,由模型补齐",
+               f"{misses} semantic component(s) unresolved, filled in by the model"),
         ))
     if state.self_check_passed:
         out.append(_evidence(
             "sql", "self_check", _SELF_CHECK_DELTA,
-            f"agent 自检 {state.self_check_passed} 次通过规则链",
+            L(lang, f"agent 自检 {state.self_check_passed} 次通过规则链",
+               f"agent self-check passed the rule chain "
+               f"{state.self_check_passed}x"),
         ))
     # 降级标记说的是**本轮的主候选那条路**降级了(Task 4 的注释:「本轮**是否**
     # 降级」)。若 select 随后采纳了某个备选候选,交付出去的是**备选的那条 SQL**
@@ -114,22 +139,34 @@ def _sql_adjustments(state: WorkflowState) -> list[dict[str, Any]]:
     if state.generation_degraded and winner != "candidate":
         out.append(_evidence(
             "sql", "generation_degraded", _DEGRADED_DELTA,
-            "本轮主候选的 agent 循环未走完,降级到单发生成",
+            L(lang, "本轮主候选的 agent 循环未走完,降级到单发生成",
+               "this round's primary agent loop did not finish; "
+               "fell back to single-shot generation"),
         ))
     # 检索分:只在**够强**时才是证据。低于阈值与「拿不到检索分」都不记 ——
     # 缺席不是坏消息(设计 §8-1),倒扣会让「KB 空」被读成「答案差」。
     examples = (state.gen_ctx or {}).get("examples") or []
-    top = float(examples[0].get("score") or 0) if examples else 0.0
+    # 取 ``max``,不是 ``examples[0]``:``per_table`` 分组时 ``_rank_examples``
+    # 返回 ``(picks + rest)``,而 ``picks`` 是**按表顺序**的每表 top1 ——
+    # ``[0]`` 是「第一个命中表里最好的那条」,不一定是全场最高分,与这里
+    # 「最强的那条」以及下面那句证据说的不是一回事。
+    top = max((float(e.get("score") or 0) for e in examples), default=0.0)
     if top >= _STRONG_RETRIEVAL_SCORE:
         out.append(_evidence(
             "sql", "strong_retrieval", _STRONG_RETRIEVAL_DELTA,
-            f"检索到高度相关的参考示例(相似度 {top:.2f})",
+            # 原本这里是 ``f"...(相似度 {top:.2f})"``。``top`` 是**融合分**
+            # (``det + 3·sim``),不是相似度 —— 实测同一句话在 demo KB 上会
+            # 渲染成「相似度 13.00」。披露行里展示一个不在 [0,1] 的「相似度」
+            # 会连累整条披露的可信度,而这个数字对用户本就没有意义(机器面有
+            # ``name`` 与 ``effect``)。所以**去掉数字**,只留结论。
+            L(lang, "检索到强相关的参考示例",
+               "strongly relevant reference examples retrieved"),
         ))
     return out
 
 
 def sql_confidence(
-    state: WorkflowState, source: AnswerSource,
+    state: WorkflowState, source: AnswerSource, *, lang: str = "zh",
 ) -> tuple[float, list[dict[str, Any]]]:
     """SQL 置信度:执行前,「这条 SQL 有多可信」。
 
@@ -138,6 +175,12 @@ def sql_confidence(
     微调只在**本档的带内**生效 —— 越档会让分数与档位打架。
 
     ``state.sql`` 为空 ⟹ ``(0.0, [])``:没有答案就没有分数(I4),而不是 0 分。
+
+    **``lang`` 为什么也是参数**:证据里的 ``why`` 是要**原样渲染给用户**的文案,
+    而设计 §5 明写「文案(i18n,随 ``state.lang``)」。这个模块拿不到 ``state``
+    之外的东西,``output`` 也拿不到 —— 它手上只有 ``state``,``lang`` 就在里面,
+    所以是调用方把 ``state.lang`` 传进来(默认为 ``"zh"``,与
+    ``core/config.py`` 的默认语言一致,测试里可以省略)。
 
     **``source`` 为什么是参数,而不是自己从 state 里读**:因为**写这个字段的
     正是 ``output`` 自己** —— 它返回字典里那句 ``"answer_source": ...`` 是这个
@@ -148,12 +191,17 @@ def sql_confidence(
     **刚判定出来的那一档** ——
     ``AnswerSource("")`` 只会抛 ValueError,不是"读到了但读错了"。
     参数化让档位只有一个来源:``output`` 里那个**已经判好**的
-    ``_answer_source(state)``,与 ``_build_details`` 用的是同一个
-    值。判一次,用两处。
+    ``_answer_source(state)``,再把它交给需要档位的每一处(披露行、
+    ``_build_details`` 的折叠区),而不是各自去 state 里翻。
+    **"每一处"从 Task 8 起才成立**:本任务落地时 ``output`` 还没有第二处
+    消费方,传参的收益要到那里才兑现 —— 这里先把形态定下来,不是为了
+    眼下那个调用点。
+    (三处位置引用改内容锚点:``:565``/``:531`` 实测是 565/534,而 **Task 8 要改
+    那个返回字典与 ``_build_details`` 的签名** —— 报数字必再漂。)
     """
     if not state.sql:
         return 0.0, []
     base, lo, hi = TIER_BANDS[source]
-    evidence = _sql_adjustments(state)
+    evidence = _sql_adjustments(state, lang)
     score = _clamp(base + sum(e["effect"] for e in evidence), lo, hi)
     return score, evidence

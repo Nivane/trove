@@ -24,14 +24,14 @@ def make_state(**kwargs) -> WorkflowState:
     return WorkflowState(**defaults)
 
 
-def conf(source=AnswerSource.GENERATED, **kwargs):
+def conf(source=AnswerSource.GENERATED, lang="zh", **kwargs):
     """``sql_confidence`` 的测试入口:档位显式传入。
 
     生产里这个参数就是 ``output`` 已经判定好的那个 ``AnswerSource``。它**不能**
     自己去 ``state.answer_source`` 里翻 —— 一轮开始时那个字段还是空串,自己翻的
     结果是每条答案都被当成 generated。
     """
-    return sql_confidence(make_state(**kwargs), source)
+    return sql_confidence(make_state(**kwargs), source, lang=lang)
 
 
 class TestTierBands:
@@ -121,15 +121,49 @@ class TestSqlConfidence:
         assert "2" in evidence[0]["why"]
 
     def test_strong_retrieval_adds_five_points(self):
-        score, evidence = conf(gen_ctx={"examples": [{"score": 0.9}]})
+        """3.5 是**融合分**刻度(``det + 3·sim``),不是相似度 —— 见 Step 3 的注释。"""
+        score, evidence = conf(gen_ctx={"examples": [{"score": 3.5}]})
         assert score == pytest.approx(0.55)
         assert evidence[0]["name"] == "strong_retrieval"
 
-    def test_weak_retrieval_is_not_evidence(self):
-        """检索分低于阈值就**不倒扣也不记** —— 缺席不是坏消息(设计 §8-1)。"""
-        score, evidence = conf(gen_ctx={"examples": [{"score": 0.3}]})
+    @pytest.mark.parametrize("top", [1.0, 3.0])
+    def test_weak_retrieval_is_not_evidence(self, top):
+        """检索分低于阈值就**不倒扣也不记** —— 缺席不是坏消息(设计 §8-1)。
+
+        ``1.0`` 不是随手挑的:**它是 ``_rank_examples`` 能返回的最低分**。
+        那边先把 ``det = _score_example(...) -> int`` 算出来,``if det <= 0:
+        continue`` 丢掉所有非正的,再返回 ``det + 3.0·sim``(``sim ≥ 0``)
+        ⟹ **凡返回的候选,score 一律 ≥ 1.0**。阈值若被写回 ``0.8``(设计
+        §5.2 的原始数字,那是**相似度**刻度),这条测试立刻转红 —— 这正是
+        它要钉住的东西。
+        """
+        score, evidence = conf(gen_ctx={"examples": [{"score": top}]})
         assert score == 0.5
         assert evidence == []
+
+    def test_strongest_example_wins_not_the_first(self):
+        """读的是**最强**那条,不是 ``examples[0]``。
+
+        ``_rank_examples`` 的 ``per_table`` 分支返回 ``(picks + rest)``,而
+        ``picks`` 是**按表顺序**的每表 top1 —— ``[0]`` 是「第一个命中表里
+        最好的那条」,不保证全场最高。第一条弱、第二条强时必须记证据。
+        """
+        score, evidence = conf(
+            gen_ctx={"examples": [{"score": 1.0}, {"score": 3.5}]})
+        assert score == pytest.approx(0.55)
+        assert evidence[0]["name"] == "strong_retrieval"
+
+    def test_why_copy_follows_lang(self):
+        """设计 §5:文案是 i18n 的,随 ``state.lang``。
+
+        英文档下 ``why`` 里**一个中日韩字符都不该有** —— 这条断言比「等于
+        某个英文字符串」更耐改,却一样能把写死中文的实现钉红。
+        """
+        _, zh = conf(compile_misses=[{"component": "a"}], lang="zh")
+        _, en = conf(compile_misses=[{"component": "a"}], lang="en")
+        assert any("一" <= c <= "鿿" for c in zh[0]["why"])
+        assert not any("一" <= c <= "鿿" for c in en[0]["why"])
+        assert "1" in en[0]["why"]      # 数字照旧带着
 
     def test_missing_retrieval_is_not_evidence(self):
         """KB 空 / 检索关闭:证据条目缺省,不是 0 分(设计 §8-1)。"""
@@ -149,7 +183,7 @@ class TestSqlConfidence:
         """
         lo, hi = TIER_BANDS[source][1], TIER_BANDS[source][2]
         score, _ = conf(
-            source, self_check_passed=1, gen_ctx={"examples": [{"score": 1.0}]})
+            source, self_check_passed=1, gen_ctx={"examples": [{"score": 3.5}]})
         assert lo <= score <= hi
         higher = [b[1] for b in TIER_BANDS.values() if b[1] > lo]
         if higher:                      # 最高档之上没有别的档
@@ -163,18 +197,35 @@ class TestSqlConfidence:
         )
         assert score == pytest.approx(0.05)
 
+    def test_band_floor_holds_overhead_downward(self):
+        """I2 的**向下**方向:缺口吃满时夹在本档下界,不掉进下一档。
+
+        上面那条 parametrize 只压上界。compiled 是唯一一个**下界离下一档
+        很远**的档(0.70 对 generated 的上界 0.69,只差 0.01),而它同时
+        又是缺口扣分最主要的承受者 —— 5 个软 MISS 就是 −0.25,底价 0.85
+        扛不住。不夹的话它会跌到 0.60,落进 generated 的带里,于是
+        「档位说 compiled、分数说 generated」—— I6 禁止的正是这种不自洽,
+        只不过方向是**虚低**而非虚高(设计 §7.2 明确:虚高与虚低都要防)。
+        """
+        score, _ = conf(
+            AnswerSource.COMPILED,
+            compile_misses=[{"component": str(i)} for i in range(5)],
+        )
+        assert score == pytest.approx(0.70)
+        assert score > TIER_BANDS[AnswerSource.GENERATED][2]
+
     def test_ceiling_holds_at_ninety_nine(self):
         """I8 上界:certified + 全额加分不越过 0.99(没执行完就不该满)。"""
         score, _ = conf(
             AnswerSource.CERTIFIED,
-            self_check_passed=1, gen_ctx={"examples": [{"score": 1.0}]})
+            self_check_passed=1, gen_ctx={"examples": [{"score": 3.5}]})
         assert score == pytest.approx(0.99)
 
     def test_every_adjustment_is_named_and_explained(self):
         """I1:分数 ≠ 基准 ⟹ 证据非空,且每条含 name / effect / why。"""
         score, evidence = conf(
             self_check_passed=1, generation_degraded=True,
-            gen_ctx={"examples": [{"score": 0.9}]},
+            gen_ctx={"examples": [{"score": 3.5}]},
         )
         assert evidence, "分数偏离了基准却没有任何证据"
         for item in evidence:

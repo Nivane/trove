@@ -1318,6 +1318,42 @@ class TestGenerationDegradedMarker:
         assert final["generation_degraded"] is False
 
 
+class TestSelectionIsRoundScoped:
+    """``selection`` 必须**每轮清零**，否则上一轮的投票结果会被当成本轮的。
+
+    这个字段是**每轮重建**的那个 ``update`` 字典里唯一漏掉的成员。同一段
+    代码给 ``candidates`` / ``fast_path`` / ``generation_degraded`` 都写了
+    默认值，还在注释里说明了理由（「本轮**是否**降级。默认必须写在这里…
+    普通 state 通道不写就保留上一轮的值」）—— ``selection`` 是同一个道理的
+    第四个成员，漏了。
+
+    漏掉的后果在 Task 5/7 才显形：``select`` 在多轮场景里**常常什么都不写**
+    —— 它开头有一句 ``if state.error or state.error_feedback or not
+    state.candidates: return {}``，而 ``candidates`` 正是那个每轮被清成
+    ``[]`` 的字段，所以**第 2 轮起 select 基本不投票**。于是 ``selection``
+    里的值永远停在第 1 轮：第 1 轮投出 ``winner="candidate"``、第 2 轮交付
+    的其实是重修出来的主候选时，Task 5 的降级守卫会**认错人**（不扣该扣的
+    分），Task 7 的票率折扣会**用上一轮的票率**折这一轮的 SQL。
+
+    这条测试钉的就是那个清零点：喂一个上一轮遗留的 ``selection``，跑一轮，
+    它必须被清掉。
+    """
+
+    async def test_stale_selection_is_cleared(self, sqlite_registry, catalog):
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "finish",
+                 "arguments": '{"answer": "```sql\\nSELECT name FROM students;\\n```"}'},
+            ]},
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        stale = make_state(selection={"winner": "candidate", "confidence": 0.4})
+        final = await graphs["reflection"].ainvoke(stale)
+        assert final["selection"] == {}
+
+
 class TestSubagentDelegation:
     """P1: 主 agent 规划 + subagent 并行执行 —— agentic 多候选由独立
     ReAct loop(gen_sql_subagent)并行产出,select 共识投票。"""
