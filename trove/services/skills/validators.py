@@ -15,6 +15,7 @@ True 是"没查却报平安",塌成 False 是"查不了却拦下正确结果" �
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from trove.core.logging import get_logger
@@ -68,11 +69,12 @@ def build_scope(
     """
     names = list(check.get("columns") or [])
     idx = _column_index(names, columns)
+    total = float(len(rows) if row_count is None else row_count)
     scope: dict[str, Any] = {
-        "row_count": float(len(rows) if row_count is None else row_count),
+        "row_count": total,
         "col_count": float(len(columns)),
     }
-    truncated = row_count is not None and row_count > len(rows)
+    truncated = row_count is not None and total > len(rows)
     if not idx or truncated:
         # 无列可算(idx 空:没点名,或点名的列不在结果里),或结果集被截断
         # (``rows`` 只是展示窗口,``row_count`` 才是真实总数 —— 窗口内的
@@ -144,6 +146,18 @@ def run_validators(
             })
             continue
         checks = spec.get("checks") or []
+        if not isinstance(checks, Iterable):
+            # 标量(``checks: 5`` / ``checks: yes``)是最省事的手写笔误,而手写
+            # SKILL.md 正是绕开 create 校验的那条路 —— 直接迭代会抛 TypeError,
+            # 抛出去就是每次查询都炸。降级为"判不了"。
+            out.append({
+                "name": name,
+                "verdict": None,
+                "severity": severity,
+                "message": "malformed checks (expected a list) — this validator did not run",
+                "mode": "deterministic",
+            })
+            continue
         if not checks:
             # 声明了却没有任何检查 = 判不了,不是通过。与上面 mode != deterministic
             # 同一条纪律:静默的"通过"和"没人管"从外面看一模一样。

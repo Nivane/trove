@@ -188,3 +188,18 @@ def test_mapping_checks_degrades_instead_of_raising():
                           columns=["a"], rows=[[1]], row_count=1)
     assert hits[0]["verdict"] is None
     assert "check error" in hits[0]["message"].lower()
+
+
+def test_scalar_checks_degrades_instead_of_raising():
+    """``checks: 5`` / ``checks: yes`` —— 手写 YAML 最省事的笔误,不得炸管线。"""
+    hits = run_validators([{"name": "g1", "severity": "advisory", "checks": 5}],
+                          columns=["a"], rows=[[1]], row_count=1)
+    assert hits[0]["verdict"] is None
+    assert "checks" in hits[0]["message"].lower()
+
+
+def test_string_row_count_still_coerces():
+    """row_count 归一化后再比较 —— 可强转的字符串照常算,不因守卫退化。"""
+    scope = build_scope({"columns": ["a"]}, ["a"], [[1], [2]], row_count="2")
+    assert scope["row_count"] == 2.0
+    assert scope["min"] == 1.0
