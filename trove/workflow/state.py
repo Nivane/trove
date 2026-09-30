@@ -417,6 +417,27 @@ class WorkflowState(BaseModel):
     # output artifact
     final_response: str = ""
 
+    def skill_ctx(self) -> dict[str, Any]:
+        """skill 触发的上下文维度 —— 与 ``triggers`` 的字段名一一对应。
+
+        收成一个方法而不是在每个节点各拼一次：**漏传一个维度不会报错**，
+        只会让那一类 trigger 永远不命中。这不是假想的风险 ——
+        ``_match_org`` / ``_match_one`` 早就按 ctx 逐字段匹配写好了，而
+        三个调用点一个 ctx 都没传，于是任何非 ``node`` 的 trigger 从写下
+        那天起就没生效过，外部完全看不出来。
+
+        ``lang`` 在里面**是有意的**：它既绑 ``render_skills`` 的具名形参
+        （决定渲染哪种语言的正文），又是触发维度（只对某种语言的问题挂）。
+        调用方写 ``render_skills(node, **state.skill_ctx())`` 时两者同时满足。
+        """
+        return {
+            "intent": self.intent,
+            "complexity": self.complexity,
+            "role": self.tool_roles,
+            "lang": self.lang,
+            "datasource": self.datasource,
+        }
+
 
 class GenSQLState(BaseModel):
     """State for the gen_sql subgraph (generate → validate retry loop)."""

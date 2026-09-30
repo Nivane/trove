@@ -34,7 +34,7 @@ from typing import Any
 import yaml
 
 from trove.llm.injection import scan_injection
-from trove.prompts.skills import fence_org_skill
+from trove.prompts.skills import fence_org_skill, match_trigger
 from trove.prompts.skills import render_skills as _code_render
 
 # name = lowercase letters/digits + hyphens; also a safe directory name.
@@ -46,13 +46,6 @@ FRONTMATTER_FIELDS = (
     "name", "description", "triggers", "tier", "status",
     "source", "lang", "created_at", "updated_at",
 )
-
-
-def _match_one(cond: object, value: object) -> bool:
-    """One trigger field: scalar equality, or list membership (OR)."""
-    if isinstance(cond, list):
-        return value in cond
-    return value == cond
 
 
 class SkillService:
@@ -344,14 +337,16 @@ class SkillService:
         return target is None or target == node
 
     def _match_org(self, node: str, **ctx: object) -> list[dict]:
-        """Confirmed org skills matching the node (trigger ctx equality)."""
+        """Confirmed org skills matching the node (trigger ctx 逐字段匹配)。"""
         out = []
         for entry in self.list_org(confirmed_only=True):
             triggers = entry.get("triggers") or {}
             if triggers.get("node") not in (None, node):
                 continue
             if not all(
-                _match_one(v, ctx.get(k)) for k, v in triggers.items() if k != "node"
+                match_trigger(k, v, ctx.get(k))
+                for k, v in triggers.items()
+                if k != "node"
             ):
                 continue
             out.append(entry)
@@ -369,7 +364,9 @@ class SkillService:
         code = _code_render(node, lang=lang, **ctx)
         if code:
             blocks.append(code)
-        for entry in self._match_org(node, **ctx):
+        # lang 被 render_skills 的具名形参吃掉了,不在这里补回,它的 ctx 值恒为
+        # None —— 「只对中文问题挂」这类 trigger 会静默失效。
+        for entry in self._match_org(node, lang=lang, **ctx):
             if entry.get("tier") != "required":
                 continue
             body = self.get_body(entry["name"], lang)
@@ -381,20 +378,17 @@ class SkillService:
 
     # ── On-demand loading (available tier, agentic gen_sql) ──
 
-    def available_descriptions(self, node: str) -> list[dict]:
+    def available_descriptions(self, node: str, **ctx: object) -> list[dict]:
         """Confirmed ``available``-tier org skills applying to ``node``."""
-        out = []
-        for entry in self._match_org(node):
-            if entry.get("tier") == "available":
-                out.append(entry)
-        return out
+        return [e for e in self._match_org(node, **ctx)
+                if e.get("tier") == "available"]
 
     def has_available_for(self, node: str) -> bool:
         return bool(self.available_descriptions(node))
 
-    def available_skills_block(self, node: str, lang: str = "en") -> str:
+    def available_skills_block(self, node: str, lang: str = "en", **ctx: object) -> str:
         """``<available_skills>`` advertisement block for the system prompt."""
-        entries = self.available_descriptions(node)
+        entries = self.available_descriptions(node, lang=lang, **ctx)
         if not entries:
             return ""
         lines = ["<available_skills>",

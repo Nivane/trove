@@ -225,3 +225,73 @@ class TestConfirmReportsInjectionShapedText:
         rendered = svc.render_skills("query_sketch")
         assert "<org_skill" in rendered and "admin-confirmed" in rendered
         assert self.POISON in rendered, "命中归命中,内容不被净化"
+
+
+def test_role_trigger_is_intersection_not_equality(tmp_path):
+    """role 是列表对列表：有交集即命中。标量相等语义会让它永远不命中。"""
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "risk-caliber", "description": "风控口径",
+        "triggers": {"node": "validate", "role": ["analyst", "admin"]},
+        "tier": "required", "body": "口径正文",
+    })
+    svc.confirm("risk-caliber")
+
+    assert svc.render_skills("validate", role=["analyst"]) != ""
+    assert svc.render_skills("validate", role=["admin", "viewer"]) != ""
+    assert svc.render_skills("validate", role=["viewer"]) == ""
+
+
+def test_role_trigger_missing_roles_does_not_match(tmp_path):
+    """role 缺失（CLI 直用 / 未登录）→ 不命中。收窄条件在信息缺失时保守。"""
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "risk-caliber", "description": "风控口径",
+        "triggers": {"role": ["analyst"]},
+        "tier": "required", "body": "口径正文",
+    })
+    svc.confirm("risk-caliber")
+
+    assert svc.render_skills("validate", role=None) == ""
+    assert svc.render_skills("validate", role=[]) == ""
+
+
+def test_lang_trigger_reaches_ctx(tmp_path):
+    """lang 既绑 render_skills 的具名形参，也必须作为触发维度可见。"""
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "zh-only", "description": "只对中文问题",
+        "triggers": {"node": "gen_sql", "lang": "zh"},
+        "tier": "required", "body": "中文口径",
+    })
+    svc.confirm("zh-only")
+
+    assert svc.render_skills("gen_sql", lang="zh") != ""
+    assert svc.render_skills("gen_sql", lang="en") == ""
+
+
+def test_skill_ctx_carries_every_trigger_dimension():
+    """skill_ctx 必须与 triggers 的字段名一一对应 —— 漏一个就是一类永不命中的 trigger。"""
+    from trove.workflow.state import WorkflowState
+
+    state = WorkflowState(
+        session_id="s1", question="q", intent="query", complexity="complex",
+        tool_roles=["analyst"], lang="zh", datasource="financial",
+    )
+    assert state.skill_ctx() == {
+        "intent": "query", "complexity": "complex", "role": ["analyst"],
+        "lang": "zh", "datasource": "financial",
+    }
+
+
+def test_code_skill_lang_trigger_survives_render_skills(monkeypatch):
+    """code 侧是**同一个** lang 死症:``render_skills`` 把 lang 吃进具名形参、
+    不转给 ``matched_skills``。只修 org 侧会留下这一半,而两边各自看代码都对
+    —— 所以这里走 ``render_skills`` 的转发路径,而不是直接调匹配器。"""
+    from trove.prompts import skills as code_skills
+
+    monkeypatch.setattr(code_skills, "_cache", [
+        {"name": "plan_query", "triggers": {"node": "query_sketch", "lang": "zh"}},
+    ])
+    assert code_skills.render_skills("query_sketch", lang="zh") != ""
+    assert code_skills.render_skills("query_sketch", lang="en") == ""

@@ -977,10 +977,14 @@ def make_gen_generate(
             # available 档只广告描述 + load_skill 按需取正文(注册表已挂工具)。
             skills = services.skills
             if skills is not None:
+                # ctx 取自外层 WorkflowState 而非 sub_state:GenSQLState 只带
+                # lang/datasource/complexity,没有 intent/tool_roles —— 用它拼
+                # ctx 会让这两类 trigger 在 gen_sql 上恒不命中,正是本任务在
+                # 修的那类静默失效。
                 system_text = append_skill_block(
-                    system_text, skills.render_skills("gen_sql", lang=sub_state.lang))
+                    system_text, skills.render_skills("gen_sql", **state.skill_ctx()))
                 system_text = append_skill_block(
-                    system_text, skills.available_skills_block("gen_sql", lang=sub_state.lang))
+                    system_text, skills.available_skills_block("gen_sql", **state.skill_ctx()))
             model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
             result = None
             try:

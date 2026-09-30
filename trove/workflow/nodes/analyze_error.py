@@ -363,9 +363,9 @@ def make_analyze_error(
             # 方法论 skill:按节点确定性匹配(manifest.yml),注入 system prompt;
             # 有 SkillService 时合并 org 技能(required 档全量注入)。
             skill_block = (
-                skills.render_skills("analyze_error", lang=state.lang)
+                skills.render_skills("analyze_error", **state.skill_ctx())
                 if skills is not None
-                else render_skills("analyze_error", lang=state.lang)
+                else render_skills("analyze_error", **state.skill_ctx())
             )
             system_prompt = append_skill_block(system_prompt, skill_block)
             raw_error = state.error_feedback or state.reason

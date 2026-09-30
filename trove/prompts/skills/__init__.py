@@ -11,6 +11,7 @@ how to diagnose failures). Facts about a datasource belong in the KB, not
 here.
 
 Public API:
+    match_trigger(key, cond, value) -> bool   trigger 语义的**唯一**实现
     matched_skills(node, **ctx) -> list[str]   matching skill names
     render_skills(node, lang="en", **ctx) -> str   rendered blocks, joined
     fence_org_skill(name, body) -> AdminConfirmed   org 正文围栏 + 来源标注
@@ -49,8 +50,30 @@ def _load_manifest() -> list[dict]:
     return _cache
 
 
-def _match_one(cond: object, value: object) -> bool:
-    """One trigger field: scalar equality, or list membership (OR)."""
+def match_trigger(key: str, cond: object, value: object) -> bool:
+    """一个 trigger 字段的匹配 —— **语义的唯一实现**。
+
+    两条语义，按字段名分派：
+
+    - ``role``：**列表对列表，有交集即命中**。``tool_roles`` 天然是列表
+      （一个用户可以同时是 analyst 与 admin），标量相等语义下
+      ``["analyst"] == ["analyst", "admin"]`` 恒假，配了 role 的 trigger
+      会永远不命中。``value`` 缺失（``None`` / ``[]``，CLI 直用或未登录）
+      → **不命中**：收窄条件在信息缺失时应当保守。
+    - 其余：标量相等，或列表成员（OR）。
+
+    收在唯一一处是因为 **code skill 与 org skill 用的是同一套 trigger 字段名**
+    —— 两处各写一份，同名字段在两处语义不同，是最难查的一类分歧。
+    """
+    if key == "role":
+        if isinstance(value, list):
+            have = set(value)
+        elif value:
+            have = {value}
+        else:
+            return False
+        want = set(cond if isinstance(cond, list) else [cond])
+        return bool(have & want)
     if isinstance(cond, list):
         return value in cond
     return value == cond
@@ -69,7 +92,7 @@ def matched_skills(node: str, **ctx: object) -> list[str]:
         if not triggers or triggers.get("node") != node:
             continue
         if all(
-            _match_one(v, ctx.get(k))
+            match_trigger(k, v, ctx.get(k))
             for k, v in triggers.items()
             if k != "node"
         ):
@@ -84,7 +107,10 @@ def render_skills(node: str, lang: str = "en", **ctx: object) -> str:
     """
     blocks = [
         render(f"skills/{name}/system", lang=lang)
-        for name in matched_skills(node, **ctx)
+        # lang 是具名形参,不在这里补回,它就到不了 matched_skills ——
+        # 与 org 侧 _match_org 的 lang 是**同一个**死症:配了 lang 触发
+        # 条件的技能永远不命中,而两处都看得出来"代码是对的"。
+        for name in matched_skills(node, lang=lang, **ctx)
     ]
     return "\n\n".join(blocks)
 
