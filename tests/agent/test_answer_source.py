@@ -181,7 +181,8 @@ class TestResolve:
 
 
 class TestExactMatchTier:
-    """``kb_exact_match`` 直接取示例 SQL、**跳过模型生成**(``graphs.py:925``)。
+    """``kb_exact_match`` 直接取示例 SQL、**跳过模型生成**
+    (``graphs.py`` 里 ``if kb_exact_match is not None:`` → ``update["sql"] = kb_exact_match["sql"]``)。
 
     它与快径是两条不同的复用路(模板 vs 示例),但披露档位同属复用:两者都
     「没经过模型」,而这正是用户要区分的那件事。

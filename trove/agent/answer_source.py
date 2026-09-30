@@ -99,7 +99,8 @@ def resolve(state: WorkflowState) -> AnswerSource:
     checkpoint)时,``_template_status`` 返回空串 → 保守 GENERATED(I6)。
     """
     # KB 精确命中要**排在快径前面**判:它跳过模型生成直接取示例 SQL
-    # (``graphs.py:925``),但 ``compiled`` 是粘滞位、可能在这一轮之前就置上了 ——
+    # (``graphs.py`` 里 ``if kb_exact_match is not None:`` 那一支)—— 但 ``compiled``
+    # 是粘滞位、可能在这一轮之前就置上了 ——
     # 只看编译位会把「逐字复用的示例」说成「编译器产物」。两者都没经过模型,
     # 可来源不同,而披露的全部内容就是来源。
     if state.kb_exact_match:
