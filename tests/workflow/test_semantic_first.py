@@ -195,7 +195,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["sum(loan.ghost)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="贷款总额?", matched_tables=["loan"]))
@@ -222,7 +222,7 @@ class TestQuerySketchSemanticFirst:
 
         node = make_query_sketch(
             ScriptedLLM([json.dumps({"tables": ["loan"]})]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="?", matched_tables=["loan"]))
@@ -249,7 +249,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="how many loans?", matched_tables=["loan"]))
@@ -294,7 +294,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model_with_date()),
         )
         out = await node(make_state(
@@ -337,7 +337,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(model),
         )
         out = await node(make_state(
@@ -380,7 +380,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [{"field": "loan.status", "op": "=", "value": "Z"}],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(model),
         )
         out = await node(make_state(question="状态为 Z 的贷款数?", matched_tables=["loan"]))
@@ -418,7 +418,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [{"field": "loan.ghost_col", "op": "=", "value": "x"}],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="?", matched_tables=["loan"]))
@@ -448,7 +448,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["sum(loan.ghost)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="贷款总额?", matched_tables=["loan"]))
@@ -477,7 +477,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="how many loans?", matched_tables=["loan"]))
@@ -494,7 +494,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["sum(loan.ghost)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out_miss = await node_miss(
@@ -514,7 +514,7 @@ class TestQuerySketchSemanticFirst:
                 "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [],
             })]),
-            AgentConfig(target="mock/model", semantic_first=True),
+            AgentConfig(target="mock/model"),
             semantic_layer=None,
         )
         out = await node(make_state(question="how many loans?", matched_tables=["loan"]))

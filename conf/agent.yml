@@ -79,9 +79,13 @@ agent:
   # 语义优先(Phase B):语义模型是生成主视角与可答边界——gen_sql/query_sketch 以
   # 语义视角为主,未覆盖查询拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认
   # → 重答),无语义模型的数据源拒绝并提示先 /kb init。catalog 枚举工具
-  # (search_values / lookup_schema / explain_plan) 始终注册,agent 可触达物理
+  # (search_values / lookup_schema / explain_plan) 在 standard/complex 档注册、
+  # 档内由 catalog 发现工具按需解锁,且限 analyst/admin 角色;agent 可触达物理
   # schema 作值确认 / 结构懒加载 / 执行计划辅助(不替代语义边界判定)。
-  semantic_first: true
+  #
+  # 这里**没有** semantic_first 开关:旧裸表路径已从查询图删除,写 false 也没有
+  # 实现可走。原先那个 `semantic_first: true` 键已删除——它没有任何读取点,改它
+  # 不改变任何行为,留着就是一条会说谎的配置。
   # KB 语义文件 git 版本管理(语义即代码):KB YAML 写操作(init/learn/草稿
   # 确认·驳回·自动应用/lesson 确认/删除)后自动 commit,git log 即审计历史,
   # git diff/revert 即评审/回滚。best-effort:KB 不在 git 工作树内/无变更/

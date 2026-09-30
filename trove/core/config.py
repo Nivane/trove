@@ -244,9 +244,6 @@ class AgentConfig:
     node_models: dict[str, str] = field(default_factory=dict)
     language: str = "zh"  # 交互语言: zh / en(不按问题语言自动检测)
     semantic_layer_path: str = ""  # OSSIE 语义层目录(相对项目根),空 = 关闭
-    # 语义优先(Phase B):语义模型是唯一可答边界——未覆盖=拒绝+反问扩展;
-    # 无模型=拒绝并提示 /kb init(决策 2/3)。旧裸表路径已从查询图删除。
-    semantic_first: bool = True
     # KB 语义文件 git 版本管理(语义即代码):KB YAML 写操作(init/learn/草稿
     # 确认·驳回·自动应用/lesson 确认/删除)后自动 commit,git log 即审计历史。
     # best-effort:KB 不在 git 工作树内/无变更/失败 → 静默跳过,绝不影响写入。
@@ -596,7 +593,6 @@ class ConfigLoader:
             },
             language=agent_section.get("language", "zh"),
             semantic_layer_path=agent_section.get("semantic_layer_path", ""),
-            semantic_first=agent_section.get("semantic_first", True),
             git_kb=agent_section.get("git_kb", True),
             date_parser=agent_section.get("date_parser", True),
             fast_path=agent_section.get("fast_path", True),

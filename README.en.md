@@ -383,7 +383,6 @@ agent:
   target: deepseek/deepseek-reasoner   # litellm model string
   model_fast: deepseek/deepseek-chat   # cheap tier: sketches, semantics, insights
   language: zh                         # interaction language: zh / en
-  semantic_first: true                 # semantic model is the only answerable boundary
   # explain_row_guard: true            # EXPLAIN row guard (on by default)
   # explain_max_rows: 50000000         # soft limit → back to generation
   # explain_hard_max_rows: 1000000000  # hard limit → refuse
