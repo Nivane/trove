@@ -160,7 +160,12 @@ def make_validate_rules(
             h for h in org_hits
             if h["severity"] == "blocking" and h["verdict"] is False
         ]
-        vh = {"validator_hits": org_hits} if org_hits else {}
+        # 有 SkillService 时**总是**重写该字段(零命中即空列表):trigger 维度
+        # 里的 complexity 会被修正轮强制成 standard(graphs.py:390-392),所以
+        # "上一轮命中、这一轮选不出人"是常规路径。不写键 = 上一轮的判词活到
+        # 交付答案上,渲染成一条针对它从未检查过的结果的告警。
+        # skills is None 时逐字保持旧形状(省略键)——那是既有的向后兼容契约。
+        vh = {"validator_hits": org_hits} if skills is not None else {}
         if blocking:
             joined = "; ".join(f"[{h['name']}] {h['message']}" for h in blocking)
             if budget_exhausted(state.retry_count, max_retries):

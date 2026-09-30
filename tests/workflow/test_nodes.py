@@ -4743,6 +4743,39 @@ class TestOrgValidatorTier:
         assert "validator_hits" not in out
         assert "error_feedback" in out
 
+    async def test_zero_matching_validators_clears_previous_round_hits(self, tmp_path):
+        """本轮零命中 → 必须清掉上一轮的判定,而不是让键缺席。
+
+        "上一轮命中、这一轮不命中"是常规路径:validators_for 按 trigger 维度
+        选人,而 complexity 会被修正轮强制成 standard(graphs.py:390-392)。
+        键缺席时上一轮的 advisory 判词会渲染到本轮结果上 —— 数据对、告警假。
+        """
+        from trove.services.skills.service import SkillService
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = SkillService(tmp_path)
+        svc.create({
+            "name": "other-node-guard", "description": "挂在别的节点上",
+            "tier": "validator", "severity": "advisory", "targets": ["result"],
+            "triggers": {"node": "insights"},
+            "checks": [{"expr": "min >= 0", "columns": ["balance"], "message": "出现负值"}],
+            "body": "说明",
+        })
+        svc.confirm("other-node-guard")
+        node = make_validate_rules(max_retries=10, skills=svc)
+
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", 5]], row_count=1,
+            # 上一轮(那时它命中)留下的判定
+            validator_hits=[{"name": "other-node-guard", "verdict": False,
+                             "severity": "advisory", "message": "出现负值",
+                             "mode": "deterministic"}],
+        ))
+
+        assert out["rules_passed"] is True
+        assert out["validator_hits"] == []
+
 
 async def test_output_renders_advisory_validator_note():
     from trove.workflow.nodes.output import output
@@ -4781,8 +4814,26 @@ async def test_output_hides_blocking_verdicts_from_the_note():
     assert "出现负值" not in out["final_response"]
 
 
+async def test_output_passing_verdict_stays_silent():
+    """verdict is True = 通过 = 无声。docstring 写了三条排除,这是没被钉的那条。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": True, "severity": "advisory",
+        "message": "检查通过", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "检查通过" not in out["final_response"]
+    assert "口径提示" not in out["final_response"]
+    assert "Caliber note" not in out["final_response"]
+
+
 async def test_output_no_validator_hits_is_unchanged():
     from trove.workflow.nodes.output import output
 
     assert (await output(make_state()))["final_response"] == \
            (await output(make_state(validator_hits=[])))["final_response"]
+
+    out = await output(make_state(validator_hits=[]))
+    assert "口径提示" not in out["final_response"]
+    assert "Caliber note" not in out["final_response"]
