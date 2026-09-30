@@ -20,7 +20,11 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
-from trove.services.skills.validators import VALIDATOR_HOST, run_validators
+from trove.services.skills.validators import (
+    VALIDATOR_HOST,
+    format_hit,
+    run_validators,
+)
 from trove.workflow.nodes.query_sketch import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
@@ -170,7 +174,10 @@ def make_validate_rules(
         # skills is None 时逐字保持旧形状(省略键)——那是既有的向后兼容契约。
         vh = {"validator_hits": org_hits} if skills is not None else {}
         if blocking:
-            joined = "; ".join(f"[{h['name']}] {h['message']}" for h in blocking)
+            # ``format_hit``:判词是手写 YAML 的自由文本 —— 空名字会拼出
+            # ``[] 判词``,换行会在预算耗尽那条路上把用户的错误卡片劈成两行
+            # (另一处同一渲染在 ``output.py::_validator_notice``)。
+            joined = "; ".join(format_hit(h) for h in blocking)
             if budget_exhausted(state.retry_count, max_retries):
                 return {"error": joined, "rules_passed": False, **vh}
             feedback = L(

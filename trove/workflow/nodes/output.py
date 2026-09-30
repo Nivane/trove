@@ -23,6 +23,7 @@ from trove.core.i18n import L
 from trove.llm.observability import record_span
 from trove.services.errors import present_error
 from trove.services.limits import get_result_limits
+from trove.services.skills.validators import format_hit
 from trove.services.sql.format import format_sql
 from trove.services.viz.spark import render_ascii_bar, render_waterfall_ascii
 from trove.workflow.state import WorkflowState
@@ -262,9 +263,10 @@ def _validator_notice(state: WorkflowState) -> str:
     ]
     if not hits:
         return ""
-    body = "; ".join(
-        f"[{h.get('name', '')}] {h.get('message', '')}" for h in hits
-    )
+    # 判词是手写 YAML 的自由文本(validator 档唯一的授权路径就是手写):
+    # 空名字留下 ``[] 判词`` 的残缺排版,换行会把引用块冲出三行、把后面的
+    # 内容顶成正文。两处同一渲染的另一处是 ``validate.py`` 的 blocking join。
+    body = "; ".join(format_hit(h) for h in hits)
     return L(
         state.lang,
         f"> ⚠️ **口径提示**：{body}\n",

@@ -1228,6 +1228,11 @@ class SessionManager:
             detail["retry"] = retry
             detail["rules_passed"] = delta.get("rules_passed", False)
             detail["validation_hits"] = delta.get("validation_hits") or []
+            # org validator 的另一路,与上一行并列:那条是规则链(eval 归因),
+            # 这条是管理员的质检信号 —— 尤其是"判不了"(verdict None),它按
+            # 设计不进用户屏幕,这里是它唯一能被**读**到的地方。未接
+            # SkillService 的图不带该键,`or []` 让形状一致(总是列表)。
+            detail["validator_hits"] = delta.get("validator_hits") or []
         elif node_name == "reflect":
             detail["verdict"] = delta.get("verdict", "")
             detail["reason"] = delta.get("reason", "")

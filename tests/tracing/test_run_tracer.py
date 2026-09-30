@@ -58,6 +58,32 @@ class TestRunTracerSpanTree:
         assert "intent_evidence" in log_text
         assert "verdict" in log_text
 
+    def test_run_log_renders_validator_hits(self, tmp_path):
+        """``node_end`` 按**返回字典的每个键**渲染 —— validate 的 org validator
+        通道因此天然进 run log,这条把它钉住。
+
+        它是唯一记下"判不了"(``verdict: None``)的落点:用户屏幕按设计不收
+        None(高频出现会把真告警一起淹掉),而"配了却判不了"的占比正是这套
+        机制唯一的质量信号。哪天渲染改成白名单式枚举,这条要红。
+        """
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("vh1")
+        tracer.start_run({"question": "q"})
+        sid = tracer.node_start("validate", {})
+        tracer.node_end(sid, {"validator_hits": [
+            {"name": "credit-guard", "verdict": None, "severity": "advisory",
+             "reason": "truncated_rows", "message": "判不了（结果集超出展示窗口）",
+             "mode": "deterministic"},
+        ]})
+        tracer.finish({})
+
+        span_end = next(e for e in _events("vh1") if e["kind"] == "span_end")
+        assert span_end["output"]["validator_hits"][0]["reason"] == "truncated_rows"
+        log_text = (tmp_path / "runs" / "vh1.log").read_text(encoding="utf-8")
+        # 原因码与判词都要在:前者数分布,后者说人话
+        assert "truncated_rows" in log_text
+        assert "判不了" in log_text
+
     def test_nested_spans_for_retried_nodes(self, tmp_path):
         """同一节点重跑两次 → 两个独立 span,每次执行自己的输入输出。"""
         configure_trace_store(tmp_path)

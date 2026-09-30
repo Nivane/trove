@@ -4558,6 +4558,32 @@ def _validator_service(tmp_path, severity="blocking"):
     return svc
 
 
+def _hand_written_validator(tmp_path, *, name_line, message_line,
+                            severity="advisory"):
+    """直接落一份 SKILL.md —— validator 档唯一的授权路径就是手写。"""
+    from trove.services.skills.service import SkillService
+
+    svc = SkillService(tmp_path)
+    d = svc.skill_dir("hand-guard")
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\n"
+        f"{name_line}\n"
+        "description: d\n"
+        "tier: validator\n"
+        "status: confirmed\n"
+        f"severity: {severity}\n"
+        "targets: [result]\n"
+        "checks:\n"
+        "  - expr: min >= 0\n"
+        "    columns: [balance]\n"
+        f"    {message_line}\n"
+        "---\n\n说明\n",
+        encoding="utf-8",
+    )
+    return svc
+
+
 class TestOrgValidatorTier:
     """org validator 档接线:紧挨规则链的**另一遍**,三值处置。
 
@@ -4598,6 +4624,35 @@ class TestOrgValidatorTier:
         # 的话,把它那里的 `**vh` 删掉这条测试照样绿(第四个 merge site 就只
         # 由代码形状保护了)。
         assert out["validator_hits"][0]["verdict"] is False
+
+    async def test_blocking_join_flattens_multiline_judgement(self, tmp_path):
+        """判词是**手写 YAML 的自由文本**,拼进 ``error_feedback`` / ``error``
+        之前要过 ``format_hit``:
+
+        - ``name: ""``(手写文件漏填)拼出 ``[] 出现负值`` —— 残缺的排版;
+        - 判词里的换行(YAML 双引号标量的 ``\\n``)把一句话劈成两行,而这条
+          串在预算耗尽时就是**直接投给用户的错误卡片**。
+
+        ``validation_hits`` 那条审计通道仍拿原文:它是机器判据(eval 归因),
+        不是排版,压平会改掉比对用的字符串。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = _hand_written_validator(
+            tmp_path, name_line='name: ""',
+            message_line='message: "第一行\\n第二行"', severity="blocking")
+        node = make_validate_rules(max_retries=10, skills=svc)
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        ))
+
+        assert out["rules_passed"] is False
+        assert "[]" not in out["error_feedback"]
+        assert "\n" not in out["error_feedback"]
+        assert "第一行 第二行" in out["error_feedback"]
+        # 审计通道不受排版处理影响
+        assert out["validation_hits"][0]["reason"] == "第一行\n第二行"
 
     async def test_advisory_validator_does_not_intercept(self, tmp_path):
         """advisory 绝不能写 validation_hits —— 那个通道是 eval 归因的判据。"""
@@ -4888,6 +4943,25 @@ async def test_output_passing_verdict_stays_silent():
     assert "检查通过" not in out["final_response"]
     assert "口径提示" not in out["final_response"]
     assert "Caliber note" not in out["final_response"]
+
+
+async def test_output_validator_note_flattens_hostile_judgement():
+    """判词是手写 YAML 的自由文本 —— 渲染进 Markdown 引用块前要过 ``format_hit``。
+
+    引用块只认**连续以 ``>`` 开头的行**:一个换行就把块冲出三行,把后面的
+    正文顶成普通段落。空名字则留下 ``[] 判词`` 这种残缺排版。两条都只在
+    手写文件上出现,而手写正是 validator 档唯一的授权路径。
+    """
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "", "verdict": False, "severity": "advisory",
+        "message": "第一行\n第二行", "mode": "deterministic",
+    }])
+    resp = (await output(state))["final_response"]
+    assert "[]" not in resp
+    assert "\n第二行" not in resp
+    assert "第一行 第二行" in resp
 
 
 async def test_output_no_validator_hits_is_unchanged():
