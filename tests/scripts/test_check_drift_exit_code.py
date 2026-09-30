@@ -226,7 +226,7 @@ def _ns(**over) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def _stub_check(cd, seen: list):
+def _stub_check(seen: list):
     """把 ``_check_datasource`` 换成记录器 —— 选源是这里要测的,真建 demo 库不是。
 
     记的是**整个 cfg** 而不是 (name, type):后者对「注册表来的」与「兜底造的」
@@ -251,9 +251,9 @@ def test_demo_resolves_without_a_registry(cd, monkeypatch, tmp_path):
     assert not (tmp_path / ".trove" / "datasources.yml").exists()
 
     seen: list = []
-    monkeypatch.setattr(cd, "_check_datasource", _stub_check(cd, seen))
+    monkeypatch.setattr(cd, "_check_datasource", _stub_check(seen))
 
-    payload, code = asyncio.run(cd._run(_ns()))
+    _, code = asyncio.run(cd._run(_ns()))
 
     assert [(c.name, c.type) for c in seen] == [("demo", "demo")], "内置 demo 没被认出来"
     assert code == 0
@@ -283,7 +283,7 @@ def test_registered_demo_still_wins_over_the_fallback(cd, monkeypatch, tmp_path)
     )
 
     seen: list = []
-    monkeypatch.setattr(cd, "_check_datasource", _stub_check(cd, seen))
+    monkeypatch.setattr(cd, "_check_datasource", _stub_check(seen))
 
     _, code = asyncio.run(cd._run(_ns()))
 
@@ -294,7 +294,7 @@ def test_registered_demo_still_wins_over_the_fallback(cd, monkeypatch, tmp_path)
 def test_unknown_name_still_exits_2(cd, monkeypatch, tmp_path):
     """兜底只给内置 demo,不能顺手把任何拼错的名字都放行。"""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cd, "_check_datasource", _stub_check(cd, []))
+    monkeypatch.setattr(cd, "_check_datasource", _stub_check([]))
 
     payload, code = asyncio.run(cd._run(_ns(datasource="nosuchsrc")))
 
