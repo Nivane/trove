@@ -33,7 +33,7 @@ def test_manifest_matches_by_node():
     """每个 skill 只由声明的节点触发;其它节点不匹配。"""
     assert matched_skills("query_sketch") == ["plan_query"]
     assert matched_skills("analyze_error") == ["diagnose_failure"]
-    assert matched_skills("schema_linking") == ["align_schema"]
+    assert matched_skills("schema_linking") == []
     assert matched_skills("gen_sql") == []
     assert matched_skills("answer") == []
 
@@ -58,12 +58,8 @@ def test_render_skills_bilingual():
     assert "回归检查" in zh
     assert "回退纪律" in zh
 
-    en = render_skills("schema_linking", lang="en")
-    zh = render_skills("schema_linking", lang="zh")
-    assert "necessity" in en.lower()
-    assert "populated" in en.lower()
-    assert "必要性" in zh
-    assert "有数据" in zh
+    # schema_linking 那一段随 align_schema 一起删了:它不是"忘了接线",是
+    # 结构性无位可挂(那个节点 477 行里没有任何 LLM 调用)。
 
 
 def test_render_skills_no_match_is_empty():

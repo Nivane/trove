@@ -261,3 +261,85 @@ async def test_chart_hook_injects_org_skill(tmp_path):
 
     assert llm.calls, "chart 没调到 LLM —— gate 条件不满足,补 state 字段"
     assert "ORG-METHOD-BODY" in llm.system_of()
+
+
+#: 有节点级挂点测试的节点(**全仓范围**,不只是本文件)。新增 manifest
+#: 条目时,要么同时在这里加一项并写挂点测试,要么别加 —— 元测试会拦下。
+#:
+#: 每一项的证据在哪,必须能指出来 —— 这张表是"声明 vs 实现"的对照物,
+#: 它自己不能变成第二张空头支票(``align_schema`` 就是那么来的):
+#:
+#:   query_sketch  tests/workflow/test_skills.py
+#:                 ::test_query_sketch_includes_confirmed_org_required_skill
+#:   analyze_error tests/workflow/test_skills.py
+#:                 ::test_analyze_error_includes_confirmed_org_required_skill
+#:   insights / conclusion / chart / attribution  —— 本文件,节点级渲染断言
+#:                 (attribution 那条在 tests/workflow/test_attribution.py
+#:                 ::TestAttributionNode::test_attribution_hook_injects_org_skill
+#:                 —— 它的四道 gate 只有那边的夹具喂得满)
+#:
+#: ``gen_sql`` 不在表里:它的 manifest 声明为空(``matched_skills("gen_sql")
+#: == []``),org 档由 ``test_skills.py`` 的 load_skill / 广告块测试覆盖。
+HOOK_TESTED_NODES: set[str] = {
+    "insights", "conclusion", "chart", "attribution",
+    "query_sketch", "analyze_error",
+}
+
+
+def test_every_manifest_node_is_hook_tested():
+    """manifest 声明的节点必须有挂点测试钉住。
+
+    ``align_schema`` 的教训:声明了 ``triggers.node: schema_linking`` 却
+    没有任何注入位,而测试全绿 —— 因为 ``test_skills.py`` 钉的是 manifest
+    的**内容**,不是**调用点**。契约由内而外翻转过来:先声明清单,再要求
+    实现满足它。
+    """
+    from trove.prompts.skills import _load_manifest
+
+    declared = {
+        (s.get("triggers") or {}).get("node")
+        for s in _load_manifest()
+    } - {None}
+    missing = declared - HOOK_TESTED_NODES
+    assert not missing, (
+        f"manifest 声明了挂点但没有节点级注入测试: {sorted(missing)} —— "
+        "要么接线并在这里登记,要么删条目。声明了却没接线的挂点是静默失效。"
+    )
+
+
+def test_graph_builders_bind_the_live_skill_service(tmp_path, monkeypatch):
+    """装配面传的**对象**必须是 services.skills,不只是"有个 skills= 关键字"。
+
+    与 test_every_graph_binding_passes_skills 分工:那条是静态的、对每个
+    调用点查关键字(改名/漏接都红,但 skills=None 也绿);这条让真装配跑
+    一遍,在工厂外面套记录器,断言**身份**。两条都不做的话,"改错对象"
+    这类错要等 eval 才发现 —— org validator 静默不跑,查询照常出结果。
+    """
+    from trove.core.config import AgentConfig
+    from trove.services.skills.service import SkillService
+    from trove.workflow import graphs as graphs_module
+    from trove.workflow.graphs import GraphServices, build_graphs
+
+    svc = SkillService(tmp_path)
+    seen: list[tuple[str, object]] = []
+
+    for name in FACTORIES_REQUIRING_SKILLS:
+        real = getattr(graphs_module, name)
+
+        def spy(*args, _real=real, _name=name, **kwargs):
+            seen.append((_name, kwargs.get("skills", "<absent>")))
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(graphs_module, name, spy)
+
+    services = GraphServices(
+        llm=RecordingLLM(), config=AgentConfig(target="mock/model"), skills=svc)
+    build_graphs(services, multi_candidate=False, query_sketch=False, agentic=False)
+
+    assert seen, "没有任何工厂被调用 —— 装配面改名了,这张清单要跟着改"
+    assert {n for n, _ in seen} == set(FACTORIES_REQUIRING_SKILLS), (
+        f"清单里的工厂没有全部被调用: "
+        f"{sorted(set(FACTORIES_REQUIRING_SKILLS) - {n for n, _ in seen})}"
+    )
+    for name, bound in seen:
+        assert bound is svc, f"{name} 绑的不是同一个 SkillService: {bound!r}"

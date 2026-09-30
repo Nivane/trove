@@ -143,7 +143,7 @@ def test_bilingual_body_override(tmp_path):
 def test_list_code_skills(tmp_path):
     svc = _svc(tmp_path)
     names = {s["name"] for s in svc.list_code_skills()}
-    assert {"plan_query", "diagnose_failure", "align_schema"} <= names
+    assert {"plan_query", "diagnose_failure"} <= names
 
 
 async def test_llm_draft_creates_pending(tmp_path):

@@ -99,8 +99,6 @@ _SNAPSHOT: dict[str, list[str]] = {
     "semantics/user.zh.j2": ["question", "sql", "time_context"],
     "session/compact.en.j2": ["conversation"],
     "session/compact.zh.j2": ["conversation"],
-    "skills/align_schema/system.en.j2": [],
-    "skills/align_schema/system.zh.j2": [],
     "skills/diagnose_failure/system.en.j2": [],
     "skills/diagnose_failure/system.zh.j2": [],
     "skills/draft.en.j2": ["description", "node", "purpose", "skill_name"],
