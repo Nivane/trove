@@ -284,9 +284,17 @@ def _result_discounts(state: WorkflowState, lang: str) -> list[dict[str, Any]]:
     # 追加量有界:``MAX_SEMANTIC_RETRIES = 2`` 时计数到 2 即**清零并置
     # ``forced``**,所以能活到交付点的 ``semantic_retries`` 恰为 1 ——
     # 追加折扣最多一个 ×0.9。
+    # **这条注释只管算术;文案有它自己的纪律**(见下面那一支):两行 `why`
+    # 会被 ``render_line`` 拼进同一条披露行,所以这一行**不许**再报一个轮次
+    # 数 —— 注释与文案口径不一致时,用户读到的是文案。
     if state.semantic_retries:
         out.append(_evidence(
             "result", "semantic_retry", _RETRY_DISCOUNT ** state.semantic_retries,
+            # 文案**不报轮次数**:``semantic_retries`` 记的那一轮同时被记进了
+            # ``retry_count``,所以上面那一行已经说过「经过 1 轮修正才交付」。
+            # 这里再报一个「1 轮」,两行拼在同一条披露行里读起来就是**两轮**
+            # —— 而物理上只有一轮。算术可辩护(设计 §5.3 两行各有独立
+            # 依据),渲染不可。
             L(lang, "修正属纯语义重试,比机械错误更可疑",
                "the correction was a semantic-only retry "
                "(treated as more suspect than a mechanical error)"),
