@@ -4689,3 +4689,23 @@ class TestOrgValidatorTier:
         assert out["rules_passed"] is True
         assert out["plan_validation"]["status"] == "untyped"
         assert set(out) == {"rules_passed", "plan_validation"}
+
+    async def test_all_pass_merges_validator_hits(self, tmp_path):
+        """typed plan 全过那条 return 也要合并 validator 判定 —— 那才是主路。
+
+        上一条钉的是 untyped 早返(散文计划的兜底)。brief 的 7 条测试没有一条
+        走到**全过**这条 return(要么 plan_json 是 None,要么被判违规拦下),把
+        它的 ``**vh`` 删掉 7 条全绿 —— 而这条正是 query_sketch 出 JSON 时的
+        常态路径。漏在这里,org validator 会在最常走的那条路上静默不上报。
+        """
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules(max_retries=10, skills=_validator_service(tmp_path))
+        out = await node(make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", 5]], row_count=1,
+            plan_json={"answer_columns": ["region", "balance"]},
+        ))
+
+        assert out["rules_passed"] is True
+        assert out["validator_hits"][0]["verdict"] is True
