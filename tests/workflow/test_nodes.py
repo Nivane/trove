@@ -4742,3 +4742,47 @@ class TestOrgValidatorTier:
         assert out["validation_hits"][0]["rule"] == "answer-columns"
         assert "validator_hits" not in out
         assert "error_feedback" in out
+
+
+async def test_output_renders_advisory_validator_note():
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": False, "severity": "advisory",
+        "message": "出现负值", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "出现负值" in out["final_response"]
+    assert "credit-guard" in out["final_response"]
+
+
+async def test_output_hides_unknown_verdicts():
+    """判不了不进用户视线 —— 高频出现会把真正有意义的告警一起淹掉。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": None, "severity": "advisory",
+        "message": "cannot evaluate", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "cannot evaluate" not in out["final_response"]
+
+
+async def test_output_hides_blocking_verdicts_from_the_note():
+    """blocking 违反已经被拦下重算了 —— 能走到 output 的 blocking 判定不该
+    再出一遍提示(它要么是重试耗尽后的交付,要么根本没判 False)。"""
+    from trove.workflow.nodes.output import output
+
+    state = make_state(validator_hits=[{
+        "name": "credit-guard", "verdict": False, "severity": "blocking",
+        "message": "出现负值", "mode": "deterministic",
+    }])
+    out = await output(state)
+    assert "出现负值" not in out["final_response"]
+
+
+async def test_output_no_validator_hits_is_unchanged():
+    from trove.workflow.nodes.output import output
+
+    assert (await output(make_state()))["final_response"] == \
+           (await output(make_state(validator_hits=[])))["final_response"]

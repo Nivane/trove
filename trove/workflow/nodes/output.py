@@ -243,6 +243,35 @@ def _degradation_notice(state: WorkflowState) -> str:
     )
 
 
+def _validator_notice(state: WorkflowState) -> str:
+    """org validator 的 advisory 判词,与降级提示同区置顶。
+
+    **只报 ``verdict is False`` 的 advisory**,三条都不报:
+
+    - ``verdict is None``(判不了)—— 它最常见的原因是"这次的结果集里恰好
+      没有点名的列",挂在多处时高频出现。投到用户面前就是每次查询多一句
+      "本次未能校验 XX 口径",两周内用户就会开始无视所有附注,把唯一有意义
+      的告警一起淹掉。它说的是**管理员**(编写问题),去处是质检统计。
+    - ``blocking`` —— 违反已经被拦下重算;能走到 output 说明要么预算耗尽
+      后交付、要么本轮没判 False。前者由错误卡片负责。
+    - ``verdict is True`` —— 通过就是无声。
+    """
+    hits = [
+        h for h in (state.validator_hits or [])
+        if h.get("severity") == "advisory" and h.get("verdict") is False
+    ]
+    if not hits:
+        return ""
+    body = "; ".join(
+        f"[{h.get('name', '')}] {h.get('message', '')}" for h in hits
+    )
+    return L(
+        state.lang,
+        f"> ⚠️ **口径提示**：{body}\n",
+        f"> ⚠️ **Caliber note**: {body}\n",
+    )
+
+
 def _freshness_line(state: WorkflowState) -> str:
     """数据截止时间(设计 §8.4 / I5 / R5);不复述就返回 ""。
 
@@ -489,6 +518,16 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     notice = _degradation_notice(state)
     if notice:
         parts.append(notice)
+
+    # 0b. 口径提示 — 与降级提示同区、同一理由:都是"读完结论之前就该知道的
+    #     前提"(数据被削过 / 某项口径没满足)。窄口:只报 advisory 的明确
+    #     违反,详见 _validator_notice。
+    #     位置在这里是**必须**的:它在 `if state.error:` 的提前 return 之后。
+    #     规则失败返回可能让上一轮的 validator_hits 残留下来,而错误/降级路径
+    #     不该把那份陈旧判定渲染给用户看。
+    vnotice = _validator_notice(state)
+    if vnotice:
+        parts.append(vnotice)
 
     # 1. Conclusion — LLM one-sentence direct answer (结论前置)
     if state.conclusion:
