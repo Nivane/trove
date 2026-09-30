@@ -166,6 +166,78 @@ def test_every_registry_with_skills_passes_skill_ctx():
         )
 
 
+def test_validator_host_name_is_the_node_that_runs_validators():
+    """``VALIDATOR_HOST`` 是个**声明**的名字 —— 它必须真的是跑 validator 的节点。
+
+    两处各自重打一遍字面量正是这类漂移的入口(``align_schema`` 同款):图上
+    的节点改了名而常量不动,后果是**反转** —— 手写 SKILL.md 里声明
+    ``node: <真节点名>`` 的会被标成 ``host_mismatch`` 永不运行,而声明
+    ``node: validate``(一个不存在的节点)的照常跑。写入校验(``create``)与
+    ``validators_for`` 的标记读的都是这个常量,它必须与图对得上。
+
+    两条断言:
+
+    1. ``validate.py`` 里 ``validators_for(`` 只有**一处**,且第一个实参是
+       ``VALIDATOR_HOST`` 这个 Name(不是重打的字符串);
+    2. ``graphs.py`` 里每个装配 ``make_validate_rules`` 的 ``add_node``,节点名
+       都等于 ``VALIDATOR_HOST``。
+
+    同 ``FACTORIES_REQUIRING_SKILLS``:只认 ``ast.Name`` / ``ast.Attribute``
+    形态,改名或包一层就会落到空清单 —— 两句 ``assert ... , "改名了?"`` 兜住
+    那种"永远绿着骗人"。
+    """
+    import ast
+    import inspect
+
+    from trove.services.skills.validators import VALIDATOR_HOST
+    from trove.workflow import graphs as graphs_module
+    from trove.workflow.nodes import validate as validate_module
+
+    def _calls(source: str, name: str) -> list[ast.Call]:
+        out = []
+        for n in ast.walk(ast.parse(source)):
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            if (isinstance(f, ast.Name) and f.id == name) or (
+                isinstance(f, ast.Attribute) and f.attr == name
+            ):
+                out.append(n)
+        return out
+
+    calls = _calls(inspect.getsource(validate_module), "validators_for")
+    assert len(calls) == 1, (
+        "validators_for 应当只有一处调用(结果断言只在一个节点跑),现在 "
+        f"{len(calls)} 处:{[c.lineno for c in calls]}"
+    )
+    arg = calls[0].args[0]
+    assert isinstance(arg, ast.Name) and arg.id == "VALIDATOR_HOST", (
+        f"validate.py:{calls[0].lineno} 把宿主名重打了一遍字面量 —— 它必须来自 "
+        "VALIDATOR_HOST(写入校验与 host_mismatch 标记同用它,两处各写一份就是漂移的入口)"
+    )
+
+    hosts: list[ast.expr] = []
+    for n in ast.walk(ast.parse(inspect.getsource(graphs_module))):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "add_node" and len(n.args) >= 2):
+            continue
+        factory = n.args[1]
+        if (isinstance(factory, ast.Call) and isinstance(factory.func, ast.Name)
+                and factory.func.id == "make_validate_rules"):
+            hosts.append(n.args[0])
+
+    assert hosts, (
+        "graphs.py 里没有装配 make_validate_rules 的 add_node(...) —— 改名或包了"
+        "一层?那样这个测试会永远绿着骗人。"
+    )
+    for first in hosts:
+        assert isinstance(first, ast.Constant) and first.value == VALIDATOR_HOST, (
+            f"graphs.py:{first.lineno} 装配 make_validate_rules 的节点名不是 "
+            f"{VALIDATOR_HOST!r} —— 改图上的名字必须同步改常量,否则声明的宿主"
+            "与实际运行位对不上(见本测试 docstring 的反转后果)"
+        )
+
+
 async def test_gen_sql_node_forwards_skill_ctx(tmp_path):
     """gen_sql 挂点也必须把 ctx 送进去 —— 三个挂点里最不显眼的一个。
 
