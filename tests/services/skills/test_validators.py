@@ -190,9 +190,11 @@ def test_fallback_verdict_messages_are_localized(lang):
     unknown = run_validators([_spec("min >= 0", ["nope"], message="")],
                              columns=["a"], rows=[[1]], row_count=1, lang=lang)
     assert unknown[0]["verdict"] is None
+    # 兜底判词按原因分句(原先"缺列或非数值数据"一句盖住四种,见
+    # test_truncation_text_does_not_blame_a_missing_column)
     assert unknown[0]["message"] == (
-        "判不了（缺列或非数值数据）" if lang == "zh"
-        else "cannot evaluate (missing column or non-numeric data)"
+        "判不了（结果里没有点名的列）" if lang == "zh"
+        else "cannot evaluate (named column is not in the result)"
     )
 
 
@@ -251,12 +253,41 @@ def test_non_dict_spec_degrades_instead_of_raising():
 
 
 def test_mapping_checks_degrades_instead_of_raising():
-    """``checks`` 写成映射(常见手误)时迭代出的是键(字符串)。"""
+    """``checks`` 写成映射(常见手误)时迭代出的是键(字符串)。
+
+    形状错走**形状**那条分支(``malformed_checks``),不是"求值抛异常"
+    (``check_error``)—— 两者都要管理员做不同的事,原因码必须分得开。
+    """
     hits = run_validators([{"name": "g1", "severity": "advisory",
                             "checks": {"expr": "min >= 0"}}],
                           columns=["a"], rows=[[1]], row_count=1)
     assert hits[0]["verdict"] is None
-    assert "check error" in hits[0]["message"].lower()
+    assert hits[0]["reason"] == "malformed_checks"
+    assert "mapping" in hits[0]["message"].lower()
+
+
+def test_check_error_is_reserved_for_evaluation_raises():
+    """``check_error`` 留给**求值真的抛了**那种:形状没错,求值炸了。
+
+    与 ``malformed_checks`` 分开的理由是处置不同 —— 前者查 YAML 缩进,
+    后者是表达式实现的问题,查到的地方不一样。
+    """
+    from trove.services.skills import validators as mod
+
+    class _Boom:
+        def eval(self, scope):
+            raise RuntimeError("boom")
+
+    real = mod.parse_condition
+    mod.parse_condition = lambda expr, vars: _Boom()
+    try:
+        hits = run_validators([_spec("min >= 0", ["a"])], columns=["a"],
+                              rows=[[1]], row_count=1)
+    finally:
+        mod.parse_condition = real
+    assert hits[0]["verdict"] is None
+    assert hits[0]["reason"] == "check_error"
+    assert "boom" in hits[0]["message"]
 
 
 def test_scalar_checks_degrades_instead_of_raising():
@@ -272,3 +303,94 @@ def test_string_row_count_still_coerces():
     scope = build_scope({"columns": ["a"]}, ["a"], [[1], [2]], row_count="2")
     assert scope["row_count"] == 2.0
     assert scope["min"] == 1.0
+
+
+# ── 判不了的原因码:None 比率是这套机制唯一的质量信号 ──────────
+
+def test_every_none_verdict_carries_a_machine_readable_reason():
+    """每条"判不了"都要带 ``reason``:自由文本 message 数不出分布。
+
+    十一种 None 各有各的处置路径(手改文件写错 / 声明了非宿主 / 结果太大 /
+    真缺列),混在一句"缺列或非数值数据"里,运维只能靠猜 —— 而这些都是
+    **管理员侧的配置问题**,本来就该能按类统计。
+    """
+    from trove.services.skills.validators import NONE_REASONS
+
+    cases = {
+        "malformed_spec": ([None], ["a"], [[1]], 1),
+        "host_mismatch": ([{**_spec("min >= 0", ["a"]), "host_mismatch": "gen_sql"}],
+                          ["a"], [[1]], 1),
+        "unknown_severity": ([_spec("min >= 0", ["a"], severity="Blocking")],
+                             ["a"], [[1]], 1),
+        "unsupported_mode": ([_spec("min >= 0", ["a"], mode="llm")], ["a"], [[1]], 1),
+        "malformed_checks": ([{"name": "g1", "severity": "advisory", "checks": 5}],
+                             ["a"], [[1]], 1),
+        "empty_checks": ([{"name": "g1", "severity": "advisory", "checks": []}],
+                         ["a"], [[1]], 1),
+        "bad_expression": ([_spec("mn >= 0", ["a"])], ["a"], [[1]], 1),
+        "missing_column": ([_spec("min >= 0", ["nope"])], ["a"], [[1]], 1),
+        "truncated_rows": ([_spec("min >= 0", ["a"])], ["a"], [[1]], 9999),
+        "no_columns_declared": ([_spec("min >= 0")], ["a"], [[1]], 1),
+        "non_numeric_data": ([_spec("min >= 0", ["a"])], ["a"], [["N/A"]], 1),
+    }
+    for expected, (specs, columns, rows, row_count) in cases.items():
+        hits = run_validators(specs, columns=columns, rows=rows, row_count=row_count)
+        assert hits[0]["verdict"] is None, expected
+        assert hits[0]["reason"] == expected, (
+            f"{expected}: 拿到 reason={hits[0].get('reason')!r}"
+        )
+        assert hits[0]["reason"] in NONE_REASONS
+
+
+def test_unknown_reason_tracks_scope_degradation():
+    """原因码的分支必须与 ``build_scope`` 的退化条件一一对应。
+
+    两处各写一遍条件必然漂移,而漂移的表现是判词解释错了原因 —— 正是这次
+    要修的那个 bug("缺列或非数值数据" 盖住了截断)。所以这条同时断言两侧。
+    """
+    from trove.services.skills.validators import _unknown_reason
+
+    checks = [
+        ({"columns": ["nope"]}, ["a"], [[1]], 1, "missing_column"),
+        ({"columns": []}, ["a"], [[1]], 1, "no_columns_declared"),
+        ({"columns": ["a"]}, ["a"], [[1]], 9999, "truncated_rows"),
+        ({"columns": ["a"]}, ["a"], [["N/A"]], 1, "non_numeric_data"),
+    ]
+    for check, columns, rows, row_count, expected in checks:
+        scope = build_scope(check, columns, rows, row_count)
+        assert scope["min"] is UNKNOWN, expected      # 退化确实发生了
+        assert _unknown_reason(check, columns, rows, row_count) == expected
+
+    # 反向:不退化的 check 不该被判成退化
+    ok = {"columns": ["a"]}
+    assert build_scope(ok, ["a"], [[1]], 1)["min"] == 1.0
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_truncation_text_does_not_blame_a_missing_column(lang):
+    """截断的兜底判词不得说"缺列" —— 那是**误导**(列在,是窗口太小)。
+
+    这句话进 ``validator_hits`` 供运维看:照"缺列"去查,查的是一个并不缺失
+    的列。今天它会出现在 1000 行以上任何阻塞档 validator 的记录里。
+    """
+    hits = run_validators([_spec("min >= 0", ["a"], message="")], columns=["a"],
+                          rows=[[1]], row_count=9999, lang=lang)
+    text = hits[0]["message"]
+    assert hits[0]["reason"] == "truncated_rows"
+    assert ("缺列" if lang == "zh" else "missing column") not in text
+    # 说清是窗口的事(中英各一份,词面不同但都得指向结果集大小)
+    assert ("窗口" if lang == "zh" else "window") in text
+
+
+def test_format_hit_omits_empty_name_and_collapses_newlines():
+    """hit 的人类可读渲染:没有名字不留 ``[]``;换行压平。
+
+    两条都会进用户屏幕(Markdown 引用块)与 ``error_feedback``:``[] 消息``
+    是残缺的排版,而一个换行就把引用块冲出三行、把后续内容顶成正文。
+    """
+    from trove.services.skills.validators import format_hit
+
+    assert format_hit({"name": "", "message": "boom"}) == "boom"
+    assert format_hit({"name": "g1", "message": "a\nb\n\nc"}) == "[g1] a b c"
+    assert format_hit({"message": None}) == ""
+
