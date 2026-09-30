@@ -6,8 +6,8 @@ import pytest
 
 from trove.agent.confidence import (
     DISCOUNT_FLOOR,
-    render_line,
     TIER_BANDS,
+    render_line,
     result_confidence,
     sql_confidence,
 )

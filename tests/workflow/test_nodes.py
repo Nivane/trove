@@ -2947,7 +2947,7 @@ class TestTerminationLine:
         assert "Confidence: low" not in response
         assert "candidate SQLs disagreed" not in response
 
-    async def test_high_confidence_no_note(self):
+    async def test_no_answer_means_no_note(self):
         """没有可披露的答案(``sql`` 为空)就不写置信度行(I4)。
 
         与上一条同一处境:这个状态今天没有分数可显示,不是因为「置信度高所以

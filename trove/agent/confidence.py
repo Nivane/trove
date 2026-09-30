@@ -370,7 +370,7 @@ def render_line(
     top = sorted(evidence, key=_severity, reverse=True)[:2]
     why = " · ".join(e["why"] for e in top)
     label = L(lang, "置信度", "Confidence")
-    left, right = ("（", "）") if lang.startswith("zh") else (" (", ")")
+    left, right = ("（", "）") if lang == "zh" else (" (", ")")
     body = f"{label}: {pct}" + (f"{left}{why}{right}" if why else "")
     return f"*{body}*\n"
 

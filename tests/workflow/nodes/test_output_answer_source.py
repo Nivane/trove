@@ -229,6 +229,27 @@ class TestConfidenceDisclosure:
         assert "置信度" not in update["final_response"]
         assert update.get("confidence", 0.0) == 0.0
 
+    async def test_no_score_on_the_metadata_path(self):
+        """I4 + §11-6:元数据问答是**另一条早退路径**(``intent_answer`` 那个
+        return),与错误路径不共享代码 —— 各钉一条,否则把算分挪到那两个
+        return 之上,错误路径那条仍绿。
+
+        这里的 ``intent_answer`` **故意是一句不含「置信度」的普通英文**:
+        否则断言会被 payload 自己满足,测的就成了那句文案。
+        """
+        update = await output(make_state(intent_answer="The dataset covers 2010-2015."))
+        assert "置信度" not in update["final_response"]
+        assert update.get("confidence", 0.0) == 0.0
+
+    async def test_no_score_on_the_clarification_path(self):
+        """I4 + §11-6:澄清反问是**第三条**早退路径(``clarification_question``
+        那个 return)。三条路径各一个守卫 —— 它们只共享「不写分数」这件事,
+        代码上是三处,一处改了另两处不会跟着红。
+        """
+        update = await output(make_state(clarification_question="Did you mean A or B?"))
+        assert "置信度" not in update["final_response"]
+        assert update.get("confidence", 0.0) == 0.0
+
     async def test_no_score_without_sql(self):
         """I4:空跑没有答案,就没有分数,也不渲染。"""
         update = await output(make_state(sql="", columns=[], rows=[], row_count=-1))
