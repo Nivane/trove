@@ -39,10 +39,10 @@
     <h2 id="shape">全貌</h2>
 
     <p>
-      先把形状看一眼，再往下读细节。图上的三个带（入口、编排、能力）加外挂的
-      模型层与状态层，就是下面「五层」那张表的形状——数据源在 Trove 之外，
-      所以不在这五层里。实线是「谁调谁」，虚线是「谁会用到大模型」；
-      两条都不是数据流。
+      先把形状看一眼，再往下读细节。图上的两个带（入口、能力）夹着编排——它是一张
+      LangGraph 图，所以画成一个节点；加外挂的模型层与状态层，就是下面「五层」那张
+      表的形状——数据源在 Trove 之外，所以不在这五层里。实线是「谁调谁」，
+      虚线是「谁会用到大模型」；两条都不是数据流。
     </p>
 
     <figure class="diagram" data-diagram="pending">
@@ -57,9 +57,7 @@ flowchart TB
         MCP["MCP"]
     end
 
-    subgraph flow["编排 · trove/workflow"]
-        WF["LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译 → 生成 → 执行与校验 → 反思"]
-    end
+    WF["&lt;b&gt;编排 · trove/workflow&lt;/b&gt;&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译 → 生成 → 执行与校验 → 反思"]
 
     subgraph caps["能力 · trove/services"]
         direction LR
@@ -76,9 +74,7 @@ flowchart TB
     SRV --&gt; WF
     CLI --&gt; WF
     MCP --&gt; WF
-    WF --&gt; SEM
-    WF --&gt; KB
-    WF --&gt; MEM
+    WF --&gt; caps
     KB --&gt; DS
     MEM --&gt; STATE
     WF -.-&gt; LLM

@@ -24,7 +24,7 @@
 <br>
 <br>
 
-📖 **[Capability map](https://nivane.github.io/trove/)** — six groups of data-side capability and twelve agent-side ones, each mechanism anchored to the source line that implements it · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[Documentation](https://nivane.github.io/trove/)** — 25 pages, every mechanism anchored to the source line · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -34,430 +34,187 @@
 
 Trove is a **self-learning conversational data agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask.
 
-Its promise is not "always right" but **never wrong without a fight**. Four pillars hold that promise:
+Its promise is not "always right" but **never wrong without a fight**:
 
-- **The semantic layer sets the boundary.** A human-approved semantic model (`semantics.yml`, an Apache OSSIE semantic model) is the *only answerable scope*: datasets, metrics, fields and relationships the business has declared — nothing else. Queries outside the model are refused with a one-click model-extension path, never answered by guessing at raw tables.
-- **Deterministic rails close the loop.** Generated SQL runs through a zero-LLM rule chain (shape / filters / values / ordering), an AST firewall, an execution-cost guard, and a reflection cycle with SQL-version regression. Wrong answers are diagnosed, rolled back, corrected, and the fix is remembered.
-- **Decisions share the query's footing.** Query → analysis → decision is one chain: threshold rules name metrics, windows and baselines in the semantic model's own vocabulary and are evaluated by a deterministic engine, zero LLM. Every trigger carries the SQL and the raw rows it was judged on.
-- **Learning compounds into an asset.** Every correction distills into a lesson, every confirmed Q&A becomes reference SQL, and cross-session memory recalls episodes and preferences. Auto-learned content lands `pending` until an admin confirms — the knowledge grows, and stays reviewable, git-manageable, yours.
+- **The semantic layer sets the boundary.** A human-approved semantic model (`semantics.yml`, an Apache OSSIE semantic model) is the *only answerable scope* — the datasets, metrics, fields and relationships the business has declared, nothing else. Queries outside it are refused, with a one-click model-extension path attached; never answered by guessing at raw tables.
+- **Deterministic rails close the loop.** Generated SQL runs through a zero-LLM rule chain, an AST firewall, an execution-cost guard and a reflection cycle with SQL-version regression. Wrong answers are diagnosed, rolled back and corrected — and the fix is remembered.
+- **Decisions share the query's footing.** Threshold rules name metrics, windows and baselines in the semantic model's own vocabulary and are evaluated by a deterministic engine, zero LLM. Every trigger carries the SQL and the raw rows it was judged on.
+- **Learning compounds into an asset.** Every correction distills into a lesson; every confirmed Q&A becomes reference SQL. Auto-learned content lands `pending` until an admin confirms — the knowledge grows, and stays reviewable, git-manageable, yours.
 
-## Why Semantic-First?
+## The Shape
 
-Raw-LLM agents write SQL from raw DDL — they are confidently wrong about business meaning. A column named `A11` or a status code `A` means nothing without the glossary, and "average loan amount" is not derivable from a schema. RAG helps: a glossary, examples and lessons anchor generation. But RAG feeds the *ammo*, it does not draw the *boundary* — retrieval misses still get answered with plausible guesses.
+```mermaid
+flowchart TB
+    subgraph entry["Entry points"]
+        direction LR
+        UI["Web UI"]
+        CLI["CLI / REPL"]
+        SRV["HTTP service"]
+        MCP["MCP"]
+    end
 
-Trove follows the semantic-layer route taken by Cortex-Analyst-style products, with a twist that keeps answers flowing:
+    WF["<b>Orchestration · trove/workflow</b><br/>LangGraph workflow<br/>semantic gate → plan and compile → generate → execute and validate → reflect"]
 
-- **Full coverage → compile.** The plan is compiled against declared metrics, fields and relationships — the SQL is authoritative, not suggested.
-- **Partial coverage → compile a skeleton, let the agent fill the gaps.** When only words, values or definitions are missing (a soft miss), joins, filters and grouping are compiled authoritatively, and the generation agent fills the uncovered parts — then a skeleton-fidelity check guards execution.
-- **Structural miss → refuse, extend, re-answer.** When the model structurally cannot cover the question (unknown table, ambiguous join, fan-out), Trove refuses — and drafts a model extension for you to confirm in one step. The refusal *is* the modeling signal; coverage grows with use.
+    subgraph caps["Capabilities · trove/services"]
+        direction LR
+        SEM["Semantic model"]
+        KB["Knowledge base + hybrid retrieval"]
+        MEM["Memory · decision rules · Skills"]
+    end
+
+    LLM["Models · trove/llm<br/>LLM gateway"]
+    STATE["State · trove/storage<br/>PostgreSQL / SQLite"]
+    DS["Data sources<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB · SQLite"]
+
+    UI --> SRV
+    SRV --> WF
+    CLI --> WF
+    MCP --> WF
+    WF --> caps
+    KB --> DS
+    MEM --> STATE
+    WF -.-> LLM
+    MEM -.-> LLM
+```
+
+Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
+
+## Why Not Another NL2SQL
+
+Raw-LLM agents write SQL from raw DDL, and are confidently wrong about business meaning: a column named `A11` or a status code `A` means nothing without the glossary, and "average loan amount" is not derivable from a schema. RAG helps — a glossary, examples and lessons anchor generation — but RAG feeds the *ammo*, it does not draw the *boundary*: retrieval misses still get answered with plausible guesses.
+
+Trove takes the semantic-layer route, with a twist that keeps answers flowing:
+
+- **Covered by the model → compile.** The plan is compiled against declared metrics, fields and relationships — the SQL is authoritative, not suggested.
+- **Missing only words, values or definitions → compile half.** Joins, filters and grouping are compiled authoritatively and the generation agent fills the gaps, with a skeleton-fidelity check guarding execution — so the answer still ships instead of stopping dead.
+- **Structurally out of reach → refuse.** An undeclared table, an ambiguous join, a fan-out — Trove refuses, and drafts a model extension for you to confirm in one step. The refusal *is* the modeling signal; coverage grows with use.
 
 Everything a human cares about — which definitions count, which joins are legal, what the enums mean, how much is too much — is declared once in YAML and enforced on every question, instead of re-guessed on every question.
 
-## How Trove Compares
-
 | | A raw LLM agent | RAG-only NL2SQL | A bare semantic layer | **Trove** |
 |---|:---:|:---:|:---:|:---:|
-| Writes SQL from natural language | ✅ (often wrong) | ✅ | ❌ | ✅ governed |
 | Draws an answerable boundary (semantic model) | ❌ | ❌ | ✅ | ✅ |
 | Refuses instead of guessing outside coverage | ❌ | ❌ | partial | ✅ + one-click model extension |
-| Still answers on partial coverage (soft-miss skeleton) | ❌ | ✅ (guessy) | ❌ | ✅ compiled skeleton + generated gaps |
+| Still answers on partial coverage | ❌ | ✅ (guessy) | ❌ | ✅ compiled skeleton + generated gaps |
 | Verifies before execution — zero LLM | ❌ | ❌ | partial | ✅ rule chain + AST firewall + EXPLAIN guard |
 | Self-corrects after execution (reflection + regression) | ❌ | ❌ | ❌ | ✅ rollback & retry with version checks |
-| Conclusion → threshold judgement (decision rules, zero LLM) | ❌ | ❌ | partial (alerts can't reach the semantic layer's baselines) | ✅ declared in model vocabulary + evidence kept |
+| Conclusion → threshold judgement (zero LLM) | ❌ | ❌ | partial (alerts can't reach the semantic layer's baselines) | ✅ declared in model vocabulary + evidence kept |
 | Learns per datasource; auto content gated by humans | ❌ | partial | partial | ✅ KB + memory, `pending` until confirmed |
-| Works where your data is (6 engines, self-hosted) | ✅ | ✅ | per-vendor | ✅ Apache-2.0 OSS |
-
-## Architecture
-
-### System overview
-
-```mermaid
-flowchart TB
-    subgraph clients["Clients"]
-        UI["Web UI<br/>(Vue SPA)"]
-        REPL["CLI / REPL"]
-        MCP["MCP server<br/>tools + resources"]
-        API["REST API /v1<br/>SSE streaming"]
-    end
-
-    subgraph core["Trove core"]
-        wf["LangGraph pipeline<br/>intent → linking → sketch → gen<br/>→ execute → reflect → attribution"]
-        semantic["Semantic layer<br/>semantics.yml · compiler · row_filter"]
-        kb["Knowledge base<br/>terms · examples · rules · lessons"]
-        decision["Decision layer<br/>threshold rules in model vocabulary"]
-        memory["Memory<br/>episodes · preferences · profiles"]
-        skills["Skills<br/>org methodology · two injection tiers + validator assertions"]
-        llm["LLM gateway<br/>litellm · any provider"]
-        admin["Admin & governance<br/>kb init · draft review · drift"]
-    end
-
-    subgraph store["Storage"]
-        yaml_src["YAML source of truth<br/>(git-manageable)"]
-        rt["Runtime retrieval<br/>FTS5 / pg_bm25 + pgvector"]
-        state_store["Internal state<br/>sessions · audit · checkpoints<br/>PostgreSQL prod · SQLite fallback"]
-    end
-
-    subgraph sources["Data sources"]
-        src_pg["PostgreSQL"]
-        src_my["MySQL / Doris"]
-        src_ch["ClickHouse"]
-        src_dk["DuckDB / SQLite"]
-    end
-
-    UI & REPL & MCP & API --> wf
-    wf <--> llm
-    wf --> semantic & kb & memory & skills
-    semantic --> yaml_src
-    kb --> yaml_src
-    decision --> yaml_src
-    yaml_src --> rt
-    rt --> kb
-    wf -->|"read-only adapters"| sources
-    semantic -->|"compile over"| sources
-    decision -->|"read-only evaluation"| sources
-    admin --> yaml_src
-    state_store --> wf
-```
-
-### How a question becomes an answer
-
-The main graph is **28 nodes** on LangGraph (default configuration; `clarify` — dashed below — is an optional branch that only attaches when you build with `build_graphs(clarify=True)`, so it is not counted in the 28).
-
-```mermaid
-flowchart TB
-    Q["Question"] --> INTENT["route_intent"]
-    INTENT -->|"data / why"| PD["parse_date<br/>relative time"]
-    INTENT -->|"metadata"| MD["answer_metadata<br/>+ metadata_check self-check"]
-    INTENT -->|"chitchat / correction / write"| ANS["answer_chitchat<br/>answer_correction · answer_reject"]
-    INTENT -.->|"draft to confirm"| CD["confirm_draft"]
-
-    PD --> LINK["schema_linking<br/>dataset anchoring<br/>renders semantic_context"]
-    LINK --> GATE{"Semantic gate"}
-    GATE -->|"no model / zero match"| REFUSE["refuse<br/>run /kb init first"]
-    GATE -->|"covered"| FM{"fast_match<br/>KB exact hit?"}
-
-    FM -->|"hit"| SQL["deterministic template SQL"]
-    FM -->|"miss"| SKETCH["query_sketch<br/>LLM plan → typed IR"]
-
-    SKETCH --> COMP{"SemanticCompiler"}
-    COMP -->|"full coverage"| SQL
-    COMP -->|"soft miss (word / value / definition)"| SKEL["PartialCompile skeleton<br/>joins · filters · grouping authoritative"]
-    COMP -->|"hard miss (structural)"| REFUSE
-    REFUSE -.->|"draft confirmed → re-enter"| CD
-    CD -.-> PD
-
-    SQL --> GEN["gen_retrieve → gen_assemble → gen_generate<br/>retrieve · assemble · generate (ReAct tool loop)"]
-    SKEL --> GEN
-
-    GEN --> SEM["semantics<br/>definition re-check"]
-    SEM --> HITL{"hitl<br/>pre-execution human check (optional)"}
-    HITL --> EXEC["execute_sql<br/>AST firewall · EXPLAIN row guard<br/>skeleton fidelity · row-filter injection"]
-    EXEC --> SEL["select<br/>multi-candidate consensus vote"]
-
-    SEL --> CHK{"validate<br/>zero-LLM rule chain<br/>shape · filters · values · ordering"}
-    CHK -->|"violation"| FIX["analyze_error<br/>diagnose & rollback"]
-    FIX --> SKETCH
-    CHK -->|"pass"| MASK["masking<br/>field-level redaction (before any LLM)"]
-    MASK --> REFLECT["reflect adjudication<br/>+ SQL version regression"]
-    REFLECT -->|"not accepted"| FIX
-    REFLECT --> ATTR{"why / root-cause?"}
-    ATTR -->|"yes"| DRILL["attribution<br/>multi-hop drill-down<br/>contribution · waterfall"]
-    ATTR -->|"no"| OUT["insights → chart → conclusion → output"]
-    DRILL --> OUT
-```
-
-### From query to decision (zero LLM)
-
-Query and analysis are thick; the decision step does not have to be a request buried in a prompt. A rule names its subject — metric, dimension, window, baseline — in the **semantic model's own vocabulary**; the engine resolves window and baseline deterministically, compiles SQL, and hands the numbers to a condition language. No LLM sits anywhere in that path.
-
-```mermaid
-flowchart LR
-    R["decisions.yml<br/>declared in model vocabulary"] --> LINT{"lint before disk"}
-    LINT -->|"fails"| REJ["refused"]
-    LINT -->|"passes"| GIT["git commit<br/>reviewable · diffable · revertible"]
-    GIT --> JOB["scheduled job bound to decision_rule"]
-    JOB --> EVAL["DecisionService<br/>window/baseline → SQL → condition AST"]
-    EVAL --> JUDGE{"condition judged<br/>three-valued logic"}
-    JUDGE -->|"triggered"| ALERT["alert + evidence<br/>rule_digest · model_version<br/>SQL · raw rows"]
-    JUDGE -->|"not triggered"| OK["ok record (also persisted)"]
-```
-
-- **Rules are written in business vocabulary.** `subject` references metrics and dimensions from the semantic model; the baseline can be period-over-period, year-over-year, a literal, or none; severity is `info` / `warning` / `critical`; judgement can be aggregate or per-dimension, with `any` / `all` / `top_k` emission.
-- **The condition language is closed.** A hand-written tokenizer and recursive-descent parser (no `eval` — rules are untrusted input), a fixed variable set (`current` / `baseline` / `delta` / `delta_pct` / `contribution` / `row_count` / `dim`) and exactly four functions (`abs` / `min` / `max` / `pct_change`). A mistyped name is a **parse error**, not a silent no-op.
-- **Three-valued logic, so no false alarms.** With no baseline, `not (x > y)` evaluates to Unknown rather than true — a missing baseline never buys you a fake alert.
-- **Failure is loud.** A rule that cannot be evaluated (unresolvable window, undeclared metric, unreachable datasource) is an `error` run; it never degrades into a quiet "all fine".
-- **The evidence is the audit trail.** A decision run has no LangGraph trace, so its evidence *is* the record: which semantic model (`model_version`), which version of the rule (`rule_digest`), both SQL statements, and the raw rows it judged (up to 200).
-- **Rules live with the knowledge.** They sit in `.trove/kb/<datasource>/decisions.yml` — the same directory and the same git audit as terms, examples and lessons; the admin console offers a rule page and a raw YAML editor, and shows which scheduled jobs reference each rule.
-
-### How it learns (and stays governed)
-
-```mermaid
-flowchart LR
-    RUN["Every question round<br/>question · SQL · verdict · corrections"] --> OBS["observe"]
-    OBS --> EP["episodes<br/>factual recall (cross-session)"]
-    OBS --> DR["draft reference example<br/>(pending)"]
-    OBS --> LS["draft lesson<br/>(pending)"]
-    OBS --> PF["preference hints<br/>(pending)"]
-    REFUSE["refuse / missed coverage"] --> XT["semantic extension draft<br/>metric · field · relationship"]
-
-    DR & LS & XT & PF --> GATE{"Admin confirm"}
-    GATE -->|"confirm"| KB["Knowledge base<br/>examples.yml · lessons.yml<br/>semantics.yml · decisions.yml"]
-    GATE -->|"reject"| DISCARD["discarded"]
-    EP --> MEM["memory store<br/>episodes · user facts"]
-    KB --> RETR["deterministic retrieval<br/>anchored to matched datasets"]
-    MEM --> RETR
-    RETR --> GEN["next generation"]
-
-    SCHEMA["live schema"] --> DRIFT{"vs declared semantics"}
-    DRIFT -->|"mismatch"| STALE["drift report → rebuild / re-init<br/>preserves reviewed assets"]
-    STALE --> KB
-    DRIFT -->|"could not check"| UNKNOWN["recorded as unverified<br/>never as 'no problem'"]
-
-    SKILLS["Org methodology<br/>draft → confirm"] --> GEN
-```
 
 <p align="center">
-<img src="docs/assets/hero-semantic.png" width="880" alt="Trove's semantic-layer admin: 44 metrics, 8 datasets and 56 fields declared in the model, with a 10-item pending-approval queue">
+<img src="docs/assets/hero-semantic.png" width="880" alt="Trove's semantic-layer console: 44 metrics, 8 datasets and 56 fields declared, with 10 awaiting approval">
 </p>
 
-<sub><i>The governance surface — what the model declares, and what is still waiting for a human to confirm.</i></sub>
-
-## What You Get
-
-- **Semantic-first boundary with graded answers** — full compile when covered; a compiled skeleton with agent-filled gaps on soft misses; refuse + one-click model extension on structural misses.
-- **Deterministic self-validation** — a zero-LLM rule chain (shape / filters / values / ordering), AST firewall (read-only whitelist, DML interception), optional EXPLAIN row guard, and a reflection cycle with SQL version regression across retries.
-- **Fast path and agentic path** — simple questions take a deterministic KB-template fast path; complex ones upgrade to an agentic ReAct loop (`validate_sql` / `probe_query` / `check_result` tools, decides when it is done); ambiguous ones generate multiple candidates and vote.
-- **Decision rule layer** — threshold rules written in the semantic model's vocabulary (metric / dimension / window / baseline / severity / emission), evaluated with zero LLM; bind them to scheduled jobs and every trigger ships with evidence; rules are linted before they reach disk, and live in the KB directory under git audit. See "From query to decision" above.
-- **Root-cause attribution on why-questions** — "why did revenue drop?" gets a multi-hop drill-down: current vs prior period, dimension breakdown, then into the top contributor. Contribution math is deterministic (zero LLM), the primary split dimension is chosen **by the data** (largest Σ|Δ|, not LLM order), and ratio metrics decompose by shift-share into within-group / mix / interaction effects; only the narrative is generated, and it may cite the contribution table and nothing else.
-- **A knowledge base that learns per datasource** — `/kb init` drafts schema notes + a semantic model + deterministic terms and templates; confirmed Q&A becomes reference SQL; corrections distill into a Hint Bank; drift detection reports when the model falls behind the schema.
-- **Semantics as code** — every KB write auto-commits, so `git log` is the audit history and `git diff` / `git revert` are review and rollback; commits can carry `Generator` / `Approved-by` trailers. Bad semantics are refused before they reach disk — and the commit gate catches them too.
-- **Declarative row filters** — a dataset can declare a `row_filter` (a boolean predicate) in the semantic model, injected at compile time into the top-level WHERE of every query touching that dataset. **The fast path and the compile path share one injection implementation**, so "the fast path forgot the filter" cannot happen. It constrains what a dataset may answer — it is not a substitute for a read-only role on the database side.
-- **Unified cross-session memory** — episodic recall, auto-extracted user preferences, per user × datasource profiles; automatic content always lands `pending` until an admin confirms.
-- **Org-level methodology skills** — cross-datasource methodology (how to plan, how to diagnose, org conventions) managed as SKILLs; drafts still need admin confirmation. **Two injection tiers**: `required` bodies go into the matching node's system prompt, `available` ones are merely advertised in the generation node and loaded on demand through `load_skill`. **A third tier, `validator`, is not injected at all** — it takes the org's own assertions and checks them against the query result (aggregate-level, zero LLM, reusing the decision-rule expression engine), returning a three-valued verdict — **pass / violation / cannot-tell** — where `blocking` stops the answer and `advisory` rides along as a footnote. "Cannot-tell" holds its own value on purpose: collapsing it into pass is reporting all-clear without having checked, and collapsing it into violation blocks a correct result because the check could not run — both are worse than not checking. Datasource facts belong in the KB; methodology belongs in skills.
-- **Answer-level confidence disclosure (disclosure only, never behavior)** — the answer carries a score built from **tier baselines + named adjustments**: the baseline comes from the answer's source (certified reuse / reuse / semantic compile / generated — four bands that do not overlap, so a score reads back its own tier), and the adjustments are a few explicitly-reasoned additions (each soft MISS gap −0.05, agent self-check all-clear +0.10, degraded to the classic subgraph −0.10, strong retrieval evidence +0.05). **These weights are judgment, not calibrated probabilities** — the code says so too, and nobody gets to describe them as calibrated. The score enters no conditional branch: turn the switch off and run it again, and the SQL, row count, verdict and answer source are byte-identical.
-- **Governance as a feature** — YAML is the single source of truth (git-reviewable, diff-able); every executed tool call is audited; HITL approval optional; admin console for KB init, draft review, drift reports, decision rules and skills.
-- **Analysis you can audit** — the web UI shows the reasoning trail: schema-linking matches, compile decisions, rule-chain results, agent tool calls, and fix reasons. Generation is itself three checkpointed stages — retrieval → context assembly → generation — separately observable and testable, merged back into a single `gen_sql` step for the UI / CLI / streaming contract.
-- **Errors that explain themselves** — a failed run returns a plain-language card (what happened, what to try, whether retrying is worth it) instead of leaking internal node names and error slugs; raw diagnostics fold away and are shown to admins only.
-- **Web UI + REST API** — Vue SPA chat with streaming, tables, charts and HITL dialogs; everything under `/v1`, including a declarative semantic query endpoint (`/v1/semantic/query`) that compiles plans straight against the semantic model.
-- **MCP server** — expose NL→SQL as tools and resources over stdio / SSE / streamable-http for Claude Code and other MCP clients.
-- **Multi-engine, one pattern** — SQLite, PostgreSQL, MySQL, Doris, ClickHouse, DuckDB adapters with a per-datasource KB; unified internal storage on PostgreSQL in production (SQLite fallback in tests), with an admin checkpoint timeline to resume any run from any node.
-- **LLM-agnostic and bilingual** — litellm gateway (OpenAI / DeepSeek / Anthropic / any compatible endpoint), per-node model tiers (cheap model for sketches, strong model for reflection), unified `zh` / `en` interaction.
-- **Observable and interruptible** — real-dependency health checks, Prometheus metrics, request-id + run-id log correlation, per-run token cost persisted into session history (still readable after a crash or restart), optional Langfuse; cancelling a query stops the datasource driver itself, not just the awaiting coroutine.
+<sub><i>The governance surface — what the model declares, and what still awaits human confirmation.</i></sub>
 
 ## Quick Start
 
 Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-# Install dependencies
-uv sync
+uv sync                                          # install dependencies
+uv run trove --datasource demo                   # interactive REPL against the built-in BIRD financial demo
 
-# Interactive REPL against the built-in BIRD financial demo
-uv run trove --datasource demo
-
-# One-shot CLI (JSON output, question via stdin)
+# one-shot CLI: question via stdin, JSON out
 echo "Which region has the highest average loan amount?" | uv run trove-cli --datasource demo --print
 ```
 
-To see the whole picture first: the [capability map](https://nivane.github.io/trove/) anchors every capability to the source line, so you can read and verify side by side.
+The demo datasource is built in, but conversations still need LLM credentials (project-root `.env` or an env var such as `DEEPSEEK_API_KEY`). No credentials, no answer — there is no silent "mock answer" fallback.
 
 ### First steps with your own data
 
-1. **Connect** — a database URL (or the built-in demo): `--datasource postgres://user:pass@host:5432/db`.
-2. **Model** — run `/kb init`: it drafts the initial semantic model (datasets, fields, metrics) from your live schema. No model, no answers: Trove refuses politely until you do — that is the boundary working.
-3. **Ask** — then answer naturally. When Trove refuses, confirm the drafted model extension to extend coverage and re-answer in one step.
+1. **Connect** — a database URL: `--datasource postgres://user:pass@host:5432/db`.
+2. **Model** — run `/kb init`: it drafts the initial semantic model (datasets, fields, metrics) from your live schema. No model, no answers — Trove refuses politely until you do, which is the boundary working.
+3. **Ask** — then ask naturally. When Trove refuses, confirm the drafted model extension to extend coverage and re-answer in one step.
 
-Under server deployment, the same flow runs in the admin console (datasource registration → KB init → draft review).
+Under server deployment the same flow runs in the admin console (datasource registration → KB init → draft review). Step-by-step guide for MySQL / Doris / PostgreSQL / ClickHouse / DuckDB, via console or local REPL: [datasource onboarding](https://nivane.github.io/trove/guide/datasource.html).
 
 ### Docker
 
-Frontend (nginx-served SPA + `/v1` reverse proxy) and backend (pure JSON API) are independent images, built and restarted independently:
+Frontend (nginx-served SPA + `/v1` reverse proxy) and backend (pure JSON API) are independent images, built and rebuilt independently:
 
 ```bash
-docker compose up --build          # build & start (backend :8000, frontend :8080)
-docker compose build frontend      # rebuild only the frontend image
-docker compose restart backend     # restart only the backend
+docker compose up --build        # → http://localhost:8080/ (backend :8000 is debug-only)
+docker compose build frontend    # rebuild only the frontend image; build backend for the backend
 docker compose down
 ```
 
-Open `http://localhost:8080/` (default local login: admin / `admin123` — production uses the `TROVE_ADMIN_PASSWORD` env var). The compose stack defaults to PostgreSQL with the BIRD demo pre-loaded. Real conversations need LLM credentials: uncomment the read-only `~/.trove/conf` mount in `docker-compose.yml`, or provide an API key inside the container.
+Default local login is admin / `admin123` (production is controlled by `TROVE_ADMIN_PASSWORD`). The compose stack defaults to PostgreSQL with the BIRD demo pre-loaded; real conversations need LLM credentials — see the comment on the `~/.trove/conf` mount in `docker-compose.yml`.
 
-## Interfaces
+## Capabilities at a Glance
 
-### Web UI and API
+Every row has a deeper version on the docs site, anchored to source:
 
-The backend is a pure JSON API (everything under `/v1`, including SSE streaming chat); the frontend is a separately built Vue SPA.
-
-```bash
-uv run trove serve --datasource demo      # backend (API only)
-cd frontend && npm run dev                # local dev → http://localhost:5173/
-cd frontend && npm run build              # production build → frontend/dist/
-```
-
-Ops endpoints (no auth, no sensitive data):
-
-- `GET /v1/health` — real dependency checks: pings internal storage and every connected datasource (`SELECT 1`), reports LLM config presence (no billed probe). `200` + `"status": "ok" | "degraded"` when serving; `503` when internal storage is unreachable.
-- `GET /v1/metrics` — Prometheus text exposition: HTTP by route/status, LLM attempts/tokens by provider/model, SQL executions by datasource, in-flight gauge.
-- `POST /v1/semantic/query` — declarative semantic query API: compile a structured plan directly against the semantic model, no conversation pipeline.
-- Every response carries `X-Request-ID`, echoed into every log line of that request.
-- Client abort cancels end-to-end: the graph task is cancelled and the adapter's driver-level interrupt fires (sqlite3 / psycopg / MySQL `KILL QUERY` / duckdb).
-
-Admin endpoints (`/v1/admin/*`, require the admin role or a token scope):
-
-- **Datasources & KB** — registration (probed on the spot; failures report the reason), `kb/init`, draft review, drift reports.
-- **Decision rules** — `GET /v1/admin/decisions` (list with lint issues and "which jobs reference it"), `PUT /v1/admin/decisions` (structured rules or the whole raw YAML — always through the lint gate), `GET /v1/admin/decisions/raw`.
-- **Skills** — `GET/POST /v1/admin/skills` plus `draft` / `llm-draft` / `confirm` / `reject` / `tier` / `body`: draft, confirm and tier org methodology.
-- **Scheduled jobs** — `POST /v1/admin/jobs` creates a scheduled question (cron / interval) with an optional threshold alert (`row_count >= 5` / `value > 1000` / `col:<name> <op> <n>` / `no_rows` / `verdict == <x>`) or a bound decision rule (`decision_rule`), channel `console` or `webhook:<url>`, cooldown minutes. Plus `GET/PATCH/DELETE /v1/admin/jobs/{id}`, `POST /v1/admin/jobs/{id}/run`, `GET /v1/admin/jobs/{id}/runs`.
-- **Memory, users, audit** — `GET /v1/admin/memory/profile`, preference confirm/reject, users and datasource grants, the audit log (`GET /v1/admin/audit`), and the session checkpoint timeline (replay from any node with `replay_from`).
-
-Scheduling: **`serve` runs an embedded scheduler tick** — due jobs execute automatically (poll interval `agent.scheduler_poll_seconds`, default 30s). Do not run `trove-cli schedule --daemon` alongside `serve` (double execution). A job bound to a decision rule runs the deterministic engine and **never enters the NL pipeline** — decision runs must be replayable and must not depend on the model.
-
-### MCP server
-
-```bash
-uv run trove mcp                                                            # stdio (default)
-uv run trove mcp --transport streamable-http --host 0.0.0.0 --port 8001 --token <secret>
-```
-
-Tools: `ask_data` · `list_datasources` · `kb_status`. Resources (read-only): `trove://datasources` · `trove://<datasource>/schema` · `trove://<datasource>/semantics`.
-
-Binding to a non-loopback address **without** `--token` makes the server refuse to start; with a token, every HTTP request must carry `Authorization: Bearer`, and visible datasources are trimmed to that token's user's grants.
-
-### REPL commands
-
-| Group | Commands |
-|---|---|
-| Session | `/help` `/exit` `/clear` `/compact` `/tasks` |
-| Knowledge | `/tables` `/table_schema` `/schemas` `/databases` `/kb …` `/init` `/facts` |
-| System | `/model [model]` `/datasource [name]` `/trace` |
-
-### Data sources
-
-| Datasource | Connection | Install |
+| Capability | In one line | Read more |
 |---|---|---|
-| SQLite | `--datasource demo` / `sqlite:///path/to.db` | built-in |
-| PostgreSQL | `postgres://user:pass@host:5432/database` | `uv sync --extra postgres` |
-| MySQL | `mysql://user:pass@host:3306/database` | `uv sync --extra mysql` |
-| Doris | `doris://user:pass@host:9030/database` | `uv sync --extra doris` |
-| ClickHouse | `clickhouse://user:pass@host:8123/database` | `uv sync --extra clickhouse` |
-| DuckDB | `duckdb:///path/to.duckdb` | `uv sync --extra duckdb` |
+| Semantic layer | The answerable boundary is a readable, diffable, git-revertible file | [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) |
+| Self-checking loop | Rule chain / AST firewall / cost guard / reflection with version regression | [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
+| Decision rules | Alerts run on the semantic model too: thresholds, windows and baselines evaluated with zero LLM, every trigger carrying evidence | [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) |
+| Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
+| Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
+| Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
+| Skills | Org-wide methodology: `required` injected / `available` on demand / `validator` assertions | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
+| Root-cause attribution | "Why did it drop?" becomes a multi-hop drill-down; the split dimension is chosen by the data, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) |
+| Six datasources | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB, one pattern | [Data capabilities](https://nivane.github.io/trove/capabilities/data.html) |
+| Interfaces and governance | Web UI, REST (`/v1`), MCP, CLI; admin review, audit, observability | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
-Each database evolves its own knowledge base under `.trove/kb/<database>/` (schema notes / semantic model / examples / rules / lessons). To add a datasource, implement the `DatabaseAdapter` methods and register it in `registry.py`; drivers are imported lazily. Step-by-step onboarding for MySQL / Doris / PostgreSQL / ClickHouse / DuckDB (admin console and local REPL paths): [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html) (Chinese).
+Drivers install on demand: `uv sync --extra postgres|mysql|doris|clickhouse|duckdb` (SQLite is built in). The LLM side goes through a litellm gateway — OpenAI / DeepSeek / Anthropic / any compatible endpoint — with per-node tiers, so a strong model can adjudicate reflection while a cheap one plans and writes insights. See the [configuration reference](https://nivane.github.io/trove/reference/config.html).
 
-## Security (read-only execution)
+## Read-Only Execution: the Boundary Is Code
 
-For a data agent to ship, the security boundary cannot be a request written in a prompt. Everything below is **code, not model behaviour**:
+For a data agent to ship, the security boundary cannot be a request written in a prompt. Everything below is **code, not model behaviour** (the full list is in [security boundaries](https://nivane.github.io/trove/ops/security.html)):
 
-| Mechanism | What it does |
-|---|---|
-| Read-only statement firewall | Parses SQL to an AST and judges it there: non-query statements, any DML/DDL (including data-modifying CTEs), `SELECT INTO OUTFILE`, dangerous functions (`SLEEP` / `LOAD_FILE` / `PG_READ_FILE` …) and metadata tables (`sqlite_master` / `information_schema` / `pg_catalog` …) are all refused — no keyword blacklist |
-| Per-datasource table allowlist | Restricts which tables may be touched, enforced **in the execution path itself** (`execute` and `explain` alike) — so SQL arriving via MCP, the semantic query API or any bypass is bound by the same gate; metadata tables stay denied regardless |
-| Execution-cost guard | EXPLAIN estimates the heaviest operator's row count before execution: over the soft limit (default 50M) the query goes back to generation to add `LIMIT` / narrow filters; over the hard limit (default 1B) it is refused outright, without burning an LLM regeneration round |
-| Tool permissions | Tools are trimmed by role before the model sees them; a call to an invisible tool is folded into "unknown tool" at runtime — the model sees that the tool does not exist, not a wall it can probe |
-| External-data isolation | Content coming from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt — human-confirmed KB content is exempt by design |
-| Field-level redaction | Declared per field in the semantic model as `partial` / `hash` / `null`, rewritten **as the result leaves the database and before any model-facing node**. It is a graph node of its own rather than a step hung off `select` — on a fast-path hit `select` returns early, so a post-step inside it would never run at all; and it sits **after** the rule chain, so the raw data is judged for correctness first and only then redacted for human eyes. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the whole query is refused rather than let through unredacted |
-| Pre-execution human check | Optional node: review the SQL before it runs; if the payload cannot be understood, the default is to refuse, not to let it through |
-| Model budget guard | The ReAct loop is bounded by rounds, wall-clock time and cumulative tokens; on hitting a limit it degrades to the classic subgraph instead of burning on |
-| Credentials encrypted at rest | Passwords / tokens in datasource config are stored Fernet-encrypted (`enc:v1:…`); the key comes from `TROVE_SECRET_KEY`, or a `0600` `secret.key` is generated next to the config |
-| Rate limiting and quotas | In-process per-user token bucket (default 30/min) and a daily quota (default 300); over the limit returns 429 + `Retry-After`, hot-updatable from the admin console |
-| Token scopes and default-deny | A token can be scoped to `query` alone (ask questions, cannot administer); with no auth component configured the API refuses to start rather than quietly allowing everything |
-| Query audit | Every execution records question / SQL / verdict / row count / duration / error, readable from the audit endpoint |
+- **Read-only statement firewall** — SQL is parsed to an AST and judged there: non-query statements, any DML/DDL, `SELECT INTO OUTFILE`, dangerous functions and metadata tables are refused — no keyword blacklist.
+- **Table allowlist** — enforced **in the execution path itself** (`execute` and `explain` alike), so SQL arriving via MCP, the semantic query API or any bypass is bound by the same gate.
+- **Execution-cost guard** — EXPLAIN estimates the heaviest operator's row count first: over the soft limit (default 50M) the query goes back to generation to add `LIMIT`; over the hard limit it is refused outright, without burning an LLM regeneration round.
+- **Field-level redaction** — declared per field as `partial` / `hash` / `null`, rewritten as the result leaves the database and before any model-facing node. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the query is refused rather than let through unredacted.
+- **External-data isolation** — content from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt; human-confirmed KB content is exempt by design.
+- **Rate limits, quotas and audit** — per-user token bucket plus a daily quota, over the limit returns 429; every execution records question / SQL / verdict / row count / duration / error.
 
 **The application layer is not a security boundary** — always connect Trove to a dedicated read-only role:
 
 ```sql
--- PostgreSQL (covers future objects)
-CREATE ROLE trove_ro LOGIN PASSWORD '...';
-GRANT pg_read_all_data TO trove_ro;
-
--- MySQL (per-database grants, fixed source IP)
-CREATE USER 'trove_ro'@'10.0.0.5' IDENTIFIED BY '...';
-GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
+-- PostgreSQL (covers future objects): CREATE ROLE trove_ro LOGIN PASSWORD '...'; GRANT pg_read_all_data TO trove_ro;
+-- MySQL (per-database grants, fixed source IP): CREATE USER 'trove_ro'@'10.0.0.5' IDENTIFIED BY '...'; GRANT SELECT ON app.* TO 'trove_ro'@'10.0.0.5';
 ```
 
-Also recommended: hide sensitive columns with column-level grants or views, set `statement_timeout` / `lock_timeout` (PG) or `MAX_EXECUTION_TIME` (MySQL), and enforce row limits in the database. A semantic-model `row_filter` is a **declarative filter** — it keeps rows that should not be answered out of the SQL, and does not replace the database-side boundaries above.
+Also recommended: hide sensitive columns with column-level grants or views; set `statement_timeout` / `lock_timeout` (PG) or `MAX_EXECUTION_TIME` (MySQL); enforce row limits in the database. A semantic-model `row_filter` is a **declarative filter** — it keeps rows that should not be answered out of the SQL, and does not replace the database-side boundaries above.
 
-## Configuration
+## Docs Map
 
-Precedence: CLI `--model` > `conf/agent.yml` > `~/.trove/conf/agent.yml`:
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 25 pages, from product concepts to API reference
 
-```yaml
-agent:
-  target: deepseek/deepseek-reasoner   # litellm model string
-  model_fast: deepseek/deepseek-chat   # cheap tier: sketches, semantics, insights
-  language: zh                         # interaction language: zh / en
-  # explain_row_guard: true            # EXPLAIN row guard (on by default)
-  # explain_max_rows: 50000000         # soft limit → back to generation
-  # explain_hard_max_rows: 1000000000  # hard limit → refuse
-  # api_rate_per_minute: 30            # per-user rate limit (0 = off)
-  # api_daily_quota: 300               # daily quota (0 = off)
-  git_kb: true                         # auto-commit KB writes
-  # confidence_score: true             # answer-level confidence disclosure (on by default; process-level, needs a restart)
-  # attribution:                       # why-question root-cause drill-down (on by default)
-  #   max_hops: 2                      # 1 = dimension breakdown only, 2 = + top-contributor drill
-  # node_models:                       # per-node overrides (query_sketch / reflect / ...)
-  #   query_sketch: deepseek/deepseek-chat
-  memory:
-    enabled: true                      # unified memory subsystem
-    # promotion: false                 # auto-promote lessons (off by default)
-```
+| | |
+|---|---|
+| **Getting started** | [Quickstart](https://nivane.github.io/trove/guide/quickstart.html) · [Concepts](https://nivane.github.io/trove/guide/concepts.html) · [Deploy](https://nivane.github.io/trove/guide/deploy.html) · [Datasources](https://nivane.github.io/trove/guide/datasource.html) |
+| **Architecture** | [System overview](https://nivane.github.io/trove/architecture/overview.html) · [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
+| **Capabilities** | [Data](https://nivane.github.io/trove/capabilities/data.html) · [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) · [KB](https://nivane.github.io/trove/capabilities/kb.html) · [Retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) · [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [Agent](https://nivane.github.io/trove/capabilities/agent.html) · [Memory](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM gateway](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
+| **Operations** | [Security](https://nivane.github.io/trove/ops/security.html) · [Admin](https://nivane.github.io/trove/ops/admin.html) · [Observability](https://nivane.github.io/trove/ops/observability.html) · [Drift](https://nivane.github.io/trove/ops/drift.html) · [Eval and regression gate](https://nivane.github.io/trove/ops/eval.html) |
+| **Reference** | [Config](https://nivane.github.io/trove/reference/config.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) · [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) |
 
-Put API keys in a project-root `.env` (auto-loaded, gitignored) or export variables such as `DEEPSEEK_API_KEY`. Custom OpenAI-compatible endpoints go under `agent.providers`; optional Langfuse tracing via `agent.observability.tracing.enabled`; point `TROVE_STORAGE_URL` at PostgreSQL for internal state (falls back to local SQLite when unset).
+What the 28-node main graph is made of, the semantic gate's three exits, the rule chain and rollback ladder, the context budget — all in [query workflow](https://nivane.github.io/trove/architecture/workflow.html). The REST docs for a running `serve` are at `/v1/docs`.
 
 ## Evaluation
 
-Reproduce accuracy on your own data and model — Trove ships a built-in BIRD financial demo (schema identical to the official BIRD export) and an evaluation script for the full reflection pipeline:
+Reproduce accuracy on your own data, your own semantic model, your own calibers — no off-the-shelf numbers are quoted here. The BIRD financial demo ships with a schema identical to the official export, so the full reflection pipeline can be run directly:
 
 ```bash
 uv run python scripts/eval_bird.py --db-id financial \
   --dev-json /path/to/mini_dev_mysql.json \
-  --datasource mysql://root:root@127.0.0.1:3306/financial \
-  [--limit 10] [--verbose]
+  --datasource mysql://root:root@127.0.0.1:3306/financial [--limit 10]
 ```
 
-Per-question verdicts — each with its `qid` and the tokens it cost — land in `.trove/eval/results.jsonl`, failures in `failures.jsonl`; batch-distill failures into lessons with `scripts/distill_lessons.py`. No canned numbers here — measure against your own questions, your own semantic model, your own schema.
-
-### Offline replay (record once, score for free)
-
-`scripts/offline_eval.py record` runs a question set with real credentials and writes the trajectory; `replay` scores it with **zero LLM calls** — completion, correctness, token cost, failure recovery — so prompt and rule changes can be iterated without paying per attempt:
-
-```bash
-uv run python scripts/offline_eval.py record --questions qs.txt --output .trove/eval/replay.jsonl
-uv run python scripts/offline_eval.py replay --input .trove/eval/replay.jsonl
-```
-
-### Regression gate (zero LLM, on by default)
-
-`scripts/eval_gate.py` compares a baseline result file with the current one and **exits 1 on a regression**: EX, compile-hit rate, completion, recovery, gold exact match and token cost — each with its own direction and tolerance (`--tol ex=0.02`, or relative `--tol ex=0.10-r`), plus `--min-n` against under-sized samples and `--json` for CI. It consumes three artifact kinds: `results.jsonl` (eval_bird), `replay.jsonl` (offline replay), and the `--scorecard` JSON the retrieval / RRF evals emit.
-
-A reproducible baseline ships in `eval/baseline/` — a fixed question set (32 questions), its results (32/32) and a **pinned metric snapshot (`scorecard.json`)** — reconciled by stable `qid`, produced or migrated by `scripts/build_eval_baseline.py` and checked by `scripts/eval_baseline.py check --require-full`.
-
-The gate is **on by default** (`eval.gate_enabled: true`). `.github/workflows/eval-gate.yml` runs on every push/PR in three layers, each catching a different class of breakage: baseline integrity (`--require-full`) → zero-LLM replay → gate verdict. Zero LLM, zero network, zero database.
-
-The verdict compares **two moments**: the `scorecard.json` pinned in the repo, and one computed now in CI. It never compares the baseline against itself — `--baseline X --current X` is identically Δ=0 and can never go red, which is a gate in name only.
-
-⚠️ **What it catches is a broken anchor** (missing baseline entries, a drifted scoring definition, a tampered frozen artifact) — **not a worse model**. Accuracy regressions need the real database plus an LLM, so they stay on manual `workflow_dispatch`; a full 32-question run costs roughly 1.7M tokens.
-
-### Retrieval evals
-
-Retrieval quality has its own zero-LLM scripts: `eval_retrieval.py` (recall, substructure coverage and budget pressure — lexical vs gold-table-anchored), `eval_hybrid_retrieval.py` (per-channel ablation), `eval_bird_retrieval.py` (table-level schema recall on BIRD) and `tune_rrf.py` (RRF weight grid) — the latter three can emit a scorecard for the gate.
+Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/results.jsonl`. `offline_eval.py record` captures a trace with real credentials, after which `replay` scores it with **zero LLM calls**; `eval_gate.py` is the CI regression gate — any metric getting worse exits 1. See [eval and regression gate](https://nivane.github.io/trove/ops/eval.html).
 
 ## Development
 
 ```bash
-uv run pytest                     # full suite (~4800 tests, mocked LLM, zero network/keys)
-uv run pytest tests/workflow/     # LangGraph graphs and nodes
-uv run pytest tests/services/kb/  # knowledge base
+uv run pytest                     # full suite: 4800+ tests, mocked LLM, zero network / zero keys
+uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```
 
-CI (`.github/workflows/backend.yml`) runs the same suite (non-integration, zero network, plus a PG integration subset) together with `ruff check` and a `pip-audit` dependency scan; the frontend has its own workflow (`npm run ci` plus build verification for both images).
-
-Zero-LLM ops scripts: `scripts/lint_kb.py` (KB quality check, optional live enum probe), `scripts/check_drift.py` (declared semantics vs live schema; exit codes 0/1/2, and **"could not check" is 2, not 0** — green while the database is unreachable is a false green), `scripts/check_kb_anti_cheat.py` (fails if a KB template copies gold SQL), `scripts/check_page_anchors.py` (verifies the [capability map](https://nivane.github.io/trove/)'s source anchors still point at the same code).
-
-Code layout: `trove/workflow/` (LangGraph graphs, nodes, deterministic rule chain) · `trove/services/` (datasource adapters, KB, semantic layer, decision rules, memory, skills, SQL) · `trove/llm/` (litellm gateway, agent loop) · `trove/storage/` (unified backend: sessions, audit, checkpoints) · `trove/agent/` (session orchestration) · `trove/cli/` (REPL and commands).
-
-Deeper architecture notes live in `CLAUDE.md`; REST API docs at `/v1/docs` when `serve` is running.
+Code layout: `trove/workflow/` (graphs and nodes) · `trove/services/` (datasources, KB, semantic layer, decision rules, memory, skills) · `trove/llm/` (litellm gateway, agent loop) · `trove/storage/` (unified storage: sessions, audit, checkpoints) · `trove/agent/` (session orchestration) · `trove/cli/`. Deeper architecture notes live in `CLAUDE.md`.
 
 ## FAQ
 
@@ -465,38 +222,15 @@ Deeper architecture notes live in `CLAUDE.md`; REST API docs at `/v1/docs` when 
 
 **Why does it refuse questions?** Because the semantic model is the answerable boundary — that is the product. A refusal means "the model does not cover this", and it arrives with a drafted extension you can confirm to extend coverage and re-answer in one step. Quietly guessing at tables is the failure mode this architecture exists to prevent.
 
-**How are decision rules different from ordinary alerts?** An ordinary alert can only say "column X > some number" — it cannot reach the baselines, calibers or ratios in the semantic layer. Trove's rules name their subject with the semantic model's own metrics and dimensions, resolve window and baseline (period-over-period, year-over-year, literal) deterministically, and evaluate conditions in a closed language (a mistyped name is a parse error, not a silent no-op). Every trigger keeps the SQL and the raw rows it judged, and the rules live beside the knowledge base under the same git audit.
-
 **What role does RAG play?** RAG feeds generation — glossary terms, reference SQL, lessons, episodic memory — retrieved deterministically against the matched datasets. It informs *how* Trove writes SQL within coverage; it never decides *whether* the question is answerable.
 
-**Do I need a vector database?** No. Retrieval runs on a built-in SQLite FTS5 mirror out of the box; under PostgreSQL the same storage hosts pg_bm25 + pgvector for hybrid retrieval, and episodic memory may use an embedder when one is configured. Everything degrades gracefully to lexical matching.
+**Do I need a vector database?** No. Retrieval runs on a built-in SQLite FTS5 mirror out of the box; under PostgreSQL the same instance hosts pg_bm25 + pgvector for hybrid retrieval, and episodic memory may use an embedder when one is configured, falling back gracefully to lexical matching.
 
-**Which LLM do I need?** Any litellm-compatible model. Quality guidance: strong models for reflection/adjudication, cheap ones for planning and insights (per-node tiers in `conf/agent.yml`). Note that the demo REPL answers only if LLM credentials are present — there is no silent "mock answer" fallback.
-
-**How does the semantic model stay honest as the schema drifts?** Runtime guards (compile guardrails, table-existence checks, declarative row filters) keep behaviour safe; a drift check compares declarations against the live schema, reports `stale` in the admin console where rebuilding via `/kb init` preserves human-reviewed definitions, and runs headless as `scripts/check_drift.py` (zero LLM, exit codes 0/1/2) for cron or CI. The important part is that it **never reads "could not check" as "no problem"**: an unreachable datasource or an unreadable KB is recorded as unverified and returns a non-zero code — the gate is not greenest exactly when the database is down.
-
-## Roadmap
-
-Directions and their acceptance criteria live in [the capability map's roadmap section](https://nivane.github.io/trove/#road) — each one states what "done" means rather than a date.
-
-**None of the eight is finished yet.** Where each one actually stands (no ranking):
-
-| Direction | Where it stands |
-|---|---|
-| 01 Semantic drift governance | Both the structural and the reference level run, and they distinguish "no drift" from "could not check"; the periodic background check lands in the drift store (same file as `/v1/admin/drift`). Missing: the gate script is not in CI yet |
-| 02 Execution profiling | The shape of execution evidence and its three-valued semantics are settled; but the scan-volume cell is still unread for all six dialects, `scanned_rows` is permanently empty |
-| 03 Verified query assets | The governance dimensions (`status` / `owner` / `approved_by` / `approved_at` / `source`) are written into `examples.yml` entry by entry as items are confirmed, `certified` must have a person behind it (I5), and a batch that fails the certification gate is refused whole — "every asset traces back to whoever confirmed it" holds. Missing: the ledger — `AssetLedger` (`runs` / `p50_ms`) is implemented and pinned by tests, but **has no production constructor**, and `status` does not yet weight retrieval |
-| 04 Verifiable closed loop | The first link (execution evidence) has landed; "any conclusion walks back to the raw rows" does not yet |
-| 05 Semantic branch review | Not started |
-| 06 Identity, auth and field masking | The pre-execution table-level gate, field-level masking before the rows reach the model, replay-as-another-user, audit and metrics have all landed; the parser defect that mistook CTE names for tables is fixed, and the telemetry outlet for `warn` hits is in place (a counter for volume, an audit row for the table name). Missing: the table-level gate still defaults to `warn` — flipping it needs false-positive data from an observation period, and that takes a real deployment |
-| 07 Cost attribution and budgets | Accounting covers the main path; of all 32 model call sites, some still produce no record |
-| 08 Untrusted-input boundary | Both channels and the isolation core have landed and are pinned by tests; org-level skill bodies used to be spliced into the system prompt as raw strings, bypassing both channels — now folded into a single gate (fencing + provenance marking, same policy for both tiers), and the confirmation gate scans once more and reports hits to the admin; the enumeration's blind spot about "how the string gets assembled" is recorded in that test's docstring |
-
-Putting this list in the README rather than just saying "three have landed" is deliberate: a roadmap earns its keep by being usable for scheduling, and a criterion that says "done" when it is not is far more harmful than one that says "not done".
+**How does the semantic model stay honest as the schema drifts?** Runtime guards keep behaviour safe; a drift check compares declarations against the live schema, reports `stale` in the admin console where rebuilding via `/kb init` preserves human-reviewed definitions. The important part is that it **never reads "could not check" as "no problem"**: an unreachable datasource or an unreadable KB is recorded as unverified and returns a non-zero exit code. See [drift governance](https://nivane.github.io/trove/ops/drift.html).
 
 ## Contributing
 
-Bug reports, feature ideas, documentation, and pull requests are welcome. Keep changes focused and make sure tests pass before submitting. Architecture and design docs for active development live with the team — open an issue to discuss larger changes first.
+Bug reports, feature ideas, docs and pull requests are welcome. Please keep changes focused and make sure the tests pass before submitting; for larger changes, open an issue to discuss first.
 
 ## License
 

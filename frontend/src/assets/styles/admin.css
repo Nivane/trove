@@ -674,7 +674,13 @@
   display: inline-flex;
   align-items: center;
   padding: 1px 8px;
-  border-radius: var(--r-full);
+  /* 不是 --r-full:同义词是整句,窄列里会折成两三行,999px 圆角会把一个
+     多行标签画成两端半圆的巨型药丸。与同文件里的 .mapping-code /
+     .sql-snippet 对齐,用 --r-sm。 */
+  border-radius: var(--r-sm);
+  /* 表格单元格不是 flex 容器,v-for 出来的多个 chip 之间没有缝隙;
+     chip 变方角后相邻的会粘成一条,靠右外边距分开。 */
+  margin: 1px 4px 1px 0;
   background: var(--surface-muted);
   border: 1px solid var(--border-subtle);
   font-size: var(--fs-2xs);
