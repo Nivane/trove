@@ -491,3 +491,97 @@ class TestCacheHitTrace:
         assert hits[0].kwargs["metadata"]["session_id"] == session.session_id
         summary = hits[0].updated["output"]["summary"]
         assert summary.get("sql") == "SELECT name FROM students;"
+
+
+class TestConfigGate:
+    """``observability.tracing.enabled: false`` 必须真的拦得住录制。
+
+    改前必红:``configure_tracing`` 只打一行日志,``langfuse_enabled()`` 只看
+    环境凭证 —— 于是"关掉"是一个假开关:有凭证的环境里 trace 照录,而
+    用户以为自己已经停止把问句送到第三方。这不是"配置没生效",是配置
+    在**说谎**,所以值得一条专门的回归钉。
+    """
+
+    def test_disabled_config_suppresses_recording_despite_credentials(
+        self, langfuse_env,
+    ):
+        from trove.core.config import TracingConfig
+        from trove.llm.tracing import configure_tracing
+
+        configure_tracing(TracingConfig(enabled=False))
+
+        assert observability.langfuse_enabled() is False
+        assert observability.get_client() is None
+        assert observability.build_callback_handler() is None
+        with observability.record_span("tool.execute_sql", input="SELECT 1") as span:
+            assert span is None
+
+    def test_enabled_config_does_not_suppress(self, langfuse_env):
+        from trove.core.config import TracingConfig
+        from trove.llm.tracing import configure_tracing
+
+        configure_tracing(TracingConfig(enabled=True))
+
+        assert observability.langfuse_enabled() is True
+        assert observability.build_callback_handler() is not None
+
+    def test_suppression_is_the_cause_not_a_side_effect(self, langfuse_env):
+        """打开→关→再打开,必须是同一张凭证下的两个不同结论。
+
+        只断言"关掉后为 False"是不够的 —— 一个把 langfuse_enabled 恒返回
+        False 的改动也能让它通过。这条钉住的是**开关是那个变量**。
+        """
+        from trove.core.config import TracingConfig
+        from trove.llm.tracing import configure_tracing
+
+        configure_tracing(TracingConfig(enabled=False))
+        assert observability.langfuse_enabled() is False
+
+        configure_tracing(TracingConfig(enabled=True))
+        assert observability.langfuse_enabled() is True
+
+    def test_credentials_still_required_when_config_enabled(self, no_langfuse):
+        """enabled 是"不要抑制",不是"强制开":没凭证仍然录不了。"""
+        from trove.core.config import TracingConfig
+        from trove.llm.tracing import configure_tracing
+
+        configure_tracing(TracingConfig(enabled=True))
+
+        assert observability.langfuse_enabled() is False
+        assert observability.get_client() is None
+
+    def test_generation_recording_honours_the_gate(self, langfuse_env, monkeypatch):
+        """每个录制入口都走同一个判定 —— 新增入口漏判会在这里露头。
+
+        ``_record_generation`` 不直接调 ``langfuse_enabled`` 而是经
+        ``get_client``;这条钉住那条间接路径也受闸。
+        """
+        from types import SimpleNamespace
+        from trove.core.config import TracingConfig
+        from trove.llm.tracing import configure_tracing
+        from trove.llm import gateway as gateway_module
+
+        recorded = []
+        client = SimpleNamespace(
+            start_as_current_observation=lambda **kw: recorded.append(kw) or _NullCtx(),
+        )
+        monkeypatch.setattr(observability, "_client", client)
+
+        configure_tracing(TracingConfig(enabled=False))
+        gateway_module._record_generation(
+            "deepseek/deepseek-chat",
+            [{"role": "user", "content": "hi"}],
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+                content="SELECT 1", reasoning_content=None,
+            ))]),
+            {"node": "gen_sql"},
+        )
+        assert recorded == [], "生成记录未被配置闸拦住"
+
+
+class _NullCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False

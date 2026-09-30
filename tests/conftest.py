@@ -142,6 +142,9 @@ def _reset_trace_store(monkeypatch):
     run_id_var.set(None)
     from trove.llm import observability as _obs
     _obs._client = None
+    # tracing 的配置侧总闸也是进程级全局:某个测试用 enabled=False 跑过
+    # configure_tracing 之后,后续测试即使有凭证也会被静默抑制。
+    _obs.set_tracing_suppressed(False)
     for key in (
         "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST",
         "LANGFUSE_AUTH_CHECK",
