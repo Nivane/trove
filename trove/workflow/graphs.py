@@ -1040,6 +1040,10 @@ def make_gen_generate(
                 # validate 层已记录的拦截)
                 if registry.check_hits:
                     update["validation_hits"] = list(state.validation_hits) + registry.check_hits
+                # 自检通过次数**每轮覆盖**(不 += 上一轮):记的是最终那一轮
+                # 的自检结果。修正轮之后交付的 SQL 是新的,用旧轮的通过给它
+                # 加分是虚高(I6)。
+                update["self_check_passed"] = registry.check_passed
                 trail = " ".join(
                     p for p in (result.get("reasoning", ""), result.get("transcript", "")) if p
                 )

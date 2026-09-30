@@ -1095,6 +1095,11 @@ def build_sql_registry(
 
     registry = ToolRegistry(finish=finish, allowed_roles=roles)
     registry.check_hits = []
+    # check_result **通过**的次数。今天通过时 hits 为空,配合 graphs 的
+    # `if registry.check_hits:`,跑完整条规则链且全过这件事零痕迹 —— 而
+    # 置信度需要正样本(设计 §5.4-2)。与 check_hits 同一手法:动态属性,
+    # 逐轮初始化(修正轮的计数不跨轮累加,记的是**最终那一轮**的自检)。
+    registry.check_passed = 0
     registry.tool_version = SQL_TOOL_VERSION
     registry.user_id = user_id
 
@@ -1243,6 +1248,10 @@ def build_sql_registry(
             datasource=datasource or None,
         )
         registry.check_hits.extend(hits)
+        # 通过 = hits 为空且不是 ERROR。ERROR(不可执行)不算通过,也不算违规
+        # —— 它是观测失败,不是 SQL 有问题,不该给它加分(设计 §8-1 同一条纪律)。
+        if not hits and text.startswith("OK"):
+            registry.check_passed += 1
         _cache_put(probe_cache, key, text)
         await _audit("check", sql_text, text)
         return text

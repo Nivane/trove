@@ -309,3 +309,36 @@ class TestProbeMemoization:
         # kind 仍参与去重:probe 与 check 取数上限不同,不可互相顶替
         assert _cache_key("", _COUNT_SQL, "probe", 10, "run-1") != _cache_key(
             "", _COUNT_SQL, "check", 50, "run-1")
+
+
+class TestSelfCheckLeavesATrace:
+    """check_result 通过曾经零痕迹:hits 只在违规时非空,而 graphs 只在
+    hits 非空时写 update。于是「agent 跑完整条规则链且全过」这件事在 state
+    上不存在 —— 置信度没有正样本可吃(设计 §5.4-2)。"""
+
+    async def test_passing_check_increments_the_counter(self, sqlite_registry):
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+        )
+        assert registry.check_passed == 0
+        text = await registry.handlers()["check_result"](
+            {"sql": "SELECT COUNT(*) FROM students"},
+        )
+        assert text.startswith("OK")
+        assert registry.check_passed == 1
+        assert registry.check_hits == []   # 通过**不**污染违规清单
+
+    async def test_repeat_check_of_same_sql_counts_once(self, sqlite_registry):
+        """probe 缓存命中时跳过重执行 —— 计数不重复累加。
+
+        否则一次通过会被记成两次,而「通过了几次」是要进证据清单的数字。
+        """
+        cache: dict = {}
+        registry = build_sql_registry(
+            sqlite_registry, "How many students?", "en", "sqlite",
+            probe_cache=cache, run_id="r1",
+        )
+        handler = registry.handlers()["check_result"]
+        await handler({"sql": "SELECT COUNT(*) FROM students"})
+        await handler({"sql": "SELECT COUNT(*) FROM students"})
+        assert registry.check_passed == 1

@@ -374,6 +374,11 @@ class WorkflowState(BaseModel):
     # 供日志/eval 归因「哪条断言拦了什么」
     validation_hits: list[dict] = Field(default_factory=list)
 
+    # agent 自检通过次数(gen_generate 写,每轮覆盖不累加)。今天通过时 hits
+    # 为空,零痕迹;置信度要用它当正面证据(设计 §5.4-2)。0 = 没跑过 agent
+    # 自检(经典子图 / simple 档 / 没调 check_result)。
+    self_check_passed: int = 0
+
     # 确定性规则全过信号(validate 节点写入):本轮执行结果通过了
     # rules.verify 全链 + 层2 计划列检查,无 error/error_feedback。
     # reflect 据此 + 复杂度决定是否跳过 LLM 裁决。
