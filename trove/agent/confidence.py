@@ -205,3 +205,129 @@ def sql_confidence(
     evidence = _sql_adjustments(state, lang)
     score = _clamp(base + sum(e["effect"] for e in evidence), lo, hi)
     return score, evidence
+
+
+#: I8 的折损下限。没有它,`retry_count=10` 的连乘会把分数压到 0 —— 而 0 是
+#: 留给「没有可披露的答案」的码位(I4),不能被一个算出来的折扣占用。
+DISCOUNT_FLOOR = 0.25
+
+_FORCED_DISCOUNT = 0.5        # 重试预算耗尽后强行交付 —— 最诚实的低置信信号
+_EMPTY_DISCOUNT = 0.7
+_EXEC_DEGRADED_DISCOUNT = 0.85
+_KILL_DISCOUNT = 0.7
+_RETRY_DISCOUNT = 0.9         # 每轮修正
+_STALLED_DISCOUNT = 0.8       # 已止损
+_RULES_FAILED_DISCOUNT = 0.5  # 交付路径上不该出现,出现即异常
+
+
+def _result_discounts(state: WorkflowState, lang: str) -> list[dict[str, Any]]:
+    """结果置信度的具名折损(乘性)。**只记异常**,正常项不记。
+
+    ``lang`` 的来路与 ``_sql_adjustments`` 完全相同:``why`` 是要原样渲染给
+    用户的文案(设计 §5「文案(i18n,随 ``state.lang``)」),而只有 ``output``
+    手里有 ``state.lang``,所以一路传进来。
+
+    回归 0.9^N:``retry_count`` 是**本轮累计**的修正次数,不是历史轮次之和
+    —— 图状态在每个用户轮次按 ``model_dump()`` 重置,所以这里不需要额外
+    的去重逻辑。
+    """
+    out: list[dict[str, Any]] = []
+    # 候选分歧:折扣就是票王得票率。``selection`` 为空 ⟹ select 没跑
+    # (单候选 / simple 档 / KB 精确命中)—— **不扣分**,把缺席当 0 是把
+    # 「没问」读成「答错」(设计 §8-2)。
+    share = (state.selection or {}).get("confidence")
+    if isinstance(share, (int, float)) and share < 1.0:
+        out.append(_evidence(
+            "result", "vote_share", float(share),
+            L(lang, f"多候选结果不完全一致(票王得票率 {float(share):.0%})",
+               f"multi-candidate results disagreed "
+               f"(winning share {float(share):.0%})"),
+        ))
+    if state.forced:
+        out.append(_evidence(
+            "result", "forced", _FORCED_DISCOUNT,
+            L(lang, "重试预算耗尽后强行交付",
+               "delivered after the retry budget ran out"),
+        ))
+    if state.verdict == "EMPTY":
+        out.append(_evidence(
+            "result", "empty_result", _EMPTY_DISCOUNT,
+            L(lang, "查询返回 0 行", "the query returned 0 rows"),
+        ))
+    # 执行期降级:与 ``output._degradation_notice`` 用**同一个门**(那里是
+    # ``str(ev.get("verdict")) != "degrade"`` 就放行),不另立判据 —— 两处
+    # 各判一次迟早出现「正文说降级了、置信度没扣」。
+    ev = state.execution_evidence or {}
+    if str(ev.get("verdict") or "") == "degrade":
+        out.append(_evidence(
+            "result", "execution_degraded", _EXEC_DEGRADED_DISCOUNT,
+            L(lang, "执行期降级,结果被加了行数上限或收窄",
+               "execution degraded; the result was row-capped or narrowed"),
+        ))
+    if ev.get("kill"):
+        out.append(_evidence(
+            "result", "timeout_kill", _KILL_DISCOUNT,
+            L(lang, "执行超时被中止", "execution was killed on timeout"),
+        ))
+    if state.retry_count:
+        out.append(_evidence(
+            "result", "retry", _RETRY_DISCOUNT ** state.retry_count,
+            L(lang, f"经过 {state.retry_count} 轮修正才交付",
+               f"delivered after {state.retry_count} correction round(s)"),
+        ))
+    # ``semantic_retries`` **不是**与 ``retry_count`` 并列的另一批轮次 ——
+    # 纯语义 RETRY 那条 return(``reflect.py`` 里同时写 ``retry_count + 1``
+    # 与 ``semantic_retries`` 的那个 dict)把**同一轮**记进了两个计数器,
+    # 所以 ``semantic_retries ⊆ retry_count``:这一条是**在轮次折扣之上的
+    # 追加折扣**,读作「纯语义重试比机械错误更可疑」,不是重复计费两次
+    # ——那是设计 §5.3 表里两行各自的措辞(「修正轮」/「纯语义重试」)。
+    # 追加量有界:``MAX_SEMANTIC_RETRIES = 2`` 时计数到 2 即**清零并置
+    # ``forced``**,所以能活到交付点的 ``semantic_retries`` 恰为 1 ——
+    # 追加折扣最多一个 ×0.9。
+    if state.semantic_retries:
+        out.append(_evidence(
+            "result", "semantic_retry", _RETRY_DISCOUNT ** state.semantic_retries,
+            L(lang, f"经过 {state.semantic_retries} 轮纯语义重试",
+               f"delivered after {state.semantic_retries} "
+               f"semantic-only retry round(s)"),
+        ))
+    if state.no_progress_rounds:
+        out.append(_evidence(
+            "result", "stalled", _STALLED_DISCOUNT,
+            L(lang, "修正已无进展,提前止损",
+               "corrections stopped making progress; bailed out early"),
+        ))
+    # **必须用 ``is False``,不能写 ``if not state.rules_passed``**:
+    # ``None``(没跑)与 ``False``(跑了没过)是两件事,后者才该罚(设计 §8-1)。
+    if state.rules_passed is False:
+        out.append(_evidence(
+            "result", "rules_not_passed", _RULES_FAILED_DISCOUNT,
+            L(lang, "结果未通过确定性规则链",
+               "the result failed the deterministic rule chain"),
+        ))
+    return out
+
+
+def result_confidence(
+    state: WorkflowState, sql_score: float, *, lang: str = "zh",
+) -> tuple[float, list[dict[str, Any]]]:
+    """结果置信度:交付前,「这个结果有多可信」。
+
+    **= SQL 置信度 × Π(具名折损)**,不是独立的第二个分数 —— 这样两个数天然
+    自洽:结果不会比它的 SQL 更可信(设计 §5.3)。反过来(两个独立分数)会出现
+    「SQL 0.5 而结果 0.9」这种读不通的组合。
+
+    折损连乘有下限 ``DISCOUNT_FLOOR``,结果再 clamp 到 ``[0.05, 0.99]``(I8)。
+    """
+    if not state.sql:
+        return 0.0, []
+    discounts = _result_discounts(state, lang)
+    product = max(DISCOUNT_FLOOR, _product(e["effect"] for e in discounts))
+    return _clamp(sql_score * product), discounts
+
+
+def _product(factors) -> float:
+    out = 1.0
+    for f in factors:
+        out *= f
+    return out

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from trove.agent.confidence import TIER_BANDS, sql_confidence
+from trove.agent.confidence import (
+    DISCOUNT_FLOOR,
+    TIER_BANDS,
+    result_confidence,
+    sql_confidence,
+)
 from trove.agent.answer_source import AnswerSource
 from trove.workflow.state import WorkflowState
 
@@ -232,3 +237,144 @@ class TestSqlConfidence:
             assert item["kind"] == "sql"
             assert item["name"] and item["why"]
             assert isinstance(item["effect"], float)
+
+
+class TestResultConfidence:
+    def test_no_sql_means_no_score(self):
+        score, evidence = result_confidence(make_state(sql="", answer_source=""), 0.0)
+        assert score == 0.0
+        assert evidence == []
+
+    def test_clean_run_equals_sql_confidence(self):
+        """一路顺利 = 没有折损,结果置信度就是 SQL 置信度。"""
+        score, evidence = result_confidence(make_state(), 0.5)
+        assert score == 0.5
+        assert evidence == []
+
+    def test_never_exceeds_its_sql(self):
+        """结果不会比它的 SQL 更可信 —— 这是「SQL × 折扣」而非两个独立
+        分数的全部理由(设计 §5.3):两个独立分数会出现「SQL 0.5、结果 0.9」。
+
+        **三条无折损的用例是不够的**:前三条里 ``result_confidence`` 走的都是
+        「没有折扣」那条路(``product`` 恒为 1.0),断言退化成 ``x <= x`` ——
+        它证明得了「没折扣时不虚高」,证明不了「**有折扣时**乘法真的发生了」。
+        后三条带上真折扣(forced 0.5 / retry 0.9² / empty 0.7),让这条不变量
+        真的走过连乘那条路。"""
+        for kwargs in (
+            {}, {"self_check_passed": 1}, {"retry_count": 0},
+            {"forced": True}, {"retry_count": 2}, {"verdict": "EMPTY"},
+        ):
+            state = make_state(**kwargs)
+            sql_score, _ = sql_confidence(state, AnswerSource.GENERATED)
+            result, _ = result_confidence(state, sql_score)
+            assert result <= sql_score
+
+    def test_forced_halves_it(self):
+        """强行交付(重试预算耗尽后接受 RETRY)是**最诚实**的低置信信号。"""
+        score, evidence = result_confidence(make_state(forced=True), 0.5)
+        assert score == pytest.approx(0.25)
+        assert evidence[0]["name"] == "forced"
+        assert evidence[0]["effect"] == pytest.approx(0.5)
+
+    def test_disagreement_multiplies_by_the_vote_share(self):
+        """候选不一致:折扣就是票王得票率(2:1 → 2/3)。"""
+        score, evidence = result_confidence(
+            make_state(consensus=True, selection={"confidence": 2 / 3}), 0.6)
+        assert score == pytest.approx(0.4)
+        assert evidence[0]["name"] == "vote_share"
+
+    def test_missing_selection_is_not_a_discount(self):
+        """单候选 / simple 档 / KB 精确命中:select 没跑,**不扣分**。
+
+        它与「平局 1/3」必须分得开 —— 后者是真分歧,前者是压根没有分歧
+        可言(设计 §8-2)。把缺席当 0 是把「没问」读成「答错」。
+        """
+        score, evidence = result_confidence(make_state(selection={}), 0.5)
+        assert score == 0.5
+        assert evidence == []
+
+    def test_empty_result_discounts(self):
+        score, _ = result_confidence(make_state(verdict="EMPTY"), 0.5)
+        assert score == pytest.approx(0.35)
+
+    def test_degraded_execution_discounts(self):
+        """执行降级:`execution_evidence["verdict"] == "degrade"` ——
+        与 ``output._degradation_notice`` **同一个门**(那里是
+        ``if str(ev.get("verdict") or "") != "degrade": return ""``),不另立判据。
+
+        正是这一步加了 LIMIT / 收窄了查询,答案的覆盖面被削过。
+        """
+        score, evidence = result_confidence(
+            make_state(execution_evidence={"verdict": "degrade",
+                                           "limit_applied": 1000}), 0.5)
+        assert score == pytest.approx(0.425)
+        assert evidence[0]["name"] == "execution_degraded"
+
+    def test_pass_verdict_is_not_evidence(self):
+        """放行的查询(``verdict == "pass"``)不留证据 —— 只记异常。"""
+        score, evidence = result_confidence(
+            make_state(execution_evidence={"verdict": "pass"}), 0.5)
+        assert score == 0.5
+        assert evidence == []
+
+    def test_timeout_kill_discounts(self):
+        score, _ = result_confidence(
+            make_state(execution_evidence={"kill": True}), 0.5)
+        assert score == pytest.approx(0.35)
+
+    def test_retry_rounds_discount_compounds(self):
+        score, evidence = result_confidence(make_state(retry_count=2), 0.5)
+        assert score == pytest.approx(0.5 * 0.9 ** 2)
+        assert evidence[0]["name"] == "retry"
+
+    def test_discount_floor_holds(self):
+        """I8:折扣叠加有下限 ×0.25,不压穿。
+
+        没有它,``retry_count=10`` 会把任何分数压成 0 —— 而 0 是留给「没有
+        答案」的码位(I4),不能被一个算出来的折扣占用。
+        """
+        score, evidence = result_confidence(
+            make_state(forced=True, retry_count=10, verdict="EMPTY",
+                       no_progress_rounds=1), 0.9)
+        # 组合折扣远小于 0.25,被地板托住
+        assert score == pytest.approx(max(0.05, 0.9 * DISCOUNT_FLOOR))
+
+    def test_a_rules_failure_is_heavily_penalised(self):
+        """``rules_passed is False`` = 跑了但没过 —— 交付路径上不该出现,
+        出现即异常,故重罚。"""
+        score, evidence = result_confidence(make_state(rules_passed=False), 0.5)
+        assert score == pytest.approx(0.25)
+        assert evidence[0]["name"] == "rules_not_passed"
+        assert "未通过" in evidence[0]["why"]
+
+    def test_rules_not_run_is_not_evidence(self):
+        """``rules_passed is None`` = 规则链**没跑**,与「跑了没过」分开。
+
+        ``empty`` 工作流是这条:调用方带着结果集进来,``_answer_source`` 非空、
+        分数照算,而验证从没发生过。罚它等于**陈述一件没发生的事**——缺席不是
+        坏消息(设计 §8-1),这条断言钉的就是 Review Focus 第 1 条。Task 6 之前
+        这两件事同形,所以这条测试在 Task 6 落地前**不可能通过**。
+
+        它测的是**纯函数契约**,不依赖某条生产路径真的把 ``None`` 送到交付点:
+        HITL 否决虽然也没跑过 validate,但 ``output`` 里「见 ``intent_answer``
+        就提前 return」那一句(``if state.intent_answer:`` 那次 return)把它挡在
+        计分点之外(那正是 I4 要的三态)。
+        """
+        score, evidence = result_confidence(make_state(rules_passed=None), 0.5)
+        assert score == 0.5
+        assert evidence == []
+
+    def test_rules_passed_is_not_evidence(self):
+        """规则链全过是**默认**,不是加分项 —— 只记坏消息的反面同样成立:
+        把默认值记成证据会让每条正常答案都背着一条噪声。"""
+        score, evidence = result_confidence(make_state(rules_passed=True), 0.5)
+        assert score == 0.5
+        assert evidence == []
+
+    def test_every_discount_is_named_and_explained(self):
+        score, evidence = result_confidence(
+            make_state(forced=True, verdict="EMPTY", retry_count=1), 0.8)
+        for item in evidence:
+            assert item["kind"] == "result"
+            assert item["name"] and item["why"]
+            assert 0 < item["effect"] <= 1.0
