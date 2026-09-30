@@ -353,7 +353,7 @@ class TroveREPL:
         if node == "execute_sql":
             return L(lang, f"{detail.get('row_count', -1)} 行", f"{detail.get('row_count', -1)} rows")
         if node == "select":
-            return L(lang, "候选一致", "candidates agree") if detail.get("consensus", True) else L(lang, "候选不一致（低置信）", "candidates disagree (low confidence)")
+            return L(lang, "候选一致", "candidates agree") if detail.get("consensus", True) else L(lang, "候选不一致", "candidates disagree")
         if node == "validate":
             return L(lang, "通过", "passed") if not detail.get("reason") else L(lang, "规则失败", "rule failed")
         if node == "analyze_error":

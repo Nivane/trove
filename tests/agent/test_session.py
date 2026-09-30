@@ -1343,7 +1343,7 @@ class TestConfidenceInSummary:
         (``frontend/src/components/chat/StepCard.vue:126``)读的是
         ``view.selection.confidence`` ← ``payload.selection.confidence``,而
         ``get()``(``frontend/src/utils/steps.ts:90-97``)**先查 ``payload.detail``**,
-        ``session.py:1228`` 早已把 ``delta["selection"]`` 原样放了进去 ——
+        ``session.py`` 早就把 ``delta["selection"]`` 原样放进 ``detail["selection"]``(那一行按内容找,别按行号 —— 本任务自己的注释已把它往下推过) ——
         票率一直显示正确。恒 ``0.0`` 的是另一个字段,它的前端落点
         ``view.confidence``(``steps.ts`` 里 ``view.confidence = conf`` 那一行)**全仓库无读取方**。
         所以本行要做,但理由是**字段诚实**:它已随 SSE / 历史回放 / runlog
@@ -1364,9 +1364,16 @@ class TestConfidenceInSummary:
         > ``multi_candidate=False`` ⟹ ``graphs.py`` 里 ``alt_subgraphs = None``
         > ⟹ ``subgraph_alt is None`` ⟹ 池子**永远是空的** ⟹ select 每轮都在第一
         > 句 return,``selection`` **一次都没写过**。
-        > 上一版推演说「跑不跑都是 1.0」,而真相是**不跑就永远是 0.0**:
-        > ``session.py`` 的 ``detail["confidence"] = delta.get("confidence", 0.0)``
-        > 在取不到时给的是 ``0.0`` —— 上一版连症状都预测错了(它写的是 ``None``)。
+        > 上一版推演说「跑不跑都是 1.0」。**两处都不对,而且是把两条原因叠成了一格**:
+        > 池空 ⟹ ``select`` 早退 ``{}`` ⟹ ``delta`` 是空的 ⟹ ``session.py`` 的
+        > ``if not delta: continue``(按内容找,在 select 那段处理**之前**)把整条
+        > select 步骤跳过 —— 这个配置下**没有 select 步骤事件**,既不是 ``1.0`` 也
+        > 不是 ``0.0``,是**根本没有那个 ``detail``**(用例会红在 ``KeyError``)。
+        > 那个 ``0.0`` 是另一回事:那句赋值原先是 ``delta.get("confidence", 0.0)``,
+        > 而 ``confidence`` 从来只写在 ``selection`` 字典**内部**,顶层没有这个键 ——
+        > 所以**只要这一步跑得到**,读出来就是恒定 ``0.0``,与候选跑没跑无关(这才是
+        > 本任务要修的那个字段)。上一版把「跑不到」与「读错键」认成了同一条,连症状
+        > 都写成 ``None``。
         >
         > ``len(ranked) == 1`` 的正确读法是「**主候选与全部备选一致**」,不是
         > 「只有一个候选」;两者只在**有备选**时才是一回事。``select`` 那个早退
@@ -1378,22 +1385,23 @@ class TestConfidenceInSummary:
         # 脚本给 7 条:意图 + 主候选生成 + 4 个备选生成 + reflect。**4 这个数是从
         # 代码上算出来的**:``graphs.py`` 的 ``alt_subgraphs`` 用
         # ``_candidate_schedule(max(scaling, 1) - 1)``,``scaling`` 默认 5 ⟹ 4 个备选
-        # 子图。(全仓**没有**一条断言 ``len(llm.calls) == 7`` 的既有用例 —— 本行
-        # 原稿说「与既有同形样本一致」,那个样本不存在,数本身是对的。)
+        # 子图。同形样本在 ``tests/workflow/test_graphs.py``:那里的
+        # ``len(llm.calls) == 7`` 断言共**五处**,其中**同形的**两处自带形状注释 ——
+        # ``# 意图 + 主 + 4 备 + reflect``(经典支)与
+        # ``# 意图 + 主 + 4 subagent + reflect``(agentic 支)。**按注释搜,别按行号。**
         # ``Scripted`` 用 ``next(it)``:**短了是 StopIteration,长了只是没人取**
         # —— 两头不对称,所以按顺序给足。
         #
-        # ⚠️ 备选那 4 条**必须与主候选文本不同**(比较键是
-        # ``" ".join(sql.split()).lower()``,大小写/空白折叠):``graphs.py`` 在
-        # 入池前会 ``if key in seen: continue`` 把与主候选重复的备选丢掉,
-        # ``seen`` 初值就是主候选。4 条备选全写成主候选原句,池子会**空着**
-        # 出这个节点 —— ``select`` 开头的 ``not state.candidates`` 守卫随即
-        # 早退 ``{}``,``session.py`` 又把空 delta 整条跳过(``if not delta:
-        # continue``),于是**连 select 步骤事件都没有**,用例会红在
-        # ``KeyError: 'select'`` 上 —— 一个看起来像图坏了、其实是用例喂错的
-        # 症状(本行原稿的脚本正是这样,已按实况修正)。加上限定名的同一句
-        # 既可入池、结果集又与主候选一致:票型落在「全员一致」那一档,
-        # 票率 = 1.0。
+        # ⚠️ 备选那 4 条**必须与主候选文本不同**。入池前有一道去重:
+        # ``key = " ".join(sql.split()).lower()``(折叠空白与大小写),而
+        # ``seen`` 的初值是**主候选再加上前几轮的池**(``seen.update(...)`` ——
+        # 是个超集,不止主候选) ⟹ ``if key in seen: continue`` 会把与主
+        # 候选同文的备选**丢掉**。四条全写成主候选原句,池子会**空着**出这个
+        # 节点;``select`` 开头的 ``not state.candidates`` 守卫随即早退 ``{}``,
+        # ``session.py`` 又把空 delta 整条跳过(``if not delta: continue``),
+        # 于是**连 select 步骤事件都没有**,用例红在 ``KeyError: 'select'`` ——
+        # 一个看着像图坏了、其实是用例喂错的症状。限定名写法既可入池、结果集
+        # 又与主候选一致:票型落「全员一致」那一档,票率 = 1.0。
         manager = self._manager(
             tmp_home, sqlite_registry,
             ["query",
