@@ -152,7 +152,8 @@ def _result_entry(
     归因字段(P2-8)随 final 一起记录,让"哪个机制贡献了多少准确率"
     可以从 results.jsonl 直接回答:
       consensus        — select 节点多候选投票是否达成一致
-      confidence       — 共识置信度(票数/候选数)
+      confidence       — 答案级结果置信度(SQL 置信度 × 结果折损);票率在下一行的
+                         selection 里。2026-09-30 前此字段无写入方,恒 0.0(口径已变)
       selection        — 裁决细节(votes/adopted/原因)
       fix_mode         — 修复路径:fixer 实现级 / revisor 语义级 / 空(一次过)
       rollback_target  — 打回目标(gen_sql/query_sketch/schema_linking)
