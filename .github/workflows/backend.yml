@@ -94,11 +94,11 @@ jobs:
       #
       # 为什么挂在这:和上一条锚点门同一个理由 —— 零 LLM / 零网络。它不连任何
       # 远端:demo 数据源是内置的,脚本会就地建一份 BIRD 金融 SQLite
-      # (``~/.trove/demo.db``);KB 是签进仓库的 .trove/kb/demo/*.yml。所以它
+      # (`~/.trove/demo.db`);KB 是签进仓库的 .trove/kb/demo/*.yml。所以它
       # 没有成本需要防,该走默认路径,而不是留在「得记得手动跑」那一档。
       #
-      # 也别被 ``--datasource demo`` 骗到以为要先注册:注册表
-      # (``.trove/datasources.yml``)是 gitignore 的,CI 上**不存在**,而脚本
+      # 也别被 `--datasource demo` 骗到以为要先注册:注册表
+      # (`.trove/datasources.yml`)是 gitignore 的,CI 上**不存在**,而脚本
       # 对内置 demo 有兜底,不需要它(scripts/check_drift.py 的 DEMO_NAME 分支)。
       #
       # 退出码 0/1/2 是三态,不是两态:0 没漂移、1 有漂移、2 **没查成**。
