@@ -6,6 +6,7 @@ import pytest
 
 from trove.agent.confidence import (
     DISCOUNT_FLOOR,
+    render_line,
     TIER_BANDS,
     result_confidence,
     sql_confidence,
@@ -403,3 +404,62 @@ class TestResultConfidence:
         score, ev = result_confidence(make_state(no_progress_rounds=2), 0.5)
         assert score == pytest.approx(0.5 * 0.8, abs=1e-4)
         assert [e["name"] for e in ev] == ["stalled"]
+
+
+class TestRenderLine:
+    def test_rounds_to_integer_percent(self):
+        """I5:展示精度不得高于证据精度。不出现 82.37%。"""
+        line = render_line(0.8237, [], lang="zh")
+        assert "82%" in line
+        assert "82.3" not in line
+
+    def test_no_evidence_means_no_parenthesis(self):
+        """证据为空就只给百分比 —— 不编造理由。"""
+        line = render_line(0.5, [], lang="zh")
+        assert "(" not in line and "（" not in line
+
+    def test_shows_at_most_two_strongest(self):
+        """括号里是**证据摘要**,最多两条,取**严重度**最大的(见 ``_severity``)。"""
+        evidence = [
+            {"kind": "result", "name": "retry", "effect": 0.81, "why": "经过 2 轮修正才交付"},
+            {"kind": "result", "name": "forced", "effect": 0.5, "why": "重试预算耗尽后强行交付"},
+            {"kind": "result", "name": "stalled", "effect": 0.8, "why": "修正已无进展,提前止损"},
+        ]
+        line = render_line(0.4, evidence, lang="zh")
+        # 三条全是 kind="result",严重度 = 1 - effect ⟹ 0.5(forced)、
+        # 0.2(stalled)、0.19(retry),降序取前二 —— 被截掉的是**第 3 条
+        # retry**。断言要盯第 3 条:盯 0.8 会红,它本来就在摘要里。
+        assert "强行交付" in line
+        assert "提前止损" in line                  # 0.8 次重,在摘要内
+        assert "经过 2 轮修正才交付" not in line    # 0.81 最轻,被截掉
+
+    def test_english(self):
+        evidence = [{"kind": "result", "name": "forced", "effect": 0.5,
+                     "why": "retry budget exhausted"}]
+        line = render_line(0.4, evidence, lang="en")
+        assert "Confidence" in line
+        assert "40%" in line
+        assert "（" not in line        # 全角括号是中文字形,英文句子里不该出现
+
+    def test_a_sql_bonus_does_not_crowd_out_a_heavier_discount(self):
+        """跨 kind 的权重:这个列表是**两种单位**拼起来的 ——
+        ``kind="sql"`` 是带符号的加法增量(±0.05~0.10),``kind="result"``
+        是乘性因子(0~1)。**不能直接按 ``effect`` 排序**:直接升序取前二,一条
+        ``+0.10`` 的加分永远排在所有折扣之后被选中,于是披露行把一条**加分**
+        写成「分数低的原因」,而真正把分数砍半的 ×0.5 反而被截掉。
+
+        严重度 = ``1 - effect``(result)/ ``abs(effect)``(sql) →
+        0.5(forced)> 0.3(empty)> 0.10(self_check),摘要取前二。
+        """
+        evidence = [
+            {"kind": "sql", "name": "self_check", "effect": 0.10,
+             "why": "agent 自检通过"},
+            {"kind": "result", "name": "forced", "effect": 0.5,
+             "why": "重试预算耗尽后强行交付"},
+            {"kind": "result", "name": "empty_result", "effect": 0.7,
+             "why": "查询返回 0 行"},
+        ]
+        line = render_line(0.35, evidence, lang="zh")
+        assert "强行交付" in line         # 严重度 0.5,最重
+        assert "查询返回 0 行" in line     # 严重度 0.3,次重
+        assert "自检通过" not in line      # 严重度 0.10,最轻 —— 被截掉

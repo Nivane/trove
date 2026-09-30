@@ -339,3 +339,46 @@ def _product(factors) -> float:
     for f in factors:
         out *= f
     return out
+
+
+def render_line(
+    total: float, evidence: list[dict[str, Any]], *, lang: str = "zh",
+) -> str:
+    """披露行。**折叠区之外**——与数据截止时间同一位置、同一理由:读结果的人
+    不展开详情也该看到它(设计 §5.5)。
+
+    括号里是**证据摘要**,最多两条、取**动得最狠**的那两条。
+    "权重"必须按**跨 kind 可比的严重度**算,不能直接拿 ``effect`` 排序 ——
+    这个列表是两种单位拼起来的:``kind="sql"`` 的 ``effect`` 是**带符号的加法
+    增量**(约 ±0.05~0.10),``kind="result"`` 的是**乘性因子**(0~1)。直接
+    按 ``effect`` 升序取前二,后果是**一个 +0.10 的自检加分永远排在所有折扣
+    后面被选中**,于是披露行会把一条**加分**写成分数低的原因;而真正把分数
+    砍半的那条 ×0.5 反而被截掉。严重度 = ``1 - effect``(result;分数被拿掉
+    的比例)/ ``abs(effect)``(sql;把基准推动了多少分)。证据为空
+    (例如 certified 直出、一路顺利)时只给百分比 —— **不编造理由**:一条恒
+    出现的解释会训练人不读它。
+
+    括号**随语言换**:全角括号是中文字形,English 那一支用它会在英文句子里
+    夹一个中文字符。这不是吹毛求疵 —— 本仓的评测语料是英文(BIRD),英文形态
+    才是这条披露行最常被真人看到的形态。``source_line`` 用 ``·`` 分隔、从不用
+    全角括号,这里同一个纪律。
+    """
+    pct = f"{round(total * 100)}%"
+    top = sorted(evidence, key=_severity, reverse=True)[:2]
+    why = " · ".join(e["why"] for e in top)
+    label = L(lang, "置信度", "Confidence")
+    left, right = ("（", "）") if lang.startswith("zh") else (" (", ")")
+    body = f"{label}: {pct}" + (f"{left}{why}{right}" if why else "")
+    return f"*{body}*\n"
+
+
+def _severity(item: dict[str, Any]) -> float:
+    """一条证据「动了多少分」—— 跨 kind 可比的唯一量纲(见 render_line)。
+
+    ``kind="result"`` 是乘性因子 ⟹ 拿掉的比例就是 ``1 - effect``;
+    ``kind="sql"`` 是加法增量 ⟹ 推动的幅度就是 ``abs(effect)``(正负都算,
+    加分和扣分都回答了「这个分数为什么是这个数」)。
+    """
+    if item["kind"] == "result":
+        return 1.0 - float(item["effect"])
+    return abs(float(item["effect"]))

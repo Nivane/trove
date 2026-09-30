@@ -19,6 +19,9 @@ from typing import Any
 from trove.agent.answer_source import AnswerSource
 from trove.agent.answer_source import resolve as resolve_answer_source
 from trove.agent.answer_source import source_line as render_source_line
+from trove.agent.confidence import (
+    confidence_enabled, render_line, result_confidence, sql_confidence,
+)
 from trove.core.i18n import L
 from trove.llm.observability import record_span
 from trove.services.errors import present_error
@@ -293,11 +296,28 @@ def _answer_source(state: WorkflowState) -> AnswerSource | None:
     return resolve_answer_source(state)
 
 
-def _build_details(state: WorkflowState) -> str:
+def _build_details(
+    state: WorkflowState, source: AnswerSource | None, *,
+    show_confidence: bool, sql_score: float,
+) -> str:
     """Technical detail section (SQL / semantics / assessment / meta).
 
     Rendered inside the collapsible <details> wrapper; empty body → "" so the
     caller omits the section entirely.
+
+    ``source`` 由调用方传入而**不在这里再判一次**:档位的判定只发生一次
+    (``_answer_source``),渲染与 state 字段必须同源。传参而不是读闭包变量,
+    是让「只有一份判定」在签名上就看得见。
+
+    ``show_confidence`` 是急停开关(§6.2),由调用方**算好传进来** —— 与决定
+    「枚举行放哪儿」用的是同一个值,不在这里再调一次 ``confidence_enabled()``。
+    关掉时这一段整体退回今天的形态:折叠区内没有 SQL 置信度行,来源枚举行也
+    不在这里(它在披露面)。§6.2 那张表的右格与验收第 11 条就是这条契约。
+
+    ``sql_score`` 同理**是参数,不是 ``state.sql_confidence``**:那个字段的唯一
+    写点是 ``output`` 自己末尾的返回值,而本函数在它**之前**跑 —— 从字段读
+    永远读到默认值 ``0.0``,这一行会一次都不出现(实测,不是推演)。披露面与
+    证据面因此拿的是**同一个** ``sql_score``:一个数字,两处渲染。
     """
     lang = state.lang
     parts: list[str] = []
@@ -306,6 +326,26 @@ def _build_details(state: WorkflowState) -> str:
     if state.sql:
         parts.append(f"### {L(lang, '生成的 SQL', 'Generated SQL')}\n")
         parts.append(f"```sql\n{format_sql(state.sql, state.dialect)}\n```\n")
+        # SQL 置信度:分数跟着**它的对象**走 —— SQL 本来就在折叠区里,所以
+        # 它不必上披露面。这里回答的是披露面那个数字的「哪个环节弱」。
+        # **开关关掉就没有这一行** —— §6.2 表的右格写死「SQL(无 SQL 置信度)」,
+        # 验收第 11 条同:「折叠区内无 SQL 置信度」。不加这个门,急停就只停了
+        # 披露面、折叠区里还留着一个新形态的分数 —— 正是 §6.2 说要避免的
+        # 「半个功能」。
+        if show_confidence and sql_score > 0:
+            parts.append(L(
+                lang,
+                f"*SQL 置信度: {round(sql_score * 100)}%*\n",
+                f"*SQL confidence: {round(sql_score * 100)}%*\n",
+            ))
+
+    # 答案来源(原在折叠区**外**,决策三移入这里)—— 它是分数的**证据**:
+    # 用户看到 82% 追问「凭什么」,第一层答案就是档位。判定仍只发生一次
+    # (``_answer_source``),这里只是换个位置渲染。
+    # **同样受开关管**:关掉时调用方已经在披露面渲染了它,这里再渲染一份就是
+    # 同一个来源说两遍 —— 那不是「今天的形态」,是新造出来的第三种(§6.2)。
+    if show_confidence and source is not None:
+        parts.append(render_source_line(source, lang=lang))
 
     # Semantic explanation (生成 SQL 后的 LLM 语义说明)
     if state.semantics:
@@ -336,13 +376,9 @@ def _build_details(state: WorkflowState) -> str:
     if meta_lines:
         parts.append("\n---\n" + "\n".join(f"*{line}*" for line in meta_lines))
 
-    # Multi-candidate disagreement → low-confidence note
-    if not state.consensus:
-        parts.append(L(
-            lang,
-            "\n*置信度:低(候选 SQL 结果不一致)*\n",
-            "\n*Confidence: low (candidate SQLs disagreed)*\n",
-        ))
+    # (已移除)Multi-candidate disagreement → low-confidence note。
+    # 它判的那件事(``not state.consensus``)已经被结果置信度的票率折损吸收
+    # —— 同一件事不两处说(设计 §5.4-3)。
 
     # Knowledge base usage
     if state.kb_hits:
@@ -528,12 +564,30 @@ async def output(state: WorkflowState) -> dict[str, Any]:
     if freshness:
         parts.append(freshness)
 
-    # 3c. 答案来源(设计 §7.3)—— 与截止时间同一位置、同一理由:一条讲数据来
-    #     自哪一刻,一条讲答案来自哪条路径,都是读者不展开详情也该看到的东西。
-    #     I6:档位只由 _answer_source 判定一次,渲染与 state 字段同源。
+    # 3c. 答案级置信度(决策三,2026-09-30)。原位置是答案来源那一行 ——
+    #     披露面换成了分数,枚举行移入 _build_details(§5.5)。
+    #
+    #     **判定只发生一次**:``source`` 在这里定,下游 _build_details 通过
+    #     参数接收(而不是自己再调一次 _answer_source)。同源同上文是 I6 的
+    #     实现方式,不是巧合 —— 两处各判一次,迟早出现「行说已认证、字段说
+    #     生成」。
+    #
+    #     开关关掉 = **完整回退**到枚举披露形态(§6.2):急停要能真的停下来,
+    #     所以回退的是整个决策三,不是半个。两个分数**照算照写** —— 只在渲染
+    #     处分流,否则急停会顺带打瞎 avg_confidence 这个刚复活的指标。
+    # 先判档位,再用它算分 —— 同一个 source 后面还要喂给 _build_details
     source = _answer_source(state)
-    if source is not None:
-        parts.append(render_source_line(source, lang=state.lang))
+    sql_score, sql_evidence = sql_confidence(state, source, lang=lang)
+    total, discounts = result_confidence(state, sql_score, lang=lang)
+    # 开关**只读一次**:它同时决定「披露面放分数还是放枚举」与「折叠区里渲染
+    # 什么」(后者经 show_confidence 传给 _build_details)。读两次就可能出现
+    # 「披露面放了枚举、折叠区也放一份」——那不是回退,是新造的第三种(§6.2)。
+    on = confidence_enabled()
+    if not on:
+        if source is not None:
+            parts.append(render_source_line(source, lang=lang))
+    elif total > 0:
+        parts.append(render_line(total, sql_evidence + discounts, lang=lang))
 
     # Insights (执行后 LLM 生成的洞察)
     if state.insights:
@@ -549,7 +603,9 @@ async def output(state: WorkflowState) -> dict[str, Any]:
             parts.append(attr_parts + "\n")
 
     # 4. Collapsible technical details (SQL / semantics / meta)
-    details = _build_details(state)
+    details = _build_details(
+        state, source, show_confidence=on, sql_score=sql_score,
+    )
     if details:
         parts.append(_details_wrap(
             L(lang, "查看 SQL 与详情", "View SQL & details"),
@@ -560,7 +616,12 @@ async def output(state: WorkflowState) -> dict[str, Any]:
 
     # 档位单独落进 state:markdown 里那一行是给人读的,这个字段是给机器读的
     # (SSE 的 summary / 前端视觉区分 / 台账落账)。两者同源同上文,不许各判一次。
+    # 三个置信度字段同理:SSE / 评测 / 历史回放读的是这里,不是 markdown。
     return {
         "final_response": response,
         "answer_source": source.value if source is not None else "",
+        # 无答案时保持全量重置后的 0.0(与 answer_source 的空串同一套三态)。
+        "sql_confidence": sql_score,
+        "confidence": total,
+        "confidence_evidence": sql_evidence + discounts,
     }

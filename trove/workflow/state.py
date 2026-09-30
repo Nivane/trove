@@ -210,8 +210,8 @@ class WorkflowState(BaseModel):
     # 驱动负载削减开关(经典子图/跳多候选/跳裁决);修正轮强制 standard
     complexity: str = "standard"
 
-    # Multi-candidate agreement; False = candidates disagreed and the
-    # answer is delivered with a low-confidence note
+    # Multi-candidate agreement; False = 候选不一致,折扣按票王得票率计入
+    # 结果置信度(output 节点,设计 2026-09-30 §5.3)
     consensus: bool = True
 
     # User intent (route_intent node): query / metadata (two-way)
@@ -265,6 +265,22 @@ class WorkflowState(BaseModel):
     # 档位只在 output 一处判定(``agent/answer_source.resolve``),SSE、前端、台账
     # 都读这一个字段 —— 各判一次迟早出现两处不一致,而披露的不一致等于没披露。
     answer_source: str = ""
+
+    # —— 答案级置信度(output 节点唯一写入,设计 2026-09-30 §6.1)——
+    #
+    # 两个分数的分工:
+    #   sql_confidence     —— 执行前,来源权威性 + 编译覆盖 + 自检(分类问题)
+    #   confidence         —— 交付前,= sql_confidence × 执行后折损(折损问题)
+    #
+    # 空 = 没有可披露的答案(元数据/反问/错误路径),**不是「置信度 0」**
+    # —— 与 answer_source 同一条三态纪律。I8 把真分数的下界钉在 0.05,所以
+    # 0.0 永远只可能是「没有答案」,不需要额外的是否位。
+    #
+    # ⚠️ 与 selection["confidence"] 不是一回事:那个是 select **步骤**的票王
+    #    得票率,只在多候选时存在;这个是**答案级**的,每轮都有。
+    sql_confidence: float = 0.0
+    confidence: float = 0.0
+    confidence_evidence: list[dict[str, Any]] = Field(default_factory=list)
 
     # schema_linking artifacts
     matched_tables: list[str] = Field(default_factory=list)
@@ -418,9 +434,6 @@ class WorkflowState(BaseModel):
     # 计数达 MAX_NO_PROGRESS_ROUNDS → analyze_error 提前止损(不再打回)。
     last_progress: str = ""
     no_progress_rounds: int = 0
-
-    # select 置信度(票王得票率): 候选投票分布的确定性信号,供降级/输出观测
-    confidence: float = 0.0
 
     # SQL 版本链(analyze_error 记录,cap 版累积):
     # [{"sql": 失败SQL全文, "sig": 结果集签名, "issues": [规则名], "round": N}]

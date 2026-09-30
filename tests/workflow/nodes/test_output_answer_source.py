@@ -14,6 +14,8 @@ A6 的原话是「三档 ``answer_source`` 与**实际路径**一致」——所
 
 from __future__ import annotations
 
+import pytest
+
 from trove.services.kb.service import ExampleHit
 from trove.workflow.nodes.fast_match import make_fast_match
 from trove.workflow.nodes.output import output
@@ -179,12 +181,102 @@ class TestNoDisclosure:
 
 
 class TestPresentation:
-    async def test_source_line_is_outside_the_collapsible_details(self):
-        """与数据截止时间同一位置:读结果的人不展开详情也该看到它(§7.3)。"""
+    async def test_source_line_moved_inside_and_score_took_its_place(self):
+        """决策三(2026-09-30):披露面给分数,枚举退出。
+
+        本断言的前身是 ``test_source_line_is_outside_the_collapsible_details``
+        ——那是**上一个设计的正确断言**(来源行在折叠区外,与数据截止时间同
+        位置)。决策三换了披露形态,于是旧的保护对象正是本次要改的东西。
+        改它时写明出处,不悄悄翻。
+        """
         state = make_state(**await run_fast_match("certified"))
         response = (await output(state))["final_response"]
-        assert "来源" in response.split("<details>")[0]
+        outside, _, inside = response.partition("<details>")
+        assert "置信度" in outside          # 披露面:分数
+        assert "来源" not in outside        # 披露面:没有枚举
+        assert "来源" in inside             # 证据面:枚举在这儿
 
     async def test_english_answer_discloses_in_english(self):
         update = await output(make_state(lang="en"))
         assert "*Source: LLM generated · please verify*" in update["final_response"]
+
+
+class TestConfidenceDisclosure:
+    """设计 2026-09-30 §5.5:披露面给分数。"""
+
+    async def test_score_renders_outside_the_details(self):
+        update = await output(make_state(self_check_passed=1))
+        outside = update["final_response"].split("<details>")[0]
+        assert "置信度" in outside
+
+    async def test_sql_confidence_renders_inside_the_details(self):
+        """证据面那条 SQL 置信度:披露面那个数字的「哪个环节弱」。
+
+        它渲染的必须是**这次调用刚算出来的** ``sql_score``,而不是 ``state``
+        上的字段 —— 字段的唯一写点就是 output 自己末尾那个返回值,而
+        _build_details 在它**之前**跑:从字段读就是读默认值 0.0,这一行会
+        永远不出现(写这条时实测过,用例见下)。这是上一条的正面配对:只有
+        反面(开关关掉时没有)会漏掉「压根没实现」。
+        """
+        update = await output(make_state(self_check_passed=1))
+        inside = update["final_response"].split("<details>", 1)[1]
+        assert "SQL 置信度: 60%" in inside
+        assert update["sql_confidence"] == pytest.approx(0.6)
+
+    async def test_no_score_on_the_error_path(self):
+        """I4:错误路径不渲染置信度行。"""
+        update = await output(make_state(error="[ERR:SQL_EXEC] boom"))
+        assert "置信度" not in update["final_response"]
+        assert update.get("confidence", 0.0) == 0.0
+
+    async def test_no_score_without_sql(self):
+        """I4:空跑没有答案,就没有分数,也不渲染。"""
+        update = await output(make_state(sql="", columns=[], rows=[], row_count=-1))
+        assert "置信度" not in update["final_response"]
+        assert update.get("confidence", 0.0) == 0.0
+
+    async def test_the_old_low_confidence_note_is_gone(self):
+        """§5.4-3:旧的「置信度:低(候选 SQL 结果不一致)」**由新的结果
+        置信度行取代**,并从折叠区移除 —— 同一件事不两处说。
+
+        ``consensus=False`` 在真链路上**总是**伴随一个 ``selection``
+        (select.py 的两条降级 return 都写它),所以这里照那个形状给 ——
+        只给 ``consensus=False`` 而不给票率,是不存在的状态,测它没有意义。
+        """
+        update = await output(make_state(
+            consensus=False, selection={"confidence": 1 / 3}))
+        assert "置信度:低" not in update["final_response"]
+        # 它判的那件事已经被票率折损吸收
+        assert update["confidence"] == pytest.approx(0.5 / 3, abs=0.01)
+
+    async def test_switch_off_restores_the_enum_disclosure(self):
+        """急停是**完整回退**(§6.2):枚举行回到披露面,而不是什么都不显示。
+
+        半截状态(分数消失、枚举也留在折叠区)既不是旧形态也不是新形态 ——
+        是新造出来的第三种,而那让「急停」在事故现场不可用。
+        """
+        from trove.agent.confidence import set_confidence_enabled, reset_confidence_flag
+        set_confidence_enabled(False)
+        try:
+            update = await output(make_state(**await run_fast_match("certified")))
+            outside, _, inside = update["final_response"].partition("<details>")
+            assert "来源" in outside
+            assert "置信度" not in outside
+            # §6.2 右格 + 验收第 11 条:折叠区内**没有** SQL 置信度行。少了这条,
+            # 「急停」会停在披露面、把一个新的分数留在折叠区里 —— 那正是 §6.2
+            # 点名要避免的「半个功能」。
+            assert "SQL 置信度" not in update["final_response"]
+            # 枚举行**不许说两遍**:它在披露面(回到今天的形态),折叠区里就
+            # 不该再有第二份。
+            assert "来源" not in inside
+            # 分数**照算照写**:急停不该顺带打瞎 avg_confidence
+            assert update["confidence"] > 0
+        finally:
+            reset_confidence_flag()
+
+    async def test_state_fields_are_written_together(self):
+        """三个字段同源同上文 —— 不是各判一次(与 answer_source 同一条纪律)。"""
+        update = await output(make_state())
+        assert update["confidence"] > 0
+        assert update["sql_confidence"] > 0
+        assert isinstance(update["confidence_evidence"], list)

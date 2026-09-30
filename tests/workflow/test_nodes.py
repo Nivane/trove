@@ -2928,14 +2928,31 @@ class TestTerminationLine:
         response = (await output(make_state(row_count=0, lang="en")))["final_response"]
         assert "Knowledge base" not in response
 
-    async def test_low_confidence_rendered(self):
-        """多候选不一致耗尽 → 输出主候选 + 低置信标注。"""
+    async def test_the_low_confidence_note_is_gone(self):
+        """§5.4-3:多候选不一致不再渲染「*Confidence: low*」那一行。
+
+        本断言的前身 ``test_low_confidence_rendered`` 断言的是**上一个设计的
+        正确行为**(consensus=False → 折叠区里一句低置信标注)。设计
+        2026-09-30 §5.4-3 把这句话删了:它判的那件事(``not state.consensus``)
+        已经由结果置信度的**票率折损**承担,同一件事不两处说。新形态的断言在
+        ``tests/workflow/nodes/test_output_answer_source.py::TestConfidenceDisclosure``。
+        这里只钉旧句不再出现 —— 谁把 note 加回来,这条会红。
+
+        状态故意保持原样(**没有 sql**):那也说明了两者的另一处区别 —— 新的
+        披露行在没有答案时一个字都不写(I4),而那句 note 在空跑时照样会说
+        「置信度:低」。
+        """
         state = make_state(row_count=0, consensus=False, lang="en")
         response = (await output(state))["final_response"]
-        assert "Confidence" in response
-        assert "low" in response.lower()
+        assert "Confidence: low" not in response
+        assert "candidate SQLs disagreed" not in response
 
     async def test_high_confidence_no_note(self):
+        """没有可披露的答案(``sql`` 为空)就不写置信度行(I4)。
+
+        与上一条同一处境:这个状态今天没有分数可显示,不是因为「置信度高所以
+        不显示」——旧的 high/low 二分已经不存在了。
+        """
         response = (await output(make_state(row_count=0, lang="en")))["final_response"]
         assert "Confidence" not in response
 
