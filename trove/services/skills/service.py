@@ -373,6 +373,14 @@ class SkillService:
             # set_tier 是一条独立的写入路径:不校验就能把一份没有 checks 的
             # skill 变成 validator —— 它永远不会生效,而且看着像生效了。
             self._validate_validator_spec(entry)
+        else:
+            # 反向同理:validator 的四字段在非 validator 档上没有意义,而 tier
+            # 一旦不是 validator,render_skills 就会把正文当**指令**投递 ——
+            # 判据被检查者念出,检查就没了意义。create() 已立了这条,set_tier
+            # 是同一个不变量的另一半。
+            for f in VALIDATOR_FIELDS:
+                if entry.get(f) is not None:
+                    raise ValueError(f"{f} is only valid for tier=validator")
         return self._rewrite_field(name, {"tier": tier})
 
     def _rewrite_field(self, name: str, updates: dict) -> dict:

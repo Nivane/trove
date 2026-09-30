@@ -404,6 +404,21 @@ def test_set_tier_to_validator_validates(tmp_path):
         svc.set_tier("plain", "validator")
 
 
+def test_set_tier_off_validator_refuses_and_changes_nothing(tmp_path):
+    """反向不变量:validator 四字段在非 validator 档上没有意义,而 tier 一旦
+    不是 validator,``render_skills`` 就会把正文当**指令**投递 —— 判据被
+    检查者念出,检查就没了意义。拒绝还必须**无副作用**:半写(字段还在、
+    tier 改了)比原来的 bug 更糟。tier != validator 走同一个分支,available
+    不必再来一遍。"""
+    svc = SkillService(tmp_path)
+    svc.create(dict(_VALIDATOR))
+    svc.confirm("credit-guard")
+    with pytest.raises(ValueError, match="only valid for tier=validator"):
+        svc.set_tier("credit-guard", "required")
+    assert svc.read_skill("credit-guard")["tier"] == "validator"
+    assert svc.render_skills("gen_sql") == ""
+
+
 def test_validator_never_in_required_render(tmp_path):
     """判据不许被当指令投递 —— 被检查者念检查标准,检查就没了意义。"""
     svc = SkillService(tmp_path)
