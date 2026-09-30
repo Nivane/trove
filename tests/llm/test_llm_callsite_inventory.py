@@ -58,7 +58,8 @@ _METHODS = frozenset({"chat", "chat_full", "chat_stream", "embedding"})
 
 _KINDS = frozenset({"A", "Av", "Ab", "Ac", "B", "E"})
 
-#: 全量调用点 (2026-09-29 设计稿 §2 盘点,32 → 33 含 scripts)。
+#: 全量调用点(2026-09-29 设计稿 §2 盘点 32 处;计入 scripts、补上它漏计的
+#: ``embedding`` 后共 34 处)。
 CALL_SITES: dict[str, str] = {
     # ── agent 会话层:提示词都来自 render ──
     "trove/agent/session.py::SessionManager.compact_session#1": "Av",

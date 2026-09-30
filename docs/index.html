@@ -930,7 +930,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>成本归因与预算</h4>
             <p>让每一次问答的 token 花在哪一步、为什么花，成为可查账、可设限的量。</p>
             <p class="road-crit"><span>判据</span>归因覆盖全部模型调用路径，不存在「不产生记录」的调用。</p>
-            <p class="road-crit"><span>装置</span>LLM 调用点清单的 AST 枚举测试（枚举 <code>.chat</code> / <code>.chat_full</code> / <code>.chat_stream</code>）。<b>两个盲区</b>：全部 33 个调用点里仍有不记账的；且清单只枚举「谁在调模型」，看不见 prompt 的字符串构造——调用点没变、投递内容变了，它不红。</p>
+            <p class="road-crit"><span>装置</span>LLM 调用点清单的 AST 枚举测试（枚举 <code>.chat</code> / <code>.chat_full</code> / <code>.chat_stream</code> / <code>.embedding</code>）。<b>两个盲区</b>：全部 34 个调用点里仍有不记账的；且清单只枚举「谁在调模型」，看不见 prompt 的字符串构造——调用点没变、投递内容变了，它不红。</p>
           </div>
         </div>
         <div class="road-item">

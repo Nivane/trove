@@ -451,7 +451,7 @@ uv run pytest tests/services/kb/  # 知识库
 uv run pytest -m "not slow"       # 跳过慢测试
 ```
 
-CI(`.github/workflows/backend.yml`)跑同一套测试(非 integration 档,零网络 + PG integration 子集),外加 `ruff check` 与 `pip-audit` 依赖漏洞扫描;前端有自己的 workflow(`npm run ci` + 两个镜像的构建验证)。
+CI(`.github/workflows/backend.yml`)跑同一套测试(非 integration 档,零网络 + PG integration 子集),外加 `ruff check`、文档锚点门、漂移门与 `pip-audit` 依赖漏洞扫描;前端有自己的 workflow(`npm run ci` + 两个镜像的构建验证)。
 
 零 LLM 运维脚本:`scripts/lint_kb.py`(KB 质量检查,可选实时枚举探测)、`scripts/check_drift.py`(声明语义 vs 实时 schema;退出码 0/1/2,且**「查不成」记 2 不记 0**——连不上库时的绿是假绿)、`scripts/check_kb_anti_cheat.py`(KB 模板若抄了 gold SQL 即失败)、`scripts/check_page_anchors.py`(校验[能力地图](https://nivane.github.io/trove/)里的源码锚点是否还指着同一段代码)。
 
@@ -483,13 +483,13 @@ CI(`.github/workflows/backend.yml`)跑同一套测试(非 integration 档,零网
 
 | 方向 | 现状 |
 |---|---|
-| 01 语义漂移治理 | L1 结构层与 L2 引用层检测都在跑,区分「没漂移」与「没查成」,后台周期检测落进漂移库(与 `/v1/admin/drift` 同一份文件);缺的是门禁脚本还没进 CI |
+| 01 语义漂移治理 | L1 结构层与 L2 引用层检测都在跑,区分「没漂移」与「没查成」,后台周期检测落进漂移库(与 `/v1/admin/drift` 同一份文件);门禁脚本已进 CI(`backend.yml` 的 lint 作业,守仓库里那份 demo KB);缺的是 L3/L4 未落地——判据里「指标」那一格今天还进不了报告 |
 | 02 执行画像 | 执行证据的形状与三态语义已定;但扫描量这一格六个方言都还没读,`scanned_rows` 恒为空 |
 | 03 已验证查询资产 | 治理维度(`status` / `owner` / `approved_by` / `approved_at` / `source`)随确认逐条写入 `examples.yml`,`certified` 必须有人(I5),认证门不过整批拒绝——「每条资产可追溯到它的确认人」已成立;缺的是台账:`AssetLedger`(`runs` / `p50_ms`)已实现、有测试钉住,但**没有任何生产构造点**,且 `status` 还没参与检索加权 |
 | 04 可核验闭环 | 证据链第一段(执行证据)已落地;「任意一条结论走回原始数据」还走不通 |
 | 05 语义分支评审 | 尚未开工 |
 | 06 身份鉴权与字段脱敏 | 执行前的表级授权门、LLM 前的字段级脱敏、以用户身份重放、审计与指标都已落地;CTE 名误判成表的解析缺陷已修,`warn` 命中的遥测出口已补(计数器给量、审计行给表名);缺的是表级门默认仍是 `warn`——切档要等观察期的误伤数据,那要真部署才收得到 |
-| 07 成本归因与预算 | 记账已覆盖主路径;全部 32 个模型调用点中仍有不产生记录的 |
+| 07 成本归因与预算 | 记账已覆盖主路径;全部 34 个模型调用点中仍有不产生记录的 |
 | 08 不可信数据输入边界 | 两条通道与隔离核已落地并被测试钉住;组织级 skill 正文此前以字符串拼接连入 system prompt、绕开两条通道,现已收成单一门(围栏 + 来源标注,两档同策略),确认关口另扫一遍并把命中报给管理员;清单枚举对「字符串怎么拼」的盲区记在那份测试的文档串里 |
 
 把这份清单摆在 README 里而不是只说「已完成三条」,是因为路标的价值在于它能不能被用来排期:一条写着「达成」而实际没达成的判据,比一条写着「未达成」的判据有害得多。
