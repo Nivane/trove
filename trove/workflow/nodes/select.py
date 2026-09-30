@@ -143,7 +143,13 @@ def make_select_consensus(
         ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))
         votes = {str(key): len(members) for key, members in ranked}
         if len(ranked) == 1:
-            return {}  # 全员一致 — 高置信通过
+            # 全员一致 — 最高置信路径。**照样记录**:今天之前这里 return {},
+            # 于是「顺利」这件事在日志里不存在,而算置信度恰恰要靠正样本
+            # (设计 §5.4-1)。形状与下面几条路径**逐字段同形**,消费方不必
+            # 分支判断。(2026-09-30 前此处为 `return {}`。)
+            return {"selection": {"votes": votes, "adopted": True,
+                                  "winner": "primary", "filtered": filtered,
+                                  "confidence": 1.0}}
 
         # 缺口5: 置信度 = 票王得票率(确定性,零 LLM)。
         # 全票 → 1.0;2:1 多数 → 2/3;平局 1:1:1 → 1/3 —— 降级/输出方观测用
@@ -154,7 +160,12 @@ def make_select_consensus(
         if len(top_members) >= 2 and len(top_members) > runner_up_size:
             # 唯一多数派胜出
             if top_key == primary_key:
-                return {}  # 多数派就是主候选 — 高置信通过,无需纠正
+                # 多数派就是主候选 — 高置信通过,无需纠正。记的是**票率**
+                # 而非 1.0:有分歧、只是主候选赢了,与「全员一致」不是同一件
+                # 事(设计 §5.4-1)。
+                return {"selection": {"votes": votes, "adopted": True,
+                                      "winner": "primary", "filtered": filtered,
+                                      "confidence": confidence}}
             winner = next(m for m in top_members if m[1] is not None)
             return {
                 "sql": winner[0],

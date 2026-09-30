@@ -47,6 +47,13 @@ class TestSelectNode:
         assert FakeConnectors([]).executed == []
 
     async def test_consensus_passes(self):
+        """全员一致 → 交付 primary,且**留下票型**。
+
+        本断言在 2026-09-30 之前是 ``update == {}``:那条断言保护的是「高置信
+        路径不留痕」——而「不留痕」正是本次要改的东西(设计 §5.4-1)。改它时要
+        写明出处:高置信路径曾经是**唯一**没有记录的那条,于是「顺利」这件事
+        在日志里不存在。
+        """
         connectors = FakeConnectors([
             QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),
         ])
@@ -55,8 +62,54 @@ class TestSelectNode:
             sql="SELECT v FROM t", rows=[[1], [2]], row_count=2,
             candidates=["SELECT v FROM t ORDER BY v"],
         )
-        assert await node(state) == {}
+        update = await node(state)
         assert connectors.executed == ["SELECT v FROM t ORDER BY v"]
+        # SQL / rows 一个字节都没动(只增记录,不改行为)
+        assert "sql" not in update
+        assert update["selection"]["confidence"] == 1.0
+        assert update["selection"]["adopted"] is True
+        assert update["selection"]["winner"] == "primary"
+
+    async def test_unanimous_records_one_vote_per_comparable(self):
+        """票型是**可核对的**:N 个候选 + primary 各一票,全落到同一组。"""
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[1], [2]], row_count=2),
+            QueryResult(columns=["v"], rows=[[2], [1]], row_count=2),
+        ])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT v FROM t", rows=[[1], [2]], row_count=2,
+            candidates=["SELECT v FROM t ORDER BY v", "SELECT v FROM t DESC"],
+        )
+        update = await node(state)
+        assert list(update["selection"]["votes"].values()) == [3]
+
+    async def test_majority_of_primary_records_the_share_not_one(self):
+        """多数派**恰是 primary** 时,置信度是票率(2/3),不是 1.0。
+
+        与「全员一致」分开记,是因为这两件事的可信度不同:前者没有分歧,
+        后者有分歧、只是主候选赢了。都记成 1.0 会让结果置信度失去分辨力。
+
+        **必须是两个候选**:``select.py`` 的多数派分支要求
+        ``len(top_members) >= 2``。只放一个「同意的候选」,primary 那组
+        只有 1 票(primary 自己),够不到 2,会掉进平局分支 —— 那里
+        ``confidence = 1/2``,而且 ``adopted`` 是 False。想考多数派,
+        就得让多数派真的成立:一个投 primary、一个投别的。
+        """
+        connectors = FakeConnectors([
+            QueryResult(columns=["v"], rows=[[2], [1]], row_count=2),  # 同组
+            QueryResult(columns=["v"], rows=[[9]], row_count=1),       # 异组
+        ])
+        node = make_select_consensus(connectors)
+        state = make_state(
+            sql="SELECT v FROM t", rows=[[1], [2]], row_count=2,
+            candidates=["SELECT v FROM t ORDER BY v", "SELECT v FROM t WHERE 0"],
+        )
+        update = await node(state)
+        assert "sql" not in update          # primary 胜出,SQL 不动
+        assert update["selection"]["adopted"] is True
+        assert update["selection"]["winner"] == "primary"
+        assert update["selection"]["confidence"] == pytest.approx(2 / 3)
 
     async def test_disagreement_feeds_back(self):
         connectors = FakeConnectors([
@@ -115,7 +168,10 @@ class TestSelectNode:
         state = make_state(
             rows=[[1]], row_count=1, candidates=["SELECT v FROM t"],
         )
-        assert await node(state) == {}
+        update = await node(state)
+        # 交付照旧(SQL 与反馈都不动),失败只以 filtered 记录现身
+        assert "sql" not in update and "error_feedback" not in update
+        assert update["selection"]["filtered"][0]["reason"] == "execution-failed"
 
     async def test_pending_feedback_passes_through(self):
         node = make_select_consensus(FakeConnectors([]))
@@ -144,7 +200,9 @@ class TestVoteSelection:
         ])
         node = make_select_consensus(connectors)
         update = await node(self._state(candidates=[f"SELECT id FROM t WHERE {i}" for i in range(4)]))
-        assert update == {}
+        assert "sql" not in update  # primary 原样交付
+        assert update["selection"]["adopted"] is True
+        assert list(update["selection"]["votes"].values()) == [4, 1]  # 多数派 4 票
 
     async def test_majority_not_primary_adopts_winner(self):
         """多数派不含 primary → 采纳多数派 SQL 及其执行结果(不重跑)。"""
@@ -268,8 +326,9 @@ class TestVoteSelection:
             question=q, rows=[[5]], row_count=1, candidates=["SELECT A", "SELECT B"],
         )
         update = await node(state)
-        assert update == {}  # 过滤后 primary(1) + B(1) 一致 → 通过
-        assert update == {}
+        # 过滤后 primary(1) + B(1) 一致 → 通过
+        assert "sql" not in update
+        assert list(update["selection"]["votes"].values()) == [2]
 
     async def test_all_candidates_filtered_passes(self):
         """有效候选 0 个(规则拦截 + 执行失败)→ 静默保留 primary。"""
@@ -282,7 +341,10 @@ class TestVoteSelection:
             question=q, rows=[[3], [4]], row_count=2,
             candidates=["SELECT 1", "SELECT boom"],
         )
-        assert await node(state) == {}
+        update = await node(state)
+        assert "sql" not in update  # 保留 primary
+        assert update["selection"]["adopted"] is True
+        assert len(update["selection"]["filtered"]) == 2  # 两个候选都出局
 
     async def test_majority_winner_adopts_with_filtered_report(self):
         """采纳多数派时,selection 详情记录分组与过滤痕迹(eval 归因)。"""
@@ -313,8 +375,10 @@ class TestVoteSelection:
         connectors = OneBoom()
         node = make_select_consensus(connectors)
         update = await node(self._state(candidates=["SELECT boom", "SELECT ok"]))
-        assert update == {}
+        assert "sql" not in update
         assert connectors.executed == ["SELECT boom", "SELECT ok"]
+        assert list(update["selection"]["votes"].values()) == [2]  # 失败者未进组
+        assert update["selection"]["filtered"][0]["reason"] == "execution-failed"
 
 
 class TestConfidence:
