@@ -4,9 +4,13 @@
 ``schema_linking.py`` 里对 skill 的引用是 0,而测试全绿 —— 因为
 ``test_skills.py`` 钉的是 manifest 的内容,不是调用点的存在。
 
-本文件的纪律:**每个挂点测试都要让节点真实渲染一遍**,断言正文出现在
+本文件的纪律:**节点级的挂点测试都要让节点真实渲染一遍**,断言正文出现在
 投给模型的 system prompt 里。对着 ``append_skill_block`` 这个唯一门钉,
 节点改名/接线断了就红。
+
+**装配面那条是例外**(``test_every_graph_binding_passes_skills``):它是静态
+AST 检查,只证明 ``graphs.py`` 的调用点带了 ``skills=``,不渲染任何节点 ——
+传进去的**对象对不对**不在它的判据内(值绑定另由 graph 装配的 spy 测试覆盖)。
 """
 
 from __future__ import annotations
@@ -20,8 +24,10 @@ from trove.workflow.state import WorkflowState
 def _fresh_skills_cache():
     """每例重置 manifest 缓存,与 ``tests/workflow/test_skills.py`` 同一装置。
 
-    ``_load_manifest`` 的缓存是**进程级**的;元测试要读它,中间又可能有
-    测试改了 manifest 的解读(或 Task 12 删了条目),不重置就会串味。
+    ``_load_manifest`` 的缓存是**进程级**的;挂点测试要让节点真实渲染一遍,
+    渲染就会经 ``render_skills`` 读它(它决定哪些 code skill 命中,进而决定
+    "无 org 技能时 system 逐字不变"那条断言比的是什么),中间又可能有测试
+    改了 manifest 的解读(或 Task 12 删了条目),不重置就会串味。
     """
     from trove.prompts import skills
 
@@ -77,8 +83,13 @@ def _org_skill(tmp_path, node, body="ORG-METHOD-BODY", tier="required", **trigge
 #: 所以每个 Task 结束时测试都是绿的)。用 AST 而不是源码文本:对格式、
 #: 换行、参数顺序免疫,而**每新增一个调用点都自动落进检查** —— 这正是
 #: 需要人工看一眼的信号("多了一个装配点")。
+#:
+#: **它只认 ``ast.Name`` 形态的调用**(``make_insights(...)``)。改成属性调用
+#: (``builder.make_insights(...)``)会静默逃出检查 —— 装配点确实还在,只是
+#: 这里看不见。哪天真要这么写,把这个匹配扩到 ``ast.Attribute``。
 FACTORIES_REQUIRING_SKILLS: list[str] = [
     "make_validate_rules",
+    "make_insights",
 ]
 
 
@@ -162,3 +173,48 @@ async def test_gen_sql_node_forwards_skill_ctx(tmp_path):
 
     assert "GEN-SQL-ORG-BODY" in await _system_text(["analyst"], "zh")
     assert "GEN-SQL-ORG-BODY" not in await _system_text(["viewer"], "zh")
+
+
+async def test_insights_hook_injects_org_skill(tmp_path):
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.insights import make_insights
+
+    llm = RecordingLLM(response="- 一条洞察")
+    # insights=True 必须显式给:AgentConfig.insights 默认 False(config.py:259),
+    # 关了它节点在第二个 gate 就返回 {} —— 那时 llm.calls 是空的,
+    # 而失败信息会把你指向"挂点没接上",与真实原因无关。
+    node = make_insights(llm, AgentConfig(target="m", insights=True),
+                         skills=_org_skill(tmp_path, "insights"))
+
+    state = WorkflowState(
+        session_id="s1", question="各地区授信余额", lang="zh",
+        sql="SELECT region, balance FROM credit",
+        columns=["region", "balance"], rows=[["A", 5]], row_count=1,
+    )
+    await node(state)
+
+    assert llm.calls, "insights 没调到 LLM —— gate 早返了,按真实条件补 state"
+    system = llm.system_of()
+    assert "ORG-METHOD-BODY" in system
+    # 来源标注:指示性文本必须可审计到"哪份配置"。
+    assert 'source="admin-confirmed"' in system
+
+
+async def test_insights_hook_backward_compatible():
+    """skills=None → 与今天逐字一致(不含任何围栏块)。"""
+    from trove.core.config import AgentConfig
+    from trove.prompts import render
+    from trove.workflow.nodes.insights import make_insights
+
+    llm = RecordingLLM(response="- 一条洞察")
+    node = make_insights(llm, AgentConfig(target="m", insights=True))
+
+    state = WorkflowState(
+        session_id="s1", question="q", lang="zh", sql="SELECT 1",
+        columns=["a"], rows=[[1]], row_count=1,
+    )
+    await node(state)
+    assert llm.calls
+    # 逐字相等:没有围栏块时,门 append_skill_block 必须**原样**返回入参 ——
+    # 这是"既有行为逐位不变"这条全局约束在这个挂点上的可执行形式。
+    assert llm.system_of() == render("insights/system", lang="zh")

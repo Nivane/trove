@@ -1929,7 +1929,8 @@ def _build_reflection(
     # 说明语义 + 执行前人工确认(HITL):生成 SQL → 解释 → 确认 → 执行 → 洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
-    g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("insights", make_insights(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("attribution", make_attribution(
         services.llm, services.config or AgentConfig(),
         connectors=services.connectors, semantic_layer=services.semantic_layer,
@@ -2115,7 +2116,8 @@ def _build_fixed(
     # 说明语义 + 执行前人工确认(HITL) + 执行后洞察
     g.add_node("semantics", make_semantics(services.llm, services.config or AgentConfig()))
     g.add_node("hitl", make_hitl(services.config or AgentConfig()))
-    g.add_node("insights", make_insights(services.llm, services.config or AgentConfig()))
+    g.add_node("insights", make_insights(
+        services.llm, services.config or AgentConfig(), skills=services.skills))
     g.add_node("attribution", make_attribution(
         services.llm, services.config or AgentConfig(),
         connectors=services.connectors, semantic_layer=services.semantic_layer,
