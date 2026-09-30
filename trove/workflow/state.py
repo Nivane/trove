@@ -392,7 +392,14 @@ class WorkflowState(BaseModel):
     # 确定性规则全过信号(validate 节点写入):本轮执行结果通过了
     # rules.verify 全链 + 层2 计划列检查,无 error/error_feedback。
     # reflect 据此 + 复杂度决定是否跳过 LLM 裁决。
-    rules_passed: bool = False
+    # 三态:``None`` = 规则链**没跑**(元数据问答 / HITL 否决 / empty 工作流 /
+    # validate 因上游 error 透传);``True``/``False`` = 跑了、全过/没过。
+    #
+    # 今天这两件事同形(都是 False),而它们的含义相反:「没跑」是**没有信息**,
+    # 「没过」是**有坏信息**。区别在置信度上直接可见(§8-1 缺席不是坏消息),
+    # 也可被 `_answer_source` 之外的披露面复用。
+    # 兼容:`None` 是假值,reflect 的 ``and state.rules_passed`` 行为不变。
+    rules_passed: bool | None = None
 
     # select 节点投票归因:各结果组票数、赢家(primary/候选)、是否采纳、
     # 被 verify/执行失败过滤掉的候选

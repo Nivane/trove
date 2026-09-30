@@ -4542,3 +4542,35 @@ class TestCatalogOnDemand:
         # 决策指引仍在(0-row probe = fix)
         assert "Verification protocol" in text
         assert "0-row probe" in text
+
+
+class TestRulesPassedTriState:
+    """``None`` = 规则链**没跑**;``False`` = 跑了没过。两者今天同形,于是
+    「未验证」会被读成「验证失败」——置信度给后者重罚,给前者不该罚
+    (设计 §8-1:缺席不是坏消息)。"""
+
+    def test_default_is_none_not_false(self):
+        from trove.workflow.state import WorkflowState
+        state = WorkflowState(session_id="s", question="q")
+        assert state.rules_passed is None
+
+    async def test_rules_not_run_does_not_skip_the_judge(self):
+        """``rules_passed=None``(规则链没跑)不进快跳分支。
+
+        这条断言钉住「改这个字段**不改**任何既有行为」:``None`` 是假值,
+        ``reflect.py:250`` 的 ``and state.rules_passed`` 走的是与今天 ``False``
+        完全相同的分支 —— 没跑规则链时照样请 LLM 裁决。字段的语义澄清不该
+        改变任何行为。
+        """
+        llm = RecordingLLM()     # 本文件既有 :4061 那个,不另造同名局部类
+        node = make_reflect(llm, AgentConfig(target="mock/model"))
+        update = await node(make_state(
+            rules_passed=None, complexity="simple",
+            sql="SELECT COUNT(*) AS n FROM students",
+            row_count=1, columns=["n"], rows=[[1]],
+        ))
+        assert len(llm.calls) == 1   # 没跳过裁决(它的 calls 存 (model, messages))
+        # 用 .get():LLM 裁决 OK 的那条 return 不带 reason 键(reflect.py 里
+        # ``if verdict.startswith("OK")`` 那次 return),直接取会 KeyError。
+        # 判定力不变 —— 快跳分支若命中,reason 就是下面这个字符串。
+        assert update.get("reason") != "deterministic rules passed; reflect skipped"
