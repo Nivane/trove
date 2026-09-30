@@ -111,6 +111,9 @@ def test_promotion_evidence_delta():
     # repeated_correction 需至少 2 次独立证据
     assert apply_evidence(0.0, "repeated_correction", count=1) == 0.0
     assert apply_evidence(0.0, "repeated_correction", count=2) == 0.6
+    # 没登记过的 kind 原值返回、不抛 —— 增量表是增删过的(删过一条
+    # lesson_reuse_pass),已存在的调用点不该因为少了条目就炸。
+    assert apply_evidence(0.5, "some_retired_kind") == 0.5
 
 
 def test_promotion_maybe_promote():

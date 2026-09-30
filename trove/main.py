@@ -609,7 +609,8 @@ def serve_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", "-f", default=None, help="Path to agent.yml config file")
     parser.add_argument("--model", "-m", default=None, help="LLM model to use (overrides config)")
-    parser.add_argument("--workflow", "-w", default="reflection", help="Default workflow")
+    # 没有 --workflow:单轮工作流由 API 请求体逐条指定(/v1/chat 的 workflow
+    # 字段,见 session.run(workflow_name=...)),启动参数选不了也不该假装能选。
     return parser
 
 
@@ -691,7 +692,7 @@ def mcp_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", "-f", default=None, help="Path to agent.yml config file")
     parser.add_argument("--model", "-m", default=None, help="LLM model to use (overrides config)")
-    parser.add_argument("--workflow", "-w", default="reflection", help="Default workflow")
+    # 同 serve:无 --workflow(它在这里从来没被读过)。
     parser.add_argument(
         "--transport", "-t", default="stdio",
         choices=("stdio", "sse", "streamable-http", "http"),
