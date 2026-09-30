@@ -6,7 +6,8 @@ A 模板渲染 / B 工具回喂。这个立论会随代码变化而失效的唯�
 
 所以这里冻结全量清单(与 ``tests/prompts/test_template_vars_snapshot.py``
 同一个装置):AST 枚举 ``trove/`` 与 ``scripts/`` 里所有 ``.chat`` /
-``.chat_full`` / ``.chat_stream`` 调用,与清单比对,**多一个少一个都失败**。
+``.chat_full`` / ``.chat_stream`` / ``.embedding`` 调用,与清单比对,
+**多一个少一个都失败**。
 失败信息会告诉你加哪个 key;加 key 的时候必须顺手答一次分类问题。
 
 **这个测试保证的是"清单是全的",不是"分类是对的"** —— ``_KINDS`` 只校验
@@ -25,7 +26,12 @@ A 模板渲染 / B 工具回喂。这个立论会随代码变化而失效的唯�
   - ``Av`` render 产物先存进变量,再作为 messages 内容传入;
   - ``Ab`` 内容来自同文件的 **prompt 构造器**(``build_*_prompt`` → render);
   - ``Ac`` 内容是**实参**,由调用方 render 后传入(本函数里看不见 render);
-  - ``B``  agent 循环自身的那一次调用(工具回喂通道的宿主)。
+  - ``B``  agent 循环自身的那一次调用(工具回喂通道的宿主);
+  - ``E``  **嵌入调用**(``.embedding``):送的是待向量化的文本(KB 文档 / 用户
+           问题 / 情节),去向是**向量**而不是消息列表 —— 前四档问的那句「消息里
+           的文本从哪来」对它不适用,单列一档的理由是它**同样是一次 LLM 调用**:
+           新增时一样要有人看一眼,漏在扫描面外就没人看(``embedding`` 正是这样
+           在清单外待了一阵 —— 名字不以 ``chat`` 开头,旧的门禁断言没认出来)。
 
 键格式:``<相对路径>::<限定名>#<该函数内第几个调用>``。带序号是因为同一个
 函数里可能有多个调用点;序号按源码顺序,插入一个新调用点会让后面的序号移位 ——
@@ -35,6 +41,7 @@ A 模板渲染 / B 工具回喂。这个立论会随代码变化而失效的唯�
 from __future__ import annotations
 
 import ast
+import inspect
 import pathlib
 
 # ── 被扫描的根:产品包 + 脚本(scripts/distill_lessons.py 也在调 LLM)──
@@ -44,11 +51,12 @@ _ROOTS = ("trove", "scripts")
 #: 相对仓库根解析(测试从仓库根跑;pytest rootdir 见 pyproject)。
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 
-#: 网关的三个入口(``trove/llm/gateway.py``)。新增入口方法时这里要跟着改 ——
-#: 否则新入口上的调用点对清单是隐形的。
-_METHODS = frozenset({"chat", "chat_full", "chat_stream"})
+#: 网关的入口(``trove/llm/gateway.py``)。新增入口方法时这里要跟着改 ——
+#: 否则新入口上的调用点对清单是隐形的。入口的口径是**形状**(公开方法且是协程),
+#: 不是名字 —— 按 ``chat`` 前缀认的那些年,``embedding`` 一直在扫描面之外。
+_METHODS = frozenset({"chat", "chat_full", "chat_stream", "embedding"})
 
-_KINDS = frozenset({"A", "Av", "Ab", "Ac", "B"})
+_KINDS = frozenset({"A", "Av", "Ab", "Ac", "B", "E"})
 
 #: 全量调用点 (2026-09-29 设计稿 §2 盘点,32 → 33 含 scripts)。
 CALL_SITES: dict[str, str] = {
@@ -63,6 +71,9 @@ CALL_SITES: dict[str, str] = {
     # ── agent 循环自身(B 通道的宿主:system/user 由调用方给,tool 回喂在
     #    _model_observation 收口)──
     "trove/llm/agent_loop.py::run_agent_loop._chat_once#1": "B",
+    # ── 嵌入(E 档):唯一一条不走消息的通道 —— 送的是待向量化的文本,
+    #    去向是向量。与上一条并列,因为这两个都不是「render 出来的提示词」──
+    "trove/services/kb/backends/dense.py::GatewayEmbedder.embed#1": "E",
     # ── KB 构建端(离线/管理侧):schema_text/samples 走 render 参数过核 ──
     "trove/services/kb/init_pipeline.py::_draft_init_chunk#1": "Av",
     "trove/services/kb/init_pipeline.py::_draft_init_chunk#2": "A",
@@ -171,15 +182,29 @@ class TestLLMCallSiteInventory:
         assert not bad, f"标签不在闭集里: {bad}"
 
     def test_gateway_entry_points_match(self):
-        """网关新增入口方法时,扫描面要跟着改(否则新入口上的调用点对清单隐形)。"""
+        """网关入口与扫描面(_METHODS)必须一一对上,**两个方向都算**。
+
+        入口的口径是**形状**(公开方法 + 异步),不是名字:写成
+        ``name.startswith("chat")`` 的那些年,``embedding`` 明明是个入口却不在
+        扫描面里,而它照样是一次 LLM 调用。按形状认,新入口不管叫什么名字都跑不掉。
+
+        「异步」是**两种**:协程(``chat`` / ``chat_full`` / ``embedding``)与
+        异步生成器(``chat_stream`` —— 它 ``yield`` 分片)。只认协程会把
+        ``chat_stream`` 判成「扫描面多出来的」,所以两个判定要并联。
+        """
         from trove.llm.gateway import LLMGateway
 
         live = {
-            name for name in vars(LLMGateway)
-            if name.startswith("chat") and callable(getattr(LLMGateway, name))
+            name for name, attr in vars(LLMGateway).items()
+            if not name.startswith("_") and (
+                inspect.iscoroutinefunction(attr)
+                or inspect.isasyncgenfunction(attr)
+            )
         }
         extra = sorted(live - _METHODS)
-        assert not extra, (
-            f"网关多了入口方法 {extra} —— 调用点清单的扫描面(_METHODS)要跟着加,"
-            "否则经它的调用点不在这张表上"
+        missing = sorted(_METHODS - live)
+        assert not extra and not missing, (
+            f"网关与扫描面(_METHODS)不一致。网关多了 {extra} —— 往 _METHODS 加,"
+            f"否则经它的调用点对清单隐形;扫描面多了 {missing} —— 网关已无此方法,"
+            "连同它的调用点 key 一起删。"
         )

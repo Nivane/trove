@@ -7,6 +7,8 @@ CI 判断依据。于是「catalog 连不上 → 报告全空 → dirty=False �
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import importlib.util
 import json
 import sys
@@ -210,3 +212,81 @@ def test_payload_is_json_serializable(cd):
     kb = _l1(gone_tables=["legacy"])
     payload, _ = cd.decide({"demo": _rep(kb, name="demo")}, errors=[])
     json.dumps(payload)  # 不抛即通过
+
+
+# ── 选源:注册表为空(全新 clone / CI)时内置 demo 仍要能查 ──────────────
+#
+# 上面所有测试都从 ``decide`` 起跳,绕过了 ``_run`` 的选源那一段 —— 而这一段
+# 正是唯一需要 ``.trove/datasources.yml`` 的地方,也是唯一在 CI 上会出问题的
+# 地方。这组测试补的就是这个缺口。
+
+def _ns(**over) -> argparse.Namespace:
+    base = {"datasource": "demo", "kb_dir": None, "json": False, "verbose": False}
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def _stub_check(cd, seen: list):
+    """把 ``_check_datasource`` 换成记录器 —— 选源是这里要测的,真建 demo 库不是。"""
+    async def fake(name, cfg, kb):
+        seen.append((name, cfg.type))
+        return {"drift": collect(_l1(), None, name)}
+    return fake
+
+
+def test_demo_resolves_without_a_registry(cd, monkeypatch, tmp_path):
+    """没有 ``.trove/datasources.yml`` 时,``--datasource demo`` 仍要能跑。
+
+    CI 恰好就是这种环境:该文件被 gitignore,只有跑过 serve / 后台注册才会有。
+    在补上兜底之前,这里返回 exit 2「datasource not found」—— 于是漂移门在 CI 上
+    **永远红**,而红的原因(选源失败)看起来像数据出了问题,门很快会被当成噪声。
+    一条永远红的门等于没有门,只是更吵。
+    """
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / ".trove" / "datasources.yml").exists()
+
+    seen: list = []
+    monkeypatch.setattr(cd, "_check_datasource", _stub_check(cd, seen))
+
+    payload, code = asyncio.run(cd._run(_ns()))
+
+    assert seen == [("demo", "demo")], "内置 demo 没被认出来"
+    assert code == 0
+
+
+def test_registered_demo_still_wins_over_the_fallback(cd, monkeypatch, tmp_path):
+    """注册表里有 demo 时用登记的那份(带持久化的连接信息),兜底不越权。
+
+    ``demo`` 在 ``naming.RESERVED_NAMES`` 里,用户注册不了这个名字,所以
+    注册表里的 demo 只可能是内置的那个 —— 这条测的是**优先级**,不是冲突。
+    """
+    monkeypatch.chdir(tmp_path)
+    store = tmp_path / ".trove"
+    store.mkdir()
+    (store / "datasources.yml").write_text(
+        "datasources:\n"
+        "- name: demo\n"
+        "  type: demo\n"
+        "  connection: {}\n"
+        "  credentials: {}\n",
+        encoding="utf-8",
+    )
+
+    seen: list = []
+    monkeypatch.setattr(cd, "_check_datasource", _stub_check(cd, seen))
+
+    _, code = asyncio.run(cd._run(_ns()))
+
+    assert seen == [("demo", "demo")]
+    assert code == 0
+
+
+def test_unknown_name_still_exits_2(cd, monkeypatch, tmp_path):
+    """兜底只给内置 demo,不能顺手把任何拼错的名字都放行。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cd, "_check_datasource", _stub_check(cd, []))
+
+    payload, code = asyncio.run(cd._run(_ns(datasource="nosuchsrc")))
+
+    assert code == 2
+    assert "not found" in payload["error"]

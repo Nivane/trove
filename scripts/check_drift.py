@@ -36,11 +36,16 @@ import json
 import sys
 from pathlib import Path
 
+from trove.core.types import DatasourceConfig
 from trove.services.datasource.config_store import ConfigStore
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
 from trove.services.drift import DriftService
 from trove.services.kb.service import KbService, resolve_kb_root
+
+#: 内置 demo 数据源的名字。它在 ``naming.RESERVED_NAMES`` 里 —— 用户**注册不了**
+#: 这个名字(admin API 直接拒),所以注册表里的 ``demo`` 只可能是内置的那个。
+DEMO_NAME = "demo"
 
 
 async def _check_datasource(name: str, cfg, kb) -> dict:
@@ -108,6 +113,21 @@ async def _run(args) -> tuple[dict, int]:
             configs = [cfg]
         else:
             configs = [c for c in configs if c.name == args.datasource]
+        if not configs and args.datasource == DEMO_NAME:
+            # 内置 demo 不需要先登记。它是**产品的一部分**,不是用户注册的源:
+            # 任何一台机器上只要仓库在、KB 在,就该能查它的漂移 —— 包括
+            # **从没跑过 serve、因此没有 datasources.yml 的全新 clone**。
+            #
+            # 这条不是可有可无的便利:CI 恰好就是那种环境(该文件被 gitignore,
+            # 只有跑过 serve/admin 注册才会有)。缺了它,漂移门在 CI 上永远是
+            # exit 2「没查成」—— 而一份 red 会因为看起来像数据有问题而被
+            # 当成噪声,门就此失效。这正是我们把「没查成」与「干净」分开的
+            # 反面:分开是为了让失败可读,不是为了让它变成常态。
+            #
+            # 注册表里有 demo 时上面那行已经取到了,轮不到这里 —— 用登记的那份
+            # (带持久化的连接信息)。不会有「顶掉用户自己的 demo」这种情形:
+            # ``naming.RESERVED_NAMES`` 让用户注册不了这个名字。
+            configs = [DatasourceConfig(name=DEMO_NAME, type="demo")]
         if not configs:
             return {"error": f"datasource not found: {args.datasource}"}, 2
 

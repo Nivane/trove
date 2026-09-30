@@ -89,6 +89,26 @@ jobs:
       # 会把「按新代码写的行号」误判成漂移。
       - name: Docs anchor gate
         run: uv run python scripts/check_page_anchors.py --at HEAD
+      # 漂移门:KB 的语义模型(semantics.yml)与数据源的真实目录是否还对得上。
+      # 「模型与真实数据已经对不上」是慢性的,发现它不能靠人想起去巡检。
+      #
+      # 为什么挂在这:和上一条锚点门同一个理由 —— 零 LLM / 零网络。它不连任何
+      # 远端:demo 数据源是内置的,脚本会就地建一份 BIRD 金融 SQLite
+      # (``~/.trove/demo.db``);KB 是签进仓库的 .trove/kb/demo/*.yml。所以它
+      # 没有成本需要防,该走默认路径,而不是留在「得记得手动跑」那一档。
+      #
+      # 也别被 ``--datasource demo`` 骗到以为要先注册:注册表
+      # (``.trove/datasources.yml``)是 gitignore 的,CI 上**不存在**,而脚本
+      # 对内置 demo 有兜底,不需要它(scripts/check_drift.py 的 DEMO_NAME 分支)。
+      #
+      # 退出码 0/1/2 是三态,不是两态:0 没漂移、1 有漂移、2 **没查成**。
+      # 脚本刻意不让「没查成」混进 0 —— 一份只跑了 L1 的 ok 报告不许被读成全绿。
+      #
+      # 守的边界要说清:它守的是**仓库里这份 demo KB**(demo 的库表改了而 KB
+      # 没跟上,这条就红),不是用户的库 —— 用户侧靠后台周期检测,那条已落进
+      # 漂移库,与 /v1/admin/drift 读写同一份文件。
+      - name: Drift gate
+        run: uv run python scripts/check_drift.py --datasource demo --kb-dir .trove/kb
       # 依赖漏洞扫描(OSV):导出锁定依赖清单交给 pip-audit 比对公开漏洞库。
       - name: Dependency vulnerability scan
         run: |

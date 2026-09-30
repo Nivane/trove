@@ -873,7 +873,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
             <h4>语义漂移治理</h4>
             <p>业务口径会变，语义模型会旧。让「模型与真实数据已经对不上」这件事被自动发现、可定位到具体条目。</p>
             <p class="road-crit"><span>判据</span>漂移报告能精确到数据集/字段/指标条目，且不依赖人工巡检。</p>
-            <p class="road-crit"><span>装置</span>分类学列了 L1–L4（结构 / 引用 / 语义 / 口径），门禁脚本 <code>scripts/check_drift.py</code> 实际渲染 L1–L2（零 LLM，退出码 0/1/2，区分「没漂移」与「没查成」——只跑了 L1 的 ok 报告不许写成 OK）。后台周期检测落进同一个漂移库，与 <code>/v1/admin/drift</code> 读写同一份文件。<b>缺出口</b>：门禁脚本还没进 CI——「不依赖人工巡检」今天只在前台成立。</p>
+            <p class="road-crit"><span>装置</span>分类学列了 L1–L4（结构 / 引用 / 语义 / 口径），门禁脚本 <code>scripts/check_drift.py</code> 实际渲染 L1–L2（零 LLM，退出码 0/1/2，区分「没漂移」与「没查成」——只跑了 L1 的 ok 报告不许写成 OK）。后台周期检测落进同一个漂移库，与 <code>/v1/admin/drift</code> 读写同一份文件。<b>出口已通</b>：门禁脚本已进 CI（<code>backend.yml</code> 的 lint 作业，守的是仓库里那份 demo KB）——「不依赖人工巡检」不再只靠人记得跑。<b>仍缺</b>：L3/L4 未落地，判据里「指标」这一格今天还进不了报告（L3 要探查活库取值，探测未接；L4 按设计只承接外部声明、不自行检测）。</p>
             <p class="road-crit"><span>已补</span>后台周期检测的出口。此前结果只进 <code>logger.info</code>——<b>在跑，但白跑</b>：没有可查询的行、没有退出码、没有告警，跑一周也答不了「哪个库漂过」。现走 <code>drift</code> 模块既有的写入路径（<code>drift_run</code> + 条目两张表），归一化用那份认得 <code>status</code>/<code>skip_reason</code> 的适配器，所以「没查成」不会被洗成「无漂移」。<b>落库的是全部数据源、返回的只是有漂移的那些</b>：落库要「查过了」的完整证据（含干净的一次，否则历史里只剩有漂移的那几次，读起来像这个库一直在漂）；返回给调用方的是「要不要吭声」。</p>
           </div>
         </div>
