@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.services.decision.expr import (
     UNKNOWN,
@@ -28,6 +29,17 @@ from trove.services.decision.expr import (
 )
 
 logger = get_logger(__name__)
+
+#: 引擎**能执行**的 ``severity`` 闭集。与 ``service.py`` 的写入校验共用同一个
+#: 定义 —— 两处各写一份的话,"写入放行、执行侧当未知"这条漂移会重新打开
+#: "配了却静默失效"那类事故(``severity: Blocking`` 既不等于 blocking 也不等于
+#: advisory,``validate.py`` 不拦、``output.py`` 不渲染,连一条 ``verdict: None``
+#: 的质检记录都不落)。写入面与消费面必须看同一份名单。
+SEVERITIES = ("blocking", "advisory")
+
+#: validator 唯一的宿主节点:本期 ``targets`` 只有 ``result``,而结果断言只在
+#: ``validate`` 节点运行。见 ``validators_for`` 对 node 触发条件的处置。
+VALIDATOR_HOST = "validate"
 
 #: 需要点名列才能算的标量。``row_count`` / ``col_count`` 不在此列 ——
 #: 它们与列内容无关,永远可算。
@@ -117,6 +129,15 @@ def run_validators(
 
     单条 validator 内**第一条失败即止**(与规则链同一纪律:最具体的最先写),
     但不同 validator 之间互不影响 —— 每条都要出判定,而不是只报第一条。
+
+    **不变量(四个入口同一条纪律)**:一切"声明了但引擎不会执行"的配置,
+    要么写入时拒掉(400,见 ``SkillService._validate_validator_spec``),要么
+    在这里降级成 ``verdict: None`` 落进 ``validator_hits`` —— 不许有第三种
+    结局(静默)。今天对齐到这条的有:未知 ``mode`` / 畸形 ``checks`` / 空
+    ``checks`` / 非宿主 ``triggers.node`` / 未知 ``severity``。
+
+    ``lang`` 只作用于**会进用户屏幕**的兜底判词(advisory 附注读原文);
+    运维诊断类原因不进屏幕,保持英文。
     """
     out: list[dict[str, Any]] = []
     for spec in specs:
@@ -130,7 +151,43 @@ def run_validators(
             })
             continue
         name = str(spec.get("name", ""))
-        severity = str(spec.get("severity", "advisory"))
+        # ``or`` 而不是 ``get(k, default)``:``severity:`` 写空(YAML null)拿到的是
+        # 字符串 ``"None"``,那是个**未知**值,会把一条默认档的检查变成静默死档。
+        severity = str(spec.get("severity") or "advisory")
+        mismatch = spec.get("host_mismatch")
+        if mismatch:
+            # ``validators_for`` 标记的"声明了非宿主 node"—— 结果断言只在
+            # ``VALIDATOR_HOST`` 跑,这份文件永远不会运行。把它丢在选人那一步,
+            # 从任何外部面(附注、``validator_hits``、``list_org``)看都和"没写"
+            # 一模一样,这正是本模块存在的理由所针对的那类事故。落一条带原因的
+            # "判不了":可观测,不进附注。
+            out.append({
+                "name": str(spec.get("name", "")),
+                "verdict": None,
+                # 没运行的判词不能拦、也不能渲染 —— 用非阻断的默认档保证。
+                "severity": "advisory",
+                "message": (
+                    f"triggers.node '{mismatch}' is not the validator host "
+                    f"('{VALIDATOR_HOST}') — result assertions never run there, "
+                    "so this validator did not run"
+                ),
+                "mode": "deterministic",
+            })
+            continue
+        if severity not in SEVERITIES:
+            # 未知 severity 的 verdict 是**明确的 False**,却两头都接不住:
+            # ``validate.py`` 要 ``severity == "blocking"`` 才拦,``output.py`` 要
+            # ``"advisory"`` 才渲染 —— 一条确定违反了的风控口径就这样静默消失。
+            # 与 mode / 畸形 checks 同一处置:降级为"判不了",进 validator_hits
+            # (可观测)不进附注(不进用户屏幕)。
+            out.append({
+                "name": name,
+                "verdict": None,
+                "severity": "advisory",
+                "message": f"unknown severity '{severity}' — this validator did not run",
+                "mode": "deterministic",
+            })
+            continue
         mode = str(spec.get("mode") or "deterministic")
         if mode != "deterministic":
             # 本期只驱动 deterministic。**不 continue** —— 静默跳过等于
@@ -140,7 +197,7 @@ def run_validators(
             out.append({
                 "name": str(spec.get("name", "")),
                 "verdict": None,
-                "severity": str(spec.get("severity", "advisory")),
+                "severity": severity,      # 上面已归一 + 校验过,不再各读一次
                 "message": f"mode '{mode}' is not supported yet — this validator did not run",
                 "mode": mode,
             })
@@ -186,13 +243,23 @@ def run_validators(
                 logger.warning("validator %s check raised: %s", name, exc)
                 verdict, message = None, f"check error: {exc}"
                 break
+            # 这两条兜底判词会**原样进用户屏幕**(``output.py`` 的 advisory 附注),
+            # 所以跟着用户语言走。上面几条(mode / severity / host / 畸形 checks)
+            # 是运维诊断,只进 ``validator_hits``,保持英文。
+            # **能进屏幕的才本地化。**
             if got is UNKNOWN:
                 verdict = None
-                message = fallback or "cannot evaluate (missing column or non-numeric data)"
+                message = fallback or L(
+                    lang,
+                    "判不了（缺列或非数值数据）",
+                    "cannot evaluate (missing column or non-numeric data)",
+                )
                 break
             if got is not True:
                 verdict = False
-                message = fallback or f"violated: {expr}"
+                message = fallback or L(
+                    lang, f"违反：{expr}", f"violated: {expr}"
+                )
                 break
         out.append({
             "name": name,

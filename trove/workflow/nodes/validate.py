@@ -20,7 +20,7 @@ from typing import Any
 from trove.core.i18n import L
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
-from trove.services.skills.validators import run_validators
+from trove.services.skills.validators import VALIDATOR_HOST, run_validators
 from trove.workflow.nodes.query_sketch import answer_columns_mismatch, extra_columns_mismatch
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
@@ -147,8 +147,11 @@ def make_validate_rules(
         # advisory 只报告）。复用它的通道，不复用它的形状。
         org_hits: list[dict[str, Any]] = []
         if skills is not None:
+            # 宿主名与声明的宿主(``VALIDATOR_HOST``,写入校验与 validators_for
+            # 都用它)共用同一个字面量 —— 两处各写一份字符串正是"声明的宿主"与
+            # "实际调用点"漂移的入口(``align_schema`` 那类事故)。
             org_hits = run_validators(
-                skills.validators_for("validate", **state.skill_ctx()),
+                skills.validators_for(VALIDATOR_HOST, **state.skill_ctx()),
                 columns=state.columns,
                 rows=state.rows,
                 row_count=state.row_count,

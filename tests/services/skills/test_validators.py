@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from trove.services.decision.expr import UNKNOWN
 from trove.services.skills.validators import build_scope, run_validators
 
@@ -125,6 +127,73 @@ def test_severity_is_carried_through():
     hits = run_validators([_spec("min >= 0", ["a"], severity="blocking")],
                           columns=["a"], rows=[[-1]], row_count=1)
     assert hits[0]["severity"] == "blocking"
+
+
+# ── 未知 severity / 非宿主 node:降级,不静默 ─────────────────
+
+@pytest.mark.parametrize("severity", ["Blocking", "BLOCKING", "blocking "])
+def test_unknown_severity_degrades_instead_of_being_dropped(severity):
+    """大小写笔误的 ``severity`` = 一条**明确违反**却被两头丢弃。
+
+    ``validate.py:161`` 要 ``severity == "blocking"`` 才拦,``output.py:261``
+    要 ``"advisory"`` 才渲染 —— 既不拦、也不提醒、连一条质检记录都不落,从
+    外面看和"检查通过"一模一样。与 ``mode`` / ``checks`` 同一处置:降级为
+    "判不了",进 ``validator_hits``(可观测、说得出原因)不进附注(不进用户
+    屏幕)。落条里的 ``severity`` 用**非阻断的默认档** —— "没运行"绝不能拦、
+    也绝不能渲染,用结构保证,不靠巧合。
+    """
+    hits = run_validators([_spec("min >= 0", ["a"], severity=severity)],
+                          columns=["a"], rows=[[-2]], row_count=1)
+    assert hits[0]["verdict"] is None
+    assert "unknown severity" in hits[0]["message"]
+    assert severity in hits[0]["message"]
+    assert hits[0]["severity"] == "advisory"
+
+
+@pytest.mark.parametrize("severity", ["", None])
+def test_blank_or_null_severity_runs_normally(severity):
+    """空 / null 是**缺省的写法**,不是未知值。``severity:`` 留空走默认
+    advisory、照常判定;把它们和 ``Blocking`` 划进同一组会让一份检查静默
+    失效 —— 与本次修复要消灭的恰好是同一件事(现状 ``str(spec.get(...))``
+    会把它变成字符串 ``"None"``,而 ``"None"`` 两头都不接)。"""
+    hits = run_validators([_spec("min >= 0", ["a"], severity=severity)],
+                          columns=["a"], rows=[[-2]], row_count=1)
+    assert hits[0]["verdict"] is False
+    assert hits[0]["severity"] == "advisory"
+
+
+def test_host_mismatch_degrades_instead_of_vanishing():
+    """``validators_for`` 标记的"声明了非宿主 node"在这里变成一条可观测的
+    判不了:丢掉它 = 从任何外部面看都和"没写"一样(``align_schema`` 同一类
+    事故)。"""
+    from trove.services.skills.validators import VALIDATOR_HOST
+
+    spec = {**_spec("min >= 0", ["a"]), "host_mismatch": "gen_sql"}
+    hits = run_validators([spec], columns=["a"], rows=[[-2]], row_count=1)
+    assert hits[0]["verdict"] is None
+    assert "gen_sql" in hits[0]["message"]
+    assert VALIDATOR_HOST in hits[0]["message"]
+    assert hits[0]["severity"] == "advisory"
+
+
+@pytest.mark.parametrize("lang", ["zh", "en"])
+def test_fallback_verdict_messages_are_localized(lang):
+    """没写 ``message`` 的 check 走兜底串,而它会**原样进用户屏幕**
+    (``output.py`` 的 advisory 附注)—— 所以它必须跟着用户语言走。
+    运维诊断那几条(mode / severity / host / 畸形 checks)只进
+    ``validator_hits``,保持英文。**能进屏幕的才本地化。**"""
+    violated = run_validators([_spec("min >= 0", ["a"], message="")],
+                              columns=["a"], rows=[[-2]], row_count=1, lang=lang)
+    assert violated[0]["message"] == (
+        "违反：min >= 0" if lang == "zh" else "violated: min >= 0"
+    )
+    unknown = run_validators([_spec("min >= 0", ["nope"], message="")],
+                             columns=["a"], rows=[[1]], row_count=1, lang=lang)
+    assert unknown[0]["verdict"] is None
+    assert unknown[0]["message"] == (
+        "判不了（缺列或非数值数据）" if lang == "zh"
+        else "cannot evaluate (missing column or non-numeric data)"
+    )
 
 
 # ── 截断:窗口内的聚合不是整个结果的聚合 ──────────────────────

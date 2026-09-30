@@ -37,6 +37,7 @@ import yaml
 from trove.llm.injection import scan_injection
 from trove.prompts.skills import fence_org_skill, match_trigger
 from trove.prompts.skills import render_skills as _code_render
+from trove.services.skills.validators import SEVERITIES, VALIDATOR_HOST
 
 # name = lowercase letters/digits + hyphens; also a safe directory name.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -45,7 +46,10 @@ _TIERS = ("required", "available", "validator")
 #: 本期在**写入面**就挡掉:允许配一份没人跑的配置,等于制造静默失效。
 #: runner 侧仍留一条兜底(手写 SKILL.md 能绕过 create),报"判不了"而不是跳过。
 _VALIDATOR_MODES = ("deterministic",)
-_SEVERITIES = ("blocking", "advisory")
+# ``severity`` 的闭集**不在这里定义** —— 与运行期(``run_validators``)共用
+# 上面 import 的 ``SEVERITIES``。两处各写一份的话,"写入放行、执行侧当未知"
+# 这条漂移会重新打开"配了却静默失效"那类事故。
+
 #: 本期**只**驱动 result。另两个都无处受理:
 #: - ``sql``:run_validators 吃的是结果集,没有"SQL 文本"这个可断言对象;
 #: - ``answer``:output 是图的终点、没有回退边,答案级检查只能 advisory(P5)。
@@ -184,8 +188,8 @@ class SkillService:
         if mode not in _VALIDATOR_MODES:
             raise ValueError(f"mode must be one of {_VALIDATOR_MODES}")
         severity = entry.get("severity") or "advisory"
-        if severity not in _SEVERITIES:
-            raise ValueError(f"severity must be one of {_SEVERITIES}")
+        if severity not in SEVERITIES:
+            raise ValueError(f"severity must be one of {SEVERITIES}")
         # mode 现在只可能是 deterministic,所以 checks 的必填与预解析
         # 是无条件执行的 —— 不留一个"将来 llm 档再说"的空分支。
         # (mode=llm 的正文本身就是检查指令,那条通用的 body 非空校验覆盖它。)
@@ -218,6 +222,18 @@ class SkillService:
         for t in targets:
             if t not in _TARGETS:
                 raise ValueError(f"target must be one of {_TARGETS}")
+        # 宿主节点:本期 targets 只有 result,而 result 断言只在 VALIDATOR_HOST
+        # 运行 —— 写别的 node 是一条**永远不运行**的配置。写入时拒掉它,读取时
+        # (validators_for + run_validators)对绕过写入的手写文件降级为"判不了":
+        # 一条不变量,两个入口都不留静默结局。
+        # P5 的 targets: answer 会让宿主不再是唯一一个节点,那时这条守卫要
+        # 跟着放宽(按 target 映射宿主),而不是删掉。
+        declared = (entry.get("triggers") or {}).get("node")
+        if declared is not None and declared != VALIDATOR_HOST:
+            raise ValueError(
+                f"triggers.node must be {VALIDATOR_HOST!r} (or omitted) for tier=validator: "
+                f"result assertions only run at the {VALIDATOR_HOST} node"
+            )
         return {"mode": mode, "severity": severity, "targets": targets,
                 "checks": checks}
 
@@ -322,8 +338,9 @@ class SkillService:
         - ``checks[].message``:validator 违反时的判词会进 ``error_feedback``
           → 进 gen_sql 的 prompt;
         - ``checks[].expr``:``message`` 不是必填,``run_validators`` 在它为空
-          时回落到 ``violated: {expr}`` —— 同一条判词路,而表达式语法收字符串
-          字面量,一棵**能解析**的表达式树同样能夹带散文。
+          时回落到 ``违反：{expr}`` / ``violated: {expr}``(跟随 ``lang``)——
+          同一条判词路,而表达式语法收字符串字面量,一棵**能解析**的表达式树
+          同样能夹带散文。
         **投递面变了扫描面就得跟着变** —— validator 档新增了一条投递路,
         扫描面也必须多扫一处,否则"同一个缺口换个 tier 就绕过去"。
 
@@ -502,11 +519,36 @@ class SkillService:
 
         与 ``available_descriptions`` 对称的一档:两者都是一条**投递路**,
         差别在投递给谁 —— available 投给模型(让它加载),validator 投给
-        引擎(让它运行)。确认门对两者同样有效(``_match_org`` 已只返回
-        confirmed)。
+        引擎(让它运行)。确认门对两者同样有效(``list_org(confirmed_only)``)。
+
+        ``triggers.node`` 在这里**不是筛子**:validator 的宿主由 ``targets``
+        决定(本期只有 ``result`` → 宿主恒为 ``VALIDATOR_HOST``),一份写了别的
+        node 的文件永远不会运行。把它丢在这里,从任何外部面(附注、
+        ``validator_hits``、``list_org``)看都和"没写"一模一样 —— 与
+        ``align_schema`` 同一类事故。改为**标记**:``host_mismatch`` 带上声明的
+        那个 node,由 ``run_validators`` 落一条 ``verdict: None`` 的可观测记录。
+
+        除 ``node`` 外的触发维度(``role`` / ``lang`` / ``complexity`` /
+        ``datasource`` / ``intent``)照旧参与筛选;``node`` 省略照旧命中。
         """
-        return [e for e in self._match_org(node, **ctx)
-                if e.get("tier") == "validator"]
+        out: list[dict] = []
+        for entry in self.list_org(confirmed_only=True):
+            if entry.get("tier") != "validator":
+                continue
+            triggers = entry.get("triggers") or {}
+            declared = triggers.get("node")
+            if not all(
+                match_trigger(k, v, ctx.get(k))
+                for k, v in triggers.items()
+                if k != "node"
+            ):
+                continue
+            # 副本:调用方要往条目上挂标记,``list_org`` 的条目不许被就地改。
+            e = dict(entry)
+            if declared is not None and declared != node:
+                e["host_mismatch"] = declared
+            out.append(e)
+        return out
 
     def render_skills(self, node: str, lang: str = "en", **ctx: object) -> str:
         """Merged methodology blocks for a node's system prompt.

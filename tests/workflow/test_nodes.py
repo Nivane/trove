@@ -4755,26 +4755,88 @@ class TestOrgValidatorTier:
 
         svc = SkillService(tmp_path)
         svc.create({
-            "name": "other-node-guard", "description": "挂在别的节点上",
+            "name": "complex-only-guard", "description": "只对复杂问题挂",
             "tier": "validator", "severity": "advisory", "targets": ["result"],
-            "triggers": {"node": "insights"},
+            "triggers": {"complexity": ["complex"]},
             "checks": [{"expr": "min >= 0", "columns": ["balance"], "message": "出现负值"}],
             "body": "说明",
         })
-        svc.confirm("other-node-guard")
+        svc.confirm("complex-only-guard")
         node = make_validate_rules(max_retries=10, skills=svc)
 
         out = await node(make_state(
             question="各地区授信余额", sql="SELECT region, balance FROM credit",
             columns=["region", "balance"], rows=[["A", 5]], row_count=1,
+            # 修正轮把它强制成 standard(graphs.py:390-392)—— 这条 trigger 不再命中
+            complexity="standard",
             # 上一轮(那时它命中)留下的判定
-            validator_hits=[{"name": "other-node-guard", "verdict": False,
+            validator_hits=[{"name": "complex-only-guard", "verdict": False,
                              "severity": "advisory", "message": "出现负值",
                              "mode": "deterministic"}],
         ))
 
         assert out["rules_passed"] is True
         assert out["validator_hits"] == []
+
+    async def test_unknown_severity_never_blocks_and_never_reaches_the_user(self, tmp_path):
+        """I1 的端到端安全钉:手写文件里 ``severity: Blocking``(大小写笔误)。
+
+        评审实测的旧行为是**两头都不接** —— ``verdict`` 是明确的 ``False``,
+        ``validate.py`` 要 ``severity == "blocking"`` 才拦、``output.py`` 要
+        ``"advisory"`` 才渲染,于是这份检查永远什么都不做,连一条质检记录都
+        不落。修好后它是一条可观测的"判不了":进 ``validator_hits``(管理员
+        看得见),不进 ``validation_hits``(不归因成拦截),不进用户屏幕。
+
+        走真 ``make_validate_rules`` + 真 ``output()``:两个消费者都不动,只
+        让生产者不再静默 —— 这条把"未知 severity 不能拦、不能渲染"从论证
+        变成实测。
+        """
+        from trove.services.skills.service import SkillService
+        from trove.workflow.nodes.output import output
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        svc = SkillService(tmp_path)
+        d = svc.skill_dir("hand-guard")
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\n"
+            "name: hand-guard\n"
+            "description: d\n"
+            "tier: validator\n"
+            "severity: Blocking\n"
+            "targets: [result]\n"
+            "checks:\n"
+            "  - expr: min >= 0\n"
+            "    columns: [balance]\n"
+            "    message: 授信余额出现负值\n"
+            "---\n\n正文\n",
+            encoding="utf-8",
+        )
+        # 手写文件绕过 create 的写入校验 —— create 那条路已经被改动三挡住了
+        svc.confirm("hand-guard")
+
+        state = make_state(
+            question="各地区授信余额", sql="SELECT region, balance FROM credit",
+            columns=["region", "balance"], rows=[["A", -5]], row_count=1,
+        )
+        out = await make_validate_rules(max_retries=10, skills=svc)(state)
+
+        # 可观测:一条"判不了",原因点名了那个 severity
+        [hit] = out["validator_hits"]
+        assert hit["name"] == "hand-guard"
+        assert hit["verdict"] is None
+        assert "unknown severity" in hit["message"]
+        # 不拦:不走恢复归因通道、不动反馈、规则链照常通过
+        assert out["rules_passed"] is True
+        assert out.get("validation_hits", []) == []
+        assert "error_feedback" not in out
+
+        delivered = state.model_copy(update=out)
+        assert delivered.validation_hits == []
+        response = (await output(delivered))["final_response"]
+        # 判词一个字都不进用户屏幕(附注只收 advisory 的**明确违反**)
+        assert "unknown severity" not in response
+        assert "授信余额出现负值" not in response
 
 
 async def test_output_renders_advisory_validator_note():

@@ -385,6 +385,31 @@ def test_llm_mode_and_sql_target_rejected_at_write_time(tmp_path):
         svc.create({**_VALIDATOR, "targets": ["answer"]})
 
 
+def test_validator_rejects_non_host_node_at_write_time(tmp_path):
+    """写在非宿主 node 上的 validator **永远不会运行** —— 写入时就拒。
+
+    本期 ``targets`` 只有 ``result``,而结果断言只在 ``validate`` 节点跑;
+    写 ``triggers.node: gen_sql`` 是一条"声明了但引擎不会执行"的配置,与
+    ``mode: llm`` / ``targets: sql`` 同一类、同一条纪律(静默保留一份死配置
+    比当场拒绝坏得多)。这是 P4 开作者面时的正门。
+    """
+    svc = SkillService(tmp_path)
+    with pytest.raises(ValueError, match="validate"):
+        svc.create({**_VALIDATOR, "triggers": {"node": "gen_sql"}})
+    # 正面:写宿主 node 与省略 node 都能建(省略是文档承诺的默认)。
+    svc.create({**_VALIDATOR, "name": "on-host", "triggers": {"node": "validate"}})
+    svc.create({**_VALIDATOR, "name": "no-node"})
+    # 非 node 的触发维度照旧 —— 它们不是宿主声明,别被这条守卫误伤。
+    svc.create({**_VALIDATOR, "name": "complex-only",
+                "triggers": {"complexity": ["complex"]}})
+    for n in ("on-host", "no-node", "complex-only"):
+        svc.confirm(n)
+    # ctx 里 complexity 不是 complex → 第三条不参与;前两条都在。
+    assert [e["name"] for e in svc.validators_for("validate")] == [
+        "no-node", "on-host",
+    ]
+
+
 def test_validator_fields_rejected_on_other_tiers(tmp_path):
     """非 validator 档带 validator 字段 → 拒。写下去也永远不会生效,不如当场说。"""
     svc = SkillService(tmp_path)
@@ -469,6 +494,40 @@ def test_validators_for_returns_only_validator_tier(tmp_path):
     assert names == ["credit-guard"]
 
 
+def test_hand_written_validator_with_foreign_node_is_marked_not_dropped(tmp_path):
+    """**手写 SKILL.md** 绕开 ``create`` 的写入校验,而它是本期 P1/P2 唯一的
+    授权路径(``trove/api/schemas.py`` 把 ``tier`` 定成
+    ``Literal["required", "available"]`` —— API 根本请求不了 validator 档)。
+
+    所以消费侧必须自己处置 ``triggers.node`` 不是宿主的那份文件:**标记**它
+    (``host_mismatch`` 带上声明的那个 node),由 ``run_validators`` 落一条
+    ``verdict: None`` 的可观测记录。丢掉它 = 这份 validator 永远不运行,而
+    从任何外部面(附注、``validator_hits``、``list_org``)看都和"没写"一样。
+    """
+    from trove.services.skills.validators import VALIDATOR_HOST
+
+    svc = SkillService(tmp_path)
+    d = svc.skill_dir("hand-written")
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\n"
+        "name: hand-written\n"
+        "description: d\n"
+        "tier: validator\n"
+        "status: confirmed\n"
+        "targets: [result]\n"
+        "triggers: {node: gen_sql}\n"
+        "checks:\n"
+        "  - expr: min >= 0\n"
+        "    columns: [balance]\n"
+        "---\n\n正文\n",
+        encoding="utf-8",
+    )
+    entries = svc.validators_for(VALIDATOR_HOST)
+    assert [e["name"] for e in entries] == ["hand-written"]
+    assert entries[0]["host_mismatch"] == "gen_sql"
+
+
 def test_pending_validator_not_returned(tmp_path):
     """确认门对 validator 同样有效 —— 未确认的草稿不得参与检查。"""
     svc = SkillService(tmp_path)
@@ -547,7 +606,8 @@ def test_confirm_preserves_checks(tmp_path):
 
 
 def test_validator_expr_is_scanned(tmp_path):
-    """``message`` 不是必填,为空时 ``run_validators`` 回落到 ``violated: {expr}``
+    """``message`` 不是必填,为空时 ``run_validators`` 回落到
+    ``违反：{expr}`` / ``violated: {expr}``(跟随 ``lang``,两条都会进用户屏幕)
     —— 表达式本身就是一条判词路;而表达式语法收字符串字面量,一条**能解析**的
     表达式同样能夹带散文。走 ``create`` 而不是手写文件:要证明的是写入口接受
     它、而扫描面仍然看得见。"""
