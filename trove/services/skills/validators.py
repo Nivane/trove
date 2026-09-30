@@ -72,9 +72,14 @@ def build_scope(
         "row_count": float(len(rows) if row_count is None else row_count),
         "col_count": float(len(columns)),
     }
-    if not idx:
-        # 无列可算:要么没点名(只有 row_count/col_count 可用),要么点名的
-        # 列不在结果里。两种都让聚合标量 UNKNOWN —— 谓词里用到它就是"判不了"。
+    truncated = row_count is not None and row_count > len(rows)
+    if not idx or truncated:
+        # 无列可算(idx 空:没点名,或点名的列不在结果里),或结果集被截断
+        # (``rows`` 只是展示窗口,``row_count`` 才是真实总数 —— 窗口内的
+        # min/max/sum/avg/null_count 都不是整个结果的对应值,拿它报"通过"
+        # 就是"没查却报平安")。两种都让聚合标量 UNKNOWN —— 谓词里用到它
+        # 就是"判不了"。``row_count`` / ``col_count`` 与行内容无关,已在
+        # 上面算好,不受影响。
         for k in _AGGREGATE_KEYS:
             scope[k] = UNKNOWN
         return scope
@@ -113,6 +118,15 @@ def run_validators(
     """
     out: list[dict[str, Any]] = []
     for spec in specs:
+        if not isinstance(spec, dict):
+            out.append({
+                "name": "",
+                "verdict": None,
+                "severity": "advisory",
+                "message": "malformed validator spec (expected a mapping) — this validator did not run",
+                "mode": "deterministic",
+            })
+            continue
         name = str(spec.get("name", ""))
         severity = str(spec.get("severity", "advisory"))
         mode = str(spec.get("mode") or "deterministic")
@@ -129,12 +143,26 @@ def run_validators(
                 "mode": mode,
             })
             continue
+        checks = spec.get("checks") or []
+        if not checks:
+            # 声明了却没有任何检查 = 判不了,不是通过。与上面 mode != deterministic
+            # 同一条纪律:静默的"通过"和"没人管"从外面看一模一样。
+            out.append({
+                "name": name,
+                "verdict": None,
+                "severity": severity,
+                "message": "no checks configured — this validator did not run",
+                "mode": "deterministic",
+            })
+            continue
         verdict: bool | None = True
         message = ""
-        for check in spec.get("checks") or []:
-            expr = str((check or {}).get("expr") or "")
-            fallback = str((check or {}).get("message") or "")
+        for check in checks:
             try:
+                if not isinstance(check, dict):
+                    raise ValueError("malformed check (expected a mapping)")
+                expr = str(check.get("expr") or "")
+                fallback = str(check.get("message") or "")
                 node = parse_condition(expr, VALIDATOR_VARIABLES)
                 got = node.eval(build_scope(check or {}, columns, rows, row_count))
             except DecisionExprError as exc:

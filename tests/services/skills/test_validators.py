@@ -125,3 +125,66 @@ def test_severity_is_carried_through():
     hits = run_validators([_spec("min >= 0", ["a"], severity="blocking")],
                           columns=["a"], rows=[[-1]], row_count=1)
     assert hits[0]["severity"] == "blocking"
+
+
+# ── 截断:窗口内的聚合不是整个结果的聚合 ──────────────────────
+
+def test_truncated_rows_make_aggregates_unknown():
+    """结果被展示上限截断时,内容聚合只覆盖窗口 —— 判不了,不是通过。
+
+    ``rows`` 是窗口(execute_sql 按 max_rows 截断),``row_count`` 是真实
+    总数。窗口内算出的 min/sum/null_count 都不是整个结果的对应值:拿它
+    报"通过"正是本模块最反对的"没查却报平安"。
+    """
+    scope = build_scope({"columns": ["a"]}, ["a"], [[1], [2]], row_count=5000)
+    for k in ("min", "max", "sum", "avg", "null_count"):
+        assert scope[k] is UNKNOWN, k
+    assert scope["row_count"] == 5000.0
+    assert scope["col_count"] == 1.0
+
+
+def test_untruncated_rows_still_compute():
+    """守卫的反面:row_count 与窗口等长时照常算 —— 别把守卫写成恒 UNKNOWN。"""
+    scope = build_scope({"columns": ["a"]}, ["a"], [[1], [2]], row_count=2)
+    assert scope["min"] == 1.0
+    assert scope["sum"] == 3.0
+
+
+def test_truncated_result_verdict_is_none_not_true():
+    hits = run_validators([_spec("min >= 0", ["a"])], columns=["a"],
+                          rows=[[1]], row_count=9999)
+    assert hits[0]["verdict"] is None
+
+
+# ── 空 checks / 形状写错:降级,不静默通过 ────────────────────
+
+def test_empty_checks_is_none_not_true():
+    """声明了却没有任何检查 = 判不了。静默的"通过"和"没人管"一样坏。"""
+    hits = run_validators([{"name": "g1", "severity": "advisory", "checks": []}],
+                          columns=["a"], rows=[[1]], row_count=1)
+    assert hits[0]["verdict"] is None
+    assert "no checks" in hits[0]["message"].lower()
+
+
+def test_missing_checks_key_is_none_not_true():
+    hits = run_validators([{"name": "g1", "severity": "advisory"}],
+                          columns=["a"], rows=[[1]], row_count=1)
+    assert hits[0]["verdict"] is None
+
+
+def test_non_dict_spec_degrades_instead_of_raising():
+    """SKILL.md 是可以手改的 YAML —— 形状写错不得把管线炸掉。"""
+    hits = run_validators([None, _spec("min >= 0", ["a"])],
+                          columns=["a"], rows=[[1]], row_count=1)
+    assert len(hits) == 2
+    assert hits[0]["verdict"] is None
+    assert hits[1]["verdict"] is True
+
+
+def test_mapping_checks_degrades_instead_of_raising():
+    """``checks`` 写成映射(常见手误)时迭代出的是键(字符串)。"""
+    hits = run_validators([{"name": "g1", "severity": "advisory",
+                            "checks": {"expr": "min >= 0"}}],
+                          columns=["a"], rows=[[1]], row_count=1)
+    assert hits[0]["verdict"] is None
+    assert "check error" in hits[0]["message"].lower()
