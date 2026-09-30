@@ -36,7 +36,7 @@ def test_confirm_makes_it_active(tmp_path):
     })
     svc.confirm("recon-caliber")
     assert svc._match_org("query_sketch")[0]["status"] == "confirmed"
-    assert "对总额" in svc.load_skill_content("recon-caliber", "zh")
+    assert "对总额" in svc.load_skill_content("recon-caliber", "zh", node="query_sketch")
 
 
 def test_reject_deletes(tmp_path):
@@ -469,6 +469,63 @@ def test_validator_refuses_load_skill(tmp_path):
     text = svc.load_skill_content("credit-guard", "zh")
     assert "人类可读说明" not in text
     assert "validator" in text
+
+
+def test_load_skill_refuses_when_role_trigger_mismatches(tmp_path):
+    """触发器是**四条投递路共用的判定**：没被广告出来的名字也不能按名取。
+
+    第四条路指 ``load_skill``。前三条(required 注入 / 广告 / validator)
+    都过 ``_match_org``,只有它此前不看任何 trigger —— 猜一个名字就能把
+    一份 role 收窄过的口径读进上下文。
+    """
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "admin-playbook", "description": "管理员口径",
+        "triggers": {"role": ["admin"]}, "body": "ADMIN-ONLY-BODY",
+    })
+    svc.confirm("admin-playbook")
+    refused = svc.load_skill_content(
+        "admin-playbook", "zh", skill_ctx={"role": ["analyst"]},
+    )
+    assert "ADMIN-ONLY-BODY" not in refused
+    assert "role" in refused  # 原因要能读懂,否则模型会换个名字再试
+    # 正面控制:同一份文件在匹配的 ctx 下照常加载
+    assert "ADMIN-ONLY-BODY" in svc.load_skill_content(
+        "admin-playbook", "zh", skill_ctx={"role": ["admin"]},
+    )
+
+
+def test_load_skill_refuses_when_node_trigger_mismatches(tmp_path):
+    """声明了别的宿主 node 的 skill,在 load_skill 的宿主上不加载。"""
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "sketch-tricks", "description": "只给 query_sketch",
+        "triggers": {"node": "query_sketch"}, "body": "SKETCH-BODY",
+    })
+    svc.confirm("sketch-tricks")
+    assert "SKETCH-BODY" not in svc.load_skill_content("sketch-tricks", "zh")
+    assert "SKETCH-BODY" in svc.load_skill_content(
+        "sketch-tricks", "zh", node="query_sketch",
+    )
+
+
+def test_load_skill_without_triggers_loads_without_ctx(tmp_path):
+    """没有触发条件的 skill 不受 ctx 影响 —— 防止过度拦截(回归)。"""
+    svc = SkillService(tmp_path)
+    svc.create({"name": "plain", "description": "通用", "body": "PLAIN-BODY"})
+    svc.confirm("plain")
+    assert "PLAIN-BODY" in svc.load_skill_content("plain", "zh")
+
+
+def test_load_skill_lang_trigger_uses_question_lang(tmp_path):
+    svc = SkillService(tmp_path)
+    svc.create({
+        "name": "zh-only", "description": "中文问题专用",
+        "triggers": {"lang": "zh"}, "body": "ZH-ONLY-BODY",
+    })
+    svc.confirm("zh-only")
+    assert "ZH-ONLY-BODY" not in svc.load_skill_content("zh-only", "en")
+    assert "ZH-ONLY-BODY" in svc.load_skill_content("zh-only", "zh")
 
 
 def test_validator_checks_message_is_scanned(tmp_path):
