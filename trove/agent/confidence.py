@@ -10,7 +10,10 @@
 **开关为什么是进程级模块变量。** ``output`` 是模块级普通函数(不是
 ``make_xxx(...)`` 工厂),拿不到 ``AgentConfig``。仓库对这件事的既有答案是
 ``services/limits.py`` 的进程级镜像(它的 docstring 写明了理由),本模块沿用同一
-范式:启动时与 admin 热更新时各同步一次。
+范式:启动时与 admin 热更新时各同步一次。**但 admin 那处当下拨不动**:
+``agent.confidence_score`` 不在 ``SETTINGS_SCHEMA`` 里 —— 改它会被校验挡
+成 400,``apply_overrides`` 看不到这个键,热更新只是把同一个值再同步一遍。
+要关掉它,只有 ``conf/agent.yml`` 的 ``agent.confidence_score`` 加一次重启。
 """
 
 from __future__ import annotations

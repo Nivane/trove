@@ -1226,6 +1226,86 @@ class TestCrossTurnStateReset:
         )
         assert "loan" in final2.matched_tables
 
+    async def test_no_scored_answer_leak_between_turns(self, tmp_home, sqlite_registry):
+        """同一条不变量的反面:第 1 轮真答案 → 第 2 轮拒绝,分数不得跟过来。
+
+        ``output`` 的三处早退(clarification / intent_answer / error)都**不写**
+        两个分数键 ⟹ ``confidence == 0.0`` 的含义「没有可披露的答案」,完全靠
+        ``SessionManager.ask`` 每轮送一份**全新**的 ``WorkflowState``(整份
+        ``state.model_dump()`` 才能把上一轮 checkpoint 里那些通道一起盖掉)。
+        状态一旦跨轮复用,第 2 轮的澄清会渲染上一轮答案的分数,而没有用例会
+        发现 —— 上面那条盯的是 refusal,这条盯的是分数。
+
+        **两半都要真**:第 1 轮必须真的交付一条被打分的答案(``confidence > 0``
+        且披露行真的渲染出来)。少了这半,第 2 轮的断言在一个从不打分的链路上
+        也成立,整条用例什么都没证明。
+
+        装配借 ``TestStructuredSteps._manager``(``sqlite_registry`` 真执行),
+        只把语义层换成可开关的薄包装:``connectors=None`` 的那套装配走不到交付。
+        ``multi_candidate=False`` 与它一致 —— 默认 ``True`` 会多跑 4 个备选
+        子图,脚本就不够用了。
+        """
+        from trove.core.config import AgentConfig
+        from trove.services.datasource.catalog import CatalogService
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+        from trove.agent.session import SessionManager
+
+        class ToggleLayer:
+            """真 provider 的薄包装:只让 ``model()`` 可开关,其余原样委托。"""
+
+            def __init__(self, inner):
+                self._inner = inner
+                self.on = True
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            def model(self):
+                return self._inner.model() if self.on else None
+
+        class Scripted:
+            def __init__(self, responses):
+                self._it = iter(responses)
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._it)
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                return {"content": next(self._it), "tool_calls": []}
+
+        layer = ToggleLayer(sqlite_registry._test_semantic_provider)
+        config = AgentConfig(home=str(tmp_home), target="mock/model")
+        llm = Scripted(["query", "```sql\nSELECT name FROM students;\n```", "OK"])
+        services = GraphServices(
+            llm=llm, catalog=CatalogService(sqlite_registry),
+            connectors=sqlite_registry, semantic_layer=layer, config=config,
+        )
+        manager = SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=build_graphs(services, multi_candidate=False, query_sketch=False),
+            llm_gateway=llm,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+
+        # 第 1 轮:语义层在位,链路一路跑到交付 —— 一条真被打分的答案。
+        layer.on = True
+        final1 = await manager.ask(
+            session=session, question="What students are in Alameda county?")
+        assert final1.confidence > 0, final1.final_response
+        assert "置信度" in final1.final_response
+
+        # 第 2 轮:同一会话摘掉语义层 → 拒绝。上一轮的分数不得跟过来。
+        layer.on = False
+        final2 = await manager.ask(session=session, question="zzz-whatever")
+        assert final2.no_model is True
+        assert final2.refusal is not None
+        assert final2.confidence == 0.0, (
+            f"第 2 轮是拒绝,不该带着上一轮的分数: {final2.confidence}"
+        )
+        assert "置信度" not in final2.final_response
+
 
 class TestQueryAudit:
     """查询执行审计:谁、问了什么、执行了什么 SQL、结果如何 → audit_log。"""
