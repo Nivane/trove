@@ -410,18 +410,17 @@ def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) ->
     """Hint Bank 经验按表锚过滤：提到未匹配表的教训与当前问题无关。"""
     if not matched or not all_tables:
         return True
-    text = " ".join([
-        str(lesson.get("pattern", "")),
-        str(lesson.get("note", "")),
-        str(lesson.get("sql_snippet", "")),
-    ])
+    text = _lesson_text(lesson)
     mentioned = [t for t in all_tables if t and t in text]
     return not mentioned or any(t in matched for t in mentioned)
 
 
 def _lesson_text(lesson: dict) -> str:
+    """教训的检索文本。``question`` 必须在内:投票教案按 question 存、没有
+    ``pattern``，漏掉它会让这类条目相似度恒为 0 —— 票数加权乘在一个零上。"""
     return " ".join([
         str(lesson.get("pattern", "")),
+        str(lesson.get("question", "")),
         str(lesson.get("note", "")),
         str(lesson.get("sql_snippet", "")),
     ])
@@ -2031,11 +2030,15 @@ class KbService:
         return True
 
     async def update_lesson_confidence(
-        self, datasource: str, pattern: str,
+        self, datasource: str, key: str,
         *, evidence_kind: str = "repeated_correction", count: int = 1,
         threshold: float | None = None,
     ) -> dict:
         """Bump a pending lesson's confidence; auto-confirm past threshold.
+
+        ``key`` 匹配 ``pattern`` **或** ``question``:教训有两种写法 ——
+        失败蒸馏与人工追加按 ``pattern``,用户投票按 ``question``
+        (``rate_lesson``)。只认前者会让带票数的条目永远匹配不上。
 
         自动晋升(promotion.py 的 evidence 增量)写入 lessons.yml:
         累加 confidence,当净好评/置信度过阈值(threshold 传入)时置
@@ -2045,11 +2048,14 @@ class KbService:
 
         path = self.kb_dir / datasource / "lessons.yml"
         if not path.exists():
-            return {"updated": False, "pattern": pattern, "reason": "no file"}
+            return {"updated": False, "key": key, "reason": "no file"}
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         lessons = list(data.get("lessons", []))
         for lesson in lessons:
-            if str(lesson.get("pattern", "")).strip() != pattern:
+            if key not in (
+                str(lesson.get("pattern", "")).strip(),
+                str(lesson.get("question", "")).strip(),
+            ):
                 continue
             conf = float(lesson.get("confidence") or 0.0)
             new_conf = apply_evidence(conf, evidence_kind, count)
@@ -2063,14 +2069,14 @@ class KbService:
             _write_doc(path, data, "kb_lesson_promotion")
             await self.force_sync(datasource)
             await self.git_commit(
-                datasource, f"kb: update lesson confidence ({pattern})",
+                datasource, f"kb: update lesson confidence ({key})",
                 files=["lessons.yml"])
             return {
-                "updated": True, "pattern": pattern,
+                "updated": True, "key": key,
                 "confidence": new_conf, "promoted": promoted,
                 "confirmed": bool(lesson.get("confirmed")),
             }
-        return {"updated": False, "pattern": pattern, "reason": "pattern not found"}
+        return {"updated": False, "key": key, "reason": "key not found"}
 
     async def list_term_names(self, datasource: str) -> list[str]:
         """Term names of one datasource (knowledge intent answers)."""

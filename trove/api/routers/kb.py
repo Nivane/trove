@@ -234,9 +234,17 @@ async def rate_lesson(
     The rated Q&A is upserted into the lesson Hint Bank keyed by
     `question`, aggregating upvotes/downvotes and landing *pending* for the
     admin console to confirm or reject.
+
+    好评同时作为 ``upvote`` 证据累加置信度(过阈值自动确认)。闸门在
+    ``MemoryService`` —— ``promotion`` 默认关,没有 memory 组件(嵌入/测试
+    装配)时这一路整个不发生。
     """
     ds = _datasource(request, None)
     lesson = await _kb(request).rate_lesson(body.model_dump(), ds)
+    if body.vote == 1:
+        memory = getattr(request.app.state, "memory", None)
+        if memory is not None:
+            await memory.promote_lesson(ds, body.question, evidence_kind="upvote")
     # 反馈闭环:评分回写对应 Langfuse trace(run_id = trace_id)
     if body.run_id:
         try:

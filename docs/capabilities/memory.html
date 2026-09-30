@@ -244,12 +244,19 @@
           <tr><th>证据类型</th><th>每次增量</th><th>当前接了吗</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">repeated_correction</td><td class="mono">0.3</td><td><strong>已接</strong>（唯一调用点）</td></tr>
-          <tr><td class="mono">upvote</td><td class="mono">0.4</td><td>已定义，未接线</td></tr>
+          <tr><td class="mono">repeated_correction</td><td class="mono">0.3</td><td><strong>已接</strong></td></tr>
+          <tr><td class="mono">upvote</td><td class="mono">0.4</td><td><strong>已接</strong>（<code>POST /v1/kb/ratings</code> 点赞）</td></tr>
           <tr><td class="mono">lesson_reuse_pass</td><td class="mono">0.25</td><td>已定义，未接线</td></tr>
         </tbody>
       </table>
     </div>
+
+    <p>
+      教训在 <code>lessons.yml</code> 里有两种写法：失败蒸馏与人工追加按
+      <code>pattern</code>，用户投票按 <code>question</code>。证据的匹配键因此
+      两者都认，检索文本也把 <code>question</code> 计入——否则投票教案的相似度
+      恒为 0，票数加权会乘在一个零上。
+    </p>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/promotion.py#L33">promotion.py:33 <span class="ref-line">_EVIDENCE_DELTA</span></a>

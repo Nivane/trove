@@ -516,15 +516,19 @@ class MemoryService:
     # ── Promotion (P3) ────────────────────────────────────
 
     async def promote_lesson(
-        self, datasource: str, pattern: str,
+        self, datasource: str, key: str,
         *, evidence_kind: str = "repeated_correction", count: int = 1,
     ) -> dict[str, Any]:
-        """Bump a pending lesson's confidence; auto-confirm past threshold."""
+        """Bump a pending lesson's confidence; auto-confirm past threshold.
+
+        ``key`` 匹配教训的 ``pattern`` 或 ``question``(两种写法并存:失败蒸馏
+        与人工追加用前者,用户投票用后者)。
+        """
         if not self.config.promotion_enabled or self.kb is None:
             return {"promoted": False, "reason": "promotion disabled"}
         try:
             return await self.kb.update_lesson_confidence(
-                datasource, pattern,
+                datasource, key,
                 evidence_kind=evidence_kind, count=count,
                 threshold=self.config.promotion_threshold,
             )

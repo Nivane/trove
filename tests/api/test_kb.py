@@ -240,3 +240,66 @@ class TestKbAssets:
         assert str(FORMAT_VERSION + 5) in body["refused"]["test_db/schema_notes.yml"]
         # 镜像没被换掉
         assert await api_kb.state.kb.list_items() == before
+
+
+class TestRatingsPromotion:
+    """点赞 → upvote 证据。仅在 memory.promotion 开启时生效(默认关)。"""
+
+    @pytest.fixture
+    async def promoted_client(self, api_kb, admin_token, tmp_path):
+        """给 app 挂一个 promotion 打开的 MemoryService(生产装配见 main.py)。"""
+        from trove.services.memory.models import MemoryConfig
+        from trove.services.memory.service import MemoryService
+
+        api_kb.state.memory = MemoryService(
+            tmp_path / "mem",
+            MemoryConfig(enabled=True, promotion=True, promotion_threshold=0.8),
+            kb=api_kb.state.kb,
+        )
+        transport = ASGITransport(app=api_kb)
+        headers = {"Authorization": f"Bearer {admin_token}"}
+        async with AsyncClient(
+            transport=transport, base_url="http://test", headers=headers
+        ) as c:
+            yield c
+
+    @staticmethod
+    def _lesson(api_kb, question):
+        kb_dir = api_kb.state.kb.kb_dir / "test_db"
+        data = yaml.safe_load((kb_dir / "lessons.yml").read_text(encoding="utf-8"))
+        return next(l for l in data["lessons"] if l.get("question") == question)
+
+    async def test_upvotes_accumulate_and_promote(self, promoted_client, api_kb):
+        for _ in range(2):
+            resp = await promoted_client.post("/v1/kb/ratings", json={
+                "question": "平均贷款金额是多少",
+                "vote": 1,
+                "sql_snippet": "SELECT AVG(amount) FROM loans",
+            })
+            assert resp.status_code == 201
+
+        lesson = self._lesson(api_kb, "平均贷款金额是多少")
+        assert lesson["confidence"] == 0.8
+        assert lesson["confirmed"] is True
+
+    async def test_single_upvote_stays_pending(self, promoted_client, api_kb):
+        resp = await promoted_client.post("/v1/kb/ratings", json={
+            "question": "只点一次的问题", "vote": 1,
+        })
+        assert resp.status_code == 201
+
+        lesson = self._lesson(api_kb, "只点一次的问题")
+        assert lesson["confidence"] == 0.4
+        assert lesson["confirmed"] is False
+
+    async def test_inert_when_promotion_absent(self, kb_client, api_kb):
+        """没有 memory 组件 = 未开启 → 一个字节都不该变。"""
+        for _ in range(2):
+            resp = await kb_client.post("/v1/kb/ratings", json={
+                "question": "不动问题", "vote": 1,
+            })
+            assert resp.status_code == 201
+
+        lesson = self._lesson(api_kb, "不动问题")
+        assert "confidence" not in lesson
+        assert lesson["confirmed"] is False
