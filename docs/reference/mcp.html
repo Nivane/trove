@@ -128,6 +128,25 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
       但这也意味着<strong>不要把 stdio 形态包装成一个别人能远程触发的服务</strong>。
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TB
+    CLI["trove mcp"] --&gt; T{"--transport"}
+    T -- "stdio（默认）" --&gt; L["身份 = 本机可信（等价 admin）<br/>数据源：全部"]
+    T -- "sse / streamable-http" --&gt; B{"绑定非回环地址？"}
+    B -- "否 · 回环" --&gt; OK["不强制 token"]
+    B -- "是" --&gt; TOK{"--token 能解析成真实用户？"}
+    TOK -- "否" --&gt; NO["拒绝启动"]
+    TOK -- "是" --&gt; U["身份 = token 对应的用户<br/>数据源按 grants 校验，与 HTTP API 同语义"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · fail-closed 在启动这一刻就生效：绑非回环就必须带 token，且 token 必须解析成真实用户，否则直接拒绝启动。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <h2 id="tools">三个 tool</h2>
 
     <div class="table-wrap">
@@ -282,6 +301,8 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

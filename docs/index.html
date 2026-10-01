@@ -90,6 +90,46 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
 <span class="cmt"># 前后端分离部署，浏览器访问 http://localhost:8080</span>
 docker compose up --build</code></pre>
 
+      <figure class="diagram" data-diagram="pending" style="margin-top:28px">
+        <div class="diagram-canvas">
+          <pre class="mermaid">
+flowchart TB
+    subgraph entry["入口"]
+        direction LR
+        UI["Web UI"] --&gt; SRV["HTTP 服务"]
+        CLI["CLI / REPL"]
+        MCP["MCP"]
+    end
+
+    WF["&lt;b&gt;编排 · trove/workflow&lt;/b&gt;&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]
+
+    subgraph caps["能力 · trove/services"]
+        direction LR
+        SEM["语义模型"]
+        KB["知识库 + 混合检索"]
+        MEM["记忆 · 判定规则 · Skills"]
+    end
+
+    LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
+    DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB · SQLite"]
+    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite"]
+
+    SRV --&gt; WF
+    CLI --&gt; WF
+    MCP --&gt; WF
+    WF --&gt; caps
+    KB --&gt; DS
+    MEM --&gt; STATE
+    WF -.-&gt; LLM
+    caps -.-&gt; LLM
+          </pre>
+        </div>
+        <figcaption>
+          <span class="cap-rendered">图 1 · 系统的形状：入口进来，编排决定做什么，能力层干活，落点在状态与数据源；实线是「谁调谁」，虚线是「谁会用到大模型」，两条都不是数据流。</span>
+          <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+        </figcaption>
+      </figure>
+
       <div class="shots" style="margin-top:28px">
         <figure>
           <img src="assets/hero-chat.png" alt="Trove 问答界面：左侧会话列表，中间提问与回答，右侧展示生成的 SQL、结果表格与图表">
@@ -997,6 +1037,8 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
 
   </main>
 </div>
+
+<script type="module" src="assets/diagram.js"></script>
 
 </body>
 </html>

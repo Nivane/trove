@@ -96,6 +96,25 @@
       </table>
     </div>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TB
+    REQ["请求 /v1/…"] --&gt; K{"端点"}
+    K -- "普通端点" --&gt; D1["get_current_user<br/>token → 用户"]
+    D1 --&gt; D2["require_admin / require_scope<br/>按需叠加"]
+    D2 --&gt; D3["require_datasource<br/>数据源授权"]
+    D3 --&gt; D4["check_api_rate<br/>限流与日配额"]
+    D4 --&gt; H["业务处理"]
+    K -- "探活 / 指标" --&gt; FREE["/v1/health · /v1/metrics<br/>免鉴权：编排与抓取端不便携带 token"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 四道依赖按需叠加，最后一道是限流；两个免鉴权端点是有理由的例外，不是漏配。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <h2 id="groups">端点分类</h2>
 
     <h3>对话</h3>
@@ -277,6 +296,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>
