@@ -46,33 +46,34 @@ Its promise is not "always right" but **never wrong without a fight**:
 ```mermaid
 flowchart TB
     subgraph entry["Entry points"]
-        direction LR
-        UI["Web UI"] --> SRV["HTTP service"]
+        UI["Web UI"]
+        SRV["HTTP service"]
         CLI["CLI / REPL"]
         MCP["MCP"]
     end
 
-    WF["<b>Orchestration · trove/workflow</b><br/>LangGraph workflow<br/>semantic gate → plan and compile<br/>generate → execute and validate → reflect"]
+    WF["Orchestration · trove/workflow<br/>LangGraph workflow<br/>semantic gate → plan and compile<br/>generate → execute and validate → reflect"]
 
     subgraph caps["Capabilities · trove/services"]
-        direction LR
         SEM["Semantic model"]
-        KB["Knowledge base + hybrid retrieval"]
+        KB["Knowledge base + retrieval"]
         MEM["Memory · decision rules · Skills"]
     end
 
     LLM["Models · trove/llm<br/>LLM gateway"]
-    DS["Data sources<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB · SQLite"]
-    STATE["State · trove/storage<br/>PostgreSQL / SQLite"]
+    DS["Data sources<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB<br/>SQLite"]
+    STATE["State · trove/storage<br/>PostgreSQL / SQLite<br/>sessions · tasks · checkpoints<br/>query log · lineage"]
 
+    UI --> WF
     SRV --> WF
     CLI --> WF
     MCP --> WF
-    WF --> caps
+    WF --> SEM
+    WF --> KB
+    WF --> MEM
+    WF -.-> LLM
     KB --> DS
     MEM --> STATE
-    WF -.-> LLM
-    caps -.-> LLM
 ```
 
 Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
@@ -81,19 +82,19 @@ Two bands (entry and capabilities) with the orchestration between them — a sin
 
 ```mermaid
 flowchart TB
-    Q["Question"] --> ROUTE["route_intent — split by intent<br/>data questions take the main chain, metadata questions have their own self-checking path"]
-    ROUTE --> SL["schema_linking<br/>anchor the question to the semantic model"]
+    Q(["Question"]) --> ROUTE["route_intent<br/>split by intent"]
+    ROUTE --> SL["schema_linking<br/>anchor it to the model"]
     SL --> GATE{"Semantic gate"}
-    GATE -->|"structurally out of reach"| REFUSE["refuse<br/>+ draft a model extension; confirm and re-ask"]
-    GATE -->|"covered / partially covered"| FAST["fast_match deterministic shortcut<br/>an exact KB hit goes straight to SQL"]
-    FAST -->|"miss"| GEN["Plan → compile → generate<br/>agentic loop, multi-candidate voting when it helps"]
-    FAST -->|"hit"| EXEC
-    GEN --> EXEC["Before execution: authorization gate → HITL → read-only layers"]
-    EXEC --> VAL["Execute → rule chain → field-level masking"]
+    GATE -->|"out of reach"| REFUSE["refuse<br/>+ draft a model extension"]
+    GATE -->|"covered / partial"| FAST["fast_match shortcut<br/>an exact KB hit goes to SQL"]
+    FAST -->|"miss"| GEN["Plan → compile → generate<br/>agentic loop, voting"]
+    FAST -->|"hit"| EXEC["Three gates pre-execution<br/>auth → HITL → read-only"]
+    GEN --> EXEC
+    EXEC --> VAL["Execute → rules → masking<br/>rules must pass first"]
     VAL --> RE{"reflect"}
-    RE -->|"not passing"| RB["analyze_error: version comparison<br/>roll back to the step that should retry"]
+    RE -->|"not passing"| RB["analyze_error<br/>version diff → roll back"]
     RB --> GEN
-    RE -->|"passing"| OUT["Conclusion · chart · insights · attribution · sources"]
+    RE -->|"passing"| OUT(["Delivery<br/>conclusion · chart<br/>insights · attribution"])
 ```
 
 The full 28-node version, every branch and the rollback ladder: [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
@@ -109,11 +110,11 @@ Trove takes the semantic-layer route, with a twist that keeps answers flowing:
 - **Structurally out of reach → refuse.** An undeclared table, an ambiguous join, a fan-out — Trove refuses, and drafts a model extension for you to confirm in one step. The refusal *is* the modeling signal; coverage grows with use.
 
 ```mermaid
-flowchart LR
+flowchart TB
     PLAN["Query plan"] --> C["Semantic compiler"]
-    C -->|"everything declared"| OK["Authoritative SQL<br/>executed as-is"]
-    C -->|"soft MISS: missing words / values / definitions"| PC["PartialCompile skeleton<br/>joins, filters and grouping pinned; generation fills the gaps<br/>skeleton-fidelity check guards execution"]
-    C -->|"hard MISS: undeclared table / ambiguous join / fan-out"| MISS["Refuse<br/>+ one-click model extension, then re-ask"]
+    C -->|"all declared"| OK["Authoritative SQL<br/>compiler output as-is<br/>nothing to generate<br/>executed directly"]
+    C -->|"soft MISS"| PC["words, values or<br/>definitions undeclared<br/>joins, filters, grouping<br/>pinned; gaps filled"]
+    C -->|"hard MISS"| MISS["undeclared table,<br/>ambiguous join, fan-out<br/>refuse + one-click<br/>model extension"]
 ```
 
 One compiler, three outcomes — and the **soft MISS in the middle is the common case**: it turns "the model doesn't cover everything" from a hard stop into an answer that ships anyway.

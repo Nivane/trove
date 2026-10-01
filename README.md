@@ -46,33 +46,34 @@ Trove 是一个**自学习型对话式数据智能体**:用自然语言提问,�
 ```mermaid
 flowchart TB
     subgraph entry["入口"]
-        direction LR
-        UI["Web UI"] --> SRV["HTTP 服务"]
+        UI["Web UI"]
+        SRV["HTTP 服务"]
         CLI["CLI / REPL"]
         MCP["MCP"]
     end
 
-    WF["<b>编排 · trove/workflow</b><br/>LangGraph 工作流<br/>语义门禁 → 计划与编译<br/>生成 → 执行与校验 → 反思"]
+    WF["编排 · trove/workflow<br/>LangGraph 工作流<br/>语义门禁 → 计划与编译<br/>生成 → 执行与校验 → 反思"]
 
     subgraph caps["能力 · trove/services"]
-        direction LR
         SEM["语义模型"]
         KB["知识库 + 混合检索"]
         MEM["记忆 · 判定规则 · Skills"]
     end
 
     LLM["模型 · trove/llm<br/>LLM 网关"]
-    DS["数据源<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB · SQLite"]
-    STATE["状态 · trove/storage<br/>PostgreSQL / SQLite"]
+    DS["数据源<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB<br/>SQLite"]
+    STATE["状态 · trove/storage<br/>PostgreSQL / SQLite<br/>会话 · 任务 · 检查点<br/>查询日志 · 谱系"]
 
+    UI --> WF
     SRV --> WF
     CLI --> WF
     MCP --> WF
-    WF --> caps
+    WF --> SEM
+    WF --> KB
+    WF --> MEM
+    WF -.-> LLM
     KB --> DS
     MEM --> STATE
-    WF -.-> LLM
-    caps -.-> LLM
 ```
 
 两个带(入口、能力)夹着编排——它是一张 LangGraph 图,所以画成一个节点;再加外挂的模型层与状态层,就是它的形状。数据源在 Trove 之外,所以不在五层里。实线是「谁调谁」,虚线是「谁会用到大模型」——两条都不是数据流。往里每一步的细节见[系统架构](https://nivane.github.io/trove/architecture/overview.html)与[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。
@@ -81,19 +82,19 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    Q["提问"] --> ROUTE["route_intent 意图分流<br/>数据问题走主链,元数据问题另有自校验链路"]
-    ROUTE --> SL["schema_linking<br/>把问题绑到语义模型上"]
+    Q(["提问"]) --> ROUTE["route_intent 意图分流<br/>数据问题走主链,元数据走自校验链"]
+    ROUTE --> SL["schema_linking 语义绑定<br/>把问题锚到语义模型上"]
     SL --> GATE{"语义门禁"}
-    GATE -->|"结构上够不着"| REFUSE["refuse:拒绝<br/>+ 起草模型扩展,确认后重答"]
+    GATE -->|"结构上够不着"| REFUSE["refuse 拒绝<br/>+ 起草模型扩展,确认后重答"]
     GATE -->|"覆盖 / 部分覆盖"| FAST["fast_match 确定性快径<br/>KB 精确命中就直接给 SQL"]
     FAST -->|"未命中"| GEN["规划 → 编译 → 生成<br/>agentic 循环,可多候选投票"]
-    FAST -->|"命中"| EXEC
-    GEN --> EXEC["执行前:授权门 → 人在环 → 只读三层门"]
-    EXEC --> VAL["执行 → 规则链校验 → 字段级脱敏"]
+    FAST -->|"命中"| EXEC["执行前三道门<br/>授权 → 人在环 → 只读三层"]
+    GEN --> EXEC
+    EXEC --> VAL["执行 → 规则链校验 → 脱敏<br/>结果逐条核验后才算数"]
     VAL --> RE{"reflect 反思"}
-    RE -->|"未过"| RB["analyze_error:版本比对<br/>回滚到该重试的环节"]
+    RE -->|"未过"| RB["analyze_error 失败分析<br/>版本比对 → 回滚重试"]
     RB --> GEN
-    RE -->|"通过"| OUT["结论 · 图表 · 洞察 · 归因 · 来源"]
+    RE -->|"通过"| OUT(["交付<br/>结论 · 图表 · 洞察<br/>归因 · 来源"])
 ```
 
 28 个节点的完整版本、分支与回滚阶梯、每个节点的输入输出,见[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。
@@ -109,11 +110,11 @@ Trove 走语义层路线,并加了一个让答案持续流动的变体:
 - **模型结构上够不着,就拒绝。** 未声明的表、二义的 join、fan-out——Trove 拒绝,并草拟一份模型扩展供你一键确认。**拒绝本身就是建模信号**,覆盖率随使用增长。
 
 ```mermaid
-flowchart LR
+flowchart TB
     PLAN["查询计划"] --> C["语义编译器"]
-    C -->|"全部命中"| OK["权威 SQL<br/>直接执行"]
-    C -->|"软 MISS:词表 / 取值 / 口径没声明"| PC["PartialCompile 骨架<br/>join / 过滤 / 分组被钉住,生成补缺<br/>执行前骨架保真校验兜底"]
-    C -->|"硬 MISS:未覆盖的表 / 二义 join / fan-out"| MISS["拒绝<br/>+ 一键确认模型扩展,然后重答"]
+    C -->|"全部命中"| OK["权威 SQL<br/>编译器全权产出<br/>无 LLM 补缺"]
+    C -->|"软 MISS"| PC["词表 / 取值 / 口径未声明<br/>join、过滤、分组已钉住<br/>生成补缺 + 骨架校验兜底"]
+    C -->|"硬 MISS"| MISS["未覆盖的表 / 二义 join<br/>fan-out / 坏派生定义<br/>拒绝 + 一键确认模型扩展"]
 ```
 
 同一份编译器,三种结局,而且**中间的软 MISS 才是常态**——它把「模型没覆盖全」从一次硬停,变成一次照常交付。

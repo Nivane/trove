@@ -52,7 +52,8 @@
 
     <p>
       主干、两条岔路、两个环——一张图看完（跟随 <code>_build_reflection</code> 的真实
-      连边；框里横排的名字表示连续经过的节点）：
+      连边；框里横排的名字表示连续经过的节点；几条只通向 <code>output</code> 的收敛边
+      从略，见图注）：
     </p>
 
     <figure class="diagram" data-diagram="pending">
@@ -62,15 +63,15 @@ flowchart TD
     START(["提问"]) --> RI["route_intent 意图路由"]
 
     RI -- "问数 / 归因" --> PD["parse_date → schema_linking"]
-    RI -- "元数据" --> AM["answer_metadata ⇄ metadata_check"]
-    RI -- "闲聊 / 纠错 / 写操作 / 确认" --> AN["各自的终态答案节点"]
+    RI -- "元数据" --> AM["answer_metadata ⇄&lt;br/&gt;metadata_check"]
+    RI -- "闲聊 / 纠错 / 确认 / 写操作" --> AN["answer_reject · chitchat&lt;br/&gt;answer_correction&lt;br/&gt;confirm_draft 草稿确认"]
 
     PD --> GATE{"语义门禁"}
-    GATE -- "无模型 / 硬 MISS" --> RF["refuse：拒绝 + 起草扩展草案"]
+    GATE -- "无模型 / 硬 MISS" --> RF["refuse：拒绝&lt;br/&gt;并起草扩展草案"]
     GATE -- "可答" --> FM{"fast_match 模板快径"}
 
-    RF -- "当轮交付引导" --> OUT(["output 交付"])
-    RF -. "下一轮确认草稿后重答" .-> PD
+    RF -- "自动确认后重答" --> PD
+    RF -- "本轮回引导" --> OUT(["output 交付"])
 
     FM -- "命中：跳过生成链" --> EX["execute_sql"]
     FM -- "未命中" --> QS["query_sketch 出计划"]
@@ -87,13 +88,11 @@ flowchart TD
     INS --> OUT
 
     AE -- "回滚重试" --> GEN
-    AE -- "到顶 / 修不动" --> OUT
-    AN --> OUT
-    AM --> OUT
+    AE -- "到顶 / 回不动" --> OUT
 </pre>
       </div>
       <figcaption>
-        <span class="cap-rendered">图 1 · 默认图（reflection）的形状：一条主干、两条跳过生成的岔路（元数据自校验环、模板快径）、两个环（生成回滚、反思回滚）。归因类问题在 insights 前多经过一个条件节点 <code>attribution</code>。</span>
+        <span class="cap-rendered">图 1 · 默认图（reflection）的形状：一条主干、两条跳过生成的岔路（元数据自校验环、模板快径）、两个环（生成回滚、反思回滚）。归因类问题在 insights 前多经过一个条件节点 <code>attribution</code>。为免两条贯穿全图的竖线，<code>answer_metadata</code> 与三个终态答案节点到 <code>output</code> 的收敛边已从略——它们都是 <code>output</code> 的直接上游。</span>
         <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
       </figcaption>
     </figure>
