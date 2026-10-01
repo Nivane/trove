@@ -47,13 +47,12 @@ Trove 是一个**自学习型对话式数据智能体**:用自然语言提问,�
 flowchart TB
     subgraph entry["入口"]
         direction LR
-        UI["Web UI"]
+        UI["Web UI"] --> SRV["HTTP 服务"]
         CLI["CLI / REPL"]
-        SRV["HTTP 服务"]
         MCP["MCP"]
     end
 
-    WF["<b>编排 · trove/workflow</b><br/>LangGraph 工作流<br/>语义门禁 → 计划与编译 → 生成 → 执行与校验 → 反思"]
+    WF["<b>编排 · trove/workflow</b><br/>LangGraph 工作流<br/>语义门禁 → 计划与编译<br/>生成 → 执行与校验 → 反思"]
 
     subgraph caps["能力 · trove/services"]
         direction LR
@@ -63,10 +62,9 @@ flowchart TB
     end
 
     LLM["模型 · trove/llm<br/>LLM 网关"]
-    STATE["状态 · trove/storage<br/>PostgreSQL / SQLite"]
     DS["数据源<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB · SQLite"]
+    STATE["状态 · trove/storage<br/>PostgreSQL / SQLite"]
 
-    UI --> SRV
     SRV --> WF
     CLI --> WF
     MCP --> WF
@@ -74,7 +72,7 @@ flowchart TB
     KB --> DS
     MEM --> STATE
     WF -.-> LLM
-    MEM -.-> LLM
+    caps -.-> LLM
 ```
 
 两个带(入口、能力)夹着编排——它是一张 LangGraph 图,所以画成一个节点;再加外挂的模型层与状态层,就是它的形状。数据源在 Trove 之外,所以不在五层里。实线是「谁调谁」,虚线是「谁会用到大模型」——两条都不是数据流。往里每一步的细节见[系统架构](https://nivane.github.io/trove/architecture/overview.html)与[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。

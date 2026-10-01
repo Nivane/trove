@@ -51,13 +51,12 @@
 flowchart TB
     subgraph entry["入口"]
         direction LR
-        UI["Web UI"]
+        UI["Web UI"] --&gt; SRV["HTTP 服务"]
         CLI["CLI / REPL"]
-        SRV["HTTP 服务"]
         MCP["MCP"]
     end
 
-    WF["&lt;b&gt;编排 · trove/workflow&lt;/b&gt;&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译 → 生成 → 执行与校验 → 反思"]
+    WF["&lt;b&gt;编排 · trove/workflow&lt;/b&gt;&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]
 
     subgraph caps["能力 · trove/services"]
         direction LR
@@ -67,10 +66,9 @@ flowchart TB
     end
 
     LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
-    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite"]
     DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB · SQLite"]
+    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite"]
 
-    UI --&gt; SRV
     SRV --&gt; WF
     CLI --&gt; WF
     MCP --&gt; WF
@@ -78,7 +76,7 @@ flowchart TB
     KB --&gt; DS
     MEM --&gt; STATE
     WF -.-&gt; LLM
-    MEM -.-&gt; LLM
+    caps -.-&gt; LLM
 </pre>
       </div>
       <figcaption>

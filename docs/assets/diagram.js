@@ -55,7 +55,9 @@ if (sources.size) {
          而这里的图多是「带」的形状，不需要默认那么松。 */
       flowchart: {
         htmlLabels: true,
-        curve: "basis",
+        // 直线，不是 basis 的波浪曲线：架构图里每条边都该一眼看清从哪个框
+        // 到哪个框，被曲线绕出来的「歪」会让人以为拓扑有额外含义。
+        curve: "linear",
         /* 允许按容器宽度缩，但 CSS 给 SVG 设了 min-width 下限（见 docs.css，
           compact 图可用 data-size="compact" 放行原尺寸）：窄屏宁可横向滚动，
          也不把字缩到读不了。宽视窗下卡片够宽，图按天然尺寸显示，等于没缩。 */

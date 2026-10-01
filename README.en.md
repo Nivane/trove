@@ -47,13 +47,12 @@ Its promise is not "always right" but **never wrong without a fight**:
 flowchart TB
     subgraph entry["Entry points"]
         direction LR
-        UI["Web UI"]
+        UI["Web UI"] --> SRV["HTTP service"]
         CLI["CLI / REPL"]
-        SRV["HTTP service"]
         MCP["MCP"]
     end
 
-    WF["<b>Orchestration · trove/workflow</b><br/>LangGraph workflow<br/>semantic gate → plan and compile → generate → execute and validate → reflect"]
+    WF["<b>Orchestration · trove/workflow</b><br/>LangGraph workflow<br/>semantic gate → plan and compile<br/>generate → execute and validate → reflect"]
 
     subgraph caps["Capabilities · trove/services"]
         direction LR
@@ -63,10 +62,9 @@ flowchart TB
     end
 
     LLM["Models · trove/llm<br/>LLM gateway"]
-    STATE["State · trove/storage<br/>PostgreSQL / SQLite"]
     DS["Data sources<br/>PostgreSQL · MySQL<br/>ClickHouse · DuckDB · SQLite"]
+    STATE["State · trove/storage<br/>PostgreSQL / SQLite"]
 
-    UI --> SRV
     SRV --> WF
     CLI --> WF
     MCP --> WF
@@ -74,7 +72,7 @@ flowchart TB
     KB --> DS
     MEM --> STATE
     WF -.-> LLM
-    MEM -.-> LLM
+    caps -.-> LLM
 ```
 
 Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
