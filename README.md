@@ -17,13 +17,6 @@
 
 <br>
 
-<img src="docs/assets/hero-chat.png" width="880" alt="Trove 对话界面:一句自然语言提问,得到结论、图表,以及右侧 12 步的分析过程">
-
-<sub><i>一次提问的完整链路——经过验证的 SQL、图表,以及每一步推理过程,全部可见。</i></sub>
-
-<br>
-<br>
-
 📖 **[文档站](https://nivane.github.io/trove/)** —— 25 页,每条机制都锚到具体源码行 · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
@@ -130,12 +123,6 @@ flowchart TB
 | 执行后自纠(反思 + 回归) | ❌ | ❌ | ❌ | ✅ 诊断回滚重试 + 版本比对 |
 | 结论 → 阈值判定(零 LLM) | ❌ | ❌ | 部分(够不着语义层的基期与口径) | ✅ 语义模型词汇声明 + 证据留痕 |
 | 按数据源学习;自动内容需人审 | ❌ | 部分 | 部分 | ✅ KB + 记忆,`pending` 至确认 |
-
-<p align="center">
-<img src="docs/assets/hero-semantic.png" width="880" alt="Trove 语义层管理端:44 个指标、8 个数据集、56 个字段已声明,以及 10 条待审批">
-</p>
-
-<sub><i>治理面——模型声明了什么,以及还有什么等待人工确认。</i></sub>
 
 ## 快速开始
 

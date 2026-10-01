@@ -63,11 +63,11 @@ class StubGraph:
         return list(self.captured)
 
 
-def _ok_outcome(final_response="答案"):
+def _ok_outcome(final_response="答案", sql="SELECT name FROM students;"):
     return {
         "route_intent": {"intent": "query", "llm": None},
         "schema_linking": {"matched_tables": ["students"]},
-        "gen_sql": {"sql": "SELECT name FROM students;", "attempts": 1, "llm": None},
+        "gen_sql": {"sql": sql, "attempts": 1, "llm": None},
         "execute_sql": {
             "row_count": 5,
             "rows": [[1, "Alice"], [2, "Bob"]],
@@ -204,6 +204,57 @@ class TestDecompositionFlow:
         assert ctx["row_count"] == 5
         assert ctx["rows_preview"] == [["1", "Alice"], ["2", "Bob"]]  # 单元格字符串化(截断预算)
         assert ctx["matched_tables"] == ["students"]
+
+    async def test_earlier_step_stays_addressable_and_materializes_on_ref(self, tmp_home):
+        """结果通道:更早的步骤不再用完即丢——索引里始终可寻址,
+        标题引用 task[1] 时按通道预算把那一步的结果包取出来。"""
+        decompose = (
+            '{"tasks": ["贷款总额最高的地区", "各银行不良贷款率",'
+            ' "在 task[1] 的基础上按分行拆分"]}'
+        )
+        graph = StubGraph([
+            _ok_outcome("第一步", sql="SELECT district FROM loan;"),
+            _ok_outcome("第二步", sql="SELECT bank FROM x;"),
+            _ok_outcome("第三步", sql="SELECT branch FROM y;"),
+        ])
+        h = _StubManagerHarness(tmp_home, [decompose, SYNTHESIS_TEXT], graph)
+        session = await h.session()
+        await h.stream(session, "分别查询 1. 地区 2. 不良率 3. 按分行拆分")
+
+        states = graph.run_states()
+        assert len(states) == 3
+        history = states[2]["history"]
+        # 第 1 步被第 2 步盖过之后,仍然出现在索引里(此前会整个消失)
+        assert "- task[1] 贷款总额最高的地区 · 5 行 · OK" in history
+        assert "- task[2] 各银行不良贷款率 · 5 行 · OK" in history
+        # 显式引用 → 物化第 1 步(SQL 全文 + 列名),而不是只有一行索引
+        assert "\ntask[1] 贷款总额最高的地区:" in history
+        assert "SELECT district FROM loan;" in history
+        assert "- 列: id | name" in history
+        # 默认锚点(最近一个已完成步骤)照旧物化
+        assert "\ntask[2] 各银行不良贷款率:" in history
+        assert "SELECT bank FROM x;" in history
+
+    async def test_unreferenced_earlier_step_is_indexed_not_materialized(self, tmp_home):
+        """不引用就不物化:prompt 成本正比于用到的结果,而非任务链长度。"""
+        decompose = '{"tasks": ["贷款总额最高的地区", "各银行不良贷款率", "汇总各地区的情况"]}'
+        graph = StubGraph([
+            _ok_outcome("第一步", sql="SELECT district FROM loan;"),
+            _ok_outcome("第二步", sql="SELECT bank FROM x;"),
+            _ok_outcome("第三步", sql="SELECT region FROM z;"),
+        ])
+        h = _StubManagerHarness(tmp_home, [decompose, SYNTHESIS_TEXT], graph)
+        session = await h.session()
+        await h.stream(session, "分别查询 1. 地区 2. 不良率 3. 汇总各地区")
+
+        history = graph.run_states()[2]["history"]
+        # 可寻址:第 1 步在索引里(能看见、能被引用)
+        assert "- task[1] 贷款总额最高的地区 · 5 行 · OK" in history
+        # 未物化:没有结果包块,它的 SQL 不进 prompt
+        assert "\ntask[1] 贷款总额最高的地区:" not in history
+        assert "SELECT district FROM loan;" not in history
+        # 最近一步仍是默认锚点
+        assert "\ntask[2] 各银行不良贷款率:" in history
 
     async def test_task_failure_marks_failed_and_continues(self, tmp_home):
         """单任务失败 → failed 状态 + 错误事件,序列继续下一条。"""
@@ -652,6 +703,82 @@ class TestTaskHelpers:
             "row_count": 0, "verdict": None, "error": "boom", "matched_tables": [],
         })
         assert "boom" in text
+
+    def test_parse_task_refs(self):
+        """结果通道的寻址语法:task[N] / 任务N / 第N步(含中文数字);越界丢弃。"""
+        from trove.agent.tasks import parse_task_refs
+
+        assert parse_task_refs("在 task[2] 的基础上拆分", 5) == [2]
+        assert parse_task_refs("对比 task[1] 与 task[3]", 5) == [1, 3]
+        assert parse_task_refs("用第二步的结果", 5) == [2]
+        assert parse_task_refs("第十二步", 20) == [12]
+        assert parse_task_refs("第 4 条", 5) == [4]
+        assert parse_task_refs("任务 3 的结论", 5) == [3]
+        # 无引用 / 越界 / 空标题:宁可不物化,不错物化
+        assert parse_task_refs("看看各地区情况", 5) == []
+        assert parse_task_refs("第 9 步", 5) == []
+        assert parse_task_refs("", 5) == []
+
+    def test_resolve_refs_defaults_to_latest_completed(self):
+        """默认锚点=最近一个已完成步骤(保留既有下钻行为);显式引用只认已完成的。"""
+        from trove.agent.tasks import resolve_refs
+
+        pairs = [(1, {"title": "A"}), (3, {"title": "C"})]
+        assert resolve_refs("随便问问", pairs, 4) == [3]
+        assert resolve_refs("在 task[1] 的基础上继续", pairs, 4) == [1, 3]
+        # 引用一个还没有结果包的步骤(第 2 步仍在跑)→ 不物化
+        assert resolve_refs("接着第 2 步", pairs, 4) == [3]
+        assert resolve_refs("", [], 2) == []
+
+    def test_format_previous_results_indexes_all_materializes_refs(self):
+        """索引覆盖每一步(可寻址),物化只发生在被引用的步骤上(取值)。"""
+        from trove.agent.tasks import format_previous_results
+
+        long_sql = "SELECT " + ", ".join(f"col_{i}" for i in range(60)) + " FROM t;"
+        p1 = {"title": "早期步骤", "sql": long_sql, "columns": ["a"],
+              "rows_preview": [["x"]], "row_count": 1, "verdict": "OK"}
+        p2 = {"title": "最近步骤", "sql": "SELECT 1;", "columns": ["b"],
+              "rows_preview": [["y"]], "row_count": 2, "verdict": "OK"}
+        pairs = [(1, p1), (2, p2)]
+
+        text = format_previous_results(pairs, refs=[2])
+        # 索引:每一步都在(即使不被物化)
+        assert "- task[1] 早期步骤 · 1 行 · OK" in text
+        assert "- task[2] 最近步骤 · 2 行 · OK" in text
+        # 只有被引用的步骤被物化;未被引用者的长 SQL 不进 prompt
+        assert "task[2] 最近步骤:" in text
+        assert "task[1] 早期步骤:" not in text
+        assert long_sql[:200] not in text
+
+        # 物化时换用 REF_* 预算:长 SQL 不再被 400 字符截断
+        text = format_previous_results(pairs, refs=[1, 2])
+        assert long_sql in text
+        assert "task[1] 早期步骤:" in text
+
+        assert format_previous_results([], refs=[]) == ""
+
+    def test_format_result_packet_full_budget(self):
+        """full=True:行数上限 30(常规 5)、SQL 上限 2000(常规 400)、带列名。"""
+        from trove.agent.tasks import (
+            PREVIEW_CAP, REF_ROWS_CAP, REF_SQL_CAP, SQL_CAP, format_result_packet,
+        )
+
+        sql = "SELECT " + "a" * (SQL_CAP + 50) + " FROM t;"
+        packet = {
+            "title": "T", "sql": sql, "columns": ["c1", "c2"],
+            "rows_preview": [[i, i] for i in range(REF_ROWS_CAP + 10)],
+            "row_count": 99, "verdict": "OK",
+        }
+        normal = format_result_packet(packet)
+        assert "…" in normal.split("- SQL: ")[1].split("\n")[0]  # 常规截断
+        assert normal.count(" ; ") + 1 == PREVIEW_CAP
+        assert "- 列:" not in normal
+
+        full = format_result_packet(packet, ref=2, full=True)
+        assert full.startswith("task[2] T:")
+        assert sql[:REF_SQL_CAP] in full and "…" not in full.split("- SQL: ")[1].split("\n")[0]
+        assert full.count(" ; ") + 1 == REF_ROWS_CAP
+        assert "- 列: c1 | c2" in full
 
     def test_looks_task_followup(self):
         from trove.agent.tasks import looks_task_followup

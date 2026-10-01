@@ -17,13 +17,6 @@
 
 <br>
 
-<img src="docs/assets/hero-chat.png" width="880" alt="Trove's chat UI: a plain-language question answered with a summary, a bar chart, and the 12-step analysis trail on the right">
-
-<sub><i>One question, end to end — verified SQL, a chart, and every step of the reasoning, visible.</i></sub>
-
-<br>
-<br>
-
 📖 **[Documentation](https://nivane.github.io/trove/)** — 25 pages, every mechanism anchored to the source line · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
@@ -130,12 +123,6 @@ Everything a human cares about — which definitions count, which joins are lega
 | Self-corrects after execution (reflection + regression) | ❌ | ❌ | ❌ | ✅ rollback & retry with version checks |
 | Conclusion → threshold judgement (zero LLM) | ❌ | ❌ | partial (alerts can't reach the semantic layer's baselines) | ✅ declared in model vocabulary + evidence kept |
 | Learns per datasource; auto content gated by humans | ❌ | partial | partial | ✅ KB + memory, `pending` until confirmed |
-
-<p align="center">
-<img src="docs/assets/hero-semantic.png" width="880" alt="Trove's semantic-layer console: 44 metrics, 8 datasets and 56 fields declared, with 10 awaiting approval">
-</p>
-
-<sub><i>The governance surface — what the model declares, and what still awaits human confirmation.</i></sub>
 
 ## Quick Start
 
