@@ -280,11 +280,46 @@ flowchart LR
     <h2 id="evidence">证据：一次触发留下了什么</h2>
 
     <p>
-      触发的判定会带一份证据进运行记录，内容包括：规则的<strong>字节摘要</strong>（这一版规则判的）、
-      当期与基期的具体区间、编译出来的两条 SQL、时间字段名、结果行（截断到 200 行并显式带
-      <code>truncated</code> 标记），以及逐组的 <code>current</code> / <code>baseline</code> /
-      <code>delta</code> / <code>contribution</code> / <code>triggered</code> / <code>matched</code>。
+      触发的判定会带一份证据进运行记录，逐项都落到具体字段上：
     </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>字段</th><th>具体是什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>规则</strong></td>
+            <td>id、名字、severity、负责角色，以及 <code>rule_digest</code>——<code>decisions.yml</code> 的<strong>字节摘要</strong>，说明这一版判定出自哪一版规则</td>
+          </tr>
+          <tr>
+            <td><strong>区间</strong></td>
+            <td><code>periods.current</code> / <code>periods.baseline</code> 两个具体区间，加基期类型；<code>times</code> 里另有锚点日期与求值时刻</td>
+          </tr>
+          <tr>
+            <td><strong>SQL</strong></td>
+            <td>当期与基期各自的编译产物，连结果列名与原样行一起</td>
+          </tr>
+          <tr>
+            <td><strong>时间</strong></td>
+            <td>窗口是按哪个字段切的（<code>time_field</code>）——换一个字段就是另一个口径</td>
+          </tr>
+          <tr>
+            <td><strong>结果</strong></td>
+            <td>截断到 200 行，并<strong>显式带 <code>truncated</code> 标记</strong>与完整行数，而不是悄悄丢行</td>
+          </tr>
+          <tr>
+            <td><strong>每组</strong></td>
+            <td>一行：<code>dim</code>、<code>current</code>、<code>baseline</code>、<code>delta</code>、<code>delta_pct</code>、<code>contribution</code>、<code>triggered</code>，以及 <code>matched</code>——<strong>只有真的触发的组才列命中的条件</strong>，否则半匹配的组看起来也像发了</td>
+          </tr>
+          <tr>
+            <td><strong>来源</strong></td>
+            <td>数据源名，以及语义模型的版本（<code>model_version</code>）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L47">service.py:47 <span class="ref-line">MAX_EVIDENCE_ROWS</span></a>

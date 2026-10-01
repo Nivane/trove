@@ -199,12 +199,14 @@ Drivers install on demand: `uv sync --extra postgres|mysql|doris|clickhouse|duck
 
 For a data agent to ship, the security boundary cannot be a request written in a prompt. Everything below is **code, not model behaviour** (the full list is in [security boundaries](https://nivane.github.io/trove/ops/security.html)):
 
-- **Read-only statement firewall** — SQL is parsed to an AST and judged there: non-query statements, any DML/DDL, `SELECT INTO OUTFILE`, dangerous functions and metadata tables are refused — no keyword blacklist.
-- **Table allowlist** — enforced **in the execution path itself** (`execute` and `explain` alike), so SQL arriving via MCP, the semantic query API or any bypass is bound by the same gate.
-- **Execution-cost guard** — EXPLAIN estimates the heaviest operator's row count first: over the soft limit (default 50M) the query goes back to generation to add `LIMIT`; over the hard limit it is refused outright, without burning an LLM regeneration round.
-- **Field-level redaction** — declared per field as `partial` / `hash` / `null`, rewritten as the result leaves the database and before any model-facing node. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the query is refused rather than let through unredacted.
-- **External-data isolation** — content from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt; human-confirmed KB content is exempt by design.
-- **Rate limits, quotas and audit** — per-user token bucket plus a daily quota, over the limit returns 429; every execution records question / SQL / verdict / row count / duration / error.
+| Boundary | What it is in code |
+| --- | --- |
+| **Read-only statement firewall** | SQL is parsed to an AST and judged there: non-query statements, any DML/DDL, `SELECT INTO OUTFILE`, dangerous functions and metadata tables are refused — no keyword blacklist |
+| **Table allowlist** | Enforced **in the execution path itself** (`execute` and `explain` alike), so SQL arriving via MCP, the semantic query API or any bypass is bound by the same gate |
+| **Execution-cost guard** | EXPLAIN estimates the heaviest operator's row count first: over the soft limit (default 50M) the query goes back to generation to add `LIMIT`; over the hard limit it is refused outright, without burning an LLM regeneration round |
+| **Field-level redaction** | Declared per field as `partial` / `hash` / `null`, rewritten as the result leaves the database and before any model-facing node. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the query is refused rather than let through unredacted |
+| **External-data isolation** | Content from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt; human-confirmed KB content is exempt by design |
+| **Rate limits, quotas and audit** | Per-user token bucket plus a daily quota, over the limit returns 429; every execution records question / SQL / verdict / row count / duration / error |
 
 **The application layer is not a security boundary** — always connect Trove to a dedicated read-only role:
 

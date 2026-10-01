@@ -229,13 +229,30 @@ flowchart LR
 
     <p>
       回归门比的是「两个时刻」，所以仓库里钉着一份<strong>可复现的基线</strong>
-      （<code>eval/baseline/</code>）：<code>questions.jsonl</code> 是固定题集（每行带
-      <code>qid</code>、<code>evidence</code>、<code>gold_sql</code>），
-      <code>results.jsonl</code> 是这批题的历史判定条目，<code>scorecard.json</code>
-      是从后者算出并钉住的指标。<code>conf/agent.yml</code> 的
-      <code>eval.baseline_path</code> 默认就指向 <code>eval/baseline/results.jsonl</code>，
-      所以 <code>--baseline</code> 不填也有锚点。
+      （<code>eval/baseline/</code>），三个文件各占一环：
     </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>文件</th><th>是什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">questions.jsonl</td>
+            <td>固定题集，每行带 <code>qid</code> / <code>evidence</code> / <code>gold_sql</code></td>
+          </tr>
+          <tr>
+            <td class="mono">results.jsonl</td>
+            <td>这批题的历史判定条目——<strong>默认的基线锚点</strong>（<code>conf/agent.yml</code> 的 <code>eval.baseline_path</code> 就指向它，所以 <code>--baseline</code> 不填也有锚点）</td>
+          </tr>
+          <tr>
+            <td class="mono">scorecard.json</td>
+            <td>从 <code>results.jsonl</code> 算出并钉住的指标</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <p>
       <code>eval_baseline.py check --require-full</code> 校验这份基线还成不成立：

@@ -340,11 +340,115 @@ flowchart LR
       不是一句愿望。
     </p>
 
+    <h4>加性微调：只在档内加减</h4>
+
     <p>
-      微调是几条<strong>明写理由</strong>的加减：每个软 MISS 缺口 −0.05、agent 自检过规则链 +0.10、
-      主候选降级到单发生成 −0.10、检索证据够强 +0.05。交付结果还有一层乘性折损——
-      多候选不完全一致时按票王得票率、重试预算耗尽后强行交付、查询返回 0 行、
-      执行期降级、被硬限拦下——所以<strong>结果不会比它的 SQL 更可信</strong>，两个数天然自洽。
+      微调是几条<strong>明写理由</strong>的加减，且只在<strong>本档的分数带内</strong>生效——
+      越档会让分数与档位打架。每条都带一个机器可读的 <code>name</code>、一个 <code>effect</code>，
+      以及一句要原样渲染给用户的中文理由：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>理由（渲染给用户的文案）</th><th>增量</th><th>什么时候发生</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>语义编译有 N 个组件未解析，由模型补齐</td>
+            <td class="mono">−0.05</td>
+            <td>每有一个软 MISS 缺口就扣一次，几个缺口累加几次</td>
+          </tr>
+          <tr>
+            <td>agent 自检 N 次通过规则链</td>
+            <td class="mono">+0.10</td>
+            <td><code>check_result</code> 全部通过</td>
+          </tr>
+          <tr>
+            <td>本轮主候选的 agent 循环未走完，降级到单发生成</td>
+            <td class="mono">−0.10</td>
+            <td>且 select 没有采纳某个备选候选——备选生成失败时返回空，没走过这条路，不该替它挨罚</td>
+          </tr>
+          <tr>
+            <td>检索到强相关的参考示例</td>
+            <td class="mono">+0.05</td>
+            <td>检索融合分 ≥ 3.4（约当相似度 0.8）；拿不到分不算坏消息，不扣</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4>乘性折损：交付结果再打一次折</h4>
+
+    <p>
+      交付出去的是<strong>结果</strong>而不是 SQL，所以结果分数在 SQL 分数之上再乘一层折损。
+      它<strong>只记异常项</strong>——正常交付一条不扣：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>理由</th><th>因子</th><th>什么时候发生</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>多候选结果不完全一致（票王得票率 N%）</td>
+            <td class="mono">× 得票率</td>
+            <td>select 跑过且票王没拿满票；select 没跑则<strong>不扣</strong></td>
+          </tr>
+          <tr>
+            <td>重试预算耗尽后强行交付</td>
+            <td class="mono">× 0.5</td>
+            <td>状态被置了强行交付位</td>
+          </tr>
+          <tr>
+            <td>结果未通过确定性规则链</td>
+            <td class="mono">× 0.5</td>
+            <td>跑了规则链且没过——<strong>没跑与没过是两件事</strong>，只有后者该罚</td>
+          </tr>
+          <tr>
+            <td>查询返回 0 行</td>
+            <td class="mono">× 0.7</td>
+            <td>裁决为 <code>EMPTY</code></td>
+          </tr>
+          <tr>
+            <td>执行超时被中止</td>
+            <td class="mono">× 0.7</td>
+            <td>执行期报告了被主动终止</td>
+          </tr>
+          <tr>
+            <td>修正已无进展，提前止损</td>
+            <td class="mono">× 0.8</td>
+            <td>止损计数非零</td>
+          </tr>
+          <tr>
+            <td>执行期降级，结果被加了行数上限或收窄</td>
+            <td class="mono">× 0.85</td>
+            <td>与正文的降级提示<strong>走同一个判据</strong>，不另立一套</td>
+          </tr>
+          <tr>
+            <td>经过 N 轮修正才交付</td>
+            <td class="mono">× 0.9<sup>N</sup></td>
+            <td>每轮修正各乘一次</td>
+          </tr>
+          <tr>
+            <td>修正属纯语义重试，比机械错误更可疑</td>
+            <td class="mono">× 0.9</td>
+            <td>在轮次折扣<strong>之上</strong>追加的折扣；能活到交付点的最多一次</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      连乘有下限 <code>0.25</code>：没有它，修正十轮的连乘会把分数压到 <code>0</code>，
+      而 0 是留给「没有可披露的答案」的码位。所以<strong>结果不会比它的 SQL 更可信</strong>，
+      两个数天然自洽。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/confidence.py#L106">confidence.py:106 <span class="ref-line">_sql_adjustments</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/confidence.py#L229">confidence.py:229 <span class="ref-line">_result_discounts</span></a>
     </p>
 
     <div class="callout warn">

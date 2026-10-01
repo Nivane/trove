@@ -206,19 +206,49 @@ flowchart TB
     </p>
 
     <p>
-      每条断言给三值判定之一：<strong>通过 / 违反 / 判不了</strong>。第三值单独占一格，不塌向任何一边——
-      塌成「通过」是没查却报平安，塌成「违反」是查不了却拦下正确结果，两种都比不检查更坏。
-      判不了还带一个机器可读的原因码（缺列、没声明 <code>columns</code>、结果超出展示窗口、
-      结果本来就为空、列里没有数值、配置写错……）：<strong>「配了却判不了」的占比是这套机制唯一的质量信号</strong>，
-      一句话盖住所有原因就再也数不出分布。
+      每条断言给三值判定之一，落点各不相同：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>判定</th><th>什么情况</th><th>落点</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>通过</strong></td>
+            <td>断言为真</td>
+            <td>交付</td>
+          </tr>
+          <tr>
+            <td><strong>违反 · <code>blocking</code></strong></td>
+            <td>明确违反，且声明为拦</td>
+            <td>判词带进 <code>error_feedback</code> 回滚重算，同时作为一条拦截进 <code>validation_hits</code>；只有预算耗尽时才升级成交付给用户的错误</td>
+          </tr>
+          <tr>
+            <td><strong>违反 · <code>advisory</code></strong></td>
+            <td>明确违反，但声明只报告</td>
+            <td>不拦，渲染成回答顶上的一行「⚠️ 口径提示」</td>
+          </tr>
+          <tr>
+            <td><strong>判不了</strong></td>
+            <td>缺列、没声明 <code>columns</code>、结果超出展示窗口、结果本来就为空、列里没有数值、配置写错……</td>
+            <td>只进 <code>validator_hits</code> 供质检统计，<strong>永远不进用户屏幕</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      第三值<strong>单独占一格，不塌向任何一边</strong>——塌成「通过」是没查却报平安，
+      塌成「违反」是查不了却拦下正确结果，两种都比不检查更坏。它带一个机器可读的原因码，
+      因为<strong>「配了却判不了」的占比是这套机制唯一的质量信号</strong>：一句话盖住所有原因，
+      就再也数不出分布。
     </p>
 
     <p>
-      违反之后怎么处置由 <code>severity</code> 定：<code>blocking</code> 把判词带进
-      <code>error_feedback</code> 回滚重算（判词同时作为一条拦截进 <code>validation_hits</code>），
-      只有预算耗尽时才升级成交付给用户的错误；<code>advisory</code> 不拦，只渲染成回答顶上的一行
-      「⚠️ 口径提示」。<strong>判不了永远不进附注</strong>——它进 <code>validator_hits</code> 供质检统计，
-      但不进用户屏幕：一个高频出现、又多半只说明管理员该改配置的提示，两周内就会把真正有意义的告警一起淹掉。
+      判不了不进附注的理由是噪声：一个高频出现、又多半只说明管理员该改配置的提示，
+      两周内就会把真正有意义的告警一起淹掉。
     </p>
 
     <div class="callout note">
