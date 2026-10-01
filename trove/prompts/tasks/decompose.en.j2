@@ -7,6 +7,13 @@ Multi-task criteria (any of):
 
 Counter-examples (not multi-task): a single question with a long description, one time range, or only one analysis dimension.
 
+Building on an earlier step (only when explicitly asked): if a sub-question cannot
+be answered without an earlier step's result (the user says "based on that",
+"using the above", "compare the first two", etc.), write that step as task[N]
+(N being the sub-question's position above) — the earlier step's result packet is
+handed to it automatically. Use this only for sub-questions the user explicitly
+chained; every other sub-question must still be complete and independently queryable.
+
 Output format: output ONLY a JSON object, no other text.
 - Multi-task: {"tasks": ["sub-question 1 (a complete, independently queryable question)", "sub-question 2", ...]}
 - Single-task: {"tasks": []}

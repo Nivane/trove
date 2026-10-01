@@ -35,9 +35,10 @@ import uuid
 from datetime import datetime, timezone
 
 from trove.agent.tasks import (
+    PACKET_ROWS,
     ROWS_PREVIEW,
     cap_cell,
-    format_result_packet,
+    format_previous_results,
     is_approve_all,
     is_reject,
     looks_likely_multitask,
@@ -45,6 +46,7 @@ from trove.agent.tasks import (
     looks_task_followup,
     parse_action_json,
     parse_task_json,
+    resolve_refs,
 )
 
 from trove.core.i18n import L
@@ -1800,12 +1802,33 @@ class SessionManager:
         ]
 
     @staticmethod
-    def _tasks_block(tasks: list[Task]) -> str:
-        """[tasks] 清单块 + [previous results] 结果包,追加到 history,
+    def _completed_pairs(tasks: list[Task]) -> list[tuple[int, dict]]:
+        """[(1-based 位置, ContextPacket)] —— 已完成且落库了结果包的步骤。
+
+        位置即结果通道的句柄编号(task[N],见 ``tasks.format_previous_results``)。
+        """
+        return [
+            (t.position + 1, t.metadata["context"])
+            for t in sorted(tasks, key=lambda t: t.position)
+            if t.status in ("done", "failed") and (t.metadata or {}).get("context")
+        ]
+
+    @staticmethod
+    def _previous_packet(tasks: list[Task]) -> dict | None:
+        """最近一个已完成任务的 ContextPacket(位置最大者);无则 None。"""
+        pairs = SessionManager._completed_pairs(tasks)
+        return pairs[-1][1] if pairs else None
+
+    @staticmethod
+    def _tasks_block(tasks: list[Task], current: Task | None = None) -> str:
+        """[tasks] 清单块 + [previous results] 结果通道,追加到 history,
         注入 gen/query_sketch/意图改写 prompt。
 
-        [previous results] 只带最近一个已完成任务的 ContextPacket
-        (done/failed 且落库了 context),供下钻/续问直接引用上一步结论。
+        [previous results] 索引**所有**已完成步骤(task[N] 句柄可寻址),
+        并按结果通道预算物化其中被引用的步骤:默认锚点是最近一个已完成
+        步骤(续问/下钻直接引用上一步结论),``current.title`` 里显式写出的
+        ``task[2]`` / 第 2 步 / 第二步 会额外把那一步的结果包取出来。
+        寻址纯代码解析,零 LLM;引用不命中只是少物化一步,不会错物化。
         """
         marks = {
             "pending": "[pending]", "in_progress": "[in_progress]",
@@ -1815,26 +1838,22 @@ class SessionManager:
         for t in tasks:
             lines.append(f"{t.position + 1}. {marks.get(t.status, '[' + t.status + ']')} {t.title}")
         block = "\n".join(lines)
-        packet = SessionManager._previous_packet(tasks)
-        if packet is not None:
-            block += "\n\n" + format_result_packet(packet)
-        return block
+        pairs = SessionManager._completed_pairs(tasks)
+        if not pairs:
+            return block
+        refs = resolve_refs(current.title if current else "", pairs, len(tasks))
+        results = format_previous_results(pairs, refs=refs)
+        return f"{block}\n\n{results}" if results else block
 
-    @staticmethod
-    def _previous_packet(tasks: list[Task]) -> dict | None:
-        """最近一个已完成任务的 ContextPacket(位置最大者);无则 None。"""
-        completed = [
-            t for t in tasks
-            if t.status in ("done", "failed") and (t.metadata or {}).get("context")
-        ]
-        if not completed:
-            return None
-        return max(completed, key=lambda t: t.position).metadata["context"]
+    async def _task_history(
+        self, session: Session, tasks: list[Task], task: Task | None = None,
+    ) -> str:
+        """会话历史 + [tasks] 块(子任务与跨轮推进共用的 prompt 上下文)。
 
-    async def _task_history(self, session: Session, tasks: list[Task]) -> str:
-        """会话历史 + [tasks] 块(子任务与跨轮推进共用的 prompt 上下文)。"""
+        ``task`` 是即将执行的那一步:它的标题决定结果通道物化哪几步。
+        """
         history = self._conversation_history(session)
-        block = self._tasks_block(tasks)
+        block = self._tasks_block(tasks, current=task)
         return f"{history}\n\n{block}" if history and block else (history or block)
 
     async def _interpret_followup(self, session: Session, question: str) -> dict:
@@ -1939,7 +1958,7 @@ class SessionManager:
 
         remaining = sum(1 for t in tasks if t.status == "pending")
         total = len(tasks)
-        history = await self._task_history(session, tasks)
+        history = await self._task_history(session, tasks, task=task)
         run_id = str(uuid.uuid4())
         prev_packet = self._previous_packet(tasks)
         state = WorkflowState(
@@ -1983,12 +2002,17 @@ class SessionManager:
             "verdict": summary.get("verdict"),
             "error": summary.get("error"),
             # ContextPacket:后续子任务/跨轮通过 [previous results] 与
-            # matched_tables 锚点复用本步结论
+            # matched_tables 锚点复用本步结论。它是步骤间的**数据通道**,
+            # 所以留的行比事件载荷多(PACKET_ROWS vs ROWS_PREVIEW)——
+            # 后续步骤引用 task[N] 时要有值可取,而不只是有话说。
             "context": {
                 "title": task.title,
                 "sql": summary.get("sql"),
                 "columns": list(summary.get("columns") or []),
-                "rows_preview": list(summary.get("rows_preview") or []),
+                "rows_preview": [
+                    [cap_cell(v) for v in row]
+                    for row in (summary.get("rows") or summary.get("rows_preview") or [])[:PACKET_ROWS]
+                ],
                 "row_count": summary.get("row_count"),
                 "verdict": summary.get("verdict"),
                 "error": summary.get("error"),
@@ -2141,7 +2165,12 @@ class SessionManager:
                 "row_count": ctx.get("row_count"),
                 "verdict": ctx.get("verdict"),
                 "error": ctx.get("error"),
-                "rows_preview": list(ctx.get("rows_preview") or []),
+                # 结果包按通道预算留了 50 行;综合 prompt 是另一回事——
+                # 它要的是各步的结论,不是各步的取值,按事件载荷的预算收窄。
+                "rows_preview": [
+                    [cap_cell(v) for v in row]
+                    for row in (ctx.get("rows_preview") or [])[:ROWS_PREVIEW]
+                ],
             })
         if not any(r["status"] == "done" for r in rows):
             return None
