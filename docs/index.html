@@ -95,33 +95,34 @@ docker compose up --build</code></pre>
           <pre class="mermaid">
 flowchart TB
     subgraph entry["入口"]
-        direction LR
-        UI["Web UI"] --&gt; SRV["HTTP 服务"]
+        UI["Web UI"]
+        SRV["HTTP 服务"]
         CLI["CLI / REPL"]
         MCP["MCP"]
     end
 
-    WF["&lt;b&gt;编排 · trove/workflow&lt;/b&gt;&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]
+    WF["编排 · trove/workflow&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]
 
     subgraph caps["能力 · trove/services"]
-        direction LR
         SEM["语义模型"]
         KB["知识库 + 混合检索"]
         MEM["记忆 · 判定规则 · Skills"]
     end
 
     LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
-    DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB · SQLite"]
-    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite"]
+    DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB&lt;br/&gt;SQLite"]
+    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite&lt;br/&gt;会话 · 任务 · 检查点&lt;br/&gt;查询日志 · 谱系"]
 
+    UI --&gt; WF
     SRV --&gt; WF
     CLI --&gt; WF
     MCP --&gt; WF
-    WF --&gt; caps
+    WF --&gt; SEM
+    WF --&gt; KB
+    WF --&gt; MEM
+    WF -.-&gt; LLM
     KB --&gt; DS
     MEM --&gt; STATE
-    WF -.-&gt; LLM
-    caps -.-&gt; LLM
           </pre>
         </div>
         <figcaption>
