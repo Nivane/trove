@@ -63,6 +63,25 @@
       </table>
     </div>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    RUN["真实评测跑一次<br/>scripts/eval_bird.py<br/>连真库 + 真模型（花钱）"] --> RES["results.jsonl<br/>逐题判定 + run_id"]
+    RES --> RP["离线回放<br/>trove/eval/replay.py<br/>零模型调用"]
+    RP --> REP["replay.jsonl<br/>结构化判定 + gold 匹配"]
+    RES --> GATE["回归门<br/>trove/eval/gate.py<br/>零 LLM，纯函数"]
+    REP --> GATE
+    SC["检索 scorecard<br/>tune_rrf / eval_*_retrieval"] --> GATE
+    GATE --> VERDICT["按方向 + 容差判定<br/>有回归 → 退出码 1 拦下"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 只有最左边那一步花钱。录下来之后，回放与回归门都是零成本的纯文件操作——绝大多数改动不必再连模型。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       设计意图是让<strong>绝大多数改动不需要走到第三层</strong>。
       第一、二层是把「已经跑过的结果」变成可反复对账的数据。
@@ -407,6 +426,8 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

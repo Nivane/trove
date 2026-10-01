@@ -51,14 +51,52 @@
     </p>
 
     <p>
-      主干大致是这条线：
+      主干、两条岔路、两个环——一张图看完（跟随 <code>_build_reflection</code> 的真实
+      连边；框里横排的名字表示连续经过的节点）：
     </p>
 
-    <pre><code>START → route_intent → parse_date → schema_linking
-      → [语义门禁] → fast_match → query_sketch
-      → gen_retrieve → gen_assemble → gen_generate → semantics → hitl
-      → execute_sql → select → validate → masking → reflect
-      → [分析错误 → 回滚重试] 或 → insights → chart → conclusion → output</code></pre>
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TD
+    START(["提问"]) --> RI["route_intent 意图路由"]
+
+    RI -- "问数 / 归因" --> PD["parse_date → schema_linking"]
+    RI -- "元数据" --> AM["answer_metadata ⇄ metadata_check"]
+    RI -- "闲聊 / 纠错 / 写操作 / 确认" --> AN["各自的终态答案节点"]
+
+    PD --> GATE{"语义门禁"}
+    GATE -- "无模型 / 硬 MISS" --> RF["refuse：拒绝 + 起草扩展草案"]
+    GATE -- "可答" --> FM{"fast_match 模板快径"}
+
+    RF -- "当轮交付引导" --> OUT(["output 交付"])
+    RF -. "下一轮确认草稿后重答" .-> PD
+
+    FM -- "命中：跳过生成链" --> EX["execute_sql"]
+    FM -- "未命中" --> QS["query_sketch 出计划"]
+    QS --> GEN["gen_retrieve → gen_assemble → gen_generate"]
+    GEN --> HITL["semantics → hitl"]
+    HITL -- "通过" --> EX
+    HITL -- "否决" --> OUT
+
+    EX --> SEL["select → validate 规则链"]
+    SEL -- "通过" --> MK["masking → reflect"]
+    SEL -- "失败" --> AE["analyze_error 失败分析"]
+    MK -- "失败" --> AE
+    MK -- "通过" --> INS["insights → chart → conclusion"]
+    INS --> OUT
+
+    AE -- "回滚重试" --> GEN
+    AE -- "到顶 / 修不动" --> OUT
+    AN --> OUT
+    AM --> OUT
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 默认图（reflection）的形状：一条主干、两条跳过生成的岔路（元数据自校验环、模板快径）、两个环（生成回滚、反思回滚）。归因类问题在 insights 前多经过一个条件节点 <code>attribution</code>。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
 
     <p>
       生成段在顶层就是<strong>三个节点</strong>：<code>gen_retrieve</code> →
@@ -272,6 +310,28 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1330">graphs.py:1330 <span class="ref-line">_route_after_reflect</span></a>
     </p>
 
+    <p>
+      回滚不是「打回上一步」一种：<code>analyze_error</code> 会从下面这几个落点里点名一个，
+      每一档对应一类不同的错法：
+    </p>
+
+    <figure class="diagram" data-diagram="pending" data-size="compact">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    AE["analyze_error 失败分析"] -- "重写 SQL" --> GR["gen_retrieve"]
+    AE -- "重做计划" --> QS["query_sketch"]
+    AE -- "重新认表" --> SL["schema_linking"]
+    AE -- "其实是元数据题" --> AM["answer_metadata"]
+    AE -- "到顶 / 回不动" --> OUT["output 交付已知 + 说明不确定性"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 2 · 回滚落点。（<code>gen_sql</code> 是“重写 SQL”这一档在判定器里的名字，实际路由回 <code>gen_retrieve</code>。）</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。</span>
+      </figcaption>
+    </figure>
+
     <div class="callout note">
       <span class="callout-tag">为什么「反馈」比「重试次数」重要</span>
       <div>
@@ -357,6 +417,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

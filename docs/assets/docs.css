@@ -469,6 +469,10 @@ figcaption {
    与其把字缩到读不了，不如让卡片横向滚动（overflow-x 已开）。天然宽约
    740px，所以宽视窗下这条不起作用，图就是原尺寸。 */
 .diagram-canvas svg { display: block; margin: 0 auto; min-width: 640px; }
+/* 天然就窄的小图（节点少）标 data-size="compact" 放行原尺寸：下限的本意
+   是「不许缩小」，对窄图继续生效反而变成放大。mermaid 的 useMaxWidth 已
+   给 SVG 写好 max-width，这里清掉 min-width 即可。 */
+figure.diagram[data-size="compact"] .diagram-canvas svg { min-width: 0; }
 /* 说明随形态切换：渲染成功时不该再解释「这是源码」，反之亦然 */
 .diagram[data-diagram="rendered"] .cap-source { display: none; }
 .diagram:not([data-diagram="rendered"]) .cap-rendered { display: none; }

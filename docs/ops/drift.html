@@ -85,6 +85,24 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/drift/service.py#L176">service.py:176 <span class="ref-line">UnknownLevel</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    LIVE["活库 schema"] --> D1["L1 结构漂移<br/>表 / 列还在不在"]
+    LIVE --> D2["L2 引用漂移<br/>语义模型引用的表 / 字段还可达吗"]
+    EXT["外部声明<br/>治理流程 / 人的通知"] --> D4["L4 口径漂移<br/>业务算法改了，库里没有痕迹"]
+    D1 --> ENT["同一条漂移条目<br/>影响面快照 + 同一套处置流程"]
+    D2 --> ENT
+    D4 --> ENT
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 四级里只有 L1、L2 是检测出来的，L4 是「承接」进来的声明——所以它们最终落在同一条条目上，走同一套影响面与处置流程。L3 尚未实现，请求它会被明确报错，而不是返回一份空报告。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <div class="callout note">
       <span class="callout-tag">为什么把 L4 明确写成「不检测」</span>
       <div>
@@ -325,6 +343,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

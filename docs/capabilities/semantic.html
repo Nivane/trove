@@ -120,6 +120,29 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1036">compiler.py:1036 <span class="ref-line">SemanticCompiler</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    P["查询计划（query_sketch 产出）"] --> C["SemanticCompiler.compile_detailed"]
+    M[("semantics.yml")] --> C
+    C -- "全部解析" --> OK["成功：权威 SQL<br/>生成通道基本不参与"]
+    C -- "只缺词表 / 取值 / 口径" --> PC["PartialCompile<br/>骨架 SQL + 交接契约 + 未解析清单"]
+    C -- "结构性问题" --> CM["CompileMiss<br/>携带 reason"]
+    OK --> RUN["执行"]
+    PC --> GEN["生成通道按契约补齐"]
+    GEN --> CHK{"执行前：骨架保真校验<br/>join 边 / WHERE / 分组宽度"}
+    CHK -- "保住了" --> RUN
+    CHK -- "丢了" --> RT["打回重生成"]
+    CM --> RF["refuse：拒绝 + 起草扩展草案"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 编译三态与去向。运行时的路由看的是<strong>产物类型</strong>（CompileMiss / PartialCompile），不是去追 <code>is_hard_miss</code> 的调用点。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       <code>PartialCompile</code> 是这套设计里最特别的一个产物。它同时携带三样东西：
       已经编译好的骨架 SQL、一份交给生成通道的<strong>交接契约</strong>、以及未解析组件的清单。
@@ -415,6 +438,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

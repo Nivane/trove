@@ -106,6 +106,27 @@
       </table>
     </div>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    Q["查询计划"] --> C{"语义编译器"}
+    C -- "全部命中" --> H["编译成功<br/>权威 SQL 直接执行"]
+    C -- "软 MISS：词表 / 取值 / 口径缺口" --> S["PartialCompile 骨架<br/>join / 过滤 / 分组被钉住"]
+    S --> G["生成通道补齐未解析部分"]
+    G --> V{"骨架保真校验"}
+    V -- "保住了" --> E["执行交付"]
+    V -- "丢了 join / 过滤" --> X["不放行，回滚重试"]
+    C -- "硬 MISS：结构性问题" --> R["refuse：拒绝 + 起草扩展草案"]
+    R -- "确认后重答" --> Q
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 分级逃生梯：三条出口对应三种命运，软 MISS 的骨架在执行前还有一道保真校验兜底。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1036">compiler.py:1036 <span class="ref-line">SemanticCompiler</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1380">compiler.py:1380 <span class="ref-line">compile_detailed</span></a>
@@ -399,6 +420,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

@@ -316,6 +316,30 @@
 
     <h2 id="debug">出问题时的排查顺序</h2>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TD
+    Q["出了什么问题？"] --> P1["服务整体不可用"]
+    Q --> P2["某个数据源问不出来"]
+    Q --> P3["答案内容不对"]
+    Q --> P4["想知道某一轮为什么这么答"]
+    Q --> P5["准确率整体下滑"]
+    P1 --> H1["/v1/health：顶层 status + 存储 ping"]
+    H1 --> H1a["unavailable 503：内部存储不可达"]
+    H1 --> H1b["degraded 200：存储正常，是某个源连不上"]
+    P2 --> H2["health 的数据源段 → check_drift.py"]
+    P3 --> H3["先查 query_sketch 的计划，而不是生成的 SQL"]
+    P4 --> H4["/trace 回放：当时的上下文与工具返回"]
+    P5 --> H5["回归门对比，而不是逐个案例猜"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 先分现象，再决定看哪——这张图是下面表格的分支版，健康检查的两条分支是唯一需要再分叉的地方。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <div class="table-wrap">
       <table>
         <thead>
@@ -388,6 +412,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

@@ -36,6 +36,26 @@
 
     <nav class="doc-toc" data-toc></nav>
 
+    <p>整条路径长这样，后面每一节拆开讲其中一步：</p>
+
+    <figure class="diagram" data-diagram="pending" data-size="compact">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TD
+    A["装驱动（extras 按需懒加载）"] --> B["注册：连接探测通过才落库"]
+    B --> C["/kb init 建模"]
+    C --> D["通读 YAML、校准 semantics.yml"]
+    D --> E["lint_kb.py 自检（可加活库探测）"]
+    E -- "发现问题" --> D
+    E -- "干净" --> F["提问 → /kb learn 沉淀"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 接入路径：注册是事务性的（探测失败不落库），建模后的校准与自检是可回头的两步。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。</span>
+      </figcaption>
+    </figure>
+
     <h2 id="prep">前置条件</h2>
 
     <div class="table-wrap">
@@ -335,6 +355,8 @@ uv run python scripts/lint_kb.py --db-id &lt;name&gt; --datasource &lt;url&gt;</
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>
