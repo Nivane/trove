@@ -70,6 +70,24 @@ uv run trove --datasource demo             # REPL</code></pre>
       <a href="../capabilities/retrieval.html">混合检索</a>的两路通道不需要跨系统。
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    B["浏览器"] -- ":8080" --> F["frontend 容器<br/>nginx：托管 SPA + 反代 /v1"]
+    F -- "/v1" --> K["backend 容器<br/>trove serve：纯 JSON API"]
+    K -- "业务查询" --> P[("postgres 容器<br/>业务表 + pgvector + pg_bm25")]
+    I["db-init 容器<br/>灌 demo 数据，跑完即退"] -- "幂等灌数（backend 等它成功后才启动）" --> P
+    K -. "生成 / 反思" .-> L["LLM 网关<br/>凭证从宿主机注入"]
+    V[".trove 卷<br/>KB · 记忆 · 任务定义"] -. "挂载进 backend 容器" .-> K
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · compose 拓扑：只有 frontend 与 postgres（调试时）对外暴露端口，业务查询与检索都落在同一个 postgres 实例里。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <div class="table-wrap">
       <table>
         <thead>
@@ -326,6 +344,8 @@ cd frontend &amp;&amp; npm run dev              # 前端 :5173，反代 /v1 → 
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

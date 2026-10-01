@@ -92,6 +92,26 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L338">rules.py:338 <span class="ref-line">compile_condition</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    R["decisions.yml 规则"] --> W["窗口解析<br/>「本月」→ 具体日期区间"]
+    W --> B["基期<br/>prev_period / yoy / literal / none"]
+    B --> C["语义编译<br/>subject → 权威 SQL（当期 + 基期）"]
+    C --> E["只读执行"]
+    E --> V["条件 AST 求值<br/>闭集语法，无 eval"]
+    V -- "违反" --> AL["alert + 证据<br/>SQL · 原始行 · 规则摘要"]
+    V -- "通过" --> OK["ok"]
+    V -- "判不了（Unknown）" --> ER["error 状态：响亮失败<br/>不进通知，但运行历史里显形"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 判定链：每一步都是纯函数或只读查询，所以结论可从证据重放；「判不了」是独立的一档，绝不被读成「今天没事」。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       全程没有模型参与。这不是为了省那点 token，而是因为<strong>一个能重放的判定才有资格被追问</strong>：
       「昨天为什么报红」应该能从输入重新算出来，而不是重跑一次对话看它今天心情如何。
@@ -378,6 +398,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

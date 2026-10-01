@@ -74,6 +74,27 @@
       </table>
     </div>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    TOOLS["① 工具治理<br/>构图时按角色裁剪出可见工具表"] -- "模型能看见的工具" --> LOOP
+    MEM["④ 记忆与技能<br/>情节与技能进上下文，写入过确认"] -- "上下文块 / 注入的 skill" --> LOOP
+    subgraph LOOP["② 生成循环（ReAct）"]
+        direction LR
+        M["模型"] -- "工具调用" --> T["工具执行<br/>语法校验 / 只读探测 / 规则链"]
+        T -- "观察结果" --> M
+        M -- "finish(SQL)" --> OUT["候选 SQL"]
+    end
+    LOOP -- "每轮落检查点" --> TRAVEL["③ 时间旅行与回滚<br/>版本比对判有没有进步，改坏了回上一轮"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 四层不是一条流水线：① 与 ④ 决定循环里看得见什么，② 是循环本身，③ 在每一轮外面记账、比对与回滚。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <div class="callout note">
       <span class="callout-tag">一条贯穿全站的原则</span>
       <div>
@@ -193,6 +214,21 @@
       但只在交付的确实是那条降级路径时：如果共识投票后来采纳了某个没经历过降级的候选，
       扣分就落不到它头上。
     </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    A["agentic 循环<br/>自验工具 + 自决收工"] -- "finish(SQL)，载荷过校验" --> OK["候选 SQL → 共识投票 → 执行"]
+    A -. "空手而归，或任一道预算触顶" .-> C["降级：经典子图<br/>生成 → 校验 → 重试"]
+    C -. "具名折损 -0.10（仅当这轮交付的确实是它）" .-> OK
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 2 · 降级是具名的：agentic 循环失灵时系统照常交付，只是这条路产出的答案在置信度上记 −0.10。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
 
     <h3>收工协议：为什么要有 <code>finish</code></h3>
 
@@ -393,6 +429,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

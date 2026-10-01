@@ -72,6 +72,27 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L413">registry.py:413 <span class="ref-line">_guard_read_only</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TB
+    SRC["SQL 从哪来：模型生成 · 编译产物 · job 载荷 · CLI · MCP"] --> G1["只读门 ① 关键词正则<br/>廉价筛查明显的写操作"]
+    G1 --> G2["只读门 ② AST 防火墙<br/>SQLGlot 整树扫 DML / DDL 节点"]
+    G2 --> G3["只读门 ③ 执行器统一门<br/>注册表执行入口再查一次"]
+    G3 --> AU["执行前授权门（execute_sql）<br/>数据源级恒拦；表级默认只警告"]
+    AU --> HITL["人在环（开启时）<br/>载荷认不出 → 默认拒绝"]
+    HITL --> EX["正式执行<br/>只读账号 · 30s 超时"]
+    EX --> MK["字段级脱敏<br/>partial / hash / null"]
+    MK --> OUT["交付：前端 / 模型上下文"]
+    SEM["POST /v1/semantic/query"] -. "不走 workflow：只有路由层数据源授权 + 只读门" .-> EX
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 一条 SQL 从生成到交付要过的每一道门——本页正是按这个顺序展开。虚线那条是声明式接口的独立路径：授权门与脱敏长在 workflow 节点里，它够不到。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <div class="callout note">
       <span class="callout-tag">为什么必须做到 AST 级</span>
       <div>
@@ -625,6 +646,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

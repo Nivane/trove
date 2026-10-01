@@ -36,6 +36,34 @@
 
     <nav class="doc-toc" data-toc></nav>
 
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>你想要</th><th>走哪条</th><th>大概要多久</th><th>直接跳</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>先看看它答得怎么样</td>
+            <td>内置 demo：零配置，连数据带知识库都随仓库提供</td>
+            <td>五分钟</td>
+            <td><a href="#five-min">跑通 demo</a></td>
+          </tr>
+          <tr>
+            <td>多人用、要管理台与界面</td>
+            <td>docker compose 完整平台（四个容器）</td>
+            <td>一次构建</td>
+            <td><a href="#platform">平台方式</a></td>
+          </tr>
+          <tr>
+            <td>问自己的数据</td>
+            <td>连接 → <code>/kb init</code> 建模 → 提问</td>
+            <td>取决于库的规模</td>
+            <td><a href="#your-data">接入你的数据库</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
     <h2 id="prereq">前置条件</h2>
 
     <div class="table-wrap">
@@ -148,6 +176,23 @@ docker compose down</code></pre>
 
     <p>三步，缺一不可。第二步是这个产品最容易被跳过、也最不能跳过的一步。</p>
 
+    <figure class="diagram" data-diagram="pending" data-size="compact">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    C["① 连接<br/>URL 或管理台注册"] --> M["② 建模<br/>/kb init 连实时 schema 起草"]
+    M --> Q["③ 提问"]
+    Q -- "答得出" --> A["回答（可 /kb learn 沉淀）"]
+    Q -- "模型没覆盖" --> R["拒绝 + 起草扩展草稿"]
+    R -- "确认草稿" --> Q
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 接入三步。被拒绝不是死路：草稿确认后回到提问，模型随使用补齐——这就是「接入即建模、建模即保障」。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。</span>
+      </figcaption>
+    </figure>
+
     <h3>① 连接</h3>
 
     <p>给一个数据库 URL 即可（本地方式是 <code>--datasource</code>，平台方式在管理台注册）：</p>
@@ -222,6 +267,8 @@ docker compose down</code></pre>
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

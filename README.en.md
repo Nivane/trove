@@ -79,6 +79,27 @@ flowchart TB
 
 Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
 
+### What happens to one question
+
+```mermaid
+flowchart TB
+    Q["Question"] --> ROUTE["route_intent — split by intent<br/>data questions take the main chain, metadata questions have their own self-checking path"]
+    ROUTE --> SL["schema_linking<br/>anchor the question to the semantic model"]
+    SL --> GATE{"Semantic gate"}
+    GATE -->|"structurally out of reach"| REFUSE["refuse<br/>+ draft a model extension; confirm and re-ask"]
+    GATE -->|"covered / partially covered"| FAST["fast_match deterministic shortcut<br/>an exact KB hit goes straight to SQL"]
+    FAST -->|"miss"| GEN["Plan → compile → generate<br/>agentic loop, multi-candidate voting when it helps"]
+    FAST -->|"hit"| EXEC
+    GEN --> EXEC["Before execution: authorization gate → HITL → read-only layers"]
+    EXEC --> VAL["Execute → rule chain → field-level masking"]
+    VAL --> RE{"reflect"}
+    RE -->|"not passing"| RB["analyze_error: version comparison<br/>roll back to the step that should retry"]
+    RB --> GEN
+    RE -->|"passing"| OUT["Conclusion · chart · insights · attribution · sources"]
+```
+
+The full 28-node version, every branch and the rollback ladder: [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
+
 ## Why Not Another NL2SQL
 
 Raw-LLM agents write SQL from raw DDL, and are confidently wrong about business meaning: a column named `A11` or a status code `A` means nothing without the glossary, and "average loan amount" is not derivable from a schema. RAG helps — a glossary, examples and lessons anchor generation — but RAG feeds the *ammo*, it does not draw the *boundary*: retrieval misses still get answered with plausible guesses.
@@ -88,6 +109,16 @@ Trove takes the semantic-layer route, with a twist that keeps answers flowing:
 - **Covered by the model → compile.** The plan is compiled against declared metrics, fields and relationships — the SQL is authoritative, not suggested.
 - **Missing only words, values or definitions → compile half.** Joins, filters and grouping are compiled authoritatively and the generation agent fills the gaps, with a skeleton-fidelity check guarding execution — so the answer still ships instead of stopping dead.
 - **Structurally out of reach → refuse.** An undeclared table, an ambiguous join, a fan-out — Trove refuses, and drafts a model extension for you to confirm in one step. The refusal *is* the modeling signal; coverage grows with use.
+
+```mermaid
+flowchart LR
+    PLAN["Query plan"] --> C["Semantic compiler"]
+    C -->|"everything declared"| OK["Authoritative SQL<br/>executed as-is"]
+    C -->|"soft MISS: missing words / values / definitions"| PC["PartialCompile skeleton<br/>joins, filters and grouping pinned; generation fills the gaps<br/>skeleton-fidelity check guards execution"]
+    C -->|"hard MISS: undeclared table / ambiguous join / fan-out"| MISS["Refuse<br/>+ one-click model extension, then re-ask"]
+```
+
+One compiler, three outcomes — and the **soft MISS in the middle is the common case**: it turns "the model doesn't cover everything" from a hard stop into an answer that ships anyway.
 
 Everything a human cares about — which definitions count, which joins are legal, what the enums mean, how much is too much — is declared once in YAML and enforced on every question, instead of re-guessed on every question.
 
@@ -109,7 +140,13 @@ Everything a human cares about — which definitions count, which joins are lega
 
 ## Quick Start
 
-Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
+Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/). Pick a path first:
+
+| What you want | Which path | Roughly | Start at |
+|---|---|---|---|
+| A look at what it does | The built-in BIRD financial demo | 5 minutes | the commands below |
+| A full deployment you can log into and administer | Docker Compose (frontend + backend + PostgreSQL) | 15 minutes | [Docker](#docker) |
+| Your own database | Register a URL → `/kb init` to model it → ask | half an hour up | [First steps with your own data](#first-steps-with-your-own-data) |
 
 ```bash
 uv sync                                          # install dependencies
@@ -179,6 +216,22 @@ For a data agent to ship, the security boundary cannot be a request written in a
 ```
 
 Also recommended: hide sensitive columns with column-level grants or views; set `statement_timeout` / `lock_timeout` (PG) or `MAX_EXECUTION_TIME` (MySQL); enforce row limits in the database. A semantic-model `row_filter` is a **declarative filter** — it keeps rows that should not be answered out of the SQL, and does not replace the database-side boundaries above.
+
+## When It Fails, It Fails Closed
+
+Every item above invites a follow-up: "and when it breaks?" The answer is uniform in the code — **an undecidable judgement falls to the safe side**, never to "let it through". These directions are chosen deliberately, not defaults:
+
+| Situation | On failure | Result |
+|---|---|---|
+| Auth components missing | Refuse to start | Better not to boot than to run silently insecure |
+| HITL payload unrecognisable | Deny by default | Not executed; handed to a human |
+| Salt or semantic model unreadable for masking | Refuse the query | Never delivered unredacted |
+| No authorization basis (`None`) | Deny everything | "Forgot to grant" never degrades into access |
+| Read-only self-check cannot complete | Recorded "unverified" | Never rendered as "safe" |
+| KB drift check cannot read | Non-zero exit code | "Could not check" is not "nothing wrong" |
+| Confidence undecidable | The most conservative band | Understating beats overstating |
+
+The same bias shows up elsewhere: health distinguishes `unavailable` from `degraded` (rather than one "down"), the rule chain stops at the first failure (rather than emitting a pile of vague hints), and a masking failure clears the result set (rather than leaving a stale one that could leak). The full list: [security boundaries](https://nivane.github.io/trove/ops/security.html) and [observability](https://nivane.github.io/trove/ops/observability.html).
 
 ## Docs Map
 

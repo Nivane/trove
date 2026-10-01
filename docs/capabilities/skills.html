@@ -143,6 +143,29 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L58">service.py:58 <span class="ref-line">_TIERS</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TB
+    S["SKILL.md 声明 tier"] --> R["required<br/>正文全文注入匹配节点的系统提示"]
+    S --> A["available<br/>只广告描述，正文经 load_skill 工具按需取"]
+    S --> V["validator<br/>正文从不进模型，是给引擎执行的断言清单"]
+    R --> P["模型读 → 生成 SQL"]
+    A --> P
+    V --> X["validate 节点<br/>零 LLM，逐条判定结果"]
+    P --> X
+    X --> X1["通过 → 交付"]
+    X --> X2["违反 · blocking → 回滚重算"]
+    X --> X3["违反 · advisory → 回答顶上一行提示"]
+    X --> X4["判不了 → 只进 validator_hits，不上屏"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 前两档是给模型读的（全文注入 / 按需取正文），第三档不是——它是在结果上跑的断言，拦在交付前。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       <code>required</code> 级的 skill 不是全局生效的——它可以声明 <code>triggers.node</code>
       来限定只注入到某几个节点（查询计划、失败分析、agentic 生成，以及展示环的
@@ -312,6 +335,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>
