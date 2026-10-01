@@ -72,6 +72,22 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L37">config.py:37 <span class="ref-line">CONFIG_SEARCH_PATHS</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    C1["./conf/agent.yml<br/>全局 · 优先级高"] --&gt; EFF["生效配置"]
+    C2["~/.trove/conf/agent.yml<br/>个人覆盖 · 优先级低"] -. "前者缺项时兜底" .-&gt; C1
+    C3[".trove/datasources.yml<br/>每个数据源：连接 · 检索参数"] --&gt; EFF
+    C4["~/.trove/settings.db<br/>管理台改的运行时设置"] -- "启动时合入" --&gt; EFF
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 四份文件合成一份生效配置（代码默认值垫在最底下）。最常见的找错地方在 <code>datasources.yml</code>：<code>rrf_k</code>、<code>rrf_weights</code>、<code>rerank</code> 是每个数据源的配置，不在 <code>agent.yml</code> 里。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <div class="callout warn">
       <span class="callout-tag">最常见的找错地方</span>
       <div>
@@ -353,6 +369,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

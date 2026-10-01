@@ -90,6 +90,33 @@
       </table>
     </div>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    subgraph can["决定能答什么"]
+        SEM["01 语义层<br/>计划 → 权威 SQL / 骨架"]
+        KB["03 知识库<br/>五个 YAML 按谁能写分工"]
+        RET["04 混合检索<br/>两路召回 → 加权 RRF"]
+    end
+    subgraph trust["决定答得对不对"]
+        DEC["02 判定规则<br/>同一份语义模型，换个问法"]
+        EV["07 评测基建<br/>离线回放 + 回归门：判定不花钱"]
+    end
+    subgraph where["决定在哪跑"]
+        DS["05 多数据源<br/>注册表 + 驱动懒加载"]
+        ST["06 统一存储<br/>一个抽象，两档后端"]
+    end
+    %% 无连线也要按左→右排：三组之间没有依赖关系，只是并列
+    can ~~~ trust ~~~ where
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 七组能力按「管什么」分成三撮：划定可答边界的三组、判定对不对的两组、以及决定跑在哪的两组。编号与上表一致。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <h2 id="theme">一条贯穿的取舍：确定性优先</h2>
 
     <p>
@@ -130,7 +157,7 @@
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">gate.py:240 <span class="ref-line">compare_metrics</span></a>）。
     </p>
 
-    <h2 id="adapters">04 多数据源：注册表与懒加载</h2>
+    <h2 id="adapters">05 多数据源：注册表与懒加载</h2>
 
     <p>
       数据源类型由一张注册表管理。关键设计是<strong>驱动懒导入</strong>：
@@ -149,7 +176,7 @@
       完整流程见<a href="../guide/datasource.html">接入数据源</a>。
     </p>
 
-    <h2 id="storage">05 统一存储：抽象管什么、不管什么</h2>
+    <h2 id="storage">06 统一存储：抽象管什么、不管什么</h2>
 
     <p>
       会话、任务、记忆、认证、设置、调度、检查点等内部状态，统一在一个
@@ -169,7 +196,7 @@
       </div>
     </div>
 
-    <h2 id="eval">06 评测基建：不花钱的判定</h2>
+    <h2 id="eval">07 评测基建：不花钱的判定</h2>
 
     <p>
       这一组能力的目标很具体：<strong>让「这次改动有没有让系统变差」这个问题可以在不调用模型的前提下回答</strong>。
@@ -242,6 +269,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

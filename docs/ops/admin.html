@@ -95,6 +95,24 @@
       三种取值都落在「安全的一侧」：忘了授权不会放出全部数据源，读不到授权依据也不会退化成放行。
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TB
+    U["用户"] --&gt; L1["① 账号角色<br/>admin / 非 admin → 能否进管理端"]
+    U --&gt; L2{"② 数据源授权 grants<br/>这个用户能问哪些源"}
+    U --&gt; L3["③ 工具 ACL<br/>analyst 角色 → catalog 工具可见性"]
+    L2 -- "None" --&gt; R1["拿不到授权依据<br/>拒绝一切，不查任何数据源"]
+    L2 -- "空集合" --&gt; R2["有依据、依据为空<br/>只放行默认数据源"]
+    L2 -- "非空集合" --&gt; R3["严格白名单"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 三层各管各的，别混。grants 的三个取值是三件不同的事——但都落在安全的一侧：忘了授权不会放出全部源，读不到授权依据也不会退化成放行。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L132">policy.py:132 <span class="ref-line">Principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L156">deps.py:156 <span class="ref-line">require_datasource</span></a>
@@ -315,6 +333,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

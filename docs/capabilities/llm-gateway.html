@@ -210,6 +210,25 @@
       </table>
     </div>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart TB
+    L1["总在<br/>validate_sql（SQLGlot 语法校验）<br/>finish（显式收工）"]
+    L2["standard / complex 档<br/>probe_query（只读试跑）· check_result（试跑 + 规则链）<br/>预算服务在场时另有 describe_cost"]
+    L3["以上 + analyst / admin 角色<br/>catalog：约 200 字节的发现工具"]
+    L4["经 catalog 解锁 · 下一轮才可见<br/>search_values · lookup_schema · explain_plan"]
+    L5["另一条独立条件：KB 里有 confirmed 的 available skill<br/>load_skill"]
+    L1 --&gt; L2 --&gt; L3 --&gt; L4
+    L1 --&gt; L5
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 工具是一级一级放出来的：门槛越高、常驻成本越低。三件套藏在 200 字节的 catalog 后面，越权调用折叠成「未知工具」而不是「权限不足」。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <p>
       三条与「零工具噪音」有关的分寸：三件套<strong>不常驻</strong>——常驻的只是一个约 200 字节的
       <code>catalog</code> 发现工具，模型确认需要后才解锁，且<strong>下一轮</strong>才可见；省下的是数百 token 的常驻工具定义，
@@ -295,6 +314,8 @@
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>

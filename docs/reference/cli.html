@@ -60,6 +60,23 @@
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L823">main.py:823 <span class="ref-line">main_repl</span></a>
     </p>
 
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+        <pre class="mermaid">
+flowchart LR
+    T["trove<br/>常驻与运维"] --&gt; T1["REPL（默认）"]
+    T --&gt; T2["serve · mcp"]
+    T --&gt; T3["admin · job · schedule<br/>maintenance"]
+    TC["trove-cli<br/>一次性"] --&gt; C1["提问：--print 输出 JSON"]
+    TC --&gt; C2["index：kb / schema / sync<br/>只属于 trove-cli，trove index 不认"]
+        </pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 两个入口的分工：<code>trove</code> 是常驻与运维，<code>trove-cli</code> 是一次性提问与索引。要留意 <code>index</code> 只挂在后者上——<code>trove index …</code> 不认这个名字。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
     <h2 id="trove-cli">trove-cli</h2>
 
     <div class="table-wrap">
@@ -320,6 +337,8 @@ trove schedule --daemon      # 常驻循环</code></pre>
     <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
   </p>
 </noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
 
 </body>
 </html>
