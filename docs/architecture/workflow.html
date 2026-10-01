@@ -55,14 +55,20 @@
     </p>
 
     <pre><code>START → route_intent → parse_date → schema_linking
-      → [语义门禁] → fast_match → query_sketch → gen_sql 三节点 → semantics → hitl
+      → [语义门禁] → fast_match → query_sketch
+      → gen_retrieve → gen_assemble → gen_generate → semantics → hitl
       → execute_sql → select → validate → masking → reflect
       → [分析错误 → 回滚重试] 或 → insights → chart → conclusion → output</code></pre>
 
     <p>
-      注意 <code>gen_sql</code> 在顶层不是三个节点，而是一个<strong>子图</strong>——
-      它内部有自己的 <code>generate</code> / <code>validate</code>。子图有独立的装配函数，
-      所以「agentic 循环」与「经典生成-校验重试」两种形态可以共用同一批上游节点。
+      生成段在顶层就是<strong>三个节点</strong>：<code>gen_retrieve</code> →
+      <code>gen_assemble</code> → <code>gen_generate</code>（2026-09 从单节点拆开，
+      中间态落检查点，分步可观测、可独立测试）。两种生成形态在
+      <code>gen_generate</code> <strong>内部</strong>：默认是 agentic 循环，空手 /
+      守卫触发时降级到经典 <code>generate</code> → <code>validate</code> 重试子图
+      （<code>build_gen_sql_subgraph</code>）。回滚阶梯里的 <code>gen_sql</code>
+      只是一个<strong>标签</strong>——判定器点名 “gen_sql” 时实际路由回
+      <code>gen_retrieve</code>。
     </p>
 
     <h2 id="nodes">28 个节点</h2>

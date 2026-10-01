@@ -453,10 +453,12 @@ def build_masker(
     ``nodes/select.py``(写进 ``error_feedback`` 文本的那条路)必须按**同一份
     规则**改写同一份结果集。两处各自拼一个 ``Masker`` 会漂移成「两条路按不同
     模式改写」——而漂移掉的那一侧是安全侧。所以构造收在这里:调用方只决定
-    **在哪一步调**,不重述**怎么建**。
+    **在哪一步调**,不重述**怎么建**。``routers/semantic_query.py``(旁路
+    REST 的结果集)同样走这个口 —— 它没有 workflow state,手里的 principal
+    正好是 wire 形状。
 
     ``principal`` 取 **wire 形状**(``state.principal`` 原样),转换放在这里 ——
-    两个调用方手里都只有 wire,判定输入的形状就不该有第二种可能。
+    调用方手里都只有 wire,判定输入的形状就不该有第二种可能。
 
     Returns:
         ``None`` = 部署级关闭(``masking.enabled`` 为假)。调用方据此**整段

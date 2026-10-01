@@ -1,16 +1,28 @@
 """LangGraph builders for Trove query workflows.
 
 Composition:
-  - gen_sql subgraph: generate → validate retry loop (max_retries attempts)
-  - reflection main graph: schema_linking → gen_sql[subgraph] → execute_sql
-    → reflect → (conditional) failure → analyze_error → LLM-judged rollback
-    (gen_sql / query_sketch / schema_linking, anti-loop guarded) or output
+  - gen chain, three top-level nodes: gen_retrieve (recall + signals) →
+    gen_assemble (budget + input assembly) → gen_generate (agentic loop +
+    consensus pool). The classic generate → validate retry subgraph
+    (build_gen_sql_subgraph) is the agentic loop's degradation path inside
+    gen_generate (and the whole story for non-agentic / fixed graphs).
+  - reflection main graph: route_intent → parse_date → schema_linking →
+    (semantic gate: refuse / clarify) → fast_match → query_sketch? →
+    gen_retrieve → gen_assemble → gen_generate → semantics → hitl? →
+    execute_sql → select → validate → masking → reflect → (conditional)
+    failure → analyze_error → LLM-judged rollback (gen_sql / query_sketch /
+    schema_linking, anti-loop guarded) → attribution? → insights → chart →
+    conclusion → output. "gen_sql" survives only as the rollback *label*
+    (analyze_targets routes it to gen_retrieve).
   - fixed main graph: same pipeline without the reflect loop
   - empty main graph: pass-through output
 
 Graceful degradation: node failures write state.error; every downstream
 node passes through untouched, and the router sends the run to output,
-which formats a readable error section.
+which formats a readable error section. The deliberate exception is masking
+(validate → masking → reflect): its failure direction is deny, not degrade,
+so a refusal clears rows/columns and writes [ERR:MASKING] — see
+nodes/masking.py.
 """
 
 from __future__ import annotations

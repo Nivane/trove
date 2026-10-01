@@ -271,6 +271,37 @@ class TestHybridSearch:
         lessons = await kb.search_lessons("表名写错 loans 表不存在", "financial", limit=2)
         assert lessons[0]["pattern"] == "no such table: loans"
 
+    async def test_pending_lessons_never_enter_retrieval(self, tmp_path):
+        """pending 教训不进检索(硬约束),管理端待审列表仍可见。
+
+        hybrid 直接召回镜像子集,不经过 ``_search_lessons`` 的 confirmed 预
+        过滤 —— 门必须在共用的 ``_rank_lessons`` 里,这条测试钉住它。
+        """
+        kb = await _hybrid_kb(tmp_path)
+        # 追加一条与已确认教训措辞几乎相同的 pending 教训:没有门时它会
+        # 被 FTS 召回、靠 BM25 挤进结果。
+        (kb.kb_dir / "financial" / "lessons.yml").write_text(
+            LESSONS.rstrip()
+            + "\n  - pattern: \"no such table: loans\"\n"
+            "    note: 还没有人确认的近似教训\n"
+            "    sql_snippet: SELECT * FROM loan\n"
+            "    confirmed: false\n",
+            encoding="utf-8",
+        )
+        await kb.ensure_synced("financial")
+
+        hits = await kb.search_lessons("表名写错 loans 表不存在", "financial", limit=10)
+        assert hits, "confirmed 教训应照常命中"
+        assert all(h["confirmed"] for h in hits)
+        assert all("还没有人确认" not in h["note"] for h in hits)
+
+        # 镜像必须保留 pending —— 管理台/CLI 的待审列表读 confirmed_only=False
+        pending = [
+            ln for ln in await kb.list_lessons("financial", confirmed_only=False)
+            if not ln["confirmed"]
+        ]
+        assert any("还没有人确认" in ln["note"] for ln in pending)
+
     async def test_table_anchor_filters_in_hybrid(self, tmp_path):
         kb = await _hybrid_kb(tmp_path)
         hits = await kb.search_examples(
