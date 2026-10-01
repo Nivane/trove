@@ -1687,12 +1687,20 @@ class KbService:
         all_tables: list[str] | None,
         sim_scores: dict[int, float] | None = None,
     ) -> list[dict]:
-        """教训候选排序(builtin 全量集 / hybrid·rag 召回子集共用)。
+        """教训候选排序(builtin 全量集 / hybrid·rag·pg_hybrid 召回子集共用)。
 
         ``score`` = 相似度(coverage × 可选通道分) × 投票加权 × 时效衰减。
+
+        confirmed 门设在这里,不在召回侧:镜像必须保留 pending(管理台/CLI 的
+        待审列表走 ``list_lessons(confirmed_only=False)``),而 hybrid/rag/
+        pg_hybrid 直接召回镜像子集、不经过 ``_search_lessons`` 的 confirmed
+        预过滤 —— 门放进共用排序,四条路径才是同一条纪律:未经确认的教训不得
+        进入检索。缺 ``confirmed`` 键按 pending 处理(与镜像构建的默认一致)。
         """
         scored: list[dict] = []
         for item_id, lesson in items:
+            if not lesson.get("confirmed"):
+                continue
             if not _lesson_table_ok(lesson, tables, all_tables):
                 continue
             sim = coverage_score(question, _lesson_text(lesson))
