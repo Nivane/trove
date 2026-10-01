@@ -420,18 +420,7 @@ p:last-child { margin-bottom: 0; }
 a.ref:hover { border-color: var(--accent-line); color: var(--accent); text-decoration: none; }
 .ref-line { color: var(--accent); }
 
-/* ── 截图 ──────────────────────────────────────────────── */
-.shots { display: flex; flex-direction: column; gap: 26px; }
 figure { margin: 0; }
-figure img {
-  width: 100%;
-  max-width: 100%;
-  display: block;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--raised);
-  box-shadow: var(--shadow-md);
-}
 figcaption {
   margin-top: 10px;
   font-size: 13px;
@@ -442,8 +431,7 @@ figcaption {
 /* ── 架构图（Mermaid）──────────────────────────────────── */
 /* 同一张图有两种形态：渲染成功是 SVG，加载失败是 <pre> 里的源码。
    两种都套在同一张卡片（.diagram-canvas）上——CDN 挂掉时读者看到的
-   是一块有意为之的代码块，而不是一片没头没尾的等宽文本。
-   卡片外观对齐上面的截图：同样的边框、圆角与抬升。 */
+   是一块有意为之的代码块，而不是一片没头没尾的等宽文本。 */
 .diagram { margin: 22px 0 18px; }
 .diagram-canvas {
   border: 1px solid var(--border-subtle);
