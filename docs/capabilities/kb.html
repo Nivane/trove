@@ -423,12 +423,44 @@ flowchart TB
     <h2 id="governance">资产治理：这条 SQL 是谁确认的</h2>
 
     <p>
-      确认不只是一个布尔开关。示例条目带五个<strong>治理维度</strong>：
-      <code>status</code>（<code>draft</code> / <code>certified</code> / <code>deprecated</code>）、
-      <code>owner</code>、<code>approved_by</code>、<code>approved_at</code>、<code>source</code>
-      （<code>human</code> / <code>memory</code> / <code>kb_init</code> / <code>user_feedback</code>），
-      在确认的那一刻逐条写进 <code>examples.yml</code>——与 SQL 同一份文件，随 git 一起回滚。
+      确认不只是一个布尔开关。示例条目带五个<strong>治理维度</strong>，
+      在确认的那一刻逐条写进 <code>examples.yml</code>——与 SQL 同一份文件，随 git 一起回滚：
     </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>维度</th><th>取值</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">status</td>
+            <td class="mono">draft / certified / deprecated</td>
+            <td>治理状态。<strong>缺省即 draft</strong>——draft 不是「未知」，是「还没人背书」，两者对检索的含义相同</td>
+          </tr>
+          <tr>
+            <td class="mono">owner</td>
+            <td>自由文本</td>
+            <td>这条资产归谁维护</td>
+          </tr>
+          <tr>
+            <td class="mono">approved_by</td>
+            <td>用户名</td>
+            <td>谁背的书。<code>status: certified</code> 时<strong>必须与 <code>approved_at</code> 一起在场</strong>，缺一就降回 draft——机器不能自己给自己背书</td>
+          </tr>
+          <tr>
+            <td class="mono">approved_at</td>
+            <td>日期</td>
+            <td>什么时候背的书。只降 status、<strong>不擦这两个字段</strong>，因为它们是修好这条记录唯一的线索</td>
+          </tr>
+          <tr>
+            <td class="mono">source</td>
+            <td class="mono">human / memory / kb_init / user_feedback</td>
+            <td>这条从哪来。存量资产标 <code>kb_init</code>——那是从历史推断出来的，不是谁写上去的</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/governance.py#L36">governance.py:36 <span class="ref-line">GOVERNANCE_FIELDS</span></a>

@@ -278,9 +278,64 @@ flowchart LR
     </div>
 
     <p>
-      模板快径的四重约束是：SQL 形状合格（单表、无 JOIN/子查询/CTE、无 GROUP/ORDER/LIMIT、单聚合）、
-      问题含聚合意图词、表锚定一致、有家族证据。它是零 LLM 零网络的纯函数，
-      所以能在毫秒级给出答案，而且答案天然可解释——命中了哪条模板，是查得出来的。
+      模板快径过四重约束，<strong>全部满足才命中</strong>——任一不满足即放弃，回到正常链路：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>约束</th><th>具体是什么</th><th>卡掉的是什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>SQL 形状合格</strong></td>
+            <td>单表 FROM；无 JOIN / 子查询 / CTE / GROUP / ORDER / LIMIT；至多一个聚合函数；无 <code>WHERE col &gt; 0</code> 这类占位比较</td>
+            <td>形状一复杂就没法安全填参的模板；阈值 0 是结构占位，不是数据锚定</td>
+          </tr>
+          <tr>
+            <td><strong>表锚定一致</strong></td>
+            <td>模板的表（复数归一后）要在 schema linking 给出的 <code>matched_tables</code> 里</td>
+            <td>「问题里提了一嘴、但 linker 判定无关」的表——问题提及通道只在 matched 多表（外键邻居扩展）时才启用</td>
+          </tr>
+          <tr>
+            <td><strong>聚合意图词</strong></td>
+            <td>问题里出现该聚合函数的说法（AVG → 平均 / average）</td>
+            <td>问题在问别的事、模板碰巧是个聚合</td>
+          </tr>
+          <tr>
+            <td><strong>有家族证据</strong></td>
+            <td>date_range / aggregate / enum_filter / bare_count 四个家族各自的匹配器要过</td>
+            <td>形状对、词也对，但条件对不上（比如裸 COUNT 模板遇到还有剩余 token 的问题）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      另有两道守卫，命中任一即放弃，而且放弃得<strong>比约束更主动</strong>：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>守卫</th><th>为什么必须放弃</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>问题带<strong>分组或排序意图</strong>（per / each / 按…分 / 每个 / 各地区 / top N / desc）</td>
+            <td>形状约束已经排除了带 GROUP/ORDER 的模板，任何模板都表达不了这个语义；命中只会<strong>静默丢掉分组/排序</strong>，产出一个错误的全局聚合</td>
+          </tr>
+          <tr>
+            <td>问题带年份或日期字面量，而模板 SQL <strong>没有 WHERE</strong></td>
+            <td>无过滤的模板会把时间条件整个丢掉（「1996 年发放的贷款平均金额」不该命中「<code>AVG(amount) FROM loan</code>」）；date_range 家族自会接手这类问题</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      它是零 LLM 零网络的纯函数，所以能在毫秒级给出答案，而且答案天然可解释——
+      命中了哪条模板，是查得出来的。
     </p>
 
     <p>

@@ -530,11 +530,40 @@ flowchart TB
     </p>
 
     <p>
-      生成阶段还会往<strong>日志流</strong>里写 <code>sql_audit</code> 行（版本、用户、工具、问题、SQL、结果签名）
-      ——它在日志里、不在审计表里，按前缀 grep 就能捞「谁在什么时候让系统执行了什么」；
-      落库的那份对应记录是 <code>query.execute</code>（问题、SQL、数据源、判定、行数、耗时、错误），
-      两条互补：一条进日志平台，一条进管理端可查的审计表。
+      生成阶段还会往<strong>日志流</strong>里写 <code>sql_audit</code> 行。它和落库的
+      <code>query.execute</code> 是同一次查询的两条互补记录——一条进日志平台，
+      一条进管理端可查的审计表：
     </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th><code>sql_audit</code>（日志流）</th><th><code>query.execute</code>（审计表）</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>落在哪</strong></td>
+            <td>日志里，按前缀 grep 捞</td>
+            <td>审计表，管理端 <code>/v1/admin/audit</code> 可查</td>
+          </tr>
+          <tr>
+            <td><strong>何时写</strong></td>
+            <td>每次工具调用（探针 / 规则链自检 / 收工），含缓存命中</td>
+            <td>每次查询交付时</td>
+          </tr>
+          <tr>
+            <td><strong>记什么</strong></td>
+            <td>版本、用户、工具、问题（截断）、SQL（截断）、结果观测（截断）</td>
+            <td>会话与运行 id、问题、SQL、数据源、判定、行数、耗时、错误</td>
+          </tr>
+          <tr>
+            <td><strong>回答什么</strong></td>
+            <td>谁在什么时候让系统<strong>执行</strong>了什么</td>
+            <td>谁在什么时候<strong>查到了</strong>什么结果</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1217">gen_sql.py:1217 <span class="ref-line">sql_audit</span></a>
