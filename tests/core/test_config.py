@@ -504,13 +504,46 @@ class TestMaskingAndAuthzConfig:
         assert cfg.authz.table_enforcement == "enforce"
 
     def test_absent_blocks_keep_the_protective_defaults(self, tmp_path):
-        """缺席 = 闸门与脱敏都**开着**(默认值是「保护开着」,关它必须显式写)。"""
+        """缺席 = 闸门与脱敏都**开着**(默认值是「保护开着」,关它必须显式写)。
+
+        table_enforcement 的默认是 **enforce**:2026-10 切换(654 条快径示例
+        SQL 静态核验违规 0 条,403 面等于零)。回退到观察档要显式写 warn。
+        """
         conf = tmp_path / "agent.yml"
         conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
         cfg = ConfigLoader.load_agent_config(str(conf))
         assert cfg.masking.enabled is True
         assert cfg.masking.hash_salt_ref == ""
         assert cfg.authz.require_principal is True
+        assert cfg.authz.table_enforcement == "enforce"
+
+    def test_authz_defaults_hold_for_both_spellings(self, tmp_path):
+        """「有 authz 段但没写档位」与「完全没有 authz 段」必须同档。
+
+        三处默认值同源(dataclass / 这里的加载器缺省 / _build_authorizer 的
+        getattr 兜底):只改一处,「写不写 authz 段」会静默改变闸门宽度,
+        而配置面看起来什么都没发生 —— 这正是这段代码注释里写的教训。
+        """
+        for body in (
+            "agent:\n  target: openai/gpt-4o\n",                      # 无 authz 段
+            "agent:\n  target: openai/gpt-4o\nauthz: {}\n",           # 空段(顶层)
+            "agent:\n  target: openai/gpt-4o\n  authz: {}\n",         # 空段(内嵌)
+        ):
+            conf = tmp_path / "agent.yml"
+            conf.write_text(body, encoding="utf-8")
+            cfg = ConfigLoader.load_agent_config(str(conf))
+            assert cfg.authz.table_enforcement == "enforce", body
+            assert cfg.authz.require_principal is True, body
+
+    def test_authz_warn_rollback_is_explicit(self, tmp_path):
+        """回退阀:warn 仍可显式选用(存量部署的回退路径)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "authz:\n  table_enforcement: warn\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
         assert cfg.authz.table_enforcement == "warn"
 
 

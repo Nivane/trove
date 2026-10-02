@@ -214,8 +214,8 @@ flowchart LR
         <tbody>
           <tr>
             <td class="mono">table_enforcement</td>
-            <td class="mono">warn</td>
-            <td>表级判定（A3）的档位：<code>warn</code> 只记日志与指标、放行；<code>enforce</code> 拒绝</td>
+            <td class="mono">enforce</td>
+            <td>表级判定（A3）的档位：<code>enforce</code> 拒绝；<code>warn</code> 只记日志与指标、放行（存量部署的回退阀）</td>
           </tr>
           <tr>
             <td class="mono">require_principal</td>

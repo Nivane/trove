@@ -25,6 +25,16 @@ from trove.core.types import (
 #: 返回 False(§10:不发第二次 kill,上层 ``QueryTerminator`` 另有硬超时兜底)。
 INTERRUPT_TIMEOUT_S = 2.0
 
+#: DB 侧语句超时的缺省界(毫秒)。**必须大于应用侧预算**(``budget.timeout_ms``
+#: 默认 30s / 30000ms):应用侧才是主闸 —— 超时 → 取消 → ``QueryTerminator``
+#: 的 KILL 证据链;库侧闸是「进程被杀 / 事件循环卡死、没人去取消」时的兜底。
+#: 两者同值或库侧更小,主闸的证据链就永远没有机会生成,故障归因会从
+#: 「Trove 杀了这条查询」悄悄变成「库自己超时了」。
+#:
+#: 连接参数 ``statement_timeout_ms`` 可覆盖:``<=0`` = 显式关闭(不发语句),
+#: 非数 = 回到本缺省(配置写错不静默变成"关掉")。
+DEFAULT_STATEMENT_TIMEOUT_MS = 60_000
+
 
 class DatabaseAdapter(ABC):
     """Uniform interface for all database connectors.
@@ -117,6 +127,78 @@ class DatabaseAdapter(ABC):
     # 缺省 False 是安全方向:调用方退到「无法主动终止,asyncio cancel 已是
     # 能做的全部」(§10)。
     supports_interrupt: bool = False
+
+    # ── DB 侧语句超时(§10 / I4)─────────────────────────
+    #
+    # 与 ``supports_interrupt`` 同一条纪律:**显式声明,不从行为反推**。
+    # 应用侧的 ``wait_for`` 只在「连接还在、事件循环还转」时有效:进程被杀 /
+    # 事件循环卡死时,库里的查询会一直跑(占着连接与资源,而 Trove 已经不
+    # 知道它存在)。库侧超时是这一档的兜底,不是主闸 —— 缺省界大于应用侧
+    # 预算正是为了不让它抢先(见 ``DEFAULT_STATEMENT_TIMEOUT_MS``)。
+    #
+    # 缺省 False 是安全方向:一个字都不发,退回既有取消链;替子类宣布支持
+    # 却发不出语句,会让「以为有界其实没有」重新成立。声明与实现的同源性由
+    # ``tests/services/test_adapter_statement_timeout_contract.py`` 钉住。
+    supports_statement_timeout: bool = False
+
+    def statement_timeout_ms(self) -> int | None:
+        """本连接生效的 DB 侧语句超时(毫秒);``None`` = 不发任何语句。
+
+        三态解析(连接参数 ``statement_timeout_ms``):缺省 → 全局缺省;
+        ``<=0`` → 显式关闭(None);非数 → 回到缺省(写错的配置不许静默
+        变成"关掉"——那正是配错时最不该拿到的结果)。未声明能力的方言恒
+        None:没有机制可发,报一个数就是替不存在的闸背书。
+        """
+        if not self.supports_statement_timeout:
+            return None
+        raw = self.config.get("statement_timeout_ms", None)
+        if raw is None:
+            return DEFAULT_STATEMENT_TIMEOUT_MS
+        try:
+            ms = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_STATEMENT_TIMEOUT_MS
+        return ms if ms > 0 else None
+
+    def statement_timeout_connect_kwargs(self) -> dict[str, Any]:
+        """连接参数形式的超时(pg ``options`` / clickhouse ``settings``)。
+
+        不支持 / 未配置 → ``{}``:连接参数一字不加。旁路连接(ClickHouse 的
+        KILL QUERY 连接)必须复用同一份 kwargs —— 否则是连到另一个库上去杀。
+        """
+        if not self.supports_statement_timeout:
+            return {}
+        ms = self.statement_timeout_ms()
+        if ms is None:
+            return {}
+        return self._statement_timeout_connect_kwargs(ms)
+
+    async def apply_statement_timeout(self) -> bool:
+        """在连接建立**之后**把超时交给服务端(语句形式的方言:mysql)。
+
+        与 ``interrupt`` 同一条纪律:有界、**不抛** —— 调用方在建连路径上,
+        「兜底闸装不上」不该让整条连接失败(旧版本/同协议的其他引擎可能不认
+        这条语句),但它必须是**看得见的**:服务端拒绝时打 warning 并返回
+        False,绝不静默降级成"以为有界其实没有"。
+
+        Returns:
+            True  = 语句交给了服务端且无异议;
+            False = 未声明能力 / 未配置 / 服务端拒绝(已打 warning)。
+        """
+        if not self.supports_statement_timeout:
+            return False
+        ms = self.statement_timeout_ms()
+        if ms is None:
+            return False
+        return await self._apply_statement_timeout(ms)
+
+    def _statement_timeout_connect_kwargs(self, ms: int) -> dict[str, Any]:
+        """子类覆写点:把 ``ms`` 折成连接参数。基类:没有这种形式。"""
+        return {}
+
+    async def _apply_statement_timeout(self, ms: int) -> bool:
+        """子类覆写点:把 ``ms`` 作为语句发给服务端。基类:什么都不发。"""
+        return False
 
     async def probe_readonly(self) -> ReadonlyProbe:
         """这个连接上的账号是不是**确实只能读**(设计 §4 I1)。缺省:**不知道**。

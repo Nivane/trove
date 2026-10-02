@@ -124,7 +124,8 @@ flowchart TB
           <tr><td>试跑取数</td><td class="mono">10 行</td><td>agentic 循环里的 <code>probe_query</code></td></tr>
           <tr><td>试跑超时</td><td class="mono">5 秒</td><td>探测不该拖垮循环</td></tr>
           <tr><td>规则校验取数</td><td class="mono">50 行</td><td>规则只消费行数/首行值/列形状，50 足够</td></tr>
-          <tr><td>执行超时</td><td class="mono">30 秒</td><td>正式执行的默认上限</td></tr>
+          <tr><td>执行超时</td><td class="mono">30 秒</td><td>正式执行的默认上限（应用侧）</td></tr>
+          <tr><td>库侧语句超时</td><td class="mono">60 秒</td><td>装在连接上的服务端闸，见下</td></tr>
         </tbody>
       </table>
     </div>
@@ -139,6 +140,45 @@ flowchart TB
     <p>
       注意<strong>试跑超时（5s）与执行超时（30s）是两个不同的数</strong>。
       一个模型自发的探测不该占用正式执行的预算，卡住它就该快速失败、换个思路。
+    </p>
+
+    <h3>库侧的兜底闸</h3>
+
+    <p>
+      上面这些上限都活在 Trove 的进程里。进程被杀、事件循环卡死时它们一个都不会执行——
+      而数据库里那条查询还在跑。所以支持的方言在连接上再装一道<strong>服务端</strong>上限：
+      默认 60 秒，比应用侧的 30 秒<strong>大</strong>。顺序是有意的：先由应用侧超时、取消、
+      发 <code>KILL</code>，失败归因里留下「Trove 杀了这条查询」的证据；库侧只在
+      「Trove 已经不在场」时兜底。两个数反过来，归因会悄悄变成「库自己超时了」。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方言</th><th>机制</th><th>备注</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>MySQL</td><td class="mono">SET SESSION max_execution_time</td><td>毫秒；建连时与每次 ping 后各发一次（重连会带走会话变量，而 ping 是否真重连无法区分）</td></tr>
+          <tr><td>MariaDB</td><td class="mono">SET SESSION max_statement_time</td><td>秒；MariaDB 不认 MySQL 的变量名，按版本串自动分流</td></tr>
+          <tr><td>PostgreSQL</td><td class="mono">options=-c statement_timeout=</td><td>走连接参数而非建连后的 SET——psycopg 默认非 autocommit，会话 SET 会被一次回滚带走</td></tr>
+          <tr><td>ClickHouse</td><td class="mono">settings.max_execution_time</td><td>秒（请求级）；旁路的 KILL 连接复用同一份参数</td></tr>
+          <tr><td>SQLite / DuckDB</td><td>—</td><td>进程内引擎，没有可保护的服务端对象</td></tr>
+          <tr><td>Doris</td><td>—</td><td>会话超时语句的语义未验证，如实声明不支持，退回既有取消链</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      连接参数 <code>statement_timeout_ms</code> 可改，<strong>≤0 表示关掉</strong>（不设上界）。
+      装闸失败<strong>不阻断连接</strong>：引擎认不出这条语句时（MySQL &lt; 5.7.8、
+      MariaDB &lt; 10.1.1、其他 MySQL 协议实现）记一条 WARN 并继续——用一次可用的降级换
+      一次不可用的保护，但降级必须看得见。声明不支持的方言一个字都不发。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/base.py#L36">adapters/base.py:36 <span class="ref-line">DEFAULT_STATEMENT_TIMEOUT_MS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/mysql.py#L186">adapters/mysql.py:186 <span class="ref-line">_statement_timeout_sql</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/postgres.py#L280">adapters/postgres.py:280 <span class="ref-line">_statement_timeout_connect_kwargs</span></a>
     </p>
 
     <h3>自检：怎么确认那道边界真的在</h3>
@@ -315,10 +355,14 @@ flowchart TB
     </p>
 
     <p>
-      表级判定默认<strong>只警告不拦</strong>（<code>authz.table_enforcement: warn</code>）。
-      原因很实在：存量 grants 只到数据源级，直接拒绝会让正常查询大面积 403，
-      把一次安全改进做成事故。先跑一段收集「哪些表会被拒」，再切 <code>enforce</code>。
-      数据源级判定与「必须有主体」不受这个开关影响，恒为拒绝。
+      表级判定<strong>默认拒绝</strong>（<code>authz.table_enforcement: enforce</code>）。
+      2026-10 从 <code>warn</code> 切换，依据不是「观察期结束」而是静态核验：用 A3
+      同源基准（<code>rls.declared_tables</code>）对三份 KB 的全部快径示例 SQL
+      （654 条）逐条 SQLGlot 比对，<strong>违规 0 条</strong> —— 按语义模型走的查询本来
+      就都在声明内，当初担心的「正常查询大面积 403」实测并不存在。
+      <strong>回退阀</strong>：存量部署若确有声明外的查询（绕开语义层直摸物理表），
+      显式写 <code>authz.table_enforcement: warn</code> 即回到「放行但记下被挡的表」
+      的观察档。数据源级判定与「必须有主体」不受这个开关影响，恒为拒绝。
     </p>
 
     <p>

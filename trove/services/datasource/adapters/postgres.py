@@ -242,6 +242,7 @@ class PostgresAdapter(DatabaseAdapter):
             psycopg = _get_driver()
             self._conn = await psycopg.AsyncConnection.connect(
                 _conninfo(self.config, self.config.get("credentials")),
+                **self.statement_timeout_connect_kwargs(),
             )
             self._connected = True
             logger.debug("Connected to PostgreSQL: %s:%s/%s",
@@ -267,6 +268,17 @@ class PostgresAdapter(DatabaseAdapter):
         self._connected = False
 
     supports_interrupt = True
+
+    # DB 侧语句超时(§10):走连接参数 ``options=-c statement_timeout=<ms>``。
+    # **不用连接后的 SET**:psycopg3 默认 ``autocommit=False``,那条 SET 会落进
+    # 一个隐式事务,任何一次 rollback 都会把它一起带走 —— 一道「随时可能被
+    # 回滚掉」的闸不是闸。``options`` 在握手时就把 GUC 交给服务端;每次
+    # ``connect()``(含 ``_ensure_connected`` 对 stale 连接的重连)都重新带上,
+    # 「重连丢会话变量」这个失败模式在参数形态下根本不存在。
+    supports_statement_timeout = True
+
+    def _statement_timeout_connect_kwargs(self, ms: int) -> dict[str, Any]:
+        return {"options": f"-c statement_timeout={int(ms)}"}
 
     async def interrupt(self) -> bool:
         """psycopg AsyncConnection.cancel() — 服务端取消在跑查询(psycopg 3.1+)。

@@ -221,6 +221,12 @@ class ClickHouseAdapter(DatabaseAdapter):
     # 都照跑,所以主动终止在这里不是可选项,是唯一能真停下来的手段。
     supports_interrupt = True
 
+    # DB 侧语句超时(§10):HTTP 协议没有可持久化的会话 SET,``max_execution_time``
+    # 只能作为**请求级 setting** 随每次请求带上(见 ``_statement_timeout_connect_kwargs``)。
+    # 服务端从第一条查询起就是有界的 —— 进程被杀 / 事件循环卡死时,查询会在
+    # 库里自己停下,而不是一直占着资源等一个不会再来的读取方。
+    supports_statement_timeout = True
+
     def __init__(self, name: str = "clickhouse", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._client: Any = None
@@ -236,13 +242,22 @@ class ClickHouseAdapter(DatabaseAdapter):
 
     def _connect_kwargs(self) -> dict[str, Any]:
         """连接参数。**旁路连接必须与原连接同参**,否则是连到另一个库上去杀。"""
-        return {
+        kwargs = {
             "host": self.config.get("host", "127.0.0.1"),
             "port": self.config.get("port", DEFAULT_PORT),
             "username": self.config.get("user", ""),
             "password": self.config.get("password", ""),
             "database": self.config.get("database", "default"),
         }
+        # 请求级 setting 也走这里:折进同一份 kwargs,旁路 KILL 连接自动同参。
+        kwargs.update(self.statement_timeout_connect_kwargs())
+        return kwargs
+
+    def _statement_timeout_connect_kwargs(self, ms: int) -> dict[str, Any]:
+        """``max_execution_time`` 以**秒**计(ClickHouse 少数不用毫秒的设置);
+        ``max(1, ms // 1000)`` 兜住 ``ms < 1000`` —— 折成 0 就是「无限制」,
+        一道静默失效的闸比没有闸更糟。"""
+        return {"settings": {"max_execution_time": max(1, ms // 1000)}}
 
     async def connect(self) -> None:
         if self._connected:

@@ -817,7 +817,7 @@ flowchart TB
             </tr>
             <tr>
               <td>执行前授权门</td>
-              <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>A1/A2 恒拒</strong>；<strong>A3 默认只 warn</strong>（放行但记下被挡的表）——存量 grants 只到数据源级，直接拒绝会把正常查询大面积 403，所以先跑一段收集清单，<code>authz.table_enforcement</code> 切 <code>enforce</code> 才真拦。</td>
+              <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>三道默认全拒</strong>：A1/A2 恒拒无开关；A3 默认 <code>enforce</code>（2026-10 切换，依据是 654 条快径示例 SQL 静态核验违规 0 条——按语义模型走的查询都在声明内，403 面等于零）。存量部署可显式写 <code>authz.table_enforcement: warn</code> 回退到观察档。</td>
               <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L80">core/config.py:80 <span class="ref-line">AuthzConfig</span></a></td>
             </tr>
             <tr>

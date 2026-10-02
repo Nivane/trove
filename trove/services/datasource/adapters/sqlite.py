@@ -103,6 +103,12 @@ class SQLiteAdapter(DatabaseAdapter):
 
     supports_interrupt = True
 
+    # DB 侧语句超时:**显式不声明**。SQLite 是文件内嵌引擎,没有服务端进程可以
+    # 把查询停在库里 —— 进程一消失,后面的工作也不存在了。「进程被杀后查询还在
+    # 跑」这个要防的失败模式在本地文件上没有对应物;声明 True 的唯一效果是发出
+    # 一条没有意义的语句。取消链由 interrupt() 负责。
+    supports_statement_timeout = False
+
     async def interrupt(self) -> bool:
         """sqlite3 interrupt — 跨线程取消底层正在执行的语句。
 

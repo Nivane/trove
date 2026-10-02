@@ -168,3 +168,49 @@ async def test_semantic_query_requires_auth(query_api, anon_client):
         "metrics": ["平均成绩"],
     })
     assert resp.status_code == 401
+
+
+def test_execute_budget_reads_the_pipeline_budget():
+    """执行预算与图管线同一个 ``budget.timeout_ms``(取不到 → 30s 缺省,不无界)。"""
+    from types import SimpleNamespace
+
+    from trove.api.routers.semantic_query import _execute_timeout_s
+
+    def _request(**state):
+        return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(**state)))
+
+    with_budget = _request(config=SimpleNamespace(budget=SimpleNamespace(timeout_ms=2_000)))
+    assert _execute_timeout_s(with_budget) == 2.0
+
+    # 应用还没挂 config / config 里没有 budget / 值是垃圾 —— 三态都回到缺省。
+    for state in ({}, {"config": None},
+                  {"config": SimpleNamespace(budget=None)},
+                  {"config": SimpleNamespace(budget=SimpleNamespace(timeout_ms="abc"))},
+                  {"config": SimpleNamespace(budget=SimpleNamespace(timeout_ms=0))}):
+        assert _execute_timeout_s(_request(**state)) == 30.0
+
+
+@pytest.mark.asyncio
+async def test_semantic_query_times_out_as_504(query_api, client, monkeypatch):
+    """这条直执行入口此前**无界**:一条慢查询能把 worker 占到进程重启。
+
+    超时必须是 504(我们等不下去了),不是 500(语句本身出错),更不是
+    一直挂着 —— 而挂着的形态正是修复前的那一个。
+    """
+    import asyncio
+
+    import trove.api.routers.semantic_query as sq
+
+    async def _hang(*_a, **_k):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(sq, "_execute_timeout_s", lambda _request: 0.05)
+    monkeypatch.setattr(query_api.state.connector_registry, "execute", _hang)
+
+    resp = await client.post("/v1/semantic/query", json={
+        "datasource": "test_db",
+        "metrics": ["平均成绩"],
+        "dimensions": ["students.county"],
+    })
+    assert resp.status_code == 504, resp.text
+    assert "timed out" in resp.json()["detail"]

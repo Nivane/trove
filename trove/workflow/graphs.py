@@ -1815,9 +1815,13 @@ def _build_authorizer(services: "GraphServices"):
             )
             return None
 
+    # 兜底档与 ``AuthzConfig.table_enforcement`` 的 dataclass 默认**逐字一致**
+    # (三处默认值同源:dataclass / ConfigLoader / 这里)。兜底的用途是
+    # authz_config 为 None(未提供 config)时仍装到安全档 —— 若兜成 warn,
+    # 「忘了传 config」这条路径会静默把表级判定变成观察档。
     return Authorizer(
         declared_tables=_declared,
-        mode=getattr(authz_config, "table_enforcement", "warn"),
+        mode=getattr(authz_config, "table_enforcement", "enforce"),
     )
 
 

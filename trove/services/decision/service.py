@@ -22,6 +22,7 @@ never-firing scheduled job is indistinguishable from a healthy one.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from dataclasses import dataclass, field
@@ -140,10 +141,21 @@ class DecisionService:
     compile the wrong model's SQL.
     """
 
-    def __init__(self, connectors, kb, semantic_dir: str | Path | None = None):
+    def __init__(
+        self, connectors, kb, semantic_dir: str | Path | None = None,
+        *, timeout_ms: int = 30_000,
+    ):
         self.connectors = connectors
         self.kb = kb
         self._semantic_dir = Path(semantic_dir) if semantic_dir is not None else None
+        # 单条 SQL 的执行预算(毫秒),与交互管线同一个 ``budget.timeout_ms``。
+        # 定时任务没有人在等,一条无界的查询会把这次 run(job 的 schedule)永远
+        # 吊在那里;写错/非正数 → 回到缺省,不静默变成"无超时"。
+        try:
+            ms = int(timeout_ms)
+        except (TypeError, ValueError):
+            ms = 0
+        self._timeout_ms = ms if ms > 0 else 30_000
 
     # ── model / dialect resolution ────────────────────────
 
@@ -424,9 +436,20 @@ class DecisionService:
         ``ConnectorRegistry.execute`` rejects anything that is not a SELECT,
         so a decision rule cannot write to a business datasource even if the
         compiler were somehow talked into emitting DML.
+
+        有界:每次执行一条各自的预算(不是整条规则共享)—— 规则最多跑两次
+        (当前期 + 基准期),一次卡死不该把另一次的额度也吃掉。超时折成
+        ``DecisionError``:run 上显式报错,绝不静默变 OK(见模块 docstring)。
         """
         try:
-            return await self.connectors.execute(sql, datasource)
+            return await asyncio.wait_for(
+                self.connectors.execute(sql, datasource),
+                timeout=self._timeout_ms / 1000.0,
+            )
+        except asyncio.TimeoutError:
+            raise DecisionError(
+                f"query timed out after {self._timeout_ms}ms on {datasource!r}"
+            )
         except Exception as e:
             raise DecisionError(f"query failed on {datasource!r}: {e}") from e
 
