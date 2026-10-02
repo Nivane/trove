@@ -2,12 +2,15 @@
 """Compile hit-rate 聚合器:从 eval results.jsonl 统计语义层编译闭环。
 
 口径(与 eval_bird.attribution_slices 一致):
-- 可判定题 = verdict ∈ {MATCH, MISMATCH, GENERATION_ERROR, EXECUTION_ERROR,
-  EMPTY_SQL}(gold 失败/崩溃题不进分母);
+- 可判定题 = verdict ∈ ``trove.eval.replay.JUDGED_VERDICTS``(MATCH / MISMATCH /
+  GENERATION_ERROR / EXECUTION_ERROR / EMPTY_SQL / REFUSED;gold 失败/崩溃题
+  不进分母)—— 集合从 replay import,不给私有副本:副本漂移过一次(漏 REFUSED,
+  docstring 却自称与 attribution_slices 一致),拒绝率因此从分母里静默消失;
 - hit-rate = compile_meta.outcome == "compiled" 的题数 / 有 compile_meta
   的题数(无 meta 的题 = 编译决策从未发生,单独计数);
 - MISS 分因按 miss_reason 聚合(计数、占 MISS 比、该原因下 EX%);
-- 路径对比:path compiled vs llm 的 EX%。
+- 路径对比:path ∈ ``EX_PATH_TIERS``(compiled / partial / llm / refused)的 EX%,
+  空档省略 —— 与 score_replay 的 ``ex_by_path`` 同源同规则。
 
 纯文件 IO,零网络零 key;可对任意历史 results.jsonl 直接跑。
 """
@@ -19,9 +22,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-_VERDICTS_OK = {
-    "MATCH", "MISMATCH", "GENERATION_ERROR", "EXECUTION_ERROR", "EMPTY_SQL",
-}
+from trove.eval.replay import EX_PATH_TIERS, JUDGED_VERDICTS
 
 
 def load_entries(path: Path, question_filter: str = "") -> list[dict[str, Any]]:
@@ -50,7 +51,7 @@ def _rate(rows: list[dict[str, Any]]) -> str:
 
 
 def stats(entries: list[dict[str, Any]], verbose: bool = False) -> list[str]:
-    judged = [e for e in entries if e.get("verdict") in _VERDICTS_OK]
+    judged = [e for e in entries if e.get("verdict") in JUDGED_VERDICTS]
     with_meta = [e for e in judged if e.get("compile_meta")]
     compiled = [e for e in with_meta if e["compile_meta"].get("outcome") == "compiled"]
     missed = [e for e in with_meta if e["compile_meta"].get("outcome") == "miss"]
@@ -64,8 +65,16 @@ def stats(entries: list[dict[str, Any]], verbose: bool = False) -> list[str]:
         if with_meta else
         "编译命中率: 无 compile_meta 数据(语义层未接线?)",
     ]
-    lines.append(f"路径 EX%: compiled {_rate(compiled)} | llm "
-                 f"{_rate([e for e in judged if e.get('path') == 'llm'])}")
+    # 路径 EX%:档位清单复用 EX_PATH_TIERS(与 ex_by_path 分档同源);
+    # 无行入档的空档省略(与 score_replay 的"空档不发键"同一规则)。
+    tier_rates: list[str] = []
+    for tier in EX_PATH_TIERS:
+        tier_rows = [e for e in judged if e.get("path") == tier]
+        if tier_rows:
+            tier_rates.append(f"{tier} {_rate(tier_rows)}")
+    lines.append(
+        "路径 EX%: " + (" | ".join(tier_rates) if tier_rates else "(无 path 数据)")
+    )
 
     if missed:
         lines.append("--- MISS 分因 ---")

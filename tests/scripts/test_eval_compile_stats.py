@@ -15,8 +15,9 @@ def _write(tmp_path, entries):
 
 
 def _fixture_entries():
-    # 8 题:4 compiled(3 MATCH / 1 MISMATCH)、2 miss+llm(分因各一)、
-    # 1 miss+refuse(MATCH,但不算 path=compiled)、1 gold 失败(不进分母)
+    # 9 题:4 compiled(3 MATCH / 1 MISMATCH)、3 miss→llm(2 MATCH / 1 MISMATCH,
+    # 分因 no_metric_match×2 + fan_out×1)、1 refused(语义门禁拒绝:REFUSED、
+    # 无 compile_meta,但**进可判定分母**)、1 gold 失败(不进分母)。
     return [
         _entry(run_id="r1", question="q1", verdict="MATCH", path="compiled",
                compile_meta={"outcome": "compiled", "miss_reason": "", "miss_component": ""}),
@@ -38,6 +39,9 @@ def _fixture_entries():
         _entry(run_id="r8", question="q8", verdict="GOLD_ERROR", path="llm",
                compile_meta={"outcome": "miss", "miss_reason": "bad_time_grain",
                              "miss_component": "fortnight"}),
+        # 真 REFUSED:语义门禁在编译前拒绝,无 compile_meta(path 由 final.refusal
+        # 标出)。它是已交付的判定,不是崩溃 —— 不进分母等于把拒绝率抹掉。
+        _entry(run_id="r9", question="q9", verdict="REFUSED", path="refused"),
     ]
 
 
@@ -46,14 +50,39 @@ def test_hit_rate_and_miss_reasons(tmp_path):
     entries = load_entries(p)
     lines = stats(entries)
     text = "\n".join(lines)
-    # 命中率:4 compiled / 7 有 meta(可判定 7,无 meta 0)
+    # 可判定 8(含 REFUSED),r8 gold 失败不进分母
+    assert "总条目: 9(可判定 8)" in text
+    # 命中率:4 compiled / 7 有 meta(refused 无 meta,不计入分母)
     assert "编译命中率: 4/7 (57.1%)" in text
     # MISS 分因:no_metric_match 2 次、fan_out 1 次
     assert "no_metric_match: 2 (66.7% of MISS)" in text
     assert "fan_out: 1 (33.3% of MISS)" in text
-    # 路径 EX%:compiled 3/4、llm 2/3
+    # 路径 EX%:compiled 3/4、llm 2/3、refused 0/1(partial 空档省略)
     assert "compiled 3/4 (75.0%)" in text
     assert "llm 2/3 (66.7%)" in text
+    assert "refused 0/1 (0.0%)" in text
+    assert "partial" not in text
+
+
+def test_refused_has_its_own_path_tier(tmp_path):
+    """拒绝题的 EX 恒 0(拒绝没有 MATCH 可言)但档位必须可见:
+    看不见拒绝,"拒绝率上升"只会表现为别人分母变小、准确率看着变好。"""
+    lines = stats(load_entries(_write(tmp_path, _fixture_entries())))
+    assert any(l.startswith("路径 EX%:") and "refused 0/1" in l for l in lines)
+
+
+def test_verdict_set_and_tiers_come_from_replay():
+    """口径单点定义:两组集合只能 import,不许私有副本。
+
+    私有副本漂移过一次 —— 本文件的 ``_VERDICTS_OK`` 漏了 REFUSED,docstring
+    却自称与 ``eval_bird.attribution_slices`` 一致。
+    """
+    from scripts import eval_compile_stats
+    from trove.eval.replay import EX_PATH_TIERS, JUDGED_VERDICTS
+
+    assert eval_compile_stats.JUDGED_VERDICTS is JUDGED_VERDICTS
+    assert eval_compile_stats.EX_PATH_TIERS is EX_PATH_TIERS
+    assert "REFUSED" in JUDGED_VERDICTS
 
 
 def test_question_filter(tmp_path):
