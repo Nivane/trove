@@ -1663,6 +1663,19 @@ class SemanticCompiler:
                 anchor = m.datasets[0]
                 break
 
+        # 自愈:计划组件**自己引用**的已声明表必须进 join 集。query_sketch 可能
+        # 把表从 plan.tables 漏掉(0483 型:条件/投影/度量锚定仍在引用它),而
+        # plan.tables 只是"声明"、组件引用才是"实际需要"——编译器是 join 集的
+        # 权威,以引用为准补齐(追加,去重保序:首表与锚选择保持原语义,纯增量)。
+        # 补进来的表照样走 resolve 的结构性判定(fan_out / ambiguous / 空路由),
+        # 不掩盖真缺口;而 plan.tables 只剩一张表时 resolve 会因 len<2 直接空树,
+        # 这里的补齐正是把「引用得到、join 不到」的那一类从 unreachable_table
+        # 误伤里救出来。
+        needed = self._plan_needed_tables(plan, matched_pairs, matched_set)
+        for _t in sorted(needed):
+            if _t in declared_datasets and _t not in join_tables:
+                join_tables.append(_t)
+
         # 编译期授权门禁:执行期表 allowlist 前移——越界数据集当场 MISS,
         # 不产出必然被执行守卫拒绝的 SQL(把「执行期事后拒」变成「编译期不产」)。
         if self._allowed_tables is not None:
@@ -1699,8 +1712,7 @@ class SemanticCompiler:
         else:
             # 查询实际需要的表 = 组件引用的表(非 query_sketch 全集):决定联表树
             # 保留与歧义作用域,避免误列的共享维度(district)触发虚假二义
-            # 或被多余联入。
-            needed = self._plan_needed_tables(plan, matched_pairs, matched_set)
+            # 或被多余联入。needed 已在 join 集自愈处算好(同一纯函数,同一入参)。
             resolution = resolver.resolve(
                 list(join_tables), root=anchor, needed=needed)
             if resolution.fan_out:
