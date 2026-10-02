@@ -171,6 +171,7 @@ import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { useRouter, useRoute } from 'vue-router'
 import {
+  LayoutDashboard,
   Users,
   Database,
   Library,
@@ -201,6 +202,7 @@ const manageItems: {
   label: keyof typeof import('../i18n').messages['zh']
   icon: Component
 }[] = [
+  { path: '/admin', label: 'ovTitle', icon: LayoutDashboard },
   { path: '/admin/users', label: 'users', icon: Users },
   { path: '/admin/datasources', label: 'datasources', icon: Database },
   { path: '/admin/kb', label: 'kb', icon: Library },

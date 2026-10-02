@@ -24,7 +24,17 @@ export const router = createRouter({
       component: () => import('../views/AdminLayout.vue'),
       meta: { requiresAdmin: true },
       children: [
-        { path: '', redirect: '/admin/users' },
+        {
+          path: '',
+          name: 'admin-overview',
+          component: () => import('../views/admin/OverviewView.vue'),
+        },
+        // Compat: /admin/overview is the same page — keep query/hash so old
+        // links (e.g. ?win=7d#todos) land on the state they described.
+        {
+          path: 'overview',
+          redirect: (to) => ({ path: '/admin', query: to.query, hash: to.hash }),
+        },
         {
           path: 'users',
           name: 'admin-users',
