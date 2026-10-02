@@ -20,6 +20,16 @@ from tests.helpers.authz import local_admin_principal  # noqa: E402
 VALID_SQL = "```sql\nSELECT name FROM students;\n```"
 INVALID_SQL = "```sql\nSELEC * FROM students;\n```"
 
+#: 触发**执行期**错误的 SQL:表是**已声明**的,列一定不存在。
+#:
+#: 为什么不用「不存在的表」当触发器(历史上这些用例正是这么写的):A3 表级闸
+#: 默认 enforce 之后,声明之外的表在**执行前**就被 authz 拦下,而拒绝是终态
+#: ——不喂回恢复环(见 execute_sql 的「拒绝不可修正」)。「no such column」则是
+#: 执行期错误(SQL_SCHEMA_MISSING,retryable),修正闭环 / 回退路由 / 防打转
+#: 这些用例真正要测的链路才跑得起来。
+BAD_SQL_RAW = "SELECT * FROM students WHERE nonexistent_col = 1;"
+BAD_SQL = f"```sql\n{BAD_SQL_RAW}\n```"
+
 
 def test_candidate_schedule_default_matches_historical():
     """scaling=5 必须逐字节等于历史 4 温度子图(0.3/0.5/0.7/1.0,无风格)。"""
@@ -536,6 +546,70 @@ class TestTerminatorWiring:
             assert kwargs["connectors"] is sqlite_registry
 
 
+class TestAuthorizerWiring:
+    """执行前授权门走装配线(设计 §5.3 / G2)。
+
+    判定本身的用例在 ``tests/services/authz/``;这里证明的是**真的会装配**,
+    且默认档位与配置面同源。缺了这一段,``Authorizer(mode="warn")`` 这种默认
+    在真实路径上不被任何测试照到 —— 2026-10 之前正是如此:观察期没有数据、
+    配置面的开关也没人证明接到了运行时。
+    """
+
+    @staticmethod
+    def _capture(monkeypatch):
+        """拦下 ``make_execute_sql``,留下每次接线的关键字参数。"""
+        seen: list[dict] = []
+        real = graphs_module.make_execute_sql
+
+        def spy(connectors, **kwargs):
+            seen.append({"connectors": connectors, **kwargs})
+            return real(connectors, **kwargs)
+
+        monkeypatch.setattr(graphs_module, "make_execute_sql", spy)
+        return seen
+
+    def test_default_mode_is_enforce(self, sqlite_registry):
+        """AgentConfig 的默认档 = enforce:未配 authz 的部署闸门也是落下的。"""
+        auth = graphs_module._build_authorizer(
+            make_services(RecordingLLM([]), connectors=sqlite_registry))
+        assert auth is not None
+        assert auth.mode == "enforce"
+
+    def test_warn_rollback_reaches_the_authorizer(self, sqlite_registry):
+        """回退阀连到装配线:显式 warn 的部署拿到 warn 档的判定器。"""
+        cfg = AgentConfig(target="mock/model")
+        cfg.authz.table_enforcement = "warn"
+        auth = graphs_module._build_authorizer(
+            make_services(RecordingLLM([]), connectors=sqlite_registry, config=cfg))
+        assert auth is not None and auth.mode == "warn"
+
+    def test_require_principal_off_disables_the_whole_layer(self, sqlite_registry):
+        """嵌入场景显式关整层 → 不装配(而非装配成放行档)。"""
+        cfg = AgentConfig(target="mock/model")
+        cfg.authz.require_principal = False
+        assert graphs_module._build_authorizer(
+            make_services(RecordingLLM([]), connectors=sqlite_registry, config=cfg)
+        ) is None
+
+    def test_no_semantic_layer_still_enforces_a1_a2(self, sqlite_registry):
+        """未接语义层 ≠ 不装配:A1/A2 恒在,只是 A3 无基准跳过。"""
+        services = make_services(RecordingLLM([]), connectors=sqlite_registry)
+        services.semantic_layer = None
+        auth = graphs_module._build_authorizer(services)
+        assert auth is not None and auth.mode == "enforce"
+
+    def test_both_graphs_hand_it_to_execute_sql(
+        self, sqlite_registry, catalog, monkeypatch,
+    ):
+        seen = self._capture(monkeypatch)
+        build(make_services(RecordingLLM([]), catalog, sqlite_registry))
+
+        nodes = [k for k in seen if k.get("authorizer") is not None]
+        assert len(nodes) == 2, f"reflection / fixed 两条图都该接到:{seen}"
+        for kwargs in nodes:
+            assert kwargs["authorizer"].mode == "enforce"
+
+
 class TestGenSQLSubgraph:
     async def test_single_valid_generation(self):
         sub = build_gen_sql_subgraph(make_services(RecordingLLM([VALID_SQL])))
@@ -647,7 +721,7 @@ class TestReflectionGraph:
     async def test_execute_failure_degrades_to_output(self, sqlite_registry, catalog, monkeypatch):
         """执行失败 → 修正预算内重生成 → 耗尽后优雅降级（不再首错即降级）。"""
         monkeypatch.setattr(graphs_module, "MAX_REFLECT_RETRIES", 2)
-        bad_sql = "```sql\nSELECT * FROM nonexistent;\n```"
+        bad_sql = BAD_SQL
         # 每轮修正：gen → analyze（诊断）→ gen…
         llm = RecordingLLM(["query", bad_sql, "diag", bad_sql, "diag", bad_sql])
         graphs = build(make_services(llm, catalog, sqlite_registry))
@@ -661,7 +735,7 @@ class TestReflectionGraph:
         """执行错误反馈给 gen_sql → 修正后成功（修正闭环）。"""
         llm = RecordingLLM([
             "query",                                             # 意图
-            "```sql\nSELECT * FROM nonexistent;\n```",           # 初稿（运行时错误）
+            BAD_SQL,                                             # 初稿（运行时错误）
             "diag: 表名错误",                                      # 错误诊断
             "```sql\nSELECT name FROM students;\n```",           # 修正稿
             "OK",                                                # reflect
@@ -674,7 +748,7 @@ class TestReflectionGraph:
         assert final["row_count"] == 5
         assert final["verdict"] == "OK"
         # 错误诊断 prompt 携带了执行错误信息
-        assert "nonexistent" in llm.calls[2][-1]["content"]
+        assert "nonexistent_col" in llm.calls[2][-1]["content"]
 
     async def test_preexisting_error_passes_straight_to_output(self, sqlite_registry, catalog):
         graphs = build(make_services(RecordingLLM([]), catalog, sqlite_registry))
@@ -686,7 +760,7 @@ class TestReflectionGraph:
         """analyze_error 的专家诊断必须注入重生成 prompt,而不是被丢弃。"""
         llm = RecordingLLM([
             "query",                                             # 意图
-            "```sql\nSELECT * FROM nonexistent;\n```",           # 初稿(运行时错误)
+            BAD_SQL,                                             # 初稿(运行时错误)
             "diag: 表名错误,应使用 students",                      # 错误诊断
             "```sql\nSELECT name FROM students;\n```",           # 修正稿
             "OK",                                                # reflect
@@ -1479,7 +1553,7 @@ class TestRollbackRouting:
         llm = RecordingLLM([
             "query",                                        # 意图
             "plan: 初版计划",                                # query_sketch 首跑
-            "```sql\nSELECT * FROM nonexistent;\n```",      # 初稿（执行失败）
+            BAD_SQL,                                        # 初稿（执行失败）
             "类型: 计划偏差\nTARGET: query_sketch",               # 判断：回退 query_sketch
             "plan: 用 students 表按 county 分组",            # query_sketch 重定计划
             "```sql\nSELECT name FROM students;\n```",      # 重新生成
@@ -1499,13 +1573,13 @@ class TestRollbackRouting:
             if "修正上下文" in str(m.get("content", ""))
         ]
         assert query_sketch_prompts
-        assert "no such table" in query_sketch_prompts[0]
+        assert "no such column" in query_sketch_prompts[0]
 
     async def test_judge_routes_to_schema_linking(self, sqlite_registry, catalog):
         """判断回退 schema_linking：重新选表后重新生成成功。"""
         llm = RecordingLLM([
             "query",                                        # 意图
-            "```sql\nSELECT * FROM nonexistent;\n```",      # 初稿（执行失败）
+            BAD_SQL,                                        # 初稿（执行失败）
             "判断: 漏了表\nTARGET: schema_linking",          # 判断：重做选表
             "```sql\nSELECT name FROM students;\n```",      # 重新生成
             "OK",                                           # reflect
@@ -1540,9 +1614,9 @@ class TestRollbackRouting:
         llm = RecordingLLM([
             "query",                                        # 意图
             "plan: v1",                                     # query_sketch 首跑
-            "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass1（执行失败）
+            BAD_SQL,                                        # gen pass1（执行失败）
             "TARGET: gen_sql",                              # judge pass1
-            "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass2（仍失败）
+            BAD_SQL,                                        # gen pass2（仍失败）
             "TARGET: gen_sql",                              # judge pass2 → 应被升级
             "plan: 用 students 表",                          # query_sketch（升级后重跑）
             "```sql\nSELECT name FROM students;\n```",      # gen pass3 成功
@@ -1560,11 +1634,13 @@ class TestRollbackRouting:
         """连续不同的执行错误不误报 invalid(结果集签名对执行错误无意义)。"""
         llm = RecordingLLM([
             "query",                                        # 意图
-            "```sql\nSELECT * FROM nonexistent_tbl;\n```",  # gen pass1 (exec error 1)
+            # 三个**互不相同**的执行错误(列名不同 → 错误文本不同):同一个错误
+            # 重演才会被判「无效修复」,这条用例要的正是「不同错误不误报」。
+            "```sql\nSELECT no_such_a FROM students;\n```",  # gen pass1 (exec error 1)
             "TARGET: gen_sql",                              # judge round1
-            "```sql\nSELECT name FROM studnets;\n```",      # gen pass2 (exec error 2)
+            "```sql\nSELECT no_such_b FROM students;\n```",  # gen pass2 (exec error 2)
             "TARGET: gen_sql",                              # judge round2
-            "```sql\nSELECT grade FROM studentss;\n```",    # gen pass3 (exec error 3)
+            "```sql\nSELECT no_such_c FROM students;\n```",  # gen pass3 (exec error 3)
             "TARGET: gen_sql",                              # judge round3
             "```sql\nSELECT name FROM students;\n```",      # gen pass4 OK
             "OK",                                           # reflect
@@ -1588,7 +1664,7 @@ class TestRollbackRouting:
         llm = RecordingLLM([
             "query",                                        # 意图
             "plan: v1",                                     # query_sketch 首跑
-            "```sql\nSELECT * FROM nonexistent_tbl;\n```",  # gen pass1 (exec error)
+            BAD_SQL,                                        # gen pass1 (exec error)
             "TARGET: gen_sql",                              # judge round1 → last=gen_sql
             "```sql\nSELECT name FROM students;\n```",      # gen pass2 OK
             "RETRY: 语义不对，应该按 county 分组",           # reflect RETRY (纯语义)
@@ -1611,7 +1687,7 @@ class TestRollbackRouting:
         """KB 精确命中的 SQL 执行失败后,修正轮重新生成而非重发同一 SQL。"""
 
         class FakeKB:
-            """KB stub:与问题逐词一致的示例(指向不存在的表 → 执行必失败)。"""
+            """KB stub:与问题逐词一致的示例(指向不存在的列 → 执行必失败)。"""
 
             async def ensure_synced(self, default_datasource=None):
                 pass
@@ -1620,7 +1696,7 @@ class TestRollbackRouting:
                                       all_tables=None, per_table=False):
                 return [SimpleNamespace(
                     question="Average grade by county",
-                    sql="SELECT grade FROM nonexistent_kb", tags=[], template=None,
+                    sql="SELECT nonexistent_col FROM students", tags=[], template=None,
                 )]
 
             async def list_rules(self, ds):
@@ -1669,7 +1745,7 @@ class TestFixedGraph:
         """fixed 图同样带执行错误修正闭环。"""
         llm = RecordingLLM([
             "query",
-            "```sql\nSELECT * FROM nonexistent;\n```",
+            BAD_SQL,
             "```sql\nSELECT name FROM students;\n```",
         ])
         graphs = build(make_services(llm, catalog, sqlite_registry))
@@ -2848,7 +2924,7 @@ class TestFixModeWiring:
         llm = RecordingLLM([
             "query",                                        # 意图
             "plan: v1",                                     # query_sketch
-            "```sql\nSELECT * FROM nonexistent;\n```",      # gen pass1（执行失败）
+            BAD_SQL,                                        # gen pass1（执行失败）
             "TARGET: gen_sql",                              # judge → fixer
             "```sql\nSELECT name FROM students;\n```",      # gen pass2 成功
             "OK",                                           # reflect
@@ -2867,7 +2943,7 @@ class TestFixModeWiring:
         每轮换回退目标规避 ladder 升级干扰——证明止损来自 no_progress
         计数而非防打转护栏。
         """
-        bad = "```sql\nSELECT * FROM nonexistent;\n```"
+        bad = BAD_SQL
         llm = RecordingLLM([
             "query",
             "plan: v1",                         # query_sketch

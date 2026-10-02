@@ -85,6 +85,12 @@ class DuckDBAdapter(DatabaseAdapter):
 
     supports_interrupt = True
 
+    # DB 侧语句超时:**显式不声明**。DuckDB 是进程内引擎 —— 没有独立的服务端
+    # 生命周期可以保护,进程一消失查询就没了;而且它没有等价的会话级超时设置
+    # (官方给的是 interrupt API,本仓已通过 ``interrupt()`` 接上)。取消链由
+    # interrupt() 负责;声明 True 只会发出一条这个引擎上不存在的语句。
+    supports_statement_timeout = False
+
     async def interrupt(self) -> bool:
         """duckdb conn.interrupt() — 跨线程停止正在执行的语句。
 

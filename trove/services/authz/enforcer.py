@@ -86,8 +86,8 @@ class Authorizer:
 
     Args:
         declared_tables: 数据源 → 语义层声明过的表名。``None`` = 不判 A3
-            (只做 A1/A2),留给没接语义层的部署与大多数单测。
-        mode: ``warn``(默认,§8.2 观察期)或 ``enforce``。
+            (只做 A1/A2),留给没接语义层的部署。
+        mode: ``enforce``(默认)或 ``warn``(§8.2 观察期档,回退阀)。
 
     Raises:
         ValueError: ``mode`` 不认识。**刻意不静默降级成 warn** —— 配置写错时
@@ -95,7 +95,7 @@ class Authorizer:
     """
 
     def __init__(
-        self, declared_tables: DeclaredTables | None = None, *, mode: str = "warn",
+        self, declared_tables: DeclaredTables | None = None, *, mode: str = "enforce",
     ) -> None:
         normalized = str(mode or "").strip().lower()
         if normalized not in MODES:

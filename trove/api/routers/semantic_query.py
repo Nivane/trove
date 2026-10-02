@@ -18,6 +18,7 @@ Non-admin users are authorized per-datasource via the standard grant surface
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -72,6 +73,22 @@ def _model_for(provider, datasource: str):
     return model
 
 
+def _execute_timeout_s(request: Request) -> float:
+    """执行预算(秒)—— 与图管线同一个 ``budget.timeout_ms``。
+
+    这条路径此前**无界**:NL 管线有 wait_for + QueryTerminator,而这个直执行
+    入口没有,一条慢查询能把 worker 占到进程重启。取不到配置就回到 30s 缺省
+    (与 ``BudgetConfig.timeout_ms`` 同值),而不是无界。
+    """
+    config = getattr(request.app.state, "config", None)
+    raw = getattr(getattr(config, "budget", None), "timeout_ms", 0)
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        ms = 0
+    return (ms if ms > 0 else 30_000) / 1000.0
+
+
 @router.post("/semantic/query")
 async def semantic_query(
     body: SemanticQueryRequest,
@@ -108,7 +125,18 @@ async def semantic_query(
         raise HTTPException(status_code=422, detail=str(e))
 
     try:
-        result = await _registry(request).execute(compiled["sql"], ds)
+        # 有界执行:超时取消走与图管线同一条解栈(适配器的 CancelledError
+        # 分支会发 interrupt/KILL,服务端查询真的停下),然后折成 504 ——
+        # 「我们等不下去了」与「语句本身出错」(500)是两回事。
+        result = await asyncio.wait_for(
+            _registry(request).execute(compiled["sql"], ds),
+            timeout=_execute_timeout_s(request),
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"execution timed out after {_execute_timeout_s(request):g}s",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"execution failed: {e}")
 

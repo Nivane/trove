@@ -62,13 +62,15 @@ class FakeDriver:
     def __init__(self, conn=None):
         self.conn = conn or FakeConn()
         self.connect_args = None
+        self.connect_kwargs = None
         self.connect_count = 0
         driver = self
 
         class _AsyncConnection:
             @classmethod
-            async def connect(cls, conninfo):
+            async def connect(cls, conninfo, **kwargs):
                 driver.connect_args = conninfo
+                driver.connect_kwargs = kwargs
                 driver.connect_count += 1
                 return driver.conn
 
@@ -104,6 +106,21 @@ class TestPostgresAdapter:
         await adapter.connect()
         assert adapter.is_connected
         assert "postgresql://trove:p@127.0.0.1:5432/testdb" in driver.connect_args
+
+    async def test_connect_carries_the_statement_timeout_option(self, monkeypatch):
+        """库侧兜底闸(§10)随**连接参数**走,不是建连后再发 SET:
+        psycopg3 默认 ``autocommit=False``,会话 SET 会落进隐式事务,任何一次
+        回滚都能把它带走 —— 一道随时会被回滚掉的闸不是闸。"""
+        adapter, driver = make_adapter(monkeypatch)
+        await adapter.connect()
+        assert driver.connect_kwargs == {"options": "-c statement_timeout=60000"}
+
+    async def test_statement_timeout_off_sends_no_options(self, monkeypatch):
+        adapter, driver = make_adapter(
+            monkeypatch, config={"host": "127.0.0.1", "statement_timeout_ms": 0},
+        )
+        await adapter.connect()
+        assert driver.connect_kwargs == {}
 
     async def test_connect_failure_wraps_datasource_error(self, monkeypatch):
         class BadDriver:

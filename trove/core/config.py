@@ -82,10 +82,19 @@ class AuthzConfig:
 
     ``table_enforcement``: 表级判定(A3)的档位。
 
-    - ``warn``(默认)—— 命中声明之外的表只记日志/metric,放行。设计 §8.2
-      选它的理由:存量 grants 只到数据源级,直接 enforce 会让**正常查询大面积
-      403**,把一次安全改进做成事故。先跑一周收集「哪些表会被拒」。
-    - ``enforce`` —— 拒绝。
+    - ``enforce``(**默认**)—— 命中声明之外的表即拒绝。
+    - ``warn`` —— 只记日志/metric,放行。**回退阀**:存量部署若确有声明外
+      查询,显式写 ``authz.table_enforcement: warn`` 回到观察档。
+
+    2026-10 从 warn 切到 enforce,依据不是「观察期结束」而是**静态核验**:
+    用 A3 同源基准(``rls.declared_tables``)对三份 KB 的全部快径示例 SQL
+    (demo 211 / financial 201 / mysql_fin 242,共 654 条)逐条 SQLGlot 比对,
+    违规 0 条 —— 设计 §8.2 当初选 warn 是怕存量 grants 只到数据源级、直接
+    enforce 会把**正常查询大面积 403**;核验表明按语义模型走的查询本来就
+    都在声明内,403 面等于零。观察期数据从未存在(所有日志早于 authorizer
+    落地),继续等一个不会到来的信号是纯粹的悬置。**三处默认值同源**
+    (此处 dataclass / ``ConfigLoader`` 的 YAML 缺省 / ``_build_authorizer``
+    的 getattr 兜底),改一处必须改三处。
 
     数据源级判定(A2)与「必须有主体」(A1)**不受这个开关影响**,恒为拒绝。
     读错这个开关只是让 A3 变宽,不会关掉鉴权。
@@ -95,7 +104,7 @@ class AuthzConfig:
     强制点,供不接语义层的嵌入场景显式关掉整层;生产恒为 true。
     """
 
-    table_enforcement: str = "warn"
+    table_enforcement: str = "enforce"
     require_principal: bool = True
 
 
@@ -550,10 +559,14 @@ class ConfigLoader:
         # 却没有在加载器里读 YAML,于是 ``agent.yml`` 里写的 table_enforcement
         # 永远不生效(恒取默认 warn)。masking 接进来时顺手补上 —— 它比 masking
         # 更危险:一个写了 ``enforce`` 的部署以为自己开着表级判定,其实没有。
+        # YAML 缺省的 table_enforcement 必须与 AuthzConfig 的 dataclass 默认
+        # **逐字一致**:有 authz 段但没写这个键的部署,与完全没有 authz 段的
+        # 部署,必须落到同一个档位 —— 两处默认值不一致时,「写不写 authz 段」
+        # 会静默改变闸门宽度,而配置面看起来什么都没发生。
         authz_raw = resolved.get("authz", {}) or agent_section.get("authz", {}) or {}
         authz_conf = AuthzConfig(
             table_enforcement=str(
-                authz_raw.get("table_enforcement", "warn")).strip().lower(),
+                authz_raw.get("table_enforcement", "enforce")).strip().lower(),
             require_principal=bool(authz_raw.get("require_principal", True)),
         )
         masking_raw = resolved.get("masking", {}) or agent_section.get("masking", {}) or {}

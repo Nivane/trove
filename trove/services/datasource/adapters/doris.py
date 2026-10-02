@@ -34,6 +34,13 @@ class DorisAdapter(MySQLAdapter):
     profile_capabilities = frozenset({"row_count"})
     _PROFILE_COLS: tuple = ()
 
+    # DB 侧语句超时:显式**收窄**(覆盖 MySQL 的 True)。Doris 的会话级超时
+    # 语句语义未在本仓验证过 —— 声明 True 会让 MySQL 的 ``SET SESSION
+    # max_execution_time`` 原样发到 Doris 上,而它认不认、认成什么,没人试过
+    # (同 ``_PROFILE_COLS`` 那条纪律:声明只写验证过的)。声明 False = 一个字
+    # 都不发,退回既有取消链(interrupt 仍然可用)。
+    supports_statement_timeout = False
+
     def __init__(self, name: str = "doris", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
 

@@ -262,6 +262,22 @@ class TestCteAliasIsNotATable:
 
 
 class TestMode:
+    def test_default_mode_is_enforce(self):
+        """构造默认 = enforce(2026-10 切换):未显式给档位时闸门必须落下。
+
+        与 ``AuthzConfig.table_enforcement`` / ``ConfigLoader`` 的缺省 /
+        ``_build_authorizer`` 的 getattr 兜底同源 —— 这里是 AI 侧最后一处
+        兜底,兜错了「忘了传 mode」就静默放行。
+        """
+        assert Authorizer().mode == "enforce"
+
+    def test_warn_remains_selectable_as_rollback(self):
+        """回退阀:warn 仍可显式选用,且真的只记不拦。"""
+        a = Authorizer(declared_tables=lambda _ds: _DECLARED, mode="warn")
+        d = a.check(_user(), datasource=DEFAULT, sql="SELECT * FROM payroll",
+                    default=DEFAULT)
+        assert d.allowed is True
+
     def test_unknown_mode_is_rejected_at_construction(self):
         """写错配置不得静默降级成 warn —— 那会让 enforce 变成一个错觉。"""
         with pytest.raises(ValueError):

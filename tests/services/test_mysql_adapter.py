@@ -14,14 +14,37 @@ from trove.services.datasource.adapters.mysql import MySQLAdapter
 
 
 class FakeCursor:
-    def __init__(self, responses=None, description=None, error=None):
-        self._responses = list(responses or [])
-        self.description = description
-        self.error = error
+    """假游标:响应在**首次 execute** 时才定型。
+
+    适配器在 connect 与每次 ping 之后会发一条**家务语句**(库侧语句超时的
+    会话变量 SET,见 ``MySQLAdapter.supports_statement_timeout``);``cursor()``
+    那一刻看不出它要执行什么,所以在 ``cursor()`` 处出队会让每条用例都得为
+    它多排一份空响应,排队位置还会随适配器改动整体平移。改为首次 execute 时
+    按 SQL 分流:用例的 ``cursor_specs`` 只需描述**自己的业务语句**。
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._responses = None       # None = 尚未定型(首次 execute 决定)
+        self.description = None
+        self.error = None
         self.executed = []
+
+    def _bind(self, sql: str) -> None:
+        if self._responses is not None:
+            return
+        if self._conn.is_housekeeping(sql):
+            # 家务语句:空响应足够(它不 fetch);单独记账备查,不占业务队列
+            self._responses = []
+            self._conn.housekeeping.append(self)
+            return
+        responses, self.description, self.error = self._conn._next_spec()
+        self._responses = list(responses)
+        self._conn.cursors.append(self)
 
     async def execute(self, sql, params=None):
         self.executed.append((sql, params))
+        self._bind(sql)
         if self.error:
             raise self.error
 
@@ -36,12 +59,28 @@ class FakeCursor:
 
 
 class FakeConn:
+    #: 家务语句的判据(变量名,不是前缀 —— 免得把用例自己的 SET 也吞掉)。
+    #: 形状由 ``test_adapter_statement_timeout_contract.py`` 专职钉住;这里
+    #: 保证「发得出、关得掉」并且**看得见**(``housekeeping`` 记账)。
+    HOUSEKEEPING_MARKERS = ("MAX_EXECUTION_TIME", "MAX_STATEMENT_TIME")
+
     def __init__(self, cursor_specs=None):
-        # cursor_specs: list of (responses, description, error) per cursor creation
+        # cursor_specs: 业务游标按创建顺序出队,每条 (responses, description, error)
         self._cursor_specs = list(cursor_specs or [])
-        self.cursors = []
+        self.cursors = []        # 业务游标(索引与用例里的第 N 条语句一一对应)
+        self.housekeeping = []   # 家务游标(见 HOUSEKEEPING_MARKERS)
         self.ping_count = 0
         self.ping_error = None
+
+    @classmethod
+    def is_housekeeping(cls, sql) -> bool:
+        upper = str(sql or "").upper()
+        return upper.startswith("SET SESSION ") and any(
+            m in upper for m in cls.HOUSEKEEPING_MARKERS
+        )
+
+    def _next_spec(self):
+        return self._cursor_specs.pop(0) if self._cursor_specs else ({}, None, None)
 
     async def ping(self, reconnect=True):
         self.ping_count += 1
@@ -49,11 +88,7 @@ class FakeConn:
             raise self.ping_error
 
     async def cursor(self):
-        spec = self._cursor_specs.pop(0) if self._cursor_specs else ({}, None, None)
-        responses, description, error = spec
-        cur = FakeCursor(responses, description, error)
-        self.cursors.append(cur)
-        return cur
+        return FakeCursor(self)
 
     async def close(self):
         pass
@@ -107,6 +142,22 @@ class TestMySQLAdapter:
 
         assert adapter._server_version == "8.0.36"
         assert conn.cursors[0].executed[0][0] == "SELECT VERSION()"
+
+    async def test_connect_and_ping_arm_the_db_side_timeout(self, monkeypatch):
+        """库侧兜底闸(§10):connect 时落一条会话变量,每次 ping 之后**再落一次**
+        (ping 可能悄悄重连并带走会话变量,且无法从返回值区分)。
+
+        语句形状由 ``test_adapter_statement_timeout_contract.py`` 专职钉;这里钉
+        **本文件的假连接确实看见了它** —— 家务语句若被静默吞掉,"以为有界其实
+        没有"的失败模式就在测试里原样成立(见 ``FakeConn.HOUSEKEEPING_MARKERS``)。
+        """
+        conn = FakeConn()
+        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        await adapter.connect()
+        await adapter.execute("SELECT 1")
+
+        sent = [sql for c in conn.housekeeping for sql, _ in c.executed]
+        assert sent == ["SET SESSION max_execution_time = 60000"] * 2
 
     async def test_connect_failure_wraps_datasource_error(self, monkeypatch):
         class BadDriver:

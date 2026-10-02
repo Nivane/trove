@@ -135,7 +135,11 @@ class MySQLAdapter(DatabaseAdapter):
                 db=self.config.get("database", ""),
             )
             self._connected = True
+            # 先探测版本,再装库侧兜底闸(见 supports_statement_timeout):
+            # MySQL 与 MariaDB 的超时变量**不同**(单位也不同),装闸要看着
+            # 引擎选;版本探测是服务端常量查询、不扫数据,先跑它的暴露可以忽略。
             await self._probe_version()
+            await self.apply_statement_timeout()
             logger.debug("Connected to %s: %s:%s/%s",
                          self.label, self.config.get("host"), self.config.get("port"),
                          self.config.get("database"))
@@ -169,6 +173,57 @@ class MySQLAdapter(DatabaseAdapter):
         self._connected = False
 
     supports_interrupt = True
+
+    # DB 侧语句超时(§10):会话变量,只对只读 SELECT 生效。变量名与单位
+    # **随引擎不同**(MySQL ``max_execution_time``/毫秒,MariaDB
+    # ``max_statement_time``/秒),由 ``_statement_timeout_sql`` 归一。
+    supports_statement_timeout = True
+
+    #: MariaDB 的版本串一定带这个词(``10.6.12-MariaDB-1:...``;
+    #: 旧客户端协议下是 ``5.5.5-10.x.y-MariaDB``,同样命中)。
+    MARIADB_MARK = "mariadb"
+
+    def _statement_timeout_sql(self, ms: int) -> str:
+        """按引擎选超时语句。
+
+        **MariaDB 不认 ``max_execution_time``**(MySQL 独有,发了直接报
+        Unknown system variable);它自己的叫 ``max_statement_time``,而且
+        单位是**秒**(10.1.1+,双精度,精度 1ms)。引擎从版本探测的字符串
+        判;探测失败(空串)按 MySQL 处理 —— 猜错的代价是一条 WARNING
+        (被拒 → 降级记录),而不是「用错变量还显示已装闸」。
+        """
+        if self.MARIADB_MARK in (self._server_version or "").lower():
+            return f"SET SESSION max_statement_time = {ms / 1000.0:g}"
+        return f"SET SESSION max_execution_time = {int(ms)}"
+
+    async def _apply_statement_timeout(self, ms: int) -> bool:
+        """``SET SESSION <超时变量>``(见 ``_statement_timeout_sql``)。一条龙 try —— 永不抛。
+
+        这条语句是**兜底闸**,而它对面是另一个事实:MySQL 协议的**其他引擎**
+        (MySQL < 5.7.8、MariaDB < 10.1.1、以及 Doris 这类语义未验证的实现)
+        未必认这条语句。在旧引擎上让整条连接失败,是用一次可用的降级换一次
+        不可用的保护;但降级必须看得见 —— 警告里点名语句与后果,返回值
+        False 供调用方记录。
+        """
+        if self._conn is None:
+            return False
+        statement = self._statement_timeout_sql(ms)
+        try:
+            cursor = await self._conn.cursor()
+            try:
+                await cursor.execute(statement)
+            finally:
+                await cursor.close()
+        except Exception as e:
+            logger.warning(
+                "%s rejected %r (%s: %s) — DB-side statement timeout is NOT in "
+                "effect on this connection (MySQL < 5.7.8 / MariaDB < 10.1.1 / "
+                "other MySQL-protocol engines); the app-side budget remains the "
+                "primary gate", self.label, statement, type(e).__name__, e,
+            )
+            return False
+        logger.debug("%s statement timeout armed: %s", self.label, statement)
+        return True
 
     async def interrupt(self) -> bool:
         """KILL QUERY via a side connection (a busy connection can't serve it).
@@ -278,6 +333,11 @@ class MySQLAdapter(DatabaseAdapter):
                 message=f"{self.label} connection lost and reconnect failed: {e}",
                 datasource=self.name,
             ) from e
+        # 重连(若发生)会带走会话变量,而 ping 是否真重连**无法从返回值区分**
+        # (aiomysql 原地换 socket,Connection 对象不变)—— 与其猜,不如每次
+        # ping 后都重发一次:一条廉价 SET,换掉「以为有界其实没有」这一个
+        # 失败模式。未声明/显式关闭的方言在这一行里自然什么都不发。
+        await self.apply_statement_timeout()
 
     async def _ensure_connected(self) -> None:
         """Ensure a live connection, reconnecting a stale one."""

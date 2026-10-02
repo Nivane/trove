@@ -369,3 +369,34 @@ class TestLocalDateAnchor:
         if out.error:
             pytest.skip(f"english rules unsupported: {out.error}")
         assert out.evidence["periods"]["current"] == ["2026-08-01", "2026-08-31"]
+
+
+class TestBoundedExecution:
+    """每条 SQL 有各自的执行预算 —— 定时任务没有人在等。
+
+    无界的形态是:一条慢查询把这次 run(job 的 schedule)永远吊在 ``await`` 上,
+    看板上它既不是成功也不是失败。所以超时必须折成 run 上看得见的 error
+    (``evaluate`` 的既有契约:失败响亮,绝不静默变 OK)。
+    """
+
+    async def test_a_hanging_query_folds_into_a_visible_error(self, svc, monkeypatch):
+        import asyncio
+
+        async def _hang(*_a, **_k):
+            await asyncio.sleep(30)
+
+        bounded = DecisionService(svc.connectors, svc.kb, timeout_ms=50)
+        monkeypatch.setattr(svc.connectors, "execute", _hang)
+
+        out = await bounded.evaluate(rule(), "demo", NOW)
+
+        assert out.triggered is False
+        assert "timed out" in out.error
+
+    def test_positive_value_wins(self):
+        assert DecisionService(None, None, timeout_ms=50)._timeout_ms == 50
+
+    @pytest.mark.parametrize("raw", [0, -1, "abc", None])
+    def test_missing_or_garbage_falls_back_to_the_default(self, raw):
+        """非正/非数 → 回到缺省,**不静默变成"无超时"**。"""
+        assert DecisionService(None, None, timeout_ms=raw)._timeout_ms == 30_000

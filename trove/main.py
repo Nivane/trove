@@ -367,7 +367,11 @@ async def create_app_components(
 
     scheduler = SchedulerRunner(
         session_manager, jobs, lang=config.language,
-        decision=DecisionService(connector_registry, kb),
+        # 决策规则的执行预算与交互管线同源(budget.timeout_ms):定时任务没有
+        # 人在等,无界查询会把 job 的 schedule 永远吊住。
+        decision=DecisionService(
+            connector_registry, kb, timeout_ms=int(config.budget.timeout_ms),
+        ),
     )
 
     # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
