@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from trove.api.deps import get_current_user, require_admin
 from trove.api.schemas import (
@@ -29,8 +30,43 @@ from trove.api.schemas import (
 router = APIRouter()
 
 
+class LessonKeyBody(BaseModel):
+    """逐条 lesson 审批的动作键(管理端「待审批」队列)。
+
+    ``key`` = ``pattern`` 或 ``question`` —— 键两认与
+    ``KbService.confirm_lesson`` 同一纪律。走 body 而不是 path:pattern
+    里含 ``/`` 时 ``%2F`` 能否匹配 path 参数取决于 ASGI 层,body 传键
+    没有这个歧义。``note`` 非 None 时表示「编辑后确认」(先改 note)。
+    """
+
+    key: str
+    datasource: str | None = None
+    note: str | None = None
+
+
+class ExampleKeyBody(BaseModel):
+    """逐条示例审批的定位键(question+sql = pending 草稿的稳定标识)。"""
+
+    question: str
+    sql: str
+    datasource: str | None = None
+
+
 def _kb(request: Request):
     return request.app.state.kb
+
+
+async def _audit(request: Request, action: str, user: dict, status: int,
+                 details: dict | None = None) -> None:
+    """审计写入(与 admin.py 的 ``_audit`` 同一形状)。
+
+    单条与批量、本路由与 admin 路由共用同一套事件名 —— 「治理动作的
+    可追溯性不能取决于走了哪个按钮」。
+    """
+    await request.app.state.auth.record_audit(
+        action, user=user, method=request.method, path=request.url.path,
+        status=status, details=details,
+    )
 
 
 def _datasource(request: Request, datasource: str | None) -> str:
@@ -81,6 +117,24 @@ async def list_rules(
     ds = _datasource(request, datasource)
     await kb.ensure_synced(ds)
     return {"rules": await kb.list_rules(ds)}
+
+
+@router.get("/kb/entries")
+async def list_semantic_entries(
+    request: Request, datasource: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """语义条目全量列表(管理端「术语与指标」表)。
+
+    每条带 ``kind``(metric / entity / table)与镜像 ``item_key``:这三类
+    是镜像里本就存在的 kind,此前管理端只展示 ``term`` 一类,把指标、
+    维度、枚举值都藏在同一张「术语」表里。``term`` 与 ``metric`` 是同一
+    份 payload 的两套投影,这里只出 metric 一套(不重复计数)。
+    """
+    kb = _kb(request)
+    ds = _datasource(request, datasource)
+    await kb.ensure_synced(ds)
+    return {"entries": await kb.list_semantic_entries(ds)}
 
 
 # ── Terms (semantics.yml) ────────────────────────────────
@@ -184,7 +238,10 @@ async def confirm_pending_examples(
     """
     ds = _datasource(request, datasource)
     actor = str(user.get("username", ""))
-    return {"confirmed": await _kb(request).confirm_pending_examples(ds, actor=actor)}
+    confirmed = await _kb(request).confirm_pending_examples(ds, actor=actor)
+    await _audit(request, "kb.example.confirm", user, 200,
+                 {"datasource": ds, "all": True, "confirmed": confirmed})
+    return {"confirmed": confirmed}
 
 
 @router.post("/kb/examples/reject", response_model=LessonConfirmResponse)
@@ -194,7 +251,58 @@ async def reject_pending_examples(
 ) -> dict:
     """拒绝(删除)全部 pending 示例。"""
     ds = _datasource(request, datasource)
-    return {"confirmed": await _kb(request).reject_pending_examples(ds)}
+    rejected = await _kb(request).reject_pending_examples(ds)
+    await _audit(request, "kb.example.reject", user, 200,
+                 {"datasource": ds, "all": True, "rejected": rejected})
+    return {"confirmed": rejected}
+
+
+@router.post("/kb/examples/confirm-one")
+async def confirm_pending_example(
+    body: ExampleKeyBody, request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """确认**单条** pending 示例(question+sql 定位,逐条认证门)。
+
+    认证门逐条判定:坏 SQL 以 409 + 原因回报并原样留在 pending,不拖住
+    整批(整批版是一条坏 SQL 全批拒绝)。管理台的批量条据此展示部分失败
+    与单项重试。404 = 没有匹配的 pending 草稿(可能已被处理)。
+    """
+    ds = _datasource(request, body.datasource or datasource)
+    res = await _kb(request).confirm_pending_example(
+        ds, question=body.question, sql=body.sql,
+        actor=str(user.get("username", "")),
+    )
+    if res["status"] == "not_found":
+        raise HTTPException(
+            status_code=404, detail=f"pending example not found: {body.question}")
+    if res["status"] == "refused":
+        raise HTTPException(
+            status_code=409,
+            detail="认证门拒绝(坏 SQL 进资产库后会被快径直接执行): "
+                   f"「{body.question}」: " + " | ".join(res["issues"]))
+    await _audit(request, "kb.example.confirm", user, 200,
+                 {"datasource": ds, "question": body.question})
+    return {"status": "confirmed", "question": body.question,
+            "audit": "kb.example.confirm"}
+
+
+@router.post("/kb/examples/reject-one")
+async def reject_pending_example(
+    body: ExampleKeyBody, request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """拒绝(删除)**单条** pending 示例;已确认的条目不受影响。"""
+    ds = _datasource(request, body.datasource or datasource)
+    if not await _kb(request).reject_pending_example(
+        ds, question=body.question, sql=body.sql,
+    ):
+        raise HTTPException(
+            status_code=404, detail=f"pending example not found: {body.question}")
+    await _audit(request, "kb.example.reject", user, 200,
+                 {"datasource": ds, "question": body.question})
+    return {"status": "rejected", "question": body.question,
+            "audit": "kb.example.reject"}
 
 
 # ── Lessons (Hint Bank, pending until confirmed) ─────────
@@ -261,7 +369,43 @@ async def confirm_lessons(
     user: dict = Depends(require_admin),
 ) -> dict:
     ds = _datasource(request, datasource)
-    return {"confirmed": await _kb(request).confirm_pending_lessons(ds)}
+    confirmed = await _kb(request).confirm_pending_lessons(ds)
+    await _audit(request, "kb.lesson.confirm", user, 200,
+                 {"datasource": ds, "all": True, "confirmed": confirmed})
+    return {"confirmed": confirmed}
+
+
+@router.post("/kb/lessons/confirm-one")
+async def confirm_lesson_one(
+    body: LessonKeyBody, request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """确认**单条** lesson(键两认:pattern 或 question)。
+
+    ``note`` 非 None 时先就地改 note 再确认(管理端「编辑后确认」)。
+    404 = 键没有匹配条目 —— 键两认落地后,投票产生的 lesson(只有
+    question)不再必然 404。
+    """
+    ds = _datasource(request, body.datasource or datasource)
+    if not await _kb(request).confirm_lesson(ds, body.key, note=body.note):
+        raise HTTPException(status_code=404, detail=f"lesson not found: {body.key}")
+    await _audit(request, "kb.lesson.confirm", user, 200,
+                 {"datasource": ds, "key": body.key})
+    return {"status": "confirmed", "key": body.key, "audit": "kb.lesson.confirm"}
+
+
+@router.post("/kb/lessons/reject-one")
+async def reject_lesson_one(
+    body: LessonKeyBody, request: Request, datasource: str | None = None,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """删除**单条** lesson(键两认:pattern 或 question)。"""
+    ds = _datasource(request, body.datasource or datasource)
+    if not await _kb(request).reject_lesson(ds, body.key):
+        raise HTTPException(status_code=404, detail=f"lesson not found: {body.key}")
+    await _audit(request, "kb.lesson.reject", user, 200,
+                 {"datasource": ds, "key": body.key})
+    return {"status": "rejected", "key": body.key, "audit": "kb.lesson.reject"}
 
 
 # ── Table annotations (schema_notes.yml) ─────────────────

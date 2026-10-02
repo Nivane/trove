@@ -415,6 +415,20 @@ def _lesson_table_ok(lesson: dict, matched: list[str], all_tables: list[str]) ->
     return not mentioned or any(t in matched for t in mentioned)
 
 
+def _lesson_key_matches(lesson: dict, key: str) -> bool:
+    """``key`` 匹配教训的 ``pattern`` 或 ``question``(strip 后全等)。
+
+    「键两认」是全服务唯一纪律(``update_lesson_confidence`` / confirm /
+    reject 共用):教训按来源有两种键 —— 蒸馏与人工追加写 ``pattern``,
+    用户投票写 ``question``。只认 pattern 的匹配会把票数条目漏掉,而它们
+    恰恰是最需要人看的一批。
+    """
+    return key in (
+        str(lesson.get("pattern", "")).strip(),
+        str(lesson.get("question", "")).strip(),
+    )
+
+
 def _lesson_text(lesson: dict) -> str:
     """教训的检索文本。``question`` 必须在内:投票教案按 question 存、没有
     ``pattern``，漏掉它会让这类条目相似度恒为 0 —— 票数加权乘在一个零上。"""
@@ -589,6 +603,11 @@ def _entries_of(path: Path, text: str, data: dict) -> list[tuple[str, str, dict]
                 "confidence": float(lesson.get("confidence") or 0.0),
                 "source": str(lesson.get("source") or "manual"),
                 "evidence": str(lesson.get("evidence") or ""),
+                # 时间戳透传:append 路径写 created_at、rating 路径写
+                # updated_at。缺失留空串 —— 管理端显示「—」,不拿假时间
+                # 填列(两个写入路径的源头本来就不同齐)。
+                "created_at": str(lesson.get("created_at") or ""),
+                "updated_at": str(lesson.get("updated_at") or ""),
             }))
 
     elif path.name == "examples.yml":
@@ -1768,6 +1787,9 @@ class KbService:
                 "upvotes": 0,
                 "downvotes": 0,
                 "confirmed": False,
+                # 来路如实:这是用户投票产生的条目(镜像缺省 "manual" 会让
+                # 来源列把最需要区分的这批显示成手工写入)。
+                "source": "user_feedback",
             }
             lessons.append(lesson)
             existing = lesson
@@ -1881,6 +1903,9 @@ class KbService:
             "tags": [str(t) for t in (tags or []) if str(t)][:6],
             "pending": True,
             "template": False,
+            # 草稿时间戳(与 append_lesson 同一条纪律):管理端队列的
+            # 「躺了多久 / 按时间排序」都靠它。没有它只能显示「—」。
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
         if note:
             draft["note"] = note
@@ -1984,6 +2009,91 @@ class KbService:
             await self.git_commit(datasource, "kb: reject pending examples")
         return rejected
 
+    async def confirm_pending_example(
+        self, datasource: str, *, question: str, sql: str, actor: str = "",
+    ) -> dict:
+        """确认**单条** pending 示例(按 question+sql 定位;逐条认证门)。
+
+        与整批确认的两点区别,都是刻意的:
+        - 认证门**逐条**判定:坏条目以 ``refused`` 连原因一起回报并原样
+          留在 pending,不拖住其余好资产(整批版是一条坏 SQL 全批拒绝);
+        - 返回 per-item 结果 ``{status, issues}``,status ∈ confirmed /
+          refused / not_found —— 管理台的批量条据此展示部分失败与重试。
+
+        ``actor`` 语义与整批一致:拿不到就清 pending 但**不写认证记录**
+        (I5 要求 certified 必须有人)。
+        """
+        path = self.kb_dir / datasource / "examples.yml"
+        data = self._read_examples(path, strict=True)
+        target = next(
+            (ex for ex in data.get("examples", [])
+             if ex.get("pending")
+             and str(ex.get("question", "")) == question
+             and str(ex.get("sql", "")) == sql),
+            None,
+        )
+        if target is None:
+            return {"status": "not_found", "issues": []}
+        issues = certification_issues(str(target.get("sql", "")))
+        if issues:
+            return {"status": "refused", "issues": issues}
+        if not actor:
+            logger.warning(
+                "kb confirm example %s: no actor given; confirmed but NOT "
+                "certified (I5 requires an approver) — pass actor=<username>",
+                datasource,
+            )
+        target.pop("pending", None)
+        if actor:
+            gov = target.get("governance")
+            gov = dict(gov) if isinstance(gov, dict) else {}
+            gov["status"] = CERTIFIED
+            gov["approved_by"] = actor
+            gov["approved_at"] = datetime.now(timezone.utc).isoformat()
+            if not gov.get("owner"):
+                gov["owner"] = actor
+            gov.setdefault("source", "")
+            target["governance"] = gov
+        _write_doc(path, data, "kb_confirm_example")
+        await self.force_sync(datasource)
+        # files= 显式限定与整批同因:不把别人未提交的 *.yml 卷进这次带
+        # Approved-by 的提交。
+        await self.git_commit(
+            datasource, f"kb: confirm example ({question[:60]})",
+            files=["examples.yml"],
+            trailers={"Generator": "kb", "Approved-by": actor} if actor else None,
+        )
+        return {"status": "confirmed", "issues": []}
+
+    async def reject_pending_example(
+        self, datasource: str, *, question: str, sql: str,
+    ) -> bool:
+        """删除**单条** pending 示例(按 question+sql 定位)。
+
+        Returns False when no pending entry matches. 已确认的条目不受影响
+        —— 这个动作只作用于草稿(拒绝确认 = 丢弃草稿)。
+        """
+        path = self.kb_dir / datasource / "examples.yml"
+        data = self._read_examples(path, strict=True)
+        examples = list(data.get("examples", []))
+        kept = [
+            ex for ex in examples
+            if not (
+                ex.get("pending")
+                and str(ex.get("question", "")) == question
+                and str(ex.get("sql", "")) == sql
+            )
+        ]
+        if len(kept) == len(examples):
+            return False
+        data["examples"] = kept
+        _write_doc(path, data, "kb_reject_example")
+        await self.force_sync(datasource)
+        await self.git_commit(
+            datasource, f"kb: reject example ({question[:60]})",
+            files=["examples.yml"])
+        return True
+
     async def get_lesson(self, datasource: str, pattern: str) -> dict | None:
         """One lesson by exact pattern match, or None."""
         path = self.kb_dir / datasource / "lessons.yml"
@@ -1995,46 +2105,66 @@ class KbService:
                 return lesson
         return None
 
-    async def confirm_lesson(self, datasource: str, pattern: str) -> bool:
-        """Confirm one pending lesson by pattern (rewrites the YAML).
+    async def confirm_lesson(
+        self, datasource: str, key: str, *, note: str | None = None,
+    ) -> bool:
+        """Confirm one pending lesson by ``pattern`` **or** ``question``.
 
-        Returns False when the pattern is absent. Idempotent for an
+        Returns False when neither matches. Idempotent for an
         already-confirmed lesson (returns True).
+
+        ``key`` 两认与 ``update_lesson_confidence`` 同一条纪律:教训有两种
+        写法 —— 失败蒸馏/人工追加按 ``pattern``,用户投票按 ``question``
+        (``rate_lesson``)。只认 pattern 会让带票数的条目(管理台最该审的
+        那批)永远 404。``note`` 传入时先就地改 note 再确认(管理端的
+        「编辑后确认」)。
         """
+        key = (key or "").strip()
+        if not key:
+            return False
         path = self.kb_dir / datasource / "lessons.yml"
         if not path.exists():
             return False
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         found = False
         for lesson in data.get("lessons", []):
-            if lesson.get("pattern") == pattern:
-                lesson["confirmed"] = True
-                found = True
-                break
+            if not _lesson_key_matches(lesson, key):
+                continue
+            if note is not None:
+                lesson["note"] = note
+            lesson["confirmed"] = True
+            found = True
+            break
         if not found:
             return False
         _write_doc(path, data, "kb_confirm_lesson")
         await self.force_sync(datasource)
-        await self.git_commit(datasource, f"kb: confirm lesson ({pattern})")
+        await self.git_commit(datasource, f"kb: confirm lesson ({key})")
         return True
 
-    async def reject_lesson(self, datasource: str, pattern: str) -> bool:
-        """Remove one lesson by pattern (rewrites the YAML).
+    async def reject_lesson(self, datasource: str, key: str) -> bool:
+        """Remove one lesson by ``pattern`` **or** ``question``.
 
-        Returns False when the pattern is absent.
+        Returns False when neither matches. Path-unsafe characters in the
+        key are irrelevant here (the key never becomes a path — it is
+        matched against file content), which is the whole point of the
+        two-recognitions rule.
         """
+        key = (key or "").strip()
+        if not key:
+            return False
         path = self.kb_dir / datasource / "lessons.yml"
         if not path.exists():
             return False
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         lessons = data.get("lessons", [])
         before = len(lessons)
-        data["lessons"] = [ln for ln in lessons if ln.get("pattern") != pattern]
+        data["lessons"] = [ln for ln in lessons if not _lesson_key_matches(ln, key)]
         if len(data["lessons"]) == before:
             return False
         _write_doc(path, data, "kb_reject_lesson")
         await self.force_sync(datasource)
-        await self.git_commit(datasource, f"kb: reject lesson ({pattern})")
+        await self.git_commit(datasource, f"kb: reject lesson ({key})")
         return True
 
     async def update_lesson_confidence(
@@ -2206,6 +2336,30 @@ class KbService:
             (datasource,),
         )
         return [json.loads(row["payload"]) for row in rows]
+
+    async def list_semantic_entries(self, datasource: str) -> list[dict]:
+        """语义条目全量视图(管理端「术语与指标」表)。
+
+        只取 metric / entity / table 三个 kind,每条补上 ``kind`` 与镜像
+        ``item_key``(统一的名字列):``term`` 是 metric 的子串检索投影
+        (同一份 semantics.yml 的两套 payload),把两套都列出来会让同一条
+        指标在表里出现两遍、计数也翻倍。
+        """
+        if not self.enabled:
+            return []
+        rows = await self._rows(
+            "SELECT kind, item_key, payload FROM kb_items "
+            "WHERE kind IN ('metric', 'entity', 'table') AND datasource = ? "
+            "ORDER BY kind, id",
+            (datasource,),
+        )
+        entries: list[dict] = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            payload["kind"] = row["kind"]
+            payload["key"] = row["item_key"]
+            entries.append(payload)
+        return entries
 
     async def kb_detail(self, datasource: str) -> dict:
         """One aggregate dump for the KB management page (admin API).
