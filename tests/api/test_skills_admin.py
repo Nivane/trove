@@ -105,6 +105,55 @@ async def test_skills_require_admin(api_app, tmp_path, user_client, anon_client)
     assert r.status_code in (401, 403)
 
 
+class TestSkillAuditTrail:
+    """治理动作留痕(设计稿 P5 §1 缺陷 12 / 附录 C.1-R5)。
+
+    技能此前是唯一「改了不留痕」的治理动作;confirm / reject / tier 三条写
+    路由补上审计(动作名 ``skill.<动作>``,照 drift.py 的 _audit 写法)。
+    """
+
+    async def test_confirm_tier_reject_are_audited(self, api_app, tmp_path, client):
+        _install_skills(api_app, tmp_path)
+        auth = api_app.state.auth
+
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        r = await client.post("/v1/admin/skills/recon-caliber/confirm")
+        assert r.status_code == 200
+        r = await client.post(
+            "/v1/admin/skills/recon-caliber/tier", json={"tier": "required"},
+        )
+        assert r.status_code == 200
+        await client.post(
+            "/v1/admin/skills/draft", json=_draft_payload(name="second-skill"),
+        )
+        r = await client.post("/v1/admin/skills/second-skill/reject")
+        assert r.status_code == 200
+
+        confirm = await auth.list_audit(action="skill.confirm")
+        assert len(confirm) == 1
+        assert confirm[0]["username"] == "admin"
+        assert confirm[0]["path"] == "/v1/admin/skills/recon-caliber/confirm"
+        assert confirm[0]["status"] == 200
+        assert confirm[0]["details"] == {
+            "name": "recon-caliber", "injection_hits": [],
+        }
+
+        tier = await auth.list_audit(action="skill.tier")
+        assert len(tier) == 1
+        assert tier[0]["details"] == {"name": "recon-caliber", "tier": "required"}
+
+        reject = await auth.list_audit(action="skill.reject")
+        assert len(reject) == 1
+        assert reject[0]["details"] == {"name": "second-skill"}
+
+    async def test_failed_action_writes_no_audit(self, api_app, tmp_path, client):
+        """只在成功后写(与 drift 的 _transition 一致):404 不留「做过」的假象。"""
+        _install_skills(api_app, tmp_path)
+        r = await client.post("/v1/admin/skills/ghost-skill/confirm")
+        assert r.status_code == 404
+        assert await api_app.state.auth.list_audit(action="skill.confirm") == []
+
+
 async def test_llm_draft_endpoint(api_app, tmp_path, client):
     """LLM 草稿端点:mock 网关产出正文 → pending 待确认。"""
     svc = SkillService(root=tmp_path / "proj" / ".trove" / "skills", llm=api_app.state.llm_gateway)

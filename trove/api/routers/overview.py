@@ -79,19 +79,26 @@ _RUNS_FAILED_SQL = (
 )
 
 #: 待办 8 类来源与其深链(设计稿 §5 的 items;顺序即展示顺序,shape 固定)。
-#: ``memory_preference`` 的落点尚无页面(P4),href 如实为 null。
+#: ``memory_preference`` 的落点页已存在(治理中心收件箱,P5)——不再是 null;
+#: ``drift`` 的处置家在治理中心 Tab3(漂移与版本),不再是数据源页。
 _TODO_HREFS: dict[str, str | None] = {
     "kb_lesson": "/admin/kb?tab=lessons",
     "kb_example": "/admin/kb?tab=examples",
     "semantic_draft": "/admin/semantic?pending=1",
     "skill_draft": "/admin/skills",
-    "memory_preference": None,
-    "drift": "/admin/datasources",
+    "memory_preference": "/admin/governance?tab=inbox&kind=memory_preference",
+    "drift": "/admin/governance?tab=drift",
     "job_failed": "/admin/jobs?status=error",
     "user_nogrant": "/admin/users?status=nogrant",
 }
 #: 逐数据源扇出的三类(KB lesson / example / 语义草稿)。
 _PER_SOURCE_TODO_KINDS = ("kb_lesson", "kb_example", "semantic_draft")
+#: 六类**审批**待办(治理中心收件箱;= overview 八类 − 两类运维待办
+#: job_failed / user_nogrant)。条目级端点 /v1/admin/todos 只认这六类。
+APPROVAL_TODO_KINDS = (
+    "kb_lesson", "kb_example", "semantic_draft",
+    "skill_draft", "memory_preference", "drift",
+)
 
 
 # ── 通用小件 ─────────────────────────────────────────────
@@ -462,28 +469,60 @@ async def _kb_facts(
     return got
 
 
-async def _drift_open(request: Request, name: str) -> dict:
-    """一个源待处置(open)的漂移条数;500 处饱和(与 ``/admin/drift`` 同帽)。"""
+def drift_entry(row) -> dict:
+    """一行漂移的条目级投影(治理中心 /v1/admin/todos 用)。
+
+    只带条目行自己的字段;重体量的 ``detail`` / ``affected`` 原文不进聚合
+    载荷(详情走 ``GET /v1/admin/drift/{id}``)。
+    """
+    return {
+        "id": row.id,
+        "ds": row.datasource,
+        "level": row.level,
+        "kind": row.kind,
+        "subject": row.subject,
+        "severity": row.severity,
+        "status": row.status,
+        "source": row.source,
+        "first_seen_at": row.first_seen_at,
+        "last_seen_at": row.last_seen_at,
+        "seen_count": row.seen_count,
+    }
+
+
+async def _drift_open(request: Request, name: str, *, limit: int = _DRIFT_CAP) -> dict:
+    """一个源待处置(open)的漂移计数 + 条目。
+
+    默认 500 处饱和(与 ``/admin/drift`` 同帽);``exact=False`` = 计数只是
+    下界(到帽了),调用方据此标 degraded / 「≥ N」。条目级端点用更大的
+    扫描帽换精确计数(见 governance 的 ``_TODO_SCAN_CAP``)。
+    """
     from trove.services.drift import DriftStore
     from trove.services.drift.store import STATUS_OPEN
 
     store = DriftStore(_project_root(request))
     try:
-        rows = await store.list_items(name, status=STATUS_OPEN, limit=_DRIFT_CAP)
+        rows = await store.list_items(name, status=STATUS_OPEN, limit=limit)
     finally:
         await store.dispose()
-    return {"count": len(rows), "samples": [], "exact": len(rows) < _DRIFT_CAP}
+    return {
+        "count": len(rows),
+        "samples": [],
+        "exact": len(rows) < limit,
+        "entries": [drift_entry(r) for r in rows],
+    }
 
 
 async def _drift_facts(
     request: Request, names: list[tuple[str, str]], degraded: list[dict],
+    *, limit: int = _DRIFT_CAP,
 ) -> dict[str, dict | None]:
     """逐源漂移计数;每源独立超时(数不出来的源不拖累其它源)。"""
 
     async def _one(name: str) -> tuple[str, dict | None]:
         got = await _leg(
             "datasources", f"drift:{name}", degraded,
-            lambda: _drift_open(request, name),
+            lambda: _drift_open(request, name, limit=limit),
         )
         return name, got
 
@@ -524,6 +563,17 @@ def _datasource_rows(
 # ── 待办队列 ────────────────────────────────────────────
 
 
+async def _dialect_of(request: Request, name: str) -> str:
+    """数据源 adapter 方言;未连接/异常 → sqlite 兜底(与 semantic.py 同一取舍:
+    方言只影响表达式校验,不值得让一次聚合失败)。"""
+    registry = getattr(request.app.state, "connector_registry", None)
+    try:
+        adapter = await registry.get(name)
+        return adapter.dialect() or "sqlite"
+    except Exception:
+        return "sqlite"
+
+
 async def _pending_lessons(request: Request, name: str) -> dict:
     kb = request.app.state.kb
     all_lessons = await kb.list_lessons(name, confirmed_only=False)
@@ -533,6 +583,8 @@ async def _pending_lessons(request: Request, name: str) -> dict:
         "count": len(pending),
         "samples": [str(ln.get("pattern") or "") for ln in pending],
         "exact": True,
+        # 条目级投影(治理中心条目列表用):同一份记录,不重查。
+        "entries": [{**ln, "ds": name} for ln in pending],
     }
 
 
@@ -543,35 +595,80 @@ async def _pending_examples(request: Request, name: str) -> dict:
         "count": len(drafts),
         "samples": [str(d.get("question") or "") for d in drafts],
         "exact": True,
+        "entries": [{**d, "ds": name} for d in drafts],
     }
 
 
-async def _pending_semantic_drafts(request: Request, name: str) -> dict:
+async def _pending_semantic_drafts(
+    request: Request, name: str, *, with_diff: bool = False,
+) -> dict:
+    """语义草稿(pending)。
+
+    ``with_diff``:附服务端 diff —— 与 ``GET /v1/admin/semantic/{name}`` 走到
+    同一份计算(``SemanticManager.detail()``,carryover 语义只有服务端知道),
+    不另算一遍;overview 只要计数,不付这份代价。
+    """
     from trove.services.semantic_layer.manage import SemanticManager
 
-    drafts = SemanticManager(request.app.state.kb).drafts(name).get("pending", [])
+    manager = SemanticManager(request.app.state.kb)
+    if with_diff:
+        detail = await manager.detail(name, dialect=await _dialect_of(request, name))
+        drafts = detail.get("drafts", {}).get("pending", [])
+    else:
+        drafts = manager.drafts(name).get("pending", [])
     return {
         "configured": True,
         "count": len(drafts),
         "samples": [str(d.get("name") or d.get("id") or "") for d in drafts],
         "exact": True,
+        "entries": [{**d, "ds": name} for d in drafts],
     }
 
 
-async def _per_source_todos(
-    request: Request, names: list[tuple[str, str]], degraded: list[dict],
-) -> dict[str, list[dict | None]]:
-    """KB lesson / example / 语义草稿三类:逐源扇出,每源独立超时。"""
+async def _pending_semantic_drafts_with_diff(request: Request, name: str) -> dict:
+    return await _pending_semantic_drafts(request, name, with_diff=True)
+
+
+#: 逐数据源扇出的三类 KB/语义待办(顺序即展示顺序)。
+_PER_SOURCE_TODO_FNS: dict[str, Callable[[Request, str], Awaitable[dict]]] = {
+    "kb_lesson": _pending_lessons,
+    "kb_example": _pending_examples,
+    "semantic_draft": _pending_semantic_drafts,
+}
+
+
+async def collect_todo_sources(
+    request: Request, names: list[tuple[str, str]] | None,
+    drift: dict[str, dict | None], degraded: list[dict],
+    *, with_diff: bool = False,
+) -> dict:
+    """六类**审批**待办的唯一枚举 + 逐源扇出实现(条目级)。
+
+    ``/v1/admin/overview`` 与 ``/v1/admin/todos`` 共用这一份 —— 两边只在投影
+    粒度上不同(计数 + 前 3 样例 vs 条目列表),各实现一遍计数数字迟早打架
+    (P5 §4.1① 的 ↔ 块)。新增待办来源时**只改这里**。
+
+    ``names is None`` = 数据源都列不出来(枚举腿已降级)。``with_diff`` 只影响
+    语义草稿(附服务端 diff);返回结构::
+
+        {enumeration_failed, per_source: {kind: [leg|None]},
+         drift: [leg|None], global: {kind: leg|None}, failed: {kind: bool}}
+    """
+    enumeration_failed = names is None
+    fns = dict(_PER_SOURCE_TODO_FNS)
+    if with_diff:
+        fns["semantic_draft"] = _pending_semantic_drafts_with_diff
     kb = getattr(request.app.state, "kb", None)
-    fns: dict[str, Callable[[Request, str], Awaitable[dict]]] = {
-        "kb_lesson": _pending_lessons,
-        "kb_example": _pending_examples,
-        "semantic_draft": _pending_semantic_drafts,
-    }
-    out: dict[str, list[dict | None]] = {}
+
+    per_source: dict[str, list[dict | None]] = {}
     for kind, fn in fns.items():
+        if enumeration_failed:
+            per_source[kind] = []
+            continue
         if kb is None:
-            out[kind] = [None] * len(names)
+            # 未装配 KB → 每条腿都算降级(None),计数照实少算并标下界;
+            # 与「源列出了但读不到」同一语义。
+            per_source[kind] = [None] * len(names)
             continue
 
         async def _one(name: str, fn=fn, kind=kind) -> dict | None:
@@ -579,12 +676,36 @@ async def _per_source_todos(
                 "todos", f"{kind}:{name}", degraded, lambda: fn(request, name),
             )
 
-        out[kind] = list(await asyncio.gather(*(_one(n) for n, _ in names)))
-    return out
+        per_source[kind] = list(await asyncio.gather(*(_one(n) for n, _ in names)))
+
+    drift_legs: list[dict | None] = [
+        ({**drift[name], "samples": []} if drift.get(name) is not None else None)
+        for name, _ in (names or [])
+    ]
+
+    global_legs: dict[str, dict | None] = {}
+    failed: dict[str, bool] = {}
+    for kind, fn in (
+        ("skill_draft", _skill_drafts),
+        ("memory_preference", _memory_drafts),
+    ):
+        before = len(degraded)
+        global_legs[kind] = await _leg("todos", kind, degraded, lambda fn=fn: fn(request))
+        failed[kind] = len(degraded) > before
+
+    return {
+        "enumeration_failed": enumeration_failed,
+        "per_source": per_source,
+        "drift": drift_legs,
+        "global": global_legs,
+        "failed": failed,
+    }
 
 
 def _unconfigured() -> dict:
-    return {"configured": False, "count": 0, "samples": [], "exact": True}
+    return {
+        "configured": False, "count": 0, "samples": [], "exact": True, "entries": [],
+    }
 
 
 async def _skill_drafts(request: Request) -> dict:
@@ -597,6 +718,20 @@ async def _skill_drafts(request: Request) -> dict:
         "count": len(pending),
         "samples": [str(s.get("name") or "") for s in pending],
         "exact": True,
+        # 条目级投影只带列表需要的字段:技能条目的 body 可以很长,聚合载荷
+        # 不该把它拖进来(正文走 GET /admin/skills/{name}/body)。
+        "entries": [
+            {
+                "name": str(s.get("name") or ""),
+                "description": str(s.get("description") or ""),
+                "tier": str(s.get("tier") or ""),
+                "status": str(s.get("status") or ""),
+                "source": str(s.get("source") or ""),
+                "created_at": str(s.get("created_at") or ""),
+                "ds": None,
+            }
+            for s in pending
+        ],
     }
 
 
@@ -610,6 +745,7 @@ async def _memory_drafts(request: Request) -> dict:
         "count": len(drafts),
         "samples": [str(d.get("fact") or "") for d in drafts],
         "exact": True,
+        "entries": [{**d, "ds": d.get("datasource")} for d in drafts],
     }
 
 
@@ -683,22 +819,20 @@ def _degraded_item(kind: str) -> dict:
     )
 
 
-async def _todos_block(
-    request: Request, names: list[tuple[str, str]] | None,
-    drift: dict[str, dict | None], shared: dict[str, dict | None],
-    failed_legs: set[str], degraded: list[dict],
+def _todos_block(
+    collected: dict, shared: dict[str, dict | None], failed_legs: set[str],
 ) -> dict:
-    """待办 8 类,固定顺序。``names is None`` = 源都列不出来(登记扇出降级)。"""
-    enumeration_failed = names is None
-    per_source = (
-        {kind: [] for kind in _PER_SOURCE_TODO_KINDS}
-        if enumeration_failed
-        else await _per_source_todos(request, names, degraded)
-    )
-    drift_partials: list[dict | None] = []
-    for name, _ in (names or []):
-        got = drift.get(name)
-        drift_partials.append({**got, "samples": []} if got is not None else None)
+    """待办 8 类,固定顺序(overview 投影:计数 + 前 3 样例 + 深链)。
+
+    ``collected`` = :func:`collect_todo_sources` 的返回值 —— 本函数只做投影
+    (取数在共享函数里,条目级端点 /v1/admin/todos 吃同一份)。``names`` 列不
+    出来(enumerated 失败)时逐类标降级。
+    """
+    enumeration_failed = collected["enumeration_failed"]
+    per_source = collected["per_source"]
+    drift_partials = collected["drift"]
+    global_legs = collected["global"]
+    global_failed = collected["failed"]
 
     items: list[dict] = []
     for kind in _TODO_HREFS:
@@ -714,6 +848,10 @@ async def _todos_block(
                 if enumeration_failed
                 else _merge_todo(kind, drift_partials)
             )
+        elif kind in global_legs:
+            items.append(_todo_from_leg(
+                kind, global_legs.get(kind), failed=global_failed.get(kind, False),
+            ))
         else:
             items.append(
                 _todo_from_leg(kind, shared.get(kind), failed=kind in failed_legs)
@@ -796,9 +934,9 @@ async def admin_overview(
 
     shared: dict[str, dict | None] = {}
     failed_legs: set[str] = set()
+    # 六类审批待办(skill_draft / memory_preference 在内的全局腿)走共享取数
+    # 函数 collect_todo_sources;这里只跑两类运维待办。
     for kind, fn in (
-        ("skill_draft", lambda: _skill_drafts(request)),
-        ("memory_preference", lambda: _memory_drafts(request)),
         ("job_failed", lambda: _jobs_failed(request, cutoff)),
         ("user_nogrant", lambda: _users_nogrant(request)),
     ):
@@ -825,7 +963,8 @@ async def admin_overview(
             getattr(request.app.state, "readonly_probes", None) or {},
         )
 
-    todos = await _todos_block(request, names, drift, shared, failed_legs, degraded)
+    collected = await collect_todo_sources(request, names, drift, degraded)
+    todos = _todos_block(collected, shared, failed_legs)
     wizard = _wizard_block(
         names, kb_facts, shared.get("user_nogrant"),
         nogrant_failed="user_nogrant" in failed_legs,

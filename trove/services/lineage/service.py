@@ -483,3 +483,73 @@ class LineageService:
         for q in await self._query_log(datasource):
             names.update(q["tables_read"])
         return sorted(names)
+
+    async def asked_tables(
+        self, datasource: str, *, since: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query-history tally: which tables were actually asked, how often.
+
+        Only **executed queries** count — definition-file entries
+        (``def:`` shards) are human-authored declarations, not questions;
+        counting them would inflate 「被问了但没建模」 with the very
+        definitions an admin just wrote. ``since`` filters on ``last_seen``
+        (ISO-8601 string compare — the store writes one format, so this is
+        exact, not approximate). Table names are tallied case-insensitively
+        (display form = first seen); sorted by ``(-queries, table)``.
+        """
+        await self.ensure_synced(datasource)
+        sql = (
+            "SELECT digest_json, last_seen, runs FROM lineage_query_log "
+            "WHERE datasource = ? AND shard NOT LIKE 'def:%'"
+        )
+        params: list[Any] = [datasource]
+        if since:
+            sql += " AND last_seen >= ?"
+            params.append(since)
+        conn = await self._conn()
+        try:
+            async with await conn.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+        finally:
+            await conn.close()
+        tally: dict[str, dict[str, Any]] = {}
+        for digest_json, last_seen, runs in rows:
+            for raw in _tables_of(digest_json):
+                name = str(raw or "")
+                if not name:
+                    continue
+                hit = tally.setdefault(
+                    name.lower(),
+                    {"table": name, "queries": 0, "last_asked_at": ""},
+                )
+                hit["queries"] += int(runs or 0)
+                if str(last_seen or "") > hit["last_asked_at"]:
+                    hit["last_asked_at"] = str(last_seen or "")
+        out = list(tally.values())
+        out.sort(key=lambda t: (-t["queries"], t["table"].lower()))
+        return out
+
+    async def table_columns(self, datasource: str, table: str) -> list[str]:
+        """Column names observed for one table (union, first-seen order).
+
+        Two independent sources merged — neither alone is complete:
+        - definitions named ``table`` → their projected output names
+          (views/CTAS we authored);
+        - query-log ``columns_read`` pairs → columns real queries touched
+          (unmodeled tables included).
+        """
+        await self.ensure_synced(datasource)
+        t = table.lower()
+        seen: dict[str, None] = {}
+        for d in await self._definitions(datasource):
+            if d["name"].lower() != t:
+                continue
+            for out in d["outputs"]:
+                name = str(out.get("name") or "")
+                if name:
+                    seen.setdefault(name, None)
+        for q in await self._query_log(datasource):
+            for rt, rc in q["columns_read"]:
+                if str(rt).lower() == t and rc:
+                    seen.setdefault(str(rc), None)
+        return list(seen)
