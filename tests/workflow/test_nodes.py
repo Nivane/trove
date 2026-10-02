@@ -1535,10 +1535,21 @@ class TestValidate:
 
 
 class TestExecuteSQL:
-    async def test_no_sql_sets_error(self):
+    async def test_no_sql_feeds_recovery_loop(self):
+        """空手生成是**可修正的生成缺陷**,不是终态错误:进共享修正预算。"""
         node = make_execute_sql()
         update = await node(make_state())
-        assert "No SQL" in update["error"]
+        assert "error" not in update
+        assert update["error_feedback"].startswith("[ERR:SQL_MISSING]")
+        assert update["retry_count"] == 1
+        assert update["row_count"] == -1  # 本轮未执行(≠ 上一轮残留)
+
+    async def test_no_sql_degrades_when_budget_exhausted(self):
+        """预算耗尽才降级为终态 error(fixed/empty 图 max_retries=0 即此路)。"""
+        node = make_execute_sql(max_retries=0)
+        update = await node(make_state())
+        assert update["error"].startswith("[ERR:SQL_MISSING]")
+        assert "error_feedback" not in update
 
     async def test_execute_valid_sql(self, sqlite_registry):
         node = make_execute_sql(sqlite_registry)
@@ -2149,7 +2160,9 @@ class TestQuerySketch:
                 raise RuntimeError("llm down")
 
         node = make_query_sketch(BrokenLLM(), AgentConfig(target="mock/model"))
-        assert await node(make_state()) == {}
+        # 失败静默 = 不带 plan 继续;唯一显式写的是复位重规划信号
+        # (上一轮发射过重规划就必须清掉,否则陈旧信号会误路由)。
+        assert await node(make_state()) == {"plan_replan_pending": False}
 
     async def test_query_sketch_error_passthrough(self):
         from trove.workflow.nodes.query_sketch import make_query_sketch

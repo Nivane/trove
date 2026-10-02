@@ -365,6 +365,15 @@ class WorkflowState(BaseModel):
     forced: bool = False  # reflect accepted a RETRY at the retry cap
     semantic_retries: int = 0  # 连续纯语义 RETRY 计数(执行成功仍被打回)
 
+    # 编译自相矛盾的有界重规划(query_sketch ⇄ analyze_error):
+    # rounds 自增、pending 是「本节点刚发射了一次重规划」的路由信号。
+    # pending 与 error_feedback 的在途生命周期解耦:feedback 会一直挂到
+    # 执行成功才被清,路由若按它判定,重规划成功后的下一跳会误入
+    # analyze_error;query_sketch 每次运行时复位 pending,只在自己的
+    # 发射轮置位。
+    plan_replan_rounds: int = 0
+    plan_replan_pending: bool = False
+
     # reflect/analyze_error verdict: the question is not answerable by SQL
     # (table meaning / term definition) → route to answer_metadata
     no_sql: bool = False

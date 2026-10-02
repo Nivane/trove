@@ -171,6 +171,21 @@ class TestTagging:
         )
         assert verdict.cls.id == "SQL_SCHEMA_MISSING"
 
+    def test_generation_and_plan_tags_roundtrip(self):
+        """生成链空手 / 计划自相矛盾:标签回读幂等,且都不在死胡同集合
+        (两者都有确定性修复方向:补一条 SELECT / 重规划)。"""
+        missing = classify_error("[ERR:SQL_MISSING] 本轮没有产出任何 SQL", context="sql")
+        assert missing.cls.id == "SQL_MISSING"
+        assert missing.cls.retryable is True
+        assert missing.cls.recovery == RecoveryAction.FIX
+
+        contradiction = classify_error(
+            "[ERR:PLAN_CONTRADICTION] Plan is self-contradictory", context="workflow")
+        assert contradiction.cls.id == "PLAN_CONTRADICTION"
+        assert contradiction.cls.recovery == RecoveryAction.ROLLBACK_QUERY_SKETCH
+        assert "PLAN_CONTRADICTION" not in DETERMINISTIC_DEAD_END
+        assert "SQL_MISSING" not in DETERMINISTIC_DEAD_END
+
 
 class TestValidateArguments:
     PARAMS = {

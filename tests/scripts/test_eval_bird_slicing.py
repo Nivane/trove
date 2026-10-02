@@ -176,6 +176,60 @@ class TestAttributionSlices:
         assert "plan" not in entry
         assert "matched_tables" not in entry
 
+    def test_result_entry_path_grades_compile_channels(self):
+        """path 三档区分编译通道:compiled(全量编译)/ partial(软 MISS
+        骨架)/ llm(裸生成)—— 「机制贡献了多少准确率」靠这一列切。"""
+
+        class _Compiled:
+            sql = "SELECT 1"
+            compiled = True
+            compile_partial = False
+            kb_hits = []
+            retry_count = 0
+            consensus = True
+            confidence = 0.9
+            selection = {}
+            fix_mode = ""
+            rollback_target = ""
+            validation_hits = []
+            candidates = ["SELECT 1"]
+
+        class _Partial(_Compiled):
+            compiled = False
+            compile_partial = True
+
+        class _Llm(_Compiled):
+            compiled = False
+
+        assert _result_entry("r", "q", "", "g", "MATCH", _Compiled())["path"] == "compiled"
+        assert _result_entry("r", "q", "", "g", "MATCH", _Partial())["path"] == "partial"
+        assert _result_entry("r", "q", "", "g", "MATCH", _Llm())["path"] == "llm"
+
+    def test_result_entry_path_refused_wins_over_stale_compile_flags(self):
+        """refused 必须最先判:拒绝轮的 compiled*/compile_partial 可能是
+        上一轮残留(终态卫生清的是交付字段,归因字段仍可能带着旧值)——
+        只要 refusal 在,path 就是 refused,拒绝题没有 SQL 可言。"""
+
+        class _Refused:
+            sql = ""
+            refusal = {"reason": "uncovered"}
+            compiled = True          # 残留值:不得冒充 compiled
+            compile_partial = True   # 残留值:不得冒充 partial
+            kb_hits = []
+            retry_count = 2
+            consensus = True
+            confidence = 0.6
+            selection = {}
+            fix_mode = ""
+            rollback_target = "query_sketch"
+            validation_hits = []
+            candidates = []
+
+        entry = _result_entry("r1", "q", "", "g", "REFUSED", _Refused())
+        assert entry["path"] == "refused"
+        assert entry["pred_sql"] == ""
+        assert entry["retries"] == 2
+
     def test_slices_rate_per_dimension_value(self):
         results = [
             self._entry("MATCH", consensus=True, confidence=0.8, fix_mode="",

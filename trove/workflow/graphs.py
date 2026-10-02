@@ -1910,10 +1910,21 @@ def _build_budget(services: "GraphServices", profile=None):
     )
 
 
-def _route_after_query_sketch(state: WorkflowState) -> Literal["refuse", "gen_retrieve"]:
-    """Query-sketch 后:编译 MISS / 无语义模型 → refuse;否则 gen 链入口。"""
+def _route_after_query_sketch(
+    state: WorkflowState,
+) -> Literal["refuse", "gen_retrieve", "analyze_error"]:
+    """Query-sketch 后:编译 MISS / 无语义模型 → refuse;计划自相矛盾 →
+    analyze_error(零 LLM 诊断 + 有界重规划,回滚目标 query_sketch);
+    否则 gen 链入口。
+
+    重规划信号用 ``plan_replan_pending``(本节点刚发射)而不是
+    ``error_feedback``:feedback 会一直挂在 state 上直到执行成功才被清,
+    按它判定会让「重规划成功」的下一跳误入 analyze_error。
+    """
     if state.error or state.no_model or state.refusal:
         return "refuse"
+    if state.plan_replan_pending and state.error_feedback:
+        return "analyze_error"
     return "gen_retrieve"
 
 
@@ -2013,7 +2024,7 @@ def _build_reflection(
             {"refuse": "refuse", "clarify": "clarify"},
         )
         if query_sketch:
-            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer, skills=services.skills))
+            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer, skills=services.skills, max_retries=MAX_REFLECT_RETRIES))
             g.add_conditional_edges(
                 "clarify",
                 _route_after_clarify_query_sketch,
@@ -2027,7 +2038,11 @@ def _build_reflection(
             g.add_conditional_edges(
                 "query_sketch",
                 _route_after_query_sketch,
-                {"refuse": "refuse", "gen_retrieve": "gen_retrieve"},
+                {
+                    "refuse": "refuse",
+                    "gen_retrieve": "gen_retrieve",
+                    "analyze_error": "analyze_error",
+                },
             )
         else:
             g.add_conditional_edges(
@@ -2042,7 +2057,7 @@ def _build_reflection(
             )
     else:
         if query_sketch:
-            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer, skills=services.skills))
+            g.add_node("query_sketch", make_query_sketch(services.llm, services.config or AgentConfig(), connectors=services.connectors, semantic_layer=services.semantic_layer, skills=services.skills, max_retries=MAX_REFLECT_RETRIES))
             g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))
             g.add_conditional_edges(
                 "refuse",
@@ -2062,7 +2077,11 @@ def _build_reflection(
             g.add_conditional_edges(
                 "query_sketch",
                 _route_after_query_sketch,
-                {"refuse": "refuse", "gen_retrieve": "gen_retrieve"},
+                {
+                    "refuse": "refuse",
+                    "gen_retrieve": "gen_retrieve",
+                    "analyze_error": "analyze_error",
+                },
             )
         else:
             g.add_node("refuse", make_refuse(services.llm, services.config or AgentConfig(), kb=services.kb, semantic_layer=services.semantic_layer, connectors=services.connectors))

@@ -20,6 +20,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.prompts.skills import append_skill_block, render_skills
+from trove.services.semantic_layer import rls
 from trove.services.semantic_layer.compiler import (
     CompileMiss,
     CompileResult,
@@ -30,12 +31,20 @@ from trove.services.semantic_layer.contract import (
     render_contract,
 )
 from trove.services.semantic_layer.plan import PlanQuery, parse_plan_query
-from trove.workflow.state import WorkflowState
+from trove.workflow.state import WorkflowState, budget_exhausted
 
 logger = get_logger(__name__)
 
 # 时间粒度中文标签(渲染 zh plan 文本用;编译器消费原始 grain slug)
 _GRAIN_ZH = {"year": "年", "quarter": "季度", "month": "月", "week": "周", "day": "日"}
+
+# 「计划自相矛盾」的错误前缀:硬 MISS 里缺的组件**语义模型里其实有**,是
+# 计划自己没带上/没写对 —— 修法是**重新规划**,不是拒绝(与「模型缺口」
+# 分开,后者照旧拒绝 + 反问扩展模型)。
+PLAN_CONTRADICTION_TAG = "[ERR:PLAN_CONTRADICTION]"
+
+#: 单题重规划轮数上限(与共享修正预算叠加,两道闸都要过)。
+MAX_PLAN_REPLANS = 2
 
 
 def _parse_plan(response: str) -> dict[str, Any] | None:
@@ -713,6 +722,104 @@ def _plan_has_intent(plan_json: dict[str, Any] | None) -> bool:
     )
 
 
+def _replan_feedback(
+    plan_json: dict[str, Any] | None,
+    miss: CompileMiss | None,
+    semantic_layer,
+) -> str | None:
+    """硬 MISS 二分:「计划自相矛盾」的确定性判定 + 重规划反馈(零 LLM)。
+
+    返回 None = 真模型缺口(照旧拒绝 + 反问扩展模型)。白名单判定,新分因
+    默认 None = 保持旧行为:
+      - unreachable_table:缺失表**全部**在语义模型里声明过 —— 模型有、
+        计划没带。反馈必须带上该数据集的**声明关系与字段清单**:那轮
+        planner 的 schema_context 里根本没有匹配到它(linker 没给),只喊
+        「加进 plan.tables」它无从下手(0483 实测)。
+      - limit_without_order:计划形状缺陷(limit 在、ordering 不可解析)
+        —— 重规划可修。
+    反馈文本英文、≤600 字符、指令在前(correction 有 ``[:600]`` 截断)。
+    """
+    if miss is None:
+        return None
+    reason = getattr(miss, "reason", "") or ""
+    component = getattr(miss, "component", "") or ""
+    if reason == "limit_without_order":
+        return (
+            f"{PLAN_CONTRADICTION_TAG} The plan sets a row limit without a "
+            f"resolvable ordering ({component or 'missing'}). Re-emit the whole "
+            "plan JSON with ordering as a declared metric name or an explicit "
+            '"dataset.field asc|desc" expression, or drop the limit.'
+        )
+    if reason != "unreachable_table" or semantic_layer is None:
+        return None
+    missing = [
+        t.strip() for t in component.split(":", 1)[-1].split(",") if t.strip()
+    ]
+    if not missing:
+        return None
+    model = None
+    try:
+        model = semantic_layer.model()
+    except Exception:
+        return None
+    if model is None:
+        return None
+    declared = {d.lower() for d in rls.declared_tables(model)}
+    if any(t.lower() not in declared for t in missing):
+        return None  # 未声明表 → 真模型缺口,照旧拒绝
+    # 数据集映射(数据集名/物理表名两个方向):关系与字段清单从这里取。
+    by_table: dict[str, Any] = {}
+    for ds in model.datasets:
+        for alias in (ds.name, rls.physical_table(ds)):
+            if alias and alias.strip():
+                by_table[alias.strip().lower()] = ds
+
+    def _anchors(name: str) -> set[str]:
+        out = {str(name).strip().lower()}
+        ds = by_table.get(str(name).strip().lower())
+        if ds is not None:
+            out.add(ds.name.strip().lower())
+            out.add(rls.physical_table(ds))
+        return out
+
+    plan_tables = [str(t).strip() for t in (plan_json or {}).get("tables") or []]
+    plan_anchors: set[str] = set()
+    for t in plan_tables:
+        plan_anchors |= _anchors(t)
+    missing_lower = {t.lower() for t in missing}
+    parts: list[str] = []
+    for t in missing:
+        ds = by_table.get(t.lower())
+        if ds is None:
+            continue
+        rels = [
+            r
+            for r in (model.relationships or [])
+            if ((missing_lower & _anchors(r.from_)) and (plan_anchors & _anchors(r.to)))
+            or ((missing_lower & _anchors(r.to)) and (plan_anchors & _anchors(r.from_)))
+        ]
+        joins = "; ".join(
+            f"{r.from_}.{fc} = {r.to}.{tc}"
+            for r in rels
+            for fc, tc in zip(r.from_columns, r.to_columns)
+        )
+        fields = ", ".join(f.name for f in ds.fields if f.name)
+        detail = f"declared joins: {joins}" if joins else "no declared relationship"
+        if fields:
+            detail += f"; declared fields: {fields}"
+        parts.append(f"{ds.name} ({detail})")
+    text = (
+        f"{PLAN_CONTRADICTION_TAG} Plan is self-contradictory: it references "
+        f"table(s) [{', '.join(missing)}] that ARE declared in the semantic "
+        "model but missing from plan.tables. Re-emit the whole plan JSON: "
+        "either add them to plan.tables (using the declared joins) or drop "
+        "the conditions referencing them."
+    )
+    if parts:
+        text += " Declared: " + " | ".join(parts)
+    return text[:600]
+
+
 _TIME_RANGE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$")
 
 
@@ -877,6 +984,7 @@ def make_query_sketch(
     connectors=None,
     semantic_layer=None,
     skills=None,
+    max_retries: int = 10,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the query_sketch node bound to an LLM gateway.
 
@@ -884,6 +992,8 @@ def make_query_sketch(
         skills: Optional SkillService — when present, merges admin-managed
             org methodology skills (required tier) into the system prompt;
             absent → only the built-in code skills (backward compatible).
+        max_retries: Shared correction budget (与 execute_sql 同一份)——
+            计划自相矛盾的有界重规划要过预算闸(另一道闸是 MAX_PLAN_REPLANS)。
     """
 
     async def query_sketch(state: WorkflowState) -> dict[str, Any]:
@@ -1020,12 +1130,13 @@ def make_query_sketch(
                     "plan": "",
                     "plan_json": None,
                     "plan_validation": {"status": "dropped", "errors": errors},
+                    "plan_replan_pending": False,
                 }
                 if llm_detail:
                     update["llm"] = llm_detail
                 return update
             if not plan:
-                return {}
+                return {"plan_replan_pending": False}
             # 形态不合 typed IR 的计划(模型输出 JSON 但结构不是计划)降级为
             # 散文:它进不了编译(编译器只吃 PlanQuery),也跑不了列检查(那些
             # 读 answer_columns)。降级可以,但不能无声——下面按 plan_typed
@@ -1074,6 +1185,8 @@ def make_query_sketch(
                 "plan_json": plan_json,
                 "plan_validation": {"status": "ok"},
                 "dialect": dialect,
+                # 每次运行先复位重规划信号;下面的发射分支会再置位。
+                "plan_replan_pending": False,
             }
             # 归因意图:plan_json 里的 "attribution" 块(目标指标/维度/基准/
             # 深度)带出到状态,供 reflect OK 后 attribution 节点多跳下钻。
@@ -1139,6 +1252,41 @@ def make_query_sketch(
             else:
                 compile_meta.update(miss_reason="unknown", miss_component="")
             update["compile_meta"] = compile_meta
+            # 硬 MISS 二分(分级逃生梯的上沿):「计划自相矛盾」——缺的组件
+            # 语义模型里其实有,是计划自己没带上/没写对——先给一次**有界
+            # 重规划**(反馈进 correction,携带声明关系与字段清单),耗尽
+            # 才落回拒绝。真模型缺口(未声明表等)不进这条路,照旧直接拒绝。
+            if (
+                compiled is None
+                and miss is not None
+                and _plan_has_intent(plan_json)
+                and not budget_exhausted(state.retry_count, max_retries)
+                and state.plan_replan_rounds < MAX_PLAN_REPLANS
+            ):
+                replan = _replan_feedback(plan_json, miss, semantic_layer)
+                if replan is not None:
+                    logger.info(
+                        "plan contradiction for %r: %s — replanning (%d/%d)",
+                        state.question[:80], miss.component,
+                        state.plan_replan_rounds + 1, MAX_PLAN_REPLANS,
+                    )
+                    update.update({
+                        "error_feedback": replan,
+                        "retry_count": state.retry_count + 1,
+                        "plan_replan_rounds": state.plan_replan_rounds + 1,
+                        "plan_replan_pending": True,
+                        # 上一轮编译产物**必须清**:execute_sql 的保真校验读
+                        # compiled/compiled_sql,残留旧权威 SQL 会让下一条
+                        # SQL 被拿去和旧契约比对 → 假 COMPILE_DRIFT。
+                        "compiled": False,
+                        "compiled_sql": "",
+                        "compile_partial": False,
+                        "compile_misses": [],
+                        "contract": None,
+                    })
+                    if llm_detail:
+                        update["llm"] = llm_detail
+                    return update
             if compiled is not None:
                 # 注入文本是契约的纯渲染;对象本身随 wire 形状落到 state,
                 # 供 execute_sql 的校验读取(不再从 SQL 字符串反推结构)。
@@ -1183,6 +1331,6 @@ def make_query_sketch(
             return update
         except Exception as e:
             logger.warning("Query-sketch failed (proceeding without a plan): %s", e)
-            return {}
+            return {"plan_replan_pending": False}
 
     return query_sketch

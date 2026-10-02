@@ -672,3 +672,70 @@ class TestDeterministicShortCircuit:
         ))
         assert "compiled SQL" not in (captured["prompt"] or "").lower()
         assert update["rollback_target"] == "gen_sql"
+
+    async def test_sql_missing_skips_llm_and_rolls_back_to_gen(self):
+        """生成链空手而归:确定性修正指令(零 LLM),打回生成链重跑。
+
+        空手不是死胡同 —— 计划在前,只差一条完整 SELECT;诊断文本里不含
+        TARGET,自然落在 ladder[0]=gen_sql(生成链入口 gen_retrieve)。
+        """
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run for deterministic fix")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            lang="en",
+            error_feedback="[ERR:SQL_MISSING] No SQL was produced this round.",
+        ))
+        assert calls["n"] == 0
+        assert "error" not in update
+        assert "one complete read-only SELECT" in update["error_analysis"]
+        assert update["rollback_target"] == "gen_sql"
+        assert update["fix_mode"] == "fixer"
+
+    async def test_plan_contradiction_skips_llm_and_rolls_back_to_query_sketch(self):
+        """计划自相矛盾:确定性指令带 TARGET: query_sketch(零 LLM),
+        回滚目标是重规划(query_sketch)而不是重生成。"""
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run for deterministic fix")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            lang="en",
+            error_feedback=(
+                "[ERR:PLAN_CONTRADICTION] Plan is self-contradictory: it "
+                "references table(s) [client] that ARE declared."
+            ),
+        ))
+        assert calls["n"] == 0
+        assert "error" not in update
+        assert update["rollback_target"] == "query_sketch"
+        assert update["last_rollback_target"] == "query_sketch"
+        assert update["fix_mode"] == "fixer"
+
+    async def test_plan_contradiction_repeat_escalates_ladder(self):
+        """同一矛盾重演 → 反循环阶梯升档(不复用同一目标),有界性交给
+        query_sketch 的双上限。"""
+        class NoLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("must not run")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        raw = ("[ERR:PLAN_CONTRADICTION] Plan is self-contradictory: it "
+               "references table(s) [client] that ARE declared.")
+        first = await node(make_state(lang="en", error_feedback=raw))
+        second = await node(make_state(
+            lang="en", error_feedback=raw,
+            last_rollback_target=first["rollback_target"],
+            sql_versions=[{"error": raw, "sig": "exec-error"}],
+        ))
+        assert first["rollback_target"] == "query_sketch"
+        assert second["rollback_target"] == "schema_linking"
