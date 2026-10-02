@@ -8,12 +8,18 @@ import pytest
 
 from trove.eval.replay import (
     append_entry,
+    completed,
+    first_pass,
     format_entry,
     load_entries,
     normalize_sql,
+    recovered,
     render_scorecard,
     score_replay,
+    scorecard_metrics,
     sql_exact_match,
+    tried_recovery,
+    zero_answer,
 )
 
 
@@ -75,14 +81,16 @@ class TestScoreReplay:
         assert s["total_tokens"] == 350
         assert s["avg_tokens"] == pytest.approx(350 / 3, abs=0.05)
 
-    def test_correctness_requires_consensus(self):
+    def test_self_consistency_requires_consensus(self):
         rows = [
             _entry(verdict="OK", consensus=True, n_candidates=5),
-            _entry(verdict="OK", consensus=False, n_candidates=5),  # 平局 → 不计正确
+            _entry(verdict="OK", consensus=False, n_candidates=5),  # 平局 → 不计自洽
             _entry(verdict="OK", consensus=True, n_candidates=0),   # 无候选 → 不计
         ]
         s = score_replay(rows)
-        assert s["correctness"] == pytest.approx(1 / 3, abs=1e-3)
+        assert s["self_consistency"] == pytest.approx(1 / 3, abs=1e-3)
+        # 旧名 correctness 是误称(它从来看的不是正确性),改名防复活
+        assert "correctness" not in s
 
     def test_gold_match_optional(self):
         rows = [
@@ -152,6 +160,86 @@ class TestScoreReplay:
         assert s["avg_confidence"] == pytest.approx(0.7, abs=1e-3)
         assert s["avg_candidates"] == pytest.approx(13 / 3, abs=0.05)
 
+    def test_zero_answer_and_first_pass(self):
+        rows = [
+            _entry(verdict="MATCH"),                  # 一次通过
+            _entry(verdict="MATCH", retry_count=1),   # 恢复后才对 → 不算一次通过
+            _entry(verdict="EMPTY_SQL", pred_sql=""),  # 零交付且没重试
+        ]
+        s = score_replay(rows)
+        assert s["zero_answer"] == pytest.approx(1 / 3, abs=1e-3)
+        assert s["first_pass"] == pytest.approx(1 / 3, abs=1e-3)
+
+    def test_first_pass_omitted_without_judged_rows(self):
+        # replay 档(OK 词表)没有可判题:first_pass 恒 0,发键 = 把"测不了"
+        # 说成"测得零"。hasattr 式探测把"缺数据"与"数据是零"混为一谈。
+        s = score_replay([_entry(verdict="OK"), _entry(verdict="OK")])
+        assert "first_pass" not in s
+
+    def test_elapsed_emitted_only_when_measured(self):
+        s = score_replay([_entry()])  # _entry 默认 elapsed_ms=1000
+        assert s["total_elapsed_ms"] == 1000.0
+        assert s["avg_elapsed_ms"] == 1000.0
+        s2 = score_replay([_entry(elapsed_ms=0)])
+        assert "total_elapsed_ms" not in s2
+        assert "avg_elapsed_ms" not in s2
+
+    def test_ex_by_path_only_when_path_coverage_complete(self):
+        rows = [
+            _entry(verdict="MATCH", path="compiled"),
+            _entry(verdict="MISMATCH", path="llm"),
+        ]
+        s = score_replay(rows)
+        assert s["ex_by_path"] == {"compiled": 1.0, "llm": 0.0}
+        # 半份 path:分档是把"缺数据"当"llm 档",不发键
+        s2 = score_replay([_entry(verdict="MATCH", path="compiled"), _entry(verdict="MATCH")])
+        assert "ex_by_path" not in s2
+
+
+class TestUnifiedPredicates:
+    """两引擎共用的唯一口径(replay.score_replay 与 gate.metrics_from_entries)。
+
+    2026-10 实测过的漂移:同一份冻结文件,completion 两边算出 0.9375 与
+    0.9062、recovery 算出 1.0 与 0.1765。谓词测试是防再漂移的第一道闸。
+    """
+
+    def test_tried_reads_both_retry_key_spellings(self):
+        # replay.jsonl 写 retry_count,results.jsonl 写 retries —— 只读一个键,
+        # 另一半题就从恢复率分母里漏掉(冻结基线实测漏 2 题)
+        assert tried_recovery({"retry_count": 1}) is True
+        assert tried_recovery({"retries": 1}) is True
+        assert tried_recovery({"retry_count": 0, "retries": 0}) is False
+        assert tried_recovery({"retry_count": 0, "validation_hits": [{"rule": "F1"}]}) is True
+
+    def test_completed_excludes_hard_fail_verdicts(self):
+        assert completed({"pred_sql": "SELECT 1", "verdict": "OK"}) is True
+        # 答错也是交付过答案:完成 ≠ 正确,那是 ex 的事
+        assert completed({"pred_sql": "SELECT 1", "verdict": "MISMATCH"}) is True
+        assert completed({"pred_sql": "SELECT 1", "verdict": "EXECUTION_ERROR"}) is False
+        assert completed({"pred_sql": "SELECT 1", "verdict": "EMPTY_SQL"}) is False
+        assert completed({"pred_sql": "", "verdict": "OK"}) is False
+
+    def test_recovered_is_strict(self):
+        # 触发过恢复 ≠ 恢复成功:实测基线 17 次触发只有 3 次以 MATCH 收场
+        assert recovered({"pred_sql": "SELECT 1", "verdict": "OK", "retry_count": 1}) is True
+        assert recovered({"pred_sql": "SELECT 1", "verdict": "EXECUTION_ERROR",
+                          "retry_count": 1}) is False
+        assert recovered({"pred_sql": "SELECT 1", "verdict": "MISMATCH",
+                          "retry_count": 1}) is False
+        assert recovered({"pred_sql": "SELECT 1", "verdict": "OK", "retry_count": 0}) is False
+
+    def test_zero_answer_invisible_to_recovery(self):
+        # 0483/0487 型:没交付且没重试 —— 旧口径在 recovery 的分子分母里
+        # 都看不见它
+        e = {"pred_sql": "", "verdict": "EMPTY_SQL", "retry_count": 0}
+        assert zero_answer(e) is True
+        assert tried_recovery(e) is False
+
+    def test_first_pass_requires_match_without_recovery(self):
+        assert first_pass({"verdict": "MATCH", "retry_count": 0}) is True
+        assert first_pass({"verdict": "MATCH", "retry_count": 1}) is False
+        assert first_pass({"verdict": "MISMATCH", "retry_count": 0}) is False
+
 
 class TestRecordIo:
     def test_append_and_load_roundtrip(self, tmp_path):
@@ -184,3 +272,25 @@ class TestRenderScorecard:
         s = score_replay([_entry(verdict="OK")] * 2)
         text = render_scorecard(s)
         assert "完成率" in text and "token" in text and "失败恢复率" in text
+        assert "自洽率" in text and "correctness" not in text
+
+
+class TestScorecardMetrics:
+    """score_replay → 门禁/基线指标快照的唯一映射(CLI / CI 重钉 / pin 测试共用)。"""
+
+    def test_key_set_matches_gate_vocabulary(self):
+        s = score_replay([_entry(verdict="MATCH", gold_sql="SELECT name FROM students")])
+        m = scorecard_metrics(s)
+        assert {
+            "ex", "completion", "self_consistency", "recovery", "zero_answer",
+            "consensus_rate", "avg_confidence", "avg_tokens", "total_tokens",
+            "n", "n_judged", "first_pass", "gold_match",
+        } <= set(m)
+        assert "correctness" not in m
+
+    def test_conditional_keys_follow_score(self):
+        s = score_replay([_entry(verdict="OK", elapsed_ms=0, gold_sql="")])
+        m = scorecard_metrics(s)
+        assert "first_pass" not in m    # OK 词表无判题
+        assert "gold_match" not in m    # 无 gold
+        assert "avg_elapsed_ms" not in m  # 未测墙钟

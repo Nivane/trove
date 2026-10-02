@@ -143,6 +143,16 @@ def record_result(entry: dict, path: Path | None = None) -> None:
         pass
 
 
+def stamp_elapsed(entry: dict, t0: float) -> dict:
+    """判定点注入本题墙钟(毫秒):条目自带 elapsed_ms 就不覆盖。
+
+    与 tokens 同位置(所有判定路径都过 done())——只记成功题的成本
+    等于没记:最贵的往往正是崩溃/失败的那几题。
+    """
+    entry.setdefault("elapsed_ms", int((time.monotonic() - t0) * 1000))
+    return entry
+
+
 def _result_entry(
     run_id: str, question: str, evidence: str, gold_sql: str, verdict: str,
     final: WorkflowState | None = None, qid: str = "",
@@ -162,6 +172,10 @@ def _result_entry(
       qid              — 基线问题集对账键(有 eval/baseline/questions.jsonl 时)
       tokens           — 进程级记账弹栈的 token 用量(由 done() 注入,
                          与 replay 条目同构,gate 的 token 指标对真评估生效)
+      plan             — query_sketch 的计划(PlanQuery.to_dict();非空才写,
+                         链路归因的离线复算输入)
+      matched_tables   — schema_linking 命中的表(非空才写;
+                         链路归因第一环:schema_linking 是否先算对)
     """
     entry: dict[str, Any] = {
         "run_id": run_id, "question": question, "evidence": evidence,
@@ -190,6 +204,14 @@ def _result_entry(
             "validation_hits": final.validation_hits or [],
             "n_candidates": len(final.candidates or []),
         })
+        # 链路归因字段(补录后离线复算 schema_linking → query_sketch →
+        # compiler → gen 哪一环先偏)。非空才写,控制行体积。
+        plan = getattr(final, "plan_json", None) or {}
+        if plan:
+            entry["plan"] = plan
+        matched_tables = getattr(final, "matched_tables", None) or []
+        if matched_tables:
+            entry["matched_tables"] = list(matched_tables)
     return entry
 
 
@@ -473,7 +495,8 @@ async def main() -> None:
 
         token 用量在判定点弹栈注入(与 SessionManager._run_stats 同一把
         tally):覆盖崩溃/GOLD_ERROR/生成失败等全部路径,崩溃题也可能
-        已产生 LLM 调用,不能只记成功题。
+        已产生 LLM 调用,不能只记成功题。每题墙钟(elapsed_ms)同位置
+        注入,setdefault = 条目自带就不覆盖。
         """
         try:
             from trove.llm.token_accounting import pop as _pop_usage
@@ -482,6 +505,7 @@ async def main() -> None:
             usage = {}
         if usage:
             entry["tokens"] = usage
+        stamp_elapsed(entry, t0)
         entry.setdefault("oracle", bool(state.oracle_tables))
         entry.setdefault("scaling", args.scaling)
         results.append(entry)
@@ -516,6 +540,8 @@ async def main() -> None:
             "model": config.target,
             "lang": config.language,
         })
+        # 本题墙钟起点(done() 在判定点折算 elapsed_ms,覆盖崩溃等全部路径)
+        t0 = time.monotonic()
         log(f"── [{i}/{len(questions)}] {question[:60]}")
         try:
             final = await _run_with_steps(graph, state, tracer)

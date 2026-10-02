@@ -156,8 +156,10 @@ agent:
 #
 # 基线产物见 eval/baseline/:questions.jsonl(固定问题集,32 题)+
 # results.jsonl(基线判定,32/32)+ scorecard.json(**钉住的指标快照**,
-# 门判定的一侧)。三者要一起动:改了基线就要重钉 scorecard,否则门会红
-# —— 这个红是对的,锚点换了门就该重新表态。
+# 门判定的一侧;由 replay.scorecard_metrics 统一生成,勿手改)。三者要
+# 一起动:改了基线就要重钉 scorecard,否则门会红—— 这个红是对的,
+# 锚点换了门就该重新表态。字段覆盖(tokens/elapsed_ms/… )由
+# eval_baseline.py check --require-fields 在补录后升级为硬门。
 eval:
   gate_enabled: true
   questions_path: eval/baseline/questions.jsonl

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
+
+_ROOT = Path(__file__).resolve().parents[2]
 
 from trove.eval.gate import (
     compare_metrics,
@@ -13,6 +16,7 @@ from trove.eval.gate import (
     render_report,
     score_from_file,
 )
+from trove.eval.replay import score_replay, scorecard_metrics
 
 
 def _eval_entry(verdict="MATCH", compile_outcome=None, retries=0, **kw):
@@ -93,6 +97,68 @@ class TestMetricsFromEntries:
         assert m["recovery"] == pytest.approx(2 / 3, abs=1e-3)
         assert m["avg_retries"] == 1.25
 
+    def test_new_metrics_self_consistency_zero_answer_first_pass(self):
+        rows = [
+            _eval_entry("MATCH", n_candidates=5),             # 一次通过 + 自洽
+            _eval_entry("MATCH", retries=1, n_candidates=5),  # 恢复后才对
+            _eval_entry("EMPTY_SQL", pred_sql=""),            # 零交付且没重试
+        ]
+        m = metrics_from_entries(rows)
+        assert m["self_consistency"] == pytest.approx(2 / 3, abs=1e-3)
+        assert m["zero_answer"] == pytest.approx(1 / 3, abs=1e-3)
+        assert m["first_pass"] == pytest.approx(1 / 3, abs=1e-3)
+
+
+class TestMetricParity:
+    """两引擎(score_replay 与 metrics_from_entries)在同一份条目上必须逐项相等。
+
+    基线由 score_replay 钉、CI 由 metrics_from_entries 比 —— 两边漂移的后果
+    是门红得莫名其妙(或该红时不红)。2026-10 实测过的漂移:同一份冻结文件
+    completion 0.9375 vs 0.9062、recovery 1.0 vs 0.1765。
+    """
+
+    #: 两引擎共享、必须逐项相等的键(CI 对比的就是这些)
+    SHARED = (
+        "ex", "completion", "self_consistency", "recovery", "zero_answer",
+        "consensus_rate", "avg_confidence", "first_pass", "gold_match",
+        "n", "n_judged",
+    )
+
+    @staticmethod
+    def _rows():
+        return [
+            _eval_entry("MATCH", n_candidates=5, gold_sql="SELECT 1"),
+            _eval_entry("MATCH", retries=2, n_candidates=3),
+            _eval_entry("MISMATCH", retries=1, n_candidates=5),
+            _eval_entry("EXECUTION_ERROR", retries=2, n_candidates=5),
+            _eval_entry("EMPTY_SQL", pred_sql="", n_candidates=0),
+            _eval_entry("GOLD_ERROR", n_candidates=2),
+        ]
+
+    def test_engines_agree_on_shared_metrics(self):
+        rows = self._rows()
+        gate_m = metrics_from_entries(rows)
+        replay_m = scorecard_metrics(score_replay(rows))
+        for key in self.SHARED:
+            assert key in gate_m, f"门侧缺 {key}"
+            assert key in replay_m, f"回放侧缺 {key}"
+            assert gate_m[key] == replay_m[key], (
+                f"{key}: 门 {gate_m[key]} != 回放 {replay_m[key]}"
+            )
+
+    def test_engines_agree_on_the_frozen_baseline_file(self):
+        """真文件上也要相等 —— 人造夹具漂移常在真实条目形状下才现形
+        (双 retry 键名、缺 tokens、缺 confidence)。"""
+        rows = load_entries(_ROOT / "eval/baseline/results.jsonl")
+        assert rows, "冻结基线缺失"
+        gate_m = metrics_from_entries(rows)
+        replay_m = scorecard_metrics(score_replay(rows))
+        for key in self.SHARED:
+            assert key in gate_m and key in replay_m, key
+            assert gate_m[key] == replay_m[key], (
+                f"{key}: 门 {gate_m[key]} != 回放 {replay_m[key]}"
+            )
+
 
 class TestCompareMetrics:
     def test_higher_better_regression_detected(self):
@@ -125,6 +191,23 @@ class TestCompareMetrics:
         metrics = {m.metric: m for m in report.metrics}
         assert "compile_hit" not in metrics
         assert "mrr" in report.unpaired  # 无基线不可比
+
+    def test_new_metric_directions(self):
+        report = compare_metrics(
+            {"self_consistency": 0.50, "first_pass": 0.50, "zero_answer": 0.10},
+            {"self_consistency": 0.40, "first_pass": 0.45, "zero_answer": 0.20},
+        )
+        by = {m.metric: m for m in report.metrics}
+        assert by["self_consistency"].direction == "higher"
+        assert by["self_consistency"].ok is False   # -0.10 > 容差 0.01
+        assert by["first_pass"].direction == "higher"
+        assert by["first_pass"].ok is False         # -0.05 > 容差 0.01
+        assert by["zero_answer"].direction == "lower"
+        assert by["zero_answer"].ok is False        # +0.10 > 容差 0.02
+        # zero_answer 上升 0.01 在容差内
+        assert compare_metrics(
+            {"zero_answer": 0.10}, {"zero_answer": 0.11}
+        ).metrics[0].ok is True
 
     def test_default_direction_heuristic(self):
         base = {"ex": 0.8, "avg_tokens": 500.0, "mrr": 0.3}

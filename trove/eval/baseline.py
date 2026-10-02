@@ -7,6 +7,7 @@
   dev.json 原始顺序,qid = f"{db_id}-{index:04d}" 稳定可复现;
 - match_qid:结果条目按问题文本对账回 qid(归一化匹配);
 - coverage_check:基线结果是否覆盖全部问题(qid 覆盖 + 无冗余条目);
+- field_coverage:结果条目的记录字段完整度(tokens/elapsed/归因字段);
 - check_integrity:文件能否解析、指标能否计算、覆盖是否完整。
 
 基线产物布局(eval/baseline/):
@@ -25,6 +26,38 @@ from typing import Any, Iterable
 
 #: 问题集文件字段(顺带校验载荷,防重建时字段漂移)
 _QUESTION_KEYS = {"qid", "db_id", "question", "evidence", "gold_sql"}
+
+#: 结果条目的记录完整度字段。缺字段不会让任何指标报错,只会让它**算在半份
+#: 样本上**(tokens 缺 → 成本指标只剩老条目;path 缺 → 分档 EX 把缺数据当
+#: llm 档)。补录后由 --require-fields 强制 100%,今天只报告。
+RESULT_FIELDS = ("tokens", "elapsed_ms", "compile_meta", "path", "plan", "matched_tables")
+
+
+def _recorded(value: Any) -> bool:
+    """字段是否记录了值:非空才算(elapsed_ms=0 / 空 dict / 空串 = 未记录,
+    与键缺失同义)。"""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return value > 0
+    return bool(value)
+
+
+def field_coverage(results: Iterable[dict[str, Any]]) -> dict[str, float]:
+    """每个记录字段在结果条目里的覆盖率(0..1)。
+
+    这是"补录后切 CI 严格档(--require-fields)"的验收面:覆盖率不足时
+    指标不是错,是**样本不完整**,门看着绿却是拿半份数据比出来的。
+    """
+    rows = list(results)
+    if not rows:
+        return {f: 0.0 for f in RESULT_FIELDS}
+    return {
+        f: round(sum(1 for r in rows if _recorded(r.get(f))) / len(rows), 4)
+        for f in RESULT_FIELDS
+    }
 
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -134,12 +167,17 @@ def check_integrity(
     questions_path: str | Path,
     results_path: str | Path,
     require_full: bool = False,
+    require_fields: Iterable[str] = (),
 ) -> dict[str, Any]:
     """一次基线完整性检查:解析、字段、覆盖、指标可计算。
 
     硬问题(解析失败/字段漂移/指标算不出/冗余 qid/重复判定)进 problems;
     软缺口(问题集尚未全部覆盖,如分片录入中的基线)进 warnings。
-    require_full=True 时软缺口升级为硬问题(CI 收基线前强制全覆盖)。
+    require_full=True 时软缺口升级为硬问题(CI 收基线前强制全覆盖);
+    require_fields 里任一字段覆盖 <100% 或字段名未知 → 硬问题(冻结基线
+    补不齐历史条目,严格档等补录后再切)。
+
+    报告始终带 field_coverage(不拦截,供人读与切换决策)。
 
     供 scripts/eval_baseline.py check 与 CI(opt-in)使用,零 LLM/网络。
     """
@@ -171,6 +209,7 @@ def check_integrity(
         except Exception as e:  # noqa: BLE001 — 完整性检查要把任何异常转成问题
             problems.append(f"基线指标计算失败: {e}")
 
+    cov: dict[str, Any] = {}
     if questions and results:
         cov = coverage_check(questions, results)
         if cov["missing_qids"]:
@@ -182,6 +221,20 @@ def check_integrity(
         if cov["duplicates"]:
             problems.append(f"同一 qid 重复判定: {cov['duplicates']}")
 
+    fields = [str(f).strip() for f in require_fields if str(f).strip()]
+    unknown = [f for f in fields if f not in RESULT_FIELDS]
+    if unknown:
+        problems.append(
+            f"未知的 --require-fields 字段: {unknown}(可选: {list(RESULT_FIELDS)})"
+        )
+    field_cov = field_coverage(results)
+    if results:
+        for f in fields:
+            if f in RESULT_FIELDS and field_cov[f] < 1.0:
+                problems.append(
+                    f"字段覆盖不足: {f} 仅 {field_cov[f]:.0%}(要求 100%)"
+                )
+
     return {
         "questions_path": str(questions_path),
         "results_path": str(results_path),
@@ -189,9 +242,10 @@ def check_integrity(
         "n_results": len(results),
         "coverage": (
             round(len(cov["covered_qids"]) / cov["total_questions"], 4)
-            if questions and results
+            if cov
             else 0.0
         ),
+        "field_coverage": field_cov,
         "problems": problems,
         "warnings": warnings,
         "ok": not problems,

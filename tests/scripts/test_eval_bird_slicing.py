@@ -14,6 +14,7 @@ from scripts.eval_bird import (
     extract_tables,
     record_result,
     slice_questions,
+    stamp_elapsed,
     _result_entry,
 )
 from trove.services.kb.service import resolve_kb_root
@@ -141,7 +142,8 @@ class TestAttributionSlices:
 
     def test_result_entry_carries_attribution_fields(self):
         """final 存在时记录机制路径:consensus/confidence/selection/fix_mode/
-        rollback_target/validation_hits/n_candidates。"""
+        rollback_target/validation_hits/n_candidates;链路归因字段
+        plan/matched_tables 供 #1 离线复算。"""
         final = _DummyState()
         entry = _result_entry("r1", "q", "", "g", "MATCH", final)
         assert entry["consensus"] is True
@@ -151,6 +153,28 @@ class TestAttributionSlices:
         assert entry["rollback_target"] == "gen_sql"
         assert entry["validation_hits"] == [{"rule": "answer-columns"}]
         assert entry["n_candidates"] == 2
+        assert entry["plan"] == {"answer_columns": ["count"]}
+        assert entry["matched_tables"] == ["account"]
+
+    def test_result_entry_omits_empty_trace_fields(self):
+        """plan/matched_tables 空(或 stub final 没有该属性)不写键 ——
+        下游按"键缺失"判未录制,空值冒充"录制过但没有"是另一种谎。"""
+
+        class _Bare:
+            sql = "SELECT 1"
+            kb_hits = []
+            retry_count = 0
+            consensus = None
+            confidence = 0.0
+            selection = {}
+            fix_mode = ""
+            rollback_target = ""
+            validation_hits = []
+            candidates = []
+
+        entry = _result_entry("r1", "q", "", "g", "MATCH", _Bare())
+        assert "plan" not in entry
+        assert "matched_tables" not in entry
 
     def test_slices_rate_per_dimension_value(self):
         results = [
@@ -200,6 +224,22 @@ class TestAttributionSlices:
         assert attribution_slices([]) == []
 
 
+class TestStampElapsed:
+    def test_sets_measured_wall_clock(self):
+        import time
+
+        e = {}
+        stamp_elapsed(e, time.monotonic() - 1.5)
+        assert e["elapsed_ms"] >= 1400
+
+    def test_explicit_value_not_overwritten(self):
+        import time
+
+        e = {"elapsed_ms": 7}
+        stamp_elapsed(e, time.monotonic())
+        assert e["elapsed_ms"] == 7
+
+
 class _DummyState:
     """_result_entry 的 final 形状(只用到归因字段,构造真实 WorkflowState
     需要 lang/session 等环境)。"""
@@ -214,6 +254,8 @@ class _DummyState:
     rollback_target = "gen_sql"
     validation_hits = [{"rule": "answer-columns"}]
     candidates = ["SELECT 1", "SELECT 2"]
+    plan_json = {"answer_columns": ["count"]}
+    matched_tables = ["account"]
 
 
 class TestLoadQuestions:
