@@ -164,6 +164,56 @@ class TestEnumFilter:
         assert match_fast_template("How many students are there?", [ENUM], ["students"]) is None
 
 
+class TestResidualConditionGuard:
+    """模板 WHERE 只固定它自己那一个条件 —— 问题多出来的条件词必须 miss。
+
+    2026-10-02 P1 评测实证:32 题里快径命中 4 次,**4 次全是部分命中**
+    (0469/0471 枚举模板丢地区 → F2-c 拦下后回滚重放耗尽;0476 丢出生年 +
+    城市 → 无规则可拦,错 SQL 直接交付,基线 MATCH → MISMATCH;0493 年份
+    SUM 模板抢答增长率问题)。单向子集检查只保证「模板说的在问题里」,
+    反向的残条件必须另查(``_residual_covered``)。
+    """
+
+    def test_enum_extra_region_rejects(self):
+        assert match_fast_template(
+            "How many students are male and staying in East Bohemia?",
+            [ENUM], ["students"],
+        ) is None
+
+    def test_enum_extra_year_rejects(self):
+        assert match_fast_template(
+            "How many students are male who were born before 1950?",
+            [ENUM], ["students"],
+        ) is None
+
+    def test_enum_plain_still_hits(self):
+        m = match_fast_template("How many students are male?", [ENUM], ["students"])
+        assert m and m["sql"] == ENUM.sql
+
+    def test_aggregate_with_where_extra_condition_rejects(self):
+        """带 WHERE 的年份 SUM 模板不得抢答增长率问题(0493 形状)。"""
+        t = hit(
+            question="What is the total amount of loans granted in 1997?",
+            sql="SELECT SUM(amount) FROM loans WHERE year(date) = '1997'",
+            tags=["loans", "date-range filter", "aggregation"],
+            aggregate=True,
+        )
+        assert match_fast_template(
+            "What was the growth rate of the total amount of loans between 1996 and 1997?",
+            [t], ["loans"],
+        ) is None
+
+    def test_aggregate_with_where_faithful_still_hits(self):
+        t = hit(
+            question="What is the total amount of loans granted in 1997?",
+            sql="SELECT SUM(amount) FROM loans WHERE year(date) = '1997'",
+            tags=["loans", "date-range filter", "aggregation"],
+            aggregate=True,
+        )
+        m = match_fast_template("What is the total loan amount granted in 1997?", [t], ["loans"])
+        assert m and m["sql"] == t.sql
+
+
 class TestAggregate:
     def test_max_hit(self):
         m = match_fast_template("What is the maximum amount?", [MAX_AMOUNT], ["loans"])
