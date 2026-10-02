@@ -134,6 +134,48 @@ class TestSemanticFirstLinking:
         assert "role=enum" in ctx
         assert "enum {F=female, M=male}" in ctx
 
+    @staticmethod
+    def _enum_model(enum_display: dict) -> SemanticModel:
+        f = lambda name: SemanticField(name=name, expression=name)  # noqa: E731
+        return SemanticModel(
+            name="fin",
+            datasets=[
+                SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                    f("loan_id"), f("amount"), f("client_id")]),
+                SemanticDataset(name="client", primary_key=["client_id"], fields=[
+                    f("client_id"),
+                    SemanticField(name="gender", expression="gender",
+                                  datatype="String", semantic_role="enum",
+                                  enum_display=enum_display),
+                ]),
+            ],
+            relationships=[
+                SemanticRelationship("loan_to_client", "loan", "client",
+                                     from_columns=["client_id"],
+                                     to_columns=["client_id"]),
+            ],
+            metrics=[
+                SemanticMetric("loan total", "SUM(loan.amount)", datasets=["loan"]),
+            ],
+        )
+
+    async def test_enum_display_value_anchors_dataset(self, sqlite_registry):
+        """B2:问题点名 enum_display 展示值("female")→ 该数据集入 matched,
+        即使问题里没有它的名称/synonym/字段名(0483 型问题的唯一线索)。"""
+        model = self._enum_model({"F": "female", "M": "male"})
+        node = _node(connectors=sqlite_registry, provider=FakeProvider(model))
+        out = await node(make_state(question="total loans for female borrowers"))
+        # loan 名称命中(3.0)在前,client 靠 enum 展示值命中(2.5)跟入
+        assert out["matched_tables"] == ["loan", "client"]
+
+    async def test_short_enum_display_values_do_not_anchor(self, sqlite_registry):
+        """长度 <3 的枚举展示值(F/M)不参与锚定:英文问句里几乎必然噪声
+        命中(B2 的长度闸)。"""
+        model = self._enum_model({"1": "F", "2": "M"})
+        node = _node(connectors=sqlite_registry, provider=FakeProvider(model))
+        out = await node(make_state(question="total loans for female borrowers"))
+        assert out["matched_tables"] == ["loan"]
+
     async def test_zero_match_refuses_no_fallback(self, sqlite_registry):
         """零命中 = 未覆盖 = 拒绝;无任何 fallback 兜底(决策 4)。"""
         node = _node(connectors=sqlite_registry,
@@ -599,8 +641,10 @@ class TestProgressiveSchemaLinking:
 
 
 class TestPlanContradictionReplan:
-    """硬 MISS 二分:计划自相矛盾(模型里有、计划没带)→ 有界重规划;
-    真模型缺口(未声明表)照旧拒绝(0483 / 0487 两种形状的回归)。"""
+    """硬 MISS 二分与自愈:计划自相矛盾(模型里有、计划没带)且**可路由**
+    → 编译器以组件引用为准自愈补齐,直接编译(B1);声明但**不可路由**
+    (无关系边)→ 有界重规划;真模型缺口(未声明表)照旧拒绝。
+    0483 形状自愈 / 0487 形状重规划 / 不可路由回归三条链路各自钉住。"""
 
     @staticmethod
     def _model() -> SemanticModel:
@@ -651,9 +695,34 @@ class TestPlanContradictionReplan:
             "conditions": [{"field": "client.gender", "op": "=", "value": "F"}],
         }
 
-    async def test_declared_table_missing_from_plan_replans(self):
-        """表已声明、计划没带 → 发射有界重规划,不是拒绝。"""
+    @staticmethod
+    def _unroutable_model() -> SemanticModel:
+        """同 _model 但**无关系边**:client 已声明却不可路由 —— 自愈把它补进
+        join 集也 join 不到,仍是 unreachable_table。重规划链路的回归载体
+        (自愈只吃「可唯一路由」的一类,不掩盖真缺口)。"""
+        from dataclasses import replace
+
+        return replace(TestPlanContradictionReplan._model(), relationships=[])
+
+    async def test_declared_table_missing_from_plan_self_heals(self):
+        """0483 形状(B1):条件引用 client、plan.tables 只带 loan,但关系已
+        声明且可唯一路由 → 编译器以组件引用为准补齐 join 集,直接编译成功,
+        不再是 unreachable_table,也不触发重规划。"""
         node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]))
+        out = await node(make_state(
+            question="female clients' loans", matched_tables=["loan"]))
+        assert "refusal" not in out
+        assert out["compiled"] is True
+        assert "JOIN client" in out["compiled_sql"]
+        assert "client.gender = 'F'" in out["compiled_sql"]
+        assert out["compile_meta"]["miss_reason"] == ""
+        assert out["plan_replan_pending"] is False
+        assert "error_feedback" not in out
+
+    async def test_unroutable_declared_table_replans(self):
+        """声明但不可路由(无关系边)→ 仍走有界重规划,不被自愈吞掉。"""
+        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]),
+                          model=self._unroutable_model())
         out = await node(make_state(
             question="female clients' loans", matched_tables=["loan"]))
         assert "refusal" not in out
@@ -661,9 +730,9 @@ class TestPlanContradictionReplan:
         assert out["retry_count"] == 1
         assert out["plan_replan_rounds"] == 1
         assert out["error_feedback"].startswith("[ERR:PLAN_CONTRADICTION]")
-        # 反馈必须携带**声明关系与字段清单**:那一轮 planner 的 schema_context
-        # 里根本没有 client(linker 漏了),只喊「加进 plan.tables」它无从下手。
-        assert "loan.client_id = client.client_id" in out["error_feedback"]
+        # 反馈必须携带字段清单,使 planner 能判断计划该带谁;无关系边时
+        # 如实说明 no declared relationship,而不是编造 join。
+        assert "no declared relationship" in out["error_feedback"]
         assert "gender" in out["error_feedback"]
         # 归因保留(miss 分因还看得见)……
         assert out["compile_meta"]["miss_reason"] == "unreachable_table"
@@ -738,22 +807,27 @@ class TestPlanContradictionReplan:
                                 provider) is None
 
     async def test_replan_exhausted_falls_back_to_refusal(self):
-        """双上限之一(MAX_PLAN_REPLANS):耗尽 → 拒绝,不是 error。"""
+        """双上限之一(MAX_PLAN_REPLANS):耗尽 → 拒绝,不是 error。
+        载体=不可路由表:重规划修不了,额度用尽后归因仍是结构性硬 MISS。"""
         from trove.workflow.nodes.query_sketch import MAX_PLAN_REPLANS
 
-        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]))
+        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]),
+                          model=self._unroutable_model())
         out = await node(make_state(
             question="female clients' loans", matched_tables=["loan"],
             plan_replan_rounds=MAX_PLAN_REPLANS))
         assert out["refusal"] is not None
+        assert out["refusal"]["compile_miss"]["reason"] == "unreachable_table"
         assert out["plan_replan_pending"] is False
         assert "error_feedback" not in out
 
     async def test_replan_budget_exhausted_falls_back_to_refusal(self):
         """双上限之二(共享修正预算):耗尽 → 拒绝,不是 error。"""
-        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]))
+        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]),
+                          model=self._unroutable_model())
         out = await node(make_state(
             question="female clients' loans", matched_tables=["loan"],
             retry_count=10))
         assert out["refusal"] is not None
+        assert out["refusal"]["compile_miss"]["reason"] == "unreachable_table"
         assert out["plan_replan_pending"] is False

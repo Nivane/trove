@@ -76,9 +76,10 @@ def _word_tokens(text: str) -> set[str]:
 def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
     """dataset 名/synonym/description 的确定性匹配分(零 LLM)。
 
-    3.0 = 名称/synonym 子串命中;2.5 = synonym 词重叠 ≥0.5;2.0 =
-    description 词重叠 ≥0.5;1.5 = description 词重叠 ≥0.25;1.0 =
-    名称/synonym/description 单 token 命中(弱信号,仅反思轮放大时用)。
+    3.0 = 名称/synonym 子串命中;2.5 = synonym 词重叠 ≥0.5 或
+    enum_display 展示值子串命中;2.0 = description 词重叠 ≥0.5;1.5 =
+    description 词重叠 ≥0.25;1.0 = 名称/synonym/description 单 token
+    命中(弱信号,仅反思轮放大时用)。
     基础阈值为 2.0 在调用侧判定,重跑轮按档放宽(见 _progressive_threshold)。
     """
     q = (query or "").lower()
@@ -87,6 +88,14 @@ def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
     for s in d.synonyms:
         if s and str(s).lower() in q:
             return 3.0
+    # enum_display 展示值命中("female" → gender 枚举列):问题点名枚举值 →
+    # 锚定其数据集(0483 型问题里值词是唯一线索)。长度 ≥3 过滤 F/M 这类
+    # 单字母码值——它们在英文问句里几乎必然误撞,是噪声。
+    for f in getattr(d, "fields", None) or []:
+        for _code, disp in (getattr(f, "enum_display", None) or {}).items():
+            disp_s = str(disp or "").strip().lower()
+            if len(disp_s) >= 3 and disp_s in q:
+                return 2.5
     for s in d.synonyms:
         if s:
             st = _word_tokens(s)

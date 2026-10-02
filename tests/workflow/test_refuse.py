@@ -798,8 +798,11 @@ draft:
         kb = KbService(tmp_path / "proj")
         kb.kb_dir.mkdir(parents=True, exist_ok=True)
         (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
-        # 两个数据集 + 声明关系:teachers 已声明,计划却只带 students ——
-        # 0483 形状(模型里有、计划没带)= 计划自相矛盾,不是模型缺口。
+        # 两个数据集、**无关系边**:teachers 已声明但不可路由 —— 计划条件引用
+        # teachers.name,编译器自愈把 teachers 补进 join 集也 join 不到
+        # (unreachable_table):重规划修不了的矛盾。自愈只吃「可唯一路由」
+        # 的一类,本用例钉住重规划→拒绝链路仍在(0483 可路由形状另有自愈
+        # 用例,见 test_semantic_first.TestPlanContradictionReplan)。
         (kb.semantics_path("demo")).write_text(
             "semantic_model:\n"
             "- name: school\n"
@@ -822,12 +825,6 @@ draft:
             "      expression: {dialects: [{dialect: ANSI_SQL, expression: teacher_id}]}\n"
             "    - name: name\n"
             "      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}\n"
-            "  relationships:\n"
-            "  - name: students_to_teachers\n"
-            "    from: students\n"
-            "    to: teachers\n"
-            "    from_columns: [teacher_id]\n"
-            "    to_columns: [teacher_id]\n"
             "  metrics:\n"
             "  - name: average grade\n"
             "    expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(students.grade)}]}\n"
