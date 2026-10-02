@@ -446,9 +446,14 @@ def _explicit_join_edges(
 
     from sqlglot import exp, parse_one
 
-    # joins 是逗号/AND 分隔的多个 ``lhs = rhs`` 子句(query_sketch 输出):
-    # 整体 parse 会被逗号卡死,逐子句解析后收集 EQ。
-    clauses = [c for c in re.split(r"\s*,\s*|\s+and\s+", text, flags=re.I) if c.strip()]
+    # joins 是逗号/分号/AND 分隔的多个 ``lhs = rhs`` 子句(query_sketch 输出):
+    # 整体 parse 会被逗号卡死,逐子句解析后收集 EQ。分号同理必须切(query_sketch
+    # 实测会用 ``;`` 分隔,整串进 parse_one 会得到一个 Block 含两条 EQ,撞上下面
+    # 的「每子句恰一条 EQ」判定 → 已声明路径被误判为不可解析)。
+    clauses = [
+        c for c in re.split(r"\s*,\s*|\s*;\s*|\s+and\s+", text, flags=re.I)
+        if c.strip()
+    ]
     parsed = []
     for clause in clauses:
         try:
