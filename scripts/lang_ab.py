@@ -18,6 +18,7 @@ load_dotenv(Path.cwd() / ".env")
 
 from trove.core.config import ConfigLoader
 from trove.llm.gateway import LLMGateway
+from trove.services.authz import Policy, principal_to_wire
 from trove.services.datasource.catalog import CatalogService
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
@@ -75,6 +76,9 @@ async def main() -> None:
         state = WorkflowState(
             session_id=run_id, question=question, evidence=EVIDENCE,
             run_id=run_id, lang=config.language,
+            # 主体:直驱图绕过 SessionManager 的主体现算,authz A1 缺主体即
+            # 拒绝 —— 与其 no-auth 分支同口径兜本机可信身份(同 eval_bird)。
+            principal=principal_to_wire(Policy.local_admin()),
         )
         tracer.start_run({"question": question, "gold_sql": GOLD_SQL, "model": config.target})
         final = WorkflowState.model_validate(await graph.ainvoke(state))

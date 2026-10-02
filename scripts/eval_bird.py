@@ -36,6 +36,7 @@ from trove.core.i18n import L
 from trove.llm.gateway import LLMGateway
 from trove.tracing.local import configure_trace_store
 from trove.tracing.runlog import create_tracer
+from trove.services.authz import Policy, principal_to_wire
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.datasource.urls import parse_datasource_url
 from trove.services.datasource.catalog import CatalogService
@@ -538,6 +539,11 @@ async def main() -> None:
             run_id=run_id,
             lang=config.language,
             oracle_tables=oracle_tables,
+            # 主体:脚本直驱图,绕过了 SessionManager 的按会话主体现算,而
+            # authz A1 缺主体即拒绝(2026-09-29 起)。与 SessionManager 的
+            # no-auth 分支同口径兜本机可信身份 —— CLI / stdio MCP / 嵌入
+            # 调用走的是同一个主体(见 agent/session.py 的 _principal_wire)。
+            principal=principal_to_wire(Policy.local_admin()),
         )
         # per-run 观测:trace span 树 + runs/{run_id}.log 详尽日志(+verbose 回显)
         tracer = create_tracer(state.run_id, verbose=args.verbose)
