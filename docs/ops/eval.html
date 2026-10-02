@@ -345,7 +345,7 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     <h2 id="ci">CI 里跑什么</h2>
 
     <p>
-      <code>.github/workflows/eval-gate.yml</code> 每个 PR 都跑，四步全部零 LLM、零网络：
+      <code>.github/workflows/eval-gate.yml</code> 每个 PR 都跑，五步全部零 LLM、零网络：
     </p>
 
     <div class="table-wrap">
@@ -358,6 +358,11 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
             <td><strong>KB 禁背题</strong></td>
             <td class="mono">check_kb_anti_cheat.py</td>
             <td>KB 可检索示例里出现 gold SQL 的拷贝（模板命中即违规，人工条目命中只告警）</td>
+          </tr>
+          <tr>
+            <td><strong>理解层切片</strong></td>
+            <td class="mono">eval_understanding.py</td>
+            <td>「没查成」伪装成「查过了」：条目为空 / gold 全不可解析（退出码 1）、KB 缺 semantics.yml（退出码 2）。缺口与分叉<strong>不</strong>拦——它们是报告</td>
           </tr>
           <tr>
             <td><strong>基线完整性</strong></td>
@@ -390,23 +395,108 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     </p>
 
     <p>
-      但要说清楚<strong>这四步挡的不是「模型变差了」</strong>：准确率回归要真库加模型，
+      但要说清楚<strong>这些步挡的不是「模型变差了」</strong>：准确率回归要真库加模型，
       仍然只能手动跑 <code>eval_bird.py</code>。这道门挡的是「锚点坏了」——基线缺题、
-      评分口径漂移、冻结产物被改。把这里的绿读成「准确率没问题」是误读。
+      评分口径漂移、冻结产物被改。理解层切片报的是「卡在哪一层」，缺口按定义是产物，
+      不拦。把这里的绿读成「准确率没问题」是误读。
     </p>
 
     <p>
-      禁背题那步不设开关：它零成本，问的也是「KB 还诚实吗」，与「模型变差了吗」是两回事；
+      禁背题与理解层切片两步不设开关：它们零成本，问的分别是「KB 还诚实吗」与
+      「理解链路卡在哪一层」，与「模型变差了吗」是两回事；
       其余三步只在 <code>eval.gate_enabled</code>（<code>conf/agent.yml</code>）为
       <code>true</code> 时跑，置 <code>false</code> 会打印一行 skip notice，
       而不是无声跳过。
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L70">eval-gate.yml:70 <span class="ref-line">check_kb_anti_cheat</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L86">eval-gate.yml:86 <span class="ref-line">--require-full</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L102">eval-gate.yml:102 <span class="ref-line">--ci</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L74">eval-gate.yml:74 <span class="ref-line">check_kb_anti_cheat</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L108">eval-gate.yml:108 <span class="ref-line">--require-full</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L124">eval-gate.yml:124 <span class="ref-line">--ci</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L44">eval_gate.py:44 <span class="ref-line">--ci</span></a>
+    </p>
+
+    <h2 id="understanding">理解层切片：准确率之外的四个面</h2>
+
+    <p>
+      准确率是<strong>终点</strong>数字：答对了几题，不说卡在哪一层。
+      <code>scripts/eval_understanding.py</code> 把理解链路拆成四个可独立测量的面，
+      零 LLM、零网络、零数据库，只读仓库里的冻结产物与
+      <code>.trove/kb/&lt;db&gt;/semantics.yml</code>——KB 缺语义模型直接退出码 2，
+      绝不给一份静默的空报告（空的 100% 看起来与「覆盖为零」一模一样）。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>切片</th><th>回答什么</th><th>冻结基线上的读数</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>A 语义表达上限</strong></td>
+            <td>gold SQL 的表/连接/列/过滤值，在语义模型里有没有落点。缺口清单 = 重建语义模型的验收表</td>
+            <td class="mono">350/350 项 (100%)<br>未声明值 17 · unknown 11</td>
+          </tr>
+          <tr>
+            <td><strong>B 分叉归因</strong></td>
+            <td>MISMATCH 的首个<strong>结构</strong>分叉组件：tables &gt; projections &gt; conds &gt; groups，余下归 ordering_or_other</td>
+            <td class="mono">13/13 可归因<br>tables 8 · projections 3 · conds 2</td>
+          </tr>
+          <tr>
+            <td><strong>C 链路归因</strong></td>
+            <td>schema_linking → query_sketch → compiler → gen，哪一环先偏</td>
+            <td class="mono">未录制（条目缺 plan / matched_tables；补录后自动生效）</td>
+          </tr>
+          <tr>
+            <td><strong>D 一次通过率</strong></td>
+            <td>first_pass 与按 <code>path</code> 分档 EX，口径与 scorecard 同源（<code>replay.score_replay</code>，不另算一份）</td>
+            <td class="mono">first_pass 0.4062 (13/32)<br>path 覆盖 19/32 → 分档不发键</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <strong>保守性是它唯一的正确性主张。</strong>
+      解析失败、限定符无法归属（派生表别名、未知前缀）一律记 <code>unknown</code>：
+      不计入分母、不进缺口清单、也<strong>不静默丢掉</strong>——静默少算一项，分母就与
+      「模型覆盖多少」脱钩，报告会显得比实际干净。未声明值域的过滤值只计数、不算缺口：
+      模型没声明值域，不等于它表达不了。缺口清单要当验收表用，虚报会让人去修不存在的问题。
+    </p>
+
+    <p>
+      归因同样<strong>与写法无关</strong>：限定符先归一（别名 → 物理表；CTE/派生表限定
+      → 只比列名），tables 用谱系摘要的实际读表而不是签名里的表名——实测 0472 的 CTE
+      包装曾被误报成「丢 client、多 selected_client」，物理上两张表都读了。签名等价但
+      结果不同时报 <code>none</code>（分叉在结构之外），不硬塞进某个组件。
+      C 切片补录后才有效：没有 plan / matched_tables 就报「未录制」，
+      <strong>不冒充「没有偏离」</strong>。
+    </p>
+
+    <p>退出码与 <code>check_drift.py</code> 同约定——「没查成」不许混进 0：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>退出码</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">0</td><td>报告已产出。<strong>缺口与分叉是产物，不是失败</strong>——拦截由门判定那步的 <code>first_pass</code> 承担</td></tr>
+          <tr><td class="mono">1</td><td>度量退化：条目为空、或 gold SQL 全部不可解析（那会产出一份空洞的 100%/0 结构）</td></tr>
+          <tr><td class="mono">2</td><td>没法跑：输入文件缺失、问题集为空、KB 缺 <code>semantics.yml</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <pre><code>uv run python scripts/eval_understanding.py           # 人读报告（~10 行）
+uv run python scripts/eval_understanding.py --json    # 完整报告（逐题明细，供机器读）</code></pre>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_understanding.py#L232">eval_understanding.py:232 <span class="ref-line">check_expressibility</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_understanding.py#L435">eval_understanding.py:435 <span class="ref-line">_first_divergence</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_understanding.py#L553">eval_understanding.py:553 <span class="ref-line">attribute_chain</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_understanding.py#L643">eval_understanding.py:643 <span class="ref-line">first_pass_slice</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_understanding.py#L754">eval_understanding.py:754 <span class="ref-line">main</span></a>
     </p>
 
     <h2 id="retrieval-eval">检索侧的评测脚本</h2>
@@ -470,7 +560,7 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b3134a0</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: e034b53</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>
