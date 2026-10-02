@@ -732,3 +732,128 @@ class TestDateRangeTemplates:
             "SELECT COUNT(*) FROM account WHERE substr(date, 1, 2) = '93'")
         assert "Bank中account opening date在1993到1997年之间的记录有多少？" in zh
         assert "Bank中account opening date早于1997年的记录有多少？" in zh
+
+
+SHARE_TABLES = [
+    {
+        "name": "loan",
+        "description": "Loan",
+        "columns": [
+            {"name": "loan_id", "type": "int", "description": "Loan identifier", "enums": []},
+            {"name": "status", "type": "varchar", "description": "loan contract status",
+             "enums": ["A=contract finished", "B=contract running", "C=finished, not paid"]},
+            {"name": "amount", "type": "int", "description": "loan amount", "enums": []},
+            {"name": "duration", "type": "int", "description": "loan duration", "enums": []},
+            {"name": "bank_code", "type": "varchar", "description": "code of the bank",
+             "enums": ["AB=bank A", "CD=bank B"]},
+            {"name": "A7", "type": "varchar", "description": "region band",
+             "enums": ["0", "6", "4", "1"]},
+            {"name": "A8", "type": "varchar", "description": "quality band",
+             "enums": ["low", "mid", "high"]},
+            {"name": "A9", "type": "varchar", "description": "extra band",
+             "enums": ["x", "y"]},
+        ],
+        "metrics": [],
+    },
+]
+
+
+class TestShareTerms:
+    """条件占比度量:"Y 为 Z 的记录/金额占比" 的可答构造(确定性产出)。
+
+    占比题此前没有可答构造——语义模型只有无条件聚合度量,编译只能软
+    MISS 拒绝。生成面按「枚举列 × 前 N 值 × (计数 + ≤1 个可加总度量)」
+    展开,列/值都经确定性过滤(见 deterministic_gen._enum_cols_of)。
+    """
+
+    def _shares(self, tables=None, lang="en"):
+        terms = generate_terms(tables or SHARE_TABLES, lang=lang)
+        return [t for t in terms if t["mapping"].startswith("SUM(CASE WHEN")]
+
+    def test_count_share_per_enum_value(self):
+        shares = self._shares()
+        by_mapping = {t["mapping"]: t for t in shares}
+        t = by_mapping["SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)"]
+        assert t["term"] == "share of loan records where loan contract status is contract finished"
+        assert "percentage of loan records where loan contract status is contract finished" in t["aliases"]
+        assert t["tables"] == ["loan"]
+        # status 的三个枚举值各一条计数占比(A8 是第二个枚举列,另算)
+        assert sum(1 for m in by_mapping
+                   if "loan.status" in m and "/ COUNT(*)" in m) == 3
+
+    def test_measure_share_first_addable_measure(self):
+        """度量占比用第一个可加总列(amount;duration 被每表 1 个的上限挡掉)。"""
+        shares = self._shares()
+        measure = [t for t in shares if "NULLIF" in t["mapping"]]
+        assert measure
+        mapping = measure[0]["mapping"]
+        assert mapping == (
+            "SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+            " * 100.0 / NULLIF(SUM(loan.amount), 0)")
+        assert all("loan.duration" not in t["mapping"] for t in shares)
+
+    def test_enum_columns_capped_per_table(self):
+        """每表最多 2 个枚举列:A8 进,A9(第 3 个)不进。"""
+        shares = self._shares()
+        assert any("loan.A8 = 'low'" in t["mapping"] for t in shares)
+        assert not any("loan.A9" in t["mapping"] for t in shares)
+
+    def test_numeric_enum_values_excluded(self):
+        """取值全数字 = probe 取样到的 range 值,不是分类,不产占比。"""
+        assert not any("loan.A7" in t["mapping"] for t in self._shares())
+
+    def test_id_like_enum_columns_excluded(self):
+        """引用/编码列(``_is_junk_measure_col``)不产占比。"""
+        assert not any("loan.bank_code" in t["mapping"] for t in self._shares())
+
+    def test_value_cap_limits_shares_per_column(self):
+        tables = [{
+            "name": "card", "description": "Card",
+            "columns": [{"name": "type", "type": "varchar", "description": "card type",
+                         "enums": ["a=one", "b=two", "c=three", "d=four", "e=five", "f=six"]}],
+        }]
+        shares = self._shares(tables)
+        assert len(shares) == 4
+        assert "= 'd'" in shares[-1]["mapping"]
+
+    def test_single_quote_in_value_escaped(self):
+        tables = [{
+            "name": "loan", "description": "Loan",
+            "columns": [
+                {"name": "status", "type": "varchar", "description": "loan status",
+                 "enums": ["it's=unfinished", "ok=finished"]},
+            ],
+        }]
+        shares = self._shares(tables)
+        assert any("loan.status = 'it''s'" in t["mapping"] for t in shares)
+
+    def test_no_enum_columns_no_shares(self):
+        tables = [{
+            "name": "account", "description": "Account",
+            "columns": [{"name": "account_id", "type": "int",
+                         "description": "Account identifier", "enums": []}],
+        }]
+        assert self._shares(tables) == []
+
+    def test_rate_like_column_never_used_as_measure(self):
+        """率值列不可加总:唯一的数值列是率值 → 只出计数占比。"""
+        tables = [{
+            "name": "district", "description": "District",
+            "columns": [
+                {"name": "name", "type": "varchar", "description": "district name",
+                 "enums": ["east=East Bohemia", "west=West Bohemia"]},
+                {"name": "unemployment", "type": "double",
+                 "description": "unemployment rate", "enums": []},
+            ],
+        }]
+        shares = self._shares(tables)
+        assert shares and all("NULLIF" not in t["mapping"] for t in shares)
+
+    def test_zh_share_terms(self):
+        shares = self._shares(lang="zh")
+        assert any(t["term"] == "loan contract status为contract finished的loan记录占比"
+                   for t in shares)
+        assert any("loan amount占比" in t["term"] for t in shares)
+
+    def test_deterministic(self):
+        assert generate_terms(SHARE_TABLES, lang="en") == generate_terms(SHARE_TABLES, lang="en")

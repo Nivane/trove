@@ -839,6 +839,48 @@ semantic_model:
     ai_context:
       synonyms:
       - Date the account was created average year
+  - name: share of account records where Frequency of account statements or transactions,
+      stored as all-caps codes is monthly issuance
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN account.frequency = 'POPLATEK MESICNE' THEN 1 ELSE
+          0 END) * 100.0 / COUNT(*)
+    description: percentage of account records where Frequency of account statements
+      or transactions, stored as all-caps codes is monthly issuance
+    ai_context:
+      synonyms:
+      - percentage of account records where Frequency of account statements or transactions,
+        stored as all-caps codes is monthly issuance
+      - monthly issuance account record share
+  - name: share of account records where Frequency of account statements or transactions,
+      stored as all-caps codes is weekly issuance
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN account.frequency = 'POPLATEK TYDNE' THEN 1 ELSE
+          0 END) * 100.0 / COUNT(*)
+    description: percentage of account records where Frequency of account statements
+      or transactions, stored as all-caps codes is weekly issuance
+    ai_context:
+      synonyms:
+      - percentage of account records where Frequency of account statements or transactions,
+        stored as all-caps codes is weekly issuance
+      - weekly issuance account record share
+  - name: share of account records where Frequency of account statements or transactions,
+      stored as all-caps codes is issuance after each transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN account.frequency = 'POPLATEK PO OBRATU' THEN 1
+          ELSE 0 END) * 100.0 / COUNT(*)
+    description: percentage of account records where Frequency of account statements
+      or transactions, stored as all-caps codes is issuance after each transaction
+    ai_context:
+      synonyms:
+      - percentage of account records where Frequency of account statements or transactions,
+        stored as all-caps codes is issuance after each transaction
+      - issuance after each transaction account record share
   - name: number of card records
     expression:
       dialects:
@@ -857,6 +899,48 @@ semantic_model:
     ai_context:
       synonyms:
       - Date the card was issued average year
+  - name: share of card records where Type of card, stored as lowercase text is gold
+      card
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN card.type = 'gold' THEN 1 ELSE 0 END) * 100.0 /
+          COUNT(*)
+    description: percentage of card records where Type of card, stored as lowercase
+      text is gold card
+    ai_context:
+      synonyms:
+      - percentage of card records where Type of card, stored as lowercase text is
+        gold card
+      - gold card card record share
+  - name: share of card records where Type of card, stored as lowercase text is classic
+      card
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN card.type = 'classic' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of card records where Type of card, stored as lowercase
+      text is classic card
+    ai_context:
+      synonyms:
+      - percentage of card records where Type of card, stored as lowercase text is
+        classic card
+      - classic card card record share
+  - name: share of card records where Type of card, stored as lowercase text is junior
+      card
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN card.type = 'junior' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of card records where Type of card, stored as lowercase
+      text is junior card
+    ai_context:
+      synonyms:
+      - percentage of card records where Type of card, stored as lowercase text is
+        junior card
+      - junior card card record share
   - name: number of client records
     expression:
       dialects:
@@ -875,6 +959,34 @@ semantic_model:
     ai_context:
       synonyms:
       - Client's birth date average year
+  - name: share of client records where Gender of the client, stored as single capital
+      letter is female
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN client.gender = 'F' THEN 1 ELSE 0 END) * 100.0 /
+          COUNT(*)
+    description: percentage of client records where Gender of the client, stored as
+      single capital letter is female
+    ai_context:
+      synonyms:
+      - percentage of client records where Gender of the client, stored as single
+        capital letter is female
+      - female client record share
+  - name: share of client records where Gender of the client, stored as single capital
+      letter is male
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN client.gender = 'M' THEN 1 ELSE 0 END) * 100.0 /
+          COUNT(*)
+    description: percentage of client records where Gender of the client, stored as
+      single capital letter is male
+    ai_context:
+      synonyms:
+      - percentage of client records where Gender of the client, stored as single
+        capital letter is male
+      - male client record share
   - name: number of disp records
     expression:
       dialects:
@@ -884,6 +996,34 @@ semantic_model:
     ai_context:
       synonyms:
       - disp count
+  - name: share of disp records where Type of disposition, stored as all-caps codes
+      is account owner
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN disp.type = 'OWNER' THEN 1 ELSE 0 END) * 100.0 /
+          COUNT(*)
+    description: percentage of disp records where Type of disposition, stored as all-caps
+      codes is account owner
+    ai_context:
+      synonyms:
+      - percentage of disp records where Type of disposition, stored as all-caps codes
+        is account owner
+      - account owner disp record share
+  - name: share of disp records where Type of disposition, stored as all-caps codes
+      is account user with limited rights
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN disp.type = 'DISPONENT' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of disp records where Type of disposition, stored as all-caps
+      codes is account user with limited rights
+    ai_context:
+      synonyms:
+      - percentage of disp records where Type of disposition, stored as all-caps codes
+        is account user with limited rights
+      - account user with limited rights disp record share
   - name: number of district records
     expression:
       dialects:
@@ -1021,6 +1161,118 @@ semantic_model:
     ai_context:
       synonyms:
       - avg Number of crimes committed in 1996
+  - name: share of district records where Region or area name of the district is Prague
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'Prague' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is Prague
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        Prague
+      - Prague district record share
+  - name: share of district records where Region or area name of the district is central
+      Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'central Bohemia' THEN 1 ELSE 0 END)
+          * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is central Bohemia
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        central Bohemia
+      - central Bohemia district record share
+  - name: share of district records where Region or area name of the district is south
+      Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'south Bohemia' THEN 1 ELSE 0 END)
+          * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is south Bohemia
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        south Bohemia
+      - south Bohemia district record share
+  - name: share of district records where Region or area name of the district is west
+      Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'west Bohemia' THEN 1 ELSE 0 END)
+          * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is west Bohemia
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        west Bohemia
+      - west Bohemia district record share
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is Prague
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'Prague' THEN district.A8 ELSE 0 END)
+          * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is Prague
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is Prague
+      - Prague share of Number of municipalities with population above 10000
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is central Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'central Bohemia' THEN district.A8
+          ELSE 0 END) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is central
+      Bohemia
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is central Bohemia
+      - central Bohemia share of Number of municipalities with population above 10000
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is south Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'south Bohemia' THEN district.A8 ELSE
+          0 END) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is south Bohemia
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is south Bohemia
+      - south Bohemia share of Number of municipalities with population above 10000
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is west Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN district.A3 = 'west Bohemia' THEN district.A8 ELSE
+          0 END) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is west Bohemia
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is west Bohemia
+      - west Bohemia share of Number of municipalities with population above 10000
   - name: number of loan records
     expression:
       dialects:
@@ -1093,6 +1345,102 @@ semantic_model:
     ai_context:
       synonyms:
       - avg Monthly payment amount
+  - name: share of loan records where Loan status code (A, B, D) is A
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is A
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is A
+      - A loan record share
+  - name: share of loan records where Loan status code (A, B, D) is B
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'B' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is B
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is B
+      - B loan record share
+  - name: share of loan records where Loan status code (A, B, D) is D
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'D' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is D
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is D
+      - D loan record share
+  - name: share of loan records where Loan status code (A, B, D) is C
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'C' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is C
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is C
+      - C loan record share
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is A
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END) *
+          100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is A
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is A
+      - A share of Loan amount in monetary units
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is B
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'B' THEN loan.amount ELSE 0 END) *
+          100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is B
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is B
+      - B share of Loan amount in monetary units
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is D
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'D' THEN loan.amount ELSE 0 END) *
+          100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is D
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is D
+      - D share of Loan amount in monetary units
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is C
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN loan.status = 'C' THEN loan.amount ELSE 0 END) *
+          100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is C
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is C
+      - C share of Loan amount in monetary units
   - name: number of order records
     expression:
       dialects:
@@ -1120,6 +1468,118 @@ semantic_model:
     ai_context:
       synonyms:
       - avg Order amount in monetary units
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is SIPO
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is SIPO
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is SIPO
+      - SIPO order record share
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is UVER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'UVER' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is UVER
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is UVER
+      - UVER order record share
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is POJISTNE
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN 1 ELSE 0 END)
+          * 100.0 / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is POJISTNE
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is POJISTNE
+      - POJISTNE order record share
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is LEASING
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN 1 ELSE 0 END)
+          * 100.0 / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is LEASING
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is LEASING
+      - LEASING order record share
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is SIPO
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN "order".amount ELSE
+          0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is SIPO
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is SIPO
+      - SIPO share of Order amount in monetary units
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is UVER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'UVER' THEN "order".amount ELSE
+          0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is UVER
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is UVER
+      - UVER share of Order amount in monetary units
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is POJISTNE
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN "order".amount
+          ELSE 0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is POJISTNE
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is POJISTNE
+      - POJISTNE share of Order amount in monetary units
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is LEASING
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN "order".amount
+          ELSE 0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is LEASING
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is LEASING
+      - LEASING share of Order amount in monetary units
   - name: number of trans records
     expression:
       dialects:
@@ -1174,6 +1634,175 @@ semantic_model:
     ai_context:
       synonyms:
       - avg Account balance after the transaction
+  - name: share of trans records where Transaction type (PRIJEM, VYDAJ, VYBER) is
+      PRIJEM
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.type = 'PRIJEM' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
+      VYBER) is PRIJEM
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction type (PRIJEM, VYDAJ, VYBER)
+        is PRIJEM
+      - PRIJEM trans record share
+  - name: share of trans records where Transaction type (PRIJEM, VYDAJ, VYBER) is
+      VYDAJ
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.type = 'VYDAJ' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
+      VYBER) is VYDAJ
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction type (PRIJEM, VYDAJ, VYBER)
+        is VYDAJ
+      - VYDAJ trans record share
+  - name: share of trans records where Transaction type (PRIJEM, VYDAJ, VYBER) is
+      VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.type = 'VYBER' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
+      VYBER) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction type (PRIJEM, VYDAJ, VYBER)
+        is VYBER
+      - VYBER trans record share
+  - name: share of Transaction amount in monetary units where Transaction type (PRIJEM,
+      VYDAJ, VYBER) is PRIJEM
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.type = 'PRIJEM' THEN trans.amount ELSE 0 END)
+          * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction type (PRIJEM, VYDAJ, VYBER) is PRIJEM
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction type
+        (PRIJEM, VYDAJ, VYBER) is PRIJEM
+      - PRIJEM share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction type (PRIJEM,
+      VYDAJ, VYBER) is VYDAJ
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.type = 'VYDAJ' THEN trans.amount ELSE 0 END)
+          * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction type (PRIJEM, VYDAJ, VYBER) is VYDAJ
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction type
+        (PRIJEM, VYDAJ, VYBER) is VYDAJ
+      - VYDAJ share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction type (PRIJEM,
+      VYDAJ, VYBER) is VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.type = 'VYBER' THEN trans.amount ELSE 0 END)
+          * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction type (PRIJEM, VYDAJ, VYBER) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction type
+        (PRIJEM, VYDAJ, VYBER) is VYBER
+      - VYBER share of Transaction amount in monetary units
+  - name: share of trans records where Transaction operation description (all caps,
+      may be NULL) is VKLAD
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.operation = 'VKLAD' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of trans records where Transaction operation description
+      (all caps, may be NULL) is VKLAD
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction operation description (all caps,
+        may be NULL) is VKLAD
+      - VKLAD trans record share
+  - name: share of trans records where Transaction operation description (all caps,
+      may be NULL) is VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.operation = 'VYBER' THEN 1 ELSE 0 END) * 100.0
+          / COUNT(*)
+    description: percentage of trans records where Transaction operation description
+      (all caps, may be NULL) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction operation description (all caps,
+        may be NULL) is VYBER
+      - VYBER trans record share
+  - name: share of trans records where Transaction operation description (all caps,
+      may be NULL) is VYBER KARTOU
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN 1 ELSE 0 END)
+          * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction operation description
+      (all caps, may be NULL) is VYBER KARTOU
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction operation description (all caps,
+        may be NULL) is VYBER KARTOU
+      - VYBER KARTOU trans record share
+  - name: share of Transaction amount in monetary units where Transaction operation
+      description (all caps, may be NULL) is VKLAD
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.operation = 'VKLAD' THEN trans.amount ELSE
+          0 END) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction operation description (all caps, may be NULL) is VKLAD
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction operation
+        description (all caps, may be NULL) is VKLAD
+      - VKLAD share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction operation
+      description (all caps, may be NULL) is VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.operation = 'VYBER' THEN trans.amount ELSE
+          0 END) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction operation description (all caps, may be NULL) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction operation
+        description (all caps, may be NULL) is VYBER
+      - VYBER share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction operation
+      description (all caps, may be NULL) is VYBER KARTOU
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN trans.amount
+          ELSE 0 END) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction operation description (all caps, may be NULL) is VYBER
+      KARTOU
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction operation
+        description (all caps, may be NULL) is VYBER KARTOU
+      - VYBER KARTOU share of Transaction amount in monetary units
   - name: max_loan_amount
     expression:
       dialects:

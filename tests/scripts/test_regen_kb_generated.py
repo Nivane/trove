@@ -48,6 +48,29 @@ class TestClassifiers:
             {"sql": "SELECT SUM(t.amount) FROM trans t JOIN loan l ON t.a = l.a",
              "tags": ["trans", "A10", "aggregation"]})
 
+    def test_generator_owned_share_shapes(self):
+        # 条件占比(生成器产物,见 deterministic_gen._share_terms):计数与度量两形
+        datasets = {"loan": {"loan_id", "status", "amount"}, "client": {"client_id"}}
+        assert _is_generator_owned(
+            "SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)",
+            datasets)
+        assert _is_generator_owned(
+            "SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+            " * 100.0 / NULLIF(SUM(loan.amount), 0)", datasets)
+
+    def test_share_shape_not_owned_when_column_undeclared(self):
+        """占比形状但表/列不在声明内 → 不认(人工度量不得被误删)。"""
+        datasets = {"loan": {"loan_id", "status", "amount"}, "client": {"client_id"}}
+        assert not _is_generator_owned(
+            "SUM(CASE WHEN ghost.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)",
+            datasets)
+        assert not _is_generator_owned(
+            "SUM(CASE WHEN loan.ghost = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)",
+            datasets)
+        assert not _is_generator_owned(
+            "SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+            " * 100.0 / NULLIF(SUM(loan.ghost), 0)", datasets)
+
     def test_foreign_keys_flags_hand_edits(self):
         assert _foreign_keys({"name": "m", "expression": {}, "custom_extensions": {}}) == [
             "custom_extensions"]
@@ -131,6 +154,63 @@ class TestRegenMetrics:
             assert "人工加工" in str(e)
         else:  # pragma: no cover
             raise AssertionError("带人工键的生成器条目必须报错退出,而不是静默重建")
+
+
+def _write_share_kb(tmp_path):
+    """含枚举列的 KB:生成器会产出条件占比度量。"""
+    (tmp_path / "schema_notes.yml").write_text(yaml.safe_dump({
+        "tables": [{
+            "name": "loan",
+            "description": "loans",
+            "columns": [
+                {"name": "loan_id", "type": "int", "description": "Loan identifier"},
+                {"name": "status", "type": "varchar", "description": "loan contract status",
+                 "enums": ["A=contract finished", "B=contract running"]},
+                {"name": "amount", "type": "int", "description": "loan amount"},
+            ],
+        }],
+    }, sort_keys=False), encoding="utf-8")
+    (tmp_path / "semantics.yml").write_text(yaml.safe_dump({
+        "semantic_model": [{
+            "name": "t",
+            "datasets": [{
+                "name": "loan",
+                "fields": [{"name": "loan_id"}, {"name": "status"}, {"name": "amount"}],
+            }],
+            "metrics": [
+                {"name": "hand_written",
+                 "expression": {"dialects": [{"dialect": "ANSI_SQL",
+                                              "expression": "MAX(loan.amount)"}]}},
+            ],
+        }],
+        "version": "0.2.0.dev0",
+    }, sort_keys=False), encoding="utf-8")
+
+
+class TestRegenShareMetrics:
+    """占比度量进重建面:生成器产物被分类器认领,重跑零漂移(防两处口径漂移)。"""
+
+    def test_share_metrics_land_and_are_owned(self, tmp_path):
+        _write_share_kb(tmp_path)
+        doc, _, changed = regen_metrics(tmp_path, "en")
+        assert changed
+        exprs = [m["expression"]["dialects"][0]["expression"]
+                 for m in doc["semantic_model"][0]["metrics"]]
+        assert ("SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END)"
+                " * 100.0 / COUNT(*)") in exprs
+        assert ("SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+                " * 100.0 / NULLIF(SUM(loan.amount), 0)") in exprs
+        assert "hand_written" in [m["name"] for m in doc["semantic_model"][0]["metrics"]]
+
+    def test_regeneration_idempotent(self, tmp_path):
+        """重跑零改动 = 分类器认得生成器自己的占比产物(不认得就会重复追加)。"""
+        _write_share_kb(tmp_path)
+        doc, _, _ = regen_metrics(tmp_path, "en")
+        (tmp_path / "semantics.yml").write_text(
+            yaml.safe_dump(doc, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8")
+        _, _, changed = regen_metrics(tmp_path, "en")
+        assert not changed
 
 
 def _write_examples(tmp_path):

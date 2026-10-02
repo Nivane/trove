@@ -72,6 +72,20 @@ _SIMPLE_AGG_RE = re.compile(
 _YEAR_AGG_RE = re.compile(
     r"^AVG\(EXTRACT\(YEAR FROM\s+(?P<table>\"?[A-Za-z_]\w*\"?)\.(?P<column>\w+)\)\)$"
 )
+# 条件占比度量(生成器产物,见 deterministic_gen._share_terms):
+#   SUM(CASE WHEN <表>.<枚举列> = '<值>' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+#   SUM(CASE WHEN <表>.<枚举列> = '<值>' THEN <表>.<度量列> ELSE 0 END)
+#       * 100.0 / NULLIF(SUM(<表>.<度量列>), 0)
+# 捕获 (表, 枚举列[, 度量列]);引用的列都须在声明的 dataset fields 内才认。
+_SHARE_COUNT_RE = re.compile(
+    r"^SUM\(CASE WHEN (?P<table>\"?[A-Za-z_]\w*\"?)\.(?P<column>\w+) = '(?:[^']|'')+'"
+    r" THEN 1 ELSE 0 END\) \* 100\.0 / COUNT\(\*\)$"
+)
+_SHARE_MEASURE_RE = re.compile(
+    r"^SUM\(CASE WHEN (?P<table>\"?[A-Za-z_]\w*\"?)\.(?P<column>\w+) = '(?:[^']|'')+'"
+    r" THEN (?P<table2>\"?[A-Za-z_]\w*\"?)\.(?P<measure>\w+) ELSE 0 END\) \* 100\.0"
+    r" / NULLIF\(SUM\((?P=table2)\.(?P=measure)\), 0\)$"
+)
 # D 族模板的 SQL 形状(单表聚合,tags = [表, 列, aggregation])
 _TEMPLATE_AGG_RE = re.compile(
     r"^SELECT (?:SUM|AVG|MAX|MIN)\(\w+\) FROM \"?[A-Za-z_]\w*\"?$"
@@ -94,6 +108,20 @@ def _is_generator_owned(expr: str, datasets: dict[str, set[str]]) -> bool:
             continue
         table = m.group("table").strip('"')
         return table in datasets and m.group("column") in datasets[table]
+    m = _SHARE_COUNT_RE.match(expr.strip())
+    if m:
+        table = m.group("table").strip('"')
+        return table in datasets and m.group("column") in datasets[table]
+    m = _SHARE_MEASURE_RE.match(expr.strip())
+    if m:
+        table = m.group("table").strip('"')
+        measure_table = m.group("table2").strip('"')
+        return (
+            table in datasets
+            and m.group("column") in datasets[table]
+            and measure_table in datasets
+            and m.group("measure") in datasets[measure_table]
+        )
     return False
 
 

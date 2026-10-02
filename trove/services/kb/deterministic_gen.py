@@ -227,6 +227,153 @@ def _is_rate_like(desc: str) -> bool:
     return bool(_RATE_LIKE_RE.search(desc))
 
 
+#: 条件占比生成面:每个枚举列取前 N 个值、每表取前 N 个枚举列与可加总
+#: 度量列。占比题("percentage of X where Y is Z")是 BIRD 金融族的高频
+#: 形状,而语义模型此前只有**无条件**聚合度量——条件占比没有可答构造,
+#: 编译只能软 MISS 拒绝。上限是噪音与覆盖的折中:枚举列 2 个、值 4 个、
+#: 度量 1 个(第一个可加总列)以内,超出部分属长尾(枚举列本身还经 junk/
+#: 数值型过滤,bank code 之类引用列与 range 值进不来)。
+_SHARE_ENUM_COLS_PER_TABLE = 2
+_SHARE_ENUM_LIMIT = 4
+_SHARE_MEASURES_PER_TABLE = 1
+
+
+def _enum_cols_of(table: dict[str, Any], lang: str) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """表的枚举列 → [(列名, 干净描述, [(code, label)])],值 ≥2 个的才要。
+
+    列描述里的 ``enums`` 是确定性数据(schema_notes 生成时就地固化),
+    解析规则见 :func:`_enum_values`;引用/垃圾列(``_is_junk_measure_col``:
+    id/code 引用、高 NULL)、中文描述列(en 模式)、**数值型列**不进——
+    数值列的 enums 是 probe 取样到的 range 值(实测 district.A7:
+    ``['0','6','4','1']``),不是分类值;占比按"分类的取值"切才有语义。
+    每表最多取前 :data:`_SHARE_ENUM_COLS_PER_TABLE` 个合格列。
+    """
+    out: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for col in table.get("columns", []):
+        if len(out) >= _SHARE_ENUM_COLS_PER_TABLE:
+            break
+        cname = str(col.get("name", "") or "")
+        cdesc = _clean_desc(str(col.get("description", "") or "").strip())
+        ctype = str(col.get("type", "") or "").lower()
+        if not cname or not cdesc:
+            continue
+        if any(m in ctype for m in _NUMERIC_TYPES):
+            continue
+        if lang == "en" and _CJK_RE.search(cdesc):
+            continue
+        if _is_junk_measure_col(cname, cdesc) or _is_id_column(cname, cdesc):
+            continue
+        values = _enum_values(col.get("enums") or [], limit=_SHARE_ENUM_LIMIT)
+        if len(values) < 2:
+            continue
+        if all(re.fullmatch(r"[+-]?\d+(?:\.\d+)?", str(code)) for code, _ in values):
+            # 取值全是数字 = probe 取样到的 range 值(实测 district.A7 的
+            # "stored as numeric text"),不是分类标签。占比按分类切才有语义。
+            continue
+        out.append((cname, cdesc, values))
+    return out
+
+
+def _share_terms(table: dict[str, Any], lang: str, tref: str) -> list[dict[str, Any]]:
+    """条件占比度量(确定性):条件聚合 / 全量聚合 × 100。
+
+    两类构造,同一套上限:
+
+    - **计数占比**(每枚举值一条):``SUM(CASE WHEN 列=值 THEN 1 ELSE 0 END)
+      * 100.0 / COUNT(*)``——"Y 为 Z 的记录占比",与 ``COUNT(*) FILTER``
+      同行数度量(编译侧占比重识别把 SUM-1 归一为 COUNT,见
+      ``compiler._agg_entry``);
+    - **度量占比**(每枚举值 × 前 N 个可加总度量列):同形状,计数换成
+      ``SUM(度量列)`` 且分母加 ``NULLIF(..., 0)`` 除零守卫。
+
+    SQL 一律 CASE 形态(MySQL 不支持 ``FILTER (WHERE ...)``),表限定;
+    分母口径 = 全表(不加 WHERE)——占比的"全量"是表全量,过滤属于
+    提问侧的语义,不进度量定义。
+    """
+    out: list[dict[str, Any]] = []
+    enum_cols = _enum_cols_of(table, lang)
+    if not enum_cols:
+        return out
+    name = table.get("name", "")
+    measures: list[tuple[str, str]] = []
+    for col in table.get("columns", []):
+        cname = str(col.get("name", "") or "")
+        cdesc = _clean_desc(str(col.get("description", "") or "").strip())
+        ctype = str(col.get("type", "") or "").lower()
+        if not cname or not cdesc or _is_id_column(cname, cdesc):
+            continue
+        if _is_junk_measure_col(cname, cdesc) or _is_rate_like(cdesc):
+            continue
+        if lang == "en" and _CJK_RE.search(cdesc):
+            continue
+        if any(m in ctype for m in _NUMERIC_TYPES):
+            measures.append((cname, cdesc))
+    measures = measures[:_SHARE_MEASURES_PER_TABLE]
+
+    for cname, cdesc, values in enum_cols:
+        qcol = _quote(cname)
+        for code, label in values:
+            code_sql = str(code).replace("'", "''")
+            cond = f"{tref}.{qcol} = '{code_sql}'"
+            if lang == "en":
+                out.append({
+                    "term": f"share of {name} records where {cdesc} is {label}",
+                    "aliases": [
+                        f"percentage of {name} records where {cdesc} is {label}",
+                        f"{label} {name} record share",
+                    ],
+                    "mapping": (
+                        f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)"
+                        f" * 100.0 / COUNT(*)"
+                    ),
+                    "tables": [name],
+                    "definition": f"percentage of {name} records where {cdesc} is {label}",
+                })
+            else:
+                out.append({
+                    "term": f"{cdesc}为{label}的{name}记录占比",
+                    "aliases": [f"{cdesc}为{label}的记录百分比"],
+                    "mapping": (
+                        f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)"
+                        f" * 100.0 / COUNT(*)"
+                    ),
+                    "tables": [name],
+                    "definition": f"{name}表中{cdesc}为{label}的记录占比",
+                })
+        for mname, mdesc in measures:
+            qm = _quote(mname)
+            for code, label in values:
+                code_sql = str(code).replace("'", "''")
+                cond = f"{tref}.{qcol} = '{code_sql}'"
+                mapping = (
+                    f"SUM(CASE WHEN {cond} THEN {tref}.{qm} ELSE 0 END)"
+                    f" * 100.0 / NULLIF(SUM({tref}.{qm}), 0)"
+                )
+                if lang == "en":
+                    out.append({
+                        "term": f"share of {mdesc} where {cdesc} is {label}",
+                        "aliases": [
+                            f"percentage of {mdesc} where {cdesc} is {label}",
+                            f"{label} share of {mdesc}",
+                        ],
+                        "mapping": mapping,
+                        "tables": [name],
+                        "definition": (
+                            f"percentage of {mdesc} contributed by records "
+                            f"where {cdesc} is {label}"
+                        ),
+                    })
+                else:
+                    out.append({
+                        "term": f"{cdesc}为{label}的{mdesc}占比",
+                        "aliases": [f"{cdesc}为{label}的{mdesc}百分比"],
+                        "mapping": mapping,
+                        "tables": [name],
+                        "definition": f"{mdesc}中{cdesc}为{label}的部分占比",
+                    })
+    return out
+
+
 def generate_terms(
     tables: list[dict[str, Any]], lang: str = "en",
 ) -> list[dict[str, Any]]:
@@ -327,6 +474,9 @@ def generate_terms(
                         "tables": [name],
                         "definition": f"{desc}的平均年份",
                     })
+
+        # 条件占比构造(计数占比 + 度量占比,见 _share_terms)
+        terms.extend(_share_terms(table, lang, tref))
     return terms
 
 
