@@ -215,7 +215,9 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     from trove.api.routers import auth as auth_router
     from trove.api.routers import decisions as decisions_router
     from trove.api.routers import jobs as jobs_router
+    from trove.api.routers import quality as quality_router
     from trove.api.routers import skills as skills_router
+    from trove.api.routers import usage as usage_router
 
     auth = components.get("auth")
     if auth is None:
@@ -247,6 +249,9 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(drift.router, prefix="/v1")
         # 总览聚合面同属管理动作(require_admin 自持门禁)。
         app.include_router(overview.router, prefix="/v1")
+        # 质量/成本运营台(设计稿 P4 §4):同档只读聚合面,require_admin 自持门禁。
+        app.include_router(quality_router.router, prefix="/v1")
+        app.include_router(usage_router.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     # 只读回放(按 run_id 取轨迹):查询面端点,NullAuth 下同样可用。

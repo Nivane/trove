@@ -24,7 +24,17 @@ export const router = createRouter({
       component: () => import('../views/AdminLayout.vue'),
       meta: { requiresAdmin: true },
       children: [
-        { path: '', redirect: '/admin/users' },
+        {
+          path: '',
+          name: 'admin-overview',
+          component: () => import('../views/admin/OverviewView.vue'),
+        },
+        // Compat: /admin/overview is the same page — keep query/hash so old
+        // links (e.g. ?win=7d#todos) land on the state they described.
+        {
+          path: 'overview',
+          redirect: (to) => ({ path: '/admin', query: to.query, hash: to.hash }),
+        },
         {
           path: 'users',
           name: 'admin-users',
@@ -79,6 +89,20 @@ export const router = createRouter({
           path: 'skills',
           name: 'admin-skills',
           component: () => import('../views/admin/SkillsView.vue'),
+        },
+        // 质量与成本运营台(P4):quality / usage 两个 Tab 同页。
+        {
+          path: 'ops',
+          name: 'admin-ops',
+          component: () => import('../views/admin/OpsView.vue'),
+        },
+        // Compat: /admin/usage 是同一页的成本 Tab —— 保留 query(窗口/筛选)。
+        {
+          path: 'usage',
+          redirect: (to) => ({
+            path: '/admin/ops',
+            query: { ...to.query, tab: 'usage' },
+          }),
         },
       ],
     },
