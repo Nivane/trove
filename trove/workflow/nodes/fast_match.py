@@ -6,7 +6,7 @@
 见 reflect.py)。KB 防作弊约束:只用 kind='template'(kb init 确定性
 产物),compose 组合候选在检索层已排除。
 
-防错配是四重硬约束(全部满足才命中):
+防错配是四重硬约束 + 一道治理门(全部满足才命中):
   1. SQL 形状(sqlglot):单表 FROM、无 JOIN/子查询/CTE/GROUP/ORDER/LIMIT、
      单个聚合、排除 `WHERE col > 0` 占位比较模板;
   2. 聚合意图词:问题含模板聚合函数对应的意图词(how many→COUNT 等);
@@ -16,6 +16,10 @@
      (防 "maximum amount" 模板命中 "maximum duration" 问题);反向也要成立
      —— 问题剥掉模板已覆盖的词后不得有剩余条件词(防 "…in East Bohemia"
      命中无地区过滤的模板,丢掉条件交付错 SQL,见 ``_residual_covered``)。
+  5. **治理门**:``status == "certified"`` —— 只有**人工背书**过的模板才
+     允许执行(见 ``match_fast_template`` 里那一段的理由)。四重防错配挡的是
+     *错配*,这一道挡的是*没人验过*:前四关全过的模板照样可能是错的,而快径
+     把模板 SQL 当权威答案直接交付,错了没有 LLM 兜底。
 
 miss 静默降级到正常链路——miss 成本(多一轮 LLM)远低于误命中成本(错 SQL)。
 
@@ -37,6 +41,7 @@ from trove.core.config import AgentConfig
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
 from trove.services.datasource.registry import ConnectorRegistry
+from trove.services.kb.governance import CERTIFIED
 from trove.services.kb.service import ExampleHit, KbService
 from trove.services.semantic_layer import rls
 from trove.workflow.state import WorkflowState
@@ -341,7 +346,7 @@ def match_fast_template(
     *,
     max_len: int = FAST_PATH_MAX_QUESTION_LEN,
 ) -> dict[str, Any] | None:
-    """模板匹配:第一个全过四重约束的模板胜出,否则 None(走正常链路)。"""
+    """模板匹配:第一个全过四重约束 + 治理门的模板胜出,否则 None(走正常链路)。"""
     q = (question or "").strip()
     if not q or len(q) > max_len or not matched_tables:
         return None
@@ -355,8 +360,27 @@ def match_fast_template(
         return None
     matched_lower = {t.lower() for t in matched_tables if t}
     is_zh = bool(_CJK_RE.search(q))
+    skipped_unvetted = 0
     for hit in hits:
         if not hit.template or not hit.sql:
+            continue
+        # ── 治理门:只有人工认证过的模板可以执行 ──────────────
+        # 快径把模板 SQL 当**权威答案**直接交付(跳过生成与裁决),所以进得了
+        # 这道门的必须有人验过。``status`` 的缺省是 draft(``governance_of``
+        # 的推断:没有 ``governance`` 块 = 存量资产 = 没人背书),而 kb init
+        # 的模板全是这个形态 —— 未经人工背书的自动产物不得作为权威答案执行。
+        # 2026-10-02 P1 评测实证:32 题里快径命中 4 次、**4 次全部有害**,
+        # 其中 0476(female + born before 1950 + Sokolov)被
+        # ``SELECT COUNT(*) FROM client WHERE gender='F'`` 抢答 —— 丢两个条件,
+        # 1 行 vs 正确答案的 1 行,**无形状规则可拦**,错答静默交付。四重防错配
+        # 能挡错配,挡不住「模板本身就是错的/过时的」;背书是唯一能挡的。
+        #
+        # **跳过而非整题 miss**:后面的 certified 模板仍可命中 —— 一条没背书的
+        # 草稿不该把排在它后面、人验过的模板一起挡掉。要开快径就走去认证流程
+        # (kb confirm 带 actor 落认证记录,或人工在 ``examples.yml`` 写
+        # ``governance`` 块):模板进门的代价是有人签字,不是改这个常量。
+        if hit.status != CERTIFIED:
+            skipped_unvetted += 1
             continue
         ok, table, agg, has_where = template_sql_shape_ok(hit.sql)
         if not ok:
@@ -388,6 +412,13 @@ def match_fast_template(
                 # (``agent/answer_source``),本节点是证据的产地,不是判官。
                 "status": hit.status,
             }
+    if skipped_unvetted:
+        # 快径为什么没亮:库里有模板,但一条都没人背书。运维排查「快径哑了」
+        # 时这一行是唯一线索,故留 debug 级(每轮一次,逐条打会淹掉日志)。
+        logger.debug(
+            "fast_match: %d 个模板因未认证(status != certified)被跳过,未命中",
+            skipped_unvetted,
+        )
     return None
 
 

@@ -214,7 +214,8 @@ def make_reflect(
             }
 
         # 确定性快径命中:模板 SQL 是 kb init 的确定性产物(结构受
-        # sqlglot 形状约束,执行与规则链已过)——与 kb_exact_match
+        # sqlglot 形状约束,执行与规则链已过),且**有人工认证记录**才进得了
+        # 快径(治理门,见 fast_match.match_fast_template)——与 kb_exact_match
         # 同理由,跳过语义裁决。
         if state.fast_path and state.sql:
             return {

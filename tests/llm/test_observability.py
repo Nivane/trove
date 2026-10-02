@@ -499,11 +499,14 @@ class TestPipelineSpans:
                 pass
 
             async def list_templates(self, datasource):
+                # certified:快径只执行人工认证过的模板(治理门);
+                # 本用例测的是命中后的 span 记录,模板必须真的命中。
                 return [ExampleHit(
                     question="How many records are in the students table?",
                     sql="SELECT COUNT(*) FROM students",
                     tags=["students", "count", "aggregation"],
                     template=True,
+                    status="certified",
                 )]
 
         class FakeConnectors:

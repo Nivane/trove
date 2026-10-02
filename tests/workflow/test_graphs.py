@@ -3093,6 +3093,11 @@ tables:
             {"term": "students", "aliases": ["student"], "mapping": "students.id",
              "tables": ["students"], "definition": "student record"},
         ]))
+        # 治理门:快径只执行 certified 模板,所以这组 fixture **必须**带人工
+        # 认证记录(approved_by + approved_at 缺一不可 —— governance_of 的 I5)。
+        # 本类测的是「快径命中后图怎么走」,不是治理判定(那有专门用例:
+        # tests/workflow/test_fast_match.py::TestGovernanceGate);不带
+        # governance 块 = 缺省 draft = 快径不执行,这一组会整体退化成正常链路。
         (ds_dir / "examples.yml").write_text(
             """
 examples:
@@ -3100,11 +3105,19 @@ examples:
     sql: SELECT COUNT(*) FROM students
     tags: [students, count, aggregation]
     template: true
+    governance:
+      status: certified
+      approved_by: test-admin
+      approved_at: "2026-10-01T00:00:00Z"
   - question: What is the average grade?
     sql: SELECT AVG(grade) FROM students
     tags: [students, grade, aggregation]
     template: true
     aggregate: true
+    governance:
+      status: certified
+      approved_by: test-admin
+      approved_at: "2026-10-01T00:00:00Z"
 """,
             encoding="utf-8",
         )

@@ -254,9 +254,10 @@ class WorkflowState(BaseModel):
     # 确定性规则已通过,KB 是标准写法)。
     kb_exact_match: bool = False
 
-    # 确定性快径命中:fast_match 节点用 kb init 模板直接产出 SQL
-    # (未经过 query_sketch/生成)。reflect 对这类答案跳过语义裁决,理由同
-    # kb_exact_match——模板是确定性产物,不是模型解释。
+    # 确定性快径命中:fast_match 节点用**已认证**模板(kb init 产物 + 人工
+    # 背书,治理门见该节点)直接产出 SQL(未经过 query_sketch/生成)。
+    # reflect 对这类答案跳过语义裁决,理由同 kb_exact_match——模板是确定性
+    # 产物且有人验过,不是模型解释。
     fast_path: bool = False
 
     # 答案来源档位(output 节点判定,设计 §6.4):certified / compiled / generated。

@@ -91,17 +91,44 @@ class TestCertifiedTier:
         assert update["answer_source"] == "certified"
         assert "*来源: 已认证模板" in update["final_response"]
 
-    async def test_draft_template_hit_discloses_reused_not_certified(self):
-        """命中了一个**没人背书**的模板 → 不许说「已认证」,但仍是复用。
+    async def test_draft_template_never_reaches_the_fast_path(self):
+        """未认证模板不执行 → 没有命中记录,也就没有任何档位可披露。
 
-        快径命中的是确定性产物,但「确定性地算出来」不等于「有人验证过」——
-        CERTIFIED 承诺的是后者,没背书就不许用那句话(这条断言没变)。
-
-        变的是**掉到哪一档**:原来是 GENERATED,于是这条 SQL 被显示成
-        「来源: LLM 生成」—— 而它根本没进过模型,是逐字取自模板表。缺的只是
-        「谁背的书」,不是「从哪来」。两件事分开之后,这一档是 REUSED。
+        2026-10-02 P1 评测实证快径 4 次命中全部有害,0476 静默错答交付;
+        ``fast_match`` 现在只放 ``status == "certified"`` 的模板进快径
+        (治理门,见 ``trove/workflow/nodes/fast_match.py``)。本用例钉住
+        「跑一遍节点」这一侧的边界:草稿完美匹配也拿不到 SQL,节点只报
+        ``{}``。
         """
-        state = make_state(**await run_fast_match("draft"))
+        assert await run_fast_match("draft") == {}
+
+    async def test_unvetted_template_record_never_discloses_certified(self):
+        """一条**没人背书**的模板命中记录 → 不许说「已认证」,但仍是复用。
+
+        CERTIFIED 答的是「有没有人**具名背书**」,没背书就不许用那句话
+        (这条断言没变)。REUSED 答的是「这条 SQL **从哪来**」—— 「命中的是
+        模板表里的一条」这件事本身与治理字段写没写对无关,所以缺的只是
+        「谁背的书」,不是「从哪来」:掉 REUSED,不掉 GENERATED(显示「来源:
+        LLM 生成」就是把没进过模型的 SQL 说成模型编的)。
+
+        这里**直接构造状态**而不是跑节点:治理门之后,快径已经不可能再产出
+        一条 draft 命中记录(上一条用例钉住了这一点)。但判定函数
+        ``for_template_status`` 要对**任何**来源的记录成立 —— 旧 checkpoint
+        里存下的历史记录、将来别的写入者 —— 判定点只有一处,不能只在
+        「今天的生产者恰好过滤干净」时才对。
+        """
+        state = make_state(
+            fast_path=True,
+            sql="SELECT COUNT(*) FROM students",
+            kb_hits=[{
+                "kind": "template",
+                "question": "How many records are in the students table?",
+                "sql": "SELECT COUNT(*) FROM students",
+                "tags": ["students"],
+                "source": "fast_path",
+                "status": "draft",
+            }],
+        )
         update = await output(state)
         assert update["answer_source"] == "reused"
         assert "*来源: 复用知识库资产*" in update["final_response"]
