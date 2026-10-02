@@ -22,15 +22,24 @@ async def test_semantic_detail(client, api_kb):
     assert model["metrics"][0]["expression"] == "AVG(students.grade)"
     assert {d["name"] for d in model["datasets"]} == {"students"}
     assert isinstance(sem["issues"], list)
+    assert isinstance(sem["issue_items"], list)
     assert sem["drafts"]["pending"] == []
     assert sem["drafts"]["applied"] == []
     assert sem["drafts"]["rejected"] == []
-    # 声明与实时 catalog(students 表)一致 → 不漂移
-    assert sem["drift"]["stale"] is False
+    # 声明与实时 catalog(students 表)一致 → 检测完成、无漂移条目
+    drift = sem["drift"]
+    assert drift["status"] == "ok"
+    assert drift["skip_reason"] is None
+    assert drift["items"] == []
+    assert drift["checked_at"]
 
 
 async def test_semantic_detail_drift_detected(client, api_app, api_kb):
-    """声明了 catalog 里不存在的表/字段 → drift.stale=True 且明细可读。"""
+    """声明了 catalog 里不存在的表/字段 → 条目形态的实时漂移明细。
+
+    条目带生命周期字段(本用例没跑过漂移检测 → drift_id/first_seen_at 为
+    null,但形状必须在位)。
+    """
     kb = api_app.state.kb
     path = kb.kb_dir / "test_db" / "semantics.yml"
     drifted = yaml.safe_dump({
@@ -64,10 +73,18 @@ async def test_semantic_detail_drift_detected(client, api_app, api_kb):
     resp = await client.get("/v1/admin/semantic/test_db")
     assert resp.status_code == 200, resp.text
     drift = resp.json()["semantic"]["drift"]
-    assert drift["stale"] is True
-    assert drift["gone_tables"] == ["courses"]
-    assert drift["missing_fields"] == {"students": ["ghost"]}
-    assert drift["missing_keys"] == {}
+    assert drift["status"] == "ok"
+    by_subject = {i["subject"]: i for i in drift["items"]}
+    assert set(by_subject) == {"courses", "students.ghost"}
+    assert by_subject["courses"]["level"] == "L2"
+    assert by_subject["courses"]["severity"] == "critical"
+    assert by_subject["courses"]["detail"]["dataset"] == "courses"
+    assert by_subject["courses"]["impact"] == {
+        "metrics": [], "examples": [], "rules": [], "lessons": []}
+    # 本用例没跑过漂移检测:生命周期字段不在位 → null(形状在,值缺省)
+    assert by_subject["courses"]["drift_id"] is None
+    assert by_subject["courses"]["first_seen_at"] is None
+    assert by_subject["courses"]["seen_count"] is None
 
 
 async def test_semantic_detail_unknown_ds_404(client):

@@ -85,6 +85,9 @@
         <span v-if="driftStale" class="pill pill-danger">
           {{ t('semDriftStale', ui.lang) }} · {{ driftSummary }}
         </span>
+        <span v-else-if="driftSkipped" class="pill pill-warn">
+          {{ t('semDriftSkipped', ui.lang) }} · {{ driftSkipLabel }}
+        </span>
       </div>
       <ul v-if="enabled && issues.length" class="issue-list">
         <li v-for="(issue, i) in issues" :key="i" class="issue-item">
@@ -94,36 +97,14 @@
       </ul>
       <ul v-if="driftStale" class="issue-list">
         <li
-          v-for="(tbl, i) in drift.gone_tables"
-          :key="`gt-${i}`"
+          v-for="(item, i) in drift.items"
+          :key="`d-${i}`"
           class="issue-item"
         >
           <AlertTriangle :size="13" />
-          <span>{{ t('semDriftTableGone', ui.lang) }}: {{ tbl }}</span>
-        </li>
-        <li
-          v-for="([dsName, cols], i) in Object.entries(drift.missing_fields)"
-          :key="`mf-${i}`"
-          class="issue-item"
-        >
-          <AlertTriangle :size="13" />
-          <span>{{ dsName }} {{ t('semDriftFieldsGone', ui.lang) }}: {{ cols.join(', ') }}</span>
-        </li>
-        <li
-          v-for="([dsName, cols], i) in Object.entries(drift.missing_keys)"
-          :key="`mk-${i}`"
-          class="issue-item"
-        >
-          <AlertTriangle :size="13" />
-          <span>{{ dsName }} {{ t('semDriftKeysGone', ui.lang) }}: {{ cols.join(', ') }}</span>
-        </li>
-        <li
-          v-for="(rel, i) in drift.relationship_breaks"
-          :key="`rb-${i}`"
-          class="issue-item"
-        >
-          <AlertTriangle :size="13" />
-          <span>{{ t('semDriftRelBreak', ui.lang) }}: {{ rel.name }} ({{ rel.detail }})</span>
+          <span>
+            {{ item.subject }}<template v-if="driftItemNote(item)"> — {{ driftItemNote(item) }}</template>
+          </span>
         </li>
       </ul>
       <div v-if="!enabled" class="empty-note">
@@ -804,12 +785,23 @@ interface SemanticDraft {
   status: 'pending' | 'applied' | 'rejected'
   created_at: string
 }
+interface SemanticDriftItem {
+  level: string
+  severity: string
+  subject: string
+  detail: Record<string, unknown>
+  first_seen_at: string | null
+  seen_count: number | null
+  drift_id: number | null
+  impact: Record<string, string[]>
+}
+// 条目形态（后端 _drift_view）：status='skipped' 时 items 恒为空、skip_reason
+// 给出原因 —— 「没查成」绝不画成「没漂移」。
 interface SemanticDrift {
-  stale: boolean
-  gone_tables: string[]
-  missing_fields: Record<string, string[]>
-  missing_keys: Record<string, string[]>
-  relationship_breaks: { name: string; detail: string }[]
+  status: string
+  skip_reason: string | null
+  checked_at: string
+  items: SemanticDriftItem[]
 }
 interface SemanticDetail {
   enabled: boolean
@@ -837,26 +829,32 @@ const connected = computed(() =>
 const enabled = computed(() => !!detail.value?.enabled)
 const issues = computed(() => detail.value?.issues || [])
 const NO_DRIFT: SemanticDrift = {
-  stale: false,
-  gone_tables: [],
-  missing_fields: {},
-  missing_keys: {},
-  relationship_breaks: [],
+  status: 'ok',
+  skip_reason: null,
+  checked_at: '',
+  items: [],
 }
 const drift = computed<SemanticDrift>(() => detail.value?.drift || NO_DRIFT)
-const driftStale = computed(() => drift.value.stale)
+const driftStale = computed(() => drift.value.items.length > 0)
+const driftSkipped = computed(() => drift.value.status === 'skipped')
 const driftSummary = computed(() => {
-  const d = drift.value
-  if (!d.stale) return ''
-  const parts: string[] = []
-  if (d.gone_tables.length) parts.push(`${d.gone_tables.length} 表缺失`)
-  const missCount = Object.values(d.missing_fields).reduce((n, v) => n + v.length, 0)
-  if (missCount) parts.push(`${missCount} 字段缺失`)
-  const keyCount = Object.values(d.missing_keys).reduce((n, v) => n + v.length, 0)
-  if (keyCount) parts.push(`${keyCount} 键列缺失`)
-  if (d.relationship_breaks.length) parts.push(`${d.relationship_breaks.length} 关系失效`)
+  const items = drift.value.items
+  if (!items.length) return ''
+  const blocking = items.filter((i) => i.severity === 'critical').length
+  const parts = [`${items.length} 项`]
+  if (blocking) parts.push(`${blocking} 项阻断`)
   return parts.join(' · ')
 })
+const driftSkipLabel = computed(() => {
+  const reason = drift.value.skip_reason || ''
+  if (reason === 'catalog_unreachable') return '数据源不可达'
+  return reason || '原因未明'
+})
+function driftItemNote(item: SemanticDriftItem): string {
+  const d = item.detail || {}
+  const v = d.note ?? d.problems
+  return typeof v === 'string' ? v : ''
+}
 const model = computed(() => detail.value?.model || null)
 const metrics = computed(() => model.value?.metrics || [])
 const datasets = computed(() => model.value?.datasets || [])
