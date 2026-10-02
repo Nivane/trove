@@ -183,6 +183,7 @@ import {
   Clock,
   Gavel,
   BookOpenCheck,
+  Activity,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -217,6 +218,7 @@ const systemItems: {
   label: keyof typeof import('../i18n').messages['zh']
   icon: Component
 }[] = [
+  { path: '/admin/ops', label: 'ops', icon: Activity },
   { path: '/admin/model-config', label: 'modelConfig', icon: Cpu },
   { path: '/admin/audit', label: 'audit', icon: ScrollText },
   { path: '/admin/checkpoints', label: 'checkpoints', icon: History },

@@ -90,6 +90,20 @@ export const router = createRouter({
           name: 'admin-skills',
           component: () => import('../views/admin/SkillsView.vue'),
         },
+        // 质量与成本运营台(P4):quality / usage 两个 Tab 同页。
+        {
+          path: 'ops',
+          name: 'admin-ops',
+          component: () => import('../views/admin/OpsView.vue'),
+        },
+        // Compat: /admin/usage 是同一页的成本 Tab —— 保留 query(窗口/筛选)。
+        {
+          path: 'usage',
+          redirect: (to) => ({
+            path: '/admin/ops',
+            query: { ...to.query, tab: 'usage' },
+          }),
+        },
       ],
     },
   ],
