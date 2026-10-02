@@ -90,7 +90,9 @@ class FakeConn:
     async def cursor(self):
         return FakeCursor(self)
 
-    async def close(self):
+    def close(self):
+        # 同步:对齐 aiomysql.Connection.close(生产 disconnect 不 await);
+        # 写成 async 会让用例里的直接调用产出 never-awaited 协程警告。
         pass
 
 
