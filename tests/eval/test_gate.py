@@ -16,7 +16,7 @@ from trove.eval.gate import (
     render_report,
     score_from_file,
 )
-from trove.eval.replay import score_replay, scorecard_metrics
+from trove.eval.replay import EX_PATH_TIERS, score_replay, scorecard_metrics
 
 
 def _eval_entry(verdict="MATCH", compile_outcome=None, retries=0, **kw):
@@ -117,47 +117,77 @@ class TestMetricParity:
     completion 0.9375 vs 0.9062、recovery 1.0 vs 0.1765。
     """
 
-    #: 两引擎共享、必须逐项相等的键(CI 对比的就是这些)
+    #: 两引擎共享、必须逐项相等的键(CI 对比的就是这些)。``ex_by_path:*``
+    #: 是**键族通配**:分档 EX 的档位集合与取值两侧必须逐项相同 —— 任一侧
+    #: 漏掉一档(最容易漏的正是 refused:拒绝行 path 非空、verdict 可判定,
+    #: 匹配不到档就从分档视图里静默消失)都在这条断言上现形。
     SHARED = (
         "ex", "completion", "self_consistency", "recovery", "zero_answer",
         "consensus_rate", "avg_confidence", "first_pass", "gold_match",
-        "n", "n_judged",
+        "n", "n_judged", "ex_by_path:*",
     )
 
     @staticmethod
     def _rows():
         return [
-            _eval_entry("MATCH", n_candidates=5, gold_sql="SELECT 1"),
-            _eval_entry("MATCH", retries=2, n_candidates=3),
-            _eval_entry("MISMATCH", retries=1, n_candidates=5),
-            _eval_entry("EXECUTION_ERROR", retries=2, n_candidates=5),
-            _eval_entry("EMPTY_SQL", pred_sql="", n_candidates=0),
-            _eval_entry("GOLD_ERROR", n_candidates=2),
+            _eval_entry("MATCH", n_candidates=5, gold_sql="SELECT 1", path="compiled"),
+            _eval_entry("MATCH", retries=2, n_candidates=3, path="partial"),
+            _eval_entry("MISMATCH", retries=1, n_candidates=5, path="llm"),
+            _eval_entry("EXECUTION_ERROR", retries=2, n_candidates=5, path="llm"),
+            _eval_entry("EMPTY_SQL", pred_sql="", n_candidates=0, path="llm"),
+            _eval_entry("REFUSED", pred_sql="", n_candidates=0, path="refused"),
+            _eval_entry("GOLD_ERROR", n_candidates=2, path="llm"),
         ]
 
-    def test_engines_agree_on_shared_metrics(self):
-        rows = self._rows()
+    def _assert_parity(self, rows):
         gate_m = metrics_from_entries(rows)
         replay_m = scorecard_metrics(score_replay(rows))
         for key in self.SHARED:
+            if key.endswith(":*"):
+                prefix = key[:-1]
+                got = {k: v for k, v in gate_m.items() if k.startswith(prefix)}
+                want = {k: v for k, v in replay_m.items() if k.startswith(prefix)}
+                assert got == want, f"{key}: 门 {got} != 回放 {want}"
+                continue
             assert key in gate_m, f"门侧缺 {key}"
             assert key in replay_m, f"回放侧缺 {key}"
             assert gate_m[key] == replay_m[key], (
                 f"{key}: 门 {gate_m[key]} != 回放 {replay_m[key]}"
             )
 
+    def test_engines_agree_on_shared_metrics(self):
+        self._assert_parity(self._rows())
+
     def test_engines_agree_on_the_frozen_baseline_file(self):
         """真文件上也要相等 —— 人造夹具漂移常在真实条目形状下才现形
         (双 retry 键名、缺 tokens、缺 confidence)。"""
         rows = load_entries(_ROOT / "eval/baseline/results.jsonl")
         assert rows, "冻结基线缺失"
+        self._assert_parity(rows)
+
+    def test_refused_has_its_own_tier_on_both_engines(self):
+        """档位清单单点定义(replay.EX_PATH_TIERS),refused 不许在任一侧缺席。
+
+        拒绝题没有 MATCH 可言 → 该档 EX 恒 0,但**必须可见**:看不见拒绝,
+        "拒绝率上升"就只会表现为别的档分母变小,准确率看着变好。
+        """
+        assert EX_PATH_TIERS == ("compiled", "partial", "llm", "refused")
+        rows = [
+            _eval_entry("MATCH", path="compiled"),
+            _eval_entry("MISMATCH", path="partial"),
+            _eval_entry("MISMATCH", path="llm"),
+            _eval_entry("REFUSED", pred_sql="", path="refused"),
+        ]
         gate_m = metrics_from_entries(rows)
         replay_m = scorecard_metrics(score_replay(rows))
-        for key in self.SHARED:
-            assert key in gate_m and key in replay_m, key
-            assert gate_m[key] == replay_m[key], (
-                f"{key}: 门 {gate_m[key]} != 回放 {replay_m[key]}"
-            )
+        expected = {
+            "ex_by_path:compiled": 1.0,
+            "ex_by_path:partial": 0.0,
+            "ex_by_path:llm": 0.0,
+            "ex_by_path:refused": 0.0,
+        }
+        assert {k: v for k, v in gate_m.items() if k.startswith("ex_by_path:")} == expected
+        assert {k: v for k, v in replay_m.items() if k.startswith("ex_by_path:")} == expected
 
 
 class TestCompareMetrics:

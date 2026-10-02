@@ -8,9 +8,11 @@
 - results.jsonl(eval_bird 判定条目,含 compile_meta / path / verdict)
 - replay.jsonl(offline_eval record 条目,含 tokens / elapsed_ms / gold_sql)
 
-口径对齐 eval_bird 归因切片:可判定题 = verdict ∈ {MATCH, MISMATCH,
-GENERATION_ERROR, EXECUTION_ERROR, EMPTY_SQL};EX = MATCH / 可判定;编译
-命中率 = compile_meta.outcome == "compiled" 的题 / 有 compile_meta 的题。
+口径对齐 eval_bird 归因切片:可判定题 = verdict ∈ ``replay.JUDGED_VERDICTS``
+(含 REFUSED —— 语义门禁拒绝是已交付的判定,不进分母等于把拒绝率从准确率里
+抹掉);EX = MATCH / 可判定;编译命中率 = compile_meta.outcome == "compiled"
+的题 / 有 compile_meta 的题。分档 EX 的档位清单 = ``replay.EX_PATH_TIERS``。
+集合与档位都只定义一次(在 replay),此处 import 使用 —— 各写一遍必然漂移。
 检索/RRF 维度的指标由对应 eval 脚本以 scorecard JSON 输出,同一 compare
 逻辑按方向(direction)比较。
 
@@ -31,6 +33,7 @@ from typing import Any, Iterable
 # 2026-10 实测过一次这种漂移:同一份冻结文件,completion 两边算出
 # 0.9375 与 0.9062(一个把"SQL 生成了但执行报错"算作完成)。
 # (无循环依赖:replay 不 import 任何 trove 模块。)
+from trove.eval.replay import EX_PATH_TIERS as _EX_PATH_TIERS
 from trove.eval.replay import JUDGED_VERDICTS as _VERDICTS_JUDGED
 from trove.eval.replay import completed as _completed
 from trove.eval.replay import first_pass as _first_pass
@@ -237,9 +240,10 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
         metrics["total_elapsed_ms"] = float(sum(elapsed))
         metrics["avg_elapsed_ms"] = round(sum(elapsed) / len(elapsed), 1)
     # 分档 EX:与 score_replay 同规则——仅当 path 覆盖完整才发
-    # (半份 path 的分档是把"缺数据"当"llm 档")
+    # (半份 path 的分档是把"缺数据"当"llm 档");档位清单同样取
+    # EX_PATH_TIERS 单一定义,refused 档不许在门这一侧漏掉。
     if judged and all((e.get("path") or "").strip() for e in rows):
-        for tier in ("compiled", "partial", "llm"):
+        for tier in _EX_PATH_TIERS:
             tier_rows = [
                 e for e in rows
                 if e.get("path") == tier and e.get("verdict") in _VERDICTS_JUDGED

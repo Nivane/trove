@@ -60,6 +60,14 @@ JUDGED_VERDICTS = {
 #: replay.jsonl 的"跑通"判定(无 DB 执行档,靠自洽)
 OK_VERDICTS = {"OK", "MATCH", "EMPTY"}
 
+#: 分档 EX(``ex_by_path:<tier>``)的档位清单。**这一份是唯一定义**:
+#: ``score_replay`` 与 ``gate.metrics_from_entries`` 都按它分桶 —— 两处各写
+#: 一遍就会漂移,而最容易漂掉的一档恰恰是 ``refused``:拒绝行 path="refused"、
+#: verdict∈JUDGED_VERDICTS,却匹配不到任何档 → 拒绝从分档视图里静默消失。
+#: (与"REFUSED 必须留在 EX 分母里"是同一件事的两面:拒绝率的变化必须可见。)
+#: 顺序即渲染顺序;某档无行时不发键(见 ``score_replay``)。
+EX_PATH_TIERS = ("compiled", "partial", "llm", "refused")
+
 
 def ex_rate(entries: Iterable[dict[str, Any]]) -> tuple[float, int, int]:
     """(命中率, 命中数, 可判题数) —— **执行准确率**,零 DB 聚合。
@@ -238,9 +246,10 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
         out["total_elapsed_ms"] = float(sum(elapsed))
         out["avg_elapsed_ms"] = round(sum(elapsed) / len(elapsed), 1)
     # 分档 EX 只在 path 覆盖完整时发:半份 path 的分档是把缺数据当 llm 档。
+    # 档位清单 = EX_PATH_TIERS(单一定义,gate 侧 import 同一份)。
     if ex_judged and all((e.get("path") or "").strip() for e in rows):
         by_path: dict[str, float] = {}
-        for tier in ("compiled", "partial", "llm"):
+        for tier in EX_PATH_TIERS:
             tier_rows = [
                 e for e in rows
                 if e.get("path") == tier and e.get("verdict") in JUDGED_VERDICTS
