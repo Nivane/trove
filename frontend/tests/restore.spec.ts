@@ -55,4 +55,23 @@ describe('restoreTurns — 历史会话还原', () => {
     const turns = restoreTurns([{ role: 'assistant', content: 'orphan' }])
     expect(turns).toHaveLength(0)
   })
+
+  it('还原 assistant 消息的 timestamp 为 turn.at;缺失则不填', () => {
+    const turns = restoreTurns([
+      { role: 'user', content: 'q1', timestamp: '2026-10-01T10:00:00Z' },
+      {
+        role: 'assistant',
+        content: 'a1',
+        timestamp: '2026-10-01T10:00:05Z',
+        metadata: {},
+      },
+      { role: 'user', content: 'q2' },
+      { role: 'assistant', content: 'a2', metadata: {} },
+    ])
+    // 溯源条的「生成时间」= 答案落盘时刻(assistant 消息 timestamp),
+    // 不是用户提问时刻。
+    expect(turns[0].at).toBe('2026-10-01T10:00:05Z')
+    // 拿不到就不填 —— 渲染层省掉时间片段,而不是编一个。
+    expect(turns[1].at).toBeUndefined()
+  })
 })

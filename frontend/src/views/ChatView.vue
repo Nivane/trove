@@ -202,6 +202,16 @@
                 @rephrase="rephraseLast(i)"
                 @admin="gotoAdmin"
               />
+              <!-- 溯源条:答案自带身份(数据源·时间·模型·run_id + 状态 chip),
+                   默认一行,点开 12 行明细。拿不到就不显示(P1 验收第 3 条)。 -->
+              <ProvenanceStrip
+                v-if="turn.status === 'done' && turn.summary"
+                :summary="turn.summary"
+                :at="turn.at"
+                :lang="ui.lang"
+                @open-evidence="openEvidence(i, 'evidence')"
+                @open-replay="openEvidence(i, 'replay')"
+              />
               <div v-if="turn.status === 'done'" class="rating-row">
                 <button
                   class="rate-btn"
@@ -218,6 +228,14 @@
                   @click="askRegenerate(i)"
                 >
                   <RotateCcw :size="14" />
+                </button>
+                <button
+                  class="rate-btn evidence-cta"
+                  :title="t('provOpenEvidence', ui.lang)"
+                  @click="openEvidence(i, 'evidence')"
+                >
+                  <Search :size="14" />
+                  <span>{{ t('provOpenEvidence', ui.lang) }}</span>
                 </button>
                 <span class="rating-sep" />
                 <button
@@ -261,6 +279,9 @@
                   {{ t('cancel', ui.lang) }}
                 </button>
               </div>
+              <div v-if="receiptFor === i" class="rating-receipt">
+                {{ receiptText }}
+              </div>
             </div>
           </template>
         </div>
@@ -269,6 +290,14 @@
       </div>
       <AnalysisPanel />
     </div>
+    <!-- 依据抽屉(View evidence):SQL / 执行要点 / 结果集预览 / 校验与反思 /
+         反馈入口 / 只读回放。按轮下标引用,内容只读已落盘的 summary。 -->
+    <EvidenceDrawer
+      v-model="drawerOpen"
+      :turn="drawerTurn"
+      :turn-index="drawerIndex"
+      :focus="drawerFocus"
+    />
   </div>
 </template>
 
@@ -288,14 +317,17 @@ import {
   X,
   Database,
   Lock,
+  Search,
 } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
 import Sidebar from '../components/layout/Sidebar.vue'
 import AnalysisPanel from '../components/chat/AnalysisPanel.vue'
 import ChartCard from '../components/chat/ChartCard.vue'
 import ErrorCard from '../components/chat/ErrorCard.vue'
+import EvidenceDrawer from '../components/chat/EvidenceDrawer.vue'
 import HitlCard from '../components/chat/HitlCard.vue'
 import MarkdownView from '../components/chat/MarkdownView.vue'
+import ProvenanceStrip from '../components/chat/ProvenanceStrip.vue'
 import { maskingBadge } from '../utils/masking'
 import type { MaskingReport } from '../utils/masking'
 import Composer from '../components/chat/Composer.vue'
@@ -328,6 +360,30 @@ const copiedId = ref(-1)
 const userCopiedId = ref(-1)
 const regenerateId = ref(-1)
 const ratingReasonsFor = ref(-1)
+// 依据抽屉(P1):按轮下标引用,内容全部来自该轮已落盘的 summary。
+const drawerOpen = ref(false)
+const drawerIndex = ref(-1)
+const drawerFocus = ref<'evidence' | 'replay'>('evidence')
+const drawerTurn = computed(() =>
+  drawerIndex.value >= 0 ? (chat.turns[drawerIndex.value] ?? null) : null,
+)
+// 评分回执:提交成功才出现,文案如实说出去向(不承诺「已采纳」)。
+const receiptFor = ref(-1)
+const receiptText = ref('')
+
+function openEvidence(i: number, focus: 'evidence' | 'replay' = 'evidence') {
+  drawerIndex.value = i
+  drawerFocus.value = focus
+  drawerOpen.value = true
+}
+
+function showReceipt(i: number, vote: 1 | -1) {
+  receiptFor.value = i
+  receiptText.value = t(vote === 1 ? 'provFbReceiptUp' : 'provFbReceiptDown', ui.lang)
+  window.setTimeout(() => {
+    if (receiptFor.value === i) receiptFor.value = -1
+  }, 6000)
+}
 
 const analysisToggleTitle = computed(() => t('analysisToggle', ui.lang))
 
@@ -381,13 +437,13 @@ async function rate(turn: Turn, vote: 1 | -1) {
     return
   }
   ratingReasonsFor.value = -1
-  await chat.rateTurn(index, vote)
+  if (await chat.rateTurn(index, vote)) showReceipt(index, vote)
 }
 
 async function rateWithReason(index: number, reasonKey: string) {
   const reason = ratingReasons.value.find((r) => r.key === reasonKey)?.label
   ratingReasonsFor.value = -1
-  await chat.rateTurn(index, -1, reason)
+  if (await chat.rateTurn(index, -1, reason)) showReceipt(index, -1)
 }
 
 function rephraseLast(i: number) {
@@ -506,3 +562,30 @@ onMounted(async () => {
   await chat.listSessions()
 })
 </script>
+
+<style scoped>
+/* 「查看依据」入口:在图标行里的一枚带字按钮(P1 的可点承诺)。 */
+.rate-btn.evidence-cta {
+  display: inline-flex;
+  width: auto;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-2xs);
+}
+.rate-btn.evidence-cta:hover {
+  border-color: var(--indigo-100);
+  background: var(--surface-accent);
+  color: var(--indigo-600);
+}
+
+/* 评分回执:提交成功才出现,如实说出去向(不承诺「已采纳」)。 */
+.rating-receipt {
+  margin-top: var(--sp-1);
+  padding: 0 var(--sp-1);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
+}
+</style>
