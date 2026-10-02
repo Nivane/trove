@@ -667,6 +667,7 @@ MISS_REASONS = frozenset({
     "unresolved_filter_field",
     "invalid_op",
     "missing_filter_value",
+    "expression_filter_value",
     "nothing_compilable",
     "fan_out",
     "unknown_cardinality",
@@ -722,6 +723,7 @@ SOFT_MISS_REASONS = frozenset({
     "unresolved_filter_field",
     "invalid_op",
     "missing_filter_value",
+    "expression_filter_value",
     "enum_value_unresolved",
     "having_metric_unknown",
     "having_without_aggregation",
@@ -863,6 +865,35 @@ def _literal(value: Any) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+#: 表达式型 filter 值:plan 把算式写进 condition value 的形态(实测 0488:
+#: ``(SELECT AVG(amount) FROM trans WHERE ...)``)。
+_EXPR_VALUE_RE = re.compile(
+    r"^\s*\(*\s*(?:select\b|sum\s*\(|avg\s*\(|count\s*\(|min\s*\(|max\s*\()",
+    re.I,
+)
+
+
+def _looks_like_expression_value(value: Any) -> bool:
+    """condition value 是否算式文本(子查询/聚合式)而非字面量。
+
+    ``_literal`` 对未知形态一律保守加引号——算式文本被冻成字符串常量后,
+    骨架保真校验又要求 gen 逐字复现该坏 SQL,正确写法反被判 drift(0488
+    实测:十轮 COMPILE_DRIFT 死循环)。识别到算式即软 MISS:该条件不进
+    骨架,交 gen 按 plan 文本补(与 missing_filter_value 同族的**值语义
+    缺口**,不是结构错误)。
+    """
+    if value is None or isinstance(value, (int, float, bool)):
+        return False
+    s = str(value).strip()
+    if not s:
+        return False
+    # 计划显式带引号的值按字面量看待('1998%');但引号内仍是算式文本的
+    # ("'(SELECT ...)'")照样识别——字符串里包 SQL 冻进骨架比软 MISS 更坏。
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        s = s[1:-1].strip()
+    return bool(_EXPR_VALUE_RE.match(s))
+
+
 _VALUE_STOPWORDS = {
     "a", "an", "the", "of", "for", "in", "on", "with", "to", "and", "or",
     "per", "by", "is", "are", "what", "how", "that", "this", "each", "its",
@@ -980,7 +1011,63 @@ def _normalize_enum_value(
 
 
 # 聚合签名 = 表达式里**全部**聚合函数的有序 (函数名, 全限定列集, DISTINCT)。
-_AggSig = tuple[tuple[str, frozenset[str], bool], ...]
+#: 每聚合签名:(函数名, 列集, DISTINCT, 条件集)。条件集 = 聚合**内部**的
+#: 归一化谓词文本(FILTER (WHERE p) 与 CASE WHEN p THEN v 两种形态统一——
+#: 占比题两种拼法都有,必须互认);空集 = 无条件聚合。
+_AggSig = tuple[tuple[str, frozenset[str], bool, frozenset[str]], ...]
+
+#: 条件谓词文本归一:空白压缩 + 小写(``loan.status = 'A'`` ≡ ``LOAN.STATUS='A'``,
+#: 但表限定与字面量值本身保持——它们是匹配的主键,不能也归一掉)。
+_COND_WS_RE = re.compile(r"\s+")
+
+
+def _norm_cond(text: str) -> str:
+    return _COND_WS_RE.sub(" ", str(text).strip()).lower().rstrip(";")
+
+
+def _agg_entry(f: Any) -> tuple[str, frozenset[str], bool, frozenset[str]] | None:
+    """单个聚合节点 → 签名条目(函数名/被测列集/DISTINCT/内部条件集)。
+
+    - 条件来源两处:父节点 ``Filter(WHERE p)``(即 ``AGG(x) FILTER (WHERE p)``)
+      与该聚合内的 ``CASE WHEN p THEN v``(``When.this`` 为谓词);
+    - CASE 形态的被测列取 **THEN 分支**的列(``SUM(CASE WHEN p THEN
+      loan.amount ELSE 0 END)`` 测的是 amount,条件列归条件集,不再混进
+      列集)——旧实现把条件列也算进列集,导致条件被完全无视;
+    - ``SUM(CASE WHEN p THEN 1 ELSE 0 END)``(无被测列)归一为 COUNT:
+      它就是"满足 p 的行数",与 ``COUNT(*) FILTER`` 同一度量。
+    """
+    from sqlglot import exp
+
+    func = f.sql().split("(", 1)[0].strip().lower()
+    distinct = bool(f.find(exp.Distinct))
+    conds: list[str] = []
+    cases = list(f.find_all(exp.Case))
+    if cases:
+        then_cols: set[str] = set()
+        for case in cases:
+            for when in case.args.get("ifs") or []:
+                if when.this is not None:
+                    conds.append(_norm_cond(when.this.sql()))
+                true_branch = when.args.get("true")
+                if true_branch is not None:
+                    for c in true_branch.find_all(exp.Column):
+                        if c.name:
+                            then_cols.add(
+                                f"{c.table}.{c.name}".lower() if c.table else c.name.lower())
+        cols = frozenset(then_cols)
+        if func == "sum" and not cols and not distinct:
+            func = "count"
+    else:
+        cols = frozenset(
+            (f"{c.table}.{c.name}" if c.table else c.name).lower()
+            for c in f.find_all(exp.Column) if c.name
+        )
+    parent = f.parent
+    if isinstance(parent, exp.Filter):
+        where = parent.args.get("expression")
+        if where is not None and getattr(where, "this", None) is not None:
+            conds.append(_norm_cond(where.this.sql()))
+    return (func, cols, distinct, frozenset(conds))
 
 
 def _agg_signature(expr_text: str) -> _AggSig | None:
@@ -994,6 +1081,11 @@ def _agg_signature(expr_text: str) -> _AggSig | None:
     - ``COUNT(DISTINCT x)`` 与 ``COUNT(x)`` 同签名 → 去重计数被普通计数顶替;
     - ``SUM(a + b)`` 与 ``SUM(a)`` 列集相交 → 两个不同度量判为同一个。
 
+    第四条(2026-10 实测)由条件集堵上:``SUM(x) FILTER (WHERE c)`` 的
+    Where 挂在聚合**父节点**上,旧实现看不见——单条件聚合与无条件度量
+    同签名,条件被静默丢弃(问"仅 A 的金额",答"全部金额")。条件进签名
+    后,条件不同即不同度量。
+
     列引用带表前缀(``loan.amount``):只按裸列名匹配会把 trans.amount
     误认成 loan.amount。空列集(COUNT(*))是通配(见 _sig_compatible)。
     """
@@ -1006,36 +1098,112 @@ def _agg_signature(expr_text: str) -> _AggSig | None:
     funcs = list(tree.find_all(exp.AggFunc))
     if not funcs:
         return None
-    out: list[tuple[str, frozenset[str], bool]] = []
-    for f in funcs:
-        out.append((
-            f.sql().split("(", 1)[0].strip().lower(),
-            frozenset(
-                (f"{c.table}.{c.name}" if c.table else c.name).lower()
-                for c in f.find_all(exp.Column) if c.name
-            ),
-            bool(f.find(exp.Distinct)),
-        ))
-    return tuple(out)
+    return tuple(e for e in (_agg_entry(f) for f in funcs) if e is not None)
 
 
 def _sig_compatible(a: _AggSig, b: _AggSig) -> bool:
-    """逐聚合函数比对:个数、函数名、DISTINCT、列集全等(一侧空集即通配)。
+    """逐聚合函数比对:个数、函数名、DISTINCT、条件集、列集全等(一侧空集即通配)。
 
     列集用**相等**而非相交:``SUM(a + b)`` 与 ``SUM(a)`` 相交但不等,是不同
     度量。``COUNT(*)`` 的空列集是唯一有意的放宽——行数度量与 ``COUNT(col)``
     互认,是既有设计。
+
+    条件集用**全等**:``SUM(x)`` 与 ``SUM(x) FILTER (WHERE c)`` 是两个度量,
+    互不相认;条件文本已归一(空白/大小写),但表限定与字面量值保留
+    (``status='A'`` ≠ ``status='B'``——这正是占比题按枚举值区分度量的依据)。
     """
     if len(a) != len(b):
         return False
-    for (a_name, a_cols, a_dist), (b_name, b_cols, b_dist) in zip(a, b):
+    for (a_name, a_cols, a_dist, a_cond), (b_name, b_cols, b_dist, b_cond) in zip(a, b):
         if a_name != b_name or a_dist != b_dist:
+            return False
+        if a_cond != b_cond:
             return False
         if not a_cols or not b_cols:
             continue  # COUNT(*) 通配
         if a_cols != b_cols:
             return False
     return True
+
+
+#: 条件占比形态:(条件聚合条目, 全量聚合条目, 标度)。标度 = 算式里聚合
+#: **之外**的数值字面量含 100 → "percent"(占比题问的是 ×100 的结果),
+#: 否则 "fraction"。两者互不匹配——量纲差 100 倍,静默互认就是静默错数。
+_ShareShape = tuple[
+    tuple[str, frozenset[str], bool, frozenset[str]],
+    tuple[str, frozenset[str], bool, frozenset[str]],
+    str,
+]
+
+
+def _contains_agg(root: Any, target: Any) -> bool:
+    """root 子树(含自身)是否包含 target 聚合节点(按节点身份)。"""
+    from sqlglot import exp
+
+    if root is target:
+        return True
+    return any(n is target for n in root.find_all(exp.AggFunc))
+
+
+def _share_shape(expr_text: str) -> _ShareShape | None:
+    """条件占比算式 → 归一形态;非占比 → None(交回常规签名路径)。
+
+    识别的是「同一度量的**条件版** / **全量版**」这一构造(0480/0481 形状):
+
+        sum(loan.amount) FILTER (WHERE loan.status = 'A') * 100.0 / sum(loan.amount)
+        (SUM(CASE WHEN loan.status = 'C' THEN loan.amount ELSE 0 END) / SUM(loan.amount)) * 100
+
+    两种拼法(FILTER/CASE)、两种操作数顺序(``a*100/b`` 与 ``a/b*100``)、
+    ``NULLIF(分母, 0)`` 除零守卫与 ``ELSE 0`` 填充——全部归一到同一个
+    (条件聚合, 全量聚合, 标度),使 plan 的自由写法能对账到声明的占比
+    度量。硬条件(缺一即 None,交常规路径):
+
+    - 恰两个聚合,一个带条件、一个不带;
+    - 两侧函数与列集一致(同一度量的条件版/全量版;COUNT(*) 空列集通配
+      与 _sig_compatible 同规则);
+    - 存在除法,且条件聚合在**分子侧**(分母条件占比是另一个量,不互认);
+    - 标度按聚合外字面量是否含 100 判定。
+    """
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(expr_text)
+    except Exception:
+        return None
+    aggs = list(tree.find_all(exp.AggFunc))
+    if len(aggs) != 2:
+        return None
+    entries = [(_agg_entry(f), f) for f in aggs]
+    if any(e is None for e, _ in entries):
+        return None
+    cond_side = [(e, f) for e, f in entries if e[3]]
+    plain_side = [(e, f) for e, f in entries if not e[3]]
+    if len(cond_side) != 1 or len(plain_side) != 1:
+        return None
+    cond_e, cond_node = cond_side[0]
+    plain_e, plain_node = plain_side[0]
+    if cond_e[0] != plain_e[0] or cond_e[2] != plain_e[2]:
+        return None
+    if cond_e[1] and plain_e[1] and cond_e[1] != plain_e[1]:
+        return None
+    divs = list(tree.find_all(exp.Div))
+    if not any(
+        _contains_agg(d.this, cond_node) and _contains_agg(d.expression, plain_node)
+        for d in divs
+    ):
+        return None
+    percent = False
+    for lit in tree.find_all(exp.Literal):
+        if not lit.is_number or lit.find_ancestor(exp.AggFunc) is not None:
+            continue
+        try:
+            num = float(lit.this)
+        except ValueError:
+            continue
+        if num == 100:
+            percent = True
+            break
+    return (cond_e, plain_e, "percent" if percent else "fraction")
 
 
 class SemanticCompiler:
@@ -1116,7 +1284,12 @@ class SemanticCompiler:
         return candidates
 
     def _match_candidate(self, cand: str) -> SemanticMetric | None:
-        """候选 → 声明度量:先 metric 名精确匹配(裸名/派生度量),再聚合签名。"""
+        """候选 → 声明度量:metric 名精确匹配 → 聚合签名 → 条件占比形态。
+
+        第三档(占比)是**结构等价**匹配:plan 的自由拼法(FILTER/CASE、
+        ``*100`` 的位置、NULLIF 守卫)归一后对账到声明的占比度量——
+        声明的表达式始终是权威,plan 只提供"要的是哪个占比"。
+        """
         m = self._metric_by_name(cand)
         if m is not None:
             return m
@@ -1129,6 +1302,11 @@ class SemanticCompiler:
                 continue
             if _sig_compatible(sig, msig):
                 return m
+        share = _share_shape(cand)
+        if share is not None:
+            for m in self._model.metrics:
+                if _share_shape(m.expression) == share:
+                    return m
         return None
 
     def _match_metrics(
@@ -1579,6 +1757,11 @@ class SemanticCompiler:
             if value is None:
                 self._record_soft("missing_filter_value", field_ref)
                 continue
+            if _looks_like_expression_value(value):
+                # 算式型值(子查询/聚合式)不是字面量:冻结进骨架会把坏 SQL
+                # 权威化(见 _looks_like_expression_value)。跳过该条件,交 gen。
+                self._record_soft("expression_filter_value", field_ref)
+                continue
             # 枚举字段:值经 enum_display 归一(male/男性 → 'M');无法归一
             # → 软 MISS:跳过该条件,LLM 通道按 plan 文本处理(值语义缺口
             # 是词表问题,不是结构错误——骨架保真校验仍守住其余条件)。
@@ -1612,6 +1795,9 @@ class SemanticCompiler:
                 continue
             if value is None:
                 self._record_soft("missing_filter_value", field_ref or metric_ref)
+                continue
+            if _looks_like_expression_value(value):
+                self._record_soft("expression_filter_value", field_ref or metric_ref)
                 continue
             if metric_ref:
                 metric = self._metric_by_name(metric_ref)
