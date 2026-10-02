@@ -13,6 +13,10 @@
 - replay.jsonl(offline_eval record)→ 另算 gold 精确匹配
 - scorecard json(检索/RRF 脚本 --scorecard 产物,含 "metrics" 键)→ 原样对比
 
+token 均值有分母口径问题(两侧各自只按"有 token 数据的条目"求均值):
+覆盖数随指标行携带(avg_tokens_n),覆盖不同时报告行标 n 并给出⚠告警,
+results/replay 两侧条目都在手时另出**配对口径**(交集条目)均值行。
+
 退出码:
 - 0: 全部指标在容差内(或无回归)
 - 1: 存在回归(变差的被拦下来)
@@ -31,6 +35,8 @@ from pathlib import Path
 from trove.eval.gate import (
     GateReport,
     compare_metrics,
+    load_entries,
+    paired_token_stats,
     render_report,
     score_from_file,
 )
@@ -114,6 +120,11 @@ def main() -> int:
     )
     report.baseline_label = Path(baseline_path).name
     report.current_label = Path(current_path).name
+    # 配对口径 token 均值(仅两侧都录制了 token 的交集条目):需要两侧条目
+    # 都在手 —— scorecard json 无条目可配对 → None,报告不渲染这一节。
+    report.token_pairing = paired_token_stats(
+        load_entries(baseline_path), load_entries(current_path)
+    )
     for note in report.denominator_notes:
         print(f"⚠ {note}", file=sys.stderr)
 
@@ -123,6 +134,7 @@ def main() -> int:
             "current": current_path,
             "passed": report.passed,
             "denominator_notes": report.denominator_notes,
+            "token_pairing": report.token_pairing,
             "regressions": [
                 {
                     "metric": m.metric,
