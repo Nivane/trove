@@ -24,6 +24,7 @@ from trove.api.routers import (
     drift,
     facts,
     kb,
+    runs,
     semantic,
     semantic_query,
 )
@@ -245,6 +246,8 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(drift.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
+    # 只读回放(按 run_id 取轨迹):查询面端点,NullAuth 下同样可用。
+    app.include_router(runs.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
     app.include_router(kb.router, prefix="/v1")
     app.include_router(facts.router, prefix="/v1")

@@ -388,6 +388,54 @@ class SessionStore:
             results = results[:limit]
         return results
 
+    # ── CRUD: Find by run ────────────────────────────────
+
+    async def find_run_message(
+        self, run_id: str, user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Locate the assistant message recorded for a ``run_id`` (or None).
+
+        run_id 只在消息 metadata 里落点(``_record_exchange`` 写入的
+        ``metadata.summary.run_id``),没有独立的 run 表 —— 反查只能走
+        ``metadata_json LIKE``。``user_id`` 给定时只在该用户的会话里找
+        (非管理员调用方;``None`` = 全库,管理员口径)。返回
+        ``{project_name, session_id, user_id, timestamp, metadata}``。
+
+        这是「按 run_id 取只读回放」那一个入口的归属裁决点:非管理员在
+        任何盘上数据被读出之前就已经被这里筛掉。run_id 是 uuid4(不含
+        LIKE 通配符 `%`/`_`),模式无需转义。
+        """
+        conn = await self._conn()
+        try:
+            where = ["m.role = 'assistant'", "m.metadata_json LIKE ?"]
+            params: list[Any] = [f'%"run_id": "{run_id}"%']
+            if user_id is not None:
+                where.append("s.user_id = ?")
+                params.append(user_id)
+            cursor = await conn.execute(
+                "SELECT m.project_name, m.session_id, m.timestamp, m.metadata_json, s.user_id "
+                "FROM messages m JOIN sessions s "
+                "ON s.project_name = m.project_name AND s.session_id = m.session_id "
+                f"WHERE {' AND '.join(where)} ORDER BY m.id DESC LIMIT 1",
+                tuple(params),
+            )
+            row = await cursor.fetchone()
+        finally:
+            await conn.close()
+        if row is None:
+            return None
+        try:
+            metadata = json.loads(row[3]) if row[3] else {}
+        except (TypeError, ValueError):
+            metadata = {}
+        return {
+            "project_name": row[0],
+            "session_id": row[1],
+            "timestamp": row[2],
+            "metadata": metadata,
+            "user_id": row[4] or "",
+        }
+
     async def _session_info(
         self, project_name: str, session_id: str, user_id: str,
         created_at: str, updated_at: str,
