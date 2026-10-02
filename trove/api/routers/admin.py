@@ -159,8 +159,48 @@ def _vector_config(body: dict, ds_type: str = "") -> dict:
 
 
 @router.get("/admin/users")
-async def list_users(request: Request, admin: dict = Depends(require_admin)) -> dict:
-    return {"users": await _auth(request).list_users()}
+async def list_users(
+    request: Request,
+    q: str | None = Query(
+        default=None,
+        description="case-insensitive substring on username / display_name",
+    ),
+    role: str | None = Query(
+        default=None, description="exact role: admin | analyst | user",
+    ),
+    status: str | None = Query(
+        default=None,
+        description="active (not disabled) | disabled | nogrant (no datasource grants)",
+    ),
+    sort: str = Query(
+        default="created_at",
+        description="username | role | disabled | created_at",
+    ),
+    order: str = Query(default="desc", description="asc | desc"),
+    limit: int | None = Query(
+        default=None, description="page size, 1..200 (default 50)",
+    ),
+    offset: int = Query(default=0, description="rows to skip (>= 0)"),
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """用户列表:过滤/排序/分页 + 内联数据源授权。
+
+    响应 ``{"users": [...], "total": n}``——每个用户保留既有全部字段并多一个
+    ``datasources``(该用户的授权数据源名);``total`` 是过滤后、分页前的总数。
+    授权由服务层按整页用户一次批量取回,管理台不必再逐人请求
+    ``/admin/users/{id}/datasources``(消灭 N+1)。
+
+    非法过滤/排序/分页值 → 400 并说明原因(失败要响:未知 status 静默退化成
+    「不过滤」会让过滤器看起来生效、实际全量返回)。无参数调用保持向后兼容。
+    """
+    try:
+        users, total = await _auth(request).list_users_page(
+            q=q, role=role, status=status, sort=sort, order=order,
+            limit=limit, offset=offset,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"users": users, "total": total}
 
 
 @router.post("/admin/users", status_code=201)

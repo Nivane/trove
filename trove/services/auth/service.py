@@ -32,12 +32,58 @@ GENERATED_PASSWORD_LEN = 20
 USER_PUBLIC_KEYS = ("id", "username", "role", "display_name", "disabled",
                     "created_at", "updated_at")
 
+# ── Admin user-list query vocabulary ──────────────────────
+# 用户枚举的单一事实来源:API 层的 400 文案、排序白名单都引用这里。
+USER_ROLES = ("admin", "analyst", "user")
+USER_STATUSES = ("active", "disabled", "nogrant")
+USER_SORT_FIELDS = ("username", "role", "disabled", "created_at")
+USER_ORDERS = ("asc", "desc")
+USERS_DEFAULT_LIMIT = 50
+USERS_MAX_LIMIT = 200
+
 
 def _public_user(row: dict[str, Any]) -> dict[str, Any]:
     out = {k: row[k] for k in USER_PUBLIC_KEYS if k in row}
     if "disabled" in out:
         out["disabled"] = bool(out["disabled"])
     return out
+
+
+def normalize_users_query(
+    *, role: str | None = None, status: str | None = None,
+    sort: str = "created_at", order: str = "desc",
+    limit: int | None = None, offset: int = 0,
+) -> dict[str, Any]:
+    """校验并规范化管理台用户列表的查询参数。
+
+    非法值抛 ``ValueError``(消息即原因,API 层映射为 400)。绝不静默降级:
+    未知的 status/sort 一旦被当成「不过滤/默认排序」,调用方会以为过滤器
+    生效,实际拿到全量——这正是项目哲学里要杜绝的静默失败。
+    空字符串等价于未传(``?role=`` 与省略同义)。
+    """
+    role = role or None
+    status = status or None
+    sort = sort or "created_at"
+    order = order or "desc"
+    if role is not None and role not in USER_ROLES:
+        raise ValueError(f"invalid role: {role} (allowed: {', '.join(USER_ROLES)})")
+    if status is not None and status not in USER_STATUSES:
+        raise ValueError(
+            f"invalid status: {status} (allowed: {', '.join(USER_STATUSES)})"
+        )
+    if sort not in USER_SORT_FIELDS:
+        raise ValueError(
+            f"invalid sort: {sort} (allowed: {', '.join(USER_SORT_FIELDS)})"
+        )
+    if order not in USER_ORDERS:
+        raise ValueError(f"invalid order: {order} (allowed: {', '.join(USER_ORDERS)})")
+    size = USERS_DEFAULT_LIMIT if limit is None else limit
+    if size < 1 or size > USERS_MAX_LIMIT:
+        raise ValueError(f"invalid limit: {size} (allowed 1..{USERS_MAX_LIMIT})")
+    if offset < 0:
+        raise ValueError(f"invalid offset: {offset} (must be >= 0)")
+    return {"role": role, "status": status, "sort": sort, "order": order,
+            "limit": size, "offset": offset}
 
 
 def _hash_token(raw: str) -> str:
@@ -120,6 +166,35 @@ class AuthService:
 
     async def list_users(self) -> list[dict[str, Any]]:
         return [_public_user(row) for row in await self.store.list_users()]
+
+    async def list_users_page(
+        self, *, q: str | None = None, role: str | None = None,
+        status: str | None = None, sort: str = "created_at",
+        order: str = "desc", limit: int | None = None, offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """管理台用户列表:过滤/排序/分页 + 内联数据源授权。
+
+        返回 ``(users, total)``;``total`` 是**过滤后、分页前**的总数。
+        每个用户条目 = 既有的公开字段 + ``datasources``(授权名,已排序),
+        由整页用户**一次批量查询**取得——管理台不再按人 GET
+        ``/users/{id}/datasources``(N+1)。
+
+        非法查询参数抛 ``ValueError``(调用方映射为 400)。
+        """
+        spec = normalize_users_query(
+            role=role, status=status, sort=sort, order=order,
+            limit=limit, offset=offset,
+        )
+        q = (q or "").strip() or None
+        rows = await self.store.list_users_filtered(q=q, **spec)
+        total = await self.store.count_users_filtered(
+            q=q, role=spec["role"], status=spec["status"],
+        )
+        users = [_public_user(row) for row in rows]
+        grants = await self.store.datasources_for_users([u["id"] for u in users])
+        for user in users:
+            user["datasources"] = grants.get(user["id"], [])
+        return users, total
 
     async def update_user(
         self, user_id: int, *, password: str | None = None,
