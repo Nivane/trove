@@ -336,3 +336,211 @@ export interface KbDetail {
   rules: string[]
   lessons: KbLesson[]
 }
+
+// ── 语义工作台(P2)—— /v1/admin/semantic/{ds} 契约 ─────────────
+//
+// 形状与后端 pydantic response_model 一一对应(trove/api/schemas.py 的
+// Semantic* 系列 + manage._model_to_dict / _draft_diff / _drift_view)。
+
+/** 问题条目定位到的实体(前端按 kind 分流跳转)。 */
+export interface SemanticIssueTarget {
+  /** metric | field | dataset | relationship | document | unknown */
+  kind: string
+  /** metric/关系名;field 为 dataset.field;dataset 为数据集名。 */
+  name: string
+}
+
+/** 结构化 lint/校验条目(validate 端点与 detail.issue_items 共用)。 */
+export interface SemanticIssueItem {
+  severity: 'error' | 'warning'
+  /** 稳定契约:前端按 code 分流 UI,不随措辞漂移。 */
+  code: string
+  target: SemanticIssueTarget
+  message: string
+  hint?: string
+}
+
+export interface SemanticFieldInfo {
+  name: string
+  expression?: string
+  datatype?: string
+  is_time?: boolean
+  description?: string
+  synonyms?: string[]
+  semantic_role?: string
+  enum_display?: Record<string, string>
+  value_aliases?: Record<string, string[]>
+  label?: string
+  examples?: string[]
+  custom_extensions?: unknown[]
+  mask?: string
+}
+
+export interface SemanticDatasetInfo {
+  name: string
+  source?: string
+  primary_key?: string[]
+  unique_keys?: string[][]
+  row_filter?: string
+  description?: string
+  synonyms?: string[]
+  fields?: SemanticFieldInfo[]
+  examples?: string[]
+  custom_extensions?: unknown[]
+}
+
+export interface SemanticMetricInfo {
+  name: string
+  expression?: string
+  synonyms?: string[]
+  datasets?: string[]
+  definition?: string
+  metric_type?: string
+  filter?: string
+  agg_time_dimension?: string
+  non_additive?: boolean
+  datatype?: string
+  examples?: string[]
+  custom_extensions?: unknown[]
+}
+
+export interface SemanticRelationshipInfo {
+  name: string
+  from?: string
+  to?: string
+  from_columns?: string[]
+  to_columns?: string[]
+  cardinality?: string
+  fan_out?: string
+}
+
+export interface SemanticTimeSpine {
+  field?: string
+  granularity?: string
+  fill?: unknown
+}
+
+export interface SemanticModelInfo {
+  name: string
+  description?: string
+  instructions?: string
+  metrics: SemanticMetricInfo[]
+  datasets: SemanticDatasetInfo[]
+  relationships: SemanticRelationshipInfo[]
+  version?: number
+  examples?: string[]
+  time_spine?: SemanticTimeSpine | null
+  masking?: { default_policy?: string; bypass_scopes?: string[]; hash_salt_ref?: string }
+}
+
+/** DiffCard 的一行(服务端算好:carryover 语义只有服务端知道)。 */
+export interface SemanticDiffRow {
+  f: string
+  before: string
+  after: string
+  changed: boolean
+}
+
+export interface SemanticDraftDiff {
+  kind: string
+  name: string
+  action: string
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  fields: SemanticDiffRow[]
+  /** 干跑失败原因(超契约补键):差不可得时只留原因。 */
+  error?: string | null
+}
+
+export interface SemanticDraft {
+  id: string
+  kind: 'metric' | 'field' | 'dataset' | string
+  action: 'upsert' | 'delete' | string
+  name: string
+  note?: string
+  status?: 'pending' | 'applied' | 'rejected' | string
+  created_at?: string
+  payload?: Record<string, unknown> | null
+  /** detail 端点逐条附上(create/confirm/reject 响应不带)。 */
+  diff?: SemanticDraftDiff
+}
+
+/** 漂移影响面快照(发现时冻结;空组也是事实,不隐藏)。 */
+export interface SemanticDriftImpact {
+  metrics: string[]
+  examples: string[]
+  rules: string[]
+  lessons: string[]
+}
+
+export interface SemanticDriftItem {
+  /** L1 违反 KB 描述;L2 违反 semantics.yml 契约(本页只显示 L2)。 */
+  level: string
+  severity: string
+  subject: string
+  detail: Record<string, unknown>
+  first_seen_at?: string | null
+  seen_count?: number | null
+  drift_id?: number | null
+  impact?: SemanticDriftImpact
+}
+
+/** 条目形态漂移报告:skipped ≠ 无漂移(skip_reason 必给)。 */
+export interface SemanticDrift {
+  status: string
+  skip_reason?: string | null
+  checked_at?: string
+  items: SemanticDriftItem[]
+}
+
+export interface SemanticDetail {
+  enabled: boolean
+  model: SemanticModelInfo | null
+  /** 扁平串(兼容保留);结构化的在 issue_items。 */
+  issues: string[]
+  issue_items?: SemanticIssueItem[]
+  drafts: {
+    pending: SemanticDraft[]
+    applied: SemanticDraft[]
+    rejected: SemanticDraft[]
+  }
+  drift?: SemanticDrift
+}
+
+export interface SemanticValidateResult {
+  /** 取「能不能过写盘门禁」语义:warning 同样拦 confirm,任一非空即 false。 */
+  ok: boolean
+  errors: SemanticIssueItem[]
+  warnings: SemanticIssueItem[]
+  normalized: { expression: string }
+}
+
+export interface SemanticPreviewResult {
+  sql: string
+  columns: string[]
+  rows: unknown[][]
+  row_count: number
+  masking_applied?: Record<string, unknown> | null
+  warnings?: SemanticIssueItem[]
+}
+
+export interface SemanticBatchResultItem {
+  id: string
+  ok: boolean
+  error?: string | null
+}
+
+export interface SemanticBatchResult {
+  results: SemanticBatchResultItem[]
+  applied: number
+  failed: number
+}
+
+/** GET /v1/admin/semantic/{ds}/history 条目(KB 文件的 git 提交)。 */
+export interface SemanticHistoryEntry {
+  sha: string
+  author: string
+  date: string
+  subject: string
+  trailers?: string
+}
