@@ -146,20 +146,31 @@ def _insert_measure(word: str, description: str) -> str:
 
 
 # profiling 噪音后缀:schema_notes 描述里偶发嵌入 probe 统计
-# (``; values range from 0 to 5`` / ``; 1% NULL, 41 distinct values.``)。
-# 指标命名前剥掉,避免 "total Integer values range from..." 这类垃圾名。
-# 处理见 _clean_desc(按分号切段丢弃 noise 段)。
+# (``; values range from 0 to 5`` / ``; 1% NULL, 41 distinct values.``),
+# BIRD 描述的**主流形态是逗号子句**(``, ranging from 33.9 to 100.0`` /
+# ``, mostly populated with 1% NULL``)。指标命名前剥掉,避免
+# "total Integer values range from..."、"total Ratio of urban
+# inhabitants, ranging from 33.9 to 100.0" 这类垃圾名。
+# 处理见 _clean_desc(逗号子句正则剥除 + 分号切段丢弃 noise 段)。
+
+_NOISE_CLAUSE_RE = re.compile(
+    r",\s*(?:ranging\s+from\b|mostly\s+populated\b|values?\s+range\s+from\b"
+    r"|\d+\s*%?\s*NULL\b|\d+\s+distinct\s+values\b)[^,;]*",
+    re.I,
+)
 
 
 def _clean_desc(desc: str) -> str:
     """剥掉描述里的 probe 统计噪音 + 尾标点 → 干净业务描述。
 
-    schema_notes 描述偶发嵌入 ``; values range from 0 to 5`` /
-    ``; 1% NULL, 41 distinct values`` 等 probe 统计段,按分号切段后丢弃
-    noise 段(首段保留)。避免生成 "total Integer values range from..."
-    这类垃圾指标名。
+    schema_notes 描述偶发嵌入 probe 统计段:分号形态(``; values range
+    from 0 to 5`` / ``; 1% NULL, 41 distinct values``)按分号切段丢弃
+    noise 段(首段保留);BIRD 逗号形态(``, ranging from ...`` /
+    ``, mostly populated with 1% NULL``)先以正则剥除。避免生成
+    "total Integer values range from..."、"total Ratio of urban
+    inhabitants, ranging from 33.9 to 100.0" 这类垃圾指标名。
     """
-    d = str(desc or "").strip()
+    d = _NOISE_CLAUSE_RE.sub("", str(desc or "").strip())
     segments = re.split(r"[;；]", d)
     keep: list[str] = []
     for i, seg in enumerate(segments):
@@ -200,6 +211,20 @@ def _is_junk_measure_col(name: str, desc: str) -> bool:
     if re.search(r"(^|_)(id|code)(_|$)", name.lower()):
         return True
     return False
+
+
+# 率值/比率/人均类描述:对率求和没有业务含义(「失业率总和」),只出 AVG。
+_RATE_LIKE_RE = re.compile(
+    r"\b(?:rate|ratio|percentage|percent|share)\b"
+    r"|\bper\s+(?:\d|capita\b|inhabitant)"
+    r"|率|占比|百分比|人均",
+    re.I,
+)
+
+
+def _is_rate_like(desc: str) -> bool:
+    """率值/比率/人均类描述 → 该列不产 SUM 指标(只保留 AVG)。"""
+    return bool(_RATE_LIKE_RE.search(desc))
 
 
 def generate_terms(
@@ -254,13 +279,14 @@ def generate_terms(
                 # 前导词再套聚合前缀。
                 avg_desc = re.sub(r"^average\s+", "", desc, flags=re.I)
                 if lang == "en":
-                    terms.append({
-                        "term": f"total {avg_desc}",
-                        "aliases": [f"sum of {avg_desc}"],
-                        "mapping": f"SUM({tref}.{col_name})",
-                        "tables": [name],
-                        "definition": f"sum of {desc} over all records",
-                    })
+                    if not _is_rate_like(desc):
+                        terms.append({
+                            "term": f"total {avg_desc}",
+                            "aliases": [f"sum of {avg_desc}"],
+                            "mapping": f"SUM({tref}.{col_name})",
+                            "tables": [name],
+                            "definition": f"sum of {desc} over all records",
+                        })
                     terms.append({
                         "term": f"average {avg_desc}",
                         "aliases": [f"avg {avg_desc}"],
@@ -269,13 +295,14 @@ def generate_terms(
                         "definition": f"average {desc} over all records",
                     })
                 else:
-                    terms.append({
-                        "term": _insert_measure("总", desc),
-                        "aliases": [f"{desc}总和"],
-                        "mapping": f"SUM({tref}.{col_name})",
-                        "tables": [name],
-                        "definition": f"所有{desc}的总和",
-                    })
+                    if not _is_rate_like(desc):
+                        terms.append({
+                            "term": _insert_measure("总", desc),
+                            "aliases": [f"{desc}总和"],
+                            "mapping": f"SUM({tref}.{col_name})",
+                            "tables": [name],
+                            "definition": f"所有{desc}的总和",
+                        })
                     terms.append({
                         "term": _insert_measure("平均", desc),
                         "aliases": [],
@@ -528,7 +555,10 @@ def generate_templates(
         for col in table.get("columns", []):
             col_type = str(col.get("type", "") or "").lower()
             col_name = col.get("name", "")
-            desc_raw = str(col.get("description", "") or "").strip()
+            # 与 generate_terms 同规则:probe 统计噪音先剥,否则模板问句
+            # 会带 "..., ranging from 1993-01-01 to 1997-12-29.?" 这类尾巴
+            # (问题文本参与检索匹配,噪音直接稀释词重叠)。
+            desc_raw = _clean_desc(str(col.get("description", "") or "").strip())
             if lang == "en" and (not desc_raw or _CJK_RE.search(desc_raw)):
                 desc = col_name
             else:
@@ -546,6 +576,11 @@ def generate_templates(
                     ("total", "SUM",
                      f"What is the total {desc}?", f"{desc}的总和是多少？"),
                 ]
+                if _is_rate_like(desc):
+                    # 率值列不出 SUM 模板(与 generate_terms 同守卫):
+                    # "What is the total Ratio of urban inhabitants?" 教的是
+                    # 对率求和,示例块优先级最高(few_shots:1),错例危害更大。
+                    agg_shapes = [s for s in agg_shapes if s[1] != "SUM"]
                 for word, fn, q_en, q_zh in agg_shapes:
                     if lang == "en":
                         templates.append({

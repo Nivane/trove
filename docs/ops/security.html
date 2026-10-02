@@ -358,7 +358,7 @@ flowchart TB
       表级判定<strong>默认拒绝</strong>（<code>authz.table_enforcement: enforce</code>）。
       2026-10 从 <code>warn</code> 切换，依据不是「观察期结束」而是静态核验：用 A3
       同源基准（<code>rls.declared_tables</code>）对三份 KB 的全部快径示例 SQL
-      （654 条）逐条 SQLGlot 比对，<strong>违规 0 条</strong> —— 按语义模型走的查询本来
+      （650 条）逐条 SQLGlot 比对，<strong>违规 0 条</strong> —— 按语义模型走的查询本来
       就都在声明内，当初担心的「正常查询大面积 403」实测并不存在。
       <strong>回退阀</strong>：存量部署若确有声明外的查询（绕开语义层直摸物理表），
       显式写 <code>authz.table_enforcement: warn</code> 即回到「放行但记下被挡的表」

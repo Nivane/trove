@@ -830,18 +830,15 @@ semantic_model:
     ai_context:
       synonyms:
       - account count
-  - name: average year of Date the account was created, ranging from 1993-01-01 to
-      1997-12-29.
+  - name: average year of Date the account was created
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(EXTRACT(YEAR FROM account.date))
-    description: average year of Date the account was created, ranging from 1993-01-01
-      to 1997-12-29.
+    description: average year of Date the account was created
     ai_context:
       synonyms:
-      - Date the account was created, ranging from 1993-01-01 to 1997-12-29. average
-        year
+      - Date the account was created average year
   - name: number of card records
     expression:
       dialects:
@@ -851,16 +848,15 @@ semantic_model:
     ai_context:
       synonyms:
       - card count
-  - name: average year of Date the card was issued, ranging from 1993-11-07 to 1998-12-29.
+  - name: average year of Date the card was issued
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(EXTRACT(YEAR FROM card.issued))
-    description: average year of Date the card was issued, ranging from 1993-11-07
-      to 1998-12-29.
+    description: average year of Date the card was issued
     ai_context:
       synonyms:
-      - Date the card was issued, ranging from 1993-11-07 to 1998-12-29. average year
+      - Date the card was issued average year
   - name: number of client records
     expression:
       dialects:
@@ -870,15 +866,15 @@ semantic_model:
     ai_context:
       synonyms:
       - client count
-  - name: average year of Client's birth date, ranging from 1911-08-20 to 1987-09-27.
+  - name: average year of Client's birth date
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(EXTRACT(YEAR FROM client.birth_date))
-    description: average year of Client's birth date, ranging from 1911-08-20 to 1987-09-27.
+    description: average year of Client's birth date
     ai_context:
       synonyms:
-      - Client's birth date, ranging from 1911-08-20 to 1987-09-27. average year
+      - Client's birth date average year
   - name: number of disp records
     expression:
       dialects:
@@ -897,197 +893,134 @@ semantic_model:
     ai_context:
       synonyms:
       - district count
-  - name: total Number of municipalities with population above 10000, ranging from
-      0 to 5.
+  - name: total Number of municipalities with population above 10000
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(district.A8)
-    description: sum of Number of municipalities with population above 10000, ranging
-      from 0 to 5. over all records
+    description: sum of Number of municipalities with population above 10000 over
+      all records
     ai_context:
       synonyms:
-      - sum of Number of municipalities with population above 10000, ranging from
-        0 to 5.
-  - name: average Number of municipalities with population above 10000, ranging from
-      0 to 5.
+      - sum of Number of municipalities with population above 10000
+  - name: average Number of municipalities with population above 10000
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A8)
-    description: average Number of municipalities with population above 10000, ranging
-      from 0 to 5. over all records
+    description: average Number of municipalities with population above 10000 over
+      all records
     ai_context:
       synonyms:
-      - avg Number of municipalities with population above 10000, ranging from 0 to
-        5.
-  - name: total Number of cities, ranging from 1 to 11.
+      - avg Number of municipalities with population above 10000
+  - name: total Number of cities
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(district.A9)
-    description: sum of Number of cities, ranging from 1 to 11. over all records
+    description: sum of Number of cities over all records
     ai_context:
       synonyms:
-      - sum of Number of cities, ranging from 1 to 11.
-  - name: average Number of cities, ranging from 1 to 11.
+      - sum of Number of cities
+  - name: average Number of cities
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A9)
-    description: average Number of cities, ranging from 1 to 11. over all records
+    description: average Number of cities over all records
     ai_context:
       synonyms:
-      - avg Number of cities, ranging from 1 to 11.
-  - name: total Ratio of urban inhabitants, ranging from 33.9 to 100.0.
-    expression:
-      dialects:
-      - dialect: ANSI_SQL
-        expression: SUM(district.A10)
-    description: sum of Ratio of urban inhabitants, ranging from 33.9 to 100.0. over
-      all records
-    ai_context:
-      synonyms:
-      - sum of Ratio of urban inhabitants, ranging from 33.9 to 100.0.
-  - name: average Ratio of urban inhabitants, ranging from 33.9 to 100.0.
+      - avg Number of cities
+  - name: average Ratio of urban inhabitants
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A10)
-    description: average Ratio of urban inhabitants, ranging from 33.9 to 100.0. over
-      all records
+    description: average Ratio of urban inhabitants over all records
     ai_context:
       synonyms:
-      - avg Ratio of urban inhabitants, ranging from 33.9 to 100.0.
-  - name: total Average salary in the district, ranging from 8110 to 12541.
+      - avg Ratio of urban inhabitants
+  - name: total salary in the district
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(district.A11)
-    description: sum of Average salary in the district, ranging from 8110 to 12541.
-      over all records
+    description: sum of Average salary in the district over all records
     ai_context:
       synonyms:
-      - sum of Average salary in the district, ranging from 8110 to 12541.
-  - name: average Average salary in the district, ranging from 8110 to 12541.
+      - sum of salary in the district
+  - name: average salary in the district
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A11)
-    description: average Average salary in the district, ranging from 8110 to 12541.
-      over all records
+    description: average Average salary in the district over all records
     ai_context:
       synonyms:
-      - avg Average salary in the district, ranging from 8110 to 12541.
-  - name: total Unemployment rate in 1995, mostly populated with 1% NULL, ranging
-      from 0.2 to 7.3.
-    expression:
-      dialects:
-      - dialect: ANSI_SQL
-        expression: SUM(district.A12)
-    description: sum of Unemployment rate in 1995, mostly populated with 1% NULL,
-      ranging from 0.2 to 7.3. over all records
-    ai_context:
-      synonyms:
-      - sum of Unemployment rate in 1995, mostly populated with 1% NULL, ranging from
-        0.2 to 7.3.
-  - name: average Unemployment rate in 1995, mostly populated with 1% NULL, ranging
-      from 0.2 to 7.3.
+      - avg salary in the district
+  - name: average Unemployment rate in 1995
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A12)
-    description: average Unemployment rate in 1995, mostly populated with 1% NULL,
-      ranging from 0.2 to 7.3. over all records
+    description: average Unemployment rate in 1995 over all records
     ai_context:
       synonyms:
-      - avg Unemployment rate in 1995, mostly populated with 1% NULL, ranging from
-        0.2 to 7.3.
-  - name: total Unemployment rate in 1996, ranging from 0.43 to 9.4.
-    expression:
-      dialects:
-      - dialect: ANSI_SQL
-        expression: SUM(district.A13)
-    description: sum of Unemployment rate in 1996, ranging from 0.43 to 9.4. over
-      all records
-    ai_context:
-      synonyms:
-      - sum of Unemployment rate in 1996, ranging from 0.43 to 9.4.
-  - name: average Unemployment rate in 1996, ranging from 0.43 to 9.4.
+      - avg Unemployment rate in 1995
+  - name: average Unemployment rate in 1996
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A13)
-    description: average Unemployment rate in 1996, ranging from 0.43 to 9.4. over
-      all records
+    description: average Unemployment rate in 1996 over all records
     ai_context:
       synonyms:
-      - avg Unemployment rate in 1996, ranging from 0.43 to 9.4.
-  - name: total Number of entrepreneurs per 1000 inhabitants, ranging from 81 to 167.
-    expression:
-      dialects:
-      - dialect: ANSI_SQL
-        expression: SUM(district.A14)
-    description: sum of Number of entrepreneurs per 1000 inhabitants, ranging from
-      81 to 167. over all records
-    ai_context:
-      synonyms:
-      - sum of Number of entrepreneurs per 1000 inhabitants, ranging from 81 to 167.
-  - name: average Number of entrepreneurs per 1000 inhabitants, ranging from 81 to
-      167.
+      - avg Unemployment rate in 1996
+  - name: average Number of entrepreneurs per 1000 inhabitants
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A14)
-    description: average Number of entrepreneurs per 1000 inhabitants, ranging from
-      81 to 167. over all records
+    description: average Number of entrepreneurs per 1000 inhabitants over all records
     ai_context:
       synonyms:
-      - avg Number of entrepreneurs per 1000 inhabitants, ranging from 81 to 167.
-  - name: total Number of crimes committed in 1995, mostly populated with 1% NULL,
-      ranging from 818 to 85677.
+      - avg Number of entrepreneurs per 1000 inhabitants
+  - name: total Number of crimes committed in 1995
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(district.A15)
-    description: sum of Number of crimes committed in 1995, mostly populated with
-      1% NULL, ranging from 818 to 85677. over all records
+    description: sum of Number of crimes committed in 1995 over all records
     ai_context:
       synonyms:
-      - sum of Number of crimes committed in 1995, mostly populated with 1% NULL,
-        ranging from 818 to 85677.
-  - name: average Number of crimes committed in 1995, mostly populated with 1% NULL,
-      ranging from 818 to 85677.
+      - sum of Number of crimes committed in 1995
+  - name: average Number of crimes committed in 1995
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A15)
-    description: average Number of crimes committed in 1995, mostly populated with
-      1% NULL, ranging from 818 to 85677. over all records
+    description: average Number of crimes committed in 1995 over all records
     ai_context:
       synonyms:
-      - avg Number of crimes committed in 1995, mostly populated with 1% NULL, ranging
-        from 818 to 85677.
-  - name: total Number of crimes committed in 1996, ranging from 888 to 99107.
+      - avg Number of crimes committed in 1995
+  - name: total Number of crimes committed in 1996
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(district.A16)
-    description: sum of Number of crimes committed in 1996, ranging from 888 to 99107.
-      over all records
+    description: sum of Number of crimes committed in 1996 over all records
     ai_context:
       synonyms:
-      - sum of Number of crimes committed in 1996, ranging from 888 to 99107.
-  - name: average Number of crimes committed in 1996, ranging from 888 to 99107.
+      - sum of Number of crimes committed in 1996
+  - name: average Number of crimes committed in 1996
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(district.A16)
-    description: average Number of crimes committed in 1996, ranging from 888 to 99107.
-      over all records
+    description: average Number of crimes committed in 1996 over all records
     ai_context:
       synonyms:
-      - avg Number of crimes committed in 1996, ranging from 888 to 99107.
+      - avg Number of crimes committed in 1996
   - name: number of loan records
     expression:
       dialects:
@@ -1097,69 +1030,69 @@ semantic_model:
     ai_context:
       synonyms:
       - loan count
-  - name: average year of Date the loan was granted.
+  - name: average year of Date the loan was granted
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(EXTRACT(YEAR FROM loan.date))
-    description: average year of Date the loan was granted.
+    description: average year of Date the loan was granted
     ai_context:
       synonyms:
-      - Date the loan was granted. average year
-  - name: total Loan amount in monetary units.
+      - Date the loan was granted average year
+  - name: total Loan amount in monetary units
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(loan.amount)
-    description: sum of Loan amount in monetary units. over all records
+    description: sum of Loan amount in monetary units over all records
     ai_context:
       synonyms:
-      - sum of Loan amount in monetary units.
-  - name: average Loan amount in monetary units.
+      - sum of Loan amount in monetary units
+  - name: average Loan amount in monetary units
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(loan.amount)
-    description: average Loan amount in monetary units. over all records
+    description: average Loan amount in monetary units over all records
     ai_context:
       synonyms:
-      - avg Loan amount in monetary units.
-  - name: total Loan duration in months.
+      - avg Loan amount in monetary units
+  - name: total Loan duration in months
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(loan.duration)
-    description: sum of Loan duration in months. over all records
+    description: sum of Loan duration in months over all records
     ai_context:
       synonyms:
-      - sum of Loan duration in months.
-  - name: average Loan duration in months.
+      - sum of Loan duration in months
+  - name: average Loan duration in months
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(loan.duration)
-    description: average Loan duration in months. over all records
+    description: average Loan duration in months over all records
     ai_context:
       synonyms:
-      - avg Loan duration in months.
-  - name: total Monthly payment amount.
+      - avg Loan duration in months
+  - name: total Monthly payment amount
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(loan.payments)
-    description: sum of Monthly payment amount. over all records
+    description: sum of Monthly payment amount over all records
     ai_context:
       synonyms:
-      - sum of Monthly payment amount.
-  - name: average Monthly payment amount.
+      - sum of Monthly payment amount
+  - name: average Monthly payment amount
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(loan.payments)
-    description: average Monthly payment amount. over all records
+    description: average Monthly payment amount over all records
     ai_context:
       synonyms:
-      - avg Monthly payment amount.
+      - avg Monthly payment amount
   - name: number of order records
     expression:
       dialects:
@@ -1169,24 +1102,24 @@ semantic_model:
     ai_context:
       synonyms:
       - order count
-  - name: total Order amount in monetary units.
+  - name: total Order amount in monetary units
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM("order".amount)
-    description: sum of Order amount in monetary units. over all records
+    description: sum of Order amount in monetary units over all records
     ai_context:
       synonyms:
-      - sum of Order amount in monetary units.
-  - name: average Order amount in monetary units.
+      - sum of Order amount in monetary units
+  - name: average Order amount in monetary units
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG("order".amount)
-    description: average Order amount in monetary units. over all records
+    description: average Order amount in monetary units over all records
     ai_context:
       synonyms:
-      - avg Order amount in monetary units.
+      - avg Order amount in monetary units
   - name: number of trans records
     expression:
       dialects:
@@ -1196,71 +1129,51 @@ semantic_model:
     ai_context:
       synonyms:
       - trans count
-  - name: average year of Date of the transaction.
+  - name: average year of Date of the transaction
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(EXTRACT(YEAR FROM trans.date))
-    description: average year of Date of the transaction.
+    description: average year of Date of the transaction
     ai_context:
       synonyms:
-      - Date of the transaction. average year
-  - name: total Transaction amount in monetary units.
+      - Date of the transaction average year
+  - name: total Transaction amount in monetary units
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(trans.amount)
-    description: sum of Transaction amount in monetary units. over all records
+    description: sum of Transaction amount in monetary units over all records
     ai_context:
       synonyms:
-      - sum of Transaction amount in monetary units.
-  - name: average Transaction amount in monetary units.
+      - sum of Transaction amount in monetary units
+  - name: average Transaction amount in monetary units
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(trans.amount)
-    description: average Transaction amount in monetary units. over all records
+    description: average Transaction amount in monetary units over all records
     ai_context:
       synonyms:
-      - avg Transaction amount in monetary units.
-  - name: total Account balance after the transaction.
+      - avg Transaction amount in monetary units
+  - name: total Account balance after the transaction
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: SUM(trans.balance)
-    description: sum of Account balance after the transaction. over all records
+    description: sum of Account balance after the transaction over all records
     ai_context:
       synonyms:
-      - sum of Account balance after the transaction.
-  - name: average Account balance after the transaction.
+      - sum of Account balance after the transaction
+  - name: average Account balance after the transaction
     expression:
       dialects:
       - dialect: ANSI_SQL
         expression: AVG(trans.balance)
-    description: average Account balance after the transaction. over all records
+    description: average Account balance after the transaction over all records
     ai_context:
       synonyms:
-      - avg Account balance after the transaction.
-  - name: total External account number for transactions (mostly NULL).
-    expression:
-      dialects:
-      - dialect: ANSI_SQL
-        expression: SUM(trans.account)
-    description: sum of External account number for transactions (mostly NULL). over
-      all records
-    ai_context:
-      synonyms:
-      - sum of External account number for transactions (mostly NULL).
-  - name: average External account number for transactions (mostly NULL).
-    expression:
-      dialects:
-      - dialect: ANSI_SQL
-        expression: AVG(trans.account)
-    description: average External account number for transactions (mostly NULL). over
-      all records
-    ai_context:
-      synonyms:
-      - avg External account number for transactions (mostly NULL).
+      - avg Account balance after the transaction
   - name: max_loan_amount
     expression:
       dialects:

@@ -154,6 +154,77 @@ class TestGenerateTerms:
         assert not any("Counterparty" in n for n in names)
         assert not any("values range" in n for n in names)
 
+    def test_english_terms_strip_comma_noise_clauses(self):
+        """BIRD 描述主流形态:probe 统计以逗号子句附着(而非分号)。"""
+        tables = [{
+            "name": "district",
+            "description": "district stats",
+            "columns": [
+                {"name": "A10", "type": "double",
+                 "description": "Ratio of urban inhabitants, ranging from 33.9 to 100.0.",
+                 "enums": []},
+                {"name": "A12", "type": "double",
+                 "description": "Unemployment rate in 1995, mostly populated with 1% NULL, "
+                                "ranging from 0.2 to 7.3.",
+                 "enums": []},
+                {"name": "date", "type": "date",
+                 "description": "Date the account was created, ranging from 1993-01-01 to 1997-12-29.",
+                 "enums": []},
+                {"name": "A9", "type": "int",
+                 "description": "Number of cities, ranging from 1 to 11.", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        terms = generate_terms(tables, lang="en")
+        names = [t["term"] for t in terms]
+        assert "average Ratio of urban inhabitants" in names
+        assert "average Unemployment rate in 1995" in names
+        assert "average year of Date the account was created" in names
+        assert "total Number of cities" in names
+        assert not any("ranging from" in n or "NULL" in n for n in names)
+
+    def test_rate_like_columns_get_no_sum_term(self):
+        """率值/比率/人均列只产 AVG(对率求和没有业务含义);计数列照旧 SUM。"""
+        tables = [{
+            "name": "district",
+            "description": "district stats",
+            "columns": [
+                {"name": "A10", "type": "double",
+                 "description": "Ratio of urban inhabitants", "enums": []},
+                {"name": "A12", "type": "double",
+                 "description": "Unemployment rate in 1995", "enums": []},
+                {"name": "A14", "type": "int",
+                 "description": "Number of entrepreneurs per 1000 inhabitants", "enums": []},
+                {"name": "A9", "type": "int",
+                 "description": "Number of cities", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        terms = generate_terms(tables, lang="en")
+        by_mapping = {t["mapping"]: t["term"] for t in terms}
+        for col in ("A10", "A12", "A14"):
+            assert f"SUM(district.{col})" not in by_mapping
+            assert f"AVG(district.{col})" in by_mapping, col
+        assert by_mapping["SUM(district.A9)"] == "total Number of cities"
+        assert by_mapping["AVG(district.A9)"] == "average Number of cities"
+
+    def test_zh_rate_like_columns_get_no_sum_term(self):
+        """中文分支同守卫:率值列不出「总」项,普通数值列不受影响。"""
+        tables = [{
+            "name": "district",
+            "description": "地区统计",
+            "columns": [
+                {"name": "A12", "type": "double", "description": "失业率", "enums": []},
+                {"name": "amount", "type": "int", "description": "贷款金额", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        terms = generate_terms(tables, lang="zh")
+        by_mapping = {t["mapping"]: t["term"] for t in terms}
+        assert "SUM(district.A12)" not in by_mapping
+        assert by_mapping["AVG(district.A12)"] == "平均失业率"
+        assert by_mapping["SUM(district.amount)"] == "贷款总金额"
+
 
 class TestGenerateTemplates:
     def test_count_template_per_table(self):
@@ -244,6 +315,47 @@ class TestGenerateTemplates:
             assert f"SELECT {fn}(duration) FROM loan" in sqls, fn
         assert "SELECT COUNT(*) FROM loan WHERE amount > 0" in sqls
         assert "SELECT COUNT(*) FROM loan WHERE duration > 0" in sqls
+
+    def test_english_templates_strip_comma_noise_clauses(self):
+        """模板问句同规则剥噪音:问句文本参与检索匹配,噪音直接稀释词重叠。"""
+        tables = [{
+            "name": "district",
+            "description": "district stats",
+            "columns": [
+                {"name": "A9", "type": "int",
+                 "description": "Number of cities, ranging from 1 to 11.", "enums": []},
+                {"name": "created", "type": "date",
+                 "description": "Date the account was created, ranging from 1993-01-01 to 1997-12-29.",
+                 "enums": []},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables, lang="en")
+        questions = [t["question"] for t in templates]
+        assert "What is the maximum Number of cities?" in questions
+        assert "What is the earliest Date the account was created?" in questions
+        assert not any("ranging from" in q or ".?" in q for q in questions)
+
+    def test_english_rate_like_columns_get_no_sum_template(self):
+        """率值列不产 SUM 模板(与 generate_terms 同守卫)——few_shots 是
+        优先级最高的上下文块,「对率求和」的错例危害比缺一条示例更大。"""
+        tables = [{
+            "name": "district",
+            "description": "district stats",
+            "columns": [
+                {"name": "A12", "type": "double",
+                 "description": "Unemployment rate in 1995", "enums": []},
+                {"name": "A9", "type": "int",
+                 "description": "Number of cities", "enums": []},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables, lang="en")
+        sqls = [t["sql"] for t in templates]
+        assert "SELECT SUM(A12) FROM district" not in sqls
+        assert "SELECT AVG(A12) FROM district" in sqls
+        assert "SELECT MAX(A12) FROM district" in sqls
+        assert "SELECT SUM(A9) FROM district" in sqls
 
     def test_numeric_templates_carry_business_questions(self):
         """问题文本带业务描述(描述权威,非列名)。"""

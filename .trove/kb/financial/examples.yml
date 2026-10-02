@@ -161,8 +161,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the earliest Date the account was created, ranging from 1993-01-01
-    to 1997-12-29.?
+  question: What is the earliest Date the account was created?
   sql: SELECT MIN(date) FROM account
   tags:
   - account
@@ -170,8 +169,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the latest Date the account was created, ranging from 1993-01-01
-    to 1997-12-29.?
+  question: What is the latest Date the account was created?
   sql: SELECT MAX(date) FROM account
   tags:
   - account
@@ -222,8 +220,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the earliest Date the card was issued, ranging from 1993-11-07
-    to 1998-12-29.?
+  question: What is the earliest Date the card was issued?
   sql: SELECT MIN(issued) FROM card
   tags:
   - card
@@ -231,8 +228,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the latest Date the card was issued, ranging from 1993-11-07 to
-    1998-12-29.?
+  question: What is the latest Date the card was issued?
   sql: SELECT MAX(issued) FROM card
   tags:
   - card
@@ -274,7 +270,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the earliest Client's birth date, ranging from 1911-08-20 to 1987-09-27.?
+  question: What is the earliest Client's birth date?
   sql: SELECT MIN(birth_date) FROM client
   tags:
   - client
@@ -282,7 +278,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the latest Client's birth date, ranging from 1911-08-20 to 1987-09-27.?
+  question: What is the latest Client's birth date?
   sql: SELECT MAX(birth_date) FROM client
   tags:
   - client
@@ -424,8 +420,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Number of municipalities with population above 10000,
-    ranging from 0 to 5.?
+  question: What is the maximum Number of municipalities with population above 10000?
   sql: SELECT MAX(A8) FROM district
   tags:
   - district
@@ -433,8 +428,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Number of municipalities with population above 10000,
-    ranging from 0 to 5.?
+  question: What is the minimum Number of municipalities with population above 10000?
   sql: SELECT MIN(A8) FROM district
   tags:
   - district
@@ -442,8 +436,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Number of municipalities with population above 10000,
-    ranging from 0 to 5.?
+  question: What is the average Number of municipalities with population above 10000?
   sql: SELECT AVG(A8) FROM district
   tags:
   - district
@@ -451,8 +444,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Number of municipalities with population above 10000,
-    ranging from 0 to 5.?
+  question: What is the total Number of municipalities with population above 10000?
   sql: SELECT SUM(A8) FROM district
   tags:
   - district
@@ -460,7 +452,7 @@ examples:
   - aggregation
 - template: true
   question: How many district records have Number of municipalities with population
-    above 10000, ranging from 0 to 5. greater than 0?
+    above 10000 greater than 0?
   sql: SELECT COUNT(*) FROM district WHERE A8 > 0
   tags:
   - district
@@ -469,7 +461,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Number of cities, ranging from 1 to 11.?
+  question: What is the maximum Number of cities?
   sql: SELECT MAX(A9) FROM district
   tags:
   - district
@@ -477,7 +469,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Number of cities, ranging from 1 to 11.?
+  question: What is the minimum Number of cities?
   sql: SELECT MIN(A9) FROM district
   tags:
   - district
@@ -485,7 +477,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Number of cities, ranging from 1 to 11.?
+  question: What is the average Number of cities?
   sql: SELECT AVG(A9) FROM district
   tags:
   - district
@@ -493,15 +485,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Number of cities, ranging from 1 to 11.?
+  question: What is the total Number of cities?
   sql: SELECT SUM(A9) FROM district
   tags:
   - district
   - A9
   - aggregation
 - template: true
-  question: How many district records have Number of cities, ranging from 1 to 11.
-    greater than 0?
+  question: How many district records have Number of cities greater than 0?
   sql: SELECT COUNT(*) FROM district WHERE A9 > 0
   tags:
   - district
@@ -510,7 +501,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Ratio of urban inhabitants, ranging from 33.9 to 100.0.?
+  question: What is the maximum Ratio of urban inhabitants?
   sql: SELECT MAX(A10) FROM district
   tags:
   - district
@@ -518,7 +509,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Ratio of urban inhabitants, ranging from 33.9 to 100.0.?
+  question: What is the minimum Ratio of urban inhabitants?
   sql: SELECT MIN(A10) FROM district
   tags:
   - district
@@ -526,23 +517,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Ratio of urban inhabitants, ranging from 33.9 to 100.0.?
+  question: What is the average Ratio of urban inhabitants?
   sql: SELECT AVG(A10) FROM district
   tags:
   - district
   - A10
   - aggregation
 - template: true
-  aggregate: true
-  question: What is the total Ratio of urban inhabitants, ranging from 33.9 to 100.0.?
-  sql: SELECT SUM(A10) FROM district
-  tags:
-  - district
-  - A10
-  - aggregation
-- template: true
-  question: How many district records have Ratio of urban inhabitants, ranging from
-    33.9 to 100.0. greater than 0?
+  question: How many district records have Ratio of urban inhabitants greater than
+    0?
   sql: SELECT COUNT(*) FROM district WHERE A10 > 0
   tags:
   - district
@@ -551,8 +534,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Average salary in the district, ranging from 8110
-    to 12541.?
+  question: What is the maximum Average salary in the district?
   sql: SELECT MAX(A11) FROM district
   tags:
   - district
@@ -560,8 +542,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Average salary in the district, ranging from 8110
-    to 12541.?
+  question: What is the minimum Average salary in the district?
   sql: SELECT MIN(A11) FROM district
   tags:
   - district
@@ -569,8 +550,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Average salary in the district, ranging from 8110
-    to 12541.?
+  question: What is the average Average salary in the district?
   sql: SELECT AVG(A11) FROM district
   tags:
   - district
@@ -578,16 +558,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Average salary in the district, ranging from 8110 to
-    12541.?
+  question: What is the total Average salary in the district?
   sql: SELECT SUM(A11) FROM district
   tags:
   - district
   - A11
   - aggregation
 - template: true
-  question: How many district records have Average salary in the district, ranging
-    from 8110 to 12541. greater than 0?
+  question: How many district records have Average salary in the district greater
+    than 0?
   sql: SELECT COUNT(*) FROM district WHERE A11 > 0
   tags:
   - district
@@ -596,8 +575,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Unemployment rate in 1995, mostly populated with 1%
-    NULL, ranging from 0.2 to 7.3.?
+  question: What is the maximum Unemployment rate in 1995?
   sql: SELECT MAX(A12) FROM district
   tags:
   - district
@@ -605,8 +583,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Unemployment rate in 1995, mostly populated with 1%
-    NULL, ranging from 0.2 to 7.3.?
+  question: What is the minimum Unemployment rate in 1995?
   sql: SELECT MIN(A12) FROM district
   tags:
   - district
@@ -614,25 +591,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Unemployment rate in 1995, mostly populated with 1%
-    NULL, ranging from 0.2 to 7.3.?
+  question: What is the average Unemployment rate in 1995?
   sql: SELECT AVG(A12) FROM district
   tags:
   - district
   - A12
   - aggregation
 - template: true
-  aggregate: true
-  question: What is the total Unemployment rate in 1995, mostly populated with 1%
-    NULL, ranging from 0.2 to 7.3.?
-  sql: SELECT SUM(A12) FROM district
-  tags:
-  - district
-  - A12
-  - aggregation
-- template: true
-  question: How many district records have Unemployment rate in 1995, mostly populated
-    with 1% NULL, ranging from 0.2 to 7.3. greater than 0?
+  question: How many district records have Unemployment rate in 1995 greater than
+    0?
   sql: SELECT COUNT(*) FROM district WHERE A12 > 0
   tags:
   - district
@@ -641,7 +608,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Unemployment rate in 1996, ranging from 0.43 to 9.4.?
+  question: What is the maximum Unemployment rate in 1996?
   sql: SELECT MAX(A13) FROM district
   tags:
   - district
@@ -649,7 +616,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Unemployment rate in 1996, ranging from 0.43 to 9.4.?
+  question: What is the minimum Unemployment rate in 1996?
   sql: SELECT MIN(A13) FROM district
   tags:
   - district
@@ -657,23 +624,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Unemployment rate in 1996, ranging from 0.43 to 9.4.?
+  question: What is the average Unemployment rate in 1996?
   sql: SELECT AVG(A13) FROM district
   tags:
   - district
   - A13
   - aggregation
 - template: true
-  aggregate: true
-  question: What is the total Unemployment rate in 1996, ranging from 0.43 to 9.4.?
-  sql: SELECT SUM(A13) FROM district
-  tags:
-  - district
-  - A13
-  - aggregation
-- template: true
-  question: How many district records have Unemployment rate in 1996, ranging from
-    0.43 to 9.4. greater than 0?
+  question: How many district records have Unemployment rate in 1996 greater than
+    0?
   sql: SELECT COUNT(*) FROM district WHERE A13 > 0
   tags:
   - district
@@ -682,8 +641,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Number of entrepreneurs per 1000 inhabitants, ranging
-    from 81 to 167.?
+  question: What is the maximum Number of entrepreneurs per 1000 inhabitants?
   sql: SELECT MAX(A14) FROM district
   tags:
   - district
@@ -691,8 +649,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Number of entrepreneurs per 1000 inhabitants, ranging
-    from 81 to 167.?
+  question: What is the minimum Number of entrepreneurs per 1000 inhabitants?
   sql: SELECT MIN(A14) FROM district
   tags:
   - district
@@ -700,25 +657,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Number of entrepreneurs per 1000 inhabitants, ranging
-    from 81 to 167.?
+  question: What is the average Number of entrepreneurs per 1000 inhabitants?
   sql: SELECT AVG(A14) FROM district
   tags:
   - district
   - A14
   - aggregation
 - template: true
-  aggregate: true
-  question: What is the total Number of entrepreneurs per 1000 inhabitants, ranging
-    from 81 to 167.?
-  sql: SELECT SUM(A14) FROM district
-  tags:
-  - district
-  - A14
-  - aggregation
-- template: true
-  question: How many district records have Number of entrepreneurs per 1000 inhabitants,
-    ranging from 81 to 167. greater than 0?
+  question: How many district records have Number of entrepreneurs per 1000 inhabitants
+    greater than 0?
   sql: SELECT COUNT(*) FROM district WHERE A14 > 0
   tags:
   - district
@@ -727,8 +674,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Number of crimes committed in 1995, mostly populated
-    with 1% NULL, ranging from 818 to 85677.?
+  question: What is the maximum Number of crimes committed in 1995?
   sql: SELECT MAX(A15) FROM district
   tags:
   - district
@@ -736,8 +682,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Number of crimes committed in 1995, mostly populated
-    with 1% NULL, ranging from 818 to 85677.?
+  question: What is the minimum Number of crimes committed in 1995?
   sql: SELECT MIN(A15) FROM district
   tags:
   - district
@@ -745,8 +690,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Number of crimes committed in 1995, mostly populated
-    with 1% NULL, ranging from 818 to 85677.?
+  question: What is the average Number of crimes committed in 1995?
   sql: SELECT AVG(A15) FROM district
   tags:
   - district
@@ -754,16 +698,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Number of crimes committed in 1995, mostly populated
-    with 1% NULL, ranging from 818 to 85677.?
+  question: What is the total Number of crimes committed in 1995?
   sql: SELECT SUM(A15) FROM district
   tags:
   - district
   - A15
   - aggregation
 - template: true
-  question: How many district records have Number of crimes committed in 1995, mostly
-    populated with 1% NULL, ranging from 818 to 85677. greater than 0?
+  question: How many district records have Number of crimes committed in 1995 greater
+    than 0?
   sql: SELECT COUNT(*) FROM district WHERE A15 > 0
   tags:
   - district
@@ -772,8 +715,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Number of crimes committed in 1996, ranging from 888
-    to 99107.?
+  question: What is the maximum Number of crimes committed in 1996?
   sql: SELECT MAX(A16) FROM district
   tags:
   - district
@@ -781,8 +723,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Number of crimes committed in 1996, ranging from 888
-    to 99107.?
+  question: What is the minimum Number of crimes committed in 1996?
   sql: SELECT MIN(A16) FROM district
   tags:
   - district
@@ -790,8 +731,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Number of crimes committed in 1996, ranging from 888
-    to 99107.?
+  question: What is the average Number of crimes committed in 1996?
   sql: SELECT AVG(A16) FROM district
   tags:
   - district
@@ -799,16 +739,15 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Number of crimes committed in 1996, ranging from 888
-    to 99107.?
+  question: What is the total Number of crimes committed in 1996?
   sql: SELECT SUM(A16) FROM district
   tags:
   - district
   - A16
   - aggregation
 - template: true
-  question: How many district records have Number of crimes committed in 1996, ranging
-    from 888 to 99107. greater than 0?
+  question: How many district records have Number of crimes committed in 1996 greater
+    than 0?
   sql: SELECT COUNT(*) FROM district WHERE A16 > 0
   tags:
   - district
@@ -868,7 +807,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the earliest Date the loan was granted.?
+  question: What is the earliest Date the loan was granted?
   sql: SELECT MIN(date) FROM loan
   tags:
   - loan
@@ -876,7 +815,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the latest Date the loan was granted.?
+  question: What is the latest Date the loan was granted?
   sql: SELECT MAX(date) FROM loan
   tags:
   - loan
@@ -884,7 +823,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Loan amount in monetary units.?
+  question: What is the maximum Loan amount in monetary units?
   sql: SELECT MAX(amount) FROM loan
   tags:
   - loan
@@ -892,7 +831,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Loan amount in monetary units.?
+  question: What is the minimum Loan amount in monetary units?
   sql: SELECT MIN(amount) FROM loan
   tags:
   - loan
@@ -900,7 +839,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Loan amount in monetary units.?
+  question: What is the average Loan amount in monetary units?
   sql: SELECT AVG(amount) FROM loan
   tags:
   - loan
@@ -908,14 +847,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Loan amount in monetary units.?
+  question: What is the total Loan amount in monetary units?
   sql: SELECT SUM(amount) FROM loan
   tags:
   - loan
   - amount
   - aggregation
 - template: true
-  question: How many loan records have Loan amount in monetary units. greater than
+  question: How many loan records have Loan amount in monetary units greater than
     0?
   sql: SELECT COUNT(*) FROM loan WHERE amount > 0
   tags:
@@ -925,7 +864,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Loan duration in months.?
+  question: What is the maximum Loan duration in months?
   sql: SELECT MAX(duration) FROM loan
   tags:
   - loan
@@ -933,7 +872,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Loan duration in months.?
+  question: What is the minimum Loan duration in months?
   sql: SELECT MIN(duration) FROM loan
   tags:
   - loan
@@ -941,7 +880,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Loan duration in months.?
+  question: What is the average Loan duration in months?
   sql: SELECT AVG(duration) FROM loan
   tags:
   - loan
@@ -949,14 +888,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Loan duration in months.?
+  question: What is the total Loan duration in months?
   sql: SELECT SUM(duration) FROM loan
   tags:
   - loan
   - duration
   - aggregation
 - template: true
-  question: How many loan records have Loan duration in months. greater than 0?
+  question: How many loan records have Loan duration in months greater than 0?
   sql: SELECT COUNT(*) FROM loan WHERE duration > 0
   tags:
   - loan
@@ -965,7 +904,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Monthly payment amount.?
+  question: What is the maximum Monthly payment amount?
   sql: SELECT MAX(payments) FROM loan
   tags:
   - loan
@@ -973,7 +912,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Monthly payment amount.?
+  question: What is the minimum Monthly payment amount?
   sql: SELECT MIN(payments) FROM loan
   tags:
   - loan
@@ -981,7 +920,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Monthly payment amount.?
+  question: What is the average Monthly payment amount?
   sql: SELECT AVG(payments) FROM loan
   tags:
   - loan
@@ -989,14 +928,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Monthly payment amount.?
+  question: What is the total Monthly payment amount?
   sql: SELECT SUM(payments) FROM loan
   tags:
   - loan
   - payments
   - aggregation
 - template: true
-  question: How many loan records have Monthly payment amount. greater than 0?
+  question: How many loan records have Monthly payment amount greater than 0?
   sql: SELECT COUNT(*) FROM loan WHERE payments > 0
   tags:
   - loan
@@ -1096,7 +1035,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Order amount in monetary units.?
+  question: What is the maximum Order amount in monetary units?
   sql: SELECT MAX(amount) FROM "order"
   tags:
   - order
@@ -1104,7 +1043,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Order amount in monetary units.?
+  question: What is the minimum Order amount in monetary units?
   sql: SELECT MIN(amount) FROM "order"
   tags:
   - order
@@ -1112,7 +1051,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Order amount in monetary units.?
+  question: What is the average Order amount in monetary units?
   sql: SELECT AVG(amount) FROM "order"
   tags:
   - order
@@ -1120,14 +1059,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Order amount in monetary units.?
+  question: What is the total Order amount in monetary units?
   sql: SELECT SUM(amount) FROM "order"
   tags:
   - order
   - amount
   - aggregation
 - template: true
-  question: How many order records have Order amount in monetary units. greater than
+  question: How many order records have Order amount in monetary units greater than
     0?
   sql: SELECT COUNT(*) FROM "order" WHERE amount > 0
   tags:
@@ -1284,7 +1223,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the earliest Date of the transaction.?
+  question: What is the earliest Date of the transaction?
   sql: SELECT MIN(date) FROM trans
   tags:
   - trans
@@ -1292,7 +1231,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the latest Date of the transaction.?
+  question: What is the latest Date of the transaction?
   sql: SELECT MAX(date) FROM trans
   tags:
   - trans
@@ -1300,7 +1239,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Transaction amount in monetary units.?
+  question: What is the maximum Transaction amount in monetary units?
   sql: SELECT MAX(amount) FROM trans
   tags:
   - trans
@@ -1308,7 +1247,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Transaction amount in monetary units.?
+  question: What is the minimum Transaction amount in monetary units?
   sql: SELECT MIN(amount) FROM trans
   tags:
   - trans
@@ -1316,7 +1255,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Transaction amount in monetary units.?
+  question: What is the average Transaction amount in monetary units?
   sql: SELECT AVG(amount) FROM trans
   tags:
   - trans
@@ -1324,14 +1263,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Transaction amount in monetary units.?
+  question: What is the total Transaction amount in monetary units?
   sql: SELECT SUM(amount) FROM trans
   tags:
   - trans
   - amount
   - aggregation
 - template: true
-  question: How many trans records have Transaction amount in monetary units. greater
+  question: How many trans records have Transaction amount in monetary units greater
     than 0?
   sql: SELECT COUNT(*) FROM trans WHERE amount > 0
   tags:
@@ -1341,7 +1280,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum Account balance after the transaction.?
+  question: What is the maximum Account balance after the transaction?
   sql: SELECT MAX(balance) FROM trans
   tags:
   - trans
@@ -1349,7 +1288,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum Account balance after the transaction.?
+  question: What is the minimum Account balance after the transaction?
   sql: SELECT MIN(balance) FROM trans
   tags:
   - trans
@@ -1357,7 +1296,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average Account balance after the transaction.?
+  question: What is the average Account balance after the transaction?
   sql: SELECT AVG(balance) FROM trans
   tags:
   - trans
@@ -1365,14 +1304,14 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total Account balance after the transaction.?
+  question: What is the total Account balance after the transaction?
   sql: SELECT SUM(balance) FROM trans
   tags:
   - trans
   - balance
   - aggregation
 - template: true
-  question: How many trans records have Account balance after the transaction. greater
+  question: How many trans records have Account balance after the transaction greater
     than 0?
   sql: SELECT COUNT(*) FROM trans WHERE balance > 0
   tags:
@@ -1382,7 +1321,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the maximum External account number for transactions (mostly NULL).?
+  question: What is the maximum External account number for transactions (mostly NULL)?
   sql: SELECT MAX(account) FROM trans
   tags:
   - trans
@@ -1390,7 +1329,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the minimum External account number for transactions (mostly NULL).?
+  question: What is the minimum External account number for transactions (mostly NULL)?
   sql: SELECT MIN(account) FROM trans
   tags:
   - trans
@@ -1398,7 +1337,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the average External account number for transactions (mostly NULL).?
+  question: What is the average External account number for transactions (mostly NULL)?
   sql: SELECT AVG(account) FROM trans
   tags:
   - trans
@@ -1406,7 +1345,7 @@ examples:
   - aggregation
 - template: true
   aggregate: true
-  question: What is the total External account number for transactions (mostly NULL).?
+  question: What is the total External account number for transactions (mostly NULL)?
   sql: SELECT SUM(account) FROM trans
   tags:
   - trans
@@ -1414,7 +1353,7 @@ examples:
   - aggregation
 - template: true
   question: How many trans records have External account number for transactions (mostly
-    NULL). greater than 0?
+    NULL) greater than 0?
   sql: SELECT COUNT(*) FROM trans WHERE account > 0
   tags:
   - trans
