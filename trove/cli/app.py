@@ -322,9 +322,16 @@ class TroveREPL:
             parts.append(L(getattr(self._config, "language", "zh"), f"耗时 {elapsed}ms", f"time {elapsed}ms"))
         usage = summary.get("token_usage") or {}
         if usage:
-            parts.append(
-                f"tokens {usage.get('prompt', 0)}+{usage.get('completion', 0)}={usage.get('total', 0)}"
+            from trove.llm.token_accounting import cache_suffix
+
+            line = (
+                f"tokens {usage.get('prompt', 0)}+{usage.get('completion', 0)}="
+                f"{usage.get('total', 0)}"
             )
+            cache = cache_suffix(usage)
+            if cache:
+                line += f" · {cache}"
+            parts.append(line)
         if parts:
             self._tui.print_info("  " + " · ".join(parts))
 

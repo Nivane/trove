@@ -55,7 +55,15 @@ export interface DoneSummary {
   hitl_status?: string
   batched?: boolean
   total_elapsed_ms?: number
-  token_usage?: { prompt?: number; completion?: number; total?: number }
+  /** 缓存键真报才在(缺席 = 该次运行未测量缓存,不要当 0 命中渲染)。 */
+  token_usage?: {
+    prompt?: number
+    completion?: number
+    total?: number
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+    cached_tokens?: number
+  }
   cached?: boolean
   /** 字段级脱敏报告(设计 §6.2):`{fields: {字段名: 模式}, bypass}`。
    *  `null`/缺省 = 脱敏节点没跑(该部署没配);`bypass` = 本次以原文返回。 */

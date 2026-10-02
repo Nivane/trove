@@ -126,6 +126,64 @@ class TestV4ApiUsage:
         assert obs.kwargs["output"] == {"content": "SELECT 1", "reasoning": "think"}
         assert obs.kwargs["metadata"] == {"node": "gen_sql"}
 
+    def test_generation_carries_usage_details_with_cache_keys(self, fake_v4_client):
+        """成本图:usage_details 恒发 input/output/total,cache 键真报才透传
+        (同上例的 provider 报 0 → 键在且为 0,与未测量可区分)。"""
+        from types import SimpleNamespace
+        from trove.llm import gateway as gateway_module
+
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="SELECT 1", reasoning_content=None,
+            ))],
+            usage=SimpleNamespace(
+                prompt_tokens=1000, completion_tokens=10, total_tokens=1010,
+                cache_read_input_tokens=800, cache_creation_input_tokens=0,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+            ),
+        )
+        gateway_module._record_generation(
+            "deepseek/deepseek-chat",
+            [{"role": "user", "content": "hi"}],
+            response,
+            {"node": "gen_sql"},
+        )
+        details = fake_v4_client.observations[0].kwargs["usage_details"]
+        assert details["input"] == 1000
+        assert details["output"] == 10
+        assert details["total"] == 1010
+        assert details["cached_tokens"] == 800
+        assert details["cache_read_input_tokens"] == 800
+        assert details["cache_creation_input_tokens"] == 0  # 报 0 也留
+
+    def test_generation_usage_details_without_cache_keys(self, fake_v4_client):
+        """没报缓存 → usage_details 只有三个规范键(不多写冒充 0 命中)。"""
+        from types import SimpleNamespace
+        from trove.llm import gateway as gateway_module
+
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=1,
+                                  total_tokens=11),
+        )
+        gateway_module._record_generation(
+            "m", [{"role": "user", "content": "hi"}], response, None,
+        )
+        details = fake_v4_client.observations[0].kwargs["usage_details"]
+        assert details == {"input": 10, "output": 1, "total": 11}
+
+    def test_generation_omits_usage_details_when_usage_absent(self, fake_v4_client):
+        from types import SimpleNamespace
+        from trove.llm import gateway as gateway_module
+
+        response = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content="ok"),
+        )])
+        gateway_module._record_generation(
+            "m", [{"role": "user", "content": "hi"}], response, None,
+        )
+        assert "usage_details" not in fake_v4_client.observations[0].kwargs
+
     def test_record_span_preserves_body_exception(self, fake_v4_client):
         """span 内 body 抛异常必须原样穿透——record_span 的 except 不得吞掉
         它并二次 yield(contextlib 会抛 "generator didn't stop after throw()"

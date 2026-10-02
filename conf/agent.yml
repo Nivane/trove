@@ -11,6 +11,10 @@ agent:
   # node_models:
   #   query_sketch: deepseek/deepseek-chat
   #   reflect: deepseek/deepseek-reasoner
+  # 生成 agent 循环的**软**轮预算(绝对轮号;0/负 = 关):到该轮起每轮追加
+  # 一条"收尾"提示,引导模型尽快 finish(模型仍可继续,提示不置 guard_hit)。
+  # 硬护栏 max_rounds=8 不变;基线长尾(均值 9.8 轮)主要靠软提示收口降本。
+  gen_sql_soft_rounds: 5
   # EXPLAIN 行数估算守卫(默认开):每次最终执行前 EXPLAIN 估算最重算子行数,
   # 三档处置——est ≤ explain_max_rows 放行;超软限打回 gen_sql 加 LIMIT/收窄;
   # 超 explain_hard_max_rows 硬限直接拒绝(不烧 LLM 重生成循环)。fail-open

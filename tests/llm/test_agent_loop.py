@@ -6,6 +6,7 @@ registry observer hooks.
 """
 
 import asyncio
+import logging
 import time
 
 
@@ -293,6 +294,134 @@ class TestSteering:
             max_rounds=5, steering_window=2,
         )
         assert result["steering_hits"] == []
+
+
+def _budget_msgs(call):
+    return [
+        m for m in call
+        if str(m.get("content", "")).startswith("[budget]")
+    ]
+
+
+class TestSoftRoundsBudget:
+    """软轮预算:接近硬护栏时提示收尾,但**不**置 guard_hit ——
+    模型看提示后自己 finish 是正常结束,不能触发调用方的降级分支。"""
+
+    async def test_nudge_from_budget_round_only_and_guard_stays_soft(self):
+        """第 r≥soft 轮末尾注入提示(下轮才可见);模型自行收尾 →
+        guard_hit False / budget_why None(与硬护栏正交)。"""
+        responses = [
+            {"content": None, "tool_calls": [
+                {"id": f"c{i}", "name": "echo", "arguments": '{"text": "x"}'},
+            ]}
+            for i in range(5)
+        ] + [{"content": "done", "tool_calls": []}]
+        llm = ScriptedLLM(responses)
+
+        async def ok(arguments: dict) -> str:
+            return "ok"
+
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", TOOL_DEF, {"echo": ok},
+            max_rounds=8, soft_rounds_budget=5,
+        )
+        assert result["content"] == "done"
+        assert result["guard_hit"] is False
+        assert result["budget_why"] is None
+        assert len(result["soft_rounds_hits"]) == 1
+        assert "3 round(s) left" in result["soft_rounds_hits"][0]
+        # 第 5 轮的调用snapshot里还没有(注入发生在该轮工具结果回填之后)
+        assert _budget_msgs(llm.calls[4]) == []
+        # 第 6 轮的调用里能看到
+        assert len(_budget_msgs(llm.calls[5])) == 1
+
+    async def test_nudge_replaced_never_piles_up(self):
+        """每轮至多一条:新提示注入前撤下旧的("还剩 N 轮"不堆积)。"""
+        responses = [
+            {"content": None, "tool_calls": [
+                {"id": f"c{i}", "name": "echo", "arguments": '{"text": "x"}'},
+            ]}
+            for i in range(4)
+        ] + [{"content": "done", "tool_calls": []}]
+        llm = ScriptedLLM(responses)
+
+        async def ok(arguments: dict) -> str:
+            return "ok"
+
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", TOOL_DEF, {"echo": ok},
+            max_rounds=8, soft_rounds_budget=1,
+        )
+        counts = [len(_budget_msgs(c)) for c in llm.calls]
+        assert counts == [0, 1, 1, 1, 1]
+        assert len(result["soft_rounds_hits"]) == 4  # 注入过 4 次…
+        assert "4 round(s) left" in _budget_msgs(llm.calls[4])[0]["content"]  # …但只剩最新一条
+
+    async def test_final_round_escalation_guard_still_hard(self):
+        """接近 max_rounds 升级为"最后一轮,立即 finish";到顶仍是硬护栏。"""
+        responses = [
+            {"content": None, "tool_calls": [
+                {"id": f"c{i}", "name": "echo", "arguments": '{"text": "x"}'},
+            ]}
+            for i in range(3)
+        ]
+        llm = ScriptedLLM(responses)
+
+        async def ok(arguments: dict) -> str:
+            return "ok"
+
+        result = await run_agent_loop(
+            llm, "m", "sys", "user", TOOL_DEF, {"echo": ok},
+            max_rounds=3, soft_rounds_budget=1,
+        )
+        assert "2 round(s) left" in result["soft_rounds_hits"][0]   # 第 1 轮:温和
+        assert "Final round" in result["soft_rounds_hits"][-1]      # 第 2/3 轮:升级
+        assert len(_budget_msgs(llm.calls[2])) == 1
+        # 软提示绝不挡硬护栏:轮数到顶照样 guard_hit
+        assert result["guard_hit"] is True
+        assert result["budget_why"] == "rounds"
+
+    async def test_out_of_range_budget_is_disabled(self):
+        """None / 0 / 负 / >=max_rounds 一律静默关闭(需 1 ≤ v < max_rounds)。"""
+        for soft in (None, 0, -1, 5, 99):
+
+            async def ok(arguments: dict) -> str:
+                return "ok"
+
+            llm = ScriptedLLM([
+                {"content": None, "tool_calls": [
+                    {"id": f"c{i}", "name": "echo", "arguments": '{"text": "x"}'},
+                ]}
+                for i in range(3)
+            ] + [{"content": "done", "tool_calls": []}])
+            result = await run_agent_loop(
+                llm, "m", "sys", "user", TOOL_DEF, {"echo": ok},
+                max_rounds=5, soft_rounds_budget=soft,
+            )
+            assert result["soft_rounds_hits"] == []
+            assert all(_budget_msgs(c) == [] for c in llm.calls), soft
+
+    async def test_token_guard_log_reports_completion_not_total(self, caplog):
+        """日志口径:守卫按 completion 计,打印也必须报 completion
+        (曾打成 total,排障时会误读成"输入把预算吃掉了")。"""
+        llm = ScriptedLLM([{
+            "content": None,
+            "tool_calls": [{"id": "c1", "name": "echo", "arguments": "{}"}],
+            "usage": {"prompt_tokens": 999, "completion_tokens": 100,
+                      "total_tokens": 1099},
+        }])
+
+        async def ok(arguments: dict) -> str:
+            return "ok"
+
+        with caplog.at_level(logging.WARNING, logger="trove.llm.agent_loop"):
+            result = await run_agent_loop(
+                llm, "m", "sys", "user", TOOL_DEF, {"echo": ok},
+                max_rounds=5, max_total_tokens=100,
+            )
+        assert result["budget_why"] == "tokens"
+        assert "(100>=100)" in caplog.text
+        assert "1099>=" not in caplog.text
 
 
 class TestFinishProtocol:

@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, TextIO
 
+from trove.llm.token_accounting import CACHE_FIELDS, cache_suffix
 from trove.tracing import local as store
 
 MAX_RUN_LOGS = 50          # runs/ 目录保留的最新 run 日志数
@@ -110,9 +111,11 @@ def _fmt_state(state: dict[str, Any] | None, indent: str) -> list[str]:
 
 
 def _norm_tokens(usage: dict[str, Any] | None) -> dict[str, int]:
-    """网关 usage → 统一 {prompt, completion, total}(全 0/缺失 → {})。
+    """网关 usage → 统一 {prompt, completion, total} + 真报的 cache 键。
 
-    兼容 litellm 原始键(prompt_tokens/…)与内部累计键(prompt/…)。
+    全 0/缺失 → {}。兼容 litellm 原始键(prompt_tokens/…)与内部累计键
+    (prompt/…);cache 键按**键存在**透传(报 0 留 0 = 命中 0,缺席 =
+    未测量),"0 命中"与"没测量"在日志/span 层同样不可混。
     """
     if not usage:
         return {}
@@ -121,7 +124,30 @@ def _norm_tokens(usage: dict[str, Any] | None) -> dict[str, int]:
     total = int(usage.get("total_tokens") or usage.get("total") or 0)
     if not (prompt or completion or total):
         return {}
-    return {"prompt": prompt, "completion": completion, "total": total}
+    out = {"prompt": prompt, "completion": completion, "total": total}
+    for field in CACHE_FIELDS:
+        value = usage.get(field)
+        if value is not None:
+            out[field] = int(value)
+    return out
+
+
+def _merge_tokens(dst: dict[str, int], src: dict[str, int]) -> None:
+    """按键存在性把 src 并入 dst(缓存键只在真报过时出现并累加)。"""
+    for key, value in src.items():
+        if value is not None:
+            dst[key] = dst.get(key, 0) + int(value)
+
+
+def _token_suffix(tokens: dict[str, int], *, has_tokens: bool) -> str:
+    """日志后缀 ``· tok p+c=t · cache N(x%)``(无 token 无后缀)。"""
+    if not has_tokens:
+        return ""
+    suffix = f" · tok {tokens['prompt']}+{tokens['completion']}={tokens['total']}"
+    cache = cache_suffix(tokens)
+    if cache:
+        suffix += f" · {cache}"
+    return suffix
 
 
 class RunTracer:
@@ -287,8 +313,7 @@ class RunTracer:
                 acc = self._span_tokens.setdefault(
                     parent, {"prompt": 0, "completion": 0, "total": 0},
                 )
-                for k in ("prompt", "completion", "total"):
-                    acc[k] += tokens[k]
+                _merge_tokens(acc, tokens)
         elapsed_ms = int((time.monotonic() - start) * 1000) if start is not None else 0
         has_tokens = tokens.get("total", 0) > 0
         self._write_event({
@@ -298,7 +323,7 @@ class RunTracer:
             "elapsed_ms": elapsed_ms,
             "tokens": tokens if has_tokens else None,
         })
-        token_suffix = f" · tok {tokens['prompt']}+{tokens['completion']}={tokens['total']}" if has_tokens else ""
+        token_suffix = _token_suffix(tokens, has_tokens=has_tokens)
         lines = [f"└─ out ({elapsed_ms}ms){token_suffix}:"]
         lines.extend(_fmt_state(output, "│   "))
         self._emit(depth, lines)
@@ -321,8 +346,7 @@ class RunTracer:
             acc = self._span_tokens.setdefault(
                 parent_id, {"prompt": 0, "completion": 0, "total": 0},
             )
-            for k in ("prompt", "completion", "total"):
-                acc[k] += tokens[k]
+            _merge_tokens(acc, tokens)
         self._write_event({
             "kind": "llm",
             "node": node,
@@ -335,7 +359,7 @@ class RunTracer:
             "parent_id": parent_id,
             "tokens": tokens or None,
         })
-        token_suffix = f" · tok {tokens['prompt']}+{tokens['completion']}={tokens['total']}" if tokens else ""
+        token_suffix = _token_suffix(tokens, has_tokens=bool(tokens))
         lines = [f"├─ · llm {model} · {elapsed_ms}ms · temp {temperature}{token_suffix}"]
         for msg in messages:
             lines.append(f"│   [{msg.get('role', '?')}]")

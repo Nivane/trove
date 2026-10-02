@@ -982,6 +982,18 @@ class AgenticLLM:
         return self._responses.pop(0)
 
 
+class ModelRecordingLLM(AgenticLLM):
+    """AgenticLLM + 记录每次 chat_full 的 model(钉 node_models 接线)。"""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.models = []
+
+    async def chat_full(self, model, messages, tools=None, **kwargs):
+        self.models.append(model)
+        return await super().chat_full(model, messages, tools=tools, **kwargs)
+
+
 class GuardLLM:
     """chat_full 永远返回无效 finish(打转);chat 走经典脚本化响应。"""
 
@@ -1088,6 +1100,90 @@ class BrokenAgenticLLM(AgenticLLM):
     async def chat(self, model, messages, **kwargs):
         self.calls.append(messages)
         return self._classic.pop(0)
+
+
+class TestNodeModelAndSoftRoundsWiring:
+    """#2 成本结构接线:node_models 打通 agentic 路径 + 软轮预算生效。"""
+
+    @staticmethod
+    def _gen_script():
+        return [
+            "query",  # 意图（chat）
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "validate_sql",
+                 "arguments": '{"sql": "SELECT name FROM students"}'},
+            ]},
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "OK", "tool_calls": []},  # reflect
+        ]
+
+    async def test_node_models_reach_agentic_gen_sql(self, sqlite_registry, catalog):
+        """node_models.gen_sql 在 agentic 主路径生效(经典路径早已认这个键)。"""
+        llm = ModelRecordingLLM(self._gen_script())
+        cfg = AgentConfig(target="mock/model",
+                          node_models={"gen_sql": "mock/pinned-gen"})
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=cfg),
+                       agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert final["sql"] == "SELECT name FROM students;"
+        assert llm.models == ["mock/pinned-gen", "mock/pinned-gen"]
+
+    async def test_default_config_keeps_historical_model(self, sqlite_registry, catalog):
+        """无 node_models → 与历史逐字节一致(默认零行为变化)。"""
+        llm = ModelRecordingLLM(self._gen_script())
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert set(llm.models) == {"mock/model"}
+
+    async def test_node_models_reach_parallel_subagents(self, sqlite_registry, catalog):
+        """gen_sql_subagent 覆盖多候选并行路径(主 agent 走 gen_sql 的键)。"""
+        llm = ModelRecordingLLM([
+            "query",
+            {"content": "```sql\nSELECT name FROM students;\n```", "tool_calls": []},
+            {"content": "```sql\nSELECT name FROM students ORDER BY name;\n```", "tool_calls": []},
+            {"content": "```sql\nSELECT name FROM students ORDER BY name DESC;\n```", "tool_calls": []},
+            {"content": "```sql\nSELECT name FROM students ORDER BY name ASC;\n```", "tool_calls": []},
+            {"content": "```sql\nSELECT name FROM students WHERE name IS NOT NULL;\n```", "tool_calls": []},
+            "OK",
+        ])
+        cfg = AgentConfig(target="mock/model", node_models={
+            "gen_sql": "mock/main-gen", "gen_sql_subagent": "mock/sub-gen"})
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=cfg),
+                       multi_candidate=True, agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        assert len(final["candidates"]) == 4
+        assert len(llm.models) == 5  # 主 + 4 subagent(reflect 走 chat,不进)
+        assert llm.models[0] == "mock/main-gen"
+        assert set(llm.models[1:]) == {"mock/sub-gen"}
+
+    async def test_soft_rounds_config_reaches_agentic_loop(self, sqlite_registry, catalog):
+        """gen_sql_soft_rounds=1 → 首轮工具回填后注入软提示;默认配置零痕迹。"""
+        llm = AgenticLLM(self._gen_script())
+        cfg = AgentConfig(target="mock/model", gen_sql_soft_rounds=1)
+        graphs = build(make_services(llm, catalog, sqlite_registry, config=cfg),
+                       agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        # 按对象身份去重(AgenticLLM 持有 messages 引用,同一提示会出现在
+        # 多个调用记录里)—— 恰好注入过一次
+        nudges = {id(m): m for msgs in llm.calls for m in msgs
+                  if str(m.get("content", "")).startswith("[budget]")}
+        assert len(nudges) == 1
+        nudge = next(iter(nudges.values()))
+        assert "7 round(s) left" in nudge["content"]  # 8 轮硬护栏 - 第 1 轮
+
+        # 默认(0=关):no nudge anywhere
+        llm2 = AgenticLLM(self._gen_script())
+        graphs2 = build(make_services(llm2, catalog, sqlite_registry), agentic=True)
+        final2 = await graphs2["reflection"].ainvoke(make_state())
+        assert final2["error"] == ""
+        assert not any(
+            str(m.get("content", "")).startswith("[budget]")
+            for msgs in llm2.calls for m in msgs
+        )
 
 
 class TestAgenticNodes:

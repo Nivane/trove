@@ -279,7 +279,11 @@ async def _run_candidate_subagent(
     hint = _STYLE_HINTS.get(mode)
     if hint:
         prompt = f"{prompt}\n\n{hint}"
-    model = services.config.model_for(rotated.complexity) if services.config else "openai/gpt-4o"
+    # 每节点覆盖优先(node_models.gen_sql_subagent / gen_sql),再复杂度分档
+    model = (
+        services.config.model_for_node("gen_sql_subagent", rotated.complexity)
+        if services.config else "openai/gpt-4o"
+    )
     try:
         result = await run_agent_loop(
             services.llm, model,
@@ -298,6 +302,10 @@ async def _run_candidate_subagent(
             # ([compacted] 行),不再有上下文复利爆炸,护栏可以放宽
             max_rounds=8,
             max_total_tokens=2500,
+            # 软轮预算(配置默认关;conf/agent.yml 写 5):子代理同主路径
+            soft_rounds_budget=(
+                services.config.gen_sql_soft_rounds if services.config else 0
+            ),
             metadata={
                 "node": "gen_sql_subagent",
                 "session_id": state.session_id,
@@ -790,8 +798,12 @@ def make_gen_assemble(services: GraphServices):
 
         # 估算校准:实测/估算比例(按 model+dialect 的 EMA)放大单条成本,
         # 把系统性的低估反馈进预算,避免真实 prompt 超窗。冷启动 = 1.0。
-        # 复杂度分档选模:simple/standard → model_fast,complex → target。
-        model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
+        # 复杂度分档选模:simple/standard → model_fast,complex → target;
+        # node_models.gen_sql 配了则覆盖(与生成段同键,估算校准也同基准)。
+        model = (
+            services.config.model_for_node("gen_sql", complexity)
+            if services.config else "openai/gpt-4o"
+        )
         cal = token_calibration_factor(model, dialect)
 
         def _count(text: str) -> int:
@@ -1017,7 +1029,12 @@ def make_gen_generate(
                     system_text, skills.render_skills("gen_sql", **state.skill_ctx()))
                 system_text = append_skill_block(
                     system_text, skills.available_skills_block("gen_sql", **state.skill_ctx()))
-            model = services.config.model_for(complexity) if services.config else "openai/gpt-4o"
+            # 每节点覆盖优先(node_models.gen_sql),再复杂度分档 —— 与
+            # 经典路径 gen_sql.py 的选模同键;下方估算校准读写同一 model。
+            model = (
+                services.config.model_for_node("gen_sql", complexity)
+                if services.config else "openai/gpt-4o"
+            )
             result = None
             try:
                 result = await run_agent_loop(
@@ -1030,6 +1047,9 @@ def make_gen_generate(
                     time_budget_s=120.0,
                     max_rounds=8,  # ④ 早期轮转 [compacted] 摘要后护栏放宽
                     max_total_tokens=2500,
+                    soft_rounds_budget=(
+                        services.config.gen_sql_soft_rounds if services.config else 0
+                    ),
                     metadata={"node": "gen_sql", "session_id": state.session_id, "run_id": state.run_id},
                     temperature=generation_temperature(state.retry_count),
                 )

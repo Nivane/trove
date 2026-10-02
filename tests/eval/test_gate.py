@@ -10,6 +10,8 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 
 from trove.eval.gate import (
+    DEFAULT_TOLERANCE,
+    HIGHER_BETTER,
     compare_metrics,
     load_entries,
     metrics_from_entries,
@@ -189,6 +191,28 @@ class TestMetricParity:
         assert {k: v for k, v in gate_m.items() if k.startswith("ex_by_path:")} == expected
         assert {k: v for k, v in replay_m.items() if k.startswith("ex_by_path:")} == expected
 
+    def test_cache_metrics_paired_or_absent(self):
+        """cache_hit_rate 不进 SHARED(冻结基线无 cache 键,进了必红),
+        但两侧必须**同时缺席/同时相等** —— 单侧发键会让门与基线错位。"""
+        # 默认条目无 tokens → 两侧都不发键
+        rows = self._rows()
+        gate_m = metrics_from_entries(rows)
+        replay_m = scorecard_metrics(score_replay(rows))
+        assert "cache_hit_rate" not in gate_m
+        assert "cache_hit_rate" not in replay_m
+
+        # 有测量 → 两侧同时发且相等(90/100 + 30/300 = 120/400)
+        rows2 = [
+            _eval_entry("MATCH", tokens={"prompt": 100, "completion": 10,
+                                         "total": 110, "cached_tokens": 90}),
+            _eval_entry("MISMATCH", tokens={"prompt": 300, "completion": 10,
+                                            "total": 310, "cached_tokens": 30}),
+        ]
+        gate_m2 = metrics_from_entries(rows2)
+        replay_m2 = scorecard_metrics(score_replay(rows2))
+        assert gate_m2["cache_hit_rate"] == 0.3
+        assert replay_m2["cache_hit_rate"] == 0.3
+
 
 class TestCompareMetrics:
     def test_higher_better_regression_detected(self):
@@ -254,6 +278,22 @@ class TestCompareMetrics:
         # mrr: -0.02 = 默认 0.02 容差,恰好不回归
         assert by["mrr"].ok is True
         assert by["mrr"].delta == -0.02
+
+    def test_cache_hit_rate_direction_and_tolerance(self):
+        """缓存命中率 = 越高越好,默认相对容差 20%(抖动期可 --ignore)。"""
+        assert "cache_hit_rate" in HIGHER_BETTER
+        assert DEFAULT_TOLERANCE["cache_hit_rate"] == "0.20-r"
+
+        m = compare_metrics({"cache_hit_rate": 0.5}, {"cache_hit_rate": 0.3}).metrics[0]
+        assert m.direction == "higher"
+        assert m.ok is False  # -0.20 > 0.5*0.20 阈值
+        # -0.05 在相对 20% 内 → 不拦
+        assert compare_metrics(
+            {"cache_hit_rate": 0.5}, {"cache_hit_rate": 0.45}
+        ).metrics[0].ok is True
+        # 未测量一侧(键缺席)→ 不可比,进 unpaired 而不是当 0
+        report = compare_metrics({"cache_hit_rate": 0.5}, {})
+        assert "cache_hit_rate" in report.unpaired
 
     def test_render_report(self):
         base = {"ex": 0.8, "avg_retries": 0.5}

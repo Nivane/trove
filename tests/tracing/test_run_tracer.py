@@ -207,6 +207,52 @@ class TestNodeTokenTracking:
         assert "tok 12+3=15" in log_text  # llm 行
         assert "=15" in log_text          # 节点段尾累计
 
+    def test_cache_keys_survive_normalization_merge_and_log(self, tmp_path):
+        """cache 键:真报才透传(报 0 留 0)、span 合并同规则、日志带命中
+        后缀;未测量的节点不出现 "cache "(0 命中与没测量在日志层也可分)。"""
+        configure_trace_store(tmp_path)
+        tracer = create_tracer("t5")
+        tracer.start_run({"question": "q"})
+        outer = tracer.node_start("gen_sql", {})
+        inner = tracer.node_start("generate", {})
+        tracer.llm(
+            "generate", "m", [], "sql", 1,
+            usage={"prompt_tokens": 100, "completion_tokens": 20,
+                   "total_tokens": 120, "cached_tokens": 80},
+        )
+        tracer.node_end(inner, {})
+        tracer.llm(
+            "gen_sql", "m", [], "sql", 1,
+            usage={"prompt_tokens": 100, "completion_tokens": 10,
+                   "total_tokens": 110, "cached_tokens": 0},  # 测到 0:必须留
+        )
+        tracer.node_end(outer, {})
+        tracer.finish({})
+
+        llm_evs = [e for e in _events("t5") if e["kind"] == "llm"]
+        assert llm_evs[0]["tokens"]["cached_tokens"] == 80
+        assert llm_evs[1]["tokens"]["cached_tokens"] == 0
+        outer_end = next(e for e in _events("t5")
+                         if e["kind"] == "span_end" and e["span_id"] == outer)
+        assert outer_end["tokens"]["cached_tokens"] == 80  # 合并 = 80 + 0
+        log_text = (tmp_path / "runs" / "t5.log").read_text(encoding="utf-8")
+        assert "cache 80(80%)" in log_text   # 第一个 llm 行:80/100
+        assert "cache 0(0%)" in log_text     # 第二个 llm 行:测到 0
+        assert "cache 80(40%)" in log_text   # 节点段尾:80/200(合并后)
+
+        # 未测量:整条日志不出现 "cache "
+        configure_trace_store(tmp_path)
+        tracer2 = create_tracer("t6")
+        tracer2.start_run({"question": "q"})
+        sid = tracer2.node_start("gen_sql", {})
+        tracer2.llm("gen_sql", "m", [], "sql", 1,
+                    usage={"prompt_tokens": 10, "completion_tokens": 1,
+                           "total_tokens": 11})
+        tracer2.node_end(sid, {})
+        tracer2.finish({})
+        log2 = (tmp_path / "runs" / "t6.log").read_text(encoding="utf-8")
+        assert "cache " not in log2
+
 
 class TestRunTracerVerbose:
     def test_verbose_echoes_sections_to_stream(self, tmp_path):
