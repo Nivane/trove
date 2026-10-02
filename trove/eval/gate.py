@@ -18,11 +18,17 @@
 
 方向约定:更高更好(higher)的指标下降即回归;更低更好(lower)的指标
 (成本类:token/耗时/重试)上升即回归。容差既支持绝对量也支持相对量。
+
+**分母可见性**(token 均值):``avg_tokens`` 两侧各按"本方有 token 数据的
+条目"求均值,覆盖率不同时同一个问题的均值随分母漂移 —— 口径本身不改
+(改值会让门与冻结基线错位),但两侧覆盖数(``avg_tokens_n``)随行携带,
+覆盖不同时报告行标注 n 并给出⚠未配对告警,配对口径(交集条目)另行列示。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -54,6 +60,17 @@ LOWER_BETTER = {
     "avg_tokens", "total_tokens", "avg_retries", "zero_recall", "zero_answer",
     "avg_elapsed_ms", "total_elapsed_ms",
 }
+
+#: **只作分母元信息**的键:计数本身没有"变差"可言,不参与逐指标判定
+#: (与 n / n_judged 同规则,进 compare_metrics 的跳过集)。``avg_tokens_n``
+#: = token 均值**实际覆盖**的条目数 —— 两侧覆盖不同时均值是分母假象下的
+#: 数,2026-10 实测过一次:基线 32 条只有 19 条录了 tokens,gate 报
+#: avg_tokens −38%,同 19 题配对口径的真值是 −20.3%。
+_COUNT_ONLY_KEYS = frozenset({"n", "n_judged", "avg_tokens_n"})
+
+#: 同一个 ``avg_tokens_n`` 计数支撑的两个成本指标(均值与总和都只在
+#: "有 token 数据的条目"上有意义)—— 行内标注覆盖数时两者都标。
+_TOKEN_COVERED_METRICS = ("avg_tokens", "total_tokens")
 
 #: 默认容差:绝对量(rate)或相对量(相对容差以 -r 后缀标记,如 "0.1-r")。
 #: ``ex_by_path:*``(补录后 path 覆盖完整才发)不在表内 → 默认容差 "0",
@@ -107,6 +124,9 @@ class GateReport:
     metrics: list[MetricResult] = field(default_factory=list)
     unpaired: list[str] = field(default_factory=list)
     denominator_notes: list[str] = field(default_factory=list)
+    #: 配对口径 token 均值(``paired_token_stats`` 产物;CLI 两侧条目都在手
+    #: 时挂上)。None = 无可配对条目 → 报告不渲染这一节。
+    token_pairing: dict[str, Any] | None = None
 
     @property
     def regressions(self) -> list[MetricResult]:
@@ -133,11 +153,26 @@ def _rate(numer: int, denom: int) -> float:
     return numer / denom if denom else 0.0
 
 
+def _total_of(entry: dict[str, Any]) -> int:
+    """条目录制的 token 总数(未录制/为 0 → 0 = 不进 token 均值分母)。"""
+    return int((entry.get("tokens") or {}).get("total") or 0)
+
+
+def _norm_question(value: Any) -> str:
+    """配对键:小写 + 去标点 + 空白压缩(与 ``baseline._norm`` 同一口径,
+    由 tests/eval 钉住相等 —— 本地副本的理由同 replay._CACHE_FIELDS:
+    对账键两侧写法一旦漂移,配对会静默落到 0 条)。"""
+    text = re.sub(r"[\W_]+", " ", str(value or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     """从结果条目计算口径化指标 dict(零 LLM,纯文件数据)。
 
     兼容 eval_bird results.jsonl 与 offline_eval replay.jsonl 两种条目:
     verdict 键兼容两者的取值;retry 键兼容 retries/retry_count。
+    token 指标命中时才发,并随行携带覆盖条目数 ``avg_tokens_n``(见模块
+    docstring「分母可见性」—— 值不动,新增的只是分母可见)。
     """
     rows = list(entries)
     n = len(rows)
@@ -196,11 +231,7 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     confs = [float(e.get("confidence") or 0.0) for e in completed_rows]
 
     # token 成本(replay 条目带 tokens 字段;eval_bird 条目走进程级记账)
-    totals = [
-        int((e.get("tokens") or {}).get("total") or 0)
-        for e in rows
-        if (e.get("tokens") or {}).get("total")
-    ]
+    totals = [t for t in (_total_of(e) for e in rows) if t > 0]
     total_tokens = sum(totals)
     avg_tokens = _rate(total_tokens, len(totals))
 
@@ -236,6 +267,10 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     if totals:
         metrics["total_tokens"] = float(total_tokens)
         metrics["avg_tokens"] = round(avg_tokens, 1)
+        # 均值/总和**只在有 token 数据的条目上有意义** —— 覆盖数随行携带,
+        # 口径检查(_check_token_coverage)与行内标注都读它。值本身不动
+        # (分母仍是"本方有 token 数据的条目"),新增的只是可见性。
+        metrics["avg_tokens_n"] = float(len(totals))
     # 缓存命中率:与 score_replay 走**同一个函数**(import 复用,不是
     # 抄一遍)——门与基线必须同一份口径,这正是本文件开头那段注释的
     # 教训。仅测量过才发键:旧录制无 cache 键 → 不发,冻结基线零位移。
@@ -265,6 +300,76 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
                     sum(1 for e in tier_rows if e.get("verdict") == "MATCH") / len(tier_rows), 4
                 )
     return metrics
+
+
+def paired_token_stats(
+    baseline_entries: Iterable[dict[str, Any]],
+    current_entries: Iterable[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """配对口径 token 均值:只在**两侧都录制了 token 的交集条目**上算。
+
+    非配对口径的 ``avg_tokens`` 各按"本方有 token 数据的条目"求均值 ——
+    覆盖率不同时(基线补录中、本轮记账变全),同一个问题在两侧的分母不同,
+    均值随分母漂移。2026-10 实测:基线 19/32 条有 tokens、现值 32/32,
+    gate 报 avg_tokens −38%,同 19 题配对真值 −20.3%。两数并存(报告行 +
+    ⚠ 口径告警)才让"不可直接比"可见。
+
+    配对键:qid 优先,退归一化问题文本(两侧一组有 qid、一组没有也能对上);
+    重复键按出现顺序消费。返回 None = 无可配对条目(报告不渲染这一节)。
+    """
+    base_tok = [e for e in baseline_entries if _total_of(e) > 0]
+    cur_tok = [e for e in current_entries if _total_of(e) > 0]
+    if not base_tok or not cur_tok:
+        return None
+
+    by_qid: dict[str, list[int]] = {}
+    by_question: dict[str, list[int]] = {}
+    for pos, entry in enumerate(cur_tok):
+        qid = str(entry.get("qid") or "").strip()
+        if qid:
+            by_qid.setdefault(qid, []).append(pos)
+        question = _norm_question(entry.get("question"))
+        if question:
+            by_question.setdefault(question, []).append(pos)
+    taken: set[int] = set()
+
+    def _claim(index: dict[str, list[int]], key: str) -> int | None:
+        for pos in index.get(key, ()):
+            if pos not in taken:
+                taken.add(pos)
+                return pos
+        return None
+
+    base_sum = cur_sum = n_paired = 0
+    for entry in base_tok:
+        pos = None
+        qid = str(entry.get("qid") or "").strip()
+        if qid:
+            pos = _claim(by_qid, qid)
+        if pos is None:
+            question = _norm_question(entry.get("question"))
+            if question:
+                pos = _claim(by_question, question)
+        if pos is None:
+            continue
+        base_sum += _total_of(entry)
+        cur_sum += _total_of(cur_tok[pos])
+        n_paired += 1
+    if not n_paired:
+        return None
+
+    base_avg = base_sum / n_paired
+    cur_avg = cur_sum / n_paired
+    return {
+        "n_paired": n_paired,
+        "n_baseline_with_tokens": len(base_tok),
+        "n_current_with_tokens": len(cur_tok),
+        "n_baseline_unpaired": len(base_tok) - n_paired,
+        "n_current_unpaired": len(cur_tok) - n_paired,
+        "baseline_avg_tokens": round(base_avg, 1),
+        "current_avg_tokens": round(cur_avg, 1),
+        "delta_pct": round((cur_avg - base_avg) / base_avg * 100, 1) if base_avg else None,
+    }
 
 
 # ── 对比(纯函数)─────────────────────────────────────────────────
@@ -298,7 +403,7 @@ def compare_metrics(
     ignore = ignore or set()
     report = GateReport()
     for metric, base in sorted(baseline.items()):
-        if metric in ignore or metric in ("n", "n_judged"):
+        if metric in ignore or metric in _COUNT_ONLY_KEYS:
             continue
         cur = current.get(metric)
         if cur is None:
@@ -318,14 +423,34 @@ def compare_metrics(
             metric=metric, baseline=base, current=cur,
             tolerance=tol_spec, direction=direction, ok=ok,
             delta=round(delta, 4),
-            note=f"({direction}{'±' + tol_spec if tol else ''})",
+            note=(
+                f"({direction}{'±' + tol_spec if tol else ''})"
+                + _row_coverage(metric, baseline, current)
+            ),
         ))
-    # 只出现在 current 的新指标:无基线不可判,记录但不拦
+    # 只出现在 current 的新指标:无基线不可判,记录但不拦(计数键除外:
+    # 它们不参与判定,进 unpaired 只会是人读不懂的噪音)
     for metric in current:
-        if metric not in baseline and metric not in ignore:
+        if metric not in baseline and metric not in ignore and metric not in _COUNT_ONLY_KEYS:
             report.unpaired.append(metric)
     _check_denominator(report, baseline, current)
+    _check_token_coverage(report, baseline, current, ignore)
     return report
+
+
+def _row_coverage(metric: str, baseline: dict[str, float], current: dict[str, float]) -> str:
+    """成本均值行内标注两侧覆盖条目数(相同/不可得则不标)。
+
+    报告行是数字被读的地方 —— 分母不同这件事必须在**数字旁边**可见,
+    不能只藏在下面的告警段里。
+    """
+    if metric not in _TOKEN_COVERED_METRICS:
+        return ""
+    base_n = baseline.get("avg_tokens_n")
+    cur_n = current.get("avg_tokens_n")
+    if base_n is None or cur_n is None or base_n == cur_n:
+        return ""
+    return f" [覆盖 n={base_n:.0f}→{cur_n:.0f}]"
 
 
 #: 可判定题数(EX 分母)的相对漂移阈值:超过即视为样本结构不同,告警不拦截
@@ -354,6 +479,41 @@ def _check_denominator(
         )
 
 
+def _check_token_coverage(
+    report: GateReport,
+    baseline: dict[str, float],
+    current: dict[str, float],
+    ignore: set[str],
+) -> None:
+    """token 均值覆盖检查:两侧纳入均值的条目数不同 → 均值不可直接比。
+
+    均值两侧各自按"本方有 token 数据的条目"求(基线补录中很常见,32 条
+    只有 19 条录了 tokens);n 不同即分母不同,同一份数据能读出 −38% 的
+    假回归(配对口径真值 −20.3%,2026-10 实测)。只告警不拦截:覆盖缺口
+    靠补录收敛,不是代码变差。
+
+    两侧计数都不可得时(如旧 scorecard json 快照)无从判断 —— 不猜、不告警。
+    """
+    if "avg_tokens" in ignore:
+        return
+    if "avg_tokens" not in baseline or "avg_tokens" not in current:
+        return
+    base_n = baseline.get("avg_tokens_n")
+    cur_n = current.get("avg_tokens_n")
+    if base_n is None or cur_n is None or base_n == cur_n:
+        return
+    who = (
+        f"基线缺 {cur_n - base_n:.0f} 条"
+        if base_n < cur_n
+        else f"现值缺 {base_n - cur_n:.0f} 条"
+    )
+    report.denominator_notes.append(
+        f"token 均值覆盖不同:基线 n={base_n:.0f} → 现值 n={cur_n:.0f}"
+        f"({who},未配对):avg_tokens/total_tokens 两侧不可直接比 —— "
+        "均值只在各自有 token 数据的条目上成立;同题配对口径(交集条目)另行列示"
+    )
+
+
 def render_report(report: GateReport) -> str:
     """把对比结果渲染成人类可读的 Markdown 记分卡。"""
     lines = [f"## 回归门禁 · {report.baseline_label} → {report.current_label}"]
@@ -369,6 +529,22 @@ def render_report(report: GateReport) -> str:
             f"{m.metric:<18} {m.baseline:>10.4f} {m.current:>10.4f} "
             f"{m.delta:>+10.4f} {flag:>7} {m.note}"
         )
+    if report.token_pairing:
+        tp = report.token_pairing
+        delta = tp.get("delta_pct")
+        delta_txt = f"{delta:+.1f}%" if delta is not None else "n/a"
+        lines.append("")
+        lines.append(
+            f"配对口径 token 均值(交集 {tp['n_paired']} 题 — 仅两侧都录制了 token 的条目):"
+        )
+        lines.append(
+            f"    {tp['baseline_avg_tokens']} → {tp['current_avg_tokens']}(Δ {delta_txt})"
+        )
+        if tp["n_baseline_unpaired"] or tp["n_current_unpaired"]:
+            lines.append(
+                f"    未配对:基线 {tp['n_baseline_unpaired']} 条 / "
+                f"现值 {tp['n_current_unpaired']} 条"
+            )
     if report.unpaired:
         lines.append("")
         lines.append("无基线不可比: " + ", ".join(sorted(set(report.unpaired))))

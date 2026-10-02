@@ -15,6 +15,7 @@ from trove.eval.gate import (
     compare_metrics,
     load_entries,
     metrics_from_entries,
+    paired_token_stats,
     render_report,
     score_from_file,
 )
@@ -212,6 +213,159 @@ class TestMetricParity:
         replay_m2 = scorecard_metrics(score_replay(rows2))
         assert gate_m2["cache_hit_rate"] == 0.3
         assert replay_m2["cache_hit_rate"] == 0.3
+
+
+def _tok_entry(key: str, total: int) -> dict:
+    """带 token 录制的配对条目(total=0 → tokens 空 = 未录制)。"""
+    return {"qid": key, "question": key, "tokens": {"total": total} if total else {}}
+
+
+class TestTokenDenominatorVisibility:
+    """token 均值的分母可见性:覆盖数随行携带 + 覆盖不同时显式告警。
+
+    2026-10 实测的口径假象:冻结基线 32 条只有 19 条录了 tokens、现值
+    32/32,gate 报 avg_tokens −38%,同 19 题配对真值 −20.3%。值不改
+    (改了门与基线就错位),要改的是"不可直接比"这件事的可见性。
+    """
+
+    #: 实测形状:两侧覆盖 19 vs 32
+    BASE = {"avg_tokens": 90555.5, "avg_tokens_n": 19.0, "total_tokens": 1720554.0}
+    CUR = {"avg_tokens": 56078.4, "avg_tokens_n": 32.0, "total_tokens": 1794509.0}
+
+    def test_avg_tokens_value_and_denominator_unchanged(self):
+        """旧行为不回归:分母仍是"本方有 token 数据的条目",未录制的条目
+        不补零、不进分母;新增的只是覆盖计数。"""
+        rows = [
+            _eval_entry("MATCH", tokens={"total": 100}),
+            _eval_entry("MATCH", tokens={"total": 300}),
+            _eval_entry("MATCH"),  # 未录制 tokens
+        ]
+        m = metrics_from_entries(rows)
+        assert m["avg_tokens"] == 200  # 400/2,不是 400/3
+        assert m["total_tokens"] == 400
+        assert m["avg_tokens_n"] == 2.0
+        # 与回放引擎逐项同值(值不动的跨引擎确认)
+        assert scorecard_metrics(score_replay(rows))["avg_tokens"] == m["avg_tokens"]
+
+    def test_coverage_gap_noted_with_both_counts(self):
+        report = compare_metrics(self.BASE, self.CUR)
+        assert len(report.denominator_notes) == 1
+        note = report.denominator_notes[0]
+        assert "n=19" in note and "n=32" in note
+        assert "基线缺 13 条" in note and "不可直接比" in note
+        # 告警不拦截:均值 −38% 是下降(成本更低),不是回归
+        assert report.passed is True
+
+    def test_count_key_never_judged(self):
+        """覆盖计数是分母元信息(同 n/n_judged):不成指标行、不进不可比。"""
+        report = compare_metrics(self.BASE, self.CUR)
+        assert all(m.metric != "avg_tokens_n" for m in report.metrics)
+        assert "avg_tokens_n" not in report.unpaired
+
+    def test_render_shows_counts_in_row_and_warning(self):
+        text = render_report(compare_metrics(self.BASE, self.CUR))
+        assert "[覆盖 n=19→32]" in text     # 数字旁(报告行)
+        assert "token 均值覆盖不同" in text  # ⚠ 样本结构告警段
+
+    def test_no_note_when_coverage_matches(self):
+        report = compare_metrics(dict(self.BASE, avg_tokens_n=32.0), self.CUR)
+        assert report.denominator_notes == []
+        assert "[覆盖" not in render_report(report)
+
+    def test_ignore_avg_tokens_silences_coverage_note(self):
+        report = compare_metrics(self.BASE, self.CUR, ignore={"avg_tokens"})
+        assert report.denominator_notes == []
+        assert all(m.metric != "avg_tokens" for m in report.metrics)
+
+    def test_missing_counts_no_note(self):
+        """旧 scorecard 快照没有覆盖计数 → 无从判断,不猜、不告警。"""
+        report = compare_metrics({"avg_tokens": 100.0}, {"avg_tokens": 90.0})
+        assert report.denominator_notes == []
+
+    def test_frozen_baseline_value_unchanged_and_coverage_visible(self):
+        """冻结基线:值与钉住的 scorecard 逐项同,覆盖缺口(19/32)可见。"""
+        rows = load_entries(_ROOT / "eval/baseline/results.jsonl")
+        assert rows, "冻结基线缺失"
+        pinned = json.loads(
+            (_ROOT / "eval/baseline/scorecard.json").read_text(encoding="utf-8")
+        )["metrics"]
+        m = metrics_from_entries(rows)
+        assert m["avg_tokens"] == pytest.approx(pinned["avg_tokens"], abs=0.05)
+        assert m["total_tokens"] == pinned["total_tokens"]
+        assert m["avg_tokens_n"] < m["n"] == 32.0
+        assert m["avg_tokens_n"] == 19.0  # 实测:基线 32 条只有 19 条带 tokens
+        report = compare_metrics(m, m)
+        assert "[覆盖" not in render_report(report)  # 同覆盖 → 不误报
+
+
+class TestPairedTokenStats:
+    """配对口径 token 均值:只在两侧都有 token 数据的**交集条目**上算。"""
+
+    def test_only_intersection_counted(self):
+        base = [
+            _tok_entry("q1", 100), _tok_entry("q2", 200), _tok_entry("q3", 300),
+            _tok_entry("q4", 0),  # 未录制 token → 不参与
+        ]
+        cur = [
+            _tok_entry("q1", 50), _tok_entry("q2", 100), _tok_entry("q3", 150),
+            _tok_entry("q4", 9999), _tok_entry("q5", 8888),
+        ]
+        stats = paired_token_stats(base, cur)
+        assert stats["n_paired"] == 3
+        assert stats["baseline_avg_tokens"] == 200.0
+        assert stats["current_avg_tokens"] == 100.0   # q4/q5 的巨额绝不被摊进来
+        assert stats["delta_pct"] == -50.0
+        assert stats["n_baseline_with_tokens"] == 3
+        assert stats["n_current_with_tokens"] == 5
+        assert stats["n_baseline_unpaired"] == 0
+        assert stats["n_current_unpaired"] == 2      # q4/q5 如实报未配对
+
+    def test_no_intersection_returns_none(self):
+        assert paired_token_stats([_tok_entry("q1", 100)], [_tok_entry("zz", 5)]) is None
+        assert paired_token_stats([], []) is None
+        # 一侧有 token、另一侧同题未录制 → 交集为空(不是 0 均值)
+        assert paired_token_stats([_tok_entry("q1", 100)], [_tok_entry("q1", 0)]) is None
+
+    def test_pairing_falls_back_to_question_text(self):
+        """一侧带 qid、另一侧只有问题文本时仍能对上(对账键同 baseline)。"""
+        base = [{"qid": "financial-0001", "question": "How  Many ACCOUNTS?",
+                 "tokens": {"total": 10}}]
+        cur = [{"question": "how many accounts?", "tokens": {"total": 20}}]
+        stats = paired_token_stats(base, cur)
+        assert stats["n_paired"] == 1
+        assert stats["delta_pct"] == 100.0
+
+    def test_duplicate_keys_pair_in_order(self):
+        base = [{"qid": "q1", "tokens": {"total": 10}},
+                {"qid": "q1", "tokens": {"total": 20}}]
+        cur = [{"qid": "q1", "tokens": {"total": 1}},
+               {"qid": "q1", "tokens": {"total": 2}}]
+        stats = paired_token_stats(base, cur)
+        assert stats["n_paired"] == 2
+        assert stats["baseline_avg_tokens"] == 15.0
+        assert stats["current_avg_tokens"] == 1.5
+
+    def test_question_norm_matches_baseline_reconciliation_key(self):
+        """配对键与 baseline 对账键同一口径(两处各写一遍必然漂移)。"""
+        from trove.eval.baseline import _norm
+        from trove.eval.gate import _norm_question
+
+        for text in ("How  many ACCOUNTS?", "  total-balance_by district ", ""):
+            assert _norm_question(text) == _norm(text)
+
+    def test_stats_render_as_their_own_section(self):
+        base = [_tok_entry("q1", 100), _tok_entry("q2", 200)]
+        cur = [_tok_entry("q1", 50), _tok_entry("q2", 100), _tok_entry("q3", 1)]
+        report = compare_metrics(
+            {"avg_tokens": 150.0, "avg_tokens_n": 2.0},
+            {"avg_tokens": 50.3, "avg_tokens_n": 3.0},
+        )
+        report.token_pairing = paired_token_stats(base, cur)
+        text = render_report(report)
+        assert "配对口径 token 均值" in text
+        assert "交集 2 题" in text
+        assert "150.0 → 75.0(Δ -50.0%)" in text
+        assert "未配对:基线 0 条 / 现值 1 条" in text
 
 
 class TestCompareMetrics:

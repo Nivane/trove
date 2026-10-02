@@ -228,6 +228,7 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
         dict: n / ex(执行准确率) / completion_rate / self_consistency(自洽率) /
         zero_answer(零交付率) / first_pass(一次通过率,有可判题才发) /
         gold_match(若有 gold_sql) / avg_tokens / total_tokens /
+        avg_tokens_n(均值覆盖的条目数)/
         recovery_rate / avg_confidence / consensus_rate / avg_candidates;
         条目带 elapsed_ms / path 时另发 avg_elapsed_ms / total_elapsed_ms /
         ex_by_path;有测量过缓存命中的条目时另发 cache_hit_rate /
@@ -247,6 +248,7 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "completion_rate": 0.0, "self_consistency": 0.0,
             "zero_answer": 0.0,
             "gold_match": None, "avg_tokens": 0, "total_tokens": 0,
+            "avg_tokens_n": 0,
             "recovery_rate": 0.0, "avg_confidence": 0.0,
             "consensus_rate": 0.0, "avg_candidates": 0.0,
         }
@@ -283,6 +285,9 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "gold_n": len(gold_rows),
         "avg_tokens": round(total / n_with_tokens, 1) if n_with_tokens else 0,
         "total_tokens": total,
+        # 均值/总和覆盖的条目数:值不动(分母仍是"有 token 数据的条目"),
+        # 但覆盖缺口要可见 —— 记分卡据此标出 n/总数,门侧 gate 也发同名键。
+        "avg_tokens_n": n_with_tokens,
         "recovery_rate": round(len(recovered_rows) / len(tried), 4) if tried else 0.0,
         "recovery_attempts": len(tried),
         "avg_confidence": round(sum(conf) / len(conf), 4) if conf else 0.0,
@@ -421,11 +426,19 @@ def render_scorecard(score: dict[str, Any]) -> str:
     ]
     if "first_pass" in score:
         lines.append(f"  一次通过(first_pass)   {score['first_pass']:.1%}")
+    # token 均值只覆盖"有 token 数据的条目":覆盖不满时在数字旁标出 ——
+    # 否则同一个问题会随录制覆盖率变化读出不同的均值(见 gate 同款口径)。
+    token_line = (
+        f"  token 成本              {score['total_tokens']} total / "
+        f"{score['avg_tokens']} avg"
+    )
+    n_tok = score.get("avg_tokens_n") or 0
+    if n_tok and n_tok < score["n"]:
+        token_line += f"({n_tok}/{score['n']} 条录制 token — 均值只覆盖这些条目)"
     lines += [
         f"  零交付(zero_answer)    {score['zero_answer']:.1%}",
         f"  gold 精确匹配           {gold_line}",
-        f"  token 成本              {score['total_tokens']} total / "
-        f"{score['avg_tokens']} avg",
+        token_line,
     ]
     if score.get("cache_hit_rate") is not None:
         lines.append(

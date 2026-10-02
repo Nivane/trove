@@ -69,6 +69,7 @@ class TestScoreReplay:
         assert s["n"] == 0
         assert s["completion_rate"] == 0.0
         assert s["gold_match"] is None
+        assert s["avg_tokens_n"] == 0
 
     def test_completion_and_cost(self):
         rows = [
@@ -81,6 +82,18 @@ class TestScoreReplay:
         assert s["completion_rate"] == pytest.approx(2 / 3, abs=1e-3)
         assert s["total_tokens"] == 350
         assert s["avg_tokens"] == pytest.approx(350 / 3, abs=0.05)
+
+    def test_avg_tokens_coverage_count_exposed(self):
+        """均值覆盖数随行携带:未录制 token 的条目不进分母(值不动),
+        但覆盖缺口要可见 —— 门侧 gate 发同名键、记分卡据此标 n/总数。"""
+        s = score_replay([
+            _entry(tokens={"total": 100}),
+            _entry(tokens={}),  # 未录制
+        ])
+        assert s["avg_tokens"] == 100  # 分母仍是"有 token 的 1 条"
+        assert s["total_tokens"] == 100
+        assert s["avg_tokens_n"] == 1
+        assert s["n"] == 2
 
     def test_self_consistency_requires_consensus(self):
         rows = [
@@ -360,6 +373,13 @@ class TestRenderScorecard:
         assert "完成率" in text and "token" in text and "失败恢复率" in text
         assert "自洽率" in text and "correctness" not in text
 
+    def test_token_line_flags_partial_coverage(self):
+        """覆盖不满时数字旁标 n/总数 —— 否则均值随录制覆盖率悄悄变化。"""
+        partial = render_scorecard(score_replay([_entry(), _entry(tokens={})]))
+        assert "1/2 条录制 token" in partial
+        full = render_scorecard(score_replay([_entry(), _entry()]))
+        assert "条录制 token" not in full
+
     def test_cache_line_only_when_measured(self):
         unmeasured = render_scorecard(score_replay([_entry()]))
         assert "缓存命中" not in unmeasured
@@ -384,6 +404,12 @@ class TestScorecardMetrics:
             "n", "n_judged", "first_pass", "gold_match",
         } <= set(m)
         assert "correctness" not in m
+
+    def test_coverage_count_not_in_pinned_vocabulary(self):
+        """avg_tokens_n 是分母元信息,**不进**口径快照 —— 冻结基线
+        (eval/baseline/scorecard.json)靠这条保持逐字节零位移。"""
+        m = scorecard_metrics(score_replay([_entry()]))
+        assert "avg_tokens_n" not in m
 
     def test_conditional_keys_follow_score(self):
         s = score_replay([_entry(verdict="OK", elapsed_ms=0, gold_sql="")])
