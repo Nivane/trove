@@ -526,7 +526,7 @@ class TestMaskingAndAuthzConfig:
     def test_absent_blocks_keep_the_protective_defaults(self, tmp_path):
         """缺席 = 闸门与脱敏都**开着**(默认值是「保护开着」,关它必须显式写)。
 
-        table_enforcement 的默认是 **enforce**:2026-10 切换(654 条快径示例
+        table_enforcement 的默认是 **enforce**:2026-10 切换(650 条快径示例
         SQL 静态核验违规 0 条,403 面等于零)。回退到观察档要显式写 warn。
         """
         conf = tmp_path / "agent.yml"

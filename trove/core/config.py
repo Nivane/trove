@@ -88,7 +88,7 @@ class AuthzConfig:
 
     2026-10 从 warn 切到 enforce,依据不是「观察期结束」而是**静态核验**:
     用 A3 同源基准(``rls.declared_tables``)对三份 KB 的全部快径示例 SQL
-    (demo 211 / financial 201 / mysql_fin 242,共 654 条)逐条 SQLGlot 比对,
+    (demo 211 / financial 197 / mysql_fin 242,共 650 条)逐条 SQLGlot 比对,
     违规 0 条 —— 设计 §8.2 当初选 warn 是怕存量 grants 只到数据源级、直接
     enforce 会把**正常查询大面积 403**;核验表明按语义模型走的查询本来就
     都在声明内,403 面等于零。观察期数据从未存在(所有日志早于 authorizer
