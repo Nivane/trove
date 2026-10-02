@@ -25,30 +25,42 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-# 判定集合**不在这里定义** —— 从 replay 取,与 score_replay 的 ex 共用一份。
+# 判定集合与谓词**不在这里定义** —— 从 replay 取,与 score_replay 共用一份。
 # 两处各写一遍的后果不是"重复",是**漂移**:门算出的 ex 与基线钉住的 ex
 # 用了不同的分母,红得没有原因,而排查方向会被引到完全错误的地方。
+# 2026-10 实测过一次这种漂移:同一份冻结文件,completion 两边算出
+# 0.9375 与 0.9062(一个把"SQL 生成了但执行报错"算作完成)。
 # (无循环依赖:replay 不 import 任何 trove 模块。)
 from trove.eval.replay import JUDGED_VERDICTS as _VERDICTS_JUDGED
-from trove.eval.replay import OK_VERDICTS as _VERDICTS_OK
+from trove.eval.replay import completed as _completed
+from trove.eval.replay import first_pass as _first_pass
+from trove.eval.replay import recovered as _recovered
+from trove.eval.replay import self_consistent as _self_consistent
+from trove.eval.replay import tried_recovery as _tried
+from trove.eval.replay import zero_answer as _zero_answer
 
 #: 更高更好的指标(准确率/覆盖率类)
 HIGHER_BETTER = {
-    "ex", "compile_hit", "completion", "correctness", "gold_match", "recovery",
-    "consensus_rate", "avg_confidence", "mrr", "recall@k", "ndcg@k",
+    "ex", "compile_hit", "completion", "self_consistency", "first_pass",
+    "gold_match", "recovery", "consensus_rate", "avg_confidence",
+    "mrr", "recall@k", "ndcg@k",
 }
 #: 更低更好的指标(成本/失败类)
 LOWER_BETTER = {
-    "avg_tokens", "total_tokens", "avg_retries", "zero_recall",
+    "avg_tokens", "total_tokens", "avg_retries", "zero_recall", "zero_answer",
     "avg_elapsed_ms", "total_elapsed_ms",
 }
 
-#: 默认容差:绝对量(rate)或相对量(相对容差以 -r 后缀标记,如 "0.1-r")
+#: 默认容差:绝对量(rate)或相对量(相对容差以 -r 后缀标记,如 "0.1-r")。
+#: ``ex_by_path:*``(补录后 path 覆盖完整才发)不在表内 → 默认容差 "0",
+#: 分档样本小,任何下降都值得人看一眼。
 DEFAULT_TOLERANCE: dict[str, str] = {
     "ex": "0.01",
     "compile_hit": "0.02",
     "completion": "0.01",
-    "correctness": "0.01",
+    "self_consistency": "0.01",
+    "first_pass": "0.01",
+    "zero_answer": "0.02",
     "gold_match": "0.01",
     "recovery": "0.02",
     "consensus_rate": "0.01",
@@ -123,9 +135,8 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     rows = list(entries)
     n = len(rows)
     judged = [e for e in rows if e.get("verdict") in _VERDICTS_JUDGED]
-    judged_set = {id(e) for e in judged}
 
-    # EX:MATCH / 可判定;完成率口径对 replay 退化(verdict=OK 且非 ERROR)
+    # EX:MATCH / 可判定
     matched = sum(1 for e in judged if e.get("verdict") == "MATCH")
     ex = _rate(matched, len(judged))
 
@@ -134,18 +145,10 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     compiled = sum(1 for e in with_meta if e["compile_meta"].get("outcome") == "compiled")
     compile_hit = _rate(compiled, len(with_meta))
 
-    # 完成率:judged 内非 hard-fail(EXECUTION_ERROR/GENERATION_ERROR 之外)
-    completed = [
-        e for e in judged
-        if e.get("verdict") not in ("EXECUTION_ERROR", "GENERATION_ERROR", "EMPTY_SQL")
-    ]
-    # replay 条目(非 MATCH/MISMATCH 体系)按 OK 判定完成
-    replay_completed = [
-        e for e in rows
-        if id(e) not in judged_set and e.get("verdict") in _VERDICTS_OK
-        and not e.get("error")
-    ]
-    completion = _rate(len(completed) + len(replay_completed), n)
+    # 完成率:两引擎共用 completed()(有 SQL ∧ 判定非硬失败)。旧版这里
+    # 内联一份"judged 非报错 + replay 词表 OK"的分支,与 replay 侧各算各的。
+    completed_rows = [e for e in rows if _completed(e)]
+    completion = _rate(len(completed_rows), n)
 
     # gold 精确匹配(仅 replay 条目带 gold_sql;零 DB 结构归一)
     from trove.eval.replay import sql_exact_match
@@ -161,25 +164,29 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
             len(gold_rows),
         )
 
-    # 失败恢复率(与 replay._tried_recovery 同口径)
-    def _tried(e: dict[str, Any]) -> bool:
-        return (
-            int(e.get("retry_count") or e.get("retries") or 0) > 0
-            or bool(e.get("validation_hits"))
-            or bool(e.get("rollback_target"))
-            or bool(e.get("fix_mode"))
-        )
-
+    # 失败恢复率:统一谓词(与 score_replay 同一份 tried/recovered)
     tried = [e for e in rows if _tried(e)]
-    recovered = [e for e in tried if e.get("verdict") in _VERDICTS_JUDGED
-                 and e.get("verdict") != "MISMATCH"
-                 and not e.get("error")]
+    recovered = [e for e in tried if _recovered(e)]
     recovery = _rate(len(recovered), len(tried))
 
-    # 共识率与置信度
-    cons = [e for e in judged if e.get("consensus") is True]
-    confs = [_num(e.get("confidence")) for e in judged]
-    confs = [c for c in confs if c is not None]
+    # 零交付率:无 SQL 且未尝试恢复(这类题原先在 recovery 分子分母都不可见)
+    zero_answer = _rate(sum(1 for e in rows if _zero_answer(e)), n)
+
+    # 一次通过率:MATCH ∧ 未触发恢复 / 可判题(无判题不发键)
+    first_pass = None
+    if judged:
+        first_pass = _rate(sum(1 for e in rows if _first_pass(e)), len(judged))
+
+    # 过程自洽率:与 score_replay 同分母(completed),不与 judged 混
+    self_consistency = _rate(
+        sum(1 for e in rows if _self_consistent(e)), n
+    )
+
+    # 共识率与置信度:分母 = completed(与 score_replay 一致)。旧版门用
+    # judged、回放用各自的 completed:同一份冻结文件两引擎各算 0.6875 /
+    # 0.6667,统一后为今天的 0.6552
+    cons = [e for e in completed_rows if e.get("consensus") is True]
+    confs = [float(e.get("confidence") or 0.0) for e in completed_rows]
 
     # token 成本(replay 条目带 tokens 字段;eval_bird 条目走进程级记账)
     totals = [
@@ -201,8 +208,13 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
         "ex": round(ex, 4),
         "compile_hit": round(compile_hit, 4),
         "completion": round(completion, 4),
+        "self_consistency": round(self_consistency, 4),
+        "zero_answer": round(zero_answer, 4),
         "recovery": round(recovery, 4),
-        "consensus_rate": _rate(len(cons), len(judged)),
+        # 与 score_replay 同分母:completed(不是 judged)——门禁的"现值"与
+        # 基线的"钉住值"必须同源,否则同一份文件两个数字,红得没有原因
+        "consensus_rate": round(_rate(len(cons), len(completed_rows)), 4),
+        "avg_confidence": round(sum(confs) / len(confs), 4) if confs else 0.0,
         "avg_retries": round(avg_retries, 3),
         "n": float(n),
         # 可判定题数(EX 分母):gold 失败/崩溃题被平移出分子分母,单独
@@ -210,13 +222,32 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
         # 就不完全可比(gate.py 仅告警不拦截,min_n 管样本量下限)。
         "n_judged": float(len(judged)),
     }
+    if first_pass is not None:
+        metrics["first_pass"] = round(first_pass, 4)
     if gold_match is not None:
         metrics["gold_match"] = round(gold_match, 4)
-    if confs:
-        metrics["avg_confidence"] = round(sum(confs) / len(confs), 4)
     if totals:
         metrics["total_tokens"] = float(total_tokens)
         metrics["avg_tokens"] = round(avg_tokens, 1)
+    # 墙钟:与 score_replay 同规则(有条目带 elapsed_ms 才发键)。
+    # 冻结基线无 elapsed → 不发;补录后自动入基线并被门覆盖。
+    elapsed = [int(e.get("elapsed_ms") or 0) for e in rows]
+    elapsed = [ms for ms in elapsed if ms > 0]
+    if elapsed:
+        metrics["total_elapsed_ms"] = float(sum(elapsed))
+        metrics["avg_elapsed_ms"] = round(sum(elapsed) / len(elapsed), 1)
+    # 分档 EX:与 score_replay 同规则——仅当 path 覆盖完整才发
+    # (半份 path 的分档是把"缺数据"当"llm 档")
+    if judged and all((e.get("path") or "").strip() for e in rows):
+        for tier in ("compiled", "partial", "llm"):
+            tier_rows = [
+                e for e in rows
+                if e.get("path") == tier and e.get("verdict") in _VERDICTS_JUDGED
+            ]
+            if tier_rows:
+                metrics[f"ex_by_path:{tier}"] = round(
+                    sum(1 for e in tier_rows if e.get("verdict") == "MATCH") / len(tier_rows), 4
+                )
     return metrics
 
 

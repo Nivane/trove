@@ -8,9 +8,14 @@ name: eval-gate
 # 实际后果是门默认不跑 —— 一个建好了却没开的门,正是 G1。
 #
 # 三步各挡一类问题:
-#   1. 基线完整性(--require-full) → 产物可对账、32 题全覆盖
+#   1. 基线完整性(--require-full) → 产物可对账、32 题全覆盖(另打印字段覆盖;
+#      --require-fields 是补录后切严格档的开关,今天只报告不拦截)
 #   2. 零 LLM 回放                → 用当前评分代码重算冻结产物的指标
 #   3. 门判定(钉住 vs 现在)      → 评分口径漂了、或基线被误改了,就红
+#      口径的唯一来源是 trove/eval/replay.py 的谓词族(completed/tried_recovery/
+#      recovered/self_consistent/zero_answer/first_pass),gate.py 复用同一份。
+#      实测过两处各写一遍的代价:同一文件 completion 0.9375 vs 0.9062、
+#      recovery 1.0 vs 0.1765 —— 门红得没有原因。
 #
 # ⚠️ **这三步挡的不是「模型变差了」。** 准确率回归要真库 + LLM,那部分留
 # 手动 workflow_dispatch(这点原设计是对的,保留)。本门挡的是「锚点坏了」:

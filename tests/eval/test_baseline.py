@@ -10,6 +10,7 @@ from trove.eval.baseline import (
     build_questions,
     check_integrity,
     coverage_check,
+    field_coverage,
     load_jsonl,
     match_qid,
     qid_for,
@@ -108,3 +109,68 @@ def test_load_jsonl_tolerates_bad_lines(tmp_path):
     p = tmp_path / "x.jsonl"
     p.write_text('{"a": 1}\nnot-json\n{"b": 2}\n', encoding="utf-8")
     assert load_jsonl(p) == [{"a": 1}, {"b": 2}]
+
+
+def test_field_coverage_counts_nonempty_only():
+    """0/空串/空 dict 与缺失同义:elapsed_ms=0 是默认值,不是"耗时为零"。"""
+    rows = [
+        {"tokens": {"total": 120}, "elapsed_ms": 900,
+         "compile_meta": {"outcome": "compiled"}, "path": "compiled"},
+        {"tokens": {}, "elapsed_ms": 0, "compile_meta": {}, "path": ""},
+    ]
+    cov = field_coverage(rows)
+    assert cov["tokens"] == 0.5
+    assert cov["elapsed_ms"] == 0.5
+    assert cov["compile_meta"] == 0.5
+    assert cov["path"] == 0.5
+    assert cov["plan"] == 0.0
+    assert cov["matched_tables"] == 0.0
+
+
+def test_field_coverage_empty_results():
+    cov = field_coverage([])
+    assert set(cov) == {
+        "tokens", "elapsed_ms", "compile_meta", "path", "plan", "matched_tables",
+    }
+    assert all(v == 0.0 for v in cov.values())
+
+
+def _write_baseline(tmp_path, result_extra=None):
+    """一题问题集 × 一条结果(部分覆盖:缺题只算 warning)。"""
+    qp = tmp_path / "questions.jsonl"
+    rp = tmp_path / "results.jsonl"
+    qp.write_text("\n".join(json.dumps(q) for q in _questions()), encoding="utf-8")
+    entry = {"qid": "financial-0001", "verdict": "MATCH"}
+    entry.update(result_extra or {})
+    rp.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    return qp, rp
+
+
+def test_check_integrity_reports_field_coverage(tmp_path):
+    qp, rp = _write_baseline(tmp_path)
+    report = check_integrity(qp, rp)
+    assert report["ok"] is True  # 只报告,不拦截(冻结基线补不齐历史条目)
+    assert report["field_coverage"]["tokens"] == 0.0
+    assert report["field_coverage"]["path"] == 0.0
+
+
+def test_check_integrity_require_fields_met(tmp_path):
+    qp, rp = _write_baseline(tmp_path, {
+        "tokens": {"total": 100}, "elapsed_ms": 1200, "path": "llm",
+    })
+    report = check_integrity(qp, rp, require_fields=["tokens", "elapsed_ms", "path"])
+    assert report["ok"] is True
+
+
+def test_check_integrity_require_fields_incomplete_is_hard(tmp_path):
+    qp, rp = _write_baseline(tmp_path, {"path": "llm"})
+    report = check_integrity(qp, rp, require_fields=["tokens"])
+    assert report["ok"] is False
+    assert any("字段覆盖不足" in p and "tokens" in p for p in report["problems"])
+
+
+def test_check_integrity_require_fields_unknown_name(tmp_path):
+    qp, rp = _write_baseline(tmp_path)
+    report = check_integrity(qp, rp, require_fields=["nope"])
+    assert report["ok"] is False
+    assert any("未知" in p for p in report["problems"])

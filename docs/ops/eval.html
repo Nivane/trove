@@ -95,15 +95,23 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L104">replay.py:104 <span class="ref-line">score_replay</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L159">replay.py:159 <span class="ref-line">score_replay</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L39">replay.py:39 <span class="ref-line">sql_exact_match</span></a>
     </p>
 
     <p>
       <code>sql_exact_match</code> 用的是 <strong>SQLGlot 结构级</strong>比较，不是字符串比较——
-      大小写、空白、别名写法的差异不该算作不同。同理，一致性判断里
-      「可判定的 verdict」集合是<strong>唯一定义</strong>，被门与回放共用，
-      避免两处口径分叉。
+      大小写、空白、别名写法的差异不该算作不同。同理，判定口径（「可判定的 verdict」
+      集合与完成 / 触发恢复 / 恢复成功 / 自洽 / 一次通过 / 零交付这一族谓词）是
+      <strong>唯一定义</strong>，被门与回放共用，避免两处口径分叉。
+    </p>
+
+    <p>
+      这不是洁癖：同一份冻结文件、两个引擎各写一遍口径时，实测出过
+      <code>completion</code> 0.9375 vs 0.9062、<code>recovery</code> 1.0 vs 0.1765——
+      门红得没有原因，排查方向也会被引到完全错误的地方。所以谓词族只有
+      <code>replay.py</code> 一份，<code>gate.py</code> 直接 import；
+      两引擎逐项相等由 <code>tests/eval/test_gate.py</code> 的对照测试钉住。
     </p>
 
     <p>
@@ -123,13 +131,18 @@ flowchart LR
         </thead>
         <tbody>
           <tr><td><strong>EX</strong></td><td>可判定条目里 <code>MATCH</code> 的占比</td></tr>
+          <tr><td><strong>分档 EX</strong></td><td><code>ex_by_path:compiled / partial / llm</code>——当且仅当全部条目都带 <code>path</code> 才出现（半份 path 的分档是把缺数据当 llm 档）</td></tr>
           <tr><td><strong>编译命中率</strong></td><td>带 <code>compile_meta</code> 的条目里 outcome 为 compiled 的占比</td></tr>
-          <tr><td><strong>完成率</strong></td><td>最终交付了答案的占比</td></tr>
-          <tr><td><strong>恢复率</strong></td><td>尝试过恢复的条目里成功恢复的占比</td></tr>
+          <tr><td><strong>完成率</strong></td><td>交付了答案（有 SQL 且判定非硬失败）的占比——答错也算交付，那是 EX 的事</td></tr>
+          <tr><td><strong>自洽率</strong></td><td>完成条目里达成共识（非平局、候选池非空）的占比；量的是<strong>过程自洽</strong>，不是对错</td></tr>
+          <tr><td><strong>一次通过率</strong></td><td><code>MATCH</code> 且从未触发恢复的占比（÷ 可判题；无可判题不发键）</td></tr>
+          <tr><td><strong>零交付率</strong></td><td>无 SQL 且未尝试恢复的占比（<strong>更低更好</strong>）——这类题原先在恢复率的分子分母里都不可见</td></tr>
+          <tr><td><strong>恢复率</strong></td><td>触发过恢复的条目里<strong>以非错非报错收场</strong>的占比——触发 ≠ 成功</td></tr>
           <tr><td><strong>gold 精确匹配</strong></td><td>仅回放条目（有 gold_sql 的）</td></tr>
-          <tr><td><strong>共识率 / 置信度</strong></td><td>可判定条目里多候选投票达成共识的占比，与平均置信度</td></tr>
+          <tr><td><strong>共识率 / 置信度</strong></td><td>完成条目里多候选投票达成共识的占比，与平均置信度</td></tr>
           <tr><td><strong>平均重试</strong></td><td>每题平均重试次数（<strong>更低更好</strong>）</td></tr>
           <tr><td><strong>token 成本</strong></td><td><code>avg_tokens</code> 与 <code>total_tokens</code>——只有带 token 记账的条目进分母</td></tr>
+          <tr><td><strong>墙钟</strong></td><td><code>avg_elapsed_ms</code> / <code>total_elapsed_ms</code>——有条目记过耗时才出现（<strong>更低更好</strong>）</td></tr>
           <tr><td><strong>检索指标</strong></td><td><code>mrr</code> / <code>recall@k</code> / <code>ndcg@k</code> / <code>zero_recall</code>——只在 scorecard 产物里出现</td></tr>
         </tbody>
       </table>
@@ -141,11 +154,11 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L117">gate.py:117 <span class="ref-line">metrics_from_entries</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L205">gate.py:205 <span class="ref-line">consensus_rate</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L254">gate.py:254 <span class="ref-line">n_judged</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L240">gate.py:240 <span class="ref-line">compare_metrics</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L310">gate.py:310 <span class="ref-line">render_report</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L129">gate.py:129 <span class="ref-line">metrics_from_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L216">gate.py:216 <span class="ref-line">consensus_rate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L285">gate.py:285 <span class="ref-line">n_judged</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L271">gate.py:271 <span class="ref-line">compare_metrics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L341">gate.py:341 <span class="ref-line">render_report</span></a>
     </p>
 
     <div class="callout note">
@@ -158,8 +171,8 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L36">gate.py:36 <span class="ref-line">HIGHER_BETTER</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L47">gate.py:47 <span class="ref-line">DEFAULT_TOLERANCE</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L43">gate.py:43 <span class="ref-line">HIGHER_BETTER</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L57">gate.py:57 <span class="ref-line">DEFAULT_TOLERANCE</span></a>
     </p>
 
     <h3>容差：绝对量或相对量</h3>
@@ -177,7 +190,7 @@ flowchart LR
     <h3>分母漂移会告警，但不会拦</h3>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L287">gate.py:287 <span class="ref-line">DENOMINATOR_DRIFT_WARN</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L318">gate.py:318 <span class="ref-line">DENOMINATOR_DRIFT_WARN</span></a>
     </p>
 
     <p>
@@ -214,7 +227,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L346">gate.py:346 <span class="ref-line">load_entries</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L377">gate.py:377 <span class="ref-line">load_entries</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird.py#L117">eval_bird.py:117 <span class="ref-line">RESULTS_PATH</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py#L44">offline_eval.py:44 <span class="ref-line">--scorecard</span></a>
     </p>
@@ -262,9 +275,33 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_baseline.py#L36">eval_baseline.py:36 <span class="ref-line">--require-full</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/baseline.py#L133">baseline.py:133 <span class="ref-line">check_integrity</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L164">conf/agent.yml:164 <span class="ref-line">baseline_path</span></a>
+      校验还会打印<strong>字段覆盖</strong>（<code>tokens</code> / <code>elapsed_ms</code> /
+      <code>compile_meta</code> / <code>path</code> / <code>plan</code> / <code>matched_tables</code>）。
+      缺字段不会让任何指标报错，只会让它<strong>算在半份样本上</strong>——
+      tokens 缺则成本指标只剩老条目，path 缺则分档 EX 把缺数据当 llm 档。
+      <code>--require-fields tokens,elapsed_ms</code> 把任一字段覆盖不足钉成硬问题；
+      冻结基线里的历史条目补不齐这些字段，所以今天默认只报告，补录之后加一行参数切严格档。
+    </p>
+
+    <p>
+      评分口径变了（改名、改定义）就要<strong>重钉</strong>快照：
+    </p>
+
+    <pre><code>uv run python scripts/offline_eval.py replay \
+  --input eval/baseline/results.jsonl \
+  --scorecard eval/baseline/scorecard.json</code></pre>
+
+    <p>
+      快照由 <code>replay.scorecard_metrics</code> 统一生成（CLI / CI / 测试共用同一份映射），
+      <code>tests/eval/test_scorecard_pin.py</code> 保证钉住的数字永远能从冻结产物复算出来。
+      改名若不同步重钉，是这个测试先红——而不是让门把两侧都算成「无基线不可比」后静默变绿
+      （<code>compare_metrics</code> 对 unpaired 只报告、不拦截）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_baseline.py#L39">eval_baseline.py:39 <span class="ref-line">--require-full</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/baseline.py#L166">baseline.py:166 <span class="ref-line">check_integrity</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/conf/agent.yml#L166">conf/agent.yml:166 <span class="ref-line">baseline_path</span></a>
     </p>
 
     <h2 id="cli">怎么用</h2>
@@ -348,6 +385,11 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     </p>
 
     <p>
+      第 1 步另外打印字段覆盖，但<strong>今天不拦</strong>：冻结基线补不齐历史条目。
+      <code>--require-fields</code> 是补录后的一行切换，不需要动代码。
+    </p>
+
+    <p>
       但要说清楚<strong>这四步挡的不是「模型变差了」</strong>：准确率回归要真库加模型，
       仍然只能手动跑 <code>eval_bird.py</code>。这道门挡的是「锚点坏了」——基线缺题、
       评分口径漂移、冻结产物被改。把这里的绿读成「准确率没问题」是误读。
@@ -361,9 +403,9 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L65">eval-gate.yml:65 <span class="ref-line">check_kb_anti_cheat</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L81">eval-gate.yml:81 <span class="ref-line">--require-full</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L97">eval-gate.yml:97 <span class="ref-line">--ci</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L70">eval-gate.yml:70 <span class="ref-line">check_kb_anti_cheat</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L86">eval-gate.yml:86 <span class="ref-line">--require-full</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml#L102">eval-gate.yml:102 <span class="ref-line">--ci</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py#L44">eval_gate.py:44 <span class="ref-line">--ci</span></a>
     </p>
 
@@ -428,7 +470,7 @@ uv run python scripts/eval_gate.py ... --ci                 # CI 模式</code></
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: a7e121f</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: b3134a0</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">能力地图</a>
     </div>

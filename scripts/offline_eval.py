@@ -1,7 +1,7 @@
 """离线 eval:录制轨迹 → 回放打分(绕开 eval_bird 的成本约束)。
 
 低成本迭代闭环:真实 LLM 跑一遍问题集(record)→ 之后任意次零 LLM
-回放打分(replay)。评分维度对齐 eval 四维:完成率/正确率/token 成本/
+回放打分(replay)。评分维度对齐 eval 四维:完成率/自洽率/token 成本/
 失败恢复率。
 
 用法:
@@ -201,7 +201,12 @@ async def cmd_record(args) -> int:
 
 
 def cmd_replay(args) -> int:
-    from trove.eval.replay import load_entries, render_scorecard, score_replay
+    from trove.eval.replay import (
+        load_entries,
+        render_scorecard,
+        score_replay,
+        scorecard_metrics,
+    )
 
     entries = load_entries(args.input)
     if not entries:
@@ -213,24 +218,12 @@ def cmd_replay(args) -> int:
         import json as _json
         from pathlib import Path as _Path
 
-        metrics = {
-            # ex 必须在:它是**唯一**对"答案对错"敏感的指标(其余量的是
-            # 过程)。不加它,门对 verdict 字段是瞎的 —— 把 8 条 MATCH 改成
-            # MISMATCH,记分卡一条都不动。
-            "ex": score["ex"],
-            "completion": score["completion_rate"],
-            "correctness": score["correctness"],
-            "recovery": score["recovery_rate"],
-            "consensus_rate": score["consensus_rate"],
-            "avg_confidence": score["avg_confidence"],
-            "avg_tokens": score["avg_tokens"],
-            "total_tokens": float(score["total_tokens"]),
-            "n": float(score["n"]),
-        }
-        if score.get("gold_match") is not None:
-            metrics["gold_match"] = score["gold_match"]
+        # 映射只有一份,在 replay.scorecard_metrics(CLI / CI 重钉 / pin 测试
+        # 共用)。各写一遍的后果不是重复,是键名漂移 → 门两侧 unpaired
+        # 静默通过,看着在跑其实瞎了。
         _Path(args.scorecard).write_text(
-            _json.dumps({"source": "offline_eval_replay", "metrics": metrics},
+            _json.dumps({"source": "offline_eval_replay",
+                         "metrics": scorecard_metrics(score)},
                         ensure_ascii=False, indent=2),
             encoding="utf-8",
         )

@@ -214,7 +214,7 @@ def make_validate_rules(
         # 状态写进已有的 ``plan_validation`` 通道:query_sketch 用同一字段报
         # "dropped"(plan 没过 schema 校验,此时 plan 被清空、列检查同样无从跑)
         # / "ok"。**不写 validation_hits** —— 那个通道的语义是"被规则拦过",
-        # 是 eval 恢复机制归因的判据(trove/eval/replay.py::_tried_recovery),
+        # 是 eval 恢复机制归因的判据(trove/eval/replay.py::tried_recovery),
         # 混进非拦截事件会污染归因。
         if state.plan_json is None and state.columns:
             logger.info(

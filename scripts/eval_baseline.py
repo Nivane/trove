@@ -5,14 +5,17 @@
   - questions.jsonl 问题集字段完整、qid 稳定
   - results.jsonl 能算指标、覆盖问题集(缺题默认仅警告)
   - qid 无"问题集外"与"重复判定"(硬问题)
+  - 字段覆盖(tokens/elapsed_ms/compile_meta/path/plan/matched_tables)
+    始终打印;--require-fields 列出者必须 100% 覆盖(补录后切严格档)
 
 默认只要求基线可解析;--require-full 要求问题集全覆盖(收基线 / CI
-严格执行用)。退出码 0 = 健康,1 = 硬问题(或 --require-full 下覆盖不全),
-2 = 用法错误。
+严格执行用)。退出码 0 = 健康,1 = 硬问题(或 --require-full 下覆盖不全、
+--require-fields 下字段不齐),2 = 用法错误。
 
 用法:
   uv run python scripts/eval_baseline.py check
   uv run python scripts/eval_baseline.py check --require-full
+  uv run python scripts/eval_baseline.py check --require-fields tokens,elapsed_ms
   uv run python scripts/eval_baseline.py check \
       --questions eval/baseline/questions.jsonl --results .trove/eval/results.jsonl
 """
@@ -35,6 +38,9 @@ def parse_args() -> argparse.ArgumentParser:
     chk.add_argument("--results", default=str(_DEFAULT_DIR / "results.jsonl"))
     chk.add_argument("--require-full", action="store_true",
                      help="缺题结果视为硬问题(收基线/CI 严格档)")
+    chk.add_argument("--require-fields", default="",
+                     help="逗号分隔的结果字段,要求 100% 覆盖"
+                          "(补录后启用;默认只报告 field_coverage)")
     chk.add_argument("--json", action="store_true", help="只输出 JSON 判定")
     return p.parse_args()
 
@@ -47,6 +53,7 @@ def main() -> int:
 
     report = check_integrity(
         args.questions, args.results, require_full=args.require_full,
+        require_fields=[f.strip() for f in args.require_fields.split(",") if f.strip()],
     )
     if args.json:
         import json
@@ -57,6 +64,9 @@ def main() -> int:
     print(f"基线完整性 · {Path(args.questions).name} × {Path(args.results).name} "
           f"({report['n_questions']} 题 / {report['n_results']} 条结果, "
           f"覆盖 {report['coverage']:.0%})")
+    print("  字段覆盖: " + " · ".join(
+        f"{k} {v:.0%}" for k, v in report["field_coverage"].items()
+    ))
     for w in report["warnings"]:
         print(f"  ! {w}")
     for p in report["problems"]:

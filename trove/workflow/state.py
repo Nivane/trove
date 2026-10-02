@@ -392,7 +392,7 @@ class WorkflowState(BaseModel):
 
     #: org validator 档的逐条判定 —— 与 ``validation_hits`` **分开**是因为
     #: 后者的语义是"被规则拦过"(eval 恢复机制归因的判据,见
-    #: trove/eval/replay.py::_tried_recovery)。advisory 判词与"判不了"
+    #: trove/eval/replay.py::tried_recovery)。advisory 判词与"判不了"
     #: 都不是拦截事件,混进去会污染归因。
     validator_hits: list[dict] = Field(default_factory=list)
 
