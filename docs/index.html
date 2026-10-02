@@ -266,7 +266,7 @@ flowchart TB
       </div>
 
       <div class="cap-where" style="margin-top:16px">
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1664">graphs.py:1664 <span class="ref-line">主图装配</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1684">graphs.py:1684 <span class="ref-line">主图装配</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py">rules.py <span class="ref-line">确定性校验规则链</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">versions.py <span class="ref-line">SQL 版本链 / 回归硬检查</span></a>
       </div>
@@ -497,7 +497,7 @@ flowchart TB
             零 LLM、零网络——所以它可以挂在提交前，而不会有人因为「跑一次太贵」把它跳过。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L164">eval/replay.py:164</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L224">eval/replay.py:224</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py">scripts/offline_eval.py</a>
           </div>
         </div>
@@ -509,7 +509,7 @@ flowchart TB
             就多一道样本量下限：当前样本不足时直接拒绝出判定，避免拿三条样本宣布胜利。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L271">eval/gate.py:271 <span class="ref-line">compare_metrics</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L287">eval/gate.py:287 <span class="ref-line">compare_metrics</span></a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py">scripts/eval_gate.py</a>
           </div>
         </div>
@@ -548,7 +548,7 @@ flowchart TB
           <div class="cap-where">
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L244">agent_loop.py:244 <span class="ref-line">visible_to</span></a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L372">agent_loop.py:372 <span class="ref-line">defs 按角色裁剪</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L580">agent_loop.py:580 <span class="ref-line">越权折叠</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L595">agent_loop.py:595 <span class="ref-line">越权折叠</span></a>
           </div>
         </div>
         <div class="cap">
@@ -572,7 +572,7 @@ flowchart TB
             出错则原样透传。意图路由把「问数据」和「问元数据」分成两条路，后者自带一轮自校验。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1664">graphs.py:1664</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1684">graphs.py:1684</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py">workflow/state.py</a>
           </div>
         </div>
@@ -685,8 +685,8 @@ flowchart TB
             外部追踪（Langfuse）与本地运行日志共用同一套埋点。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L139">runlog.py:139 <span class="ref-line">span token 桶</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L308">runlog.py:308</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L165">runlog.py:165 <span class="ref-line">span token 桶</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L333">runlog.py:333</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py">llm/observability.py</a>
           </div>
         </div>
@@ -803,7 +803,7 @@ flowchart TB
             <tr>
               <td>工具权限</td>
               <td>工具按角色裁剪，越权调用在运行时折叠为「未知工具」。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L580">llm/agent_loop.py:580 <span class="ref-line">角色裁剪</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L595">llm/agent_loop.py:595 <span class="ref-line">角色裁剪</span></a></td>
             </tr>
             <tr>
               <td>执行前人工确认</td>
@@ -1016,7 +1016,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         </div>
       </div>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">cade4da</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: cade4da</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">7cf88cd</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 7cf88cd</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>
