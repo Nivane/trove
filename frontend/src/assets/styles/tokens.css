@@ -168,4 +168,11 @@
   --ok: var(--ok-text);
   --warn: var(--warn-text);
   --danger: var(--danger-text);
+
+  /* ── Appended 2026-10 (P6/P7 base components) ──
+     Only what the base components actually consume; nothing existing
+     is renamed or revalued. */
+  --red-700: #b91c1c; /* danger button hover shade */
+  --danger-hover: var(--red-700);
+  --overlay: rgba(24, 24, 27, 0.36); /* drawer / dialog scrim */
 }
