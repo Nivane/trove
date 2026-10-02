@@ -33,6 +33,32 @@ from trove.workflow.state import WorkflowState
 logger = logging.getLogger(__name__)
 
 
+# 拒绝轮**不交付任何查询产物**:交付字段一律清零。
+#
+# 为什么必须显式清:query_sketch 是回滚目标,前几轮失败可能已经把 sql/rows/
+# compiled_sql 写进 state —— 那是**用户从未见过的旧 SQL**。拒绝轮里它若留着:
+#   ① output 的 `_answer_source` 以 state.sql 为门,会把旧 SQL 渲染成「本轮答案」
+#      的生成 SQL 块,并给出「已认证/已编译」的来源档位;
+#   ② `_record_result` 的台账会记下一条从未交付的查询;
+#   ③ 评测端(refusal 未归因时)会判在旧 SQL 上,把拒绝误记成一次交付。
+# plan / plan_json / compile_meta **保留**:草稿生成要读 plan,miss_reason 是
+# 拒绝归因的源。error_feedback 同清 —— 拒绝是终态,在途修正信号没有下一跳。
+_HYGIENE: dict[str, Any] = {
+    "sql": "",
+    "rows": [],
+    "columns": [],
+    "row_count": -1,
+    "execution_time_ms": 0.0,
+    "compiled": False,
+    "compiled_sql": "",
+    "compile_partial": False,
+    "compile_misses": [],
+    "contract": None,
+    "error_feedback": "",
+    "plan_replan_pending": False,
+}
+
+
 def _no_model_message(lang: str) -> str:
     return L(
         lang,
@@ -515,6 +541,7 @@ def make_refuse(
                     "question": state.question,
                     "message": message,
                 },
+                **_HYGIENE,
             }
 
         refusal = state.refusal or {}
@@ -636,6 +663,9 @@ def make_refuse(
                     "draft_name": draft.get("name"),
                     "message": message,
                 },
+                # 重答不复用旧产物:交付字段清零(plan 保留,重答的
+                # query_sketch 以它为上一轮上下文)。
+                **_HYGIENE,
             }
 
         if draft is not None and conflict:
@@ -652,17 +682,24 @@ def make_refuse(
             )
         # 普通拒绝:显式重置 auto_confirmed=False——A 档自确认后若同问重跑仍
         # 失败,auto_confirmed 残留 True 会把路由拉回 parse_date 造成死循环。
+        refusal_out: dict[str, Any] = {
+            "reason": reason,
+            "question": question,
+            "draft": draft,
+            "conflict": bool(conflict),
+            "draft_entry": entry,
+            "message": message,
+        }
+        # 结构化分因随终态拒绝一起交付:拒绝是这条链的**终态产物**(wire 上
+        # 走 mcp/session 的 refusal 字段),它得能自己说清缺的是哪种声明 ——
+        # 上一跳写了 compile_miss,这里重建 dict 时丢掉 = 诊断只活在日志里。
+        if cm:
+            refusal_out["compile_miss"] = cm
         return {
             "auto_confirmed": False,
             "clarification_question": message,
-            "refusal": {
-                "reason": reason,
-                "question": question,
-                "draft": draft,
-                "conflict": bool(conflict),
-                "draft_entry": entry,
-                "message": message,
-            },
+            "refusal": refusal_out,
+            **_HYGIENE,
         }
 
     return refuse

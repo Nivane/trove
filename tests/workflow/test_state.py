@@ -50,6 +50,10 @@ class TestWorkflowState:
         assert state.intent == "query"
         assert state.intent_answer == ""
         assert state.no_sql is False
+        # 有界重规划(query_sketch ⇄ analyze_error):rounds 是预算计数,
+        # pending 是路由信号 —— 两者生命周期不同源,默认都必须归零。
+        assert state.plan_replan_rounds == 0
+        assert state.plan_replan_pending is False
 
     def test_session_id_and_question_required(self):
         with pytest.raises(ValidationError):

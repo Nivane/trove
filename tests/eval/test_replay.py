@@ -116,6 +116,18 @@ class TestScoreReplay:
         assert (s["ex_hit"], s["ex_judged"]) == (1, 5)
         assert s["ex"] == pytest.approx(0.2, abs=1e-3)
 
+    def test_refused_counts_as_miss_not_dropped_from_denominator(self):
+        """REFUSED 进 ex 分母 —— 否则拒绝率一升,准确率反而"变好"。
+
+        拒绝交付的是「反问 + 扩展草稿」,是**已交付的判定结果**,不是崩溃:
+        把它从分母抹掉,等于给「多拒绝」发奖励。冻结基线无 REFUSED 行,
+        此条对既有基线零位移。
+        """
+        rows = [_entry(verdict="MATCH"), _entry(verdict="REFUSED", pred_sql="")]
+        s = score_replay(rows)
+        assert (s["ex_hit"], s["ex_judged"]) == (1, 2)
+        assert s["ex"] == pytest.approx(0.5, abs=1e-3)
+
     def test_ex_moves_when_only_verdicts_change(self):
         """**反退化性质**:只改 verdict、别的字段一概不动,EX 必须跟着动。
 
@@ -218,6 +230,17 @@ class TestUnifiedPredicates:
         assert completed({"pred_sql": "SELECT 1", "verdict": "EXECUTION_ERROR"}) is False
         assert completed({"pred_sql": "SELECT 1", "verdict": "EMPTY_SQL"}) is False
         assert completed({"pred_sql": "", "verdict": "OK"}) is False
+
+    def test_refused_is_delivered_verdict_but_not_completion(self):
+        """REFUSED 的两副面孔:判定集里算错题(ex 分母),完成率里算未交付。
+
+        它没有 pred_sql(交付字段被终态卫生清零),所以 completed 为 False;
+        但它进 ex 分母(见 replay.JUDGED_VERDICTS 注释),也不能从
+        zero_answer 桶里消失 —— 拒绝题终止在「没交付 SQL」是事实,得看得见。
+        """
+        assert completed({"pred_sql": "", "verdict": "REFUSED"}) is False
+        assert zero_answer({"pred_sql": "", "verdict": "REFUSED"}) is True
+        assert tried_recovery({"pred_sql": "", "verdict": "REFUSED", "retry_count": 0}) is False
 
     def test_recovered_is_strict(self):
         # 触发过恢复 ≠ 恢复成功:实测基线 17 次触发只有 3 次以 MATCH 收场

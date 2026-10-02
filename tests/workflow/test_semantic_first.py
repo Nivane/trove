@@ -596,3 +596,164 @@ class TestProgressiveSchemaLinking:
         assert set(first) == {"loan"}
         expanded = _semantic_match_datasets(model, q, [], None, retry_round=1)
         assert set(expanded) == {"loan", "trans"}
+
+
+class TestPlanContradictionReplan:
+    """硬 MISS 二分:计划自相矛盾(模型里有、计划没带)→ 有界重规划;
+    真模型缺口(未声明表)照旧拒绝(0483 / 0487 两种形状的回归)。"""
+
+    @staticmethod
+    def _model() -> SemanticModel:
+        f = lambda name: SemanticField(name=name, expression=name)  # noqa: E731
+        return SemanticModel(
+            name="fin",
+            datasets=[
+                SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                    f("loan_id"), f("client_id"), f("amount")]),
+                SemanticDataset(name="client", primary_key=["client_id"], fields=[
+                    f("client_id"), f("gender")]),
+            ],
+            relationships=[
+                SemanticRelationship("loan_to_client", "loan", "client",
+                                     from_columns=["client_id"],
+                                     to_columns=["client_id"]),
+            ],
+            metrics=[
+                SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
+                               datasets=["loan"]),
+            ],
+        )
+
+    class _Provider:
+        enabled = True
+
+        def __init__(self, model):
+            self._model = model
+
+        def model(self):
+            return self._model
+
+    def _node(self, llm, model=None, **kwargs):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        return make_query_sketch(
+            llm, AgentConfig(target="mock/model"),
+            semantic_layer=self._Provider(model or self._model()), **kwargs,
+        )
+
+    @staticmethod
+    def _contradictory_plan() -> dict:
+        """0483 形状:条件引用 client.gender,但 plan.tables 只带 loan。"""
+        return {
+            "tables": ["loan"],
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+            "conditions": [{"field": "client.gender", "op": "=", "value": "F"}],
+        }
+
+    async def test_declared_table_missing_from_plan_replans(self):
+        """表已声明、计划没带 → 发射有界重规划,不是拒绝。"""
+        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]))
+        out = await node(make_state(
+            question="female clients' loans", matched_tables=["loan"]))
+        assert "refusal" not in out
+        assert out["plan_replan_pending"] is True
+        assert out["retry_count"] == 1
+        assert out["plan_replan_rounds"] == 1
+        assert out["error_feedback"].startswith("[ERR:PLAN_CONTRADICTION]")
+        # 反馈必须携带**声明关系与字段清单**:那一轮 planner 的 schema_context
+        # 里根本没有 client(linker 漏了),只喊「加进 plan.tables」它无从下手。
+        assert "loan.client_id = client.client_id" in out["error_feedback"]
+        assert "gender" in out["error_feedback"]
+        # 归因保留(miss 分因还看得见)……
+        assert out["compile_meta"]["miss_reason"] == "unreachable_table"
+        # ……但上一轮编译产物**必须清**:execute_sql 的保真校验读
+        # compiled/compiled_sql,残留旧权威 SQL 会让下一条 SQL 被拿去和
+        # 旧契约比对 → 假 COMPILE_DRIFT。
+        assert out["compiled"] is False
+        assert out["compiled_sql"] == ""
+        assert out["compile_partial"] is False
+        assert out["compile_misses"] == []
+        assert out["contract"] is None
+
+    async def test_replanned_plan_compiles(self):
+        """重规划环的出口:计划修好 → 编译成功,信号复位,反馈进 planner。"""
+        captured = {}
+
+        class RecordingLLM:
+            def __init__(self, responses):
+                self._it = iter(responses)
+
+            async def chat(self, model, messages, **kwargs):
+                captured["prompt"] = " ".join(m["content"] for m in messages)
+                return next(self._it)
+
+        fixed = {
+            "tables": ["loan", "client"],
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+            "conditions": [{"field": "client.gender", "op": "=", "value": "F"}],
+        }
+        node = self._node(RecordingLLM([json.dumps(fixed)]))
+        state = make_state(question="female clients' loans", matched_tables=["loan"])
+        state.error_feedback = "[ERR:PLAN_CONTRADICTION] add client to plan.tables"
+        state.plan_replan_rounds = 1
+        out = await node(state)
+        assert out["compiled"] is True
+        assert "client.gender = 'F'" in out["compiled_sql"]
+        assert out["plan_replan_pending"] is False
+        assert captured["prompt"].find("PLAN_CONTRADICTION") != -1
+
+    async def test_limit_without_order_replans(self):
+        """0487 形状:limit 在、排序不可解析 → 同样是有界重规划。"""
+        plan = {
+            "tables": ["loan"],
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+            "conditions": [],
+            "limit": 10,
+        }
+        node = self._node(ScriptedLLM([json.dumps(plan)]))
+        out = await node(make_state(question="top 10 loans", matched_tables=["loan"]))
+        assert "refusal" not in out
+        assert out["plan_replan_pending"] is True
+        assert out["error_feedback"].startswith("[ERR:PLAN_CONTRADICTION]")
+        assert "ordering" in out["error_feedback"]
+
+    def test_whitelist_excludes_model_gaps(self):
+        """白名单:真模型缺口与未知分因保持旧行为(照旧拒绝)。"""
+        from trove.services.semantic_layer.compiler import CompileMiss
+        from trove.workflow.nodes.query_sketch import _replan_feedback
+
+        provider = self._Provider(self._model())
+        plan = self._contradictory_plan()
+        # 未声明表 → 模型缺口,不是计划缺陷
+        assert _replan_feedback(
+            plan, CompileMiss("unreachable_table", "tables outside join tree: ghost"),
+            provider) is None
+        # 白名单外分因(结构性硬 MISS 与软/未命中分因)一律不重规划
+        assert _replan_feedback(plan, CompileMiss("fan_out", "loan, client"),
+                                provider) is None
+        assert _replan_feedback(plan, CompileMiss("no_metric_match", "x"),
+                                provider) is None
+
+    async def test_replan_exhausted_falls_back_to_refusal(self):
+        """双上限之一(MAX_PLAN_REPLANS):耗尽 → 拒绝,不是 error。"""
+        from trove.workflow.nodes.query_sketch import MAX_PLAN_REPLANS
+
+        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]))
+        out = await node(make_state(
+            question="female clients' loans", matched_tables=["loan"],
+            plan_replan_rounds=MAX_PLAN_REPLANS))
+        assert out["refusal"] is not None
+        assert out["plan_replan_pending"] is False
+        assert "error_feedback" not in out
+
+    async def test_replan_budget_exhausted_falls_back_to_refusal(self):
+        """双上限之二(共享修正预算):耗尽 → 拒绝,不是 error。"""
+        node = self._node(ScriptedLLM([json.dumps(self._contradictory_plan())]))
+        out = await node(make_state(
+            question="female clients' loans", matched_tables=["loan"],
+            retry_count=10))
+        assert out["refusal"] is not None
+        assert out["plan_replan_pending"] is False

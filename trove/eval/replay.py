@@ -51,6 +51,11 @@ def sql_exact_match(pred: str, gold: str) -> bool:
 #: 定义放在 replay(被 gate 依赖)而非 gate:gate 已经 import replay。
 JUDGED_VERDICTS = {
     "MATCH", "MISMATCH", "GENERATION_ERROR", "EXECUTION_ERROR", "EMPTY_SQL",
+    # 语义门禁拒绝是**已交付的判定结果**(反问 + 扩展草稿),不是崩溃:
+    # 不判定就等于从分母里抹掉拒绝 —— 拒绝率一升,只要拒绝题不进分母,
+    # 执行准确率反而"变好"。冻结基线无 REFUSED 行,此改动对既有基线
+    # 逐项零位移(test_scorecard_pin 是机器证明)。
+    "REFUSED",
 }
 #: replay.jsonl 的"跑通"判定(无 DB 执行档,靠自洽)
 OK_VERDICTS = {"OK", "MATCH", "EMPTY"}

@@ -106,6 +106,28 @@ _DETERMINISTIC_MSGS: dict[str, tuple[str, str]] = {
 # 确定性修复(非死胡同):打回重生成有意义,且修正指令完全确定——
 # 不烧 LLM 诊断,直接把修正指令注入生成方(fix_mode=fixer)。
 _DETERMINISTIC_FIX: dict[str, tuple[str, str]] = {
+    "SQL_MISSING": (
+        "上一轮没有产出任何 SQL(生成链空手而归)。请按计划产出**一条完整的"
+        "只读 SELECT**:含 FROM/JOIN/WHERE/聚合与 LIMIT,只输出 SQL —— "
+        "不要解释、不要只给片段、不要省略任何子句。",
+        "No SQL was produced last round. Emit one complete read-only SELECT "
+        "per the plan (FROM/JOIN/WHERE/aggregation/LIMIT), SQL only — no "
+        "prose, no fragments, no omitted clauses.",
+    ),
+    # 计划自相矛盾:重规划指令的实质内容在 error_feedback(query_sketch 起草的
+    # 声明关系/字段清单),这里只负责给出 TARGET 与一句方向。**不含花括号**:
+    # _extract_rollback_target 会先尝试把整段当 JSON 解析。
+    "PLAN_CONTRADICTION": (
+        "计划与语义模型自相矛盾(引用的表/排序没有以可编译的形状进入计划)。"
+        "TARGET: query_sketch。请**整份重出**计划 JSON:把语义模型已声明的表"
+        "按声明的关系补进 plan.tables,或删掉引用它们的条件;排序用已声明的"
+        "指标名或 dataset.field asc|desc。",
+        "The plan contradicts the semantic model (referenced tables/orderings "
+        "did not enter the plan in a compilable shape). TARGET: query_sketch. "
+        "Re-emit the WHOLE plan JSON: add the declared tables with their "
+        "declared joins, or drop the conditions referencing them; express "
+        "ordering as a declared metric name or dataset.field asc|desc.",
+    ),
     "SQL_WRITEOP": (
         "生成的 SQL 含写操作或越界构造,只读代理不允许。请重写为纯只读 "
         "SELECT(禁止 CREATE/INSERT/UPDATE/DELETE/DROP/DDL/INTO OUTFILE、"

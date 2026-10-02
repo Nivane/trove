@@ -138,6 +138,17 @@ CLASSES: dict[str, ErrorClass] = {
                 "rewrite it as a read-only SELECT."
             ),
         ),
+        ErrorClass(
+            # 生成链空手而归(execute_sql 收到空 SQL):计划在前,只差一条
+            # 完整 SELECT —— 一句确定指令就能修,不是死胡同(对比 SQL_EMPTY
+            # 是「查询跑了、零行」,语义不同)。
+            "SQL_MISSING", "sql", "error", retryable=True,
+            recovery=RecoveryAction.FIX, needs_analysis=False,
+            user_msg=(
+                "SQL generation produced no query this round; "
+                "emit one complete read-only SELECT from the plan."
+            ),
+        ),
         # ── SQL 结果 ──────────────────────────────────────
         ErrorClass(
             "SQL_TIMEOUT", "sql", "error", retryable=True,
@@ -159,6 +170,17 @@ CLASSES: dict[str, ErrorClass] = {
             "PLAN_DRIFT", "plan", "error", retryable=True,
             recovery=RecoveryAction.ROLLBACK_QUERY_SKETCH,
             user_msg="Generated columns drifted from the plan.",
+        ),
+        ErrorClass(
+            # 计划自相矛盾(引用的表/排序未进 plan 的可用形状,但语义模型里
+            # 有):缺的是**计划**不是模型 —— 重规划可修,不是模型缺口。
+            # 有界性由 query_sketch 的 MAX_PLAN_REPLANS + 共享修正预算管。
+            "PLAN_CONTRADICTION", "plan", "error", retryable=True,
+            recovery=RecoveryAction.ROLLBACK_QUERY_SKETCH, needs_analysis=False,
+            user_msg=(
+                "The plan contradicts itself; re-plan with the declared "
+                "tables/orderings."
+            ),
         ),
         ErrorClass(
             "INTENT_MISROUTE", "plan", "error", retryable=True,

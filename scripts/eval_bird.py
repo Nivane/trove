@@ -186,12 +186,18 @@ def _result_entry(
     if final is not None:
         entry.update({
             "pred_sql": final.sql or "",
-            # path 归因:partial(软 MISS 骨架)→ 单独一类(编译通道的
-            # 分级逃生梯,区别于全量 compiled 与裸 llm 生成)。
+            # path 归因:refused(语义门禁拒绝)→ 单独一类;partial(软 MISS
+            # 骨架)→ 单独一类(编译通道的分级逃生梯,区别于全量 compiled
+            # 与裸 llm 生成)。refused 必须最先判:拒绝轮没有 SQL 可言,
+            # compiled/compile_partial 可能是上一轮的残留。
             "path": (
-                "partial"
-                if getattr(final, "compile_partial", False)
-                else ("compiled" if getattr(final, "compiled", False) else "llm")
+                "refused"
+                if getattr(final, "refusal", None)
+                else (
+                    "partial"
+                    if getattr(final, "compile_partial", False)
+                    else ("compiled" if getattr(final, "compiled", False) else "llm")
+                )
             ),
             "compile_meta": getattr(final, "compile_meta", {}) or {},
             "kb_hits": final.kb_hits,
@@ -224,6 +230,9 @@ def attribution_slices(results: list[dict]) -> list[str]:
     """
     verdicts_ok = {
         "MATCH", "MISMATCH", "GENERATION_ERROR", "EXECUTION_ERROR", "EMPTY_SQL",
+        # REFUSED 是**已交付的判定**(语义门禁按模型缺口拒绝并给出扩展草稿),
+        # 不是崩溃/gold 失败:它是分母的一部分,进切片才看得见「拒绝率」。
+        "REFUSED",
     }
     rows = [r for r in results if r.get("verdict") in verdicts_ok]
     if not rows:
@@ -483,7 +492,8 @@ async def main() -> None:
     graph = build_graphs(services, scaling=args.scaling)["reflection"]
 
     matched = 0
-    failures = {"generation": 0, "execution": 0, "mismatch": 0, "gold_error": 0, "crash": 0}
+    failures = {"generation": 0, "execution": 0, "mismatch": 0, "refused": 0,
+                "gold_error": 0, "crash": 0}
     total_retries = 0
     results: list[dict] = []  # 本轮的逐题条目(供归因切片;jsonl 仍全部落盘)
 
@@ -586,6 +596,25 @@ async def main() -> None:
             log(f"[{i}/{len(questions)}] ✗ {final.error[:70]}")
             continue
 
+        if getattr(final, "refusal", None):
+            # 语义门禁拒绝(分级逃生梯的上沿):本轮交付的是「缺声明 + 反问/
+            # 扩展草稿」,不是查询。必须与 EMPTY_SQL(生成链空手)分开归因——
+            # 否则拒绝被记成「空 SQL(意图可能误路由)」,把模型缺口伪装成
+            # 路由缺陷(0483/0487 实测的失真)。record_failure → 进
+            # failures.jsonl 供 distill_lessons。
+            failures["refused"] += 1
+            reason = str((final.refusal or {}).get("reason") or "uncovered")
+            record_failure({
+                "question": question, "evidence": evidence, "gold_sql": gold_sql,
+                "pred_sql": "", "error": f"refused: {reason}"[:200],
+            })
+            done(_result_entry(
+                run_id, question, evidence, gold_sql, "REFUSED", final,
+                qid=_qid_of(q),
+            ) | {"error": f"refused: {reason}"[:200]})
+            log(f"[{i}/{len(questions)}] ⊘ 拒绝({reason}): {question[:50]}")
+            continue
+
         if not final.sql:
             failures["execution"] += 1
             done(_result_entry(
@@ -623,7 +652,8 @@ async def main() -> None:
     log(f"Execution Accuracy: {matched}/{evaluated} = {matched / evaluated * 100:.1f}%"
         f"（gold 失败 {failures['gold_error']} + 崩溃 {failures['crash']} 题未计入）")
     log(f"错误分布: 生成失败 {failures['generation']} | 执行失败 {failures['execution']} | "
-        f"结果不一致 {failures['mismatch']} | 崩溃 {failures['crash']}")
+        f"结果不一致 {failures['mismatch']} | 拒绝 {failures['refused']} | "
+        f"崩溃 {failures['crash']}")
     log(f"平均修正轮数: {total_retries / total:.1f}")
     for line in attribution_slices(results):
         log(line)

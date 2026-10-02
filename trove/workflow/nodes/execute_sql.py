@@ -49,6 +49,10 @@ logger = get_logger(__name__)
 # 编译照抄校验失败的错误前缀:analyze_error 据此走确定性短路径(不烧 LLM)。
 COMPILE_DRIFT_TAG = "[ERR:COMPILE_DRIFT]"
 
+# 生成链空手而归的错误前缀:与执行错误同走共享修正预算(有界恢复),
+# analyze_error 据它走确定性短路径(不烧 LLM)。
+NO_SQL_TAG = "[ERR:SQL_MISSING]"
+
 
 def make_execute_sql(
     connectors: ConnectorRegistry | None = None,
@@ -102,7 +106,25 @@ def make_execute_sql(
             return {}
 
         if not state.sql:
-            return {"error": "No SQL to execute — SQL generation did not produce a query."}
+            # 空手而归是**可修正的生成缺陷**(计划在前,只差一条完整 SQL),
+            # 不是终态错误:走共享修正预算进有界恢复环,预算耗尽才降级为
+            # state.error。此前这里直接落 error,等于绕过了全图唯一的重试
+            # 通道 —— 生成链空手比执行报错更接近一次普通失败。
+            return _execution_failure(
+                state,
+                NO_SQL_TAG
+                + " "
+                + L(
+                    state.lang,
+                    "本轮没有产出任何 SQL。请按计划产出一条完整的只读 SELECT"
+                    "(含 FROM/JOIN/WHERE/聚合与 LIMIT),只输出 SQL:不要解释、"
+                    "不要只给片段、不要省略任何子句。",
+                    "No SQL was produced this round. Emit one complete read-only "
+                    "SELECT per the plan (FROM/JOIN/WHERE/aggregation/LIMIT), "
+                    "SQL only — no prose, no fragments, no omitted clauses.",
+                ),
+                max_retries,
+            )
 
         if connectors is None:
             return {"error": "No datasource registry available."}

@@ -781,6 +781,98 @@ draft:
         assert "sum_of_grades" in (final["clarification_question"] or "")
         assert llm.calls == 3  # intent + query_sketch + refuse 草稿,无 gen_sql/reflect
 
+    async def test_plan_contradiction_replans_bounded(self, tmp_path, sqlite_registry, catalog):
+        """图级:同一矛盾连发 → 有界重规划(MAX_PLAN_REPLANS=2)后落回拒绝,
+        不是 error,也不是无界自旋。LLM 调用数精确钉住(5 次)。
+
+        路径:query_sketch(错)→ analyze_error(零 LLM,回滚重规划)→
+        query_sketch(仍错)→ analyze_error(同一失败 → 阶梯升档 schema_linking)→
+        schema_linking → query_sketch(第三错,重规划额度用尽 → refusal)→ refuse。
+        """
+        from trove.services.kb.service import KbService
+        from trove.services.semantic_layer.provider import SemanticLayerProvider
+        from trove.workflow.graphs import build_graphs
+        from trove.workflow.nodes.query_sketch import MAX_PLAN_REPLANS
+        from trove.workflow.state import WorkflowState
+
+        kb = KbService(tmp_path / "proj")
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
+        # 两个数据集 + 声明关系:teachers 已声明,计划却只带 students ——
+        # 0483 形状(模型里有、计划没带)= 计划自相矛盾,不是模型缺口。
+        (kb.semantics_path("demo")).write_text(
+            "semantic_model:\n"
+            "- name: school\n"
+            "  datasets:\n"
+            "  - name: students\n"
+            "    source: students\n"
+            "    primary_key: [id]\n"
+            "    fields:\n"
+            "    - name: id\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}\n"
+            "    - name: grade\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}\n"
+            "    - name: teacher_id\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: teacher_id}]}\n"
+            "  - name: teachers\n"
+            "    source: teachers\n"
+            "    primary_key: [teacher_id]\n"
+            "    fields:\n"
+            "    - name: teacher_id\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: teacher_id}]}\n"
+            "    - name: name\n"
+            "      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}\n"
+            "  relationships:\n"
+            "  - name: students_to_teachers\n"
+            "    from: students\n"
+            "    to: teachers\n"
+            "    from_columns: [teacher_id]\n"
+            "    to_columns: [teacher_id]\n"
+            "  metrics:\n"
+            "  - name: average grade\n"
+            "    expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(students.grade)}]}\n"
+            "  - name: number of students\n"
+            "    expression: {dialects: [{dialect: ANSI_SQL, expression: COUNT(students.id)}]}\n",
+            encoding="utf-8",
+        )
+        provider = SemanticLayerProvider(
+            tmp_path / "semantic", "demo",
+            kb_semantics_path=kb.semantics_path("demo"),
+            table_exists=lambda t: True, dialect="sqlite",
+        )
+        # 条件引用 teachers.name,但 plan.tables 只有 students → unreachable_table
+        plan = {"tables": ["students"], "aggregation": "count(students.id)",
+                "answer_columns": ["count(students.id)"],
+                "conditions": [{"field": "teachers.name", "op": "=", "value": "Smith"}]}
+        draft = """\
+draft:
+  kind: field
+  name: students.ghost_column
+  expression: ghost_column
+  synonyms: [ghost]
+  definition: a column that is not in the physical table
+  datatype: String
+"""
+        # intent + query_sketch ×3(每次都被脚本喂回同一份错计划)+ refuse 草稿
+        llm = ExhaustingLLM(["query", json.dumps(plan), json.dumps(plan),
+                             json.dumps(plan), draft])
+        graphs = build_graphs(
+            self._services(llm, catalog, sqlite_registry, kb, provider),
+            multi_candidate=False, query_sketch=True, agentic=False,
+        )
+        final = await graphs["reflection"].ainvoke(WorkflowState(
+            session_id="s1", question="how many students does teacher Smith have?",
+            lang="en", datasource="demo"))
+        # 额度用尽 → 拒绝(不是 error),miss 分因仍是结构性硬 MISS
+        assert final["error"] == ""
+        assert final["refusal"]["reason"] == "uncovered"
+        assert final["refusal"]["compile_miss"]["reason"] == "unreachable_table"
+        assert final["plan_replan_rounds"] == MAX_PLAN_REPLANS
+        # 终态卫生:拒绝轮不交付旧产物
+        assert final["sql"] == ""
+        assert final["row_count"] == -1
+        assert llm.calls == 5
+
     async def test_covered_plan_not_routed_to_refuse(self):
         """覆盖内计划 → _route_after_query_sketch 走 gen 链入口(不误拒)。"""
         from trove.workflow.graphs import _route_after_query_sketch
@@ -829,3 +921,118 @@ draft:
 
         error = WorkflowState(session_id="s1", question="确认", error="boom")
         assert _route_after_confirm_draft(error) == "output"
+
+    async def test_plan_replan_routes_to_analyze_error(self):
+        """计划自相矛盾的重规划信号 → analyze_error(零 LLM 诊断 + 回滚重规划)。
+
+        判定必须走 ``plan_replan_pending`` 而不是 ``error_feedback``:feedback
+        会一直挂在 state 上直到执行成功才被清,按它判定会让「重规划成功」的
+        下一跳误入 analyze_error。
+        """
+        from trove.workflow.graphs import _route_after_query_sketch
+        from trove.workflow.state import WorkflowState
+
+        replan = WorkflowState(
+            session_id="s1", question="q",
+            plan_replan_pending=True, error_feedback="[ERR:PLAN_CONTRADICTION] ...")
+        assert _route_after_query_sketch(replan) == "analyze_error"
+
+        # 陈旧 feedback(上一轮错误还在途)+ 未发射重规划 → 不进 analyze_error
+        stale = WorkflowState(
+            session_id="s1", question="q",
+            plan_replan_pending=False, error_feedback="[ERR:SQL_MISSING] ...")
+        assert _route_after_query_sketch(stale) == "gen_retrieve"
+
+        # 拒绝优先于重规划信号(拒绝是终态,不看在途信号)
+        both = WorkflowState(
+            session_id="s1", question="q",
+            refusal={"reason": "uncovered", "question": "q"},
+            plan_replan_pending=True, error_feedback="[ERR:PLAN_CONTRADICTION] ...")
+        assert _route_after_query_sketch(both) == "refuse"
+
+
+# 拒绝轮**不交付任何查询产物**:前几轮失败留下的 sql/rows/compiled_sql 是
+# 用户从未见过的旧 SQL,不清会走 output 的 SQL 块渲染、进台账,并让评测判在
+# 旧 SQL 上(0492/0495 实测)。
+_STALE_DELIVERY = {
+    "sql": "SELECT 1",
+    "rows": [[1]],
+    "columns": ["x"],
+    "row_count": 1,
+    "execution_time_ms": 12.5,
+    "compiled": True,
+    "compiled_sql": "SELECT 1",
+    "compile_partial": True,
+    "compile_misses": [{"reason": "enum_value_unresolved", "component": "loan.status"}],
+    "contract": {"v": 1},
+    "error_feedback": "stale correction",
+    "plan_replan_pending": True,
+    # 保留项:草稿生成要读 plan,miss_reason 是拒绝归因的源
+    "plan": "Count loans per client (rendered plan text)",
+    "plan_json": {"tables": ["loan"]},
+    "compile_meta": {"outcome": "miss", "miss_reason": "unreachable_table"},
+}
+
+_HYGIENE_ZEROED = {
+    "sql": "", "rows": [], "columns": [], "row_count": -1,
+    "execution_time_ms": 0.0, "compiled": False, "compiled_sql": "",
+    "compile_partial": False, "compile_misses": [], "contract": None,
+    "error_feedback": "", "plan_replan_pending": False,
+}
+
+
+def _assert_delivery_zeroed(out: dict) -> None:
+    for key, want in _HYGIENE_ZEROED.items():
+        assert out[key] == want, f"{key} 未清零: {out.get(key)!r}"
+    # plan / plan_json / compile_meta 不进 update = 保留 state 原值
+    for kept in ("plan", "plan_json", "compile_meta"):
+        assert kept not in out, f"{kept} 不应被拒绝轮覆盖"
+
+
+class TestRefusalStateHygiene:
+    async def test_no_model_clears_delivery_fields(self, kb):
+        node = make_refuse(ScriptedLLM([]), AgentConfig(target="mock/model"), kb=kb)
+        out = await node(make_state(no_model=True, **_STALE_DELIVERY))
+        _assert_delivery_zeroed(out)
+        assert out["refusal"]["reason"] == "no_model"
+
+    async def test_plain_refusal_clears_delivery_fields(self, kb):
+        node = make_refuse(
+            ScriptedLLM(["not yaml at all"]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "q", "plan": {}},
+            **_STALE_DELIVERY,
+        ))
+        _assert_delivery_zeroed(out)
+        assert out["refusal"]["reason"] == "uncovered"
+        assert out["auto_confirmed"] is False
+
+    async def test_auto_confirm_clears_delivery_fields(self, kb, sqlite_registry):
+        """重答不复用旧产物:自确认轮同样清零交付字段(plan 保留给重答)。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+
+        seed = TestAutoConfirmPhysicalColumn()
+        seed._seed_students_semantics(kb)
+        node = make_refuse(
+            ScriptedLLM([TestAutoConfirmPhysicalColumn.FIELD_DRAFT]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(seed._students_model()),
+            connectors=sqlite_registry,
+        )
+        out = await node(make_state(
+            datasource="test_db",
+            refusal={"reason": "uncovered", "question": "counties of students?",
+                     "plan": {"tables": ["students"], "answer_columns": ["students.county"]}},
+            **_STALE_DELIVERY,
+        ))
+        assert out["auto_confirmed"] is True
+        _assert_delivery_zeroed(out)
+        # 重答信号完整:替换问题 + intent=query + 清 refusal
+        assert out["intent"] == "query"
+        assert out["question"] == "counties of students?"
+        assert out["refusal"] is None
+        assert SemanticManager(kb).drafts("test_db")["pending"] == []
