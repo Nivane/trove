@@ -14,7 +14,14 @@ from trove.workflow.state import WorkflowState
 
 
 def hit(**kw):
-    defaults = dict(question="", sql="", tags=[], template=True)
+    """一条快径模板 fixture。
+
+    **默认 certified**:本文件的用例测的是匹配/守卫语义(形状、表锚、族证据、
+    残条件),前提都是「这条模板合法、够格执行」;治理门(draft 不得快径执行)
+    有自己的一组 ``TestGovernanceGate``,不靠这里隐式覆盖。要造一条未认证
+    模板,显式传 ``status="draft"``(``ExampleHit`` 的缺省值)。
+    """
+    defaults = dict(question="", sql="", tags=[], template=True, status="certified")
     defaults.update(kw)
     return ExampleHit(**defaults)
 
@@ -434,6 +441,100 @@ class TestZh:
         assert match_fast_template("各地区的平均工资", [plain], ["district"]) is None
 
 
+# ── 治理门:未认证模板不得执行 ─────────────────────────
+
+
+class TestGovernanceGate:
+    """快径执行门槛 = ``status == "certified"``。
+
+    快径把模板 SQL 当**权威答案**直接交付(跳过生成与裁决),而 ``status``
+    的缺省是 draft —— kb init 的自动产物正是这个形态(没有 ``governance``
+    块 = 没人背书)。2026-10-02 P1 评测实证:32 题里快径命中 4 次、4 次全
+    有害,0476 丢两个条件交付错答且无形状规则可拦。四重防错配挡错配,挡不住
+    「模板本身就是错的」;人工背书是唯一能挡的。
+    """
+
+    DRAFT_BARE = hit(
+        question="How many records are in the students table?",
+        sql="SELECT COUNT(*) FROM students",
+        tags=["students", "count", "aggregation"],
+        status="draft",   # 完美匹配,但没人背书
+    )
+
+    def test_draft_template_never_matches_even_on_a_perfect_question(self):
+        """① 问题与草稿模板逐字吻合 → 仍不命中(交回正常链路)。"""
+        assert match_fast_template(
+            "How many records are in the students table?", [self.DRAFT_BARE], ["students"],
+        ) is None
+
+    def test_deprecated_template_never_matches(self):
+        """deprecated 与 draft 同待遇:不是 certified 就进不了门。"""
+        old = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students",
+            tags=["students", "count", "aggregation"],
+            status="deprecated",
+        )
+        assert match_fast_template(
+            "How many students are there?", [old], ["students"],
+        ) is None
+
+    def test_unknown_status_never_matches(self):
+        """坏元数据(认不出的取值)同样不命中 —— 认不出就没有资格声称认证。"""
+        weird = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students",
+            tags=["students", "count", "aggregation"],
+            status="CERTIFIED",   # 大小写拼错:governance_of 不归一,读端也不归一
+        )
+        assert match_fast_template(
+            "How many students are there?", [weird], ["students"],
+        ) is None
+
+    def test_scan_continues_past_draft_to_certified(self):
+        """跳过 ≠ 整题 miss:草稿挡不住排在它后面的 certified 模板。"""
+        m = match_fast_template(
+            "How many students are there?",
+            [self.DRAFT_BARE, BARE],   # 同一条问句的草稿 + 认证版
+            ["students"],
+        )
+        assert m and m["sql"] == BARE.sql
+        assert m["status"] == "certified"
+
+    def test_certified_status_passes_through(self):
+        """② 命中时 status 照旧随结果交出(下游标注答案来源靠它)。"""
+        m = match_fast_template("How many students are there?", [BARE], ["students"])
+        assert m and m["status"] == "certified"
+
+    def test_residual_guard_still_fires_on_a_certified_template(self):
+        """③ D2 残条件守卫不回退:认证只解决「有没有人背书」,不解决「条件全不全」。
+
+        一条 certified 的枚举模板照样不许抢答带额外条件的问题 —— 治理门是
+        在四重防错配**之外**加的一道,不是替换它们。
+        """
+        assert match_fast_template(
+            "How many students are male and staying in East Bohemia?",
+            [ENUM], ["students"],   # ENUM 现为 certified(fixture 缺省)
+        ) is None
+
+    def test_certified_does_not_waive_the_shape_gate(self):
+        """背书只管「有没有人验过」,不豁免结构与条件守卫。
+
+        认证过的坏形状(JOIN/N 聚合)照样进不了快径 —— 治理门是**加**一道,
+        不是替换四重防错配。反过来说,审批人签了字也不能让快径执行一条
+        结构上表达不了问题的 SQL。
+        """
+        certified_join = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students JOIN counties ON 1=1",
+            tags=["students", "count", "aggregation"],
+            status="certified",
+        )
+        assert match_fast_template(
+            "How many students are there?", [certified_join], ["students"],
+        ) is None
+
+
 # ── 节点 gate(修正轮 / 意图 / 配置 kill-switch) ─────────
 
 
@@ -507,6 +608,65 @@ class TestNodeGates:
         assert out["complexity"] == "simple"
         assert out["kb_hits"][0]["kind"] == "template"
         assert out["dialect"] == "sqlite"
+
+    async def test_draft_template_never_executes(self):
+        """① 草稿模板完美匹配 → 节点 miss 走正常链路(不写任何命中标记)。
+
+        节点级复验纯函数的治理门:``kb_hits`` 里那条记录是「本轮 SQL 从哪来」
+        的证据,草稿既然没执行,就一个字都不该留下。
+        """
+        draft = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students",
+            tags=["students", "count", "aggregation"],
+            status="draft",
+        )
+        out = await run_node(node_state(matched_tables=["students"]), kb=FakeKB([draft]))
+        assert out == {}
+
+    async def test_certified_status_lands_in_kb_hits(self):
+        """② certified 模板照常命中,status 透传给下游标注(answer_source)。"""
+        out = await run_node(node_state(matched_tables=["students"]))
+        assert out["fast_path"] is True
+        assert out["kb_hits"][0]["status"] == "certified"
+
+    async def test_scan_continues_from_draft_to_certified(self):
+        """草稿在前、认证在后:命中后者(跳过不是整题 miss)。"""
+        draft = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students",
+            tags=["students", "count", "aggregation"],
+            status="draft",
+        )
+        out = await run_node(
+            node_state(matched_tables=["students"]), kb=FakeKB([draft, BARE]),
+        )
+        assert out["fast_path"] is True
+        assert out["sql"] == BARE.sql
+        assert out["kb_hits"][0]["status"] == "certified"
+
+    async def test_governance_skip_still_clears_stale_hit(self):
+        """③ D1 不回退:治理门跳过也是 miss,同样清掉上一轮的命中标记。
+
+        「模板全被治理门跳过」与其它 miss 分支同路(``_miss``),不是裸 ``{}``
+        —— 状态里若留着上一轮的 ``fast_path``/旧 SQL(重试重入 / 恢复自
+        checkpoint),不清就会被路由器按「本轮命中」原样重放(2026-10-02 P1
+        评测 Q1/Q3)。这里**不带** error_feedback:走的是治理门那一支,
+        修正轮那一支由 ``test_correction_round_clears_stale_hit`` 单独钉住。
+        """
+        draft = hit(
+            question="How many records are in the students table?",
+            sql="SELECT COUNT(*) FROM students",
+            tags=["students", "count", "aggregation"],
+            status="draft",
+        )
+        state = node_state(
+            matched_tables=["students"],
+            fast_path=True, sql="SELECT COUNT(*) FROM students WHERE gender = 'M'",
+        )
+        out = await run_node(state, kb=FakeKB([draft]))
+        assert out.get("fast_path") is False
+        assert "sql" not in out
 
     async def test_correction_round_never_fast_paths(self):
         state = node_state(

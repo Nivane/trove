@@ -80,7 +80,16 @@ def _loan_model() -> SemanticModel:
 
 
 def _hit(question: str, sql: str, table: str = "loan") -> ExampleHit:
-    return ExampleHit(question=question, sql=sql, tags=[table], template=True)
+    """一条**会命中**的快径模板 fixture。
+
+    certified 是刻意的:``diagnose_row`` 调的是生产匹配函数
+    (``match_fast_template``),而快径自 2026-10-02 起只执行人工认证过的模板
+    —— 缺省 draft 会让每条 fixture 都变成 ``FAST_MISSED``,这一组就全在测
+    「快径没命中」这一个 (正确的) 新常态,而不是它们各自要测的口径分歧。
+    """
+    return ExampleHit(
+        question=question, sql=sql, tags=[table], template=True, status="certified",
+    )
 
 
 # ── 1. 什么算「一致」 ────────────────────────────────────
