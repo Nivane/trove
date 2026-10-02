@@ -2201,7 +2201,7 @@ class SessionManager:
         usage = summary.get("token_usage") or {}
         bucket = acc.setdefault("token_usage", {})
         for k, v in usage.items():
-            if v:
+            if v is not None:  # 键存在 = 该子任务测量过(报 0 命中不许被吞)
                 bucket[k] = bucket.get(k, 0) + int(v)
 
     @staticmethod

@@ -437,6 +437,7 @@ async def run_agent_loop(
     steering_window: int = 3,
     cache_prefix: str | None = None,
     prompt_caching: bool = True,
+    soft_rounds_budget: int | None = None,
 ) -> dict[str, Any]:
     """Run a tool-calling loop until the model returns content without calls.
 
@@ -474,11 +475,17 @@ async def run_agent_loop(
             Providers without explicit caching (OpenAI etc.) have the
             markers stripped by the gateway — behavior-equivalent, no
             caching benefit.
+        soft_rounds_budget: **软**轮预算(绝对轮号;需 1 ≤ v < max_rounds,
+            否则静默关)。从第 v 轮起每轮追加一条收尾提示(走 steering
+            同款 user 消息通道),引导模型尽快 finish —— **不置 guard_hit**:
+            模型看提示后自己结束 = 模型自己结束的,不是护栏降级;最后
+            一轮(≥ max_rounds-1)升级为"立即 finish"。命中记入
+            ``soft_rounds_hits``。目标是压长尾轮次,与硬护栏正交。
 
     Returns:
         {"content", "rounds", "guard_hit", "finish_tool", "budget_why",
-         "steering_hits", "tool_calls", "total_tokens", "tool_history",
-         "transcript", "reasoning"}
+         "steering_hits", "soft_rounds_hits", "tool_calls", "total_tokens",
+         "first_input_tokens", "tool_history", "transcript", "reasoning"}
     """
     own_registry = registry is None
     if registry is None:
@@ -526,12 +533,20 @@ async def run_agent_loop(
     transcript_parts: list[str] = []
     reasoning_parts: list[str] = []
     steering_hits: list[str] = []
+    soft_rounds_hits: list[str] = []
     total_tokens = 0
     completion_tokens = 0
     first_input_tokens = 0  # 首轮 prompt_tokens(调用方做估算校准用)
     start_time = time.monotonic()
     recent_sigs: list[str] = []
     consumed_rounds = 0
+    # 软轮预算校验:越界一律静默关(硬护栏已覆盖这些情形)。
+    soft_budget = (
+        soft_rounds_budget
+        if soft_rounds_budget is not None and 1 <= soft_rounds_budget < max_rounds
+        else None
+    )
+    soft_nudge: dict[str, Any] | None = None  # 上一条软提示(注入前撤下)
 
     def _round_defs() -> list[dict[str, Any]] | None:
         """每轮工具定义:注册表路径每轮重取——懒激活(③ catalog 发现)
@@ -646,6 +661,7 @@ async def run_agent_loop(
             "finish_tool": answered,
             "budget_why": budget_why,
             "steering_hits": steering_hits,
+            "soft_rounds_hits": soft_rounds_hits,
             "tool_calls": len(tool_history),
             "total_tokens": total_tokens or None,
             "first_input_tokens": first_input_tokens or None,
@@ -695,7 +711,8 @@ async def run_agent_loop(
             guard_hit = True
             budget_why = "tokens"
             logger.warning(
-                "Agent loop hit token budget (%d>=%d)", total_tokens, max_total_tokens,
+                "Agent loop hit token budget (%d>=%d)",
+                completion_tokens, max_total_tokens,
             )
             break
 
@@ -825,6 +842,33 @@ async def run_agent_loop(
                 messages.append({"role": "user", "content": steer})
                 steering_hits.append(steer)
                 logger.info("Agent loop steering injected (%s)", window[0].split("|")[0])
+
+        # 软轮预算:接近硬护栏时**提示**模型收尾(steering 同款通道)。软
+        # 提示不置 guard_hit —— 模型看提示后自己 finish 是正常结束,不该
+        # 被 graphs 的降级分支误判;护栏仍只由 time/token/rounds 触发。
+        # 每轮至多一条(注入前撤下上一条,防过期的"还剩 N 轮"堆积)。
+        if soft_budget is not None and round_no >= soft_budget:
+            if soft_nudge is not None:
+                messages[:] = [m for m in messages if m is not soft_nudge]
+            if round_no >= max_rounds - 1:
+                soft = (
+                    "[budget] Final round — call the finish tool NOW with your "
+                    "best complete SQL; do not start new exploration."
+                )
+            else:
+                soft = (
+                    f"[budget] {max_rounds - round_no} round(s) left before the "
+                    "safety guard. Wrap up: if you have validated SQL, call the "
+                    "finish tool now; otherwise take the most direct remaining "
+                    "step and then finish."
+                )
+            soft_nudge = {"role": "user", "content": soft}
+            messages.append(soft_nudge)
+            soft_rounds_hits.append(soft)
+            logger.info(
+                "Agent loop soft round nudge injected (round %d/%d)",
+                round_no, max_rounds,
+            )
 
     # 护栏:模型持续调用工具未收敛——返回累积内容并标记原因
     guard_hit = True

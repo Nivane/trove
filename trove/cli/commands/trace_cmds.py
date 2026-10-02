@@ -150,10 +150,16 @@ def _format_stats(summary: dict) -> str:
         parts.append(f"耗时 {elapsed}ms")
     usage = summary.get("token_usage") or {}
     if usage:
-        parts.append(
+        from trove.llm.token_accounting import cache_suffix
+
+        line = (
             f"tokens {usage.get('prompt', 0)}+{usage.get('completion', 0)}="
             f"{usage.get('total', 0)}"
         )
+        cache = cache_suffix(usage)
+        if cache:
+            line += f" · {cache}"
+        parts.append(line)
     return (" · " + " · ".join(parts)) if parts else ""
 
 

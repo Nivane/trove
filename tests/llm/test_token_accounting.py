@@ -2,7 +2,14 @@
 
 import pytest
 
-from trove.llm.token_accounting import add, get, pop, reset
+from trove.llm.token_accounting import (
+    add,
+    cache_hit_tokens,
+    cache_suffix,
+    get,
+    pop,
+    reset,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -208,3 +215,93 @@ class TestRunSummary:
         meta_usage = assistant[-1].metadata.get("token_usage")
         assert meta_usage is not None
         assert meta_usage["total"] == usage["total"]
+
+
+class TestCacheAccounting:
+    """缓存命中计量:报 0 ≠ 没测量;两个拼写取一不求和(litellm 对
+    DeepSeek 会同时设 cached_tokens 与 cache_read_input_tokens,同一个数)。"""
+
+    def test_reported_zero_kept_absent_stays_absent(self):
+        add("r1", {"total_tokens": 10, "cached_tokens": 0})  # 测量过 = 0 命中
+        add("r1", {"total_tokens": 10})                      # 这次没测量
+        bucket = get("r1")
+        assert bucket == {
+            "prompt": 0, "completion": 0, "total": 20, "cached_tokens": 0,
+        }
+        assert cache_hit_tokens(bucket) == 0  # 键在 → 测过(值为 0)
+
+        add("r2", {"total_tokens": 10})
+        assert "cached_tokens" not in get("r2")
+        assert cache_hit_tokens(get("r2")) is None  # 键缺席 → 未测量
+
+    def test_all_three_fields_accumulate(self):
+        add("r1", {"total_tokens": 10, "cache_read_input_tokens": 100,
+                   "cache_creation_input_tokens": 7})
+        add("r1", {"total_tokens": 10, "cache_read_input_tokens": 50,
+                   "cache_creation_input_tokens": 0})
+        bucket = get("r1")
+        assert bucket["cache_read_input_tokens"] == 150
+        assert bucket["cache_creation_input_tokens"] == 7
+
+    def test_hit_takes_one_spelling_never_sums(self):
+        # DeepSeek 经 litellm:两个拼写指向同一个命中数,求和会翻倍
+        bucket = {"prompt": 100, "cached_tokens": 80, "cache_read_input_tokens": 80}
+        assert cache_hit_tokens(bucket) == 80
+        # 只有 Anthropic 拼写 → 回落
+        assert cache_hit_tokens({"prompt": 100, "cache_read_input_tokens": 30}) == 30
+        # 写缓存不是命中
+        assert cache_hit_tokens({"prompt": 100, "cache_creation_input_tokens": 30}) is None
+
+    def test_suffix(self):
+        assert cache_suffix({"prompt": 1000, "cached_tokens": 800}) == "cache 800(80%)"
+        assert cache_suffix({"prompt": 1000, "cached_tokens": 0}) == "cache 0(0%)"
+        assert cache_suffix({"prompt": 1000}) == ""       # 未测量
+        assert cache_suffix({"cached_tokens": 5}) == ""   # 无分母
+        assert cache_suffix(None) == ""
+
+    def test_usage_dict_reported_zero_vs_absent(self):
+        """源头三态:provider 报 0 → 键在且为 0;没报/None → 键缺席。"""
+        from types import SimpleNamespace
+
+        from trove.llm.gateway import _usage_dict
+
+        measured = _usage_dict(SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=100, completion_tokens=10, total_tokens=110,
+            cache_read_input_tokens=0, cache_creation_input_tokens=None,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+        )))
+        assert measured["cache_read_input_tokens"] == 0
+        assert "cache_creation_input_tokens" not in measured
+        assert measured["cached_tokens"] == 0
+
+        unmeasured = _usage_dict(SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=100, completion_tokens=10, total_tokens=110,
+        )))
+        assert "cache_read_input_tokens" not in unmeasured
+        assert "cache_creation_input_tokens" not in unmeasured
+        assert "cached_tokens" not in unmeasured
+
+        no_details = _usage_dict(SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=1, completion_tokens=1, total_tokens=2,
+            prompt_tokens_details=None,
+        )))
+        assert "cached_tokens" not in no_details
+        assert _usage_dict(SimpleNamespace(usage=None)) == {}
+
+    def test_deepseek_double_spelling_flows_end_to_end(self):
+        """源头两拼写 → 累计器 → 命中/后缀,全程取一(不翻倍)。"""
+        from types import SimpleNamespace
+
+        from trove.llm.gateway import _usage_dict
+
+        usage = _usage_dict(SimpleNamespace(usage=SimpleNamespace(
+            prompt_tokens=1000, completion_tokens=10, total_tokens=1010,
+            cache_read_input_tokens=800, cache_creation_input_tokens=0,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=800),
+        )))
+        add("r1", usage)
+        bucket = get("r1")
+        assert bucket["cached_tokens"] == 800
+        assert bucket["cache_read_input_tokens"] == 800
+        assert cache_hit_tokens(bucket) == 800          # 不是 1600
+        assert cache_suffix(bucket) == "cache 800(80%)"

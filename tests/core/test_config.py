@@ -424,6 +424,26 @@ class TestPerNodeModel:
         assert cfg.model_for_node("query_sketch", "complex") == "openai/gpt-4o-mini"
 
 
+class TestGenSqlSoftRounds:
+    def test_code_default_is_off(self):
+        """代码默认关(0):库嵌入方与测试零行为变化,本仓走 conf 写 5。"""
+        assert AgentConfig().gen_sql_soft_rounds == 0
+
+    def test_config_loader_parses_soft_rounds(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n  gen_sql_soft_rounds: 5\n",
+            encoding="utf-8",
+        )
+        assert ConfigLoader.load_agent_config(str(conf)).gen_sql_soft_rounds == 5
+
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n  gen_sql_soft_rounds: -3\n",
+            encoding="utf-8",
+        )
+        assert ConfigLoader.load_agent_config(str(conf)).gen_sql_soft_rounds == 0
+
+
 class TestHomeNormalization:
     """home 必须是展开后的绝对路径。
 

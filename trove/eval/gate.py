@@ -43,6 +43,7 @@ from trove.eval.replay import zero_answer as _zero_answer
 HIGHER_BETTER = {
     "ex", "compile_hit", "completion", "self_consistency", "first_pass",
     "gold_match", "recovery", "consensus_rate", "avg_confidence",
+    "cache_hit_rate",
     "mrr", "recall@k", "ndcg@k",
 }
 #: 更低更好的指标(成本/失败类)
@@ -68,6 +69,9 @@ DEFAULT_TOLERANCE: dict[str, str] = {
     "mrr": "0.02",
     "recall@k": "0.02",
     "ndcg@k": "0.02",
+    # 缓存命中率:新观测,早期录制的缓存计量可能不全 → 相对容差放宽;
+    # 抖动期可用 `--ignore cache_hit_rate` 作急停阀(不删指标,先摘门)。
+    "cache_hit_rate": "0.20-r",
     "avg_tokens": "0.10-r",
     "total_tokens": "0.10-r",
     "avg_retries": "0.20",
@@ -229,6 +233,14 @@ def metrics_from_entries(entries: Iterable[dict[str, Any]]) -> dict[str, float]:
     if totals:
         metrics["total_tokens"] = float(total_tokens)
         metrics["avg_tokens"] = round(avg_tokens, 1)
+    # 缓存命中率:与 score_replay 走**同一个函数**(import 复用,不是
+    # 抄一遍)——门与基线必须同一份口径,这正是本文件开头那段注释的
+    # 教训。仅测量过才发键:旧录制无 cache 键 → 不发,冻结基线零位移。
+    from trove.eval.replay import cache_hit_stats
+
+    cache_stats = cache_hit_stats(rows)
+    if cache_stats is not None:
+        metrics["cache_hit_rate"] = round(float(cache_stats["cache_hit_rate"]), 4)
     # 墙钟:与 score_replay 同规则(有条目带 elapsed_ms 才发键)。
     # 冻结基线无 elapsed → 不发;补录后自动入基线并被门覆盖。
     elapsed = [int(e.get("elapsed_ms") or 0) for e in rows]

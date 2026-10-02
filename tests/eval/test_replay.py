@@ -8,6 +8,7 @@ import pytest
 
 from trove.eval.replay import (
     append_entry,
+    cache_hit_stats,
     completed,
     first_pass,
     format_entry,
@@ -290,12 +291,85 @@ class TestRecordIo:
         assert json.dumps(e, ensure_ascii=False)  # 可序列化
 
 
+class TestCacheMetrics:
+    """缓存命中指标:只统计**测量过**的条目;旧录制无 cache 键 → 整个
+    指标缺席(不是 0%),门/基线才不会被"没测"误判成"没命中"。"""
+
+    def test_unmeasured_entries_emit_no_cache_keys(self):
+        rows = [_entry(), _entry()]
+        assert cache_hit_stats(rows) is None
+        s = score_replay(rows)
+        assert "cache_hit_rate" not in s
+        assert "cache_hit_rate" not in scorecard_metrics(s)
+
+    def test_rate_only_over_measured_entries(self):
+        rows = [
+            # 测量过:100 prompt 里命中 80
+            _entry(tokens={"prompt": 100, "completion": 10, "total": 110,
+                           "cached_tokens": 80}),
+            # 测量过但 0 命中:进分母、不进分子
+            _entry(tokens={"prompt": 100, "completion": 10, "total": 110,
+                           "cached_tokens": 0}),
+            # 未测量:完全不入账(否则 rate 被稀释成 0.2)
+            _entry(tokens={"prompt": 300, "completion": 10, "total": 310}),
+        ]
+        stats = cache_hit_stats(rows)
+        assert stats == {
+            "cache_hit_rate": 0.4, "cache_hit_tokens": 80,
+            "cache_prompt_tokens": 200,
+        }
+        s = score_replay(rows)
+        assert s["cache_hit_rate"] == 0.4
+        assert scorecard_metrics(s)["cache_hit_rate"] == 0.4
+
+    def test_measured_zero_is_a_rate_not_absent(self):
+        stats = cache_hit_stats([
+            _entry(tokens={"prompt": 100, "completion": 5, "total": 105,
+                           "cached_tokens": 0}),
+        ])
+        assert stats == {"cache_hit_rate": 0.0, "cache_hit_tokens": 0,
+                         "cache_prompt_tokens": 100}
+
+    def test_two_spellings_never_summed(self):
+        # litellm 对 DeepSeek 同时设两个拼写(同一个命中数)→ 取一
+        stats = cache_hit_stats([
+            _entry(tokens={"prompt": 100, "completion": 5, "total": 105,
+                           "cached_tokens": 60,
+                           "cache_read_input_tokens": 60}),
+        ])
+        assert stats["cache_hit_tokens"] == 60  # 不是 120
+
+    def test_prompt_zero_measured_is_none(self):
+        assert cache_hit_stats([
+            _entry(tokens={"prompt": 0, "completion": 5, "total": 5,
+                           "cached_tokens": 0}),
+        ]) is None
+
+    def test_local_copy_pinned_to_token_accounting(self):
+        """replay 不 import trove(独立回放),缓存字段靠测试钉住同源。"""
+        from trove.eval import replay as replay_mod
+        from trove.llm.token_accounting import CACHE_FIELDS
+
+        assert replay_mod._CACHE_FIELDS == CACHE_FIELDS
+
+
 class TestRenderScorecard:
     def test_scorecard_contains_key_metrics(self):
         s = score_replay([_entry(verdict="OK")] * 2)
         text = render_scorecard(s)
         assert "完成率" in text and "token" in text and "失败恢复率" in text
         assert "自洽率" in text and "correctness" not in text
+
+    def test_cache_line_only_when_measured(self):
+        unmeasured = render_scorecard(score_replay([_entry()]))
+        assert "缓存命中" not in unmeasured
+
+        measured = render_scorecard(score_replay([
+            _entry(tokens={"prompt": 100, "completion": 10, "total": 110,
+                           "cached_tokens": 80}),
+        ]))
+        assert "缓存命中(cache)" in measured
+        assert "80.0%" in measured
 
 
 class TestScorecardMetrics:

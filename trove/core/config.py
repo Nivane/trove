@@ -293,6 +293,11 @@ class AgentConfig:
     # provider 由 gateway 剥掉断点(行为等价,只是没有缓存收益)。默认开——
     # 纯收益开关,provider 不支持时自动 no-op。
     prompt_caching: bool = True
+    # 生成 agent 循环的**软**轮预算(绝对轮号,0/负 = 关):到达该轮后每轮
+    # 追加一条"收尾"提示引导模型尽快 finish。软提示**不置 guard_hit** ——
+    # 模型看提示后自己结束 = 模型结束的,不该被降级分支误判;硬护栏
+    # (max_rounds/time/token)原样。本仓 conf/agent.yml 写 5(max_rounds=8)。
+    gen_sql_soft_rounds: int = 0
     # 上下文预算覆盖(可空 = 用内置默认):gen prompt 可选块(few-shot/术语/
     # 教训/计划/历史)与 schema 段的 token 上限,按复杂度分档 simple/standard/
     # complex。配置时整体覆盖对应档位,未配置项回落内置默认。示例:
@@ -618,6 +623,8 @@ class ConfigLoader:
             explain_hard_max_rows=max(
                 1000, int(agent_section.get("explain_hard_max_rows", 1_000_000_000))),
             prompt_caching=agent_section.get("prompt_caching", True),
+            gen_sql_soft_rounds=max(
+                0, int(agent_section.get("gen_sql_soft_rounds", 0))),
             context_budget_tokens={
                 str(k): max(0, int(v))
                 for k, v in (agent_section.get("context_budget_tokens", {}) or {}).items()

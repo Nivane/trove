@@ -152,12 +152,64 @@ def first_pass(e: dict[str, Any]) -> bool:
     return e.get("verdict") == "MATCH" and not tried_recovery(e)
 
 
+#: 缓存字段的本地副本:**replay 不 import 任何 trove 模块**(gate 依赖
+#: replay,反向依赖会成环;离线回放要能脱离 runtime 独立跑)。键序与
+#: ``trove.llm.token_accounting.CACHE_FIELDS`` 相同,由测试钉住相等 ——
+#: 缓存指标跨引擎必须同源,漂移了门与基线就对不上。
+_CACHE_FIELDS = (
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cached_tokens",
+)
+
+
 def _tokens(e: dict[str, Any]) -> dict[str, int]:
     t = e.get("tokens") or {}
-    return {
+    out = {
         "prompt": int(t.get("prompt") or 0),
         "completion": int(t.get("completion") or 0),
         "total": int(t.get("total") or 0),
+    }
+    for field in _CACHE_FIELDS:
+        value = t.get(field)
+        if value is not None:  # 键存在 = 录制时测量过(报 0 也留)
+            out[field] = int(value)
+    return out
+
+
+def _cache_hit_tokens(bucket: dict[str, int]) -> int | None:
+    """命中 token:``cached_tokens`` 优先、退 ``cache_read_input_tokens``
+    (同一命中数的两个拼写,取一不求和);都不在 = 未测量 → None。"""
+    if bucket.get("cached_tokens") is not None:
+        return bucket["cached_tokens"]
+    if bucket.get("cache_read_input_tokens") is not None:
+        return bucket["cache_read_input_tokens"]
+    return None
+
+
+def cache_hit_stats(entries: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """缓存命中统计(rate = Σ命中/Σprompt,仅算**测量过**的条目)。
+
+    没有任何测量过的条目、或 prompt 总量为 0 → None:不仅发"测不了"的
+    0%,与 first_pass「无判题不发键」同一条规则。
+    """
+    hit_total = 0
+    prompt_total = 0
+    measured = 0
+    for e in entries:
+        t = _tokens(e)
+        hit = _cache_hit_tokens(t)
+        if hit is None:
+            continue
+        measured += 1
+        hit_total += hit
+        prompt_total += t["prompt"]
+    if not measured or prompt_total <= 0:
+        return None
+    return {
+        "cache_hit_rate": round(hit_total / prompt_total, 4),
+        "cache_hit_tokens": hit_total,
+        "cache_prompt_tokens": prompt_total,
     }
 
 
@@ -170,7 +222,8 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
         gold_match(若有 gold_sql) / avg_tokens / total_tokens /
         recovery_rate / avg_confidence / consensus_rate / avg_candidates;
         条目带 elapsed_ms / path 时另发 avg_elapsed_ms / total_elapsed_ms /
-        ex_by_path。
+        ex_by_path;有测量过缓存命中的条目时另发 cache_hit_rate /
+        cache_hit_tokens / cache_prompt_tokens。
 
     ``ex`` 与 ``self_consistency`` 是**两件事**,别混:``self_consistency``
     量的是「生成过程自洽吗」(共识达成、候选池非空),``ex`` 量的是「答案
@@ -228,6 +281,11 @@ def score_replay(entries: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "consensus_rate": round(len(cons) / len(completed_rows), 4) if completed_rows else 0.0,
         "avg_candidates": round(sum(cands) / n, 2),
     }
+    # 缓存命中:仅统计**测量过**的条目(旧录制无 cache 键 → 不发键,
+    # 冻结基线对门禁逐项零位移);随缓存计量上线的新录制自动带出来。
+    cache_stats = cache_hit_stats(rows)
+    if cache_stats is not None:
+        out.update(cache_stats)
     # 一次通过率只在有可判题时发键:replay.jsonl 的 OK 词表下它恒 0,
     # 发出来是"测不了"冒充"测得是零"。
     if ex_judged:
@@ -278,6 +336,9 @@ def scorecard_metrics(score: dict[str, Any]) -> dict[str, float]:
         metrics["gold_match"] = score["gold_match"]
     if score.get("first_pass") is not None:
         metrics["first_pass"] = score["first_pass"]
+    # 缓存命中率只进这个键(tokens 明细留给 score_replay 的输出侧)
+    if score.get("cache_hit_rate") is not None:
+        metrics["cache_hit_rate"] = float(score["cache_hit_rate"])
     for key in ("avg_elapsed_ms", "total_elapsed_ms"):
         if score.get(key) is not None:
             metrics[key] = float(score[key])
@@ -357,6 +418,12 @@ def render_scorecard(score: dict[str, Any]) -> str:
         f"  token 成本              {score['total_tokens']} total / "
         f"{score['avg_tokens']} avg",
     ]
+    if score.get("cache_hit_rate") is not None:
+        lines.append(
+            f"  缓存命中(cache)        {score['cache_hit_rate']:.1%} "
+            f"({score.get('cache_hit_tokens', 0)}/"
+            f"{score.get('cache_prompt_tokens', 0)} prompt)"
+        )
     if "avg_elapsed_ms" in score:
         lines.append(
             f"  墙钟                    {score['total_elapsed_ms']:.0f} ms total / "

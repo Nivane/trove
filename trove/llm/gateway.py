@@ -616,9 +616,12 @@ def _usage_dict(raw_response: Any) -> dict[str, int]:
 
     Cache fields are surfaced best-effort across providers: Anthropic
     reports ``cache_read_input_tokens`` / ``cache_creation_input_tokens``,
-    OpenAI-family reports ``prompt_tokens_details.cached_tokens``. 0 或
-    缺失都算未命中——观测 prompt 缓存的真实命中率(cache_prefix_tokens
-    只给"理论上可缓存多少")。
+    OpenAI-family (and DeepSeek via litellm's normalization) reports
+    ``prompt_tokens_details.cached_tokens``. **真报才写**:provider 报告了
+    就写(报 0 = 命中 0),没报告就**键缺席** = 没测量——"0 命中"与"没
+    测量"在观测层必须可分(下游 cache_hit_tokens 以键缺席为未测量)。
+    注意同一命中数可能以 ``cached_tokens`` 与 ``cache_read_input_tokens``
+    两个拼写同时可读(litellm 对 DeepSeek 的映射),消费端**取一不求和**。
     """
     try:
         usage = getattr(raw_response, "usage", None)
@@ -628,12 +631,16 @@ def _usage_dict(raw_response: Any) -> dict[str, int]:
             "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
             "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
             "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-            "cache_read_input_tokens": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
-            "cache_creation_input_tokens": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
         }
+        for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            value = getattr(usage, key, None)
+            if value is not None:
+                out[key] = int(value)
         details = getattr(usage, "prompt_tokens_details", None)
         if details is not None:
-            out["cached_tokens"] = int(getattr(details, "cached_tokens", 0) or 0)
+            cached = getattr(details, "cached_tokens", None)
+            if cached is not None:
+                out["cached_tokens"] = int(cached)
         return out
     except Exception:
         return {}
@@ -657,6 +664,19 @@ def _record_generation(
         reasoning = getattr(message, "reasoning_content", None)
         if reasoning:
             output["reasoning"] = reasoning
+        # 用量进 Langfuse(成本图):input/output/total 恒发,cache 键**真报
+        # 才带**(自由字典;未测量就不该在成本图上冒充 0 命中)。
+        usage = _usage_dict(response)
+        usage_details: dict[str, int] = {}
+        if usage:
+            usage_details = {
+                "input": usage.get("prompt_tokens", 0),
+                "output": usage.get("completion_tokens", 0),
+                "total": usage.get("total_tokens", 0),
+            }
+            for key, value in usage.items():
+                if key not in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    usage_details[key] = value
         # Langfuse SDK v4: generations are observations with an explicit type
         with client.start_as_current_observation(
             as_type="generation",
@@ -665,6 +685,7 @@ def _record_generation(
             input={"messages": messages},
             output=output,
             metadata=metadata or {},
+            **({"usage_details": usage_details} if usage_details else {}),
         ):
             pass
     except Exception as e:
