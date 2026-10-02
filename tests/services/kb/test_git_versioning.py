@@ -364,6 +364,34 @@ async def test_confirm_draft_records_actor(git_repo: Path):
     assert "Approved-by: alice" in body
 
 
+async def test_confirm_draft_generator_trailer_distinguishes_batch(git_repo: Path):
+    """Generator trailer:逐条确认 = semantic.confirm,批量确认 = semantic.batch
+    —— 审计能分清「逐条点的」与「批量点的」(批量端点传 generator)。"""
+    kb = _kb_with_git(git_repo)
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    manager = SemanticManager(kb)
+    await manager.create_draft(
+        "demo", "metric", "upsert", "avg_amount",
+        {"expression": "AVG(loan.amount)"})
+    draft = manager.drafts("demo")["pending"][0]
+    await manager.confirm_draft("demo", draft["id"], dialect="sqlite", actor="alice")
+
+    body = _git(git_repo, "log", "-1", "--format=%B").stdout
+    assert "Generator: semantic.confirm" in body
+
+    await manager.create_draft(
+        "demo", "metric", "upsert", "cnt", {"expression": "COUNT(1)"})
+    draft = [d for d in manager.drafts("demo")["pending"] if d["name"] == "cnt"][0]
+    await manager.confirm_draft(
+        "demo", draft["id"], dialect="sqlite", actor="alice",
+        generator="semantic.batch")
+
+    body = _git(git_repo, "log", "-1", "--format=%B").stdout
+    assert "Generator: semantic.batch" in body
+    assert "Approved-by: alice" in body
+
+
 # ── 优化 3: history / rollback ───────────────────────────
 
 
@@ -484,11 +512,20 @@ async def test_auto_apply_rejects_bad_semantics_before_write(tmp_path: Path):
 
 
 async def test_confirm_draft_clean_semantics_still_writes(tmp_path: Path):
-    """门禁不误伤:干净草稿照常写盘并进 git 审计历史。"""
+    """门禁不误伤:干净草稿照常写盘并进 git 审计历史。
+
+    草稿显式声明锚定数据集 ``loan`` → 它必须先被**显式声明**(静默补建
+    空壳已改为显式报错,见 test_metric_undeclared_dataset_rejected)。
+    """
     from trove.services.semantic_layer.manage import SemanticManager
 
     kb = KbService(tmp_path / "proj")
-    _seed_empty_semantics(kb)
+    ds_dir = kb.kb_dir / "demo"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    kb.semantics_path("demo").write_text(
+        "semantic_model:\n- name: demo\n  datasets:\n  - name: loan\n"
+        "  metrics: []\n",
+        encoding="utf-8")
     manager = SemanticManager(kb)
     draft = await manager.create_draft(
         "demo", "metric", "upsert", "avg_amount",

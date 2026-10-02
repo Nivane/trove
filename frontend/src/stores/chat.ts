@@ -54,6 +54,9 @@ export interface Turn {
   live?: LiveStep[]
   /** Wall clock when the turn began streaming (live total-elapsed meter). */
   startedAt?: number
+  /** 答案落盘的 ISO 时间(live 轮 = 终态时刻;历史轮 = 消息 timestamp)。
+   *  缺席 = 拿不到 —— 溯源条省掉时间片段,不拿别的时刻冒名顶替。 */
+  at?: string
 }
 
 const SESSION_KEY = 'trove_ui_session'
@@ -263,6 +266,7 @@ export const useChatStore = defineStore('chat', {
           t.status = 'error'
         } else {
           t.status = 'done'
+          t.at = new Date().toISOString()
         }
         t.live = []
       }
@@ -355,6 +359,7 @@ export const useChatStore = defineStore('chat', {
             t.summary = summary
             t.synthesis = summary.final_response
             t.status = 'done'
+            t.at = new Date().toISOString()
           } else {
             const answerAdd = summary?.final_response || content
             if (answerAdd && !t.answer.includes(answerAdd)) {
@@ -370,7 +375,10 @@ export const useChatStore = defineStore('chat', {
             }
             // Batch in progress → intermediate per-task done; wait for the
             // terminal batched done. Otherwise this is the final answer.
-            if (!this.batchRunning) t.status = 'done'
+            if (!this.batchRunning) {
+              t.status = 'done'
+              t.at = new Date().toISOString()
+            }
           }
           break
         }
@@ -409,6 +417,7 @@ export const useChatStore = defineStore('chat', {
       const t = this.currentTurn
       if (t && t.status === 'streaming') {
         t.status = t.answer ? 'done' : 'error'
+        if (t.answer) t.at = new Date().toISOString()
         t.error = t.answer ? undefined : 'aborted'
         t.live = []
       }
@@ -475,6 +484,7 @@ export const useChatStore = defineStore('chat', {
               tt.summary = summary
               tt.synthesis = summary.final_response
               tt.status = 'done'
+              tt.at = new Date().toISOString()
             } else {
               const answerAdd = summary?.final_response || content
               if (answerAdd && !tt.answer.includes(answerAdd)) {
@@ -495,8 +505,10 @@ export const useChatStore = defineStore('chat', {
         },
         this.controller.signal,
       )
-      if (this.currentTurn?.status === 'streaming')
+      if (this.currentTurn?.status === 'streaming') {
         this.currentTurn.status = 'done'
+        this.currentTurn.at = new Date().toISOString()
+      }
       if (this.currentTurn) this.currentTurn.live = []
       this.streaming = false
       this.batchRunning = false
@@ -528,9 +540,11 @@ export const useChatStore = defineStore('chat', {
       await this.send(q)
     },
 
-    async rateTurn(index: number, vote: 1 | -1, reason?: string) {
+    /** 提交评分。返回值 = 是否成功 —— 依据抽屉的回执只报真实去向,
+     *  失败就什么都不说,不显示一张"已提交"的假回执。 */
+    async rateTurn(index: number, vote: 1 | -1, reason?: string): Promise<boolean> {
       const t = this.turns[index]
-      if (!t || !t.question) return
+      if (!t || !t.question) return false
       const summary = t.summary
       const body: Record<string, unknown> = {
         question: t.question,
@@ -547,8 +561,10 @@ export const useChatStore = defineStore('chat', {
       try {
         await apiPost('/v1/kb/ratings', body)
         t.rating = vote
+        return true
       } catch (e) {
         console.error('rate failed', e)
+        return false
       }
     },
 
@@ -577,6 +593,8 @@ interface StoredMessage {
   role: string
   content: string
   metadata?: Record<string, unknown>
+  /** 消息落盘 ISO 时间(GET /v1/sessions/{id} 一直带着它)。 */
+  timestamp?: string
 }
 
 /** 最近一个有数据源记录的 turn(会话元数据为准,从尾往前找)。 */
@@ -608,6 +626,10 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
       })
     } else if (m.role === 'assistant' && turns.length) {
       const t = turns[turns.length - 1]
+      // 历史轮时间戳还原:消息自带的 timestamp 就是这一轮答案的落盘时刻
+      // (此前只读了 metadata,把整条时间线丢了)。缺席就不填 —— 溯源条
+      // 省掉时间片段,而不是拿"现在"冒名顶替。
+      if (m.timestamp) t.at = m.timestamp
       const meta = m.metadata ?? {}
       const summary = (meta.summary ?? null) as DoneSummary | null
       if (summary) {

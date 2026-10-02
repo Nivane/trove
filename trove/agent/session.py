@@ -339,6 +339,16 @@ class SessionManager:
         """Rename a session (empty title falls back to the first question)."""
         return await self._store.set_title(session_id, title, project_cwd)
 
+    async def find_run(
+        self, run_id: str, user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Locate the session/message recorded for a run_id (None = unknown).
+
+        ``user_id`` = 非管理员调用方的会话属主过滤(None = 管理员口径,
+        全库)。只读,供 ``GET /v1/runs/{run_id}`` 的归属裁决与终态兜底。
+        """
+        return await self._store.find_run_message(run_id, user_id=user_id)
+
     async def clear_session(self, session: Session) -> Session:
         """Clear all messages, the compaction summary, and the task list
         (keeps the session; /clear = fresh conversation, fresh tasks)."""
@@ -530,7 +540,7 @@ class SessionManager:
                 cached, run_id, history, self.config.language,
             )
             await self._record_exchange(session, workflow_name, final)
-            self._trace_run_finish(run_id, final)
+            self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
             return final
 
         config = self._run_config(session, run_id, state, workflow_name)
@@ -561,7 +571,7 @@ class SessionManager:
         final = WorkflowState.model_validate(result)
 
         await self._record_exchange(session, workflow_name, final)
-        self._trace_run_finish(run_id, final)
+        self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
         return final
 
     @staticmethod
@@ -716,7 +726,7 @@ class SessionManager:
 
         await self._record_exchange(session, workflow_name, final, task=task, content_prefix=prefix)
         if run_id:
-            self._trace_run_finish(run_id, final)
+            self._trace_run_finish(run_id, final, model=self._gen_model(self.config, final))
 
         if task is not None:
             meta = {
@@ -733,7 +743,7 @@ class SessionManager:
             await store.update_status(task.task_id, status, meta)
             yield {"type": "task", "data": {"tasks": await self._tasks_snapshot(session)}}
 
-        summary = self._state_summary(final)
+        summary = self._state_summary(final, self._gen_model(self.config, final))
         summary["hitl_status"] = final.hitl_status
         # resume 段统计:token 是该 run_id 的整条 tally(中断前已累计的也在这里,
         # 中断时只 get 未 pop),_run_stats 一次性 pop 结算。
@@ -895,7 +905,8 @@ class SessionManager:
             )
             await self._record_exchange(session, workflow_name, final, task=task, content_prefix=prefix)
             stats = self._run_stats(run_id, _time.monotonic())
-            self._trace_run_finish(run_id, final, stats)
+            model = self._gen_model(self.config, final)
+            self._trace_run_finish(run_id, final, stats, model=model)
             summary = dict(cached)
             summary["cached"] = True
             summary.update(stats)
@@ -1153,8 +1164,9 @@ class SessionManager:
         await self._record_exchange(session, workflow_name, final, task=task, content_prefix=prefix)
 
         stats = self._run_stats(run_id, run_start)
-        self._trace_run_finish(run_id, final, stats)
-        summary = self._state_summary(final)
+        model = self._gen_model(self.config, final)
+        self._trace_run_finish(run_id, final, stats, model=model)
+        summary = self._state_summary(final, model)
         summary.update(stats)
         content = prefix + final.final_response
         if final.error:
@@ -1328,9 +1340,10 @@ class SessionManager:
             pass
 
     @staticmethod
-    def _trace_run_finish(run_id: str, final: WorkflowState, stats: dict[str, Any] | None = None) -> None:
+    def _trace_run_finish(run_id: str, final: WorkflowState, stats: dict[str, Any] | None = None,
+                          model: str = "") -> None:
         from trove.tracing.runlog import get_tracer
-        summary = SessionManager._state_summary(final)
+        summary = SessionManager._state_summary(final, model)
         if stats:
             summary.update(stats)
         tracer = get_tracer(run_id)
@@ -1509,7 +1522,7 @@ class SessionManager:
             "row_count": final.row_count,
             "verdict": final.verdict,
             "error": final.error,
-            "summary": self._state_summary(final),
+            "summary": self._state_summary(final, self._gen_model(self.config, final)),
         }
         # 持久化 per-run token 用量(get 不弹栈,调用方 _run_stats 稍后
         # 一次性 pop 结算):崩溃/重启后成本历史仍可查,不再只活在进程内
@@ -2205,8 +2218,31 @@ class SessionManager:
                 bucket[k] = bucket.get(k, 0) + int(v)
 
     @staticmethod
-    def _state_summary(final: WorkflowState) -> dict[str, Any]:
-        """Essentials of the final state for event consumers (e.g. --print)."""
+    def _gen_model(config: Any, final: WorkflowState) -> str:
+        """gen_sql 真正生成 SQL 时用的模型名("" = 这条答案没有经过生成)。
+
+        判据用 ``answer_source`` 而不是 ``fast_path`` / ``kb_exact_match``:
+        缓存的 summary 经 ``_cached_final`` 重建时只有 WorkflowState 的**模型
+        字段**能活下来(那两个标记不在其中),而 answer_source 在 summary 里。
+        certified / reused 两条路径 SQL 都是复用来的,模型没跑过 —— 不报一个
+        配置里的名字冒充。取不到(没有 SQL / 配置异常)也返回空串。
+        """
+        if not final.sql:
+            return ""
+        if str(final.answer_source or "") in ("certified", "reused"):
+            return ""
+        try:
+            return config.model_for_node("gen_sql", final.complexity)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _state_summary(final: WorkflowState, model: str = "") -> dict[str, Any]:
+        """Essentials of the final state for event consumers (e.g. --print).
+
+        ``model`` = gen_sql 实际使用的模型(``_gen_model``;"" = 没经过生成)。
+        溯源条要它才说得清「这条 SQL 是哪个模型写的」——历史轮与导出同理。
+        """
         chart_option = None
         if final.chart:
             try:
@@ -2232,6 +2268,8 @@ class SessionManager:
             "rewritten_question": final.rewritten_question,
             "datasource": final.datasource,
             "sql": final.sql,
+            # gen_sql 实际使用的模型(见 _gen_model;"" = 这条答案没经过生成)。
+            "model": model,
             "row_count": final.row_count,
             "verdict": final.verdict,
             "reason": final.reason,
@@ -2267,6 +2305,11 @@ class SessionManager:
             # summary 里读回「这份数据是以谁的身份产出的」。键里已按主体隔离,
             # 这里透出来是为了**记录对**,不是为了分流。
             "principal": final.principal,
+            # 执行可信度(数据截止/估算扫描/限额/降级):答案末尾的新鲜度行
+            # 就是它渲染的(output._freshness_line)。摘要带上它,历史轮与
+            # 依据抽屉才能把「这批数据是什么时候的」讲回来 —— 三态照原样
+            # 透出:"" = 没查过,"unknown" = 查过但未知。
+            "execution_evidence": final.execution_evidence,
         }
 
     # ── Result cache (exact-question, in-process) ────────
@@ -2361,7 +2404,7 @@ class SessionManager:
         # 按此刻的 scope 重新判一次。代价只是重复提问多打一次库。
         if (final.masking_applied or {}).get("bypass"):
             return
-        summary = self._state_summary(final)
+        summary = self._state_summary(final, self._gen_model(self.config, final))
         summary["cached"] = True
         summary["dialect"] = final.dialect
         self._cache_put(

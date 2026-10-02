@@ -13,6 +13,8 @@ SQLGlot 校验,坏条目拒绝写入。
 """
 from __future__ import annotations
 
+import copy
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -23,7 +25,7 @@ import yaml
 from sqlglot import ErrorLevel, exp, parse_one
 
 from trove.services.datasource.naming import is_path_safe
-from trove.services.kb.lint import lint_semantics, lint_semantics_document
+from trove.services.kb.lint import lint_semantics_document
 from trove.services.kb.service import KbService
 from trove.services.semantic_layer.models import (
     SemanticDataset,
@@ -251,10 +253,15 @@ def _apply_metric(model: dict[str, Any], action: str, name: str,
         return
     metric = _metric_payload_to_ossie(name, payload or {}, dialect)
     declared = {d.get("name") for d in model.get("datasets", []) if d.get("name")}
-    for t in payload.get("datasets") or []:
-        if t and t not in declared:
-            model.setdefault("datasets", []).append({"name": t})
-            declared.add(t)
+    # 锚定的数据集必须已声明:**显式报错**,不再静默补建空壳条目。补出来的
+    # stub 无 source 无字段,作者从没见过它,编译器却会把指标锚到一个查询期
+    # 必然 MISS 的空数据集上 —— 静默补建把「写错了名字」变成「运行期才发现」。
+    undeclared = list(dict.fromkeys(
+        str(t) for t in (payload.get("datasets") or []) if t and str(t) not in declared))
+    if undeclared:
+        raise ValueError(
+            f"指标「{name}」锚定的数据集未声明: {', '.join(undeclared)}"
+            "(修正数据集名,或先在 datasets 里显式声明该数据集)")
     idx = next((i for i, m in enumerate(model["metrics"]) if m.get("name") == name), None)
     if idx is not None:
         old = model["metrics"][idx]
@@ -400,6 +407,196 @@ def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | Non
         raise ValueError(f"未知草稿类型: {kind}")
 
 
+# ── 草稿 diff(DiffCard 的 before / after / fields) ─────────
+
+
+_DIFF_LABELS: dict[str, str] = {
+    "name": "名称 name",
+    "expression": "表达式 expression",
+    "datasets": "锚定数据集",
+    "description": "定义 description",
+    "definition": "定义 definition",
+    "type": "派生类型 type",
+    "datatype": "类型 datatype",
+    "synonyms": "同义词 synonyms",
+    "filter": "过滤 filter",
+    "agg_time_dimension": "聚合时间 agg_time_dimension",
+    "non_additive": "非可加 non_additive",
+    "examples": "示例 examples",
+    "custom_extensions": "扩展 custom_extensions",
+    "semantic_role": "语义角色 semantic_role",
+    "is_time": "时间维度 is_time",
+    "enum_display": "枚举展示 enum_display",
+    "value_aliases": "值别名 value_aliases",
+    "label": "标签 label",
+    "source": "物理来源 source",
+    "primary_key": "主键 primary_key",
+    "unique_keys": "唯一键 unique_keys",
+    "row_filter": "行过滤 row_filter",
+    "fields": "字段清单 fields",
+}
+
+_ACTION_LABELS = {"metric": "指标", "field": "字段", "dataset": "数据集"}
+
+
+def _present(value: Any) -> bool:
+    """视图里「这个键有内容吗」—— 空值不落键,让 diff 只列有信息量的行。
+
+    注意 ``False`` 是**有内容**(``is_time: false`` 与「未声明」是两回事)。
+    """
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _fmt_cell(value: Any) -> str:
+    """DiffRow 单元格渲染:列表 `` · `` 连接、缺失为空串(与设计稿原型一致)。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return " · ".join(_fmt_cell(v) for v in value if _present(v))
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
+
+
+def _raw_expr(entry: dict[str, Any]) -> str:
+    """原始 YAML 条目的表达式(第一个非空方言即管理页展示的口径)。"""
+    for dia in (entry.get("expression") or {}).get("dialects") or []:
+        if isinstance(dia, dict) and str(dia.get("expression") or "").strip():
+            return str(dia["expression"])
+    return ""
+
+
+def _find_entity(data: dict[str, Any] | None, kind: str,
+                 name: str) -> dict[str, Any] | None:
+    """semantics.yml 原始 dict 里的目标实体(**原地引用**,只读不写)。"""
+    if not isinstance(data, dict):
+        return None
+    models = data.get("semantic_model") or []
+    model = models[0] if models and isinstance(models[0], dict) else {}
+    datasets = [d for d in model.get("datasets", []) or [] if isinstance(d, dict)]
+    if kind == "metric":
+        return next((m for m in model.get("metrics", []) or []
+                     if isinstance(m, dict) and m.get("name") == name), None)
+    if kind == "dataset":
+        return next((d for d in datasets if d.get("name") == name), None)
+    if kind == "field":
+        ds_name, sep, field_name = name.partition(".")
+        if not sep:
+            return None
+        ds = next((d for d in datasets if d.get("name") == ds_name), None)
+        if ds is None:
+            return None
+        return next((f for f in ds.get("fields", []) or []
+                     if isinstance(f, dict) and f.get("name") == field_name), None)
+    return None
+
+
+def _raw_view(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """原始条目 → 平铺视图(嵌套的 dialects / ai_context 摊平,便于逐行对比)。"""
+    out: dict[str, Any] = {}
+
+    def put(key: str, value: Any) -> None:
+        if _present(value):
+            out[key] = value
+
+    ai = entry.get("ai_context") if isinstance(entry.get("ai_context"), dict) else {}
+    if kind == "metric":
+        put("name", str(entry.get("name") or ""))
+        put("expression", _raw_expr(entry))
+        put("datasets", [str(t) for t in entry.get("datasets") or [] if t])
+        put("description", str(entry.get("description") or ""))
+        put("type", str(entry.get("type") or ""))
+        put("datatype", str(entry.get("datatype") or ""))
+        put("synonyms", list(ai.get("synonyms") or []))
+        put("examples", list(ai.get("examples") or []))
+        put("filter", str(entry.get("filter") or ""))
+        put("agg_time_dimension", str(entry.get("agg_time_dimension") or ""))
+        put("non_additive", entry.get("non_additive"))
+        put("custom_extensions", list(entry.get("custom_extensions") or []))
+    elif kind == "field":
+        dim = entry.get("dimension") if isinstance(entry.get("dimension"), dict) else {}
+        put("name", str(entry.get("name") or ""))
+        put("expression", _raw_expr(entry))
+        put("datatype", str(entry.get("datatype") or ""))
+        put("semantic_role", str(entry.get("semantic_role") or ""))
+        put("synonyms", list(ai.get("synonyms") or []))
+        put("description", str(entry.get("description") or ""))
+        put("is_time", dim.get("is_time"))
+        put("enum_display", entry.get("enum_display"))
+        put("value_aliases", ai.get("value_aliases"))
+        put("label", str(entry.get("label") or ""))
+        put("examples", list(ai.get("examples") or []))
+        put("custom_extensions", list(entry.get("custom_extensions") or []))
+    elif kind == "dataset":
+        put("name", str(entry.get("name") or ""))
+        put("source", str(entry.get("source") or ""))
+        put("primary_key", list(entry.get("primary_key") or []))
+        put("unique_keys", entry.get("unique_keys"))
+        put("row_filter", str(entry.get("row_filter") or ""))
+        put("description", str(entry.get("description") or ""))
+        put("synonyms", list(ai.get("synonyms") or []))
+        put("examples", list(ai.get("examples") or []))
+        put("custom_extensions", list(entry.get("custom_extensions") or []))
+        put("fields", [str(f.get("name")) for f in entry.get("fields") or []
+                       if isinstance(f, dict) and f.get("name")])
+    return out
+
+
+def _draft_diff(data: dict[str, Any] | None, draft: dict[str, Any],
+                dialect: str | None = None) -> dict[str, Any]:
+    """服务端算草稿 diff —— carryover 语义(未覆盖的手写字段不丢)只在
+    ``_apply_draft`` 里,前端重实现必然漂移,所以 before/after 由这里给出。
+
+    形状:``{kind, name, action, before, after, fields[], error}``。
+    ``fields`` 行 = 与设计稿原型同形 ``{f, before, after, changed}``(字符串
+    单元格);``error`` 是超契约补的键 —— 干跑失败时 before/after 之间的
+    差不可得,只留原因,前端据此显示「校验前创建/手工改过 YAML」一类的卡片。
+    """
+    kind = str(draft.get("kind") or "")
+    action = str(draft.get("action") or "")
+    name = str(draft.get("name") or "")
+    before_entry = _find_entity(data, kind, name)
+    before = _raw_view(kind, before_entry) if before_entry is not None else None
+
+    applied = copy.deepcopy(data) if data else {}
+    error = ""
+    try:
+        _apply_draft(applied, draft, dialect)
+    except (ValueError, TypeError) as e:
+        error = str(e)
+    after_entry = _find_entity(applied, kind, name) if not error else None
+    after = _raw_view(kind, after_entry) if after_entry is not None else None
+    if after is not None and kind == "metric":
+        # 写盘不落 datasets 键,但作者显式声明过的锚定要看得见
+        extra = [str(t) for t in (draft.get("payload") or {}).get("datasets") or [] if t]
+        if extra:
+            after["datasets"] = sorted(set(after.get("datasets") or []) | set(extra))
+
+    rows: list[dict[str, Any]] = []
+    if not error:
+        if action == "delete":
+            rows.append({"f": "动作", "before": "存在" if before else "（不存在）",
+                         "after": "删除", "changed": bool(before)})
+        elif before is None:
+            rows.append({"f": "动作", "before": "（不存在）",
+                         "after": f"新增{_ACTION_LABELS.get(kind, kind)}", "changed": True})
+    b, a = before or {}, after or {}
+    for key in sorted(set(b) | set(a)):
+        rows.append({
+            "f": _DIFF_LABELS.get(key, key),
+            "before": _fmt_cell(b.get(key)),
+            "after": _fmt_cell(a.get(key)),
+            "changed": b.get(key) != a.get(key),
+        })
+    return {
+        "kind": kind, "name": name, "action": action,
+        "before": before, "after": after, "fields": rows,
+        "error": error or None,
+    }
+
+
 class SemanticManager:
     """Per-datasource semantic layer management (reads + draft approval)."""
 
@@ -415,6 +612,16 @@ class SemanticManager:
 
     def _drafts_path(self, datasource: str) -> Path:
         return self.kb_dir / datasource / "semantic_drafts.yml"
+
+    def document(self, datasource: str) -> dict[str, Any]:
+        """原始 ``semantics.yml`` dict(只读)。
+
+        validate/preview/diff 需要**未解析的文档**(要判的就是字形与锚定),
+        而 ``detail()`` 返回的是解析后的模型 —— 两者不能互相替代。
+        文件不存在 → 空 dict(与 ``_load_yaml`` 同语义)。
+        """
+        path = self._semantics_path(datasource)
+        return _load_yaml(path) if path.exists() else {}
 
     def _check_datasource(self, datasource: str) -> None:
         if not is_path_safe(datasource):
@@ -437,18 +644,19 @@ class SemanticManager:
             return None
 
     def issues(self, datasource: str, dialect: str | None = None) -> list[str]:
-        """lint_semantics 逐模型输出:重复定义/坏表达式/非法关系。"""
+        """文档级 lint:重复定义/坏表达式/非法关系/脱敏声明错层。
+
+        走 ``lint_semantics_document``(与写盘门禁、git pre-commit 判**同一份
+        字节**),而非逐模型 ``lint_semantics`` —— 文档级问题(如 masking 写错
+        层)只在文档函数里检查,逐模型检查会静默漏掉它。
+        """
         path = self._semantics_path(datasource)
         if not path.exists():
             return []
         data = _load_yaml(path)
         if not data:
             return ["semantics.yml 无法解析(YAML 语法错误)"]
-        issues: list[str] = []
-        for entry in data.get("semantic_model", []) or []:
-            if isinstance(entry, dict):
-                issues += lint_semantics(entry, dialect=dialect or "sqlite")
-        return issues
+        return lint_semantics_document(data, dialect=dialect or "sqlite")
 
     def drafts(self, datasource: str) -> dict[str, list[dict[str, Any]]]:
         data = _load_yaml(self._drafts_path(datasource))
@@ -463,12 +671,28 @@ class SemanticManager:
         return out
 
     async def detail(self, datasource: str, dialect: str | None = None) -> dict[str, Any]:
+        """管理端详情:模型 + lint(扁平 + 结构化)+ 草稿队列(**每条带 diff**)。
+
+        ``issues`` 保留扁平一版(旧前端兼容),``issue_items`` 是同内容的
+        结构化形态(severity/code/target/message/hint);每条 draft 附
+        ``diff``(服务端算的 before/after,carryover 语义只有服务端知道)。
+        """
+        from trove.services.semantic_layer.issues import structured_issues
+
+        path = self._semantics_path(datasource)
+        data = _load_yaml(path) if path.exists() else {}
         model = self.model(datasource, dialect)
+        issues = self.issues(datasource, dialect)
+        drafts = self.drafts(datasource)
         return {
             "enabled": self.enabled(datasource),
             "model": _model_to_dict(model) if model is not None else None,
-            "issues": self.issues(datasource, dialect),
-            "drafts": self.drafts(datasource),
+            "issues": issues,
+            "issue_items": structured_issues(issues),
+            "drafts": {
+                status: [{**e, "diff": _draft_diff(data, e, dialect)} for e in entries]
+                for status, entries in drafts.items()
+            },
         }
 
     # ── 审批流写 ──────────────────────────────────────────
@@ -525,9 +749,14 @@ class SemanticManager:
 
     async def confirm_draft(
         self, datasource: str, draft_id: str, dialect: str | None = None,
-        actor: str = "",
+        actor: str = "", generator: str = "",
     ) -> dict[str, Any]:
-        """审批通过:应用到 semantics.yml → 标记 applied → 刷新镜像。"""
+        """审批通过:应用到 semantics.yml → 标记 applied → 刷新镜像。
+
+        ``generator`` 覆盖 git trailer 的 ``Generator``(批量审批走
+        ``semantic.batch``,单条默认 ``semantic.confirm``)—— 审计要能分清
+        「逐条点的」与「批量点的」,否则批量入口是审计盲区。
+        """
         self._check_datasource(datasource)
         draft, path = self._find_draft(datasource, draft_id)
         if draft.get("status") != "pending":
@@ -547,13 +776,18 @@ class SemanticManager:
         drafts = self._drafts_with(datasource, draft)
         self._save_drafts(path, drafts)
         await self._kb.force_sync(datasource)
+        trailers: dict[str, str] = {}
+        if actor or generator:
+            trailers["Generator"] = generator or "semantic.confirm"
+        if actor:
+            trailers["Approved-by"] = actor
         await self._kb.git_commit(
             datasource,
             f"semantic: confirm {draft.get('kind')} {draft.get('name')} "
             f"(draft {draft_id})",
             files=["semantics.yml", "semantic_drafts.yml"],
             lint=self._kb.semantics_lint(datasource, dialect or "sqlite"),
-            trailers={"Generator": "semantic.confirm", "Approved-by": actor} if actor else None)
+            trailers=trailers or None)
         return dict(draft)
 
     async def auto_apply(
@@ -613,7 +847,7 @@ class SemanticManager:
             datasource, "field", name, payload=payload, note=note)
 
     async def reject_draft(self, datasource: str, draft_id: str,
-                           actor: str = "") -> dict[str, Any]:
+                           actor: str = "", generator: str = "") -> dict[str, Any]:
         """驳回:仅标记 rejected,不改 semantics.yml。"""
         self._check_datasource(datasource)
         draft, path = self._find_draft(datasource, draft_id)
@@ -623,10 +857,15 @@ class SemanticManager:
         drafts = self._drafts_with(datasource, draft)
         self._save_drafts(path, drafts)
         await self._kb.force_sync(datasource)
+        trailers: dict[str, str] = {}
+        if actor or generator:
+            trailers["Generator"] = generator or "semantic.reject"
+        if actor:
+            trailers["Approved-by"] = actor
         await self._kb.git_commit(
             datasource, f"semantic: reject draft {draft_id}",
             files=["semantic_drafts.yml"],
-            trailers={"Generator": "semantic.reject", "Approved-by": actor} if actor else None)
+            trailers=trailers or None)
         return dict(draft)
 
     def _drafts_with(self, datasource: str, updated: dict[str, Any]) -> list[dict[str, Any]]:

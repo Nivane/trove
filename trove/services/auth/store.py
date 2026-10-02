@@ -100,6 +100,13 @@ INDEX_SQL = [
 # Column sets for row→dict mapping
 USER_COLS = ("id", "username", "password_hash", "role", "display_name",
              "disabled", "created_at", "updated_at")
+
+# 用户列表排序白名单:服务层的 sort 值 → 真实列名。绝不让请求值进 ORDER BY,
+# 这里再做一层「列名只能是本字典里的常量」的防线。
+USER_SORT_COLS = {
+    "username": "username", "role": "role",
+    "disabled": "disabled", "created_at": "created_at",
+}
 TOKEN_COLS = ("id", "token_hash", "user_id", "label", "expires_at",
               "revoked", "created_at", "last_used_at", "scopes_json")
 AUDIT_COLS = ("id", "ts", "user_id", "username", "action", "method",
@@ -108,6 +115,52 @@ AUDIT_COLS = ("id", "ts", "user_id", "username", "action", "method",
 
 async def _fetch_all(cursor) -> list[tuple]:
     return [row async for row in cursor]
+
+
+def _like_pattern(text: str) -> str:
+    """子串匹配的 LIKE 模式(大小写不敏感由 SQL 侧的 ``LOWER`` 完成)。
+
+    ``%``/``_``/``\\`` 转义后 q 是**字面子串**而非通配模式 —— 搜
+    ``user_1`` 不该把 ``userX1`` 也捞出来。SQL 里配套显式声明
+    ``ESCAPE '\\'``:SQLite 默认没有转义符,显式声明后两个后端一致。
+    """
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped.lower()}%"
+
+
+def _users_filter(
+    q: str | None = None, role: str | None = None, status: str | None = None,
+) -> tuple[str, list[Any]]:
+    """用户过滤的 ``WHERE`` 片段 + 参数(只用 SQLite/Postgres 通用语法)。
+
+    status 语义:``active`` = 未禁用;``disabled`` = 已禁用;
+    ``nogrant`` = 零数据源授权(相关子查询,两后端通用)。未知值抛
+    ``ValueError`` —— 静默退化成「不过滤」会让调用方以为过滤器生效。
+    """
+    clauses: list[str] = []
+    values: list[Any] = []
+    if q:
+        clauses.append(
+            "(LOWER(username) LIKE ? ESCAPE '\\' "
+            "OR LOWER(display_name) LIKE ? ESCAPE '\\')"
+        )
+        values += [_like_pattern(q), _like_pattern(q)]
+    if role:
+        clauses.append("role = ?")
+        values.append(role)
+    if status == "active":
+        clauses.append("disabled = 0")
+    elif status == "disabled":
+        clauses.append("disabled = 1")
+    elif status == "nogrant":
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM user_datasources ud "
+            "WHERE ud.user_id = users.id)"
+        )
+    elif status:
+        raise ValueError(f"invalid status: {status}")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, values
 
 
 class AppDbStore:
@@ -238,6 +291,51 @@ class AppDbStore:
                 f"SELECT {', '.join(USER_COLS)} FROM users ORDER BY id"
             )
             return [self._user_row(row) async for row in cursor]
+        finally:
+            await conn.close()
+
+    async def list_users_filtered(
+        self, *, q: str | None = None, role: str | None = None,
+        status: str | None = None, sort: str = "created_at",
+        order: str = "desc", limit: int = 50, offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """过滤/排序/分页的用户行(参数由服务层校验,这里再白名单兜底)。
+
+        ``id`` 始终作为末位排序键:role/disabled/created_at 都可能并列,
+        没有确定性 tiebreaker 时翻页会漏行/重行。
+        """
+        where, values = _users_filter(q=q, role=role, status=status)
+        if sort not in USER_SORT_COLS:
+            raise ValueError(f"invalid sort: {sort}")
+        if order not in ("asc", "desc"):
+            raise ValueError(f"invalid order: {order}")
+        direction = "ASC" if order == "asc" else "DESC"
+        sql = (
+            f"SELECT {', '.join(USER_COLS)} FROM users {where} "
+            f"ORDER BY {USER_SORT_COLS[sort]} {direction}, id {direction} "
+            "LIMIT ? OFFSET ?"
+        )
+        values += [limit, offset]
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(sql, values)
+            return [self._user_row(row) async for row in cursor]
+        finally:
+            await conn.close()
+
+    async def count_users_filtered(
+        self, *, q: str | None = None, role: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """与 ``list_users_filtered`` 同一 WHERE 的计数(分页 total)。"""
+        where, values = _users_filter(q=q, role=role, status=status)
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                f"SELECT COUNT(*) FROM users {where}", values,
+            )
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
         finally:
             await conn.close()
 
@@ -473,6 +571,32 @@ class AppDbStore:
                 (user_id,),
             )
             return [row[0] async for row in cursor]
+        finally:
+            await conn.close()
+
+    async def datasources_for_users(
+        self, user_ids: list[int],
+    ) -> dict[int, list[str]]:
+        """整页用户的授权——**一次查询**取回(user_id → 数据源名,已排序)。
+
+        管理台用户列表用它消灭按人循环的 N+1(逐人调
+        ``get_user_datasources``)。空页直接返回,不发 ``IN ()``(两个
+        后端的空 IN 都非法)。每个用户内部的顺序与逐人查询一致(按名排序)。
+        """
+        if not user_ids:
+            return {}
+        marks = ", ".join("?" * len(user_ids))
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT user_id, datasource FROM user_datasources "
+                f"WHERE user_id IN ({marks}) ORDER BY user_id, datasource",
+                list(user_ids),
+            )
+            out: dict[int, list[str]] = {}
+            async for row in cursor:
+                out.setdefault(int(row[0]), []).append(row[1])
+            return out
         finally:
             await conn.close()
 

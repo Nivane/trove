@@ -1437,6 +1437,52 @@ class TestConfidenceInSummary:
         assert summary["confidence"] <= summary["sql_confidence"]
         assert isinstance(summary["confidence_evidence"], list)
 
+    async def test_done_event_summary_carries_gen_model(
+        self, tmp_home, sqlite_registry,
+    ):
+        """溯源条要的两行新依据:``model``(gen_sql 实际用的模型,此前全仓
+        多处找得到、summary 里没有)与 ``execution_evidence``(数据截止/限额,
+        与 output 的新鲜度行同源同读)。"""
+        manager = self._manager(
+            tmp_home, sqlite_registry,
+            ["query", "```sql\nSELECT name FROM students;\n```", "OK"],
+            query_sketch=False,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        events = []
+        async for event in manager.ask_stream(
+            session=session, question="What students are in Alameda county?",
+        ):
+            events.append(event)
+
+        summary = events[-1]["summary"]
+        # AgentConfig(target="mock/model");这条答案真经过 gen_sql ⟹ 报模型名。
+        assert summary["model"] == "mock/model"
+        assert "execution_evidence" in summary
+
+    def test_gen_model_reports_only_when_generated(self):
+        """``_gen_model`` 的诚实口径:没有 SQL、复用(reused/certified)都不报
+        模型 —— 把配置里的名字冒充成「这个模型写了这条 SQL」正是披露装置最
+        不该说的话。compiled 仍报:编译契约之外,gen_sql 照样跑。"""
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.workflow.state import WorkflowState
+
+        config = AgentConfig(target="mock/model")
+        gen = WorkflowState(session_id="s1", question="q", sql="SELECT 1", answer_source="generated")
+        assert SessionManager._gen_model(config, gen) == "mock/model"
+        compiled = WorkflowState(session_id="s1", question="q", sql="SELECT 1", answer_source="compiled")
+        assert SessionManager._gen_model(config, compiled) == "mock/model"
+        assert SessionManager._gen_model(
+            config, WorkflowState(session_id="s1", question="q", answer_source="generated"),
+        ) == ""
+        for source in ("reused", "certified"):
+            state = WorkflowState(session_id="s1", question="q", sql="SELECT 1", answer_source=source)
+            assert SessionManager._gen_model(config, state) == ""
+        # summary 的存与读:不传 = ""(三态里的「没有」),传了原样透出。
+        assert SessionManager._state_summary(gen)["model"] == ""
+        assert SessionManager._state_summary(gen, "m/x")["model"] == "m/x"
+
     async def test_select_step_detail_reads_the_nested_vote_share(
         self, tmp_home, sqlite_registry,
     ):

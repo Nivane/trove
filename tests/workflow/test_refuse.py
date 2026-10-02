@@ -508,10 +508,25 @@ draft:
 class TestChatConfirmDraft:
     """对话内草稿确认(管理员):refuse 草稿 → confirm_draft 节点 → 替换上一问。"""
 
+    @staticmethod
+    def _seed_demo_semantics(kb) -> None:
+        """KB semantics.yml 预置 loan 数据集 —— 锚定校验读盘上声明。
+
+        ``_apply_metric`` 不再静默补建空壳数据集(显式报错),所以 fake
+        provider 的模型(含 loan)与盘上的声明必须一致。
+        """
+        kb.kb_dir.mkdir(parents=True, exist_ok=True)
+        (kb.kb_dir / "demo").mkdir(parents=True, exist_ok=True)
+        kb.semantics_path("demo").write_text(
+            "semantic_model:\n- name: fin\n  datasets:\n  - name: loan\n"
+            "  metrics: []\n",
+            encoding="utf-8")
+
     async def _seed_pending_draft(self, kb, question="平均贷款金额是多少?"):
         """用 refuse 节点产出一个 pending metric 草稿。"""
         from trove.workflow.nodes.refuse import make_refuse
 
+        self._seed_demo_semantics(kb)
         node = make_refuse(
             ScriptedLLM([METRIC_DRAFT_YAML]),
             AgentConfig(target="mock/model"),
