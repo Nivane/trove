@@ -90,6 +90,12 @@ export const router = createRouter({
           name: 'admin-skills',
           component: () => import('../views/admin/SkillsView.vue'),
         },
+        // 治理中心(P5):收件箱 / 覆盖体检 / 漂移与版本 / 血缘地图,四个 Tab 同页。
+        {
+          path: 'governance',
+          name: 'admin-governance',
+          component: () => import('../views/admin/GovernanceView.vue'),
+        },
         // 质量与成本运营台(P4):quality / usage 两个 Tab 同页。
         {
           path: 'ops',

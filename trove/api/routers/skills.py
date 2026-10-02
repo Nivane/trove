@@ -10,6 +10,8 @@ advertised and loaded on demand via ``load_skill``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trove.api.deps import require_admin
@@ -24,6 +26,20 @@ router = APIRouter()
 
 def _skills(request: Request):
     return request.app.state.skills
+
+
+async def _audit(request: Request, action: str, user: dict, status: int,
+                 details: dict[str, Any] | None = None) -> None:
+    """治理动作留痕(照 drift.py:133-138 的写法)。
+
+    技能此前是唯一「改了不留痕」的治理动作(设计稿 P5 §1 缺陷 12 /
+    附录 C.1-R5):confirm / reject / tier 三条写路由补上审计,动作名
+    ``skill.<动作>``。只在成功后写(与 drift 的 _transition 一致)。
+    """
+    await request.app.state.auth.record_audit(
+        action, user=user, method=request.method, path=request.url.path,
+        status=status, details=details,
+    )
 
 
 @router.get("/admin/skills")
@@ -106,6 +122,9 @@ async def confirm_skill(
         entry = _skills(request).confirm(name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+    await _audit(request, "skill.confirm", user, 200, {
+        "name": name, "injection_hits": entry.get("injection_hits") or [],
+    })
     return {"name": name, "status": entry["status"],
             "injection_hits": entry["injection_hits"]}
 
@@ -121,6 +140,7 @@ async def reject_skill(
         result = _skills(request).reject(name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
+    await _audit(request, "skill.reject", user, 200, {"name": name})
     return {"name": name, "status": result["status"]}
 
 
@@ -138,4 +158,7 @@ async def set_skill_tier(
         raise HTTPException(status_code=404, detail=f"skill not found: {name}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    await _audit(request, "skill.tier", user, 200, {
+        "name": name, "tier": entry["tier"],
+    })
     return {"name": name, "tier": entry["tier"]}

@@ -23,6 +23,7 @@ from trove.api.routers import (
     chat,
     drift,
     facts,
+    governance,
     kb,
     overview,
     runs,
@@ -252,11 +253,18 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         # 质量/成本运营台(设计稿 P4 §4):同档只读聚合面,require_admin 自持门禁。
         app.include_router(quality_router.router, prefix="/v1")
         app.include_router(usage_router.router, prefix="/v1")
+        # 治理中心(设计稿 P5 §4):同档只读聚合面,require_admin 自持门禁
+        # (admin/todos · admin/coverage);血缘端点在 governance.py 里单独
+        # 一只 router(用户面,与 /v1/catalog/* 同档,挂下面 user 块)。
+        app.include_router(governance.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     # 只读回放(按 run_id 取轨迹):查询面端点,NullAuth 下同样可用。
     app.include_router(runs.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
+    # 血缘只读包装(P5 §4.1③):与 catalog 同档(登录 + require_datasource),
+    # 不是管理面 —— 用户端表详情抽屉与治理中心 Tab4 共用同一个端点。
+    app.include_router(governance.lineage_router, prefix="/v1")
     app.include_router(kb.router, prefix="/v1")
     app.include_router(facts.router, prefix="/v1")
     app.include_router(semantic.router, prefix="/v1")

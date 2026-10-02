@@ -44,7 +44,12 @@
               @click="go(item.path)"
             >
               <component :is="item.icon" :size="17" class="admin-nav-icon" />
-              <span>{{ t(item.label, ui.lang) }}</span>
+              <span class="admin-nav-text">{{ t(item.label, ui.lang) }}</span>
+              <span
+                v-if="item.path === '/admin/governance' && govBadge"
+                class="admin-nav-badge"
+                :title="t('govKpiTotal', ui.lang)"
+              >{{ govBadge }}</span>
             </button>
           </div>
         </nav>
@@ -165,7 +170,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { Component } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
@@ -184,6 +189,7 @@ import {
   Gavel,
   BookOpenCheck,
   Activity,
+  ShieldCheck,
   PanelLeftClose,
   PanelLeftOpen,
   Languages,
@@ -191,6 +197,7 @@ import {
   LogOut,
 } from 'lucide-vue-next'
 import BrandMark from '../components/brand/BrandMark.vue'
+import { fetchOverview } from '../api/overview'
 import { t } from '../i18n'
 
 const auth = useAuthStore()
@@ -218,12 +225,33 @@ const systemItems: {
   label: keyof typeof import('../i18n').messages['zh']
   icon: Component
 }[] = [
+  { path: '/admin/governance', label: 'govTitle', icon: ShieldCheck },
   { path: '/admin/ops', label: 'ops', icon: Activity },
   { path: '/admin/model-config', label: 'modelConfig', icon: Cpu },
   { path: '/admin/audit', label: 'audit', icon: ScrollText },
   { path: '/admin/checkpoints', label: 'checkpoints', icon: History },
   { path: '/admin/settings', label: 'systemSettings', icon: SlidersHorizontal },
 ]
+
+/* 治理待办徽标:合计 > 0 才出现(0 与取不到都不显示 —— 空徽标没有信息,
+   而把「没取到」画成 0 是这一屏最不该犯的错,§6-A/B)。不精确时 ≥ N。 */
+const govBadge = ref<string | null>(null)
+
+async function loadGovBadge() {
+  try {
+    const payload = await fetchOverview('24h')
+    const todos = payload.todos
+    if (!todos || todos.total <= 0) {
+      govBadge.value = null
+      return
+    }
+    govBadge.value = todos.count_exact ? String(todos.total) : `≥ ${todos.total}`
+  } catch {
+    govBadge.value = null
+  }
+}
+
+onMounted(loadGovBadge)
 
 const allItems = computed(() => [...manageItems, ...systemItems])
 
@@ -252,3 +280,24 @@ async function onProfileCmd(cmd: string) {
   }
 }
 </script>
+
+<style scoped>
+/* 治理待办徽标(仅治理中心一行渲染;0 / 取不到时不出现)。 */
+.admin-nav-badge {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+.admin-nav-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>
