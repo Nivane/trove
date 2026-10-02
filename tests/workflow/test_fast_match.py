@@ -465,6 +465,52 @@ class TestNodeGates:
         )
         assert await run_node(state) == {}
 
+    async def test_correction_round_clears_stale_hit(self):
+        """回归(2026-10-02 P1 评测 Q1/Q3):回滚到 schema_linking 后重入本节点。
+
+        修正轮守卫故意 miss,但 ``fast_path``/``sql`` 还是**上一轮命中**写下的
+        —— 只返回 ``{}`` 不更新,路由器(``fast_path and sql and not error``)
+        就按「本轮命中」把刚被 F2-c 拦下的旧 SQL 原样重放,连败后无档可升,
+        题降级成 EXECUTION_ERROR(基线同题 MATCH)。miss 必须清掉命中标记;
+        ``sql`` 不清(修复链要拿失败的 SQL 当底稿)。
+        """
+        state = node_state(
+            matched_tables=["students"],
+            error_feedback="Validation rule: count-shape",
+            fast_path=True,
+            sql="SELECT COUNT(*) FROM students WHERE gender = 'M'",
+        )
+        out = await run_node(state)
+        assert out.get("fast_path") is False
+        assert "sql" not in out
+
+    async def test_router_sends_stale_hit_to_normal_path(self):
+        """路由器契约:标记清掉后必须回正常链路,绝不重放旧 SQL。"""
+        from trove.workflow.graphs import _make_route_after_fast_match
+
+        state = node_state(
+            matched_tables=["students"],
+            error_feedback="Validation rule: count-shape",
+            fast_path=True,
+            sql="SELECT COUNT(*) FROM students WHERE gender = 'M'",
+        )
+        route = _make_route_after_fast_match("query_sketch")
+        assert route(state) == "execute_sql"  # 修复前的坏行为:旧 SQL 直执行
+        merged = state.model_copy(update=await run_node(state))
+        assert route(merged) == "query_sketch"
+
+    async def test_other_miss_gates_clear_stale_hit_too(self):
+        """任何 miss 分支都得清:KB 故障轮次不该留着上一轮的命中标记。"""
+
+        class Boom:
+            async def ensure_synced(self, **kwargs):
+                raise RuntimeError("db gone")
+
+        state = node_state(
+            matched_tables=["students"], fast_path=True, sql="SELECT 1",
+        )
+        assert (await run_node(state, kb=Boom())) == {"fast_path": False}
+
     async def test_error_analysis_blocks(self):
         state = node_state(matched_tables=["students"], error_analysis="TARGET: gen_sql")
         assert await run_node(state) == {}

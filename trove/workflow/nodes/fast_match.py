@@ -369,6 +369,25 @@ def match_fast_template(
     return None
 
 
+def _miss(state: WorkflowState) -> dict[str, Any]:
+    """Miss 更新:顺手清掉上一轮遗留的快径标记。
+
+    修正轮重入(schema_linking 回滚 → fast_match)必须 miss —— 但
+    ``fast_path``/``sql`` 还是上一轮命中写下的:只 ``return {}`` 不更新,
+    路由器(``fast_path and sql and not error``)就会把**刚失败的旧 SQL**
+    原样再执行一遍。2026-10-02 P1 评测 Q1/Q3 实证:模板 SQL 被 F2-c 拦下
+    → 回滚 schema_linking → 重入 fast_match(本应 miss)→ 同一条 SQL 重放
+    → 连续同因失败 → 无档可升 → EXECUTION_ERROR(基线同题 MATCH)。
+    清的是「本轮是否命中」这一个事实。
+
+    ``sql`` 不清:修正路径要拿失败的 SQL 当底稿(``analyze_error`` 与
+    classic 生成端的 ``build_fix_prompt`` 都读 ``state.sql``),清掉它反而
+    断了修复链。首轮 miss(``fast_path`` 本来就是 False)仍返回 ``{}`` ——
+    正常 miss 的状态更新逐字节不变。
+    """
+    return {"fast_path": False} if state.fast_path else {}
+
+
 def make_fast_match(
     kb: KbService | None = None,
     connectors: ConnectorRegistry | None = None,
@@ -377,9 +396,11 @@ def make_fast_match(
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     """Build the fast-match node: hit → inject template SQL, skip the LLM path.
 
-    Miss (or any gate) → empty update: the pipeline continues to the query_sketch
-    unchanged. Correction rounds never fast-path (KB standard SQL already
-    failed; templates are the same deterministic family).
+    Miss (or any gate) → no fast path **this round**: a stale hit flag left by
+    an earlier round is cleared (``_miss``), otherwise the update is empty and
+    the pipeline continues to the query_sketch unchanged. Correction rounds
+    never fast-path (KB standard SQL already failed; templates are the same
+    deterministic family).
 
     ``semantic``: ``SemanticLayerProvider``(取 ``.model()``)。命中后按其声明的
     ``row_filter`` 注入 RLS —— 快径**不过编译器**,不在此补注入则声明层授权
@@ -388,31 +409,33 @@ def make_fast_match(
     """
 
     async def fast_match(state: WorkflowState) -> dict[str, Any]:
+        # 所有 miss 分支走 _miss():命中标记可能是上一轮留下的,不清就会
+        # 被路由器当成「本轮命中」把旧 SQL 再执行一遍(见 _miss 注释)。
         if state.error:
-            return {}
+            return _miss(state)
         cfg = config or AgentConfig()
         if not cfg.fast_path:
-            return {}
+            return _miss(state)
         if state.intent != "query":
-            return {}
+            return _miss(state)
         # 修正轮(error_feedback/error_analysis/reason 任一)不快径;也覆盖
         # 回滚到 schema_linking 后的重入(error_feedback 已置位)
         if bool(state.error_feedback or state.error_analysis or state.reason):
-            return {}
+            return _miss(state)
         if kb is None or connectors is None:
-            return {}
+            return _miss(state)
         datasource = state.datasource or connectors.default_name
         if not datasource:
             # 无数据源则 KB 快径直接 miss(原守卫语义)
-            return {}
+            return _miss(state)
         try:
             await kb.ensure_synced(default_datasource=datasource)
             hits = await kb.list_templates(datasource)
         except Exception as exc:  # KB 失败绝不停管线:静默 miss
             logger.warning("fast_match KB failure: %s", exc)
-            return {}
+            return _miss(state)
         if not hits:
-            return {}
+            return _miss(state)
         dialect = state.dialect
         try:
             adapter = await connectors.get(state.datasource or None)
@@ -421,7 +444,7 @@ def make_fast_match(
             pass
         m = match_fast_template(state.question, hits, list(state.matched_tables or []))
         if m is None:
-            return {}
+            return _miss(state)
         sql = m["sql"]
         rls_applied = False
         try:
@@ -433,10 +456,10 @@ def make_fast_match(
             # 无法确认 RLS 生效 → 放弃快径,回落编译路径(那里正常注入)。
             # 快径是优化,授权不是;宁慢不错。
             logger.warning("fast_match RLS 注入失败,放弃快径: %s", exc)
-            return {}
+            return _miss(state)
         except Exception as exc:  # noqa: BLE001 — 提供方异常同样不得静默放行
             logger.warning("fast_match 语义模型不可用,放弃快径: %s", exc)
-            return {}
+            return _miss(state)
         # 模板快径命中进 langfuse(无 Langfuse 时 no-op)
         with record_span(
             "kb.template_hit",
