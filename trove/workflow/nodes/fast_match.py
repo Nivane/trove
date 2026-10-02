@@ -12,8 +12,10 @@
   2. 聚合意图词:问题含模板聚合函数对应的意图词(how many→COUNT 等);
   3. 表锚定:模板表 ∈ schema_linking 的 matched_tables,或表名(复数归一)
      出现在问题里;
-  4. 族证据:模板措辞的 content token/年份字面量必须出现在问题里
-     (防 "maximum amount" 模板命中 "maximum duration" 问题)。
+  4. 族证据 + 残条件:模板措辞的 content token/年份字面量必须出现在问题里
+     (防 "maximum amount" 模板命中 "maximum duration" 问题);反向也要成立
+     —— 问题剥掉模板已覆盖的词后不得有剩余条件词(防 "…in East Bohemia"
+     命中无地区过滤的模板,丢掉条件交付错 SQL,见 ``_residual_covered``)。
 
 miss 静默降级到正常链路——miss 成本(多一轮 LLM)远低于误命中成本(错 SQL)。
 
@@ -203,12 +205,40 @@ def _match_bare_count(hit: ExampleHit, question: str, table: str, is_zh: bool) -
     return not leftover
 
 
+def _residual_covered(required: set[str], question: str, table: str) -> bool:
+    """残条件守卫:问题侧剥掉 结构词/聚合词/表名/模板已覆盖词 后必须无剩余。
+
+    模板 SQL 的 WHERE 只固定它自己那一个条件(枚举标签/年份),覆盖不了问题
+    里的**其余条件** —— "…staying in East Bohemia region" 命中无地区过滤的
+    枚举模板、"growth rate … between 1996 and 1997" 命中年份 SUM 模板,都是
+    *部分命中*:丢条件的错 SQL 被当成答案交付。miss 只是多一轮 LLM,误命中
+    是把错的 SQL 交付出去(本文件首段的原则),所以宁可 miss。
+
+    2026-10-02 P1 评测实证(32 题里快径命中 4 次,4 次全是部分命中):
+    0469/0471 被 F2-c 拦下 → 回滚重放耗尽;0476 无规则可拦 → 错答交付
+    (基线 MATCH → MISMATCH);0493 年份 SUM 抢答增长率问题。
+    """
+    q_tokens = (
+        _tokens(question) - _STRUCT_EN - _ALL_EN_AGG - {_norm_token(table.lower())}
+    )
+    covered = {
+        t for t in q_tokens
+        if t in required or any(
+            len(r) >= 4 and len(t) >= 4 and t[:4] == r[:4] for r in required)
+    }
+    return not (q_tokens - covered)
+
+
 def _match_enum_filter(hit: ExampleHit, question: str, table: str, is_zh: bool) -> bool:
     """枚举过滤 COUNT(`WHERE col = 'code'`):模板措辞的 content token 必须在问题里。
 
     强制 label 词("male"/"female")出现——"how many clients are male?"
     命中,"how many clients are there?" 不命中。zh 枚举模板的 code 值
     无法从自然措辞可靠匹配,一律 miss(保守)。
+
+    单向子集(required ⊆ 问题)只保证模板说的在问题里,不保证问题说的在
+    模板里:问题多出来的**条件词**(地区/年份/阈值)会被静默丢掉,故再补
+    残条件守卫(``_residual_covered``,与 ``_match_aggregate`` 同一条)。
     """
     if is_zh:
         return False
@@ -220,11 +250,13 @@ def _match_enum_filter(hit: ExampleHit, question: str, table: str, is_zh: bool) 
     )
     if not required:
         return False
-    return required <= (_tokens(question) - _STRUCT_EN)
+    if not required <= (_tokens(question) - _STRUCT_EN):
+        return False
+    return _residual_covered(required, question, table)
 
 
 def _match_aggregate(hit: ExampleHit, question: str, table: str, agg: str,
-                     is_zh: bool, has_where: bool) -> bool:
+                     is_zh: bool) -> bool:
     """聚合模板(MAX/MIN/AVG/SUM,含日期 earliest/latest):意图词 + desc 锚定。"""
     if not _has_agg_word(question, agg, is_zh):
         return False
@@ -244,23 +276,13 @@ def _match_aggregate(hit: ExampleHit, question: str, table: str, agg: str,
     )
     if not _desc_overlap(required, _tokens(question)):
         return False
-    # 残条件守卫(仅无 WHERE 模板):模板 SQL 没有过滤,就不能覆盖问题里的
-    # 任何条件——剥离 结构词+聚合词+表名+desc 重叠词 后问题仍有剩余 token
-    # ("by region"/"for gold cards"/"issued in 1996") → 拒绝快径,交正常
-    # 链路带出条件。模板 SQL 自带 WHERE 时信任模板,不做残条件检查。
-    if not has_where:
-        q_tokens = _tokens(question) - _STRUCT_EN - _ALL_EN_AGG - {
-            _norm_token(table.lower()),
-        }
-        # desc 重叠词在模板里已覆盖(共享 token 或 ≥4 前缀) → 从残条件中剔除
-        covered = {
-            t for t in q_tokens
-            if t in required or any(
-                len(r) >= 4 and len(t) >= 4 and t[:4] == r[:4] for r in required)
-        }
-        if q_tokens - covered:
-            return False
-    return True
+    # 残条件守卫:模板 SQL 覆盖不了问题里的其余条件——剥离 结构词+聚合词+
+    # 表名+模板已覆盖词 后问题仍有剩余 token("by region"/"for gold cards"/
+    # "issued in 1996")→ 拒绝快径,交正常链路带出条件。原实现只查无 WHERE
+    # 的模板("自带 WHERE 时信任模板"),但模板的 WHERE 只固定它自己那个
+    # 过滤(年份/标签),问题多出来的条件照样被丢——2026-10-02 P1 评测
+    # 0493 实证:年份 SUM 模板抢答 "growth rate … between 1996 and 1997"。
+    return _residual_covered(required, question, table)
 
 
 def _match_date_range(hit: ExampleHit, question: str, table: str, is_zh: bool) -> bool:
@@ -350,7 +372,7 @@ def match_fast_template(
         if hit.date_range:
             matched = _match_date_range(hit, q, table, is_zh)
         elif hit.aggregate or agg in ("MAX", "MIN", "AVG", "SUM"):
-            matched = _match_aggregate(hit, q, table, agg, is_zh, has_where)
+            matched = _match_aggregate(hit, q, table, agg, is_zh)
         elif has_where:
             matched = _match_enum_filter(hit, q, table, is_zh)
         else:
