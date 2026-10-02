@@ -24,6 +24,7 @@ from trove.api.routers import (
     drift,
     facts,
     kb,
+    overview,
     runs,
     semantic,
     semantic_query,
@@ -244,6 +245,8 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(decisions_router.router, prefix="/v1")
         # 漂移面是管理动作(改状态、下豁免、承接外部声明),与 semantic 同档。
         app.include_router(drift.router, prefix="/v1")
+        # 总览聚合面同属管理动作(require_admin 自持门禁)。
+        app.include_router(overview.router, prefix="/v1")
 
     app.include_router(chat.router, prefix="/v1")
     # 只读回放(按 run_id 取轨迹):查询面端点,NullAuth 下同样可用。
