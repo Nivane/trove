@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -714,6 +715,24 @@ def _edge_key(edge: JoinEdge) -> tuple:
     ]))
 
 
+def _edge_components(edges: list[JoinEdge]) -> int:
+    """显式边集的连通分量数(顶点并查集,大小写不敏感)。"""
+    parent: dict[str, str] = {}
+
+    def _find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for e in edges:
+        ra, rb = _find(e.from_.lower()), _find(e.to.lower())
+        if ra != rb:
+            parent[ra] = rb
+    return len({_find(v) for v in parent})
+
+
 def _unique_edges(edges: list[JoinEdge]) -> list[JoinEdge]:
     out: list[JoinEdge] = []
     seen: set[tuple] = set()
@@ -756,6 +775,229 @@ def _literal_items(value: Any) -> list[Any]:
             return [p.strip() for p in s[1:-1].split(",") if p.strip()]
         return [s] if s else []
     return [value]
+
+
+def _safe_display(text: str, fallback: str = "expr") -> str:
+    """展示名安全化:非标识符字符折叠为 ``_``。
+
+    投影展示名会被窗口包装(A2 分析)当作**列别名**拼进外层 SELECT,而
+    A② 表达式列的尾部(``A13 - district.A12) / district.A12) * 100``)含
+    空格与括号——未清洗会拼出非法 SQL 别名。
+    """
+    cleaned = re.sub(r"[^0-9A-Za-z_]+", "_", str(text or "")).strip("_")
+    if not cleaned:
+        return fallback
+    if cleaned[0].isdigit():
+        cleaned = f"c_{cleaned}"
+    return cleaned[:48]
+
+
+def _extreme_rank(ex: dict[str, Any]) -> int:
+    """``extreme.rank`` → 正整数序数(1 = 最大/最小本身);缺省/非法/非正 → 1。"""
+    try:
+        rank = int(str(ex.get("rank") or 1).strip())
+    except (TypeError, ValueError):
+        return 1
+    return rank if rank >= 1 else 1
+
+
+# ── 标量表达式列通道(闭语法)───────────────────────────────────
+#
+# 计划把算式/带函数的标量列写进 answer_columns(0482 的
+# ``((district.A13 - district.A12) / district.A12) * 100``)时,旧投影循环
+# 对任何含 ``(`` 的无签名列一律静默跳过——骨架丢列,生成侧无从知道它被丢。
+# 这里给出一条**闭语法**通道:sqlglot 严格解析 → 节点白名单 → 每列经
+# ``_resolve_field`` 落到声明字段 → 用自己的渲染器**重建**文本。
+#
+# 绝不回放 LLM 原文(回放会把注入/坏引用带进权威 SQL);白名单刻意收窄——
+# 收窄的代价是软 MISS,放宽的代价是权威错 SQL。聚合(AggFunc)、子查询、
+# 别名、未知函数、解析不到声明字段的列一律拒绝;CURRENT_TIMESTAMP /
+# CURRENT_DATE 按标准渲染成带括号的调用形式(0498 的年龄派生列)。
+
+#: 白名单函数:节点类型 → (SQL 名, 最少实参, 最多实参)。
+_SCALAR_FUNCS: dict[type, tuple[str, int, int]] = {
+    exp.Year: ("YEAR", 1, 1),
+    exp.Month: ("MONTH", 1, 1),
+    exp.Day: ("DAY", 1, 1),
+    exp.Round: ("ROUND", 1, 2),
+    exp.Abs: ("ABS", 1, 1),
+    exp.Coalesce: ("COALESCE", 1, 99),
+    exp.Nullif: ("NULLIF", 2, 2),
+}
+_SCALAR_BINOPS: dict[type, str] = {
+    exp.Add: "+", exp.Sub: "-", exp.Mul: "*", exp.Div: "/", exp.Mod: "%",
+}
+#: CAST 目标类型白名单(数值/字符串/时间);其余类型(如 JSON/ARRAY)不认。
+_SCALAR_CAST_TYPES = frozenset({"DOUBLE", "DECIMAL", "SIGNED", "CHAR", "DATETIME"})
+_SCALAR_MAX_DEPTH = 32
+
+
+def _scalar_func_args(node: Any) -> list[Any]:
+    """函数实参列表(按节点形状显式取槽:Anonymous 的 ``this`` 是函数名而非
+    实参;ROUND 的精度在 ``decimals``、NULLIF 的第二参在 ``expression``)。"""
+    if isinstance(node, exp.Anonymous):
+        return [a for a in node.expressions if a is not None]
+    if isinstance(node, exp.Round):
+        args: list[Any] = [node.this, node.args.get("decimals")]
+    elif isinstance(node, exp.Coalesce):
+        args = [node.this, *node.expressions]
+    elif isinstance(node, exp.Nullif):
+        args = [node.this, node.args.get("expression")]
+    else:
+        args = [node.this]
+    return [a for a in args if a is not None]
+
+
+def _scalar_render(node: Any, compiler: Any, tables: set[str], depth: int = 0) -> str | None:
+    """闭语法重建:白名单节点 → 文本;任何越界节点 → None(整列弃用)。
+
+    列一律渲染成 ``dataset.field.expression``(强制表限定,不复用
+    ``_qualified``:后者的"已限定就跳过"判定会被计划文本里的错限定词骗过);
+    二元运算统一加括号(重建文本与计划文本的括号数可能不同,语义等价)。
+    """
+    if depth > _SCALAR_MAX_DEPTH:
+        return None
+    if isinstance(node, exp.Column):
+        if node.catalog or node.db or not node.name:
+            return None  # 三段以上限定 / 无名列:超出声明模型的两级命名
+        ref = f"{node.table}.{node.name}" if node.table else str(node.name)
+        resolved = compiler._resolve_field(ref, compiler._matched_set)
+        if resolved is None:
+            return None  # 解析不到声明字段(歧义/未声明)→ 弃用整列
+        tables.add(resolved[0])
+        return f"{resolved[0]}.{resolved[1].expression}"
+    if isinstance(node, exp.Paren):
+        return _scalar_render(node.this, compiler, tables, depth + 1)
+    if isinstance(node, exp.Neg):
+        inner = _scalar_render(node.this, compiler, tables, depth + 1)
+        return f"-{inner}" if inner is not None else None
+    if isinstance(node, exp.Literal):
+        return str(node.this) if node.is_number else None
+    if isinstance(node, exp.CurrentTimestamp):
+        return "CURRENT_TIMESTAMP()"
+    if isinstance(node, exp.CurrentDate):
+        return "CURRENT_DATE()"
+    op = _SCALAR_BINOPS.get(type(node))
+    if op is not None:
+        left = _scalar_render(node.this, compiler, tables, depth + 1)
+        right = _scalar_render(node.expression, compiler, tables, depth + 1)
+        if left is None or right is None:
+            return None
+        return f"({left} {op} {right})"
+    if isinstance(node, exp.Cast):
+        to = node.args.get("to")
+        # DType 是 str 枚举:``str(DType.DOUBLE)`` 给 "DType.DOUBLE",类型名
+        # 取 ``.value``(参数化类型如 DECIMAL(10,2) 的基础类型同样落在 .value)。
+        base = str(getattr(getattr(to, "this", None), "value", "") or "").upper()
+        if base not in _SCALAR_CAST_TYPES:
+            return None
+        inner = _scalar_render(node.this, compiler, tables, depth + 1)
+        if inner is None:
+            return None
+        # 忠实保留计划里已有的 CAST(类型与精度原样;绝不自动补 CAST)
+        return f"CAST({inner} AS {to.sql()})"
+    spec = _SCALAR_FUNCS.get(type(node))
+    if spec is not None and not isinstance(node, exp.AggFunc):
+        name, lo, hi = spec
+        args = _scalar_func_args(node)
+        if not (lo <= len(args) <= hi):
+            return None
+        rendered = [_scalar_render(a, compiler, tables, depth + 1) for a in args]
+        if any(r is None for r in rendered):
+            return None
+        return f"{name}({', '.join(rendered)})"
+    return None
+
+
+def _scalar_expr_analyze(
+    expr_text: Any, compiler: Any,
+) -> tuple[str, frozenset[str]] | None:
+    """标量表达式 → (重建文本, 引用的数据集集);越出闭语法 → None。
+
+    至少引用一个声明字段才认(纯字面量列不是"列");顶层形态(Select/
+    Subquery/Alias/Union/Star)一律拒绝。
+    """
+    text = str(expr_text or "").strip()
+    if not text:
+        return None
+    try:
+        tree = parse_one(text)
+    except Exception:
+        return None
+    if tree is None or isinstance(
+        tree, (exp.Alias, exp.Subquery, exp.Select, exp.Query, exp.Union, exp.Star)
+    ):
+        return None
+    tables: set[str] = set()
+    rendered = _scalar_render(tree, compiler, tables)
+    if rendered is None or not tables:
+        return None
+    return rendered, frozenset(tables)
+
+
+def scalar_expr_ref(expr_text: Any, compiler: Any, dialect: str = "sqlite") -> str | None:
+    """标量表达式列 → **重建后**的 SQL 文本;越出闭语法 → None(A② 入口)。
+
+    ``dialect`` 仅为调用侧签名兼容而保留:重建走本模块自己的渲染器
+    (列用声明字段表达式、函数名大写、字面量原样),不依赖方言解析/生成。
+    """
+    analyzed = _scalar_expr_analyze(expr_text, compiler)
+    return analyzed[0] if analyzed is not None else None
+
+
+def _looks_like_formula(text: Any) -> bool:
+    """形态判定:该文本看起来**想表达一个算式/函数列**(而非占位符)。
+
+    只在标量通道解析失败后决定"要不要为这一列记软 MISS":``number(*)`` /
+    ``min(*)`` 这类无实参占位符保持静默(计划噪声,同旧行为),而
+    ``foo(district.A2)`` / ``a + b`` / ``CAST(...)`` / ``(SELECT ...)`` 是真的
+    丢了一个投影,必须记 ``unresolved_answer_column`` 让生成侧看见缺口。
+    """
+    s = str(text or "").strip()
+    if not s:
+        return False
+    try:
+        tree = parse_one(s)
+    except Exception:
+        return bool(re.search(r"[+\-*/%]", s))
+    for node in tree.walk():
+        if isinstance(
+            node, (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.Neg, exp.Cast)
+        ):
+            return True
+        if isinstance(node, (exp.Subquery, exp.Select, exp.Query, exp.Union)):
+            # 子查询列:计划真想投影一个值(不是占位符)——通道外必须记账
+            return True
+        if isinstance(node, exp.Func):
+            args = _scalar_func_args(node)
+            if not args or any(not isinstance(a, exp.Star) for a in args):
+                return True
+    return False
+
+
+def agg_owned_cond_keys(
+    exprs: Iterable[str],
+) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
+    """聚合表达式集 → 其**内部谓词**的归一化条件键集合(条件所有权)。
+
+    这些谓词是聚合定义的一部分(占比/条件聚合的分子条件),不是行级过滤:
+    计划里往往同一谓词还有一条孪生 conditions 条目,冻结进骨架 WHERE 后与
+    生成侧"分子进聚合"的重写冲突(0476/0495 型)。键口径与 ``_skeleton_where``
+    逐字一致(共用 ``_conds_of``),**只用于所有权判定**(命中即跳过该行级
+    条件),放宽安全——键比对不会把条件写进 SQL。
+
+    候选内部的 ``AND`` 复合谓词拆成叶子逐条进集合(``_cond_keys_of``):
+    计划侧同一谓词可能写成一条孪生条件、也可能拆成多条,两侧都按叶子对账。
+    """
+    keys: set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]] = set()
+    for text in exprs:
+        sig = _agg_signature(str(text))
+        if sig is None:
+            continue
+        for _fn, _cols, _dist, conds in sig:
+            for cond_text in conds:
+                keys |= _cond_keys_of(cond_text)
+    return keys
 
 
 #: 值路由(A4b)不认数字字面量:枚举码表里也可能出现纯数字键(如 A7 的
@@ -938,6 +1180,8 @@ MISS_REASONS = frozenset({
     "analysis_invalid",
     "limit_without_order",
     "guardrail_rejected",
+    "extreme_rank_unsupported",
+    "extreme_rank_scope_unsupported",
 })
 
 # 硬 MISS(结构性,拒绝是保护):放行会产出行倍增/笛卡尔/引用未覆盖表/
@@ -983,6 +1227,10 @@ SOFT_MISS_REASONS = frozenset({
     "analysis_order_unresolved",
     "analysis_time_required",
     "analysis_invalid",
+    # A①:极值声明(plan.extreme)在保守边界外不可消费——极值列不可解析 /
+    # 取数集横跨其它表且 scope 未显式声明 global。计划其余部分照常编译。
+    "extreme_rank_unsupported",
+    "extreme_rank_scope_unsupported",
 })
 
 
@@ -1768,23 +2016,15 @@ class SemanticCompiler:
 
     @staticmethod
     def _soft_agg_cond_keys(
-        miss_candidates: list[str],
+        candidates: list[str],
     ) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
-        """软 MISS 聚合候选内部条件 → 归一化条件键集合。
+        """聚合候选内部条件 → 归一化条件键集合。
 
-        候选内部的 ``AND`` 复合谓词拆成叶子逐条进集合(``_cond_keys_of``):
-        计划侧同一谓词可能写成一条孪生条件,也可能拆成多条 —— 两侧都按叶子
-        对账,单条与复合两种拼法才互认。
+        薄包装(兼容入口):逻辑在模块级 ``agg_owned_cond_keys`` —— 条件所有权
+        只取决于"该谓词是否已是某个候选定义的一部分",与候选是否命中了声明
+        度量无关(A④:命中的 share 候选同样持有内部谓词)。
         """
-        keys: set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]] = set()
-        for cand in miss_candidates:
-            sig = _agg_signature(cand)
-            if sig is None:
-                continue
-            for _fn, _cols, _dist, conds in sig:
-                for cond_text in conds:
-                    keys |= _cond_keys_of(cond_text)
-        return keys
+        return agg_owned_cond_keys(candidates)
 
     # ── 扇出提升(A1.1)/ having 折叠(A1d)─────────────────────────
 
@@ -1865,6 +2105,103 @@ class SemanticCompiler:
             str(g.get("reason") or "").startswith("analysis_")
             for g in self._soft_misses
         )
+
+    # ── 极值消费(A①,plan.extreme)──────────────────────────────
+    #
+    # query_sketch 的 extreme 声明("最高的 X / 第二大的 Y")此前被编译器
+    # 完全忽略:骨架既没有 ORDER BY+LIMIT 1,也没有极值谓词 —— 计划里的
+    # 选择语义被静默丢给生成侧,骨架与计划在"选哪一行"上不一致。
+    # 消费规则(保守,越界一律**软 MISS**,绝不硬拒):
+    #   投影为空 → 兜底 MAX/MIN(极值列);
+    #   投影已含 FUNC(极值列) → 已表达,不动;
+    #   rank ≥ 2,或聚合投影不含极值列 → 行级选择谓词
+    #     ``col = (SELECT col FROM t [WHERE 同表条件] ORDER BY col DESC LIMIT 1
+    #     [OFFSET n-1])``;
+    #   纯维度投影 + rank = 1 → ``ORDER BY col DESC`` + LIMIT 1;
+    #   显式 ordering / analysis 存在 → 整体跳过(更强的呈现声明优先)。
+
+    #: scope 文本里的显式"全局"标记 → 极值的取数集是**未过滤**的表。
+    _EXTREME_GLOBAL_MARKERS = (
+        "global", "全局", "among all", "all districts", "all rows",
+        "entire table", "whole table", "unfiltered",
+    )
+
+    def _extreme_target(
+        self, plan: dict[str, Any],
+    ) -> tuple[str, str, Any, int, str] | None:
+        """plan.extreme → (func, dataset, field, rank, scope);不可消费 → None。
+
+        - 显式 ``ordering`` 非空 → 整体跳过(显式排序是更强的声明,叠加会
+          产出互相矛盾的 ORDER BY);
+        - ``analysis`` 存在 → 整体跳过(窗口包装自己决定排序/分区;分析题
+          普遍带 extreme 噪声,记软 MISS 会把一批分析题无谓降级 → 只记 log);
+        - func 只认 max/min(其余形态维持旧行为:忽略);
+        - column 必须经 ``_resolve_field`` 落到**声明字段**;聚合/metric
+          形态(``avg(district.A11)``)解析不到 → 软 MISS
+          ``extreme_rank_unsupported``(极值列不在声明模型内,选择谓词无从构造);
+        - rank 取 ``extreme.rank``(节点车道从问句序数填充),缺省/非法 → 1。
+        """
+        ex = plan.get("extreme")
+        if not isinstance(ex, dict) or not ex:
+            return None
+        if parse_ordering(plan.get("ordering")):
+            logger.debug("semantic-layer: extreme skipped, explicit ordering wins")
+            return None
+        if plan.get("analysis"):
+            logger.debug("semantic-layer: extreme ignored under analysis wrapping")
+            return None
+        func = str(ex.get("func") or "").strip().lower()
+        if func not in ("max", "min"):
+            return None
+        col_ref = str(ex.get("column") or "").strip()
+        if not col_ref:
+            return None
+        resolved = self._resolve_field(col_ref, self._matched_set)
+        if resolved is None:
+            self._record_soft("extreme_rank_unsupported", col_ref)
+            return None
+        return (
+            func, resolved[0], resolved[1], _extreme_rank(ex),
+            str(ex.get("scope") or ""),
+        )
+
+    def _extreme_selection_predicate(
+        self,
+        func: str,
+        dataset: str,
+        fld: Any,
+        rank: int,
+        scope: str,
+        filters: list[tuple[str, Any, str, Any]],
+    ) -> str | None:
+        """极值行级选择谓词:外层 ``col = (子查询取第 rank 个极值)``。
+
+        子查询自带 ORDER BY/LIMIT/OFFSET(方言通用);**同表**条件复制进
+        子查询(把"极值"限定在计划声明的过滤集内)。条件若落在别的表上而
+        scope 未显式声明全局 → 保守放弃(软 MISS ``extreme_rank_scope_
+        unsupported``):跨表条件无法复制进子查询,而不复制会在**未过滤集**
+        上取极值(张冠李戴,比没有谓词更坏)。
+        """
+        col = _qualified(dataset, fld.expression)
+        global_scope = any(
+            m in str(scope or "").lower() for m in self._EXTREME_GLOBAL_MARKERS)
+        if not global_scope and any(
+            t.lower() != dataset.lower() for t, _f, _op, _v in filters
+        ):
+            self._record_soft("extreme_rank_scope_unsupported", col)
+            return None
+        same_conds = [] if global_scope else [
+            f"{_qualified(t, f.expression)} {op.upper()} {_literal(v)}"
+            for t, f, op, v in filters if t.lower() == dataset.lower()
+        ]
+        direction = "DESC" if func == "max" else "ASC"
+        sub = f"SELECT {col} FROM {dataset}"
+        if same_conds:
+            sub += " WHERE " + " AND ".join(same_conds)
+        sub += f" ORDER BY {col} {direction} LIMIT 1"
+        if rank > 1:
+            sub += f" OFFSET {rank - 1}"
+        return f"{col} = ({sub})"
 
     def _repair_explicit_joins(
         self, joins_value: Any, needed: set[str],
@@ -1958,6 +2295,64 @@ class SemanticCompiler:
                 return None
             out.extend(best[0])
         return out
+
+    @staticmethod
+    def _prune_explicit_to_needed(
+        edges: list[JoinEdge], needed: set[str], anchor: str,
+    ) -> list[JoinEdge]:
+        """显式 joins 通道的 needed 感知剪枝:删掉**只起连接作用**的叶子边。
+
+        BFS 通道一直按 needed 剪枝,显式通道此前完全不看 needed —— 计划把
+        共享维度(district/disp)写进 joins 就一律联进去(0492 型:account
+        只是 district 的另一个叶,联上纯属多余,还会白白触发基数判定)。
+        剪枝规则刻意保守,两条不变量:
+
+        1. **只删叶子**:端点不在 keep 里且在当前边表里度数为 1 的边才可删,
+           迭代到不动点 —— 删叶子保连通,两棵子树之间的桥(度数 ≥ 2 的中间
+           点)照常保留,也不会产生"树序 JOIN 引用未入表"的非法产物;
+        2. **锚表的声明连边一律不剪**:锚表是 FROM 根,它的连边定义了查询的
+           粒度与行集(内连接会筛行)—— 计划显式声明它,就没有"它多余"这个
+           判断的立足点;而且剪掉锚的连边会破坏"FROM 锚表 + 树序 JOIN"的
+           骨架不变量(树从别的表起根)。这条也保证剪枝结果恒包含锚表,
+           即恒有锚候选 —— 不存在剪空后静默回退 BFS 的路径。
+
+        needed 为空 → 恒等(无从判断需要什么);显式边集本身**不连通**
+        (两棵以上互不相连的树)→ 恒等:计划声明的路由整体不成树,"哪棵
+        多余"无从判断,剪掉一整棵等于替计划猜它想联哪个组件 —— 原样返回
+        后由左深树构筑失败维持今日 ambiguous_join_path 硬 MISS。
+        """
+        if not needed:
+            return list(edges)
+        if _edge_components(edges) > 1:
+            return list(edges)
+        anchor_l = str(anchor).lower()
+        keep = {str(t).lower() for t in needed} | {anchor_l}
+
+        def _anchor_incident(e: JoinEdge) -> bool:
+            return anchor_l in (e.from_.lower(), e.to.lower())
+
+        current = list(edges)
+        changed = True
+        while changed and current:
+            changed = False
+            degree: dict[str, int] = {}
+            for e in current:
+                degree[e.from_.lower()] = degree.get(e.from_.lower(), 0) + 1
+                degree[e.to.lower()] = degree.get(e.to.lower(), 0) + 1
+
+            def _prunable(e: JoinEdge) -> bool:
+                if _anchor_incident(e):
+                    return False
+                for t in (e.from_, e.to):
+                    if t.lower() not in keep and degree[t.lower()] == 1:
+                        return True
+                return False
+
+            nxt = [e for e in current if not _prunable(e)]
+            if len(nxt) != len(current):
+                current = nxt
+                changed = True
+        return current
 
     @staticmethod
     def _agg_candidates(plan: dict[str, Any]) -> list[str]:
@@ -2089,7 +2484,16 @@ class SemanticCompiler:
 
         def _add(ref: Any) -> None:
             ref = str(ref or "").strip()
-            if not ref or ref == "*" or "(" in ref:
+            if not ref or ref == "*":
+                return
+            if "(" in ref:
+                # 表达式形态引用(聚合/算式列):闭语法标量通道能解析出其中
+                # 已限定列的**数据集**(0482 的算式列把 district 拉进 needed);
+                # 解析不出来(纯聚合式 / 非闭语法)才跳过——补不进来的表由
+                # 投影表守卫(unreachable_table)兜底,这里只做"能确定就补"。
+                analyzed = _scalar_expr_analyze(ref, self)
+                if analyzed is not None:
+                    needed.update(analyzed[1])
                 return
             if "." in ref:
                 needed.add(ref.split(".", 1)[0].strip())
@@ -2112,6 +2516,11 @@ class SemanticCompiler:
         tg = plan.get("time_grain")
         if isinstance(tg, dict):
             _add(tg.get("field"))
+        ex = plan.get("extreme")
+        if isinstance(ex, dict):
+            # A① 补收:极值列所在表进 needed —— 排序片段/选择谓词都要引用
+            # 它,漏表会让产物引用连接树外的列(静默非法 SQL)。
+            _add(ex.get("column"))
         for col, _dir in parse_ordering(plan.get("ordering")) or []:
             _add(col)
         analysis = plan.get("analysis")
@@ -2290,10 +2699,14 @@ class SemanticCompiler:
             # 聚合候选有签名但无兼容度量 → 软 MISS(跳过该候选继续编译,
             # 已命中的度量照常进骨架;全都没命中 → nothing_compilable 兜底)。
             self._record_soft("no_metric_match", cand)
-        # A3b 条件所有权:软 MISS 聚合候选内部的谓词(FILTER/CASE 的分子
-        # 条件)不进骨架 WHERE —— 它们属于聚合定义,计划里的孪生行级条件
-        # 冻结进骨架后与生成侧的分子重写冲突(骨架保真校验打回正确 SQL)。
-        soft_agg_keys = self._soft_agg_cond_keys(miss_candidates)
+        # A3b/A④ 条件所有权:聚合候选(FILTER/CASE 的分子条件)内部的谓词
+        # 不进骨架 WHERE —— 它们属于聚合定义,计划里的孪生行级条件冻结进
+        # 骨架后与生成侧的分子重写冲突(骨架保真校验打回正确 SQL)。
+        # A④:面扩到**命中的**候选 —— 所有权取决于"该谓词是否已是某个候选
+        # 定义的一部分",与候选是否对上声明度量无关;只喂未命中候选时,
+        # 计划命中声明 share 度量后孪生行级条件仍会被冻结(0495 型冲突)。
+        soft_agg_keys = agg_owned_cond_keys(
+            [c for c, _m in matched_pairs] + list(miss_candidates))
         is_agg = bool(matched_pairs)
         if agg_declared and not is_agg:
             self._record_soft("no_metric_match", str(plan.get("aggregation") or ""))
@@ -2367,6 +2780,26 @@ class SemanticCompiler:
             if "(" in ac:
                 metric = by_candidate.get(ac)
                 if metric is None:
+                    # A② 标量表达式列通道:算式/带函数的标量列(0482)按闭语法
+                    # 解析 + **重建**后进投影(列强制表限定、函数名大写、
+                    # 已有 CAST 原样保留);通道外一律弃用 —— 重建失败且形态
+                    # 像算式才记软 MISS(number(*)/min(*) 这类无实参占位符
+                    # 保持静默,同旧行为;已进度量通道的候选不重复记账)。
+                    analyzed_expr = _scalar_expr_analyze(ac, self)
+                    if analyzed_expr is not None:
+                        expr_sql, _expr_tables = analyzed_expr
+                        if expr_sql not in projections:
+                            projections.append(expr_sql)
+                            gb_exprs.append(expr_sql)
+                            proj_display.append(_safe_display(
+                                str(ac).split(".", 1)[-1]))
+                            # 与 dim/metric 等长对齐的占位引用(分析包装按位置
+                            # 取列名/分区,不解析 __expr__ 内容)
+                            proj_ref.append(("__expr__", expr_sql))
+                            last_dim_idx = len(projections) - 1
+                        continue
+                    if _looks_like_formula(ac) and _agg_signature(ac) is None:
+                        self._record_soft("unresolved_answer_column", ac)
                     continue  # 无签名占位表达式(如 number(*))→ 跳过,同旧行为
                 proj = self._inline_metric(metric)
                 if isinstance(proj, CompileMiss):
@@ -2440,6 +2873,61 @@ class SemanticCompiler:
                 gb_exprs.insert(pos, tg_expr)
                 proj_display.insert(pos, tg_grain)
                 proj_ref.insert(pos, ("__tg__", tg_grain))
+
+        # ── A① 极值落点(plan.extreme)──────────────────────────────
+        # 三条互斥路径(详见 _extreme_target):
+        #   投影兜底 / 排序分支(rank=1 + 纯维度投影)/ 选择谓词分支。
+        # 排序分支的产物在排序装配处插 order_parts 首位并把 limit 兜成 1;
+        # 谓词分支的产物在 having 折叠之后追加进 where_parts(外层语义:
+        # "那一行"的极值列 = 子查询选出的极值)。
+        ex_target = self._extreme_target(plan)
+        extreme_order: str | None = None
+        ex_predicate: tuple[str, str, Any, int, str] | None = None
+        if ex_target is not None:
+            func_e, ds_e, fld_e, rank_e, scope_e = ex_target
+            extreme_col = _qualified(ds_e, fld_e.expression)
+            if not projections:
+                # 投影兜底:计划只给了 extreme(0475 的 min(*)),没有可编译
+                # 投影 → 用 FUNC(极值列)作唯一投影,避免整份计划以
+                # nothing_compilable 硬 MISS 收场。
+                projections.append(f"{func_e.upper()}({extreme_col})")
+                proj_display.append(_safe_display(str(fld_e.name)))
+                proj_ref.append((ds_e, fld_e))
+                is_agg = True
+            covered = {
+                (ds_e.lower(), str(fld_e.name).lower()),
+                (ds_e.lower(), str(fld_e.expression).lower()),
+            }
+            agg_covered = False
+            for p in projections:
+                col_p = self._single_agg_column(p, frozenset({func_e}))
+                if col_p is not None and (col_p[0].lower(), col_p[1].lower()) in covered:
+                    agg_covered = True
+                    break
+            has_dim = any(
+                isinstance(r, tuple) and len(r) == 2
+                and r[0] not in ("__tg__", "__expr__")
+                for r in proj_ref
+            )
+            spine_possible = (
+                tg_field is not None and self._model.time_spine is not None)
+            if agg_covered:
+                # 投影已表达极值本身(``FUNC(极值列)``)→ 不做排序/谓词:
+                # 叠加 LIMIT 1 会把"每组一条聚合结果"截成一条。
+                pass
+            elif rank_e >= 2:
+                # 第 n 个极值:ORDER BY+LIMIT n 在多组聚合下不可表达,
+                # 行级选择谓词(OFFSET n-1)才是无歧义形式。
+                ex_predicate = ex_target
+            elif not is_agg and has_dim and not spine_possible:
+                # 纯维度投影 + rank=1:"取那一行"= 按极值列排序 + LIMIT 1。
+                # time_spine 可接管该计划时不走此路(脊柱会自建 ORDER BY,
+                # 与之叠加得到的是"最早一期"而非极值行 → 落进谓词分支)。
+                extreme_order = f"{extreme_col} {'DESC' if func_e == 'max' else 'ASC'}"
+            elif is_agg:
+                # 聚合投影但不含极值列(0486 型:count(*) + 第 n 大维度值):
+                # 行级选择谓词(rank=1 → OFFSET 0)。
+                ex_predicate = ex_target
 
         filters: list[tuple[str, Any, str, Any]] = []
         for cond in plan.get("conditions") or []:
@@ -2614,6 +3102,12 @@ class SemanticCompiler:
             if explicit is None:
                 return CompileMiss(
                     "ambiguous_join_path", "explicit joins reference undeclared edges")
+            # A③ needed 感知剪枝:显式通道同样只保留"真正被引用"的子树
+            # (BFS 通道一直如此;显式通道此前会把计划误列的共享维度一律联上)。
+            # A5a 修复出的边集同样过这道闸。剪枝只删叶子、且锚表连边恒留
+            # (见 _prune_explicit_to_needed)—— 显式通道的判定强度
+            # (ambiguous_join_path / 基数守卫)与"不回退 BFS"都不变。
+            explicit = self._prune_explicit_to_needed(explicit, needed, anchor)
             tree = None
             for cand in _anchor_candidates(anchor, join_tables, explicit):
                 tree = _left_deep_tree(explicit, cand)
@@ -2645,6 +3139,21 @@ class SemanticCompiler:
                 # P2:root→matched 存在多条简单路径,BFS 先到先得不可审计 → 严格 MISS
                 return CompileMiss("ambiguous_join_path", ", ".join(matched))
             joins = resolution.tree_edges if (not resolution.empty and resolution.tree_edges) else []
+
+        # A① 可达性闸:极值列所在的表必须在**最终连接树**里(needed 补收已
+        # 尽力),否则排序片段/选择谓词会引用 FROM 里不存在的表(静默非法
+        # SQL)。不可达 → 放弃极值消费(记 log),其余编译照常。
+        if ex_target is not None and ex_target[1].lower() not in (
+            {anchor.lower()}
+            | {e.from_.lower() for e in joins}
+            | {e.to.lower() for e in joins}
+        ):
+            logger.debug(
+                "semantic-layer: extreme dropped, table %s outside join tree",
+                ex_target[1],
+            )
+            extreme_order = None
+            ex_predicate = None
 
         # A1.1 扇出提升:1:N 联路径把「1」端的行按多端重复,声明的
         # COUNT(t.pk) 直接内联会得到行对数(0470:2645 vs 77)→ PK 上补
@@ -2685,6 +3194,16 @@ class SemanticCompiler:
                     f"{_qualified(tbl, col)} {h_op.upper()} {_literal(h_value)}")
             else:
                 having_parts.append(f"{expr} {h_op.upper()} {_literal(h_value)}")
+
+        # A① 极值选择谓词(rank ≥ 2,或聚合投影不含极值列):外层 WHERE 限定
+        # "极值那一行"的极值列 = 子查询选出的第 rank 个极值。放在 here
+        # (having 折叠之后、RLS 之前):条件集已定型,复制进子查询的同表
+        # 条件才是计划声明的过滤集。
+        if ex_predicate is not None:
+            extreme_pred = self._extreme_selection_predicate(
+                *ex_predicate, filters)
+            if extreme_pred:
+                where_parts.append(extreme_pred)
 
         # 声明层行级安全(RLS):数据集 row_filter 注入顶层 WHERE。数据集 JOIN
         # 均为内连接(仅时间轴用 LEFT JOIN,作用在派生表上),顶层过滤与联前
@@ -2735,6 +3254,10 @@ class SemanticCompiler:
         # 排序不产生新拒绝向量,gen_sql 仍会收到 plan 文本里的 ordering 线索。
         agg_by_norm = {_norm_expr_text(c): m for c, m in by_candidate.items()}
         order_parts: list[str] = []
+        if extreme_order is not None:
+            # A① rank=1 的"最高/最低那一行":排序首位 + LIMIT 1(limit 装配
+            # 处兜底,见下)。计划显式给了 limit 时保留其值(取前 N 名)。
+            order_parts.append(extreme_order)
         for column, direction in (parse_ordering(plan.get("ordering")) or []):
             metric_o = (
                 self._metric_by_name(column)
@@ -2770,6 +3293,10 @@ class SemanticCompiler:
         # 到外层(窗口 ORDER BY 由 analysis 决定),LIMIT 也只落在外层。
         analysis = plan.get("analysis")
         limit = plan.get("limit")
+        if limit is None and extreme_order is not None:
+            # A① 排序分支:"最高的那一行" = 排序首位 + LIMIT 1;计划显式
+            # 给了 limit 时不覆盖(取前 N 名)。
+            limit = 1
         # 时间轴空档补全(time_spine):模型声明 + 时间分桶 + 可从条件推导
         # 时间范围 → 包一层 spine LEFT JOIN 填充缺期。analysis 存在时不
         # 叠加(窗口包装优先);范围不可推/无 spine → 常规路径(无填充)。
@@ -2886,10 +3413,14 @@ class SemanticCompiler:
                 m = self._metric_by_expression(target_metric)
             if m is None or m.name != proj_ref[m_idx].name:
                 return CompileMiss("analysis_metric_unknown", target_metric)
-        if atype == "share" and len(proj_ref) == 1:
-            # 退化守卫:内层没有任何维度投影时,share 的窗口 SUM OVER () 恒等于
-            # 该行自身 → 恒 1.0(0495:单组 COUNT 包 share)—— 无信息窗口不是
-            # 正确包装。记软 MISS 回退内层聚合,交生成通道按 plan 文本处理。
+        if atype == "share" and not [
+            i for i in range(len(proj_ref)) if i != m_idx
+        ]:
+            # 退化守卫:内层除目标度量外**没有任何其它投影**时,share 的窗口
+            # SUM OVER () 恒等于该行自身 → 恒 1.0(0495:单组 COUNT 包 share)
+            # —— 无信息窗口不是正确包装。记软 MISS 回退内层聚合,交生成通道
+            # 按 plan 文本处理。A② 表达式列/时间分桶列都算"其它投影"(窗口
+            # 有信息量),判据从"投影数 == 1"改成"除度量外空"是同义的显式化。
             return CompileMiss(
                 "analysis_invalid", "share without dimension projection")
 

@@ -41,6 +41,10 @@ CASE_A = ("SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
           " * 100.0 / NULLIF(SUM(loan.amount), 0)")
 CASE_C = ("SUM(CASE WHEN loan.status = 'C' THEN loan.amount ELSE 0 END)"
           " * 100.0 / NULLIF(SUM(loan.amount), 0)")
+#: CAST 变体:KB 生成器写占比时常给分子/分母补 CAST(数值安全),而计划侧候选
+#: 往往不带 —— 两者必须互认(等价关系不随拼法;声明表达式始终是权威)。
+CASE_A_CAST = ("SUM(CASE WHEN loan.status = 'A' THEN CAST(loan.amount AS DOUBLE) ELSE 0 END)"
+               " * 100.0 / NULLIF(SUM(CAST(loan.amount AS DOUBLE)), 0)")
 
 
 def _field(name, datatype=None):
@@ -170,6 +174,16 @@ def test_share_shape_filter_and_case_spellings_are_the_same():
     assert scale == "percent"
 
 
+def test_share_shape_cast_variant_is_same_shape():
+    """CAST 变体同形态:KB 侧 ``CAST(amount AS DOUBLE)`` 与计划侧的裸列互认。
+
+    占比构造的 CAST 是量纲/类型噪声(SUM 的输入类型不改变"哪一部分占总量的
+    百分之几"),归一化时必须穿透 CAST —— 否则 Lane B 生成的带 CAST 占比度量
+    永远匹配不上计划候选(整类占比题退回软 MISS)。
+    """
+    assert _share_shape(CASE_A_CAST) == _share_shape(CASE_A)
+
+
 def test_share_shape_distinguishes_enum_value():
     """``status='A'`` 与 ``status='C'`` 是两个占比,不互认。"""
     assert _share_shape(CASE_A) != _share_shape(CASE_C)
@@ -218,6 +232,15 @@ def test_filter_spelling_matches_declared_case_metric():
     assert "CASE WHEN loan.status = 'A'" in result.sql
     assert "NULLIF(SUM(loan.amount), 0)" in result.sql
     assert "/ COUNT(*)" not in result.sql  # 不得退化成计数占比
+
+
+def test_cast_metric_matched_by_plain_candidate():
+    """声明带 CAST 的占比度量 ← 不带 CAST 的候选命中;SQL 用声明形态(带 CAST)。"""
+    model = _model(_sum_amount(), _share_metric(CASE_A_CAST, name="share cast"))
+    result = _compile(model, _agg_plan(CASE_A))
+    assert isinstance(result, CompileResult), result
+    assert "CASE WHEN loan.status = 'A'" in result.sql
+    assert "CAST(loan.amount AS DOUBLE)" in result.sql
 
 
 def test_share_candidate_with_other_enum_value_does_not_match():

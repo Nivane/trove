@@ -522,13 +522,18 @@ def test_no_joins_genuine_ambiguity_still_miss():
 
 
 def test_explicit_joins_resolve_diamond():
-    """显式 joins 选边(client→disp→account→loan)→ 编译通过,不删关系。"""
+    """显式 joins 选边(client→disp→account→loan)→ 编译通过,被引用的边全保留。
+
+    A③(needed 感知剪枝)起显式通道同样只保留"组件真正引用"的子树,于是投影
+    须覆盖路径末端(loan.loan_id):整条路径都在 needed 内时一条不剪(剪枝只删
+    无引用的叶子,见 test_explicit_join_prune.py)。
+    """
     plan = {
         "tables": ["client", "disp", "account", "loan"],
         "joins": ("disp.client_id = client.client_id, "
                   "disp.account_id = account.account_id, "
                   "loan.account_id = account.account_id"),
-        "answer_columns": ["client.client_id"],
+        "answer_columns": ["client.client_id", "loan.loan_id"],
     }
     result = _compile(plan, ["client", "loan"], model=_diamond_model())
     assert result is not None
@@ -559,11 +564,15 @@ def test_explicit_joins_undeclared_edge_repaired_to_declared_path():
     (client—district—account—loan 因 district 只是维度叶、不作路由中间点而
     被排除)。「列名编造」与「路径编造」由此分开:表对唯一即按声明路径修复,
     不唯一/无路才维持严格 MISS(见 test_explicit_joins_disconnected_tree_miss)。
+
+    投影覆盖路径末端(loan.loan_id)是 A③ 之后的必要前提:修复出的边集同样过
+    needed 剪枝,"修复对但没人引用"的末端会被剪掉(那是对的行为,见
+    test_explicit_join_prune.py)。
     """
     plan = {
         "tables": ["client", "loan"],
         "joins": "client.district_id = loan.loan_id",
-        "answer_columns": ["client.client_id"],
+        "answer_columns": ["client.client_id", "loan.loan_id"],
     }
     res = SemanticCompiler(_diamond_model()).compile_detailed(
         plan, ["client", "loan"], force_dialect="mysql")
@@ -588,7 +597,12 @@ def test_explicit_joins_placeholder_falls_back():
 
 
 def test_explicit_joins_disconnected_tree_miss():
-    """joins 成两棵断树(anchor 连不上全部)→ 严格 MISS。"""
+    """joins 成两棵断树(anchor 连不上全部)→ 严格 MISS。
+
+    A③ 剪枝不救断树:第二棵(loan-account)虽无人引用,但"哪棵多余"无从判断
+    —— 剪掉一整棵等于替计划猜它想联哪个组件。不连通的显式边集整体跳过剪枝
+    (见 _prune_explicit_to_needed),左深树构筑失败 → 维持今日硬 MISS。
+    """
     plan = {
         "tables": ["client", "disp", "loan", "account"],
         "joins": ("disp.client_id = client.client_id, "
