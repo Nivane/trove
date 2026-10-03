@@ -739,3 +739,43 @@ class TestDeterministicShortCircuit:
         ))
         assert first["rollback_target"] == "query_sketch"
         assert second["rollback_target"] == "schema_linking"
+
+    async def test_sql_empty_escalation_skips_llm_and_replans(self):
+        """零行+未点名过滤(reflect 打标 [ERR:SQL_EMPTY]):确定性重规划指令
+        (零 LLM),回滚 query_sketch;不带 note 的普通零行文本仍走 LLM 诊断。"""
+        calls = {"n": 0}
+
+        class NoLLM:
+            async def chat(self, *a, **k):
+                calls["n"] += 1
+                raise AssertionError("must not run for deterministic fix")
+
+        node = make_analyze_error(NoLLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            lang="en",
+            verdict="RETRY",  # reflect 空结果升级的裁决形态
+            reason=("[ERR:SQL_EMPTY] Zero rows, and the plan filters "
+                    "order.k_symbol = 'SIPO' — a value the question never "
+                    "mentions. TARGET: query_sketch."),
+        ))
+        assert calls["n"] == 0
+        assert "error" not in update
+        assert "TARGET: query_sketch" in update["error_analysis"]
+        assert update["rollback_target"] == "query_sketch"
+        assert update["last_rollback_target"] == "query_sketch"
+        assert update["fix_mode"] == "fixer"
+
+    async def test_plain_zero_rows_still_goes_to_llm(self):
+        """无标记的"零行"文本不是确定性修复面(可能是正确的空结果)——LLM 诊断照跑。"""
+        calls = {"n": 0}
+
+        class LLM:
+            async def chat(self, model, messages, **kwargs):
+                calls["n"] += 1
+                return "类型: 结果\n判断: 可能确实没有数据\n修正: 检查过滤"
+
+        node = make_analyze_error(LLM(), AgentConfig(target="m"))
+        update = await node(make_state(
+            error_feedback="Query returned zero rows for this filter."))
+        assert calls["n"] == 1
+        assert "error" not in update

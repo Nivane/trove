@@ -1528,6 +1528,378 @@ class TestCorrectEntityCountPlan:
         assert "extra" in errors[0]
 
 
+# ── P3 纠正器:实体重锚(0483) / 比率投影收敛(0482) / joins 修复接线 ──
+
+
+def _fin_model():
+    """financial 骨架:account—disp—client 所有权链 + 共享维度 district。"""
+    from trove.services.semantic_layer.models import (
+        SemanticDataset, SemanticField, SemanticModel, SemanticRelationship,
+    )
+
+    def f(name):
+        return SemanticField(name=name, expression=name)
+
+    return SemanticModel(
+        name="fin",
+        datasets=[
+            SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                f("loan_id"), f("account_id"), f("amount"), f("status"),
+                f("date")]),
+            SemanticDataset(name="account", primary_key=["account_id"], fields=[
+                f("account_id"), f("district_id"), f("frequency")]),
+            SemanticDataset(name="disp", primary_key=["disp_id"], fields=[
+                f("disp_id"), f("account_id"), f("client_id")]),
+            SemanticDataset(name="client", primary_key=["client_id"], fields=[
+                f("client_id"), f("district_id"), f("gender"),
+                f("birth_date")]),
+            SemanticDataset(name="district", primary_key=["district_id"], fields=[
+                f("district_id"), f("A2"), f("A12"), f("A13")]),
+        ],
+        relationships=[
+            SemanticRelationship("disp_to_account", "disp", "account",
+                                 from_columns=["account_id"],
+                                 to_columns=["account_id"], cardinality="1:1"),
+            SemanticRelationship("disp_to_client", "disp", "client",
+                                 from_columns=["client_id"],
+                                 to_columns=["client_id"], cardinality="1:1"),
+            SemanticRelationship("account_to_district", "account", "district",
+                                 from_columns=["district_id"],
+                                 to_columns=["district_id"], cardinality="1:N"),
+            SemanticRelationship("client_to_district", "client", "district",
+                                 from_columns=["district_id"],
+                                 to_columns=["district_id"], cardinality="1:N"),
+            SemanticRelationship("loan_to_account", "loan", "account",
+                                 from_columns=["account_id"],
+                                 to_columns=["account_id"], cardinality="1:N"),
+        ],
+        metrics=[],
+    )
+
+
+class TestReanchorEntityCountPlan:
+    """实体计数重锚:数「人」却锚了明细表 → 换锚到人实体表自身路径(0483)。"""
+
+    Q = ("List the top nine districts, by descending order, from the highest to "
+         "the lowest, the number of female account holders.")
+
+    def _import(self):
+        from trove.workflow.nodes.query_sketch import reanchor_entity_count_plan
+        return reanchor_entity_count_plan
+
+    def _plan(self, **kw):
+        """0483 实录计划的逐字形状。"""
+        base = {
+            "tables": ["account", "district", "disp", "client"],
+            "joins": ("account.district_id = district.district_id AND "
+                      "disp.account_id = account.account_id AND "
+                      "disp.client_id = client.client_id"),
+            "conditions": [{"field": "client.gender", "op": "=", "value": "'F'"}],
+            "aggregation": "count",
+            "ordering": [{"column": "count(account.account_id)",
+                          "direction": "desc"}],
+            "answer_columns": ["district.A2", "count(account.account_id)"],
+            "having": [],
+            "limit": 9,
+            "plan_field": "",
+        }
+        base.update(kw)
+        return base
+
+    def test_person_noun_as_qualifier_untouched(self):
+        """人称名词只是被数表的限定语 → 锚没错,不动作(节点测实拍回归)。"""
+        f = self._import()
+        plan = {
+            "tables": ["loan", "client"],
+            "joins": "loan.account_id = account.account_id",
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+            "conditions": [{"field": "client.gender", "op": "=", "value": "F"}],
+        }
+        # G1:人名词修饰被数表(所有格)
+        assert f(plan, "female clients' loans", "en", _fin_model()) is None
+        # G2:人是介词补语,头名词是被数表
+        assert f(plan, "number of loans for female clients", "en",
+                 _fin_model()) is None
+        assert f(plan, "count of loans among female clients", "en",
+                 _fin_model()) is None
+        # G2 换一张被数表:头名词 accounts 在介词之前 → 同样不动作
+        account_plan = {
+            "tables": ["account", "client"],
+            "joins": "account.account_id = client.district_id",
+            "aggregation": "count(account.account_id)",
+            "answer_columns": ["count(account.account_id)"],
+            "conditions": [{"field": "client.gender", "op": "=", "value": "F"}],
+        }
+        assert f(account_plan, "count of accounts for female clients", "en",
+                 _fin_model()) is None
+        # 对照:人是头名词(0483 形态)→ 照常重锚
+        assert f(plan, "number of female account holders", "en",
+                 _fin_model()) is not None
+
+    def test_0483_recorded_plan_reanchored(self):
+        """实录形状 → 锚换到 client,计数/排序/投影三处同步。"""
+        f = self._import()
+        fixed = f(self._plan(), self.Q, "zh", _fin_model())
+        assert fixed is not None
+        assert fixed["tables"] == ["client", "district"]
+        assert fixed["joins"] == "client.district_id = district.district_id"
+        assert fixed["aggregation"] == "count(distinct client.client_id)"
+        assert fixed["answer_columns"] == [
+            "district.A2", "count(distinct client.client_id)"]
+        assert fixed["ordering"] == [
+            {"column": "count(distinct client.client_id)", "direction": "desc"}]
+        assert fixed["limit"] == 9  # 非计数组件逐字保留
+        assert fixed["conditions"] == self._plan()["conditions"]
+        assert fixed["plan_field"] == "reanchor_entity_count_plan"
+
+    def test_idempotent_and_no_in_place_mutation(self):
+        f = self._import()
+        plan = self._plan()
+        once = f(plan, self.Q, "zh", _fin_model())
+        assert once is not None
+        assert f(once, self.Q, "zh", _fin_model()) is None
+        assert plan["answer_columns"][1] == "count(account.account_id)"
+
+    def test_pk_prefers_model_primary_key(self):
+        """主键列取语义模型 dataset.primary_key,词法回退只是兜底。"""
+        model = _fin_model()
+        for ds in model.datasets:
+            if ds.name == "client":
+                ds.primary_key = ["client_number"]
+                ds.fields.append(
+                    type(ds.fields[0])(name="client_number", expression="client_number"))
+        f = self._import()
+        fixed = f(self._plan(), self.Q, "zh", model)
+        assert fixed is not None
+        assert fixed["aggregation"] == "count(distinct client.client_number)"
+
+    def test_no_person_noun_untouched(self):
+        """问句无人称名词(数记录/数账户)→ 不动作。"""
+        f = self._import()
+        assert f(self._plan(), "How many accounts per district?", "zh",
+                 _fin_model()) is None
+        assert f(self._plan(), "How many loan records are there?", "zh",
+                 _fin_model()) is None
+
+    def test_counted_table_already_person_untouched(self):
+        """已数人表(哪怕未去重)→ 不动作(幂等,交旧纠正器)。"""
+        f = self._import()
+        plan = self._plan(
+            aggregation="count",
+            answer_columns=["district.A2", "count(client.client_id)"],
+            ordering=[],
+        )
+        assert f(plan, self.Q, "zh", _fin_model()) is None
+
+    def test_already_distinct_untouched(self):
+        f = self._import()
+        plan = self._plan(
+            answer_columns=["district.A2", "count(distinct account.account_id)"])
+        assert f(plan, self.Q, "zh", _fin_model()) is None
+
+    def test_person_table_without_condition_untouched(self):
+        """人表在场但不承载任何条件 → 锚对人无证据,不猜。"""
+        f = self._import()
+        plan = self._plan(
+            conditions=[{"field": "account.district_id", "op": "=", "value": "1"}])
+        assert f(plan, self.Q, "zh", _fin_model()) is None
+
+    def test_condition_outside_entity_and_dims_untouched(self):
+        """条件落在将被剪掉的表上(loan)→ 剪不干净,不动作。"""
+        f = self._import()
+        plan = self._plan(conditions=[
+            {"field": "client.gender", "op": "=", "value": "'F'"},
+            {"field": "loan.status", "op": "=", "value": "'D'"},
+        ])
+        assert f(plan, self.Q, "zh", _fin_model()) is None
+
+    def test_dimension_without_declared_edge_untouched(self):
+        """维度表与人表间无声明边 → 不造边。"""
+        f = self._import()
+        plan = self._plan(answer_columns=["loan.amount", "count(account.account_id)"],
+                          ordering=[])
+        assert f(plan, self.Q, "zh", _fin_model()) is None
+
+    def test_having_analysis_extreme_untouched(self):
+        f = self._import()
+        assert f(self._plan(having=[{"metric": "sum(loan.amount)", "op": "=",
+                                     "value": 1}]), self.Q, "zh",
+                 _fin_model()) is None
+        assert f(self._plan(analysis={"type": "pct_change"}), self.Q, "zh",
+                 _fin_model()) is None
+        assert f(self._plan(extreme={"func": "max", "column": "loan.amount"}),
+                 self.Q, "zh", _fin_model()) is None
+
+    def test_no_model_or_non_dict_untouched(self):
+        f = self._import()
+        assert f(self._plan(), self.Q, "zh", None) is None
+        assert f(None, self.Q, "zh", _fin_model()) is None
+
+
+class TestRatioOnlyProjection:
+    """比率问句投影收敛:只要比率的问题多投了裸维度列 → 只留比率列(0482)。"""
+
+    Q = ("For loans contracts which are still running where client are in debt, "
+         "list the district of the and the state the percentage unemployment "
+         "rate increment from year 1995 to 1996.")
+
+    def _import(self):
+        from trove.workflow.nodes.query_sketch import ratio_only_projection
+        return ratio_only_projection
+
+    def test_0482_recorded_plan_drops_bare_dimension(self):
+        f = self._import()
+        plan = {
+            "tables": ["loan", "account", "district"],
+            "joins": ("loan.account_id = account.account_id; "
+                      "account.district_id = district.district_id"),
+            "conditions": [{"field": "loan.status", "op": "=", "value": "'D'"}],
+            "aggregation": "无",
+            "answer_columns": [
+                "district.A2",
+                "((district.A13 - district.A12) / district.A12) * 100",
+            ],
+            "having": [],
+            "plan_field": "",
+        }
+        fixed = f(plan, self.Q)
+        assert fixed is not None
+        assert fixed["answer_columns"] == [
+            "((district.A13 - district.A12) / district.A12) * 100"]
+        assert fixed["plan_field"] == "ratio_only_projection"
+        assert plan["answer_columns"][0] == "district.A2"  # 非就地
+
+    def test_breakdown_marker_untouched(self):
+        """要分解(each/per/by/按/每个)→ 维度列是答案的一部分,不剪。"""
+        f = self._import()
+        plan = {"answer_columns": ["district.A2", "district.A13 / district.A12 * 100"],
+                "conditions": []}
+        for q in ("percentage unemployment increment for each district",
+                  "percentage unemployment increment by district",
+                  "各区的失业率增幅百分比"):
+            assert f(plan, q) is None
+
+    def test_condition_field_bare_column_untouched(self):
+        """被剪列同时是条件字段(过滤键兼输出列)→ 不剪。"""
+        f = self._import()
+        plan = {
+            "answer_columns": ["district.A2", "district.A13 / district.A12 * 100"],
+            "conditions": [{"field": "district.A2", "op": "=", "value": "'X'"}],
+        }
+        assert f(plan, self.Q) is None
+
+    def test_non_bare_columns_untouched(self):
+        """含函数/聚合的其它列在场 → 形状不确定,整份不动。"""
+        f = self._import()
+        assert f({"answer_columns": [
+            "count(district.district_id)",
+            "district.A13 / district.A12 * 100",
+        ], "conditions": []}, self.Q) is None
+
+    def test_single_column_or_no_ratio_untouched(self):
+        f = self._import()
+        assert f({"answer_columns": ["district.A13 / district.A12 * 100"],
+                  "conditions": []}, self.Q) is None  # 本来就只投比率
+        assert f({"answer_columns": ["district.A2", "district.A13"],
+                  "conditions": []}, self.Q) is None  # 无比率列
+
+    def test_having_analysis_extreme_untouched(self):
+        f = self._import()
+        base = {"answer_columns": ["district.A2", "district.A13 / district.A12 * 100"],
+                "conditions": []}
+        assert f({**base, "having": [{"metric": "m", "op": "=", "value": 1}]},
+                 self.Q) is None
+        assert f({**base, "analysis": {"type": "pct_change"}}, self.Q) is None
+        assert f({**base, "extreme": {"func": "max", "column": "district.A13"}},
+                 self.Q) is None
+
+
+class TestQuerySketchP3Wiring:
+    """节点级接线:三个新纠正器依次生效(重锚 → 比率 → joins 修复)。"""
+
+    @staticmethod
+    def _provider(model):
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, m):
+                self._m = m
+
+            def model(self):
+                return self._m
+
+        return FakeProvider(model)
+
+    async def test_reanchor_wired_before_entity_corrector(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        llm = ScriptedLLM([json.dumps({
+            "tables": ["account", "district", "disp", "client"],
+            "joins": ("account.district_id = district.district_id AND "
+                      "disp.account_id = account.account_id AND "
+                      "disp.client_id = client.client_id"),
+            "conditions": [{"field": "client.gender", "op": "=", "value": "'F'"}],
+            "aggregation": "count",
+            "answer_columns": ["district.A2", "count(account.account_id)"],
+        })])
+        node = make_query_sketch(llm, AgentConfig(target="mock/model"),
+                                 semantic_layer=self._provider(_fin_model()))
+        update = await node(make_state(
+            question=TestReanchorEntityCountPlan.Q,
+            matched_tables=["account", "district", "disp", "client"]))
+        assert update["plan_json"]["plan_field"] == "reanchor_entity_count_plan"
+        assert update["plan_json"]["answer_columns"][1] == (
+            "count(distinct client.client_id)")
+
+    async def test_ratio_only_wired_after_aggregate_fix(self):
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        llm = ScriptedLLM([json.dumps({
+            "tables": ["loan", "account", "district"],
+            "joins": ("loan.account_id = account.account_id AND "
+                      "account.district_id = district.district_id"),
+            "conditions": [{"field": "loan.status", "op": "=", "value": "'D'"}],
+            "answer_columns": [
+                "district.A2",
+                "((district.A13 - district.A12) / district.A12) * 100",
+            ],
+        })])
+        node = make_query_sketch(llm, AgentConfig(target="mock/model"),
+                                 semantic_layer=self._provider(_fin_model()))
+        update = await node(make_state(
+            question=TestRatioOnlyProjection.Q,
+            matched_tables=["loan", "account", "district"]))
+        assert update["plan_json"]["answer_columns"] == [
+            "((district.A13 - district.A12) / district.A12) * 100"]
+
+    async def test_repair_joins_wired_after_time_inject(self):
+        """未声明连接(共享维度桥)在计划层被还原成声明路径(0493 形状)。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        llm = ScriptedLLM([json.dumps({
+            "tables": ["loan", "account", "client"],
+            "joins": ("loan.account_id = account.account_id AND "
+                      "account.district_id = client.district_id"),
+            "conditions": [{"field": "client.gender", "op": "=", "value": "'M'"}],
+            "aggregation": "sum",
+            "answer_columns": ["sum(loan.amount)"],
+        })])
+        node = make_query_sketch(llm, AgentConfig(target="mock/model"),
+                                 semantic_layer=self._provider(_fin_model()))
+        update = await node(make_state(
+            question="What was the growth rate of the total amount of loans "
+                     "across all accounts for a male client?",
+            matched_tables=["loan", "account", "client"]))
+        pj = update["plan_json"]
+        assert pj["plan_field"] == "repair_plan_joins"
+        assert "client.district_id" not in pj["joins"]
+        assert pj["joins"] == (
+            "loan.account_id = account.account_id AND "
+            "disp.account_id = account.account_id AND "
+            "disp.client_id = client.client_id")
+
+
 # ── gen_sql subgraph nodes: generate / validate ──────────
 
 
@@ -2860,6 +3232,100 @@ class TestReflect:
         node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model"))
         update = await node(make_state(row_count=0))
         assert update["verdict"] == "EMPTY"
+
+    # ── P3:空结果 + 未点名计划过滤 → 打回重规划一次(0494)────────
+
+    Q0494 = ("How often does account number 3 request an account statement "
+             "to be released? What was the aim of debiting 3539 in total?")
+
+    def _empty_state(self, **kw):
+        plan = {
+            "tables": ["account", "order"],
+            "conditions": [
+                {"field": "account.account_id", "op": "=", "value": "3"},
+                {"field": "order.k_symbol", "op": "=", "value": "'SIPO'"},
+            ],
+            "answer_columns": ["account.frequency", "count(order.order_id)"],
+        }
+        base = dict(row_count=0, question=self.Q0494, plan_json=plan)
+        base.update(kw)
+        return make_state(**base)
+
+    async def test_empty_with_unasked_plan_filter_escalates(self):
+        class NoCallLLM:
+            async def chat(self, *a, **k):
+                raise AssertionError("escalation is deterministic, no LLM")
+
+        node = make_reflect(NoCallLLM(), AgentConfig(target="mock/model"))
+        update = await node(self._empty_state())
+        assert update["verdict"] == "RETRY"
+        assert update["reason"].startswith("[ERR:SQL_EMPTY]")
+        assert "TARGET: query_sketch" in update["reason"]
+        assert "order.k_symbol = 'SIPO'" in update["reason"]
+        assert update["retry_count"] == 1
+
+    async def test_empty_escalation_once_per_run(self):
+        """上轮回滚目标已是 query_sketch → 不再升(二次空结果照常交付)。"""
+        node = self._make("OK")
+        update = await node(self._empty_state(last_rollback_target="query_sketch"))
+        assert update["verdict"] == "EMPTY"
+
+    async def test_empty_escalation_respects_budget(self):
+        node = self._make("OK")
+        update = await node(self._empty_state(retry_count=10))
+        assert update["verdict"] == "EMPTY"
+
+    async def test_empty_with_asked_filter_stays_empty(self):
+        """过滤取值在问句里点名了(合法条件)→ 空结果是"没数据",照常交付。"""
+        node = self._make("OK")
+        update = await node(self._empty_state(
+            question="How many orders of kind SIPO are there?"))
+        assert update["verdict"] == "EMPTY"
+
+    async def test_empty_with_date_filter_stays_empty(self):
+        """日期/纯数字形态字面量不在嗅探面(时间条件由注入器合法派生)。"""
+        from trove.workflow.nodes.reflect import _unasked_plan_filter
+
+        state = make_state(
+            question=self.Q0494,
+            plan_json={"conditions": [
+                {"field": "loan.date", "op": ">=", "value": "'1996-01-01'"},
+                {"field": "trans.date", "op": "IN",
+                 "value": "('1993-03-22', '1998-12-27')"},
+                {"field": "client.gender", "op": "=", "value": "'M'"},
+            ]},
+        )
+        assert _unasked_plan_filter(state) is None
+
+    async def test_unasked_filter_haystack_includes_rewritten_and_time(self):
+        """改写问句与时间上下文算"点名"(值出现在那里即不升)。"""
+        from trove.workflow.nodes.reflect import _unasked_plan_filter
+
+        plan = {"conditions": [
+            {"field": "order.k_symbol", "op": "=", "value": "'SIPO'"}]}
+        assert _unasked_plan_filter(make_state(
+            question=self.Q0494, plan_json=plan,
+            rewritten_question="debiting SIPO in total",
+        )) is None
+        assert _unasked_plan_filter(make_state(
+            question=self.Q0494, plan_json=plan, time_context="SIPO 期内",
+        )) is None
+        assert _unasked_plan_filter(make_state(
+            question=self.Q0494, plan_json=plan,
+        )) == "order.k_symbol = 'SIPO'"
+
+    async def test_unasked_filter_ignores_unquoted_and_short(self):
+        from trove.workflow.nodes.reflect import _unasked_plan_filter
+
+        state = make_state(
+            question=self.Q0494,
+            plan_json={"conditions": [
+                {"field": "a.b", "op": "=", "value": "3"},
+                {"field": "a.c", "op": "=", "value": "'D'"},
+                {"field": "a.d", "op": "=", "value": "(SELECT 1)"},
+            ]},
+        )
+        assert _unasked_plan_filter(state) is None
 
     async def test_prompt_includes_schema_context(self):
         """裁决 prompt 带 schema 上下文，模型不必用工具去猜表结构。"""

@@ -137,7 +137,26 @@ _DETERMINISTIC_FIX: dict[str, tuple[str, str]] = {
         "no CREATE/INSERT/UPDATE/DELETE/DROP/DDL, no SELECT INTO OUTFILE, "
         "no metadata or unauthorized tables.",
     ),
+    # 空结果+未点名计划过滤(reflect 快径升级打标 [ERR:SQL_EMPTY]):修正指令
+    # 完全确定——臆造的类别过滤去掉,该列大概率是答案维度。不烧 LLM 诊断。
+    "SQL_EMPTY": (
+        "查询返回零行,且计划里的过滤取值在问句中从未出现——疑似把问句追问的"
+        "**答案维度**(类别列)臆造成了过滤条件。TARGET: query_sketch。请**整份"
+        "重出**计划 JSON:删掉这个未点名的过滤;若问句在问「是哪种类别/用途」"
+        "(aim/purpose/kind/type),该类别列放进 answer_columns 作为分组维度;"
+        "同一问句给了总量约束(如 in total 3539)则用 having 表达。",
+        "Zero rows, and the plan filters on a value the question never mentions "
+        "— likely an ANSWER dimension (category column) invented as a filter. "
+        "TARGET: query_sketch. Re-emit the WHOLE plan JSON: drop the unasked "
+        "filter; if the question asks WHICH/WHAT category (aim/purpose/kind/"
+        "type), put that categorical column in answer_columns as the grouping "
+        "dimension; express a stated total (e.g. '3539 in total') as having.",
+    ),
 }
+
+
+# 只认显式 [ERR:<id>] 打标的确定性修复类(见查找处的标记门说明)。
+_TAG_ONLY_FIX = frozenset({"SQL_EMPTY"})
 
 
 def _deterministic_message(error_class: ErrorClass, lang: str) -> str:
@@ -448,6 +467,12 @@ def make_analyze_error(
                 trail=trail,
             )
             det_fix = _DETERMINISTIC_FIX.get(verdict.cls.id)
+            if det_fix is not None and verdict.cls.id in _TAG_ONLY_FIX:
+                # 标记门:这些类的确定性修复只认**显式打标**的升级路径文本。
+                # 裸文本同属该类但语义未定(SQL_EMPTY 的词典面就是任何"零行"
+                # 文本——可能就是正确的空结果),仍交 LLM 诊断裁决。
+                if not re.match(r"\s*\[ERR:SQL_EMPTY\]", raw_error or ""):
+                    det_fix = None
             if det_fix is not None:
                 # 确定性修复(非死胡同):修正指令完全确定,不烧 LLM 诊断。
                 logger.info(

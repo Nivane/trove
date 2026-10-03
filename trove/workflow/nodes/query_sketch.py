@@ -25,7 +25,9 @@ from trove.services.semantic_layer.compiler import (
     CompileMiss,
     CompileResult,
     PartialCompile,
+    declared_join_edge_text,
     is_hard_miss,
+    repair_plan_joins,
 )
 from trove.services.semantic_layer.contract import (
     contract_to_wire,
@@ -333,11 +335,6 @@ def extreme_rank_from_question(
 
 # 语义级计数纠正的实体名词识别。收益率最高的是业务实体词 + 表名的双信号:
 # 命中名词 → 找以其为表名(或含该名词)的表 → 取该表主键/ID 列做去重计数。
-_ENTITY_COUNT_RE = re.compile(
-    r"(?:用户|客户|顾客|人数|人员|多少(?:个|位|名)?(?:不同|不同|不同)?)"
-    r"|\b(?:customers?|users?|clients?|persons?|people|holders?)\b",
-    re.I,
-)
 _ENTITY_WORDS = {
     # 中文业务词 → 表名必须包含的 token(无 -> 匹配"近义表")
     "用户": ("client", "account", "customer"),
@@ -361,6 +358,12 @@ def _is_entity_count_question(question: str, lang: str) -> bool:
     语词信号:「X 的用户数量/人数/多少用户」「number of X users/customers/
     people」。这类问题需要 COUNT(DISTINCT 实体),而 LLM query_sketch 常把它
     误译成 COUNT(loan.loan_id) 之类的记录计数。纯正则,零 LLM。
+
+    词表按 ``lang``(配置驱动的界面/回答语言)分支——**不改**为 union:
+    实测(27 份实录计划复放)union 会把英文问题拉进本纠正器的改写面,
+    0476(现 MATCH)被改错锚(account)、0478/0495 的占比算式被碾平,净回归。
+    英文字符串命中而锚错表的场景由 ``reanchor_entity_count_plan``(更严的
+    守卫:人表承载条件 + 声明边)接管,这里保持原行为。
     """
     q = question or ""
     if lang == "zh":
@@ -537,6 +540,290 @@ def _distinct_expr_from_entities(
         if re.search(rf"\b{re.escape(t)}\s*\.", joins, re.I) or t in tables:
             return f"count(distinct {t}.{_entity_id_column(t)})"
     return None
+
+
+# ── P3 新纠正器:实体重锚(0483)与比率投影收敛(0482)──────────────
+
+# 人称表 token(表名包含即"人实体表"候选)。刻意区别于 _ENTITY_WORDS 的
+# holder→account:重锚要找的是**人**那张表,而不是问句名词的任意近义表。
+_PERSON_TABLE_TOKENS = (
+    "client", "customer", "user", "person", "employee", "member",
+)
+_PERSON_NOUN_RE = re.compile(
+    r"\b(?:clients?|customers?|users?|persons?|people|holders?|employees?|members?)\b"
+    r"|(?:客户|用户|顾客|持有人|人员|员工|成员)",
+    re.I,
+)
+_COUNT_COL_RE = re.compile(
+    r"count\s*\(\s*(?:distinct\s+)?([A-Za-z_]\w*)\s*\.\s*(\w+)\s*\)", re.I
+)
+
+
+def _field_table(ref: Any) -> str | None:
+    """``table.column`` → 小写表名;含函数/非两级引用 → None。"""
+    text = str(ref or "").strip()
+    if "(" in text or "." not in text:
+        return None
+    return text.split(".", 1)[0].strip().lower()
+
+
+# 人称名词做**限定语**的介词(人是短语补语而非计数头名词)。
+_PERSON_QUALIFIER_PREPS = frozenset({"of", "for", "among", "with"})
+_WORD_RE = re.compile(r"[a-z']+")
+
+
+def _table_stem(table: str) -> str:
+    return table[:-1] if table.endswith("s") else table
+
+
+def _person_noun_is_qualifier(question: str, counted: set[str]) -> bool:
+    """人称名词是限定语(修饰被数表)而非计数头名词 → True(不重锚)。
+
+    反面教材(节点测 "female clients' loans" 实拍):计划数 loan,问句里
+    "clients" 只是 loans 的限定语,重锚成"数客户"就把答案改了。两个形态:
+    G1 人名词之后 ≤2 词内出现被数表词("clients' loans")——人修饰被数的表;
+    G2 人名词之前 ≤2 词内有 of/for/among/with 且被数表词在该介词之前出现过
+       ("number of loans for clients" / "count of accounts for female clients")
+       ——人是短语补语,头名词是被数的表。
+    0483 的 "the number of female account holders"(account 在介词之后、
+    紧贴人名词)两道门都不触发 → 照常重锚。
+    """
+    q = (question or "").lower()
+    for m in _PERSON_NOUN_RE.finditer(q):
+        window_after = q[m.end(): m.end() + 40]
+        for t in counted:
+            if re.match(
+                rf"\W*(?:\w+\W+){{0,2}}?{re.escape(_table_stem(t))}",
+                window_after,
+            ):
+                return True
+        tokens = _WORD_RE.findall(q[: m.start()])
+        if any(w in _PERSON_QUALIFIER_PREPS for w in tokens[-2:]):
+            head = " ".join(tokens[:-2])
+            for t in counted:
+                if re.search(rf"\b{re.escape(_table_stem(t))}\w*\b", head):
+                    return True
+    return False
+
+
+def reanchor_entity_count_plan(
+    plan: dict[str, Any] | None,
+    question: str,
+    lang: str = "en",
+    model: Any = None,
+) -> dict[str, Any] | None:
+    """实体计数**重锚**:数"人"的问题却数了明细表 → 换锚到人实体表自身路径(0483)。
+
+    0483 实测:问 "female account holders" 的**人数**,planner 写
+    ``count(account.account_id)`` 并沿 account—disp—client 全链连接;gold 数的是
+    ``count(distinct client.client_id)``(gender 长在 client 上)。旧纠正器
+    (correct_entity_count_plan)只会把记录计数改成"记录表外键去重"或按词表选表
+    ——词表里 holder 的首选近义表恰是 account(错的那张),治不了"锚错了表"。
+
+    前置(全满足才动作,任一不满足 → None 不猜):
+      1. 问句含人称名词(union 词表,与 lang 无关);
+      2. 计划在数某张表的列(首个 ``count([distinct] T.col)``),聚合未含
+         distinct(已去重 = 已修过 → 幂等返回 None);
+      3. 人实体表 E = plan.tables 里命中人称 token 的表,**且 E 承载了至少
+         一条条件**(题面属性长在人身上,才是"锚对人"的证据);E ≠ T;
+      4. 全部条件字段属于 {E} ∪ 投影维度表,且投影里非计数的列都是二级
+         引用(裸列/算式 → 形状不确定,不动);
+      5. 每个维度表与 E 之间有**唯一**声明关系(``declared_join_edge_text``);
+      6. 无 having / 无 analysis / 无 extreme / 时间字段(若有)在 {E}∪维度内。
+    动作:改锚到 E 自身路径——tables=[E, *dims],joins 用声明边重建,
+    count 表达式统一改写为 ``count(distinct E.<pk>)``(聚合/输出列/排序三处
+    同步),E 路径之外的明细/链接表整体剪掉(条件全在 {E}∪dims 内,剪得干净)。
+    """
+    if not isinstance(plan, dict) or model is None:
+        return None
+    if isinstance(plan.get("analysis"), dict) or plan.get("extreme"):
+        return None
+    if plan.get("having"):
+        return None
+    if not _PERSON_NOUN_RE.search(question or ""):
+        return None
+    agg = str(plan.get("aggregation") or "")
+    if "count" not in agg.lower() or re.search(r"count\s*\(\s*distinct", agg, re.I):
+        return None
+    colses = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    if any(re.search(r"count\s*\(\s*distinct", a, re.I) for a in colses):
+        return None
+    counted: set[str] = set()
+    for a in colses:
+        m = _COUNT_COL_RE.search(a)
+        if m:
+            counted.add(m.group(1).lower())
+    if not counted:
+        return None
+    # 人称名词是限定语("female clients' loans" 数的是 loan)→ 锚没错,不动作
+    if _person_noun_is_qualifier(question, counted):
+        return None
+    tables = [str(t).strip() for t in (plan.get("tables") or [])]
+    # 投影维度(非 count 的 answer 列)
+    dims: list[str] = []
+    for a in colses:
+        if _COUNT_COL_RE.search(a):
+            continue
+        dt = _field_table(a)
+        if dt is None:
+            return None
+        if dt not in dims:
+            dims.append(dt)
+    if any(d in counted for d in dims):
+        return None
+    # 条件表集合
+    cond_tables: set[str] = set()
+    for c in (plan.get("conditions") or []):
+        if not isinstance(c, dict):
+            return None
+        ct = _field_table(c.get("field"))
+        if ct is None:
+            return None
+        cond_tables.add(ct)
+    # 人实体候选:表名命中人称 token;E = 候选里承载条件的(恰一个)
+    candidates = [
+        t for t in tables
+        if any(tok in t.lower() for tok in _PERSON_TABLE_TOKENS)
+    ]
+    with_cond = [t for t in candidates if t.lower() in cond_tables]
+    if len(with_cond) != 1:
+        return None
+    e_name = with_cond[0]
+    e_low = e_name.lower()
+    if e_low in counted:
+        return None  # 已经数的是人实体表 → 无需重锚
+    allowed = {e_low, *dims}
+    if not cond_tables <= allowed:
+        return None
+    joins_parts: list[str] = []
+    for d in dims:
+        edge = declared_join_edge_text(model, e_name, d)
+        if edge is None:
+            return None
+        joins_parts.append(edge)
+    tg = plan.get("time_grain")
+    if isinstance(tg, dict) and tg.get("field"):
+        if _field_table(tg.get("field")) not in allowed:
+            return None
+    # 主键:语义模型优先,词法回退
+    pk = _entity_id_column(e_name)
+    for ds in getattr(model, "datasets", []) or []:
+        if str(getattr(ds, "name", "")).lower() == e_low:
+            keys = [str(k) for k in (getattr(ds, "primary_key", None) or [])]
+            if keys:
+                pk = keys[0]
+            break
+    new_count = f"count(distinct {e_name}.{pk})"
+
+    if _COUNT_COL_RE.search(agg):
+        new_agg = _COUNT_COL_RE.sub(new_count, agg)
+    elif agg.strip().lower() in {"count", "count(*)", ""}:
+        new_agg = new_count
+    else:
+        return None
+
+    def _rewrite(text: str) -> str | None:
+        if _COUNT_COL_RE.search(text):
+            return _COUNT_COL_RE.sub(new_count, text)
+        return None
+
+    replaced: list[str] = []
+    for a in colses:
+        rewritten = _rewrite(a)
+        replaced.append(rewritten if rewritten is not None else a)
+    ordering = plan.get("ordering")
+    new_ordering = ordering
+    if isinstance(ordering, list):
+        new_ordering = []
+        for o in ordering:
+            if not isinstance(o, dict):
+                return None
+            col = str(o.get("column") or "")
+            rewritten = _rewrite(col)
+            if rewritten is not None:
+                new_ordering.append({**o, "column": rewritten})
+            elif _field_table(col) in allowed:
+                new_ordering.append(o)
+            else:
+                return None
+    fixed = dict(plan)
+    fixed["tables"] = [e_name, *dims]
+    fixed["joins"] = " AND ".join(joins_parts)
+    fixed["conditions"] = list(plan.get("conditions") or [])
+    fixed["aggregation"] = new_agg
+    fixed["answer_columns"] = replaced
+    if new_ordering is not ordering:
+        fixed["ordering"] = new_ordering
+    fixed["plan_field"] = "reanchor_entity_count_plan"
+    return fixed
+
+
+# 比率问句标记 / 分解标记(方法学措辞,en+zh 同表)
+_RATIO_MARKER_RE = re.compile(
+    r"percent(?:age)?|\brate\b|\bratio\b|\bshare\b|increment|"
+    r"占比|比率|百分比|增幅|增长率",
+    re.I,
+)
+_BREAKDOWN_MARKER_RE = re.compile(
+    r"\b(?:each|per|every|by)\b|分别|每个|各|按",
+    re.I,
+)
+
+
+def ratio_only_projection(
+    plan: dict[str, Any] | None, question: str,
+) -> dict[str, Any] | None:
+    """比率问句的投影收敛:只投比率算式列(0482)。
+
+    0482 实测:问句只要"1995→1996 失业率增幅"(单值语义——"the percentage
+    unemployment rate increment",不是"各区的增幅"),planner 却投了两列
+    (district.A2 + 比率算式),产物 45 行两列 vs gold 单列。plan_query 的
+    "只要比率只投比率列"纪律在 prompt 层;这里补确定性一层,门槛宁窄勿宽:
+
+      · 问句含比率标记且不含分解标记(each/per/by/every/按/每个/分别);
+      · answer_columns 含 ≥1 个除法算式列(含 "/")与 ≥1 个**裸字段列**
+        (单列引用:无括号),其余形状(含函数/聚合的列)一律不动;
+      · 被剪的裸列不得是条件字段(过滤键兼输出列是合法形状);
+      · 无 having / 无 analysis / 无 extreme。
+    任一不满足 → None(不剪)。剪掉的只是"没人要的分解维度",比率算式列
+    引用的表照旧经 needed 补进 join。
+    """
+    if not isinstance(plan, dict):
+        return None
+    if isinstance(plan.get("analysis"), dict) or plan.get("extreme"):
+        return None
+    if plan.get("having"):
+        return None
+    q = question or ""
+    if not _RATIO_MARKER_RE.search(q) or _BREAKDOWN_MARKER_RE.search(q):
+        return None
+    colses = [str(a).strip() for a in (plan.get("answer_columns") or [])]
+    if len(colses) < 2:
+        return None
+    if not any("/" in a for a in colses):
+        return None
+    cond_fields = {
+        str(c.get("field") or "").strip().lower()
+        for c in (plan.get("conditions") or [])
+        if isinstance(c, dict)
+    }
+    keep: list[str] = []
+    dropped: list[str] = []
+    for a in colses:
+        if "/" in a:
+            keep.append(a)
+            continue
+        if "(" in a:
+            return None
+        if a.lower() in cond_fields:
+            return None
+        dropped.append(a)
+    if not dropped or not keep:
+        return None
+    fixed = dict(plan)
+    fixed["answer_columns"] = keep
+    fixed["plan_field"] = "ratio_only_projection"
+    return fixed
 
 
 def _answer_ref_in_results(ref: str, lower_result: set[str],
@@ -1342,6 +1629,18 @@ def make_query_sketch(
                     "plan is not a typed plan (prose fallback) for %r",
                     state.question[:80],
                 )
+            # P3 实体重锚(先于既有词表纠正):问"人的数量"却数了明细表 → 换锚到
+            # 人实体表自身路径(count(distinct 人表.主键))。旧纠正器词表把
+            # holder 首选成 account(恰是错的那张),治不了锚错表。保守:人表候选
+            # 恰一个且承载条件、维度全有声明边才动作;否则不猜。
+            if plan_json is not None and semantic_layer is not None:
+                reanchored = reanchor_entity_count_plan(
+                    plan_json, state.question, state.lang,
+                    semantic_layer.model(),
+                )
+                if reanchored is not None:
+                    plan_json = reanchored
+                    plan = _render_plan(plan_json, state.lang)
             # 语义级计数纠正(优先):「X 的用户数量/人数」→ count(distinct 实体)。
             # query_sketch 常把实体计数误译成 count(loan.loan_id) 的记录计数,这里
             # 在 plan→gen 之间确定性纠偏——gen 遵守规则 19 也不会做错。
@@ -1365,6 +1664,13 @@ def make_query_sketch(
             if fixed is not None:
                 plan_json = fixed
                 plan = _render_plan(plan_json, state.lang)
+            # P3 比率投影收敛:单值比率问句(无 each/per/by/按 分解标记)却多投了
+            # 裸维度列 → 只留比率算式列(0482 的 45 行两列 vs gold 单列)。门槛
+            # 宁窄勿宽:被剪列不得是条件字段,任何含函数/聚合的列在场即不动作。
+            ratio_fixed = ratio_only_projection(plan_json, state.question)
+            if ratio_fixed is not None:
+                plan_json = ratio_fixed
+                plan = _render_plan(plan_json, state.lang)
             # P1-4:解析出的时间范围确定性绑定唯一声明时间维度(注入 plan.conditions)。
             # 覆盖内问题 → 编译 SQL 必然带时间过滤;未覆盖 → gen_sql 的 plan
             # 文本带该条件。无法判定(多时间字段/无时间字段)不猜,time_context
@@ -1376,6 +1682,16 @@ def make_query_sketch(
                 )
                 if timed is not None:
                     plan_json = timed
+                    plan = _render_plan(plan_json, state.lang)
+            # P3 joins 声明图修复(最后一道,全部纠正落定后再动连接):未声明
+            # 连接(0482 计划里的 account.district_id = client.district_id 共享
+            # 维度桥)→ 按声明关系还原路径。编译器内部的同类修复只在显式 joins
+            # 通道生效;若编译因其它组件软 MISS,plan 文本会带坏连接交给 gen 照抄
+            # ——修复前移到计划层,编译与生成两侧看到的都是合规 joins。
+            if plan_json is not None and semantic_layer is not None:
+                repaired = repair_plan_joins(plan_json, semantic_layer.model())
+                if repaired is not None:
+                    plan_json = repaired
                     plan = _render_plan(plan_json, state.lang)
             # 纠正是确定性变换(dict → dict),shape 不变——所以重解析对
             # canonical dict 是幂等的(三个纠正函数只写聚合表达式/answer_columns/

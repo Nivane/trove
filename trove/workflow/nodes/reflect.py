@@ -188,6 +188,35 @@ async def _rejudge_verdict(
         return "", detail
 
 
+# 未点名的计划过滤值(类别字面量)嗅探:空结果 + 计划带着问句从未提过的类别
+# 取值过滤 → 空结果很可能由这个臆造过滤造成(0494 实录:planner 把「哪种用途」
+# 的答案维度 order.k_symbol 变成过滤 ='SIPO' → 0 行,快径直接判 EMPTY 交付)。
+# 只认形态明确的**类别字面量**:带引号、去引号后 ≥3 字符、含字母/汉字;日期
+# 与纯数字形态排除——时间条件由时间注入器按 time_context 合法派生(其原文已在
+# 嗅探 haystack 里),不在嗅探面。返回 "field = value" 文本或 None。
+def _unasked_plan_filter(state: WorkflowState) -> str | None:
+    plan = state.plan_json
+    if not isinstance(plan, dict):
+        return None
+    hay = " ".join(
+        str(x or "") for x in (
+            state.question, state.rewritten_question, state.time_context,
+        )
+    ).lower()
+    for c in plan.get("conditions") or []:
+        if not isinstance(c, dict):
+            continue
+        raw = str(c.get("value") or "").strip()
+        if len(raw) < 5 or raw[0] not in "'\"" or raw[-1] != raw[0]:
+            continue
+        lit = raw[1:-1].strip().lower()
+        if len(lit) < 3 or not re.search(r"[a-z一-鿿]", lit):
+            continue
+        if lit not in hay:
+            return f"{c.get('field')} = {raw}"
+    return None
+
+
 def make_reflect(
     llm: LLMGateway,
     config: AgentConfig,
@@ -228,7 +257,45 @@ def make_reflect(
         # deterministic rules before this node. Questions with a metadata
         # leaning still go to the LLM judge — an empty result for a
         # definitional question should be able to verdict NO_SQL.
+        #
+        # 例外(P3):计划带着**问句从未点名**的类别字面量过滤(0494:
+        # k_symbol='SIPO' 把"哪种用途"的答案维度臆造成过滤 → 0 行)——
+        # 这不是"没数据",是错的计划。带标记打回重规划一次(标记
+        # [ERR:SQL_EMPTY] 让 analyze_error 走确定性修复,不烧 LLM 诊断);
+        # 每轮至多一次(上轮回滚目标已是 query_sketch 即不再升,
+        # 二次空结果照常交付),预算吃紧时不升。
         if state.row_count == 0 and not has_weak_signal(state.question):
+            unasked = _unasked_plan_filter(state)
+            if (
+                unasked is not None
+                and state.last_rollback_target != "query_sketch"
+                and not budget_exhausted(state.retry_count, max_retries)
+            ):
+                logger.info(
+                    "reflect replan escalation: unasked plan filter %s",
+                    unasked,
+                )
+                reason = (
+                    f"[ERR:SQL_EMPTY] 零行,且计划带着过滤 {unasked}——该取值"
+                    "在问句(含改写/时间上下文)中从未出现,疑似把答案维度"
+                    "臆造成了过滤。TARGET: query_sketch。该类别列很可能正是"
+                    "问句追问的答案列(分组维度),请整份重出计划:去掉这个"
+                    "臆造过滤。"
+                    if state.lang == "zh" else
+                    f"[ERR:SQL_EMPTY] Zero rows, and the plan filters "
+                    f"{unasked} — a value the question (rewritten/time context "
+                    "included) never mentions, likely an answer dimension "
+                    "invented as a filter. TARGET: query_sketch. Re-emit the "
+                    "whole plan: that categorical column is probably the "
+                    "answer column the question asks about — drop the "
+                    "invented filter."
+                )
+                return {
+                    "verdict": "RETRY",
+                    "reason": reason,
+                    "retry_count": state.retry_count + 1,
+                    "semantic_retries": 0,
+                }
             return {
                 "verdict": "EMPTY",
                 "reason": "Query returned zero rows — this may be correct if no data matches",
