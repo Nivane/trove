@@ -465,6 +465,120 @@ figure.diagram[data-size="compact"] .diagram-canvas svg { min-width: 0; }
 .diagram[data-diagram="rendered"] .cap-source { display: none; }
 .diagram:not([data-diagram="rendered"]) .cap-rendered { display: none; }
 
+/* ── 产品截图 ──────────────────────────────────────────── */
+/* 位图只承载像素：编号点（.pin）、数字图例、图注全部留在 HTML —— 可检索、
+   可翻译、跟主题。旧截图被删（e90f33e）的理由是「会过期」，现在的缓解是
+   capture-guide-shots.mjs 可重跑 + _manifest.json 记录来源 commit（页脚注明）。 */
+.shot { margin: 22px 0 18px; }
+.shot-frame {
+  position: relative; /* .pin 的定位上下文 */
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--raised);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.shot-frame img { display: block; width: 100%; height: auto; }
+/* 编号点压在图上，用百分比定位（--x/--y），随图缩放不脱位。白描边是给点
+   兜一层底：截图恒为亮色产品界面，浅色 UI 上实心点会跟背景糊在一起。 */
+.pin {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: #fff;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, .9), 0 1px 4px rgba(0, 0, 0, .3);
+}
+@media (max-width: 620px) { .pin { width: 18px; height: 18px; font-size: 10.5px; } }
+/* 图例与 .pin 同号同色：读者在页面上建立「几号点 = 哪一步」的映射 */
+.shot-legend {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+/* 行内片段多（<strong>/<code> 夹在文字里），li 不能用 grid：grid 会把每个
+   行内片段拆成独立格项，轮流落进 20px 的数字列——落进去的片段一字一行。
+   数字改绝对定位，正文保持正常行内流。 */
+.shot-legend li {
+  position: relative;
+  padding-left: 29px;
+  min-height: 20px;
+}
+.shot-legend .n {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* 页脚一句：截图会过期，说清怎么重生成（e90f33e 删图的理由要有下文） */
+.shot-note {
+  margin: 26px 0 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+.shot-note code { font-size: 11.5px; }
+
+/* ── 编号步骤 ──────────────────────────────────────────── */
+/* 操作步骤的骨架（DataWorks 式）：号码是手写的，不是 CSS counter —— 页面是
+   手写 HTML，号码要能在源码里 grep 到，也要能跟截图 .pin 对上号。 */
+.steps {
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 30px;
+}
+.steps > li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 14px;
+}
+.step-num {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: #fff;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+}
+.step-body { min-width: 0; }
+.step-body > :first-child { margin-top: 0; }
+.step-body h3 { margin: 0 0 8px; font-size: 16px; }
+@media (max-width: 620px) { .steps > li { grid-template-columns: 24px minmax(0, 1fr); gap: 10px; } .step-num { width: 24px; height: 24px; font-size: 12.5px; } }
+
 /* ── 代码块 ────────────────────────────────────────────── */
 pre {
   background: var(--code-bg);
