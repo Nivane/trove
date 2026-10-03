@@ -4,11 +4,15 @@ Reads go through the SQLite mirror (ensure_synced refreshes it
 incrementally from YAML — the single source of truth); appends write
 straight into the YAML files.
 
-Reads are open to any authenticated user. KB writes (terms/examples) and
-the confirm-ALL action are admin-only; POST /v1/kb/lessons and
-POST /v1/kb/ratings stay open to any authenticated user — they are the
-user feedback channel that produces *pending* lessons for the admin
-console to confirm or reject.
+Reads are open to any authenticated user **whose datasource grants cover
+the target datasource** (per-endpoint ``require_datasource``, same rule as
+``catalog``/``lineage``: admin any, empty grants = registry default,
+non-empty = strict allowlist, no evidence = refuse). ``/kb/status`` has no
+datasource parameter and enumerates every KB — it lists only the caller's
+visible datasources. KB writes (terms/examples) and the confirm-ALL action
+are admin-only; POST /v1/kb/lessons and POST /v1/kb/ratings stay open to
+any authenticated user — they are the user feedback channel that produces
+*pending* lessons for the admin console to confirm or reject.
 """
 
 from __future__ import annotations
@@ -18,7 +22,12 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from trove.api.deps import get_current_user, require_admin
+from trove.api.deps import (
+    get_current_user,
+    get_principal,
+    require_admin,
+    require_datasource,
+)
 from trove.api.schemas import (
     ExampleCreate,
     LessonConfirmResponse,
@@ -26,6 +35,7 @@ from trove.api.schemas import (
     LessonRatingCreate,
     TermCreate,
 )
+from trove.services.authz.policy import visible_datasources
 
 router = APIRouter()
 
@@ -70,7 +80,12 @@ async def _audit(request: Request, action: str, user: dict, status: int,
 
 
 def _datasource(request: Request, datasource: str | None) -> str:
-    """Resolve the target datasource: explicit param or registry default."""
+    """Resolve the target datasource: explicit param or registry default.
+
+    **只做解析,不做授权** —— 读端点一律走 ``deps.require_datasource``(解析 +
+    判定一体),这里的调用方目前只剩下面这些 POST(用户反馈入口)。新端点
+    别再用它:绕过闸门只需要少写一行。
+    """
     ds = datasource or request.app.state.connector_registry.default_name
     if not ds:
         raise HTTPException(status_code=400, detail="no active datasource")
@@ -81,8 +96,23 @@ def _datasource(request: Request, datasource: str | None) -> str:
 async def kb_status(
     request: Request, user: dict = Depends(get_current_user)
 ) -> dict:
+    """KB 概览(按数据源的条目计数)。
+
+    没有 ``datasource`` 参数 —— 它一次枚举**全部**数据源,所以可见性在
+    这里按 grants 过滤(admin 全量),而不是走 ``require_datasource`` 的单源
+    判定。过滤规则复用 ``visible_datasources``(与 catalog 列表页同一份
+    实现):任何登录用户能枚举出未授权数据源的名字,本身就是一次信息泄露。
+    """
     kb = _kb(request)
-    return {"enabled": kb.enabled, "items": await kb.list_items()}
+    items = await kb.list_items()
+    registry = getattr(request.app.state, "connector_registry", None)
+    default_name = registry.default_name if registry is not None else None
+    principal = await get_principal(request, user)
+    visible = set(visible_datasources(principal, items.keys(), default_name))
+    return {
+        "enabled": kb.enabled,
+        "items": {ds: counts for ds, counts in items.items() if ds in visible},
+    }
 
 
 @router.get("/kb/assets")
@@ -97,7 +127,7 @@ async def kb_assets(
     和"磁盘上的文件被采纳了"是两件事,这个接口是唯一能分开它们的入口。
     """
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     return {
         "datasource": ds,
         "assets": kb.asset_report(ds),
@@ -114,7 +144,7 @@ async def list_rules(
     datasource: str | None = None,
 ) -> dict:
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     await kb.ensure_synced(ds)
     return {"rules": await kb.list_rules(ds)}
 
@@ -132,7 +162,7 @@ async def list_semantic_entries(
     份 payload 的两套投影,这里只出 metric 一套(不重复计数)。
     """
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     await kb.ensure_synced(ds)
     return {"entries": await kb.list_semantic_entries(ds)}
 
@@ -148,7 +178,7 @@ async def list_terms(
     user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     await kb.ensure_synced(ds)
     if q:
         hits = await kb.search_terms(q, ds)
@@ -178,7 +208,7 @@ async def list_examples(
     user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     await kb.ensure_synced(ds)
     if q:
         hits = await kb.search_examples(q, ds, limit=limit)
@@ -316,7 +346,7 @@ async def list_lessons(
     user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     await kb.ensure_synced(ds)
     return {"lessons": await kb.list_lessons(ds, confirmed_only=not pending)}
 
@@ -417,7 +447,7 @@ async def table_notes(
     user: dict = Depends(get_current_user),
 ) -> dict:
     kb = _kb(request)
-    ds = _datasource(request, datasource)
+    ds = await require_datasource(request, datasource, user)
     await kb.ensure_synced(ds)
     notes = await kb.table_notes([table_name], ds)
     if table_name not in notes:

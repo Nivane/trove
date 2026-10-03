@@ -67,10 +67,16 @@ async def test_api_and_mcp_agree_on_every_grants_case(
         await auth_service.set_datasources(bob["id"], grants)
         label = f"grants={grants} ds={requested!r}"
 
-        # ── API 侧 ──
+        # ── API 侧(catalog)──
         params = {} if requested is None else {"datasource": requested}
         resp = await user_client.get("/v1/catalog/tables", params=params)
         api_denied = resp.status_code == 403
+
+        # ── API 侧(KB 读端点)──
+        # 读侧曾经只挂 get_current_user:同一份数据源,catalog 403 而 KB 200。
+        # 这一行把它钉进矩阵 —— 两个入口的判定必须逐格相同。
+        kb_resp = await user_client.get("/v1/kb/rules", params=params)
+        kb_denied = kb_resp.status_code == 403
 
         # ── MCP 侧 ──
         # kb_status 的 datasource 是必填(无默认值),所以"省略"这一格显式传
@@ -84,6 +90,11 @@ async def test_api_and_mcp_agree_on_every_grants_case(
         assert api_denied is not should_allow, f"API 判定不符: {label}"
         assert mcp_denied is not should_allow, f"MCP 判定不符: {label}"
         assert api_denied == mcp_denied, f"两个入口不一致: {label}"
+        # 放行格必须是 200(而不是"不是 403"就完事 —— 500/404 也能骗过弱断言)
+        assert kb_resp.status_code == (200 if should_allow else 403), (
+            f"KB 读端点判定不符: {label} (got {kb_resp.status_code})"
+        )
+        assert kb_denied == api_denied, f"KB 与 catalog 判定不一致: {label}"
 
 
 async def test_listing_agrees_with_datasource_gate(
