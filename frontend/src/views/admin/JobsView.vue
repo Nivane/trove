@@ -116,7 +116,9 @@
             />
           </template>
         </el-table-column>
-        <el-table-column :label="t('auditAction', ui.lang)" :width="readOnly ? 130 : 230" fixed="right">
+        <!-- 只读角色下动作只剩「运行历史」(订阅管理走 /v1/admin/subscriptions,
+             不在 analyst 只读面内 —— R1:看得见必须点得开),列宽随之收窄。 -->
+        <el-table-column :label="t('auditAction', ui.lang)" :width="readOnly ? 130 : 310" fixed="right">
           <template #default="{ row }">
             <el-button v-if="!readOnly" size="small" :loading="running === row.id" @click="runNow(row)">
               <Play :size="14" class="btn-icon" />
@@ -125,6 +127,12 @@
             <el-button size="small" @click="showRuns(row)">
               <History :size="14" class="btn-icon" />
               {{ t('jobRuns', ui.lang) }}
+            </el-button>
+            <!-- 订阅抽屉读的是 /v1/admin/subscriptions(admin 专属,不在 analyst
+                 冻结只读清单里)→ 只读角色不渲染该入口,不留 403 死点击。 -->
+            <el-button v-if="!readOnly" size="small" @click="openSubs(row)">
+              <Bell :size="14" class="btn-icon" />
+              {{ t('subsManage', ui.lang) }}
             </el-button>
             <el-button v-if="!readOnly" size="small" @click="openEdit(row)">
               <Pencil :size="14" class="btn-icon" />
@@ -262,14 +270,188 @@
         </el-table-column>
       </el-table>
     </el-dialog>
+
+    <!-- 订阅抽屉:订阅者 × 任务。投递是 runner 里 best-effort 发生的,
+         这里的「投递记录」是事后取证 —— 订了却没收到时,先看这里。 -->
+    <DetailDrawer
+      v-model="subsOpen"
+      :title="subsTitle"
+      width="720px"
+      :close-label="t('close', ui.lang)"
+    >
+      <div class="subs-add">
+        <div class="subs-add-hint">{{ t('subsAddHint', ui.lang) }}</div>
+        <div class="subs-add-row">
+          <el-input
+            v-model="subForm.subscriber"
+            class="subs-in-name"
+            :placeholder="t('subsSubscriberPh', ui.lang)"
+            :aria-label="t('subsSubscriber', ui.lang)"
+          />
+          <el-select
+            v-model="subForm.mode"
+            class="subs-in-mode"
+            :aria-label="t('subsMode', ui.lang)"
+          >
+            <el-option :label="t('subsModeAlways', ui.lang)" value="always" />
+            <el-option :label="t('subsModeAlertOnly', ui.lang)" value="alert_only" />
+          </el-select>
+          <el-button type="primary" :loading="subSaving" @click="addSub">
+            <Plus :size="14" class="btn-icon" />
+            {{ t('subsAdd', ui.lang) }}
+          </el-button>
+        </div>
+        <el-input
+          v-model="subForm.channel"
+          class="subs-in-channel"
+          :placeholder="t('subsChannelPh', ui.lang)"
+          :aria-label="t('subsChannel', ui.lang)"
+        />
+      </div>
+
+      <el-table
+        v-loading="subsLoading"
+        :data="subsRows"
+        class="admin-table"
+        max-height="280"
+      >
+        <template #empty>
+          <div class="dim">{{ t('subsEmpty', ui.lang) }}</div>
+        </template>
+        <el-table-column :label="t('subsSubscriber', ui.lang)" min-width="150">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ row.subscriber }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsMode', ui.lang)" width="110">
+          <template #default="{ row }">
+            <span class="pill" :class="modeClass(row.mode)">
+              {{ t(modeLabelKey(row.mode), ui.lang) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsChannel', ui.lang)" min-width="170">
+          <template #default="{ row }">
+            <span v-if="row.channel" class="cell-mono">{{ row.channel }}</span>
+            <span v-else class="dim">{{ t('subsChannelInherit', ui.lang) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsEnabled', ui.lang)" width="80">
+          <template #default="{ row }">
+            <el-switch
+              :model-value="row.enabled"
+              :loading="subToggling === row.id"
+              @change="(v: boolean) => toggleSub(row, v)"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('auditAction', ui.lang)" width="130" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" @click="openSubEdit(row)">
+              <Pencil :size="14" class="btn-icon" />
+            </el-button>
+            <el-button size="small" type="danger" @click="removeSub(row)">
+              <Trash2 :size="14" class="btn-icon" />
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <h4 class="subs-sec">{{ t('subsDeliveries', ui.lang) }}</h4>
+      <el-table
+        v-loading="subsDeliveriesLoading"
+        :data="subsDeliveries"
+        class="admin-table"
+        max-height="280"
+      >
+        <template #empty>
+          <div class="dim">{{ t('subsDeliveriesEmpty', ui.lang) }}</div>
+        </template>
+        <el-table-column :label="t('subsRun', ui.lang)" width="70">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ row.run_id }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsSubscriber', ui.lang)" min-width="110">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ row.subscriber }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsChannel', ui.lang)" min-width="130">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ row.channel }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('jobStatus', ui.lang)" width="90">
+          <template #default="{ row }">
+            <span class="pill" :class="deliveryStatusClass(row.status)">
+              {{ row.status === 'failed'
+                ? t('subsDeliveryFailed', ui.lang)
+                : t('subsDeliverySent', ui.lang) }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsExcerpt', ui.lang)" min-width="200">
+          <template #default="{ row }">
+            <div class="subs-excerpt" :title="row.excerpt">{{ row.excerpt }}</div>
+            <div v-if="row.error" class="subs-excerpt-err">{{ row.error }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('subsDeliveredAt', ui.lang)" width="160">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ fmtDateTime(row.created_at) }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </DetailDrawer>
+
+    <el-dialog
+      v-model="subEditOpen"
+      :title="t('subsEditTitle', ui.lang)"
+      width="480px"
+      class="job-dialog"
+    >
+      <el-form label-position="top">
+        <el-form-item :label="t('subsChannel', ui.lang)">
+          <el-input
+            v-model="subEditForm.channel"
+            :placeholder="t('subsChannelPh', ui.lang)"
+          />
+        </el-form-item>
+        <el-form-item :label="t('subsMode', ui.lang)">
+          <el-select v-model="subEditForm.mode" class="subs-in-mode">
+            <el-option :label="t('subsModeAlways', ui.lang)" value="always" />
+            <el-option :label="t('subsModeAlertOnly', ui.lang)" value="alert_only" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="subEditOpen = false">{{ t('cancel', ui.lang) }}</el-button>
+        <el-button type="primary" :loading="subEditSaving" @click="saveSubEdit">
+          {{ t('save', ui.lang) }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { History, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { Bell, History, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
 import { apiGet, apiPatch, apiPost, apiDelete } from '../../api/http'
+import {
+  createSubscription,
+  deleteSubscription,
+  deliveryStatusClass,
+  fetchDeliveries,
+  fetchSubscriptions,
+  modeClass,
+  modeLabelKey,
+  patchSubscription,
+  type SubscriptionDelivery,
+  type SubscriptionRow,
+} from '../../api/subscriptions'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, toastError } from '../../utils/notify'
@@ -277,6 +459,7 @@ import { fmtDateTime } from '../../utils/format'
 import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
 import PageHeader from '../../components/base/PageHeader.vue'
+import DetailDrawer from '../../components/base/DetailDrawer.vue'
 import type { DatasourceInfo } from '../../api/types'
 import { useReadOnly } from '../../composables/useReadOnly'
 
@@ -604,6 +787,159 @@ async function remove(row: JobRow) {
   }
 }
 
+/* ── 订阅(报告投递)─────────────────────────────────────────────────────
+   一条订阅 = 订阅者 × 任务;mode 决定每期投还是仅告警投,channel 留空 =
+   沿用任务通道。投递由 runner 在每次运行后 best-effort 发生,这里的投递
+   记录是事后取证:订了却没收到,先来这里看是「没投」还是「投失败」。 */
+const subsOpen = ref(false)
+const subsJob = ref<JobRow | null>(null)
+const subsRows = ref<SubscriptionRow[]>([])
+const subsLoading = ref(false)
+const subsDeliveries = ref<SubscriptionDelivery[]>([])
+const subsDeliveriesLoading = ref(false)
+const subSaving = ref(false)
+const subToggling = ref('')
+const subForm = reactive({
+  subscriber: '',
+  channel: '',
+  mode: 'always' as 'always' | 'alert_only',
+})
+const subEditOpen = ref(false)
+const subEditSaving = ref(false)
+const subEditTarget = ref<SubscriptionRow | null>(null)
+const subEditForm = reactive({
+  channel: '',
+  mode: 'always' as 'always' | 'alert_only',
+})
+
+const subsTitle = computed(() => {
+  const job = subsJob.value?.name || subsJob.value?.id || ''
+  return job ? `${t('subsDrawerTitle', ui.lang)} · ${job}` : t('subsDrawerTitle', ui.lang)
+})
+
+function openSubs(row: JobRow) {
+  subsJob.value = row
+  subsOpen.value = true
+  subForm.subscriber = ''
+  subForm.channel = ''
+  subForm.mode = 'always'
+  void loadSubs()
+  void loadSubDeliveries()
+}
+
+async function loadSubs() {
+  const job = subsJob.value
+  if (!job) return
+  subsLoading.value = true
+  try {
+    const body = await fetchSubscriptions({ job_id: job.id })
+    subsRows.value = body.subscriptions ?? []
+  } catch (e) {
+    toastError(e)
+  } finally {
+    subsLoading.value = false
+  }
+}
+
+async function loadSubDeliveries() {
+  const job = subsJob.value
+  if (!job) return
+  subsDeliveriesLoading.value = true
+  try {
+    const body = await fetchDeliveries({ job_id: job.id })
+    subsDeliveries.value = body.deliveries ?? []
+  } catch (e) {
+    toastError(e)
+  } finally {
+    subsDeliveriesLoading.value = false
+  }
+}
+
+async function addSub() {
+  const job = subsJob.value
+  const subscriber = subForm.subscriber.trim()
+  // 空订阅者只会换来后端 400;前端先拦(与 save() 的空问题同款)。
+  if (!job || !subscriber) return
+  subSaving.value = true
+  try {
+    await createSubscription(job.id, {
+      subscriber,
+      channel: subForm.channel.trim(),
+      mode: subForm.mode,
+    })
+    notifySuccess(t('subsCreated', ui.lang))
+    subForm.subscriber = ''
+    subForm.channel = ''
+    await loadSubs()
+  } catch (e) {
+    // 未知用户 / 重复订阅 / 坏通道都是 400 —— 后端 detail 比前端猜的准。
+    toastError(e)
+  } finally {
+    subSaving.value = false
+  }
+}
+
+async function toggleSub(sub: SubscriptionRow, enabled: boolean) {
+  subToggling.value = sub.id
+  try {
+    await patchSubscription(sub.id, { enabled })
+    await loadSubs()
+  } catch (e) {
+    toastError(e)
+  } finally {
+    subToggling.value = ''
+  }
+}
+
+function openSubEdit(sub: SubscriptionRow) {
+  subEditTarget.value = sub
+  subEditForm.channel = sub.channel
+  subEditForm.mode = sub.mode === 'alert_only' ? 'alert_only' : 'always'
+  subEditOpen.value = true
+}
+
+async function saveSubEdit() {
+  const target = subEditTarget.value
+  if (!target) return
+  subEditSaving.value = true
+  try {
+    await patchSubscription(target.id, {
+      channel: subEditForm.channel.trim(),
+      mode: subEditForm.mode,
+    })
+    notifySuccess(t('subsUpdated', ui.lang))
+    subEditOpen.value = false
+    await loadSubs()
+  } catch (e) {
+    toastError(e)
+  } finally {
+    subEditSaving.value = false
+  }
+}
+
+async function removeSub(sub: SubscriptionRow) {
+  try {
+    await ElMessageBox.confirm(
+      t('subsConfirmDelete', ui.lang),
+      t('delete', ui.lang),
+      {
+        type: 'warning',
+        confirmButtonText: t('delete', ui.lang),
+        cancelButtonText: t('cancel', ui.lang),
+      },
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteSubscription(sub.id)
+    notifySuccess(t('subsDeleted', ui.lang))
+    await loadSubs()
+  } catch (e) {
+    toastError(e)
+  }
+}
+
 onMounted(() => {
   // 坏的 ?page=abc 归一为 1,而不是让 URL 说谎
   if (values.page !== String(page.value)) values.page = String(page.value)
@@ -615,5 +951,60 @@ onMounted(() => {
 <style scoped>
 .filter-select {
   width: 150px;
+}
+
+/* ── 订阅抽屉 ── */
+.subs-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.subs-add-hint {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--text-secondary);
+}
+
+.subs-add-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.subs-in-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.subs-in-mode {
+  width: 130px;
+  flex: none;
+}
+
+.subs-sec {
+  margin: var(--sp-5) 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.subs-excerpt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+.subs-excerpt-err {
+  margin-top: 2px;
+  font-size: var(--fs-2xs);
+  color: var(--danger-text);
 }
 </style>

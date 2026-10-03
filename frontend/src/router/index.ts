@@ -49,6 +49,12 @@ export const router = createRouter({
       name: 'chat',
       component: () => import('../views/ChatView.vue'),
     },
+    // 用户面：我的订阅（定时报告）。登录即可，无角色门槛 —— 后端 own-only。
+    {
+      path: '/subscriptions',
+      name: 'subscriptions',
+      component: () => import('../views/SubscriptionsView.vue'),
+    },
     {
       path: '/admin',
       component: () => import('../views/AdminLayout.vue'),
