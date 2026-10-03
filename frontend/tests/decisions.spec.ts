@@ -136,3 +136,18 @@ describe('DecisionsView URL state (§4.3)', () => {
     expect(ruleIds(view)).toEqual(['r-fin'])
   })
 })
+
+describe('DecisionsView table layout (F1)', () => {
+  it('pins the verdict-history column to the right edge of the table', async () => {
+    mockGet({ demo: [rule('r-demo')] })
+    const view = await mountView()
+    const headers = view.findAll('.el-table__header th')
+    expect(headers.length).toBe(9)
+    const last = headers[headers.length - 1]
+    expect(last.text()).toContain('Verdict history')
+    // Element Plus renders fixed columns as sticky cells carrying
+    // `el-table-fixed-column--right`; without it a narrow viewport pushes the
+    // only action column out of sight instead of pinning it.
+    expect(last.classes()).toContain('el-table-fixed-column--right')
+  })
+})

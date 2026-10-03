@@ -1796,6 +1796,10 @@ export const messages = {
     loginRetry: '重试',
     loginLegal: '登录即表示你有权访问该平台',
     loginVersionTitle: '版本 · 构建',
+    // ── P6-b3-polish ──（F1/F2/F3/F4 打磨批；仅追加，两语言块同序）
+    dsDriftUnavailable: '漂移不可用',
+    dsDriftUnknown: '漂移未读到',
+    dsDriftDemoNote: '内置 demo 演练库不参与漂移治理（它随启动重建，没有可比对的基线）',
   },
   en: {
     brand: 'Trove',
@@ -3630,6 +3634,11 @@ export const messages = {
     loginRetry: 'Retry',
     loginLegal: 'By signing in you confirm you may access this platform',
     loginVersionTitle: 'Version · build',
+    // ── P6-b3-polish ──（F1/F2/F3/F4 polish batch; appended only, same order in both blocks）
+    dsDriftUnavailable: 'Drift unavailable',
+    dsDriftUnknown: 'Drift unread',
+    dsDriftDemoNote:
+      'The built-in demo is excluded from drift governance (it is rebuilt on every start, so there is no baseline to compare against)',
   },
 }
 

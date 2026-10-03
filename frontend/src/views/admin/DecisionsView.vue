@@ -58,41 +58,45 @@
         <template #empty>
           <TableEmpty>{{ t('decisionsEmpty', ui.lang) }}</TableEmpty>
         </template>
-        <el-table-column :label="t('decisionsRuleId', ui.lang)" width="160">
+        <!-- 列宽合计刻意压在内容列宽(~1175px)以内:9 列都按内容能放下的
+             最小宽取,超出就只剩横滚 —— 而横滚会让最后一列(判定历史)
+             整列消失。收窄只减内边距,不做 show-overflow-tooltip 之类的
+             隐藏:文字放不下时换行,不截断。 -->
+        <el-table-column :label="t('decisionsRuleId', ui.lang)" width="140">
           <template #default="{ row }">
             <span class="cell-mono">{{ row.id }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('jobName', ui.lang)" min-width="150">
+        <el-table-column :label="t('jobName', ui.lang)" min-width="130">
           <template #default="{ row }">{{ row.name || '—' }}</template>
         </el-table-column>
-        <el-table-column :label="t('decisionsSeverity', ui.lang)" width="110">
+        <el-table-column :label="t('decisionsSeverity', ui.lang)" width="100">
           <template #default="{ row }">
             <span class="pill" :class="severityClass(row.severity)">
               {{ row.severity }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('decisionsWindow', ui.lang)" width="120">
+        <el-table-column :label="t('decisionsWindow', ui.lang)" width="110">
           <template #default="{ row }">
             <span class="cell-mono">{{ row.window || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('decisionsConditions', ui.lang)" min-width="220">
+        <el-table-column :label="t('decisionsConditions', ui.lang)" min-width="190">
           <template #default="{ row }">
             <div v-for="(c, i) in row.conditions" :key="i" class="cell-mono cond">
               <span class="dim">{{ row.condition_mode }}</span> {{ c }}
             </div>
           </template>
         </el-table-column>
-        <el-table-column :label="t('jobEnabled', ui.lang)" width="90">
+        <el-table-column :label="t('jobEnabled', ui.lang)" width="80">
           <template #default="{ row }">
             <span class="pill" :class="row.enabled ? 'pill-ok' : 'pill-neutral'">
               {{ row.enabled ? t('enable', ui.lang) : t('disable', ui.lang) }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('decisionsLatest', ui.lang)" min-width="180">
+        <el-table-column :label="t('decisionsLatest', ui.lang)" min-width="170">
           <template #default="{ row }">
             <div v-if="row.latest_verdict" class="decisions-latest">
               <span
@@ -108,13 +112,19 @@
             <span v-else class="dim">{{ t('decisionsNeverJudged', ui.lang) }}</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('decisionsReferencedBy', ui.lang)" min-width="180">
+        <el-table-column :label="t('decisionsReferencedBy', ui.lang)" min-width="150">
           <template #default="{ row }">
             <div v-for="(j, i) in row.referenced_by" :key="i" class="dim">{{ j }}</div>
             <span v-if="!row.referenced_by.length" class="dim">—</span>
           </template>
         </el-table-column>
-        <el-table-column :label="t('decisionsHistory', ui.lang)" width="110">
+        <!-- 判定历史是这张表的唯一动作列:固定在最右,让它在任何视口宽度下
+             都常驻(收窄列宽只是让它更早进入可视区,不能保证不出视口)。 -->
+        <el-table-column
+          :label="t('decisionsHistory', ui.lang)"
+          width="100"
+          fixed="right"
+        >
           <template #default="{ row }">
             <el-button link size="small" @click="openHistory(row)">
               {{ t('decisionsHistoryOpen', ui.lang) }}

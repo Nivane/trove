@@ -50,13 +50,25 @@
           :aria-label="t('dsSearch', ui.lang)"
           clearable
         />
-        <el-select v-model="values.health" class="filter-select">
-          <el-option :label="t('dsFilterHealth', ui.lang)" value="" />
+        <!-- 「全部」用非空哨兵值:Element Plus 把 value="" 当成"还没选",
+             静止态会回落到默认占位「请选择」,与选项自身写的"全部状态"
+             自相矛盾。placeholder 同文兜底:老链接里的 ?health= 这类空值
+             也不会显出「请选择」。 -->
+        <el-select
+          v-model="values.health"
+          class="filter-select"
+          :placeholder="t('dsFilterHealth', ui.lang)"
+        >
+          <el-option :label="t('dsFilterHealth', ui.lang)" value="all" />
           <el-option :label="t('dsConnected', ui.lang)" value="connected" />
           <el-option :label="t('dsDisconnected', ui.lang)" value="disconnected" />
         </el-select>
-        <el-select v-model="values.drift" class="filter-select">
-          <el-option :label="t('dsFilterDrift', ui.lang)" value="" />
+        <el-select
+          v-model="values.drift"
+          class="filter-select"
+          :placeholder="t('dsFilterDrift', ui.lang)"
+        >
+          <el-option :label="t('dsFilterDrift', ui.lang)" value="all" />
           <el-option :label="t('dsDriftOpen', ui.lang)" value="open" />
           <el-option :label="t('dsDriftNone', ui.lang)" value="none" />
         </el-select>
@@ -109,12 +121,16 @@
                   : t('dsDisconnected', ui.lang)
               }}
             </span>
+            <!-- 漂移胶囊:>0 才红/黄。读不到的源给一个显式的灰色胶囊 ——
+                 胶囊静默缺席会被读成"查过且干净",那是漂移面最忌讳的
+                 静默(「没有信号」与「信号是 0」不是一回事)。 -->
             <span
-              v-if="driftOpen(row) > 0"
-              class="pill pill-warn ds-drift-pill"
-              :title="t('dsDriftOpen', ui.lang)"
+              v-if="driftBadge(row)"
+              class="pill ds-drift-pill"
+              :class="driftBadge(row)!.cls"
+              :title="driftBadge(row)!.title"
             >
-              {{ t('dsDriftOpen', ui.lang) }} {{ driftOpen(row) }}
+              {{ driftBadge(row)!.label }}
             </span>
           </template>
         </el-table-column>
@@ -318,10 +334,11 @@ import {
   Trash2,
   RefreshCw,
 } from 'lucide-vue-next'
-import { apiDelete, apiGet, apiPost, apiPut } from '../../api/http'
+import { apiDelete, apiGet, apiPost, apiPut, ApiError } from '../../api/http'
+import { fetchDriftList } from '../../api/governance'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
-import { toastError, notifySuccess } from '../../utils/notify'
+import { notifyError, notifySuccess, toastError } from '../../utils/notify'
 import { dsTypeLabel } from '../../utils/format'
 import { useListQuery } from '../../composables/useListQuery'
 import type { DatasourceInfo } from '../../api/types'
@@ -340,15 +357,61 @@ const busyMap = reactive<Record<string, boolean>>({})
    q / health / drift are the keys this page acknowledges: the list stays
    shareable and /admin/datasources?drift=open lands on the drifted sources
    instead of a full list. All three filter client-side over the fetched
-   catalog (the endpoint takes no filter parameters). */
-const { values } = useListQuery({ q: '', health: '', drift: '' })
+   catalog (the endpoint takes no filter parameters). "不筛"是 all 而不是
+   '' —— 空串在 el-select 里等于"还没选",见过滤器处的注释。 */
+const { values } = useListQuery({ q: '', health: 'all', drift: 'all' })
 
-// 每源的未豁免漂移条目数(治理中心同一手法:一次只读查询);失败/未体检 =
-// 0 条,过滤器就说"无漂移",不替后台编造体检结论。
-const driftCounts = ref<Record<string, number>>({})
+/** 每源的漂移探针结果 —— 三态,不是数字:
+ *  · ok         读到了(count 为该源的未豁免条目数,0 = 查过且干净);
+ *  · unavailable 这个源读不了漂移(后端 4xx:未注册/未连接;或内置 demo);
+ *  · failed     读取失败(5xx/网络),已 toast,行内不冒充 0。
+ *  三态可分的理由与漂移面本身一致:把"没读到"洗成"0 条",管理台就再也
+ *  分不出「查过且干净」与「根本没查」。 */
+type DriftProbe =
+  | { state: 'ok'; count: number }
+  | { state: 'unavailable'; reason: string }
+  | { state: 'failed'; reason: string }
+
+const driftProbes = ref<Record<string, DriftProbe>>({})
+
+/** 内置 demo(名字在 naming.RESERVED_NAMES 里,用户注册不了)不参与漂移
+ *  治理:~/.trove/demo.db 每次 setup 都会被重建,对一份每次重造的演练库
+ *  做「当前 schema vs KB 基线」比对,读出的只会是上一次会话的残影。 */
+function driftNotApplicable(row: DatasourceInfo): boolean {
+  return row.name === 'demo' || row.type === 'demo'
+}
 
 function driftOpen(row: DatasourceInfo): number {
-  return driftCounts.value[row.name] ?? 0
+  const probe = driftProbes.value[row.name]
+  return probe?.state === 'ok' ? probe.count : 0
+}
+
+/** 行的漂移胶囊:ok 且 >0 → 红/黄计数;读不到 → 灰色"不可用/未读到"。 */
+function driftBadge(
+  row: DatasourceInfo,
+): { label: string; title: string; cls: string } | null {
+  const probe = driftProbes.value[row.name]
+  if (!probe) return null // 探针还没回来:不编造任何结论
+  if (probe.state === 'ok') {
+    if (probe.count <= 0) return null
+    return {
+      label: `${t('dsDriftOpen', ui.lang)} ${probe.count}`,
+      title: t('dsDriftOpen', ui.lang),
+      cls: 'pill-warn',
+    }
+  }
+  if (probe.state === 'unavailable') {
+    return {
+      label: t('dsDriftUnavailable', ui.lang),
+      title: `${t('dsDriftUnavailable', ui.lang)} · ${probe.reason}`,
+      cls: 'pill-neutral',
+    }
+  }
+  return {
+    label: t('dsDriftUnknown', ui.lang),
+    title: `${t('dsDriftUnknown', ui.lang)} · ${probe.reason}`,
+    cls: 'pill-danger',
+  }
 }
 
 const filtered = computed(() =>
@@ -358,6 +421,8 @@ const filtered = computed(() =>
     if (values.health === 'connected' && row.status !== 'connected') return false
     if (values.health === 'disconnected' && row.status === 'connected') return false
     if (values.drift === 'open') return driftOpen(row) > 0
+    // "无漂移"按 0 条算(与改前一致):读不到的源不在这里另设规则 ——
+    // 行内的灰色胶囊已经说了"不可用",过滤器不替它下结论。
     if (values.drift === 'none') return driftOpen(row) === 0
     return true
   }),
@@ -456,22 +521,41 @@ async function load() {
   }
 }
 
-/** 漂移数:每源一次只读查询,失败不阻塞列表(过滤按 0 条算)。 */
+/** 漂移探针:每源一次只读查询(走 api/governance 的取数层,端点形状只此
+ *  一处)。失败不阻塞列表 —— 但**要响**:4xx 是"这个源读不了漂移",渲染
+ *  灰色不可用胶囊;5xx/网络是"没读到",toast 出来并在行内标未读到。
+ *  从前这里把两类都 catch 成 0,于是胶囊永久缺席、还看不出是为什么。 */
 async function loadDrift() {
-  const counts: Record<string, number> = {}
+  const probes: Record<string, DriftProbe> = {}
+  const failures: string[] = []
   await Promise.all(
     rows.value.map(async (row) => {
+      if (driftNotApplicable(row)) {
+        probes[row.name] = {
+          state: 'unavailable',
+          reason: t('dsDriftDemoNote', ui.lang),
+        }
+        return
+      }
       try {
-        const body = await apiGet(
-          `/v1/admin/drift?ds=${encodeURIComponent(row.name)}`,
-        )
-        counts[row.name] = (body.items ?? []).length
-      } catch {
-        counts[row.name] = 0
+        const body = await fetchDriftList(row.name)
+        probes[row.name] = { state: 'ok', count: body.items?.length ?? 0 }
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e)
+        if (e instanceof ApiError && e.status >= 400 && e.status < 500) {
+          probes[row.name] = { state: 'unavailable', reason }
+        } else {
+          probes[row.name] = { state: 'failed', reason }
+          failures.push(`${row.name}: ${reason}`)
+        }
       }
     }),
   )
-  driftCounts.value = counts
+  driftProbes.value = probes
+  // 一次刷新只响一次:N 个源的同类失败合成一条,不刷屏。
+  if (failures.length) {
+    notifyError(`${t('dsDriftUnknown', ui.lang)} · ${failures.join(' · ')}`)
+  }
 }
 
 function openDialog() {
