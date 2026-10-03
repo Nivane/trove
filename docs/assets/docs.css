@@ -987,3 +987,36 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* 文档页里的源码锚点与首页同款，只是不换行时更容易读 */
 .doc-col .ref { white-space: nowrap; }
+
+/* ── 入口卡（首页） ────────────────────────────────────── */
+/* 首页「从这里开始」的整卡链接：视觉取自上下页的 .doc-pager a，但类名表意。
+   每张卡是一段可跳转的入口（kicker → 标题 → 一句话说明），整卡可点。
+   auto-fit 保证窄屏自动塌成一列，无需断点。 */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 15px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-primary);
+}
+.card:hover {
+  border-color: var(--accent-line);
+  background: var(--muted);
+  text-decoration: none;
+}
+.card-kicker {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.card-title { font-size: 15px; font-weight: 600; }
+.card-desc { font-size: 13.5px; line-height: 1.6; color: var(--text-secondary); }
