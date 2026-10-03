@@ -805,6 +805,178 @@ def test_0483_real_reanchor_rows_match_gold(model):
     _assert_rows_match_gold("0483", res.sql)
 
 
+# --------------------------------- P3.5 跨车道针(0479/0483/0493,纠正器链)
+#
+# 逐字取自 P3 运行台账 ``.trove/eval/results.jsonl``(run id 见注释):这三题
+# 的机制产物是**计划层纠正器**的确定输出,不是日志里的历史形状。
+
+# 0479 · eval-6-1791008975 第 2 轮 —— 软 MISS 的子查询算式列(除先乘后);
+# ② 规范化后经 plan 的 FROM/WHERE 执行 = gold 逐字节(430.45454545454544)。
+PLAN_0479_LATEST = {
+    "tables": ["loan", "account", "disp", "client", "trans"],
+    "joins": (
+        "loan.account_id = account.account_id AND "
+        "disp.account_id = account.account_id AND "
+        "disp.client_id = client.client_id AND "
+        "trans.account_id = account.account_id"
+    ),
+    "conditions": [
+        {"field": "loan.date", "op": "=", "value": "'1993-07-05'",
+         "note": "loan approved on 1993-07-05"},
+        {"field": "disp.type", "op": "=", "value": "'OWNER'",
+         "note": "client is the owner of the account"},
+    ],
+    "aggregation": "无",
+    "extreme": {"func": "min", "column": "loan.date", "rank": 1,
+                "scope": "全部条件过滤后的集合"},
+    "ordering": [],
+    "answer_columns": [
+        "((SELECT trans.balance FROM trans WHERE trans.account_id = "
+        "account.account_id AND trans.date = '1998-12-27') - (SELECT "
+        "trans.balance FROM trans WHERE trans.account_id = account.account_id "
+        "AND trans.date = '1993-03-22')) / (SELECT trans.balance FROM trans "
+        "WHERE trans.account_id = account.account_id AND trans.date = "
+        "'1993-03-22') * 100"
+    ],
+    "having": [],
+    "plan_field": "",
+}
+
+QUESTION_0479 = (
+    "For the client whose loan was approved first in 1993/7/5, what is the "
+    "increase rate of his/her account balance from 1993/3/22 to 1998/12/27?"
+)
+
+# 0483 · eval-8-1791009102 第 2 轮 —— 已数 count(distinct client.client_id),
+# 但连接绕 account→disp 且角色条件挂在桥上;③a 路径简化后直连
+# client.district_id、无角色约束 = gold 9 行逐字节(Hl.m. Praha 324 起)。
+PLAN_0483_LATEST = {
+    "tables": ["account", "district", "disp", "client"],
+    "joins": (
+        "account.district_id = district.district_id; "
+        "disp.account_id = account.account_id; "
+        "disp.client_id = client.client_id"
+    ),
+    "conditions": [
+        {"field": "client.gender", "op": "=", "value": "'F'", "note": "女性客户"},
+        {"field": "disp.type", "op": "=", "value": "'OWNER'", "note": "账户持有人"},
+    ],
+    "aggregation": "count(distinct client.client_id)",
+    "ordering": [{"column": "count(distinct client.client_id)", "direction": "desc"}],
+    "answer_columns": ["district.A2", "count(distinct client.client_id)"],
+    "having": [],
+    "limit": 9,
+    "plan_field": "",
+}
+
+# 0493 · eval-9-1791009137 —— joins 已修复成所有权链;③c 补 OWNER + ② 规范化后
+# 执行 = gold 逐字节(25.300191222790616;缺 OWNER 时 25.36203967738821)。
+PLAN_0493_LATEST = {
+    "tables": ["loan", "account", "client", "disp"],
+    "joins": (
+        "loan.account_id = account.account_id AND "
+        "disp.account_id = account.account_id AND "
+        "disp.client_id = client.client_id"
+    ),
+    "conditions": [
+        {"field": "client.gender", "op": "=", "value": "'M'", "note": "male client"},
+        {"field": "loan.date", "op": ">=", "value": "'1996-01-01'", "note": "loans from 1996"},
+        {"field": "loan.date", "op": "<=", "value": "'1997-12-31'", "note": "loans up to 1997"},
+    ],
+    "aggregation": "sum",
+    "ordering": [],
+    "answer_columns": [
+        "(SUM(CASE WHEN YEAR(loan.date) = 1997 THEN loan.amount ELSE 0 END) - "
+        "SUM(CASE WHEN YEAR(loan.date) = 1996 THEN loan.amount ELSE 0 END)) / "
+        "SUM(CASE WHEN YEAR(loan.date) = 1996 THEN loan.amount ELSE 0 END) * 100"
+    ],
+    "time_grain": {"field": "loan.date", "grain": "year"},
+    "having": [],
+    "plan_field": "repair_plan_joins",
+}
+
+QUESTION_0493 = (
+    "What was the growth rate of the total amount of loans across all accounts "
+    "for a male client between 1996 and 1997?"
+)
+
+
+def _plan_pin_sql(plan: dict) -> str:
+    """按计划组件拼一条可执行 SQL(FROM 首表 + 声明 joins + WHERE 条件)。
+
+    仅测试用:把纠正器的**最终计划**落成执行载体,断言它逐字节命中 gold。
+    """
+    joined = {plan["tables"][0]}
+    sql = f"SELECT {', '.join(plan['answer_columns'])} FROM {plan['tables'][0]}"
+    for clause in str(plan.get("joins") or "").split(" AND "):
+        clause = clause.strip()
+        if not clause:
+            continue
+        lhs, _, rhs = clause.partition("=")
+        sides = [s.split(".", 1)[0].strip() for s in (lhs, rhs)]
+        new = next((t for t in sides if t and t not in joined), None)
+        if new is None:
+            continue
+        joined.add(new)
+        sql += f" JOIN {new} ON {clause}"
+    conds = [
+        f"{c['field']} {c['op']} {c['value']}"
+        for c in plan.get("conditions") or []
+    ]
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    return sql
+
+
+@pytest.mark.integration
+def test_0479_canonical_ratio_sql_matches_gold(model):
+    """② 规范化后的子查询算式列 + 计划 WHERE → gold 逐字节(1 ulp 分界:
+    除先 430.4545454545455,乘先 430.45454545454544)。"""
+    from trove.workflow.nodes.query_sketch import (
+        canonicalize_ratio_answer_columns,
+    )
+
+    fixed = canonicalize_ratio_answer_columns(dict(PLAN_0479_LATEST))
+    assert fixed is not None, "divide-first subquery ratio must be canonicalized"
+    sql = (
+        f"SELECT {fixed['answer_columns'][0]} "
+        "FROM loan "
+        "JOIN account ON loan.account_id = account.account_id "
+        "JOIN disp ON disp.account_id = account.account_id "
+        "WHERE loan.date = '1993-07-05' AND disp.type = 'OWNER' LIMIT 1"
+    )
+    _assert_rows_match_gold("0479", sql)
+
+
+@pytest.mark.integration
+def test_0483_latest_simplified_path_rows_match_gold(model):
+    """③a 路径简化后的计划直接编译执行 = gold 9 行(计数已在数人,只换路径)。"""
+    from trove.workflow.nodes.query_sketch import reanchor_entity_count_plan
+
+    fixed = reanchor_entity_count_plan(
+        dict(PLAN_0483_LATEST), QUESTION_0483, "en", model)
+    assert fixed is not None and fixed["plan_field"] == "simplify_person_count_path"
+    res = _compile_with(model, fixed, MATCHED["0483"])
+    assert not isinstance(res, CompileMiss), res
+    _assert_rows_match_gold("0483", res.sql)
+
+
+@pytest.mark.integration
+def test_0493_owner_role_plus_canonical_rows_match_gold(model):
+    """③c 补 OWNER + ② 规范化 + 计划 joins/WHERE → gold 逐字节。"""
+    from trove.workflow.nodes.query_sketch import (
+        canonicalize_ratio_answer_columns,
+        ensure_owner_role_on_person_path,
+    )
+
+    roled = ensure_owner_role_on_person_path(
+        dict(PLAN_0493_LATEST), QUESTION_0493, model)
+    assert roled is not None
+    fixed = canonicalize_ratio_answer_columns(roled)
+    assert fixed is not None
+    _assert_rows_match_gold("0493", _plan_pin_sql(fixed))
+
+
 @pytest.mark.integration
 def test_0493_repaired_ownership_path_rows_match_gold(model):
     """A2 所有权链 + 角色限定 + 占比 DOUBLE 形态三者齐备才与 gold 同行。

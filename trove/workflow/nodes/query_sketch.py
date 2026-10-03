@@ -25,6 +25,7 @@ from trove.services.semantic_layer.compiler import (
     CompileMiss,
     CompileResult,
     PartialCompile,
+    canonical_ratio_text,
     declared_join_edge_text,
     is_hard_miss,
     repair_plan_joins,
@@ -606,6 +607,108 @@ def _person_noun_is_qualifier(question: str, counted: set[str]) -> bool:
     return False
 
 
+# 角色语义:owner 类标签(en 词边界 + zh 常见词形)。桥表条件"可弃"与
+# "该补角色限定"两个判据共用同一词表 —— 声明层有歧义时宁可不动作。
+_OWNER_LABEL_RE = re.compile(r"\bowner\b|持有人|户主", re.I)
+# own 系词:问句显式点名"持有/自有"→ 角色是题面要求,简化与补齐皆不动。
+_OWN_WORD_RE = re.compile(r"\bown(?:s|ed|er|ers|ership)?\b", re.I)
+
+
+def _declared_enum_labels(
+    model: Any, table: str, col: str,
+) -> dict[str, str] | None:
+    """模型把 ``table.col`` 声明成枚举字段 → ``{code: label}``;否则 None。
+
+    入参表/列名按小写比较(计划侧与模型侧大小写各自书写)。
+    """
+    for ds in getattr(model, "datasets", []) or []:
+        if str(getattr(ds, "name", "")).lower() != table:
+            continue
+        for f in getattr(ds, "fields", []) or []:
+            if str(getattr(f, "name", "")).lower() != col:
+                continue
+            display = getattr(f, "enum_display", None) or {}
+            if str(getattr(f, "semantic_role", "")).lower() == "enum" or display:
+                return {str(k): str(v) for k, v in display.items()}
+            return None
+    return None
+
+
+def _simplify_person_count_path(
+    plan: dict[str, Any],
+    question: str,
+    model: Any,
+    agg: str,
+    e_name: str,
+    e_low: str,
+    dims: list[str],
+    conditions: list[Any],
+) -> dict[str, Any] | None:
+    """数"人"的计划绕了角色桥表 → 改走人表自己的声明边(0483 路径简化分支)。
+
+    0483 第 2 轮实测:planner 已按 skill 纪律数 ``count(distinct
+    client.client_id)``(对),但连接仍绕 client→disp→account→district,并把
+    ``disp.type='OWNER'`` 挂在桥上;gold 直接走 ``client.district_id`` 且**无**
+    角色约束(「数人本身」语义:持有人身份是既有事实,不是过滤条件)。既有两道
+    护栏(agg/列含 count(distinct)、``e_low in counted``)让换锚分支整链 bail,
+    这里给"数的是 E"这一形状开一条**路径简化**的确定性出口。
+
+    与换锚分支互斥且互补:本分支不改计数表达式(它已在数人),只重建
+    tables/joins/conditions。守卫(全过才动作):
+      · 聚合字段确实在数(空/count 形态/含 count( 表达式)——不做语义翻转;
+      · 问句无 own 系词(显式点名"持有"→ 角色约束是题面要求,不简化);
+      · 桥上(条件表 ∉ {E}∪dims)必须 **≥1 条且全部**可弃:条件是二级
+        ``T.col``、模型声明 T.col 为枚举、声明标签含 owner 类标签(0483 的
+        ``disp.type='OWNER'``),且条件值若命中声明 code,该 code 的标签也是
+        owner 类(**≥1 条是防 0476 的关键**:存在语义的桥——"Among the account
+        opened…"、桥上无条件——承载行存在性,少一条连接就换了答案);
+      · 每个维度表与 E 有声明边(沿用 ``declared_join_edge_text``);时间字段
+        (若有)在 {E}∪维度内。
+    动作:tables=[E, *dims]、joins 用声明边重建、conditions 只留 kept(引用 E
+    的计数与投影表达式原样保留)。幂等:改写后桥上无条件 → 再次运行自然 bail。
+    """
+    agg_low = agg.strip().lower()
+    if agg_low and agg_low not in {"count", "count(*)", "count(1)"} \
+            and not _COUNT_COL_RE.search(agg):
+        return None
+    if _OWN_WORD_RE.search(question or ""):
+        return None
+    allowed = {e_low, *dims}
+    kept: list[Any] = []
+    bridge: list[Any] = []
+    for c in conditions:
+        (kept if _field_table(c.get("field")) in allowed else bridge).append(c)
+    if not bridge:
+        return None  # 桥上无条件 = 存在语义(0476),不动
+    for c in bridge:
+        tbl, _, col = str(c.get("field") or "").strip().partition(".")
+        labels = _declared_enum_labels(
+            model, tbl.strip().lower(), col.strip().lower())
+        if labels is None:
+            return None
+        if not any(_OWNER_LABEL_RE.search(lbl) for lbl in labels.values()):
+            return None
+        code = str(c.get("value") or "").strip().strip("'\"")
+        if code in labels and not _OWNER_LABEL_RE.search(labels[code]):
+            return None  # 限定到非 owner 角色(DISPONENT)→ 语义相反,不弃
+    joins_parts: list[str] = []
+    for d in dims:
+        edge = declared_join_edge_text(model, e_name, d)
+        if edge is None:
+            return None
+        joins_parts.append(edge)
+    tg = plan.get("time_grain")
+    if isinstance(tg, dict) and tg.get("field"):
+        if _field_table(tg.get("field")) not in allowed:
+            return None
+    fixed = dict(plan)
+    fixed["tables"] = [e_name, *dims]
+    fixed["joins"] = " AND ".join(joins_parts)
+    fixed["conditions"] = kept
+    fixed["plan_field"] = "simplify_person_count_path"
+    return fixed
+
+
 def reanchor_entity_count_plan(
     plan: dict[str, Any] | None,
     question: str,
@@ -622,17 +725,21 @@ def reanchor_entity_count_plan(
 
     前置(全满足才动作,任一不满足 → None 不猜):
       1. 问句含人称名词(union 词表,与 lang 无关);
-      2. 计划在数某张表的列(首个 ``count([distinct] T.col)``),聚合未含
-         distinct(已去重 = 已修过 → 幂等返回 None);
+      2. 计划在数某张表的列(``count([distinct] T.col)``),且投影里非计数的列
+         都是二级引用(裸列/算式 → 形状不确定,不动);
       3. 人实体表 E = plan.tables 里命中人称 token 的表,**且 E 承载了至少
-         一条条件**(题面属性长在人身上,才是"锚对人"的证据);E ≠ T;
-      4. 全部条件字段属于 {E} ∪ 投影维度表,且投影里非计数的列都是二级
-         引用(裸列/算式 → 形状不确定,不动);
-      5. 每个维度表与 E 之间有**唯一**声明关系(``declared_join_edge_text``);
-      6. 无 having / 无 analysis / 无 extreme / 时间字段(若有)在 {E}∪维度内。
-    动作:改锚到 E 自身路径——tables=[E, *dims],joins 用声明边重建,
-    count 表达式统一改写为 ``count(distinct E.<pk>)``(聚合/输出列/排序三处
-    同步),E 路径之外的明细/链接表整体剪掉(条件全在 {E}∪dims 内,剪得干净)。
+         一条条件**(题面属性长在人身上,才是"锚对人"的证据);
+      4. 无 having / 无 analysis / 无 extreme。
+
+    两条互斥动作分支:
+      · **换锚**(数的是明细表 T,E ≠ T,聚合未含 distinct):改锚到 E 自身
+        路径——tables=[E, *dims],joins 用声明边重建,count 表达式统一改写为
+        ``count(distinct E.<pk>)``(聚合/输出列/排序三处同步),E 路径之外的
+        明细/链接表整体剪掉(条件全在 {E}∪dims 内,剪得干净)。守卫:每个
+        维度表与 E 有唯一声明关系;时间字段(若有)在 {E}∪维度内。
+      · **路径简化**(数的是 E 本身,0483 第 2 轮形状):planner 已数对表,但
+        连接仍绕角色桥表 → 见 ``_simplify_person_count_path``(桥上必须恰有
+        可弃的角色条件,否则不动)。幂等:两条分支的产物都不会二次命中。
     """
     if not isinstance(plan, dict) or model is None:
         return None
@@ -643,11 +750,7 @@ def reanchor_entity_count_plan(
     if not _PERSON_NOUN_RE.search(question or ""):
         return None
     agg = str(plan.get("aggregation") or "")
-    if "count" not in agg.lower() or re.search(r"count\s*\(\s*distinct", agg, re.I):
-        return None
     colses = [str(a).strip() for a in (plan.get("answer_columns") or [])]
-    if any(re.search(r"count\s*\(\s*distinct", a, re.I) for a in colses):
-        return None
     counted: set[str] = set()
     for a in colses:
         m = _COUNT_COL_RE.search(a)
@@ -671,9 +774,10 @@ def reanchor_entity_count_plan(
             dims.append(dt)
     if any(d in counted for d in dims):
         return None
-    # 条件表集合
+    # 条件(原 dict,保序)与条件表集合
+    conditions = list(plan.get("conditions") or [])
     cond_tables: set[str] = set()
-    for c in (plan.get("conditions") or []):
+    for c in conditions:
         if not isinstance(c, dict):
             return None
         ct = _field_table(c.get("field"))
@@ -691,7 +795,16 @@ def reanchor_entity_count_plan(
     e_name = with_cond[0]
     e_low = e_name.lower()
     if e_low in counted:
-        return None  # 已经数的是人实体表 → 无需重锚
+        # 数的是人实体表本身 → 路径简化分支(还数着别的表 = 剪不干净,不动)
+        if counted != {e_low}:
+            return None
+        return _simplify_person_count_path(
+            plan, question, model, agg, e_name, e_low, dims, conditions)
+    # 换锚分支:数的是明细表,聚合未含 distinct(已去重 = 已修过 → 幂等)
+    if "count" not in agg.lower() or re.search(r"count\s*\(\s*distinct", agg, re.I):
+        return None
+    if any(re.search(r"count\s*\(\s*distinct", a, re.I) for a in colses):
+        return None
     allowed = {e_low, *dims}
     if not cond_tables <= allowed:
         return None
@@ -823,6 +936,147 @@ def ratio_only_projection(
     fixed = dict(plan)
     fixed["answer_columns"] = keep
     fixed["plan_field"] = "ratio_only_projection"
+    return fixed
+
+
+def canonicalize_ratio_answer_columns(
+    plan: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """计划文本比率式规范化:「除先乘后」→「先乘后除 + CAST DOUBLE」(0479/0493)。
+
+    比率形状的算式列只在标量闭集里被编译器化归(``_scalar_ratio_canonical``);
+    含子查询/聚合的算式一律软 MISS(``unresolved_answer_column``),plan 文本
+    原文交给 gen 照抄——0479/0493 实测 gen 抄了除先形式,中间量先舍入一次,
+    零容差下 0479 差 1 ulp(``430.4545454545455`` 对 gold ``…544``)、0493 除
+    浮点序外还差角色限定。这里把规范式前移到计划层,契约 gap 与 plan 文本两路
+    同时拿到 ``(CAST(N AS DOUBLE) * K / D)``(0478/0481 的计划逐字已是该形态)。
+    解析失败/无形状/已是规范形态 → 该列原样(零扰动);全无改动 → None。
+    """
+    if not isinstance(plan, dict):
+        return None
+    changed = False
+    fixed = dict(plan)
+    new_cols: list[str] = []
+    for a in [str(c).strip() for c in (plan.get("answer_columns") or [])]:
+        canon = canonical_ratio_text(a)
+        new_cols.append(canon if canon is not None else a)
+        changed = changed or canon is not None
+    if changed:
+        fixed["answer_columns"] = new_cols
+    agg = plan.get("aggregation")
+    if isinstance(agg, str) and "/" in agg:
+        canon = canonical_ratio_text(agg)
+        if canon is not None:
+            fixed["aggregation"] = canon
+            changed = True
+    if not changed:
+        return None
+    fixed["plan_field"] = "canonicalize_ratio"
+    return fixed
+
+
+def ensure_owner_role_on_person_path(
+    plan: dict[str, Any] | None,
+    question: str,
+    model: Any = None,
+) -> dict[str, Any] | None:
+    """记录量化 + 人属性过滤且经角色桥表 → 补上桥表的 owner 角色限定(0493)。
+
+    0493 实测:计划把 client 接到 account(借共享维度列的坏连接由
+    ``repair_plan_joins`` 还原成 disp 所有权链),但**没人补**
+    ``disp.type='OWNER'``——桥表把 DISPONENT(授权使用人)的记录也算了进来,
+    占比 25.362… 对 gold 25.300191222790616。语义模型已声明该 enum
+    (``disp.type: {OWNER: owner, DISPONENT: authorized user}``),问句要的是
+    **持有人**的记录(「经角色链接表按声明取值过滤」纪律的确定性补口)。
+
+    守卫(全过才动作,任一不满足 → None 不猜):
+      1. 计划无 analysis / 无 extreme;
+      2. E = 计划表里唯一命中人称 token 且**承载 ≥1 条条件**的人表;
+      3. L(≠E,与 E 有声明边)声明的 enum 角色字段标签里**恰有一个** owner 类
+         标签(取其键为 owner_code),且该字段未被任何条件约束;
+      4. **量化元素不引用 E**且至少引用一张别的表——聚合/输出列不碰人表才是
+         "人的记录"的量化;0492/0495/0476 的 client 侧占比据此排除;
+      5. 问句无 own 系词、无角色标签/取值 token(显式点名持有 → 题面自带)。
+    动作:conditions 追加 ``{"field": "<L>.<role_col>", "op": "=",
+    "value": "'<owner_code>'", "note": ...}``。
+    """
+    if not isinstance(plan, dict) or model is None:
+        return None
+    if isinstance(plan.get("analysis"), dict) or plan.get("extreme"):
+        return None
+    tables = [str(t).strip() for t in (plan.get("tables") or [])]
+    conditions = list(plan.get("conditions") or [])
+    if not tables or not all(isinstance(c, dict) for c in conditions):
+        return None
+    constrained = {
+        str(c.get("field") or "").strip().lower() for c in conditions
+    }
+    cond_tables = {_field_table(c.get("field")) for c in conditions}
+    # E:唯一命中人称 token 且承载条件的人表
+    e_cands = [
+        t for t in tables
+        if any(tok in t.lower() for tok in _PERSON_TABLE_TOKENS)
+    ]
+    with_cond = [t for t in e_cands if t.lower() in cond_tables]
+    if len(with_cond) != 1:
+        return None
+    e_low = with_cond[0].lower()
+    # L:另一张与 E 有声明边、声明了 owner 类 enum 角色字段,且该字段自由的表
+    role: tuple[str, str, str, dict[str, str]] | None = None
+    for t in tables:
+        if t.lower() == e_low:
+            continue
+        if declared_join_edge_text(model, t, with_cond[0]) is None:
+            continue
+        ds = next(
+            (d for d in getattr(model, "datasets", []) or []
+             if str(getattr(d, "name", "")).lower() == t.lower()),
+            None,
+        )
+        for f in getattr(ds, "fields", []) or []:
+            labels = {str(k): str(v) for k, v in
+                      (getattr(f, "enum_display", None) or {}).items()}
+            if not labels and str(getattr(f, "semantic_role", "")).lower() != "enum":
+                continue
+            owners = [
+                (k, v) for k, v in labels.items() if _OWNER_LABEL_RE.search(v)
+            ]
+            if len(owners) != 1:
+                continue  # 无 owner 标签 / 多个 owner 取值(歧义)→ 该字段不作数
+            col = str(getattr(f, "name", ""))
+            if f"{t.lower()}.{col.lower()}" in constrained:
+                continue  # 角色列已受条件约束 → 已有,不重复
+            if role is not None:
+                return None  # 多个候选 → 歧义,不猜
+            role = (t, col, owners[0][0], labels)
+    if role is None:
+        return None
+    l_name, l_col, owner_code, labels = role
+    # 量化元素:不得引用人表 E,且至少引用一张别的表(人侧份额题据此排除)
+    quantified = " ".join([
+        str(plan.get("aggregation") or ""),
+        *[str(a) for a in (plan.get("answer_columns") or [])],
+    ])
+    refs = {m.lower() for m in re.findall(r"\b([A-Za-z_]\w*)\s*\.", quantified)}
+    others = refs & {t.lower() for t in tables} - {e_low}
+    if e_low in refs or not others:
+        return None
+    # 问句不得自带 own 系词 / 角色 token(题面点名了角色就别替它决定)
+    if _OWN_WORD_RE.search(question or ""):
+        return None
+    q_tokens = set(_WORD_RE.findall((question or "").lower()))
+    role_tokens: set[str] = set()
+    for text in (owner_code, *labels.keys(), *labels.values()):
+        role_tokens.update(_WORD_RE.findall(str(text).lower()))
+    if q_tokens & role_tokens:
+        return None
+    fixed = dict(plan)
+    fixed["conditions"] = [
+        *conditions,
+        {"field": f"{l_name}.{l_col}", "op": "=", "value": f"'{owner_code}'",
+         "note": "持有人角色(语义模型声明的 owner 取值)"},
+    ]
+    fixed["plan_field"] = "ensure_owner_role_on_person_path"
     return fixed
 
 
@@ -1671,6 +1925,14 @@ def make_query_sketch(
             if ratio_fixed is not None:
                 plan_json = ratio_fixed
                 plan = _render_plan(plan_json, state.lang)
+            # P3.5 算式比率规范化:计划文本里的「除先乘后」比率式 → 「先乘后除 +
+            # CAST DOUBLE」(0479/0493 的软 MISS 算式列——gen 照 plan 文本渲染,
+            # 除先形式在中间量上先舍入一次,零容差下与 gold 差 1 ulp)。已是规范
+            # 形态(0478/0481)零改写,故这条纠正对既有基线是恒等。
+            canonical = canonicalize_ratio_answer_columns(plan_json)
+            if canonical is not None:
+                plan_json = canonical
+                plan = _render_plan(plan_json, state.lang)
             # P1-4:解析出的时间范围确定性绑定唯一声明时间维度(注入 plan.conditions)。
             # 覆盖内问题 → 编译 SQL 必然带时间过滤;未覆盖 → gen_sql 的 plan
             # 文本带该条件。无法判定(多时间字段/无时间字段)不猜,time_context
@@ -1692,6 +1954,18 @@ def make_query_sketch(
                 repaired = repair_plan_joins(plan_json, semantic_layer.model())
                 if repaired is not None:
                     plan_json = repaired
+                    plan = _render_plan(plan_json, state.lang)
+            # P3.5 角色补齐(链尾,joins 修复之后——它的产物把 disp 补进表集,
+            # 角色补口要在最终连接路径上判定):记录量化 + 人属性过滤且经角色桥
+            # 表 → 按模型声明的 owner 取值补桥表角色条件(0493 的
+            # ``disp.type='OWNER'``:计划/修复链都不会自己补,缺失时把
+            # DISPONENT 的记录也算进来)。
+            if plan_json is not None and semantic_layer is not None:
+                roled = ensure_owner_role_on_person_path(
+                    plan_json, state.question, semantic_layer.model(),
+                )
+                if roled is not None:
+                    plan_json = roled
                     plan = _render_plan(plan_json, state.lang)
             # 纠正是确定性变换(dict → dict),shape 不变——所以重解析对
             # canonical dict 是幂等的(三个纠正函数只写聚合表达式/answer_columns/

@@ -1049,6 +1049,48 @@ def _scalar_ratio_canonical(
     return f"({n_expr} * {k_text} / {d_text})"
 
 
+def canonical_ratio_text(expr: str) -> str | None:
+    """计划层比率规范化:文本算式 ``(N/D)*K`` / ``(N*K)/D`` → ``(CAST(N AS DOUBLE) * K / D)``。
+
+    与 ``_scalar_ratio_canonical`` 同一渲染规范,作用面是**计划文本的任意
+    算式**:闭集只认声明列,子查询/聚合算式一律软 MISS
+    (``unresolved_answer_column``),此时 plan 文本原文交给 gen 照抄 —— 0479
+    实测 gen 抄了「除先乘后」形式,中间量先舍入一次,零容差下与 gold 差 1 ulp
+    (``430.4545454545455`` 对 ``…544``)。这里把规范式前移到计划层:契约 gap
+    与 plan 文本两路同时拿到先乘后除 + CAST DOUBLE 的写法(0478/0481 的计划
+    逐字已是该形态,即此规范的先例)。
+
+    解析失败 / 无比率形状 / **已是规范形态** → None(不折腾,零文本扰动)。
+    """
+    try:
+        tree = parse_one(expr)
+    except Exception:
+        return None
+    hit = None
+    for node in tree.walk(bfs=False):
+        if isinstance(node, (exp.Mul, exp.Div)) and _ratio_operands(node) is not None:
+            hit = node
+            break
+    if hit is None:
+        return None
+    shape = _ratio_operands(hit)
+    n_node, d_node, k_node = shape  # type: ignore[misc]
+    # 已是规范形态(Div(Mul(CAST(…), K), D))→ None:零改写
+    if isinstance(hit, exp.Div):
+        numerator = _unwrap_paren(hit.this)
+        if isinstance(numerator, exp.Mul):
+            for side, other in ((numerator.this, numerator.expression),
+                                (numerator.expression, numerator.this)):
+                if (isinstance(side, exp.Literal) and side.is_number
+                        and _scalar_is_double_cast(_unwrap_paren(other))):
+                    return None
+    n_expr = (
+        n_node.sql() if _scalar_is_double_cast(n_node)
+        else f"CAST({n_node.sql()} AS DOUBLE)"
+    )
+    return f"({n_expr} * {k_node.sql()} / {d_node.sql()})"
+
+
 def _scalar_render(node: Any, compiler: Any, tables: set[str], depth: int = 0) -> str | None:
     """闭语法重建:白名单节点 → 文本;任何越界节点 → None(整列弃用)。
 
