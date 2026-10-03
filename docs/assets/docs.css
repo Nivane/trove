@@ -149,6 +149,15 @@ h1 {
   margin: 0 0 30px;
 }
 .lede strong { color: var(--text-primary); font-weight: 600; }
+/* 链路行：h1 与 lede 之间的一句定位（问数 · 分析 · 决策 · 行动）。
+   h1 自带 22px 下边距，这里用 -8px 上边距把行贴近标题。 */
+.chain {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  letter-spacing: .14em;
+  color: var(--text-secondary);
+  margin: -8px 0 24px;
+}
 
 .en {
   max-width: 44em;

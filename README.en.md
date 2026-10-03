@@ -2,9 +2,9 @@
 
 # Trove
 
-**Talk to your data. It answers — and learns with every question.**
+**Ask · Analyze · Decide · Act — in one conversation.**
 
-*An open-source, self-hosted conversational data agent: natural language in, verified answers out — where a human-approved semantic model is the only answerable boundary.*
+*An open-source, self-hosted **data decision agent**: natural language in, verified answers out — the same human-approved semantic model both bounds what is answerable and backs zero-LLM, evidence-carrying scheduled verdicts.*
 
 [English](README.en.md) · [简体中文](README.md)
 
@@ -25,7 +25,7 @@
 
 ## What Trove Is
 
-Trove is a **self-learning conversational data agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask.
+Trove is a **self-learning data decision agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask. The same semantic model is also evaluated on schedule into evidence-carrying verdicts, delivered the moment they trigger — the action happens in your own processes (Trove keeps read-only access to your data).
 
 Its promise is not "always right" but **never wrong without a fight**:
 
@@ -260,7 +260,7 @@ Code layout: `trove/workflow/` (graphs and nodes) · `trove/services/` (datasour
 
 ## FAQ
 
-**Is this a text-to-SQL framework or a BI tool?** Neither exactly — Trove is a conversational data agent. You ask, it plans, compiles, executes and verifies, then answers in Markdown with charts and an auditable trail. It does not try to be a dashboard builder.
+**Is this a text-to-SQL framework or a BI tool?** Neither exactly — Trove is a data decision agent. You ask, it plans, compiles, executes and verifies, then answers in Markdown with charts and an auditable trail; the same semantic model is also evaluated on schedule into evidence-carrying verdicts. It does not try to be a dashboard builder.
 
 **Why does it refuse questions?** Because the semantic model is the answerable boundary — that is the product. A refusal means "the model does not cover this", and it arrives with a drafted extension you can confirm to extend coverage and re-answer in one step. Quietly guessing at tables is the failure mode this architecture exists to prevent.
 
