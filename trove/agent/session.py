@@ -1546,6 +1546,9 @@ class SessionManager:
         # 统一记忆 write-back(情景记忆 + 观测回流 + 失败教训),替代旧的
         # _capture_lessons 单通道;老方法保留供直接调用方(测试)使用。
         await self._observe_memory(final)
+        # 语义生长候选(补丁 3「候选收件箱」):软 MISS 的未声明组件 →
+        # pending 语义草稿(确定性、零 LLM;管理员在收件箱确认)。
+        await self._capture_candidates(final)
         # 查询执行审计:谁、问了什么、执行了什么 SQL、结果如何。best-effort。
         await self._audit_query(session, final)
         # 授权与脱敏审计:被拦了 / 改了哪些字段 / 谁看了原文(设计 §6.3)。
@@ -1706,6 +1709,11 @@ class SessionManager:
             return
         from trove.services.memory.models import MemoryScope
 
+        gen_ctx = final.gen_ctx or {}
+        # 零命中:生成路径跑过但检索一个示例都没召回 —— 给自动示例草稿
+        # 盖 zero-hit 标(收件箱/示例队列里优先审这些「KB 没有锚点」的题)。
+        zero_hit = bool(gen_ctx) and not (gen_ctx.get("examples") or [])
+
         await self._memory.observe(
             scope=MemoryScope(datasource=datasource, user_id=final.user_id or "local"),
             session_id=final.session_id,
@@ -1718,6 +1726,7 @@ class SessionManager:
             correction_history=final.correction_history,
             matched_tables=final.matched_tables,
             error=final.error,
+            zero_hit=zero_hit,
         )
         # 自动晋升:修正闭环成功后,为该轮修正理由累加置信度(阈值过则自动确认)
         if (
@@ -1729,6 +1738,28 @@ class SessionManager:
                 await self._memory.promote_lesson(
                     datasource, reason[:120], evidence_kind="repeated_correction",
                 )
+
+    async def _capture_candidates(self, final: WorkflowState) -> None:
+        """软 MISS → 确定性语义候选草稿(候选收件箱的捕获口)。
+
+        只在语义层**部分编译**(回答已交付、但计划里存在未声明组件)时
+        触发;refusal 路径由 refuse 节点负责(它带更完整的 LLM 草稿与
+        确定性验证门),此处不重复。全部 best-effort:捕获失败绝不影响回答。
+        """
+        if self._kb is None or not final.compile_partial or not final.compile_misses:
+            return
+        if final.refusal or final.auto_confirmed:
+            return
+        datasource = final.datasource or self._connectors.default_name or ""
+        if not datasource:
+            return
+        try:
+            from trove.services.semantic_layer.candidates import capture_candidates
+
+            await capture_candidates(
+                self._kb, datasource, final.question, final.compile_misses)
+        except Exception as e:
+            logger.debug("Candidate capture skipped (%s): %s", type(e).__name__, e)
 
     # ── Task coordination ────────────────────────────────
 

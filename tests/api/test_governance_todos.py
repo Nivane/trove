@@ -466,3 +466,30 @@ class TestTodosAuth:
             r = await c.get("/v1/admin/todos")
             assert r.status_code == 403
             assert "scope" in r.json()["detail"]
+
+
+class TestAutoCandidateInbox:
+    """软 MISS 自动候选的收件箱面(补丁 3「候选收件箱」的交付验收)。"""
+
+    async def test_auto_candidate_lands_with_source_marker(
+        self, client, api_app, api_kb,
+    ):
+        """捕获口落的 pending 草稿出现在 semantic_draft 源,summary 即 note。"""
+        from trove.services.semantic_layer.candidates import capture_candidates
+
+        created = await capture_candidates(
+            api_app.state.kb, "test_db", "最高成绩是多少?",
+            [{"reason": "no_metric_match", "component": "MAX(students.grade)"}])
+        assert len(created) == 1
+
+        r = await client.get("/v1/admin/todos", params={"kind": "semantic_draft"})
+        assert r.status_code == 200, r.text
+        items = [i for i in r.json()["items"] if i["kind"] == "semantic_draft"]
+        assert len(items) == 1
+        item = items[0]
+        assert item["title"] == "max_grade"
+        # 来源标在 note 上 —— 收件箱 summary 逐字即 note,管理员一眼分辨
+        # 自动候选与人工/refuse 草稿。
+        assert item["summary"] == "auto:no_metric_match:最高成绩是多少?"
+        assert item["source"] == "metric"
+        assert item["actionable"]["edit_url"] == "/admin/semantic?pending=1"

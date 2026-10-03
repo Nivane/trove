@@ -689,6 +689,91 @@ class TestLessonCapture:
         assert any("loans" in l["pattern"] for l in all_lessons)
 
 
+class TestCandidateCapture:
+    """软 MISS → 确定性语义候选(pending)经 _record_exchange 收尾漏斗落库。"""
+
+    @staticmethod
+    def _kb_with_model(tmp_home, datasource: str):
+        import yaml
+
+        from trove.services.kb.service import KbService
+
+        kb = KbService(tmp_home / "proj")
+        ds_dir = kb.kb_dir / datasource
+        ds_dir.mkdir(parents=True)
+        (ds_dir / "semantics.yml").write_text(
+            yaml.safe_dump({
+                "version": "0.2.0.dev0",
+                "semantic_model": [{
+                    "name": datasource,
+                    "datasets": [{
+                        "name": "loan", "source": "loan",
+                        "primary_key": ["loan_id"],
+                        "fields": [{
+                            "name": "amount", "datatype": "Decimal",
+                            "expression": {"dialects": [{
+                                "dialect": "ANSI_SQL",
+                                "expression": "amount"}]}}],
+                    }],
+                    "metrics": [],
+                }],
+            }, allow_unicode=True, sort_keys=False),
+            encoding="utf-8")
+        return kb
+
+    async def _ask(self, tmp_home, sqlite_registry, extra: dict):
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+
+        ds = sqlite_registry.default_name
+        kb = self._kb_with_model(tmp_home, ds)
+
+        class StubGraph:
+            async def ainvoke(self, state, config=None):
+                return {
+                    **(state if isinstance(state, dict) else state.model_dump()),
+                    "sql": "SELECT 1", "error": "", "final_response": "answer",
+                    **extra,
+                }
+
+        manager = SessionManager(
+            config=AgentConfig(home=str(tmp_home)),
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={"reflection": StubGraph()},
+            llm_gateway=None,
+            kb=kb,
+            connectors=sqlite_registry,
+        )
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager.ask(session=session, question="贷款总额")
+        return kb, ds
+
+    async def test_soft_miss_lands_pending_candidate(self, tmp_home, sqlite_registry):
+        from trove.services.semantic_layer.manage import SemanticManager
+
+        kb, ds = await self._ask(tmp_home, sqlite_registry, {
+            "compile_partial": True,
+            "compile_misses": [
+                {"reason": "no_metric_match", "component": "AVG(loan.amount)"}],
+        })
+        pending = SemanticManager(kb).drafts(ds)["pending"]
+        assert [d["name"] for d in pending] == ["avg_amount"]
+        assert pending[0]["status"] == "pending"
+
+    async def test_refusal_run_is_not_captured(self, tmp_home, sqlite_registry):
+        """refusal 路径归 refuse 节点(带 LLM 草稿与验证门),捕获口不重复建。"""
+        from trove.services.semantic_layer.manage import SemanticManager
+
+        kb, ds = await self._ask(tmp_home, sqlite_registry, {
+            "compile_partial": True,
+            "compile_misses": [
+                {"reason": "no_metric_match", "component": "AVG(loan.amount)"}],
+            "refusal": {"reason": "uncovered", "question": "贷款总额"},
+        })
+        assert SemanticManager(kb).drafts(ds)["pending"] == []
+
+
 class TestTracingCallbacks:
     async def test_callbacks_forwarded_to_graph_config(self, tmp_home):
         """Langfuse CallbackHandler 通过 config["callbacks"] 传给图执行。"""
