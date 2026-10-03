@@ -1870,8 +1870,11 @@ class TestQuerySketchP3Wiring:
         update = await node(make_state(
             question=TestRatioOnlyProjection.Q,
             matched_tables=["loan", "account", "district"]))
+        # 比率列先被 ratio_only_projection 收进口径,再被 ② 规范成
+        # 「先乘后除 + CAST DOUBLE」(链上最后一个改动者记 plan_field)
         assert update["plan_json"]["answer_columns"] == [
-            "((district.A13 - district.A12) / district.A12) * 100"]
+            "(CAST((district.A13 - district.A12) AS DOUBLE) * 100 / district.A12)"]
+        assert update["plan_json"]["plan_field"] == "canonicalize_ratio"
 
     async def test_repair_joins_wired_after_time_inject(self):
         """未声明连接(共享维度桥)在计划层被还原成声明路径(0493 形状)。"""
