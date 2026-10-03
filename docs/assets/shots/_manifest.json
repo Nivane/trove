@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-10-03T02:58:20.371Z",
-  "frontendCommit": "358d7b8",
+  "generatedAt": "2026-10-03T03:33:53.318Z",
+  "frontendCommit": "e5a762e",
   "baseUrl": "http://localhost:5174",
   "viewport": {
     "width": 1440,
@@ -73,7 +73,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 281552
+      "bytes": 278883
     },
     {
       "name": "user-chat-feedback",
@@ -117,7 +117,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 356648
+      "bytes": 357536
     },
     {
       "name": "admin-todos",
@@ -128,7 +128,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 378237
+      "bytes": 377103
     },
     {
       "name": "admin-datasources",
@@ -150,7 +150,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 202780
+      "bytes": 202953
     },
     {
       "name": "admin-kb-pending",
@@ -183,7 +183,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 222055
+      "bytes": 218701
     },
     {
       "name": "admin-semantic-detail",
@@ -194,7 +194,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 320482
+      "bytes": 280192
     },
     {
       "name": "admin-semantic-draft",
@@ -205,7 +205,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 288117
+      "bytes": 285020
     },
     {
       "name": "admin-jobs",
@@ -216,7 +216,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 194453
+      "bytes": 195558
     },
     {
       "name": "admin-jobs-history",
@@ -238,7 +238,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 255755
+      "bytes": 255647
     },
     {
       "name": "admin-skills-table",
@@ -249,7 +249,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 368493
+      "bytes": 367549
     },
     {
       "name": "admin-skills",
@@ -260,7 +260,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 306966
+      "bytes": 327287
     },
     {
       "name": "admin-users",
@@ -282,7 +282,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 265663
+      "bytes": 265306
     },
     {
       "name": "admin-audit",
@@ -293,7 +293,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 285704
+      "bytes": 287858
     },
     {
       "name": "admin-settings",
@@ -326,7 +326,7 @@
       },
       "width": 1624,
       "height": 1015,
-      "bytes": 353078
+      "bytes": 352089
     }
   ]
 }
