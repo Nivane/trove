@@ -770,9 +770,13 @@ async def _action_templates(request: Request) -> dict:
     templates = getattr(request.app.state, "action_templates", None)
     if templates is None:
         return _unconfigured()
+    # 坏文件(解析失败/校验不过)的条目**没有 status 键** —— 只按 status
+    # 过滤会让它们从收件箱静默消失,而"看不见的坏"恰恰是这条腿存在的
+    # 理由(docstring 的承诺):一个断了的模板要么被修、要么被删,两种
+    # 都是管理员此刻该做的决定。
     pending = [
         t for t in templates.list_templates(confirmed_only=False)
-        if t.get("status") == "pending"
+        if t.get("status") == "pending" or t.get("error")
     ]
     return {
         "configured": True,

@@ -188,11 +188,17 @@ async def get_action_proposal(
 async def decide_action_proposal(
     proposal_id: str,
     decision: str,
-    body: ActionDecision,
     request: Request,
+    body: ActionDecision | None = None,
     user: dict = Depends(require_admin),
 ) -> dict:
-    """Apply one lifecycle verb to a proposal (closed set — see ``_DECISIONS``)."""
+    """Apply one lifecycle verb to a proposal (closed set — see ``_DECISIONS``).
+
+    The body is optional on purpose: ``approve`` with nothing to add (and
+    ``dispatch``/``ack``) must be callable as a plain ``POST`` — requiring an
+    empty ``{}`` is friction the caller has to remember, not a safety property
+    (``comment`` is the only field, and it defaults to empty).
+    """
     if decision not in _DECISIONS:
         raise HTTPException(
             status_code=400,
@@ -203,9 +209,10 @@ async def decide_action_proposal(
     # 稳定又可读 —— 审批轨迹进了 approvals 表之后不再回auth 库做 join,
     # 一个裸 id 在抽屉里是读不出「谁批的」的。
     actor = str(user.get("username") or user.get("id") or "")
+    comment = body.comment if body is not None else ""
     try:
         method = getattr(service, decision)
-        proposal = await method(proposal_id, actor, body.comment)
+        proposal = await method(proposal_id, actor, comment)
     except KeyError:
         raise HTTPException(
             status_code=404, detail=f"proposal not found: {proposal_id}")
@@ -214,5 +221,5 @@ async def decide_action_proposal(
     await _audit(request, f"action.proposal.{decision}", user, status=200,
                  details={"proposal_id": proposal_id,
                           "status": proposal.status,
-                          "comment": body.comment[:200]})
+                          "comment": comment[:200]})
     return {"proposal": _proposal_dict(proposal)}

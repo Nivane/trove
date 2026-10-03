@@ -489,3 +489,220 @@ async def test_ask_data_denies_when_the_identity_has_no_user_row(mcp_components)
     assert "AUTHZ_NO_PRINCIPAL" in out.get("error", ""), (
         "拒绝原因没回到调用者 —— 空 answer + 空 verdict 读起来像「模型没答」"
     )
+
+
+# ── 行动提案拉通道(补丁 4:与 webhook 推送并列的取件口)────────────
+#
+# 边界:这里**只读 + 回执**。approve / reject / dispatch 是人在管理台做的
+# 决定,机器通道不投票 —— 资源与工具里不出现任何审批动词,这条用例组把
+# 它钉在工具清单上。
+
+_PAYLOAD_TEMPLATE = ('{"rule": "{{rule_id}}", "metric": "{{metric}}", '
+                     '"current": {{current}}, "msg": "{{message}}"}')
+
+
+@pytest.fixture
+async def mcp_actions(mcp_components, tmp_path):
+    """接上行动层(真 store/模板服务;MCP 不外送,分发器无需通道)。"""
+    from types import SimpleNamespace
+
+    from trove.services.action.dispatcher import ActionDispatcher
+    from trove.services.action.service import ActionService
+    from trove.services.action.store import ActionStore
+    from trove.services.action.templates import ActionTemplateService
+
+    store = ActionStore(tmp_path / "action-root")
+    templates = ActionTemplateService(tmp_path / "templates")
+    templates.create({
+        "name": "notify-ops", "title": "Notify ops",
+        "target": {"channel": "ops-alerts"}, "risk": "medium",
+        "payload_template": _PAYLOAD_TEMPLATE,
+    })
+    templates.confirm("notify-ops")
+    service = ActionService(store, templates, ActionDispatcher({}), enabled=True)
+    mcp_components["actions"] = service
+    env = SimpleNamespace(components=mcp_components, service=service,
+                          templates=templates, store=store)
+    try:
+        yield env
+    finally:
+        # aiosqlite worker 线程常驻非 daemon,不 dispose 会挂住 pytest 退出
+        await store.dispose()
+
+
+async def _seed_mcp_proposal(service, *, datasource="test_db", digest="d1"):
+    from trove.services.decision.rules import ActionRef, DecisionRule, Subject
+    from trove.services.decision.service import DecisionOutcome
+
+    rule = DecisionRule(
+        id="revenue-drop", name="Revenue drop", severity="warning", priority=2,
+        recommendation="Check the campaign calendar",
+        subject=Subject(metrics=["revenue"]),
+        action=ActionRef(template="notify-ops", autonomy="propose"),
+    )
+    outcome = DecisionOutcome(
+        triggered=True, message="[warning] Revenue drop", rule_id="revenue-drop",
+        severity="warning", error="",
+        evidence={"rule_digest": digest,
+                  "times": {"anchor_date": "2026-10-03"},
+                  "rows": [{"dim": "north", "triggered": True, "current": 1234,
+                            "baseline": 1400, "delta": -166,
+                            "delta_pct": -0.1186, "contribution": -166.0}]},
+    )
+    p = await service.propose_from_verdict(
+        rule=rule, outcome=outcome, datasource=datasource)
+    assert p is not None
+    return p
+
+
+async def test_proposals_surface_registers_read_only_verbs(mcp_actions):
+    """工具清单里**没有任何审批动词** —— 机器不能投票(设计边界,逐字钉)。"""
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_actions.components)
+    names = {t.name for t in await server.list_tools()}
+    assert {"list_proposals", "fetch_proposal", "ack_proposal"} <= names
+    assert not any(
+        v in n for n in names for v in ("approve", "reject", "dispatch")
+    ), f"机器通道混进了审批动词: {sorted(names)}"
+
+    uris = {str(r.uri) for r in await server.list_resources()}
+    assert "trove://proposals" in uris
+
+
+async def test_proposals_resource_only_approved_and_unexpired(mcp_actions):
+    """拉通道索引 = **approved 且未过期** —— 它还取不走的、已经太迟的,都不发。"""
+    from trove.mcp.server import build_mcp_server
+
+    p_approved = await _seed_mcp_proposal(mcp_actions.service, digest="d1")
+    await mcp_actions.service.approve(p_approved.id, "admin")
+    p_pending = await _seed_mcp_proposal(mcp_actions.service, digest="d2")
+
+    # 过去钟里建的提案:expires_at(= 时刻 + 72h TTL)落在真实现在之前
+    # (但相对服务自己的钟未过期,所以能批)—— 拉通道必须把它滤掉。
+    from datetime import datetime, timedelta
+
+    past = datetime.now() - timedelta(hours=80)
+    mcp_actions.service._now = staticmethod(lambda: past)
+    p_stale = await _seed_mcp_proposal(mcp_actions.service, digest="d3")
+    await mcp_actions.service.approve(p_stale.id, "admin")
+    del mcp_actions.service._now
+
+    server = build_mcp_server(mcp_actions.components)
+    text = await _read(server, "trove://proposals")
+    assert p_approved.id in text
+    assert "test_db" in text and "revenue-drop" in text
+    assert p_pending.id not in text, "pending 还没被批准,拉通道不该发"
+    assert p_stale.id not in text, "已过期的取不走,不该出现在索引里"
+
+
+async def test_fetch_proposal_returns_frozen_payload_and_trail(mcp_actions):
+    from trove.mcp.server import build_mcp_server
+
+    p = await _seed_mcp_proposal(mcp_actions.service)
+    await mcp_actions.service.approve(p.id, "admin")
+    server = build_mcp_server(mcp_actions.components)
+
+    out = await _invoke(server, "fetch_proposal", proposal_id=p.id)
+    detail = out["proposal"]
+    assert detail["id"] == p.id and detail["status"] == "approved"
+    assert "payload" not in detail, "摘要不含 payload —— 那是 fetch 的事"
+    # 被批准的就是这份 payload:创建时定稿,取回时不重渲染
+    assert out["payload"]["current"] == 1234
+    assert out["payload"]["rule"] == "revenue-drop"
+    assert [a["action"] for a in out["approvals"]] == ["approve"]
+    assert out["approvals"][0]["user"] == "admin"
+    assert out["deliveries"] == []
+    assert out["stale"] is False
+
+
+async def test_fetch_and_ack_unknown_is_no_existence_oracle(mcp_actions):
+    """「存在但你没授权」与「不存在」**同一句话** —— 否则错误文案本身
+    就是一个存在性预言(拿它枚举别人的提案 id)。"""
+    from trove.mcp.server import build_mcp_server
+
+    auth = _FakeAuth({1: ["test_db"]})
+    p_other = await _seed_mcp_proposal(
+        mcp_actions.service, datasource="other_db", digest="d9")
+    await mcp_actions.service.approve(p_other.id, "admin")
+    server = _server_with_identity(
+        mcp_actions.components, auth,
+        {"id": 1, "role": "user", "username": "bob"},
+    )
+
+    denied = await _invoke(server, "fetch_proposal", proposal_id=p_other.id)
+    ghost = await _invoke(server, "fetch_proposal", proposal_id="p-ghost")
+    assert denied["error"] == ghost["error"].replace("p-ghost", p_other.id), \
+        "授权外的提案与不存在的提案必须不可区分"
+
+    denied_ack = await _invoke(server, "ack_proposal", proposal_id=p_other.id)
+    assert denied_ack["error"] == denied["error"]
+
+    # 同一身份下 grants 内的提案照常可见
+    p_ok = await _seed_mcp_proposal(mcp_actions.service, digest="d8")
+    await mcp_actions.service.approve(p_ok.id, "admin")
+    out = await _invoke(server, "fetch_proposal", proposal_id=p_ok.id)
+    assert out["proposal"]["id"] == p_ok.id
+
+
+async def test_ack_marks_delivered_records_actor_and_is_idempotent(mcp_actions):
+    from trove.mcp.server import build_mcp_server
+
+    p = await _seed_mcp_proposal(mcp_actions.service)
+    await mcp_actions.service.approve(p.id, "admin")
+    auth = _FakeAuth({1: ["test_db"]})
+    server = _server_with_identity(
+        mcp_actions.components, auth,
+        {"id": 1, "role": "user", "username": "bob"},
+    )
+
+    out = await _invoke(server, "ack_proposal", proposal_id=p.id, note="已执行")
+    assert out["acked"] is True and out["proposal"]["status"] == "delivered"
+
+    again = await _invoke(server, "ack_proposal", proposal_id=p.id)
+    assert again["acked"] is True and again["proposal"]["status"] == "delivered"
+
+    detail = await _invoke(server, "fetch_proposal", proposal_id=p.id)
+    acks = [a for a in detail["approvals"] if a["action"] == "ack"]
+    assert len(acks) == 1, "重复签收不得再记一条"
+    assert acks[0]["user"] == "1", "回执记调用者身份"
+    assert [d["channel"] for d in detail["deliveries"]] == ["ack"]
+
+    # pending 的批不了也签不了 —— 签收不是审批
+    p2 = await _seed_mcp_proposal(mcp_actions.service, digest="d7")
+    bad = await _invoke(server, "ack_proposal", proposal_id=p2.id)
+    assert "pending" in bad["error"]
+
+
+async def test_list_proposals_status_validation_and_filters(mcp_actions):
+    from trove.mcp.server import build_mcp_server
+
+    p = await _seed_mcp_proposal(mcp_actions.service)
+    await mcp_actions.service.approve(p.id, "admin")
+    server = build_mcp_server(mcp_actions.components)
+
+    out = await _invoke(server, "list_proposals", status="approved")
+    assert [x["id"] for x in out["proposals"]] == [p.id]
+    assert out["enabled"] is True
+
+    empty = await _invoke(server, "list_proposals", status="rejected")
+    assert empty["proposals"] == []
+
+    bad = await _invoke(server, "list_proposals", status="frobnicate")
+    assert "unknown status" in bad["error"]
+
+    other = await _invoke(server, "list_proposals", datasource="nope")
+    assert other["proposals"] == []
+
+
+async def test_missing_action_layer_degrades_cleanly(mcp_components):
+    """没装行动层的进程:工具与资源各回一句明确的话,不是异常。"""
+    from trove.mcp.server import build_mcp_server
+
+    server = build_mcp_server(mcp_components)
+    listed = await _invoke(server, "list_proposals")
+    assert "not available" in listed.get("error", ""), listed
+    for name in ("fetch_proposal", "ack_proposal"):
+        out = await _invoke(server, name, proposal_id="p-x")
+        assert "not available" in out.get("error", ""), (name, out)
+    assert "not available" in await _read(server, "trove://proposals")

@@ -645,3 +645,66 @@ class TestLyingConfigKeys:
             encoding="utf-8",
         )
         assert ConfigLoader.load_agent_config(str(conf)).tracing.enabled is False
+
+
+class TestActionConfig:
+    """``action:`` 块必须真的进 ``AgentConfig``(照 ``TestMaskingAndAuthzConfig``
+    的教训:字段加好了、加载器没读,是一处**静默失效的安全配置** —— 一份
+    ``enabled: true`` 的部署跑成"关着",外送永不发生而配置面看起来一切正常)。
+    """
+
+    def test_action_block_is_parsed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TROVE_OPS_SECRET", "hush")
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "action:\n"
+            "  enabled: true\n"
+            "  approval_ttl_hours: 24\n"
+            "  max_payload_bytes: 4096\n"
+            "  max_attempts: 5\n"
+            "  channels:\n"
+            "    ops-alerts:\n"
+            "      url: https://hook.example/ops\n"
+            "      secret: ${TROVE_OPS_SECRET}\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.action.enabled is True
+        assert cfg.action.approval_ttl_hours == 24
+        assert cfg.action.max_payload_bytes == 4096
+        assert cfg.action.max_attempts == 5
+        assert cfg.action.channels["ops-alerts"].url == "https://hook.example/ops"
+        # secret 的 ``${ENV_VAR}`` 在加载时解析 —— 密钥不进 YAML 本体,
+        # 通道配置因此可以随代码评审而不携带任何凭证。
+        assert cfg.action.channels["ops-alerts"].secret == "hush"
+
+    def test_action_block_reads_nested_under_agent(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "  action:\n    enabled: true\n    channels:\n"
+            "      room:\n        url: https://hook.example/room\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.action.enabled is True
+        assert cfg.action.channels["room"].url == "https://hook.example/room"
+
+    def test_absent_block_keeps_the_layer_off(self, tmp_path):
+        """缺席 = 行动层**关着**:一条能往外发消息的链路,不能靠"配置不在"
+        顺手打开 —— 开它必须显式写 ``enabled: true``。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.action.enabled is False
+        assert cfg.action.channels == {}
+        assert cfg.action.approval_ttl_hours == 72
+        assert cfg.action.max_attempts == 3
+
+    def test_empty_block_and_absent_block_are_same_tier(self, tmp_path):
+        """「有 action 段但没写 enabled」与「完全没有 action 段」同档(False)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\naction: {}\n", encoding="utf-8")
+        assert ConfigLoader.load_agent_config(str(conf)).action.enabled is False
