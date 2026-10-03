@@ -2706,6 +2706,40 @@ class TestNoSQLExit:
         assert "SELECT" not in final["final_response"]
         assert len(llm.calls) == 5  # 意图 + gen + 裁决 + 答案 + 答案裁决
 
+    async def test_metadata_judge_issue_loop_terminates(self, sqlite_registry, catalog):
+        """裁决连续 ISSUE:预算耗尽 → error → output 交付,不回头重生成。
+
+        回归(2026-10-03):旧路由把 error 也送回 answer_metadata,而该节点
+        从不清理在途反馈 —— check 的反馈守卫短路后 retry_count 冻结在 1,
+        max_retries 永不可达,循环只能靠 langgraph 递归上限兜底(每问最多
+        约 5000 次 LLM 调用)。本用例给死的裁决:终止必须由预算保证。
+        """
+
+        class AlwaysIssueLLM:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            async def chat(self, model, messages, **kwargs):
+                node = (kwargs.get("metadata") or {}).get("node", "")
+                self.calls.append(node)
+                if node == "metadata_check":
+                    return "ISSUE: 没答全"
+                if node == "route_intent":
+                    return "metadata"
+                return "students 表包含 id、name、grade、county 列。"
+
+        llm = AlwaysIssueLLM()
+        graphs = build(make_services(llm, catalog, sqlite_registry))
+        final = await graphs["reflection"].ainvoke(make_state(question="有哪些表"))
+        # 预算耗尽后 error 是终态:最后一版答案照常交付(不是硬停)
+        assert final["error"]
+        assert "students" in final["final_response"]
+        # 每轮回答都被 answer_metadata 消费掉反馈 —— 反馈信号不跨轮存活
+        assert final["error_feedback"] == ""
+        # 有界:最多 max_retries 次重答,不是「递归上限次」
+        assert llm.calls.count("answer_metadata") == graphs_module.MAX_REFLECT_RETRIES + 1
+        assert llm.calls.count("metadata_check") == graphs_module.MAX_REFLECT_RETRIES + 1
+
     async def test_analyze_error_no_sql_exits_via_consensus_disagreement(self, sqlite_registry, catalog):
         """候选不一致 → 诊断判定 NO_SQL → answer_metadata（清掉陈旧反馈）。"""
         await self._make_disp(sqlite_registry)

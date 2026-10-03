@@ -1720,9 +1720,14 @@ def _add_intent_routing(g: StateGraph, services: GraphServices) -> None:
     )
     g.add_edge("parse_date", "schema_linking")
     g.add_edge("answer_metadata", "metadata_check")
+    # 裁决不过 → 带反馈回 answer_metadata 重答(answer_metadata 交付即清
+    # 反馈、metadata_check 每轮自增 retry_count,循环按预算收敛);预算耗尽
+    # 的 error 是**终态**,直落 output 交付最后一版答案。error 目标**不能**
+    # 是 answer_metadata:那条路既够不着计数器也没有清反馈的一方,旧路由
+    # 实测无限重生成(只有 langgraph 递归上限兜底)。
     g.add_conditional_edges(
         "metadata_check",
-        _make_route_after_feedback("answer_metadata", "answer_metadata", "output"),
+        _make_route_after_feedback("output", "answer_metadata", "output"),
         {"answer_metadata": "answer_metadata", "output": "output"},
     )
 
@@ -1736,8 +1741,9 @@ def _make_route_after_feedback(
     否则 → ok_target。
 
     execute/validate/metadata 共用同一分流语义,只差目标节点——以参数化
-    工厂替代三份近似重复的路由。error 与 error_feedback 同目标(如 metadata
-    图)时两者传同一个值。
+    工厂替代三份近似重复的路由。**error_target 必须不是 feedback_target**:
+    feedback 是重试信号(有消费者、有预算计数),error 是终态降级——把它
+    交回重试目标,计数器与清除逻辑都不在这条路上,就是一个没有出口的循环。
     """
 
     def route(state: WorkflowState) -> str:

@@ -310,10 +310,25 @@ def make_answer_metadata(
                 )
                 answer = response.strip()
                 if answer:
-                    return {"intent_answer": answer}
+                    # 交付即消费在途反馈(同 execute_sql「success clears
+                    # previous feedback」):metadata_check 的裁决反馈路由回
+                    # 本节点,谁消费谁清 —— 不清则下一轮 check 拿着陈旧
+                    # 反馈短路、retry_count 冻结,循环只能靠递归上限兜底。
+                    # metadata_context 留快照供 check 对照评审。
+                    return {
+                        "intent_answer": answer,
+                        "metadata_context": context,
+                        "error_feedback": "",
+                    }
             except Exception as e:
                 logger.warning("Metadata LLM answer failed, using fallback: %s", e)
 
-        return {"intent_answer": await _fallback_answer(state, catalog, kb, connectors, lineage)}
+        # 回退答案同样是「本轮交付」:照清反馈、照留上下文快照 —— 否则
+        # 评审要么打转要么无从对照。
+        return {
+            "intent_answer": await _fallback_answer(state, catalog, kb, connectors, lineage),
+            "metadata_context": context,
+            "error_feedback": "",
+        }
 
     return answer_metadata
