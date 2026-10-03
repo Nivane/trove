@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 部署与日常运维：compose 拓扑与数据落点、日常起停与重建、健康检查 /v1/health 与 Prometheus 指标 /v1/metrics、生产配置清单、备份与升级、故障排查对照表。">
+<title>部署与运维实操 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>运维<span class="sep">/</span>部署与运维实操
+      </div>
+      <h1>部署与运维实操</h1>
+      <p class="lede">
+        这一页是<strong>装完之后</strong>的手册：日常起停与重建、健康与监控、
+        生产配置清单、备份与升级、故障排查对照表。
+        安装本身的三种跑法（本地 REPL / compose 全套 / 独立进程）在
+        <a href="../guide/deploy.html">安装部署</a>，这里不重复。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="topology">拓扑：四个容器，数据落在哪</h2>
+
+    <p>
+      compose 栈一共四个服务，职责和依赖关系是固定的：
+      <code>postgres</code>（业务表 + pgvector 向量 + 全文检索同实例）→
+      <code>db-init</code>（一次性灌入 BIRD 金融演示数据，幂等）→
+      <code>backend</code>（<code>trove serve</code>，纯 JSON API，全部路由在 <code>/v1</code> 下）→
+      <code>frontend</code>（nginx 托管 SPA 并反代 <code>/v1</code>）。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>服务</th><th>镜像</th><th>对外端口</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>postgres</code></td>
+            <td><code>paradedb/paradedb</code></td>
+            <td>不暴露（默认注释 <code>5432</code>）</td>
+            <td>业务数据 + 向量/全文检索 + （设了 <code>TROVE_STORAGE_URL</code> 时）Trove 自己的内部状态</td>
+          </tr>
+          <tr>
+            <td><code>db-init</code></td>
+            <td><code>trove-backend:local</code></td>
+            <td>—</td>
+            <td>跑完即退出的初始化容器；重复启动无害（<code>IF NOT EXISTS</code> + <code>ON CONFLICT</code>）</td>
+          </tr>
+          <tr>
+            <td><code>backend</code></td>
+            <td><code>trove-backend:local</code></td>
+            <td><code>8000</code>（仅供本机调试）</td>
+            <td>JSON API；<code>/v1/health</code> 被 compose 用作健康检查</td>
+          </tr>
+          <tr>
+            <td><code>frontend</code></td>
+            <td><code>trove-frontend:local</code></td>
+            <td><code>8080</code></td>
+            <td>用户访问入口：nginx 发布 SPA，并把 <code>/v1</code> 反代到 backend</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p><strong>数据落点</strong>决定了备份什么、迁移带什么：</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>数据</th><th>位置</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>内部状态：会话、任务、用户、审计、定时任务、LangGraph 检查点、记忆（情节 / 偏好 / 用户事实）</td>
+            <td>设了 <code>TROVE_STORAGE_URL</code> → Postgres；未设 → 各 store 路径下的 SQLite 文件（默认在 <code>~/.trove/</code> 与 <code>.trove/</code>）</td>
+            <td>统一走一套 <code>StorageBackend</code> 抽象，compose 里指向同一个 Postgres 库</td>
+          </tr>
+          <tr>
+            <td>知识库（<code>schema_notes / semantics / examples / rules / lessons</code>、<code>decisions.yml</code>）</td>
+            <td><code>.trove/kb/&lt;数据源&gt;/</code>，compose 里 bind mount 到 <code>/app/.trove</code></td>
+            <td>YAML 是唯一真源；SQLite 镜像只是运行时检索的派生物，可重建</td>
+          </tr>
+          <tr>
+            <td>数据源注册表</td>
+            <td><code>.trove/datasources.yml</code></td>
+            <td>管理台注册的数据源持久化在这里，重启自动恢复</td>
+          </tr>
+          <tr>
+            <td>LLM 凭证与全局配置</td>
+            <td><code>~/.trove/conf/agent.yml</code>（容器内 <code>/root/.trove/conf</code>）</td>
+            <td>compose 里的只读挂载默认注释掉——取消注释才会生效</td>
+          </tr>
+          <tr>
+            <td>业务数据本身</td>
+            <td>你自己的数据库</td>
+            <td>Trove 对业务库<strong>只读</strong>：执行通道只放行 SELECT 类语句，不需要为它准备任何写权限</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="daily">日常操作：起停、重建、看日志</h2>
+
+<pre><code>docker compose up --build        <span class="cmt"># 构建并启动（后端 :8000 仅调试，前端 :8080）</span>
+docker compose build frontend    <span class="cmt"># 只重建前端镜像（前端改动不动后端）</span>
+docker compose build backend     <span class="cmt"># 只重建后端镜像</span>
+docker compose restart backend   <span class="cmt"># 只重启后端，前端容器不受影响</span>
+docker compose logs -f backend   <span class="cmt"># 跟后端日志</span>
+docker compose down              <span class="cmt"># 停止并移除容器（保留 pgdata 卷与 .trove 挂载）</span></code></pre>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>我改了什么</th><th>要做什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>前端页面 / 样式</td><td><code>docker compose build frontend &amp;&amp; docker compose up -d frontend</code>——后端不动</td></tr>
+          <tr><td>后端代码 / 提示词</td><td><code>docker compose build backend &amp;&amp; docker compose up -d backend</code>——前端不动</td></tr>
+          <tr><td>知识库内容</td><td>优先走管理台或 <code>/kb</code> 接口改（它们会同步维护检索镜像）；直接手改 YAML 后重启一次后端</td></tr>
+          <tr><td>数据源连接串</td><td>管理台 <code>/admin/datasources</code> 改，写入 <code>datasources.yml</code>；重启后自动恢复</td></tr>
+          <tr><td>LLM 配置</td><td>改 <code>~/.trove/conf/agent.yml</code> 后 <code>docker compose restart backend</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-tag">注意</span>
+      <div>
+        <p><code>trove serve</code> 自带内嵌的定时任务巡检（默认每 30 秒一跳，
+        由 <code>agent.scheduler_poll_seconds</code> 控制）。<strong>不要再并行跑
+        <code>trove-cli schedule --daemon</code></strong>——两个调度器会各跑一遍，
+        定时任务被重复执行。</p>
+      </div>
+    </div>
+
+    <h2 id="monitor">健康检查与监控</h2>
+
+    <p>
+      <code>GET /v1/health</code> 是存活 + 真实依赖检查，三种结果：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>HTTP</th><th><code>status</code></th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>200</td><td><code>ok</code></td><td>内部存储往返正常，全部数据源探测通过</td></tr>
+          <tr><td>200</td><td><code>degraded</code></td><td>进程活着，但某个数据源连不上；外部编排仍视其为可用</td></tr>
+          <tr><td>503</td><td><code>unavailable</code></td><td>内部存储不可达（Postgres 挂了 / <code>TROVE_STORAGE_URL</code> 指错）——这才是真正要告警的状态</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+<pre><code>$ curl -s localhost:8000/v1/health
+{"status":"ok",
+ "checks":{
+   "storage":{"ok":true},
+   "datasources":{"financial":{"ok":true,"readonly":{"basis":"grants"}},
+                  "demo":{"ok":true,"readonly":{"verified":null,"basis":"not_probed"}}},
+   "llm":{"mock":false,"target":"deepseek/deepseek-reasoner","providers":0}}}</code></pre>
+
+    <p>
+      LLM 一栏只报事实（<code>mock</code> / <code>target</code> / <code>providers</code>），
+      不做计费探测，也不下「能不能用」的结论——凭证是否可用的最终判定
+      是一次真实提问（见故障表「问答不可用」一行）。
+    </p>
+
+    <p>
+      <code>GET /v1/metrics</code> 输出 Prometheus 文本格式，直接可被
+      Prometheus / VictoriaMetrics 抓取。运维上最该关注的几个族：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>指标</th><th>看什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>trove_http_requests_total</code> / <code>trove_http_request_duration_seconds</code></td><td>接口流量与延迟；按 route/status 定位错误面</td></tr>
+          <tr><td><code>trove_llm_calls_total</code> / <code>trove_llm_call_duration_seconds</code></td><td>按 provider/model/status 拆分——成本与供应商健康</td></tr>
+          <tr><td><code>trove_sql_queries_total</code> / <code>trove_sql_query_duration_seconds</code></td><td>业务库执行次数与耗时</td></tr>
+          <tr><td><code>trove_sql_cache_hits_total</code></td><td>精确结果缓存命中；命中即零 LLM 成本</td></tr>
+          <tr><td><code>trove_sql_degraded_total</code> / <code>trove_sql_kill_total</code></td><td>预算降级与 EXPLAIN 守卫拦截——回答质量与安全的先行指标</td></tr>
+          <tr><td><code>trove_authz_deny_total</code> / <code>trove_authz_table_warn_total</code></td><td>越权拒绝与越表告警；异常升高说明有人在探边界</td></tr>
+          <tr><td><code>trove_masking_applied_total</code></td><td>脱敏实际发生的次数</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">说明</span>
+      <div>
+        <p>指标是<strong>单进程内存计数</strong>、<strong>免鉴权</strong>
+        （计数值本身不敏感）。部署在公网时，在反向代理层给 <code>/v1/metrics</code>
+        和 <code>/v1/health</code> 加上来源限制即可，不需要应用内额外配置。</p>
+      </div>
+    </div>
+
+    <h2 id="prod">生产配置清单</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>配置</th><th>作用</th><th>建议</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>TROVE_ADMIN_PASSWORD</code></td>
+            <td>首个 <code>admin</code> 账号的引导密码</td>
+            <td>必须显式设置。不设置时密码随机生成、只在首次启动日志里打印一次（compose 里的 <code>admin123</code> 仅本地演练）</td>
+          </tr>
+          <tr>
+            <td><code>TROVE_STORAGE_URL</code></td>
+            <td>内部状态的存储后端；设了 → Postgres，未设 → SQLite 回退</td>
+            <td>生产用 Postgres（多实例/备份/并发都更稳）；单机演示保持不设即可</td>
+          </tr>
+          <tr>
+            <td>LLM 凭证（<code>providers[].api_key</code>，支持 <code>${ENV_VAR}</code>）</td>
+            <td>真实问答的前提</td>
+            <td>凭证只放环境变量或 <code>~/.trove/conf</code>（只读挂载），<strong>不进仓库、不进镜像</strong></td>
+          </tr>
+          <tr>
+            <td><code>--datasource</code></td>
+            <td>启动时接入的数据源；业务库是示范数据时用 <code>postgres://…</code>，内置演示用 <code>demo</code></td>
+            <td>生产数据源交由管理台注册，写进 <code>datasources.yml</code> 持久化</td>
+          </tr>
+          <tr>
+            <td><code>agent.scheduler_poll_seconds</code></td>
+            <td>内嵌调度巡检间隔（默认 30 秒）</td>
+            <td>与上文的「不要双跑」是同一件事的两面</td>
+          </tr>
+          <tr>
+            <td><code>agent.language</code></td>
+            <td>交互语言（提示词、答案、轨迹统一使用）</td>
+            <td>与知识库内容语言保持一致；KB 内容语言与提问语言不一致会明显掉准确率</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-tag">注意</span>
+      <div>
+        <p>compose 默认<strong>不暴露 5432</strong>（那行 <code>ports</code> 是给本地调试用的），
+        保持注释状态。用户入口 <code>8080</code> 前面应接 TLS 终结（负载均衡或
+        nginx），<code>8000</code> 只留本机调试、不要对公网开放。</p>
+      </div>
+    </div>
+
+    <h2 id="backup">备份与升级</h2>
+
+    <h3>备份什么</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>对象</th><th>方式</th><th>恢复影响</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>内部状态（会话/用户/审计/任务/检查点/记忆）</td>
+            <td>Postgres 部署下即 <code>pg_dump trove</code>；SQLite 回退下备份对应 <code>.sqlite</code> / <code>.db</code> 文件</td>
+            <td>丢了 = 丢历史会话、用户与授权、审计记录</td>
+          </tr>
+          <tr>
+            <td>知识库与治理内容</td>
+            <td>打包 <code>.trove/</code>（重点是 <code>kb/</code> 与 <code>datasources.yml</code>）</td>
+            <td>丢了 = 丢失全部建模成果（语义模型、样例、教训、决策规则）——这是最贵的一份</td>
+          </tr>
+          <tr>
+            <td>LLM 凭证与全局配置</td>
+            <td>备份 <code>~/.trove/conf/</code>（进密钥管理，不进普通备份盘）</td>
+            <td>丢了 = 问答不可用（health 里 <code>llm.mock</code> 会亮）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>升级步骤</h3>
+
+<pre><code><span class="cmt"># 1. 先备份（见上表）</span>
+pg_dump "$TROVE_STORAGE_URL" &gt; trove-$(date +%F).sql
+tar czf kb-$(date +%F).tar.gz .trove/
+
+<span class="cmt"># 2. 拉新代码，重建镜像，滚动起来</span>
+git pull
+docker compose build
+docker compose up -d
+
+<span class="cmt"># 3. 验证</span>
+curl -s localhost:8000/v1/health        <span class="cmt"># 应为 ok / degraded</span>
+<span class="cmt"># 管理台登录 → 数据源健康 → 问一个已知问题对照答案</span></code></pre>
+
+    <p>
+      内部状态的库表迁移是<strong>版本化、幂等、自动应用</strong>的：新代码第一次
+      打开旧库会自动迁移到位，中途失败会回滚且不推进版本。KB 的 SQLite 检索镜像
+      是派生物，走<strong>重建</strong>而不是迁移——升级后如果检索异常，重跑一次
+      KB 初始化即可，YAML 真源不受影响。
+    </p>
+
+    <div class="callout danger">
+      <span class="callout-tag">回滚</span>
+      <div>
+        <p>迁移只前进不后退：<strong>旧代码打开新版本的库会被直接拒绝</strong>
+        （<code>StorageSchemaTooNew</code>，防止静默读丢数据）。所以回滚镜像时必须
+        连同数据库一起恢复到步骤 1 的备份，不能只回滚镜像。</p>
+      </div>
+    </div>
+
+    <h2 id="troubleshoot">故障排查对照表</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>症状</th><th>先看</th><th>处置</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>打开 8080 页面正常，但登录/接口 502</td>
+            <td><code>docker compose ps</code>——backend 是否 healthy</td>
+            <td>看 <code>docker compose logs backend</code> 的启动报错；多半是依赖没就绪，等 compose 重试或 <code>up -d</code> 重拉</td>
+          </tr>
+          <tr>
+            <td><code>/v1/health</code> 返回 503</td>
+            <td><code>checks.storage</code></td>
+            <td>存储不可达：Postgres 容器是否在跑、<code>TROVE_STORAGE_URL</code> 指的库是否存在、网络是否通</td>
+          </tr>
+          <tr>
+            <td><code>status: degraded</code></td>
+            <td><code>checks.datasources</code> 里哪个源 <code>ok:false</code></td>
+            <td>该业务库的连接串/账号/网络问题；单源故障不影响其他源</td>
+          </tr>
+          <tr>
+            <td>能登录，但提问得到的不是真实答案（或提示无凭证）</td>
+            <td><code>checks.llm.mock</code>：<code>true</code> 即未配置凭证</td>
+            <td>按<a href="../reference/config.html">配置参考</a>给 <code>providers[]</code> 配 key（或挂载 <code>~/.trove/conf</code>）后重启后端</td>
+          </tr>
+          <tr>
+            <td>登录失败，不知道 admin 密码</td>
+            <td>首次启动日志</td>
+            <td>未设 <code>TROVE_ADMIN_PASSWORD</code> 时密码是随机生成的、只在首次启动日志里打印一次；实在找不回可清掉用户表重建引导（先备份）</td>
+          </tr>
+          <tr>
+            <td>用户端数据源下拉里看不到某个源</td>
+            <td>管理台 <code>/admin/datasources</code> 该源状态与 KB 状态</td>
+            <td>下拉只显示「已连接<strong>且</strong> KB 已初始化」的源；非 admin 用户还需要在用户页勾选数据源授权</td>
+          </tr>
+          <tr>
+            <td>注册数据源直接报 400</td>
+            <td>错误正文</td>
+            <td>注册即连接探测，400 就是探测失败的原因（连接串、账号、网络或驱动 extra 没装）——按正文修</td>
+          </tr>
+          <tr>
+            <td><code>/kb init</code> 报凭证错误、或只生成了骨架</td>
+            <td>LLM 凭证</td>
+            <td>没有 LLM 凭证时，初始化按配置走纯骨架或直接报错；补好凭证后重跑 <code>/kb init</code></td>
+          </tr>
+          <tr>
+            <td>定时任务被执行了两次</td>
+            <td>是否同时跑了 <code>serve</code> 与 <code>schedule --daemon</code></td>
+            <td>停掉其中一个；<code>serve</code> 自带内嵌巡检，二选一</td>
+          </tr>
+          <tr>
+            <td>中文提问命中率骤降、检索总是差一点</td>
+            <td>KB 内容语言 vs 提问语言</td>
+            <td>两者必须一致（英文 KB 配英文提问是设计边界）；在语义层为中文问法补同义词，或按使用语言重建 KB</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">排查答案质量</span>
+      <div>
+        <p>单次问答的完整轨迹在运行目录的 <code>runs/&lt;run_id&gt;.log</code>
+        （默认 <code>~/.trove/runs</code>，容器内 <code>/root/.trove/runs</code>）：
+        逐节点的输入、生成、校验与裁决都在里面，是排查「答案为什么不对」的第一现场。
+        平台侧的可观测入口见 <a href="observability.html">可观测性</a>。</p>
+      </div>
+    </div>
+
+    <h2 id="next">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><td>三种安装跑法与环境变量速查</td><td><a href="../guide/deploy.html">安装部署</a></td></tr>
+          <tr><td>管理台六个模块的日常操作</td><td><a href="admin.html">运维管理</a></td></tr>
+          <tr><td>轨迹、运行日志与指标口径</td><td><a href="observability.html">可观测性</a></td></tr>
+          <tr><td>只读边界、脱敏与审计</td><td><a href="security.html">安全边界</a></td></tr>
+          <tr><td>全部配置键</td><td><a href="../reference/config.html">配置参考</a></td></tr>
+          <tr><td>Schema 漂移巡检</td><td><a href="drift.html">数据漂移治理</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

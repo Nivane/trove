@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 会话管理：新建会话、按标题搜索历史、重命名与删除、运行中中断、重新生成，以及同一会话里的结果复用。">
+<title>会话管理 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>用户指南<span class="sep">/</span>会话管理
+      </div>
+      <h1>会话管理</h1>
+      <p class="lede">
+        一个会话 = 一段连续的对话上下文。怎么开、怎么找、怎么改名与删除，
+        以及运行中怎么叫停、答案不满意怎么重来——都在这一页。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="new">新建会话：什么时候开新的</h2>
+
+    <p>
+      点侧栏顶部的<strong>「新建会话」</strong>（<a href="ui-tour.html#shell">界面导览</a>图 2 的 ②）
+      开一段干净上下文。判断标准很简单：
+    </p>
+
+    <ul>
+      <li><strong>同一个话题的追问</strong>——留在原会话。「那按地区拆开呢?」这类问题靠上文的表名、口径、实体指代理解，新开会话它就不知道「那」指的是什么。</li>
+      <li><strong>换话题、换数据源口径</strong>——开新会话。省得旧语境把新问题带偏。</li>
+      <li><strong>要干净的起点做对照</strong>——开新会话问同一个问题，两次的答案与依据可以逐项比对。</li>
+    </ul>
+
+    <p>
+      会话标题自动取第一个问题（超出宽度截断显示），所以列表本身就是一份问题清单。
+    </p>
+
+    <h2 id="search">找到历史会话</h2>
+
+    <p>
+      会话多了以后用侧栏的<strong>「查询」</strong>（或快捷键，见输入框旁的提示）打开搜索框，
+      输入关键词即时过滤。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-sessions-search.png" alt="会话搜索对话框：输入 How many 后列出三条匹配的历史会话，背景为最近的会话列表">
+        <span class="pin" style="--x:9.4%;--y:14.8%">1</span>
+        <span class="pin" style="--x:50.0%;--y:44.2%">2</span>
+        <span class="pin" style="--x:43.1%;--y:52.2%">3</span>
+      </div>
+      <figcaption>图 1 · 搜索「How many」命中三条历史会话。点击任意一条直接切过去，上下文原样恢复。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>查询</strong>——侧栏固定的搜索入口，会话再多也不用翻列表。</li>
+        <li><span class="n">2</span><strong>搜索框</strong>——输入即过滤，无需回车；<code>×</code> 或点击空白处关闭。</li>
+        <li><span class="n">3</span><strong>结果列表</strong>——按<strong>标题</strong>匹配（不搜对话正文）。找不到时换个问题开头里的关键词试试，或直接搜索你记得的那几个字。</li>
+      </ol>
+    </figure>
+
+    <h2 id="rename-delete">重命名与删除</h2>
+
+    <p>
+      在侧栏把鼠标移到某个会话上，行尾出现 <code>⋮</code>（菜单）与 <code>×</code>（快速删除）；
+      直接右键会话行也能唤出同样的菜单。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-session-menu.png" alt="会话行右键菜单：重命名与删除两个操作，背景为侧栏会话列表">
+        <span class="pin" style="--x:9.4%;--y:23.3%">1</span>
+        <span class="pin" style="--x:14.7%;--y:25.9%">2</span>
+        <span class="pin" style="--x:14.7%;--y:29.3%">3</span>
+      </div>
+      <figcaption>图 2 · 会话操作菜单。重命名只改标题、不动内容；标题改掉后搜索也按新标题匹配。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span>选中的会话行——右键或悬停 <code>⋮</code> 唤出菜单。</li>
+        <li><span class="n">2</span><strong>重命名</strong>——给会话一个自己认得出的名字，比如「Q3 贷款口径核对」。</li>
+        <li><span class="n">3</span><strong>删除</strong>——删除整个会话及其对话记录。</li>
+      </ol>
+    </figure>
+
+    <div class="callout danger">
+      <span class="callout-tag">删除不可恢复</span>
+      <p>
+        删除会话会移除这段对话的历史（含每一轮的答案与出处）。已经沉淀进知识库的内容
+        （审批通过的示例、教训）不受影响——那些已经属于数据源的知识资产，不属于某个会话。
+      </p>
+    </div>
+
+    <h2 id="interrupt">运行中的中断，和答案的重来</h2>
+
+    <ul>
+      <li><strong>中断</strong>——提问后发送按钮变为停止按钮。问题明显问错或数据源选错时，早停比等完便宜；中断不影响其他会话。</li>
+      <li><strong>重新生成</strong>——每条答案下方的操作行里有「重新生成」（<a href="ask.html#anatomy">答案解剖</a>图 1 的操作行）：把该轮的提问重跑一遍。对它不满意再重跑一次，或者编辑问题重新问，都是正常用法。</li>
+    </ul>
+
+    <h2 id="reuse">同一会话里的结果复用</h2>
+
+    <p>
+      在同一会话里问一个<strong>已经问过的完全相同的问题</strong>，系统直接返回上一轮的结果与依据，
+      不重新生成——出处条与依据抽屉会如实标注来源档位（复用而非新算）。
+      这对往返核对特别有用：数字不会因为重跑而漂移。
+      要一次全新的计算，换一种问法，或到新会话里问。
+    </p>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>读懂一轮问答的每个部分</td><td><a href="ask.html">提问与读懂答案</a></td></tr>
+          <tr><td>让某个答案沉淀成知识（反馈 / 纠错）</td><td><a href="feedback.html">反馈与知识沉淀</a></td></tr>
+          <tr><td>会话与运行记录保存在哪、怎么运维</td><td><a href="../ops/deployment.html">部署与运维实操</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 反馈与知识沉淀：点赞与点踩（含必选理由）、提交后的回执与去向、答错时的补救路径，以及反馈如何经由管理员审批变成数据源的知识。">
+<title>反馈与知识沉淀 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>用户指南<span class="sep">/</span>反馈与知识沉淀
+      </div>
+      <h1>反馈与知识沉淀</h1>
+      <p class="lede">
+        每一条好评和差评都走同一条通道，但去向不同：<strong>好评计入统计与运行评分</strong>，
+        <strong>差评连同你选的理由落为待确认草案</strong>，由管理员审批后成为数据源的知识。
+        这一页讲怎么反馈、提交后发生了什么，以及答案不对时的补救路径。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="why">为什么要反馈</h2>
+
+    <p>
+      这不是一个「点完赞就结束」的评分按钮。Trove 的数据源知识库（KB）是一份<strong>由人审批、随使用增长</strong>
+      的资产：模型答得好的问法被沉淀成示例与模板，答得不好的地方连同原因进入待审批队列——
+      修正的是知识库，不是这一次回答。于是同一个数据源会越用越准；
+      下一个同事问到同一类问题时，直接受益于你这次的三十秒。
+    </p>
+
+    <h2 id="rate">评分行：五个按钮怎么用</h2>
+
+    <p>
+      每条答案下方是一排操作按钮。左边三枚是工具（复制 / 重新生成 / 查看依据），
+      右边两枚才是评分——<strong>点赞直接提交，点踩会先问你「哪里不对」</strong>。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-chat-feedback.png" alt="答案下方的操作行：复制、重新生成、查看依据、点赞、点踩；点踩后出现「这次回答哪里不对?」与四个理由标签">
+        <span class="pin" style="--x:23.1%;--y:78.6%">1</span>
+        <span class="pin" style="--x:37.0%;--y:78.6%">2</span>
+        <span class="pin" style="--x:43.4%;--y:88.3%">3</span>
+      </div>
+      <figcaption>图 1 · 点踩后的状态：理由标签弹出，此时<strong>还没有提交</strong>——选定一个理由才真正落库。本图停在提交前一刻。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>操作行</strong>——复制答案、重新生成（把这一轮重跑一遍，仅最后一轮可见）、查看依据（等同<a href="ask.html#evidence">依据抽屉</a>入口）。</li>
+        <li><span class="n">2</span><strong>点赞 / 点踩</strong>——点赞立即提交；点踩不会直接提交，而是先展开下一步的理由标签。</li>
+        <li><span class="n">3</span><strong>理由标签（四选一，必选）</strong>——过滤条件不对 / 数字·数值不对 / 图表不需要或选型不对 / 答非所问。选中的理由会随差评一起提交，成为管理员判断「该修什么」的第一线索；这一步不给你「只踩不说」的选项，因为无理由的差评对知识库没有增量。</li>
+      </ol>
+    </figure>
+
+    <p>
+      另外，<a href="ask.html#evidence">依据抽屉</a>底部也有一个反馈入口，走的是同一评分通道——
+      核查 SQL 时发现问题，可以就地反馈，不用退回聊天区。
+    </p>
+
+    <h2 id="receipt">提交之后：回执说了什么，就只承诺什么</h2>
+
+    <p>提交后按钮旁出现一行回执，把真实去向原样报给你：</p>
+
+    <ul>
+      <li>点赞回执：<em>「已记录好评：计入好评统计与运行评分；是否沉淀为知识由管理员确认。」</em></li>
+      <li>点踩回执：<em>「已提交：落为待确认草案（待管理员确认），并回写运行评分。」</em></li>
+    </ul>
+
+    <p>三件事值得注意：</p>
+
+    <ul>
+      <li><strong>好评不会直接变成知识</strong>——它先累加统计与运行评分，是否把这条问答沉淀成知识库资产，仍由管理员确认。</li>
+      <li><strong>差评先落为「待确认草案」</strong>——进入管理台知识库的待审批队列（见<a href="../admin/kb.html#pending">知识库运营 · 待审批</a>），确认后才会参与后续检索。同一问题被反复纠正会累积证据、加快处置，但每条草案都保留来源，可查、可退。</li>
+      <li><strong>提交失败会如实说失败</strong>——不会给你一张「已提交」的假回执。</li>
+    </ul>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么要有审批这一关</span>
+      <p>
+        知识库直接决定后续所有答案的口径。如果反馈能自动入库，一次误操作就能污染整个数据源的检索。
+        所以自动写回的通道设计为<strong>只落草案、不直接生效</strong>；
+        管理员的确认按钮才是知识的入库口（这条规则在管理指南里同样适用：
+        <a href="../admin/kb.html">知识库运营</a>、<a href="../admin/automation.html#skills">方法论技能</a>的草稿都不例外）。
+      </p>
+    </div>
+
+    <h2 id="correction">答案不对时，除了点踩还能做什么</h2>
+
+    <ol class="steps">
+      <li>
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <h3>先追问澄清</h3>
+          <p>
+            多数「不对」其实是口径分歧——在会话里直接追问「按发放日期口径呢?」，
+            比重新开一轮快，上下文也都在。
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <h3>换个问法重新问</h3>
+          <p>
+            问题本身有歧义时，用提问气泡旁悬浮出现的铅笔按钮<strong>编辑并重发</strong>，
+            或者到新会话里换一种问法。反复纠正的痕迹会被系统看作「这个问题容易被误解」的证据。
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">3</span>
+        <div class="step-body">
+          <h3>运行失败时用错误卡片</h3>
+          <p>
+            查询中断会显示一张错误卡片：能重试的给<strong>重试</strong>，
+            问题问得不好给<strong>换个问法</strong>（直接进入编辑状态）；
+            管理员还多一个<strong>去管理台</strong>入口，以及默认折叠的<strong>技术细节</strong>
+            （出错节点、错误类别、原文——反馈故障时把这行复制给管理员最快）。
+          </p>
+        </div>
+      </li>
+    </ol>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>读懂答案与依据（反馈前先核对）</td><td><a href="ask.html">提问与读懂答案</a></td></tr>
+          <tr><td>管理员：审批反馈草案、管理好评</td><td><a href="../admin/kb.html">知识库运营</a></td></tr>
+          <tr><td>反馈最终如何影响命中（检索与融合）</td><td><a href="../capabilities/kb.html">知识库（能力）</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 用户·权限·安全：账号 CRUD 与三种角色、数据源授权、API 令牌（有效期与作用域）、审计日志（含当前页状态快照的口径）、系统设置（结果限制/流程开关/保留策略）、模型配置（默认/快速模型与 Providers）、质量与成本运营台（评测对比与回归门）。">
+<title>用户·权限·安全 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>管理指南<span class="sep">/</span>用户·权限·安全
+      </div>
+      <h1>用户·权限·安全</h1>
+      <p class="lede">
+        谁可以用、能用到什么、做过什么、平台自身怎么配置——四件事一条线：
+        <strong>账号与授权</strong>（用户页）、<strong>行为留痕</strong>（审计日志）、
+        <strong>运行时配置</strong>（系统设置、模型配置），以及给管理员的
+        <strong>质量与成本运营台</strong>。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="users">账号与授权</h2>
+
+    <p>
+      <code>/admin/users</code> 管账号、角色与数据源授权。三种角色：
+      <strong>管理员</strong>（全部管理权限）、<strong>分析员</strong>（可触达目录枚举工具等增强能力）、
+      <strong>普通用户</strong>（问答基本盘）。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-users.png" alt="用户管理页：五张筛选 KPI 卡（全部用户 3 / 启用中 3 / 管理员 1 / 已禁用 0 / 待授权 1）、搜索与筛选、用户表（用户名、角色章、状态章、创建时间、数据源授权章）">
+        <span class="pin" style="--x:94.1%;--y:7.6%">1</span>
+        <span class="pin" style="--x:77.6%;--y:20.0%">2</span>
+        <span class="pin" style="--x:29.4%;--y:28.5%">3</span>
+        <span class="pin" style="--x:56.3%;--y:45.8%">4</span>
+        <span class="pin" style="--x:81.9%;--y:40.0%">5</span>
+        <span class="pin" style="--x:27.7%;--y:45.8%">6</span>
+      </div>
+      <figcaption>图 1 · 用户列表。图中三个账号就是一条完整的授权示例：一个普通用户、一个已授权两源的分析员、一个管理员。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>新建用户</strong>——用户名、显示名（可留空）、初始密码、角色。删除同样在这里发起，确认框会列出被删账号名，属危险动作。</li>
+        <li><span class="n">2</span><strong>筛选 KPI 行</strong>——全部用户 / 启用中 / 管理员 / 已禁用 / 待授权，<strong>每张卡点一下即按该类过滤</strong>（再点取消）。「待授权」= 尚未授予任何数据源的账号；待授权的用户登录后看不到可用数据源。</li>
+        <li><span class="n">3</span><strong>搜索与筛选</strong>——按用户名或显示名搜索；两个下拉分别按角色、状态过滤。过滤后的空结果会给出「清空筛选」，不会让人以为系统里没人了。</li>
+        <li><span class="n">4</span><strong>角色章</strong>——普通用户 / 分析员 / 管理员。角色决定管理面的可达范围；改角色在账号详情里做。</li>
+        <li><span class="n">5</span><strong>数据源授权</strong>——显示该账号被<strong>显式授权</strong>的源数量；「待授权」表示还没有授予任何源。管理员可访问全部数据源，不依赖这里的授权。</li>
+        <li><span class="n">6</span><strong>点任意行打开详情</strong>——账号的全部处置都在详情抽屉（图 2）。</li>
+      </ol>
+    </figure>
+
+    <h2 id="drawer">账号详情：资料、授权与 API 令牌</h2>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-user-drawer.png" alt="用户详情抽屉：身份头（陈晓 @docs-guide，分析员、正常）、显示名/角色/状态/新密码字段、数据源授权勾选（demo、financial）、API 令牌区（名称、有效期、作用域、生成与已签发列表）、页脚放弃更改/保存更改">
+        <span class="pin" style="--x:74.3%;--y:5.7%">1</span>
+        <span class="pin" style="--x:84.1%;--y:29.2%">2</span>
+        <span class="pin" style="--x:77.9%;--y:37.5%">3</span>
+        <span class="pin" style="--x:73.8%;--y:56.7%">4</span>
+        <span class="pin" style="--x:73.6%;--y:69.2%">5</span>
+        <span class="pin" style="--x:94.7%;--y:96.7%">6</span>
+      </div>
+      <figcaption>图 2 · 账号详情（陈晓）。抽屉里所有改动都是「草稿」——不点保存不生效。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>身份头</strong>——用户名、显示名与角色 / 状态章一屏确认「这个人是谁、什么权限、能不能登录」。</li>
+        <li><span class="n">2</span><strong>角色</strong>——在此改角色。角色变更与授权变更走同一次保存。</li>
+        <li><span class="n">3</span><strong>状态开关</strong>——「已禁用」的账号无法登录，但历史会话与审计记录都保留。离职/停用首选这个，销毁性的删除是最后手段。</li>
+        <li><span class="n">4</span><strong>数据源授权</strong>——勾选该账号可见的源。注意下方一行：<strong>授权改动在点击「保存更改」前不会生效</strong>——勾完就跑去看用户端，是看不到变化的。</li>
+        <li><span class="n">5</span><strong>API 令牌</strong>——令牌名称 + <strong>有效期（小时，留空 = 永不过期）</strong> + <strong>作用域（留空 = 不限，即用户全部权限；填 <code>query</code> 则只可查不可管）</strong>，点「生成」签发。已签发的令牌列在下方（创建时间 / 过期时间），可随时「撤销」。令牌用于程序化访问，当作密码保管。</li>
+        <li><span class="n">6</span><strong>保存更改 / 放弃更改</strong>——没有实际改动时「保存更改」保持禁用；改动过而未保存时，离开前有确认，不会静默丢弃。</li>
+      </ol>
+    </figure>
+
+    <h2 id="audit">审计日志：发生过什么</h2>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-audit.png" alt="审计日志页：三张统计卡（审计日志 64、正常 15、异常请求 0）、动作搜索、日志表（时间、用户、动作、METHOD、路径、状态）、分页">
+        <span class="pin" style="--x:33.6%;--y:15.8%">1</span>
+        <span class="pin" style="--x:58.9%;--y:15.2%">2</span>
+        <span class="pin" style="--x:30.8%;--y:25.7%">3</span>
+        <span class="pin" style="--x:48.6%;--y:46.5%">4</span>
+        <span class="pin" style="--x:94.0%;--y:46.5%">5</span>
+      </div>
+      <figcaption>图 3 · 审计日志。登录、查询执行等动作逐条记录；图中含一条 <code>query.execute</code>（用户 docs-guide 发起）。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>审计日志（总数）</strong>——全部记录的条数，与列表底部的「共 N 条」一致。</li>
+        <li><span class="n">2</span><strong>正常 / 异常请求</strong>——这两张卡统计的是<strong>当前页</strong>的状态分布快照，不是全量聚合；状态为空的动作（如内部执行记录）不计入两侧。看整段时期的趋势去<a href="../ops/observability.html">可观测性</a>。</li>
+        <li><span class="n">3</span><strong>动作过滤</strong>——按动作名（如 <code>auth.login</code>、<code>query.execute</code>）过滤，回车生效。</li>
+        <li><span class="n">4</span><strong>行结构</strong>——时间 / 用户 / 动作 / METHOD / 路径：谁在什么时候、对哪个接口做了什么。分页支持每页 20 / 50 / 100 条。</li>
+        <li><span class="n">5</span><strong>状态</strong>——HTTP 语义：2xx–3xx 为正常（绿），其余为异常（红）；没有 HTTP 状态的动作显示为无状态的 <code>—</code>（红底提示它不是「成功」）。</li>
+      </ol>
+    </figure>
+
+    <h2 id="settings">系统设置：运行时开关</h2>
+
+    <p>
+      <code>/admin/settings</code> 是平台的运行时配置（存于数据库，保存后即时生效）——
+      分五组卡片：<strong>查询结果</strong>（表格展示行数与结果行数上限）、<strong>语义层</strong>、
+      <strong>交互</strong>（界面语言）、<strong>流程开关</strong>、<strong>会话保留</strong>（会话数、检查点、
+      清理周期等保留策略）。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-settings.png" alt="系统设置页：查询结果卡（表格展示行数 50、查询结果行数上限 1000）、语义层卡（语义层目录输入框）、交互卡（语言 中文）、流程开关卡（时间解析、模板快径、语义说明三个开关）">
+        <span class="pin" style="--x:33.0%;--y:24.5%">1</span>
+        <span class="pin" style="--x:33.0%;--y:33.3%">2</span>
+        <span class="pin" style="--x:42.1%;--y:54.3%">3</span>
+        <span class="pin" style="--x:29.4%;--y:78.6%">4</span>
+        <span class="pin" style="--x:44.8%;--y:95.7%">5</span>
+      </div>
+      <figcaption>图 4 · 系统设置（上半屏）。下方还有流程开关的其余项与会话保留卡片。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>表格展示行数</strong>——答案表格单次最多展示的行数（1–500，默认 50）。调大它影响的是<strong>阅读</strong>，不是查询。</li>
+        <li><span class="n">2</span><strong>查询结果行数上限</strong>——下载与透出的完整查询结果上限（1–50000，默认 1000）。这是数据外流的闸门：要导出更大的结果，先想清楚数据合规。</li>
+        <li><span class="n">3</span><strong>语义层目录</strong>——OSSIE 语义层目录（相对项目根；留空 = 关闭）。这一项<strong>每次重启后生效</strong>，与同页其它「保存即生效」的开关不同。</li>
+        <li><span class="n">4</span><strong>交互</strong>——界面语言（中文 / English）。</li>
+        <li><span class="n">5</span><strong>流程开关</strong>——逐项开关流水线能力：时间解析（解析「上周」这类相对时间）、模板快径（命中确定性模板时跳过规划/生成）、语义说明（生成 SQL 后、执行前展示语义解释）、HITL 人工确认、insights、conclusion、结果缓存、分解 LLM 判定；还有一个反思跳过档位选择。开关的后果直接反映在用户的等待时间与答案结构上，按提示文字逐项确认再动。</li>
+      </ol>
+    </figure>
+
+    <h2 id="model">模型配置</h2>
+
+    <p>
+      <code>/admin/model-config</code> 管默认模型、快速模型与模型服务商（Providers）。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-model.png" alt="模型配置页：回退说明条、默认模型 deepseek/deepseek-reasoner、快速模型 deepseek/deepseek-chat（留空 = 简单查询也用默认模型）、模型服务商区块与加号按钮">
+        <span class="pin" style="--x:48.0%;--y:23.8%">1</span>
+        <span class="pin" style="--x:41.9%;--y:35.0%">2</span>
+        <span class="pin" style="--x:41.9%;--y:43.4%">3</span>
+        <span class="pin" style="--x:95.4%;--y:56.6%">4</span>
+      </div>
+      <figcaption>图 5 · 模型配置。图中未配置任何 Provider——平台按左侧说明条的回退规则取凭据。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>回退说明</strong>——未配置任何 Providers 时，litellm 自动回退到环境变量（如 <code>DEEPSEEK_API_KEY</code> / <code>OPENAI_API_KEY</code>）或默认凭据，服务仍可用；此处配置会按服务商名覆盖对应模型的 key/base。</li>
+        <li><span class="n">2</span><strong>默认模型</strong>——承担复杂档问答的主力模型（<code>provider/model</code> 形式）。</li>
+        <li><span class="n">3</span><strong>快速模型</strong>——简单问句走它省成本；<strong>留空 = 简单查询也用默认模型</strong>（不区分档位）。</li>
+        <li><span class="n">4</span><strong>模型服务商（Providers）</strong>——点「+」加一行：名称 + <code>api_base</code> + <code>api_key</code>，按服务商名覆盖对应模型的密钥与接入点。没有实际改动时「保存」保持禁用。</li>
+      </ol>
+    </figure>
+
+    <div class="callout note">
+      <span class="callout-tag">凭据的摆放位置</span>
+      <p>
+        模型密钥属于机密：这里的输入框按密码类型回显；容器部署时通过环境变量或只读挂载的
+        配置目录注入，不要写进仓库文件。详见<a href="../ops/deployment.html">部署与运维实操</a>。
+      </p>
+    </div>
+
+    <h2 id="ops">质量与成本运营台</h2>
+
+    <p>
+      <code>/admin/ops</code> 把「平台答得对不对、花得值不值」摊开成一页——
+      <strong>只读聚合、零 LLM</strong>：质量 tab 展示评测判定、失败清单与知识库反馈，
+      成本与性能 tab 展示用量样本、缓存与预算/降级。
+      <strong>评测永远不会从这一页点火</strong>（评测是花钱的，启动权在运维命令行）。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-ops.png" alt="质量与成本运营台：当前与基线两张结果卡（EX 30.0% / 50.0%、compile_hit 73.7% / 72.2%）、回归门（覆盖 19/32、重复 qid 1 个、样本门槛 10）与逐指标判定表（基线、当前、变化、容差、判定）">
+        <span class="pin" style="--x:46.0%;--y:10.5%">1</span>
+        <span class="pin" style="--x:85.9%;--y:7.7%">2</span>
+        <span class="pin" style="--x:30.6%;--y:30.8%">3</span>
+        <span class="pin" style="--x:65.0%;--y:30.8%">4</span>
+        <span class="pin" style="--x:36.8%;--y:40.3%">5</span>
+        <span class="pin" style="--x:92.6%;--y:53.3%">6</span>
+      </div>
+      <figcaption>图 6 · 质量 tab。这是一次真实的对比：当前批次与基线逐指标对照，回归门把差异按容差判成通过或回归。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>口径声明</strong>——「只读聚合，零 LLM」与<strong>数据截至时间</strong>：这一页是快照，不假装实时。</li>
+        <li><span class="n">2</span><strong>双视角</strong>——质量 / 成本与性能两个 tab，URL 里带参可直达。</li>
+        <li><span class="n">3</span><strong>当前结果</strong>——最近一批评测结果文件、样本数（可判定数）与顶部两个指标（EX 与编译命中率）。</li>
+        <li><span class="n">4</span><strong>基线</strong>——对照用的基线结果文件与同口径指标。两侧用<strong>同样的指标定义</strong>，差异才有意义。</li>
+        <li><span class="n">5</span><strong>回归门</strong>——对比的合法性声明：<strong>覆盖</strong>（基线指标里有多少条参与了本轮对比，未覆盖的不会被静默当作通过）、<strong>重复 qid</strong>（重复样本的告警）、<strong>样本门槛</strong>（样本不足不判定）。</li>
+        <li><span class="n">6</span><strong>逐指标判定</strong>——基线值、当前值、变化量与<strong>容差</strong>（部分指标用相对容差，如 <code>0.10-r</code>），最后一列给出判定：✓ 在容差内，✗ 越界（回归）。图中有多项判为回归——这正是这页存在的意义：把「变差了」变成可见、可定位的事实。</li>
+      </ol>
+    </figure>
+
+    <div class="callout note">
+      <span class="callout-tag">这一页的诚实规则</span>
+      <p>
+        数据没到显示加载态而非空白；某一路数据取不到时面板明说原因（降级提示），不用 0 冒充；
+        端点声明「本轮不测」的指标直接照抄，不替它编数字。
+        和<a href="console.html">总览</a>一样：每个数字都带出处，取不到就说取不到。
+      </p>
+    </div>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>给新用户授权一个已就绪的数据源</td><td><a href="datasources.html#after">数据源接入 · 注册之后</a></td></tr>
+          <tr><td>了解评测与回归门的完整机制</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
+          <tr><td>看质量趋势与用量、成本</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
+          <tr><td>生产部署与凭据管理</td><td><a href="../ops/deployment.html">部署与运维实操</a></td></tr>
+          <tr><td>处理安全相关的待办（待授权用户等）</td><td><a href="console.html#todos">管理台总览 · 待办队列</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库；评测对比来自本地演示数据）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

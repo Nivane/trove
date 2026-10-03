@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 数据源接入：注册（内置 Demo / MySQL / Doris / ClickHouse / SQLite / DuckDB）、连接探测、默认数据源、编辑锁定、测试连接与检索索引同步、删除边界。">
+<title>数据源接入 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>管理指南<span class="sep">/</span>数据源接入
+      </div>
+      <h1>数据源接入</h1>
+      <p class="lede">
+        注册一个数据源 = 给 Trove 一个业务库 + 一套知识边界。
+        注册即探测（连不上会当场报原因），注册成功只是第一步——
+        知识库初始化与用户授权完成后，这个源才对用户可见。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="list">数据源列表</h2>
+
+    <p>
+      <code>/admin/datasources</code> 管全部连接的生命周期。页面上每个元素都对应一个维护动作，
+      先认全再动手：
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-datasources.png" alt="数据源管理页：顶部三项统计、数据源列表（financial 带 default 徽标、demo）、连接状态与操作列">
+        <span class="pin" style="--x:33.6%;--y:15.8%">1</span>
+        <span class="pin" style="--x:92.0%;--y:25.6%">2</span>
+        <span class="pin" style="--x:31.9%;--y:36.3%">3</span>
+        <span class="pin" style="--x:82.5%;--y:36.3%">4</span>
+        <span class="pin" style="--x:94.5%;--y:36.3%">5</span>
+      </div>
+      <figcaption>图 1 · 数据源管理页。列表按连接类型标注（MySQL / Demo），名称旁的状态徽标是后续所有操作的依据。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>三项统计</strong>——数据源总数 / 已连接 / 未连接。未连接不为 0 时先处理连接，它意味着有用户正对着一个不可用的源。</li>
+        <li><span class="n">2</span><strong>注册数据源</strong>——打开注册对话框（见<a href="#register">下一节</a>）。</li>
+        <li><span class="n">3</span><strong><code>default</code> 徽标</strong>——默认数据源。用户端下拉的初始选择、未指定数据源时的兜底都指向它；首个注册的源自动成为默认，需要更换时由管理员调整服务端接入配置后重启生效。</li>
+        <li><span class="n">4</span><strong>连接状态</strong>——实时的连通判定（已连接 / 未连接）。未连接通常意味着凭据变更、库下线或网络问题。</li>
+        <li><span class="n">5</span><strong>操作列</strong>——编辑 / 测试连接 / 重建检索索引 / 删除。编辑按钮可被锁定（悬停看原因）：内置 Demo 不可编辑；已初始化知识库的源也不可编辑——连接一改，KB 里的表结构注释可能整片失效。</li>
+      </ol>
+    </figure>
+
+    <h2 id="register">注册一个新数据源</h2>
+
+    <p>
+      点「注册数据源」打开对话框。四种信息：类型、连接 URL、名称（可留空）、以及一条承诺——
+      注册时会真的去连一次。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-ds-create.png" alt="注册数据源对话框：连接类型选 MySQL、连接 URL 已填示例、数据源名称 sales、底部提示注册时会进行连接探测">
+        <span class="pin" style="--x:49.0%;--y:29.0%">1</span>
+        <span class="pin" style="--x:49.0%;--y:40.5%">2</span>
+        <span class="pin" style="--x:49.9%;--y:51.4%">3</span>
+        <span class="pin" style="--x:36.6%;--y:64.7%">4</span>
+      </div>
+      <figcaption>图 2 · 注册对话框。图中类型已选 MySQL、URL 与名称已填写；底部一行是本页最重要的一句话：注册时会进行连接探测。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>连接类型</strong>——Demo（内置金融示例，无需连接串）/ MySQL / Doris / ClickHouse / SQLite / DuckDB。直接粘贴 <code>scheme://</code> 开头的 URL 会自动切换类型。</li>
+        <li><span class="n">2</span><strong>连接 URL</strong>——含凭据的完整连接串；下方给出当前类型的示例格式，照着改最快。</li>
+        <li><span class="n">3</span><strong>数据源名称</strong>——用户端下拉里显示的名字，也是知识库目录名（<code>.trove/kb/&lt;name&gt;/</code>）。留空会自动从 URL 解析；建议显式取一个业务可读的名字。</li>
+        <li><span class="n">4</span><strong>探测承诺</strong>——点「注册」会真实连接一次：成功才登记入册；失败弹回具体原因（凭据错、库不存在、网络不通），不会留下一个「看起来注册成功」的坏连接。</li>
+      </ol>
+    </figure>
+
+    <ol class="steps">
+      <li>
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <h3>选类型、填 URL</h3>
+          <p>
+            把连接串粘进 URL 框即可，类型会跟着 <code>scheme://</code> 自动切换。注意连接串带明文凭据，
+            它保存在服务端的 <code>.trove/datasources.yml</code>（不在仓库里），建议使用只读权限的库账号。
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <h3>起名、注册、看探测结果</h3>
+          <p>
+            名称建议与业务对齐（<code>financial</code> 而不是 <code>db1</code>）——用户端、KB 目录、
+            治理页都以它为准。探测失败时按报错改连接串再试，反复失败再查网络与账号权限。
+          </p>
+        </div>
+      </li>
+    </ol>
+
+    <h2 id="after">注册之后：两步才上线</h2>
+
+    <p>
+      新注册的源<strong>不会立刻出现在用户端</strong>。要完成剩余两步（总览页「接入向导」会盯着进度）：
+    </p>
+
+    <ul>
+      <li><strong>初始化知识库</strong>——在<a href="kb.html#init">知识库运营</a>里跑初始化（起草表注释、语义模型与确定性资产）。没有 KB 的源不提供给用户——这是「接入即建模」的硬边界。</li>
+      <li><strong>授权用户</strong>——在<a href="access.html#users">用户与权限</a>里给需要的人勾选这个源。只读用户与管理员以外的角色必须显式授权。</li>
+    </ul>
+
+    <h2 id="maintain">日常维护动作</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>动作</th><th>什么时候用</th><th>边界</th></tr></thead>
+        <tbody>
+          <tr><td><strong>测试连接</strong></td><td>状态显示未连接、或刚改过网络/凭据，想当场验证</td><td>只探测，不改变任何状态</td></tr>
+          <tr><td><strong>重建检索索引</strong></td><td>刚批量改过 KB 资产、或检索命中异常，让索引追平最新状态</td><td>触发该源的索引同步（KB 资产 + 表结构）；纯后台任务，不影响正在进行的问答</td></tr>
+          <tr><td><strong>编辑</strong></td><td>改名称或连接串</td><td>内置 Demo 与已初始化 KB 的源被锁定——连接变更意味着 KB 可能失效；这类变更走「删除后重新接入」并接受 KB 需重建</td></tr>
+          <tr><td><strong>删除</strong></td><td>数据源确定下线</td><td>删除注册<strong>不删知识库</strong>——<code>.trove/kb/&lt;name&gt;/</code> 仍在磁盘上；要一并清掉，去<a href="kb.html#danger">知识库运营的删除入口</a>（带影响面确认）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-tag">删除是有影响面的动作</span>
+      <p>
+        移除数据源会让用户端下拉立即少一项、引用它的定时任务与决策规则随之失效。
+        知识库删除更重——它会连同人工审批过的资产一起移除，所以放在了 KB 页面里、
+        要求逐条确认影响面（见<a href="kb.html#danger">知识库运营 · 删除知识库</a>）。
+      </p>
+    </div>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>初始化 / 运营这个源的知识库</td><td><a href="kb.html">知识库运营</a></td></tr>
+          <tr><td>治理这个源的指标与口径</td><td><a href="semantic.html">语义层治理</a></td></tr>
+          <tr><td>给用户授权这个源</td><td><a href="access.html#users">用户·权限·安全</a></td></tr>
+          <tr><td>命令行/容器方式接入（生产部署）</td><td><a href="../ops/deployment.html">部署与运维实操</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库；注册对话框中的连接串为示意值，未提交）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>
