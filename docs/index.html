@@ -175,9 +175,9 @@ flowchart TB
       </div>
 
       <div class="cap-where" style="margin-top:18px">
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L640">compiler.py:640 <span class="ref-line">PartialCompile</span></a>
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L743">compiler.py:743 <span class="ref-line">is_hard_miss</span></a>
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1583">compiler.py:1583 <span class="ref-line">骨架产出</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L886">compiler.py:886 <span class="ref-line">PartialCompile</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L989">compiler.py:989 <span class="ref-line">is_hard_miss</span></a>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L2275">compiler.py:2275 <span class="ref-line">骨架产出</span></a>
       </div>
     </section>
 
@@ -305,9 +305,9 @@ flowchart TB
             软缺口（未声明的指标/字段/枚举值、时间分桶）留骨架给生成节点补齐。详见上文「为什么语义优先」。
           </div>
           <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L640">compiler.py:640</a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L886">compiler.py:886</a>
             <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L148">compiler.py:148 <span class="ref-line">JoinResolver</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L171">contract.py:171 <span class="ref-line">miss_parts 契约</span></a>
+            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L180">contract.py:180 <span class="ref-line">miss_parts 契约</span></a>
           </div>
         </div>
         <div class="cap">
@@ -1016,7 +1016,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         </div>
       </div>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">0e5c631</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 0e5c631</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">ced9aab</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: ced9aab</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>
