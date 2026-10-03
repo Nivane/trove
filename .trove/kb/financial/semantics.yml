@@ -1985,4 +1985,73 @@ semantic_model:
       synonyms:
       - 最高的贷款金额
     description: 所有贷款记录中金额的最大值
+  # 业务主题域(2026-10-03 声明):选域提问时,数据集锚定收敛到该域声明的
+  # datasets 内;域不存在/过期 → 显式拒绝,不回落全量。生效作用域 =
+  # 此处 datasets ∩ 模型现有数据集;只收敛锚定、不裁剪 join 路径;
+  # 域间允许重叠(共享维度表)。
+  topics:
+  - name: Loans
+    description: Loan amounts, durations and statuses, viewed by account, client
+      and region.
+    synonyms:
+    - loan
+    - loans
+    - 贷款
+    - 信贷
+    datasets:
+    - loan
+    - account
+    - client
+    - district
+    examples:
+    - What is the average loan amount?
+    - Which region has the highest average loan amount?
+    - How many loans are in each status?
+  - name: Transactions
+    description: Account transactions and outgoing orders, viewed by account,
+      client and region.
+    synonyms:
+    - transaction
+    - transactions
+    - transfer
+    - 交易
+    - 转账
+    datasets:
+    - trans
+    - order
+    - account
+    - client
+    - district
+    examples:
+    - How many transactions were made in 1996?
+    - What is the total transaction amount by account?
+    - How many orders were sent to each bank?
+  - name: Cards
+    description: Card types and issuance, and the clients holding them.
+    synonyms:
+    - card
+    - cards
+    - 银行卡
+    datasets:
+    - card
+    - client
+    examples:
+    - How many clients have a gold card?
+    - Which card type was issued the most?
+  - name: Customers
+    description: Customer demographics and district-level statistics.
+    synonyms:
+    - customer
+    - customers
+    - client
+    - district
+    - 客户
+    - 地区
+    datasets:
+    - client
+    - district
+    examples:
+    - How many clients are there by gender?
+    - What is the average salary in each district?
+    - What is the unemployment rate in 1995?
 version: 0.2.0.dev0
