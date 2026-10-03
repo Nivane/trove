@@ -10,6 +10,14 @@ probe_enums 对每张表的文本列执行 `SELECT DISTINCT col ... LIMIT N+1`
 distinct 路径无意义——probe_date_ranges 对日期类型列(以及 distinct
 超限的文本列)执行 `SELECT MIN(col), MAX(col)` 拿值域,写入列的
 `range` 字段;deterministic_gen 据此生成年份/区间/比较模板。
+
+**第二档取值探测(probe_values)**:`PROBE_LIMIT=20` 是**枚举档**——进
+schema_notes 的 enums(带可读含义)。有些列的取值域比 20 宽但仍有限
+(BIRD district.A2 = 77 个区名),枚举档看不见它们,而"问题里的字面量
+到底属于哪一列"恰恰要有这份取值表。probe_values 以
+:data:`VALUE_PROBE_LIMIT` 为上限做同一件事,产物是语义模型字段级
+`values:` 键(纯结构事实:该列的实际取值),供值路由使用。两档互不
+干扰:枚举档的形状与产物一字不动。
 """
 
 from __future__ import annotations
@@ -22,6 +30,10 @@ from typing import Any
 from trove.services.kb.lint import parse_enum_values
 
 PROBE_LIMIT = 20            # distinct 取值 ≤ 此数才记入枚举
+#: 第二档(probe_values)上限:字段级 ``values:`` 的条数含此界。
+#: 与 ``semantic_layer.models.MAX_FIELD_VALUES`` 同一个界 —— 探测侧
+#: 不多探,消费侧不多收(两边都是 100,任一改变都要同时改)。
+VALUE_PROBE_LIMIT = 100
 DEFAULT_MAX_ROWS = 2_000_000  # 行数护栏:超大表(如 1M 交易表)也允许探测
 DEFAULT_TIMEOUT_S = 20        # 单列探测超时(慢列静默跳过)
 
@@ -68,6 +80,62 @@ async def probe_enums(
             results.setdefault(table.name, {})[col.name] = "; ".join(
                 str(v) for v in values
             )
+    return results
+
+
+async def probe_values(
+    registry: Any,
+    schema: Any,
+    *,
+    limit: int = VALUE_PROBE_LIMIT,
+    max_rows: int = DEFAULT_MAX_ROWS,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+) -> dict[str, dict[str, list[str]]]:
+    """第二档探测:文本列的实际取值(结构事实,零 LLM)。
+
+    与 ``probe_enums`` 同一手段、不同档位:``SELECT DISTINCT col ... LIMIT
+    limit + 1``(多取一行,用来判定"取值域是否完整落在界内")。
+
+    三条判据,任一不满足即跳过该列:
+
+    - **仅文本列**(char/text/enum 类型标记;数值列不是值词表);
+    - **排除日期列** —— 类型带日期标记的,以及取值里出现日期形状值的
+      文本列(BIRD 把 YYMMDD 存成 TEXT,类型看不出,取值看得出);
+    - **完整落在 limit 内** —— 探到 limit+1 行说明还有更多,那就**不是**
+      "该列的实际取值"这份事实,不落库(宁缺勿假:残缺取值表会被值路由
+      当成完整词表用)。
+
+    超时/坏列静默跳过(尽力而为,绝不致命)。返回
+    ``{table: {column: [v1, v2, ...]}}``,取值已 strip、去重、排序
+    (排序让同一份数据每次探测产出同一份 YAML,回填因此幂等)。
+    """
+    results: dict[str, dict[str, list[str]]] = {}
+    for table in schema.tables:
+        estimate = table.row_count_estimate or 0
+        if estimate and estimate > max_rows:
+            continue
+        for col in table.columns:
+            col_type = (col.type or "").lower()
+            if any(m in col_type for m in _DATE_TYPE_MARKERS):
+                continue
+            if not any(m in col_type for m in _TEXT_TYPE_MARKERS):
+                continue
+            sql = (
+                f"SELECT DISTINCT `{col.name}` FROM `{table.name}` "
+                f"LIMIT {limit + 1}"
+            )
+            try:
+                res = await asyncio.wait_for(registry.execute(sql), timeout=timeout_s)
+            except Exception:
+                continue
+            raw = [r[0] for r in res.rows if r and r[0] is not None]
+            values = [str(v).strip() for v in raw]
+            values = [v for v in values if v]
+            if not values or len(values) > limit:
+                continue
+            if any(_DATE_VALUE_RE.match(v) for v in values):
+                continue
+            results.setdefault(table.name, {})[col.name] = sorted(set(values))
     return results
 
 

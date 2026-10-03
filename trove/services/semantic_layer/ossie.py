@@ -12,7 +12,9 @@ Reads the parts relevant to NL→SQL plus the spec's extensibility surface:
   top-level `version` string;
 - field-level `mask` + model-level `masking` (default_policy /
   bypass_scopes / hash_salt_ref) — the masking **declaration**; applying it
-  to result sets is `authz/masking.py` (P4).
+  to result sets is `authz/masking.py` (P4);
+- field-level `values` (该列的实际取值,probe 的结构事实) — read as plain
+  data; it never changes `semantic_role` nor feeds prompt rendering.
 """
 import logging
 import re
@@ -29,6 +31,7 @@ from trove.services.semantic_layer.models import (
     SemanticRelationship,
     TimeSpine,
     _clean_extensions,
+    _clean_values,
 )
 
 logger = logging.getLogger(__name__)
@@ -217,6 +220,9 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
                 semantic_role=role,
                 enum_display=enum_display,
                 value_aliases=value_aliases,
+                # 列的实际取值(probe 的结构事实):缺省/坏形状 → 空列表,
+                # 存量模型(无该键)一字不变。它只是数据,不参与角色推导。
+                values=_clean_values(f.get("values")),
                 label=str(f.get("label", "") or "").strip(),
                 examples=f_examples,
                 custom_extensions=_clean_extensions(f.get("custom_extensions")),

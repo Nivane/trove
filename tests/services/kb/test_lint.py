@@ -24,6 +24,7 @@ from trove.services.kb.lint import (
     lint_tables,
     parse_enum_values,
 )
+from trove.services.semantic_layer.models import MAX_FIELD_VALUES
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -636,3 +637,97 @@ class TestLintMask:
         assert lint_semantics_document(
             yaml.safe_load(path.read_text(encoding="utf-8")), dialect="sqlite") == []
 
+
+
+class TestLintValues:
+    """字段级 ``values``(列的实际取值)形状门。
+
+    它是**结构事实**,所以 lint 只管形状,不管语义:
+      - 必须是非空 string 数组(映射/嵌套/空条目 = 坏形状);
+      - ≤ MAX_FIELD_VALUES(超限说明探测落了残缺取值域 —— 残缺的"事实"
+        比没有更坏,值路由会当完整词表用);
+      - 时间字段不得声明(日期取值是时点,不是取值词表)。
+
+    省略该键 = 未探测(存量模型走这条,不得误报)。
+    """
+
+    @staticmethod
+    def _model(field_extra: dict | None = None, field_name: str = "A2",
+               **field_kwargs) -> dict:
+        field = {
+            "name": field_name,
+            "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": field_name}]},
+            "datatype": "String",
+        }
+        field.update(field_extra or {})
+        field.update(field_kwargs)
+        return {
+            "name": "fin",
+            "datasets": [{"name": "district", "fields": [field]}],
+            "relationships": [],
+            "metrics": [],
+        }
+
+    def test_valid_values_pass(self):
+        assert lint_semantics(self._model({"values": ["Sokolov", "Benesov"]})) == []
+
+    def test_absent_key_not_flagged(self):
+        """存量模型(无 values 键)不得被误报。"""
+        assert lint_semantics(self._model({})) == []
+
+    @pytest.mark.parametrize("bad", ["Sokolov", {"a": 1}, ["ok", 7], ["ok", ""], [[]]])
+    def test_bad_shape_flagged(self, bad):
+        issues = lint_semantics(self._model({"values": bad}))
+
+        assert any("values" in i for i in issues)
+
+    def test_over_limit_flagged(self):
+        issues = lint_semantics(self._model(
+            {"values": [f"v{i}" for i in range(MAX_FIELD_VALUES + 1)]}))
+
+        assert any("district.A2" in i and "values" in i for i in issues)
+
+    def test_at_limit_passes(self):
+        assert lint_semantics(self._model(
+            {"values": [f"v{i}" for i in range(MAX_FIELD_VALUES)]})) == []
+
+    @pytest.mark.parametrize("extra", [
+        {"semantic_role": "time"},
+        {"datatype": "Date"},
+        {"datatype": "DateTimeTz"},
+    ])
+    def test_temporal_field_flagged(self, extra):
+        issues = lint_semantics(self._model({"values": ["1993-01-15"]}, **extra))
+
+        assert any("时间字段" in i for i in issues)
+
+    def _with_baked_filter(self, **field_kwargs) -> dict:
+        """一份"metric filter 对某字段等值过滤"的模型(建模异味探针)。"""
+        model = self._model(field_name="a2", **field_kwargs)
+        model["metrics"] = [{
+            "name": "m",
+            "expression": {"dialects": [
+                {"dialect": "ANSI_SQL", "expression": "COUNT(district.a2)"}]},
+            "filter": "district.a2 = 'Sokolov'",
+        }]
+        return model
+
+    def test_values_do_not_make_an_enum_field(self):
+        """``values`` 是数据,不是枚举声明:它不让字段变成 enum 字段。
+
+        枚举字段判定读的是 ``semantic_role`` / ``enum_display``;若把
+        ``values`` 也认成枚举词表,下面这条 metric 会被误判成"把枚举值写死
+        进 metric"—— 这正是预冻结接口 Ⅰ 要挡住的事(对照组见下一个用例)。
+        """
+        issues = lint_semantics(self._with_baked_filter(values=["Sokolov"]))
+
+        assert not any("写死" in i for i in issues)
+
+    def test_enum_display_still_flags_baked_filter(self):
+        """对照组:同一份文档,字段改成真枚举(enum_display)→ 规则照常命中。
+        证明上面那条不是因为规则坏了才通过的。"""
+        issues = lint_semantics(self._with_baked_filter(
+            enum_display={"Sokolov": "Sokolov"}, semantic_role="enum"))
+
+        assert any("写死" in i for i in issues)

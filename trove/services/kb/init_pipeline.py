@@ -21,7 +21,8 @@ from trove.core.logging import get_logger
 from trove.prompts import render
 from trove.services.kb.deterministic_gen import generate_terms, generate_templates
 from trove.services.kb.docs_import import apply_docs, load_docs_tables
-from trove.services.kb.enum_probe import merge_into_notes, probe_enums
+from trove.services.kb.enum_probe import merge_into_notes, probe_enums, probe_values
+from trove.services.kb.lint import is_temporal_field
 from trove.services.kb.profiling import merge_into_stats, probe_stats
 from trove.services.kb.semantic_draft import draft_semantic_annotations
 from trove.services.kb.semantic_gen import generate_semantic_document
@@ -304,6 +305,61 @@ def _backfill_pks(tables: list[dict], schema) -> None:
                 ).get(col.get("name", ""), False)
 
 
+def _backfill_values(
+    semantic_doc: dict, probed: dict[str, dict[str, list[str]]],
+) -> dict[str, int]:
+    """把探测到的列取值回填进语义模型的字段级 ``values:`` 键。
+
+    值路由（"问题里的这个字面量属于哪一列"）要有一份列取值表，而它是
+    **结构事实**（``SELECT DISTINCT`` 的产物），不是语义声明 —— 因此这里
+    只做一件事：给还**没有**任何值词表的字段补上 ``values``。
+
+    三条隔离线（这份函数的全部风险都在"多写了什么"上）：
+
+    - **只新增缺失键**：字段已有 ``values``（哪怕空）、``enum_display``
+      或 ``value_aliases`` 的一律不动 —— 那三样是更丰富的值词表，覆盖它们
+      是把确定性骨架踩在人的建模上；
+    - **永不改名/新建**：只按 `表名 + 列名` 在**已声明**的 dataset/field 上
+      定位；探测结果里对不上的表/列静默丢弃，绝不新增字段、绝不重命名
+      （与 ``regen_kb_generated.py --write`` 的改名风险隔离 —— 那个脚本的
+      教训是：一个"顺手对齐"就能把人工夹具静默改掉）；
+    - **时间字段不写**：日期列的取值是时点不是值词表，写了 lint 也拦
+      （两处共用 ``lint.is_temporal_field``，判的是同一件事）。
+
+    Returns:
+        ``{dataset.field: 新增取值条数}``，供 dry-run 清单与摘要打印。
+        ``semantic_doc`` 就地更新（它是本流程刚生成的新 dict）。
+    """
+    added: dict[str, int] = {}
+    if not probed:
+        return added
+    for entry in semantic_doc.get("semantic_model", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        for dataset in entry.get("datasets", []) or []:
+            if not isinstance(dataset, dict):
+                continue
+            ds_name = str(dataset.get("name", ""))
+            columns = probed.get(ds_name) or {}
+            if not columns:
+                continue
+            for fld in dataset.get("fields", []) or []:
+                if not isinstance(fld, dict):
+                    continue
+                values = columns.get(str(fld.get("name", "")))
+                if not values:
+                    continue
+                if "values" in fld or fld.get("enum_display"):
+                    continue
+                if (fld.get("ai_context") or {}).get("value_aliases"):
+                    continue
+                if is_temporal_field(fld):
+                    continue
+                fld["values"] = [str(v) for v in values]
+                added[f"{ds_name}.{fld.get('name', '')}"] = len(values)
+    return added
+
+
 #: /kb init 生成的文件。合并的预检(merge_blockers)按这份清单逐个过。
 INIT_FILES = ["schema_notes.yml", "semantics.yml", "examples.yml"]
 
@@ -419,6 +475,17 @@ async def init_kb(kb, registry, llm, config, datasource, *,
             llm, model, semantic_doc, lang=lang)
     except Exception as e:
         logger.warning("Semantic draft skipped: %s", e)
+    # 值探测回填放在起草之后:判"字段有没有值词表"要看**最终**那份文档
+    # (草稿只写 enum_display/synonyms/description,不改结构;顺序仍取更保守
+    # 的一侧)。探测失败/没有候选列 → 静默跳过,init 照常。
+    try:
+        _report("semantic", 86, "探测列取值")
+        probed_values = await probe_values(registry, schema)
+    except Exception:
+        probed_values = {}
+    added_values = _backfill_values(semantic_doc, probed_values)
+    if added_values:
+        logger.info("Backfilled values for %d field(s)", len(added_values))
     # ── 写盘原子段:三个文件连续写、中间无 await。任何中断(客户端断开/
     # 异常)只会落在"全无"(写盘前)或"全有"(写盘后),杜绝半成品——
     # 半成品会让 UI 误判已初始化、又补不了缺失文件。
