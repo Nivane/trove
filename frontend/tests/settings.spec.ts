@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { ElSwitch } from 'element-plus'
 import ElementPlus from 'element-plus'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import SettingsView from '../src/views/admin/SettingsView.vue'
 
 vi.mock('../src/api/http', () => ({
@@ -46,11 +47,22 @@ const baseValues = {
 }
 
 let wrapper: VueWrapper | null = null
+let router: Router
 
 async function mountView() {
   ;(apiGet as any).mockResolvedValue({ values: baseValues, mask: MASK })
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => null } },
+      { path: '/admin', component: { render: () => null } },
+      { path: '/admin/settings', component: SettingsView },
+    ],
+  })
+  await router.push('/admin/settings')
+  await router.isReady()
   wrapper = mount(SettingsView, {
-    global: { plugins: [ElementPlus] },
+    global: { plugins: [ElementPlus, router] },
     attachTo: document.body,
   })
   await flushPromises()
@@ -107,6 +119,16 @@ describe('SettingsView', () => {
     // model/provider keys are managed by the separate ModelConfigView
     expect(values['llm.default_model']).toBeUndefined()
     expect(values['llm.providers']).toBeUndefined()
+  })
+
+  it('renders the PageHeader with the root crumb and document.title', async () => {
+    const view = await mountView()
+    expect(view.find('h1').text()).toBe('系统设置')
+    const crumbs = view.findAll('.ph-crumb')
+    expect(crumbs.map((c) => c.text())).toEqual(['管理台', '系统设置'])
+    expect(crumbs[0].attributes('href')).toBe('/admin')
+    expect(crumbs[1].attributes('aria-current')).toBe('page')
+    expect(document.title).toBe('系统设置')
   })
 
   it('renders and saves the semantic layer path', async () => {

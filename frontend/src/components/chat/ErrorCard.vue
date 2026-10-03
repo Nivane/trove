@@ -33,7 +33,7 @@
         class="error-btn error-btn-primary"
         @click="emit('retry')"
       >
-        <RefreshRight :size="13" />
+        <RefreshCw :size="13" />
         {{ t('retry', ui.lang) }}
       </button>
       <button class="error-btn" @click="emit('rephrase')">
@@ -49,8 +49,7 @@
 </template>
 
 <script setup lang="ts">
-import { AlertCircle, Pencil, Settings } from 'lucide-vue-next'
-import { RefreshRight } from '@element-plus/icons-vue'
+import { AlertCircle, Pencil, RefreshCw, Settings } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/ui'
 import { useAuthStore } from '../../stores/auth'
 import { t } from '../../i18n'

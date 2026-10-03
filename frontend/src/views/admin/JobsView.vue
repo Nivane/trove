@@ -1,20 +1,34 @@
 <template>
-  <div class="admin-view">
-    <header class="view-header">
-      <div>
-        <h2>{{ t('jobs', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('jobsPageDesc', ui.lang) }}</p>
-      </div>
-    </header>
+  <div class="admin-view" :aria-busy="loading || undefined">
+    <PageHeader
+      :title="t('jobs', ui.lang)"
+      :description="t('jobsPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    />
 
     <div class="admin-card">
       <div class="card-toolbar">
+        <el-input
+          v-model="values.q"
+          class="toolbar-search"
+          :prefix-icon="Search"
+          :placeholder="t('jobsSearch', ui.lang)"
+          :aria-label="t('jobsSearch', ui.lang)"
+          clearable
+        />
+        <el-select v-model="values.status" class="filter-select">
+          <el-option :label="t('jobsFilterStatus', ui.lang)" value="" />
+          <el-option :label="t('jobStatusError', ui.lang)" value="error" />
+          <el-option :label="t('jobStatusAlert', ui.lang)" value="alert" />
+          <el-option :label="t('jobStatusOk', ui.lang)" value="ok" />
+          <el-option :label="t('disable', ui.lang)" value="disabled" />
+        </el-select>
         <el-button type="primary" class="add" @click="openCreate">
           <Plus :size="15" class="btn-icon" />
           {{ t('jobCreateTitle', ui.lang) }}
         </el-button>
         <span class="spacer" />
-        <span v-if="rows.length" class="view-count">{{ rows.length }}</span>
+        <span class="view-count">{{ filtered.length }}</span>
         <el-button class="refresh-btn" :loading="loading" @click="load">
           <RefreshCw :size="15" class="btn-icon" />
           {{ t('refresh', ui.lang) }}
@@ -30,9 +44,9 @@
       <el-table
         v-else
         v-loading="loading"
-        :data="rows"
+        :data="paged"
         class="admin-table"
-        max-height="calc(100vh - 320px)"
+        max-height="var(--table-max-h)"
       >
         <template #empty>
           <TableEmpty />
@@ -120,6 +134,16 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="filtered.length > pageSize" class="pagination-bar">
+        <el-pagination
+          v-model:page-size="pageSize"
+          :current-page="page"
+          :total="filtered.length"
+          :page-sizes="[20, 50, 100]"
+          layout="total, prev, pager, next"
+          @current-change="onPageChange"
+        />
+      </div>
     </div>
 
     <el-dialog
@@ -191,7 +215,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialogOpen = false">{{ t('cancel', ui.lang) || 'Cancel' }}</el-button>
+        <el-button @click="dialogOpen = false">{{ t('cancel', ui.lang) }}</el-button>
         <el-button type="primary" :loading="saving" @click="save">
           {{ editing ? t('save', ui.lang) : t('jobCreateTitle', ui.lang) }}
         </el-button>
@@ -243,13 +267,15 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { History, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { History, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
 import { apiGet, apiPatch, apiPost, apiDelete } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, toastError } from '../../utils/notify'
 import { fmtDateTime } from '../../utils/format'
+import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import PageHeader from '../../components/base/PageHeader.vue'
 import type { DatasourceInfo } from '../../api/types'
 
 interface JobRow {
@@ -293,6 +319,60 @@ interface RunRow {
 const ui = useUiStore()
 const rows = ref<JobRow[]>([])
 const loading = ref(false)
+
+/* ── URL state (P6 §4.3) ──────────────────────────────────────────────────
+   q / status / page are the keys this page acknowledges. The list endpoint
+   has no filter parameters (GET /v1/admin/jobs?limit= only), so filtering
+   and paging stay client-side over the fetched rows — but the *state* is
+   still the URL's, so /admin/jobs?status=error (the shell's failed-jobs
+   drill-down) lands on the filtered list, a refresh keeps it and the link
+   is shareable.
+   status values are the last run's outcome, or 'disabled' for the enable
+   switch: '' | error | alert | ok | disabled. */
+const { values } = useListQuery({ q: '', status: '', page: '1' })
+const pageSize = ref(20)
+
+const filtered = computed(() => {
+  const needle = values.q.trim().toLowerCase()
+  return rows.value.filter((row) => {
+    if (needle) {
+      const hay = `${row.name || ''}\n${row.question || ''}`.toLowerCase()
+      if (!hay.includes(needle)) return false
+    }
+    if (values.status === 'disabled') return !row.enabled
+    if (values.status) return row.recent_run?.status === values.status
+    return true
+  })
+})
+
+const page = computed(() => Math.max(1, Number.parseInt(values.page, 10) || 1))
+const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
+const paged = computed(() =>
+  filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
+)
+
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('jobs', ui.lang) },
+])
+
+function onPageChange(next: number) {
+  values.page = String(Math.max(1, next))
+}
+
+// 过滤条件变化回到第 1 页(旧的第 7 页在新结果集里没有意义)。
+watch(
+  [() => values.q, () => values.status],
+  () => {
+    if (values.page !== '1') values.page = '1'
+  },
+)
+
+// 结果集缩水(过滤/刷新)时把页码钳回合法范围。
+watch([filtered, pageSize], () => {
+  if (page.value > pageCount.value) values.page = String(pageCount.value)
+})
+
 const saving = ref(false)
 const toggling = ref('')
 const running = ref('')
@@ -466,7 +546,7 @@ async function runNow(row: JobRow) {
     await ElMessageBox.confirm(t('jobConfirmRun', ui.lang), t('jobRunNow', ui.lang), {
       type: 'warning',
       confirmButtonText: t('jobRunNow', ui.lang),
-      cancelButtonText: t('cancel', ui.lang) || 'Cancel',
+      cancelButtonText: t('cancel', ui.lang),
     })
   } catch {
     return
@@ -503,10 +583,10 @@ async function showRuns(row: JobRow) {
 
 async function remove(row: JobRow) {
   try {
-    await ElMessageBox.confirm(t('jobConfirmDelete', ui.lang), t('deleteUser', ui.lang), {
+    await ElMessageBox.confirm(t('jobConfirmDelete', ui.lang), t('delete', ui.lang), {
       type: 'warning',
-      confirmButtonText: t('deleteUser', ui.lang),
-      cancelButtonText: t('cancel', ui.lang) || 'Cancel',
+      confirmButtonText: t('delete', ui.lang),
+      cancelButtonText: t('cancel', ui.lang),
     })
   } catch {
     return
@@ -521,7 +601,15 @@ async function remove(row: JobRow) {
 }
 
 onMounted(() => {
+  // 坏的 ?page=abc 归一为 1,而不是让 URL 说谎
+  if (values.page !== String(page.value)) values.page = String(page.value)
   load()
   loadDatasources()
 })
 </script>
+
+<style scoped>
+.filter-select {
+  width: 150px;
+}
+</style>

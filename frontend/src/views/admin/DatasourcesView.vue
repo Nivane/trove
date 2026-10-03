@@ -1,11 +1,10 @@
 <template>
-  <div class="admin-view">
-    <header class="view-header">
-      <div>
-        <h2>{{ t('datasources', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('dsPageDesc', ui.lang) }}</p>
-      </div>
-    </header>
+  <div class="admin-view" :aria-busy="loading || undefined">
+    <PageHeader
+      :title="t('datasources', ui.lang)"
+      :description="t('dsPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    />
 
     <div class="stat-grid">
       <div class="stat-card">
@@ -43,10 +42,28 @@
 
     <div v-else class="admin-card">
       <div class="card-toolbar">
-        <span class="view-count">
-          {{ rows.length }} · {{ connectedCount }} {{ t('dsConnected', ui.lang) }}
-        </span>
+        <el-input
+          v-model="values.q"
+          class="toolbar-search"
+          :prefix-icon="Search"
+          :placeholder="t('dsSearch', ui.lang)"
+          :aria-label="t('dsSearch', ui.lang)"
+          clearable
+        />
+        <el-select v-model="values.health" class="filter-select">
+          <el-option :label="t('dsFilterHealth', ui.lang)" value="" />
+          <el-option :label="t('dsConnected', ui.lang)" value="connected" />
+          <el-option :label="t('dsDisconnected', ui.lang)" value="disconnected" />
+        </el-select>
+        <el-select v-model="values.drift" class="filter-select">
+          <el-option :label="t('dsFilterDrift', ui.lang)" value="" />
+          <el-option :label="t('dsDriftOpen', ui.lang)" value="open" />
+          <el-option :label="t('dsDriftNone', ui.lang)" value="none" />
+        </el-select>
         <span class="spacer" />
+        <span class="view-count">
+          {{ filtered.length }} · {{ connectedCount }} {{ t('dsConnected', ui.lang) }}
+        </span>
         <el-button type="primary" class="add" @click="openDialog">
           <Plus :size="15" class="btn-icon" />
           {{ t('dsCreateTitle', ui.lang) }}
@@ -55,9 +72,9 @@
 
       <el-table
         v-loading="loading"
-        :data="rows"
+        :data="filtered"
         class="admin-table"
-        max-height="calc(100vh - 340px)"
+        max-height="var(--table-max-h)"
       >
         <template #empty>
           <TableEmpty />
@@ -91,6 +108,13 @@
                   ? t('dsConnected', ui.lang)
                   : t('dsDisconnected', ui.lang)
               }}
+            </span>
+            <span
+              v-if="driftOpen(row) > 0"
+              class="pill pill-warn ds-drift-pill"
+              :title="t('dsDriftOpen', ui.lang)"
+            >
+              {{ t('dsDriftOpen', ui.lang) }} {{ driftOpen(row) }}
             </span>
           </template>
         </el-table-column>
@@ -289,6 +313,7 @@ import {
   Info,
   PlugZap,
   Pencil,
+  Search,
   WifiOff,
   Trash2,
   RefreshCw,
@@ -298,8 +323,10 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
 import { dsTypeLabel } from '../../utils/format'
+import { useListQuery } from '../../composables/useListQuery'
 import type { DatasourceInfo } from '../../api/types'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import PageHeader from '../../components/base/PageHeader.vue'
 
 const ui = useUiStore()
 const rows = ref<DatasourceInfo[]>([])
@@ -308,6 +335,38 @@ const dlgOpen = ref(false)
 const submitting = ref(false)
 const formError = ref('')
 const busyMap = reactive<Record<string, boolean>>({})
+
+/* ── URL state (P6 §4.3) ──────────────────────────────────────────────────
+   q / health / drift are the keys this page acknowledges: the list stays
+   shareable and /admin/datasources?drift=open lands on the drifted sources
+   instead of a full list. All three filter client-side over the fetched
+   catalog (the endpoint takes no filter parameters). */
+const { values } = useListQuery({ q: '', health: '', drift: '' })
+
+// 每源的未豁免漂移条目数(治理中心同一手法:一次只读查询);失败/未体检 =
+// 0 条,过滤器就说"无漂移",不替后台编造体检结论。
+const driftCounts = ref<Record<string, number>>({})
+
+function driftOpen(row: DatasourceInfo): number {
+  return driftCounts.value[row.name] ?? 0
+}
+
+const filtered = computed(() =>
+  rows.value.filter((row) => {
+    const needle = values.q.trim().toLowerCase()
+    if (needle && !`${row.name}\n${row.type}`.toLowerCase().includes(needle)) return false
+    if (values.health === 'connected' && row.status !== 'connected') return false
+    if (values.health === 'disconnected' && row.status === 'connected') return false
+    if (values.drift === 'open') return driftOpen(row) > 0
+    if (values.drift === 'none') return driftOpen(row) === 0
+    return true
+  }),
+)
+
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('datasources', ui.lang) },
+])
 
 const connectedCount = computed(
   () => rows.value.filter((r) => r.status === 'connected').length,
@@ -389,11 +448,30 @@ async function load() {
   loading.value = true
   try {
     rows.value = (await apiGet('/v1/admin/datasources')).datasources ?? []
+    await loadDrift()
   } catch (e) {
     toastError(e)
   } finally {
     loading.value = false
   }
+}
+
+/** 漂移数:每源一次只读查询,失败不阻塞列表(过滤按 0 条算)。 */
+async function loadDrift() {
+  const counts: Record<string, number> = {}
+  await Promise.all(
+    rows.value.map(async (row) => {
+      try {
+        const body = await apiGet(
+          `/v1/admin/drift?ds=${encodeURIComponent(row.name)}`,
+        )
+        counts[row.name] = (body.items ?? []).length
+      } catch {
+        counts[row.name] = 0
+      }
+    }),
+  )
+  driftCounts.value = counts
 }
 
 function openDialog() {
@@ -533,7 +611,11 @@ async function saveEdit() {
 
 async function remove(row: DatasourceInfo) {
   try {
-    await ElMessageBox.confirm(t('dsRemoveConfirm', ui.lang), 'Confirm')
+    await ElMessageBox.confirm(t('dsRemoveConfirm', ui.lang), t('dsRemove', ui.lang), {
+      type: 'warning',
+      confirmButtonText: t('dsRemove', ui.lang),
+      cancelButtonText: t('cancel', ui.lang),
+    })
   } catch {
     return
   }

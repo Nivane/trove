@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ElementPlus from 'element-plus'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import AuditView from '../src/views/admin/AuditView.vue'
 
 vi.mock('../src/api/http', () => ({
@@ -32,10 +33,21 @@ const calls: string[] = []
 let currentTotal = 45
 
 let wrapper: VueWrapper | null = null
+let router: Router
 
-async function mountView() {
+async function mountView(query = '') {
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => null } },
+      { path: '/admin', component: { render: () => null } },
+      { path: '/admin/audit', component: AuditView },
+    ],
+  })
+  await router.push(`/admin/audit${query}`)
+  await router.isReady()
   wrapper = mount(AuditView, {
-    global: { plugins: [ElementPlus] },
+    global: { plugins: [ElementPlus, router] },
     attachTo: document.body,
   })
   await flushPromises()
@@ -123,5 +135,62 @@ describe('AuditView pagination', () => {
     await view.find('.refresh-btn').trigger('click')
     await flushPromises()
     expect(calls[calls.length - 1]).toContain('offset=0')
+  })
+})
+
+describe('AuditView page header (P6 §2.3)', () => {
+  it('renders PageHeader with the root crumb, aria-current and document.title', async () => {
+    const view = await mountView()
+    expect(view.find('h1').text()).toBe('Audit log')
+    const crumbs = view.findAll('.ph-crumb')
+    expect(crumbs.map((c) => c.text())).toEqual(['Admin', 'Audit log'])
+    expect(crumbs[0].attributes('href')).toBe('/admin')
+    expect(crumbs[1].attributes('aria-current')).toBe('page')
+    expect(document.title).toBe('Audit log')
+  })
+
+  it('states each stat card caliber (§7: filtered total vs current page)', async () => {
+    const view = await mountView()
+    const subs = view.findAll('.stat-sub').map((s) => s.text())
+    // total is the server-side count under the filters; ok/err only split
+    // the visible page, so the two calibers must not look identical.
+    expect(subs).toEqual(['matching filters', 'this page', 'this page'])
+  })
+})
+
+describe('AuditView URL state (§4.3)', () => {
+  it('honours a deep link: user_id / action / page all reach the API', async () => {
+    await mountView('?user_id=3&action=auth.login&page=2')
+    const first = calls[0]
+    expect(first).toContain('user_id=3')
+    expect(first).toContain('action=auth.login')
+    expect(first).toContain('offset=20')
+  })
+
+  it('writes the filters and the page back into the URL', async () => {
+    const view = await mountView()
+    const inputs = view.findAll('.audit-filter-input input')
+    expect(inputs.length).toBe(2)
+    await inputs[0].setValue('7')
+    await inputs[1].setValue('admin.user.create')
+    await flushPromises()
+    expect(router.currentRoute.value.query.user_id).toBe('7')
+    expect(router.currentRoute.value.query.action).toBe('admin.user.create')
+    expect(calls[calls.length - 1]).toContain('user_id=7')
+    expect(calls[calls.length - 1]).toContain('action=admin.user.create')
+
+    const page2 = view.findAll('.el-pager li.number').find((li) => li.text() === '2')
+    await page2!.trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.page).toBe('2')
+  })
+
+  it('drops the keys back out of the URL when a filter is cleared', async () => {
+    await mountView('?action=auth.login')
+    expect(router.currentRoute.value.query.action).toBe('auth.login')
+    const actionInput = wrapper!.findAll('.audit-filter-input input')[1]
+    await actionInput.setValue('')
+    await flushPromises()
+    expect(router.currentRoute.value.query.action).toBeUndefined()
   })
 })

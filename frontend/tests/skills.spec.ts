@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ElementPlus from 'element-plus'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import SkillsView from '../src/views/admin/SkillsView.vue'
 
 vi.mock('../src/api/http', () => ({
@@ -14,21 +15,37 @@ import { useUiStore } from '../src/stores/ui'
 import type { VueWrapper } from '@vue/test-utils'
 
 let wrapper: VueWrapper | null = null
+let router: Router
 
 beforeEach(() => {
   setActivePinia(createPinia())
   useUiStore().lang = 'en'
   vi.clearAllMocks()
+  document.body.innerHTML = ''
 })
 
 afterEach(() => {
   wrapper?.unmount()
   wrapper = null
+  document.body.innerHTML = ''
 })
 
-async function mountRows(rows: unknown[]) {
+async function mountRows(rows: unknown[], query = '') {
   ;(apiGet as any).mockResolvedValue({ skills: rows })
-  wrapper = mount(SkillsView, { global: { plugins: [ElementPlus] } })
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => null } },
+      { path: '/admin', component: { render: () => null } },
+      { path: '/admin/skills', component: SkillsView },
+    ],
+  })
+  await router.push(`/admin/skills${query}`)
+  await router.isReady()
+  wrapper = mount(SkillsView, {
+    global: { plugins: [ElementPlus, router] },
+    attachTo: document.body,
+  })
   await flushPromises()
   return wrapper
 }
@@ -79,5 +96,64 @@ describe('SkillsView tier column', () => {
     expect(apiPost).toHaveBeenCalledWith('/v1/admin/skills/soft/tier', {
       tier: 'available',
     })
+  })
+})
+
+describe('SkillsView page header (P6 §2.3)', () => {
+  it('renders PageHeader with the root crumb and document.title', async () => {
+    const view = await mountRows([{ ...ORG, name: 'soft', tier: 'available' }])
+    expect(view.find('h1').text()).toBe('Methodology skills')
+    const crumbs = view.findAll('.ph-crumb')
+    expect(crumbs.map((c) => c.text())).toEqual(['Admin', 'Methodology skills'])
+    expect(crumbs[0].attributes('href')).toBe('/admin')
+    expect(crumbs[1].attributes('aria-current')).toBe('page')
+    expect(document.title).toBe('Methodology skills')
+    // the page-level actions moved into the header slot
+    const actionTexts = view
+      .findAll('header .ph-actions button')
+      .map((b) => b.text())
+    expect(actionTexts.some((x) => x.includes('New draft'))).toBe(true)
+  })
+})
+
+describe('SkillsView URL state (§4.3)', () => {
+  const ROWS = [
+    { ...ORG, name: 'credit-guard', tier: 'validator' },
+    { ...ORG, name: 'soft', tier: 'available' },
+    { ...ORG, name: 'queued', tier: 'available', status: 'pending' },
+  ]
+
+  function names(view: VueWrapper): string[] {
+    return view
+      .findAll('.el-table__body tbody tr .cell-mono')
+      .map((n) => n.text())
+      .filter((x) => ROWS.some((r) => r.name === x))
+  }
+
+  it('lands on the review queue for ?status=pending', async () => {
+    const view = await mountRows(ROWS, '?status=pending')
+    expect(names(view)).toEqual(['queued'])
+  })
+
+  it('lands on the validator tier for ?tier=validator', async () => {
+    const view = await mountRows(ROWS, '?tier=validator')
+    expect(names(view)).toEqual(['credit-guard'])
+  })
+
+  it('writes the status filter back into the URL and keeps a clean URL clean', async () => {
+    const view = await mountRows(ROWS)
+    expect(names(view).length).toBe(3)
+    const select = view
+      .findAllComponents({ name: 'ElSelect' })
+      .find((c) => c.classes().includes('filter-select'))!
+    select.vm.$emit('update:modelValue', 'pending')
+    await flushPromises()
+    expect(names(view)).toEqual(['queued'])
+    expect(router.currentRoute.value.query.status).toBe('pending')
+
+    select.vm.$emit('update:modelValue', '')
+    await flushPromises()
+    expect(router.currentRoute.value.query.status).toBeUndefined()
+    expect(names(view).length).toBe(3)
   })
 })
