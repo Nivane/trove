@@ -24,7 +24,7 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isAuthed: (s) => !!s.token && !!s.user,
     isAdmin: (s) => s.user?.role === 'admin',
-    /** 阶段二（W5）才启用 analyst 只读面；今天它只用于角色徽与导航过滤。 */
+    /** W5 阶段二已启用 analyst 只读面（navModel/canEnterConsole 为判定处）。 */
     isAnalyst: (s) => s.user?.role === 'analyst',
   },
   actions: {

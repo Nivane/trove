@@ -11,9 +11,12 @@
 <script setup lang="ts">
 import StatePanel from '../base/StatePanel.vue'
 import { t } from '../../i18n'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
 import type { SemanticHistoryEntry } from '../../api/types'
+
+const { readOnly } = useReadOnly()
 
 withDefaults(
   defineProps<{
@@ -75,7 +78,7 @@ function shortSha(sha: string): string {
           <td class="vt-trailers mono">{{ e.trailers || '—' }}</td>
           <td class="mono vt-date">{{ fmtDateTime(e.date) || '—' }}</td>
           <td>
-            <button type="button" class="act-btn" @click="emit('rollback', e)">
+            <button v-if="!readOnly" type="button" class="act-btn" @click="emit('rollback', e)">
               {{ t('govVerRollback', ui.lang) }}
             </button>
           </td>

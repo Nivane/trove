@@ -27,10 +27,12 @@ import {
 } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { useUiStore } from '../../stores/ui'
+import { useReadOnly } from '../../composables/useReadOnly'
 import type { OverviewTodoItem, OverviewTodoKind, OverviewTodos } from '../../api/overview'
 
 const props = defineProps<{ todos: OverviewTodos }>()
 
+const { canOpen } = useReadOnly()
 const ui = useUiStore()
 
 const KIND_LABEL: Record<OverviewTodoKind, keyof typeof import('../../i18n').messages['zh']> = {
@@ -95,9 +97,10 @@ const empty = computed(() => props.todos.count_exact && props.todos.total === 0)
             {{ item.samples.join(' · ') }}
           </p>
         </div>
-        <RouterLink v-if="item.href" class="tq-link" :to="item.href">
+        <RouterLink v-if="item.href && canOpen(item.href)" class="tq-link" :to="item.href">
           {{ t('ovTodoReview', ui.lang) }}
         </RouterLink>
+        <span v-else-if="item.href" class="tq-nolink">{{ t('roAdminOnly', ui.lang) }}</span>
         <span v-else class="tq-nolink">{{ t('ovTodoNoPage', ui.lang) }}</span>
       </li>
     </ul>

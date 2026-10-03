@@ -166,7 +166,7 @@
                 ui.lang === 'zh' ? '中文' : 'English'
               }}</span>
             </el-dropdown-item>
-            <el-dropdown-item v-if="auth.isAdmin" command="admin">
+            <el-dropdown-item v-if="canEnterConsole(auth.user?.role)" command="admin">
               <Settings :size="15" />
               {{ t('admin', ui.lang) }}
             </el-dropdown-item>
@@ -261,6 +261,7 @@ import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { useRouter } from 'vue-router'
 import { t } from '../../i18n'
+import { canEnterConsole } from './navModel'
 import { trunc } from '../../utils/format'
 import { notifyError } from '../../utils/notify'
 

@@ -38,7 +38,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin_or_analyst
 from trove.api.routers.overview import (
     _audit_backend,
     _leg,
@@ -361,7 +361,7 @@ def _payload(
 async def admin_usage_overview(
     request: Request,
     window: str = Query(default="7d", description="lookback window, e.g. 7d / 30d / 90d"),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(require_admin_or_analyst),
 ) -> JSONResponse:
     """成本与性能总览(见模块 docstring 的三条口径纪律)。"""
     try:

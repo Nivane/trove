@@ -14,9 +14,12 @@ import type { DataTableColumn, DataTableSort } from '../base/DataTable.vue'
 import DataTable from '../base/DataTable.vue'
 import DiffCard from './DiffCard.vue'
 import { t } from '../../i18n'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
 import type { GovernanceTodoItem } from '../../api/types'
+
+const { readOnly, canOpen } = useReadOnly()
 
 const props = withDefaults(
   defineProps<{
@@ -125,7 +128,7 @@ function diffValidation(item: GovernanceTodoItem) {
       :columns="columns"
       :rows="items"
       row-key="id"
-      selectable
+      :selectable="!readOnly"
       :selected="props.selected"
       :sort="props.sort"
       :loading="loading"
@@ -202,7 +205,7 @@ function diffValidation(item: GovernanceTodoItem) {
           </a>
           <template v-else>
             <button
-              v-if="u(row).actionable.confirm"
+              v-if="!readOnly && u(row).actionable.confirm"
               type="button"
               class="act-btn is-primary"
               :disabled="busyId === u(row).id"
@@ -211,7 +214,7 @@ function diffValidation(item: GovernanceTodoItem) {
               {{ t('govInboxConfirm', ui.lang) }}
             </button>
             <button
-              v-if="u(row).actionable.reject"
+              v-if="!readOnly && u(row).actionable.reject"
               type="button"
               class="act-btn"
               :disabled="busyId === u(row).id"
@@ -220,7 +223,7 @@ function diffValidation(item: GovernanceTodoItem) {
               {{ t('govInboxReject', ui.lang) }}
             </button>
             <a
-              v-if="u(row).actionable.edit_url"
+              v-if="u(row).actionable.edit_url && canOpen(u(row).actionable.edit_url ?? '')"
               class="link-btn"
               :href="u(row).actionable.edit_url ?? '#'"
               @click.prevent="emit('open-edit', u(row))"

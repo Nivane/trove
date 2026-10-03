@@ -134,6 +134,32 @@ async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dic
     return user
 
 
+async def require_admin_or_analyst(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """admin/analyst 守卫(W5 阶段二 analyst 只读面)。
+
+    与 ``require_admin`` 同一套 token 最小权限语义,只把角色集从 {admin}
+    放宽到 {admin, analyst},**且只挂在逐条挑出的只读 GET 路由上** ——
+    写端点、用户与权限页、系统组一律保持 ``require_admin``。一把梭会把
+    几十处写端点也开给 analyst,这正是「逐条切换」纪律要防的事。
+
+    角色可见性三处一致(设计稿 §2.2 R1):navModel.ts 的 ``visibleFor``、
+    路由 ``meta.roles`` 与本守卫 —— 一个导航项只有端点对该角色 200 才
+    允许显示;反方向不要求(数据依赖端点可先开,页面仍可隐藏)。
+    """
+    if user["role"] not in ("admin", "analyst"):
+        raise HTTPException(
+            status_code=403, detail="admin or analyst privileges required"
+        )
+    if not scopes_allow(user.get("scopes"), "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail="token lacks the 'admin' scope (restricted token)",
+        )
+    return user
+
+
 def require_scope(*required: str):
     """Route-level token scope gate (dependency factory).
 

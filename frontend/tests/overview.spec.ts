@@ -332,6 +332,10 @@ function hrefs(view: VueWrapper): string[] {
 beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
+  // W5: /admin is reached only as an authenticated admin, and the read-only
+  // gating reads this store — pin the real precondition, or the page renders
+  // read-only and silently hides the exits these tests are about.
+  useAuthStore().user = { id: 1, username: 'admin', role: 'admin' }
   useUiStore().lang = 'en'
   vi.clearAllMocks()
   setPayload(healthy())
@@ -599,6 +603,51 @@ describe('OverviewView', () => {
       await settle()
       expect(router.currentRoute.value.fullPath).toBe('/admin/datasources')
     })
+  })
+})
+
+describe('OverviewView W5 只读面（analyst 登录后的落地页）', () => {
+  function asAnalyst() {
+    useAuthStore().user = { id: 2, username: 'ana', role: 'analyst' }
+  }
+
+  it('只读出口收窄：建模页深链不渲染，向导整段隐藏，可读出口照常', async () => {
+    asAnalyst()
+    const view = await mountView('/admin')
+
+    // datasource 卡头的「数据源 →」指向建模组 → analyst 不渲染
+    // （审计/成本卡头同用 ov-card-link，但目标是只读面内，保留）
+    expect(hrefs(view)).not.toContain('/admin/datasources')
+    expect(hrefs(view)).toContain('/admin/audit')
+    // 接入向导整段是管理员动作（注册/KB init/授权）→ 连同它的深链一起消失
+    expect(view.text()).not.toContain('Onboarding')
+    expect(hrefs(view)).not.toContain('/admin/users?status=nogrant')
+
+    // 只读面内的出口不受影响：失败任务 → /admin/jobs、成本 → ops/审计
+    const failed = kpiTile(view, 'Failed jobs')
+    expect(failed.attributes('disabled')).toBeUndefined()
+    await failed.trigger('click')
+    await settle()
+    expect(router.currentRoute.value.fullPath).toBe('/admin/jobs?status=error')
+  })
+
+  it('KPI 出口分档：目标在只读面外的 tile 置灰并说明，不做死点击', async () => {
+    asAnalyst()
+    const view = await mountView('/admin')
+
+    // refused → /admin/kb、drift → /admin/datasources 都在建模组 → 置灰
+    for (const label of ['Refused assets', 'Drift']) {
+      const tile = kpiTile(view, label)
+      expect(tile.attributes('disabled'), label).toBeDefined()
+      expect(tile.attributes('title'), label).toBe('Admin only')
+    }
+    // 置灰的 tile 点击不导航（不是「点了没反应」，是根本没有出口）
+    await kpiTile(view, 'Drift').trigger('click')
+    await settle()
+    expect(router.currentRoute.value.fullPath).toBe('/admin')
+
+    // 可达出口保持可点：#todos 锚点与 /admin/jobs 都不在置灰之列
+    expect(kpiTile(view, 'Pending items').attributes('disabled')).toBeUndefined()
   })
 })
 

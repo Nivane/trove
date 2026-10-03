@@ -23,6 +23,7 @@ vi.mock('../src/api/http', () => ({
 }))
 
 import { apiGet } from '../src/api/http'
+import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 
 function job(over: Record<string, unknown>) {
@@ -82,6 +83,9 @@ function rowNames(view: VueWrapper): string[] {
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  // W5: job mutations are gated on an authenticated admin (useReadOnly) —
+  // pin the real precondition so the admin path stays under test.
+  useAuthStore().user = { id: 1, username: 'admin', role: 'admin' }
   useUiStore().lang = 'en'
   vi.clearAllMocks()
   document.body.innerHTML = ''

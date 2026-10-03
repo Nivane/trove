@@ -28,6 +28,14 @@ declare module 'vue-router' {
 /** 管理台路由的角色常量 —— W5 阶段二逐条放开时只改这里/子路由声明。 */
 const ADMIN_ONLY: Role[] = ['admin']
 
+/**
+ * W5 阶段二 analyst 只读面（设计稿 §2.2 R3）：运营组 4 页 + 治理中心 /
+ * 审计日志。与 navModel.visibleFor（ADMIN_ANALYST）、后端
+ * require_admin_or_analyst 的逐条清单三处一致 —— 契约测试钉住。
+ * 父路由 /admin 保持 ADMIN_ONLY（默认拒绝），子路由声明覆盖它。
+ */
+const ADMIN_ANALYST: Role[] = ['admin', 'analyst']
+
 export const router = createRouter({
   history,
   routes: [
@@ -51,7 +59,7 @@ export const router = createRouter({
           path: '',
           name: 'admin-overview',
           component: () => import('../views/admin/OverviewView.vue'),
-          meta: { titleKey: 'ovTitle' },
+          meta: { titleKey: 'ovTitle', roles: ADMIN_ANALYST },
         },
         // Compat: /admin/overview is the same page — keep query/hash so old
         // links (e.g. ?win=7d#todos) land on the state they described.
@@ -81,13 +89,13 @@ export const router = createRouter({
           path: 'audit',
           name: 'admin-audit',
           component: () => import('../views/admin/AuditView.vue'),
-          meta: { titleKey: 'audit' },
+          meta: { titleKey: 'audit', roles: ADMIN_ANALYST },
         },
         {
           path: 'checkpoints',
           name: 'admin-checkpoints',
           component: () => import('../views/admin/CheckpointsView.vue'),
-          meta: { titleKey: 'checkpoints' },
+          meta: { titleKey: 'checkpoints', roles: ADMIN_ANALYST },
         },
         {
           path: 'datasources',
@@ -111,7 +119,7 @@ export const router = createRouter({
           path: 'jobs',
           name: 'admin-jobs',
           component: () => import('../views/admin/JobsView.vue'),
-          meta: { titleKey: 'jobs' },
+          meta: { titleKey: 'jobs', roles: ADMIN_ANALYST },
         },
         {
           path: 'decisions',
@@ -136,14 +144,14 @@ export const router = createRouter({
           path: 'governance',
           name: 'admin-governance',
           component: () => import('../views/admin/GovernanceView.vue'),
-          meta: { titleKey: 'govTitle' },
+          meta: { titleKey: 'govTitle', roles: ADMIN_ANALYST },
         },
         // 质量与成本运营台(P4):quality / usage 两个 Tab 同页。
         {
           path: 'ops',
           name: 'admin-ops',
           component: () => import('../views/admin/OpsView.vue'),
-          meta: { titleKey: 'ops' },
+          meta: { titleKey: 'ops', roles: ADMIN_ANALYST },
         },
         // Compat: /admin/usage 是同一页的成本 Tab —— 保留 query(窗口/筛选)。
         {

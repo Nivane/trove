@@ -15,10 +15,11 @@
    ``/v1/admin/todos`` 与 ``/v1/admin/overview`` 的 ``todos[]`` 都吃它,
    只在投影粒度上不同(条目列表 vs 计数 + 前 3 样例)。各写一遍必然漂移。
 
-权限(§4.3):``/admin/todos`` 与 ``/admin/coverage`` 是 ``require_admin``
-自持门禁(含受限 token 的 admin scope 二次校验 —— deps.py:120-134,不在这层
-重写角色判断);``/lineage/tables/{name}`` 是用户面,与 ``/v1/catalog/*``
-同档(``get_current_user`` + ``require_datasource``,deps.py:156-190)。
+权限(§4.3 / W5):``/admin/todos`` 与 ``/admin/coverage`` 是
+``require_admin_or_analyst`` 自持门禁(与 ``require_admin`` 同一套受限
+token admin scope 二次校验,只是角色集放宽到 {admin, analyst} —— 见
+deps.py,不在这层重写角色判断);``/lineage/tables/{name}`` 是用户面,
+与 ``/v1/catalog/*`` 同档(``get_current_user`` + ``require_datasource``)。
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from typing import Any, Callable, Awaitable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from trove.api.deps import get_current_user, require_admin, require_datasource
+from trove.api.deps import get_current_user, require_admin_or_analyst, require_datasource
 from trove.api.routers import overview
 from trove.services.lineage.service import LineageService
 from trove.services.semantic_layer.manage import SemanticManager
@@ -386,7 +387,7 @@ async def admin_todos(
     ds: str = Query(default="", description="datasource filter; empty = all sources"),
     q: str = Query(default="", description="case-insensitive substring over title/summary/ds"),
     sort: str = Query(default="oldest", description="oldest|newest|confidence|severity"),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """八类审批待办的条目级聚合(§4.1①)。counts 恒含八类(筛选片要靠它)。"""
     wanted = [k.strip() for k in (kind or "").split(",") if k.strip()]
@@ -622,7 +623,7 @@ async def admin_coverage(
     request: Request,
     ds: str = Query(default="", description="datasource filter; empty = all registered"),
     window: str = Query(default=_COVERAGE_WINDOW_DEFAULT, description="1h .. 90d"),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """建模覆盖 + 被问未建模(§4.1②)。零 LLM、纯集合差。"""
     try:

@@ -14,9 +14,12 @@ import type { DataTableColumn } from '../base/DataTable.vue'
 import DataTable from '../base/DataTable.vue'
 import StatePanel from '../base/StatePanel.vue'
 import { t } from '../../i18n'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
 import type { GovernanceDriftItem } from '../../api/types'
+
+const { readOnly, canOpen } = useReadOnly()
 
 withDefaults(
   defineProps<{
@@ -94,10 +97,10 @@ function lifeText(item: GovernanceDriftItem): string {
       </div>
       <p class="dt-skip-explain">{{ t('govDriftSkipExplain', ui.lang) }}</p>
       <div class="dt-skip-actions">
-        <button type="button" class="act-btn is-primary" :disabled="loading" @click="emit('recheck')">
+        <button v-if="!readOnly" type="button" class="act-btn is-primary" :disabled="loading" @click="emit('recheck')">
           {{ t('govDriftCheck', ui.lang) }}
         </button>
-        <button type="button" class="act-btn" @click="emit('go-datasources')">
+        <button v-if="canOpen('/admin/datasources')" type="button" class="act-btn" @click="emit('go-datasources')">
           {{ t('govDriftGoDatasources', ui.lang) }}
         </button>
       </div>
@@ -144,10 +147,10 @@ function lifeText(item: GovernanceDriftItem): string {
             {{ t('opsViewDetail', ui.lang) }}
           </button>
           <template v-if="u(row).status === 'open'">
-            <button type="button" class="act-btn is-primary" @click="emit('resolve', u(row))">
+            <button v-if="!readOnly" type="button" class="act-btn is-primary" @click="emit('resolve', u(row))">
               {{ t('govDriftResolve', ui.lang) }}
             </button>
-            <button type="button" class="act-btn" @click="emit('waive', u(row))">
+            <button v-if="!readOnly" type="button" class="act-btn" @click="emit('waive', u(row))">
               {{ t('govDriftWaive', ui.lang) }}
             </button>
           </template>

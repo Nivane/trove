@@ -65,17 +65,28 @@ export interface NavGroup {
   labelKey: MessageKey
 }
 
-/**
- * 「组件规范」页 W4 才建（设计稿 §5 W4：views/admin/StyleguideView.vue）。
- * 本波保留 IA 项、显式过滤隐藏 —— 中间态不产生死链；W4 建页后置 true。
+/** 「组件规范」页（设计稿 §5 W4：views/admin/StyleguideView.vue）。
+ * W4 已建页，但按 W4 交付的定位它只按
+ * URL 直达、不进侧栏 —— W0 冻结的 IA 项数保持不变，故此项永远被过滤。
+ * 留在这里是为了让路径仍受 navModel 契约测试覆盖（路由存在、角色对齐）。
  */
 export const STYLEGUIDE_READY = false
 
 /**
- * W5 阶段二开关：后端 require_admin_or_analyst 就绪后置 true，
- * analyst 才可见只读面（设计稿 §2.2 R3）。阶段一 analyst 对管理台不可见。
+ * W5 阶段二开关（设计稿 §2.2 R3）：批三已置 true —— 后端
+ * require_admin_or_analyst 逐条只读面就绪，analyst 可见**声明了
+ * visibleFor 的**只读页。此开关是整层 kill-switch：置 false 即让
+ * analyst 对管理台整体不可见（visibleFor 声明原样保留，不逐个回改）。
  */
-export const ANALYST_READ_ONLY = false
+export const ANALYST_READ_ONLY = true
+
+/**
+ * W5 阶段二 analyst 只读面（设计稿 §2.2 R3）：运营组 4 页 + 治理中心 /
+ * 审计日志。与路由 meta.roles、后端 require_admin_or_analyst 的逐条清单
+ * 三处一致 —— 契约测试 tests/analyst.spec.ts 钉住这份对齐。
+ * 建模组（数据源/KB/语义/Skills/判定/行动）与用户、系统组保持 admin 专属。
+ */
+const ADMIN_ANALYST: Role[] = ['admin', 'analyst']
 
 /** 分组顺序即渲染顺序。 */
 export const NAV_GROUPS: NavGroup[] = [
@@ -94,6 +105,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: LayoutDashboard,
     group: 'ops',
     badgeKey: 'todos',
+    visibleFor: ADMIN_ANALYST,
   },
   {
     key: 'ops',
@@ -102,6 +114,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Activity,
     group: 'ops',
     badgeKey: 'failedJobs',
+    visibleFor: ADMIN_ANALYST,
   },
   {
     key: 'jobs',
@@ -110,6 +123,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Clock,
     group: 'ops',
     badgeKey: 'failedJobs',
+    visibleFor: ADMIN_ANALYST,
   },
   {
     key: 'checkpoints',
@@ -117,6 +131,7 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: 'checkpoints',
     icon: History,
     group: 'ops',
+    visibleFor: ADMIN_ANALYST,
   },
   // ── 建模 ──
   {
@@ -173,6 +188,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: ShieldCheck,
     group: 'governance',
     badgeKey: 'govPending',
+    visibleFor: ADMIN_ANALYST,
   },
   {
     key: 'audit',
@@ -180,6 +196,7 @@ export const NAV_ITEMS: NavItem[] = [
     labelKey: 'audit',
     icon: ScrollText,
     group: 'governance',
+    visibleFor: ADMIN_ANALYST,
   },
   {
     key: 'users',
@@ -241,9 +258,18 @@ export function navItemsFor(role: string | undefined): NavItem[] {
     (item) =>
       canSee(item, role) &&
       (item.key !== 'styleguide' || STYLEGUIDE_READY) &&
-      // W5 阶段二之前，analyst 连治理/运营只读面也不可见（后端仍 403）。
+      // W5 阶段二 kill-switch：ANALYST_READ_ONLY 关闭时，analyst 连
+      // 声明过 visibleFor 的只读面也不可见（后端对应守卫另在 deps.py）。
       (role === 'admin' || ANALYST_READ_ONLY),
   )
+}
+
+/**
+ * 该角色是否有任一管理台入口（侧栏「管理台」下拉项用）。
+ * 单一判定来源 = navItemsFor —— 入口可见 ⟺ 至少一个导航项可见。
+ */
+export function canEnterConsole(role: string | undefined): boolean {
+  return navItemsFor(role).length > 0
 }
 
 /** 按分组归拢（供侧栏与 ⌘K 渲染）；空组不返回。 */

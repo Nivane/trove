@@ -33,7 +33,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin_or_analyst
 from trove.api.routers.overview import (
     _leg,
     _now_iso,
@@ -361,7 +361,7 @@ def _eval_conf(request: Request) -> dict:
 async def admin_quality_overview(
     request: Request,
     failures_limit: int = Query(_FAILURES_LIMIT_DEFAULT, ge=1, le=_FAILURES_LIMIT_MAX),
-    _admin: dict = Depends(require_admin),
+    _admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """质量总览:评测产物 / 门禁判定 / 失败清单 / KB 反馈,一次取齐。"""
     generated_at = _now_iso()

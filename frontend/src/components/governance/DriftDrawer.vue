@@ -15,8 +15,11 @@ import { fetchDriftDetail } from '../../api/governance'
 import type { GovernanceDriftDetail } from '../../api/governance'
 import type { GovernanceDriftItem } from '../../api/types'
 import { t } from '../../i18n'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
+
+const { readOnly } = useReadOnly()
 
 const props = withDefaults(
   defineProps<{
@@ -150,7 +153,7 @@ const impactEmpty = computed(
 
       <p class="dd-audit">{{ t('govDriftAuditNote', ui.lang) }}</p>
 
-      <div v-if="detail.drift.status === 'open'" class="dd-actions">
+      <div v-if="!readOnly && detail.drift.status === 'open'" class="dd-actions">
         <button
           type="button"
           class="act-btn is-primary"

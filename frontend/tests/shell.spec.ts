@@ -86,19 +86,19 @@ describe('navModel — 四组 16 项 IA 单一来源', () => {
     }
   })
 
-  it('组件规范项保留在 IA 里，但 W4 建页前被显式过滤（无死链）', () => {
+  it('组件规范项保留在 IA 里但显式过滤（URL 直达页，无侧栏死链）', () => {
     expect(STYLEGUIDE_READY).toBe(false)
     expect(NAV_ITEMS.some((i) => i.path === '/admin/styleguide')).toBe(true)
     expect(
       navItemsFor('admin').some((i) => i.path === '/admin/styleguide'),
     ).toBe(false)
-    // W4 建页前的中间态：它不该出现在任何角色的可见列表里。
+    // 不进侧栏的定位（W4 交付）：它不该出现在任何角色的可见列表里。
     expect(filterNavItems('组件规范', 'admin')).toHaveLength(0)
   })
 
-  it('角色可见性默认拒绝：W0 只有 admin 进得了控制台', () => {
+  it('角色可见性：W5 阶段二 analyst 只见只读面 6 项，user 与未登录仍为零', () => {
     expect(navItemsFor('admin')).toHaveLength(15)
-    expect(navItemsFor('analyst')).toHaveLength(0)
+    expect(navItemsFor('analyst')).toHaveLength(6)
     expect(navItemsFor('user')).toHaveLength(0)
     expect(navItemsFor(undefined)).toHaveLength(0)
   })
@@ -118,9 +118,17 @@ describe('isPathActive — 前缀匹配高亮（K3）', () => {
 })
 
 describe('守卫角色矩阵（meta.roles 地基）', () => {
-  it('admin 子树（含壳内 404 兜底）要求 admin；非 admin 路径不设门槛', () => {
+  it('admin 子树默认拒绝；W5 只读面按声明放行 analyst；非 admin 路径不设门槛', () => {
+    // W5 阶段二：运营 4 页 + 治理中心 / 审计日志声明 ADMIN_ANALYST
+    // （逐项清单与三处一致契约由 tests/analyst.spec.ts 钉住）。
+    for (const path of ['/admin', '/admin/ops', '/admin/jobs', '/admin/governance']) {
+      expect(requiredRoles(appRouter.resolve(path)), path).toEqual([
+        'admin',
+        'analyst',
+      ])
+    }
+    // 未声明只读的页 + 壳内 404 兜底仍回到默认拒绝（['admin']）。
     for (const path of [
-      '/admin',
       '/admin/users',
       '/admin/kb?ds=demo',
       '/admin/nonexistent',
@@ -197,9 +205,10 @@ describe('filterNavItems — ⌘K 过滤', () => {
     ])
   })
 
-  it('无匹配返回空；分析师/普通用户过滤后为空（R2 阶段一）', () => {
+  it('无匹配返回空；分析师过滤=只读面 6 项；普通用户为空', () => {
     expect(filterNavItems('不存在的页面', 'admin')).toHaveLength(0)
-    expect(filterNavItems('', 'analyst')).toHaveLength(0)
+    expect(filterNavItems('', 'analyst')).toHaveLength(6)
+    expect(filterNavItems('', 'user')).toHaveLength(0)
   })
 })
 

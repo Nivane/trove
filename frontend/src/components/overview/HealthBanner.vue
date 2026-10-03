@@ -24,6 +24,9 @@ import { CircleCheck, TriangleAlert } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { useUiStore } from '../../stores/ui'
 import type { OverviewHealth } from '../../api/overview'
+import { useReadOnly } from '../../composables/useReadOnly'
+
+const { readOnly } = useReadOnly()
 
 const props = defineProps<{ health: OverviewHealth; probeError?: string }>()
 
@@ -117,7 +120,7 @@ const facts = computed(() => {
       </ul>
     </div>
 
-    <RouterLink class="hb-cta" to="/admin/datasources">
+    <RouterLink v-if="!readOnly" class="hb-cta" to="/admin/datasources">
       {{ t('ovGoDatasources', ui.lang) }}
     </RouterLink>
   </section>

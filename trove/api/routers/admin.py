@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 logger = logging.getLogger(__name__)
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin, require_admin_or_analyst
 from trove.api.schemas import (
     DatasourcesPut,
     SettingsUpdate,
@@ -181,7 +181,7 @@ async def list_users(
         default=None, description="page size, 1..200 (default 50)",
     ),
     offset: int = Query(default=0, description="rows to skip (>= 0)"),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """用户列表:过滤/排序/分页 + 内联数据源授权。
 
@@ -322,7 +322,7 @@ async def list_audit(
     offset: int = Query(default=0, ge=0),
     user_id: int | None = None,
     action: str | None = None,
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     entries = await _auth(request).list_audit(
         limit=limit, offset=offset, user_id=user_id, action=action
@@ -338,7 +338,7 @@ async def list_audit(
 async def list_all_sessions(
     request: Request,
     user_id: str | None = None,
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """All sessions across users (optionally filtered by owner)."""
     manager = request.app.state.session_manager
@@ -374,7 +374,7 @@ async def list_session_checkpoints(
     session_id: str,
     request: Request,
     limit: int = Query(default=200, ge=1, le=1000),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """One session's graph-checkpoint timeline (newest first).
 
@@ -397,7 +397,7 @@ async def get_session_checkpoint(
     session_id: str,
     checkpoint_id: str,
     request: Request,
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """Full state snapshot at one checkpoint (audit / debug view)."""
     checkpointer = _checkpointer(request)
@@ -522,7 +522,7 @@ async def reject_lesson(
 
 
 @router.get("/admin/datasources")
-async def list_admin_datasources(request: Request, admin: dict = Depends(require_admin)) -> dict:
+async def list_admin_datasources(request: Request, admin: dict = Depends(require_admin_or_analyst)) -> dict:
     registry = _registry(request)
     kb = _kb(request)
     # 幂等：KB 目录存在但镜像未建（如挂载的 .trove）时先建表，否则 list_items 500

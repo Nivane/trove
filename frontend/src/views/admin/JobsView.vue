@@ -23,7 +23,7 @@
           <el-option :label="t('jobStatusOk', ui.lang)" value="ok" />
           <el-option :label="t('disable', ui.lang)" value="disabled" />
         </el-select>
-        <el-button type="primary" class="add" @click="openCreate">
+        <el-button v-if="!readOnly" type="primary" class="add" @click="openCreate">
           <Plus :size="15" class="btn-icon" />
           {{ t('jobCreateTitle', ui.lang) }}
         </el-button>
@@ -111,13 +111,14 @@
             <el-switch
               :model-value="row.enabled"
               :loading="toggling === row.id"
+              :disabled="readOnly"
               @change="(v: boolean) => toggle(row, v)"
             />
           </template>
         </el-table-column>
-        <el-table-column :label="t('auditAction', ui.lang)" width="230" fixed="right">
+        <el-table-column :label="t('auditAction', ui.lang)" :width="readOnly ? 130 : 230" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" :loading="running === row.id" @click="runNow(row)">
+            <el-button v-if="!readOnly" size="small" :loading="running === row.id" @click="runNow(row)">
               <Play :size="14" class="btn-icon" />
               {{ t('jobRunNow', ui.lang) }}
             </el-button>
@@ -125,10 +126,10 @@
               <History :size="14" class="btn-icon" />
               {{ t('jobRuns', ui.lang) }}
             </el-button>
-            <el-button size="small" @click="openEdit(row)">
+            <el-button v-if="!readOnly" size="small" @click="openEdit(row)">
               <Pencil :size="14" class="btn-icon" />
             </el-button>
-            <el-button size="small" type="danger" @click="remove(row)">
+            <el-button v-if="!readOnly" size="small" type="danger" @click="remove(row)">
               <Trash2 :size="14" class="btn-icon" />
             </el-button>
           </template>
@@ -277,6 +278,9 @@ import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
 import PageHeader from '../../components/base/PageHeader.vue'
 import type { DatasourceInfo } from '../../api/types'
+import { useReadOnly } from '../../composables/useReadOnly'
+
+const { readOnly } = useReadOnly()
 
 interface JobRow {
   id: string
