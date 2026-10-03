@@ -50,6 +50,8 @@ export interface DoneSummary {
   rewritten_question?: string
   /** 回答所用数据源名。 */
   datasource?: string
+  /** 这条答案在哪个主题域范围内算出('' = 未限定);恢复会话时据此还原选择。 */
+  topic?: string
   sql?: string
   row_count?: number
   verdict?: string

@@ -631,6 +631,7 @@ button:disabled {
 .chat-ds-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--sp-2);
   padding: var(--sp-2) var(--sp-4);
   padding-right: 52px; /* 让开右上角分析面板开关 */
@@ -683,6 +684,49 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* ── 主题域(数据源选择器同排) ── */
+.chat-ds-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+}
+.chat-topic-select {
+  width: auto;
+  min-width: 150px;
+  max-width: 280px;
+}
+.chat-topic-select .el-select__wrapper {
+  min-height: 30px;
+  box-shadow: 0 0 0 1px var(--border-subtle) inset;
+}
+.chat-topic-select .el-select__wrapper.is-focused {
+  box-shadow: 0 0 0 1px var(--border-default) inset;
+}
+/* 域描述(KB 原文,可能很长 —— 截断在选项行内,不撑破下拉) */
+.ds-opt-desc {
+  display: inline-block;
+  max-width: 260px;
+  margin-left: var(--sp-2);
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+.topic-opt-scope {
+  margin-left: var(--sp-2);
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+}
+.topic-opt-stale {
+  margin-left: var(--sp-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
 }
 .empty-center {
   flex: 1;

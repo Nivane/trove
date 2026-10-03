@@ -34,6 +34,8 @@
           >
             {{ t('dsFallback', ui.lang) }}
           </span>
+          <!-- 主题域:当前源声明了域才出现(内部自持 v-if,免得这里再判断)。 -->
+          <TopicSelect />
         </div>
         <button
           v-if="chat.turns.length"
@@ -56,9 +58,9 @@
         <div v-if="!chat.turns.length" class="empty-center">
           <Composer ref="emptyComposer" />
           <div v-if="ui.datasourceList.length" class="empty-examples">
-            <div class="empty-examples-title">{{ t('examples', ui.lang) }}</div>
+            <div class="empty-examples-title">{{ starterTitle }}</div>
             <button
-              v-for="ex in exampleQuestions"
+              v-for="ex in starterExamples"
               :key="ex"
               class="empty-example-btn"
               @click="fillExample(ex)"
@@ -338,6 +340,7 @@ import ProvenanceStrip from '../components/chat/ProvenanceStrip.vue'
 import { maskingBadge } from '../utils/masking'
 import type { MaskingReport } from '../utils/masking'
 import Composer from '../components/chat/Composer.vue'
+import TopicSelect from '../components/chat/TopicSelect.vue'
 import { useChatStore } from '../stores/chat'
 import { useUiStore } from '../stores/ui'
 import { router } from '../router'
@@ -418,6 +421,22 @@ const exampleQuestions = computed(() => [
   t('example2', ui.lang),
   t('example3', ui.lang),
 ])
+
+/** 当前生效的主题域对象(名字已在 activeTopic 里校验过)。 */
+const selectedTopic = computed(
+  () => ui.activeTopics.find((tp) => tp.name === ui.activeTopic) ?? null,
+)
+
+/** 起始提问:选中域且有示例 → 换成该域的问句(展示即 KB 原文);
+ *  否则退回通用示例。 */
+const starterExamples = computed(() => {
+  const ex = selectedTopic.value?.examples ?? []
+  return ex.length ? ex : exampleQuestions.value
+})
+
+const starterTitle = computed(() =>
+  t(selectedTopic.value ? 'topicStarters' : 'examples', ui.lang),
+)
 
 async function fillExample(q: string) {
   // 填入输入框让用户确认/修改后自己发送(不直接提交)
@@ -560,6 +579,17 @@ function scrollToBottom() {
 }
 
 watch(() => chat.turns.map((t) => t.answer.length).join(','), scrollToBottom)
+
+// 数据源就绪/切换(含会话恢复时的源变化)→ 重拉该源的主题域清单。
+// 「换源重置选择」不在这里做:那一步由 ui.setDatasource 统一负责 ——
+// 选择重置必须发生在源变化的同一个动作里,而不是仰赖某个组件在场。
+watch(
+  () => ui.activeDatasource,
+  (ds) => {
+    void ui.loadTopics(ds)
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
   // 进入对话页 = 一次新的待输入对话:不自动选中/还原上一次会话

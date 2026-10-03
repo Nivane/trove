@@ -1839,6 +1839,11 @@ export const messages = {
     subsDeliveryFailed: '投递失败',
     subsExcerpt: '摘要',
     subsDeliveredAt: '投递时间',
+    topicLabel: '主题域',
+    topicAny: '不限定主题',
+    topicStale: '已失效',
+    topicScopeTables: '{n} 张表',
+    topicStarters: '从这里开始问',
   },
   en: {
     brand: 'Trove',
@@ -3720,6 +3725,11 @@ export const messages = {
     subsDeliveryFailed: 'Failed',
     subsExcerpt: 'Summary',
     subsDeliveredAt: 'Delivered at',
+    topicLabel: 'Topic',
+    topicAny: 'All topics',
+    topicStale: 'Expired',
+    topicScopeTables: '{n} tables',
+    topicStarters: 'Start with one of these',
   },
 }
 

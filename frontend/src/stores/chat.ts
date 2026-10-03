@@ -142,6 +142,15 @@ export const useChatStore = defineStore('chat', {
         } else {
           ui.restoreSessionDatasource(sid)
         }
+        // 主题域与数据源同口径:服务端消息元数据优先,本地按会话存储兜底。
+        // 放在数据源之后 —— setDatasource 会重置主题域,这里把它放回来。
+        const tp = lastTurnTopic(this.turns)
+        if (tp) {
+          ui.setTopic(tp)
+          ui.rememberSessionTopic(sid)
+        } else {
+          ui.restoreSessionTopic(sid)
+        }
       } catch {
         this.turns = []
       }
@@ -227,6 +236,8 @@ export const useChatStore = defineStore('chat', {
           workflow: 'reflection',
         }
         if (ui.datasource) body.datasource = ui.datasource
+        // 主题域经 activeTopic 校验后才带上:过期/不属于当前源的值静默退化为「不限定」
+        if (ui.activeTopic) body.topic = ui.activeTopic
         if (this.sessionId) body.session_id = this.sessionId
 
         const resp = await streamSse(
@@ -283,8 +294,10 @@ export const useChatStore = defineStore('chat', {
       this.streaming = false
       this.batchRunning = false
       this.controller = null
-      // 记住本轮实际使用的数据源,便于切回该会话时恢复
-      useUiStore().rememberSessionDatasource(this.sessionId)
+      // 记住本轮实际使用的数据源与主题域,便于切回该会话时恢复
+      const ui = useUiStore()
+      ui.rememberSessionDatasource(this.sessionId)
+      ui.rememberSessionTopic(this.sessionId)
       await this.listSessions()
     },
 
@@ -612,6 +625,15 @@ function lastTurnDatasource(turns: Turn[]): string {
   for (let i = turns.length - 1; i >= 0; i--) {
     const ds = turns[i].summary?.datasource
     if (ds) return ds
+  }
+  return ''
+}
+
+/** 最近一个有主题域记录的 turn(与数据源同口径:服务端元数据优先)。 */
+function lastTurnTopic(turns: Turn[]): string {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const tp = turns[i].summary?.topic
+    if (tp) return tp
   }
   return ''
 }
