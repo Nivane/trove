@@ -86,10 +86,10 @@
     <section v-else-if="firstEmpty" class="ov-first-empty">
       <h2 class="ofe-title">{{ t('ovEmptyFirstTitle', ui.lang) }}</h2>
       <p class="ofe-desc">{{ t('ovEmptyFirstDesc', ui.lang) }}</p>
-      <RouterLink class="ofe-cta" to="/admin/datasources">
+      <RouterLink v-if="!readOnly" class="ofe-cta" to="/admin/datasources">
         {{ t('ovEmptyFirstCta', ui.lang) }}
       </RouterLink>
-      <div class="ofe-wizard">
+      <div v-if="!readOnly" class="ofe-wizard">
         <OnboardingWizard :wizard="payload?.wizard ?? null" />
       </div>
     </section>
@@ -117,6 +117,8 @@
           :label="tile.label"
           :value="tile.value"
           :sub="tile.sub"
+          :disabled="tile.blocked"
+          :title="tile.blocked ? t('roAdminOnly', ui.lang) : undefined"
           @click="onKpi(tile)"
         />
       </div>
@@ -176,7 +178,7 @@
               </template>
             </p>
           </div>
-          <RouterLink class="ov-card-link" to="/admin/datasources">
+          <RouterLink v-if="!readOnly" class="ov-card-link" to="/admin/datasources">
             {{ t('datasources', ui.lang) }} →
           </RouterLink>
         </header>
@@ -282,7 +284,7 @@
 
         <aside class="ov-aside">
           <!-- onboarding: three steps, all reading existing state -->
-          <section class="ov-card">
+          <section v-if="!readOnly" class="ov-card">
             <header class="ov-card-head">
               <div>
                 <h2 class="ov-card-title">{{ t('ovWizTitle', ui.lang) }}</h2>
@@ -421,7 +423,7 @@
       </div>
 
       <template #footer>
-        <RouterLink class="dd-go" to="/admin/datasources">
+        <RouterLink v-if="!readOnly" class="dd-go" to="/admin/datasources">
           {{ t('ovGoDsPage', ui.lang) }}
         </RouterLink>
       </template>
@@ -453,7 +455,9 @@ import HealthBanner from '../../components/overview/HealthBanner.vue'
 import ModuleErrorCard from '../../components/overview/ModuleErrorCard.vue'
 import TodoQueue from '../../components/overview/TodoQueue.vue'
 import OnboardingWizard from '../../components/overview/OnboardingWizard.vue'
+import { useReadOnly } from '../../composables/useReadOnly'
 
+const { readOnly, canOpen } = useReadOnly()
 const ui = useUiStore()
 const router = useRouter()
 const route = useRoute()
@@ -625,6 +629,8 @@ interface KpiTileSpec {
   sub: string
   anchor?: string
   to?: string
+  /** 只读角色下目标页不可达(tile 置灰并说明,不做静默死点击)。 */
+  blocked?: boolean
 }
 
 /** 计数纪律:null → 「—」;不精确 → 「≥ N」,绝不给出偏低的精确数。 */
@@ -655,6 +661,13 @@ const usageEmpty = computed(
 )
 
 const winSub = computed(() => t('ovKpiWindowSub', ui.lang, apiWindow.value))
+
+/** 只读角色的 tile 出口:目标页开不出去就置灰,而不是点了没反应。 */
+function roTile(tile: KpiTileSpec): KpiTileSpec {
+  if (!readOnly.value && !tile.blocked) return tile
+  if (tile.to && !canOpen(tile.to)) return { ...tile, to: undefined, blocked: true }
+  return tile
+}
 
 const kpiTiles = computed<KpiTileSpec[]>(() => {
   const p = payload.value
@@ -715,7 +728,7 @@ const kpiTiles = computed<KpiTileSpec[]>(() => {
       sub: dsOk ? t('ovKpiDriftSub', ui.lang) : t('ovKpiNoData', ui.lang),
       to: '/admin/datasources',
     },
-  ]
+  ].map(roTile)
 })
 
 /** Quality/cost drill-down is /admin/ops?tab=usage (P4, P6 跨文档决定)。P4 未合入

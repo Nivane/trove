@@ -37,7 +37,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin_or_analyst
 from trove.core.types import BASIS_NOT_PROBED
 from trove.services.action.models import OPEN_STATUSES
 
@@ -1009,7 +1009,7 @@ def _payload(
 async def admin_overview(
     request: Request,
     window: str = Query(default="24h", description="lookback window, e.g. 24h / 7d"),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> JSONResponse:
     """总览 Dashboard 的一次性只读聚合(见模块 docstring 的三条纪律)。"""
     started = time.perf_counter()

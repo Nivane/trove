@@ -27,7 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin, require_admin_or_analyst
 from trove.api.schemas import DriftDeclareRequest, DriftResolveRequest
 from trove.services.drift import (
     DriftError,
@@ -188,7 +188,7 @@ async def drift_check(
 
 @router.get("/admin/drift")
 async def drift_list(
-    request: Request, admin: dict = Depends(require_admin),
+    request: Request, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """列出该数据源的漂移条目(默认不含已豁免的)。"""
     ds = _query_ds(request)
@@ -209,7 +209,7 @@ async def drift_list(
 
 @router.get("/admin/drift/runs")
 async def drift_runs(
-    request: Request, admin: dict = Depends(require_admin),
+    request: Request, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """检测历史 —— **含 skipped 的 run**。I3 要求「未检测」在历史里也看得见。"""
     ds = _query_ds(request)
@@ -223,7 +223,7 @@ async def drift_runs(
 
 @router.get("/admin/drift/{drift_id}")
 async def drift_detail(
-    drift_id: int, request: Request, admin: dict = Depends(require_admin),
+    drift_id: int, request: Request, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     ds = _query_ds(request)
     svc = _service(request, ds)

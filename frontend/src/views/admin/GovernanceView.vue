@@ -37,6 +37,7 @@ import LineagePanel from '../../components/governance/LineagePanel.vue'
 import TableDetailDrawer from '../../components/governance/TableDetailDrawer.vue'
 import { useListQuery } from '../../composables/useListQuery'
 import { apiGet } from '../../api/http'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { fetchOverview } from '../../api/overview'
 import {
   GOVERNANCE_DRIFT_STATUSES,
@@ -83,6 +84,7 @@ import { t } from '../../i18n'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
 
+const { readOnly } = useReadOnly()
 const ui = useUiStore()
 const router = useRouter()
 const route = useRoute()
@@ -999,6 +1001,7 @@ const activeLoading = computed(
       </details>
 
       <InboxBulkBar
+        v-if="!readOnly"
         :selected-count="selected.length"
         :groups="bulkGroups"
         :busy="bulkBusy"
@@ -1140,10 +1143,10 @@ const activeLoading = computed(
           :placeholder="t('govInboxSearch', ui.lang)"
         />
         <span class="gov-spacer" />
-        <el-button v-if="values.ds" :loading="driftState(values.ds).loading" @click="checkDrift(values.ds)">
+        <el-button v-if="!readOnly && values.ds" :loading="driftState(values.ds).loading" @click="checkDrift(values.ds)">
           {{ t('govDriftCheck', ui.lang) }}
         </el-button>
-        <el-button @click="toggleDeclare">{{ t('govDriftDeclare', ui.lang) }}</el-button>
+        <el-button v-if="!readOnly" @click="toggleDeclare">{{ t('govDriftDeclare', ui.lang) }}</el-button>
       </div>
 
       <p v-if="driftNotice" class="gov-notice" role="status">{{ driftNotice }}</p>
@@ -1152,7 +1155,7 @@ const activeLoading = computed(
       </p>
 
       <!-- L4 声明:没有检测器,人为告知也要留痕。 -->
-      <section v-if="declareOpen" class="gov-declare">
+      <section v-if="!readOnly && declareOpen" class="gov-declare">
         <p class="gov-declare-desc">{{ t('govDriftDeclareDesc', ui.lang) }}</p>
         <div class="gov-declare-grid">
           <el-select v-model="declareDs" class="filter-select" :aria-label="t('govCovDs', ui.lang)">
@@ -1204,6 +1207,7 @@ const activeLoading = computed(
             }}
           </span>
           <el-button
+            v-if="!readOnly"
             size="small"
             :loading="driftState(ds).loading"
             @click="checkDrift(ds)"

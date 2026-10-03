@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin, require_admin_or_analyst
 from trove.core.logging import get_logger
 from trove.api.schemas import DecisionDocBody
 from trove.services.decision.rules import (
@@ -125,7 +125,7 @@ async def _referencing_jobs(request: Request, datasource: str, rule_id: str) -> 
 
 @router.get("/admin/decisions")
 async def list_decisions(
-    request: Request, datasource: str, admin: dict = Depends(require_admin),
+    request: Request, datasource: str, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """All rules for one datasource, with lint issues and job references."""
     kb = _kb(request)

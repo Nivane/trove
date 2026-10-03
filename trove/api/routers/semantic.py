@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trove.api.deps import get_principal, require_admin
+from trove.api.deps import get_principal, require_admin, require_admin_or_analyst
 from trove.api.schemas import (
     SemanticBatchRequest,
     SemanticBatchResponse,
@@ -175,7 +175,7 @@ async def _drift_view(request: Request, ds: str, dialect: str) -> dict[str, Any]
 
 @router.get("/admin/semantic/{name}")
 async def semantic_detail(
-    name: str, request: Request, admin: dict = Depends(require_admin),
+    name: str, request: Request, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """One datasource's semantic model + lint issues + draft queue + drift.
 
@@ -192,7 +192,7 @@ async def semantic_detail(
 
 @router.get("/admin/semantic/{name}/history")
 async def semantic_history(
-    name: str, request: Request, admin: dict = Depends(require_admin),
+    name: str, request: Request, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """该数据源 KB 文件的 git 提交历史(管理端变更时间线)。
 

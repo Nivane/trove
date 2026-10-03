@@ -12,8 +12,13 @@ withDefaults(
     sub?: string
     /** Pressed state — the tile currently drives the list filter. */
     active?: boolean
+    /** W5：出口对该角色不可达（如 analyst 的只读面外页面）——置灰并说明，
+     *  不做「点了没反应」的静默死点击。 */
+    disabled?: boolean
+    /** 置灰原因（原生 title，悬停可见）。 */
+    title?: string
   }>(),
-  { sub: '', active: false },
+  { sub: '', active: false, disabled: false, title: '' },
 )
 
 const emit = defineEmits<{ (e: 'click', event: MouseEvent): void }>()
@@ -25,7 +30,9 @@ const emit = defineEmits<{ (e: 'click', event: MouseEvent): void }>()
     class="kpi-tile"
     :class="{ 'is-active': active }"
     :aria-pressed="active"
-    @click="emit('click', $event)"
+    :disabled="disabled"
+    :title="title"
+    @click="!disabled && emit('click', $event)"
   >
     <span class="kpi-label">{{ label }}</span>
     <span class="kpi-value"><slot name="value">{{ value }}</slot></span>

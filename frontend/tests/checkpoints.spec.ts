@@ -24,6 +24,7 @@ vi.mock('element-plus', async (importOriginal) => {
 })
 
 import { apiGet, apiPost } from '../src/api/http'
+import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 import type { VueWrapper } from '@vue/test-utils'
 
@@ -32,6 +33,9 @@ let router: Router
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  // W5: the resume action is gated on an authenticated admin (useReadOnly);
+  // pin the real precondition so the admin path stays under test.
+  useAuthStore().user = { id: 1, username: 'admin', role: 'admin' }
   useUiStore().lang = 'en'
   vi.clearAllMocks()
   document.body.innerHTML = ''

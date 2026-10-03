@@ -95,13 +95,13 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column :label="t('auditAction', ui.lang)" width="200" fixed="right">
+        <el-table-column :label="t('auditAction', ui.lang)" :width="readOnly ? 110 : 200" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openDetail(row)">
               <Eye :size="14" class="btn-icon" />
               {{ t('ckptViewDetail', ui.lang) }}
             </el-button>
-            <el-button size="small" type="primary" :loading="resuming" @click="confirmResume(row)">
+            <el-button v-if="!readOnly" size="small" type="primary" :loading="resuming" @click="confirmResume(row)">
               <Play :size="14" class="btn-icon" />
               {{ t('ckptResume', ui.lang) }}
             </el-button>
@@ -166,12 +166,15 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Eye, Play, RefreshCw } from 'lucide-vue-next'
 import { apiGet, apiPost } from '../../api/http'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError } from '../../utils/notify'
 import { fmtDateTime } from '../../utils/format'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
 import PageHeader from '../../components/base/PageHeader.vue'
+
+const { readOnly } = useReadOnly()
 
 interface SessionRow {
   session_id: string

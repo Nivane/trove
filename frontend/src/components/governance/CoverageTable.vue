@@ -27,8 +27,11 @@ import type { DataTableColumn } from '../base/DataTable.vue'
 import DataTable from '../base/DataTable.vue'
 import StatePanel from '../base/StatePanel.vue'
 import { t } from '../../i18n'
+import { useReadOnly } from '../../composables/useReadOnly'
 import { useUiStore } from '../../stores/ui'
 import { fmtDateTime } from '../../utils/format'
+
+const { canOpen } = useReadOnly()
 
 const props = withDefaults(
   defineProps<{
@@ -231,6 +234,7 @@ const askedRows = computed(() =>
             <td class="mono">{{ fmtDateTime(a.last_asked_at ?? undefined) || '—' }}</td>
             <td>
               <a
+                v-if="canOpen('/admin/semantic')"
                 class="link-btn"
                 :href="`/admin/semantic?ds=${encodeURIComponent(a.ds)}`"
                 @click.prevent="emit('go-model', { ds: a.ds, table: a.table })"

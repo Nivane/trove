@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from trove.api.deps import require_admin
+from trove.api.deps import require_admin, require_admin_or_analyst
 from trove.api.schemas import JobCreate, JobPatch
 from trove.services.jobs.service import compute_next_run
 
@@ -123,7 +123,7 @@ def _rule_error(request: Request, datasource: str, rule_id: str) -> str | None:
 async def list_jobs(
     request: Request,
     limit: int = Query(default=200, ge=1, le=500),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     """All scheduled jobs, each with its most recent run status."""
     jobs = await _jobs(request).list_jobs()
@@ -167,7 +167,7 @@ async def create_job(
 
 @router.get("/admin/jobs/{job_id}")
 async def get_job(
-    job_id: str, request: Request, admin: dict = Depends(require_admin),
+    job_id: str, request: Request, admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     job = await _job_or_404(request, job_id)
     return {"job": _serialize(job)}
@@ -237,7 +237,7 @@ async def list_job_runs(
     job_id: str,
     request: Request,
     limit: int = Query(default=20, ge=1, le=200),
-    admin: dict = Depends(require_admin),
+    admin: dict = Depends(require_admin_or_analyst),
 ) -> dict:
     await _job_or_404(request, job_id)
     runs = await _jobs(request).store.list_runs(job_id, limit=limit)

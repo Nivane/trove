@@ -1282,7 +1282,7 @@ export const messages = {
     /* ── 治理中心(P5)─────────────────────────────────────────
        扁平 camelCase,gov* 前缀(§5.2:线 0 建段并冻结,各线只加子键)。 */
     govTitle: '治理中心',
-    govDesc: '跨源待办 · 覆盖体检 · 漂移与版本 · 数据地图 —— 全页仅管理员',
+    govDesc: '跨源待办 · 覆盖体检 · 漂移与版本 · 数据地图',
     govTabInbox: '收件箱',
     govTabCoverage: '覆盖与体检',
     govTabDrift: '漂移与版本',
@@ -1579,7 +1579,7 @@ export const messages = {
     healthUnavailable: '不可用',
     netOffline: '网络已断开，恢复后自动重试',
     netOnline: '网络已恢复',
-    adminDeniedHint: '你没有访问管理台的权限',
+    adminDeniedHint: '该页面仅管理员可访问',
     logoutConfirmTitle: '退出登录？',
     logoutConfirmBody: '退出后需要重新登录才能继续访问管理台。',
     notFoundTitle: '页面不存在',
@@ -1796,6 +1796,9 @@ export const messages = {
     loginRetry: '重试',
     loginLegal: '登录即表示你有权访问该平台',
     loginVersionTitle: '版本 · 构建',
+
+    // ── P6-b3-w5 ──（analyst 只读面；仅追加,不改既有键）
+    roAdminOnly: '管理员专属',
   },
   en: {
     brand: 'Trove',
@@ -3102,7 +3105,7 @@ export const messages = {
 
     /* ── 治理中心(P5)—— keys mirror the zh block one-for-one ── */
     govTitle: 'Governance center',
-    govDesc: 'Cross-source inbox · coverage · drift & versions · data map — admin only',
+    govDesc: 'Cross-source inbox · coverage · drift & versions · data map',
     govTabInbox: 'Inbox',
     govTabCoverage: 'Coverage',
     govTabDrift: 'Drift & versions',
@@ -3399,7 +3402,7 @@ export const messages = {
     healthUnavailable: 'Unavailable',
     netOffline: 'You are offline — will retry when the connection is back',
     netOnline: 'Back online',
-    adminDeniedHint: 'You do not have access to the console',
+    adminDeniedHint: 'This page is available to admins only',
     logoutConfirmTitle: 'Log out?',
     logoutConfirmBody: 'You will need to sign in again to continue using the console.',
     notFoundTitle: 'Page not found',
@@ -3630,6 +3633,9 @@ export const messages = {
     loginRetry: 'Retry',
     loginLegal: 'By signing in you confirm you may access this platform',
     loginVersionTitle: 'Version · build',
+
+    // ── P6-b3-w5 ── (analyst read-only surface; appended only, no key edits)
+    roAdminOnly: 'Admin only',
   },
 }
 

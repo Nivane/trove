@@ -298,6 +298,10 @@ async function apiPostImpl(url: string, body: Record<string, unknown>): Promise<
 beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
+  // W5: write affordances (bulk bar, drift checks, declarations) are gated on
+  // an authenticated admin via useReadOnly — pin the real precondition so the
+  // admin path stays under test (analyst read-only has its own spec).
+  useAuthStore().user = { id: 1, username: 'admin', role: 'admin' }
   useUiStore().lang = LANG
   vi.clearAllMocks()
   todosRoute = { status: 200, body: todosBody() }
