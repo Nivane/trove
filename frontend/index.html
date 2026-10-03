@@ -9,6 +9,19 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3' y='13' width='5' height='8.5' rx='1.6' fill='%236366f1'/%3E%3Crect x='9.5' y='9' width='5' height='12.5' rx='1.6' fill='%236366f1' opacity='0.8'/%3E%3Crect x='16' y='4.5' width='5' height='17' rx='1.6' fill='%236366f1' opacity='0.6'/%3E%3Cpath d='M12 0.6 l1.15 2.75 2.75 1.15 -2.75 1.15 -1.15 2.75 -1.15-2.75 -2.75-1.15 2.75-1.15 z' fill='%236366f1'/%3E%3C/svg%3E"
     />
+    <!-- 页面语言跟随上次选择（D21）：读屏器与拼写检查读的是 <html lang>，
+         写死 zh 会让英文界面的用户听到中文发音。ui store 在 setLang 时同步
+         （stores/ui.ts），这里补首屏那一跳 —— 脚本在应用挂载前跑，避免闪切。 -->
+    <script>
+      try {
+        var troveLang = localStorage.getItem('trove_ui_lang')
+        if (troveLang === 'en' || troveLang === 'zh') {
+          document.documentElement.lang = troveLang
+        }
+      } catch (e) {
+        /* 隐私模式等禁用 localStorage —— 保留 index.html 的默认语言 */
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>
