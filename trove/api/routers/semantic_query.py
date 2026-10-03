@@ -89,6 +89,46 @@ def _execute_timeout_s(request: Request) -> float:
     return (ms if ms > 0 else 30_000) / 1000.0
 
 
+@router.get("/semantic/topics")
+async def semantic_topics(
+    request: Request,
+    datasource: str | None = None,
+    user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """主题域清单(用户端选择器;零 LLM、只读,与查询同一条授权面)。
+
+    作用域列的是**生效口径**(声明 ∩ 模型当前数据集,与提问时
+    ``resolve_topic`` 同一实现),并且**过期域不隐藏** —— 声明数据集全没了
+    的域以 ``status="empty_scope"`` 照常列出,选择器据此显示「该域已失效」,
+    而不是让它静默消失、用户带着一个选不中的旧值继续提问。
+    """
+    from trove.services.semantic_layer.topics import resolve_topic
+
+    ds = await require_datasource(request, datasource, user)
+    kb = _kb(request)
+    try:
+        adapter = await _registry(request).get(ds)
+        dialect = adapter.dialect() or "sqlite"
+    except Exception:
+        dialect = "sqlite"
+    model = _model_for(_provider_for(kb, ds, dialect), ds)
+    topics: list[dict[str, Any]] = []
+    for t in model.topics:
+        res = resolve_topic(model, t.name)
+        topics.append({
+            "name": t.name,
+            "description": t.description,
+            "synonyms": list(t.synonyms),
+            "datasets": list(t.datasets),
+            "scope": list(res.scope or []),  # 生效作用域(empty_scope 时为空)
+            "status": res.status,  # ok | empty_scope
+            "metrics": list(t.metrics),
+            # 示例问句:选择器用它渲染"从这里开始问"的起始提问
+            "examples": list(t.examples),
+        })
+    return {"datasource": ds, "topics": topics}
+
+
 @router.post("/semantic/query")
 async def semantic_query(
     body: SemanticQueryRequest,

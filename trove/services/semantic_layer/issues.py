@@ -67,7 +67,13 @@ _HINTS: dict[str, str] = {
     "relationship_fan_out": "M:N 会拒绝 fan-out:改 1:N + 中间表,或 fan_out=dedup 显式豁免",
     "path_ambiguity": "两表间多条简单路径会让编译器拒绝二义:收敛建模(仅声明必要边)",
     "fk_relationship_missing": "按命名约定指向已声明数据集时,补声明对应 relationship",
-    "kind_unknown": "kind 必须为 metric / field / dataset 之一",
+    "dup_topic": "同名主题域只保留一条:确认哪条是权威范围后改名或合并",
+    "topic_empty_scope": "声明它覆盖的 dataset(空边界会把域内所有问题收敛成零锚定拒绝),或删除该主题域",
+    "topic_undeclared_dataset": "修正数据集名,或先在 datasets 里声明它(主题域只能收敛到已声明的数据集)",
+    "topic_undeclared_metric": "先声明该指标,或从主题域里移除它",
+    "topic_metric_outside": "把该指标锚定的数据集并入本主题,或从本主题移除该指标",
+    "topic_invalid": "topics 须为映射数组,每项至少含 name 与非空 datasets",
+    "kind_unknown": "kind 必须为 metric / field / dataset / topic 之一",
     "lint": "见原文;这条问题尚未归类,请按 lint 描述修正",
 }
 
@@ -87,6 +93,10 @@ def _dataset_target(m: re.Match[str]) -> tuple[str, str]:
 
 def _relationship_target(m: re.Match[str]) -> tuple[str, str]:
     return ("relationship", m.group("name"))
+
+
+def _topic_target(m: re.Match[str]) -> tuple[str, str]:
+    return ("topic", m.group("name"))
 
 
 def _document_target(_m: re.Match[str]) -> tuple[str, str]:
@@ -143,6 +153,23 @@ _RULES: list[tuple[re.Pattern[str], str, str, Callable[[re.Match[str]], tuple[st
     (re.compile(r"^关系「(?P<name>[^」]*)」声明 fan_out="), "relationship_fan_out", SEVERITY_WARNING, _relationship_target),
     (re.compile(r"^关系「(?P<name>[^」]*)」为 M:N 多对多"), "relationship_fan_out", SEVERITY_ERROR, _relationship_target),
     (re.compile(r"^关系图上 (?P<a>.+?)↔(?P<b>.+?) 存在多条简单路径"), "path_ambiguity", SEVERITY_ERROR, _pair_target),
+    # ── 主题域家族 ──
+    # 两个来源共用:lint(kb/lint.py ``_lint_topics``)与写盘路径
+    # (manage._apply_topic 的 ValueError)—— 措辞不同、判定同一件事。
+    (re.compile(r"^topics 必须是数组"), "topic_invalid", SEVERITY_ERROR, lambda _m: ("topic", "")),
+    (re.compile(r"^topics 条目必须是映射"), "topic_invalid", SEVERITY_ERROR, lambda _m: ("topic", "")),
+    (re.compile(r"^主题域缺少 name"), "topic_invalid", SEVERITY_ERROR, lambda _m: ("topic", "")),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」重复定义"), "dup_topic", SEVERITY_ERROR, _topic_target),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」未声明任何数据集"), "topic_empty_scope", SEVERITY_ERROR, _topic_target),
+    # 写盘路径的同一判定:「datasets 必填(空作用域 = 域内什么都问不了)」
+    (re.compile(r"^主题域「(?P<name>[^」]+)」的 datasets 必填"), "topic_empty_scope", SEVERITY_ERROR, _topic_target),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」引用未声明的数据集"), "topic_undeclared_dataset", SEVERITY_ERROR, _topic_target),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」声明的数据集未声明"), "topic_undeclared_dataset", SEVERITY_ERROR, _topic_target),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」引用未声明的指标"), "topic_undeclared_metric", SEVERITY_ERROR, _topic_target),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」的指标「"), "topic_metric_outside", SEVERITY_ERROR, _topic_target),
+    # 与字段家族共用 code:形状问题同一类,前端提示同一句话
+    (re.compile(r"^主题域「(?P<name>[^」]+)」的 (?:synonyms|examples) 含空"), "bad_synonym", SEVERITY_WARNING, _topic_target),
+    (re.compile(r"^主题域「(?P<name>[^」]+)」custom_extensions 缺 vendor_name"), "custom_extensions", SEVERITY_WARNING, _topic_target),
     # ── 其它写盘路径错误 ──
     (re.compile(r"^未知草稿类型"), "kind_unknown", SEVERITY_ERROR, lambda _m: _TARGET_UNKNOWN),
 ]

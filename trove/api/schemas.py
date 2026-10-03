@@ -13,6 +13,10 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     workflow: str = "reflection"
     datasource: str | None = None  # target datasource (None = registry default)
+    #: 主题域(可选):该数据源 semantics.yml 里声明的 topic 名。非空时问数
+    #: 范围收敛到该域声明的 datasets;域不存在/域过期 → 显式拒绝(不是回落
+    #: 全量)。空 = 不收敛,行为与不启用主题域完全一致。
+    topic: str = ""
     #: 重放(设计 §5.6):admin 以目标用户身份看数据。``user:42`` / ``42``。
     #: 仅 admin、仅自己的会话;目标必须是已存在的用户。见 routers/chat._replay_subject
     on_behalf_of: str | None = None
@@ -164,12 +168,12 @@ class FactPatch(BaseModel):
 class SemanticDraftCreate(BaseModel):
     """POST /v1/admin/semantic/{ds}/drafts body (审批流草稿).
 
-    kind: metric | field | dataset; action: upsert | delete。
+    kind: metric | field | dataset | topic;action: upsert | delete。
     payload 为平铺友好结构,confirm 时转换为 OSSIE 文档(见
     services/semantic_layer/manage.py)。
     """
 
-    kind: Literal["metric", "field", "dataset"]
+    kind: Literal["metric", "field", "dataset", "topic"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -196,8 +200,8 @@ class SemanticRollbackRequest(BaseModel):
 class SemanticIssueTarget(BaseModel):
     """问题定位到的实体(前端按 kind 分流跳转/分组)。"""
 
-    kind: str = ""   # metric | field | dataset | relationship | document | unknown
-    name: str = ""   # metric/关系名,field 为 dataset.field,dataset 为数据集名
+    kind: str = ""   # metric | field | dataset | relationship | topic | document | unknown
+    name: str = ""   # metric/关系/主题域名,field 为 dataset.field,dataset 为数据集名
 
 
 class SemanticIssueItem(BaseModel):
@@ -221,7 +225,7 @@ class SemanticValidateRequest(BaseModel):
     不写任何文件。``payload`` 与创建草稿时同形。
     """
 
-    kind: Literal["metric", "field", "dataset"]
+    kind: Literal["metric", "field", "dataset", "topic"]
     action: Literal["upsert", "delete"]
     name: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)

@@ -100,6 +100,63 @@ def test_structured_issues_write_path_errors_get_targets():
     assert items[1]["target"] == {"kind": "dataset", "name": "nope"}
 
 
+def test_structured_issues_maps_topic_family():
+    """主题域家族:lint 与写盘路径两个来源同一张表,target 定位到具体域。"""
+    items = structured_issues([
+        "主题域「learners」重复定义",
+        "主题域「learners」未声明任何数据集 —— 主题域是收敛边界,"
+        "空边界会把该主题下的全部问题收敛成零锚定拒绝;"
+        "请声明它覆盖的 dataset(或删除该主题域)",
+        "主题域「learners」的 datasets 必填(空作用域 = 域内什么都问不了)",
+        "主题域「learners」引用未声明的数据集 ghost",
+        "主题域「learners」声明的数据集未声明: ghost"
+        "(主题域只能收敛到已声明的数据集;改用正确名字,或先声明该数据集)",
+        "主题域「learners」引用未声明的指标 nope",
+        "主题域「learners」的指标「平均成绩」锚定到主题外的数据集 courses "
+        "—— 该指标在主题内必然 MISS"
+        "(请把它锚定的数据集并入本主题,或从本主题移除该指标)",
+        "主题域「learners」的 synonyms 含空/非法条目: ''",
+    ])
+    assert [i["code"] for i in items] == [
+        "dup_topic", "topic_empty_scope", "topic_empty_scope",
+        "topic_undeclared_dataset", "topic_undeclared_dataset",
+        "topic_undeclared_metric", "topic_metric_outside", "bad_synonym",
+    ]
+    # 边界破坏(error)与注记形状(warning)分开 —— 与字段家族同判
+    assert [i["severity"] for i in items] == [
+        SEVERITY_ERROR, SEVERITY_ERROR, SEVERITY_ERROR,
+        SEVERITY_ERROR, SEVERITY_ERROR, SEVERITY_ERROR, SEVERITY_ERROR,
+        SEVERITY_WARNING,
+    ]
+    assert all(i["target"]["kind"] == "topic" for i in items)
+    assert all(i["target"]["name"] == "learners" for i in items)
+    assert all(i["hint"] for i in items)
+
+
+def test_structured_issues_topic_document_shape():
+    """文档级 topics 形状问题(topic_invalid)没有具名目标 —— 落空名字。"""
+    items = structured_issues([
+        "topics 必须是数组: 'x'",
+        "topics 条目必须是映射: 3",
+        "主题域缺少 name",
+    ])
+    assert [i["code"] for i in items] == ["topic_invalid"] * 3
+    assert all(i["target"] == {"kind": "topic", "name": ""} for i in items)
+
+
+def test_validate_topic_draft_blocks_like_confirm():
+    """主题域同样受「validate 与 confirm 同判」约束:悬空数据集 → ok=False。"""
+    out = validate_draft(DOC, kind="topic", action="upsert", name="learners",
+                         payload={"datasets": ["ghost"]}, dialect="sqlite")
+    assert out["ok"] is False
+    assert out["errors"][0]["code"] == "topic_undeclared_dataset"
+    assert out["normalized"]["expression"] == ""  # 主题域不是表达式草稿
+
+    clean = validate_draft(DOC, kind="topic", action="upsert", name="learners",
+                           payload={"datasets": ["students"]}, dialect="sqlite")
+    assert clean["ok"] is True and clean["errors"] == []
+
+
 def test_structured_issues_never_drops_unclassified():
     """未归类串兜底为 code=lint(warning)—— 映射失败不该让真问题消失。"""
     items = structured_issues(["半句没见过的问题描述"])
@@ -299,3 +356,55 @@ def test_draft_diff_marks_removed_values():
     assert rows["定义 description"]["before"] == "学生平均分"
     assert rows["定义 description"]["after"] == ""
     assert rows["定义 description"]["changed"] is True
+
+
+# ── 主题域(_apply_topic / diff)────────────────────────
+
+
+def _apply_learner_topic(doc: dict, payload: dict, action: str = "upsert"):
+    _apply_draft(doc, {"kind": "topic", "action": action,
+                       "name": "learners", "payload": payload}, "sqlite")
+    return doc["semantic_model"][0].get("topics") or []
+
+
+def test_apply_topic_upsert_update_delete_roundtrip():
+    doc = copy.deepcopy(DOC)
+    topics = _apply_learner_topic(doc, {
+        "datasets": ["students"], "description": "学生域",
+        "synonyms": ["学生主题"], "metrics": ["平均成绩"],
+    })
+    assert topics[0] == {
+        "name": "learners", "datasets": ["students"], "description": "学生域",
+        "synonyms": ["学生主题"], "metrics": ["平均成绩"],
+    }
+    # 只改作用域的二次 upsert:注记字段 carryover(与 dataset 同口径,
+    # 不同于 metric —— 主题域的"定义"是必填的 datasets)
+    topics = _apply_learner_topic(doc, {"datasets": ["courses"]})
+    assert topics[0]["description"] == "学生域"
+    assert topics[0]["synonyms"] == ["学生主题"]
+    assert topics[0]["datasets"] == ["courses"]
+    # delete 闭环
+    assert _apply_learner_topic(doc, {}, action="delete") == []
+
+
+def test_apply_topic_rejects_bad_scope_before_write():
+    """两条结构性硬校验都是 ValueError —— 写盘门禁把它折成 400,不落盘。"""
+    with pytest.raises(ValueError, match="未声明"):
+        _apply_learner_topic(copy.deepcopy(DOC), {"datasets": ["ghost"]})
+    with pytest.raises(ValueError, match="datasets 必填"):
+        _apply_learner_topic(copy.deepcopy(DOC), {"datasets": []})
+
+
+def test_draft_diff_topic_create_and_labels():
+    """主题域草稿的 DiffCard:动作行叫「新增主题域」,metrics 列有中文标签。"""
+    diff = _draft_diff(DOC, {"kind": "topic", "action": "upsert",
+                             "name": "learners",
+                             "payload": {"datasets": ["students"],
+                                         "metrics": ["平均成绩"]}},
+                       "sqlite")
+    assert diff["before"] is None
+    assert diff["after"]["datasets"] == ["students"]
+    assert diff["fields"][0] == {"f": "动作", "before": "（不存在）",
+                                 "after": "新增主题域", "changed": True}
+    rows = {row["f"]: row for row in diff["fields"]}
+    assert rows["收敛指标 metrics"]["after"] == "平均成绩"

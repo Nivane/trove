@@ -102,6 +102,72 @@ _MISS_COPY: dict[str, tuple[str, str]] = {
 }
 
 
+# ── 主题域拒绝(确定性,零 LLM)─────────────────────────────
+# 三种形态,补救方式各不相同,所以分开说:
+#   topic_not_found   —— 选的主题域不存在(前端列表过期/域被删)
+#   topic_empty_scope —— 域还在,但它声明的数据集已全部不在模型里(域过期)
+#   topic_out_of_scope—— 域有效,但这个问题不在域内(域内零锚定)
+_TOPIC_REASONS = {"topic_not_found", "topic_empty_scope"}
+
+
+def _topic_refusal_reason(refusal: dict[str, Any], reason: str) -> str:
+    """refusal → 主题域拒绝分因(非主题域类拒绝返回空串)。
+
+    ``no_semantic_match`` 只在**带主题域上下文**时才升级成 ``topic_out_of_scope``
+    —— schema_linking 仅在域生效时把 topic 键写进 refusal,所以这里看到
+    topic 键即"这次拒绝发生在域内"。
+    """
+    if reason in _TOPIC_REASONS:
+        return reason
+    if reason == "no_semantic_match" and str(refusal.get("topic") or "").strip():
+        return "topic_out_of_scope"
+    return ""
+
+
+def _topic_message(lang: str, kind: str, refusal: dict[str, Any]) -> str:
+    topic = str(refusal.get("topic") or "")
+    topics = [str(t) for t in (refusal.get("available_topics") or []) if str(t)]
+    scope = [str(t) for t in (refusal.get("topic_scope") or []) if str(t)]
+    listed = ("、".join(topics)) if topics else ""
+    listed_en = (", ".join(topics)) if topics else ""
+    if kind == "topic_not_found":
+        return L(
+            lang,
+            f"主题域「{topic}」不存在（可能已被改名或删除）。"
+            + (f"当前可选主题域:{listed}。" if listed else "")
+            + "请在界面上重新选择主题域后重试。",
+            f"Topic domain \"{topic}\" does not exist (it may have been renamed "
+            "or removed). "
+            + (f"Available topics: {listed_en}. " if listed_en else "")
+            + "Please pick a topic again and retry.",
+        )
+    if kind == "topic_empty_scope":
+        return L(
+            lang,
+            f"主题域「{topic}」当前没有可用的数据集(它的声明可能已随模型更新失效)。"
+            + (f"当前可选主题域:{listed}。" if listed else "")
+            + "请管理员在管理端修正该主题域,或改选其它主题域。",
+            f"Topic domain \"{topic}\" currently has no usable datasets (its "
+            "declaration may have gone stale as the model changed). "
+            + (f"Available topics: {listed_en}. " if listed_en else "")
+            + "Ask an admin to fix this topic in the admin console, or pick "
+            "another topic.",
+        )
+    return L(
+        lang,
+        f"这个问题不在主题域「{topic}」的范围内"
+        + (f"(该主题域覆盖:{'、'.join(scope)})" if scope else "")
+        + "。请切换到覆盖该问题的主题域"
+        + (f"({listed})" if listed else "")
+        + ";若该问题确实属于本主题,请管理员把相关数据集并入本主题域。",
+        f"This question is outside topic domain \"{topic}\""
+        + (f" (its coverage: {', '.join(scope)})" if scope else "")
+        + ". Switch to a topic that covers it"
+        + (f" ({listed_en})" if listed_en else "")
+        + ", or ask an admin to add the relevant datasets to this topic.",
+    )
+
+
 def _miss_phrase(lang: str, reason: str, component: str = "") -> str:
     """未知 slug 退回泛化说法 —— 宁可笼统也不把内部 slug 摆给用户。"""
     pair = _MISS_COPY.get(reason)
@@ -549,6 +615,25 @@ def make_refuse(
             return {}
 
         reason = str(refusal.get("reason") or "未覆盖")
+        # 主题域类拒绝:**确定性短路**,不走草稿机。
+        # 这几种拒绝的补救方式与"模型缺声明"完全不同(换域 / 把数据集并进
+        # 域 / 管理员修主题域声明),而且让它去起草 metric/field 是答非所问
+        # —— 域的边界不是"缺了一个声明"。
+        topic_reason = _topic_refusal_reason(refusal, reason)
+        if topic_reason:
+            message = _topic_message(state.lang, topic_reason, refusal)
+            return {
+                "auto_confirmed": False,
+                "clarification_question": message,
+                "refusal": {
+                    "reason": reason,
+                    "question": str(refusal.get("question") or state.question),
+                    "message": message,
+                    "topic": str(refusal.get("topic") or ""),
+                    "available_topics": list(refusal.get("available_topics") or []),
+                },
+                **_HYGIENE,
+            }
         # 编译 MISS 的结构化分因(reason slug + 失败组件)→ 拼进用户可见
         # 文案,管理端知道具体缺哪个声明(metric/字段/join),而不是笼统
         # 「uncovered」。返回的 refusal["reason"] 保持原始值(上游契约/

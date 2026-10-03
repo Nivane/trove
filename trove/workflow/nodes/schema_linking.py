@@ -18,6 +18,13 @@ from typing import Any
 
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService, TermHit
+from trove.services.semantic_layer.topics import (
+    TopicResolution,
+    in_scope,
+    render_topic_line,
+    resolve_topic,
+    topic_names,
+)
 from trove.core.logging import get_logger
 from trove.llm.observability import record_span
 from trove.workflow.state import WorkflowState
@@ -151,6 +158,7 @@ def _semantic_match_datasets(
     model: Any, query: str, term_hits: list[TermHit],
     semantic_layer: Any | None,
     retry_round: int = 0,
+    scope: set[str] | None = None,
 ) -> list[str]:
     """模型视角的 dataset 锚定:KB/live term 表 + 词法匹配,排序去重。
 
@@ -160,6 +168,11 @@ def _semantic_match_datasets(
     ``retry_round``(反思/纠错重跑轮数)渐进放大候选:阈值档位放宽
     (2.0 → 1.5 → 1.0) + 上限提升(8 → 16)。首轮(0)与旧行为字节级一致;
     重跑轮多拉候选,给回滚到 schema_linking 的修正提供更多可锚表。
+
+    ``scope``(主题域作用域)非空时,**三条通道一律收敛**:词法锚定、字段名
+    锚定、KB/live term 表。收敛在入口而不是出口 —— 出口过滤会让"域外表先
+    进候选、再被删掉",而候选顺序/上限是按全量算的,域内表可能已经被上限
+    挤掉。``None`` = 未选主题域,行为与不启用主题域字节级一致。
     """
     q_tokens = _word_tokens(query)
     q_lower = (query or "").lower()
@@ -169,6 +182,7 @@ def _semantic_match_datasets(
     scored = [
         (name, _semantic_dataset_score(d, query, q_tokens))
         for d in model.datasets for name in [d.name]
+        if in_scope(scope, name)
     ]
     for name, score in sorted(scored, key=lambda x: -x[1]):
         if score >= threshold and name not in matched:
@@ -180,7 +194,7 @@ def _semantic_match_datasets(
     # 命中 card.issued 时间列,把无关数据集拉进作用域,query_sketch 进而误锚列)。
     # synonym 命中不受此限(人工写的业务词表)。
     for d in model.datasets:
-        if d.name in matched:
+        if d.name in matched or not in_scope(scope, d.name):
             continue
         for f in d.fields:
             role = str(getattr(f, "semantic_role", "") or "").strip().lower()
@@ -208,7 +222,7 @@ def _semantic_match_datasets(
         except Exception:
             live_tables = []
     for t in term_tables + live_tables:
-        if t in declared and t not in matched:
+        if t in declared and in_scope(scope, t) and t not in matched:
             matched.append(t)
     return matched[:_progressive_tables_limit(retry_round)]
 
@@ -216,6 +230,7 @@ def _semantic_match_datasets(
 def _render_semantic_context(
     model: Any, matched: list[str], semantic_layer: Any | None,
     question: str, metric_hits: list[Any] | None = None,
+    topic: TopicResolution | None = None,
 ) -> str:
     """仅渲染模型声明内容(dataset/metric/field+synonym/关系/instructions)。
 
@@ -236,6 +251,10 @@ def _render_semantic_context(
             render_tables.append(extra)
 
     parts: list[str] = []
+    # 主题域声明行(仅命中时渲染):作用域事实先行,生成侧据此不往域外找表。
+    topic_line = render_topic_line(topic) if topic is not None else ""
+    if topic_line:
+        parts.append(topic_line)
     use_selected = bool(metric_hits)
     if use_selected:
         parts.append("Relevant metrics:\n" + "\n".join(
@@ -347,8 +366,36 @@ async def _semantic_linking(
             "link_detail": {"semantic_first": True, "no_model": True},
         }
 
+    # ── 主题域(可选):选择 → 作用域 → 收敛锚定 ──────────────
+    # 用户/前端按主题域进入;名字解析不到 = **显式失败**(topic_not_found),
+    # 不静默退回全量 —— 用户选的是范围,范围失效却按更大的数据回答,是
+    # "答非所选"。未选主题域 → status="none",下面每条路径与旧行为一致。
+    topic_res = resolve_topic(model, str(getattr(state, "topic", "") or ""))
+    if topic_res.status in ("not_found", "empty_scope"):
+        return {
+            "matched_tables": [],
+            "schema_context": "",
+            "semantic_context": "",
+            "refusal": {
+                "reason": {
+                    "not_found": "topic_not_found",
+                    "empty_scope": "topic_empty_scope",
+                }[topic_res.status],
+                "question": state.question,
+                "topic": topic_res.requested,
+                "available_topics": topic_names(model),
+            },
+            "link_detail": {
+                "semantic_first": True,
+                "topic": topic_res.requested,
+                "topic_status": topic_res.status,
+            },
+        }
+    scope = topic_res.scope_set
+
     matched = _semantic_match_datasets(
-        model, search_query, term_hits, semantic_layer, retry_round=retry_round)
+        model, search_query, term_hits, semantic_layer,
+        retry_round=retry_round, scope=scope)
 
     # 指标相关性选择 + 图链接(P4):metric 命中沿 metric.datasets 扩展表锚,
     # 相关性选择的指标(带口径)替换"全量渲染锚定 metrics"。只在已有锚定时
@@ -365,13 +412,19 @@ async def _semantic_linking(
                 state.question, datasource, matched_tables=matched or None)
             metric_hits = family.get("metrics") or []
             expanded = family.get("tables") or []
+            # 指标沿 metric.datasets 扩展表锚 —— 这是唯一一处"引擎自己"往
+            # matched 里加表的地方,主题域作用域必须在这里再收敛一次:
+            # 只靠入口过滤挡不住它(域外指标一律会把域外数据集拉回来)。
+            if scope is not None:
+                expanded = [t for t in expanded if in_scope(scope, t)]
             if expanded and set(expanded) != set(matched):
                 matched = expanded
         except Exception as e:
             logger.warning("metric_family failed (%s): %s", datasource, e)
 
     semantic_context = _render_semantic_context(
-        model, matched, semantic_layer, state.question, metric_hits=metric_hits)
+        model, matched, semantic_layer, state.question, metric_hits=metric_hits,
+        topic=topic_res)
 
     base: dict[str, Any] = {
         "matched_tables": matched,
@@ -383,6 +436,12 @@ async def _semantic_linking(
             "retry_round": retry_round,
             "tables_limit": _progressive_tables_limit(retry_round),
             "threshold": _progressive_threshold(retry_round),
+            # 主题域只作事实记录(status="none" 时两键都不落,存量运行面板
+            # 形状不变):评估归因要能分清"全模型零命中"与"域内零命中"。
+            **({
+                "topic": topic_res.topic.name,
+                "topic_scope": list(topic_res.scope or []),
+            } if topic_res.active else {}),
         },
     }
 
@@ -412,11 +471,19 @@ async def _semantic_linking(
         except Exception as e:
             logger.warning("schema_doc injection failed: %s", e)
     if not matched:
-        # 零命中 = 未覆盖 = 拒绝(决策 4),不 fallback 全量表
+        # 零命中 = 未覆盖 = 拒绝(决策 4),不 fallback 全量表。
+        # 带主题域时把域信息一并带上:拒绝对拒绝的补救方式不同 ——
+        # 「模型缺声明」是找管理员补建模,「问题不在本主题域内」是换个域
+        # 或把数据集并进域。refuse 节点据此给不同的用户文案。
         base["refusal"] = {
             "reason": "no_semantic_match",
             "question": state.question,
             "semantic_context": semantic_context,
+            **({
+                "topic": topic_res.topic.name,
+                "topic_scope": list(topic_res.scope or []),
+                "available_topics": topic_names(model),
+            } if topic_res.active else {}),
         }
     return base
 

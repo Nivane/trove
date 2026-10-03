@@ -30,7 +30,9 @@ from trove.services.semantic_layer.models import (
     SemanticModel,
     SemanticRelationship,
     TimeSpine,
+    TopicDomain,
     _clean_extensions,
+    _clean_names,
     _clean_values,
 )
 
@@ -304,6 +306,27 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
     # 模型级脱敏策略(缺省 = 惰性:A11 存量模型行为不变)
     masking = _masking_policy(top.get("masking"))
 
+    # 业务主题域(Trove 扩展,可选段)。与 masking 同层:`semantic_model[0]`
+    # 下。写在文档顶层会被忽略 —— 忽略一个**收敛边界**比忽略一个展示字段
+    # 更危险(主题看起来生效了,范围其实没收),所以出声 + lint 拦写盘。
+    if "topics" in data and "topics" not in top:
+        logger.warning(
+            "topics at document top level is ignored; declare it under "
+            "semantic_model[0] (same level as time_spine)")
+    topics: list[TopicDomain] = []
+    for t in top.get("topics", []) or []:
+        if not isinstance(t, dict) or not str(t.get("name") or "").strip():
+            continue
+        topics.append(TopicDomain(
+            name=str(t["name"]).strip(),
+            description=str(t.get("description") or ""),
+            synonyms=_clean_names(t.get("synonyms")),
+            datasets=_clean_names(t.get("datasets")),
+            metrics=_clean_names(t.get("metrics")),
+            examples=_clean_names(t.get("examples")),
+            custom_extensions=_clean_extensions(t.get("custom_extensions")),
+        ))
+
     metrics: list[SemanticMetric] = []
     for m in top.get("metrics", []) or []:
         # 与原实现一致:metric 缺可用的 expression 是结构性问题 → 抛错
@@ -338,4 +361,5 @@ def parse_ossie(text: str, preferred_dialect: str = "ansi_sql") -> SemanticModel
         custom_extensions=_clean_extensions(top.get("custom_extensions")),
         time_spine=spine,
         masking=masking,
+        topics=topics,
     )
