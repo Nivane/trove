@@ -1,15 +1,16 @@
 <template>
   <div class="admin-view">
-    <header class="view-header">
-      <div>
-        <h2>{{ t('decisions', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('decisionsPageDesc', ui.lang) }}</p>
-      </div>
-      <div class="view-actions">
+    <PageHeader
+      :title="t('decisions', ui.lang)"
+      :description="t('decisionsPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    >
+      <template #actions>
         <el-select
-          v-model="ds"
+          v-model="values.ds"
           class="ds-select"
           :placeholder="t('kbSelectDs', ui.lang)"
+          :aria-label="t('kbSelectDs', ui.lang)"
           @change="load"
         >
           <el-option
@@ -26,8 +27,8 @@
           <Pencil :size="14" />
           {{ t('decisionsEdit', ui.lang) }}
         </el-button>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <div v-if="issues.length" class="admin-card decisions-issues">
       <div class="card-header">
@@ -48,7 +49,12 @@
           <span v-if="digest" class="cell-mono dim">sha256:{{ digest.slice(0, 12) }}</span>
         </div>
       </div>
-      <el-table v-loading="loading" :data="rules" class="admin-table">
+      <el-table
+        v-loading="loading"
+        :data="rules"
+        class="admin-table"
+        max-height="var(--table-max-h)"
+      >
         <template #empty>
           <TableEmpty>{{ t('decisionsEmpty', ui.lang) }}</TableEmpty>
         </template>
@@ -127,7 +133,9 @@ import { apiGet, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, toastError } from '../../utils/notify'
+import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import PageHeader from '../../components/base/PageHeader.vue'
 import type { DatasourceInfo } from '../../api/types'
 
 interface RuleRow {
@@ -147,7 +155,19 @@ interface RuleRow {
 
 const ui = useUiStore()
 const datasources = ref<DatasourceInfo[]>([])
-const ds = ref('')
+
+/* ── URL state (P6 §4.3) ──────────────────────────────────────────────────
+   ds is the one key this page acknowledges — the backend endpoint takes
+   exactly `datasource=`, so the choice is a real filter and a shared link
+   /admin/decisions?ds=demo lands on the same rule list (same shape as the
+   KB page, which owns its ds selector the same way). */
+const { values } = useListQuery({ ds: '' })
+
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('decisions', ui.lang) },
+])
+
 const rules = ref<RuleRow[]>([])
 const issues = ref<string[]>([])
 const digest = ref('')
@@ -171,9 +191,9 @@ async function loadDatasources() {
   try {
     const body = await apiGet('/v1/catalog/datasources')
     datasources.value = body.datasources ?? []
-    if (!ds.value && connected.value.length) {
+    if (!values.ds && connected.value.length) {
       const dflt = connected.value.find((d) => d.default)
-      ds.value = dflt ? dflt.name : connected.value[0].name
+      values.ds = dflt ? dflt.name : connected.value[0].name
     }
   } catch {
     datasources.value = []
@@ -181,11 +201,11 @@ async function loadDatasources() {
 }
 
 async function load() {
-  if (!ds.value) return
+  if (!values.ds) return
   loading.value = true
   try {
     const body = await apiGet(
-      `/v1/admin/decisions?datasource=${encodeURIComponent(ds.value)}`,
+      `/v1/admin/decisions?datasource=${encodeURIComponent(values.ds)}`,
     )
     rules.value = (body.rules ?? []) as RuleRow[]
     issues.value = (body.issues ?? []) as string[]
@@ -211,7 +231,7 @@ async function openEditor() {
     // so the API owns parsing. (The read is verbatim so authored comments are
     // visible; saving re-serializes the document, so they do not survive.)
     const body = await apiGet(
-      `/v1/admin/decisions/raw?datasource=${encodeURIComponent(ds.value)}`,
+      `/v1/admin/decisions/raw?datasource=${encodeURIComponent(values.ds)}`,
     )
     yamlText.value = (body.text ?? '') as string
   } catch (e) {
@@ -224,7 +244,7 @@ async function save() {
   saveError.value = ''
   try {
     await apiPut('/v1/admin/decisions', {
-      datasource: ds.value,
+      datasource: values.ds,
       text: yamlText.value,
     })
     notifySuccess(t('decisionsSaved', ui.lang))
@@ -246,11 +266,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.view-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
 .decisions-issues ul {
   margin: 0;
   padding: var(--sp-3) var(--sp-5) var(--sp-3) calc(var(--sp-5) + 18px);

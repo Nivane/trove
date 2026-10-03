@@ -1,11 +1,10 @@
 <template>
-  <div class="admin-view">
-    <header class="view-header">
-      <div>
-        <h2>{{ t('audit', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('auditPageDesc', ui.lang) }}</p>
-      </div>
-    </header>
+  <div class="admin-view" :aria-busy="loading || undefined">
+    <PageHeader
+      :title="t('audit', ui.lang)"
+      :description="t('auditPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    />
 
     <div class="stat-grid">
       <div class="stat-card">
@@ -13,6 +12,8 @@
         <div class="stat-meta">
           <span class="stat-label">{{ t('audit', ui.lang) }}</span>
           <span class="stat-value">{{ total }}</span>
+          <!-- §7: 卡面必须写清口径 —— 这张是服务端按当前筛选的全量 -->
+          <span class="stat-sub">{{ t('auditScopeFiltered', ui.lang) }}</span>
         </div>
       </div>
       <div class="stat-card">
@@ -20,6 +21,8 @@
         <div class="stat-meta">
           <span class="stat-label">{{ t('statusActive', ui.lang) }}</span>
           <span class="stat-value">{{ statusSummary.ok }}</span>
+          <!-- 下一张卡是当前页切分,不是全量 —— 口径写在卡面 -->
+          <span class="stat-sub">{{ t('auditScopePage', ui.lang) }}</span>
         </div>
       </div>
       <div class="stat-card">
@@ -27,6 +30,7 @@
         <div class="stat-meta">
           <span class="stat-label">{{ t('errors', ui.lang) }}</span>
           <span class="stat-value">{{ statusSummary.err }}</span>
+          <span class="stat-sub">{{ t('auditScopePage', ui.lang) }}</span>
         </div>
       </div>
     </div>
@@ -35,13 +39,19 @@
       <div class="card-toolbar">
         <div class="audit-filters">
           <el-input
-            v-model="action"
+            v-model="values.user_id"
+            :placeholder="t('auditUser', ui.lang)"
+            clearable
+            class="audit-filter-input audit-filter-user"
+            :aria-label="t('auditUser', ui.lang)"
+          />
+          <el-input
+            v-model="values.action"
             :placeholder="t('auditAction', ui.lang)"
             clearable
             class="audit-filter-input"
             :prefix-icon="Search"
-            @keyup.enter="onActionChange"
-            @clear="onActionChange"
+            :aria-label="t('auditAction', ui.lang)"
           />
         </div>
         <span class="spacer" />
@@ -61,7 +71,7 @@
         v-loading="loading"
         :data="entries"
         class="admin-table"
-        max-height="calc(100vh - 300px)"
+        max-height="var(--table-max-h)"
       >
         <template #empty>
           <TableEmpty />
@@ -110,13 +120,12 @@
       </el-table>
       <div class="pagination-bar">
         <el-pagination
-          v-model:current-page="page"
           v-model:page-size="pageSize"
+          :current-page="page"
           :total="total"
           :page-sizes="[20, 50, 100]"
           layout="total, sizes, prev, pager, next"
-          @current-change="load"
-          @size-change="onSizeChange"
+          @current-change="onPageChange"
         />
       </div>
     </div>
@@ -137,7 +146,9 @@ import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError } from '../../utils/notify'
 import { fmtDateTime } from '../../utils/format'
+import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import PageHeader from '../../components/base/PageHeader.vue'
 
 interface AuditEntry {
   ts?: string
@@ -152,10 +163,31 @@ interface AuditEntry {
 const ui = useUiStore()
 const entries = ref<AuditEntry[]>([])
 const loading = ref(false)
-const action = ref('')
-const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
+
+/* ── URL state (P6 §4.3) ──────────────────────────────────────────────────
+   user_id / action / page are the keys this page acknowledges, so a
+   filtered trail is shareable, survives a refresh and the back button
+   undoes a filter. The shell (overview) and the users page deep-link
+   straight in — /admin/audit?action=query.execute, ?user_id=3 — and until
+   these keys were read here those links landed on an unfiltered list. */
+const { values } = useListQuery({ user_id: '', action: '', page: '1' })
+
+const page = computed(() => Math.max(1, Number.parseInt(values.page, 10) || 1))
+
+// 末项面包屑带筛选上下文(与 URL 同源):动作 / 用户 ID。
+const filterContext = computed(() =>
+  [values.action, values.user_id ? `#${values.user_id}` : ''].filter(Boolean).join(' · '),
+)
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  {
+    label: filterContext.value
+      ? `${t('audit', ui.lang)} · ${filterContext.value}`
+      : t('audit', ui.lang),
+  },
+])
 
 function okStatus(s: unknown): boolean {
   return typeof s === 'number' && s >= 200 && s < 400
@@ -185,7 +217,8 @@ async function load() {
   loading.value = true
   try {
     const params = new URLSearchParams()
-    if (action.value) params.set('action', action.value)
+    if (values.action) params.set('action', values.action)
+    if (values.user_id) params.set('user_id', values.user_id)
     params.set('limit', String(pageSize.value))
     params.set('offset', String((page.value - 1) * pageSize.value))
     const body = await apiGet(`/v1/admin/audit?${params}`)
@@ -198,26 +231,38 @@ async function load() {
   }
 }
 
-// 过滤条件变化回到第 1 页;页大小变化同理(当前页可能超出新分页范围)
-function onActionChange() {
-  page.value = 1
-  load()
+// 翻页把页码写回 URL(后退键可回到上一页),由下面的 watch 统一触发请求。
+function onPageChange(next: number) {
+  values.page = String(Math.max(1, next))
 }
 
-function onSizeChange() {
-  page.value = 1
-  load()
-}
+// 页大小变化会让当前页号失效:先回到第 1 页(此 watch 建在取数 watch 之前,
+// 复位先落地)。
+watch(pageSize, () => {
+  if (values.page !== '1') values.page = '1'
+})
+
+// 过滤条件变化重取数据并回到第 1 页。
+watch(
+  [() => values.user_id, () => values.action],
+  () => {
+    if (values.page !== '1') values.page = '1'
+    else void load()
+  },
+)
+
+watch([() => values.page, pageSize], () => void load())
 
 // 结果集缩水时(如刷新后总条数减少)把当前页钳回合法范围并重拉数据,
 // 否则翻页控件会停在超出范围的页码上,出现"翻页没反应/白页"的假故障。
 watch(total, () => {
   const maxPage = Math.max(1, Math.ceil(total.value / pageSize.value))
-  if (page.value > maxPage) {
-    page.value = maxPage
-    load()
-  }
+  if (page.value > maxPage) values.page = String(maxPage)
 })
 
-onMounted(load)
+onMounted(() => {
+  // 坏的 ?page=abc 归一为 1,而不是让 URL 说谎
+  if (values.page !== String(page.value)) values.page = String(page.value)
+  void load()
+})
 </script>

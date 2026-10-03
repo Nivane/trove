@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ElementPlus from 'element-plus'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import ModelConfigView from '../src/views/admin/ModelConfigView.vue'
 
 vi.mock('../src/api/http', () => ({
@@ -45,11 +46,22 @@ const baseValues = {
 }
 
 let wrapper: VueWrapper | null = null
+let router: Router
 
 async function mountView() {
   ;(apiGet as any).mockResolvedValue({ values: baseValues, mask: MASK })
+  router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { render: () => null } },
+      { path: '/admin', component: { render: () => null } },
+      { path: '/admin/model', component: ModelConfigView },
+    ],
+  })
+  await router.push('/admin/model')
+  await router.isReady()
   wrapper = mount(ModelConfigView, {
-    global: { plugins: [ElementPlus] },
+    global: { plugins: [ElementPlus, router] },
     attachTo: document.body,
   })
   await flushPromises()
@@ -96,6 +108,16 @@ describe('ModelConfigView', () => {
   it('shows the env-fallback note', async () => {
     const view = await mountView()
     expect(view.text()).toContain('环境变量')
+  })
+
+  it('renders the PageHeader with the root crumb and document.title', async () => {
+    const view = await mountView()
+    expect(view.find('h1').text()).toBe('模型配置')
+    const crumbs = view.findAll('.ph-crumb')
+    expect(crumbs.map((c) => c.text())).toEqual(['管理台', '模型配置'])
+    expect(crumbs[0].attributes('href')).toBe('/admin')
+    expect(crumbs[1].attributes('aria-current')).toBe('page')
+    expect(document.title).toBe('模型配置')
   })
 
   it('sends only changed model scalars and keeps provider secrets masked', async () => {

@@ -175,4 +175,5 @@
   --red-700: #b91c1c; /* danger button hover shade */
   --danger-hover: var(--red-700);
   --overlay: rgba(24, 24, 27, 0.36); /* drawer / dialog scrim */
+  --table-max-h: 560px; /* P6-W2: bounded admin-table cap, replaces calc(100vh - Npx) */
 }

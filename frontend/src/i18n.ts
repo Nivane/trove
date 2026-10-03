@@ -1568,6 +1568,18 @@ export const messages = {
     exportHtmlReport: '导出 HTML 报告',
     exportDocEvidence: '分析证据',
     exportDocChart: '图表',
+    // ── P6-W23 ──（页头收口 + URL 状态补齐；仅追加，不改既有键）
+    jobsSearch: '搜索任务名或问题',
+    jobsFilterStatus: '全部状态',
+    dsSearch: '搜索数据源',
+    dsFilterHealth: '全部状态',
+    dsFilterDrift: '全部漂移',
+    dsDriftOpen: '有漂移',
+    dsDriftNone: '无漂移',
+    skillsFilterStatus: '全部状态',
+    skillsFilterTier: '全部档位',
+    auditScopeFiltered: '符合筛选',
+    auditScopePage: '当前页',
   },
   en: {
     brand: 'Trove',
@@ -3160,6 +3172,18 @@ export const messages = {
     exportHtmlReport: 'Export HTML report',
     exportDocEvidence: 'Analysis evidence',
     exportDocChart: 'Chart',
+    // ── P6-W23 ──（page-header sweep + URL state; appended only, no key edits）
+    jobsSearch: 'Search name or question',
+    jobsFilterStatus: 'All statuses',
+    dsSearch: 'Search datasources',
+    dsFilterHealth: 'All statuses',
+    dsFilterDrift: 'Any drift',
+    dsDriftOpen: 'Drifted',
+    dsDriftNone: 'No drift',
+    skillsFilterStatus: 'All statuses',
+    skillsFilterTier: 'All tiers',
+    auditScopeFiltered: 'matching filters',
+    auditScopePage: 'this page',
   },
 }
 

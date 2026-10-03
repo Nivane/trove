@@ -94,7 +94,10 @@
   --el-bg-color-page: var(--surface-canvas);
 }
 
-/* ── Page header (shared across all admin views) ── */
+/* ── Shell main region (P6-W2) ──
+   .admin-main (Components/layout/ConsoleShell.vue) is the scrolling column;
+   .admin-view is the content column inside it: same width cap, same rhythm
+   for every page. The page title/actions live in <PageHeader>, not here. */
 .admin-view {
   max-width: 1240px;
   margin: 0 auto;
@@ -104,32 +107,12 @@
   gap: var(--sp-5);
 }
 
-.view-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--sp-5);
-  flex-wrap: wrap;
-}
-.view-header h2 {
-  margin: 0;
-  font-size: var(--fs-xl);
-  letter-spacing: -0.02em;
-  line-height: var(--lh-tight);
-}
 .view-desc {
   margin: var(--sp-1) 0 0;
   font-size: var(--fs-sm);
   color: var(--text-tertiary);
   line-height: 1.5;
   max-width: 520px;
-}
-.view-header-right {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-shrink: 0;
-  padding-top: 2px;
 }
 .view-count {
   font-size: var(--fs-xs);
@@ -240,6 +223,10 @@
 }
 .toolbar-search {
   width: 260px;
+}
+/* 列表工具条里的下拉筛选(用户页/知识库页另有同名 scoped 规则,同宽) */
+.filter-select {
+  width: 150px;
 }
 /* settings / model-config card body — unified titled-card body */
 .settings-card__body {
@@ -654,6 +641,10 @@
   color: var(--text-tertiary);
   font-family: var(--font-mono);
 }
+/* 状态列里的漂移徽标(有未豁免漂移时才出现) */
+.ds-drift-pill {
+  margin-left: var(--sp-2);
+}
 
 /* ── Generic cell helpers ── */
 .cell-muted {
@@ -824,6 +815,10 @@
 }
 .audit-filter-input {
   width: 240px;
+}
+/* 用户 ID 过滤(深链 ?user_id= 的可视化入口),窄一些 */
+.audit-filter-user {
+  width: 120px;
 }
 .method-badge {
   font-family: var(--font-mono);
@@ -1080,16 +1075,8 @@
   }
 }
 @media (max-width: 640px) {
-  .view-header h2 {
-    font-size: var(--fs-lg);
-  }
   .stat-grid {
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  }
-  .view-header-right {
-    width: 100%;
-    justify-content: flex-end;
-    flex-wrap: wrap;
   }
   .provider-row {
     grid-template-columns: 1fr 1fr;
@@ -1112,7 +1099,7 @@
 }
 .ckpt-question {
   font-size: var(--fs-sm);
-  color: var(--color-text);
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1121,7 +1108,7 @@
 .ckpt-sql {
   font-family: var(--font-mono, monospace);
   font-size: var(--fs-2xs);
-  color: var(--color-dim);
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1143,7 +1130,7 @@
 .ckpt-empty {
   padding: 24px;
   text-align: center;
-  color: var(--color-dim);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 .ckpt-detail-grid {
@@ -1154,11 +1141,11 @@
   font-size: var(--fs-sm);
 }
 .dim {
-  color: var(--color-dim);
+  color: var(--text-secondary);
 }
 .ckpt-summary-block {
   margin-bottom: 16px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 12px;
 }
@@ -1174,13 +1161,13 @@
   padding: 2px 0;
 }
 .ckpt-kv-val {
-  color: var(--color-text);
+  color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 .ckpt-json,
 .ckpt-sql-block {
-  background: var(--color-surface-alt, #f5f6f8);
-  border: 1px solid var(--color-border);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 12px;
   font-family: var(--font-mono, monospace);
@@ -1193,16 +1180,16 @@
 .ckpt-warn {
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--color-warn-bg, #fff7e6);
-  color: var(--color-warn, #b26a00);
+  background: var(--warn-bg);
+  color: var(--warn-text);
   font-size: var(--fs-sm);
   margin-bottom: 12px;
 }
 .ckpt-error {
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--color-danger-bg, #fef0f0);
-  color: var(--color-danger, #b42318);
+  background: var(--danger-bg);
+  color: var(--danger-text);
   font-size: var(--fs-sm);
   margin-bottom: 12px;
 }

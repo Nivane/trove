@@ -277,6 +277,29 @@ describe('UsersView', () => {
     expect(lastListCall()).toContain('sort=username')
   })
 
+  it('keeps the page size in the URL and refetches with it (U3)', async () => {
+    mockApi()
+    // a deep link keeps its rows-per-page: page 2 of a 50-row window
+    const view = await mountView('/admin/users?size=50&page=2')
+    expect(lastListCall()).toContain('limit=50')
+    expect(lastListCall()).toContain('offset=50')
+    expect(view.findComponent('.pager-size').props('modelValue')).toBe(50)
+
+    // a picked size lands in the URL and refetches
+    view.findComponent('.pager-size').vm.$emit('change', 100)
+    await flushPromises()
+    expect(router.currentRoute.value.query.size).toBe('100')
+    expect(lastListCall()).toContain('limit=100')
+  })
+
+  it('drops a hand-edited size the pager cannot offer', async () => {
+    mockApi()
+    await mountView('/admin/users?size=25')
+    // the URL must not claim a page size the selector cannot show
+    expect('size' in router.currentRoute.value.query).toBe(false)
+    expect(lastListCall()).toContain('limit=20')
+  })
+
   it('enables or disables the selection from the bulk bar', async () => {
     mockApi()
     const view = await mountView()
