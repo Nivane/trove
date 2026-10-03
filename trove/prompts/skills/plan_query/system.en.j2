@@ -13,6 +13,24 @@
 
 A plan element with no supporting phrase in the question must be dropped.
 
+## Construction discipline for plan values
+
+The plan already carries the aggregation expression / conditions / having split — get
+those splits right, the generator copies them:
+
+- Aggregate conditions: a filter constraining the population *inside* an aggregate (a
+  share/ratio's numerator or denominator, e.g. "the share of running contracts among
+  all loans") belongs to the aggregate expression in answer_columns — never to a
+  separate row-level condition, which shrinks the base population instead of
+  building the ratio.
+- Constraints on an aggregate result (a total that must equal a stated number,
+  "...debited 3539 in total") → having, not conditions.
+- Extreme questions: express the selection with the extreme field (rank for
+  second/nth); keep the ordered measure column OUT of answer_columns unless the
+  question asks for that measure itself.
+- Dimension filters name the human-readable column (district.A2, client.gender),
+  not the id column.
+
 ## Common failure modes to guard against
 
 - "list all the X" questions: leaking detail columns (date, amount, status, ...) into answer_columns when the question names none;

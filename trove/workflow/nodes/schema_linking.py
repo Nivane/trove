@@ -73,6 +73,13 @@ def _word_tokens(text: str) -> set[str]:
     return {w for w in words if w not in _SEMANTIC_STOPWORDS}
 
 
+def _fold_plural(word: str) -> str:
+    """朴素屈折归一:尾 s 去尾(≥4 字母、非 ss 结尾)。"""
+    if len(word) >= 4 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
     """dataset 名/synonym/description 的确定性匹配分(零 LLM)。
 
@@ -91,10 +98,20 @@ def _semantic_dataset_score(d: Any, query: str, q_tokens: set[str]) -> float:
     # enum_display 展示值命中("female" → gender 枚举列):问题点名枚举值 →
     # 锚定其数据集(0483 型问题里值词是唯一线索)。长度 ≥3 过滤 F/M 这类
     # 单字母码值——它们在英文问句里几乎必然误撞,是噪声。
+    q_fold = {_fold_plural(w) for w in q_tokens}
     for f in getattr(d, "fields", None) or []:
         for _code, disp in (getattr(f, "enum_display", None) or {}).items():
             disp_s = str(disp or "").strip().lower()
             if len(disp_s) >= 3 and disp_s in q:
+                return 2.5
+            # 官方文档形态的长标签("running contract, OK so far")几乎不可能
+            # 整串出现在问句里(实测 0.0 分,而短标签 "running contract" 靠
+            # 子串命中 2.5)→ 补 token 级命中:标签词元(尾 s 屈折归一)与
+            # 问句词元 ≥2 命中、且至少一个命中词元长 ≥5 才认——单词语义值
+            # 与常见短词不单独构成锚定信号(噪声控制)。
+            lf = {_fold_plural(w) for w in _word_tokens(disp_s)}
+            hit = lf & q_fold
+            if len(hit) >= 2 and any(len(w) >= 5 for w in hit):
                 return 2.5
     for s in d.synonyms:
         if s:
@@ -236,6 +253,15 @@ def _render_semantic_context(
             lines.append("Fields:")
             for f in d.fields:
                 bits = [f.name]
+                _desc = " ".join(str(getattr(f, "description", "") or "").split())
+                _role = str(getattr(f, "semantic_role", "") or "").strip().lower()
+                if _desc and _role in ("dimension", "enum", "measure"):
+                    # 业务列(维度/枚举/度量)的描述是值语义线索(官方文档
+                    # 导入的列义,如 "average salary");identifier/time 是
+                    # 结构列,描述多为样板句,渲染只挤占预算。单行、截 80。
+                    if len(_desc) > 80:
+                        _desc = _desc[:80].rstrip() + "…"
+                    bits.append(f"desc={_desc}")
                 if f.synonyms:
                     bits.append("synonyms: " + ", ".join(f.synonyms))
                 if f.semantic_role:
@@ -245,7 +271,9 @@ def _render_semantic_context(
                 if f.enum_display:
                     # 渲染值映射(不是只报个数):query_sketch 据此把人类值(male/男性)
                     # 落到规范 code(M),编译期再确定性归一——值留在字段层。
-                    mapping = ", ".join(
+                    # 分隔符用 "; " 而非 ", ":官方文档导入的标签自身带逗号
+                    # ("running contract, OK so far"),逗号分隔会让映射边界歧义。
+                    mapping = "; ".join(
                         f"{k}={v}" for k, v in f.enum_display.items())
                     bits.append(f"enum {{{mapping}}}")
                 if getattr(f, "value_aliases", None):

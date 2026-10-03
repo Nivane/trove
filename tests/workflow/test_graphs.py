@@ -1488,6 +1488,88 @@ class TestGenerationDegradedMarker:
         assert final["generation_degraded"] is False
 
 
+class TestPayloadSQLGate:
+    """gen 收尾载荷的解析门(0479):散文/半截 SQL 不得进 state.sql。
+
+    agentic 收尾 payload 是散文时,``extract_sql`` 的最后手段原样回吐 →
+    散文被当 SQL 接受,直到执行层 authz 才拦(ERR:AUTHZ_UNRESOLVED)。
+    门槛前移到写入点:sqlglot 解析不过 → 空串,调用方走经典降级。
+    """
+
+    def _gate(self, raw, dialect="sqlite"):
+        from trove.workflow.graphs import _payload_sql
+        return _payload_sql(raw, dialect)
+
+    def test_valid_select_passes(self):
+        assert self._gate("SELECT name FROM students;") == "SELECT name FROM students;"
+
+    def test_with_query_passes(self):
+        sql = "WITH x AS (SELECT 1 AS a) SELECT * FROM x"
+        assert self._gate(sql) == sql
+
+    def test_prose_dropped(self):
+        assert self._gate("The answer is likely around 42 based on the rows.") == ""
+
+    def test_garbled_sql_dropped(self):
+        assert self._gate("SELEC * FROM students") == ""
+
+    def test_non_query_statement_dropped(self):
+        """非查询语句(DROP/写语句)同样不过门——收尾载荷只该是查询。"""
+        assert self._gate("DROP TABLE students") == ""
+
+    def test_empty_dropped(self):
+        assert self._gate("") == ""
+        assert self._gate("   \n ") == ""
+
+    def test_validator_exception_fails_open(self, monkeypatch):
+        """校验器自身异常不阻断(与 validate_sql 的导入缺失兜底同哲学)。"""
+        import trove.workflow.nodes.gen_sql as gen_sql_mod
+
+        def _boom(sql, dialect):
+            raise RuntimeError("validator down")
+
+        monkeypatch.setattr(gen_sql_mod, "validate_sql", _boom)
+        assert self._gate("SELECT 1") == "SELECT 1"
+
+
+class TestUnparseablePayloadGate:
+    """节点级回归(0479 形状):散文收尾 → 不写 sql、走经典降级 + 归因。"""
+
+    async def test_prose_finish_falls_back_to_classic(self, sqlite_registry, catalog):
+        llm = AgenticLLM([
+            "query",  # 意图(chat)
+            # agentic 收尾:散文,不是 SQL(0479 实证形态)
+            {"content": "The answer is likely around 42 based on the rows.",
+             "tool_calls": []},
+            VALID_SQL,  # 经典兜底生成(chat)
+            "OK",       # reflect
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["error"] == ""
+        # 散文没有被当 SQL 接受;交付的是经典兜底产物
+        assert final["sql"] == "SELECT name FROM students;"
+        assert final["generation_degraded"] is True
+        # 归因:解析门拦下一笔,进 validation_hits(可观测,不静默)
+        assert any(h["name"] == "sql_gate" for h in final["validation_hits"])
+
+    async def test_valid_finish_payload_not_gated(self, sqlite_registry, catalog):
+        """对照组:合法 SQL 收尾 → 不降级、无解析门归因(门不误伤)。"""
+        llm = AgenticLLM([
+            "query",
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "finish",
+                 "arguments": '{"answer": "```sql\\nSELECT name FROM students;\\n```"}'},
+            ]},
+            {"content": "OK", "tool_calls": []},
+        ])
+        graphs = build(make_services(llm, catalog, sqlite_registry), agentic=True)
+        final = await graphs["reflection"].ainvoke(make_state())
+        assert final["sql"] == "SELECT name FROM students;"
+        assert final["generation_degraded"] is False
+        assert not any(h["name"] == "sql_gate" for h in final["validation_hits"])
+
+
 class TestSelectionIsRoundScoped:
     """``selection`` 必须**每轮清零**，否则上一轮的投票结果会被当成本轮的。
 

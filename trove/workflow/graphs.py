@@ -234,6 +234,28 @@ _STYLE_HINTS = {
 }
 
 
+def _payload_sql(raw: str, dialect: str) -> str:
+    """收尾文本/工具载荷里的 SQL 必须过解析门才允许进 state.sql。
+
+    0479 实证:agentic 收尾 payload 是散文,``extract_sql`` 的最后手段原样
+    回吐,散文被当 SQL 接受、直到执行层 authz 才拦(ERR:AUTHZ_UNRESOLVED
+    could not be parsed)。这里把门槛前移:sqlglot 解析不过(非单条
+    SELECT/WITH/UNION 查询)→ 返回空串,调用方走经典降级/重试,而不是把
+    不可执行文本当产物交付。校验器自身异常不阻断(与 validate_sql 的
+    导入缺失兜底同哲学)。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        from trove.workflow.nodes.gen_sql import validate_sql
+
+        ok, _errors = validate_sql(text, dialect)
+    except Exception:
+        return text
+    return text if ok else ""
+
+
 async def _run_candidate_subagent(
     services,
     state: WorkflowState,
@@ -315,15 +337,21 @@ async def _run_candidate_subagent(
         )
     except Exception:
         return None
-    sql = extract_sql(result.get("content", "")) if result.get("content") else ""
+    sql = _payload_sql(
+        extract_sql(result.get("content", "")) if result.get("content") else "",
+        dialect,
+    )
     if not sql:
-        # 模型可能在工具里给出 SQL(validate/probe/check/finish 过都算)
+        # 模型可能在工具里给出 SQL(validate/probe/check/finish 过都算)。
+        # 每个候选同样过解析门:不可解析的载荷不进投票池——坏候选只会让
+        # select 共识投票在垃圾上收敛。
         for entry in reversed(result.get("tool_history") or []):
             args = entry.get("arguments") or {}
             payload = args.get("sql") or args.get("answer")
             if entry.get("name") in ("validate_sql", "probe_query", "check_result", "finish") and payload:
-                sql = payload
-                break
+                sql = _payload_sql(payload, dialect)
+                if sql:
+                    break
     return sql or None
 
 
@@ -1093,21 +1121,37 @@ def make_gen_generate(
                 actual = result.get("first_input_tokens") or 0
                 if est and actual:
                     record_token_calibration(model, dialect, est, actual)
-                sql = extract_sql(result["content"]) if result.get("content") else ""
+                raw_sql = extract_sql(result["content"]) if result.get("content") else ""
+                # 解析门:收尾文本/工具载荷必须是一条可解析的查询才允许落
+                # state.sql(0479:散文收尾曾被当 SQL 接受,直到执行层才拦)。
+                sql = _payload_sql(raw_sql, dialect)
+                gate_dropped = bool(raw_sql.strip()) and not sql
                 if not sql:
                     # 模型可能只在工具里给出 SQL,最终 content 无 SQL 回显
-                    # (validate/probe/check/finish 过都算——捞最近一次工具载荷)。
+                    # (validate/probe/check/finish 过都算——捞最近一次**可解析**
+                    # 的工具载荷;散文/半截 SQL 被解析门挡下)。
                     for entry in reversed(result.get("tool_history") or []):
                         args = entry["arguments"] or {}
                         payload = args.get("sql") or args.get("answer")
                         if entry["name"] in ("validate_sql", "probe_query", "check_result", "finish") and payload:
-                            sql = payload
-                            break
+                            sql = _payload_sql(payload, dialect)
+                            if sql:
+                                break
+                            gate_dropped = True
                 update["attempts"] = result["rounds"]
                 # check_result 规则命中随状态带出(与既有 hits 合并,不覆盖
-                # validate 层已记录的拦截)
-                if registry.check_hits:
-                    update["validation_hits"] = list(state.validation_hits) + registry.check_hits
+                # validate 层已记录的拦截);解析门拦下也记一笔归因。
+                if registry.check_hits or gate_dropped:
+                    hits = list(state.validation_hits) + registry.check_hits
+                    if gate_dropped:
+                        # 与 rules.verify / validate 节点的命中同形({name, reason}):
+                        # 它就是一次真实拦截(载荷被拒、随后经典兜底),是 eval
+                        # tried_recovery 该看到的恢复前因,不是旁观事件。
+                        hits.append({
+                            "name": "sql_gate",
+                            "reason": "unparseable payload dropped before execution",
+                        })
+                    update["validation_hits"] = hits
                 # 自检通过次数**每轮覆盖**(不 += 上一轮):记的是最终那一轮
                 # 的自检结果。修正轮之后交付的 SQL 是新的,用旧轮的通过给它
                 # 加分是虚高(I6)。

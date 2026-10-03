@@ -133,9 +133,13 @@ def _render_plan(data: dict[str, Any], lang: str = "en") -> str:
     extreme = data.get("extreme")
     if isinstance(extreme, dict):
         scope = extreme.get("scope", "")
+        rank = extreme.get("rank")
+        # rank 渲染给 gen_sql:它是"第 N 高/低"的结构信号(编译器据此产出
+        # 选择谓词),gen 照计划文本构造 SQL 时需要看到它。
+        rank_txt = f" · rank: {rank}" if rank else ""
         lines.append(
             f"{('极值: ' if zh else 'Extreme: ')}{extreme.get('func')}({extreme.get('column')})"
-            f" · scope: {scope}"
+            f" · scope: {scope}{rank_txt}"
         )
     if data.get("ordering"):
         lines.append(("排序: " if zh else "Ordering: ") + _ordering_text(data["ordering"]))
@@ -248,6 +252,12 @@ def ensure_aggregate_answer_column(
     # (多度量)导致分析 MISS,分析计划跳过这些旧形态兜底。
     if isinstance(plan.get("analysis"), dict):
         return None
+    # 极值计划(extreme 带列)的指标列由编译器消费 extreme 生成(rank=1 的
+    # 排序/rank≥2 的选择谓词),注入 FUNC(*) 只会多出一个通配占位列——0475
+    # 实测把"单列实体"答案变成"实体列 + max(*)"两列。
+    extreme = plan.get("extreme")
+    if isinstance(extreme, dict) and str(extreme.get("column") or "").strip():
+        return None
     agg = str(plan.get("aggregation") or "").strip().lower()
     if not agg or agg in ("none", "无"):
         return None
@@ -256,10 +266,68 @@ def ensure_aggregate_answer_column(
         return None  # 已有聚合表达式列 → 不重复补
     # aggregation 可能带修饰(如 "count(distinct x)")——取其函数名作占位前列
     func = re.split(r"[(\s]", agg, 1)[0] or "count"
+    if not func.lower().startswith("count"):
+        # 非 count 族的聚合(avg/sum/min/max)注入 FUNC(*) 是非法或语义错的
+        # 占位:AVG(*)/SUM(*) 在 MySQL 语法非法,MIN(*)/MAX(*) 语义是"任意行
+        # 极值"而非计划声明的度量(如 avg(order.amount))。这类计划的指标列
+        # 由 aggregation 表达式本身承载,gen_sql 照计划文本输出即可。
+        return None
+    if plan.get("having"):
+        # 已有聚合后过滤(having)→ 计划已把量级约束表达完整(0494 型:"in
+        # total 3539" 的 HAVING),通配占位列只会改变结果宽度。
+        return None
     metric = f"{func}(*)"
     fixed = dict(plan)
     fixed["answer_columns"] = list(cols) + [metric]
     fixed["plan_field"] = "ensure_aggregate_answer_column"
+    return fixed
+
+
+#: 序数词 → extreme rank(「第 N 高/低」)。中英并收,词边界匹配;
+#: 只认**恰一个**命中——多命中=歧义,不猜。
+_ORDINAL_RANKS = {
+    "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    "2nd": 2, "3rd": 3, "4th": 4, "5th": 5,
+    "6th": 6, "7th": 7, "8th": 8, "9th": 9, "10th": 10,
+}
+_ORDINAL_RANKS_ZH = {
+    "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+
+def extreme_rank_from_question(
+    plan: dict[str, Any] | None, question: str,
+) -> dict[str, Any] | None:
+    """「第二高/third-highest」型问句 → 给 plan.extreme 补 rank(零 LLM)。
+
+    编译器消费 extreme.rank:rank≥2 产出「第 N 高/低」的选择谓词,缺省 1。
+    planner 常把 "second-highest" 写进 scope 文本却不落结构字段——这里按
+    问句词形确定性补齐,让编译器不必解析自由文本。恰一个序数词命中才认。
+    """
+    if not isinstance(plan, dict):
+        return None
+    extreme = plan.get("extreme")
+    if not isinstance(extreme, dict) or not str(extreme.get("column") or "").strip():
+        return None
+    if extreme.get("rank") is not None:
+        return None  # planner 已给 → 不动(显式优先)
+    ql = (question or "").lower()
+    hits: set[int] = set()
+    for word, rank in _ORDINAL_RANKS.items():
+        if re.search(rf"\b{re.escape(word)}\b", ql):
+            hits.add(rank)
+    for word, rank in _ORDINAL_RANKS_ZH.items():
+        if f"第{word}" in (question or ""):
+            hits.add(rank)
+    if len(hits) != 1:
+        return None
+    fixed = dict(plan)
+    fixed_extreme = dict(extreme)
+    fixed_extreme["rank"] = hits.pop()
+    fixed["extreme"] = fixed_extreme
+    fixed["plan_field"] = "extreme_rank_from_question"
     return fixed
 
 
@@ -387,7 +455,12 @@ def correct_entity_count_plan(
         return None
     joins = str(plan.get("joins") or "")
 
-    expr = _distinct_expr_from_plan(colses, joins)
+    # 实体候选表(问题名词 → plan 表),同时作精确层的外键护栏:改写只认
+    # "记录表 → 问题点名的实体表"的所有权边。外键那端是维度表
+    # (account.district_id = district.district_id)时,去重计数会把每个
+    # 分组塌成 1(0483 实测误改 → count(distinct account.district_id))。
+    entity_hint = set(_entity_tables(question, plan, lang))
+    expr = _distinct_expr_from_plan(colses, joins, entity_hint)
     if expr is None:
         expr = _distinct_expr_from_entities(question, plan, joins, lang)
     if expr is None:
@@ -410,13 +483,29 @@ def correct_entity_count_plan(
     return fixed
 
 
-def _distinct_expr_from_plan(cols: list[str], joins: str) -> str | None:
+def _distinct_expr_from_plan(
+    cols: list[str], joins: str, entity_tables: set[str],
+) -> str | None:
     """精确层:从 answer_columns 的 count(记录表.列) + joins 外键推去重实体列。
 
-    只认 ``count(<t>.<anything>)`` 且 joins 里有 ``<t>.<fk> = ... <id>``:
-    把记录计数(count 行)改成 count(distinct 记录表.外键列)。外键列名通常
-    即"实体归属",如 count(loan.loan_id) → count(distinct loan.account_id)。
+    只认 ``count(<t>.<anything>)`` 且 joins 里有 ``<t>.<fk> = <other>.<id>``
+    **且 <other> 属于问题实体候选表**:把记录计数(count 行)改成
+    count(distinct 记录表.外键列)。外键列名通常即"实体归属",如
+    count(loan.loan_id) → count(distinct loan.account_id)。
+
+    护栏(0483 实测):``<other>`` 是维度表(district)时该边不是所有权边,
+    去重计数会把每个分组塌成 1——不认,继续找该表的其它边;都没有则
+    返回 None(交兜底层/planner 纪律,不瞎改)。
     """
+    def _fk_edge(tbl: str) -> str | None:
+        for fk in re.finditer(
+            rf"\b{re.escape(tbl)}\s*\.\s*(\w+)\s*=\s*([A-Za-z_][\w]*)\s*\.\s*(\w+)",
+            joins, re.I,
+        ):
+            if fk.group(2).lower() in entity_tables:
+                return fk.group(1)
+        return None
+
     for a in cols:
         m = re.match(r"^count\s*\(\s*([A-Za-z_][\w]*)\.(\w+)\s*\)", a, re.I)
         if not m:
@@ -425,24 +514,17 @@ def _distinct_expr_from_plan(cols: list[str], joins: str) -> str | None:
         if col.lower() == f"{tbl}_id".lower():
             continue  # count(loan.loan_id) 是记录主键,不是外键;继续找外键
         # joins 里该表的其它列作为 <=> 键(通常是外键,如 account_id)
-        fk = re.search(
-            rf"\b{re.escape(tbl)}\s*\.\s*(\w+)\s*=\s*[A-Za-z_][\w]*\s*\.\s*(\w+)",
-            joins, re.I,
-        )
-        if fk:
-            return f"count(distinct {tbl}.{fk.group(1)})"
+        fk_col = _fk_edge(tbl)
+        if fk_col:
+            return f"count(distinct {tbl}.{fk_col})"
     # 记录主键在 count 里,退一层:从 joins 找记录表级联的外键
     for a in cols:
         m = re.match(r"^count\s*\(\s*([A-Za-z_][\w]*)\.\w+\s*\)", a, re.I)
         if not m:
             continue
-        tbl = m.group(1)
-        fk = re.search(
-            rf"\b{re.escape(tbl)}\s*\.\s*(\w+)\s*=\s*[A-Za-z_][\w]*\s*\.\s*(\w+)",
-            joins, re.I,
-        )
-        if fk:
-            return f"count(distinct {tbl}.{fk.group(1)})"
+        fk_col = _fk_edge(m.group(1))
+        if fk_col:
+            return f"count(distinct {m.group(1)}.{fk_col})"
     return None
 
 
@@ -1268,6 +1350,13 @@ def make_query_sketch(
             corrected = correct_entity_count_plan(plan_json, state.question, state.lang)
             if corrected is not None:
                 plan_json = corrected
+                plan = _render_plan(plan_json, state.lang)
+            # 极值序数词补齐:「第二高/third-highest」→ plan.extreme.rank
+            # (编译器据此产出第 N 高/低的选择谓词;缺省 rank=1 走排序形态)。
+            # 确定性、恰一命中才认;和上面一样先纠正再渲染、再重解析。
+            ranked = extreme_rank_from_question(plan_json, state.question)
+            if ranked is not None:
+                plan_json = ranked
                 plan = _render_plan(plan_json, state.lang)
             # 分组聚合兜底:声明了聚合但 answer_columns 缺聚合指标列 → 补列。
             # 修正后重渲染 plan 文本(gen_sql 以 answer_columns 为权威),
