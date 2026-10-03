@@ -20,6 +20,7 @@ from trove.services.retrieval import (
     PgHybridStore,
     SqliteHybridStore,
 )
+from trove.services.retrieval.authority import AUTHORITY_ALPHA
 from trove.services.retrieval.query_log import QueryLogRecorder
 
 logger = get_logger(__name__)
@@ -71,6 +72,21 @@ def channel_cfg(cfg: Any) -> tuple[int, dict[str, float]]:
     )
 
 
+def authority_cfg(cfg: Any) -> float:
+    """权威分权重 α(registry / eval 共用)。
+
+    与 store 的 ``authority_alpha=None`` 约定对齐:缺省/None → 默认
+    ``AUTHORITY_ALPHA``(默认开);**显式 0 原样保留**(关);非法值回默认。
+    """
+    raw = getattr(cfg, "rrf_authority_alpha", None)
+    if raw is None:
+        return AUTHORITY_ALPHA
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return AUTHORITY_ALPHA
+
+
 def hnsw_cfg(cfg: Any) -> tuple[int, int, int]:
     """(hnsw_m, hnsw_ef_construction, hnsw_ef_search) HNSW 参数(0 = 默认)。"""
     return (
@@ -92,6 +108,7 @@ def build_store(cfg: Any, gateway: Any, home: str | Path) -> Any:
     reranker = _reranker_for(cfg, embedder)
     dims = int(getattr(cfg, "embedding_dims", 1536) or 1536)
     rrf_k, rrf_weights = channel_cfg(cfg)
+    alpha = authority_cfg(cfg)
     recorder = QueryLogRecorder.for_home(home)
     dsn = str(getattr(cfg, "retrieval_dsn", "") or "").strip()
     if not dsn and getattr(cfg, "type", "") == "postgres":
@@ -101,11 +118,12 @@ def build_store(cfg: Any, gateway: Any, home: str | Path) -> Any:
         m, ef_construction, ef_search = hnsw_cfg(cfg)
         return PgHybridStore(
             dsn, embedder=embedder, reranker=reranker, dims=dims,
-            rrf_k=rrf_k, rrf_weights=rrf_weights,
+            rrf_k=rrf_k, rrf_weights=rrf_weights, authority_alpha=alpha,
             recorder=recorder,
             hnsw_m=m, hnsw_ef_construction=ef_construction,
             hnsw_ef_search=ef_search,
         )
     return SqliteHybridStore.for_home(
         home, embedder, reranker,
-        rrf_k=rrf_k, rrf_weights=rrf_weights, recorder=recorder)
+        rrf_k=rrf_k, rrf_weights=rrf_weights, authority_alpha=alpha,
+        recorder=recorder)

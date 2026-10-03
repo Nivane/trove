@@ -314,7 +314,10 @@ class TestAbsorbedSites:
             await db.commit()
 
     async def test_legacy_retrieval_db_gets_the_sparse_column(self, tmp_path):
-        from trove.services.retrieval.sqlite_store import SqliteHybridStore
+        from trove.services.retrieval.sqlite_store import (
+            RETRIEVAL_MIGRATIONS,
+            SqliteHybridStore,
+        )
 
         db_path = tmp_path / "retrieval.sqlite"
         await self._legacy_retrieval_db(db_path)
@@ -322,16 +325,25 @@ class TestAbsorbedSites:
         await SqliteHybridStore(db_path, None, None)._ensure()
 
         async with aiosqlite.connect(db_path) as db:
-            assert "sparse" in await columns_of(db, "documents", dialect=SQLITE)
-            assert await read_version(db, "retrieval", dialect=SQLITE) == 2
+            cols = await columns_of(db, "documents", dialect=SQLITE)
+            assert "sparse" in cols
+            assert "authority" in cols   # v3 同样补到老库上
+            # 版本断言锚"代码当前最新"而非数字字面量:迁移增版时此测自动
+            # 跟随 —— 它测的是补齐路径,不是版本号本身。
+            assert (await read_version(db, "retrieval", dialect=SQLITE)
+                    == RETRIEVAL_MIGRATIONS[-1].version)
 
     async def test_fresh_retrieval_db_lands_on_the_same_version(self, tmp_path):
         """新库与存量库**最终同形** —— 这正是"迁移逐条幂等"换来的性质。"""
-        from trove.services.retrieval.sqlite_store import SqliteHybridStore
+        from trove.services.retrieval.sqlite_store import (
+            RETRIEVAL_MIGRATIONS,
+            SqliteHybridStore,
+        )
 
         db_path = tmp_path / "retrieval.sqlite"
         await SqliteHybridStore(db_path, None, None)._ensure()
 
         async with aiosqlite.connect(db_path) as db:
             assert "sparse" in await columns_of(db, "documents", dialect=SQLITE)
-            assert await read_version(db, "retrieval", dialect=SQLITE) == 2
+            assert (await read_version(db, "retrieval", dialect=SQLITE)
+                    == RETRIEVAL_MIGRATIONS[-1].version)

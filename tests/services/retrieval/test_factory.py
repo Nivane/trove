@@ -13,7 +13,13 @@ from trove.services.retrieval import (
     PgHybridStore,
     SqliteHybridStore,
 )
-from trove.services.retrieval.factory import _reranker_for, build_store, channel_cfg
+from trove.services.retrieval.authority import AUTHORITY_ALPHA
+from trove.services.retrieval.factory import (
+    _reranker_for,
+    authority_cfg,
+    build_store,
+    channel_cfg,
+)
 
 
 def _cfg(**kw):
@@ -68,6 +74,22 @@ def test_channel_cfg_roundtrip():
     rrf_k, weights = channel_cfg(cfg)
     assert rrf_k == 100
     assert weights == {"keyword": 1.5, "dense": 1.0}
+
+
+def test_authority_cfg_default_on_explicit_zero_off():
+    """权威分默认开(诚实默认);显式 0 = 关;非法值不炸、回默认。"""
+    assert authority_cfg(_cfg()) == AUTHORITY_ALPHA
+    assert authority_cfg(_cfg(rrf_authority_alpha=0)) == 0.0
+    assert authority_cfg(_cfg(rrf_authority_alpha=0.25)) == 0.25
+    assert authority_cfg(_cfg(rrf_authority_alpha="wat")) == AUTHORITY_ALPHA
+
+
+async def test_build_store_passes_authority_alpha(tmp_path):
+    store = build_store(_cfg(embedder_backend="bge-m3"), None, tmp_path)
+    assert store._authority_alpha == AUTHORITY_ALPHA
+    off = build_store(
+        _cfg(embedder_backend="bge-m3", rrf_authority_alpha=0), None, tmp_path)
+    assert off._authority_alpha == 0.0
 
 
 async def test_build_store_sqlite_recorder(tmp_path):

@@ -40,8 +40,9 @@ _DOC_FTS = "CREATE VIRTUAL TABLE IF NOT EXISTS doc_fts USING fts5(content, conte
 _DOC_DS_INDEX = "CREATE INDEX IF NOT EXISTS idx_documents_ds ON documents(datasource)"
 
 #: 检索库的表结构版本。v1 = documents/doc_fts/索引;v2 = 稀疏通道的 sparse
-#: 列。v1 里**不含** sparse 是刻意的:那是 v1 当年的真实形状,新库和存量库
-#: 因此走同一条路径(存量库的 CREATE 是空操作,列由 v2 补上)。
+#: 列;v3 = 权威分 authority 列。v1 里**不含** sparse/authority 是刻意的:
+#: 那是 v1 当年的真实形状,新库和存量库因此走同一条路径(存量库的 CREATE
+#: 是空操作,列由后续版本补上)。
 #:
 #: **v2 保留,即使 learned-sparse 通道已退役**:版本号记的是历史,不是配置。
 #: 从列表里删掉 v2 会让存量库(停在 v2)看起来"比代码新"而触发
@@ -52,6 +53,9 @@ RETRIEVAL_MIGRATIONS = [
               ops=[_DOCUMENTS_TABLE, _DOC_FTS, _DOC_DS_INDEX]),
     Migration(version=2, description="sparse 稀疏通道列",
               ops=[AddColumn("documents", "sparse", "BLOB", "BYTEA")]),
+    Migration(version=3, description="authority 权威分列",
+              ops=[AddColumn("documents", "authority",
+                             "REAL DEFAULT 0.0", "DOUBLE PRECISION DEFAULT 0.0")]),
 ]
 
 
@@ -68,11 +72,13 @@ class SqliteHybridStore(HybridStore):
         self, db_path: str | Path, embedder, reranker, dims: int = 0,
         rrf_k: int = 60,
         rrf_weights: dict[str, float] | None = None,
+        authority_alpha: float | None = None,
         recorder: Any | None = None,
     ) -> None:
         super().__init__(
             embedder, reranker, rrf_k=rrf_k,
-            rrf_weights=rrf_weights, recorder=recorder)
+            rrf_weights=rrf_weights,
+            authority_alpha=authority_alpha, recorder=recorder)
         self._db = str(db_path)
         self._dims = dims
 
@@ -103,10 +109,10 @@ class SqliteHybridStore(HybridStore):
                 await db.execute(
                     "DELETE FROM documents WHERE doc_id = ?", (doc_id,))
                 cur = await db.execute(
-                    "INSERT INTO documents (doc_id, datasource, kind, source_file, content, embedding) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO documents (doc_id, datasource, kind, source_file, content, embedding, authority) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (doc_id, doc.datasource, doc.kind, doc.source_file, doc.content,
-                     _pack(emb)),
+                     _pack(emb), float(doc.authority or 0.0)),
                 )
                 rowid = cur.lastrowid
                 await db.execute(
@@ -207,7 +213,8 @@ class SqliteHybridStore(HybridStore):
             db.row_factory = aiosqlite.Row
             ph = ",".join("?" * len(doc_ids))
             cur = await db.execute(
-                f"SELECT doc_id, content, kind FROM documents WHERE doc_id IN ({ph})",
+                f"SELECT doc_id, content, kind, authority FROM documents "
+                f"WHERE doc_id IN ({ph})",
                 doc_ids,
             )
             rows = {r["doc_id"]: r for r in await cur.fetchall()}
@@ -218,5 +225,6 @@ class SqliteHybridStore(HybridStore):
                 continue
             out.append(RetrievalHit(
                 doc_id=doc_id, content=r["content"],
-                score=scores.get(doc_id, 0.0), kind=r["kind"]))
+                score=scores.get(doc_id, 0.0), kind=r["kind"],
+                authority=float(r["authority"] or 0.0)))
         return out

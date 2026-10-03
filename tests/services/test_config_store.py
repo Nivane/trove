@@ -37,6 +37,7 @@ def test_roundtrip_retrieval_tuning_fields(tmp_path):
         name="r", type="postgres", retrieval_dsn="postgresql://x",
         embedder_backend="bge-m3", embedding_model="BAAI/bge-m3",
         rrf_k=100, rrf_weights={"keyword": 1.5, "dense": 1.0},
+        rrf_authority_alpha=0.25,
         rerank_backend="bge", rerank_endpoint="https://x/rerank",
     )
     store.save_configs([cfg])
@@ -44,6 +45,7 @@ def test_roundtrip_retrieval_tuning_fields(tmp_path):
     assert loaded.embedder_backend == "bge-m3"
     assert loaded.rrf_k == 100
     assert loaded.rrf_weights == {"keyword": 1.5, "dense": 1.0}
+    assert loaded.rrf_authority_alpha == 0.25
     assert loaded.rerank_backend == "bge"
     assert loaded.rerank_endpoint == "https://x/rerank"
 
@@ -56,7 +58,26 @@ def test_roundtrip_retrieval_tuning_defaults(tmp_path):
     assert loaded.embedder_backend == ""
     assert loaded.rrf_k == 60
     assert loaded.rrf_weights == {}
+    assert loaded.rrf_authority_alpha == 0.1   # 权威分默认开
     assert loaded.rerank_backend == ""
+
+
+def test_roundtrip_authority_alpha_explicit_zero(tmp_path):
+    """显式 0 = 关闭权威分偏置 —— 读回时不能被 `or 0.1` 翻回默认。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    store.save_configs([
+        DatasourceConfig(name="a", type="sqlite", rrf_authority_alpha=0.0)])
+    assert store.load_configs()[0].rrf_authority_alpha == 0.0
+
+
+def test_legacy_yml_without_authority_alpha_defaults_on(tmp_path):
+    """旧 yml 无该字段 → 默认 0.1(默认开是刻意的,消融靠显式 0)。"""
+    store = ConfigStore(tmp_path / "datasources.yml")
+    (tmp_path / "datasources.yml").write_text(
+        "datasources:\n- name: a\n  type: sqlite\n  connection:\n    path: /tmp/x.db\n",
+        encoding="utf-8",
+    )
+    assert store.load_configs()[0].rrf_authority_alpha == 0.1
 
 
 def test_load_top_level_not_mapping(tmp_path):

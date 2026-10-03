@@ -286,6 +286,11 @@ class DatasourceConfig:
     rrf_k: int = 60
     # RRF 每路权重:{"keyword": .., "dense": ..};缺省 = 等权 1.0。
     rrf_weights: dict[str, float] = field(default_factory=dict)
+    # 检索权威分权重 α:命中分 = 归一化 RRF + α·authority,authority ∈ [-1,1]
+    # 由条目治理状态确定性派生(certified +1 / deprecated -1,仅 example/
+    # template;见 retrieval/authority.py)。**默认开(0.1)**;显式 0 = 关。
+    # 学 Databricks Ontology 的 curation 加权;消融入口与 rrf_k/rrf_weights 同层。
+    rrf_authority_alpha: float = 0.1
     # 精排后端:**""/"auto"/"none" = 不精排(默认)** —— 默认档曾是确定性
     # n-gram coverage,与下游 _rank_examples 的 _sim 同函数同源,融合等于原值,
     # 纯重复计算。显式配 | "deterministic"(n-gram coverage) | "bge"(本地
