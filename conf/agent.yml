@@ -66,7 +66,9 @@ agent:
   #              跳过 query_sketch + 生成 + 裁决)。默认开。
   #   reflect_skip: validate 确定性规则全过时跳过 reflect 的 LLM 裁决——
   #                 simple(仅低复杂度题,默认)/ standard(再跳 standard,
-  #                 修正轮强制 standard 复杂度,成功轮也受益)/ all/ off
+  #                 修正轮强制 standard 复杂度,成功轮也受益)/ all/ off。
+  #                 例外:权威编译产物(逐字复现契约)不受复杂度档限制,
+  #                 规则全过即跳过(判据读不到 → 照常判)。
   # fast_path: true
   reflect_skip: standard
   # 上下文预算覆盖(按复杂度分档 simple/standard/complex 的 token 上限;
