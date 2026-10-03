@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 能力地图：语义优先的 NL→SQL 对话式数据 Agent。数据能力与 Agent 能力逐条给出机制说明与可核对的源码位置。">
-<title>Trove 能力地图</title>
+<meta name="description" content="Trove 是语义优先的对话式数据问答（NL→SQL）系统：把一句提问变成可解释的 SQL、图表与结论，安全边界全部是代码而非提示词。含快速上手、图文用户 / 管理台指南与逐条源码锚点。">
+<title>Trove 文档 · 对话式数据问答（NL→SQL）</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -25,20 +25,20 @@
     <!-- ══ 首屏 ══ -->
     <header class="hero">
       <span class="eyebrow"><span class="dot"></span>开源 · Apache-2.0 · Python 3.12 / LangGraph / Vue</span>
-      <h1>Trove 能力地图</h1>
+      <h1>Trove 对话式数据问答</h1>
       <p class="lede">
         把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>。
         Trove 把确定性押在<strong>语义模型、节点化工作流与确定性安全层</strong>上，
-        只把真正需要模型的那一段交给 LLM——所以跨厂商、跨方言下行为可预期。
+        只把真正需要模型的那一段交给 LLM。
       </p>
 
       <div class="en">
         <span class="en-label">English summary</span>
         Trove is a conversational data agent that turns a natural-language question into explainable SQL,
         a chart and a written conclusion. It is <b>semantic-first</b>: an OSSIE semantic model defines what is
-        answerable, a deterministic compiler resolves joins, enums, time buckets and derived metrics, and a
-        28-node LangGraph workflow generates, validates, executes and reflects — with an agentic ReAct loop
-        driving SQL generation. This page lists what it does; every capability links to the file that implements it.
+        answerable, and a deterministic compiler resolves joins, enums, time buckets and derived metrics —
+        the LLM only handles what genuinely needs a model. This page is the entry point to the docs:
+        quickstart, illustrated user / admin guides, and per-capability source anchors.
       </div>
 
       <div class="cta-row">
@@ -75,80 +75,95 @@
     <section id="what">
       <div class="sec-head">
         <span class="sec-label">全貌 · 01</span>
-        <h2>它是什么</h2>
+        <h2>一句话提问，一份可核对的答案</h2>
         <p class="sec-intro">
           一个可自托管的问数分析 Agent：接入你自己的库，用自然语言提问，拿到 SQL、图表和一段有依据的结论。
           提问与修正会沉淀进该数据源的知识库，准确率随使用增长。
         </p>
       </div>
 
+      <figure class="shot">
+        <div class="shot-frame">
+          <img src="assets/shots/user-chat-answer.png" alt="Trove 答案卡：提问气泡、结论、结果表、数据截止时间与置信度、洞察、查看 SQL 与详情、出处条" width="1624" height="1015" decoding="async">
+          <span class="pin" style="--x:23.6%;--y:21.2%">1</span>
+          <span class="pin" style="--x:27.7%;--y:52.3%">2</span>
+          <span class="pin" style="--x:48.0%;--y:74.2%">3</span>
+        </div>
+        <figcaption>图 1 · 一条完整答案：前半是给人读的（结论 → 数据），后半是给核查用的（出处与依据）。</figcaption>
+        <ol class="shot-legend">
+          <li><span class="n">1</span><strong>结论</strong>——一句话给出答案本身。先读这里；数字有疑问再往下核。</li>
+          <li><span class="n">2</span><strong>数据截止时间与置信度</strong>——截止时间是这次查询所依据数据的时间边界，<strong>无从判断时如实写「无从判断」</strong>，不猜一个日期。</li>
+          <li><span class="n">3</span><strong>出处条</strong>——数据源、模型与运行 ID，加「KB 命中」与「校验 OK」两枚状态章。<a href="user/ask.html#anatomy">答案解剖 →</a></li>
+        </ol>
+      </figure>
+
       <pre><code><span class="cmt"># 内置 BIRD 金融演示数据源，装完即可问</span>
 uv run trove --datasource demo
 
 <span class="cmt"># 一次性提问，输出 JSON</span>
-echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print
+echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource demo --print</code></pre>
 
-<span class="cmt"># 前后端分离部署，浏览器访问 http://localhost:8080</span>
-docker compose up --build</code></pre>
+      <p style="color:var(--text-secondary);font-size:14.5px">
+        系统的形状——入口、编排、能力层与数据源各是什么——见 <a href="architecture/overview.html#shape">系统架构 · 全貌</a>。
+      </p>
+    </section>
 
-      <figure class="diagram" data-diagram="pending" style="margin-top:28px">
-        <div class="diagram-canvas">
-          <pre class="mermaid">
-flowchart TB
-    subgraph entry["入口"]
-        UI["Web UI"]
-        SRV["HTTP 服务"]
-        CLI["CLI / REPL"]
-        MCP["MCP"]
-    end
+    <!-- ══ 从这里开始 ══ -->
+    <section id="start">
+      <div class="sec-head">
+        <span class="sec-label">入口 · 02</span>
+        <h2>从这里开始</h2>
+        <p class="sec-intro">
+          第一次来，按「快速上手」走一遍；想先建立心智模型，看「产品概念」；要对着界面操作，走图文指南。
+        </p>
+      </div>
 
-    WF["编排 · trove/workflow&lt;br/&gt;LangGraph 工作流&lt;br/&gt;语义门禁 → 计划与编译&lt;br/&gt;生成 → 执行与校验 → 反思"]
-
-    subgraph caps["能力 · trove/services"]
-        SEM["语义模型"]
-        KB["知识库 + 混合检索"]
-        MEM["记忆 · 判定规则 · Skills"]
-    end
-
-    LLM["模型 · trove/llm&lt;br/&gt;LLM 网关"]
-    DS["数据源&lt;br/&gt;PostgreSQL · MySQL&lt;br/&gt;ClickHouse · DuckDB&lt;br/&gt;SQLite"]
-    STATE["状态 · trove/storage&lt;br/&gt;PostgreSQL / SQLite&lt;br/&gt;会话 · 任务 · 检查点&lt;br/&gt;查询日志 · 谱系"]
-
-    UI --&gt; WF
-    SRV --&gt; WF
-    CLI --&gt; WF
-    MCP --&gt; WF
-    WF --&gt; SEM
-    WF --&gt; KB
-    WF --&gt; MEM
-    WF -.-&gt; LLM
-    KB --&gt; DS
-    MEM --&gt; STATE
-          </pre>
-        </div>
-        <figcaption>
-          <span class="cap-rendered">图 1 · 系统的形状：入口进来，编排决定做什么，能力层干活，落点在状态与数据源；实线是「谁调谁」，虚线是「谁会用到大模型」，两条都不是数据流。</span>
-          <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
-        </figcaption>
-      </figure>
+      <div class="cards">
+        <a class="card" href="guide/quickstart.html">
+          <span class="card-kicker">入门</span>
+          <span class="card-title">快速上手</span>
+          <span class="card-desc">安装、启动、接上演示库，问出第一条答案。</span>
+        </a>
+        <a class="card" href="guide/concepts.html">
+          <span class="card-kicker">概念</span>
+          <span class="card-title">产品概念</span>
+          <span class="card-desc">语义模型、知识库、工作流各是什么——先建立心智模型再动手。</span>
+        </a>
+        <a class="card" href="user/ui-tour.html">
+          <span class="card-kicker">图文指南</span>
+          <span class="card-title">界面导览</span>
+          <span class="card-desc">用户端与管理台界面逐屏讲解，全部配真实截图。</span>
+        </a>
+        <a class="card" href="architecture/overview.html">
+          <span class="card-kicker">架构</span>
+          <span class="card-title">系统架构</span>
+          <span class="card-desc">系统的形状、各层职责，与一次问答的完整链路。</span>
+        </a>
+        <a class="card" id="data" href="capabilities/data.html">
+          <span class="card-kicker">能力 · 数据侧</span>
+          <span class="card-title">数据能力总览</span>
+          <span class="card-desc">语义层、知识库、检索、多数据源、内部存储与评测基建。</span>
+        </a>
+        <a class="card" id="agent" href="capabilities/agent.html">
+          <span class="card-kicker">能力 · Agent 侧</span>
+          <span class="card-title">Agent 能力总览</span>
+          <span class="card-desc">工具治理、工作流编排、规划、多候选、记忆分层与安全边界。</span>
+        </a>
+      </div>
     </section>
 
     <!-- ══ 为什么语义优先 ══ -->
     <section id="why">
       <div class="sec-head">
-        <span class="sec-label">全貌 · 02</span>
+        <span class="sec-label">方法 · 03</span>
         <h2>为什么语义优先</h2>
         <p class="sec-intro">
           大多数问数系统的准确率上限押在模型和检索上。Trove 换了一个问题：
           <b>这个数据源到底能回答什么</b>——把这件事用一份可读的语义模型写清楚，
-          先划定边界，再谈生成。
+          先划定边界，再谈生成。语义模型是生成的主视角，也是可答边界；
+          但它不是一道全有全无的闸门——编译结果是<b>分级</b>的，能答多少答多少，答不了的说清楚为什么：
         </p>
       </div>
-
-      <p style="margin-bottom:22px">
-        语义模型是生成的主视角，也是可答边界。但它不是一道全有全无的闸门——
-        编译结果是<b>分级</b>的，能答多少答多少，答不了的说清楚为什么：
-      </p>
 
       <div class="tiers">
         <div class="tier hit">
@@ -178,609 +193,18 @@ flowchart TB
       <div class="cap-where" style="margin-top:18px">
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1128">compiler.py:1128 <span class="ref-line">PartialCompile</span></a>
         <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1237">compiler.py:1237 <span class="ref-line">is_hard_miss</span></a>
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L2684">compiler.py:2684 <span class="ref-line">骨架产出</span></a>
+        <a href="guide/concepts.html">产品概念</a>
+        <a href="capabilities/semantic.html">语义层详解</a>
       </div>
     </section>
 
-    <!-- ══ 链路 ══ -->
-    <section id="flow">
-      <div class="sec-head">
-        <span class="sec-label">全貌 · 03</span>
-        <h2>一次问答走完的链路</h2>
-        <p class="sec-intro">
-          主图是 LangGraph 上的 28 个节点（默认配置）。节点名与图中一致，可以直接对着代码读。
-          虚线框的 <code>clarify</code> 是可选分支，需显式开启 <code>build_graphs(clarify=True)</code> 才挂上——
-          生产入口只传 checkpointer，走默认值，所以不算在 28 里。
-        </p>
-      </div>
-
-      <div class="pipeline">
-        <div class="pipe-row">
-          <span class="pipe-phase">入口与路由</span>
-          <div class="pipe-nodes">
-            <span class="node">route_intent</span><span class="node">parse_date</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">语义门禁</span>
-          <div class="pipe-nodes">
-            <span class="node">schema_linking</span>
-            <span class="node is-gate">refuse</span>
-            <span class="node is-gate is-opt">clarify</span>
-            <span class="node is-gate">confirm_draft</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">确定性快径</span>
-          <div class="pipe-nodes">
-            <span class="node">fast_match</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">规划与生成</span>
-          <div class="pipe-nodes">
-            <span class="node">query_sketch</span><span class="node">gen_retrieve</span>
-            <span class="node">gen_assemble</span><span class="node">gen_generate</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">语义复核与人工确认</span>
-          <div class="pipe-nodes">
-            <span class="node">semantics</span><span class="node">hitl</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">执行与校验</span>
-          <div class="pipe-nodes">
-            <span class="node">execute_sql</span><span class="node">select</span><span class="node">validate</span>
-            <span class="node">masking</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">反思与错因回滚</span>
-          <div class="pipe-nodes">
-            <span class="node is-loop">reflect</span><span class="node is-loop">analyze_error</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">交付</span>
-          <div class="pipe-nodes">
-            <span class="node is-out">insights</span><span class="node is-out">attribution</span>
-            <span class="node is-out">chart</span><span class="node is-out">conclusion</span>
-            <span class="node is-out">output</span>
-          </div>
-        </div>
-        <div class="pipe-row">
-          <span class="pipe-phase">旁路</span>
-          <div class="pipe-nodes">
-            <span class="node">answer_metadata</span><span class="node">metadata_check</span>
-            <span class="node">answer_reject</span><span class="node">answer_chitchat</span>
-            <span class="node">answer_correction</span>
-          </div>
-        </div>
-        <div class="pipe-note">
-          <span class="legend"><i style="background:var(--warn)"></i>门禁 / 需澄清</span>
-          <span class="legend"><i style="background:var(--accent)"></i>失败回环重生成</span>
-          <span class="legend"><i style="background:var(--ok)"></i>面向用户的交付</span>
-          <span class="legend"><i style="border:1px dashed var(--border-default)"></i>可选分支，默认关闭</span>
-        </div>
-      </div>
-
-      <div class="cap-where" style="margin-top:16px">
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1728">graphs.py:1728 <span class="ref-line">主图装配</span></a>
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/rules.py">rules.py <span class="ref-line">确定性校验规则链</span></a>
-        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">versions.py <span class="ref-line">SQL 版本链 / 回归硬检查</span></a>
-      </div>
-    </section>
-
-    <!-- ══ 数据能力 ══ -->
-    <section id="data">
-      <div class="sec-head">
-        <span class="sec-label">数据能力</span>
-        <h2>七组数据侧能力</h2>
-        <p class="sec-intro">
-          每一组都给出机制与实现位置。行号指向仓库 <code class="mono">main</code> 分支，
-          可直接跳过去读源码。
-        </p>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">01</span>
-          <h3>语义层——可答边界写成一份可读的文件</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            语义模型存的是 <b>Apache OSSIE</b> 核心规范的 <code>semantic_model</code>：datasets 与 metrics，
-            指标表达式按方言分写（<code>expression.dialects</code>），表达式里的表是全限定的，
-            指标归属哪个数据集由 <code>dataset.field</code> 引用反推——不需要人再手填一遍。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/">trove/services/kb/ <span class="ref-line">semantics.yml</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/">semantic_layer/</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            <b>编译边界是分级逃生梯，不是全有全无。</b>硬缺口（fan-out、join 二义、未覆盖表）才拒绝并反问扩展模型；
-            软缺口（未声明的指标/字段/枚举值、时间分桶）留骨架给生成节点补齐。详见上文「为什么语义优先」。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1128">compiler.py:1128</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L149">compiler.py:149 <span class="ref-line">JoinResolver</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/contract.py#L180">contract.py:180 <span class="ref-line">miss_parts 契约</span></a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            语义校验节点在出结果前复核口径：问的是不是这个指标、时间窗口对不对、比率的分母是不是该排除的那一批。
-            不一致就回炉，而不是把一段看着像样的答案交出去。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/semantics.py">nodes/semantics.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">02</span>
-          <h3>判定规则——同一份语义模型，回答「算不算有问题」</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            规则用语义模型的词表说话：一个 metric、一组 filter、一个自然语言窗口、一个基线，
-            外加「什么算超标」的布尔表达式。定时任务按规则求值，<b>全程零 LLM</b>——
-            于是「昨天为什么报红」可以从输入重放出来，而不是重跑一次对话看它今天心情如何。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L134">decision/service.py:134 <span class="ref-line">DecisionService</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L60">decision/rules.py:60 <span class="ref-line">DecisionRule</span></a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            条件是<b>不可信输入</b>（任何能写 KB 的人都能改），所以绝不过 <code>eval()</code>：
-            手写分词器 + 递归下降，变量表与函数表都是闭集，拼错的变量名在<b>解析期</b>就报错。
-            求值是<b>三值</b>的——通过 / 违反 / <b>判不了</b>：只有两值时，「缺基期」会让
-            <code>not (x &gt; y)</code> 为真，一条「没数据就报警」的规则反而会在数据缺失那刻触发。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L70">decision/expr.py:70 <span class="ref-line">VARIABLES 闭集</span></a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            规则存 <code>.trove/kb/&lt;源&gt;/decisions.yml</code>，每次改动是一个可 review 的提交；
-            写盘前无条件过 lint，拦的是那类<b>会安静地永不触发</b>的写法（比如聚合规则上给了维度——
-            查询会分组，而聚合规则只读那个空标签行，每个变量都成 Unknown）。判定失败永远<b>响亮</b>：
-            一条静默不触发的定时规则，和一个健康的规则从外面看完全一样。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L191">decision/rules.py:191 <span class="ref-line">lint_rule</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L58">routers/decisions.py:58 <span class="ref-line">管理端接口</span></a>
-            <a href="capabilities/decisions.html">判定规则（详解）</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">03</span>
-          <h3>知识库——YAML 是唯一真源，人确认才算数</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            每个数据源一套 YAML：<code>schema_notes</code> / <code>semantics</code> / <code>examples</code> /
-            <code>rules</code> / <code>lessons</code>。SQLite 镜像只服务于运行时检索，改内容改 YAML。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/">trove/services/kb/</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            <b>双轨门禁。</b>系统自动沉淀的参考示例与经验教训一律落 <code>pending</code>，
-            未经确认不进检索——人写的知识和机器猜的知识不混在一起。命中检索时才算「活过」，
-            长期没人用到的自动老化退役。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L615">service.py:615 <span class="ref-line">pending 不入检索</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1649">service.py:1649 <span class="ref-line">confirmed_only</span></a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            <b>题库式初始化与质检。</b><code>kb init</code> 起草 schema 注释与确定性规则（词表、模板），
-            <code>kb learn</code> 走「模型起草 → 人确认 → 落库」，另有静态质检脚本与在线枚举探测兜底。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/lint_kb.py">scripts/lint_kb.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/profiling.py">kb/profiling.py <span class="ref-line">取值画像</span></a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">04</span>
-          <h3>检索——两路召回，融合权重可调可评</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            关键词通道（Postgres 侧 <code>pg_bm25</code>、SQLite 侧 FTS5）与稠密通道（pgvector HNSW / 余弦）
-            各自召回，再用加权 RRF 融合（<code>rrf_k</code> 默认 60，权重按通道名配）。
-            精排默认关闭：默认档的覆盖度打分与下游排序用的是同一个函数，关掉反而让检索信号更纯。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L67">factory.py:67 <span class="ref-line">通道配置</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/rerank.py">retrieval/rerank.py</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            召回窗口按库规模自适应：小库全量候选不裁剪，超过阈值才按 <code>limit × 6</code> 收窄。
-            命中分数归一化到 [0,1] 再进下游，避免融合分被压成常量偏移。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py">retrieval/pg_store.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/metrics.py">retrieval/metrics.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">05</span>
-          <h3>多数据源——一个注册表，驱动按需加载</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            六个方言适配器：SQLite、MySQL、Doris、PostgreSQL、ClickHouse、DuckDB。新增库实现
-            <code>DatabaseAdapter</code> 并在注册表登记即可，驱动懒加载，不装就不用装。
-            能力探测决定哪些功能对该库生效，而不是假设所有库都一样。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">适配器注册表</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/base.py">adapters/base.py <span class="ref-line">抽象基类</span></a>
-            <a class="ref" href="guide/datasource.html">接入指南</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            管理端注册数据源时当场连接探测，失败直接报原因；注册后跑一次知识库初始化，
-            用户端只看到「已连接且已建模」的数据源。多数据源配置持久化，重启自动恢复。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py">api/routers/admin.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/init_postgres_demo.py">scripts/init_postgres_demo.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">06</span>
-          <h3>内部状态——一个存储抽象，两档后端</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            会话、任务、用户事实、记忆情节、鉴权、作业、血缘、查询日志、图检查点，全部走同一个
-            <code>StorageBackend</code>：生产用 Postgres，本地与测试回落 SQLite。
-            SQLite 方言（<code>?</code> 占位符、自增主键、<code>INSERT OR REPLACE</code>）由 Postgres 后端翻译，
-            上层 SQL 只写一份。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/base.py">storage/backends/base.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/backends/postgres.py">backends/postgres.py</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            <b>版本化迁移，两条不变量：</b>每个操作单独幂等（所以历史库接入 = 从 0 重放，全新库、老库、
-            失败重试走同一条代码路径），版本号只反映历史、不反映配置（否则改个开关就会让老库看起来「更新」）。
-            代码比库旧时直接报错，而不是让缺列的 SELECT 静默丢数据。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/migrations.py">storage/migrations.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head">
-          <span class="group-idx">07</span>
-          <h3>评测基建——回归判定不花一分钱</h3>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            <b>离线回放。</b>把一次真实运行的每问判定落盘，之后纯文件对比即可复算指标，
-            零 LLM、零网络——所以它可以挂在提交前，而不会有人因为「跑一次太贵」把它跳过。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/replay.py#L224">eval/replay.py:224</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/offline_eval.py">scripts/offline_eval.py</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            <b>回归门。</b>baseline 与 current 按指标逐项比：执行准确率、编译命中率、完成率、恢复率、
-            与金标准的精确匹配、token 成本——带方向和容差，出现回归即以退出码 1 拦下改动。
-            设了 <code>eval.min_n</code>（代码默认 0 = 不设限，<code>conf/agent.yml</code> 示例里是 10）
-            就多一道样本量下限：当前样本不足时直接拒绝出判定，避免拿三条样本宣布胜利。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/gate.py#L392">eval/gate.py:392 <span class="ref-line">compare_metrics</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_gate.py">scripts/eval_gate.py</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            检索侧还有独立的分路消融与权重网格调参脚本，表级召回与融合权重可以分别验证，
-            不必先跑完整生成链路。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_hybrid_retrieval.py">eval_hybrid_retrieval.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/tune_rrf.py">tune_rrf.py</a>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ══ Agent 能力 ══ -->
-    <section id="agent">
-      <div class="sec-head">
-        <span class="sec-label">Agent 能力</span>
-        <h2>十二项 Agent 侧能力</h2>
-        <p class="sec-intro">
-          按工具调用、工作流、规划、多候选、状态、长任务、人在环、评估、可观测这九条线组织，
-          另补记忆分层、上下文工程与安全边界三项。
-        </p>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">01</span><h3>工具调用与工具治理</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            工具注册表 + <code>ToolSpec</code>：每个工具声明所需权限级别与可见角色，
-            定义按角色裁剪后才交给模型。<b>越权调用不会报错</b>——运行时把它折叠成「未知工具」，
-            模型看到的是「没有这个工具」，而不是一道可以试探的墙。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L244">agent_loop.py:244 <span class="ref-line">visible_to</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L372">agent_loop.py:372 <span class="ref-line">defs 按角色裁剪</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L595">agent_loop.py:595 <span class="ref-line">越权折叠</span></a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            生成节点用 ReAct 循环，模型自己决定什么时候收工——<code>max_rounds</code> 只是安全护栏，
-            不是停止条件。工具并行派发、单工具超时与重试、空手而归时降级回经典「生成→校验重试」子图。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L430">agent_loop.py:430 <span class="ref-line">max_rounds=8</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py">nodes/gen_sql.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">02</span><h3>工作流编排</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            LangGraph 主图 28 节点，节点是<code>make_&lt;name&gt;(services…)</code> 工厂返回的
-            <code>async def node(state) -&gt; dict</code>，服务在构图时绑进闭包；每个节点只回写自己关心的字段，
-            出错则原样透传。意图路由把「问数据」和「问元数据」分成两条路，后者自带一轮自校验。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1728">graphs.py:1728</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py">workflow/state.py</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            反思不是「再问一次模型」：每次失败都会记录 SQL 与结果签名，和上一版做确定性比对，
-            产出「这版没修对 / 毫无进展 / 问题转移了」这类具体反馈，再决定是否回炉——
-            同一段代码，零 LLM。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/versions.py">workflow/versions.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">03</span><h3>规划：先出计划，再写 SQL</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            查询规划是条件节点：产出一份计划（输出列、过滤、分组、口径），按优先级注入生成上下文，
-            生成节点跟着计划走。同时把 schema 段做成稳定缓存前缀并单独设预算，宽表大库下
-            被裁掉的结构由工具按需懒加载——省 token，也避免结构全量塞进窗口。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/query_sketch.py">nodes/query_sketch.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L134">graphs.py:134 <span class="ref-line">schema 预算</span></a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">04</span><h3>多候选与投票</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            候选子代理并行生成多份 SQL，再进共识节点做执行投票：全票一致、单一多数、或分裂——
-            分裂就带着分歧点回炉。相似问法轮换少样本示例，避免每次都从同一个角度想。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L259">graphs.py:259 <span class="ref-line">候选子代理</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/select.py">nodes/select.py <span class="ref-line">共识投票</span></a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">05</span><h3>状态管理与时间旅行</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            图检查点按存储后端选型：配了 Postgres 就用 Postgres 存档，否则落本地 SQLite。
-            管理端可以列出某条会话的全部检查点，并从任意一个<code>replay_from</code> 重放——
-            复盘一次错误回答时，不必靠猜。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/storage/checkpoint_store.py">storage/checkpoint_store.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/checkpoint_view.py#L128">checkpoint_view.py:128 <span class="ref-line">replay_from</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py">api/routers/admin.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">06</span><h3>长任务与定时</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            定时任务支持 CRUD、调度计算、运行记录与告警，带冷却时间避免告警风暴。
-            调度器对会话管理器是鸭子类型的，所以测试里可以塞假实现；
-            服务进程内嵌一个 tick 自动跑，人不用额外守一个 daemon。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/service.py#L40">jobs/service.py:40</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L24">jobs/runner.py:24</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/jobs.py">api/routers/jobs.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">07</span><h3>人在环（HITL）</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            确认节点可在执行前拦下 SQL 交给人过目。载荷无法识别时<b>默认拒绝</b>而不是放行——
-            这道门只在能读懂输入时才开。定时任务跑的时候自动放行，人不在场也不卡死。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">08</span><h3>评估</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            见上文「评测基建」：离线回放 + 带方向容差的回归门 + 检索分路消融。三层都可零成本复跑，
-            所以评估是提交前的一步，不是发布前的一次豪赌。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/">trove/eval/</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/.github/workflows/eval-gate.yml">.github/workflows/eval-gate.yml</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">09</span><h3>可观测</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            运行追踪器维护一棵 span 树，并给每个节点单独累计 token——所以「这次回答贵在哪一步」
-            是一个可以查的量，不是估算。链路回调挂在 LangGraph 节点元数据上，
-            外部追踪（Langfuse）与本地运行日志共用同一套埋点。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L165">runlog.py:165 <span class="ref-line">span token 桶</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L333">runlog.py:333</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/observability.py">llm/observability.py</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            定时任务可以挂<strong>判定规则</strong>：窗口（自然语言）→ 编译成权威 SQL → 跑数 →
-            对结果求值，产出一个带证据的判定。全程零 LLM、纯函数加只读查询，
-            所以「为什么今天报红」是可以从输入重放出来的。判定失败永远<strong>响亮地失败</strong>——
-            一条静默不触发的定时规则，和一个健康的规则从外面看没有区别。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L134">service.py:134 <span class="ref-line">DecisionService</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py">decision/expr.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py">routers/decisions.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">10</span><h3>记忆分层</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            会话内记忆之上，还有跨会话的<b>情节记忆</b>：把「问过什么 → 生成了什么 SQL → 判定如何 →
-            修正过什么」存下来，下次相似提问直接作为锚点或反例。召回走词面与语义的 OR 门——
-            任一门过即召回，没有 embedder 的部署退化为纯词面，行为可预期。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L68">episode.py:68 <span class="ref-line">权重与门限</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/episode.py#L114">episode.py:114</a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            记忆分层收口在一个门面里：写入（情节）、读取（统一分发）、生命周期（保留期清理 + 结构漂移检测）、
-            用户画像（正确率、失败模式、已确认偏好）。<b>自动写入一律 pending</b>，
-            高置信偏好才进用户事实——人工确认这道闸不绕。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L185">memory/service.py:185 <span class="ref-line">observe</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L394">service.py:394 <span class="ref-line">run_lifecycle</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/promotion.py">promotion.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">11</span><h3>上下文工程</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            生成提示的内容不是一股脑塞进去的：先按问题复杂度选档（简单 1500 / 标准 2500 / 复杂 4000 token），
-            再按优先级装块（少样本 → 用户事实 → 规则 → 术语 → 指标 → 实体 → 教训 → 情节 → 计划 → 历史 → 画像），
-            块内还能按相关度逐条裁剪。预算不够时知道该先丢谁。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L131">graphs.py:131 <span class="ref-line">分档预算</span></a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/context_budget.py#L102">context_budget.py:102 <span class="ref-line">条目级装配</span></a>
-          </div>
-        </div>
-        <div class="cap">
-          <div class="cap-mech">
-            组织级方法论以「技能」形式管理，三档：<code>required</code> 的正文进对应节点的系统提示，
-            <code>available</code> 的只播广告、模型需要时用工具取正文——不相关的能力就不占窗口；
-            <code>validator</code> 的正文<strong>从不进模型</strong>，它是一份给引擎跑的断言清单，
-            在结果交付前逐条判<strong>通过 / 违反 / 判不了</strong>。
-            和组织知识库同一套门禁：草稿未经确认不生效。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py">services/skills/service.py</a>
-            <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py">api/routers/skills.py</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-head"><span class="group-idx">12</span><h3>确定性安全边界</h3></div>
-        <div class="cap">
-          <div class="cap-mech">
-            「能不能执行」不交给模型判断，见下一节。
-          </div>
-          <div class="cap-where">
-            <a class="ref" href="#safety">↓ 确定性安全层</a>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ══ 安全 ══ -->
+    <!-- ══ 安全与可核对 ══ -->
     <section id="safety">
       <div class="sec-head">
-        <span class="sec-label">边界</span>
-        <h2>确定性安全层</h2>
+        <span class="sec-label">边界 · 04</span>
+        <h2>安全与可核对</h2>
         <p class="sec-intro">
-          问数系统要落地，安全边界不能是提示词里的一句请求。以下是已经实现并在链路上生效的机制——
+          问数系统要落地，安全边界不能是提示词里的一句请求。以下六条都在链路上生效——
           它们全部是代码，不是模型行为。
         </p>
       </div>
@@ -788,7 +212,7 @@ flowchart TB
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th style="width:34%">机制</th><th>做什么</th><th class="mono" style="width:26%">位置</th></tr>
+            <tr><th style="width:30%">机制</th><th>做什么</th><th class="mono" style="width:28%">位置</th></tr>
           </thead>
           <tbody>
             <tr>
@@ -802,23 +226,8 @@ flowchart TB
               <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/budget.py#L136">services/sql/budget.py:136 <span class="ref-line">BudgetService</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/sql/budget.py#L236">:236 <span class="ref-line">decide</span></a></td>
             </tr>
             <tr>
-              <td>工具权限</td>
-              <td>工具按角色裁剪，越权调用在运行时折叠为「未知工具」。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L595">llm/agent_loop.py:595 <span class="ref-line">角色裁剪</span></a></td>
-            </tr>
-            <tr>
-              <td>执行前人工确认</td>
-              <td>可选节点，SQL 执行前交人过目；载荷无法识别时默认拒绝。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">workflow/nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a></td>
-            </tr>
-            <tr>
-              <td>模型预算护栏</td>
-              <td>ReAct 循环受轮次、墙钟时间、累计 token 三重约束，触顶即降级回经典子图，不会无限烧下去。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L430">llm/agent_loop.py:430 <span class="ref-line">max_rounds</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L435">:435 <span class="ref-line">time_budget_s</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L436">:436 <span class="ref-line">max_total_tokens</span></a></td>
-            </tr>
-            <tr>
               <td>执行前授权门</td>
-              <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>三道默认全拒</strong>：A1/A2 恒拒无开关；A3 默认 <code>enforce</code>（2026-10 切换，依据是 650 条快径示例 SQL 静态核验违规 0 条——按语义模型走的查询都在声明内，403 面等于零）。存量部署可显式写 <code>authz.table_enforcement: warn</code> 回退到观察档。</td>
+              <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>三道默认全拒</strong>：A1/A2 恒拒无开关；A3 默认 <code>enforce</code>（2026-10 切换，依据是全量快径示例 SQL 静态核验违规 0 条）。存量部署可显式写 <code>authz.table_enforcement: warn</code> 回退到观察档。</td>
               <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L80">core/config.py:80 <span class="ref-line">AuthzConfig</span></a></td>
             </tr>
             <tr>
@@ -829,27 +238,61 @@ flowchart TB
             <tr>
               <td>不可信内容隔离</td>
               <td>值进入模型上下文只有两条通道，两条都过同一个隔离核：命中注入短语即把<strong>整个值</strong>作废成中性标记，而不是剪掉命中的那一段（模型不能以为自己拿到的是不完整但可用的数据）。截断排在隔离<strong>之后</strong>，否则长文本里的注入串会被从中间切断、正则漏判。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L83">llm/untrusted.py:83 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">llm/agent_loop.py:89 <span class="ref-line">_model_observation</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L83">llm/untrusted.py:83 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a></td>
             </tr>
             <tr>
-              <td>以用户身份重放</td>
-              <td>admin 可代目标用户跑一次：目标的主体、角色与 grants 生效，重放者自己的 scopes 整体丢弃；四道校验都在 SSE 开始之前跑完。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L37">api/routers/chat.py:37 <span class="ref-line">_replay_subject</span></a></td>
-            </tr>
-            <tr>
-              <td>授权与脱敏审计</td>
-              <td>拒绝、字段改写、凭 scope 读原文三类各记一条（只记字段名与模式，从不记值）；拒绝另按原因计数。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1608">agent/session.py:1608 <span class="ref-line">_audit_authz</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/metrics.py#L343">core/metrics.py:343 <span class="ref-line">record_authz_deny</span></a></td>
+              <td>人在环与审计</td>
+              <td>SQL 执行前可交人过目，载荷无法识别时<b>默认拒绝</b>——这道门只在能读懂输入时才开。拒绝、字段改写、凭 scope 读原文三类各记一条审计（只记字段名与模式，从不记值）。</td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">workflow/nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1608">agent/session.py:1608 <span class="ref-line">_audit_authz</span></a></td>
             </tr>
           </tbody>
         </table>
       </div>
+
+      <p style="color:var(--text-secondary);font-size:14.5px;margin-top:14px">
+        更多机制——工具权限裁剪、模型预算护栏、以用户身份重放——见
+        <a href="ops/security.html">安全边界</a>与 <a href="capabilities/agent.html">Agent 能力总览</a>的逐条展开。
+      </p>
+
+      <figure class="shot">
+        <div class="shot-frame">
+          <img src="assets/shots/user-chat-evidence.png" alt="答案依据抽屉：来源档位、生成的 SQL、执行与计划要点、结果集预览、校验与反思记录、反馈入口、运行轨迹" width="1624" height="1015" decoding="async" loading="lazy">
+        </div>
+        <figcaption>图 2 · 每条答案都能展开「查看依据」：执行的 SQL、执行与计划要点、校验与反思记录——数字可疑时先读这里。读法见 <a href="user/ask.html#evidence">用户指南 · 依据抽屉</a>。</figcaption>
+      </figure>
+    </section>
+
+    <!-- ══ 界面 ══ -->
+    <section id="ui">
+      <div class="sec-head">
+        <span class="sec-label">界面 · 05</span>
+        <h2>界面：用户端与管理台</h2>
+        <p class="sec-intro">
+          用户端只做三件事——提问、读答案、核对依据（上文图 1、图 2 即是）；
+          管理台负责接入、建模与治理。逐屏读法见 <a href="user/ui-tour.html">界面导览</a> 与
+          <a href="admin/console.html">管理指南</a>。
+        </p>
+      </div>
+
+      <figure class="shot">
+        <div class="shot-frame">
+          <img src="assets/shots/admin-overview.png" alt="管理台总览：健康横幅、六项 KPI、失败分布、数据源健康表、待办队列与接入向导" width="1624" height="1015" decoding="async" loading="lazy">
+        </div>
+        <figcaption>图 3 · 管理台总览：健康横幅、KPI、数据源健康表与待办队列——一屏回答「今天平台健康吗」。读法见 <a href="admin/console.html">管理台总览</a>。</figcaption>
+      </figure>
+
+      <figure class="shot">
+        <div class="shot-frame">
+          <img src="assets/shots/admin-semantic.png" alt="语义模型工作台：摘要行、五项 KPI、问题面板（校验问题与漂移）、指标/数据集/字段/待审批四个 tab 与资产表" width="1624" height="1015" decoding="async" loading="lazy">
+        </div>
+        <figcaption>图 4 · 语义模型工作台：摘要、校验问题与漂移、指标 / 数据集 / 字段 / 待审批四个 tab——可答边界在这里维护。读法见 <a href="admin/semantic.html">语义层治理</a>。</figcaption>
+      </figure>
     </section>
 
     <!-- ══ 怎么验证 ══ -->
     <section id="eval">
       <div class="sec-head">
-        <span class="sec-label">边界</span>
+        <span class="sec-label">验证 · 06</span>
         <h2>怎么验证，而不是信谁的数字</h2>
         <p class="sec-intro">
           这个页面<b>不给准确率数字</b>。问数系统的准确率高度依赖数据集、方言、语义模型完备度，
@@ -857,127 +300,92 @@ flowchart TB
         </p>
       </div>
 
-      <p style="margin-bottom:18px">仓库自带一条完整链路，你可以用自己的题、接自己的库跑一遍：</p>
-
-      <pre><code><span class="cmt"># 1. 内置 BIRD 金融演示数据源，零配置先看效果</span>
-uv run trove --datasource demo
-
-<span class="cmt"># 2. 接上你自己的库（MySQL / Doris / PostgreSQL / ClickHouse / DuckDB）</span>
-uv run python scripts/lint_kb.py --db-id &lt;你的库&gt; \
-    --datasource mysql://user:pass@host:3306/dbname
-
-<span class="cmt"># 3. 换成你的题目集跑评测，代价敏感，按需手动跑</span>
+      <pre><code><span class="cmt"># 1. 换成你的题目集跑评测，代价敏感，按需手动跑</span>
 uv run python scripts/eval_bird.py --kb-dir &lt;你的 KB 目录&gt;
 
-<span class="cmt"># 4. 拿到 baseline 后，之后每次改动都过一遍零成本回归门</span>
+<span class="cmt"># 2. 拿到 baseline 后，之后每次改动都过一遍零成本回归门</span>
 uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;新结果&gt;</code></pre>
 
       <p style="color:var(--text-secondary);font-size:14.5px">
-        第 4 步是这套评测设计的关键：判定落盘之后，回归检查不调用任何模型、不碰网络，
-        所以它可以进 CI，也可以在你提交前顺手跑一次。
+        第 2 步是这套评测设计的关键：判定落盘之后，回归检查不调用任何模型、不碰网络，
+        所以它可以进 CI，也可以在你提交前顺手跑一次。完整方法见 <a href="ops/eval.html">评测与回归门</a>。
       </p>
     </section>
 
     <!-- ══ 路标 ══ -->
     <section id="road">
       <div class="sec-head">
-        <span class="sec-label">向前</span>
-        <h2>路标</h2>
+        <span class="sec-label">向前 · 07</span>
+        <h2>路线图与缺口</h2>
         <p class="sec-intro">
-          正在推进的八个方向。这里写的是<b>方向与判据</b>——一个方向做到什么程度算做到了，
-          而不是承诺日期。
-        </p>
-        <p class="sec-intro">
-          每条判据下面另有一行<b>装置</b>：靠什么保证它，以及<b>那个装置今天缺哪一块</b>。
-          没有装置句的判据只能靠人工复核，就没法用来排期——所以八条<b>目前都还没有走完</b>，
-          每条的缺口都写在下面，不藏在「进行中」里。
+          八个正在推进的方向。写的是<b>方向与判据</b>——做到什么程度算做到了，而不是承诺日期；
+          每条今天缺哪一块也直接写在表里，不藏在「进行中」。
         </p>
       </div>
 
-      <div class="road">
-        <div class="road-item">
-          <span class="road-n">01</span>
-          <div class="road-body">
-            <h4>语义漂移治理</h4>
-            <p>业务口径会变，语义模型会旧。让「模型与真实数据已经对不上」这件事被自动发现、可定位到具体条目。</p>
-            <p class="road-crit"><span>判据</span>漂移报告能精确到数据集/字段/指标条目，且不依赖人工巡检。</p>
-            <p class="road-crit"><span>装置</span>分类学列了 L1–L4（结构 / 引用 / 语义 / 口径），门禁脚本 <code>scripts/check_drift.py</code> 实际渲染 L1–L2（零 LLM，退出码 0/1/2，区分「没漂移」与「没查成」——只跑了 L1 的 ok 报告不许写成 OK）。后台周期检测落进同一个漂移库，与 <code>/v1/admin/drift</code> 读写同一份文件。<b>出口已通</b>：门禁脚本已进 CI（<code>backend.yml</code> 的 lint 作业，守的是仓库里那份 demo KB）——「不依赖人工巡检」不再只靠人记得跑。<b>仍缺</b>：L3/L4 未落地，判据里「指标」这一格今天还进不了报告（L3 要探查活库取值，探测未接；L4 按设计只承接外部声明、不自行检测）。</p>
-            <p class="road-crit"><span>已补</span>后台周期检测的出口。此前结果只进 <code>logger.info</code>——<b>在跑，但白跑</b>：没有可查询的行、没有退出码、没有告警，跑一周也答不了「哪个库漂过」。现走 <code>drift</code> 模块既有的写入路径（<code>drift_run</code> + 条目两张表），归一化用那份认得 <code>status</code>/<code>skip_reason</code> 的适配器，所以「没查成」不会被洗成「无漂移」。<b>落库的是全部数据源、返回的只是有漂移的那些</b>：落库要「查过了」的完整证据（含干净的一次，否则历史里只剩有漂移的那几次，读起来像这个库一直在漂）；返回给调用方的是「要不要吭声」。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">02</span>
-          <div class="road-body">
-            <h4>执行画像</h4>
-            <p>把每次执行的代价与形态沉淀成画像：哪些查询在变慢、哪类问法代价最高，让优化有据可依。</p>
-            <p class="road-crit"><span>判据</span>画像数据来自真实执行观测，且采集本身不给查询增加可感知开销。</p>
-            <p class="road-crit"><span>装置</span>执行证据的三态形状已落地（没查过 / 查过但不知道 / 有值），并有测试禁止拿返回行数冒充扫描量。<b>缺观测面</b>：扫描量这一格六个方言都还没读，<code>scanned_rows</code> 恒空——「来自真实执行观测」今天只对行数成立。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">03</span>
-          <div class="road-body">
-            <h4>已验证查询资产</h4>
-            <p>被人确认过的正确答案应当可复用、可溯源，成为知识库里的一等资产，而不是一次性消耗品。</p>
-            <p class="road-crit"><span>判据</span>复用不改变现有匹配判据的去向，且每条资产可追溯到它的确认人。</p>
-            <p class="road-crit"><span>装置</span>治理维度（<code>status</code> / <code>owner</code> / <code>approved_by</code> / <code>approved_at</code> / <code>source</code>）随确认逐条写入 <code>examples.yml</code>，<code>certified</code> 必须有人，认证门不过整批拒绝——「每条资产可追溯到它的确认人」<b>已成立</b>。<b>缺的是台账</b>：<code>AssetLedger</code>（<code>runs</code> / <code>p50_ms</code>）已实现、有测试钉住，但没有任何生产构造点；且 <code>status</code> 还没参与检索加权。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">04</span>
-          <div class="road-body">
-            <h4>可核验闭环</h4>
-            <p>结论不仅要给 SQL，还要能说明它凭什么成立——把校验过程也变成可复核的产物。</p>
-            <p class="road-crit"><span>判据</span>任意一条交付结论，都能沿着证据链走回原始数据。</p>
-            <p class="road-crit"><span>装置</span>证据链的下半段已落地（执行证据：估算 / 实际 / 三态新鲜度）。<b>缺上半段</b>：从结论出发回走到执行这一段还没有——「任意一条」今天不成立。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">05</span>
-          <div class="road-body">
-            <h4>语义分支评审</h4>
-            <p>同一份语义模型的多条演进路线，应当可以并行比对后再合入，而不是只能线性覆盖。</p>
-            <p class="road-crit"><span>判据</span>分支评审的结论对最终合入有约束力，而非仅供参考。</p>
-            <p class="road-crit"><span>装置</span><b>还没有。</b>「有约束力的评审」所需的形状（<code>GateDecision</code> / <code>SemanticChange</code>）已定义在漂移治理模块里，但<b>没有任何实现与调用点</b>——判据今天不可达，这条是八条里离得最远的一格。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">06</span>
-          <div class="road-body">
-            <h4>身份鉴权与字段脱敏</h4>
-            <p>把可答边界从「这个数据源能答什么」推进到「这个人能看什么」——先落执行前的表级授权门与字段级脱敏，再谈编译期收窄。</p>
-            <p class="road-crit"><span>判据</span>判定落在<strong>执行前</strong>而不是结果后置过滤：未授权的表不发出查询，越权字段不进入模型上下文（脱敏在 LLM 之前），每一次拒绝、改写与凭 scope 读原文都留下审计。</p>
-            <p class="road-crit"><span>装置</span>执行前的 <code>Authorizer</code>（A1 主体 → A2 数据源 → A3 表级三道） + LLM 前的 <code>Masker</code> + 审计日志与指标，都已在执行路径上。<b>剩一处缺口</b>：表级门默认 <code>warn</code>（命中只放行、不拦）——切档要等观察期的误伤数据，那要真部署才收得到。</p>
-            <p class="road-crit"><span>已修</span>解析把 CTE 名当成物理表（<code>FROM &lt;cte&gt;</code> 与 <code>exp.Table</code> 同形）。后果是<b>与权限无关</b>的误拒：只要查询里有 CTE 就可能被拦，基线实测 32 题里 2 题命中。已与 <code>services/sql/guard.py</code> 的判据同源，修后基线 0 命中。</p>
-            <p class="road-crit"><span>已补</span><code>warn</code> 命中的遥测出口。此前只有一行日志与 <code>state.authz_decision</code>——「跑一周看哪些表会被拒」收不齐（一行一条的日志答不了聚合问题）。现为三条出口，各答一个问题：日志给现场，<code>trove_authz_table_warn_total{datasource}</code> 给<b>量</b>（切 enforce 会打挂多少），审计行 <code>authz.table_warn</code> 给<b>名字</b>。计数器与拒绝计数<b>分家</b>——混在一起，告警率里会有一半根本没被拦的查询；表名<b>不进标签</b>（基数随库增长而无限），名字落在审计行上。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">07</span>
-          <div class="road-body">
-            <h4>成本归因与预算</h4>
-            <p>让每一次问答的 token 花在哪一步、为什么花，成为可查账、可设限的量。</p>
-            <p class="road-crit"><span>判据</span>归因覆盖全部模型调用路径，不存在「不产生记录」的调用。</p>
-            <p class="road-crit"><span>装置</span>LLM 调用点清单的 AST 枚举测试（枚举 <code>.chat</code> / <code>.chat_full</code> / <code>.chat_stream</code> / <code>.embedding</code>）。<b>两个盲区</b>：全部 34 个调用点里仍有不记账的；且清单只枚举「谁在调模型」，看不见 prompt 的字符串构造——调用点没变、投递内容变了，它不红。</p>
-          </div>
-        </div>
-        <div class="road-item">
-          <span class="road-n">08</span>
-          <div class="road-body">
-            <h4>不可信数据输入边界</h4>
-            <p>数据库里的内容来自外部世界，不该被当成指令。值进入模型上下文只有两条通道——模板渲染与工具回喂；隔离收成<strong>一个核</strong>钉在这两条上，不靠调用点自觉。</p>
-            <p class="road-crit"><span>判据</span>新增数据源、新增提示词参数<strong>默认被扫</strong>，要放行必须显式登记；第三条路不存在——<b>调用点</b>由 LLM 调用点清单枚举保证，<b>往 prompt 上挂内容</b>由单一门保证。</p>
-            <p class="road-crit"><span>装置</span>隔离核（<code>llm/untrusted.py</code>）+ 19 个名字的白名单（<b>默认扫</b>，放行必须显式登记，理由写进表里）+ 第三档信任级 <code>AdminConfirmed</code>（豁免来自<b>登记</b>，不来自内容长相）+ 守卫与快照测试。org skill 的追加只留一个门：<code>fence_org_skill</code> 围栏兼标注来源，<code>append_skill_block</code> 是唯一追加点。</p>
-            <p class="road-crit"><span>已修</span>组织级 skill 正文此前是散落的 f-string 追加——既不经过模板渲染、也不经过工具回喂，隔离核的两条通道都够不着它；两档处置还相反：required 档原文进 system prompt（零扫描），available 档经隔离核<b>整值作废</b>，一句话让整份方法论变成 <code>[data: content isolated]</code>。现已两档同策略：<b>围栏 + 来源标注、不净化内容</b>——指令性文本的可信来自人确认过的登记。写入关口另扫一遍投递面（描述 + 正文，两档都扫），命中在响应里报给管理员（<code>injection_hits</code>，<b>报而不拦</b>）。清单的盲区（只看得见「谁在调模型」，看不见字符串怎么拼）已写进那份测试的文档串，由单一门补，不靠扩清单。</p>
-          </div>
-        </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:48px">#</th><th style="width:19%">方向</th><th>判据（做到什么程度算数）</th><th style="width:36%">今天缺哪一块</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">01</td>
+              <td>语义漂移治理</td>
+              <td>漂移报告能精确到数据集 / 字段 / 指标条目，且不依赖人工巡检（门禁脚本已进 CI，渲染 L1–L2，区分「没漂移」与「没查成」）。</td>
+              <td>L3/L4 未落地——「指标」这一格今天还进不了报告：L3 要探查活库取值，探测未接；L4 按设计只承接外部声明、不自行检测。</td>
+            </tr>
+            <tr>
+              <td class="mono">02</td>
+              <td>执行画像</td>
+              <td>画像数据来自真实执行观测，且采集本身不给查询增加可感知开销。</td>
+              <td>观测面——扫描量这一格六个方言都还没读，<code>scanned_rows</code> 恒空；「来自真实执行观测」今天只对行数成立。</td>
+            </tr>
+            <tr>
+              <td class="mono">03</td>
+              <td>已验证查询资产</td>
+              <td>复用不改变现有匹配判据的去向，且每条资产可追溯到它的确认人（治理维度随确认逐条写入，追溯已成立）。</td>
+              <td>台账——<code>AssetLedger</code> 已实现并有测试钉住，但没有任何生产构造点；<code>status</code> 还没参与检索加权。</td>
+            </tr>
+            <tr>
+              <td class="mono">04</td>
+              <td>可核验闭环</td>
+              <td>任意一条交付结论，都能沿着证据链走回原始数据。</td>
+              <td>上半段——执行证据（估算 / 实际 / 三态新鲜度）已落地；从结论回走到执行的这一段还没有，「任意一条」今天不成立。</td>
+            </tr>
+            <tr>
+              <td class="mono">05</td>
+              <td>语义分支评审</td>
+              <td>分支评审的结论对最终合入有约束力，而非仅供参考。</td>
+              <td>全部——所需形状（<code>GateDecision</code> / <code>SemanticChange</code>）已定义，但没有实现与调用点；八条里离得最远的一格。</td>
+            </tr>
+            <tr>
+              <td class="mono">06</td>
+              <td>身份鉴权与字段脱敏</td>
+              <td>判定落在<strong>执行前</strong>而不是结果后置过滤：未授权的表不发出查询，越权字段不进入模型上下文（脱敏在 LLM 之前），每一次拒绝、改写与凭 scope 读原文都留下审计。</td>
+              <td>执行侧已成立——三道执行门默认全拒（A3 已按 2026-10 切到 <code>enforce</code>）+ 脱敏 + 审计都在执行路径上。仍缺：这条方向的下一段，编译期收窄尚未开始。</td>
+            </tr>
+            <tr>
+              <td class="mono">07</td>
+              <td>成本归因与预算</td>
+              <td>归因覆盖全部模型调用路径，不存在「不产生记录」的调用。</td>
+              <td>两个盲区——LLM 调用点清单（AST 枚举）里仍有不记账的；且清单只看得见「谁在调模型」，看不见 prompt 的字符串构造（调用点没变、投递内容变了，它不红）。</td>
+            </tr>
+            <tr>
+              <td class="mono">08</td>
+              <td>不可信数据输入边界</td>
+              <td>新增数据源、新增提示词参数<strong>默认被扫</strong>，要放行必须显式登记；第三条路不存在。</td>
+              <td>隔离核 + 名字白名单（默认扫、放行须登记）+ 第三档信任级均已就位，有守卫与快照测试。盲区是清单只看得见「谁在调模型」、看不见字符串怎么拼——已写进测试文档串，由单一追加门补，不靠扩清单。</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
     <!-- ══ 定位 ══ -->
     <section id="pos">
       <div class="sec-head">
-        <span class="sec-label">定位</span>
+        <span class="sec-label">定位 · 08</span>
         <h2>这套设计押在哪</h2>
       </div>
       <div class="claim">
@@ -1024,6 +432,10 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
           </ul>
         </div>
       </div>
+      <p class="shot-note">
+        本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+        可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+      </p>
       <div class="attribution">
         <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">963df74</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 963df74</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
@@ -1033,8 +445,6 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
 
   </main>
 </div>
-
-<script type="module" src="assets/diagram.js"></script>
 
 </body>
 </html>
