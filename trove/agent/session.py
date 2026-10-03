@@ -2314,6 +2314,11 @@ class SessionManager:
             # 依据抽屉才能把「这批数据是什么时候的」讲回来 —— 三态照原样
             # 透出:"" = 没查过,"unknown" = 查过但未知。
             "execution_evidence": final.execution_evidence,
+            # 结构化分析结果(分析柱 v1:贡献表/比率效应/驱动器树/证据)。
+            # 与答案 markdown 里的分析区块同源(attribution 节点双写),这条
+            # 走的是 UI 卡片通道 —— 缓存/历史回放/SSE 三条路都吃 summary,
+            # 加这一行即全通道贯通(_cached_final 按 model_fields 过滤)。
+            "analysis": final.analysis,
         }
 
     # ── Result cache (exact-question, in-process) ────────
