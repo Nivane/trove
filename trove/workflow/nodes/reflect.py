@@ -31,6 +31,7 @@ from trove.core.logging import get_logger
 from trove.llm.gateway import LLMGateway
 from trove.prompts import render
 from trove.workflow.intent import has_weak_signal
+from trove.workflow.nodes.authority import authoritative_compiled_sql
 from trove.workflow.state import WorkflowState, budget_exhausted
 
 logger = get_logger(__name__)
@@ -310,6 +311,11 @@ def make_reflect(
         # 追加的确定性证据:row_count > 0(0 行由上方 EMPTY 分支处理,
         # 弱信号问题需保留法官)+ 投影宽度自洽(执行结果列数 == SQL
         # SELECT 列数)——两者不满足即退回 LLM 裁决,保守方向。
+        # 复杂度档的例外(P3.5,0492):权威编译产物(逐字复现契约)+
+        # 规则全过 = 语义层权威答案,不受复杂度档限制——complex 题
+        # 编译出的与 gold 逐字节相等的结果,曾仅因超过 standard 档
+        # 被判官(拿不准就 RETRY)打回,回滚后反而变错。判据读不到
+        # → False → 判官照常跑(失效方向安全,与 validate 同纪律)。
         _skip_levels = {"simple": 1, "standard": 2, "all": 3}
         _complexity_levels = {"simple": 1, "standard": 2, "complex": 3}
         skip = config.reflect_skip or "simple"
@@ -319,8 +325,11 @@ def make_reflect(
             and not state.error_feedback
             and not has_weak_signal(state.question)
             and state.row_count > 0
-            and _skip_levels.get(skip, 1)
-            >= _complexity_levels.get(state.complexity, 2)
+            and (
+                _skip_levels.get(skip, 1)
+                >= _complexity_levels.get(state.complexity, 2)
+                or authoritative_compiled_sql(state)[0]
+            )
             and _projection_width_matches(
                 state.sql, state.dialect, len(state.columns),
             )
