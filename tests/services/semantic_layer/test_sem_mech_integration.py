@@ -485,6 +485,84 @@ def test_0495_hand_share_candidate_owns_twin_condition(model):
     assert "where" not in sql  # 孪生条件归聚合所有
 
 
+# ----------------------------------- 跨车道机制针(0498/0485,合并后补)
+
+# 0498 手写:age = 年份差算式列(复数形态)。真实 plan 只投原列
+# (client.birth_date),没有表达式;gold 该列是 DOUBLE(DATE_FORMAT 字符串
+# 相减 → 74.0),零容差 str(v) 下整数 74 ≠ '74.0'。A② 通道**忠实保留**
+# 计划里的 CAST(绝不自动补)——类型口径由 planner 纪律产出。
+PLAN_0498_HAND = {
+    "tables": ["disp", "card", "client"],
+    "joins": "card.disp_id = disp.disp_id AND disp.client_id = client.client_id",
+    "conditions": [
+        {"field": "card.type", "op": "=", "value": "'gold'"},
+        {"field": "disp.type", "op": "=", "value": "'OWNER'"},
+    ],
+    "answer_columns": [
+        "client.client_id",
+        "CAST(YEAR(CURRENT_TIMESTAMP()) - YEAR(client.birth_date) AS DOUBLE)",
+    ],
+    "ordering": [],
+    "having": [],
+    "plan_field": "",
+}
+
+# 0485 手写:"running contracts" → loan.status IN ('C','D')(官方标签
+# C/D = running contract);district 1 → account.district_id = 1。
+PLAN_0485_HAND = {
+    "tables": ["account", "loan"],
+    "joins": "loan.account_id = account.account_id",
+    "conditions": [
+        {"field": "account.district_id", "op": "=", "value": 1,
+         "note": "Branch location 1"},
+        {"field": "loan.status", "op": "in", "value": "('C', 'D')",
+         "note": "running contracts"},
+    ],
+    "aggregation": "count",
+    "answer_columns": ["count(account.account_id)"],
+    "ordering": [],
+    "having": [],
+    "plan_field": "",
+}
+
+
+def test_0498_hand_year_diff_scalar_real_valued(model):
+    """0498 手写:年份差算式列经 A② 通道重建,CAST 类型原样保留(DOUBLE)。
+    算式列不再被静默跳过;类型口径是计划声明的一部分。"""
+    res = _compile_with(model, PLAN_0498_HAND, ["disp", "card", "client"])
+    assert not isinstance(res, CompileMiss), f"age scalar column must compile: {res}"
+    sql = _low(res)
+    assert "client.client_id" in sql
+    assert "cast((year(current_timestamp()) - year(client.birth_date)) as double)" in sql
+
+
+def test_0485_hand_enum_in_predicate(model):
+    """0485 手写:枚举 IN 谓词('C','D')按 code 落到 loan.status,district_id=1
+    行级过滤保留,两个连接都在。"""
+    res = _compile_with(model, PLAN_0485_HAND, ["account", "loan"])
+    assert not isinstance(res, CompileMiss), f"enum IN must compile: {res}"
+    sql = _low(res)
+    assert "loan.status in ('c', 'd')" in sql
+    assert "account.district_id = 1" in sql
+    assert "join loan" in sql
+
+
+def test_0485_real_kb_running_contract_labels_anchor_loan(model):
+    """B(官方文档 → enum_display)× C(标签 token 命中)在真实 KB 上合流。
+
+    0485 问句不含 'loan' 词元 → 2.5 只能来自 loan.status 的官方标签
+    ("running contract, OK so far" / "…client in debt");标签不可达时
+    loan 进不了 matched_datasets,条件整条消失(实跑日志口径)。
+    """
+    from trove.workflow.nodes.schema_linking import (
+        _semantic_dataset_score,
+        _word_tokens,
+    )
+    q = "How many accounts have running contracts in Branch location 1?"
+    loan = next(d for d in model.datasets if d.name == "loan")
+    assert _semantic_dataset_score(loan, q, _word_tokens(q)) == 2.5
+
+
 # ------------------------------------------------- env-gated MySQL execution
 
 def _mysql_conn():
@@ -520,3 +598,47 @@ def test_execution_matches_gold(model, qid, plan, expected):
     finally:
         conn.close()
     assert int(got[0]) == expected, f"{qid}: compiled SQL gives {got[0]}, gold {expected}"
+
+
+_GOLD_ORACLE = (
+    Path(__file__).resolve().parents[3] / "eval" / "baseline" / "questions.jsonl"
+)
+
+
+def _gold_sql(qid: str) -> str:
+    """题面 oracle 取仓库内的 eval/baseline/questions.jsonl(与 anti-cheat
+    脚本同一份)。gold 只在本测试内作执行比对,绝不进 KB。"""
+    import json
+
+    with _GOLD_ORACLE.open(encoding="utf-8") as fh:
+        for line in fh:
+            row = json.loads(line)
+            if row.get("qid") == f"financial-{qid}":
+                return row["gold_sql"]
+    raise KeyError(f"qid {qid} not in oracle")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("qid,plan,matched", [
+    # 0485: 官方标签语义(running contract = C/D)→ 枚举 IN 谓词,计数与 gold 同
+    ("0485", PLAN_0485_HAND, ["account", "loan"]),
+    # 0498: 派生量算式列(年份差 CAST DOUBLE)逐行 = gold(DATE_FORMAT 相减同为
+    # double;str() 零容差下 74 与 '74.0' 不同,这正是 CAST 存在的意义)
+    ("0498", PLAN_0498_HAND, ["disp", "card", "client"]),
+])
+def test_execution_matches_gold_rows(model, qid, plan, matched):
+    from scripts.eval_bird import normalize_rows  # harness 同款比较口径
+
+    res = _compile_with(model, plan, matched)
+    assert not isinstance(res, CompileMiss), f"{qid} must compile: {res}"
+    conn = _mysql_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(res.sql)
+            got = cur.fetchall()
+            cur.execute(_gold_sql(qid))
+            gold = cur.fetchall()
+    finally:
+        conn.close()
+    assert normalize_rows(got) == normalize_rows(gold), (
+        f"{qid}: compiled rows != gold rows\n got={got!r}\ngold={gold!r}")
