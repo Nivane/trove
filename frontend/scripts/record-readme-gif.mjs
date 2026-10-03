@@ -124,7 +124,9 @@ const captureLoop = (async () => {
       try {
         const st = await doneCheck()
         if (st.statusDone || (st.hasAnswer && !st.streaming)) doneAt = Date.now() - t0
-      } catch {}
+      } catch {
+        // 探测失败只当"还没完成",下一帧再试 —— 不中断录制
+      }
     }
     await page.waitForTimeout(CADENCE)
   }

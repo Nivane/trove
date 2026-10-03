@@ -209,6 +209,24 @@ class AttributionConfig:
 
 
 @dataclass
+class AnalysisConfig:
+    """分析服务(``trove/services/analysis/``)的扩展预算。
+
+    attribution 老配置原样保留(零迁移);这里是**新增阶段**的开关与
+    预算,只影响驱动器树,不改变老路径行为:
+    ``driver_tree``: 指标表达式树的组件分解(Add/Sub 恒等式链上拆组件,
+      乘除链只标 decomposable=False 不硬拆);关掉 = 只出维度分解表。
+    ``max_components``: 树里可执行组件数上限(超出截断,degraded 记账)。
+    ``max_queries``: 驱动器树阶段的双期查询预算上限(每期一条多度量
+      SQL;超预算 → 树只留骨架 + degraded 记账,老跳不受影响)。
+    """
+
+    driver_tree: bool = True
+    max_components: int = 4
+    max_queries: int = 12
+
+
+@dataclass
 class AssetsConfig:
     """可信查询资产的台账配置(设计稿 §9.2 的 ``agent.assets.*``)。
 
@@ -311,6 +329,8 @@ class AgentConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     # 业务级归因/根因分析:为什么类问题的多跳下钻 + 贡献率 + 瀑布图。
     attribution: AttributionConfig = field(default_factory=AttributionConfig)
+    # 分析服务扩展预算(驱动器树等;老 attribution 配置不动)。
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     # 离线评测回归门配置(opt-in;默认不进 CI)。见 EvalConfig。
     eval: EvalConfig = field(default_factory=EvalConfig)
     # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
@@ -518,6 +538,14 @@ class ConfigLoader:
             ratio_decomposition=bool(attr_raw.get("ratio_decomposition", True)),
         )
 
+        # Parse analysis (driver tree budgets; nested under agent: like attribution)
+        analysis_raw = agent_section.get("analysis", {}) or {}
+        analysis_conf = AnalysisConfig(
+            driver_tree=bool(analysis_raw.get("driver_tree", True)),
+            max_components=max(1, int(analysis_raw.get("max_components", 4))),
+            max_queries=max(1, int(analysis_raw.get("max_queries", 12))),
+        )
+
         # Parse eval gate (top-level section, not under agent:)
         eval_raw = resolved.get("eval", {}) or {}
         budget_raw = agent_section.get("budget", {}) or {}
@@ -635,6 +663,7 @@ class ConfigLoader:
             },
             memory=memory,
             attribution=attribution,
+            analysis=analysis_conf,
             eval=eval_conf,
             budget=budget_conf,
             authz=authz_conf,
