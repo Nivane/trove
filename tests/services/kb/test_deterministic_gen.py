@@ -304,6 +304,72 @@ class TestGenerateTemplates:
         assert filters[0]["question"] == "贷款中贷款状态为'A'的记录有多少？"
         assert "过滤" in filters[0]["tags"]
 
+    def test_group_by_question_strips_profile_noise(self):
+        """单表 GROUP BY 问句:描述里的 probe 统计段先剥(与指标命名同规则)。"""
+        tables = [{
+            "name": "loan",
+            "description": "贷款信息表",
+            "columns": [
+                {"name": "status", "type": "varchar",
+                 "description": "贷款状态; values range from A to C; 3 distinct values.",
+                 "enums": []},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables, lang="zh")
+        grouped = next(t for t in templates if t["sql"].startswith("SELECT status"))
+        assert grouped["question"] == "按贷款状态分组，统计每种贷款状态的贷款数量"
+
+    def test_join_group_question_strips_profile_noise(self):
+        """JOIN+分组问句:维度表文本列的描述同样先剥 probe 统计。"""
+        tables = [
+            {
+                "name": "account",
+                "description": "银行账户信息表",
+                "columns": [
+                    {"name": "account_id", "type": "int",
+                     "description": "账户标识符", "enums": []},
+                    {"name": "district_id", "type": "int",
+                     "description": "所属地区ID", "enums": []},
+                ],
+                "metrics": [],
+            },
+            {
+                "name": "district",
+                "description": "地区信息表",
+                "columns": [
+                    {"name": "district_id", "type": "int",
+                     "description": "地区标识符", "enums": []},
+                    {"name": "name", "type": "varchar",
+                     "description": "地区名称; 77 distinct values.", "enums": []},
+                ],
+                "metrics": [],
+            },
+        ]
+        templates = generate_templates(tables, lang="zh")
+        grouped = next(t for t in templates if t["sql"].startswith("SELECT district.name"))
+        assert grouped["question"] == "按地区的地区名称分组，统计每种地区名称的银行账户数量"
+
+    def test_enum_filter_question_strips_profile_noise(self):
+        """enum 过滤问句(中文分支直用描述):probe 统计段先剥。"""
+        tables = [{
+            "name": "loan",
+            "description": "贷款信息表",
+            "columns": [
+                {"name": "status", "type": "varchar",
+                 "description": "贷款状态; values range from A to C.",
+                 "enums": ["A=contract finished", "B=contract running"]},
+            ],
+            "metrics": [],
+        }]
+        templates = generate_templates(tables, lang="zh")
+        filters = [t for t in templates
+                   if t["sql"].startswith("SELECT COUNT(*) FROM loan WHERE status")]
+        assert [t["question"] for t in filters] == [
+            "贷款中贷款状态为'A'的记录有多少？",
+            "贷款中贷款状态为'B'的记录有多少？",
+        ]
+
     def test_primary_key_does_not_create_self_join(self):
         """{table}_id 主键不是 FK → 不生成自连接模板。"""
         templates = generate_templates(TABLES, lang="zh")
@@ -514,6 +580,45 @@ class TestEnglishGeneration:
         assert grouped["question"] == (
             "How many account records are there for each district name of district?"
         )
+
+    def test_group_questions_strip_comma_noise_in_english(self):
+        """GROUP BY 与 JOIN+分组问句同规则剥噪音(BIRD 逗号形态 + 尾标点)。"""
+        tables = [
+            {
+                "name": "account",
+                "description": "bank accounts",
+                "columns": [
+                    {"name": "account_id", "type": "int",
+                     "description": "account identifier", "enums": []},
+                    {"name": "district_id", "type": "int",
+                     "description": "district identifier", "enums": []},
+                ],
+                "metrics": [],
+            },
+            {
+                "name": "district",
+                "description": "districts",
+                "columns": [
+                    {"name": "district_id", "type": "int",
+                     "description": "district identifier", "enums": []},
+                    {"name": "name", "type": "text",
+                     "description": "District name, sample values are Czech place "
+                                    "names, ranging from A to Z.",
+                     "enums": []},
+                ],
+                "metrics": [],
+            },
+        ]
+        templates = generate_templates(tables, lang="en")
+        by_sql = {t["sql"]: t["question"] for t in templates}
+        assert by_sql["SELECT name, COUNT(*) FROM district GROUP BY name"] == (
+            "How many district records are there for each District name, "
+            "sample values are Czech place names?")
+        assert by_sql[
+            "SELECT district.name, COUNT(*) FROM account JOIN district "
+            "ON account.district_id = district.district_id GROUP BY district.name"
+        ] == ("How many account records are there for each District name, "
+              "sample values are Czech place names of district?")
 
     def test_enum_filter_templates_in_english(self):
         """问题文本用人类可读 label(male/female),SQL 保留 code 值。"""
