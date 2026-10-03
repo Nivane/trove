@@ -409,6 +409,11 @@ class TestStructuredSteps:
             [
                 "query",
                 "```sql\nSELECT name FROM students;\n```",
+                # 校验失败后 analyze_error 真的会问一次 LLM,脚本必须给它一轮。
+                # 旧脚本漏了这轮:它拿到的下一句是 gen 的第二轮响应,凑成两个
+                # gen step 靠的是散文("OK")被当 SQL 接受 —— 那个口子已被
+                # gen 收尾解析门槛关上,脚本按真实调用序补齐。
+                "TARGET: gen_sql\n修正: 按问题改为计数查询",
                 "```sql\nSELECT COUNT(*) FROM students;\n```",
                 "OK",
             ],

@@ -75,9 +75,12 @@ def test_render_skills_gen_sql_construction_bilingual():
     assert "分子" in zh and "分母" in zh
     assert "排序键" in zh
     assert "having" in zh.lower()
-    # 只由声明节点触发:其它节点拿不到它
-    assert "分子" not in render_skills("query_sketch", lang="zh")
+    # 只由声明节点触发:其它节点拿不到它。哨兵用 sql_construction 独有的
+    # 小节标题("分子"不独有——query_sketch 的 plan_query 也讲占比构造纪律)。
+    assert "答案构造" not in render_skills("query_sketch", lang="zh")
     assert "numerator" not in render_skills("analyze_error", lang="en")
+    # 反向:plan_query 只挂 query_sketch,不进 gen_sql
+    assert "可追溯自检" not in render_skills("gen_sql", lang="zh")
 
 
 def test_render_skills_no_match_is_empty():

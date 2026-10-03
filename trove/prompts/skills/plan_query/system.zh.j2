@@ -13,6 +13,15 @@
 
 问题中没有支撑短语的计划元素必须删除。
 
+## 计划取值的构造纪律
+
+计划本身承载了聚合表达式 / conditions / having 的拆分——把这些拆对，生成端照抄：
+
+- 聚合条件：约束聚合**总体内部**的过滤（占比/比率的分子或分母，如"运行中合约占全部贷款的比例"）属于 answer_columns 里的聚合表达式本身——绝不拆成独立的行级 condition，那会收缩基总体而不是构造比率。
+- 聚合结果上的约束（总量必须等于某个给定数，"in total 3539"）→ having，不是 conditions。
+- 极值问题：选择语义用 extreme 字段表达（第二/第 N 值填 rank）；排序度量列不放进 answer_columns——除非问题本身就要该度量。
+- 维度过滤写人类可读列（district.A2、client.gender），不写 id 列。
+
 ## 常见失败模式（需主动规避）
 
 - "list all the X" 类问题：问题未点名列时，把明细列（date、amount、status…）泄漏进 answer_columns；

@@ -132,7 +132,8 @@ class TestSemanticFirstLinking:
         out = await node(make_state(question="male clients"))
         ctx = out["semantic_context"]
         assert "role=enum" in ctx
-        assert "enum {F=female, M=male}" in ctx
+        # 映射分隔符 "; ":官方文档导入的标签自身带逗号,逗号分隔会歧义
+        assert "enum {F=female; M=male}" in ctx
 
     @staticmethod
     def _enum_model(enum_display: dict) -> SemanticModel:

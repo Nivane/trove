@@ -1129,6 +1129,132 @@ class TestEnsureAggregateAnswerColumn:
                    "aggregation": "count(distinct account_id)"})
         assert fixed["answer_columns"] == ["district.A2", "count(*)"]
 
+    def test_extreme_plan_untouched(self):
+        """extreme 带列的极值计划 → 不注入 FUNC(*)。
+
+        回归(0475):plan 是"实体列 + extreme{max,loan.amount}",注入
+        max(*) 把单列答案变成"实体列 + max(*)"两列——指标列由编译器消费
+        extreme 生成,注进来的通配列是噪声。
+        """
+        f = self._import()
+        plan = {"answer_columns": ["account.account_id"], "aggregation": "max",
+                "tables": ["loan", "account"],
+                "extreme": {"func": "max", "column": "loan.amount",
+                            "scope": "all loans"}}
+        assert f(plan) is None
+
+    def test_extreme_without_column_still_injected(self):
+        """extreme 缺 column(半截声明)→ 不享受豁免,照旧补列。"""
+        f = self._import()
+        plan = {"answer_columns": ["district.A2"], "aggregation": "count",
+                "extreme": {"func": "max", "scope": "all"}}
+        assert f(plan) is not None
+
+    def test_non_count_aggregate_untouched(self):
+        """非 count 族聚合(avg/sum/min/max)→ 不注入 FUNC(*)。
+
+        AVG(*)/SUM(*) 在 MySQL 语法非法,MIN(*)/MAX(*) 语义是"任意行极值"
+        而非计划声明的度量——这类计划的指标列由 aggregation 表达式承载。
+        """
+        f = self._import()
+        for agg in ("avg", "sum(loan.amount) / count(*)", "max", "min"):
+            assert f({"answer_columns": ["district.A2"], "aggregation": agg}) is None
+
+    def test_having_plan_untouched(self):
+        """已有 having(聚合后过滤,如 "in total 3539")→ 不注入占位列。
+
+        计划已把量级约束表达完整(0494 型);补一列 count(*) 只会改变结果
+        宽度、动摇已定型的聚合口径。
+        """
+        f = self._import()
+        # aggregation 用 count,隔离 having 守卫(count 守卫在此不触发)
+        plan = {"answer_columns": ["trans.type"], "aggregation": "count",
+                "having": [{"metric": "orders.amount", "op": "=", "value": 3539}]}
+        assert f(plan) is None
+        # 对照组:同样 shape 去掉 having → 照旧补列(守卫不误伤)
+        assert f({"answer_columns": ["trans.type"], "aggregation": "count"}) is not None
+
+
+class TestExtremeRankFromQuestion:
+    """「第二高/third-highest」→ plan.extreme.rank 的确定性补齐(零 LLM)。
+
+    编译器消费 extreme.rank(rank≥2 产出第 N 值的选择谓词);planner 常把
+    序数词写进 scope 文本却不落结构字段——这里按问句词形补齐。恰一个
+    序数词命中才认,多命中=歧义不猜。
+    """
+
+    def _import(self):
+        from trove.workflow.nodes.query_sketch import extreme_rank_from_question
+        return extreme_rank_from_question
+
+    @staticmethod
+    def _plan(**extreme_over):
+        extreme = {"func": "max", "column": "district.A15", "scope": "after all filters"}
+        extreme.update(extreme_over)
+        return {"answer_columns": ["district.A2"], "extreme": extreme,
+                "tables": ["district"]}
+
+    def test_english_ordinal_sets_rank(self):
+        f = self._import()
+        fixed = f(self._plan(), "Which district has the second-highest average salary?")
+        assert fixed is not None
+        assert fixed["extreme"]["rank"] == 2
+        assert fixed["plan_field"] == "extreme_rank_from_question"
+
+    def test_numeric_ordinal_sets_rank(self):
+        f = self._import()
+        fixed = f(self._plan(), "the 3rd largest loan amount")
+        assert fixed["extreme"]["rank"] == 3
+
+    def test_chinese_ordinal_sets_rank(self):
+        f = self._import()
+        fixed = f(self._plan(), "哪个地区的平均工资第二高？")
+        assert fixed["extreme"]["rank"] == 2
+
+    def test_multiple_ordinals_ambiguous_untouched(self):
+        """两个不同序数词 → 歧义,不动(宁缺勿错)。"""
+        f = self._import()
+        assert f(self._plan(), "second-highest in the third district") is None
+
+    def test_existing_rank_wins(self):
+        """planner 已给 rank → 显式优先,不覆盖。"""
+        f = self._import()
+        assert f(self._plan(rank=2), "Which district has the second-highest salary?") is None
+
+    def test_no_ordinal_untouched(self):
+        f = self._import()
+        assert f(self._plan(), "Which district has the highest average salary?") is None
+
+    def test_no_extreme_or_column_untouched(self):
+        f = self._import()
+        assert f({"answer_columns": ["district.A2"]}, "second-highest") is None
+        assert f({"extreme": {"func": "max", "scope": "all"}}, "second-highest") is None
+        assert f(None, "second-highest") is None
+
+    def test_input_not_mutated(self):
+        """纯函数:原 plan / extreme 字典不被就地修改。"""
+        f = self._import()
+        plan = self._plan()
+        f(plan, "the third highest salary")
+        assert "rank" not in plan["extreme"]
+        assert "plan_field" not in plan
+
+
+class TestRenderPlanExtremeRank:
+    """_render_plan 把 extreme.rank 渲染给 gen_sql(结构信号进计划文本)。"""
+
+    def test_rank_rendered_when_present(self):
+        from trove.workflow.nodes.query_sketch import _render_plan
+        text = _render_plan({"extreme": {"func": "max", "column": "district.A15",
+                                         "rank": 2, "scope": "after filters"}})
+        assert "rank: 2" in text
+
+    def test_rank_absent_no_noise(self):
+        from trove.workflow.nodes.query_sketch import _render_plan
+        text = _render_plan({"extreme": {"func": "max", "column": "district.A15",
+                                         "scope": "after filters"}})
+        assert "rank" not in text
+
 
 class TestCorrectEntityCountPlan:
     """语义级计数纠正:「X 的用户数量/人数」→ count(distinct 实体)。
@@ -1189,6 +1315,68 @@ class TestCorrectEntityCountPlan:
         """问题本身是数记录(不是数实体) → 不改。"""
         f = self._import()
         assert f(self._plan(), "loan 表总共有多少条记录", "zh") is None
+
+    def test_dimension_fk_not_used_as_entity_edge(self):
+        """精确层护栏:FK 那端是维度表(非问题实体候选)→ 不认这条边。
+
+        回归(0483 实测,en 会话):joins 只有 ``account.district_id =
+        district.district_id`` 时,旧实现取"该表第一条 FK 边"→
+        count(distinct account.district_id),每个分组恒 1 的塌缩计数。
+        护栏后该边被跳过,继续找其它边;都没有则精确层不产出。
+        """
+        from trove.workflow.nodes.query_sketch import _distinct_expr_from_plan
+
+        cols = ["count(account.account_id)"]
+        joins = "account.district_id = district.district_id"
+        # 实体候选是 account/client(问题在数持有人)→ 维度边不认
+        assert _distinct_expr_from_plan(cols, joins, {"account", "client"}) is None
+        # 对照组:实体候选就是 district 时,该边是合法所有权边
+        assert _distinct_expr_from_plan(cols, joins, {"district"}) == (
+            "count(distinct account.district_id)")
+
+    def test_entity_owned_fk_edge_still_honored(self):
+        """护栏不误伤原有受益路径:loan→account(实体候选含 account)。"""
+        from trove.workflow.nodes.query_sketch import _distinct_expr_from_plan
+
+        cols = ["count(loan.loan_id)"]
+        joins = ("loan.account_id = account.account_id AND "
+                 "account.district_id = district.district_id")
+        assert _distinct_expr_from_plan(cols, joins, {"account"}) == (
+            "count(distinct loan.account_id)")
+
+    def test_0483_shape_no_district_collapse(self):
+        """0483 形状端到端:绝不产出 count(distinct account.district_id)。
+
+        joins 只有维度边(旧实现取"第一条 FK 边"→ 每分组恒 1 的塌缩计数)。
+        护栏后精确层跳过该边 → 兜底层按实体表去重(account)。
+        """
+        f = self._import()
+        q = "How many female account holders per district?"
+        plan = {
+            "tables": ["account", "district"],
+            "joins": "account.district_id = district.district_id",
+            "aggregation": "count",
+            "answer_columns": ["district.A2", "count(account.account_id)"],
+        }
+        fixed = f(plan, q, "en")
+        assert fixed is not None
+        assert fixed["answer_columns"][1] == "count(distinct account.account_id)"
+        assert "district_id" not in fixed["aggregation"]
+
+    def test_0483_shape_with_ownership_edge_prefers_it(self):
+        """joins 同时含所有权边(account.client_id = client.client_id)时,
+        护栏跳过维度边、选中所有权边——去重列与 gold 口径(client)等价。"""
+        f = self._import()
+        plan = {
+            "tables": ["account", "district", "client"],
+            "joins": ("account.district_id = district.district_id AND "
+                      "account.client_id = client.client_id"),
+            "aggregation": "count",
+            "answer_columns": ["district.A2", "count(account.account_id)"],
+        }
+        fixed = f(plan, "How many female account holders per district?", "en")
+        assert fixed is not None
+        assert fixed["answer_columns"][1] == "count(distinct account.client_id)"
 
     def test_aggregate_expr_answer_column_quota(self):
         """含聚合表达式 answer 列时,聚合别名的多余列按配额豁免。

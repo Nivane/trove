@@ -206,3 +206,113 @@ async def test_render_context_without_metric_hits_keeps_full_metrics():
     model = _SemanticLayer().model()
     ctx = _render_semantic_context(model, ["loan"], None, "loan", metric_hits=None)
     assert "Metrics:" in ctx  # 无选择时保留旧行为(全量锚定渲染)
+
+
+# ── 官方枚举标签的链接可达性 + 字段描述渲染(C6/C3) ──
+
+
+class _LongLabelLayer(_SemanticLayer):
+    """loan.status 用官方文档长标签(自带逗号、多词)。"""
+
+    def model(self):
+        return _Model([
+            _Dataset("loan", description="loan", fields=[
+                _Field("status", role="enum", enum_display={
+                    "C": "running contract, OK so far",
+                    "D": "running contract, client in debt",
+                }),
+            ]),
+        ])
+
+
+class TestEnumLabelLinkReach:
+    """官网长标签("running contract, OK so far")的 dataset 锚定(0485 前提)。
+
+    现行"整串 ⊂ 问句"规则对官方长标签实测 0.0 分(问句不可能整串复述标签)
+    → 补 token 级命中:标签词元与问句词元(尾 s 屈折归一)≥2 命中、且至少
+    一个命中词元长 ≥5。短词双命中不构成锚定信号(噪声控制)。
+    """
+
+    def _score(self, disp, field_name="status", query="q"):
+        from trove.workflow.nodes.schema_linking import (
+            _semantic_dataset_score,
+            _word_tokens,
+        )
+        # dataset 名取问句里不可能出现的词,隔离枚举锚定这一条通路
+        d = _Dataset("loanrec", fields=[_Field(field_name, role="enum",
+                                               enum_display={"C": disp})])
+        return _semantic_dataset_score(d, query, _word_tokens(query))
+
+    def test_long_official_label_anchors_by_tokens(self):
+        s = self._score("running contract, OK so far",
+                        query="How many running contracts are there in district 1?")
+        assert s == 2.5
+
+    def test_plural_folding_matches(self):
+        """"contracts" 归一为 "contract" 后与标签词元命中。"""
+        s = self._score("running contract, OK so far",
+                        query="list loans with status of running contracts")
+        assert s == 2.5
+
+    def test_single_token_hit_not_enough(self):
+        s = self._score("running contract, OK so far",
+                        query="the contract of each client")
+        assert s < 2.5
+
+    def test_all_short_tokens_not_enough(self):
+        """双命中但全部词元 <5 字符 → 不锚定(短词是噪声源)。"""
+        s = self._score("paid by cash", query="cash paid")
+        assert s < 2.5
+
+    def test_whole_label_substring_still_wins(self):
+        s = self._score("running contract", query="how many running contract loans")
+        assert s == 2.5
+
+    async def test_0485_shape_loan_enters_matched(self, tmp_path):
+        """端到端:英文问句点名官方标签 → loan 进 matched_tables。
+
+        B2 把官方标签写进 enum_display 后,链接命中规则不扩则 loan 仍进不了
+        matched(实测 0.0 分)——这里钉住两者合流的可达性。
+        """
+        kb = await _kb(tmp_path)
+        q = "How many running contracts are there in district 1?"
+        state = _state(q)
+        base = await _semantic_linking(
+            state, kb, None, _LongLabelLayer(), [], q, "demo")
+        assert "loan" in base["matched_tables"]
+        assert base.get("refusal") is None
+
+
+class TestFieldDescriptionRender:
+    """字段 description 渲染进 planner 上下文:仅业务列(dimension/enum/
+    measure),单行、截 80;identifier/time 的结构样板描述不渲染。"""
+
+    def _ctx(self, *fields):
+        model = _Model([_Dataset("district", fields=list(fields))])
+        return _render_semantic_context(model, ["district"], None, "q")
+
+    def test_dimension_desc_rendered(self):
+        ctx = self._ctx(_Field("A11", role="dimension", description="average salary"))
+        assert "desc=average salary" in ctx
+
+    def test_enum_desc_rendered_and_multiline_collapsed(self):
+        ctx = self._ctx(_Field("status", role="enum",
+                               description="  running\n  contract  "))
+        assert "desc=running contract" in ctx
+
+    def test_identifier_desc_not_rendered(self):
+        ctx = self._ctx(_Field("district_id", role="identifier",
+                               description="identifier of the district"))
+        assert "identifier of the district" not in ctx
+
+    def test_long_desc_truncated(self):
+        ctx = self._ctx(_Field("A11", role="dimension", description="x" * 100))
+        assert "desc=" + "x" * 80 + "…" in ctx
+
+    def test_enum_mapping_separator_semicolon(self):
+        """官方标签自带逗号 → 映射分隔符用 "; ",边界不歧义。"""
+        ctx = self._ctx(_Field("status", role="enum", enum_display={
+            "C": "running contract, OK so far",
+            "D": "running contract, client in debt",
+        }))
+        assert "C=running contract, OK so far; D=running contract, client in debt" in ctx
