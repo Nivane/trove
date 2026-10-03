@@ -11,6 +11,35 @@ deterministic structure layer that later stages compile queries from
 """
 from dataclasses import dataclass, field
 
+#: 字段级 ``values`` 的条数上限(结构事实:该列的实际取值)。
+#: 与 ``services.kb.enum_probe.VALUE_PROBE_LIMIT`` 同一个界 —— 探测侧
+#: 只探这么多,装载侧也只收这么多(超出的部分截断,坏形状由 lint 拦)。
+MAX_FIELD_VALUES = 100
+
+
+def _clean_values(raw: object) -> list[str]:
+    """``values`` 净化:非空 string 列表,去空白,≤ :data:`MAX_FIELD_VALUES`。
+
+    容忍缺省(``None`` → ``[]``,存量模型走这条)与裸标量
+    (``values: Sokolov`` → 单元素列表,与 ``_masking_policy`` 的
+    ``bypass_scopes`` 同法);其它坏形状(映射/嵌套容器)忽略而不是猜 ——
+    "猜"会让一份写错的文件静默变成一份能跑的模型。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for v in raw:
+        if v is None or isinstance(v, (dict, list, tuple, set)):
+            continue
+        s = str(v).strip()
+        if s:
+            out.append(s)
+    return out[:MAX_FIELD_VALUES]
+
 
 def _clean_extensions(raw: list | None) -> list[dict]:
     """custom_extensions 净化:只保留 {vendor_name, data} 形式且 vendor_name
@@ -75,6 +104,7 @@ class SemanticField:
         能不能聚合/该不该分组"(P5.1)。
     enum_display: 枚举列的 ``code → 人类可读词`` 字典(过滤值锚定用,
         "POPLATEK MESICNE" → "monthly")。运行时把人类值归一成 code。
+    values: 该列的实际取值(structural fact,probe 产物);见下。
     label: OSSIE ``label`` — 分类标签(AI/UI 归类用,透传)。
     examples: OSSIE ai_context.examples — 该字段的示例问句。
     custom_extensions: OSSIE vendor 扩展(透传保留)。
@@ -94,6 +124,11 @@ class SemanticField:
     # ``_enum_code_for`` 在 enum_display 基础上并入这些别名做词级匹配;
     # 多 code 同命中 → 保守 MISS(值歧义,不猜)。
     value_aliases: dict[str, list[str]] = field(default_factory=dict)
+    #: 该列的**实际取值**(``SELECT DISTINCT`` 探测产物,≤ MAX_FIELD_VALUES)。
+    #: 纯结构事实,不是语义声明:它不提升 ``semantic_role``、不进提示词渲染、
+    #: 不参与占比/条件构造,只回答"这个字面量属于哪一列"(值路由用)。
+    #: 缺省空列表 = 未探测/取值域超界(存量模型全落这一侧,行为不变)。
+    values: list[str] = field(default_factory=list)
     label: str = ""
     examples: list[str] = field(default_factory=list)
     custom_extensions: list[dict] = field(default_factory=list)

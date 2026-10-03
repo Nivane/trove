@@ -20,11 +20,68 @@ from typing import Any
 from sqlglot import ErrorLevel, exp, parse_one
 
 from trove.services.kb.lesson_distill import MAX_PATTERN_LEN
+# 字段级 values 的条数上限与装载侧同一个常量:lint 放行的上界必须就是
+# 装载侧截断的那条线,否则「装进来的一定合法」不成立。
+from trove.services.semantic_layer.models import MAX_FIELD_VALUES
 
 _ID_LIKE_SUFFIXES = ("_id", "_to", "_from", "_code", "id")
 
 #: 字段级脱敏值域(设计 §5.5)。空串 = 未声明;存量模型没有 ``mask`` 键(A11)。
 _VALID_MASKS = {"", "none", "partial", "hash", "null"}
+
+#: 时态 datatype(OSSIE DataType 口径)。``is_temporal_field`` 与
+#: ``lint_semantics`` 的时间字段判定共用同一份 —— 两处判定必须一致,
+#: 否则回填写的键会被 lint 判成违规(自己人打自己人)。
+_TEMPORAL_DATATYPES = frozenset(
+    {"date", "time", "datetime", "datetimetz", "timestamp"}
+)
+
+def is_temporal_field(field: dict[str, Any]) -> bool:
+    """字段是否时间维度:``semantic_role: time`` 或时态 datatype。
+
+    回填脚本（``init_pipeline._backfill_values``）与 lint 共用这一个判定:
+    日期列的取值域不是"值词表"（写进去会被 ``_lint_values`` 拦），
+    而在两处各判一次迟早会判出两种结果。
+    """
+    if str(field.get("semantic_role") or "").strip().lower() == "time":
+        return True
+    dt = str(field.get("datatype") or "").strip().lower()
+    return dt in _TEMPORAL_DATATYPES
+
+
+def _lint_values(issues: list[str], ds_name: str, field: dict[str, Any]) -> None:
+    """字段级 ``values``(列的实际取值)的形状门。三条:
+
+    1. **必须是非空 string 数组** —— 映射/嵌套/空串是坏形状(空串在装载
+       侧会被丢掉,但盘上留着它意味着写它的人以为那是取值);
+    2. **≤ MAX_FIELD_VALUES** —— 超限说明探测不该落这一列(取值域不完整
+       的"事实"比没有更坏:值路由会把它当完整词表用);
+    3. **时间字段不得声明** —— 日期列的取值是时点,不是可路由的取值词表。
+
+    省略该键 = 未探测(存量模型走这条,不得误报)。它**只是数据**:lint
+    不检查它与 semantic_role / enum_display 的"一致性"—— 那两样不是它的
+    归属,是消费侧的防御读取。
+    """
+    if "values" not in field:
+        return
+    where = f"表 {ds_name}.{field.get('name', '')}"
+    raw = field.get("values")
+    if not isinstance(raw, list):
+        issues.append(f"{where} values 必须是字符串数组: {raw!r}")
+        return
+    bad = [
+        v for v in raw
+        if not isinstance(v, str) or not v.strip()
+    ]
+    if bad:
+        issues.append(f"{where} values 含非字符串/空条目: {bad[:3]!r}")
+    if len(raw) > MAX_FIELD_VALUES:
+        issues.append(
+            f"{where} values 超过 {MAX_FIELD_VALUES} 条({len(raw)})——"
+            "取值域不完整的事实不如不写,请只落完整探测结果")
+    if is_temporal_field(field):
+        issues.append(
+            f"{where} 是时间字段,不得声明 values(取值是时点,不是取值词表)")
 
 
 def parse_enum_values(enum_text: str) -> set[str]:
@@ -152,11 +209,7 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
         tmp = set()
         enums = set()
         for f in d.get("fields", []) or []:
-            if str(f.get("semantic_role", "") or "").lower() == "time":
-                tmp.add(str(f.get("name", "")))
-            elif str(f.get("datatype", "") or "").lower() in (
-                "date", "time", "datetime", "datetimetz", "timestamp",
-            ):
+            if isinstance(f, dict) and is_temporal_field(f):
                 tmp.add(str(f.get("name", "")))
             if (
                 str(f.get("semantic_role", "") or "").lower() == "enum"
@@ -230,6 +283,7 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
             for ext in f.get("custom_extensions") or []:
                 if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
                     issues.append(f"表 {ds_name}.{fname} custom_extensions 缺 vendor_name")
+            _lint_values(issues, ds_name, f)
 
     rel_pairs: set[frozenset[str]] = set()
     for r in model.get("relationships", []) or []:

@@ -105,3 +105,69 @@ async def test_init_kb_semantic_draft_reaches_single_source(tmp_path, sqlite_reg
     county = next(f for f in students.fields if f.name == "county")
     assert county.synonyms == ["district", "region"]
     assert county.description == "county name"
+
+
+#: 一张 30 个不同取值的文本表:枚举档(≤20)看不见,第二档(≤100)才收录 ——
+#: 正是 ``values`` 存在的理由。
+_LABELS_DOC = """tables:
+- name: labels
+  description: label records
+  columns:
+  - name: id
+    type: int
+    description: label identifier
+    enums: []
+  - name: tag
+    type: varchar
+    description: tag
+    enums: []
+  metrics: []
+"""
+
+
+async def test_init_kb_backfills_probed_values(tmp_path):
+    """值探测回填接线:init 产出的语义模型带字段级 ``values``(结构事实)。
+
+    labels.tag 有 30 个取值 —— 枚举档(≤20)跳过、第二档(≤100)收录;
+    id 是主键、不是文本列 → 不探不填。走真探测(内存 sqlite),不是 mock。
+    """
+    from trove.core.types import DatasourceConfig
+    from trove.services.datasource.registry import ConnectorRegistry
+
+    registry = ConnectorRegistry()
+    adapter = await registry.register(
+        DatasourceConfig(name="labels_db", type="sqlite",
+                         connection_params={"path": ":memory:"}, default=True),
+        set_default=True,
+    )
+    await adapter.execute("CREATE TABLE labels (id INTEGER PRIMARY KEY, tag TEXT)")
+    await adapter.execute(
+        "INSERT INTO labels (tag) VALUES "
+        + ", ".join(f"('t{i:02d}')" for i in range(30))
+    )
+    try:
+        kb = KbService(tmp_path)
+        llm = LLMGateway(mock_response=_LABELS_DOC)
+        config = AgentConfig(target="mock/model")
+        await init_kb(kb, registry, llm, config, datasource="labels_db", lang="en")
+    finally:
+        await registry.close_all()
+
+    import yaml
+    text = (kb.kb_dir / "labels_db" / "semantics.yml").read_text(encoding="utf-8")
+    model = yaml.safe_load(text)["semantic_model"][0]
+    labels = next(d for d in model["datasets"] if d["name"] == "labels")
+    fields = {f["name"]: f for f in labels["fields"]}
+    assert fields["tag"]["values"] == [f"t{i:02d}" for i in range(30)]
+    assert "values" not in fields["id"]      # 主键/数值列不是取值词表
+    assert "enum_display" not in fields["tag"]  # 30 个取值进不了枚举档
+
+    # 装载侧同一份字节:values 是数据,不改角色
+    from trove.services.semantic_layer.ossie import parse_ossie
+    parsed = parse_ossie(text, preferred_dialect="sqlite")
+    tag = next(
+        f for d in parsed.datasets if d.name == "labels"
+        for f in d.fields if f.name == "tag"
+    )
+    assert tag.values == [f"t{i:02d}" for i in range(30)]
+    assert tag.semantic_role != "enum"
