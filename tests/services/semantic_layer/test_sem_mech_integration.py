@@ -8,9 +8,12 @@
 - A5a 显式 joins 表对修复(0477)
 - B3 排序第三档(0483/0487)+ 方向词归一后的形状
 
-plan fixture 逐字取自 ``~/.trove/runs/<run_id>.log`` 的 ``plan_json``(每题注释
-标注 run id);0479 的 plan_json 在日志里被截断,按其上一行未截断的 ``[output]``
-块逐字重建。gold SQL 只作 env-gated 的 MySQL oracle,绝不入 KB。
+上半段 plan fixture 逐字取自 ``~/.trove/runs/<run_id>.log`` 的 ``plan_json``
+(每题注释标注 run id);0479 的 plan_json 在日志里被截断,按其上一行未截断的
+``[output]`` 块逐字重建。下半段是**手写机制针**(0475/0486/0482/0492/0495):
+这几题的机制产物只存在于本批改造之后,run 日志里没有对应形状,故按机制契约
+手写并断言编译产物(A① 极值 rank、A② 算式列、A③ 剪枝、A④ 条件所有权)。
+gold SQL 只作 env-gated 的 MySQL oracle,绝不入 KB。
 
 零 LLM / 零网络:默认只编译(纯函数)。执行断言需 ``MYSQL_TEST_URL``
 (形如 ``mysql://root:root@127.0.0.1:3306/financial``),未设自动跳过。
@@ -198,6 +201,92 @@ PLAN_0495 = {
     "plan_field": "",
 }
 
+# --------------------------------------------------------- 机制针(手写形状)
+#
+# 0475/0486/0482/0492 的真实 plan 产生于机制落地**之前**:run 日志里的形状
+# 拿不到"机制能消费"的那一面(0486 的 rank=2、0482 的算式列当时都被静默丢给
+# 生成侧,日志里没有成功编译的痕迹)。这里按机制契约**手写**形状,与上面的
+# 逐字 fixture 共用同一模型、同一 matched 口径。
+
+# 0475 手写:只有 extreme(min)、没有可编译投影 → 兜底单列 MIN(极值列)
+PLAN_0475_HAND = {
+    "tables": ["district"],
+    "answer_columns": [],
+    "extreme": {"func": "min", "column": "district.A11"},
+    "conditions": [],
+    "ordering": [],
+    "having": [],
+    "plan_field": "",
+}
+
+# 0486 手写:"全区的第二高" → rank=2 行级选择谓词(声明字段 district.A15);
+# scope 文本带显式全局标记 → 跨表条件不进子查询(取未过滤集的极值)
+PLAN_0486_HAND = {
+    "tables": ["district", "client"],
+    "joins": "client.district_id = district.district_id",
+    "conditions": [{"field": "client.gender", "op": "=", "value": "'F'"}],
+    "aggregation": "number of client records",
+    "answer_columns": ["number of client records"],
+    "extreme": {"func": "max", "column": "district.A15", "rank": 2,
+                "scope": "second highest among all districts by A15"},
+    "ordering": [],
+    "having": [],
+    "plan_field": "",
+}
+
+# 0482 手写:算式列(失业率 1996 vs 1995 的增幅)——旧投影循环对含 "(" 的
+# 无签名列静默跳过;闭语法通道应重建为表限定形态
+PLAN_0482_HAND = {
+    "tables": ["district"],
+    "answer_columns": [
+        "district.A2",
+        "(district.A13 - district.A12) / district.A12 * 100",
+    ],
+    "conditions": [],
+    "ordering": [],
+    "having": [],
+    "plan_field": "",
+}
+
+# 0492 手写:A③ 剪枝可作用的形状(锚表是 client;account 在显式 joins 里
+# 但无人引用 → 应被剪掉);其余组件与逐字 PLAN_0492 同形
+PLAN_0492_HAND = {
+    "tables": ["client", "district", "account"],
+    "joins": (
+        "account.district_id = district.district_id AND "
+        "client.district_id = district.district_id"
+    ),
+    "conditions": [
+        {"field": "district.A11", "op": ">", "value": "10000",
+         "note": "districts with average salary over 10000"},
+    ],
+    "aggregation": "share of female clients",
+    "ordering": [],
+    "answer_columns": ["client.gender"],
+    "having": [],
+    "analysis": {"type": "share", "metric": "count(client.client_id)",
+                 "partition_by": [], "order_by": "", "direction": "asc"},
+    "plan_field": "",
+}
+
+# 0495 手写(A④ 条件所有权):候选命中**声明**的占比度量(自由拼法带
+# NULLIF 守卫)→ 其分子谓词的孪生行级条件不得冻结进骨架 WHERE
+_SHARE_FEMALE = (
+    "SUM(CASE WHEN client.gender = 'F' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)"
+)
+PLAN_0495_OWN_HAND = {
+    "tables": ["client"],
+    "conditions": [{"field": "client.gender", "op": "=", "value": "'F'"}],
+    "aggregation": (
+        "SUM(CASE WHEN client.gender = 'F' THEN 1 ELSE 0 END)"
+        " * 100.0 / NULLIF(COUNT(*), 0)"
+    ),
+    "answer_columns": [_SHARE_FEMALE],
+    "ordering": [],
+    "having": [],
+    "plan_field": "",
+}
+
 # 运行时的 matched_tables(取自各 run 日志,原样)。
 MATCHED = {
     "0470": ["district", "client", "trans"],
@@ -223,6 +312,12 @@ def model():
 def _compile(model, qid: str, plan: dict):
     return SemanticCompiler(model).compile_detailed(
         plan, list(MATCHED[qid]), force_dialect="mysql")
+
+
+def _compile_with(model, plan: dict, matched: list[str]):
+    """手写形状:matched 显式给出(不查 MATCHED 表)。"""
+    return SemanticCompiler(model).compile_detailed(
+        plan, list(matched), force_dialect="mysql")
 
 
 def _sql(res) -> str:
@@ -311,13 +406,83 @@ def test_0487_ordering_metric_expression(model):
 ])
 def test_share_analysis_partial_is_advisory(model, qid, plan, kept):
     """0492/0495:share 口径未声明 → 软缺口骨架,必须是 partial + advisory
-    (where 子集检查让位给 gen_sql 重构视角),但权威部分(join/过滤)仍在。"""
+    (where 子集检查让位给 gen_sql 重构视角),但权威部分(join/过滤)仍在。
+
+    A④ 条件所有权**不改这里的 0495 断言**(``client.gender = 'm'`` 照旧冻结):
+    0495 的 answer 候选 ``count(client.client_id)`` 命中的是 KB 里的**无条件**
+    计数度量 —— 所有权只看候选定义里有没有内部谓词,无条件度量给出空集,
+    孪生条件本就不归它。会翻转的是"候选 = 条件/占比形态"的形状,见
+    ``test_0495_hand_share_candidate_owns_twin_condition``(手写 fixture)。
+    """
     res = _compile(model, qid, plan)
     assert isinstance(res, PartialCompile), f"{qid} should be a partial skeleton: {res}"
     assert getattr(res.contract, "advisory", False) is True
     sql = _low(res)
     assert kept in sql
     assert "join" in sql
+
+
+# ----------------------------------------------- 机制针(手写形状)编译断言
+
+def test_0475_hand_extreme_only_projection_fallback(model):
+    """0475 手写:只有 min 极值、没有可编译投影 → 兜底单列 MIN(极值列),
+    不再 nothing_compilable 硬 MISS。"""
+    res = _compile_with(model, PLAN_0475_HAND, ["district"])
+    assert not isinstance(res, CompileMiss), f"extreme fallback must compile: {res}"
+    sql = _low(res)
+    assert "min(district.a11)" in sql
+    assert "from district" in sql
+    assert "limit" not in sql and "order by" not in sql  # 聚合兜底不是"取一行"
+
+
+def test_0486_hand_second_highest_selection_predicate(model):
+    """0486 手写:rank=2 极值 → 行级选择谓词(OFFSET 1);scope 带全局标记 →
+    子查询取未过滤集,跨表条件留在外层 WHERE。"""
+    res = _compile_with(model, PLAN_0486_HAND, ["district", "client"])
+    assert not isinstance(res, CompileMiss), f"extreme rank=2 must compile: {res}"
+    sql = _low(res)
+    assert (
+        "district.a15 = (select district.a15 from district "
+        "order by district.a15 desc limit 1 offset 1)"
+    ) in sql
+    assert "client.gender = 'f'" in sql
+
+
+def test_0482_hand_scalar_expression_column(model):
+    """0482 手写:算式列经闭语法通道**重建**进投影(表限定、括号规范化),
+    不再被静默跳过。"""
+    res = _compile_with(model, PLAN_0482_HAND, ["district"])
+    assert not isinstance(res, CompileMiss), f"expression column must compile: {res}"
+    sql = _low(res)
+    assert "district.a2" in sql
+    assert "(((district.a13 - district.a12) / district.a12) * 100)" in sql
+
+
+def test_0492_hand_prunes_unreferenced_account_join(model):
+    """0492 手写(锚表 client):显式 joins 里的 account 无人引用 → A③ 剪掉;
+    对照逐字 PLAN_0492(锚表 account)不剪 —— 剪枝只删"非锚的无关叶子"。"""
+    hand = _compile_with(model, PLAN_0492_HAND, ["account", "client", "district"])
+    assert isinstance(hand, PartialCompile), hand
+    hand_sql = _low(hand)
+    assert "district.a11 > 10000" in hand_sql
+    assert "join account" not in hand_sql
+    assert "join district" in hand_sql
+
+    verbatim = _compile(model, "0492", PLAN_0492)
+    assert isinstance(verbatim, PartialCompile), verbatim
+    # 逐字形状里 account 是锚表(FROM 根 + keep)→ 它的连边一条不剪
+    assert "from account" in _low(verbatim)
+    assert "join account" not in _low(verbatim)
+
+
+def test_0495_hand_share_candidate_owns_twin_condition(model):
+    """0495 手写(A④):候选命中**声明**占比度量后,分子谓词的孪生行级条件
+    不再冻结进骨架 WHERE(产物 = 声明表达式,无 WHERE)。"""
+    res = _compile_with(model, PLAN_0495_OWN_HAND, ["client"])
+    assert not isinstance(res, CompileMiss), f"matched share must compile: {res}"
+    sql = _low(res)
+    assert "case when client.gender = 'f' then 1 else 0 end" in sql
+    assert "where" not in sql  # 孪生条件归聚合所有
 
 
 # ------------------------------------------------- env-gated MySQL execution

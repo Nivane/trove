@@ -314,7 +314,10 @@ class PlanQuery(BaseModel):
     @field_validator("extreme", mode="before")
     @classmethod
     def _extreme(cls, v: Any) -> dict[str, Any] | None:
-        # extreme 编译器不消费,非 dict 宽松置空
+        # extreme 由编译器消费 func/column/rank/scope 四键(max/min + 可解析
+        # 到声明字段的列 → 排序片段或行级选择谓词)。形态非法**不在这里**拒绝:
+        # 非 max/min、列解析不到、scope 横跨其它表 —— 都由编译器按软 MISS
+        # 处理并跳过极值,计划其余组件照常编译(整体打回会丢掉本可编译的部分)。
         return v if isinstance(v, dict) else None
 
     @field_validator("attribution", mode="before")

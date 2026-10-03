@@ -348,6 +348,95 @@ def test_condition_with_other_value_still_frozen():
     assert ("client", "gender") in where_cols
 
 
+# ══ A④ 条件所有权扩到「命中的」share 候选 ═══════════════════════
+#
+# A3b 只喂**未命中**候选;候选命中声明度量后,同一份内部谓词的孪生行级条件
+# 仍会被冻结进骨架(0495 型:骨架 WHERE 与生成侧"分子进聚合"的重写冲突,
+# 骨架保真校验把正确 SQL 打回)。所有权取决于"该谓词是否已是某个候选定义的
+# 一部分",与候选是否对上声明度量无关 → matched_pairs 的候选文本一并喂给
+# agg_owned_cond_keys。
+
+_A4_SHARE_CAND = (
+    "SUM(CASE WHEN client.gender = 'F' THEN client.income ELSE 0 END)"
+    " * 100.0 / NULLIF(SUM(client.income), 0)"
+)
+
+
+def _share_model(*, cast: bool = False):
+    """_fin_model + 一条声明占比度量(A④:候选命中通道)。
+
+    cast=True 时声明表达式带 CAST(Lane B 生成器的口径)—— 候选**不带** CAST
+    也要命中(tier3 结构等价:CAST 归一后同一形态),声明的带 CAST 表达式是权威。
+    """
+    model = _fin_model()
+    if cast:
+        expr = (
+            "SUM(CASE WHEN client.gender = 'F' THEN CAST(client.income AS DOUBLE) "
+            "ELSE 0 END) * 100.0 / NULLIF(SUM(CAST(client.income AS DOUBLE)), 0)"
+        )
+    else:
+        expr = _A4_SHARE_CAND
+    model.metrics.append(
+        SemanticMetric("share of female income", expr, datasets=["client"]))
+    return model
+
+
+def test_matched_share_candidate_owns_twin_condition():
+    """候选命中声明度量后,其内部谓词的孪生行级条件仍不进骨架 WHERE。"""
+    plan = {
+        "tables": ["client"],
+        "aggregation": _A4_SHARE_CAND,
+        "answer_columns": [_A4_SHARE_CAND],
+        "conditions": [{"field": "client.gender", "op": "=", "value": "'F'"}],
+    }
+    result = _compile(plan, ["client"], model=_share_model())
+    assert not isinstance(result, CompileMiss), result
+    assert "CASE WHEN client.gender = 'F'" in result.sql  # 命中:声明表达式内联
+    assert "WHERE" not in result.sql                      # 孪生条件归聚合所有
+
+
+def test_matched_share_candidate_other_value_condition_still_frozen():
+    """反向:值不同(非该候选内部谓词)→ 照常冻结进骨架(不被所有权吞掉)。"""
+    plan = {
+        "tables": ["client"],
+        "aggregation": _A4_SHARE_CAND,
+        "answer_columns": [_A4_SHARE_CAND],
+        "conditions": [{"field": "client.gender", "op": "=", "value": "'M'"}],
+    }
+    result = _compile(plan, ["client"], model=_share_model())
+    assert not isinstance(result, CompileMiss), result
+    assert "WHERE client.gender = 'M'" in result.sql
+
+
+def test_cast_metric_matched_by_plain_candidate_tier3():
+    """KB 度量带 CAST、计划候选不带 CAST → 归一后同形态,第三档照常命中;
+    产物用**声明的**带 CAST 表达式(候选只表达"要哪个占比")。"""
+    plan = {
+        "tables": ["client"],
+        "aggregation": _A4_SHARE_CAND,
+        "answer_columns": [_A4_SHARE_CAND],
+    }
+    result = _compile(plan, ["client"], model=_share_model(cast=True))
+    assert not isinstance(result, CompileMiss), result
+    # 分子 THEN 与分母各一处 CAST(声明表达式逐字内联)
+    assert result.sql.count("CAST(client.income AS DOUBLE)") == 2
+    assert "NULLIF" in result.sql
+
+
+def test_plain_metric_not_matched_by_cast_candidate():
+    """反向:声明不带 CAST、候选带 CAST → 同样命中(对称:等价关系不随拼法)。"""
+    plan = {
+        "tables": ["client"],
+        "aggregation": _A4_SHARE_CAND.replace(
+            "client.income", "CAST(client.income AS DOUBLE)"),
+        "answer_columns": [_A4_SHARE_CAND.replace(
+            "client.income", "CAST(client.income AS DOUBLE)")],
+    }
+    result = _compile(plan, ["client"], model=_share_model(cast=False))
+    assert not isinstance(result, CompileMiss), result
+    assert "CAST(" not in result.sql  # 声明形态权威(不带 CAST)
+
+
 # ══ A3c 骨架降级(advisory)与 RLS 硬底线 ═══════════════════════
 
 
