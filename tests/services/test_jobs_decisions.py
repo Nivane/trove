@@ -87,11 +87,35 @@ class FakeDecision:
         return self.outcome
 
 
+ANALYSIS = {
+    "top_components": [{"dim": "region", "value": "华东", "delta": -20.0,
+                        "contribution": 0.62, "source": "dimension"}],
+    "tree": None,
+    "residual": {"value": 0.0, "exact": True, "reason": "identity"},
+    "queries": [{"id": 1, "purpose": "driver_dimension", "sql": "SELECT ..."}],
+    "degraded": [],
+}
+
+
 def _triggered(**overrides):
     base = {"triggered": True, "message": "[warning] 贷款余额环比下滑 — 华东: -20%",
             "rule_id": "loan-drop", "evidence": EVIDENCE}
     base.update(overrides)
     return DecisionOutcome(**base)
+
+
+class FakeVerdicts:
+    """Duck-typed ``VerdictStore``: records what it is given, or explodes."""
+
+    def __init__(self, fail: bool = False):
+        self.records: list = []
+        self.fail = fail
+
+    async def record(self, verdict):
+        if self.fail:
+            raise RuntimeError("verdict store on fire")
+        self.records.append(verdict)
+        return len(self.records)
 
 
 @pytest.fixture
@@ -209,6 +233,110 @@ class TestEvidenceIsStored:
         assert runs[0]["result"]["amount"] == "12.5"
         reloaded = await svc.get_job(job.id)
         assert reloaded.next_run_at != before
+
+
+class TestVerdictHistory:
+    """The verdict history is the decision layer's audit line (P2)."""
+
+    async def test_the_verdict_is_recorded_with_run_identity(self, svc):
+        """A verdict without its run identity is a floating claim: the run
+        row and the verdict have to point at each other."""
+        job = await _job(svc)
+        store = FakeVerdicts()
+        runner = SchedulerRunner(FakeSessionManager(), svc,
+                                 decision=FakeDecision(_triggered()),
+                                 verdicts=store)
+        await runner.run_job(job, NOW)
+
+        assert len(store.records) == 1
+        v = store.records[0]
+        assert v.rule_id == "loan-drop" and v.status == "alert"
+        assert v.triggered is True and v.datasource == "demo"
+        assert v.job_id == job.id
+        assert v.run_id == (await svc.store.list_runs(job.id))[0]["id"]
+
+    async def test_untriggered_runs_are_recorded_too(self, svc):
+        """"Nothing wrong today" is a verdict — a history of only alerts
+        cannot tell "checked, quiet" from "never ran"."""
+        job = await _job(svc)
+        store = FakeVerdicts()
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(triggered=False, message="")), verdicts=store)
+        await runner.run_job(job, NOW)
+
+        assert len(store.records) == 1
+        assert store.records[0].status == "ok"
+        assert store.records[0].triggered is False
+
+    async def test_analysis_evidence_survives_into_the_verdict(self, svc):
+        """The bridge summary is stored verbatim: the diff view later reads
+        the cards, and the audit has to be able to re-read the SQL."""
+        job = await _job(svc)
+        store = FakeVerdicts()
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(evidence={**EVIDENCE, "analysis": ANALYSIS})),
+            verdicts=store)
+        await runner.run_job(job, NOW)
+
+        analysis = store.records[0].evidence["analysis"]
+        assert analysis["top_components"][0]["value"] == "华东"
+        assert analysis["queries"][0]["sql"] == "SELECT ..."
+
+    async def test_a_failing_verdict_store_never_breaks_the_schedule(self, svc):
+        """Same discipline as `advance`: the run judged fine, so the run is
+        fine — a history that cannot be written is logged, not escalated."""
+        job = await _job(svc)
+        before = job.next_run_at
+        runner = SchedulerRunner(FakeSessionManager(), svc,
+                                 decision=FakeDecision(_triggered()),
+                                 verdicts=FakeVerdicts(fail=True))
+        summary = await runner.run_job(job, NOW)
+
+        assert summary["status"] == "alert" and summary["alert_sent"] is True
+        runs = await svc.store.list_runs(job.id)
+        assert runs[0]["status"] == "alert"
+        assert (await svc.get_job(job.id)).next_run_at != before
+
+
+class TestDriverLineInTheMessage:
+    """补丁 1 的最后一公里:通知里多一行「主因：…」."""
+
+    async def test_the_notification_gains_the_driver_line(self, svc, monkeypatch):
+        job = await _job(svc)
+        sent: list[str] = []
+
+        async def fake_dispatch(job, message, state):
+            sent.append(message)
+            return True
+
+        monkeypatch.setattr(svc, "dispatch", fake_dispatch)
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(evidence={**EVIDENCE, "analysis": ANALYSIS})))
+        summary = await runner.run_job(job, NOW)
+
+        assert sent and sent[0] == summary["alert"]
+        assert summary["alert"].endswith("主因：region=华东（贡献 62.0%）")
+        assert summary["alert"].startswith("[warning] 贷款余额环比下滑")
+
+    async def test_without_analysis_the_message_is_untouched(self, svc):
+        """Single-leaf metric / bridge not applicable: no line, not an empty
+        「主因：—」 line."""
+        job = await _job(svc)
+        runner = SchedulerRunner(FakeSessionManager(), svc,
+                                 decision=FakeDecision(_triggered()))
+        summary = await runner.run_job(job, NOW)
+        assert summary["alert"] == _triggered().message
+        assert "主因" not in summary["alert"]
+
+    async def test_an_empty_component_list_adds_nothing(self, svc):
+        """A bridge that ran but found nothing to say (all deltas missing)
+        is the same silence as one that never ran."""
+        job = await _job(svc)
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(evidence={**EVIDENCE,
+                                 "analysis": {**ANALYSIS, "top_components": []}})))
+        summary = await runner.run_job(job, NOW)
+        assert "主因" not in summary["alert"]
 
 
 class TestErrorsAreLoud:

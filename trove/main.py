@@ -364,6 +364,11 @@ async def create_app_components(
     # service resolves the semantic model per job.datasource itself, so no
     # datasource-bound provider is injected here.
     from trove.services.decision.service import DecisionService
+    from trove.services.decision.verdict_store import VerdictStore
+
+    # 判定历史(P2):与 JobStore 同根 —— verdict 行按 run_id 指向 run 行,
+    # 两者分家会出现"历史里有判定、日程里没有那次运行"的悬空引用。
+    verdicts = VerdictStore(config.home)
 
     scheduler = SchedulerRunner(
         session_manager, jobs, lang=config.language,
@@ -372,6 +377,7 @@ async def create_app_components(
         decision=DecisionService(
             connector_registry, kb, timeout_ms=int(config.budget.timeout_ms),
         ),
+        verdicts=verdicts,
     )
 
     # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
@@ -402,6 +408,7 @@ async def create_app_components(
         "checkpointer": checkpointer,
         "jobs": jobs,
         "scheduler": scheduler,
+        "verdicts": verdicts,
         "maintenance": MaintenanceService(
             session_store, checkpointer, config.retention,
         ),

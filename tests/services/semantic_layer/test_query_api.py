@@ -131,3 +131,31 @@ def test_bad_time_grain_rejected():
     )
     with pytest.raises(SemanticQueryError, match="time grain"):
         build_and_compile(_demo_model(), query)
+
+
+def test_caller_supplied_matched_rescues_an_unanchored_metric():
+    """派生度量引用**度量名**(``net = a - b``)时 datasets 为空(oSSIE 的
+    ``_dataset_refs`` 只认 ``dataset.field``),这条查询自己也推不出锚定 ——
+    但调用方已经指明了数据集,那个问题就已经被回答过了。缺了这层豁免,
+    一个完全可编译的查询会被"推不出锚定"拒绝(分析桥与聚合口径的判定
+    规则都会撞上)。
+    """
+    model = _demo_model()
+    model.metrics.append(SemanticMetric(
+        "net_amount", "total_loan_amount - total_loan_amount",
+        datasets=[], metric_type="derived"))
+    query = SemanticQuery(metrics=["net_amount"])
+
+    with pytest.raises(SemanticQueryError, match="anchor"):
+        build_and_compile(model, query)              # 无人指路 → 照旧拒绝
+
+    out = build_and_compile(model, query, matched=["loan"])
+    assert out["sql"]
+    assert out["datasets"] == ["loan"]               # 原样回传调用方的锚定
+
+
+def test_caller_supplied_matched_never_loosens_component_checks():
+    """豁免只针对"推不出锚定",不针对未声明组件 —— 严格契约不变。"""
+    with pytest.raises(SemanticQueryError, match="metric not declared"):
+        build_and_compile(_demo_model(), SemanticQuery(metrics=["ghost"]),
+                          matched=["loan"])

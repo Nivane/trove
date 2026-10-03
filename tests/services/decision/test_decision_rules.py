@@ -9,12 +9,19 @@ import pytest
 
 from trove.services.decision.expr import DecisionExprError
 from trove.services.decision.rules import (
+    PRIORITY_MAX,
+    SCHEMA_VERSION,
+    ActionRef,
     RuleError,
     compile_condition,
+    lint_advisories,
     lint_document,
+    lint_document_assets,
     lint_rule,
+    lint_rule_assets,
     parse_document,
     parse_rule,
+    rule_to_dict,
 )
 
 MINIMAL = {
@@ -25,6 +32,19 @@ MINIMAL = {
     "baseline": {"kind": "prev_period"},
     "scope": "per_dimension",
     "conditions": {"all": ["delta_pct < -0.10", "abs(delta) > 100000"]},
+}
+
+#: A schema-v2 rule exercising every new field (round-trip + lint source).
+V2 = {
+    **MINIMAL,
+    "recommendation": "联系区域客户经理复核贷款余额变动",
+    "priority": 2,
+    "driver_dimension": "product",
+    "action": {
+        "template": "notify-ops",
+        "autonomy": "propose",
+        "params": {"channel": "ops-alerts"},
+    },
 }
 
 
@@ -75,7 +95,17 @@ class TestParse:
         doc = parse_document(None)
         assert doc.rules == []
         assert lint_document(doc) == []
-        assert parse_document({"version": 3}).version == 3
+
+    def test_newer_document_version_refused(self):
+        """Same philosophy as ``StorageSchemaTooNew``: reading less than the
+        file holds is silent, and the next save would make it permanent."""
+        with pytest.raises(RuleError, match="newer than this Trove understands"):
+            parse_document({"version": SCHEMA_VERSION + 1, "rules": []})
+
+    def test_current_version_is_readable(self):
+        doc = parse_document({"version": SCHEMA_VERSION, "rules": [V2]})
+        assert doc.version == SCHEMA_VERSION
+        assert doc.rules[0].action.template == "notify-ops"
 
 
 class TestLint:
@@ -160,6 +190,143 @@ class TestLint:
     def test_no_conditions(self):
         assert any("at least one condition" in i
                    for i in lint_rule(rule(conditions=[])))
+
+
+class TestSchemaV2Parse:
+    def test_defaults_read_as_v1(self):
+        """A rule written before v2 means exactly what it always meant."""
+        r = rule()
+        assert r.recommendation == ""
+        assert r.priority == 0
+        assert r.action is None
+        assert r.driver_dimension == ""
+
+    def test_full_v2_rule(self):
+        r = parse_rule(V2)
+        assert r.recommendation == V2["recommendation"]
+        assert r.priority == 2
+        assert r.driver_dimension == "product"
+        assert r.action == ActionRef(
+            template="notify-ops", autonomy="propose",
+            params={"channel": "ops-alerts"})
+
+    def test_action_defaults_to_notify_only(self):
+        r = rule(action={"template": "notify-ops"})
+        assert r.action.autonomy == "notify_only"
+        assert r.action.params == {}
+
+    def test_priority_garbage_raises(self):
+        """``priority: high`` must not quietly become 0 — 'regular priority'
+        reads exactly like a deliberate choice."""
+        with pytest.raises(RuleError):
+            rule(priority="high")
+        with pytest.raises(RuleError):
+            rule(priority=True)   # bool is not an int here
+
+    def test_priority_absent_or_empty_means_zero(self):
+        assert rule(priority=None).priority == 0
+        assert rule(priority="").priority == 0
+
+    def test_action_must_be_a_mapping(self):
+        with pytest.raises(RuleError):
+            rule(action="notify-ops")
+
+    def test_round_trip_is_value_equal(self):
+        """The API writes back what it read: a field ``parse_rule`` reads but
+        ``rule_to_dict`` drops would vanish on the next save through the UI."""
+        original = parse_rule(V2)
+        assert parse_rule(rule_to_dict(original)) == original
+
+    def test_round_trip_of_a_bare_rule(self):
+        original = rule()
+        assert parse_rule(rule_to_dict(original)) == original
+
+    def test_round_trip_keeps_action_params(self):
+        original = rule(action={"template": "t", "autonomy": "propose",
+                                "params": {"channel": "ops", "n": 3}})
+        again = parse_rule(rule_to_dict(original))
+        assert again.action.params == {"channel": "ops", "n": 3}
+
+
+class TestLintV2:
+    def test_priority_range_blocks(self):
+        assert any("priority must be an integer in [0, 3]" in i
+                   for i in lint_rule(rule(priority=PRIORITY_MAX + 1)))
+        assert any("priority must be an integer" in i
+                   for i in lint_rule(rule(priority=-1)))
+        assert lint_rule(rule(priority=PRIORITY_MAX)) == []
+
+    def test_empty_action_template_blocks(self):
+        assert any("action.template must not be empty" in i
+                   for i in lint_rule(rule(action={"autonomy": "propose"})))
+
+    def test_unknown_autonomy_blocks(self):
+        issues = lint_rule(rule(action={"template": "t", "autonomy": "auto"}))
+        assert any("action.autonomy must be one of notify_only, propose" in i
+                   for i in issues)
+
+    def test_a_v2_rule_is_still_clean(self):
+        """The new fields must not make a well-formed rule report issues."""
+        assert lint_rule(parse_rule(V2)) == []
+
+
+class TestAdvisories:
+    """Advisories never block a save — they are the admin UI's nudge."""
+
+    def test_action_without_recommendation(self):
+        doc = parse_document({"rules": [
+            {**MINIMAL, "action": {"template": "notify-ops"}},
+        ]})
+        assert lint_document(doc) == []      # not blocking
+        assert any("no 'recommendation'" in i for i in lint_advisories(doc))
+
+    def test_propose_on_aggregate_suggests_driver_dimension(self):
+        doc = parse_document({"rules": [{
+            "id": "agg", "subject": {"metrics": ["m"]},
+            "baseline": {"kind": "prev_period"},
+            "conditions": ["delta < 0"],
+            "recommendation": "去看一眼",
+            "action": {"template": "t", "autonomy": "propose"},
+        }]})
+        assert any("driver_dimension" in i for i in lint_advisories(doc))
+
+    def test_clean_rule_has_no_advisories(self):
+        assert lint_advisories(parse_document({"rules": [V2]})) == []
+
+
+class TestLintAssets:
+    """``None`` = registry unavailable (skip); an empty set = present and
+    empty (flag). The difference is what keeps P3 wiring honest: an unwired
+    service must not fail rules, an empty one must."""
+
+    def test_unavailable_registries_skip(self):
+        r = rule(action={"template": "ghost"}, driver_dimension="product")
+        assert lint_rule_assets(r) == []
+
+    def test_declared_missing_from_registry(self):
+        r = rule(action={"template": "ghost"})
+        issues = lint_rule_assets(r, templates=set(), confirmed=set())
+        assert any("'ghost' is not declared" in i for i in issues)
+
+    def test_declared_but_unconfirmed(self):
+        r = rule(action={"template": "notify-ops"})
+        issues = lint_rule_assets(r, templates={"notify-ops"}, confirmed=set())
+        assert any("not confirmed yet" in i for i in issues)
+        assert lint_rule_assets(
+            r, templates={"notify-ops"}, confirmed={"notify-ops"}) == []
+
+    def test_driver_dimension_must_be_declared(self):
+        r = rule(driver_dimension="product")
+        issues = lint_rule_assets(r, dimensions={"region"})
+        assert any("driver_dimension 'product' is not declared" in i
+                   for i in issues)
+        assert lint_rule_assets(r, dimensions={"product"}) == []
+
+    def test_document_assets_flatten(self):
+        doc = parse_document({"rules": [V2, {**MINIMAL, "id": "other"}]})
+        issues = lint_document_assets(doc, templates={"a"}, confirmed={"a"})
+        assert len(issues) == 1
+        assert "notify-ops" in issues[0]
 
 
 class TestCompileCondition:

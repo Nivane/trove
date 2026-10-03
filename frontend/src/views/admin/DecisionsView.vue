@@ -86,14 +86,44 @@
             </span>
           </template>
         </el-table-column>
+        <el-table-column :label="t('decisionsLatest', ui.lang)" min-width="180">
+          <template #default="{ row }">
+            <div v-if="row.latest_verdict" class="decisions-latest">
+              <span
+                class="pill"
+                :class="verdictStatusClass(row.latest_verdict.status)"
+              >
+                {{ row.latest_verdict.status }}
+              </span>
+              <span class="dim cell-mono">
+                {{ fmtDateTime(row.latest_verdict.evaluated_at) }}
+              </span>
+            </div>
+            <span v-else class="dim">{{ t('decisionsNeverJudged', ui.lang) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('decisionsReferencedBy', ui.lang)" min-width="180">
           <template #default="{ row }">
             <div v-for="(j, i) in row.referenced_by" :key="i" class="dim">{{ j }}</div>
             <span v-if="!row.referenced_by.length" class="dim">—</span>
           </template>
         </el-table-column>
+        <el-table-column :label="t('decisionsHistory', ui.lang)" width="110">
+          <template #default="{ row }">
+            <el-button link size="small" @click="openHistory(row)">
+              {{ t('decisionsHistoryOpen', ui.lang) }}
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </div>
+
+    <VerdictHistoryDrawer
+      v-model="historyOpen"
+      :datasource="ds"
+      :rule-id="historyRule?.id ?? ''"
+      :rule-name="historyRule?.name ?? ''"
+    />
 
     <el-dialog
       v-model="editorOpen"
@@ -126,8 +156,11 @@ import { Pencil, RefreshCw } from 'lucide-vue-next'
 import { apiGet, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
+import { fmtDateTime } from '../../utils/format'
 import { notifySuccess, toastError } from '../../utils/notify'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import VerdictHistoryDrawer from '../../components/admin/VerdictHistoryDrawer.vue'
+import { verdictStatusClass, type VerdictBrief } from '../../api/decisions'
 import type { DatasourceInfo } from '../../api/types'
 
 interface RuleRow {
@@ -142,6 +175,8 @@ interface RuleRow {
   conditions: string[]
   condition_mode: string
   referenced_by: string[]
+  /** null = 还没被任何任务判过(或本进程没接 store),不是"判定正常"。 */
+  latest_verdict: VerdictBrief | null
   [k: string]: unknown
 }
 
@@ -156,6 +191,8 @@ const saving = ref(false)
 const editorOpen = ref(false)
 const yamlText = ref('')
 const saveError = ref('')
+const historyOpen = ref(false)
+const historyRule = ref<RuleRow | null>(null)
 
 const connected = computed(() =>
   datasources.value.filter((d) => d.status === 'connected'),
@@ -200,6 +237,11 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+function openHistory(row: RuleRow) {
+  historyRule.value = row
+  historyOpen.value = true
 }
 
 async function openEditor() {
@@ -261,6 +303,11 @@ onMounted(async () => {
 }
 .cond {
   font-size: 12px;
+}
+.decisions-latest {
+  display: flex;
+  gap: 6px;
+  align-items: center;
 }
 .decisions-yaml :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

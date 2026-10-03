@@ -33,6 +33,7 @@ import yaml
 
 from trove.core.logging import get_logger
 from trove.services.decision.rules import (
+    SCHEMA_VERSION as _DECISIONS_SCHEMA_VERSION,
     DecisionDoc,
     DecisionRule,
     RuleError,
@@ -1102,7 +1103,13 @@ class KbService:
         if issues:
             raise RuleError("决策规则校验未通过,拒绝写入: " + "; ".join(issues))
 
-        data: dict = {"version": doc.version, "rules": [_rule_to_dict(r) for r in doc.rules]}
+        # 版本戳写**当前** schema:``rule_to_dict`` 已把内容规范化到本版语义,
+        # 文件就该这么自称 —— 若沿用读入时的 v1,一个带 action 的文件会自称
+        # v1,而旧版 Trove 会认为它读得懂,保存时把 action 静默丢掉。
+        data: dict = {
+            "version": _DECISIONS_SCHEMA_VERSION,
+            "rules": [_rule_to_dict(r) for r in doc.rules],
+        }
         path = self.decisions_path(datasource)
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_doc(path, data, "decisions")

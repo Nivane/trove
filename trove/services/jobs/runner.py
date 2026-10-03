@@ -13,6 +13,8 @@ from datetime import datetime
 from typing import Any
 
 from trove.core.logging import get_logger
+from trove.services.decision.bridge import primary_driver_line
+from trove.services.decision.verdicts import verdict_from_outcome
 from trove.services.jobs.service import JobsService
 from trove.services.jobs.store import Job, Run
 
@@ -23,7 +25,7 @@ MAX_RESULT_ROWS = 200
 
 class SchedulerRunner:
     def __init__(self, session_manager, jobs: JobsService, lang: str = "zh",
-                 decision=None):
+                 decision=None, verdicts=None):
         self.session_manager = session_manager
         self.jobs = jobs
         self.lang = lang
@@ -32,6 +34,10 @@ class SchedulerRunner:
         #: answering the job's `question` label with the LLM would produce a
         #: plausible-looking verdict that has nothing to do with the rule.
         self.decision = decision
+        #: ``VerdictStore`` (duck-typed) or None — the decision history. Both
+        #: writes here are best-effort: a verdict store that is unavailable
+        #: or failing must not turn a schedule that ran fine into an error.
+        self.verdicts = verdicts
 
     async def run_job(self, job: Job, now: datetime | None = None) -> dict[str, Any]:
         """Execute one job end-to-end and return its run summary."""
@@ -138,17 +144,17 @@ class SchedulerRunner:
             # run status, which is the entire audit trail for this path.
             triggered = bool(outcome.triggered)
             error = outcome.error or ""
+            message = self._notify_message(outcome)
             sent = False
             if error:
                 status = "error"
             else:
                 status = "alert" if triggered else "ok"
-                verdict = await self.jobs.evaluate_outcome(
-                    job, triggered, outcome.message)
+                verdict = await self.jobs.evaluate_outcome(job, triggered, message)
                 sent = False
                 if verdict["notify"]:
                     sent = await self.jobs.dispatch(
-                        job, outcome.message,
+                        job, message,
                         {"rule_id": job.decision_rule,
                          "evidence": outcome.evidence},
                     )
@@ -158,11 +164,12 @@ class SchedulerRunner:
                 0 if error else int(rows), job.decision_rule,
                 result_json=outcome.evidence,
             )
+            await self._record_verdict(job, outcome, run_id)
             summary.update({
                 "status": status,
                 "row_count": 0 if error else int(rows),
                 "error": error,
-                "alert": outcome.message if triggered else "",
+                "alert": message if triggered else "",
                 "alert_sent": sent,
             })
             return summary
@@ -177,6 +184,45 @@ class SchedulerRunner:
             return summary
         finally:
             await self._advance(job, now)
+
+    def _notify_message(self, outcome: Any) -> str:
+        """The rule's message plus the bridge's 「主因」 line, when it has one.
+
+        Composed here rather than inside the decision service so the service
+        keeps returning exactly what the rule produced — the evidence is the
+        record, the message is the notification. Skipped whenever the bridge
+        had nothing to say (single-leaf metric, no time field, all component
+        deltas unreported): an empty 「主因：—」 line is worse than no line.
+        """
+        message = str(getattr(outcome, "message", "") or "")
+        evidence = getattr(outcome, "evidence", None) or {}
+        driver = primary_driver_line(evidence.get("analysis"))
+        if not driver:
+            return message
+        return f"{message}\n主因：{driver}" if message else f"主因：{driver}"
+
+    async def _record_verdict(self, job: Job, outcome: Any, run_id: int) -> None:
+        """Best-effort append to the verdict history (the admin UI's audit line).
+
+        The run row is the schedule's record; the verdict is the decision's.
+        A store that is absent (feature not wired) or failing must never turn
+        a schedule that judged fine into an error — log loudly, never raise.
+        Same discipline as ``_advance``.
+        """
+        if self.verdicts is None:
+            return
+        try:
+            verdict = verdict_from_outcome(
+                outcome,
+                datasource=job.datasource or "",
+                job_id=job.id,
+                run_id=run_id,
+                now=datetime.now().isoformat(timespec="seconds"),
+            )
+            await self.verdicts.record(verdict)
+        except Exception:
+            logger.exception("decision job %s: verdict store write failed",
+                             job.id)
 
     async def _load_rule(self, job: Job) -> tuple[Any, str]:
         """``(rule, document digest)`` for ``job.decision_rule``.

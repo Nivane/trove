@@ -14,6 +14,7 @@ import contextlib
 import re
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -72,6 +73,29 @@ async def _purge_auth(app: FastAPI) -> None:
         logger.warning("[auth] hygiene purge failed: %s", e)
 
 
+async def _purge_verdicts(app: FastAPI) -> None:
+    """Decision-history retention — off unless ``agent.decision
+    .verdict_retention_days`` is set (>0); best-effort like the others.
+
+    Rides the periodic sweep rather than a loop of its own: one deployment
+    gets one cleanup cadence. A store that is absent (feature not wired) or
+    failing never blocks the sweep.
+    """
+    store = getattr(app.state, "verdicts", None)
+    days = getattr(getattr(app.state, "config", None), "decision", None)
+    days = getattr(days, "verdict_retention_days", 0)
+    if store is None or not isinstance(days, int) or days <= 0:
+        return
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat(
+            timespec="seconds")
+        purged = await store.purge_before(cutoff)
+        if purged:
+            logger.info("[decision] verdict retention: purged %d row(s)", purged)
+    except Exception as e:
+        logger.warning("[decision] verdict retention failed: %s", e)
+
+
 async def _job_tick(app: FastAPI) -> None:
     """Background loop: run due scheduled jobs every scheduler_poll_seconds.
 
@@ -124,6 +148,7 @@ async def _periodic_sweep(app: FastAPI) -> None:
             except Exception as e:
                 logger.warning("[memory] lifecycle sweep failed: %s", e)
         await _purge_auth(app)
+        await _purge_verdicts(app)
 
 
 async def _readonly_selfcheck(app: FastAPI) -> None:
