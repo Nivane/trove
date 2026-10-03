@@ -1,11 +1,12 @@
 <!--
-  InboxTable — 收件箱六类待办的条目级列表(§2.3)。
+  InboxTable — 收件箱八类待办的条目级列表(§2.3)。
 
   纯呈现(与 DataTable 同一哲学:渲染行、发出意图):
     · 行内 diff 展开 —— 展开态是**呈现状态**,不进 URL(§3.2 的键表已冻结);
     · 每行的动作按钮按 `actionable` 显示:confirm / reject / 编辑后批准(深链);
       漂移条目在本页只有「去 Tab3 裁定」—— 裁定要看 live schema 对比(§2.3);
-    · 空态分两种:首次空(六类都是 0,把闸门讲明白)与筛选后空(清除筛选)。
+      行动两类(模板/提案)只有深链:审批闸与状态机在行动页,本页不就地处置;
+    · 空态分两种:首次空(八类都是 0,把闸门讲明白)与筛选后空(清除筛选)。
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
@@ -77,7 +78,7 @@ const columns = computed<DataTableColumn[]>(() => [
   { key: 'actions', label: t('govInboxActions', ui.lang) },
 ])
 
-/** kind → 展示名(六类 + 兜底原样透出)。 */
+/** kind → 展示名(八类 + 兜底原样透出)。 */
 const KIND_KEY: Record<string, Parameters<typeof t>[0]> = {
   kb_lesson: 'govKindKbLesson',
   kb_example: 'govKindKbExample',
@@ -85,6 +86,17 @@ const KIND_KEY: Record<string, Parameters<typeof t>[0]> = {
   skill_draft: 'govKindSkillDraft',
   memory_preference: 'govKindMemoryPref',
   drift: 'govKindDrift',
+  action_template: 'govKindActionTemplate',
+  action_proposal: 'govKindActionProposal',
+}
+
+/** 行动两类:深链文案要说清去处 —— 点进去是审批闸,不是"编辑后批准"。 */
+const ACTION_KINDS = new Set(['action_template', 'action_proposal'])
+
+function editLabel(kind: string): string {
+  return ACTION_KINDS.has(kind)
+    ? t('govInboxGoActions', ui.lang)
+    : t('govInboxEditApprove', ui.lang)
 }
 
 function kindLabel(kind: string): string {
@@ -213,7 +225,7 @@ function diffValidation(item: GovernanceTodoItem) {
               :href="u(row).actionable.edit_url ?? '#'"
               @click.prevent="emit('open-edit', u(row))"
             >
-              {{ t('govInboxEditApprove', ui.lang) }}
+              {{ editLabel(u(row).kind) }}
             </a>
           </template>
         </div>

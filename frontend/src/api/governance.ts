@@ -38,7 +38,7 @@ export type GovernanceInboxSort = (typeof GOVERNANCE_INBOX_SORTS)[number]
 export const GOVERNANCE_DRIFT_STATUSES = ['open', 'waived', 'resolved', 'all'] as const
 export const GOVERNANCE_DRIFT_LEVELS = ['L1', 'L2', 'L4'] as const
 
-/** 收件箱六类(顺序即页面展示顺序)。 */
+/** 收件箱八类(顺序即页面展示顺序;行动两类随 P3 并入,只导向行动页,不就地处置)。 */
 export const GOVERNANCE_TODO_KINDS = [
   'kb_lesson',
   'kb_example',
@@ -46,6 +46,8 @@ export const GOVERNANCE_TODO_KINDS = [
   'skill_draft',
   'memory_preference',
   'drift',
+  'action_template',
+  'action_proposal',
 ] as const
 
 export const GOVERNANCE_TODOS_LIMIT = 50
@@ -53,7 +55,7 @@ export const GOVERNANCE_TODOS_LIMIT = 50
 /* ── ① 收件箱:GET /v1/admin/todos ─────────────────────────── */
 
 export interface GovernanceTodosQuery {
-  /** 逗号分隔(空 = 六类全要)。 */
+  /** 逗号分隔(空 = 八类全要)。 */
   kind?: string
   ds?: string
   q?: string

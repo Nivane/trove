@@ -149,7 +149,7 @@ async function loadDatasources() {
   }
 }
 
-/* ── KPI 行(overview.todos 的六类 + 合计)────────────────── */
+/* ── KPI 行(overview.todos 的八类 + 合计)────────────────── */
 
 const overview = ref<Awaited<ReturnType<typeof fetchOverview>> | null>(null)
 
@@ -168,6 +168,8 @@ const KIND_KEY: Record<string, Parameters<typeof t>[0]> = {
   skill_draft: 'govKindSkillDraft',
   memory_preference: 'govKindMemoryPref',
   drift: 'govKindDrift',
+  action_template: 'govKindActionTemplate',
+  action_proposal: 'govKindActionProposal',
 }
 
 function kindLabel(kind: string): string {
@@ -232,7 +234,7 @@ const inboxDegraded = computed(() =>
  * total 是下界吗:降级腿漏取的条目后端如实「少算」(不落 0、也不硬标 null),
  * 契约里没有 count_exact —— 下界信号只在 degraded[] 里(§6-B:降级要显示为
  * 「≥ N」,不显示假精确值)。与当前切片相交的降级腿才影响这里显示的数:
- * kind 在请求的类别内(未筛 = 六类),且 ds 命中源筛选(或 ds 为 null 的
+ * kind 在请求的类别内(未筛 = 八类),且 ds 命中源筛选(或 ds 为 null 的
  * 全局腿/整体枚举失败腿 —— 它们与源筛选无关)。
  */
 const totalIsFloor = computed(() => {
@@ -354,9 +356,16 @@ const bulkHasResults = ref(false)
 /** 上一批的方向 —— 失败行的单条重试沿用同一方向(confirm / reject)。 */
 const bulkLastAction = ref<'confirm' | 'reject'>('confirm')
 
+/**
+ * 不进批量分组的类别:漂移(裁定要看 live schema 对比)与行动两类
+ * (审批闸在行动页,本页只有深链)。按 kind 名排除而不是读 `actionable.batch`
+ * —— 后者是后端的**能力声明**,这里是本页的**呈现决策**,两者的测试面不同。
+ */
+const BULK_EXCLUDED = new Set(['drift', 'action_template', 'action_proposal'])
+
 const bulkGroups = computed<BulkGroup[]>(() => {
   const items = (todos.value?.items ?? []).filter(
-    (i) => selected.value.includes(i.id) && i.kind !== 'drift',
+    (i) => selected.value.includes(i.id) && !BULK_EXCLUDED.has(i.kind),
   )
   const map = new Map<string, BulkGroup>()
   for (const it of items) {

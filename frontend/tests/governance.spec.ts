@@ -459,6 +459,78 @@ describe('inbox', () => {
     expect(router.currentRoute.value.path).toBe('/admin/governance')
   })
 
+  it('routes action kinds to the actions page instead of offering in-place approval', async () => {
+    // 行动两类后端已声明 confirm/reject/batch 全 false + edit_url 指向行动页 ——
+    // 本页的职责只剩把去处说清楚(「编辑后批准」在这里是错的说法:点进去
+    // 是审批闸,不是编辑器),以及不要把它们塞进批量分组。
+    todosRoute = {
+      status: 200,
+      body: {
+        ...todosBody(),
+        items: [
+          {
+            kind: 'action_template',
+            id: 'tpl-A',
+            ds: 'sales',
+            title: 'notify-ops',
+            summary: 'notify the ops channel',
+            severity: 'warning',
+            confidence: null,
+            created_at: '2026-10-02T09:00:00Z',
+            href: '/admin/actions?tab=templates',
+            actionable: {
+              confirm: false,
+              reject: false,
+              batch: false,
+              edit_url: '/admin/actions?tab=templates',
+            },
+            diff: null,
+            source: 'actions',
+          },
+          {
+            kind: 'action_proposal',
+            id: 'prop-A',
+            ds: 'sales',
+            title: 'revenue-drop',
+            summary: 'revenue fell 12%',
+            severity: 'warning',
+            confidence: null,
+            created_at: '2026-10-02T09:30:00Z',
+            href: '/admin/actions?tab=proposals',
+            actionable: {
+              confirm: false,
+              reject: false,
+              batch: false,
+              edit_url: '/admin/actions?tab=proposals',
+            },
+            diff: null,
+            source: 'actions',
+          },
+        ],
+      },
+    }
+    const view = await mountView('/admin/governance?tab=inbox')
+
+    const text = view.text()
+    expect(text).toContain(tr('govKindActionTemplate'))
+    expect(text).toContain(tr('govKindActionProposal'))
+
+    const rows = view.findAll('.inbox-table tbody tr')
+    const actionRow = rows.find((r) => r.text().includes(tr('govKindActionTemplate')))!
+    expect(actionRow).toBeTruthy()
+    const link = actionRow.find('a.link-btn')
+    expect(link.text()).toBe(tr('govInboxGoActions'))
+    expect(link.attributes('href')).toBe('/admin/actions?tab=templates')
+    // 就地处置按钮一个都不给(没有可用端点,给了就是必定失败的按钮)。
+    expect(actionRow.findAll('button.act-btn')).toHaveLength(0)
+
+    // 全选也不产生批量分组:选择条只显示计数与清除。
+    const checks = view.findAll('.inbox-table .dt-check')
+    await checks[0].trigger('click')
+    await settle()
+    expect(view.findAll('.bulk-bar .bb-btn.is-primary')).toHaveLength(0)
+  })
+
   it('lists per-item bulk failures with reasons, and retries a single row alone', async () => {
     lessonResults['lesson-B'] = 'stale lesson revision'
     const view = await mountView('/admin/governance?tab=inbox&ds=sales')

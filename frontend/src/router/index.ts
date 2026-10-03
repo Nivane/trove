@@ -120,6 +120,12 @@ export const router = createRouter({
           meta: { titleKey: 'decisions' },
         },
         {
+          path: 'actions',
+          name: 'admin-actions',
+          component: () => import('../views/admin/ActionsView.vue'),
+          meta: { titleKey: 'actionsPage' },
+        },
+        {
           path: 'skills',
           name: 'admin-skills',
           component: () => import('../views/admin/SkillsView.vue'),

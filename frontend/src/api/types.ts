@@ -647,7 +647,7 @@ export interface SemanticHistoryEntry {
 //   · 503 带完整「跳过的报告」时必须能被渲染成「检测未能完成」,
 //     绝不落 catch → rows=[](那是最严重的一类实现错误)。
 
-/** 收件箱六类 = 概览八类待办减两件运维待办(§2.3)。 */
+/** 收件箱八类 = 概览十类待办减两件运维待办(§2.3;行动两类随 P3 并入)。 */
 export type GovernanceTodoKind =
   | 'kb_lesson'
   | 'kb_example'
@@ -655,6 +655,8 @@ export type GovernanceTodoKind =
   | 'skill_draft'
   | 'memory_preference'
   | 'drift'
+  | 'action_template'
+  | 'action_proposal'
 
 /** 每条目允许的动作;`edit_url` 空 = 没有「编辑后批准」落点(不做禁用按钮)。 */
 export interface GovernanceTodoActionable {
