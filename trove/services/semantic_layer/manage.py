@@ -417,6 +417,11 @@ def _apply_topic(model: dict[str, Any], action: str, name: str,
       草稿确认时,而不是留给运行期去猜;
     * ``metrics`` 若声明,同样按名字引用既有指标(不在这里校验锚定是否落在
       域内 —— 那是文档 lint ``_lint_topics`` 的事,写盘门禁会跑同一份)。
+
+    carryover 取 **dataset 口径**(description/synonyms/metrics/examples 都留):
+    主题域的"定义"就是必填的 ``datasets``,其余是注记 —— 只改作用域的
+    二次 upsert 不应把作者写的描述/同义词抹掉(metric 不 carryover
+    description,因为它整个 payload 就是定义本身)。
     """
     topics = model.setdefault("topics", [])
     if action == "delete":
