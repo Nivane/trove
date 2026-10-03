@@ -37,6 +37,46 @@ class TestKbStatus:
         assert any("千元" in r for r in resp.json()["rules"])
 
 
+class TestKbStatusVisibility:
+    """/kb/status 没有 datasource 参数 —— 它枚举全量,所以可见性在响应里过滤。
+
+    任何登录用户能枚举出未授权数据源的名字本身就是一次泄露;过滤复用
+    ``visible_datasources``(与 catalog 列表页同一份实现),不是另写一套。
+    """
+
+    @staticmethod
+    def _seed_second_source(api_kb) -> None:
+        """再种一个源(只有 rules.yml)进镜像,让"枚举"这件事有东西可枚举。"""
+        ds_dir = api_kb.state.kb.kb_dir / "other_db"
+        ds_dir.mkdir(parents=True, exist_ok=True)
+        (ds_dir / "rules.yml").write_text(
+            "rules:\n  - rule: 另一源的口径\n", encoding="utf-8",
+        )
+
+    async def test_admin_sees_all_users_see_visible(
+        self, api_kb, client, user_client, auth_service,
+    ):
+        self._seed_second_source(api_kb)
+        await api_kb.state.kb.ensure_synced("other_db")
+
+        by_admin = (await client.get("/v1/kb/status")).json()
+        assert {"test_db", "other_db"} <= set(by_admin["items"])
+        assert by_admin["enabled"] is True
+
+        # bob 空 grants → 只默认源(test_db 之外的名字一个都不出现)
+        assert set((await user_client.get("/v1/kb/status")).json()["items"]) == {"test_db"}
+
+        bob = await auth_service.authenticate("bob", "bobpw")
+        # 非空 grants = 严格白名单:给了 other_db,默认源反而不可见
+        await auth_service.set_datasources(bob["id"], ["other_db"])
+        assert set((await user_client.get("/v1/kb/status")).json()["items"]) == {"other_db"}
+
+        await auth_service.set_datasources(bob["id"], ["test_db", "other_db"])
+        assert set((await user_client.get("/v1/kb/status")).json()["items"]) == {
+            "test_db", "other_db",
+        }
+
+
 class TestTerms:
     async def test_search_terms(self, kb_client):
         resp = await kb_client.get("/v1/kb/terms", params={"q": "平均成绩"})
@@ -240,6 +280,62 @@ class TestKbAssets:
         assert str(FORMAT_VERSION + 5) in body["refused"]["test_db/schema_notes.yml"]
         # 镜像没被换掉
         assert await api_kb.state.kb.list_items() == before
+
+
+KB_READ_ENDPOINTS = [
+    "/v1/kb/assets",
+    "/v1/kb/rules",
+    "/v1/kb/entries",
+    "/v1/kb/terms",
+    "/v1/kb/examples",
+    "/v1/kb/lessons",
+    "/v1/kb/tables/students/notes",
+]
+
+
+class TestKbReadGating:
+    """KB 读端点与 catalog/lineage 同一把闸:grants 之外的数据源 → 403。
+
+    读侧此前只挂 ``get_current_user`` —— 任何登录用户对任意数据源都能读到
+    KB 内容(schema 注释、口径、few-shot 示例),而同一份数据源的
+    ``/catalog/tables`` 是 403。闸门只装在一半入口上等于没装。
+    """
+
+    @pytest.fixture
+    async def two_sources(self, api_kb, auth_service):
+        """注册第二个源(未授权给 bob),bob 的 grants 收窄为 [test_db]。"""
+        from trove.core.types import DatasourceConfig
+
+        await api_kb.state.connector_registry.register(DatasourceConfig(
+            name="extra", type="sqlite",
+            connection_params={"path": ":memory:"}, credentials={}, default=False,
+        ))
+        bob = await auth_service.authenticate("bob", "bobpw")
+        await auth_service.set_datasources(bob["id"], ["test_db"])
+        return api_kb
+
+    @pytest.mark.parametrize("path", KB_READ_ENDPOINTS)
+    async def test_user_refused_for_ungranted_source(
+        self, path, user_client, two_sources,
+    ):
+        resp = await user_client.get(path, params={"datasource": "extra"})
+        assert resp.status_code == 403, resp.text
+        assert "extra" in resp.json()["detail"]
+
+    @pytest.mark.parametrize("path", KB_READ_ENDPOINTS)
+    async def test_granted_source_still_reads(self, path, user_client, two_sources):
+        resp = await user_client.get(path, params={"datasource": "test_db"})
+        assert resp.status_code == 200, resp.text
+
+    async def test_default_source_needs_no_grant(self, user_client, api_kb):
+        """空 grants → 默认源(单数据源部署不需要预先配 grant)。"""
+        resp = await user_client.get("/v1/kb/terms")
+        assert resp.status_code == 200
+
+    async def test_admin_reads_any_source(self, client, two_sources):
+        resp = await client.get("/v1/kb/terms", params={"datasource": "extra"})
+        assert resp.status_code == 200
+        assert resp.json()["terms"] == []
 
 
 class TestRatingsPromotion:
