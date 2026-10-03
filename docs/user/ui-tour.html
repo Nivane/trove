@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 界面导览：登录、应用外壳三栏布局、侧栏会话列表、数据源选择条、提问入口与示例问题。">
+<title>界面导览 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>用户指南<span class="sep">/</span>界面导览
+      </div>
+      <h1>界面导览</h1>
+      <p class="lede">
+        用 Trove 只需要一个界面：左边是会话，中间是提问与答案，右边是这次查询的分析过程。
+        这一页带你走一遍从登录到提出第一个问题的完整界面；
+        怎么把答案读懂在<a href="ask.html">提问与读懂答案</a>。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="login">登录：从哪来、怎么进</h2>
+
+    <p>
+      Trove 的每个账号都要由管理员创建（首个 <code>admin</code> 账号在服务启动时按
+      <code>TROVE_ADMIN_PASSWORD</code> 初始化）。账号带着<strong>角色</strong>（普通用户 /
+      分析员 / 管理员）和<strong>数据源授权</strong>——授权决定了你登录后能看到哪些数据源。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-login.png" alt="Trove 登录页：品牌标识、用户名与密码输入框、登录按钮、语言切换">
+        <span class="pin" style="--x:50.0%;--y:51.2%">1</span>
+        <span class="pin" style="--x:50.0%;--y:59.8%">2</span>
+        <span class="pin" style="--x:58.4%;--y:68.0%">3</span>
+      </div>
+      <figcaption>图 1 · 登录页。凭据由管理员发放；界面语言在这里切换，登录后也可以从侧栏账户菜单切换。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span>用户名与密码——区分大小写，密码错误时提示不区分「账号不存在 / 密码错误」，避免探测账号。</li>
+        <li><span class="n">2</span>登录按钮。回车提交等效。</li>
+        <li><span class="n">3</span>界面语言切换（中文 / English）。这只影响界面文案，不改变问答的语言。</li>
+      </ol>
+    </figure>
+
+    <div class="callout note">
+      <span class="callout-tag">登录态存在哪</span>
+      <p>
+        登录成功后 token 保存在浏览器本地存储（<code>localStorage.trove_auth_token</code>），
+        刷新页面不用重新登录。换账号 = 退出后重新登录；管理员可以在管理台
+        <a href="../admin/access.html#users">用户与权限</a>里禁用某个账号或改密。
+      </p>
+    </div>
+
+    <h2 id="shell">应用外壳：三栏各管什么</h2>
+
+    <p>
+      登录后就进入问答主界面，固定三栏布局：<strong>左侧栏</strong>管会话（新建、搜索、切换、
+      重命名、删除），<strong>中间主区</strong>是提问与答案，<strong>右侧面板</strong>是当前这次查询的
+      分析过程（规划、生成、校验的每一步）。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-chat-empty.png" alt="Trove 问答主界面空态：左侧栏会话列表、顶部数据源选择条、中央输入框与三条示例问题、右侧分析过程面板">
+        <span class="pin" style="--x:29.0%;--y:3.0%">1</span>
+        <span class="pin" style="--x:9.4%;--y:9.6%">2</span>
+        <span class="pin" style="--x:9.4%;--y:14.8%">3</span>
+        <span class="pin" style="--x:6.8%;--y:23.4%">4</span>
+        <span class="pin" style="--x:48.3%;--y:41.4%">5</span>
+        <span class="pin" style="--x:48.3%;--y:58.1%">6</span>
+        <span class="pin" style="--x:86.9%;--y:3.5%">7</span>
+      </div>
+      <figcaption>图 2 · 新会话的空态。此刻还没有提问，右侧面板给出占位说明，输入框下方的示例问题取自当前数据源知识库里的真实问法。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>数据源选择条</strong>——只列出「已连接、知识库已初始化、且你有授权」的数据源；切换它等于切换这次问答的知识边界。</li>
+        <li><span class="n">2</span><strong>新建会话</strong>——开一段干净的上下文；跨会话的记忆只通过知识库沉淀传递，不共享聊天记录。</li>
+        <li><span class="n">3</span><strong>查询</strong>——按标题搜索历史会话（见<a href="sessions.html">会话管理</a>）。</li>
+        <li><span class="n">4</span><strong>最近会话</strong>——点击切换；悬停出现重命名与删除。列表底部是账户菜单（语言切换、管理台入口、退出）。</li>
+        <li><span class="n">5</span><strong>输入框</strong>——用自然语言提问，中英文都行；右侧圆形按钮发送，回车等效。<code>+</code> 是快捷菜单：就地切换数据源，或上传 CSV / TSV / TXT 文件（上传后自动切到该文件提问）。</li>
+        <li><span class="n">6</span><strong>示例问题</strong>——从知识库模板里挑的真实问法，点一下直接填入输入框。</li>
+        <li><span class="n">7</span><strong>分析过程面板</strong>——提问后这里实时显示这条答案是怎么来的（见<a href="ask.html#analysis">提问与读懂答案 · 分析面板</a>）。</li>
+      </ol>
+    </figure>
+
+    <h2 id="ds-bar">数据源选择条：你先看到的边界</h2>
+
+    <p>
+      下拉里的每个数据源都对应一套独立的知识库与语义模型。一个数据源要出现在这里，
+      必须同时满足三件事：<strong>连接可用</strong>（注册时探测通过，此后健康检查持续可用）、
+      <strong>知识库已初始化</strong>（管理员跑过 <code>/kb init</code>）、<strong>你被授权</strong>
+      （非管理员需要显式授权）。任何一条不满足，它对你就不可见——
+      不可见即不可问，这是权限模型的第一道门。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">看不到某个数据源？</span>
+      <p>
+        先在管理台确认它「已连接 + 已初始化」（<a href="../admin/datasources.html">数据源接入</a>、
+        <a href="../admin/kb.html">知识库运营</a>），再确认你的账号被授权
+        （<a href="../admin/access.html#users">用户与权限</a>）。两者都满足还没有，
+        请管理员检查授权是否保存生效。
+      </p>
+    </div>
+
+    <h2 id="first-question">提出第一个问题</h2>
+
+    <ol class="steps">
+      <li>
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <h3>确认数据源</h3>
+          <p>
+            看顶部数据源选择条（图 2 的 ①）。如果下拉里的选项不是你想问的业务，
+            先切换——问题会发给错误的知识库，答案再流畅也不是你要的口径。
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <h3>用自然语言提问</h3>
+          <p>
+            直接在输入框里问，例如「贷款金额最高是多少?」。不需要写表名或字段名；
+            拿不准怎么问时先点一条示例问题看看该数据源的问法习惯。
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">3</span>
+        <div class="step-body">
+          <h3>等答案，或者看它怎么算的</h3>
+          <p>
+            回车发送后，右侧面板实时滚动每一步；答案出来前的等待一般几秒到几十秒，
+            复杂问题更久。答案落地后从<strong>结论</strong>读起，细节见
+            <a href="ask.html#anatomy">提问与读懂答案 · 答案解剖</a>。
+          </p>
+        </div>
+      </li>
+    </ol>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>读懂答案的每个部分（结论 / 结果表 / 图表 / 依据 / 分析过程）</td><td><a href="ask.html">提问与读懂答案</a></td></tr>
+          <tr><td>管理会话：搜索、重命名、删除、中断与重试</td><td><a href="sessions.html">会话管理</a></td></tr>
+          <tr><td>点赞 / 点踩 / 纠错，让知识库随使用变准</td><td><a href="feedback.html">反馈与知识沉淀</a></td></tr>
+          <tr><td>给某个数据源接上业务库（管理员）</td><td><a href="../admin/datasources.html">数据源接入</a></td></tr>
+          <tr><td>给同事开账号、授权数据源（管理员）</td><td><a href="../admin/access.html">用户·权限·安全</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

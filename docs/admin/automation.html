@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 自动化与治理：定时任务（调度、告警表达式与决策规则两种求值路径、运行历史、冷却与渠道）、决策规则（YAML 编辑、lint 写入门禁、sha256 摘要、git 提交）、方法论技能（required/available/validator 三档、确认门、预览）。">
+<title>自动化与治理 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>管理指南<span class="sep">/</span>自动化与治理
+      </div>
+      <h1>自动化与治理</h1>
+      <p class="lede">
+        三个不是「用户提问」的入口：<strong>定时任务</strong>按点跑问题、按阈值告警；
+        <strong>决策规则</strong>把阈值声明成确定性判定（零 LLM，每条判定带证据）；
+        <strong>方法论技能</strong>沉淀组织自己的分析与表述约定，注入生成链路。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="jobs">定时任务</h2>
+
+    <p>
+      一个定时任务 = <strong>名称 + 问题 + 数据源 + 调度</strong>。
+      到点后 <code>serve</code> 内置的调度器自动执行（默认 30 秒轮询一次到期任务），
+      结果落进运行历史；可以配告警，把「跑出来不对劲」主动推给管理员。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-jobs.png" alt="定时任务列表：两条任务（间隔 1440 分钟 / Cron 0 9 * * 1），告警表达式列显示决策规则 loan-high，最近一次列显示告警/成功与行数，动作列有立即运行与运行历史">
+        <span class="pin" style="--x:26.3%;--y:14.5%">1</span>
+        <span class="pin" style="--x:27.0%;--y:25.0%">2</span>
+        <span class="pin" style="--x:35.0%;--y:26.1%">3</span>
+        <span class="pin" style="--x:64.5%;--y:25.5%">4</span>
+        <span class="pin" style="--x:71.9%;--y:25.5%">5</span>
+        <span class="pin" style="--x:92.7%;--y:25.5%">6</span>
+      </div>
+      <figcaption>图 1 · 定时任务列表。两条任务分别演示两种调度（间隔与 Cron）与两种求值（无告警 vs 决策规则告警）。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>新建定时任务</strong>——打开创建对话框：名称、问题（自然语言，与用户端同一个提问框同等地位）、数据源、调度方式与告警配置。</li>
+        <li><span class="n">2</span><strong>名称 + 问题</strong>——任务名下面一行就是它会去问的问题，也是运行历史里一眼能对上的标签。</li>
+        <li><span class="n">3</span><strong>调度方式与调度</strong>——<strong>间隔</strong>（分钟数，如 1440 = 每天一次）或 <strong>Cron</strong>（五段表达式，如 <code>0 9 * * 1</code> = 每周一 09:00）。行尾的开关可随时停用/启用任务，停用后「下次运行」列会标出「停用」。</li>
+        <li><span class="n">4</span><strong>告警表达式列</strong>——两种求值路径在这里区分：显示<strong>决策规则</strong>徽标 + 规则名（如 <code>loan-high</code>）表示该任务改由决策引擎确定性求值（零 LLM，问题仅作标签，普通告警表达式不再生效）；没有规则的任务则显示告警表达式本身（形如 <code>row_count &gt;= 5</code> / <code>value &gt; 1000</code> / <code>col:amount &lt; 10</code> / <code>no_rows</code> / <code>verdict == OK</code>）。没有告警的任务显示 <code>—</code>（图中第二条）。</li>
+        <li><span class="n">5</span><strong>最近一次</strong>——最近一回运行的状态章（成功 / 告警 / 失败）与返回行数。状态是<strong>告警</strong>意味着任务跑成功了、但命中了告警条件——不是失败。</li>
+        <li><span class="n">6</span><strong>动作列</strong>——立即运行（不用等调度，当场执行一次并记入历史，改完配置最常用的验证动作）、运行历史（见<a href="#runs">下一节</a>）、编辑、删除。</li>
+      </ol>
+    </figure>
+
+    <div class="callout note">
+      <span class="callout-tag">定时运行是无人值守的</span>
+      <p>
+        交互式提问里需要人工确认的环节（HITL），在定时任务里<strong>自动放行</strong>——调度器不会停下来等人。
+        因此定时任务适合口径稳定、不需要中途改问的问题；把「还得看一眼才敢信」的问题留给用户端。
+        另外：<code>serve</code> 自带内置调度，<strong>不要再同时运行 <code>trove-cli schedule --daemon</code></strong>，
+        否则任务会被执行两遍。
+      </p>
+    </div>
+
+    <h2 id="runs">运行历史：每次跑完都留一条账</h2>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-jobs-history.png" alt="运行历史对话框：一行运行记录，列为时间、状态（告警）、行数（1）、告警表达式（alert sent）、运行 ID（loan-high）">
+        <span class="pin" style="--x:31.3%;--y:30.5%">1</span>
+        <span class="pin" style="--x:42.1%;--y:30.5%">2</span>
+        <span class="pin" style="--x:47.1%;--y:30.5%">3</span>
+        <span class="pin" style="--x:55.4%;--y:30.5%">4</span>
+        <span class="pin" style="--x:66.6%;--y:30.5%">5</span>
+      </div>
+      <figcaption>图 2 · 运行历史。这一行是「贷款总额基线巡检」的一次运行：决策规则判定触发，告警已发出。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>时间</strong>——该次运行的开始时刻。</li>
+        <li><span class="n">2</span><strong>状态</strong>——成功 / 告警 / 失败。三种状态互斥且穷尽：告警是「正常跑完但命中条件」，失败是「没跑成」。</li>
+        <li><span class="n">3</span><strong>行数</strong>——本次查询返回的行数。</li>
+        <li><span class="n">4</span><strong>告警是否发出</strong>——<code>alert sent</code> 表示这次运行真的推送了告警（受冷却时间约束，冷却期内重复命中不会反复轰炸）。</li>
+        <li><span class="n">5</span><strong>运行 ID</strong>——本次运行的判定标识。决策规则任务显示规则 id（图中 <code>loan-high</code>），普通任务显示执行标识；对不上号时用它去<a href="#decisions">决策规则</a>页查。</li>
+      </ol>
+    </figure>
+
+    <h2 id="decisions">决策规则：声明式的确定性判定</h2>
+
+    <p>
+      决策规则把「什么情况算异常」写成声明（指标、窗口、基线、触发条件），
+      由确定性引擎求值——<strong>零 LLM</strong>。每条判定都带证据（编译器产出的 SQL 和判定依据的原始行），
+      因此一个结论<strong>可复现</strong>：同样的输入永远给同样的判定。
+      规则存在该数据源的 <code>decisions.yml</code>，每次改动都是一条 git 提交。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-decisions.png" alt="决策规则页打开「编辑规则文件」对话框：顶部数据源切到 demo，对话框内是 decisions.yml 原文（version、rules、loan-high 的 subject/baseline/conditions 与 _meta），底部取消与保存按钮">
+        <span class="pin" style="--x:77.0%;--y:4.7%">1</span>
+        <span class="pin" style="--x:93.1%;--y:4.7%">2</span>
+        <span class="pin" style="--x:49.0%;--y:27.1%">3</span>
+        <span class="pin" style="--x:30.0%;--y:45.0%">4</span>
+        <span class="pin" style="--x:73.3%;--y:78.7%">5</span>
+        <span class="pin" style="--x:87.0%;--y:26.2%">6</span>
+      </div>
+      <figcaption>图 3 · 编辑规则文件。规则文件按数据源分开——顶部先选源，再编辑该源的 <code>decisions.yml</code> 原文。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>数据源选择器</strong>——决策规则属于某个具体数据源（阈值要落在它的语义模型里），切源即切文件。</li>
+        <li><span class="n">2</span><strong>编辑规则文件</strong>——编辑器打开的是文件<strong>原文</strong>（含注释）；保存时会重新序列化，注释不再保留。规则表里「被引用的任务」列回答「这条规则谁在用」。</li>
+        <li><span class="n">3</span><strong>写入门禁</strong>——保存前做结构校验与 lint，<strong>未通过则拒绝写入</strong>：不会落一份跑不起来、却看起来正常的规则。校验的硬指标就是「能不能编译」——和 <code>POST /v1/semantic/query</code> 走同一条编译路径。</li>
+        <li><span class="n">4</span><strong>规则的解剖</strong>——<code>subject</code> 用语义模型的词汇声明指标与过滤（和用户提问的编译输入同形），<code>baseline</code> 给基线（图中 <code>literal 100000.0</code>），<code>conditions</code> 写触发条件（图中 <code>delta &gt; 0</code>，即高于基线就触发）；<code>severity</code> 与 <code>owner_role</code> 供告警分级与归口。<code>_meta</code> 记录格式版本与生成信息，供工具链识别。</li>
+        <li><span class="n">5</span><strong>保存</strong>——写盘成功即一条 git 提交，改错了可以回滚；保存失败时 lint 的具体原因会留在对话框里，不用重开。</li>
+        <li><span class="n">6</span><strong>规则表（对话框背后）</strong>——严重度 / 窗口 / 触发条件 / 启用 / 被引用的任务；卡片标题旁的 <code>sha256:…</code> 是文件内容摘要，文件动没动一眼可查。</li>
+      </ol>
+    </figure>
+
+    <div class="callout warn">
+      <span class="callout-tag">失败必须响亮</span>
+      <p>
+        一条无法求值的规则（窗口解析不了、指标在语义模型里没声明、数据集没有时间字段）会以<strong>错误</strong>浮出，
+        而不是安静地「一切正常」——静默不触发的任务和健康任务在表面上没有任何区别，
+        所以这里宁可吵：不知道就说不知道，绝不假装判定过。
+      </p>
+    </div>
+
+    <h2 id="skills">方法论技能：组织自己的分析约定</h2>
+
+    <p>
+      技能是<strong>跨数据源的方法论资产</strong>：怎么拆解查询、怎么诊断失败、组织要求的口径与表述方式。
+      两个来源：<strong>内置</strong>技能随代码发布（只读），<strong>组织</strong>技能由管理端起草与确认。
+      技能草稿<strong>确认后才生效</strong>——未确认的内容不进入任何提示词。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-skills-table.png" alt="方法论技能列表：内置技能三行（required(注入) 档，生效节点 query_sketch/analyze_error/gen_sql），组织技能两行（available(按需) 档，一个已确认一个待确认；待确认行带确认/拒绝/预览按钮）">
+        <span class="pin" style="--x:94.6%;--y:3.9%">1</span>
+        <span class="pin" style="--x:29.5%;--y:20.2%">2</span>
+        <span class="pin" style="--x:57.8%;--y:20.2%">3</span>
+        <span class="pin" style="--x:69.6%;--y:20.2%">4</span>
+        <span class="pin" style="--x:75.1%;--y:91.4%">5</span>
+        <span class="pin" style="--x:83.0%;--y:91.4%">6</span>
+      </div>
+      <figcaption>图 4 · 方法论技能列表。页头还有「新建草稿」与「LLM 草拟」两个入口（本图滚动后不可见）。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>总数章</strong>——当前技能数与卡片标题同排；列表把内置与组织技能混排，靠「内置」章区分。</li>
+        <li><span class="n">2</span><strong>内置章</strong>——随代码发布的技能（只读，不提供确认/拒绝动作）。组织技能没有这个章，可被管理端处置。</li>
+        <li><span class="n">3</span><strong>生效节点</strong>——技能挂在哪个生成环节：<code>query_sketch</code>（规划）/ <code>analyze_error</code>（失败诊断）/ <code>gen_sql</code>（生成）；「（全局）」表示对所有环节生效。</li>
+        <li><span class="n">4</span><strong>档位</strong>——三种注入方式（见下表）。</li>
+        <li><span class="n">5</span><strong>状态</strong>——已确认 / 待确认。待确认的草稿不进任何提示词，确认才生效，拒绝即删除草稿。</li>
+        <li><span class="n">6</span><strong>行内动作</strong>——待确认行给出「确认 / 拒绝」；已确认行可切换档位（「设为 required」/ 反向切回 available）并随时「预览」。</li>
+      </ol>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>档位</th><th>注入方式</th><th>适合放什么</th></tr></thead>
+        <tbody>
+          <tr><td><strong>required（注入）</strong></td><td>全文注入生效节点的系统提示词</td><td>每次都必须遵守的硬约定：规划方法、诊断步骤、输出结构的组织标准</td></tr>
+          <tr><td><strong>available（按需）</strong></td><td>只在生成环节<strong>广告一行描述</strong>；模型判断需要时才用 <code>load_skill</code> 工具加载全文</td><td>场景性的方法论：命中才用，不占每次提示词的预算</td></tr>
+          <tr><td><strong>validator（结果断言）</strong></td><td>不注入提示词——在结果校验环节<strong>零 LLM 执行</strong>声明式断言</td><td>可机械判定的输出硬约束；在 <code>SKILL.md</code> 里手写，界面不提供切换</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-skills.png" alt="技能预览抽屉：标题 answer-structure-zh，正文为中文回答结构约定（结论前置、一句话给答案、数据用表格、口径一行小字、最后给追问方向）">
+        <span class="pin" style="--x:71.4%;--y:3.9%">1</span>
+        <span class="pin" style="--x:80.0%;--y:14.3%">2</span>
+      </div>
+      <figcaption>图 5 · 预览抽屉。选中「预览」后看到的是技能正文原文——模型读到的就是这段文字。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>技能名</strong>——<code>answer-structure-zh</code>：一条中文回答的结构约定。</li>
+        <li><span class="n">2</span><strong>正文</strong>——「结论前置，一句话给答案；数据用表格；口径用一行小字；最后给一条可以继续追问的方向。」确认之前先用预览核对措辞：这段文字会逐字进入模型上下文，写含糊等于没写。</li>
+      </ol>
+    </figure>
+
+    <div class="callout note">
+      <span class="callout-tag">边界：技能管方法，知识库管事实</span>
+      <p>
+        技能承载<strong>跨数据源</strong>的方法论（怎么规划、怎么诊断、组织的口径与表述约定）；
+        某个数据源的事实（表、字段、枚举值、指标的算法）属于<strong>知识库</strong>与语义模型——
+        放错了地方，换个数据源就会误导生成。
+      </p>
+    </div>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>看规则里的指标 / 窗口在语义模型里怎么声明</td><td><a href="semantic.html">语义层治理</a></td></tr>
+          <tr><td>审批知识草案、管理 KB 资产</td><td><a href="kb.html#pending">知识库运营</a></td></tr>
+          <tr><td>看告警与待办汇总</td><td><a href="console.html#todos">管理台总览 · 待办队列</a></td></tr>
+          <tr><td>部署与调度配置（serve 内置调度、轮询间隔）</td><td><a href="../ops/deployment.html">部署与运维实操</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 知识库运营：初始化与四种重建动作的边界、待审批队列（教训/示例草稿、票数与置信度、批量确认）、资产采纳体检、术语与指标编辑、示例与教训管理、rules.yml 只读。">
+<title>知识库运营 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>管理指南<span class="sep">/</span>知识库运营
+      </div>
+      <h1>知识库运营</h1>
+      <p class="lede">
+        <code>/admin/kb</code> 是知识库（KB）的日常柜台：用户反馈的草案在这里审批，
+        资产采纳状态在这里体检，术语与示例在这里编辑。
+        YAML 文件是唯一真源——这一页的每个动作，最终都落成 <code>.trove/kb/&lt;ds&gt;/</code> 里的一次文件变更。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="init">初始化：一个源的知识从这里开始</h2>
+
+    <p>
+      数据源注册后、对用户可见前，必须跑一次<strong>初始化</strong>（右上角 <code>⋯</code> 菜单 →「初始化」）。
+      初始化调用 LLM 起草表注释与语义模型，加上确定性生成的术语与模板，产出六份 YAML 资产
+      （<code>schema_notes.yml</code> / <code>semantics.yml</code> / <code>examples.yml</code> 等）。
+      没有 KB 的源不提供给用户——这是「接入即建模」的硬边界。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>动作</th><th>做了什么</th><th>人的编辑</th><th>代价 / 风险</th></tr></thead>
+        <tbody>
+          <tr><td><strong>重新同步</strong></td><td>重读磁盘 YAML，刷新检索镜像</td><td>保留</td><td>零 LLM 调用；检索命中异常时的第一个动作</td></tr>
+          <tr><td><strong>初始化</strong>（首次）</td><td>生成全部 KB 资产</td><td>—</td><td>调用计费 LLM；长任务带阶段进度</td></tr>
+          <tr><td><strong>重新初始化（合并）</strong></td><td>再次生成，按条目与现有基线合并</td><td><strong>按条目存活</strong></td><td>调用计费 LLM</td></tr>
+          <tr><td><strong>覆盖重建（危险）</strong></td><td>忽略合并、整份重写文件</td><td><strong>会丢</strong>未合并的手工编辑</td><td>调用计费 LLM；旧版本可从 git 历史回滚</td></tr>
+          <tr><td><strong>删除知识库（危险）</strong></td><td>删除 <code>.trove/kb/&lt;ds&gt;/</code> 全部资产 + 清空检索镜像</td><td>文件可从 git 历史找回</td><td>检索<strong>立即失效</strong>，用户端该源不再可用</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      四个动作共用同一个确认对话框：标题、后果清单与按钮文案都按破坏半径变化——
+      「重新同步」的说明是「重读磁盘 YAML 刷新镜像（人的编辑保留）」，
+      「覆盖重建」则明确写「未合并的手工编辑会丢失」。执行前读一眼后果清单，不会踩到隐藏代价。
+    </p>
+
+    <h2 id="pending">待审批：人在这里把关</h2>
+
+    <p>
+      用户端的反馈与系统的自动捕获，都先落成<strong>待审批草案</strong>（绝不直接进检索）。
+      队列把教训与示例两类草稿聚在一起，逐条给你判断依据。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-kb-pending.png" alt="知识库待审批队列：待审批 KPI、六个 tab、来源与排序过滤、教训与示例草稿卡片（票数、置信度、说明、确认/编辑后确认/拒绝）">
+        <span class="pin" style="--x:28.3%;--y:20.5%">1</span>
+        <span class="pin" style="--x:29.6%;--y:27.9%">2</span>
+        <span class="pin" style="--x:35.0%;--y:43.8%">3</span>
+        <span class="pin" style="--x:24.0%;--y:56.7%">4</span>
+      </div>
+      <figcaption>图 1 · 待审批队列。顶部 KPI 与 tab 上的数字一致且都是过滤器——点哪个数字就按哪类过滤。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>五个 KPI</strong>——待审批 / 资产健康 / 术语与指标 / 示例 / 教训。每个都是筛选入口：例如「待审批 9」写明构成（教训 3 · 示例 6），点进即过滤。</li>
+        <li><span class="n">2</span><strong>六个 tab</strong>——待审批 / 资产 / 术语与指标 / 示例 / 教训 / 规则，与磁盘上的资产文件一一对应。带数字的 tab 是当前条目数。</li>
+        <li><span class="n">3</span><strong>草稿卡片的判断依据</strong>——类型章（教训 / 示例）、标题、来源与统计（时间、来源、票数、置信度）与「说明」字段。<strong>来源</strong>告诉你是谁写的：用户投票 / 失败蒸馏 / 好评草稿 / 修正闭环 / 自动捕获 / 手动；<strong>票数与置信度</strong>是系统对「值不值得采纳」的量化提示，不是替你做的决定。</li>
+        <li><span class="n">4</span><strong>三个处置按钮</strong>——确认 / 编辑后确认 / 拒绝。按钮上方一行写明后果，各类型不同：教训确认后「进入 Hint Bank 检索，后续生成会把它注入上下文」；示例确认后「写入认证块（批准人/时间）并进入检索——好 SQL 可被快径直接复用」。拒绝也会留提交记录，可从 git 历史找回。</li>
+      </ol>
+    </figure>
+
+    <p>队列上还有几个提效开关：</p>
+
+    <ul>
+      <li><strong>来源与排序过滤</strong>——按来源（用户投票 / 失败蒸馏 / 好评草稿 / 修正闭环 / 自动捕获 / 手动）筛选；排序支持「最新在前 / 票数优先 / 置信度优先」。</li>
+      <li><strong>批量</strong>——勾选多条后出现「确认所选 / 拒绝所选」；批处理逐条报告结果，部分失败会标出并提供「重试」，不会用「全部成功」盖住失败。</li>
+      <li><strong>处理回执</strong>——处理过的条目落入「刚刚处理」清单（已确认 / 已拒绝 / 失败，带审计编号），误操作一眼可查。</li>
+    </ul>
+
+    <div class="callout note">
+      <span class="callout-tag">认证门：不是所有确认都放行</span>
+      <p>
+        示例确认时要过一道<strong>认证门</strong>（结构与质量校验）。被拒的条目会注明
+        「认证门拒绝：原因」，它不会被写进检索——宁可这条经验晚一点入库，也不让一条坏 SQL 被快径复用。
+      </p>
+    </div>
+
+    <h2 id="assets">资产体检：六份文件，谁写的、有没有被改</h2>
+
+    <p>
+      「资产」tab 把 KB 目录摊开成一张采纳清单：每份 YAML 的<strong>来源（生成器）、生成时间、
+      生成后被改、基线、采纳状态</strong>都可见——这是「知识是不是账实相符」的第一现场。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-kb-assets.png" alt="知识库资产 tab：资产健康 KPI、全部/仅问题过滤、资产表（文件、格式、生成器、生成时间、生成后被改、基线、采纳状态）">
+        <span class="pin" style="--x:45.3%;--y:19.4%">1</span>
+        <span class="pin" style="--x:23.4%;--y:34.0%">2</span>
+        <span class="pin" style="--x:59.1%;--y:46.4%">3</span>
+        <span class="pin" style="--x:88.7%;--y:46.0%">4</span>
+      </div>
+      <figcaption>图 2 · 资产体检。图中共 5 份资产、全部已采纳（KPI 读作「已采纳 5 · 拒绝 0」）。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>资产健康 KPI</strong>——「5·0」= 已采纳 5 份、被拒 0 份。出现被拒份数时副标题会改为「N 份未被采纳」，提醒存在未生效的资产。</li>
+        <li><span class="n">2</span><strong>全部 / 仅问题</strong>——「仅问题」只留未被采纳或被改动的条目；问题清零时这个 tab 就是一行「全部已采纳」。</li>
+        <li><span class="n">3</span><strong>血缘列</strong>——生成器（如 <code>memory</code> 表示自动记忆写回、<code>kb_rate</code> 表示用户反馈）与生成时间回答「这条是谁写的、什么时候」；「生成后被改」标记人工是否动过；「基线」标记有无可对照的基线。「格式」是资产文件格式版本：<code>1</code> 为当前版本，<code>0</code> 为存量旧格式（可迁移）；比代码更新的格式会整份拒读——镜像停留在上一次读懂的样子。</li>
+        <li><span class="n">4</span><strong>采纳状态</strong>——已采纳（进入检索）/ 被拒（未生效）。<strong>点任意行</strong>打开资产详情抽屉，可以看到处置记录并执行处置动作。</li>
+      </ol>
+    </figure>
+
+    <h2 id="entries">术语与指标：词表在这里补</h2>
+
+    <p>
+      「术语与指标」tab 是 KB 词表（指标 / 维度 / 表）的编辑面：搜索名称 / 同义词 / 定义，
+      或「新增术语」补一条（术语名、别名、映射表达式、关联表、定义）。
+      表格里每条都带<strong>表达式与关联数据集</strong>——补词之前先看一眼已有表达式的口径，避免造一个同义不同义的词。
+    </p>
+
+    <p>
+      这里是<strong>词条级</strong>的编辑；模型级治理（数据集锚定、lint、漂移、草稿审批、试跑）
+      在<a href="semantic.html">语义层治理</a>。
+    </p>
+
+    <h2 id="more">示例 / 教训 / 规则三个 tab</h2>
+
+    <ul>
+      <li><strong>示例</strong>——支持搜索问题 / SQL，按「全部 / 待确认」切换，或手动「新增示例」。认证过的示例是快径直接复用的对象：命中即复用 SQL，不走模型。</li>
+      <li><strong>教训</strong>——Hint Bank 的两级结构，按「全部 / 待审 / 已确认」切换；每条带说明、来源与票数（▲ / ▼）。教训在生成时被注入上下文（参与提示），「全部确认」可批量放行待审教训。</li>
+      <li><strong>规则</strong>——<code>rules.yml</code> 是唯一「人工编写、无写入路径」的资产，本页<strong>只读</strong>：规则要么在文件里手写，要么不存在。</li>
+    </ul>
+
+    <h2 id="danger">删除知识库</h2>
+
+    <p id="danger-note">
+      删除入口在右上角 <code>⋯</code> 菜单（危险操作）。确认对话框逐条列出影响面：
+      删除 <code>.trove/kb/&lt;ds&gt;/</code> 全部 YAML 资产文件、清空该源的检索镜像（<strong>检索立即失效</strong>）、
+      文件可从 git 历史找回、镜像需要重新同步重建。确认之后，该源回到「未初始化」状态——
+      用户端不可用，直到重新初始化。
+    </p>
+
+    <div class="callout warn">
+      <span class="callout-tag">删除的边界</span>
+      <p>
+        删除知识库<strong>不等于</strong>删除数据源注册（那是<a href="datasources.html">数据源页</a>的动作）；
+        反过来，删除数据源注册也<strong>不会</strong>删掉 KB 目录。两个动作分开正是为了让「连接出问题」与
+        「知识作废」不互相绑架。
+      </p>
+    </div>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>用户端反馈是怎么来的</td><td><a href="../user/feedback.html">反馈与知识沉淀</a></td></tr>
+          <tr><td>知识库的工作机制（检索、融合、命中）</td><td><a href="../capabilities/kb.html">知识库（能力）</a></td></tr>
+          <tr><td>模型级治理：指标、漂移、草稿</td><td><a href="semantic.html">语义层治理</a></td></tr>
+          <tr><td>接一个新数据源 / 处理连接问题</td><td><a href="datasources.html">数据源接入</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>

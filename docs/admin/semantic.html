@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 语义层治理：语义模型工作台（指标 / 数据集 / 字段 / 待审批）、校验问题与漂移检测、表达式编辑器的校验→试跑→创建草稿、审批 diff 与落盘 semantics.yml。">
+<title>语义层治理 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>管理指南<span class="sep">/</span>语义层治理
+      </div>
+      <h1>语义层治理</h1>
+      <p class="lede">
+        语义模型（<code>semantics.yml</code>）是 Trove 生成答案的<strong>权威口径</strong>：
+        指标怎么算、维度锚在哪个数据集，编译器就按它拼 SQL。
+        <code>/admin/semantic</code> 是它的工作台——所有改动<strong>先草稿、后审批</strong>，确认才写入文件。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="map">工作台全貌</h2>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台：摘要行、五项 KPI、问题面板（校验问题与漂移）、指标/数据集/字段/待审批四个 tab 与资产表">
+        <span class="pin" style="--x:84.5%;--y:7.4%">1</span>
+        <span class="pin" style="--x:36.9%;--y:16.7%">2</span>
+        <span class="pin" style="--x:28.3%;--y:24.2%">3</span>
+        <span class="pin" style="--x:25.4%;--y:44.8%">4</span>
+        <span class="pin" style="--x:24.5%;--y:83.6%">5</span>
+      </div>
+      <figcaption>图 1 · 语义模型工作台（financial）。摘要行里的「漂移检测 刚刚」是这次会话刚跑过检测的结果——检测状态永远显式。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>页头动作</strong>——切换数据源、<strong>重新检测漂移</strong>（对照物理 schema 的实时探测）、<strong>新建资产</strong>（新增指标 / 数据集 / 字段，同样走草稿）。</li>
+        <li><span class="n">2</span><strong>摘要行</strong>——指标 / 数据集 / 字段 / 待审批 / 最近提交时间 / 漂移检测时间。一眼确认「模型有多大、上次动是什么时候」。</li>
+        <li><span class="n">3</span><strong>五项 KPI</strong>——每项都是入口：指标 / 数据集 / 字段 / 待审批点开即切 tab；「待处置问题」点开按问题过滤（再点一次取消）。</li>
+        <li><span class="n">4</span><strong>问题面板</strong>——两个独立小节：<strong>校验问题</strong>（lint：表达式语法、数据集锚定、引用完整性）与<strong>漂移</strong>（物理 schema 与模型不符，如列被删改）。全净时就是一行「无校验问题 · 未发现漂移」——这一行是日常巡检的目标状态。</li>
+        <li><span class="n">5</span><strong>四个 tab 与资产表</strong>——指标 / 数据集 / 字段 / 待审批；表内可按名称、表达式排序与搜索。点任意行打开资产详情（图 2）。</li>
+      </ol>
+    </figure>
+
+    <h2 id="asset">资产详情：一条指标的全息档案</h2>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-semantic-detail.png" alt="指标详情抽屉：定义、表达式（可编辑）、锚定数据集、被谁用、历史提交记录与删除按钮">
+        <span class="pin" style="--x:77.6%;--y:25.1%">1</span>
+        <span class="pin" style="--x:64.9%;--y:33.6%">2</span>
+        <span class="pin" style="--x:77.6%;--y:43.2%">3</span>
+        <span class="pin" style="--x:61.9%;--y:51.5%">4</span>
+        <span class="pin" style="--x:96.9%;--y:98.0%">5</span>
+      </div>
+      <figcaption>图 2 · 指标「average Account balance after the transaction」的详情抽屉。判断一条指标能不能动，先读这张档案。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>表达式</strong>——指标的计算式（<code>AVG(trans.balance)</code>），可一键复制；「编辑」进入图 3 的编辑器。</li>
+        <li><span class="n">2</span><strong>锚定数据集</strong>——这条指标声明依赖哪个数据集（<code>trans</code>）。编译器据此决定 join 范围；锚定错了，生成的 SQL 会整体走偏。</li>
+        <li><span class="n">3</span><strong>被谁用</strong>——引用它的示例 / 教训等资产。注意边界提示：「依据漂移影响面快照 + 模型内声明，<strong>可能不完整</strong>」——不确定的地方不装确定。</li>
+        <li><span class="n">4</span><strong>历史</strong>——每次改动的提交记录（短哈希、变更类型与标题、提交人、时间）。谁在什么时候改的、改的是什么，从 git 视角可追。</li>
+        <li><span class="n">5</span><strong>删除</strong>——危险动作，删除同样先落草稿、经审批才生效；引用它的资产会在「被谁用」里暴露出来，删之前先看这里。</li>
+      </ol>
+    </figure>
+
+    <h2 id="draft">改一条表达式：校验 → 试跑 → 创建草稿</h2>
+
+    <p>
+      点表达式旁的「编辑」打开编辑器。三个按钮是一条<strong>顺序化的流程</strong>：
+      先<strong>校验</strong>（结构 lint，通过前「创建草稿」保持禁用），再<strong>试跑</strong>（用与用户问答<strong>同一条编译路径</strong>
+      跑一次真实查询），最后<strong>创建草稿</strong>。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-semantic-draft.png" alt="表达式编辑器：文本域、校验/试跑/创建草稿三个按钮、校验通过提示、试跑生成的 SQL 与一行脱敏结果">
+        <span class="pin" style="--x:78.0%;--y:33.7%">1</span>
+        <span class="pin" style="--x:72.3%;--y:44.9%">2</span>
+        <span class="pin" style="--x:78.0%;--y:62.3%">3</span>
+      </div>
+      <figcaption>图 3 · 表达式编辑器。图中已「校验通过」且试跑出结果——「创建草稿」已亮起，再点一步就是待审批草稿。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>表达式文本域</strong>——改计算式本身（如把 <code>AVG</code> 换成别的聚合）。语法约束在下方有提示。</li>
+        <li><span class="n">2</span><strong>校验 / 试跑 / 创建草稿</strong>——校验给出结构结论（图中「校验通过」）；试跑把表达式交给真实编译器与数据库；创建草稿把这次改动登记进待审批队列。<strong>试跑通过 ≠ 直接生效</strong>，生效永远在审批之后。</li>
+        <li><span class="n">3</span><strong>试跑结果</strong>——编译器实际生成的 SQL（<code>SELECT AVG(trans.balance) FROM trans</code>）与一行真实结果，<strong>按脱敏策略回显</strong>（图中标注「已脱敏」）。改口径前先看它跑出来什么数——这是比读表达式更可靠的确认。</li>
+      </ol>
+    </figure>
+
+    <p>
+      草稿进入「待审批」tab 后会带一份<strong>服务端计算的 diff</strong>；打开草稿时系统会<strong>重新校验</strong>——
+      校验不过的草稿不能应用（按钮禁用，原因就摆在旁边）。确认后才写入 <code>semantics.yml</code>，
+      并作为一次提交留痕（图 2 的历史）。批量勾选可以一次确认或拒绝多条。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">为什么改动都要过审批流</span>
+      <p>
+        语义模型是编译路径的输入：一条表达式改错，所有命中它的提问都会拿到一个「语法正确、口径错误」的答案，
+        而且答案来源档位还会写着「语义编译」——错得越自信越危险。
+        草稿 + diff + 重新校验 + 落盘留痕，四道都为了把「改口径」变成一个可回退的动作。
+      </p>
+    </div>
+
+    <h2 id="drift">漂移检测：物理库不打招呼就变了</h2>
+
+    <p>
+      「重新检测漂移」把语义模型与<strong>物理 schema 的当前状态</strong>对照一遍：列被删、类型被改、数据集对应的表
+      消失，都会成为漂移条目。检测本身失败（例如探测超时）时状态保持「未检测」，
+      <strong>不会洗成「无漂移」</strong>——不知道就说不知道。漂移的处置与影响面分析在
+      <a href="../ops/drift.html">漂移检测（运维）</a>与<a href="automation.html">治理中心</a>。
+    </p>
+
+    <h2 id="related">相关页面</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
+        <tbody>
+          <tr><td>补词表（术语、同义词、定义）</td><td><a href="kb.html#entries">知识库运营 · 术语与指标</a></td></tr>
+          <tr><td>看编译机制（语义编译档位怎么来）</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
+          <tr><td>漂移的处置与影响面</td><td><a href="../ops/drift.html">漂移检测</a></td></tr>
+          <tr><td>给用户解释「为什么这个答案来源是编译」</td><td><a href="../user/ask.html#provenance">提问与读懂答案 · 来源四档</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="shot-note">
+      本页截图为真实界面（隔离的演示实例，数据是内置 BIRD 金融演示库）；
+      可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
+    </p>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">能力地图</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">能力地图（首页）</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+</body>
+</html>
