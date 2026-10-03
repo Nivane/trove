@@ -17,6 +17,10 @@
 
 <br>
 
+<img src="assets/demo.gif" alt="Trove 演示：提问后右侧实时展开分析步骤（意图路由 → 生成 SQL → 校验 → 洞察 → 图表），最终给出带柱状图、KB 命中与校验标记的答案" width="880">
+
+<br>
+
 📖 **[文档站](https://nivane.github.io/trove/)** —— 36 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>

@@ -17,6 +17,10 @@
 
 <br>
 
+<img src="assets/demo.gif" alt="Trove demo: ask a question, watch the pipeline steps unfold live (routing → SQL generation → validation → insights → chart), and get an answer with a chart plus KB-hit and verified badges" width="880">
+
+<br>
+
 📖 **[Documentation](https://nivane.github.io/trove/)** — 36 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
