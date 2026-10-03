@@ -97,11 +97,19 @@ class FakeConn:
 
 
 class FakeDriver:
-    def __init__(self, conn=None):
+    def __init__(self, conn=None, *, fail_after=None):
         self.conn = conn or FakeConn()
         self.connect_kwargs = None
+        self.connect_calls = 0
+        #: 第 N 次之后的 connect 一律失败(模拟服务端真的不可达)。
+        #: 适配器在连接级故障后会重建一次,所以「重连失败」的现场是**新建
+        #: 连接这一步也失败** —— 没有这个旋钮,fake 会把每次重建都"连接成功"。
+        self.fail_after = fail_after
 
     async def connect(self, **kwargs):
+        self.connect_calls += 1
+        if self.fail_after is not None and self.connect_calls > self.fail_after:
+            raise OSError("connection refused")
         self.connect_kwargs = kwargs
         return self.conn
 
@@ -217,14 +225,24 @@ class TestMySQLAdapter:
         assert conn.ping_count >= 1
 
     async def test_reconnect_failure_raises_datasource_error(self, monkeypatch):
+        """服务端真的不可达 → 如实抛 ``reconnect failed``,**有界**。
+
+        适配器在 ping 失败后会弃旧建新一次(语句还没跑,见 ``_ensure_connected``;
+        自愈的那条路走 ``test_mysql_connection_concurrency.py``),所以"重连失败"
+        的现场是**新的连接也建不起来** —— 假驱动必须在这一步失败:
+        ``fail_after=1`` = 首次建连成功,之后一律拒绝。
+        """
         conn = FakeConn()
         conn.ping_error = RuntimeError("connection refused")
-        adapter, _ = make_adapter(monkeypatch, driver=FakeDriver(conn))
+        driver = FakeDriver(conn, fail_after=1)
+        adapter, _ = make_adapter(monkeypatch, driver=driver)
         await adapter.connect()
-        adapter._conn.close()
 
         with pytest.raises(DatasourceError, match="reconnect failed"):
             await adapter.execute("SELECT 1")
+
+        assert driver.connect_calls == 2, "初次 + 一次重建,不循环重连"
+        assert adapter._conn is None  # 坏连接已丢弃,不留着等下一次复用
 
     async def test_get_schema_reconnects_stale_connection(self, monkeypatch):
         conn = FakeConn(cursor_specs=[
