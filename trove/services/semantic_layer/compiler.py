@@ -745,6 +745,137 @@ def _unique_edges(edges: list[JoinEdge]) -> list[JoinEdge]:
     return out
 
 
+def _clause_refs(clause: str) -> tuple[frozenset[str], tuple[str, str]] | None:
+    """单个 ON 子句 → (无序列对键, (左表, 右表));不可解析 → None。"""
+    try:
+        tree = parse_one(clause)
+    except Exception:
+        return None
+    eqs = list(tree.find_all(exp.EQ))
+    if len(eqs) != 1:
+        return None
+    left, right = eqs[0].left, eqs[0].right
+    if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+        return None
+    lt = (left.table or "").strip().lower()
+    rt = (right.table or "").strip().lower()
+    if not (lt and rt):
+        return None
+    return (
+        frozenset({
+            f"{lt}.{(left.name or '').strip().lower()}",
+            f"{rt}.{(right.name or '').strip().lower()}",
+        }),
+        (lt, rt),
+    )
+
+
+def _route_capable_tables(model: "SemanticModel | None") -> set[str]:
+    """可作声明图路由中间点的表(from_ 端 ∪ M:N 的 to 端)。
+
+    纯维度叶(district:只是 1:N 的 to 端)只能当路径**终点**,不能被穿行
+    ——共享维度桥(account—district—client)因此天然出局,所有权链
+    (account—disp—client)胜出。与 ``_repair_explicit_joins`` 同口径。
+    """
+    if model is None:
+        return set()
+    rels = list(model.relationships)
+    capable = {str(r.from_) for r in rels}
+    capable |= {str(r.to) for r in rels if _is_many_to_many(r.cardinality)}
+    return capable
+
+
+def declared_join_edge_text(model: "SemanticModel | None", a: str, b: str) -> str | None:
+    """两表间**唯一**声明关系的 ON 文本;无关系/多关系 → None。"""
+    rels = _declared_rels_between(model, a, b)
+    if len(rels) != 1:
+        return None
+    edges = _relationship_edges(rels[0])
+    if not edges:
+        return None
+    return " AND ".join(_edge_text(e) for e in edges)
+
+
+def repair_plan_joins(
+    plan: dict[str, Any] | None, model: "SemanticModel | None",
+) -> dict[str, Any] | None:
+    """计划 joins 的声明图合规修复(A5a 表对修复前移到计划层);无改动 → None。
+
+    动机(0493 实测):计划写了一条**未声明**的连接
+    (``account.district_id = client.district_id``,共享维度桥),编译器的显式
+    joins 通道能在编译内部把它还原成声明路径(account—disp—client);但编译
+    若因**其它组件**软 MISS,plan 文本会带着这条坏连接原样交给 gen_sql——
+    生成侧照抄,错误被固化。计划层先修一次,编译与生成两侧看到的都是合规
+    joins。规则与 ``_repair_explicit_joins`` 同源,逐子句:
+
+      - 子句列对命中声明边 → 原样保留(计划的具体写法是权威,只修不改写);
+      - 表对恰有一条声明关系 → 用该关系的边重建子句(列名纠正,0477 型);
+      - 表对无直接关系 → 声明图上找**唯一**路径(中间点限 route-capable),
+        唯一才替换;多条平行关系(同表对多关系)同样判不唯一;
+      - 其余(无路径/多路径/子句不可解析)→ None,整份计划不动(交既有
+        硬 MISS + 有界重规划,不猜)。
+
+    修复只增不减:新引入的中间表追加进 ``plan.tables``(生成侧与编译侧的
+    FROM 表集都从它来,漏表会让产物引用连接树外的列),不删任何表;
+    ``plan_field`` 标记本次改写(最后触发的纠正器胜出,与既有约定一致)。
+    """
+    if not isinstance(plan, dict) or model is None:
+        return None
+    clauses = _join_clauses(plan.get("joins"))
+    if not clauses:
+        return None
+    declared: set[frozenset[str]] = set()
+    for r in model.relationships:
+        for e in _relationship_edges(r):
+            declared.add(_edge_pair_key(e))
+    canon = {d.name.lower(): d.name for d in model.datasets}
+    links = _declared_links(model)
+    capable = _route_capable_tables(model)
+    kept: list[str] = []
+    added: list[JoinEdge] = []
+    changed = False
+    for clause in clauses:
+        refs = _clause_refs(clause)
+        if refs is not None and refs[0] in declared:
+            kept.append(clause)
+            continue
+        if refs is None:
+            return None
+        a, b = refs[1]
+        a_c, b_c = canon.get(a), canon.get(b)
+        if a_c is None or b_c is None or a == b:
+            return None
+        rels = _declared_rels_between(model, a_c, b_c)
+        if len(rels) > 1:
+            return None
+        if len(rels) == 1:
+            added.extend(_relationship_edges(rels[0]))
+            changed = True
+            continue
+        paths = _declared_paths(links, a_c, b_c, lambda t: t in capable)
+        if len(paths) != 1:
+            return None
+        added.extend(paths[0])
+        changed = True
+    if not changed:
+        return None
+    edges = _unique_edges(added)
+    if not edges:
+        return None
+    fixed = dict(plan)
+    fixed["joins"] = " AND ".join([*kept, *[_edge_text(e) for e in edges]])
+    tables = [str(t) for t in (plan.get("tables") or [])]
+    have = {t.lower() for t in tables}
+    for e in edges:
+        for t in (e.from_, e.to):
+            if t.lower() not in have:
+                tables.append(t)
+                have.add(t.lower())
+    fixed["tables"] = tables
+    fixed["plan_field"] = "repair_plan_joins"
+    return fixed
+
+
 def _cond_keys_of(
     text: str,
 ) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
@@ -848,6 +979,76 @@ def _scalar_func_args(node: Any) -> list[Any]:
     return [a for a in args if a is not None]
 
 
+def _unwrap_paren(node: Any) -> Any:
+    """剥掉多余的括号层(sqlglot 只在语法需要时保留 Paren,但计划文本
+    里的 ``((diff/A12) * 100)`` 会把 Div 包进 Paren——形态识别必须透视)。"""
+    while isinstance(node, exp.Paren):
+        node = node.this
+    return node
+
+
+def _ratio_operands(node: Any) -> tuple[Any, Any, Any] | None:
+    """比率形态识别:``(N / D) * K`` 或 ``(N * K) / D``(K 为数字字面量)。
+
+    返回 (N 节点, D 节点, K 字面量节点);非该形态 → None。两侧都试
+    (``100 * x / y`` 与 ``x * 100 / y`` 同形),``a*b/c`` 的左结合天然落在
+    ``Div(Mul(N,K), D)`` 上,一并认。
+    """
+    if isinstance(node, exp.Mul):
+        left, right = node.this, node.expression
+        for k_node, other in ((left, right), (right, left)):
+            if (
+                isinstance(k_node, exp.Literal) and k_node.is_number
+                and isinstance(_unwrap_paren(other), exp.Div)
+            ):
+                div = _unwrap_paren(other)
+                return div.this, div.expression, k_node
+        return None
+    if isinstance(node, exp.Div) and isinstance(_unwrap_paren(node.this), exp.Mul):
+        mul = _unwrap_paren(node.this)
+        for k_node, n_node in ((mul.this, mul.expression), (mul.expression, mul.this)):
+            if isinstance(k_node, exp.Literal) and k_node.is_number:
+                return n_node, node.expression, k_node
+    return None
+
+
+def _scalar_is_double_cast(node: Any) -> bool:
+    """节点是否已是 ``CAST(… AS DOUBLE)``(化归时不重复包 CAST)。"""
+    if not isinstance(node, exp.Cast):
+        return False
+    to = node.args.get("to")
+    base = str(getattr(getattr(to, "this", None), "value", "") or "").upper()
+    return base == "DOUBLE"
+
+
+def _scalar_ratio_canonical(
+    node: Any, compiler: Any, tables: set[str], depth: int,
+) -> str | None:
+    """比率化归:``(N / D) * K`` / ``(N * K) / D`` → ``CAST(N AS DOUBLE) * K / D``。
+
+    与 KB share 模板(deterministic_gen 的 ``CAST(… AS DOUBLE) * 100 / …``)
+    同一渲染规范:先乘后除只引入一次除法舍入;先除后乘在中间量上先舍入一次
+    (0482 实测 23/45 行末位偏差,如 ``114.99999999999999`` 对 ``115.0``)。
+    零容差对照下同一数学式必须落在同一浮点路径上——这是渲染规范,不是语义
+    改写(乘除交换律在实数域成立)。N 已是 DOUBLE CAST 则不重复包(计划自带
+    的 CAST 原样保留,同 A2 的"绝不自动补"原则的例外:这里是**规范形态**
+    的一部分,只对"除后乘"这一种形状).
+    """
+    if depth > _SCALAR_MAX_DEPTH:
+        return None
+    shape = _ratio_operands(node)
+    if shape is None:
+        return None
+    n_node, d_node, k_node = shape
+    n_text = _scalar_render(n_node, compiler, tables, depth + 1)
+    d_text = _scalar_render(d_node, compiler, tables, depth + 1)
+    k_text = _scalar_render(k_node, compiler, tables, depth + 1)
+    if n_text is None or d_text is None or k_text is None:
+        return None
+    n_expr = n_text if _scalar_is_double_cast(n_node) else f"CAST({n_text} AS DOUBLE)"
+    return f"({n_expr} * {k_text} / {d_text})"
+
+
 def _scalar_render(node: Any, compiler: Any, tables: set[str], depth: int = 0) -> str | None:
     """闭语法重建:白名单节点 → 文本;任何越界节点 → None(整列弃用)。
 
@@ -877,6 +1078,9 @@ def _scalar_render(node: Any, compiler: Any, tables: set[str], depth: int = 0) -
         return "CURRENT_TIMESTAMP()"
     if isinstance(node, exp.CurrentDate):
         return "CURRENT_DATE()"
+    ratio = _scalar_ratio_canonical(node, compiler, tables, depth)
+    if ratio is not None:
+        return ratio
     op = _SCALAR_BINOPS.get(type(node))
     if op is not None:
         left = _scalar_render(node.this, compiler, tables, depth + 1)

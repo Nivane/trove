@@ -79,9 +79,34 @@ def _ref(expr: str) -> str | None:
 
 
 def test_formula_rebuilt_table_qualified():
-    """0482 形状:算式列按闭语法**重建**(列强制表限定,括号由渲染器决定)。"""
+    """0482 形状:算式列按闭语法**重建**(列强制表限定,括号由渲染器决定)。
+
+    "除后乘"的比率形态按渲染规范化归为"先乘后除 + CAST DOUBLE"(B1,
+    0482 实测:先除后乘在中间量上进位,23/45 行末位与 gold 差 1 ulp)。
+    """
     assert _ref("(district.A13 - district.A12) / district.A12 * 100") == (
-        "(((district.A13 - district.A12) / district.A12) * 100)")
+        "(CAST((district.A13 - district.A12) AS DOUBLE) * 100 / district.A12)")
+
+
+def test_ratio_canonical_three_spellings_same_text():
+    """三种等价写法(除法在乘法左/右、乘号在前)化归到同一渲染文本。"""
+    want = "(CAST((district.A13 - district.A12) AS DOUBLE) * 100 / district.A12)"
+    assert _ref("((district.A13 - district.A12) / district.A12) * 100") == want
+    assert _ref("(district.A13 - district.A12) / district.A12 * 100") == want
+    assert _ref("100 * (district.A13 - district.A12) / district.A12") == want
+
+
+def test_ratio_canonical_skips_double_cast():
+    """N 已是 DOUBLE CAST → 不重复包 CAST(计划自带的 CAST 原样保留)。"""
+    assert _ref("CAST(district.A13 - district.A12 AS DOUBLE) / district.A12 * 100") == (
+        "(CAST((district.A13 - district.A12) AS DOUBLE) * 100 / district.A12)")
+
+
+def test_non_ratio_division_untouched():
+    """非比率形态(除数/被除数是单字段、乘积两边都是字段)不化归。"""
+    assert _ref("district.A11 / 2") == "(district.A11 / 2)"
+    assert _ref("district.A11 * district.A12 / 100") == (
+        "((district.A11 * district.A12) / 100)")
 
 
 def test_unqualified_column_resolved_to_declared_field():
@@ -160,7 +185,8 @@ def test_0482_shape_compiles_with_expression_projection():
     res = _compile(plan, ["district", "client"])
     assert isinstance(res, CompileResult), res
     assert res.sql == (
-        "SELECT district.A2, (((district.A13 - district.A12) / district.A12) * 100)\n"
+        "SELECT district.A2, "
+        "(CAST((district.A13 - district.A12) AS DOUBLE) * 100 / district.A12)\n"
         "FROM district\n"
         "JOIN client ON client.district_id = district.district_id\n"
         "WHERE client.gender = 'M'"

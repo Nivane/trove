@@ -455,7 +455,8 @@ def test_0482_hand_scalar_expression_column(model):
     assert not isinstance(res, CompileMiss), f"expression column must compile: {res}"
     sql = _low(res)
     assert "district.a2" in sql
-    assert "(((district.a13 - district.a12) / district.a12) * 100)" in sql
+    # B1 渲染规范化:比率形态归为"先乘后除 + CAST DOUBLE"(与 gold 同浮点路径)
+    assert "(cast((district.a13 - district.a12) as double) * 100 / district.a12)" in sql
 
 
 def test_0492_hand_prunes_unreferenced_account_join(model):
