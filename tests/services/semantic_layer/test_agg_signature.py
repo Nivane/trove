@@ -9,6 +9,10 @@
 
 修复后签名是表达式里**全部**聚合函数的有序 ``(函数名, 列集, DISTINCT)`` 元组,
 逐项相等才算命中。``COUNT(*)`` 空列集通配是有意保留的放宽。
+
+2026-10 追加一条**受控**放宽(A1.2):被计对象是声明主键时
+``COUNT(pk)`` ≡ ``COUNT(DISTINCT pk)``(键唯一 → 行计数等价);非主键列的
+DISTINCT 仍严格不等 —— 原来的防线只在"主键"这一点上让路。
 """
 import pytest
 
@@ -81,10 +85,15 @@ def test_ratio_expression_not_reduced_to_its_first_aggregate():
 
 
 def test_distinct_count_not_matched_by_plain_count():
-    """COUNT(DISTINCT x) 与 COUNT(x) 不是同一个度量。"""
+    """COUNT(DISTINCT x) 与 COUNT(x) 不是同一个度量(**非主键列**)。
+
+    PK 上是唯一例外(2026-10,A1.2):``COUNT(pk)`` ≡ ``COUNT(DISTINCT pk)``
+    —— 键唯一使两者数学等价(见 test_pk_distinct_tolerance_*)。非主键列上的
+    DISTINCT 数的是不同取值,与行计数是两个度量,严格不等。
+    """
     model = _model(SemanticMetric(
-        "loan_rows", "COUNT(loan.loan_id)", datasets=["loan"]))
-    result = _compile(model, _ratio_plan("COUNT(DISTINCT loan.loan_id)"))
+        "loan_amounts", "COUNT(loan.amount)", datasets=["loan"]))
+    result = _compile(model, _ratio_plan("COUNT(DISTINCT loan.amount)"))
     assert isinstance(result, CompileMiss)
     assert result.reason == "no_metric_match"
 

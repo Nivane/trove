@@ -92,6 +92,10 @@ class TestWireTransport:
             ),
             gaps=({"reason": "no_metric_match", "component": "loan.amount"},),
             partial=True,
+            # 接口 Ⅲ(A3c/RLS):wire 往返一并带过 checkpointer(旧 wire 缺席
+            # 这两个键时按 False/() 缺省,见下面的缺省测试)
+            advisory=True,
+            row_filters=(( (("district", "region_id"),), "eq", ("R1",)),),
         )
 
     def test_round_trip_is_lossless(self):
@@ -189,6 +193,31 @@ class TestWireTransport:
         """只有 skeleton_sql 也能还原 —— 全量编译没有缺口/结构是常态。"""
         contract = contract_from_wire({"skeleton_sql": "SELECT 1"})
         assert contract == PlanContract(skeleton_sql="SELECT 1")
+
+    def test_wire_defaults_keep_today_behaviour(self):
+        """接口 Ⅲ 的向后兼容:旧 wire 没有 advisory/row_filters 键。
+
+        缺省 = ``advisory=False``(WHERE 照旧硬校验)、``row_filters=()``
+        (没有声明层谓词可守)—— 与这两个概念出现之前的行为逐位相同,旧
+        checkpoint 恢复出的契约不会因为升级而变松或变紧。
+        """
+        contract = contract_from_wire({"skeleton_sql": "SELECT 1", "partial": True})
+        assert contract.advisory is False
+        assert contract.row_filters == ()
+
+    @pytest.mark.parametrize("bad", [
+        # advisory 不是 bool(字符串"yes" 会被真值判定吃成 True —— 必须拒)
+        {"skeleton_sql": "SELECT 1", "advisory": "true"},
+        {"skeleton_sql": "SELECT 1", "advisory": 1},
+        # row_filters 形状异常:不是列表 / 条目不是三元组
+        {"skeleton_sql": "SELECT 1", "row_filters": "district.region_id = 'R1'"},
+        {"skeleton_sql": "SELECT 1", "row_filters": [["district.region_id"]]},
+        {"skeleton_sql": "SELECT 1",
+         "row_filters": [{"cols": "x", "op": "eq", "values": []}]},
+    ])
+    def test_malformed_advisory_or_row_filters_yield_none(self, bad):
+        """新键形状异常 → 整份契约作废(同旧键的严格度,不静默弱化)。"""
+        assert contract_from_wire(bad) is None
 
     def test_absent_signature_key_means_no_signature(self):
         """``signature`` 缺席 / 显式 null 是**合法取值**(抽取失败),不是形状错误。

@@ -164,6 +164,15 @@ class PlanContract:
     - ``join_edges``:必须保留的 JOIN 边(集合语义;有序元组,见模块 docstring)。
     - ``where``:必须保留的过滤条件(集合语义)。
     - ``group_by_width``:必须保留的分组宽度。
+    - ``advisory``:骨架**降级为参考**的标记(A3c)。计划本身是退化形态
+      (声明了聚合却没命中任何度量 / 分析组件未解析)时,``skeleton_sql``
+      的 WHERE 只反映"计划文本里恰好可解析的部分",把它冻成权威会把生成侧
+      的正确改写打回。advisory 下校验只跳过 WHERE 子集检查 —— join ⊇ 与
+      分组宽度仍校验(结构骨架仍权威),``row_filters`` 更是恒校验。
+      缺省 False = 全量编译/普通骨架(旧行为逐字不变)。
+    - ``row_filters``:编译器注入的**声明层行级安全(RLS)谓词**。单独成字段
+      (而不是混在 ``where`` 里)是给 advisory 留硬底线:普通条件可以降级为
+      参考,安全条件不可以 —— 丢了就是丢了。
     - ``signature``:全量编译的照抄判据(见 :class:`PlanSignature`)。``None``
       = 编译期抽取失败(编译器拼出的 SQL 解析不了,正常不该发生)—— 校验侧
       据此显式记录并放行,不伪装成"形状相同"。
@@ -181,6 +190,8 @@ class PlanContract:
     signature: PlanSignature | None = None
     gaps: tuple[dict[str, str], ...] = ()
     partial: bool = False
+    advisory: bool = False
+    row_filters: tuple[WhereCond, ...] = ()
 
 
 # 两段固定文案:与 A0 之前 CompileResult/PartialCompile 里硬编码的字符串
@@ -241,17 +252,22 @@ def contract_to_wire(contract: PlanContract) -> dict[str, Any]:
     只产出 str/int/bool/list/dict —— 不放 tuple/set/frozenset/自定义类型。
     ``test_contract_wire`` 有一条形状守卫测试,防止后续"顺手"改回去。
     """
+    def _where_wire(conds: tuple[WhereCond, ...]) -> list[dict[str, Any]]:
+        return [
+            {"cols": [list(c) for c in cols], "op": op, "values": list(vals)}
+            for cols, op, vals in conds
+        ]
+
     return {
         "skeleton_sql": contract.skeleton_sql,
         "join_edges": [[list(a), list(b)] for a, b in contract.join_edges],
-        "where": [
-            {"cols": [list(c) for c in cols], "op": op, "values": list(vals)}
-            for cols, op, vals in contract.where
-        ],
+        "where": _where_wire(contract.where),
         "group_by_width": contract.group_by_width,
         "signature": signature_to_wire(contract.signature),
         "gaps": [dict(g) for g in contract.gaps],
         "partial": contract.partial,
+        "advisory": contract.advisory,
+        "row_filters": _where_wire(contract.row_filters),
     }
 
 
@@ -381,6 +397,10 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
 
     部分解出的契约 = 被削弱的校验,那是 fail-open;``None`` 是明确的"没有
     契约",调用方退回老路径 —— 行为与契约缺席前逐字一致,不会静默放松。
+
+    ``advisory``/``row_filters`` 是后加的键,按 ``.get(默认值)`` 读取:
+    旧 checkpoint 的 wire 里没有它们 → advisory=False、row_filters=()
+    —— 与加这两个字段之前的行为**逐字一致**(不降级任何校验)。
     """
     if not isinstance(wire, dict):
         return None
@@ -390,10 +410,14 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
     join_edges = _decode_edges(wire.get("join_edges", []))
     where = _decode_where(wire.get("where", []))
     gaps = _decode_gaps(wire.get("gaps", []))
-    if join_edges is None or where is None or gaps is None:
+    row_filters = _decode_where(wire.get("row_filters", []))
+    if join_edges is None or where is None or gaps is None or row_filters is None:
         return None
     width = wire.get("group_by_width", 0)
     if not isinstance(width, int) or isinstance(width, bool) or width < 0:
+        return None
+    advisory = wire.get("advisory", False)
+    if not isinstance(advisory, bool):
         return None
     signature = _decode_signature(wire.get("signature"))
     if isinstance(signature, str):  # "invalid"
@@ -406,4 +430,6 @@ def contract_from_wire(wire: Any) -> PlanContract | None:
         signature=signature,
         gaps=gaps,
         partial=bool(wire.get("partial")),
+        advisory=advisory,
+        row_filters=row_filters,
     )
