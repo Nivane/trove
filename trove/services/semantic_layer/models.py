@@ -41,6 +41,29 @@ def _clean_values(raw: object) -> list[str]:
     return out[:MAX_FIELD_VALUES]
 
 
+def _clean_names(raw: object) -> list[str]:
+    """名字列表净化:非空 string、去空白、保序去重。
+
+    容忍缺省(``None`` → ``[]``)与裸标量(``datasets: loan`` → 单元素列表,
+    与 ``_clean_values`` 同法);映射/嵌套容器忽略而不是猜 —— 猜会让一份写错
+    的文件静默变成一份能跑的主题域。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for v in raw:
+        if v is None or isinstance(v, (dict, list, tuple, set)):
+            continue
+        s = str(v).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
 def _clean_extensions(raw: list | None) -> list[dict]:
     """custom_extensions 净化:只保留 {vendor_name, data} 形式且 vendor_name
     非空的条目(空 vendor_name 是坏条目,lint 也会标)。"""
@@ -239,6 +262,35 @@ class MaskingPolicy:
 
 
 @dataclass
+class TopicDomain:
+    """业务主题域 —— 语义模型之上的**分组与收敛边界**(Trove 扩展,非 OSSIE)。
+
+    形态学参照:Datus subject tree / Databricks Genie space —— 用户按业务主题
+    进入,问数范围被主题收敛。
+
+    ``datasets`` 是**权威作用域**:主题域命中时,schema linking 的数据集锚定
+    被限制在这个集合内(检索/指标扩展都不得越界)。名字必须解析到**同一份
+    文档**里已声明的 dataset(lint 硬拦),所以作用域永远不是"悬空引用"。
+
+    ``metrics`` 可选:声明该主题对外口径的度量,须已声明且锚定在 datasets
+    之内(否则主题内编译必然 MISS,lint 拦)。空 = 不限制(主题只是范围)。
+
+    ``synonyms`` 供检索/前端展示用(路由仍由调用方显式指定,不做自动路由);
+    ``examples`` 是主题的示例问句(前端起始提问用)。
+
+    ``custom_extensions`` 与其它实体同款(OSSIE vendor 扩展,透传保留)。
+    """
+
+    name: str
+    description: str = ""
+    synonyms: list[str] = field(default_factory=list)
+    datasets: list[str] = field(default_factory=list)
+    metrics: list[str] = field(default_factory=list)
+    examples: list[str] = field(default_factory=list)
+    custom_extensions: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class SemanticModel:
     """One parsed semantic model (OSSIE `semantic_model` entry).
 
@@ -246,6 +298,8 @@ class SemanticModel:
     examples: model 级 ai_context.examples(示例问句)。
     custom_extensions: model 级 vendor 扩展(透传保留)。
     time_spine: 模型级时间轴声明(见 TimeSpine);空 = 不启用空档填充。
+    topics: 业务主题域(见 TopicDomain);空 = 未分组(存量模型走这条,
+        行为与不启用主题域完全一致)。
     """
 
     name: str = ""
@@ -260,3 +314,5 @@ class SemanticModel:
     time_spine: TimeSpine | None = None
     #: 模型级脱敏策略(见 MaskingPolicy);缺省 = 不脱敏(存量兼容,A11)
     masking: MaskingPolicy = field(default_factory=MaskingPolicy)
+    #: 业务主题域(见 TopicDomain);空 = 未启用主题分组(存量模型走这条)
+    topics: list[TopicDomain] = field(default_factory=list)

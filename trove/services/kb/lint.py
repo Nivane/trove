@@ -23,6 +23,9 @@ from trove.services.kb.lesson_distill import MAX_PATTERN_LEN
 # 字段级 values 的条数上限与装载侧同一个常量:lint 放行的上界必须就是
 # 装载侧截断的那条线,否则「装进来的一定合法」不成立。
 from trove.services.semantic_layer.models import MAX_FIELD_VALUES
+# metric 锚定数据集只有一种判定方式(与装载侧共用,避免"lint 说锚在 A、
+# 运行时锚在 B"这类两处不一致)。
+from trove.services.semantic_layer.ossie import _dataset_refs
 
 _ID_LIKE_SUFFIXES = ("_id", "_to", "_from", "_code", "id")
 
@@ -313,6 +316,7 @@ def lint_semantics(model: dict[str, Any], dialect: str = "mysql") -> list[str]:
 
     _lint_path_ambiguity(issues, model, ds_names)
     _lint_mask(issues, model)
+    _lint_topics(issues, model, ds_fields, ds_names)
 
     # 命名约定 FK → 已声明数据集 但未声明关系:编译器「matched 但连不上」
     # 会产出 FROM anchor 无 JOIN 的非法 SQL(被投影表守卫拦成 MISS)。
@@ -352,6 +356,12 @@ def lint_semantics_document(data: dict[str, Any], dialect: str = "mysql") -> lis
         # 静默忽略 = 静默不脱敏,所以在写盘前拦下而不是留给运行时。
         issues.append(
             "文档顶层的 masking 会被忽略 —— 请写在 semantic_model[0] 下"
+            "(与 time_spine 同层)")
+    if "topics" in (data or {}):
+        # 同 masking:写错层会被解析器忽略。主题域是**收敛边界**,静默忽略
+        # 意味着「看起来按主题收敛了、其实没收」,比不脱敏更难发现。
+        issues.append(
+            "文档顶层的 topics 会被忽略 —— 请写在 semantic_model[0] 下"
             "(与 time_spine 同层)")
     for entry in (data or {}).get("semantic_model", []) or []:
         if isinstance(entry, dict):
@@ -569,6 +579,92 @@ def _lint_metric_non_additive(
                     f"non_additive 指标「{name}」被指标「{oname}」的表达式引用,"
                     "可能造成重复计算/再聚合,请复核")
                 return
+
+
+def _lint_topics(
+    issues: list[str], model: dict[str, Any],
+    ds_fields: dict[str, set[str]], ds_names: set[str],
+) -> None:
+    """业务主题域的结构门(模型内 ``topics`` 段)。
+
+    主题域是**收敛边界**:命中后 schema linking 的数据集锚定被限制在
+    ``datasets`` 内。所以这里拦的每一条都是"边界本身不成立"的形态:
+
+    1. 名字为空/重复 —— 主题域靠名字选择,重名让选择有歧义;
+    2. ``datasets`` 缺失或空 —— 空边界会把该主题下的**所有**问题收敛成
+       零锚定拒绝(不是"不限制"),几乎必然是建模事故而非本意;
+    3. 引用未声明的 dataset —— 悬空引用会让边界比作者以为的窄,且窄得
+       无从解释(锚定永远命中不了它);
+    4. ``metrics`` 引用未声明的 metric —— 同上;
+    5. metric 锚定到主题外的 dataset —— 该 metric 在主题内必然 MISS
+       (锚定越界),属于自相矛盾的边界;
+    6. synonyms/examples 的形状与字段同款(空串/非字符串是坏形状)。
+
+    ``topics`` 缺省(存量模型)不报 —— 不启用主题域是合法状态。
+    """
+    raw_topics = model.get("topics")
+    if raw_topics is None:
+        return
+    if not isinstance(raw_topics, list):
+        issues.append(f"topics 必须是数组: {raw_topics!r}")
+        return
+    # metric 的锚定数据集**从表达式推**(与装载侧 parse_ossie._dataset_refs 同
+    # 一个函数、同一份 declared 集合)—— 原始 YAML 里 metric 并不落 datasets
+    # 键,读显式键会把每条 metric 都判成"无锚定",于是"主题外锚定"这条门
+    # 静默失效。
+    metric_datasets: dict[str, list[str]] = {}
+    for m in model.get("metrics", []) or []:
+        if not (isinstance(m, dict) and m.get("name")):
+            continue
+        anchor: list[str] = []
+        for dia in (m.get("expression") or {}).get("dialects", []) or []:
+            expr = str(dia.get("expression") or "")
+            if expr:
+                for d in _dataset_refs(expr, ds_names):
+                    if d not in anchor:
+                        anchor.append(d)
+        metric_datasets[str(m["name"])] = anchor
+    seen: set[str] = set()
+    for t in raw_topics:
+        if not isinstance(t, dict):
+            issues.append(f"topics 条目必须是映射: {t!r}")
+            continue
+        name = str(t.get("name") or "").strip()
+        if not name:
+            issues.append("主题域缺少 name")
+            continue
+        if name in seen:
+            issues.append(f"主题域「{name}」重复定义")
+        seen.add(name)
+        for key in ("synonyms", "examples"):
+            for v in t.get(key) or []:
+                if not isinstance(v, str) or not v.strip():
+                    issues.append(f"主题域「{name}」的 {key} 含空/非法条目: {v!r}")
+        datasets = t.get("datasets")
+        if not isinstance(datasets, list) or not datasets:
+            issues.append(
+                f"主题域「{name}」未声明任何数据集 —— 主题域是收敛边界,"
+                "空边界会把该主题下的全部问题收敛成零锚定拒绝;"
+                "请声明它覆盖的 dataset(或删除该主题域)")
+            continue
+        for d in datasets:
+            if str(d) not in ds_names:
+                issues.append(f"主题域「{name}」引用未声明的数据集 {d}")
+        declared = {str(d) for d in datasets}
+        for metric in t.get("metrics") or []:
+            mname = str(metric)
+            if mname not in metric_datasets:
+                issues.append(f"主题域「{name}」引用未声明的指标 {metric}")
+                continue
+            outside = [d for d in metric_datasets[mname] if d not in declared]
+            if outside:
+                issues.append(
+                    f"主题域「{name}」的指标「{mname}」锚定到主题外的数据集 "
+                    f"{', '.join(sorted(outside))} —— 该指标在主题内必然 MISS"
+                    "(请把它锚定的数据集并入本主题,或从本主题移除该指标)")
+        for ext in t.get("custom_extensions") or []:
+            if not (isinstance(ext, dict) and str(ext.get("vendor_name") or "").strip()):
+                issues.append(f"主题域「{name}」custom_extensions 缺 vendor_name")
 
 
 def _is_many_to_many(cardinality: Any) -> bool:

@@ -88,6 +88,12 @@ def _merge_models(base: SemanticModel, override: SemanticModel) -> SemanticModel
         metrics = [x for x in metrics if x.name != m.name] if m.name in metric_names else metrics
         metrics.append(m)
         metric_names.add(m.name)
+    # 主题域按名合并(与 dataset/metric 同一条"KB 为准"规则):同名主题域被
+    # 真源整体替换,不同名并列。**不做字段级并集** —— 一个主题域的
+    # ``datasets`` 是收敛边界,两份定义各留一半会得到谁都没写过的第三条边界。
+    topics = {t.name: t for t in base.topics}
+    for t in override.topics:
+        topics[t.name] = t
     return SemanticModel(
         name=override.name or base.name,
         description=override.description or base.description,
@@ -100,6 +106,7 @@ def _merge_models(base: SemanticModel, override: SemanticModel) -> SemanticModel
         examples=override.examples or base.examples,
         custom_extensions=override.custom_extensions or base.custom_extensions,
         time_spine=override.time_spine or base.time_spine,
+        topics=list(topics.values()),
     )
 
 
