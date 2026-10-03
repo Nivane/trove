@@ -13,6 +13,10 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     workflow: str = "reflection"
     datasource: str | None = None  # target datasource (None = registry default)
+    #: 主题域(可选):该数据源 semantics.yml 里声明的 topic 名。非空时问数
+    #: 范围收敛到该域声明的 datasets;域不存在/域过期 → 显式拒绝(不是回落
+    #: 全量)。空 = 不收敛,行为与不启用主题域完全一致。
+    topic: str = ""
     #: 重放(设计 §5.6):admin 以目标用户身份看数据。``user:42`` / ``42``。
     #: 仅 admin、仅自己的会话;目标必须是已存在的用户。见 routers/chat._replay_subject
     on_behalf_of: str | None = None

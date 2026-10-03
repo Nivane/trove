@@ -258,6 +258,7 @@ async def chat(
             is_admin=user["role"] == "admin",
             scopes=user.get("scopes"),
             on_behalf_of=replay,
+            topic=body.topic,
         ):
             payload = {k: v for k, v in event.items() if k != "type"}
             yield {"type": event["type"], "data": payload}

@@ -481,6 +481,7 @@ class SessionManager:
         is_admin: bool = False,
         scopes: Iterable[str] | None = None,
         on_behalf_of: str | None = None,
+        topic: str = "",
     ) -> WorkflowState:
         """Process a natural language question through a compiled graph.
 
@@ -490,6 +491,8 @@ class SessionManager:
             workflow_name: Which graph to run ("reflection", "fixed", "empty").
             datasource: Datasource name for this request; empty/None keeps
                 the current default-datasource behavior.
+            topic: 主题域名(可选)。非空时 schema linking 只在该域声明的
+                datasets 内锚定,域不存在/域过期 → 显式拒绝;空 = 不收敛。
             is_admin: Whether the caller is an admin (enables chat-side
                 draft confirmation etc.).
             scopes: Scopes carried by the caller's token (from
@@ -529,6 +532,7 @@ class SessionManager:
             principal=await self._principal_wire(
                 session, scopes=scopes, on_behalf_of=on_behalf_of,
             ),
+            topic=topic,
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -536,7 +540,7 @@ class SessionManager:
         # 精确结果缓存:同会话同问句直接返回上次结果(0 LLM)。命中跳过
         # HITL 确认——首次运行该问题已人工确认过。
         cached = self._cache_get(
-            self._cache_key(session, question, datasource, state.principal),
+            self._cache_key(session, question, datasource, state.principal, topic),
         )
         if cached is not None:
             self._record_cache_hit(session, run_id, question, cached)
@@ -780,7 +784,7 @@ class SessionManager:
                 async for ev in self._run_one_task(
                     session, graph, workflow_name, store, current, target,
                     final.lang, auto_approve=True, scopes=scopes,
-                    on_behalf_of=on_behalf_of,
+                    on_behalf_of=on_behalf_of, topic=final.topic,
                 ):
                     if ev.get("type") in ("done", "error") and ev.get("summary"):
                         self._merge_run_stats(batch_stats, ev["summary"])
@@ -802,6 +806,7 @@ class SessionManager:
         is_admin: bool = False,
         scopes: Iterable[str] | None = None,
         on_behalf_of: str | None = None,
+        topic: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream a query response as graph events.
 
@@ -810,6 +815,9 @@ class SessionManager:
         The terminal event (done or error) carries a "summary" dict with
         the final state essentials (sql, row_count, verdict, error,
         final_response, ...) for non-streaming consumers like --print.
+
+        ``topic`` 同 :meth:`ask`(非空 = 主题域收敛,贯穿任务拆解路径的每个
+        子任务 —— 拆解不改变用户选定的问数范围)。
         """
         yield {"type": "thought", "node": "start", "content": f"Processing: {question[:80]}..."}
 
@@ -827,6 +835,7 @@ class SessionManager:
             async for ev in self._run_task_action(
                 session, graph, question, action, workflow_name,
                 datasource=datasource, scopes=scopes, on_behalf_of=on_behalf_of,
+                topic=topic,
             ):
                 yield ev
             return
@@ -836,6 +845,7 @@ class SessionManager:
             async for ev in self._run_task_sequence(
                 session, graph, question, tasks, workflow_name,
                 datasource=datasource, scopes=scopes, on_behalf_of=on_behalf_of,
+                topic=topic,
             ):
                 yield ev
             return
@@ -863,6 +873,7 @@ class SessionManager:
             principal=await self._principal_wire(
                 session, scopes=scopes, on_behalf_of=on_behalf_of,
             ),
+            topic=topic,
         )
         self._begin_trace(state)
         self._trace_run_start(state)
@@ -899,7 +910,10 @@ class SessionManager:
         # 精确结果缓存:同会话同问句直接产出结果事件(0 LLM),形状与
         # 实跑路径一致(sql → result → done);命中跳过 HITL 确认。
         cached = self._cache_get(
-            self._cache_key(session, state.question, state.datasource, state.principal),
+            self._cache_key(
+                session, state.question, state.datasource, state.principal,
+                state.topic,
+            ),
         )
         if cached is not None:
             import time as _time
@@ -1940,6 +1954,7 @@ class SessionManager:
         datasource: str | None = None,
         scopes: Iterable[str] | None = None,
         on_behalf_of: str | None = None,
+        topic: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """多任务单轮连跑:逐条执行,事件流中插入 task 快照事件。
 
@@ -1970,6 +1985,7 @@ class SessionManager:
             async for ev in self._run_one_task(
                 session, graph, workflow_name, store, current, target,
                 self.config.language, datasource=datasource, scopes=scopes,
+                topic=topic,
             ):
                 if ev.get("type") in ("done", "error") and ev.get("summary"):
                     self._merge_run_stats(batch_stats, ev["summary"])
@@ -1998,6 +2014,7 @@ class SessionManager:
         auto_approve: bool = False,
         scopes: Iterable[str] | None = None,
         on_behalf_of: str | None = None,
+        topic: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """执行单个子任务并流式产出事件(in_progress → 事件流 → 终态标记)。"""
         task.status = "in_progress"
@@ -2022,6 +2039,8 @@ class SessionManager:
             principal=await self._principal_wire(
                 session, scopes=scopes, on_behalf_of=on_behalf_of,
             ),
+            # 主题域沿任务拆解传播:子任务不改变用户选定的问数范围
+            topic=topic,
             # 步骤间共享:继承上一步 schema linking 锚定的表(schema_linking
             # 节点会与本次新匹配合并,KB 检索与 C1 规则据此锚定)
             matched_tables=list(prev_packet.get("matched_tables") or []) if prev_packet else [],
@@ -2079,6 +2098,7 @@ class SessionManager:
         datasource: str | None = None,
         scopes: Iterable[str] | None = None,
         on_behalf_of: str | None = None,
+        topic: str = "",
     ) -> AsyncIterator[dict[str, Any]]:
         """执行跨轮任务操作:continue_next / redo / skip / add。"""
         lang = self.config.language
@@ -2153,6 +2173,7 @@ class SessionManager:
         async for ev in self._run_one_task(
             session, graph, workflow_name, store, tasks, target, lang,
             datasource=datasource, scopes=scopes, on_behalf_of=on_behalf_of,
+            topic=topic,
         ):
             if ev.get("type") in ("done", "error") and ev.get("summary"):
                 self._merge_run_stats(batch_stats, ev["summary"])
@@ -2302,6 +2323,10 @@ class SessionManager:
             "question": final.question,
             "rewritten_question": final.rewritten_question,
             "datasource": final.datasource,
+            # 主题域:这条答案是在哪个问数范围里算出来的(空 = 未限定)。
+            # 进 summary 的理由与 datasource 相同 —— 缓存命中重建 state 时
+            # 它是答案上下文的一部分,不能丢。
+            "topic": final.topic,
             "sql": final.sql,
             # gen_sql 实际使用的模型(见 _gen_model;"" = 这条答案没经过生成)。
             "model": model,
@@ -2371,9 +2396,15 @@ class SessionManager:
         question: str,
         datasource: str | None = None,
         principal: dict[str, Any] | None = None,
+        topic: str | None = None,
     ) -> tuple:
-        """键 = (会话, 数据源, 归一化问句, 主体)。数据源隔离:同一问句在不同
-        库上是不同问题。
+        """键 = (会话, 数据源, 归一化问句, 主体, 主题域)。
+
+        数据源隔离:同一问句在不同库上是不同问题。主题域同理 —— 同一问句
+        带不同主题域,问数范围不同(域外数据集注定不可锚),答案也可能不同;
+        若共用一键,先问的域外结果会在 TTL 内被另一域直接复用,而**不再过
+        schema linking 的作用域收敛**(与 bypass 不写缓存同一条理由:重跑
+        会按此刻的范围重新判,回放一份缓存的行走不到这个判定)。
 
         第四个分量是**视图**:缓存里存着 ``rows``(数据本身),而同一会话里
         同一句问句可以有两个视图 —— 会话主人自己问,与他以目标身份重放
@@ -2390,7 +2421,10 @@ class SessionManager:
             except Exception:
                 ds = ""
         subject = str((principal or {}).get("subject") or "")
-        return (session.session_id, ds, self._normalize_question(question), subject)
+        return (
+            session.session_id, ds, self._normalize_question(question), subject,
+            (topic or "").strip().lower(),
+        )
 
     def _cache_get(self, key: tuple) -> dict[str, Any] | None:
         hit = self._result_cache.get(key)
@@ -2450,6 +2484,7 @@ class SessionManager:
         self._cache_put(
             self._cache_key(
                 session, final.question, final.datasource, final.principal,
+                final.topic,
             ),
             summary,
         )
