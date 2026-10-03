@@ -96,24 +96,9 @@ a:focus-visible, button:focus-visible {
   border-radius: 3px;
 }
 
-/* ── Shell ─────────────────────────────────────────────── */
-.shell {
-  display: grid;
-  grid-template-columns: 1fr;
-  max-width: 1180px;
-  margin: 0 auto;
-  padding-block: 0 96px;
-  padding-inline: 24px;
-}
-/* 首页与文档页共用同一套左侧导航（.doc-nav，由 assets/nav.js 注入），
-   所以栏宽与断点也必须跟 .doc-shell 一致 —— 否则同一份导航在两处
-   会是两种宽度，长条目在窄栏里折行。 */
-@media (min-width: 1000px) {
-  .shell { grid-template-columns: 218px minmax(0, 1fr); gap: 0 56px; }
-}
-.col { min-width: 0; max-width: 760px; }
-/* 导航的起始位置也不覆盖：首页与文档页用同一份 .doc-nav 的 padding，
-   两边的品牌块落在同一个高度上。 */
+/* 骨架说明：首页不再单起一套 .shell/.col，与文档页共用 .doc-shell/.doc-col
+   （见下方「文档站（多页）」一节）；本节的落地页组件在 .doc-col 一节末尾
+   做了少量抵消，维持落地页自己的间距。 */
 
 /* ── Hero ──────────────────────────────────────────────── */
 .hero { padding-block: 88px 0; }
@@ -703,9 +688,9 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* ══════════════════════════════════════════════════════════
    文档站（多页）
-   首页用 .shell（正文栏 760px），文档页用 .doc-shell（正文栏 812px）——
-   唯一区别是正文栏宽；左侧导航两边都是同一个 .doc-nav（assets/nav.js 注入），
-   所以栏宽、断点、视觉一套，不另起。共用上面的 token 与排版。
+   全站 36 页共用这一套骨架（首页也在内）：左栏 .doc-nav（assets/nav.js
+   注入）+ 正文 .doc-col，宽屏再多一栏本页目录。共用上面的 token 与排版；
+   首页保留落地页组件（hero/.sec-head/footer），个中抵消见 .doc-col 一节末尾。
    ══════════════════════════════════════════════════════════ */
 
 .doc-shell {
@@ -718,6 +703,15 @@ footer .attribution p:last-child { margin-bottom: 0; }
 }
 @media (min-width: 1000px) {
   .doc-shell { grid-template-columns: 218px minmax(0, 1fr); gap: 0 56px; }
+}
+/* 宽屏第三栏放本页目录（断点与 nav.js 的 railQ 一致）。总宽上限同步放宽到
+   1390px = 218 导航 + 56 间隔 + 812 正文 + 56 间隔 + 200 目录 + 两侧留白——
+   正文栏宽度与窄屏完全一致，多出来的只是被用起来的空白。 */
+@media (min-width: 1280px) {
+  .doc-shell {
+    grid-template-columns: 218px minmax(0, 1fr) 200px;
+    max-width: 1390px;
+  }
 }
 
 /* ── 站点导航 ──────────────────────────────────────────── */
@@ -872,6 +866,18 @@ footer .attribution p:last-child { margin-bottom: 0; }
 .doc-col table { font-size: 13.5px; }
 .doc-col th, .doc-col td { padding: 10px 14px; vertical-align: top; }
 
+/* 首页（docs/index.html）也穿这套骨架，但保留落地页组件，逐处抵消上面的
+   文档页排版，维持落地页自己的节奏：
+   - .sec-head 标题组：文档页 h2 的 58px 间距 + 顶部细线是「章节分隔」用的，
+     落在标题组内部（sec-label 与 h2 之间）就成了错位；恢复全局 h2 间距。
+   - <footer> 栏目：h4/列表间距按页脚自己的规则，不吃文档页标题与列表的。
+   .shot-legend 不在此列——图例在指南页与首页共用，跟着文档页规则走，
+   两处外貌一致（这也是迁移前指南页的既有效果）。 */
+.doc-col .sec-head h2 { margin: 0 0 14px; padding-top: 0; border-top: 0; }
+.doc-col footer h4 { margin-top: 0; }
+.doc-col footer ul { margin: 0; padding-left: 0; }
+.doc-col footer li { margin-bottom: 0; }
+
 /* ── 提示块 ────────────────────────────────────────────── */
 .callout {
   display: grid;
@@ -956,8 +962,10 @@ footer .attribution p:last-child { margin-bottom: 0; }
 }
 
 /* ── 本页目录 ──────────────────────────────────────────── */
-/* 放在正文开头而不是右栏：右栏在 1180px 总宽下放不下（218 导航 + 812 正文已占满），
-   而长页面（工作流 28 个节点、配置全 key）确实需要它。 */
+/* 两种形态，同一个节点由 nav.js 在 1280px 断点搬运：
+   宽屏 = .doc-shell 第三栏的竖线列表（sticky 常驻 + is-active 高亮当前小节，
+   参照 doris.apache.org 的三栏做法）；窄屏 = 正文开头的两列卡片——
+   窄屏没有右栏可放，而长页面（工作流 28 个节点、配置全 key）确实需要它。 */
 .doc-toc {
   margin: 34px 0 0;
   padding: 15px 19px 16px;
@@ -993,6 +1001,32 @@ footer .attribution p:last-child { margin-bottom: 0; }
 
 /* 目录后面紧跟的 h2 不必再画顶部分隔线 */
 .doc-toc + h2, .doc-toc + .doc-head + h2 { border-top: 0; padding-top: 0; margin-top: 44px; }
+
+/* 宽屏形态：nav.js 把目录挪成 .doc-shell 的第三个栅格子项。只认直接子级——
+   目录在 .doc-col 里（窄屏/未搬运）时这条不匹配，卡片样式原样保留。 */
+@media (min-width: 1280px) {
+  .doc-shell > .doc-toc {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: start;
+    position: sticky;
+    top: 24px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    margin: 81px 0 0; /* 顶端与 h1 齐平：46 头部留白 + 20 面包屑一行 + 15 间距 */
+    padding: 0 0 4px 16px;
+    border: 0;
+    border-left: 1px solid var(--border-subtle);
+    border-radius: 0;
+    background: none;
+    columns: auto;
+  }
+  .doc-shell > .doc-toc .toc-label { margin-bottom: 8px; }
+  .doc-shell > .doc-toc a { font-size: 13px; padding: 3px 0; }
+  .doc-shell > .doc-toc a.toc-3 { padding-left: 13px; font-size: 12.5px; }
+  .doc-shell > .doc-toc a:hover { color: var(--text-primary); }
+  .doc-shell > .doc-toc a.is-active { color: var(--accent); font-weight: 500; }
+}
 
 /* 文档页里的源码锚点与首页同款，只是不换行时更容易读 */
 .doc-col .ref { white-space: nowrap; }

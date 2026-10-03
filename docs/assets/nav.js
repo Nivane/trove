@@ -11,7 +11,7 @@
  *   <script src="../assets/nav.js" defer></script>
  *   <aside class="doc-nav" data-nav></aside>      ← 站点导航
  *   <div class="doc-pager" data-pager></div>       ← 上下页（可选）
- *   <nav class="doc-toc" data-toc></nav>           ← 本页目录（可选）
+ *   <nav class="doc-toc" data-toc></nav>           ← 本页目录（可选；宽屏自动移入右栏）
  */
 (function () {
   "use strict";
@@ -220,6 +220,10 @@
   // ── 本页目录 ─────────────────────────────────────────────
   // 从正文里的 h2/h3 生成；没有 id 的补一个。少于 4 条不显示——
   // 短页面加目录只是噪音。
+  // 两种形态是同一个节点，由 place() 在 1280px 断点（与 docs.css 的三栏
+  // 断点一致）搬运：宽屏挪进 .doc-shell 第三栏（sticky 常驻 + 滚动高亮
+  // 当前小节）；窄屏挪回正文开头的两列卡片。原位置留一个注释锚点，
+  // 断点来回穿越时据此还原。
   var toc = document.querySelector("[data-toc]");
   var col = document.querySelector(".doc-col");
   if (toc && col) {
@@ -241,10 +245,12 @@
     }
     var heads = col.querySelectorAll("h2, h3");
     var links = [];
+    var targets = [];
     Array.prototype.forEach.call(heads, function (h, n) {
       // 跳过正文之外的（比如被 .doc-head 包住的 h1 不在此列）
       if (h.closest(".doc-pager, .doc-foot")) return;
       if (!h.id) h.id = slug(h.textContent, n + 1);
+      targets.push(h);
       var depth = h.tagName === "H3" ? " toc-3" : "";
       links.push(
         '<a class="' +
@@ -259,6 +265,69 @@
     if (links.length >= 4) {
       toc.innerHTML =
         '<span class="toc-label">本页目录</span>' + links.join("");
+      toc.setAttribute("aria-label", "本页目录");
+
+      var linkEls = toc.querySelectorAll("a");
+      var shell = col.closest(".doc-shell");
+      var railQ = window.matchMedia("(min-width: 1280px)");
+      var home = document.createComment("toc-home");
+      toc.parentNode.insertBefore(home, toc);
+
+      function place() {
+        if (shell && railQ.matches) shell.appendChild(toc);
+        else home.parentNode.insertBefore(toc, home);
+      }
+
+      // 滚动高亮：越过视口上方 80px 线的最后一个标题 = 当前小节
+      var active = -1;
+      function activate(i) {
+        if (i === active) return;
+        if (active >= 0) linkEls[active].classList.remove("is-active");
+        active = i;
+        if (i < 0) return;
+        var link = linkEls[i];
+        link.classList.add("is-active");
+        // 目录比可视高度长时，把当前项滚进视野（只滚目录，不动页面）
+        if (toc.scrollHeight > toc.clientHeight + 4) {
+          if (
+            link.offsetTop < toc.scrollTop + 8 ||
+            link.offsetTop + link.offsetHeight >
+              toc.scrollTop + toc.clientHeight - 8
+          ) {
+            toc.scrollTop = link.offsetTop - toc.clientHeight / 2;
+          }
+        }
+      }
+      var ticking = false;
+      function spy() {
+        ticking = false;
+        if (!railQ.matches) return;
+        var i = -1;
+        for (var k = 0; k < targets.length; k++) {
+          if (targets[k].getBoundingClientRect().top <= 80) i = k;
+          else break;
+        }
+        activate(i);
+      }
+      function onRailChange() {
+        place();
+        activate(-1);
+        spy();
+      }
+      window.addEventListener(
+        "scroll",
+        function () {
+          if (ticking) return;
+          ticking = true;
+          window.requestAnimationFrame(spy);
+        },
+        { passive: true }
+      );
+      if (railQ.addEventListener) railQ.addEventListener("change", onRailChange);
+      else if (railQ.addListener) railQ.addListener(onRailChange);
+
+      place();
+      spy();
     } else {
       toc.remove();
     }
