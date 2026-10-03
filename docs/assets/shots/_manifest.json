@@ -1,0 +1,332 @@
+{
+  "generatedAt": "2026-10-03T02:58:20.371Z",
+  "frontendCommit": "358d7b8",
+  "baseUrl": "http://localhost:5174",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "deviceScaleFactor": 2,
+  "resizeWidth": 1624,
+  "shots": [
+    {
+      "name": "user-login",
+      "file": "user-login.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 70631
+    },
+    {
+      "name": "user-chat-empty",
+      "file": "user-chat-empty.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 124799
+    },
+    {
+      "name": "user-chat-answer",
+      "file": "user-chat-answer.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 202024
+    },
+    {
+      "name": "user-chat-chart",
+      "file": "user-chat-chart.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 224326
+    },
+    {
+      "name": "user-chat-evidence",
+      "file": "user-chat-evidence.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 334411
+    },
+    {
+      "name": "user-chat-analysis",
+      "file": "user-chat-analysis.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 281552
+    },
+    {
+      "name": "user-chat-feedback",
+      "file": "user-chat-feedback.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 247010
+    },
+    {
+      "name": "user-sessions-search",
+      "file": "user-sessions-search.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 126552
+    },
+    {
+      "name": "user-session-menu",
+      "file": "user-session-menu.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 130124
+    },
+    {
+      "name": "admin-overview",
+      "file": "admin-overview.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 356648
+    },
+    {
+      "name": "admin-todos",
+      "file": "admin-todos.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 378237
+    },
+    {
+      "name": "admin-datasources",
+      "file": "admin-datasources.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 154538
+    },
+    {
+      "name": "admin-ds-create",
+      "file": "admin-ds-create.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 202780
+    },
+    {
+      "name": "admin-kb-pending",
+      "file": "admin-kb-pending.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 304938
+    },
+    {
+      "name": "admin-kb-assets",
+      "file": "admin-kb-assets.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 247335
+    },
+    {
+      "name": "admin-semantic",
+      "file": "admin-semantic.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 222055
+    },
+    {
+      "name": "admin-semantic-detail",
+      "file": "admin-semantic-detail.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 320482
+    },
+    {
+      "name": "admin-semantic-draft",
+      "file": "admin-semantic-draft.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 288117
+    },
+    {
+      "name": "admin-jobs",
+      "file": "admin-jobs.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 194453
+    },
+    {
+      "name": "admin-jobs-history",
+      "file": "admin-jobs-history.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 165746
+    },
+    {
+      "name": "admin-decisions",
+      "file": "admin-decisions.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 255755
+    },
+    {
+      "name": "admin-skills-table",
+      "file": "admin-skills-table.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 368493
+    },
+    {
+      "name": "admin-skills",
+      "file": "admin-skills.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 306966
+    },
+    {
+      "name": "admin-users",
+      "file": "admin-users.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 208932
+    },
+    {
+      "name": "admin-user-drawer",
+      "file": "admin-user-drawer.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 265663
+    },
+    {
+      "name": "admin-audit",
+      "file": "admin-audit.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 285704
+    },
+    {
+      "name": "admin-settings",
+      "file": "admin-settings.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 203244
+    },
+    {
+      "name": "admin-model",
+      "file": "admin-model.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 184161
+    },
+    {
+      "name": "admin-ops",
+      "file": "admin-ops.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 353078
+    }
+  ]
+}

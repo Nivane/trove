@@ -16,7 +16,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "types:generate": "openapi-typescript http://127.0.0.1:8000/openapi.json -o src/api/openapi.d.ts",
-    "ci": "npm run typecheck && npm run lint && npm test && npm run build"
+    "ci": "npm run typecheck && npm run lint && npm test && npm run build",
+    "shots": "node scripts/capture-guide-shots.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
@@ -39,6 +40,7 @@
     "eslint-plugin-vue": "^10.10.0",
     "jsdom": "^30.0.1",
     "openapi-typescript": "^7.13.0",
+    "playwright-core": "^1.63.0",
     "prettier": "^3.8.4",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.67.0",
