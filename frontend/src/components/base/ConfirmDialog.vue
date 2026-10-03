@@ -211,7 +211,7 @@ function onKeydown(e: KeyboardEvent) {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  height: 30px;
+  height: var(--density-control-h, 30px); /* density register (P7) */
   padding: 0 var(--sp-4);
   border: 1px solid var(--border-default);
   border-radius: var(--r-sm);

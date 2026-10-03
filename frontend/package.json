@@ -21,7 +21,6 @@
     "gif": "node scripts/record-readme-gif.mjs"
   },
   "dependencies": {
-    "@element-plus/icons-vue": "^2.3.2",
     "dompurify": "^3.2.4",
     "echarts": "^5.6.0",
     "element-plus": "^2.9.3",
