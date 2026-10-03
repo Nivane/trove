@@ -137,10 +137,38 @@ def test_explicit_declared_many_to_one_ok():
     assert "JOIN client ON loan.account_id = client.account_id" in result.sql
 
 
-def test_explicit_undeclared_edge_still_rejected():
-    """既有行为不回退:显式 joins 引用未声明边 → 严格 MISS。"""
-    result = _compile(
-        _model(cardinality="M:1"), _plan(joins="loan.loan_id = client.client_id"))
+def test_explicit_undeclared_edge_repaired_by_table_pair():
+    """列名写错但**表对可解析**(A5a):按表对上的声明唯一路径修复,不再一律 MISS。
+
+    原先显式 joins 的列级校验失败即严格 MISS;而计划写错列名(0477 型:
+    表对表达了真实关系、列名对不上声明)时,表对表达的骨架是真实且唯一的
+    —— 修复走同一套显式 channel(基数守卫/左深树判定不豁免),把「列名笔误」
+    与「编造路径」区分开。缺的表(投影引用的 district)按声明路径补齐。
+    """
+    result = _chain_compile("loan.loan_id = account.account_id")
+    assert not isinstance(result, CompileMiss), result
+    # 修复出的是**声明列对**(account_id),而不是计划里写错的列名
+    assert "JOIN account ON loan.account_id = account.account_id" in result.sql
+    assert "JOIN district ON account.district_id = district.district_id" in result.sql
+    assert "loan.loan_id = account.account_id" not in result.sql
+
+
+def test_explicit_undeclared_table_still_rejected():
+    """表对里有**未声明数据集** → 修复无路可走,维持严格 MISS。"""
+    result = _chain_compile("loan.loan_id = ghost.ghost_id", tables=["loan", "ghost"])
+    assert isinstance(result, CompileMiss)
+    assert result.reason == "ambiguous_join_path"
+
+
+def test_explicit_ambiguous_table_pair_still_rejected():
+    """同一对表有**多条**声明关系(表对一义、关系二义)→ 不猜,严格 MISS。"""
+    model = _chain_model()
+    model.relationships.append(SemanticRelationship(
+        "loan_to_account_alt", "loan", "account",
+        from_columns=["loan_id"], to_columns=["account_id"],
+        cardinality="1:N"))
+    result = SemanticCompiler(model).compile_detailed(
+        _chain_plan("loan.nope = account.nope"), _L3)
     assert isinstance(result, CompileMiss)
     assert result.reason == "ambiguous_join_path"
 
@@ -252,25 +280,30 @@ def test_explicit_joins_semicolon_split_directly():
     ]
 
 
-# ── ② 切分放宽不得放松判定(0477 形状:未声明边仍严格 MISS)────
+# ── ② 列名笔误 → 表对修复(A5a);语柄坏的/表对不存在的仍严格 MISS ──
+#
+# 0477 形状:并列的第一条边列名写错(``loan.loan_id = account.account_id``,
+# 真实列对是 account_id)。A5a 起按**表对**在声明图上找唯一路径修复 ——
+# 表对本身表达了真实骨架,列名笔误不该让整条计划作废;但修复不是放行:
+# 表对不存在/同表对多关系/子句形态坏 → 一律维持严格 MISS(下面 ③ 组钉住)。
 
-def test_explicit_joins_semicolon_undeclared_edge_still_rejected():
-    """0477 形状(AND 分隔,首条边未声明)→ 仍严格 MISS,不放宽。"""
+def test_explicit_joins_undeclared_edge_repaired_by_table_pair():
+    """0477 形状(AND 分隔,首条边列名错但表对存在)→ 按表对修复后编译。"""
     result = _chain_compile(
         "loan.loan_id = account.account_id AND "
         "account.district_id = district.district_id")
-    assert isinstance(result, CompileMiss), (
-        "未声明边不得因分隔符解析变宽容而静默改道")
-    assert result.reason == "ambiguous_join_path"
+    assert not isinstance(result, CompileMiss), result
+    assert "JOIN account ON loan.account_id = account.account_id" in result.sql
+    assert "JOIN district ON account.district_id = district.district_id" in result.sql
 
 
-def test_explicit_joins_semicolon_undeclared_first_edge_still_rejected():
-    """同上,但用 `;` 分隔 → 新切分路径同样严格(证明只补分隔符、未松判定)。"""
+def test_explicit_joins_undeclared_first_edge_repaired_by_table_pair():
+    """同上,但用 `;` 分隔 → 修复路径与 AND 分隔同判(分隔符不影响表对解析)。"""
     result = _chain_compile(
         "loan.loan_id = account.account_id; "
         "account.district_id = district.district_id")
-    assert isinstance(result, CompileMiss)
-    assert result.reason == "ambiguous_join_path"
+    assert not isinstance(result, CompileMiss), result
+    assert "JOIN account ON loan.account_id = account.account_id" in result.sql
 
 
 @pytest.mark.parametrize("joins", [

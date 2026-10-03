@@ -552,8 +552,14 @@ def test_explicit_joins_commas_and_and_parsed():
     assert "FROM client" in result.sql
 
 
-def test_explicit_joins_undeclared_edge_strict_miss():
-    """显式 joins 引用未声明边 → 严格 MISS,不静默忽略后 BFS 改道。"""
+def test_explicit_joins_undeclared_edge_repaired_to_declared_path():
+    """显式 joins 的列对未声明,但**表对**在声明图上有唯一路径(A5a)→ 修复。
+
+    菱形里 client—loan 无直连:唯一可路由路径是 client—disp—account—loan
+    (client—district—account—loan 因 district 只是维度叶、不作路由中间点而
+    被排除)。「列名编造」与「路径编造」由此分开:表对唯一即按声明路径修复,
+    不唯一/无路才维持严格 MISS(见 test_explicit_joins_disconnected_tree_miss)。
+    """
     plan = {
         "tables": ["client", "loan"],
         "joins": "client.district_id = loan.loan_id",
@@ -562,8 +568,10 @@ def test_explicit_joins_undeclared_edge_strict_miss():
     res = SemanticCompiler(_diamond_model()).compile_detailed(
         plan, ["client", "loan"], force_dialect="mysql")
     from trove.services.semantic_layer.compiler import CompileMiss
-    assert isinstance(res, CompileMiss)
-    assert res.reason == "ambiguous_join_path"
+    assert not isinstance(res, CompileMiss), res
+    assert "JOIN disp ON disp.client_id = client.client_id" in res.sql
+    assert "JOIN account ON disp.account_id = account.account_id" in res.sql
+    assert "JOIN loan ON loan.account_id = account.account_id" in res.sql
 
 
 def test_explicit_joins_placeholder_falls_back():

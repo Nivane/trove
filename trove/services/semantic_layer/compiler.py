@@ -421,6 +421,182 @@ class JoinResolver:
 _PLACEHOLDER_JOINS = {"", "none", "empty", "-", "(empty if none)", "null"}
 
 
+def _join_clauses(joins_value: Any) -> list[str] | None:
+    """joins 文本 → 子句列表(逗号/分号/AND 分隔);非 str/list → None。"""
+    if isinstance(joins_value, str):
+        parts = [joins_value]
+    elif isinstance(joins_value, list):
+        parts = [str(x) for x in joins_value]
+    else:
+        return None
+    text = " AND ".join(p for p in parts if str(p).strip())
+    if text.strip().lower() in _PLACEHOLDER_JOINS:
+        return None
+    return [
+        c for c in re.split(r"\s*,\s*|\s*;\s*|\s+and\s+", text, flags=re.I)
+        if c.strip()
+    ]
+
+
+def _table_pairs_from_joins(joins_value: Any) -> list[tuple[str, str]] | None:
+    """joins 文本 → 无序表对列表(A3a 表对修复的输入);任一子句不可解析 → None。
+
+    只取**表**这一层:plan.joins 的列名可能写错(0477:``client.client_id =
+    account.account_id``,真实边是 client—disp—account),但表对通常是计划真正
+    想表达的关系骨架。解析不出干净的两端限定列对 → None(调用方维持硬 MISS)。
+    """
+    clauses = _join_clauses(joins_value)
+    if clauses is None:
+        return None
+    pairs: list[tuple[str, str]] = []
+    for clause in clauses:
+        try:
+            tree = parse_one(clause)
+        except Exception:
+            return None
+        eqs = list(tree.find_all(exp.EQ))
+        if len(eqs) != 1:
+            return None
+        left, right = eqs[0].left, eqs[0].right
+        if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+            return None
+        lt = (left.table or "").strip().lower()
+        rt = (right.table or "").strip().lower()
+        if not lt or not rt:
+            return None
+        pairs.append((lt, rt))
+    return pairs or None
+
+
+def _relationship_edges(r: Any) -> list[JoinEdge]:
+    """声明关系 → 逐列对的 JoinEdge(方向沿用声明:from_=多端 FK 持有者)。"""
+    out: list[JoinEdge] = []
+    for fc, tc in zip(getattr(r, "from_columns", None) or [],
+                      getattr(r, "to_columns", None) or []):
+        out.append(JoinEdge(
+            r.from_, r.to, str(fc), str(tc), declared=True,
+            cardinality=(r.cardinality or "").upper(),
+            fan_out=(r.fan_out or "").strip().lower(),
+        ))
+    return out
+
+
+def _declared_edges_between(model: "SemanticModel | None", from_: str, to: str) -> list[JoinEdge]:
+    """声明图里恰好连接 (from_, to) 这一对表的关系的边(方向无关,大小写不敏感)。"""
+    if model is None:
+        return []
+    want = {from_.lower(), to.lower()}
+    out: list[JoinEdge] = []
+    for r in model.relationships:
+        if {str(r.from_).lower(), str(r.to).lower()} != want:
+            continue
+        out.extend(_relationship_edges(r))
+    return out
+
+
+def _declared_rels_between(model: "SemanticModel | None", a: str, b: str) -> list[Any]:
+    """声明图里连接 (a, b) 这一对表的**关系**列表(判「一对多关系」用)。"""
+    if model is None:
+        return []
+    want = {a.lower(), b.lower()}
+    return [
+        r for r in model.relationships
+        if {str(r.from_).lower(), str(r.to).lower()} == want
+        and r.from_columns and r.to_columns
+    ]
+
+
+def _edge_text(edge: JoinEdge) -> str:
+    """JoinEdge → 可回喂 ``_explicit_join_edges`` 的 ON 文本。"""
+    return f"{edge.from_}.{edge.from_column} = {edge.to}.{edge.to_column}"
+
+
+def _edge_pair_key(edge: JoinEdge) -> frozenset[str]:
+    """边 → 无序列对键(小写 ``表.列``),方向/大小写无关的查重口径。"""
+    return frozenset({
+        f"{str(edge.from_).lower()}.{str(edge.from_column).lower()}",
+        f"{str(edge.to).lower()}.{str(edge.to_column).lower()}",
+    })
+
+
+def _join_pair_keys(joins_value: Any) -> set[frozenset[str]]:
+    """joins 文本 → 子句级无序列对键集合(不可解析/非列对列的子句跳过)。
+
+    与 ``_explicit_join_edges`` 同一解析口径(逐子句恰一条 EQ、两侧须为
+    限定列),但**不**要求命中声明关系、失败也不作废 —— 它只服务于「这条边
+    是不是已经写过了」的查重,不承担权威性判定。
+    """
+    clauses = _join_clauses(joins_value)
+    if not clauses:
+        return set()
+    keys: set[frozenset[str]] = set()
+    for clause in clauses:
+        try:
+            tree = parse_one(clause)
+        except Exception:
+            continue
+        eqs = list(tree.find_all(exp.EQ))
+        if len(eqs) != 1:
+            continue
+        left, right = eqs[0].left, eqs[0].right
+        if not (isinstance(left, exp.Column) and isinstance(right, exp.Column)):
+            continue
+        lt = (left.table or "").strip().lower()
+        rt = (right.table or "").strip().lower()
+        if not (lt and rt):
+            continue
+        keys.add(frozenset({
+            f"{lt}.{(left.name or '').strip().lower()}",
+            f"{rt}.{(right.name or '').strip().lower()}",
+        }))
+    return keys
+
+
+def _declared_links(model: "SemanticModel | None") -> dict[str, list[tuple[str, list[JoinEdge]]]]:
+    """声明关系图(无向)邻接表:表 → [(对端表, 连接边列表)]。"""
+    links: dict[str, list[tuple[str, list[JoinEdge]]]] = {}
+    if model is None:
+        return links
+    for r in model.relationships:
+        edges = _relationship_edges(r)
+        if not edges:
+            continue
+        links.setdefault(str(r.from_), []).append((str(r.to), edges))
+        links.setdefault(str(r.to), []).append((str(r.from_), edges))
+    return links
+
+
+def _declared_paths(
+    links: dict[str, list[tuple[str, list[JoinEdge]]]],
+    start: str,
+    goal: str,
+    allow_intermediate: Any,
+) -> list[list[JoinEdge]]:
+    """start→goal 的简单路径(**最多收集 2 条**,>1 即视为不唯一)。
+
+    中间点(A3a 表对修复的路由桥)须过 ``allow_intermediate``;端点不设限 ——
+    纯维度叶(如 district)可以作路径终点,但不能被穿行。多条平行关系
+    (同表对多关系)各自成路 → 自然计成 >1 → 调用方判「不唯一」。
+    """
+    out: list[list[JoinEdge]] = []
+
+    def dfs(node: str, visited: set[str], acc: list[JoinEdge]) -> None:
+        if len(out) >= 2:
+            return
+        if node == goal and acc:
+            out.append(list(acc))
+            return
+        for nxt, edges in links.get(node, ()):
+            if nxt in visited:
+                continue
+            if nxt != goal and not allow_intermediate(nxt):
+                continue
+            dfs(nxt, visited | {nxt}, acc + edges)
+
+    dfs(start, {start}, [])
+    return out
+
+
 def _explicit_join_edges(
     joins_value: Any, model: SemanticModel | None,
 ) -> tuple[list["JoinEdge"] | None, bool]:
@@ -433,15 +609,8 @@ def _explicit_join_edges(
     """
     if model is None:
         return None, False
-    if isinstance(joins_value, str):
-        parts = [joins_value]
-    elif isinstance(joins_value, list):
-        parts = [str(x) for x in joins_value]
-    else:
-        return None, False
-    text = " AND ".join(p for p in parts if str(p).strip())
-    stripped = text.strip().lower()
-    if stripped in _PLACEHOLDER_JOINS:
+    clauses = _join_clauses(joins_value)
+    if clauses is None:
         return None, False
 
     from sqlglot import exp, parse_one
@@ -450,10 +619,6 @@ def _explicit_join_edges(
     # 整体 parse 会被逗号卡死,逐子句解析后收集 EQ。分号同理必须切(query_sketch
     # 实测会用 ``;`` 分隔,整串进 parse_one 会得到一个 Block 含两条 EQ,撞上下面
     # 的「每子句恰一条 EQ」判定 → 已声明路径被误判为不可解析)。
-    clauses = [
-        c for c in re.split(r"\s*,\s*|\s*;\s*|\s+and\s+", text, flags=re.I)
-        if c.strip()
-    ]
     parsed = []
     for clause in clauses:
         try:
@@ -539,6 +704,87 @@ def _anchor_candidates(anchor: str, join_tables: list[str], edges: list[JoinEdge
         if cand in edge_tables and cand not in out:
             out.append(cand)
     return out
+
+
+def _edge_key(edge: JoinEdge) -> tuple:
+    """边的无序规范键(同一条边的不同声明方向/重复声明只算一次)。"""
+    return tuple(sorted([
+        (edge.from_.lower(), str(edge.from_column).lower()),
+        (edge.to.lower(), str(edge.to_column).lower()),
+    ]))
+
+
+def _unique_edges(edges: list[JoinEdge]) -> list[JoinEdge]:
+    out: list[JoinEdge] = []
+    seen: set[tuple] = set()
+    for e in edges:
+        k = _edge_key(e)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(e)
+    return out
+
+
+def _cond_keys_of(
+    text: str,
+) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
+    """谓词文本 → 归一化条件键集合(叶子逐条、字面量小写)。
+
+    与 ``_skeleton_where`` 同口径(共用 ``_conds_of``):``A AND B`` 拆成两条叶子
+    键、``or`` 整体成一条键 —— A3b 的"条件所有权"对账正是拿它比对计划条件与
+    聚合候选内部谓词,口径分叉会让同一谓词在两侧不等。
+    """
+    return {
+        (frozenset(cols), op, tuple(str(v).lower() for v in vals))
+        for cols, op, vals in _predicate_conds(text)
+    }
+
+
+def _norm_expr_text(text: Any) -> str:
+    """表达式文本归一:小写 + 空白折叠(仅用于"同一表达式"的对账,不改写)。"""
+    return " ".join(str(text or "").lower().split())
+
+
+def _literal_items(value: Any) -> list[Any]:
+    """条件值 → 字面量列表(``in`` 的 list/tuple/paren 串;标量 → 单元素)。"""
+    if isinstance(value, (list, tuple)):
+        return [v for v in value if str(v).strip()]
+    if isinstance(value, str):
+        s = value.strip()
+        if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+            return [p.strip() for p in s[1:-1].split(",") if p.strip()]
+        return [s] if s else []
+    return [value]
+
+
+#: 值路由(A4b)不认数字字面量:枚举码表里也可能出现纯数字键(如 A7 的
+#: '0'..'20'),把数值过滤按字面量路由到别的列是误伤,不是值词表查询。
+_NUMERIC_LITERAL_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def _index_value(
+    idx: dict[str, list[tuple[str, str]]], raw: Any, ds_name: str, field_name: str,
+) -> None:
+    """值索引追加一条(键:去引号小写;同 (dataset, field) 去重)。
+
+    纯数字串值**不入索引**(收口在构建期,覆盖所有 KB):文本列里存数字串
+    是常见的存储习惯(实测 financial 的 ``district.A5``/``A6`` 是县/市数量
+    的文本形式,'0'..'101'),它既不具名、又与 id 类取值天然二义 ——
+    ``district.district_id = '5'`` 若被路由到"county 数 = 5"就是静默错数。
+    值路由只对**具名**值(textual)成立。
+    """
+    key = str(raw or "").strip().strip("'\"").lower()
+    if not key or _NUMERIC_LITERAL_RE.match(key):
+        return
+    entry = (ds_name, field_name)
+    bucket = idx.setdefault(key, [])
+    if entry not in bucket:
+        bucket.append(entry)
+
+#: having 折叠(A1d)允许的聚合函数:维度表上按实体的 AVG/MIN/MAX 即列值本身,
+#: 可折成行级 WHERE;SUM/COUNT 是**跨行聚集**,折叠语义不同,一律不折。
+_HAVING_FOLD_FUNCS = frozenset({"avg", "min", "max"})
 
 
 # ── Constrained-selection SQL compilation ────────────────────
@@ -1101,8 +1347,26 @@ def _agg_signature(expr_text: str) -> _AggSig | None:
     return tuple(e for e in (_agg_entry(f) for f in funcs) if e is not None)
 
 
-def _sig_compatible(a: _AggSig, b: _AggSig) -> bool:
-    """逐聚合函数比对:个数、函数名、DISTINCT、条件集、列集全等(一侧空集即通配)。
+def _pk_distinct_tolerated(
+    a_cols: frozenset[str], b_cols: frozenset[str], pk_of: Any,
+) -> bool:
+    """``COUNT(col)`` 与 ``COUNT(DISTINCT col)`` 是否同一度量:仅当被计对象是
+    **声明主键**且列集全等(逐列判定;``pk_of`` 缺席即不宽容)。
+
+    主键上的行计数与去重行计数数学等价(键唯一)——这正是 0470 型
+    「声明 COUNT(pk)、计划写 COUNT(DISTINCT pk)」的对账依据。非主键列上的
+    DISTINCT 是**另一个度量**(数不同取值),严格不等:那是既有防线
+    (``test_distinct_count_not_matched_by_plain_count`` 的原意图),不在此放宽。
+    """
+    if pk_of is None or not a_cols or not b_cols:
+        return False
+    if a_cols != b_cols:
+        return False
+    return all(pk_of(c) for c in a_cols)
+
+
+def _sig_compatible(a: _AggSig, b: _AggSig, pk_of: Any = None) -> bool:
+    """逐聚合函数比对:个数、函数名、条件集、列集全等(一侧空集即通配)。
 
     列集用**相等**而非相交:``SUM(a + b)`` 与 ``SUM(a)`` 相交但不等,是不同
     度量。``COUNT(*)`` 的空列集是唯一有意的放宽——行数度量与 ``COUNT(col)``
@@ -1111,13 +1375,19 @@ def _sig_compatible(a: _AggSig, b: _AggSig) -> bool:
     条件集用**全等**:``SUM(x)`` 与 ``SUM(x) FILTER (WHERE c)`` 是两个度量,
     互不相认;条件文本已归一(空白/大小写),但表限定与字面量值保留
     (``status='A'`` ≠ ``status='B'``——这正是占比题按枚举值区分度量的依据)。
+
+    ``pk_of``(列引用 → 是否声明主键)给出第二处放宽:func/conds/cols 全等、
+    仅 DISTINCT 不同、且列集全为主键时视为同一度量(见
+    :func:`_pk_distinct_tolerated`)。缺省 ``None`` = 不宽容(旧行为)。
     """
     if len(a) != len(b):
         return False
     for (a_name, a_cols, a_dist, a_cond), (b_name, b_cols, b_dist, b_cond) in zip(a, b):
-        if a_name != b_name or a_dist != b_dist:
+        if a_name != b_name:
             return False
         if a_cond != b_cond:
+            return False
+        if a_dist != b_dist and not _pk_distinct_tolerated(a_cols, b_cols, pk_of):
             return False
         if not a_cols or not b_cols:
             continue  # COUNT(*) 通配
@@ -1270,6 +1540,425 @@ class SemanticCompiler:
                 return m
         return None
 
+    # ── 主键判定(A1.2 签名 PK 容忍 / A1.1 扇出提升共用)──────────
+    #
+    # 主键声明在数据集上是**字段名**(primary_key=["district_id"]),而列引用
+    # 可能写字段名、也可能写 expression(物理列)。判定按「名字 ↔ 名字、
+    # expression ↔ 主键名」两条都认,与 rls.physical_table 的口径一致
+    # (声明层用名字,物理层用 expression)。
+
+    @staticmethod
+    def _pk_matches(ds: SemanticDataset, col: str) -> bool:
+        pks = {str(k).strip().lower() for k in (ds.primary_key or [])}
+        if not pks:
+            return False
+        col = str(col).strip().lower()
+        if not col:
+            return False
+        if col in pks:
+            return True
+        for f in ds.fields:
+            name = str(f.name).strip().lower()
+            expr = str(f.expression).strip().lower()
+            if name in pks and col == expr:
+                return True
+            if expr in pks and col == name:
+                return True
+        return False
+
+    def _is_pk_ref(self, ref: str) -> bool:
+        """列引用(``table.col`` / 裸列)→ 是否落在**声明主键**上。
+
+        带表限定时直接查该数据集;裸列在多数据集同名时要求唯一命中
+        (歧义 → False:判不了主键就不放宽)。
+        """
+        ref = str(ref or "").strip().lower()
+        if not ref:
+            return False
+        if "." in ref:
+            tbl, col = ref.split(".", 1)
+            ds = self._datasets.get(tbl)
+            return ds is not None and self._pk_matches(ds, col)
+        hits = [ds for ds in self._datasets.values() if self._pk_matches(ds, ref)]
+        return len(hits) == 1
+
+    def _metric_by_expression(self, ref: str) -> SemanticMetric | None:
+        """表达式形态的度量引用(``avg(district.A11)``)→ **唯一**命中度量。
+
+        answer_columns/aggregation 早已支持「按表达式形状对账度量」,having 与
+        analysis.metric 的引用此前只认名字(``_metric_by_name``),同一份计划里
+        表达式引用在 having 上就静默丢弃 —— 这里是那条缺口的补齐。多命中
+        (表达式对得上多个度量)不猜 → None(调用方维持各自的既有行为)。
+        """
+        if not str(ref or "").strip() or "(" not in str(ref):
+            return None
+        hits = [
+            m for m in self._model.metrics
+            if self._matches_metric_expression(ref, m)
+        ]
+        return hits[0] if len(hits) == 1 else None
+
+    def _matches_metric_expression(self, ref: str, m: SemanticMetric) -> bool:
+        """引用对账单个度量:名字精确 → True;签名兼容(含 PK 容忍)→ True;
+        条件占比形态相同 → True。"""
+        if m.name.strip().lower() == str(ref).strip().lower():
+            return True
+        sig = _agg_signature(ref)
+        if sig is not None:
+            msig = _agg_signature(m.expression)
+            if msig is not None and _sig_compatible(sig, msig, self._is_pk_ref):
+                return True
+        share = _share_shape(ref)
+        if share is not None and _share_shape(m.expression) == share:
+            return True
+        return False
+
+    # ── 值路由(A4b):字面量落到"真正持有该值"的字段 ─────────────
+    #
+    # query_sketch 偶尔把值写在**结构上正确、语义上错位**的列上:0476 的
+    # ``client.district_id = 'Sokolov'`` —— 区名是 district 表的值,却被放到了
+    # client 的外键列。字段解析会成功(列确实声明过),条件于是被权威化进
+    # 骨架 WHERE,生成侧再想纠正也要撞骨架保真校验。这里在编译**最前端**
+    # 做一次模型级值索引对账:字面量唯一命中别处的值词表 → 重锚该字段。
+    #
+    # 值来源三处:字段 ``values``(Lane B 回填的实际取值,``getattr`` 防御
+    # 读取——接口预冻结 Ⅰ,车道可独立落地)、``enum_display`` 的键与值(码值
+    # 与人类可读词)、``value_aliases``(码值与全部别名)。只做 ``=``/``in``:
+    # 其余算子(|>|<|like)的值语义是区间/模式,不是词表命中。
+
+    @staticmethod
+    def _has_value_vocabulary(f: Any) -> bool:
+        """字段是否自带值词表(values / enum_display / value_aliases)。"""
+        return bool(
+            getattr(f, "values", None)
+            or getattr(f, "enum_display", None)
+            or getattr(f, "value_aliases", None)
+        )
+
+    def _value_index(self) -> dict[str, list[tuple[str, str]]]:
+        """值 → [(dataset, field)] 索引(小写、去引号;一个值可命中多字段)。"""
+        idx: dict[str, list[tuple[str, str]]] = {}
+        for ds in self._model.datasets:
+            for f in ds.fields:
+                for raw in (getattr(f, "values", ()) or ()):
+                    _index_value(idx, raw, ds.name, f.name)
+                for k, v in (f.enum_display or {}).items():
+                    _index_value(idx, k, ds.name, f.name)
+                    _index_value(idx, v, ds.name, f.name)
+                for k, aliases in (f.value_aliases or {}).items():
+                    _index_value(idx, k, ds.name, f.name)
+                    for a in (aliases or ()):
+                        _index_value(idx, a, ds.name, f.name)
+        return idx
+
+    def _reroute_condition_values(
+        self, plan: dict[str, Any], matched_set: set[str],
+    ) -> dict[str, Any]:
+        """条件字面量按值索引重锚字段;仅在可安全重锚时改写(浅拷贝)。"""
+        conditions = plan.get("conditions") or []
+        if not conditions:
+            return plan
+        # 只在**显式 joins 通道**上重锚:重锚会把源→目标的声明边追加进
+        # joins,而 joins 缺席时这等于把计划从 BFS 通道拽进显式通道 ——
+        # BFS 对同一对表的选边不可审计(0476 会经 account 绕到 district,
+        # 语义错的居住区)。无显式路径 = 保持今日行为。
+        if _join_clauses(plan.get("joins")) is None:
+            return plan
+        index = self._value_index()
+        if not index:
+            return plan
+        new_conditions: list[Any] = []
+        extra_joins: list[str] = []
+        # 已存在的连接子句:重锚要追加的边若**已在 plan.joins 里**,追加就是
+        # 重复边 —— 显式路径的左深树判定会因此判「不连通」而硬 MISS,比不重锚
+        # 还糟。按(无序)列对查重,方向/格式/分隔符无关。
+        existing_keys = _join_pair_keys(plan.get("joins"))
+        appended_keys: set[frozenset[str]] = set()
+        changed = False
+        for cond in conditions:
+            rerouted = self._reroute_one(cond, matched_set, index)
+            if rerouted is None:
+                new_conditions.append(cond)
+                continue
+            new_cond, rel_edges = rerouted
+            new_conditions.append(new_cond)
+            for e in (rel_edges or []):
+                key = _edge_pair_key(e)
+                if key in existing_keys or key in appended_keys:
+                    continue
+                appended_keys.add(key)
+                extra_joins.append(_edge_text(e))
+            changed = True
+        if not changed:
+            return plan
+        out = dict(plan)
+        out["conditions"] = new_conditions
+        if extra_joins:
+            # 重锚把条件搬到了另一张表上 → 该表必须进联路径(否则
+            # unreachable_table 硬 MISS 取代今日的可编译结果)。
+            base = str(plan.get("joins") or "").strip()
+            extra = " AND ".join(extra_joins)
+            out["joins"] = f"{base} AND {extra}" if base else extra
+        return out
+
+    def _reroute_one(
+        self, cond: Any, matched_set: set[str],
+        index: dict[str, list[tuple[str, str]]],
+    ) -> tuple[dict[str, Any], list[JoinEdge] | None] | None:
+        """单条条件 → (重锚后的条件, 需追加的连边);不重锚 → None。
+
+        重锚的四道闸(任一不满足即不动,保持今日行为):
+          ① 算子 ∈ {=, in},值是纯字面量(算式型值早已在别处软 MISS);
+          ② 源字段解析成功且**自身没有值词表** —— 有词表时值归它,索引无权改判;
+          ③ 每个字面量唯一命中同 (dataset, field),且全体命中同一目标;
+          ④ 跨表时源→目标恰有**一条**声明关系(0 条无路可走,>1 条是二义)。
+        """
+        if not isinstance(cond, dict):
+            return None
+        op = str(cond.get("op") or "=").strip().lower()
+        if op not in ("=", "==", "in"):
+            return None
+        value = cond.get("value")
+        if value is None or _looks_like_expression_value(value):
+            return None
+        field_ref = str(cond.get("field") or "").strip()
+        resolved = self._resolve_field(field_ref, matched_set)
+        if resolved is None:
+            return None
+        src_ds, src_field = resolved
+        if self._has_value_vocabulary(src_field):
+            return None
+        literals = _literal_items(value)
+        if not literals:
+            return None
+        targets: list[tuple[str, str]] = []
+        for lit in literals:
+            key = str(lit).strip().strip("'\"").lower()
+            if not key or _NUMERIC_LITERAL_RE.match(key):
+                return None
+            hits = index.get(key) or []
+            if len(hits) != 1:
+                return None
+            if hits[0] not in targets:
+                targets.append(hits[0])
+        if len(targets) != 1:
+            return None
+        tgt_ds, tgt_name = targets[0]
+        if tgt_ds.lower() == src_ds.lower() and str(tgt_name).lower() == str(src_field.name).lower():
+            return None
+        tgt_field = self._fields.get((tgt_ds, tgt_name))
+        if tgt_field is None:
+            return None
+        rel_edges: list[JoinEdge] | None = None
+        if tgt_ds.lower() != src_ds.lower():
+            rels = _declared_rels_between(self._model, src_ds, tgt_ds)
+            if len(rels) != 1:
+                return None
+            rel_edges = _relationship_edges(rels[0])
+        new_cond = dict(cond)
+        new_cond["field"] = f"{tgt_ds}.{tgt_field.name}"
+        return new_cond, rel_edges
+
+    # ── 条件所有权(A3b):软 MISS 聚合候选自带的内部条件 ─────────
+    #
+    # 占比/条件聚合候选(FILTER/CASE)的谓词是**分子定义的一部分**,不是行级
+    # 过滤。计划里往往同一谓词还有一条孪生 conditions 条目:冻结进骨架
+    # WHERE 后,生成侧按"分子进聚合"重写时与骨架冲突(0476)。
+    # 键口径与 ``_skeleton_where`` 逐字一致(共用 ``_conds_of``)。
+
+    @staticmethod
+    def _soft_agg_cond_keys(
+        miss_candidates: list[str],
+    ) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
+        """软 MISS 聚合候选内部条件 → 归一化条件键集合。
+
+        候选内部的 ``AND`` 复合谓词拆成叶子逐条进集合(``_cond_keys_of``):
+        计划侧同一谓词可能写成一条孪生条件,也可能拆成多条 —— 两侧都按叶子
+        对账,单条与复合两种拼法才互认。
+        """
+        keys: set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]] = set()
+        for cand in miss_candidates:
+            sig = _agg_signature(cand)
+            if sig is None:
+                continue
+            for _fn, _cols, _dist, conds in sig:
+                for cond_text in conds:
+                    keys |= _cond_keys_of(cond_text)
+        return keys
+
+    # ── 扇出提升(A1.1)/ having 折叠(A1d)─────────────────────────
+
+    def _promote_fanout_counts(
+        self, projections: list[str], joins: list[JoinEdge],
+    ) -> list[str]:
+        """1:N 扇出下的行计数提升:``COUNT(<t>.<pk>)`` → ``COUNT(DISTINCT …)``。
+
+        联路径上 ``<t>`` 位于某条 many→one 边的「1」端时,连接把 t 的行按多端
+        重复 —— 声明的 ``COUNT(t.pk)`` 直接内联得到的是**行对数**,不是「t 的
+        行数」(0470:2645 vs 77)。PK 上的 DISTINCT 数学等价于行计数(t.pk
+        唯一),把数拉回声明的度量语义。范围刻意收窄:非 PK 列不改(DISTINCT
+        非键列是另一个度量)、``COUNT(*)`` 不改(无列身份)、M:N 边不参与
+        (dedup 豁免只保证单侧去重,行对数仍非 t 的行数)。
+        """
+        one_end = {e.to.lower() for e in joins if not _is_many_to_many(e.cardinality)}
+        if not one_end:
+            return projections
+        from sqlglot import exp, parse_one
+
+        out: list[str] = []
+        for text in projections:
+            try:
+                tree = parse_one(text)
+            except Exception:
+                out.append(text)
+                continue
+            changed = False
+            for count in list(tree.find_all(exp.Count)):
+                if count.find(exp.Distinct) is not None:
+                    continue
+                col = count.this
+                if not isinstance(col, exp.Column) or not col.table or not col.name:
+                    continue
+                if str(col.table).lower() not in one_end:
+                    continue
+                if not self._is_pk_ref(f"{col.table}.{col.name}"):
+                    continue
+                count.set("this", exp.Distinct(expressions=[col.copy()]))
+                changed = True
+            out.append(tree.sql(dialect=self._dialect) if changed else text)
+        return out
+
+    @staticmethod
+    def _single_agg_column(
+        expr_text: str, funcs: frozenset[str],
+    ) -> tuple[str, str] | None:
+        """表达式 = 恰一个 ``funcs`` 聚合,且被测对象是单个带表限定的列 → (表, 列)。"""
+        from sqlglot import exp, parse_one
+
+        try:
+            tree = parse_one(expr_text)
+        except Exception:
+            return None
+        aggs = list(tree.find_all(exp.AggFunc))
+        if len(aggs) != 1:
+            return None
+        agg = aggs[0]
+        if str(agg.key).lower() not in funcs:
+            return None
+        operand = agg.this
+        if not isinstance(operand, exp.Column) or not operand.table or not operand.name:
+            return None
+        return (str(operand.table), str(operand.name))
+
+    def _is_advisory_plan(self, agg_declared: bool, is_agg: bool) -> bool:
+        """骨架降级判定(A3c):计划级退化 → WHERE 只作参考,不做保真硬校验。
+
+        触发面刻意收窄为两类**计划级**缺口:声明了聚合意图却没命中任何度量
+        (agg_declared ∧ ¬is_agg:aggregation 自由文本没对账上),或分析组件
+        未解析(analysis_*:窗口包装的结构目标缺失)。外围缺口(值词表/单条
+        条件的字段/时间分桶)不触发 —— 那些情况下 WHERE 里已解析出的部分
+        仍是可信的权威骨架,降级是白放水。
+        """
+        if agg_declared and not is_agg:
+            return True
+        return any(
+            str(g.get("reason") or "").startswith("analysis_")
+            for g in self._soft_misses
+        )
+
+    def _repair_explicit_joins(
+        self, joins_value: Any, needed: set[str],
+    ) -> list[JoinEdge] | None:
+        """显式 joins 列级校验失败的**表对修复**(A5a)。
+
+        计划写错了列名(0477:``client.client_id = account.account_id``),但
+        表对表达了真实的关系骨架:把每一对表还原成声明图上的**唯一**路径
+        (client—disp—account),再交回既有显式 join 通道(基数守卫/左深树
+        判定照旧,不豁免)。任何一对表无路径或多路径 → None(维持今日硬 MISS,
+        不猜)。
+        """
+        if self._model is None:
+            return None
+        pairs = _table_pairs_from_joins(joins_value)
+        if pairs is None:
+            return None
+        canon = {d.name.lower(): d.name for d in self._model.datasets}
+        edges: list[JoinEdge] = []
+        for a, b in pairs:
+            a_c, b_c = canon.get(a), canon.get(b)
+            if a_c is None or b_c is None or a == b:
+                return None
+            rels_ab = _declared_rels_between(self._model, a_c, b_c)
+            if len(rels_ab) > 1:
+                return None  # 同表对多关系 → 路径本身二义,不猜
+            if len(rels_ab) == 1:
+                edges.extend(_relationship_edges(rels_ab[0]))
+                continue
+            links = _declared_links(self._model)
+            paths = _declared_paths(links, a_c, b_c, self._route_capable_pred())
+            if len(paths) != 1:
+                return None
+            edges.extend(paths[0])
+        edges = _unique_edges(edges)
+        if not edges:
+            return None
+        return self._extend_to_needed(edges, needed)
+
+    def _route_capable_pred(self):
+        """中间点判定:可作路由桥的表(关系端点 ∪ M:N 关系端点)。"""
+        rels = list(self._model.relationships)
+        capable = {str(r.from_) for r in rels}
+        capable |= {str(r.to) for r in rels if _is_many_to_many(r.cardinality)}
+        return lambda t: t in capable
+
+    def _extend_to_needed(
+        self, edges: list[JoinEdge], needed: set[str],
+    ) -> list[JoinEdge] | None:
+        """修复出的边集必须覆盖 needed:未覆盖的表按声明**唯一**路径接入。
+
+        接不上(无路径/多路径) → None(调用方维持硬 MISS)。
+        """
+        if not needed:
+            return edges
+        canon = {d.name.lower(): d.name for d in self._model.datasets}
+        keep = self._route_capable_pred()
+        links = _declared_links(self._model)
+        out = list(edges)
+
+        def _covered() -> set[str]:
+            return {e.from_.lower() for e in out} | {e.to.lower() for e in out}
+
+        missing = [t for t in sorted(needed) if str(t).lower() not in _covered()]
+        for t in missing:
+            t_c = canon.get(str(t).lower())
+            if t_c is None:
+                return None
+            # 收集该表接进现有树的全部声明路径(经任意已覆盖表)。路径条数本身
+            # 不判二义 —— 同一张表经不同锚点接入时,长路径往往只是同一份边的
+            # 延伸(district→account 与 district→account→loan,后者多绕一条)。
+            # 判据落在**最短路径是否唯一**:最短长度上有两条不同路径 = 真有
+            # 两条可选接边(如菱形里 district 同时挂 client 与 account)→ None。
+            candidates: list[list[JoinEdge]] = []
+            seen: set[tuple] = set()
+            for c in sorted(_covered()):
+                c_c = canon.get(c)
+                if c_c is None:
+                    continue
+                for path in _declared_paths(links, t_c, c_c, keep):
+                    key = tuple(sorted(_edge_key(e) for e in path))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(path)
+            if not candidates:
+                return None
+            best_len = min(len(p) for p in candidates)
+            best = [p for p in candidates if len(p) == best_len]
+            if len(best) != 1:
+                return None
+            out.extend(best[0])
+        return out
+
     @staticmethod
     def _agg_candidates(plan: dict[str, Any]) -> list[str]:
         """聚合候选(按 plan 顺序):aggregation 字段 + 每个含 "(" 的 answer 列。"""
@@ -1289,6 +1978,9 @@ class SemanticCompiler:
         第三档(占比)是**结构等价**匹配:plan 的自由拼法(FILTER/CASE、
         ``*100`` 的位置、NULLIF 守卫)归一后对账到声明的占比度量——
         声明的表达式始终是权威,plan 只提供"要的是哪个占比"。
+
+        签名对账带 PK 容忍(pk_of):``COUNT(pk)`` ≡ ``COUNT(DISTINCT pk)``
+        (主键唯一 → 行计数等价);非 PK 列的 DISTINCT 仍严格不等。
         """
         m = self._metric_by_name(cand)
         if m is not None:
@@ -1300,7 +1992,7 @@ class SemanticCompiler:
             msig = _agg_signature(m.expression)
             if msig is None:
                 continue
-            if _sig_compatible(sig, msig):
+            if _sig_compatible(sig, msig, self._is_pk_ref):
                 return m
         share = _share_shape(cand)
         if share is not None:
@@ -1588,10 +2280,20 @@ class SemanticCompiler:
         matched_pairs, miss_candidates = self._match_metrics(plan)
         # 裸列歧义消歧锚:命中度量的表达式限定列 → 同名列跨数据集时锚定。
         self._set_field_anchor(matched_pairs)
+        # A4b 值路由:条件字面量落在**没有值词表**的列上、而该值唯一命中
+        # 别处字段的词表时,把条件重锚到真正持有该值的字段(0476:
+        # client.district_id = 'Sokolov' → district.A2),并把源→目标的声明
+        # 连边追加进 joins(否则重锚后的表不在联路径上 → unreachable_table)。
+        # 返回浅拷贝,绝不改调用方的 plan dict。
+        plan = self._reroute_condition_values(plan, matched_set)
         for cand in miss_candidates:
             # 聚合候选有签名但无兼容度量 → 软 MISS(跳过该候选继续编译,
             # 已命中的度量照常进骨架;全都没命中 → nothing_compilable 兜底)。
             self._record_soft("no_metric_match", cand)
+        # A3b 条件所有权:软 MISS 聚合候选内部的谓词(FILTER/CASE 的分子
+        # 条件)不进骨架 WHERE —— 它们属于聚合定义,计划里的孪生行级条件
+        # 冻结进骨架后与生成侧的分子重写冲突(骨架保真校验打回正确 SQL)。
+        soft_agg_keys = self._soft_agg_cond_keys(miss_candidates)
         is_agg = bool(matched_pairs)
         if agg_declared and not is_agg:
             self._record_soft("no_metric_match", str(plan.get("aggregation") or ""))
@@ -1772,12 +2474,25 @@ class SemanticCompiler:
                     self._record_soft("enum_value_unresolved", field_ref)
                     continue
                 value = normalized
+            if soft_agg_keys:
+                # A3b:该条件与未解析聚合候选的**内部谓词**逐叶对账 → 归聚合
+                # 所有,留在 plan 文本交生成侧,不进骨架 WHERE(口径见
+                # _soft_agg_cond_keys;键比对只用于"所有权"判定,放宽安全)。
+                if _cond_keys_of(
+                    f"{_qualified(resolved[0], resolved[1].expression)} "
+                    f"{op} {_literal(value)}"
+                ) & soft_agg_keys:
+                    continue
             filters.append((resolved[0], resolved[1], op, value))
 
         # 聚合后过滤:having[].metric → HAVING(内联度量表达式);
         # having[].field → 折进 WHERE(行级)。field/metric 必须恰好一个,
         # op/value 与 conditions 同规。
         having_parts: list[str] = []
+        # A1d 折叠候选:维度侧单列 AVG/MIN/MAX 的度量级 having —— 是否折成
+        # 行级 WHERE 要等联路径解析后才判(需要知道该表在不在「1」端),先按
+        # (表, 列, 表达式, 算子, 值) 收集。
+        having_folds: list[tuple[str, str, str, str, Any]] = []
         for h in plan.get("having") or []:
             if not isinstance(h, dict):
                 self._record_soft("having_metric_unknown", str(h))
@@ -1800,14 +2515,23 @@ class SemanticCompiler:
                 self._record_soft("expression_filter_value", field_ref or metric_ref)
                 continue
             if metric_ref:
-                metric = self._metric_by_name(metric_ref)
+                # 名字精确匹配 → 表达式形态唯一对账(0470 型:计划用
+                # ``avg(district.A11)`` 而非度量名引用,旧路径静默丢弃该过滤)。
+                metric = (
+                    self._metric_by_name(metric_ref)
+                    or self._metric_by_expression(metric_ref)
+                )
                 if metric is None:
                     self._record_soft("having_metric_unknown", metric_ref)
                     continue
                 expr = self._inline_metric(metric)
                 if isinstance(expr, CompileMiss):
                     return expr  # 派生度量结构坏 → 硬 MISS(度量定义问题)
-                having_parts.append(f"{expr} {op.upper()} {_literal(value)}")
+                fold = self._single_agg_column(metric.expression, _HAVING_FOLD_FUNCS)
+                if fold is not None:
+                    having_folds.append((fold[0], fold[1], expr, op, value))
+                else:
+                    having_parts.append(f"{expr} {op.upper()} {_literal(value)}")
                 continue
             resolved_h = self._resolve_field(field_ref, matched_set)
             if resolved_h is None:
@@ -1883,6 +2607,11 @@ class SemanticCompiler:
         resolver = JoinResolver(self._model)
         if joins_present:
             if explicit is None:
+                # A5a 表对修复:列名写错(0477)但表对可解析成声明图上的
+                # 唯一路径 → 按修复出的路径走同一套显式 channel;修不出来
+                # (无路径/多路径/不完整) → 维持今日硬 MISS。
+                explicit = self._repair_explicit_joins(plan.get("joins"), needed)
+            if explicit is None:
                 return CompileMiss(
                     "ambiguous_join_path", "explicit joins reference undeclared edges")
             tree = None
@@ -1917,6 +2646,13 @@ class SemanticCompiler:
                 return CompileMiss("ambiguous_join_path", ", ".join(matched))
             joins = resolution.tree_edges if (not resolution.empty and resolution.tree_edges) else []
 
+        # A1.1 扇出提升:1:N 联路径把「1」端的行按多端重复,声明的
+        # COUNT(t.pk) 直接内联会得到行对数(0470:2645 vs 77)→ PK 上补
+        # DISTINCT 拉回声明的行计数语义。proj_ref 索引不变(dim/metric 引用
+        # 保持等长),分析包装/脊柱照常。
+        projections = self._promote_fanout_counts(projections, joins)
+        one_end = {e.to.lower() for e in joins if not _is_many_to_many(e.cardinality)}
+
         where_parts = [
             f"{_qualified(tbl, f.expression)} {op.upper()} {_literal(value)}"
             for tbl, f, op, value in filters
@@ -1937,6 +2673,19 @@ class SemanticCompiler:
             if pred:
                 where_parts.append(pred)
 
+        # A1d 维度侧 having 折叠:无 GROUP BY(单组聚合)且列所在表在联路径
+        # 「1」端时,AVG/MIN/MAX 作用在维度实体行上 = 列值本身 —— HAVING 的
+        # 加权聚合在单组查询里只能给整条结果开闸(恒真/恒假),行级 WHERE 才是
+        # 实体级过滤(0470:HAVING AVG(district.A11) → WHERE district.A11)。
+        # 其余形态一律保持 HAVING:有 GROUP BY(分组后每组的 AVG ≠ 行值)、
+        # 事实侧列(多端重复的值,行级过滤语义不同)、SUM/COUNT(跨行聚集)。
+        for tbl, col, expr, h_op, h_value in having_folds:
+            if not gb_exprs and tbl.lower() in one_end:
+                where_parts.append(
+                    f"{_qualified(tbl, col)} {h_op.upper()} {_literal(h_value)}")
+            else:
+                having_parts.append(f"{expr} {h_op.upper()} {_literal(h_value)}")
+
         # 声明层行级安全(RLS):数据集 row_filter 注入顶层 WHERE。数据集 JOIN
         # 均为内连接(仅时间轴用 LEFT JOIN,作用在派生表上),顶层过滤与联前
         # 过滤等价;放进顶层还让交接契约覆盖它——gen_sql 丢弃该谓词会被
@@ -1946,10 +2695,14 @@ class SemanticCompiler:
             for _t in (edge.from_, edge.to):
                 if _t not in rls_tables:
                     rls_tables.append(_t)
+        row_filters: list[tuple[tuple[tuple[str, str], ...], str, tuple[str, ...]]] = []
         for _t in rls_tables:
             rf = self._row_filter_sql(_t)
             if rf:
                 where_parts.append(rf)
+                # 契约里单列 RLS 谓词(A3c/advisory 下仍**恒查**:声明层授权
+                # 不因计划降级而放水,见 skeleton_preserved)。
+                row_filters.extend(_predicate_conds(rf))
 
         # M:N dedup 豁免:fan_out="dedup" 的 from 侧包 SELECT DISTINCT * 子查询
         # (关联/桥接表),消除行倍增——编译期确定性,不靠规则链事后兜底。
@@ -1976,12 +2729,17 @@ class SemanticCompiler:
             sql += "\nGROUP BY " + ", ".join(gb_exprs)
         if having_parts:
             sql += "\nHAVING " + " AND ".join(having_parts)
-        # 排序(呈现层,宽处理):metric 名 → 内联表达式;字段 → 限定表达式
-        # (时间分桶字段用分桶表达式);不可解析列丢弃而非 MISS——排序不
-        # 产生新拒绝向量,gen_sql 仍会收到 plan 文本里的 ordering 线索。
+        # 排序(呈现层,宽处理):metric 名 → 内联表达式;answer_columns 的
+        # 聚合候选(已对账度量,按表达式归一文本对账)→ 内联表达式;字段 →
+        # 限定表达式(时间分桶字段用分桶表达式);不可解析列丢弃而非 MISS——
+        # 排序不产生新拒绝向量,gen_sql 仍会收到 plan 文本里的 ordering 线索。
+        agg_by_norm = {_norm_expr_text(c): m for c, m in by_candidate.items()}
         order_parts: list[str] = []
         for column, direction in (parse_ordering(plan.get("ordering")) or []):
-            metric_o = self._metric_by_name(column)
+            metric_o = (
+                self._metric_by_name(column)
+                or agg_by_norm.get(_norm_expr_text(column))
+            )
             if metric_o is not None:
                 expr_o = self._inline_metric(metric_o)
                 if isinstance(expr_o, CompileMiss):
@@ -2052,16 +2810,22 @@ class SemanticCompiler:
         if self._soft_misses:
             # 软 MISS 已收集但仍有可编译成分 → 骨架(PartialCompile):
             # 可解析部分权威化,未解析组件留给生成通道,不再整体拒绝。
+            # A3c:Aggr 意图未落地 / analysis 未解析这两类**计划级**缺口下,
+            # 骨架的 WHERE 只作参考(advisory)——生成侧有权按 plan 文本重写;
+            # 外围缺口不降级(见 _is_advisory_plan)。
             miss_parts = list(self._soft_misses)
             return PartialCompile(
                 sql=sql,
                 contract=_build_contract(
-                    sql, dialect=self._dialect, partial=True, gaps=miss_parts),
+                    sql, dialect=self._dialect, partial=True, gaps=miss_parts,
+                    advisory=self._is_advisory_plan(agg_declared, is_agg),
+                    row_filters=tuple(row_filters)),
                 miss_parts=miss_parts,
             )
         return CompileResult(
             sql=sql,
-            contract=_build_contract(sql, dialect=self._dialect),
+            contract=_build_contract(
+                sql, dialect=self._dialect, row_filters=tuple(row_filters)),
         )
 
     # ── 窗口分析编译(plan.analysis)────────────────────────────
@@ -2115,8 +2879,19 @@ class SemanticCompiler:
         target_metric = str(analysis.get("metric") or "").strip()
         if target_metric:
             m = self._metric_by_name(target_metric)
+            if m is None:
+                # 表达式形态引用(0483/0495 型:计划复述内层聚合表达式而非度量
+                # 名)—— 唯一签名对账命中才认;认不出就照旧 analysis_metric_unknown
+                # (不做"回落到内层度量"的兜底:那会把打错的引用静默洗白)。
+                m = self._metric_by_expression(target_metric)
             if m is None or m.name != proj_ref[m_idx].name:
                 return CompileMiss("analysis_metric_unknown", target_metric)
+        if atype == "share" and len(proj_ref) == 1:
+            # 退化守卫:内层没有任何维度投影时,share 的窗口 SUM OVER () 恒等于
+            # 该行自身 → 恒 1.0(0495:单组 COUNT 包 share)—— 无信息窗口不是
+            # 正确包装。记软 MISS 回退内层聚合,交生成通道按 plan 文本处理。
+            return CompileMiss(
+                "analysis_invalid", "share without dimension projection")
 
         # 窗口排序字段(order_by):时间类分析必需(缺省取内层时间分桶列)。
         order_ref = str(analysis.get("order_by") or "").strip()
@@ -2599,6 +3374,8 @@ def _build_contract(
     dialect: str = "sqlite",
     partial: bool = False,
     gaps: list[dict[str, str]] | None = None,
+    advisory: bool = False,
+    row_filters: tuple[WhereCond, ...] = (),
 ) -> PlanContract:
     """权威 SQL → 契约。结构**此刻**抽取(编译器刚拼出的 SQL 必然可解析)。
 
@@ -2606,8 +3383,16 @@ def _build_contract(
     **编译器自身有缺陷**(拼出的 SQL 解析不了),不该让下游静默降级:这里
     当场告警,契约上的 ``signature is None`` 则是留给校验侧的独立信号
     (``compiled_sql_matches`` 见到它就记录并放行,而不是伪装成"形状相同")。
+
+    ``advisory``/``row_filters`` 是骨架校验的降级声明(接口Ⅲ):
+    advisory 表示"计划本身是退化/未覆盖形态,WHERE 只可参考不可冻结";
+    row_filters 是编译器注入的声明层 RLS 谓词 —— 它的校验**不随 advisory
+    降级**(安全条件没有"参考"一说,丢了就是丢了)。
     """
-    base = PlanContract(skeleton_sql=sql, gaps=tuple(gaps or ()), partial=partial)
+    base = PlanContract(
+        skeleton_sql=sql, gaps=tuple(gaps or ()), partial=partial,
+        advisory=advisory, row_filters=tuple(row_filters),
+    )
     try:
         tree = parse_one(sql, read=dialect or "sqlite")
     except Exception as e:
@@ -2670,25 +3455,59 @@ def _skeleton_join_edges(tree) -> set[frozenset[tuple[str, str]]]:
     return out
 
 
-def _skeleton_where(tree) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
-    """WHERE 条件集合:(列集, 操作符, 字面量值元组)。"""
+def _conds_of(node) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
+    """谓词子树 → 条件集合:(列集, 操作符, 字面量值元组)。
+
+    ``and`` 复合节点**跳过**(A3a):合取的可满足性由叶子逐个隐含,把复合节点
+    也收进来只会产出「列集=叶子并集、算子=and」的伪条件 —— 生成侧重排条件
+    顺序(``A AND B`` → ``B AND A``)就会让两个复合伪条件对不上,骨架保真
+    校验把语义等价的改写误判成「丢了过滤条件」。``or`` 保留:析取是一个整体
+    逻辑条件,叶子不分别成立,必须整块比对。
+    """
     from sqlglot import exp
 
     out: set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]] = set()
-    where = tree.args.get("where")
-    if where is None:
-        return out
-    for node in where.walk():
-        if not isinstance(node, exp.Binary):
+    for n in node.walk():
+        if not isinstance(n, exp.Binary) or isinstance(n, exp.And):
             continue
         cols = frozenset(
             (str(c.table or "").lower(), str(c.name).lower())
-            for c in node.find_all(exp.Column)
+            for c in n.find_all(exp.Column)
         )
         vals = tuple(sorted(
-            str(ln.this) for ln in node.expression.find_all(exp.Literal)))
-        out.add((cols, str(node.key), vals))
+            str(ln.this) for ln in n.expression.find_all(exp.Literal)))
+        out.add((cols, str(n.key), vals))
     return out
+
+
+def _skeleton_where(tree) -> set[tuple[frozenset[tuple[str, str]], str, tuple[str, ...]]]:
+    """WHERE 条件集合:(列集, 操作符, 字面量值元组);``and`` 复合节点跳过。"""
+    where = tree.args.get("where")
+    if where is None:
+        return set()
+    return _conds_of(where)
+
+
+def _predicate_conds(text: str) -> list[tuple[tuple[tuple[str, str], ...], str, tuple[str, ...]]]:
+    """单条谓词文本 → 契约形状的条件元组列表(解析失败 → 空)。
+
+    与 ``_skeleton_where`` 同口径(同一 ``_conds_of``),只是入口是文本而非
+    子树 —— 契约的 ``row_filters`` 从编译器**注入的谓词字符串**直接抽取,
+    而不是解析整条 SQL 后再按表反查(后者会把普通 WHERE 也混进来)。
+    """
+    s = str(text or "").strip()
+    if not s:
+        return []
+    try:
+        tree = parse_one(s)
+    except Exception:
+        return []
+    if tree is None:
+        return []
+    return sorted(
+        (tuple(sorted(cols)), op, vals)
+        for cols, op, vals in _conds_of(tree)
+    )
 
 
 def _skeleton_col_in(skel_col: tuple[str, str], gen_cols) -> bool:
@@ -2711,6 +3530,13 @@ def skeleton_preserved(
     LLM 输出。与 ``compiled_sql_matches`` 的差别:投影列不参与比较(LLM 需
     补未解析组件),join 顺序、分桶表达式方言差异被容忍。
 
+    ``contract.advisory``(A3c):计划本身是退化形态(声明了聚合却没命中任何
+    度量 / 分析组件未解析)时,编译器拼出的 WHERE 只反映"计划文本恰好可解析
+    的部分",把它冻成权威会把生成侧的正确改写打回 —— 语义缺口是计划的问题,
+    不是生成的问题。advisory 下**仅跳过** WHERE 子集检查;join ⊇ 与分组宽度
+    照旧(结构骨架仍权威)。``contract.row_filters``(RLS)不受 advisory 影响:
+    安全谓词是恒校验的硬底线。
+
     返回 ``(False, 原因)`` 的两种情况都是**打回重生成**:
       - 生成 SQL 解析不了(LLM 输出了非 SQL / 方言不符)——它连解析都不行,
         更谈不上保真;
@@ -2718,7 +3544,10 @@ def skeleton_preserved(
     """
     if not contract.skeleton_sql or not generated:
         return True, ""
-    if not contract.join_edges and not contract.where and not contract.group_by_width:
+    if (
+        not contract.join_edges and not contract.where
+        and not contract.group_by_width and not contract.row_filters
+    ):
         # 编译期就没抽出结构(编译器自己拼的 SQL 解析不了,见 _build_contract
         # 的告警):此处的"全保留"是空转。不伪装成通过,显式记录后放行 ——
         # 拒绝会让这种配置下**所有**问题都失败,那是惩罚用户,不是收口。
@@ -2742,13 +3571,24 @@ def skeleton_preserved(
         return False, "generated SQL dropped a skeleton join"
 
     gen_where = _skeleton_where(g)
-    for cols, op, vals in contract.where:
-        if not any(
-            gop == op and gvals == vals
-            and all(_skeleton_col_in(c, gcols) for c in cols)
-            for gcols, gop, gvals in gen_where
-        ):
-            return False, "generated SQL dropped a skeleton filter condition"
+
+    def _missing(conds) -> bool:
+        for cols, op, vals in conds:
+            if not any(
+                gop == op and gvals == vals
+                and all(_skeleton_col_in(c, gcols) for c in cols)
+                for gcols, gop, gvals in gen_where
+            ):
+                return True
+        return False
+
+    if not contract.advisory and _missing(contract.where):
+        return False, "generated SQL dropped a skeleton filter condition"
+
+    # RLS 谓词恒校验:advisory 只对"计划文本恰好解析出的普通条件"降级,声明层
+    # 行级安全是编译器注入的硬谓词,丢了不应静默(见 compiler 的 RLS 注释)。
+    if contract.row_filters and _missing(contract.row_filters):
+        return False, "generated SQL dropped a declared row filter (RLS)"
 
     group = g.args.get("group")
     gen_groups = len(group.expressions or []) if group is not None else 0
