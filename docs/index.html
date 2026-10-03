@@ -92,16 +92,18 @@
 
       <figure class="shot">
         <div class="shot-frame">
-          <img src="assets/shots/user-chat-answer.png" alt="Trove 答案卡：提问气泡、结论、结果表、数据截止时间与置信度、洞察、查看 SQL 与详情、出处条" width="1624" height="1015" decoding="async">
-          <span class="pin" style="--x:23.6%;--y:21.2%">1</span>
-          <span class="pin" style="--x:27.7%;--y:52.3%">2</span>
-          <span class="pin" style="--x:48.0%;--y:74.2%">3</span>
+          <img src="assets/shots/user-chat-analysis.png" alt="Trove 问答界面（右侧「分析过程」面板展开）：提问气泡、结论、结果表、数据截止时间与置信度、洞察、出处条；分析过程共 13 个步骤、总耗时 11.0s——意图路由、表关联、查询计划、生成 SQL、语义、执行 SQL、校验、反思、洞察、图表、结论、最终回答、思考" width="1624" height="1015" decoding="async">
+          <span class="pin" style="--x:23.6%;--y:24.6%">1</span>
+          <span class="pin" style="--x:27.7%;--y:56.5%">2</span>
+          <span class="pin" style="--x:48.0%;--y:78.2%">3</span>
+          <span class="pin" style="--x:88.0%;--y:10.0%">4</span>
         </div>
-        <figcaption>图 1 · 一条完整答案：前半是给人读的（结论 → 数据），后半是给核查用的（出处与依据）。</figcaption>
+        <figcaption>图 1 · 一句话提问，一份可核对的答案：左边是给人读的（结论 → 数据 → 出处），右边是给核查用的「分析过程」——13 个步骤记录这条答案是怎么一步步算出来的，每步带耗时、可展开。</figcaption>
         <ol class="shot-legend">
           <li><span class="n">1</span><strong>结论</strong>——一句话给出答案本身。先读这里；数字有疑问再往下核。</li>
           <li><span class="n">2</span><strong>数据截止时间与置信度</strong>——截止时间是这次查询所依据数据的时间边界，<strong>无从判断时如实写「无从判断」</strong>，不猜一个日期。</li>
           <li><span class="n">3</span><strong>出处条</strong>——数据源、模型与运行 ID，加「KB 命中」与「校验 OK」两枚状态章。<a href="user/ask.html#anatomy">答案解剖 →</a></li>
+          <li><span class="n">4</span><strong>分析过程</strong>——这条答案是怎么一步步算出来的：意图路由 → 表关联 → 查询计划 → 生成 SQL → …… → 最终回答，各带耗时，随时展开核对。<a href="user/ask.html#analysis">分析面板 →</a></li>
         </ol>
       </figure>
 
