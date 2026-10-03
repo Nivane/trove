@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import {
   buildSessionMarkdown,
@@ -7,6 +7,7 @@ import {
   useChatStore,
 } from '../src/stores/chat'
 import type { SessionExportLabels, Turn } from '../src/stores/chat'
+import type { AnalysisPayload } from '../src/api/types'
 import Sidebar from '../src/components/layout/Sidebar.vue'
 
 const LABELS: SessionExportLabels = {
@@ -15,6 +16,19 @@ const LABELS: SessionExportLabels = {
   cols: '列',
   generatedAt: '导出时间',
   rounds: '轮次',
+  analysis: {
+    title: '分析证据',
+    evidence: '证据',
+    partial: '部分结果',
+    partialHint: '部分组件未取到值',
+    truncated: '已截断',
+    purposes: {
+      overall: '总体',
+      probe: '维度探测',
+      drilldown: '下钻',
+      driver_tree: '驱动分解',
+    },
+  },
 }
 
 function turn(partial: Partial<Turn>): Turn {
@@ -141,6 +155,84 @@ describe('buildSessionMarkdown — 整段会话导出', () => {
   })
 })
 
+describe('buildSessionMarkdown — 分析证据节(补丁 2)', () => {
+  const ANA = {
+    version: 1,
+    partial: false,
+    evidence: {
+      queries: [
+        { purpose: 'overall', sql: 'SELECT SUM(amount) FROM loan', period: '2024' },
+        {
+          purpose: 'driver_tree',
+          sql: 'SELECT district, SUM(amount) FROM loan GROUP BY 1',
+        },
+      ],
+    },
+  } as unknown as AnalysisPayload
+
+  it('证据查询按 purpose 显示名渲染,节在结果表之前', () => {
+    const md = buildSessionMarkdown(
+      [
+        turn({
+          question: 'q',
+          answer: 'a',
+          summary: {
+            sql: 'SELECT 1',
+            columns: ['n'],
+            rows: [[1]],
+            analysis: ANA,
+          } as Turn['summary'],
+        }),
+      ],
+      { title: 't', sessionId: 's', labels: LABELS, now: NOW },
+    )
+    expect(md).toContain('### 分析证据')
+    expect(md).toContain('**1. 总体 · 2024**')
+    expect(md).toContain('```sql\nSELECT SUM(amount) FROM loan\n```')
+    expect(md).toContain('**2. 驱动分解**')
+    expect(md.indexOf('### 分析证据')).toBeLessThan(md.indexOf('### 结果'))
+  })
+
+  it('证据超过 6 条只导出前 6 条并写明 已截断 N/M', () => {
+    const queries = Array.from({ length: 8 }, (_, i) => ({
+      purpose: 'probe',
+      sql: `SELECT probe_${i}`,
+    }))
+    const ana = { evidence: { queries } } as unknown as AnalysisPayload
+    const md = buildSessionMarkdown(
+      [
+        turn({
+          question: 'q',
+          answer: 'a',
+          summary: { analysis: ana } as Turn['summary'],
+        }),
+      ],
+      { title: 't', sessionId: 's', labels: LABELS, now: NOW },
+    )
+    expect(md).toContain('**1. 维度探测**')
+    expect(md).toContain('SELECT probe_5')
+    expect(md).not.toContain('SELECT probe_6')
+    expect(md).toContain('> 已截断 (6/8)')
+  })
+
+  it('partial 轮次带降级标注;无 analysis 的轮次不出该节', () => {
+    const md = buildSessionMarkdown(
+      [
+        turn({
+          question: 'q1',
+          answer: 'a',
+          summary: { analysis: { ...ANA, partial: true } } as Turn['summary'],
+        }),
+        turn({ question: 'q2', answer: 'plain' }),
+      ],
+      { title: 't', sessionId: 's', labels: LABELS, now: NOW },
+    )
+    expect(md).toContain('> **部分结果**: 部分组件未取到值')
+    // 整段只出现一次「### 分析证据」(q2 无 analysis 不出节)
+    expect(md.split('### 分析证据').length - 1).toBe(1)
+  })
+})
+
 describe('sessionMarkdownFilename', () => {
   it('标题 + YYYYMMDD,非法字符清洗', () => {
     // 非法字符 → '-',首尾的 '-'/'.'/空白被剥掉,不留下悬空的连接符
@@ -177,6 +269,36 @@ describe('Sidebar 会话菜单(置顶/导出)', () => {
     const menu = wrapper.find('.session-menu')
     expect(menu.text()).toContain('取消置顶')
     expect(menu.text()).toContain('导出 Markdown')
+    expect(menu.text()).toContain('导出 HTML 报告')
+  })
+
+  it('点击「导出 HTML 报告」→ 取轮次并触发 .html 下载', async () => {
+    const { wrapper, chat } = mountSidebar([
+      { session_id: 's3', title: '报告会话' },
+    ])
+    const fetch = vi
+      .spyOn(chat, 'fetchSessionTurns')
+      .mockResolvedValue([turn({ question: 'q', answer: 'a' })])
+    // jsdom 没有 createObjectURL:stub 掉;anchor.click 也拦下避免导航告警
+    const createObjectURL = vi.fn(() => 'blob:x')
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.session-more').trigger('click')
+    const btn = wrapper
+      .findAll('.session-menu-item')
+      .find((b) => b.text().includes('导出 HTML 报告'))!
+    await btn.trigger('click')
+    await flushPromises()
+    expect(fetch).toHaveBeenCalledWith('s3')
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    const a = click.mock.instances[0] as unknown as HTMLAnchorElement
+    expect(a.download.startsWith('报告会话-')).toBe(true)
+    expect(a.download.endsWith('.html')).toBe(true)
+    click.mockRestore()
+    vi.unstubAllGlobals()
   })
 
   it('未置顶行不显示图钉,菜单显示「置顶」,点击调用 pinSession(true)', async () => {

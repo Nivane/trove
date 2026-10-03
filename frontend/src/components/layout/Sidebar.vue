@@ -82,6 +82,10 @@
           <Download :size="13" />
           {{ t('exportMarkdown', ui.lang) }}
         </button>
+        <button class="session-menu-item" @click="menuExportReport()">
+          <FileDown :size="13" />
+          {{ t('exportHtmlReport', ui.lang) }}
+        </button>
         <button class="session-menu-item" @click="menuRename()">
           <Pencil :size="13" />
           {{ t('rename', ui.lang) }}
@@ -235,6 +239,7 @@ import {
   Trash2,
   Pin,
   Download,
+  FileDown,
 } from 'lucide-vue-next'
 import BrandMark from '../brand/BrandMark.vue'
 import {
@@ -242,7 +247,15 @@ import {
   sessionMarkdownFilename,
   useChatStore,
 } from '../../stores/chat'
-import type { SessionExportLabels } from '../../stores/chat'
+import type {
+  SessionAnalysisLabels,
+  SessionExportLabels,
+} from '../../stores/chat'
+import {
+  buildSessionHtml,
+  sessionReportFilename,
+} from '../../utils/session-report'
+import type { SessionReportLabels } from '../../utils/session-report'
 import type { SessionInfo } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
@@ -305,11 +318,11 @@ function selectFromSearch(sid: string) {
 
 function openMenu(s: SessionRow, ev?: PointerEvent | MouseEvent) {
   // anchor at the cursor/three-dot button and clamp into the viewport
-  // (menu grew to 4 items — reserve its height so it never opens off-screen)
+  // (menu grew to 5 items — reserve its height so it never opens off-screen)
   let x = ev?.clientX ?? window.innerWidth / 2
   let y = ev?.clientY ?? 80
   x = Math.min(Math.max(0, x), window.innerWidth - 168)
-  y = Math.min(Math.max(0, y), window.innerHeight - 168)
+  y = Math.min(Math.max(0, y), window.innerHeight - 208)
   menu.value = { open: true, sid: s.session_id, x, y }
 }
 
@@ -337,6 +350,41 @@ function menuExport() {
   void exportSession(sid)
 }
 
+function menuExportReport() {
+  const sid = menu.value.sid
+  closeMenu()
+  void exportReport(sid)
+}
+
+/** 分析证据节文案(md 导出与 HTML 报告共用;补丁 2)。 */
+function analysisLabels(): SessionAnalysisLabels {
+  return {
+    title: t('exportDocEvidence', ui.lang),
+    evidence: t('anaEvidence', ui.lang),
+    partial: t('anaPartial', ui.lang),
+    partialHint: t('anaPartialHint', ui.lang),
+    truncated: t('anaTruncated', ui.lang),
+    purposes: {
+      overall: t('anaPurposeOverall', ui.lang),
+      probe: t('anaPurposeProbe', ui.lang),
+      drilldown: t('anaPurposeDrilldown', ui.lang),
+      driver_tree: t('anaPurposeTree', ui.lang),
+    },
+  }
+}
+
+function reportLabels(): SessionReportLabels {
+  return {
+    generatedAt: t('exportDocGeneratedAt', ui.lang),
+    rounds: t('exportDocRounds', ui.lang),
+    results: t('exportDocResult', ui.lang),
+    rows: t('exportDocRows', ui.lang),
+    cols: t('exportDocCols', ui.lang),
+    chart: t('exportDocChart', ui.lang),
+    analysis: analysisLabels(),
+  }
+}
+
 /** 导出整段会话:取轮次 → 渲染 Markdown → blob 下载(抄 DataTable 的下载先例)。 */
 async function exportSession(sid: string) {
   try {
@@ -351,6 +399,7 @@ async function exportSession(sid: string) {
       cols: t('exportDocCols', ui.lang),
       generatedAt: t('exportDocGeneratedAt', ui.lang),
       rounds: t('exportDocRounds', ui.lang),
+      analysis: analysisLabels(),
     }
     const row = chat.sessions.find((s) => s.session_id === sid)
     const markdown = buildSessionMarkdown(turns, {
@@ -363,6 +412,34 @@ async function exportSession(sid: string) {
     const a = document.createElement('a')
     a.href = url
     a.download = sessionMarkdownFilename(row?.title ?? '', sid)
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    notifyError(t('exportFailed', ui.lang))
+  }
+}
+
+/** 导出 HTML 报告(补丁 2):同一取轮次口径 → 自包含单文件 HTML
+ *  (图表内联 SVG、证据查询折叠,离线可开,零外部依赖)。 */
+async function exportReport(sid: string) {
+  try {
+    const turns = await chat.fetchSessionTurns(sid)
+    if (!turns.length) {
+      notifyError(t('exportEmpty', ui.lang))
+      return
+    }
+    const row = chat.sessions.find((s) => s.session_id === sid)
+    const html = buildSessionHtml(turns, {
+      title: row?.title ?? '',
+      sessionId: sid,
+      labels: reportLabels(),
+      lang: ui.lang,
+    })
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = sessionReportFilename(row?.title ?? '', sid)
     a.click()
     URL.revokeObjectURL(url)
   } catch {

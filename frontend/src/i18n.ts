@@ -1564,6 +1564,10 @@ export const messages = {
     exportDocCols: '列',
     exportDocGeneratedAt: '导出时间',
     exportDocRounds: '轮次',
+    // ── 补丁 2：分析证据 / HTML 报告导出（追加块）──
+    exportHtmlReport: '导出 HTML 报告',
+    exportDocEvidence: '分析证据',
+    exportDocChart: '图表',
   },
   en: {
     brand: 'Trove',
@@ -3152,6 +3156,10 @@ export const messages = {
     exportDocCols: 'cols',
     exportDocGeneratedAt: 'Exported at',
     exportDocRounds: 'Rounds',
+    // ── last-mile patch 2: analysis evidence / HTML report export ──
+    exportHtmlReport: 'Export HTML report',
+    exportDocEvidence: 'Analysis evidence',
+    exportDocChart: 'Chart',
   },
 }
 

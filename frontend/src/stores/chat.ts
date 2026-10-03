@@ -664,13 +664,31 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
 //
 // 纯函数(不碰 DOM):Sidebar 负责取轮次 + blob 下载,这里只把
 // 已落盘的 turn 渲染成 Markdown。忠实渲染已定口径:每轮 = 用户问题
-// heading + 答案 markdown + 有 SQL 时 ```sql 代码块 + 可渲染时结果表;
-// 图表不随文导出(界面里本来就有)。truncate 是**写明**的截断 ——
+// heading + 答案 markdown + 有 SQL 时 ```sql 代码块 + 有分析时证据查询
+// 节(补丁 2)+ 可渲染时结果表;图表不随文导出(界面里本来就有,HTML
+// 报告另走 session-report.ts)。truncate 是**写明**的截断 ——
 // 表格超过上限时 caption 同时给出「导出维度 / 完整维度」,不做静默丢行。
 
 /** 结果表导出上限(超宽/超长只导出前 N,注明完整维度)。 */
 export const EXPORT_MAX_ROWS = 50
 export const EXPORT_MAX_COLS = 8
+
+/** 分析证据节查询上限(超出写明「已截断 N/M」)。 */
+export const EXPORT_MAX_QUERIES = 6
+
+/** 分析证据节文案(补丁 2):答案 markdown 已含归因表/驱动树,本节只补
+ *  证据查询 SQL 与降级标注 —— 不做同文重复。 */
+export interface SessionAnalysisLabels {
+  /** 节标题(「分析证据」)。 */
+  title: string
+  /** 证据抽屉摘要(「证据」)。 */
+  evidence: string
+  partial: string
+  partialHint: string
+  truncated: string
+  /** purpose(overall/probe/drilldown/driver_tree)→ 显示名;缺 key 原样透出。 */
+  purposes: Record<string, string>
+}
 
 /** 导出文档里的小标题/表头文案(由调用方按 ui.lang 从 i18n 取)。 */
 export interface SessionExportLabels {
@@ -679,6 +697,7 @@ export interface SessionExportLabels {
   cols: string
   generatedAt: string
   rounds: string
+  analysis: SessionAnalysisLabels
 }
 
 /** 单元格 → markdown 表格单元:null 空串,| 转义,换行压成 <br>。 */
@@ -722,6 +741,37 @@ function resultTable(turn: Turn, labels: SessionExportLabels): string[] {
   return lines
 }
 
+/** 一轮的分析证据节(补丁 2):降级标注 + 证据查询 SQL(上限
+ *  EXPORT_MAX_QUERIES,超出写明)。无 analysis / 无证据 → 空数组,
+ *  老会话逐项跳过(同①纪律)。 */
+function analysisSection(turn: Turn, labels: SessionExportLabels): string[] {
+  const a = turn.summary?.analysis
+  const al = labels.analysis
+  if (!a) return []
+  const queries = a.evidence?.queries ?? []
+  if (!queries.length && !a.partial) return []
+  const lines: string[] = ['', `### ${al.title}`]
+  if (a.partial) {
+    lines.push('', `> **${al.partial}**: ${al.partialHint}`)
+  }
+  const shown = queries.slice(0, EXPORT_MAX_QUERIES)
+  shown.forEach((ev, i) => {
+    const purpose =
+      al.purposes[String(ev.purpose ?? '')] ?? String(ev.purpose ?? '')
+    const meta = [purpose, ev.period, ev.filter]
+      .filter(Boolean)
+      .map(String)
+      .join(' · ')
+    lines.push('', `**${i + 1}. ${meta}**`)
+    const sql = (ev.sql ?? '').trim()
+    if (sql) lines.push('', '```sql', sql, '```')
+  })
+  if (queries.length > shown.length) {
+    lines.push('', `> ${al.truncated} (${shown.length}/${queries.length})`)
+  }
+  return lines
+}
+
 /** 整段会话 → 一个 Markdown 文档。 */
 export function buildSessionMarkdown(
   turns: Turn[],
@@ -752,14 +802,16 @@ export function buildSessionMarkdown(
     else if (turn.error) out.push('', `> ${oneLine(turn.error)}`)
     const sql = (turn.summary?.sql || '').trim()
     if (sql) out.push('', '```sql', sql, '```')
+    out.push(...analysisSection(turn, labels))
     out.push(...resultTable(turn, labels))
   })
   out.push('')
   return out.join('\n')
 }
 
-/** 下载文件名:`<标题或首问截断>-<YYYYMMDD>.md`,非法字符清洗。 */
-export function sessionMarkdownFilename(
+/** 下载文件名基底:`<标题或首问截断>-<YYYYMMDD>`,非法字符清洗
+ *  (md 导出与 HTML 报告共用)。 */
+export function sessionFileBase(
   title: string | undefined,
   sessionId: string,
   now: Date = new Date(),
@@ -776,5 +828,14 @@ export function sessionMarkdownFilename(
     `${now.getFullYear()}` +
     `${String(now.getMonth() + 1).padStart(2, '0')}` +
     `${String(now.getDate()).padStart(2, '0')}`
-  return `${safe || sessionId.slice(0, 8) || 'session'}-${d}.md`
+  return `${safe || sessionId.slice(0, 8) || 'session'}-${d}`
+}
+
+/** 下载文件名:`<标题或首问截断>-<YYYYMMDD>.md`,非法字符清洗。 */
+export function sessionMarkdownFilename(
+  title: string | undefined,
+  sessionId: string,
+  now: Date = new Date(),
+): string {
+  return `${sessionFileBase(title, sessionId, now)}.md`
 }
