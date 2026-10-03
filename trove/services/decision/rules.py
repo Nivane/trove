@@ -30,6 +30,21 @@ BASELINE_KINDS = ("prev_period", "yoy", "literal", "none")
 SCOPES = ("aggregate", "per_dimension")
 EMITS = ("any", "all", "top_k")
 
+#: ``action.autonomy`` — v1 ships no dispatch either way; the two values are
+#: the contract the action pillar (P3) builds its proposal gate on:
+#: ``notify_only`` never leaves the system, ``propose`` may create a proposal
+#: that a human still has to approve. There is deliberately no "auto" value.
+AUTONOMIES = ("notify_only", "propose")
+
+#: ``priority`` 的闭区间 —— 0 = 常规。四个档位够区分「今天要做」与「知会一声」,
+#: 不做无上界的自由数字:它进通知、进排序、进治理待办,排序语义必须可解释。
+PRIORITY_MAX = 3
+
+#: Schema version this code writes and understands. A file with a *higher*
+#: version was written by a newer Trove and may carry fields this reader
+#: would drop on the next save — see ``parse_document``.
+SCHEMA_VERSION = 2
+
 #: Variables that only exist when the rule groups by a dimension — a
 #: condition referencing them on an aggregate rule would silently see Unknown.
 _DIMENSION_ONLY = frozenset({"contribution", "dim"})
@@ -43,6 +58,22 @@ class RuleError(ValueError):
 class Baseline:
     kind: str = "none"
     value: float | None = None
+
+
+@dataclass
+class ActionRef:
+    """A rule's pointer at an action template (P3) — a *reference*, not an action.
+
+    The rule says "when this fires, the org's response is template X"; whether
+    anything leaves the system is decided by the template's confirmation gate
+    and the proposal's approval step, never here. ``params`` carries the
+    closed-set variables the template may interpolate — arbitrary expressions
+    are deliberately impossible.
+    """
+
+    template: str = ""
+    autonomy: str = "notify_only"    # AUTONOMIES
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +102,20 @@ class DecisionRule:
     top_k: int = 3
     conditions: list[str] = field(default_factory=list)
     condition_mode: str = "all"        # "all" (AND) | "any" (OR)
+    # ── schema v2 ────────────────────────────────────────
+    #: What a human should do about it. **Human-authored only** — it is never
+    #: generated, because a recommendation is a promise the org makes, not a
+    #: model's guess; an LLM-written "建议" that reads as authoritative is the
+    #: exact failure mode this field exists to avoid.
+    recommendation: str = ""
+    #: 0 = 常规, PRIORITY_MAX = 最紧急. Orders the governance to-do list.
+    priority: int = 0
+    #: Optional response template (P3). None = notify only, which is also
+    #: what every rule written before v2 means.
+    action: ActionRef | None = None
+    #: The dimension the analysis bridge decomposes along when the rule fires
+    #: (default: the rule's own grouping — see ``decision/bridge.py``).
+    driver_dimension: str = ""
 
     def describe(self) -> str:
         return self.name or self.id
@@ -85,6 +130,23 @@ class DecisionDoc:
 
 
 # ── parsing ──────────────────────────────────────────────────
+
+def _as_int(raw: Any, *, default: int) -> int:
+    """Strict int coercion for hand-written YAML, with ``None`` = absent.
+
+    Garbage raises (like ``top_k``): a typo'd ``priority: high`` must not
+    quietly become 0 — "regular priority" reads exactly like a deliberate
+    choice. The *range* is lint's business, not the parser's.
+    """
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, bool):
+        raise RuleError(f"expected an integer, got {raw!r}")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise RuleError(f"expected an integer, got {raw!r}")
+
 
 def _as_float(raw: Any) -> float | None:
     if raw is None or isinstance(raw, bool):
@@ -112,6 +174,24 @@ def _parse_conditions(raw: Any) -> tuple[list[str], str]:
             raise RuleError(f"conditions.{key} must be a list")
         return [str(c) for c in items], key
     raise RuleError("conditions must be a list or an {all|any} object")
+
+
+def _parse_action(raw: Any) -> ActionRef | None:
+    """``action`` block → ``ActionRef``; ``None`` when the rule has no action.
+
+    Structure only — whether ``template`` names a confirmed template is a
+    question for ``lint_rule_assets``, which owns the asset registries.
+    """
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, dict):
+        raise RuleError(f"'action' must be a mapping, got {type(raw).__name__}")
+    params = raw.get("params")
+    return ActionRef(
+        template=str(raw.get("template") or "").strip(),
+        autonomy=str(raw.get("autonomy") or "notify_only").strip().lower(),
+        params=dict(params) if isinstance(params, dict) else {},
+    )
 
 
 def parse_rule(raw: dict[str, Any]) -> DecisionRule:
@@ -158,6 +238,10 @@ def parse_rule(raw: dict[str, Any]) -> DecisionRule:
         top_k=int(raw.get("top_k") or 3),
         conditions=conditions,
         condition_mode=mode,
+        recommendation=str(raw.get("recommendation") or "").strip(),
+        priority=_as_int(raw.get("priority"), default=0),
+        action=_parse_action(raw.get("action")),
+        driver_dimension=str(raw.get("driver_dimension") or "").strip(),
     )
 
 
@@ -183,6 +267,16 @@ def parse_document(data: dict[str, Any] | None) -> DecisionDoc:
         version = int(data.get("version") or 1)
     except (TypeError, ValueError):
         raise RuleError("'version' must be an integer")
+    if version > SCHEMA_VERSION:
+        # Same philosophy as ``StorageSchemaTooNew``: a newer file may carry
+        # fields this reader does not know, and the failure is *silent* —
+        # ``rule_to_dict`` would drop them on the next save through the UI,
+        # so a whole document PUT would quietly delete a newer Trove's rules.
+        # Refusing to read beats silently having read less.
+        raise RuleError(
+            f"decisions.yml schema version {version} is newer than this Trove "
+            f"understands (max {SCHEMA_VERSION}) — refusing to read it, since "
+            "saving through this version would drop fields it does not know")
     return DecisionDoc(rules=rules, version=version)
 
 
@@ -254,6 +348,19 @@ def lint_rule(rule: DecisionRule) -> list[str]:
     if not rule.conditions:
         issues.append(f"{where}: at least one condition is required")
 
+    # ── schema v2 ────────────────────────────────────────
+    if not isinstance(rule.priority, int) or not (0 <= rule.priority <= PRIORITY_MAX):
+        issues.append(
+            f"{where}: priority must be an integer in [0, {PRIORITY_MAX}] "
+            f"(got {rule.priority!r})")
+    if rule.action is not None:
+        if not rule.action.template:
+            issues.append(f"{where}: action.template must not be empty")
+        if rule.action.autonomy not in AUTONOMIES:
+            issues.append(
+                f"{where}: action.autonomy must be one of "
+                f"{', '.join(AUTONOMIES)} (got {rule.action.autonomy!r})")
+
     for cond in rule.conditions:
         try:
             used = condition_variables(cond)
@@ -275,6 +382,80 @@ def lint_rule(rule: DecisionRule) -> list[str]:
                 f"{where}: condition {cond!r} uses a delta but "
                 "baseline.kind is 'none'")
 
+    return issues
+
+
+def lint_advisories(doc: DecisionDoc) -> list[str]:
+    """Non-blocking hints — shown by the admin UI, **never** refused by a save.
+
+    The blocking/advisory split is the same one the Skills validator tier
+    uses: a rule that is structurally sound but under-specified should still
+    be writable (the author may be mid-draft), while one that would never
+    fire must not reach disk at all.
+    """
+    out: list[str] = []
+    for rule in doc.rules:
+        where = f"rule {rule.id!r}"
+        if rule.action is not None and not rule.recommendation:
+            # A proposal with no stated recommendation asks a human to approve
+            # *something* without saying why. Not fatal — the action payload
+            # still carries the evidence — but the approver deserves a reason.
+            out.append(
+                f"{where}: declares an action but no 'recommendation' — the "
+                "approver will see the template with no stated reason")
+        if rule.action is not None and rule.action.autonomy == "propose" \
+                and rule.scope == "aggregate":
+            out.append(
+                f"{where}: 'propose' on an aggregate rule fires without a "
+                "group label — consider a driver_dimension so the proposal "
+                "names what moved")
+    return out
+
+
+def lint_rule_assets(
+    rule: DecisionRule, *, templates: set[str] | None = None,
+    confirmed: set[str] | None = None, dimensions: set[str] | None = None,
+) -> list[str]:
+    """Checks that need asset registries rather than the rule alone.
+
+    Every input is optional and ``None`` means *"that registry is not
+    available here, so this check cannot run"* — a caller without a template
+    service should not be told the rule is bad. Passing an empty set is
+    different and means "the registry is here and it is empty", which does
+    flag every reference. The distinction matters at P3 wiring time: an
+    unwired service must skip the check, an empty one must fail it.
+    """
+    issues: list[str] = []
+    where = f"rule {rule.id!r}"
+    if rule.action is not None and rule.action.template:
+        name = rule.action.template
+        if templates is not None and name not in templates:
+            issues.append(f"{where}: action.template {name!r} is not declared")
+        elif confirmed is not None and name not in confirmed:
+            # Declared but not confirmed: the template gate (draft → admin
+            # confirm) exists so unreviewed org responses cannot be wired to
+            # a rule that fires on its own.
+            issues.append(
+                f"{where}: action.template {name!r} is not confirmed yet — "
+                "confirm it (or pick a confirmed template) before referencing it")
+    if rule.driver_dimension and dimensions is not None:
+        if rule.driver_dimension not in dimensions:
+            issues.append(
+                f"{where}: driver_dimension {rule.driver_dimension!r} is not "
+                "declared in the semantic model")
+    return issues
+
+
+def lint_document_assets(
+    doc: DecisionDoc, *, templates: set[str] | None = None,
+    confirmed: set[str] | None = None, dimensions: set[str] | None = None,
+) -> list[str]:
+    """``lint_rule_assets`` flattened across the document (see ``lint_document``)."""
+    issues: list[str] = []
+    for rule in doc.rules:
+        issues.extend(lint_rule_assets(
+            rule, templates=templates, confirmed=confirmed,
+            dimensions=dimensions))
     return issues
 
 
@@ -318,6 +499,22 @@ def rule_to_dict(rule: DecisionRule) -> dict[str, Any]:
     conds = list(rule.conditions)
     out["conditions"] = {rule.condition_mode: conds} if rule.condition_mode != "all" \
         else conds
+    # Schema v2 — every field parse_rule reads must be written back, or a save
+    # through the UI silently drops it (round-trip test pins this).
+    if rule.recommendation:
+        out["recommendation"] = rule.recommendation
+    if rule.priority:
+        out["priority"] = rule.priority
+    if rule.action is not None:
+        action: dict[str, Any] = {
+            "template": rule.action.template,
+            "autonomy": rule.action.autonomy,
+        }
+        if rule.action.params:
+            action["params"] = dict(rule.action.params)
+        out["action"] = action
+    if rule.driver_dimension:
+        out["driver_dimension"] = rule.driver_dimension
     return out
 
 

@@ -126,10 +126,14 @@ class TestSave:
     async def test_written_file_carries_provenance_meta(self, kb):
         """Written through _write_doc, so the digest/staleness machinery
         sees it — otherwise the next sync would read it as "edited by hand"."""
+        from trove.services.decision.rules import SCHEMA_VERSION
+
         await kb.save_decisions("demo", DecisionDoc(rules=[parse_rule(RULE)]))
         data = yaml.safe_load(kb.decisions_path("demo").read_text(encoding="utf-8"))
         assert "_meta" in data
-        assert data["version"] == 1
+        # 写入盖的是**当前** schema 版本(不是字面量 1):版本跟着生产者的
+        # 认知走,一版一改,断言跟常量才不会在下一次升级时假红。
+        assert data["version"] == SCHEMA_VERSION
 
     async def test_bad_rule_is_refused_before_it_reaches_disk(self, kb):
         """Same posture as `_reject_bad_semantics`: a rule that would never

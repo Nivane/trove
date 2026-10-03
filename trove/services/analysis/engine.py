@@ -249,6 +249,11 @@ class AnalysisRequest:
     depth: int = 1
     focus: str | None = None
     time_context: str | None = None
+    #: 已解析的显式期间 (cur, base) ISO 覆盖 —— 决策桥用:规则窗口已由
+    #: ``DecisionService._resolve_window`` 按**运行锚点**解析过,二次解析
+    #: (且按"今天"解析)会给出不同窗口,判定与证据就对不上了。
+    #: None = 走 ``time_context`` 的常规派生(问答路径不变)。
+    periods: tuple[tuple[str, str] | None, tuple[str, str] | None] | None = None
 
 
 @dataclass
@@ -505,10 +510,12 @@ class AnalysisEngine:
         need = 2 if (cur_period and base_period) else 1
         if self._queries + need > lim.max_queries:
             degraded.append({"stage": "driver_tree", "reason": "query_budget_exceeded"})
-            self._mark_tree(root, comps, {}, {}, alias=alias)
+            self._mark_tree(root, comps, {}, {}, alias=alias,
+                            cur_total=cur_total, base_total=base_total)
             return _finish()
         if not kept:
-            self._mark_tree(root, comps, {}, {}, alias=alias)
+            self._mark_tree(root, comps, {}, {}, alias=alias,
+                            cur_total=cur_total, base_total=base_total)
             return _finish()
 
         cur_vals: dict[str, float] = {}
@@ -571,11 +578,13 @@ class AnalysisEngine:
                         )
                         if rows:
                             _fill(base_vals, [k["resolved"]], list(rows[0]))
-            self._mark_tree(root, comps, cur_vals, base_vals, alias=alias)
+            self._mark_tree(root, comps, cur_vals, base_vals, alias=alias,
+                            cur_total=cur_total, base_total=base_total)
         except Exception as e:
             logger.warning("Driver tree execution failed (%s); keeping skeleton", e)
             degraded.append({"stage": "driver_tree", "reason": str(e)[:200]})
-            self._mark_tree(root, comps, {}, {}, alias=alias)
+            self._mark_tree(root, comps, {}, {}, alias=alias,
+                            cur_total=cur_total, base_total=base_total)
 
         return _finish()
 
@@ -587,6 +596,8 @@ class AnalysisEngine:
         base_vals: dict[str, float],
         *,
         alias: dict[str, str] | None = None,
+        cur_total: float = 0.0,
+        base_total: float = 0.0,
     ) -> None:
         """组件值落树 + 诚实残差(就地改 root/comps 的节点字典)。
 
@@ -615,6 +626,16 @@ class AnalysisEngine:
             else:
                 node.setdefault("executed", False)
 
+        # 根的口径是 hop0(与卡片头条一致),必须在 annotate **之前**落值:
+        # 残差 = 根 Δ − 带符号子 Δ 之和,根没有值时它是 0.0 —— 一次精确的
+        # 分解会被算成 gap(值还恰等于子 Δ 之和,读起来像真残差)。
+        # 根被预检剔除(遮蔽/不可聚合)而 hop0 成功时就会走到这里。
+        if self._hop0_ok:
+            root["current"] = cur_total
+            root["base"] = base_total
+            root["delta"] = cur_total - base_total
+            root["executed"] = True
+
         def annotate(node: dict[str, Any]) -> None:
             kids = node.get("children") or []
             for k in kids:
@@ -638,6 +659,99 @@ class AnalysisEngine:
             node["residual"] = res
 
         annotate(root)
+
+    # ── 聚焦组件分解(决策桥 / 未来 what-if)─────────────
+
+    async def run_components(
+        self, request: AnalysisRequest, *, include_total: bool = True,
+    ) -> AnalysisOutcome | None:
+        """根总量 + 指标组件树 —— 不跑维度探测、主分解与 drilldown。
+
+        与 ``run()`` 的区别只是"少做什么":桥要回答的是「总量怎么变、哪些
+        组件推动」,不需要维度预选与下钻。顺序刻意**树优先** —— 树是主产物,
+        总量(hop0)只在"补上它也不挤占树"时才跑;树的根查询与 hop0 同源,
+        缺它不过是根的 ``value_source`` 记为 ``tree_query``。反过来先跑
+        hop0,在紧预算下会留下一个空树。
+
+        适用门(不满足 → None,调用方静默跳过,这不是失败):指标可解析、
+        表达式树确有组件、时间字段可解析、当前期可得。任何执行异常都不外抛
+        —— 桥的失败只记 ``degraded``,绝不影响判定本身。
+        """
+        lim = self.limits
+        metric_name = str(request.metric or "").strip()
+        if not metric_name:
+            return None
+        dialect = request.dialect or "sqlite"
+        matched = list(request.matched)
+        datasource = request.datasource
+        degraded: list[dict[str, Any]] = []
+
+        metric_obj = resolve_metric(self._sl, metric_name)
+        if metric_obj is None:
+            return None
+        try:
+            model = self._sl.model()
+        except Exception:
+            model = None
+        if model is None:
+            return None
+
+        root = metric_components(metric_obj, model, max_depth=lim.tree_max_depth)
+        if not (root.get("children") or []):
+            return None      # 单叶子:表达式不可分解,桥对这条规则不适用
+
+        time_field = resolve_time_field(self._sl, matched, metric_name)
+        if time_field is None:
+            return None
+        if request.periods is not None:
+            cur_period, base_period = request.periods
+        else:
+            periods = _derive_periods(request.time_context or "", request.baseline)
+            cur_period, base_period = (
+                (periods[0], periods[1]) if periods else (None, None))
+        if cur_period is None:
+            return None
+
+        cur_total = base_total = 0.0
+        need = 2 if (cur_period and base_period) else 1
+        if include_total and self._queries + 2 + need <= lim.max_queries:
+            try:
+                cur_sql = compile_hop(self._sl, matched, dialect, metric_name, [],
+                                      time_conds(time_field, cur_period))
+                base_sql = compile_hop(self._sl, matched, dialect, metric_name, [],
+                                       time_conds(time_field, base_period))
+                if cur_sql:
+                    cols, rows = await self._execute(
+                        cur_sql, datasource, purpose="overall",
+                        period="current", keep=5)
+                    cur_total = num(rows[0][-1]) if rows and rows[0] else 0.0
+                    self._hop0_ok = True
+                if base_sql and base_period:
+                    cols, rows = await self._execute(
+                        base_sql, datasource, purpose="overall",
+                        period="base", keep=5)
+                    base_total = num(rows[0][-1]) if rows and rows[0] else 0.0
+            except Exception as e:
+                degraded.append({"stage": "overall", "reason": str(e)[:200]})
+
+        tree = await self._build_tree(
+            request, metric_obj, cur_period, base_period, time_field,
+            cur_total, base_total, degraded,
+        )
+        if tree is None:
+            return None
+
+        outcome = AnalysisOutcome(
+            metric=metric_name, baseline=request.baseline,
+            cur_total=cur_total, base_total=base_total,
+            total_delta=cur_total - base_total,
+        )
+        outcome.tree = tree
+        outcome.hops = list(self._hops)
+        outcome.evidence_queries = list(self._evidence)
+        outcome.degraded = degraded
+        outcome.partial = bool(degraded)
+        return outcome
 
     # ── 主流程 ──────────────────────────────────────────
 

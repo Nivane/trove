@@ -197,8 +197,14 @@ class DecisionService:
                 "(refusing to guess — a wrong dialect compiles wrong SQL)")
         return dialect
 
-    def _model_for(self, datasource: str, dialect: str):
-        """Per-datasource semantic model — same path as the public query API."""
+    def _provider_for(self, datasource: str, dialect: str):
+        """Per-datasource semantic provider — same path as the public query API.
+
+        Returned as the *provider* (not just its model) because the analysis
+        bridge hands it to ``AnalysisEngine``, which calls ``.model()`` and
+        the resolver helpers on it. One construction path for both keeps the
+        bridge compiling against exactly the model the verdict was judged on.
+        """
         from trove.services.semantic_layer.provider import SemanticLayerProvider
 
         kb_path = None
@@ -207,13 +213,15 @@ class DecisionService:
                 kb_path = self.kb.semantics_path(datasource)
             except Exception:
                 kb_path = None
-        provider = SemanticLayerProvider(
+        return SemanticLayerProvider(
             directory=self._semantic_root() / datasource,
             datasource=datasource,
             dialect=dialect,
             kb_semantics_path=kb_path,
         )
-        model = provider.model()
+
+    def _model_for(self, datasource: str, dialect: str):
+        model = self._provider_for(datasource, dialect).model()
         if model is None:
             raise DecisionError(
                 f"no semantic model for datasource {datasource!r} "
@@ -391,11 +399,21 @@ class DecisionService:
                                            cur_result.row_count)
         triggered = bool(triggered_dims)
 
+        # 分析桥(补丁 1):只在触发时跑,未触发零成本。任何失败只进
+        # evidence 的 degraded —— 判定已经判完,桥是附录不是前置。
+        analysis = None
+        if triggered:
+            analysis = await self._analysis_bridge(
+                rule, datasource, dialect, rows, cur_window, base_window,
+                matched=list(cur_info.get("datasets") or []))
+
         evidence = {
             "rule_id": rule.id,
             "rule_digest": rule_digest,
             "rule_name": rule.describe(),
             "severity": rule.severity,
+            "priority": rule.priority,
+            "recommendation": rule.recommendation,
             "owner_role": rule.owner_role,
             "model_version": cur_info.get("version", ""),
             "window_expr": rule.window,
@@ -421,6 +439,8 @@ class DecisionService:
             },
             "provenance": {"datasource": datasource},
         }
+        if analysis is not None:
+            evidence["analysis"] = analysis
 
         return DecisionOutcome(
             triggered=triggered,
@@ -429,6 +449,63 @@ class DecisionService:
             severity=rule.severity,
             evidence=evidence,
         )
+
+    async def _analysis_bridge(
+        self, rule: DecisionRule, datasource: str, dialect: str,
+        rows: list[dict[str, Any]],
+        cur_window: tuple[str, str] | None,
+        base_window: tuple[str, str] | None,
+        matched: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """触发后的确定性"为什么"(补丁 1)。绝不上抛 —— 见 bridge 模块。
+
+        ``None`` = 桥对这条规则不适用(指标不可分解/无时间字段),证据里
+        就不写这一节;该做而没做成的情况由桥自己记 ``degraded``。
+
+        ``matched`` 从判定自己的编译产物里原样传递:桥再推一遍锚定,就多
+        了一处能与判定漂移的推论 —— 判定按什么表编译的,桥就得按同一份。
+        """
+        from trove.services.decision.bridge import run_bridge
+
+        try:
+            provider = self._provider_for(datasource, dialect)
+        except Exception as e:
+            logger.warning("analysis bridge: no semantic provider for %s: %s",
+                           datasource, e)
+            return {
+                "top_components": [], "tree": None,
+                "residual": {"value": None, "exact": False,
+                             "reason": "no_semantic_provider"},
+                "queries": [],
+                "degraded": [{"stage": "analysis_bridge",
+                              "reason": str(e)[:200]}],
+            }
+
+        async def _runner(sql: str, ds: str):
+            result = await self._run(sql, ds)
+            return list(result.columns), list(result.rows)
+
+        try:
+            return await run_bridge(
+                semantic_layer=provider, runner=_runner, rule=rule,
+                datasource=datasource, dialect=dialect,
+                cur_period=cur_window, base_period=base_window,
+                judged_rows=rows, matched=list(matched or []),
+            )
+        except Exception as e:
+            # 第二层保险:``run_bridge`` 自己已保证不上抛,但如果没有这层,
+            # 桥里将来某个未预料的异常形态会顺着 ``evaluate`` 的兜底把一次
+            # **已经判完的判定**降级成 error run —— 附录拖垮正文。记账,
+            # 判定照常交付(与上面 provider 缺失同一形状)。
+            logger.exception("analysis bridge raised for rule %s", rule.id)
+            return {
+                "top_components": [], "tree": None,
+                "residual": {"value": None, "exact": False,
+                             "reason": "bridge_error"},
+                "queries": [],
+                "degraded": [{"stage": "analysis_bridge",
+                              "reason": str(e)[:200]}],
+            }
 
     async def _run(self, sql: str, datasource: str):
         """Read-only execution through the registry's guarded channel.

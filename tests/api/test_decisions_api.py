@@ -74,6 +74,18 @@ async def decisions_app(sqlite_registry, tmp_path, auth_service):
 
 
 @pytest.fixture
+async def verdict_store(decisions_app, tmp_path):
+    """A real verdict history behind the app (the routes degrade to null
+    without one, which is its own test)."""
+    from trove.services.decision.verdict_store import VerdictStore
+
+    store = VerdictStore(tmp_path / "proj")
+    decisions_app.state.verdicts = store
+    yield store
+    await store.dispose()
+
+
+@pytest.fixture
 async def admin_client(decisions_app, admin_token):
     transport = ASGITransport(app=decisions_app)
     headers = {"Authorization": f"Bearer {admin_token}"}
@@ -350,12 +362,167 @@ class TestRawText:
         assert neither.status_code == 400
 
 
+def _record(store, **over):
+    from trove.services.decision.verdicts import VerdictRecord
+
+    fields = dict(
+        datasource="demo", rule_id="loan-drop", status="ok",
+        triggered=False, rule_digest="sha256:a", evaluated_at="2026-09-01T00:00:00",
+        created_at="2026-09-01T00:00:00", anchor_date="2026-09-01",
+        evidence={"rows": [{"dim": "华东", "triggered": False,
+                            "delta_pct": 0.05}]},
+    )
+    fields.update(over)
+    return store.record(VerdictRecord(**fields))
+
+
+class TestVerdictHistory:
+    """判定历史 —— 审计线是决策层的产物,不是 run 行的事后解释。"""
+
+    async def test_empty_history_is_an_empty_list_not_an_error(
+            self, admin_client, verdict_store):
+        r = await admin_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo")
+        assert r.status_code == 200, r.text
+        assert r.json()["verdicts"] == []
+
+    async def test_list_is_newest_first_with_inline_diffs(
+            self, admin_client, verdict_store):
+        await _record(verdict_store, evaluated_at="2026-09-01T00:00:00")
+        await _record(verdict_store, triggered=True, status="alert",
+                      message="[warning] 华东下滑",
+                      rule_digest="sha256:b",
+                      evaluated_at="2026-09-02T00:00:00")
+
+        body = (await admin_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo")).json()
+        vs = body["verdicts"]
+        assert [v["evaluated_at"] for v in vs] == [
+            "2026-09-02T00:00:00", "2026-09-01T00:00:00"]
+        top = vs[0]["diff"]
+        assert top["trigger"] == "fired"
+        assert top["rule_digest_changed"] is True
+        assert top["status_change"] == ["ok", "alert"]
+        assert vs[0]["diff"]["prev_id"] == vs[1]["id"]
+        # 窗口最旧一条没有前一条可比 —— 是边界,不是"没变化"。
+        assert vs[1]["diff"] is None
+
+    async def test_list_rows_carry_no_evidence_blob(
+            self, admin_client, verdict_store):
+        """列表渲染不需要证据 SQL/原始行;它们让一次抽屉打开变成几百 KB。"""
+        await _record(verdict_store)
+        body = (await admin_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo")).json()
+        assert "evidence" not in body["verdicts"][0]
+        assert body["verdicts"][0]["message"] == ""
+
+    async def test_list_honours_limit_and_since(self, admin_client, verdict_store):
+        await _record(verdict_store, evaluated_at="2026-09-01T00:00:00")
+        await _record(verdict_store, evaluated_at="2026-09-02T00:00:00")
+
+        body = (await admin_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo"
+            "&limit=1")).json()
+        assert body["count"] == 1
+        assert body["verdicts"][0]["evaluated_at"] == "2026-09-02T00:00:00"
+
+        body = (await admin_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo"
+            "&since=2026-09-02T00:00:00")).json()
+        assert body["count"] == 1
+
+    async def test_detail_returns_the_evidence_and_the_diff(
+            self, admin_client, verdict_store):
+        await _record(verdict_store, evaluated_at="2026-09-01T00:00:00")
+        vid = await _record(verdict_store, triggered=True, status="alert",
+                            evaluated_at="2026-09-02T00:00:00",
+                            evidence={"rows": [{"dim": "华东", "triggered": True,
+                                                "delta_pct": -0.2}]})
+
+        body = (await admin_client.get(
+            f"/v1/admin/decisions/verdicts/{vid}")).json()
+        assert body["verdict"]["id"] == vid
+        assert body["verdict"]["evidence"]["rows"][0]["dim"] == "华东"
+        assert body["diff"]["trigger"] == "fired"
+
+    async def test_detail_of_the_very_first_verdict_has_no_diff(
+            self, admin_client, verdict_store):
+        vid = await _record(verdict_store)
+        body = (await admin_client.get(
+            f"/v1/admin/decisions/verdicts/{vid}")).json()
+        assert body["diff"] is None
+
+    async def test_unknown_verdict_is_404(self, admin_client, verdict_store):
+        r = await admin_client.get("/v1/admin/decisions/verdicts/999")
+        assert r.status_code == 404
+
+    async def test_verdicts_route_is_not_swallowed_by_the_rule_id_pattern(
+            self, admin_client, verdict_store):
+        """`/verdicts/{id}` 必须排在 `/{rule_id}` 之前(同 `/raw` 的陷阱)。"""
+        vid = await _record(verdict_store)
+        r = await admin_client.get(f"/v1/admin/decisions/verdicts/{vid}")
+        assert r.status_code == 200
+        assert r.json()["verdict"]["id"] == vid
+
+    async def test_list_attaches_the_latest_verdict_per_rule(
+            self, admin_client, decisions_app, verdict_store):
+        _write(decisions_app, [RULE, {**RULE, "id": "other"}])
+        await _record(verdict_store, evaluated_at="2026-09-02T00:00:00",
+                      message="最近一次")
+
+        body = (await admin_client.get(
+            "/v1/admin/decisions?datasource=demo")).json()
+        by_id = {r["id"]: r for r in body["rules"]}
+        assert by_id["loan-drop"]["latest_verdict"]["message"] == "最近一次"
+        assert by_id["loan-drop"]["latest_verdict"]["diff"] is None
+        assert by_id["other"]["latest_verdict"] is None
+
+    async def test_a_broken_store_costs_the_history_not_the_rules(
+            self, admin_client, decisions_app, monkeypatch):
+        """历史不可用 ≠ 没有历史 —— 规则列表照常渲染。"""
+        class _Boom:
+            async def latest_for_rules(self, *_a, **_k):
+                raise RuntimeError("store down")
+
+        _write(decisions_app, [RULE])
+        decisions_app.state.verdicts = _Boom()
+        body = (await admin_client.get(
+            "/v1/admin/decisions?datasource=demo")).json()
+        assert [x["id"] for x in body["rules"]] == ["loan-drop"]
+        assert body["rules"][0]["latest_verdict"] is None
+
+
+class TestVerdictHistoryWithoutAStore:
+    """没接 store 的进程(嵌入/测试):列表降级为 null,历史端点 409。"""
+
+    async def test_list_degrades_to_null(self, admin_client, decisions_app):
+        _write(decisions_app, [RULE])
+        body = (await admin_client.get(
+            "/v1/admin/decisions?datasource=demo")).json()
+        assert body["rules"][0]["latest_verdict"] is None
+
+    async def test_history_endpoints_are_409(self, admin_client):
+        r = await admin_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo")
+        assert r.status_code == 409
+        r = await admin_client.get("/v1/admin/decisions/verdicts/1")
+        assert r.status_code == 409
+
+
 class TestAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get(
             "/v1/admin/decisions?datasource=demo")).status_code == 403
         assert (await user_client.put("/v1/admin/decisions", json={
             "datasource": "demo", "rules": []})).status_code == 403
+
+    async def test_verdict_history_is_admin_only(self, user_client):
+        """证据里是原始业务行 —— v1 只做 admin 面。"""
+        assert (await user_client.get(
+            "/v1/admin/decisions/loan-drop/verdicts?datasource=demo"
+        )).status_code == 403
+        assert (await user_client.get(
+            "/v1/admin/decisions/verdicts/1")).status_code == 403
 
     async def test_requires_auth(self, decisions_app):
         transport = ASGITransport(app=decisions_app)

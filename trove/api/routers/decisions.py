@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from trove.api.deps import require_admin
 from trove.api.schemas import DecisionDocBody
@@ -40,6 +40,46 @@ def _kb(request: Request):
 
 def _jobs(request: Request):
     return getattr(request.app.state, "jobs", None)
+
+
+def _verdicts(request: Request):
+    """The verdict store, or ``None`` when this process has none.
+
+    ``None`` is not an error for the *list* view (rules still exist without a
+    history — a fresh install, or ``trove serve`` wired without the store), so
+    callers degrade to a null ``latest_verdict``. The two history endpoints
+    need the store to answer at all, so they turn it into a 409.
+    """
+    return getattr(request.app.state, "verdicts", None)
+
+
+def _verdict_brief(rec, diff: dict | None = None) -> dict[str, Any]:
+    """A verdict without its evidence blob — what a history list renders.
+
+    The evidence (SQL + raw rows) is the *detail* view's payload; inlining it
+    per row would make one drawer-open cost a few hundred KB of JSON that the
+    list never shows.
+    """
+    return {
+        "id": rec.id,
+        "datasource": rec.datasource,
+        "rule_id": rec.rule_id,
+        "rule_digest": rec.rule_digest,
+        "run_id": rec.run_id,
+        "job_id": rec.job_id,
+        "status": rec.status,
+        "triggered": rec.triggered,
+        "severity": rec.severity,
+        "priority": rec.priority,
+        "message": rec.message,
+        "error": rec.error,
+        "row_count": rec.row_count,
+        "evidence_truncated": rec.evidence_truncated,
+        "anchor_date": rec.anchor_date,
+        "evaluated_at": rec.evaluated_at,
+        "created_at": rec.created_at,
+        "diff": diff,
+    }
 
 
 async def _referencing_jobs(request: Request, datasource: str, rule_id: str) -> list[str]:
@@ -73,13 +113,28 @@ async def list_decisions(
         # to delete the last rule), but a reader should know it means "nothing
         # is being watched", not "everything is fine".
         issues.insert(0, f"no decision rules declared for {datasource!r}")
+    # One lookup for the whole page, and a failure here must not cost the
+    # reader the rule list — "the history is unavailable" and "there is no
+    # history" are different facts, so the former degrades to null per rule
+    # and the list still renders.
+    latest: dict[str, Any] = {}
+    store = _verdicts(request)
+    if store is not None and doc.rules:
+        try:
+            latest = await store.latest_for_rules(
+                datasource, [r.id for r in doc.rules])
+        except Exception:
+            latest = {}
     rules = []
     for rule in doc.rules:
+        last = latest.get(rule.id)
         rules.append({
             "id": rule.id,
             "name": rule.name,
             "enabled": rule.enabled,
             "severity": rule.severity,
+            "priority": rule.priority,
+            "recommendation": rule.recommendation,
             "owner_role": rule.owner_role,
             "window": rule.window,
             "scope": rule.scope,
@@ -87,6 +142,7 @@ async def list_decisions(
             "conditions": list(rule.conditions),
             "condition_mode": rule.condition_mode,
             "referenced_by": await _referencing_jobs(request, datasource, rule.id),
+            "latest_verdict": _verdict_brief(last) if last is not None else None,
         })
     return {
         "datasource": datasource,
@@ -111,6 +167,78 @@ async def get_decisions_raw(
     path = _kb(request).decisions_path(datasource)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     return {"datasource": datasource, "text": text}
+
+
+@router.get("/admin/decisions/verdicts/{verdict_id}")
+async def get_verdict(
+    verdict_id: int, request: Request, admin: dict = Depends(require_admin),
+) -> dict:
+    """One verdict with its full evidence, plus its diff against the previous.
+
+    Declared **before** ``/{rule_id}`` (same Starlette ordering trap as
+    ``/raw``): the paths do not actually overlap today — ``/{rule_id}`` is one
+    segment — but a future ``/verdicts/...`` sibling declared below it would
+    be shadowed, and the ordering is cheap insurance.
+
+    The evidence carries raw business rows and is admin-only by design; a
+    user-facing decision surface (later milestone) must re-mask on read
+    rather than reuse this payload.
+    """
+    store = _verdicts(request)
+    if store is None:
+        raise HTTPException(
+            status_code=409, detail="decision verdict store not configured")
+    rec = await store.get(int(verdict_id))
+    if rec is None:
+        raise HTTPException(status_code=404,
+                            detail=f"verdict not found: {verdict_id}")
+    from dataclasses import asdict
+
+    from trove.services.decision.verdicts import diff_verdicts
+
+    prev = await store.previous_for(rec.datasource, rec.rule_id, rec)
+    return {
+        "verdict": asdict(rec),
+        "diff": diff_verdicts(prev, rec) if prev is not None else None,
+    }
+
+
+@router.get("/admin/decisions/{rule_id}/verdicts")
+async def list_verdicts(
+    rule_id: str, request: Request, datasource: str,
+    limit: int = Query(20, ge=1, le=200),
+    since: str | None = Query(None),
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """Newest-first verdict history for one rule, each row diffed against the
+    one before it (inline — the window is bounded, so no N+1).
+
+    The oldest row of the returned window has ``diff: null``: its predecessor
+    is outside the page. That is a boundary, not "nothing changed" — raise
+    ``limit``/``since`` to reach further back.
+
+    A rule with no history answers 200 with an empty list (it may simply have
+    never been scheduled); only a missing *store* is a 409.
+    """
+    store = _verdicts(request)
+    if store is None:
+        raise HTTPException(
+            status_code=409, detail="decision verdict store not configured")
+    records = await store.list_for_rule(datasource, rule_id, limit=limit,
+                                        since=since)
+    from trove.services.decision.verdicts import diff_verdicts
+
+    out = []
+    for i, rec in enumerate(records):
+        prev = records[i + 1] if i + 1 < len(records) else None
+        out.append(_verdict_brief(
+            rec, diff_verdicts(prev, rec) if prev is not None else None))
+    return {
+        "datasource": datasource,
+        "rule_id": rule_id,
+        "count": len(out),
+        "verdicts": out,
+    }
 
 
 @router.get("/admin/decisions/{rule_id}")

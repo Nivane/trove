@@ -248,6 +248,20 @@ class AssetsConfig:
 
 
 @dataclass
+class DecisionConfig:
+    """决策层配置(P2 —— 规则判定与判定历史 ``agent.decision.*``)。
+
+    ``verdict_retention_days``: 判定历史(verdict store)的保留期,``<=0``
+    = 不清理(**默认**)。与 ``memory.retention_days`` 同纪律 —— 判定记录是
+    不可编辑的审计行,一条按时间自动消失的审计线,恰好会在有人来查它的
+    时候不在。清理挂在既有 periodic sweep 上(``retention.sweep_interval_
+    hours`` 关掉时它也不会跑,这是有意的:一个部署只会有一个清理节拍)。
+    """
+
+    verdict_retention_days: int = 0
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -331,6 +345,8 @@ class AgentConfig:
     attribution: AttributionConfig = field(default_factory=AttributionConfig)
     # 分析服务扩展预算(驱动器树等;老 attribution 配置不动)。
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    # 决策层:判定历史保留期等。见 DecisionConfig(默认不清理)。
+    decision: DecisionConfig = field(default_factory=DecisionConfig)
     # 离线评测回归门配置(opt-in;默认不进 CI)。见 EvalConfig。
     eval: EvalConfig = field(default_factory=EvalConfig)
     # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
@@ -546,6 +562,15 @@ class ConfigLoader:
             max_queries=max(1, int(analysis_raw.get("max_queries", 12))),
         )
 
+        # Parse decision layer (verdict history retention; agent.decision.*).
+        # 与 assets/authz 同写法:顶层与 ``agent:`` 内嵌两种都认 —— 加了字段
+        # 却不在加载器里读 YAML,配置就永远不生效(恒取默认)。
+        decision_raw = resolved.get("decision", {}) or agent_section.get("decision", {}) or {}
+        decision_conf = DecisionConfig(
+            verdict_retention_days=max(
+                0, int(decision_raw.get("verdict_retention_days", 0))),
+        )
+
         # Parse eval gate (top-level section, not under agent:)
         eval_raw = resolved.get("eval", {}) or {}
         budget_raw = agent_section.get("budget", {}) or {}
@@ -664,6 +689,7 @@ class ConfigLoader:
             memory=memory,
             attribution=attribution,
             analysis=analysis_conf,
+            decision=decision_conf,
             eval=eval_conf,
             budget=budget_conf,
             authz=authz_conf,

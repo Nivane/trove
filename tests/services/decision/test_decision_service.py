@@ -51,6 +51,15 @@ semantic_model:
         expression:
           dialects: [{dialect: sqlite, expression: SUM(loan.amount)}]
         agg_time_dimension: loan.date
+      - name: loan_cost
+        expression:
+          dialects: [{dialect: sqlite, expression: SUM(loan.cost)}]
+        agg_time_dimension: loan.date
+      - name: loan_net
+        type: derived
+        expression:
+          dialects: [{dialect: sqlite, expression: loan_balance - loan_cost}]
+        agg_time_dimension: loan.date
 """
 
 RULE = {
@@ -65,12 +74,14 @@ RULE = {
 
 # Aug 2026 (baseline): 华东 1000, 华北 500
 # Sep 2026 (current):  华东  800 (-20%), 华北 600 (+20%)
+# cost 是成比例的减数,让 loan_net = loan_balance − loan_cost 有真实可分解性:
+# Δnet(-550) == Δbalance(-300) − Δcost(+250) —— 恒等式精确,残差为 0。
 ROWS = """
-INSERT INTO loan (region, amount, date) VALUES
-  ('华东', 1000, '2026-08-05'), ('华东', 1000, '2026-08-20'),
-  ('华北',  500, '2026-08-10'),
-  ('华东',  800, '2026-09-05'), ('华东',  800, '2026-09-20'),
-  ('华北',  600, '2026-09-10')
+INSERT INTO loan (region, amount, cost, date) VALUES
+  ('华东', 1000, 400, '2026-08-05'), ('华东', 1000, 400, '2026-08-20'),
+  ('华北',  500, 100, '2026-08-10'),
+  ('华东',  800, 500, '2026-09-05'), ('华东',  800, 500, '2026-09-20'),
+  ('华北',  600, 150, '2026-09-10')
 """
 
 
@@ -85,7 +96,7 @@ async def svc(tmp_path):
     )
     adapter = await registry.register(config, set_default=True)
     await adapter.execute(
-        "CREATE TABLE loan (region TEXT, amount REAL, date DATE)")
+        "CREATE TABLE loan (region TEXT, amount REAL, cost REAL, date DATE)")
     await adapter.execute(ROWS)
 
     kb = KbService(tmp_path / "proj")
@@ -400,3 +411,114 @@ class TestBoundedExecution:
     def test_missing_or_garbage_falls_back_to_the_default(self, raw):
         """非正/非数 → 回到缺省,**不静默变成"无超时"**。"""
         assert DecisionService(None, None, timeout_ms=raw)._timeout_ms == 30_000
+
+
+class TestAnalysisBridgeSeam:
+    """补丁 1:判定触发 → 桥接分析引擎,证据里多一节 ``analysis``。
+
+    这一层测的是**缝**(谁在什么时候被调用、调用时手里有什么),不是桥
+    内部的算法 —— 那些在 ``test_bridge.py`` 里。缝错了的表现都很安静:
+    未触发也跑(白烧查询)、matched 递空(桥静默永不适用)、桥抛异常把
+    已判完的判定降级成 error run(附录拖垮正文)。
+    """
+
+    async def test_untriggered_rule_never_touches_the_bridge(self, svc, monkeypatch):
+        """判定是常态,分析是例外 —— 不触发的规则不该付两次查询。"""
+        import trove.services.decision.bridge as bridge
+
+        called = []
+
+        async def _spy(**kwargs):
+            called.append(kwargs)
+            return None
+
+        monkeypatch.setattr(bridge, "run_bridge", _spy)
+        out = await svc.evaluate(rule(baseline={"kind": "yoy"}), "demo", NOW)
+
+        assert out.error == ""
+        assert out.triggered is False          # 2025-09 无数据 → Unknown → 不触发
+        assert called == []
+        assert "analysis" not in out.evidence
+
+    async def test_triggered_rule_hands_the_bridge_the_judging_anchor(
+            self, svc, monkeypatch):
+        """matched 必须与判定自己编译时用的一致(判定按什么表编译,桥就
+        按同一份),judged_rows 必须是判定行 —— 桥据此零额外查询复用分组。"""
+        import trove.services.decision.bridge as bridge
+
+        calls = []
+        real = bridge.run_bridge
+
+        async def _record(**kwargs):
+            calls.append(kwargs)
+            return await real(**kwargs)
+
+        monkeypatch.setattr(bridge, "run_bridge", _record)
+        out = await svc.evaluate(rule(), "demo", NOW)
+
+        assert out.error == "" and out.triggered is True
+        assert len(calls) == 1
+        assert calls[0]["matched"] == ["loan"]
+        assert calls[0]["judged_rows"], "判定行必须递过去,不能空手"
+        assert calls[0]["judged_rows"][0]["dim"] == "华东"
+
+    async def test_single_leaf_metric_writes_no_analysis_section(self, svc):
+        """SUM(amount) 是单叶子 —— 桥对这条规则没有话说。不适用 ≠ 失败:
+        证据里什么都不写,也不得报错。"""
+        out = await svc.evaluate(rule(), "demo", NOW)   # loan_balance
+
+        assert out.error == "" and out.triggered is True
+        assert "analysis" not in out.evidence
+
+    async def test_derived_metric_yields_components_and_an_exact_residual(self, svc):
+        """loan_net = loan_balance − loan_cost 有真实可分解性。
+
+        Δnet(-600 华东) == Δbalance(-400) − Δcost(+200) —— 恒等式精确,
+        残差必须是 ``identity`` 的 0,而不是读起来像真残差的 gap。
+        """
+        from trove.services.decision.bridge import MAX_BRIDGE_QUERIES
+
+        out = await svc.evaluate(
+            rule(id="net-drop", name="净额下滑", priority=2,
+                 recommendation="联系区域客户经理复核",
+                 subject={"metrics": ["loan_net"], "dimensions": ["region"]},
+                 conditions={"all": ["delta_pct < -0.10"]}),
+            "demo", NOW)
+
+        assert out.error == "" and out.triggered is True
+        analysis = out.evidence["analysis"]
+        top = analysis["top_components"][0]
+        assert (top["dim"], top["value"]) == ("region", "华东")
+        assert top["delta"] == pytest.approx(-600.0)
+        assert top["contribution"] == pytest.approx(-600 / 650)
+        assert len(analysis["queries"]) <= MAX_BRIDGE_QUERIES
+        assert analysis["residual"] == {"value": 0.0, "exact": True,
+                                        "reason": "identity"}
+        assert analysis["degraded"] == []
+        # 证据自带 SQL —— 判定记录是唯一审计线,可复算性不认"谁跑的"。
+        assert any("SELECT" in q["sql"].upper() for q in analysis["queries"])
+        # 判定字段照常在(桥只追加,不动正文)。
+        assert out.evidence["priority"] == 2
+        assert out.evidence["recommendation"] == "联系区域客户经理复核"
+
+    async def test_a_crashing_bridge_cannot_downgrade_the_verdict(
+            self, svc, monkeypatch):
+        """附录拖垮正文是最坏形态:判定已经判完,桥崩了只能记账。"""
+        import trove.services.decision.bridge as bridge
+
+        async def _boom(**_kwargs):
+            raise RuntimeError("bridge exploded")
+
+        monkeypatch.setattr(bridge, "run_bridge", _boom)
+        out = await svc.evaluate(rule(id="net-drop", name="净额下滑",
+                                      subject={"metrics": ["loan_net"],
+                                               "dimensions": ["region"]},
+                                      conditions={"all": ["delta_pct < -0.10"]}),
+                                 "demo", NOW)
+
+        assert out.error == ""                     # 不是 error run
+        assert out.triggered is True               # 判定照常交付
+        analysis = out.evidence["analysis"]
+        assert analysis["top_components"] == []
+        assert analysis["degraded"][0]["stage"] == "analysis_bridge"
+        assert "bridge exploded" in analysis["degraded"][0]["reason"]

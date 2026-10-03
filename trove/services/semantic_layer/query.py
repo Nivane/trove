@@ -138,7 +138,12 @@ def build_and_compile(
     for ds in dim_datasets + tg_datasets:
         if ds and ds not in anchor:
             anchor.append(ds)
-    if not anchor:
+    # 调用方给了 matched 就不需要我们再推锚定 —— 它已经回答了同一个问题。
+    # 该分支存在的原因:派生度量引用**其他度量名**(``net = revenue - cost``)
+    # 时,``_dataset_refs`` 只认 ``dataset.field``,datasets 为空,而它的
+    # 维度/时间字段可能也没在这条查询里出现;没有这层豁免,一个调用方已经
+    # 指明了数据集的查询会被"推不出锚定"拒绝。
+    if not anchor and not matched:
         raise SemanticQueryError(
             "cannot determine anchor datasets — metrics have no dataset anchor")
 
