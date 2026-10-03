@@ -6,6 +6,11 @@ Introspection via information_schema:
 
 The driver is imported lazily so the adapter module stays importable
 without `uv sync --extra mysql`.
+
+并发:一个适配器 = **一条**连接,而调用方会并行使用它(agent 循环同轮
+``asyncio.gather`` 派发 probe_query / check_result)。所有触碰 ``self._conn``
+的段由每适配器一把 ``asyncio.Lock`` 串行化;连接级故障有**有界**恢复
+(见 ``_conn_lock`` 与 ``_execute_locked`` 的注释)。
 """
 
 from __future__ import annotations
@@ -51,6 +56,112 @@ _MYSQL_WRITE_PRIVILEGES = frozenset({
     "ALL PRIVILEGES", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
     "TRUNCATE", "CREATE TEMPORARY TABLES", "LOCK TABLES", "REFERENCES",
 })
+
+
+# ── 连接级故障的**收窄**判定(重试边界的第一半)─────────────
+#
+# 判定分两层,缺一不可(见 ``_execute_locked``):
+#   1. 错误是不是「这条连接已不可信」(本段);
+#   2. 语句本身能不能安全重发(``_is_retryable_read``)。
+#
+# 只看第一层会在写语句上重发(可能已经在服务端落了一半);只看第二层会
+# 在一个语法错误上白拆一条好连接。两层都过才重建重试一次。
+#
+# 错误码优先(pymysql/aiomysql 把 ``(errno, message)`` 放在 args):
+#
+#   2006 CR_SERVER_GONE_ERROR      服务端已断开
+#   2013 CR_SERVER_LOST            查询途中连接丢失("Lost connection ... during query")
+#   2014 CR_COMMANDS_OUT_OF_SYNC   上一条语句的结果没读完就又发命令 —— 并发共用
+#                                  一条连接的典型后果
+#   2055 CR_SERVER_LOST_EXTENDED
+_TRANSIENT_CONN_ERRNOS = frozenset({2006, 2013, 2014, 2055})
+
+#: 无错误码时按 **类型名** 判「连接不可信」的异常(驱动/事件循环的命名差异)。
+#: ``OperationalError`` **刻意不在其中** —— 它同时承载 1045(权限)、1205(锁等待)、
+#: 1146(缺表)等不该拆连接的错误,只能按错误码判(见上面的常量)。
+_TRANSIENT_CONN_TYPES = frozenset({
+    "InterfaceError",        # pymysql 协议级:失步 / 对已关闭连接发命令 (0, '')
+    "IncompleteReadError",   # asyncio 流读到一半 EOF(片段 / 服务端掐断)
+    "ConnectionResetError",
+    "ConnectionAbortedError",
+    "BrokenPipeError",
+})
+
+#: 错误码与类型名都缺时的文本兜底(asyncio 流层 / OS 层 / 本适配器的包装)。
+#: 只收「连接已不可信」的措辞:语法、权限、缺表一律不在其中 —— 它们重试
+#: 无意义,拆连接更是纯浪费。
+_TRANSIENT_CONN_MARKERS = (
+    "lost connection",           # MySQL 原文: Lost connection to MySQL server ...
+    "connection lost",           # 本适配器 _ping_reconnect 的包装措辞
+    "server has gone away",      # MySQL 2006
+    "commands out of sync",      # MySQL 2014
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "connection closed",
+    "broken pipe",
+    "incomplete read",           # asyncio.IncompleteReadError 的报文
+    "unexpected eof",
+    # asyncio.StreamReader 的并发读签名原话(``read()`` / ``readexactly()`` 共用
+    # 同一句):「两个协程在等同一个流的下一份数据」。这正是本适配器要根治的
+    # 那条报文 —— 修好锁之后它不该再出现,判定留着是兜底(比如外部绕过适配器).
+    "while another coroutine is already waiting",
+)
+
+#: 出错后**可以重发**的语句头(只读,幂等)。刻意不含 ``WITH``:MySQL 8 里
+#: ``WITH`` 也能冠在 ``UPDATE`` / ``DELETE`` 前面(CTE + DML),同一个前缀
+#: 既可能是读也可能是写 —— 而"能不能重发"完全取决于这一点。
+_READ_STATEMENT_HEADS = frozenset({"SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN"})
+
+
+def _error_code(exc: BaseException) -> int | None:
+    args = getattr(exc, "args", None) or ()
+    return args[0] if args and isinstance(args[0], int) else None
+
+
+def _is_connection_lost(exc: BaseException | None) -> bool:
+    """这条异常是否说明「当前连接已不可信」(收窄判定,依据见上方常量)。
+
+    沿 ``__cause__`` 走一段:``_ping_reconnect`` / Doris 的同名钩子都把驱动
+    异常包进了 ``DatasourceError(...) from e``,只看最外层会把原码漏掉。
+    """
+    seen = 0
+    while exc is not None and seen < 4:
+        if _error_code(exc) in _TRANSIENT_CONN_ERRNOS:
+            return True
+        if type(exc).__name__ in _TRANSIENT_CONN_TYPES:
+            return True
+        if any(m in str(exc).lower() for m in _TRANSIENT_CONN_MARKERS):
+            return True
+        exc = exc.__cause__
+        seen += 1
+    return False
+
+
+def _is_retryable_read(sql: str) -> bool:
+    """语句本身是否幂等可重发(只读)。判据与理由见 ``_READ_STATEMENT_HEADS``。"""
+    text = str(sql or "").lstrip()
+    # 跳过前导注释:``/* hint */ SELECT ...`` 与 ``-- note\\nSELECT ...`` 都是
+    # 读语句。注释没有闭合就不判读 —— 连语句头都取不到时按不可重试处理。
+    while text:
+        if text.startswith("/*"):
+            end = text.find("*/", 2)
+            if end < 0:
+                return False
+            text = text[end + 2:].lstrip()
+        elif text.startswith("--") or text.startswith("#"):
+            end = text.find("\n")
+            if end < 0:
+                return False
+            text = text[end + 1:].lstrip()
+        else:
+            break
+    head = text.split(None, 1)[0].upper() if text else ""
+    if head not in _READ_STATEMENT_HEADS:
+        return False
+    # ``SELECT ... INTO OUTFILE/DUMPFILE`` 会写文件 —— 读语句的外形,写的副作用。
+    upper = text.upper()
+    return "INTO OUTFILE" not in upper and "INTO DUMPFILE" not in upper
 
 
 def _mysql_write_grants(grant_lines: list[str]) -> list[str]:
@@ -101,10 +212,34 @@ class MySQLAdapter(DatabaseAdapter):
         ("UPDATE_TIME", "last_modified", timestamp_str),
     )
 
+    # ── 并发:一条连接,多个协程 ────────────────────────────
+    #
+    # 一个适配器就是一个**共享单例**(registry 里按名字取同一个对象),而
+    # agent 循环会**并行派发工具**(``agent_loop`` 的 ``asyncio.gather``):
+    # probe_query / check_result 同轮落到同一个适配器上。两个协程等同一个
+    # socket 的下一份数据,MySQL 协议就此失步 —— 症状是
+    # ``(2013, 'Lost connection to MySQL server during query')`` 或 asyncio
+    # 自己的 ``readexactly() called while another coroutine is already
+    # waiting for incoming data``,而不是一条业务错误。
+    #
+    # 修法**不是连接池**:池把「共享一条连接」换成「共享一个池的记账」,而
+    # 这里要的只是「同一时刻只有一个协程用这条连接」。``_conn_lock`` 串行化
+    # 所有触碰 ``self._conn`` 的段;每个公共入口持锁后调 ``_xxx_locked`` /
+    # 私有实现,私有实现里**不再取锁**(asyncio.Lock 不可重入,嵌套必自锁死)。
+    #
+    # 唯一的例外是 ``interrupt`` / ``_kill_query``:**不取锁**。它由 ``execute``
+    # 的取消栈在**持锁状态**下调用(去杀自己那条查询),再取一次锁就是自锁死;
+    # 它只读 ``thread_id``(纯属性,不是线上操作)并走**旁路连接**发 KILL
+    # QUERY —— 本来就碰不到共享连接。
+    #
+    # 锁只保证不重叠;连接**断/失步之后**的恢复另有有界重试,见
+    # ``_ensure_connected`` 与 ``_execute_locked``。
+
     def __init__(self, name: str = "mysql", config: dict[str, Any] | None = None):
         super().__init__(name, config or {})
         self._conn: Any = None
         self._server_version = ""
+        self._conn_lock = asyncio.Lock()
 
     @classmethod
     def _get_driver(cls):
@@ -123,7 +258,17 @@ class MySQLAdapter(DatabaseAdapter):
         return "mysql"
 
     async def connect(self) -> None:
-        if self._connected:
+        async with self._conn_lock:
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
+        """建连(**调用方必须已持有 ``_conn_lock``**)。
+
+        守卫看的是「已有一条活连接」,不是 ``_connected`` 标志:连接被丢弃过
+        (``_conn is None`` 但 ``_connected`` 仍为 True,见 ``_drop_connection``)
+        时,这里的 connect 负责把它建回来。
+        """
+        if self._conn is not None and self._connected:
             return
         try:
             aiomysql = self._get_driver()
@@ -139,7 +284,7 @@ class MySQLAdapter(DatabaseAdapter):
             # MySQL 与 MariaDB 的超时变量**不同**(单位也不同),装闸要看着
             # 引擎选;版本探测是服务端常量查询、不扫数据,先跑它的暴露可以忽略。
             await self._probe_version()
-            await self.apply_statement_timeout()
+            await self._statement_timeout_locked()   # 锁已在本方法调用方手里
             logger.debug("Connected to %s: %s:%s/%s",
                          self.label, self.config.get("host"), self.config.get("port"),
                          self.config.get("database"))
@@ -167,10 +312,41 @@ class MySQLAdapter(DatabaseAdapter):
             logger.debug("Version probe failed (capabilities will be conservative): %s", e)
 
     async def disconnect(self) -> None:
+        # 关连接也走锁:否则会在一条正在跑的语句下方把 socket 抽掉,下一条
+        # 语句拿到的是半条连接。等锁的时间被在飞语句自己的超时界住。
+        async with self._conn_lock:
+            self._disconnect_locked()
+
+    def _disconnect_locked(self) -> None:
         if self._conn:
             self._conn.close()
             self._conn = None
         self._connected = False
+
+    def _drop_connection(self) -> None:
+        """丢弃当前连接:**关闭、不复用**(失步的连接状态不可判)。
+
+        ``_connected`` 保持 True —— 适配器仍处「应已连接」状态,下一次使用
+        会重建(见 ``_ensure_connected``);只有显式 ``disconnect`` 才把它
+        置 False(那之后 execute 必须快速失败,不许隐式建连)。
+        """
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception as e:   # 关一条已坏的连接失败,不改变"它已不可用"
+                logger.debug("%s dropping connection: close failed: %s", self.label, e)
+
+    async def _rebuild_connection(self) -> None:
+        """丢弃旧连接并建一条新的;建不起来如实抛 ``reconnect failed``。"""
+        self._drop_connection()
+        try:
+            await self._connect_locked()
+        except Exception as e:
+            raise DatasourceError(
+                message=f"{self.label} connection lost and reconnect failed: {e}",
+                datasource=self.name,
+            ) from e
 
     supports_interrupt = True
 
@@ -195,6 +371,25 @@ class MySQLAdapter(DatabaseAdapter):
         if self.MARIADB_MARK in (self._server_version or "").lower():
             return f"SET SESSION max_statement_time = {ms / 1000.0:g}"
         return f"SET SESSION max_execution_time = {int(ms)}"
+
+    async def apply_statement_timeout(self) -> bool:
+        """公共入口(基类策略 + 本类钩子):与其余触碰 ``self._conn`` 的段一样**持锁**。
+
+        基类实现最后会在这条共享连接上发一条 ``SET SESSION``,所以它同样
+        是「线上操作」,不能游离在锁外。锁内路径(``_connect_locked`` /
+        ``_ping_reconnect``)改调 ``_statement_timeout_locked`` —— 同一个
+        实现,只是不再取一次锁(asyncio.Lock 不可重入,重入必自锁死)。
+        """
+        async with self._conn_lock:
+            return await self._statement_timeout_locked()
+
+    async def _statement_timeout_locked(self) -> bool:
+        """基类策略原样(能力声明 → ms 解析 → 本类钩子);**调用方必须已持锁**。
+
+        直接调基类实现(``super()``)而不是 ``self.``:后者会回到本类的
+        公共入口,在锁内再取一次锁 = 死锁。
+        """
+        return await super().apply_statement_timeout()
 
     async def _apply_statement_timeout(self, ms: int) -> bool:
         """``SET SESSION <超时变量>``(见 ``_statement_timeout_sql``)。一条龙 try —— 永不抛。
@@ -238,6 +433,10 @@ class MySQLAdapter(DatabaseAdapter):
 
         「查不到 thread id / 没连接」**不算失败**(见 ``_kill_query``):那是
         「本就无可取消」,与基类契约一致。
+
+        **刻意不取 ``_conn_lock``**:调用方是 ``execute`` 的取消栈,那一刻锁
+        就在它手里 —— 再取一次就是自锁死。它读 ``thread_id``(纯属性,不是
+        线上操作)、走旁路连接发 KILL,与共享连接的线上状态无关。
         """
         try:
             await asyncio.wait_for(self._kill_query(), timeout=INTERRUPT_TIMEOUT_S)
@@ -294,6 +493,10 @@ class MySQLAdapter(DatabaseAdapter):
         不接异常:查询被拒/连接断了,**如实往上抛**,由 ``readonly.probe`` 折成
         ``probe_failed``。在这里吞掉它就等于让「没查成」消失在实现里。
         """
+        async with self._conn_lock:
+            return await self._probe_readonly_locked()
+
+    async def _probe_readonly_locked(self) -> ReadonlyProbe:
         await self._ensure_connected()
         cursor = await self._conn.cursor()
         try:
@@ -325,6 +528,11 @@ class MySQLAdapter(DatabaseAdapter):
         driver exception (InterfaceError/OperationalError). ping with
         reconnect transparently reopens the connection when the server
         is reachable again.
+
+        **调用方必须已持有 ``_conn_lock``**(连接生命周期内部钩子);失败由
+        ``_ensure_connected`` 接手(丢弃 + 重建一次)。
+        Doris 覆写本方法(FE 不认 COM_PING,改用 ``SELECT 1``)—— 覆写体同样
+        只允许在锁内被调用。
         """
         try:
             await self._conn.ping(reconnect=True)
@@ -337,19 +545,73 @@ class MySQLAdapter(DatabaseAdapter):
         # (aiomysql 原地换 socket,Connection 对象不变)—— 与其猜,不如每次
         # ping 后都重发一次:一条廉价 SET,换掉「以为有界其实没有」这一个
         # 失败模式。未声明/显式关闭的方言在这一行里自然什么都不发。
-        await self.apply_statement_timeout()
+        await self._statement_timeout_locked()   # 锁已在本方法调用方手里
 
     async def _ensure_connected(self) -> None:
-        """Ensure a live connection, reconnecting a stale one."""
-        if not self._conn or not self._connected:
-            raise DatasourceError(message="Not connected", datasource=self.name)
-        await self._ping_reconnect()
+        """确保当前有一条可用连接(**调用方必须已持有 ``_conn_lock``**)。
+
+        三种状态:
+          * 从未连接 / 已显式 disconnect → ``Not connected``(不隐式建连);
+          * 连接被丢弃过(``_conn is None`` 但 ``_connected``)→ 重建后即用;
+          * 有连接 → ping(``reconnect=True`` 覆盖服务端 wait_timeout 掐断)。
+
+        ping 失败只有一种解释:这条连接已经不工作(ping 自带的重连也救不回
+        一条失步的连接)—— 此时**语句还没跑**,重建一次对任何语句都安全
+        (重试的是连接,不是语句),所以这里不做读/写区分。重建仍有界:
+        建不起来就抛 ``reconnect failed``,由调用方如实处理。
+        """
+        if self._conn is None:
+            if not self._connected:
+                raise DatasourceError(message="Not connected", datasource=self.name)
+            await self._rebuild_connection()
+        try:
+            await self._ping_reconnect()
+        except Exception as e:
+            logger.warning(
+                "%s connection unusable (%s: %s); rebuilding it before running "
+                "the statement", self.label, type(e).__name__, e,
+            )
+            await self._rebuild_connection()
 
     async def execute(self, sql: str) -> QueryResult:
-        if not self._conn or not self._connected:
-            raise SQLExecutionError(message="Not connected to MySQL", sql=sql)
-        await self._ping_reconnect()
+        async with self._conn_lock:
+            return await self._execute_locked(sql)
 
+    async def _execute_locked(self, sql: str) -> QueryResult:
+        if not self._conn and not self._connected:
+            # 从未连接 / 已显式 disconnect:与历史一致地快速失败(不隐式建连)。
+            raise SQLExecutionError(message="Not connected to MySQL", sql=sql)
+
+        # 连接层:ping 失败会在这里被重建一次(语句尚未执行,任何语句都安全)。
+        await self._ensure_connected()
+
+        try:
+            return await self._run_query(sql)
+        except Exception as e:
+            if not _is_connection_lost(e):
+                raise self._execution_error(sql, e) from e
+            # 连接已不可信:**一律丢弃**(不复用),但**只有读语句重试** ——
+            # 这条连接上「语句到底执行了没有」不可判,写语句重发可能产生
+            # 第二次副作用,读语句重发是幂等的。丢弃不等于重发:写语句丢掉
+            # 连接后直接把错误抛出去,由下一次调用用新连接。
+            if not _is_retryable_read(sql):
+                self._drop_connection()
+                raise self._execution_error(sql, e) from e
+            logger.warning(
+                "%s lost the connection while running a read statement (%s: %s); "
+                "discarding it and retrying once on a fresh connection",
+                self.label, type(e).__name__, e,
+            )
+            await self._rebuild_connection()
+            try:
+                return await self._run_query(sql)
+            except Exception as e2:
+                if _is_connection_lost(e2):
+                    self._drop_connection()   # 新连接也失步:别留给下一条语句
+                raise self._execution_error(sql, e2) from e2
+
+    async def _run_query(self, sql: str) -> QueryResult:
+        """在**当前**连接上跑一条语句(调用方已持锁、已确保连接可用)。"""
         start = time.monotonic()
         cursor = await self._conn.cursor()
         try:
@@ -369,18 +631,27 @@ class MySQLAdapter(DatabaseAdapter):
         except asyncio.CancelledError:
             # 客户端中止:在跑连接发不了 KILL,走旁路连接 KILL QUERY
             # (同用户可杀自己的查询),服务端真正停止执行。
+            #
+            # **顺序要紧**:先 interrupt 再关游标。MySQL 游标的 close 会去
+            # 抽干剩余结果,在一条失步/卡住的 socket 上这一步可能一直等 ——
+            # 先让服务端停下这条查询,那次读才会快点失败。
             await self.interrupt()
             raise
-        except Exception as e:
-            raise SQLExecutionError(
-                message=f"MySQL execution error: {e}",
-                sql=sql,
-                db_error=str(e),
-            ) from e
         finally:
             await cursor.close()
 
+    def _execution_error(self, sql: str, e: BaseException) -> SQLExecutionError:
+        return SQLExecutionError(
+            message=f"MySQL execution error: {e}",
+            sql=sql,
+            db_error=str(e),
+        )
+
     async def get_schema(self) -> SchemaInfo:
+        async with self._conn_lock:
+            return await self._get_schema_locked()
+
+    async def _get_schema_locked(self) -> SchemaInfo:
         await self._ensure_connected()
 
         tables = []
@@ -438,6 +709,10 @@ class MySQLAdapter(DatabaseAdapter):
         ``UPDATE_TIME`` 取到值时是**下界**(I_S 的统计列默认缓存 24h,change
         buffer 又会让它偏旧),方向安全:宁可说「数据截至更早」,不可说更新。
         """
+        async with self._conn_lock:
+            return await self._table_profiles_locked()
+
+    async def _table_profiles_locked(self) -> dict[str, TableProfile]:
         await self._ensure_connected()
         caps = self.profile_capabilities
         cols = ["TABLE_NAME", "TABLE_ROWS", *(c for c, _, _ in self._PROFILE_COLS)]
