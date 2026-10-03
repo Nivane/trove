@@ -187,6 +187,10 @@ docker compose down
 
 数据源按需装驱动:`uv sync --extra postgres|mysql|doris|clickhouse|duckdb`(SQLite 内置)。LLM 走 litellm 网关,OpenAI / DeepSeek / Anthropic / 任意兼容端点皆可,每节点可分档——强模型做反思裁决,便宜模型做规划与洞察。见 [配置参考](https://nivane.github.io/trove/reference/config.html)。
 
+管理台(管理端)是同一套栈的另一半:数据源接入、知识库审议、语义模型、判定规则、审计。这是知识库的待审批队列——自动沉淀的教训与示例先进待审批,管理员确认后才进入检索:
+
+<img src="docs/assets/shots/admin-kb-pending.png" alt="Trove 管理台 · 知识库:待审批队列里每条自动学到的教训与示例都带「确认 / 编辑后确认 / 拒绝」,确认后写入认证块(批准人 / 时间)并进入检索" width="880">
+
 ## 只读执行:边界在代码里
 
 问数系统要落地,安全边界不能是提示词里的一句请求。下面这些**全是代码,不是模型行为**(完整清单见[安全边界](https://nivane.github.io/trove/ops/security.html)):

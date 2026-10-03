@@ -187,6 +187,10 @@ Every row has a deeper version on the docs site, anchored to source:
 
 Drivers install on demand: `uv sync --extra postgres|mysql|doris|clickhouse|duckdb` (SQLite is built in). The LLM side goes through a litellm gateway — OpenAI / DeepSeek / Anthropic / any compatible endpoint — with per-node tiers, so a strong model can adjudicate reflection while a cheap one plans and writes insights. See the [configuration reference](https://nivane.github.io/trove/reference/config.html).
 
+The admin console is the other half of the same stack: datasource onboarding, KB review, the semantic model, decision rules, audit. This is the KB review queue — automatically captured lessons and examples land as pending, and only enter retrieval after an admin confirms them:
+
+<img src="docs/assets/shots/admin-kb-pending.png" alt="Trove admin console · knowledge base review queue: every auto-captured lesson and example carries Confirm / Edit-and-confirm / Reject, and enters retrieval only after confirmation" width="880">
+
 ## Read-Only Execution: the Boundary Is Code
 
 For a data agent to ship, the security boundary cannot be a request written in a prompt. Everything below is **code, not model behaviour** (the full list is in [security boundaries](https://nivane.github.io/trove/ops/security.html)):
