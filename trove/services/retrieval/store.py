@@ -18,6 +18,12 @@ pluggable reranker does the coarse→fine (精排) pass — 默认无精排:默�
 per-query hit meta (branch sizes / RRF order / rerank order) for the feedback
 loop (see ``trove.services.retrieval.query_log``).
 
+融合分上还有一条**权威分**偏置:命中分 = 归一化 RRF + α·authority,authority
+∈ [-1,1] 由条目治理状态确定性派生(certified +1 / deprecated -1,见
+``retrieval/authority.py``),α 默认 0.1(配置 ``rrf_authority_alpha``,0 = 关)。
+学 Databricks Ontology 的 curation 加权:相关性打平的地方人工背书的资产优先;
+偏置上限 ±α,盖不过一个名次以上的检索差距。
+
 Non-PostgreSQL datasources / test environments fall back to
 ``SqliteHybridStore`` (FTS5 + in-Python cosine) so the same interface works
 everywhere; the PostgreSQL path is exercised by env-gated integration tests.
@@ -36,6 +42,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from trove.core.logging import get_logger
 from trove.services.kb.backends.dense import Embedder
+from trove.services.retrieval.authority import AUTHORITY_ALPHA
 
 logger = get_logger(__name__)
 
@@ -59,6 +66,8 @@ class RetrievalDoc:
     source_file: str = ""
     item_key: str = ""
     embedding: list[float] | None = None
+    #: 权威分 ∈ [-1,1](治理状态派生;见 ``retrieval/authority.py``)。
+    authority: float = 0.0
 
 
 @dataclass
@@ -67,6 +76,8 @@ class RetrievalHit:
     content: str
     score: float
     kind: str = ""
+    #: 文档的权威分(装载时随行带回,供 recall 做 ±α 偏置)。
+    authority: float = 0.0
 
 
 @runtime_checkable
@@ -146,12 +157,17 @@ class HybridStore(ABC):
         *,
         rrf_k: int = RRF_K,
         rrf_weights: dict[str, float] | None = None,
+        authority_alpha: float | None = None,
         recorder: Any | None = None,
     ) -> None:
         self._embedder = embedder
         self._reranker = reranker
         self._rrf_k = int(rrf_k or RRF_K)
         self._rrf_weights = rrf_weights or {}
+        # None = 默认开(AUTHORITY_ALPHA);显式 0 = 关;负数归零。
+        self._authority_alpha = (
+            AUTHORITY_ALPHA if authority_alpha is None
+            else max(0.0, float(authority_alpha)))
         self._recorder = recorder
 
     def _channel_weights(self, n: int) -> list[float]:
@@ -235,9 +251,14 @@ class HybridStore(ABC):
         returns ``(hits, meta)`` where meta carries branch sizes / RRF order /
         rerank order / latency — the feedback-loop + eval surface.
 
-        命中 ``score`` = **排序位映射后的 RRF 分**(无精排时)或精排分(有精排时)。
-        不用 min-max 是因为它在候选少时把分数顶平(见 :func:`rrf_order_scores`),
-        会让下游 ``_fuse_extra_sim`` 的 0.5 权重退化成常量偏移,压平确定性信号。
+        命中 ``score`` = **排序位映射后的 RRF 分**(无精排时)或精排分(有精排时),
+        再叠加权威分偏置 ``+ α·authority``(默认 α=0.1)。不用 min-max 是因为它
+        在候选少时把分数顶平(见 :func:`rrf_order_scores`),会让下游
+        ``_fuse_extra_sim`` 的 0.5 权重退化成常量偏移,压平确定性信号。
+
+        权威分偏置放在精排**之前**:精排一旦启用会整体替换 score(既有语义),
+        权威分只参与融合序,不假装能穿过精排。score 上界因此从 1.0 放宽到
+        1+α,下游 ``_fuse_extra_sim`` 是线性混合、不设阈值,沿用即可。
         """
         self._ds = datasource
         t0 = time.perf_counter()
@@ -251,6 +272,17 @@ class HybridStore(ABC):
         fused = sorted(fused_scores, key=lambda d: fused_scores[d], reverse=True)
         candidates = await self._load(fused, rrf_order_scores(fused))
         rrf_ids = [c.doc_id for c in candidates]
+        if self._authority_alpha:
+            # 权威分偏置:按加偏后的分数重排(同分候选 certified 优先、
+            # deprecated 靠后)。rrf_ids 保持纯 RRF 序 —— 它是评测/反馈
+            # 的基准面,不该混入偏置。
+            adjusted = False
+            for c in candidates:
+                if c.authority:
+                    c.score += self._authority_alpha * c.authority
+                    adjusted = True
+            if adjusted:
+                candidates.sort(key=lambda c: c.score, reverse=True)
         rerank_used = False
         if self._reranker is not None and candidates:
             try:

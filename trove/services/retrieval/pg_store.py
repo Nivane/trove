@@ -27,6 +27,7 @@ from trove.services.kb.backends.dense import Embedder
 from trove.services.retrieval.store import HybridStore, RetrievalDoc, RetrievalHit
 from trove.storage.migrations import (
     POSTGRES,
+    AddColumn,
     Migration,
     apply_migrations,
 )
@@ -43,6 +44,7 @@ class PgHybridStore(HybridStore):
         dims: int = 1536, fts_tokenizer: str | None = None,
         rrf_k: int = 60,
         rrf_weights: dict[str, float] | None = None,
+        authority_alpha: float | None = None,
         recorder: Any | None = None,
         hnsw_m: int = 0,
         hnsw_ef_construction: int = 0,
@@ -50,7 +52,8 @@ class PgHybridStore(HybridStore):
     ) -> None:
         super().__init__(
             embedder, reranker, rrf_k=rrf_k,
-            rrf_weights=rrf_weights, recorder=recorder)
+            rrf_weights=rrf_weights, authority_alpha=authority_alpha,
+            recorder=recorder)
         self._dsn = dsn
         self._dims = dims
         self._fts_tokenizer = fts_tokenizer
@@ -83,7 +86,8 @@ class PgHybridStore(HybridStore):
         return await psycopg.AsyncConnection.connect(self._dsn)
 
     def _base_migrations(self) -> list[Migration]:
-        """v1 = 表与索引。
+        """v1 = 表与索引;v2 = authority 权威分列(sqlite 侧对应 v3,两边
+        版本号各自演进,同一版本表 `trove_schema` 按 store 名分开记录)。
 
         **版本号与配置无关**:向量维度是配置,配置不该让库"变新"(见
         ``storage/migrations`` 模块文档)。退役的 sparse 列当年走的也是
@@ -106,7 +110,11 @@ class PgHybridStore(HybridStore):
             f"{_SCHEMA_NS}.documents(datasource)",
             f"CREATE INDEX IF NOT EXISTS documents_vec ON "
             f"{_SCHEMA_NS}.documents USING hnsw (embedding vector_cosine_ops)",
-        ])]
+        ]),
+            Migration(version=2, description="authority 权威分列", ops=[
+                AddColumn(f"{_SCHEMA_NS}.documents", "authority",
+                          "REAL DEFAULT 0.0", "DOUBLE PRECISION DEFAULT 0.0")]),
+        ]
 
     async def _ensure(self) -> None:
         if self._ensured:
@@ -180,10 +188,10 @@ class PgHybridStore(HybridStore):
                         f"DELETE FROM {_SCHEMA_NS}.documents WHERE id = %s", (doc_id,))
                     await cur.execute(
                         f"""INSERT INTO {_SCHEMA_NS}.documents
-                        (id, datasource, kind, source_file, content, embedding)
-                        VALUES (%s, %s, %s, %s, %s, %s::vector)""",
+                        (id, datasource, kind, source_file, content, embedding, authority)
+                        VALUES (%s, %s, %s, %s, %s, %s::vector, %s)""",
                         (doc_id, doc.datasource, doc.kind, doc.source_file,
-                         doc.content, self._lit(emb)),
+                         doc.content, self._lit(emb), float(doc.authority or 0.0)),
                     )
             await conn.commit()
         finally:
@@ -307,7 +315,7 @@ class PgHybridStore(HybridStore):
         try:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    f"SELECT id, content, kind FROM {_SCHEMA_NS}.documents "
+                    f"SELECT id, content, kind, authority FROM {_SCHEMA_NS}.documents "
                     "WHERE id = ANY(%s)",
                     (doc_ids,),
                 )
@@ -322,7 +330,7 @@ class PgHybridStore(HybridStore):
                 continue
             out.append(RetrievalHit(
                 doc_id=doc_id, content=r[1], score=scores.get(doc_id, 0.0),
-                kind=r[2]))
+                kind=r[2], authority=float(r[3] or 0.0)))
         return out
 
     # datasource is threaded through recall() via self._ds (set in base recall).

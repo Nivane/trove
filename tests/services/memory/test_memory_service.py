@@ -68,6 +68,18 @@ async def test_observe_success_drafts_pending_example(memory, kb_dir):
     assert any(e.get("tags") == ["auto"] for e in pending)
 
 
+async def test_observe_zero_hit_tags_pending_example(memory, kb_dir):
+    """零命中(检索无示例锚点)→ 自动示例草稿盖 zero-hit 标,优先审。"""
+    await memory.observe(
+        scope=SCOPE, question="unseen question", sql="SELECT 1",
+        verdict="OK", row_count=1, dialect="sqlite", zero_hit=True,
+    )
+    pending = await memory.kb.list_pending_examples("demo")
+    draft = next(e for e in pending if e.get("question") == "unseen question")
+    assert draft["tags"] == ["auto", "zero-hit"]
+    assert "zero KB hits" in draft.get("note", "")
+
+
 async def test_observe_correction_captures_pending_lesson(memory, kb_dir):
     await memory.observe(
         scope=SCOPE, question="q", sql="SELECT 1",

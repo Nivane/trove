@@ -40,6 +40,9 @@ def to_dict(cfg: DatasourceConfig) -> dict:
         "embedding_dims": int(cfg.embedding_dims or 1536),
         "rrf_k": int(cfg.rrf_k or 60),
         "rrf_weights": dict(cfg.rrf_weights or {}),
+        # None → 默认 0.1;显式 0 原样落盘(0 = 关,不能经 `or` 翻回默认)。
+        "rrf_authority_alpha": float(
+            cfg.rrf_authority_alpha if cfg.rrf_authority_alpha is not None else 0.1),
         "rerank_backend": cfg.rerank_backend or "",
         "rerank_endpoint": cfg.rerank_endpoint or "",
         "vector_backend": cfg.vector_backend or "sqlite",
@@ -90,6 +93,10 @@ def from_dict(data: dict) -> DatasourceConfig:
         embedding_dims=int(data.get("embedding_dims") or 1536),
         rrf_k=int(data.get("rrf_k") or 60),
         rrf_weights=dict(data.get("rrf_weights") or {}),
+        # 缺字段(旧 yml)→ 默认 0.1;显式 0 是"关闭",不能用 `or 0.1` 读回。
+        rrf_authority_alpha=(
+            0.1 if data.get("rrf_authority_alpha") is None
+            else float(data["rrf_authority_alpha"])),
         rerank_backend=str(data.get("rerank_backend") or ""),
         rerank_endpoint=str(data.get("rerank_endpoint") or ""),
         vector_backend=str(data.get("vector_backend") or "sqlite"),

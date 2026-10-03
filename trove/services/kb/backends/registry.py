@@ -105,6 +105,7 @@ def resolver_from_configs(
             )
             from trove.services.retrieval.factory import (
                 _reranker_for,
+                authority_cfg,
                 channel_cfg,
                 hnsw_cfg,
             )
@@ -113,6 +114,7 @@ def resolver_from_configs(
             embedder = embedder_factory(cfg) if embedder_factory is not None else None
             reranker = _reranker_for(cfg, embedder)
             rrf_k, rrf_weights = channel_cfg(cfg)
+            alpha = authority_cfg(cfg)
             # 检索 hit 日志落在 KB 目录父级 home(与 sqlite 兜底同 home)。
             home = getattr(cfg, "home", "") or (
                 str(kb.kb_dir.parent) if kb is not None and getattr(kb, "kb_dir", None) else "")
@@ -128,7 +130,8 @@ def resolver_from_configs(
                     dims=int(getattr(cfg, "embedding_dims", 1536) or 1536),
                     fts_tokenizer=str(getattr(cfg, "fts_tokenizer", "") or "en_stem"),
                     rrf_k=rrf_k,
-                    rrf_weights=rrf_weights, recorder=recorder,
+                    rrf_weights=rrf_weights, authority_alpha=alpha,
+                    recorder=recorder,
                     hnsw_m=m, hnsw_ef_construction=ef_construction,
                     hnsw_ef_search=ef_search,
                 )
@@ -136,7 +139,8 @@ def resolver_from_configs(
                 # SQLite 兜底须与索引器同一 home(否则检索库为空);取 kb 目录父级
                 store = SqliteHybridStore.for_home(
                     home, embedder, reranker,
-                    rrf_k=rrf_k, rrf_weights=rrf_weights, recorder=recorder)
+                    rrf_k=rrf_k, rrf_weights=rrf_weights, authority_alpha=alpha,
+                    recorder=recorder)
             return PgHybridKbBackend(kb, store, embedder=embedder)
         return build_retrieval_backend(name, kb)
 

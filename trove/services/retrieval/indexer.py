@@ -23,6 +23,7 @@ from typing import Any
 
 from trove.core.logging import get_logger
 from trove.services.kb.backends.fts import fts_item_text
+from trove.services.retrieval.authority import authority_of
 from trove.services.retrieval.store import HybridStore, RetrievalDoc
 
 logger = get_logger(__name__)
@@ -114,6 +115,10 @@ class Indexer:
             docs.append(RetrievalDoc(
                 content=text, datasource=datasource, kind="kb",
                 source_file=it["source_file"], item_key=it["item_key"],
+                # 治理字段由镜像装载时注入 payload(见 kb/service._entries_of),
+                # 这里只做值映射 —— 与 pg_hybrid.index_file 同一表达式,
+                # 全量/增量两条写入路径必须逐字段一致。
+                authority=authority_of(it["kind"], it["payload"]),
             ))
         if docs:
             await self._store.index_many(docs)

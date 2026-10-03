@@ -118,6 +118,7 @@ class PgHybridKbBackend:
         即 doc_id)——增量写入与全量索引必须产出逐字段一致的文档,否则同一
         条目会随"最后是谁写的"而不同。
         """
+        from trove.services.retrieval.authority import authority_of
         from trove.services.retrieval.indexer import kb_item_text
         from trove.services.retrieval.store import RetrievalDoc
 
@@ -129,6 +130,9 @@ class PgHybridKbBackend:
             docs.append(RetrievalDoc(
                 content=text, datasource=datasource, kind="kb",
                 source_file=source_file, item_key=item_key,
+                # 与 Indexer.index_kb 同一表达式(entries 出自同一 _entries_of,
+                # 治理字段已在 payload 里)—— 增量与全量必须逐字段一致。
+                authority=authority_of(kind, payload),
             ))
         # 先删后写:条目被改写或从 YAML 移除时,旧文档不能留下
         # (留下的旧 doc_id 映射不回 kb_items,只会白占召回位)。

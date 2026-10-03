@@ -198,12 +198,14 @@ class MemoryService:
         matched_tables: list[str] | None = None,
         error: str = "",
         evidence: str = "",
+        zero_hit: bool = False,
     ) -> None:
         """Automatic memory write-back after one query run.
 
         Paths:
           1. episode record (always, if enabled) — cross-session recall;
-          2. success → pending reference example (auto_examples);
+          2. success → pending reference example (auto_examples; ``zero_hit``
+             tags the draft so the inbox surfaces anchor-less questions first);
           3. correction → pending lesson with confidence (Hint Bank);
           4. failure → LLM-distilled pending lesson (opt-in cost path).
         Never raises: every failure is logged and skipped.
@@ -230,7 +232,8 @@ class MemoryService:
             logger.warning("Episode record failed (%s): %s", scope.datasource, e)
 
         if self.config.examples_enabled and verdict in ("OK", "EMPTY") and sql:
-            await self._draft_success_example(scope, question, sql)
+            await self._draft_success_example(
+                scope, question, sql, zero_hit=zero_hit)
 
         if correction_history:
             await self._capture_correction_lessons(scope, question, sql, correction_history)
@@ -241,14 +244,22 @@ class MemoryService:
 
     async def _draft_success_example(
         self, scope: MemoryScope, question: str, sql: str,
+        *, zero_hit: bool = False,
     ) -> None:
-        """成功查询 → 待确认参考示例(pending, admin 确认后才可复用)。"""
+        """成功查询 → 待确认参考示例(pending, admin 确认后才可复用)。
+
+        ``zero_hit``:本轮检索一个示例都没召回 —— 草稿盖 ``zero-hit`` 标签 +
+        溯源 note,审例队列里这些「KB 没有锚点」的题优先看。
+        """
         if self.kb is None:
             return
+        tags = ["auto", "zero-hit"] if zero_hit else ["auto"]
+        note = ("auto-captured successful query (zero KB hits)" if zero_hit
+                else "auto-captured successful query")
         try:
             await self.kb.draft_example(
                 question, sql, scope.datasource,
-                tags=["auto"], note="auto-captured successful query",
+                tags=tags, note=note,
                 generator="memory",
             )
         except Exception as e:
