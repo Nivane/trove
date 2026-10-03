@@ -94,7 +94,7 @@
       ]
     }
   ];
-  var HOME = { href: "index.html", text: "能力地图（首页）" };
+  var HOME = { href: "index.html", text: "首页" };
 
   // ── 站点根：从本脚本的 src 反推 ──────────────────────────
   var self =
