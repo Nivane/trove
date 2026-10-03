@@ -215,7 +215,8 @@ async def test_topics_listing_for_granted_user(
     user_client, api_app, api_kb, auth_service,
 ):
     _seed_topics(api_app, [
-        {"name": "learners", "description": "学生域", "datasets": ["students"]},
+        {"name": "learners", "description": "学生域", "datasets": ["students"],
+         "examples": ["有多少学生?"]},
         {"name": "legacy", "datasets": ["dropped_table"]},  # 过期域
     ])
     await api_app.state.kb.ensure_synced("test_db")
@@ -232,6 +233,7 @@ async def test_topics_listing_for_granted_user(
     assert by["learners"]["scope"] == ["students"]
     assert by["learners"]["status"] == "ok"
     assert by["learners"]["description"] == "学生域"
+    assert by["learners"]["examples"] == ["有多少学生?"]  # 起始提问
     assert by["legacy"]["status"] == "empty_scope"
     assert by["legacy"]["scope"] == []
 

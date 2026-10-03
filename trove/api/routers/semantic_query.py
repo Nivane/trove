@@ -123,6 +123,8 @@ async def semantic_topics(
             "scope": list(res.scope or []),  # 生效作用域(empty_scope 时为空)
             "status": res.status,  # ok | empty_scope
             "metrics": list(t.metrics),
+            # 示例问句:选择器用它渲染"从这里开始问"的起始提问
+            "examples": list(t.examples),
         })
     return {"datasource": ds, "topics": topics}
 
