@@ -5,6 +5,7 @@ import {
   styleBar,
   styleLine,
   stylePie,
+  buildWaterfallOption,
   CHART_PALETTE,
 } from '../src/utils/chart'
 
@@ -49,5 +50,65 @@ describe('chart theming', () => {
     )
     expect(opt.tooltip).toHaveProperty('backgroundColor')
     expect((opt.series as unknown[])[0]).toHaveProperty('type', 'line')
+  })
+})
+
+describe('waterfall option', () => {
+  const bars = (opt: Record<string, unknown>) => {
+    const series = opt.series as {
+      name: string
+      silent?: boolean
+      data: ({ value: number } | number)[]
+    }[]
+    return { base: series[0], delta: series[1] }
+  }
+  const val = (d: { value: number } | number) =>
+    typeof d === 'number' ? d : d.value
+
+  it('floats signed deltas on a transparent base, absolutes at the ends', () => {
+    // 基期 100 → 华东 -20 → 华南 +5 → 当前 85
+    const opt = buildWaterfallOption(
+      ['基期', '华东', '华南', '当前'],
+      [100, -20, 5, 85],
+      { delta: 'Δ', base: '基期', current: '当前' },
+    )
+    const { base, delta } = bars(opt)
+    // 透明底座:首末为 0(绝对柱),中间托起 running 的较低端
+    // 100 → 80 时托 80;80 → 85 时托 80(min(running, running+v))
+    expect(base.silent).toBe(true)
+    expect(base.data.map(val)).toEqual([0, 80, 80, 0])
+    // 增量条:绝对值原样,负增量取 |v|(浮在底座之上)
+    expect(delta.data.map(val)).toEqual([100, 20, 5, 85])
+  })
+
+  it('colors mid deltas by sign and keeps tooltip on original values', () => {
+    const opt = buildWaterfallOption(
+      ['基期', '华东', '华南', '当前'],
+      [100, -20, 5, 85],
+      { delta: 'Δ', base: '基期', current: '当前' },
+    )
+    const { delta } = bars(opt)
+    const style = (i: number) =>
+      (delta.data[i] as { itemStyle: { color: string } }).itemStyle.color
+    // 正负不同色(与升/降直觉一致);首末用主色
+    expect(style(1)).not.toBe(style(2))
+    expect(style(0)).not.toBe(style(1))
+    const fmt = (
+      (opt.tooltip as { formatter: (p: unknown) => string }).formatter
+    )({ dataIndex: 1 })
+    expect(fmt).toContain('华东')
+    expect(fmt).toContain('-20') // 原始带符号值,不是堆叠后的底座
+    expect(fmt).toContain('Δ')
+  })
+
+  it('handles a two-category (base→current) waterfall', () => {
+    const opt = buildWaterfallOption(['基期', '当前'], [100, 130], {
+      delta: 'Δ',
+      base: '基期',
+      current: '当前',
+    })
+    const { base, delta } = bars(opt)
+    expect(base.data.map(val)).toEqual([0, 0])
+    expect(delta.data.map(val)).toEqual([100, 130])
   })
 })

@@ -1,0 +1,937 @@
+"""分析引擎 —— 编排:请求 → 取数 → 分解 → payload。
+
+**全服务唯一的 I/O 处**:所有查询经注入的 ``runner`` 执行
+(``async (sql, datasource) -> (columns, rows)``),引擎自己不开连接、
+不 import 数据源注册表。分解数学在 ``decompose``、树骨架在
+``expr_tree``、渲染在 ``render`` —— 本模块只做「先查什么、再查什么」
+与记账(queries / degraded / partial)。
+
+编排流程与 ``workflow/nodes/attribution.py`` 原节点逐行同构
+(hop0 总量 → 维度预选 → hop1 分解 → hop2 下钻),行为不变量由
+``tests/workflow/test_attribution.py`` 零改动通过钉死;追加的
+驱动器树是**新阶段**,只受新配置门控,失败只降级不影响老路径。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from trove.core.logging import get_logger
+from trove.core.periods import base_period as _derive_periods
+from trove.services.analysis.decompose import (
+    breakdown_signal,
+    contribution,
+    num,
+    ratio_share,
+    residual,
+    shift_share,
+    signed_children,
+)
+from trove.services.analysis.expr_tree import (
+    collect_components,
+    metric_components,
+    metric_ratio_parts,
+)
+
+logger = get_logger(__name__)
+
+#: 注入的执行器:只读一跳 SQL → (columns, rows)。超时/失败抛错由 runner 负责。
+HopRunner = Callable[[str, str], Awaitable[tuple[list[str], list[list[Any]]]]]
+
+
+# ── 语义模型解析(纯,只读模型)────────────────────────────
+
+def resolve_time_field(semantic_layer: Any, matched: list[str], metric_name: str) -> str | None:
+    """度量锚定的声明时间字段引用(dataset.field);不可判定 → None。"""
+    try:
+        from trove.services.semantic_layer.compiler import SemanticCompiler, resolve_time_field as _rtf
+
+        model = semantic_layer.model()
+        if model is None:
+            return None
+        compiler = SemanticCompiler(model)
+        metric = compiler._metric_by_name(metric_name)
+        preferred = metric.agg_time_dimension if metric is not None else ""
+        resolved = _rtf(model, list(matched), preferred=preferred)
+        if resolved is None:
+            return None
+        return f"{resolved[0]}.{resolved[1].name}"
+    except Exception:
+        return None
+
+
+def resolve_dim_ref(semantic_layer: Any, matched: list[str], dim: str) -> str | None:
+    """维度名 → 声明字段引用(dataset.field);不可解析 → None。"""
+    try:
+        from trove.services.semantic_layer.compiler import SemanticCompiler
+
+        model = semantic_layer.model()
+        if model is None:
+            return None
+        compiler = SemanticCompiler(model)
+        resolved = compiler._resolve_field(str(dim).strip(), set(matched))
+        if resolved is None:
+            return None
+        return f"{resolved[0]}.{resolved[1].name}"
+    except Exception:
+        return None
+
+
+def resolve_metric(semantic_layer: Any, metric_name: str) -> Any:
+    """语义模型里的目标度量对象;解析失败 → None。"""
+    try:
+        from trove.services.semantic_layer.compiler import SemanticCompiler
+
+        model = semantic_layer.model()
+        if model is None:
+            return None
+        return SemanticCompiler(model)._metric_by_name(metric_name)
+    except Exception:
+        return None
+
+
+# ── SQL 构造(复用语义编译器:hops 由编译器直接产出,失败即降级)────────
+
+def compile_hop(
+    semantic_layer: Any,
+    matched: list[str],
+    dialect: str,
+    metric_name: str,
+    dim_refs: list[str],
+    conds: list[dict[str, Any]],
+) -> str | None:
+    """构造并编译一跳查询 → SQL(编译 MISS → None,调用方降级)。
+
+    plan.aggregation 填度量名(编译器按名解析);answer_columns 前段为
+    维度字段(非聚合列 → GROUP BY),末段为度量名(裸名 → 度量投影)。
+    """
+    try:
+        from trove.services.semantic_layer.compiler import (
+            CompileResult,
+            SemanticCompiler,
+        )
+
+        model = semantic_layer.model()
+        if model is None:
+            return None
+        compiler = SemanticCompiler(model)
+        metric = compiler._metric_by_name(metric_name)
+        if metric is None:
+            return None
+        plan = {
+            "tables": list(matched),
+            "aggregation": metric_name,
+            "answer_columns": list(dim_refs) + [metric_name],
+            "conditions": conds,
+        }
+        result = compiler.compile_detailed(plan, list(matched), force_dialect=dialect)
+        # 归因下钻需要完整编译(软 MISS 骨架不算——跳一跳不能建立在缺组件上)
+        if not isinstance(result, CompileResult):
+            return None
+        return result.sql
+    except Exception as e:
+        logger.warning("Attribution hop compile failed: %s", e)
+        return None
+
+
+def compile_ratio_hop(
+    semantic_layer: Any,
+    matched: list[str],
+    dialect: str,
+    metric: Any,
+    ratio_parts: tuple[str, str],
+    dim_ref: str,
+    conds: list[dict[str, Any]],
+) -> str | None:
+    """构造比率 hop SQL:SELECT dim, num, den FROM <单数据集> WHERE ... GROUP BY dim。
+
+    只支持单数据集度量(比率分子/分母同表,无需 join);多数据集 → None
+    (调用方降级加性路径)。条件字段已是表限定,字面量用编译器 _literal。
+    """
+    try:
+        from trove.services.semantic_layer.compiler import _literal
+        num_sql, den_sql = ratio_parts
+        ds = [d for d in (getattr(metric, "datasets", None) or []) if d]
+        if len(set(ds)) != 1:
+            return None
+        table = ds[0]
+        if table not in {str(t) for t in (matched or [])}:
+            return None
+        # 维度必须落在度量所在数据集:比率 hop 无 join,FROM 单表即唯一
+        # 数据来源,跨表维度无法在同一个 GROUP BY 里解析。
+        dim_tbl = str(dim_ref or "").split(".", 1)[0]
+        if dim_tbl and dim_tbl != table:
+            return None
+        where = ""
+        if conds:
+            parts = []
+            for c in conds:
+                if not isinstance(c, dict):
+                    continue
+                field = str(c.get("field") or "").strip()
+                op = str(c.get("op") or "=").strip()
+                value = c.get("value")
+                if not field or value is None:
+                    continue
+                parts.append(f"{field} {op} {_literal(value)}")
+            if parts:
+                where = " WHERE " + " AND ".join(parts)
+        return f"SELECT {dim_ref}, {num_sql} AS __num, {den_sql} AS __den FROM {table}{where} GROUP BY {dim_ref}"
+    except Exception:
+        return None
+
+
+def time_conds(time_field: str, period: tuple[str, str] | None) -> list[dict[str, Any]]:
+    """时间范围 → plan conditions(半开区间用 >=/< 表达;period None → 空)。"""
+    if not time_field or period is None:
+        return []
+    start, end = period
+    return [
+        {"field": time_field, "op": ">=", "value": start, "note": "attribution period start"},
+        {"field": time_field, "op": "<=", "value": end, "note": "attribution period end"},
+    ]
+
+
+def rows_to_map(columns: list[str], rows: list[list[Any]]) -> dict[str, float]:
+    """hop 结果(维度, 度量)→ {dim: value}。首列为维度,末列为度量。"""
+    out: dict[str, float] = {}
+    if not columns or not rows:
+        return out
+    for row in rows:
+        if len(row) < 2:
+            continue
+        out[str(row[0])] = num(row[-1])
+    return out
+
+
+def rows_to_numden(columns: list[str], rows: list[list[Any]]) -> dict[str, tuple[float, float]]:
+    """比率 hop 结果(维度, 分子, 分母)→ {dim: (num, den)}。"""
+    out: dict[str, tuple[float, float]] = {}
+    if not columns or not rows:
+        return out
+    for row in rows:
+        if len(row) < 3:
+            continue
+        out[str(row[0])] = (num(row[1]), num(row[2]))
+    return out
+
+
+# ── 请求 / 限度 / 结果 ────────────────────────────────────
+
+@dataclass
+class AnalysisLimits:
+    """确定性预算(节点从 AgentConfig 装配;默认值 = 存量行为)。"""
+
+    max_dimensions: int = 3
+    max_hops: int = 2
+    probe_dimensions: bool = True
+    ratio_decomposition: bool = True
+    driver_tree: bool = True
+    max_components: int = 4
+    max_queries: int = 12
+    tree_max_depth: int = 5
+
+
+@dataclass
+class AnalysisRequest:
+    """一次分析请求(节点/API 构造;引擎不读 state)。"""
+
+    question: str
+    lang: str
+    datasource: str
+    dialect: str
+    matched: list[str]
+    metric: str
+    dimensions: list[str]
+    baseline: str = "prev_period"
+    depth: int = 1
+    focus: str | None = None
+    time_context: str | None = None
+
+
+@dataclass
+class AnalysisOutcome:
+    """分解产物(节点据此组装 state.attribution 与 state.analysis)。"""
+
+    metric: str
+    baseline: str
+    table: list[dict[str, Any]] = field(default_factory=list)
+    effects: dict[str, Any] | None = None
+    total_delta: float = 0.0
+    base_total: float = 0.0
+    cur_total: float = 0.0
+    primary_dim: str = ""
+    dimensions: list[str] = field(default_factory=list)
+    drilldown: dict[str, Any] | None = None
+    is_ratio: bool = False
+    hops: list[dict[str, Any]] = field(default_factory=list)
+    tree: dict[str, Any] | None = None
+    evidence_queries: list[dict[str, Any]] = field(default_factory=list)
+    degraded: list[dict[str, Any]] = field(default_factory=list)
+    partial: bool = False
+    #: 异常中途降级(表为空、只有 hops)—— 节点按旧形状原样组装 result
+    degraded_result: bool = False
+
+
+class AnalysisEngine:
+    """一次分析运行的编排器(实例即一次运行:hops/evidence 行程内累积)。"""
+
+    def __init__(
+        self,
+        semantic_layer: Any,
+        runner: HopRunner,
+        limits: AnalysisLimits | None = None,
+    ) -> None:
+        self._sl = semantic_layer
+        self._runner = runner
+        self.limits = limits or AnalysisLimits()
+        self._hops: list[dict[str, Any]] = []
+        self._evidence: list[dict[str, Any]] = []
+        self._queries = 0
+        self._produced = False  # 主分解表是否产出过(降级分支判定用)
+        self._hop0_ok = False  # hop0 当前期总量是否真取到(树根口径覆盖的前置)
+
+    # ── 记账 ────────────────────────────────────────────
+
+    async def _execute(
+        self,
+        sql: str,
+        datasource: str,
+        *,
+        purpose: str,
+        period: str = "",
+        filt: str = "",
+        keep: int = 10,
+    ) -> tuple[list[str], list[list[Any]]]:
+        """唯一执行入口:跑一跳 + 记证据(query 计数/rows 截断视图)。"""
+        cols, rows = await self._runner(sql, datasource)
+        self._queries += 1
+        entry: dict[str, Any] = {
+            "id": len(self._evidence) + 1,
+            "purpose": purpose,
+            "sql": sql,
+            "columns": list(cols),
+            "row_count": len(rows),
+            "rows": [list(r) for r in rows[:keep]],
+            "truncated": len(rows) > keep,
+        }
+        if period:
+            entry["period"] = period
+        if filt:
+            entry["filter"] = filt
+        self._evidence.append(entry)
+        return list(cols), list(rows)
+
+    async def _probe_dim(
+        self,
+        matched: list[str],
+        dialect: str,
+        metric_name: str,
+        metric: Any,
+        ratio_parts: tuple[str, str] | None,
+        dim_ref: str,
+        conds_extra: list[dict[str, Any]],
+        time_field: str | None,
+        cur_period: tuple[str, str] | None,
+        base_period: tuple[str, str] | None,
+        datasource: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], float, dict[str, Any] | None, dict[str, Any] | None]:
+        """一个候选维的双期 GROUP BY 探测 → (cur_map, base_map, signal, hop_cur, hop_base)。
+
+        hop_cur/hop_base: 成功执行时该跳的观测条目(记录用),失败 → None。
+        比率度量用 num/den 双列;加性用单值列。
+        """
+        hop_cur = hop_base = None
+        if ratio_parts is not None and metric is not None:
+            cur_sql = compile_ratio_hop(
+                self._sl, matched, dialect, metric, ratio_parts,
+                dim_ref, conds_extra + time_conds(time_field, cur_period),
+            )
+            base_sql = (
+                compile_ratio_hop(
+                    self._sl, matched, dialect, metric, ratio_parts,
+                    dim_ref, conds_extra + time_conds(time_field, base_period),
+                )
+                if base_period else None
+            )
+            cur_map: dict[str, Any] = {}
+            base_map: dict[str, Any] = {}
+            if cur_sql:
+                cols, rows = await self._execute(cur_sql, datasource, purpose="probe", period="current")
+                cur_map = rows_to_numden(cols, rows)
+                hop_cur = {"hop": 1, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current"}
+            if base_sql:
+                cols, rows = await self._execute(base_sql, datasource, purpose="probe", period="base")
+                base_map = rows_to_numden(cols, rows)
+                hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base"}
+        else:
+            cur_sql = compile_hop(
+                self._sl, matched, dialect, metric_name, [dim_ref],
+                conds_extra + time_conds(time_field, cur_period),
+            )
+            base_sql = (
+                compile_hop(
+                    self._sl, matched, dialect, metric_name, [dim_ref],
+                    conds_extra + time_conds(time_field, base_period),
+                )
+                if base_period else None
+            )
+            cur_map = {}
+            base_map = {}
+            if cur_sql:
+                cols, rows = await self._execute(cur_sql, datasource, purpose="probe", period="current")
+                cur_map = rows_to_map(cols, rows)
+                hop_cur = {"hop": 1, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current"}
+            if base_sql:
+                cols, rows = await self._execute(base_sql, datasource, purpose="probe", period="base")
+                base_map = rows_to_map(cols, rows)
+                hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base"}
+        signal = breakdown_signal(cur_map, base_map, ratio_parts)
+        return cur_map, base_map, signal, hop_cur, hop_base
+
+    # ── 驱动器树(新阶段;失败只降级,不动老路径)──────────────
+
+    async def _build_tree(
+        self,
+        request: AnalysisRequest,
+        metric_obj: Any,
+        cur_period: tuple[str, str] | None,
+        base_period: tuple[str, str] | None,
+        time_field: str | None,
+        cur_total: float,
+        base_total: float,
+        degraded: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """指标表达式树 → 组件值(两期各一条多度量 SQL)。失败 → 骨架或 None。"""
+        lim = self.limits
+        if metric_obj is None:
+            return None
+        try:
+            model = self._sl.model()
+        except Exception:
+            model = None
+        if model is None:
+            return None
+
+        root = metric_components(metric_obj, model, max_depth=lim.tree_max_depth)
+        comps, truncated = collect_components(
+            root, max_components=lim.max_components, exclude=request.metric,
+        )
+        if truncated:
+            degraded.append({"stage": "driver_tree", "reason": f"components_truncated:{truncated}"})
+
+        # 预检(**只编译不执行,零查询成本**):逐候选独立编译,把
+        # ①不可解析 ②名字被字段遮蔽(编译器"字段优先"会把裸名当维度投影,
+        # 值变成分组列) ③结果带 GROUP BY(维度混入) 的候选剔除。
+        # 按"解析后的度量名"去重 —— 编译器投影按度量名去重,同名会少列,
+        # 位置映射会错位;别名表让不同拼写(如 SUM(x) 与度量名)共用一值。
+        from trove.services.semantic_layer.compiler import SemanticCompiler
+        from trove.services.semantic_layer.query import (
+            SemanticQuery,
+            _resolve_metric as _sq_resolve,
+            build_and_compile,
+        )
+
+        def _filters(period: tuple[str, str] | None) -> list[dict[str, Any]]:
+            return [
+                {"field": c["field"], "op": c["op"], "value": c["value"]}
+                for c in time_conds(time_field, period)
+            ]
+
+        def _compile_one(cand: str, period: tuple[str, str] | None) -> str | None:
+            """单候选编译;解析失败/维度投影(GROUP BY)→ None。"""
+            try:
+                compiled = build_and_compile(
+                    model, SemanticQuery(metrics=[cand], filters=_filters(period)),
+                    dialect=request.dialect or "sqlite", matched=list(request.matched),
+                )
+            except Exception:
+                return None
+            if "GROUP BY" in compiled["sql"].upper():
+                return None
+            return compiled["sql"]
+
+        compiler = SemanticCompiler(model)
+        kept: list[dict[str, Any]] = []  # {"candidate","resolved","sql_cur","sql_base"}
+        alias: dict[str, str] = {}      # 组件候选 → 解析后度量名(值映射键)
+        seen_resolved: set[str] = set()
+        for cand in [request.metric] + [c["candidate"] for c in comps]:
+            try:
+                resolved = _sq_resolve(model, cand)
+            except Exception:
+                degraded.append({"stage": "driver_tree", "reason": f"unresolvable:{cand}"[:120]})
+                continue
+            # 裸名被字段遮蔽 → 编译器会走字段路径(维度投影),不可用于取值
+            if "(" not in str(cand):
+                try:
+                    shadowed = compiler._resolve_field(str(cand).strip(), set(request.matched)) is not None
+                except Exception:
+                    shadowed = False
+                if shadowed:
+                    degraded.append({"stage": "driver_tree", "reason": f"field_shadowed:{cand}"[:120]})
+                    continue
+            key = str(getattr(resolved, "name", "") or cand)
+            if key in seen_resolved:
+                alias[str(cand)] = key  # 同名度量:共享首见候选的值
+                continue
+            sql_cur = _compile_one(cand, cur_period)
+            sql_base = _compile_one(cand, base_period) if base_period else None
+            if sql_cur is None and sql_base is None:
+                degraded.append({"stage": "driver_tree", "reason": f"not_aggregate:{cand}"[:120]})
+                continue
+            seen_resolved.add(key)
+            alias[str(cand)] = key
+            kept.append({"candidate": cand, "resolved": key,
+                         "sql_cur": sql_cur, "sql_base": sql_base})
+
+        def _finish() -> dict[str, Any]:
+            """根节点数值优先用 hop0 官方口径(与卡片头条一致);hop0 没跑成
+            (编译失败)时保留树查询自己的值,不拿 0.0 顶替。所有返回路径
+            (含预算截断/空候选的骨架)都要过这里 —— 整体值在，头就不断。"""
+            if self._hop0_ok:
+                root["current"] = cur_total
+                root["base"] = base_total
+                root["delta"] = cur_total - base_total
+                root["executed"] = True
+                root["value_source"] = "hop0"
+            elif root.get("executed"):
+                root["value_source"] = "tree_query"
+            else:
+                root["value_source"] = "none"
+            return root
+
+        need = 2 if (cur_period and base_period) else 1
+        if self._queries + need > lim.max_queries:
+            degraded.append({"stage": "driver_tree", "reason": "query_budget_exceeded"})
+            self._mark_tree(root, comps, {}, {}, alias=alias)
+            return _finish()
+        if not kept:
+            self._mark_tree(root, comps, {}, {}, alias=alias)
+            return _finish()
+
+        cur_vals: dict[str, float] = {}
+        base_vals: dict[str, float] = {}
+
+        def _fill(bucket: dict[str, float], keys: list[str], row: list[Any]) -> None:
+            for i, key in enumerate(keys):
+                bucket[key] = num(row[i]) if i < len(row) else 0.0
+
+        try:
+            combined_ok = True
+            combined: dict[str, dict[str, Any]] = {}
+            for period_tag, period in (("current", cur_period), ("base", base_period)):
+                if period is None:
+                    continue
+                try:
+                    compiled = build_and_compile(
+                        model,
+                        SemanticQuery(metrics=[k["candidate"] for k in kept], filters=_filters(period)),
+                        dialect=request.dialect or "sqlite", matched=list(request.matched),
+                    )
+                except Exception:
+                    combined_ok = False
+                    break
+                combined[period_tag] = compiled
+            if combined_ok and any("GROUP BY" in c["sql"].upper() for c in combined.values()):
+                combined_ok = False  # 组合路径混入维度投影 → 逐候选回退
+
+            if combined_ok:
+                # 组合路径:每期一条多度量 SQL;列序 == kept 顺序(已按
+                # 解析名去重,列数与候选数一致)
+                for period_tag, bucket in (("current", cur_vals), ("base", base_vals)):
+                    if period_tag not in combined:
+                        continue
+                    cols, rows = await self._execute(
+                        combined[period_tag]["sql"], request.datasource,
+                        purpose="driver_tree", period=period_tag,
+                    )
+                    if rows:
+                        _fill(bucket, [k["resolved"] for k in kept], list(rows[0]))
+            else:
+                # 逐候选回退:组合编译失败(交互)时各自取数;预算内逐个跑,
+                # 超预算的候选截断记账(宁缺勿错)
+                for k in kept:
+                    if self._queries + need > lim.max_queries:
+                        degraded.append({"stage": "driver_tree",
+                                         "reason": f"query_budget_exceeded:{k['candidate']}"[:120]})
+                        break
+                    if k["sql_cur"]:
+                        cols, rows = await self._execute(
+                            k["sql_cur"], request.datasource,
+                            purpose="driver_tree", period="current",
+                        )
+                        if rows:
+                            _fill(cur_vals, [k["resolved"]], list(rows[0]))
+                    if k["sql_base"]:
+                        cols, rows = await self._execute(
+                            k["sql_base"], request.datasource,
+                            purpose="driver_tree", period="base",
+                        )
+                        if rows:
+                            _fill(base_vals, [k["resolved"]], list(rows[0]))
+            self._mark_tree(root, comps, cur_vals, base_vals, alias=alias)
+        except Exception as e:
+            logger.warning("Driver tree execution failed (%s); keeping skeleton", e)
+            degraded.append({"stage": "driver_tree", "reason": str(e)[:200]})
+            self._mark_tree(root, comps, {}, {}, alias=alias)
+
+        return _finish()
+
+    def _mark_tree(
+        self,
+        root: dict[str, Any],
+        comps: list[dict[str, Any]],
+        cur_vals: dict[str, float],
+        base_vals: dict[str, float],
+        *,
+        alias: dict[str, str] | None = None,
+    ) -> None:
+        """组件值落树 + 诚实残差(就地改 root/comps 的节点字典)。
+
+        值按 **alias(候选→解析后度量名)** 查:不同拼写指向同一个声明
+        度量时共享值(组合查询按度量名去重,别名防止位置错位)。
+        """
+        alias = alias or {}
+
+        def _value(bucket: dict[str, float], cand: str) -> float | None:
+            if not cand:
+                return None
+            key = alias.get(cand, cand)
+            if key in bucket:
+                return bucket[key]
+            return bucket.get(cand)
+
+        for node in [root] + comps:
+            cand = str(node.get("candidate") or "")
+            cur_v = _value(cur_vals, cand)
+            base_v = _value(base_vals, cand)
+            if cur_v is not None or base_v is not None:
+                node["current"] = cur_v if cur_v is not None else 0.0
+                node["base"] = base_v if base_v is not None else 0.0
+                node["delta"] = node["current"] - node["base"]
+                node["executed"] = True
+            else:
+                node.setdefault("executed", False)
+
+        def annotate(node: dict[str, Any]) -> None:
+            kids = node.get("children") or []
+            for k in kids:
+                annotate(k)
+            if not kids:
+                return
+            decomposable = bool(node.get("decomposable"))
+            if not decomposable:
+                for k in kids:
+                    k.setdefault("informational", True)
+                node["residual"] = {"value": None, "exact": False, "reason": "non_decomposable"}
+                return
+            child_deltas = [k.get("delta") for k in kids]
+            if any(d is None for d in child_deltas):
+                node["residual"] = {"value": None, "exact": False, "reason": "component_unavailable"}
+                return
+            # 减法链按算子带符号:Δ(a−b)=Δa−Δb,直接求和会误判出残差。
+            signed = signed_children(node.get("op"), [float(d) for d in child_deltas])
+            res = residual(float(node.get("delta") or 0.0), signed)
+            res["reason"] = "identity" if res["exact"] else "gap"
+            node["residual"] = res
+
+        annotate(root)
+
+    # ── 主流程 ──────────────────────────────────────────
+
+    async def run(self, request: AnalysisRequest) -> AnalysisOutcome | None:
+        """执行一次分析;无可交付产物 → None(节点静默跳过,主链零影响)。"""
+        lim = self.limits
+        sl = self._sl
+        metric_name = str(request.metric or "").strip()
+        dims = [
+            str(d).strip()
+            for d in (request.dimensions or [])
+            if str(d or "").strip()
+        ][: lim.max_dimensions]
+        if not metric_name or not dims:
+            return None
+        baseline = str(request.baseline or "prev_period").strip().lower()
+        if baseline not in ("prev_period", "yoy", "share"):
+            baseline = "prev_period"
+        depth = min(int(request.depth or 1), lim.max_hops)
+        focus = request.focus
+
+        dialect = request.dialect or "sqlite"
+        matched = list(request.matched)
+        datasource = request.datasource
+        degraded: list[dict[str, Any]] = []
+
+        # 时间字段判定失败 → baseline 降级 share(无基期,占比归因)
+        time_field = resolve_time_field(sl, matched, metric_name)
+        periods = None
+        if time_field:
+            periods = _derive_periods(request.time_context or "", baseline)
+        if periods is None:
+            baseline = "share"
+        cur_period = periods[0] if periods else None
+        base_period = periods[1] if periods else None
+
+        # 维度字段解析(全部解析失败 → 静默跳过,不给编造维度)
+        dim_refs: list[str] = []
+        for d in dims:
+            ref = resolve_dim_ref(sl, matched, d)
+            if ref is None:
+                break
+            dim_refs.append(ref)
+        if not dim_refs:
+            return None
+        # 计划维度名 ↔ 解析 ref 的映射(ref 可被 probe 重排,名字不可)
+        ref_to_dim: dict[str, str] = dict(zip(dim_refs, dims))
+
+        # 度量解析 + 比率判定(方向 2):metric_type=ratio / AVG / A÷B / SAFE_DIVIDE
+        metric_obj = resolve_metric(sl, metric_name)
+        ratio_parts: tuple[str, str] | None = None
+        if lim.ratio_decomposition and metric_obj is not None:
+            ratio_parts = metric_ratio_parts(metric_obj)
+        is_ratio = ratio_parts is not None
+
+        outcome = AnalysisOutcome(metric=metric_name, baseline=baseline)
+        table: list[dict[str, Any]] = []
+        effects: dict[str, Any] | None = None
+        total_delta = 0.0
+        base_total = cur_total = 0.0
+        primary_dim = dims[0]
+        drill_table: list[dict[str, Any]] = []
+        try:
+            # hop0:整体 Δ(无维度)——当前期 vs 基期总量对比
+            cur_sql = compile_hop(
+                sl, matched, dialect, metric_name, [], time_conds(time_field, cur_period)
+            )
+            base_sql = compile_hop(
+                sl, matched, dialect, metric_name, [], time_conds(time_field, base_period)
+            )
+            if cur_sql:
+                cols, rows = await self._execute(cur_sql, datasource, purpose="overall", period="current", keep=5)
+                cur_total = num(rows[0][-1]) if rows and rows[0] else 0.0
+                self._hops.append({"hop": 0, "sql": cur_sql, "columns": cols, "rows": rows[:5], "period": "current"})
+                self._hop0_ok = True
+            if base_sql and base_period:
+                cols, rows = await self._execute(base_sql, datasource, purpose="overall", period="base", keep=5)
+                base_total = num(rows[0][-1]) if rows and rows[0] else 0.0
+                self._hops.append({"hop": 0, "sql": base_sql, "columns": cols, "rows": rows[:5], "period": "base"})
+            total_delta = cur_total - base_total
+
+            # focus 属于计划的首维(问题里点名的那一项),探测时排除(要
+            # 的是全量分组的信号,不是单值退化);hop1 时再套上。
+            focus_dim_ref = dim_refs[0]
+            focus_conds = (
+                [{"field": focus_dim_ref, "op": "=", "value": focus}]
+                if focus else []
+            )
+
+            # 维度预选(方向 1):≥2 维且有基期时探测各候选维,取 Σ|Δ| 最大
+            # 者作主拆维度(LLM 的顺序不再盲信);探测结果直接复用为 hop1,
+            # 不重复查询。share 基线(无基期)信号退化 → 保持计划顺序。
+            # focus 存在时探测结果不可复用(focus 会把分组压成单值)。
+            d0_ref = dim_refs[0]
+            probe_cache: dict[str, Any] = {}
+            if (
+                lim.probe_dimensions
+                and len(dim_refs) >= 2
+                and base_period is not None
+                and not focus_conds
+            ):
+                best_sig, best_ref = -1.0, d0_ref
+                for ref in dim_refs[: lim.max_dimensions]:
+                    cur_map, base_map, sig, hop_c, hop_b = await self._probe_dim(
+                        matched, dialect, metric_name, metric_obj, ratio_parts, ref, [],
+                        time_field, cur_period, base_period, datasource,
+                    )
+                    if sig > best_sig:
+                        best_sig, best_ref = sig, ref
+                        probe_cache = {
+                            "ref": ref,
+                            "cur": cur_map, "base": base_map,
+                            "hop_cur": hop_c, "hop_base": hop_b,
+                        }
+                if best_ref != d0_ref:
+                    # 重排:最佳维居首,其余保持计划顺序
+                    dim_refs = [best_ref] + [r for r in dim_refs if r != best_ref]
+                    d0_ref = dim_refs[0]
+            # 记录实际主拆维度(可能被 probe 重排):ref 反查计划维度名
+            primary_dim = ref_to_dim.get(d0_ref, dims[0])
+
+            # hop1:按主拆维度分解(探测命中则复用;key 必须比 ref ——
+            # 探到的总是 best_ref,d0_ref 重排后即它,命中即省两条查询)
+            if probe_cache.get("ref") == d0_ref:
+                cur_map = probe_cache["cur"]
+                base_map = probe_cache["base"]
+                if probe_cache.get("hop_cur"):
+                    self._hops.append(probe_cache["hop_cur"])
+                if probe_cache.get("hop_base"):
+                    self._hops.append(probe_cache["hop_base"])
+            else:
+                cur_map, base_map, _sig, hop_c, hop_b = await self._probe_dim(
+                    matched, dialect, metric_name, metric_obj, ratio_parts, d0_ref, focus_conds,
+                    time_field, cur_period, base_period, datasource,
+                )
+                if hop_c:
+                    self._hops.append(hop_c)
+                if hop_b:
+                    self._hops.append(hop_b)
+
+            if is_ratio:
+                if base_period is not None and base_map:
+                    dec = shift_share(base_map, cur_map)
+                    table = dec["rows"]
+                    effects = dec["effects"]
+                    base_total = dec["base_total"]
+                    cur_total = dec["cur_total"]
+                    total_delta = dec["effects"]["delta"]
+                else:
+                    dec = ratio_share(cur_map)
+                    table = dec["rows"]
+                    cur_total = dec["cur_total"]
+                    base_total = 0.0
+            else:
+                table = contribution(base_map, cur_map)
+
+            # hop2:下钻(depth>=2 且还有第二个维度)——对 top |contribution|
+            # 项加过滤后按 dimensions[1] 再分解(比率指标同样 shift-share)。
+            if depth >= 2 and len(dim_refs) >= 2:
+                top = table[0] if table else None
+                # 下钻信号用 contribution(比率指标率变化可为 0 但权重移动贡献非 0)
+                if top and top["contribution"] != 0:
+                    d1_ref = dim_refs[1]
+                    drill_conds = [{"field": d0_ref, "op": "=", "value": str(top["dim"])}]
+                    if is_ratio:
+                        cur_sql = compile_ratio_hop(
+                            sl, matched, dialect, metric_obj, ratio_parts,
+                            d1_ref, drill_conds + time_conds(time_field, cur_period),
+                        )
+                        base_sql = (
+                            compile_ratio_hop(
+                                sl, matched, dialect, metric_obj, ratio_parts,
+                                d1_ref, drill_conds + time_conds(time_field, base_period),
+                            )
+                            if base_period else None
+                        )
+                        drill_cur: dict[str, Any] = {}
+                        drill_base: dict[str, Any] = {}
+                        if cur_sql:
+                            cols, rows = await self._execute(cur_sql, datasource, purpose="drilldown", period="current", filt=str(top["dim"]))
+                            drill_cur = rows_to_numden(cols, rows)
+                            self._hops.append({"hop": 2, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current", "filter": str(top["dim"])})
+                        if base_sql:
+                            cols, rows = await self._execute(base_sql, datasource, purpose="drilldown", period="base", filt=str(top["dim"]))
+                            drill_base = rows_to_numden(cols, rows)
+                            self._hops.append({"hop": 2, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base", "filter": str(top["dim"])})
+                        drill_table = shift_share(drill_base, drill_cur)["rows"]
+                    else:
+                        cur_sql = compile_hop(
+                            sl, matched, dialect, metric_name, [d1_ref],
+                            drill_conds + time_conds(time_field, cur_period),
+                        )
+                        base_sql = compile_hop(
+                            sl, matched, dialect, metric_name, [d1_ref],
+                            drill_conds + time_conds(time_field, base_period),
+                        )
+                        drill_cur_v: dict[str, float] = {}
+                        drill_base_v: dict[str, float] = {}
+                        if cur_sql:
+                            cols, rows = await self._execute(cur_sql, datasource, purpose="drilldown", period="current", filt=str(top["dim"]))
+                            drill_cur_v = rows_to_map(cols, rows)
+                            self._hops.append({"hop": 2, "sql": cur_sql, "columns": cols, "rows": rows[:10], "period": "current", "filter": str(top["dim"])})
+                        if base_sql and base_period:
+                            cols, rows = await self._execute(base_sql, datasource, purpose="drilldown", period="base", filt=str(top["dim"]))
+                            drill_base_v = rows_to_map(cols, rows)
+                            self._hops.append({"hop": 2, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base", "filter": str(top["dim"])})
+                        drill_table = contribution(drill_base_v, drill_cur_v)
+
+            self._produced = True
+
+            # 驱动器树(新阶段;独立门控,失败只降级)
+            tree = None
+            if lim.driver_tree:
+                tree = await self._build_tree(
+                    request, metric_obj, cur_period, base_period, time_field,
+                    cur_total, base_total, degraded,
+                )
+        except Exception as e:
+            logger.warning("Attribution analysis failed (%s); degrading to partial hops", e)
+            degraded.append({"stage": "analysis", "reason": str(e)[:200]})
+            if not self._produced and self._hops:
+                return AnalysisOutcome(
+                    metric=metric_name, baseline=baseline, hops=list(self._hops),
+                    evidence_queries=list(self._evidence), degraded=degraded,
+                    partial=True, degraded_result=True,
+                )
+            tree = None
+
+        if not self._hops:
+            return None
+
+        outcome.table = table
+        outcome.effects = effects
+        outcome.total_delta = total_delta
+        outcome.base_total = base_total
+        outcome.cur_total = cur_total
+        outcome.primary_dim = primary_dim
+        outcome.dimensions = [primary_dim] + [d for d in dims if d != primary_dim]
+        outcome.is_ratio = is_ratio
+        outcome.hops = list(self._hops)
+        outcome.evidence_queries = list(self._evidence)
+        outcome.degraded = degraded
+        outcome.partial = bool(degraded)
+        if drill_table:
+            drill_dim = (
+                ref_to_dim.get(dim_refs[1], dims[1])
+                if len(dim_refs) >= 2 else primary_dim
+            )
+            outcome.drilldown = {"dimension": drill_dim, "table": drill_table}
+        outcome.tree = tree
+        return outcome
+
+
+# ── payload 组装(纯函数)─────────────────────────────────
+
+def analysis_payload(
+    outcome: AnalysisOutcome,
+    *,
+    question: str,
+    chart: dict[str, Any] | None,
+    baseline_label: str,
+    datasource: str,
+) -> dict[str, Any]:
+    """AnalysisOutcome → ``state.analysis``(前端/回放/缓存同源同键)。"""
+    if outcome.tree and outcome.table:
+        kind = "combined"
+    elif outcome.tree:
+        kind = "driver_tree"
+    else:
+        kind = "attribution"
+    truncated = any(bool(q.get("truncated")) for q in outcome.evidence_queries)
+    return {
+        "version": 1,
+        "kind": kind,
+        "metric": outcome.metric,
+        "metric_kind": "ratio" if outcome.is_ratio else "additive",
+        "labels": {
+            "question": (question or "").strip()[:60],
+            "baseline": outcome.baseline,
+            "baseline_label": baseline_label,
+            "primary_dimension": outcome.primary_dim,
+            "dimensions": list(outcome.dimensions),
+        },
+        "total_delta": outcome.total_delta,
+        "table": outcome.table,
+        "effects": outcome.effects,
+        "drilldown": outcome.drilldown,
+        "tree": outcome.tree,
+        "charts": [chart] if chart else [],
+        "evidence": {
+            "datasource": datasource,
+            "queries": outcome.evidence_queries,
+            "truncated": truncated,
+            "degraded": outcome.degraded,
+        },
+        "partial": outcome.partial,
+    }

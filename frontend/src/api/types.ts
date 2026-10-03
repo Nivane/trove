@@ -91,6 +91,86 @@ export interface DoneSummary {
   model?: string
   /** 执行可信度(数据截止/估算扫描/限额/降级):三态字段。 */
   execution_evidence?: ExecutionEvidence | null
+  /** 分析柱结构化结果(贡献/效应/驱动器树/证据);null/缺席 = 这一轮没有
+   *  归因分析(不是「分析为空」)。与答案 markdown 里的分析区块同源。 */
+  analysis?: AnalysisPayload | null
+}
+
+/** 分析柱一件证据(query log):SQL + 取回的样例行(≤10 行,前端抽屉展示)。 */
+export interface AnalysisQueryEvidence {
+  id?: number
+  purpose?: string // overall | probe | drilldown | driver_tree
+  sql?: string
+  columns?: string[]
+  row_count?: number
+  rows?: unknown[][]
+  truncated?: boolean
+  period?: string // current | base
+  filter?: string
+}
+
+/** 驱动器树节点:指标按表达式分解(值 + 诚实残差)。 */
+export interface AnalysisTreeNode {
+  name?: string
+  kind?: string // leaf | derived | ratio
+  op?: string
+  expression?: string
+  candidate?: string
+  decomposable?: boolean
+  note?: string
+  current?: number
+  base?: number
+  delta?: number
+  executed?: boolean
+  informational?: boolean
+  value_source?: string // hop0 | tree_query | none
+  residual?: { value?: number | null; exact?: boolean; reason?: string }
+  children?: AnalysisTreeNode[]
+}
+
+/** 贡献表一行(加性:base/current/delta/contribution;比率:率与权重 + 三效应)。 */
+export interface AnalysisContributionRow {
+  dim?: string
+  base?: number
+  current?: number
+  delta?: number
+  contribution?: number
+  base_rate?: number
+  current_rate?: number
+  base_weight?: number
+  current_weight?: number
+  within?: number
+  composition?: number
+  interaction?: number
+}
+
+/** state.analysis(分析柱 v1;形状定义见后端 analysis_payload)。 */
+export interface AnalysisPayload {
+  version?: number
+  kind?: string // combined | driver_tree | attribution
+  metric?: string
+  metric_kind?: string // additive | ratio
+  labels?: {
+    question?: string
+    baseline?: string
+    baseline_label?: string
+    primary_dimension?: string
+    dimensions?: string[]
+  }
+  total_delta?: number
+  table?: AnalysisContributionRow[]
+  effects?: Record<string, number> | null
+  drilldown?: { dimension?: string; table?: AnalysisContributionRow[] } | null
+  tree?: AnalysisTreeNode | null
+  charts?: ChartSpec[]
+  evidence?: {
+    datasource?: string
+    queries?: AnalysisQueryEvidence[]
+    truncated?: boolean
+    degraded?: { stage?: string; reason?: string }[]
+  }
+  /** 降级过(组件截断/预算用尽/不可解析):卡片要如实标,不许静默。 */
+  partial?: boolean
 }
 
 /** 置信度证据项(`_state_summary.confidence_evidence`)。 */

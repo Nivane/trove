@@ -441,12 +441,43 @@ def _build_details(
     return "\n".join(parts).strip()
 
 
-def _build_attribution_section(state: WorkflowState) -> str:
-    """归因分析区块:叙事 + 归因表 + 瀑布图(ASCII 兜底)。
+def _tree_rows(node: dict[str, Any], depth: int = 0) -> list[tuple[int, dict[str, Any]]]:
+    """驱动器树 → [(深度, 节点)] 先序展开(渲染缩进表用)。"""
+    rows: list[tuple[int, dict[str, Any]]] = [(depth, node)]
+    for child in node.get("children") or []:
+        if isinstance(child, dict):
+            rows.extend(_tree_rows(child, depth + 1))
+    return rows
 
-    全部来自 state.attribution(attribution 节点产物);字段缺失即跳过对应
-    小节。叙事缺失只出表(分析本身照常可见),不阻断回答。比率指标
-    (kind == "ratio")渲染率/权重列 + 三效应汇总行。
+
+def _tree_note(node: dict[str, Any], lang: str) -> str:
+    """树节点说明列:执行状态 + 残差诚实性(恒等式成立/残差/组件缺失)。"""
+    if not node.get("executed"):
+        return str(node.get("note") or L(lang, "未取到值", "no value"))
+    res = node.get("residual")
+    reason = str((res or {}).get("reason") or "")
+    if reason == "identity":
+        return L(lang, "恒等式成立", "identity holds")
+    if reason == "gap":
+        val = (res or {}).get("value")
+        return (f"{L(lang, '残差', 'residual')} {val:g}"
+                if isinstance(val, (int, float)) else L(lang, "残差", "residual"))
+    if reason == "component_unavailable":
+        return L(lang, "组件未取到、不声称分解", "component unavailable")
+    if reason == "non_decomposable":
+        return L(lang, "不可分解(只报值)", "non-decomposable (value only)")
+    if node.get("informational"):
+        return L(lang, "参考值", "informational")
+    return str(node.get("note") or "")
+
+
+def _build_attribution_section(state: WorkflowState) -> str:
+    """归因分析区块:叙事 + 归因表 + 瀑布图(ASCII 兜底)+ 驱动器树。
+
+    叙事/表/效应/瀑布来自 state.attribution(attribution 节点产物);驱动器树
+    来自 state.analysis(分析柱结构化产物,缺失即跳过 —— 老路径逐字不变)。
+    字段缺失即跳过对应小节。叙事缺失只出表(分析本身照常可见),不阻断
+    回答。比率指标(kind == "ratio")渲染率/权重列 + 三效应汇总行。
     """
     attr = state.attribution or {}
     lang = state.lang
@@ -481,13 +512,14 @@ def _build_attribution_section(state: WorkflowState) -> str:
         if ascii_chart:
             parts.append(f"\n{ascii_chart}\n")
 
+    baseline_label = {
+        "prev_period": "基期" if lang == "zh" else "Base",
+        "yoy": "去年同期" if lang == "zh" else "YoY",
+        "share": "本期" if lang == "zh" else "Current",
+    }.get(str(attr.get("baseline") or ""), "基期")
+
     table = attr.get("table") or []
     if table:
-        baseline_label = {
-            "prev_period": "基期" if lang == "zh" else "Base",
-            "yoy": "去年同期" if lang == "zh" else "YoY",
-            "share": "本期" if lang == "zh" else "Current",
-        }.get(str(attr.get("baseline") or ""), "基期")
         if is_ratio:
             parts.append(f"| {L(lang, '维度', 'Dimension')} | "
                          f"{L(lang, '基期率', 'Base rate')} | "
@@ -517,6 +549,29 @@ def _build_attribution_section(state: WorkflowState) -> str:
                     f"{it.get('current', 0.0):g} | {it.get('delta', 0.0):g} | "
                     f"{it.get('contribution', 0.0):+.1%} |"
                 )
+        parts.append("\n")
+
+    # 驱动器树:指标按表达式分解(分析柱结构化产物,state.analysis 独有;
+    # 单叶树 = 没得拆 → 不渲染,避免与上面整体对比重复)。值缺失 → "—",
+    # 残差不精确如实写进说明列(宁可不拆,不造恒等式)。
+    tree = (state.analysis or {}).get("tree")
+    if isinstance(tree, dict) and tree.get("children"):
+        parts.append(f"**{L(lang, '驱动因素分解', 'Driver decomposition')}**\n")
+        parts.append(f"| {L(lang, '组件', 'Component')} | {baseline_label} | "
+                     f"{L(lang, '当前', 'Current')} | {L(lang, '变化量', 'Δ')} | "
+                     f"{L(lang, '说明', 'Note')} |")
+        parts.append("| --- | --- | --- | --- | --- |")
+
+        def _fmt_tree_val(v: Any) -> str:
+            return f"{v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else "—"
+
+        for depth, node in _tree_rows(tree):
+            name = "　" * depth + str(node.get("name") or node.get("metric") or "")
+            parts.append(
+                f"| {name} | {_fmt_tree_val(node.get('base'))} | "
+                f"{_fmt_tree_val(node.get('current'))} | "
+                f"{_fmt_tree_val(node.get('delta'))} | {_tree_note(node, lang)} |"
+            )
         parts.append("\n")
 
     return "\n".join(parts).strip()

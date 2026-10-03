@@ -189,6 +189,12 @@
                   @ask="askChartFollowUp"
                 />
               </div>
+              <!-- 分析卡(分析柱):结构化归因 —— 瀑布/贡献表/驱动树/证据。
+                   与答案 markdown 里的分析区块同源;没有分析就不渲染。 -->
+              <AnalysisCard
+                v-if="turn.status === 'done' && turn.summary?.analysis"
+                :analysis="turn.summary.analysis"
+              />
               <div
                 v-if="turn.status === 'hitl' && !turn.hitlActionsShown"
                 class="step-wrap"
@@ -321,6 +327,7 @@ import {
 } from 'lucide-vue-next'
 import { ElMessageBox } from 'element-plus'
 import Sidebar from '../components/layout/Sidebar.vue'
+import AnalysisCard from '../components/chat/AnalysisCard.vue'
 import AnalysisPanel from '../components/chat/AnalysisPanel.vue'
 import ChartCard from '../components/chat/ChartCard.vue'
 import ErrorCard from '../components/chat/ErrorCard.vue'

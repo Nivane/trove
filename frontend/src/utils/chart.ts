@@ -166,6 +166,80 @@ export function applyChartTheme(
   return merged
 }
 
+/**
+ * Waterfall option from an attribution spec: 首/末为绝对柱(基期/当前),
+ * 中间为带符号增量。经典 ECharts 瀑布技法 —— 一条透明底座托起可见的
+ * 增量条,正负用语义色区分(与升/降的直觉一致)。
+ */
+export function buildWaterfallOption(
+  categories: string[],
+  data: number[],
+  labels: { delta: string; base: string; current: string },
+): Record<string, unknown> {
+  const t = chartTheme()
+  const up = cssVar('--ok', '#15803d')
+  const down = cssVar('--danger', '#dc2626')
+  const n = data.length
+  const base: number[] = []
+  const bars: Record<string, unknown>[] = []
+  let running = 0
+  data.forEach((v, i) => {
+    if (i === 0 || i === n - 1) {
+      base.push(0)
+      bars.push({
+        value: v,
+        itemStyle: { color: withAlpha(t.accent, 0.9), borderRadius: [5, 5, 0, 0] },
+      })
+      if (i === 0) running = v
+      return
+    }
+    base.push(Math.min(running, running + v))
+    bars.push({
+      value: Math.abs(v),
+      itemStyle: {
+        color: withAlpha(v >= 0 ? up : down, 0.88),
+        borderRadius: v >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4],
+      },
+    })
+    running += v
+  })
+  return applyChartTheme({
+    tooltip: {
+      // 悬浮显示**原始带符号值**(不是堆叠后的两段),基期/当前标各自的名字
+      formatter: (params: unknown) => {
+        const p = (Array.isArray(params) ? params[0] : params) as
+          | { dataIndex?: number }
+          | undefined
+        const i = p?.dataIndex ?? 0
+        const name = i === 0 ? labels.base : i === n - 1 ? labels.current : labels.delta
+        return `${categories[i]}<br/>${name}: ${data[i]}`
+      },
+    },
+    legend: { show: false },
+    xAxis: { type: 'category', data: categories },
+    yAxis: { type: 'value' },
+    series: [
+      {
+        name: 'wf-base',
+        type: 'bar',
+        stack: 'wf',
+        silent: true,
+        itemStyle: { color: 'transparent' },
+        emphasis: { disabled: true },
+        tooltip: { show: false },
+        data: base,
+      },
+      {
+        name: labels.delta,
+        type: 'bar',
+        stack: 'wf',
+        barMaxWidth: 32,
+        data: bars,
+      },
+    ],
+  })
+}
+
 /** Series-level styling per chart type (built on top of a compact spec). */
 export function styleBar(
   series: Record<string, unknown>,

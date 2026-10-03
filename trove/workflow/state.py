@@ -344,6 +344,13 @@ class WorkflowState(BaseModel):
     # 前端分析面板(同 link_detail 模式,不参与管线判定)。
     attribution_hops: list[dict[str, Any]] = Field(default_factory=list)
 
+    # 结构化分析结果(分析服务产出,attribution 节点写入;v1 形状见
+    # trove/services/analysis/engine.py::analysis_payload):分解表 +
+    # 驱动器树 + 证据(queries/degraded)。与 attribution 双写期共存;
+    # 进 WorkflowState 即自动贯穿结果缓存/历史回放/SSE(_cached_final
+    # 按 model_fields 过滤,见 agent/session.py)。
+    analysis: dict[str, Any] | None = None
+
     # 图表(chart 节点):确定性推断的 ECharts 可消费字典
     # {"type": line|bar|pie, "title", "dimension", "categories", "series",
     #  "measures"};None = 无需图表/未生成。
