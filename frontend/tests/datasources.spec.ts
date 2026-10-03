@@ -4,13 +4,13 @@
  *
  * The list endpoint takes no filter parameters, so the three filters run
  * client-side over the fetched catalog; the drift filter reads the per-source
- * drift counts (/v1/admin/drift?ds=...), which is why apiGet is mocked by
- * path rather than by call order.
+ * drift counts (GET /v1/admin/drift?datasource=...), which is why apiGet is
+ * mocked by path rather than by call order.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessage } from 'element-plus'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 import DatasourcesView from '../src/views/admin/DatasourcesView.vue'
 
@@ -19,16 +19,25 @@ vi.mock('../src/api/http', () => ({
   apiPost: vi.fn(),
   apiPut: vi.fn(),
   apiDelete: vi.fn(),
+  apiFetch: vi.fn(),
+  ApiError: class ApiError extends Error {
+    status: number
+    constructor(status: number, message: string) {
+      super(message)
+      this.status = status
+    }
+  },
 }))
 
 // Confirm dialogs gate billed/irreversible actions — stub the real dialog,
 // keep the ElementPlus plugin (default export) intact for component mounts.
+// ElMessage is stubbed so the drift-probe failure signal can be asserted.
 vi.mock('element-plus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('element-plus')>()
-  return { ...actual, ElMessageBox: { confirm: vi.fn() } }
+  return { ...actual, ElMessageBox: { confirm: vi.fn() }, ElMessage: vi.fn() }
 })
 
-import { apiGet, apiPost, apiPut } from '../src/api/http'
+import { apiGet, apiPost, apiPut, ApiError } from '../src/api/http'
 import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 import type { VueWrapper } from '@vue/test-utils'
@@ -46,12 +55,19 @@ interface GetOpts {
   detail?: unknown
   /** per-source open drift-item counts, served through /v1/admin/drift */
   drift?: Record<string, number>
+  /** per-source drift-read failures, thrown as ApiError with that status */
+  driftFails?: Record<string, { status: number; message: string }>
 }
 
 function mockGet(opts: GetOpts = {}) {
   ;(apiGet as any).mockImplementation(async (path: string) => {
     if (path.startsWith('/v1/admin/drift')) {
-      const ds = new URLSearchParams(path.split('?')[1] ?? '').get('ds') ?? ''
+      // the endpoint keys on `datasource=` (the governance layer's shape) —
+      // `?ds=` is a 400 on the real backend, so the mock keys the same way
+      const ds =
+        new URLSearchParams(path.split('?')[1] ?? '').get('datasource') ?? ''
+      const fail = opts.driftFails?.[ds]
+      if (fail) throw new ApiError(fail.status, fail.message)
       const n = opts.drift?.[ds] ?? 0
       return { items: Array.from({ length: n }, (_, i) => ({ id: i })) }
     }
@@ -286,5 +302,84 @@ describe('DatasourcesView URL state (§4.3)', () => {
     await flushPromises()
     expect(router.currentRoute.value.query.q).toBeUndefined()
     expect(rowNames(view).length).toBe(2)
+  })
+})
+
+describe('DatasourcesView filters: no-op means "all", never "unpicked" (F4)', () => {
+  it('shows the "all" labels at rest instead of the el-select placeholder', async () => {
+    mockGet({ datasources: DS })
+    const view = await mountView()
+    const selects = view.findAll('.filter-select')
+    expect(selects.length).toBe(2)
+    const texts = selects.map((s) => s.text())
+    expect(texts[0]).toContain('All statuses')
+    expect(texts[1]).toContain('Any drift')
+    // the Element Plus default placeholder must not survive as the resting copy
+    expect(texts.join(' ')).not.toContain('Select')
+  })
+
+  it('keeps the no-op sentinel out of the URL', async () => {
+    mockGet({ datasources: DS })
+    await mountView()
+    expect(router.currentRoute.value.query.health).toBeUndefined()
+    expect(router.currentRoute.value.query.drift).toBeUndefined()
+  })
+})
+
+describe('DatasourcesView drift probe (F3)', () => {
+  function driftPills(view: VueWrapper): { text: string; title: string }[] {
+    return view
+      .findAll('.ds-drift-pill')
+      .map((p) => ({ text: p.text(), title: p.attributes('title') ?? '' }))
+  }
+
+  it('asks /v1/admin/drift with datasource= (the ?ds= spelling is a 400)', async () => {
+    mockGet({ datasources: DS, drift: { financial: 1 } })
+    await mountView()
+    const paths = (apiGet as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(paths).toContain('/v1/admin/drift?datasource=financial')
+    expect(paths.some((p: string) => p.includes('ds=') && !p.includes('datasource=')))
+      .toBe(false)
+  })
+
+  it('marks the built-in demo as drift-unavailable with the reason on the pill', async () => {
+    mockGet({ datasources: DS, drift: { financial: 0 } })
+    const view = await mountView()
+    const pills = driftPills(view)
+    expect(pills.length).toBe(1)
+    expect(pills[0].text).toContain('Drift unavailable')
+    expect(pills[0].title).toContain('demo')
+    // the demo's row is not probed at all — nothing to read there
+    const paths = (apiGet as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(paths.some((p: string) => p.includes('datasource=demo'))).toBe(false)
+  })
+
+  it('marks a 4xx drift read as unavailable, carrying the backend reason', async () => {
+    mockGet({
+      datasources: [DS[0]],
+      driftFails: { financial: { status: 404, message: 'datasource not found' } },
+    })
+    const view = await mountView()
+    const pills = driftPills(view)
+    expect(pills.length).toBe(1)
+    expect(pills[0].text).toContain('Drift unavailable')
+    expect(pills[0].title).toContain('datasource not found')
+    // a client-side 4xx is not a page-level error toast
+    expect(ElMessage).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a 5xx drift read instead of swallowing it', async () => {
+    mockGet({
+      datasources: [DS[0]],
+      driftFails: { financial: { status: 503, message: 'catalog unreachable' } },
+    })
+    const view = await mountView()
+    const pills = driftPills(view)
+    expect(pills.length).toBe(1)
+    expect(pills[0].text).toContain('Drift unread')
+    expect(pills[0].title).toContain('catalog unreachable')
+    expect(ElMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('catalog unreachable') }),
+    )
   })
 })

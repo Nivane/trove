@@ -98,17 +98,30 @@
       </template>
     </PageHeader>
 
-    <!-- KPI row — every number is a filter. -->
-    <div class="kpi-row">
-      <KpiTile
-        v-for="tile in kpiTiles"
-        :key="tile.key"
-        :label="tile.label"
-        :value="tile.value"
-        :sub="tile.sub"
-        :active="tile.active"
-        @click="applyKpi(tile.key)"
-      />
+    <!-- KPI row — every number is a filter. 数字只在 detail 就绪后渲染:
+         首屏(datasources 还没回来)给同形状的骨架,而不是一排 0 —— 一排
+         0 读起来像"这份 KB 什么都没有",那是编出来的结论。空态/错误态
+         整行撤掉(showKpiRow):没有可数的东西,骨架在那里会永远闪下去,
+         而"永远在加载"和"编造 0"是同一类假信号。 -->
+    <div v-if="showKpiRow" class="kpi-row" role="group" :aria-busy="!detail || undefined">
+      <template v-if="detail">
+        <KpiTile
+          v-for="tile in kpiTiles"
+          :key="tile.key"
+          :label="tile.label"
+          :value="tile.value"
+          :sub="tile.sub"
+          :active="tile.active"
+          @click="applyKpi(tile.key)"
+        />
+      </template>
+      <template v-else>
+        <div v-for="n in 5" :key="`kpi-skel-${n}`" class="kpi-skel" aria-hidden="true">
+          <span class="kpi-skel-bar is-label" />
+          <span class="kpi-skel-bar is-value" />
+          <span class="kpi-skel-bar is-sub" />
+        </div>
+      </template>
     </div>
 
     <!-- init / reload / bulk progress -->
@@ -131,16 +144,26 @@
       @retry="loadAll"
     />
 
-    <!-- first paint -->
+    <!-- 一个已连接的数据源都没有:加载中不是真话,给空态(首屏骨架覆盖的是
+         "还在等 datasources 返回"的那一段)。 -->
     <StatePanel
-      v-else-if="loading && !detail"
+      v-else-if="noDatasource"
+      mode="empty"
+      :title="t('dsEmpty', ui.lang)"
+      :description="t('dsEmptySub', ui.lang)"
+    />
+
+    <!-- 其余"还没有 detail 且没报错"的时段一律骨架/加载态(datasources 阶段
+         + KB 三连阶段)。从前这一段没有任何分支,正文是空白的。 -->
+    <StatePanel
+      v-else-if="!detail"
       mode="loading"
       :title="t('kbLoading', ui.lang)"
     />
 
     <!-- never initialized: the first-run empty state carries the CTA -->
     <StatePanel
-      v-else-if="detail && !initialized"
+      v-else-if="!initialized"
       mode="empty"
       :title="t('kbNotInitTitle', ui.lang)"
       :description="t('kbNotInitDesc', ui.lang)"
@@ -920,6 +943,14 @@ const initProgress = ref<{ stage?: string; progress?: number; detail?: string } 
 
 const connected = computed(() => datasources.value.filter((d) => d.status === 'connected'))
 const initialized = computed(() => !!detail.value?.status.initialized)
+/** 加载结束后仍然没有可看的数据源(既没有选中的,也没有已连接的)。 */
+const noDatasource = computed(
+  () => !loading.value && !detail.value && !loadError.value && !values.ds,
+)
+/** KPI 行只在「有 detail 可数」或「首屏还没有结论」时存在(见模板注释)。 */
+const showKpiRow = computed(
+  () => !!detail.value || !(noDatasource.value || !!loadError.value),
+)
 const assets = computed(() => (detail.value?.status.assets ?? []) as KbAsset[])
 const refusedMap = computed(() => detail.value?.status.refused_assets ?? {})
 const lessons = computed(() => detail.value?.lessons ?? [])
@@ -944,12 +975,21 @@ const crumbs = computed(() => [
 /* ── loading ────────────────────────────────────────────────────────────── */
 
 async function loadDatasources() {
+  // 骨架从这一步就开始:首屏链路是 datasources → KB 三连,而 KB 三连要等
+  // 它返回才发得出去。之前 loading 只在 loadAll 内置位,于是这段窗口里
+  // loadError/(loading && !detail)/(detail && !initialized)/detail 四个
+  // 分支全为 false —— 正文空白 + KPI 全 0。
+  loading.value = true
   try {
     const body = await apiGet('/v1/admin/datasources')
     datasources.value = body.datasources ?? []
   } catch (e) {
     datasources.value = []
     loadError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    // 没有可用源 → 交给空态;有源则继续 loading,由 loadAll(watcher 那条
+    // 路也走它)收尾。
+    if (!values.ds) loading.value = false
   }
 }
 
@@ -1974,6 +2014,54 @@ async function copySnippet(sql: string) {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--sp-2);
+}
+
+/* KPI 骨架:与 KpiTile 同形状的三行(标签 / 数字 / 注脚),用 DataTable
+   同一支 shimmer;prefers-reduced-motion 下停动画。 */
+.kpi-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-raised);
+}
+.kpi-skel-bar {
+  border-radius: var(--r-sm);
+  background: linear-gradient(
+    90deg,
+    var(--surface-muted) 25%,
+    var(--border-subtle) 50%,
+    var(--surface-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: kb-shimmer 1.2s linear infinite;
+}
+.kpi-skel-bar.is-label {
+  width: 42%;
+  height: 9px;
+}
+.kpi-skel-bar.is-value {
+  width: 28%;
+  height: 16px;
+}
+.kpi-skel-bar.is-sub {
+  width: 60%;
+  height: 8px;
+}
+@keyframes kb-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kpi-skel-bar {
+    animation: none;
+  }
 }
 @media (max-width: 1100px) {
   .kpi-row {

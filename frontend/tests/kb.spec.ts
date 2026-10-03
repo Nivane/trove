@@ -793,3 +793,48 @@ describe('KbView', () => {
     expect(view.findAll('.diff-card')).toHaveLength(4)
   })
 })
+
+describe('KbView first paint (F2)', () => {
+  it('shows KPI skeletons and a loading panel while /datasources is in flight', async () => {
+    mockApi()
+    // hold the first leg of the chain open: datasources → KB 三连
+    const realImpl = (apiGet as any).getMockImplementation()
+    let release!: () => void
+    ;(apiGet as any).mockImplementation((path: string) => {
+      if (path === '/v1/admin/datasources') {
+        return new Promise((resolve) => {
+          release = () => resolve({ datasources: clone(DESTS) })
+        })
+      }
+      return realImpl(path)
+    })
+    const view = await mountView('/admin/kb?ds=demo')
+
+    // mid-flight: same-shape placeholders, no fabricated zeros, no blank body
+    expect(view.findAll('.kpi-skel')).toHaveLength(5)
+    expect(view.findAll('.kpi-tile')).toHaveLength(0)
+    expect(view.find('.kpi-row').text().trim()).toBe('')
+    expect(view.find('.state-panel.is-loading').exists()).toBe(true)
+    expect(view.find('.state-panel.is-error').exists()).toBe(false)
+
+    release()
+    await settle()
+    expect(view.findAll('.kpi-skel')).toHaveLength(0)
+    expect(view.findAll('.kpi-tile')).toHaveLength(5)
+    // the pending tile counts 2 unconfirmed lessons + 2 example drafts
+    expect(view.find('.kpi-tile .kpi-value').text()).toBe('4')
+    expect(view.find('.state-panel.is-loading').exists()).toBe(false)
+  })
+
+  it('drops the KPI row entirely when no datasource is connected', async () => {
+    DESTS = []
+    mockApi()
+    const view = await mountView('/admin/kb')
+    await settle()
+    // neither zeros nor an eternal shimmer: there is nothing to count
+    expect(view.find('.kpi-row').exists()).toBe(false)
+    const empty = view.find('.state-panel.is-empty')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('No datasources connected yet')
+  })
+})

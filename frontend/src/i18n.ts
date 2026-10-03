@@ -1799,6 +1799,10 @@ export const messages = {
 
     // ── P6-b3-w5 ──（analyst 只读面；仅追加,不改既有键）
     roAdminOnly: '管理员专属',
+    // ── P6-b3-polish ──（F1/F2/F3/F4 打磨批；仅追加，两语言块同序）
+    dsDriftUnavailable: '漂移不可用',
+    dsDriftUnknown: '漂移未读到',
+    dsDriftDemoNote: '内置 demo 演练库不参与漂移治理（它随启动重建，没有可比对的基线）',
   },
   en: {
     brand: 'Trove',
@@ -3636,6 +3640,11 @@ export const messages = {
 
     // ── P6-b3-w5 ── (analyst read-only surface; appended only, no key edits)
     roAdminOnly: 'Admin only',
+    // ── P6-b3-polish ──（F1/F2/F3/F4 polish batch; appended only, same order in both blocks）
+    dsDriftUnavailable: 'Drift unavailable',
+    dsDriftUnknown: 'Drift unread',
+    dsDriftDemoNote:
+      'The built-in demo is excluded from drift governance (it is rebuilt on every start, so there is no baseline to compare against)',
   },
 }
 
