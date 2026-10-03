@@ -30,6 +30,7 @@ from trove.services.semantic_layer.compiler import (
     PartialCompile,
     SemanticCompiler,
     is_hard_miss,
+    repair_plan_joins,
 )
 from trove.services.semantic_layer.ossie import parse_ossie
 
@@ -564,6 +565,124 @@ def test_0485_real_kb_running_contract_labels_anchor_loan(model):
     assert _semantic_dataset_score(loan, q, _word_tokens(q)) == 2.5
 
 
+# --------------------------------- P3 跨车道针(0482/0483/0493,纠正器+编译器)
+
+# 0482 实录(results.jsonl financial-0482,path=compiled):双列投影(A2 + 比率
+# 式),比率式先除后乘;B3 比率投影收敛剪掉 A2(问题要的是增幅本身,gold 单列),
+# A1 渲染规范化把比率归到"先乘后除 + CAST DOUBLE"——先除后乘实测 23/45 行
+# 末位差 1 ulp,零容差下必须落在 gold 同一浮点路径。
+PLAN_0482_REAL = {
+    "tables": ["loan", "account", "district"],
+    "joins": (
+        "loan.account_id = account.account_id; "
+        "account.district_id = district.district_id"
+    ),
+    "conditions": [
+        {"field": "loan.status", "op": "=", "value": "'D'",
+         "note": "running contract, client in debt"},
+    ],
+    "aggregation": "无",
+    "ordering": [],
+    "answer_columns": [
+        "district.A2",
+        "((district.A13 - district.A12) / district.A12) * 100",
+    ],
+    "having": [],
+    "plan_field": "",
+}
+
+QUESTION_0482 = (
+    "For loans contracts which are still running where client are in debt, "
+    "list the district of the and the state the percentage unemployment rate "
+    "increment from year 1995 to 1996."
+)
+
+QUESTION_0483 = (
+    "List the top nine districts, by descending order, from the highest to "
+    "the lowest, the number of female account holders."
+)
+
+# 0493 实录(results.jsonl financial-0493,path=llm):joins 借共享维度列把
+# client 接到 account(account.district_id = client.district_id,扇出);
+# A2 计划层 joins 修复换成所有权链 loan→account→disp→client。编译仍软 MISS
+# (no_metric_match),修复的意义在**计划文本层**:gen 逐字照抄的是修好的链。
+PLAN_0493_REAL = {
+    "tables": ["loan", "account", "client"],
+    "joins": (
+        "loan.account_id = account.account_id AND "
+        "account.district_id = client.district_id"
+    ),
+    "conditions": [
+        {"field": "client.gender", "op": "=", "value": "'M'",
+         "note": "male client"},
+        {"field": "loan.date", "op": ">=", "value": "'1996-01-01'",
+         "note": "loans from 1996"},
+        {"field": "loan.date", "op": "<=", "value": "'1997-12-31'",
+         "note": "loans up to 1997"},
+    ],
+    "aggregation": "sum",
+    "time_grain": {"field": "loan.date", "grain": "year"},
+    "ordering": [],
+    "answer_columns": [
+        "(SUM(CASE WHEN YEAR(loan.date) = 1997 THEN loan.amount ELSE 0 END) "
+        "- SUM(CASE WHEN YEAR(loan.date) = 1996 THEN loan.amount ELSE 0 END)) "
+        "/ SUM(CASE WHEN YEAR(loan.date) = 1996 THEN loan.amount ELSE 0 END) * 100"
+    ],
+    "having": [],
+    "plan_field": "",
+}
+
+
+def test_0482_real_ratio_only_projection_single_column(model):
+    """0482 实录:B3 收敛只留比率列 + A1 归一(先乘后除/CAST DOUBLE)。"""
+    from trove.workflow.nodes.query_sketch import ratio_only_projection
+
+    fixed = ratio_only_projection(dict(PLAN_0482_REAL), QUESTION_0482)
+    assert fixed is not None and fixed["plan_field"] == "ratio_only_projection"
+    assert fixed["answer_columns"] == [
+        "((district.A13 - district.A12) / district.A12) * 100"]
+    res = _compile_with(
+        model, fixed, ["client", "district", "loan", "trans", "account"])
+    assert not isinstance(res, CompileMiss), res
+    sql = _low(res)
+    assert "district.a2" not in sql
+    assert "(cast((district.a13 - district.a12) as double) * 100 / district.a12)" in sql
+
+
+def test_0483_real_reanchor_to_holder_table(model):
+    """0483 实录:B2 重锚把计数从 account 换到持有人表 client,计数改
+    count(distinct client.client_id) 并三处同步;编译不再出现 account。"""
+    from trove.workflow.nodes.query_sketch import reanchor_entity_count_plan
+
+    re = reanchor_entity_count_plan(dict(PLAN_0483), QUESTION_0483, "en", model)
+    assert re is not None, "reanchor must fire on the recorded shape"
+    assert re["plan_field"] == "reanchor_entity_count_plan"
+    assert re["tables"] == ["client", "district"]
+    assert re["joins"] == "client.district_id = district.district_id"
+    assert re["answer_columns"] == [
+        "district.A2", "count(distinct client.client_id)"]
+    assert re["ordering"] == [
+        {"column": "count(distinct client.client_id)", "direction": "desc"}]
+    res = _compile_with(model, re, MATCHED["0483"])
+    assert not isinstance(res, CompileMiss), res
+    sql = _low(res)
+    assert "account" not in sql
+    assert "count(client.client_id)" in sql
+    assert "order by count(client.client_id) desc" in sql
+    assert "limit 9" in sql
+
+
+def test_0493_real_plan_join_repair_ownership_chain(model):
+    """0493 实录:A2 修复把借共享列的扇出连接换成所有权链(经 disp),
+    disp 进表集;坏连接逐字消失(计划文本交 gen 的就是这条链)。"""
+    rp = repair_plan_joins(dict(PLAN_0493_REAL), model)
+    assert rp is not None
+    assert "disp" in rp["tables"]
+    assert "account.district_id = client.district_id" not in rp["joins"]
+    assert "disp.account_id = account.account_id" in rp["joins"]
+    assert "disp.client_id = client.client_id" in rp["joins"]
+
+
 # ------------------------------------------------- env-gated MySQL execution
 
 def _mysql_conn():
@@ -643,3 +762,69 @@ def test_execution_matches_gold_rows(model, qid, plan, matched):
         conn.close()
     assert normalize_rows(got) == normalize_rows(gold), (
         f"{qid}: compiled rows != gold rows\n got={got!r}\ngold={gold!r}")
+
+
+def _assert_rows_match_gold(qid: str, sql: str):
+    from scripts.eval_bird import normalize_rows  # harness 同款比较口径
+
+    conn = _mysql_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            got = cur.fetchall()
+            cur.execute(_gold_sql(qid))
+            gold = cur.fetchall()
+    finally:
+        conn.close()
+    assert normalize_rows(got) == normalize_rows(gold), (
+        f"{qid}: rows != gold rows\n got={got!r}\ngold={gold!r}")
+
+
+@pytest.mark.integration
+def test_0482_real_projection_rows_match_gold(model):
+    """B3+A1 收敛后的单列比率式,45 行逐字符 = gold(含 1 ulp 浮点路径)。"""
+    from trove.workflow.nodes.query_sketch import ratio_only_projection
+
+    fixed = ratio_only_projection(dict(PLAN_0482_REAL), QUESTION_0482)
+    res = _compile_with(
+        model, fixed, ["client", "district", "loan", "trans", "account"])
+    assert not isinstance(res, CompileMiss), res
+    _assert_rows_match_gold("0482", res.sql)
+
+
+@pytest.mark.integration
+def test_0483_real_reanchor_rows_match_gold(model):
+    """B2 重锚后的计划(gold 的计数形态 COUNT(client_id),无 DISTINCT 因
+    client_id 是主键),9 行 = gold。"""
+    from trove.workflow.nodes.query_sketch import reanchor_entity_count_plan
+
+    re = reanchor_entity_count_plan(dict(PLAN_0483), QUESTION_0483, "en", model)
+    assert re is not None
+    res = _compile_with(model, re, MATCHED["0483"])
+    assert not isinstance(res, CompileMiss), res
+    _assert_rows_match_gold("0483", res.sql)
+
+
+@pytest.mark.integration
+def test_0493_repaired_ownership_path_rows_match_gold(model):
+    """A2 所有权链 + 角色限定 + 占比 DOUBLE 形态三者齐备才与 gold 同行。
+
+    连接段必须与 repair 输出逐子句一致(它修的就是这一环);角色限定
+    (disp.type='OWNER',问题「for a male client」的持有人语义)与占比 CANON
+    形态是规划/生成侧纪律的既定渲染(实跑 pred 即为此形态),在此按纪律手写
+    执行载体——不加限定实测 25.362,加限定 25.300191222790616 = gold。"""
+    rp = repair_plan_joins(dict(PLAN_0493_REAL), model)
+    assert rp is not None
+    n97 = "SUM(CASE WHEN YEAR(loan.date) = 1997 THEN loan.amount ELSE 0 END)"
+    n96 = "SUM(CASE WHEN YEAR(loan.date) = 1996 THEN loan.amount ELSE 0 END)"
+    sql = (
+        f"SELECT (CAST(({n97} - {n96}) AS DOUBLE) * 100 / {n96}) "
+        "FROM loan "
+        "JOIN account ON loan.account_id = account.account_id "
+        "JOIN disp ON disp.account_id = account.account_id "
+        "JOIN client ON disp.client_id = client.client_id "
+        "WHERE client.gender = 'M' AND disp.type = 'OWNER'"
+    )
+    for clause in rp["joins"].split(" AND "):
+        assert clause in sql, f"repair clause not in pin SQL: {clause}"
+    _assert_rows_match_gold("0493", sql)

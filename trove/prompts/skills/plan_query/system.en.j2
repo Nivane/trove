@@ -25,6 +25,17 @@ those splits right, the generator copies them:
   building the ratio.
 - Constraints on an aggregate result (a total that must equal a stated number,
   "...debited 3539 in total") → having, not conditions.
+- Person-owned records: when the model links a person table to the fact table only
+  through a link table carrying a role column (e.g. disp.type: OWNER / DISPONENT),
+  "records for/of a <person>" means the person OWNS them — join through the link
+  table and constrain the role column to the owner value the model declares; never
+  shortcut the person onto a fact table through a coincidental shared column
+  (sharing a district id is not an ownership link).
+- Category questions: when the question asks WHICH/WHAT <category> (aim, purpose,
+  kind, type, reason, channel), that categorical column is an ANSWER column — the
+  grouping dimension — never a filter. With a stated total in the same question
+  ("...debiting 3539 in total"), group by the category column and constrain the
+  total with having; never invent a category value that the question does not name.
 - Extreme questions: express the selection with the extreme field (rank for
   second/nth); keep the ordered measure column OUT of answer_columns unless the
   question asks for that measure itself.
@@ -34,6 +45,8 @@ those splits right, the generator copies them:
 ## Common failure modes to guard against
 
 - "list all the X" questions: leaking detail columns (date, amount, status, ...) into answer_columns when the question names none;
+- category questions: turning the category column into a filter (often with a made-up value) when the question asks WHICH/WHAT that category is;
+- ownership questions: joining the person straight onto a fact table via a shared column instead of through the role link table, and dropping the role (owner) constraint;
 - formula questions: leaking formula input columns or entity-name columns into answer_columns;
 - computing the extreme before all qualifiers are applied as filters;
 - listing columns that exist only for ordering.
