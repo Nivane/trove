@@ -59,6 +59,7 @@ import yaml
 
 from trove.services.kb.deterministic_gen import generate_terms, generate_templates
 from trove.services.kb.ossie_format import terms_to_ossie_document
+from trove.services.kb.provenance import META_KEY, dump_asset
 
 _DUMP_KWARGS = dict(default_flow_style=False, allow_unicode=True, sort_keys=False)
 
@@ -354,6 +355,24 @@ def regen_examples(kb: Path, lang: str) -> tuple[dict[str, Any], str, bool]:
 # ── CLI ──────────────────────────────────────────────────
 
 
+# 落盘时写入 _meta 的来源名(惯例同 kb_learn / memory / user_feedback)。
+_GENERATOR = "regen_kb_generated"
+
+
+def _write_pending(pending: list[tuple[Path, dict[str, Any]]]) -> None:
+    """落盘。带来源块的文件经 ``dump_asset`` **重盖章** —— 守则见
+    ``KbService._write_doc``:摘要没跟着正文更新,文件下次读回就会被判成
+    "人改过",机器写入伪装成人的编辑;不带 ``_meta`` 的文件(semantics.yml)
+    保持仓内惯例,不引入来源块。"""
+    for path, doc in pending:
+        text = (
+            dump_asset(doc, _GENERATOR)
+            if META_KEY in doc
+            else yaml.safe_dump(doc, **_DUMP_KWARGS)
+        )
+        path.write_text(text, encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--kb-dir", default=".trove/kb/financial", help="KB 目录(默认 financial)")
@@ -386,8 +405,8 @@ def main() -> int:
     if not args.write:
         print("(dry-run;加 --write 落盘)")
         return 1 if args.check else 0
-    for path, doc in pending:
-        path.write_text(yaml.safe_dump(doc, **_DUMP_KWARGS), encoding="utf-8")
+    _write_pending(pending)
+    for path, _doc in pending:
         print(f"已写入 {path}")
     return 0
 

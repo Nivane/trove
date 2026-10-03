@@ -591,7 +591,7 @@ def generate_templates(
             col_type = str(col.get("type", "") or "").lower()
             if any(m in col_type for m in _TEXT_TYPES):
                 col_name = col.get("name", "")
-                desc = str(col.get("description", "") or "").strip()
+                desc = _clean_desc(str(col.get("description", "") or "").strip())
                 if lang == "en" and (not desc or _CJK_RE.search(desc)):
                     desc = col_name  # 英文模式下中文描述退回到列名
                 desc = desc or col_name
@@ -666,7 +666,7 @@ def generate_templates(
             dcol = first_text_col(dim)
             if dcol:
                 dcol_name = dcol.get("name", "")
-                ddesc = str(dcol.get("description", "") or "").strip()
+                ddesc = _clean_desc(str(dcol.get("description", "") or "").strip())
                 if lang == "en" and (not ddesc or _CJK_RE.search(ddesc)):
                     ddesc = dcol_name
                 ddesc = ddesc or dcol_name
@@ -695,7 +695,7 @@ def generate_templates(
             if not vals:
                 continue
             col_name = col.get("name", "")
-            desc = str(col.get("description", "") or "").strip()
+            desc = _clean_desc(str(col.get("description", "") or "").strip())
             if lang == "en" and (not desc or _CJK_RE.search(desc)):
                 desc = col_name
             desc = desc or col_name

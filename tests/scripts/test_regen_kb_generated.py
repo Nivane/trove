@@ -13,9 +13,11 @@ from scripts.regen_kb_generated import (
     _is_generator_owned,
     _is_stale_generated,
     _unwrap_double_cast,
+    _write_pending,
     regen_examples,
     regen_metrics,
 )
+from trove.services.kb.provenance import body_edited
 
 _DATASETS = {"loan": {"loan_id", "amount"}, "district": {"district_id", "A10"}}
 
@@ -350,7 +352,8 @@ class TestRegenExamples:
         # 对齐:问句换成生成器现在的措辞(聚合族 + GROUP BY 族)
         assert "What is the maximum Number of cities?" in questions
         assert "What is the maximum Number of cities, ranging from 1 to 11.?" not in questions
-        assert "How many district records are there for each Card type; lowercase text values.?" in questions
+        assert "How many district records are there for each Card type; lowercase text values?" in questions
+        assert "How many district records are there for each Card type; lowercase text values.?" not in questions
         assert "How many district records are there for each Card type?" not in questions
         # 合成的多表条目原样
         assert "Which districts are largest?" in questions
@@ -376,3 +379,43 @@ class TestRegenExamples:
             encoding="utf-8")
         _, _, changed = regen_examples(tmp_path, "en")
         assert not changed
+
+
+class TestWritePending:
+    def test_stamps_files_with_meta(self, tmp_path):
+        """带 _meta 的文件落盘必须重盖章 —— 否则机器写入被读成"人改过"。
+
+        规则原文见 KbService._write_doc:摘要没跟着正文更新,文件下次读回
+        就会被判成"人改过",而"哪些是人的编辑"是三方合并的分界依据。
+        """
+        _write_examples(tmp_path)
+        path = tmp_path / "examples.yml"
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        doc["_meta"] = {
+            "format": 1,
+            "generator": "memory",
+            "trove": "0.0.0",
+            "digest": "sha256:" + "0" * 64,
+            "generated_at": "2026-01-01T00:00:00+00:00",
+        }
+        path.write_text(
+            yaml.safe_dump(doc, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+
+        regen_doc, _, _ = regen_examples(tmp_path, "en")
+        assert body_edited(regen_doc) is True  # 写前:正文已变,摘要还是旧的
+        _write_pending([(path, regen_doc)])
+
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert body_edited(written) is False  # 写后:摘要跟随正文
+        assert written["_meta"]["generator"] == "regen_kb_generated"
+        assert written["_meta"]["format"] == 1
+
+    def test_no_meta_file_stays_unstamped(self, tmp_path):
+        """semantics.yml 不带 _meta,落盘不引入来源块(仓内惯例)。"""
+        path = tmp_path / "semantics.yml"
+        doc = {"semantic_model": [{"name": "x", "datasets": [], "metrics": []}]}
+        _write_pending([(path, doc)])
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert "_meta" not in written
