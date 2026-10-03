@@ -10,14 +10,14 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-4800%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-5500%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
 
 <br>
 
-📖 **[文档站](https://nivane.github.io/trove/)** —— 25 页,每条机制都锚到具体源码行 · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[文档站](https://nivane.github.io/trove/)** —— 36 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -223,11 +223,12 @@ docker compose down
 
 ## 文档地图
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 25 页,产品概念到 API 参考
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 36 页,产品概念到 API 参考,含 29 张真实界面截图的图文指南
 
 | | |
 |---|---|
 | **上手** | [快速上手](https://nivane.github.io/trove/guide/quickstart.html) · [产品概念](https://nivane.github.io/trove/guide/concepts.html) · [安装部署](https://nivane.github.io/trove/guide/deploy.html) · [接入数据源](https://nivane.github.io/trove/guide/datasource.html) |
+| **图文指南** | [用户指南](https://nivane.github.io/trove/user/ui-tour.html) · [管理台指南](https://nivane.github.io/trove/admin/console.html) · [部署与运维](https://nivane.github.io/trove/ops/deployment.html) |
 | **架构** | [系统架构](https://nivane.github.io/trove/architecture/overview.html) · [查询工作流](https://nivane.github.io/trove/architecture/workflow.html) |
 | **能力** | [数据能力](https://nivane.github.io/trove/capabilities/data.html) · [语义层](https://nivane.github.io/trove/capabilities/semantic.html) · [知识库](https://nivane.github.io/trove/capabilities/kb.html) · [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) · [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) · [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [记忆](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM 网关](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
 | **运维** | [安全边界](https://nivane.github.io/trove/ops/security.html) · [运维管理](https://nivane.github.io/trove/ops/admin.html) · [可观测性](https://nivane.github.io/trove/ops/observability.html) · [漂移治理](https://nivane.github.io/trove/ops/drift.html) · [评测与回归门](https://nivane.github.io/trove/ops/eval.html) |
@@ -250,7 +251,7 @@ uv run python scripts/eval_bird.py --db-id financial \
 ## 开发
 
 ```bash
-uv run pytest                     # 全量 4800+ 测试,mocked LLM,零网络 / 零 key
+uv run pytest                     # 全量 5500+ 测试,mocked LLM,零网络 / 零 key
 uv run pytest tests/workflow/     # 只跑 LangGraph 图与节点
 uv run pytest -m "not slow"       # 跳过慢测试
 ```

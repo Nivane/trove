@@ -10,14 +10,14 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-4800%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-5500%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
 
 <br>
 
-📖 **[Documentation](https://nivane.github.io/trove/)** — 25 pages, every mechanism anchored to the source line · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[Documentation](https://nivane.github.io/trove/)** — 36 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -223,11 +223,12 @@ The same bias shows up elsewhere: health distinguishes `unavailable` from `degra
 
 ## Docs Map
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 25 pages, from product concepts to API reference
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 36 pages, from product concepts to API reference, including illustrated guides with 29 real-UI screenshots
 
 | | |
 |---|---|
 | **Getting started** | [Quickstart](https://nivane.github.io/trove/guide/quickstart.html) · [Concepts](https://nivane.github.io/trove/guide/concepts.html) · [Deploy](https://nivane.github.io/trove/guide/deploy.html) · [Datasources](https://nivane.github.io/trove/guide/datasource.html) |
+| **Illustrated guides** | [User guide](https://nivane.github.io/trove/user/ui-tour.html) · [Admin console](https://nivane.github.io/trove/admin/console.html) · [Deployment & ops](https://nivane.github.io/trove/ops/deployment.html) |
 | **Architecture** | [System overview](https://nivane.github.io/trove/architecture/overview.html) · [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
 | **Capabilities** | [Data](https://nivane.github.io/trove/capabilities/data.html) · [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) · [KB](https://nivane.github.io/trove/capabilities/kb.html) · [Retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) · [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [Agent](https://nivane.github.io/trove/capabilities/agent.html) · [Memory](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM gateway](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
 | **Operations** | [Security](https://nivane.github.io/trove/ops/security.html) · [Admin](https://nivane.github.io/trove/ops/admin.html) · [Observability](https://nivane.github.io/trove/ops/observability.html) · [Drift](https://nivane.github.io/trove/ops/drift.html) · [Eval and regression gate](https://nivane.github.io/trove/ops/eval.html) |
@@ -250,7 +251,7 @@ Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/
 ## Development
 
 ```bash
-uv run pytest                     # full suite: 4800+ tests, mocked LLM, zero network / zero keys
+uv run pytest                     # full suite: 5500+ tests, mocked LLM, zero network / zero keys
 uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```
