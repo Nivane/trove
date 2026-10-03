@@ -6,7 +6,8 @@
  * POST /validate · /preview · /drafts · /drafts/batch · /drift/check) plus
  * a real router, so the assertions pin the page's own behaviour:
  *
- *  · KPIs as entry points, state in the URL (tab/q/sort/prob read back);
+ *  · KPIs as entry points, state in the URL (tab/q/sort/order/prob read
+ *    back; ordering is two keys per §4.3 U2, never sort=key:dir);
  *  · the five states, including the one that matters most: a *skipped*
  *    drift check renders as "did not complete", never as "no drift";
  *  · problems are structured rows with locate / blast-radius / fix;
@@ -473,11 +474,14 @@ describe('SemanticView', () => {
       .find((b) => b.text().includes('Name'))!
     await nameHeader.trigger('click')
     await settle()
-    expect(router.currentRoute.value.query.sort).toBe('name:asc')
+    // §4.3 U2: sort and order are two keys, never the packed sort=name:asc
+    expect(router.currentRoute.value.query.sort).toBe('name')
+    expect(router.currentRoute.value.query.order).toBe('asc')
 
     await nameHeader.trigger('click')
     await settle()
-    expect(router.currentRoute.value.query.sort).toBe('name:desc')
+    expect(router.currentRoute.value.query.sort).toBe('name')
+    expect(router.currentRoute.value.query.order).toBe('desc')
     expect(view.findAll('.dt-row')[0].text()).toContain('total_loan_amount')
 
     // last-changed sort is audit-derived: the confirmed asset floats up, "—" sinks
@@ -486,7 +490,8 @@ describe('SemanticView', () => {
       .find((b) => b.text().includes('Last changed'))!
     await changedHeader.trigger('click')
     await settle()
-    expect(router.currentRoute.value.query.sort).toBe('changed:desc')
+    expect(router.currentRoute.value.query.sort).toBe('changed')
+    expect(router.currentRoute.value.query.order).toBe('desc')
     const first = view.findAll('.dt-row')[0]
     expect(first.text()).toContain('total_loan_amount')
     expect(first.text()).not.toContain('—')

@@ -5,10 +5,11 @@
   成本(用量样本 + 缓存 + 预算/降级)。页面**只读**:不触发评测
   (eval_bird 是花钱的,永不从这里点火),不写任何 KB。
 
-  三个 URL 键全部住在 query 里(useListQuery):tab / window /
-  失败清单的 {q, verdict, path, page, sort, order}(过滤键在
-  QualityPanel 内声明)。/admin/usage 是兼容别名,重定向到这里
-  并带上 tab=usage(路由表里声明)。
+  三个 URL 键全部住在 query 里(useListQuery):tab / win / 失败清单的
+  {q, verdict, path, page, sort, order}(过滤键在 QualityPanel 内声明)。
+  win 与 /admin 同键名(§4.3 白名单):总览页的成本下钻链接
+  /admin/ops?tab=usage&win=<w> 必须落在这个窗口上,不是默认窗口。
+  /admin/usage 是兼容别名,重定向到这里并带上 tab=usage(路由表里声明)。
 
   诚实规则在本页的体现:
     · 数据没到 → StatePanel loading,不是空白页;
@@ -41,10 +42,16 @@ import PerfPanel from '../../components/ops/PerfPanel.vue'
 
 const ui = useUiStore()
 
-const { values } = useListQuery({ tab: 'quality', window: '7d' })
+const { values } = useListQuery({ tab: 'quality', win: '7d' })
 
 /** URL 里的 tab 认不出时回落到质量(自愈,不报错)。 */
 const tab = computed<'quality' | 'usage'>(() => (values.tab === 'usage' ? 'usage' : 'quality'))
+
+// §2.3 统一页头:根面包屑=管理台(→ /admin),末项=本页。
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('opsTitle', ui.lang) },
+])
 
 const quality = ref<QualityOverview | null>(null)
 const usage = ref<UsageOverview | null>(null)
@@ -98,7 +105,7 @@ async function loadUsage() {
   pageError.value = ''
   try {
     // 存储探不通时 503 仍带完整 payload —— resolve 后从这里渲染。
-    usage.value = await fetchUsageOverview(values.window)
+    usage.value = await fetchUsageOverview(values.win)
   } catch (e) {
     pageError.value = describeError(e)
   } finally {
@@ -130,7 +137,7 @@ watch(tab, (next) => {
 })
 
 watch(
-  () => values.window,
+  () => values.win,
   () => {
     if (tab.value !== 'usage' || loadingUsage.value) return
     void loadUsage()
@@ -140,7 +147,7 @@ watch(
 
 <template>
   <div class="admin-view ops-page" :aria-busy="activeLoading || undefined">
-    <PageHeader :title="t('opsTitle', ui.lang)" :breadcrumbs="[{ label: t('opsTitle', ui.lang) }]">
+    <PageHeader :title="t('opsTitle', ui.lang)" :breadcrumbs="crumbs">
       <template #description>
         <span>{{ t('opsDesc', ui.lang) }}</span>
         <span v-if="asOf" class="ops-asof"> · {{ asOf }}</span>
@@ -179,9 +186,9 @@ watch(
             :key="w"
             type="button"
             class="seg-btn"
-            :class="{ 'is-active': values.window === w }"
-            :aria-pressed="values.window === w"
-            @click="values.window = w"
+            :class="{ 'is-active': values.win === w }"
+            :aria-pressed="values.win === w"
+            @click="values.win = w"
           >
             {{ w }}
           </button>

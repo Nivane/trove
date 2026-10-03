@@ -1,11 +1,10 @@
 <template>
   <div class="admin-view">
-    <div class="view-header">
-      <div>
-        <h2>{{ t('settingsNav', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('settingsPageDesc', ui.lang) }}</p>
-      </div>
-    </div>
+    <PageHeader
+      :title="t('settingsNav', ui.lang)"
+      :description="t('settingsPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    />
 
     <div class="settings-stack">
       <div v-if="saveError" class="form-error settings-error"><span>{{ saveError }}</span></div>
@@ -154,8 +153,14 @@ import { apiGet, apiPut } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { toastError, notifySuccess } from '../../utils/notify'
+import PageHeader from '../../components/base/PageHeader.vue'
 
 const ui = useUiStore()
+
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('settingsNav', ui.lang) },
+])
 
 const loading = ref(false)
 const saving = ref(false)

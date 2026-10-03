@@ -227,7 +227,12 @@
       <span class="spacer" />
       <span class="pager-size-label">
         {{ t('usersPageSize', ui.lang) }}
-        <el-select v-model="pageSize" size="small" class="pager-size">
+        <el-select
+          :model-value="pageSize"
+          size="small"
+          class="pager-size"
+          @change="setPageSize"
+        >
           <el-option v-for="n in PAGE_SIZES" :key="n" :label="String(n)" :value="n" />
         </el-select>
       </span>
@@ -576,7 +581,7 @@ type KpiKey = 'all' | 'active' | 'admin' | 'disabled' | 'nogrant'
 
 const ui = useUiStore()
 
-/* ── list state: filters/sort/page live in the URL, never in the session ── */
+/* ── list state: filters/sort/page/size live in the URL, never in the session ── */
 const { values, isActive: isFiltered, reset: resetFilters } = useListQuery({
   q: '',
   role: '',
@@ -584,6 +589,7 @@ const { values, isActive: isFiltered, reset: resetFilters } = useListQuery({
   sort: 'created_at',
   order: 'desc',
   page: '1',
+  size: '20',
 })
 
 const users = ref<AdminUser[]>([])
@@ -592,7 +598,6 @@ const loading = ref(false)
 const listError = ref('')
 const selected = ref<(string | number)[]>([])
 const bulkBusy = ref(false)
-const pageSize = ref(20)
 const kpis = ref<Record<KpiKey, number | null>>({
   all: null,
   active: null,
@@ -603,6 +608,16 @@ const kpis = ref<Record<KpiKey, number | null>>({
 const knownDatasources = ref<string[]>([])
 
 const page = computed(() => Math.max(1, Number.parseInt(values.page, 10) || 1))
+// Rows per page is a URL key too (P6 §4.3 U3): a shared link keeps its size.
+// Only the offered sizes are honored — a hand-edited ?size=25 falls back to
+// the default instead of leaving the pager showing a size it cannot pick.
+const pageSize = computed(() => {
+  const n = Number(values.size)
+  return PAGE_SIZES.includes(n) ? n : 20
+})
+function setPageSize(n: number) {
+  values.size = String(n)
+}
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 const tableSort = computed<DataTableSort>(() => ({
   key: values.sort,
@@ -742,6 +757,9 @@ async function reload() {
 }
 
 onMounted(() => {
+  // drop a hand-edited ?size= that is not one of the offered sizes, so the
+  // URL never claims a page size the pager cannot show
+  if (!PAGE_SIZES.includes(Number(values.size))) values.size = '20'
   void reload()
   void loadDatasources()
 })
@@ -1412,8 +1430,8 @@ async function loadActivity(userId: number) {
   color: var(--accent-active);
 }
 .tag-pill.is-analyst {
-  background: #e0f2fe;
-  color: #0369a1;
+  background: var(--info-bg);
+  color: var(--info-text);
 }
 .tag-pill.is-ok {
   background: var(--ok-bg);

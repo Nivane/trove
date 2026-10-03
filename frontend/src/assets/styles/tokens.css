@@ -216,6 +216,8 @@
   /* Identifiers (ids, table names, slugs, SQL) get the mono face; numeric
      cells get tabular figures + right alignment (DataTable `numeric` column). */
   --font-ident: var(--font-mono);
+
+  --table-max-h: 560px; /* P6-W2: bounded admin-table cap, replaces calc(100vh - Npx) */
 }
 
 /* Console register: compact rows / controls. Scoped here (not in admin.css)

@@ -3,8 +3,9 @@
 
   The page's contract, in one place:
 
-  - state lives in the URL (?ds=&tab=&q=&sort=&page=&prob=&draft=), so a
-    filtered view is shareable and ?draft=<id> is a deep link;
+  - state lives in the URL (?ds=&tab=&q=&sort=&order=&page=&prob=&draft=;
+    ordering is two keys per §4.3 U2, never sort=key:dir), so a filtered
+    view is shareable and ?draft=<id> is a deep link;
   - the five KPI numbers are entry points (pending → queue, problems → the
     panel filtered to errors), not decoration;
   - problems are structured rows ([定位] jumps to the asset), and the drift
@@ -77,6 +78,9 @@ const { values } = useListQuery({
   tab: 'metrics',
   q: '',
   sort: '',
+  // U2: the direction is its own key — the same shape the users endpoint
+  // takes (sort=key&order=asc|desc), never the packed sort=key:dir.
+  order: '',
   page: '',
   prob: '',
   draft: '',
@@ -271,20 +275,17 @@ function sortWith<T>(rows: T[], getter: (row: T) => string | number, dir: 'asc' 
 }
 
 const sortState = computed<DataTableSort | null>(() => {
-  const raw = values.sort
-  if (!raw) return null
-  const idx = raw.indexOf(':')
-  if (idx < 0) return null
-  const key = raw.slice(0, idx)
-  const dir = raw.slice(idx + 1)
-  if (!key || (dir !== 'asc' && dir !== 'desc')) return null
-  return { key, dir }
+  if (!values.sort) return null
+  // a hand-edited ?order= that is neither asc nor desc falls back to asc,
+  // matching the backend's own default
+  return { key: values.sort, dir: values.order === 'desc' ? 'desc' : 'asc' }
 })
 
 function onSort(s: DataTableSort) {
   // Always written: the header toggle reads its next direction from the URL,
   // and "state in the URL" means the chosen ordering is shareable too.
-  values.sort = `${s.key}:${s.dir}`
+  values.sort = s.key
+  values.order = s.dir
   values.page = ''
 }
 

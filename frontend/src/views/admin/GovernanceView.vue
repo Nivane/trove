@@ -111,6 +111,12 @@ const activeTab = computed<GovernanceTab>(() =>
     : 'inbox',
 )
 
+// §2.3 统一页头:根面包屑=管理台(→ /admin),末项=本页。
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('govTitle', ui.lang) },
+])
+
 const PAGE_SIZE = GOVERNANCE_TODOS_LIMIT
 const pageNum = computed(() => Math.max(1, Number.parseInt(values.page, 10) || 1))
 
@@ -880,7 +886,7 @@ const activeLoading = computed(
   <div class="admin-view gov-page" :aria-busy="activeLoading || undefined">
     <PageHeader
       :title="t('govTitle', ui.lang)"
-      :breadcrumbs="[{ label: t('govTitle', ui.lang) }]"
+      :breadcrumbs="crumbs"
     >
       <template #description>
         <span>{{ t('govDesc', ui.lang) }}</span>
@@ -1403,7 +1409,7 @@ const activeLoading = computed(
 .gov-warn {
   margin: 0;
   font-size: var(--fs-xs);
-  color: var(--danger, #d64545);
+  color: var(--danger-text);
   font-weight: 600;
 }
 .gov-muted {
