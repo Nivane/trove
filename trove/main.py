@@ -391,6 +391,11 @@ async def create_app_components(
     from trove.services.jobs.store import JobStore
 
     jobs = JobsService(JobStore(config.home))
+    # 订阅投递（定时分析产出物 → 订阅者）：与 JobStore 共用同一个 SQLite ——
+    # 订阅行按 job_id 指向任务行，分家会出现「有订阅、没任务」的悬空引用。
+    from trove.services.jobs.subscribe import SubscriptionService
+
+    subscriptions = SubscriptionService(jobs.store)
     # `decision` is optional: without it a decision job would have to be
     # reported as an error rather than quietly run as an NL question — the
     # service resolves the semantic model per job.datasource itself, so no
@@ -413,6 +418,8 @@ async def create_app_components(
         # 触发 + autonomy=propose → 建 pending 提案(best-effort:
         # 提案失败绝不让判定 run 变成 error,见 runner._propose_action)。
         actions=actions,
+        # 报告订阅投递(best-effort 同级,见 runner._deliver)。
+        subscriptions=subscriptions,
     )
 
     # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
@@ -445,6 +452,7 @@ async def create_app_components(
         "scheduler": scheduler,
         "verdicts": verdicts,
         "actions": actions,
+        "subscriptions": subscriptions,
         "action_templates": action_templates,
         "maintenance": MaintenanceService(
             session_store, checkpointer, config.retention,

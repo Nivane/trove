@@ -266,6 +266,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     from trove.api.routers import jobs as jobs_router
     from trove.api.routers import quality as quality_router
     from trove.api.routers import skills as skills_router
+    from trove.api.routers import subscriptions as subscriptions_router
     from trove.api.routers import usage as usage_router
 
     auth = components.get("auth")
@@ -292,6 +293,9 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(auth_router.router, prefix="/v1")
         app.include_router(admin_router.router, prefix="/v1")
         app.include_router(jobs_router.router, prefix="/v1")
+        # 订阅面(定时分析的产出去向):管理面 + 订阅者本人面同文件,子路径
+        # 按 admin/·无前缀分流,门禁各自自持(DELETE 的 204 空体与 jobs 同款)。
+        app.include_router(subscriptions_router.router, prefix="/v1")
         app.include_router(skills_router.router, prefix="/v1")
         app.include_router(decisions_router.router, prefix="/v1")
         # 行动提案面(模板门 + 审批 + 外送回执):全 require_admin 自持门禁,

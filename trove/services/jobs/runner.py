@@ -25,7 +25,7 @@ MAX_RESULT_ROWS = 200
 
 class SchedulerRunner:
     def __init__(self, session_manager, jobs: JobsService, lang: str = "zh",
-                 decision=None, verdicts=None, actions=None):
+                 decision=None, verdicts=None, actions=None, subscriptions=None):
         self.session_manager = session_manager
         self.jobs = jobs
         self.lang = lang
@@ -44,6 +44,10 @@ class SchedulerRunner:
         #: *request for a human*, so a failure to create one must never take
         #: the schedule (or the verdict) down with it.
         self.actions = actions
+        #: ``SubscriptionService`` (duck-typed) or None — 把本次 run 的报告
+        #: 投递给订阅者（定时分析 + 订阅的投递半边）。同样 best-effort：一个
+        #: 收不到的订阅者绝不能把一次跑好的运行变成 error。
+        self.subscriptions = subscriptions
 
     async def run_job(self, job: Job, now: datetime | None = None) -> dict[str, Any]:
         """Execute one job end-to-end and return its run summary."""
@@ -70,6 +74,12 @@ class SchedulerRunner:
             except Exception as e:
                 logger.exception("job %s question failed", job.id)
                 await self.jobs.finish_run(run_id, "error", False, False, 0, "")
+                # 失败也是订阅者要知道的事：日报静默消失比一条失败通知更糟。
+                await self._deliver(
+                    job, run_id, status="error", verdict="",
+                    alert_triggered=False, alert_message="",
+                    report={"question": job.question, "error": str(e)[:200]},
+                )
                 summary["error"] = str(e)[:200]
                 return summary
 
@@ -90,9 +100,19 @@ class SchedulerRunner:
                 )
             status = "error" if error else ("alert" if triggered else "ok")
             row_count = state["row_count"] if not error else 0
+            # 报告记录 = 定时分析的产出物：答案 markdown（分析型问题天然带上
+            # 归因表/驱动树）+ 主因行 + SQL + 计数，逐字段有界截断。此前 NL
+            # 运行不落任何结果，订阅投递与回看都无从谈起。
+            report = self._report_payload(job, final)
             await self.jobs.finish_run(
                 run_id, status, triggered, sent,
-                row_count, state["verdict"],
+                row_count, state["verdict"], result_json=report,
+            )
+            await self._deliver(
+                job, run_id, status=status, verdict=str(state["verdict"] or ""),
+                alert_triggered=triggered,
+                alert_message=alert_eval.get("message", "") if triggered else "",
+                report=report,
             )
             summary.update({
                 "status": status,
@@ -108,6 +128,11 @@ class SchedulerRunner:
                 await self.jobs.finish_run(run_id, "error", False, False, 0, "")
             except Exception:
                 pass
+            await self._deliver(
+                job, run_id, status="error", verdict="",
+                alert_triggered=False, alert_message="",
+                report={"question": job.question, "error": str(e)[:200]},
+            )
             summary["error"] = str(e)[:200]
             return summary
         finally:
@@ -172,6 +197,20 @@ class SchedulerRunner:
             )
             verdict_id = await self._record_verdict(job, outcome, run_id)
             await self._propose_action(job, rule, outcome, run_id, verdict_id)
+            # 订阅投递：判定 run 的报告 = 规则消息（含「主因」行）+ 计数。
+            # 与 NL 路径的 answer 报告同构，收件方拿到的都是一份「本期发生了什么」。
+            await self._deliver(
+                job, run_id, status=status, verdict=job.decision_rule,
+                alert_triggered=triggered,
+                alert_message=message if triggered else "",
+                report={
+                    "question": job.question,
+                    "rule_id": job.decision_rule,
+                    "message": message,
+                    "row_count": 0 if error else int(rows),
+                    "error": error,
+                },
+            )
             summary.update({
                 "status": status,
                 "row_count": 0 if error else int(rows),
@@ -187,6 +226,13 @@ class SchedulerRunner:
                                            job.decision_rule)
             except Exception:
                 pass
+            await self._deliver(
+                job, run_id, status="error", verdict=job.decision_rule,
+                alert_triggered=False, alert_message="",
+                report={"question": job.question,
+                        "rule_id": job.decision_rule,
+                        "error": str(e)[:200]},
+            )
             summary["error"] = str(e)[:200]
             return summary
         finally:
@@ -207,6 +253,43 @@ class SchedulerRunner:
         if not driver:
             return message
         return f"{message}\n主因：{driver}" if message else f"主因：{driver}"
+
+    def _report_payload(self, job: Job, final: Any) -> dict[str, Any]:
+        """有界报告记录（写进 ``run.result_json``）——定时分析的产出物。
+
+        答案 markdown 自带归因表/驱动树（分析型问题走归因管线），所以
+        ``answer`` + ``driver`` 就是可投递、可回看的报告本体；逐字段显式
+        截断，防止一次 run 把 jobs.sqlite 撑爆（result_json 是长文本列）。
+        """
+        analysis = getattr(final, "analysis", None)
+        return {
+            "question": job.question,
+            "datasource": job.datasource,
+            "answer": str(getattr(final, "final_response", "") or "")[:4000],
+            "sql": str(getattr(final, "sql", "") or "")[:2000],
+            "driver": primary_driver_line(analysis),
+            "analysis": bool(analysis),
+            "row_count": int(getattr(final, "row_count", 0) or 0),
+            "verdict": str(getattr(final, "verdict", "") or ""),
+            "error": str(getattr(final, "error", "") or "")[:200],
+        }
+
+    async def _deliver(
+        self, job: Job, run_id: int, *, status: str, verdict: str,
+        alert_triggered: bool, alert_message: str, report: dict[str, Any],
+    ) -> None:
+        """把本期报告投递给订阅者。best-effort —— 与 verdict/action 同级
+        纪律：投递子系统缺席或失败只是日志，绝不改运行的结果。"""
+        if self.subscriptions is None:
+            return
+        try:
+            await self.subscriptions.deliver_for_run(
+                job, run_id=run_id, status=status, verdict=verdict,
+                alert_triggered=alert_triggered, alert_message=alert_message,
+                report=report,
+            )
+        except Exception:
+            logger.exception("job %s: subscription delivery failed", job.id)
 
     async def _record_verdict(
         self, job: Job, outcome: Any, run_id: int,
