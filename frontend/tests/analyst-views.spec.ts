@@ -160,7 +160,7 @@ function rowButtonTexts(view: VueWrapper): string[] {
 }
 
 describe('JobsView 只读门控', () => {
-  it('analyst：无新建/运行/编辑/删除，开关禁用；运行历史仍可打开', async () => {
+  it('analyst：无新建/运行/编辑/删除/订阅，开关禁用；运行历史仍可打开', async () => {
     setRole('analyst')
     const view = await mountJobs()
     expect(view.find('.add').exists()).toBe(false)
@@ -168,15 +168,19 @@ describe('JobsView 只读门控', () => {
     const texts = rowButtonTexts(view)
     expect(texts.some((t) => t.includes('Run now'))).toBe(false)
     expect(texts.some((t) => t.includes('Run history'))).toBe(true)
+    // 订阅抽屉走 /v1/admin/subscriptions(admin 专属,不在冻结只读清单)
+    expect(texts.some((t) => t.includes('Subscriptions'))).toBe(false)
     expect(texts.length).toBe(1) // 只剩运行历史；编辑/删除是图标按钮
   })
 
-  it('admin 对照：新建在、开关可点、行内动作齐全', async () => {
+  it('admin 对照：新建在、开关可点、行内动作齐全（含订阅）', async () => {
     setRole('admin')
     const view = await mountJobs()
     expect(view.find('.add').exists()).toBe(true)
     expect(view.find('.el-switch').classes()).not.toContain('is-disabled')
-    expect(rowButtonTexts(view).some((t) => t.includes('Run now'))).toBe(true)
+    const texts = rowButtonTexts(view)
+    expect(texts.some((t) => t.includes('Run now'))).toBe(true)
+    expect(texts.some((t) => t.includes('Subscriptions'))).toBe(true)
   })
 })
 

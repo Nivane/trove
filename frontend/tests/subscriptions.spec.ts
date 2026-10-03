@@ -23,6 +23,7 @@ vi.mock('../src/api/http', () => ({
 }))
 
 import { apiGet, apiPost, apiDelete } from '../src/api/http'
+import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 import type { VueWrapper } from '@vue/test-utils'
 
@@ -82,6 +83,9 @@ let router: ReturnType<typeof createRouter>
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  // W5: JobsView's 订阅 entry is gated on an authenticated admin (useReadOnly)
+  // — pin the real precondition so the drawer stays under test here.
+  useAuthStore().user = { id: 1, username: 'admin', role: 'admin' }
   useUiStore().lang = 'en'
   vi.clearAllMocks()
 })
