@@ -123,6 +123,13 @@ class WorkflowState(BaseModel):
     # ``connectors.get(state.datasource or None)`` 解析——None 回退 default_name。
     datasource: str = ""
 
+    # 业务主题域(会话请求指定;空 = 不按主题域收敛)。值 = 该数据源
+    # semantics.yml 里 ``topics[].name``。schema_linking 据此把数据集锚定
+    # 收敛到主题域的 datasets 内;名字解析不到 → **显式拒绝**
+    # (topic_not_found),不静默退回全量 —— 用户选的是范围,范围失效却按
+    # 更大的数据回答等于答非所选。
+    topic: str = ""
+
     # Compact conversation history (prior exchanges) for follow-up questions
     history: str = ""
 
