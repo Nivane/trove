@@ -33,34 +33,63 @@ ANALYSIS_TYPES = frozenset({
 })
 
 
+#: 方向词表(文本后缀 → 归一方向)。中英并收:BIRD 之外的真实问题常带中文
+#: 方向词,而模型会把问句里的方向原样抄进列名("count(x) 降序")。
+_DIRECTION_WORDS = {
+    "asc": "asc", "ascending": "asc", "升序": "asc",
+    "desc": "desc", "descending": "desc", "降序": "desc",
+}
+#: 方向词后可能还跟一个词(``desc order`` / ``升序排列``),先摘掉再判方向。
+_DIRECTION_TAIL = frozenset({"order"})
+
+
+def _split_direction(part: str) -> tuple[str, str | None]:
+    """尾部方向词切分:"count(x) 降序" → ("count(x)", "desc")。
+
+    **末 token 全等**匹配(``desc order`` 形态先摘掉尾部的 order 再判)——不做
+    子串匹配:列名里出现 "desc" 字样(``description``)不是方向词,子串匹配会
+    把列名切坏。无可判方向 → 原样返回 ``(part, None)``;整段就是方向词
+    (``"desc"`` / ``"降序"``)→ 返回 ``("", 方向)`` —— 没有列名的排序段是
+    无效段,由调用方判 None(不把方向词当列名容忍:``ORDER BY desc`` 不是
+    一条合法的列引用,容忍它只会把失败推迟到编译期、换成更难读的错)。
+    """
+    tokens = part.split()
+    if not tokens:
+        return part, None
+    idx = len(tokens) - 1
+    if idx > 0 and tokens[idx].lower() in _DIRECTION_TAIL:
+        idx -= 1
+    word = tokens[idx].lower()
+    if word not in _DIRECTION_WORDS:
+        return part, None
+    col = " ".join(tokens[:idx]).strip()
+    if not col:
+        return "", _DIRECTION_WORDS[word]  # 整段就是方向词 → 无列名的无效段
+    return col, _DIRECTION_WORDS[word]
+
+
 def _norm_direction(value: Any) -> str:
-    """方向归一:desc/descending → "desc",其余一律 "asc"(容错)。"""
+    """方向归一:desc/descending/降序 → "desc",其余一律 "asc"(容错)。"""
     d = str(value).strip().lower()
-    return "desc" if d in ("desc", "descending") else "asc"
+    return "desc" if _DIRECTION_WORDS.get(d) == "desc" else "asc"
 
 
 def _parse_ordering_entries(parts: list[str]) -> list[tuple[str, str]] | None:
     """解析逗号切分后的排序段:"col" / "col asc" / "col desc"。
 
     列名可为多词(metric 名带空格,如 "number of loan records desc"):
-    末 token 是 asc/desc 时作方向,其余整体作列名。空段与占位文本跳过。
-    非法段(列名缺失)→ None。
+    末 token 是方向词(含 ascending/descending/升序/降序,``desc order`` 形态)
+    时作方向,其余整体作列名。空段与占位文本跳过。非法段(列名缺失)→ None。
     """
     out: list[tuple[str, str]] = []
     for part in parts:
         part = part.strip()
         if not part or part.lower() in ("none", "empty", "(empty if none)"):
             continue
-        tokens = part.split()
-        if tokens[-1].lower() in ("asc", "desc"):
-            col = " ".join(tokens[:-1]).strip()
-            direction = tokens[-1].lower()
-        else:
-            col = part
-            direction = "asc"
+        col, direction = _split_direction(part)
         if not col:
             return None
-        out.append((col, direction))
+        out.append((col, direction or "asc"))
     return out
 
 
@@ -86,7 +115,16 @@ def parse_ordering(value: Any) -> list[tuple[str, str]] | None:
                 col = str(item.get("column") or "").strip()
                 if not col:
                     return None
-                out.append((col, _norm_direction(item.get("direction"))))
+                # 文本后缀与结构化 direction 字段冲突时**以后缀为准**:0483
+                # 实形状 {"column": "count(account.account_id) 降序",
+                # "direction": "asc"} —— 方向词被吞进列名,而字段值与之矛盾。
+                # 模型把方向词写进列名时,它表达的方向在那里;字段值只是位置
+                # 填错(或默认值回填)。无后缀才读字段。
+                col, suffix = _split_direction(col)
+                if not col:
+                    # 整段是方向词(column 槽里只写了 "desc"):无列名 → 无效段
+                    return None
+                out.append((col, suffix or _norm_direction(item.get("direction"))))
             else:
                 return None
         return out

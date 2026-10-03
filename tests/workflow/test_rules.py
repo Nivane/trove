@@ -239,6 +239,77 @@ class TestValidate:
         ) is None
 
 
+class TestRatioIntDivisionAST:
+    """ratio-int-division 的 AST 判据(B1):浮点证据在除法任一侧即放行。
+
+    0480 死锁的根因是旧实现只认 SQL 文本里的 DOUBLE|FLOAT|DECIMAL 字样,
+    而权威编译 SQL 的 ``* 100.0`` 是**浮点字面量** —— 规则令它 CAST,
+    execute_sql 的编译保真校验令它逐字照抄,两条断言互斥烧满修正预算。
+    现在判据是 AST:浮点字面量 / 浮点 CAST / avg·stddev·variance;
+    解析失败放行(拦不了 ≠ 误抓)。
+    """
+
+    def test_float_literal_on_numerator_passes(self):
+        """``* 100.0`` 浮点字面量(权威编译 SQL 的形状)→ 放行。"""
+        assert validate(
+            "what percentage of clients",
+            "SELECT COUNT(CASE WHEN gender='M' THEN 1 END) * 100.0 / COUNT(*)",
+            ["pct"], [[44.26229508196721]], 1,
+        ) is None
+
+    def test_compiled_filter_shape_passes(self):
+        """编译器 0480 保真形状:``sum(x) FILTER (WHERE ...) * 100.0 / sum(x)``。"""
+        assert validate(
+            "what percentage of loans are A status",
+            "SELECT sum(loan.amount) FILTER (WHERE loan.status = 'A') * 100.0 "
+            "/ sum(loan.amount) FROM loan",
+            ["share"], [[44.26229508196721]], 1,
+        ) is None
+
+    def test_integer_count_division_still_flags(self):
+        """两侧计数聚合、无任何浮点证据 → 仍拦(整数除法截断)。"""
+        reason = validate(
+            "what percentage of clients",
+            "SELECT COUNT(CASE WHEN gender='M' THEN 1 END) / COUNT(*) * 100",
+            ["pct"], [[44.2623]], 1,
+        )
+        assert reason and "DOUBLE" in reason
+
+    def test_unparseable_sql_passes(self):
+        """解析不了 → 放行(判不了不拦:误拦成本是把正确 SQL 打回重写)。"""
+        assert validate(
+            "what percentage of clients",
+            "SELECT COUNT(x) / FROM WHERE (((",
+            ["pct"], [[44.2]], 1,
+        ) is None
+
+    def test_string_literal_is_not_float_evidence(self):
+        """字符串字面量不是浮点证据:日期串参与条件时,除法照旧拦截。"""
+        reason = validate(
+            "what percentage of clients",
+            "SELECT COUNT(CASE WHEN d = '2020-01-01' THEN 1 END) / COUNT(*) * 100 "
+            "FROM t",
+            ["pct"], [[44.2]], 1,
+        )
+        assert reason and "DOUBLE" in reason
+
+    def test_avg_division_passes(self):
+        """AVG 天然返回浮点:含 avg 的除法不再构成整数除法风险。"""
+        assert validate(
+            "what percentage of clients",
+            "SELECT AVG(gender='M') / COUNT(*) * 100",
+            ["pct"], [[44.2]], 1,
+        ) is None
+
+    def test_plain_column_division_without_aggregate_passes(self):
+        """除法两侧都无聚合调用 → 不介入(纯列除法结果精确)。"""
+        assert validate(
+            "what percentage of clients",
+            "SELECT (male / total) * 100 FROM stats",
+            ["pct"], [[44.2]], 1,
+        ) is None
+
+
 class TestScopeAmbiguityRule:
     """极值作用域歧义:MIN/MAX 子查询 + 外层还有过滤条件 → 告警回查。"""
 

@@ -718,8 +718,25 @@ semantic_model:
       expression: {dialects: [{dialect: ANSI_SQL, expression: grade}]}
     - name: county
       expression: {dialects: [{dialect: ANSI_SQL, expression: county}]}
+    - name: club_id
+      expression: {dialects: [{dialect: ANSI_SQL, expression: club_id}]}
     ai_context:
       synonyms: [student]
+  - name: clubs
+    source: clubs
+    primary_key: [club_id]
+    fields:
+    - name: club_id
+      expression: {dialects: [{dialect: ANSI_SQL, expression: club_id}]}
+    - name: name
+      expression: {dialects: [{dialect: ANSI_SQL, expression: name}]}
+  relationships:
+  - name: student_clubs
+    from: students
+    to: clubs
+    from_columns: [club_id]
+    to_columns: [club_id]
+    cardinality: M:N
   metrics:
   - name: average grade
     expression: {dialects: [{dialect: ANSI_SQL, expression: AVG(students.grade)}]}
@@ -762,15 +779,21 @@ class TestReflectionGraphRouting:
         )
 
     async def test_uncovered_routes_to_refuse(self, tmp_path, sqlite_registry, catalog):
-        """图路由:编译 MISS → refuse 节点 → 反问文案,不执行不生成。"""
+        """图路由:硬 MISS(结构性)→ refuse 节点 → 反问文案,不执行不生成。
+
+        A2 分级逃生梯:只有硬 MISS 拒 —— 载体重取 M:N 联(students↔clubs
+        多对多,行倍增)触发 fan_out;软 MISS(词表缺口)直通 gen_sql,
+        不再走 refuse(旧载体的 SUM(students.ghost) 是软 no_metric_match)。
+        """
         from trove.services.kb.service import KbService
         from trove.workflow.graphs import build_graphs
         from trove.workflow.state import WorkflowState
 
         kb = KbService(tmp_path / "proj")
         provider = await self._provider(tmp_path, kb)
-        plan = {"tables": ["students"], "aggregation": "SUM(students.ghost)",
-                "answer_columns": ["SUM(students.ghost)"], "conditions": []}
+        plan = {"tables": ["students", "clubs"], "aggregation": "AVG(students.grade)",
+                "answer_columns": ["AVG(students.grade)"],
+                "conditions": [{"field": "clubs.name", "op": "=", "value": "chess"}]}
         draft = """\
 draft:
   kind: metric
@@ -787,7 +810,7 @@ draft:
             multi_candidate=False, query_sketch=True, agentic=False,
         )
         final = await graphs["reflection"].ainvoke(WorkflowState(
-            session_id="s1", question="what is the total ghost sum for students?",
+            session_id="s1", question="what is the average grade for students in the chess club?",
             lang="en", datasource="demo"))
         assert final["refusal"]["reason"] == "uncovered"
         assert final["refusal"]["conflict"] is False

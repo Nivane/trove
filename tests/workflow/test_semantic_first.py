@@ -217,8 +217,59 @@ class TestQuerySketchSemanticFirst:
             ],
         )
 
-    async def test_query_sketch_miss_emits_refusal_signal(self):
-        """语义优先:编译 MISS + 真实意图 → refusal 信号(不再静默降级裸表)。"""
+    @staticmethod
+    def _m2m_model():
+        """M:N 关系(loan↔account 多对多):联路径在,但行倍增 → fan_out 硬 MISS。"""
+        from dataclasses import replace
+
+        return replace(
+            TestQuerySketchSemanticFirst._demo_model(),
+            relationships=[
+                SemanticRelationship("loan_accounts", "loan", "account",
+                                     from_columns=["account_id"],
+                                     to_columns=["account_id"],
+                                     cardinality="M:N"),
+            ],
+        )
+
+    async def test_query_sketch_hard_miss_emits_refusal_signal(self):
+        """语义优先 + 分级逃生梯(A2):硬 MISS(fan_out 行倍增)+ 真实意图
+        → refusal 信号(结构性缺口不逃生,不再静默降级裸表)。"""
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+
+        class FakeProvider:
+            enabled = True
+
+            def __init__(self, model):
+                self._model = model
+
+            def model(self):
+                return self._model
+
+        node = make_query_sketch(
+            ScriptedLLM([json.dumps({
+                "tables": ["loan", "account"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
+                "conditions": [{"field": "account.district_id", "op": "=", "value": "1"}],
+            })]),
+            AgentConfig(target="mock/model"),
+            semantic_layer=FakeProvider(self._m2m_model()),
+        )
+        out = await node(make_state(question="各账户的贷款数?", matched_tables=["loan"]))
+        assert "compiled" not in out
+        assert out["refusal"] is not None
+        assert out["refusal"]["reason"] == "uncovered"
+        assert out["refusal"]["plan"]["aggregation"] == "count(loan.loan_id)"
+        # MISS 结构化分因透出(不再被丢弃成笼统 uncovered):reason slug + 组件
+        assert out["refusal"]["compile_miss"]["reason"] == "fan_out"
+        assert out["refusal"]["compile_miss"]["component"]
+        # 硬度分级正交可见(不改变 outcome 值域)
+        assert out["compile_meta"]["miss_class"] == "hard"
+
+    async def test_query_sketch_soft_miss_passes_through(self):
+        """A2 分级逃生梯下沿:软 MISS(词表缺口,无骨架可保真)→ 不拒绝、
+        不产编译产物,plan 文本照常注入 gen_sql 按计划补齐。"""
         from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
@@ -241,13 +292,15 @@ class TestQuerySketchSemanticFirst:
             semantic_layer=FakeProvider(self._demo_model()),
         )
         out = await node(make_state(question="贷款总额?", matched_tables=["loan"]))
+        assert "refusal" not in out
         assert "compiled" not in out
-        assert out["refusal"] is not None
-        assert out["refusal"]["reason"] == "uncovered"
-        assert out["refusal"]["plan"]["aggregation"] == "sum(loan.ghost)"
-        # MISS 结构化分因透出(不再被丢弃成笼统 uncovered):reason slug + 组件
-        assert out["refusal"]["compile_miss"]["reason"] == "no_metric_match"
-        assert "sum(loan.ghost)" in out["refusal"]["compile_miss"]["component"]
+        assert "compile_partial" not in out
+        assert out["compile_meta"]["outcome"] == "miss"
+        assert out["compile_meta"]["miss_class"] == "soft"
+        assert out["compile_meta"]["miss_reason"] == "no_metric_match"
+        assert "sum(loan.ghost)" in out["compile_meta"]["miss_component"]
+        # plan 文本照常注入(gen_sql 拿它补齐)
+        assert "sum(loan.ghost)" in out["plan"]
 
     async def test_query_sketch_miss_without_intent_does_not_refuse(self):
         """退化/空洞计划不拒绝 → 照常走 gen_sql(不误拒)。"""
@@ -470,7 +523,13 @@ class TestQuerySketchSemanticFirst:
         assert "unresolved_filter_field: loan.ghost_col" in out["plan"]
 
     async def test_query_sketch_hard_miss_still_refuses(self):
-        """硬 MISS(结构性)仍拒绝——fan_out/二义/未覆盖表不逃生。"""
+        """硬 MISS(结构性)仍拒绝——fan_out/基数不明/二义/未覆盖表不逃生。
+
+        载体:关系声明了但**基数未声明**(反向 account→loan,to 侧非唯一键)
+        → unknown_cardinality:many→one 无从判定,交 LLM 是赌安全,编译期拒。
+        """
+        from dataclasses import replace
+
         from trove.workflow.nodes.query_sketch import make_query_sketch
 
         class FakeProvider:
@@ -482,21 +541,29 @@ class TestQuerySketchSemanticFirst:
             def model(self):
                 return self._model
 
-        # metric 完全未命中 + 无其他可解析成分 → 首个软 MISS 作为拒绝分因
+        model = replace(
+            self._demo_model(),
+            relationships=[
+                SemanticRelationship("account_to_loans", "account", "loan",
+                                     from_columns=["account_id"],
+                                     to_columns=["account_id"]),
+            ],
+        )
         node = make_query_sketch(
             ScriptedLLM([json.dumps({
-                "tables": ["loan"],
-                "aggregation": "sum(loan.ghost)",
-                "answer_columns": ["sum(loan.ghost)"],
+                "tables": ["account"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"],
                 "conditions": [],
             })]),
             AgentConfig(target="mock/model"),
-            semantic_layer=FakeProvider(self._demo_model()),
+            semantic_layer=FakeProvider(model),
         )
-        out = await node(make_state(question="贷款总额?", matched_tables=["loan"]))
+        out = await node(make_state(question="账户的平均贷款数?", matched_tables=["loan"]))
         assert out["refusal"] is not None
         assert out["compile_meta"]["outcome"] == "miss"
-        assert out["compile_meta"]["miss_reason"] == "no_metric_match"
+        assert out["compile_meta"]["miss_reason"] == "unknown_cardinality"
+        assert out["compile_meta"]["miss_class"] == "hard"
 
     async def test_query_sketch_writes_compile_meta_both_paths(self):
         """编译决策观测:命中与 MISS 都写 compile_meta(eval hit-rate 闭环数据源)。"""
@@ -543,10 +610,16 @@ class TestQuerySketchSemanticFirst:
             make_state(question="贷款总额?", matched_tables=["loan"]))
         assert out_miss["compile_meta"]["outcome"] == "miss"
         assert out_miss["compile_meta"]["miss_reason"] == "no_metric_match"
+        assert out_miss["compile_meta"]["miss_class"] == "soft"
         assert "sum(loan.ghost)" in out_miss["compile_meta"]["miss_component"]
 
     async def test_query_sketch_compile_meta_no_semantic_layer(self):
-        """无语义层接线时:不编译、不拒绝,compile_meta 记 no_semantic_layer。"""
+        """无语义层接线时:不编译,compile_meta 记 no_semantic_layer。
+
+        ``no_plan_or_matched`` 属 HARD_MISS_REASONS —— 计划有意图时仍拒绝
+        (图路由到 refuse 的 kb init 引导);本测试钉的是 compile_meta 的
+        短路分因与拒绝分因的原样透出。
+        """
         from trove.workflow.nodes.query_sketch import make_query_sketch
 
         node = make_query_sketch(
@@ -564,6 +637,9 @@ class TestQuerySketchSemanticFirst:
         assert out["compile_meta"]["outcome"] == "miss"
         assert out["compile_meta"]["miss_reason"] == "no_semantic_layer"
         assert out["compile_meta"]["semantic_layer"] is False
+        # 拒绝照旧(硬 MISS):分因是编译器原始值,不是 compile_meta 的短路值
+        assert out["refusal"]["reason"] == "uncovered"
+        assert out["refusal"]["compile_miss"]["reason"] == "no_plan_or_matched"
 
     async def test_compile_result_carries_its_source_plan(self):
         """A1-9:产物带回**编译它的那份计划**——引用同一性,不是长得一样的一份。
@@ -803,8 +879,75 @@ class TestPlanContradictionReplan:
         # 白名单外分因(结构性硬 MISS 与软/未命中分因)一律不重规划
         assert _replan_feedback(plan, CompileMiss("fan_out", "loan, client"),
                                 provider) is None
+        assert _replan_feedback(plan, CompileMiss("unknown_cardinality", "loan"),
+                                provider) is None
         assert _replan_feedback(plan, CompileMiss("no_metric_match", "x"),
                                 provider) is None
+        assert _replan_feedback(
+            plan, CompileMiss("no_such_reason_ever", "x"), provider) is None
+
+    def test_limit_without_order_feedback_lists_concrete_candidates(self):
+        """0487:光说「补 ordering」重规划空转 —— 反馈必须带可写进 ordering
+        的具体形态(相关声明度量名 + 计划已有的聚合列表达式)。"""
+        from trove.services.semantic_layer.compiler import CompileMiss
+        from trove.workflow.nodes.query_sketch import _replan_feedback
+
+        plan = {
+            "tables": ["loan"],
+            "aggregation": "count(loan.loan_id)",
+            "answer_columns": ["count(loan.loan_id)"],
+            "conditions": [],
+            "limit": 10,
+        }
+        text = _replan_feedback(
+            plan, CompileMiss("limit_without_order", "ordering"),
+            self._Provider(self._model()))
+        assert text is not None
+        assert text.startswith("[ERR:PLAN_CONTRADICTION]")
+        assert "ordering" in text
+        # 具体候选:声明度量名(loan 锚定)与计划里的聚合表达式
+        assert "number of loan records" in text
+        assert "count(loan.loan_id)" in text
+        # 指令在前、≤600 字符(correction 通道有截断)
+        assert len(text) <= 600
+
+    def test_limit_without_order_without_semantic_layer_still_feedback(self):
+        """无语义层也要给形态样例(度量名缺席,聚合表达式照给)。"""
+        from trove.services.semantic_layer.compiler import CompileMiss
+        from trove.workflow.nodes.query_sketch import _replan_feedback
+
+        plan = {"tables": ["loan"], "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"], "limit": 5}
+        text = _replan_feedback(
+            plan, CompileMiss("limit_without_order", "ordering"), None)
+        assert text is not None and "count(loan.loan_id)" in text
+
+    def test_ambiguous_join_path_feedback_requires_full_replan(self):
+        """二义 join 路径:反馈要求**整份**重计划 + 显式 plan.joins 官方路径,
+        并附上声明的关系子句(只改被质疑的一段会改出第三条二义路径)。"""
+        from trove.services.semantic_layer.compiler import CompileMiss
+        from trove.workflow.nodes.query_sketch import _replan_feedback
+
+        plan = {"tables": ["loan", "client"],
+                "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"], "conditions": []}
+        text = _replan_feedback(
+            plan, CompileMiss("ambiguous_join_path", "loan -> client"),
+            self._Provider(self._model()))
+        assert text is not None
+        assert text.startswith("[ERR:PLAN_CONTRADICTION]")
+        assert "whole" in text and "joins" in text
+        assert "loan.client_id = client.client_id" in text
+        assert len(text) <= 600
+
+    def test_ambiguous_join_path_without_semantic_layer_is_none(self):
+        """无 provider / 无模型:拿不到声明路径 → 不重规划(照旧拒绝)。"""
+        from trove.services.semantic_layer.compiler import CompileMiss
+        from trove.workflow.nodes.query_sketch import _replan_feedback
+
+        plan = {"tables": ["loan", "client"], "aggregation": "count(loan.loan_id)"}
+        assert _replan_feedback(
+            plan, CompileMiss("ambiguous_join_path", "x"), None) is None
 
     async def test_replan_exhausted_falls_back_to_refusal(self):
         """双上限之一(MAX_PLAN_REPLANS):耗尽 → 拒绝,不是 error。

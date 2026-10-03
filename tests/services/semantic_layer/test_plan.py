@@ -110,6 +110,62 @@ def test_ordering_invalid_shapes_none():
     assert parse_ordering("   ") == []
 
 
+def test_ordering_direction_suffix_wins_over_field():
+    """B3:方向词被吞进 column 的后缀时,**后缀为准**(0483 实形状)。
+
+    模型把方向词写进列名("count(account.account_id) 降序")、而 direction
+    字段填了矛盾值("asc")——它表达的方向在文本里,字段值只是位置填错。
+    """
+    assert parse_ordering([{
+        "column": "count(account.account_id) 降序", "direction": "asc",
+    }]) == [("count(account.account_id)", "desc")]
+    assert parse_ordering([{
+        "column": "count(account.account_id) desc", "direction": "asc",
+    }]) == [("count(account.account_id)", "desc")]
+    # 后缀 asc 对抗字段 desc:同样以后缀为准
+    assert parse_ordering([{
+        "column": "count(account.account_id) ascending", "direction": "desc",
+    }]) == [("count(account.account_id)", "asc")]
+    # 无后缀 → 照旧读字段
+    assert parse_ordering([{"column": "x", "direction": "desc"}]) == [("x", "desc")]
+
+
+def test_ordering_direction_suffix_order_tail():
+    """``desc order`` / ``升序排列前的方向词``:末 token 是 order 时先摘掉再判。"""
+    assert parse_ordering("loan.amount desc order") == [("loan.amount", "desc")]
+    assert parse_ordering([{"column": "loan.amount desc order"}]) == [
+        ("loan.amount", "desc")
+    ]
+    # 多词列名 + 后缀:只切方向词,列名其余部分原样保留
+    assert parse_ordering("number of loan records 降序") == [
+        ("number of loan records", "desc")
+    ]
+
+
+def test_ordering_suffix_not_confused_by_column_names():
+    """子串不算方向词:列名含 "desc"(description)不切坏。"""
+    assert parse_ordering("description") == [("description", "asc")]
+    assert parse_ordering([{"column": "description", "direction": "desc"}]) == [
+        ("description", "desc")
+    ]
+
+
+def test_ordering_bare_direction_word_is_invalid():
+    """整段就是方向词(没有列名)→ 无效段 None,不当列名容忍。
+
+    容忍成 ("desc", "asc") 会生成 ``ORDER BY desc`` —— 不是合法列引用,
+    失败被推迟到编译期、换成更难读的错;判 None 则走既有失败路径
+    (limit 在场时正是 limit_without_order 重规划反馈要接的形态)。
+    """
+    assert parse_ordering("desc") is None
+    assert parse_ordering("asc") is None
+    assert parse_ordering(" 降序 ") is None
+    assert parse_ordering("desc order") is None
+    assert parse_ordering([{"column": "desc", "direction": "asc"}]) is None
+    # 逗号列表里混入无效段 → 整条失败(与其余非法段同一方向)
+    assert parse_ordering("a desc, desc") is None
+
+
 def test_aggregation_none_coerces_empty():
     q = parse_plan_query({"answer_columns": ["loan.status"]})
     assert q is not None

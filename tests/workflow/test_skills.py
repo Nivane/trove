@@ -33,8 +33,8 @@ def test_manifest_matches_by_node():
     """每个 skill 只由声明的节点触发;其它节点不匹配。"""
     assert matched_skills("query_sketch") == ["plan_query"]
     assert matched_skills("analyze_error") == ["diagnose_failure"]
+    assert matched_skills("gen_sql") == ["sql_construction"]
     assert matched_skills("schema_linking") == []
-    assert matched_skills("gen_sql") == []
     assert matched_skills("answer") == []
 
 
@@ -62,8 +62,26 @@ def test_render_skills_bilingual():
     # 结构性无位可挂(那个节点 477 行里没有任何 LLM 调用)。
 
 
+def test_render_skills_gen_sql_construction_bilingual():
+    """sql_construction 挂在 gen_sql:占比/极值/名称列/conditions-having
+    四条构造纪律按语言渲染。"""
+    en = render_skills("gen_sql", lang="en")
+    zh = render_skills("gen_sql", lang="zh")
+    assert en and zh
+    assert "numerator" in en.lower() and "denominator" in en.lower()
+    assert "* 100" in en
+    assert "ordering key" in en.lower()
+    assert "having" in en.lower()
+    assert "分子" in zh and "分母" in zh
+    assert "排序键" in zh
+    assert "having" in zh.lower()
+    # 只由声明节点触发:其它节点拿不到它
+    assert "分子" not in render_skills("query_sketch", lang="zh")
+    assert "numerator" not in render_skills("analyze_error", lang="en")
+
+
 def test_render_skills_no_match_is_empty():
-    assert render_skills("gen_sql", lang="en") == ""
+    assert render_skills("schema_linking", lang="en") == ""
     assert render_skills("answer", lang="zh") == ""
 
 
@@ -394,6 +412,18 @@ async def test_load_skill_tool_enforces_triggers(tmp_path):
     out = await viewer_handler({"skill_name": "analyst-tricks"})
     assert "ANALYST-BODY" not in out
     assert "role" in out
+
+
+def test_service_render_skills_merges_code_skill_for_gen_sql(tmp_path):
+    """生产调用路径(SkillService.render_skills,graphs.py gen 阶段实际调它)
+    把 code skill 合并进结果 —— sql_construction 在 gen_sql 的 system prompt
+    里真的到得了,而不是只在 prompts 层 render 得出来。"""
+    svc = _org_skills(tmp_path)
+    merged = svc.render_skills("gen_sql", lang="en")
+    assert "Answer construction" in merged
+    assert "numerator" in merged.lower()
+    # 无 code 无 org 的节点仍为空(合并不引入噪声)
+    assert svc.render_skills("schema_linking", lang="en") == ""
 
 
 def test_available_skills_block_advertises_on_demand_skills(tmp_path):

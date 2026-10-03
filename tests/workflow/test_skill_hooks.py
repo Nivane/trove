@@ -285,6 +285,9 @@ async def test_gen_sql_node_forwards_skill_ctx(tmp_path):
 
     assert "GEN-SQL-ORG-BODY" in await _system_text(["analyst"], "zh")
     assert "GEN-SQL-ORG-BODY" not in await _system_text(["viewer"], "zh")
+    # code skill(sql_construction)也在同一次渲染里进 system,且与 role 无关
+    # —— code skill 属 de-facto required,不经 org 触发器筛。
+    assert "Answer construction" in await _system_text(["viewer"], "en")
 
 
 async def test_insights_hook_injects_org_skill(tmp_path):
@@ -382,16 +385,16 @@ async def test_chart_hook_injects_org_skill(tmp_path):
 #:                 ::test_query_sketch_includes_confirmed_org_required_skill
 #:   analyze_error tests/workflow/test_skills.py
 #:                 ::test_analyze_error_includes_confirmed_org_required_skill
+#:   gen_sql       本文件 ::test_gen_sql_node_forwards_skill_ctx
+#:                 (org 档走外层 WorkflowState 的 ctx,只能真实装配一遍才钉得住;
+#:                  code skill 的渲染在同一例里断言)
 #:   insights / conclusion / chart / attribution  —— 本文件,节点级渲染断言
 #:                 (attribution 那条在 tests/workflow/test_attribution.py
 #:                 ::TestAttributionNode::test_attribution_hook_injects_org_skill
 #:                 —— 它的四道 gate 只有那边的夹具喂得满)
-#:
-#: ``gen_sql`` 不在表里:它的 manifest 声明为空(``matched_skills("gen_sql")
-#: == []``),org 档由 ``test_skills.py`` 的 load_skill / 广告块测试覆盖。
 HOOK_TESTED_NODES: set[str] = {
     "insights", "conclusion", "chart", "attribution",
-    "query_sketch", "analyze_error",
+    "query_sketch", "analyze_error", "gen_sql",
 }
 
 

@@ -25,7 +25,7 @@ matching no rule pass through untouched.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from trove.core.i18n import L
@@ -218,6 +218,26 @@ class Rule:
 
 _RULES: list[Rule] = []
 
+#: 改写型规则 —— 命中即要求**改写 SQL**(而不是要求结果落回某个域)。
+#: 权威编译 SQL 是"逐字照抄"的对象(``execute_sql`` 的编译保真校验),对这些
+#: 规则**豁免**:否则「规则令它重写」与「契约令它照抄」互斥,模型在两令之间
+#: 烧满修正预算(BIRD 0480 实测 10 轮)。结果域规则(percent-range /
+#: list-zero-rows)不在其列 —— 它们判的是**行**,与 SQL 是否权威无关,
+#: 权威 SQL 给出越界结果仍然是真问题。
+REWRITE_RULES: frozenset[str] = frozenset({
+    "ratio-int-division",
+    "rate-shape",
+    "limit-without-order",
+    "count-multirow",
+    "count-shape",
+    "scope-ambiguity",
+    "F1-a",
+    "F1-b",
+    "F1-d",
+    "F4-a",
+    "F4-b",
+})
+
 
 def _rule(name: str):
     """Register a rule (definition order = evaluation order)."""
@@ -236,6 +256,8 @@ def verify(
     rows: list[list],
     row_count: int,
     lang: str = "zh",
+    exempt: Collection[str] = (),
+    skipped: list[dict] | None = None,
 ) -> tuple[str | None, list[dict]]:
     """Run the assertion registry; return (reason, hits).
 
@@ -244,6 +266,15 @@ def verify(
     can attribute the interception. hits records the structured
     (name, reason) pair for observability. A rule bug must never
     crash the pipeline — exceptions degrade to pass.
+
+    ``exempt``: rule names that must **not** intercept. A hit on an exempt
+    rule neither fails the chain nor enters ``hits`` — it is appended to
+    ``skipped`` (caller-side log/span only) and the scan continues to the
+    next rule. This is the authoritative-compiled-SQL exemption: the copy
+    check (``execute_sql``) already requires the SQL to be the compiled one,
+    so a rule demanding a rewrite cannot be satisfied simultaneously —
+    honoring it just burns the correction budget (see ``REWRITE_RULES``).
+    Result-domain rules are never exempt.
     """
     hits: list[dict] = []
     for rule in _RULES:
@@ -251,10 +282,15 @@ def verify(
             reason = rule.fn(question, sql, columns, rows, row_count, lang)
         except Exception:
             reason = None
-        if reason:
-            prefixed = f"[{rule.name}] {reason}"
-            hits.append({"name": rule.name, "reason": prefixed})
-            return prefixed, hits
+        if not reason:
+            continue
+        prefixed = f"[{rule.name}] {reason}"
+        if rule.name in exempt:
+            if skipped is not None:
+                skipped.append({"name": rule.name, "reason": prefixed})
+            continue
+        hits.append({"name": rule.name, "reason": prefixed})
+        return prefixed, hits
     return None, hits
 
 
@@ -374,32 +410,86 @@ def _rule_percent_range(
     return None
 
 
-def _division_near_aggregate(sql: str) -> bool:
-    """``/`` 附近(±200 字符)是否出现聚合调用。
+# 浮点类型名(CAST 目标)。DOUBLE/FLOAT/DECIMAL 是 MySQL 侧的显式转浮点,
+# REAL/NUMERIC 是同一族的方言别名。
+_FLOAT_TYPE_RE = re.compile(r"\b(?:DOUBLE|FLOAT|DECIMAL|REAL|NUMERIC)\b", re.I)
+# 天然返回浮点的聚合函数名(avg/stddev/variance 不返回整数,除法不会截断)。
+_FLOAT_AGG_NAMES = ("Avg", "Stddev", "StddevPop", "StddevSamp", "Variance", "VariancePop")
 
-    整数除法陷阱只对聚合比值题成立(COUNT(x)/COUNT(y) 会被截断);纯
-    列常量除法(x/y)误伤面大且结果通常精确,不介入——收紧防误报。
+
+def _has_float_evidence(node) -> bool:
+    """子树里是否存在浮点证据:浮点字面量 / 浮点 CAST / avg·stddev·variance。
+
+    任一类都让该侧除法在 MySQL 里走浮点路径(结果不被截断),因此不再构成
+    「整数除法」风险。判据取 AST 节点,不是 SQL 文本里出现过某个词 ——
+    ``100.0`` 与 ``$100.00``(字符串字面量)在文本上都"含 DOUBLE 字样之外
+    的浮点",在 AST 上一个是 ``Literal`` 一个不是。
     """
-    return any(
-        re.search(r"\b(?:SUM|COUNT|AVG|MAX|MIN)\s*\(", sql[max(0, m.start() - 200):m.end() + 200], re.I)
-        for m in re.finditer(r"/", sql)
+    from sqlglot import exp
+
+    float_aggs = tuple(
+        t for t in (getattr(exp, n, None) for n in _FLOAT_AGG_NAMES)
+        if isinstance(t, type)
     )
+    for lit in node.find_all(exp.Literal):
+        if lit.is_string:
+            continue
+        text = str(lit.this).lower()
+        if "." in text or "e" in text:
+            return True
+    for cast in node.find_all(exp.Cast):
+        to = getattr(cast, "to", None)
+        if to is not None and _FLOAT_TYPE_RE.search(to.sql() or ""):
+            return True
+    return any(isinstance(n, float_aggs) for n in node.find_all(exp.AggFunc))
+
+
+def _division_uses_integer_aggregates(sql: str) -> bool:
+    """SQL 里是否存在「两侧至少一侧含聚合、且两侧都无浮点证据」的除法。
+
+    整数除法陷阱只对**聚合比值**成立(``COUNT(x)/COUNT(y)`` 被 MySQL 按整数
+    截断);纯列除法 x/y 结果精确,不介入。解析失败 / 无法判定 → False
+    (**放行**):判不了的 SQL 不拦 —— 拦截的成本是把正确 SQL 打回重写,
+    而拦截器自身的遗漏只是不拦(与"误报"不对称)。
+    """
+    if "/" not in sql:
+        return False
+    try:
+        from sqlglot import exp, parse_one
+
+        tree = parse_one(sql)
+    except Exception:
+        return False
+    if tree is None:
+        return False
+    for div in tree.find_all(exp.Div):
+        sides = [s for s in (div.this, div.expression) if s is not None]
+        if not any(
+            any(isinstance(n, exp.AggFunc) for n in side.find_all(exp.AggFunc))
+            for side in sides
+        ):
+            continue
+        if any(_has_float_evidence(side) for side in sides):
+            continue
+        return True
+    return False
 
 
 @_rule("ratio-int-division")
 def _rule_ratio_int_division(
     question: str, sql: str, columns: list, rows: list[list], row_count: int, lang: str,
 ):
-    """比率题的整数除法陷阱:MySQL 截断到 4 位小数,必须显式 CAST DOUBLE。"""
+    """比率题的整数除法陷阱:MySQL 截断到 4 位小数,必须显式 CAST DOUBLE。
+
+    AST 判据(取代旧的字样扫描):权威编译 SQL 的 ``* 100.0`` 是浮点字面量,
+    旧实现只认 ``DOUBLE|FLOAT|DECIMAL`` 字样 → 误判成整数除法 → 规则令它
+    CAST,而编译保真校验令它逐字照抄,两条断言互斥烧满修正预算(BIRD 0480
+    实测的 10 轮死锁)。现在:任一侧子树含浮点证据即放行,解析不了也放行。
+    """
     ratio_question = is_percent_question(question) or bool(
         re.search(r"\brate\b", question, re.I)
     )
-    if (
-        ratio_question
-        and "/" in sql
-        and not re.search(r"\b(?:DOUBLE|FLOAT|DECIMAL)\b", sql, re.I)
-        and _division_near_aggregate(sql)
-    ):
+    if ratio_question and _division_uses_integer_aggregates(sql):
         return L(
             lang,
             "比率计算疑似整数除法(MySQL 会截断到 4 位小数,如 44.2623 而非 "
