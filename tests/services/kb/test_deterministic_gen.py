@@ -4,7 +4,11 @@ kb init 的 semantics/examples 部分从「LLM 起草」改为「确定性生成
 有列描述才能起名(A5~A16 这类不透明列不生成,避免 LLM 瞎猜映射)。
 """
 
-from trove.services.kb.deterministic_gen import generate_terms, generate_templates
+from trove.services.kb.deterministic_gen import (
+    _enum_values,
+    generate_templates,
+    generate_terms,
+)
 
 TABLES = [
     {
@@ -768,12 +772,15 @@ class TestShareTerms:
 
     def _shares(self, tables=None, lang="en"):
         terms = generate_terms(tables or SHARE_TABLES, lang=lang)
-        return [t for t in terms if t["mapping"].startswith("SUM(CASE WHEN")]
+        return [t for t in terms if t["mapping"].startswith("CAST(SUM(CASE WHEN")]
 
     def test_count_share_per_enum_value(self):
+        """计数占比:分子 CAST(... AS DOUBLE)(MySQL DECIMAL 除法只留 5 位小数)。"""
         shares = self._shares()
         by_mapping = {t["mapping"]: t for t in shares}
-        t = by_mapping["SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)"]
+        t = by_mapping[
+            "CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
+            " * 100.0 / COUNT(*)"]
         assert t["term"] == "share of loan records where loan contract status is contract finished"
         assert "percentage of loan records where loan contract status is contract finished" in t["aliases"]
         assert t["tables"] == ["loan"]
@@ -788,8 +795,8 @@ class TestShareTerms:
         assert measure
         mapping = measure[0]["mapping"]
         assert mapping == (
-            "SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
-            " * 100.0 / NULLIF(SUM(loan.amount), 0)")
+            "CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+            " AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)")
         assert all("loan.duration" not in t["mapping"] for t in shares)
 
     def test_enum_columns_capped_per_table(self):
@@ -857,3 +864,142 @@ class TestShareTerms:
 
     def test_deterministic(self):
         assert generate_terms(SHARE_TABLES, lang="en") == generate_terms(SHARE_TABLES, lang="en")
+
+    def test_zh_count_share_also_cast(self):
+        """zh 分支与 en 同形(同一 mapping,只是命名语言不同)。"""
+        shares = self._shares(lang="zh")
+        assert any(
+            t["mapping"] == "CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END)"
+            " AS DOUBLE) * 100.0 / COUNT(*)" for t in shares)
+
+
+class TestEnumValuesFullWidthColon:
+    """全角冒号与 ``=`` 同义(官方 client.gender 的 "F：female")。
+
+    口径与 ``lint.parse_enum_values`` 一致——同一份官方文档在两个通道
+    (生成器的占比构造 / lint 的取值域检查)里必须切出同一套值。
+    """
+
+    def test_full_width_colon_parsed_as_pair(self):
+        assert _enum_values(["F：female", "M：male"]) == [("F", "female"), ("M", "male")]
+
+    def test_ascii_and_full_width_colon_agree(self):
+        assert _enum_values(["F：female\nM：male"]) == _enum_values(["F=female\nM=male"])
+
+    def test_quoted_and_bare_forms_unchanged(self):
+        assert _enum_values(["'A' stands for contract finished"]) == [
+            ("A", "contract finished")]
+        assert _enum_values(["POPLATEK MESICNE=monthly issuance"]) == [
+            ("POPLATEK MESICNE", "monthly issuance")]
+        assert _enum_values(["west Bohemia"]) == [("west Bohemia", "west Bohemia")]
+
+
+class TestShareCastCompatibility:
+    """CAST 包在聚合**外** → 编译侧形状元组逐字节同构(tier2/tier3 匹配不退化)。
+
+    迁移风险:占比度量换成 CAST 形态后,若形状归一跟着变,plan 里的自由
+    拼法(无 CAST / FILTER 拼法)就对不上声明度量,占比题会从「可答」退回
+    「软 MISS」。这里逐条钉死:``_agg_entry`` 单聚合签名、``_share_shape``
+    两聚合形态、以及声明度量与 plan 候选的匹配(两个方向)。
+    """
+
+    PLAIN_COUNT = "SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)"
+    CAST_COUNT = (
+        "CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
+        " * 100.0 / COUNT(*)")
+    PLAIN_MEAS = (
+        "SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+        " * 100.0 / NULLIF(SUM(loan.amount), 0)")
+    CAST_MEAS = (
+        "CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END) AS DOUBLE)"
+        " * 100.0 / NULLIF(SUM(loan.amount), 0)")
+
+    @staticmethod
+    def _model(metric_expr):
+        from trove.services.semantic_layer.models import (
+            SemanticDataset,
+            SemanticField,
+            SemanticMetric,
+            SemanticModel,
+        )
+
+        return SemanticModel(
+            name="share",
+            datasets=[SemanticDataset(
+                name="loan", primary_key=["loan_id"],
+                fields=[SemanticField(name=n, expression=n)
+                        for n in ("loan_id", "amount", "status")])],
+            metrics=[SemanticMetric("loan share", metric_expr, datasets=["loan"])],
+        )
+
+    def _compile(self, metric_expr, plan_expr):
+        from trove.services.semantic_layer.compiler import SemanticCompiler
+
+        plan = {"tables": ["loan"], "aggregation": plan_expr,
+                "answer_columns": [plan_expr]}
+        return SemanticCompiler(self._model(metric_expr)).compile_detailed(plan, ["loan"])
+
+    def test_agg_entry_per_aggregate_unchanged(self):
+        """CAST 在聚合外:每个聚合条目的 (func, cols, distinct, conds) 一字不变。
+
+        按**条目集合**比较:多一层 CAST 节点会改变 ``find_all`` 的遍历顺序
+        (先走内层 CASE 聚合),因此整式 ``_agg_signature`` 的元组顺序在新旧
+        形态间是翻转的 —— 它不能用来做新旧占比度量的相等判断(占比对账走
+        ``_share_shape``,已按 条件侧/全量侧 归一,见下一条用例与 compile 级
+        用例)。聚合条目本身(签名材料)逐条相同。
+        """
+        from collections import Counter
+
+        from sqlglot import exp, parse_one
+
+        from trove.services.semantic_layer.compiler import _agg_entry
+
+        for plain, cast in ((self.PLAIN_COUNT, self.CAST_COUNT),
+                            (self.PLAIN_MEAS, self.CAST_MEAS)):
+            plain_entries = Counter(
+                _agg_entry(f) for f in parse_one(plain).find_all(exp.AggFunc))
+            cast_entries = Counter(
+                _agg_entry(f) for f in parse_one(cast).find_all(exp.AggFunc))
+            assert plain_entries == cast_entries
+
+    def test_share_shape_unchanged(self):
+        from trove.services.semantic_layer.compiler import _share_shape
+
+        assert _share_shape(self.CAST_COUNT) == _share_shape(self.PLAIN_COUNT)
+        assert _share_shape(self.CAST_MEAS) == _share_shape(self.PLAIN_MEAS)
+        assert _share_shape(self.CAST_MEAS) is not None
+
+    def test_declared_cast_metric_matched_by_plain_plan(self):
+        """声明 CAST 形态 → 无 CAST / FILTER 拼法的 plan 候选照常命中。"""
+        from trove.services.semantic_layer.compiler import CompileResult
+
+        for metric_expr, plan_expr in (
+            (self.CAST_COUNT, self.PLAIN_COUNT),
+            (self.CAST_MEAS, self.PLAIN_MEAS),
+            (self.CAST_MEAS,
+             "SUM(loan.amount) FILTER (WHERE loan.status = 'A') * 100.0 / SUM(loan.amount)"),
+        ):
+            result = self._compile(metric_expr, plan_expr)
+            assert isinstance(result, CompileResult), (metric_expr, plan_expr, result)
+            # 声明表达式是权威:产物必须是 CAST 形态
+            assert "CAST(" in result.sql
+
+    def test_declared_plain_metric_matched_by_cast_plan(self):
+        """迁移期反向:盘上还是无 CAST 度量,plan 写 CAST 形态也命中。"""
+        from trove.services.semantic_layer.compiler import CompileResult
+
+        for metric_expr, plan_expr in (
+            (self.PLAIN_COUNT, self.CAST_COUNT),
+            (self.PLAIN_MEAS, self.CAST_MEAS),
+        ):
+            result = self._compile(metric_expr, plan_expr)
+            assert isinstance(result, CompileResult), (metric_expr, plan_expr, result)
+            assert "CAST(" not in result.sql
+
+    def test_enum_value_still_distinguishes(self):
+        """CAST 形态不削弱区分度:status='C' 的占比不得命中 status='A' 的度量。"""
+        from trove.services.semantic_layer.compiler import CompileMiss
+
+        other = self.CAST_COUNT.replace("= 'A'", "= 'C'")
+        result = self._compile(self.CAST_COUNT, other)
+        assert isinstance(result, CompileMiss)

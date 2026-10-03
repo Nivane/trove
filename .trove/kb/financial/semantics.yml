@@ -16,7 +16,7 @@ semantic_model:
       ai_context:
         synonyms:
         - account number
-      description: unique identifier for a bank account
+      description: the id of the account
     - name: district_id
       expression:
         dialects:
@@ -27,7 +27,7 @@ semantic_model:
       ai_context:
         synonyms:
         - branch district
-      description: identifier of the district where the account was opened
+      description: location of branch
     - name: frequency
       expression:
         dialects:
@@ -36,14 +36,14 @@ semantic_model:
       datatype: String
       semantic_role: enum
       enum_display:
-        POPLATEK MESICNE: monthly
-        POPLATEK TYDNE: weekly
-        POPLATEK PO OBRATU: after transaction
+        POPLATEK MESICNE: monthly issuance
+        POPLATEK TYDNE: weekly issuance
+        POPLATEK PO OBRATU: issuance after transaction
       ai_context:
         synonyms:
         - statement frequency
         - transaction frequency
-      description: how often statements are issued for the account
+      description: frequency of the acount
     - name: date
       expression:
         dialects:
@@ -55,7 +55,7 @@ semantic_model:
         synonyms:
         - creation date
         - account opening date
-      description: date the account was created
+      description: the creation date of the account
   - name: card
     source: financial.card
     primary_key:
@@ -71,7 +71,7 @@ semantic_model:
       ai_context:
         synonyms:
         - card number
-      description: unique identifier for a card
+      description: id number of credit card
     - name: disp_id
       expression:
         dialects:
@@ -82,7 +82,7 @@ semantic_model:
       ai_context:
         synonyms:
         - disposition id
-      description: identifier linking the card to a client-account relationship
+      description: disposition id
     - name: type
       expression:
         dialects:
@@ -91,14 +91,14 @@ semantic_model:
       datatype: String
       semantic_role: enum
       enum_display:
-        gold: gold
-        classic: classic
-        junior: junior
+        gold: high-level credit card
+        classic: standard class of credit card
+        junior: junior class of credit card
       ai_context:
         synonyms:
         - card category
         - card tier
-      description: type or tier of the card
+      description: type of credit card
     - name: issued
       expression:
         dialects:
@@ -110,7 +110,7 @@ semantic_model:
         synonyms:
         - issue date
         - card issue date
-      description: date the card was issued
+      description: the date when the credit card issued
   - name: client
     source: financial.client
     primary_key:
@@ -126,7 +126,7 @@ semantic_model:
       ai_context:
         synonyms:
         - customer id
-      description: unique identifier for a client
+      description: the unique number
     - name: gender
       expression:
         dialects:
@@ -152,7 +152,7 @@ semantic_model:
         synonyms:
         - date of birth
         - dob
-      description: date the client was born
+      description: birth date
     - name: district_id
       expression:
         dialects:
@@ -163,7 +163,7 @@ semantic_model:
       ai_context:
         synonyms:
         - residence district
-      description: identifier of the district where the client resides
+      description: location of branch
   - name: disp
     source: financial.disp
     primary_key:
@@ -179,7 +179,7 @@ semantic_model:
       ai_context:
         synonyms:
         - disposition id
-      description: unique identifier for a client-account relationship
+      description: unique number of identifying this row of record
     - name: client_id
       expression:
         dialects:
@@ -190,7 +190,7 @@ semantic_model:
       ai_context:
         synonyms:
         - customer id
-      description: identifier of the client in this relationship
+      description: id number of client
     - name: account_id
       expression:
         dialects:
@@ -201,7 +201,7 @@ semantic_model:
       ai_context:
         synonyms:
         - account number
-      description: identifier of the account in this relationship
+      description: id number of account
     - name: type
       expression:
         dialects:
@@ -216,7 +216,7 @@ semantic_model:
         synonyms:
         - relationship type
         - access type
-      description: type of access the client has to the account
+      description: type of disposition
   - name: district
     source: financial.district
     primary_key:
@@ -232,7 +232,7 @@ semantic_model:
       ai_context:
         synonyms:
         - region id
-      description: unique identifier for a district
+      description: location of branch
     - name: A2
       expression:
         dialects:
@@ -243,7 +243,7 @@ semantic_model:
       ai_context:
         synonyms:
         - district name
-      description: name of the district
+      description: district_name
       values:
       - Benesov
       - Beroun
@@ -342,7 +342,7 @@ semantic_model:
         synonyms:
         - region
         - area
-      description: region or area of the district
+      description: region
     - name: A4
       expression:
         dialects:
@@ -364,7 +364,7 @@ semantic_model:
       ai_context:
         synonyms:
         - households count
-      description: number of households in the district
+      description: municipality < district < region
       values:
       - '0'
       - '10'
@@ -429,7 +429,7 @@ semantic_model:
       ai_context:
         synonyms:
         - enterprise count
-      description: number of enterprises in the district
+      description: municipality < district < region
       values:
       - '0'
       - '10'
@@ -495,7 +495,7 @@ semantic_model:
       ai_context:
         synonyms:
         - crime count
-      description: number of crimes reported in the district
+      description: municipality < district < region
     - name: A8
       expression:
         dialects:
@@ -506,7 +506,7 @@ semantic_model:
       ai_context:
         synonyms:
         - unemployment rate
-      description: unemployment rate in the district
+      description: municipality < district < region
     - name: A9
       expression:
         dialects:
@@ -528,7 +528,7 @@ semantic_model:
       ai_context:
         synonyms:
         - avg salary
-      description: average salary in the district
+      description: ratio of urban inhabitants
     - name: A11
       expression:
         dialects:
@@ -539,7 +539,7 @@ semantic_model:
       ai_context:
         synonyms:
         - avg salary deviation
-      description: standard deviation of salaries in the district
+      description: average salary
     - name: A12
       expression:
         dialects:
@@ -550,7 +550,7 @@ semantic_model:
       ai_context:
         synonyms:
         - avg house price
-      description: average house price in the district
+      description: unemployment rate 1995
     - name: A13
       expression:
         dialects:
@@ -561,7 +561,7 @@ semantic_model:
       ai_context:
         synonyms:
         - avg house price deviation
-      description: standard deviation of house prices in the district
+      description: unemployment rate 1996
     - name: A14
       expression:
         dialects:
@@ -572,7 +572,7 @@ semantic_model:
       ai_context:
         synonyms:
         - avg rent
-      description: average rent in the district
+      description: no. of entrepreneurs per 1000 inhabitants
     - name: A15
       expression:
         dialects:
@@ -583,7 +583,7 @@ semantic_model:
       ai_context:
         synonyms:
         - avg rent deviation
-      description: standard deviation of rents in the district
+      description: no. of committed crimes 1995
     - name: A16
       expression:
         dialects:
@@ -594,7 +594,7 @@ semantic_model:
       ai_context:
         synonyms:
         - unemployment deviation
-      description: standard deviation of unemployment rates in the district
+      description: no. of committed crimes 1996
   - name: loan
     source: financial.loan
     primary_key:
@@ -610,7 +610,7 @@ semantic_model:
       ai_context:
         synonyms:
         - loan identifier
-      description: unique identifier for each loan
+      description: the id number identifying the loan data
     - name: account_id
       expression:
         dialects:
@@ -621,7 +621,7 @@ semantic_model:
       ai_context:
         synonyms:
         - account identifier
-      description: identifier of the account associated with the loan
+      description: the id number identifying the account
     - name: date
       expression:
         dialects:
@@ -632,7 +632,7 @@ semantic_model:
       ai_context:
         synonyms:
         - loan start date
-      description: date when the loan was granted
+      description: the date when the loan is approved
     - name: amount
       expression:
         dialects:
@@ -643,7 +643,7 @@ semantic_model:
       ai_context:
         synonyms:
         - loan amount
-      description: total amount of the loan
+      description: approved amount
     - name: duration
       expression:
         dialects:
@@ -654,7 +654,7 @@ semantic_model:
       ai_context:
         synonyms:
         - loan term
-      description: duration of the loan in months
+      description: loan duration
     - name: payments
       expression:
         dialects:
@@ -665,7 +665,7 @@ semantic_model:
       ai_context:
         synonyms:
         - monthly payment
-      description: monthly payment amount for the loan
+      description: monthly payments
     - name: status
       expression:
         dialects:
@@ -674,15 +674,15 @@ semantic_model:
       datatype: String
       semantic_role: enum
       enum_display:
-        A: active
-        B: closed
-        D: defaulted
-        C: in collection
+        A: contract finished, no problems
+        B: contract finished, loan not paid
+        D: running contract, client in debt
+        C: running contract, OK so far
       ai_context:
         synonyms:
         - repayment state
         - loan state
-      description: status of the loan repayment
+      description: repayment status
   - name: order
     source: financial.order
     primary_key:
@@ -698,7 +698,7 @@ semantic_model:
       ai_context:
         synonyms:
         - order identifier
-      description: unique identifier for each order
+      description: identifying the unique order
     - name: account_id
       expression:
         dialects:
@@ -709,7 +709,7 @@ semantic_model:
       ai_context:
         synonyms:
         - account identifier
-      description: identifier of the account placing the order
+      description: id number of account
     - name: bank_to
       expression:
         dialects:
@@ -735,7 +735,7 @@ semantic_model:
         synonyms:
         - destination bank
         - recipient bank
-      description: bank code of the recipient
+      description: bank of the recipient
     - name: account_to
       expression:
         dialects:
@@ -747,7 +747,7 @@ semantic_model:
         synonyms:
         - destination account
         - recipient account
-      description: account number of the recipient
+      description: account of the recipient
     - name: amount
       expression:
         dialects:
@@ -758,7 +758,7 @@ semantic_model:
       ai_context:
         synonyms:
         - order amount
-      description: amount of money in the order
+      description: debited amount
     - name: k_symbol
       expression:
         dialects:
@@ -775,7 +775,7 @@ semantic_model:
         synonyms:
         - payment purpose
         - transaction category
-      description: purpose or category of the order
+      description: purpose of the payment
   - name: trans
     source: financial.trans
     primary_key:
@@ -791,7 +791,7 @@ semantic_model:
       ai_context:
         synonyms:
         - transaction identifier
-      description: unique identifier for each transaction
+      description: transaction id
     - name: account_id
       expression:
         dialects:
@@ -813,7 +813,7 @@ semantic_model:
       ai_context:
         synonyms:
         - transaction date
-      description: date when the transaction occurred
+      description: date of transaction
     - name: type
       expression:
         dialects:
@@ -823,12 +823,12 @@ semantic_model:
       semantic_role: enum
       enum_display:
         PRIJEM: credit
-        VYDAJ: debit
+        VYDAJ: withdrawal
         VYBER: withdrawal
       ai_context:
         synonyms:
         - transaction type
-      description: type of transaction (credit or debit)
+      description: +/- transaction
     - name: operation
       expression:
         dialects:
@@ -837,15 +837,15 @@ semantic_model:
       datatype: String
       semantic_role: enum
       enum_display:
-        VKLAD: deposit
-        PREVOD Z UCTU: transfer from account
-        PREVOD NA UCET: transfer to account
-        VYBER: withdrawal
-        VYBER KARTOU: card withdrawal
+        VKLAD: credit in cash
+        PREVOD Z UCTU: collection from another bank
+        PREVOD NA UCET: remittance to another bank
+        VYBER: withdrawal in cash
+        VYBER KARTOU: credit card withdrawal
       ai_context:
         synonyms:
         - transaction operation
-      description: specific operation performed in the transaction
+      description: mode of transaction
     - name: amount
       expression:
         dialects:
@@ -856,7 +856,7 @@ semantic_model:
       ai_context:
         synonyms:
         - transaction amount
-      description: amount of money in the transaction
+      description: amount of money
     - name: balance
       expression:
         dialects:
@@ -867,7 +867,7 @@ semantic_model:
       ai_context:
         synonyms:
         - account balance
-      description: account balance after the transaction
+      description: balance after transaction
     - name: k_symbol
       expression:
         dialects:
@@ -876,13 +876,13 @@ semantic_model:
       datatype: String
       semantic_role: enum
       enum_display:
-        SIPO: household payment
-        SLUZBY: services
+        SIPO: household
+        SLUZBY: payment for statement
         UVER: loan payment
-        POJISTNE: insurance payment
-        DUCHOD: pension
-        UROK: interest
-        SANKC. UROK: penalty interest
+        POJISTNE: insurrance payment
+        DUCHOD: old-age pension
+        UROK: interest credited
+        SANKC. UROK: sanction interest if negative balance
       ai_context:
         synonyms:
         - transaction purpose
@@ -1013,8 +1013,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN account.frequency = 'POPLATEK MESICNE' THEN 1 ELSE
-          0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN account.frequency = 'POPLATEK MESICNE' THEN
+          1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of account records where Frequency of account statements
       or transactions, stored as all-caps codes is monthly issuance
     ai_context:
@@ -1027,8 +1027,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN account.frequency = 'POPLATEK TYDNE' THEN 1 ELSE
-          0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN account.frequency = 'POPLATEK TYDNE' THEN 1
+          ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of account records where Frequency of account statements
       or transactions, stored as all-caps codes is weekly issuance
     ai_context:
@@ -1041,8 +1041,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN account.frequency = 'POPLATEK PO OBRATU' THEN 1
-          ELSE 0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN account.frequency = 'POPLATEK PO OBRATU' THEN
+          1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of account records where Frequency of account statements
       or transactions, stored as all-caps codes is issuance after each transaction
     ai_context:
@@ -1073,8 +1073,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN card.type = 'gold' THEN 1 ELSE 0 END) * 100.0 /
-          COUNT(*)
+        expression: CAST(SUM(CASE WHEN card.type = 'gold' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of card records where Type of card, stored as lowercase
       text is gold card
     ai_context:
@@ -1087,8 +1087,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN card.type = 'classic' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN card.type = 'classic' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
     description: percentage of card records where Type of card, stored as lowercase
       text is classic card
     ai_context:
@@ -1101,8 +1101,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN card.type = 'junior' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN card.type = 'junior' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
     description: percentage of card records where Type of card, stored as lowercase
       text is junior card
     ai_context:
@@ -1133,8 +1133,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN client.gender = 'F' THEN 1 ELSE 0 END) * 100.0 /
-          COUNT(*)
+        expression: CAST(SUM(CASE WHEN client.gender = 'F' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of client records where Gender of the client, stored as
       single capital letter is female
     ai_context:
@@ -1147,8 +1147,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN client.gender = 'M' THEN 1 ELSE 0 END) * 100.0 /
-          COUNT(*)
+        expression: CAST(SUM(CASE WHEN client.gender = 'M' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of client records where Gender of the client, stored as
       single capital letter is male
     ai_context:
@@ -1170,8 +1170,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN disp.type = 'OWNER' THEN 1 ELSE 0 END) * 100.0 /
-          COUNT(*)
+        expression: CAST(SUM(CASE WHEN disp.type = 'OWNER' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of disp records where Type of disposition, stored as all-caps
       codes is account owner
     ai_context:
@@ -1184,8 +1184,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN disp.type = 'DISPONENT' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN disp.type = 'DISPONENT' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of disp records where Type of disposition, stored as all-caps
       codes is account user with limited rights
     ai_context:
@@ -1334,8 +1334,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'Prague' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'Prague' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
     description: percentage of district records where Region or area name of the district
       is Prague
     ai_context:
@@ -1348,8 +1348,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'central Bohemia' THEN 1 ELSE 0 END)
-          * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'central Bohemia' THEN 1 ELSE
+          0 END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of district records where Region or area name of the district
       is central Bohemia
     ai_context:
@@ -1362,8 +1362,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'south Bohemia' THEN 1 ELSE 0 END)
-          * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'south Bohemia' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of district records where Region or area name of the district
       is south Bohemia
     ai_context:
@@ -1376,8 +1376,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'west Bohemia' THEN 1 ELSE 0 END)
-          * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'west Bohemia' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of district records where Region or area name of the district
       is west Bohemia
     ai_context:
@@ -1390,8 +1390,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'Prague' THEN district.A8 ELSE 0 END)
-          * 100.0 / NULLIF(SUM(district.A8), 0)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'Prague' THEN district.A8 ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
     description: percentage of Number of municipalities with population above 10000
       contributed by records where Region or area name of the district is Prague
     ai_context:
@@ -1404,8 +1404,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'central Bohemia' THEN district.A8
-          ELSE 0 END) * 100.0 / NULLIF(SUM(district.A8), 0)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'central Bohemia' THEN district.A8
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
     description: percentage of Number of municipalities with population above 10000
       contributed by records where Region or area name of the district is central
       Bohemia
@@ -1419,8 +1419,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'south Bohemia' THEN district.A8 ELSE
-          0 END) * 100.0 / NULLIF(SUM(district.A8), 0)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'south Bohemia' THEN district.A8
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
     description: percentage of Number of municipalities with population above 10000
       contributed by records where Region or area name of the district is south Bohemia
     ai_context:
@@ -1433,8 +1433,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN district.A3 = 'west Bohemia' THEN district.A8 ELSE
-          0 END) * 100.0 / NULLIF(SUM(district.A8), 0)
+        expression: CAST(SUM(CASE WHEN district.A3 = 'west Bohemia' THEN district.A8
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
     description: percentage of Number of municipalities with population above 10000
       contributed by records where Region or area name of the district is west Bohemia
     ai_context:
@@ -1518,7 +1518,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of loan records where Loan status code (A, B, D) is A
     ai_context:
       synonyms:
@@ -1528,7 +1529,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'B' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN loan.status = 'B' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of loan records where Loan status code (A, B, D) is B
     ai_context:
       synonyms:
@@ -1538,7 +1540,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'D' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN loan.status = 'D' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of loan records where Loan status code (A, B, D) is D
     ai_context:
       synonyms:
@@ -1548,7 +1551,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'C' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN loan.status = 'C' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
     description: percentage of loan records where Loan status code (A, B, D) is C
     ai_context:
       synonyms:
@@ -1559,8 +1563,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END) *
-          100.0 / NULLIF(SUM(loan.amount), 0)
+        expression: CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
     description: percentage of Loan amount in monetary units contributed by records
       where Loan status code (A, B, D) is A
     ai_context:
@@ -1573,8 +1577,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'B' THEN loan.amount ELSE 0 END) *
-          100.0 / NULLIF(SUM(loan.amount), 0)
+        expression: CAST(SUM(CASE WHEN loan.status = 'B' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
     description: percentage of Loan amount in monetary units contributed by records
       where Loan status code (A, B, D) is B
     ai_context:
@@ -1587,8 +1591,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'D' THEN loan.amount ELSE 0 END) *
-          100.0 / NULLIF(SUM(loan.amount), 0)
+        expression: CAST(SUM(CASE WHEN loan.status = 'D' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
     description: percentage of Loan amount in monetary units contributed by records
       where Loan status code (A, B, D) is D
     ai_context:
@@ -1601,8 +1605,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN loan.status = 'C' THEN loan.amount ELSE 0 END) *
-          100.0 / NULLIF(SUM(loan.amount), 0)
+        expression: CAST(SUM(CASE WHEN loan.status = 'C' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
     description: percentage of Loan amount in monetary units contributed by records
       where Loan status code (A, B, D) is C
     ai_context:
@@ -1642,8 +1646,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of order records where Payment purpose code (all caps,
       may be empty) is SIPO
     ai_context:
@@ -1656,8 +1660,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'UVER' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'UVER' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of order records where Payment purpose code (all caps,
       may be empty) is UVER
     ai_context:
@@ -1670,8 +1674,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN 1 ELSE 0 END)
-          * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of order records where Payment purpose code (all caps,
       may be empty) is POJISTNE
     ai_context:
@@ -1684,8 +1688,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN 1 ELSE 0 END)
-          * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of order records where Payment purpose code (all caps,
       may be empty) is LEASING
     ai_context:
@@ -1698,8 +1702,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN "order".amount ELSE
-          0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
     description: percentage of Order amount in monetary units contributed by records
       where Payment purpose code (all caps, may be empty) is SIPO
     ai_context:
@@ -1712,8 +1716,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'UVER' THEN "order".amount ELSE
-          0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'UVER' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
     description: percentage of Order amount in monetary units contributed by records
       where Payment purpose code (all caps, may be empty) is UVER
     ai_context:
@@ -1726,8 +1730,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN "order".amount
-          ELSE 0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
     description: percentage of Order amount in monetary units contributed by records
       where Payment purpose code (all caps, may be empty) is POJISTNE
     ai_context:
@@ -1740,8 +1744,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN "order".amount
-          ELSE 0 END) * 100.0 / NULLIF(SUM("order".amount), 0)
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
     description: percentage of Order amount in monetary units contributed by records
       where Payment purpose code (all caps, may be empty) is LEASING
     ai_context:
@@ -1808,8 +1812,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.type = 'PRIJEM' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN trans.type = 'PRIJEM' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
     description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
       VYBER) is PRIJEM
     ai_context:
@@ -1822,8 +1826,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.type = 'VYDAJ' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYDAJ' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
     description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
       VYBER) is VYDAJ
     ai_context:
@@ -1836,8 +1840,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.type = 'VYBER' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYBER' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
     description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
       VYBER) is VYBER
     ai_context:
@@ -1850,8 +1854,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.type = 'PRIJEM' THEN trans.amount ELSE 0 END)
-          * 100.0 / NULLIF(SUM(trans.amount), 0)
+        expression: CAST(SUM(CASE WHEN trans.type = 'PRIJEM' THEN trans.amount ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
     description: percentage of Transaction amount in monetary units contributed by
       records where Transaction type (PRIJEM, VYDAJ, VYBER) is PRIJEM
     ai_context:
@@ -1864,8 +1868,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.type = 'VYDAJ' THEN trans.amount ELSE 0 END)
-          * 100.0 / NULLIF(SUM(trans.amount), 0)
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYDAJ' THEN trans.amount ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
     description: percentage of Transaction amount in monetary units contributed by
       records where Transaction type (PRIJEM, VYDAJ, VYBER) is VYDAJ
     ai_context:
@@ -1878,8 +1882,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.type = 'VYBER' THEN trans.amount ELSE 0 END)
-          * 100.0 / NULLIF(SUM(trans.amount), 0)
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYBER' THEN trans.amount ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
     description: percentage of Transaction amount in monetary units contributed by
       records where Transaction type (PRIJEM, VYDAJ, VYBER) is VYBER
     ai_context:
@@ -1892,8 +1896,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.operation = 'VKLAD' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VKLAD' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of trans records where Transaction operation description
       (all caps, may be NULL) is VKLAD
     ai_context:
@@ -1906,8 +1910,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.operation = 'VYBER' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*)
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of trans records where Transaction operation description
       (all caps, may be NULL) is VYBER
     ai_context:
@@ -1920,8 +1924,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN 1 ELSE 0 END)
-          * 100.0 / COUNT(*)
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN 1 ELSE
+          0 END) AS DOUBLE) * 100.0 / COUNT(*)
     description: percentage of trans records where Transaction operation description
       (all caps, may be NULL) is VYBER KARTOU
     ai_context:
@@ -1934,8 +1938,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.operation = 'VKLAD' THEN trans.amount ELSE
-          0 END) * 100.0 / NULLIF(SUM(trans.amount), 0)
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VKLAD' THEN trans.amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
     description: percentage of Transaction amount in monetary units contributed by
       records where Transaction operation description (all caps, may be NULL) is VKLAD
     ai_context:
@@ -1948,8 +1952,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.operation = 'VYBER' THEN trans.amount ELSE
-          0 END) * 100.0 / NULLIF(SUM(trans.amount), 0)
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER' THEN trans.amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
     description: percentage of Transaction amount in monetary units contributed by
       records where Transaction operation description (all caps, may be NULL) is VYBER
     ai_context:
@@ -1962,8 +1966,8 @@ semantic_model:
     expression:
       dialects:
       - dialect: ANSI_SQL
-        expression: SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN trans.amount
-          ELSE 0 END) * 100.0 / NULLIF(SUM(trans.amount), 0)
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN trans.amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
     description: percentage of Transaction amount in monetary units contributed by
       records where Transaction operation description (all caps, may be NULL) is VYBER
       KARTOU

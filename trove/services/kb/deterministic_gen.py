@@ -274,17 +274,36 @@ def _enum_cols_of(table: dict[str, Any], lang: str) -> list[tuple[str, str, list
     return out
 
 
+def _cast_double(expr: str) -> str:
+    """分子聚外包一层 ``CAST(... AS DOUBLE)``(BIRD gold 的占比写法)。
+
+    MySQL 下 ``SUM(...) * 100.0 / COUNT(*)`` 的分子是 DECIMAL:除法只保留
+    ``div_precision_increment``(默认 4)位小数,数值被截断,与官方 gold 的
+    浮点结果字符串比较不等。官方 gold 一律写 ``CAST(... AS DOUBLE) * 100``。
+
+    **CAST 必须在聚合之外**:包进聚合(``SUM(CAST(x AS DOUBLE))``)会把
+    CAST 的列引用混进编译侧 ``_agg_entry`` 的列集签名;包在聚合外时
+    (func, cols, distinct, conds) 与 ``_share_shape`` 的形状元组与无
+    CAST 版逐字节同构(见 tests/services/kb/test_deterministic_gen.py 的
+    TestShareCastCompatibility)。
+    """
+    return f"CAST({expr} AS DOUBLE)"
+
+
 def _share_terms(table: dict[str, Any], lang: str, tref: str) -> list[dict[str, Any]]:
     """条件占比度量(确定性):条件聚合 / 全量聚合 × 100。
 
     两类构造,同一套上限:
 
-    - **计数占比**(每枚举值一条):``SUM(CASE WHEN 列=值 THEN 1 ELSE 0 END)
-      * 100.0 / COUNT(*)``——"Y 为 Z 的记录占比",与 ``COUNT(*) FILTER``
-      同行数度量(编译侧占比重识别把 SUM-1 归一为 COUNT,见
-      ``compiler._agg_entry``);
+    - **计数占比**(每枚举值一条):``CAST(SUM(CASE WHEN 列=值 THEN 1 ELSE 0
+      END) AS DOUBLE) * 100.0 / COUNT(*)``——"Y 为 Z 的记录占比",与
+      ``COUNT(*) FILTER`` 同行数度量(编译侧占比重识别把 SUM-1 归一为
+      COUNT,见 ``compiler._agg_entry``);
     - **度量占比**(每枚举值 × 前 N 个可加总度量列):同形状,计数换成
       ``SUM(度量列)`` 且分母加 ``NULLIF(..., 0)`` 除零守卫。
+
+    分子一律经 :func:`_cast_double` 包 CAST(MySQL DECIMAL 除法截断;
+    见该函数 docstring),CAST 落在聚合外。
 
     SQL 一律 CASE 形态(MySQL 不支持 ``FILTER (WHERE ...)``),表限定;
     分母口径 = 全表(不加 WHERE)——占比的"全量"是表全量,过滤属于
@@ -323,7 +342,7 @@ def _share_terms(table: dict[str, Any], lang: str, tref: str) -> list[dict[str, 
                         f"{label} {name} record share",
                     ],
                     "mapping": (
-                        f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)"
+                        f"{_cast_double(f'SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)')}"
                         f" * 100.0 / COUNT(*)"
                     ),
                     "tables": [name],
@@ -334,7 +353,7 @@ def _share_terms(table: dict[str, Any], lang: str, tref: str) -> list[dict[str, 
                     "term": f"{cdesc}为{label}的{name}记录占比",
                     "aliases": [f"{cdesc}为{label}的记录百分比"],
                     "mapping": (
-                        f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)"
+                        f"{_cast_double(f'SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)')}"
                         f" * 100.0 / COUNT(*)"
                     ),
                     "tables": [name],
@@ -346,7 +365,7 @@ def _share_terms(table: dict[str, Any], lang: str, tref: str) -> list[dict[str, 
                 code_sql = str(code).replace("'", "''")
                 cond = f"{tref}.{qcol} = '{code_sql}'"
                 mapping = (
-                    f"SUM(CASE WHEN {cond} THEN {tref}.{qm} ELSE 0 END)"
+                    f"{_cast_double(f'SUM(CASE WHEN {cond} THEN {tref}.{qm} ELSE 0 END)')}"
                     f" * 100.0 / NULLIF(SUM({tref}.{qm}), 0)"
                 )
                 if lang == "en":
@@ -497,10 +516,15 @@ def _enum_values(
       'POPLATEK MESICNE=monthly issuance' → [('POPLATEK MESICNE','monthly issuance')]
       '"junior": junior class of credit card;' → [('junior','junior class of credit card')]
       "'A' stands for contract finished"  → [('A','contract finished')]
+      'F：female'(全角冒号,同 '=')        → [('F','female')]
       'west Bohemia'(纯值)                → [('west Bohemia','west Bohemia')]
     叙述/噪声行('commonsense evidence: ...'、'each bank has unique
     two-letter code')跳过——保守:不产出 garbage 值。label 解析不出
     回退 code。
+
+    全角冒号与 :func:`trove.services.kb.lint.parse_enum_values` 同义
+    (那支解析器已把 "F：female" 视作 "F=female"):两处对**同一份官方
+    文档**的切分口径必须一致,否则同一条目在两个通道里算出两套值。
     """
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -509,7 +533,7 @@ def _enum_values(
             line = line.strip()
             if not line:
                 continue
-            m = re.match(r"^([^=]+)=(.*)$", line)
+            m = re.match(r"^([^=：]+)[=：](.*)$", line)
             if m:
                 code = m.group(1).strip().strip("'\"")
                 label = m.group(2).strip()

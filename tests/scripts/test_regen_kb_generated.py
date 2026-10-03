@@ -12,6 +12,7 @@ from scripts.regen_kb_generated import (
     _foreign_keys,
     _is_generator_owned,
     _is_stale_generated,
+    _unwrap_double_cast,
     regen_examples,
     regen_metrics,
 )
@@ -49,14 +50,59 @@ class TestClassifiers:
              "tags": ["trans", "A10", "aggregation"]})
 
     def test_generator_owned_share_shapes(self):
-        # 条件占比(生成器产物,见 deterministic_gen._share_terms):计数与度量两形
+        """条件占比两形 × 两代形态(无 CAST / CAST AS DOUBLE)都认。
+
+        形态换代后旧盘上的无 CAST 度量同属生成器所有:分类器不认它就会
+        把它当人工条目(报错或冻结),重建面只剩一半。双向都钉死。
+        """
         datasets = {"loan": {"loan_id", "status", "amount"}, "client": {"client_id"}}
-        assert _is_generator_owned(
-            "SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)",
-            datasets)
-        assert _is_generator_owned(
+        plain_count = (
+            "SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)")
+        cast_count = (
+            "CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
+            " * 100.0 / COUNT(*)")
+        plain_measure = (
             "SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
-            " * 100.0 / NULLIF(SUM(loan.amount), 0)", datasets)
+            " * 100.0 / NULLIF(SUM(loan.amount), 0)")
+        cast_measure = (
+            "CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+            " AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)")
+        for expr in (plain_count, cast_count, plain_measure, cast_measure):
+            assert _is_generator_owned(expr, datasets), expr
+        # 大小写/空白不敏感(旧盘可能被人工编辑过排版)
+        assert _is_generator_owned(
+            "cast( SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) as double )"
+            " * 100.0 / COUNT(*)", datasets)
+
+    def test_unwrap_double_cast_only_strips_outermost(self):
+        """只剥表达式**起始处**那一层 CAST;剥完其余部分逐字保留。"""
+        assert _unwrap_double_cast("CAST(SUM(loan.amount) AS DOUBLE)") == "SUM(loan.amount)"
+        # 生成器的真实摆法:CAST 只包分子,后面还有算式
+        assert _unwrap_double_cast(
+            "CAST(SUM(loan.amount) AS DOUBLE) * 100.0 / COUNT(*)") == (
+            "SUM(loan.amount) * 100.0 / COUNT(*)")
+        # 只剥一层(嵌套 CAST 的内层原样留着)
+        assert _unwrap_double_cast("CAST(CAST(x AS DOUBLE) AS DOUBLE)") == "CAST(x AS DOUBLE)"
+        assert _unwrap_double_cast("SUM(loan.amount)") == "SUM(loan.amount)"
+        assert _unwrap_double_cast("") == ""
+        # CAST 不在起始处 / 收尾不是 AS DOUBLE → 不剥
+        assert _unwrap_double_cast("100.0 * CAST(SUM(x) AS DOUBLE) / COUNT(*)") == (
+            "100.0 * CAST(SUM(x) AS DOUBLE) / COUNT(*)")
+        assert _unwrap_double_cast("CAST(SUM(x) AS INTEGER)") == "CAST(SUM(x) AS INTEGER)"
+        # 括号不配对 / 内层为空 → 不剥
+        assert _unwrap_double_cast("CAST(SUM(x AS DOUBLE)") == "CAST(SUM(x AS DOUBLE)"
+        assert _unwrap_double_cast("CAST( AS DOUBLE)") == "CAST( AS DOUBLE)"
+        # 引号里的括号不算数
+        assert _unwrap_double_cast(
+            "CAST(SUM(CASE WHEN a = ')' THEN 1 ELSE 0 END) AS DOUBLE)") == (
+            "SUM(CASE WHEN a = ')' THEN 1 ELSE 0 END)")
+
+    def test_cast_wrapped_non_share_shape_not_owned(self):
+        """剥壳不扩大认领面:MAX / 比值形态包 CAST 也不是生成器产物。"""
+        datasets = {"loan": {"loan_id", "amount"}}
+        assert not _is_generator_owned("CAST(MAX(loan.amount) AS DOUBLE)", datasets)
+        assert not _is_generator_owned(
+            "CAST(SUM(loan.amount) / COUNT(*) AS DOUBLE)", datasets)
 
     def test_share_shape_not_owned_when_column_undeclared(self):
         """占比形状但表/列不在声明内 → 不认(人工度量不得被误删)。"""
@@ -196,10 +242,10 @@ class TestRegenShareMetrics:
         assert changed
         exprs = [m["expression"]["dialects"][0]["expression"]
                  for m in doc["semantic_model"][0]["metrics"]]
-        assert ("SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END)"
+        assert ("CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
                 " * 100.0 / COUNT(*)") in exprs
-        assert ("SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
-                " * 100.0 / NULLIF(SUM(loan.amount), 0)") in exprs
+        assert ("CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)"
+                " AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)") in exprs
         assert "hand_written" in [m["name"] for m in doc["semantic_model"][0]["metrics"]]
 
     def test_regeneration_idempotent(self, tmp_path):
@@ -211,6 +257,39 @@ class TestRegenShareMetrics:
             encoding="utf-8")
         _, _, changed = regen_metrics(tmp_path, "en")
         assert not changed
+
+    def test_legacy_plain_share_metrics_migrated_not_frozen(self, tmp_path):
+        """迁移期:盘上留着无 CAST 旧形态 → 仍认作生成器产物,重建为 CAST 形态。
+
+        认不出就会走两条错路:当人工条目字面保留(形态不换代)或触发
+        「带生成器不会写的键」报错退出。这里两个方向都钉死。
+        """
+        _write_share_kb(tmp_path)
+        doc = yaml.safe_load((tmp_path / "semantics.yml").read_text())
+        legacy = [
+            {"name": "share of loan records where loan contract status is contract finished",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression":
+                                          "SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END)"
+                                          " * 100.0 / COUNT(*)"}]}},
+            {"name": "share of loan amount where loan contract status is contract finished",
+             "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression":
+                                          "SUM(CASE WHEN loan.status = 'A'"
+                                          " THEN loan.amount ELSE 0 END)"
+                                          " * 100.0 / NULLIF(SUM(loan.amount), 0)"}]}},
+        ]
+        doc["semantic_model"][0]["metrics"] = legacy + doc["semantic_model"][0]["metrics"]
+        (tmp_path / "semantics.yml").write_text(
+            yaml.safe_dump(doc, default_flow_style=False, allow_unicode=True, sort_keys=False),
+            encoding="utf-8")
+
+        rebuilt, _, changed = regen_metrics(tmp_path, "en")
+        assert changed
+        exprs = [m["expression"]["dialects"][0]["expression"]
+                 for m in rebuilt["semantic_model"][0]["metrics"]]
+        assert not any(e.startswith("SUM(CASE WHEN") for e in exprs)  # 旧形态全被换掉
+        assert ("CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)"
+                " * 100.0 / COUNT(*)") in exprs
+        assert "hand_written" in [m["name"] for m in rebuilt["semantic_model"][0]["metrics"]]
 
 
 def _write_examples(tmp_path):

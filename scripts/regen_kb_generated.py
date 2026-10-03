@@ -73,10 +73,13 @@ _YEAR_AGG_RE = re.compile(
     r"^AVG\(EXTRACT\(YEAR FROM\s+(?P<table>\"?[A-Za-z_]\w*\"?)\.(?P<column>\w+)\)\)$"
 )
 # 条件占比度量(生成器产物,见 deterministic_gen._share_terms):
-#   SUM(CASE WHEN <表>.<枚举列> = '<值>' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)
-#   SUM(CASE WHEN <表>.<枚举列> = '<值>' THEN <表>.<度量列> ELSE 0 END)
-#       * 100.0 / NULLIF(SUM(<表>.<度量列>), 0)
+#   CAST(SUM(CASE WHEN <表>.<枚举列> = '<值>' THEN 1 ELSE 0 END) AS DOUBLE)
+#       * 100.0 / COUNT(*)
+#   CAST(SUM(CASE WHEN <表>.<枚举列> = '<值>' THEN <表>.<度量列> ELSE 0 END)
+#       AS DOUBLE) * 100.0 / NULLIF(SUM(<表>.<度量列>), 0)
 # 捕获 (表, 枚举列[, 度量列]);引用的列都须在声明的 dataset fields 内才认。
+# 分子聚外的 CAST 先由 _unwrap_double_cast 剥掉 —— 形态换代期旧盘上还留着
+# 无 CAST 形态,两者都属生成器所有,不能把旧的误判成人工条目(报错/冻结)。
 _SHARE_COUNT_RE = re.compile(
     r"^SUM\(CASE WHEN (?P<table>\"?[A-Za-z_]\w*\"?)\.(?P<column>\w+) = '(?:[^']|'')+'"
     r" THEN 1 ELSE 0 END\) \* 100\.0 / COUNT\(\*\)$"
@@ -86,6 +89,69 @@ _SHARE_MEASURE_RE = re.compile(
     r" THEN (?P<table2>\"?[A-Za-z_]\w*\"?)\.(?P<measure>\w+) ELSE 0 END\) \* 100\.0"
     r" / NULLIF\(SUM\((?P=table2)\.(?P=measure)\), 0\)$"
 )
+
+#: 表达式起始处的 ``CAST(``(生成器占比形态:分子包一层)。
+_DOUBLE_CAST_HEAD_RE = re.compile(r"^CAST\s*\(", re.I)
+#: CAST 内容必须以 ``AS DOUBLE`` 收尾(贪婪 ``.*`` = 取最靠右的那对)。
+_DOUBLE_CAST_TAIL_RE = re.compile(r"^(?P<inner>.*)\s+AS\s+DOUBLE\s*$", re.I | re.S)
+
+
+def _matching_paren(text: str, open_idx: int) -> int | None:
+    """``text[open_idx] == '('`` 的配对右括号下标;不配对 → None。
+
+    单引号串内的括号不计(``''`` 是转义的字面量单引号)。
+    """
+    depth = 0
+    in_quote = False
+    i = open_idx
+    while i < len(text):
+        ch = text[i]
+        if in_quote:
+            if ch == "'":
+                if i + 1 < len(text) and text[i + 1] == "'":
+                    i += 2
+                    continue
+                in_quote = False
+        elif ch == "'":
+            in_quote = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _unwrap_double_cast(expr: str) -> str:
+    """剥掉最外层 ``CAST(<x> AS DOUBLE)`` 的外壳,返回其余部分原样。
+
+    形态识别专用(``_is_generator_owned`` 先归一再看形状),不动落盘内容
+    —— diff 仍按原文比较。生成器占比的 CAST 只包**分子**:表达式
+    ``CAST(SUM(...) AS DOUBLE) * 100.0 / COUNT(*)`` 剥成
+    ``SUM(...) * 100.0 / COUNT(*)``,正好落回既有的占比正则。
+
+    只认**表达式起始处**的 CAST(生成器只产这一种摆法),且要求括号配对、
+    内容以 ``AS DOUBLE`` 收尾、内层非空 —— 任一条不满足即原样返回:多剥
+    一层就可能把人工表达式误认成生成器产物(被静默重建/删除)。
+    """
+    text = str(expr or "").strip()
+    head = _DOUBLE_CAST_HEAD_RE.match(text)
+    if not head:
+        return text
+    close = _matching_paren(text, head.end() - 1)
+    if close is None:
+        return text
+    tail = _DOUBLE_CAST_TAIL_RE.match(text[head.end():close])
+    if not tail:
+        return text
+    inner = tail.group("inner").strip()
+    if not inner:
+        return text
+    return inner + text[close + 1:]
+
+
 # D 族模板的 SQL 形状(单表聚合,tags = [表, 列, aggregation])
 _TEMPLATE_AGG_RE = re.compile(
     r"^SELECT (?:SUM|AVG|MAX|MIN)\(\w+\) FROM \"?[A-Za-z_]\w*\"?$"
@@ -102,17 +168,19 @@ def _expr_of(metric: dict[str, Any]) -> str:
 
 
 def _is_generator_owned(expr: str, datasets: dict[str, set[str]]) -> bool:
+    # 先剥最外层 CAST(x AS DOUBLE):新旧两种占比形态都算生成器拥有。
+    text = _unwrap_double_cast(expr)
     for pattern in (_SIMPLE_AGG_RE, _YEAR_AGG_RE):
-        m = pattern.match(expr.strip())
+        m = pattern.match(text)
         if not m:
             continue
         table = m.group("table").strip('"')
         return table in datasets and m.group("column") in datasets[table]
-    m = _SHARE_COUNT_RE.match(expr.strip())
+    m = _SHARE_COUNT_RE.match(text)
     if m:
         table = m.group("table").strip('"')
         return table in datasets and m.group("column") in datasets[table]
-    m = _SHARE_MEASURE_RE.match(expr.strip())
+    m = _SHARE_MEASURE_RE.match(text)
     if m:
         table = m.group("table").strip('"')
         measure_table = m.group("table2").strip('"')
