@@ -55,6 +55,9 @@ class TestCrossUserAccess:
             assert (await alice_client.post(
                 f"/v1/sessions/{bob_sid}/clear"
             )).status_code == 404
+            assert (await alice_client.post(
+                f"/v1/sessions/{bob_sid}/pin", json={"pinned": True}
+            )).status_code == 404
             chat = await alice_client.post(
                 "/v1/chat", json={"session_id": bob_sid, "question": "hi"}
             )

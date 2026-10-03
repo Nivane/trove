@@ -14,10 +14,12 @@ import type {
   DoneSummary,
   ErrorInfo,
   HitlPayload,
+  SessionInfo,
   SseEvent,
   StepPayload,
   TaskItem,
 } from '../api/types'
+import { fmtDateTime } from '../utils/format'
 
 export interface StepCard {
   node: string
@@ -65,13 +67,7 @@ const SESSION_PAGE_SIZE = 20
 export const useChatStore = defineStore('chat', {
   state: () => ({
     sessionId: localStorage.getItem(SESSION_KEY) || '',
-    sessions: [] as {
-      session_id: string
-      created_at?: string
-      updated_at?: string
-      message_count?: number
-      title?: string
-    }[],
+    sessions: [] as SessionInfo[],
     sessionsLoading: false,
     sessionsOffset: 0,
     sessionsHasMore: true,
@@ -113,13 +109,7 @@ export const useChatStore = defineStore('chat', {
       this.sessionsLoading = true
       try {
         const body = await apiGet<{
-          sessions: {
-            session_id: string
-            created_at?: string
-            updated_at?: string
-            message_count?: number
-            title?: string
-          }[]
+          sessions: SessionInfo[]
           has_more?: boolean
         }>(`/v1/sessions?limit=${SESSION_PAGE_SIZE}&offset=${this.sessionsOffset}`)
         const page = body.sessions ?? []
@@ -185,6 +175,26 @@ export const useChatStore = defineStore('chat', {
       } catch (e) {
         notifyError(String((e as Error)?.message ?? 'rename failed'))
       }
+    },
+    /** 置顶/取消置顶。排序在服务端(置顶在前 + updated_at desc):
+     *  写成功后重取列表,而不是本地把行挪到顶部 —— 本地挪动只对
+     *  「已加载的那一页」成立,翻到第二页就会露馅。 */
+    async pinSession(sid: string, pinned: boolean) {
+      try {
+        await apiPost(`/v1/sessions/${sid}/pin`, { pinned })
+        const row = this.sessions.find((s) => s.session_id === sid)
+        if (row) row.pinned = pinned
+        await this.listSessions()
+      } catch (e) {
+        notifyError(String((e as Error)?.message ?? 'pin failed'))
+      }
+    },
+    /** 取某会话的整段轮次(导出用):当前会话用内存态,其余只读拉取。
+     *  拿不到就如实抛错 —— 导出一份缺轮的文档比报错更糟。 */
+    async fetchSessionTurns(sid: string): Promise<Turn[]> {
+      if (sid && sid === this.sessionId && this.turns.length) return this.turns
+      const body = await apiGet(`/v1/sessions/${sid}`)
+      return restoreTurns((body.messages ?? []) as StoredMessage[])
     },
     _authHeaders(): Record<string, string> {
       const token = localStorage.getItem('trove_auth_token')
@@ -648,4 +658,123 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
     }
   }
   return turns.filter((t) => t.question || t.answer)
+}
+
+// ── 会话导出 Markdown(① 整段会话 → 一个 .md)────────────────────
+//
+// 纯函数(不碰 DOM):Sidebar 负责取轮次 + blob 下载,这里只把
+// 已落盘的 turn 渲染成 Markdown。忠实渲染已定口径:每轮 = 用户问题
+// heading + 答案 markdown + 有 SQL 时 ```sql 代码块 + 可渲染时结果表;
+// 图表不随文导出(界面里本来就有)。truncate 是**写明**的截断 ——
+// 表格超过上限时 caption 同时给出「导出维度 / 完整维度」,不做静默丢行。
+
+/** 结果表导出上限(超宽/超长只导出前 N,注明完整维度)。 */
+export const EXPORT_MAX_ROWS = 50
+export const EXPORT_MAX_COLS = 8
+
+/** 导出文档里的小标题/表头文案(由调用方按 ui.lang 从 i18n 取)。 */
+export interface SessionExportLabels {
+  results: string
+  rows: string
+  cols: string
+  generatedAt: string
+  rounds: string
+}
+
+/** 单元格 → markdown 表格单元:null 空串,| 转义,换行压成 <br>。 */
+function mdCell(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
+  return s.replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>')
+}
+
+/** 多行问题压成一行(heading 里不能有换行)。 */
+function oneLine(s: string): string {
+  return s.replace(/\s*\r?\n\s*/g, ' ').trim()
+}
+
+/** 一轮的结果表(无列/无行时返回空数组 —— 不渲染空表)。 */
+function resultTable(turn: Turn, labels: SessionExportLabels): string[] {
+  const summary = turn.summary
+  const columns = (summary?.columns ?? []).map((c) => String(c))
+  const all = (summary?.rows?.length
+    ? summary.rows
+    : summary?.rows_preview ?? []) as unknown[][]
+  if (!columns.length || !all.length) return []
+
+  const shownCols = columns.slice(0, EXPORT_MAX_COLS)
+  const shownRows = all.slice(0, EXPORT_MAX_ROWS)
+  const truncated =
+    all.length > shownRows.length || columns.length > shownCols.length
+  const dims = `${all.length} ${labels.rows} × ${columns.length} ${labels.cols}`
+  const shownDims =
+    `${shownRows.length} ${labels.rows} × ${shownCols.length} ${labels.cols}`
+  const lines = [
+    '',
+    `### ${labels.results} (${truncated ? `${shownDims} / ${dims}` : dims})`,
+    '',
+    `| ${shownCols.map((c) => mdCell(c)).join(' | ')} |`,
+    `| ${shownCols.map(() => '---').join(' | ')} |`,
+  ]
+  for (const row of shownRows) {
+    lines.push(`| ${shownCols.map((_, j) => mdCell(row[j])).join(' | ')} |`)
+  }
+  return lines
+}
+
+/** 整段会话 → 一个 Markdown 文档。 */
+export function buildSessionMarkdown(
+  turns: Turn[],
+  opts: {
+    title?: string
+    sessionId: string
+    labels: SessionExportLabels
+    now?: Date
+  },
+): string {
+  const { labels } = opts
+  const now = opts.now ?? new Date()
+  const sid = opts.sessionId || ''
+  const head = (opts.title ?? '').trim() || sid.slice(0, 8) || 'session'
+  const out = [
+    `# ${head}`,
+    '',
+    `> ${labels.generatedAt}: ${fmtDateTime(now.toISOString())} · ` +
+      `${labels.rounds}: ${turns.length} · session:${sid.slice(0, 8)}`,
+  ]
+  turns.forEach((turn, i) => {
+    out.push('', '---', '')
+    out.push(`## ${i + 1}. ${oneLine(turn.question || '')}`)
+    // 与界面同口径(ChatView 的 `turn.answer || turn.synthesis`):
+    // 批收尾轮界面上显示的是逐条子任务答案,synthesis 只在 answer 缺席时兜底
+    const answer = (turn.answer || turn.synthesis || '').trim()
+    if (answer) out.push('', answer)
+    else if (turn.error) out.push('', `> ${oneLine(turn.error)}`)
+    const sql = (turn.summary?.sql || '').trim()
+    if (sql) out.push('', '```sql', sql, '```')
+    out.push(...resultTable(turn, labels))
+  })
+  out.push('')
+  return out.join('\n')
+}
+
+/** 下载文件名:`<标题或首问截断>-<YYYYMMDD>.md`,非法字符清洗。 */
+export function sessionMarkdownFilename(
+  title: string | undefined,
+  sessionId: string,
+  now: Date = new Date(),
+): string {
+  const raw = (title ?? '').trim() || sessionId.slice(0, 8) || 'session'
+  const safe = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\-\s]+|[.\-\s]+$/g, '')
+    .slice(0, 40)
+    .trim()
+  const d =
+    `${now.getFullYear()}` +
+    `${String(now.getMonth() + 1).padStart(2, '0')}` +
+    `${String(now.getDate()).padStart(2, '0')}`
+  return `${safe || sessionId.slice(0, 8) || 'session'}-${d}.md`
 }

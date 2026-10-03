@@ -15,7 +15,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trove.api.deps import check_api_rate, get_current_user, require_datasource, require_scope
-from trove.api.schemas import ChatRequest, RenameRequest, ResumeRequest, SessionCreateResponse
+from trove.api.schemas import (
+    ChatRequest,
+    PinRequest,
+    RenameRequest,
+    ResumeRequest,
+    SessionCreateResponse,
+)
 from trove.api.sse import sse_response
 from trove.core.errors import SessionError
 
@@ -147,6 +153,25 @@ async def rename_session(
     if not await _manager(request).rename_session(session.session_id, body.title.strip()):
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
     return {"session_id": session.session_id, "title": body.title.strip()}
+
+
+@router.post("/sessions/{session_id}/pin")
+async def pin_session(
+    session_id: str,
+    body: PinRequest,
+    request: Request,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """置顶/取消置顶会话(``{"pinned": bool}``)。
+
+    与 title 同口径:仅会话属主可操作(admin 例外),他人会话 404 ——
+    不泄露存在性。置顶影响列表排序(置顶在前 + updated_at desc),
+    排序由存储层查询保证,分页切片排在其后。
+    """
+    session = await _load_or_404(request, session_id, user)
+    if not await _manager(request).set_pinned(session.session_id, body.pinned):
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    return {"session_id": session.session_id, "pinned": body.pinned}
 
 
 @router.get("/sessions/{session_id}/tasks")

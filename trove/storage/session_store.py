@@ -320,6 +320,37 @@ class SessionStore:
         finally:
             await conn.close()
 
+    async def set_pinned(
+        self,
+        session_id: str,
+        pinned: bool,
+        project_cwd: str | Path = ".",
+    ) -> bool:
+        """Pin/unpin a session (persisted in the meta table).
+
+        与 title 同一个 KV 先例:不新增列、不加迁移 —— meta 表本就承担
+        「会话级兼容键」。刻意**不碰 updated_at**:置顶改的是排序档位,
+        不是会话活跃时间(否则置顶会把会话顶到「最近」组里,读起来像
+        刚发生过对话)。
+        """
+        project_name = _normalize_project_name(project_cwd)
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT 1 FROM sessions WHERE project_name = ? AND session_id = ?",
+                (project_name, session_id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return False
+            await self._upsert_meta(conn, project_name, session_id, {
+                "pinned": "1" if pinned else "0",
+            })
+            await conn.commit()
+            return True
+        finally:
+            await conn.close()
+
     # ── CRUD: Delete ─────────────────────────────────────
 
     async def delete_session(
@@ -361,17 +392,28 @@ class SessionStore:
         offset: int = 0,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """List sessions for a project (by updated_at, desc)."""
+        """List sessions for a project (pinned first, then updated_at desc).
+
+        排序**在 SQL 里**完成(置顶组在前,组内仍按 updated_at desc):
+        `offset`/`limit` 是在这批有序行上切的 —— 只排「当前页」会让
+        第 2 页冒出一个本该在第一页的置顶会话。pinned 状态存在 meta 表
+        (`key='pinned'`),用 LEFT JOIN 取回;缺行 = 未置顶。
+        """
         project_name = _normalize_project_name(project_cwd)
         conn = await self._conn()
         try:
-            where, params = ["project_name = ?"], [project_name]
+            where, params = ["s.project_name = ?"], [project_name]
             if user_id is not None:
-                where.append("user_id = ?")
+                where.append("s.user_id = ?")
                 params.append(user_id)
             cursor = await conn.execute(
-                f"SELECT project_name, session_id, user_id, created_at, updated_at "
-                f"FROM sessions WHERE {' AND '.join(where)} ORDER BY updated_at DESC",
+                f"SELECT s.project_name, s.session_id, s.user_id, s.created_at, s.updated_at "
+                f"FROM sessions s "
+                f"LEFT JOIN meta pm ON pm.project_name = s.project_name "
+                f"  AND pm.session_id = s.session_id AND pm.key = 'pinned' "
+                f"WHERE {' AND '.join(where)} "
+                f"ORDER BY CASE WHEN pm.value = '1' THEN 1 ELSE 0 END DESC, "
+                f"s.updated_at DESC",
                 tuple(params),
             )
             rows = await cursor.fetchall()
@@ -457,11 +499,15 @@ class SessionStore:
             row = await cursor.fetchone()
             first_question = row[0] if row else ""
             cursor = await conn.execute(
-                "SELECT value FROM meta WHERE project_name = ? AND session_id = ? AND key = 'title'",
+                "SELECT key, value FROM meta WHERE project_name = ? AND session_id = ? "
+                "AND key IN ('title', 'pinned')",
                 (project_name, session_id),
             )
-            row = await cursor.fetchone()
-            custom_title = (row[0] if row else "") or ""
+            kv: dict[str, str] = {}
+            async for krow in cursor:
+                kv[krow[0]] = krow[1]
+            custom_title = kv.get("title", "") or ""
+            pinned = kv.get("pinned", "") == "1"
         finally:
             await conn.close()
         return {
@@ -472,6 +518,7 @@ class SessionStore:
             "updated_at": updated_at,
             "message_count": msg_count,
             "title": custom_title or first_question,
+            "pinned": pinned,
             "size_bytes": 0,  # 单库多表模型下无独立文件体积
         }
 

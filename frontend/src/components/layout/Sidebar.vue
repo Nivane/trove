@@ -46,7 +46,12 @@
                 @blur="commitRename(s.session_id)"
               >
             </template>
-            <span v-else class="session-title">{{ title(s) }}</span>
+            <template v-else>
+              <span v-if="s.pinned" class="session-pin" :title="t('pinSession', ui.lang)">
+                <Pin :size="11" />
+              </span>
+              <span class="session-title">{{ title(s) }}</span>
+            </template>
             <span class="session-more" @click.stop="openMenu(s, $event)"><MoreVertical :size="13" /></span>
             <span class="session-del" @click.stop="remove(s.session_id)"><X :size="12" /></span>
           </div>
@@ -69,6 +74,14 @@
         @pointerdown.stop
         @click.stop
       >
+        <button class="session-menu-item" @click="menuPin()">
+          <Pin :size="13" />
+          {{ menuPinned ? t('unpinSession', ui.lang) : t('pinSession', ui.lang) }}
+        </button>
+        <button class="session-menu-item" @click="menuExport()">
+          <Download :size="13" />
+          {{ t('exportMarkdown', ui.lang) }}
+        </button>
         <button class="session-menu-item" @click="menuRename()">
           <Pencil :size="13" />
           {{ t('rename', ui.lang) }}
@@ -220,22 +233,25 @@ import {
   Search,
   MoreVertical,
   Trash2,
+  Pin,
+  Download,
 } from 'lucide-vue-next'
 import BrandMark from '../brand/BrandMark.vue'
-import { useChatStore } from '../../stores/chat'
+import {
+  buildSessionMarkdown,
+  sessionMarkdownFilename,
+  useChatStore,
+} from '../../stores/chat'
+import type { SessionExportLabels } from '../../stores/chat'
+import type { SessionInfo } from '../../api/types'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { useRouter } from 'vue-router'
 import { t } from '../../i18n'
 import { trunc } from '../../utils/format'
+import { notifyError } from '../../utils/notify'
 
-interface SessionRow {
-  session_id: string
-  created_at?: string
-  updated_at?: string
-  message_count?: number
-  title?: string
-}
+type SessionRow = SessionInfo
 
 const chat = useChatStore()
 const ui = useUiStore()
@@ -289,15 +305,69 @@ function selectFromSearch(sid: string) {
 
 function openMenu(s: SessionRow, ev?: PointerEvent | MouseEvent) {
   // anchor at the cursor/three-dot button and clamp into the viewport
+  // (menu grew to 4 items — reserve its height so it never opens off-screen)
   let x = ev?.clientX ?? window.innerWidth / 2
   let y = ev?.clientY ?? 80
   x = Math.min(Math.max(0, x), window.innerWidth - 168)
-  y = Math.min(Math.max(0, y), window.innerHeight - 96)
+  y = Math.min(Math.max(0, y), window.innerHeight - 168)
   menu.value = { open: true, sid: s.session_id, x, y }
 }
 
 function closeMenu() {
   menu.value.open = false
+}
+
+function menuTarget(): SessionRow | undefined {
+  return chat.sessions.find((x) => x.session_id === menu.value.sid)
+}
+
+/** 菜单里显示「取消置顶」还是「置顶」——按目标行当前状态。 */
+const menuPinned = computed(() => !!menuTarget()?.pinned)
+
+function menuPin() {
+  const s = menuTarget()
+  if (!s) return closeMenu()
+  closeMenu()
+  void chat.pinSession(s.session_id, !s.pinned)
+}
+
+function menuExport() {
+  const sid = menu.value.sid
+  closeMenu()
+  void exportSession(sid)
+}
+
+/** 导出整段会话:取轮次 → 渲染 Markdown → blob 下载(抄 DataTable 的下载先例)。 */
+async function exportSession(sid: string) {
+  try {
+    const turns = await chat.fetchSessionTurns(sid)
+    if (!turns.length) {
+      notifyError(t('exportEmpty', ui.lang))
+      return
+    }
+    const labels: SessionExportLabels = {
+      results: t('exportDocResult', ui.lang),
+      rows: t('exportDocRows', ui.lang),
+      cols: t('exportDocCols', ui.lang),
+      generatedAt: t('exportDocGeneratedAt', ui.lang),
+      rounds: t('exportDocRounds', ui.lang),
+    }
+    const row = chat.sessions.find((s) => s.session_id === sid)
+    const markdown = buildSessionMarkdown(turns, {
+      title: row?.title ?? '',
+      sessionId: sid,
+      labels,
+    })
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = sessionMarkdownFilename(row?.title ?? '', sid)
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    notifyError(t('exportFailed', ui.lang))
+  }
 }
 
 function menuRename() {
@@ -388,3 +458,13 @@ async function remove(sid: string) {
   await chat.deleteSession(sid)
 }
 </script>
+
+<style scoped>
+/* 置顶标记:排在标题前的固定小图标(不参与标题省略) */
+.session-pin {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--indigo-600);
+}
+</style>

@@ -339,6 +339,10 @@ class SessionManager:
         """Rename a session (empty title falls back to the first question)."""
         return await self._store.set_title(session_id, title, project_cwd)
 
+    async def set_pinned(self, session_id: str, pinned: bool, project_cwd: str = ".") -> bool:
+        """Pin/unpin a session (list order = pinned first, then updated_at)."""
+        return await self._store.set_pinned(session_id, pinned, project_cwd)
+
     async def find_run(
         self, run_id: str, user_id: str | None = None,
     ) -> dict[str, Any] | None:

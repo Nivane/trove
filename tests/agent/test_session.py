@@ -41,6 +41,15 @@ class TestSessionLifecycle:
         assert await session_manager.delete_session(session.session_id, "/tmp/p1") is True
         assert await session_manager.delete_session(session.session_id, "/tmp/p1") is False
 
+    async def test_set_pinned(self, session_manager):
+        session = await session_manager.start_session(project_cwd="/tmp/p1")
+        assert await session_manager.set_pinned(
+            session.session_id, True, "/tmp/p1"
+        ) is True
+        rows = await session_manager.list_sessions("/tmp/p1")
+        assert rows[0]["pinned"] is True
+        assert await session_manager.set_pinned("missing", True, "/tmp/p1") is False
+
 
 class TestAsk:
     async def test_ask_returns_final_state(self, session_manager):

@@ -1,6 +1,6 @@
 """Session store persistence tests."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -127,6 +127,59 @@ class TestDeleteAndList:
         store = SessionStore(home_dir=str(tmp_home))
         sessions = await store.list_sessions("/tmp/empty_project")
         assert sessions == []
+
+
+class TestPinnedSessions:
+    """置顶:meta KV 持久化 + 列表排序(置顶在前,组内 updated_at desc)。"""
+
+    async def test_set_pinned_roundtrip(self, tmp_home):
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+
+        assert await store.set_pinned(session.session_id, True, "/tmp/p") is True
+        rows = await store.list_sessions("/tmp/p")
+        assert rows[0]["pinned"] is True
+
+        assert await store.set_pinned(session.session_id, False, "/tmp/p") is True
+        rows = await store.list_sessions("/tmp/p")
+        assert rows[0]["pinned"] is False
+
+    async def test_set_pinned_missing_session(self, tmp_home):
+        store = SessionStore(home_dir=str(tmp_home))
+        assert await store.set_pinned("nope", True, "/tmp/p") is False
+
+    async def test_pinned_sorts_first_across_pages(self, tmp_home):
+        """排序必须在存储层:置顶最早的会话,首页(limit=1)仍是它。"""
+        store = SessionStore(home_dir=str(tmp_home))
+        p = _normalize_project_name("/tmp/p")
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        s1 = await store.create_session(project_cwd="/tmp/p")
+        s2 = await store.create_session(project_cwd="/tmp/p")
+        s3 = await store.create_session(project_cwd="/tmp/p")
+        await store.set_updated_at(p, s1.session_id, base)
+        await store.set_updated_at(p, s2.session_id, base + timedelta(minutes=1))
+        await store.set_updated_at(p, s3.session_id, base + timedelta(minutes=2))
+
+        # 未置顶:updated_at desc = s3, s2, s1
+        order = [r["session_id"] for r in await store.list_sessions("/tmp/p")]
+        assert order == [s3.session_id, s2.session_id, s1.session_id]
+
+        # 置顶最早的 s1 → 全局第一页第一行
+        assert await store.set_pinned(s1.session_id, True, "/tmp/p") is True
+        page1 = await store.list_sessions("/tmp/p", offset=0, limit=1)
+        assert [r["session_id"] for r in page1] == [s1.session_id]
+        # 第二页不再出现它(切片发生在排序之后)
+        page2 = await store.list_sessions("/tmp/p", offset=1, limit=2)
+        assert [r["session_id"] for r in page2] == [s3.session_id, s2.session_id]
+
+    async def test_pin_does_not_bump_updated_at(self, tmp_home):
+        """置顶改的是排序档位,不是会话活跃时间。"""
+        store = SessionStore(home_dir=str(tmp_home))
+        session = await store.create_session(project_cwd="/tmp/p")
+        before = (await store.load_session(session.session_id, "/tmp/p")).updated_at
+        await store.set_pinned(session.session_id, True, "/tmp/p")
+        after = (await store.load_session(session.session_id, "/tmp/p")).updated_at
+        assert after == before
 
 
 class TestCompactSession:
