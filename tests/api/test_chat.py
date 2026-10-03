@@ -60,6 +60,45 @@ class TestSessions:
         )
         assert foreign.status_code == 404
 
+    async def test_pin_session_roundtrip(self, client):
+        created = (await client.post("/v1/sessions")).json()["session_id"]
+        resp = await client.post(f"/v1/sessions/{created}/pin", json={"pinned": True})
+        assert resp.status_code == 200
+        assert resp.json() == {"session_id": created, "pinned": True}
+        listing = (await client.get("/v1/sessions")).json()["sessions"]
+        by_id = {s["session_id"]: s for s in listing}
+        assert by_id[created]["pinned"] is True
+
+        resp = await client.post(f"/v1/sessions/{created}/pin", json={"pinned": False})
+        assert resp.status_code == 200
+        assert resp.json()["pinned"] is False
+        listing = (await client.get("/v1/sessions")).json()["sessions"]
+        by_id = {s["session_id"]: s for s in listing}
+        assert by_id[created]["pinned"] is False
+
+    async def test_pin_sorts_first_across_pages(self, client):
+        """置顶排最前,且分页切片发生在排序之后(首页 limit=1 就是它)。"""
+        ids = []
+        for _ in range(3):
+            ids.append((await client.post("/v1/sessions")).json()["session_id"])
+        oldest = ids[0]
+        assert (
+            await client.post(f"/v1/sessions/{oldest}/pin", json={"pinned": True})
+        ).status_code == 200
+
+        page1 = (await client.get("/v1/sessions", params={"limit": 1})).json()
+        assert page1["sessions"][0]["session_id"] == oldest
+        assert page1["sessions"][0]["pinned"] is True
+
+        page2 = (
+            await client.get("/v1/sessions", params={"limit": 2, "offset": 1})
+        ).json()
+        assert oldest not in [s["session_id"] for s in page2["sessions"]]
+
+    async def test_pin_missing_session_404(self, client):
+        resp = await client.post("/v1/sessions/nope/pin", json={"pinned": True})
+        assert resp.status_code == 404
+
     async def test_list_sessions(self, client):
         assert (await client.post("/v1/sessions")).status_code == 201
         resp = await client.get("/v1/sessions")

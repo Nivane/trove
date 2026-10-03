@@ -1,5 +1,18 @@
 // Shared wire types for the SSE event stream and API payloads.
 
+/** GET /v1/sessions 列表条目(会话侧栏一行)。 */
+export interface SessionInfo {
+  session_id: string
+  created_at?: string
+  updated_at?: string
+  message_count?: number
+  /** 自定义标题;空则后端回退首问(前端仍按空处理,不冒名)。 */
+  title?: string
+  /** 置顶标记 —— 排序 = 置顶在前 + updated_at desc,由存储层查询保证
+   *  (分页切片发生在排序之后,前端不做本地重排)。 */
+  pinned?: boolean
+}
+
 export interface ChartSpec {
   type: string
   title?: string

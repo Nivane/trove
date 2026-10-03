@@ -1514,6 +1514,17 @@ export const messages = {
     notFoundDesc: '你访问的页面不存在或已被移动。',
     notFoundBackConsole: '返回总览',
     notFoundBackChat: '返回对话',
+    // ── 对话侧 ①⑥ 导出/置顶（追加块：与其它车道在各自语言块末尾合并）──
+    pinSession: '置顶',
+    unpinSession: '取消置顶',
+    exportMarkdown: '导出 Markdown',
+    exportFailed: '导出失败',
+    exportEmpty: '该会话还没有可导出的内容',
+    exportDocResult: '结果',
+    exportDocRows: '行',
+    exportDocCols: '列',
+    exportDocGeneratedAt: '导出时间',
+    exportDocRounds: '轮次',
   },
   en: {
     brand: 'Trove',
@@ -3051,6 +3062,17 @@ export const messages = {
     notFoundDesc: 'This page does not exist or has been moved.',
     notFoundBackConsole: 'Back to overview',
     notFoundBackChat: 'Back to chat',
+    // ── Chat ①⑥ export/pin (appended block; merge at each language block's tail) ──
+    pinSession: 'Pin',
+    unpinSession: 'Unpin',
+    exportMarkdown: 'Export Markdown',
+    exportFailed: 'Export failed',
+    exportEmpty: 'This session has nothing to export yet',
+    exportDocResult: 'Results',
+    exportDocRows: 'rows',
+    exportDocCols: 'cols',
+    exportDocGeneratedAt: 'Exported at',
+    exportDocRounds: 'Rounds',
   },
 }
 
