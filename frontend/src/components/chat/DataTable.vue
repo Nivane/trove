@@ -13,14 +13,14 @@
       >
       <span class="data-table-actions">
         <button class="icon-btn" :title="t('copyTable', ui.lang)" @click="copy">
-          <el-icon :size="14"><CopyDocument /></el-icon>
+          <Copy :size="14" />
         </button>
         <button
           class="icon-btn"
           :title="t('downloadCsv', ui.lang)"
           @click="downloadCsv"
         >
-          <el-icon :size="14"><Download /></el-icon>
+          <Download :size="14" />
         </button>
       </span>
     </div>
@@ -76,7 +76,7 @@
         :disabled="page <= 1"
         @click="page -= 1"
       >
-        <el-icon :size="14"><ArrowLeft /></el-icon>
+        <ArrowLeft :size="14" />
       </button>
       <span class="data-table-page">{{ page }} / {{ pageCount }}</span>
       <button
@@ -84,7 +84,7 @@
         :disabled="page >= pageCount"
         @click="page += 1"
       >
-        <el-icon :size="14"><ArrowRight /></el-icon>
+        <ArrowRight :size="14" />
       </button>
     </div>
   </div>
@@ -92,13 +92,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import {
-  CopyDocument,
-  Download,
-  ArrowLeft,
-  ArrowRight,
-} from '@element-plus/icons-vue'
-import { EyeOff } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, Copy, Download, EyeOff } from 'lucide-vue-next'
 import type { MaskingReport } from '../../utils/masking'
 import { maskedColumnModes } from '../../utils/masking'
 import { useUiStore } from '../../stores/ui'

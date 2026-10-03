@@ -51,6 +51,33 @@ describe('DataTable', () => {
     expect(w.find('.dt-row').text()).toContain('—')
   })
 
+  /* ── data typography (P7-W4 §6.1): identifier mono + numeric tabular ── */
+
+  it('marks identifier columns mono on header and body cells', () => {
+    const w = mountTable({
+      columns: [
+        { key: 'id', label: 'ID', mono: true },
+        columns[0],
+      ],
+    })
+    expect(w.findAll('.dt-th')[0].classes()).toContain('is-mono')
+    const cells = w.findAll('.dt-row').map((r) => r.findAll('.dt-td')[0])
+    expect(cells).toHaveLength(3)
+    for (const c of cells) expect(c.classes()).toContain('is-mono')
+    // the plain column stays untouched
+    expect(w.findAll('.dt-th')[1].classes()).not.toContain('is-mono')
+  })
+
+  it('marks numeric columns right-aligned tabular', () => {
+    const w = mountTable({
+      columns: [{ key: 'visits', label: 'Visits', numeric: true }, columns[0]],
+    })
+    expect(w.findAll('.dt-th')[0].classes()).toContain('is-num')
+    const cells = w.findAll('.dt-row').map((r) => r.findAll('.dt-td')[0])
+    for (const c of cells) expect(c.classes()).toContain('is-num')
+    expect(w.findAll('.dt-td')[1].classes()).not.toContain('is-num')
+  })
+
   /* ── sorting ── */
 
   it('emits update:sort ascending when a sortable header is clicked', async () => {

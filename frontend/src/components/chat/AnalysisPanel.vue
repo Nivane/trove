@@ -12,7 +12,7 @@
         </span>
       </span>
       <button class="topbar-btn" @click="ui.toggleAnalysis()">
-        <el-icon :size="14"><Close /></el-icon>
+        <X :size="14" />
       </button>
     </header>
     <div ref="panelBody" class="analysis-body">
@@ -20,7 +20,11 @@
         <div class="analysis-section-title">{{ t('tasks', ui.lang) }}</div>
         <div v-for="task in chat.tasks" :key="task.task_id" class="task-row">
           <span class="task-mark" :class="task.status">
-            <el-icon :size="14"><component :is="taskIcon(task.status)" /></el-icon>
+            <component
+              :is="taskIcon(task.status)"
+              :size="14"
+              :class="{ spin: task.status === 'in_progress' }"
+            />
           </span>
           <span class="task-title">{{ task.title }}</span>
         </div>
@@ -51,7 +55,7 @@
             </div>
           </template>
           <template v-else-if="currentTurn.status === 'error'">
-            <el-icon :size="15" class="status-err-icon"><CircleCloseFilled /></el-icon>
+            <CircleX :size="15" class="status-err-icon" />
             <div class="status-text">
               <div class="status-line">
                 <span class="status-k">{{ t('failedStep', ui.lang) }}</span>
@@ -61,7 +65,7 @@
             </div>
           </template>
           <template v-else-if="currentTurn.status === 'done' && currentTurn.steps.length">
-            <el-icon :size="15" class="status-ok-icon"><CircleCheckFilled /></el-icon>
+            <CircleCheck :size="15" class="status-ok-icon" />
             <div class="status-text">
               <div class="status-line">
                 <span>{{ t('stepsCount', ui.lang, currentTurn.steps.length) }}</span>
@@ -116,14 +120,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch, nextTick } from 'vue'
-import { LoaderCircle } from 'lucide-vue-next'
-import {
-  Close,
-  CircleCheckFilled,
-  CircleCloseFilled,
-  Loading,
-  CirclePlus,
-} from '@element-plus/icons-vue'
+import { CircleCheck, CirclePlus, CircleX, LoaderCircle, X } from 'lucide-vue-next'
 import StepCard from './StepCard.vue'
 import { useChatStore } from '../../stores/chat'
 import { useUiStore } from '../../stores/ui'
@@ -270,11 +267,11 @@ watch(
 function taskIcon(status: string) {
   switch (status) {
     case 'done':
-      return CircleCheckFilled
+      return CircleCheck
     case 'failed':
-      return CircleCloseFilled
+      return CircleX
     case 'in_progress':
-      return Loading
+      return LoaderCircle
     default:
       return CirclePlus
   }

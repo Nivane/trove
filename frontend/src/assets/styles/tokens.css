@@ -35,9 +35,13 @@
   --green-600: #15803d;
   --green-100: #dcfce7;
   --amber-500: #d97706;
+  --amber-700: #b45309; /* §6.2: warn text/border that clears AA on amber-100 */
   --amber-100: #fef3c7;
   --red-500: #dc2626;
   --red-100: #fee2e2;
+  --blue-50: #eff6ff; /* info family (§6.2 / W23 contract: --info-bg/-text) */
+  --blue-600: #2563eb;
+  --blue-700: #1d4ed8;
 
   /* ── Primitives: elevation (soft shadows, no hard borders) ── */
   --shadow-xs: 0 1px 2px rgba(24, 24, 27, 0.04);
@@ -104,26 +108,50 @@
   --border-default: var(--gray-300);
   --border-strong: var(--gray-400);
 
-  /* ── Semantic: text ── */
+  /* ── Semantic: text ──
+     §6.2: gray-400 (#a1a1aa, 2.56:1) fails AA wherever it carries text —
+     tertiary text resolves to gray-500 (4.83:1). #a1a1aa survives only as a
+     decorative separator / disabled chrome (see --border-strong). */
   --text-primary: var(--gray-900);
   --text-secondary: var(--gray-500);
-  --text-tertiary: var(--gray-400);
+  --text-tertiary: var(--gray-500);
   --text-on-accent: var(--gray-0);
+  /* Text that sits on --surface-muted (table headers, code details): gray-500
+     measures only 4.40:1 there, so that pairing uses gray-600 (7.03:1). */
+  --text-on-muted: var(--gray-600);
 
-  /* ── Semantic: status ── */
+  /* ── Semantic: status ──
+     Four families, each with text / bg / border.
+     §6.2: warn text was amber-500 (2.86:1 on amber-100) → amber-700 (4.51:1);
+     danger text was red-500 (3.95:1 on red-100) → red-700 (5.30:1).
+     A family border keeps the lightest tone that still clears 3:1 against the
+     family bg (1.4.11 non-text). */
   --ok: var(--green-600);
   --ok-bg: var(--green-100);
   --ok-text: var(--green-600);
+  --ok-border: var(--green-600); /* 4.57:1 on --ok-bg */
   --warn: var(--amber-500);
   --warn-bg: var(--amber-100);
-  --warn-text: var(--amber-500);
+  --warn-text: var(--amber-700);
+  --warn-border: var(--amber-700); /* 4.51:1 on --warn-bg */
   --danger: var(--red-500);
   --danger-bg: var(--red-100);
-  --danger-text: var(--red-500);
+  --danger-text: var(--red-700);
+  --danger-border: var(--red-500); /* 3.95:1 on --danger-bg */
+  --info: var(--blue-600);
+  --info-bg: var(--blue-50);
+  --info-text: var(--blue-700);
+  --info-border: var(--blue-600); /* 4.75:1 on --info-bg */
 
-  /* ── Semantic: accent ── */
-  --accent: var(--indigo-500);
-  --accent-hover: var(--indigo-600);
+  /* ── Semantic: accent ──
+     §6.2: indigo-500 (#6366f1) is 4.47:1 — below the 4.5 text bar as link /
+     emphasis copy and under white button text. Text, links and solid fills
+     therefore resolve to indigo-600 (#4f46e5, 6.29:1); hover deepens to
+     indigo-700 (7.07:1). #6366f1 survives only as a graphics/border accent
+     (--accent-graphic: icons, borders, chart marks — 3:1 tier). */
+  --accent-graphic: var(--indigo-500);
+  --accent: var(--indigo-600);
+  --accent-hover: var(--indigo-700);
   --accent-active: var(--indigo-700);
   --accent-soft: var(--indigo-50);
   --accent-soft-hover: var(--indigo-100);
@@ -175,4 +203,25 @@
   --red-700: #b91c1c; /* danger button hover shade */
   --danger-hover: var(--red-700);
   --overlay: rgba(24, 24, 27, 0.36); /* drawer / dialog scrim */
+
+  /* ── Appended 2026-10 (P7-W4: density / data typography) ──
+     Density comes in two registers: chat (comfortable) is the default here;
+     the console overrides to compact in its own scope *below* (`.admin-shell`
+     / `.admin-view`), so admin.css stays untouched. Consumers read them as
+     `var(--density-x, <current value>)` so a missing token degrades to
+     today's metric. */
+  --density-row-h: 40px; /* comfortable: chat tables / comfortable lists */
+  --density-control-h: 34px; /* comfortable: buttons, inputs, icon buttons */
+
+  /* Identifiers (ids, table names, slugs, SQL) get the mono face; numeric
+     cells get tabular figures + right alignment (DataTable `numeric` column). */
+  --font-ident: var(--font-mono);
+}
+
+/* Console register: compact rows / controls. Scoped here (not in admin.css)
+   so the two registers coexist and the console can be re-tuned in one place. */
+.admin-shell,
+.admin-view {
+  --density-row-h: 32px;
+  --density-control-h: 30px;
 }
