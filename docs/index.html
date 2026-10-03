@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 是语义优先的对话式数据问答（NL→SQL）系统：把一句提问变成可解释的 SQL、图表与结论，安全边界全部是代码而非提示词。含快速上手、图文用户 / 管理台指南与逐条源码锚点。">
-<title>Trove 文档 · 对话式数据问答（NL→SQL）</title>
+<meta name="description" content="Trove 是语义优先的数据决策智能体：用自然语言问数（NL→SQL），把一句提问变成可解释的 SQL、图表与结论；同一份语义模型上的判定规则零 LLM 定时求值，触发即带着证据送达。安全边界全部是代码而非提示词。含快速上手、图文用户 / 管理台指南与逐条源码锚点。">
+<title>Trove 文档 · 数据决策智能体</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -25,17 +25,23 @@
     <!-- ══ 首屏 ══ -->
     <header class="hero">
       <span class="eyebrow"><span class="dot"></span>开源 · Apache-2.0 · Python 3.12 / LangGraph / Vue</span>
-      <h1>Trove 对话式数据问答</h1>
+      <h1>Trove 数据决策智能体</h1>
+      <p class="chain">问数 · 分析 · 决策 · 行动，一条对话链路</p>
       <p class="lede">
-        把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>。
+        把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>；
+        判定规则在同一份语义模型上定时求值，触发即带着证据送达——
+        行动发生在你的流程里（系统对业务数据保持只读）。
         Trove 把确定性押在<strong>语义模型、节点化工作流与确定性安全层</strong>上，
         只把真正需要模型的那一段交给 LLM。
       </p>
 
       <div class="en">
         <span class="en-label">English summary</span>
-        Trove is a conversational data agent that turns a natural-language question into explainable SQL,
-        a chart and a written conclusion. It is <b>semantic-first</b>: an OSSIE semantic model defines what is
+        Trove is a <b>data decision agent</b>: questions, analysis, decisions and action in one conversation.
+        It turns a natural-language question into explainable SQL, a chart and a written conclusion, and
+        evaluates zero-LLM judgment rules on the same semantic model — each trigger arriving with the SQL
+        and rows it was judged on, while the action itself stays in your own processes (Trove keeps
+        read-only access to your data). It is <b>semantic-first</b>: an OSSIE semantic model defines what is
         answerable, and a deterministic compiler resolves joins, enums, time buckets and derived metrics —
         the LLM only handles what genuinely needs a model. This page is the entry point to the docs:
         quickstart, illustrated user / admin guides, and per-capability source anchors.
