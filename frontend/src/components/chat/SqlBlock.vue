@@ -4,7 +4,7 @@
       <span class="sql-block-label">SQL</span>
       <span class="sql-block-actions">
         <button class="icon-btn" :title="t('copySql', ui.lang)" @click="copy">
-          <el-icon :size="13"><CopyDocument /></el-icon>
+          <Copy :size="13" />
         </button>
       </span>
     </div>
@@ -18,7 +18,7 @@
 import { computed } from 'vue'
 import highlight from 'highlight.js/lib/core'
 import sql from 'highlight.js/lib/languages/sql'
-import { CopyDocument } from '@element-plus/icons-vue'
+import { Copy } from 'lucide-vue-next'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, notifyError } from '../../utils/notify'

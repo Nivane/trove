@@ -6,18 +6,36 @@ import { router } from '../router'
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** 429 的 `Retry-After`（秒）；后端没给数值头时为 undefined（P6 §2.4）。 */
+  retryAfter?: number
+  constructor(status: number, message: string, retryAfter?: number) {
     super(message)
     this.status = status
+    this.retryAfter = retryAfter
   }
+}
+
+/** `Retry-After` 只取数值秒（HTTP-date 形式极少用且各家不一 —— 读不出就当没给，
+ *  登录页退化成不带秒数的「稍后重试」，绝不编造等待时长）。 */
+function parseRetryAfter(resp: Response): number | undefined {
+  const raw = resp.headers?.get?.('retry-after')
+  if (!raw) return undefined
+  const seconds = Number(raw)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined
 }
 
 async function onUnauthorized() {
   const auth = useAuthStore()
   auth.clear()
-  if (router.currentRoute.value.name !== 'login') {
-    await router.push({ name: 'login' })
+  const current = router.currentRoute.value
+  if (current.name === 'login') return
+  // 会话过期要说明来路（P6 §2.4 / §3 全局态）：带 reason 给登录页一次性信息条，
+  // 带 next 让用户登录后回到被踢出前的那一页。静默跳转会让用户以为是自己点错了。
+  const query: Record<string, string> = { reason: 'expired' }
+  if (current.name && current.fullPath && current.fullPath !== '/') {
+    query.next = current.fullPath
   }
+  await router.push({ name: 'login', query })
 }
 
 /** Extract a human error message from a failed response: the backend's
@@ -41,7 +59,7 @@ async function apiError(resp: Response): Promise<ApiError> {
       /* keep raw text */
     }
   }
-  return new ApiError(resp.status, message)
+  return new ApiError(resp.status, message, parseRetryAfter(resp))
 }
 
 export async function apiFetch(

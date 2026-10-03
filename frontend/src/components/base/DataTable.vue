@@ -17,6 +17,10 @@ export interface DataTableColumn {
   defaultDir?: 'asc' | 'desc'
   width?: string | number
   align?: 'left' | 'center' | 'right'
+  /** Identifier column (id, slug, table name): rendered in the mono face. */
+  mono?: boolean
+  /** Numeric column: right-aligned with tabular figures (P7 data type rule). */
+  numeric?: boolean
 }
 
 export interface DataTableSort {
@@ -172,7 +176,13 @@ function sizeStyle(col: DataTableColumn): Record<string, string> | undefined {
 }
 
 function alignClass(col: DataTableColumn): string | undefined {
+  if (col.numeric) return 'is-num'
   return col.align && col.align !== 'left' ? `is-${col.align}` : undefined
+}
+
+/** Cell modifiers: numeric alignment + the identifier mono face. */
+function cellClass(col: DataTableColumn): (string | undefined)[] {
+  return [alignClass(col), col.mono ? 'is-mono' : undefined]
 }
 
 function skeletonWidth(i: number): string {
@@ -210,7 +220,7 @@ function skeletonWidth(i: number): string {
               :key="col.key"
               scope="col"
               class="dt-th"
-              :class="[alignClass(col), { 'is-sortable': col.sortable }]"
+              :class="[cellClass(col), { 'is-sortable': col.sortable }]"
               :style="sizeStyle(col)"
               :aria-sort="ariaSort(col)"
             >
@@ -255,7 +265,7 @@ function skeletonWidth(i: number): string {
                 v-for="(col, ci) in columns"
                 :key="col.key"
                 class="dt-td"
-                :class="alignClass(col)"
+                :class="cellClass(col)"
               >
                 <span class="dt-skel" :style="{ width: skeletonWidth(ci) }" />
               </td>
@@ -303,7 +313,7 @@ function skeletonWidth(i: number): string {
                 v-for="col in columns"
                 :key="col.key"
                 class="dt-td"
-                :class="alignClass(col)"
+                :class="cellClass(col)"
               >
                 <slot
                   :name="`cell-${col.key}`"
@@ -369,7 +379,9 @@ function skeletonWidth(i: number): string {
   padding: var(--sp-2) var(--sp-3);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-muted);
-  color: var(--text-secondary);
+  /* gray-500 measures 4.40:1 on --surface-muted — the muted-surface role
+     token keeps the header labels at AA (7.03:1). */
+  color: var(--text-on-muted);
   font-weight: 500;
   text-align: left;
   white-space: nowrap;
@@ -412,13 +424,17 @@ function skeletonWidth(i: number): string {
 }
 .dt-sort-ico {
   flex: none;
-  color: var(--accent);
+  color: var(--accent-graphic); /* icon → graphics tier, not text */
 }
 .dt-sort-ico.is-idle {
   color: var(--text-tertiary);
 }
 
 .dt-row {
+  /* Density register (P7): chat/comfortable by default, compact inside
+     .admin-shell/.admin-view. `height` on a <tr> acts as a minimum, so a
+     two-line cell still grows the row. */
+  height: var(--density-row-h, 36px);
   transition: background var(--dur-fast) var(--ease);
 }
 .dt-row:hover {
@@ -437,7 +453,8 @@ function skeletonWidth(i: number): string {
 }
 
 .dt-td {
-  padding: var(--sp-2) var(--sp-3);
+  /* Vertical padding is a floor only — the row height token does the sizing. */
+  padding: var(--sp-1) var(--sp-3);
   border-bottom: 1px solid var(--border-subtle);
   color: var(--text-primary);
   vertical-align: middle;
@@ -452,9 +469,17 @@ function skeletonWidth(i: number): string {
 .dt-td.is-center {
   text-align: center;
 }
-.dt-td.is-right {
+.dt-td.is-right,
+.dt-td.is-num {
   text-align: right;
+}
+.dt-td.is-num {
   font-variant-numeric: tabular-nums;
+}
+/* Identifier columns (ids, slugs, table names) read in the mono face. */
+.dt-th.is-mono,
+.dt-td.is-mono {
+  font-family: var(--font-ident, var(--font-mono));
 }
 
 .dt-empty-cell {
@@ -468,7 +493,9 @@ function skeletonWidth(i: number): string {
   justify-content: center;
   width: 15px;
   height: 15px;
-  border: 1.5px solid var(--border-strong);
+  /* A control boundary, not a decorative hairline: 1.4.11 needs 3:1 against
+     the white row, which the #d4d4d8 hairline does not reach. */
+  border: 1.5px solid var(--text-tertiary);
   border-radius: var(--r-sm);
   background: var(--surface-raised);
   color: transparent;

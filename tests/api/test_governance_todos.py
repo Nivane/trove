@@ -497,3 +497,157 @@ class TestAutoCandidateInbox:
         assert item["summary"] == "auto:no_metric_match:最高成绩是多少?"
         assert item["source"] == "metric"
         assert item["actionable"]["edit_url"] == "/admin/semantic?pending=1"
+
+
+# ── 行动柱两类(action_template / action_proposal, P3) ───
+
+ACTION_PAYLOAD_TEMPLATE = (
+    '{"rule": "{{rule_id}}", "metric": "{{metric}}", '
+    '"current": {{current}}, "msg": "{{message}}"}'
+)
+
+
+def _actions_dir(api_app):
+    return _root(api_app) / ".trove" / "actions"
+
+
+def _template_doc(name="notify-ops", **over):
+    doc = {
+        "name": name, "title": "Notify ops", "description": "Ops alert",
+        "target": {"channel": "ops-alerts"}, "risk": "medium",
+        "payload_template": ACTION_PAYLOAD_TEMPLATE,
+    }
+    doc.update(over)
+    return doc
+
+
+@pytest.fixture
+async def actions_env(api_app):
+    """装行动层(真 store/模板服务,零通道 —— 收件箱不涉及外送)。"""
+    from types import SimpleNamespace
+
+    from trove.services.action.dispatcher import ActionDispatcher
+    from trove.services.action.service import ActionService
+    from trove.services.action.store import ActionStore
+    from trove.services.action.templates import ActionTemplateService
+
+    templates = ActionTemplateService(_actions_dir(api_app))
+    store = ActionStore(_root(api_app))
+    service = ActionService(store, templates, ActionDispatcher({}), enabled=True)
+    api_app.state.action_templates = templates
+    api_app.state.actions = service
+    env = SimpleNamespace(templates=templates, service=service, store=store)
+    try:
+        yield env
+    finally:
+        await store.dispose()
+
+
+async def _seed_proposal(env):
+    from trove.services.decision.rules import ActionRef, DecisionRule, Subject
+    from trove.services.decision.service import DecisionOutcome
+
+    rule = DecisionRule(
+        id="revenue-drop", name="Revenue drop", severity="warning", priority=2,
+        recommendation="Check the campaign calendar",
+        subject=Subject(metrics=["revenue"]),
+        action=ActionRef(template="notify-ops", autonomy="propose"),
+    )
+    outcome = DecisionOutcome(
+        triggered=True, message="[warning] Revenue drop", rule_id="revenue-drop",
+        severity="warning", error="",
+        evidence={"rule_digest": "d1",
+                  "times": {"anchor_date": "2026-10-03"},
+                  "rows": [{"dim": "north", "triggered": True, "current": 1234,
+                            "baseline": 1400, "delta": -166,
+                            "delta_pct": -0.1186, "contribution": -166.0}]},
+    )
+    p = await env.service.propose_from_verdict(
+        rule=rule, outcome=outcome, datasource="test_db")
+    assert p is not None
+    return p
+
+
+class TestActionInbox:
+    """行动柱两类待办:Pending 模板与 open 提案进收件箱的形状。
+
+    两类都**只给入口、不给就地裁定**(confirm/reject/batch 全 False):
+    确认模板前要看全文与注入扫描命中,批准提案前要看渲染后的 payload 与
+    证据 —— 收件箱里一键批等于「没看就批」,而这两样一个会外送、一个已经
+    冻结了外送内容。
+    """
+
+    async def test_pending_template_and_open_proposal_items(
+        self, client, api_app, api_kb, actions_env,
+    ):
+        actions_env.templates.create(_template_doc(
+            name="draft-tpl", title="Ops draft", description="待评审"))
+        actions_env.templates.create(_template_doc(name="notify-ops"))
+        actions_env.templates.confirm("notify-ops")
+        p = await _seed_proposal(actions_env)
+
+        body = (await client.get("/v1/admin/todos")).json()
+        assert body["counts"]["action_template"] == 1
+        assert body["counts"]["action_proposal"] == 1
+        by = _by_kind(body)
+
+        tpl = by["action_template"]
+        assert tpl["id"] == "draft-tpl"
+        assert tpl["ds"] is None, "模板是全局资产,不属于任何数据源"
+        assert tpl["title"] == "Ops draft"
+        assert "channel: ops-alerts" in tpl["summary"]
+        assert tpl["severity"] == "medium"      # 无 error 时=模板自身 risk
+        assert tpl["actionable"] == {
+            "confirm": False, "reject": False, "batch": False,
+            "edit_url": "/admin/actions?tab=templates",
+        }
+
+        prop = by["action_proposal"]
+        assert prop["id"] == p.id
+        assert prop["title"] == "Check the campaign calendar"  # rationale
+        assert "pending · revenue-drop" in prop["summary"]
+        assert "notify-ops" in prop["summary"]
+        assert prop["ds"] == "test_db"
+        assert prop["severity"] == "warning"
+        assert prop["href"] == "/admin/actions?tab=proposals&status=open"
+        assert prop["actionable"] == {
+            "confirm": False, "reject": False, "batch": False,
+            "edit_url": "/admin/actions?tab=proposals",
+        }
+
+    async def test_only_open_proposals_are_inbox_items(
+        self, client, api_app, api_kb, actions_env,
+    ):
+        """"待办"= OPEN_STATUSES(pending/approved/failed)三个状态 —— 都已
+        阻塞在**人**身上。cancelled 不再是待办:一件没人需要做的事不该在
+        收件箱里占位。"""
+        actions_env.templates.create(_template_doc())
+        actions_env.templates.confirm("notify-ops")
+        p = await _seed_proposal(actions_env)
+
+        await actions_env.service.approve(p.id, "admin")
+        body = (await client.get("/v1/admin/todos")).json()
+        assert body["counts"]["action_proposal"] == 1, \
+            "approved 仍是 open(外送要人按,它还没出门)"
+
+        await actions_env.service.cancel(p.id, "admin")
+        body = (await client.get("/v1/admin/todos")).json()
+        assert body["counts"]["action_proposal"] == 0
+        assert all(i["kind"] != "action_proposal" for i in body["items"])
+
+    async def test_broken_template_is_counted_with_its_error(
+        self, client, api_app, api_kb, actions_env,
+    ):
+        """手改坏的文件是**仍然待决**的一条:不该从收件箱消失,error 逐字
+        进 summary —— "看不见的坏"比"看见的坏"危险。"""
+        d = _actions_dir(api_app) / "broken"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "action.yml").write_text("title: x\n  bad: [", encoding="utf-8")
+
+        body = (await client.get("/v1/admin/todos")).json()
+        assert body["counts"]["action_template"] == 1
+        item = _by_kind(body)["action_template"]
+        assert item["id"] == "broken"
+        assert item["title"] == "broken"        # 无 title 时回落到目录名
+        assert "invalid YAML" in item["summary"]
+        assert item["severity"] == "warning"    # error 恒 warning,非 risk 档

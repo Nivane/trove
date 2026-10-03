@@ -153,6 +153,15 @@ export const router = createRouter({
             query: { ...to.query, tab: 'usage' },
           }),
         },
+        // 设计系统样式指南（P7-W4）：基础六件 × 状态矩阵的活样板间。
+        // 只按 URL 直达（/admin/styleguide），不进侧栏 —— W0 冻结的四组
+        // 15 项 IA 保持不变。
+        {
+          path: 'styleguide',
+          name: 'admin-styleguide',
+          component: () => import('../views/admin/StyleguideView.vue'),
+          meta: { titleKey: 'styleguideTitle' },
+        },
         // 壳内 404：/admin/* 的未知路径渲染在壳里（面包屑 + 回总览），
         // 必须放在子路由表最后。
         {

@@ -116,7 +116,7 @@ const live = computed(() =>
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-sm);
   background: var(--surface-muted);
-  color: var(--text-secondary);
+  color: var(--text-on-muted); /* gray-500 is 4.40:1 on the muted surface */
   font-family: var(--font-mono);
   font-size: var(--fs-2xs);
   text-align: left;
@@ -135,7 +135,7 @@ const live = computed(() =>
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  height: 30px;
+  height: var(--density-control-h, 30px); /* density register (P7) */
   padding: 0 var(--sp-4);
   border: 1px solid var(--accent);
   border-radius: var(--r-sm);

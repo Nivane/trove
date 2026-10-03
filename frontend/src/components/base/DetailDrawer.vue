@@ -201,8 +201,9 @@ const open = computed(() => props.modelValue)
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  /* density register (P7) — square icon button */
+  width: var(--density-control-h, 28px);
+  height: var(--density-control-h, 28px);
   flex: none;
   border-radius: var(--r-sm);
   color: var(--text-secondary);

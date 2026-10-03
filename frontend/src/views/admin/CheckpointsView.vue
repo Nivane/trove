@@ -1,11 +1,10 @@
 <template>
   <div class="admin-view">
-    <header class="view-header">
-      <div>
-        <h2>{{ t('checkpoints', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('checkpointsPageDesc', ui.lang) }}</p>
-      </div>
-    </header>
+    <PageHeader
+      :title="t('checkpoints', ui.lang)"
+      :description="t('checkpointsPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    />
 
     <div class="admin-card">
       <div class="card-toolbar">
@@ -46,7 +45,7 @@
         v-loading="loading"
         :data="checkpoints"
         class="admin-table"
-        max-height="calc(100vh - 300px)"
+        max-height="var(--table-max-h)"
       >
         <template #empty>
           <TableEmpty />
@@ -172,6 +171,7 @@ import { t } from '../../i18n'
 import { toastError } from '../../utils/notify'
 import { fmtDateTime } from '../../utils/format'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import PageHeader from '../../components/base/PageHeader.vue'
 
 interface SessionRow {
   session_id: string
@@ -196,7 +196,16 @@ interface CheckpointRow {
 }
 
 const ui = useUiStore()
+
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('checkpoints', ui.lang) },
+])
+
 const sessions = ref<SessionRow[]>([])
+// Session picker stays local: §4.3's whitelist gives this page no keys (it
+// is a debug surface reached from a session, not a shareable list) — the
+// drill-down context is the session itself, not a filter.
 const sessionId = ref('')
 const checkpoints = ref<CheckpointRow[]>([])
 const loading = ref(false)
@@ -278,7 +287,7 @@ async function confirmResume(row: CheckpointRow) {
     await ElMessageBox.confirm(t('ckptResumeConfirm', ui.lang), t('ckptResume', ui.lang), {
       type: 'warning',
       confirmButtonText: t('ckptResume', ui.lang),
-      cancelButtonText: t('cancel', ui.lang) || 'Cancel',
+      cancelButtonText: t('cancel', ui.lang),
     })
   } catch {
     return

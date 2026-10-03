@@ -1,11 +1,11 @@
 <template>
   <div class="admin-view">
-    <header class="view-header">
-      <div>
-        <h2>{{ t('skills', ui.lang) }}</h2>
-        <p class="view-desc">{{ t('skillsPageDesc', ui.lang) }}</p>
-      </div>
-      <div class="view-actions">
+    <PageHeader
+      :title="t('skills', ui.lang)"
+      :description="t('skillsPageDesc', ui.lang)"
+      :breadcrumbs="crumbs"
+    >
+      <template #actions>
         <el-button :loading="loading" @click="load">
           <RefreshCw :size="14" />
         </el-button>
@@ -17,17 +17,34 @@
           <Sparkles :size="14" />
           {{ t('skillsLlmDraft', ui.lang) }}
         </el-button>
-      </div>
-    </header>
+      </template>
+    </PageHeader>
 
     <div class="admin-card">
       <div class="card-header">
         <div class="card-title">{{ t('skills', ui.lang) }}</div>
         <div class="card-actions">
-          <span class="pill pill-neutral">{{ skills.length }} {{ t('skillsCount', ui.lang) }}</span>
+          <el-select v-model="values.status" class="filter-select" :aria-label="t('skillsFilterStatus', ui.lang)">
+            <el-option :label="t('skillsFilterStatus', ui.lang)" value="" />
+            <el-option :label="t('skillsStatusPending', ui.lang)" value="pending" />
+            <el-option :label="t('skillsStatusConfirmed', ui.lang)" value="confirmed" />
+            <el-option :label="t('skillsStatusRejected', ui.lang)" value="rejected" />
+          </el-select>
+          <el-select v-model="values.tier" class="filter-select" :aria-label="t('skillsFilterTier', ui.lang)">
+            <el-option :label="t('skillsFilterTier', ui.lang)" value="" />
+            <el-option :label="t('skillsRequired', ui.lang)" value="required" />
+            <el-option :label="t('skillsAvailable', ui.lang)" value="available" />
+            <el-option :label="t('skillsValidator', ui.lang)" value="validator" />
+          </el-select>
+          <span class="pill pill-neutral">{{ filtered.length }} {{ t('skillsCount', ui.lang) }}</span>
         </div>
       </div>
-      <el-table v-loading="loading" :data="skills" class="admin-table">
+      <el-table
+        v-loading="loading"
+        :data="filtered"
+        class="admin-table"
+        max-height="var(--table-max-h)"
+      >
         <template #empty>
           <TableEmpty>{{ t('skillsEmpty', ui.lang) }}</TableEmpty>
         </template>
@@ -139,13 +156,15 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Pencil, RefreshCw, Sparkles } from 'lucide-vue-next'
 import { apiGet, apiPost } from '../../api/http'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
 import { notifySuccess, toastError } from '../../utils/notify'
+import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
+import PageHeader from '../../components/base/PageHeader.vue'
 
 interface SkillRow {
   name: string
@@ -177,6 +196,25 @@ const form = ref({
   body: '',
   tier: 'available',
 })
+
+/* ── URL state (P6 §4.3) ──────────────────────────────────────────────────
+   status / tier are the keys this page acknowledges. The list endpoint
+   returns every source (code + org, all states), so both filters run
+   client-side and /admin/skills?status=pending lands on the review queue. */
+const { values } = useListQuery({ status: '', tier: '' })
+
+const crumbs = computed(() => [
+  { label: t('admin', ui.lang), to: '/admin' },
+  { label: t('skills', ui.lang) },
+])
+
+const filtered = computed(() =>
+  skills.value.filter((row) => {
+    if (values.status && row.status !== values.status) return false
+    if (values.tier && row.tier !== values.tier) return false
+    return true
+  }),
+)
 
 function statusClass(s: string): string {
   if (s === 'confirmed') return 'pill-ok'

@@ -8,8 +8,9 @@
  *
  *   · the state matrix — loading / first-run empty / block-degraded / page
  *     error & retry, with null rendering as '—' and never as 0;
- *   · the URL protocol — tab / window / the failure list's {q, verdict,
- *     page} all live in the query and survive back/forward;
+ *   · the URL protocol — tab / win (§4.3: the same key the overview's
+ *     drill-down link carries) / the failure list's {q, verdict, page} all
+ *     live in the query and survive back/forward;
  *   · ruling ② — the failure list is not deduplicated by qid: a duplicated
  *     qid shows up twice, byte-for-byte as the eval gate sees it;
  *   · ruling ⑤ — the lesson draft is a copy-to-clipboard prefill with zero
@@ -512,13 +513,13 @@ describe('OpsView usage tab', () => {
     // 窗口切到 30d → URL + 重新取数
     findButton(view.element as HTMLElement, '30d').click()
     await settle()
-    expect(router.currentRoute.value.query.window).toBe('30d')
+    expect(router.currentRoute.value.query.win).toBe('30d')
     expect(usageWindows()).toEqual(['7d', '30d'])
     await view.unmount()
   })
 
   it('follows /admin/usage?tab=usage deep links', async () => {
-    const view = await mountOps('/admin/ops?tab=usage&window=90d')
+    const view = await mountOps('/admin/ops?tab=usage&win=90d')
     expect(usageWindows()).toEqual(['90d'])
     expect(bodyText()).toContain(tr('opsPerfP50'))
     await view.unmount()
