@@ -416,6 +416,26 @@ class JobPatch(BaseModel):
     enabled: bool | None = None
 
 
+class SubscriptionCreate(BaseModel):
+    """POST /v1/admin/jobs/{id}/subscriptions body — 把一个用户订到任务的报告上."""
+
+    subscriber: str = Field(min_length=1, description="username")
+    channel: str = Field(
+        default="",
+        description="console | webhook:<url>；空 = 继承任务的 alert_channel"
+                    "（再退到 console）",
+    )
+    mode: Literal["always", "alert_only"] = "always"
+
+
+class SubscriptionPatch(BaseModel):
+    """PATCH 订阅 body（全部可选）——管理员或订阅者本人。"""
+
+    channel: str | None = None
+    mode: Literal["always", "alert_only"] | None = None
+    enabled: bool | None = None
+
+
 class DecisionDocBody(BaseModel):
     """PUT /v1/admin/decisions body — replaces a datasource's whole
     ``decisions.yml``.

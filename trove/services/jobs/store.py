@@ -2,8 +2,13 @@
 
 Store: ``.trove/jobs/jobs.sqlite`` (mirrors the KB/Session mirror pattern).
 Tables:
-  jobs   — one scheduled question per row (schedule + optional alert rule)
-  runs   — execution history for job status & alert dedup
+  jobs          — one scheduled question per row (schedule + optional alert rule)
+  runs          — execution history for job status & alert dedup
+  subscriptions — one subscriber × job delivery subscription per row
+  deliveries    — per-(subscription, run) delivery attempt log
+                  (UNIQUE: a run is delivered to a subscriber at most once —
+                  a retried tick/manual run gets a *new* run row, so re-sends
+                  are visible as separate runs, not duplicate delivery rows)
 
 Jobs are plain read-only questions by default; HITL is bypassed for
 scheduled runs (auto-approved) since the agent only ever executes
@@ -62,6 +67,33 @@ _CREATE_RUNS = """CREATE TABLE IF NOT EXISTS runs (
 )"""
 
 
+_CREATE_SUBSCRIPTIONS = """CREATE TABLE IF NOT EXISTS subscriptions (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    subscriber TEXT NOT NULL,
+    channel TEXT DEFAULT '',                -- '' = 继承 job.alert_channel（再退到 console）
+    mode TEXT NOT NULL DEFAULT 'always',    -- 'always' | 'alert_only'
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)"""
+
+_CREATE_DELIVERIES = """CREATE TABLE IF NOT EXISTS deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscription_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    run_id INTEGER NOT NULL,
+    subscriber TEXT NOT NULL,
+    channel TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'sent',    -- 'sent' | 'failed'
+    error TEXT DEFAULT '',
+    excerpt TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(subscription_id, run_id)
+)"""
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -105,6 +137,37 @@ class Run:
     result_json: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class Subscription:
+    """One subscriber's report-delivery subscription to a scheduled job."""
+
+    job_id: str
+    subscriber: str
+    channel: str = ""       # '' = 继承 job.alert_channel，再退到 console
+    mode: str = "always"    # 'always' = 每期都投递 | 'alert_only' = 仅触发时
+    enabled: bool = True
+    created_by: str = ""
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+
+
+@dataclass
+class Delivery:
+    """One delivery attempt of a run's report to one subscriber."""
+
+    subscription_id: str
+    job_id: str
+    run_id: int
+    subscriber: str
+    channel: str = ""
+    status: str = "sent"    # 'sent' | 'failed'
+    error: str = ""
+    excerpt: str = ""
+    id: int | None = None
+    created_at: str = field(default_factory=now_iso)
+
+
 def _job_to_row(job: Job) -> tuple:
     return (
         job.id,
@@ -122,6 +185,14 @@ def _job_to_row(job: Job) -> tuple:
         job.created_at,
         job.updated_at,
         job.decision_rule,
+    )
+
+
+def _row_to_subscription(row) -> Subscription:
+    return Subscription(
+        id=row[0], job_id=row[1], subscriber=row[2], channel=row[3] or "",
+        mode=row[4] or "always", enabled=bool(row[5]), created_by=row[6] or "",
+        created_at=row[7], updated_at=row[8],
     )
 
 
@@ -171,7 +242,9 @@ class JobStore:
             return
         from trove.storage.backends.base import script_statements
 
-        await self._backend.executescript(script_statements([_CREATE_JOBS, _CREATE_RUNS]))
+        await self._backend.executescript(script_statements([
+            _CREATE_JOBS, _CREATE_RUNS, _CREATE_SUBSCRIPTIONS, _CREATE_DELIVERIES,
+        ]))
         # `jobs` predates the migration framework (bare CREATE TABLE IF NOT
         # EXISTS), so there is no version row to hang a step off. The column
         # is added by probe instead: idempotent on every open, and a no-op
@@ -375,6 +448,133 @@ class JobStore:
                 "status": r[3], "alert_triggered": bool(r[4]),
                 "alert_sent": bool(r[5]), "row_count": r[6],
                 "verdict": r[7], "result": json.loads(r[8] or "{}"),
+            }
+            for r in rows
+        ]
+
+    # ── subscriptions ────────────────────────────────────
+
+    async def save_subscription(self, sub: Subscription) -> None:
+        sub.updated_at = now_iso()
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                """INSERT INTO subscriptions (id, job_id, subscriber, channel,
+                   mode, enabled, created_by, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     channel=excluded.channel, mode=excluded.mode,
+                     enabled=excluded.enabled, updated_at=excluded.updated_at""",
+                (
+                    sub.id, sub.job_id, sub.subscriber, sub.channel, sub.mode,
+                    1 if sub.enabled else 0, sub.created_by,
+                    sub.created_at, sub.updated_at,
+                ),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def load_subscriptions(self) -> list[Subscription]:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT id, job_id, subscriber, channel, mode, enabled, "
+                "created_by, created_at, updated_at FROM subscriptions "
+                "ORDER BY created_at DESC, id DESC"
+            )
+            subs = [_row_to_subscription(r) async for r in cursor]
+        finally:
+            await conn.close()
+        return subs
+
+    async def get_subscription(self, sub_id: str) -> Subscription | None:
+        conn = await self._conn()
+        try:
+            async with await conn.execute(
+                "SELECT id, job_id, subscriber, channel, mode, enabled, "
+                "created_by, created_at, updated_at FROM subscriptions "
+                "WHERE id = ?", (sub_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+        finally:
+            await conn.close()
+        return _row_to_subscription(row) if row else None
+
+    async def delete_subscription(self, sub_id: str) -> bool:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "DELETE FROM subscriptions WHERE id = ?", (sub_id,),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
+    # ── deliveries ───────────────────────────────────────
+
+    async def add_delivery(self, delivery: Delivery) -> None:
+        """Record one delivery attempt.
+
+        ``(subscription_id, run_id)`` is unique — insert-or-nothing, so a
+        repeated call for the same run can never produce two rows (the first
+        attempt's outcome is the one kept; a genuine re-send is a *new* run).
+        """
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                """INSERT INTO deliveries (subscription_id, job_id, run_id,
+                   subscriber, channel, status, error, excerpt, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(subscription_id, run_id) DO NOTHING""",
+                (
+                    delivery.subscription_id, delivery.job_id, delivery.run_id,
+                    delivery.subscriber, delivery.channel, delivery.status,
+                    delivery.error, delivery.excerpt, delivery.created_at,
+                ),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def list_deliveries(
+        self, *, subscription_id: str | None = None,
+        job_id: str | None = None, subscriber: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Delivery log (newest first), filtered by sub / job / subscriber."""
+        where: list[str] = []
+        args: list[Any] = []
+        if subscription_id:
+            where.append("subscription_id = ?")
+            args.append(subscription_id)
+        if job_id:
+            where.append("job_id = ?")
+            args.append(job_id)
+        if subscriber:
+            where.append("subscriber = ?")
+            args.append(subscriber)
+        sql = (
+            "SELECT id, subscription_id, job_id, run_id, subscriber, channel, "
+            "status, error, excerpt, created_at FROM deliveries"
+        )
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 200)))
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(sql, tuple(args))
+            rows = [r async for r in cursor]
+        finally:
+            await conn.close()
+        return [
+            {
+                "id": r[0], "subscription_id": r[1], "job_id": r[2],
+                "run_id": r[3], "subscriber": r[4], "channel": r[5],
+                "status": r[6], "error": r[7], "excerpt": r[8],
+                "created_at": r[9],
             }
             for r in rows
         ]
