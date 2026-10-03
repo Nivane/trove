@@ -166,6 +166,10 @@
                 ui.lang === 'zh' ? '中文' : 'English'
               }}</span>
             </el-dropdown-item>
+            <el-dropdown-item command="subs">
+              <Bell :size="15" />
+              {{ t('subsMy', ui.lang) }}
+            </el-dropdown-item>
             <el-dropdown-item v-if="auth.isAdmin" command="admin">
               <Settings :size="15" />
               {{ t('admin', ui.lang) }}
@@ -240,6 +244,7 @@ import {
   Pin,
   Download,
   FileDown,
+  Bell,
 } from 'lucide-vue-next'
 import BrandMark from '../brand/BrandMark.vue'
 import {
@@ -499,6 +504,8 @@ async function onProfileCmd(cmd: string) {
   if (cmd === 'lang') {
     ui.setLang(ui.lang === 'zh' ? 'en' : 'zh')
     window.location.reload()
+  } else if (cmd === 'subs') {
+    await router.push('/subscriptions')
   } else if (cmd === 'admin') {
     await router.push('/admin')
   } else if (cmd === 'logout') {
