@@ -39,7 +39,7 @@ from trove.services.semantic_layer.ossie import parse_ossie
 logger = logging.getLogger(__name__)
 
 _ANSI = "ANSI_SQL"
-_KINDS = {"metric", "field", "dataset"}
+_KINDS = {"metric", "field", "dataset", "topic"}
 _ACTIONS = {"upsert", "delete"}
 
 _DUMP_KWARGS = dict(
@@ -192,6 +192,20 @@ def _model_to_dict(m: SemanticModel) -> dict[str, Any]:
         "examples": list(m.examples),
         "custom_extensions": list(m.custom_extensions),
         "time_spine": spine,
+        # 主题域(可选段):管理端看得见声明;作用域的实际生效口径在
+        # ``semantic_layer/topics.resolve_topic``(声明 ∩ 模型当前数据集)。
+        "topics": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "synonyms": list(t.synonyms),
+                "datasets": list(t.datasets),
+                "metrics": list(t.metrics),
+                "examples": list(t.examples),
+                "custom_extensions": list(t.custom_extensions),
+            }
+            for t in m.topics
+        ],
         # 形状即 OSSIE 形状(无 dialects 嵌套)→ 管理页看得见、可原样回灌
         "masking": {
             "default_policy": m.masking.default_policy,
@@ -391,6 +405,60 @@ def _apply_dataset(model: dict[str, Any], action: str, name: str,
         model["datasets"].append(ds)
 
 
+def _apply_topic(model: dict[str, Any], action: str, name: str,
+                 payload: dict[str, Any] | None, dialect: str | None) -> None:
+    """主题域草稿应用(语义收敛边界,与 metric/field/dataset 同一审批流)。
+
+    两条硬校验,都在**写盘前**:
+
+    * ``datasets`` 必填且每个名字都必须在模型里已声明 —— 主题域的作用域是
+      ``声明 ∩ 模型``(见 ``semantic_layer/topics.resolve_topic``),声明一个
+      不存在的名字只会让作用域静默变窄;这里显式报错,把「写错了名字」挡在
+      草稿确认时,而不是留给运行期去猜;
+    * ``metrics`` 若声明,同样按名字引用既有指标(不在这里校验锚定是否落在
+      域内 —— 那是文档 lint ``_lint_topics`` 的事,写盘门禁会跑同一份)。
+    """
+    topics = model.setdefault("topics", [])
+    if action == "delete":
+        model["topics"] = [t for t in topics if t.get("name") != name]
+        return
+    payload = payload or {}
+    declared = {d.get("name") for d in model.get("datasets", []) if d.get("name")}
+    datasets = [str(d) for d in (payload.get("datasets") or []) if str(d).strip()]
+    undeclared = [d for d in dict.fromkeys(datasets) if d not in declared]
+    if undeclared:
+        raise ValueError(
+            f"主题域「{name}」声明的数据集未声明: {', '.join(undeclared)}"
+            "(主题域只能收敛到已声明的数据集;改用正确名字,或先声明该数据集)")
+    if not datasets:
+        raise ValueError(
+            f"主题域「{name}」的 datasets 必填(空作用域 = 域内什么都问不了)")
+    topic: dict[str, Any] = {"name": name, "datasets": datasets}
+    if payload.get("description"):
+        topic["description"] = str(payload["description"])
+    syns = _clean_synonyms(payload.get("synonyms"))
+    if syns:
+        topic["synonyms"] = syns
+    metrics = [str(m) for m in (payload.get("metrics") or []) if str(m).strip()]
+    if metrics:
+        topic["metrics"] = list(dict.fromkeys(metrics))
+    examples = [str(e) for e in (payload.get("examples") or []) if str(e).strip()]
+    if examples:
+        topic["examples"] = examples
+    ext = [e for e in (payload.get("custom_extensions") or [])
+           if isinstance(e, dict) and e.get("vendor_name")]
+    if ext:
+        topic["custom_extensions"] = ext
+    idx = next((i for i, t in enumerate(model["topics"]) if t.get("name") == name), None)
+    if idx is not None:
+        old = model["topics"][idx]
+        _carryover(old, topic, "description", "synonyms", "metrics", "examples",
+                   "custom_extensions")
+        model["topics"][idx] = topic
+    else:
+        model["topics"].append(topic)
+
+
 def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | None) -> None:
     model = _model_of(data)
     kind = draft["kind"]
@@ -403,6 +471,8 @@ def _apply_draft(data: dict[str, Any], draft: dict[str, Any], dialect: str | Non
         _apply_field(model, action, name, payload, dialect)
     elif kind == "dataset":
         _apply_dataset(model, action, name, payload, dialect)
+    elif kind == "topic":
+        _apply_topic(model, action, name, payload, dialect)
     else:
         raise ValueError(f"未知草稿类型: {kind}")
 
@@ -434,9 +504,10 @@ _DIFF_LABELS: dict[str, str] = {
     "unique_keys": "唯一键 unique_keys",
     "row_filter": "行过滤 row_filter",
     "fields": "字段清单 fields",
+    "metrics": "收敛指标 metrics",
 }
 
-_ACTION_LABELS = {"metric": "指标", "field": "字段", "dataset": "数据集"}
+_ACTION_LABELS = {"metric": "指标", "field": "字段", "dataset": "数据集", "topic": "主题域"}
 
 
 def _present(value: Any) -> bool:
@@ -481,6 +552,9 @@ def _find_entity(data: dict[str, Any] | None, kind: str,
                      if isinstance(m, dict) and m.get("name") == name), None)
     if kind == "dataset":
         return next((d for d in datasets if d.get("name") == name), None)
+    if kind == "topic":
+        return next((t for t in model.get("topics", []) or []
+                     if isinstance(t, dict) and t.get("name") == name), None)
     if kind == "field":
         ds_name, sep, field_name = name.partition(".")
         if not sep:
@@ -541,6 +615,16 @@ def _raw_view(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
         put("custom_extensions", list(entry.get("custom_extensions") or []))
         put("fields", [str(f.get("name")) for f in entry.get("fields") or []
                        if isinstance(f, dict) and f.get("name")])
+    elif kind == "topic":
+        # 主题域是扁平段(name/description/synonyms/datasets/metrics/examples),
+        # 不走 ai_context 嵌套(见 ossie.parse_ossie 的 topics 段)。
+        put("name", str(entry.get("name") or ""))
+        put("datasets", [str(d) for d in entry.get("datasets") or [] if d])
+        put("metrics", [str(m) for m in entry.get("metrics") or [] if m])
+        put("description", str(entry.get("description") or ""))
+        put("synonyms", [str(s) for s in entry.get("synonyms") or [] if s])
+        put("examples", [str(e) for e in entry.get("examples") or [] if e])
+        put("custom_extensions", list(entry.get("custom_extensions") or []))
     return out
 
 
