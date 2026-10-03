@@ -224,6 +224,11 @@ class WorkflowState(BaseModel):
     # Direct answer for non-query intents (metadata/lineage questions)
     intent_answer: str = ""
 
+    # 元数据问答的上下文快照(answer_metadata 生成时构建,≤6000 字符):
+    # metadata_check 的 LLM 评审拿它核对答案有没有引用上下文之外的信息。
+    # 存快照而不是评审时重算 —— 评审要对照的正是**生成时看到的**那份材料。
+    metadata_context: str = ""
+
     # 意图层改写痕迹:省略式追问补全 / 纯反馈重跑上一问时,记录原始问题
     # (当前 question 是改写后的有效问题);空 = 本次未发生改写
     rewritten_question: str = ""

@@ -75,7 +75,8 @@ _SNAPSHOT: dict[str, list[str]] = {
     "memory/preference_extract.zh.j2": ["conversation"],
     "metadata_check/system.en.j2": [],
     "metadata_check/system.zh.j2": [],
-    "metadata_check/user.en.j2": ["answer", "question"],
+    # context = 数据(目录/血缘/KB 拼成的元数据快照,默认按数据扫)
+    "metadata_check/user.en.j2": ["answer", "context", "question"],
     "query_sketch/attribution.en.j2": [],
     "query_sketch/attribution.zh.j2": [],
     "query_sketch/system.en.j2": [],

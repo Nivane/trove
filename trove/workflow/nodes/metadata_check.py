@@ -5,6 +5,16 @@ pipeline: deterministic checks first (referenced table.column must
 exist), then an LLM judge (complete answer? no fabrication?). Failures
 feed back to answer_metadata through the shared error_feedback
 channel with a concrete reason.
+
+Termination contract (mirrors execute_sql's):
+- the feedback **consumer** clears it — answer_metadata returns
+  ``error_feedback: ""`` on every delivered answer, so a pending
+  feedback means "a retry is in flight", never "the last verdict";
+- the **budget** lives here: every failing verdict increments
+  retry_count, and at the cap the node escalates to ``state.error``.
+  The graph routes that error straight to output — the one shape that
+  is a loop is error → answer_metadata, because that path has neither
+  the counter nor the clearer.
 """
 
 from __future__ import annotations
@@ -41,7 +51,11 @@ def make_metadata_check(
     max_retries: int = 10,
 ) -> Callable[[WorkflowState], Awaitable[dict[str, Any]]]:
     async def metadata_check(state: WorkflowState) -> dict[str, Any]:
-        if state.error or state.error_feedback:
+        # 只对 error 透传。**不**对在途 error_feedback 短路(validate 那样做
+        # 是因为它的预算在失败生产者 execute_sql 手里);本节点自己就是预算
+        # 持有者,跳过 = retry_count 冻结、max_retries 永不可达,裁决也永远
+        # 停在第一版答案上 —— 实测循环只能靠 langgraph 递归上限兜底。
+        if state.error:
             return {}
 
         # 1. Deterministic hallucination check
@@ -77,6 +91,11 @@ def make_metadata_check(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": render(
                             "metadata_check/user",
+                            # 评审必须对照**答案生成时看到的那份**上下文
+                            # (answer_metadata 的快照):重算既是重复的目录/
+                            # 血缘读,也可能与生成时不一致;system 里"只引用
+                            # 上下文中存在的信息"这条判据没有它无法裁决。
+                            context=state.metadata_context,
                             question=state.question,
                             answer=state.intent_answer,
                         )},
@@ -102,6 +121,9 @@ def make_metadata_check(
             except Exception as e:
                 logger.warning("Metadata judge failed (passing): %s", e)
 
-        return {}
+        # 通过即显式清反馈:在途反馈 = 路由信号(按真值判定下一跳)。判过、
+        # 通过 = 这一轮没意见,信号必须灭 —— 否则路由拿着上一轮的火种回头
+        # 重答,答案再新也验证不到(消费者已清的情况下这里是幂等的 no-op)。
+        return {"error_feedback": ""}
 
     return metadata_check
