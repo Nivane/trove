@@ -20,3 +20,26 @@ def ossie_semantics_yaml(
     return yaml.safe_dump(
         doc, default_flow_style=False, allow_unicode=True, sort_keys=False,
     )
+
+
+def topic_model_yaml(datasets: list[str], topics: dict[str, list[str]]) -> str:
+    """最小语义模型:只含 datasets 声明 + topics 段(主题域测试专用)。
+
+    ``terms_to_ossie_document`` 不产 topics(主题域是人工声明段,不在
+    term 写端的输出面上),所以这里手写 —— 但参数化到「声明集 × 域」这
+    两个语义事实,而不是让各测试各拷一份完成度不同的 YAML。dataset 只带
+    名字是 parse_ossie 接受的存量形态(字段缺省为空)。
+    """
+    doc = {
+        "version": "0.2.0.dev0",
+        "semantic_model": [{
+            "name": "kb",
+            "datasets": [{"name": d} for d in datasets],
+            "topics": [
+                {"name": name, "datasets": list(ds)} for name, ds in topics.items()
+            ],
+        }],
+    }
+    return yaml.safe_dump(
+        doc, default_flow_style=False, allow_unicode=True, sort_keys=False,
+    )

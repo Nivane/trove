@@ -119,6 +119,33 @@ class TestJobsService:
         assert recent["status"] == "ok"
         assert recent["row_count"] == 3
 
+    async def test_topic_and_rule_roundtrip_across_reopen(self, tmp_path):
+        """topic 是 jobs 表当前的最后一列 —— 重开库必须各归各位。
+
+        ``_row_to_job`` 按位置取值,列错位会把 decision_rule 读成 topic
+        (或反过来),而两者都是自由文本,错位不报错、只答错范围。
+        """
+        svc = await self.make_service(tmp_path)
+        job = await svc.create_job(
+            "q", "5", "interval", decision_rule="loan-drop", topic="loans")
+        assert (job.decision_rule, job.topic) == ("loan-drop", "loans")
+        await svc.store.dispose()
+
+        reopened = JobsService(JobStore(tmp_path))
+        loaded = await reopened.get_job(job.id)
+        assert (loaded.decision_rule, loaded.topic) == ("loan-drop", "loans")
+        await reopened.store.dispose()
+
+    async def test_topic_is_stripped_and_updatable(self, tmp_path):
+        svc = await self.make_service(tmp_path)
+        job = await svc.create_job("q", "5", "interval", topic="  loans ")
+        assert job.topic == "loans"
+
+        assert (await svc.update_job(job.id, topic="clients")).topic == "clients"
+        # None = 不动(与其余 update 字段同一语义)
+        assert (await svc.update_job(job.id, name="n")).topic == "clients"
+        assert (await svc.update_job(job.id, topic="")).topic == ""
+
 
 async def _run(job: Job):
     from trove.services.jobs.store import Run
@@ -153,7 +180,8 @@ class TestCooldown:
             async def start_session(self):
                 return object()
 
-            async def ask(self, session, question, workflow, datasource=None):
+            async def ask(self, session, question, workflow, datasource=None,
+                          topic=""):
                 from trove.workflow.state import WorkflowState
 
                 return WorkflowState(session_id="s", question=question,
@@ -197,13 +225,15 @@ class FakeSessionManager:
         self._finals = list(finals)
         self.asked = []
         self.asked_datasources = []
+        self.asked_topics = []
 
     async def start_session(self):
         return object()
 
-    async def ask(self, session, question, workflow, datasource=None):
+    async def ask(self, session, question, workflow, datasource=None, topic=""):
         self.asked.append(question)
         self.asked_datasources.append(datasource)
+        self.asked_topics.append(topic)
         return self._finals.pop(0) if self._finals else self._finals[-1]
 
     async def resume(self, session, decision, workflow):
@@ -234,6 +264,7 @@ class TestRunner:
         assert summary["alert"] == ""
         assert manager.asked == ["q"]
         assert manager.asked_datasources == ["demo"]
+        assert manager.asked_topics == [""]  # 不限定主题 → 空串,不是 None
 
     async def test_run_job_passes_job_datasource(self, tmp_path):
         svc = JobsService(JobStore(tmp_path))
@@ -242,6 +273,16 @@ class TestRunner:
         runner = SchedulerRunner(manager, svc)
         await runner.run_job(job)
         assert manager.asked_datasources == ["financial"]
+
+    async def test_run_job_passes_job_topic_and_reports_it(self, tmp_path):
+        """主题域随任务传进 NL 路径,并（有界地）落进运行报告。"""
+        svc = JobsService(JobStore(tmp_path))
+        job = await svc.create_job("q", "5", "interval", topic="loans")
+        manager = FakeSessionManager([_final_state()])
+        await SchedulerRunner(manager, svc).run_job(job)
+        assert manager.asked_topics == ["loans"]
+        report = (await svc.store.recent_run(job.id))["result"]
+        assert report["topic"] == "loans"
 
     async def test_run_job_triggers_alert(self, tmp_path):
         svc = JobsService(JobStore(tmp_path))

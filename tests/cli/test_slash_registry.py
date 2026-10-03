@@ -200,6 +200,22 @@ class TestCommandHandlersWithContext:
         assert "new-model" in result
         assert context["config"].target == "new-model"
 
+    async def test_topic_command_show_set_clear(self):
+        context = {"topic": ""}
+        reg = SlashRegistry()
+        register_system_commands(reg, context)
+
+        assert "No topic set" in await reg.get("topic").handler("")
+
+        result = await reg.get("topic").handler("loans")
+        assert "loans" in result
+        assert context["topic"] == "loans"  # 改的是会话上下文,不是副本
+
+        assert "Current topic: loans" in await reg.get("topic").handler("")
+
+        assert "cleared" in await reg.get("topic").handler("clear")
+        assert context["topic"] == ""
+
     async def test_datasource_command_list(self, sqlite_registry):
         context = {"connector_registry": sqlite_registry}
         reg = SlashRegistry()

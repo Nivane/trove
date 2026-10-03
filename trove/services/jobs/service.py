@@ -56,6 +56,7 @@ class JobsService:
         alert_channel: str = "",
         alert_cooldown_min: int = 30,
         decision_rule: str = "",
+        topic: str = "",
     ) -> Job | None:
         # A decision job carries `question` only as a human label — the run
         # never asks it. Still required, so the jobs list stays readable.
@@ -77,6 +78,7 @@ class JobsService:
             alert_channel=alert_channel.strip(),
             alert_cooldown_min=alert_cooldown_min,
             decision_rule=decision_rule.strip(),
+            topic=topic.strip(),
             next_run_at=next_run,
         )
         await self.store.save_job(job)
@@ -114,6 +116,7 @@ class JobsService:
         alert_channel: str | None = None,
         alert_cooldown_min: int | None = None,
         decision_rule: str | None = None,
+        topic: str | None = None,
         enabled: bool | None = None,
     ) -> Job | None:
         """Update mutable job fields (None = unchanged).
@@ -152,6 +155,8 @@ class JobsService:
             job.alert_cooldown_min = max(0, int(alert_cooldown_min))
         if decision_rule is not None:
             job.decision_rule = decision_rule.strip()
+        if topic is not None:
+            job.topic = topic.strip()
         if enabled is not None:
             job.enabled = bool(enabled)
         job.next_run_at = compute_next_run(job.schedule_type, job.schedule) if job.enabled else ""

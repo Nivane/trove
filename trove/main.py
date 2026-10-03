@@ -48,6 +48,15 @@ def parse_args(argv: list[str] | None = None):
         ),
     )
     parser.add_argument(
+        "--topic",
+        default="",
+        help=(
+            "Topic domain to scope questions to (declared in the datasource's "
+            "semantic model; default: unrestricted). In the REPL this sets "
+            "the initial value — /topic shows or changes it"
+        ),
+    )
+    parser.add_argument(
         "--config", "-f",
         default=None,
         help="Path to agent.yml config file",
@@ -574,6 +583,8 @@ async def async_main_repl():
             kb_service=components["kb"],
             llm_gateway=components["llm_gateway"],
             user_facts=components["user_facts"],
+            # --topic 是 REPL 的初始值;/topic 在会话内查看/修改。
+            topic=args.topic,
         )
 
         try:
@@ -623,6 +634,9 @@ async def async_main_cli():
                     session=session,
                     question=user_input,
                     workflow_name=args.workflow,
+                    # 透传,不做预检:域是否存在由管线自己响亮拒绝(与前端
+                    # 同一条路径),CLI 不自建第二套判定。
+                    topic=args.topic,
                 ):
                     events.append(event)
                     if "summary" in event:

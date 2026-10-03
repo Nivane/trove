@@ -46,6 +46,61 @@ async def test_job_add_invalid_schedule_exits(tmp_path, monkeypatch, capsys):
     assert "invalid schedule" in out
 
 
+def _write_model(tmp_path, datasource="demo"):
+    """cwd 根下写一份带 loans 域的最小语义模型(与 runner 读的同一份)。"""
+    from tests.helpers.kb import topic_model_yaml
+
+    path = tmp_path / ".trove" / "kb" / datasource / "semantics.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        topic_model_yaml(["loan", "account"], {"loans": ["loan", "account"]}),
+        encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_job_add_topic_passthrough(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    _write_model(tmp_path)
+    await main_job(["add", "每月贷款总额是多少", "--interval", "60",
+                    "--topic", "loans"])
+    jobs = await _jobs_in(tmp_path)
+    assert jobs[0].topic == "loans"
+    assert '"topic": "loans"' in capsys.readouterr().out
+
+    await main_job(["list"])
+    assert "topic=loans" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_job_add_unknown_topic_exits(tmp_path, monkeypatch, capsys):
+    """写坏的名字会以同样的方式失败到永远 —— 建任务时就拦下。"""
+    monkeypatch.chdir(tmp_path)
+    _write_model(tmp_path)
+    with pytest.raises(SystemExit):
+        await main_job(["add", "q", "--interval", "60", "--topic", "nope"])
+    out = capsys.readouterr().out
+    assert "unknown topic" in out
+    assert "loans" in out  # 说清声明里有什么
+    assert await _jobs_in(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_job_add_topic_without_semantic_model_exits(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        await main_job(["add", "q", "--interval", "60", "--topic", "loans"])
+    assert "no semantic model" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_job_add_without_topic_needs_no_model(tmp_path, monkeypatch):
+    """不带主题域的任务对语义模型零依赖(既有行为不变)。"""
+    monkeypatch.chdir(tmp_path)
+    await main_job(["add", "q", "--interval", "60"])
+    jobs = await _jobs_in(tmp_path)
+    assert jobs[0].topic == ""
+
+
 @pytest.mark.asyncio
 async def test_list_empty(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)

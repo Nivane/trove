@@ -305,6 +305,103 @@ class TestDecisionRuleReference:
         assert (await jobs_app.state.jobs.get_job(job.id)).decision_rule == ""
 
 
+class TestTopicReference:
+    """Same write-time discipline as decision_rule: a job whose topic domain
+    can only fail at every tick must be rejected when it is created, not
+    discovered by a silent daily failure."""
+
+    @staticmethod
+    def _write_model(app, datasource="demo"):
+        from tests.helpers.kb import topic_model_yaml
+
+        path = app.state.kb.semantics_path(datasource)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            topic_model_yaml(
+                ["loan", "account"],
+                # legacy 声明的数据集已从模型退役 → 域过期(empty_scope)
+                {"loans": ["loan", "account"], "legacy": ["mortgage"]},
+            ),
+            encoding="utf-8")
+
+    async def test_create_with_a_declared_topic(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "每月贷款总量", "schedule": "30",
+            "datasource": "demo", "topic": "loans",
+        })
+        assert r.status_code == 201, r.text
+        assert r.json()["job"]["topic"] == "loans"
+
+    async def test_create_rejects_an_unknown_topic(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "topic": "nope",
+        })
+        assert r.status_code == 400
+        assert "unknown topic" in r.json()["detail"]
+        assert "loans" in r.json()["detail"]      # says what *is* declared
+
+    async def test_create_rejects_an_expired_topic(self, admin_client, jobs_app):
+        """域还在声明里,但它的数据集已全部退役 —— empty_scope 不是
+        「不限定」:静默放宽会让任务天天答在作者没选的范围内。"""
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "topic": "legacy",
+        })
+        assert r.status_code == 400
+        assert "expired" in r.json()["detail"]
+
+    async def test_create_rejects_a_topic_with_no_semantic_model(
+            self, admin_client, jobs_app):
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "topic": "loans",
+        })
+        assert r.status_code == 400
+        assert "no semantic model" in r.json()["detail"]
+
+    async def test_a_plain_job_needs_no_topic(self, admin_client, jobs_app):
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30",
+        })
+        assert r.status_code == 201
+        assert r.json()["job"]["topic"] == ""
+
+    async def test_patch_can_attach_and_detach(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        job = await _make_job(jobs_app)
+        assert job.topic == ""
+
+        attached = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "topic": "loans"})
+        assert attached.status_code == 200, attached.text
+        assert attached.json()["job"]["topic"] == "loans"
+
+        detached = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "topic": ""})
+        assert detached.json()["job"]["topic"] == ""
+
+    async def test_patch_rejects_an_unknown_topic(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        job = await _make_job(jobs_app)
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "topic": "nope"})
+        assert r.status_code == 400
+        # ...and the job is untouched
+        assert (await jobs_app.state.jobs.get_job(job.id)).topic == ""
+
+    async def test_patch_judges_the_end_state_datasource(
+            self, admin_client, jobs_app):
+        """一次 PATCH 同时换源与设主题域时,判的是改完之后的组合:目标源
+        没有语义模型 → 400,而不是按旧源的模型放行。"""
+        self._write_model(jobs_app, "demo")
+        job = await _make_job(jobs_app)
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "datasource": "other", "topic": "loans"})
+        assert r.status_code == 400
+        assert "no semantic model" in r.json()["detail"]
+
+
 class TestJobAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get("/v1/admin/jobs")).status_code == 403

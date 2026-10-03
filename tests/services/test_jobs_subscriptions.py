@@ -306,12 +306,14 @@ class FakeSessionManager:
         self._finals = list(finals)
         self._raise = raise_on_ask
         self.asked: list[str] = []
+        self.asked_topics: list[str] = []
 
     async def start_session(self):
         return object()
 
-    async def ask(self, session, question, workflow, datasource=None):
+    async def ask(self, session, question, workflow, datasource=None, topic=""):
         self.asked.append(question)
+        self.asked_topics.append(topic)
         if self._raise is not None:
             raise self._raise
         return self._finals.pop(0) if self._finals else self._finals[-1]
@@ -363,6 +365,20 @@ class TestRunnerDelivery:
         assert "主因：region=华东" in payload["message"]
         rows = await subs.list_deliveries(subscription_id=sub.id)
         assert len(rows) == 1 and rows[0]["run_id"] == recent["id"]
+
+    async def test_topic_rides_along_without_changing_the_message(
+            self, jobs, subs, notifier):
+        """任务带主题域时订阅通知文本零变化:topic 只进 report(webhook
+        收件方拿得到),不进人类可读的 message —— 通知是「结果变了」的
+        信号,主题域是任务的静态配置,不是每次投递的新闻。"""
+        job = await _job(jobs, topic="loans")
+        await subs.create(job.id, "bob")
+        runner = SchedulerRunner(FakeSessionManager([_final_state(
+            final_response="本月贷款总量 120 万元")]), jobs, subscriptions=subs)
+        await runner.run_job(job)
+        payload = notifier.sent[0]
+        assert payload["message"] == "本月贷款总量 120 万元"
+        assert payload["report"]["topic"] == "loans"
 
     async def test_error_run_still_delivers(self, jobs, subs, notifier):
         """日报静默消失比一条失败通知更糟 —— error 也要投。"""

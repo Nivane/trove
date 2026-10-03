@@ -1844,6 +1844,7 @@ export const messages = {
     topicStale: '已失效',
     topicScopeTables: '{n} 张表',
     topicStarters: '从这里开始问',
+    jobTopicHint: '只答该主题域声明的数据范围;不限定则答整个数据源。域不存在或已失效在保存时会被拒绝。',
   },
   en: {
     brand: 'Trove',
@@ -3730,6 +3731,7 @@ export const messages = {
     topicStale: 'Expired',
     topicScopeTables: '{n} tables',
     topicStarters: 'Start with one of these',
+    jobTopicHint: 'Answers are scoped to the domain’s declared datasets; unrestricted answers across the whole datasource. An unknown or expired domain is rejected on save.',
   },
 }
 

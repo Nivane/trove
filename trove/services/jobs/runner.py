@@ -66,6 +66,9 @@ class SchedulerRunner:
                 final = await self.session_manager.ask(
                     session, job.question, job.workflow,
                     datasource=job.datasource or None,
+                    # 主题域只对 NL 路径有意义:决策路径的主体由 rule 定义
+                    # (见 _run_decision),那里的 topic 是无操作。
+                    topic=job.topic,
                 )
                 if getattr(final, "hitl_status", "") == "pending":
                     final = await self.session_manager.resume(
@@ -265,6 +268,7 @@ class SchedulerRunner:
         return {
             "question": job.question,
             "datasource": job.datasource,
+            "topic": str(job.topic or "")[:200],
             "answer": str(getattr(final, "final_response", "") or "")[:4000],
             "sql": str(getattr(final, "sql", "") or "")[:2000],
             "driver": primary_driver_line(analysis),

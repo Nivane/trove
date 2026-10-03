@@ -16,6 +16,16 @@ def test_repl_still_takes_a_workflow():
     assert parse_args(["-w", "fixed"]).workflow == "fixed"
 
 
+def test_repl_takes_a_topic():
+    """--topic 是 REPL 的初始主题域(/topic 在会话内可改)。
+
+    CLI 只透传、不预检:域是否存在由管线在回答流里显式拒绝 —— 与 Web 端
+    同一条口径,CLI 自建第二套判定只会和 KB 的实际状态漂移。
+    """
+    assert parse_args([]).topic == ""
+    assert parse_args(["--topic", "loans"]).topic == "loans"
+
+
 @pytest.mark.parametrize("parser", [serve_parser, mcp_parser])
 def test_serve_and_mcp_refuse_a_workflow_flag(parser):
     """serve / mcp 不该收下自己从不读的参数。

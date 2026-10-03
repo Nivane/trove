@@ -402,6 +402,14 @@ class JobCreate(BaseModel):
                     "non-empty runs the deterministic decision engine instead "
                     "of the NL pipeline (alert_expr is then unused)",
     )
+    topic: str = Field(
+        default="",
+        description="Topic domain (declared in the datasource's semantic "
+                    "model) to scope the scheduled question to; empty = "
+                    "unrestricted. Checked at write time: an unknown or "
+                    "expired domain is a 400, never a job that fails the "
+                    "same way on every tick",
+    )
 
 
 class JobPatch(BaseModel):
@@ -417,6 +425,7 @@ class JobPatch(BaseModel):
     alert_channel: str | None = None
     alert_cooldown_min: int | None = Field(default=None, ge=0)
     decision_rule: str | None = None
+    topic: str | None = None
     enabled: bool | None = None
 
 

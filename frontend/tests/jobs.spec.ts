@@ -22,7 +22,7 @@ vi.mock('../src/api/http', () => ({
   apiDelete: vi.fn(),
 }))
 
-import { apiGet } from '../src/api/http'
+import { apiGet, apiPost } from '../src/api/http'
 import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
 
@@ -113,6 +113,162 @@ describe('JobsView page header (P6 §2.3)', () => {
     expect(crumbs[0].attributes('href')).toBe('/admin')
     expect(crumbs[1].attributes('aria-current')).toBe('page')
     expect(document.title).toBe('Scheduled jobs')
+  })
+})
+
+/* ── 主题域(P3 P2 尾巴)───────────────────────────────────────────────────
+   任务的 topic 是**跨运行的悬空引用**(按表天天跑,写坏会天天失败),所以
+   写任务时就校验;表单侧只做三件事:按源拉清单、过期域置灰、换源重拉并
+   丢掉新源没有的选择。 */
+
+const TOPICS: Record<string, { datasource: string; topics: unknown[] }> = {
+  demo: {
+    datasource: 'demo',
+    topics: [
+      {
+        name: 'loans', description: '', synonyms: [], datasets: ['loan'],
+        scope: ['loan'], status: 'ok', metrics: [], examples: [],
+      },
+      {
+        name: 'legacy', description: '', synonyms: [], datasets: ['mortgage'],
+        scope: [], status: 'empty_scope', metrics: [], examples: [],
+      },
+    ],
+  },
+  other: { datasource: 'other', topics: [] },
+}
+
+function mockTopicApi() {
+  ;(apiGet as any).mockImplementation(async (path: string) => {
+    if (path.startsWith('/v1/admin/jobs')) return { jobs: JOBS, total: JOBS.length }
+    if (path.startsWith('/v1/catalog/datasources')) {
+      return { datasources: [{ name: 'demo', default: true }, { name: 'other' }] }
+    }
+    if (path.startsWith('/v1/semantic/topics')) {
+      const ds = new URLSearchParams(path.split('?')[1]).get('datasource') ?? ''
+      return TOPICS[ds] ?? { datasource: ds, topics: [] }
+    }
+    if (path.startsWith('/v1/admin/decisions')) return { rules: [] }
+    return {}
+  })
+}
+
+function findButton(root: ParentNode, text: string): HTMLButtonElement {
+  const btn = Array.from(root.querySelectorAll('button')).find((b) =>
+    (b.textContent ?? '').includes(text),
+  )
+  if (!btn) throw new Error(`button not found: ${text}`)
+  return btn as HTMLButtonElement
+}
+
+async function openCreateDialog(view: VueWrapper) {
+  findButton(view.element as HTMLElement, 'New scheduled job').click()
+  await flushPromises()
+}
+
+/** 下拉项 teleport 到 body 的 popper 里,按文字找(两个下拉的选项文字不撞)。 */
+function dropdownItem(text: string): HTMLElement {
+  const item = Array.from(
+    document.body.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+  ).find((i) => (i.textContent ?? '').includes(text))
+  if (!item) throw new Error(`dropdown item not found: ${text}`)
+  return item
+}
+
+async function selectOption(selectSelector: string, optionText: string) {
+  const wrapperEl = document.querySelector(
+    `${selectSelector} .el-select__wrapper`,
+  ) as HTMLElement
+  wrapperEl.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+  dropdownItem(optionText).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+}
+
+describe('JobsView topic scope', () => {
+  beforeEach(() => {
+    mockTopicApi()
+  })
+
+  it('lists the datasource domains, expired ones disabled', async () => {
+    const view = await mountView()
+    await openCreateDialog(view)
+    // 域清单按所选源拉取(与规则清单同一条纪律)
+    expect(
+      (apiGet as any).mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('/v1/semantic/topics?datasource=demo')),
+    ).toBe(true)
+
+    const wrapperEl = document.querySelector(
+      '.job-topic-select .el-select__wrapper',
+    ) as HTMLElement
+    wrapperEl.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+
+    const items = Array.from(
+      document.body.querySelectorAll<HTMLElement>('.el-select-dropdown__item'),
+    )
+    const labels = items.map((i) => i.textContent ?? '')
+    expect(labels.some((l) => l.includes('All topics'))).toBe(true)   // 空项 = 不限
+    const legacy = items.find((i) => (i.textContent ?? '').includes('legacy'))!
+    expect(legacy.textContent).toContain('Expired')
+    // 过期域选了必被拒(empty_scope),挡在手滑之前
+    expect(legacy.classList.contains('is-disabled')).toBe(true)
+  })
+
+  it('posts the selected topic with the job', async () => {
+    const view = await mountView()
+    await openCreateDialog(view)
+    const textarea = document.querySelector('.job-dialog textarea') as HTMLTextAreaElement
+    textarea.value = '每月贷款总量'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    await selectOption('.job-topic-select', 'loans')
+
+    findButton(document.querySelector('.el-dialog__footer')!, 'New scheduled job').click()
+    await flushPromises()
+
+    const [path, body] = (apiPost as any).mock.calls[0] as [string, Record<string, unknown>]
+    expect(path).toBe('/v1/admin/jobs')
+    expect(body.topic).toBe('loans')
+  })
+
+  it('refetches on datasource switch and drops a topic the new source lacks', async () => {
+    const view = await mountView()
+    await openCreateDialog(view)
+    await selectOption('.job-topic-select', 'loans')
+
+    await selectOption('.job-ds-select', 'other')
+    expect(
+      (apiGet as any).mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('/v1/semantic/topics?datasource=other')),
+    ).toBe(true)
+
+    // 新源没有 loans 域 → 选择被清掉(由成功返回的清单收敛,不猜)
+    const textarea = document.querySelector('.job-dialog textarea') as HTMLTextAreaElement
+    textarea.value = 'q'
+    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    findButton(document.querySelector('.el-dialog__footer')!, 'New scheduled job').click()
+    await flushPromises()
+    const [, body] = (apiPost as any).mock.calls[0] as [string, Record<string, unknown>]
+    expect(body.datasource).toBe('other')
+    expect(body.topic).toBe('')
+  })
+
+  it('shows the job topic in the row', async () => {
+    ;(apiGet as any).mockImplementation(async (path: string) => {
+      if (path.startsWith('/v1/admin/jobs')) {
+        return { jobs: [job({ topic: 'loans' })], total: 1 }
+      }
+      if (path.startsWith('/v1/catalog/datasources')) {
+        return { datasources: [{ name: 'demo', default: true }] }
+      }
+      return {}
+    })
+    const view = await mountView()
+    const tag = view.find('.job-topic-tag')
+    expect(tag.exists()).toBe(true)
+    expect(tag.text()).toBe('loans')
+    expect(tag.attributes('title')).toBe('Topic: loans')
   })
 })
 

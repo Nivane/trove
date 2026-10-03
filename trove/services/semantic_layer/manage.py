@@ -35,6 +35,7 @@ from trove.services.semantic_layer.models import (
     SemanticRelationship,
 )
 from trove.services.semantic_layer.ossie import parse_ossie
+from trove.services.semantic_layer.topics import resolve_topic, topic_names
 
 logger = logging.getLogger(__name__)
 
@@ -684,6 +685,39 @@ def _draft_diff(data: dict[str, Any] | None, draft: dict[str, Any],
         "before": before, "after": after, "fields": rows,
         "error": error or None,
     }
+
+
+def topic_reference_error(kb: Any, datasource: str, topic: str) -> str | None:
+    """为什么这个主题域引用不可用;None = 可用(或未选择)。
+
+    定时任务里的 topic 是一个**跨运行的悬空引用**:任务按表天天跑,写坏的
+    名字会以同样的方式失败到永远 —— 所以校验放在**写任务时**(与
+    ``_rule_error`` 对 decision_rule 的纪律一致),而不是留给运行期去发现。
+    判据与运行期 ``resolve_topic`` 完全同源:域须在模型里声明,且声明数据集
+    与模型现有数据集有交集(``empty_scope`` = 域已过期,不是"不限定")。
+
+    路由与 CLI 共用这一份实现(消息词汇一处维护),调用方只负责把 KB 取来:
+    路由用 ``app.state.kb``,CLI 用 cwd 根下的 ``KbService``。
+    """
+    topic = str(topic or "").strip()
+    if not topic:
+        return None
+    if kb is None:
+        return f"topic domains unavailable: no KB for datasource {datasource!r}"
+    model = SemanticManager(kb).model(datasource)
+    if model is None:
+        # 与 /v1/semantic/topics 同一条口径:文件缺失或坏掉都算"无语义模型"。
+        return f"no semantic model for datasource: {datasource}"
+    res = resolve_topic(model, topic)
+    if res.status == "not_found":
+        known = ", ".join(topic_names(model)) or "(none declared)"
+        return f"unknown topic {topic!r} for {datasource!r} (declared: {known})"
+    if res.status == "empty_scope":
+        return (
+            f"topic {topic!r} is expired for {datasource!r}: its declared "
+            "datasets are no longer in the semantic model"
+        )
+    return None
 
 
 class SemanticManager:

@@ -47,10 +47,12 @@ _CREATE_JOBS = """CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     -- Non-empty = this job runs the decision engine, not the NL pipeline.
-    -- MUST stay the last column: _row_to_job reads positionally and SQLite's
-    -- ALTER TABLE ADD COLUMN can only append, so a column inserted mid-list
-    -- would land at a different index in a migrated DB than in a fresh one.
-    decision_rule TEXT DEFAULT ''
+    decision_rule TEXT DEFAULT '',
+    -- 主题域收敛(空 = 不限定):随问题透传给 NL 管线。
+    -- 新列一律追加在**末尾**:_row_to_job 按位置读,SQLite 的
+    -- ALTER TABLE ADD COLUMN 也只能追加 —— 插进中间会让迁移库与
+    -- 新建库的列序不同,同一个索引读出两个字段。
+    topic TEXT DEFAULT ''
 )"""
 
 _CREATE_RUNS = """CREATE TABLE IF NOT EXISTS runs (
@@ -120,6 +122,10 @@ class Job:
     #: pipeline. Defaults to "" so a job row written before this field
     #: existed still reads back as an ordinary question job.
     decision_rule: str = ""
+    #: 主题域(空 = 不限定)。查询范围在**写任务时**校验(见
+    #: ``semantic_layer.manage.topic_reference_error``),运行期只透传 ——
+    #: 一个悬空引用会让任务每天以同样的方式静默失败,不能等跑起来才发现。
+    topic: str = ""
 
 
 @dataclass
@@ -185,6 +191,7 @@ def _job_to_row(job: Job) -> tuple:
         job.created_at,
         job.updated_at,
         job.decision_rule,
+        job.topic,
     )
 
 
@@ -206,6 +213,7 @@ def _row_to_job(row) -> Job:
         # No len() guard: _ensure_schema guarantees the column exists, and a
         # silent "" here would turn a decision job into an NL question.
         decision_rule=row[14] or "",
+        topic=row[15] or "",
     )
 
 
@@ -246,18 +254,22 @@ class JobStore:
             _CREATE_JOBS, _CREATE_RUNS, _CREATE_SUBSCRIPTIONS, _CREATE_DELIVERIES,
         ]))
         # `jobs` predates the migration framework (bare CREATE TABLE IF NOT
-        # EXISTS), so there is no version row to hang a step off. The column
-        # is added by probe instead: idempotent on every open, and a no-op
-        # once present. Never let a failure pass silently — an un-added
-        # column turns a decision job back into an NL question.
+        # EXISTS), so there is no version row to hang a step off. Columns are
+        # added by probe instead: idempotent on every open, and a no-op once
+        # present. Never let a failure pass silently — an un-added column
+        # turns a decision job back into an NL question, and drops the topic
+        # scope off a topic'd job (answering on more data than was asked for).
         from trove.storage.migrations import POSTGRES, SQLITE, AddColumn, ensure_column
 
         is_pg = "Postgres" in type(self._backend).__name__
-        added = await ensure_column(
-            self._backend,
-            AddColumn("jobs", "decision_rule", "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
-            dialect=POSTGRES if is_pg else SQLITE,
-        )
+        dialect = POSTGRES if is_pg else SQLITE
+        added = False
+        for column in ("decision_rule", "topic"):
+            added = await ensure_column(
+                self._backend,
+                AddColumn("jobs", column, "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
+                dialect=dialect,
+            ) or added
         # ensure_column is a plain write, not a migration step — the caller commits.
         if added:
             await self._backend.commit()
@@ -273,8 +285,8 @@ class JobStore:
                 """INSERT INTO jobs (id, name, question, datasource, workflow,
                    schedule_type, schedule, enabled, alert_expr, alert_channel,
                    alert_cooldown_min, next_run_at, created_at, updated_at,
-                   decision_rule)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   decision_rule, topic)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, question=excluded.question,
                      datasource=excluded.datasource, workflow=excluded.workflow,
@@ -283,7 +295,7 @@ class JobStore:
                      alert_channel=excluded.alert_channel,
                      alert_cooldown_min=excluded.alert_cooldown_min,
                      next_run_at=excluded.next_run_at, updated_at=excluded.updated_at,
-                     decision_rule=excluded.decision_rule""",
+                     decision_rule=excluded.decision_rule, topic=excluded.topic""",
                 _job_to_row(job),
             )
             await conn.commit()

@@ -72,6 +72,15 @@
         <el-table-column :label="t('jobDatasource', ui.lang)" width="120">
           <template #default="{ row }">
             <span class="cell-mono">{{ row.datasource }}</span>
+            <!-- 主题域只做最小行展示(名称 + tooltip):它是任务的静态范围配置,
+                 不是每次运行的结果状态 —— 状态类列留给 recent_run。 -->
+            <div
+              v-if="row.topic"
+              class="job-topic-tag"
+              :title="`${t('topicLabel', ui.lang)}: ${row.topic}`"
+            >
+              <span class="pill pill-accent">{{ row.topic }}</span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column :label="t('jobAlertExpr', ui.lang)" min-width="160">
@@ -182,6 +191,19 @@
               :value="d.name"
             />
           </el-select>
+        </el-form-item>
+        <el-form-item :label="t('topicLabel', ui.lang)">
+          <el-select v-model="form.topic" class="job-topic-select">
+            <el-option :label="t('topicAny', ui.lang)" value="" />
+            <el-option
+              v-for="tp in topics"
+              :key="tp.name"
+              :label="tp.status === 'ok' ? tp.name : `${tp.name} (${t('topicStale', ui.lang)})`"
+              :value="tp.name"
+              :disabled="tp.status !== 'ok'"
+            />
+          </el-select>
+          <div class="job-field-hint">{{ t('jobTopicHint', ui.lang) }}</div>
         </el-form-item>
         <el-form-item :label="t('jobScheduleType', ui.lang)">
           <el-radio-group v-model="form.schedule_type">
@@ -457,6 +479,7 @@ import { t } from '../../i18n'
 import { notifySuccess, toastError } from '../../utils/notify'
 import { fmtDateTime } from '../../utils/format'
 import { useListQuery } from '../../composables/useListQuery'
+import { fetchTopics, type TopicInfo } from '../../api/topics'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
 import PageHeader from '../../components/base/PageHeader.vue'
 import DetailDrawer from '../../components/base/DetailDrawer.vue'
@@ -478,6 +501,7 @@ interface JobRow {
   alert_channel: string
   alert_cooldown_min: number
   decision_rule: string
+  topic: string
   next_run_at: string
   created_at: string
   updated_at: string
@@ -580,6 +604,7 @@ const emptyForm = {
   alert_channel: '',
   alert_cooldown_min: 30,
   decision_rule: '',
+  topic: '',
 }
 const form = reactive({ ...emptyForm })
 
@@ -591,6 +616,7 @@ interface RuleOption {
 
 const rules = ref<RuleOption[]>([])
 const rulesError = ref('')
+const topics = ref<TopicInfo[]>([])
 
 // Only the rules of the datasource this job points at can compile — the
 // semantic model is per-datasource, so the list is filtered rather than
@@ -609,6 +635,32 @@ async function loadRules() {
     // A datasource with no decisions.yml, or a corrupt one, shows as a hint —
     // creating a job must stay possible (a plain question job needs no rule).
     rulesError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// The topic list is per-datasource too (the domains live in that
+// datasource's semantic model). A failed fetch means "no domains to offer"
+// (404 = no semantic model) — it does NOT mean the current value is invalid,
+// so the value is left alone and the write-time check stays the loud gate;
+// only a *successful* list may prune a selection that is gone or expired.
+async function loadTopics() {
+  const ds = form.datasource
+  topics.value = []
+  if (!ds) return
+  let list: TopicInfo[] = []
+  let loaded = false
+  try {
+    const body = await fetchTopics(ds)
+    if (form.datasource !== ds) return // 换源了,这份清单已过期
+    list = body.topics ?? []
+    loaded = true
+  } catch {
+    if (form.datasource !== ds) return
+  }
+  topics.value = list
+  if (!loaded) return
+  if (form.topic && !list.some((tp) => tp.name === form.topic && tp.status === 'ok')) {
+    form.topic = ''
   }
 }
 
@@ -656,6 +708,7 @@ function openCreate() {
   form.datasource = def?.name || datasources.value[0]?.name || ''
   dialogOpen.value = true
   void loadRules()
+  void loadTopics()
 }
 
 function openEdit(row: JobRow) {
@@ -670,19 +723,24 @@ function openEdit(row: JobRow) {
     alert_channel: row.alert_channel,
     alert_cooldown_min: row.alert_cooldown_min,
     decision_rule: row.decision_rule || '',
+    topic: row.topic || '',
   })
   dialogOpen.value = true
   void loadRules()
+  void loadTopics()
 }
 
 // The rule list is per-datasource, so switching datasource reloads it and
-// drops a rule that no longer belongs to the selected one.
+// drops a rule that no longer belongs to the selected one. The topic list
+// reloads the same way; loadTopics prunes a stale selection once the new
+// list actually arrives.
 watch(() => form.datasource, () => {
   if (!dialogOpen.value) return
   if (form.decision_rule && !rules.value.some((r) => r.id === form.decision_rule)) {
     form.decision_rule = ''
   }
   void loadRules()
+  void loadTopics()
 })
 
 async function save() {
@@ -699,6 +757,7 @@ async function save() {
       alert_channel: form.alert_channel,
       alert_cooldown_min: form.alert_cooldown_min,
       decision_rule: form.decision_rule,
+      topic: form.topic,
     }
     if (editing.value) {
       await apiPatch(`/v1/admin/jobs/${editing.value.id}`, payload)
@@ -1006,5 +1065,11 @@ onMounted(() => {
   margin-top: 2px;
   font-size: var(--fs-2xs);
   color: var(--danger-text);
+}
+
+/* 主题域列内小标签:长域名截断,tooltip 给全名。 */
+.job-topic-tag {
+  margin-top: 4px;
+  overflow: hidden;
 }
 </style>

@@ -73,6 +73,18 @@ def _rule_error(datasource: str, rule_id: str) -> str | None:
     return None
 
 
+def _topic_error(datasource: str, topic: str) -> str | None:
+    """Why this topic reference is unusable; None when fine.
+
+    与 API 路由共用 ``topic_reference_error``(消息词汇一处维护)—— CLI 没有
+    app,所以自己打开 cwd 根下的 KB(与 runner 读的是同一份)。
+    """
+    from trove.services.kb.service import KbService
+    from trove.services.semantic_layer.manage import topic_reference_error
+
+    return topic_reference_error(KbService(Path.cwd()), datasource, topic)
+
+
 def _job_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trove job", description="Scheduled jobs")
     sub = parser.add_subparsers(dest="subcommand", required=True)
@@ -91,6 +103,11 @@ def _job_parser() -> argparse.ArgumentParser:
         "--rule", default="",
         help="Decision rule id from .trove/kb/<datasource>/decisions.yml "
              "(runs the deterministic decision engine; --alert is then unused)",
+    )
+    add.add_argument(
+        "--topic", default="",
+        help="Topic domain declared in the datasource's semantic model "
+             "(scopes the scheduled question; default: unrestricted)",
     )
 
     add.add_argument("--list", action="store_true", help=argparse.SUPPRESS)
@@ -118,6 +135,11 @@ async def main_job(argv: list[str]) -> None:
             if err:
                 print(f"add: {err}")
                 sys.exit(1)
+        if args.topic:
+            err = _topic_error(args.datasource, args.topic)
+            if err:
+                print(f"add: {err}")
+                sys.exit(1)
         job = await jobs.create_job(
             args.question,
             schedule,
@@ -129,6 +151,7 @@ async def main_job(argv: list[str]) -> None:
             alert_channel=args.channel,
             alert_cooldown_min=args.cooldown,
             decision_rule=args.rule,
+            topic=args.topic,
         )
         if job is None:
             print(f"add: invalid schedule {schedule!r} ({schedule_type})")
@@ -139,6 +162,7 @@ async def main_job(argv: list[str]) -> None:
             "schedule_type": job.schedule_type, "schedule": job.schedule,
             "next_run_at": job.next_run_at,
             "alert_expr": job.alert_expr, "alert_channel": job.alert_channel,
+            "topic": job.topic,
         }, ensure_ascii=False, indent=2))
         return
 
@@ -150,9 +174,10 @@ async def main_job(argv: list[str]) -> None:
         for j in jobs_list:
             enabled = "enabled" if j.enabled else "disabled"
             alert = f", alert={j.alert_expr}" if j.alert_expr else ""
+            topic = f", topic={j.topic}" if j.topic else ""
             print(
                 f"[{j.id}] {j.name} | {j.schedule_type}:{j.schedule} "
-                f"| {j.question[:48]} | {enabled}{alert} | next {j.next_run_at}"
+                f"| {j.question[:48]} | {enabled}{alert}{topic} | next {j.next_run_at}"
             )
         return
 

@@ -66,6 +66,7 @@ class TroveREPL:
         kb_service: Any = None,
         llm_gateway: Any = None,
         user_facts: Any = None,
+        topic: str = "",
     ):
         self._manager = session_manager
         self._config = config
@@ -88,6 +89,9 @@ class TroveREPL:
             "kb": kb_service,
             "llm_gateway": llm_gateway,
             "user_facts": user_facts,
+            # 主题域是会话内的一个可变量(/topic 改它,_consume_stream 读它),
+            # 与 /model 改 config.target 同一模式 —— 放 context 而不是独立字段。
+            "topic": topic or "",
         }
 
         # Register all slash commands
@@ -217,6 +221,9 @@ class TroveREPL:
             async for event in self._manager.ask_stream(
                 session=self._session,
                 question=text,
+                # 空 = 不限定;非空时域不存在/过期由管线在流里显式拒绝,
+                # CLI 这里不预检(与 --print 路径同一条口径)。
+                topic=self._context.get("topic") or "",
             ):
                 await self._render_event(event)
         except asyncio.CancelledError:

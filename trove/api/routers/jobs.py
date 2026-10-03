@@ -52,6 +52,8 @@ def _serialize(job) -> dict[str, Any]:
         # Non-empty → `question` is a label only and `workflow`/`alert_expr`
         # do not apply: the run is decided by the decision engine.
         "decision_rule": job.decision_rule,
+        # 主题域(空 = 不限定):NL 路径把问题收敛到该域。
+        "topic": job.topic,
         "next_run_at": job.next_run_at,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -119,6 +121,20 @@ def _rule_error(request: Request, datasource: str, rule_id: str) -> str | None:
     return None
 
 
+def _topic_error(request: Request, datasource: str, topic: str) -> str | None:
+    """400 message for an unusable topic reference; None when fine.
+
+    Same discipline as ``_rule_error`` (checked at write time — the runner
+    would fail the same way on every tick, forever), but the judgement itself
+    lives in ``semantic_layer.manage.topic_reference_error`` because the CLI
+    needs the identical check and the two must not drift apart.
+    """
+    from trove.services.semantic_layer.manage import topic_reference_error
+
+    return topic_reference_error(
+        getattr(request.app.state, "kb", None), datasource, topic)
+
+
 @router.get("/admin/jobs")
 async def list_jobs(
     request: Request,
@@ -147,6 +163,9 @@ async def create_job(
     rule_err = _rule_error(request, body.datasource, body.decision_rule)
     if rule_err:
         raise HTTPException(status_code=400, detail=rule_err)
+    topic_err = _topic_error(request, body.datasource, body.topic)
+    if topic_err:
+        raise HTTPException(status_code=400, detail=topic_err)
     job = await _jobs(request).create_job(
         body.question,
         body.schedule.strip(),
@@ -158,6 +177,7 @@ async def create_job(
         alert_channel=body.alert_channel,
         alert_cooldown_min=body.alert_cooldown_min,
         decision_rule=body.decision_rule,
+        topic=body.topic,
     )
     if job is None:
         raise HTTPException(status_code=400, detail="invalid job definition")
@@ -196,6 +216,14 @@ async def update_job(
             request, body.datasource or existing.datasource, body.decision_rule)
         if rule_err:
             raise HTTPException(status_code=400, detail=rule_err)
+    if body.topic is not None:
+        # Same end-state rule as decision_rule above: a PATCH that moves the
+        # job to another datasource *and* sets a topic judges the pair it
+        # will actually have.
+        topic_err = _topic_error(
+            request, body.datasource or existing.datasource, body.topic)
+        if topic_err:
+            raise HTTPException(status_code=400, detail=topic_err)
     job = await _jobs(request).update_job(
         job_id,
         name=body.name,
@@ -208,6 +236,7 @@ async def update_job(
         alert_channel=body.alert_channel,
         alert_cooldown_min=body.alert_cooldown_min,
         decision_rule=body.decision_rule,
+        topic=body.topic,
         enabled=body.enabled,
     )
     if job is None:

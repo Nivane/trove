@@ -70,3 +70,26 @@ def register_system_commands(registry: SlashRegistry, context: dict) -> None:
         group="system",
         handler=cmd_init,
     ))
+
+    async def cmd_topic(args: str) -> str:
+        """Show or set the active topic domain. Usage: /topic [name | clear]"""
+        name = args.strip()
+        if not name:
+            current = context.get("topic") or ""
+            if not current:
+                return "No topic set — questions use the full datasource."
+            return f"Current topic: {current}"
+        if name.lower() == "clear":
+            context["topic"] = ""
+            return "Topic cleared — questions use the full datasource."
+        # 不做预检:域是否存在/过期由管线在回答流里显式拒绝(与 Web 端
+        # 一致)—— CLI 自建第二套判定就会和 KB 的实际状态漂移。
+        context["topic"] = name
+        return f"Topic set to: {name}"
+
+    registry.register(SlashCommand(
+        name="topic",
+        description="Show/set topic domain. Usage: /topic [name | clear]",
+        group="system",
+        handler=cmd_topic,
+    ))

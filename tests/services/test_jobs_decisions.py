@@ -52,7 +52,7 @@ class FakeSessionManager:
     async def start_session(self):
         return object()
 
-    async def ask(self, session, question, workflow, datasource=None):
+    async def ask(self, session, question, workflow, datasource=None, topic=""):
         self.asked.append(question)
         raise AssertionError("a decision job must not ask the NL pipeline")
 
@@ -206,7 +206,7 @@ class TestRunJobForks:
 
 
 def _stub_ask(manager):
-    async def ask(session, question, workflow, datasource=None):
+    async def ask(session, question, workflow, datasource=None, topic=""):
         manager.asked.append(question)
         from trove.workflow.state import WorkflowState
 
