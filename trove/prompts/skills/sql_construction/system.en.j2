@@ -1,0 +1,35 @@
+## Answer construction — the shapes that decide right vs. wrong
+
+### Share / ratio questions ("what fraction / percentage of ...")
+- Put the numerator's condition **inside the aggregation**
+  (`SUM(CASE WHEN <cond> THEN value ELSE 0 END)`) — never in `WHERE`:
+  a `WHERE` filter shrinks the denominator along with the numerator.
+- The denominator is the **filtered population the question names** —
+  not the whole table, and not the numerator's own subset.
+- Apply `* 100` at the **outermost level** of the expression, once;
+  keep the division itself in raw units (a percentage is a unit choice,
+  not a different quantity).
+
+### Highest / lowest ("top", "which X has the most/least ...")
+- The ordering key is a **selection device, not an answer column**:
+  order by it and take the limit, but leave it out of the projection
+  unless the question explicitly asks for that value.
+- Apply every qualifier as a filter **before** selecting the extreme —
+  the extreme of the unfiltered set is a different number.
+- Do not pre-aggregate per entity and then re-aggregate the aggregates;
+  compute the metric over the filtered set, grouped at the granularity
+  the question names.
+
+### Dimension values: filter on the name column, not the id column
+- When the question names a dimension value ("district X", "status
+  active"), filter on the **name / description column** — an id column's
+  value domain is unknown to you, and an id filter silently matches
+  nothing or the wrong group.
+- When the question asks "which X", group by / project the name column;
+  carry the id only where a join requires it.
+
+### Where a filter lives: `conditions` vs. `having`
+- Row-level filters (applied before grouping) go in `conditions`.
+- `having` is **only** for filtering on an aggregate after grouping
+  (`HAVING COUNT(...) > 1`). A dimension filter written into `having`
+  is not a different filter — it is a different result.

@@ -2523,6 +2523,139 @@ class TestValidateRules:
         assert await node(state) == {}
 
 
+class TestValidateAuthoritativeExemption:
+    """权威编译 SQL 的改写型规则豁免(B2,0480 死锁的收窄修法)。
+
+    豁免判据是**重放**契约(contract_from_wire + compiled_sql_matches),
+    不是粘滞位 ``state.compiled``:那个布尔只说明"某轮编译过"。
+    豁免命中只 log/span —— 不进 error_feedback(不烧 retry),不进
+    validation_hits(eval 的 tried_recovery 判据,混入非拦截事件会污染)。
+    结果域规则(percent-range / list-zero-rows)从不豁免:它们判的是行。
+    """
+
+    @staticmethod
+    def _authoritative_state(**kw):
+        """用真实编译器产出 (SQL, contract wire) 拼 validate 的 state。
+
+        rows/columns 由调用方控制 —— 规则链读它们,契约保真校验读 SQL
+        文本,两者互不依赖(要的正是"SQL 权威,但结果行仍触发改写规则")。
+        """
+        from trove.services.semantic_layer.contract import contract_to_wire
+        from trove.services.semantic_layer.models import (
+            SemanticDataset,
+            SemanticField,
+            SemanticMetric,
+            SemanticModel,
+        )
+        from trove.workflow.nodes.query_sketch import _compile_semantic
+
+        f = lambda name: SemanticField(name=name, expression=name)  # noqa: E731
+        model = SemanticModel(
+            name="fin",
+            datasets=[SemanticDataset(name="loan", primary_key=["loan_id"], fields=[
+                f("loan_id"), f("amount")])],
+            metrics=[SemanticMetric("number of loan records", "COUNT(loan.loan_id)",
+                                    datasets=["loan"])],
+        )
+
+        class FakeProvider:
+            enabled = True
+
+            def model(self):
+                return model
+
+        plan = {"tables": ["loan"], "aggregation": "count(loan.loan_id)",
+                "answer_columns": ["count(loan.loan_id)"], "conditions": []}
+        compiled, miss = _compile_semantic(plan, ["loan"], FakeProvider(), "sqlite")
+        assert miss is None and compiled is not None
+        fields = {
+            "question": "how many loans",
+            "sql": compiled.sql,
+            "columns": ["count(loan.loan_id)"],
+            "rows": [["1"], ["2"]],  # 计数题返回多行 → count 规则命中
+            "row_count": 2,
+            "compiled": True,
+            "compiled_sql": compiled.sql,
+            "compile_meta": {"outcome": "compiled"},
+            "contract": contract_to_wire(compiled.contract),
+            "plan_json": {"answer_columns": ["count(loan.loan_id)"]},
+        }
+        fields.update(kw)  # 覆盖任一项以构造"判据缺失/不成立"的变体
+        return make_state(**fields)
+
+    async def test_authoritative_sql_exempts_rewrite_rules(self):
+        """权威 SQL(重放契约成立)+ 计数规则本会命中 → 豁免:不烧轮次、
+        不写 validation_hits,规则链按"全过"交付。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(self._authoritative_state())
+        assert "error_feedback" not in update
+        assert "validation_hits" not in update
+        assert "retry_count" not in update  # 不烧修正预算
+        assert update["rules_passed"] is True
+
+    async def test_partial_compile_is_not_exempt(self):
+        """骨架编译(compile_partial)不是权威照抄对象 → 不豁免,照常拦截。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(self._authoritative_state(compile_partial=True))
+        assert "error_feedback" in update
+        assert update["retry_count"] == 1
+        assert update["validation_hits"][0]["name"] in ("count-multirow", "count-shape")
+
+    async def test_missing_contract_is_not_exempt(self):
+        """契约缺失(判据输入不在)→ 不豁免 —— 读不到契约就退回老路径。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(self._authoritative_state(contract=None))
+        assert "error_feedback" in update
+        assert update["validation_hits"][0]["name"] in ("count-multirow", "count-shape")
+
+    async def test_sql_not_reproducing_contract_is_not_exempt(self):
+        """SQL 没复现契约(判据不成立)→ 不豁免。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        update = await node(self._authoritative_state(
+            sql="SELECT name FROM students",
+        ))
+        assert "error_feedback" in update
+
+    async def test_result_domain_rules_never_exempt(self):
+        """结果域规则(percent-range)判的是**行**:权威 SQL 也不豁免。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = self._authoritative_state(
+            question="what percentage of clients",
+            columns=["pct"],
+            rows=[[150.0]],
+            row_count=1,
+        )
+        update = await node(state)
+        assert "error_feedback" in update
+        assert update["validation_hits"][0]["name"] == "percent-range"
+
+    async def test_exemption_skips_only_rewrite_rules_and_keeps_scanning(self):
+        """豁免是"跳过这一条继续扫",不是"整链通过":前面的改写型命中
+        (count-shape / F1-a)被跳过后,后面**非豁免**的过滤覆盖命中(F2-a,
+        不在豁免名单)仍然拦下。"""
+        from trove.workflow.nodes.validate import make_validate_rules
+
+        node = make_validate_rules()
+        state = self._authoritative_state(
+            question="how many male students",
+            rows=[["1"], ["2"]],   # 计数题多行 → count/F1 改写命中被跳过
+            row_count=2,
+        )
+        update = await node(state)
+        assert "error_feedback" in update
+        assert update["validation_hits"][0]["name"] == "F2-a"
+
+
 # ── Reflect ──────────────────────────────────────────────
 
 

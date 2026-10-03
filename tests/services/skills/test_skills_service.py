@@ -266,8 +266,10 @@ def test_lang_trigger_reaches_ctx(tmp_path):
     })
     svc.confirm("zh-only")
 
-    assert svc.render_skills("gen_sql", lang="zh") != ""
-    assert svc.render_skills("gen_sql", lang="en") == ""
+    # 按**正文**断言而不是"渲染非空/为空":gen_sql 上常驻 code skill
+    # (sql_construction),空与非空区分不出 org 侧这条 trigger 命中与否。
+    assert "中文口径" in svc.render_skills("gen_sql", lang="zh")
+    assert "中文口径" not in svc.render_skills("gen_sql", lang="en")
 
 
 def test_skill_ctx_carries_every_trigger_dimension():
@@ -452,7 +454,8 @@ def test_set_tier_off_validator_refuses_and_changes_nothing(tmp_path):
         svc.set_tier("credit-guard", "required")
     assert "SKILL.md" in str(ei.value)
     assert svc.read_skill("credit-guard")["tier"] == "validator"
-    assert svc.render_skills("gen_sql") == ""
+    # 判据正文不得被当指令投递(gen_sql 上还有 code skill,按正文断言)
+    assert "人类可读说明" not in svc.render_skills("gen_sql")
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
@@ -505,7 +508,8 @@ def test_validator_never_in_required_render(tmp_path):
     svc = SkillService(tmp_path)
     svc.create(dict(_VALIDATOR))
     svc.confirm("credit-guard")
-    assert svc.render_skills("gen_sql") == ""
+    # gen_sql 上有 code skill 常驻,按**正文**断言判据没被投进去
+    assert "人类可读说明" not in svc.render_skills("gen_sql")
     assert svc.render_skills("validate") == ""
 
 

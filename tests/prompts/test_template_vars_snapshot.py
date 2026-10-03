@@ -101,6 +101,8 @@ _SNAPSHOT: dict[str, list[str]] = {
     "skills/draft.zh.j2": ["description", "node", "purpose", "skill_name"],
     "skills/plan_query/system.en.j2": [],
     "skills/plan_query/system.zh.j2": [],
+    "skills/sql_construction/system.en.j2": [],
+    "skills/sql_construction/system.zh.j2": [],
     "tasks/decompose.en.j2": ["question"],
     "tasks/decompose.zh.j2": ["question"],
     "tasks/interpret.en.j2": ["question", "tasks"],

@@ -25,6 +25,7 @@ from trove.services.semantic_layer.compiler import (
     CompileMiss,
     CompileResult,
     PartialCompile,
+    is_hard_miss,
 )
 from trove.services.semantic_layer.contract import (
     contract_to_wire,
@@ -722,6 +723,93 @@ def _plan_has_intent(plan_json: dict[str, Any] | None) -> bool:
     )
 
 
+def _datasets_by_alias(model) -> dict[str, Any]:
+    """数据集查找表:数据集名与物理表名两个方向都指向同一个 dataset。"""
+    by_table: dict[str, Any] = {}
+    for ds in model.datasets:
+        for alias in (ds.name, rls.physical_table(ds)):
+            if alias and str(alias).strip():
+                by_table[str(alias).strip().lower()] = ds
+    return by_table
+
+
+def _table_anchors(name: str, by_table: dict[str, Any]) -> set[str]:
+    """一个表名的全部别名(小写):原名 + 该数据集的声明名 + 物理表名。"""
+    out = {str(name).strip().lower()}
+    ds = by_table.get(str(name).strip().lower())
+    if ds is not None:
+        out.add(ds.name.strip().lower())
+        out.add(rls.physical_table(ds))
+    return out
+
+
+def _declared_join_clauses(model, tables: list[str]) -> list[str]:
+    """``tables`` 之间已声明的关系子句(``a.col = b.col``,官方路径写法)。
+
+    plan.joins 的合法写法就是这串子句(编译器按声明列对校验,见
+    ``_explicit_join_edges``);反馈给 planner 的必须是**声明里已有的**那条,
+    不是它自己编的等值边。
+    """
+    by_table = _datasets_by_alias(model)
+    anchors: set[str] = set()
+    for t in tables:
+        anchors |= _table_anchors(t, by_table)
+    clauses: list[str] = []
+    for r in model.relationships or []:
+        if not (
+            (_table_anchors(r.from_, by_table) & anchors)
+            and (_table_anchors(r.to, by_table) & anchors)
+        ):
+            continue
+        for fc, tc in zip(r.from_columns or [], r.to_columns or []):
+            clauses.append(f"{r.from_}.{fc} = {r.to}.{tc}")
+    return clauses
+
+
+def _declared_metric_names(model, tables: list[str], limit: int = 8) -> list[str]:
+    """与计划相关的已声明度量名(≤limit):排序候选的可执行素材。
+
+    相关 = 度量锚定数据集命中 plan.tables(别名口径同 ``_datasets_by_alias``)。
+    一个都不相关时按声明序兜底 —— 退化方向选「给得出名字」:反馈文本是
+    planner 的唯一额外输入,给空的候选列表等于没给。
+    """
+    by_table = _datasets_by_alias(model)
+    anchors: set[str] = set()
+    for t in tables:
+        anchors |= _table_anchors(t, by_table)
+    relevant = [
+        m.name
+        for m in model.metrics
+        if m.name and any(
+            str(d).strip().lower() in anchors for d in (m.datasets or [])
+        )
+    ]
+    if not relevant:
+        relevant = [m.name for m in model.metrics if m.name]
+    return relevant[:limit]
+
+
+def _ordering_candidates(plan_json, semantic_layer) -> tuple[list[str], list[str]]:
+    """(声明度量名, 计划的聚合列表达式)—— limit_without_order 的候选形态。"""
+    exprs = [
+        str(ac).strip()
+        for ac in (plan_json or {}).get("answer_columns") or []
+        if "(" in str(ac) and str(ac).strip()
+    ]
+    metrics: list[str] = []
+    if semantic_layer is not None:
+        try:
+            model = semantic_layer.model()
+        except Exception:
+            model = None
+        if model is not None:
+            tables = [
+                str(t).strip() for t in (plan_json or {}).get("tables") or []
+            ]
+            metrics = _declared_metric_names(model, tables)
+    return metrics, exprs
+
+
 def _replan_feedback(
     plan_json: dict[str, Any] | None,
     miss: CompileMiss | None,
@@ -736,7 +824,13 @@ def _replan_feedback(
         planner 的 schema_context 里根本没有匹配到它(linker 没给),只喊
         「加进 plan.tables」它无从下手(0483 实测)。
       - limit_without_order:计划形状缺陷(limit 在、ordering 不可解析)
-        —— 重规划可修。
+        —— 重规划可修。光说「补 ordering」不够(0487 实测重规划空转):
+        附上**可写进 ordering 的具体形态**(相关声明度量名 / 计划的聚合列
+        表达式 / dataset.field asc|desc),planner 才有可执行素材。
+      - ambiguous_join_path:组件引用的列都在已声明关系里,但 root→表的
+        声明路径不唯一(菱形共享维度)。修法是**整份重计划 + 显式
+        plan.joins 写官方路径**——只让 LLM 重写被质疑的那一段,它会改出
+        第三条同样二义的路径。
     反馈文本英文、≤600 字符、指令在前(correction 有 ``[:600]`` 截断)。
     """
     if miss is None:
@@ -744,12 +838,41 @@ def _replan_feedback(
     reason = getattr(miss, "reason", "") or ""
     component = getattr(miss, "component", "") or ""
     if reason == "limit_without_order":
-        return (
+        metrics, exprs = _ordering_candidates(plan_json, semantic_layer)
+        text = (
             f"{PLAN_CONTRADICTION_TAG} The plan sets a row limit without a "
             f"resolvable ordering ({component or 'missing'}). Re-emit the whole "
-            "plan JSON with ordering as a declared metric name or an explicit "
-            '"dataset.field asc|desc" expression, or drop the limit.'
+            "plan JSON with ordering written as one of: a declared metric name; "
+            'an explicit "<dataset>.<field> asc|desc"; or an aggregate '
+            "expression already present in answer_columns. Otherwise drop the "
+            "limit."
         )
+        if metrics:
+            text += " Declared metrics: " + ", ".join(metrics) + "."
+        if exprs:
+            text += " Plan aggregate expressions: " + ", ".join(exprs) + "."
+        return text[:600]
+    if reason == "ambiguous_join_path":
+        if semantic_layer is None:
+            return None
+        try:
+            model = semantic_layer.model()
+        except Exception:
+            return None
+        if model is None:
+            return None
+        tables = [str(t).strip() for t in (plan_json or {}).get("tables") or []]
+        clauses = _declared_join_clauses(model, tables)
+        text = (
+            f"{PLAN_CONTRADICTION_TAG} The plan's columns reference declared "
+            "relations, but the declared join path between them is ambiguous "
+            "(more than one route). Re-emit the **whole** plan JSON with "
+            "plan.joins written out as the official declared path(s) — one "
+            "'table.column = table.column' clause per hop, separated by ';'."
+        )
+        if clauses:
+            text += " Declared clauses: " + "; ".join(clauses) + "."
+        return text[:600]
     if reason != "unreachable_table" or semantic_layer is None:
         return None
     missing = [
@@ -768,19 +891,10 @@ def _replan_feedback(
     if any(t.lower() not in declared for t in missing):
         return None  # 未声明表 → 真模型缺口,照旧拒绝
     # 数据集映射(数据集名/物理表名两个方向):关系与字段清单从这里取。
-    by_table: dict[str, Any] = {}
-    for ds in model.datasets:
-        for alias in (ds.name, rls.physical_table(ds)):
-            if alias and alias.strip():
-                by_table[alias.strip().lower()] = ds
+    by_table = _datasets_by_alias(model)
 
     def _anchors(name: str) -> set[str]:
-        out = {str(name).strip().lower()}
-        ds = by_table.get(str(name).strip().lower())
-        if ds is not None:
-            out.add(ds.name.strip().lower())
-            out.add(rls.physical_table(ds))
-        return out
+        return _table_anchors(name, by_table)
 
     plan_tables = [str(t).strip() for t in (plan_json or {}).get("tables") or []]
     plan_anchors: set[str] = set()
@@ -1242,6 +1356,10 @@ def make_query_sketch(
             if compiled is not None:
                 compile_meta.update(miss_reason="", miss_component="")
             elif miss is not None:
+                # 硬度分级(A2):只有硬 MISS 触发拒绝;软 MISS 直通 gen_sql。
+                # 与 outcome 正交,additive —— 值域冻结的是 outcome 本身。
+                compile_meta["miss_class"] = (
+                    "hard" if is_hard_miss(miss.reason) else "soft")
                 if semantic_layer is None:
                     # 短路真实分因(无语义层 ≠ no_plan):eval 接线诊断用
                     compile_meta.update(
@@ -1251,6 +1369,7 @@ def make_query_sketch(
                         miss_reason=miss.reason, miss_component=miss.component)
             else:
                 compile_meta.update(miss_reason="unknown", miss_component="")
+                compile_meta["miss_class"] = "hard"
             update["compile_meta"] = compile_meta
             # 硬 MISS 二分(分级逃生梯的上沿):「计划自相矛盾」——缺的组件
             # 语义模型里其实有,是计划自己没带上/没写对——先给一次**有界
@@ -1303,11 +1422,21 @@ def make_query_sketch(
                     update["compile_partial"] = True
                     update["compile_misses"] = list(compiled.miss_parts)
             else:
-                # 语义优先(Phase B,决策 4):硬 MISS(结构性)不静默降级裸表——
-                # 计划有真实意图但组件结构性未覆盖 → 拒绝信号,图路由到 refuse
-                # 节点(LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞计划
-                # 不拒绝,gen_sql 从 semantic_context 照常生成。
-                if _plan_has_intent(plan_json):
+                # 语义优先(Phase B,决策 4)+ 硬度分流(A2,分级逃生梯的上沿):
+                # 只有**硬 MISS**(结构性:fan-out/二义/未覆盖表/坏定义/
+                # limit 无序)不静默降级裸表 —— 拒绝信号,图路由到 refuse
+                # 节点(LLM 草拟扩展 draft → 管理端确认 → 重答)。退化/空洞
+                # 计划不拒绝,gen_sql 从 semantic_context 照常生成。
+                #
+                # 软 MISS(词表/值/口径未声明)不拒绝:**缺陷在模型不在计划**
+                # ——加一个 CASE WHEN / 多一句口径说明就能答,而拒绝会把「本可
+                # 回答」的问题换成「先扩模型」。直通 gen_sql:plan 文本照常注入,
+                # 不置 compiled/compile_partial/contract(没有骨架可保真)。
+                # miss 缺席(编译器没给出分因)按硬处理——与 is_hard_miss 的
+                # 「未知分因默认硬」同一条保守方向。
+                if _plan_has_intent(plan_json) and (
+                    miss is None or is_hard_miss(miss.reason)
+                ):
                     refusal = {
                         "reason": "uncovered",
                         "question": state.question,
@@ -1326,6 +1455,12 @@ def make_query_sketch(
                             state.question[:80], miss.reason, miss.component,
                         )
                     update["refusal"] = refusal
+                elif miss is not None:
+                    logger.info(
+                        "soft compile miss for %r: %s (%s) — passing through "
+                        "to gen_sql (plan text injected as usual)",
+                        state.question[:80], miss.reason, miss.component,
+                    )
             if llm_detail:
                 update["llm"] = llm_detail
             return update

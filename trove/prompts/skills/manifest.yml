@@ -24,3 +24,14 @@
     contract and the target mapping).
   triggers:
     node: analyze_error
+
+- name: sql_construction
+  description: >
+    Answer-construction discipline for the SQL generator: share/ratio
+    shapes (numerator inside the aggregation, denominator = the filtered
+    population, *100 outermost), extreme-selection ordering keys kept out
+    of the projection, name-column (not id-column) dimension filters, and
+    row filters in conditions with having reserved for post-aggregation
+    filters. Cross-datasource construction methodology.
+  triggers:
+    node: gen_sql

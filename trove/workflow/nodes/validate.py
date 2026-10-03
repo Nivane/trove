@@ -26,10 +26,52 @@ from trove.services.skills.validators import (
     run_validators,
 )
 from trove.workflow.nodes.query_sketch import answer_columns_mismatch, extra_columns_mismatch
+from trove.workflow.rules import REWRITE_RULES as _REWRITE_RULES
 from trove.workflow.rules import verify as run_rules
 from trove.workflow.state import WorkflowState, budget_exhausted
 
 logger = get_logger(__name__)
+
+
+def _authoritative_sql(state: WorkflowState) -> tuple[bool, str]:
+    """这条 SQL 是否**就是要照抄的那条权威编译 SQL**(零 LLM)。
+
+    改写型规则(``_REWRITE_RULES``)对它的豁免前提 —— 判据必须比粘滞位
+    ``state.compiled`` 强:那个布尔值只说明"某轮编译过",而豁免是**放松**
+    一道守卫,只有"这一条 SQL 确实复现了本轮契约"才配。
+
+    逐项(全过才算):
+      ① ``compiled`` 且非 ``compile_partial``;
+      ② ``compile_meta.outcome == "compiled"``(miss / partial 都不算);
+      ③ wire 契约解得出来(``contract_from_wire`` 形状异常一律 None);
+      ④ 契约不是 advisory / partial(Lane A 的降级档:advisory 骨架允许
+         投影/过滤放宽,不能当权威照抄对象;键缺失 → 老 checkpoint 行为);
+      ⑤ 契约带形状签名 —— 无签名时 ``compiled_sql_matches`` 是**放行**
+         (编译期就抽不出结构),拿一个不校验的契约去豁免等于双重放松;
+      ⑥ ``compiled_sql_matches``:这条 SQL 复现契约的结果形状。
+
+    判据缺失/抽取失败 → 不豁免(与 execute_sql 的保真校验同一条纪律:
+    读不到契约就退回老路径,不静默放松)。
+    """
+    from trove.services.semantic_layer.compiler import compiled_sql_matches
+    from trove.services.semantic_layer.contract import contract_from_wire
+
+    if not state.compiled or state.compile_partial:
+        return False, "not a full compile"
+    meta = state.compile_meta or {}
+    if meta.get("outcome") != "compiled":
+        return False, f"outcome={meta.get('outcome') or 'missing'}"
+    contract = contract_from_wire(state.contract)
+    if contract is None:
+        return False, "no contract"
+    if getattr(contract, "advisory", False) or contract.partial:
+        return False, "advisory/partial contract"
+    if contract.signature is None:
+        return False, "contract without shape signature"
+    if not state.sql:
+        return False, "empty SQL"
+    ok, why = compiled_sql_matches(contract, state.sql, state.dialect)
+    return (True, "") if ok else (False, why or "SQL does not reproduce the contract")
 
 
 def make_validate_rules(
@@ -58,6 +100,14 @@ def make_validate_rules(
         if state.error or state.error_feedback:
             return {}
 
+        # 权威编译 SQL 的改写型规则豁免(收窄):这条 SQL 是"逐字照抄"对象
+        # (execute_sql 的编译保真校验),而改写型规则命中即要求**改写它** ——
+        # 两条断言互斥,honoring 规则只会烧修正预算(0480 实测 10 轮死锁)。
+        # 豁免命中**只 log + span**:不进 error_feedback(不烧 retry)、不写
+        # validation_hits(那是 replay.tried_recovery 的判据,混入非拦截事件
+        # 会污染 eval 归因)。结果域规则从不豁免 —— 它们判的是行。
+        authoritative, auth_reason = _authoritative_sql(state)
+        exempted: list[dict[str, Any]] = []
         # 规则链结果进 langfuse(hits = 规则名+原因,即修正指令的证据)
         with record_span(
             "rules.verify",
@@ -66,9 +116,25 @@ def make_validate_rules(
             reason, hits = run_rules(
                 state.question, state.sql, state.columns, state.rows, state.row_count,
                 lang=state.lang,
+                exempt=_REWRITE_RULES if authoritative else (),
+                skipped=exempted,
             )
             if span is not None:
-                span.update(output={"passed": reason is None, "failures": hits})
+                span.update(output={
+                    "passed": reason is None,
+                    "failures": hits,
+                    # 权威 SQL 被豁免的改写型命中 + 判定依据:豁免是"少拦了
+                    # 一次",必须留痕(降级可以说,但不能不说)。
+                    "authoritative": authoritative,
+                    "authoritative_reason": auth_reason,
+                    "exempted": exempted,
+                })
+        if exempted:
+            logger.info(
+                "rewrite rules exempted for authoritative compiled SQL (%r): %s",
+                state.question[:80],
+                "; ".join(str(e.get("name")) for e in exempted),
+            )
         if reason is not None:
             if budget_exhausted(state.retry_count, max_retries):
                 return {"error": reason, "rules_passed": False}
