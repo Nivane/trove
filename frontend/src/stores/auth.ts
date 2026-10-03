@@ -1,10 +1,14 @@
 import { defineStore } from 'pinia'
 import { apiPost, apiGet } from '../api/http'
 
+/** Backend USER_ROLES = ("admin", "analyst", "user") — the frontend type
+ *  must not be narrower than what /v1/auth/me can return (P6 D9). */
+export type Role = 'admin' | 'analyst' | 'user'
+
 export interface UserInfo {
   id: number | string
   username: string
-  role: 'admin' | 'user'
+  role: Role
   display_name?: string
   disabled?: boolean
 }
@@ -20,6 +24,8 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     isAuthed: (s) => !!s.token && !!s.user,
     isAdmin: (s) => s.user?.role === 'admin',
+    /** 阶段二（W5）才启用 analyst 只读面；今天它只用于角色徽与导航过滤。 */
+    isAnalyst: (s) => s.user?.role === 'analyst',
   },
   actions: {
     async login(username: string, password: string) {

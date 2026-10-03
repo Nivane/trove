@@ -43,6 +43,11 @@ export const useUiStore = defineStore('ui', {
     setLang(lang: Lang) {
       this.lang = lang
       localStorage.setItem(LANG_KEY, lang)
+      // 页面语言跟着走（D21）：读屏器与拼写检查读的是 <html lang>，
+      // 只切 UI 文案不同步它会按旧语言发音。局部切换，不整页 reload。
+      if (typeof document !== 'undefined') {
+        document.documentElement.lang = lang
+      }
     },
     toggleSidebar() {
       this.sidebarOpen = !this.sidebarOpen
