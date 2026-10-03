@@ -38,6 +38,7 @@ from trove.services.decision.rules import (
     DecisionRule,
     RuleError,
     lint_document,
+    lint_document_assets,
     parse_document,
     rule_to_dict as _rule_to_dict,
 )
@@ -651,6 +652,7 @@ class KbService:
         kb_dir: str | Path | None = None,
         backend_resolver: Callable[[str], Any] | None = None,
         git_kb: bool = True,
+        action_templates: Any = None,
     ):
         self.kb_dir = (
             Path(kb_dir) if kb_dir is not None
@@ -674,6 +676,13 @@ class KbService:
         # 累加、由调用方 take 走 —— 与 refused_assets 同一套"服务记账,
         # 调用方呈现"的做法。
         self.merge_reports: list[dict] = []
+        # 行动模板注册表(P3,鸭子类型 ``ActionTemplateService``)—— 规则里
+        # 引用的 ``action.template`` 必须**已声明且已确认**,写盘前就挡住。
+        # None = 这个进程里没有行动层(老调用方/纯 KB 工具),此时
+        # ``lint_rule_assets`` 的 None 语义是**跳过该项检查**:一个没接线
+        # 的服务没资格说这条规则坏;而一个在场但为空的注册表会把每条引用
+        # 都判为未声明 —— 两种情况的区别正是 None 与空集的区别。
+        self.action_templates = action_templates
 
     def _backend_for(self, datasource: str):
         """该数据源的检索后端;builtin/未配置/解析失败 → None。"""
@@ -1063,6 +1072,25 @@ class KbService:
                 return rule
         return None
 
+    def _asset_lint(self, doc: DecisionDoc) -> list[str]:
+        """模板资产检查(P3):引用的 action.template 必须已声明且已确认。
+
+        注册表**每次现读**(``names()``/``confirmed_names()``):确认一份模板
+        正是要让此前被拒的规则引用变得合法,缓存住注册表会让"确认了却仍然
+        存不进去"。注册表本身抛错(读盘失败)按 None 处理 —— 与"没接线"
+        同一语义:拿不到注册表就不该拿它给规则定罪。
+        """
+        service = self.action_templates
+        if service is None:
+            return []
+        try:
+            templates: set[str] | None = set(service.names())
+            confirmed: set[str] | None = set(service.confirmed_names())
+        except Exception:
+            logger.exception("决策规则资产检查:模板注册表不可用,跳过该项检查")
+            return []
+        return lint_document_assets(doc, templates=templates, confirmed=confirmed)
+
     def decisions_lint(self, datasource: str):
         """Pre-commit 门禁:lint 决策规则,坏规则拒绝进入 git 审计历史。
 
@@ -1077,8 +1105,10 @@ class KbService:
                 if p.name != "decisions.yml" or not p.exists():
                     continue
                 try:
-                    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-                    issues += lint_document(parse_document(data))
+                    parsed = parse_document(yaml.safe_load(
+                        p.read_text(encoding="utf-8")) or {})
+                    issues += lint_document(parsed)
+                    issues += self._asset_lint(parsed)
                 except Exception as e:
                     issues.append(f"decisions.yml 无法解析: {e}")
             return issues
@@ -1099,7 +1129,7 @@ class KbService:
         把该数据源目录下所有 ``*.yml`` 一起暂存,那会把别人尚未提交的
         semantics.yml 改动卷进这次"规则变更"提交里。
         """
-        issues = lint_document(doc)
+        issues = lint_document(doc) + self._asset_lint(doc)
         if issues:
             raise RuleError("决策规则校验未通过,拒绝写入: " + "; ".join(issues))
 

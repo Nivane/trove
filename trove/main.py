@@ -192,8 +192,40 @@ async def create_app_components(
 
     resolve_backend, bind_kb = resolver_from_configs(
         config_store.load_configs(), embedder_factory=_embedder_for)
+
+    # ── Action layer (P3: 模板门 → 提案 → 单人审批 → 命名通道外送) ──
+    # 模板是**组织资产**(`.trove/actions/<name>/action.yml`,与 skills 同门:
+    # 草稿 → admin 确认才可被规则引用);提案/审批/回执是**运行状态**
+    # (ActionStore 落 config.home,与 JobStore/VerdictStore 同根 —— 提案按
+    # run_id/job_id 指向 run 行,分家会出现悬空引用)。
+    # enabled 默认 false:关着时 propose 与 dispatch 都不可用。
+    from trove.services.action import (
+        ActionDispatcher,
+        ActionService,
+        ActionStore,
+        ActionTemplateService,
+    )
+
+    action_templates = ActionTemplateService(
+        Path.cwd() / ".trove" / "actions",
+        max_payload_bytes=int(config.action.max_payload_bytes),
+    )
+    actions = ActionService(
+        ActionStore(config.home),
+        action_templates,
+        ActionDispatcher(
+            {name: {"url": ch.url, "secret": ch.secret}
+             for name, ch in (config.action.channels or {}).items()},
+        ),
+        enabled=bool(config.action.enabled),
+        approval_ttl_hours=int(config.action.approval_ttl_hours),
+        max_payload_bytes=int(config.action.max_payload_bytes),
+        max_attempts=int(config.action.max_attempts),
+        lang=config.language,
+    )
+
     kb = KbService(Path.cwd(), backend_resolver=resolve_backend,
-                   git_kb=config.git_kb)
+                   git_kb=config.git_kb, action_templates=action_templates)
     bind_kb(kb)
 
     # ── Org skill assets (methodology, admin-managed) ──────
@@ -378,6 +410,9 @@ async def create_app_components(
             connector_registry, kb, timeout_ms=int(config.budget.timeout_ms),
         ),
         verdicts=verdicts,
+        # 触发 + autonomy=propose → 建 pending 提案(best-effort:
+        # 提案失败绝不让判定 run 变成 error,见 runner._propose_action)。
+        actions=actions,
     )
 
     # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
@@ -409,6 +444,8 @@ async def create_app_components(
         "jobs": jobs,
         "scheduler": scheduler,
         "verdicts": verdicts,
+        "actions": actions,
+        "action_templates": action_templates,
         "maintenance": MaintenanceService(
             session_store, checkpointer, config.retention,
         ),

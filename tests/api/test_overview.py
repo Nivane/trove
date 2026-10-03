@@ -28,7 +28,8 @@ _TOP_LEVEL_KEYS = {
 }
 _TODO_KINDS = [
     "kb_lesson", "kb_example", "semantic_draft", "skill_draft",
-    "memory_preference", "drift", "job_failed", "user_nogrant",
+    "memory_preference", "drift", "action_template", "action_proposal",
+    "job_failed", "user_nogrant",
 ]
 
 
@@ -102,7 +103,7 @@ class TestOverviewShape:
         assert rows[0]["drift_open"] == 0
         assert rows[0]["drift_count_exact"] is True
 
-        # todos:8 类固定顺序;未装配来源 → count 0 / available false
+        # todos:10 类固定顺序;未装配来源 → count 0 / available false
         todos = body["todos"]
         assert [i["kind"] for i in todos["items"]] == _TODO_KINDS
         by_kind = _by_kind(body)
@@ -110,7 +111,8 @@ class TestOverviewShape:
             status="nogrant", limit=3,
         )
         assert by_kind["user_nogrant"]["count"] == nogrant_total
-        for kind in ("skill_draft", "memory_preference", "job_failed"):
+        for kind in ("skill_draft", "memory_preference", "action_template",
+                     "action_proposal", "job_failed"):
             assert by_kind[kind]["count"] == 0
             assert by_kind[kind]["available"] is False
             assert by_kind[kind]["count_exact"] is True

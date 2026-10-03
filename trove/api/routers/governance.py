@@ -1,4 +1,4 @@
-"""治理中心(设计稿 P5 §4):三个只读端点 —— 六类待办条目级聚合 / 建模覆盖 / 血缘包装。
+"""治理中心(设计稿 P5 §4):三个只读端点 —— 八类待办条目级聚合 / 建模覆盖 / 血缘包装。
 
 设计稿:``~/Downloads/trove-page-p5-governance.html`` §4.1(冻结契约)+ §4.3(权限)。
 
@@ -10,7 +10,7 @@
 2. **降级是一等返回。** 每条腿独立超时(照抄 ``overview._leg``:
    ``_SOURCE_TIMEOUT_S`` + 只报异常类型名),失败只进 ``degraded[]``,
    绝不整页 500。
-3. **同源同值(验收 R2)。** 六类待办的枚举 + 逐源扇出只有**一份实现**
+3. **同源同值(验收 R2)。** 八类待办的枚举 + 逐源扇出只有**一份实现**
    —— :func:`trove.api.routers.overview.collect_todo_sources`;
    ``/v1/admin/todos`` 与 ``/v1/admin/overview`` 的 ``todos[]`` 都吃它,
    只在投影粒度上不同(条目列表 vs 计数 + 前 3 样例)。各写一遍必然漂移。
@@ -244,6 +244,53 @@ def _drift_item(e: dict) -> dict:
     )
 
 
+def _action_template_item(e: dict) -> dict:
+    name = str(e.get("name") or "")
+    problems = str(e.get("error") or "")
+    summary = str(e.get("description") or "")
+    target = e.get("target") or {}
+    channel = str(target.get("channel") or "")
+    line = " · ".join(p for p in (f"channel: {channel}" if channel else "", problems) if p)
+    return _todo(
+        "action_template", item_id=name, ds=e.get("ds"),
+        title=str(e.get("title") or name),
+        summary=" — ".join(p for p in (summary, line) if p),
+        href=overview._TODO_HREFS["action_template"],
+        source=_str_or_none(e.get("source")),
+        severity="warning" if problems else _str_or_none(e.get("risk")),
+        created_at=_str_or_none(e.get("created_at")),
+        # 确认前要看模板全文与注入扫描命中(confirm 响应里带),所以收件箱
+        # 只给入口 —— 就地确认等于「没看就批」,而模板是外送内容的全文。
+        confirm=False, reject=False, batch=False,
+        edit_url="/admin/actions?tab=templates",
+    )
+
+
+def _action_proposal_item(e: dict) -> dict:
+    pid = str(e.get("id") or "")
+    rule_id = str(e.get("rule_id") or "")
+    status = str(e.get("status") or "")
+    bits = [
+        f"{status} · {rule_id}" if status else rule_id,
+        str(e.get("template") or ""),
+        f"attempts: {e['attempts']}" if e.get("attempts") else "",
+        str(e.get("error") or ""),
+    ]
+    return _todo(
+        "action_proposal", item_id=pid, ds=e.get("ds"),
+        title=str(e.get("rationale") or rule_id or pid),
+        summary=" · ".join(b for b in bits if b),
+        href=overview._TODO_HREFS["action_proposal"],
+        source=_str_or_none(e.get("template")),
+        severity=_str_or_none(e.get("severity")),
+        created_at=_str_or_none(e.get("created_at")),
+        # 审批要读渲染后的 payload 与证据(行动页抽屉),就地批准会让
+        # 「批准」变成不看你批的是什么;失败重试同理。
+        confirm=False, reject=False, batch=False,
+        edit_url="/admin/actions?tab=proposals",
+    )
+
+
 _ITEM_BUILDERS: dict[str, Callable[[dict], dict]] = {
     "kb_lesson": _kb_lesson_item,
     "kb_example": _kb_example_item,
@@ -251,6 +298,8 @@ _ITEM_BUILDERS: dict[str, Callable[[dict], dict]] = {
     "skill_draft": _skill_draft_item,
     "memory_preference": _memory_preference_item,
     "drift": _drift_item,
+    "action_template": _action_template_item,
+    "action_proposal": _action_proposal_item,
 }
 
 
@@ -333,13 +382,13 @@ def _degraded_entries(degraded: list[dict]) -> list[dict]:
 @router.get("/admin/todos")
 async def admin_todos(
     request: Request,
-    kind: str = Query(default="", description="comma-separated kinds; empty = all six"),
+    kind: str = Query(default="", description="comma-separated kinds; empty = all eight"),
     ds: str = Query(default="", description="datasource filter; empty = all sources"),
     q: str = Query(default="", description="case-insensitive substring over title/summary/ds"),
     sort: str = Query(default="oldest", description="oldest|newest|confidence|severity"),
     admin: dict = Depends(require_admin),
 ) -> dict:
-    """六类审批待办的条目级聚合(§4.1①)。counts 恒含六类(筛选片要靠它)。"""
+    """八类审批待办的条目级聚合(§4.1①)。counts 恒含八类(筛选片要靠它)。"""
     wanted = [k.strip() for k in (kind or "").split(",") if k.strip()]
     if not wanted:
         wanted = list(overview.APPROVAL_TODO_KINDS)
@@ -390,7 +439,7 @@ async def admin_todos(
             item = builder(e)
             if _matches(item, ds_filter=ds, query=q):
                 all_items.append(item)
-    # counts 忽略 kind 筛选(筛选片要一直能看到六类的数);ds/q 筛选生效。
+    # counts 忽略 kind 筛选(筛选片要一直能看到八类的数);ds/q 筛选生效。
     counts: dict[str, int | None] = {}
     for k in overview.APPROVAL_TODO_KINDS:
         counts[k] = (

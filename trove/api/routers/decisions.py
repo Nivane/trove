@@ -21,14 +21,18 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from trove.api.deps import require_admin
+from trove.core.logging import get_logger
 from trove.api.schemas import DecisionDocBody
 from trove.services.decision.rules import (
     RuleError,
+    lint_advisories,
     lint_document,
+    lint_document_assets,
     parse_document,
 )
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _kb(request: Request):
@@ -82,6 +86,30 @@ def _verdict_brief(rec, diff: dict | None = None) -> dict[str, Any]:
     }
 
 
+def _asset_issues(request: Request, doc) -> list[str]:
+    """Template-existence lint, i.e. the same closure ``save`` enforces.
+
+    ``KbService`` injects the registry as a duck-typed object; here it is the
+    app component. Same three-way semantics as ``KbService._asset_lint``:
+    registry absent → unchecked (a process without the action layer must not
+    report every rule as dangling); registry present → its two name sets. The
+    list view is where an admin sees "this rule points at a template that was
+    rejected/deleted" *before* the next fire, so it must not be quieter here
+    than at save time.
+    """
+    templates = getattr(request.app.state, "action_templates", None)
+    if templates is None:
+        return []
+    try:
+        return lint_document_assets(
+            doc, templates=set(templates.names()),
+            confirmed=set(templates.confirmed_names()),
+        )
+    except Exception:  # 读模板目录失败:体检腿坏掉不该把规则列表也带走
+        logger.warning("decision asset lint failed", exc_info=True)
+        return []
+
+
 async def _referencing_jobs(request: Request, datasource: str, rule_id: str) -> list[str]:
     """Job ids (name: id) that schedule this rule — deleting a rule that a job
     still points at would leave a job failing on every tick."""
@@ -107,7 +135,7 @@ async def list_decisions(
         # A file that will not parse is not "no rules" — say so, or the UI
         # would offer to create a first rule and silently overwrite it.
         raise HTTPException(status_code=422, detail=str(e))
-    issues = lint_document(doc)
+    issues = lint_document(doc) + _asset_issues(request, doc)
     if not doc.rules:
         # Display-only: an empty document is writable (it is also the only way
         # to delete the last rule), but a reader should know it means "nothing
@@ -141,6 +169,12 @@ async def list_decisions(
             "emit": rule.emit,
             "conditions": list(rule.conditions),
             "condition_mode": rule.condition_mode,
+            "action": (
+                {"template": rule.action.template,
+                 "autonomy": rule.action.autonomy,
+                 "params": dict(rule.action.params)}
+                if rule.action is not None else None
+            ),
             "referenced_by": await _referencing_jobs(request, datasource, rule.id),
             "latest_verdict": _verdict_brief(last) if last is not None else None,
         })
@@ -150,6 +184,9 @@ async def list_decisions(
         "digest": doc.digest,
         "rules": rules,
         "issues": issues,
+        # 提示级与拦截级**分开出**:advisory 从不拦保存,混进 issues 会让
+        # 读者以为规则存不下去(与 save 的 422 判定不是同一张表)。
+        "advisories": lint_advisories(doc),
     }
 
 

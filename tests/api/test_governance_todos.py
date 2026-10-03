@@ -1,7 +1,7 @@
-"""GET /v1/admin/todos —— 六类审批待办的条目级聚合(设计稿 P5 §4.1①)。
+"""GET /v1/admin/todos —— 八类审批待办的条目级聚合(设计稿 P5 §4.1①)。
 
 覆盖:
-1. 六类计数 + 条目形状(字段名逐字;缺失 = null,形状固定);
+1. 八类计数 + 条目形状(字段名逐字;缺失 = null,形状固定);
 2. kind / ds / q / sort / limit / offset 六个查询参数(limit 钳制 ≤200,不 422);
 3. **0 与 null 是两条信息** —— 某类取不到 → ``counts[kind] = null`` +
    ``degraded[]`` 条目(绝不落成 0),``total`` 随之 null;
@@ -20,9 +20,10 @@ from httpx import ASGITransport, AsyncClient
 from trove.api.routers import governance, overview
 from trove.services.skills.service import SkillService
 
-SIX = (
+EIGHT = (
     "kb_lesson", "kb_example", "semantic_draft",
     "skill_draft", "memory_preference", "drift",
+    "action_template", "action_proposal",
 )
 ITEM_KEYS = {
     "kind", "id", "ds", "title", "summary", "severity", "confidence",
@@ -134,11 +135,12 @@ class TestTodosShape:
         assert set(body) == {"items", "total", "counts", "generated_at", "degraded"}
         assert body["generated_at"]
         assert body["degraded"] == []
-        # counts 恒含六类(筛选片要靠它),无该类条目 = 0(exact),不是 null
-        assert set(body["counts"]) == set(SIX)
+        # counts 恒含八类(筛选片要靠它),无该类条目 = 0(exact),不是 null
+        assert set(body["counts"]) == set(EIGHT)
         assert body["counts"] == {
             "kb_lesson": 1, "kb_example": 0, "semantic_draft": 1,
             "skill_draft": 1, "memory_preference": 1, "drift": 1,
+            "action_template": 0, "action_proposal": 0,
         }
         assert body["total"] == 5
         assert len(body["items"]) == 5
@@ -208,8 +210,8 @@ class TestTodosShape:
         body = r.json()
         assert {i["kind"] for i in body["items"]} == {"semantic_draft", "kb_lesson"}
         assert body["total"] == 2
-        # counts 忽略 kind 筛选:六类全在,数字不变
-        assert set(body["counts"]) == set(SIX)
+        # counts 忽略 kind 筛选:八类全在,数字不变
+        assert set(body["counts"]) == set(EIGHT)
         assert body["counts"]["kb_lesson"] == 1
         assert body["counts"]["kb_example"] == 0
 
@@ -312,13 +314,13 @@ class TestTodosPaging:
 
 class TestTodosDegradedAndEmpty:
     async def test_empty_state_is_zero_not_null(self, client, api_app):
-        """全空是真空态:items [] / total 0 / 六类全 0(exact),无 degraded。"""
+        """全空是真空态:items [] / total 0 / 八类全 0(exact),无 degraded。"""
         r = await client.get("/v1/admin/todos")
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["items"] == []
         assert body["total"] == 0
-        assert set(body["counts"]) == set(SIX)
+        assert set(body["counts"]) == set(EIGHT)
         assert all(v == 0 for v in body["counts"].values())
         assert body["degraded"] == []
 
@@ -404,16 +406,18 @@ class TestTodosDegradedAndEmpty:
         degraded = {(d["kind"], d["ds"]) for d in body["degraded"]}
         for kind in ("kb_lesson", "kb_example", "semantic_draft", "drift"):
             assert (kind, None) in degraded
-        # 全局两类不依赖逐源列举:未装配 → 0(数得出来)
+        # 全局四类不依赖逐源列举:未装配 → 0(数得出来)
         assert body["counts"]["skill_draft"] == 0
         assert body["counts"]["memory_preference"] == 0
+        assert body["counts"]["action_template"] == 0
+        assert body["counts"]["action_proposal"] == 0
 
 
 class TestTodosSameSourceAsOverview:
     async def test_r2_counts_equal_overview_todos(
         self, client, api_app, api_kb, memory_app,
     ):
-        """验收 R2:收件箱计数与概览页 todos[] 同源同值(六类逐类相等)。"""
+        """验收 R2:收件箱计数与概览页 todos[] 同源同值(八类逐类相等)。"""
         await _install_skills(api_app)
         await _seed_semantic_draft(client)
         await _seed_skill_draft(client)
@@ -422,7 +426,7 @@ class TestTodosSameSourceAsOverview:
         todos = (await client.get("/v1/admin/todos")).json()
         ov = (await client.get("/v1/admin/overview")).json()
         by_kind = {i["kind"]: i for i in ov["todos"]["items"]}
-        for kind in SIX:
+        for kind in EIGHT:
             assert todos["counts"][kind] == by_kind[kind]["count"], kind
         assert todos["counts"]["kb_lesson"] == 1       # 夹具非空,比较有意义
 

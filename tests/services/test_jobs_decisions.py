@@ -11,16 +11,21 @@ properties matter here and neither is visible from the decision tests:
 2. **``advance`` runs even when the run fails.** A job whose ``next_run_at``
    never moves stays due, so every tick re-runs it and re-sends the alert —
    an accidental notification loop.
+3. **The outbound hooks (verdict history, action proposals) are best-effort.**
+   They run after the judgment, and a failure in either is a log line — the
+   schedule ran and the verdict is stored, so neither may turn that into an
+   error (P2/P3).
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
-from trove.services.decision.rules import DecisionRule
+from trove.services.decision.rules import ActionRef, DecisionRule
 from trove.services.decision.service import DecisionOutcome
 from trove.services.jobs.runner import SchedulerRunner
 from trove.services.jobs.service import JobsService
@@ -116,6 +121,31 @@ class FakeVerdicts:
             raise RuntimeError("verdict store on fire")
         self.records.append(verdict)
         return len(self.records)
+
+
+class FakeActions:
+    """Duck-typed ``ActionService``: records the propose calls, or explodes.
+
+    The *policy* (disabled layer / notify_only / dedup) belongs to the real
+    service and is tested there; here the only question is whether the runner
+    hands it the right firing, and whether a refusal can touch the schedule.
+    """
+
+    def __init__(self, fail: bool = False):
+        self.calls: list[dict] = []
+        self.fail = fail
+
+    async def propose_from_verdict(self, *, rule, outcome, datasource,
+                                   job_id="", run_id=None,
+                                   created_by="system", evidence_refs=None):
+        if self.fail:
+            raise ValueError("template 'notify-ops' is 'pending', not confirmed")
+        self.calls.append({
+            "rule": rule, "outcome": outcome, "datasource": datasource,
+            "job_id": job_id, "run_id": run_id, "created_by": created_by,
+            "evidence_refs": evidence_refs,
+        })
+        return SimpleNamespace(id="p-1", status="pending")
 
 
 @pytest.fixture
@@ -296,6 +326,106 @@ class TestVerdictHistory:
         runs = await svc.store.list_runs(job.id)
         assert runs[0]["status"] == "alert"
         assert (await svc.get_job(job.id)).next_run_at != before
+
+
+class TestActionProposals:
+    """A fired rule with ``autonomy: propose`` → a pending proposal (P3).
+
+    The runner's job is narrow: hand the *firing* to the service, and let
+    nothing it does come back as a run error. Dedup, the template gate and
+    the disabled switch are the service's (see ``tests/services/action/``).
+    """
+
+    @staticmethod
+    def _proposing_rule(**kw):
+        base = dict(id="loan-drop", name="贷款余额环比下滑",
+                    conditions=["delta_pct < -0.1"],
+                    recommendation="联系运营核对额度",
+                    action=ActionRef(template="notify-ops",
+                                     autonomy="propose"))
+        base.update(kw)
+        return DecisionRule(**base)
+
+    async def test_a_fired_propose_rule_reaches_the_service(self, svc):
+        job = await _job(svc)
+        actions = FakeActions()
+        runner = SchedulerRunner(
+            FakeSessionManager(), svc, decision=FakeDecision(
+                _triggered(), kb=FakeKb(self._proposing_rule())),
+            verdicts=FakeVerdicts(), actions=actions)
+        await runner.run_job(job, NOW)
+
+        assert len(actions.calls) == 1
+        call = actions.calls[0]
+        assert call["rule"].id == "loan-drop"
+        assert call["outcome"].triggered is True
+        assert call["datasource"] == "demo"
+        assert call["job_id"] == job.id
+        assert call["created_by"] == "system"
+        # run identity + the exact evidence row the verdict was stored as
+        assert call["run_id"] == (await svc.store.list_runs(job.id))[0]["id"]
+        assert call["evidence_refs"] == {"verdict_id": 1}
+
+    async def test_a_refusal_from_the_service_stays_a_log_line(self, svc):
+        """The run judged fine and the verdict is stored — an unconfirmed
+        template must not turn that into an error, and must not stall the
+        schedule (same discipline as ``_advance``)."""
+        job = await _job(svc)
+        before = job.next_run_at
+        runner = SchedulerRunner(
+            FakeSessionManager(), svc, decision=FakeDecision(
+                _triggered(), kb=FakeKb(self._proposing_rule())),
+            actions=FakeActions(fail=True))
+        summary = await runner.run_job(job, NOW)
+
+        assert summary["status"] == "alert"
+        assert summary["alert_sent"] is True
+        assert (await svc.get_job(job.id)).next_run_at != before
+
+    async def test_notify_only_rules_never_reach_the_service(self, svc):
+        """``notify_only`` means the alert *is* the response — the action
+        layer is not even consulted (and the service's policy agrees)."""
+        job = await _job(svc)
+        actions = FakeActions()
+        rule = self._proposing_rule(
+            action=ActionRef(template="notify-ops", autonomy="notify_only"))
+        runner = SchedulerRunner(
+            FakeSessionManager(), svc,
+            decision=FakeDecision(_triggered(), kb=FakeKb(rule)),
+            actions=actions)
+        await runner.run_job(job, NOW)
+        assert actions.calls == []
+
+    async def test_quiet_or_erroring_runs_never_propose(self, svc):
+        """A proposal is a request for a human's time — "nothing wrong" and
+        "could not judge" are both reasons not to make one."""
+        job = await _job(svc)
+        quiet = FakeActions()
+        runner = SchedulerRunner(
+            FakeSessionManager(), svc, decision=FakeDecision(
+                _triggered(triggered=False, message=""),
+                kb=FakeKb(self._proposing_rule())),
+            actions=quiet)
+        await runner.run_job(job, NOW)
+        assert quiet.calls == []
+
+        broken = FakeActions()
+        runner = SchedulerRunner(
+            FakeSessionManager(), svc, decision=FakeDecision(
+                _triggered(triggered=False, message="", error="no model"),
+                kb=FakeKb(self._proposing_rule())),
+            actions=broken)
+        await runner.run_job(job, NOW)
+        assert broken.calls == []
+
+    async def test_no_action_layer_wired_is_a_noop(self, svc):
+        """A deployment without P3 (``actions=None``) runs exactly as before."""
+        job = await _job(svc)
+        runner = SchedulerRunner(
+            FakeSessionManager(), svc, decision=FakeDecision(
+                _triggered(), kb=FakeKb(self._proposing_rule())))
+        summary = await runner.run_job(job, NOW)
+        assert summary["status"] == "alert"
 
 
 class TestDriverLineInTheMessage:

@@ -6,6 +6,10 @@
   会话用 ``session_id`` 参数复用(进程内会话注册表;缺失则新建)。
 - ``list_datasources``:已连接且 KB 已初始化的数据源(用户端可见性规则)。
 - ``kb_status``:数据源连接 / KB 初始化 / 语义模型文件状态。
+- ``list_proposals`` / ``fetch_proposal`` / ``ack_proposal``:行动提案的
+  **拉通道**(P3,与 webhook 推送并列的第二条出口)。拉取已批准的提案、
+  取回 payload、回执 —— **审批本身不在这里**:approve / reject / dispatch
+  是管理台里的人做的决定,agent 只能取和签收。
 
 资源面(MCP 三原语之一:只读数据):
 
@@ -14,6 +18,8 @@
 - ``trove://{datasource}/semantics``:semantics.yml 原文(OSSIE 语义模型)。
   ——把元数据暴露成 MCP server,数据平台成为 agent 的工具底座(只读、
   无副作用)。
+- ``trove://proposals``:已批准且未过期的行动提案索引(拉通道的入口;
+  详情走 ``fetch_proposal``)。
 
 模板面(MCP 三原语之三:可复用提示词):
 
@@ -37,10 +43,12 @@ grant 判定的实现**不在本模块** —— 唯一实现在
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 from fastmcp import FastMCP
 
+from trove.services.action.models import PROPOSAL_STATUSES
 from trove.services.authz.policy import (
     LOCAL_SUBJECT,
     Policy,
@@ -51,6 +59,11 @@ from trove.services.authz.policy import (
 logger = logging.getLogger(__name__)
 
 _SESSION_CACHE_MAX = 200
+
+#: 拉通道一次最多带回的提案数(内务:提案对账是人过的,不是 agent 全量扫)。
+_PROPOSAL_LIMIT_MAX = 100
+#: 拉通道的默认取件状态:已批准 = 等人取走的那些。
+_PULL_STATUS = "approved"
 
 
 def build_mcp_server(
@@ -235,6 +248,74 @@ def build_mcp_server(
         (datasets + metrics, the single answerability boundary) as read-only data."""
         return await _resource_for(datasource, "semantics")
 
+    # ── 行动提案拉通道(P3:与 webhook 推送并列的取件口)─────────────
+    # 这里**只读 + 回执**:清单/详情/签收。approve / reject / dispatch 是人在
+    # 管理台做的决定(MCP 是机器通道,机器不投票)—— 所以没有任何工具能改
+    # 提案的审批状态,唯一的写是 ack(签收,事实记录)。
+    actions = components.get("actions")
+
+    def _actor() -> str:
+        return str(identity["id"]) if identity else LOCAL_SUBJECT
+
+    async def _allowed(p: Any) -> bool:
+        """提案的数据源对当前身份可见 —— 与 ask_data 走同一份策略判定。"""
+        return await _authorize_datasource(getattr(p, "datasource", "") or "") is not None
+
+    def _proposal_brief(p: Any) -> dict[str, Any]:
+        """列表/回执用的提案摘要(不含 payload —— 那是 fetch 的事)。"""
+        return {
+            "id": p.id,
+            "datasource": p.datasource,
+            "rule_id": p.rule_id,
+            "template": p.template,
+            "status": p.status,
+            "risk": p.risk,
+            "severity": p.severity,
+            "priority": p.priority,
+            "action_type": p.action_type,
+            "rationale": p.rationale,
+            "created_at": p.created_at,
+            "expires_at": p.expires_at,
+            "attempts": p.attempts,
+            "error": p.error,
+        }
+
+    async def _missing(proposal_id: str) -> dict[str, Any]:
+        """取不到与没授权**同一句话** —— 别把「存在但你看不到」漏成存在性预言。"""
+        return {
+            "error": f"proposal not found: {proposal_id} "
+                     "(or its datasource is not allowed for this identity)"
+        }
+
+    async def _open_proposals(status: str, now_iso: str) -> list[Any]:
+        """某状态且未过期的提案,按身份过滤(拉通道只发「还能取的」)。"""
+        rows = await actions.list_proposals(status=status, limit=_PROPOSAL_LIMIT_MAX)
+        out = []
+        for p in rows:
+            if p.expires_at and p.expires_at < now_iso:
+                continue
+            if not await _allowed(p):
+                continue
+            out.append(p)
+        return out
+
+    @mcp.resource("trove://proposals")
+    async def proposals_resource() -> str:
+        """Approved & unexpired action proposals (read-only index — fetch one
+        with ``fetch_proposal`` to get its payload, then ``ack_proposal``)."""
+        if actions is None:
+            return "(action layer is not available in this process)"
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        rows = await _open_proposals(_PULL_STATUS, now_iso)
+        if not rows:
+            return "(no approved proposals waiting)"
+        lines = [
+            f"- [{p.id}] datasource={p.datasource} rule={p.rule_id} "
+            f"template={p.template} risk={p.risk} expires_at={p.expires_at or '-'}"
+            for p in rows
+        ]
+        return "\n".join(lines)
+
     # ── prompts(MCP 三原语之三:可复用模板——标准化的提示词工作流)─────────
     # 客户端可直接拉起这些模板,把"查数据源"的规范流程固化成提示词,
     # 而不是每次手写。
@@ -333,5 +414,92 @@ def build_mcp_server(
                 "error": f"datasource not allowed: {ds}",
             }
         return _kb_status(ds)
+
+    @mcp.tool()
+    async def list_proposals(
+        status: str | None = None, datasource: str | None = None,
+    ) -> dict[str, Any]:
+        """List action proposals (a rule fired and asked a human to act).
+
+        Approved proposals are the pull channel: fetch one with
+        ``fetch_proposal`` and receipt it with ``ack_proposal``. Approving,
+        rejecting and dispatching are admin-console decisions and are NOT
+        available here. Empty ``status`` lists every state.
+        """
+        if actions is None:
+            return {"error": "action layer is not available in this process"}
+        wanted = (status or "").strip()
+        if wanted and wanted not in PROPOSAL_STATUSES:
+            return {"error": f"unknown status {wanted!r}: must be one of "
+                             f"{', '.join(PROPOSAL_STATUSES)}"}
+        rows = await actions.list_proposals(
+            status=wanted or None, datasource=(datasource or "").strip() or None,
+            limit=_PROPOSAL_LIMIT_MAX,
+        )
+        visible = [p for p in rows if await _allowed(p)]
+        return {
+            "proposals": [_proposal_brief(p) for p in visible],
+            "enabled": bool(getattr(actions, "enabled", False)),
+        }
+
+    @mcp.tool()
+    async def fetch_proposal(proposal_id: str) -> dict[str, Any]:
+        """Fetch one proposal with the payload a human approved, plus its
+        approval trail and delivery receipts. Read-only — fetching is not a
+        receipt; call ``ack_proposal`` once the action has actually been taken.
+        """
+        if actions is None:
+            return {"error": "action layer is not available in this process"}
+        pid = (proposal_id or "").strip()
+        if not pid:
+            return {"error": "proposal_id is required"}
+        detail = await actions.get(pid)
+        if detail is None:
+            return await _missing(pid)
+        p = detail["proposal"]
+        if not await _allowed(p):
+            return await _missing(pid)
+        return {
+            "proposal": _proposal_brief(p),
+            # 被批准的就是这份 payload(提案创建时定稿,外送原样发)——
+            # 拉通道取回同一份,不重新渲染。
+            "payload": dict(p.payload or {}),
+            "approvals": [
+                {"user": a.user_id, "action": a.action, "comment": a.comment,
+                 "at": a.created_at}
+                for a in detail["approvals"]
+            ],
+            "deliveries": [
+                {"channel": d.channel, "status": d.status,
+                 "http_status": d.http_status, "error": d.error,
+                 "at": d.attempted_at}
+                for d in detail["deliveries"]
+            ],
+            "stale": bool(detail["stale"]),
+        }
+
+    @mcp.tool()
+    async def ack_proposal(proposal_id: str, note: str = "") -> dict[str, Any]:
+        """Receipt: the action has been carried out — marks the proposal
+        ``delivered`` and records who acked it. Idempotent (a second ack on a
+        delivered proposal is a no-op). This does NOT approve anything; only a
+        human in the admin console can approve or reject.
+        """
+        if actions is None:
+            return {"error": "action layer is not available in this process"}
+        pid = (proposal_id or "").strip()
+        if not pid:
+            return {"error": "proposal_id is required"}
+        detail = await actions.get(pid)
+        if detail is None:
+            return await _missing(pid)
+        if not await _allowed(detail["proposal"]):
+            return await _missing(pid)
+        try:
+            fresh = await actions.ack(pid, _actor(), note or "")
+        except Exception as e:
+            # ProposalError 的文案是给人看的(状态不对时说明当前状态与允许的动作)
+            return {"error": str(e)}
+        return {"proposal": _proposal_brief(fresh), "acked": True}
 
     return mcp

@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 
 from trove.api.deps import require_admin
 from trove.core.types import BASIS_NOT_PROBED
+from trove.services.action.models import OPEN_STATUSES
 
 router = APIRouter()
 
@@ -78,9 +79,10 @@ _RUNS_FAILED_SQL = (
     "ORDER BY MAX(started_at) DESC"
 )
 
-#: 待办 8 类来源与其深链(设计稿 §5 的 items;顺序即展示顺序,shape 固定)。
+#: 待办 10 类来源与其深链(设计稿 §5 的 items;顺序即展示顺序,shape 固定)。
 #: ``memory_preference`` 的落点页已存在(治理中心收件箱,P5)——不再是 null;
-#: ``drift`` 的处置家在治理中心 Tab3(漂移与版本),不再是数据源页。
+#: ``drift`` 的处置家在治理中心 Tab3(漂移与版本),不再是数据源页;
+#: P3 的两类行动待办落在行动页(模板与提案同页两 Tab)。
 _TODO_HREFS: dict[str, str | None] = {
     "kb_lesson": "/admin/kb?tab=lessons",
     "kb_example": "/admin/kb?tab=examples",
@@ -88,16 +90,19 @@ _TODO_HREFS: dict[str, str | None] = {
     "skill_draft": "/admin/skills",
     "memory_preference": "/admin/governance?tab=inbox&kind=memory_preference",
     "drift": "/admin/governance?tab=drift",
+    "action_template": "/admin/actions?tab=templates",
+    "action_proposal": "/admin/actions?tab=proposals&status=open",
     "job_failed": "/admin/jobs?status=error",
     "user_nogrant": "/admin/users?status=nogrant",
 }
 #: 逐数据源扇出的三类(KB lesson / example / 语义草稿)。
 _PER_SOURCE_TODO_KINDS = ("kb_lesson", "kb_example", "semantic_draft")
-#: 六类**审批**待办(治理中心收件箱;= overview 八类 − 两类运维待办
-#: job_failed / user_nogrant)。条目级端点 /v1/admin/todos 只认这六类。
+#: 八类**审批**待办(治理中心收件箱;= overview 十类 − 两类运维待办
+#: job_failed / user_nogrant)。条目级端点 /v1/admin/todos 只认这八类。
 APPROVAL_TODO_KINDS = (
     "kb_lesson", "kb_example", "semantic_draft",
     "skill_draft", "memory_preference", "drift",
+    "action_template", "action_proposal",
 )
 
 
@@ -642,7 +647,7 @@ async def collect_todo_sources(
     drift: dict[str, dict | None], degraded: list[dict],
     *, with_diff: bool = False,
 ) -> dict:
-    """六类**审批**待办的唯一枚举 + 逐源扇出实现(条目级)。
+    """八类**审批**待办的唯一枚举 + 逐源扇出实现(条目级)。
 
     ``/v1/admin/overview`` 与 ``/v1/admin/todos`` 共用这一份 —— 两边只在投影
     粒度上不同(计数 + 前 3 样例 vs 条目列表),各实现一遍计数数字迟早打架
@@ -688,6 +693,8 @@ async def collect_todo_sources(
     for kind, fn in (
         ("skill_draft", _skill_drafts),
         ("memory_preference", _memory_drafts),
+        ("action_template", _action_templates),
+        ("action_proposal", _action_proposals),
     ):
         before = len(degraded)
         global_legs[kind] = await _leg("todos", kind, degraded, lambda fn=fn: fn(request))
@@ -746,6 +753,96 @@ async def _memory_drafts(request: Request) -> dict:
         "samples": [str(d.get("fact") or "") for d in drafts],
         "exact": True,
         "entries": [{**d, "ds": d.get("datasource")} for d in drafts],
+    }
+
+
+_ACTION_SCAN_CAP = 200
+
+
+async def _action_templates(request: Request) -> dict:
+    """Pending action templates — a draft nobody confirmed (P3, same gate as skills).
+
+    Includes drafts whose file is broken (``error`` in the entry): those are
+    still pending decisions, and the only other place they show up is the
+    actions page itself. Broken-ness is *visible* there, so the inbox entry
+    counts it rather than hiding it.
+    """
+    templates = getattr(request.app.state, "action_templates", None)
+    if templates is None:
+        return _unconfigured()
+    pending = [
+        t for t in templates.list_templates(confirmed_only=False)
+        if t.get("status") == "pending"
+    ]
+    return {
+        "configured": True,
+        "count": len(pending),
+        "samples": [str(t.get("name") or "") for t in pending],
+        "exact": True,
+        "entries": [
+            {
+                "name": str(t.get("name") or ""),
+                "title": str(t.get("title") or ""),
+                "description": str(t.get("description") or ""),
+                "risk": str(t.get("risk") or ""),
+                "target": dict(t.get("target") or {}),
+                "source": str(t.get("source") or ""),
+                "created_at": str(t.get("created_at") or ""),
+                "error": str(t.get("error") or ""),
+                "ds": None,
+            }
+            for t in pending
+        ],
+    }
+
+
+async def _action_proposals(request: Request) -> dict:
+    """Open action proposals — waiting on a human (P3).
+
+    "Open" is the state machine's own set (pending / approved / failed): all
+    three are blocked on a person (approve, dispatch, retry) and an ignored
+    one means the action silently never happens. Counts come from
+    ``status_counts`` (a real COUNT), entries from a capped scan — an
+    action-proposal backlog in the hundreds is a broken deployment, but the
+    cap is reported rather than silently truncating.
+    """
+    service = getattr(request.app.state, "actions", None)
+    if service is None:
+        return _unconfigured()
+    counts = await service.status_counts()
+    total = sum(int(counts.get(s) or 0) for s in OPEN_STATUSES)
+    rows = []
+    for status in OPEN_STATUSES:
+        rows.extend(await service.list_proposals(
+            status=status, limit=_ACTION_SCAN_CAP))
+    rows.sort(key=lambda p: p.created_at or "", reverse=True)
+    capped = len(rows) >= _ACTION_SCAN_CAP
+    return {
+        "configured": True,
+        "count": total,
+        "samples": [f"{p.rule_id} · {p.status}" for p in rows[: _SAMPLES]],
+        # 计数本身是精确 COUNT;到顶的是**条目**,按老规矩（降级必须说）
+        # 标 exact=false —— 收件箱宁少不多。
+        "exact": not capped,
+        "entries": [
+            {
+                "id": p.id,
+                "datasource": p.datasource,
+                "rule_id": p.rule_id,
+                "template": p.template,
+                "status": p.status,
+                "risk": p.risk,
+                "severity": p.severity,
+                "priority": p.priority,
+                "rationale": p.rationale,
+                "created_at": p.created_at,
+                "expires_at": p.expires_at,
+                "attempts": p.attempts,
+                "error": p.error,
+                "ds": p.datasource or None,
+            }
+            for p in rows
+        ],
     }
 
 
@@ -934,7 +1031,7 @@ async def admin_overview(
 
     shared: dict[str, dict | None] = {}
     failed_legs: set[str] = set()
-    # 六类审批待办(skill_draft / memory_preference 在内的全局腿)走共享取数
+    # 八类审批待办(skill_draft / memory_preference / action_* 在内的全局腿)走共享取数
     # 函数 collect_todo_sources;这里只跑两类运维待办。
     for kind, fn in (
         ("job_failed", lambda: _jobs_failed(request, cutoff)),

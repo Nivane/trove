@@ -484,3 +484,36 @@ class DriftDeclareRequest(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
     severity: Literal["info", "warning", "critical"] = "warning"
     author: str = ""
+
+
+class ActionTemplateCreate(BaseModel):
+    """POST /v1/admin/actions/templates body — admin-authored response template.
+
+    Created as a *pending* draft (same gate as skills): a decision rule may
+    not reference it until an admin confirms it. ``target.channel`` names a
+    channel configured under ``agent.action.channels`` — templates never
+    carry a bare URL, so reviewing one never means reviewing a credential.
+
+    ``payload_template`` is a JSON document with closed-set ``{{variable}}``
+    holes; it is rendered once against sample values at create time, so a
+    typo'd variable is a 400 here rather than a surprise on the night the
+    rule first fires.
+    """
+
+    name: str = Field(min_length=1, description="lowercase-hyphen name (safe file dir)")
+    title: str = Field(min_length=1)
+    description: str = ""
+    action_type: Literal["notify", "webhook"] = "notify"
+    target: dict[str, Any] = Field(default_factory=dict)  # {channel, resource}
+    risk: Literal["low", "medium", "high"] = "low"
+    payload_template: str = Field(min_length=1)
+
+
+class ActionDecision(BaseModel):
+    """POST /v1/admin/actions/proposals/{id}/{decision} body.
+
+    ``comment`` is optional everywhere but is the only place a rejection
+    reason lives; the audit row keeps it verbatim.
+    """
+
+    comment: str = ""

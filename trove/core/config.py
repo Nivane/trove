@@ -262,6 +262,40 @@ class DecisionConfig:
 
 
 @dataclass
+class ActionChannel:
+    """外送通道(P3):命名通道 → URL/密钥。
+
+    模板只写通道**名**(``target.channel``),URL 与密钥住在部署配置里 ——
+    一份组织模板因此可以在不携带任何凭证的前提下被评审,而"这条模板发到
+    哪里"是一个配置问题,不是内容问题。``secret`` 支持 ``${ENV_VAR}``
+    (加载器对全配置递归解析),非空时以 ``Authorization: Bearer`` 外送。
+    """
+
+    url: str = ""
+    secret: str = ""
+
+
+@dataclass
+class ActionConfig:
+    """行动层配置(P3 —— 提案/审批/外送 ``agent.action.*``)。
+
+    ``enabled`` **默认 False** —— 最保守的读法:关着的时候 propose 与
+    dispatch 两个"往外走"的方向都被拒,审批/驳回/过期/回执与模板管理照常
+    可用(可以先备好模板、清掉积压,再决定开不开外送)。
+
+    ``approval_ttl_hours``:提案的审批时限,过期由 serve 的周期任务清收。
+    ``max_payload_bytes``:渲染后 payload 的上限(创建模板时也会按它试渲染)。
+    ``max_attempts``:同一条提案允许的外送尝试次数(失败后只能显式 retry)。
+    """
+
+    enabled: bool = False
+    channels: dict[str, ActionChannel] = field(default_factory=dict)
+    approval_ttl_hours: int = 72
+    max_payload_bytes: int = 8192
+    max_attempts: int = 3
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -347,6 +381,8 @@ class AgentConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     # 决策层:判定历史保留期等。见 DecisionConfig(默认不清理)。
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    # 行动层:提案/审批/外送(默认关闭)。见 ActionConfig。
+    action: ActionConfig = field(default_factory=ActionConfig)
     # 离线评测回归门配置(opt-in;默认不进 CI)。见 EvalConfig。
     eval: EvalConfig = field(default_factory=EvalConfig)
     # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
@@ -571,6 +607,32 @@ class ConfigLoader:
                 0, int(decision_raw.get("verdict_retention_days", 0))),
         )
 
+        # Parse action layer (P3; agent.action.* — same top-level-or-nested
+        # reading as decision/attribution: a field the loader does not read is
+        # a config that silently never applies).
+        action_raw = resolved.get("action", {}) or agent_section.get("action", {}) or {}
+        channels_raw = action_raw.get("channels")
+        channels: dict[str, ActionChannel] = {}
+        if isinstance(channels_raw, dict):
+            for ch_name, ch_spec in channels_raw.items():
+                spec = ch_spec if isinstance(ch_spec, dict) else {}
+                channels[str(ch_name)] = ActionChannel(
+                    url=str(spec.get("url", "") or ""),
+                    secret=str(spec.get("secret", "") or ""),
+                )
+        action_conf = ActionConfig(
+            # 缺省 False,与 dataclass 同口径:整段 action: 缺失时行动层是
+            # **关**的。开它必须是显式写 true —— 一条能往外发消息的链路,
+            # 不能靠"配置不在"顺手打开。
+            enabled=bool(action_raw.get("enabled", False)),
+            channels=channels,
+            approval_ttl_hours=max(
+                1, int(action_raw.get("approval_ttl_hours", 72))),
+            max_payload_bytes=max(
+                0, int(action_raw.get("max_payload_bytes", 8192))),
+            max_attempts=max(1, int(action_raw.get("max_attempts", 3))),
+        )
+
         # Parse eval gate (top-level section, not under agent:)
         eval_raw = resolved.get("eval", {}) or {}
         budget_raw = agent_section.get("budget", {}) or {}
@@ -690,6 +752,7 @@ class ConfigLoader:
             attribution=attribution,
             analysis=analysis_conf,
             decision=decision_conf,
+            action=action_conf,
             eval=eval_conf,
             budget=budget_conf,
             authz=authz_conf,

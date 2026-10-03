@@ -25,7 +25,7 @@ MAX_RESULT_ROWS = 200
 
 class SchedulerRunner:
     def __init__(self, session_manager, jobs: JobsService, lang: str = "zh",
-                 decision=None, verdicts=None):
+                 decision=None, verdicts=None, actions=None):
         self.session_manager = session_manager
         self.jobs = jobs
         self.lang = lang
@@ -38,6 +38,12 @@ class SchedulerRunner:
         #: writes here are best-effort: a verdict store that is unavailable
         #: or failing must not turn a schedule that ran fine into an error.
         self.verdicts = verdicts
+        #: ``ActionService`` (duck-typed) or None — turns a fired verdict into
+        #: a pending proposal (P3). Best-effort for the same reason as the
+        #: verdict store, and with one more of its own: a proposal is a
+        #: *request for a human*, so a failure to create one must never take
+        #: the schedule (or the verdict) down with it.
+        self.actions = actions
 
     async def run_job(self, job: Job, now: datetime | None = None) -> dict[str, Any]:
         """Execute one job end-to-end and return its run summary."""
@@ -164,7 +170,8 @@ class SchedulerRunner:
                 0 if error else int(rows), job.decision_rule,
                 result_json=outcome.evidence,
             )
-            await self._record_verdict(job, outcome, run_id)
+            verdict_id = await self._record_verdict(job, outcome, run_id)
+            await self._propose_action(job, rule, outcome, run_id, verdict_id)
             summary.update({
                 "status": status,
                 "row_count": 0 if error else int(rows),
@@ -201,16 +208,19 @@ class SchedulerRunner:
             return message
         return f"{message}\n主因：{driver}" if message else f"主因：{driver}"
 
-    async def _record_verdict(self, job: Job, outcome: Any, run_id: int) -> None:
+    async def _record_verdict(
+        self, job: Job, outcome: Any, run_id: int,
+    ) -> int | None:
         """Best-effort append to the verdict history (the admin UI's audit line).
 
         The run row is the schedule's record; the verdict is the decision's.
         A store that is absent (feature not wired) or failing must never turn
         a schedule that judged fine into an error — log loudly, never raise.
-        Same discipline as ``_advance``.
+        Same discipline as ``_advance``. Returns the new verdict id so the
+        proposal can point back at the exact evidence row it came from.
         """
         if self.verdicts is None:
-            return
+            return None
         try:
             verdict = verdict_from_outcome(
                 outcome,
@@ -219,10 +229,43 @@ class SchedulerRunner:
                 run_id=run_id,
                 now=datetime.now().isoformat(timespec="seconds"),
             )
-            await self.verdicts.record(verdict)
+            return int(await self.verdicts.record(verdict) or 0) or None
         except Exception:
             logger.exception("decision job %s: verdict store write failed",
                              job.id)
+            return None
+
+    async def _propose_action(
+        self, job: Job, rule: Any, outcome: Any, run_id: int,
+        verdict_id: int | None,
+    ) -> None:
+        """A fired rule with ``autonomy: propose`` → a pending proposal (P3).
+
+        Best-effort exactly like ``_record_verdict``: the schedule ran and the
+        verdict is stored, so a proposal failure is a log line, never an error
+        on the run. The service owns the policy (disabled layer, no action,
+        ``notify_only``, dedup); a ``ProposalError`` here means the rule points
+        at a template that cannot produce a payload — loud in the log, and no
+        half-built proposal (see ``ActionService.propose_from_verdict``).
+        """
+        if self.actions is None:
+            return
+        action = getattr(rule, "action", None)
+        if action is None or action.autonomy != "propose":
+            return
+        if not getattr(outcome, "triggered", False) or getattr(outcome, "error", ""):
+            return
+        try:
+            refs = {"verdict_id": verdict_id} if verdict_id else None
+            await self.actions.propose_from_verdict(
+                rule=rule, outcome=outcome, datasource=job.datasource or "",
+                job_id=job.id, run_id=run_id, created_by="system",
+                evidence_refs=refs,
+            )
+        except Exception:
+            logger.exception(
+                "decision job %s: action proposal failed for rule %s",
+                job.id, getattr(rule, "id", "?"))
 
     async def _load_rule(self, job: Job) -> tuple[Any, str]:
         """``(rule, document digest)`` for ``job.decision_rule``.

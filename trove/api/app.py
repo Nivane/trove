@@ -96,6 +96,27 @@ async def _purge_verdicts(app: FastAPI) -> None:
         logger.warning("[decision] verdict retention failed: %s", e)
 
 
+async def _expire_actions(app: FastAPI) -> None:
+    """Action-proposal expiry: a pending proposal past its deadline → expired.
+
+    One indexed UPDATE, zero LLM. Rides the periodic sweep rather than a timer
+    of its own — but note this leg is **not** retention cleanup: the approval
+    deadline is the action layer's own clock, and an admin list showing
+    "pending" for a proposal nobody may approve any more is the audit lie the
+    sweep exists to prevent. Best-effort like every other leg: `approve()`
+    still refuses a late approval lazily if this never runs.
+    """
+    service = getattr(app.state, "actions", None)
+    if service is None:
+        return
+    try:
+        expired = await service.expire_due()
+        if expired:
+            logger.info("[action] expiry sweep: %d proposal(s) expired", expired)
+    except Exception as e:
+        logger.warning("[action] expiry sweep failed: %s", e)
+
+
 async def _job_tick(app: FastAPI) -> None:
     """Background loop: run due scheduled jobs every scheduler_poll_seconds.
 
@@ -149,6 +170,7 @@ async def _periodic_sweep(app: FastAPI) -> None:
                 logger.warning("[memory] lifecycle sweep failed: %s", e)
         await _purge_auth(app)
         await _purge_verdicts(app)
+        await _expire_actions(app)
 
 
 async def _readonly_selfcheck(app: FastAPI) -> None:
@@ -237,6 +259,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     # missing → refuse to start unless the caller explicitly opted into
     # the NullAuth local-admin fallback (embedded/test only).
     from trove.api.deps import NullAuth
+    from trove.api.routers import actions as actions_router
     from trove.api.routers import admin as admin_router
     from trove.api.routers import auth as auth_router
     from trove.api.routers import decisions as decisions_router
@@ -271,6 +294,9 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(jobs_router.router, prefix="/v1")
         app.include_router(skills_router.router, prefix="/v1")
         app.include_router(decisions_router.router, prefix="/v1")
+        # 行动提案面(模板门 + 审批 + 外送回执):全 require_admin 自持门禁,
+        # 与 decisions 同档 —— 行动的每一次外送都是治理动作。
+        app.include_router(actions_router.router, prefix="/v1")
         # 漂移面是管理动作(改状态、下豁免、承接外部声明),与 semantic 同档。
         app.include_router(drift.router, prefix="/v1")
         # 总览聚合面同属管理动作(require_admin 自持门禁)。
