@@ -4,13 +4,13 @@
 
 **Ask · Analyze · Decide · Act — in one conversation.**
 
-*An open-source, self-hosted **data decision agent**: natural language in, verified answers out — the same human-approved semantic model both bounds what is answerable and backs zero-LLM, evidence-carrying scheduled verdicts.*
+*An open-source, self-hosted **data decision agent**: natural language in, verified answers out — the same human-approved semantic model bounds what is answerable, backs zero-LLM scheduled verdicts that know their own uncertainty, and measures the effect of the action that followed.*
 
 [English](README.en.md) · [简体中文](README.md)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-5500%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-7200%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -21,7 +21,7 @@
 
 <br>
 
-📖 **[Documentation](https://nivane.github.io/trove/)** — 37 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[Documentation](https://nivane.github.io/trove/)** — 38 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -29,13 +29,15 @@
 
 ## What Trove Is
 
-Trove is a **self-learning data decision agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask. The same semantic model is also evaluated on schedule into evidence-carrying verdicts, delivered the moment they trigger — the action happens in your own processes (Trove keeps read-only access to your data).
+Trove is a **self-learning data decision agent**. Ask questions in your own words; get Markdown answers backed by real SQL — verified before and after execution, refused when the answer would be a guess, and improved by every question you ask. The same semantic model is also evaluated on schedule into evidence-carrying verdicts that know their own uncertainty, delivered the moment they trigger; the action happens in your own processes (Trove keeps read-only access to your data), and its effect is measured back afterwards.
 
 Its promise is not "always right" but **never wrong without a fight**:
 
 - **The semantic layer sets the boundary.** A human-approved semantic model (`semantics.yml`, an Apache OSSIE semantic model) is the *only answerable scope* — the datasets, metrics, fields and relationships the business has declared, nothing else. Queries outside it are refused, with a one-click model-extension path attached; never answered by guessing at raw tables.
 - **Deterministic rails close the loop.** Generated SQL runs through a zero-LLM rule chain, an AST firewall, an execution-cost guard and a reflection cycle with SQL-version regression. Wrong answers are diagnosed, rolled back and corrected — and the fix is remembered.
-- **Decisions share the query's footing.** Threshold rules name metrics, windows and baselines in the semantic model's own vocabulary and are evaluated by a deterministic engine, zero LLM. Every trigger carries the SQL and the raw rows it was judged on.
+- **Decisions share the query's footing — and know how certain they are.** Threshold rules name metrics, windows and baselines in the semantic model's own vocabulary and are evaluated by a deterministic engine, zero LLM. Every trigger carries the SQL and the raw rows it was judged on, plus statistical honesty: a seasonal noise band, no confirmation from fewer than 8 blocks, and a confidence figure labelled for what it is — a *position score, not a probability*. "Cannot tell" is reported as such, never quietly read as "nothing wrong today".
+- **Analysis is statistics first, narrative second.** "Why did it drop?" recurses along the metric's definition; contributions, ratio attribution and residuals are shown as they are, and significance, confidence and seasonal baselines come from a pure-stdlib statistics kit — recomputable and seed-reproducible, so a conclusion can always be re-derived. Every number comes from the deterministic engine; only the narrative uses an LLM.
+- **An action is not done until it is measured.** Approval and dispatch are not the end: on the agreed cadence Trove comes back and compares the blocks before and after the action against the *same noise band* the verdict used — "outside the band" and "no identifiable change" are both honest outcomes. Measurement reuses the decision's own parsing and compilation, so nobody quietly swaps the ruler.
 - **Learning compounds into an asset.** Every correction distills into a lesson; every confirmed Q&A becomes reference SQL. Auto-learned content lands `pending` until an admin confirms — the knowledge grows, and stays reviewable, git-manageable, yours.
 
 ## The Shape
@@ -55,7 +57,7 @@ flowchart TB
         SEM["Semantic model"]
         KB["Knowledge base + retrieval"]
         MEM["Memory · decision rules · Skills"]
-        ACT["Actions · proposal / approval / receipt"]
+        ACT["Actions · proposal / approval / receipt / measured effect"]
     end
 
     LLM["Models · trove/llm<br/>LLM gateway"]
@@ -128,6 +130,8 @@ Everything a human cares about — which definitions count, which joins are lega
 | Verifies before execution — zero LLM | ❌ | ❌ | partial | ✅ rule chain + AST firewall + EXPLAIN guard |
 | Self-corrects after execution (reflection + regression) | ❌ | ❌ | ❌ | ✅ rollback & retry with version checks |
 | Conclusion → threshold judgement (zero LLM) | ❌ | ❌ | partial (alerts can't reach the semantic layer's baselines) | ✅ declared in model vocabulary + evidence kept |
+| Judgements carry their own uncertainty (seasonal noise band / no confirmation on thin samples) | ❌ | ❌ | ❌ | ✅ pure-stdlib statistics, confidence honestly labelled |
+| Measures the effect after acting (closes the loop) | ❌ | ❌ | ❌ | ✅ the same noise band the verdict used |
 | Learns per datasource; auto content gated by humans | ❌ | partial | partial | ✅ KB + memory, `pending` until confirmed |
 
 ## Quick Start
@@ -179,14 +183,16 @@ Every row has a deeper version on the docs site, anchored to source:
 | Semantic layer | The answerable boundary is a readable, diffable, git-revertible file | [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) |
 | Topic areas | An optional narrowing inside the semantic model: queries anchor and converge within the area, out-of-area questions are refused outright; grants narrow users to areas in the console | [Semantic layer · topics](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
 | Self-checking loop | Rule chain / AST firewall / cost guard / reflection with version regression | [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
-| Decision rules | Alerts run on the semantic model too: thresholds, windows and baselines evaluated with zero LLM, every trigger carrying evidence and an adjacent diff | [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) |
-| Actions | A trigger freezes into a proposal → human approval → dispatch and receipt; Trove itself holds no write channel and never writes back to your database | [Actions & approval](https://nivane.github.io/trove/capabilities/actions.html) |
+| Decision rules | Alerts run on the semantic model too: thresholds, windows and baselines evaluated with zero LLM, every trigger carrying evidence and an adjacent diff; a seasonal noise band decides significance, a conditional ladder estimates net effect, and a rule can be replayed what-if on the numbers it actually judged | [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) |
+| Proactive scan | Scheduled scans hunt anomalies across metrics × dimensions; anything beyond the noise band lands as a *draft* that only becomes a rule once an admin confirms it — the LLM proposes hypotheses, the engine verifies them | [Decision rules · scan](https://nivane.github.io/trove/capabilities/decisions.html#scan) |
+| Actions | A trigger freezes into a proposal → human approval → dispatch and receipt → measured effect; backoff retry and dry-run rehearsal are built in, and Trove itself holds no write channel | [Actions & approval](https://nivane.github.io/trove/capabilities/actions.html) |
+| Decision quality | Verdict history is scored back per rule revision: trigger rate, and how many actions proved effective / showed no change / could not be measured — no rate on thin samples | [Decision rules · quality](https://nivane.github.io/trove/capabilities/decisions.html#quality) |
 | Subscriptions | Scheduled analysis is delivered to a notification channel as "every run / alerts only", failures on record; a job can be scoped to a topic area | [Automation & governance](https://nivane.github.io/trove/admin/automation.html) |
 | Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
 | Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | Org-wide methodology: `required` injected / `available` on demand / `validator` assertions | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
-| Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) |
+| Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; significance, confidence and seasonal baselines come from a recomputable statistics kit; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) · [noise band](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
 | Six datasources | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB, one pattern | [Data capabilities](https://nivane.github.io/trove/capabilities/data.html) |
 | Interfaces and governance | Web UI, REST (`/v1`), MCP, CLI; admin review, audit, observability | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
@@ -232,12 +238,13 @@ Every item above invites a follow-up: "and when it breaks?" The answer is unifor
 | Read-only self-check cannot complete | Recorded "unverified" | Never rendered as "safe" |
 | KB drift check cannot read | Non-zero exit code | "Could not check" is not "nothing wrong" |
 | Confidence undecidable | The most conservative band | Understating beats overstating |
+| Noise band unmeasurable (too few blocks / no history) | Report "cannot tell" as-is | A rule that gates on the band raises an error run rather than quietly passing |
 
 The same bias shows up elsewhere: health distinguishes `unavailable` from `degraded` (rather than one "down"), the rule chain stops at the first failure (rather than emitting a pile of vague hints), and a masking failure clears the result set (rather than leaving a stale one that could leak). The full list: [security boundaries](https://nivane.github.io/trove/ops/security.html) and [observability](https://nivane.github.io/trove/ops/observability.html).
 
 ## Docs Map
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 37 pages, from product concepts to API reference, including illustrated guides with 29 real-UI screenshots
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 38 pages, from product concepts to API reference, including illustrated guides with 34 real-UI screenshots
 
 | | |
 |---|---|
@@ -265,7 +272,7 @@ Per-question verdicts (each with its `qid` and token cost) land in `.trove/eval/
 ## Development
 
 ```bash
-uv run pytest                     # full suite: 5500+ tests, mocked LLM, zero network / zero keys
+uv run pytest                     # full suite: 7200+ tests, mocked LLM, zero network / zero keys
 uv run pytest tests/workflow/     # LangGraph graphs and nodes only
 uv run pytest -m "not slow"       # skip slow tests
 ```

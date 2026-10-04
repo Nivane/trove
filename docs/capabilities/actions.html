@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 行动与审批：判定触发冻结成提案，人工批准后才外送；模板两级门禁、闭集变量渲染、幂等键去重、投递与回执留痕——系统自身没有写回业务库的通道。">
+<meta name="description" content="Trove 行动与审批：判定触发冻结成提案，人工批准后才外送；模板两级门禁、闭集变量渲染、幂等键去重、投递与回执留痕；外送带护栏、退避重试与 dry-run 预演，送达后按窗做效果验收——系统自身没有写回业务库的通道。">
 <title>行动与审批 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -32,6 +32,9 @@
         系统不会自己去改任何东西——它把「该做什么」<strong>冻结成一份提案</strong>：
         载荷、依据、通道、风险都在里面，人批准了才外送，外送了还要回执。
         而<strong>系统自身没有写回业务库的通道</strong>，这不是承诺，是结构。
+        送出去也不是终点：按约定窗口回来重新测量，行动前后的块序列与当初判定用的是
+        <strong>同一套噪声带</strong>——「超出噪声带 / 无可辨识变化」都被如实记下，
+        后者不是失败，是最有价值的诚实结论。
       </p>
     </div>
 
@@ -56,9 +59,9 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L92">models.py:92 <span class="ref-line">ActionProposal</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L63">service.py:63 <span class="ref-line">ActionService</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L57">dispatcher.py:57 <span class="ref-line">ActionDispatcher</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L110">models.py:110 <span class="ref-line">ActionProposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L146">service.py:146 <span class="ref-line">ActionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L130">dispatcher.py:130 <span class="ref-line">ActionDispatcher</span></a>
     </p>
 
     <h2 id="lifecycle">一条提案的生命周期</h2>
@@ -109,9 +112,9 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L32">models.py:32 <span class="ref-line">PROPOSAL_STATUSES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L238">service.py:238 <span class="ref-line">dispatch</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L298">service.py:298 <span class="ref-line">ack</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L38">models.py:38 <span class="ref-line">PROPOSAL_STATUSES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L341">service.py:341 <span class="ref-line">dispatch</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L640">service.py:640 <span class="ref-line">ack</span></a>
     </p>
 
     <h3>载荷创建即定稿</h3>
@@ -129,7 +132,7 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L329">service.py:329 <span class="ref-line">_envelope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L671">service.py:671 <span class="ref-line">_envelope</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L164">propose.py:164 <span class="ref-line">build_proposal</span></a>
     </p>
 
@@ -147,7 +150,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L38">propose.py:38 <span class="ref-line">idempotency_key</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L111">service.py:111 <span class="ref-line">propose_from_verdict</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L206">service.py:206 <span class="ref-line">propose_from_verdict</span></a>
     </p>
 
     <p>
@@ -195,7 +198,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/templates.py#L60">templates.py:60 <span class="ref-line">ActionTemplateService</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L415">rules.py:415 <span class="ref-line">lint_rule_assets</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L734">rules.py:734 <span class="ref-line">lint_rule_assets</span></a>
     </p>
 
     <h3>渲染是闭集的：没有表达式，没有 eval</h3>
@@ -284,9 +287,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L37">rules.py:37 <span class="ref-line">AUTONOMIES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L195">service.py:195 <span class="ref-line">approve</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L291">config.py:291 <span class="ref-line">enabled</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L57">rules.py:57 <span class="ref-line">AUTONOMIES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L298">service.py:298 <span class="ref-line">approve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L347">config.py:347 <span class="ref-line">enabled</span></a>
     </p>
 
     <p>
@@ -299,9 +302,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L64">rules.py:64 <span class="ref-line">ActionRef</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L110">rules.py:110 <span class="ref-line">recommendation</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L118">rules.py:118 <span class="ref-line">driver_dimension</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L88">rules.py:88 <span class="ref-line">ActionRef</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L202">rules.py:202 <span class="ref-line">recommendation</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L210">rules.py:210 <span class="ref-line">driver_dimension</span></a>
     </p>
 
     <h2 id="failure">失败是响亮的</h2>
@@ -311,7 +314,8 @@ flowchart LR
       告警路径失败可以静默：告警会重复，下一个 tick 会再投一次。
       行动不会重复：它对着一场具体的触发被批准了一次。所以一次失败的 dispatch 会
       把提案置为 <code>failed</code>、写下一行带错误的投递记录、并出现在管理端的待办列表里；
-      再试一次是一次显式的 <code>retry</code>，且受 <code>max_attempts</code>（默认 3）约束。
+      再试一次是一次显式的 <code>retry</code>，且受 <code>max_attempts</code>（默认 3）约束；
+      到期未决的可重试失败也会被退避扫描自动重试（见下）。
     </p>
 
     <p>
@@ -322,8 +326,55 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L74">dispatcher.py:74 <span class="ref-line">send</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L287">service.py:287 <span class="ref-line">retry</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L198">dispatcher.py:198 <span class="ref-line">send</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L421">service.py:421 <span class="ref-line">retry</span></a>
+    </p>
+
+    <h2 id="guards">外送不是一次 POST 赌一把：护栏与重试</h2>
+
+    <p>
+      外送是外部系统调用，会超时、会被限流、会打到配错的地址。这些现实被内建进流程，
+      而不是留给使用者自己兜：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>护栏</th><th>行为</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>dry-run 预演</strong></td>
+            <td><code>dry_run</code> 动词走完前置判定后<strong>直接返回</strong>：不发 POST、不动提案状态，只写一条 <code>status="dry_run"</code> 的投递记录——预演过什么，审计轨迹里看得到</td>
+          </tr>
+          <tr>
+            <td><strong>风险档拒发</strong></td>
+            <td>风险高于配置的 <code>max_risk</code> 直接拒发：写 <code>failed</code> + 错误原因，可审计，不静默</td>
+          </tr>
+          <tr>
+            <td><strong>通道限速</strong></td>
+            <td>每条通道 60 秒窗口内的发送次数有上限——一条吵闹的规则不会把某个 IM 通道打成刷屏源</td>
+          </tr>
+          <tr>
+            <td><strong>错误分类重试</strong></td>
+            <td>5xx / 429 / 超时标 <code>retryable</code>；4xx 是配置错误，重试只会重复失败——不重试，把原文摆给你看</td>
+          </tr>
+          <tr>
+            <td><strong>退避与到期扫描</strong></td>
+            <td>下次可试时间由 <code>(attempts, deliveries.attempted_at)</code> <strong>纯派生</strong>（零新增列）；<code>retry_due_proposals</code> 自动扫到期的失败提案——重试是自动的，但只重试分类为可重试的</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L70">guard.py:70 <span class="ref-line">risk_allowed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L85">guard.py:85 <span class="ref-line">channel_rate_ok</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L115">guard.py:115 <span class="ref-line">backoff_delay</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/guard.py#L137">guard.py:137 <span class="ref-line">next_attempt_at</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L123">dispatcher.py:123 <span class="ref-line">retryable</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L341">service.py:341 <span class="ref-line">dispatch</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L432">service.py:432 <span class="ref-line">retry_due_proposals</span></a>
     </p>
 
     <h2 id="pull">拉通道：MCP 与 webhook 并列</h2>
@@ -361,9 +412,55 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L133">models.py:133 <span class="ref-line">Approval</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L145">models.py:145 <span class="ref-line">Delivery</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L188">actions.py:188 <span class="ref-line">decide_action_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L151">models.py:151 <span class="ref-line">Approval</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L163">models.py:163 <span class="ref-line">Delivery</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L214">actions.py:214 <span class="ref-line">decide_action_proposal</span></a>
+    </p>
+
+    <h2 id="effect">发出去了，然后呢：闭环效果验收</h2>
+
+    <p>
+      一个行动发出之后，它对指标到底有没有用？这里不猜，也不靠手动前后对比：
+      到期由后台按<strong>与判定同一口径</strong>回来测量——重新解析、编译、执行（<strong>只读</strong>），
+      把行动前的块序列与行动后的块序列放进<strong>同一套噪声带</strong>，
+      给出三态结论：<strong>超出噪声带 / 无可辨识变化 / 判不了</strong>。
+      「无可辨识变化」不是失败，它是最有价值的诚实结论——它告诉你这个行动没起作用。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>测量闸口</th><th>语义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>观察窗未满</strong></td><td>距外送不足约定天数 → 跳过，且<strong>不算「已测量」</strong>——还没到时候</td></tr>
+          <tr><td><strong>测量器缺席</strong></td><td>没有可用的测量器 → 跳过，同样不算已测。「没测」与「测了没结果」从账本上就是两回事</td></tr>
+          <tr><td><strong>测量器出错</strong></td><td>写一行 <strong>error 结局</strong>——响亮记下，不重试、不吞</td></tr>
+          <tr><td><strong>行动层开关</strong></td><td><strong>不是闸口</strong>：关闭只是不再外送新行动；对已有行动的测量是读取，照常进行</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      测量的诚实藏在数字形态里：行动前后块序列的对比（<code>delta</code>、<code>pct</code>、<code>z</code>）、
+      同一套噪声带的 <code>outside_band</code> 三态、样本不足时的 <code>low_n</code> 标与具名降级原因。
+      若规则声明了因果梯并能给出 ATT，结果同时携带它（<code>method: "its+did"</code>）；
+      给不了就标 <code>causal: "unavailable"</code> 保留 ITS 本身——能算什么说什么。
+      测量器复用判定路径的解析、编译与执行 helper，测量与判定同口径；
+      它的物理位置在判定包（如传输器的姿态：包外持有连接器），行动包自己不获得查询能力。
+    </p>
+
+    <p>
+      结局落在提案自己的存储里：<code>GET /v1/admin/actions/proposals/{id}/outcomes</code>
+      一次读全「什么出去了、之后发生了什么」；这些结局还会被
+      <a href="decisions.html#quality">质量回评</a>按规则版本聚合——闭环的账本就是它。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L131">effect.py:131 <span class="ref-line">measure_effect</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/outcome.py#L98">outcome.py:98 <span class="ref-line">make_verifier</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L486">service.py:486 <span class="ref-line">measure_due</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L189">actions.py:189 <span class="ref-line">outcomes 端点</span></a>
     </p>
 
     <h2 id="ui">在管理台里</h2>
@@ -371,7 +468,7 @@ flowchart LR
     <p>
       管理台的「行动」页有两个页签：<strong>模板</strong>（草稿确认门禁、通道名、
       风险级别、命中注入扫描的报告、试渲染预览）与<strong>提案</strong>
-      （按状态过滤的列表、待办计数、以及逐条的批准 / 拒绝 / 外送 / 重试 / 确认回执 / 详情）。
+      （按状态过滤的列表、待办计数、以及逐条的批准 / 拒绝 / 外送 / 重试 / 预演（dry-run）/ 确认回执 / 详情）。
       详情抽屉里是提案全文加它的完整审计轨迹。行动层未启用时，页面顶部有醒目的
       「已停用」横幅——列表照常可读，外送按钮背后的那一步会被服务拒绝。
     </p>
@@ -411,14 +508,15 @@ flowchart LR
           <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/templates/{name}/confirm · reject</td><td>确认 / 驳回草稿</td></tr>
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals</td><td>提案列表（按状态 / 数据源过滤）+ 各状态计数</td></tr>
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals/{id}</td><td>单条提案 + 完整审计轨迹（批准、投递）</td></tr>
-          <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/proposals/{id}/{decision}</td><td>状态迁移，闭集动词：<code>approve / reject / cancel / dispatch / retry / ack</code></td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/proposals/{id}/{decision}</td><td>状态迁移，闭集动词：<code>approve / reject / cancel / dispatch / retry / dry_run / ack</code></td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals/{id}/outcomes</td><td>提案的效果验收记录（测量窗、三态结论、方法、降级原因）</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L36">actions.py:36 <span class="ref-line">_DECISIONS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L67">actions.py:67 <span class="ref-line">list_action_templates</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L37">actions.py:37 <span class="ref-line">_DECISIONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L68">actions.py:68 <span class="ref-line">list_action_templates</span></a>
     </p>
 
     <p>
@@ -437,6 +535,8 @@ flowchart LR
         <tbody>
           <tr><td>触发提案的判定从哪来</td><td><a href="decisions.html">判定规则</a></td></tr>
           <tr><td>触发通知里的「主因」行是谁算的</td><td><a href="decisions.html#bridge">判定规则 · 分析→决策桥</a></td></tr>
+          <tr><td>效果验收的结局怎么回评</td><td><a href="decisions.html#quality">判定规则 · 质量回评</a></td></tr>
+          <tr><td>判定凭什么说自己「确定」</td><td><a href="decisions.html#significance">判定规则 · 噪声带与显著性</a></td></tr>
           <tr><td>指标、维度与主题域</td><td><a href="semantic.html">语义层</a></td></tr>
           <tr><td>订阅投递与定时任务</td><td><a href="../admin/automation.html">自动化与治理</a></td></tr>
           <tr><td>只读边界全清单</td><td><a href="../ops/security.html">安全边界</a></td></tr>
@@ -447,7 +547,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 8b06b55</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
