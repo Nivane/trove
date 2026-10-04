@@ -72,7 +72,6 @@ from trove.services.decision.rules import (
 from trove.services.kb.git_versioning import GitVersioning
 from trove.services.presets.models import (
     Preset,
-    PresetError,
     STATUSES,
     ApplyReport,
     brief,
