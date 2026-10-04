@@ -46,7 +46,9 @@ def contribution(
 
     Returns: [{"dim", "base", "current", "delta", "contribution"}, ...]
     """
-    keys = set(base_map) | set(cur_map)
+    # 保序并集(dict.fromkeys):集合迭代序随 PYTHONHASHSEED 变化,而
+    # 并列项的排序会退到插入序 —— 跨进程必须逐字节一致。
+    keys = dict.fromkeys(list(base_map) + list(cur_map))
     items: list[dict[str, Any]] = []
     for k in keys:
         b = num(base_map.get(k, 0.0))
@@ -60,7 +62,9 @@ def contribution(
     else:
         for it in items:
             it["contribution"] = it["delta"] / total_abs
-    items.sort(key=lambda x: abs(x["contribution"]), reverse=True)
+    # 二级键:并列时按维度名升序 —— 单键排序的并列次序依赖插入序,
+    # 跨进程不可复现
+    items.sort(key=lambda x: (-abs(x["contribution"]), str(x["dim"])))
     return items
 
 
@@ -78,7 +82,7 @@ def shift_share(base_nd: dict[str, tuple[float, float]], cur_nd: dict[str, tuple
     降序,含 base_rate/current_rate/base_weight/current_weight/within/
     composition/interaction/contribution;effects 为三类效应总和 + ΔR。
     """
-    dims = set(base_nd) | set(cur_nd)
+    dims = dict.fromkeys(list(base_nd) + list(cur_nd))  # 保序并集,跨进程确定
     D_base = sum(d for _, d in base_nd.values())
     D_cur = sum(d for _, d in cur_nd.values())
     N_base = sum(n for n, _ in base_nd.values())
@@ -105,7 +109,7 @@ def shift_share(base_nd: dict[str, tuple[float, float]], cur_nd: dict[str, tuple
             "within": within, "composition": composition, "interaction": interaction,
             "contribution": contribution,
         })
-    rows.sort(key=lambda r: abs(r["contribution"]), reverse=True)
+    rows.sort(key=lambda r: (-abs(r["contribution"]), str(r["dim"])))
     effects = {
         "within": sum(r["within"] for r in rows),
         "composition": sum(r["composition"] for r in rows),
@@ -133,7 +137,7 @@ def ratio_share(cur_nd: dict[str, tuple[float, float]]) -> dict[str, Any]:
             "within": 0.0, "composition": 0.0, "interaction": 0.0,
             "contribution": (n / N) if N else 0.0,
         })
-    rows.sort(key=lambda r: abs(r["contribution"]), reverse=True)
+    rows.sort(key=lambda r: (-abs(r["contribution"]), str(r["dim"])))
     return {"rows": rows, "effects": None, "base_total": 0.0, "cur_total": R}
 
 
@@ -151,7 +155,8 @@ def breakdown_signal(cur_map: dict[str, Any], base_map: dict[str, Any], ratio_pa
             {k: tuple(map(float, v)) for k, v in (cur_map or {}).items()},
         )
         return sum(abs(r["contribution"]) for r in dec["rows"])
-    keys = set(cur_map) | set(base_map)
+    # 保序并集:浮点求和的次序影响末位比特,跨进程也要一致
+    keys = dict.fromkeys(list(cur_map) + list(base_map))
     return sum(abs(float(cur_map.get(k, 0.0)) - float(base_map.get(k, 0.0))) for k in keys)
 
 

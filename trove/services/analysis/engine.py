@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any
 
 from trove.core.logging import get_logger
@@ -29,11 +30,21 @@ from trove.services.analysis.decompose import (
     shift_share,
     signed_children,
 )
+from trove.services.analysis.budget import QueryLedger
 from trove.services.analysis.expr_tree import (
     collect_components,
     metric_components,
     metric_ratio_parts,
 )
+from trove.services.analysis.series import (
+    SeriesSpec,
+    block_windows,
+    compile_series_hop,
+    derive_grain,
+    same_phase_blocks,
+    series_from_rows,
+)
+from trove.services.analysis.stats import band, low_n, outside, robust_z
 
 logger = get_logger(__name__)
 
@@ -183,14 +194,41 @@ def compile_ratio_hop(
         return None
 
 
-def time_conds(time_field: str, period: tuple[str, str] | None) -> list[dict[str, Any]]:
-    """时间范围 → plan conditions(半开区间用 >=/< 表达;period None → 空)。"""
+def _plus_one_day(iso: str) -> str | None:
+    """ISO 日期 + 1 天(不可解析 → None,调用方回退)。"""
+    try:
+        return (date.fromisoformat(str(iso)) + timedelta(days=1)).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def time_conds(
+    time_field: str,
+    period: tuple[str, str] | None,
+    *,
+    dialect: str = "",
+) -> list[dict[str, Any]]:
+    """时间范围 → plan conditions(半开 ``>= start`` ∧ ``< end + 1 天``)。
+
+    半开是唯一对 Date 与 Timestamp 列语义一致的形式:闭区间
+    ``<= '2024-01-31'`` 在 timestamp 列上排除当天 00:00 之后的所有行
+    —— **丢最后一天**(sqlite 实测:同日数据 date 列 2 行、timestamp
+    列 0 行;半开则两列同为 2 行)。end 不可解析时回退闭区间(如实
+    标注,不猜)。``dialect`` 预留给未来需要方言差异化时间算术的场景,
+    当前四种方言统一按 ISO 字面量比较。
+    """
     if not time_field or period is None:
         return []
     start, end = period
+    tail = _plus_one_day(end)
+    if tail is None:
+        return [
+            {"field": time_field, "op": ">=", "value": start, "note": "attribution period start"},
+            {"field": time_field, "op": "<=", "value": end, "note": "attribution period end (unparsable; closed fallback)"},
+        ]
     return [
         {"field": time_field, "op": ">=", "value": start, "note": "attribution period start"},
-        {"field": time_field, "op": "<=", "value": end, "note": "attribution period end"},
+        {"field": time_field, "op": "<", "value": tail, "note": "attribution period end (half-open: end + 1d)"},
     ]
 
 
@@ -232,6 +270,14 @@ class AnalysisLimits:
     max_components: int = 4
     max_queries: int = 12
     tree_max_depth: int = 5
+    #: 块序列(统计器械,B1)。``series_grain`` 空 = 新阶段关闭(老路径
+    #: 逐字节不变);非空时作为默认粒度(请求的 ``SeriesSpec.grain`` 优先)。
+    series_grain: str = ""
+    block_lookback: int = 12
+    #: 全运行查询硬预算(None = 不设上限,只记账 —— 老路径逐字节兼容)。
+    #: 「老路径不受 max_queries 约束」的洞由此从**不可见变可观测**;
+    #: 上限只在显式设置时生效(决策桥/新阶段),让路永远记账、永不静默。
+    total_query_budget: int | None = None
 
 
 @dataclass
@@ -254,6 +300,8 @@ class AnalysisRequest:
     #: (且按"今天"解析)会给出不同窗口,判定与证据就对不上了。
     #: None = 走 ``time_context`` 的常规派生(问答路径不变)。
     periods: tuple[tuple[str, str] | None, tuple[str, str] | None] | None = None
+    #: 块序列规格(B1 统计器械;None = 不跑序列阶段 —— 老路径不变)。
+    series: SeriesSpec | None = None
 
 
 @dataclass
@@ -278,6 +326,11 @@ class AnalysisOutcome:
     partial: bool = False
     #: 异常中途降级(表为空、只有 hops)—— 节点按旧形状原样组装 result
     degraded_result: bool = False
+    #: 块序列产物(统计器械;None = 未跑/降级 —— payload 不出本节)。
+    series: dict[str, Any] | None = None
+    #: 查询账本快照(仅 ``total_query_budget`` 显式设置时非 None ——
+    #: 老路径 evidence 不带 budget 键,逐字节兼容)。
+    budget: dict[str, Any] | None = None
 
 
 class AnalysisEngine:
@@ -292,6 +345,7 @@ class AnalysisEngine:
         self._sl = semantic_layer
         self._runner = runner
         self.limits = limits or AnalysisLimits()
+        self._ledger = QueryLedger(total=self.limits.total_query_budget)
         self._hops: list[dict[str, Any]] = []
         self._evidence: list[dict[str, Any]] = []
         self._queries = 0
@@ -313,6 +367,7 @@ class AnalysisEngine:
         """唯一执行入口:跑一跳 + 记证据(query 计数/rows 截断视图)。"""
         cols, rows = await self._runner(sql, datasource)
         self._queries += 1
+        self._ledger.record(purpose)
         entry: dict[str, Any] = {
             "id": len(self._evidence) + 1,
             "purpose": purpose,
@@ -352,12 +407,12 @@ class AnalysisEngine:
         if ratio_parts is not None and metric is not None:
             cur_sql = compile_ratio_hop(
                 self._sl, matched, dialect, metric, ratio_parts,
-                dim_ref, conds_extra + time_conds(time_field, cur_period),
+                dim_ref, conds_extra + time_conds(time_field, cur_period, dialect=dialect),
             )
             base_sql = (
                 compile_ratio_hop(
                     self._sl, matched, dialect, metric, ratio_parts,
-                    dim_ref, conds_extra + time_conds(time_field, base_period),
+                    dim_ref, conds_extra + time_conds(time_field, base_period, dialect=dialect),
                 )
                 if base_period else None
             )
@@ -374,12 +429,12 @@ class AnalysisEngine:
         else:
             cur_sql = compile_hop(
                 self._sl, matched, dialect, metric_name, [dim_ref],
-                conds_extra + time_conds(time_field, cur_period),
+                conds_extra + time_conds(time_field, cur_period, dialect=dialect),
             )
             base_sql = (
                 compile_hop(
                     self._sl, matched, dialect, metric_name, [dim_ref],
-                    conds_extra + time_conds(time_field, base_period),
+                    conds_extra + time_conds(time_field, base_period, dialect=dialect),
                 )
                 if base_period else None
             )
@@ -395,6 +450,113 @@ class AnalysisEngine:
                 hop_base = {"hop": 1, "sql": base_sql, "columns": cols, "rows": rows[:10], "period": "base"}
         signal = breakdown_signal(cur_map, base_map, ratio_parts)
         return cur_map, base_map, signal, hop_cur, hop_base
+
+    # ── 块序列(统计器械 B1;默认关,失败只降级)─────────────
+
+    def _series_spec(self, request: AnalysisRequest) -> SeriesSpec | None:
+        """块规格:请求 > 限额默认;两者皆无 → None(新阶段关闭)。"""
+        if request.series is not None:
+            return request.series
+        if self.limits.series_grain:
+            return SeriesSpec(
+                grain=self.limits.series_grain,
+                lookback=self.limits.block_lookback,
+            )
+        return None
+
+    async def _series_stage(
+        self,
+        request: AnalysisRequest,
+        metric_name: str,
+        time_field: str | None,
+        cur_period: tuple[str, str] | None,
+        datasource: str,
+        degraded: list[dict[str, Any]],
+        *,
+        current: float | None = None,
+    ) -> dict[str, Any] | None:
+        """历史块分布(1 条 ``time_grain`` 查询)→ band / z / outside。
+
+        块严格取**当前窗口之前**(噪声带混入被测点会自我稀释:异常值
+        把自己拉回带内);粒度与窗口不对齐 / 时间字段缺失 / 编译失败 /
+        预算让路 → 记 ``degraded`` 后返回 None —— 序列是**增强**不是
+        前提,主产物照常交付(判定侧的 ``require:outside_band`` 会把
+        「算不出」升级为 error run,那是判定语义,不是引擎语义)。
+        """
+        spec = self._series_spec(request)
+        if spec is None:
+            return None
+        if not time_field or cur_period is None:
+            degraded.append({"stage": "series", "reason": "no_time_field"})
+            return None
+        grain = str(spec.grain or "").strip() or derive_grain(cur_period)
+        if grain is None:
+            degraded.append({"stage": "series", "reason": "grain_unaligned"})
+            return None
+        mode = str(spec.mode or "trailing").strip().lower()
+        count = max(int(spec.lookback or 0), 0)
+        if mode == "same_phase":
+            blocks = same_phase_blocks(cur_period, count)
+        else:
+            mode = "trailing"
+            blocks = block_windows(cur_period, grain, count)
+        if not blocks:
+            degraded.append({"stage": "series", "reason": "no_blocks"})
+            return None
+        # 预算门(显式,且只在新阶段):无上限时 can() 恒真
+        if not self._ledger.can(1):
+            entry = self._ledger.yield_("series", needed=1)
+            degraded.append({"stage": "series", "reason": entry["reason"]})
+            return None
+        span = (blocks[0][0], blocks[-1][1])
+        dialect = request.dialect or "sqlite"
+        sql = compile_series_hop(
+            self._sl, list(request.matched), dialect, metric_name,
+            time_conds(time_field, span, dialect=dialect),
+            time_grain=grain, time_field=time_field,
+        )
+        if sql is None:
+            degraded.append({"stage": "series", "reason": "compile_miss"})
+            return None
+        try:
+            cols, rows = await self._execute(sql, datasource, purpose="series")
+        except Exception as e:
+            logger.warning("Series stage execution failed (%s); skipping", e)
+            degraded.append({"stage": "series", "reason": str(e)[:200]})
+            return None
+        series = series_from_rows(cols, rows)
+        if mode == "same_phase":
+            # 单条范围查询会带回异相位块 —— 只留落在目标块内的桶。
+            # 比较键按桶标签长度截齐:sqlite 月桶标签是 'YYYY-MM'(7 位),
+            # 直接与 'YYYY-MM-DD' 窗口边界比较会因前缀短而全部漏掉。
+            series = [
+                (lbl, v) for lbl, v in series
+                if any(w0[:len(lbl)] <= lbl <= w1[:len(lbl)] for w0, w1 in blocks)
+            ]
+        if not series:
+            degraded.append({"stage": "series", "reason": "empty_series"})
+            return None
+        values = [v for _, v in series]
+        b = band(values, k=float(spec.k or 3.5))
+        return {
+            "grain": grain,
+            "mode": mode,
+            "lookback": count,
+            "span": [span[0], span[1]],
+            "labels": [lbl for lbl, _ in series],
+            "values": values,
+            "band": b.to_dict(),
+            "current": current,
+            "z": robust_z(current, values) if current is not None else None,
+            "outside": outside(current, b) if current is not None else None,
+            "low_n": low_n(len(values)),
+        }
+
+    def _budget_snapshot(self) -> dict[str, Any] | None:
+        """账本快照(仅显式预算时非 None —— 老路径 payload 无 budget 键)。"""
+        if self.limits.total_query_budget is None:
+            return None
+        return self._ledger.snapshot()
 
     # ── 驱动器树(新阶段;失败只降级,不动老路径)──────────────
 
@@ -442,7 +604,7 @@ class AnalysisEngine:
         def _filters(period: tuple[str, str] | None) -> list[dict[str, Any]]:
             return [
                 {"field": c["field"], "op": c["op"], "value": c["value"]}
-                for c in time_conds(time_field, period)
+                for c in time_conds(time_field, period, dialect=request.dialect or "sqlite")
             ]
 
         def _compile_one(cand: str, period: tuple[str, str] | None) -> str | None:
@@ -717,9 +879,9 @@ class AnalysisEngine:
         if include_total and self._queries + 2 + need <= lim.max_queries:
             try:
                 cur_sql = compile_hop(self._sl, matched, dialect, metric_name, [],
-                                      time_conds(time_field, cur_period))
+                                      time_conds(time_field, cur_period, dialect=dialect))
                 base_sql = compile_hop(self._sl, matched, dialect, metric_name, [],
-                                       time_conds(time_field, base_period))
+                                       time_conds(time_field, base_period, dialect=dialect))
                 if cur_sql:
                     cols, rows = await self._execute(
                         cur_sql, datasource, purpose="overall",
@@ -740,6 +902,10 @@ class AnalysisEngine:
         )
         if tree is None:
             return None
+        series = await self._series_stage(
+            request, metric_name, time_field, cur_period, datasource,
+            degraded, current=cur_total if self._hop0_ok else None,
+        )
 
         outcome = AnalysisOutcome(
             metric=metric_name, baseline=request.baseline,
@@ -747,6 +913,8 @@ class AnalysisEngine:
             total_delta=cur_total - base_total,
         )
         outcome.tree = tree
+        outcome.series = series
+        outcome.budget = self._budget_snapshot()
         outcome.hops = list(self._hops)
         outcome.evidence_queries = list(self._evidence)
         outcome.degraded = degraded
@@ -814,13 +982,16 @@ class AnalysisEngine:
         base_total = cur_total = 0.0
         primary_dim = dims[0]
         drill_table: list[dict[str, Any]] = []
+        series: dict[str, Any] | None = None
         try:
             # hop0:整体 Δ(无维度)——当前期 vs 基期总量对比
             cur_sql = compile_hop(
-                sl, matched, dialect, metric_name, [], time_conds(time_field, cur_period)
+                sl, matched, dialect, metric_name, [],
+                time_conds(time_field, cur_period, dialect=dialect),
             )
             base_sql = compile_hop(
-                sl, matched, dialect, metric_name, [], time_conds(time_field, base_period)
+                sl, matched, dialect, metric_name, [],
+                time_conds(time_field, base_period, dialect=dialect),
             )
             if cur_sql:
                 cols, rows = await self._execute(cur_sql, datasource, purpose="overall", period="current", keep=5)
@@ -919,12 +1090,12 @@ class AnalysisEngine:
                     if is_ratio:
                         cur_sql = compile_ratio_hop(
                             sl, matched, dialect, metric_obj, ratio_parts,
-                            d1_ref, drill_conds + time_conds(time_field, cur_period),
+                            d1_ref, drill_conds + time_conds(time_field, cur_period, dialect=dialect),
                         )
                         base_sql = (
                             compile_ratio_hop(
                                 sl, matched, dialect, metric_obj, ratio_parts,
-                                d1_ref, drill_conds + time_conds(time_field, base_period),
+                                d1_ref, drill_conds + time_conds(time_field, base_period, dialect=dialect),
                             )
                             if base_period else None
                         )
@@ -942,11 +1113,11 @@ class AnalysisEngine:
                     else:
                         cur_sql = compile_hop(
                             sl, matched, dialect, metric_name, [d1_ref],
-                            drill_conds + time_conds(time_field, cur_period),
+                            drill_conds + time_conds(time_field, cur_period, dialect=dialect),
                         )
                         base_sql = compile_hop(
                             sl, matched, dialect, metric_name, [d1_ref],
-                            drill_conds + time_conds(time_field, base_period),
+                            drill_conds + time_conds(time_field, base_period, dialect=dialect),
                         )
                         drill_cur_v: dict[str, float] = {}
                         drill_base_v: dict[str, float] = {}
@@ -961,6 +1132,12 @@ class AnalysisEngine:
                         drill_table = contribution(drill_base_v, drill_cur_v)
 
             self._produced = True
+
+            # 块序列(统计器械;独立门控,失败只降级)
+            series = await self._series_stage(
+                request, metric_name, time_field, cur_period, datasource,
+                degraded, current=cur_total if self._hop0_ok else None,
+            )
 
             # 驱动器树(新阶段;独立门控,失败只降级)
             tree = None
@@ -979,6 +1156,7 @@ class AnalysisEngine:
                     partial=True, degraded_result=True,
                 )
             tree = None
+            series = None
 
         if not self._hops:
             return None
@@ -1002,6 +1180,8 @@ class AnalysisEngine:
             )
             outcome.drilldown = {"dimension": drill_dim, "table": drill_table}
         outcome.tree = tree
+        outcome.series = series
+        outcome.budget = self._budget_snapshot()
         return outcome
 
 
@@ -1023,7 +1203,7 @@ def analysis_payload(
     else:
         kind = "attribution"
     truncated = any(bool(q.get("truncated")) for q in outcome.evidence_queries)
-    return {
+    payload = {
         "version": 1,
         "kind": kind,
         "metric": outcome.metric,
@@ -1049,3 +1229,9 @@ def analysis_payload(
         },
         "partial": outcome.partial,
     }
+    # 新节只在有值时出现:老路径(序列/预算未启用)payload 逐字节不变
+    if outcome.series is not None:
+        payload["series"] = outcome.series
+    if outcome.budget is not None:
+        payload["evidence"]["budget"] = outcome.budget
+    return payload
