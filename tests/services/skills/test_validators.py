@@ -421,3 +421,32 @@ def test_format_hit_omits_empty_name_and_collapses_newlines():
     assert format_hit({"name": "g1", "message": "a\nb\n\nc"}) == "[g1] a b c"
     assert format_hit({"message": None}) == ""
 
+
+# ── 一致性回归门:VALIDATOR_VARIABLES ↔ build_scope 键集 ────
+
+def test_scope_keys_match_validator_variables():
+    """作用域里**实际**放进去的键 == 表达式语言声明的可读变量,一一相等。
+
+    ``VALIDATOR_VARIABLES`` 是解析期闭集(没声明的名字是 parse error),
+    ``build_scope`` 是运行期作用域 —— 漂移的两个方向都是静默事故:
+    - 作用域多出一个键:谁都读不到它,白算;
+    - 语言声明了一个作用域永远不置的键:写它的 check **解析通过、每次都
+      判不了**,而判不了从不拦(阻断档也一样)。
+    三种退化形状都枚举(正常/无列/被截断),取并集 —— 只要有一个分支
+    少置一个键,这条就红。
+    """
+    from trove.services.decision.expr import VALIDATOR_VARIABLES
+
+    shapes = [
+        # 正常:点名列在结果里,聚合全部可算
+        ({"columns": ["a"]}, ["a"], [[1.0], [2.0]], None),
+        # 没点名列(或点名的列不在结果里)→ 聚合标量退化 UNKNOWN,键仍在
+        ({"columns": ["nope"]}, ["a"], [[1.0]], None),
+        # 结果集被展示层截断 → 同上(窗口内的聚合不代表整个结果)
+        ({"columns": ["a"]}, ["a"], [[1.0]], 9999),
+    ]
+    keys: set[str] = set()
+    for check, columns, rows, row_count in shapes:
+        keys |= set(build_scope(check, columns, rows, row_count=row_count))
+    assert keys == set(VALIDATOR_VARIABLES)
+

@@ -6,7 +6,8 @@
   - 列描述为空、lessons pattern 过长或 note 为空
 
 可选实时检查(--datasource):schema_notes 的枚举取值 vs 数据库 DISTINCT 值,
-缺值报警(如 loan.status 漏掉 'C')。
+缺值报警(如 loan.status 漏掉 'C')。live 检查的实现与静态检查同住
+services/kb/(见 live_lint.py),本脚本只是它的壳 —— `trove validate` 走同一份。
 
 Usage:
     uv run python scripts/lint_kb.py [--db-id financial] [--kb-dir DIR]
@@ -25,11 +26,16 @@ from trove.services.datasource.urls import parse_datasource_url
 from trove.services.kb.lint import (
     lint_examples,
     lint_lessons,
-    lint_semantics,
+    lint_semantics_document,
     lint_stats,
     lint_tables,
     lint_terms,
-    parse_enum_values,
+)
+# live 检查的实现移到了服务侧(scripts 只是壳);这两个名字在此 re-export,
+# ``from scripts.lint_kb import check_enums`` 的既有导入面不变。
+from trove.services.kb.live_lint import (  # noqa: F401
+    check_enums,
+    check_undocumented_columns,
 )
 from trove.services.kb.service import KbService, _parse_file, resolve_kb_root
 
@@ -42,59 +48,6 @@ def parse_args():
     parser.add_argument("--datasource", default=None,
                         help="可选:连接数据源,比对枚举取值(如 mysql://root:root@127.0.0.1:3306/financial)")
     return parser.parse_args()
-
-
-async def check_enums(adapter, table_payloads: dict[str, dict]) -> list[str]:
-    """schema_notes 的枚举 vs 数据库 DISTINCT 值,缺值报警。"""
-    issues = []
-    for table_name, payload in table_payloads.items():
-        for col, enum_text in (payload.get("enums") or {}).items():
-            known = parse_enum_values(enum_text)
-            if not known:
-                continue
-            try:
-                rows = (await adapter.execute(
-                    f"SELECT DISTINCT `{col}` FROM `{table_name}`"
-                )).rows
-                # 空串/空白取值是数据噪声,写不出含义,不计入缺口
-                actual = {
-                    str(r[0]) for r in rows
-                    if r[0] is not None and str(r[0]).strip()
-                }
-            except Exception as e:
-                issues.append(f"枚举探测失败 {table_name}.{col}: {e}")
-                continue
-            missing = sorted(actual - known)
-            if missing:
-                issues.append(
-                    f"表 {table_name}.{col} 的枚举缺取值: {missing[:10]}"
-                    f"{'…' if len(missing) > 10 else ''}")
-    return issues
-
-
-async def check_undocumented_columns(adapter, tables: list[dict]) -> list[str]:
-    """数据库实际列 vs schema_notes 已描述列,缺描述的列报警。
-
-    _parse_file 会静默丢弃空描述列,静态检查看不到它们,只能对照
-    information_schema(如 district 的 A4~A16 描述被丢光)。
-    """
-    issues = []
-    for table in tables:
-        name = str(table["name"])
-        documented = set(table.get("columns", {}))
-        try:
-            rows = (await adapter.execute(
-                "SELECT column_name FROM information_schema.columns "
-                f"WHERE table_schema = DATABASE() AND table_name = '{name}'"
-            )).rows
-        except Exception as e:
-            issues.append(f"information_schema 查询失败 {name}: {e}")
-            continue
-        missing = sorted({str(r[0]) for r in rows} - documented)
-        if missing:
-            issues.append(f"表 {name} 缺列描述: {missing[:10]}"
-                          f"{'…' if len(missing) > 10 else ''}")
-    return issues
 
 
 def main() -> int:
@@ -132,15 +85,15 @@ def main() -> int:
     warnings = lint_tables(tables) + lint_lessons(lessons) + lint_stats(tables)
 
     # 语义层模型(单一真源 semantics.yml):结构/别名/表达式/关系校验。
+    # 用文档级包装(与 admin 议题视图、git 提交门禁同一份),否则三处各判
+    # 各的字节 —— 顶层错放的 masking/topics 只有包装版看得见。
     semantics_yml = ds_dir / "semantics.yml"
     if semantics_yml.exists():
         try:
             import yaml as _yaml
             _sem_data = _yaml.safe_load(
                 semantics_yml.read_text(encoding="utf-8")) or {}
-            for _entry in _sem_data.get("semantic_model", []) or []:
-                if isinstance(_entry, dict):
-                    errors += lint_semantics(_entry)
+            errors += lint_semantics_document(_sem_data)
         except Exception as e:
             errors.append(f"semantics.yml 读取失败: {e}")
 
