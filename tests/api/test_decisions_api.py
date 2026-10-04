@@ -555,6 +555,205 @@ class TestVerdictHistoryWithoutAStore:
         assert r.status_code == 409
 
 
+class TestSimulate:
+    """what-if 模拟 —— 零业务库查询是它的核心承诺(验收清单 4)。"""
+
+    ROWS = [
+        {"dim": "华东", "current": 600, "baseline": 1200, "delta": -600,
+         "delta_pct": -0.5, "contribution": -0.92, "triggered": True,
+         "matched": ["delta_pct < -0.1"]},
+        {"dim": "华北", "current": 450, "baseline": 400, "delta": 50,
+         "delta_pct": 0.125, "contribution": 0.08, "triggered": False,
+         "matched": []},
+    ]
+
+    async def _digest(self, admin_client, datasource="demo"):
+        body = (await admin_client.get(
+            f"/v1/admin/decisions?datasource={datasource}")).json()
+        return body["digest"]
+
+    async def test_verdict_replay_judges_the_recorded_numbers_only(
+            self, admin_client, decisions_app, verdict_store, monkeypatch):
+        """重放最近 verdict 的行卡 → 同一条内核重判;**零业务库查询**。"""
+        calls: list[str] = []
+
+        async def _spy(sql, datasource=None):
+            calls.append(sql)
+            raise AssertionError("simulate must never touch the business DB")
+
+        monkeypatch.setattr(
+            decisions_app.state.connector_registry, "execute", _spy)
+        _write(decisions_app, [RULE])
+        vid = await _record(
+            verdict_store, triggered=True, status="alert",
+            rule_digest=await self._digest(admin_client),
+            evidence={"rows": self.ROWS, "evidence": {"row_count": 2}})
+
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": [{"dim": "华东", "field": "current",
+                                "mode": "set", "value": 1200}]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert calls == []
+        assert body["source"] == {"kind": "verdict", "verdict_id": vid,
+                                  "evaluated_at": "2026-09-01T00:00:00",
+                                  "rule_digest": await self._digest(admin_client),
+                                  "stale": False,
+                                  "row_count_source": "evidence"}
+        assert body["before"]["triggered"] is True
+        assert body["after"]["triggered"] is False
+        assert body["flip"] == "cleared"
+        assert body["applied"][0]["after"] == 1200
+        assert body["summary"]["flip"] == "cleared"
+
+    async def test_caller_maps_are_judged_directly(
+            self, admin_client, decisions_app):
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"source": "caller",
+                  "current": {"华东": 1300, "华北": 450},
+                  "baseline": {"华东": 1200, "华北": 400},
+                  "scenario": [{"dim": "华北", "mode": "set", "value": 300}]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["source"] == {"kind": "caller"}
+        assert body["flip"] == "fired"
+
+    async def test_caller_mode_without_current_numbers_is_rejected(
+            self, admin_client, decisions_app):
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"source": "caller"})
+        assert r.status_code == 400
+        assert "current" in r.json()["detail"]
+
+    async def test_aggregate_rule_rejects_dimension_keys_loudly(
+            self, admin_client, decisions_app):
+        """聚合规则唯一的组键是 '';别的键没被用上而模拟看起来跑过了 ——
+        正是模拟面最不能有的静默失败。"""
+        _write(decisions_app, [{**RULE, "id": "loan-high",
+                                "scope": "aggregate",
+                                "subject": {"metrics": ["loan_balance"]}}])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-high/simulate?datasource=demo",
+            json={"source": "caller", "current": {"华东": 100}})
+        assert r.status_code == 400
+        assert "aggregate" in r.json()["detail"]
+
+    async def test_malformed_scenario_is_rejected_with_the_legal_keys(
+            self, admin_client, decisions_app):
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"source": "caller", "current": {"华东": 100},
+                  "scenario": [{"dim": "华东", "value": 1, "modex": "pct"}]})
+        assert r.status_code == 400
+        assert "dim, field, mode, value" in r.json()["detail"]
+
+    async def test_no_verdict_to_replay_is_404_with_the_way_out(
+            self, admin_client, decisions_app, verdict_store):
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": []})
+        assert r.status_code == 404
+        assert "source='caller'" in r.json()["detail"]
+
+    async def test_caller_maps_with_verdict_source_are_refused(
+            self, admin_client, decisions_app, verdict_store):
+        """给了 maps 却重放 verdict = 用错了数据源而结果看起来是对的。"""
+        _write(decisions_app, [RULE])
+        await _record(verdict_store, evidence={"rows": self.ROWS})
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"current": {"华东": 1}})
+        assert r.status_code == 400
+        assert "source='caller'" in r.json()["detail"]
+
+    async def test_without_a_store_replay_is_409(
+            self, admin_client, decisions_app):
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": []})
+        assert r.status_code == 409
+
+    async def test_unknown_rule_is_404(self, admin_client, decisions_app):
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/nope/simulate?datasource=demo", json={})
+        assert r.status_code == 404
+
+    async def test_a_rule_edited_since_the_verdict_is_flagged(
+            self, admin_client, decisions_app, verdict_store):
+        """数字是旧规则的判定现场,条件是新规则的 —— 必须看得见。"""
+        _write(decisions_app, [RULE])
+        await _record(verdict_store, rule_digest="sha256:stale",
+                      evidence={"rows": self.ROWS})
+        body = (await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": []})).json()
+        assert body["source"]["stale"] is True
+        assert {"stage": "replay",
+                "reason": "rule_edited_since_verdict"} in body["degraded"]
+
+    async def test_impacts_without_tree_evidence_say_why(
+            self, admin_client, decisions_app, verdict_store):
+        _write(decisions_app, [RULE])
+        await _record(verdict_store, evidence={"rows": self.ROWS})
+        body = (await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": [], "impacts": {"loan_a": -10}})).json()
+        assert body["tree"]["total"] is None
+        assert body["tree"]["not_modeled"][0]["reason"] == "no_tree_evidence"
+        assert body["summary"]["total_delta"] is None
+        # 老证据没记 row_count → 退到行卡条数,退让在 source 里看得见。
+        assert body["source"]["row_count_source"] == "cards"
+
+    async def test_impacts_over_the_replayed_driver_tree_sum_at_the_root(
+            self, admin_client, decisions_app, verdict_store):
+        tree = {"name": "loan_balance", "kind": "derived", "op": "+",
+                "decomposable": True, "expression": "(+)", "children": [
+                    {"name": "华东", "candidate": "loan_a", "kind": "leaf",
+                     "expression": "loan_a", "decomposable": True,
+                     "children": []},
+                    {"name": "华北", "candidate": "loan_b", "kind": "leaf",
+                     "expression": "loan_b", "decomposable": True,
+                     "children": []}]}
+        _write(decisions_app, [RULE])
+        await _record(verdict_store,
+                      evidence={"rows": self.ROWS,
+                                "analysis": {"tree": tree}})
+        body = (await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": [],
+                  "impacts": {"loan_a": -60, "loan_b": 20}})).json()
+        assert body["tree"]["total"] == -40
+        assert body["summary"]["total_delta"] == -40
+
+    async def test_simulate_is_admin_only(self, user_client):
+        r = await user_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"scenario": []})
+        assert r.status_code == 403
+
+    async def test_route_is_not_swallowed_by_the_rule_id_pattern(
+            self, admin_client, decisions_app):
+        """``/{rule_id}/simulate`` 必须排在 ``/{rule_id}`` 之前(同 /raw 的
+        Starlette 顺序陷阱)—— 命中即 200,被吞会变成 405。"""
+        _write(decisions_app, [RULE])
+        r = await admin_client.post(
+            "/v1/admin/decisions/loan-drop/simulate?datasource=demo",
+            json={"source": "caller", "current": {"华东": 600}})
+        assert r.status_code == 200
+        # 既有 GET 不受影响
+        assert (await admin_client.get(
+            "/v1/admin/decisions/loan-drop?datasource=demo")).status_code == 200
+
+
 class TestAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get(

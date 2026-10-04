@@ -512,6 +512,31 @@ class DecisionDocBody(BaseModel):
     message: str = ""
 
 
+class DecisionSimulateBody(BaseModel):
+    """POST /v1/admin/decisions/{rule_id}/simulate body — what-if 场景。
+
+    数据来源两条,都**不触业务库**:``source="verdict"``(默认)重放
+    最近一条 verdict 的 ``evidence.rows`` —— 判定当时判的就是那份数字;
+    ``source="caller"`` 用这里给的 ``current``/``baseline`` maps(哪来的
+    数字由调用方负责,端点只管在同一条判定内核上重跑)。
+
+    ``scenario`` 的键集封闭(``dim``/``field``/``mode``/``value``,
+    见 ``services.decision.whatif``):未知键/未知 field/mode 在端点
+    拒绝 —— 静默忽略一条调整会让「模拟过了」与「模拟的是别的场景」
+    看起来一样。结构校验在 whatif 层(它拥有那些消息)。
+
+    ``impacts`` = {组件: 变化量},给了才算驱动器树的根级总变化(树取自
+    重放 verdict 的证据;不可分解节点不会硬凑总数,见 ``simulate_tree``)。
+    """
+
+    scenario: list[dict[str, Any]] = Field(default_factory=list)
+    source: Literal["verdict", "caller"] = "verdict"
+    current: dict[str, float | None] | None = None
+    baseline: dict[str, float | None] | None = None
+    row_count: int | None = Field(default=None, ge=0)
+    impacts: dict[str, float] | None = None
+
+
 class SettingsUpdate(BaseModel):
     """PUT /v1/admin/settings body — partial flat updates keyed by the
     settings schema (e.g. `llm.default_model`, `app.hitl`)."""

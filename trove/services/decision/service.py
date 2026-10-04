@@ -147,6 +147,107 @@ def _contribution(
     return items
 
 
+def cond_hit(text: str, scope: dict[str, Any]) -> bool:
+    """Whether one condition text matched — for the `matched` audit list.
+    A condition that fails to parse is already fatal upstream."""
+    from trove.services.decision.expr import parse_condition
+
+    try:
+        return parse_condition(text).eval(scope) is True
+    except DecisionExprError:
+        return False
+
+
+def judge(
+    rule: DecisionRule, cond: Any, cur_map: dict[str, float | None],
+    base_map: dict[str, float | None], row_count: int, *,
+    confidence_by_dim: dict[str, float | None] | None = None,
+    gated_by_dim: dict[str, bool] | None = None,
+    require_gate: bool = False,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Per-group verdicts → (row cards, the groups that triggered).
+
+    Module-level and **pure** (B4 提取):同样的输入永远给同样的行卡 ——
+    what-if 模拟要在假想的 current/baseline 上重跑同一条内核,判定与
+    模拟共用这一个函数就是它们不漂移的全部保证(``_contribution`` /
+    ``_jsonable`` 同样零 I/O)。
+
+    ``confidence_by_dim`` is the significance stage's product: ``None``
+    (the default — no ``significance`` on the rule) leaves every row card
+    byte-identical to the pre-B2 shape. When provided, rows gain
+    ``confidence``/``gated`` and — for a rule that ``require``s the gate —
+    a satisfied condition only triggers when the group is also *out of
+    the noise band*. A group that fired but could not be confirmed stays
+    visible as ``triggered: false, gated: false`` with its ``matched``
+    conditions intact (the audit trail must show the near-miss, not hide
+    it), and ``confidence`` joins the condition scope so a rule can test
+    it directly.
+    """
+    contrib = _contribution(cur_map, base_map) if rule.scope == "per_dimension" \
+        else []
+    contrib_by_dim = {c["dim"]: c["contribution"] for c in contrib}
+    dims = [c["dim"] for c in contrib] if contrib else list(cur_map)
+
+    rows: list[dict[str, Any]] = []
+    hits: list[tuple[str, float | None, list[str]]] = []
+    if rule.scope != "per_dimension":
+        dims = [""]
+
+    for dim in dims:
+        cur = cur_map.get(dim)
+        base = base_map.get(dim)
+        delta = (cur - base) if cur is not None and base is not None else None
+        delta_pct = (delta / base) if delta is not None and base else None
+        scope_vars = {
+            "current": cur,
+            "baseline": base,
+            "delta": delta,
+            "delta_pct": delta_pct,
+            "contribution": contrib_by_dim.get(dim),
+            "row_count": row_count,
+            "dim": dim,
+        }
+        if confidence_by_dim is not None:
+            scope_vars["confidence"] = confidence_by_dim.get(dim)
+        hit = cond.eval(scope_vars) is True
+        # Only a satisfied group lists its conditions: under `all`, a
+        # half-matched group would otherwise look like it fired.
+        matched = ([c for c in rule.conditions if cond_hit(c, scope_vars)]
+                   if hit else [])
+        card: dict[str, Any] = {
+            "dim": dim,
+            "current": _jsonable(cur),
+            "baseline": _jsonable(base),
+            "delta": _jsonable(delta),
+            "delta_pct": _jsonable(delta_pct),
+            "contribution": _jsonable(contrib_by_dim.get(dim)),
+            "triggered": hit,
+            "matched": matched,
+        }
+        if confidence_by_dim is not None:
+            gated = bool(gated_by_dim.get(dim)) if gated_by_dim is not None else False
+            card["triggered"] = bool(hit and (gated if require_gate else True))
+            card["confidence"] = _jsonable(confidence_by_dim.get(dim))
+            card["gated"] = gated
+        rows.append(card)
+        if card["triggered"]:
+            hits.append((dim, cur, matched))
+
+    # `emit` decides which of the triggered groups the *rule* reports. The
+    # per-row verdicts stay as judged — for `all` you specifically want to
+    # see which groups did not fire, and rewriting them would hide that.
+    if rule.scope == "per_dimension":
+        if rule.emit == "all":
+            fired = bool(rows) and all(r["triggered"] for r in rows)
+            hits = hits if fired else []
+        elif rule.emit == "top_k":
+            hits = sorted(
+                hits, key=lambda h: abs(contrib_by_dim.get(h[0]) or 0.0),
+                reverse=True)[:max(1, rule.top_k)]
+
+    return rows, [h[0] for h in hits]
+
+
 class DecisionService:
     """Evaluates decision rules for a datasource.
 
@@ -1033,93 +1134,15 @@ class DecisionService:
         gated_by_dim: dict[str, bool] | None = None,
         require_gate: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Per-group verdicts → (row cards, the groups that triggered).
-
-        ``confidence_by_dim`` is the significance stage's product: ``None``
-        (the default — no ``significance`` on the rule) leaves every row card
-        byte-identical to the pre-B2 shape. When provided, rows gain
-        ``confidence``/``gated`` and — for a rule that ``require``s the gate —
-        a satisfied condition only triggers when the group is also *out of
-        the noise band*. A group that fired but could not be confirmed stays
-        visible as ``triggered: false, gated: false`` with its ``matched``
-        conditions intact (the audit trail must show the near-miss, not hide
-        it), and ``confidence`` joins the condition scope so a rule can test
-        it directly.
-        """
-        contrib = _contribution(cur_map, base_map) if rule.scope == "per_dimension" \
-            else []
-        contrib_by_dim = {c["dim"]: c["contribution"] for c in contrib}
-        dims = [c["dim"] for c in contrib] if contrib else list(cur_map)
-
-        rows: list[dict[str, Any]] = []
-        hits: list[tuple[str, float | None, list[str]]] = []
-        if rule.scope != "per_dimension":
-            dims = [""]
-
-        for dim in dims:
-            cur = cur_map.get(dim)
-            base = base_map.get(dim)
-            delta = (cur - base) if cur is not None and base is not None else None
-            delta_pct = (delta / base) if delta is not None and base else None
-            scope_vars = {
-                "current": cur,
-                "baseline": base,
-                "delta": delta,
-                "delta_pct": delta_pct,
-                "contribution": contrib_by_dim.get(dim),
-                "row_count": row_count,
-                "dim": dim,
-            }
-            if confidence_by_dim is not None:
-                scope_vars["confidence"] = confidence_by_dim.get(dim)
-            hit = cond.eval(scope_vars) is True
-            # Only a satisfied group lists its conditions: under `all`, a
-            # half-matched group would otherwise look like it fired.
-            matched = ([c for c in rule.conditions if self._cond_hit(c, scope_vars)]
-                       if hit else [])
-            card: dict[str, Any] = {
-                "dim": dim,
-                "current": _jsonable(cur),
-                "baseline": _jsonable(base),
-                "delta": _jsonable(delta),
-                "delta_pct": _jsonable(delta_pct),
-                "contribution": _jsonable(contrib_by_dim.get(dim)),
-                "triggered": hit,
-                "matched": matched,
-            }
-            if confidence_by_dim is not None:
-                gated = bool(gated_by_dim.get(dim)) if gated_by_dim is not None else False
-                card["triggered"] = bool(hit and (gated if require_gate else True))
-                card["confidence"] = _jsonable(confidence_by_dim.get(dim))
-                card["gated"] = gated
-            rows.append(card)
-            if card["triggered"]:
-                hits.append((dim, cur, matched))
-
-        # `emit` decides which of the triggered groups the *rule* reports. The
-        # per-row verdicts stay as judged — for `all` you specifically want to
-        # see which groups did not fire, and rewriting them would hide that.
-        if rule.scope == "per_dimension":
-            if rule.emit == "all":
-                fired = bool(rows) and all(r["triggered"] for r in rows)
-                hits = hits if fired else []
-            elif rule.emit == "top_k":
-                hits = sorted(
-                    hits, key=lambda h: abs(contrib_by_dim.get(h[0]) or 0.0),
-                    reverse=True)[:max(1, rule.top_k)]
-
-        return rows, [h[0] for h in hits]
+        """Thin shell → module-level :func:`judge`(B4 提取;签名不变)。"""
+        return judge(rule, cond, cur_map, base_map, row_count,
+                     confidence_by_dim=confidence_by_dim,
+                     gated_by_dim=gated_by_dim, require_gate=require_gate)
 
     @staticmethod
     def _cond_hit(text: str, scope: dict[str, Any]) -> bool:
-        """Whether one condition text matched — for the `matched` audit list.
-        A condition that fails to parse is already fatal upstream."""
-        from trove.services.decision.expr import parse_condition
-
-        try:
-            return parse_condition(text).eval(scope) is True
-        except DecisionExprError:
-            return False
+        """Thin shell → module-level :func:`cond_hit`(B4 提取)。"""
+        return cond_hit(text, scope)
 
     @staticmethod
     def _fmt(value: Any) -> str:

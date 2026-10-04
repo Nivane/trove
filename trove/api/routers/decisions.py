@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from trove.api.deps import require_admin, require_admin_or_analyst
 from trove.core.logging import get_logger
-from trove.api.schemas import DecisionDocBody
+from trove.api.schemas import DecisionDocBody, DecisionSimulateBody
 from trove.services.decision.rules import (
     RuleError,
     lint_advisories,
@@ -362,6 +362,188 @@ async def list_verdicts(
         "rule_id": rule_id,
         "count": len(out),
         "verdicts": out,
+    }
+
+
+def _replay_maps(evidence: dict[str, Any]) -> tuple[
+        dict[str, float | None], dict[str, float | None],
+        dict[str, float | None] | None, dict[str, bool] | None, int, str]:
+    """verdict 证据 → 重放 maps。
+
+    行卡是判定当时对每组的完整记账(``current``/``baseline``/``confidence``/
+    ``gated``),从它重建输入就是**逐字节重放**那次判定的输入方向:重建
+    出来的 maps 喂回同一个 ``judge``,原样判定必须复现行卡里的
+    ``triggered``(测试钉这一点)。
+
+    第六个返回值是 ``row_count`` 的来源:``"evidence"`` = 判定当时记的
+    业务行数;老证据缺这个数时退到行卡条数并标 ``"cards"`` —— 两者**不是
+    同一个量**(行卡按组建账),所以退让必须看得见:引用 ``row_count``
+    条件的规则在这种重放里,判的就是这个替身。
+    """
+    rows = [r for r in (evidence.get("rows") or []) if isinstance(r, dict)]
+    cur_map = {str(r.get("dim") or ""): r.get("current") for r in rows}
+    base_map = {str(r.get("dim") or ""): r.get("baseline") for r in rows}
+    conf = {str(r["dim"] or ""): r.get("confidence") for r in rows
+            } if any("confidence" in r for r in rows) else None
+    gated = {str(r["dim"] or ""): bool(r.get("gated")) for r in rows
+             } if any("gated" in r for r in rows) else None
+    raw = (evidence.get("evidence") or {}).get("row_count")
+    if isinstance(raw, int):
+        return cur_map, base_map, conf, gated, int(raw), "evidence"
+    return cur_map, base_map, conf, gated, len(rows), "cards"
+
+
+def _caller_maps(rule, body) -> tuple[dict[str, float | None],
+                                      dict[str, float | None]]:
+    """调用方 maps 的形状校验 —— 组键错形状会静默判到 None 上,必须拒绝。
+
+    聚合规则唯一的组键是 ``""``(``judge`` 对非 per_dimension 规则只看
+    这一个键),给了别的键就是「数字没被用上而模拟看起来跑过了」——
+    正是模拟面最不能有的失败模式。
+    """
+    cur = dict(body.current or {})
+    base = dict(body.baseline or {})
+    if not cur:
+        raise HTTPException(
+            status_code=400,
+            detail="source='caller' requires a non-empty 'current' map "
+                   "(there is nothing to judge otherwise)")
+    if rule.scope == "per_dimension":
+        if "" in cur or "" in base:
+            raise HTTPException(
+                status_code=400,
+                detail=f"rule {rule.id!r} is per_dimension: group keys are "
+                       "dimension values, '' is not one of them")
+    else:
+        extra = sorted({k for k in (*cur, *base) if k != ""})
+        if extra:
+            raise HTTPException(
+                status_code=400,
+                detail=f"rule {rule.id!r} is aggregate: its only group key "
+                       f"is '' — got {extra}")
+    return cur, base
+
+
+@router.post("/admin/decisions/{rule_id}/simulate")
+async def simulate_decision(
+    rule_id: str, body: DecisionSimulateBody, request: Request,
+    datasource: str, admin: dict = Depends(require_admin),
+) -> dict:
+    """what-if:同一条判定内核在假想数字上重判(**零业务库查询**)。
+
+    Declared **before** ``/{rule_id}``(与 ``/raw``、``/drafts`` 同一条
+    Starlette 顺序纪律,注册顺序即匹配顺序)。
+
+    数字来源只有两条,都不碰业务库:``source="verdict"``(默认)重放
+    最近一条 verdict 的 ``evidence.rows`` —— 模拟的价值在于判的仍是
+    「当时那份数字」;``source="caller"`` 由调用方直接给 maps。第三条路
+    「再查一遍库」是被**刻意**排除的:那样第二次取的数与判定当时的数
+    可能已经不是同一份,「模拟」就变成了「另一条规则」。
+
+    判定与模拟共用 ``service.judge``(B4 提取的模块级纯函数),这是两边
+    结论不漂移的全部保证;显著带只重放不重算(见 ``whatif`` 的
+    ``degraded``)。规则在 verdict 之后被编辑过时,响应里
+    ``source.stale=true`` 并进 ``degraded`` —— 数字是旧规则的判定现场,
+    条件是新规则的,这一点必须看得见。
+    """
+    from trove.services.decision.expr import DecisionExprError
+    from trove.services.decision.rules import rule_rev
+    from trove.services.decision.whatif import (
+        WhatIfError,
+        impact_summary,
+        parse_scenario,
+        simulate_rule,
+        simulate_tree,
+    )
+
+    kb = _kb(request)
+    try:
+        doc = kb.load_decisions(datasource)
+    except RuleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    rule = next((r for r in doc.rules if r.id == rule_id), None)
+    if rule is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"decision rule not found: {rule_id} (datasource {datasource!r})",
+        )
+
+    degraded: list[dict[str, Any]] = []
+    tree_evidence: dict[str, Any] | None = None
+    if body.source == "verdict":
+        if body.current is not None or body.baseline is not None \
+                or body.row_count is not None:
+            # 给了 maps 却重放 verdict = 用错了数据源而结果看起来是对的。
+            raise HTTPException(
+                status_code=400,
+                detail="source='verdict' replays the recorded numbers and "
+                       "ignores caller maps — send source='caller' to judge "
+                       "maps you supply",
+            )
+        store = _verdicts(request)
+        if store is None:
+            raise HTTPException(
+                status_code=409, detail="decision verdict store not configured")
+        recs = await store.list_for_rule(datasource, rule_id, limit=1)
+        if not recs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no verdict to replay for rule {rule_id!r} — run it "
+                       "once, or send source='caller' with explicit maps",
+            )
+        rec = recs[0]
+        cur_map, base_map, conf, gated, row_count, rc_source = _replay_maps(
+            rec.evidence)
+        tree_evidence = (rec.evidence.get("analysis") or {}).get("tree")
+        source_info: dict[str, Any] = {
+            "kind": "verdict", "verdict_id": rec.id,
+            "evaluated_at": rec.evaluated_at,
+            "rule_digest": rec.rule_digest,
+            "stale": rec.rule_digest != doc.digest,
+            "row_count_source": rc_source,
+        }
+        if source_info["stale"]:
+            degraded.append({"stage": "replay",
+                             "reason": "rule_edited_since_verdict"})
+    else:
+        cur_map, base_map = _caller_maps(rule, body)
+        conf = gated = None
+        row_count = int(body.row_count or 0)
+        source_info = {"kind": "caller"}
+
+    try:
+        adjustments = parse_scenario(body.scenario)
+    except WhatIfError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        sim = simulate_rule(rule, cur_map, base_map, row_count, adjustments,
+                            confidence_by_dim=conf, gated_by_dim=gated)
+    except DecisionExprError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    tree = None
+    if body.impacts is not None:
+        if tree_evidence:
+            tree = simulate_tree(tree_evidence, body.impacts)
+        else:
+            tree = {"total": None, "assumed_unchanged": 0,
+                    "not_modeled": [{"node": "", "reason": "no_tree_evidence",
+                                     "detail": "verdict 证据里没有驱动器树"}]}
+    sim["degraded"] = list(sim.get("degraded") or []) + degraded
+    return {
+        "datasource": datasource,
+        "rule_id": rule_id,
+        "rule_rev": rule_rev(rule),
+        "source": source_info,
+        "scenario": body.scenario,
+        "before": sim["before"],
+        "after": sim["after"],
+        "flip": sim["flip"],
+        "applied": sim["applied"],
+        "unapplied": sim["unapplied"],
+        "degraded": sim["degraded"],
+        "tree": tree,
+        "summary": impact_summary(sim, tree=tree),
     }
 
 
