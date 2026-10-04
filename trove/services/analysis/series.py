@@ -132,13 +132,18 @@ def compile_series_hop(
     *,
     time_grain: str,
     time_field: str,
+    dim_ref: str = "",
 ) -> str | None:
     """构造并编译块序列查询 → SQL(编译 MISS → None,调用方降级)。
 
     = ``engine.compile_hop`` + plan ``time_grain`` 键。时间字段不在
     answer_columns,编译器把分桶表达式插在维度列之后、度量之前
-    (此处无维度 → 首列即 bucket);输出列 = ``(bucket, 度量)``,
+    (无维度 → 首列即 bucket);输出列 = ``(bucket, 度量)``,
     ``series_from_rows`` 直接消费。
+
+    ``dim_ref``(可选,B6 主动扫描):把分组推到维度值上 —— 输出列变成
+    ``(维度, bucket, 度量)``(分桶插在维度**之后**),调用方按维度值切出
+    各自的块序列。缺省空 = 老形状逐字节不变。
     """
     if time_grain not in GRAINS or not time_field:
         return None
@@ -155,10 +160,11 @@ def compile_series_hop(
         metric = compiler._metric_by_name(metric_name)
         if metric is None:
             return None
+        answer_columns = ([dim_ref] if dim_ref else []) + [metric_name]
         plan = {
             "tables": list(matched),
             "aggregation": metric_name,
-            "answer_columns": [metric_name],
+            "answer_columns": answer_columns,
             "conditions": list(conds),
             "time_grain": {"field": time_field, "grain": time_grain},
         }
@@ -190,3 +196,24 @@ def series_from_rows(
             continue
         merged[key] = num(row[-1])
     return sorted(merged.items())
+
+
+def series_by_dim(
+    columns: list[str], rows: list[list[Any]],
+) -> dict[str, list[tuple[str, float]]]:
+    """``(维度, bucket, 度量)`` 结果 → ``{维度值: [(bucket, 值), …]}``。
+
+    ``compile_series_hop(dim_ref=…)`` 的输出形状(分桶在维度之后、度量
+    之前);每个维度值各自成列,按 bucket 标签排序(同 ``series_from_rows``
+    的纪律:行序不承诺,标签才是排序键)。空值/短行跳过,不猜。
+    """
+    out: dict[str, dict[str, float]] = {}
+    for row in rows or []:
+        if len(row) < 3:
+            continue
+        dim_val = str(row[0])
+        bucket = str(row[1])[:10]
+        if not bucket:
+            continue
+        out.setdefault(dim_val, {})[bucket] = num(row[-1])
+    return {k: sorted(v.items()) for k, v in out.items()}

@@ -1,0 +1,20 @@
+{% if intro %}{{ intro }}{% else %}You are a data-anomaly analyst. Below are data points a deterministic scan just flagged as falling outside their own historical noise band (the band comes from robust statistics over historical same-grain blocks; z is the robust z-score).{% endif %}
+
+{% if data %}
+{{ data }}
+{% else %}
+(no findings)
+{% endif %}
+
+Draft at most {{ limit }} **falsifiable** hypotheses about these findings: each must state which metric, which direction, and at least how much it moved.
+
+Hard requirements:
+- metric must match a metric name from the findings **verbatim** (those are the declared names in the semantic model; anything else is rejected);
+- dimension / value may only reference dimensions and values that appear in the findings; for whole-metric findings (no dimension), leave dimension and value empty;
+- direction is "up" or "down";
+- min_pct is the minimum relative change as a fraction between 0 and 1 (e.g. 0.1 = at least a 10% move);
+- claim is one sentence stating the hypothesis (it is shown to a human as-is).
+
+Output JSON only — no fences, no commentary:
+
+{"hypotheses": [{"claim": "...", "metric": "...", "dimension": "", "value": "", "direction": "up", "min_pct": 0.1}]}

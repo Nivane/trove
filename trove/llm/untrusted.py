@@ -51,6 +51,9 @@ _TRUSTED_VARS: frozenset[str] = frozenset({
     # 3. 系统自身的标量与枚举(不可能命中,登记是为了让分类表完整)
     "lang", "dialect", "fix_mode", "has_probe", "total_rows",
     "node", "purpose", "skill_name",
+    # 假设轮模板(scan/hypothesis):intro 是节点自带的固定开场白,
+    # limit 是条数上限 —— 两者都由系统写死,不经数据面。
+    "intro", "limit",
 })
 
 
