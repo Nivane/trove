@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from trove.services.analysis.stats import MIN_BLOCKS, ROBUST_Z_THRESHOLD
+from trove.services.decision.causal import (
+    DEFAULT_CAUSAL_MODE,
+    DEFAULT_PLACEBO_BLOCKS,
+    DEFAULT_TOLERANCE,
+)
 from trove.services.decision.expr import (
     DecisionExprError,
     condition_variables,
@@ -41,6 +46,9 @@ SEASONAL_MODES = ("trailing", "same_phase")
 #: ``significance.require`` 的闭集 —— 空 = 只记录不拦;``outside_band`` =
 #: 触发必须再通过「超出历史噪声带」这道门。
 SIGNIFICANCE_REQUIREMENTS = ("", "outside_band")
+#: ``causal.mode`` 的闭集 —— ``auto`` = 条件满足就尽量升级(至合成对照
+#: L3);``did`` = 只做差中差(L2),刻意不尝试合成对照。
+CAUSAL_MODES = ("auto", "did")
 
 #: ``action.autonomy`` — v1 ships no dispatch either way; the two values are
 #: the contract the action pillar (P3) builds its proposal gate on:
@@ -55,7 +63,7 @@ PRIORITY_MAX = 3
 #: Schema version this code writes and understands. A file with a *higher*
 #: version was written by a newer Trove and may carry fields this reader
 #: would drop on the next save — see ``parse_document``.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: Variables that only exist when the rule groups by a dimension — a
 #: condition referencing them on an aggregate rule would silently see Unknown.
@@ -138,6 +146,40 @@ class Significance:
 
 
 @dataclass
+class CausalControl:
+    """对照组声明(schema v4)—— **恰一种**形态,解析期强制。
+
+    ``{dim, value}``:对照组是 ``dim`` 上取 ``value`` 的那一行(处理组
+    由 subject 在该维上的等值过滤识别;供体池 = 该维其余取值)。
+    ``filters``:窄口径序列——供体池结构上不存在,L3 不可用。
+    两种都给或都不给都是结构错误(前者解析期拒,后者 lint 拒):
+    「恰一种」不是风格偏好,是对照帧怎么取数的唯一依据。
+    """
+
+    dim: str = ""
+    value: Any = None
+    filters: list[dict[str, Any]] = field(default_factory=list)
+
+    def by_dim(self) -> bool:
+        return bool(self.dim)
+
+
+@dataclass
+class Causal:
+    """因果升级梯声明(schema v4)—— 条件满足才升级,否则诚实降级回 L1。
+
+    声明即「触发后尝试反事实估计」:L2 差中差恒可尝试(control 齐备
+    时),L3 合成对照只在 ``mode="auto"`` 且供体拟合通过时升级。
+    **绝不改变 triggered** —— 因果是附录,任何条件不过都只降级。
+    """
+
+    mode: str = DEFAULT_CAUSAL_MODE      # CAUSAL_MODES
+    control: CausalControl | None = None
+    placebo_blocks: int = DEFAULT_PLACEBO_BLOCKS
+    tolerance: float = DEFAULT_TOLERANCE
+
+
+@dataclass
 class DecisionRule:
     id: str
     name: str = ""
@@ -171,6 +213,9 @@ class DecisionRule:
     seasonal: Seasonal | None = None
     #: 显著性门。``None`` = 未声明;存在即要证据,``require`` 非空即要拦。
     significance: Significance | None = None
+    # ── schema v4 ────────────────────────────────────────
+    #: 因果升级梯。``None`` = 未声明(输出逐字节与 v3 相同)。
+    causal: Causal | None = None
 
     def describe(self) -> str:
         return self.name or self.id
@@ -301,6 +346,68 @@ def _parse_significance(raw: Any) -> Significance | None:
     )
 
 
+def _parse_control(raw: Any) -> CausalControl | None:
+    """``causal.control`` → ``CausalControl``;``None``/空 = 未声明(lint 拦)。
+
+    「恰一种」在这里强制:两种形态同时给出是**结构歧义**(取哪一形
+    编译对照帧?),解析期就拒 —— 不留给运行时挑一个然后静默忽略另一个。
+    ``value`` 允许 0 / ``false`` 这类合法维值,但不允许缺失/``None``:
+    ``dim`` 没有取值就没有对照组。
+    """
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, dict):
+        raise RuleError(f"'causal.control' must be a mapping, got {type(raw).__name__}")
+    has_dim = bool(str(raw.get("dim") or "").strip())
+    has_filters = raw.get("filters") not in (None, "")
+    if has_dim and has_filters:
+        raise RuleError(
+            "causal.control must declare exactly one of {dim, value} or "
+            "{filters} — both given is ambiguous (which one compiles the "
+            "control frame?)")
+    if has_dim:
+        if "value" not in raw or raw.get("value") is None:
+            raise RuleError("causal.control with 'dim' requires a 'value'")
+        return CausalControl(dim=str(raw.get("dim")).strip(), value=raw["value"])
+    if has_filters:
+        filters = raw.get("filters")
+        if not isinstance(filters, list) or not all(isinstance(f, dict) for f in filters):
+            raise RuleError("causal.control.filters must be a list of mappings")
+        if not filters:
+            raise RuleError("causal.control.filters must not be empty")
+        return CausalControl(filters=[dict(f) for f in filters])
+    return CausalControl()
+
+
+def _parse_causal(raw: Any) -> Causal | None:
+    """``causal`` 块 → ``Causal``;``None``/空 = 未声明(保持缺省)。
+
+    出现即声明(与 seasonal/significance 同款):``mode: auto`` 显式写出
+    也会被记下 —— 存在性必须能表达,不能靠"值不等于缺省"猜。
+    """
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, dict):
+        raise RuleError(f"'causal' must be a mapping, got {type(raw).__name__}")
+    tol_raw = raw.get("tolerance")
+    if tol_raw is None or tol_raw == "":
+        tolerance = float(DEFAULT_TOLERANCE)
+    elif isinstance(tol_raw, bool):
+        raise RuleError(f"causal.tolerance must be a number, got {tol_raw!r}")
+    else:
+        try:
+            tolerance = float(tol_raw)
+        except (TypeError, ValueError):
+            raise RuleError(f"causal.tolerance must be a number, got {tol_raw!r}")
+    return Causal(
+        mode=str(raw.get("mode") or DEFAULT_CAUSAL_MODE).strip().lower(),
+        control=_parse_control(raw.get("control")),
+        placebo_blocks=_as_int(raw.get("placebo_blocks"),
+                               default=DEFAULT_PLACEBO_BLOCKS),
+        tolerance=tolerance,
+    )
+
+
 def parse_rule(raw: dict[str, Any]) -> DecisionRule:
     """One YAML rule mapping → ``DecisionRule`` (structure only, no lint)."""
     if not isinstance(raw, dict):
@@ -351,6 +458,7 @@ def parse_rule(raw: dict[str, Any]) -> DecisionRule:
         driver_dimension=str(raw.get("driver_dimension") or "").strip(),
         seasonal=_parse_seasonal(raw.get("seasonal")),
         significance=_parse_significance(raw.get("significance")),
+        causal=_parse_causal(raw.get("causal")),
     )
 
 
@@ -514,6 +622,44 @@ def lint_rule(rule: DecisionRule) -> list[str]:
                 f"{MIN_BLOCKS} (MIN_BLOCKS) — significance can never confirm "
                 "a trigger with fewer blocks")
 
+    # ── schema v4 ────────────────────────────────────────
+    if rule.causal is not None:
+        if rule.causal.mode not in CAUSAL_MODES:
+            issues.append(
+                f"{where}: causal.mode must be one of "
+                f"{', '.join(CAUSAL_MODES)} (got {rule.causal.mode!r})")
+        if rule.causal.placebo_blocks < 1:
+            issues.append(f"{where}: causal.placebo_blocks must be >= 1 "
+                          f"(got {rule.causal.placebo_blocks!r})")
+        if not (rule.causal.tolerance > 0):
+            issues.append(f"{where}: causal.tolerance must be > 0 "
+                          f"(got {rule.causal.tolerance!r})")
+        ctrl = rule.causal.control
+        if ctrl is None or not (ctrl.by_dim() or ctrl.filters):
+            # 没有对照 → 梯子永远停在 L1:一条每次都 L1 的因果声明
+            # 与 never-firing 规则同类,挡在写入口(与 significance
+            # 缺 seasonal 同一判据)。
+            issues.append(
+                f"{where}: 'causal' requires a 'control' — declare "
+                "{dim, value} (grouped frame, enables donors/L3) or "
+                "{filters} (narrow frame, L2 at most); without a "
+                "comparator the ladder can only ever report L1")
+        elif ctrl.by_dim() and ctrl.value is None:
+            issues.append(f"{where}: causal.control.dim requires a 'value'")
+        if rule.seasonal is None:
+            issues.append(
+                f"{where}: 'causal' requires a 'seasonal' block — the "
+                "ladder's frames are block series; declare seasonal "
+                "(grain/lookback/mode) or drop causal")
+        if rule.scope != "aggregate":
+            # 明确拒绝优于静默只对第一行:per_dimension 的分组标签跟着
+            # 行卡走,而因果帧只有一个处理组序列 —— 悄悄只算第一组
+            # 会把「哪一组」的歧义埋进证据。拆成逐组规则即可。
+            issues.append(
+                f"{where}: 'causal' supports scope 'aggregate' only (got "
+                f"{rule.scope!r}) — per-group causal claims need one rule "
+                "per group")
+
     for cond in rule.conditions:
         try:
             used = condition_variables(cond)
@@ -573,6 +719,15 @@ def lint_advisories(doc: DecisionDoc) -> list[str]:
                 f"{where}: significance.min_confidence is only enforced with "
                 "require: outside_band — without it the value is recorded "
                 "but not gated on")
+        if rule.causal is not None and rule.causal.mode == "auto" \
+                and rule.causal.control is not None \
+                and not rule.causal.control.by_dim():
+            # filters 形态没有供体池,合成对照(L3)结构上不可达 ——
+            # 不是错误(auto 仍会在 L2 停下并记账),但作者应知道。
+            out.append(
+                f"{where}: causal mode 'auto' with a filters-form control "
+                "can never reach L3 (synthetic control needs a donor pool "
+                "— use {dim, value})")
     return out
 
 
@@ -694,6 +849,19 @@ def rule_to_dict(rule: DecisionRule) -> dict[str, Any]:
         if rule.significance.min_confidence:
             sig["min_confidence"] = rule.significance.min_confidence
         out["significance"] = sig
+    # Schema v4 —— 同款条件序列化:未声明的块不写出,v3 规则的字节
+    # 表示与历史逐字节一致(digest/rev 连续)。
+    if rule.causal is not None:
+        causal: dict[str, Any] = {"mode": rule.causal.mode}
+        ctrl = rule.causal.control
+        if ctrl is not None:
+            if ctrl.by_dim():
+                causal["control"] = {"dim": ctrl.dim, "value": ctrl.value}
+            elif ctrl.filters:
+                causal["control"] = {"filters": [dict(f) for f in ctrl.filters]}
+        causal["placebo_blocks"] = rule.causal.placebo_blocks
+        causal["tolerance"] = rule.causal.tolerance
+        out["causal"] = causal
     return out
 
 

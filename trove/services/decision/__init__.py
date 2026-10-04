@@ -27,10 +27,13 @@ from trove.services.decision.expr import (
 )
 from trove.services.decision.rules import (
     BASELINE_KINDS,
+    CAUSAL_MODES,
     EMITS,
     SCOPES,
     SEVERITIES,
     Baseline,
+    Causal,
+    CausalControl,
     DecisionDoc,
     DecisionRule,
     RuleError,
@@ -49,6 +52,9 @@ from trove.services.decision.rules import (
 __all__ = [
     "BASELINE_KINDS",
     "Baseline",
+    "CAUSAL_MODES",
+    "Causal",
+    "CausalControl",
     "DecisionDoc",
     "DecisionExprError",
     "DecisionRule",
