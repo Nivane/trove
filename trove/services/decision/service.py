@@ -33,8 +33,20 @@ from typing import Any
 
 from trove.core.logging import get_logger
 from trove.services.analysis.engine import time_conds
-from trove.services.decision.expr import DecisionExprError, as_number
-from trove.services.decision.rules import DecisionRule, RuleError, compile_condition
+from trove.services.decision.budget import DecisionBudget
+from trove.services.decision.expr import (
+    DecisionExprError,
+    as_number,
+    condition_variables,
+)
+from trove.services.decision.rules import (
+    DecisionRule,
+    RuleError,
+    Seasonal,
+    Significance,
+    compile_condition,
+    rule_rev,
+)
 from trove.services.semantic_layer.query import (
     SemanticQuery,
     SemanticQueryError,
@@ -404,10 +416,16 @@ class DecisionService:
 
         cond = compile_condition(rule)
 
+        # 查询账本(B2):judge 最先花、永远花得起;显著性/桥在它后面,
+        # 预算不足时让路的永远是后者。无 significance 声明的规则账本不
+        # 进证据(见下面 evidence 的写法)—— 老输出保持原样。
+        ledger = DecisionBudget().allocate()
+
         cur_info = await self._compile(rule, model, dialect, datasource, cur_window)
         cur_sql = cur_info["sql"]
         cur_cols = list(cur_info.get("columns") or [])
         cur_result = await self._run(cur_sql, datasource)
+        ledger.record("judge")
         cur_map = self._to_map(cur_cols, cur_result.rows)
 
         base_sql = ""
@@ -419,12 +437,25 @@ class DecisionService:
                                             base_window)
             base_sql = base_info["sql"]
             base_result = await self._run(base_sql, datasource)
+            ledger.record("judge")
             base_map = self._to_map(
                 list(base_info.get("columns") or []), base_result.rows)
 
         rows, triggered_dims = self._judge(rule, cond, cur_map, base_map,
                                            cur_result.row_count)
         triggered = bool(triggered_dims)
+
+        # 显著性门(B2):_judge 之后、桥之前。只在「声明了 significance
+        # 且有事要判」时跑(未触发的规则零成本;条件引用 confidence 的
+        # 规则必须跑 —— 那是它的判据)。require 下判不了 → DecisionError。
+        significance = None
+        if self._needs_significance(rule, triggered):
+            rows, triggered_dims, significance = await self._significance_stage(
+                rule, datasource, dialect, rows, cur_map, base_map,
+                cur_result.row_count, cur_window, cond=cond, ledger=ledger,
+                matched=list(cur_info.get("datasets") or []),
+                time_field=str(cur_info.get("time_field") or ""))
+            triggered = bool(triggered_dims)
 
         # 分析桥(补丁 1):只在触发时跑,未触发零成本。任何失败只进
         # evidence 的 degraded —— 判定已经判完,桥是附录不是前置。
@@ -433,6 +464,9 @@ class DecisionService:
             analysis = await self._analysis_bridge(
                 rule, datasource, dialect, rows, cur_window, base_window,
                 matched=list(cur_info.get("datasets") or []))
+            # 桥的查询事后入账(桥自带 4 条硬门,这里只求账目完整):
+            # evidence.budget 回答「这次判定一共花了几条、花在哪」。
+            ledger.record("bridge", len((analysis or {}).get("queries") or []))
 
         evidence = {
             "rule_id": rule.id,
@@ -468,6 +502,17 @@ class DecisionService:
         }
         if analysis is not None:
             evidence["analysis"] = analysis
+        if significance is not None:
+            # 声明了 significance 的规则才有这两节:significance = 噪声带
+            # 证据(含每维 band/z/confidence/gated 与判不了的原因),
+            # budget = 本次判定的查询账目(限额/实花/分阶段/让路)。
+            evidence["significance"] = significance
+            evidence["budget"] = ledger.snapshot()
+        # rule_rev = 单条规则的内容版本(N2):rule_digest 是整份文件的
+        # 字节 sha256,任何一条无关规则被编辑都会污染所有回评分桶。
+        # 无条件写入 —— 从本版起每条 verdict 都钉在自己被判定时的规则
+        # 内容上;更老的 verdict 没有它,回评按 rev_unknown 分桶。
+        evidence["rule_rev"] = rule_rev(rule)
 
         return DecisionOutcome(
             triggered=triggered,
@@ -476,6 +521,165 @@ class DecisionService:
             severity=rule.severity,
             evidence=evidence,
         )
+
+    @staticmethod
+    def _needs_significance(rule: DecisionRule, triggered: bool) -> bool:
+        """显著性阶段跑不跑(成本纪律:未触发且无 confidence 条件 → 不跑)。
+
+        声明即要证据(触发了就给带),``require`` 是拦不拦的问题,不是
+        跑不跑的问题 —— 拦的道理与记的道理是同一个带。条件引用
+        ``confidence`` 的规则必须跑:那是它的判据,不跑恒 Unknown。
+        """
+        uses_confidence = any(
+            "confidence" in condition_variables(c) for c in rule.conditions)
+        if uses_confidence:
+            return True
+        return rule.significance is not None and triggered
+
+    async def _significance_stage(
+        self, rule: DecisionRule, datasource: str, dialect: str,
+        rows: list[dict[str, Any]], cur_map: dict[str, float | None],
+        base_map: dict[str, float | None], row_count: int,
+        cur_window: tuple[str, str] | None, *, cond: Any, ledger: Any,
+        matched: list[str] | None = None, time_field: str = "",
+    ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+        """触发后的噪声带门(至多 1 条 SQL)→ (重判的行卡, 触发的组, 证据节)。
+
+        与引擎的 series 阶段同款块语义(block_windows / same_phase_blocks
+        / compile_series_hop),三处判定侧特有语义:
+
+          - **按维仍是一条 SQL**(answer_columns = 维度… + 度量,见
+            series_source)—— 预算纪律要求块序列至多花一条;
+          - **require 下判不了 = error run**:触发但无法确认(粒度不对齐、
+            块数不足、无数据、SQL 失败、预算让路)的组不静默变「未触发」;
+          - **重判**:条件可引用 ``confidence``,带算出来后要用完整作用域
+            重算一遍行卡与触发组(未引用 confidence 的行结果不变)。
+        """
+        from trove.services.decision.series_source import (
+            fetch_block_series,
+            plan_reason,
+        )
+        from trove.services.decision.significance import (
+            CONFIDENCE_NOTE,
+            build_band_payload,
+            gate,
+        )
+
+        sig = rule.significance or Significance()
+        seasonal = rule.seasonal or Seasonal()
+        degraded: list[dict[str, Any]] = []
+        section: dict[str, Any] = {
+            "required": sig.required(),
+            "min_confidence": sig.min_confidence,
+            "seasonal": {
+                "grain": seasonal.grain, "lookback": seasonal.lookback,
+                "mode": seasonal.mode, "k": seasonal.k,
+            },
+            "note": CONFIDENCE_NOTE,
+            "by_dim": {},
+            "degraded": degraded,
+        }
+
+        series = None
+        reason = ""
+        if not time_field:
+            reason = "no_time_field"
+        else:
+            reason = plan_reason(cur_window, grain=seasonal.grain,
+                                 mode=seasonal.mode, lookback=seasonal.lookback)
+        if not reason and not ledger.can(1):
+            entry = ledger.yield_("significance", needed=1)
+            degraded.append({"stage": "significance", **entry})
+            reason = str(entry.get("reason") or "query_budget_exceeded")
+        if not reason:
+            try:
+                series = await fetch_block_series(
+                    semantic_layer=self._provider_for(datasource, dialect),
+                    runner=self._query_runner(datasource),
+                    datasource=datasource, dialect=dialect,
+                    metric_name=(rule.subject.metrics[0]
+                                 if rule.subject.metrics else ""),
+                    matched=list(matched or []), filters=rule.subject.filters,
+                    window=cur_window, time_field=time_field,
+                    grain=seasonal.grain, mode=seasonal.mode,
+                    lookback=seasonal.lookback,
+                    dimensions=list(rule.subject.dimensions),
+                )
+            except Exception as e:
+                reason = f"series_query_failed:{str(e)[:120]}"
+            if series is not None:
+                ledger.record("significance")
+            elif not reason:
+                reason = "series_unavailable"
+        if reason and series is None:
+            degraded.append({"stage": "significance", "reason": reason})
+        if series is not None:
+            section["grain"] = series.grain
+            section["mode"] = series.mode
+            section["blocks"] = [[b[0], b[1]] for b in series.blocks]
+            section["span"] = list(series.span() or ["", ""])
+            section["sql"] = series.sql
+            if series.unmatched:
+                # 桶标签与块窗口对不上 = 粒度/时区假设错了:记账,
+                # 外面看得见(不静默丢桶)。
+                degraded.append({"stage": "significance",
+                                 "reason": f"unmatched_buckets:{series.unmatched}"})
+
+        conf_by_dim: dict[str, float | None] = {}
+        gated_by_dim: dict[str, bool] = {}
+        for row in rows:
+            dim = str(row.get("dim") or "")
+            values = series.values(dim) if series is not None else []
+            if series is not None:
+                payload = build_band_payload(
+                    values, k=seasonal.k,
+                    seed_material=(f"{datasource}|{rule.id}|{dim}|"
+                                   f"{series.blocks[0][0] if series.blocks else ''}"))
+                outcome = gate(values, cur_map.get(dim), payload,
+                               min_confidence=sig.min_confidence)
+            else:
+                payload = {}
+                outcome = {"z": None, "outside": None, "confidence": None,
+                           "gated": False, "reason": reason or "series_unavailable"}
+            section["by_dim"][dim] = {**payload, **outcome}
+            conf_by_dim[dim] = outcome["confidence"]
+            gated_by_dim[dim] = bool(outcome["gated"])
+
+        if sig.required():
+            # 「判了在带内」是诚实的未触发;「判不了」不是 —— 触发过但
+            # 无法确认的组必须把整条规则升级成 error run,绝不静默放行。
+            hard: list[str] = []
+            for row in rows:
+                dim = str(row.get("dim") or "")
+                if not row.get("triggered") or gated_by_dim.get(dim):
+                    continue
+                why = str(section["by_dim"].get(dim, {}).get("reason") or "")
+                if why in ("within_band", "below_min_confidence"):
+                    continue
+                hard.append(f"{dim or '(aggregate)'}: {why or 'unconfirmable'}")
+            if hard:
+                raise DecisionError(
+                    f"rule {rule.id!r}: significance requires 'outside_band' "
+                    "but the noise band could not be computed for a triggered "
+                    f"group — {'; '.join(hard)} (refusing to pass silently: a "
+                    "trigger that cannot be confirmed is not a confirmed trigger)")
+
+        rows, triggered_dims = self._judge(
+            rule, cond, cur_map, base_map, row_count,
+            confidence_by_dim=conf_by_dim, gated_by_dim=gated_by_dim,
+            require_gate=sig.required())
+        return rows, triggered_dims, section
+
+    def _query_runner(self, datasource: str):
+        """桥与签名带共用的 runner 契约:``(sql, ds) -> (columns, rows)``。
+
+        异常原样上抛(桥与显著性阶段各自按自己的语义处理:桥吞成
+        degraded,显著性按 require 决定降级还是 error run)。
+        """
+        async def _runner(sql: str, ds: str):
+            result = await self._run(sql, ds or datasource)
+            return list(result.columns), list(result.rows)
+        return _runner
 
     async def _analysis_bridge(
         self, rule: DecisionRule, datasource: str, dialect: str,
@@ -508,9 +712,7 @@ class DecisionService:
                               "reason": str(e)[:200]}],
             }
 
-        async def _runner(sql: str, ds: str):
-            result = await self._run(sql, ds)
-            return list(result.columns), list(result.rows)
+        _runner = self._query_runner(datasource)
 
         try:
             return await run_bridge(
@@ -559,9 +761,24 @@ class DecisionService:
 
     def _judge(
         self, rule: DecisionRule, cond, cur_map: dict[str, float | None],
-        base_map: dict[str, float | None], row_count: int,
+        base_map: dict[str, float | None], row_count: int, *,
+        confidence_by_dim: dict[str, float | None] | None = None,
+        gated_by_dim: dict[str, bool] | None = None,
+        require_gate: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Per-group verdicts → (row cards, the groups that triggered)."""
+        """Per-group verdicts → (row cards, the groups that triggered).
+
+        ``confidence_by_dim`` is the significance stage's product: ``None``
+        (the default — no ``significance`` on the rule) leaves every row card
+        byte-identical to the pre-B2 shape. When provided, rows gain
+        ``confidence``/``gated`` and — for a rule that ``require``s the gate —
+        a satisfied condition only triggers when the group is also *out of
+        the noise band*. A group that fired but could not be confirmed stays
+        visible as ``triggered: false, gated: false`` with its ``matched``
+        conditions intact (the audit trail must show the near-miss, not hide
+        it), and ``confidence`` joins the condition scope so a rule can test
+        it directly.
+        """
         contrib = _contribution(cur_map, base_map) if rule.scope == "per_dimension" \
             else []
         contrib_by_dim = {c["dim"]: c["contribution"] for c in contrib}
@@ -586,12 +803,14 @@ class DecisionService:
                 "row_count": row_count,
                 "dim": dim,
             }
+            if confidence_by_dim is not None:
+                scope_vars["confidence"] = confidence_by_dim.get(dim)
             hit = cond.eval(scope_vars) is True
             # Only a satisfied group lists its conditions: under `all`, a
             # half-matched group would otherwise look like it fired.
             matched = ([c for c in rule.conditions if self._cond_hit(c, scope_vars)]
                        if hit else [])
-            rows.append({
+            card: dict[str, Any] = {
                 "dim": dim,
                 "current": _jsonable(cur),
                 "baseline": _jsonable(base),
@@ -600,8 +819,14 @@ class DecisionService:
                 "contribution": _jsonable(contrib_by_dim.get(dim)),
                 "triggered": hit,
                 "matched": matched,
-            })
-            if hit:
+            }
+            if confidence_by_dim is not None:
+                gated = bool(gated_by_dim.get(dim)) if gated_by_dim is not None else False
+                card["triggered"] = bool(hit and (gated if require_gate else True))
+                card["confidence"] = _jsonable(confidence_by_dim.get(dim))
+                card["gated"] = gated
+            rows.append(card)
+            if card["triggered"]:
                 hits.append((dim, cur, matched))
 
         # `emit` decides which of the triggered groups the *rule* reports. The

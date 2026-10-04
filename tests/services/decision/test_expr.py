@@ -253,6 +253,21 @@ def test_default_variables_unchanged():
     assert evaluate_condition("delta > 0", {"delta": 1.0}) is True
 
 
+def test_confidence_is_a_first_class_decision_variable():
+    """v3 的 ``confidence`` 在闭集里 —— 而它在**未声明 significance** 时
+    恒为 Unknown(静默不响),所以 lint(rules._SIGNIFICANCE_ONLY)在写入
+    时就拒掉这样的条件;这里只钉表达式层的解析与三值行为。"""
+    from trove.services.decision.expr import VARIABLES
+
+    assert "confidence" in VARIABLES
+    assert parse_condition("confidence > 0.5").identifiers() == {"confidence"}
+    assert evaluate_condition("confidence > 0.5", {"confidence": 0.8}) is True
+    assert evaluate_condition("confidence > 0.5", {"confidence": 0.1}) is False
+    # 作用域里没有它 → Unknown → 不触发(而不是塌成 False 后借 not 反转)
+    assert evaluate_condition("confidence > 0.5", {}) is False
+    assert evaluate_condition("not (confidence > 0.5)", {}) is False
+
+
 def test_min_is_both_identifier_and_function():
     """``min`` 同时是聚合标量与 FUNCTIONS 里的函数名:两种拼法都必须能解析。
 

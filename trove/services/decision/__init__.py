@@ -34,12 +34,15 @@ from trove.services.decision.rules import (
     DecisionDoc,
     DecisionRule,
     RuleError,
+    Seasonal,
+    Significance,
     Subject,
     compile_condition,
     lint_document,
     lint_rule,
     parse_document,
     parse_rule,
+    rule_rev,
     rule_to_dict,
 )
 
@@ -53,6 +56,8 @@ __all__ = [
     "RuleError",
     "SCOPES",
     "SEVERITIES",
+    "Seasonal",
+    "Significance",
     "Subject",
     "UNKNOWN",
     "as_number",
@@ -64,5 +69,6 @@ __all__ = [
     "parse_condition",
     "parse_document",
     "parse_rule",
+    "rule_rev",
     "rule_to_dict",
 ]

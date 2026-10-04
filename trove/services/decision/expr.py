@@ -75,6 +75,10 @@ VARIABLES: frozenset[str] = frozenset({
     "contribution",   # signed share of Σ|delta| across dimensions
     "row_count",      # rows returned by the current-window query
     "dim",            # dimension label of the row being evaluated
+    # 位置分数(非概率,(|z|−k)/k 截断到 [0,1];仅在规则声明
+    # ``significance``、显著性阶段跑过之后有值 —— 未声明时恒 Unknown,
+    # lint 会在写入时拒掉这样的条件,见 rules._SIGNIFICANCE_ONLY)
+    "confidence",
 })
 
 #: validator 档的标识符闭集 —— **结果域**,与上面的决策域是两套词。

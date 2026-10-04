@@ -469,6 +469,54 @@ class TestDriverLineInTheMessage:
         assert "主因" not in summary["alert"]
 
 
+class TestBandLineInTheMessage:
+    """B2 最后一公里:声明了 significance 的通知多一行「噪声带：…」."""
+
+    SECTION = {
+        "required": True,
+        "by_dim": {
+            "华东": {"gated": True, "z": 6.74, "k": 3.5, "confidence": 0.93},
+            "华北": {"gated": False, "z": 1.21, "k": 3.5, "confidence": 0.0},
+        },
+    }
+
+    async def test_the_notification_gains_the_band_line(self, svc):
+        job = await _job(svc)
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(evidence={**EVIDENCE, "significance": self.SECTION})))
+        summary = await runner.run_job(job, NOW)
+        assert summary["alert"].endswith("噪声带：华东 |z|=6.74 > k=3.50（位置 0.93）")
+        assert "华北" not in summary["alert"]      # 未确认的组不进通知
+
+    async def test_without_a_declaration_the_message_is_untouched(self, svc):
+        """未声明 significance → band_line 空串 → 通知与历史逐字节相同。"""
+        job = await _job(svc)
+        runner = SchedulerRunner(FakeSessionManager(), svc,
+                                 decision=FakeDecision(_triggered()))
+        summary = await runner.run_job(job, NOW)
+        assert summary["alert"] == _triggered().message
+        assert "噪声带" not in summary["alert"]
+
+    async def test_all_within_band_adds_nothing(self, svc):
+        """声明了但没有任何组被确认(全在带内)→ 不加行,而不是空行。"""
+        job = await _job(svc)
+        within = {"by_dim": {"华东": {**self.SECTION["by_dim"]["华北"],
+                                     "gated": False}}}
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(evidence={**EVIDENCE, "significance": within})))
+        summary = await runner.run_job(job, NOW)
+        assert "噪声带" not in summary["alert"]
+
+    async def test_driver_and_band_lines_compose_in_order(self, svc):
+        job = await _job(svc)
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
+            _triggered(evidence={**EVIDENCE, "analysis": ANALYSIS,
+                                 "significance": self.SECTION})))
+        summary = await runner.run_job(job, NOW)
+        alert = summary["alert"]
+        assert alert.index("主因：") < alert.index("噪声带：")
+
+
 class TestErrorsAreLoud:
     async def test_rule_missing_is_error_and_sends_nothing(self, svc):
         job = await _job(svc, decision_rule="gone")
