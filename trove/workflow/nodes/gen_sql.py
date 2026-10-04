@@ -1306,14 +1306,17 @@ def build_sql_registry(
             "probe_query", probe_tool,
             description=(
                 "Execute a SQL query read-only and return a short observation: "
-                '{"ok", "row_count", "columns", "rows" (first 5)}. '
+                '{"ok", "row_count", "columns", "rows" (first 5 of up to 10 '
+                'fetched)}. '
                 "Use when: a superlative/filter draft risks 0 rows, the result "
                 "shape is uncertain, or you used a self-invented filter value — "
                 "verify BEFORE finalizing. Do NOT use when: you only need a "
                 "syntax check (use validate_sql) or you are already certain. "
                 "Example: probe_query(sql=\"SELECT name FROM students WHERE "
                 "county='Alameda'\") -> {\"ok\":true,\"row_count\":5,...}. "
-                "Fetches at most 10 rows, 5s timeout, never modifies data."
+                "Fetches at most 10 rows (a LIMIT is injected when the draft "
+                "has none, and row_count is then the true total), 5s timeout, "
+                "never modifies data."
             ),
             parameters={
                 "type": "object",
