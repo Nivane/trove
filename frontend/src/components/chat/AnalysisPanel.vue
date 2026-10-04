@@ -6,10 +6,7 @@
     <header class="analysis-head">
       <span class="analysis-title">
         {{ t('analysisTitle', ui.lang) }}
-        <span v-if="currentTurn?.startedAt" class="analysis-head-stats">
-          {{ fmtMs(headTotal) }}
-          <template v-if="currentTurn.steps.length"> · {{ t('stepsCount', ui.lang, currentTurn.steps.length) }}</template>
-        </span>
+        <span v-if="headStats" class="analysis-head-stats">{{ headStats }}</span>
       </span>
       <button class="topbar-btn" @click="ui.toggleAnalysis()">
         <X :size="14" />
@@ -111,6 +108,15 @@
             </summary>
             <div class="thought-body">{{ th }}</div>
           </details>
+        </div>
+
+        <!-- ① 截断写明:上限之外还有 N 步没随历史保存(不静默丢步)。 -->
+        <div v-if="currentTurn.stepsTruncated" class="analysis-truncated">
+          {{ t('analysisStepsTruncated', ui.lang, currentTurn.stepsTruncated) }}
+        </div>
+        <!-- 零步骤的完结轮(缓存命中 / 旧会话 / 中断轮):不留纯空白。 -->
+        <div v-if="emptyStepsNote" class="analysis-empty analysis-empty-turn">
+          {{ t('analysisNoSteps', ui.lang) }}
         </div>
       </template>
       <div v-else class="analysis-empty">{{ t('analysisEmpty', ui.lang) }}</div>
@@ -237,6 +243,25 @@ const headTotal = computed(() => {
   const ms = t.summary?.total_elapsed_ms
   if (t.status === 'done' && typeof ms === 'number') return ms
   return Math.max(0, now.value - t.startedAt)
+})
+
+/** Header stats: 直播轮 = 已用时 · N 步;历史轮没有直播时钟(startedAt
+ *  缺席),只给 N 步 —— 有几步说几步,不补零。 */
+const headStats = computed(() => {
+  const turn = currentTurn.value
+  if (!turn) return ''
+  const parts: string[] = []
+  if (turn.startedAt) parts.push(fmtMs(headTotal.value))
+  if (turn.steps.length) parts.push(t('stepsCount', ui.lang, turn.steps.length))
+  return parts.join(' · ')
+})
+
+/** 零步骤的完结轮(缓存命中 / 旧会话 / 中断轮)—— 面板不留纯空白,明说
+ *  「本轮无步骤记录」。直播中(status=streaming)不插话:状态条已在说明。 */
+const emptyStepsNote = computed(() => {
+  const turn = currentTurn.value
+  if (!turn || turn.status === 'streaming') return false
+  return !turn.steps.length && !turn.live?.length && !turn.thoughts.length
 })
 
 function stepAttempt(j: number): number {

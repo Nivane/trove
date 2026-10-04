@@ -27,6 +27,13 @@ export interface StepCard {
   payload: StepPayload
 }
 
+/** SSE `step` 事件 → 步骤卡。直播(onEvent)、续跑(resume 回调)与历史恢复
+ *  (restoreTurns)共用同一映射 —— 同一段映射此前抄了三份,收敛成一个,
+ *  历史轮与直播轮的步骤卡才保证逐字段一致。 */
+export function stepCardFromEvent(p: StepPayload): StepCard {
+  return { node: p.node ?? p.label ?? 'step', label: p.label, payload: p }
+}
+
 /** A node currently in flight (from a `begin` event, not yet resolved by a step). */
 export interface LiveStep {
   node: string
@@ -59,6 +66,15 @@ export interface Turn {
   /** 答案落盘的 ISO 时间(live 轮 = 终态时刻;历史轮 = 消息 timestamp)。
    *  缺席 = 拿不到 —— 溯源条省掉时间片段,不拿别的时刻冒名顶替。 */
   at?: string
+  /** 历史轮:因上限被截掉、未随历史保存的步数(面板据此标注,
+   *  不做静默丢步)。缺席/0 = 没有截断。 */
+  stepsTruncated?: number
+  /** 历史轮:提问已落盘但没有答案 —— 仍在跑 / 已中断(方案 ⑤)。
+   *  渲染为灰字如实标注,不装作正常收官。 */
+  unfinished?: boolean
+  /** 历史轮:该轮停在 HITL 待确认(末条书签重建);resume 时随
+   *  pendingHitl 回传工作流名。 */
+  hitlWorkflow?: string
 }
 
 const SESSION_KEY = 'trove_ui_session'
@@ -132,6 +148,18 @@ export const useChatStore = defineStore('chat', {
       try {
         const body = await apiGet(`/v1/sessions/${sid}`)
         this.turns = restoreTurns(body.messages ?? [])
+        // HITL 书签回填(方案 ②):末条消息带未决书签时 restoreTurns 已把该轮
+        // 恢复成待确认态 —— 这里把 pending 簿记接回 store,确认卡与既有
+        // resume 通道即插即用(零新交互)。换会话必须清掉上一会话的残留。
+        const tail = this.turns[this.turns.length - 1]
+        this.pendingHitl =
+          tail?.status === 'hitl'
+            ? {
+                sessionId: sid,
+                workflow: tail.hitlWorkflow ?? 'reflection',
+                batch: !!tail.hitlBatch,
+              }
+            : null
         // 会话级数据源记忆:服务端消息元数据为准(跨设备一致),
         // 本地按会话存储兜底。
         const ui = useUiStore()
@@ -336,12 +364,7 @@ export const useChatStore = defineStore('chat', {
           break
         }
         case 'step': {
-          const p = ev.data as StepPayload
-          t.steps.push({
-            node: p.node ?? p.label ?? 'step',
-            label: p.label,
-            payload: p,
-          })
+          t.steps.push(stepCardFromEvent(ev.data as StepPayload))
           // A step marks the completion of the current node chain — resolve
           // every pending begin (nested sub-nodes included).
           t.live = []
@@ -391,10 +414,7 @@ export const useChatStore = defineStore('chat', {
             if (summary) t.summary = summary
             if (summary?.error_info) t.errorInfo = summary.error_info
             if (summary?.sql && !t.steps.some((s) => s.node === 'gen_sql')) {
-              t.steps.push({
-                node: 'gen_sql',
-                payload: { node: 'gen_sql', sql: summary.sql },
-              })
+              t.steps.push(stepCardFromEvent({ node: 'gen_sql', sql: summary.sql }))
             }
             // Batch in progress → intermediate per-task done; wait for the
             // terminal batched done. Otherwise this is the final answer.
@@ -482,12 +502,7 @@ export const useChatStore = defineStore('chat', {
               })
             }
           } else if (ev.type === 'step') {
-            const p = ev.data as StepPayload
-            tt.steps.push({
-              node: p.node ?? p.label ?? 'step',
-              label: p.label,
-              payload: p,
-            })
+            tt.steps.push(stepCardFromEvent(ev.data as StepPayload))
             tt.live = []
           } else if (ev.type === 'task') {
             const task = ev.data as Partial<TaskItem> & { task_id: string }
@@ -643,9 +658,21 @@ function lastTurnTopic(turns: Turn[]): string {
  * Persisted metadata carries the structured summary (sql / chart /
  * rows_preview ...) written by the backend's _record_exchange; older
  * sessions only have plain text — those fall back to text-only turns.
+ *
+ * 方案 ①②⑤ 的历史重建:
+ *  - ① 步骤历史:metadata.steps(run 期 SSE step 事件的有界前缀)按同一
+ *    映射重建步骤卡;steps_truncated > 0 时透出被截步数 —— 面板据此
+ *    标注「其后 N 步未随历史保存」,不做静默丢步。
+ *  - ② HITL 书签:消息表 append-only、书签无更新通道,失效规则 = 「只认
+ *    最后一条」—— 末条 assistant 消息带 pending 书签 → 该轮恢复为待确认
+ *    态;书签之后已落答案(恢复成功)→ 视为已完成轮次,书签只是中间站。
+ *  - ⑤ 提问起始落盘:末条停在 user 消息 = 该轮问了没答(仍在跑/已中断)
+ *    → unfinished 灰字标注。
  */
 export function restoreTurns(messages: StoredMessage[]): Turn[] {
   const turns: Turn[] = []
+  /** 收到过答案消息(非书签)的轮次 —— 收口时据此标未完成。 */
+  const answered = new Set<Turn>()
   for (const m of messages) {
     if (m.role === 'user') {
       turns.push({
@@ -663,6 +690,18 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
       // 省掉时间片段,而不是拿"现在"冒名顶替。
       if (m.timestamp) t.at = m.timestamp
       const meta = m.metadata ?? {}
+      // ① 步骤历史。一轮内可能有多条 assistant 消息(② 的中断书签 +
+      // 恢复后的答案各带一段步骤),追加为一条时间线。
+      const steps = meta.steps as StepPayload[] | undefined
+      if (Array.isArray(steps) && steps.length) {
+        t.steps.push(...steps.map(stepCardFromEvent))
+      }
+      const truncated = Number(meta.steps_truncated ?? 0)
+      if (truncated > 0) t.stepsTruncated = (t.stepsTruncated ?? 0) + truncated
+      // ② 书签消息只是中断现场:内容是本轮确认文案、不是答案 —— 直播路径
+      // 里确认文案由 HitlCard 呈现(不进答案气泡),历史路径同样不落。
+      if (meta.hitl) continue
+      answered.add(t)
       const summary = (meta.summary ?? null) as DoneSummary | null
       if (summary) {
         t.summary = {
@@ -671,12 +710,33 @@ export function restoreTurns(messages: StoredMessage[]): Turn[] {
         }
         t.answer = summary.final_response || m.content
         if (summary.error_info) t.errorInfo = summary.error_info
-        // 分析面板只服务"当前直播轮次":历史会话不重建步骤/日志,
-        // 只保留 answer/summary(消息体渲染 SQL 与图表用),保证点开
-        // 历史会话时右侧没有可展开的分析过程。
       } else {
         t.answer = m.content
       }
+    }
+  }
+  // ⑤ 问了没答的轮次 = 未完成(仍在跑 / 已中断)—— 含「问过、中断、又
+  // 在新提问里被丢弃书签」的中间轮:没有答案消息就是没有答案。
+  for (const turn of turns) {
+    if (!answered.has(turn)) turn.unfinished = true
+  }
+  // ② 书签只认末条(方案 ②:消息表 append-only,失效规则「最后一条」)——
+  // 末条 assistant 消息带 pending 书签 → 该轮是待确认态而非未完成;
+  // 书签之后已落答案(恢复成功)→ 上面 answered 已把它算作完成轮。
+  const lastMsg = messages[messages.length - 1]
+  const tail = turns[turns.length - 1]
+  if (lastMsg?.role === 'assistant' && tail) {
+    const hitl = (lastMsg.metadata?.hitl ?? null) as {
+      status?: string
+      workflow?: string
+      batch?: boolean
+    } | null
+    if (hitl?.status === 'pending') {
+      tail.status = 'hitl'
+      tail.hitlBatch = !!hitl.batch
+      tail.hitlWorkflow = String(hitl.workflow || 'reflection')
+      tail.hitlActionsShown = false
+      tail.unfinished = false
     }
   }
   return turns.filter((t) => t.question || t.answer)

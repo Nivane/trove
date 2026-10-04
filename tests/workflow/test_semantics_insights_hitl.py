@@ -492,8 +492,16 @@ class TestSessionManagerHITL:
         assert final.row_count == 5
         assert final.verdict == "OK"
         assert final.insights == ["共 5 名学生"]
-        # 一次完整问答落库(user + assistant)
-        assert len(session.messages) == 2
+        # 落库 = 提问(⑤ 起始落盘)+ 等待确认书签(②)+ 答案。书签把中断
+        # 现场持久化(resume 跨重启据末条重建,方案 ②),不是一次完整交换 ——
+        # 它不触发记忆观测/审计/结果缓存写。
+        assert len(session.messages) == 3
+        bookmark = session.messages[1]
+        assert bookmark.role == "assistant"
+        assert bookmark.metadata["hitl"]["status"] == "pending"
+        assert bookmark.metadata["hitl"]["workflow"] == "reflection"
+        assert "datasource" in bookmark.metadata["hitl"]  # 跨重启 stub 重建用
+        assert session.messages[2].metadata["row_count"] == 5
 
     async def test_ask_pauses_and_resume_reject(self, tmp_home, sqlite_registry):
         manager, _ = await self._make_manager(tmp_home, sqlite_registry, [

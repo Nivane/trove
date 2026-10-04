@@ -364,6 +364,20 @@ class TestChatHITLResume:
             assert payload["kind"] == "confirm_sql"
             assert "SELECT name FROM students;" in payload["sql"]
 
+            # 暂停即落盘(方案 ①⑤):提问 + 「等待确认」书签(pending)+ 已收集
+            # 步骤已在历史里(GET 透出形状,防序列化丢字段)
+            paused = (await c.get(f"/v1/sessions/{session_id}")).json()
+            assert [m["role"] for m in paused["messages"]] == ["user", "assistant"]
+            bookmark_meta = paused["messages"][1]["metadata"]
+            pending_hitl = bookmark_meta["hitl"]
+            assert pending_hitl["status"] == "pending"
+            assert pending_hitl["run_id"]
+            assert pending_hitl["workflow"] == "reflection"
+            assert "SELECT name FROM students;" in bookmark_meta["sql"]
+            steps = bookmark_meta["steps"]
+            assert steps and steps[0]["type"] == "step"
+            assert {"seq", "node", "elapsed_ms", "lang", "detail"} <= set(steps[0])
+
             # 批准 → SSE 事件流:done 终态带执行结果与洞察
             resume = await c.post(
                 f"/v1/sessions/{session_id}/resume",
@@ -378,9 +392,24 @@ class TestChatHITLResume:
             assert summary["insights"] == ["共 5 名学生"]
             assert summary["final_response"]
 
-            # 会话落库为一次完整问答
+            # 会话落库:提问(⑤)+ 中断书签(②)+ 终答 = 3 条。书签是中断时的
+            # 事实快照(消息表 append-only,status 保持 pending 不更新)——
+            # 失效规则「只认最后一条」:答案消息落在其后,书签自然失效。
             detail = (await c.get(f"/v1/sessions/{session_id}")).json()
-            assert len(detail["messages"]) == 2
+            msgs = detail["messages"]
+            assert [m["role"] for m in msgs] == ["user", "assistant", "assistant"]
+            assert msgs[1]["metadata"]["hitl"]["status"] == "pending"
+            assert msgs[2]["metadata"]["row_count"] == 5
+
+            # 书签已失效 → 再 resume 响亮报错(不静默续一条走完的线程)
+            again = parse_sse(
+                (await c.post(
+                    f"/v1/sessions/{session_id}/resume", json={"decision": "yes"},
+                )).text
+            )
+            assert [t for t, _ in again] == ["error"]
+            assert "没有待确认" in again[0][1]["content"] or \
+                "Nothing is pending" in again[0][1]["content"]
 
         await manager.dispose()
 

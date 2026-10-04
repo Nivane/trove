@@ -443,6 +443,245 @@ class TestStructuredSteps:
         assert "校验规则" in gen_steps[1]["detail"]["reason"]
 
 
+class TestHistoryPersistence:
+    """对话历史补存(方案 ①②⑤):步骤/书签落盘 + resume 跨重启重建。
+
+    恢复端(前端 ``restoreTurns``)与直播端读的是**同一形状** —— 落盘的就是
+    SSE 事件原样(见 ``trove/agent/step_history.py`` 模块注释)。
+    """
+
+    _Q = "What students are in Alameda county?"
+    _SQL = "```sql\nSELECT name FROM students;\n```"
+
+    @staticmethod
+    def _rig(tmp_home, sqlite_registry, responses, *, hitl=False, **cfg):
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        from trove.agent.session import SessionManager
+        from trove.core.config import AgentConfig
+        from trove.storage.session_store import SessionStore
+        from trove.workflow.graphs import GraphServices, build_graphs
+
+        class Scripted:
+            def __init__(self):
+                self._it = iter(responses)
+
+            async def chat(self, model, messages, **kwargs):
+                return next(self._it)
+
+            async def chat_full(self, model, messages, tools=None, **kwargs):
+                return {"content": next(self._it), "tool_calls": []}
+
+        config = AgentConfig(home=str(tmp_home), target="mock/model", hitl=hitl, **cfg)
+        llm = Scripted()
+        graphs = build_graphs(
+            GraphServices(
+                llm=llm, connectors=sqlite_registry,
+                semantic_layer=getattr(sqlite_registry, "_test_semantic_provider", None),
+                config=config,
+            ),
+            checkpointer=InMemorySaver(),
+            multi_candidate=False, query_sketch=False, agentic=False,
+        )
+        manager = SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs=graphs,
+            llm_gateway=llm,
+        )
+        return manager, llm
+
+    @staticmethod
+    async def _drain(stream):
+        return [ev async for ev in stream]
+
+    async def test_stream_persists_steps_in_message_metadata(self, tmp_home, sqlite_registry):
+        """跑完一问 → assistant 消息 metadata.steps = SSE step 事件(值相等)。
+
+        直播端从 SSE 收步骤、恢复端从 metadata 读步骤,两边喂给同一个
+        事件→卡片映射 —— 形状漂移会让历史卡片和直播卡片长得不一样,
+        所以这里断言的是**逐字段相等**,不是"差不多"。
+        """
+        manager, _ = self._rig(
+            tmp_home, sqlite_registry, ["query", self._SQL, "OK"],
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            streamed = await self._drain(
+                manager.ask_stream(session=session, question=self._Q)
+            )
+            sse_steps = [e for e in streamed if e["type"] == "step"]
+            assert sse_steps
+
+            stored = await manager.load_session(session.session_id, "/tmp/p")
+            last = stored.messages[-1]
+            assert last.role == "assistant"
+            assert last.metadata["steps"] == sse_steps
+            assert last.metadata["steps_truncated"] == 0
+        finally:
+            await manager.dispose()
+
+    async def test_cache_hit_persists_no_steps(self, tmp_home, sqlite_registry):
+        """缓存命中没跑图 → 无步骤可落,metadata 不带 steps 键(干净缺席)。"""
+        manager, _ = self._rig(
+            tmp_home, sqlite_registry, ["query", self._SQL, "OK"],
+            result_cache=True,
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            await self._drain(manager.ask_stream(session=session, question=self._Q))
+            # 第二问命中结果缓存(脚本已耗尽,再问 LLM 会炸)
+            await self._drain(manager.ask_stream(session=session, question=self._Q))
+
+            stored = await manager.load_session(session.session_id, "/tmp/p")
+            assert [m.role for m in stored.messages] == [
+                "user", "assistant", "user", "assistant",
+            ]
+            assert stored.messages[1].metadata["steps"]
+            assert "steps" not in stored.messages[3].metadata
+            assert "steps_truncated" not in stored.messages[3].metadata
+        finally:
+            await manager.dispose()
+
+    async def test_steps_truncation_lands_in_metadata(
+        self, tmp_home, sqlite_registry, monkeypatch,
+    ):
+        """裁剪触顶 → steps_truncated 随 metadata 落盘(前端据此注记
+        「其后 N 步未随历史保存」)。上限数值本身由 test_step_history 钉死。"""
+        import trove.agent.session as session_mod
+        from trove.agent.step_history import trim_steps as real_trim
+
+        monkeypatch.setattr(
+            session_mod, "trim_steps",
+            lambda steps: real_trim(steps, max_steps=1),
+        )
+        manager, _ = self._rig(
+            tmp_home, sqlite_registry, ["query", self._SQL, "OK"],
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            streamed = await self._drain(
+                manager.ask_stream(session=session, question=self._Q)
+            )
+            sse_steps = [e for e in streamed if e["type"] == "step"]
+            assert len(sse_steps) > 1
+
+            stored = await manager.load_session(session.session_id, "/tmp/p")
+            meta = stored.messages[-1].metadata
+            assert len(meta["steps"]) == 1
+            assert meta["steps_truncated"] == len(sse_steps) - 1
+        finally:
+            await manager.dispose()
+
+    async def test_interrupt_persists_pending_bookmark(self, tmp_home, sqlite_registry):
+        """HITL 中断落「等待确认」assistant 消息(②)+ 提问(⑤)。
+
+        书签是**中断时的事实快照**:status 恒为 pending(消息表 append-only,
+        无更新通道);失效规则 = 「只认最后一条」—— 答案消息落在其后即失效。
+        """
+        manager, _ = self._rig(
+            tmp_home, sqlite_registry, ["query", self._SQL], hitl=True,
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            final = await manager.ask(session=session, question=self._Q)
+            assert final.hitl_status == "pending"
+
+            stored = await manager.load_session(session.session_id, "/tmp/p")
+            assert [m.role for m in stored.messages] == ["user", "assistant"]
+            assert stored.messages[0].content == self._Q
+            meta = stored.messages[1].metadata
+            assert meta["hitl"]["status"] == "pending"
+            assert meta["hitl"]["run_id"] == final.run_id
+            assert meta["hitl"]["workflow"] == "reflection"
+            assert "SELECT name FROM students;" in " ".join(meta["sql"].split())
+            assert meta["summary"]["hitl_status"] == "pending"
+        finally:
+            await manager.dispose()
+
+    async def test_resume_rebuilds_bookmark_across_restart(self, tmp_home, sqlite_registry):
+        """清空 _pending_runs(模拟服务重启)→ resume 从 store 末条重建书签并跑通。
+
+        图状态本身在 checkpointer(thread = session_id)—— 重建后 resume 继续
+        同一线程;跑完的答案消息落在书签之后,书签自然失效。
+        """
+        manager, _ = self._rig(
+            tmp_home, sqlite_registry, ["query", self._SQL, "OK"], hitl=True,
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            first = await self._drain(
+                manager.ask_stream(session=session, question=self._Q)
+            )
+            assert first[-1]["type"] == "hitl"
+            assert session.session_id in manager._pending_runs
+
+            manager._pending_runs.clear()  # 重启:进程内簿记丢失
+            loaded = await manager.load_session(session.session_id, "/tmp/p")
+            resumed = await self._drain(manager.resume_stream(loaded, "yes"))
+            assert resumed[-1]["type"] == "done"
+
+            stored = await manager.load_session(session.session_id, "/tmp/p")
+            assert [m.role for m in stored.messages] == [
+                "user", "assistant", "assistant",
+            ]
+            assert stored.messages[-2].metadata["hitl"]["status"] == "pending"
+            assert stored.messages[-1].metadata["row_count"] == 5
+        finally:
+            await manager.dispose()
+
+    async def test_new_question_drops_stale_bookmark(self, tmp_home, sqlite_registry):
+        """开新 run 丢弃进程内残留书签(失效规则的服务端一半)—— 中断后直接
+        重问,旧的 resume 响亮报错而不是续错线程。"""
+        manager, _ = self._rig(
+            tmp_home, sqlite_registry,
+            ["query", self._SQL, "query", self._SQL],  # 两问各自 route + gen
+            hitl=True,
+        )
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            first = await self._drain(
+                manager.ask_stream(session=session, question=self._Q)
+            )
+            assert first[-1]["type"] == "hitl"
+            assert session.session_id in manager._pending_runs
+
+            # 不确认,直接重问:新 run 起始丢弃残留书签(这一问同样暂停)
+            second = await self._drain(
+                manager.ask_stream(session=session, question="how many students?")
+            )
+            assert second[-1]["type"] == "hitl"
+
+            stored = await manager.load_session(session.session_id, "/tmp/p")
+            bookmarks = [
+                m.metadata["hitl"] for m in stored.messages
+                if m.role == "assistant" and (m.metadata or {}).get("hitl")
+            ]
+            assert len(bookmarks) == 2  # append-only:两枚书签都在历史里
+            assert bookmarks[0]["run_id"] != bookmarks[1]["run_id"]
+            # 进程内簿记指向新书签 —— 旧书签不再可 resume
+            assert manager._pending_runs[session.session_id]["run_id"] == \
+                bookmarks[1]["run_id"]
+        finally:
+            await manager.dispose()
+
+    async def test_resume_without_bookmark_is_loud_error(self, tmp_home, sqlite_registry):
+        """没有待确认(无书签/已被消费)→ 响亮报错,不静默续一条不存在的线程。"""
+        manager, _ = self._rig(tmp_home, sqlite_registry, [], hitl=True)
+        try:
+            session = await manager.start_session(project_cwd="/tmp/p")
+            events = await self._drain(manager.resume_stream(session, "yes"))
+            assert len(events) == 1
+            assert events[0]["type"] == "error"
+            assert events[0]["node"] == "hitl"
+            assert (
+                "没有待确认" in events[0]["content"]
+                or "Nothing is pending" in events[0]["content"]
+            )
+        finally:
+            await manager.dispose()
+
+
 class TestTrajectoryEvents:
     def _manager(self, tmp_home, sqlite_registry, responses, **build_kwargs):
         from trove.core.config import AgentConfig

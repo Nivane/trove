@@ -1162,6 +1162,16 @@ button:disabled {
   text-align: center;
   margin-top: var(--sp-6);
 }
+/* 历史轮①:上限之外没随历史保存的步数 —— 写明,不静默丢步。 */
+.analysis-truncated {
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+}
+/* 零步骤的完结轮:有轮次就有一句话,不留纯空白(比整面板空态靠上)。 */
+.analysis-empty-turn {
+  margin-top: var(--sp-3);
+}
 
 /* ── Live status bar (which node is running / how long) ── */
 .analysis-status {
@@ -1903,6 +1913,17 @@ button:disabled {
   gap: var(--sp-1);
   padding: var(--sp-1) var(--sp-2);
   border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-tertiary);
+  font-size: var(--fs-xs);
+  width: fit-content;
+}
+/* ── Unfinished turn (question saved, no answer persisted) ── */
+.unfinished-note {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
   background: var(--surface-muted);
   color: var(--text-tertiary);
   font-size: var(--fs-xs);

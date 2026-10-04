@@ -516,6 +516,10 @@ export const messages = {
     analysisTitle: '分析过程',
     analysisToggle: '分析过程',
     analysisEmpty: '提问后,这里会显示规划、SQL 与校验过程',
+    // 历史轮分析面板(方案 ①②):零步骤明说、截断写明,不留纯空白。
+    analysisNoSteps: '本轮无步骤记录',
+    analysisStepsTruncated: '其后 {n} 步未随历史保存',
+    turnUnfinished: '本轮未完成(可能仍在进行,或已中断)',
     // 分析卡(分析柱):结构化归因结果 —— 瀑布/贡献表/驱动树/证据。
     anaCardTitle: '归因分析',
     anaKindAttribution: '归因',
@@ -2408,6 +2412,10 @@ export const messages = {
     analysisToggle: 'Analysis',
     analysisEmpty:
       'Ask a question to see the planning, SQL and verification here',
+    // Restored-turn analysis panel (options ①②): say it plainly, no blanks.
+    analysisNoSteps: 'No steps recorded for this turn',
+    analysisStepsTruncated: '{n} later steps were not saved with the history',
+    turnUnfinished: "This turn didn't finish (still running, or interrupted)",
     // Analysis card (analysis pillar): structured attribution result.
     anaCardTitle: 'Attribution',
     anaKindAttribution: 'Attribution',

@@ -203,6 +203,11 @@
               >
                 <HitlCard :batch="!!turn.hitlBatch" />
               </div>
+              <!-- 未完成轮(方案 ⑤):提问已落盘、答案没落盘 —— 仍在跑或
+                   已中断。灰字如实标注,不装作正常收官。 -->
+              <div v-if="turn.unfinished" class="unfinished-note">
+                {{ t('turnUnfinished', ui.lang) }}
+              </div>
               <ErrorCard
                 v-if="cards[i]"
                 :card="cards[i]!"

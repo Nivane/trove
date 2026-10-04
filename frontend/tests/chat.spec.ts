@@ -351,6 +351,76 @@ describe('chat store — SSE event state machine', () => {
     const body = mocked.mock.calls[0][1] as Record<string, unknown>
     expect('datasource' in body).toBe(false)
   })
+
+  // ── 方案 ②:末条书签 → 待确认态 + pendingHitl 回填 ──────────────
+  function stubSessionFetch(body: Record<string, unknown>) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).endsWith('/tasks')) {
+          return new Response('{"tasks": []}', { status: 200 })
+        }
+        return new Response(JSON.stringify(body), { status: 200 })
+      }),
+    )
+  }
+
+  it('loadSession 把末条 pending 书签回填为 pendingHitl(确认卡即插即用)', async () => {
+    const chat = useChatStore()
+    chat.pendingHitl = { sessionId: 'old', workflow: 'reflection', batch: false }
+    stubSessionFetch({
+      messages: [
+        { role: 'user', content: 'q1' },
+        {
+          role: 'assistant',
+          content: '确认执行吗?',
+          metadata: {
+            hitl: {
+              status: 'pending',
+              run_id: 'r1',
+              workflow: 'reflection',
+              batch: true,
+            },
+            steps: [{ node: 'gen_sql', seq: 1 }],
+          },
+        },
+      ],
+    })
+    try {
+      await chat.loadSession('s1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(chat.currentTurn?.status).toBe('hitl')
+    expect(chat.currentTurn?.steps.map((s) => s.node)).toEqual(['gen_sql'])
+    expect(chat.pendingHitl).toEqual({
+      sessionId: 's1',
+      workflow: 'reflection',
+      batch: true,
+    })
+  })
+
+  it('loadSession 换到无书签会话时清掉残留 pendingHitl', async () => {
+    const chat = useChatStore()
+    chat.pendingHitl = { sessionId: 'old', workflow: 'reflection', batch: false }
+    stubSessionFetch({
+      messages: [
+        { role: 'user', content: 'q1' },
+        {
+          role: 'assistant',
+          content: 'a1',
+          metadata: { summary: { final_response: 'a1' } },
+        },
+      ],
+    })
+    try {
+      await chat.loadSession('s2')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(chat.pendingHitl).toBeNull()
+    expect(chat.currentTurn?.status).toBe('done')
+  })
 })
 
 // ── 失败轮次的呈现接线:结构化错误随事件进来,卡片据此渲染 ──────────

@@ -35,6 +35,7 @@ from langgraph.types import Command
 import uuid
 from datetime import datetime, timezone
 
+from trove.agent.step_history import MAX_COLLECTED_STEPS, trim_steps
 from trove.agent.tasks import (
     PACKET_ROWS,
     ROWS_PREVIEW,
@@ -109,6 +110,9 @@ class SessionManager:
         # 审计服务(None = CLI/嵌入环境无 auth,查询审计跳过)
         self._auth = auth
         self._pending_runs: dict[str, dict[str, Any]] = {}  # session_id → pending HITL run info
+        # 步骤历史缓冲(方案 ①):run_id → {"steps": [...], "overflow": N}。
+        # 采集上限防跑飞;run 结束/异常时弹出清理,不跨 run 泄漏。
+        self._run_steps: dict[str, dict[str, Any]] = {}
         self._task_stores: dict[str, TaskStore] = {}  # session_id → TaskStore (惰性,同一会话 .db)
         # 精确结果缓存:key → {"summary", "cached_at"}(进程内存,TTL 惰性淘汰)
         self._result_cache: dict[tuple, dict[str, Any]] = {}
@@ -511,6 +515,9 @@ class SessionManager:
         # Auto-compact an over-long session, then build history BEFORE
         # appending the current question
         await self._maybe_auto_compact(session)
+        # 开新 run 丢弃残留书签(方案 ②):失效规则「只认最后一条」的进程内
+        # 一半 —— 新提问后旧书签与旧卡片一起失效,不再可 resume。
+        self._pending_runs.pop(session.session_id, None)
         history = self._conversation_history(session)
         user_msg = Message(
             role="user",
@@ -518,6 +525,9 @@ class SessionManager:
             metadata={"workflow": workflow_name},
         )
         session.messages.append(user_msg)
+        # 提问起始落盘(方案 ⑤):图跑完前进程崩/被杀,问题仍留在历史里
+        # (尾轮无 assistant 回复 → 前端注记「本轮未完成」),不再整轮消失。
+        await self._store.save_session(session)
 
         run_id = str(uuid.uuid4())
         state = WorkflowState(
@@ -563,18 +573,28 @@ class SessionManager:
         if self._is_interrupted(result):
             # HITL 门:图在执行前暂停,返回确认请求。调用方展示后
             # 通过 resume() 用用户的批准/否决继续同一图。
-            # 持久化本轮用户消息:resume() 会从 store 重载会话,
-            # 未保存的用户输入会丢失(resume 的 _record_exchange 只追加 assistant)。
-            await self._store.save_session(session)
             final = WorkflowState.model_validate({k: v for k, v in result.items() if k != "__interrupt__"})
             final = final.model_copy(update={
                 "hitl_status": "pending",
                 "final_response": self._hitl_confirmation(result, state.lang),
             })
-            self._pending_runs[session.session_id] = {
+            pending_info: dict[str, Any] = {
                 "run_id": run_id,
-                "workflow_name": workflow_name,
+                "workflow": workflow_name,
+                "datasource": state.datasource,
             }
+            self._pending_runs[session.session_id] = pending_info
+            # 待确认落盘(方案 ②):书签 + 确认文案进 assistant 消息 ——
+            # 进程重启后 resume 从 store 末条重建;用户问题已在提问起始
+            # 落盘(⑤),这里把确认消息一并持久化。
+            await self._record_hitl_pending(
+                session, workflow_name=workflow_name,
+                content=final.final_response,
+                hitl={"status": "pending", **pending_info},
+                summary=self._state_summary(
+                    final, self._gen_model(self.config, final),
+                ),
+            )
             return final
 
         final = WorkflowState.model_validate(result)
@@ -692,6 +712,26 @@ class SessionManager:
         """
         graph = self._get_graph(workflow_name)
         pending = self._pending_runs.pop(session.session_id, {})
+        if not pending:
+            # 跨重启重建(方案 ②):书签同时落在 store 末条 assistant 消息的
+            # metadata.hitl 上 —— 进程内 _pending_runs 只是快路径(图状态
+            # 本身在 checkpointer,thread = session_id,重建后 resume 可行)。
+            pending = self._hitl_pending_from_store(session)
+        if not pending:
+            # 响亮报错:没有待确认的运行可续(书签已被消费,或从未有过)。
+            # 不做兜底 resume —— 那会拿用户的一个「y」去续一条不存在的
+            # 中断(或早已走完的线程),行为不可预期。
+            yield {
+                "type": "error", "node": "hitl",
+                "content": L(
+                    self.config.language,
+                    "没有待确认的执行:确认可能已完成、已过期或被取消。"
+                    "如需重跑,请重新提问。",
+                    "Nothing is pending confirmation: it may already be "
+                    "resolved, expired, or cancelled. Ask again to re-run.",
+                ),
+            }
+            return
         run_id = pending.get("run_id", "")
         import time as _time
         resume_start = _time.monotonic()
@@ -712,6 +752,10 @@ class SessionManager:
             config = self._run_config(session, run_id, stub, workflow_name)
             config["callbacks"] = list(config.get("callbacks") or []) + self._trace_callbacks(run_id)
 
+        # 书签消费 = 答案消息随 _record_exchange 落在书签之后(方案 ②:消息表
+        # append-only、无 metadata 更新通道,失效规则「只认最后一条」,零写改
+        # 历史)。双击/重放的第二次 resume 因而落到上面的「无待确认」响亮报错;
+        # 续跑失败/中断则书签仍是末条,天然可重试,无需回滚。
         result = await graph.ainvoke(Command(resume=decision), config)
         final = WorkflowState.model_validate(
             {k: v for k, v in result.items() if k != "__interrupt__"}
@@ -829,6 +873,9 @@ class SessionManager:
             return
 
         await self._maybe_auto_compact(session)
+        # 开新 run 丢弃残留书签(方案 ②):失效规则「只认最后一条」的进程内
+        # 一半 —— 新提问后旧书签与旧卡片一起失效,不再可 resume。
+        self._pending_runs.pop(session.session_id, None)
 
         # ── 任务层:跨轮推进(解释器)→ 多任务拆解 → 普通单任务 ──
         action = await self._interpret_followup(session, question)
@@ -859,6 +906,8 @@ class SessionManager:
             metadata={"workflow": workflow_name},
         )
         session.messages.append(user_msg)
+        # 提问起始落盘(方案 ⑤,同 ask())
+        await self._store.save_session(session)
 
         run_id = str(uuid.uuid4())
         state = WorkflowState(
@@ -987,10 +1036,12 @@ class SessionManager:
                 seq += 1
                 reason = merged.get("error_feedback", "")
                 retry = merged.get("retry_count", 0)
-                yield self._step_event(
+                step_ev = self._step_event(
                     seq, "gen_sql", g_delta, g_elapsed, reason, retry, lang,
                     merged.get("dialect", ""),
                 )
+                self._collect_step(run_id, step_ev)
+                yield step_ev
                 if g_delta.get("sql"):
                     yield {"type": "sql", "node": "gen_sql",
                            "content": format_sql(g_delta["sql"], merged.get("dialect", ""))}
@@ -1025,7 +1076,8 @@ class SessionManager:
                             if isinstance(value, dict) and value.get("kind") == "confirm_sql":
                                 pending_info: dict[str, Any] = {
                                     "run_id": run_id,
-                                    "workflow_name": workflow_name,
+                                    "workflow": workflow_name,
+                                    "datasource": state.datasource,
                                 }
                                 if task is not None:
                                     tc = state.task_context or {}
@@ -1036,8 +1088,6 @@ class SessionManager:
                                         "batch": True,
                                     })
                                 self._pending_runs[session.session_id] = pending_info
-                                # 持久化本轮用户消息(resume 重载会话后不丢失)
-                                await self._store.save_session(session)
                                 merged.update(
                                     {k: str(v) for k, v in value.items()}
                                 )
@@ -1070,12 +1120,22 @@ class SessionManager:
                                     usage = {}
                                 if usage:
                                     pending_summary["token_usage"] = usage
+                                confirmation = self._hitl_confirmation(
+                                    {"__interrupt__": interrupts}, lang,
+                                )
+                                # 待确认落盘(方案 ②):书签 + 确认文案 + 已收集
+                                # 步骤进 assistant 消息 —— resume 跨重启从 store
+                                # 末条重建;用户问题已在提问起始落盘(⑤)。
+                                await self._record_hitl_pending(
+                                    session, workflow_name=workflow_name,
+                                    content=confirmation,
+                                    hitl={"status": "pending", **pending_info},
+                                    summary=pending_summary,
+                                )
                                 yield {
                                     "type": "hitl",
                                     "node": "hitl",
-                                    "content": self._hitl_confirmation(
-                                        {"__interrupt__": interrupts}, lang,
-                                    ),
+                                    "content": confirmation,
                                     "payload": value,
                                     "summary": pending_summary,
                                 }
@@ -1115,10 +1175,13 @@ class SessionManager:
                         merged.update(delta)
 
                         # ── Structured step (REPL renders; also in --print) ──
-                        yield self._step_event(
+                        step_ev = self._step_event(
                             seq, node_name, delta, elapsed_ms,
                             reason, retry, lang, merged.get("dialect", ""),
                         )
+                        # 步骤历史(方案 ①):SSE 发什么、缓冲收什么,同形状。
+                        self._collect_step(run_id, step_ev)
+                        yield step_ev
 
                         # ── Legacy trajectory events (--print compatibility) ──
                         if node_name == "query_sketch" and delta.get("plan"):
@@ -1158,8 +1221,11 @@ class SessionManager:
                 with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                     await asyncio.wait_for(producer, timeout=5)
         except asyncio.CancelledError:
+            self._run_steps.pop(run_id, None)
             raise
         except Exception as e:
+            # 步骤缓冲随异常清理:不跨 run 泄漏(方案 ① 的泄漏边界)。
+            self._run_steps.pop(run_id, None)
             error_summary = {
                 "session_id": session.session_id,
                 "question": state.question,
@@ -1525,6 +1591,34 @@ class SessionManager:
             lines.append(f"{role}: {m.content[:300]}")
         return "\n".join(lines)
 
+    # ── 步骤历史缓冲(方案 ①)──────────────────────────────
+
+    def _collect_step(self, run_id: str, event: dict[str, Any]) -> None:
+        """收集本 run 的步骤事件(SSE 形状原样)。
+
+        采集上限 ``MAX_COLLECTED_STEPS`` 防跑飞;超出的计入 overflow,
+        截断计数一并体现 —— 「其后 N 步未随历史保存」不因缓冲上限失真。
+        """
+        buf = self._run_steps.get(run_id)
+        if buf is None:
+            buf = self._run_steps[run_id] = {"steps": [], "overflow": 0}
+        if len(buf["steps"]) >= MAX_COLLECTED_STEPS:
+            buf["overflow"] += 1
+            return
+        buf["steps"].append(event)
+
+    def _pop_run_steps(self, run_id: str) -> tuple[list[dict[str, Any]], int]:
+        """弹出并裁剪本 run 的缓冲 → ``(保留步骤, 截断计数)``。
+
+        无论有没有缓冲都清键:run 结束(含缓存命中/无步骤路径)即释放,
+        重复调用是空操作。
+        """
+        buf = self._run_steps.pop(run_id, None) if run_id else None
+        if not buf or not buf["steps"]:
+            return [], 0
+        kept, truncated = trim_steps(buf["steps"])
+        return kept, truncated + buf["overflow"]
+
     async def _record_exchange(
         self,
         session: Session,
@@ -1546,6 +1640,12 @@ class SessionManager:
             "error": final.error,
             "summary": self._state_summary(final, self._gen_model(self.config, final)),
         }
+        # 步骤历史(方案 ①):本 run 的 SSE step 事件经有界裁剪后落盘 ——
+        # 历史轮「分析过程」面板据此恢复;触顶时 steps_truncated = 被截步数。
+        steps, steps_truncated = self._pop_run_steps(final.run_id)
+        if steps:
+            metadata["steps"] = steps
+            metadata["steps_truncated"] = steps_truncated
         # 持久化 per-run token 用量(get 不弹栈,调用方 _run_stats 稍后
         # 一次性 pop 结算):崩溃/重启后成本历史仍可查,不再只活在进程内
         # tally 与一次性 done 事件里。
@@ -1574,6 +1674,73 @@ class SessionManager:
         await self._audit_authz(session, final)
         # 结果缓存写钩子(覆盖 ask / resume / ask_stream 三路径)
         self._maybe_cache_exchange(session, final)
+
+    # ── HITL 待确认落盘(方案 ②)────────────────────────────
+
+    async def _record_hitl_pending(
+        self,
+        session: Session,
+        *,
+        workflow_name: str,
+        content: str,
+        hitl: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> None:
+        """中断落「等待确认」assistant 消息(书签 + 确认文案 + 已收集步骤)。
+
+        metadata 口径与 :meth:`_record_exchange` 对齐(sql/summary/token_usage
+        …)—— 历史卡片照常渲染;``hitl`` 块是 resume 跨重启重建书签的唯一
+        持久来源(进程内 ``_pending_runs`` 只是快路径)。
+
+        刻意**不走** ``_record_exchange``:本轮尚未执行,不是一次完成的
+        交换 —— 不触发记忆观测 / 审计 / 结果缓存写。
+        """
+        run_id = str(hitl.get("run_id") or "")
+        steps, steps_truncated = self._pop_run_steps(run_id)
+        metadata: dict[str, Any] = {
+            "trace_id": session.session_id,
+            "workflow": workflow_name,
+            "hitl": hitl,
+            "sql": summary.get("sql", ""),
+            "row_count": summary.get("row_count", -1),
+            "verdict": summary.get("verdict", ""),
+            "error": summary.get("error", ""),
+            "summary": summary,
+        }
+        usage = summary.get("token_usage") or self._peek_tokens(run_id)
+        if usage:
+            metadata["token_usage"] = usage
+        if steps:
+            metadata["steps"] = steps
+            metadata["steps_truncated"] = steps_truncated
+        session.messages.append(Message(
+            role="assistant", content=content, metadata=metadata,
+        ))
+        await self._store.save_session(session)
+
+    @staticmethod
+    def _hitl_bookmark_message(session: Session) -> Message | None:
+        """末条 assistant 消息上的 hitl 书签(任意状态);没有则 None。"""
+        if not session.messages:
+            return None
+        last = session.messages[-1]
+        if last.role != "assistant":
+            return None
+        hitl = (last.metadata or {}).get("hitl")
+        if isinstance(hitl, dict) and hitl.get("status"):
+            return last
+        return None
+
+    @classmethod
+    def _hitl_pending_from_store(cls, session: Session) -> dict[str, Any]:
+        """store 末条若带未决书签 → 重建 pending 簿记(resume 跨重启)。"""
+        last = cls._hitl_bookmark_message(session)
+        if last is None:
+            return {}
+        hitl = last.metadata["hitl"]
+        if hitl.get("status") != "pending":
+            return {}
+        return {k: v for k, v in hitl.items() if k != "status"}
 
     async def _audit_user(
         self, session: Session, final: WorkflowState,
@@ -1977,6 +2144,8 @@ class SessionManager:
             metadata={"workflow": workflow_name},
         )
         session.messages.append(user_msg)
+        # 提问起始落盘(方案 ⑤,任务流同口径)
+        await self._store.save_session(session)
 
         yield {"type": "task", "data": {"tasks": await self._tasks_snapshot(session)}}
 
@@ -2172,6 +2341,8 @@ class SessionManager:
             metadata={"workflow": workflow_name},
         )
         session.messages.append(user_msg)
+        # 提问起始落盘(方案 ⑤,任务流同口径)
+        await self._store.save_session(session)
 
         batch_stats: dict[str, Any] = {}
         async for ev in self._run_one_task(
