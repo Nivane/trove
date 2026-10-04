@@ -1005,7 +1005,7 @@ onMounted(load)
   background: var(--surface-muted);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1041,7 +1041,7 @@ onMounted(load)
 .actions-dialog-error {
   margin-top: 8px;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   color: var(--el-color-danger);
   background: var(--el-color-danger-light-9);
   border-radius: 4px;
@@ -1055,7 +1055,7 @@ onMounted(load)
 }
 .actions-yaml :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   line-height: 1.5;
 }
 .actions-detail {
