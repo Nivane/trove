@@ -222,8 +222,10 @@ async def create_app_components(
     actions = ActionService(
         ActionStore(config.home),
         action_templates,
+        # kind 缺省 generic:payload 原样外送(与塑形器不存在时逐字节一致);
+        # slack/feishu/dingtalk/wecom 走 services.im 的信封塑形。
         ActionDispatcher(
-            {name: {"url": ch.url, "secret": ch.secret}
+            {name: {"url": ch.url, "secret": ch.secret, "kind": ch.kind}
              for name, ch in (config.action.channels or {}).items()},
         ),
         enabled=bool(config.action.enabled),
@@ -232,6 +234,12 @@ async def create_app_components(
         max_attempts=int(config.action.max_attempts),
         lang=config.language,
     )
+    # 护栏走运行时绑定(构造签名是姿态守卫钉死的,不得新增参数):默认档
+    # 三道全关,配置了 agent.action.max_risk / rate_limit / retry_backoff_*
+    # 才生效。
+    from trove.services.action.guard import ActionGuards
+
+    actions.guards = ActionGuards.from_config(config.action)
 
     kb = KbService(Path.cwd(), backend_resolver=resolve_backend,
                    git_kb=config.git_kb, action_templates=action_templates)
@@ -433,16 +441,19 @@ async def create_app_components(
     # 两者分家会出现"历史里有判定、日程里没有那次运行"的悬空引用。
     verdicts = VerdictStore(config.home)
 
+    # 决策规则的执行预算与交互管线同源(budget.timeout_ms):定时任务没有
+    # 人在等,无界查询会把 job 的 schedule 永远吊住。具名变量 + 进 components,
+    # 是因为装配点**有两处**(serve 的 lifespan 与 CLI `schedule --daemon`)——
+    # 两边必须注入同一组件集,parity 测试钉住这一点。
+    decision = DecisionService(
+        connector_registry, kb, timeout_ms=int(config.budget.timeout_ms),
+        # 组织扩展总开关现读:停用中的决策任务以 status=error 报「已停用」,
+        # 绝不静默按零规则通过。
+        config=config,
+    )
     scheduler = SchedulerRunner(
         session_manager, jobs, lang=config.language,
-        # 决策规则的执行预算与交互管线同源(budget.timeout_ms):定时任务没有
-        # 人在等,无界查询会把 job 的 schedule 永远吊住。
-        decision=DecisionService(
-            connector_registry, kb, timeout_ms=int(config.budget.timeout_ms),
-            # 组织扩展总开关现读:停用中的决策任务以 status=error 报「已停用」,
-            # 绝不静默按零规则通过。
-            config=config,
-        ),
+        decision=decision,
         verdicts=verdicts,
         # 触发 + autonomy=propose → 建 pending 提案(best-effort:
         # 提案失败绝不让判定 run 变成 error,见 runner._propose_action)。
@@ -480,6 +491,7 @@ async def create_app_components(
         "checkpointer": checkpointer,
         "jobs": jobs,
         "scheduler": scheduler,
+        "decision": decision,
         "verdicts": verdicts,
         "actions": actions,
         "subscriptions": subscriptions,

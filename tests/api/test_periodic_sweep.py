@@ -131,6 +131,104 @@ async def test_expire_actions_swallows_failures():
     await _expire_actions(_actions_app(_BrokenActions()))  # never raises
 
 
+# ── 行动自动重试腿(``trove.api.app._retry_actions``)────────
+#
+# 这条腿挂在 30s 的 tick 上(不是小时级的周期清扫):失败重试的退避以秒计,
+# 挂在小时级清扫上等于把"自动重试"变成"自动明天再试"。默认档关 —— 没配
+# retry_backoff_base_s 时服务侧立即返回 0,连库都不查。
+
+class _FakeRetryActions:
+    def __init__(self, *, armed: bool = True) -> None:
+        self.calls = 0
+        self.guards = SimpleNamespace(
+            retry_backoff_base_s=60 if armed else 0)
+
+    async def retry_due_proposals(self) -> int:
+        self.calls += 1
+        return 1
+
+
+async def test_retry_actions_calls_the_service():
+    from trove.api.app import _retry_actions
+
+    actions = _FakeRetryActions()
+    await _retry_actions(_actions_app(actions))
+    assert actions.calls == 1
+
+
+async def test_retry_actions_skips_missing_layer():
+    from trove.api.app import _retry_actions
+
+    await _retry_actions(_actions_app(None))  # no-op, no exception
+
+
+async def test_retry_actions_swallows_failures():
+    from trove.api.app import _retry_actions
+
+    class _BrokenActions:
+        async def retry_due_proposals(self) -> int:
+            raise RuntimeError("boom")
+
+    await _retry_actions(_actions_app(_BrokenActions()))  # never raises
+
+
+def test_retry_armed_follows_the_guard_config():
+    from trove.api.app import _retry_armed
+
+    assert _retry_armed(_FakeRetryActions(armed=True)) is True
+    assert _retry_armed(_FakeRetryActions(armed=False)) is False
+    assert _retry_armed(None) is False
+    assert _retry_armed(object()) is False  # 没有 guards 的对象不炸
+
+
+def test_lifespan_job_tick_runs_the_retry_leg(monkeypatch):
+    """tick 的两条腿共享同一个循环:没有 scheduler 时,配了退避也要跑重试。"""
+    import asyncio
+
+    from trove.core.config import RetentionConfig
+
+    real_sleep = asyncio.sleep
+
+    async def short_sleep(delay: float) -> None:
+        await real_sleep(0.05 if delay >= 1 else delay)
+
+    monkeypatch.setattr("trove.api.app.asyncio.sleep", short_sleep)
+    actions = _FakeRetryActions(armed=True)
+    app = create_app({
+        "session_manager": object(),
+        "connector_registry": _FakeRegistry(),
+        "config": SimpleNamespace(
+            scheduler_poll_seconds=1,
+            retention=RetentionConfig(sweep_interval_hours=0)),
+        "actions": actions,
+    }, allow_null_auth=True)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        time.sleep(0.4)
+    assert actions.calls >= 1
+
+
+def test_lifespan_no_tick_when_nothing_is_armed():
+    """默认档:没有 scheduler、退避也没配 → 循环根本不启动(零负担)。"""
+    import time as _time
+
+    from trove.core.config import RetentionConfig
+
+    actions = _FakeRetryActions(armed=False)
+    app = create_app({
+        "session_manager": object(),
+        "connector_registry": _FakeRegistry(),
+        "config": SimpleNamespace(
+            scheduler_poll_seconds=1,
+            retention=RetentionConfig(sweep_interval_hours=0)),
+        "actions": actions,
+    }, allow_null_auth=True)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        _time.sleep(0.3)
+    assert actions.calls == 0
+
+
 def test_lifespan_periodic_sweep_expires_action_proposals(monkeypatch):
     """周期清扫真的走到行动过期腿。
 

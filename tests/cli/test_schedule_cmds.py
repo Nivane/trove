@@ -118,6 +118,71 @@ def _job_local(state):
     return state
 
 
+@pytest.mark.asyncio
+async def test_daemon_runner_gets_the_shared_components(tmp_path, monkeypatch):
+    """``schedule --daemon`` 的 runner 必须拿到 components 里的四件注入。
+
+    历史缺陷:这个构造点漏了 decision / verdicts / actions / subscriptions,
+    daemon 于是"看着在跑"但决策任务只能报未接线、触发型规则静默不提案。这里
+    用一个假 components + 假 SchedulerRunner 跑一遍 ``--once``,断言注入的
+    正是**同一个对象**(不是就地 new 出来的替身)。
+    """
+    from trove.cli import schedule_cmds
+
+    class _Registry:
+        async def close_all(self):
+            return None
+
+    session_manager = object()
+    components = {
+        "session_manager": session_manager,
+        "connector_registry": _Registry(),
+        "decision": object(),
+        "verdicts": object(),
+        "actions": object(),
+        "subscriptions": object(),
+    }
+    captured: dict = {}
+
+    class _FakeRunner:
+        def __init__(self, sm, jobs, **kw):
+            captured["sm"] = sm
+            captured.update(kw)
+
+        async def tick(self):
+            return []
+
+    class _FakeCheckpointer:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def fake_load_config(args):
+        from trove.core.config import AgentConfig
+
+        return AgentConfig()
+
+    async def fake_create(args, config, checkpointer):
+        return components
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(schedule_cmds, "_load_config_with", fake_load_config)
+    monkeypatch.setattr("trove.main.build_checkpointer",
+                        lambda home: _FakeCheckpointer())
+    monkeypatch.setattr("trove.main.create_app_components", fake_create)
+    monkeypatch.setattr("trove.services.jobs.runner.SchedulerRunner", _FakeRunner)
+
+    await schedule_cmds.main_schedule(["--once"])
+
+    assert captured["sm"] is session_manager
+    assert captured["decision"] is components["decision"]
+    assert captured["verdicts"] is components["verdicts"]
+    assert captured["actions"] is components["actions"]
+    assert captured["subscriptions"] is components["subscriptions"]
+
+
 def test_should_sweep():
     """周期判断:间隔内不触发,超过触发,interval<=0 关闭。"""
     from trove.cli.schedule_cmds import should_sweep
