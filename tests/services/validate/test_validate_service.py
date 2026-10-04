@@ -616,3 +616,161 @@ async def test_json_shape_is_stable(tmp_path):
     assert data["ok"] is True and data["errors"] == 0
     assert json.loads(json.dumps(data, ensure_ascii=False)) == data
     assert "结论:" in report.render()
+
+
+# ── preset 面 ────────────────────────────────────────────
+
+
+def _make_preset(tmp_path: Path, name: str, data: dict) -> Path:
+    """组织侧 preset(``.trove/presets/<name>/preset.yml``)。"""
+    d = tmp_path / ".trove" / "presets" / name
+    _write_yaml(d / "preset.yml", data)
+    return d
+
+
+def _preset_checks(report, prefix: str = "preset") -> list:
+    return [i for i in report.issues if i.check.startswith(prefix)]
+
+
+async def test_builtin_example_preset_validates_without_hard_errors(tmp_path):
+    """随码分发的示例 preset 必须**无硬错误** —— 它是 preset 该长什么样的
+    参照物;一份让 ``trove validate`` 变红的参照物等于没有参照物。
+
+    它的主题域骨架不声明 datasets(那是数据源事实,preset 里写不出来)
+    → 由 apply 报 unresolved + 这里报 warning,两级都不是 error。
+    """
+    report = await run_validate(project_root=tmp_path)
+    assert report.errors == []
+    domain = [i for i in _preset_checks(report) if i.check == "preset.domain"]
+    assert domain and domain[0].severity == "warning"
+    assert "financial-analysis" in {m.name for m in report.mounts}
+
+
+async def test_preset_unknown_key_is_error(tmp_path):
+    _make_preset(tmp_path, "typo", {"name": "typo", "description": "d",
+                                    "skillz": []})
+    report = await run_validate(project_root=tmp_path)
+    errs = [i for i in _preset_checks(report) if i.severity == "error"]
+    assert errs and errs[0].check == "preset.load" and errs[0].target == "typo"
+    assert "合法键" in errs[0].message and "skills" in errs[0].message
+    assert report.exit_code() == 1
+
+
+async def test_preset_name_must_match_directory(tmp_path):
+    _make_preset(tmp_path, "dir-name", {"name": "other", "description": "d"})
+    report = await run_validate(project_root=tmp_path)
+    errs = [i for i in _preset_checks(report) if i.severity == "error"]
+    assert errs and "不一致" in errs[0].message
+
+
+async def test_preset_shadowing_builtin_is_warning(tmp_path):
+    _make_preset(tmp_path, "financial-analysis",
+                 {"name": "financial-analysis", "version": 7,
+                  "description": "组织本地版"})
+    report = await run_validate(project_root=tmp_path)
+    shadow = [i for i in _preset_checks(report) if i.check == "preset.shadow"]
+    assert shadow and shadow[0].severity == "warning"
+    assert shadow[0].target == "financial-analysis"
+    assert report.exit_code() == 0            # 遮蔽不拦 CI
+    assert report.exit_code(strict=True) == 1
+
+
+async def test_preset_missing_skill_reference_is_error(tmp_path):
+    _make_preset(tmp_path, "refs", {
+        "name": "refs", "description": "d", "skills": ["no-such-skill"]})
+    report = await run_validate(project_root=tmp_path)
+    errs = [i for i in _preset_checks(report) if i.check == "preset.ref"]
+    assert errs and errs[0].severity == "error"
+    assert "no-such-skill" in errs[0].message
+
+
+async def test_preset_code_skill_reference_resolves(tmp_path):
+    _make_preset(tmp_path, "refs", {
+        "name": "refs", "description": "d", "skills": ["plan_query"]})
+    report = await run_validate(project_root=tmp_path)
+    assert [i for i in _preset_checks(report) if i.check == "preset.ref"] == []
+
+
+async def test_preset_skill_template_create_would_reject_is_error(tmp_path):
+    _make_preset(tmp_path, "badskill", {
+        "name": "badskill", "description": "d",
+        "skills": [{"name": "no-body", "description": "d", "body": ""}]})
+    report = await run_validate(project_root=tmp_path)
+    errs = [i for i in _preset_checks(report) if i.check == "preset.skill"]
+    assert errs and errs[0].severity == "error"
+    assert "body" in errs[0].message          # 写入面自己的措辞
+
+
+async def test_preset_rule_template_condition_is_error(tmp_path):
+    """条件语言是闭文法:算术运算符在 lint 就拒(不是等到套用时才发现)。"""
+    _make_preset(tmp_path, "badrule", {
+        "name": "badrule", "description": "d",
+        "decisions": [{
+            "id": "r-bad", "window": "last month",
+            "subject": {"metrics": ["total_amount"]},
+            "baseline": {"kind": "prev_period"},
+            "conditions": ["current > baseline * 1.2"],
+        }]})
+    report = await run_validate(project_root=tmp_path)
+    errs = [i for i in _preset_checks(report) if i.check == "preset.rule"]
+    assert errs and errs[0].severity == "error"
+    assert "r-bad" in errs[0].message
+
+
+async def test_preset_domain_without_datasets_warns(tmp_path):
+    _make_preset(tmp_path, "dom", {
+        "name": "dom", "description": "d",
+        "domains": [{"name": "credit-risk", "description": "信贷"}]})
+    report = await run_validate(project_root=tmp_path)
+    warns = [i for i in _preset_checks(report) if i.check == "preset.domain"]
+    assert warns and warns[0].severity == "warning"
+    assert "unresolved" in warns[0].message
+    assert report.exit_code() == 0
+
+
+async def test_preset_datasource_bound_checks_need_a_datasource(tmp_path):
+    """绑定引用只在 ``--datasource`` 下判 —— 且只出 warning。
+
+    preset 不绑定数据源(它的用途是套到**还没接入**的源上),所以「这个源
+    还没有这条规则 / 这个指标」不能是硬错误;不点名数据源时干脆不判。
+    """
+    _make_kb(tmp_path, decisions=_RULE)
+    _make_preset(tmp_path, "bound", {
+        "name": "bound", "description": "d",
+        "decisions": [
+            "ghost-rule",                     # 引用:decisions.yml 里没有
+            {"id": "r-metric", "window": "last month",
+             "subject": {"metrics": ["no_such_metric"]},
+             "baseline": {"kind": "prev_period"},
+             "conditions": ["delta > 0"]},
+        ],
+        "domains": [{"name": "credit-risk", "datasets": ["no_such_dataset"]}]})
+
+    loose = await run_validate(project_root=tmp_path)
+    # 不点名 → 静态面:这份 preset 一条都不判(内置示例自己那条 domain
+    # warning 不在此列 —— 按 target 过滤,只断言本测试写的这份)
+    assert [i for i in _preset_checks(loose) if i.target == "bound"] == []
+
+    report = await run_validate("mini", project_root=tmp_path)
+    binding = [i for i in _preset_checks(report) if i.target == "bound"]
+    assert {i.check for i in binding} == {
+        "preset.ref", "preset.metric", "preset.domain"}
+    assert {i.severity for i in binding} == {"warning"}
+    assert report.exit_code() == 0
+    assert all(i.datasource == "mini" for i in binding)
+
+
+async def test_preset_mount_preview_and_counts(tmp_path):
+    _make_preset(tmp_path, "starter", {
+        "name": "starter", "description": "d",
+        "skills": [{"name": "s1", "description": "d", "body": "b"}],
+        "decisions": ["ghost"], "semantics": {"notes": ["n"]}})
+    report = await run_validate(project_root=tmp_path)
+    preview = next(m for m in report.mounts
+                   if m.kind == "preset" and m.name == "starter")
+    assert preview.status.startswith("org")
+    targets = " | ".join(preview.mounts)
+    assert "技能草稿队列" in targets
+    assert "decision_drafts.yml" in targets
+    assert report.counts["presets"] >= 1
+    assert report.counts["preset_items"] >= 3

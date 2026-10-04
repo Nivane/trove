@@ -29,7 +29,14 @@ import yaml
 
 from trove.core.logging import get_logger
 from trove.services.action.templates import ActionTemplateService
-from trove.services.decision.rules import lint_advisories, lint_document
+from trove.services.decision.drafts import DecisionDraftStore
+from trove.services.decision.rules import (
+    RuleError,
+    lint_advisories,
+    lint_document,
+    lint_rule,
+    parse_rule,
+)
 from trove.services.decision.service import DecisionService
 from trove.services.kb.lint import (
     lint_examples,
@@ -41,6 +48,8 @@ from trove.services.kb.lint import (
 )
 from trove.services.kb.live_lint import check_enums, check_undocumented_columns
 from trove.services.kb.service import KbService, _parse_file
+from trove.services.presets.models import Preset, parse_preset
+from trove.services.presets.service import _builtin_root
 from trove.services.skills.service import (
     FRONTMATTER_FIELDS,
     VALIDATOR_FIELDS,
@@ -613,6 +622,302 @@ def _check_skills(
     return issues, mounts, counts
 
 
+# ── preset packs ─────────────────────────────────────────
+#
+# preset 是"接入模板":把跨源方法论骨架声明成一份 YAML,套到新数据源上
+# 只落 pending 草稿。这里的检查分两类,判据不同、**去向也不同**:
+#
+# - **静态**(与数据源无关,error):契约(闭键集/必填/名字==目录名)、
+#   技能引用的解析(code skill / 已确认 org skill)、技能骨架能否过
+#   ``SkillService.create`` 的写入面、规则模板能否过结构 lint、主题域骨架
+#   有没有 datasets(语义层确认时硬拒空作用域)。这些在**任何**数据源上都
+#   同样地失败 —— 套用报告里必然是 unresolved,所以是 error。
+# - **数据源绑定**(给 ``--datasource`` 才判,warning):规则 id / 主题域名
+#   引用、模板里的 metric、主题域 datasets 是否已在**这个**数据源的
+#   decisions.yml / 语义模型里。preset 不绑定数据源(它的用途正是"套到
+#   还没接入的源上"),所以按 warning 报:可能只是这个源还没建模。
+
+
+def _read_presets(base: Path, source: str) -> tuple[dict[str, Preset], list[Issue]]:
+    """一个根目录下的 preset —— 解析成功的与**失败的**都要带回。
+
+    ``PresetService._read_dir`` 对坏文件宽容(跳过 + 日志),生产读取面必须
+    如此;validate 的职责正是把那些跳过点出来 —— 否则一份谁都装载不了的
+    preset,从任何外部面看都与"写对了"一样。
+    """
+    parsed: dict[str, Preset] = {}
+    issues: list[Issue] = []
+    if not base.is_dir():
+        return parsed, issues
+    for d in sorted(base.iterdir()):
+        path = d / "preset.yml"
+        if not d.is_dir() or not path.exists():
+            continue
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            parsed[d.name] = parse_preset(
+                data, source=source, path=path, name_hint=d.name)
+        except Exception as e:  # noqa: BLE001 — 读取失败按一条 error 报
+            issues.append(_err("preset.load", f"读取失败: {e}", target=d.name))
+    return parsed, issues
+
+
+def _preset_skill_names(skills_root: Path) -> tuple[set[str], set[str], set[str]]:
+    """``(code, org_confirmed, org_other)`` —— 技能引用的解析面。
+
+    与 ``PresetService._skill_names`` 同一条判据:引用只认**生效**状态,
+    还在 pending 的 org skill 不算解析成功(preset 说"应当具备 X",而 X
+    还没过确认门,那是一句尚未成立的话)。
+    """
+    svc = SkillService(skills_root)
+    code = {str(e.get("name")) for e in svc.list_code_skills()}
+    org = svc.list_org()
+    confirmed = {str(e.get("name")) for e in org if e.get("status") == "confirmed"}
+    other = {str(e.get("name")) for e in org if e.get("status") != "confirmed"}
+    return code, confirmed, other
+
+
+def _skill_template_problem(entry: dict, name: str) -> str:
+    """技能骨架能不能落成草稿 —— 用**写入面自己**在一个 tmp 目录里干跑。
+
+    与 ``SkillService.create`` 完全相同的那套校验(名字/描述/正文/tier/
+    validator 规格 + 未知键),不在这里复写:复写的版本迟早与写入面漂移,
+    而 validate 比写入面宽松的后果正是"干跑通过、套用报 unresolved"。
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="trove-preset-check-") as tmp:
+        try:
+            SkillService(Path(tmp)).create({**entry, "name": name})
+        except ValueError as e:
+            return str(e)
+    return ""
+
+
+def _preset_decision_problem(entry: dict) -> tuple[list[str], Any]:
+    """规则模板 → (问题列表, 解析出的规则或 None)。
+
+    默认 ``enabled: false`` 与 ``PresetService._apply_decision`` 同一条
+    (模板默认停用):lint 必须在**套用时真正落下去的那个形状**上判。
+    """
+    raw = dict(entry)
+    if "enabled" not in raw:
+        raw["enabled"] = False
+    try:
+        rule = parse_rule(raw)
+    except RuleError as e:
+        return [f"解析失败: {e}"], None
+    return [f"过不了结构 lint(确认时必被拒): {m}" for m in lint_rule(rule)], rule
+
+
+def _preset_mounts(preset: Preset, *, shadowed: bool,
+                   checked_datasource: str) -> MountPreview:
+    counts = preset.counts
+    preview = MountPreview(
+        kind="preset", name=preset.name,
+        status=f"{preset.source} v{preset.version}",
+        mounts=[], notes=[],
+    )
+    if counts["skills"]:
+        preview.mounts.append(
+            f"skills({counts['skills']}): 技能草稿队列(pending)"
+            " → 确认后按 tier 注入/广告")
+    if counts["decisions"]:
+        preview.mounts.append(
+            f"decisions({counts['decisions']}): decision_drafts.yml"
+            "(**不在** decisions.yml 里,调度面读不到)→ 确认后写入")
+    if counts["domains"]:
+        preview.mounts.append(
+            f"domains({counts['domains']}): 语义草稿队列 semantic_drafts.yml"
+            " → 确认后写入 semantics.yml")
+    if counts["semantics"] or counts["presentation"]:
+        preview.mounts.append(
+            "(仅提示:preset 不写语义层,也不改展示配置)")
+    if shadowed:
+        preview.notes.append("组织版遮蔽同名内置版 —— 内置版的后续更新不再生效")
+    if checked_datasource:
+        preview.notes.append(f"数据源绑定引用按 {checked_datasource!r} 解析")
+    else:
+        preview.notes.append(
+            "未给 --datasource:规则 id / 主题域 / metric 的解析只在套用报告里"
+            "逐条给出(或用 trove validate --datasource <ds> 预检)")
+    return preview
+
+
+def _check_presets(
+    root: Path, kb: KbService, skills_root: Path, *, datasource: str = "",
+) -> tuple[list[Issue], list[MountPreview], dict[str, int]]:
+    """预设包契约 + 引用解析(静态 error,数据源绑定 warning)。"""
+    issues: list[Issue] = []
+    mounts: list[MountPreview] = []
+    counts = {"presets": 0, "preset_items": 0}
+
+    org, org_issues = _read_presets(root / ".trove" / "presets", "org")
+    builtin, builtin_issues = _read_presets(_builtin_root(), "builtin")
+    issues += org_issues + builtin_issues
+
+    code, confirmed, other = _preset_skill_names(skills_root)
+
+    # 数据源绑定面(给了 datasource 才解析;读不到就当判不了,静默 —— 这些
+    # 面自身的错由对应的检查器去报,不在这里刷第二条)。
+    decisions_doc = None
+    drafts_store = DecisionDraftStore(kb)
+    model = dataset_names = topic_names = metric_names = None
+    if datasource:
+        try:
+            decisions_doc = kb.load_decisions(datasource)
+        except Exception:  # noqa: BLE001
+            decisions_doc = None
+        try:
+            from trove.services.semantic_layer.manage import SemanticManager
+
+            model = SemanticManager(kb).model(datasource)
+        except Exception:  # noqa: BLE001
+            model = None
+        if model is not None:
+            metric_names = {str(m.name) for m in (getattr(model, "metrics", None) or [])}
+            dataset_names = {str(d.name) for d in (getattr(model, "datasets", None) or [])}
+            topic_names = {str(t.name) for t in (getattr(model, "topics", None) or [])}
+
+    for name in sorted({*org, *builtin}):
+        preset = org.get(name) or builtin[name]
+        shadowed = name in org and name in builtin
+        if shadowed:
+            issues.append(_warn(
+                "preset.shadow",
+                f"组织版(v{preset.version})遮蔽内置版"
+                f"(v{builtin[name].version}) —— 内置版的后续更新不再生效",
+                target=name))
+        counts["presets"] += 1
+        counts["preset_items"] += sum(preset.counts.values())
+
+        # ── skills ──
+        for entry in preset.skills:
+            if isinstance(entry, str):
+                if entry in code or entry in confirmed:
+                    continue
+                if entry in other:
+                    issues.append(_err(
+                        "preset.ref",
+                        f"技能引用 {entry!r} 存在但尚未确认(pending)"
+                        " —— 套用会报 unresolved,先确认该技能",
+                        target=name))
+                    continue
+                issues.append(_err(
+                    "preset.ref",
+                    f"技能引用 {entry!r} 解析不到(code skill / 已确认 org skill "
+                    "都没有)—— 套用会报 unresolved",
+                    target=name))
+                continue
+            tname = str(entry.get("name") or "")
+            if tname in other or tname in confirmed:
+                issues.append(_warn(
+                    "preset.conflict",
+                    f"技能骨架 {tname!r} 与已有 org skill 同名 —— "
+                    "套用时会跳过(骨架内容不会落)",
+                    target=name))
+                continue
+            if tname in code:
+                issues.append(_warn(
+                    "preset.conflict",
+                    f"技能骨架 {tname!r} 与 code skill 同名 —— 套用会跳过"
+                    "(org skill 会按名字遮蔽它,要定制请改名)",
+                    target=name))
+            problem = _skill_template_problem(entry, tname)
+            if problem:
+                issues.append(_err(
+                    "preset.skill",
+                    f"技能骨架 {tname!r} 落不了草稿(create 会拒): {problem}",
+                    target=name))
+
+        # ── decisions ──
+        seen_ids: set[str] = set()
+        for entry in preset.decisions:
+            if isinstance(entry, str):
+                if decisions_doc is not None and not any(
+                        r.id == entry for r in decisions_doc.rules):
+                    issues.append(_warn(
+                        "preset.ref",
+                        f"规则引用 {entry!r} 不在 {datasource!r} 的 decisions.yml "
+                        "—— 套用会报 unresolved",
+                        target=name, datasource=datasource))
+                continue
+            rid = str(entry.get("id") or "")
+            if rid in seen_ids:
+                issues.append(_err(
+                    "preset.rule",
+                    f"规则模板 id {rid!r} 在本 preset 内重复", target=name))
+                continue
+            seen_ids.add(rid)
+            problems, rule = _preset_decision_problem(entry)
+            issues += [
+                _err("preset.rule", f"规则模板 {rid!r}: {p}", target=name)
+                for p in problems
+            ]
+            if problems or rule is None:
+                continue
+            if decisions_doc is not None and any(
+                    r.id == rid for r in decisions_doc.rules):
+                issues.append(_warn(
+                    "preset.conflict",
+                    f"规则模板 {rid!r} 与 {datasource!r} 已有规则同 id —— "
+                    "套用会跳过", target=name, datasource=datasource))
+            elif drafts_store.find_rule(datasource, rid, status="pending"):
+                issues.append(_warn(
+                    "preset.conflict",
+                    f"规则模板 {rid!r} 的同 id 草稿已在待审队列 —— 套用会跳过",
+                    target=name, datasource=datasource))
+            if metric_names is not None:
+                missing = sorted(set(rule.subject.metrics) - metric_names)
+                if missing:
+                    issues.append(_warn(
+                        "preset.metric",
+                        f"规则模板 {rid!r} 引用的指标未在 {datasource!r} 语义模型"
+                        f"声明: {', '.join(missing)}(确认前需先建模,否则调度报错)",
+                        target=name, datasource=datasource))
+
+        # ── domains ──
+        for entry in preset.domains:
+            if isinstance(entry, str):
+                if topic_names is not None and entry not in topic_names:
+                    issues.append(_warn(
+                        "preset.ref",
+                        f"主题域引用 {entry!r} 不在 {datasource!r} 语义模型里"
+                        " —— 套用会报 unresolved",
+                        target=name, datasource=datasource))
+                continue
+            dname = str(entry.get("name") or "")
+            declared = [str(d) for d in (entry.get("datasets") or [])
+                        if str(d).strip()]
+            if not declared:
+                # 空作用域 = 一份 datasource-agnostic 的骨架的**定义形状**:
+                # "域要收敛到哪几个数据集"是数据源事实,preset 里写不出来
+                # (内置示例签的就是这个形状)。语义层在确认那一刻硬拒空作用域
+                # (``_apply_topic``:datasets 必填),套用因此**不落**这份草稿
+                # 而是报 unresolved —— 不会有死配置,但这件事必须在体检里
+                # 说话:warning 级,重复 apply 报告里的那条判定。
+                issues.append(_warn(
+                    "preset.domain",
+                    f"主题域骨架 {dname!r} 未声明 datasets —— 套用会报 unresolved"
+                    "(语义层确认时拒空作用域);按目标语义模型补全 datasets 后"
+                    "重套,或确认时手工收窄",
+                    target=name))
+                continue
+            if dataset_names is not None:
+                missing = [d for d in declared if d not in dataset_names]
+                if missing:
+                    issues.append(_warn(
+                        "preset.domain",
+                        f"主题域骨架 {dname!r} 的数据集未在 {datasource!r} 语义"
+                        f"模型声明: {', '.join(missing)} —— 套用会报 unresolved",
+                        target=name, datasource=datasource))
+
+        mounts.append(_preset_mounts(
+            preset, shadowed=shadowed, checked_datasource=datasource))
+
+    return issues, mounts, counts
+
+
 # ── entry point ──────────────────────────────────────────
 
 
@@ -696,5 +1001,18 @@ async def run_validate(
     except Exception as e:  # noqa: BLE001
         logger.exception("validate: 技能检查失败")
         report.issues.append(_err("validate.internal", f"技能检查异常: {e}"))
+
+    try:
+        # 引用按**显式点名的数据源**解析(不点名 = 静态面,绑定引用留给
+        # 套用报告逐条给出 —— preset 的用途正是"套到还没接入的源上",
+        # 拿全量数据源逐个判定只会刷屏)。
+        issues, mounts, counts = _check_presets(
+            root, kb, root / ".trove" / "skills", datasource=datasource)
+        report.issues += issues
+        report.mounts += mounts
+        report.counts.update(counts)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("validate: preset 检查失败")
+        report.issues.append(_err("validate.internal", f"preset 检查异常: {e}"))
 
     return report
