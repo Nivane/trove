@@ -172,7 +172,7 @@ async def get_action_proposal(
     request: Request,
     user: dict = Depends(require_admin),
 ) -> dict:
-    """One proposal with its audit trail: approvals and delivery receipts."""
+    """One proposal with its audit trail: approvals, receipts, outcomes."""
     detail = await _actions(request).get(proposal_id)
     if detail is None:
         raise HTTPException(
@@ -181,7 +181,32 @@ async def get_action_proposal(
         "proposal": _proposal_dict(detail["proposal"]),
         "approvals": [dataclasses.asdict(a) for a in detail["approvals"]],
         "deliveries": [dataclasses.asdict(d) for d in detail["deliveries"]],
+        "outcomes": [dataclasses.asdict(o) for o in detail.get("outcomes", [])],
         "stale": detail["stale"],
+    }
+
+
+@router.get("/admin/actions/proposals/{proposal_id}/outcomes")
+async def get_action_outcomes(
+    proposal_id: str,
+    request: Request,
+    user: dict = Depends(require_admin),
+) -> dict:
+    """该提案的效果测量(闭环验收 B7;至多一行 —— 一次测量一个结局)。
+
+    空列表 ≠ 失败:``outcome_after_days`` 没配时测量从不产生,配了而规则的
+    测量期还没滚过行动日时它还没到 —— 两种都由 ``measured`` 与提案自己的
+    ``dispatched_at`` 一起读出来,调用方不必猜。
+    """
+    detail = await _actions(request).get(proposal_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=404, detail=f"proposal not found: {proposal_id}")
+    outcomes = list(detail.get("outcomes", []))
+    return {
+        "proposal_id": proposal_id,
+        "outcomes": [dataclasses.asdict(o) for o in outcomes],
+        "measured": bool(outcomes),
     }
 
 

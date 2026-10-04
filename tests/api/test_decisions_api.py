@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import yaml
 from httpx import ASGITransport, AsyncClient
@@ -754,6 +756,168 @@ class TestSimulate:
             "/v1/admin/decisions/loan-drop?datasource=demo")).status_code == 200
 
 
+def _rev(rule: dict) -> str:
+    from trove.services.decision.rules import parse_rule, rule_rev
+
+    return rule_rev(parse_rule(rule))
+
+
+class _FakeEffectStore:
+    """质量端点要的那一个方法 —— 签名必须与真 store 的
+    ``list_effect_entries(datasource, *, limit)`` 一致,不一致这里先炸。"""
+
+    def __init__(self, entries: list[dict]):
+        self.entries = entries
+        self.calls: list[tuple[str, int]] = []
+
+    async def list_effect_entries(self, datasource: str, *, limit: int = 500):
+        self.calls.append((datasource, limit))
+        return list(self.entries)
+
+
+def _effect_entry(rev: str, **over) -> dict:
+    entry = {"rule_id": "loan-drop", "rule_rev": rev, "outside_band": True,
+             "error": "", "measured_at": "2026-10-06T00:00:00",
+             "window_end": "2026-10-05", "proposal_id": "p-1", "pct": 0.1}
+    entry.update(over)
+    return entry
+
+
+class TestQualityReport:
+    """判定质量回评 —— 分桶键是 ``(rule_id, rule_rev)``,不是整份文件的
+    digest(编辑别的规则不该动这条规则的桶;验收清单 7 的 API 面)。"""
+
+    async def test_verdicts_bucket_by_rev_and_annotate_against_the_file(
+            self, admin_client, decisions_app, verdict_store):
+        _write(decisions_app, [RULE])
+        current = _rev(RULE)
+        await _record(verdict_store, evaluated_at="2026-09-01T00:00:00",
+                      evidence={"rows": [], "rule_rev": current})
+        await _record(verdict_store, evaluated_at="2026-09-02T00:00:00",
+                      evidence={"rows": [], "rule_rev": "rev-old"})
+        await _record(verdict_store, evaluated_at="2026-09-03T00:00:00",
+                      evidence={"rows": []})          # B2 之前的行,没有 rev
+
+        body = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).json()
+        assert body["verdicts_read"] == 3
+        by_rev = {b["rule_rev"]: b for b in body["buckets"]}
+        assert set(by_rev) == {current, "rev-old", "rev_unknown"}
+        cur = by_rev[current]
+        assert cur["total"] == 1 and cur["rule_declared"] is True
+        assert cur["rule_rev_current"] is True
+        assert by_rev["rev-old"]["rule_rev_current"] is False
+        # 没版本信息的桶:「无从谈起」是第三种答案,不是 False。
+        assert by_rev["rev_unknown"]["rule_rev_current"] is None
+        assert body["summary"]["buckets"] == 3
+        assert body["summary"]["total"] == 3
+
+    async def test_editing_rule_b_does_not_clear_rule_a_bucket(
+            self, admin_client, decisions_app, verdict_store):
+        """验收清单 7:digest 会随任意编辑变,rev 只随这条规则变。"""
+        rule_b = {**RULE, "id": "other", "conditions": ["delta_pct > 0.5"]}
+        _write(decisions_app, [RULE, rule_b])
+        rev_a = _rev(RULE)
+        await _record(verdict_store, evidence={"rows": [], "rule_rev": rev_a})
+
+        before = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).json()
+        _write(decisions_app, [RULE, {**rule_b, "conditions": ["delta_pct > 0.9"]}])
+        after = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).json()
+
+        (b,) = after["buckets"]
+        assert (b["rule_id"], b["rule_rev"]) == ("loan-drop", rev_a)
+        assert b["rule_rev_current"] is True, "改 B 规则不改 A 的 rev"
+        assert after["digest"] != before["digest"], \
+            "digest 确实变了 —— 这正是它不能当分桶键的原因"
+
+    async def test_a_deleted_rule_keeps_its_history_marked_not_declared(
+            self, admin_client, decisions_app, verdict_store):
+        """规则删了,那段判定史还在:桶照出现,``rule_declared`` 说出
+        哪一半变了(历史是真的,只是不再对应任何当前规则)。"""
+        _write(decisions_app, [])
+        await _record(verdict_store, evidence={"rows": []})
+        (b,) = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).json()["buckets"]
+        assert b["total"] == 1
+        assert b["rule_declared"] is False
+        assert b["rule_rev_current"] is None
+
+    async def test_the_action_layer_feeds_effect_columns_into_the_same_buckets(
+            self, admin_client, decisions_app, verdict_store):
+        _write(decisions_app, [RULE])
+        rev = _rev(RULE)
+        await _record(verdict_store, evidence={"rows": [], "rule_rev": rev})
+        fake = _FakeEffectStore([
+            _effect_entry(rev),
+            _effect_entry(rev, outside_band=False, pct=-0.01,
+                          measured_at="2026-10-07T00:00:00"),
+            _effect_entry(rev, outside_band=None, error="verifier_failed: x",
+                          measured_at="2026-10-08T00:00:00"),
+        ])
+        decisions_app.state.actions = SimpleNamespace(store=fake)
+
+        body = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).json()
+        assert body["degraded"] == []
+        assert body["effects_read"] == 3
+        assert fake.calls == [("demo", 500)], "按数据源过滤、带 limit 读"
+        (b,) = body["buckets"]
+        assert b["effects"] == {"measured": 2, "effective": 1, "no_effect": 1,
+                                "unverifiable": 0, "errors": 1}
+        assert b["decided"] == 2 and b["effective_rate"] is None
+        assert "few_effects" in b["insufficient"]
+        assert body["summary"]["effects"]["effective"] == 1
+        assert body["summary"]["decided"] == 2
+
+    async def test_without_the_action_layer_the_verdict_half_still_answers(
+            self, admin_client, decisions_app, verdict_store):
+        """「没有效果数据」绝不能被读成「没有效果」—— 判定那一半照答,
+        缺的那条腿在 degraded 里说得出来。"""
+        _write(decisions_app, [RULE])
+        await _record(verdict_store, evidence={"rows": []})
+        body = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).json()
+        assert body["effects_read"] == 0
+        assert {"stage": "effects", "reason": "action_layer_absent"} \
+            in body["degraded"]
+        assert body["buckets"][0]["total"] == 1
+
+    async def test_limit_is_echoed_and_clamped(
+            self, admin_client, verdict_store):
+        await _record(verdict_store)
+        body = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo&limit=1")).json()
+        assert body["limit"] == 1 and body["verdicts_read"] == 1
+        body = (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo&limit=99999")).json()
+        assert body["limit"] == 5000
+
+    async def test_quality_route_is_not_swallowed_by_the_rule_id_pattern(
+            self, admin_client, decisions_app, verdict_store):
+        """有一条 id 就叫 ``quality`` 的规则时,端点仍须命中质量报告
+        (同 ``/raw``、``/verdicts/{id}`` 的 Starlette 顺序纪律)。"""
+        _write(decisions_app, [{**RULE, "id": "quality"}])
+        r = await admin_client.get("/v1/admin/decisions/quality?datasource=demo")
+        assert r.status_code == 200, r.text
+        assert "buckets" in r.json()
+
+    async def test_without_a_verdict_store_the_endpoint_is_409(
+            self, admin_client):
+        """端点存在的意义就是读判定史;读不到就是 409,不装作空报告。"""
+        assert (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).status_code == 409
+
+    async def test_a_corrupt_file_is_422_not_a_quality_report(
+            self, admin_client, decisions_app, verdict_store):
+        path = decisions_app.state.kb.decisions_path("demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("rules: [{id: a}, {id: a}]", encoding="utf-8")
+        assert (await admin_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).status_code == 422
+
+
 class TestAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get(
@@ -768,6 +932,10 @@ class TestAuth:
         )).status_code == 403
         assert (await user_client.get(
             "/v1/admin/decisions/verdicts/1")).status_code == 403
+
+    async def test_quality_report_is_admin_only(self, user_client):
+        assert (await user_client.get(
+            "/v1/admin/decisions/quality?datasource=demo")).status_code == 403
 
     async def test_requires_auth(self, decisions_app):
         transport = ASGITransport(app=decisions_app)

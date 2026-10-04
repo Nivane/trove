@@ -241,6 +241,28 @@ class VerdictStore:
         finally:
             await conn.close()
 
+    async def list_recent(
+        self, datasource: str, *, limit: int = 500,
+    ) -> list[VerdictRecord]:
+        """Newest-first verdicts for one datasource, all rules (B7 quality).
+
+        The quality rollup scores a datasource, not one rule: a rule that was
+        renamed or deleted still has a history, and reading per *declared*
+        rule would silently drop those verdicts from the report. Uses the
+        ``(datasource, evaluated_at DESC)`` index — this is that index's
+        query.
+        """
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                f"SELECT {_COLUMNS} FROM verdicts WHERE datasource = ?"
+                " ORDER BY evaluated_at DESC, id DESC LIMIT ?",
+                (datasource, int(limit)),
+            )
+            return [_row_to_verdict(r) async for r in cursor]
+        finally:
+            await conn.close()
+
     async def latest_for_rules(
         self, datasource: str, rule_ids: list[str],
     ) -> dict[str, VerdictRecord]:
