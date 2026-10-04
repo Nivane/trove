@@ -87,6 +87,23 @@ class TestSectionSugar:
         assert p.decisions[0]["id"] == "r1"
         assert p.domains[0]["datasets"] == ["loan"]
 
+    def test_a_banded_rule_template_parses(self):
+        """决策模板键集与 ``rule_to_dict`` 同为 schema v3 —— 噪声带模板
+        (seasonal + significance)是合法骨架;未知键照旧拒绝。"""
+        p = parse_preset({**MINIMAL, "decisions": [{
+            "id": "watch-band", "window": "本月",
+            "subject": {"metrics": ["loan_balance"], "dimensions": ["region"]},
+            "baseline": {"kind": "prev_period"}, "scope": "per_dimension",
+            "conditions": ["delta_pct < -0.1"],
+            "seasonal": {"grain": "month", "lookback": 12, "mode": "trailing",
+                         "k": 3.5},
+            "significance": {"require": "outside_band"},
+        }]})
+        assert p.decisions[0]["seasonal"]["lookback"] == 12
+        assert p.decisions[0]["significance"] == {"require": "outside_band"}
+        with pytest.raises(PresetError):
+            parse_preset({**MINIMAL, "decisions": [{"id": "x", "bands": {}}]})
+
     def test_empty_reference_rejected(self):
         with pytest.raises(PresetError):
             parse_preset({**MINIMAL, "skills": ["  "]})

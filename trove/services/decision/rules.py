@@ -16,9 +16,12 @@ that is already git-tracked, so every rule change is a reviewable commit.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from trove.services.analysis.stats import MIN_BLOCKS, ROBUST_Z_THRESHOLD
 from trove.services.decision.expr import (
     DecisionExprError,
     condition_variables,
@@ -29,6 +32,15 @@ SEVERITIES = ("info", "warning", "critical")
 BASELINE_KINDS = ("prev_period", "yoy", "literal", "none")
 SCOPES = ("aggregate", "per_dimension")
 EMITS = ("any", "all", "top_k")
+
+#: ``seasonal.grain`` —— 空 = 由窗口形状推导(``derive_grain``);非空 =
+#: 作者声明(判定侧按硬性对齐处理:声明与窗口形状不一致时拒绝确认)。
+SEASONAL_GRAINS = ("", "day", "week", "month")
+#: ``seasonal.mode`` —— 近期连续块 | 同相位(去年同期)。
+SEASONAL_MODES = ("trailing", "same_phase")
+#: ``significance.require`` 的闭集 —— 空 = 只记录不拦;``outside_band`` =
+#: 触发必须再通过「超出历史噪声带」这道门。
+SIGNIFICANCE_REQUIREMENTS = ("", "outside_band")
 
 #: ``action.autonomy`` — v1 ships no dispatch either way; the two values are
 #: the contract the action pillar (P3) builds its proposal gate on:
@@ -43,11 +55,15 @@ PRIORITY_MAX = 3
 #: Schema version this code writes and understands. A file with a *higher*
 #: version was written by a newer Trove and may carry fields this reader
 #: would drop on the next save — see ``parse_document``.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Variables that only exist when the rule groups by a dimension — a
 #: condition referencing them on an aggregate rule would silently see Unknown.
 _DIMENSION_ONLY = frozenset({"contribution", "dim"})
+
+#: 只在声明 ``significance`` 后才有值的变量 —— 未声明时它在条件里
+#: 恒为 Unknown(规则静默不响),所以 lint 在写入时直接拒掉。
+_SIGNIFICANCE_ONLY = frozenset({"confidence"})
 
 
 class RuleError(ValueError):
@@ -88,6 +104,40 @@ class Subject:
 
 
 @dataclass
+class Seasonal:
+    """季节性声明(schema v3)—— 噪声带的**块规格**,不是第二个窗口。
+
+    语义 = 「这条规则的历史基线由哪些同粒度块构成」:
+    ``grain`` 空 → 由窗口形状推导(月首月尾→month 等);``lookback``
+    只计**历史**块(被测窗口不参与 —— 混入会自我稀释);``mode`` 选
+    近期连续块(trailing)或同相位(same_phase,去年同期);``k`` 是
+    噪声带宽(稳健 z 单位)。呈现形态是**分布**而非点值:决策要回答
+    「超出噪声带了吗」,把分布压成「上期是多少」会丢掉它唯一的价值。
+    """
+
+    grain: str = ""
+    lookback: int = 12
+    mode: str = "trailing"
+    k: float = ROBUST_Z_THRESHOLD
+
+
+@dataclass
+class Significance:
+    """显著性门(schema v3)—— 声明的存在与否都有语义。
+
+    声明即要证据:触发后计算噪声带、给行卡附 ``z/confidence/gated``;
+    ``require`` 非空则是**门**:触发必须超出噪声带才成立。``""`` 只
+    记录不拦。``min_confidence`` 是位置分数下限(仅 require 时生效)。
+    """
+
+    require: str = ""
+    min_confidence: float = 0.0
+
+    def required(self) -> bool:
+        return bool(self.require)
+
+
+@dataclass
 class DecisionRule:
     id: str
     name: str = ""
@@ -116,6 +166,11 @@ class DecisionRule:
     #: The dimension the analysis bridge decomposes along when the rule fires
     #: (default: the rule's own grouping — see ``decision/bridge.py``).
     driver_dimension: str = ""
+    # ── schema v3 ────────────────────────────────────────
+    #: 噪声带的块规格。``None`` = 未声明(输出逐字节与 v2 相同)。
+    seasonal: Seasonal | None = None
+    #: 显著性门。``None`` = 未声明;存在即要证据,``require`` 非空即要拦。
+    significance: Significance | None = None
 
     def describe(self) -> str:
         return self.name or self.id
@@ -194,6 +249,58 @@ def _parse_action(raw: Any) -> ActionRef | None:
     )
 
 
+def _parse_seasonal(raw: Any) -> Seasonal | None:
+    """``seasonal`` 块 → ``Seasonal``;``None``/空 = 未声明(保持缺省)。
+
+    **出现即声明**:与缺省值相同的块也会被记下(``lookback: 12`` 显式
+    写出 ≠ 没写)—— ``significance`` 的 lint 要求 seasonal 存在,存在性
+    必须能表达,不能靠"值不等于缺省"来猜。
+    """
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, dict):
+        raise RuleError(f"'seasonal' must be a mapping, got {type(raw).__name__}")
+    k_raw = raw.get("k")
+    if k_raw is None or k_raw == "":
+        k = float(ROBUST_Z_THRESHOLD)
+    elif isinstance(k_raw, bool):
+        raise RuleError(f"seasonal.k must be a number, got {k_raw!r}")
+    else:
+        try:
+            k = float(k_raw)
+        except (TypeError, ValueError):
+            raise RuleError(f"seasonal.k must be a number, got {k_raw!r}")
+    return Seasonal(
+        grain=str(raw.get("grain") or "").strip().lower(),
+        lookback=_as_int(raw.get("lookback"), default=12),
+        mode=str(raw.get("mode") or "trailing").strip().lower(),
+        k=k,
+    )
+
+
+def _parse_significance(raw: Any) -> Significance | None:
+    """``significance`` 块 → ``Significance``;``None``/空 = 未声明。"""
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, dict):
+        raise RuleError(f"'significance' must be a mapping, got {type(raw).__name__}")
+    mc_raw = raw.get("min_confidence")
+    if mc_raw is None or mc_raw == "":
+        mc = 0.0
+    elif isinstance(mc_raw, bool):
+        raise RuleError(f"significance.min_confidence must be a number, got {mc_raw!r}")
+    else:
+        try:
+            mc = float(mc_raw)
+        except (TypeError, ValueError):
+            raise RuleError(
+                f"significance.min_confidence must be a number, got {mc_raw!r}")
+    return Significance(
+        require=str(raw.get("require") or "").strip().lower(),
+        min_confidence=mc,
+    )
+
+
 def parse_rule(raw: dict[str, Any]) -> DecisionRule:
     """One YAML rule mapping → ``DecisionRule`` (structure only, no lint)."""
     if not isinstance(raw, dict):
@@ -242,6 +349,8 @@ def parse_rule(raw: dict[str, Any]) -> DecisionRule:
         priority=_as_int(raw.get("priority"), default=0),
         action=_parse_action(raw.get("action")),
         driver_dimension=str(raw.get("driver_dimension") or "").strip(),
+        seasonal=_parse_seasonal(raw.get("seasonal")),
+        significance=_parse_significance(raw.get("significance")),
     )
 
 
@@ -361,6 +470,50 @@ def lint_rule(rule: DecisionRule) -> list[str]:
                 f"{where}: action.autonomy must be one of "
                 f"{', '.join(AUTONOMIES)} (got {rule.action.autonomy!r})")
 
+    # ── schema v3 ────────────────────────────────────────
+    if rule.seasonal is not None:
+        if rule.seasonal.grain not in SEASONAL_GRAINS:
+            issues.append(
+                f"{where}: seasonal.grain must be one of "
+                f"{[g or '(derive)' for g in SEASONAL_GRAINS]} "
+                f"(got {rule.seasonal.grain!r})")
+        if rule.seasonal.mode not in SEASONAL_MODES:
+            issues.append(
+                f"{where}: seasonal.mode must be one of "
+                f"{', '.join(SEASONAL_MODES)} (got {rule.seasonal.mode!r})")
+        if rule.seasonal.lookback < 1:
+            issues.append(f"{where}: seasonal.lookback must be >= 1 "
+                          f"(got {rule.seasonal.lookback!r})")
+        if not (rule.seasonal.k > 0):
+            issues.append(f"{where}: seasonal.k must be > 0 "
+                          f"(got {rule.seasonal.k!r})")
+    if rule.significance is not None:
+        if rule.seasonal is None:
+            # 噪声带由历史块构建 —— 没有块规格,门永远判不了(而
+            # 「判不了」在 require 下是 error run:一条每次都报错的
+            # 规则不该被写进文件)。
+            issues.append(
+                f"{where}: 'significance' requires a 'seasonal' block — the "
+                "noise band is built from historical blocks; declare "
+                "seasonal (grain/lookback/mode) or drop significance")
+        if rule.significance.require not in SIGNIFICANCE_REQUIREMENTS:
+            issues.append(
+                f"{where}: significance.require must be one of "
+                f"{[r or '(record only)' for r in SIGNIFICANCE_REQUIREMENTS]} "
+                f"(got {rule.significance.require!r})")
+        if not (0.0 <= rule.significance.min_confidence <= 1.0):
+            issues.append(
+                f"{where}: significance.min_confidence must be in [0, 1] "
+                f"(got {rule.significance.min_confidence!r})")
+        if rule.seasonal is not None and rule.significance.required() \
+                and rule.seasonal.lookback < MIN_BLOCKS:
+            # MIN_BLOCKS 是统计侧的硬门(块数不足时显著性成噪声放大器):
+            # 声明了门却给不够块,等于一条永远 error 的规则 —— 挡在写入口。
+            issues.append(
+                f"{where}: seasonal.lookback {rule.seasonal.lookback} < "
+                f"{MIN_BLOCKS} (MIN_BLOCKS) — significance can never confirm "
+                "a trigger with fewer blocks")
+
     for cond in rule.conditions:
         try:
             used = condition_variables(cond)
@@ -372,6 +525,11 @@ def lint_rule(rule: DecisionRule) -> list[str]:
             issues.append(
                 f"{where}: condition {cond!r} uses {', '.join(missing)}, which "
                 "only exists when scope is 'per_dimension'")
+        sig_only = sorted(used & _SIGNIFICANCE_ONLY)
+        if sig_only and rule.significance is None:
+            issues.append(
+                f"{where}: condition {cond!r} uses {', '.join(sig_only)}, which "
+                "only exists when 'significance' is declared")
         if rule.baseline.kind in ("none",) and "baseline" in used:
             issues.append(
                 f"{where}: condition {cond!r} uses 'baseline' but "
@@ -409,6 +567,12 @@ def lint_advisories(doc: DecisionDoc) -> list[str]:
                 f"{where}: 'propose' on an aggregate rule fires without a "
                 "group label — consider a driver_dimension so the proposal "
                 "names what moved")
+        if rule.significance is not None and rule.significance.min_confidence \
+                and not rule.significance.required():
+            out.append(
+                f"{where}: significance.min_confidence is only enforced with "
+                "require: outside_band — without it the value is recorded "
+                "but not gated on")
     return out
 
 
@@ -515,7 +679,35 @@ def rule_to_dict(rule: DecisionRule) -> dict[str, Any]:
         out["action"] = action
     if rule.driver_dimension:
         out["driver_dimension"] = rule.driver_dimension
+    # Schema v3 —— 未声明的块**不写出**:v2 规则的字节表示与历史完全一致,
+    # 整份文件的 digest 与每条规则的 rev 因此保持连续(条件序列化是
+    # N2 修复成立的前提:回评分桶认 rev,而 rev 认这份规范形状)。
+    if rule.seasonal is not None:
+        out["seasonal"] = {
+            "grain": rule.seasonal.grain,
+            "lookback": rule.seasonal.lookback,
+            "mode": rule.seasonal.mode,
+            "k": rule.seasonal.k,
+        }
+    if rule.significance is not None:
+        sig: dict[str, Any] = {"require": rule.significance.require}
+        if rule.significance.min_confidence:
+            sig["min_confidence"] = rule.significance.min_confidence
+        out["significance"] = sig
     return out
+
+
+def rule_rev(rule: DecisionRule) -> str:
+    """单条规则的内容版本号(规范序列化 sha256 前 16 位)。
+
+    N2 修复:``rule_digest`` 是整份 ``decisions.yml`` 的字节 sha256 ——
+    改 B 规则会让 A 规则的回评分桶(``(rule_id, rule_rev)``)整段错位。
+    rev 只认这一条规则:``rule_to_dict`` 条件序列化 → 与文件里其他规则、
+    键序、缩进、注释都无关;同一规则内容 ⇒ 同一 rev(跨进程稳定)。
+    """
+    payload = json.dumps(rule_to_dict(rule), sort_keys=True,
+                         ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def lint_document(doc: DecisionDoc) -> list[str]:

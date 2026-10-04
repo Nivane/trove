@@ -14,6 +14,7 @@ from typing import Any
 
 from trove.core.logging import get_logger
 from trove.services.decision.bridge import primary_driver_line
+from trove.services.decision.significance import band_line
 from trove.services.decision.verdicts import verdict_from_outcome
 from trove.services.jobs.service import JobsService
 from trove.services.jobs.store import Job, Run
@@ -242,20 +243,26 @@ class SchedulerRunner:
             await self._advance(job, now)
 
     def _notify_message(self, outcome: Any) -> str:
-        """The rule's message plus the bridge's 「主因」 line, when it has one.
+        """The rule's message plus the bridge's 「主因」/「噪声带」 lines.
 
         Composed here rather than inside the decision service so the service
         keeps returning exactly what the rule produced — the evidence is the
-        record, the message is the notification. Skipped whenever the bridge
-        had nothing to say (single-leaf metric, no time field, all component
-        deltas unreported): an empty 「主因：—」 line is worse than no line.
+        record, the message is the notification. Each line is skipped when it
+        has nothing to say (bridge: single-leaf metric / no time field; band:
+        no confirmed group): an empty 「主因：—」 line is worse than no line.
+        未声明 significance 的规则 band_line 恒为空串 → 通知与历史逐字节
+        相同(兼容安全带)。
         """
         message = str(getattr(outcome, "message", "") or "")
         evidence = getattr(outcome, "evidence", None) or {}
         driver = primary_driver_line(evidence.get("analysis"))
-        if not driver:
-            return message
-        return f"{message}\n主因：{driver}" if message else f"主因：{driver}"
+        band = band_line(evidence.get("significance"))
+        lines = [message] if message else []
+        if driver:
+            lines.append(f"主因：{driver}")
+        if band:
+            lines.append(band)
+        return "\n".join(lines)
 
     def _report_payload(self, job: Job, final: Any) -> dict[str, Any]:
         """有界报告记录（写进 ``run.result_json``）——定时分析的产出物。

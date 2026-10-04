@@ -132,13 +132,18 @@ def compile_series_hop(
     *,
     time_grain: str,
     time_field: str,
+    dimensions: list[str] | None = None,
 ) -> str | None:
     """构造并编译块序列查询 → SQL(编译 MISS → None,调用方降级)。
 
     = ``engine.compile_hop`` + plan ``time_grain`` 键。时间字段不在
     answer_columns,编译器把分桶表达式插在维度列之后、度量之前
-    (此处无维度 → 首列即 bucket);输出列 = ``(bucket, 度量)``,
-    ``series_from_rows`` 直接消费。
+    (无维度 → 首列即 bucket);输出列 = ``(维度…, bucket, 度量)``,
+    ``series_from_rows`` / ``series_source`` 按同一契约消费。
+
+    ``dimensions`` = 分组维(判定侧按维取噪声带时给;缺省 None = 整体
+    一条序列)。分组查询仍是**一条 SQL** —— 逐维一条会随维值数量
+    爆炸,而预算纪律要求块序列至多花一条(见 decision/budget.py)。
     """
     if time_grain not in GRAINS or not time_field:
         return None
@@ -158,7 +163,7 @@ def compile_series_hop(
         plan = {
             "tables": list(matched),
             "aggregation": metric_name,
-            "answer_columns": [metric_name],
+            "answer_columns": [str(d) for d in (dimensions or [])] + [metric_name],
             "conditions": list(conds),
             "time_grain": {"field": time_field, "grain": time_grain},
         }

@@ -139,6 +139,28 @@ class Band:
     method: str = "robust"
     degraded: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "Band":
+        """``to_dict`` 的逆(证据 JSON → 可再判的带)。
+
+        判定侧要把存进证据的带重新拿去做 ``outside`` —— 逆变换存在的
+        唯一理由是**同一份构造语义**:没有它,消费方会各写各的「从
+        dict 拼一个带」,拼错了(漏掉 degraded 之类)外面看不出来。
+        缺字段 → 带不可用(lo/hi None),绝不猜。
+        """
+        data = data if isinstance(data, dict) else {}
+        degraded = data.get("degraded")
+        n = data.get("n")
+        return cls(
+            center=data.get("center"),
+            scale=data.get("scale"),
+            lo=data.get("lo"),
+            hi=data.get("hi"),
+            n=int(n) if isinstance(n, (int, float)) and not isinstance(n, bool) else 0,
+            method=str(data.get("method") or "robust"),
+            degraded=[str(d) for d in degraded] if isinstance(degraded, list) else [],
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "center": self.center,

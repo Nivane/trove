@@ -87,6 +87,22 @@
             <div v-for="(c, i) in row.conditions" :key="i" class="cell-mono cond">
               <span class="dim">{{ row.condition_mode }}</span> {{ c }}
             </div>
+            <!-- 噪声带是触发条件的一部分(条件命中还要超带才算数),所以它
+                 渲染在条件列内而不是新开一列:表格宽度是收紧过的,新列
+                 会把判定历史挤出可视区。未声明 → 不渲染,与历史一致。 -->
+            <div v-if="row.seasonal" class="cell-mono cond band-line">
+              <span class="dim">{{ t('decisionsSeasonal', ui.lang) }}</span>
+              {{ row.seasonal.grain || 'auto' }} × {{ row.seasonal.lookback }} · k={{ row.seasonal.k }}
+              <span
+                v-if="row.significance"
+                class="pill"
+                :class="row.significance.require === 'outside_band' ? 'pill-warn' : 'pill-neutral'"
+              >
+                {{ row.significance.require === 'outside_band'
+                  ? t('decisionsBandRequired', ui.lang)
+                  : t('decisionsBandRecord', ui.lang) }}
+              </span>
+            </div>
           </template>
         </el-table-column>
         <el-table-column :label="t('jobEnabled', ui.lang)" width="80">
@@ -181,6 +197,18 @@ import { verdictStatusClass, type VerdictBrief } from '../../api/decisions'
 import PageHeader from '../../components/base/PageHeader.vue'
 import type { DatasourceInfo } from '../../api/types'
 
+interface SeasonalBlock {
+  grain: string
+  lookback: number
+  mode: string
+  k: number
+}
+
+interface SignificanceBlock {
+  require: string
+  min_confidence?: number
+}
+
 interface RuleRow {
   id: string
   name: string
@@ -193,6 +221,9 @@ interface RuleRow {
   conditions: string[]
   condition_mode: string
   referenced_by: string[]
+  /** Schema v3 —— 未声明的规则后端不带这两个键(拿不到不渲染)。 */
+  seasonal?: SeasonalBlock
+  significance?: SignificanceBlock
   /** null = 还没被任何任务判过(或本进程没接 store),不是"判定正常"。 */
   latest_verdict: VerdictBrief | null
   [k: string]: unknown
@@ -328,6 +359,13 @@ onMounted(async () => {
 }
 .cond {
   font-size: var(--fs-2xs);
+}
+.band-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 2px;
 }
 .decisions-latest {
   display: flex;

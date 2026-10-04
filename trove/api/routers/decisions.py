@@ -29,6 +29,7 @@ from trove.services.decision.rules import (
     lint_document,
     lint_document_assets,
     parse_document,
+    rule_to_dict,
 )
 
 router = APIRouter()
@@ -156,7 +157,7 @@ async def list_decisions(
     rules = []
     for rule in doc.rules:
         last = latest.get(rule.id)
-        rules.append({
+        entry = {
             "id": rule.id,
             "name": rule.name,
             "enabled": rule.enabled,
@@ -177,7 +178,14 @@ async def list_decisions(
             ),
             "referenced_by": await _referencing_jobs(request, datasource, rule.id),
             "latest_verdict": _verdict_brief(last) if last is not None else None,
-        })
+        }
+        # Schema v3:与 ``rule_to_dict`` 同一序列化源 —— 未声明的规则响应
+        # 与历史逐字节一致(前端「拿不到不渲染」),声明了才多出对应块。
+        serialized = rule_to_dict(rule)
+        for key in ("seasonal", "significance"):
+            if key in serialized:
+                entry[key] = serialized[key]
+        rules.append(entry)
     return {
         "datasource": datasource,
         "version": doc.version,
@@ -373,8 +381,6 @@ async def get_decision(
             status_code=404,
             detail=f"decision rule not found: {rule_id} (datasource {datasource!r})",
         )
-    from trove.services.decision.rules import rule_to_dict
-
     return {
         "datasource": datasource,
         "digest": doc.digest,

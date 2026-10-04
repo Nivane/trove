@@ -13,6 +13,8 @@ from trove.services.decision.rules import (
     SCHEMA_VERSION,
     ActionRef,
     RuleError,
+    Seasonal,
+    Significance,
     compile_condition,
     lint_advisories,
     lint_document,
@@ -21,6 +23,7 @@ from trove.services.decision.rules import (
     lint_rule_assets,
     parse_document,
     parse_rule,
+    rule_rev,
     rule_to_dict,
 )
 
@@ -327,6 +330,150 @@ class TestLintAssets:
         issues = lint_document_assets(doc, templates={"a"}, confirmed={"a"})
         assert len(issues) == 1
         assert "notify-ops" in issues[0]
+
+
+#: A schema-v3 rule exercising the significance/seasonal declarations.
+V3 = {
+    **MINIMAL,
+    "seasonal": {"grain": "month", "lookback": 12, "mode": "same_phase", "k": 4},
+    "significance": {"require": "outside_band", "min_confidence": 0.2},
+}
+
+
+class TestSchemaV3Parse:
+    def test_defaults_read_as_v2(self):
+        """A rule written before v3 means exactly what it always meant:
+        the declarations are None, not default-constructed."""
+        r = rule()
+        assert r.seasonal is None
+        assert r.significance is None
+
+    def test_full_v3_rule(self):
+        r = parse_rule(V3)
+        assert r.seasonal == Seasonal(grain="month", lookback=12,
+                                      mode="same_phase", k=4.0)
+        assert r.significance == Significance(require="outside_band",
+                                              min_confidence=0.2)
+        assert r.significance.required() is True
+
+    def test_seasonal_defaults(self):
+        r = rule(seasonal={})
+        assert r.seasonal == Seasonal(grain="", lookback=12,
+                                      mode="trailing", k=3.5)
+
+    def test_presence_is_the_declaration(self):
+        """显式写出与缺省相同的块也是声明 —— 存在性必须能表达,不能靠
+        「值不等于缺省」来猜。"""
+        assert parse_rule({**MINIMAL, "seasonal": {}}).seasonal is not None
+        assert rule(seasonal=None).seasonal is None
+        assert rule(seasonal="").seasonal is None
+
+    def test_significance_defaults_to_record_only(self):
+        r = rule(significance={})
+        assert r.significance is not None
+        assert r.significance.required() is False
+        assert r.significance.min_confidence == 0.0
+
+    def test_garbage_numbers_raise(self):
+        with pytest.raises(RuleError):
+            rule(seasonal={"k": "loose"})
+        with pytest.raises(RuleError):
+            rule(seasonal={"lookback": True})
+        with pytest.raises(RuleError):
+            rule(significance={"min_confidence": "high"})
+        with pytest.raises(RuleError):
+            rule(significance="yes")
+
+    def test_round_trip_is_value_equal(self):
+        original = parse_rule(V3)
+        assert parse_rule(rule_to_dict(original)) == original
+
+    def test_round_trip_of_a_defaulted_v3_rule(self):
+        original = rule(seasonal={}, significance={})
+        assert parse_rule(rule_to_dict(original)) == original
+
+    def test_v2_rule_serializes_byte_identically(self):
+        """条件序列化:未声明 v3 字段的规则,写回形状与历史完全一致 ——
+        digest 与 rule_rev 的连续性(audit bucket)以此为前提。"""
+        out = rule_to_dict(parse_rule(V2))
+        assert "seasonal" not in out and "significance" not in out
+
+
+class TestLintV3:
+    def test_a_v3_rule_is_clean(self):
+        assert lint_rule(parse_rule(V3)) == []
+
+    def test_significance_requires_seasonal(self):
+        issues = lint_rule(rule(significance={"require": "outside_band"}))
+        assert any("requires a 'seasonal' block" in i for i in issues)
+
+    def test_unknown_require_and_grain_and_mode(self):
+        assert any("significance.require must be one of" in i for i in
+                   lint_rule(rule(seasonal={}, significance={"require": "maybe"})))
+        assert any("seasonal.grain must be one of" in i for i in
+                   lint_rule(rule(seasonal={"grain": "quarter"})))
+        assert any("seasonal.mode must be one of" in i for i in
+                   lint_rule(rule(seasonal={"mode": "yoy"})))
+
+    def test_lookback_and_k_bounds(self):
+        assert any("seasonal.lookback must be >= 1" in i for i in
+                   lint_rule(rule(seasonal={"lookback": 0})))
+        assert any("seasonal.k must be > 0" in i for i in
+                   lint_rule(rule(seasonal={"k": 0})))
+
+    def test_min_confidence_range(self):
+        issues = lint_rule(rule(seasonal={},
+                                significance={"min_confidence": 1.5}))
+        assert any("min_confidence must be in [0, 1]" in i for i in issues)
+
+    def test_requiring_with_too_few_blocks_blocks_the_write(self):
+        """MIN_BLOCKS 是统计侧的硬门:声明了门却给不够块,等于一条每次
+        都 error 的规则 —— 挡在写入口,而不是等它在生产里天天报错。"""
+        issues = lint_rule(rule(seasonal={"lookback": 4},
+                                significance={"require": "outside_band"}))
+        assert any("MIN_BLOCKS" in i for i in issues)
+        # 只记录不拦的门不受此限(降级记账即可)
+        assert lint_rule(rule(seasonal={"lookback": 4},
+                              significance={"require": ""})) == []
+
+    def test_confidence_condition_requires_the_declaration(self):
+        issues = lint_rule(rule(conditions=["confidence > 0.5"]))
+        assert any("only exists when 'significance' is declared" in i
+                   for i in issues)
+        assert lint_rule(rule(
+            seasonal={}, significance={"require": ""},
+            conditions=["confidence > 0.5"])) == []
+
+    def test_min_confidence_without_require_is_advisory(self):
+        doc = parse_document({"rules": [
+            {**MINIMAL, "seasonal": {},
+             "significance": {"min_confidence": 0.5}}]})
+        assert lint_document(doc) == []
+        assert any("only enforced with require" in i for i in lint_advisories(doc))
+
+
+class TestRuleRev:
+    def test_stable_across_parses_and_key_order(self):
+        a = parse_rule(V3)
+        b = parse_rule({k: V3[k] for k in reversed(list(V3))})
+        assert rule_rev(a) == rule_rev(b)
+        assert len(rule_rev(a)) == 16 and rule_rev(a) == rule_rev(a)
+
+    def test_changes_only_with_the_rule_itself(self):
+        """N2:rule_digest 是整份文件的字节哈希,改 B 规则会污染 A 规则
+        的回评分桶;rule_rev 只认这一条。"""
+        a = parse_rule(V3)
+        a2 = parse_rule(V3)
+        other_edited = parse_rule({**V3, "id": "other", "name": "改过了"})
+        assert rule_rev(a) == rule_rev(a2)
+        assert rule_rev(a) != rule_rev(other_edited)
+
+    def test_changes_when_the_rule_changes(self):
+        base = parse_rule(V3)
+        assert rule_rev(base) != rule_rev(rule(conditions=["delta < 0"],
+                                               seasonal={}, significance={}))
+        assert rule_rev(base) != rule_rev(
+            parse_rule({**V3, "seasonal": {"lookback": 13}}))
 
 
 class TestCompileCondition:

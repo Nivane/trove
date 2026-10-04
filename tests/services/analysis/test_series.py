@@ -147,6 +147,19 @@ class TestCompileSeriesHop:
         )
         assert sql is not None and "DATE_FORMAT" in sql
 
+    def test_dimensions_insert_the_bucket_after_the_dim_columns(self):
+        """判定侧按维取带时仍是**一条** SQL:维度列 + bucket + 度量 ——
+        ``series_source`` 按这个列契约解析(维度标签在前、桶在中、值在末)。"""
+        sql = compile_series_hop(
+            _SL(), ["sales"], "sqlite", "revenue", [],
+            time_grain="month", time_field="sales.day", dimensions=["region"],
+        )
+        assert sql is not None
+        select = sql.split("FROM")[0]
+        assert select.index("sales.region") < select.index("strftime('%Y-%m', sales.day)")
+        assert select.index("strftime('%Y-%m', sales.day)") < select.index("SUM(sales.amount)")
+        assert "GROUP BY" in sql and "sales.region" in sql.split("GROUP BY")[-1]
+
     def test_miss_returns_none(self):
         # 未知粒度 / 未知度量 / 软 MISS 条件(未声明字段)一律 None:
         # 序列是统计取数面,骨架(缺组件)不算

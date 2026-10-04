@@ -260,6 +260,73 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
     expect(text).toContain('not_aggregate:loan_net') // 降级必须可见
   })
 
+  it('renders the noise band: section, position scores, degraded reasons', async () => {
+    // 声明了 significance 的判定:证据里多出 significance 节,行卡多出
+    // gated/confidence 两键。note(位置分数非概率)必须出现 —— 它防的
+    // 正是这一节被读成概率。
+    const banded: VerdictDetail = {
+      verdict: {
+        ...brief(),
+        evidence: {
+          ...DETAIL.verdict.evidence,
+          rows: [
+            { ...(DETAIL.verdict.evidence as any).rows[0],
+              gated: true, confidence: 0.93 },
+            { ...(DETAIL.verdict.evidence as any).rows[1],
+              gated: false, confidence: 0.0 },
+          ],
+          significance: {
+            required: true,
+            min_confidence: 0,
+            seasonal: { grain: 'month', lookback: 12, mode: 'trailing', k: 3.5 },
+            note: '位置分数非概率:(|z|−k)/k 截断到 [0,1]',
+            by_dim: {
+              华东: { k: 3.5, z: 6.74, outside: true, confidence: 0.93,
+                     gated: true, reason: '' },
+              华北: { k: 3.5, z: 1.21, outside: false, confidence: 0.0,
+                     gated: false, reason: 'within_band' },
+            },
+            degraded: [{ stage: 'significance', reason: 'unmatched_buckets:1' }],
+          },
+          budget: { limit: 12, used: 5, by_stage: { judge: 2, significance: 1 }, yielded: [] },
+        },
+      },
+      diff: null,
+    }
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],
+    })
+    vi.mocked(fetchVerdict).mockResolvedValue(banded)
+    const view = await mountDrawer()
+    await view.find('.vh-row').trigger('click')
+    await flushPromises()
+
+    const text = view.text()
+    expect(text).toContain('Noise band · significance gate')
+    expect(text).toContain('位置分数非概率')
+    expect(text).toContain('6.74')            // z
+    expect(text).toContain('0.93')            // 位置分
+    expect(text).toContain('Outside band')    // 华东确认超带
+    expect(text).toContain('within_band')     // 华北:判了,在带内
+    expect(text).toContain('unmatched_buckets:1') // 降级必须可见
+    expect(text).toContain('Query ledger')
+    expect(text).toContain('5/12')            // 本次判定花了几条
+  })
+
+  it('without a declared band the detail keeps its old columns', async () => {
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],
+    })
+    vi.mocked(fetchVerdict).mockResolvedValue(DETAIL)
+    const view = await mountDrawer()
+    await view.find('.vh-row').trigger('click')
+    await flushPromises()
+
+    // 未声明 → 不出现任何新节/新列(拿不到不渲染)
+    expect(view.text()).not.toContain('Noise band')
+    expect(view.text()).not.toContain('Position')
+  })
+
   it('collapses the detail on a second click without refetching', async () => {
     vi.mocked(fetchVerdicts).mockResolvedValue({
       datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],

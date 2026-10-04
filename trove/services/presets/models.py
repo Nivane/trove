@@ -43,11 +43,14 @@ SKILL_TEMPLATE_KEYS = (
 )
 
 #: 决策规则模板 —— 键集 = ``decision.rules`` 的规则字段(``rule_to_dict``
-#: 的往返形状),不多不少:模板是规则,不是另一种东西。
+#: 的往返形状),不多不少:模板是规则,不是另一种东西。``seasonal`` /
+#: ``significance``(schema v3)在内 —— 噪声带是跨源方法论骨架,正是
+#: preset 该装的东西;填不填由模板作者决定。
 DECISION_TEMPLATE_KEYS = (
     "id", "name", "enabled", "severity", "owner_role", "window", "subject",
     "baseline", "scope", "emit", "top_k", "conditions", "condition_mode",
     "recommendation", "priority", "action", "driver_dimension",
+    "seasonal", "significance",
 )
 
 #: 主题域骨架 —— 喂 ``SemanticManager.create_draft(kind="topic")``。
