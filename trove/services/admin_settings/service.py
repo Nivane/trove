@@ -50,6 +50,9 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     # API 限流(进程内,按 user;0 = 关闭):每分钟请求数 / 每日请求配额
     "app.api_rate_per_minute": ("api_rate_per_minute", "range", (0, 1000)),
     "app.api_daily_quota": ("api_daily_quota", "range", (0, 100000)),
+    # 扩展面治理:组织扩展总开关(org skills 注入/广告 + validator 断言 +
+    # 决策规则执行;默认 true)。code skills / KB 不受它影响。
+    "extensions.org_extensions_enabled": ("extensions.org_extensions_enabled", "bool", None),
 }
 
 

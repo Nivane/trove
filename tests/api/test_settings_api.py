@@ -146,3 +146,39 @@ class TestSettingsApi:
         assert (await user_client.get("/v1/admin/settings")).status_code == 403
         assert (await user_client.put("/v1/admin/settings",
                                       json={"values": {"app.hitl": True}})).status_code == 403
+
+    async def test_org_extensions_switch_flips_live_consumers(
+            self, client, api_app, tmp_path, settings_store):
+        """PUT 一个开关 → 已挂载的消费方(idle 的 SkillService,持同一把活
+        开关的引用)当场改变行为,不重建、不重启 ——「生效」的端到端半边。
+
+        断言分三层:响应值 / 活 config 对象 / **真实消费方行为**(org 注入
+        停止,code skills 照常)。
+        """
+        from trove.services.skills.service import SkillService
+
+        await _with_store(api_app, tmp_path, settings_store)
+        svc = SkillService(
+            root=tmp_path / "proj" / ".trove" / "skills",
+            config=api_app.state.config,      # 与运行时同一把开关(活引用)
+        )
+        svc.create({"name": "org-rule", "description": "d", "tier": "required",
+                    "triggers": {"node": "query_sketch"}, "body": "ORG-MARKER"})
+        svc.confirm("org-rule")
+        assert "ORG-MARKER" in svc.render_skills("query_sketch", lang="en")
+
+        r = await client.put("/v1/admin/settings", json={"values": {
+            "extensions.org_extensions_enabled": False,
+        }})
+        assert r.status_code == 200
+        assert r.json()["values"]["extensions.org_extensions_enabled"] is False
+        assert api_app.state.config.extensions.org_extensions_enabled is False
+        rendered = svc.render_skills("query_sketch", lang="en")
+        assert "ORG-MARKER" not in rendered                 # org 消费面停
+        assert "Traceability self-check" in rendered        # code skills 不动
+
+        r = await client.put("/v1/admin/settings", json={"values": {
+            "extensions.org_extensions_enabled": True,
+        }})
+        assert r.status_code == 200
+        assert "ORG-MARKER" in svc.render_skills("query_sketch", lang="en")

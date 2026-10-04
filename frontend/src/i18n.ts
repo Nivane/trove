@@ -1292,6 +1292,11 @@ export const messages = {
        扁平 camelCase,gov* 前缀(§5.2:线 0 建段并冻结,各线只加子键)。 */
     govTitle: '治理中心',
     govDesc: '跨源待办 · 覆盖体检 · 漂移与版本 · 数据地图',
+    govExtTitle: '组织扩展',
+    govExtHint: '总开关只停组织扩展:org skills 注入与 load_skill 广告、validator 断言、决策规则执行;code skills / KB / few-shot 不受影响。开关每问现读,保存即下一问生效。',
+    govExtUnknown: '开关状态未取到',
+    govExtDisabledNotice: '组织扩展已停用:org 技能不再注入、load_skill 不可用、validator 断言与决策规则不执行。停用中的定时决策任务会报「已停用」错误,绝不静默按零规则通过。',
+    govExtSaved: '已保存,下一问生效',
     govTabInbox: '收件箱',
     govTabCoverage: '覆盖与体检',
     govTabDrift: '漂移与版本',
@@ -3170,6 +3175,11 @@ export const messages = {
     /* ── 治理中心(P5)—— keys mirror the zh block one-for-one ── */
     govTitle: 'Governance center',
     govDesc: 'Cross-source inbox · coverage · drift & versions · data map',
+    govExtTitle: 'Org extensions',
+    govExtHint: 'The master switch stops org extensions only: org skill injection and load_skill ads, validator assertions, decision-rule execution. Code skills / KB / few-shots are untouched. Read live on every question — saving takes effect on the next one.',
+    govExtUnknown: 'Switch state not fetched',
+    govExtDisabledNotice: 'Org extensions are disabled: org skills are not injected, load_skill is unavailable, validator assertions and decision rules do not run. A scheduled decision job reports an "disabled" error rather than silently passing with zero rules.',
+    govExtSaved: 'Saved — takes effect on the next question',
     govTabInbox: 'Inbox',
     govTabCoverage: 'Coverage',
     govTabDrift: 'Drift & versions',

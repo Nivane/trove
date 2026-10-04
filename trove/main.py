@@ -242,7 +242,12 @@ async def create_app_components(
     # 确认后才进入 prompt(required 档注入 / available 档 load_skill 按需)。
     # 与 KB 同款「草稿 → 确认」门禁,无技能时零开销(空目录即空 render)。
     from trove.services.skills.service import SkillService
-    skills = SkillService(Path.cwd() / ".trove" / "skills", llm=llm_gateway)
+    skills = SkillService(
+        Path.cwd() / ".trove" / "skills", llm=llm_gateway,
+        # 写路径 git 自动版本化与 KB 同源(config.git_kb);config 是组织扩展
+        # 总开关的现读宿主(管理端 PUT 就地改同一个对象)。
+        git_enabled=config.git_kb, config=config,
+    )
 
     # ── User facts (per-user memory: ~/.trove/user_facts.db) ──
     # 独立于数据源级 KB 的用户级记忆层:偏好/口径事实,按用户+数据源
@@ -422,6 +427,9 @@ async def create_app_components(
         # 人在等,无界查询会把 job 的 schedule 永远吊住。
         decision=DecisionService(
             connector_registry, kb, timeout_ms=int(config.budget.timeout_ms),
+            # 组织扩展总开关现读:停用中的决策任务以 status=error 报「已停用」,
+            # 绝不静默按零规则通过。
+            config=config,
         ),
         verdicts=verdicts,
         # 触发 + autonomy=propose → 建 pending 提案(best-effort:

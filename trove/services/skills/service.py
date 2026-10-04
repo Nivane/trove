@@ -37,6 +37,24 @@ All four delivery paths — required injection, available advertisement,
 validator execution and on-demand ``load_skill`` — share **one** trigger
 predicate (``_trigger_mismatch``). A declared ``role`` / ``lang`` / … narrows
 every path, so naming a skill directly cannot bypass it.
+
+Governance (P2 — effect / rollback / disable):
+
+- **Effect**: every read path re-reads the files; every gate reads the admin
+  switch from the live ``AgentConfig`` on each call. Flipping a switch or
+  editing a file takes effect on the next question — no restart, no cache.
+- **Rollback**: every write path (create / confirm / reject / set_tier / body
+  / rollback) auto-commits through the same ``GitVersioning`` the KB uses
+  (scoped staging, degrade-to-no-op — versioning never blocks the write it
+  records). ``version`` is a **revision counter**: any content change
+  (confirm / body rewrite / tier change / rollback) increments it, so the
+  audit history reads as a monotonically growing series.
+- **Disable**: ``agent.extensions.org_extensions_enabled`` (default true) is
+  a single master switch for *this org surface only* — injection, the
+  ``load_skill`` advertisement, on-demand loading and validator assertions
+  all short-circuit when it is off. Code skills (``trove/prompts/skills/``),
+  the KB and few-shots are untouched; the admin write/list surface stays
+  usable (the switch stops **consumption**, not management).
 """
 
 from __future__ import annotations
@@ -51,6 +69,7 @@ import yaml
 from trove.llm.injection import scan_injection
 from trove.prompts.skills import fence_org_skill, match_trigger
 from trove.prompts.skills import render_skills as _code_render
+from trove.services.kb.git_versioning import GitVersioning
 from trove.services.skills.validators import SEVERITIES, VALIDATOR_HOST
 
 # name = lowercase letters/digits + hyphens; also a safe directory name.
@@ -113,9 +132,36 @@ def _declared_node(triggers: dict) -> Any:
 class SkillService:
     """Manage + render org skills, merged with the built-in code skills."""
 
-    def __init__(self, root: Path | None = None, llm: Any = None):
+    def __init__(self, root: Path | None = None, llm: Any = None, *,
+                 git_enabled: bool = True, config: Any = None):
         self.root = Path(root) if root is not None else Path.cwd() / ".trove" / "skills"
         self.llm = llm
+        # 扩展面治理开关的宿主(``AgentConfig``)。管理端改的是**同一个活对象**
+        # (``apply_overrides`` 就地改),所以这里是"每问现读"的读书处,不是快照。
+        # 不传(旧构造点/纯单测)→ ``_org_enabled()`` 视为全开。
+        self.config = config
+        # 写路径的 git 自动版本化 —— 与 KB 同一个 ``GitVersioning``,守卫
+        # (只暂存点名文件 / 失败降级 no-op)因此只有一份实现。enabled=False
+        # 或树不在 git worktree 里时,后续 commit 全部降级、写入照常。
+        self.git = GitVersioning(self.root, enabled=True) if git_enabled else None
+
+    # ── Governance switch (``agent.extensions.*``) ─────────
+
+    def _org_enabled(self) -> bool:
+        """组织扩展总开关 —— **每次调用现读**(热生效,无缓存)。
+
+        ``agent.extensions.org_extensions_enabled``(默认 true)只停「组织
+        扩展」这一层:org skills 的注入与 ``load_skill`` 广告、按名取正文、
+        validator 断言。code skills / KB / few-shots 一律不受影响。
+
+        "现读"而不是"构造时快照":管理端 PUT 改的是共享的 ``AgentConfig``
+        实例(``apply_overrides`` 就地改),构造期快照会让开关在重启前失效
+        ——而"改了没生效"正是这一层最要防的静默结局。
+        """
+        ext = getattr(self.config, "extensions", None)
+        if ext is None:
+            return True
+        return bool(getattr(ext, "org_extensions_enabled", True))
 
     # ── Paths / IO ────────────────────────────────────────
 
@@ -141,6 +187,12 @@ class SkillService:
         body = "\n".join(lines[end + 1:]).strip()
         return {"meta": meta, "body": body}
 
+    @staticmethod
+    def _normalized_version(meta: dict) -> int:
+        """从 frontmatter 读修订号;非整数(含 bool)/缺失 → 1 —— 读路径不抛。"""
+        raw = meta.get("version", 1)
+        return raw if isinstance(raw, int) and not isinstance(raw, bool) else 1
+
     def read_skill(self, name: str) -> dict | None:
         """Load one org skill (meta + body). None when absent/invalid."""
         path = self.skill_path(name)
@@ -161,16 +213,13 @@ class SkillService:
             "created_at": meta.get("created_at", ""),
             "updated_at": meta.get("updated_at", ""),
         }
-        # version:org skill 的修订号(仅 .trove/skills/ 下的文件;code skills
-        # 不走这里)。create 初始 1;confirm / set_tier 的整篇重 dump 原样
-        # 保留(``_rewrite_field`` 只 update 点名的那几个键)。遗留文件没有
-        # 该字段 → 读出 1;手写进非整数的同样按 1 解释 —— 读路径不抛。
-        raw_version = meta.get("version", 1)
-        entry["version"] = (
-            raw_version
-            if isinstance(raw_version, int) and not isinstance(raw_version, bool)
-            else 1
-        )
+        # version:org skill 的**修订计数**(仅 .trove/skills/ 下的文件;code
+        # skills 不走这里)。create 初始 1;此后每次内容变更(confirm / 正文
+        # 重写 / tier 变更 / rollback)由 ``_rewrite_field`` 递增 —— 版本号在
+        # 审计史里单调前进,回滚因此是"新的一版"而不是时间倒流。
+        # 读路径保持宽容:遗留文件没有该字段 → 读出 1;手写进非整数的同样
+        # 按 1 解释,绝不抛。
+        entry["version"] = self._normalized_version(meta)
         # validator 专属字段**条件带上**:非 validator 档的返回形状保持不变
         # (既有调用方按 exact dict 断言的话,无条件加键会打碎它们)。
         if entry["tier"] == "validator":
@@ -292,7 +341,7 @@ class SkillService:
         return {"mode": mode, "severity": severity, "targets": targets,
                 "checks": checks}
 
-    def create(self, entry: dict) -> dict:
+    def create(self, entry: dict, *, actor: str = "") -> dict:
         """Create an org skill as a *pending* draft. Returns the saved entry.
 
         写入面先把未知键拦掉(报错并列出合法字段):未知键经 YAML 往返会被
@@ -359,7 +408,9 @@ class SkillService:
         self.skill_path(name).write_text(
             f"---\n{frontmatter}\n---\n\n{body}\n", encoding="utf-8",
         )
-        return self._with_scan(self.read_skill(name))
+        saved = self._with_scan(self.read_skill(name))
+        self._commit("create", name, saved, actor=actor)
+        return saved
 
     async def draft_with_llm(
         self, name: str, description: str, node: str, purpose: str, lang: str = "en",
@@ -451,7 +502,7 @@ class SkillService:
         entry["injection_hits"] = cls._scan_entry(entry)
         return entry
 
-    def confirm(self, name: str) -> dict:
+    def confirm(self, name: str, *, actor: str = "") -> dict:
         """Admin confirmation: pending draft → confirmed (enters retrieval)."""
         entry = self._load_meta(name)
         if entry is None:
@@ -465,9 +516,10 @@ class SkillService:
         hits = self._scan_entry(entry)
         entry = self._rewrite_status(name, "confirmed")
         entry["injection_hits"] = hits
+        self._commit("confirm", name, entry, actor=actor)
         return entry
 
-    def reject(self, name: str) -> dict:
+    def reject(self, name: str, *, actor: str = "") -> dict:
         """Admin rejection: delete the draft directory."""
         d = self.skill_dir(name)
         if not (d / "SKILL.md").exists():
@@ -475,9 +527,11 @@ class SkillService:
         import shutil
 
         shutil.rmtree(d)
+        # 删除也进审计史:目录作用域的 add -A 只记录这个 skill 的删除。
+        self._commit("reject", name, None, deleted=True, actor=actor)
         return {"name": name, "status": "rejected"}
 
-    def set_tier(self, name: str, tier: str) -> dict:
+    def set_tier(self, name: str, tier: str, *, actor: str = "") -> dict:
         """在 ``required`` ↔ ``available`` 之间搬;``validator`` 只能手写 SKILL.md。
 
         曾经这里分两个方向校验(升档跑 ``_validate_validator_spec``、降档查
@@ -503,26 +557,137 @@ class SkillService:
                 f"them. Edit {self.skill_path(name)} and set tier plus those four "
                 "fields together in the frontmatter."
             )
-        return self._rewrite_field(name, {"tier": tier})
+        entry = self._rewrite_field(name, {"tier": tier})
+        self._commit("tier", name, entry, actor=actor)
+        return entry
 
-    def _rewrite_field(self, name: str, updates: dict) -> dict:
+    def _rewrite_field(self, name: str, updates: dict,
+                       body: str | None = None) -> dict:
+        """整篇重 dump frontmatter(可选换正文),**修订号 +1**。
+
+        版本语义是修订计数:任何一次内容变更(confirm / tier / 正文重写 /
+        rollback)都往前走一格。取**规范化后的当前值 + 1** —— 遗留文件
+        (无该字段或非整数,读作 1)第一次重写后成为 2,而不是被打回 0;
+        ``version`` 与 ``updated_at`` 和点名键在同一次写盘里落定,不存在
+        "内容改了、版本没动"的中间态。
+        """
         path = self.skill_path(name)
         parsed = self._parse_skill(path.read_text(encoding="utf-8"))
         if "meta" not in parsed:
             raise ValueError(f"skill not found: {name}")
         meta = parsed["meta"]
         meta.update(updates)
+        meta["version"] = self._normalized_version(meta) + 1
         from datetime import datetime, timezone
 
         meta["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         frontmatter = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+        text = body if body is not None else parsed["body"]
         path.write_text(
-            f"---\n{frontmatter}\n---\n\n{parsed['body']}\n", encoding="utf-8",
+            f"---\n{frontmatter}\n---\n\n{text}\n", encoding="utf-8",
         )
         return self.read_skill(name)
 
     def _rewrite_status(self, name: str, status: str) -> dict:
         return self._rewrite_field(name, {"status": status})
+
+    def update_body(self, name: str, body: str, *, actor: str = "") -> dict:
+        """整篇替换正文(frontmatter 不动,修订号 +1)。
+
+        与 ``confirm`` 同一顺序:先扫、后写 —— 落盘是最后一个会抛的步骤,
+        扫描命中只报不改(写它的人此刻在场,是唯一能判断"这句话是不是有意
+        写的"的一方)。
+        """
+        text = (body or "").strip()
+        if not text:
+            raise ValueError("body is required")
+        entry = self._load_meta(name)
+        if entry is None:
+            raise KeyError(f"skill not found: {name}")
+        hits = self._scan_entry({**entry, "body": text})
+        updated = self._rewrite_field(name, {}, body=text)
+        updated["injection_hits"] = hits
+        self._commit("body", name, updated, actor=actor)
+        return updated
+
+    # ── Git audit: history / rollback ─────────────────────
+
+    def history(self, name: str, limit: int = 50) -> list[dict]:
+        """该 skill 的提交历史(git log,按时间倒序);非 git 环境 → []。"""
+        if not self.skill_path(name).exists():
+            raise KeyError(f"skill not found: {name}")
+        if self.git is None:
+            return []
+        return self.git.history_files([self.skill_dir(name)], limit=limit)
+
+    def rollback(self, name: str, sha: str, *, actor: str = "",
+                 message: str = "") -> dict:
+        """把该 skill 回滚到 ``sha`` 时的内容(新建提交,修订号继续前进)。
+
+        回滚 = **一次新的修订**:恢复目标版本的文件(正文 / 触发条件 / 档位,
+        ``SKILL.<lang>.md`` 覆盖文件一并回到那个版本)之后,把 ``version``
+        抬到 ``max(回滚前, 恢复后) + 1`` —— 审计史里版本号单调,前端看到的
+        永远是"又改了一版"而不是时间倒流。回滚本身又是一条 commit,历史
+        不改写。
+        """
+        if not self.skill_path(name).exists():
+            raise KeyError(f"skill not found: {name}")
+        if self.git is None:
+            return {"rolled_back": False, "reason": "disabled"}
+        current = self.read_skill(name) or {}
+        base = self._normalized_version(current)
+
+        def _bump(directory: Path) -> None:
+            p = directory / "SKILL.md"
+            parsed = self._parse_skill(p.read_text(encoding="utf-8"))
+            if "meta" not in parsed:
+                raise ValueError(f"skill not found: {name}")
+            meta = parsed["meta"]
+            meta["version"] = max(self._normalized_version(meta), base) + 1
+            from datetime import datetime, timezone
+
+            meta["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            frontmatter = yaml.safe_dump(
+                meta, allow_unicode=True, sort_keys=False).strip()
+            p.write_text(f"---\n{frontmatter}\n---\n\n{parsed['body']}\n",
+                         encoding="utf-8")
+
+        result = self.git.rollback_tree(
+            self.skill_dir(name), sha,
+            message or f"skills: rollback {name} to {sha[:8]}",
+            transform=_bump,
+            trailers={"Generator": "skills.rollback", "Approved-by": actor},
+        )
+        if result.get("rolled_back"):
+            result["entry"] = self.read_skill(name)
+        return result
+
+    # ── Git versioning helper ─────────────────────────────
+
+    def _skill_files(self, name: str) -> list[Path]:
+        """该 skill 目录下参与版本化的文件:SKILL.md + 各语言覆盖文件。"""
+        d = self.skill_dir(name)
+        files = [d / "SKILL.md", *sorted(d.glob("SKILL.*.md"))]
+        return [p for p in files if p.exists()]
+
+    def _commit(self, action: str, name: str, entry: dict | None, *,
+                deleted: bool = False, actor: str = "") -> dict:
+        """写路径自动版本化:一次治理变更 = 一条 commit(尽力而为)。
+
+        守卫与 KB 写路径同源(同一个 ``GitVersioning``):只暂存点名文件
+        (删除走目录作用域)、没仓库/没改动/提交失败一律降级 no-op ——
+        **版本化绝不阻断它要记录的那次写入**。
+        """
+        if self.git is None:
+            return {"committed": False, "reason": "disabled"}
+        version = (entry or {}).get("version")
+        message = f"skills: {action} {name}" + (f" v{version}" if version else "")
+        trailers = {"Generator": f"skills.{action}", "Approved-by": actor}
+        if deleted:
+            return self.git.commit_dir_removed(
+                self.skill_dir(name), message, trailers=trailers)
+        return self.git.commit_files(
+            self._skill_files(name), message, trailers=trailers)
 
     # ── Body / rendering ──────────────────────────────────
 
@@ -557,7 +722,17 @@ class SkillService:
 
         ``skill_ctx`` 由装配处递入(``state.skill_ctx()``);缺省时除 ``lang``
         外的维度都不匹配 —— 收窄声明保守不命中,而不是放行。
+
+        总开关停用时按"取不到"回答(报错文本而不是抛):广告已经不出,按名
+        直取同样必须停 —— 否则一条被记住的名字就是绕过管理员开关的后门。
         """
+        if not self._org_enabled():
+            return (
+                "Org skills are disabled by the administrator "
+                "(agent.extensions.org_extensions_enabled=false) — skill "
+                "bodies are not delivered while the org extension surface "
+                "is switched off."
+            )
         entry = self.read_skill(name)
         if entry is None:
             return f"Skill not found: {name}"
@@ -648,7 +823,11 @@ class SkillService:
 
         除 ``node`` 外的触发维度(``role`` / ``lang`` / ``complexity`` /
         ``datasource`` / ``intent``)照旧参与筛选;``node`` 省略照旧命中。
+
+        总开关停用 → 空列表:断言是组织扩展的消费面之一,停用即一条都不跑。
         """
+        if not self._org_enabled():
+            return []
         out: list[dict] = []
         for entry in self.list_org(confirmed_only=True):
             if entry.get("tier") != "validator":
@@ -673,11 +852,16 @@ class SkillService:
         confirmed org skills at ``tier: required`` are injected in full;
         ``available`` org skills are NOT injected here (single-shot nodes have
         no tool loop) — they are advertised in ``available_skills_block``.
+
+        总开关停用 → org 层短路(**code skills 照常**:它们随代码走,不属于
+        组织扩展这一层)。开关每问现读,无需重启。
         """
         blocks = []
         code = _code_render(node, lang=lang, **ctx)
         if code:
             blocks.append(code)
+        if not self._org_enabled():
+            return "\n\n".join(blocks)
         # lang 被 render_skills 的具名形参吃掉了,不在这里补回,它的 ctx 值恒为
         # None —— 「只对中文问题挂」这类 trigger 会静默失效。
         for entry in self._match_org(node, lang=lang, **ctx):
@@ -694,6 +878,8 @@ class SkillService:
 
     def available_descriptions(self, node: str, **ctx: object) -> list[dict]:
         """Confirmed ``available``-tier org skills applying to ``node``."""
+        if not self._org_enabled():
+            return []
         return [e for e in self._match_org(node, **ctx)
                 if e.get("tier") == "available"]
 
@@ -706,7 +892,12 @@ class SkillService:
         ctx here would make the registration gate narrower than the
         advertisement, so a ``{node, lang: zh}`` skill would be named in the
         prompt while the tool it names was never registered.
+
+        总开关停用 → False:``load_skill`` 工具根本不注册(广告与工具一起
+        消失,不留一个点名字才报错的空工具)。
         """
+        if not self._org_enabled():
+            return False
         return any(
             self._applies_to(e, node)
             for e in self.list_org(confirmed_only=True)

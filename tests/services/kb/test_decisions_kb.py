@@ -176,3 +176,61 @@ class TestLintGate:
         other.parent.mkdir(parents=True)
         other.write_text("not: yaml: at: all\n", encoding="utf-8")
         assert kb.decisions_lint("demo")([other]) == []
+
+
+def _git(repo, *args: str):
+    import os
+    import subprocess
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+
+@pytest.fixture
+def git_kb(tmp_path):
+    """KB 目录落在 git 工作树里(写路径自动版本化的真实宿主)。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Tester")
+    _git(repo, "config", "user.email", "tester@local")
+    return KbService(repo / "proj"), repo
+
+
+class TestSaveIsVersioned:
+    """decisions.yml 的保存进 git 史(与 org skills 同一套 GitVersioning)
+    —— 回滚点因此存在,「这条判定按哪一版规则判的」有史可查。"""
+
+    async def test_save_commits_decisions_only(self, git_kb):
+        kb, repo = git_kb
+        d = kb.kb_dir / "demo"
+        d.mkdir(parents=True)
+        (d / "semantics.yml").write_text("semantic_model: []\n", encoding="utf-8")
+
+        await kb.save_decisions("demo", DecisionDoc(rules=[parse_rule(RULE)]))
+
+        history = await kb.git_history("demo")
+        assert [h["subject"] for h in history] == [
+            "kb: update decision rules (1 rule(s))"]
+        # 只暂存点名文件:邻居的未提交改动不被卷进这条"规则变更"提交
+        stat = _git(repo, "show", "--stat", "--format=", "HEAD").stdout
+        assert "decisions.yml" in stat
+        assert "semantics.yml" not in stat
+        assert "semantics.yml" in _git(repo, "status", "--porcelain").stdout
+
+    async def test_rollback_restores_the_rule_that_judged(self, git_kb):
+        kb, _ = git_kb
+        await kb.save_decisions("demo", DecisionDoc(rules=[parse_rule(RULE)]))
+        first = (await kb.git_history("demo"))[0]["sha"]
+        await kb.save_decisions("demo", DecisionDoc(
+            rules=[parse_rule({**RULE, "name": "改过名字的规则"})]))
+        assert kb.load_decisions("demo").rules[0].name == "改过名字的规则"
+
+        result = await kb.git_rollback("demo", first)
+
+        assert result["rolled_back"] is True
+        assert kb.load_decisions("demo").rules[0].name == "贷款余额环比下滑"
+        # 回滚不改写历史:它自己也是一条提交
+        assert "kb rollback" in (await kb.git_history("demo"))[0]["subject"]

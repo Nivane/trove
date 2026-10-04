@@ -296,6 +296,31 @@ class ActionConfig:
 
 
 @dataclass
+class ExtensionsConfig:
+    """扩展面治理开关(``agent.extensions.*`` —— 管理端可配,默认全开)。
+
+    ``org_extensions_enabled`` 是**单个总开关**,只停「组织扩展」这一层:
+
+    - org skills(``.trove/skills/``)的注入与 ``load_skill`` 广告;
+    - validator 断言(``validators_for`` —— 结果域断言在 validate 节点运行);
+    - 决策规则的**执行**(``DecisionService`` 评估入口;规则文件与编辑面照常)。
+
+    **code skills(``trove/prompts/skills/``)/ KB / few-shots 一律不动** ——
+    它们是随代码发布的产品默认,不是组织资产;一个停组织扩展的开关顺手
+    把内置方法论也停了,「停用」与「功能破坏」就分不清了。
+
+    停用的是**消费面**而不是写入面:停用期间管理员照常起草/确认/编辑,
+    重新打开后下一问即生效(消费点每问现读,无缓存)。
+
+    ``DecisionService`` 侧有额外一条响度纪律:停用中定时决策任务**报错**
+    (「已停用」),绝不静默按零规则通过 —— 一个安静跑着的健康态与一个
+    被关掉的判定,从运行记录上看必须不一样。
+    """
+
+    org_extensions_enabled: bool = True
+
+
+@dataclass
 class AgentConfig:
     """Top-level agent configuration."""
 
@@ -383,6 +408,9 @@ class AgentConfig:
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     # 行动层:提案/审批/外送(默认关闭)。见 ActionConfig。
     action: ActionConfig = field(default_factory=ActionConfig)
+    # 扩展面治理:组织扩展(org skills / validator / 决策规则执行)总开关,
+    # 默认开。见 ExtensionsConfig。
+    extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)
     # 离线评测回归门配置(opt-in;默认不进 CI)。见 EvalConfig。
     eval: EvalConfig = field(default_factory=EvalConfig)
     # 执行前授权门:表级判定的档位 + 是否要求主体。见 AuthzConfig(默认 warn)。
@@ -689,6 +717,14 @@ class ConfigLoader:
                 authz_raw.get("table_enforcement", "enforce")).strip().lower(),
             require_principal=bool(authz_raw.get("require_principal", True)),
         )
+        # 扩展面治理(org skills / validator / 决策规则执行的总开关)。
+        # 与 authz/masking/assets 同款:顶层与 ``agent:`` 内嵌两种写法都认 ——
+        # 只认一种会让另一种静默失效。默认 True(与 ExtensionsConfig 逐字一致)。
+        ext_raw = resolved.get("extensions", {}) or agent_section.get("extensions", {}) or {}
+        extensions_conf = ExtensionsConfig(
+            org_extensions_enabled=bool(
+                ext_raw.get("org_extensions_enabled", True)),
+        )
         masking_raw = resolved.get("masking", {}) or agent_section.get("masking", {}) or {}
         masking_conf = MaskingConfig(
             enabled=bool(masking_raw.get("enabled", True)),
@@ -753,6 +789,7 @@ class ConfigLoader:
             analysis=analysis_conf,
             decision=decision_conf,
             action=action_conf,
+            extensions=extensions_conf,
             eval=eval_conf,
             budget=budget_conf,
             authz=authz_conf,

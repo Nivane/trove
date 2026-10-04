@@ -151,6 +151,27 @@ class SkillTierUpdate(BaseModel):
     tier: Literal["required", "available"]
 
 
+class SkillBodyUpdate(BaseModel):
+    """PUT /v1/admin/skills/{name}/body — 整篇替换正文(frontmatter 不动)。
+
+    正文重写是内容变更:修订号 +1,并自动提交一条 ``skills: body <name>``
+    的 git commit(审计史即回滚点)。
+    """
+
+    body: str = Field(min_length=1)
+
+
+class SkillRollbackRequest(BaseModel):
+    """POST /v1/admin/skills/{name}/rollback — 回滚到指定历史 commit。
+
+    回滚以**一条新 commit** 落盘(历史不改写),修订号继续前进;
+    ``message`` 留空时服务端生成 ``skills: rollback <name> to <sha8>``。
+    """
+
+    sha: str = Field(min_length=1)
+    message: str = ""
+
+
 class FactCreate(BaseModel):
     """POST /v1/facts body — user-level memory (preference / caliber)."""
 

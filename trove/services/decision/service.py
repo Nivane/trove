@@ -143,11 +143,15 @@ class DecisionService:
 
     def __init__(
         self, connectors, kb, semantic_dir: str | Path | None = None,
-        *, timeout_ms: int = 30_000,
+        *, timeout_ms: int = 30_000, config: Any = None,
     ):
         self.connectors = connectors
         self.kb = kb
         self._semantic_dir = Path(semantic_dir) if semantic_dir is not None else None
+        # 扩展面治理开关的宿主(``AgentConfig``,与 SkillService 同一把)。
+        # 这里存的是**活对象引用**:管理端改开关就地生效,评估时现读 ——
+        # 不做构造期快照。不传(旧构造点/单测)→ 视为开启。
+        self.config = config
         # 单条 SQL 的执行预算(毫秒),与交互管线同一个 ``budget.timeout_ms``。
         # 定时任务没有人在等,一条无界的查询会把这次 run(job 的 schedule)永远
         # 吊在那里;写错/非正数 → 回到缺省,不静默变成"无超时"。
@@ -156,6 +160,17 @@ class DecisionService:
         except (TypeError, ValueError):
             ms = 0
         self._timeout_ms = ms if ms > 0 else 30_000
+
+    def _org_enabled(self) -> bool:
+        """组织扩展总开关 —— **每次评估现读**(热生效,无缓存)。
+
+        ``agent.extensions.org_extensions_enabled``(默认 true)同管
+        org skills 与决策规则:规则是组织扩展的一个消费面,停用即不执行。
+        """
+        ext = getattr(self.config, "extensions", None)
+        if ext is None:
+            return True
+        return bool(getattr(ext, "org_extensions_enabled", True))
 
     # ── model / dialect resolution ────────────────────────
 
@@ -361,7 +376,18 @@ class DecisionService:
         needs it, because for a decision run the evidence *is* the audit
         trail: without it, "this fired on the 10% threshold" is unanswerable
         once the threshold is edited.
+
+        **总开关停用时抛 ``DecisionError``(响)**,绝不返回"零规则通过":
+        ``evaluate`` 把它折成 ``error``,runner 记 status=error —— 一条停用
+        中的定时决策任务必须报「已停用」,静默的绿色 run 与健康运行从外部
+        看没有区别(与模块 docstring 的"失败必响"同一条纪律)。
         """
+        if not self._org_enabled():
+            raise DecisionError(
+                "org extensions are disabled "
+                "(agent.extensions.org_extensions_enabled=false) — "
+                "组织扩展已停用,decision rules 不执行(这不是一条通过的判定)。"
+            )
         # Lint blocks this at the write time, but a hand-edited decisions.yml
         # reaches here un-linted, and the failure mode is a rule that reads
         # Unknown forever — indistinguishable from "nothing wrong today".
