@@ -189,6 +189,50 @@ function budgetOf(
   return { used: b.used, limit: b.limit }
 }
 
+/** 因果升级梯(B3):无 rung 则整节不渲染(R1:梯子必须显式出现,
+ *  宁可不显示结论,也不显示一个看不出硬度的结论)。 */
+function causalOf(v: VerdictDetail): Record<string, unknown> | null {
+  const c = evidenceOf(v).causal
+  if (!c || typeof c !== 'object') return null
+  const m = c as Record<string, unknown>
+  return typeof m.rung === 'string' && m.rung ? m : null
+}
+
+function causalRows(
+  v: VerdictDetail,
+  key: string,
+): Record<string, unknown>[] {
+  const rows = causalOf(v)?.[key]
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : []
+}
+
+/** 净效应行:有效应量才出现(与后端消息的「净效应」后缀同判据)。 */
+function causalEffectOf(
+  v: VerdictDetail,
+): { effect: number; design: string; crosses: boolean | null } | null {
+  const c = causalOf(v)
+  const src = c?.rung === 'L3' ? c.synthetic : c?.rung === 'L2' ? c.did : null
+  const s = src && typeof src === 'object' ? (src as Record<string, unknown>) : null
+  if (!s) return null
+  const effect = typeof s.effect === 'number'
+    ? s.effect
+    : typeof s.att === 'number' ? s.att : null
+  if (effect === null) return null
+  return {
+    effect,
+    design: t(
+      c!.rung === 'L3' ? 'decisionsCausalSynthetic' : 'decisionsCausalDid',
+      ui.lang,
+    ),
+    crosses: typeof s.crosses_zero === 'boolean' ? s.crosses_zero : null,
+  }
+}
+
+/** 假设条目的三态:✓ 已检验 / — 无法检验(写出来而非省略)/ ✗ 不成立。 */
+function checkedMark(v: unknown): string {
+  return v === true ? '✓' : v === false ? '✗' : '—'
+}
+
 function num2(v: unknown): string {
   const n = typeof v === 'number' ? v : null
   return n === null ? '—' : n.toFixed(2)
@@ -424,15 +468,89 @@ function pct(v: unknown): string {
                   {{ t('decisionsBandDegraded', ui.lang) }} · {{ d.reason }}
                 </li>
               </ul>
-              <!-- 查询账目:这次判定花了几条、花在哪。让路(yield)的原因在
-                   上面的 degraded 里,这里只给总量。 -->
-              <p
-                v-if="budgetOf(evidenceOf(details[v.id]))"
-                class="dim vh-residual cell-mono"
-              >
-                {{ t('decisionsBudget', ui.lang) }}
-                {{ budgetOf(evidenceOf(details[v.id]))!.used }}/{{ budgetOf(evidenceOf(details[v.id]))!.limit }}
+            </div>
+
+            <!-- 查询账目:这次判定花了几条、花在哪。让路(yield)的原因在
+                 degraded 里,这里只给总量。显著性/因果任一在场即有账本
+                 —— 所以它站在两节之外,不被其中任一节的缺席藏掉。 -->
+            <p
+              v-if="budgetOf(evidenceOf(details[v.id]))"
+              class="dim vh-residual cell-mono"
+            >
+              {{ t('decisionsBudget', ui.lang) }}
+              {{ budgetOf(evidenceOf(details[v.id]))!.used }}/{{ budgetOf(evidenceOf(details[v.id]))!.limit }}
+            </p>
+
+            <!-- 因果升级梯(B3):声明了 causal 的规则才有这一节,无 rung
+                 则整节不渲染(R1:梯子显式出现,否则不显示结论)。unmet
+                 带实测/阈值、assumptions 三态、degraded 全部必须可见 ——
+                 「结论有多硬、差在哪」正是这一节存在的意义。 -->
+            <div v-if="causalOf(details[v.id])" class="vh-sec">
+              <div class="vh-sec-title">{{ t('decisionsCausal', ui.lang) }}</div>
+              <p class="dim vh-residual">
+                {{ causalOf(details[v.id])!.note }}
               </p>
+              <p class="vh-residual">
+                <span class="cell-mono">
+                  {{ t('decisionsCausalRung', ui.lang) }}
+                  {{ causalOf(details[v.id])!.rung }}
+                </span>
+                <template v-if="causalEffectOf(details[v.id])">
+                  · {{ t('decisionsCausalNet', ui.lang) }}
+                  <span class="cell-mono">
+                    {{ fmtVal(causalEffectOf(details[v.id])!.effect) }}
+                  </span>
+                  ({{ causalEffectOf(details[v.id])!.design }}<template
+                    v-if="causalEffectOf(details[v.id])!.crosses !== null"
+                  >,{{ causalEffectOf(details[v.id])!.crosses
+                    ? t('decisionsCausalCrosses', ui.lang)
+                    : t('decisionsCausalNotCrosses', ui.lang) }}</template>)
+                </template>
+              </p>
+              <ul
+                v-if="causalRows(details[v.id], 'unmet').length"
+                class="vh-degraded"
+              >
+                <li
+                  v-for="(u, i) in causalRows(details[v.id], 'unmet')"
+                  :key="i"
+                  class="cell-mono"
+                >
+                  {{ t('decisionsCausalUnmet', ui.lang) }} · {{ u.condition }}: {{ u.reason }}
+                  <template v-if="u.measured != null && u.threshold != null">
+                    ({{ t('decisionsCausalMeasured', ui.lang) }} {{ num2(u.measured) }}
+                    / {{ t('decisionsCausalThreshold', ui.lang) }} {{ num2(u.threshold) }})
+                  </template>
+                </li>
+              </ul>
+              <template v-if="causalRows(details[v.id], 'assumptions').length">
+                <div class="vh-sec-title">
+                  {{ t('decisionsCausalAssumptions', ui.lang) }}
+                </div>
+                <ul class="vh-comps">
+                  <li
+                    v-for="(a, i) in causalRows(details[v.id], 'assumptions')"
+                    :key="i"
+                  >
+                    <span class="cell-mono">{{ checkedMark(a.checked) }}</span>
+                    <span class="dim">
+                      · {{ a.text }}<template v-if="a.detail">（{{ a.detail }}）</template>
+                    </span>
+                  </li>
+                </ul>
+              </template>
+              <ul
+                v-if="causalRows(details[v.id], 'degraded').length"
+                class="vh-degraded"
+              >
+                <li
+                  v-for="(d, i) in causalRows(details[v.id], 'degraded')"
+                  :key="i"
+                  class="cell-mono"
+                >
+                  {{ t('decisionsCausalDegraded', ui.lang) }} · {{ d.reason }}
+                </li>
+              </ul>
             </div>
           </template>
         </div>

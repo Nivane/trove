@@ -327,6 +327,91 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
     expect(view.text()).not.toContain('Position')
   })
 
+  it('renders the causal ladder: rung, unmet with measured/threshold, assumptions', async () => {
+    // 声明了 causal 的判定:证据里多出 causal 节。梯级、未升级原因(带
+    // 实测/阈值)、假设三态(✓/—/✗,「无法检验」写出来)、降级全部必须
+    // 可见 —— 这一节存在的意义就是让结论的硬度可审计。账本此时没有
+    // significance 作伴,仍须出现(它是两条产线的公共节)。
+    const causal: VerdictDetail = {
+      verdict: {
+        ...brief(),
+        evidence: {
+          ...DETAIL.verdict.evidence,
+          causal: {
+            mode: 'auto',
+            placebo_blocks: 4,
+            tolerance: 0.1,
+            control_declared: { dim: 'region', value: '华北' },
+            note: '净效应是条件式反事实估计(升级梯逐条检验,见 assumptions),不是实验结论;不进入触发判定。',
+            rung: 'L2',
+            unmet: [{ condition: 'C6', reason: 'fit_too_poor',
+                      measured: 0.152381, threshold: 0.1 }],
+            assumptions: [
+              { text: '平行趋势(前窗 placebo DiD 不显著)', checked: true,
+                detail: 'max|did|=5.00 ≤ 11.00(4 对前窗)' },
+              { text: '无同期其他冲击', checked: null,
+                detail: '无数据可检验,列出以显式化' },
+            ],
+            degraded: [{ stage: 'causal', reason: 'donors:treated_unidentified' }],
+            did: { att: 85.25, treated_delta: 85.25, control_delta: 0.0,
+                   se: 5.77, crosses_zero: false },
+          },
+          budget: { limit: 12, used: 6, by_stage: { judge: 2, causal: 2 }, yielded: [] },
+        },
+      },
+      diff: null,
+    }
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],
+    })
+    vi.mocked(fetchVerdict).mockResolvedValue(causal)
+    const view = await mountDrawer()
+    await view.find('.vh-row').trigger('click')
+    await flushPromises()
+
+    const text = view.text()
+    expect(text).toContain('Causal ladder')
+    expect(text).toContain('L2')                 // 梯级必须显式出现
+    expect(text).toContain('Net effect')
+    expect(text).toContain('85.25')              // 净效应量
+    expect(text).toContain('DiD')
+    expect(text).toContain('interval excludes zero')
+    expect(text).toContain('Not upgraded')
+    expect(text).toContain('C6')                 // 卡在哪个条件
+    expect(text).toContain('fit_too_poor')
+    expect(text).toContain('0.15')               // 实测
+    expect(text).toContain('0.10')               // 阈值
+    expect(text).toContain('✓')                  // 已检验
+    expect(text).toContain('—')                  // 无法检验(显式写出)
+    expect(text).toContain('treated_unidentified') // 降级必须可见
+    expect(text).toContain('Query ledger')       // 无 significance 也出账本
+    expect(text).toContain('6/12')
+  })
+
+  it('a causal payload without a rung renders no section', async () => {
+    // R1:梯子必须显式出现。rung 缺失时宁可不渲染这一节,也不渲染一个
+    // 看不出硬度的结论。
+    const rungless: VerdictDetail = {
+      verdict: {
+        ...brief(),
+        evidence: {
+          ...DETAIL.verdict.evidence,
+          causal: { mode: 'auto', degraded: [] },
+        },
+      },
+      diff: null,
+    }
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],
+    })
+    vi.mocked(fetchVerdict).mockResolvedValue(rungless)
+    const view = await mountDrawer()
+    await view.find('.vh-row').trigger('click')
+    await flushPromises()
+
+    expect(view.text()).not.toContain('Causal ladder')
+  })
+
   it('collapses the detail on a second click without refetching', async () => {
     vi.mocked(fetchVerdicts).mockResolvedValue({
       datasource: 'demo', rule_id: 'loan-drop', count: 1, verdicts: [brief()],
