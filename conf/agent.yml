@@ -49,6 +49,17 @@ agent:
   #   max_dimensions: 3
   #   probe_dimensions: true   # 数据驱动维度预选(≥2 维时按 Σ|delta| 选主拆维度)
   #   ratio_decomposition: true  # 比率指标 shift-share 分解(本征/结构/交叉)
+  # 分析服务扩展预算(驱动器树 + 块序列;B8 接线):
+  #   series_grain 留空(默认)= 块序列阶段整体关闭 —— 老路径逐字节不变。
+  #   非空时归因节点额外发 1 条 time_grain 查询取历史块分布(噪声带/稳健 z),
+  #   答案出「噪声带」段、前端分析卡出对应节;不足 8 块的分布退化为 degraded
+  #   并如实标注(块数不够 ≠ 没有结论,但带只作参考)。
+  # analysis:
+  #   driver_tree: true
+  #   max_components: 4
+  #   max_queries: 12
+  #   series_grain: ""         # day | week | month;"" = 关闭
+  #   block_lookback: 12       # 回看的历史块数上限
   # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
   # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
   # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。

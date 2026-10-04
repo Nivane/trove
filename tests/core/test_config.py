@@ -343,6 +343,36 @@ class TestModelTiering:
         assert config.attribution.probe_dimensions is False
         assert config.attribution.ratio_decomposition is False
 
+    def test_analysis_series_defaults_off(self):
+        """块序列默认关(series_grain 空)—— 老路径逐字节不变的前提。"""
+        cfg = AgentConfig()
+        assert cfg.analysis.series_grain == ""
+        assert cfg.analysis.block_lookback == 12
+
+    def test_analysis_series_loaded_from_yaml(self, tmp_path):
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n"
+            "  target: mock/model\n"
+            "  analysis:\n"
+            "    series_grain: Month\n"          # 大小写/空白都归一
+            "    block_lookback: 24\n"
+        )
+        cfg = ConfigLoader.load_agent_config(str(config_file))
+        assert cfg.analysis.series_grain == "month"
+        assert cfg.analysis.block_lookback == 24
+
+    def test_analysis_unknown_grain_folds_to_off(self, tmp_path):
+        """错拼的粒度不假装序列开着(引擎侧只会得到 no_blocks 降级,
+        不如在这里归空)—— 一个假开着的配置比一条报错更难查。"""
+        config_file = tmp_path / "agent.yml"
+        config_file.write_text(
+            "agent:\n  target: mock/model\n"
+            "  analysis:\n    series_grain: quarterly\n",
+        )
+        assert ConfigLoader.load_agent_config(
+            str(config_file)).analysis.series_grain == ""
+
     @pytest.mark.parametrize("model_fast,complexity,expected", [
         ("", "simple", "mock/target"),            # 未配置 fast → 不分档
         ("", "complex", "mock/target"),

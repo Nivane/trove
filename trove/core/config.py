@@ -220,11 +220,17 @@ class AnalysisConfig:
     ``max_components``: 树里可执行组件数上限(超出截断,degraded 记账)。
     ``max_queries``: 驱动器树阶段的双期查询预算上限(每期一条多度量
       SQL;超预算 → 树只留骨架 + degraded 记账,老跳不受影响)。
+    ``series_grain``: 块序列(噪声带)的块粒度 day/week/month;留空(默认)
+      = 序列阶段整体关闭,老路径逐字节不变 —— 与全仓「默认关」纪律一致。
+    ``block_lookback``: 块序列回看的历史块数上限(分布样本量);不足
+      ``stats.MIN_BLOCKS`` 时带退化为 degraded,渲染面如实标注。
     """
 
     driver_tree: bool = True
     max_components: int = 4
     max_queries: int = 12
+    series_grain: str = ""
+    block_lookback: int = 12
 
 
 @dataclass
@@ -679,10 +685,17 @@ class ConfigLoader:
 
         # Parse analysis (driver tree budgets; nested under agent: like attribution)
         analysis_raw = agent_section.get("analysis", {}) or {}
+        series_grain = str(analysis_raw.get("series_grain", "") or "").strip().lower()
+        if series_grain not in ("", "day", "week", "month"):
+            # 未知粒度不静默接受:引擎侧只会得到 no_blocks 降级,不如在这里
+            # 就归空(= 关闭序列阶段)——一个错拼的粒度不该假装序列开着。
+            series_grain = ""
         analysis_conf = AnalysisConfig(
             driver_tree=bool(analysis_raw.get("driver_tree", True)),
             max_components=max(1, int(analysis_raw.get("max_components", 4))),
             max_queries=max(1, int(analysis_raw.get("max_queries", 12))),
+            series_grain=series_grain,
+            block_lookback=max(0, int(analysis_raw.get("block_lookback", 12))),
         )
 
         # Parse decision layer (verdict history retention; agent.decision.*).

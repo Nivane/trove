@@ -25,6 +25,7 @@ from trove.workflow.intent import (
 from trove.workflow.nodes.attribution import (
     _base_period,
     _contribution,
+    _limits_from_config,
     _metric_ratio_parts,
     _ratio_share,
     _shift_share,
@@ -1074,3 +1075,26 @@ class TestInteractiveHypotheses:
         assert len(section["verified"]) == 1
         assert section["rejected"][0]["reason"] == "over_limit"
         assert section["queries"] == 2                      # 只有一条吃掉预算
+
+
+class TestLimitsFromConfig:
+    """``_limits_from_config`` 的映射(B8 块序列接线)。
+
+    「加载器不读 = 配置永远不生效」的姊妹纪律:加载器读了、映射没写,
+    同样等于没接 —— 两侧各有一只测试钉住。
+    """
+
+    def test_series_keys_mapped_from_config(self):
+        from trove.core.config import AnalysisConfig
+
+        cfg = AgentConfig(analysis=AnalysisConfig(
+            series_grain="month", block_lookback=24))
+        limits = _limits_from_config(cfg)
+        assert limits.series_grain == "month"
+        assert limits.block_lookback == 24
+
+    def test_defaults_keep_the_series_stage_off(self):
+        limits = _limits_from_config(AgentConfig())
+        assert limits.series_grain == ""
+        assert limits.block_lookback == 12
+        assert limits.total_query_budget is None     # 老路径不设上限
