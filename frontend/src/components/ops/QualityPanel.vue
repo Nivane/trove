@@ -43,6 +43,8 @@ const emit = defineEmits<{ (e: 'retry'): void }>()
 const ui = useUiStore()
 const PAGE_SIZE = 20
 
+type I18nKey = Parameters<typeof t>[0]
+
 /* 失败清单的筛选/排序/翻页 —— 全部住在 URL 里。 */
 const { values, isActive: isFiltered, reset: resetFilters } = useListQuery({
   q: '',
@@ -161,6 +163,62 @@ function artifactSub(a: OpsArtifact | null): string {
     a.kind,
   ].filter(Boolean)
   return parts.join(' · ')
+}
+
+/* ── 判定质量全局面(B8)─────────────────────────────────────────
+ * 整块拿不到(store 未装配/枚举失败 → decisions = null)就不渲染 ——
+ * 缺席容忍;跨源只给总量,per-rule 明细在「决策」页。 */
+
+interface DecisionRow {
+  datasource: string
+  buckets: number
+  ok: number
+  alert: number
+  error: number
+  triggered_rate: number | null
+  decided: number
+  effective: number
+  effective_rate: number | null
+  /** 不足原因已译人话(与决策页同一套键);空串 = 没不足。 */
+  insufficient: string
+}
+
+const decisions = computed(() => props.data?.decisions ?? null)
+
+/** 每源一行(扁平化 —— DataTable 的键是平的;比率不足的成因原样带上)。 */
+const decisionRows = computed<DecisionRow[]>(() =>
+  (decisions.value?.reports ?? []).map((r) => ({
+    datasource: r.datasource,
+    buckets: r.summary.buckets,
+    ok: r.summary.ok,
+    alert: r.summary.alert,
+    error: r.summary.error,
+    triggered_rate: r.summary.triggered_rate,
+    decided: r.summary.decided,
+    effective: r.summary.effects.effective,
+    effective_rate: r.summary.effective_rate,
+    insufficient: r.summary.insufficient.map(insuffLabel).join(' / '),
+  })),
+)
+
+const decisionColumns = computed<DataTableColumn[]>(() => [
+  { key: 'datasource', label: t('opsDecisionsSource', ui.lang), mono: true },
+  { key: 'buckets', label: t('opsDecisionsBuckets', ui.lang), width: 110, numeric: true },
+  { key: 'ok', label: t('opsDecisionsVerdicts', ui.lang), width: 170 },
+  { key: 'triggered_rate', label: t('opsDecisionsTriggeredRate', ui.lang), width: 110, numeric: true },
+  { key: 'effective_rate', label: t('opsDecisionsEffectiveRate', ui.lang) },
+])
+
+/** 不足原因 → 展示词(复用决策页的键:同一概念一份措辞)。 */
+const INSUFF_KEY: Record<string, I18nKey> = {
+  few_verdicts: 'decisionsQualityFewVerdicts',
+  few_effects: 'decisionsQualityFewEffects',
+  no_effects: 'decisionsQualityNoEffects',
+}
+
+function insuffLabel(code: string): string {
+  const key = INSUFF_KEY[code]
+  return key ? t(key, ui.lang) : code
 }
 
 /** 两张产物卡片:{当前, 基线} —— 逐字段渲染同一形状。 */
@@ -289,6 +347,73 @@ function openFailure(row: unknown) {
             n
           }}</span>
         </div>
+      </section>
+
+      <!-- 判定质量全局面(拿不到不整节渲染;跨源只给总量,明细在决策页) -->
+      <section v-if="decisions" class="ops-card decisions-card">
+        <header class="card-head">
+          <h3 class="card-title">{{ t('opsDecisionsTitle', ui.lang) }}</h3>
+          <span class="fail-count">
+            {{ t('opsDecisionsSources', ui.lang, decisions.datasources) }}
+          </span>
+        </header>
+        <p class="ops-note decisions-desc">{{ t('opsDecisionsDesc', ui.lang) }}</p>
+        <div class="artifact-kpis">
+          <KpiTile
+            :label="t('opsDecisionsVerdicts', ui.lang)"
+            :value="decisions.summary.total"
+          />
+          <KpiTile
+            :label="t('opsDecisionsTriggeredRate', ui.lang)"
+            :value="pct(decisions.summary.triggered_rate)"
+          />
+          <KpiTile
+            :label="t('opsDecisionsMeasured', ui.lang)"
+            :value="decisions.summary.effects.measured"
+          />
+          <KpiTile
+            :label="t('opsDecisionsEffectiveRate', ui.lang)"
+            :value="pct(decisions.summary.effective_rate)"
+          />
+        </div>
+        <div v-if="decisions.summary.insufficient.length" class="gate-notes">
+          <span class="gate-notes-label">{{ t('decisionsQualityRateGated', ui.lang) }}:</span>
+          <span v-for="c in decisions.summary.insufficient" :key="c" class="gate-note-chip">
+            {{ insuffLabel(c) }}
+          </span>
+        </div>
+        <p v-if="!decisionRows.length" class="ops-note">{{ t('opsDecisionsEmpty', ui.lang) }}</p>
+        <DataTable
+          v-else
+          class="decisions-table"
+          :columns="decisionColumns"
+          :rows="decisionRows"
+          row-key="datasource"
+        >
+          <template #cell-ok="{ row }">
+            <span class="decisions-counts">
+              {{ (row as DecisionRow).ok }} /
+              <span class="delta-down">{{ (row as DecisionRow).alert }}</span> /
+              <span class="delta-down decisions-count-error">{{
+                (row as DecisionRow).error
+              }}</span>
+            </span>
+          </template>
+          <template #cell-triggered_rate="{ value }">
+            {{ pct(value as number | null) }}
+          </template>
+          <template #cell-effective_rate="{ row }">
+            <span v-if="(row as DecisionRow).effective_rate != null" class="decisions-counts">
+              {{ pct((row as DecisionRow).effective_rate) }}
+            </span>
+            <!-- 分母不够就不给比率;说清为什么(与决策页同一纪律) -->
+            <span v-else class="decisions-gated">
+              {{ t('decisionsQualityRateGated', ui.lang)
+              }}<template v-if="(row as DecisionRow).insufficient">
+                · {{ (row as DecisionRow).insufficient }}</template>
+            </span>
+          </template>
+        </DataTable>
       </section>
 
       <!-- 失败清单 -->
@@ -566,6 +691,22 @@ function openFailure(row: unknown) {
 }
 .ops-note {
   margin: var(--sp-2) 0 0;
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+}
+.decisions-desc {
+  margin: 0 0 var(--sp-2);
+}
+.decisions-table {
+  margin-top: var(--sp-2);
+}
+.decisions-counts {
+  font-variant-numeric: tabular-nums;
+}
+.decisions-count-error {
+  font-weight: 600;
+}
+.decisions-gated {
   font-size: var(--fs-2xs);
   color: var(--text-tertiary);
 }
