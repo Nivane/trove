@@ -250,6 +250,17 @@ class WorkflowState(BaseModel):
     # Context budget usage of the last gen pass (observability)
     context_usage: list[dict[str, Any]] = Field(default_factory=list)
 
+    # 装配 dump 的 blocks 节:上一轮 gen_assemble 的逐块逐项装配元数据
+    # (name/tokens/truncated/items[{ref,tokens,truncated}]),gen_generate 再
+    # 追加 skill_injections 块。None = 这一问没跑过装配(元数据/反问/拒绝路径)。
+    # 纯 JSON、checkpoint 安全;落盘见 trove/tracing/assembly.py。
+    assembly_blocks: list[dict[str, Any]] | None = None
+
+    # 装配 dump 的 tools 节:上一轮 gen 阶段的工具注册表观测
+    # (name/level/roles/lazy/activated/calls)。**每轮复位**(与 fast_path
+    # 同族:记的是最终交付那条 SQL 的那一轮),None = 没进过 gen 阶段。
+    assembly_tools: list[dict[str, Any]] | None = None
+
     # 稳定可缓存前缀(dialect+schema)的 token 数——prompt caching 观测:
     # 同一数据源+方言下该前缀字节级稳定,跨调用可复用(缓存折扣)。
     cache_prefix_tokens: int = 0
