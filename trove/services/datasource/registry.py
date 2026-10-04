@@ -17,19 +17,9 @@ from trove.core.errors import DatasourceConflictError, DatasourceError
 from trove.core.logging import get_logger
 from trove.core.metrics import record_sql, record_sql_cache_hit
 from trove.services.datasource.adapters.base import DatabaseAdapter
-from trove.services.datasource.adapters.sqlite import SQLiteAdapter
-from trove.services.datasource.adapters.mysql import MySQLAdapter
-from trove.services.datasource.adapters.doris import DorisAdapter
-from trove.services.datasource.adapters.postgres import PostgresAdapter
-from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
-from trove.services.datasource.adapters.duckdb import DuckDBAdapter
 from trove.services.datasource.naming import backfill_ds_id, is_path_safe
 
 logger = get_logger(__name__)
-
-# ── Adapter factory mapping ──────────────────────────────
-# Adapter modules import their drivers lazily, so importing them here
-# never requires the optional extras to be installed.
 
 # Keys that look like credentials — never exposed to the Web UI.
 _SENSITIVE_KEY_RE = re.compile(r"password|passwd|secret|token|credential", re.IGNORECASE)
@@ -45,19 +35,21 @@ def _sanitize_connection(params: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in params.items() if not _SENSITIVE_KEY_RE.search(k)}
 
 
-_ADAPTER_REGISTRY: dict[str, type[DatabaseAdapter]] = {
-    "sqlite": SQLiteAdapter,
-    "mysql": MySQLAdapter,
-    "doris": DorisAdapter,
-    "postgres": PostgresAdapter,
-    "clickhouse": ClickHouseAdapter,
-    "duckdb": DuckDBAdapter,
-    # "snowflake": SnowflakeAdapter,
-}
+# 方言 → 适配器类。**内部状态**:唯一的写入路径是 register_adapter()(内置
+# 方言在文件末尾自注册,外部插件同样经它接入)。此前这里是一份硬编码 dict
+# 加顶部硬 import,而公开的 register_adapter() 全仓零调用——扩展点做成了
+# 形状、没通电:函数在,但没有任何一处代码走它。
+_ADAPTER_REGISTRY: dict[str, type[DatabaseAdapter]] = {}
 
 
 def register_adapter(dialect: str, adapter_cls: type[DatabaseAdapter]) -> None:
-    """Register a new database adapter class for a dialect.
+    """Register a database adapter class for a dialect (**the** entry point).
+
+    新增一个数据源 = 实现 ``DatabaseAdapter`` 的适配器类,然后在
+    ``trove/services/datasource/adapters/`` 里新增模块,并在本文件末尾
+    （或插件入口）调一次本函数——内置的 6 个方言走的就是同一条路径,
+    没有任何"内部第二条注册路径"。同方言重复注册 = 覆盖（幂等,便于
+    测试与插件替换）。
 
     Args:
         dialect: The SQL dialect name (e.g. "postgres").
@@ -493,3 +485,25 @@ class ConnectorRegistry:
         """Disconnect all registered datasources."""
         for name in list(self._adapters.keys()):
             await self.unregister(name)
+
+
+# ── Built-in dialects: self-registration ──────────────────
+# 「新增一个数据源」的落地样板:实现 DatabaseAdapter → 在这里 import +
+# register_adapter 一行(外部插件在任何入口调 register_adapter 等价)。
+# import 刻意放在文件末尾:让「注册机制 + 它注册的 6 个内置项」同处一段,
+# 中间的注册表/执行代码看不到它们。适配器模块各自惰性 import 驱动,所以
+# 这里 import 不需要装可选 extras(per-file E402 见 pyproject 注释)。
+from trove.services.datasource.adapters.sqlite import SQLiteAdapter
+from trove.services.datasource.adapters.mysql import MySQLAdapter
+from trove.services.datasource.adapters.doris import DorisAdapter
+from trove.services.datasource.adapters.postgres import PostgresAdapter
+from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
+from trove.services.datasource.adapters.duckdb import DuckDBAdapter
+
+register_adapter("sqlite", SQLiteAdapter)
+register_adapter("mysql", MySQLAdapter)
+register_adapter("doris", DorisAdapter)
+register_adapter("postgres", PostgresAdapter)
+register_adapter("clickhouse", ClickHouseAdapter)
+register_adapter("duckdb", DuckDBAdapter)
+# register_adapter("snowflake", SnowflakeAdapter)  # 未实现,留作示例
