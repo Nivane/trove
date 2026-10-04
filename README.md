@@ -4,13 +4,13 @@
 
 **问数 · 分析 · 决策 · 行动，一条对话链路。**
 
-*开源、自托管的**数据决策智能体**:自然语言进,验证过的答案出;同一份人工确认的语义模型,既划定可答边界,也支撑零 LLM、带证据的定时判定。*
+*开源、自托管的**数据决策智能体**:自然语言进,验证过的答案出;同一份人工确认的语义模型,既划定可答边界,也支撑零 LLM、带证据、知不确定性的定时判定——以及判定触发后行动的效果验收。*
 
 [English](README.en.md) · [简体中文](README.md)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)]()
-[![Tests](https://img.shields.io/badge/tests-5500%2B-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-7200%2B-brightgreen.svg)]()
 [![Powered by LangGraph](https://img.shields.io/badge/powered_by-LangGraph-black.svg)]()
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-ready-336791.svg)]()
 [![MCP](https://img.shields.io/badge/MCP-server-7c3aed.svg)]()
@@ -29,13 +29,15 @@
 
 ## 它是什么
 
-Trove 是一个**自学习型数据决策智能体**:用自然语言提问,得到由真实 SQL 支撑的 Markdown 答案——执行前与执行后都被验证;当答案只能是猜测时,它会拒绝;同一份语义模型还会被定时求值成带证据的判定,触发即送达——行动发生在你的流程里(系统对业务数据保持只读);每一次提问都会让它变得更好。
+Trove 是一个**自学习型数据决策智能体**:用自然语言提问,得到由真实 SQL 支撑的 Markdown 答案——执行前与执行后都被验证;当答案只能是猜测时,它会拒绝;同一份语义模型还会被定时求值成带证据、知不确定性的判定,触发即送达——行动发生在你的流程里(系统对业务数据保持只读),行动之后还有效果验收;每一次提问都会让它变得更好。
 
 它承诺的不是「永远正确」,而是 **「错了也绝不轻易认输」**:
 
 - **语义层划定边界。** 一份人工确认的语义模型(`semantics.yml`,Apache OSSIE 语义模型)是**唯一可答范围**——业务方已声明的 dataset / metric / field / relationship,仅此而已。模型之外的提问会被拒绝,并附一条一键扩展模型的路径,绝不靠猜裸表作答。
 - **确定性护栏闭环。** 生成的 SQL 要过零 LLM 规则链、AST 防火墙、执行代价守卫,以及带 SQL 版本回归的反思循环。错的答案会被诊断、回滚、纠正,修正本身也被记住。
-- **决策与问数同源。** 阈值规则用语义模型自己的词汇声明指标、窗口与基期,由确定性引擎求值,零 LLM;每次触发都带着它据以判定的 SQL 与原始行。
+- **决策与问数同源,且知道自己有多确定。** 阈值规则用语义模型自己的词汇声明指标、窗口与基期,由确定性引擎求值,零 LLM;每次触发都带着它据以判定的 SQL 与原始行。判定还带一层统计诚实:季节基线做噪声带,样本不足 8 块不予确认,置信度明标「位置分数,非概率」——测不出就说测不出,绝不把「判不了」读成「今天没事」。
+- **分析先统计,后叙事。** 「为什么跌了?」沿指标定义逐层拆解:贡献分解、比率归因与残差如实呈现;显著性、置信与季节基线出自一套纯 stdlib 的统计器械——可复算、可种子重放,结论永远能被重新算出来。数字全部来自确定性引擎,只有叙事用 LLM。
+- **行动之后有效果验收。** 提案批准、外送不是终点:系统按约定窗口回来测量,把行动前后的数据与判定用的**同一套噪声带**比对,给出「超出噪声带 / 无可辨识变化」的三态结局——没有变化也是诚实的结论;测量与判定复用同一份解析口径,谁也无法悄悄换尺子。
 - **学习沉淀为资产。** 每一次纠正蒸馏成一条 lesson,每一条被确认的问答成为参考 SQL。自动学习的内容一律以 `pending` 落地,直到管理员确认——知识在增长,同时可审查、可 git 管理、属于你。
 
 ## 全貌
@@ -55,7 +57,7 @@ flowchart TB
         SEM["语义模型"]
         KB["知识库 + 混合检索"]
         MEM["记忆 · 判定规则 · Skills"]
-        ACT["行动 · 提案 / 审批 / 回执"]
+        ACT["行动 · 提案 / 审批 / 回执 / 效果验收"]
     end
 
     LLM["模型 · trove/llm<br/>LLM 网关"]
@@ -128,6 +130,8 @@ flowchart TB
 | 执行前零 LLM 验证 | ❌ | ❌ | 部分 | ✅ 规则链 + AST 防火墙 + EXPLAIN 守卫 |
 | 执行后自纠(反思 + 回归) | ❌ | ❌ | ❌ | ✅ 诊断回滚重试 + 版本比对 |
 | 结论 → 阈值判定(零 LLM) | ❌ | ❌ | 部分(够不着语义层的基期与口径) | ✅ 语义模型词汇声明 + 证据留痕 |
+| 判定带不确定性(季节噪声带 / 样本不足不硬判) | ❌ | ❌ | ❌ | ✅ 纯 stdlib 统计器械,置信如实标注 |
+| 行动后效果验收(闭环回测) | ❌ | ❌ | ❌ | ✅ 与判定共用同一套噪声带 |
 | 按数据源学习;自动内容需人审 | ❌ | 部分 | 部分 | ✅ KB + 记忆,`pending` 至确认 |
 
 ## 快速开始
@@ -179,14 +183,16 @@ docker compose down
 | 语义层 | 可答边界是一份可读、可 diff、可 git 回滚的文件 | [语义层](https://nivane.github.io/trove/capabilities/semantic.html) |
 | 主题域 | 语义模型里的可选收窄:域内收敛锚定、超域显式拒绝;管理台可按用户授权到域 | [语义层 · 主题域](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
 | 自校验闭环 | 规则链 / AST 防火墙 / 代价守卫 / 带版本回归的反思回滚 | [查询工作流](https://nivane.github.io/trove/architecture/workflow.html) |
-| 判定规则 | 告警也走语义模型:阈值、窗口、基期零 LLM 求值,触发带证据与相邻 diff | [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) |
-| 行动 | 判定触发冻结成提案 → 人工审批 → 外送回执;系统自身不接写通道,绝不写回业务库 | [行动与审批](https://nivane.github.io/trove/capabilities/actions.html) |
+| 判定规则 | 告警也走语义模型:阈值、窗口、基期零 LLM 求值,触发带证据与相邻 diff;季节噪声带判显著性,条件满足时升级因果对照,可在当时的数字上 what-if 回放 | [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) |
+| 主动扫描 | 按计划扫描指标 × 维度找异常,超噪声带只落草稿——管理员确认才成为规则;LLM 只提假设,引擎负责验证 | [判定规则 · 主动扫描](https://nivane.github.io/trove/capabilities/decisions.html#scan) |
+| 行动 | 判定触发冻结成提案 → 人工审批 → 外送回执 → 效果验收;退避重试与 dry-run 预演内建,系统自身不接写通道 | [行动与审批](https://nivane.github.io/trove/capabilities/actions.html) |
+| 判定质量 | 历史判定按规则版本分桶回评:触发率、行动有效 / 无变化 / 测不了的条数;样本不足不报比率 | [判定规则 · 质量回评](https://nivane.github.io/trove/capabilities/decisions.html#quality) |
 | 订阅 | 定时分析的结果按「每期 / 仅告警」投递到通知通道,失败留痕;任务可限定主题域 | [自动化与治理](https://nivane.github.io/trove/admin/automation.html) |
 | 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移报警 | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
 | 混合检索 | 关键词 + 向量两路召回,权重可调可评,零 LLM 评测脚本 | [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | 组织级方法论:`required` 注入 / `available` 按需 / `validator` 断言 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
-| 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) |
+| 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;显著性、置信与季节基线出自可复算的统计器械;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [噪声带](https://nivane.github.io/trove/capabilities/decisions.html#significance) |
 | 六种数据源 | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB,一套模式 | [数据能力](https://nivane.github.io/trove/capabilities/data.html) |
 | 接口与治理 | Web UI、REST(`/v1`)、MCP、CLI;管理端审批、审计、可观测 | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
@@ -232,6 +238,7 @@ docker compose down
 | 只读自检查不成 | 记「未验证」 | 绝不渲染成「安全」 |
 | KB 漂移检查读不出来 | 非零退出码 | 不把「没查成」当「没问题」 |
 | 置信度判定不出 | 倒向最保守的档 | 虚低好过虚高 |
+| 噪声带测不出(块数不足 / 无历史) | 如实记「判不了」 | 要求噪声带兜底的规则宁可报错误运行,不静默放行 |
 
 同样的取向也写在别处:健康检查区分 `unavailable` 与 `degraded`(而不是一个「挂了」),规则链第一条失败即止(而不是给一堆模糊提示),掩码失败清空结果集(而不是留一份可能泄漏的旧结果)。完整清单见[安全边界](https://nivane.github.io/trove/ops/security.html)与[可观测性](https://nivane.github.io/trove/ops/observability.html)。
 
@@ -265,7 +272,7 @@ uv run python scripts/eval_bird.py --db-id financial \
 ## 开发
 
 ```bash
-uv run pytest                     # 全量 5500+ 测试,mocked LLM,零网络 / 零 key
+uv run pytest                     # 全量 7200+ 测试,mocked LLM,零网络 / 零 key
 uv run pytest tests/workflow/     # 只跑 LangGraph 图与节点
 uv run pytest -m "not slow"       # 跳过慢测试
 ```

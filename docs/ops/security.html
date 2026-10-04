@@ -234,7 +234,7 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L224">deps.py:224 <span class="ref-line">check_api_rate</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L368">config.py:368 <span class="ref-line">api_rate_per_minute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L430">config.py:430 <span class="ref-line">api_rate_per_minute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/ratelimit.py#L24">ratelimit.py:24 <span class="ref-line">TokenBucket</span></a>
     </p>
 
@@ -252,7 +252,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L274">app.py:274 <span class="ref-line">auth is None</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L354">app.py:354 <span class="ref-line">auth is None</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L78">deps.py:78 <span class="ref-line">get_current_user</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L168">deps.py:168 <span class="ref-line">require_scope</span></a>
     </p>
@@ -295,7 +295,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L379">main.py:379 <span class="ref-line">_resolve_user_roles</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L387">main.py:387 <span class="ref-line">_resolve_user_roles</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L146">policy.py:146 <span class="ref-line">Principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L187">deps.py:187 <span class="ref-line">require_datasource</span></a>
     </p>
@@ -350,7 +350,7 @@ flowchart TB
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L146">semantic_query.py:146 <span class="ref-line">require_datasource</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L179">semantic_query.py:179 <span class="ref-line">execute</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L108">config.py:108 <span class="ref-line">require_principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L109">config.py:109 <span class="ref-line">require_principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1940">graphs.py:1940 <span class="ref-line">require_principal</span></a>
     </p>
 
@@ -450,7 +450,7 @@ flowchart TB
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">loader.py:71 <span class="ref-line">_isolate_vars</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L89">agent_loop.py:89 <span class="ref-line">_model_observation</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L83">untrusted.py:83 <span class="ref-line">isolate_tree</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L86">untrusted.py:86 <span class="ref-line">isolate_tree</span></a>
     </p>
 
     <p>
@@ -495,9 +495,9 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L57">untrusted.py:57 <span class="ref-line">is_trusted_var</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L62">untrusted.py:62 <span class="ref-line">AdminConfirmed</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L94">untrusted.py:94 <span class="ref-line">screen_derived</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L60">untrusted.py:60 <span class="ref-line">is_trusted_var</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L65">untrusted.py:65 <span class="ref-line">AdminConfirmed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L97">untrusted.py:97 <span class="ref-line">screen_derived</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/injection.py#L32">injection.py:32 <span class="ref-line">ISOLATED_MARKER</span></a>
     </p>
 
@@ -704,7 +704,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 8209c27</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 8b06b55</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

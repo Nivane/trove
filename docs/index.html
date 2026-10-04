@@ -29,8 +29,8 @@
       <p class="chain">问数 · 分析 · 决策 · 行动，一条对话链路</p>
       <p class="lede">
         把一句自然语言提问，变成<strong>可解释的 SQL、图表与结论</strong>；
-        判定规则在同一份语义模型上定时求值，触发即带着证据送达——
-        行动发生在你的流程里（系统对业务数据保持只读）。
+        判定规则在同一份语义模型上定时求值——季节噪声带判显著性，触发即带着证据送达；
+        行动发生在你的流程里（系统对业务数据保持只读），送出之后按同一套噪声带做效果验收。
         Trove 把确定性押在<strong>语义模型、节点化工作流与确定性安全层</strong>上，
         只把真正需要模型的那一段交给 LLM。
       </p>
@@ -41,7 +41,8 @@
         It turns a natural-language question into explainable SQL, a chart and a written conclusion, and
         evaluates zero-LLM judgment rules on the same semantic model — each trigger arriving with the SQL
         and rows it was judged on, while the action itself stays in your own processes (Trove keeps
-        read-only access to your data). It is <b>semantic-first</b>: an OSSIE semantic model defines what is
+        read-only access to your data) and is measured back against the same noise band afterwards.
+        It is <b>semantic-first</b>: an OSSIE semantic model defines what is
         answerable, and a deterministic compiler resolves joins, enums, time buckets and derived metrics —
         the LLM only handles what genuinely needs a model. This page is the entry point to the docs:
         quickstart, illustrated user / admin guides, and per-capability source anchors.
@@ -65,7 +66,7 @@
           <span class="repro-cmd">datasource/registry.py</span>
         </div>
         <div class="repro-item">
-          <span class="repro-n">5500+</span>
+          <span class="repro-n">7200+</span>
           <span class="repro-k">条测试 · 零网络零密钥</span>
           <span class="repro-cmd">uv run pytest</span>
         </div>
@@ -167,7 +168,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
         <a class="card" id="decide" href="capabilities/actions.html">
           <span class="card-kicker">能力 · 决策与行动</span>
           <span class="card-title">判定规则与行动</span>
-          <span class="card-desc">零 LLM 的阈值判定与判定历史；触发后接分析桥、行动提案、审批与外送回执——执行落在你自己的流程里。</span>
+          <span class="card-desc">零 LLM 的阈值判定与判定历史：季节噪声带判显著性、条件满足时升级因果对照、按规则版本回评质量。触发后接分析桥、行动提案、审批、外送回执与效果验收——执行落在你自己的流程里。</span>
         </a>
       </div>
     </section>
@@ -248,7 +249,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <tr>
               <td>执行前授权门</td>
               <td>执行前判定，三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层声明内。<strong>三道默认全拒</strong>：A1/A2 恒拒无开关；A3 默认 <code>enforce</code>（2026-10 切换，依据是全量快径示例 SQL 静态核验违规 0 条）。存量部署可显式写 <code>authz.table_enforcement: warn</code> 回退到观察档。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L80">core/config.py:80 <span class="ref-line">AuthzConfig</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/enforcer.py#L84">services/authz/enforcer.py:84 <span class="ref-line">Authorizer</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L81">core/config.py:81 <span class="ref-line">AuthzConfig</span></a></td>
             </tr>
             <tr>
               <td>字段级脱敏</td>
@@ -258,7 +259,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <tr>
               <td>不可信内容隔离</td>
               <td>值进入模型上下文只有两条通道，两条都过同一个隔离核：命中注入短语即把<strong>整个值</strong>作废成中性标记，而不是剪掉命中的那一段（模型不能以为自己拿到的是不完整但可用的数据）。截断排在隔离<strong>之后</strong>，否则长文本里的注入串会被从中间切断、正则漏判。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L83">llm/untrusted.py:83 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/untrusted.py#L86">llm/untrusted.py:86 <span class="ref-line">isolate_tree</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/prompts/loader.py#L71">prompts/loader.py:71 <span class="ref-line">_isolate_vars</span></a></td>
             </tr>
             <tr>
               <td>人在环与审计</td>
@@ -457,7 +458,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
       </p>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">8209c27</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 8209c27</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">8b06b55</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 8b06b55</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>

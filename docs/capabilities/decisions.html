@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 判定规则：用语义模型的词表声明「什么算有问题」，定时任务零 LLM 求值，三值逻辑、写盘前 lint 门禁、可重放的证据，以及判定历史、相邻 diff 与触发时的分析→决策桥。">
+<meta name="description" content="Trove 判定规则：用语义模型的词表声明「什么算有问题」，定时任务零 LLM 求值，三值逻辑、写盘前 lint 门禁、可重放的证据；季节噪声带与显著性门、条件式因果升级梯、what-if 回放、主动扫描、按规则版本回评的质量，以及判定历史、相邻 diff 与触发时的分析→决策桥。">
 <title>判定规则 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -33,6 +33,9 @@
         而是<strong>「这个数算不算有问题」</strong>——每天定时跑，零 LLM，产出可重放的证据。
         规则可以声明「该怎么办」（建议、响应模板），触发后连同<strong>「为什么」</strong>
         （分析桥的贡献分解）一起进<strong>判定历史</strong>；每一次判定与上一次的差异，也如实列出来。
+        再往深一层，判定知道自己有多确定：季节基线构成<strong>噪声带</strong>，「超出噪声带」可声明为触发的必要条件；
+        <strong>因果升级梯</strong>在条件满足时估计净效应，不满足就停在相关，并逐条列出哪条假设没过——
+        因果永远是附录，绝不改写触发与否。判定还能被 what-if 回放、被主动扫描提议、被按规则版本回评质量。
       </p>
     </div>
 
@@ -53,8 +56,8 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L134">service.py:134 <span class="ref-line">DecisionService</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L91">rules.py:91 <span class="ref-line">DecisionRule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L251">service.py:251 <span class="ref-line">DecisionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L183">rules.py:183 <span class="ref-line">DecisionRule</span></a>
     </p>
 
     <h2 id="pipeline">一条规则跑起来是什么样</h2>
@@ -85,13 +88,18 @@
             <td>结果行 × 条件 AST → 触没触发、按维度分组各自的判定</td>
             <td>纯函数，同样的输入永远是同样的结论</td>
           </tr>
+          <tr>
+            <td>显著性与因果<br/>（声明了才跑）</td>
+            <td>触发行过噪声带门（<code>require</code> 时成为触发的一部分）；声明了 <code>causal</code> 再尝试反事实估计</td>
+            <td>两段都是事后附加：预算记账、按优先级让路，<strong>绝不改变触发与否</strong></td>
+          </tr>
         </tbody>
       </table>
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L368">service.py:368 <span class="ref-line">evaluate_rule</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L535">rules.py:535 <span class="ref-line">compile_condition</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L485">service.py:485 <span class="ref-line">evaluate_rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L895">rules.py:895 <span class="ref-line">compile_condition</span></a>
     </p>
 
     <figure class="diagram" data-diagram="pending">
@@ -104,6 +112,7 @@ flowchart LR
     C --> E["只读执行"]
     E --> V["条件 AST 求值<br/>闭集语法，无 eval"]
     V -- "违反" --> AL["alert + 证据<br/>SQL · 原始行 · 规则摘要"]
+    AL -. "声明了显著性 / 因果" .-> SG["噪声带门 → 因果梯<br/>只降级、不改判定"]
     V -- "通过" --> OK["ok"]
     V -- "判不了（Unknown）" --> ER["error 状态：响亮失败<br/>不进通知，但运行历史里显形"]
 </pre>
@@ -151,6 +160,7 @@ flowchart LR
           <tr><td class="mono">contribution</td><td>该维度对全部维度 |delta| 之和的带符号占比（仅按维度分组时存在）</td></tr>
           <tr><td class="mono">row_count</td><td>当期查询返回的行数</td></tr>
           <tr><td class="mono">dim</td><td>正在被求值的那一行的维度标签（仅按维度分组时存在）</td></tr>
+          <tr><td class="mono">confidence</td><td>该行的位置分数（0–1）：仅当规则声明了 <code>seasonal</code> 且该行算得出时存在，其余情况是 Unknown——「测不出」与「等于 0」在词法上就是两件事</td></tr>
         </tbody>
       </table>
     </div>
@@ -164,7 +174,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L70">expr.py:70 <span class="ref-line">VARIABLES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L100">expr.py:100 <span class="ref-line">FUNCTIONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L104">expr.py:104 <span class="ref-line">FUNCTIONS</span></a>
     </p>
 
     <h3>三值逻辑，以及它挡掉的具体那个 bug</h3>
@@ -202,29 +212,34 @@ flowchart LR
           <tr><td class="mono">priority</td><td class="mono">0–3</td><td>0 = 常规。闭区间而非自由数字——它进通知、进排序、进治理待办，排序语义必须可解释</td></tr>
           <tr><td class="mono">action</td><td class="mono">{template, autonomy, params}</td><td>指向一份响应模板 + 自主级别（<code>notify_only</code> / <code>propose</code>，刻意没有 auto）+ 闭集变量改写。见<a href="actions.html">行动与审批</a></td></tr>
           <tr><td class="mono">driver_dimension</td><td>维度名</td><td>触发后分析桥沿哪个维度找主因；缺省用规则自己的分组维度</td></tr>
+          <tr><td class="mono">seasonal</td><td class="mono">{grain, lookback, mode, k}</td><td>v3，<strong>噪声带的块规格</strong>：<code>grain</code> 空 = 按窗口形状推导（声明了则与窗口硬性对齐，不一致拒绝确认）；<code>mode</code> 取 <code>trailing</code>（近期连续块）/ <code>same_phase</code>（去年同期）；<code>lookback</code> 默认 12 块；<code>k</code> 是噪声带宽（稳健 z 单位，默认 3.5）。呈现的是一段<strong>分布</strong>，不是「上期是多少」</td></tr>
+          <tr><td class="mono">significance</td><td class="mono">{require, min_confidence}</td><td>v3，<strong>显著性门</strong>：<code>require</code> 空 = 只记录不拦；<code>outside_band</code> = 触发必须再超出历史噪声带。<code>min_confidence</code> 是位置分数下限。lint 强制：声明它必须同时声明 <code>seasonal</code>——没有块就没有带，一条永远判不了的规则不该被写进文件</td></tr>
+          <tr><td class="mono">causal</td><td class="mono">{mode, control, placebo_blocks, tolerance}</td><td>v4，<strong>因果升级梯</strong>：<code>mode</code> 取 <code>auto</code>（尽量升到合成对照）/ <code>did</code>（只做差中差）；<code>control</code> <strong>恰一种</strong>形态——<code>{dim, value}</code>（对照组是一条维度值，有供体池）或 <code>{filters}</code>（窄口径，至多 L2）；<code>placebo_blocks</code>/<code>tolerance</code> 是前窗平行检验的参数。没有 <code>control</code> 的声明被 lint 拦下——梯子永远停在 L1 的声明与不写等价</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L29">rules.py:29 <span class="ref-line">BASELINE_KINDS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L31">rules.py:31 <span class="ref-line">EMITS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L41">rules.py:41 <span class="ref-line">PRIORITY_MAX</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L64">rules.py:64 <span class="ref-line">ActionRef</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L37">rules.py:37 <span class="ref-line">BASELINE_KINDS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L39">rules.py:39 <span class="ref-line">EMITS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L61">rules.py:61 <span class="ref-line">PRIORITY_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L88">rules.py:88 <span class="ref-line">ActionRef</span></a>
     </p>
 
     <div class="callout note">
       <span class="callout-tag">文件带版本号，读不动的版本拒绝读</span>
       <div>
         <p><code>decisions.yml</code> 带一个 <code>version</code> 字段，当前是
-        <code>2</code>（v2 加的正是上面这几行）。读到<strong>更高</strong>版本的文件会直接拒绝——
+        <code>4</code>：v2 加的正是上面这几行（recommendation / priority / action / driver_dimension），
+        v3 加 seasonal / significance（噪声带与显著性门），v4 加 causal（因果升级梯）。
+        读到<strong>更高</strong>版本的文件会直接拒绝——
         因为「读得少一点」是静默的：保存回去时会把它不认识的字段悄悄丢掉，
         一次整份 PUT 就删掉了新版 Trove 写的规则。拒读好过悄悄少读。</p>
       </div>
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L46">rules.py:46 <span class="ref-line">SCHEMA_VERSION</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L66">rules.py:66 <span class="ref-line">SCHEMA_VERSION</span></a>
     </p>
 
     <h2 id="lint">写盘前的 lint 门禁</h2>
@@ -265,7 +280,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L285">rules.py:285 <span class="ref-line">lint_rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L502">rules.py:502 <span class="ref-line">lint_rule</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/service.py#L1118">kb/service.py:1118 <span class="ref-line">save_decisions</span></a>
     </p>
 
@@ -284,13 +299,15 @@ flowchart LR
 
     <p>
       任务带一个 <code>decision_rule</code> 字段（规则 id）。设了它，这次 run 就不走自然语言管线，
-      直接按规则求值；没设则照常是一次问数任务。两条路的运行记录、告警冷却、通知分发是同一套。
+      直接按规则求值；设 <code>scan_spec</code> 则是一次<strong>主动扫描</strong>（见下）；
+      都没设则照常是一次问数任务。几条路的运行记录、告警冷却、通知分发是同一套基建；
+      字段同时出现时按 <code>decision_rule</code> → <code>scan_spec</code> → 问数管线的顺序取第一个。
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L157">runner.py:157 <span class="ref-line">_run_decision</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L174">runner.py:174 <span class="ref-line">_run_decision</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/service.py#L58">jobs/service.py:58 <span class="ref-line">decision_rule</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L383">main.py:383 <span class="ref-line">装配</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L391">main.py:391 <span class="ref-line">装配</span></a>
     </p>
 
     <p>
@@ -308,9 +325,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L244">runner.py:244 <span class="ref-line">_notify_message</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L298">runner.py:298 <span class="ref-line">_record_verdict</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L325">runner.py:325 <span class="ref-line">_propose_action</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L330">runner.py:330 <span class="ref-line">_notify_message</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L390">runner.py:390 <span class="ref-line">_record_verdict</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/runner.py#L417">runner.py:417 <span class="ref-line">_propose_action</span></a>
     </p>
 
     <h2 id="bridge">触发之后：分析→决策桥</h2>
@@ -370,6 +387,208 @@ flowchart LR
       </div>
     </div>
 
+    <h2 id="significance">显著性：噪声带，与「判不了」的完整词表</h2>
+
+    <p>
+      两周前的数字和本周差多少算「跌了」？两条数据点答不了这个问题——
+      没有波动概念，任何微小抖动都会被读成信号。所以 v3 给规则加了
+      <code>seasonal</code> 块规格：把历史切成<strong>块序列</strong>，
+      用它们的分布给「正常波动」画一条<strong>噪声带</strong>。
+    </p>
+
+    <p>
+      带的构造是纯 stdlib 的确定性统计：中位数定中心、MAD×1.4826 定尺度、
+      bootstrap 分位区间，样本自相关修正后的 <code>n_eff</code> 计有效样本
+      （纯 stdlib：可复算、可种子重放）。判定侧只说纪律：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>纪律</th><th>含义</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>位置分数不是概率</strong></td>
+            <td><code>confidence</code> = (|z|−k)/k 截断到 [0,1]：0 = 恰在带缘、1 = 两倍阈值；无分布假设，<strong>不输出 p 值</strong></td>
+          </tr>
+          <tr>
+            <td><strong>块数不足不予确认</strong></td>
+            <td>块数 &lt; 8（<code>MIN_BLOCKS</code>）直接记 <code>insufficient_n</code>——样本那么少，显著性只会变成噪声放大器；块数 &lt; 12 额外挂 <code>low_n</code> 标</td>
+          </tr>
+          <tr>
+            <td><strong>「判不了」是完整词表</strong></td>
+            <td>不是布尔值：每条判不了都有一条<strong>具名原因</strong>（见下表），绝不折算成「没事」或「有问题」</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      当规则声明 <code>significance: {require: outside_band}</code>，噪声带从记录升级为
+      <strong>触发的一部分</strong>：规则级 <code>triggered = any(行触发 ∧ 过门)</code>。
+      而 <code>require</code> 生效时如果带<strong>压根算不出来</strong>（没有历史块、历史恒定、
+      时间字段缺），这次运行直接记 <code>error</code>——要求噪声带兜底的规则，
+      宁可报错误运行，也不静默放行。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th class="mono">reason</th><th>人话</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">no_current_value</td><td>本期值缺失——没有可比的数</td></tr>
+          <tr><td class="mono">no_band</td><td>没有历史块，带建不出来</td></tr>
+          <tr><td class="mono">no_data / zero_scale</td><td>带自身退化：无数据 / 历史恒定（稳健尺度为零）</td></tr>
+          <tr><td class="mono">band_unavailable</td><td>带不可用而未归类——兜底，不冒充某个具体原因</td></tr>
+          <tr><td class="mono">insufficient_n</td><td>块数 &lt; 8（<code>MIN_BLOCKS</code> 硬门）</td></tr>
+          <tr><td class="mono">within_band</td><td>判了，落在带内——这是结论，不是失败</td></tr>
+          <tr><td class="mono">confidence_unavailable</td><td>位置分数算不出</td></tr>
+          <tr><td class="mono">below_min_confidence</td><td>在带外，但强度不够规则声明的下限</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      查询花销显式记账：<code>DecisionBudget</code> 给每段划份（判定 2 / 显著性 2 /
+      因果 4 / 桥 4，总上限 12），超额按优先级<strong>让路</strong>并记进
+      <code>evidence.budget</code>——让路是可见的事实，不是无声的降级。
+      同一套噪声带也用在分析回答里（「本期 vs 历史噪声带」一节），
+      <code>outside_band</code> 同样是三态：超出 / 带内 / 判不了，判不了的原因同样具名。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/significance.py#L61">significance.py:61 <span class="ref-line">build_band_payload</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/significance.py#L85">significance.py:85 <span class="ref-line">gate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L199">stats.py:199 <span class="ref-line">band</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/stats.py#L37">stats.py:37 <span class="ref-line">MIN_BLOCKS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L229">service.py:229 <span class="ref-line">行卡 gated 与规则级 triggered</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/budget.py#L34">budget.py:34 <span class="ref-line">DecisionBudget</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/output.py#L500">output.py:500 <span class="ref-line">噪声带行</span></a>
+    </p>
+
+    <h2 id="causal">因果升级梯：相关是默认，因果要过条件</h2>
+
+    <p>
+      「A 涨了，B 也涨了」是相关；企业想知道的是「这个变化带来了多少净效应」。
+      但因果不能靠声明，要靠<strong>设计</strong>。声明了 <code>causal</code> 的规则，
+      在噪声带之后走一条<strong>升级梯</strong>：每一级先查条件清单，过不去就停在上一级，
+      并逐条列出哪条假设没过——「无法检验」被写出来，而不是省略。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>级</th><th>方法</th><th>需要什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>L1</strong></td><td>相关：确定性贡献分解</td><td>永远可用——分解恒等式，不主张因果</td></tr>
+          <tr><td><strong>L2</strong></td><td>差中差：ATT = 处理组前后差 − 对照组前后差</td><td>声明的 <code>control</code> 可构造对照组；前窗平行检验（placebo）通过；只报效应量与是否跨零，不贴显著性标签</td></tr>
+          <tr><td><strong>L3</strong></td><td>合成对照：供体等权平均构造反事实</td><td>仅 <code>mode: "auto"</code> 且有 <code>{dim, value}</code> 供体池；前窗拟合诊断差 → <code>fit_too_poor</code> 拒绝升级</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三条纪律：<strong>逐条假设带体检</strong>——每条结论附 <code>assumptions</code> 数组，
+      每条带 <code>checked</code> 标记（通过 / 不通过 / 无法检验）；
+      <strong>不满足就诚实降级</strong>——停在 L1 时说明哪条没过、实测值多少；
+      <strong>因果永远是附录</strong>——只进 <code>degraded</code> 附注，<strong>绝不改变 triggered</strong>，
+      绝不上抛。相关与因果在输出上的区别，是渲染层的一等公民。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L305">causal.py:305 <span class="ref-line">ladder_decision</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L188">causal.py:188 <span class="ref-line">did_se</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L213">causal.py:213 <span class="ref-line">donor_counterfactual</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L87">causal.py:87 <span class="ref-line">LADDER_ASSUMPTIONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L805">service.py:805 <span class="ref-line">_causal_stage</span></a>
+    </p>
+
+    <h2 id="whatif">What-if：在当时的数字上重放</h2>
+
+    <p>
+      「阈值改到 8% 会怎样？加一个过滤条件还触发吗？」——回答这些问题不必重跑业务库：
+      <code>POST /v1/admin/decisions/{rule_id}/simulate</code> 把<strong>最近一条判定留下的数字行</strong>
+      （或调用方直接给的行）灌进<strong>同一个 judge 纯函数</strong>，当场重判。
+      判定是纯函数，重放给出的是确定答案，不是估计。
+    </p>
+
+    <p>
+      两条刻意的约束：<strong>零业务库查询</strong>——数据来源只有判定证据行与调用方入参两条路，
+      「再查一遍库」这第三条路被有意排除（那会把「当时为什么响」换成一个新问题「现在会不会响」）；
+      <strong>显著性只重放不重算</strong>——噪声带是当时判定的产物，跟着一起重放，
+      保证变化的只有一个变量。若规则在判定之后被编辑过，结果带 <code>source.stale = true</code>
+      与 <code>degraded</code> 注解——重放的是旧规则的数字，这件事自己先说出来。
+    </p>
+
+    <p>
+      带 <code>impacts</code> 的规则还能模拟触发后的<strong>影响树</strong>：
+      可分解的节点按贡献传播，不可分解的节点标 <code>not_modeled</code>——不装能算。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/whatif.py#L146">whatif.py:146 <span class="ref-line">simulate_rule</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/whatif.py#L245">whatif.py:245 <span class="ref-line">impact_summary</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L429">decisions.py:429 <span class="ref-line">POST /simulate</span></a>
+    </p>
+
+    <h2 id="scan">主动扫描：先找异常，再问要不要盯</h2>
+
+    <p>
+      上面的规则是「人先想到问题，写成规则」；主动扫描是反向的：
+      给定时任务一个 <code>scan_spec</code>（度量 × 维度 × top_k），
+      引擎逐条算块序列、画噪声带、找<strong>超出噪声带</strong>的异常，按 |z| 降序取前几名。
+      扫描是确定性的，零 LLM。
+    </p>
+
+    <p>
+      找到的异常<strong>不直接成为规则</strong>：落进 <code>decision_drafts.yml</code> 草稿，
+      管理端确认后才写进规则文件——自动内容永远不绕过确认门，
+      与 KB 的 pending 草稿是同一条纪律。
+    </p>
+
+    <p>
+      可选的 LLM 假设层（默认关，成本考虑）：LLM 提假设（「哪条度量 × 哪条维度可能异常」），
+      引擎逐条验证。边界划得很清——<strong>解析期先验证引用</strong>（度量 / 维度必须真实存在），
+      验证不过根本不发查询（LLM 创不出不存在的度量）；每条假设<strong>恰好一行裁决</strong>，
+      取值闭集 <code>supported / refuted / unverifiable / no_data</code>，
+      <code>unverifiable</code> 带原因（如 <code>budget_exceeded</code>）——没有静默丢弃；
+      裁决由引擎算数，LLM 只写 rationale，渲染永远带 <code>source: "llm"</code> 标。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/service.py#L350">scan/service.py:350 <span class="ref-line">scan_and_draft</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/scanner.py#L63">scan/scanner.py:63 <span class="ref-line">rank_findings</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/hypotheses.py#L144">scan/hypotheses.py:144 <span class="ref-line">propose</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/hypotheses.py#L290">scan/hypotheses.py:290 <span class="ref-line">verify</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/jobs/store.py#L58">jobs/store.py:58 <span class="ref-line">scan_spec 列</span></a>
+    </p>
+
+    <h2 id="quality">质量回评：按规则版本分桶</h2>
+
+    <p>
+      一条规则吵不吵、准不准，不该靠印象。<code>GET /v1/admin/decisions/quality</code>
+      把每条规则的历史按 <code>(rule_id, rule_rev)</code> 分桶——
+      <code>rule_rev</code> 是<strong>逐规则</strong>的版本，同文件里改别人的规则不污染它的账本；
+      版本对不上的老判定归入 <code>rev_unknown</code> 桶。
+    </p>
+
+    <p>
+      每个桶里是四类结局计数：有效 / 无可辨识变化 / 测不了 / 错误，
+      另有触发率与测量总数。比率只在分母够的时候给——已裁决 ≥ 3 才报有效率，
+      判定总数 &lt; 12 整桶挂「样本不足」标。宁可说「样本不足」，
+      也不给出「一条测量 = 100% 有效」的伪精度。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/score.py#L109">score.py:109 <span class="ref-line">score_history</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/score.py#L37">score.py:37 <span class="ref-line">MIN_EFFECTS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/quality_report.py#L48">quality_report.py:48 <span class="ref-line">build_report</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L551">decisions.py:551 <span class="ref-line">GET /quality</span></a>
+    </p>
+
     <h2 id="history">判定历史：每个版本都被留下，相邻两次被对照</h2>
 
     <p>
@@ -393,7 +612,8 @@ flowchart LR
           <tr><th>diff 说的</th><th>含义</th></tr>
         </thead>
         <tbody>
-          <tr><td class="mono">rule_digest_changed</td><td><strong>规则本身在两跑之间被改过</strong>——单独点名，因为它能解释其余一切</td></tr>
+          <tr><td class="mono">rule_digest_changed</td><td>整份 <code>decisions.yml</code> 在两跑之间被改过——它能解释其余一切，所以单独点名</td></tr>
+          <tr><td class="mono">rule_rev_changed</td><td><strong>这条规则本身</strong>被改过（逐规则版本，不受同文件其他规则编辑影响）。管理台展示时 rev 优先、缺席退回 digest——两把尺：digest 动说明文件动过，rev 动才说明<strong>它</strong>动过</td></tr>
           <tr><td class="mono">trigger: fired / cleared</td><td>本次从「平静」转为触发，或相反</td></tr>
           <tr><td class="mono">groups: fired / cleared / jump</td><td>逐维度：某个组开始触发、停止触发，或变化幅度突跳（|Δpct 差| ≥ 10 个百分点——一个写在常量里的展示阈值，不是统计断言）</td></tr>
           <tr><td class="mono">groups: appeared / vanished</td><td>某个组在两次之间有/无——缺席本身也是信息</td></tr>
@@ -410,7 +630,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdicts.py#L46">verdicts.py:46 <span class="ref-line">VerdictRecord</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdicts.py#L169">verdicts.py:169 <span class="ref-line">diff_verdicts</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdicts.py#L180">verdicts.py:180 <span class="ref-line">diff_verdicts</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdicts.py#L42">verdicts.py:42 <span class="ref-line">MAGNITUDE_JUMP</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/verdict_store.py#L124">verdict_store.py:124 <span class="ref-line">VerdictStore</span></a>
     </p>
@@ -454,7 +674,7 @@ flowchart LR
         <tbody>
           <tr>
             <td><strong>规则</strong></td>
-            <td>id、名字、severity、负责角色，以及 <code>rule_digest</code>——<code>decisions.yml</code> 的<strong>字节摘要</strong>，说明这一版判定出自哪一版规则</td>
+            <td>id、名字、severity、负责角色，以及 <code>rule_digest</code>——<code>decisions.yml</code> 的<strong>字节摘要</strong>，说明这一版判定出自哪一版规则；B2 起另有 <code>rule_rev</code>（逐规则的版本），质量回评按它分桶</td>
           </tr>
           <tr>
             <td><strong>区间</strong></td>
@@ -474,7 +694,19 @@ flowchart LR
           </tr>
           <tr>
             <td><strong>每组</strong></td>
-            <td>一行：<code>dim</code>、<code>current</code>、<code>baseline</code>、<code>delta</code>、<code>delta_pct</code>、<code>contribution</code>、<code>triggered</code>，以及 <code>matched</code>——<strong>只有真的触发的组才列命中的条件</strong>，否则半匹配的组看起来也像发了</td>
+            <td>一行：<code>dim</code>、<code>current</code>、<code>baseline</code>、<code>delta</code>、<code>delta_pct</code>、<code>contribution</code>、<code>triggered</code>（声明 <code>seasonal</code> 时另有 <code>confidence</code> 与 <code>gated</code>），以及 <code>matched</code>——<strong>只有真的触发的组才列命中的条件</strong>，否则半匹配的组看起来也像发了</td>
+          </tr>
+          <tr>
+            <td><strong>显著性</strong></td>
+            <td>声明 <code>seasonal</code> 时：噪声带（band + bootstrap 区间 + <code>n_eff</code> + <code>low_n</code>）、当期的 <code>z</code> 与位置分数、<code>gated</code> 与否决原因；<code>require</code> 时它就是门</td>
+          </tr>
+          <tr>
+            <td><strong>因果</strong></td>
+            <td>声明 <code>causal</code> 时：梯级（L1 / L2 / L3）、效应估计与假设清单（逐条带 <code>checked</code>）。永远不改变 <code>triggered</code></td>
+          </tr>
+          <tr>
+            <td><strong>预算</strong></td>
+            <td><code>budget</code> 账本：<code>{limit, used, by_stage, yielded}</code>——哪一段用了多少、在哪里让了路，一目了然</td>
           </tr>
           <tr>
             <td><strong>分析</strong></td>
@@ -489,7 +721,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L48">service.py:48 <span class="ref-line">MAX_EVIDENCE_ROWS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L64">service.py:64 <span class="ref-line">MAX_EVIDENCE_ROWS</span></a>
     </p>
 
     <div class="callout note">
@@ -539,17 +771,20 @@ flowchart LR
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions/{rule_id}</td><td>单条规则 + 它自己的 lint 问题</td></tr>
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions/{rule_id}/verdicts</td><td>该规则的<strong>判定历史</strong>，相邻记录已带好 diff</td></tr>
           <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions/verdicts/{verdict_id}</td><td>单条判定记录，含完整证据与主因分析</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/v1/admin/decisions/{rule_id}/simulate</td><td><strong>what-if 重判</strong>：在最近一条判定的数字（或调用方给的数字）上重放，<strong>零业务库查询</strong></td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/decisions/quality</td><td>按 <code>(rule_id, rule_rev)</code> 分桶的质量回评</td></tr>
+          <tr><td class="mono">GET · POST</td><td class="mono">/v1/admin/decisions/drafts<br/>/drafts/{id}/confirm · reject</td><td>主动扫描落下的规则<strong>草稿</strong>；确认之前不进规则文件</td></tr>
           <tr><td class="mono">PUT</td><td class="mono">/v1/admin/decisions</td><td><strong>整份替换</strong>：结构化 <code>rules</code> 或原始 <code>text</code> 二选一</td></tr>
         </tbody>
       </table>
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L127">decisions.py:127 <span class="ref-line">list_decisions</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L60">decisions.py:60 <span class="ref-line">_verdict_brief</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L323">decisions.py:323 <span class="ref-line">list_verdicts</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L289">decisions.py:289 <span class="ref-line">get_verdict</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L388">decisions.py:388 <span class="ref-line">put_decisions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L130">decisions.py:130 <span class="ref-line">list_decisions</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L63">decisions.py:63 <span class="ref-line">_verdict_brief</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L333">decisions.py:333 <span class="ref-line">list_verdicts</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L299">decisions.py:299 <span class="ref-line">get_verdict</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L648">decisions.py:648 <span class="ref-line">put_decisions</span></a>
     </p>
 
     <p>
@@ -580,6 +815,7 @@ flowchart LR
         </thead>
         <tbody>
           <tr><td>规则声明了 <code>action</code>，触发之后发生什么</td><td><a href="actions.html">行动与审批</a></td></tr>
+          <tr><td>行动送达之后怎么验收</td><td><a href="actions.html#effect">行动与审批 · 效果验收</a></td></tr>
           <tr><td>metric / dimension 从哪来</td><td><a href="semantic.html">语义层</a></td></tr>
           <tr><td>规则文件在 KB 树里的位置与门禁</td><td><a href="kb.html">知识库</a></td></tr>
           <tr><td>定时任务怎么排期、怎么发通知</td><td><a href="../ops/admin.html">运维管理</a></td></tr>
@@ -591,7 +827,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: cbfff9e</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 8b06b55</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
