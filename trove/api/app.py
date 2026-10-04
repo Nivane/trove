@@ -15,6 +15,7 @@ import re
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -117,30 +118,66 @@ async def _expire_actions(app: FastAPI) -> None:
         logger.warning("[action] expiry sweep failed: %s", e)
 
 
+async def _retry_actions(app: FastAPI) -> None:
+    """Auto-retry leg of the tick: failed-but-transient proposals past backoff.
+
+    Best-effort like every other leg, and **default-off**: with no
+    ``retry_backoff_*`` configured (or the layer disabled)
+    ``retry_due_proposals`` returns 0 without touching the store, so an
+    unconfigured deployment does nothing here. The due time itself is a pure
+    derivation over ``(attempts, deliveries.attempted_at)`` — see
+    ``action/guard.py``; nothing schedule-shaped is persisted.
+    """
+    service = getattr(app.state, "actions", None)
+    if service is None:
+        return
+    try:
+        retried = await service.retry_due_proposals()
+        if retried:
+            logger.info("[action] auto-retry: %d proposal(s) re-attempted", retried)
+    except Exception as e:
+        logger.warning("[action] auto-retry leg failed: %s", e)
+
+
+def _retry_armed(actions: Any) -> bool:
+    """自动重试是否已配置(护栏运行时绑定;缺省全关)。"""
+    guards = getattr(actions, "guards", None)
+    return int(getattr(guards, "retry_backoff_base_s", 0) or 0) > 0
+
+
 async def _job_tick(app: FastAPI) -> None:
     """Background loop: run due scheduled jobs every scheduler_poll_seconds.
 
     Mirrors the maintenance sweep pattern: never blocks, exceptions are
-    caught and logged, and the loop exits silently when scheduling is
-    disabled (poll <= 0) or no scheduler is wired in (CLI/embedded use).
+    caught and logged, and the loop exits silently when there is nothing to
+    tick for — ``scheduler_poll_seconds <= 0``, no scheduler wired in, and no
+    armed action-retry leg (CLI/embedded use).
+
+    Two legs share one tick: due jobs, then the action auto-retry. They are
+    separate failure domains — one raising must not skip the other.
     """
     config = getattr(app.state, "config", None)
     poll = getattr(config, "scheduler_poll_seconds", 30)
     scheduler = getattr(app.state, "scheduler", None)
-    if scheduler is None or poll <= 0:
+    actions = getattr(app.state, "actions", None)
+    if poll <= 0 or (scheduler is None and not _retry_armed(actions)):
         return
     while True:
         await asyncio.sleep(poll)
-        try:
-            results = await scheduler.tick()
-            if results:
-                logger.info(
-                    "[jobs] tick: %d due job(s) — %s",
-                    len(results),
-                    [f"{r.get('name', '?')}={r.get('status', '?')}" for r in results],
-                )
-        except Exception as e:
-            logger.warning("[jobs] scheduler tick failed: %s", e)
+        if scheduler is not None:
+            try:
+                results = await scheduler.tick()
+                if results:
+                    logger.info(
+                        "[jobs] tick: %d due job(s) — %s",
+                        len(results),
+                        [f"{r.get('name', '?')}={r.get('status', '?')}"
+                         for r in results],
+                    )
+            except Exception as e:
+                logger.warning("[jobs] scheduler tick failed: %s", e)
+        if actions is not None:
+            await _retry_actions(app)
 
 
 async def _periodic_sweep(app: FastAPI) -> None:

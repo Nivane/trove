@@ -269,10 +269,16 @@ class ActionChannel:
     一份组织模板因此可以在不携带任何凭证的前提下被评审,而"这条模板发到
     哪里"是一个配置问题,不是内容问题。``secret`` 支持 ``${ENV_VAR}``
     (加载器对全配置递归解析),非空时以 ``Authorization: Bearer`` 外送。
+
+    ``kind``:接收端的信封形态(``generic`` / ``slack`` / ``feishu`` /
+    ``dingtalk`` / ``wecom``,见 ``services.im.shape.CHANNEL_KINDS``)。
+    缺省 ``generic`` = payload 原样外送 —— 与没有塑形器时逐字节一致;
+    未知 kind 在 dispatch 时是一条**失败的投递**(配置错,不重试)。
     """
 
     url: str = ""
     secret: str = ""
+    kind: str = "generic"
 
 
 @dataclass
@@ -286,6 +292,16 @@ class ActionConfig:
     ``approval_ttl_hours``:提案的审批时限,过期由 serve 的周期任务清收。
     ``max_payload_bytes``:渲染后 payload 的上限(创建模板时也会按它试渲染)。
     ``max_attempts``:同一条提案允许的外送尝试次数(失败后只能显式 retry)。
+
+    **护栏(B5,默认全关 —— 老路径逐字节不变)**:
+
+    - ``max_risk``:允许外送的提案风险上限(``low`` / ``medium`` / ``high``,
+      默认 ``high`` = 不设限)。超限的 dispatch 在入口被拒,写 failed + 原因。
+    - ``rate_limit``:同一通道每分钟的外送尝试上限(``0`` = 不设限)。
+    - ``retry_backoff_base_s``:失败自动重试的首个等待秒数(``0`` = 不自动
+      重试,默认)。``retry_backoff_factor`` / ``retry_backoff_max_s`` 是
+      指数退避的倍增与上限;重试时点由 ``(attempts, 上次投递时刻)`` 纯派生,
+      不落库、零新列。
     """
 
     enabled: bool = False
@@ -293,6 +309,11 @@ class ActionConfig:
     approval_ttl_hours: int = 72
     max_payload_bytes: int = 8192
     max_attempts: int = 3
+    max_risk: str = "high"
+    rate_limit: int = 0
+    retry_backoff_base_s: int = 0
+    retry_backoff_factor: float = 2.0
+    retry_backoff_max_s: int = 3600
 
 
 @dataclass
@@ -647,6 +668,7 @@ class ConfigLoader:
                 channels[str(ch_name)] = ActionChannel(
                     url=str(spec.get("url", "") or ""),
                     secret=str(spec.get("secret", "") or ""),
+                    kind=str(spec.get("kind", "generic") or "generic"),
                 )
         action_conf = ActionConfig(
             # 缺省 False,与 dataclass 同口径:整段 action: 缺失时行动层是
@@ -659,6 +681,16 @@ class ConfigLoader:
             max_payload_bytes=max(
                 0, int(action_raw.get("max_payload_bytes", 8192))),
             max_attempts=max(1, int(action_raw.get("max_attempts", 3))),
+            # 护栏(B5)。默认值的读法是"没有这道护栏":high 是上限的顶格,
+            # 0 是"不设限/不自动重试"—— 缺省部署因此与 B5 之前逐字节一致。
+            max_risk=str(action_raw.get("max_risk", "high") or "high").strip().lower(),
+            rate_limit=max(0, int(action_raw.get("rate_limit", 0))),
+            retry_backoff_base_s=max(
+                0, int(action_raw.get("retry_backoff_base_s", 0))),
+            retry_backoff_factor=float(
+                action_raw.get("retry_backoff_factor", 2.0)),
+            retry_backoff_max_s=max(
+                0, int(action_raw.get("retry_backoff_max_s", 3600))),
         )
 
         # Parse eval gate (top-level section, not under agent:)

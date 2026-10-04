@@ -48,6 +48,7 @@ export const ACTION_DECISIONS = [
   'cancel',
   'dispatch',
   'retry',
+  'dry_run',
   'ack',
 ] as const
 export type ActionDecision = (typeof ACTION_DECISIONS)[number]
@@ -132,7 +133,10 @@ export interface ActionDelivery {
   id?: number
   proposal_id: string
   channel: string
-  /** sent | failed | ack。 */
+  /**
+   * sent | failed | ack | dry_run。`dry_run` 是预演行:什么都没发出去,
+   * response_excerpt 存的是"本来会发的那一份",不计入尝试次数。
+   */
   status: string
   http_status: number | null
   response_excerpt: string
@@ -249,11 +253,15 @@ export async function decideActionProposal(
 
 /* ── 展示口径(与页面同一处)──────────────────────────── */
 
-/** 该状态下可用的动词(镜像后端状态机;详情抽屉与行内按钮都读这里)。 */
+/**
+ * 该状态下可用的动词(镜像后端状态机;详情抽屉与行内按钮都读这里)。
+ * `dry_run` 三个未闭环状态都能用 —— 后端 `_DRY_RUNNABLE` 同口径;它不改
+ * 状态,所以放在批准**前**(先看看真实载荷再决定)也成立。
+ */
 export function proposalVerbs(status: string): ActionDecision[] {
-  if (status === 'pending') return ['approve', 'reject', 'cancel']
-  if (status === 'approved') return ['dispatch', 'cancel', 'ack']
-  if (status === 'failed') return ['retry']
+  if (status === 'pending') return ['approve', 'reject', 'cancel', 'dry_run']
+  if (status === 'approved') return ['dispatch', 'cancel', 'ack', 'dry_run']
+  if (status === 'failed') return ['retry', 'dry_run']
   if (status === 'dispatched' || status === 'delivered') return ['ack']
   return []
 }

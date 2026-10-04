@@ -446,3 +446,26 @@ class ActionStore:
             return [_row_to_delivery(r) async for r in cursor]
         finally:
             await conn.close()
+
+    async def list_delivery_times(
+        self, channel: str, since_iso: str,
+    ) -> list[str]:
+        """某通道 ``since`` 之后的**真实尝试**时刻(升序)。
+
+        速率护栏的输入:计数不该靠一个会被重启清零的计数器,而该来自
+        append-only 的回执 trail —— 它是既有的、有索引的事实源,零新列。
+        只算 ``sent`` / ``failed``:``dry_run`` 什么都没发出去,``ack`` 是
+        回执不是外送。
+        """
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT attempted_at FROM deliveries"
+                " WHERE channel = ? AND attempted_at >= ?"
+                " AND status IN ('sent', 'failed')"
+                " ORDER BY attempted_at",
+                (str(channel), str(since_iso)),
+            )
+            return [str(r[0]) async for r in cursor]
+        finally:
+            await conn.close()

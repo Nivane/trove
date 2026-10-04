@@ -512,7 +512,8 @@
           </el-table-column>
           <el-table-column :label="t('actionsStatus', ui.lang)" width="100">
             <template #default="{ row }">
-              <span class="pill" :class="row.status === 'failed' ? 'pill-danger' : row.status === 'ack' ? 'pill-accent' : 'pill-ok'">
+              <!-- dry_run 是中性档:它什么都没发出去,不该长成绿色的「成功」。 -->
+              <span class="pill" :class="row.status === 'failed' ? 'pill-danger' : row.status === 'ack' ? 'pill-accent' : row.status === 'dry_run' ? 'pill-neutral' : 'pill-ok'">
                 {{ row.status }}
               </span>
             </template>
@@ -692,6 +693,7 @@ const VERB_KEY: Record<ActionDecision, Parameters<typeof t>[0]> = {
   cancel: 'actionsCancel',
   dispatch: 'actionsDispatch',
   retry: 'actionsRetry',
+  dry_run: 'actionsDryRun',
   ack: 'actionsAck',
 }
 
@@ -705,6 +707,7 @@ const VERB_HINT_KEY: Record<ActionDecision, Parameters<typeof t>[0]> = {
   cancel: 'actionsHintCancel',
   dispatch: 'actionsHintDispatch',
   retry: 'actionsHintRetry',
+  dry_run: 'actionsHintDryRun',
   ack: 'actionsHintAck',
 }
 

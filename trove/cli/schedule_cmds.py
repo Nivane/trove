@@ -213,7 +213,18 @@ async def main_schedule(argv: list[str]) -> None:
         jobs = _jobs_service()
         from trove.services.jobs.runner import SchedulerRunner
 
-        runner = SchedulerRunner(session_manager, jobs)
+        # **装配 parity**:daemon 与 serve 的 tick 必须注入同一组件集。
+        # 少了 decision,决策任务只能报「未接线」;少了 verdicts 判定历史不落;
+        # 少了 actions 触发型规则静默不提案;少了 subscriptions 报告不投递 ——
+        # 四种都是"看着在跑、其实没接线"的静默劣化。组件一律从 components
+        # 取件(create_app_components 是唯一构造点),不在此就地 new。
+        runner = SchedulerRunner(
+            session_manager, jobs, lang=config.language,
+            decision=components["decision"],
+            verdicts=components["verdicts"],
+            actions=components["actions"],
+            subscriptions=components["subscriptions"],
+        )
         try:
             if args.once:
                 results = await runner.tick()
