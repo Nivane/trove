@@ -872,3 +872,205 @@ class TestGraphAttributionFlow:
         )["reflection"]
         result = await graph.ainvoke(make_attr_state())
         assert result.get("attribution") is None
+
+
+# ── 交互式假设轮(确定性分析之后、叙事之前的一轮) ─────────────
+
+def _prev_period_state(**kwargs):
+    """上一用例组的两期 state(loan 表有 2023-12 与 2024-01 两期数据)。"""
+    defaults = {
+        "session_id": "s1",
+        "run_id": "r1",
+        "question": "为什么平均贷款额度下降",
+        "lang": "zh",
+        "matched_tables": ["loan"],
+        "dialect": "sqlite",
+        "datasource": "test_db",
+        "attribution_plan": {
+            "target_metric": "avg of loan.amount",
+            "dimensions": ["loan.region"],
+            "baseline": "prev_period",
+            "depth": 1,
+        },
+        "time_context": "2024-01-01 ~ 2024-01-31",
+    }
+    defaults.update(kwargs)
+    return WorkflowState(**defaults)
+
+
+def _hyp_response(metric="avg of loan.amount", **over):
+    item = {"claim": "区域结构变化拉低了平均额度", "metric": metric,
+            "dimension": "loan.region", "value": "South",
+            "direction": "down", "min_pct": 0.1}
+    item.update(over)
+    return json.dumps({"hypotheses": [item]})
+
+
+class TestInteractiveHypotheses:
+    """假设轮的落位与纪律:LLM 只在**节点层**被调用(确定性分析先完成),
+    结果进 ``analysis["hypotheses"]`` 附录;跳过/失败都留可见的一行。
+
+    这个文件里顺序即断言:``RecordingLLM`` 按脚本出响应 —— 假设轮先跑,
+    叙事拿的是**第二条**脚本。所以「叙事读到了哪条」就是「假设轮有没有
+    先跑、跑了几次」的判据。
+    """
+
+    def _node(self, registry, llm, **over):
+        return make_attribution(
+            llm, on_config(**over), connectors=registry,
+            semantic_layer=registry._test_semantic_provider,
+        )
+
+    async def test_round_runs_before_the_narrative(self, two_period_registry):
+        llm = RecordingLLM([_hyp_response(), "叙事:结构性下滑"])
+        out = await self._node(two_period_registry, llm)(
+            _prev_period_state())
+
+        # 叙事读的是第二条脚本 → 假设轮确实先跑了一次 LLM 调用
+        assert out["attribution"]["narrative"] == "叙事:结构性下滑"
+        section = out["analysis"]["hypotheses"]
+        assert section["status"] == "ran"
+        # 当期/基期与归因表同一跨度(同一个 base_period) —— 否则裁决的是另一道题
+        assert section["window"] == ["2024-01-01", "2024-01-31"]
+        assert section["base_window"] == ["2023-12-01", "2023-12-31"]
+        row = section["verified"][0]
+        # South:基期 50 → 当期 40,-20% ≤ -10%;上限内的幅度断言钉住的是
+        # 「验证确实查了那个维度值」,不是聚合口径的巧合
+        assert row["status"] == "supported"
+        assert row["observed"]["pct_change"] == pytest.approx(-0.2)
+        assert row["queries"] == 2
+        assert section["queries"] == 2          # 账本记账随附录一起交付
+        assert "South" in section["evidence"][0]["sql"]
+        assert section["evidence"][0]["purpose"] == "hypothesis_current"
+
+    async def test_the_analysis_payload_keeps_its_deterministic_core(
+            self, two_period_registry):
+        """附录挂在 payload 上,但 payload 的确定性字段一个不少 ——
+        回放/缓存拿到的是确定性骨架 + 裁决记录。"""
+        llm = RecordingLLM([_hyp_response(), "叙事"])
+        out = await self._node(two_period_registry, llm)(_prev_period_state())
+        payload = out["analysis"]
+        assert payload["kind"] in ("attribution", "combined")
+        assert payload["metric"] == "avg of loan.amount"
+        assert payload["evidence"]["queries"]            # 确定性的查询清单还在
+        assert payload["hypotheses"]["verified"]
+
+    async def test_rejected_candidates_ride_along(self, two_period_registry):
+        """引用不成立的候选零查询被拒 —— 拒绝记录同样进附录。"""
+        llm = RecordingLLM([
+            json.dumps({"hypotheses": [
+                {"claim": "ok", "metric": "avg of loan.amount",
+                 "direction": "down", "min_pct": 0.1},
+                {"claim": "typo", "metric": "avg of loan.nope",
+                 "direction": "down"},
+            ]}),
+            "叙事",
+        ])
+        out = await self._node(two_period_registry, llm)(_prev_period_state())
+        section = out["analysis"]["hypotheses"]
+        # 引用不过的在解析期被拦(零查询),不进裁决行
+        assert [r["status"] for r in section["verified"]] == ["supported"]
+        assert section["queries"] == 2          # 只花了那一条好候选的两跳
+        assert section["rejected"][0]["reason"].startswith("unknown_metric")
+
+    async def test_off_switch_skips_the_round_entirely(self, two_period_registry):
+        import dataclasses
+
+        scan_off = dataclasses.replace(
+            AgentConfig().scan, interactive_hypotheses=False)
+        llm = RecordingLLM(["叙事"])
+        out = await self._node(two_period_registry, llm, scan=scan_off)(
+            _prev_period_state())
+        assert "hypotheses" not in out["analysis"]
+        assert out["attribution"]["narrative"] == "叙事"   # 第一条脚本给了叙事
+        assert len(llm.calls) == 1
+
+    async def test_share_baseline_is_a_visible_skip(self, attr_registry):
+        """share 基线没有"基期"可言 → 跳过,但跳过也是写下来的一行。"""
+        llm = RecordingLLM(["叙事"])
+        out = await self._node(attr_registry, llm)(make_attr_state())
+        section = out["analysis"]["hypotheses"]
+        assert section["status"] == "skipped"
+        assert section["reason"] == "share_baseline"
+        assert len(llm.calls) == 1                          # 没有为假设多花一次
+
+    def test_window_helper_matches_the_engine_contract(self):
+        """窗口助手与归因表**同源**(同一个 ``base_period``):share / 解析不了
+        → (None, None)。节点里 ``no_time_window`` 的分支是防御性的 —— 引擎
+        对解析不了的 time_context 一律降级 share(由 share_baseline 兜住),
+        但助手自身必须对 None 诚实(将来加基线类型时这是第一道闸)。"""
+        from trove.workflow.nodes.attribution import _hypothesis_windows
+
+        assert _hypothesis_windows("2024-01-01 ~ 2024-01-31", "prev_period") == (
+            ("2024-01-01", "2024-01-31"), ("2023-12-01", "2023-12-31"))
+        assert _hypothesis_windows("", "prev_period") == (None, None)
+        assert _hypothesis_windows("not a range", "prev_period") == (None, None)
+        assert _hypothesis_windows("2024-01-01 ~ 2024-01-31", "share") == (
+            None, None)
+
+    async def test_a_failing_round_degrades_the_appendix_not_the_chain(
+            self, two_period_registry):
+        class FlakyLLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("llm down")
+                return "叙事还在"
+
+        llm = FlakyLLM()
+        out = await self._node(two_period_registry, llm)(_prev_period_state())
+        assert out["attribution"]["table"]                  # 归因表完好
+        assert out["attribution"]["narrative"] == "叙事还在"  # 叙事照发
+        section = out["analysis"]["hypotheses"]
+        assert section["status"] == "skipped"
+        assert section["reason"].startswith("failed: llm down")
+
+    async def test_unparseable_draft_is_recorded_not_silent(
+            self, two_period_registry):
+        llm = RecordingLLM(["对不起,我无法给出假设", "叙事"])
+        out = await self._node(two_period_registry, llm)(_prev_period_state())
+        section = out["analysis"]["hypotheses"]
+        assert section["status"] == "ran"                   # 跑了,只是没产出
+        assert section["verified"] == []
+        assert section["rejected"] == [
+            {"claim": "", "reason": "unparseable_response"}]
+
+    async def test_the_prompt_tells_the_truth_about_where_the_data_came_from(
+            self, two_period_registry):
+        """给模型的前言不许撒谎:归因路径讲变动分解(不讲噪声带),
+        且带上归因表本体与列说明。"""
+        llm = RecordingLLM([_hyp_response(), "叙事"])
+        out = await self._node(two_period_registry, llm)(_prev_period_state())
+        assert out["analysis"]["hypotheses"]["status"] == "ran"
+        prompt = llm.calls[0][-1]["content"]
+        assert "数据归因助手" in prompt
+        assert "按维度分解" in prompt
+        assert "噪声带" not in prompt
+        # avg 是比率度量 + 环比 → shift-share 列集进 prompt(模型看到的
+        # 表与列说明必须就是归因表本体)
+        assert "columns: dim / base_rate" in prompt
+        assert "2023-12-01 ~ 2023-12-31" in prompt          # 基期跨度写明
+        assert "\t" in prompt                               # 归因表本体在内
+
+    async def test_max_hypotheses_caps_the_round(self, two_period_registry):
+        import dataclasses
+
+        capped = dataclasses.replace(AgentConfig().scan, max_hypotheses=1)
+        llm = RecordingLLM([
+            json.dumps({"hypotheses": [
+                {"claim": "a", "metric": "avg of loan.amount",
+                 "direction": "down", "min_pct": 0.1},
+                {"claim": "b", "metric": "avg of loan.amount",
+                 "direction": "down", "min_pct": 0.1},
+            ]}),
+            "叙事",
+        ])
+        out = await self._node(two_period_registry, llm, scan=capped)(
+            _prev_period_state())
+        section = out["analysis"]["hypotheses"]
+        assert len(section["verified"]) == 1
+        assert section["rejected"][0]["reason"] == "over_limit"
+        assert section["queries"] == 2                      # 只有一条吃掉预算

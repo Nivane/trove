@@ -99,6 +99,93 @@ def _limits_from_config(config: AgentConfig) -> AnalysisLimits:
     )
 
 
+#: 交互式假设轮的开场白(模板 ``scan/hypothesis`` 的 ``intro`` 槽)。
+#: 扫描路径的默认开场讲「超出历史噪声带」,归因路径必须讲「变动分解」
+#: —— 这个轮次的输入是归因表,不是块序列的噪声带。
+_HYPOTHESIS_INTRO = {
+    "zh": (
+        "你是一名数据归因助手。下面是确定性归因刚刚算出的主要变动点"
+        "(当期 vs 基期的按维度分解;contribution 是该维度贡献的变动量)。"
+    ),
+    "en": (
+        "You are a data-attribution analyst. Below are the main movers a "
+        "deterministic attribution just computed (current vs baseline, broken "
+        "down by dimension; contribution is that dimension's contribution to "
+        "the total change)."
+    ),
+}
+
+
+def _hypothesis_windows(
+    time_context: str, baseline: str,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+    """(当期窗口, 基期窗口)。share 基线 / time_context 解析不了 → (None, None)。
+
+    走**同一个** ``base_period`` —— 假设验证用的基期与归因表 base 列必须
+    是同一个跨度,否则裁决的就是另一道题。
+    """
+    if baseline == "share":
+        return None, None
+    periods = _base_period(time_context or "", baseline)
+    if periods is None:
+        return None, None
+    return periods
+
+
+def _skipped_hypotheses(reason: str) -> dict[str, Any]:
+    """跳过 → **可见的一行**(与「跑了但一条都没产出」区分得开)。"""
+    return {
+        "status": "skipped",
+        "reason": reason,
+        "verified": [],
+        "rejected": [],
+        "queries": 0,
+    }
+
+
+async def _hypothesis_round(
+    *,
+    llm: Any,
+    semantic_layer: Any,
+    runner: Callable[[str, str], Awaitable[tuple[list[str], list[list[Any]]]]],
+    datasource: str,
+    dialect: str,
+    lang: str,
+    model: str,
+    intro: str,
+    data: str,
+    limit: int,
+    max_queries: int,
+    window: tuple[str, str],
+    base_window: tuple[str, str],
+) -> dict[str, Any]:
+    """一轮 propose → verify(编排薄壳;起草/解析/裁决全在 ``scan.hypotheses``)。"""
+    from trove.services.analysis.budget import QueryLedger
+    from trove.services.scan import hypotheses as hyp
+
+    ledger = QueryLedger(total=max(2, int(max_queries)))
+    evidence: list[dict[str, Any]] = []
+    accepted, rejected = await hyp.propose(
+        llm, semantic_layer=semantic_layer, data=data, lang=lang,
+        limit=int(limit), model=model, intro=intro,
+    )
+    verified = await hyp.verify(
+        accepted, semantic_layer=semantic_layer, runner=runner,
+        datasource=datasource, dialect=dialect,
+        window=window, base_window=base_window,
+        ledger=ledger, evidence=evidence,
+    )
+    return {
+        "status": "ran",
+        "verified": [v.to_dict() for v in verified],
+        "rejected": rejected,
+        "window": list(window),
+        "base_window": list(base_window),
+        "queries": ledger.used,
+        "evidence": evidence,
+    }
+
+
 def make_attribution(
     llm: LLMGateway,
     config: AgentConfig,
@@ -184,6 +271,13 @@ def make_attribution(
         base_total = outcome.base_total
         cur_total = outcome.cur_total
 
+        zh = state.lang == "zh"
+        baseline_label = {
+            "prev_period": "环比" if zh else "previous period",
+            "yoy": "同比" if zh else "year-over-year",
+            "share": "占比" if zh else "share",
+        }[outcome.baseline]
+
         # 归因叙事(LLM,ground 在归因表;走 node_models["attribution"]
         # 覆盖,缺省回落 model_for → model_fast,与 insights 一致)。
         # 比率指标:表格列带率/权重/三效应,并注入分解汇总。
@@ -191,6 +285,10 @@ def make_attribution(
         if is_ratio:
             if effects is not None:
                 # shift-share:贡献 = 对整体率的绝对贡献(点),与 delta 同量纲
+                cols = (
+                    "dim / base_rate / current_rate / base_weight / "
+                    "current_weight / within / composition / interaction / contribution"
+                )
                 table_text = "\n".join(
                     f"{it['dim']}\t{it['base_rate']:g}\t{it['current_rate']:g}\t"
                     f"{it['base_weight']:.1%}\t{it['current_weight']:.1%}\t"
@@ -200,23 +298,71 @@ def make_attribution(
                 )
             else:
                 # share 基线:贡献 = 分子占比(无基期,无率变化可拆)
+                cols = "dim / current_rate / current_weight / contribution"
                 table_text = "\n".join(
                     f"{it['dim']}\t{it['current_rate']:g}\t{it['current_weight']:.1%}\t"
                     f"{it['contribution']:+.1%}"
                     for it in table[:MAX_ATTRIBUTION_ROWS]
                 )
         else:
+            cols = "dim / base / current / delta / contribution"
             table_text = "\n".join(
                 f"{it['dim']}\t{it['base']:g}\t{it['current']:g}\t{it['delta']:g}\t{it['contribution']:+.1%}"
                 for it in table[:MAX_ATTRIBUTION_ROWS]
             )
+
+        # 交互式假设轮(可选,上限 N):确定性分析已产出表 → LLM 起草
+        # 可证伪假设 → 确定性裁决(每条恰一行四态)。LLM 调用**发生在这
+        # 里**(workflow 节点层)—— ``analysis_payload`` 本体零 LLM,假设
+        # 节只是节点层附加的附录;起草/裁决失败只降级附录,绝不阻断主链。
+        # 跳过也写成可见的一行(status=skipped + reason),与「跑了但一条
+        # 都没产出」区分得开。
+        hypotheses_section: dict[str, Any] | None = None
+        if (
+            config.scan.interactive_hypotheses
+            and config.scan.max_hypotheses > 0
+            and llm is not None
+            and table_text
+        ):
+            cur_window, base_window = _hypothesis_windows(
+                state.time_context or "", outcome.baseline)
+            if base_window is None:
+                hypotheses_section = _skipped_hypotheses(
+                    "share_baseline" if outcome.baseline == "share"
+                    else "no_time_window")
+            else:
+                try:
+                    hypotheses_section = await _hypothesis_round(
+                        llm=llm,
+                        semantic_layer=semantic_layer,
+                        runner=_runner,
+                        datasource=state.datasource or "",
+                        dialect=state.dialect or "sqlite",
+                        lang=state.lang,
+                        model=config.model_for_node("attribution", state.complexity),
+                        intro=_HYPOTHESIS_INTRO.get(
+                            state.lang, _HYPOTHESIS_INTRO["en"]),
+                        data="\n".join(x for x in (
+                            f"metric: {metric_name}",
+                            f"dimension: {primary_dim}",
+                            f"baseline: {baseline_label} "
+                            f"({base_window[0]} ~ {base_window[1]})",
+                            f"columns: {cols}",
+                            table_text,
+                        ) if x),
+                        limit=config.scan.max_hypotheses,
+                        max_queries=config.scan.max_queries,
+                        window=cur_window,
+                        base_window=base_window,
+                    )
+                except Exception as e:  # noqa: BLE001 — 假设是附录,不拖垮主链
+                    logger.warning(
+                        "Attribution hypothesis round failed (%s); skipping", e)
+                    hypotheses_section = _skipped_hypotheses(
+                        f"failed: {str(e)[:160]}")
+
         if llm is not None and table_text:
             model = config.model_for_node("attribution", state.complexity)
-            baseline_label = {
-                "prev_period": "环比" if state.lang == "zh" else "previous period",
-                "yoy": "同比" if state.lang == "zh" else "year-over-year",
-                "share": "占比" if state.lang == "zh" else "share",
-            }[outcome.baseline]
             try:
                 prompt_kwargs = dict(
                     question=state.question,
@@ -262,8 +408,7 @@ def make_attribution(
             except Exception as e:
                 logger.warning("Attribution narrative failed (%s); skipping", e)
 
-        zh = state.lang == "zh"
-        baseline_label = {
+        baseline_period_label = {
             "prev_period": "基期" if zh else "Base period",
             "yoy": "去年同期" if zh else "Same period last year",
             "share": "本期" if zh else "Current period",
@@ -274,7 +419,8 @@ def make_attribution(
             )
         else:
             chart = _waterfall_chart(
-                state.question, baseline_label, base_total, cur_total, table, state.lang,
+                state.question, baseline_period_label, base_total, cur_total,
+                table, state.lang,
             )
 
         result = {
@@ -298,9 +444,13 @@ def make_attribution(
             outcome,
             question=state.question,
             chart=chart,
-            baseline_label=baseline_label,
+            baseline_label=baseline_period_label,
             datasource=state.datasource or "",
         )
+        if hypotheses_section is not None:
+            # 节点层附录:LLM 在节点层调用,分析包本体(analysis_payload)
+            # 保持零 LLM —— 回放/缓存拿到的是确定性骨架 + 假设裁决记录。
+            payload["hypotheses"] = hypotheses_section
         return {
             "attribution": result,
             "attribution_hops": outcome.hops,
