@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
 import re
 from collections.abc import Callable, Iterable
 from typing import Any, AsyncIterator
@@ -2398,7 +2399,7 @@ class SessionManager:
         principal: dict[str, Any] | None = None,
         topic: str | None = None,
     ) -> tuple:
-        """键 = (会话, 数据源, 归一化问句, 主体, 主题域)。
+        """键 = (会话, 数据源, 归一化问句, 主体, 主题域, 授权快照)。
 
         数据源隔离:同一问句在不同库上是不同问题。主题域同理 —— 同一问句
         带不同主题域,问数范围不同(域外数据集注定不可锚),答案也可能不同;
@@ -2413,7 +2414,15 @@ class SessionManager:
 
         主体取自**已解析的** ``principal`` 而不是 ``on_behalf_of`` 入参:重放
         时入参是发起人、主体是目标,而这份数据属于后者。无 auth / CLI 场景
-        ``principal`` 为 None → 分量是空串,与改动前同一行为。"""
+        ``principal`` 为 None → 分量是空串,与改动前同一行为。
+
+        最后一个分量是**判定这份结果可见性所用的全部依据**(role / scopes /
+        grants / topic_grants,规范 JSON;见 :meth:`_authz_component`)。命中
+        路径**不执行图**:``schema_linking`` 的域收敛与 ``masking`` 的脱敏都
+        不会再跑 —— 所以"按什么范围判的"必须由键本身携带。只带 ``subject``
+        不够:同一个主体在管理员收窄其主题域(或数据源)授权前后,是两个不同
+        的可见范围;没有这个分量,收窄后的第一条同问会在 TTL 内把旧范围的
+        结果原样再端一次。"""
         ds = datasource or ""
         if not ds and self._connectors is not None:
             try:
@@ -2424,7 +2433,27 @@ class SessionManager:
         return (
             session.session_id, ds, self._normalize_question(question), subject,
             (topic or "").strip().lower(),
+            self._authz_component(principal),
         )
+
+    @staticmethod
+    def _authz_component(principal: dict[str, Any] | None) -> str:
+        """授权快照 → 规范字符串(缓存键的最后一个分量;理由见 ``_cache_key``)。
+
+        畸形形状回退 ``repr`` 而不是抛:缓存是尽力而为的优化,一条算不出的键
+        不该把整个提问打挂 —— 回退值仍区分不同形态(``principal_to_wire`` 的
+        键序固定,dict 的 repr 按插入序稳定)。"""
+        if not principal:
+            return ""
+        snapshot = {
+            k: principal.get(k)
+            for k in ("role", "scopes", "grants", "topic_grants")
+        }
+        try:
+            return json.dumps(
+                snapshot, sort_keys=True, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return repr(snapshot)
 
     def _cache_get(self, key: tuple) -> dict[str, Any] | None:
         hit = self._result_cache.get(key)

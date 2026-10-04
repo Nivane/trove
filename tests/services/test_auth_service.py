@@ -329,6 +329,8 @@ async def test_topic_grants_malformed_storage_reads_as_deny_all(auth):
     """人工改库改坏的字节 → 空字典(一个域都不见),**不是** None。
 
     None 在域层是"未收窄";把读不懂的东西翻译成放行是最坏的降级方向。
+    空串也算"读不懂":自家写入器只落 NULL 或合法 JSON(None 走 NULL),
+    ``''`` 只可能来自库外的手。
     """
     u = await auth.create_user("bob", "pw")
     await auth.store._backend.execute(
@@ -340,6 +342,12 @@ async def test_topic_grants_malformed_storage_reads_as_deny_all(auth):
     await auth.store._backend.execute(
         "UPDATE users SET topic_grants_json = ? WHERE id = ?",
         ("not json at all", u["id"]))
+    await auth.store._backend.commit()
+    assert await auth.get_topic_grants(u["id"]) == {}
+
+    await auth.store._backend.execute(
+        "UPDATE users SET topic_grants_json = ? WHERE id = ?",
+        ("", u["id"]))                          # 空串:同样从严
     await auth.store._backend.commit()
     assert await auth.get_topic_grants(u["id"]) == {}
 

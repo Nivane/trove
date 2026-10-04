@@ -188,6 +188,21 @@ class Principal:
     #: None = 未配置收窄;见类 docstring 的第二张表
     topic_grants: dict[str, frozenset[str]] | None = None
 
+    def __hash__(self) -> int:
+        """冻结类的自动 ``__hash__`` 在 ``topic_grants`` 是 dict 时会 ``TypeError``。
+
+        不补的话,「配了域授权的用户」与其余用户是两个可哈希性不同的群体 ——
+        未来任何以 Principal 为键的记忆化都会**只对他们**炸(而且是配了授权
+        之后才出现,最难联想)。值都是 frozenset,items 转 frozenset 后与自动
+        ``__eq__`` 一致(内容相等 → 哈希相等)。
+        """
+        return hash((
+            self.subject, self.role, self.scopes, self.grants,
+            self.on_behalf_of,
+            None if self.topic_grants is None
+            else frozenset(self.topic_grants.items()),
+        ))
+
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"

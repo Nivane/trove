@@ -306,9 +306,15 @@ async def test_topics_listing_datasource_gate_still_first(
 async def test_topics_listing_admin_sees_all_despite_topic_grants(
     client, api_app, api_kb, auth_service,
 ):
-    """admin 不受域级授权约束(与数据源门同一套 admin 语义)。"""
+    """admin 不受域级授权约束(与数据源门同一套 admin 语义)。
+
+    给 admin **本人**种一份收窄到零的清单 —— 不种的话这条测试同时被
+    「None = 未收窄」分支放行,删掉 admin 豁免也照样绿(名不副实)。
+    """
     _seed_topics(api_app, [{"name": "learners", "datasets": ["students"]}])
     await api_app.state.kb.ensure_synced("test_db")
+    admin = await auth_service.authenticate("admin", "adminpw")
+    await auth_service.set_topic_grants(admin["id"], {"test_db": []})
 
     resp = await client.get(
         "/v1/semantic/topics", params={"datasource": "test_db"})

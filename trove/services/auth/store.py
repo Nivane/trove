@@ -130,14 +130,14 @@ def _like_pattern(text: str) -> str:
 
 
 def _parse_topic_grants(raw: Any) -> dict[str, list[str]] | None:
-    """``topic_grants_json`` → 归一化字典;NULL/空串 = 未配置(``None``)。
+    """``topic_grants_json`` → 归一化字典;NULL = 未配置(``None``)。
 
-    **形状异常 → 空字典(该主体一个域都不见),不是 ``None``**:``None`` 在
-    域层是「未收窄」,把一段读不懂的字节翻译成放行是最坏的降级方向。写入侧
-    只会写合法 JSON(``json.dumps``),异常只可能来自人工改库 —— 那时严的
-    方向才是对的。
+    **读不懂的字节一律 → 空字典(该主体一个域都不见),不是 ``None``** ——
+    空串也在其列:``None`` 在域层是「未收窄」,把一段读不出的内容翻译成放行
+    是最坏的降级方向。写入侧只会写合法 JSON 或 SQL NULL(``json.dumps`` /
+    列可空),``''`` 这类字节只可能来自人工改库 —— 那时严的方向才是对的。
     """
-    if raw is None or raw == "":
+    if raw is None:
         return None
     try:
         doc = json.loads(raw)

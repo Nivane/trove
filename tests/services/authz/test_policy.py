@@ -126,6 +126,18 @@ class TestAllowsTopic:
         assert p.allows_topic("fin", "loans") is True
         assert p.allows_topic("fin", "clients") is False
 
+    def test_principal_is_hashable_when_topic_grants_are_set(self):
+        """冻结类带 dict 字段:不补 ``__hash__`` 就**只对配了授权的人**炸。
+
+        内容相等 → 哈希相等;内容不同 → 哈希(与 eq)必须分得开,
+        否则未来拿到 set / dict 键上会发生静默碰撞。
+        """
+        a = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})
+        b = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})
+        c = Principal(subject="1", topic_grants={"fin": frozenset()})
+        assert hash(a) == hash(b)
+        assert len({a, b, c}) == 2
+
     def test_unlisted_datasource_has_no_topics(self):
         """声明了清单就是**完整**清单;漏写的源 = 无域(没有「默认域」)。"""
         p = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})

@@ -685,6 +685,36 @@ class TestCacheMaskingIsolation:
         assert plain[3] == ""          # 无主体(CLI / 无 auth)保持原样
         assert replayed[3] == "7"
 
+    async def test_a_narrowed_scope_is_a_different_key(
+        self, cache_manager, tmp_home,
+    ):
+        """TTL 内收窄授权 → 新键 → 必 miss(命中路径不跑图,不会重判范围)。
+
+        场景:同一主体、同一问句、同一主题域,管理员在 300s TTL 内把主题域
+        (或数据源)授权从「未收窄」改成清单 —— 旧结果是按**另一个可见范围**
+        判出来的(可能已经端出过现在不该看到的行),回放它等于范围失效。
+        ``subject`` 分量对此无感(收窄不换人),所以授权快照必须自成一个分量。
+        """
+        session = await cache_manager.start_session(
+            project_cwd="/tmp/p", user_id="7")
+        wide = {"subject": "7", "role": "user", "scopes": [], "grants": None,
+                "topic_grants": None}
+        narrowed = {**wide, "topic_grants": {"fin": ["loans"]}}
+
+        old = cache_manager._cache_key(session, "q", None, wide, "loans")
+        new = cache_manager._cache_key(session, "q", None, narrowed, "loans")
+        assert old != new
+        # 同快照无论构造几次同键(内容相等 → 键相等)
+        assert cache_manager._cache_key(
+            session, "q", None, dict(wide), "loans") == old
+        # 数据源级 grants 的收窄同理(同一类洞,一起关)
+        assert cache_manager._cache_key(
+            session, "q", None, {**wide, "grants": ["fin"]}, "loans") != old
+        # 具体到「收窄后不命中」:旧键存,新键取不到
+        cache_manager._cache_put(old, {"question": "q"})
+        assert cache_manager._cache_get(old) is not None
+        assert cache_manager._cache_get(new) is None
+
     async def test_a_masked_run_is_still_cached(self, cache_manager, tmp_home):
         """反向:脱敏过的运行**照常缓存** —— 别把缓存整个关掉。
 
