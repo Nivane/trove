@@ -275,3 +275,26 @@ def test_validator_scope_missing_column_is_unknown_not_false():
     assert got is UNKNOWN
     with pytest.raises(TypeError):
         bool(got)
+
+
+# ── 一致性回归门:FUNCTIONS ↔ Call.eval ──────────────────────
+
+def test_call_eval_branches_match_functions_table():
+    """函数表(解析期闭集)与求值分支必须同键集。
+
+    ``FUNCTIONS`` 决定 `f(...)` 能否解析,``Call.eval`` 决定它能否算出来。
+    两边漂移的失败模式是**最坏的一种**:解析放行、求值落 ``UNKNOWN`` ——
+    一条规则从"写错了"变成"永远判不了",而判不了永远不触发,从外面看与
+    "检查通过"一模一样。键集相等 = 两个表在同一份代码里。
+    """
+    import inspect
+    import re
+
+    from trove.services.decision.expr import FUNCTIONS, Call
+
+    src = inspect.getsource(Call.eval)
+    branches = set(re.findall(r'self\.name == "([a-z_][a-z0-9_]*)"', src))
+    assert branches == set(FUNCTIONS)
+    # 兜底仍在:未知名字不许有除 Unknown 之外的结局(表与分支相等时它
+    # 是死代码,但它是"两边漂移时唯一的安全网")。
+    assert src.rstrip().endswith("return UNKNOWN")

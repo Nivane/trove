@@ -21,6 +21,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
 
 uv run python scripts/lint_kb.py --db-id demo   # KB quality check (static; --db-id 默认 financial 需按实际 KB 目录指定)
 uv run python scripts/lint_kb.py --db-id financial --datasource mysql://root:root@127.0.0.1:3306/financial   # + live enum probe
+uv run trove validate [--datasource NAME] [--json] [--strict] [--live]   # 扩展面干跑校验:KB lint/决策规则编译/org 技能挂点;零 LLM/零网络,硬错误退出码 1
 ```
 
 ### Docker 部署（前后端独立容器）

@@ -915,6 +915,12 @@ def main_repl():
         except KeyboardInterrupt:
             sys.exit(0)
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "validate":
+        # 扩展面干跑校验:零 LLM / 零网络(除非 --live),退出码即结论
+        # (0 干净 / 1 硬错误),可直接挂 CI。
+        from trove.cli.commands.validate_cmds import main_validate
+
+        sys.exit(main_validate(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
         async def _run_maint():
             from trove.cli.maintenance_cmds import main_maintenance
