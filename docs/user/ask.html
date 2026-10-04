@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 提问与读懂答案：怎么问、主题域范围收敛、答案的每个部分怎么读（结论 / 结果表 / 数据截止时间与置信度 / 洞察）、图表与下钻、依据抽屉（SQL / 执行事实 / 校验反思 / 运行轨迹）、分析面板、答案来源四档。">
+<meta name="description" content="Trove 提问与读懂答案：怎么问、主题域范围收敛、答案的每个部分怎么读（结论 / 结果表 / 数据截止时间与置信度 / 洞察）、图表与下钻、归因分析卡、依据抽屉（SQL / 执行事实 / 校验反思 / 运行轨迹）、分析面板、答案来源四档。">
 <title>提问与读懂答案 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -61,6 +61,23 @@
       <strong>示例问句</strong>（「从这里开始问」），不知道从哪问起时可以直接点。
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-topic-select.png" alt="提问框旁的主题域选择器展开：不限定主题（默认）与四个主题域（Loans / Transactions / Cards / Customers），每个域带描述与范围表数">
+        <span class="pin" style="--x:43.0%;--y:3.1%">1</span>
+        <span class="pin" style="--x:45.9%;--y:8.4%">2</span>
+        <span class="pin" style="--x:45.0%;--y:16.2%">3</span>
+        <span class="pin" style="--x:65.3%;--y:16.2%">4</span>
+      </div>
+      <figcaption>图 1 · 主题域选择器展开。域清单、描述与范围表数都来自语义模型的声明原文。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>主题域选择器</strong>——与数据源选择器同一行；当前数据源没有声明任何域时，整个选择器不显示。</li>
+        <li><span class="n">2</span><strong>「不限定主题」</strong>——默认档：问题面向整个数据源回答。</li>
+        <li><span class="n">3</span><strong>域与描述</strong>——名字和描述是建模原文，可能中英混排，展示层不代译；声明过的数据集全部下线的域会在这里置灰标「已失效」。</li>
+        <li><span class="n">4</span><strong>「N 张表」</strong>——该域声明的范围数据集数量；悬停可以看到具体的表名清单。</li>
+      </ol>
+    </figure>
+
     <ul>
       <li><strong>越界或问不出来，都如实说</strong>——问题落在所选域的可答范围之外，会被明确告知（连同该域声明的范围），而不是悄悄放回整个数据源上给一个看似合理的答案。选范围是为了更准，不是为了被糊弄。</li>
       <li><strong>已失效的域置灰、但不消失</strong>——域声明过的数据集已全部从语义模型里下线时，标「已失效」且不可选。让它留在清单里是刻意的：静默消失会让你带着一个选不中的旧值继续提问。</li>
@@ -89,7 +106,7 @@
         <span class="pin" style="--x:48.0%;--y:66.3%">6</span>
         <span class="pin" style="--x:48.0%;--y:74.2%">7</span>
       </div>
-      <figcaption>图 1 · 一条完整答案。上半是给人读的（结论 → 数据 → 口径），下半是给核查用的（出处与依据）。</figcaption>
+      <figcaption>图 2 · 一条完整答案。上半是给人读的（结论 → 数据 → 口径），下半是给核查用的（出处与依据）。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>你的提问</strong>——留在会话里，多轮对话中后一条问题会继承前文的语境。</li>
         <li><span class="n">2</span><strong>结论</strong>——一句话给出答案本身。先读这里；数字有疑问再往下核。</li>
@@ -128,7 +145,7 @@
         <span class="pin" style="--x:67.7%;--y:59.8%">5</span>
         <span class="pin" style="--x:67.7%;--y:82.3%">6</span>
       </div>
-      <figcaption>图 2 · 依据抽屉。「语义编译」这枚章说的是这条 SQL 由语义层编译器权威生成——不是模型自由发挥。</figcaption>
+      <figcaption>图 3 · 依据抽屉。「语义编译」这枚章说的是这条 SQL 由语义层编译器权威生成——不是模型自由发挥。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>来源与运行时</strong>——数据源、运行 ID、时间与<strong>来源档位</strong>（已认证复用 / 知识库复用 / 语义编译 / 模型生成，见下节）。</li>
         <li><span class="n">2</span><strong>生成的 SQL</strong>——实际执行的语句，一键复制。核查口径最快的一步就是读这条 SQL 的聚合与过滤。</li>
@@ -156,16 +173,49 @@
         <span class="pin" style="--x:32.9%;--y:70.4%">5</span>
         <span class="pin" style="--x:47.9%;--y:78.8%">6</span>
       </div>
-      <figcaption>图 3 · 图表卡。洞察先给结论（A 状态最多、C 状态数量超过 A/B/D 之和），图形供快速核对，两者指向同一份结果表。</figcaption>
+      <figcaption>图 4 · 图表卡。洞察先给结论（A 状态最多、C 状态数量超过 A/B/D 之和），图形供快速核对，两者指向同一份结果表。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>洞察</strong>——同一份结果的文字解读，带具体数值与占比。</li>
         <li><span class="n">2</span><strong>图表类型</strong>——折线图 / 柱状图 / 饼图随手切换，不重新查询。</li>
         <li><span class="n">3</span><strong>下载</strong>——把当前图表保存为图片，用于汇报材料。</li>
         <li><span class="n">4</span><strong>图形区</strong>——轴与系列直接来自结果表，不经过任何二次加工。</li>
         <li><span class="n">5</span><strong>分类下钻</strong>——点某个分类只看它（如只看 C），图形联动过滤。</li>
-        <li><span class="n">6</span><strong>出处条</strong>——与图 1 相同：图表也带完整出处与校验状态，可一样核到 SQL。</li>
+        <li><span class="n">6</span><strong>出处条</strong>——与图 2 相同：图表也带完整出处与校验状态，可一样核到 SQL。</li>
       </ol>
     </figure>
+
+    <h2 id="attribution">归因分析卡：问「为什么」时多出来的那块</h2>
+
+    <p>
+      问题在问<strong>「为什么」</strong>（归因类）时，答案正文下方会多出一张
+      <strong>归因分析卡</strong>：把「总变化从哪来」分解到主维度的每个分类上。
+      分解是确定性的、零 LLM——瀑布、贡献表与证据里的 SQL 同源同数。
+      与其它卡片同一套纪律：<strong>拿不到就不渲染</strong>，整节缺席，而不是给一块空壳。
+    </p>
+
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/user-chat-attribution.png" alt="归因分析卡：卡片头的已声明度量章、总变化与主维度、分类瀑布图、维度贡献表（基期 / 当前 / Δ / 贡献）、证据（查询 2）与出处条">
+        <span class="pin" style="--x:24.0%;--y:17.7%">1</span>
+        <span class="pin" style="--x:29.6%;--y:22.3%">2</span>
+        <span class="pin" style="--x:47.4%;--y:38.4%">3</span>
+        <span class="pin" style="--x:43.1%;--y:62.7%">4</span>
+        <span class="pin" style="--x:27.4%;--y:70.1%">5</span>
+      </div>
+      <figcaption>图 5 · 归因分析卡。「为什么不同贷款状态的最大贷款金额差异这么大?」的总变化 +590,820 被拆到四个贷款状态上。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>度量与口径章</strong>——归因沿语义模型的<strong>已声明度量</strong>解析（这里是 <code>max_loan_amount</code>）；「归因」标卡片类型，「本期」标基线口径。</li>
+        <li><span class="n">2</span><strong>总变化与主维度</strong>——当期相对基线的总差，以及沿哪个维度分解（这里是 <code>loan.status</code>）。</li>
+        <li><span class="n">3</span><strong>瀑布图</strong>——每个分类对总差的贡献推演，首尾两端是基期与当期合计的参照柱。</li>
+        <li><span class="n">4</span><strong>贡献表</strong>——逐行的基期 / 当前 / Δ / 贡献占比，与瀑布同源同数。度量可分解时，这下面还会多一段<strong>驱动器树</strong>（沿语义模型的表达式逐层拆）；本例是叶子度量（最大值），没有可拆的层级，这一节整节缺席。</li>
+        <li><span class="n">5</span><strong>证据（查询 N）</strong>——这次归因实跑过的查询清单（本例两条：当期与基期各一条）。它是独立的只读分析：不成时整卡不出现，绝不改变答案本身；哪一步没做成以 <code>degraded</code> 记在这里。</li>
+      </ol>
+    </figure>
+
+    <p>
+      同一条分析在<strong>决策侧</strong>也接在告警上：判定触发时顺带跑一次，
+      把「主因」压进通知行——见<a href="../capabilities/decisions.html">决策规则</a>里的「分析→决策桥」。
+    </p>
 
     <h2 id="analysis">分析面板：看它怎么一步步算出来</h2>
 
@@ -183,7 +233,7 @@
         <span class="pin" style="--x:88.9%;--y:30.1%">3</span>
         <span class="pin" style="--x:90.3%;--y:81.4%">4</span>
       </div>
-      <figcaption>图 4 · 一次完整运行：13 个步骤、总耗时 8.5s。等待答案时盯着这里，比干等进度条信息量大得多。</figcaption>
+      <figcaption>图 6 · 一次完整运行：13 个步骤、总耗时 8.5s。等待答案时盯着这里，比干等进度条信息量大得多。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>总览</strong>——步骤数与总耗时。同一问题在不同数据源上的耗时结构可能完全不同。</li>
         <li><span class="n">2</span><strong>步骤条目</strong>——每步带名称、耗时与状态圆点，点开看该步的细节（输入输出、命中资产、生成内容）。</li>

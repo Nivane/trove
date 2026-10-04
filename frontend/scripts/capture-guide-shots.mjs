@@ -102,6 +102,17 @@ const SHOTS = [
     wait: '.empty-center',
   },
   {
+    // 主题域选择器:只在当前源声明了域时才出现(financial 有四个域)。
+    // 展开下拉是这张图的主题——域 + 描述 + 范围表数是一等清单信息。
+    name: 'user-topic-select',
+    path: '/',
+    before: async (page) => {
+      await page.click('.chat-topic-select')
+    },
+    wait: '.el-select-dropdown__item .topic-opt-scope',
+    settle: 600,
+  },
+  {
     name: 'user-chat-answer',
     path: '/',
     before: async (page) => {
@@ -150,6 +161,39 @@ const SHOTS = [
     // question the seeded HERO session carries. Left behind, it sorts to the
     // top of the sidebar (visible in every later user shot) and openSession
     // would have to keep dodging it — delete it so a re-run is idempotent.
+    postshot: async (page) => {
+      await page.evaluate(async () => {
+        const sid = localStorage.getItem('trove_ui_session')
+        const token = localStorage.getItem('trove_auth_token')
+        if (!sid) return
+        await fetch(`/v1/sessions/${sid}`, {
+          method: 'DELETE',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+      })
+    },
+  },
+  {
+    // 归因问题走「意图 → 归因计划 → 多跳下钻」,分析卡在跑完之后才渲染。
+    // 问句刻意对准 sketch 大纲里列出的已声明度量(max_loan_amount)——
+    // 归因节点按「精确度量名」解析,口径名对不上会静默跳过分析(无卡片)。
+    name: 'user-chat-attribution',
+    path: '/',
+    before: async (page) => {
+      await page.click('.new-session-btn:has-text("新建会话")')
+      await page.fill('.composer-input', '为什么不同贷款状态的最大贷款金额差异这么大?')
+      await page.click('.send-btn')
+    },
+    wait: '.assistant-turn .ana-card',
+    timeout: 180000,
+    // 卡片在答案正文下方,聊天区内层滚动 —— 把卡片顶滚到视野顶部。
+    after: async (page) => {
+      await page
+        .locator('.assistant-turn .ana-card')
+        .evaluate((el) => el.scrollIntoView({ block: 'start' }))
+    },
+    // 瀑布图有入场动画,等它画完再拍(与 user-chat-analysis 同一套路)。
+    settle: 1200,
     postshot: async (page) => {
       await page.evaluate(async () => {
         const sid = localStorage.getItem('trove_ui_session')
@@ -304,6 +348,25 @@ const SHOTS = [
     wait: '.job-dialog .el-table__row',
   },
   {
+    // 订阅抽屉(决策任务):订阅者 × 模式(总是/仅提醒)× 频道 + 投递记录。
+    // 两张表两次请求 —— 先等订阅行,再由 wait 证明投递记录也已落地。
+    name: 'admin-subs',
+    role: 'admin',
+    path: '/admin/jobs',
+    before: async (page) => {
+      await page
+        .locator('.el-table__row:has-text("贷款总额基线巡检") .el-button:has-text("订阅")')
+        .first()
+        .click()
+      await page
+        .locator('.drawer-panel .subs-add ~ .el-table .el-table__row')
+        .first()
+        .waitFor()
+    },
+    wait: '.drawer-panel .subs-sec + .el-table .el-table__row',
+    settle: 600,
+  },
+  {
     name: 'admin-decisions',
     role: 'admin',
     path: '/admin/decisions',
@@ -315,6 +378,33 @@ const SHOTS = [
     },
     wait: '.el-textarea.decisions-yaml',
     settle: 800,
+  },
+  {
+    // 行动审批台:提案列表(默认筛选「待处理」= pending ∪ approved ∪ failed)。
+    // 播种的待批提案来自 demo/loan-high 的触发性判定。
+    name: 'admin-actions',
+    role: 'admin',
+    path: '/admin/actions?tab=proposals',
+    wait: '.admin-table .el-table__row',
+    settle: 600,
+  },
+  {
+    // 判定历史抽屉:行内唯一动作(固定最右列)。展开最新一条 → 证据段
+    // (SQL + 判定行 + 判定卡)随之渲染;diff chip 显示与上一条之间的变化。
+    name: 'admin-verdict-history',
+    role: 'admin',
+    path: '/admin/decisions',
+    before: async (page) => {
+      await page.click('.el-select.ds-select')
+      await page.locator('.el-select-dropdown__item:has-text("demo")').last().click()
+      await page
+        .locator('.el-table__row:has-text("loan-high") .el-button:has-text("历史")')
+        .first()
+        .click()
+      await page.locator('.drawer-panel .vh-row').first().click()
+    },
+    wait: '.drawer-panel .vh-detail .vh-sql',
+    settle: 600,
   },
   {
     // Plain list first: the preview drawer (next shot) covers the 层级/状态

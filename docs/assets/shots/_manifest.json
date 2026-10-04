@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-10-03T03:33:53.318Z",
-  "frontendCommit": "e5a762e",
-  "baseUrl": "http://localhost:5174",
+  "generatedAt": "2026-10-04T02:57:16.000Z",
+  "frontendCommit": "739f753",
+  "baseUrl": "http://localhost:5173",
   "viewport": {
     "width": 1440,
     "height": 900
@@ -30,6 +30,17 @@
       "width": 1624,
       "height": 1015,
       "bytes": 124799
+    },
+    {
+      "name": "user-topic-select",
+      "file": "user-topic-select.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 174275
     },
     {
       "name": "user-chat-answer",
@@ -74,6 +85,17 @@
       "width": 1624,
       "height": 1015,
       "bytes": 278883
+    },
+    {
+      "name": "user-chat-attribution",
+      "file": "user-chat-attribution.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 298073
     },
     {
       "name": "user-chat-feedback",
@@ -230,6 +252,17 @@
       "bytes": 165746
     },
     {
+      "name": "admin-subs",
+      "file": "admin-subs.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 304821
+    },
+    {
       "name": "admin-decisions",
       "file": "admin-decisions.png",
       "captured": {
@@ -239,6 +272,28 @@
       "width": 1624,
       "height": 1015,
       "bytes": 255647
+    },
+    {
+      "name": "admin-actions",
+      "file": "admin-actions.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 206424
+    },
+    {
+      "name": "admin-verdict-history",
+      "file": "admin-verdict-history.png",
+      "captured": {
+        "width": 2880,
+        "height": 1800
+      },
+      "width": 1624,
+      "height": 1015,
+      "bytes": 296787
     },
     {
       "name": "admin-skills-table",

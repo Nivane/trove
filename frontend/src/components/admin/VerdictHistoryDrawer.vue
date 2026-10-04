@@ -101,8 +101,13 @@ function diffSummary(d: VerdictDetail['diff']): string {
   if (d.trigger === 'fired') bits.push(t('decisionsDiffFired', ui.lang))
   if (d.trigger === 'cleared') bits.push(t('decisionsDiffCleared', ui.lang))
   for (const g of d.groups) {
+    // 无维度规则(唯一分组的 dim 是空串)的 fired/cleared 与上面的规则级
+    // 触发位说的是同一件事(规则级 triggered = 任一分组触发)——不再叠加,
+    // 也避免留下一个悬空的「 · 」;幅度突变没有规则级对应位,照常单独写出。
+    if (!g.dim && (g.change === 'fired' || g.change === 'cleared')) continue
     const key = GROUP_LABELS[g.change]
-    bits.push(`${g.dim} · ${key ? t(key as never, ui.lang) : g.change}`)
+    const label = key ? t(key as never, ui.lang) : g.change
+    bits.push(g.dim ? `${g.dim} · ${label}` : label)
   }
   return bits.length ? bits.join(' · ') : t('decisionsDiffNone', ui.lang)
 }

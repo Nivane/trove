@@ -115,6 +115,23 @@
       收不收由收件人自己决定，不是只管发不管收。
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-subs.png" alt="任务的「报告订阅」抽屉：添加订阅（用户名 / 模式 / 通道）、两条生效订阅（docs-user 仅告警、docs-guide 每期，可启停 / 编辑 / 删除）与投递记录表">
+        <span class="pin" style="--x:65.9%;--y:14.3%">1</span>
+        <span class="pin" style="--x:61.6%;--y:30.5%">2</span>
+        <span class="pin" style="--x:91.7%;--y:30.5%">3</span>
+        <span class="pin" style="--x:70.2%;--y:43.1%">4</span>
+      </div>
+      <figcaption>图 3 · 订阅抽屉（任务「贷款总额基线巡检」）。上半是订阅名单，下半是每次投递的台账。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>添加订阅</strong>——用户名 + 模式（每期 / 仅告警）+ 可选通道；通道留空即沿用任务通道。</li>
+        <li><span class="n">2</span><strong>一条订阅</strong>——订阅者、模式芯片与这条订阅实际生效的通道。</li>
+        <li><span class="n">3</span><strong>启停与编辑 / 删除</strong>——管理员在这里调整；收件人也能在自己的「我的订阅」页退订。</li>
+        <li><span class="n">4</span><strong>投递记录</strong>——每次投递一行账（订阅 × 运行唯一）：运行号、通道、状态、消息摘要与时间。</li>
+      </ol>
+    </figure>
+
     <div class="table-wrap">
       <table>
         <thead><tr><th>要素</th><th>口径</th></tr></thead>
@@ -168,7 +185,7 @@
         <span class="pin" style="--x:73.3%;--y:78.7%">5</span>
         <span class="pin" style="--x:87.0%;--y:26.2%">6</span>
       </div>
-      <figcaption>图 3 · 编辑规则文件。规则文件按数据源分开——顶部先选源，再编辑该源的 <code>decisions.yml</code> 原文。</figcaption>
+      <figcaption>图 4 · 编辑规则文件。规则文件按数据源分开——顶部先选源，再编辑该源的 <code>decisions.yml</code> 原文。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>数据源选择器</strong>——决策规则属于某个具体数据源（阈值要落在它的语义模型里），切源即切文件。</li>
         <li><span class="n">2</span><strong>编辑规则文件</strong>——编辑器打开的是文件<strong>原文</strong>（含注释）；保存时会重新序列化，注释不再保留。规则表里「被引用的任务」列回答「这条规则谁在用」。</li>
@@ -206,7 +223,7 @@
         <span class="pin" style="--x:75.1%;--y:91.4%">5</span>
         <span class="pin" style="--x:83.0%;--y:91.4%">6</span>
       </div>
-      <figcaption>图 4 · 方法论技能列表。页头还有「新建草稿」与「LLM 草拟」两个入口（本图滚动后不可见）。</figcaption>
+      <figcaption>图 5 · 方法论技能列表。页头还有「新建草稿」与「LLM 草拟」两个入口（本图滚动后不可见）。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>总数章</strong>——当前技能数与卡片标题同排；列表把内置与组织技能混排，靠「内置」章区分。</li>
         <li><span class="n">2</span><strong>内置章</strong>——随代码发布的技能（只读，不提供确认/拒绝动作）。组织技能没有这个章，可被管理端处置。</li>
@@ -234,7 +251,7 @@
         <span class="pin" style="--x:71.4%;--y:3.9%">1</span>
         <span class="pin" style="--x:80.0%;--y:14.3%">2</span>
       </div>
-      <figcaption>图 5 · 预览抽屉。选中「预览」后看到的是技能正文原文——模型读到的就是这段文字。</figcaption>
+      <figcaption>图 6 · 预览抽屉。选中「预览」后看到的是技能正文原文——模型读到的就是这段文字。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>技能名</strong>——<code>answer-structure-zh</code>：一条中文回答的结构约定。</li>
         <li><span class="n">2</span><strong>正文</strong>——「结论前置，一句话给答案；数据用表格；口径用一行小字；最后给一条可以继续追问的方向。」确认之前先用预览核对措辞：这段文字会逐字进入模型上下文，写含糊等于没写。</li>

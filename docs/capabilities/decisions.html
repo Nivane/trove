@@ -423,6 +423,23 @@ flowchart LR
       「无前次可比」也是一枚芯片，而不是一个消失的区块。
     </p>
 
+    <figure class="shot">
+      <div class="shot-frame">
+        <img src="../assets/shots/admin-verdict-history.png" alt="判定历史抽屉（loan-high）：每条判定带状态章与一句话消息，下面是一组 diff 芯片；最新一条展开着——当时跑的 SQL、原始结果行、判定行（当期 / 基期 / Δ / Δ% 与结论）">
+        <span class="pin" style="--x:61.6%;--y:18.2%">1</span>
+        <span class="pin" style="--x:58.5%;--y:29.6%">2</span>
+        <span class="pin" style="--x:75.4%;--y:47.6%">3</span>
+        <span class="pin" style="--x:54.4%;--y:83.1%">4</span>
+      </div>
+      <figcaption>图 2 · 判定历史抽屉。最新一条展开着：这次判定基于哪条 SQL、哪些数字，以及它与上一次之间的变化。</figcaption>
+      <ol class="shot-legend">
+        <li><span class="n">1</span><strong>一条判定与它的 diff 芯片</strong>——时间、状态章（<code>alert</code> / <code>ok</code> / <code>error</code>）、消息内容；下面这枚芯片是相邻 diff 的一句话：「规则已修改 · 本次转为触发」把两件事并排说——两跑之间规则本身被改过，且本次从平静转为触发。</li>
+        <li><span class="n">2</span><strong>展开的证据</strong>——当时实跑的 SQL（当期与基期两条）与原始结果行，判定不可编辑，这是它被判定时的数字原样。</li>
+        <li><span class="n">3</span><strong>判定行</strong>——分组、当期、基期、Δ、Δ% 与结论（已触发 / 未触发）逐项列出；维度不足时这一行也照实呈现，不补造。</li>
+        <li><span class="n">4</span><strong>更早的判定</strong>——逐条同样带芯片：「与上次相同」「窗口边界」（前面没有可比的一条——与「相同」是不同的两块，词表里各有一枚芯片）。</li>
+      </ol>
+    </figure>
+
     <h2 id="evidence">证据：一次触发留下了什么</h2>
 
     <p>

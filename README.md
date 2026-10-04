@@ -237,7 +237,7 @@ docker compose down
 
 ## 文档地图
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 37 页,产品概念到 API 参考,含 29 张真实界面截图的图文指南
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 37 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
 
 | | |
 |---|---|

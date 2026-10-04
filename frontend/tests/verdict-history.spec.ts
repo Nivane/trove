@@ -170,6 +170,51 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
     expect(first).toContain('magnitude jump')
   })
 
+  it('a dim-less rule reports the trigger once, not twice with a dangling separator', async () => {
+    // 无维度规则(整表判定)的唯一分组 dim 是空串:它的 fired 与规则级
+    // 触发位是同一件事 —— chip 里只能说一次,且不留悬空的「 · 」。
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-high', count: 1,
+      verdicts: [
+        brief({
+          diff: {
+            prev_id: 1,
+            rule_digest_changed: false,
+            prev_rule_digest: 'sha256:b',
+            rule_digest: 'sha256:b',
+            status_change: ['ok', 'alert'],
+            trigger: 'fired',
+            groups: [{ dim: '', change: 'fired', triggered: [false, true], delta_pct: [-0.06, 3.7] }],
+          },
+        }),
+      ],
+    })
+    const view = await mountDrawer()
+    const chip = view.find('.vh-item .vh-chip').text()
+    expect(chip).toBe('Now firing')
+    // 幅度突变没有规则级对应位 —— 空 dim 的 jump 仍要单独写出
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-high', count: 1,
+      verdicts: [
+        brief({
+          diff: {
+            prev_id: 1,
+            rule_digest_changed: false,
+            prev_rule_digest: 'sha256:b',
+            rule_digest: 'sha256:b',
+            status_change: null,
+            trigger: null,
+            groups: [{ dim: '', change: 'jump', triggered: [true, true], delta_pct: [-0.1, -0.5] }],
+          },
+        }),
+      ],
+    })
+    await view.unmount()
+    wrapper = null
+    const view2 = await mountDrawer()
+    expect(view2.find('.vh-item .vh-chip').text()).toBe('magnitude jump')
+  })
+
   it('a rule that never ran shows the empty state, not an empty table', async () => {
     vi.mocked(fetchVerdicts).mockResolvedValue({
       datasource: 'demo', rule_id: 'loan-drop', count: 0, verdicts: [],
