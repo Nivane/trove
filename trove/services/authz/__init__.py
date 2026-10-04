@@ -12,6 +12,7 @@ from trove.services.authz.policy import (
     Principal,
     principal_from_wire,
     principal_to_wire,
+    visible_topics,
 )
 
 __all__ = [
@@ -23,4 +24,5 @@ __all__ = [
     "Principal",
     "principal_from_wire",
     "principal_to_wire",
+    "visible_topics",
 ]

@@ -101,10 +101,15 @@ async def semantic_topics(
     ``resolve_topic`` 同一实现),并且**过期域不隐藏** —— 声明数据集全没了
     的域以 ``status="empty_scope"`` 照常列出,选择器据此显示「该域已失效」,
     而不是让它静默消失、用户带着一个选不中的旧值继续提问。
+
+    两层授权面依次过:数据源(``require_datasource``)先行,域级收窄
+    (``topic_grants``)过滤清单 —— 不可见的域**不出现在清单里**(admin 见
+    全部)。注意过滤只针对可见性:过期域在**可见**的域里照常显示。
     """
     from trove.services.semantic_layer.topics import resolve_topic
 
     ds = await require_datasource(request, datasource, user)
+    principal = await get_principal(request, user)
     kb = _kb(request)
     try:
         adapter = await _registry(request).get(ds)
@@ -114,6 +119,8 @@ async def semantic_topics(
     model = _model_for(_provider_for(kb, ds, dialect), ds)
     topics: list[dict[str, Any]] = []
     for t in model.topics:
+        if not principal.allows_topic(ds, t.name):
+            continue
         res = resolve_topic(model, t.name)
         topics.append({
             "name": t.name,

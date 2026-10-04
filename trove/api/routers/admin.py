@@ -21,6 +21,7 @@ from trove.api.schemas import (
     DatasourcesPut,
     SettingsUpdate,
     TokenCreate,
+    TopicGrantsPut,
     UserCreate,
     UserPatch,
 )
@@ -310,6 +311,35 @@ async def set_datasources(
     await _audit(request, "admin.grant.set", admin, 200,
                  {"user_id": user_id, "datasources": body.datasources})
     return {"datasources": body.datasources}
+
+
+# ── Topic grants(数据源门之下的第二层:主题域可见性)─────
+
+
+@router.get("/admin/users/{user_id}/topic-grants")
+async def get_topic_grants(
+    user_id: int, request: Request, admin: dict = Depends(require_admin)
+) -> dict:
+    await _user_or_404(request, user_id)
+    return {"topic_grants": await _auth(request).get_topic_grants(user_id)}
+
+
+@router.put("/admin/users/{user_id}/topic-grants")
+async def set_topic_grants(
+    user_id: int, body: TopicGrantsPut, request: Request,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """整表写入;``topic_grants: null`` = 取消收窄,``{}`` = 收窄到零。
+
+    回显**读回值**而不是请求体:写入侧会做归一化(裁剪/去重/排序),回显
+    请求体会让管理台看到一份与存储不一致的"现状"。
+    """
+    await _user_or_404(request, user_id)
+    await _auth(request).set_topic_grants(user_id, body.topic_grants)
+    saved = await _auth(request).get_topic_grants(user_id)
+    await _audit(request, "admin.topic_grant.set", admin, 200,
+                 {"user_id": user_id, "topic_grants": saved})
+    return {"topic_grants": saved}
 
 
 # ── Audit log ────────────────────────────────────────────

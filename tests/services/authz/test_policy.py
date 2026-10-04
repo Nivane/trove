@@ -20,6 +20,7 @@ from trove.services.authz.policy import (
     principal_to_wire,
     scopes_allow,
     visible_datasources,
+    visible_topics,
 )
 from trove.services.semantic_layer.models import MaskingPolicy
 
@@ -27,18 +28,28 @@ TROVE_ROOT = Path(trove.__file__).parent
 
 
 class _FakeAuth:
-    """最小 AuthService 替身,记录被查过哪些 user id。"""
+    """最小 AuthService 替身,记录被查过哪些 user id(数据源与域各记一列)。"""
 
-    def __init__(self, grants_by_user: dict | None = None, boom: bool = False):
+    def __init__(self, grants_by_user: dict | None = None, boom: bool = False,
+                 topic_grants_by_user: dict | None = None):
         self._grants = grants_by_user or {}
+        self._topic_grants = topic_grants_by_user or {}
         self._boom = boom
         self.asked: list = []
+        self.asked_topics: list = []
 
     async def get_datasources(self, user_id):
         self.asked.append(user_id)
         if self._boom:
             raise RuntimeError("app.db is unreachable")
         return list(self._grants.get(user_id, []))
+
+    async def get_topic_grants(self, user_id):
+        self.asked_topics.append(user_id)
+        if self._boom:
+            raise RuntimeError("app.db is unreachable")
+        raw = self._topic_grants.get(user_id)
+        return None if raw is None else {k: list(v) for k, v in raw.items()}
 
 
 # ── grants 三种取值(I7 的核心)────────────────────────────────────
@@ -84,6 +95,75 @@ class TestAllowsDatasource:
         """
         p = Principal(subject="1", grants=None)
         assert p.allows_datasource("financial", "financial") is False
+
+
+# ── topic_grants 三种取值(第二层收窄,None 的方向与 grants 相反)──
+
+
+class TestAllowsTopic:
+    """域层三态:None = 未收窄 / {} = 收窄到零 / 清单 = 严格 allowlist。
+
+    第一条与 ``grants`` 的 None 方向刻意相反,理由见 ``Principal`` docstring:
+    域层叠加在数据源门之上,「没配置」只该是「没收窄」。
+    """
+
+    def test_unconfigured_is_unrestricted(self):
+        """**本层语义的分界**:None(未配置)不是「没有依据」,是不收窄。"""
+        p = Principal(subject="1", grants=frozenset({"fin"}))
+        assert p.allows_topic("fin", "loans") is True
+        assert p.allows_topic("fin", "anything") is True
+
+    def test_admin_sees_every_topic(self):
+        p = Principal(subject="1", role="admin")
+        assert p.allows_topic("fin", "loans") is True
+        # admin 判定在读 topic_grants 之前(同 grants 的既有语义)
+        assert Principal(
+            subject="1", role="admin", topic_grants={},
+        ).allows_topic("fin", "loans") is True
+
+    def test_allowlist_is_strict(self):
+        p = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})
+        assert p.allows_topic("fin", "loans") is True
+        assert p.allows_topic("fin", "clients") is False
+
+    def test_unlisted_datasource_has_no_topics(self):
+        """声明了清单就是**完整**清单;漏写的源 = 无域(没有「默认域」)。"""
+        p = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})
+        assert p.allows_topic("other", "loans") is False
+        assert p.allows_topic("other", "anything") is False
+
+    def test_empty_list_per_datasource_hides_that_source(self):
+        p = Principal(subject="1", topic_grants={"fin": frozenset()})
+        assert p.allows_topic("fin", "loans") is False
+
+    def test_empty_map_hides_everything(self):
+        """``{}`` = 显式收窄到零 —— 与 None(未收窄)是两种语义。"""
+        p = Principal(subject="1", topic_grants={})
+        assert p.allows_topic("fin", "loans") is False
+        assert p.allows_topic("other", "x") is False
+
+    def test_default_principal_is_unrestricted_at_topic_layer(self):
+        """字段默认值在**域层**是放行方向 —— 与 datasource 层的 fail-closed
+        默认值并存,两层各按各的兜底(数据源门已经拒绝了无依据主体的一切源)。"""
+        assert Principal(subject="1").allows_topic("any", "any") is True
+
+
+class TestVisibleTopics:
+    def test_admin_sees_all_in_order(self):
+        p = Principal(subject="1", role="admin")
+        assert visible_topics(p, "fin", ["a", "b"]) == ["a", "b"]
+
+    def test_restricted_user_sees_intersection(self):
+        p = Principal(subject="1", topic_grants={"fin": frozenset({"b"})})
+        assert visible_topics(p, "fin", ["a", "b", "c"]) == ["b"]
+
+    def test_unconfigured_user_sees_all(self):
+        p = Principal(subject="1", grants=frozenset({"fin"}))
+        assert visible_topics(p, "fin", ["a", "b"]) == ["a", "b"]
+
+    def test_other_datasource_sees_nothing(self):
+        p = Principal(subject="1", topic_grants={"fin": frozenset({"a"})})
+        assert visible_topics(p, "other", ["a", "b"]) == []
 
 
 # ── scope 规则(「空 = 不限」只有一份)──────────────────────────────
@@ -268,6 +348,36 @@ class TestPrincipalFor:
         assert p.has_scope("pii") is True
         assert p.has_scope("admin") is False
 
+    async def test_admin_does_not_read_topic_grants(self):
+        auth = _FakeAuth(topic_grants_by_user={7: {"fin": ["loans"]}})
+        p = await Policy(auth).principal_for({"id": 7, "role": "admin"})
+        assert p.topic_grants is None
+        assert auth.asked_topics == []   # 与 grants 同:admin 判定在读之前
+
+    async def test_user_topic_grants_are_fetched_and_frozen(self):
+        auth = _FakeAuth(topic_grants_by_user={7: {"fin": ["loans", "cards"]}})
+        p = await Policy(auth).principal_for({"id": 7, "role": "user"})
+        assert p.topic_grants == {"fin": frozenset({"loans", "cards"})}
+        assert p.allows_topic("fin", "loans") is True
+        assert p.allows_topic("fin", "clients") is False
+
+    async def test_no_topic_grants_row_means_unrestricted(self):
+        p = await Policy(_FakeAuth()).principal_for({"id": 7, "role": "user"})
+        assert p.topic_grants is None
+        assert p.allows_topic("fin", "loans") is True
+
+    async def test_topic_store_failure_propagates(self):
+        """与 grants 同一条纪律:存储故障不是授权结论,照抛。"""
+        with pytest.raises(RuntimeError, match="unreachable"):
+            await Policy(_FakeAuth(boom=True)).principal_for(
+                {"id": 7, "role": "user"})
+
+    async def test_missing_auth_keeps_topic_layer_unconfigured(self):
+        """没有 auth = 没有收窄配置;数据源层的 None 已经把一切拒了。"""
+        p = await Policy(None).principal_for({"id": 7, "role": "user"})
+        assert p.topic_grants is None
+        assert p.allows_datasource("fin", "fin") is False
+
 
 # ── I6:只能收窄 ──────────────────────────────────────────────────
 
@@ -296,6 +406,39 @@ class TestNarrow:
         assert narrowed.role == "user"
         assert narrowed.grants == frozenset({"sales"})
         assert narrowed.allows_datasource("financial", "financial") is False
+
+    def test_topic_grants_intersect_per_source(self):
+        p = Principal(subject="1", topic_grants={
+            "fin": frozenset({"loans", "cards"}),
+            "ops": frozenset({"rr"}),
+        })
+        narrowed = p.narrow(topic_grants={"fin": ["cards", "clients"]})
+        # fin:取交;ops:对方没列 = 允许空集 → 交集为空(不是保留原样)
+        assert narrowed.topic_grants == {"fin": frozenset({"cards"})}
+
+    def test_topic_grants_cannot_widen(self):
+        p = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})
+        assert p.narrow(
+            topic_grants={"fin": ["loans", "clients"]}).topic_grants == {
+                "fin": frozenset({"loans"})}
+
+    def test_unrestricted_principal_takes_the_given_topics(self):
+        """未收窄(含 admin)的原始主体,交集上界就是对方给的清单本身。"""
+        p = Principal(subject="1", role="admin")
+        narrowed = p.narrow(role="user", topic_grants={"fin": ["loans"]})
+        assert narrowed.topic_grants == {"fin": frozenset({"loans"})}
+        assert narrowed.allows_topic("fin", "loans") is True
+        assert narrowed.allows_topic("fin", "clients") is False
+
+    def test_topic_none_over_restricted_is_rejected(self):
+        """域层的 ``None`` 是**最宽**取值 —— 拿它当收窄目标必须抛错,不能放宽。"""
+        p = Principal(subject="1", topic_grants={"fin": frozenset({"loans"})})
+        with pytest.raises(ValueError, match="不能把 topic_grants"):
+            p.narrow(topic_grants=None)
+
+    def test_topic_none_over_unrestricted_is_a_noop(self):
+        p = Principal(subject="1")
+        assert p.narrow(topic_grants=None).topic_grants is None
 
     def test_role_cannot_be_raised(self):
         p = Principal(subject="1", role="user")
@@ -370,6 +513,47 @@ class TestPrincipalWire:
         assert back == p
         assert (back.grants is None) is (grants is None)
 
+    @pytest.mark.parametrize(
+        "topic_grants",
+        [None, {}, {"fin": frozenset({"loans", "cards"})}],
+        ids=["unconfigured", "empty", "allowlist"],
+    )
+    def test_round_trip_preserves_the_three_topic_states(self, topic_grants):
+        """域层三态往返不得塌陷 —— ``{}`` 塌成 None 就是「收窄到零」变「不收窄」。"""
+        p = Principal(
+            subject="7", grants=frozenset({"fin"}), topic_grants=topic_grants)
+        wire = principal_to_wire(p)
+        if topic_grants is None:
+            assert wire["topic_grants"] is None
+        else:
+            assert type(wire["topic_grants"]) is dict
+        back = principal_from_wire(wire)
+        assert back == p
+        assert (back.topic_grants is None) is (topic_grants is None)
+        # 判定结论也要原样活过往返(形状对但语义变了同样是改向)
+        assert back.allows_topic("fin", "loans") == p.allows_topic("fin", "loans")
+
+    def test_missing_topic_key_reads_as_unconfigured(self):
+        """本功能之前的 checkpoint 没有这个键 —— 还原为"未收窄"(历史行为)。
+
+        主体是运行时快照:后来配上的收窄不该回溯改写一份旧会话,与 grants
+        同一条纪律(改授权只影响新运行)。
+        """
+        p = principal_from_wire({"subject": "1", "role": "user"})
+        assert p is not None
+        assert p.topic_grants is None
+
+    def test_malformed_topic_grants_void_the_whole_principal(self):
+        """域层形状错误 → ``None``(没有主体 → 拒绝),不尽量解出一部分。"""
+        for bad in (
+            ["fin"],                   # 整体不是 dict
+            {"fin": "loans"},          # 值不是列表(str 会被拆成字符集)
+            {"fin": ["ok", 3]},        # 值里有非字符串
+            {"": ["loans"]},           # 空数据源名
+        ):
+            assert principal_from_wire(
+                {"subject": "1", "topic_grants": bad}) is None, bad
+
     def test_admin_round_trips(self):
         p = Principal(subject="1", role="admin")
         assert principal_from_wire(principal_to_wire(p)) == p
@@ -421,7 +605,9 @@ class TestPrincipalWire:
 
         serde = JsonPlusSerializer()
         for grants in (None, frozenset(), frozenset({"a"})):
-            p = Principal(subject="7", scopes=frozenset({"pii"}), grants=grants)
+            p = Principal(
+                subject="7", scopes=frozenset({"pii"}), grants=grants,
+                topic_grants={"fin": frozenset({"loans"})})
             wire = principal_to_wire(p)
             back = serde.loads_typed(serde.dumps_typed(wire))
             assert type(back) is dict, f"被降级成了 {type(back)}"

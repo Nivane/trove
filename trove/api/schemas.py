@@ -384,6 +384,19 @@ class DatasourcesPut(BaseModel):
     datasources: list[str] = Field(default_factory=list)
 
 
+class TopicGrantsPut(BaseModel):
+    """PUT /v1/admin/users/{id}/topic-grants body.
+
+    三态都要原样保留 —— 塌陷成空字典会让「取消收窄」变成「全部隐藏」:
+
+    * ``None``  = 不收窄(可见数据源的全部主题域);
+    * ``{}``    = 显式收窄到一个域都不见;
+    * ``{"ds": ["topic", ...]}`` = 严格清单,未列出的数据源 = 该源无域。
+    """
+
+    topic_grants: dict[str, list[str]] | None = None
+
+
 class JobCreate(BaseModel):
     """POST /v1/admin/jobs body — a scheduled question (cron/interval + alert)."""
 

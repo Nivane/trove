@@ -24,15 +24,18 @@ from trove.services.authz.policy import Policy, principal_from_wire
 
 
 class _FakeAuth:
-    """最小 auth 替身:用户表 + grants 表各一份 dict。
+    """最小 auth 替身:用户表 + grants / topic_grants 表各一份 dict。
 
-    只实现被用到的两处 —— ``store.get_user_by_id``(解析主体)与
-    ``get_datasources``(取依据)。后者由 ``Policy.principal_for`` 独占调用。
+    只实现被用到的几处 —— ``store.get_user_by_id``(解析主体)、
+    ``get_datasources`` / ``get_topic_grants``(取依据)。两者都由
+    ``Policy.principal_for`` 独占调用。
     """
 
-    def __init__(self, users=None, grants=None, *, explode=False):
+    def __init__(self, users=None, grants=None, topic_grants=None, *,
+                 explode=False):
         self.users = users or {}
         self.grants = grants or {}
+        self.topic_grants = topic_grants or {}
         self.explode = explode
         self.audits: list[dict] = []
         self.store = self
@@ -46,6 +49,12 @@ class _FakeAuth:
         if self.explode:
             raise RuntimeError("app.db is gone")
         return list(self.grants.get(user_id, []))
+
+    async def get_topic_grants(self, user_id):
+        if self.explode:
+            raise RuntimeError("app.db is gone")
+        raw = self.topic_grants.get(user_id)
+        return None if raw is None else {k: list(v) for k, v in raw.items()}
 
     async def record_audit(self, action, user=None, **kwargs):
         self.audits.append({"action": action, "user": user, **kwargs})

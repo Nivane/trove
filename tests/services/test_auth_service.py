@@ -287,6 +287,63 @@ async def test_datasource_grants(auth):
     assert await auth.get_datasources(u["id"]) == []
 
 
+# ── Topic grants(三态往返:None / {} / 清单)───────────────
+
+
+async def test_topic_grants_three_states_roundtrip(auth):
+    """``None``(未收窄)与 ``{}``(收窄到零)是两种语义,存储层得分得开。"""
+    u = await auth.create_user("bob", "pw")
+    assert await auth.get_topic_grants(u["id"]) is None   # 新用户 = 未配置
+
+    await auth.set_topic_grants(u["id"], {"financial": ["loans", "cards"]})
+    assert await auth.get_topic_grants(u["id"]) == {
+        "financial": ["cards", "loans"]}   # 写入侧排序,读回即唯一形态
+
+    await auth.set_topic_grants(u["id"], {})
+    assert await auth.get_topic_grants(u["id"]) == {}     # 不是 None
+
+    await auth.set_topic_grants(u["id"], None)
+    assert await auth.get_topic_grants(u["id"]) is None   # 取消收窄
+
+
+async def test_topic_grants_are_normalized_on_write(auth):
+    """归一化在写入侧一次完成:空白裁剪 / 去重 / 排序,读回即唯一形态。"""
+    u = await auth.create_user("bob", "pw")
+    await auth.set_topic_grants(u["id"], {
+        " financial ": ["loans", "loans", " cards ", "  "],
+        "   ": ["ghost"],           # 空源名整条丢弃
+    })
+    assert await auth.get_topic_grants(u["id"]) == {
+        "financial": ["cards", "loans"]}
+
+
+async def test_topic_grants_per_datasource_empty_list_survives(auth):
+    """``{ds: []}``(该源无域)与 ``{}``(全无域)都必须原样存活 ——
+    塌成同一形态会让某一种语义悄悄变成另一种。"""
+    u = await auth.create_user("bob", "pw")
+    await auth.set_topic_grants(u["id"], {"financial": []})
+    assert await auth.get_topic_grants(u["id"]) == {"financial": []}
+
+
+async def test_topic_grants_malformed_storage_reads_as_deny_all(auth):
+    """人工改库改坏的字节 → 空字典(一个域都不见),**不是** None。
+
+    None 在域层是"未收窄";把读不懂的东西翻译成放行是最坏的降级方向。
+    """
+    u = await auth.create_user("bob", "pw")
+    await auth.store._backend.execute(
+        "UPDATE users SET topic_grants_json = ? WHERE id = ?",
+        ('{"financial": "loans"}', u["id"]))   # 值不是列表
+    await auth.store._backend.commit()
+    assert await auth.get_topic_grants(u["id"]) == {}
+
+    await auth.store._backend.execute(
+        "UPDATE users SET topic_grants_json = ? WHERE id = ?",
+        ("not json at all", u["id"]))
+    await auth.store._backend.commit()
+    assert await auth.get_topic_grants(u["id"]) == {}
+
+
 # ── Audit ─────────────────────────────────────────────────
 
 

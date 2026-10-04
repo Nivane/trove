@@ -16,6 +16,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from trove.services.authz.policy import principal_from_wire, visible_topics
 from trove.services.datasource.registry import ConnectorRegistry
 from trove.services.kb.service import KbService, TermHit
 from trove.services.semantic_layer.topics import (
@@ -341,6 +342,19 @@ def _render_semantic_context(
     return "\n\n".join(parts) if parts else "No semantic model matched this question."
 
 
+def _visible_topic_names(model, principal, datasource: str) -> list[str]:
+    """拒绝文案里的可选域清单,按主体过滤。
+
+    无主体(CLI / eval / 本机嵌入)= 不设限,与全仓其余路径同口径
+    (``Policy.local_admin``)。过滤在这里做而非渲染侧:两处 ``available_topics``
+    的构造都要过这一关,漏一处就是存在性泄露。
+    """
+    names = topic_names(model)
+    if principal is None:
+        return names
+    return visible_topics(principal, datasource, names)
+
+
 async def _semantic_linking(
     state: WorkflowState, kb, connectors, semantic_layer,
     term_hits: list[TermHit], search_query: str, datasource: str,
@@ -371,6 +385,21 @@ async def _semantic_linking(
     # 不静默退回全量 —— 用户选的是范围,范围失效却按更大的数据回答,是
     # "答非所选"。未选主题域 → status="none",下面每条路径与旧行为一致。
     topic_res = resolve_topic(model, str(getattr(state, "topic", "") or ""))
+    principal = principal_from_wire(getattr(state, "principal", None))
+    # 域级授权(第二层收窄):名字解析得到、但不在主体的可见清单里 → **改写成
+    # 与"压根不存在"逐字节同形**的 not_found,复用下面同一条拒绝分支。存在性
+    # 绝不能从这里漏出去:受限主题名与拼错的名字必须给出完全一样的输出(文案
+    # 里的 available_topics 也按主体过滤,见下),否则一次拒绝就成了域名清单。
+    # principal 为 None(CLI/eval/嵌入 = 本机身份)或 admin 不收窄;未选主题域
+    # (status="none")不涉及判定。topic 只在**显式选择**时生效——域级授权收窄的
+    # 是"域的入口面"(选择器 + 显式带域提问),数据访问边界仍是数据源门。
+    if (
+        topic_res.topic is not None
+        and principal is not None
+        and not principal.allows_topic(datasource, topic_res.topic.name)
+    ):
+        topic_res = TopicResolution(
+            status="not_found", requested=topic_res.requested)
     if topic_res.status in ("not_found", "empty_scope"):
         return {
             "matched_tables": [],
@@ -383,7 +412,10 @@ async def _semantic_linking(
                 }[topic_res.status],
                 "question": state.question,
                 "topic": topic_res.requested,
-                "available_topics": topic_names(model),
+                # 可见清单只列主体有权看到的域 —— 与"不存在"路径同一份,
+                # 让两种拒绝输出完全一致(存在性预言机的封口在这里)
+                "available_topics": _visible_topic_names(
+                    model, principal, datasource),
             },
             "link_detail": {
                 "semantic_first": True,
@@ -482,7 +514,9 @@ async def _semantic_linking(
             **({
                 "topic": topic_res.topic.name,
                 "topic_scope": list(topic_res.scope or []),
-                "available_topics": topic_names(model),
+                # "换个域再问"的建议只列主体可见的域(存在性不从这里漏)
+                "available_topics": _visible_topic_names(
+                    model, principal, datasource),
             } if topic_res.active else {}),
         }
     return base
