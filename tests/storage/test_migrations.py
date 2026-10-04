@@ -150,6 +150,44 @@ class TestTableExistsPostgres:
             dialect=POSTGRES) is True
 
 
+class TestColumnsOfPostgres:
+    """PG 分支的占位符必须是 ``%s`` —— 这条路径的 target 可以是**裸 psycopg
+    连接**(检索 store 有意不在 StorageBackend 上,没有 ``?``→``%s`` 翻译层)。
+
+    硬编码 ``?`` 时 SQL 里一个占位符都没有、params 却传了俩,psycopg 直接抛
+    "the query has 0 placeholders but 2 parameters were passed" —— 只在真 PG
+    上露头,SQLite 侧测不到(CI 真 PG 抓到的回归:补丁 3 的 authority 列迁移
+    是第一个在裸连接上走 AddColumn → columns_of 的调用)。
+    """
+
+    class _Cursor:
+        async def fetchall(self):
+            return []
+
+    class _FakeTarget:
+        def __init__(self):
+            self.calls: list[tuple[str, tuple]] = []
+
+        async def execute(self, sql, params=()):
+            self.calls.append((sql, tuple(params)))
+            return TestColumnsOfPostgres._Cursor()
+
+    async def test_schema_qualified_table_uses_pg_placeholders(self):
+        target = self._FakeTarget()
+        assert await columns_of(
+            target, "trove_retrieval.documents", dialect=POSTGRES) == []
+        sql, params = target.calls[0]
+        assert sql.count("%s") == 2 and "?" not in sql, sql
+        assert params == ("trove_retrieval", "documents")
+
+    async def test_unqualified_table_uses_pg_placeholder(self):
+        target = self._FakeTarget()
+        assert await columns_of(target, "documents", dialect=POSTGRES) == []
+        sql, params = target.calls[0]
+        assert sql.count("%s") == 1 and "?" not in sql, sql
+        assert params == ("documents",)
+
+
 class TestDirection:
     async def test_database_newer_than_code_is_refused(self, conn):
         """验收 #8:库版本 > 代码已知 → 拒绝,并且什么都不执行。"""

@@ -126,11 +126,14 @@ async def columns_of(target: Any, table: str, *, dialect: str) -> list[str]:
     于是每次"探测"都以为列缺失。
     """
     if dialect == POSTGRES:
+        ph = _ph(dialect)
         schema, _, name = table.rpartition(".")
         if schema:
-            where, params = "table_schema = ? AND table_name = ?", (schema, name)
+            where = f"table_schema = {ph} AND table_name = {ph}"
+            params: tuple = (schema, name)
         else:
-            where, params = "table_schema = current_schema() AND table_name = ?", (name,)
+            where = f"table_schema = current_schema() AND table_name = {ph}"
+            params = (name,)
         rows = await (await target.execute(
             f"SELECT column_name FROM information_schema.columns WHERE {where}",
             params,
