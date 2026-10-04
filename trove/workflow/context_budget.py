@@ -79,6 +79,16 @@ def estimate_tokens(text: str) -> int:
     return _char_estimate(text)
 
 
+def ref_label(text: str, limit: int = 60) -> str:
+    """条目来源标识(装配 dump 的 ``ref`` 字段):归一化空白并截断。
+
+    给"这条 item 来自哪"(示例问题/术语名/教训 pattern…)一个可读且稳定的
+    标识;取不到来源的调用方留空,``assemble_context`` 的明细回退到 key。
+    """
+    s = " ".join((text or "").split())
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 @dataclass
 class ContextItem:
     """One renderable, scoreable unit within a context block.
@@ -92,11 +102,15 @@ class ContextItem:
         score: Selection priority within the block (higher filled first).
             Items without a real relevance signal use 0.0 and keep their
             retrieval order (Python's sort is stable).
+        ref: Source identifier for the assembly dump (KB 条目/术语/skill
+            名等)。空 = 回退到 key(位置标识),见 assemble_context 的
+            detail 报告。
     """
 
     key: str
     text: str
     score: float = 0.0
+    ref: str = ""
 
 
 def assemble_context(
@@ -104,6 +118,7 @@ def assemble_context(
     priorities: dict[str, int],
     budget_tokens: int,
     count: Callable[[str], int] = count_tokens,
+    detail: bool = False,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
     """Item-level context assembly within a global token budget.
 
@@ -125,15 +140,23 @@ def assemble_context(
     are ignored. Usage report keeps the per-block shape (tokens/included/
     items_total/items_included) for observability.
 
+    ``detail=True`` additionally reports, per block, ``truncated`` (有任
+    一条被预算裁掉) and ``items`` — 逐项的 ``{ref, tokens, truncated}``,
+    按块的源顺序排列、含被裁条目(它们的 ``tokens`` 是"本会花掉的成本")。
+    这份明细是装配 dump 的 blocks 节;token 数取自填充循环已算的同一份
+    计数(不重算),默认 False 保持既有报告形状(SSE / 前端契约)。
+
     Args:
         blocks: name → its items.
         priorities: name → priority (lower first; missing = lowest).
         budget_tokens: token cap for the assembled optional context.
         count: token estimator (default count_tokens — real tokenizer).
+        detail: also report per-item cost/truncation (assembly dump).
 
     Returns:
         (included: {name: [kept item keys]}, usage report
-        [{name, tokens, included, items_total, items_included}]).
+        [{name, tokens, included, items_total, items_included}], plus
+        ``truncated``/``items`` per entry when ``detail``).
     """
     ordered = sorted(blocks, key=lambda name: priorities.get(name, 100))
     # (effective_score, priority, block, item)——全局候选池
@@ -155,8 +178,12 @@ def assemble_context(
 
     used = 0
     included: dict[str, list[str]] = {}
+    # id(item) -> 本条的 token 成本(填充循环对每条候选都算过一次;更新报告
+    # 直接复用这一份,不再调 count 重算)。scored 里每个 item 对象仅出现一次。
+    costs: dict[int, int] = {}
     for eff, prio, name, item in scored:
         cost = count(item.text)
+        costs[id(item)] = cost
         if used + cost > budget_tokens:
             continue  # item-level trim: skip this item, try the next
         used += cost
@@ -169,12 +196,24 @@ def assemble_context(
             continue  # 空块不进报告(与填充前行为一致)
         kept = included.get(name, [])
         kept_set = set(kept)
-        block_used = sum(count(it.text) for it in items if it.key in kept_set)
-        usage.append({
+        entry: dict[str, Any] = {
             "name": name,
-            "tokens": block_used,
+            "tokens": sum(
+                costs.get(id(it), 0) for it in items if it.key in kept_set
+            ),
             "included": bool(kept),
             "items_total": len(items),
             "items_included": len(kept),
-        })
+        }
+        if detail:
+            entry["truncated"] = len(kept) < len(items)
+            entry["items"] = [
+                {
+                    "ref": it.ref or it.key,
+                    "tokens": costs.get(id(it), 0),
+                    "truncated": it.key not in kept_set,
+                }
+                for it in items
+            ]
+        usage.append(entry)
     return included, usage

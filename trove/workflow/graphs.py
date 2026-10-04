@@ -50,6 +50,7 @@ from trove.workflow.context_budget import (
     ContextItem,
     assemble_context,
     count_tokens,
+    ref_label,
 )
 from trove.workflow.context_score import history_items, relevance_score
 from trove.workflow.schema_budget import trim_schema
@@ -58,6 +59,11 @@ from trove.llm.token_calibration import record as record_token_calibration
 from trove.workflow.complexity import grade_complexity
 from trove.workflow.state import GenSQLState, WorkflowState
 
+from trove.tracing.assembly import (
+    block_entry,
+    lazy_tool_names,
+    tools_from_registry,
+)
 from trove.workflow.nodes.schema_linking import make_schema_linking
 from trove.workflow.nodes.refuse import make_refuse
 from trove.workflow.nodes.confirm_draft import make_confirm_draft
@@ -726,6 +732,8 @@ def make_gen_assemble(services: GraphServices):
             COMPLEXITY_BUDGET_TOKENS,
             complexity,
         )
+        # ref = 装配 dump 的来源标识(示例问题/规则原文/术语名…);取不到的
+        # 回退到 key(位置标识),由 assemble_context 的明细统一处理。
         optional_blocks: dict[str, list[ContextItem]] = {}
         if few_shots:
             # 每表/每条示例带 KB 相关度分数(score 降序=检索顺序)——预算
@@ -735,6 +743,7 @@ def make_gen_assemble(services: GraphServices):
                     key=f"shot{i}",
                     text=render_shots([s]),
                     score=float(h.get("score") or 0),
+                    ref=ref_label(str(s.get("question", ""))),
                 )
                 for i, (h, s) in enumerate(zip(example_hits, few_shots))
             ]
@@ -746,6 +755,7 @@ def make_gen_assemble(services: GraphServices):
                     key=f"rule{i}",
                     text=render_rules([r]),
                     score=relevance_score(r, state.question),
+                    ref=ref_label(r),
                 )
                 for i, r in enumerate(rules)
             ]
@@ -759,6 +769,7 @@ def make_gen_assemble(services: GraphServices):
                                   str(t.get("definition", ""))]),
                         state.question,
                     ),
+                    ref=ref_label(str(t.get("term", ""))),
                 )
                 for i, t in enumerate(term_notes)
             ]
@@ -768,6 +779,7 @@ def make_gen_assemble(services: GraphServices):
                     key=f"metric{i}",
                     text=render_metrics([m]),
                     score=float(m.get("score") or 0),
+                    ref=ref_label(str(m.get("name", ""))),
                 )
                 for i, m in enumerate(metric_items)
             ]
@@ -777,6 +789,8 @@ def make_gen_assemble(services: GraphServices):
                     key=f"entity{i}",
                     text=render_entities([e]),
                     score=float(e.get("score") or 0),
+                    ref=ref_label(
+                        f"{e.get('dataset', '')}.{e.get('field', '')}".strip(".")),
                 )
                 for i, e in enumerate(entity_items)
             ]
@@ -790,6 +804,7 @@ def make_gen_assemble(services: GraphServices):
                                   str(ln.get("sql_snippet", ""))]),
                         state.question,
                     ) or 0),
+                    ref=ref_label(str(ln.get("pattern") or ln.get("note") or "")),
                 )
                 for i, ln in enumerate(lessons)
             ]
@@ -799,6 +814,7 @@ def make_gen_assemble(services: GraphServices):
                     key=f"ufact{i}",
                     text=render_user_facts([f]),
                     score=relevance_score(str(f.get("fact", "")), state.question),
+                    ref=ref_label(str(f.get("fact", ""))),
                 )
                 for i, f in enumerate(user_fact_items)
             ]
@@ -810,6 +826,7 @@ def make_gen_assemble(services: GraphServices):
                     key=f"ep{i}",
                     text=render_episodes([e]),
                     score=float(e.get("score") or 0),
+                    ref=ref_label(str(e.get("question", ""))),
                 )
                 for i, e in enumerate(episode_items)
             ]
@@ -817,7 +834,7 @@ def make_gen_assemble(services: GraphServices):
             # 失败画像:用户级而非问题级信号,score 0.0(中性);priority 10
             # 垫底——预算余量才进,不挤占任何问题相关的上下文。
             optional_blocks["profile"] = [
-                ContextItem(key="profile", text=profile_text, score=0.0),
+                ContextItem(key="profile", text=profile_text, score=0.0, ref="profile"),
             ]
         if state.history:
             # 历史拆成逐轮条目:score = 相关度(与问句词重叠) + 最近度——
@@ -845,19 +862,37 @@ def make_gen_assemble(services: GraphServices):
         # lessons/episodes),它们才是补充信息。
         plan_block = state.plan or ""
         plan_cost = _count(plan_block) if plan_block else 0
-        included, context_usage = assemble_context(
+        # detail=True:同一份装配结果顺带给出逐块逐项的 tokens/truncated
+        # (装配 dump 的 blocks 节,不重算 token)。
+        included, usage = assemble_context(
             optional_blocks,
             {"few_shots": 1, "user_facts": 2, "rules": 3, "term_notes": 4,
              "metrics": 5, "entities": 6, "lessons": 7, "episodes": 8,
              "history": 9, "profile": 10},
             max(0, budget - plan_cost),
             count=_count,
+            detail=True,
         )
+        # context_usage 保持**旧形状**(SSE/前端契约):逐项明细只进
+        # assembly_blocks(run 级装配 dump),不随步骤事件扩散。
+        context_usage = [
+            {k: v for k, v in u.items() if k not in ("items", "truncated")}
+            for u in usage
+        ]
+        assembly_blocks: list[dict[str, Any]] = [
+            {"name": u["name"], "tokens": u["tokens"],
+             "truncated": u["truncated"], "items": u["items"]}
+            for u in usage
+        ]
         if plan_block:
             included["plan"] = ["plan"]
             context_usage.append({
                 "name": "plan", "tokens": plan_cost, "included": True,
                 "items_total": 1, "items_included": 1,
+            })
+            assembly_blocks.append({
+                "name": "plan", "tokens": plan_cost, "truncated": False,
+                "items": [{"ref": "plan", "tokens": plan_cost, "truncated": False}],
             })
         # 按预算选中的 item key 过滤各源列表(保留检索顺序)
         def _trim(block: str, prefix: str, items: list[Any]) -> list[Any]:
@@ -924,6 +959,8 @@ def make_gen_assemble(services: GraphServices):
             "gen_sub_state": sub_state.model_dump(),
             "context_usage": context_usage,
             "cache_prefix_tokens": cache_prefix_tokens,
+            # 装配 dump 的 blocks 节(gen_generate 再追加 skill_injections)
+            "assembly_blocks": assembly_blocks,
         }
 
     return gen_assemble
@@ -989,6 +1026,10 @@ def make_gen_generate(
             # SQL。断言它的用例:``tests/workflow/test_graphs.py``
             # ``TestSelectionIsRoundScoped``。
             "selection": {},
+            # 装配 dump 的 tools 节:与 fast_path 同族,**每轮复位** ——
+            # 记的是最终交付那条 SQL 的那一轮用了什么工具(没进 agentic 分支
+            # 的轮次 = 这一轮没建注册表,空列表就是实情)。
+            "assembly_tools": [],
         }
 
         if kb_exact_match is not None:
@@ -1028,6 +1069,10 @@ def make_gen_generate(
                 budget=budget,
                 profiles=profiles,
             )
+            # 懒工具名快照:装配 dump 要靠"跑之前的懒集合 + 跑之后还剩谁在
+            # 懒集合里"才能判出 lazy/activated(解锁过的会移出 _lazy_specs,
+            # 事后单独看注册表分不出来)。
+            lazy_names = lazy_tool_names(registry)
 
             prompt = build_sql_prompt_from_state(sub_state)
             # ① Prompt caching:prompt 头两节(dialect+schema)与
@@ -1053,10 +1098,26 @@ def make_gen_generate(
                 # lang/datasource/complexity,没有 intent/tool_roles —— 用它拼
                 # ctx 会让这两类 trigger 在 gen_sql 上恒不命中,正是本任务在
                 # 修的那类静默失效。
-                system_text = append_skill_block(
-                    system_text, skills.render_skills("gen_sql", **state.skill_ctx()))
-                system_text = append_skill_block(
-                    system_text, skills.available_skills_block("gen_sql", **state.skill_ctx()))
+                required_block = skills.render_skills("gen_sql", **state.skill_ctx())
+                available_block = skills.available_skills_block(
+                    "gen_sql", **state.skill_ctx())
+                system_text = append_skill_block(system_text, required_block)
+                system_text = append_skill_block(system_text, available_block)
+                # 装配 dump 的 skill_injections 块:真正进了 system prompt 的
+                # 技能文本的 token 数(required 正文 + available 广告)。
+                # 逐 skill 拆分只有 service 内部按条目渲染时才有,公开面拿不到
+                # ——按块只报总量(items 留空,见 tracing/assembly 的约定)。
+                # 空块不算成本(count_tokens("") 恒 ≥1,直接相加会凭空造出
+                # 一个假的 skill_injections 块)。
+                skill_injected_tokens = (
+                    (count_tokens(required_block) if required_block else 0)
+                    + (count_tokens(available_block) if available_block else 0)
+                )
+                if skill_injected_tokens:
+                    update["assembly_blocks"] = [
+                        *(state.assembly_blocks or []),
+                        block_entry("skill_injections", tokens=skill_injected_tokens),
+                    ]
             # 每节点覆盖优先(node_models.gen_sql),再复杂度分档 —— 与
             # 经典路径 gen_sql.py 的选模同键;下方估算校准读写同一 model。
             model = (
@@ -1084,6 +1145,15 @@ def make_gen_generate(
             except Exception as e:
                 logger.warning("Agentic gen_sql failed (%s); falling back to classic", e)
                 result = None
+
+            # 装配 dump 的 tools 节:注册表逐工具记录(level/roles/懒注册与
+            # 激活状态),calls 取自 tool_history(每次真实执行的工具调用)。
+            # loop 中途异常(result=None)也照记 —— 注册表已建,这一轮确实
+            # 备了这些工具;calls 归零而已。
+            update["assembly_tools"] = tools_from_registry(
+                registry, lazy_names=lazy_names,
+                tool_history=(result or {}).get("tool_history") or [],
+            )
 
             async def _classic_fallback() -> None:
                 """经典单发子图生成(异常 / agent loop 空手而归 / 护栏降级兜底)。"""

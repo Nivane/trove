@@ -1367,7 +1367,10 @@ class SessionManager:
             summary.update(stats)
         tracer = get_tracer(run_id)
         if tracer is not None:
-            tracer.finish(summary)
+            # 装配 dump:随 run 收尾的**单一写点**落盘(见 tracing/assembly),
+            # 与 .log 同款——同一 run_id 覆盖、按 MAX_RUN_LOGS 一起裁剪。
+            from trove.tracing.assembly import build_report
+            tracer.finish(summary, assembly=build_report(final))
         else:
             try:
                 from trove.tracing.local import add_event

@@ -154,3 +154,53 @@ class TestAssembleContext:
         )
         assert included == {"plan": ["plan"]}
         assert usage[0]["items_included"] == 1
+
+
+class TestAssembleContextDetail:
+    """detail=True 的逐项报告 —— 装配 dump 的 blocks 节(成本与截断)。"""
+
+    def _items(self):
+        return [
+            ContextItem(key="shot0", text="x" * 100, score=9, ref="How many loans?"),
+            # ref 缺省(如历史轮次)→ 回退到 key,位置标识也是标识
+            ContextItem(key="turn1", text="y" * 100, score=1),
+        ]
+
+    def test_items_report_cost_and_truncation(self):
+        blocks = {"few_shots": self._items()}
+        included, usage = assemble_context(
+            blocks, {"few_shots": 1}, budget_tokens=30,
+            count=estimate_tokens, detail=True,
+        )
+        assert included == {"few_shots": ["shot0"]}
+        entry = usage[0]
+        assert entry["truncated"] is True
+        assert entry["items"] == [
+            {"ref": "How many loans?", "tokens": 25, "truncated": False},
+            # 被预算裁掉的条目也在报告里:tokens 是"本会花掉的成本"
+            {"ref": "turn1", "tokens": 25, "truncated": True},
+        ]
+        # 块 tokens = 只算进 prompt 的那部分(与未开启 detail 时同值)
+        assert entry["tokens"] == 25
+
+    def test_detail_off_keeps_legacy_shape(self):
+        """默认报告形状不变(SSE / 前端契约):没有 items/truncated 键。"""
+        _, usage = assemble_context(
+            {"few_shots": self._items()}, {"few_shots": 1},
+            budget_tokens=300, count=estimate_tokens,
+        )
+        assert set(usage[0]) == {
+            "name", "tokens", "included", "items_total", "items_included",
+        }
+
+    def test_ref_falls_back_to_key_and_full_block_not_truncated(self):
+        blocks = {"few_shots": self._items()}
+        _, usage = assemble_context(
+            blocks, {"few_shots": 1}, budget_tokens=1000,
+            count=estimate_tokens, detail=True,
+        )
+        entry = usage[0]
+        assert entry["truncated"] is False
+        assert [it["ref"] for it in entry["items"]] == ["How many loans?", "turn1"]
+        assert all(it["truncated"] is False for it in entry["items"])
+        assert entry["tokens"] == 50

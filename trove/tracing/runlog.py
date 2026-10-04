@@ -9,6 +9,10 @@
      参数与观测;事件按时间顺序追加,llm/tool 自然落在所属节点段内。
   3. verbose:同一叙事实时回显到控制台(默认关闭)。
 
+run 收尾还落一份**装配 dump** runs/{run_id}.assembly.json(见
+trove/tracing/assembly.py):这一问用了什么上下文块/工具/判定,结构化清单。
+它与 .log 成对:同一 run_id 重跑覆盖、按 MAX_RUN_LOGS 一起裁剪。
+
 trace store 未配置时全部静默 no-op(测试/CI 无副作用)。
 """
 
@@ -22,8 +26,9 @@ from typing import Any, TextIO
 
 from trove.llm.token_accounting import CACHE_FIELDS, cache_suffix
 from trove.tracing import local as store
+from trove.tracing.assembly import ASSEMBLY_SUFFIX, write_report
 
-MAX_RUN_LOGS = 50          # runs/ 目录保留的最新 run 日志数
+MAX_RUN_LOGS = 50          # runs/ 目录保留的最新 run 数(日志与其装配 dump 成对)
 _LONG_VALUE = 600          # 单字段字符串截断长度(run 日志)
 _LIST_PREVIEW = 10         # 列表/rows 预览条数(run 日志)
 _SPAN_LIST_PREVIEW = 50    # span JSONL 事件的列表预览条数(稍宽松)
@@ -211,7 +216,13 @@ class RunTracer:
             return False
 
     def _trim_run_logs(self) -> None:
-        """只保留最近 MAX_RUN_LOGS 个 run 日志(按 mtime,同名平局取字典序)。"""
+        """只保留最近 MAX_RUN_LOGS 个 run 的产物(按 mtime,同名平局取字典序)。
+
+        run 的产物是**一对**:{run_id}.log + {run_id}.assembly.json。
+        保留集按日志算;被裁的日志连同同 run 的清单一起删(不留孤儿清单)。
+        没有日志的孤儿清单(只落了 dump 的异常路径)按同一上限单独收口 ——
+        两套口径各自有界,谁也不无限堆积。
+        """
         home = store.store_dir()
         if home is None:
             return
@@ -223,10 +234,24 @@ class RunTracer:
             key=lambda p: (p.stat().st_mtime, p.name), reverse=True,
         )
         for stale in logs[MAX_RUN_LOGS:]:
-            try:
-                stale.unlink()
-            except OSError:
-                pass
+            self._unlink(stale)
+            self._unlink(runs_dir / f"{stale.stem}{ASSEMBLY_SUFFIX}")
+        manifests = sorted(
+            runs_dir.glob(f"*{ASSEMBLY_SUFFIX}"),
+            key=lambda p: (p.stat().st_mtime, p.name), reverse=True,
+        )
+        for stale in manifests[MAX_RUN_LOGS:]:
+            run_id = stale.name[: -len(ASSEMBLY_SUFFIX)]
+            if (runs_dir / f"{run_id}.log").exists():
+                continue  # 有日志的一对归日志口径管,避免两套规则互相打架
+            self._unlink(stale)
+
+    @staticmethod
+    def _unlink(path: Path) -> None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
     # ── 生命周期 ──────────────────────────────────────────
 
@@ -250,8 +275,14 @@ class RunTracer:
                 head.append(f"{key}: {meta[key]}")
         self._emit(0, head)
 
-    def finish(self, summary: dict[str, Any]) -> None:
-        """run 结束:kind=finish 事件 + 日志页脚;注销并清理旧日志。
+    def finish(
+        self, summary: dict[str, Any], assembly: dict[str, Any] | None = None,
+    ) -> None:
+        """run 结束:kind=finish 事件 + 日志页脚 + 装配 dump;注销并清理旧产物。
+
+        ``assembly`` = 装配清单(trove/tracing/assembly.build_report 的产物);
+        落 runs/{run_id}.assembly.json —— **run 收尾的单一写点**(不在中途多次
+        写),同一 run_id 覆盖旧清单(与 .log 同款)。None = 本次不落清单。
 
         幂等:崩溃路径可能重复调用(如正常 finish 后再 CRASH finish),
         只记录第一次。"""
@@ -267,6 +298,8 @@ class RunTracer:
         if self._log_fh is not None:
             self._log_fh.close()
             self._log_fh = None
+        if assembly is not None:
+            write_report(self.run_id, assembly)
         self._trim_run_logs()
         _unregister(self.run_id)
 
