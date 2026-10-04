@@ -451,6 +451,30 @@ async def create_app_components(
         # 绝不静默按零规则通过。
         config=config,
     )
+    # 主动扫描(B6):执行面**注入**而不是交给它连接器 —— scan 包物理上
+    # 够不到 registry(姿态守卫钉住),这里给它两条只读通道:一跳执行 +
+    # 方言解析,都经 registry 的只读守卫,与判定路径同一条。
+    from trove.services.scan.service import ScanService
+
+    async def _scan_hop(sql: str, datasource: str):
+        result = await asyncio.wait_for(
+            connector_registry.execute(sql, datasource),
+            timeout=int(config.budget.timeout_ms) / 1000.0,
+        )
+        return list(result.columns), list(result.rows)
+
+    async def _scan_dialect(datasource: str) -> str:
+        adapter = await connector_registry.get(datasource)
+        return getattr(adapter, "dialect", lambda: "")() or ""
+
+    scans = ScanService(
+        kb,
+        runner=_scan_hop,
+        dialect_of=_scan_dialect,
+        config=config,
+        llm=llm_gateway,
+        timeout_ms=int(config.budget.timeout_ms),
+    )
     scheduler = SchedulerRunner(
         session_manager, jobs, lang=config.language,
         decision=decision,
@@ -460,6 +484,8 @@ async def create_app_components(
         actions=actions,
         # 报告订阅投递(best-effort 同级,见 runner._deliver)。
         subscriptions=subscriptions,
+        # 扫描任务(best-effort 同级的报告节;缺席时按 error 记账)。
+        scans=scans,
     )
 
     # ── API 速率限制(进程内令牌桶 + 日配额,按 user)──
@@ -492,6 +518,7 @@ async def create_app_components(
         "jobs": jobs,
         "scheduler": scheduler,
         "decision": decision,
+        "scans": scans,
         "verdicts": verdicts,
         "actions": actions,
         "subscriptions": subscriptions,

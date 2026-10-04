@@ -120,7 +120,7 @@ def _job_local(state):
 
 @pytest.mark.asyncio
 async def test_daemon_runner_gets_the_shared_components(tmp_path, monkeypatch):
-    """``schedule --daemon`` 的 runner 必须拿到 components 里的四件注入。
+    """``schedule --daemon`` 的 runner 必须拿到 components 里的五件注入。
 
     历史缺陷:这个构造点漏了 decision / verdicts / actions / subscriptions,
     daemon 于是"看着在跑"但决策任务只能报未接线、触发型规则静默不提案。这里
@@ -141,6 +141,7 @@ async def test_daemon_runner_gets_the_shared_components(tmp_path, monkeypatch):
         "verdicts": object(),
         "actions": object(),
         "subscriptions": object(),
+        "scans": object(),
     }
     captured: dict = {}
 
@@ -181,6 +182,7 @@ async def test_daemon_runner_gets_the_shared_components(tmp_path, monkeypatch):
     assert captured["verdicts"] is components["verdicts"]
     assert captured["actions"] is components["actions"]
     assert captured["subscriptions"] is components["subscriptions"]
+    assert captured["scans"] is components["scans"]
 
 
 def test_should_sweep():

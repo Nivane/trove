@@ -402,6 +402,145 @@ class TestTopicReference:
         assert "no semantic model" in r.json()["detail"]
 
 
+class TestScanSpecReference:
+    """Same write-time discipline as decision_rule/topic — and it matters
+    more here: a scan spec names metric × dimension *inside* one datasource's
+    semantic model, so a typo is a dangling reference the job would hit on
+    every tick, turning into a forever-growing pile of ``unverifiable`` rows.
+    The reference check resolves names against the model only (zero queries)."""
+
+    SPEC = {"metrics": ["loan_balance"], "dimensions": ["region"],
+            "window": "本月", "lookback": 4}
+
+    @staticmethod
+    def _write_model(app, datasource="demo"):
+        import yaml
+
+        doc = {"semantic_model": [{
+            "name": datasource,
+            "datasets": [{
+                "name": "loan", "source": "loan",
+                "fields": [
+                    {"name": "region", "datatype": "TEXT",
+                     "semantic_role": "dimension",
+                     "expression": {"dialects": [
+                         {"dialect": "sqlite", "expression": "loan.region"}]}},
+                    {"name": "amount", "datatype": "DOUBLE",
+                     "semantic_role": "measure",
+                     "expression": {"dialects": [
+                         {"dialect": "sqlite", "expression": "loan.amount"}]}},
+                    {"name": "date", "datatype": "DATE",
+                     "semantic_role": "time",
+                     "expression": {"dialects": [
+                         {"dialect": "sqlite", "expression": "loan.date"}]}},
+                ],
+            }],
+            "metrics": [{
+                "name": "loan_balance",
+                "expression": {"dialects": [
+                    {"dialect": "sqlite", "expression": "SUM(loan.amount)"}]},
+                "agg_time_dimension": "loan.date",
+            }],
+        }]}
+        path = app.state.kb.semantics_path(datasource)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
+
+    async def test_create_with_a_declared_spec(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "贷款余额扫描", "schedule": "30",
+            "datasource": "demo", "scan_spec": self.SPEC,
+        })
+        assert r.status_code == 201, r.text
+        # 读侧解析回 dict(前端拿到形状,而不是一串要二次解析的 JSON)
+        assert r.json()["job"]["scan_spec"]["metrics"] == ["loan_balance"]
+
+    async def test_create_rejects_an_unknown_metric(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30",
+            "scan_spec": {**self.SPEC, "metrics": ["nope"]},
+        })
+        assert r.status_code == 400
+        assert "unknown metric 'nope'" in r.json()["detail"]
+        # ...and nothing was written(否则那条任务每 tick 静默产 unverifiable)
+        assert (await admin_client.get("/v1/admin/jobs")).json()["total"] == 0
+
+    async def test_create_rejects_an_unknown_dimension(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30",
+            "scan_spec": {**self.SPEC, "dimensions": ["nope"]},
+        })
+        assert r.status_code == 400
+        assert "unknown dimension 'nope'" in r.json()["detail"]
+
+    async def test_create_rejects_a_spec_with_no_semantic_model(
+            self, admin_client, jobs_app):
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "scan_spec": self.SPEC,
+        })
+        assert r.status_code == 400
+        assert "no semantic model" in r.json()["detail"]
+
+    async def test_create_rejects_a_bad_structure(self, admin_client, jobs_app):
+        """结构错是**写入时**的错误:一条挂空 metric 列表的规格宁可在
+        创建时被拒,也不要每个 tick 以同样的方式静默失败。"""
+        self._write_model(jobs_app)
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "scan_spec": {"metrics": []},
+        })
+        assert r.status_code == 400
+        assert "invalid scan_spec" in r.json()["detail"]
+
+        bad_mode = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30",
+            "scan_spec": {**self.SPEC, "mode": "sideways"},
+        })
+        assert bad_mode.status_code == 400
+
+    async def test_empty_spec_is_not_a_scan_job(self, admin_client, jobs_app):
+        r = await admin_client.post("/v1/admin/jobs", json={
+            "question": "q", "schedule": "30", "scan_spec": {},
+        })
+        assert r.status_code == 201
+        assert r.json()["job"]["scan_spec"] == {}
+
+    async def test_patch_can_attach_and_detach(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        job = await _make_job(jobs_app)
+        assert job.scan_spec == ""
+
+        attached = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "scan_spec": self.SPEC})
+        assert attached.status_code == 200, attached.text
+        assert attached.json()["job"]["scan_spec"]["window"] == "本月"
+
+        detached = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "scan_spec": {}})
+        assert detached.json()["job"]["scan_spec"] == {}
+
+    async def test_patch_rejects_an_unknown_metric(self, admin_client, jobs_app):
+        self._write_model(jobs_app)
+        job = await _make_job(jobs_app)
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "scan_spec": {**self.SPEC, "metrics": ["nope"]}})
+        assert r.status_code == 400
+        # ...and the job is untouched
+        assert (await jobs_app.state.jobs.get_job(job.id)).scan_spec == ""
+
+    async def test_patch_judges_the_end_state_datasource(
+            self, admin_client, jobs_app):
+        """一次 PATCH 同时换源与设扫描规格时,判的是改完之后的组合。"""
+        self._write_model(jobs_app, "demo")
+        job = await _make_job(jobs_app)
+        r = await admin_client.patch(f"/v1/admin/jobs/{job.id}", json={
+            "datasource": "other", "scan_spec": self.SPEC})
+        assert r.status_code == 400
+        assert "no semantic model" in r.json()["detail"]
+
+
 class TestJobAuth:
     async def test_admin_only(self, user_client):
         assert (await user_client.get("/v1/admin/jobs")).status_code == 403

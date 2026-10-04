@@ -11,6 +11,7 @@ exposed per job for the management UI.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -54,6 +55,10 @@ def _serialize(job) -> dict[str, Any]:
         "decision_rule": job.decision_rule,
         # 主题域(空 = 不限定):NL 路径把问题收敛到该域。
         "topic": job.topic,
+        # 主动扫描规格(解析后的 dict;空 dict = 非扫描任务)。写侧一律
+        # 存 JSON 字符串(列是 TEXT),读侧解析回去 —— 前端拿到的是形状,
+        # 不是一个需要二次解析的字符串。
+        "scan_spec": _scan_spec_out(job.scan_spec),
         "next_run_at": job.next_run_at,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
@@ -121,6 +126,64 @@ def _rule_error(request: Request, datasource: str, rule_id: str) -> str | None:
     return None
 
 
+def _scan_spec_out(raw: str) -> dict[str, Any]:
+    """TEXT 列 → dict。坏 JSON 返回空 dict(写侧已校验,此处只是防御)。"""
+    try:
+        data = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _scan_spec_in(spec: dict[str, Any] | None) -> str:
+    """dict → TEXT 列。空 dict/None = 非扫描任务(空串)。"""
+    if not spec:
+        return ""
+    return json.dumps(spec, ensure_ascii=False)
+
+
+def _scan_error(request: Request, datasource: str, spec: dict[str, Any]) -> str | None:
+    """400 message for an unusable scan spec; None when fine (or not a scan).
+
+    Same discipline as ``_rule_error``/``_topic_error``, and it matters more
+    here: a scan spec names metrics and dimensions *inside* one datasource's
+    semantic model, so a typo is a cross-run dangling reference — the job
+    would tick forever producing nothing but ``unverifiable`` rows. The
+    reference check therefore runs at **write time, with zero queries**: it
+    resolves names against the model only.
+    """
+    if not spec:
+        return None
+    from trove.services.scan.models import ScanError, ScanSpec
+    from trove.services.scan.scanner import spec_issues
+    from trove.services.semantic_layer.manage import SemanticManager
+
+    try:
+        parsed = ScanSpec.from_dict(spec)
+    except ScanError as e:
+        return f"invalid scan_spec: {e}"
+    kb = getattr(request.app.state, "kb", None)
+    if kb is None:
+        return f"scan unavailable: no KB for datasource {datasource!r}"
+    model = SemanticManager(kb).model(datasource)
+    if model is None:
+        return f"no semantic model for datasource: {datasource}"
+    issues = spec_issues(_ModelLayer(model), parsed)
+    if issues:
+        return "scan_spec references are not usable: " + "; ".join(issues)
+    return None
+
+
+class _ModelLayer:
+    """``resolve_*`` 只要求 ``.model()`` —— 校验侧不需要 provider 的其余面。"""
+
+    def __init__(self, model: Any) -> None:
+        self._model = model
+
+    def model(self) -> Any:
+        return self._model
+
+
 def _topic_error(request: Request, datasource: str, topic: str) -> str | None:
     """400 message for an unusable topic reference; None when fine.
 
@@ -166,6 +229,9 @@ async def create_job(
     topic_err = _topic_error(request, body.datasource, body.topic)
     if topic_err:
         raise HTTPException(status_code=400, detail=topic_err)
+    scan_err = _scan_error(request, body.datasource, body.scan_spec)
+    if scan_err:
+        raise HTTPException(status_code=400, detail=scan_err)
     job = await _jobs(request).create_job(
         body.question,
         body.schedule.strip(),
@@ -178,6 +244,7 @@ async def create_job(
         alert_cooldown_min=body.alert_cooldown_min,
         decision_rule=body.decision_rule,
         topic=body.topic,
+        scan_spec=_scan_spec_in(body.scan_spec),
     )
     if job is None:
         raise HTTPException(status_code=400, detail="invalid job definition")
@@ -224,6 +291,13 @@ async def update_job(
             request, body.datasource or existing.datasource, body.topic)
         if topic_err:
             raise HTTPException(status_code=400, detail=topic_err)
+    if body.scan_spec is not None:
+        # End-state judgement again: moving the job to another datasource and
+        # setting a scan spec in one PATCH judges the pair it will have.
+        scan_err = _scan_error(
+            request, body.datasource or existing.datasource, body.scan_spec)
+        if scan_err:
+            raise HTTPException(status_code=400, detail=scan_err)
     job = await _jobs(request).update_job(
         job_id,
         name=body.name,
@@ -237,6 +311,7 @@ async def update_job(
         alert_cooldown_min=body.alert_cooldown_min,
         decision_rule=body.decision_rule,
         topic=body.topic,
+        scan_spec=None if body.scan_spec is None else _scan_spec_in(body.scan_spec),
         enabled=body.enabled,
     )
     if job is None:
