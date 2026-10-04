@@ -234,9 +234,9 @@ async def create_app_components(
         max_attempts=int(config.action.max_attempts),
         lang=config.language,
     )
-    # 护栏走运行时绑定(构造签名是姿态守卫钉死的,不得新增参数):默认档
-    # 三道全关,配置了 agent.action.max_risk / rate_limit / retry_backoff_*
-    # 才生效。
+    # 护栏走运行时绑定(构造签名由姿态守卫钉死;唯一例外是 B7 的 verifier
+    # 可注入,见下):默认档三道全关,配置了 agent.action.max_risk /
+    # rate_limit / retry_backoff_* 才生效。
     from trove.services.action.guard import ActionGuards
 
     actions.guards = ActionGuards.from_config(config.action)
@@ -451,6 +451,16 @@ async def create_app_components(
         # 绝不静默按零规则通过。
         config=config,
     )
+
+    # 闭环验收(B7):效果测量器从 decision 侧装配(**包外执行面** —— 它
+    # 复用判定的语义解析与只读执行契约,测量与判定因此读同一套口径),
+    # 以 callable 注入行动包。行动包拿到的是一次调用,不是任何能自己伸向
+    # 业务库的东西 —— 姿态守卫的例外条款兑现为这一句装配。
+    from trove.services.decision.outcome import make_verifier
+
+    actions.verifier = make_verifier(decision, kb=kb)
+    # 测量延迟(天)。默认 0 = 测量腿全关(app.py 的 sweep 腿按它门控)。
+    actions.outcome_after_days = int(config.action.outcome_after_days or 0)
     # 主动扫描(B6):执行面**注入**而不是交给它连接器 —— scan 包物理上
     # 够不到 registry(姿态守卫钉住),这里给它两条只读通道:一跳执行 +
     # 方言解析,都经 registry 的只读守卫,与判定路径同一条。

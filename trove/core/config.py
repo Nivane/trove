@@ -328,6 +328,14 @@ class ActionConfig:
       重试,默认)。``retry_backoff_factor`` / ``retry_backoff_max_s`` 是
       指数退避的倍增与上限;重试时点由 ``(attempts, 上次投递时刻)`` 纯派生,
       不落库、零新列。
+
+    **闭环验收(B7,默认关 —— 老路径逐字节不变)**:
+
+    - ``outcome_after_days``:提案外送满 N 天后做效果测量(``0`` = 不测,
+      默认)。这是**延迟下限**,不是测量窗口本身 —— 测量窗口永远是规则
+      自己的那个期间,由 verifier 在测量时按规则的时钟重算;这个旋钮只
+      决定「什么时候开始看」。刻度是天,所以测量腿挂在小时级的周期
+      sweep 上,不占 30 秒的 job tick。
     """
 
     enabled: bool = False
@@ -340,6 +348,7 @@ class ActionConfig:
     retry_backoff_base_s: int = 0
     retry_backoff_factor: float = 2.0
     retry_backoff_max_s: int = 3600
+    outcome_after_days: int = 0
 
 
 @dataclass
@@ -741,6 +750,10 @@ class ConfigLoader:
                 action_raw.get("retry_backoff_factor", 2.0)),
             retry_backoff_max_s=max(
                 0, int(action_raw.get("retry_backoff_max_s", 3600))),
+            # 闭环验收(B7)。0 = 不测 —— 缺省部署与 B7 之前逐字节一致;
+            # 负数归 0(与护栏同款:负数不是"提前测"这类没意义的值)。
+            outcome_after_days=max(
+                0, int(action_raw.get("outcome_after_days", 0))),
         )
 
         # Parse eval gate (top-level section, not under agent:)
