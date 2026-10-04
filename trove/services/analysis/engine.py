@@ -44,7 +44,13 @@ from trove.services.analysis.series import (
     same_phase_blocks,
     series_from_rows,
 )
-from trove.services.analysis.stats import band, low_n, outside, robust_z
+from trove.services.analysis.stats import (
+    band,
+    confidence_from_margin,
+    low_n,
+    outside,
+    robust_z,
+)
 
 logger = get_logger(__name__)
 
@@ -537,7 +543,9 @@ class AnalysisEngine:
             degraded.append({"stage": "series", "reason": "empty_series"})
             return None
         values = [v for _, v in series]
-        b = band(values, k=float(spec.k or 3.5))
+        k = float(spec.k or 3.5)
+        b = band(values, k=k)
+        z = robust_z(current, values) if current is not None else None
         return {
             "grain": grain,
             "mode": mode,
@@ -547,9 +555,15 @@ class AnalysisEngine:
             "values": values,
             "band": b.to_dict(),
             "current": current,
-            "z": robust_z(current, values) if current is not None else None,
+            "z": z,
             "outside": outside(current, b) if current is not None else None,
             "low_n": low_n(len(values)),
+            # 带宽与位置分数(B8)随序列走:消费面(答案 markdown / 分析卡)
+            # **不重算** —— 与判定侧 gate 同一份公式
+            # (``confidence_from_margin``),「位置分数非概率」的限定语
+            # 留在各自的出口措辞里。
+            "k": k,
+            "confidence": confidence_from_margin(z, k),
         }
 
     def _budget_snapshot(self) -> dict[str, Any] | None:
@@ -1204,7 +1218,18 @@ def analysis_payload(
         kind = "attribution"
     truncated = any(bool(q.get("truncated")) for q in outcome.evidence_queries)
     payload = {
-        "version": 1,
+        # v2 = v1 形状 + **全可选**的统计节(series 含噪声带/z/位置分数;
+        # evidence.budget)+ 节点层附录(hypotheses,attribution 节点在
+        # analysis_payload 之后附加;分析包本体永远零 LLM)。
+        # 版本描述**生产者 schema**,不由本次 payload 恰好带了哪些节决定 ——
+        # 按内容变版本会让同一个生产者在两个版本间摇摆(migrations 同款
+        # 纪律:版本反映历史,从不反映配置)。兼容机制 = **缺席容忍**:
+        # 不认识的新键原样忽略,v1 payload 无需迁移(前端类型全可选 +
+        # 「拿不到不整节渲染」)。
+        # 边界:判定侧的 significance/causal 证据节**不进**本 payload ——
+        # 它们属于 verdict.evidence(判定记录自带证据),这里不复制第二份;
+        # 分析侧对应的统计节就是 series(噪声带即分析侧的显著性)。
+        "version": 2,
         "kind": kind,
         "metric": outcome.metric,
         "metric_kind": "ratio" if outcome.is_ratio else "additive",

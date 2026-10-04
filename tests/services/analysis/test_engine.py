@@ -314,7 +314,9 @@ class TestAnalysisPayload:
         p = analysis_payload(combined, question="q", chart=chart,
                              baseline_label="上期", datasource="demo")
         assert p["kind"] == "combined" and p["charts"] == [chart]
-        assert p["version"] == 1 and p["metric_kind"] == "additive"
+        # v2(B8):版本无条件前进 —— 描述的是生产者 schema,不由内容决定
+        # (缺席容忍才是兼容机制;v1 形状的 payload 逐键仍是这里的样子)。
+        assert p["version"] == 2 and p["metric_kind"] == "additive"
         assert p["labels"]["baseline_label"] == "上期"
         assert p["partial"] is False and p["evidence"]["truncated"] is False
 
