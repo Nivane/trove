@@ -26,7 +26,7 @@ from trove.services.semantic_layer.models import (
     SemanticModel,
 )
 
-# ── 罐头数字(单日窗口,当前期用字面量 '2024-02-01' 区分)────────
+# ── 罐头数字(单日窗口,当前期用起始字面量 >= '2024-02-01' 区分)──
 # profit = revenue − expense,加性恒等式:Δ70−60 = (100−80) − (30−20) ✓
 PROFIT_C, PROFIT_B = 70.0, 60.0
 REV_C, REV_B = 100.0, 80.0
@@ -99,7 +99,8 @@ class FakeRunner:
         self.calls.append(sql)
         if self.fail:
             raise RuntimeError("datasource down")
-        cur = "'2024-02-01'" in sql
+        # 半开区间:基期 SQL 也含 '< '2024-02-01'',只有 >= 一侧能区分两期
+        cur = ">= '2024-02-01'" in sql
         if "GROUP BY" in sql.upper():
             return ["region", "profit"], [list(r) for r in (DIM_C if cur else DIM_B)]
         if _n_select_cols(sql) >= 3:      # 树组合查询 profit/revenue/expense

@@ -7,7 +7,8 @@
   - ``analysis_payload`` 形状(kind / evidence / partial)。
 
 runner 按 SQL 形状回罐头数字(自洽:区域行之和 == 总量),周期靠当前
-窗口字面量 ``'2024-02-01'`` 区分(单日窗口,基期 = 2024-01-31)。
+窗口起始字面量 ``>= '2024-02-01'`` 区分(单日窗口,基期 = 2024-01-31;
+半开区间下基期 SQL 含 ``< '2024-02-01'``,所以必须认 ``>=`` 一侧)。
 """
 
 from __future__ import annotations
@@ -98,7 +99,7 @@ class FakeRunner:
 
     async def __call__(self, sql: str, datasource: str) -> tuple[list[str], list[list[Any]]]:
         self.calls.append(sql)
-        cur = "'2024-02-01'" in sql
+        cur = ">= '2024-02-01'" in sql
         if "__num" in sql:  # 比率 hop(分子/分母双列)
             rows = [list(r) for r in (NUMDEN_C if cur else NUMDEN_B)]
             return ["region", "__num", "__den"], rows

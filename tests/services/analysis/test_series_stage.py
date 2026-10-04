@@ -89,7 +89,7 @@ class FakeRunner:
         self.calls.append(sql)
         if _is_series_sql(sql):
             return ["bucket", "net"], [list(r) for r in self.series_rows]
-        cur = "'2024-02-01'" in sql
+        cur = ">= '2024-02-01'" in sql
         if "GROUP BY sales.region" in sql:
             return ["region", "net"], [list(r) for r in (REGION_C if cur else REGION_B)]
         n = _n_select_cols(sql)
@@ -159,9 +159,10 @@ class TestSeriesEnabled:
         assert "insufficient_n" in s["band"]["degraded"]
         assert s["current"] == CUR and s["z"] == pytest.approx((70.0 - 42.0) / (1.4826 * 2.0))
         assert s["outside"] is True and s["low_n"] is True
-        # 序列 SQL 覆盖历史 span 且带分桶
+        # 序列 SQL 覆盖历史 span 且带分桶;span 末日在 SQL 里是半开
+        # (``< '2024-02-01'``)—— payload 的 span 仍是人类口径的闭端
         series_sql = runner.calls[4]
-        assert "'2023-11-01'" in series_sql and "'2024-01-31'" in series_sql
+        assert "'2023-11-01'" in series_sql and "'2024-02-01'" in series_sql
         assert "strftime" in series_sql
         # payload:series 节在;budget 未设置 → 不出现
         p = analysis_payload(out, question="q", chart=None,

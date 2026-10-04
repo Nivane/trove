@@ -220,7 +220,7 @@ async def _dimension_components(
         sql = ""
         try:
             sql = compile_hop(semantic_layer, matched, dialect, metric_name,
-                              [dim_ref], time_conds(time_field, period))
+                              [dim_ref], time_conds(time_field, period, dialect=dialect))
             if not sql:
                 continue
             cols, rows = await runner(sql, datasource)

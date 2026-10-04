@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Any
 
 from trove.core.logging import get_logger
@@ -193,25 +194,41 @@ def compile_ratio_hop(
         return None
 
 
+def _plus_one_day(iso: str) -> str | None:
+    """ISO 日期 + 1 天(不可解析 → None,调用方回退)。"""
+    try:
+        return (date.fromisoformat(str(iso)) + timedelta(days=1)).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
 def time_conds(
     time_field: str,
     period: tuple[str, str] | None,
     *,
     dialect: str = "",
 ) -> list[dict[str, Any]]:
-    """时间范围 → plan conditions(period None → 空)。
+    """时间范围 → plan conditions(半开 ``>= start`` ∧ ``< end + 1 天``)。
 
-    当前行为是**闭区间**(``>= start`` ∧ ``<= end``);``dialect`` 是
-    调用方现在就传、函数体暂不分支的**管道准备** —— 下一步的行为修正
-    (改为半开 ``< end + 1 天``:timestamp 列在闭区间下会丢最后一天)
-    因此成为单点改动,不再触及全部调用方。本提交零行为变化。
+    半开是唯一对 Date 与 Timestamp 列语义一致的形式:闭区间
+    ``<= '2024-01-31'`` 在 timestamp 列上排除当天 00:00 之后的所有行
+    —— **丢最后一天**(sqlite 实测:同日数据 date 列 2 行、timestamp
+    列 0 行;半开则两列同为 2 行)。end 不可解析时回退闭区间(如实
+    标注,不猜)。``dialect`` 预留给未来需要方言差异化时间算术的场景,
+    当前四种方言统一按 ISO 字面量比较。
     """
     if not time_field or period is None:
         return []
     start, end = period
+    tail = _plus_one_day(end)
+    if tail is None:
+        return [
+            {"field": time_field, "op": ">=", "value": start, "note": "attribution period start"},
+            {"field": time_field, "op": "<=", "value": end, "note": "attribution period end (unparsable; closed fallback)"},
+        ]
     return [
         {"field": time_field, "op": ">=", "value": start, "note": "attribution period start"},
-        {"field": time_field, "op": "<=", "value": end, "note": "attribution period end"},
+        {"field": time_field, "op": "<", "value": tail, "note": "attribution period end (half-open: end + 1d)"},
     ]
 
 
