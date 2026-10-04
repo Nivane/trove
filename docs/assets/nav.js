@@ -61,7 +61,8 @@
         { href: "capabilities/semantic.html", text: "语义层" },
         { href: "capabilities/kb.html", text: "知识库" },
         { href: "capabilities/retrieval.html", text: "混合检索" },
-        { href: "capabilities/decisions.html", text: "判定规则" }
+        { href: "capabilities/decisions.html", text: "判定规则" },
+        { href: "capabilities/actions.html", text: "行动与审批" }
       ]
     },
     {

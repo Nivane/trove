@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 行动与审批：判定触发冻结成提案，人工批准后才外送；模板两级门禁、闭集变量渲染、幂等键去重、投递与回执留痕——系统自身没有写回业务库的通道。">
+<title>行动与审批 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>数据能力<span class="sep">/</span>行动与审批
+      </div>
+      <h1>行动与审批</h1>
+      <p class="lede">
+        「问数 · 分析 · 决策 · 行动」的最后一腿。一条<a href="decisions.html">判定</a>触发之后，
+        系统不会自己去改任何东西——它把「该做什么」<strong>冻结成一份提案</strong>：
+        载荷、依据、通道、风险都在里面，人批准了才外送，外送了还要回执。
+        而<strong>系统自身没有写回业务库的通道</strong>，这不是承诺，是结构。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="why">为什么行动停在一份提案</h2>
+
+    <p>
+      判定可以自动，行动不行。两者出错的代价不是一个量级：一条判错的阈值，
+      最坏是多发一条通知；一个自动执行错的行动，改的是你的真实系统。
+      所以这里把自动化的边界画在<strong>「提案」</strong>上——
+      机器负责<em>发现</em>和<em>起草</em>，人负责<em>点头</em>。
+    </p>
+
+    <p>
+      另一半是只读姿态。整个行动包（<code>trove/services/action/</code>）<strong>不导入数据源模块</strong>：
+      <code>ActionService</code> 和 <code>ActionDispatcher</code> 的构造参数里没有连接器注册表，
+      数据库 SQL 守卫也不在它们的依赖里。<code>ActionDispatcher</code> 的全部输入是一个
+      <strong>通道名加一个载荷字典</strong>——它在物理上就无法写业务库，无论模板写了什么。
+      这条边界不靠约定维持：一个守卫测试直接对着源码断言「这个包没有碰连接器的路径」，
+      将来哪次编辑伸手去拿连接器，会在测试里响亮地失败，而不是在评审里被悄悄放过。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L92">models.py:92 <span class="ref-line">ActionProposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L63">service.py:63 <span class="ref-line">ActionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L57">dispatcher.py:57 <span class="ref-line">ActionDispatcher</span></a>
+    </p>
+
+    <h2 id="lifecycle">一条提案的生命周期</h2>
+
+    <p>
+      八个状态，一条单向街。能「往回走」的只有失败后的显式重试与取消，
+      其余每一步都是一次留痕的状态迁移：
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    T["判定触发<br/>autonomy: propose"] --> P["pending<br/>待批准 · 载荷已冻结"]
+    P -- "人工批准" --> A["approved<br/>已批准"]
+    P -- "人工驳回" --> R["rejected"]
+    P -- "超时清收" --> E["expired"]
+    P -- "撤销" --> C1["cancelled"]
+    A -- "外送" --> D["dispatched<br/>通道已收下"]
+    A -- "撤销" --> C2["cancelled"]
+    A -- "MCP 拉取并签收" --> V["delivered<br/>已回执"]
+    D -- "签收" --> V
+    D -- "重试" --> F["failed<br/>外送失败 · 原样留痕"]
+    F -- "显式 retry" --> D
+    D -- "通道失败" --> F
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 提案状态机。只有 <code>pending</code> 能被批准；只有 <code>approved</code>（或失败后重试）能被外送；<code>delivered</code> 由签收到达。每个箭头都写一行审计记录。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>状态</th><th>含义</th><th>还能做什么</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">pending</td><td>待批准；载荷此刻已定稿</td><td>批准 / 驳回 / 撤销；到点后过期</td></tr>
+          <tr><td class="mono">approved</td><td>人工批准，尚未外送</td><td>外送 / 撤销；MCP 客户端可拉取并签收</td></tr>
+          <tr><td class="mono">dispatched</td><td>通道已接受（HTTP 2xx），尚无回执</td><td>签收；不再可撤（已出楼）</td></tr>
+          <tr><td class="mono">delivered</td><td>回执到达——对方确实拿到了</td><td>终态</td></tr>
+          <tr><td class="mono">failed</td><td>外送失败，原因在原行上</td><td>显式 retry（有次数上限）</td></tr>
+          <tr><td class="mono">rejected / cancelled / expired</td><td>人工驳回 / 撤销 / 超时清收</td><td>终态</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L32">models.py:32 <span class="ref-line">PROPOSAL_STATUSES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L238">service.py:238 <span class="ref-line">dispatch</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L298">service.py:298 <span class="ref-line">ack</span></a>
+    </p>
+
+    <h3>载荷创建即定稿</h3>
+
+    <p>
+      提案一出生，出站消息的字节就确定了——渲染发生在<strong>创建时</strong>，
+      之后不再重渲染。批准的是哪段文字，送出去的就是哪段文字；如果外送时才渲染，
+      一条被编辑过的规则或模板就能改掉一份<strong>已经批准过</strong>的消息，
+      而那正是审批这一步存在的意义。
+    </p>
+
+    <p>
+      发出的信封里还带一个 <code>_trove</code> 块：提案 id、幂等键、数据源、规则、模板、
+      风险、批准人、外送时刻。收件方据此在自己的侧边去重与归因——重发同一份不会变成两条行动。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L329">service.py:329 <span class="ref-line">_envelope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L164">propose.py:164 <span class="ref-line">build_proposal</span></a>
+    </p>
+
+    <h3>同一触发，只提案一次</h3>
+
+    <p>
+      判定任务会重跑——手动重跑、调度推进两次、崩溃后重试——但同一场触发不该
+      产出第二份提案。幂等键是
+      <code>sha256(rule_id | rule_digest | anchor_date | template | params)</code>：
+      同一条规则、同一版本、同一个锚定日、同一个模板 → 折叠成一份；规则改过（摘要变了）
+      或换了日子，才算新的触发。<strong>刻意不把数字算进去</strong>——
+      重跑时数据略有变化仍然是同一场触发，按数值做键会让每个 tick 都喷一份提案。
+      去重检查发生在渲染<em>之前</em>：重复的那次是廉价空操作，而不是一次「模板坏了」的假故障。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L38">propose.py:38 <span class="ref-line">idempotency_key</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L111">service.py:111 <span class="ref-line">propose_from_verdict</span></a>
+    </p>
+
+    <p>
+      提案的名字取得很具体：一条按维度触发的规则可能同时命中好几组，但一条出站消息只能
+      指一个——载荷里的数字来自<strong>贡献绝对值最大的那一组</strong>（与判定引擎
+      排序用的同一个口径），其余留在证据里。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/propose.py#L85">propose.py:85 <span class="ref-line">primary_group</span></a>
+    </p>
+
+    <h2 id="template">模板：组织自己的响应资产</h2>
+
+    <p>
+      规则说「当这个触发时，组织的响应是模板 X」。模板是一份
+      <code>.trove/actions/&lt;name&gt;/action.yml</code>——和 Skills 同一套
+      <strong>草稿 → 管理员确认</strong>门禁：未确认的模板不能被规则引用，
+      规则保存时的资产 lint 会直接拒绝。
+    </p>
+
+    <p>
+      模板是<strong>数据，不是代码，也不是提示词</strong>。它点名一个<strong>通道</strong>
+      （如 <code>ops-alerts</code>，绝不是裸 URL——URL 与密钥住在部署配置
+      <code>agent.action.channels</code> 里，模板可以被人审阅而不携带凭证），
+      并给出一段带 <code>{{变量}}</code> 洞的 JSON 载荷。创建时先按样例变量试渲染一遍：
+      写错的变量名或 JSON 语法错误是<strong>写给作者本人的一个 400</strong>，
+      而不是规则第一次触发那个晚上的惊喜。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>字段</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">action_type</td><td class="mono">notify（告警形状）/ webhook（载荷原样）</td></tr>
+          <tr><td class="mono">target.channel</td><td>点名通道；<code>resource</code> 是可选的自由标签（如房间名），只给人看，不参与路由</td></tr>
+          <tr><td class="mono">risk</td><td class="mono">low / medium / high</td></tr>
+          <tr><td class="mono">approvals_required</td><td>v1 只支持 1；其他值在创建/读取时被响亮拒绝（一个「2」表现得像「1」是最糟的组合）</td></tr>
+          <tr><td class="mono">payload_template</td><td>带闭集 <code>{{变量}}</code> 的 JSON 文档</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/templates.py#L60">templates.py:60 <span class="ref-line">ActionTemplateService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L415">rules.py:415 <span class="ref-line">lint_rule_assets</span></a>
+    </p>
+
+    <h3>渲染是闭集的：没有表达式，没有 eval</h3>
+
+    <p>
+      占位符只能写 <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/template_render.py#L44">template_render.py:44 <span class="ref-line">TEMPLATE_VARIABLES</span></a>
+      里那十九个名字——规则身份、判定值、主组数字、时间、提案与运行身份。
+      没有 Jinja，没有表达式语言（与<a href="decisions.html#expr">判定条件的表达式语言</a>同一款纪律，
+      理由相同：填的内容最终会变成一条<strong>出站消息</strong>）。三条硬规则：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>写法</th><th>结局</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>未知变量（<code>{{mesage}}</code> 打错字）</td>
+            <td><strong>硬错误</strong>，错误文本里附全部合法名字</td>
+            <td>渲染成空串的字段，与「本来就该是空的」长得一模一样，等发现时消息已经进了错误的收件箱</td>
+          </tr>
+          <tr>
+            <td>闭集内但这条规则给不出值（聚合规则没有 <code>dim</code>）</td>
+            <td><strong>硬错误</strong>，提案不创建</td>
+            <td>规则与模板是两份各自人工编辑的资产，对不上就该在提案创建时暴露——宁可不发，不发半成品</td>
+          </tr>
+          <tr>
+            <td>值里含引号、换行或注入形状的字符串</td>
+            <td>JSON 转义后再替换，结果<strong>按解析验证</strong></td>
+            <td>值逃不出它所在的字符串字面量；渲染结果必须能被 <code>json.loads</code> 解回一个对象，否则拒绝</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/template_render.py#L150">template_render.py:150 <span class="ref-line">render_payload</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/template_render.py#L195">template_render.py:195 <span class="ref-line">validate_template</span></a>
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">注入扫描：报告，不阻断</span>
+      <div>
+        <p>确认一份模板时，载荷文本与批准人看到的标签会过一遍注入扫描，
+        <strong>命中项返回给人看，但不拦截</strong>——与 Skills 同一款纪律。
+        拦截会毁掉作者本来就要的内容；沉默则会让管理员确认了自己没读过的东西。</p>
+      </div>
+    </div>
+
+    <h2 id="gates">两道门，加一个总闸</h2>
+
+    <p>
+      从「规则触发」到「消息出楼」之间站着两个互相独立的门，加一个部署层的总闸：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>门</th><th>在哪</th><th>拦什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>模板门</strong></td>
+            <td>模板服务 + 规则资产 lint</td>
+            <td>未确认的模板不能被规则引用；引用一个不存在或未确认的模板，规则<strong>保存不下来</strong></td>
+          </tr>
+          <tr>
+            <td><strong>审批门</strong></td>
+            <td>提案状态机</td>
+            <td>提案以 <code>pending</code> 出生，只有人的 <code>approve</code> 能把它变成 <code>approved</code>——而 <code>approved</code> 是 <code>dispatch</code> 唯一可用的起点</td>
+          </tr>
+          <tr>
+            <td><strong>总闸</strong> <code>agent.action.enabled</code></td>
+            <td>部署配置，<strong>默认 false</strong></td>
+            <td>关着时 <em>propose 与 dispatch 两个往外走的方向都被拒</em>；批准 / 驳回 / 撤销 / 过期 / 回执与模板管理照常可用——可以先备好模板、清掉积压，再决定开不开外送</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      行为开关里最要防的是「关着，但看起来像开着」。所以关闸时的 <code>dispatch</code>
+      是<strong>抛错拒绝</strong>，不是静默跳过——这是全系统唯一一处「什么都没发生」与
+      「消息已送出」绝不能混淆的调用。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L37">rules.py:37 <span class="ref-line">AUTONOMIES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L195">service.py:195 <span class="ref-line">approve</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L291">config.py:291 <span class="ref-line">enabled</span></a>
+    </p>
+
+    <p>
+      规则侧的对应字段是 <code>action.autonomy</code>——只有两个取值，且<strong>刻意没有
+      「auto」</strong>：<code>notify_only</code>（响应就是那条通知本身，永不离开系统）
+      与 <code>propose</code>（可以生成提案，但仍要人批准）。规则还可以写
+      <code>recommendation</code>（人写的「该怎么办」，随提案进入批准人的视野）与
+      <code>driver_dimension</code>（分析桥沿哪个维度找主因）。lint 会提醒：
+      声明了 action 却没写 recommendation，批准人看到的就是一段没有理由的模板。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L64">rules.py:64 <span class="ref-line">ActionRef</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L110">rules.py:110 <span class="ref-line">recommendation</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L118">rules.py:118 <span class="ref-line">driver_dimension</span></a>
+    </p>
+
+    <h2 id="failure">失败是响亮的</h2>
+
+    <p>
+      外送失败在这里<strong>不吞</strong>——与定时任务的告警路径刻意相反。
+      告警路径失败可以静默：告警会重复，下一个 tick 会再投一次。
+      行动不会重复：它对着一场具体的触发被批准了一次。所以一次失败的 dispatch 会
+      把提案置为 <code>failed</code>、写下一行带错误的投递记录、并出现在管理端的待办列表里；
+      再试一次是一次显式的 <code>retry</code>，且受 <code>max_attempts</code>（默认 3）约束。
+    </p>
+
+    <p>
+      通道本身也是「失败即结果」：未配置的通道名不是异常，而是一次失败的投递——
+      通道名打错、URL 不合法、网络超时，都是落在提案与投递记录上的可读事实。
+      每次投递记录带 HTTP 状态与一段<strong>有上限的响应摘录</strong>（512 字符）：
+      足够调试一次拒绝，小到恶意或话痨的端点点不满存储。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/dispatcher.py#L74">dispatcher.py:74 <span class="ref-line">send</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L287">service.py:287 <span class="ref-line">retry</span></a>
+    </p>
+
+    <h2 id="pull">拉通道：MCP 与 webhook 并列</h2>
+
+    <p>
+      外送不是只有「推」一种姿势。已批准且未过期的提案同时出现在 MCP 侧的
+      <code>trove://proposals</code> 资源里，客户端可以<code>list_proposals</code>
+      看清单、<code>fetch_proposal</code> 取那份被人批准过的载荷、做完之后
+      <code>ack_proposal</code> 签收（幂等——已签收的再签是空操作）。
+      签收即 <code>delivered</code>：一个拉取了已批准提案并回执的客户端，
+      <strong>就已经收到它了</strong>，与 webhook 是否推过无关。
+    </p>
+
+    <p>
+      这条通道有一条刻意的边界：<strong>MCP 只能看和签收，不能批准</strong>。
+      批准 / 驳回 / 外送都是人在管理台做的决定——机器通道不投票。
+      提案清单也按数据源授权过滤，「取不到」与「没授权」返回<strong>逐字相同</strong>的一句话：
+      拒绝不能变成一件存在性预言机。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L303">server.py:303 <span class="ref-line">proposals_resource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L446">server.py:446 <span class="ref-line">fetch_proposal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L482">server.py:482 <span class="ref-line">ack_proposal</span></a>
+    </p>
+
+    <h2 id="audit">审计轨迹：谁批的、何时发的、对方收没收到</h2>
+
+    <p>
+      每一次状态迁移都写一行 <code>approvals</code>（追加式，含操作人、动作、备注、时间），
+      每一次外送与签收都写一行 <code>deliveries</code>（通道、HTTP 状态、响应摘录）。
+      签收也<strong>写进同一条投递轨迹</strong>，而不是在别处立一个旗标——
+      回执与投递是同一件事的两半。再加管理端 API 的 <code>action.*</code> 审计行，
+      「谁在什么时候批准了哪一份、发了几次」在提案存储之外也有答案。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L133">models.py:133 <span class="ref-line">Approval</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/models.py#L145">models.py:145 <span class="ref-line">Delivery</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L188">actions.py:188 <span class="ref-line">decide_action_proposal</span></a>
+    </p>
+
+    <h2 id="ui">在管理台里</h2>
+
+    <p>
+      管理台的「行动」页有两个页签：<strong>模板</strong>（草稿确认门禁、通道名、
+      风险级别、命中注入扫描的报告、试渲染预览）与<strong>提案</strong>
+      （按状态过滤的列表、待办计数、以及逐条的批准 / 拒绝 / 外送 / 重试 / 确认回执 / 详情）。
+      详情抽屉里是提案全文加它的完整审计轨迹。行动层未启用时，页面顶部有醒目的
+      「已停用」横幅——列表照常可读，外送按钮背后的那一步会被服务拒绝。
+    </p>
+
+    <p>
+      提案的来路在「判定规则」页里：一条规则声明了 <code>action</code> 之后，
+      它的每次触发都可以在这里看到「提案了没有、批没批、发没发出去」。
+    </p>
+
+    <h2 id="api">管理端接口</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>方法</th><th>路径</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/templates</td><td>模板列表 + 行动层状态（是否启用、已配置通道名）</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/templates</td><td>创建模板草稿（返回注入扫描命中项）</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/templates/{name}/confirm · reject</td><td>确认 / 驳回草稿</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals</td><td>提案列表（按状态 / 数据源过滤）+ 各状态计数</td></tr>
+          <tr><td class="mono">GET</td><td class="mono">/v1/admin/actions/proposals/{id}</td><td>单条提案 + 完整审计轨迹（批准、投递）</td></tr>
+          <tr><td class="mono">POST</td><td class="mono">/v1/admin/actions/proposals/{id}/{decision}</td><td>状态迁移，闭集动词：<code>approve / reject / cancel / dispatch / retry / ack</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L36">actions.py:36 <span class="ref-line">_DECISIONS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L67">actions.py:67 <span class="ref-line">list_action_templates</span></a>
+    </p>
+
+    <p>
+      动词表是闭集并在路由层先校验的，路由表长不出服务没实现的动词；
+      失败以 400 回服务自己的错误文本——那些文本是写给人读的
+      （「提案 p-… 是 'dispatched'——只有已批准的（或失败待重试的）提案可以被外送」）。
+    </p>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>触发提案的判定从哪来</td><td><a href="decisions.html">判定规则</a></td></tr>
+          <tr><td>触发通知里的「主因」行是谁算的</td><td><a href="decisions.html#bridge">判定规则 · 分析→决策桥</a></td></tr>
+          <tr><td>指标、维度与主题域</td><td><a href="semantic.html">语义层</a></td></tr>
+          <tr><td>订阅投递与定时任务</td><td><a href="../admin/automation.html">自动化与治理</a></td></tr>
+          <tr><td>只读边界全清单</td><td><a href="../ops/security.html">安全边界</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

@@ -43,9 +43,9 @@ trove mcp --transport sse --port 8001
 trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</code></pre>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L819">main.py:819 <span class="ref-line">main_mcp</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L704">main.py:704 <span class="ref-line">--transport</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L69">server.py:69 <span class="ref-line">FastMCP</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L885">main.py:885 <span class="ref-line">main_mcp</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L770">main.py:770 <span class="ref-line">--transport</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L82">server.py:82 <span class="ref-line">FastMCP</span></a>
     </p>
 
     <div class="table-wrap">
@@ -72,7 +72,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L733">main.py:733 <span class="ref-line">_LOOPBACK_HOSTS</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L799">main.py:799 <span class="ref-line">_LOOPBACK_HOSTS</span></a>
     </p>
 
     <p>
@@ -82,7 +82,7 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L767">main.py:767 <span class="ref-line">_build_mcp_auth_middleware</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L833">main.py:833 <span class="ref-line">_build_mcp_auth_middleware</span></a>
     </p>
 
     <p>
@@ -113,8 +113,8 @@ trove mcp --transport streamable-http --port 8001 --token &lt;trove-token&gt;</c
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L128">server.py:128 <span class="ref-line">_authorize_datasource</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L132">policy.py:132 <span class="ref-line">Principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L141">server.py:141 <span class="ref-line">_authorize_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L146">policy.py:146 <span class="ref-line">Principal</span></a>
     </p>
 
     <p>
@@ -166,9 +166,9 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L268">server.py:268 <span class="ref-line">ask_data</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L317">server.py:317 <span class="ref-line">list_datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L324">server.py:324 <span class="ref-line">kb_status</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L349">server.py:349 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L398">server.py:398 <span class="ref-line">list_datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L405">server.py:405 <span class="ref-line">kb_status</span></a>
     </p>
 
     <p>
@@ -183,8 +183,8 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L53">server.py:53 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L184">server.py:184 <span class="ref-line">_ds_name_safe</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L61">server.py:61 <span class="ref-line">_SESSION_CACHE_MAX</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L197">server.py:197 <span class="ref-line">_ds_name_safe</span></a>
     </p>
 
     <h2 id="resources">三个 resource</h2>
@@ -203,9 +203,9 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L206">server.py:206 <span class="ref-line">datasources</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L226">server.py:226 <span class="ref-line">schema</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L232">server.py:232 <span class="ref-line">semantics</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L219">server.py:219 <span class="ref-line">datasources</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L239">server.py:239 <span class="ref-line">schema</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L245">server.py:245 <span class="ref-line">semantics</span></a>
     </p>
 
     <p>
@@ -230,8 +230,8 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L242">server.py:242 <span class="ref-line">datasource_guide</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L257">server.py:257 <span class="ref-line">ask_data</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L323">server.py:323 <span class="ref-line">datasource_guide</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L338">server.py:338 <span class="ref-line">ask_data</span></a>
     </p>
 
     <h2 id="visible">语义优先也在这里生效</h2>
@@ -241,7 +241,7 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L139">server.py:139 <span class="ref-line">_datasources_visible</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/mcp/server.py#L152">server.py:152 <span class="ref-line">_datasources_visible</span></a>
     </p>
 
     <p>
@@ -286,7 +286,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: cade4da</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 语义层详解：编译器如何把计划编译成权威 SQL、硬/软 MISS 的全部判据、骨架保真校验，以及行级安全（RLS）的注入时机。">
+<meta name="description" content="Trove 语义层详解：编译器如何把计划编译成权威 SQL、主题域的范围收敛口径（四态解析、入口收敛、无存在性预言机）、硬/软 MISS 的全部判据、骨架保真校验，以及行级安全（RLS）的注入时机。">
 <title>语义层 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -90,10 +90,10 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L242">models.py:242 <span class="ref-line">SemanticModel</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L59">models.py:59 <span class="ref-line">SemanticMetric</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L96">models.py:96 <span class="ref-line">SemanticField</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L142">models.py:142 <span class="ref-line">SemanticRelationship</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L294">models.py:294 <span class="ref-line">SemanticModel</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L82">models.py:82 <span class="ref-line">SemanticMetric</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L119">models.py:119 <span class="ref-line">SemanticField</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L165">models.py:165 <span class="ref-line">SemanticRelationship</span></a>
     </p>
 
     <p>
@@ -103,8 +103,102 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L169">models.py:169 <span class="ref-line">fan_out</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L168">models.py:168 <span class="ref-line">cardinality</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L192">models.py:192 <span class="ref-line">fan_out</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L191">models.py:191 <span class="ref-line">cardinality</span></a>
+    </p>
+
+    <h2 id="topics">主题域：把「可答范围」声明成域</h2>
+
+    <p>
+      模型还可以声明<strong>主题域</strong>（<code>topics</code>）：一个业务域 =
+      名字 + 数据集清单，外加给人和给检索用的佐料（同义词、指标、示例问句、描述）。
+      它把「这个数据源里哪些数据集属于哪块业务」从口头约定变成声明，消费面有三处：
+      用户端的选择器（<a href="../user/ask.html#topic">提问时选域收敛范围</a>）、
+      定时任务的域引用（<a href="../admin/automation.html#jobs">写任务时校验</a>）、
+      以及域级授权（<a href="../admin/access.html#topic-grants">谁可见哪些域</a>）。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L265">models.py:265 <span class="ref-line">TopicDomain</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L318">models.py:318 <span class="ref-line">topics</span></a>
+    </p>
+
+    <p>
+      运行期只有三件事，全部零 LLM、纯函数（<code>topics.py</code>）：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>步骤</th><th>口径</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>解析选择</strong></td>
+            <td>域名单平台比较（大小写 / 空白不敏感）→ 声明里的那一个。解析不到是<strong>显式的失败信号</strong>，不静默退回全量——用户选的是范围，范围没了就该说，而不是把问题答在更大的数据上</td>
+          </tr>
+          <tr>
+            <td><strong>算作用域</strong></td>
+            <td>声明数据集 <strong>∩</strong> 模型当前数据集。<em>交集而不是直接采信声明</em>：域写在 YAML 里、模型会随 <code>/kb init</code> 演进，悬空名字只会让作用域比作者以为的更窄；交集为空也是显式状态——<code>empty_scope</code>，域过期，不是「不限制」</td>
+          </tr>
+          <tr>
+            <td><strong>收敛<br>（入口，不是出口）</strong></td>
+            <td>锚定候选的三条通道（词法、字段名、KB/live term 表）<strong>一律收敛</strong>。收敛放在入口：出口过滤会让域外表先占满候选与上限、再被删掉——域内表可能已经被上限挤出去了。另外引擎唯一一处「自己加表」的指标扩展（沿 <code>metric.datasets</code> 拉表）之后还要<strong>再收敛一次</strong>：只靠入口过滤挡不住它</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      解析结果四态，每种都对应一句说得出的话：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>状态</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>none</code></td><td>未选择——行为与不启用主题域<strong>字节级一致</strong></td></tr>
+          <tr><td><code>ok</code></td><td>命中；作用域 = 声明 ∩ 现有数据集（非空）</td></tr>
+          <tr><td><code>not_found</code></td><td>名字不在模型里——<strong>「域不存在」与「你没被授权」是同一种拒绝</strong>（见下）</td></tr>
+          <tr><td><code>empty_scope</code></td><td>名字在、但声明的数据集已全部不在模型里——域过期</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">拒绝不能变成域名清单</span>
+      <div>
+        <p>名字解析不到、或者域存在但被域级授权挡掉，返回的是<strong>同一个</strong>
+        <code>topic_not_found</code> 拒绝。分开写的话，任何一个用户都能拿报错文案当预言机，
+        逐个试出「哪些域存在」——拒绝文案不能泄露它不该知道的存在性。</p>
+        <p>拒绝文案里附的可选域清单（<code>available_topics</code>）也按主体过滤：
+        你看不见的域，既不在选择器里，也不在报错里。域过期的拒绝另成一档
+        （<code>topic_empty_scope</code>），因为它和「名字写错」处置不同：
+        改名字没用，得修模型。</p>
+      </div>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">域收敛的是锚定，不是关系图</span>
+      <div>
+        <p>作用域只回答「这个问题关于哪些数据集」，<strong>不裁剪 join 路径</strong>——
+        编译器按声明的 join 图补齐中间表是既有语义，主题域不是关系图的裁剪器。
+        选域是为了收敛入口，不是给跨表分析上锁。</p>
+      </div>
+    </div>
+
+    <p>
+      命中后，语义上下文里会多一行确定性的声明：<code>Topic domain: &lt;名&gt; (scope: …)</code>。
+      渲染给生成侧的是<strong>作用域事实</strong>（本问收敛在哪些数据集），不是营销文案——
+      生成据此不再往域外找表。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/topics.py#L25">topics.py:25 <span class="ref-line">TopicResolution</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/topics.py#L58">topics.py:58 <span class="ref-line">resolve_topic</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/topics.py#L81">topics.py:81 <span class="ref-line">filter_scoped</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/topics.py#L98">topics.py:98 <span class="ref-line">render_topic_line</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/schema_linking.py#L158">schema_linking.py:158 <span class="ref-line">_semantic_match_datasets</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/schema_linking.py#L399">schema_linking.py:399 <span class="ref-line">allows_topic</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L73">policy.py:73 <span class="ref-line">visible_topics</span></a>
     </p>
 
     <h2 id="compile">编译：三态产出</h2>
@@ -363,7 +457,7 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L193">models.py:193 <span class="ref-line">row_filter</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/models.py#L216">models.py:216 <span class="ref-line">row_filter</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/rls.py#L99">rls.py:99 <span class="ref-line">inject_row_filters</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/rls.py#L75">rls.py:75 <span class="ref-line">render_row_filter</span></a>
     </p>
@@ -394,8 +488,8 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/query.py#L180">query.py:180 <span class="ref-line">compile_detailed</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/query.py#L185">query.py:185 <span class="ref-line">PartialCompile</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/query.py#L185">query.py:185 <span class="ref-line">compile_detailed</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/query.py#L190">query.py:190 <span class="ref-line">PartialCompile</span></a>
     </p>
 
     <p>
@@ -413,7 +507,9 @@ flowchart LR
         <tbody>
           <tr><td>概念层面的可答边界与逃生梯</td><td><a href="../guide/concepts.html">产品概念</a></td></tr>
           <tr><td>指标、字段、枚举从哪来（KB 五件套）</td><td><a href="kb.html">知识库</a></td></tr>
-          <tr><td>同一份模型还有别的消费者吗</td><td><a href="decisions.html">判定规则</a></td></tr>
+          <tr><td>同一份模型还有别的消费者吗</td><td><a href="decisions.html">判定规则</a>、<a href="actions.html">行动与审批</a></td></tr>
+          <tr><td>用户端怎么用主题域收敛提问</td><td><a href="../user/ask.html#topic">提问与读懂答案 · 主题域</a></td></tr>
+          <tr><td>域级授权怎么配置</td><td><a href="../admin/access.html#topic-grants">用户·权限·安全</a></td></tr>
           <tr><td>编译器在图上哪一步被调用</td><td><a href="../architecture/workflow.html">查询工作流</a></td></tr>
           <tr><td>拒绝之后管理端怎么处置</td><td><a href="../ops/admin.html">运维管理</a></td></tr>
         </tbody>
@@ -423,7 +519,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 7ecf39d</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

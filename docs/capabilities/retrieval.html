@@ -49,9 +49,9 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L42">store.py:42 <span class="ref-line">RRF_K</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L44">store.py:44 <span class="ref-line">_CHANNEL_NAMES</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L139">store.py:139 <span class="ref-line">HybridStore</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L49">store.py:49 <span class="ref-line">RRF_K</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L51">store.py:51 <span class="ref-line">_CHANNEL_NAMES</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L150">store.py:150 <span class="ref-line">HybridStore</span></a>
     </p>
 
     <p>
@@ -62,7 +62,7 @@
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L53">sqlite_store.py:53 <span class="ref-line">Migration</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L54">sqlite_store.py:54 <span class="ref-line">Migration</span></a>
     </p>
 
     <h2 id="channels">两路各自怎么做</h2>
@@ -88,10 +88,10 @@
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py#L245">pg_store.py:245 <span class="ref-line">_fts_ids</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py#L276">pg_store.py:276 <span class="ref-line">_ann_ids</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L168">sqlite_store.py:168 <span class="ref-line">_fts_ids</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L184">sqlite_store.py:184 <span class="ref-line">_ann_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py#L253">pg_store.py:253 <span class="ref-line">_fts_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/pg_store.py#L284">pg_store.py:284 <span class="ref-line">_ann_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L174">sqlite_store.py:174 <span class="ref-line">_fts_ids</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/sqlite_store.py#L190">sqlite_store.py:190 <span class="ref-line">_ann_ids</span></a>
     </p>
 
     <p>
@@ -120,8 +120,8 @@ flowchart LR
     </figure>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L221">store.py:221 <span class="ref-line">recall</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L248">store.py:248 <span class="ref-line">channels</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L237">store.py:237 <span class="ref-line">recall</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L269">store.py:269 <span class="ref-line">channels</span></a>
     </p>
 
     <h2 id="rrf">加权 RRF 与一个必须做的归一化</h2>
@@ -133,9 +133,9 @@ flowchart LR
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L82">store.py:82 <span class="ref-line">rrf_scores</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L157">store.py:157 <span class="ref-line">_channel_weights</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L66">factory.py:66 <span class="ref-line">channel_cfg</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L93">store.py:93 <span class="ref-line">rrf_scores</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L173">store.py:173 <span class="ref-line">_channel_weights</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L67">factory.py:67 <span class="ref-line">channel_cfg</span></a>
     </p>
 
     <div class="callout note">
@@ -147,8 +147,8 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L108">store.py:108 <span class="ref-line">rrf_order_scores</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L127">store.py:127 <span class="ref-line">rrf_fuse</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L119">store.py:119 <span class="ref-line">rrf_order_scores</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/store.py#L138">store.py:138 <span class="ref-line">rrf_fuse</span></a>
     </p>
 
     <h2 id="window">召回窗口按库规模自适应</h2>
@@ -167,7 +167,7 @@ flowchart LR
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L33">pg_hybrid.py:33 <span class="ref-line">_EXHAUSTIVE_SCAN_MAX</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L27">pg_hybrid.py:27 <span class="ref-line">_RECALL_MULTIPLIER</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L174">pg_hybrid.py:174 <span class="ref-line">_recall_window</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/backends/pg_hybrid.py#L178">pg_hybrid.py:178 <span class="ref-line">_recall_window</span></a>
     </p>
 
     <h2 id="rerank">精排：能力都有，但默认关闭</h2>
@@ -192,7 +192,7 @@ flowchart LR
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L30">factory.py:30 <span class="ref-line">_reranker_for</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/factory.py#L31">factory.py:31 <span class="ref-line">_reranker_for</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/rerank.py#L41">rerank.py:41 <span class="ref-line">DeterministicReranker</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/rerank.py#L97">rerank.py:97 <span class="ref-line">CrossEncoderReranker</span></a>
     </p>
@@ -278,7 +278,7 @@ flowchart LR
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_bird_retrieval.py#L54">eval_bird_retrieval.py:54 <span class="ref-line">--scorecard</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/tune_rrf.py#L33">tune_rrf.py:33 <span class="ref-line">--scorecard</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/tune_rrf.py#L39">tune_rrf.py:39 <span class="ref-line">--scorecard</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/scripts/eval_hybrid_retrieval.py#L33">eval_hybrid_retrieval.py:33 <span class="ref-line">--scorecard</span></a>
     </p>
 
@@ -307,7 +307,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: b6e8af2</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

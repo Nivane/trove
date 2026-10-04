@@ -177,7 +177,7 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/base.py#L36">adapters/base.py:36 <span class="ref-line">DEFAULT_STATEMENT_TIMEOUT_MS</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/mysql.py#L186">adapters/mysql.py:186 <span class="ref-line">_statement_timeout_sql</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/mysql.py#L362">adapters/mysql.py:362 <span class="ref-line">_statement_timeout_sql</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/adapters/postgres.py#L280">adapters/postgres.py:280 <span class="ref-line">_statement_timeout_connect_kwargs</span></a>
     </p>
 
@@ -233,8 +233,8 @@ flowchart TB
     </div>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L193">deps.py:193 <span class="ref-line">check_api_rate</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L277">config.py:277 <span class="ref-line">api_rate_per_minute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L224">deps.py:224 <span class="ref-line">check_api_rate</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L343">config.py:343 <span class="ref-line">api_rate_per_minute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/ratelimit.py#L24">ratelimit.py:24 <span class="ref-line">TokenBucket</span></a>
     </p>
 
@@ -252,9 +252,9 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L224">app.py:224 <span class="ref-line">auth is None</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L73">deps.py:73 <span class="ref-line">get_current_user</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L137">deps.py:137 <span class="ref-line">require_scope</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/app.py#L273">app.py:273 <span class="ref-line">auth is None</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L78">deps.py:78 <span class="ref-line">get_current_user</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L168">deps.py:168 <span class="ref-line">require_scope</span></a>
     </p>
 
     <p>
@@ -295,9 +295,9 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L321">main.py:321 <span class="ref-line">_resolve_user_roles</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L132">policy.py:132 <span class="ref-line">Principal</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L156">deps.py:156 <span class="ref-line">require_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L362">main.py:362 <span class="ref-line">_resolve_user_roles</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/authz/policy.py#L146">policy.py:146 <span class="ref-line">Principal</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/deps.py#L187">deps.py:187 <span class="ref-line">require_datasource</span></a>
     </p>
 
     <p>
@@ -348,8 +348,8 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L99">semantic_query.py:99 <span class="ref-line">require_datasource</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L132">semantic_query.py:132 <span class="ref-line">execute</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L146">semantic_query.py:146 <span class="ref-line">require_datasource</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic_query.py#L179">semantic_query.py:179 <span class="ref-line">execute</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L108">config.py:108 <span class="ref-line">require_principal</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/graphs.py#L1870">graphs.py:1870 <span class="ref-line">require_principal</span></a>
     </p>
@@ -526,9 +526,9 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L37">chat.py:37 <span class="ref-line">_replay_subject</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L192">session.py:192 <span class="ref-line">_replay_wire</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L230">session.py:230 <span class="ref-line">scopes</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/chat.py#L43">chat.py:43 <span class="ref-line">_replay_subject</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L193">session.py:193 <span class="ref-line">_replay_wire</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L231">session.py:231 <span class="ref-line">scopes</span></a>
     </p>
 
     <p>
@@ -568,8 +568,8 @@ flowchart TB
     </p>
 
     <p>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L392">service.py:392 <span class="ref-line">record_audit</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L318">admin.py:318 <span class="ref-line">audit</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/auth/service.py#L416">service.py:416 <span class="ref-line">record_audit</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/admin.py#L348">admin.py:348 <span class="ref-line">audit</span></a>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/retrieval/query_log.py#L23">query_log.py:23 <span class="ref-line">retrieval_log</span></a>
     </p>
 
@@ -611,7 +611,7 @@ flowchart TB
 
     <p>
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/gen_sql.py#L1217">gen_sql.py:1217 <span class="ref-line">sql_audit</span></a>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1574">session.py:1574 <span class="ref-line">_audit_query</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1596">session.py:1596 <span class="ref-line">_audit_query</span></a>
     </p>
 
     <p>
@@ -704,7 +704,7 @@ flowchart TB
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 963df74</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>

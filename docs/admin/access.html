@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 用户·权限·安全：账号 CRUD 与三种角色、数据源授权、API 令牌（有效期与作用域）、审计日志（含当前页状态快照的口径）、系统设置（结果限制/流程开关/保留策略）、模型配置（默认/快速模型与 Providers）、质量与成本运营台（评测对比与回归门）。">
+<meta name="description" content="Trove 用户·权限·安全：账号 CRUD 与三种角色、数据源授权、主题域授权（第二层收窄、三态口径、不可见即不存在）、API 令牌（有效期与作用域）、审计日志（含当前页状态快照的口径）、系统设置（结果限制/流程开关/保留策略）、模型配置（默认/快速模型与 Providers）、质量与成本运营台（评测对比与回归门）。">
 <title>用户·权限·安全 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -88,6 +88,44 @@
         <li><span class="n">6</span><strong>保存更改 / 放弃更改</strong>——没有实际改动时「保存更改」保持禁用；改动过而未保存时，离开前有确认，不会静默丢弃。</li>
       </ol>
     </figure>
+
+    <h2 id="topic-grants">主题域授权：数据源门之下的第二层收窄</h2>
+
+    <p>
+      数据源授权决定「能看到哪些源」；<strong>主题域授权</strong>决定「在这个源里能看到哪些业务域」。
+      它是账号详情抽屉里、数据源授权下方的独立一段，按源分别配置，两种模式：
+      <strong>不限（全部主题域）</strong>与<strong>限定（按数据源勾选）</strong>。
+      两种「空」必须分清：<strong>「不限」≠「一个都不勾」</strong>——
+      后者表示<em>该源无可见主题域</em>，是一种刻意的收窄，不是没有配置。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>配置</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><strong>不限</strong></td><td>取消收窄：可见数据源的全部主题域对该用户可见（管理员默认如此，且不受限制）</td></tr>
+          <tr><td><strong>限定 + 勾选 N 个</strong></td><td>只有勾选的域可见；未勾选的不可见</td></tr>
+          <tr><td><strong>限定 + 一个都不勾</strong></td><td>收窄到零：该源无可见主题域——保存前界面会明确提示与「不限」的区别</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      三条边界值得写清楚：
+    </p>
+
+    <ul>
+      <li><strong>不可见 = 不存在</strong>——被挡掉的域，既不出现在用户端选择器里，也不出现在拒绝文案的可选清单里；而且它与「域不存在」返回<strong>同一个</strong>拒绝文案——分开写，任何人都能拿报错当预言机，逐个试出「哪些域存在」。</li>
+      <li><strong>管理员不受此层限制</strong>（与数据源授权的既有语义一致）：admin 判定发生在读取主题域授权之前。</li>
+      <li><strong>没有建模的源不猜</strong>——数据源还没有主题域清单（尚未建模）时，保存<strong>保持其原有配置不变</strong>；清单读取失败也一样：这次保存不会顺手改动读不到的部分。</li>
+    </ul>
+
+    <p>
+      改动与数据源授权同一次「保存更改」提交，<strong>对该用户的新提问生效</strong>。
+      授权只决定域<em>可见性</em>；域本身的声明、过期口径与提问时的收敛行为见
+      <a href="../capabilities/semantic.html#topics">语义层 · 主题域</a>，
+      用户端怎么用见<a href="../user/ask.html#topic">提问与读懂答案 · 主题域</a>。
+    </p>
 
     <h2 id="audit">审计日志：发生过什么</h2>
 
@@ -215,6 +253,7 @@
         <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
         <tbody>
           <tr><td>给新用户授权一个已就绪的数据源</td><td><a href="datasources.html#after">数据源接入 · 注册之后</a></td></tr>
+          <tr><td>主题域在哪声明、什么时候会「已失效」</td><td><a href="../capabilities/semantic.html#topics">语义层 · 主题域</a></td></tr>
           <tr><td>了解评测与回归门的完整机制</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
           <tr><td>看质量趋势与用量、成本</td><td><a href="../ops/observability.html">可观测性</a></td></tr>
           <tr><td>生产部署与凭据管理</td><td><a href="../ops/deployment.html">部署与运维实操</a></td></tr>

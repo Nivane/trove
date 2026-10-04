@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 界面导览：登录、应用外壳三栏布局、侧栏会话列表、数据源选择条、提问入口与示例问题。">
+<meta name="description" content="Trove 界面导览：登录、应用外壳三栏布局、侧栏会话列表、数据源与主题域选择条、提问入口与示例问题。">
 <title>界面导览 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -107,6 +107,15 @@
       <strong>知识库已初始化</strong>（管理员跑过 <code>/kb init</code>）、<strong>你被授权</strong>
       （非管理员需要显式授权）。任何一条不满足，它对你就不可见——
       不可见即不可问，这是权限模型的第一道门。
+    </p>
+
+    <p>
+      紧挨数据源选择条的<strong>主题域</strong>选择器是第二层收窄（可选）：
+      把提问范围进一步收敛到语义模型声明的某个业务域，默认「不限定主题」。
+      两个刻意的行为：已失效的域<strong>置灰但不隐藏</strong>；一个可选的域都没有时，
+      <strong>选择器整体不显示</strong>——没有域可选是常态，不是故障。
+      域的口径见<a href="../capabilities/semantic.html#topics">语义层 · 主题域</a>，
+      提问时的完整行为见<a href="ask.html#topic">提问与读懂答案 · 主题域</a>。
     </p>
 
     <div class="callout warn">

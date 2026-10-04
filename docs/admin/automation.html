@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 自动化与治理：定时任务（调度、告警表达式与决策规则两种求值路径、运行历史、冷却与渠道）、决策规则（YAML 编辑、lint 写入门禁、sha256 摘要、git 提交）、方法论技能（required/available/validator 三档、确认门、预览）。">
+<meta name="description" content="Trove 自动化与治理：定时任务（调度、告警表达式与决策规则两种求值路径、任务主题域、运行历史、冷却与渠道）、报告订阅（每期/仅告警、通道沿用、投递记录、可退订）、决策规则（YAML 编辑、lint 写入门禁、sha256 摘要、git 提交）、方法论技能（required/available/validator 三档、确认门、预览）。">
 <title>自动化与治理 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -41,7 +41,8 @@
     <p>
       一个定时任务 = <strong>名称 + 问题 + 数据源 + 调度</strong>。
       到点后 <code>serve</code> 内置的调度器自动执行（默认 30 秒轮询一次到期任务），
-      结果落进运行历史；可以配告警，把「跑出来不对劲」主动推给管理员。
+      结果落进运行历史；可以配告警，把「跑出来不对劲」主动推给管理员，
+      还能把每期报告<strong>订阅</strong>给团队成员（见<a href="#subs">报告订阅</a>）。
     </p>
 
     <figure class="shot">
@@ -64,6 +65,15 @@
         <li><span class="n">6</span><strong>动作列</strong>——立即运行（不用等调度，当场执行一次并记入历史，改完配置最常用的验证动作）、运行历史（见<a href="#runs">下一节</a>）、编辑、删除。</li>
       </ol>
     </figure>
+
+    <p>
+      任务的<strong>主题域</strong>（可选）把这次提问收敛到语义模型声明的某个域
+      （口径见<a href="../capabilities/semantic.html#topics">语义层 · 主题域</a>）：
+      只答该域声明的数据范围，不限定则答整个数据源。
+      域引用的校验放在<strong>写任务时</strong>——名字不存在或域已过期，保存直接被拒：
+      任务按表天天跑，一个悬空引用会以同样的方式失败到永远，不能留给运行期去发现。
+      决策规则任务例外：判定主体由规则声明，主题域对它无操作。
+    </p>
 
     <div class="callout note">
       <span class="callout-tag">定时运行是无人值守的</span>
@@ -95,6 +105,49 @@
         <li><span class="n">5</span><strong>运行 ID</strong>——本次运行的判定标识。决策规则任务显示规则 id（图中 <code>loan-high</code>），普通任务显示执行标识；对不上号时用它去<a href="#decisions">决策规则</a>页查。</li>
       </ol>
     </figure>
+
+    <h2 id="subs">报告订阅：让结果主动找到人</h2>
+
+    <p>
+      任务跑完，除了管理员在运行历史里翻，还可以<strong>订</strong>出去：
+      在任务的「订阅」抽屉里把一个用户订到报告上，每次运行完成后按订阅模式投放。
+      被订的人在自己的「我的订阅」页看到订阅、随时<strong>退订</strong>——
+      收不收由收件人自己决定，不是只管发不管收。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>要素</th><th>口径</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>模式</strong></td>
+            <td><strong>每期</strong>——每次运行都投；<strong>仅告警</strong>——只有这次运行触发告警才投。选了「仅告警」，「平静的每天」等于零打扰</td>
+          </tr>
+          <tr>
+            <td><strong>通道</strong></td>
+            <td>订阅可以带自己的通道；<strong>留空 = 沿用任务通道</strong>（<code>console</code> 或 <code>webhook:&lt;url&gt;</code>），两者都空则落到 <code>console</code>。投放链路上每一环都是显式的，没有一处默认行为藏在代码里</td>
+          </tr>
+          <tr>
+            <td><strong>投递记录</strong></td>
+            <td>每次投递留一行账：<strong>已投递</strong> / <strong>投递失败</strong> + 原因 + 消息摘要 + 时间。<strong>一次运行对一条订阅至多一条记录</strong>（订阅 × 运行唯一），补投也不会重复轰炸</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout note">
+      <span class="callout-tag">投递从不阻断运行</span>
+      <p>
+        通道坏了（订阅里残留了非法通道串、webhook 超时）记「投递失败」+ 原因，
+        <strong>不抛异常、不改变任务本身的成败</strong>——投递是运行的下游，
+        不能倒过来拖垮运行。但失败一定留痕：静默跳过会让「订了却从没收到」
+        看起来像订阅没生效，而不是一条坏配置。
+      </p>
+      <p>
+        反过来，任务<strong>失败</strong>的那次运行也会照常投递——日报静默消失，
+        比收到一条失败通知更糟。
+      </p>
+    </div>
 
     <h2 id="decisions">决策规则：声明式的确定性判定</h2>
 
@@ -203,6 +256,7 @@
       <table>
         <thead><tr><th>你想做的事</th><th>去哪一页</th></tr></thead>
         <tbody>
+          <tr><td>规则触发之后：提案、审批与外送回执</td><td><a href="../capabilities/actions.html">行动与审批</a></td></tr>
           <tr><td>看规则里的指标 / 窗口在语义模型里怎么声明</td><td><a href="semantic.html">语义层治理</a></td></tr>
           <tr><td>审批知识草案、管理 KB 资产</td><td><a href="kb.html#pending">知识库运营</a></td></tr>
           <tr><td>看告警与待办汇总</td><td><a href="console.html#todos">管理台总览 · 待办队列</a></td></tr>
