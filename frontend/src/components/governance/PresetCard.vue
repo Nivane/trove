@@ -96,6 +96,16 @@ watch(
     if (v) target.value = v
   },
 )
+
+/** 源清单异步到达(页面挂载后才取回):到达时若还没选过任何目标,补上第一个。
+ *  load() 里那句同步兜底在真实页面上永远跑空 —— 组件挂载时 dsNames 还是空数组,
+ *  没有这个 watcher,单源安装的「套用」按钮会一直停在禁用态,等一次手点。 */
+watch(
+  () => props.datasources,
+  () => {
+    if (!target.value && sources.value.length) target.value = sources.value[0]
+  },
+)
 </script>
 
 <template>
@@ -245,11 +255,14 @@ watch(
   display: flex;
   gap: 6px;
   align-items: baseline;
-  padding: 2px 0;
+  /* 挂起缩进:长 reason 换行后从 section 列下续排,而不是回到最左缘 ——
+     回到最左缘的续行看上去像一条没有状态标记的独立条目。 */
+  padding: 2px 0 2px calc(3.5em + 6px);
   flex-wrap: wrap;
 }
 .pc-status {
   min-width: 3.5em;
+  margin-left: calc(-3.5em - 6px); /* 状态标记仍然顶格 */
   font-weight: 600;
 }
 .is-drafted .pc-status {

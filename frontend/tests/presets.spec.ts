@@ -193,6 +193,23 @@ describe('PresetCard — apply', () => {
     expect(applyPreset).not.toHaveBeenCalled()
   })
 
+  it('fills the target when the async datasource list arrives', async () => {
+    // 真实页面上 dsNames 是挂载后才取回的:到达时没有已选目标就补第一个,
+    // 否则单源安装的「套用」会一直停在禁用态(要求先手点一次下拉)。
+    ;(applyPreset as any).mockResolvedValue(report())
+    const view = await mountCard({ datasources: [], datasource: '' })
+    expect(findButton(view.element as HTMLElement, 'Apply').disabled).toBe(true)
+
+    await view.setProps({ datasources: ['demo', 'sales'] })
+    await flushPromises()
+
+    const btn = findButton(view.element as HTMLElement, 'Apply')
+    expect(btn.disabled).toBe(false)
+    btn.click()
+    await flushPromises()
+    expect(applyPreset).toHaveBeenCalledWith('financial-analysis', 'demo')
+  })
+
   it('hides the apply button for a read-only role', async () => {
     useAuthStore().user = { id: 2, username: 'analyst', role: 'analyst' }
     const view = await mountCard()

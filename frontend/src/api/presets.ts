@@ -47,7 +47,7 @@ export interface PresetApplyReport {
 }
 
 export async function fetchPresets(): Promise<PresetBrief[]> {
-  const body = await apiGet<{ presets: PresetBrief[] }>('/admin/presets')
+  const body = await apiGet<{ presets: PresetBrief[] }>('/v1/admin/presets')
   return body.presets ?? []
 }
 
@@ -56,7 +56,7 @@ export async function applyPreset(
   datasource: string,
 ): Promise<PresetApplyReport> {
   return apiPost<PresetApplyReport>(
-    `/admin/presets/${encodeURIComponent(name)}/apply`,
+    `/v1/admin/presets/${encodeURIComponent(name)}/apply`,
     { datasource },
   )
 }
