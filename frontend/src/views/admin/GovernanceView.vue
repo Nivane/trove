@@ -28,6 +28,7 @@ import GovernanceMap from '../../components/governance/GovernanceMap.vue'
 import InboxTable from '../../components/governance/InboxTable.vue'
 import InboxBulkBar from '../../components/governance/InboxBulkBar.vue'
 import CoverageTable from '../../components/governance/CoverageTable.vue'
+import PresetCard from '../../components/governance/PresetCard.vue'
 import AssetHealthPanel from '../../components/governance/AssetHealthPanel.vue'
 import DriftTable from '../../components/governance/DriftTable.vue'
 import DriftDrawer from '../../components/governance/DriftDrawer.vue'
@@ -1171,6 +1172,10 @@ const activeLoading = computed(
         @go-model="goModel"
         @clear-filters="clearCoverageFilters"
       />
+
+      <!-- 预设包(接入模板):覆盖面之外的第二个问题 ——「还没接的源怎么起步」。
+           挂在三态之外,因为它不依赖覆盖率取数(自己的清单端点独立)。 -->
+      <PresetCard :datasources="dsNames" :datasource="values.ds" />
     </section>
 
     <!-- ③ 漂移与版本 -->
