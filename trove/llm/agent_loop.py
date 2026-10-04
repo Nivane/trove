@@ -202,13 +202,15 @@ class ToolSpec:
     parallel=False marks tools that must run before/after the parallel
     batch rather than inside it (ordering matters, e.g. ``finish``).
 
-    level/roles — tool governance (ACL): ``level`` is an operational
-    tier (core/catalog/admin, observability + default gating), ``roles``
-    is the list of user roles allowed to see this tool. ``roles=None``
-    means unrestricted (visible to every user); an empty list means the
-    tool is registered for internal/legacy use only. Filtering happens in
+    level/roles — tool governance (ACL): ``roles`` is the **gate** — the
+    list of user roles allowed to see this tool. ``roles=None`` means
+    unrestricted (visible to every user); an empty list means the tool is
+    registered for internal/legacy use only. Filtering happens in
     ``ToolRegistry.defs()``/``handlers()`` against the registry's
-    ``allowed_roles``.
+    ``allowed_roles``. ``level`` is a pure **classification** of the tool's
+    operational tier (core/catalog) — it never decides visibility; it is
+    consumed by the tool record (tracing / assembly-list grouping), see
+    ``ToolRegistry._trace``.
     """
 
     def __init__(
@@ -270,7 +272,9 @@ class ToolRegistry:
     register(): handler + def + per-tool timeout/retries/parallel policy.
     add_observer(): cross-cutting hook (metrics/cost/tracing); called with
         (name, arguments, observation, elapsed_ms, error, run_id) after each
-        executed tool call. A default tracing observer is always present.
+        executed tool call. A default tracing observer is always present —
+        it resolves the tool's ``ToolSpec.level`` into the record (see
+        ``_trace``); the hook signature itself stays six-arg.
     finish protocol: constructed with finish=True, the registry exposes a
         built-in ``finish(answer)`` tool; the harness intercepts it, accepts
         the payload only when 'answer' is a non-empty string, and terminates.
@@ -280,7 +284,9 @@ class ToolRegistry:
         self._specs: dict[str, ToolSpec] = {}
         self._lazy_specs: dict[str, ToolSpec] = {}
         self._finish_spec: ToolSpec | None = None
-        self._observers: list[Observer] = [_trace_observer]
+        # 默认观察者绑在注册表上:它要在记录里补上该工具的 ``ToolSpec.level``
+        # (分类信息,见 ``_trace``);外部观察者拿到的仍是六元签名。
+        self._observers: list[Observer] = [self._trace]
         self.allowed_roles = list(allowed_roles) if allowed_roles is not None else None
         if finish:
             self.add_finish_tool()
@@ -346,6 +352,23 @@ class ToolRegistry:
     def add_observer(self, fn: Observer) -> None:
         self._observers.append(fn)
 
+    def _trace(
+        self, name: str, arguments: dict[str, Any], observation: str,
+        elapsed_ms: float, error: str | None, run_id: str,
+    ) -> None:
+        """默认观察者:查出该工具的 ``ToolSpec.level`` 一并记录。
+
+        这是 ``level`` 的**唯一消费点**(此前 7 处传参、0 处读取——一个死
+        字段)。它是分类不是门控:可见性只由 ``roles`` 决定(见
+        ``ToolSpec``);这里把它补进工具记录,供 tracing / 装配清单按层级
+        分组。模型调了不存在的工具时查不到 spec,记录不带层级。
+        """
+        spec = self.spec(name)
+        _trace_observer(
+            name, arguments, observation, elapsed_ms, error, run_id,
+            level=spec.level if spec is not None else "",
+        )
+
     def observers(self) -> list[Observer]:
         return list(self._observers)
 
@@ -396,11 +419,17 @@ async def _finish_handler(arguments: dict[str, Any]) -> str:
 def _trace_observer(
     name: str, arguments: dict[str, Any], observation: str,
     elapsed_ms: float, error: str | None, run_id: str,
+    level: str = "",
 ) -> None:
     """Default observer: 工具调用挂到当前节点 span 下(本地 runlog + langfuse)。
 
     两个通道共享同一插桩点:runlog 保真全量,langfuse 记截断的
     证据(嵌套进当前节点 span,contextvar 传播)。
+
+    ``level`` 是工具层级(``ToolSpec.level``:core/catalog,见
+    ``ToolRegistry._trace`` 这个唯一消费者)。runlog 通道不收它(事件形状
+    保持不动),langfuse span 把它记进 metadata 的 ``tool_level`` 键——与
+    span 自身的 severity ``level``(DEFAULT/ERROR)是两回事,故不共用键名。
     """
     try:
         from trove.tracing.runlog import get_tracer
@@ -411,7 +440,10 @@ def _trace_observer(
         pass
     try:
         from trove.llm.observability import record_tool_call
-        record_tool_call(name, arguments, observation, error)
+        record_tool_call(
+            name, arguments, observation, error,
+            metadata={"tool_level": level} if level else None,
+        )
     except Exception:
         pass
 

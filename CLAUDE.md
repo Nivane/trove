@@ -105,7 +105,7 @@ Wiring: `main.py` builds `MemoryService` (kb/user_facts/llm/connectors/catalog);
 
 ### Datasources `trove/services/datasource/`
 
-- `adapters/base.py` defines the `DatabaseAdapter` abstract base (connect/disconnect/execute/get_schema/get_capabilities/dialect); new datasources register in `registry.py`'s `_ADAPTER_REGISTRY`. Drivers are lazily imported on demand. `catalog.py` provides table/column listing and row-count estimates. Top-K value profiling lives in `trove/services/kb/profiling.py` (used by `/kb init`); `*_id` join hints are rendered deterministically on the metadata answer path (`workflow/nodes/answer.py`).
+- `adapters/base.py` defines the `DatabaseAdapter` abstract base (connect/disconnect/execute/get_schema/get_capabilities/dialect); new datasources register **via `registry.py`'s `register_adapter()`**（已接线：内置 6 方言在模块尾部自注册，`_ADAPTER_REGISTRY` 是内部状态、唯一写入路径就是它；外部插件在任何入口调用等价）。 Drivers are lazily imported on demand. `catalog.py` provides table/column listing and row-count estimates. Top-K value profiling lives in `trove/services/kb/profiling.py` (used by `/kb init`); `*_id` join hints are rendered deterministically on the metadata answer path (`workflow/nodes/answer.py`).
 
 ### Unified storage `trove/storage/backends/`
 
@@ -126,6 +126,24 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 - `trove/llm/gateway.py` — litellm gateway with `LLMGateway(mock_response=...)` mode for tests; `chat`/`chat_full` (tool calling)/`chat_stream`; model selection CLI `--model` > `conf/agent.yml` > `~/.trove/conf/agent.yml`; `providers[]` supports custom api_base with `${ENV_VAR}` substitution.
 - **Scheduled jobs** (`trove/services/jobs/`): `JobsService` (CRUD + scheduling + alert-eval + cooldown) over `JobStore` (`.trove/jobs/jobs.sqlite`, on the `StorageBackend` abstraction), `SchedulerRunner` (duck-typed against `SessionManager`, auto-approves HITL, passes `job.datasource`). `trove serve` runs an embedded tick (lifespan task, poll = `agent.scheduler_poll_seconds`, default 30s) — do **not** run `trove-cli schedule --daemon` alongside serve (double execution). Exposed as admin API `trove/api/routers/jobs.py` (`/v1/admin/jobs`: CRUD + `run` + `runs`) + admin UI "定时任务 / Scheduled jobs". The runner/scheduler never blocks; test fakes record `asked_datasources`.
 - Test constraints (`tests/conftest.py`): zero API keys, zero network, all LLM mocked. **Internal state stores run on the SQLite backend** (file-backed under tmp dirs via `resolve_backend`, `TROVE_STORAGE_URL` unset; a few registries use literal `:memory:`); business datasource adapters also use local SQLite. Real-Postgres coverage is env-gated with `-m integration` (`PG_TEST_URL`; see `tests/storage/test_pg_storage.py` + `.github/workflows/backend.yml`). Common fixtures: `mock_llm`, `sql_llm`, `sqlite_registry`, `demo_registry`, `tmp_home`; workflow tests use the `ScriptedLLM` (scripted responses + recorded prompts) pattern. `tracing.local` is a process-level global; conftest's autouse fixture ensures every test starts from an unconfigured state.
+
+### 扩展点清单（接缝盘点）
+
+> 2026-10-04 盘点；三处死接口已收口：`register_adapter` 接线（内置方言自注册、唯一注册路径）、`ToolSpec.level` 通电（默认观察者把 level 带进 tool record；**门控只由 `roles` 决定**，level 是观测/装配分类）、`FRONTMATTER_FIELDS` 生效（`create` 写入校验 + `version` 字段，读路径保持宽容）。「加一个要改」= 新增一个同类扩展要动的文件/位置数。
+
+| 接缝 | 机制 + 关键 file:line | 加一个要改几处 | 开放对象 |
+|---|---|---|---|
+| org skill | `.trove/skills/<name>/SKILL.md` + pending→confirm 门（`services/skills/service.py:295/454`） | 0 处代码 | admin ✅ |
+| code skill | `trove/prompts/skills/manifest.yml` + 模板（`skills/service.py:205`） | 2 处 | 仅核心 |
+| 提示词模板 | `prompts/loader.py:39` 纯文件约定 `<dir>/<name>.<lang>.j2`（en/zh 回退） | 0 处注册 | 仅核心 |
+| validator 断言 | 结果域闭集 `decision/expr.py:88`（`VALIDATOR_VARIABLES`）+ `skills/validators.py:42`（只跑 validate 节点） | 新变量 1–2 处 | 内容开放 |
+| 决策规则 | `decision/rules.py` schema + `.trove/kb/<ds>/decisions.yml`；表达式闭集、无 eval、Kleene 三值 | 内容 0 处；新函数 3 处 | admin（内容） |
+| 数据源适配器 | `datasource/registry.py:42/45`：`register_adapter()` 唯一注册路径，内置方言模块尾自注册；ABC 在 `adapters/base.py:39` | 新方言 2 处（实现 + 注册）；走 CLI URL 再 +2 | 仅核心（外插件可调） |
+| 工具 | `build_sql_registry`（`workflow/nodes/gen_sql.py:1038`）每轮现建闭包；lazy + role 门控 | 4 处 | 仅核心 |
+| 图节点 | `workflow/graphs.py` `build_graphs:1330` / `_build_reflection:2012` + `state.py` 字段 | 4–5 处 | 仅核心 |
+| 管理域（前后端） | `api/app.py` 硬编码块 + `router/index.ts` + `AdminLayout.vue` + i18n 双字典 | 7–8 处 | 仅核心 |
+| 存储 | `StorageBackend` ABC（`storage/backends/base.py:72`）+ `build_backend` scheme 分支；迁移清单每 store 自带 | 新 store 1 处；新后端 3 处 | 仅核心 |
+| 配置 | `AgentConfig`（`core/config.py:299`）+ 管理端白名单 `SETTINGS_SCHEMA`（`admin_settings/service.py:25`，双写纪律） | 2–3 处 | 仅核心 |
 
 ## Hard project constraints (must respect)
 

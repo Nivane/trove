@@ -77,7 +77,16 @@ _STATUSES = ("pending", "confirmed", "rejected")
 
 FRONTMATTER_FIELDS = (
     "name", "description", "triggers", "tier", "status",
-    "source", "lang", "created_at", "updated_at",
+    "source", "lang", "version", "created_at", "updated_at",
+)
+
+#: ``create`` 接受的输入键 = frontmatter 词表 + validator 四字段 + 正文。
+#: 校验**只在写入时**做:手写的存量文件(可能带未知键)必须照常可读可确认
+#: ——读路径宽容是这一层的另一半(见 ``read_skill``)。
+#: 此前 FRONTMATTER_FIELDS 只是个死常量、没有任何校验:未知键经 YAML 往返
+#: 被静默保留进 SKILL.md,写错了没人告诉你。
+_CREATE_INPUT_FIELDS = (
+    frozenset(FRONTMATTER_FIELDS) | frozenset(VALIDATOR_FIELDS) | {"body"}
 )
 
 
@@ -152,6 +161,16 @@ class SkillService:
             "created_at": meta.get("created_at", ""),
             "updated_at": meta.get("updated_at", ""),
         }
+        # version:org skill 的修订号(仅 .trove/skills/ 下的文件;code skills
+        # 不走这里)。create 初始 1;confirm / set_tier 的整篇重 dump 原样
+        # 保留(``_rewrite_field`` 只 update 点名的那几个键)。遗留文件没有
+        # 该字段 → 读出 1;手写进非整数的同样按 1 解释 —— 读路径不抛。
+        raw_version = meta.get("version", 1)
+        entry["version"] = (
+            raw_version
+            if isinstance(raw_version, int) and not isinstance(raw_version, bool)
+            else 1
+        )
         # validator 专属字段**条件带上**:非 validator 档的返回形状保持不变
         # (既有调用方按 exact dict 断言的话,无条件加键会打碎它们)。
         if entry["tier"] == "validator":
@@ -274,7 +293,22 @@ class SkillService:
                 "checks": checks}
 
     def create(self, entry: dict) -> dict:
-        """Create an org skill as a *pending* draft. Returns the saved entry."""
+        """Create an org skill as a *pending* draft. Returns the saved entry.
+
+        写入面先把未知键拦掉(报错并列出合法字段):未知键经 YAML 往返会被
+        静默保留进 SKILL.md —— 写错了没人告诉你,而这份配置从任何外部面看
+        都与"写对了"一样。**只查写入面**:``read_skill``/``confirm`` 对存量
+        文件(含手工未知键)照常宽容,否则一条校验会把盘上已有的文件锁死。
+
+        ``status``/``created_at``/``updated_at``/``version`` 属服务端管理:
+        这里一律写 ``pending`` / 当前时间 / ``version: 1``(重写路径原样保留)。
+        """
+        unknown = sorted(k for k in entry if k not in _CREATE_INPUT_FIELDS)
+        if unknown:
+            raise ValueError(
+                f"unknown field(s): {', '.join(unknown)}; legal fields: "
+                f"{', '.join(sorted(_CREATE_INPUT_FIELDS))}"
+            )
         name = (entry.get("name") or "").strip()
         description = (entry.get("description") or "").strip()
         body = (entry.get("body") or "").strip()
@@ -316,6 +350,7 @@ class SkillService:
             "source": entry.get("source", "admin"),
             "lang": entry.get("lang", "en"),
             **validator_meta,
+            "version": 1,
             "created_at": now,
             "updated_at": now,
         }

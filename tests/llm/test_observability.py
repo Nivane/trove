@@ -408,6 +408,50 @@ class TestToolSpans:
         assert obs.kwargs["status_message"] == "timeout"
 
 
+class TestToolLevelClassification:
+    """``ToolSpec.level`` 的消费点:默认观察者把它带进工具记录。
+
+    此前 level 有 7 处传参、0 处读取——注释还把它说成「观测 + 默认门控」,
+    而真正生效的门只有 ``roles``。现在它是**分类**(core/catalog),由诊断性
+    的 ``tool_level`` metadata 承载;langfuse span 自身的 ``level``(severity,
+    DEFAULT/ERROR)是另一个概念,两者不共用键名。
+    """
+
+    def test_default_observer_records_tool_level(self, fake_v4_client):
+        from trove.llm.agent_loop import ToolRegistry
+
+        registry = ToolRegistry()
+
+        async def handler(arguments):
+            return "ok"
+
+        registry.register("lookup_schema", handler, level="catalog")
+        # 循环消费的正是 registry.observers() 这个列表(六元签名不变)
+        for fn in registry.observers():
+            fn("lookup_schema", {"table": "loans"}, "ok", 1.5, None, "run-1")
+        obs = fake_v4_client.observations[0]
+        assert obs.kwargs["name"] == "tool.lookup_schema"
+        assert obs.kwargs["metadata"] == {"tool_level": "catalog"}
+        assert obs.kwargs["level"] == "DEFAULT"  # severity 仍是 span 自己的
+
+    def test_unknown_tool_records_no_level(self, fake_v4_client):
+        """模型调了不存在的工具(观测被折叠)时,记录不带层级。"""
+        from trove.llm.agent_loop import ToolRegistry
+
+        for fn in ToolRegistry().observers():
+            fn("ghost-tool", {}, "Unknown tool", 0.0, None, "run-1")
+        obs = fake_v4_client.observations[0]
+        assert obs.kwargs["name"] == "tool.ghost-tool"
+        assert obs.kwargs["metadata"] == {}
+
+    def test_direct_observer_call_without_level_keeps_old_shape(self, fake_v4_client):
+        """``_trace_observer`` 六参直调(旧调用方/测试)不带 metadata。"""
+        from trove.llm.agent_loop import _trace_observer
+
+        _trace_observer("probe_query", {}, "obs", 1.0, None, "run-1")
+        assert fake_v4_client.observations[0].kwargs["metadata"] == {}
+
+
 class TestPipelineSpans:
     """Gap 3/4/6: 终态、KB 命中、规则验证的管道级 span。"""
 

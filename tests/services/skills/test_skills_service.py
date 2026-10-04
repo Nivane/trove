@@ -739,3 +739,102 @@ def test_validator_expr_is_scanned(tmp_path):
         "columns": ["balance"],
     }]})
     assert "ignore_previous" in entry["injection_hits"]
+
+
+# ── 写入面校验 + version 字段 ─────────────────────────────
+
+
+def test_create_rejects_unknown_frontmatter_key(tmp_path):
+    """未知键当场拒、并**列出合法字段** —— 此前它被静默保留进 SKILL.md。
+
+    ``trigger``(少了个 s)是会真实发生的拼写错误:写下去之后文件里多一个
+    谁都不读的键,而这份配置从任何外部面看都与"写对了"一样。报错要能自解释,
+    否则管理员只能靠猜。"""
+    svc = SkillService(tmp_path)
+    with pytest.raises(ValueError) as ei:
+        svc.create({
+            "name": "typo-skill", "description": "d", "body": "b",
+            "trigger": {"node": "query_sketch"},
+        })
+    msg = str(ei.value)
+    assert "trigger" in msg and "triggers" in msg  # 报出的与合法字段可对照
+    assert "body" in msg and "tier" in msg
+    # 被拒 = 什么都没落盘(不是"写了再报")
+    assert not (tmp_path / ".trove" / "skills" / "typo-skill").exists()
+
+
+def test_create_accepts_the_api_payload_field_set(tmp_path):
+    """API 路由送的就是这份键集(``SkillCreate.model_dump()``)——不得误伤。"""
+    svc = SkillService(tmp_path)
+    entry = svc.create({
+        "name": "from-api", "description": "从管理端来",
+        "triggers": {"node": "query_sketch"}, "tier": "available",
+        "lang": "zh", "source": "admin", "body": "正文",
+    })
+    assert entry["lang"] == "zh" and entry["triggers"]["node"] == "query_sketch"
+
+
+def test_create_version_starts_at_one_and_survives_rewrites(tmp_path):
+    """version:create 初始 1;confirm / set_tier 的整篇重 dump 原样保留。"""
+    svc = SkillService(tmp_path)
+    entry = svc.create({"name": "ver", "description": "d", "body": "b"})
+    assert entry["version"] == 1
+    assert "version: 1" in svc.skill_path("ver").read_text(encoding="utf-8")
+    assert svc.confirm("ver")["version"] == 1
+    svc.set_tier("ver", "required")
+    assert svc.read_skill("ver")["version"] == 1
+
+
+def test_legacy_frontmatter_with_unknown_keys_stays_readable(tmp_path):
+    """读路径宽容:存量文件(含手工未知键)**照常可读可确认**。
+
+    校验只加在写入面。存量文件是手工写下的(手写正是本期唯一的授权路径),
+    一条"顺手的校验"把它们锁死,比静默保留一个键坏得多。"""
+    svc = _svc(tmp_path)
+    d = tmp_path / ".trove" / "skills" / "legacy"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\n"
+        "name: legacy\n"
+        "description: 手写的\n"
+        "tier: required\n"
+        "status: pending\n"
+        "owner: data-team\n"          # 未知键:手写文件里合法存在
+        "version: 3\n"
+        "---\n\n正文\n",
+        encoding="utf-8",
+    )
+    entry = svc.read_skill("legacy")
+    assert "error" not in entry
+    assert entry["version"] == 3                       # 读出的就是盘上那份
+    assert svc.confirm("legacy")["status"] == "confirmed"
+    # 重写不清洗未知键:宽容读 != 顺手改写别人的文件
+    assert "owner: data-team" in (d / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_legacy_frontmatter_without_version_reads_as_one(tmp_path):
+    """遗留文件(与 code skills 一样)没有 version 字段 → 读出 1,不抛。"""
+    svc = _svc(tmp_path)
+    d = tmp_path / ".trove" / "skills" / "no-ver"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: no-ver\ndescription: d\ntier: available\nstatus: pending\n"
+        "---\n\n正文\n",
+        encoding="utf-8",
+    )
+    assert svc.read_skill("no-ver")["version"] == 1
+    # 手写进非整数的同样按 1 解释(读路径不抛)
+    (d / "SKILL.md").write_text(
+        "---\nname: no-ver\ndescription: d\ntier: available\nstatus: pending\n"
+        'version: "abc"\n---\n\n正文\n',
+        encoding="utf-8",
+    )
+    assert svc.read_skill("no-ver")["version"] == 1
+
+
+def test_code_skills_have_no_version_field(tmp_path):
+    """version 只落在 org skills 上;code skills(manifest.yml)形状不动。"""
+    svc = SkillService(tmp_path)
+    code = svc.list_code_skills()
+    assert code, "内置 code skills 应当存在"
+    assert all("version" not in e for e in code)

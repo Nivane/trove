@@ -104,7 +104,9 @@ markers = [
 ]
 
 # CI 质量门禁:pyflakes 未用变量/导入/未定义名 + pycodestyle 错误级。
-# E501(行长)是纯风格噪音不拦;E402 为 3 处**故意**惰性导入模块豁免;
+# E501(行长)是纯风格噪音不拦;E402 为 3 处**故意**惰性导入模块豁免
+# (admin / kb.service / datasource.registry——后者把内置方言的 import 与
+# register_adapter 自注册收在同一段,见该文件末尾);
 # 测试目录容忍 E741(l 等短循环变量,生产代码保持严格)。
 [tool.ruff]
 target-version = "py312"
@@ -117,4 +119,5 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 "trove/api/routers/admin.py" = ["E402"]
 "trove/services/kb/service.py" = ["E402"]
+"trove/services/datasource/registry.py" = ["E402"]
 "tests/**" = ["E402", "E741"]

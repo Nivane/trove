@@ -161,17 +161,27 @@ def structural_counts(repo: Path, rev: str) -> dict[str, int | None]:
 
     lines = blob(repo, rev, "trove/services/datasource/registry.py")
     if lines:
+        # 方言数认两种写法,因为注册方式在 2026-10 变过:
+        #   旧 —— `_ADAPTER_REGISTRY = { "sqlite": SQLiteAdapter, ... }` 字面量;
+        #   新 —— 模块末尾 `register_adapter("sqlite", SQLiteAdapter)` 自注册。
+        # 两种都数,是为了让这个校验器在**新旧两个版本**上取数都正确:
+        # 本地默认 `--at main`(合流前仍是旧写法)不会误报「6 → 0」。
         inside = False
         n = 0
         for ln in lines:
             if "_ADAPTER_REGISTRY" in ln and "{" in ln:
-                inside = True
+                # 空表字面量(`= {}`,新写法的内部状态)不进入字面量模式
+                inside = not ln.rstrip().endswith("{}")
                 continue
             if inside:
                 if ln.strip().startswith("}"):
-                    break
+                    inside = False
+                    continue
                 if re.match(r'\s*"\w+":\s*\w+Adapter', ln):
                     n += 1
+                continue
+            if re.match(r'\s*register_adapter\(\s*"\w+"\s*,\s*\w+Adapter\s*\)', ln):
+                n += 1
         counts["adapters"] = n
     return counts
 
