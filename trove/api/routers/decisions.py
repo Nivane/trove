@@ -183,6 +183,14 @@ async def list_decisions(
         "version": doc.version,
         "digest": doc.digest,
         "rules": rules,
+        # 草稿队列一并给出:规则列表在**生效面**,草稿在等候室 —— 两者
+        # 分开呈现,读者才知道"这条规则现在到底跑不跑"。
+        "pending_drafts": [
+            {"id": d.get("id"), "rule_id": (d.get("rule") or {}).get("id"),
+             "source": d.get("source"), "created_at": d.get("created_at"),
+             "enabled": (d.get("rule") or {}).get("enabled", True)}
+            for d in _draft_store(request).grouped(datasource)["pending"]
+        ],
         "issues": issues,
         # 提示级与拦截级**分开出**:advisory 从不拦保存,混进 issues 会让
         # 读者以为规则存不下去(与 save 的 422 判定不是同一张表)。
@@ -204,6 +212,77 @@ async def get_decisions_raw(
     path = _kb(request).decisions_path(datasource)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     return {"datasource": datasource, "text": text}
+
+
+# ── 规则草稿(pending → confirm / reject)────────────────────
+#
+# 草稿**不在** decisions.yml 里(``decision_drafts.yml``,见
+# ``services/decision/drafts.py``)—— 所以执行面(调度/DecisionService)结构上
+# 读不到未确认的规则,「apply 后立刻跑任务,规则不生效」是结构事实而不是约定。
+#
+# 路由顺序:这三条必须声明在 ``/{rule_id}`` 之前 —— Starlette 按注册顺序
+# 匹配,``/admin/decisions/drafts`` 与 ``/admin/decisions/{rule_id}`` 同为
+# 三段,反过来就会被规则 id 吞掉(与 /raw 同一个陷阱)。
+
+
+def _draft_store(request: Request):
+    from trove.services.decision.drafts import DecisionDraftStore
+
+    return DecisionDraftStore(_kb(request))
+
+
+@router.get("/admin/decisions/drafts")
+async def list_decision_drafts(
+    request: Request, datasource: str,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """该数据源的规则草稿队列(按状态分组;前端待审列表读这里)。"""
+    store = _draft_store(request)
+    return {"datasource": datasource, "drafts": store.grouped(datasource)}
+
+
+@router.post("/admin/decisions/drafts/{draft_id}/confirm")
+async def confirm_decision_draft(
+    draft_id: str, request: Request, datasource: str,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """确认草稿:规则**经既有写门**(``save_decisions``)进 decisions.yml。"""
+    store = _draft_store(request)
+    actor = str((admin or {}).get("username", ""))
+    try:
+        draft = await store.confirm(datasource, draft_id, actor=actor)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"draft not found: {draft_id}")
+    except RuleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await _audit(request, "decisions.draft.confirm", admin, 200, {
+        "datasource": datasource, "draft_id": draft_id,
+        "rule_id": (draft.get("rule") or {}).get("id"),
+    })
+    return {"datasource": datasource, "draft_id": draft_id,
+            "rule_id": (draft.get("rule") or {}).get("id"),
+            "status": draft.get("status")}
+
+
+@router.post("/admin/decisions/drafts/{draft_id}/reject")
+async def reject_decision_draft(
+    draft_id: str, request: Request, datasource: str,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """驳回草稿:只标记 rejected,decisions.yml 一个字节不动。"""
+    store = _draft_store(request)
+    actor = str((admin or {}).get("username", ""))
+    try:
+        draft = await store.reject(datasource, draft_id, actor=actor)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"draft not found: {draft_id}")
+    except RuleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    await _audit(request, "decisions.draft.reject", admin, 200, {
+        "datasource": datasource, "draft_id": draft_id,
+    })
+    return {"datasource": datasource, "draft_id": draft_id,
+            "status": draft.get("status")}
 
 
 @router.get("/admin/decisions/verdicts/{verdict_id}")

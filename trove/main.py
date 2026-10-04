@@ -249,6 +249,18 @@ async def create_app_components(
         git_enabled=config.git_kb, config=config,
     )
 
+    # ── Preset packs (datasource onboarding templates) ──────
+    # 双源:内置 ``trove/presets/<name>`` 随码分发只读,组织
+    # ``.trove/presets/<name>`` 由 admin 管理(同名时**组织版遮蔽内置版**)。
+    # ``apply`` 只落 pending 草稿(技能门 / 决策草稿 / 语义审批流),
+    # 逐条确认后才生效 —— 这条红线由各段的既有写入口保证,preset 自己不写
+    # 任何生效文件。
+    from trove.services.presets.service import PresetService
+    presets = PresetService(
+        Path.cwd() / ".trove" / "presets", kb=kb, skills=skills,
+        git_enabled=config.git_kb,
+    )
+
     # ── User facts (per-user memory: ~/.trove/user_facts.db) ──
     # 独立于数据源级 KB 的用户级记忆层:偏好/口径事实,按用户+数据源
     # 隔离,注入 gen_sql 个性化上下文(多用户共用时每人有自己的口径)。
@@ -462,6 +474,7 @@ async def create_app_components(
         "hybrid_store": hybrid_store,
         "lineage": lineage,
         "skills": skills,
+        "presets": presets,
         "graphs": graphs,
         "session_manager": session_manager,
         "checkpointer": checkpointer,
@@ -929,6 +942,12 @@ def main_repl():
         from trove.cli.commands.validate_cmds import main_validate
 
         sys.exit(main_validate(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "preset":
+        # 预设包:list / show / apply —— 套用只落 pending 草稿(确认门在
+        # 各服务自身,这里不另开一条写路径)。
+        from trove.cli.commands.preset_cmds import main_preset
+
+        sys.exit(main_preset(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "maintenance":
         async def _run_maint():
             from trove.cli.maintenance_cmds import main_maintenance

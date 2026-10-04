@@ -264,6 +264,7 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
     from trove.api.routers import auth as auth_router
     from trove.api.routers import decisions as decisions_router
     from trove.api.routers import jobs as jobs_router
+    from trove.api.routers import presets as presets_router
     from trove.api.routers import quality as quality_router
     from trove.api.routers import skills as skills_router
     from trove.api.routers import subscriptions as subscriptions_router
@@ -298,6 +299,8 @@ def create_app(components: dict, *, allow_null_auth: bool = False) -> FastAPI:
         app.include_router(subscriptions_router.router, prefix="/v1")
         app.include_router(skills_router.router, prefix="/v1")
         app.include_router(decisions_router.router, prefix="/v1")
+        # 预设包(接入模板):套用**只落 pending 草稿**,确认门一条都不绕。
+        app.include_router(presets_router.router, prefix="/v1")
         # 行动提案面(模板门 + 审批 + 外送回执):全 require_admin 自持门禁,
         # 与 decisions 同档 —— 行动的每一次外送都是治理动作。
         app.include_router(actions_router.router, prefix="/v1")

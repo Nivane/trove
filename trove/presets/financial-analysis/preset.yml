@@ -1,0 +1,138 @@
+# 内置示例 preset —— 财务分析接入模板(方法学骨架级)。
+#
+# 硬边界(与 KB 反作弊同一条纪律):
+#   · 这里**只装跨源方法论与骨架** —— 没有任何具体数据源的表名、字段名、
+#     枚举值或参考 SQL;
+#   · 技能正文回答"怎么分析",不回答"这张表里有什么";
+#   · 决策模板引用的指标名是**模板占位**:套用时对着目标语义模型逐条解析,
+#     解析不到会如实出现在套用报告的 unresolved 里,绝不静默成功。
+#
+# 套用产出**全部是 pending 草稿**(技能 / 决策 / 主题域各走各自的确认门),
+# 逐条确认后才生效。
+name: financial-analysis
+version: 1
+description: >
+  Financial-statement analysis starter pack: period-comparison and
+  driver-attribution methodology, two ratio-watch rule templates, a
+  risk-domain skeleton, plus caliber and presentation hints. Cross-source
+  methodology only — every datasource fact belongs in the KB.
+author: trove
+
+skills:
+  # ① 引用形态:名称解析到已生效资产(code skill / 已确认的 org skill)
+  #    → 套用报告里是 skipped(无需草稿)。解析不到 → unresolved。
+  - plan_query
+
+  # ② 骨架形态:落 pending 草稿,admin 确认后才进入投递面。
+  - name: period-comparison
+    description: >
+      Period-over-period comparison discipline: align the calendar before
+      computing, state the comparison base explicitly, and never compare a
+      partial period against a complete one.
+    tier: available
+    lang: en
+    triggers:
+      node: gen_sql
+    body: |
+      ## Period comparison — build it in this order
+
+      1. BASE: name the comparison base before writing any expression
+         (previous period / same period last year / a stated number). A
+         comparison whose base is implicit cannot be reviewed.
+      2. ALIGN: bucket both sides at the same grain, and align them to
+         calendar boundaries (month / quarter / year) — never a rolling
+         window against a calendar bucket.
+      3. COMPLETENESS: a period that has not ended is incomplete. Compare
+         complete-to-complete, or state the truncation in the answer.
+      4. DIRECTION: report the absolute delta and the relative change
+         separately; a large percentage on a small base is not "growth".
+
+      ## Traps
+
+      - Comparing a filtered population against an unfiltered one (same
+        base only).
+      - Letting the time filter sit inside an aggregate expression when it
+        is meant to constrain the whole population.
+      - Answering with a period the question did not name.
+
+decisions:
+  # 模板骨架 —— id / name / window / conditions 是方法学的形状;subject.metrics
+  # 是**对目标语义模型的引用**:模型里没有该指标时套用会报 unresolved。
+  # 未写 enabled 的模板按 enabled: false 草拟 —— 确认那一刻不该顺带获得
+  # "按点开跑"的权力,启用是一个独立的、明确的动作。
+  #
+  # 条件语言是闭文法(decision/expr.py):**没有算术运算符**,比较之外只有
+  # delta_pct / pct_change(a, b) / abs 这类内置量。写成 `current > baseline
+  # * 1.2` 会在结构 lint 就被拒(套用报 unresolved)——"涨了 20%"要写
+  # `delta_pct > 0.2`。
+  - id: watch-bad-debt-ratio
+    name: Bad-debt ratio rising
+    severity: warning
+    priority: 2
+    window: last month
+    subject:
+      metrics: [bad_debt_ratio]
+    baseline:
+      kind: prev_period
+    scope: aggregate
+    conditions:
+      - delta_pct > 0.2      # 比率相对基期上行 > 20%
+    recommendation: >
+      Review the delinquency ageing before acting: a rising ratio driven by
+      a new cohort is a different problem from a rising ratio in an old
+      book. Name the driver, then escalate.
+
+  - id: watch-amount-by-region
+    name: Loan amount — regional outliers
+    severity: info
+    window: last quarter
+    subject:
+      metrics: [total_loan_amount]
+      dimensions: [region]
+    baseline:
+      kind: prev_period
+    scope: per_dimension
+    emit: top_k
+    top_k: 3
+    conditions:
+      - delta_pct > 0.5      # 分量相对基期上行 > 50%(配合 top_k 看离群)
+    driver_dimension: region
+    recommendation: >
+      A region that moved far more than its peers is a question, not a
+      finding. Check the booking calendar and any product mix shift before
+      attributing it to demand.
+
+domains:
+  # 主题域骨架:作用域必须收敛到目标语义模型**已声明**的数据集,而那是
+  # 数据源事实,preset 里写不出来。套用时逐条解析:datasets 解析不到 →
+  # unresolved + 点名缺哪个,不落一份确认不了的草稿。按目标模型补全
+  # datasets 后重套即可。
+  - name: credit-risk
+    description: >
+      Credit-quality scope: exposure, delinquency, provisioning — the
+      datasets a question about portfolio risk should be answerable from.
+    synonyms: [risk, 风险]
+    datasets: []     # ← 按目标语义模型补全(如数据集名:loans / repayments)
+
+semantics:
+  notes:
+    - >
+      Ratio metrics: model the numerator and the denominator as their own
+      metrics and divide them. A ratio written as one opaque expression
+      cannot be inspected, compared, or re-scoped.
+    - >
+      Amount metrics: fix the currency and the unit once, in the metric
+      definition — never in the answer text.
+    - >
+      Period comparison: declare the aggregation time dimension on every
+      metric that has one, so "last month" resolves the same way everywhere.
+  metrics:
+    - Watch-style rules want a per-period metric with a declared time dimension.
+  time_grains: [month, quarter, year]
+
+presentation:
+  notes:
+    - Trends → line; composition → stacked bar; single-period comparison → bar.
+    - State the base period in the answer whenever a comparison is shown.
+  chart: line
+  drill_down: [time, region, product]

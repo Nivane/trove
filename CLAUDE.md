@@ -22,6 +22,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
 uv run python scripts/lint_kb.py --db-id demo   # KB quality check (static; --db-id 默认 financial 需按实际 KB 目录指定)
 uv run python scripts/lint_kb.py --db-id financial --datasource mysql://root:root@127.0.0.1:3306/financial   # + live enum probe
 uv run trove validate [--datasource NAME] [--json] [--strict] [--live]   # 扩展面干跑校验:KB lint/决策规则编译/org 技能挂点;零 LLM/零网络,硬错误退出码 1
+uv run trove preset list|show NAME|apply NAME --datasource DS   # 预设包(接入模板):内置 + 组织两源;套用只落 pending 草稿(逐条确认才生效),--strict 有未解析即退出码 1
 ```
 
 ### Docker 部署（前后端独立容器）
@@ -150,6 +151,7 @@ Trove's **internal state** (sessions, tasks, user facts, memory episodes/prefere
 | 管理域（前后端） | `api/app.py` 硬编码块 + `router/index.ts` + `AdminLayout.vue` + i18n 双字典 | 7–8 处 | 仅核心 |
 | 存储 | `StorageBackend` ABC（`storage/backends/base.py:72`）+ `build_backend` scheme 分支；迁移清单每 store 自带 | 新 store 1 处；新后端 3 处 | 仅核心 |
 | 配置 | `AgentConfig`（`core/config.py:324`）+ 管理端白名单 `SETTINGS_SCHEMA`（`admin_settings/service.py:25`，双写纪律；`extensions.org_extensions_enabled` 即经此落库 + 热改活 config） | 2–3 处 | 仅核心 |
+| 预设包 | `trove/presets/<name>/preset.yml`（内置只读）+ `.trove/presets/<name>/preset.yml`（org，同名遮蔽内置）；契约闭键校验在 `services/presets/models.py`；**套用只落 pending 草稿**（skills→`SkillService.create` / 规则→`decision_drafts.yml` / 域→`semantic_drafts.yml`，确认门复用各服务既有写路径），`trove validate` 干跑同一套契约 + 引用可解析性 | 新预设 0 处代码 | admin ✅ |
 
 ## Hard project constraints (must respect)
 
