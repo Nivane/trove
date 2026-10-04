@@ -44,7 +44,7 @@ BOOTSTRAP_ITERS = 2000
 BOOTSTRAP_LEVEL = 0.90
 
 
-def _clean(values: Iterable[Any] | None) -> list[float]:
+def clean(values: Iterable[Any] | None) -> list[float]:
     """None / 非有限值过滤 → 纯 float 列表(保序,不排序)。"""
     out: list[float] = []
     for v in values or []:
@@ -66,12 +66,12 @@ def _seed(material: str) -> int:
 
 
 def mean(values: Iterable[Any] | None) -> float | None:
-    xs = _clean(values)
+    xs = clean(values)
     return (sum(xs) / len(xs)) if xs else None
 
 
 def median(values: Iterable[Any] | None) -> float | None:
-    xs = _clean(values)
+    xs = clean(values)
     if not xs:
         return None
     return float(statistics.median(xs))
@@ -84,7 +84,7 @@ def mad(values: Iterable[Any] | None) -> float | None:
     ``robust_z``(除以 0 尺度 → None)与 ``band``(→ degraded)——
     分工明确,别在这里把 0.0 偷换成 None。
     """
-    xs = _clean(values)
+    xs = clean(values)
     med = median(xs)
     if med is None:
         return None
@@ -93,7 +93,7 @@ def mad(values: Iterable[Any] | None) -> float | None:
 
 def quantile(values: Iterable[Any] | None, q: float) -> float | None:
     """分位(线性插值,Hyndman-Fan type-7,与 numpy 默认一致)。"""
-    xs = _clean(values)
+    xs = clean(values)
     if not xs:
         return None
     xs.sort()
@@ -121,6 +121,29 @@ def robust_z(x: float, values: Iterable[Any] | None) -> float | None:
         return (float(x) - med) / scale
     except (TypeError, ValueError):
         return None
+
+
+def confidence_from_margin(z: float | None, k: float) -> float | None:
+    """稳健 z → 位置分数 ∈ [0,1]((|z|−k)/k 截断)。**不是概率。**
+
+    公式本体在这里:判定侧的显著性门与验收侧的效果测量**必须是同一
+    句话** —— 「超带」在两边由同一个数与同一条线定义(B7 把它从
+    decision/significance.py 移下来,那处继续 re-export)。限定语
+    (「位置分数非概率」)与出口措辞留在各自的消费面,见
+    ``significance.CONFIDENCE_NOTE``。
+
+    z 算不出 / k 非法(≤0)→ None(判不了,不返回 0)。恰在带缘
+    (|z| = k)→ 0.0;两倍阈值(|z| = 2k)→ 1.0 封顶。
+    """
+    if z is None:
+        return None
+    try:
+        zz, kk = abs(float(z)), float(k)
+    except (TypeError, ValueError):
+        return None
+    if kk <= 0.0:
+        return None
+    return min(max((zz - kk) / kk, 0.0), 1.0)
 
 
 @dataclass
@@ -186,7 +209,7 @@ def band(
         但调用方必须把「样本不足」传到结论旁;
       - ``no_data`` / ``zero_scale``:带不可用(lo/hi = None)。
     """
-    xs = _clean(values)
+    xs = clean(values)
     med = median(xs)
     scale = mad(xs)
     degraded: list[str] = []
@@ -228,7 +251,7 @@ def bootstrap_ci(
     材料留空仍是确定的(sha256("")),但调用方**应当**给材料
     (如 f"{datasource}|{metric}|{field}|{window}")把结论钉到语境上。
     """
-    xs = _clean(values)
+    xs = clean(values)
     if len(xs) < 2:
         return None
     rng = random.Random(_seed(seed_material))
@@ -257,7 +280,7 @@ def effective_n(values: Iterable[Any] | None) -> float | None:
     块序列有自相关(相邻月天然相似),裸 n 是伪精度 —— 报 n_eff。
     常数序列(无散布)ρ1 无定义 → None(判不了)。
     """
-    xs = _clean(values)
+    xs = clean(values)
     n = len(xs)
     if n < 3:
         return None
@@ -278,7 +301,7 @@ def welch_delta(a: Iterable[Any] | None, b: Iterable[Any] | None) -> dict[str, A
     刻意**不输出 p 值**:n≈8–12 上的 p 是伪精度,比没有更糟。
     返回 ``{delta, t, df, n_a, n_b, method}``;方差为 0 / 样本不足 → None。
     """
-    xs, ys = _clean(a), _clean(b)
+    xs, ys = clean(a), clean(b)
     if len(xs) < 2 or len(ys) < 2:
         return None
     nx, ny = len(xs), len(ys)
@@ -300,5 +323,5 @@ def low_n(n_or_values: Any, *, threshold: int = LOW_N) -> bool:
     if isinstance(n_or_values, int) and not isinstance(n_or_values, bool):
         n = n_or_values
     else:
-        n = len(_clean(n_or_values))
+        n = len(clean(n_or_values))
     return n < int(threshold)
