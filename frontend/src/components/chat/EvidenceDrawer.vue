@@ -443,7 +443,7 @@ async function submitVote(vote: 1 | -1) {
   margin: 0;
   padding: var(--sp-3);
   overflow-x: auto;
-  font-size: var(--fs-2xs);
+  font-size: var(--fs-xs);
   line-height: var(--lh-relaxed);
   color: var(--text-primary);
   white-space: pre;

@@ -366,13 +366,13 @@ function pct(v: unknown): string {
 }
 .vh-time {
   flex: none;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
 }
 .vh-msg {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -385,7 +385,7 @@ function pct(v: unknown): string {
 }
 .vh-chip {
   padding: 1px 6px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   border-radius: 4px;
 }
 .vh-chip-neutral {
@@ -402,7 +402,7 @@ function pct(v: unknown): string {
   background: var(--el-color-danger-light-9);
 }
 .vh-count {
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 .vh-detail {
   padding: var(--sp-3);
@@ -410,7 +410,7 @@ function pct(v: unknown): string {
 }
 .vh-detail-error {
   margin: 0 0 var(--sp-2);
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   color: var(--el-color-danger);
 }
 .vh-sec + .vh-sec {
@@ -418,7 +418,7 @@ function pct(v: unknown): string {
 }
 .vh-sec-title {
   margin-bottom: 4px;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -427,7 +427,7 @@ function pct(v: unknown): string {
 .vh-sql {
   margin: 0 0 4px;
   padding: var(--sp-2);
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   overflow-x: auto;
   background: var(--fill-subtle, rgba(128, 128, 128, 0.08));
   border-radius: 4px;
@@ -438,7 +438,7 @@ function pct(v: unknown): string {
 }
 .vh-table {
   width: 100%;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   border-collapse: collapse;
 }
 .vh-table th,
@@ -455,13 +455,13 @@ function pct(v: unknown): string {
 .vh-degraded {
   margin: 0;
   padding-left: 18px;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
 }
 .vh-degraded {
   color: var(--el-color-warning);
 }
 .vh-residual {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
 }
 </style>
