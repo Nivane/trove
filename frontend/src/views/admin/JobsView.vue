@@ -89,6 +89,10 @@
               <span class="pill pill-neutral">{{ t('jobDecisionRule', ui.lang) }}</span>
               {{ row.decision_rule }}
             </span>
+            <span v-else-if="scanMetrics(row).length" class="cell-mono">
+              <span class="pill pill-neutral">{{ t('jobScan', ui.lang) }}</span>
+              {{ scanMetrics(row).join(', ') }}
+            </span>
             <span v-else-if="row.alert_expr" class="cell-mono">{{ row.alert_expr }}</span>
             <span v-else class="dim">—</span>
           </template>
@@ -231,8 +235,41 @@
           <div class="job-field-hint">{{ t('jobDecisionRuleHint', ui.lang) }}</div>
           <div v-if="rulesError" class="job-field-hint job-field-warn">{{ rulesError }}</div>
         </el-form-item>
+        <!-- 主动扫描(B6):与决策规则同级的三选一 —— 决策规则 > 扫描 > NL 问数。
+             扫描发现只落 pending 草稿,提示文案里写明这一点(别再让人以为
+             存了就会自动告警)。 -->
+        <el-form-item v-if="!form.decision_rule" :label="t('jobScanEnabled', ui.lang)">
+          <el-switch v-model="form.scan_enabled" />
+          <div class="job-field-hint">{{ t('jobScanHint', ui.lang) }}</div>
+        </el-form-item>
+        <template v-if="!form.decision_rule && form.scan_enabled">
+          <el-form-item :label="t('jobScanMetrics', ui.lang)">
+            <el-input v-model="form.scan_metrics" :placeholder="t('jobScanMetricsPh', ui.lang)" />
+          </el-form-item>
+          <el-form-item :label="t('jobScanDimensions', ui.lang)">
+            <el-input v-model="form.scan_dimensions" :placeholder="t('jobScanDimensionsPh', ui.lang)" />
+          </el-form-item>
+          <el-form-item :label="t('jobScanWindow', ui.lang)">
+            <el-input v-model="form.scan_window" :placeholder="t('jobScanWindowPh', ui.lang)" />
+          </el-form-item>
+          <el-form-item :label="t('jobScanMode', ui.lang)">
+            <el-select v-model="form.scan_mode" class="job-rule-select">
+              <el-option :label="t('jobScanModeTrailing', ui.lang)" value="trailing" />
+              <el-option :label="t('jobScanModeSamePhase', ui.lang)" value="same_phase" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('jobScanLookback', ui.lang)">
+            <el-input-number v-model="form.scan_lookback" :min="1" :max="60" />
+          </el-form-item>
+          <el-form-item :label="t('jobScanTopK', ui.lang)">
+            <el-input-number v-model="form.scan_top_k" :min="1" :max="50" />
+          </el-form-item>
+          <el-form-item :label="t('jobScanHypotheses', ui.lang)">
+            <el-switch v-model="form.scan_hypotheses" />
+          </el-form-item>
+        </template>
         <el-form-item
-          v-if="!form.decision_rule"
+          v-if="!form.decision_rule && !form.scan_enabled"
           :label="t('jobAlertExpr', ui.lang)"
         >
           <el-input v-model="form.alert_expr" :placeholder="t('jobAlertHint', ui.lang)" />
@@ -502,6 +539,7 @@ interface JobRow {
   alert_cooldown_min: number
   decision_rule: string
   topic: string
+  scan_spec?: JobScanSpec
   next_run_at: string
   created_at: string
   updated_at: string
@@ -513,6 +551,18 @@ interface JobRow {
     verdict?: string
   } | null
   [k: string]: unknown
+}
+
+/** 主动扫描规格(B6)—— 后端返回解析后的 dict;空 = 非扫描任务。 */
+interface JobScanSpec {
+  metrics?: string[]
+  dimensions?: string[]
+  window?: string
+  grain?: string
+  mode?: string
+  lookback?: number
+  top_k?: number
+  hypotheses?: boolean
 }
 
 interface RunRow {
@@ -605,6 +655,15 @@ const emptyForm = {
   alert_cooldown_min: 30,
   decision_rule: '',
   topic: '',
+  // 主动扫描(B6):开关 + 规格字段(逗号分隔的度量/维度,窗口走自然语言)。
+  scan_enabled: false,
+  scan_metrics: '',
+  scan_dimensions: '',
+  scan_window: '',
+  scan_mode: 'trailing' as 'trailing' | 'same_phase',
+  scan_lookback: 12,
+  scan_top_k: 5,
+  scan_hypotheses: false,
 }
 const form = reactive({ ...emptyForm })
 
@@ -664,6 +723,16 @@ async function loadTopics() {
   }
 }
 
+function csv(text: string): string[] {
+  // 中英文逗号都当分隔符(中文输入法下打出来的就是「,」)。
+  return text.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+}
+
+function scanMetrics(row: JobRow): string[] {
+  const metrics = row.scan_spec?.metrics
+  return Array.isArray(metrics) ? metrics : []
+}
+
 function runClass(status: string): string {
   if (status === 'ok') return 'pill-ok'
   if (status === 'alert') return 'pill-warn'
@@ -713,6 +782,7 @@ function openCreate() {
 
 function openEdit(row: JobRow) {
   editing.value = row
+  const spec = row.scan_spec || {}
   Object.assign(form, {
     name: row.name,
     question: row.question,
@@ -724,6 +794,14 @@ function openEdit(row: JobRow) {
     alert_cooldown_min: row.alert_cooldown_min,
     decision_rule: row.decision_rule || '',
     topic: row.topic || '',
+    scan_enabled: Array.isArray(spec.metrics) && spec.metrics.length > 0,
+    scan_metrics: (spec.metrics || []).join(', '),
+    scan_dimensions: (spec.dimensions || []).join(', '),
+    scan_window: spec.window || '',
+    scan_mode: spec.mode === 'same_phase' ? 'same_phase' : 'trailing',
+    scan_lookback: typeof spec.lookback === 'number' ? spec.lookback : 12,
+    scan_top_k: typeof spec.top_k === 'number' ? spec.top_k : 5,
+    scan_hypotheses: spec.hypotheses === true,
   })
   dialogOpen.value = true
   void loadRules()
@@ -745,6 +823,13 @@ watch(() => form.datasource, () => {
 
 async function save() {
   if (!form.question.trim()) return
+  // 三选一:决策规则 > 主动扫描 > NL 问数(与后端 runner 的分支优先级一致)。
+  const scanOn = !form.decision_rule && form.scan_enabled
+  const metrics = csv(form.scan_metrics)
+  if (scanOn && !metrics.length) {
+    ElMessage.warning(t('jobScanMetricsRequired', ui.lang))
+    return
+  }
   saving.value = true
   try {
     const payload = {
@@ -753,11 +838,27 @@ async function save() {
       datasource: form.datasource,
       schedule_type: form.schedule_type,
       schedule: form.schedule,
-      alert_expr: form.decision_rule ? '' : form.alert_expr,
+      alert_expr: form.decision_rule || scanOn ? '' : form.alert_expr,
       alert_channel: form.alert_channel,
       alert_cooldown_min: form.alert_cooldown_min,
       decision_rule: form.decision_rule,
       topic: form.topic,
+      // 空对象 = 非扫描任务(PATCH 里它会把旧的扫描规格清掉 —— 表单说
+      // 关就是关)。
+      scan_spec: scanOn
+        ? {
+            metrics,
+            dimensions: csv(form.scan_dimensions),
+            window: form.scan_window.trim()
+              || (ui.lang === 'zh' ? '本月' : 'this month'),
+            grain: '',
+            mode: form.scan_mode,
+            lookback: form.scan_lookback,
+            k: 3.5,
+            top_k: form.scan_top_k,
+            hypotheses: form.scan_hypotheses,
+          }
+        : {},
     }
     if (editing.value) {
       await apiPatch(`/v1/admin/jobs/${editing.value.id}`, payload)

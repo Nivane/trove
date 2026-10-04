@@ -90,6 +90,10 @@ _SNAPSHOT: dict[str, list[str]] = {
     "reflect/user.en.j2": ["columns", "evidence", "question", "sample", "schema_context", "sql", "time_context", "total_rows"],
     "refuse/draft.en.j2": ["plan", "question", "vocabulary"],
     "refuse/draft.zh.j2": ["plan", "question", "vocabulary"],
+    # scan/hypothesis:data = 发现表/归因表(数据,按数据扫);intro(节点写的
+    # 开场白,系统自带)与 limit(条数上限)是系统标量,已在 _TRUSTED_VARS 登记。
+    "scan/hypothesis.en.j2": ["data", "intro", "limit"],
+    "scan/hypothesis.zh.j2": ["data", "intro", "limit"],
     "semantics/system.en.j2": [],
     "semantics/system.zh.j2": [],
     "semantics/user.en.j2": ["question", "sql", "time_context"],

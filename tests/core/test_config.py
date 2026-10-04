@@ -761,3 +761,88 @@ class TestActionConfig:
         conf.write_text(
             "agent:\n  target: openai/gpt-4o\naction: {}\n", encoding="utf-8")
         assert ConfigLoader.load_agent_config(str(conf)).action.enabled is False
+
+
+class TestScanConfig:
+    """``scan:`` 块必须真的进 ``AgentConfig``(同 ``TestActionConfig`` 的教训:
+    字段加好、加载器没读 = 一处静默失效的配置开关)。两个假设开关是本层
+    最要紧的两个默认:定时扫描的 ``hypotheses`` 默认**关**(成本面在后台),
+    交互侧的 ``interactive_hypotheses`` 默认**开**(一次分析尾部的一两跳)。
+    """
+
+    def test_defaults(self):
+        cfg = AgentConfig()
+        assert cfg.scan.hypotheses is False
+        assert cfg.scan.interactive_hypotheses is True
+        assert cfg.scan.max_hypotheses == 3
+        assert cfg.scan.max_queries == 12
+        assert cfg.scan.top_k == 5
+        assert cfg.scan.lookback == 12
+        assert cfg.scan.k == 3.5
+
+    def test_block_is_parsed_top_level(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "scan:\n"
+            "  hypotheses: true\n"
+            "  interactive_hypotheses: false\n"
+            "  max_hypotheses: 5\n"
+            "  max_queries: 20\n"
+            "  top_k: 8\n"
+            "  lookback: 24\n"
+            "  k: 2.5\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.scan.hypotheses is True
+        assert cfg.scan.interactive_hypotheses is False
+        assert cfg.scan.max_hypotheses == 5
+        assert cfg.scan.max_queries == 20
+        assert cfg.scan.top_k == 8
+        assert cfg.scan.lookback == 24
+        assert cfg.scan.k == 2.5
+
+    def test_block_reads_nested_under_agent(self, tmp_path):
+        """顶层与 ``agent:`` 内嵌两种都认(与 decision/action 同写法)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "  scan:\n    top_k: 2\n",
+            encoding="utf-8",
+        )
+        assert ConfigLoader.load_agent_config(str(conf)).scan.top_k == 2
+
+    def test_bad_numeric_fields_fall_back_or_clamp(self, tmp_path):
+        """坏值不许把扫描推向"零发现/无预算"档:非数 k 回默认,计数下限 1。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "scan:\n  k: not-a-number\n  top_k: 0\n  lookback: -3\n"
+            "  max_queries: 0\n  max_hypotheses: 0\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.scan.k == 3.5
+        assert cfg.scan.top_k == 1
+        assert cfg.scan.lookback == 1
+        assert cfg.scan.max_queries == 1
+        assert cfg.scan.max_hypotheses == 1
+
+    def test_k_must_be_positive_and_finite(self, tmp_path):
+        """``k <= 0`` 的带宽会把每一点都判成异常 —— 退回默认,不接。"""
+        conf = tmp_path / "agent.yml"
+        for bad in ("k: 0\n", "k: -2.5\n", "k: .inf\n"):
+            conf.write_text(
+                "agent:\n  target: openai/gpt-4o\nscan:\n  " + bad,
+                encoding="utf-8",
+            )
+            assert ConfigLoader.load_agent_config(str(conf)).scan.k == 3.5
+
+    def test_empty_block_and_absent_block_are_same_tier(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\nscan: {}\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.scan.hypotheses is False
+        assert cfg.scan.interactive_hypotheses is True

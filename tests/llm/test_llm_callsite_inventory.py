@@ -59,7 +59,7 @@ _METHODS = frozenset({"chat", "chat_full", "chat_stream", "embedding"})
 _KINDS = frozenset({"A", "Av", "Ab", "Ac", "B", "E"})
 
 #: 全量调用点(2026-09-29 设计稿 §2 盘点 32 处;计入 scripts、补上它漏计的
-#: ``embedding`` 后共 34 处)。
+#: ``embedding`` 后共 34 处;B6 假设层起草 +1 → 35 处)。
 CALL_SITES: dict[str, str] = {
     # ── agent 会话层:提示词都来自 render ──
     "trove/agent/session.py::SessionManager.compact_session#1": "Av",
@@ -85,6 +85,9 @@ CALL_SITES: dict[str, str] = {
     # ── 记忆:内容来自同文件的 prompt 构造器 ──
     "trove/services/memory/preferences.py::extract_and_store#1": "Ab",
     "trove/services/memory/service.py::MemoryService._capture_failure_lesson#1": "Ab",
+    # ── 主动扫描的假设层(B6):LLM 只起草,render 产物存进 prompt 变量后
+    #    随 messages 送出(messages 里的 system 是系统自带的固定句)──
+    "trove/services/scan/hypotheses.py::propose#1": "Av",
     "trove/services/skills/service.py::SkillService.draft_with_llm#1": "Av",
     # ── 工作流节点 ──
     "trove/workflow/graphs.py::make_route_intent._classify#1": "Av",

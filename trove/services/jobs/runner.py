@@ -24,9 +24,19 @@ logger = get_logger(__name__)
 MAX_RESULT_ROWS = 200
 
 
+def _scan_verdict(report: Any) -> str:
+    """Run 行的 verdict 列:扫描结果的紧凑计数(运行历史里一行可读)。"""
+    return (
+        f"scan: {len(getattr(report, 'findings', []))} findings / "
+        f"{len(getattr(report, 'unverifiable', []))} unverifiable / "
+        f"{len(getattr(report, 'drafts', []))} drafts"
+    )[:300]
+
+
 class SchedulerRunner:
     def __init__(self, session_manager, jobs: JobsService, lang: str = "zh",
-                 decision=None, verdicts=None, actions=None, subscriptions=None):
+                 decision=None, verdicts=None, actions=None, subscriptions=None,
+                 scans=None):
         self.session_manager = session_manager
         self.jobs = jobs
         self.lang = lang
@@ -49,11 +59,17 @@ class SchedulerRunner:
         #: 投递给订阅者（定时分析 + 订阅的投递半边）。同样 best-effort：一个
         #: 收不到的订阅者绝不能把一次跑好的运行变成 error。
         self.subscriptions = subscriptions
+        #: ``ScanService`` (duck-typed) or None — 主动扫描（B6）。缺席时扫描
+        #: 任务按 error 记账，绝不落回 NL 管线去回答 job.question 那个标签 ——
+        #: 那会产出一条看起来像扫描结论、其实什么都没扫的答案。
+        self.scans = scans
 
     async def run_job(self, job: Job, now: datetime | None = None) -> dict[str, Any]:
         """Execute one job end-to-end and return its run summary."""
         if job.decision_rule:
             return await self._run_decision(job, now)
+        if job.scan_spec:
+            return await self._run_scan(job, now)
 
         run = Run(job_id=job.id)
         run_id = await self.jobs.record_run(job, run)
@@ -236,6 +252,75 @@ class SchedulerRunner:
                 report={"question": job.question,
                         "rule_id": job.decision_rule,
                         "error": str(e)[:200]},
+            )
+            summary["error"] = str(e)[:200]
+            return summary
+        finally:
+            await self._advance(job, now)
+
+    async def _run_scan(self, job: Job, now: datetime | None) -> dict[str, Any]:
+        """Run one scan job: deterministic scan → pending drafts → optional
+        hypothesis round; the report is the run's evidence.
+
+        Same posture as ``_run_decision``: the NL pipeline is never entered
+        (a scan must be replayable and must not depend on the model for its
+        deterministic half), and ``advance`` is unconditional in ``finally``.
+        A scan that finds nothing is still a normal finished run — "no
+        findings" is a result, not a failure.
+        """
+        summary: dict[str, Any] = {
+            "job_id": job.id, "name": job.name, "error": "", "status": "error",
+            "row_count": 0, "alert": "", "alert_sent": False,
+            "scan": True,
+        }
+        run = Run(job_id=job.id)
+        run_id = await self.jobs.record_run(job, run)
+        try:
+            if self.scans is None:
+                raise RuntimeError(
+                    "scan job but no scan service is wired — refusing to fall "
+                    "back to the NL pipeline")
+            report = await self.scans.run(job, now)
+            payload = report.to_dict()
+            error = report.error or ""
+            triggered = bool(report.findings) and not error
+            message = report.message()
+            status = "error" if error else ("alert" if triggered else "ok")
+            sent = False
+            if not error:
+                alert_eval = await self.jobs.evaluate_outcome(job, triggered, message)
+                if alert_eval["notify"]:
+                    sent = await self.jobs.dispatch(job, message, payload)
+            verdict = _scan_verdict(report)
+            findings_n = 0 if error else len(report.findings)
+            await self.jobs.finish_run(
+                run_id, status, triggered, sent, findings_n, verdict,
+                result_json=payload,
+            )
+            await self._deliver(
+                job, run_id, status=status, verdict=verdict,
+                alert_triggered=triggered,
+                alert_message=message if triggered else "",
+                report={"question": job.question, "scan": payload},
+            )
+            summary.update({
+                "status": status,
+                "row_count": findings_n,
+                "error": error,
+                "alert": message if triggered else "",
+                "alert_sent": sent,
+            })
+            return summary
+        except Exception as e:
+            logger.exception("scan job %s crashed", job.id)
+            try:
+                await self.jobs.finish_run(run_id, "error", False, False, 0, "")
+            except Exception:
+                pass
+            await self._deliver(
+                job, run_id, status="error", verdict="",
+                alert_triggered=False, alert_message="",
+                report={"question": job.question, "error": str(e)[:200]},
             )
             summary["error"] = str(e)[:200]
             return summary

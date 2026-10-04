@@ -7,6 +7,7 @@ Resolves ${ENV_VAR} placeholders at load time.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -262,6 +263,31 @@ class DecisionConfig:
 
 
 @dataclass
+class ScanConfig:
+    """主动扫描配置(B6 —— ``agent.scan.*``)。
+
+    ``hypotheses`` **默认 False**:定时扫描的成本面(每轮 = 规格里每个
+    metric×dim 一次只读查询 + 可选一轮 LLM 假设),要让任务显式打开
+    (``Job.scan_spec.hypotheses=true``);``interactive_hypotheses`` 默认
+    True —— 交互侧(归因节点)本来就只在一次分析尾部花一到数次调用,
+    默认开着才让「为什么」有下文;两个开关分开,是因为两种场景的成本
+    与在场的读者都不同。
+
+    其余字段是扫描的确定性预算:``max_queries``(单次扫描的查询上限,
+    超出的单元记 ``unverifiable`` 而不是静默丢弃)、``top_k``(交付的
+    超带发现上限,|z| 降序)、``lookback``/``k``(历史块数与噪声带宽)。
+    """
+
+    hypotheses: bool = False
+    interactive_hypotheses: bool = True
+    max_hypotheses: int = 3
+    max_queries: int = 12
+    top_k: int = 5
+    lookback: int = 12
+    k: float = 3.5
+
+
+@dataclass
 class ActionChannel:
     """外送通道(P3):命名通道 → URL/密钥。
 
@@ -427,6 +453,9 @@ class AgentConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     # 决策层:判定历史保留期等。见 DecisionConfig(默认不清理)。
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    # 主动扫描(B6):定时扫描的假设开关(默认关)+ 交互侧假设(默认开)+
+    # 预算。见 ScanConfig。
+    scan: ScanConfig = field(default_factory=ScanConfig)
     # 行动层:提案/审批/外送(默认关闭)。见 ActionConfig。
     action: ActionConfig = field(default_factory=ActionConfig)
     # 扩展面治理:组织扩展(org skills / validator / 决策规则执行)总开关,
@@ -656,6 +685,27 @@ class ConfigLoader:
                 0, int(decision_raw.get("verdict_retention_days", 0))),
         )
 
+        # Parse scan layer (B6; agent.scan.* — same top-level-or-nested
+        # reading as decision/action: a field the loader does not read is a
+        # config that silently never applies).
+        scan_raw = resolved.get("scan", {}) or agent_section.get("scan", {}) or {}
+        try:
+            scan_k = float(scan_raw.get("k", 3.5))
+        except (TypeError, ValueError):
+            scan_k = 3.5
+        if not math.isfinite(scan_k) or scan_k <= 0:
+            scan_k = 3.5
+        scan_conf = ScanConfig(
+            hypotheses=bool(scan_raw.get("hypotheses", False)),
+            interactive_hypotheses=bool(
+                scan_raw.get("interactive_hypotheses", True)),
+            max_hypotheses=max(1, int(scan_raw.get("max_hypotheses", 3))),
+            max_queries=max(1, int(scan_raw.get("max_queries", 12))),
+            top_k=max(1, int(scan_raw.get("top_k", 5))),
+            lookback=max(1, int(scan_raw.get("lookback", 12))),
+            k=scan_k,
+        )
+
         # Parse action layer (P3; agent.action.* — same top-level-or-nested
         # reading as decision/attribution: a field the loader does not read is
         # a config that silently never applies).
@@ -820,6 +870,7 @@ class ConfigLoader:
             attribution=attribution,
             analysis=analysis_conf,
             decision=decision_conf,
+            scan=scan_conf,
             action=action_conf,
             extensions=extensions_conf,
             eval=eval_conf,

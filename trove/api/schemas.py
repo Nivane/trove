@@ -444,6 +444,16 @@ class JobCreate(BaseModel):
                     "expired domain is a 400, never a job that fails the "
                     "same way on every tick",
     )
+    scan_spec: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Active-scan spec (B6): {metrics, dimensions, window, "
+                    "grain, mode, lookback, k, top_k, hypotheses}. Non-empty "
+                    "runs the deterministic scan instead of the NL pipeline "
+                    "(decision_rule wins when both are set). Validated at "
+                    "write time — metrics are checked against the datasource's "
+                    "semantic model, so a dangling reference is a 400, never "
+                    "a job that fails the same way on every tick",
+    )
 
 
 class JobPatch(BaseModel):
@@ -460,6 +470,7 @@ class JobPatch(BaseModel):
     alert_cooldown_min: int | None = Field(default=None, ge=0)
     decision_rule: str | None = None
     topic: str | None = None
+    scan_spec: dict[str, Any] | None = None
     enabled: bool | None = None
 
 

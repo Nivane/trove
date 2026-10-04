@@ -139,11 +139,13 @@ def compile_series_hop(
     = ``engine.compile_hop`` + plan ``time_grain`` 键。时间字段不在
     answer_columns,编译器把分桶表达式插在维度列之后、度量之前
     (无维度 → 首列即 bucket);输出列 = ``(维度…, bucket, 度量)``,
-    ``series_from_rows`` / ``series_source`` 按同一契约消费。
+    ``series_from_rows`` / ``series_source`` / ``series_by_dim`` 按同一
+    契约消费。
 
-    ``dimensions`` = 分组维(判定侧按维取噪声带时给;缺省 None = 整体
-    一条序列)。分组查询仍是**一条 SQL** —— 逐维一条会随维值数量
-    爆炸,而预算纪律要求块序列至多花一条(见 decision/budget.py)。
+    ``dimensions`` = 分组维(判定侧按维取噪声带、扫描侧按维度值拆块序列
+    时给;缺省 None = 整体一条序列)。分组查询仍是**一条 SQL** —— 逐维一条
+    会随维值数量爆炸,而预算纪律要求块序列至多花一条(见
+    decision/budget.py;扫描单元同理,见 scan/scanner.py)。
     """
     if time_grain not in GRAINS or not time_field:
         return None
@@ -160,10 +162,11 @@ def compile_series_hop(
         metric = compiler._metric_by_name(metric_name)
         if metric is None:
             return None
+        answer_columns = [str(d) for d in (dimensions or [])] + [metric_name]
         plan = {
             "tables": list(matched),
             "aggregation": metric_name,
-            "answer_columns": [str(d) for d in (dimensions or [])] + [metric_name],
+            "answer_columns": answer_columns,
             "conditions": list(conds),
             "time_grain": {"field": time_field, "grain": time_grain},
         }
@@ -195,3 +198,25 @@ def series_from_rows(
             continue
         merged[key] = num(row[-1])
     return sorted(merged.items())
+
+
+def series_by_dim(
+    columns: list[str], rows: list[list[Any]],
+) -> dict[str, list[tuple[str, float]]]:
+    """``(维度, bucket, 度量)`` 结果 → ``{维度值: [(bucket, 值), …]}``。
+
+    ``compile_series_hop(dimensions=[…])`` 的输出形状(分桶在维度之后、
+    度量之前);每个维度值各自成列,按 bucket 标签排序(同
+    ``series_from_rows`` 的纪律:行序不承诺,标签才是排序键)。空值/
+    短行跳过,不猜。
+    """
+    out: dict[str, dict[str, float]] = {}
+    for row in rows or []:
+        if len(row) < 3:
+            continue
+        dim_val = str(row[0])
+        bucket = str(row[1])[:10]
+        if not bucket:
+            continue
+        out.setdefault(dim_val, {})[bucket] = num(row[-1])
+    return {k: sorted(v.items()) for k, v in out.items()}

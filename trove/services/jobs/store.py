@@ -52,7 +52,10 @@ _CREATE_JOBS = """CREATE TABLE IF NOT EXISTS jobs (
     -- 新列一律追加在**末尾**:_row_to_job 按位置读,SQLite 的
     -- ALTER TABLE ADD COLUMN 也只能追加 —— 插进中间会让迁移库与
     -- 新建库的列序不同,同一个索引读出两个字段。
-    topic TEXT DEFAULT ''
+    topic TEXT DEFAULT '',
+    -- Non-empty = 主动扫描任务(scan_spec 的 JSON;见 services/scan)。
+    -- 优先级:decision_rule > scan_spec > NL 管线。
+    scan_spec TEXT DEFAULT ''
 )"""
 
 _CREATE_RUNS = """CREATE TABLE IF NOT EXISTS runs (
@@ -126,6 +129,9 @@ class Job:
     #: ``semantic_layer.manage.topic_reference_error``),运行期只透传 ——
     #: 一个悬空引用会让任务每天以同样的方式静默失败,不能等跑起来才发现。
     topic: str = ""
+    #: Non-empty = 主动扫描(``ScanSpec`` 的 JSON)。与 ``decision_rule``
+    #: 相同的形式(写时校验、运行期只透传);两者都非空时决策规则优先。
+    scan_spec: str = ""
 
 
 @dataclass
@@ -192,6 +198,7 @@ def _job_to_row(job: Job) -> tuple:
         job.updated_at,
         job.decision_rule,
         job.topic,
+        job.scan_spec,
     )
 
 
@@ -214,6 +221,7 @@ def _row_to_job(row) -> Job:
         # silent "" here would turn a decision job into an NL question.
         decision_rule=row[14] or "",
         topic=row[15] or "",
+        scan_spec=row[16] or "",
     )
 
 
@@ -264,7 +272,7 @@ class JobStore:
         is_pg = "Postgres" in type(self._backend).__name__
         dialect = POSTGRES if is_pg else SQLITE
         added = False
-        for column in ("decision_rule", "topic"):
+        for column in ("decision_rule", "topic", "scan_spec"):
             added = await ensure_column(
                 self._backend,
                 AddColumn("jobs", column, "TEXT DEFAULT ''", "TEXT DEFAULT ''"),
@@ -285,8 +293,8 @@ class JobStore:
                 """INSERT INTO jobs (id, name, question, datasource, workflow,
                    schedule_type, schedule, enabled, alert_expr, alert_channel,
                    alert_cooldown_min, next_run_at, created_at, updated_at,
-                   decision_rule, topic)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   decision_rule, topic, scan_spec)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      name=excluded.name, question=excluded.question,
                      datasource=excluded.datasource, workflow=excluded.workflow,
@@ -295,7 +303,8 @@ class JobStore:
                      alert_channel=excluded.alert_channel,
                      alert_cooldown_min=excluded.alert_cooldown_min,
                      next_run_at=excluded.next_run_at, updated_at=excluded.updated_at,
-                     decision_rule=excluded.decision_rule, topic=excluded.topic""",
+                     decision_rule=excluded.decision_rule, topic=excluded.topic,
+                     scan_spec=excluded.scan_spec""",
                 _job_to_row(job),
             )
             await conn.commit()
