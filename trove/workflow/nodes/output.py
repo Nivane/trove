@@ -471,6 +471,104 @@ def _tree_note(node: dict[str, Any], lang: str) -> str:
     return str(node.get("note") or "")
 
 
+#: 块粒度 → 展示词(zh, en);未知粒度原样拼「块」,不猜。
+_GRAIN_WORDS = {
+    "day": ("日", "day"), "week": ("周", "week"), "month": ("月", "month"),
+}
+
+#: 带降级原因 → 展示词(zh, en);未知原因原样带出(不吞,也不编一个说法)。
+_BAND_REASON_WORDS = {
+    "insufficient_n": ("样本不足", "insufficient sample"),
+    "no_data": ("无历史数据", "no historical data"),
+    "zero_scale": ("历史值无波动(稳健尺度为零)", "no variation in history"),
+}
+
+
+def _numf(v: Any) -> float | None:
+    """数值读取:bool 不算数;NaN/inf 读不出 → None(不编 0)。"""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        f = float(v)
+        if f == f and f not in (float("inf"), float("-inf")):
+            return f
+    return None
+
+
+def _fmt_g(v: float | None) -> str:
+    return f"{v:g}" if v is not None else "—"
+
+
+def _noise_band_line(series: dict[str, Any], lang: str) -> str:
+    """块序列 → 「噪声带/置信」一行(B8;分析侧的显著性表述)。
+
+    三态如实:超出带 / 落在带内 / 判不了(带不可用、本期值缺失各写明
+    原因)。「样本不足」标与「位置分数(非概率)」限定语不可省 —— 块数
+    不够时结论照给、标照挂。数字读不出不编 0。
+    """
+    b = series.get("band") if isinstance(series.get("band"), dict) else {}
+    grain = str(series.get("grain") or "")
+    gw = _GRAIN_WORDS.get(grain)
+    unit = L(lang, f"{gw[0]}块" if gw else "块",
+             f"{gw[1]}-block" if gw else "block")
+    n = _numf(b.get("n"))
+    if n is None and isinstance(series.get("values"), list):
+        n = float(len(series["values"]))
+    lookback = _numf(series.get("lookback"))
+    count_txt = (f"{int(n)}" if n is not None
+                 else f"{int(lookback)}" if lookback is not None else "?")
+    center, scale = _numf(b.get("center")), _numf(b.get("scale"))
+    lo, hi = _numf(b.get("lo")), _numf(b.get("hi"))
+    current = _numf(series.get("current"))
+    z, conf = _numf(series.get("z")), _numf(series.get("confidence"))
+    degraded = ([str(d) for d in b["degraded"]]
+                if isinstance(b.get("degraded"), list) else [])
+    idx = 0 if lang == "zh" else 1
+    reason_words = [_BAND_REASON_WORDS.get(d, (d, d))[idx] for d in degraded]
+
+    if lo is None or hi is None:
+        reasons = (("、".join(reason_words) if lang == "zh"
+                    else ", ".join(reason_words))
+                   or L(lang, "原因未记录", "reason unrecorded"))
+        head = L(lang,
+                 f"近 {count_txt} 个{unit}的噪声带不可用（{reasons}）",
+                 f"noise band unavailable over the last {count_txt} {unit}s ({reasons})")
+    else:
+        head = L(lang,
+                 f"近 {count_txt} 个{unit}（中位数 {_fmt_g(center)}，"
+                 f"稳健尺度 {_fmt_g(scale)}），带 [{_fmt_g(lo)}, {_fmt_g(hi)}]",
+                 f"over the last {count_txt} {unit}s (median {_fmt_g(center)}, "
+                 f"robust scale {_fmt_g(scale)}), band [{_fmt_g(lo)}, {_fmt_g(hi)}]")
+
+    cur_bits: list[str] = []
+    if current is None:
+        cur_bits.append(L(lang, "本期值缺失", "current value missing"))
+    else:
+        cur_bits.append(L(lang, f"本期值 {_fmt_g(current)}", f"current {_fmt_g(current)}"))
+        if z is not None:
+            cur_bits.append(L(lang, f"稳健 z={z:.2f}", f"robust z={z:.2f}"))
+        if conf is not None:
+            cur_bits.append(L(
+                lang, f"位置分数 {conf:.2f}（非概率）",
+                f"position score {conf:.2f} (not a probability)"))
+
+    sep = ("；", "，") if lang == "zh" else ("; ", ", ")
+    colon = "：" if lang == "zh" else ": "
+    line = (f"{L(lang, '**噪声带**', '**Noise band**')}{colon}"
+            f"{head}{sep[0]}{sep[1].join(cur_bits)}")
+    if current is not None:
+        outside = series.get("outside")
+        if outside is True:
+            verdict = L(lang, "超出噪声带", "outside the noise band")
+        elif outside is False:
+            verdict = L(lang, "落在噪声带内", "within the noise band")
+        else:
+            verdict = L(lang, "判不了", "undecidable")
+        line += f" → {verdict}"
+    if lo is not None and (series.get("low_n") is True or "insufficient_n" in degraded):
+        line += L(lang, "（样本不足，带估计仅供参考）",
+                  " (low sample; band is indicative only)")
+    return line
+
+
 def _build_attribution_section(state: WorkflowState) -> str:
     """归因分析区块:叙事 + 归因表 + 瀑布图(ASCII 兜底)+ 驱动器树。
 
@@ -550,6 +648,14 @@ def _build_attribution_section(state: WorkflowState) -> str:
                     f"{it.get('contribution', 0.0):+.1%} |"
                 )
         parts.append("\n")
+
+    # 噪声带/置信(块序列在场才渲染;B8):本期值 vs 历史块分布的稳健带 ——
+    # 分析侧的「显著性」表述。序列缺席(未启用/降级)整段不渲染,老路径逐字不变。
+    series = (state.analysis or {}).get("series")
+    if isinstance(series, dict):
+        band_line = _noise_band_line(series, lang)
+        if band_line:
+            parts.append(f"{band_line}\n")
 
     # 驱动器树:指标按表达式分解(分析柱结构化产物,state.analysis 独有;
     # 单叶树 = 没得拆 → 不渲染,避免与上面整体对比重复)。值缺失 → "—",
