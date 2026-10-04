@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+
+import pytest
+
 from trove.services.skills.service import SkillService
 
 
@@ -171,3 +176,123 @@ async def test_llm_draft_endpoint(api_app, tmp_path, client):
     assert len(payload["skill"]["body"]) > 0
     # 未确认前 load_skill 不可用
     assert svc.load_skill_content("loan-caliber", "zh").startswith("Skill 'loan-caliber' is not confirmed yet")
+
+
+# ── P2 治理:body 写路径 / history / rollback ─────────────────
+
+
+def _git(repo, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+
+
+@pytest.fixture
+def git_repo(tmp_path):
+    """临时 git 仓库(零网络):版本化端点的真实宿主。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Tester")
+    _git(repo, "config", "user.email", "tester@local")
+    return repo
+
+
+def _install_git_skills(api_app, repo) -> SkillService:
+    svc = SkillService(root=repo / ".trove" / "skills")
+    api_app.state.skills = svc
+    return svc
+
+
+class TestBodyUpdate:
+    async def test_put_body_bumps_version_and_audits(self, api_app, tmp_path, client):
+        svc = _install_skills(api_app, tmp_path)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+
+        r = await client.put(
+            "/v1/admin/skills/recon-caliber/body", json={"body": "改过的正文\n"})
+        assert r.status_code == 200
+        assert r.json()["version"] == 2                 # 修订计数前进
+        assert svc.read_skill("recon-caliber")["body"] == "改过的正文"
+
+        audit = await api_app.state.auth.list_audit(action="skill.body")
+        assert len(audit) == 1
+        assert audit[0]["details"]["name"] == "recon-caliber"
+        assert audit[0]["details"]["version"] == 2
+
+    async def test_put_body_404_and_empty_422(self, api_app, tmp_path, client):
+        _install_skills(api_app, tmp_path)
+        r = await client.put(
+            "/v1/admin/skills/ghost/body", json={"body": "x"})
+        assert r.status_code == 404
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        r = await client.put(
+            "/v1/admin/skills/recon-caliber/body", json={"body": ""})
+        assert r.status_code == 422                     # 空正文不是一次修订
+
+
+class TestHistoryAndRollback:
+    async def test_history_lists_and_rollback_restores(
+            self, api_app, git_repo, client):
+        _install_git_skills(api_app, git_repo)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        await client.post("/v1/admin/skills/recon-caliber/confirm")
+        await client.put(
+            "/v1/admin/skills/recon-caliber/body", json={"body": "第三版正文\n"})
+
+        r = await client.get("/v1/admin/skills/recon-caliber/history")
+        assert r.status_code == 200
+        history = r.json()["history"]
+        assert [h["subject"] for h in history] == [
+            "skills: body recon-caliber v3",
+            "skills: confirm recon-caliber v2",
+            "skills: create recon-caliber v1",
+        ]
+
+        r = await client.post(
+            "/v1/admin/skills/recon-caliber/rollback",
+            json={"sha": history[-1]["sha"]},
+        )
+        assert r.status_code == 200
+        assert r.json()["rolled_back"] is True
+        assert r.json()["version"] == 4                 # 回滚 = 新的一版
+
+        body = await client.get("/v1/admin/skills/recon-caliber/body")
+        assert body.json()["status"] == "pending"       # 连同状态一起回滚
+        assert "第三版正文" not in body.json()["body"]
+        after = await client.get("/v1/admin/skills/recon-caliber/history")
+        assert after.json()["history"][0]["subject"].startswith(
+            "skills: rollback recon-caliber to ")
+
+        assert len(await api_app.state.auth.list_audit(action="skill.rollback")) == 1
+
+    async def test_rollback_bad_sha_is_400(self, api_app, git_repo, client):
+        _install_git_skills(api_app, git_repo)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        r = await client.post(
+            "/v1/admin/skills/recon-caliber/rollback", json={"sha": "f" * 40})
+        assert r.status_code == 400
+        assert r.json()["detail"]["reason"] == "bad-sha"
+        assert await api_app.state.auth.list_audit(action="skill.rollback") == []
+
+    async def test_history_and_rollback_404_for_ghost(self, api_app, git_repo, client):
+        _install_git_skills(api_app, git_repo)
+        r = await client.get("/v1/admin/skills/ghost/history")
+        assert r.status_code == 404
+        r = await client.post(
+            "/v1/admin/skills/ghost/rollback", json={"sha": "f" * 40})
+        assert r.status_code == 404
+
+    async def test_history_empty_without_git(self, api_app, tmp_path, client):
+        """非 git 环境:history 空列表、rollback 400(reason=no-repo)——不抛。"""
+        _install_skills(api_app, tmp_path)
+        await client.post("/v1/admin/skills/draft", json=_draft_payload())
+        r = await client.get("/v1/admin/skills/recon-caliber/history")
+        assert r.status_code == 200
+        assert r.json()["history"] == []
+        r = await client.post(
+            "/v1/admin/skills/recon-caliber/rollback", json={"sha": "f" * 40})
+        assert r.status_code == 400
+        assert r.json()["detail"]["reason"] == "no-repo"

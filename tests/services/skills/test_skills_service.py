@@ -774,15 +774,22 @@ def test_create_accepts_the_api_payload_field_set(tmp_path):
     assert entry["lang"] == "zh" and entry["triggers"]["node"] == "query_sketch"
 
 
-def test_create_version_starts_at_one_and_survives_rewrites(tmp_path):
-    """version:create 初始 1;confirm / set_tier 的整篇重 dump 原样保留。"""
+def test_create_version_starts_at_one_and_increments_on_rewrites(tmp_path):
+    """version 是**修订计数**:create 初始 1,此后每次内容变更 +1。
+
+    P0 的旧语义是"confirm / set_tier 的整篇重 dump 原样保留"——版本号在两次
+    真实变更之间动都不动,"回滚到 v1"与"覆盖前那份"因此无法区分。改为修订
+    计数后(本次升级):confirm=2、set_tier=3、正文重写=4。读路径宽容不变
+    (遗留文件/非整数读作 1,见下面两条用例)。"""
     svc = SkillService(tmp_path)
     entry = svc.create({"name": "ver", "description": "d", "body": "b"})
     assert entry["version"] == 1
     assert "version: 1" in svc.skill_path("ver").read_text(encoding="utf-8")
-    assert svc.confirm("ver")["version"] == 1
-    svc.set_tier("ver", "required")
-    assert svc.read_skill("ver")["version"] == 1
+    assert svc.confirm("ver")["version"] == 2
+    assert svc.set_tier("ver", "required")["version"] == 3
+    assert svc.update_body("ver", "新正文")["version"] == 4
+    text = svc.skill_path("ver").read_text(encoding="utf-8")
+    assert "version: 4" in text and "新正文" in text
 
 
 def test_legacy_frontmatter_with_unknown_keys_stays_readable(tmp_path):

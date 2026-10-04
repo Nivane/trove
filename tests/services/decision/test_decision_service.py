@@ -522,3 +522,45 @@ class TestAnalysisBridgeSeam:
         assert analysis["top_components"] == []
         assert analysis["degraded"][0]["stage"] == "analysis_bridge"
         assert "bridge exploded" in analysis["degraded"][0]["reason"]
+
+
+class TestOrgExtensionsSwitch:
+    """``agent.extensions.org_extensions_enabled`` 的决策面 —— 停用必须**响**。
+
+    一条停用中的定时决策任务若静默按"零规则通过"返回,与健康运行从外部看
+    没有区别(模块 docstring「失败必响」的同一条纪律)。开关**现读**:同一个
+    ``DecisionService`` 实例上翻开关即时生效,不重建 —— 管理端 PUT 改的就是
+    这个活对象。
+    """
+
+    async def test_disabled_raises_and_evaluate_folds_to_error(self, svc):
+        from trove.core.config import AgentConfig
+        from trove.services.decision.service import DecisionError
+
+        cfg = AgentConfig(target="mock/model")
+        cfg.extensions.org_extensions_enabled = False
+        svc.config = cfg
+
+        with pytest.raises(DecisionError, match="已停用"):
+            await svc.evaluate_rule(rule(), "demo", NOW)
+
+        out = await svc.evaluate(rule(), "demo", NOW)   # 折成 error,不上抛
+        assert out.triggered is False
+        assert out.message == ""
+        assert "org_extensions_enabled" in out.error
+        assert "已停用" in out.error
+        # 证据仍记 provenance:「哪一版规则没被判」是 error 第一个问题。
+        assert out.evidence["provenance"] == {"datasource": "demo"}
+
+    async def test_switch_is_read_live_no_rebuild(self, svc):
+        from trove.core.config import AgentConfig
+
+        cfg = AgentConfig(target="mock/model")
+        cfg.extensions.org_extensions_enabled = False
+        svc.config = cfg
+        assert (await svc.evaluate(rule(), "demo", NOW)).error
+
+        cfg.extensions.org_extensions_enabled = True    # 现场翻回,不重建
+        out = await svc.evaluate(rule(), "demo", NOW)
+        assert out.error == ""
+        assert out.triggered is True                    # 华东 -20% 照常命中

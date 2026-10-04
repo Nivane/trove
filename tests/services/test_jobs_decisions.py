@@ -509,6 +509,34 @@ class TestErrorsAreLoud:
         assert summary["alert"] == ""
         assert summary["alert_sent"] is False
 
+    async def test_disabled_org_extensions_are_a_loud_error(self, svc):
+        """总开关停用 → 定时决策任务必须报「已停用」,绝不静默按零规则
+        通过 —— 静默的绿色 run 与健康运行从外部看没有区别。这里用**真的**
+        DecisionService(带停用开关),只有 kb 是替身。"""
+        from trove.core.config import AgentConfig
+        from trove.services.decision.service import DecisionService
+
+        cfg = AgentConfig(target="mock/model")
+        cfg.extensions.org_extensions_enabled = False
+        decision = DecisionService(None, FakeKb(), config=cfg)
+        job = await _job(svc)
+        before = job.next_run_at
+        runner = SchedulerRunner(FakeSessionManager(), svc, decision=decision)
+
+        summary = await runner.run_job(job, NOW)
+
+        assert summary["status"] == "error"
+        assert "已停用" in summary["error"]
+        assert "org_extensions_enabled" in summary["error"]
+        assert summary["alert"] == ""
+        assert summary["alert_sent"] is False
+
+        runs = await svc.store.list_runs(job.id)
+        assert runs[0]["status"] == "error"
+        # 调度照常前进(停用不是把 job 卡死;恢复开关后下一 tick 即恢复)。
+        reloaded = await svc.get_job(job.id)
+        assert reloaded.next_run_at != before
+
     async def test_no_trigger_records_ok(self, svc):
         job = await _job(svc)
         runner = SchedulerRunner(FakeSessionManager(), svc, decision=FakeDecision(
