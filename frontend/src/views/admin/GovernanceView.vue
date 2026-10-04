@@ -36,7 +36,8 @@ import RollbackDialog from '../../components/governance/RollbackDialog.vue'
 import LineagePanel from '../../components/governance/LineagePanel.vue'
 import TableDetailDrawer from '../../components/governance/TableDetailDrawer.vue'
 import { useListQuery } from '../../composables/useListQuery'
-import { apiGet } from '../../api/http'
+import { apiGet, apiPut } from '../../api/http'
+import { notifySuccess, toastError } from '../../utils/notify'
 import { useReadOnly } from '../../composables/useReadOnly'
 import { fetchOverview } from '../../api/overview'
 import {
@@ -140,6 +141,50 @@ const TABS: { key: GovernanceTab; label: Parameters<typeof t>[0] }[] = [
 
 /* 治理地图:默认展开(§2.2 它是第一屏),可收起。 */
 const mapOpen = ref(true)
+
+/* ── 扩展面总开关(org 扩展的启停)──────────────────────────
+   开关本身住在系统设置(/v1/admin/settings),这里是第二个入口 ——
+   治理中心必须看得见「哪些治理动作已经不生效」。三条纪律:
+
+     · 只停 org 扩展:org skills 注入与 load_skill 广告、validator
+       断言、决策规则执行;code skills / KB / few-shot 不动;
+     · 开关每问现读 —— 保存成功即下一问生效,无需重启;
+     · 诚实三态:null = 未取到(开关渲染 disabled、提示条不出现),
+       绝不把「不知道」画成「已启用」(与 §6 同一条纪律)。 */
+
+const orgEnabled = ref<boolean | null>(null)
+const extBusy = ref(false)
+
+async function loadOrgSwitch() {
+  if (readOnly.value) return // 设置端点 admin-only;只读角色的治理中心不含开关
+  try {
+    const body = await apiGet<{ values: Record<string, unknown> }>('/v1/admin/settings')
+    const v = body.values?.['extensions.org_extensions_enabled']
+    orgEnabled.value = typeof v === 'boolean' ? v : null
+  } catch {
+    orgEnabled.value = null // 未取到 ≠ 已启用
+  }
+}
+
+async function setOrgEnabled(next: boolean | string | number) {
+  const want = Boolean(next)
+  const prev = orgEnabled.value
+  orgEnabled.value = want // 乐观:开关立刻响应用户;失败再回退
+  extBusy.value = true
+  try {
+    const body = await apiPut<{ values: Record<string, unknown> }>('/v1/admin/settings', {
+      values: { 'extensions.org_extensions_enabled': want },
+    })
+    const v = body.values?.['extensions.org_extensions_enabled']
+    orgEnabled.value = typeof v === 'boolean' ? v : want
+    notifySuccess(t('govExtSaved', ui.lang))
+  } catch (e) {
+    orgEnabled.value = prev
+    toastError(e)
+  } finally {
+    extBusy.value = false
+  }
+}
 
 /* ── 数据源清单(各 Tab 共用)────────────────────────────── */
 
@@ -877,10 +922,12 @@ watch(dsNames, () => {
 
 void loadDatasources()
 void loadOverview()
+void loadOrgSwitch()
 
 function reload() {
   void loadDatasources()
   void loadOverview()
+  void loadOrgSwitch()
   loadActive()
 }
 
@@ -924,6 +971,30 @@ const activeLoading = computed(
         <el-button :loading="activeLoading" @click="reload">{{ t('refresh', ui.lang) }}</el-button>
       </template>
     </PageHeader>
+
+    <!-- 扩展面总开关:停用只停 org 扩展(code skills / KB / few-shot 不动)。
+         只读角色看不见开关(设置端点 admin-only);未取到 → 开关 disabled,
+         提示条不出现 —— 不把「不知道」画成「已启用」。 -->
+    <section v-if="!readOnly" class="gov-extbar">
+      <div class="gov-ext-text">
+        <span class="gov-ext-label">{{ t('govExtTitle', ui.lang) }}</span>
+        <span class="gov-ext-hint">{{ t('govExtHint', ui.lang) }}</span>
+      </div>
+      <span class="gov-spacer" />
+      <span v-if="orgEnabled === null" class="gov-ext-unknown">
+        {{ t('govExtUnknown', ui.lang) }}
+      </span>
+      <el-switch
+        class="gov-ext-switch"
+        :model-value="orgEnabled === true"
+        :disabled="orgEnabled === null || extBusy"
+        :loading="extBusy"
+        @update:model-value="setOrgEnabled"
+      />
+    </section>
+    <p v-if="orgEnabled === false" class="gov-ext-off" role="alert">
+      {{ t('govExtDisabledNotice', ui.lang) }}
+    </p>
 
     <GovernanceMap v-if="mapOpen" />
 
@@ -1373,6 +1444,43 @@ const activeLoading = computed(
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+
+.gov-extbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-raised);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+.gov-ext-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gov-ext-label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.gov-ext-hint {
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+}
+.gov-ext-unknown {
+  font-size: var(--fs-2xs);
+  color: var(--warn-text, var(--text-tertiary));
+}
+.gov-ext-off {
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--warn-border, var(--border-default));
+  border-radius: var(--r-md);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  color: var(--warn-text, var(--text-secondary));
 }
 
 .gov-filters {

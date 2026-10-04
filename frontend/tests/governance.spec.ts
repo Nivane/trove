@@ -48,7 +48,7 @@ vi.mock('../src/api/http', () => ({
   },
 }))
 
-import { ApiError, apiFetch, apiGet, apiPost } from '../src/api/http'
+import { ApiError, apiFetch, apiGet, apiPost, apiPut } from '../src/api/http'
 import { messages, t } from '../src/i18n'
 import { useAuthStore } from '../src/stores/auth'
 import { useUiStore } from '../src/stores/ui'
@@ -231,6 +231,9 @@ let searchRoute: Resp
 let catalogRoute: Resp
 let lineageRoute: Resp
 let rollbackCalls: string[]
+/** /v1/admin/settings —— 扩展面总开关的宿主(响应值与落库值同源)。 */
+let settingsRoute: Resp
+let settingsPuts: Record<string, unknown>[]
 
 function response(r: Resp) {
   return {
@@ -249,6 +252,13 @@ function qs(url: string): URLSearchParams {
 async function apiGetImpl(url: string): Promise<unknown> {
   const u = String(url)
   if (u.includes('/v1/admin/overview')) return overview()
+  if (u.includes('/v1/admin/settings')) {
+    // 真实 apiGet 对非 2xx 抛错 —— 开关的「未取到」分支靠它触达。
+    if (settingsRoute.status >= 400) {
+      throw new ApiError(settingsRoute.status, 'settings unavailable')
+    }
+    return settingsRoute.body
+  }
   if (u.includes('/v1/admin/datasources')) {
     return {
       datasources: [
@@ -292,6 +302,19 @@ async function apiPostImpl(url: string, body: Record<string, unknown>): Promise<
     return { ok: true }
   }
   if (u.includes('/v1/kb/lessons/reject-one')) return { ok: true }
+  return { ok: true }
+}
+
+async function apiPutImpl(url: string, body: Record<string, unknown>): Promise<unknown> {
+  const u = String(url)
+  if (u.includes('/v1/admin/settings')) {
+    const values = (body as { values?: Record<string, unknown> }).values ?? {}
+    settingsPuts.push(values)
+    // 落库即生效:响应回读的就是这一次写入后的值(PUT 语义)。
+    const prev = (settingsRoute.body as { values: Record<string, unknown> }).values
+    settingsRoute = { status: 200, body: { values: { ...prev, ...values } } }
+    return settingsRoute.body
+  }
   return { ok: true }
 }
 
@@ -361,8 +384,14 @@ beforeEach(() => {
     },
   }
   rollbackCalls = []
+  settingsRoute = {
+    status: 200,
+    body: { values: { 'extensions.org_extensions_enabled': true } },
+  }
+  settingsPuts = []
   ;(apiGet as unknown as ReturnType<typeof vi.fn>).mockImplementation(apiGetImpl)
   ;(apiPost as unknown as ReturnType<typeof vi.fn>).mockImplementation(apiPostImpl)
+  ;(apiPut as unknown as ReturnType<typeof vi.fn>).mockImplementation(apiPutImpl)
   // fetchOverview 与漂移检测走 apiFetch(不是 apiGet)。
   ;(apiFetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (url: string) => {
     const u = String(url)
@@ -756,6 +785,67 @@ describe('kpi row', () => {
     expect(byLabel(tr('govKindSemanticDraft'))).toContain(tr('govAtLeast', 2))
     expect(byLabel(tr('govKindSkillDraft'))).toContain('0')
     expect(byLabel(tr('govKpiTotal'))).toContain(tr('govAtLeast', 5))
+  })
+})
+
+describe('org extensions switch', () => {
+  it('reflects the server state, flips it with one PUT, and raises the disabled notice', async () => {
+    const view = await mountView('/admin/governance?tab=inbox')
+    expect(view.find('.gov-ext-switch').classes()).toContain('is-checked')
+    expect(document.body.querySelector('.gov-ext-off')).toBeNull()
+
+    await view.find('.gov-ext-switch').trigger('click')
+    await settle()
+
+    expect(settingsPuts).toEqual([{ 'extensions.org_extensions_enabled': false }])
+    // 开关当场翻面 + 停用提示条出现 —— 治理中心看得见「哪些动作已不生效」。
+    expect(view.find('.gov-ext-switch').classes()).not.toContain('is-checked')
+    expect(document.body.querySelector('.gov-ext-off')?.textContent).toContain(
+      tr('govExtDisabledNotice'),
+    )
+
+    await view.find('.gov-ext-switch').trigger('click')
+    await settle()
+    expect(settingsPuts).toEqual([
+      { 'extensions.org_extensions_enabled': false },
+      { 'extensions.org_extensions_enabled': true },
+    ])
+    expect(document.body.querySelector('.gov-ext-off')).toBeNull()
+  })
+
+  it('renders an unfetched state as a disabled switch + 未取到 — never as enabled', async () => {
+    settingsRoute = { status: 500, body: { detail: 'boom' } }
+    const view = await mountView('/admin/governance?tab=inbox')
+
+    expect(view.find('.gov-ext-switch').classes()).toContain('is-disabled')
+    expect(view.find('.gov-ext-switch').classes()).not.toContain('is-checked')
+    expect(view.find('.gov-ext-unknown').text()).toBe(tr('govExtUnknown'))
+    expect(document.body.querySelector('.gov-ext-off')).toBeNull()
+    expect(settingsPuts).toEqual([])
+  })
+
+  it('reverts the switch when the PUT fails (no optimistic lie left behind)', async () => {
+    const view = await mountView('/admin/governance?tab=inbox')
+    ;(apiPut as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'unknown setting'),
+    )
+
+    await view.find('.gov-ext-switch').trigger('click')
+    await settle()
+
+    expect(view.find('.gov-ext-switch').classes()).toContain('is-checked') // 回退到真值
+    expect(document.body.querySelector('.gov-ext-off')).toBeNull()
+  })
+
+  it('hides the switch from read-only roles and never probes the admin-only endpoint', async () => {
+    useAuthStore().user = { id: 2, username: 'analyst', role: 'analyst' }
+    const view = await mountView('/admin/governance?tab=inbox')
+
+    expect(view.find('.gov-extbar').exists()).toBe(false)
+    const settingsCalls = (apiGet as unknown as ReturnType<typeof vi.fn>).mock.calls.filter((c) =>
+      String(c[0]).includes('/v1/admin/settings'),
+    )
+    expect(settingsCalls).toEqual([]) // 不去撞 403
   })
 })
 
