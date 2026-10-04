@@ -19,6 +19,12 @@ function cssVar(name: string, fallback: string): string {
   return v || fallback
 }
 
+/** 同 cssVar，但把「13px」解析成 13 —— ECharts 的 fontSize 只吃数字。 */
+function cssVarPx(name: string, fallback: number): number {
+  const n = Number.parseFloat(cssVar(name, ''))
+  return Number.isFinite(n) ? n : fallback
+}
+
 /** A secondary palette for multi-series / pie slices (readable on both themes). */
 export const CHART_PALETTE = [
   '#818cf8', // indigo
@@ -87,7 +93,7 @@ export function chartChrome(base: Partial<Record<string, unknown>> = {}) {
       borderColor: t.border,
       borderWidth: 1,
       padding: [10, 12],
-      textStyle: { color: t.text, fontSize: 13 },
+      textStyle: { color: t.text, fontSize: cssVarPx('--fs-xs', 13) },
       extraCssText:
         'border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,.12);',
     },
@@ -119,7 +125,11 @@ export function applyChartTheme(
   const axisChrome = {
     axisLine: { lineStyle: { color: t.border } },
     axisTick: { show: false },
-    axisLabel: { color: t.secondary, fontSize: 12, fontFamily: t.fontFamily },
+    axisLabel: {
+      color: t.secondary,
+      fontSize: cssVarPx('--fs-2xs', 12),
+      fontFamily: t.fontFamily,
+    },
     splitLine: { lineStyle: { color: t.border, opacity: 0.6 } },
   }
   const mergeAxis = (axis: unknown) =>
@@ -143,7 +153,7 @@ export function applyChartTheme(
       left: 0,
       top: 0,
       textStyle: {
-        fontSize: 14,
+        fontSize: cssVarPx('--fs-sm', 14),
         fontWeight: 600,
         color: t.text,
         fontFamily: t.fontFamily,
@@ -156,7 +166,11 @@ export function applyChartTheme(
       ...(opt.legend as object),
       right: 0,
       top: 0,
-      textStyle: { color: t.secondary, fontFamily: t.fontFamily },
+      textStyle: {
+        color: t.secondary,
+        fontSize: cssVarPx('--fs-2xs', 12),
+        fontFamily: t.fontFamily,
+      },
       icon: 'roundRect',
       itemWidth: 12,
       itemHeight: 4,

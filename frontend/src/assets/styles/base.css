@@ -1023,7 +1023,7 @@ button:disabled {
   background: color-mix(in srgb, var(--warn) 10%, var(--surface-raised));
   color: var(--warn);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 .answer-meta {
   display: flex;
@@ -1040,7 +1040,7 @@ button:disabled {
   background: var(--surface-muted);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 .assistant-turn:hover .rating-row,
 .assistant-turn:focus-within .rating-row {
@@ -1052,7 +1052,7 @@ button:disabled {
   border-radius: 0;
   padding: var(--sp-1) 0;
   font-size: var(--fs-base);
-  line-height: 1.65;
+  line-height: var(--lh-relaxed);
 }
 
 /* ── Streaming caret ────────────────────────────────── */
@@ -1208,7 +1208,7 @@ button:disabled {
   margin-top: var(--sp-1);
   font-size: var(--fs-xs);
   color: var(--text-secondary);
-  line-height: 1.5;
+  line-height: var(--lh-normal);
 }
 .status-ok-icon {
   color: var(--ok);
@@ -1446,13 +1446,13 @@ button:disabled {
   background: var(--surface-muted);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   white-space: nowrap;
 }
 /* 标识符(表名/字段名/规则号)才穿等宽字体 */
 .chip-id {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
 }
 .chip-term {
   color: var(--accent);
@@ -1494,7 +1494,7 @@ button:disabled {
   color: var(--text-secondary);
   background: var(--surface-raised);
   border-color: var(--border-strong);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   cursor: help;
   margin-left: var(--sp-1);
 }
@@ -1502,13 +1502,13 @@ button:disabled {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: transparent;
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   cursor: help;
   margin-left: var(--sp-1);
 }
 .chip-src {
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   cursor: help;
 }
 .ver-list {
@@ -1542,8 +1542,8 @@ button:disabled {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-normal);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 240px;
@@ -1552,7 +1552,7 @@ button:disabled {
 
 .code-block {
   font-family: var(--font-mono);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   background: var(--surface-muted);
   padding: var(--sp-3);
   border-radius: var(--r-md);
@@ -1725,7 +1725,7 @@ button:disabled {
   background: none;
   border: none;
   padding: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
 }
 .markdown-body a {
   color: var(--accent);
@@ -1820,14 +1820,14 @@ button:disabled {
 .error-text {
   margin: var(--sp-2) 0 0;
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: var(--lh-relaxed);
 }
 .error-hint {
   margin: var(--sp-2) 0 0;
   padding-left: var(--sp-3);
   border-left: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
-  line-height: 1.6;
+  line-height: var(--lh-relaxed);
 }
 .error-detail {
   margin-top: var(--sp-3);
@@ -2001,7 +2001,7 @@ button:disabled {
   font-size: var(--fs-base);
   max-height: 200px;
   min-height: 28px;
-  line-height: 1.5;
+  line-height: var(--lh-normal);
   padding: 10px 4px;
   caret-color: var(--accent);
 }
@@ -2577,7 +2577,7 @@ button:disabled {
   gap: var(--sp-1);
 }
 .sort-arrow {
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   color: var(--accent);
 }
 .data-table tfoot td {
@@ -2705,7 +2705,7 @@ button:disabled {
   border: 1px solid var(--border-subtle);
   background: var(--surface-muted);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   font-family: var(--font-mono);
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s;

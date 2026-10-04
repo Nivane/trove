@@ -323,11 +323,11 @@ onMounted(async () => {
   padding: var(--sp-3) var(--sp-5) var(--sp-3) calc(var(--sp-5) + 18px);
 }
 .decisions-issues li {
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   color: var(--el-color-warning);
 }
 .cond {
-  font-size: 12px;
+  font-size: var(--fs-2xs);
 }
 .decisions-latest {
   display: flex;
@@ -336,13 +336,13 @@ onMounted(async () => {
 }
 .decisions-yaml :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   line-height: 1.5;
 }
 .decisions-error {
   margin-top: 8px;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   color: var(--el-color-danger);
   background: var(--el-color-danger-light-9);
   border-radius: 4px;

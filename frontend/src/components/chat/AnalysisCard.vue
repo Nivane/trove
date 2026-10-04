@@ -354,11 +354,11 @@ function resize() {
 }
 .ana-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-sm);
   color: var(--text-primary);
 }
 .ana-chip {
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--surface-muted);
@@ -377,17 +377,17 @@ function resize() {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
 }
 .ana-headline-v {
-  font-size: 20px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   color: var(--text-primary);
 }
 .ana-headline-dim {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
 }
 .up {
   color: var(--ok);
@@ -403,7 +403,7 @@ function resize() {
   display: flex;
   gap: 18px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--fs-xs);
 }
 .ana-effect-k {
   color: var(--text-secondary);
@@ -412,13 +412,13 @@ function resize() {
 .ana-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 .ana-table th {
   text-align: left;
   font-weight: 500;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--fs-xs);
   padding: 4px 8px;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -433,10 +433,10 @@ function resize() {
 }
 .ana-note {
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--fs-2xs);
 }
 .ana-subtitle {
-  font-size: 13px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 6px;
@@ -446,7 +446,7 @@ function resize() {
   border: none;
   padding: 0;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
   display: flex;
   align-items: center;
@@ -462,7 +462,7 @@ function resize() {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-2xs);
   color: var(--text-secondary);
   margin-bottom: 4px;
 }
