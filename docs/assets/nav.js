@@ -51,7 +51,8 @@
       group: "架构",
       items: [
         { href: "architecture/overview.html", text: "系统架构" },
-        { href: "architecture/workflow.html", text: "查询工作流" }
+        { href: "architecture/workflow.html", text: "查询工作流" },
+        { href: "architecture/functional.html", text: "功能架构" }
       ]
     },
     {

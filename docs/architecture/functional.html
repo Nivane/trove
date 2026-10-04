@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 功能架构：两个界面对三种角色的功能投放、问数·分析·决策·行动四段链路与横向支撑层的功能分解、产物在功能之间的流动，以及刻意不做的边界。">
+<title>功能架构 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>架构<span class="sep">/</span>功能架构
+      </div>
+      <h1>功能架构</h1>
+      <p class="lede">
+        这一页讲 Trove 的<strong>功能与边界</strong>：产品有哪些功能块、分给谁用、
+        怎么串成一条链路、哪些事刻意不做。代码怎么分层在<a href="overview.html">系统架构</a>，
+        一次提问经过了哪些节点在<a href="workflow.html">查询工作流</a>——
+        本页不重复机制细节，只把功能说全、把边界划清。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="consoles">两个界面，三种角色</h2>
+
+    <p>
+      Trove 对外只有两个界面：<strong>用户端</strong>（提问与读答案）与
+      <strong>管理台</strong>（治理与运营）。功能按角色投放——
+      用户看到的数据源也已被两层授权筛过（数据源授权 + 主题域授权），
+      只有「已连接且知识库已初始化」的数据源才可能出现。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">能力的投放方式：挂载，而不是拦截</span>
+      <div>
+        <p>管理台入口、生成时的 schema 枚举工具，都是<b>按角色与档位挂载</b>的：不具备就不出现，而不是出现了再被拦回来。服务端接口另有自己的鉴权（fail-closed）——两道门各自成立。</p>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>角色</th><th>在哪工作</th><th>能做什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>普通用户</strong></td>
+            <td>用户端</td>
+            <td>提问；读答案的每一块（结论 / 结果表 / 图表 / 依据抽屉 / 归因分析卡）；会话管理与反馈；切换主题域</td>
+          </tr>
+          <tr>
+            <td><strong>分析员</strong></td>
+            <td>用户端 + 管理台（只读）</td>
+            <td>普通用户的全部；管理台只读浏览（数据源、知识库、语义层、判定历史等）；生成时可用 schema 枚举工具（值确认 / 结构懒加载 / 执行计划）。不能改任何治理内容</td>
+          </tr>
+          <tr>
+            <td><strong>管理员</strong></td>
+            <td>管理台</td>
+            <td>数据源注册、知识库初始化 / 学习与确认、语义模型编辑与版本回滚、判定规则、订阅与定时任务、行动审批、Skills、记忆确认、主题域与授权、审计、系统设置与模型配置</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="map">功能块：四段链路，一层支撑</h2>
+
+    <p>
+      首页把 Trove 概括为一条链路——<strong>问数 · 分析 · 决策 · 行动</strong>。
+      落到功能上，每一段都有用户端形态与管理端配套。图 1 是功能分解（不是调用图）：
+      四段链路在上，一层横向支撑在下——支撑层不对应某一个环节，
+      而是所有环节共用的治理与沉淀。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    subgraph chain["链路：问数 · 分析 · 决策 · 行动（终点在系统外）"]
+        direction LR
+        Q["问数&lt;br/&gt;提问 → 可核对的答案&lt;br/&gt;门禁 · 生成 · 校验 · 澄清"]
+        A["分析&lt;br/&gt;问「为什么」&lt;br/&gt;归因卡 · 来源四档"]
+        D["决策&lt;br/&gt;算不算有问题&lt;br/&gt;规则 · 历史 · 订阅"]
+        ACT["行动&lt;br/&gt;停在一份提案&lt;br/&gt;审批 · 拉通道 · 回执"]
+        EXT["外部系统&lt;br/&gt;（执行与后果）"]
+        Q --&gt; A
+        A --&gt; D
+        D --&gt; ACT
+        ACT -.-&gt;|回执对账| D
+        ACT -.-&gt;|交付 / 回执| EXT
+    end
+    SUP["横向支撑（所有环节共用）&lt;br/&gt;知识库 · 语义模型 · 记忆 · Skills&lt;br/&gt;主题域 · 权限 · 审计 · 令牌&lt;br/&gt;人工确认的闸门贯穿全部"]
+    %% 带间不连线：跨带边会让带内 direction LR 失效（mermaid v11），支撑层用单节点绕开
+    chain ~~~ SUP
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 上带是四段链路（首页口径）：问数 → 分析 → 决策 → 行动，终点在外部系统；下方一块是贯穿所有环节的横向支撑。虚线是交付与回执。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <h3 id="chain">四段链路</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>段</th><th>功能块</th><th>界面</th><th>一分钟说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td rowspan="5"><strong>问<br>数</strong></td>
+            <td>对话问答</td>
+            <td>用户端</td>
+            <td>全管线：意图分流 → 生成与自校验 → 规则链校验 → 人话解释 + 依据抽屉（机制见<a href="workflow.html">查询工作流</a>）</td>
+          </tr>
+          <tr>
+            <td>可答边界</td>
+            <td>用户端 / 管理端</td>
+            <td>超出语义模型的声明范围时：结构性缺口（<strong>硬 MISS</strong>）拒绝并给扩展引导；词表 / 值 / 口径未声明（<strong>软 MISS</strong>）产出骨架照常作答，未解析部分由生成补齐</td>
+          </tr>
+          <tr>
+            <td>模型扩展确认</td>
+            <td>管理端</td>
+            <td>被拒不是终点：LLM 草拟扩展（术语 / 枚举 / 口径）→ 管理员确认 → 自动重答原问</td>
+          </tr>
+          <tr>
+            <td>元数据问答</td>
+            <td>用户端</td>
+            <td>「有哪些表 / 某字段是什么意思」走独立的解释与自校验回路</td>
+          </tr>
+          <tr>
+            <td>澄清纠错</td>
+            <td>用户端</td>
+            <td>指代不明先反问（可选档）；纠错题在上一问的结果上直接出新答案</td>
+          </tr>
+          <tr>
+            <td rowspan="2"><strong>分<br>析</strong></td>
+            <td><a href="../user/ask.html#attribution">归因分析卡</a></td>
+            <td>用户端</td>
+            <td>问「为什么」时多出的卡：总变化按已声明度量拆到主维度（瀑布图 + 维度贡献表 + 基期口径），附本次证据查询清单；不成时整卡不出现，绝不改变答案本身</td>
+          </tr>
+          <tr>
+            <td><a href="../user/ask.html#analysis">分析面板 · 来源</a></td>
+            <td>用户端</td>
+            <td>答案旁可看它怎么一步步算出来；每条 SQL 标注四档来源之一——已认证复用 / 知识库复用 / 语义编译 / 模型生成</td>
+          </tr>
+          <tr>
+            <td rowspan="4"><strong>决<br>策</strong></td>
+            <td><a href="../capabilities/decisions.html">判定规则</a></td>
+            <td>管理端</td>
+            <td>阈值规则声明在语义模型自己的词汇上（与语义查询同一个形状）；确定性引擎求值，零 LLM</td>
+          </tr>
+          <tr>
+            <td>判定历史</td>
+            <td>管理端</td>
+            <td>每次触发留下版本、相邻两次对照；每条判定带 SQL 与原始行——证据可回放</td>
+          </tr>
+          <tr>
+            <td><a href="../admin/automation.html#subs">报告订阅</a></td>
+            <td>管理端</td>
+            <td>按主题域订阅，结果主动找到人</td>
+          </tr>
+          <tr>
+            <td><a href="../admin/automation.html#jobs">定时任务</a></td>
+            <td>管理端</td>
+            <td>判定 / 订阅 / 问数统一调度；不可求值的规则以错误上报，不静默</td>
+          </tr>
+          <tr>
+            <td rowspan="3"><strong>行<br>动</strong></td>
+            <td><a href="../capabilities/actions.html#lifecycle">行动提案</a></td>
+            <td>管理端</td>
+            <td>判定触发即生成提案：载荷创建即定稿、同一触发只提案一次</td>
+          </tr>
+          <tr>
+            <td>审批与总闸</td>
+            <td>管理端</td>
+            <td>两道门加一个总闸；谁批的、何时发的全程留痕</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/actions.html#pull">拉通道交付</a></td>
+            <td>外部系统</td>
+            <td>webhook 与 MCP 并列；对方回执回来对账</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 id="support">横向支撑层</h3>
+
+    <p>
+      支撑层是功能「用起来之后变准」的地方——它不直接回答问题，
+      但决定了下次回答的依据从哪来、谁说了算。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>功能块</th><th>谁在用</th><th>一句话</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="../capabilities/kb.html">知识库</a></td>
+            <td>管理员（+ 自动草案）</td>
+            <td>五个 YAML 按「谁能写」分工；自动写入一律 pending，管理员确认后才进检索</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/semantic.html">语义模型</a></td>
+            <td>管理员</td>
+            <td>可答边界的唯一声明处：初始化起草、可视化编辑、版本历史与回滚</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/memory.html">记忆</a></td>
+            <td>自动 + 管理员确认</td>
+            <td>情节记忆（问过什么）自动可用；偏好与晋升先落草案，确认才生效（晋升默认关）</td>
+          </tr>
+          <tr>
+            <td><a href="../capabilities/skills.html">Skills</a></td>
+            <td>管理员</td>
+            <td>组织方法论（区别于数据源事实）：三档——整段注入、按需加载、只断言不注入</td>
+          </tr>
+          <tr>
+            <td><a href="../admin/access.html">主题域 · 权限 · 审计</a></td>
+            <td>管理员</td>
+            <td>给问题划范围 + 第二层授权收窄（不可见即不存在）；角色授权、审计日志、API 令牌</td>
+          </tr>
+          <tr>
+            <td><a href="../admin/console.html">质量与成本运营台</a></td>
+            <td>管理员</td>
+            <td>评测对比与回归门：答得对不对、花得值不值摊开成一页</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/memory/service.py#L41">service.py:41 <span class="ref-line">MemoryService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L77">service.py:77 <span class="ref-line">_TIERS</span></a>
+    </p>
+
+    <h2 id="flow">产物链：谁产生，谁消费</h2>
+
+    <p>
+      把上图拆散看，功能之间真正流动的是<strong>产物</strong>——
+      这也决定了「用起来会变准」具体是怎么发生的：每一次问答与判定都在留下
+      下一次要用的东西，而自动留下的部分必须过确认门。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>产物</th><th>谁产生</th><th>谁消费</th><th>落在哪</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>答案卡（结论 / SQL / 证据）</td>
+            <td>问数管线</td>
+            <td>提问者；依据抽屉随时复查</td>
+            <td>会话记录</td>
+          </tr>
+          <tr>
+            <td>归因卡</td>
+            <td>独立的只读分析</td>
+            <td>提问者</td>
+            <td>会话记录（不成时不出现）</td>
+          </tr>
+          <tr>
+            <td>情节记忆</td>
+            <td>每次问答自动写回（事实记录）</td>
+            <td>下一次生成：成功 SQL 当锚点、失败与纠正当反例</td>
+            <td>本机记忆库</td>
+          </tr>
+          <tr>
+            <td>待确认草案（示例 / 教训 / 偏好）</td>
+            <td>自动沉淀</td>
+            <td>管理员确认</td>
+            <td>知识库的 pending 区 → 确认后进检索</td>
+          </tr>
+          <tr>
+            <td>判定（verdict + 证据）</td>
+            <td>定时判定引擎</td>
+            <td>判定历史、订阅推送、行动提案</td>
+            <td>判定运行记录</td>
+          </tr>
+          <tr>
+            <td>行动提案</td>
+            <td>判定触发</td>
+            <td>管理员审批</td>
+            <td>提案台</td>
+          </tr>
+          <tr>
+            <td>交付与回执</td>
+            <td>审批通过后的拉通道</td>
+            <td>外部系统；回执回来对账</td>
+            <td>审计轨迹</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      这条链上有一条贯穿的分工：<strong>凡是「算不算、对不对、变没变好」的判断
+      都交给确定性代码</strong>——门禁判定、编译器、结果规则链、版本比对、
+      判定引擎、审批留痕，全是零 LLM；LLM 只负责理解与表达。所以「行动」才可能
+      停在一份可审计的提案上，而不是一个不可解释的自主执行。
+    </p>
+
+    <p>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L134">service.py:134 <span class="ref-line">DecisionService</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/expr.py#L495">expr.py:495 <span class="ref-line">parse_condition</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L63">service.py:63 <span class="ref-line">ActionService</span></a>
+    </p>
+
+    <h2 id="boundaries">边界：刻意不做的事</h2>
+
+    <p>
+      下面这些不是待办清单，是产品口径的一部分——
+      写出来，才不会在演示时被过度承诺。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>不做的事</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>不由 Trove 执行行动</td>
+            <td>系统只到「提案 → 审批 → 交付 → 回执」；执行与后果在外部系统——<strong>行动在系统外</strong>是刻意边界，不是缺口</td>
+          </tr>
+          <tr>
+            <td>自动内容不直接进检索</td>
+            <td>记忆 / Skills / 教训的自动写入一律落 pending，晋升默认关——人工确认是知识库不被污染的闸门</td>
+          </tr>
+          <tr>
+            <td>未建模的数据源不开放问数</td>
+            <td>语义模型是可答边界的唯一声明处：接入即建模——先初始化知识库，再开放给用户</td>
+          </tr>
+          <tr>
+            <td>判定不做「AI 判断」</td>
+            <td>阈值规则声明式（无 eval 的闭集表达式）、三值逻辑、证据可回放；「判不了」绝不报成告警</td>
+          </tr>
+          <tr>
+            <td>人工环节默认拒绝</td>
+            <td>人工确认与行动审批的失败方向都是不放行——拿不准时宁可停在原地</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>代码怎么分层 / 一次提问的节点级机制</td><td><a href="overview.html">系统架构</a> / <a href="workflow.html">查询工作流</a></td></tr>
+          <tr><td>用户视角：怎么问、答案每一块怎么读</td><td><a href="../user/ask.html">提问与读懂答案</a></td></tr>
+          <tr><td>四段链路各自的机制细节</td><td><a href="../capabilities/data.html">数据能力总览</a> / <a href="../capabilities/agent.html">Agent 能力总览</a></td></tr>
+          <tr><td>判定、订阅与定时怎么配</td><td><a href="../admin/automation.html">自动化与治理</a></td></tr>
+          <tr><td>行动提案的完整生命周期</td><td><a href="../capabilities/actions.html">行动与审批</a></td></tr>
+          <tr><td>角色、授权与审计的口径</td><td><a href="../admin/access.html">用户·权限·安全</a></td></tr>
+          <tr><td>评测对比与回归门怎么跑</td><td><a href="../ops/eval.html">评测与回归门</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 0b8f140</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>
