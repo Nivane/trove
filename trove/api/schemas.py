@@ -584,3 +584,33 @@ class ActionDecision(BaseModel):
     """
 
     comment: str = ""
+
+
+class PresetApplyRequest(BaseModel):
+    """POST /v1/admin/presets/{name}/apply body — 套用到哪个数据源。
+
+    套用**只产 pending 草稿**(技能门 / 决策草稿 / 语义审批流),不写任何
+    生效文件;逐条确认后才生效。
+    """
+
+    datasource: str = Field(min_length=1)
+
+
+class PresetBody(BaseModel):
+    """PUT /v1/admin/presets/{name} body — 写入一份**组织** preset。
+
+    与决策文档同一手法:``preset`` 是结构化映射,``text`` 是原始 YAML;两者
+    恰好给一个。preset 的契约(闭键集/必填字段)由 ``services.presets``
+    拥有 —— 这里不镜像一份会漂移的副本,坏 body 的报错就是校验器自己的话。
+    """
+
+    preset: dict[str, Any] | None = None
+    text: str | None = None
+    message: str = ""
+
+
+class PresetRollbackRequest(BaseModel):
+    """POST /v1/admin/presets/{name}/rollback body(回滚 = 一次新的修订)。"""
+
+    sha: str = Field(min_length=1)
+    message: str = ""
