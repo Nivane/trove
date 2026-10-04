@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from trove.services.kb.lint import lint_semantics, lint_semantics_document
 from trove.services.kb.merge import merge3
 from trove.services.semantic_layer.models import SemanticModel

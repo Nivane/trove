@@ -625,7 +625,6 @@ async def test_fetch_proposal_returns_frozen_payload_and_trail(mcp_actions):
 async def test_fetch_and_ack_unknown_is_no_existence_oracle(mcp_actions):
     """「存在但你没授权」与「不存在」**同一句话** —— 否则错误文案本身
     就是一个存在性预言(拿它枚举别人的提案 id)。"""
-    from trove.mcp.server import build_mcp_server
 
     auth = _FakeAuth({1: ["test_db"]})
     p_other = await _seed_mcp_proposal(
@@ -652,8 +651,6 @@ async def test_fetch_and_ack_unknown_is_no_existence_oracle(mcp_actions):
 
 
 async def test_ack_marks_delivered_records_actor_and_is_idempotent(mcp_actions):
-    from trove.mcp.server import build_mcp_server
-
     p = await _seed_mcp_proposal(mcp_actions.service)
     await mcp_actions.service.approve(p.id, "admin")
     auth = _FakeAuth({1: ["test_db"]})

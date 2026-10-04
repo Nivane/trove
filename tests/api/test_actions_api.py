@@ -15,7 +15,6 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from trove.services.action.dispatcher import ActionDispatcher
 from trove.services.action.service import ActionService
