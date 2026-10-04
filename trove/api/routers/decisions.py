@@ -179,10 +179,10 @@ async def list_decisions(
             "referenced_by": await _referencing_jobs(request, datasource, rule.id),
             "latest_verdict": _verdict_brief(last) if last is not None else None,
         }
-        # Schema v3:与 ``rule_to_dict`` 同一序列化源 —— 未声明的规则响应
-        # 与历史逐字节一致(前端「拿不到不渲染」),声明了才多出对应块。
+        # Schema v3/v4:与 ``rule_to_dict`` 同一序列化源 —— 未声明的规则
+        # 响应与历史逐字节一致(前端「拿不到不渲染」),声明了才多出对应块。
         serialized = rule_to_dict(rule)
-        for key in ("seasonal", "significance"):
+        for key in ("seasonal", "significance", "causal"):
             if key in serialized:
                 entry[key] = serialized[key]
         rules.append(entry)

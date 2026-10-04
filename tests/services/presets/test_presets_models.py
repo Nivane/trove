@@ -104,6 +104,25 @@ class TestSectionSugar:
         with pytest.raises(PresetError):
             parse_preset({**MINIMAL, "decisions": [{"id": "x", "bands": {}}]})
 
+    def test_a_causal_rule_template_parses(self):
+        """决策模板键集与 ``rule_to_dict`` 同为 schema v4 —— 因果升级梯
+        模板(seasonal + causal)是合法骨架:方法论骨架正是 preset
+        该装的东西,而「不用因果就别写」由模板作者决定。"""
+        p = parse_preset({**MINIMAL, "decisions": [{
+            "id": "watch-causal", "window": "本月",
+            "subject": {"metrics": ["loan_balance"], "dimensions": [],
+                        "filters": [{"field": "loan.region", "op": "=",
+                                     "value": "华东"}]},
+            "baseline": {"kind": "prev_period"}, "scope": "aggregate",
+            "conditions": ["delta_pct < -0.1"],
+            "seasonal": {"lookback": 12},
+            "causal": {"mode": "auto",
+                       "control": {"dim": "region", "value": "华北"},
+                       "placebo_blocks": 4, "tolerance": 0.1},
+        }]})
+        assert p.decisions[0]["causal"]["control"] == {"dim": "region",
+                                                       "value": "华北"}
+
     def test_empty_reference_rejected(self):
         with pytest.raises(PresetError):
             parse_preset({**MINIMAL, "skills": ["  "]})

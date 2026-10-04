@@ -33,13 +33,16 @@ from typing import Any
 
 from trove.core.logging import get_logger
 from trove.services.analysis.engine import time_conds
+from trove.services.analysis.stats import MIN_BLOCKS
 from trove.services.decision.budget import DecisionBudget
+from trove.services.decision.causal import causal_line
 from trove.services.decision.expr import (
     DecisionExprError,
     as_number,
     condition_variables,
 )
 from trove.services.decision.rules import (
+    Causal,
     DecisionRule,
     RuleError,
     Seasonal,
@@ -457,6 +460,16 @@ class DecisionService:
                 time_field=str(cur_info.get("time_field") or ""))
             triggered = bool(triggered_dims)
 
+        # 因果升级梯(B3):显著性之后、桥之前。只在「声明了 causal 且
+        # 触发(含显著性门判定后的终态)」时跑。附录纪律:任何失败只
+        # 进 degraded/unmet,绝不上抛、绝不改 triggered(见 _causal_stage)。
+        causal = None
+        if self._needs_causal(rule, triggered):
+            causal = await self._causal_stage(
+                rule, datasource, dialect, cur_window, ledger=ledger,
+                matched=list(cur_info.get("datasets") or []),
+                time_field=str(cur_info.get("time_field") or ""))
+
         # 分析桥(补丁 1):只在触发时跑,未触发零成本。任何失败只进
         # evidence 的 degraded —— 判定已经判完,桥是附录不是前置。
         analysis = None
@@ -502,11 +515,16 @@ class DecisionService:
         }
         if analysis is not None:
             evidence["analysis"] = analysis
+        # 声明了对应块的规则才有这些节(未声明 → 响应逐字节与旧版相同):
+        # significance = 噪声带证据(含每维 band/z/confidence/gated 与
+        # 判不了的原因);causal = 升级梯证据(rung/unmet/assumptions/
+        # did/placebo/synthetic);budget = 本次判定的查询账目(限额/实花/
+        # 分阶段/让路)。
         if significance is not None:
-            # 声明了 significance 的规则才有这两节:significance = 噪声带
-            # 证据(含每维 band/z/confidence/gated 与判不了的原因),
-            # budget = 本次判定的查询账目(限额/实花/分阶段/让路)。
             evidence["significance"] = significance
+        if causal is not None:
+            evidence["causal"] = causal
+        if significance is not None or causal is not None:
             evidence["budget"] = ledger.snapshot()
         # rule_rev = 单条规则的内容版本(N2):rule_digest 是整份文件的
         # 字节 sha256,任何一条无关规则被编辑都会污染所有回评分桶。
@@ -516,11 +534,24 @@ class DecisionService:
 
         return DecisionOutcome(
             triggered=triggered,
-            message=self._summarize(rule, rows, triggered_dims) if triggered else "",
+            message=(self._summarize(rule, rows, triggered_dims,
+                                     net=causal_line(causal))
+                     if triggered else ""),
             rule_id=rule.id,
             severity=rule.severity,
             evidence=evidence,
         )
+
+    @staticmethod
+    def _needs_causal(rule: DecisionRule, triggered: bool) -> bool:
+        """因果阶段跑不跑 —— 声明即尝试,且只在触发后(未触发零成本)。
+
+        与显著性不同:条件词汇里没有「净效应」变量(因果**绝不参与
+        判定**,连读都不读),所以不存在「未触发也要跑」的情形 ——
+        附录只跟在真触发后面。显著性门抑制掉的触发到这里已经是
+        ``triggered=False``:规则没成立,估计它「为什么变化」没有意义。
+        """
+        return rule.causal is not None and triggered
 
     @staticmethod
     def _needs_significance(rule: DecisionRule, triggered: bool) -> bool:
@@ -669,6 +700,242 @@ class DecisionService:
             confidence_by_dim=conf_by_dim, gated_by_dim=gated_by_dim,
             require_gate=sig.required())
         return rows, triggered_dims, section
+
+    async def _causal_stage(
+        self, rule: DecisionRule, datasource: str, dialect: str,
+        cur_window: tuple[str, str] | None, *, ledger: Any,
+        matched: list[str] | None = None, time_field: str = "",
+    ) -> dict[str, Any]:
+        """触发后的反事实估计(升级梯 L1→L3;至多 2 条 SQL)。
+
+        三条不变量(与 ``decision/causal.py`` 的模块纪律一一对应):
+
+          - **绝不上抛**:编译 MISS、SQL 报错、预算让路、数据不足 ——
+            全部只写 ``degraded`` / ``unmet``,证据节照常返回;附录
+            拖垮正文是明确禁止的;
+          - **绝不改 triggered**:因果不参与判定(条件词汇里没有它),
+            只是「为什么变化」的补充估计;
+          - **条件不足诚实降级**:``ladder_decision`` 逐条给实测值与
+            阈值(C3 的 ``max|did|``/阈值走验收要求),``assumptions``
+            永远非空且把「无法检验」的条目写出来。
+
+        取数两条:处理组(subject 口径,含当期块)+ 对照帧(dim 口径
+        按维分组,供体池在同一帧里;filters 口径窄序列)。两条都成功
+        才 ``ledger.record``;结构性前置(C4/C1)不满足时不花第二条。
+        """
+        from trove.services.decision.causal import (
+            CAUSAL_NOTE,
+            assumptions_for,
+            crosses_zero,
+            did_2x2,
+            did_se,
+            donor_counterfactual,
+            ladder_decision,
+            parallel_trends,
+            placebo_pairs,
+        )
+        from trove.services.decision.causal_source import (
+            causal_lookback,
+            fetch_control_series,
+            fetch_treated_series,
+            split_post,
+        )
+        from trove.services.decision.series_source import plan_reason
+
+        causal = rule.causal or Causal()
+        seasonal = rule.seasonal or Seasonal()
+        lookback = causal_lookback(seasonal, causal)
+        degraded: list[dict[str, Any]] = []
+        section: dict[str, Any] = {
+            "mode": causal.mode,
+            "placebo_blocks": causal.placebo_blocks,
+            "tolerance": causal.tolerance,
+            "control_declared": (
+                {"dim": causal.control.dim, "value": causal.control.value}
+                if causal.control is not None and causal.control.by_dim()
+                else {"filters": [dict(f) for f in causal.control.filters]}
+                if causal.control is not None
+                else {}),
+            "note": CAUSAL_NOTE,
+            "rung": "L1",
+            "unmet": [],
+            "assumptions": [],
+            "degraded": degraded,
+        }
+
+        def _stop(condition: str, reason: str, **fields: Any) -> dict[str, Any]:
+            section["unmet"] = [{"condition": condition, "reason": reason,
+                                 **fields}]
+            section["assumptions"] = assumptions_for(
+                "L1", unmet=section["unmet"],
+                context=f"粒度 {seasonal.grain or '派生'}·{seasonal.mode}")
+            return section
+
+        # ── 结构性前置(C4):不花任何查询 ─────────────────
+        if rule.seasonal is None:
+            degraded.append({"stage": "causal", "reason": "no_seasonal"})
+            return _stop("C4", "no_seasonal")
+        if not time_field:
+            degraded.append({"stage": "causal", "reason": "no_time_field"})
+            return _stop("C4", "no_time_field")
+        structural = plan_reason(cur_window, grain=seasonal.grain,
+                                 mode=seasonal.mode, lookback=lookback)
+        if structural:
+            degraded.append({"stage": "causal", "reason": structural})
+            return _stop("C4", structural)
+
+        # ── C5 预算:两条取数要么都花得起,要么让路记账 ────
+        if not ledger.can(2):
+            entry = ledger.yield_("causal", needed=2)
+            degraded.append({"stage": "causal", **entry})
+            return _stop("C5", str(entry.get("reason") or "query_budget_exceeded"))
+
+        metric = rule.subject.metrics[0] if rule.subject.metrics else ""
+        # ── 第一条:处理组序列(subject 口径) ─────────────
+        try:
+            treated = await fetch_treated_series(
+                semantic_layer=self._provider_for(datasource, dialect),
+                runner=self._query_runner(datasource),
+                datasource=datasource, dialect=dialect, metric_name=metric,
+                matched=list(matched or []), filters=rule.subject.filters,
+                window=cur_window, time_field=time_field,
+                grain=seasonal.grain, mode=seasonal.mode, lookback=lookback)
+        except Exception as e:
+            reason = f"series_query_failed:{str(e)[:120]}"
+            degraded.append({"stage": "causal", "reason": reason})
+            return _stop("C4", reason)
+        if treated is None:
+            degraded.append({"stage": "causal",
+                             "reason": "treated_series_unavailable"})
+            return _stop("C4", "treated_series_unavailable")
+        ledger.record("causal")
+        if treated.unmatched:
+            degraded.append({"stage": "causal",
+                             "reason": f"unmatched_buckets:{treated.unmatched}"})
+
+        t_hist, t_post = split_post(treated.values(""))
+        if not t_hist or t_hist[-1] is None:
+            # 前窗最后一格没值 = 没有「干预前水平」——DiD 的减数不存在。
+            return _stop("C4", "no_pre_block")
+        n_blocks = sum(1 for v in t_hist if v is not None)
+        if n_blocks < MIN_BLOCKS:
+            # C1 在 C2 之前:块数都不够就不花第二条查询(梯子顺序即
+            # 取数顺序,记账与判定共用同一条序)。
+            return _stop("C1", "insufficient_blocks",
+                         measured=n_blocks, threshold=MIN_BLOCKS)
+        t_pre = t_hist[-1]
+
+        # ── 第二条:对照帧(dim 口径含供体池 / filters 窄序列) ──
+        ctrl = None
+        c_reason = ""
+        if causal.control is None:      # 手改文件可绕过 lint
+            c_reason = "no_control_declared"
+        else:
+            try:
+                ctrl = await fetch_control_series(
+                    semantic_layer=self._provider_for(datasource, dialect),
+                    runner=self._query_runner(datasource),
+                    datasource=datasource, dialect=dialect, metric_name=metric,
+                    matched=list(matched or []),
+                    subject_filters=rule.subject.filters,
+                    control=causal.control, window=cur_window,
+                    time_field=time_field, grain=seasonal.grain,
+                    mode=seasonal.mode, lookback=lookback)
+            except Exception as e:
+                c_reason = f"control_query_failed:{str(e)[:120]}"
+            if ctrl is not None and ctrl.series is not None:
+                ledger.record("causal")
+                if ctrl.series.unmatched:
+                    degraded.append(
+                        {"stage": "causal",
+                         "reason": f"unmatched_buckets:{ctrl.series.unmatched}"})
+            elif ctrl is not None:
+                c_reason = "control_series_unavailable"
+            if ctrl is not None and ctrl.donor_reason:
+                degraded.append({"stage": "causal",
+                                 "reason": f"donors:{ctrl.donor_reason}"})
+
+        c_hist: list[float | None] = []
+        c_post: float | None = None
+        if ctrl is not None and ctrl.series is not None:
+            label = ctrl.label if ctrl.mode == "dim" else ""
+            c_hist, c_post = split_post(ctrl.series.values(label))
+            if not c_hist or c_hist[-1] is None or c_post is None:
+                c_reason = c_reason or "control_data_missing"
+        has_control = not c_reason
+
+        # ── 估计:DiD(手算)+ placebo 前窗 + 合成对照(可选) ──
+        pairs: list[dict[str, Any]] = []
+        placebo: dict[str, Any] | None = None
+        synthetic: dict[str, Any] | None = None
+        if has_control:
+            c_pre = c_hist[-1]
+            att = did_2x2(t_pre, t_post, c_pre, c_post)
+            # 块窗口两帧同规格(同 grain/mode/lookback/窗口),取处理组的
+            # 历史窗口做 placebo 标签 —— 两条 SQL 的块网格逐格对齐。
+            pairs = placebo_pairs(t_hist, c_hist, blocks=treated.blocks[:-1],
+                                  count=causal.placebo_blocks)
+            se = did_se(pairs)
+            if att is not None:
+                section["did"] = {**att, "se": se,
+                                  "crosses_zero": crosses_zero(att["att"], se)}
+            placebo = parallel_trends(pairs, scale=max(abs(t_pre), abs(c_pre)),
+                                      tolerance=causal.tolerance)
+            if causal.mode == "auto" and ctrl is not None and ctrl.donors:
+                synthetic = donor_counterfactual(
+                    treated.values(""), ctrl.donors,
+                    tolerance=causal.tolerance)
+                synthetic["se"] = se
+                synthetic["crosses_zero"] = crosses_zero(
+                    synthetic.get("effect"), se)
+
+        # ── 梯子判定(唯一一次;所有条件已实测) ────────────
+        ladder = ladder_decision(
+            seasonal_declared=True, n_blocks=n_blocks, has_pre_block=True,
+            has_control=has_control, budget_ok=True, placebo=placebo,
+            mode=causal.mode, synthetic=synthetic)
+        if synthetic is None and ctrl is not None and ctrl.donor_reason:
+            # C6 的原因细化为结构性原因(treated_unidentified /
+            # donors_need_dim_control 的修法各自不同,不塌成一句
+            # synthetic_unavailable)。
+            for u in ladder["unmet"]:
+                if u.get("condition") == "C6" \
+                        and u.get("reason") == "synthetic_unavailable":
+                    u["reason"] = ctrl.donor_reason
+        if not has_control and c_reason:
+            for u in ladder["unmet"]:
+                if u.get("condition") == "C2":
+                    u["reason"] = c_reason
+
+        section.update({
+            "rung": ladder["rung"],
+            "unmet": ladder["unmet"],
+            "grain": treated.grain,
+            "block_mode": treated.mode,
+            "lookback": lookback,
+            "blocks": [[b[0], b[1]] for b in treated.blocks],
+            "treated": {"label": "", "blocks_with_data": n_blocks,
+                        "pre": t_pre, "post": t_post, "sql": treated.sql},
+            "assumptions": assumptions_for(
+                ladder["rung"], placebo=placebo, synthetic=synthetic,
+                unmet=ladder["unmet"],
+                context=f"粒度 {treated.grain}·{treated.mode}·前窗 {n_blocks} 块"),
+        })
+        if ctrl is not None:
+            section["control"] = {
+                "mode": ctrl.mode,
+                "label": ctrl.label,
+                "treated_labels": ctrl.treated_labels,
+                "donors": sorted(ctrl.donors),
+                "pre": c_hist[-1] if c_hist else None,
+                "post": c_post,
+                "sql": ctrl.series.sql if ctrl.series is not None else "",
+            }
+        if placebo is not None:
+            section["placebo"] = placebo
+        if synthetic is not None:
+            section["synthetic"] = synthetic
+        return section
 
     def _query_runner(self, datasource: str):
         """桥与签名带共用的 runner 契约:``(sql, ds) -> (columns, rows)``。
@@ -863,12 +1130,18 @@ class DecisionService:
 
     def _summarize(
         self, rule: DecisionRule, rows: list[dict[str, Any]], dims: list[str],
+        *, net: str = "",
     ) -> str:
         """One-line human summary: what fired, for which groups, on what numbers.
 
         ``dims`` is what the rule decided to emit (see ``_judge``), so an
         `emit: top_k` rule reports its top groups, not every group that
         happened to satisfy the condition.
+
+        ``net`` = 因果梯的一行缀(``causal_line`` 的产物;**仅 rung
+        L2/L3 且有效应时非空**)—— L1 明说「不主张因果」,拒绝主张的
+        效应不该上通知。缀在末尾而不是替换正文:触发的事实与反事实的
+        估计是两层信息,不能互相顶掉。
         """
         head = rule.describe()
         emitted = set(dims)
@@ -884,7 +1157,8 @@ class DecisionService:
                 bits.append(f"变化 {r['delta_pct'] * 100:+.1f}%")
             why = "; ".join(r["matched"]) or "; ".join(rule.conditions)
             parts.append(f"{label}{', '.join(bits)} 〔{why}〕")
-        return f"[{rule.severity}] {head} — " + " | ".join(parts)
+        line = f"[{rule.severity}] {head} — " + " | ".join(parts)
+        return f"{line} {net}" if net else line
 
     # ── entry point used by the runner ────────────────────
 

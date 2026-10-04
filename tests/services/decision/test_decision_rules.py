@@ -7,11 +7,19 @@ fires, or fires on a variable that does not exist at that scope.
 
 import pytest
 
+from trove.services.decision.causal import (
+    DEFAULT_CAUSAL_MODE,
+    DEFAULT_PLACEBO_BLOCKS,
+    DEFAULT_TOLERANCE,
+)
 from trove.services.decision.expr import DecisionExprError
 from trove.services.decision.rules import (
+    CAUSAL_MODES,
     PRIORITY_MAX,
     SCHEMA_VERSION,
     ActionRef,
+    Causal,
+    CausalControl,
     RuleError,
     Seasonal,
     Significance,
@@ -495,3 +503,179 @@ class TestCompileCondition:
         "no trigger"."""
         with pytest.raises(DecisionExprError):
             compile_condition(rule(conditions=["dleta < 0"]))
+
+
+#: A schema-v4 rule exercising the causal ladder declaration. ``scope:
+#: aggregate`` is part of the contract (per-group claims need one rule per
+#: group) — hence a bespoke body rather than a MINIMAL overlay.
+V4 = {
+    "id": "region-causal",
+    "name": "华东贷款余额异动(含因果升级)",
+    "window": "本月",
+    "subject": {
+        "metrics": ["loan_balance"], "dimensions": [],
+        "filters": [{"field": "loan.region", "op": "=", "value": "华东"}],
+    },
+    "baseline": {"kind": "prev_period"},
+    "scope": "aggregate",
+    "conditions": {"all": ["delta_pct > 0.05"]},
+    "seasonal": {"lookback": 12},
+    "causal": {
+        "mode": "auto",
+        "control": {"dim": "region", "value": "华北"},
+        "placebo_blocks": 6,
+        "tolerance": 0.05,
+    },
+}
+
+
+class TestSchemaV4Parse:
+    def test_current_schema_version_is_four(self):
+        assert SCHEMA_VERSION == 4
+        assert DEFAULT_CAUSAL_MODE in CAUSAL_MODES
+
+    def test_defaults_read_as_v3(self):
+        """A rule written before v4 means exactly what it always meant:
+        the causal declaration is None, not default-constructed."""
+        assert parse_rule(V3).causal is None
+        assert rule().causal is None
+
+    def test_full_v4_rule(self):
+        r = parse_rule(V4)
+        assert r.causal == Causal(
+            mode="auto",
+            control=CausalControl(dim="region", value="华北"),
+            placebo_blocks=6, tolerance=0.05)
+        assert r.causal.control.by_dim() is True
+
+    def test_causal_defaults(self):
+        r = rule(seasonal={},
+                 causal={"control": {"dim": "region", "value": "华北"}})
+        assert r.causal == Causal(mode=DEFAULT_CAUSAL_MODE,
+                                  control=CausalControl(dim="region",
+                                                        value="华北"),
+                                  placebo_blocks=DEFAULT_PLACEBO_BLOCKS,
+                                  tolerance=DEFAULT_TOLERANCE)
+
+    def test_filters_form_control(self):
+        r = rule(seasonal={}, causal={
+            "control": {"filters": [
+                {"field": "loan.region", "op": "=", "value": "华北"}]}})
+        assert r.causal.control.by_dim() is False
+        assert r.causal.control.filters == [
+            {"field": "loan.region", "op": "=", "value": "华北"}]
+
+    def test_presence_is_the_declaration(self):
+        assert rule(seasonal={}, causal={}).causal is not None
+        assert rule(causal=None).causal is None
+        assert rule(causal="").causal is None
+
+    def test_control_forms_are_exclusive_and_complete(self):
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={"control": {
+                "dim": "region", "value": "华北",
+                "filters": [{"field": "region", "op": "=", "value": "华北"}]}})
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={"control": {"dim": "region"}})
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={"control": {"filters": []}})
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal="auto")
+
+    def test_empty_control_parses_as_incomplete_and_lint_blocks_it(self):
+        """``control`` 键缺席 → None;``control: {}`` → 空对照对象。两种
+        都过不了 lint 的「requires a 'control'」—— 缺对照的因果声明
+        被拦在写入口,而不是等它在生产里永远只能报 L1。"""
+        r = rule(seasonal={}, causal={"control": {}})
+        assert r.causal is not None and r.causal.control is not None
+        assert not r.causal.control.by_dim() and not r.causal.control.filters
+        assert any("requires a 'control'" in i for i in lint_rule(r))
+        assert rule(seasonal={}, causal={}).causal.control is None
+        assert any("requires a 'control'" in i
+                   for i in lint_rule(rule(seasonal={}, causal={})))
+
+    def test_garbage_numbers_raise(self):
+        base = {"control": {"dim": "region", "value": "华北"}}
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={**base, "placebo_blocks": "many"})
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={**base, "placebo_blocks": True})
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={**base, "tolerance": "tight"})
+        with pytest.raises(RuleError):
+            rule(seasonal={}, causal={**base, "tolerance": False})
+
+    def test_round_trip_is_value_equal(self):
+        for raw in (V4,
+                    rule_to_dict(rule(seasonal={}, causal={})),
+                    rule_to_dict(rule(seasonal={}, causal={
+                        "control": {"filters": [
+                            {"field": "loan.region", "op": "=",
+                             "value": "华北"}]}}))):
+            original = parse_rule(raw)
+            assert parse_rule(rule_to_dict(original)) == original
+
+    def test_v3_rule_serializes_byte_identically(self):
+        """条件序列化:未声明 causal 的规则写回形状与 v3 完全一致 ——
+        digest 与 rule_rev 的连续性以这个为前提。"""
+        out = rule_to_dict(parse_rule(V3))
+        assert "causal" not in out
+        assert "seasonal" in out and "significance" in out
+
+    def test_v3_file_is_still_readable(self):
+        doc = parse_document({"version": 3, "rules": [V3]})
+        assert doc.rules[0].causal is None
+        doc4 = parse_document({"version": 4, "rules": [V4]})
+        assert doc4.rules[0].causal is not None
+
+
+class TestLintV4:
+    def test_a_v4_rule_is_clean(self):
+        assert lint_rule(parse_rule(V4)) == []
+
+    def test_causal_requires_a_control(self):
+        issues = lint_rule(rule(seasonal={}, causal={}))
+        assert any("requires a 'control'" in i for i in issues)
+
+    def test_causal_requires_seasonal(self):
+        r = parse_rule({**V4})
+        r.seasonal = None      # 手改文件可绕过解析,但 lint 拦写入
+        assert any("'causal' requires a 'seasonal' block" in i
+                   for i in lint_rule(r))
+
+    def test_per_dimension_causal_is_refused(self):
+        """明确拒绝优于静默只对第一行 —— 拆成逐组规则才是正解。"""
+        issues = lint_rule(rule(seasonal={}, causal={
+            "control": {"dim": "region", "value": "华北"}}))
+        assert any("supports scope 'aggregate' only" in i for i in issues)
+
+    def test_bad_mode_placebo_blocks_and_tolerance(self):
+        base = {"control": {"dim": "region", "value": "华北"}}
+        assert any("causal.mode must be one of" in i for i in lint_rule(
+            rule(seasonal={}, causal={**base, "mode": "did2"})))
+        assert any("placebo_blocks must be >= 1" in i for i in lint_rule(
+            rule(seasonal={}, causal={**base, "placebo_blocks": 0})))
+        assert any("tolerance must be > 0" in i for i in lint_rule(
+            rule(seasonal={}, causal={**base, "tolerance": 0})))
+
+    def test_auto_with_filters_control_is_advisory_not_blocking(self):
+        doc = parse_document({"rules": [
+            {**V4, "causal": {"mode": "auto", "control": {"filters": [
+                {"field": "loan.region", "op": "=", "value": "华北"}]}}}]})
+        assert lint_document(doc) == []
+        assert any("can never reach L3" in i for i in lint_advisories(doc))
+
+    def test_did_mode_with_filters_control_has_no_advisory(self):
+        """did 档本来就不上 L3 —— 提示不该出现(提示也要诚实)。"""
+        doc = parse_document({"rules": [
+            {**V4, "causal": {"mode": "did", "control": {"filters": [
+                {"field": "loan.region", "op": "=", "value": "华北"}]}}}]})
+        assert not any("L3" in i for i in lint_advisories(doc))
+
+    def test_causal_joins_rule_rev(self):
+        """因果块进序列化 → 改它必须改 rev(回评分桶的键)。"""
+        base = parse_rule(V4)
+        bumped = parse_rule({**V4, "causal": {**V4["causal"],
+                                              "tolerance": 0.2}})
+        assert rule_rev(base) != rule_rev(bumped)
+        assert rule_rev(base) == rule_rev(parse_rule(V4))

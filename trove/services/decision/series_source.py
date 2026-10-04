@@ -147,13 +147,18 @@ async def fetch_block_series(
     mode: str = "trailing",
     lookback: int = 12,
     dimensions: list[str] | None = None,
+    include_current: bool = False,
 ) -> BlockSeries | None:
-    """历史块序列(至多 1 条 SQL)。
+    """块序列(至多 1 条 SQL)。
 
     ``None`` = 不适用或编译 MISS(无窗口 / 粒度不对齐 / 无时间字段 /
     空块集 / 软 MISS)—— 调用方按 require 语义决定降级还是 error。
     ``filters`` = 规则 subject 的过滤条件(历史块必须与当期**同一
     口径**:过滤掉了华北,基线里也不该有华北)。
+
+    ``include_current=True`` 把被测窗口本体追加为最后一个块(缺省
+    False —— 显著性路径逐字节不变):因果梯需要把处理组与对照组的
+    当期水平放在同一条序列里(块对齐、口径对齐),原样复用块语义。
     """
     if not time_field:
         return None
@@ -161,6 +166,8 @@ async def fetch_block_series(
     if planned is None:
         return None
     eff, m, blocks = planned
+    if include_current and window:
+        blocks = list(blocks) + [(str(window[0]), str(window[1]))]
     span = (blocks[0][0], blocks[-1][1])
     conds = [dict(f) for f in (filters or [])]
     conds += time_conds(time_field, span, dialect=dialect)
