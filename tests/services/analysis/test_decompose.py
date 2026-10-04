@@ -122,3 +122,47 @@ class TestResidual:
     def test_float_noise_within_tolerance(self):
         r = residual(0.3, [0.1, 0.2])
         assert r["exact"] is True
+
+
+class TestDeterminism:
+    """保序并集 + 二级排序键:输出不随 PYTHONHASHSEED 变化。
+
+    旧实现用 ``set()`` 并集,并列项的次序退到集合迭代序 —— 同一输入
+    在不同进程可以给出不同的**行序**(进而是不同的证据/下钻选择)。
+    这里的固定期望值把次序钉死,三连子进程把它跨进程钉死。
+    """
+
+    _CODE = (
+        "from trove.services.analysis.decompose import ("
+        " contribution, shift_share, breakdown_signal);"
+        "r1 = contribution({'b':1,'c':1,'a':1}, {'a':1,'b':1,'z':1});"
+        "r2 = shift_share({'B':(1,1),'A':(1,1)}, {'A':(1,1),'C':(1,1)});"
+        "print(repr(([x['dim'] for x in r1], [x['contribution'] for x in r1],"
+        " [x['dim'] for x in r2['rows']], breakdown_signal({'a':2}, {'b':1}, None))))"
+    )
+
+    def test_tie_break_is_dim_name_ascending(self):
+        rows = contribution({"b": 1, "c": 1, "a": 1}, {"a": 1, "b": 1, "z": 1})
+        # |contribution| 并列(±0.5)→ 按维度名升序:先 c/z(.5),再 a/b(0)
+        assert [r["dim"] for r in rows] == ["c", "z", "a", "b"]
+        # shift_share:B/C 贡献 ±0.5 并列 → 名字升序 B<C,再 A(0)
+        dec = shift_share({"B": (1, 1), "A": (1, 1)}, {"A": (1, 1), "C": (1, 1)})
+        assert [r["dim"] for r in dec["rows"]] == ["B", "C", "A"]
+
+    def test_output_stable_across_hash_seeds(self):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        outs = set()
+        for seed in ("0", "1", "999"):
+            env = dict(os.environ, PYTHONHASHSEED=seed)
+            r = subprocess.run(
+                [sys.executable, "-c", self._CODE],
+                capture_output=True, text=True, env=env, cwd=str(root), timeout=120,
+            )
+            assert r.returncode == 0, r.stderr
+            outs.add(r.stdout.strip())
+        assert len(outs) == 1, f"跨进程不一致: {outs}"

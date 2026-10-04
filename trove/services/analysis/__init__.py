@@ -11,6 +11,7 @@
 ``tests/services/analysis/test_readonly_posture.py`` 守卫。
 """
 
+from trove.services.analysis.budget import QueryLedger
 from trove.services.analysis.decompose import (
     breakdown_signal,
     contribution,
@@ -33,23 +34,62 @@ from trove.services.analysis.expr_tree import (
     metric_ratio_parts,
 )
 from trove.services.analysis.render import ratio_waterfall_chart, waterfall_chart
+from trove.services.analysis.series import (
+    SeriesSpec,
+    block_windows,
+    compile_series_hop,
+    derive_grain,
+    same_phase_blocks,
+    series_from_rows,
+)
+from trove.services.analysis.stats import (
+    Band,
+    band,
+    bootstrap_ci,
+    effective_n,
+    low_n,
+    mad,
+    median,
+    outside,
+    quantile,
+    robust_z,
+    welch_delta,
+)
 
 __all__ = [
     "AnalysisEngine",
     "AnalysisLimits",
     "AnalysisOutcome",
     "AnalysisRequest",
+    "Band",
+    "QueryLedger",
+    "SeriesSpec",
     "analysis_payload",
+    "band",
+    "block_windows",
+    "bootstrap_ci",
     "breakdown_signal",
     "collect_components",
+    "compile_series_hop",
     "contribution",
+    "derive_grain",
+    "effective_n",
+    "low_n",
+    "mad",
+    "median",
     "metric_components",
     "metric_ratio_parts",
     "num",
+    "outside",
+    "quantile",
     "ratio_share",
     "ratio_waterfall_chart",
     "residual",
+    "robust_z",
+    "same_phase_blocks",
+    "series_from_rows",
     "shift_share",
     "signed_children",
     "waterfall_chart",
+    "welch_delta",
 ]
