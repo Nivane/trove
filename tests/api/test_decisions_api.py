@@ -127,9 +127,10 @@ class TestList:
         assert body["rules"][0]["severity"] == "warning"
         assert body["rules"][0]["conditions"] == ["delta_pct < -0.1"]
         assert body["digest"], "the digest is what a run records as 'which version'"
-        # Schema v3:未声明的规则**不带**这两个键(与历史列表逐字节一致)。
+        # Schema v3/v4:未声明的规则**不带**这三个键(与历史列表逐字节一致)。
         assert "seasonal" not in body["rules"][0]
         assert "significance" not in body["rules"][0]
+        assert "causal" not in body["rules"][0]
 
     async def test_a_declared_band_surfaces_in_the_list(
             self, admin_client, decisions_app):
@@ -147,6 +148,31 @@ class TestList:
         assert rule["seasonal"] == {"grain": "month", "lookback": 12,
                                     "mode": "trailing", "k": 3.5}
         assert rule["significance"] == {"require": "outside_band"}
+
+    async def test_a_declared_ladder_surfaces_in_the_list(
+            self, admin_client, decisions_app):
+        """schema v4:声明了 causal 的规则把升级梯声明带进列表 —— 管理员
+        要看得见「这条规则的净效应是被什么对照与容差约束的」。"""
+        _write(decisions_app, [{
+            "id": "region-causal",
+            "name": "华东贷款余额异动",
+            "window": "本月",
+            "subject": {"metrics": ["loan_balance"], "dimensions": [],
+                        "filters": [{"field": "loan.region", "op": "=",
+                                     "value": "华东"}]},
+            "baseline": {"kind": "prev_period"},
+            "scope": "aggregate",
+            "conditions": ["delta_pct > 0.05"],
+            "seasonal": {"lookback": 12},
+            "causal": {"mode": "auto",
+                       "control": {"dim": "region", "value": "华北"}},
+        }])
+        r = await admin_client.get("/v1/admin/decisions?datasource=demo")
+        body = r.json()
+        assert body["issues"] == [], body["issues"]
+        assert body["rules"][0]["causal"] == {
+            "mode": "auto", "control": {"dim": "region", "value": "华北"},
+            "placebo_blocks": 4, "tolerance": 0.1}
 
     async def test_a_corrupt_file_is_422_not_an_empty_list(
             self, admin_client, decisions_app):

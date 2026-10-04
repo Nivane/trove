@@ -178,6 +178,28 @@ class TestFetchBlockSeries:
             raise AssertionError("exception must propagate to the caller")
 
 
+class TestIncludeCurrent:
+    """因果梯的取数契约:当期窗口本体是序列的最后一个块。
+
+    缺省 ``include_current=False`` 时逐字节不变(显著性路径依赖这一点)。
+    """
+
+    async def test_current_block_rides_last(self):
+        rows = [["华东", "2026-08", 110.0], ["华东", "2026-09", 200.0]]
+        series, _ = await _fetch(rows, include_current=True)
+        assert series.blocks == [("2026-06-01", "2026-06-30"),
+                                 ("2026-07-01", "2026-07-31"),
+                                 ("2026-08-01", "2026-08-31"),
+                                 ("2026-09-01", "2026-09-30")]
+        # 末位 = 当期(因果侧 split_post 的约定)
+        assert series.values("华东") == [None, None, 110.0, 200.0]
+
+    async def test_absence_keeps_blocks_without_the_window(self):
+        rows = [["华东", "2026-09", 200.0]]
+        series, _ = await _fetch(rows)
+        assert len(series.blocks) == 3 and series.unmatched == 1
+
+
 class TestBlockSeriesHelpers:
     def test_span_is_first_start_to_last_end(self):
         s = BlockSeries(sql="s", grain="month", mode="trailing",
