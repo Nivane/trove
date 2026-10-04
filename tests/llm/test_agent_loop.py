@@ -616,6 +616,35 @@ class TestRegistryObservers:
         await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
         assert ("echo", "hi") in seen
 
+    async def test_default_observer_carries_tool_level(self, monkeypatch):
+        """经真实循环路径:默认观察者把 ToolSpec.level 带进工具记录。
+
+        level 是分类不是门控(门控只有 roles)——这里钉住它至少有一个
+        消费点(此前 7 处传参、0 处读取)。
+        """
+        from trove.llm import observability
+
+        seen: list[tuple] = []
+        monkeypatch.setattr(
+            observability, "record_tool_call",
+            lambda name, arguments, observation="", error=None, metadata=None:
+                seen.append((name, metadata)),
+        )
+        registry = ToolRegistry()
+
+        async def ok(arguments: dict) -> str:
+            return "hi"
+
+        registry.register("lookup_schema", ok, level="catalog")
+        llm = ScriptedLLM([
+            {"content": None, "tool_calls": [
+                {"id": "c1", "name": "lookup_schema", "arguments": "{}"},
+            ]},
+            {"content": "final", "tool_calls": []},
+        ])
+        await run_agent_loop(llm, "m", "sys", "user", registry=registry, max_rounds=5)
+        assert ("lookup_schema", {"tool_level": "catalog"}) in seen
+
     async def test_observer_error_never_breaks_loop(self):
         """observer 抛异常被吞掉,主循环不受影响。"""
 
