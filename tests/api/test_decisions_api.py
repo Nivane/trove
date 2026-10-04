@@ -127,6 +127,26 @@ class TestList:
         assert body["rules"][0]["severity"] == "warning"
         assert body["rules"][0]["conditions"] == ["delta_pct < -0.1"]
         assert body["digest"], "the digest is what a run records as 'which version'"
+        # Schema v3:未声明的规则**不带**这两个键(与历史列表逐字节一致)。
+        assert "seasonal" not in body["rules"][0]
+        assert "significance" not in body["rules"][0]
+
+    async def test_a_declared_band_surfaces_in_the_list(
+            self, admin_client, decisions_app):
+        """声明了 significance 的规则要把两段带出来(与 ``rule_to_dict``
+        同一序列化源)—— 列表是管理员判断「这条规则到底怎么判」的主视图,
+        正文只在 YAML 编辑器里可见,列表不给等于看不见。"""
+        _write(decisions_app, [{**RULE,
+                                "seasonal": {"grain": "month", "lookback": 12,
+                                             "mode": "trailing", "k": 3.5},
+                                "significance": {"require": "outside_band"}}])
+        r = await admin_client.get("/v1/admin/decisions?datasource=demo")
+        body = r.json()
+        assert body["issues"] == []
+        rule = body["rules"][0]
+        assert rule["seasonal"] == {"grain": "month", "lookback": 12,
+                                    "mode": "trailing", "k": 3.5}
+        assert rule["significance"] == {"require": "outside_band"}
 
     async def test_a_corrupt_file_is_422_not_an_empty_list(
             self, admin_client, decisions_app):
