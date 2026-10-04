@@ -48,6 +48,15 @@ from trove.services.decision.rules import (
     rule_rev,
     rule_to_dict,
 )
+from trove.services.decision.whatif import (
+    Adjustment,
+    WhatIfError,
+    apply_adjustments,
+    impact_summary,
+    parse_scenario,
+    simulate_rule,
+    simulate_tree,
+)
 
 __all__ = [
     "BASELINE_KINDS",
@@ -55,6 +64,7 @@ __all__ = [
     "CAUSAL_MODES",
     "Causal",
     "CausalControl",
+    "Adjustment",
     "DecisionDoc",
     "DecisionExprError",
     "DecisionRule",
@@ -66,15 +76,21 @@ __all__ = [
     "Significance",
     "Subject",
     "UNKNOWN",
+    "WhatIfError",
+    "apply_adjustments",
     "as_number",
     "compile_condition",
     "condition_variables",
     "evaluate_condition",
+    "impact_summary",
     "lint_document",
     "lint_rule",
     "parse_condition",
     "parse_document",
     "parse_rule",
+    "parse_scenario",
     "rule_rev",
     "rule_to_dict",
+    "simulate_rule",
+    "simulate_tree",
 ]
