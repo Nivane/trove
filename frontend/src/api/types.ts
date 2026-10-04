@@ -159,7 +159,45 @@ export interface AnalysisContributionRow {
   interaction?: number
 }
 
-/** state.analysis(分析柱 v1;形状定义见后端 analysis_payload)。 */
+/** 噪声带(块序列的稳健分布;lo/hi 为 null = 带不可用,别画)。 */
+export interface AnalysisSeriesBand {
+  center?: number | null
+  scale?: number | null
+  lo?: number | null
+  hi?: number | null
+  n?: number | null
+  method?: string // robust
+  degraded?: string[] // insufficient_n | no_data | zero_scale | …
+}
+
+/** 历史块序列(v2;B1 起可选,v2 起统计节齐备)。 */
+export interface AnalysisSeries {
+  grain?: string // day | week | month
+  mode?: string // trailing | same_phase
+  lookback?: number
+  span?: string[]
+  labels?: string[]
+  values?: number[]
+  band?: AnalysisSeriesBand | null
+  /** 本期值(被测点);null = 缺,别编数。 */
+  current?: number | null
+  /** 稳健 z((x−med)/(1.4826·MAD));null = 算不出。 */
+  z?: number | null
+  /** 是否超出带;null = 判不了(undefined 同理 —— 三态)。 */
+  outside?: boolean | null
+  /** 样本不足(< LOW_N):结论照给、标照挂。 */
+  low_n?: boolean
+  /** 带宽(稳健 z 单位,默认 3.5)。 */
+  k?: number | null
+  /** 位置分数 = (|z|−k)/k 截断 [0,1];**不是概率**(口径同判定侧 gate)。 */
+  confidence?: number | null
+}
+
+/** state.analysis(分析柱;形状定义见后端 analysis_payload)。
+ *
+ * v2(B8)只增不减:series / evidence.budget 与节点层 hypotheses 全可选。
+ * 兼容机制 = 缺席容忍 + **拿不到不整节渲染** —— 判据是键在不在,
+ * 不是版本号(v1 也可能带 series;B1 起它就可选)。 */
 export interface AnalysisPayload {
   version?: number
   kind?: string // combined | driver_tree | attribution
@@ -178,11 +216,17 @@ export interface AnalysisPayload {
   drilldown?: { dimension?: string; table?: AnalysisContributionRow[] } | null
   tree?: AnalysisTreeNode | null
   charts?: ChartSpec[]
+  /** 块序列 + 噪声带(v2 统计节;缺席 = 未启用/降级,整节不渲染)。 */
+  series?: AnalysisSeries | null
+  /** 交互式假设轮(节点层附加;分析包本体永远零 LLM)。 */
+  hypotheses?: Record<string, unknown> | null
   evidence?: {
     datasource?: string
     queries?: AnalysisQueryEvidence[]
     truncated?: boolean
     degraded?: { stage?: string; reason?: string }[]
+    /** 查询预算账本(v2;total_query_budget 设置时才有)。 */
+    budget?: Record<string, unknown> | null
   }
   /** 降级过(组件截断/预算用尽/不可解析):卡片要如实标,不许静默。 */
   partial?: boolean

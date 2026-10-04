@@ -22,6 +22,11 @@
 - ② 失败清单**不按 qid 去重**,与 eval gate CLI 逐字节一致;
   重复 qid 通过 ``coverage.duplicate_qids`` 显式暴露,不静默吞掉;
 - ④ 没有新的"运行终态表":运行读数 = ``audit_log`` + 消息投影(见 usage.py)。
+- 判定/行动质量块(``decisions``,B8):逐数据源读 verdict store + 效果
+  条目,包装 ``eval/quality_report.py``(纯函数;口径唯一权威仍是
+  ``decision/score.py``)。**本端点不因该 store 缺失而 500** —— 没接
+  就如实说没接(``not_configured`` + null),这与 ``/admin/decisions/
+  quality`` 的 409 不同:那个端点就是读它的,这个不是。
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from trove.api.routers.overview import (
     _project_root,
 )
 from trove.eval.gate import compare_metrics, load_entries, score_from_file
+from trove.eval.quality_report import build_report, fleet_report
 
 router = APIRouter()
 
@@ -61,6 +67,13 @@ _NOT_MEASURED = ["failures.by_error_class", "feedback.trend"]
 
 #: 晋升的净赞成票门槛(promotion.py ``maybe_promote`` 的口径,此处只读展示)。
 _PROMOTION_NET_UPVOTES = 3
+
+#: 判定质量块每源的读取上限(最近 N 条判定/效果;与 decisions.py 的
+#: quality 端点同量级)。报告是运营读的视图,不是导出。
+_DECISIONS_LIMIT = 500
+#: 报告覆盖的数据源数上限(超出按名字截断并进 degraded —— 腿是串行的,
+#: 每腿 1.5s 超时,不设上限的页在病态部署里会慢慢变成不可打开)。
+_DECISIONS_MAX_DATASOURCES = 10
 
 
 # ── 小工具 ────────────────────────────────────────────────────
@@ -354,6 +367,67 @@ def _eval_conf(request: Request) -> dict:
     }
 
 
+async def _decisions_block(request: Request, degraded: list[dict]) -> dict | None:
+    """判定/行动质量块:逐数据源 fleet 报告(纯函数在 ``eval/quality_report.py``)。
+
+    数据源清单从 verdicts 自己来(``list_datasources``),不从注册表来:
+    历史比改名/删除活得久,报告应能说出「这个源以前判过」(与
+    ``list_recent`` 同一句为什么)。store 缺失 → None + degraded
+    (``not_configured``);action 层缺失 → effects 空 + degraded
+    (「没有效果数据」不许冒充「没有效果」)。
+    """
+    store = getattr(request.app.state, "verdicts", None)
+    if store is None:
+        degraded.append({
+            "block": "decisions", "source": "verdicts",
+            "error": "not_configured", "at": _now_iso(),
+        })
+        return None
+    now = _now_iso()
+    sources_raw = await _leg(
+        "decisions", "verdicts", degraded, store.list_datasources,
+    )
+    if sources_raw is None:
+        # 枚举失败 ≠ 没有数据源:空的 fleet 报告是一句假话
+        # (「测到了且为零」),这里要说的是「没测到」—— 块为 null,
+        # 原因在 degraded 里(与三条腿的三值纪律同一句)。
+        return None
+    sources = [str(s) for s in sources_raw if str(s)]
+    if len(sources) > _DECISIONS_MAX_DATASOURCES:
+        degraded.append({
+            "block": "decisions", "source": "verdicts",
+            "error": f"truncated:{len(sources)}", "at": now,
+        })
+        sources = sources[:_DECISIONS_MAX_DATASOURCES]
+
+    actions = getattr(request.app.state, "actions", None)
+    if actions is None:
+        degraded.append({
+            "block": "decisions", "source": "actions",
+            "error": "not_configured", "at": now,
+        })
+    reports: list[dict] = []
+    for ds in sources:
+        verdicts = await _leg(
+            "decisions", f"verdicts:{ds}", degraded,
+            lambda ds=ds: store.list_recent(ds, limit=_DECISIONS_LIMIT),
+        )
+        if verdicts is None:
+            continue
+        effects: list[dict] = []
+        if actions is not None:
+            got = await _leg(
+                "decisions", f"effects:{ds}", degraded,
+                lambda ds=ds: actions.store.list_effect_entries(
+                    ds, limit=_DECISIONS_LIMIT),
+            )
+            effects = got or []
+        reports.append(build_report(
+            verdicts, effects, datasource=ds, generated_at=now,
+        ))
+    return fleet_report(reports, generated_at=now)
+
+
 # ── 端点 ──────────────────────────────────────────────────────
 
 
@@ -397,6 +471,7 @@ async def admin_quality_overview(
     )
     failures = _failures_block(cur[0], failures_limit) if cur else None
     feedback = await _leg("feedback", "kb", degraded, lambda: _feedback_block(request))
+    decisions = await _decisions_block(request, degraded)
 
     return {
         "available": current is not None or baseline is not None,
@@ -406,6 +481,7 @@ async def admin_quality_overview(
         "gate": gate,
         "failures": failures,
         "feedback": feedback,
+        "decisions": decisions,
         "not_measured": list(_NOT_MEASURED),
         "degraded": degraded,
     }

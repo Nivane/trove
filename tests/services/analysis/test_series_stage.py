@@ -159,6 +159,10 @@ class TestSeriesEnabled:
         assert "insufficient_n" in s["band"]["degraded"]
         assert s["current"] == CUR and s["z"] == pytest.approx((70.0 - 42.0) / (1.4826 * 2.0))
         assert s["outside"] is True and s["low_n"] is True
+        # 带宽与位置分数随序列走(B8):引擎是唯一产地,消费面(markdown /
+        # 分析卡)不重算 —— 公式与判定侧 gate 同一份 confidence_from_margin
+        assert s["k"] == 3.5
+        assert s["confidence"] == 1.0          # |z|≈9.44 → (|z|−k)/k > 1 → 截断
         # 序列 SQL 覆盖历史 span 且带分桶;span 末日在 SQL 里是半开
         # (``< '2024-02-01'``)—— payload 的 span 仍是人类口径的闭端
         series_sql = runner.calls[4]
@@ -169,6 +173,17 @@ class TestSeriesEnabled:
                              baseline_label="", datasource="demo")
         assert p["series"]["labels"] == s["labels"]
         assert "budget" not in p["evidence"]
+
+    async def test_confidence_interior_and_follows_k(self):
+        """位置分数∈(0,1) 的中间档:k 由规格给,分数跟着同一公式走。"""
+        runner = FakeRunner()
+        out = await _engine(runner).run(
+            _req(series=SeriesSpec(grain="month", lookback=3, k=6.0)))
+        assert out is not None and out.series is not None
+        z = 28.0 / (1.4826 * 2.0)
+        assert out.series["k"] == 6.0
+        assert out.series["confidence"] == pytest.approx((z - 6.0) / 6.0)
+        assert 0.0 < out.series["confidence"] < 1.0
 
     async def test_limits_grain_default_also_enables(self):
         runner = FakeRunner()

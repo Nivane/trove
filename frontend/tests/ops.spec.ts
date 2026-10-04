@@ -47,7 +47,13 @@ import { apiFetch } from '../src/api/http'
 import { t } from '../src/i18n'
 import { useUiStore } from '../src/stores/ui'
 import OpsView from '../src/views/admin/OpsView.vue'
-import type { OpsFailureItem, QualityOverview, UsageOverview } from '../src/api/ops'
+import type {
+  OpsDecisions,
+  OpsFailureItem,
+  OpsQualitySummary,
+  QualityOverview,
+  UsageOverview,
+} from '../src/api/ops'
 
 const LANG = 'en' as const
 const tr = (key: Parameters<typeof t>[0], params?: number | string) => t(key, LANG, params)
@@ -149,6 +155,61 @@ function quality(): QualityOverview {
     },
     not_measured: ['failures.by_error_class', 'feedback.trend'],
     degraded: [],
+    // 判定质量全局面:默认 fixture 走缺席档(null = 拿不到不整节渲染)。
+    decisions: null,
+  }
+}
+
+/** 总计行(B8):计数相加、比率同一口径;不足原因原样带。 */
+function qualitySummary(over: Partial<OpsQualitySummary> = {}): OpsQualitySummary {
+  return {
+    buckets: 2,
+    total: 12,
+    ok: 10,
+    alert: 1,
+    error: 1,
+    triggered: 2,
+    triggered_rate: 2 / 12,
+    effects: { measured: 4, effective: 2, no_effect: 1, unverifiable: 0, errors: 1 },
+    decided: 3,
+    effective_rate: 2 / 3,
+    insufficient: [],
+    ...over,
+  }
+}
+
+/** 判定质量全局面:两源 —— financial 给得出比率,demo 分母不够(门控)。 */
+function qualityDecisions(): OpsDecisions {
+  return {
+    generated_at: '2026-10-02T10:00:00Z',
+    datasources: 2,
+    summary: qualitySummary({ buckets: 3, total: 15, triggered_rate: 3 / 15 }),
+    reports: [
+      {
+        datasource: 'financial',
+        generated_at: '2026-10-02T10:00:00Z',
+        buckets: [],
+        summary: qualitySummary(),
+      },
+      {
+        datasource: 'demo',
+        generated_at: '2026-10-02T10:00:00Z',
+        buckets: [],
+        summary: qualitySummary({
+          buckets: 1,
+          total: 3,
+          ok: 3,
+          alert: 0,
+          error: 0,
+          triggered: 1,
+          triggered_rate: 1 / 3,
+          effects: { measured: 1, effective: 1, no_effect: 0, unverifiable: 0, errors: 0 },
+          decided: 1,
+          effective_rate: null,
+          insufficient: ['few_effects'],
+        }),
+      },
+    ],
   }
 }
 
@@ -390,6 +451,38 @@ describe('OpsView quality tab', () => {
     const failRows = view.findAll('.failures-table .dt-row')
     const q1Rows = failRows.filter((r) => r.text().includes('q1'))
     expect(q1Rows.length).toBe(2)
+    await view.unmount()
+  })
+
+  it('renders the fleet decision-quality card; 分母不够的源给门控文案,不给比率', async () => {
+    const q = quality()
+    q.decisions = qualityDecisions()
+    qualityRoute = { status: 200, body: q }
+    const view = await mountOps()
+
+    const card = view.find('.decisions-card')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain(tr('opsDecisionsTitle'))
+    expect(card.text()).toContain(tr('opsDecisionsSources', 2))
+    // 全局面 KPI:判定 15 次、触发率 20.0%
+    expect(card.text()).toContain('15')
+    expect(card.text()).toContain('20.0%')
+
+    const rows = card.findAll('.decisions-table .dt-row')
+    expect(rows.length).toBe(2)
+    const demo = rows.find((r) => r.text().includes('demo'))
+    expect(demo).toBeTruthy()
+    // 1 条测量 < 门槛:不给比率(更不给 100%),原因译成人话
+    expect(demo!.text()).toContain(tr('decisionsQualityRateGated'))
+    expect(demo!.text()).toContain(tr('decisionsQualityFewEffects'))
+    expect(demo!.text()).not.toContain('100.0%')
+    await view.unmount()
+  })
+
+  it('拿不到判定质量(decisions=null)→ 整节不渲染,其余照常', async () => {
+    const view = await mountOps()
+    expect(view.find('.decisions-card').exists()).toBe(false)
+    expect(view.find('.gate-card').exists()).toBe(true)
     await view.unmount()
   })
 

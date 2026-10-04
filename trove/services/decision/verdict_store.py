@@ -263,6 +263,25 @@ class VerdictStore:
         finally:
             await conn.close()
 
+    async def list_datasources(self) -> list[str]:
+        """Distinct datasources that have verdict history, sorted.
+
+        Derived from the verdicts themselves, not from the configured
+        datasource registry: history outlives a renamed or deleted source
+        (same reasoning as :meth:`list_recent`), and the quality report
+        should be able to say "this source used to be judged" instead of
+        going silent when someone removes it from the config.
+        """
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT DISTINCT datasource FROM verdicts"
+                " ORDER BY datasource",
+            )
+            return [str(r[0]) for r in await cursor.fetchall() if r and r[0]]
+        finally:
+            await conn.close()
+
     async def latest_for_rules(
         self, datasource: str, rule_ids: list[str],
     ) -> dict[str, VerdictRecord]:

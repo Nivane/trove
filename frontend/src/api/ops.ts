@@ -110,8 +110,73 @@ export interface QualityOverview {
   gate: OpsGate
   failures: OpsFailures | null
   feedback: OpsFeedback | null
+  /** 判定质量全局面(B8);store 未装配/枚举失败 → null(不整节渲染)。 */
+  decisions: OpsDecisions | null
   not_measured: string[]
   degraded: OpsDegradedEntry[]
+}
+
+/* ── 判定质量域(B8)───────────────────────────────────────────
+ * 形状来自后端 eval/quality_report.py 的 fleet_report / build_report
+ * (口径唯一权威在 decision/score.py,这里只做类型)。 */
+
+export interface OpsEffectCounts {
+  measured: number
+  effective: number
+  no_effect: number
+  unverifiable: number
+  errors: number
+}
+
+/** 一个 (rule_id, rule_rev) 桶;比率只在分母够时给,不足原因原样带出。 */
+export interface OpsQualityBucket {
+  key: string
+  rule_id: string
+  rule_rev: string
+  total: number
+  ok: number
+  alert: number
+  error: number
+  triggered: number
+  first_at: string
+  last_at: string
+  effects: OpsEffectCounts
+  decided: number
+  triggered_rate: number | null
+  effective_rate: number | null
+  /** few_verdicts | few_effects | no_effects(呈现层只翻译措辞)。 */
+  insufficient: string[]
+}
+
+/** 总计行:计数相加、比率按同一口径重算;与桶同一道分母门。 */
+export interface OpsQualitySummary {
+  buckets: number
+  total: number
+  ok: number
+  alert: number
+  error: number
+  triggered: number
+  triggered_rate: number | null
+  effects: OpsEffectCounts
+  decided: number
+  effective_rate: number | null
+  insufficient: string[]
+}
+
+/** 单源报告(与决策页的判定质量卡同源,粒度更粗)。 */
+export interface OpsQualityReport {
+  datasource: string
+  generated_at: string
+  buckets: OpsQualityBucket[]
+  summary: OpsQualitySummary
+}
+
+/** 全局面:跨源只给总量,per-rule 明细原样带在 reports 里。 */
+export interface OpsDecisions {
+  generated_at: string
+  datasources: number
+  summary: OpsQualitySummary
+  reports: OpsQualityReport[]
 }
 
 /* ── 成本域(§4.2) ───────────────────────────────────────────── */

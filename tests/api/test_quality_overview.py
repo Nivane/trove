@@ -18,12 +18,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from trove.api.routers import quality
 from trove.eval.gate import compare_metrics, score_from_file
 
 _TOP_LEVEL_KEYS = {
     "available", "generated_at", "current", "baseline", "gate",
-    "failures", "feedback", "not_measured", "degraded",
+    "failures", "feedback", "decisions", "not_measured", "degraded",
 }
 _ARTIFACT_KEYS = {
     "path", "kind", "n", "n_judged", "mtime", "batch_at", "metrics", "coverage",
@@ -147,12 +149,19 @@ class TestQualityShape:
         assert fb["promotion_net_upvotes_min"] == 3
         assert fb["last_rated_at"] is None            # 没票 → null,不填假时间
 
+        # 判定质量块:没接 store → null + 如实记「没接」,不是 500、不是空报告
+        assert body["decisions"] is None
+        not_conf = [d for d in body["degraded"] if d["block"] == "decisions"]
+        assert {d["error"] for d in not_conf} == {"not_configured"}
+
     async def test_full_roundtrip_artifacts_and_gate_parity(self, client, api_app, api_kb):
         cur_path, base_path = _seed_pair(api_app)
         r = await client.get("/v1/admin/quality/overview")
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["available"] is True and body["degraded"] == []
+        assert body["available"] is True
+        # 评测两腿零降级(decisions 块在本 fixture 里没接 store,自有专测)
+        assert [d for d in body["degraded"] if d["block"] != "decisions"] == []
 
         cur = body["current"]
         assert set(cur) == _ARTIFACT_KEYS
@@ -299,6 +308,98 @@ class TestQualityFeedback:
         assert fb["pending_examples"] == 1
         assert fb["by_datasource"] == [{"datasource": "test_db", "up": 5, "down": 1}]
         assert fb["last_rated_at"] == "2026-10-02T08:00:00+00:00"
+
+
+class TestQualityDecisions:
+    """``decisions`` 块(B8):逐源报告,包装 ``eval/quality_report.py``。
+
+    store 缺失 → null + degraded(不 500);接了 → 判定史/效果条目按
+    ``(rule_id, rule_rev)`` 分桶;store 坏了 → 只降级该块,其余照答。
+    """
+
+    async def _seed(self, api_app, tmp_path):
+        from trove.services.decision.verdict_store import VerdictStore
+        from trove.services.decision.verdicts import VerdictRecord
+
+        store = VerdictStore(tmp_path / "proj")
+        api_app.state.verdicts = store
+        for i, (status, trig) in enumerate(
+                [("ok", False), ("alert", True), ("alert", True)]):
+            await store.record(VerdictRecord(
+                datasource="demo", rule_id="revenue_drop", status=status,
+                triggered=trig, evidence={"rule_rev": "abc123"},
+                evaluated_at=f"2026-10-0{i + 1}T00:00:00+00:00",
+            ))
+        return store
+
+    async def test_seeded_store_reports_buckets(self, client, api_app, tmp_path):
+        store = await self._seed(api_app, tmp_path)
+        try:
+            r = await client.get("/v1/admin/quality/overview")
+            assert r.status_code == 200, r.text
+            body = r.json()
+            block = body["decisions"]
+            assert block["datasources"] == 1
+            rep = block["reports"][0]
+            assert rep["datasource"] == "demo"
+            assert rep["summary"]["total"] == 3 and rep["summary"]["alert"] == 2
+            b = rep["buckets"][0]
+            assert b["key"] == "revenue_drop@abc123"
+            assert b["triggered_rate"] == pytest.approx(2 / 3)
+            assert b["effects"]["measured"] == 0
+            assert "no_effects" in b["insufficient"]   # 先别读比率,说清为什么
+            # 行动层没接 → 记一笔(「没有效果数据」不许冒充「没有效果」)
+            dec_deg = [d for d in body["degraded"] if d["block"] == "decisions"]
+            assert {d["source"] for d in dec_deg} == {"actions"}
+            assert {d["error"] for d in dec_deg} == {"not_configured"}
+        finally:
+            await store.dispose()
+
+    async def test_effects_join_into_buckets(self, client, api_app, tmp_path):
+        from types import SimpleNamespace
+
+        store = await self._seed(api_app, tmp_path)
+
+        class _Effects:
+            async def list_effect_entries(self, datasource, *, limit=500):
+                return [
+                    {"rule_id": "revenue_drop", "rule_rev": "abc123",
+                     "outside_band": band, "error": "",
+                     "measured_at": f"2026-10-0{i}T00:00:00+00:00"}
+                    for i, band in enumerate([True, False, True, False], start=5)
+                ]
+
+        api_app.state.actions = SimpleNamespace(store=_Effects())
+        try:
+            r = await client.get("/v1/admin/quality/overview")
+            assert r.status_code == 200, r.text
+            body = r.json()
+            b = body["decisions"]["reports"][0]["buckets"][0]
+            assert b["effects"] == {"measured": 4, "effective": 2,
+                                    "no_effect": 2, "unverifiable": 0,
+                                    "errors": 0}
+            assert b["decided"] == 4 and b["effective_rate"] == 0.5
+            # 效果侧够了(4 ≥ MIN_EFFECTS)可读比率;判定侧 3 < LOW_N 仍标
+            # few_verdicts —— 两个域的样本门互不代偿
+            assert b["insufficient"] == ["few_verdicts"]
+            assert [d for d in body["degraded"]
+                    if d["block"] == "decisions"] == []
+        finally:
+            await store.dispose()
+
+    async def test_store_failure_degrades_block_only(self, client, api_app):
+        class _Boom:
+            async def list_datasources(self):
+                raise RuntimeError("boom")
+
+        api_app.state.verdicts = _Boom()
+        r = await client.get("/v1/admin/quality/overview")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["decisions"] is None
+        entry = next(d for d in body["degraded"] if d["block"] == "decisions")
+        assert entry["error"] == "RuntimeError"        # 只报异常类型名
+        assert body["feedback"] is not None            # 其余腿不受影响
 
 
 class TestQualityAuth:

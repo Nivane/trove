@@ -96,6 +96,9 @@ def _limits_from_config(config: AgentConfig) -> AnalysisLimits:
         driver_tree=bool(getattr(an, "driver_tree", True)),
         max_components=int(getattr(an, "max_components", 4)),
         max_queries=int(getattr(an, "max_queries", 12)),
+        # 块序列(B8 接线):默认空/12 → 序列阶段关闭,老路径逐字节不变。
+        series_grain=str(getattr(an, "series_grain", "") or ""),
+        block_lookback=int(getattr(an, "block_lookback", 12)),
     )
 
 

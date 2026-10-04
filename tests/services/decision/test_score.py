@@ -166,12 +166,24 @@ class TestRollup:
         assert out["buckets"] == 2
         assert out["decided"] == 5
         assert out["effective_rate"] == pytest.approx(3 / 5)
+        assert out["insufficient"] == []
 
     def test_empty(self):
         out = sc.rollup([])
         assert out["buckets"] == 0 and out["total"] == 0
         assert out["triggered_rate"] is None
         assert out["effective_rate"] is None
+        assert out["insufficient"] == ["no_effects"]
+
+    def test_summary_obeys_the_same_denominator_gate(self):
+        """一条测量的总览不是 100% —— 总览行不该比桶更敢说话(B8 收口)。"""
+        out = sc.rollup(sc.score_history([], effects=[_e("a", "x", True)]))
+        assert out["decided"] == 1 and out["effective_rate"] is None
+        assert out["insufficient"] == ["few_effects"]
+        # 门槛可调,判据同桶(min_effects 是同一个域参数)
+        assert sc.rollup(
+            sc.score_history([], effects=[_e("a", "x", True)]),
+            min_effects=1)["effective_rate"] == 1.0
 
     def test_accepts_a_generator_once(self):
         """生成器只被消费一次(rollup 先 list 化 —— 曾经的 bug 钉)。"""
