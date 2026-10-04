@@ -129,9 +129,9 @@ uv sync</code></pre>
 
     <p>
       两个入口共用同一套管线：<code>trove</code> 是交互 REPL
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L893">main.py:893 <span class="ref-line">main_repl</span></a>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L914">main.py:914 <span class="ref-line">main_repl</span></a>，
       <code>trove-cli</code> 是管道模式
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L603">main.py:603 <span class="ref-line">async_main_cli</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/main.py#L624">main.py:624 <span class="ref-line">async_main_cli</span></a>。
     </p>
 
     <h3>4. 看看它凭什么这么答</h3>
@@ -202,7 +202,7 @@ flowchart LR
     <p>
       支持 SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB，驱动按需懒加载，
       装哪个用哪个（<code>uv sync --extra postgres</code> 等）。注册表见
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L48">registry.py:48 <span class="ref-line">_ADAPTER_REGISTRY</span></a>。
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L42">registry.py:42 <span class="ref-line">_ADAPTER_REGISTRY</span></a>。
     </p>
 
     <h3>② 建模</h3>
@@ -252,7 +252,7 @@ flowchart LR
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 0b45464</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: cbfff9e</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
