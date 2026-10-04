@@ -21,7 +21,7 @@
 
 <br>
 
-📖 **[Documentation](https://nivane.github.io/trove/)** — 36 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[Documentation](https://nivane.github.io/trove/)** — 37 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -55,6 +55,7 @@ flowchart TB
         SEM["Semantic model"]
         KB["Knowledge base + retrieval"]
         MEM["Memory · decision rules · Skills"]
+        ACT["Actions · proposal / approval / receipt"]
     end
 
     LLM["Models · trove/llm<br/>LLM gateway"]
@@ -68,12 +69,13 @@ flowchart TB
     WF --> SEM
     WF --> KB
     WF --> MEM
+    MEM -->|"on trigger"| ACT
     WF -.-> LLM
     KB --> DS
     MEM --> STATE
 ```
 
-Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
+Two bands (entry and capabilities) with the orchestration between them — a single LangGraph graph, drawn as one node — plus the model and state layers hanging off the side: that is the shape. Data sources sit outside Trove, which is why they are not one of the five layers. **The same goes for executing an action** — the proposals, approvals and receipts a trigger produces are inside; the execution is outside (pushed via webhook / pulled via MCP). Solid lines are "who calls whom", dotted lines are "who uses an LLM"; neither is a data flow. For the detail behind each box: [system architecture](https://nivane.github.io/trove/architecture/overview.html) and [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
 
 ### What happens to one question
 
@@ -175,19 +177,22 @@ Every row has a deeper version on the docs site, anchored to source:
 | Capability | In one line | Read more |
 |---|---|---|
 | Semantic layer | The answerable boundary is a readable, diffable, git-revertible file | [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) |
+| Topic areas | An optional narrowing inside the semantic model: queries anchor and converge within the area, out-of-area questions are refused outright; grants narrow users to areas in the console | [Semantic layer · topics](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
 | Self-checking loop | Rule chain / AST firewall / cost guard / reflection with version regression | [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
-| Decision rules | Alerts run on the semantic model too: thresholds, windows and baselines evaluated with zero LLM, every trigger carrying evidence | [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) |
+| Decision rules | Alerts run on the semantic model too: thresholds, windows and baselines evaluated with zero LLM, every trigger carrying evidence and an adjacent diff | [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) |
+| Actions | A trigger freezes into a proposal → human approval → dispatch and receipt; Trove itself holds no write channel and never writes back to your database | [Actions & approval](https://nivane.github.io/trove/capabilities/actions.html) |
+| Subscriptions | Scheduled analysis is delivered to a notification channel as "every run / alerts only", failures on record; a job can be scoped to a topic area | [Automation & governance](https://nivane.github.io/trove/admin/automation.html) |
 | Knowledge base | `/kb init` drafts it, confirmed Q&A becomes reference SQL, drift raises an alarm | [Knowledge base](https://nivane.github.io/trove/capabilities/kb.html) |
 | Hybrid retrieval | Keyword + vector recall, weights tunable and measurable, with zero-LLM eval scripts | [Hybrid retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | Memory | Cross-session episodes, auto-extracted preferences, per user × datasource profiles | [Memory](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | Org-wide methodology: `required` injected / `available` on demand / `validator` assertions | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
-| Root-cause attribution | "Why did it drop?" becomes a multi-hop drill-down; the split dimension is chosen by the data, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) |
+| Analysis | "Why did it drop?" recurses along the metric's definition into a driver tree, with contribution breakdowns and residuals shown as they are; the numbers come from a deterministic engine, only the narrative uses an LLM | [Agent capabilities](https://nivane.github.io/trove/capabilities/agent.html) |
 | Six datasources | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB, one pattern | [Data capabilities](https://nivane.github.io/trove/capabilities/data.html) |
 | Interfaces and governance | Web UI, REST (`/v1`), MCP, CLI; admin review, audit, observability | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
 Drivers install on demand: `uv sync --extra postgres|mysql|doris|clickhouse|duckdb` (SQLite is built in). The LLM side goes through a litellm gateway — OpenAI / DeepSeek / Anthropic / any compatible endpoint — with per-node tiers, so a strong model can adjudicate reflection while a cheap one plans and writes insights. See the [configuration reference](https://nivane.github.io/trove/reference/config.html).
 
-The admin console is the other half of the same stack: datasource onboarding, KB review, the semantic model, decision rules, audit. This is the KB review queue — automatically captured lessons and examples land as pending, and only enter retrieval after an admin confirms them:
+The admin console is the other half of the same stack: datasource onboarding, KB review, the semantic model and topic areas, decision rules, action proposals and approvals, subscriptions and audit; which datasources and topic areas a user sees is granted per person. This is the KB review queue — automatically captured lessons and examples land as pending, and only enter retrieval after an admin confirms them:
 
 <img src="docs/assets/shots/admin-kb-pending.png" alt="Trove admin console · knowledge base review queue: every auto-captured lesson and example carries Confirm / Edit-and-confirm / Reject, and enters retrieval only after confirmation" width="880">
 
@@ -203,6 +208,7 @@ For a data agent to ship, the security boundary cannot be a request written in a
 | **Field-level redaction** | Declared per field as `partial` / `hash` / `null`, rewritten as the result leaves the database and before any model-facing node. The failure direction is strict: if a field should be redacted but the salt or the semantic model cannot be read, the query is refused rather than let through unredacted |
 | **External-data isolation** | Content from database cells (and retrieval/probe results) is scanned for injection patterns and replaced with an isolation marker before it reaches the prompt; human-confirmed KB content is exempt by design |
 | **Rate limits, quotas and audit** | Per-user token bucket plus a daily quota, over the limit returns 429; every execution records question / SQL / verdict / row count / duration / error |
+| **Actions propose, never execute** | A decision trigger only freezes the action into a proposal (payload final the moment it is created, deduplicated by idempotency key); it is dispatched only after approval. The action layer **takes no datasource connectors at all** — Trove itself has no channel to write back to your database, and approval, dispatch and receipt are each recorded separately |
 
 **The application layer is not a security boundary** — always connect Trove to a dedicated read-only role:
 
@@ -231,14 +237,14 @@ The same bias shows up elsewhere: health distinguishes `unavailable` from `degra
 
 ## Docs Map
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 36 pages, from product concepts to API reference, including illustrated guides with 29 real-UI screenshots
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 37 pages, from product concepts to API reference, including illustrated guides with 29 real-UI screenshots
 
 | | |
 |---|---|
 | **Getting started** | [Quickstart](https://nivane.github.io/trove/guide/quickstart.html) · [Concepts](https://nivane.github.io/trove/guide/concepts.html) · [Deploy](https://nivane.github.io/trove/guide/deploy.html) · [Datasources](https://nivane.github.io/trove/guide/datasource.html) |
 | **Illustrated guides** | [User guide](https://nivane.github.io/trove/user/ui-tour.html) · [Admin console](https://nivane.github.io/trove/admin/console.html) · [Deployment & ops](https://nivane.github.io/trove/ops/deployment.html) |
 | **Architecture** | [System overview](https://nivane.github.io/trove/architecture/overview.html) · [Query workflow](https://nivane.github.io/trove/architecture/workflow.html) |
-| **Capabilities** | [Data](https://nivane.github.io/trove/capabilities/data.html) · [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) · [KB](https://nivane.github.io/trove/capabilities/kb.html) · [Retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) · [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [Agent](https://nivane.github.io/trove/capabilities/agent.html) · [Memory](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM gateway](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
+| **Capabilities** | [Data](https://nivane.github.io/trove/capabilities/data.html) · [Semantic layer](https://nivane.github.io/trove/capabilities/semantic.html) · [KB](https://nivane.github.io/trove/capabilities/kb.html) · [Retrieval](https://nivane.github.io/trove/capabilities/retrieval.html) · [Decision rules](https://nivane.github.io/trove/capabilities/decisions.html) · [Actions & approval](https://nivane.github.io/trove/capabilities/actions.html) · [Agent](https://nivane.github.io/trove/capabilities/agent.html) · [Memory](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM gateway](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
 | **Operations** | [Security](https://nivane.github.io/trove/ops/security.html) · [Admin](https://nivane.github.io/trove/ops/admin.html) · [Observability](https://nivane.github.io/trove/ops/observability.html) · [Drift](https://nivane.github.io/trove/ops/drift.html) · [Eval and regression gate](https://nivane.github.io/trove/ops/eval.html) |
 | **Reference** | [Config](https://nivane.github.io/trove/reference/config.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) · [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) |
 

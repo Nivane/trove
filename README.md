@@ -21,7 +21,7 @@
 
 <br>
 
-📖 **[文档站](https://nivane.github.io/trove/)** —— 36 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[文档站](https://nivane.github.io/trove/)** —— 37 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -55,6 +55,7 @@ flowchart TB
         SEM["语义模型"]
         KB["知识库 + 混合检索"]
         MEM["记忆 · 判定规则 · Skills"]
+        ACT["行动 · 提案 / 审批 / 回执"]
     end
 
     LLM["模型 · trove/llm<br/>LLM 网关"]
@@ -68,12 +69,13 @@ flowchart TB
     WF --> SEM
     WF --> KB
     WF --> MEM
+    MEM -->|"判定触发"| ACT
     WF -.-> LLM
     KB --> DS
     MEM --> STATE
 ```
 
-两个带(入口、能力)夹着编排——它是一张 LangGraph 图,所以画成一个节点;再加外挂的模型层与状态层,就是它的形状。数据源在 Trove 之外,所以不在五层里。实线是「谁调谁」,虚线是「谁会用到大模型」——两条都不是数据流。往里每一步的细节见[系统架构](https://nivane.github.io/trove/architecture/overview.html)与[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。
+两个带(入口、能力)夹着编排——它是一张 LangGraph 图,所以画成一个节点;再加外挂的模型层与状态层,就是它的形状。数据源在 Trove 之外,所以不在五层里;**行动的执行同理**——判定触发产出的提案、审批与回执在内,执行在外(webhook 推 / MCP 拉)。实线是「谁调谁」,虚线是「谁会用到大模型」——两条都不是数据流。往里每一步的细节见[系统架构](https://nivane.github.io/trove/architecture/overview.html)与[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。
 
 ### 一次提问在图上怎么走
 
@@ -175,19 +177,22 @@ docker compose down
 | 能力 | 一句话 | 深入 |
 |---|---|---|
 | 语义层 | 可答边界是一份可读、可 diff、可 git 回滚的文件 | [语义层](https://nivane.github.io/trove/capabilities/semantic.html) |
+| 主题域 | 语义模型里的可选收窄:域内收敛锚定、超域显式拒绝;管理台可按用户授权到域 | [语义层 · 主题域](https://nivane.github.io/trove/capabilities/semantic.html#topics) |
 | 自校验闭环 | 规则链 / AST 防火墙 / 代价守卫 / 带版本回归的反思回滚 | [查询工作流](https://nivane.github.io/trove/architecture/workflow.html) |
-| 判定规则 | 告警也走语义模型:阈值、窗口、基期零 LLM 求值,触发带证据 | [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) |
+| 判定规则 | 告警也走语义模型:阈值、窗口、基期零 LLM 求值,触发带证据与相邻 diff | [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) |
+| 行动 | 判定触发冻结成提案 → 人工审批 → 外送回执;系统自身不接写通道,绝不写回业务库 | [行动与审批](https://nivane.github.io/trove/capabilities/actions.html) |
+| 订阅 | 定时分析的结果按「每期 / 仅告警」投递到通知通道,失败留痕;任务可限定主题域 | [自动化与治理](https://nivane.github.io/trove/admin/automation.html) |
 | 知识库 | `/kb init` 起草 + 确认过的问答成为参考 SQL + 漂移报警 | [知识库](https://nivane.github.io/trove/capabilities/kb.html) |
 | 混合检索 | 关键词 + 向量两路召回,权重可调可评,零 LLM 评测脚本 | [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) |
 | 记忆 | 跨会话 episode、自动提取的偏好、per user × datasource 画像 | [记忆](https://nivane.github.io/trove/capabilities/memory.html) |
 | Skills | 组织级方法论:`required` 注入 / `available` 按需 / `validator` 断言 | [Skills](https://nivane.github.io/trove/capabilities/skills.html) |
-| 根因归因 | 「为什么下降?」多跳下钻,主拆维度由数据决定,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) |
+| 分析 | 「为什么下降?」沿指标定义递归拆成驱动器树,贡献分解与残差如实呈现;数字来自确定性引擎,只有叙事用 LLM | [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) |
 | 六种数据源 | SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB,一套模式 | [数据能力](https://nivane.github.io/trove/capabilities/data.html) |
 | 接口与治理 | Web UI、REST(`/v1`)、MCP、CLI;管理端审批、审计、可观测 | [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) |
 
 数据源按需装驱动:`uv sync --extra postgres|mysql|doris|clickhouse|duckdb`(SQLite 内置)。LLM 走 litellm 网关,OpenAI / DeepSeek / Anthropic / 任意兼容端点皆可,每节点可分档——强模型做反思裁决,便宜模型做规划与洞察。见 [配置参考](https://nivane.github.io/trove/reference/config.html)。
 
-管理台(管理端)是同一套栈的另一半:数据源接入、知识库审议、语义模型、判定规则、审计。这是知识库的待审批队列——自动沉淀的教训与示例先进待审批,管理员确认后才进入检索:
+管理台(管理端)是同一套栈的另一半:数据源接入、知识库审议、语义模型与主题域、判定规则、行动提案审批、订阅与审计;用户可见的数据源与主题域按人授权。这是知识库的待审批队列——自动沉淀的教训与示例先进待审批,管理员确认后才进入检索:
 
 <img src="docs/assets/shots/admin-kb-pending.png" alt="Trove 管理台 · 知识库:待审批队列里每条自动学到的教训与示例都带「确认 / 编辑后确认 / 拒绝」,确认后写入认证块(批准人 / 时间)并进入检索" width="880">
 
@@ -203,6 +208,7 @@ docker compose down
 | **字段级脱敏** | 按字段声明 `partial` / `hash` / `null`,在结果出库、任何面向模型的节点之前改写;失败方向取严——该脱敏而读不出 salt 或语义模型,拒绝这次查询,不降级放行 |
 | **不可信内容隔离** | 数据库单元格内容(以及检索、探测结果)先过注入扫描,命中即替换为隔离占位符再进提示;人确认过的 KB 内容不在此列 |
 | **限流、配额与审计** | 按用户令牌桶与每日配额,超限 429;每次执行记录 question / SQL / verdict / 行数 / 耗时 / 错误 |
+| **行动只提案,不执行** | 判定触发只把行动冻结成提案(载荷创建即定稿、幂等键去重),批准后才外送;行动层**不接数据源连接器**——系统自身没有写回业务库的通道,批准、外送与回执各自独立留痕 |
 
 **应用层不是安全边界**——请始终用专用只读账号连接:
 
@@ -231,14 +237,14 @@ docker compose down
 
 ## 文档地图
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 36 页,产品概念到 API 参考,含 29 张真实界面截图的图文指南
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 37 页,产品概念到 API 参考,含 29 张真实界面截图的图文指南
 
 | | |
 |---|---|
 | **上手** | [快速上手](https://nivane.github.io/trove/guide/quickstart.html) · [产品概念](https://nivane.github.io/trove/guide/concepts.html) · [安装部署](https://nivane.github.io/trove/guide/deploy.html) · [接入数据源](https://nivane.github.io/trove/guide/datasource.html) |
 | **图文指南** | [用户指南](https://nivane.github.io/trove/user/ui-tour.html) · [管理台指南](https://nivane.github.io/trove/admin/console.html) · [部署与运维](https://nivane.github.io/trove/ops/deployment.html) |
 | **架构** | [系统架构](https://nivane.github.io/trove/architecture/overview.html) · [查询工作流](https://nivane.github.io/trove/architecture/workflow.html) |
-| **能力** | [数据能力](https://nivane.github.io/trove/capabilities/data.html) · [语义层](https://nivane.github.io/trove/capabilities/semantic.html) · [知识库](https://nivane.github.io/trove/capabilities/kb.html) · [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) · [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) · [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [记忆](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM 网关](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
+| **能力** | [数据能力](https://nivane.github.io/trove/capabilities/data.html) · [语义层](https://nivane.github.io/trove/capabilities/semantic.html) · [知识库](https://nivane.github.io/trove/capabilities/kb.html) · [混合检索](https://nivane.github.io/trove/capabilities/retrieval.html) · [判定规则](https://nivane.github.io/trove/capabilities/decisions.html) · [行动与审批](https://nivane.github.io/trove/capabilities/actions.html) · [Agent 能力](https://nivane.github.io/trove/capabilities/agent.html) · [记忆](https://nivane.github.io/trove/capabilities/memory.html) · [Skills](https://nivane.github.io/trove/capabilities/skills.html) · [LLM 网关](https://nivane.github.io/trove/capabilities/llm-gateway.html) |
 | **运维** | [安全边界](https://nivane.github.io/trove/ops/security.html) · [运维管理](https://nivane.github.io/trove/ops/admin.html) · [可观测性](https://nivane.github.io/trove/ops/observability.html) · [漂移治理](https://nivane.github.io/trove/ops/drift.html) · [评测与回归门](https://nivane.github.io/trove/ops/eval.html) |
 | **参考** | [配置](https://nivane.github.io/trove/reference/config.html) · [CLI](https://nivane.github.io/trove/reference/cli.html) · [API](https://nivane.github.io/trove/reference/api.html) · [MCP](https://nivane.github.io/trove/reference/mcp.html) |
 
