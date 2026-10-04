@@ -77,6 +77,14 @@ The main graph's gen stage is **three top-level nodes** built in `graphs.py` (`m
 - **KB content language must match the question language** (BIRD is English; measured once: a Chinese KB drops English-question accuracy substantially — the dominant gap is few-shot retrieval hits, not generation). Treat this as a qualitative constraint; re-verify on your own eval before relying on the exact number.
 - **Hybrid retrieval = 两路**(`trove/services/retrieval/`):keyword(`pg_bm25` / FTS5)+ dense(pgvector HNSW / 余弦)→ 加权 RRF(`rrf_k` 默认 60,`rrf_weights` 按通道名) → 可选精排。三条设计约束:①**learned-sparse 通道已退役** —— bge-m3 的 sparse head 与 dense 同属一个 backbone,不是独立信号,而它唯一不可替代的场景(中文问题检索英文 KB)超出「KB 语言 == 提问语言」的边界;②**默认不精排**(`rerank_backend` 留空/`auto`/`none` → `None`)—— 默认档曾是确定性 n-gram,其 `coverage_score` 与下游 `_rank_examples` 的 `_sim` 是同一个函数,纯重复计算,关掉反而让 `sim` 里的检索信号变纯;③**召回窗口按库规模自适应** —— `count(datasource) <= _EXHAUSTIVE_SCAN_MAX`(2000)时全量候选不裁剪,超过才按 `limit × 6` 裁。命中 `score` 是**归一化到 [0,1] 的 RRF 分**(RRF 原始分压缩在 ~[0.022, 0.033],不归一化会让 `_fuse_extra_sim` 的 0.5 权重退化成常量偏移)。零 LLM 评测脚本:`eval_retrieval.py` / `eval_hybrid_retrieval.py` / `eval_bird_retrieval.py`(表级召回 + 分路消融)/ `tune_rrf.py`(权重网格)。
 
+### 分析引擎 `trove/services/analysis/`(确定性分解,零 LLM)
+
+驱动「为什么变了」的编排:hop0 总量 → 维度预选 → 分解/比率 shift-share → 下钻 → 驱动器树;`engine.py` 是**全服务唯一 I/O 处**(注入的 `runner` 一跳 SQL,引擎不开连接),`decompose.py`/`expr_tree.py`/`render.py` 纯函数。每跳进 `evidence_queries` 可复算;预算/失败只进 `degraded`,主产物照常交付。
+
+- **统计器械(B1)是纯 stdlib,不引入 numpy**:可复算承诺不外包 —— verdict 是不可编辑审计记录,而 numpy 采样实现历史跨版本变过。`stats.py`:`median/mad(×1.4826)/quantile(type-7)/robust_z/band/bootstrap_ci/effective_n/welch_delta`;seed 一律 `sha256` 派生(**绝不用 `hash()`**);**算不出返回 `None` 绝不返回 0/inf**(MAD=0 → `robust_z=None`);不输出 p 值(n≈8–12 上是伪精度)。`series.py`:块序列规格(grain/lookback/mode/k)——历史窗口 `block_windows`/`same_phase_blocks` 确定性派生 + 1 条 `time_grain` 查询取分布(`compile_series_hop` 只加 plan 键,编译器零改动),块严格早于被测窗口(噪声带混入被测点会自我稀释)。`budget.py` 的 `QueryLedger` 记账每条查询;`total_query_budget` 未显式设置 = 无上限仅记账(老输出逐字节兼容)。
+- **`time_conds` 是半开区间**(`>= start` ∧ `< end + 1 天`):闭区间在 timestamp 列上丢最后一天(sqlite 实测),半开是唯一对 Date/Timestamp 两列语义一致的形式;end 不可解析回退闭区间并如实标注。判定 SQL(`decision/service.py`)、分析桥与引擎共用这一份构造。
+- `decompose` 的并集保序(`dict.fromkeys`,不用 `set()`)、排序键 `(-abs(c), dim)` 二级键 —— 输出不随 `PYTHONHASHSEED` 漂移(三连子进程钉死)。
+
 ### Decision rules `trove/services/decision/` (deterministic verdicts, zero LLM)
 
 Threshold rules **declared in the semantic model's own vocabulary** (metric / dimension / filter — the same shapes `/v1/semantic/query` accepts), evaluated by a deterministic engine; every verdict carries the SQL and the raw rows it was judged on (evidence). Rules live in `.trove/kb/<datasource>/decisions.yml` (inside the git-tracked KB tree).
