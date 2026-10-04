@@ -213,6 +213,34 @@ CLASSES: dict[str, ErrorClass] = {
             recovery=RecoveryAction.NOOP, needs_analysis=False,
             user_msg="Operation was interrupted.",
         ),
+        # ── 行动外送(仅在 context="action" 生效) ─────────────
+        # 外送的失败分成两类判据,决定"重试有没有意义":瞬态(5xx/429/
+        # 超时/连接断)重试有意义;4xx 与配置错(通道没配、URL 不合法、
+        # kind 不认识)是**配置问题**,重试一万次还是同一份错配置。
+        ErrorClass(
+            "ACTION_HTTP_5XX", "action", "error", retryable=True,
+            recovery=RecoveryAction.RETRY_BACKOFF, needs_analysis=False,
+            user_msg="The channel returned a server error; retrying later.",
+        ),
+        ErrorClass(
+            "ACTION_RATE_LIMITED", "action", "warn", retryable=True,
+            recovery=RecoveryAction.RETRY_AFTER, needs_analysis=False,
+            retry_after=True,
+            user_msg="The channel is throttling; waiting before retry.",
+        ),
+        ErrorClass(
+            "ACTION_TIMEOUT", "action", "error", retryable=True,
+            recovery=RecoveryAction.RETRY_BACKOFF, needs_analysis=False,
+            user_msg="The outbound call timed out; retrying later.",
+        ),
+        ErrorClass(
+            "ACTION_CONFIG", "action", "fatal", retryable=False,
+            recovery=RecoveryAction.SURFACE, needs_analysis=False,
+            user_msg=(
+                "The channel rejected the request or is misconfigured "
+                "(4xx/unknown channel); fix the deployment config."
+            ),
+        ),
         # ── 兜底 ──────────────────────────────────────────
         ErrorClass(
             "UNKNOWN", "runtime", "warn", retryable=True,
@@ -232,10 +260,11 @@ DETERMINISTIC_DEAD_END = {
 
 # ── Deterministic lexicon (context-gated, ordered) ────────
 
-# context 取值: "llm" | "sql" | "tool" | "workflow" | "" (不限制)
+# context 取值: "llm" | "sql" | "tool" | "workflow" | "action" | "" (不限制)
 _LLM_CTX = frozenset({"llm"})
 _SQL_CTX = frozenset({"sql", "workflow", ""})
 _TOOL_CTX = frozenset({"tool", ""})
+_ACTION_CTX = frozenset({"action"})
 _ANY = frozenset({""})
 
 # (pattern, class_id, allowed_contexts|None)
@@ -244,6 +273,24 @@ _LEXICON: list[tuple[re.Pattern, str, frozenset[str] | None]] = []
 # tag_error 打的标签:文本前置的显式类别,优先于词典措辞匹配。
 _TAG_RE = re.compile(r"^\s*\[ERR:([A-Z_]+)\]")
 _RULES: list[tuple[str, str, frozenset[str] | None]] = [
+    # ── 行动外送(仅在 action 上下文生效;排在最前,因为下面有若干
+    #    不限定上下文的兜底措辞——在 action 面它们会误判成数据源错) ──
+    (r"\b429\b|rate.?\s?limit|too many requests|quota exceeded|throttl|"
+     r"retry.after",
+     "ACTION_RATE_LIMITED", _ACTION_CTX),
+    (r"\b5\d\d\b|internal server error|bad gateway|gateway timeout|"
+     r"service unavailable|overloaded|upstream",
+     "ACTION_HTTP_5XX", _ACTION_CTX),
+    (r"timed out|timeout|connection (?:reset|refused|closed|aborted|timed out)|"
+     r"broken pipe|unreachable|name or service not known|"
+     r"temporary failure in name resolution|network is unreachable|"
+     r"server disconnected|reset by peer",
+     "ACTION_TIMEOUT", _ACTION_CTX),
+    (r"\b4\d\d\b|unauthorized|forbidden|bad request|"
+     r"not configured|no usable url|names no channel|"
+     r"unknown channel kind|invalid (?:payload|token|channel)",
+     "ACTION_CONFIG", _ACTION_CTX),
+
     # ── LLM 层(仅 LLM 上下文,避免 SQL 文本里数字误伤) ─────
     (r"rate.?\s?limit|too many requests|quota exceeded|throttl|status.?code.?429|\b429\b",
      "LLM_TRANSIENT", _LLM_CTX),
@@ -309,6 +356,13 @@ _RULES: list[tuple[str, str, frozenset[str] | None]] = [
 
 for _pat, _cls, _ctx in _RULES:
     _LEXICON.append((re.compile(_pat, re.I), _cls, _ctx))
+
+# 异常类型名后缀 → 行动外送的瞬态(httpx 家族:超时/连接/协议/DNS)
+_ACTION_TRANSIENT_TYPE = (
+    "Timeout", "TimeoutException", "ConnectError", "ConnectTimeout",
+    "ReadTimeout", "WriteTimeout", "PoolTimeout", "ReadError", "WriteError",
+    "NetworkError", "RemoteProtocolError", "TransportError", "ProxyError",
+)
 
 # 异常类型名后缀 → ds 瞬态(不依赖文本;覆盖各驱动命名差异)
 _DS_TRANSIENT_TYPE = (
@@ -382,8 +436,12 @@ def _status_class(exc: BaseException, context: str) -> ErrorClass | None:
             return CLASSES["LLM_TRANSIENT"]
         if context == "tool":
             return CLASSES["TOOL_TIMEOUT"]
+        if context == "action":
+            return CLASSES["ACTION_TIMEOUT"]
         return CLASSES["SQL_TIMEOUT"]
     name = type(exc).__name__
+    if context == "action" and name.endswith(_ACTION_TRANSIENT_TYPE):
+        return CLASSES["ACTION_TIMEOUT"]
     if name.endswith(_DS_TRANSIENT_TYPE):
         return CLASSES["LLM_TRANSIENT"] if context == "llm" else CLASSES["DS_TRANSIENT"]
     if name in _PYTHON_BUG_TYPE:
@@ -406,8 +464,10 @@ def classify_error(
     Args:
         text: 错误文本(引擎报错/sanitize 后的异常信息,可能为空)。
         exc: 原始异常(强类型信号:HTTP 状态码/内建异常/驱动类型名)。
-        context: 故障面——"llm" | "sql" | "tool" | "workflow";决定
-            LLM/SQL 专属词典的生效范围,避免跨层误分类。
+        context: 故障面——"llm" | "sql" | "tool" | "workflow" | "action";
+            决定各层专属词典的生效范围,避免跨层误分类。``"action"`` 面
+            只回答一个问题:这次外送失败**重试有没有意义**(5xx/429/超时
+            → 有意义;4xx/配置错 → 没意义)。
 
     已显式打标(``[ERR:<id>]``)的文本以标签为准:标签是上游(``tag_error``)
     的既定判定,下游按措辞重猜会把「[ERR:DS_AUTH] 拒绝访问」这类无关键词的

@@ -149,6 +149,26 @@ agent:
     #   preferences: 90
     #   facts: 180
     #   retrieval_log: 90
+  # ── 行动层(提案 → 审批 → 外送;整层默认关)──
+  # enabled 是唯一总开关:false(默认)= 整层拒绝外送(预演 dry_run 仍可用);
+  # 一条能往外发消息的链路,不能靠"配置不在"顺手打开。
+  # action:
+  #   enabled: false
+  #   channels:                  # 目标通道: 名字 → url / secret? / kind?
+  #     ops-alerts:
+  #       url: https://hooks.example.com/services/XXX
+  #       kind: slack            # generic(默认,payload 原样) | slack | feishu | dingtalk | wecom
+  #   approval_ttl_hours: 72     # 提案审批时限,过期由 serve 周期任务清收
+  #   max_payload_bytes: 8192    # 渲染后载荷上限
+  #   max_attempts: 3            # 同一提案的外送尝试上限(失败后显式 retry)
+  #   # ── 护栏(B5;默认全关 = 与旧行为逐字节一致)──
+  #   max_risk: high             # 允许外送的提案风险上限 low/medium/high(high = 不设限)
+  #   rate_limit: 0              # 同通道每分钟外送尝试上限(0 = 不设限)
+  #   retry_backoff_base_s: 0    # 失败自动重试的首个等待秒数(0 = 不自动重试)
+  #   retry_backoff_factor: 2.0  # 指数退避倍增
+  #   retry_backoff_max_s: 3600  # 退避上限(秒)
+  #   重试时点由 (attempts, 最近一次真实投递时刻) 纯派生,零新列、可复算;
+  #   4xx/配置错(含 kind 不认识)不自动重试 —— 同一份错配置重试一万次还是它。
 
 # ── 执行前授权门(设计 §7.2)──
 # 三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层

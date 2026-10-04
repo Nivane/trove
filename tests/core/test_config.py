@@ -702,6 +702,59 @@ class TestActionConfig:
         assert cfg.action.approval_ttl_hours == 72
         assert cfg.action.max_attempts == 3
 
+    def test_channel_kind_defaults_to_generic_and_is_read(self, tmp_path):
+        """通道 kind:缺席 = ``generic``(载荷原样外送,与塑形器不存在时一致)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "action:\n  channels:\n"
+            "    ops-alerts:\n      url: https://hook.example/ops\n"
+            "    slack-room:\n      url: https://hooks.slack.example/x\n"
+            "      kind: slack\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.action.channels["ops-alerts"].kind == "generic"
+        assert cfg.action.channels["slack-room"].kind == "slack"
+
+    def test_guard_fields_default_off_and_are_read(self, tmp_path):
+        """护栏字段必须真的进 config(加载器不读 = 一份永远不生效的配置)。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text("agent:\n  target: openai/gpt-4o\n", encoding="utf-8")
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.action.max_risk == "high"        # 顶格 = 不设限
+        assert cfg.action.rate_limit == 0           # 不限速
+        assert cfg.action.retry_backoff_base_s == 0  # 不自动重试
+        assert cfg.action.retry_backoff_factor == 2.0
+        assert cfg.action.retry_backoff_max_s == 3600
+
+        conf2 = tmp_path / "agent2.yml"
+        conf2.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "action:\n  max_risk: Medium\n  rate_limit: 3\n"
+            "  retry_backoff_base_s: 30\n  retry_backoff_factor: 1.5\n"
+            "  retry_backoff_max_s: 600\n",
+            encoding="utf-8",
+        )
+        cfg2 = ConfigLoader.load_agent_config(str(conf2))
+        assert cfg2.action.max_risk == "medium"     # 归一化到小写
+        assert cfg2.action.rate_limit == 3
+        assert cfg2.action.retry_backoff_base_s == 30
+        assert cfg2.action.retry_backoff_factor == 1.5
+        assert cfg2.action.retry_backoff_max_s == 600
+
+    def test_negative_guards_are_clamped_to_off(self, tmp_path):
+        """负数 = 关(不是"负速率"这类没意义的值);缺省档不该被手滑配置打破。"""
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: openai/gpt-4o\n"
+            "action:\n  rate_limit: -5\n  retry_backoff_base_s: -1\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.action.rate_limit == 0
+        assert cfg.action.retry_backoff_base_s == 0
+
     def test_empty_block_and_absent_block_are_same_tier(self, tmp_path):
         """「有 action 段但没写 enabled」与「完全没有 action 段」同档(False)。"""
         conf = tmp_path / "agent.yml"
