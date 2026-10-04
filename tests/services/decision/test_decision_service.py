@@ -152,12 +152,16 @@ class TestWindowedComparison:
 
     async def test_both_windows_are_actually_filtered(self, svc):
         """Guards against the window silently not being applied — both SQLs
-        must name the time field with a real date range."""
+        must name the time field with a real date range.
+
+        窗口末日按**半开**渲染(``< end + 1 天``):判定 SQL 与桥/分析引擎
+        走同一份 ``time_conds`` —— 闭区间在 timestamp 列上会丢最后一天,
+        而桥是半开,两边对同一窗口会见到不同的天数。"""
         out = await svc.evaluate(rule(), "demo", NOW)
         cur = out.evidence["evidence"]["sql_current"]
         base = out.evidence["evidence"]["sql_baseline"]
-        assert "2026-09-01" in cur and "2026-09-30" in cur
-        assert "2026-08-02" in base and "2026-08-31" in base
+        assert ">= '2026-09-01'" in cur and "< '2026-10-01'" in cur
+        assert ">= '2026-08-02'" in base and "< '2026-09-01'" in base
 
     async def test_message_names_the_group_and_the_numbers(self, svc):
         out = await svc.evaluate(rule(), "demo", NOW)

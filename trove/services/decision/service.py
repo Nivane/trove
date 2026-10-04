@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from trove.core.logging import get_logger
+from trove.services.analysis.engine import time_conds
 from trove.services.decision.expr import DecisionExprError, as_number
 from trove.services.decision.rules import DecisionRule, RuleError, compile_condition
 from trove.services.semantic_layer.query import (
@@ -321,10 +322,10 @@ class DecisionService:
                 "in the semantic model")
         ds, fld = resolved
         ref = f"{ds}.{fld.name}"
-        time_filters = [
-            {"field": ref, "op": ">=", "value": window[0]},
-            {"field": ref, "op": "<=", "value": window[1]},
-        ]
+        # 窗口条件与分析引擎/桥走同一份 ``time_conds``(半开 ``< end+1 天``),
+        # 不再内联闭区间:闭区间在 timestamp 列上丢窗口最后一天,而触发后的
+        # 分析桥是半开 —— 判定和它自己的附录必须对同一窗口看到同一批天数。
+        time_filters = time_conds(ref, window, dialect=dialect)
         try:
             info = build_and_compile(model, _query(time_filters + base_filters),
                                      dialect)
