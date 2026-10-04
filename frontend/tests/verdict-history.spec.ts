@@ -52,6 +52,9 @@ function brief(over: Partial<VerdictBrief> = {}): VerdictBrief {
       rule_digest_changed: false,
       prev_rule_digest: 'sha256:b',
       rule_digest: 'sha256:b',
+      rule_rev_changed: false,
+      prev_rule_rev: 'rev-1',
+      rule_rev: 'rev-1',
       status_change: ['ok', 'alert'],
       trigger: 'fired',
       groups: [],
@@ -91,6 +94,9 @@ const DETAIL: VerdictDetail = {
     rule_digest_changed: true,
     prev_rule_digest: 'sha256:a',
     rule_digest: 'sha256:b',
+    rule_rev_changed: true,
+    prev_rule_rev: 'rev-1',
+    rule_rev: 'rev-2',
     status_change: ['ok', 'alert'],
     trigger: 'fired',
     groups: [{ dim: '华东', change: 'jump', triggered: [true, true], delta_pct: [-0.1, -0.5] }],
@@ -155,6 +161,9 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
             rule_digest_changed: true,
             prev_rule_digest: 'sha256:a',
             rule_digest: 'sha256:b',
+            rule_rev_changed: true,
+            prev_rule_rev: 'rev-1',
+            rule_rev: 'rev-2',
             status_change: ['ok', 'alert'],
             trigger: 'fired',
             groups: [{ dim: '华东', change: 'jump', triggered: [true, true], delta_pct: [-0.1, -0.5] }],
@@ -170,6 +179,64 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
     expect(first).toContain('magnitude jump')
   })
 
+  it('a sibling rule\'s edit does not read as "this rule was edited" (N2)', async () => {
+    // digest 是整份 decisions.yml 的字节 hash:编辑 B 规则,文件摘要变了,
+    // A 规则的相邻两条也会带着 rule_digest_changed=true。rev 是单条规则
+    // 的内容版本 —— 两边都在时只信 rev,不然"规则已修改"会挂在没改过的
+    // 规则头上。
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 2,
+      verdicts: [
+        brief({
+          diff: {
+            prev_id: 1,
+            rule_digest_changed: true,
+            prev_rule_digest: 'sha256:a',
+            rule_digest: 'sha256:b',
+            rule_rev_changed: false,
+            prev_rule_rev: 'rev-1',
+            rule_rev: 'rev-1',
+            status_change: ['ok', 'alert'],
+            trigger: 'fired',
+            groups: [],
+          },
+        }),
+        brief({ id: 1, status: 'ok', triggered: false, message: '', diff: null }),
+      ],
+    })
+    const view = await mountDrawer()
+    const first = view.findAll('.vh-item')[0].text()
+    expect(first).toContain('Now firing')
+    expect(first).not.toContain('Rule edited')
+  })
+
+  it('falls back to the file digest when a legacy row has no rule rev', async () => {
+    // B2 之前的 verdict 没有 rule_rev —— 两把尺都缺 rev 时退回 digest,
+    // 保持老行为而不是把"没记录版本"当成"没被改过"。
+    vi.mocked(fetchVerdicts).mockResolvedValue({
+      datasource: 'demo', rule_id: 'loan-drop', count: 2,
+      verdicts: [
+        brief({
+          diff: {
+            prev_id: 1,
+            rule_digest_changed: true,
+            prev_rule_digest: 'sha256:a',
+            rule_digest: 'sha256:b',
+            rule_rev_changed: false,
+            prev_rule_rev: '',
+            rule_rev: '',
+            status_change: ['ok', 'alert'],
+            trigger: 'fired',
+            groups: [],
+          },
+        }),
+        brief({ id: 1, status: 'ok', triggered: false, message: '', diff: null }),
+      ],
+    })
+    const view = await mountDrawer()
+    expect(view.findAll('.vh-item')[0].text()).toContain('Rule edited')
+  })
+
   it('a dim-less rule reports the trigger once, not twice with a dangling separator', async () => {
     // 无维度规则(整表判定)的唯一分组 dim 是空串:它的 fired 与规则级
     // 触发位是同一件事 —— chip 里只能说一次,且不留悬空的「 · 」。
@@ -182,6 +249,9 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
             rule_digest_changed: false,
             prev_rule_digest: 'sha256:b',
             rule_digest: 'sha256:b',
+            rule_rev_changed: false,
+            prev_rule_rev: 'rev-1',
+            rule_rev: 'rev-1',
             status_change: ['ok', 'alert'],
             trigger: 'fired',
             groups: [{ dim: '', change: 'fired', triggered: [false, true], delta_pct: [-0.06, 3.7] }],
@@ -202,6 +272,9 @@ describe('VerdictHistoryDrawer — 判定历史', () => {
             rule_digest_changed: false,
             prev_rule_digest: 'sha256:b',
             rule_digest: 'sha256:b',
+            rule_rev_changed: false,
+            prev_rule_rev: 'rev-1',
+            rule_rev: 'rev-1',
             status_change: null,
             trigger: null,
             groups: [{ dim: '', change: 'jump', triggered: [true, true], delta_pct: [-0.1, -0.5] }],

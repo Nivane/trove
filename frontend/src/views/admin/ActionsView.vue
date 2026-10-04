@@ -531,6 +531,50 @@
           </el-table-column>
         </el-table>
 
+        <!-- 效果验收(B7 闭环):至多一行 —— 一次测量一个结局。空态文案
+             说清"为什么还没有",而不是留一张看起来像失败的空白表。 -->
+        <div class="actions-field-label">{{ t('actionsEffects', ui.lang) }}</div>
+        <el-table :data="detail.outcomes ?? []" size="small" class="admin-table">
+          <template #empty>
+            <span class="dim">{{ t('actionsEffectsEmpty', ui.lang) }}</span>
+          </template>
+          <el-table-column :label="t('actionsEffectsConclusion', ui.lang)" width="130">
+            <template #default="{ row }">
+              <span class="pill" :class="outcomeBandClass(row)">
+                {{ outcomeLabel(row) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('actionsEffectsDelta', ui.lang)" width="130">
+            <template #default="{ row }">
+              <span class="cell-mono">{{ outcomeDelta(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('actionsEffectsWindow', ui.lang)" min-width="150">
+            <template #default="{ row }">
+              <span class="cell-mono">
+                {{ row.window_start || '—' }} → {{ row.window_end || '—' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('actionsEffectsMethod', ui.lang)" width="90">
+            <template #default="{ row }">
+              <span class="cell-mono">{{ row.method || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('actionsEffectsMeasuredAt', ui.lang)" width="150">
+            <template #default="{ row }">{{ fmtDateTime(row.measured_at) }}</template>
+          </el-table-column>
+        </el-table>
+        <!-- 测量失败的原话要看得见(响亮,不重试):它是"为什么判不了"的唯一线索。 -->
+        <div
+          v-for="o in outcomeErrors"
+          :key="o.id ?? o.measured_at"
+          class="actions-dialog-error cell-mono"
+        >
+          {{ o.error }}
+        </div>
+
         <div v-if="detailVerbs.length" class="actions-detail-verbs">
           <el-button
             v-for="v in detailVerbs"
@@ -570,12 +614,14 @@ import {
   fetchOpenActionProposals,
   isOverdue,
   openProposalCount,
+  outcomeBandClass,
   proposalStatusClass,
   proposalVerbs,
   rejectActionTemplate,
   riskClass,
   templateStatusClass,
   type ActionDecision,
+  type ActionOutcome,
   type ActionProposal,
   type ActionProposalDetail,
   type ActionTab,
@@ -699,6 +745,28 @@ const VERB_KEY: Record<ActionDecision, Parameters<typeof t>[0]> = {
 
 function verbLabel(v: ActionDecision): string {
   return t(VERB_KEY[v], ui.lang)
+}
+
+/** 测量失败的行(每提案至多一行)—— 原话渲染在表格下面。 */
+const outcomeErrors = computed(() =>
+  (detail.value?.outcomes ?? []).filter((o) => o.error),
+)
+
+/** 效果结论 → 文案。四档里 ``null``(判不了)与 ``false``(无变化)是
+ *  两种事实,文案与 pill 类名(outcomeBandClass)都必须分开。 */
+function outcomeLabel(o: ActionOutcome): string {
+  if (o.error) return t('actionsEffectsFailed', ui.lang)
+  if (o.outside_band === true) return t('actionsEffectsOutside', ui.lang)
+  if (o.outside_band === false) return t('actionsEffectsNoChange', ui.lang)
+  return t('actionsEffectsUndecided', ui.lang)
+}
+
+/** delta + pct;两者都可缺(判不了的那档),缺就 '—',不补零。 */
+function outcomeDelta(o: ActionOutcome): string {
+  if (o.delta == null && o.pct == null) return '—'
+  const d = o.delta == null ? '' : String(Math.round(o.delta * 100) / 100)
+  const p = o.pct == null ? '' : `${(o.pct * 100).toFixed(1)}%`
+  return [d, p].filter(Boolean).join(' · ')
 }
 
 const VERB_HINT_KEY: Record<ActionDecision, Parameters<typeof t>[0]> = {

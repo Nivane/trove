@@ -166,6 +166,90 @@ describe('DecisionsView noise band (B2)', () => {
   })
 })
 
+describe('DecisionsView verdict quality (B7)', () => {
+  function qualityPayload(over: Record<string, unknown> = {}) {
+    const bucketA = {
+      key: 'r-a@rev-cur1', rule_id: 'r-a', rule_rev: 'rev-cur1',
+      total: 12, ok: 9, alert: 2, error: 1, triggered: 2,
+      first_at: '2026-09-01T00:00:00', last_at: '2026-10-01T00:00:00',
+      effects: { measured: 4, effective: 3, no_effect: 1, unverifiable: 0, errors: 0 },
+      decided: 4, triggered_rate: 0.1667, effective_rate: 0.75,
+      insufficient: [], rule_declared: true, rule_rev_current: true,
+    }
+    const bucketGone = {
+      key: 'r-gone@rev_unknown', rule_id: 'r-gone', rule_rev: 'rev_unknown',
+      total: 2, ok: 2, alert: 0, error: 0, triggered: 0,
+      first_at: '2026-09-01T00:00:00', last_at: '2026-09-02T00:00:00',
+      effects: { measured: 0, effective: 0, no_effect: 0, unverifiable: 0, errors: 0 },
+      decided: 0, triggered_rate: 0, effective_rate: null,
+      insufficient: ['few_verdicts', 'no_effects'],
+      rule_declared: false, rule_rev_current: null,
+    }
+    return {
+      datasource: 'demo', digest: 'abc123', limit: 500,
+      verdicts_read: 14, effects_read: 4,
+      buckets: [bucketA, bucketGone],
+      summary: {
+        buckets: 2, total: 14, ok: 11, alert: 2, error: 1, triggered: 2,
+        triggered_rate: 0.14,
+        effects: { measured: 4, effective: 3, no_effect: 1, unverifiable: 0, errors: 0 },
+        decided: 4, effective_rate: 0.75,
+      },
+      degraded: [],
+      ...over,
+    }
+  }
+
+  function mockQuality(quality: unknown) {
+    ;(apiGet as any).mockImplementation(async (path: string) => {
+      if (path.startsWith('/v1/catalog/datasources')) return DSOURCES
+      if (path.includes('/decisions/quality')) return quality
+      return { rules: [rule('r-a')], issues: [], digest: 'abc123' }
+    })
+  }
+
+  it('renders the buckets with revision state and gated rates', async () => {
+    mockQuality(qualityPayload())
+    const view = await mountView('?ds=demo')
+    const text = view.text()
+    // 分桶键的一半:版本,以及它和当前文件的关系(三态 + 已删除)。
+    expect(text).toContain('Current revision')
+    expect(text).toContain('Rule deleted')
+    expect(text).toContain('75%')          // 分母够 → 给比率
+    // 分母不够 → 不给比率,而是说清为什么。
+    expect(text).toContain('Sample too small')
+    expect(text).toContain('no measurements yet')
+    expect(text).toContain('few verdicts')
+  })
+
+  it('says the action layer is missing instead of showing an empty effects column', async () => {
+    mockQuality(qualityPayload({
+      degraded: [{ stage: 'effects', reason: 'action_layer_absent' }],
+      effects_read: 0,
+    }))
+    const view = await mountView('?ds=demo')
+    expect(view.text()).toContain('Action layer not wired')
+  })
+
+  it('answers an empty history with words, not a blank table', async () => {
+    mockQuality(qualityPayload({ buckets: [], summary: { ...qualityPayload().summary, buckets: 0 } }))
+    const view = await mountView('?ds=demo')
+    expect(view.text()).toContain('No verdict history for this datasource yet')
+  })
+
+  it('renders no quality section at all when the report cannot be read', async () => {
+    // 409(本进程没接判定存储)与网络失败同路:规则表照渲染,这一节不装。
+    ;(apiGet as any).mockImplementation(async (path: string) => {
+      if (path.startsWith('/v1/catalog/datasources')) return DSOURCES
+      if (path.includes('/decisions/quality')) throw new Error('409')
+      return { rules: [rule('r-a')], issues: [], digest: 'abc123' }
+    })
+    const view = await mountView('?ds=demo')
+    expect(view.text()).not.toContain('Verdict quality')
+    expect(ruleIds(view)).toEqual(['r-a'])
+  })
+})
+
 describe('DecisionsView table layout (F1)', () => {
   it('pins the verdict-history column to the right edge of the table', async () => {
     mockGet({ demo: [rule('r-demo')] })
