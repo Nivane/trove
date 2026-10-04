@@ -97,7 +97,12 @@ const GROUP_LABELS: Record<string, string> = {
 function diffSummary(d: VerdictDetail['diff']): string {
   if (!d) return t('decisionsDiffBoundary', ui.lang)
   const bits: string[] = []
-  if (d.rule_digest_changed) bits.push(t('decisionsDiffDigest', ui.lang))
+  // N2:digest 是整份 decisions.yml 的字节 hash —— 编辑别的规则也会亮。
+  // rev 两边都在时只信 rev("这条规则被改过");rev 缺席(B2 之前的行)才
+  // 退回 digest,保持老行为。
+  const revComparable = Boolean(d.prev_rule_rev) && Boolean(d.rule_rev)
+  const ruleChanged = revComparable ? d.rule_rev_changed : d.rule_digest_changed
+  if (ruleChanged) bits.push(t('decisionsDiffDigest', ui.lang))
   if (d.trigger === 'fired') bits.push(t('decisionsDiffFired', ui.lang))
   if (d.trigger === 'cleared') bits.push(t('decisionsDiffCleared', ui.lang))
   for (const g of d.groups) {

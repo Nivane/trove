@@ -144,6 +144,39 @@ export interface ActionDelivery {
   attempted_at: string
 }
 
+/**
+ * 一次效果测量(B7 闭环验收;每提案至多一行)。
+ *
+ * ``outside_band`` 是**三态**且中间那档是要点:
+ *   · ``true``  —— 行动后超出噪声带(有可辨识的变化);
+ *   · ``false`` —— 行动后无可辨识变化:这是一档结论,不是失败,
+ *     也不是"没测出来";
+ *   · ``null``  —— 判不了(带不可用 / 对照组缺失),由 ``error`` 或
+ *     ``observed`` 说原因。
+ * 三态必须渲染成三种样子,把 null 与 false 混同就是在替数据说谎。
+ */
+export interface ActionOutcome {
+  id?: number
+  proposal_id: string
+  measured_at: string
+  window_start: string
+  window_end: string
+  metric: string
+  /** 测量所依据的规则内容版本(质量回评分桶键的一半)。 */
+  rule_rev: string
+  delta: number | null
+  pct: number | null
+  outside_band: boolean | null
+  z: number | null
+  /** its | its+did —— 有对照腿时方法升级,数值始终来自 ITS。 */
+  method: string
+  confidence: number | null
+  /** 完整测量记录(窗口/带/块/组/SQL)—— 可复算承诺的载体。 */
+  observed: Record<string, unknown>
+  /** 非空 = 测量失败(响亮、一次性,不重试)。 */
+  error: string
+}
+
 export interface ActionProposalList {
   proposals: ActionProposal[]
   /** 状态 → 计数(status_counts 的真实 COUNT)。 */
@@ -155,8 +188,18 @@ export interface ActionProposalDetail {
   proposal: ActionProposal
   approvals: ActionApproval[]
   deliveries: ActionDelivery[]
+  /** 空列表 = 还没测(未配置测量 / 期没滚过行动日),不是失败。 */
+  outcomes: ActionOutcome[]
   /** 已过有效期 —— 清收任务会把它置为 expired,审批闸自己也会挡。 */
   stale: boolean
+}
+
+/** 效果结论 → pill 类名:四档各不相同(尤其 null ≠ false)。 */
+export function outcomeBandClass(o: ActionOutcome): string {
+  if (o.error) return 'pill-danger'
+  if (o.outside_band === true) return 'pill-accent'
+  if (o.outside_band === false) return 'pill-neutral'
+  return 'pill-warn'
 }
 
 /* ── 模板 ─────────────────────────────────────────────── */

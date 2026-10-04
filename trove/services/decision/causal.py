@@ -41,7 +41,30 @@ from __future__ import annotations
 from statistics import fmean
 from typing import Any, Sequence
 
+from trove.services.analysis.effect import did_2x2
 from trove.services.analysis.stats import MIN_BLOCKS
+
+#: 公式本体在 ``analysis/effect.py``(B7 搬下去):判定侧的升级梯与验收
+#: 侧的净效应估计**必须是字面同一份 2×2** —— 两处各写一遍,「判定看到
+#: 的净效应」与「验收算出的净效应」迟早对不上,而那是这一层最不能出的
+#: 错。这里 re-export,既有 import 点(service._causal_stage 与测试)不变。
+__all__ = [
+    "CAUSAL_NOTE",
+    "CROSSES_ZERO_BAND",
+    "DEFAULT_CAUSAL_MODE",
+    "DEFAULT_PLACEBO_BLOCKS",
+    "DEFAULT_TOLERANCE",
+    "LADDER_ASSUMPTIONS",
+    "assumptions_for",
+    "causal_line",
+    "crosses_zero",
+    "did_2x2",
+    "did_se",
+    "donor_counterfactual",
+    "ladder_decision",
+    "parallel_trends",
+    "placebo_pairs",
+]
 
 #: ``causal.mode`` 默认值(闭集在 ``rules.CAUSAL_MODES``)。
 DEFAULT_CAUSAL_MODE = "auto"
@@ -90,23 +113,7 @@ def _f(value: Any) -> float | None:
 
 
 # ── L2 差中差 ─────────────────────────────────────────────
-
-
-def did_2x2(
-    t_pre: Any, t_post: Any, c_pre: Any, c_post: Any,
-) -> dict[str, Any] | None:
-    """2×2 差中差(手算公式,零模型):``ATT = (T_post−T_pre) − (C_post−C_pre)``。
-
-    任一值缺失/非数 → ``None``(判不了,不拿 0 装数)。
-    """
-    t0, t1, c0, c1 = (_f(t_pre), _f(t_post), _f(c_pre), _f(c_post))
-    if None in (t0, t1, c0, c1):
-        return None
-    return {
-        "att": (t1 - t0) - (c1 - c0),
-        "treated_delta": t1 - t0,
-        "control_delta": c1 - c0,
-    }
+# ``did_2x2`` 的定义在文件顶端 re-export(本体:analysis/effect.py)。
 
 
 def placebo_pairs(

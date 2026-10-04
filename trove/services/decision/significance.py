@@ -29,11 +29,23 @@ from trove.services.analysis.stats import (
     Band,
     band,
     bootstrap_ci,
+    confidence_from_margin,
     effective_n,
     low_n,
     outside,
     robust_z,
 )
+
+#: 本模块的公开出口(B7 起 ``confidence_from_margin`` 的公式本体搬到
+#: ``analysis/stats.py`` —— 验收侧要用同一个公式,而 analysis 不得
+#: 反向依赖 decision;这里 re-export,既有 import 点逐字不变)。
+__all__ = [
+    "CONFIDENCE_NOTE",
+    "band_line",
+    "build_band_payload",
+    "confidence_from_margin",
+    "gate",
+]
 
 #: 证据节与字段文档共用的限定语 —— 出口处必须出现,防止被读成概率。
 CONFIDENCE_NOTE = (
@@ -44,23 +56,6 @@ CONFIDENCE_NOTE = (
 #: 「判不了」的 band.degraded 原因(带不可用的硬原因;insufficient_n 另算:
 #: 带可能算得出,但块数不足时**不予确认**,见 gate)。
 _HARD_DEGRADED = ("no_data", "zero_scale")
-
-
-def confidence_from_margin(z: float | None, k: float) -> float | None:
-    """稳健 z → 位置分数 ∈ [0,1]((|z|−k)/k 截断)。**不是概率。**
-
-    z 算不出 / k 非法(≤0)→ None(判不了,不返回 0)。恰在带缘
-    (|z| = k)→ 0.0;两倍阈值(|z| = 2k)→ 1.0 封顶。
-    """
-    if z is None:
-        return None
-    try:
-        zz, kk = abs(float(z)), float(k)
-    except (TypeError, ValueError):
-        return None
-    if kk <= 0.0:
-        return None
-    return min(max((zz - kk) / kk, 0.0), 1.0)
 
 
 def build_band_payload(

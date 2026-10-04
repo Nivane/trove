@@ -6,13 +6,15 @@ like every other internal store — every step individually idempotent, and the
 recorded version reflects history rather than config, so a fresh database, a
 legacy one and a retry after a failed migration all take one code path.
 
-Three tables, three jobs:
+Four tables, four jobs:
 
 - ``proposals`` — the outbound item and its lifecycle. The rendered payload is
   stored here (frozen at creation): what was approved is what is sent.
 - ``approvals`` — append-only human decisions. Who approved what, when, with
   what comment. Never updated, never deleted.
 - ``deliveries`` — append-only outbound receipts (dispatch attempts and acks).
+- ``outcomes`` — append-only effect measurements (B7): what the numbers did
+  after a dispatch, one row per proposal, written by ``measure_due``.
 
 The unique index on ``idempotency_key`` is the dedup guarantee, enforced by
 the database rather than by a read-then-write in the service: two scheduler
@@ -29,7 +31,12 @@ from pathlib import Path
 from typing import Any
 
 from trove.core.logging import get_logger
-from trove.services.action.models import ActionProposal, Approval, Delivery
+from trove.services.action.models import (
+    ActionProposal,
+    Approval,
+    Delivery,
+    Outcome,
+)
 
 logger = get_logger(__name__)
 
@@ -46,10 +53,20 @@ _PROPOSAL_COLUMNS = (
     " dispatched_at, attempts, error"
 )
 
+#: JOIN 里引用 proposals 列时的 ``p.`` 前缀形态 —— 从常量**派生**,不手抄:
+#: 两份列表逐字漂移是加列时最安静的那种错(SELECT 错位)。
+_PROPOSAL_COLUMNS_P = ", ".join(
+    f"p.{c.strip()}" for c in _PROPOSAL_COLUMNS.split(","))
+
 _APPROVAL_COLUMNS = "id, proposal_id, user_id, action, comment, created_at"
 _DELIVERY_COLUMNS = (
     "id, proposal_id, channel, status, http_status, response_excerpt, error,"
     " attempted_at"
+)
+_OUTCOME_COLUMNS = (
+    "id, proposal_id, measured_at, window_start, window_end, metric,"
+    " rule_rev, delta, pct, outside_band, z, method, confidence,"
+    " observed_json, error"
 )
 
 _PROPOSALS_SQL = """
@@ -130,6 +147,33 @@ _DELIVERIES_IDX = (
     "ON deliveries (proposal_id, id)"
 )
 
+_OUTCOMES_SQL = """
+CREATE TABLE IF NOT EXISTS outcomes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id   TEXT NOT NULL,
+    measured_at   TEXT NOT NULL,
+    window_start  TEXT NOT NULL DEFAULT '',
+    window_end    TEXT NOT NULL DEFAULT '',
+    metric        TEXT NOT NULL DEFAULT '',
+    rule_rev      TEXT NOT NULL DEFAULT '',
+    delta         REAL,
+    pct           REAL,
+    outside_band  INTEGER,
+    z             REAL,
+    method        TEXT NOT NULL DEFAULT 'its',
+    confidence    REAL,
+    observed_json TEXT NOT NULL DEFAULT '{}',
+    error         TEXT NOT NULL DEFAULT ''
+)
+"""
+
+#: 到期面查"这条提案测过没有"走 (proposal_id, id);质量汇总按 proposal
+#: 的 datasource 过滤,依赖 proposals 既有的 ds 索引。
+_OUTCOMES_IDX = (
+    "CREATE INDEX IF NOT EXISTS idx_action_outcomes_proposal "
+    "ON outcomes (proposal_id, id)"
+)
+
 #: Columns ``update_proposal`` may touch. Everything else on a proposal is
 #: either immutable (payload, key, template) or written once at insert.
 _UPDATABLE = ("status", "decided_at", "dispatched_at", "attempts", "error")
@@ -145,6 +189,11 @@ def _migrations():
             ops=[_PROPOSALS_SQL, _PROPOSALS_STATUS_IDX, _PROPOSALS_DS_IDX,
                  _PROPOSALS_IDEM_IDX, _APPROVALS_SQL, _APPROVALS_IDX,
                  _DELIVERIES_SQL, _DELIVERIES_IDX],
+        ),
+        Migration(
+            version=2,
+            description="闭环验收(B7):outcomes 表(效果测量,一提案一行)+ 提案索引",
+            ops=[_OUTCOMES_SQL, _OUTCOMES_IDX],
         ),
     ]
 
@@ -203,6 +252,20 @@ def _row_to_delivery(row: Any) -> Delivery:
         status=row[3] or "sent", http_status=row[4],
         response_excerpt=row[5] or "", error=row[6] or "",
         attempted_at=row[7] or "",
+    )
+
+
+def _row_to_outcome(row: Any) -> Outcome:
+    band = row[9]
+    return Outcome(
+        id=row[0], proposal_id=row[1], measured_at=row[2] or "",
+        window_start=row[3] or "", window_end=row[4] or "",
+        metric=row[5] or "", rule_rev=row[6] or "",
+        delta=row[7], pct=row[8],
+        # 0/1/NULL 三态:None 是「判不了」,绝不能折成 False。
+        outside_band=None if band is None else bool(band),
+        z=row[10], method=row[11] or "its", confidence=row[12],
+        observed=_loads(row[13], {}), error=row[14] or "",
     )
 
 
@@ -467,5 +530,98 @@ class ActionStore:
                 (str(channel), str(since_iso)),
             )
             return [str(r[0]) async for r in cursor]
+        finally:
+            await conn.close()
+
+    # ── outcomes(闭环验收,B7) ──────────────────────────
+
+    async def record_outcome(self, o: Outcome) -> int:
+        """追加一行测量记录(只增不改;同一提案重复写入 = 调用方的错)。"""
+        band = None if o.outside_band is None else int(bool(o.outside_band))
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                """INSERT INTO outcomes
+                   (proposal_id, measured_at, window_start, window_end,
+                    metric, rule_rev, delta, pct, outside_band, z, method,
+                    confidence, observed_json, error)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (o.proposal_id, o.measured_at, o.window_start, o.window_end,
+                 o.metric, o.rule_rev, o.delta, o.pct, band, o.z, o.method,
+                 o.confidence, _dump(o.observed), o.error),
+                need_lastrowid=True,
+            )
+            await conn.commit()
+            return int(getattr(cursor, "lastrowid", 0) or 0)
+        finally:
+            await conn.close()
+
+    async def list_outcomes(self, proposal_id: str) -> list[Outcome]:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                f"SELECT {_OUTCOME_COLUMNS} FROM outcomes"
+                " WHERE proposal_id = ? ORDER BY id",
+                (str(proposal_id),),
+            )
+            return [_row_to_outcome(r) async for r in cursor]
+        finally:
+            await conn.close()
+
+    async def list_unmeasured_proposals(
+        self, statuses: tuple[str, ...], *, limit: int = 50,
+    ) -> list[ActionProposal]:
+        """已外送、尚无测量记录的提案(LEFT JOIN,一条查询)。
+
+        闭环验收的到期面:``status IN (...)`` ∧ 无 outcome 行 ——
+        **一次测量一个结局**,测过(哪怕是 error 行)就不再是候选。
+        ``dispatched_at`` 升序:等得最久的先测。
+        """
+        marks = ",".join("?" for _ in statuses)
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                f"SELECT {_PROPOSAL_COLUMNS_P} FROM proposals p"
+                " LEFT JOIN outcomes o ON o.proposal_id = p.id"
+                f" WHERE p.status IN ({marks}) AND o.id IS NULL"
+                " ORDER BY p.dispatched_at, p.id LIMIT ?",
+                tuple(str(s) for s in statuses) + (int(limit),),
+            )
+            return [_row_to_proposal(r) async for r in cursor]
+        finally:
+            await conn.close()
+
+    async def list_effect_entries(
+        self, datasource: str, *, limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """某数据源的效果条目(JOIN proposals)—— ``decision/score.py`` 的食粮。
+
+        ``rule_id`` 从提案行取(提案是不变的),``rule_rev`` 在结果行上
+        (测量自己记的)。投影在这里做:SQL 是 store 的事,回评是纯函数
+        的事。取**最近** ``limit`` 条(id 降序)—— 质量看的是当前这一段。
+        """
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT p.rule_id, o.rule_rev, o.outside_band, o.error,"
+                " o.measured_at, o.window_end, o.proposal_id, o.pct"
+                " FROM outcomes o JOIN proposals p ON p.id = o.proposal_id"
+                " WHERE p.datasource = ? ORDER BY o.id DESC LIMIT ?",
+                (str(datasource), int(limit)),
+            )
+            out: list[dict[str, Any]] = []
+            async for row in cursor:
+                band = row[2]
+                out.append({
+                    "rule_id": str(row[0] or ""),
+                    "rule_rev": str(row[1] or ""),
+                    "outside_band": None if band is None else bool(band),
+                    "error": str(row[3] or ""),
+                    "measured_at": str(row[4] or ""),
+                    "window_end": str(row[5] or ""),
+                    "proposal_id": str(row[6] or ""),
+                    "pct": row[7],
+                })
+            return out
         finally:
             await conn.close()

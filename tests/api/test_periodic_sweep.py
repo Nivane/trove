@@ -229,6 +229,147 @@ def test_lifespan_no_tick_when_nothing_is_armed():
     assert actions.calls == 0
 
 
+# ── 闭环验收测量腿(``trove.api.app._measure_outcomes``)────
+#
+# 挂在小时/天级的周期清扫上(测量的语义是 N 天,不占 30s 的 tick ——
+# 与自动重试腿挂在 tick 上互为镜像)。默认关:outcome_after_days 没配时
+# 循环都不为该腿启动;保留清理关着而测量开着时,循环按小时走。
+
+class _FakeMeasureActions:
+    """两腿都在一个对象上(测量 + 过期),整轮清扫不必换 state。"""
+
+    def __init__(self, *, armed: bool = True) -> None:
+        self.calls = 0
+        self.expires = 0
+        self.outcome_after_days = 7 if armed else 0
+
+    async def measure_due(self) -> int:
+        self.calls += 1
+        return 2
+
+    async def expire_due(self) -> int:
+        self.expires += 1
+        return 0
+
+
+async def test_measure_outcomes_calls_the_service():
+    from trove.api.app import _measure_outcomes
+
+    actions = _FakeMeasureActions()
+    await _measure_outcomes(_actions_app(actions))
+    assert actions.calls == 1
+
+
+async def test_measure_outcomes_skips_missing_layer():
+    from trove.api.app import _measure_outcomes
+
+    await _measure_outcomes(_actions_app(None))  # no-op, no exception
+
+
+async def test_measure_outcomes_skips_when_not_armed():
+    from trove.api.app import _measure_outcomes
+
+    actions = _FakeMeasureActions(armed=False)
+    await _measure_outcomes(_actions_app(actions))
+    assert actions.calls == 0                    # 没配置 → 连服务都不叫
+
+
+async def test_measure_outcomes_swallows_failures():
+    from trove.api.app import _measure_outcomes
+
+    class _BrokenActions:
+        outcome_after_days = 7
+
+        async def measure_due(self) -> int:
+            raise RuntimeError("boom")
+
+    await _measure_outcomes(_actions_app(_BrokenActions()))  # never raises
+
+
+def test_measure_armed_follows_the_config():
+    from trove.api.app import _measure_armed
+
+    assert _measure_armed(_FakeMeasureActions(armed=True)) is True
+    assert _measure_armed(_FakeMeasureActions(armed=False)) is False
+    assert _measure_armed(None) is False
+    assert _measure_armed(object()) is False     # 没有该字段的对象不炸
+
+
+def test_lifespan_sweep_measures_when_retention_is_off(monkeypatch):
+    """保留清理关着、测量开着 → 循环仍然按小时走测量腿。
+
+    （老行为是 ``interval<=0`` 直接 return:测量腿会被"没开保留清理"
+    顺带关掉 —— 两件不相干的事被一条条件绑在一起,正是这条测试钉的
+    缝;maintenance 组件在生产里总是装配的,这里也必须给,否则测的
+    是"循环压根没起"。）"""
+    import asyncio
+
+    from trove.core.config import RetentionConfig
+
+    class _FakeMaintenance:
+        def __init__(self):
+            self.sweeps = 0
+
+        async def run_all(self):
+            self.sweeps += 1
+            return {}
+
+    real_sleep = asyncio.sleep
+
+    async def short_sleep(delay: float) -> None:
+        await real_sleep(0.05 if delay >= 3600 else delay)
+
+    monkeypatch.setattr("trove.api.app.asyncio.sleep", short_sleep)
+    actions = _FakeMeasureActions(armed=True)
+    maintenance = _FakeMaintenance()
+    app = create_app({
+        "session_manager": object(),
+        "connector_registry": _FakeRegistry(),
+        "config": SimpleNamespace(
+            retention=RetentionConfig(sweep_interval_hours=0)),
+        "maintenance": maintenance,
+        "actions": actions,
+    }, allow_null_auth=True)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        _wait_until(lambda: actions.calls >= 1)
+    assert actions.calls >= 1
+    # 保留清理整段跳过:只有启动那一次(不在周期里反复跑)
+    assert maintenance.sweeps == 1
+
+
+def test_lifespan_periodic_sweep_measures_outcomes(monkeypatch):
+    """保留清理与测量都开着:一轮完整清扫的末尾走到测量腿。"""
+    import asyncio
+
+    from trove.core.config import RetentionConfig
+
+    class _FakeMaintenance:
+        async def run_all(self):
+            return {}
+
+    real_sleep = asyncio.sleep
+
+    async def short_sleep(delay: float) -> None:
+        await real_sleep(0.05 if delay >= 3600 else delay)
+
+    monkeypatch.setattr("trove.api.app.asyncio.sleep", short_sleep)
+    actions = _FakeMeasureActions(armed=True)
+    app = create_app({
+        "session_manager": object(),
+        "connector_registry": _FakeRegistry(),
+        "config": SimpleNamespace(
+            retention=RetentionConfig(sweep_interval_hours=1)),
+        "maintenance": _FakeMaintenance(),
+        "actions": actions,
+    }, allow_null_auth=True)
+    with TestClient(app) as c:
+        assert c.get("/v1/health").status_code == 200
+        _wait_until(lambda: actions.calls >= 1)
+    assert actions.calls >= 1
+    assert actions.expires >= 1                  # 同一轮里两条腿都跑了
+
+
 def test_lifespan_periodic_sweep_expires_action_proposals(monkeypatch):
     """周期清扫真的走到行动过期腿。
 

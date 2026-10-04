@@ -150,6 +150,80 @@
       </el-table>
     </div>
 
+    <!-- 判定质量(B7):判定史与行动效果的回评。拿不到(本进程未接判定
+         存储 / 文件损坏)就整节不渲染 —— 这是读视图,读不到不装;桶为空
+         = 还没有判定史,照答并说明。 -->
+    <div v-if="quality" class="admin-card">
+      <div class="card-header">
+        <div class="card-title">{{ t('decisionsQuality', ui.lang) }}</div>
+        <div class="card-actions">
+          <span class="pill pill-ok">{{ quality.summary.ok }}</span>
+          <span class="pill pill-warn">{{ quality.summary.alert }}</span>
+          <span class="pill pill-danger">{{ quality.summary.error }}</span>
+        </div>
+      </div>
+      <p class="view-desc decisions-quality-desc">
+        {{ t('decisionsQualityDesc', ui.lang) }}
+      </p>
+      <div v-if="quality.degraded.length" class="decisions-quality-degraded">
+        {{ t('decisionsQualityEffectsDegraded', ui.lang) }}
+      </div>
+      <div v-if="!quality.buckets.length" class="decisions-quality-empty dim">
+        {{ t('decisionsQualityEmpty', ui.lang) }}
+      </div>
+      <el-table v-else :data="quality.buckets" class="admin-table" size="small">
+        <el-table-column :label="t('decisionsQualityRule', ui.lang)" min-width="150">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ row.rule_id || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('decisionsQualityRev', ui.lang)" width="180">
+          <template #default="{ row }">
+            <div class="decisions-quality-rev">
+              <span class="cell-mono dim">{{ revShort(row.rule_rev) }}</span>
+              <span class="pill" :class="revClass(row)">{{ revLabel(row) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <!-- 判定(正常/触发/失败)与效果(有效/无变化/判不了/失败)分开计:
+             一条全是 error 的规则与一条判了但从没动到数的规则,是两种问题。 -->
+        <el-table-column :label="t('decisionsQualityVerdicts', ui.lang)" width="170">
+          <template #default="{ row }">
+            <span class="cell-mono">
+              {{ row.ok }} /
+              <span class="decisions-quality-alert">{{ row.alert }}</span> /
+              <span class="decisions-quality-danger">{{ row.error }}</span>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('decisionsQualityTriggeredRate', ui.lang)" width="100">
+          <template #default="{ row }">
+            <span class="cell-mono">{{ rate(row.triggered_rate) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('decisionsQualityEffects', ui.lang)" width="180">
+          <template #default="{ row }">
+            <span class="cell-mono">
+              {{ row.effects.effective }} / {{ row.effects.no_effect }} /
+              {{ row.effects.unverifiable }} / {{ row.effects.errors }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column :label="t('decisionsQualityEffectiveRate', ui.lang)" min-width="170">
+          <template #default="{ row }">
+            <span v-if="row.effective_rate != null" class="cell-mono">
+              {{ rate(row.effective_rate) }}
+            </span>
+            <!-- 分母不够就不给比率 —— 近似值比没有更糟;说清为什么。 -->
+            <span v-else class="dim decisions-quality-insufficient">
+              {{ t('decisionsQualityRateGated', ui.lang) }}
+              · {{ row.insufficient.map(insuffLabel).join(' / ') }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+    </div>
+
     <VerdictHistoryDrawer
       v-model="historyOpen"
       :datasource="values.ds"
@@ -193,7 +267,13 @@ import { notifySuccess, toastError } from '../../utils/notify'
 import { useListQuery } from '../../composables/useListQuery'
 import TableEmpty from '../../components/admin/TableEmpty.vue'
 import VerdictHistoryDrawer from '../../components/admin/VerdictHistoryDrawer.vue'
-import { verdictStatusClass, type VerdictBrief } from '../../api/decisions'
+import {
+  fetchDecisionQuality,
+  verdictStatusClass,
+  type DecisionQuality,
+  type QualityBucket,
+  type VerdictBrief,
+} from '../../api/decisions'
 import PageHeader from '../../components/base/PageHeader.vue'
 import type { DatasourceInfo } from '../../api/types'
 
@@ -247,6 +327,8 @@ const crumbs = computed(() => [
 const rules = ref<RuleRow[]>([])
 const issues = ref<string[]>([])
 const digest = ref('')
+/** 判定质量回评;null = 读不到(未接 store / 文件损坏)→ 整节不渲染。 */
+const quality = ref<DecisionQuality | null>(null)
 const loading = ref(false)
 const saving = ref(false)
 const editorOpen = ref(false)
@@ -263,6 +345,42 @@ function severityClass(sev: string): string {
   if (sev === 'critical') return 'pill-danger'
   if (sev === 'warning') return 'pill-warn'
   return 'pill-neutral'
+}
+
+/* ── 判定质量的展示口径 ────────────────────────────────── */
+
+function rate(v: number | null): string {
+  return v == null ? '—' : `${(v * 100).toFixed(0)}%`
+}
+
+function revShort(rev: string): string {
+  return !rev || rev === 'rev_unknown' ? '—' : rev.slice(0, 8)
+}
+
+/** 桶 ↔ 当前文件的版本关系,三态 + 「规则已删」共四档,文案各不相同。 */
+function revLabel(row: QualityBucket): string {
+  if (!row.rule_declared) return t('decisionsQualityRuleGone', ui.lang)
+  if (row.rule_rev_current === true) return t('decisionsQualityRevCurrent', ui.lang)
+  if (row.rule_rev_current === false) return t('decisionsQualityRevOld', ui.lang)
+  return t('decisionsQualityRevUnknown', ui.lang)
+}
+
+function revClass(row: QualityBucket): string {
+  if (!row.rule_declared) return 'pill-neutral'
+  if (row.rule_rev_current === true) return 'pill-ok'
+  if (row.rule_rev_current === false) return 'pill-warn'
+  return 'pill-neutral'
+}
+
+const INSUFF_KEY: Record<string, Parameters<typeof t>[0]> = {
+  few_verdicts: 'decisionsQualityFewVerdicts',
+  few_effects: 'decisionsQualityFewEffects',
+  no_effects: 'decisionsQualityNoEffects',
+}
+
+function insuffLabel(code: string): string {
+  const key = INSUFF_KEY[code]
+  return key ? t(key, ui.lang) : code
 }
 
 async function loadDatasources() {
@@ -297,6 +415,19 @@ async function load() {
     toastError(e)
   } finally {
     loading.value = false
+  }
+  await loadQuality()
+}
+
+/** 质量的第二条腿:它读不到不影响规则表 —— 静默收起整节(422 的 toast
+ *  已由规则表那条给出,重复报两次只是噪声)。返回体没有 ``buckets``
+ *  就不是一份质量报告(代理/旧后端),同样按读不到处理。 */
+async function loadQuality() {
+  try {
+    const body = await fetchDecisionQuality(values.ds)
+    quality.value = body && Array.isArray(body.buckets) ? body : null
+  } catch {
+    quality.value = null
   }
 }
 
@@ -371,6 +502,36 @@ onMounted(async () => {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+.decisions-quality-desc {
+  padding: 0 var(--sp-5) var(--sp-2);
+}
+.decisions-quality-degraded {
+  margin: 0 var(--sp-5) var(--sp-3);
+  padding: 6px 10px;
+  font-size: var(--fs-2xs);
+  color: var(--el-color-warning);
+  background: var(--el-color-warning-light-9);
+  border-radius: 4px;
+}
+.decisions-quality-empty {
+  padding: 0 var(--sp-5) var(--sp-4);
+  font-size: var(--fs-2xs);
+}
+.decisions-quality-rev {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.decisions-quality-alert {
+  color: var(--el-color-warning);
+}
+.decisions-quality-danger {
+  color: var(--el-color-danger);
+}
+.decisions-quality-insufficient {
+  font-size: var(--fs-2xs);
 }
 .decisions-yaml :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

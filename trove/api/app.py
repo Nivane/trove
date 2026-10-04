@@ -145,6 +145,35 @@ def _retry_armed(actions: Any) -> bool:
     return int(getattr(guards, "retry_backoff_base_s", 0) or 0) > 0
 
 
+async def _measure_outcomes(app: FastAPI) -> None:
+    """闭环验收腿:给外送满 N 天、还没测过的提案各做一次效果测量(B7)。
+
+    Best-effort 同其他腿,**默认关**:``outcome_after_days <= 0``(缺省)
+    时 ``measure_due`` 不查库直接返回 0。测量的语义是 N 天,所以这条腿
+    挂在小时/天级的周期 sweep 上,而**不**占 30 秒的 job tick —— 一个还没
+    到期的提案在 tick 上被反复捞起来查一遍,是纯粹的浪费(与自动重试腿
+    挂在 tick 上的理由正好互为镜像:那条的刻度是秒)。
+
+    测量读业务库但**不外送任何东西**(只读),所以 ``agent.action.enabled``
+    关着也照跑 —— 外送关掉之后,已经出去的那批更需要有人验收。
+    """
+    service = getattr(app.state, "actions", None)
+    if service is None or not _measure_armed(service):
+        return
+    try:
+        measured = await service.measure_due()
+        if measured:
+            logger.info("[action] outcome sweep: %d proposal(s) measured",
+                        measured)
+    except Exception as e:
+        logger.warning("[action] outcome sweep failed: %s", e)
+
+
+def _measure_armed(actions: Any) -> bool:
+    """效果测量腿是否已配置(``outcome_after_days > 0``;缺省全关)。"""
+    return int(getattr(actions, "outcome_after_days", 0) or 0) > 0
+
+
 async def _job_tick(app: FastAPI) -> None:
     """Background loop: run due scheduled jobs every scheduler_poll_seconds.
 
@@ -181,15 +210,28 @@ async def _job_tick(app: FastAPI) -> None:
 
 
 async def _periodic_sweep(app: FastAPI) -> None:
-    """Background loop: run retention sweep every sweep_interval_hours."""
+    """Background loop: run retention sweep every sweep_interval_hours.
+
+    循环的存活条件是「有腿可跑」:保留清理按 ``sweep_interval_hours``,
+    效果测量腿(B7)只看它自己的延迟是否配了。保留清理关着而测量开着时
+    按小时走 —— 测量的刻度是天,小时级的检查绰绰有余(而且还没到期的
+    提案会被 ``measure_due`` 原样跳过)。
+    """
     config = getattr(app.state, "config", None)
     interval_hours = getattr(
         getattr(config, "retention", None), "sweep_interval_hours", 0
     )
-    if interval_hours <= 0:
+    actions = getattr(app.state, "actions", None)
+    measure_armed = _measure_armed(actions)
+    if interval_hours <= 0 and not measure_armed:
         return
+    period_s = interval_hours * 3600 if interval_hours > 0 else 3600
     while True:
-        await asyncio.sleep(interval_hours * 3600)
+        await asyncio.sleep(period_s)
+        if interval_hours <= 0:
+            # 保留清理关着 —— 只有测量腿要跑,清扫腿整段跳过。
+            await _measure_outcomes(app)
+            continue
         try:
             stats = await app.state.maintenance.run_all()
             logger.info("[maintenance] periodic sweep: %s", stats)
@@ -208,6 +250,7 @@ async def _periodic_sweep(app: FastAPI) -> None:
         await _purge_auth(app)
         await _purge_verdicts(app)
         await _expire_actions(app)
+        await _measure_outcomes(app)
 
 
 async def _readonly_selfcheck(app: FastAPI) -> None:

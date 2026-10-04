@@ -395,3 +395,99 @@ describe('ActionsView — proposals', () => {
     expect(text).toContain('200')
   })
 })
+
+describe('ActionsView effect measurement (B7)', () => {
+  const openPages = {
+    pending: proposal({ id: 'p1', status: 'pending' }),
+    approved: proposal({ id: 'p2', status: 'approved' }),
+    failed: proposal({ id: 'p3', status: 'failed', error: 'timeout' }),
+  }
+
+  function outcomeRow(over: Record<string, unknown> = {}) {
+    return {
+      id: 1,
+      proposal_id: 'p1',
+      measured_at: '2026-10-10T03:00:00Z',
+      window_start: '2026-10-03',
+      window_end: '2026-11-02',
+      metric: 'revenue',
+      rule_rev: 'rev-1',
+      delta: 49.5,
+      pct: 0.01,
+      outside_band: true,
+      z: 1.2,
+      method: 'its',
+      confidence: null,
+      observed: {},
+      error: '',
+      ...over,
+    }
+  }
+
+  function mockDetail(outcomes: unknown[]) {
+    ;(apiGet as any).mockImplementation(async (url: string) => {
+      if (url.includes('/proposals/p1')) {
+        return {
+          proposal: proposal({ status: 'dispatched' }),
+          approvals: [],
+          deliveries: [],
+          outcomes,
+          stale: false,
+        }
+      }
+      const hit = (['pending', 'approved', 'failed'] as const).find((s) =>
+        url.includes(`status=${s}`),
+      )
+      return {
+        proposals: hit ? [openPages[hit]] : [],
+        counts: { pending: 1, approved: 1, failed: 1 },
+        enabled: true,
+      }
+    })
+  }
+
+  it('renders the measured effect row with its window and method', async () => {
+    mockDetail([outcomeRow()])
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    findButton(view.element, 'Detail').click()
+    await flushPromises()
+
+    const text = bodyText()
+    expect(text).toContain('Effect measurement')
+    expect(text).toContain('Outside band')
+    expect(text).toContain('49.5 · 1.0%')
+    expect(text).toContain('2026-10-03 → 2026-11-02')
+  })
+
+  it.each([
+    ['no identifiable change', { outside_band: false }, 'No identifiable change'],
+    ['undecided', { outside_band: null }, 'Undecidable'],
+    ['failed', { outside_band: null, error: 'group_unresolved' }, 'Measurement failed'],
+  ])('keeps the %s conclusion visually distinct', async (_name, over, label) => {
+    // 三态纪律:null(判不了)与 false(无变化)是两种事实,不能同款渲染。
+    mockDetail([outcomeRow(over)])
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    findButton(view.element, 'Detail').click()
+    await flushPromises()
+
+    const text = bodyText()
+    expect(text).toContain(label)
+    expect(text).not.toContain('Outside band')
+  })
+
+  it('shows a failed measurement\'s own words', async () => {
+    mockDetail([outcomeRow({ outside_band: null, error: 'group_unresolved' })])
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    findButton(view.element, 'Detail').click()
+    await flushPromises()
+    expect(bodyText()).toContain('group_unresolved')
+  })
+
+  it('explains an empty measurement list instead of leaving a blank table', async () => {
+    mockDetail([])
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    findButton(view.element, 'Detail').click()
+    await flushPromises()
+    expect(bodyText()).toContain('Not measured yet')
+  })
+})

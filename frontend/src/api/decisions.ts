@@ -23,10 +23,19 @@ export interface VerdictDiffGroup {
 
 export interface VerdictDiff {
   prev_id: number | null
-  /** 规则在两次判定之间被改过 —— 它解释了其余所有变化。 */
+  /** 整份 decisions.yml 在两次判定之间变过(编辑**别的**规则也会亮)。 */
   rule_digest_changed: boolean
   prev_rule_digest: string
   rule_digest: string
+  /**
+   * **本条规则**的内容版本变过(N2 起的第一把尺)。与 digest 的区别:
+   * digest 对整份文件敏感 —— 编辑 B 规则会让 A 的相邻两条也显示"规则已
+   * 修改";rev 只在这条规则真的被改过时才变。两者都缺 rev(B2 之前的行)
+   * 时前端退回 digest。
+   */
+  rule_rev_changed: boolean
+  prev_rule_rev: string
+  rule_rev: string
   status_change: [string, string] | null
   /** fired | cleared | null */
   trigger: string | null
@@ -95,4 +104,81 @@ export function verdictStatusClass(status: string): string {
   if (status === 'error') return 'pill-danger'
   if (status === 'alert') return 'pill-warn'
   return 'pill-ok'
+}
+
+/* ── 判定质量回评(GET /v1/admin/decisions/quality)─────────────────────
+ *
+ * 分桶键是 ``(rule_id, rule_rev)``,不是整份文件的 digest —— 编辑别的
+ * 规则不动这条规则的桶。三个口径都是页面要照实渲染的:
+ *
+ *   · ``rule_rev_current`` 三态:true=还是这条规则现在的版本 / false=这段
+ *     历史判的是旧版本 / null=规则已删或版本无从谈起 —— null 与 false
+ *     必须长得不一样(「不知道」不是「旧的」);
+ *   · ``effective_rate`` 只在分母够时非 null,读不出比率时看
+ *     ``insufficient`` 说原因 —— 页面不给"近似比率";
+ *   · ``degraded`` 非空 = 行动层未装配,效果列是空的而不是"没有效果"。
+ */
+
+export interface QualityEffectCounts {
+  measured: number
+  effective: number
+  no_effect: number
+  unverifiable: number
+  errors: number
+}
+
+export interface QualityBucket {
+  /** ``"<rule_id>@<rule_rev|rev_unknown>"``。 */
+  key: string
+  rule_id: string
+  rule_rev: string
+  total: number
+  ok: number
+  alert: number
+  error: number
+  triggered: number
+  first_at: string
+  last_at: string
+  effects: QualityEffectCounts
+  /** effective + no_effect —— 有效率的真实分母。 */
+  decided: number
+  triggered_rate: number | null
+  effective_rate: number | null
+  /** few_verdicts | few_effects | no_effects。 */
+  insufficient: string[]
+  rule_declared: boolean
+  rule_rev_current: boolean | null
+}
+
+export interface QualitySummary {
+  buckets: number
+  total: number
+  ok: number
+  alert: number
+  error: number
+  triggered: number
+  triggered_rate: number | null
+  effects: QualityEffectCounts
+  decided: number
+  effective_rate: number | null
+}
+
+export interface DecisionQuality {
+  datasource: string
+  digest: string
+  limit: number
+  verdicts_read: number
+  effects_read: number
+  buckets: QualityBucket[]
+  summary: QualitySummary
+  /** [{stage, reason}] —— 非空即某条腿缺席,别把缺数据读成没效果。 */
+  degraded: { stage: string; reason: string }[]
+}
+
+export async function fetchDecisionQuality(
+  datasource: string,
+): Promise<DecisionQuality> {
+  return apiGet<DecisionQuality>(
+    `/v1/admin/decisions/quality?datasource=${encodeURIComponent(datasource)}`,
+  )
 }

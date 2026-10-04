@@ -166,6 +166,31 @@ class TestDiffVerdicts:
         assert diff_verdicts(rec(rule_digest=""), rec(rule_digest="d1"))[
             "rule_digest_changed"] is False
 
+    def test_rule_rev_change_is_flagged_with_both_versions(self):
+        """rev 是单条规则的尺(N2):它变了才是「这条规则被改过」——
+        digest 会被别的规则编辑带亮,rev 不会。"""
+        prev = rec(evidence={"rule_rev": "rev-a", "rows": []})
+        cur = rec(evidence={"rule_rev": "rev-b", "rows": []})
+        d = diff_verdicts(prev, cur)
+        assert d["rule_rev_changed"] is True
+        assert d["prev_rule_rev"] == "rev-a" and d["rule_rev"] == "rev-b"
+
+    def test_same_rev_across_a_digest_change_is_not_a_rev_change(self):
+        """编辑别的规则:digest 变了,本条规则的 rev 没变 —— 两把尺的差。"""
+        prev = rec(rule_digest="d1",
+                   evidence={"rule_rev": "rev-a", "rows": []})
+        cur = rec(rule_digest="d2", evidence={"rule_rev": "rev-a", "rows": []})
+        d = diff_verdicts(prev, cur)
+        assert d["rule_digest_changed"] is True
+        assert d["rule_rev_changed"] is False
+
+    def test_missing_rev_is_not_a_change(self):
+        """B2 之前的行没有 rev —— 「没记录版本」不是「版本变了」。"""
+        d = diff_verdicts(rec(evidence={"rows": []}),
+                          rec(evidence={"rule_rev": "rev-b", "rows": []}))
+        assert d["rule_rev_changed"] is False
+        assert d["prev_rule_rev"] == "" and d["rule_rev"] == "rev-b"
+
     def test_group_fired_and_cleared(self):
         prev = rec(evidence={"rows": [
             {"dim": "华东", "delta_pct": -0.05, "triggered": False}]})

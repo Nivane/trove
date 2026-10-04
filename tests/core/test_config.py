@@ -727,13 +727,14 @@ class TestActionConfig:
         assert cfg.action.retry_backoff_base_s == 0  # 不自动重试
         assert cfg.action.retry_backoff_factor == 2.0
         assert cfg.action.retry_backoff_max_s == 3600
+        assert cfg.action.outcome_after_days == 0    # 不测量(B7 默认关)
 
         conf2 = tmp_path / "agent2.yml"
         conf2.write_text(
             "agent:\n  target: openai/gpt-4o\n"
             "action:\n  max_risk: Medium\n  rate_limit: 3\n"
             "  retry_backoff_base_s: 30\n  retry_backoff_factor: 1.5\n"
-            "  retry_backoff_max_s: 600\n",
+            "  retry_backoff_max_s: 600\n  outcome_after_days: 14\n",
             encoding="utf-8",
         )
         cfg2 = ConfigLoader.load_agent_config(str(conf2))
@@ -742,6 +743,7 @@ class TestActionConfig:
         assert cfg2.action.retry_backoff_base_s == 30
         assert cfg2.action.retry_backoff_factor == 1.5
         assert cfg2.action.retry_backoff_max_s == 600
+        assert cfg2.action.outcome_after_days == 14
 
     def test_negative_guards_are_clamped_to_off(self, tmp_path):
         """负数 = 关(不是"负速率"这类没意义的值);缺省档不该被手滑配置打破。"""

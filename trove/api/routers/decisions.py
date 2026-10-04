@@ -29,8 +29,10 @@ from trove.services.decision.rules import (
     lint_document,
     lint_document_assets,
     parse_document,
+    rule_rev,
     rule_to_dict,
 )
+from trove.services.decision.score import REV_UNKNOWN, rollup, score_history
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -447,7 +449,6 @@ async def simulate_decision(
     条件是新规则的,这一点必须看得见。
     """
     from trove.services.decision.expr import DecisionExprError
-    from trove.services.decision.rules import rule_rev
     from trove.services.decision.whatif import (
         WhatIfError,
         impact_summary,
@@ -544,6 +545,77 @@ async def simulate_decision(
         "degraded": sim["degraded"],
         "tree": tree,
         "summary": impact_summary(sim, tree=tree),
+    }
+
+
+@router.get("/admin/decisions/quality")
+async def decision_quality(
+    request: Request,
+    datasource: str,
+    limit: int = 500,
+    admin: dict = Depends(require_admin),
+) -> dict:
+    """判定质量回评:判定史 + 行动效果 → 按 ``(rule_id, rule_rev)`` 分桶。
+
+    Declared **before** ``/{rule_id}``(与 ``/raw``、``/drafts``、``/simulate``
+    同一条 Starlette 顺序纪律;否则 ``quality`` 会被当成一个 rule_id)。
+
+    三个口径都在响应里看得见,而不是靠调用方读文档:
+
+      - **分桶键 =(rule_id, rule_rev)**,不是 ``rule_digest`` ——
+        digest 是整份 decisions.yml 的字节 hash,编辑 B 规则会让 A 规则
+        的历史整段错位;每桶随附 ``rule_declared`` / ``rule_rev_current``
+        (True=还是这条规则现在的版本 / False=这段历史判的是旧版本 /
+        None=规则已不在或版本无从谈起),「哪些历史还算数」不需要
+        调用方自己拿 rev 去比;
+      - **纯派生,不写回**:这是读出来的视图(见 ``decision/score.py``);
+      - **比率只在分母够时给**:``effective_rate`` 的分母是判得出来的
+        测量(有效 + 无变化),``insufficient`` 明列「为什么先别读比率」。
+
+    两条数据腿各自可缺:verdict 存储缺失 → 409(这个端点就是读它的);
+    行动层缺失 → effects 为空 + ``degraded`` 记一笔(判定健康那一半照答,
+    把「没有效果数据」冒充成「没有效果」才是不能接受的)。
+    """
+    store = _verdicts(request)
+    if store is None:
+        raise HTTPException(
+            status_code=409, detail="decision verdict store not configured")
+    kb = _kb(request)
+    try:
+        doc = kb.load_decisions(datasource)
+    except RuleError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    n = max(1, min(int(limit or 500), 5000))
+    verdicts = await store.list_recent(datasource, limit=n)
+
+    degraded: list[dict[str, Any]] = []
+    effects: list[dict[str, Any]] = []
+    actions = getattr(request.app.state, "actions", None)
+    if actions is None:
+        degraded.append({"stage": "effects",
+                         "reason": "action_layer_absent"})
+    else:
+        effects = await actions.store.list_effect_entries(datasource, limit=n)
+
+    buckets = score_history(verdicts, effects=effects)
+    # 桶 ↔ 当前规则的版本关系(见 docstring 的三态语义)。
+    revs = {r.id: rule_rev(r) for r in doc.rules}
+    for b in buckets:
+        current = revs.get(b["rule_id"])
+        b["rule_declared"] = current is not None
+        b["rule_rev_current"] = (
+            None if current is None or b["rule_rev"] == REV_UNKNOWN
+            else current == b["rule_rev"])
+    return {
+        "datasource": datasource,
+        "digest": doc.digest,
+        "limit": n,
+        "verdicts_read": len(verdicts),
+        "effects_read": len(effects),
+        "buckets": buckets,
+        "summary": rollup(buckets),
+        "degraded": degraded,
     }
 
 

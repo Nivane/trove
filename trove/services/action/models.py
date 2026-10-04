@@ -1,4 +1,4 @@
-"""Action-pillar records — templates, proposals, approvals, deliveries.
+"""Action-pillar records — templates, proposals, approvals, deliveries, outcomes.
 
 The action pillar is the last leg of 「问数 · 分析 · 决策 · 行动」: a decision
 verdict that fired is turned into a **proposal**, a human approves it, and only
@@ -24,7 +24,13 @@ divergence the approval step exists to prevent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
+
+#: 观测量(闭环验收)的契约:``async (proposal) -> 测量记录 | None``
+#: —— ``None`` = 「还没到期」,不是失败。执行面在包外
+#: (``decision/outcome.py::make_verifier`` 装配,main.py 注入);这里只
+#: 声明**形状**,不 import 任何东西 —— 行动包的够不到性由姿态守卫钉着。
+Verifier = Callable[[Any], Awaitable[dict[str, Any] | None]]
 
 #: Proposal lifecycle. ``delivered`` is reached through ``ack`` (a human or an
 #: MCP client confirming the other end has it); ``dispatched`` means the
@@ -57,6 +63,13 @@ TEMPLATE_STATUSES = ("pending", "confirmed")
 APPROVAL_ACTIONS = (
     "approve", "reject", "cancel", "dispatch", "retry", "dry_run", "ack",
 )
+
+#: 效果测量的 ``method`` —— 描述的是**最强的那层主张**(与
+#: ``services/analysis/effect.py`` 的 ``method`` 同一套词):``its`` =
+#: 行动前后对比;``its+did`` = 另有 2×2 净效应(处理组 × 对照组)。
+#: 方法名把两者区分开,是因为「数字动了」和「数字因为这次行动动了」
+#: 是两个不同强度的结论。
+OUTCOME_METHODS = ("its", "its+did")
 
 #: v1 is single-approver only. The field exists on the template so the
 #: multi-approver version does not have to migrate files, but any other value
@@ -169,6 +182,44 @@ class Delivery:
     response_excerpt: str = ""
     error: str = ""
     attempted_at: str = ""
+    id: int | None = None
+
+
+@dataclass
+class Outcome:
+    """One effect measurement for one proposal — the loop's return leg (B7).
+
+    ``outside_band`` is **three-valued** and the middle value is the point:
+    ``False`` — "no identifiable change after the action" — is a conclusion,
+    not a failure, and it is the honest verdict; ``None`` — "could not be
+    decided" — is a third fact that never collapses into either neighbour.
+    Stored as 0 / 1 / NULL (``_tri`` in ``service.py`` maps it both ways).
+
+    ``observed`` keeps the full measurement record (windows, band, blocks,
+    group, causal leg, SQL) so a verdict can be audited and re-derived from
+    its inputs — the same discipline as decision evidence.
+
+    Append-only, and **one measurement per proposal**: after recovery the
+    window has moved, so a backfill would measure a different period. A row
+    with ``error`` (measurement could not be made) also counts as measured —
+    the failure is loud, recorded, and not retried.
+    """
+
+    proposal_id: str
+    measured_at: str = ""
+    window_start: str = ""
+    window_end: str = ""
+    metric: str = ""
+    #: 测量所依据的规则内容版本(回评分桶键的一半;``rule_id`` 由提案行给)。
+    rule_rev: str = ""
+    delta: float | None = None
+    pct: float | None = None
+    outside_band: bool | None = None
+    z: float | None = None
+    method: str = "its"              # OUTCOME_METHODS
+    confidence: float | None = None
+    observed: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
     id: int | None = None
 
 

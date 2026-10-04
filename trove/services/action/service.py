@@ -43,9 +43,20 @@ deployment keeps every byte of the old behaviour:
   ``MaintenanceService.preview`` precedent: a preview that changes state is a
   preview nobody will trust twice).
 
+**Closed loop (B7).** ``measure_due`` is the return leg: a dispatched
+proposal, once its window has rolled past the dispatch day, is measured
+against its rule's own history and the result lands in the ``outcomes``
+table. The measurement itself is a **callable injected from outside**
+(``verifier``, built by ``decision/outcome.py``), which is why the loop can
+close without the package ever holding a connector — the capability arrives,
+the reach does not.
+
 **No connectors, by construction.** The constructor takes a store, a template
 service, a dispatcher and config — nothing that can reach a business
-datasource. The read-only posture guard test asserts this against the source.
+datasource. The read-only posture guard test asserts this against the source
+(the B7 ``verifier`` parameter is the one reviewed exception: it is a
+callable whose *source* lives outside the package, so the reach it grants is
+exactly the reach the caller already chose to grant).
 """
 
 from __future__ import annotations
@@ -68,11 +79,14 @@ from trove.services.action.models import (
     ActionProposal,
     Approval,
     Delivery,
+    Outcome,
+    Verifier,
 )
 from trove.services.action.propose import (
     ProposalError,
     anchor_of,
     build_proposal,
+    primary_group,
     proposal_key,
 )
 logger = get_logger(__name__)
@@ -96,6 +110,29 @@ _DRY_RUNNABLE = ("pending", "approved", "failed")
 _ACKABLE = ("approved", "dispatched", "delivered")
 
 
+def _num(value: Any) -> float | None:
+    """宽容数值化(``None`` / 非数 / bool → None;不抛)。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _tri(value: Any) -> bool | None:
+    """三值带判定 → True / False / None(0/1 与 True/False 都认;其余 → None)。
+
+    ``0`` 是「判了、在带内」,``None`` 是「判不了」—— 两者绝不可互换
+    (与 ``decision/score.py::_effect_flags`` 同一纪律的两端)。
+    """
+    if value is True or value == 1:
+        return True
+    if value is False or value == 0:
+        return False
+    return None
+
+
 def _last_real_attempt(deliveries: list[Delivery]) -> Delivery | None:
     """最近一次**真实**投递(``sent`` / ``failed``),没有则 ``None``。
 
@@ -113,7 +150,7 @@ class ActionService:
         self, store, templates, dispatcher: ActionDispatcher, *,
         enabled: bool = False, approval_ttl_hours: int = 72,
         max_payload_bytes: int = 8192, max_attempts: int = 3,
-        lang: str = "zh",
+        lang: str = "zh", verifier: Verifier | None = None,
     ):
         self.store = store
         self.templates = templates
@@ -123,9 +160,17 @@ class ActionService:
         self.max_payload_bytes = max(0, int(max_payload_bytes or 0))
         self.max_attempts = max(1, int(max_attempts or 1))
         self.lang = lang
-        #: 护栏配置。构造签名是姿态守卫钉死的(不得新增构造参数),所以护栏
-        #: 走**运行时绑定**:装配点(main.py)用 ``ActionGuards.from_config``
-        #: 显式绑定。默认 ActionGuards = 三道护栏全关 → 老路径逐字节不变。
+        #: 效果测量器(闭环验收,可选)。**经评审的守卫签名例外**:它是一个
+        #: callable —— 实现体在包外(decision/outcome.py),包拿到的是一次
+        #: 调用,不是任何可以自己伸出去的东西。缺省 None = 测量腿不存在。
+        self.verifier = verifier
+        #: 测量延迟(天)。配置标量走**运行时绑定**(main.py 装配时绑定),
+        #: 构造签名只保留上面那一个例外。默认 0 = 测量腿全关。
+        self.outcome_after_days = 0
+        #: 护栏配置。构造签名是姿态守卫钉死的(唯一例外是 ``verifier``),
+        #: 所以护栏走**运行时绑定**:装配点(main.py)用
+        #: ``ActionGuards.from_config`` 显式绑定。默认 ActionGuards =
+        #: 三道护栏全关 → 老路径逐字节不变。
         self.guards = ActionGuards()
 
     # ── helpers ──────────────────────────────────────────
@@ -219,6 +264,14 @@ class ActionService:
             refs.setdefault("run_id", run_id)
         if job_id:
             refs.setdefault("job_id", job_id)
+        # 闭环验收(B7)要在测量时回答两个问题:「测哪一组」与「按哪版规则
+        # 测」—— 判定发生的那一刻这两个答案就在眼前(消息点名的组 =
+        # primary_group;verdict 证据里的 rule_rev = 当时那一版),钉进
+        # 证据指针(JSON 附加键,零迁移)。验收读它、不重算:重算读到的
+        # 是**现在**的规则与证据,而验收要的是**当时**那一份。
+        evidence = getattr(outcome, "evidence", None) or {}
+        refs.setdefault("rule_rev", str(evidence.get("rule_rev") or ""))
+        refs.setdefault("group", str(primary_group(outcome).get("dim") or ""))
         proposal = build_proposal(
             rule=rule, outcome=outcome, datasource=datasource,
             template=template, run_id=run_id, job_id=job_id,
@@ -428,6 +481,89 @@ class ActionService:
             logger.info("action auto-retry: %d proposal(s) re-attempted", retried)
         return retried
 
+    # ── 闭环验收(B7) ────────────────────────────────────
+
+    async def measure_due(
+        self, now: datetime | None = None, *, limit: int = 50,
+    ) -> int:
+        """给已外送、还没测的提案各做一次效果测量(B7);返回写入行数。
+
+        默认档**全关**:``outcome_after_days <= 0`` 立即返回 0,不查库 ——
+        未配置的部署逐字节不变。刻度是**天**(测量是 N 天语义),所以调用
+        面挂在小时级的 sweep 腿上,不是 30 秒的 job tick。
+
+        四道门,各自的语义都刻意区分:
+
+        - 未到 ``outcome_after_days`` → 跳过,**不算已测**(到期后那次
+          sweep 会再看到它);
+        - verifier 返回 ``None`` → 规则的测量期还没滚过行动日,跳过、不写行
+          (与上一条同款:还没到时候 ≠ 测了);
+        - verifier 缺席或抛异常 → **落一行 error outcome**(响亮):闭环断了
+          必须看得见,不能像"还没到期"一样安静,也不重试;
+        - ``enabled`` **不是**门:测量是读(读业务库的只读查询 + 自己的
+          账本),不是外送 —— 关掉外送之后,已经出去的那批更需要验收。
+        """
+        if int(self.outcome_after_days or 0) <= 0:
+            return 0
+        now_dt = now or self._now()
+        cutoff = (now_dt - timedelta(days=int(self.outcome_after_days))
+                  ).isoformat(timespec="seconds")
+        candidates = await self.store.list_unmeasured_proposals(
+            ("dispatched", "delivered"), limit=limit)
+        measured = 0
+        for p in candidates:
+            stamp = p.dispatched_at or p.decided_at
+            if not stamp or stamp > cutoff:
+                continue  # 外送还没满 N 天 —— 下次 sweep 再看
+            observed = await self._observe(p)
+            if observed is None:
+                continue  # 测量期没滚过行动日(verifier 的语义,不是失败)
+            await self.store.record_outcome(
+                self._outcome_row(p, observed, now_dt))
+            measured += 1
+        if measured:
+            logger.info("action outcomes: measured %d proposal(s)", measured)
+        return measured
+
+    async def _observe(self, p: ActionProposal) -> dict[str, Any] | None:
+        """跑 verifier —— 绝不上抛;缺席与异常都折成一条 error 记录。"""
+        if self.verifier is None:
+            return {"error": "no_verifier"}
+        try:
+            observed = await self.verifier(p)
+        except Exception as e:  # noqa: BLE001 — 一次测量失败 = 一行 error,不是崩
+            logger.exception("outcome verifier failed for proposal %s", p.id)
+            return {"error": f"verifier_failed: {str(e)[:160]}"}
+        if observed is None:
+            return None
+        if not isinstance(observed, dict):
+            return {"error": "verifier_bad_result"}
+        return observed
+
+    def _outcome_row(
+        self, p: ActionProposal, observed: dict[str, Any], now: datetime,
+    ) -> Outcome:
+        """测量记录 → 存储行(表列从记录里取,取不到的列留空,不编)。"""
+        window = observed.get("window")
+        start = end = ""
+        if isinstance(window, (list, tuple)) and len(window) >= 2:
+            start, end = str(window[0]), str(window[1])
+        return Outcome(
+            proposal_id=p.id,
+            measured_at=now.isoformat(timespec="seconds"),
+            window_start=start, window_end=end,
+            metric=str(observed.get("metric") or ""),
+            rule_rev=str(observed.get("rule_rev") or ""),
+            delta=_num(observed.get("delta")),
+            pct=_num(observed.get("pct")),
+            outside_band=_tri(observed.get("outside_band")),
+            z=_num(observed.get("z")),
+            method=str(observed.get("method") or "its"),
+            confidence=_num(observed.get("confidence")),
+            observed=observed,
+            error=str(observed.get("error") or "")[:300],
+        )
+
     # ── 预演 / 护栏 ──────────────────────────────────────
 
     async def _dry_run(
@@ -556,16 +692,18 @@ class ActionService:
         return body
 
     async def get(self, proposal_id: str) -> dict[str, Any] | None:
-        """Proposal + its full audit trail (approvals, deliveries)."""
+        """Proposal + its full audit trail (approvals, deliveries, outcomes)."""
         p = await self.store.get_proposal(proposal_id)
         if p is None:
             return None
         approvals = await self.store.list_approvals(p.id)
         deliveries = await self.store.list_deliveries(p.id)
+        outcomes = await self.store.list_outcomes(p.id)
         return {
             "proposal": p,
             "approvals": approvals,
             "deliveries": deliveries,
+            "outcomes": outcomes,
             "stale": self._is_expired(p) and p.status in OPEN_STATUSES,
         }
 

@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from trove.services.action.dispatcher import ActionDispatcher
+from trove.services.action.models import Outcome
 from trove.services.action.service import ActionService
 from trove.services.action.store import ActionStore
 from trove.services.action.templates import ActionTemplateService
@@ -104,6 +105,19 @@ async def _seed_proposal(env):
 def _advance(env, *, hours: int) -> None:
     later = datetime.now() + timedelta(hours=hours)
     env.service._now = staticmethod(lambda: later)
+
+
+def _effect_row(proposal_id: str, **over) -> Outcome:
+    fields = dict(
+        proposal_id=proposal_id, measured_at="2026-10-10T03:00:00",
+        window_start="2026-10-03", window_end="2026-11-02",
+        metric="revenue", rule_rev="rev-1",
+        delta=49.5, pct=0.49, outside_band=True, z=4.2,
+        method="its+did", confidence=0.2,
+        observed={"sql": "SELECT ...", "blocks": 9},
+    )
+    fields.update(over)
+    return Outcome(**fields)
 
 
 # ── 权限三层 ────────────────────────────────────────────
@@ -422,6 +436,88 @@ class TestProposalLifecycle:
         r = await client.get(f"/v1/admin/actions/proposals/{p.id}")
         assert r.json()["proposal"]["status"] == "expired", \
             "迟到的 approve 顺手把状态翻成 expired,不留一个可批的假象"
+
+
+# ── 闭环验收的读取面(B7)──────────────────────────────────
+
+class TestOutcomes:
+    """效果测量在详情里随行,专用端点回答「测到了没有」。
+
+    空列表 ≠ 失败:``outcome_after_days`` 没配时测量从不产生、配了而期没
+    滚过行动日时还没到 —— 两种都由 ``measured`` 说出来,调用方不必猜。
+    """
+
+    async def _dispatched(self, client, env) -> str:
+        await client.post("/v1/admin/actions/templates",
+                          json=_template_body())
+        await client.post("/v1/admin/actions/templates/notify-ops/confirm")
+        p = await _seed_proposal(env)
+        await client.post(f"/v1/admin/actions/proposals/{p.id}/approve")
+        await client.post(f"/v1/admin/actions/proposals/{p.id}/dispatch")
+        return p.id
+
+    async def test_detail_and_endpoint_carry_the_measured_outcome(
+            self, client, actions_env):
+        pid = await self._dispatched(client, actions_env)
+        row_id = await actions_env.store.record_outcome(_effect_row(pid))
+
+        detail = (await client.get(
+            f"/v1/admin/actions/proposals/{pid}")).json()
+        assert [o["id"] for o in detail["outcomes"]] == [row_id]
+        assert detail["outcomes"][0]["outside_band"] is True
+        assert detail["outcomes"][0]["method"] == "its+did"
+        assert detail["outcomes"][0]["observed"]["blocks"] == 9
+
+        body = (await client.get(
+            f"/v1/admin/actions/proposals/{pid}/outcomes")).json()
+        assert body["proposal_id"] == pid
+        assert body["measured"] is True
+        assert body["outcomes"] == detail["outcomes"]
+
+    async def test_unmeasured_is_an_empty_list_with_the_flag_off(
+            self, client, actions_env):
+        pid = await self._dispatched(client, actions_env)
+        body = (await client.get(
+            f"/v1/admin/actions/proposals/{pid}/outcomes")).json()
+        assert body == {"proposal_id": pid, "outcomes": [], "measured": False}
+
+    async def test_the_sweep_leg_measures_through_the_api_surface(
+            self, client, actions_env):
+        """装好 verifier + outcome_after_days 后跑一次 ``measure_due`` ——
+        从外送到效果行在 API 读取面上拼成整条闭环。"""
+        pid = await self._dispatched(client, actions_env)
+
+        class _Verifier:
+            async def __call__(self, proposal):
+                return {"method": "its", "delta": 10.0, "pct": 0.01, "z": 1.2,
+                        "outside_band": False, "confidence": None,
+                        "metric": "revenue",
+                        "rule_rev": proposal.evidence_refs["rule_rev"],
+                        "window": ["2026-10-03", "2026-11-02"]}
+
+        actions_env.service.verifier = _Verifier()
+        actions_env.service.outcome_after_days = 7
+        row = await actions_env.store.get_proposal(pid)
+        when = datetime.fromisoformat(row.dispatched_at) + timedelta(days=8)
+        assert await actions_env.service.measure_due(now=when) == 1
+
+        body = (await client.get(
+            f"/v1/admin/actions/proposals/{pid}/outcomes")).json()
+        assert body["measured"] is True
+        (o,) = body["outcomes"]
+        assert o["outside_band"] is False, \
+            "「行动后无可辨识变化」是一档结论,不是没测到"
+        assert o["method"] == "its" and o["window_end"] == "2026-11-02"
+        assert o["measured_at"] == when.isoformat()
+
+    async def test_unknown_proposal_is_404_on_the_outcomes_endpoint(
+            self, client, actions_env):
+        assert (await client.get(
+            "/v1/admin/actions/proposals/p-ghost/outcomes")).status_code == 404
+
+    async def test_outcomes_endpoint_is_admin_only(self, user_client, actions_env):
+        assert (await user_client.get(
+            "/v1/admin/actions/proposals/p-1/outcomes")).status_code == 403
 
 
 # ── 审计 ────────────────────────────────────────────────

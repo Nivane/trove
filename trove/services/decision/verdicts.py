@@ -166,6 +166,17 @@ def _delta_pct(card: dict[str, Any]) -> float | None:
     return as_number(card.get("delta_pct"))
 
 
+def _rev_of(rec: VerdictRecord) -> str:
+    """该 verdict 记下的 ``rule_rev``(B2 之前的行没有 → 空串)。
+
+    与 ``rule_digest`` 的区别就是 N2:digest 是整份 decisions.yml 的
+    字节 hash —— 编辑 B 规则会让 A 规则的相邻两条也"digest 变了";
+    rev 是单条规则的内容版本,只在该规则真的被改过时才变。
+    """
+    evidence = rec.evidence if isinstance(rec.evidence, dict) else {}
+    return str(evidence.get("rule_rev") or "")
+
+
 def diff_verdicts(prev: VerdictRecord, cur: VerdictRecord) -> dict[str, Any]:
     """Two adjacent verdicts → what changed between them (pure, no LLM).
 
@@ -173,6 +184,10 @@ def diff_verdicts(prev: VerdictRecord, cur: VerdictRecord) -> dict[str, Any]:
     that ordering (``list_for_rule`` returns newest-first). Every field is
     present even when empty, so the UI never has to distinguish "no change"
     from "key missing".
+
+    ``rule_digest_changed`` 与 ``rule_rev_changed`` 是两把尺:前者对整份
+    decisions.yml 敏感(编辑别的规则也亮),后者只对这条规则敏感 ——
+    渲染要说"规则被改过"时,信 rev(见 :func:`_rev_of`)。
     """
     digest_changed = bool(prev.rule_digest) and bool(cur.rule_digest) \
         and prev.rule_digest != cur.rule_digest
@@ -212,11 +227,18 @@ def diff_verdicts(prev: VerdictRecord, cur: VerdictRecord) -> dict[str, Any]:
             })
 
     status_change = [prev.status, cur.status] if prev.status != cur.status else None
+    # rev 变更与 digest 变更同款三态:两边都有值才敢说"变了" —— 缺 rev 的
+    # 是 B2 之前的行,"没记录版本"不是"版本变了"(同 digest 的纪律)。
+    prev_rev, cur_rev = _rev_of(prev), _rev_of(cur)
     return {
         "prev_id": prev.id,
         "rule_digest_changed": digest_changed,
         "prev_rule_digest": prev.rule_digest,
         "rule_digest": cur.rule_digest,
+        "rule_rev_changed": bool(prev_rev) and bool(cur_rev)
+        and prev_rev != cur_rev,
+        "prev_rule_rev": prev_rev,
+        "rule_rev": cur_rev,
         "status_change": status_change,
         "trigger": trigger,
         "groups": groups,
