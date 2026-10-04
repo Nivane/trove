@@ -345,6 +345,51 @@
         <p class="dsec-note">{{ t('usersGrantsNote', ui.lang) }}</p>
       </section>
 
+      <!-- topic grants: second narrowing layer (staged with the same Save) -->
+      <section class="dsec">
+        <h4>
+          {{ t('usersDrawerTopicGrants', ui.lang) }}
+          <span v-if="topicDirty" class="dirty-badge">{{ t('usersDirty', ui.lang) }}</span>
+        </h4>
+        <p v-if="topicGrantsError" class="dsec-note">{{ t('usersTopicError', ui.lang) }}</p>
+        <template v-else>
+          <el-radio-group v-model="topicMode" size="small" :disabled="topicLoading">
+            <el-radio value="all">{{ t('usersTopicModeAll', ui.lang) }}</el-radio>
+            <el-radio value="limited">{{ t('usersTopicModeLimited', ui.lang) }}</el-radio>
+          </el-radio-group>
+          <p class="dsec-note">{{ t('usersTopicNote', ui.lang) }}</p>
+          <template v-if="topicMode === 'limited'">
+            <div v-for="d in sortedGrantedDs" :key="d" class="topic-ds">
+              <div class="topic-ds-head">{{ d }}</div>
+              <p v-if="topicLoadState[d] === 'loading'" class="dsec-note">
+                {{ t('usersTopicLoading', ui.lang) }}
+              </p>
+              <p v-else-if="topicLoadState[d] === 'unavailable'" class="dsec-note">
+                {{ t('usersTopicNoModel', ui.lang) }}
+              </p>
+              <template v-else>
+                <div class="ds-checks">
+                  <label v-for="name in topicNamesFor(d)" :key="name" class="ds-check">
+                    <input
+                      class="ds-check-input"
+                      type="checkbox"
+                      :checked="topicSelected(d, name)"
+                      :aria-label="`${d}:${name}`"
+                      @change="toggleTopic(d, name)"
+                    >
+                    <span>{{ name }}</span>
+                  </label>
+                </div>
+                <p v-if="!(topicSelections[d] ?? []).length" class="dsec-note">
+                  {{ t('usersTopicNoneForDs', ui.lang) }}
+                </p>
+              </template>
+            </div>
+            <p class="dsec-note">{{ t('usersTopicLimitedHint', ui.lang) }}</p>
+          </template>
+        </template>
+      </section>
+
       <!-- api tokens -->
       <section ref="tokensSectionEl" class="dsec">
         <h4>{{ t('apiTokens', ui.lang) }}</h4>
@@ -1112,7 +1157,8 @@ const dirty = computed(() => {
     draft.role !== base.role ||
     draft.disabled !== base.disabled ||
     draft.password !== '' ||
-    !sameSet(draft.datasources, base.datasources)
+    !sameSet(draft.datasources, base.datasources) ||
+    topicDirty.value
   )
 })
 
@@ -1142,6 +1188,7 @@ function openDrawer(row: unknown, focus: 'top' | 'tokens' = 'top') {
     disabled: draft.disabled,
     datasources: [...grants],
   }
+  resetTopicDraft(null) // 先按"不限"占位,读到真实配置前不放行保存(见 loadTopicGrants)
   tokenRaw.value = ''
   tokens.value = []
   activity.value = []
@@ -1149,6 +1196,7 @@ function openDrawer(row: unknown, focus: 'top' | 'tokens' = 'top') {
   drawerOpen.value = true
   void loadTokens(user.id)
   void loadActivity(user.id)
+  void loadTopicGrants(user.id)
   if (focus === 'tokens') {
     void Promise.resolve().then(() =>
       tokensSectionEl.value?.scrollIntoView?.({ block: 'start' }),
@@ -1173,6 +1221,134 @@ function toggleGrant(name: string) {
   else draft.datasources.push(name)
 }
 
+/* ── topic grants: the second narrowing layer (staged with the same Save) ──
+ *
+ * 三态必须在 UI 上分得开(与后端契约一一对应):
+ *   - `null`  = 不限(默认;可见数据源的全部主题域,存量用户行为);
+ *   - `{}`    = 收窄到零(一个域都不见);
+ *   - `{ds:[…]}` = 该源的严格清单,字典里没有的源 = 该源无域。
+ * 所以用「不限 / 限定」两个模式区分 null 与 map,而不是一组勾选框。 */
+
+type TopicGrantWire = Record<string, string[]>
+
+const topicMode = ref<'all' | 'limited'>('all')
+/** ds → 勾选的域;只在"限定"模式下参与保存。 */
+const topicSelections = reactive<Record<string, string[]>>({})
+/** ds → 该源的主题域清单(来自 GET /v1/semantic/topics,admin 可见全部)。 */
+const topicNames = reactive<Record<string, string[]>>({})
+const topicLoadState = reactive<Record<string, 'loading' | 'ready' | 'unavailable'>>({})
+/** 抽屉当前锚定的已存配置(读回值归一化后的形态);读失败保持 null 并加锁。 */
+const originalTopic = ref<TopicGrantWire | null>(null)
+const topicGrantsError = ref(false)
+/** 读回值到位前锁住模式切换:占位的"不限"绝不能被当成"未配置"而写回去。 */
+const topicLoading = ref(false)
+
+const sortedGrantedDs = computed(() => [...draft.datasources].sort())
+
+function normalizeTopicGrants(g: TopicGrantWire | null): TopicGrantWire | null {
+  if (g === null) return null // 注意:{} 是"收窄到零",绝不能塌成 null
+  const out: TopicGrantWire = {}
+  for (const ds of Object.keys(g).sort()) {
+    out[ds] = Array.from(new Set(g[ds] ?? [])).sort()
+  }
+  return out
+}
+
+function topicGrantsEqual(a: TopicGrantWire | null, b: TopicGrantWire | null): boolean {
+  return JSON.stringify(normalizeTopicGrants(a)) === JSON.stringify(normalizeTopicGrants(b))
+}
+
+/** 草稿的 wire 形态(与 PUT /topic-grants 的请求体一致)。 */
+function draftTopicGrants(): TopicGrantWire | null {
+  if (topicMode.value === 'all') return null
+  const out: TopicGrantWire = {}
+  // 读不到清单的源(未建模/请求失败)原样保留已存条目 —— 无关的保存不该把它清掉
+  for (const [ds, names] of Object.entries(originalTopic.value ?? {})) {
+    if (!draft.datasources.includes(ds) || topicLoadState[ds] !== 'ready') {
+      out[ds] = [...names]
+    }
+  }
+  // 本轮展示到的源以勾选为准。"空选择"只在原条目已存在时保留成一条空清单 ——
+  // 否则「从未有条目 + 一个都没勾」与「无条目」是同一语义(该源无可见域),
+  // 凭空补一条会把地图改脏("打开抽屉就未保存"),而不写才是最小改动。
+  for (const ds of draft.datasources) {
+    if (topicLoadState[ds] !== 'ready') continue
+    const picked = [...(topicSelections[ds] ?? [])]
+    const had = originalTopic.value !== null && ds in originalTopic.value
+    if (picked.length || had) out[ds] = picked
+  }
+  return out
+}
+
+const topicDirty = computed(() =>
+  !topicGrantsEqual(draftTopicGrants(), originalTopic.value),
+)
+
+/** 展示用清单 = 服务端清单 ∪ 已配置但已从模型移除的名字(不隐藏、不静默丢弃)。 */
+function topicNamesFor(ds: string): string[] {
+  const names = topicNames[ds] ?? []
+  const extra = (topicSelections[ds] ?? []).filter((n) => !names.includes(n))
+  return [...names, ...extra].sort()
+}
+
+function topicSelected(ds: string, name: string): boolean {
+  return (topicSelections[ds] ?? []).includes(name)
+}
+
+function toggleTopic(ds: string, name: string) {
+  const cur = topicSelections[ds] ?? (topicSelections[ds] = [])
+  const idx = cur.indexOf(name)
+  if (idx >= 0) cur.splice(idx, 1)
+  else cur.push(name)
+}
+
+async function loadTopicNames(ds: string) {
+  if (topicLoadState[ds] === 'loading' || topicLoadState[ds] === 'ready') return
+  topicLoadState[ds] = 'loading'
+  try {
+    const body = await apiGet(`/v1/semantic/topics?datasource=${encodeURIComponent(ds)}`)
+    topicNames[ds] = ((body.topics ?? []) as { name: string }[]).map((x) => x.name)
+    topicLoadState[ds] = 'ready'
+  } catch {
+    topicLoadState[ds] = 'unavailable' // 404(未建模)与网络错误同路:保留原配置
+  }
+}
+
+function resetTopicDraft(raw: TopicGrantWire | null) {
+  originalTopic.value = normalizeTopicGrants(raw)
+  topicMode.value = raw === null ? 'all' : 'limited'
+  for (const key of Object.keys(topicSelections)) delete topicSelections[key]
+  for (const [ds, names] of Object.entries(raw ?? {})) {
+    topicSelections[ds] = [...names]
+  }
+  if (topicMode.value === 'limited') ensureTopicNames()
+}
+
+function ensureTopicNames() {
+  if (topicMode.value !== 'limited') return
+  for (const ds of draft.datasources) void loadTopicNames(ds)
+}
+
+watch([topicMode, () => draft.datasources.join('\u0000')], ensureTopicNames)
+
+async function loadTopicGrants(userId: number) {
+  topicGrantsError.value = false
+  topicLoading.value = true
+  try {
+    const body = await apiGet(`/v1/admin/users/${userId}/topic-grants`)
+    if (drawerUser.value?.id !== userId) return // 抽屉已切走,别把旧用户的读回值落上去
+    resetTopicDraft((body.topic_grants ?? null) as TopicGrantWire | null)
+  } catch {
+    if (drawerUser.value?.id !== userId) return
+    // 读不到就锁住这一节:宁可不改,也不能把"读失败"当成"未配置"写回去清掉配置
+    topicGrantsError.value = true
+    originalTopic.value = null
+    topicMode.value = 'all'
+  } finally {
+    if (drawerUser.value?.id === userId) topicLoading.value = false
+  }
+}
+
 function discardDraft() {
   const base = original.value
   draft.display_name = base.display_name
@@ -1180,6 +1356,7 @@ function discardDraft() {
   draft.disabled = base.disabled
   draft.password = ''
   draft.datasources = [...base.datasources]
+  resetTopicDraft(originalTopic.value)
 }
 
 async function saveDraft() {
@@ -1192,6 +1369,8 @@ async function saveDraft() {
   if (draft.disabled !== base.disabled) profile.disabled = draft.disabled
   if (draft.password) profile.password = draft.password
   const grantsChanged = !sameSet(draft.datasources, base.datasources)
+  // 读失败的这一节永不参与写入(见 loadTopicGrants):dirty 也把它排除在外
+  const topicsChanged = topicDirty.value && !topicGrantsError.value
 
   saving.value = true
   try {
@@ -1201,6 +1380,11 @@ async function saveDraft() {
     if (grantsChanged) {
       await apiPut(`/v1/admin/users/${user.id}/datasources`, {
         datasources: draft.datasources,
+      })
+    }
+    if (topicsChanged) {
+      await apiPut(`/v1/admin/users/${user.id}/topic-grants`, {
+        topic_grants: draftTopicGrants(),
       })
     }
     notifySuccess(t('userUpdatedOk', ui.lang))
@@ -1219,6 +1403,7 @@ async function saveDraft() {
       original.value.datasources = [...(fresh.datasources ?? [])]
       draft.datasources = [...(fresh.datasources ?? [])]
     }
+    if (topicsChanged) await loadTopicGrants(user.id) // 用服务端归一化后的读回值重锚
   } catch (e) {
     toastError(e)
   } finally {
@@ -1672,6 +1857,19 @@ async function loadActivity(userId: number) {
   height: 13px;
   accent-color: var(--accent);
   margin: 0;
+}
+
+.topic-ds {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+}
+.topic-ds-head {
+  font-size: var(--fs-2xs);
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-2);
 }
 
 .token-reveal {

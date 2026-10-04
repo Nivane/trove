@@ -124,7 +124,9 @@ def test_proposal_key_reads_params_from_the_rule():
 
 def test_anchor_comes_from_evidence_then_falls_back_to_now():
     assert anchor_of(_outcome()) == ANCHOR
-    assert anchor_of(_outcome(anchor="")) == NOW.date().isoformat()
+    # 回退到"现在":注入 NOW,不读挂钟 —— 断言里写死 NOW.date() 的测试只在
+    # 写它的那天绿(日期一翻就红,与被测代码无关)。
+    assert anchor_of(_outcome(anchor=""), NOW) == NOW.date().isoformat()
 
 
 def test_primary_group_is_the_largest_absolute_contribution():

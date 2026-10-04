@@ -104,7 +104,18 @@ function serverList(path: string): { users: Row[]; total: number } {
   return { users: rows.slice(offset, offset + limit), total: rows.length }
 }
 
-function mockApi(overrides: { list?: (path: string) => unknown } = {}) {
+interface TopicOverrides {
+  /** user id → stored topic_grants (null = 未配置收窄). */
+  topicGrants?: Record<number, Record<string, string[]> | null>
+  /** datasource → topic names; a missing key acts as 404 (该源没有主题域清单). */
+  topicLists?: Record<string, string[]>
+  /** 把 topic_grants 读端点打成 500,测"读不到就不动它"的锁。 */
+  topicGrantsFail?: boolean
+}
+
+function mockApi(
+  overrides: { list?: (path: string) => unknown } & TopicOverrides = {},
+) {
   ;(apiGet as any).mockImplementation(async (path: string) => {
     if (path.startsWith('/v1/admin/users?')) {
       return overrides.list ? overrides.list(path) : serverList(path)
@@ -114,6 +125,17 @@ function mockApi(overrides: { list?: (path: string) => unknown } = {}) {
     }
     const tk = path.match(/^\/v1\/admin\/users\/(\d+)\/tokens$/)
     if (tk) return { tokens: TOKENS[Number(tk[1])] ?? [] }
+    const tg = path.match(/^\/v1\/admin\/users\/(\d+)\/topic-grants$/)
+    if (tg) {
+      if (overrides.topicGrantsFail) throw new ApiError(500, 'boom')
+      return { topic_grants: overrides.topicGrants?.[Number(tg[1])] ?? null }
+    }
+    const tp = path.match(/^\/v1\/semantic\/topics\?datasource=(.+)$/)
+    if (tp) {
+      const names = overrides.topicLists?.[decodeURIComponent(tp[1])]
+      if (!names) throw new ApiError(404, 'no semantic model')
+      return { topics: names.map((name) => ({ name })) }
+    }
     if (path.startsWith('/v1/admin/audit')) {
       return { audit: [{ id: 99, ts: '2026-03-05T10:00:00Z', action: 'query.run' }], total: 1 }
     }
@@ -355,6 +377,116 @@ describe('UsersView', () => {
       datasources: ['demo'],
     })
     expect(bodyText()).not.toContain('Unsaved changes')
+  })
+
+  /* ── topic access: the second narrowing layer (None vs {} vs map) ── */
+
+  function drawerPanel(): HTMLElement {
+    return document.body.querySelector<HTMLElement>('.drawer-panel')!
+  }
+
+  function topicCheck(ds: string, name: string): HTMLInputElement {
+    return Array.from(
+      drawerPanel().querySelectorAll<HTMLInputElement>('.topic-ds .ds-check-input'),
+    ).find((i) => i.getAttribute('aria-label') === `${ds}:${name}`)!
+  }
+
+  function pickTopicRadio(text: string): HTMLElement {
+    const label = Array.from(
+      drawerPanel().querySelectorAll<HTMLElement>('.el-radio'),
+    ).find((r) => (r.textContent ?? '').includes(text))!
+    return label.querySelector<HTMLElement>('.el-radio__original') ?? label
+  }
+
+  function topicPutCalls(): { topic_grants: unknown }[] {
+    return (apiPut as any).mock.calls
+      .filter((c: unknown[]) => String(c[0]).endsWith('/topic-grants'))
+      .map((c: unknown[]) => c[1] as { topic_grants: unknown })
+  }
+
+  it('stages topic narrowing and saves the explicit map (unchosen source = empty)', async () => {
+    mockApi({
+      topicGrants: { 2: { demo: ['loans'] } },
+      topicLists: { demo: ['loans', 'clients'], sales: ['orders'] },
+    })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click') // lin.wang: demo, sales
+    await flushPromises()
+
+    expect(drawerPanel().textContent).toContain('Topic access')
+    // 已存配置 = 限定;demo 只勾了 loans,sales 一个都没勾(该源无可见域)
+    expect(topicCheck('demo', 'loans').checked).toBe(true)
+    expect(topicCheck('demo', 'clients').checked).toBe(false)
+    expect(topicCheck('sales', 'orders').checked).toBe(false)
+    // 打开抽屉不写任何东西,也不凭空把没配置过的源补成"未保存"
+    expect(topicPutCalls()).toHaveLength(0)
+    expect(bodyText()).not.toContain('Unsaved changes')
+
+    topicCheck('demo', 'clients').checked = true
+    topicCheck('demo', 'clients').dispatchEvent(new Event('change', { bubbles: true }))
+    await flushPromises()
+    expect(bodyText()).toContain('Unsaved changes')
+
+    findButton(drawerPanel(), 'Save changes').click()
+    await flushPromises()
+    // 客户端不排序(归一化是服务端一件事);sales 无条目即"该源无可见域",
+    // 不会被补成一条空清单
+    expect(topicPutCalls()).toEqual([
+      { topic_grants: { demo: ['loans', 'clients'] } },
+    ])
+    // 读回值(此 mock 不持久化,照旧返回 demo:loans)重锚后回到干净态
+    expect(bodyText()).not.toContain('Unsaved changes')
+  })
+
+  it('switching back to unrestricted writes null, not an empty map', async () => {
+    mockApi({
+      topicGrants: { 2: { demo: ['loans'] } },
+      topicLists: { demo: ['loans'], sales: [] },
+    })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click')
+    await flushPromises()
+
+    pickTopicRadio('Unrestricted').click()
+    await flushPromises()
+    findButton(drawerPanel(), 'Save changes').click()
+    await flushPromises()
+
+    // null 与 {} 是两种语义:取消收窄绝不能写成"收窄到零"
+    expect(topicPutCalls()).toEqual([{ topic_grants: null }])
+  })
+
+  it('keeps a source whose topic list cannot be read (404) unchanged', async () => {
+    mockApi({
+      topicGrants: { 2: { demo: ['loans'], sales: ['orders'] } },
+      topicLists: { demo: ['loans'] }, // sales 无清单 → topicNames 404
+    })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click')
+    await flushPromises()
+
+    expect(drawerPanel().textContent).toContain('No topic list for this datasource')
+    // 只要没动勾选就没有差异 —— 读不到清单的源不因无关浏览变 dirty,更不被清掉
+    expect(bodyText()).not.toContain('Unsaved changes')
+    expect(topicPutCalls()).toHaveLength(0)
+  })
+
+  it('locks the section when the stored grants cannot be read', async () => {
+    mockApi({ topicGrantsFail: true })
+    const view = await mountView()
+    await view.findAll('.dt-row')[1].trigger('click')
+    await flushPromises()
+
+    expect(drawerPanel().textContent).toContain('saving will not change it')
+    // 编辑别的字段并保存:主题域授权必须原封不动(读失败 ≠ 未配置)
+    const name = drawerPanel().querySelector<HTMLInputElement>('.profile-form input')!
+    name.value = 'Renamed'
+    name.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    findButton(drawerPanel(), 'Save changes').click()
+    await flushPromises()
+    expect(apiPatch).toHaveBeenCalledWith('/v1/admin/users/2', { display_name: 'Renamed' })
+    expect(topicPutCalls()).toHaveLength(0)
   })
 
   it('guards the drawer close while a draft is unsaved', async () => {

@@ -284,13 +284,19 @@ class _FakeAuth:
     用户表可以留空 —— 那就等价于「这个人查不到」,会话层据此判定**没有主体**。
     """
 
-    def __init__(self, grants_by_user: dict, users: dict | None = None):
+    def __init__(self, grants_by_user: dict, users: dict | None = None,
+                 topic_grants_by_user: dict | None = None):
         self._grants = grants_by_user
         self._users = users or {}
+        self._topic_grants = topic_grants_by_user or {}
         self.store = self
 
     async def get_datasources(self, user_id):
         return list(self._grants.get(user_id, []))
+
+    async def get_topic_grants(self, user_id):
+        raw = self._topic_grants.get(user_id)
+        return None if raw is None else {k: list(v) for k, v in raw.items()}
 
     async def get_user_by_id(self, uid):
         return self._users.get(uid)

@@ -387,6 +387,30 @@ class AuthService:
     async def get_datasources(self, user_id: int) -> list[str]:
         return await self.store.get_user_datasources(user_id)
 
+    # ── Topic grants(数据源之下的第二层:主题域可见性)──────
+
+    async def set_topic_grants(
+        self, user_id: int, grants: dict[str, list[str]] | None,
+    ) -> None:
+        """整表写入域级授权;``None`` = 取消收窄,``{}`` = 显式收窄到零。
+
+        归一化(空白裁剪 / 去重 / 排序)只在这里做一次:写入即唯一形态 ——
+        读回、审计与判定看到的都是同一份,不靠调用方自律。
+        """
+        if grants is None:
+            await self.store.set_user_topic_grants(user_id, None)
+            return
+        normalized = {
+            str(ds).strip(): sorted(
+                {str(t).strip() for t in (topics or ()) if str(t).strip()})
+            for ds, topics in grants.items()
+            if str(ds).strip()
+        }
+        await self.store.set_user_topic_grants(user_id, normalized)
+
+    async def get_topic_grants(self, user_id: int) -> dict[str, list[str]] | None:
+        return await self.store.get_user_topic_grants(user_id)
+
     # ── Audit ─────────────────────────────────────────────
 
     async def record_audit(

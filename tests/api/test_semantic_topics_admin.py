@@ -238,6 +238,84 @@ async def test_topics_listing_for_granted_user(
     assert by["legacy"]["scope"] == []
 
 
+async def test_topics_listing_filtered_by_topic_grants(
+    user_client, api_app, api_kb, auth_service,
+):
+    """域级授权收窄清单:未授权的域在用户端**不存在**(不是标注不可用)。"""
+    _seed_topics(api_app, [
+        {"name": "learners", "datasets": ["students"]},
+        {"name": "legacy", "datasets": ["dropped_table"]},
+    ])
+    await api_app.state.kb.ensure_synced("test_db")
+    bob = await auth_service.authenticate("bob", "bobpw")
+    await auth_service.set_datasources(bob["id"], ["test_db"])
+    await auth_service.set_topic_grants(bob["id"], {"test_db": ["learners"]})
+
+    resp = await user_client.get(
+        "/v1/semantic/topics", params={"datasource": "test_db"})
+    assert resp.status_code == 200, resp.text
+    assert [t["name"] for t in resp.json()["topics"]] == ["learners"]
+
+
+async def test_topics_listing_empty_topic_grants_hides_all(
+    user_client, api_app, api_kb, auth_service,
+):
+    """``{}`` = 已配置清单为空:数据源进得去,一个域都不见(200 + 空清单)。"""
+    _seed_topics(api_app, [{"name": "learners", "datasets": ["students"]}])
+    await api_app.state.kb.ensure_synced("test_db")
+    bob = await auth_service.authenticate("bob", "bobpw")
+    await auth_service.set_datasources(bob["id"], ["test_db"])
+    await auth_service.set_topic_grants(bob["id"], {})
+
+    resp = await user_client.get(
+        "/v1/semantic/topics", params={"datasource": "test_db"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["topics"] == []
+
+
+async def test_topics_listing_other_datasource_entry_grants_nothing(
+    user_client, api_app, api_kb, auth_service,
+):
+    """字典里没有该源 = 该源无域(没有"默认域"概念,也没有隐式放行)。"""
+    _seed_topics(api_app, [{"name": "learners", "datasets": ["students"]}])
+    await api_app.state.kb.ensure_synced("test_db")
+    bob = await auth_service.authenticate("bob", "bobpw")
+    await auth_service.set_datasources(bob["id"], ["test_db", "other_db"])
+    await auth_service.set_topic_grants(bob["id"], {"other_db": ["anything"]})
+
+    resp = await user_client.get(
+        "/v1/semantic/topics", params={"datasource": "test_db"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["topics"] == []
+
+
+async def test_topics_listing_datasource_gate_still_first(
+    user_client, api_app, api_kb, auth_service,
+):
+    """数据源门在先:域授权不会把看不见的源"借"出来(403 仍然是 403)。"""
+    _seed_topics(api_app, [{"name": "learners", "datasets": ["students"]}])
+    bob = await auth_service.authenticate("bob", "bobpw")
+    await auth_service.set_datasources(bob["id"], ["other_db"])
+    await auth_service.set_topic_grants(bob["id"], {"test_db": ["learners"]})
+
+    resp = await user_client.get(
+        "/v1/semantic/topics", params={"datasource": "test_db"})
+    assert resp.status_code == 403, resp.text
+
+
+async def test_topics_listing_admin_sees_all_despite_topic_grants(
+    client, api_app, api_kb, auth_service,
+):
+    """admin 不受域级授权约束(与数据源门同一套 admin 语义)。"""
+    _seed_topics(api_app, [{"name": "learners", "datasets": ["students"]}])
+    await api_app.state.kb.ensure_synced("test_db")
+
+    resp = await client.get(
+        "/v1/semantic/topics", params={"datasource": "test_db"})
+    assert resp.status_code == 200, resp.text
+    assert [t["name"] for t in resp.json()["topics"]] == ["learners"]
+
+
 async def test_topics_listing_requires_grant(user_client, api_app, api_kb,
                                              auth_service):
     _seed_topics(api_app, [{"name": "learners", "datasets": ["students"]}])

@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS users (
     display_name TEXT NOT NULL DEFAULT '',
     disabled INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    topic_grants_json TEXT
 )
 """
 
@@ -128,6 +129,33 @@ def _like_pattern(text: str) -> str:
     return f"%{escaped.lower()}%"
 
 
+def _parse_topic_grants(raw: Any) -> dict[str, list[str]] | None:
+    """``topic_grants_json`` → 归一化字典;NULL/空串 = 未配置(``None``)。
+
+    **形状异常 → 空字典(该主体一个域都不见),不是 ``None``**:``None`` 在
+    域层是「未收窄」,把一段读不懂的字节翻译成放行是最坏的降级方向。写入侧
+    只会写合法 JSON(``json.dumps``),异常只可能来自人工改库 —— 那时严的
+    方向才是对的。
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        doc = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for ds, topics in doc.items():
+        if not isinstance(ds, str) or not ds:
+            return {}
+        if not isinstance(topics, list) or not all(
+                isinstance(t, str) for t in topics):
+            return {}
+        out[ds] = list(topics)
+    return out
+
+
 def _users_filter(
     q: str | None = None, role: str | None = None, status: str | None = None,
 ) -> tuple[str, list[Any]]:
@@ -196,6 +224,7 @@ class AppDbStore:
         )
         await self._backend.executescript(script)
         await self._ensure_token_scopes_column()
+        await self._ensure_topic_grants_column()
         self._schema_ready = True
 
     async def _ensure_token_scopes_column(self) -> None:
@@ -208,6 +237,22 @@ class AppDbStore:
         try:
             await self._backend.execute(
                 "ALTER TABLE tokens ADD COLUMN scopes_json TEXT NOT NULL DEFAULT '[]'"
+            )
+            await self._backend.commit()
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate column" not in msg and "already exists" not in msg:
+                raise
+
+    async def _ensure_topic_grants_column(self) -> None:
+        """存量库幂等补列 ``topic_grants_json``(同上手法)。
+
+        注意与 ``scopes_json`` 的一处差异:**可空** —— ``NULL`` 在这里是有
+        语义的取值(未配置域级收窄),不能给它 ``NOT NULL DEFAULT``。
+        """
+        try:
+            await self._backend.execute(
+                "ALTER TABLE users ADD COLUMN topic_grants_json TEXT"
             )
             await self._backend.commit()
         except Exception as e:
@@ -571,6 +616,44 @@ class AppDbStore:
                 (user_id,),
             )
             return [row[0] async for row in cursor]
+        finally:
+            await conn.close()
+
+    # ── Topic grants(域级收窄;整表写入)─────────────────
+
+    async def set_user_topic_grants(
+        self, user_id: int, grants: dict[str, list[str]] | None,
+    ) -> None:
+        """整表写入;``None`` = 未配置收窄(列写 NULL,不是 ``'{}'``)。
+
+        ``None`` 与 ``{}`` 是两种语义(不收窄 / 收窄到零),存储层必须分得
+        开,所以列可空且空 dict 老老实实序列化成 ``'{}'``。
+        """
+        payload = None if grants is None else json.dumps(
+            {str(ds): list(topics) for ds, topics in grants.items()},
+            ensure_ascii=False)
+        conn = await self._conn()
+        try:
+            await conn.execute(
+                "UPDATE users SET topic_grants_json = ?, updated_at = ? "
+                "WHERE id = ?",
+                (payload, now_iso(), user_id),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    async def get_user_topic_grants(
+        self, user_id: int,
+    ) -> dict[str, list[str]] | None:
+        conn = await self._conn()
+        try:
+            cursor = await conn.execute(
+                "SELECT topic_grants_json FROM users WHERE id = ?", (user_id,))
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return _parse_topic_grants(row[0])
         finally:
             await conn.close()
 

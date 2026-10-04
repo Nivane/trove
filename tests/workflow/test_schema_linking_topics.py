@@ -116,9 +116,22 @@ class FakeKB:
         return "builtin"
 
 
-def _state(question: str, topic: str = "") -> WorkflowState:
+def _state(question: str, topic: str = "",
+           principal: dict | None = None) -> WorkflowState:
     return WorkflowState(
-        session_id="s1", question=question, datasource="fin", topic=topic)
+        session_id="s1", question=question, datasource="fin", topic=topic,
+        principal=principal)
+
+
+def _wire(subject: str = "7", *, role: str = "user",
+          topic_grants: dict | None = None) -> dict:
+    """一张 wire 形状的主体(与 ``principal_to_wire`` 同形,手写以便直读)。"""
+    from trove.services.authz.policy import Principal, principal_to_wire
+
+    return principal_to_wire(Principal(
+        subject=subject, role=role, grants=frozenset({"fin"}),
+        topic_grants=None if topic_grants is None else {
+            ds: frozenset(ts) for ds, ts in topic_grants.items()}))
 
 
 class TestTopicScopeConvergence:
@@ -227,3 +240,121 @@ class TestTopicScopeConvergence:
         state.retry_count = 2
         out = await node(state)
         assert set(out["matched_tables"]) <= {"loan", "account"}
+
+
+class TestTopicGrantsEnforcement:
+    """域级授权(topic_grants)在提问路径上的收窄。
+
+    核心不变量:**不可见的域与不存在的域输出逐字节同形** —— 存在性不得从
+    拒绝里漏出去(否则一次试探就拿到了域名单)。域级收窄收的是"域的入口面"
+    (选择器 + 显式带域提问);数据访问边界仍是数据源门,未选域的提问不因
+    本层而改变(见 test_no_topic_ask_is_not_gated)。
+    """
+
+    def _node(self, sqlite_registry, model=None):
+        return make_schema_linking(
+            kb=None, connectors=sqlite_registry,
+            semantic_layer=FakeProvider(model or _model()))
+
+    async def test_unauthorized_topic_is_byte_identical_to_not_found(
+        self, sqlite_registry,
+    ):
+        """**存在性预言机的正面封口**:同一个输入「clients」,一次是"存在但无权"
+        (模型里真有 clients),一次是"压根不存在"(模型里没有这个域)——
+        两次的全部输出必须逐字节相同,包括被回显的输入本身。"""
+        with_topic = self._node(sqlite_registry)          # 模型含 clients
+        without_topic = self._node(sqlite_registry, _model(topics=[
+            TopicDomain(name="loans", datasets=["loan", "account"])]))
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        denied = await with_topic(
+            _state("loan amount", topic="clients", principal=wire))
+        missing = await without_topic(
+            _state("loan amount", topic="clients", principal=wire))
+        assert denied == missing
+        assert denied["refusal"]["reason"] == "topic_not_found"
+        assert denied["matched_tables"] == []
+        assert denied["link_detail"]["topic_status"] == "not_found"
+
+    async def test_unauthorized_output_differs_from_not_found_only_by_the_echo(
+        self, sqlite_registry,
+    ):
+        """换个名字试探也拿不到信息:剔除对**用户自己的输入**的回显后,
+        无权拒绝与不存在拒绝的其余字段完全一致(可用域清单也是同一份)。"""
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        denied = await node(_state("loan amount", topic="clients", principal=wire))
+        missing = await node(_state("loan amount", topic="ghost", principal=wire))
+        drop = lambda d: {k: v for k, v in d.items() if k != "topic"}  # noqa: E731
+        assert drop(denied["refusal"]) == drop(missing["refusal"])
+        assert drop(denied["link_detail"]) == drop(missing["link_detail"])
+
+    async def test_stale_invisible_topic_is_also_not_found(self, sqlite_registry):
+        """域过期但**不可见**:报 not_found 而不是 empty_scope(后者也是存在性)。"""
+        model = _model(topics=[
+            TopicDomain(name="legacy", datasets=["dropped_table"]),
+            TopicDomain(name="loans", datasets=["loan", "account"]),
+        ])
+        node = self._node(sqlite_registry, model)
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        denied = await node(_state("loan amount", topic="legacy", principal=wire))
+        assert denied["refusal"]["reason"] == "topic_not_found"
+        assert denied["link_detail"]["topic_status"] == "not_found"
+
+    async def test_authorized_topic_flows_normally(self, sqlite_registry):
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        out = await node(_state("loan amount", topic="loans", principal=wire))
+        assert out["matched_tables"] == ["loan"]
+        assert out["link_detail"]["topic"] == "loans"
+
+    async def test_authorization_compares_canonical_name(self, sqlite_registry):
+        """授权清单写的是模型里的规范名;请求侧的大小写/空白由解析层收敛。"""
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        out = await node(_state("loan amount", topic="  LOANS ", principal=wire))
+        assert out["link_detail"]["topic"] == "loans"
+
+    async def test_guidance_lists_only_visible_topics(self, sqlite_registry):
+        """拒绝文案的 available_topics 按主体过滤 —— 预言机的封口在这里。"""
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        denied = await node(_state("loan amount", topic="ghost", principal=wire))
+        assert denied["refusal"]["available_topics"] == ["loans"]
+
+    async def test_out_of_scope_guidance_is_filtered_too(self, sqlite_registry):
+        """域内零锚定的"换个域"建议同样只列可见域(第二条泄露路径)。"""
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={"fin": ["loans"]})
+        out = await node(_state("client gender", topic="loans", principal=wire))
+        assert out["refusal"]["reason"] == "no_semantic_match"
+        assert out["refusal"]["topic"] == "loans"
+        assert out["refusal"]["available_topics"] == ["loans"]
+
+    async def test_empty_map_hides_every_topic(self, sqlite_registry):
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={})
+        out = await node(_state("loan amount", topic="loans", principal=wire))
+        assert out["refusal"]["reason"] == "topic_not_found"
+        assert out["refusal"]["available_topics"] == []
+
+    async def test_admin_principal_sees_all(self, sqlite_registry):
+        node = self._node(sqlite_registry)
+        wire = _wire(role="admin", topic_grants={"fin": []})
+        out = await node(_state("loan amount", topic="loans", principal=wire))
+        assert out["matched_tables"] == ["loan"]
+
+    async def test_unrestricted_principal_unchanged(self, sqlite_registry):
+        """主题收窄未配置(存量用户)→ 与无主体时完全一致。"""
+        node = self._node(sqlite_registry)
+        anon = await node(_state("loan amount", topic="loans"))
+        with_wire = await node(_state(
+            "loan amount", topic="loans", principal=_wire()))
+        assert with_wire == anon
+
+    async def test_no_topic_ask_is_not_gated(self, sqlite_registry):
+        """**边界自证**:未选主题域的提问不因域级授权改变 —— 本层收窄的是
+        "域的选择面",数据访问边界仍是数据源门(在 API 层先行)。"""
+        node = self._node(sqlite_registry)
+        wire = _wire(topic_grants={})
+        out = await node(_state("loan amount by client gender", principal=wire))
+        assert set(out["matched_tables"]) == {"loan", "client"}

@@ -40,6 +40,7 @@ __all__ = [
     "principal_to_wire",
     "scopes_allow",
     "visible_datasources",
+    "visible_topics",
 ]
 
 #: 「本机可信身份」的主体名 —— CLI / stdio MCP / ``allow_null_auth`` 的嵌入调用。
@@ -67,6 +68,19 @@ def visible_datasources(
     纯函数,不需要 :class:`Policy` 实例(它只管构造主体)。
     """
     return [n for n in names if principal.allows_datasource(n, default)]
+
+
+def visible_topics(
+    principal: "Principal", datasource: str, names: Iterable[str],
+) -> list[str]:
+    """``names`` 里该主体在 ``datasource`` 上可见的主题域,保持原顺序。
+
+    与 :func:`visible_datasources` 同一条纪律:过滤规则只写一遍。主题域清单
+    端点(``GET /v1/semantic/topics``)与拒绝文案里的 ``available_topics``
+    都调它 —— 后者尤其要命:两处各判各的,「不可见」与「不存在」的拒绝文案
+    就会分叉,等于把域的存在性泄露给受限用户(存在性预言机)。
+    """
+    return [n for n in names if principal.allows_topic(datasource, n)]
 
 
 def scopes_allow(scopes: Iterable[str] | None, *required: str) -> bool:
@@ -148,6 +162,21 @@ class Principal:
     grants 处理 —— 用户 grants 明明是 ``{sales}``、默认源是 ``financial`` 时,
     存储一抖动他就拿到了 financial。**拿不到依据 != 依据为空**,前者必须拒绝。
     要表示「不设限」只有一条路:``role="admin"``。
+
+    ``topic_grants`` 是数据源门之下的**第二层可选收窄**(主题域可见性),
+    取值也三态,但 ``None`` 的方向与 ``grants`` 刻意相反:
+
+    ===========================  ==========================================
+    ``None``(且非 admin)         **未配置收窄** → 可见源的全部主题域
+    ``{}`` / 各源空集            已配置,清单为空 → 一个域都不见
+    ``{ds: frozenset({...})}``   严格 allowlist;``ds`` 不在字典里 = 该源无域
+    ===========================  ==========================================
+
+    第一行为什么不是拒绝:主题域是叠加在**已经 fail-closed 的数据源门**之上
+    的收窄层,「没配置」只该是「没收窄」—— 读成拒绝会让本功能上线的一刻,
+    所有存量用户的主题域凭空消失。要表达「一个域都不见」有明确写法(``{}``)。
+    第三行承接 ``grants`` 的纪律:声明了清单就是**完整**清单,漏写的源即
+    拒绝(没有「默认域」概念,别照搬 grants 空集放行默认源的写法),方向仍是严。
     """
 
     subject: str
@@ -156,6 +185,8 @@ class Principal:
     #: None = 无授权依据(拒绝);见类 docstring 的三行表
     grants: frozenset[str] | None = None
     on_behalf_of: str | None = None
+    #: None = 未配置收窄;见类 docstring 的第二张表
+    topic_grants: dict[str, frozenset[str]] | None = None
 
     @property
     def is_admin(self) -> bool:
@@ -179,17 +210,36 @@ class Principal:
             return name in self.grants
         return bool(default) and name == default
 
+    def allows_topic(self, datasource: str, topic: str) -> bool:
+        """这个主体能不能看见/使用 ``datasource`` 上的主题域 ``topic``。
+
+        只答「域这一层」——数据源本身可不可见由 :meth:`allows_datasource`
+        在各自入口先行判定(清单端点先过 ``require_datasource``、提问先过
+        会话层的源授权),这里不重复做,也做不了:``allows_datasource``
+        需要注册表默认源名,那个信息在域判定点上并不存在。
+
+        admin 判定在读 ``topic_grants`` 之前(同 ``grants`` 的既有语义)。
+        """
+        if self.is_admin:
+            return True
+        if self.topic_grants is None:
+            return True          # 未配置收窄(见类 docstring 的第二张表)
+        return str(topic) in self.topic_grants.get(str(datasource), frozenset())
+
     def narrow(self, **overrides: Any) -> "Principal":
         """派生一个**不比自己更宽**的主体(I6)。
 
         agent 在流程中途(如 refuse 节点起草扩展)需要构造一个受限视图时用它。
         ``narrow`` 不是 ``replace``:``role`` 只能向下(admin → user),
-        ``scopes`` 与 ``grants`` 只能取交集 —— 否则「收窄」就成了提权的后门。
+        ``scopes`` / ``grants`` / ``topic_grants`` 只能取交集(域层因为
+        ``None`` 是最宽取值,把 ``None`` 当收窄目标会**抛错**而不是放宽)——
+        否则「收窄」就成了提权的后门。
 
         Raises:
             ValueError: 试图把 ``role`` 抬到 ``user`` 之上,或传入未知字段。
         """
-        allowed = {"role", "scopes", "grants", "on_behalf_of", "subject"}
+        allowed = {"role", "scopes", "grants", "topic_grants", "on_behalf_of",
+                   "subject"}
         unknown = set(overrides) - allowed
         if unknown:
             raise ValueError(f"narrow() 不认识的字段: {sorted(unknown)}")
@@ -215,6 +265,29 @@ class Principal:
                 changes["grants"] = None
             else:
                 changes["grants"] = self.grants & frozenset(asked)
+        if "topic_grants" in overrides:
+            asked = overrides["topic_grants"]
+            if asked is None:
+                # 与 grants 不同:域层的 None 是**最宽**的取值,收窄不往这边走
+                if self.topic_grants is not None:
+                    raise ValueError(
+                        "narrow() 不能把 topic_grants 从受限放宽为不限制")
+            else:
+                norm = {
+                    str(ds): frozenset(ts) for ds, ts in dict(asked).items()
+                }
+                if self.topic_grants is None:
+                    # 原本不受限(或 admin):交集就是对方给的清单本身
+                    changes["topic_grants"] = norm
+                else:
+                    # 按源求交:任一侧没列出的源 = 那一侧允许空集,交集为空
+                    merged: dict[str, frozenset[str]] = {}
+                    for ds in set(self.topic_grants) | set(norm):
+                        both = (self.topic_grants.get(ds, frozenset())
+                                & norm.get(ds, frozenset()))
+                        if both:
+                            merged[ds] = both
+                    changes["topic_grants"] = merged
         for key in ("on_behalf_of", "subject"):
             if key in overrides:
                 changes[key] = overrides[key]
@@ -243,6 +316,11 @@ def principal_to_wire(principal: "Principal | None") -> dict[str, Any] | None:
         # 三种取值原样保留 —— None / [] / [...] 是三个语义,塌陷即改向
         "grants": None if principal.grants is None else sorted(principal.grants),
         "on_behalf_of": principal.on_behalf_of,
+        # 域层同理三态(那边是 None / {} / {...});键序固定、值排序,可比可断言
+        "topic_grants": None if principal.topic_grants is None else {
+            str(ds): sorted(ts)
+            for ds, ts in sorted(principal.topic_grants.items())
+        },
     }
 
 
@@ -275,6 +353,16 @@ def principal_from_wire(data: Any) -> "Principal | None":
     on_behalf_of = data.get("on_behalf_of")
     if on_behalf_of is not None and not isinstance(on_behalf_of, str):
         return None
+    raw_topic_grants = data.get("topic_grants")
+    if raw_topic_grants is None:
+        # 键不存在(写下这份 checkpoint 时功能还不存在)与显式 null 同解:
+        # 未配置收窄。按「历史行为」还原,而不是按今天的配置倒推 —— 主体
+        # 是**运行时快照**,与 grants 同一条纪律(改授权不影响已在跑的会话)。
+        topic_grants: dict[str, frozenset[str]] | None = None
+    else:
+        topic_grants = _topic_grants_from_wire(raw_topic_grants)
+        if topic_grants is None:
+            return None
     # 未知键忽略:旧代码读新 checkpoint 不该因为多一个字段而整个作废
     return Principal(
         subject=subject,
@@ -282,7 +370,27 @@ def principal_from_wire(data: Any) -> "Principal | None":
         scopes=scopes,
         grants=grants,
         on_behalf_of=on_behalf_of,
+        topic_grants=topic_grants,
     )
+
+
+def _topic_grants_from_wire(value: Any) -> dict[str, frozenset[str]] | None:
+    """``{ds: [topic, ...]}`` 的 wire 形状 → 字典;形状不对则 ``None``(主体作废)。
+
+    **空字典是合法取值**(显式「一个域都不见」),与形状错误必须分清 ——
+    把 ``{}`` 读成错误会让一份「已收窄到零」的主体悄悄放宽成「未收窄」。
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, frozenset[str]] = {}
+    for ds, topics in value.items():
+        if not isinstance(ds, str) or not ds:
+            return None
+        bag = _str_frozenset(topics)
+        if bag is None:
+            return None
+        out[ds] = bag
+    return out
 
 
 def _str_frozenset(value: Any) -> frozenset[str] | None:
@@ -317,7 +425,7 @@ class Policy:
     ) -> Principal:
         """用户 dict(``get_current_user`` / ``resolve_token`` 的产物)→ 主体。
 
-        **全仓库唯一的 ``get_datasources`` 调用点。**
+        **全仓库唯一的 ``get_datasources`` / ``get_topic_grants`` 调用点。**
 
         不捕获存储异常:取不到 grants 时往上抛(HTTP 500),而不是翻译成一个
         授权结论。基础设施故障不是「这个用户没有权限」,把它渲染成 403 会让
@@ -327,16 +435,25 @@ class Policy:
         role = str(user.get("role") or "user")
         scopes = frozenset(user.get("scopes") or ())
         grants: frozenset[str] | None = None
+        topic_grants: dict[str, frozenset[str]] | None = None
         if role != "admin":
             if self._auth is not None:
                 grants = frozenset(await self._auth.get_datasources(user.get("id")) or ())
-            # auth 缺失 → grants 保持 None = 无依据 → 拒绝
+                raw = await self._auth.get_topic_grants(user.get("id"))
+                if raw is not None:
+                    topic_grants = {
+                        str(ds): frozenset(str(t) for t in topics or ())
+                        for ds, topics in dict(raw).items()
+                    }
+            # auth 缺失 → grants 保持 None = 无依据 → 拒绝一切源;域层保持
+            # None(未配置收窄)—— 没有源可见时域判定根本到不了
         return Principal(
             subject=str(user.get("id")),
             role=role,
             scopes=scopes,
             grants=grants,
             on_behalf_of=on_behalf_of,
+            topic_grants=topic_grants,
         )
 
     @staticmethod
@@ -361,3 +478,9 @@ class Policy:
         principal: Principal, names: Iterable[str], default: str | None,
     ) -> list[str]:
         return visible_datasources(principal, names, default)
+
+    @staticmethod
+    def visible_topics(
+        principal: Principal, datasource: str, names: Iterable[str],
+    ) -> list[str]:
+        return visible_topics(principal, datasource, names)

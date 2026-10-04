@@ -41,6 +41,11 @@ class NullAuth:
     async def get_datasources(self, user_id: int) -> list[str]:
         return []
 
+    async def get_topic_grants(self, user_id: int) -> dict[str, list[str]] | None:
+        # NullAuth 的请求一律解析成 LOCAL_ADMIN(admin 判定不读域级授权);
+        # 这个实现只为 duck-type 完整 —— 没有存储 = 没有收窄配置。
+        return None
+
     async def record_audit(self, *args, **kwargs) -> None:
         pass
 
