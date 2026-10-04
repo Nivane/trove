@@ -258,7 +258,7 @@ echo "哪个地区的平均贷款金额最高?" | uv run trove-cli --datasource 
             <tr>
               <td>人在环与审计</td>
               <td>SQL 执行前可交人过目，载荷无法识别时<b>默认拒绝</b>——这道门只在能读懂输入时才开。拒绝、字段改写、凭 scope 读原文三类各记一条审计（只记字段名与模式，从不记值）。</td>
-              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">workflow/nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1630">agent/session.py:1630 <span class="ref-line">_audit_authz</span></a></td>
+              <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/hitl.py#L65">workflow/nodes/hitl.py:65 <span class="ref-line">make_hitl</span></a> · <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1633">agent/session.py:1633 <span class="ref-line">_audit_authz</span></a></td>
             </tr>
           </tbody>
         </table>
@@ -452,7 +452,7 @@ uv run python scripts/eval_gate.py --baseline &lt;旧结果&gt; --current &lt;�
         可用前端仓库里的 <code>npm run shots</code> 重新生成，<code>_manifest.json</code> 记录每张图的来源提交。
       </p>
       <div class="attribution">
-        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">0b45464</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: 0b45464</code></p>
+        <p>本页只描述 Trove 自身的实现。文中出现的模块名、文件路径与行号均指向该仓库源码，可逐条核对；行号基准为 main 分支 <code class="mono">cbfff9e</code>，源码演进后若有偏移，可按标注的符号名定位。<code class="mono" hidden>anchor-base: cbfff9e</code></p>
         <p>问数分析是一个活跃的开源方向，Trove 在设计上参考了这一领域的公开实践；页面上没有列出任何同类项目的模块，也没有把别人的实现写成自己的。</p>
         <p>本页不提供准确率数字。不同数据集与口径之间不可混比，请用上文的复现路径在你自己的数据源上测量。</p>
       </div>
