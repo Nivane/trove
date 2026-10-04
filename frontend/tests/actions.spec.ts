@@ -125,6 +125,15 @@ function dialogButton(text: string): HTMLButtonElement {
   return findButton(footer, text)
 }
 
+/** 抽屉同样 teleport 到 body;页面里有几个抽屉(预览/详情),只取打开的那个。 */
+function drawerButton(text: string): HTMLButtonElement {
+  const drawer = Array.from(document.querySelectorAll('.el-drawer')).find(
+    (d) => !(d.parentElement as HTMLElement | null)?.style.display.includes('none'),
+  )
+  if (!drawer) throw new Error('drawer is not open')
+  return findButton(drawer, text)
+}
+
 describe('fetchOpenActionProposals', () => {
   it('fans out over the three open statuses and merges newest-first', async () => {
     ;(apiGet as any).mockImplementation(async (url: string) => {
@@ -283,6 +292,56 @@ describe('ActionsView — proposals', () => {
 
     expect(apiPost).toHaveBeenCalledWith('/v1/admin/actions/proposals/p1/approve', {
       comment: 'lgtm',
+    })
+  })
+
+  it('offers dry_run in the drawer and posts it like any other verb', async () => {
+    // 预演是闭集动词之一(镜像后端 _DECISIONS)。它不该只在后端存在而前端
+    // 够不着 —— 那样"预演"就只剩 API 调用者用得上。
+    ;(apiGet as any).mockImplementation(async (url: string) => {
+      if (url.includes('/proposals/p1')) {
+        return {
+          proposal: proposal({ status: 'pending' }),
+          approvals: [],
+          deliveries: [
+            {
+              proposal_id: 'p1',
+              channel: 'ops-alerts',
+              status: 'dry_run',
+              http_status: null,
+              response_excerpt: '{"rule":"revenue-drop"}',
+              error: '',
+              attempted_at: '2026-10-01T09:30:00Z',
+            },
+          ],
+          stale: false,
+        }
+      }
+      const hit = (['pending', 'approved', 'failed'] as const).find((s) =>
+        url.includes(`status=${s}`),
+      )
+      return {
+        proposals: hit ? [openPages[hit]] : [],
+        counts: { pending: 1, approved: 1, failed: 1 },
+        enabled: true,
+      }
+    })
+    ;(apiPost as any).mockResolvedValue({ proposal: proposal({ status: 'pending' }) })
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+
+    findButton(view.element, 'Detail').click()
+    await flushPromises()
+
+    // 回执行里的预演行原样展示(不是绿色「成功」,也不是错误)。
+    expect(bodyText()).toContain('dry_run')
+
+    drawerButton('Dry run').click()
+    await flushPromises()
+    dialogButton('Dry run').click()
+    await flushPromises()
+
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/actions/proposals/p1/dry_run', {
+      comment: '',
     })
   })
 
