@@ -175,8 +175,18 @@ def score_history(
     return out
 
 
-def rollup(buckets: Iterable[dict[str, Any]] | None) -> dict[str, Any]:
-    """各桶 → 总览(同一套口径:计数相加,比率重算,不足原因重判)。"""
+def rollup(
+    buckets: Iterable[dict[str, Any]] | None,
+    *,
+    min_effects: int = MIN_EFFECTS,
+) -> dict[str, Any]:
+    """各桶 → 总览(同一套口径:计数相加,比率重算,不足原因重判)。
+
+    ``effective_rate`` 与桶同一道门(``decided >= min_effects``,不足 →
+    None + ``insufficient``):总览行不该比桶更敢说话 —— 一条测量的
+    100% 正是本模块要防的伪精度(3 次行动里的 2 次不是「67%」,
+    1 次里的 1 次更不是「100%」)。
+    """
     items = list(buckets or [])
     total = ok = alert = error = triggered = 0
     effects = {"measured": 0, "effective": 0, "no_effect": 0,
@@ -190,6 +200,11 @@ def rollup(buckets: Iterable[dict[str, Any]] | None) -> dict[str, Any]:
         for k in effects:
             effects[k] += int((b.get("effects") or {}).get(k) or 0)
     decided = effects["effective"] + effects["no_effect"]
+    insufficient: list[str] = []
+    if 0 < decided < int(min_effects):
+        insufficient.append("few_effects")
+    if decided == 0:
+        insufficient.append("no_effects")
     return {
         "buckets": len(items),
         "total": total, "ok": ok, "alert": alert, "error": error,
@@ -197,5 +212,7 @@ def rollup(buckets: Iterable[dict[str, Any]] | None) -> dict[str, Any]:
         "triggered_rate": (triggered / total) if total else None,
         "effects": effects,
         "decided": decided,
-        "effective_rate": (effects["effective"] / decided) if decided else None,
+        "effective_rate": ((effects["effective"] / decided)
+                           if decided >= int(min_effects) else None),
+        "insufficient": insufficient,
     }
