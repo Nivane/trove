@@ -33,7 +33,8 @@ router = APIRouter()
 #: The closed set of proposal transitions the API accepts. Each maps to a
 #: service method; the verb in the path is validated against this, so the
 #: route table cannot grow a verb the service does not implement.
-_DECISIONS = ("approve", "reject", "cancel", "dispatch", "retry", "ack")
+#: ``dry_run`` 是预演:只走前置判定与回执行,不发 POST、不动提案状态。
+_DECISIONS = ("approve", "reject", "cancel", "dispatch", "retry", "dry_run", "ack")
 
 
 def _actions(request: Request):

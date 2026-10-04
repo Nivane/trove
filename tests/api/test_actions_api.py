@@ -347,6 +347,60 @@ class TestProposalLifecycle:
         assert r.json()["proposal"]["attempts"] == 2
         assert len(actions_env.sent) == 2
 
+    async def test_dry_run_previews_without_sending_or_moving_the_state(
+            self, client, actions_env):
+        """预演是闭集动词之一:走通道解析与护栏,不发 POST,提案状态不动。"""
+        await client.post("/v1/admin/actions/templates",
+                          json=_template_body())
+        await client.post("/v1/admin/actions/templates/notify-ops/confirm")
+        p = await _seed_proposal(actions_env)
+
+        r = await client.post(
+            f"/v1/admin/actions/proposals/{p.id}/dry_run",
+            json={"comment": "looks right"})
+        assert r.status_code == 200, r.text
+        body = r.json()["proposal"]
+        assert body["status"] == "pending", "预演不改状态"
+        assert body["attempts"] == 0, "预演不消耗尝试次数"
+        assert actions_env.sent == [], "预演不发 POST"
+
+        detail = (await client.get(
+            f"/v1/admin/actions/proposals/{p.id}")).json()
+        assert [a["action"] for a in detail["approvals"]] == ["dry_run"]
+        assert detail["approvals"][0]["comment"] == "looks right"
+        assert detail["deliveries"][-1]["status"] == "dry_run"
+        assert "revenue-drop" in detail["deliveries"][-1]["response_excerpt"]
+
+        # 预演之后照常批准/外送 —— 预演不是一次尝试,首次外送仍是 dispatch。
+        r = await client.post(
+            f"/v1/admin/actions/proposals/{p.id}/approve")
+        assert r.status_code == 200
+        r = await client.post(
+            f"/v1/admin/actions/proposals/{p.id}/dispatch")
+        assert r.json()["proposal"]["status"] == "dispatched"
+        assert r.json()["proposal"]["attempts"] == 1
+        detail = (await client.get(
+            f"/v1/admin/actions/proposals/{p.id}")).json()
+        assert [a["action"] for a in detail["approvals"]] == [
+            "dry_run", "approve", "dispatch"]
+
+    async def test_dry_run_is_audited_and_lists_the_new_verb(
+            self, client, actions_env, auth_service):
+        await client.post("/v1/admin/actions/templates",
+                          json=_template_body())
+        await client.post("/v1/admin/actions/templates/notify-ops/confirm")
+        p = await _seed_proposal(actions_env)
+
+        await client.post(f"/v1/admin/actions/proposals/{p.id}/dry_run")
+        rows = await auth_service.list_audit(action="action.proposal.dry_run")
+        assert len(rows) == 1
+        assert rows[0]["details"]["status"] == "pending"
+
+        # 动词闭集的报错信息里带着 dry_run(前端据此把按钮挂出来)。
+        r = await client.post(
+            "/v1/admin/actions/proposals/p-ghost/frobnicate", json={})
+        assert "dry_run" in r.json()["detail"]
+
     async def test_expired_is_stale_and_approve_refuses_lazily(
             self, client, actions_env):
         """过期是"时间到了":approve 在**任一时刻**都拒绝迟到的批准,

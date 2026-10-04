@@ -51,7 +51,12 @@ TEMPLATE_STATUSES = ("pending", "confirmed")
 
 #: What an approval row can record. ``retry`` is recorded when a failed
 #: dispatch is re-attempted — the audit line answers "who sent this twice".
-APPROVAL_ACTIONS = ("approve", "reject", "cancel", "dispatch", "retry", "ack")
+#: ``dry_run`` is recorded whenever someone previews a proposal: a preview is
+#: still a **decision about** an outbound message, so it belongs in the same
+#: append-only trail as approve/reject (who looked, and when).
+APPROVAL_ACTIONS = (
+    "approve", "reject", "cancel", "dispatch", "retry", "dry_run", "ack",
+)
 
 #: v1 is single-approver only. The field exists on the template so the
 #: multi-approver version does not have to migrate files, but any other value
@@ -149,11 +154,17 @@ class Delivery:
     carries the channel, the HTTP status and a bounded response excerpt, and
     ``ack`` writes a row too (channel ``ack``) so the receipt is in the same
     trail rather than a flag somewhere else.
+
+    ``dry_run`` rows record a preview: the pre-flight verdict plus the payload
+    that *would* have gone out. Nothing left the building, so they are excluded
+    from attempt counts, rate-limit windows and retry clocks — status is a
+    closed set of ``sent | failed | ack | dry_run`` and only the first two are
+    "an attempt happened".
     """
 
     proposal_id: str
     channel: str = ""
-    status: str = "sent"             # sent | failed | ack
+    status: str = "sent"             # sent | failed | ack | dry_run
     http_status: int | None = None
     response_excerpt: str = ""
     error: str = ""

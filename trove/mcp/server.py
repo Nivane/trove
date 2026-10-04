@@ -249,9 +249,9 @@ def build_mcp_server(
         return await _resource_for(datasource, "semantics")
 
     # ── 行动提案拉通道(P3:与 webhook 推送并列的取件口)─────────────
-    # 这里**只读 + 回执**:清单/详情/签收。approve / reject / dispatch 是人在
-    # 管理台做的决定(MCP 是机器通道,机器不投票)—— 所以没有任何工具能改
-    # 提案的审批状态,唯一的写是 ack(签收,事实记录)。
+    # 这里**只读 + 回执**:清单/详情/签收。approve / reject / dispatch /
+    # dry_run 是人在管理台做的决定(MCP 是机器通道,机器不投票)—— 所以没有
+    # 任何工具能改提案的审批状态,唯一的写是 ack(签收,事实记录)。
     actions = components.get("actions")
 
     def _actor() -> str:
@@ -423,8 +423,8 @@ def build_mcp_server(
 
         Approved proposals are the pull channel: fetch one with
         ``fetch_proposal`` and receipt it with ``ack_proposal``. Approving,
-        rejecting and dispatching are admin-console decisions and are NOT
-        available here. Empty ``status`` lists every state.
+        rejecting, dispatching and dry-running are admin-console decisions and
+        are NOT available here. Empty ``status`` lists every state.
         """
         if actions is None:
             return {"error": "action layer is not available in this process"}
