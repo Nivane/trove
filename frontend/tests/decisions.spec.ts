@@ -137,6 +137,35 @@ describe('DecisionsView URL state (§4.3)', () => {
   })
 })
 
+describe('DecisionsView noise band (B2)', () => {
+  it('renders the band line only for rules that declare one', async () => {
+    mockGet({
+      demo: [
+        rule('r-plain'),
+        {
+          ...rule('r-band'),
+          seasonal: { grain: 'month', lookback: 12, mode: 'trailing', k: 3.5 },
+          significance: { require: 'outside_band' },
+        },
+        {
+          ...rule('r-record'),
+          seasonal: { grain: '', lookback: 8, mode: 'same_phase', k: 3.5 },
+          significance: { require: '' },
+        },
+      ],
+    })
+    const view = await mountView()
+    const text = view.text()
+    // 声明了的规则:季节基线 + 口径 pill;auto 粒度显示为 auto
+    expect(text).toContain('month × 12 · k=3.5')
+    expect(text).toContain('Requires outside band')
+    expect(text).toContain('auto × 8 · k=3.5')
+    expect(text).toContain('Noise band · record only')
+    // 未声明的规则不带这一行 —— 出现次数等于声明数,不是规则数
+    expect(text.match(/Seasonal baseline/g)).toHaveLength(2)
+  })
+})
+
 describe('DecisionsView table layout (F1)', () => {
   it('pins the verdict-history column to the right edge of the table', async () => {
     mockGet({ demo: [rule('r-demo')] })

@@ -153,6 +153,47 @@ function degradedOf(a: Record<string, unknown>): Record<string, unknown>[] {
   return Array.isArray(d) ? (d as Record<string, unknown>[]) : []
 }
 
+function significanceOf(
+  ev: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const s = ev.significance
+  return s && typeof s === 'object' ? (s as Record<string, unknown>) : null
+}
+
+function bandEntries(
+  ev: Record<string, unknown>,
+): { dim: string; entry: Record<string, unknown> }[] {
+  const by = significanceOf(ev)?.by_dim
+  if (!by || typeof by !== 'object') return []
+  return Object.entries(by as Record<string, unknown>).map(([dim, entry]) => ({
+    dim,
+    entry: (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>,
+  }))
+}
+
+function bandDegradedOf(ev: Record<string, unknown>): Record<string, unknown>[] {
+  const d = significanceOf(ev)?.degraded
+  return Array.isArray(d) ? (d as Record<string, unknown>[]) : []
+}
+
+/** 带门列只在规则声明了 significance 时出现(未声明 → 与历史逐列一致)。 */
+function cardsHaveBand(ev: Record<string, unknown>): boolean {
+  return judgedRowsOf(ev).some((c) => 'gated' in c)
+}
+
+function budgetOf(
+  ev: Record<string, unknown>,
+): { used: number; limit: number } | null {
+  const b = ev.budget as Record<string, unknown> | undefined
+  if (!b || typeof b.used !== 'number' || typeof b.limit !== 'number') return null
+  return { used: b.used, limit: b.limit }
+}
+
+function num2(v: unknown): string {
+  const n = typeof v === 'number' ? v : null
+  return n === null ? '—' : n.toFixed(2)
+}
+
 function pct(v: unknown): string {
   const n = typeof v === 'number' ? v : null
   return n === null ? '—' : `${(n * 100).toFixed(1)}%`
@@ -267,6 +308,9 @@ function pct(v: unknown): string {
                       <th>Δ</th>
                       <th>Δ%</th>
                       <th>{{ t('decisionsColTriggered', ui.lang) }}</th>
+                      <th v-if="cardsHaveBand(evidenceOf(details[v.id]))">
+                        {{ t('decisionsColBand', ui.lang) }}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -281,6 +325,13 @@ function pct(v: unknown): string {
                       <td>{{ fmtVal(card.delta) }}</td>
                       <td>{{ pct(card.delta_pct) }}</td>
                       <td>{{ card.triggered ? t('decisionsTriggered', ui.lang) : '—' }}</td>
+                      <td v-if="cardsHaveBand(evidenceOf(details[v.id]))">
+                        <template v-if="card.gated === true">
+                          {{ t('decisionsBandOutside', ui.lang) }}
+                          <span class="dim">{{ num2(card.confidence) }}</span>
+                        </template>
+                        <span v-else class="dim">—</span>
+                      </td>
                     </tr>
                   </tbody>
                 </table>
@@ -315,6 +366,73 @@ function pct(v: unknown): string {
                   {{ d.stage }}: {{ d.reason }}
                 </li>
               </ul>
+            </div>
+
+            <!-- 噪声带(B2):声明了 significance 的规则才有这一节。note 是
+                 后端的限定语(位置分数非概率)—— 它必须出现,否则这一节
+                 会被读成概率/因果。degraded 同样必须显示:带没算出来和
+                 "没有异常"是两回事。 -->
+            <div v-if="significanceOf(evidenceOf(details[v.id]))" class="vh-sec">
+              <div class="vh-sec-title">{{ t('decisionsSignificance', ui.lang) }}</div>
+              <p
+                v-if="significanceOf(evidenceOf(details[v.id]))!.note"
+                class="dim vh-residual"
+              >
+                {{ significanceOf(evidenceOf(details[v.id]))!.note }}
+              </p>
+              <div
+                v-if="bandEntries(evidenceOf(details[v.id])).length"
+                class="vh-table-wrap"
+              >
+                <table class="vh-table cell-mono">
+                  <thead>
+                    <tr>
+                      <th>{{ t('decisionsColDim', ui.lang) }}</th>
+                      <th>z</th>
+                      <th>k</th>
+                      <th>{{ t('decisionsColPosition', ui.lang) }}</th>
+                      <th>{{ t('decisionsColTriggered', ui.lang) }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="(b, i) in bandEntries(evidenceOf(details[v.id]))"
+                      :key="i"
+                      :class="{ 'vh-fired': b.entry.gated }"
+                    >
+                      <td>{{ b.dim || '—' }}</td>
+                      <td>{{ num2(b.entry.z) }}</td>
+                      <td>{{ num2(b.entry.k) }}</td>
+                      <td>{{ num2(b.entry.confidence) }}</td>
+                      <td>
+                        {{ b.entry.gated ? t('decisionsBandOutside', ui.lang)
+                          : (b.entry.reason || t('decisionsBandUnavailable', ui.lang)) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <ul
+                v-if="bandDegradedOf(evidenceOf(details[v.id])).length"
+                class="vh-degraded"
+              >
+                <li
+                  v-for="(d, i) in bandDegradedOf(evidenceOf(details[v.id]))"
+                  :key="i"
+                  class="cell-mono"
+                >
+                  {{ t('decisionsBandDegraded', ui.lang) }} · {{ d.reason }}
+                </li>
+              </ul>
+              <!-- 查询账目:这次判定花了几条、花在哪。让路(yield)的原因在
+                   上面的 degraded 里,这里只给总量。 -->
+              <p
+                v-if="budgetOf(evidenceOf(details[v.id]))"
+                class="dim vh-residual cell-mono"
+              >
+                {{ t('decisionsBudget', ui.lang) }}
+                {{ budgetOf(evidenceOf(details[v.id]))!.used }}/{{ budgetOf(evidenceOf(details[v.id]))!.limit }}
+              </p>
             </div>
           </template>
         </div>
