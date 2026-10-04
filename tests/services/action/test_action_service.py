@@ -165,10 +165,23 @@ async def test_propose_creates_a_pending_proposal(env):
     assert p.payload == {"rule": "revenue-drop", "metric": "revenue",
                          "current": 1234, "msg": "[warning] Revenue drop"}
     assert "_trove" not in p.payload  # 信封只在 dispatch 时加
-    assert p.evidence_refs == {"run_id": 7, "job_id": "job-1"}
+    # B7 起还钉上「判定当时那一版」与「被点名的那一组」(见下一条测试)
+    assert p.evidence_refs == {"run_id": 7, "job_id": "job-1",
+                               "rule_rev": "", "group": "north"}
     assert p.expires_at == (datetime.fromisoformat(p.created_at)
                             + timedelta(hours=72)).isoformat(timespec="seconds")
     assert (await env.store.count_by_status()) == {"pending": 1}
+
+
+async def test_propose_pins_the_judged_rev_and_the_named_group(env):
+    """闭环验收要「当时点的那一组」—— propose 这一刻钉进 evidence_refs,
+    验收侧读它而不是重算(重算会读到现在的证据,而验收要的是当时的)。"""
+    _confirm(env)
+    outcome = _outcome()
+    outcome.evidence["rule_rev"] = "rev-abc123"
+    p = await _propose(env, outcome=outcome)
+    assert p.evidence_refs["rule_rev"] == "rev-abc123"
+    assert p.evidence_refs["group"] == "north"
 
 
 async def test_same_firing_dedupes_to_the_same_proposal(env):

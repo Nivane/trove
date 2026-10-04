@@ -67,13 +67,20 @@ def test_no_forbidden_names():
 
 
 def test_action_service_takes_no_connectors():
-    """构造签名 = (store, templates, dispatcher) + 配置标量,没有连接器入口。"""
+    """构造签名 = (store, templates, dispatcher) + 配置标量,没有连接器入口。
+
+    ``verifier`` 是**唯一一处经评审的守卫签名例外**(闭环验收 B7):它
+    是一个 callable —— 实现体在 ``decision/outcome.py``(包外,那里物理
+    持有 connector 是有意为之),包拿到的只是一次 ``await`` 调用,不是
+    任何能自己伸向业务库的东西。除它之外,签名纪律照旧:再加任何参数
+    都在这里响亮失败。
+    """
     from trove.services.action.service import ActionService
 
     params = list(inspect.signature(ActionService.__init__).parameters)
     assert params == ["self", "store", "templates", "dispatcher", "enabled",
                       "approval_ttl_hours", "max_payload_bytes", "max_attempts",
-                      "lang"]
+                      "lang", "verifier"]
 
 
 def test_dispatcher_takes_channels_not_connectors():
