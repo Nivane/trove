@@ -200,7 +200,7 @@ flowchart LR
 <pre><code>uv run trove --datasource postgres://user:pass@host:5432/mydb</code></pre>
 
     <p>
-      支持 SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB，驱动按需懒加载，
+      支持 SQLite / PostgreSQL / MySQL / Doris / ClickHouse / DuckDB / Snowflake / BigQuery，驱动按需懒加载，
       装哪个用哪个（<code>uv sync --extra postgres</code> 等）。注册表见
       <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L42">registry.py:42 <span class="ref-line">_ADAPTER_REGISTRY</span></a>。
     </p>

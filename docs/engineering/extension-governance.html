@@ -55,11 +55,11 @@
         <p>
           <code>register_adapter(dialect, cls)</code>
           <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L45">registry.py:45 <span class="ref-line">register_adapter</span></a>
-          是<strong>唯一</strong>入口：内置的 6 个方言在模块末尾走同一函数自我注册
+          是<strong>唯一</strong>入口：内置的 8 个方言在模块末尾走同一函数自我注册
           <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L516">registry.py:516 <span class="ref-line">内置自我注册</span></a>——
-          没有任何「内部第二条注册路径」。新增数据源 = 实现 <code>DatabaseAdapter</code> + 调一次这个函数。
-          文件末尾还留着注释掉的一行 <code># register_adapter("snowflake", SnowflakeAdapter)</code> 作为样例——
-          这是仓库里少见的「以未实现示例当文档」的写法，但它比任何文档都接近真实接法。
+          没有任何「内部第二条注册路径」。新增数据源 = 实现 <code>DatabaseAdapter</code> + 调一次这个函数，
+          文件末尾那 8 行 import + 注册本身就是落地样板，照抄一行即可——早先这条路径上用注释掉的一行
+          <code># register_adapter("snowflake", …)</code> 充当「未实现示例」，A7 落地 Snowflake 时它被真实注册取代。
         </p>
       </div>
     </div>

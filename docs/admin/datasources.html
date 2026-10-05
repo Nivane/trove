@@ -79,7 +79,7 @@
       </div>
       <figcaption>图 2 · 注册对话框。图中类型已选 MySQL、URL 与名称已填写；底部一行是本页最重要的一句话：注册时会进行连接探测。</figcaption>
       <ol class="shot-legend">
-        <li><span class="n">1</span><strong>连接类型</strong>——Demo（内置金融示例，无需连接串）/ MySQL / Doris / ClickHouse / SQLite / DuckDB。直接粘贴 <code>scheme://</code> 开头的 URL 会自动切换类型。</li>
+        <li><span class="n">1</span><strong>连接类型</strong>——Demo（内置金融示例，无需连接串）/ MySQL / Doris / ClickHouse / SQLite / DuckDB / Snowflake / BigQuery。直接粘贴 <code>scheme://</code> 开头的 URL 会自动切换类型。</li>
         <li><span class="n">2</span><strong>连接 URL</strong>——含凭据的完整连接串；下方给出当前类型的示例格式，照着改最快。</li>
         <li><span class="n">3</span><strong>数据源名称</strong>——用户端下拉里显示的名字，也是知识库目录名（<code>.trove/kb/&lt;name&gt;/</code>）。留空会自动从 URL 解析；建议显式取一个业务可读的名字。</li>
         <li><span class="n">4</span><strong>探测承诺</strong>——点「注册」会真实连接一次：成功才登记入册；失败弹回具体原因（凭据错、库不存在、网络不通），不会留下一个「看起来注册成功」的坏连接。</li>
