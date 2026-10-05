@@ -17,11 +17,11 @@
 
 <br>
 
-<img src="assets/demo.gif" alt="Trove 演示：提问后右侧实时展开分析步骤（意图路由 → 生成 SQL → 校验 → 洞察 → 图表），最终给出带柱状图、KB 命中与校验标记的答案" width="880">
+<a href="https://nivane.github.io/trove/"><img src="assets/banner.png" alt="Trove —— 数据决策智能体：自然语言进，验证过的答案出。一次提问穿过查询管线（意图路由 → 语义绑定 → 语义门禁 → 计划与编译 → 生成与共识 → 执行前三门 → 校验与脱敏 → 反思 → 交付），右侧是真实问答界面与分析过程面板" width="880"></a>
 
 <br>
 
-📖 **[文档站](https://nivane.github.io/trove/)** —— 38 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[文档站](https://nivane.github.io/trove/)** —— 46 页,每条机制都锚到具体源码行 · [用户 / 管理台图文指南](https://nivane.github.io/trove/user/ui-tour.html) · [接入数据源指南](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -99,6 +99,10 @@ flowchart TB
 ```
 
 28 个节点的完整版本、分支与回滚阶梯、每个节点的输入输出,见[查询工作流](https://nivane.github.io/trove/architecture/workflow.html)。
+
+管线的真实样片——提问后右侧实时展开分析步骤,最终给出带柱状图、KB 命中与校验标记的答案:
+
+<p align="center"><img src="assets/demo.gif" alt="Trove 演示：提问后右侧实时展开分析步骤（意图路由 → 生成 SQL → 校验 → 洞察 → 图表），最终给出带柱状图、KB 命中与校验标记的答案" width="880"></p>
 
 ## 为什么不是又一个 NL2SQL
 
@@ -259,7 +263,7 @@ docker compose down
 
 ## 文档地图
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 38 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** —— 46 页,产品概念到 API 参考,含 34 张真实界面截图的图文指南
 
 | | |
 |---|---|

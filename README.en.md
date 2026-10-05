@@ -17,11 +17,11 @@
 
 <br>
 
-<img src="assets/demo.gif" alt="Trove demo: ask a question, watch the pipeline steps unfold live (routing → SQL generation → validation → insights → chart), and get an answer with a chart plus KB-hit and verified badges" width="880">
+<a href="https://nivane.github.io/trove/"><img src="assets/banner.png" alt="Trove — a data decision agent: natural language in, verified answers out. One question flowing through the query pipeline (intent routing → semantic binding → semantic gate → plan &amp; compile → generate &amp; consensus → pre-execution gates → validate &amp; mask → reflect → deliver), next to a real chat session with its analysis panel" width="880"></a>
 
 <br>
 
-📖 **[Documentation](https://nivane.github.io/trove/)** — 38 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
+📖 **[Documentation](https://nivane.github.io/trove/)** — 46 pages, every mechanism anchored to the source line · [Illustrated user / admin guides](https://nivane.github.io/trove/user/ui-tour.html) · [Datasource onboarding](https://nivane.github.io/trove/guide/datasource.html)
 
 </div>
 
@@ -99,6 +99,10 @@ flowchart TB
 ```
 
 The full 28-node version, every branch and the rollback ladder: [query workflow](https://nivane.github.io/trove/architecture/workflow.html).
+
+The pipeline for real — ask a question, watch the analysis steps unfold live on the right, and get an answer with a chart plus KB-hit and verified badges:
+
+<p align="center"><img src="assets/demo.gif" alt="Trove demo: ask a question, watch the pipeline steps unfold live (routing → SQL generation → validation → insights → chart), and get an answer with a chart plus KB-hit and verified badges" width="880"></p>
 
 ## Why Not Another NL2SQL
 
@@ -259,7 +263,7 @@ The same bias shows up elsewhere: health distinguishes `unavailable` from `degra
 
 ## Docs Map
 
-📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 38 pages, from product concepts to API reference, including illustrated guides with 34 real-UI screenshots
+📖 **[nivane.github.io/trove](https://nivane.github.io/trove/)** — 46 pages, from product concepts to API reference, including illustrated guides with 34 real-UI screenshots
 
 | | |
 |---|---|
