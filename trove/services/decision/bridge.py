@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import Any
 
 from trove.core.logging import get_logger
+from trove.core.serialize import json_safe
 from trove.services.analysis.engine import (
     AnalysisEngine,
     AnalysisLimits,
@@ -231,7 +232,10 @@ async def _dimension_components(
                 "sql": sql,
                 "columns": [str(c) for c in cols],
                 "row_count": len(rows),
-                "rows": [list(r) for r in rows[:10]],
+                # 与引擎证据同一纪律:记录行逐格 JSON 安全化(Decimal/date
+                # 原样进 verdict evidence 会在读侧降级成 str 形态,且任何
+                # 直接 dumps 的消费者会炸 —— 见 core.serialize 的来由)。
+                "rows": [[json_safe(c) for c in r] for r in rows[:10]],
                 "truncated": len(rows) > 10,
                 "period": tag,
                 "dimension": dimension,

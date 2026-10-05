@@ -13,6 +13,9 @@ runner 按 SQL 形状回罐头数字(自洽:区域行之和 == 总量),周期靠
 
 from __future__ import annotations
 
+import json
+from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -22,6 +25,7 @@ from trove.services.analysis.engine import (
     AnalysisLimits,
     AnalysisOutcome,
     AnalysisRequest,
+    _record_rows,
     analysis_payload,
 )
 from trove.services.semantic_layer.models import (
@@ -343,3 +347,55 @@ class TestAnalysisPayload:
         assert p["partial"] is True and p["metric_kind"] == "ratio"
         assert p["labels"]["question"] == "q" * 60  # 标题截断
         assert p["evidence"]["queries"][0]["sql"] == "SELECT 1"
+
+
+class _DbTypedRunner(FakeRunner):
+    """同 FakeRunner,但按驱动原生类型回行:数字格 → ``Decimal``,一个分组
+    键 → ``date``(日期维度;MySQL/PG 都是这么交回 ``DECIMAL`` / ``DATE``)。"""
+
+    async def __call__(self, sql: str, datasource: str) -> tuple[list[str], list[list[Any]]]:
+        cols, rows = await super().__call__(sql, datasource)
+        return cols, [
+            [
+                Decimal(str(c)) if isinstance(c, float)
+                else (date(2024, 2, 1) if c == "East" else c)
+                for c in row
+            ]
+            for row in rows
+        ]
+
+
+class TestEvidenceJsonSafe:
+    """DB 原生类型(Decimal/date)不得掐断交付段 —— 2026-10-05 回归门。
+
+    线上根因:MySQL 适配器把 ``Decimal``/``date`` 原样交回,证据行原样进
+    ``state.analysis`` → summary → ``SessionStore.save_session`` 的
+    ``json.dumps`` 抛 TypeError,生成器死在 ``done`` 事件之前 —— 用户看到
+    「流中断」,答案既不送达也不落库(SSE 侧本有 ``default=str`` 兜底,
+    但落库先炸,轮不到它)。
+
+    门打在**出口**:payload 必须零 ``default=`` 可 dumps;保真度一并钉死
+    (Decimal → 数字、date → ISO,而不是 ``"Decimal('45')"`` 字符串)。
+    """
+
+    async def test_payload_dumps_without_default_and_keeps_fidelity(self):
+        out = await _engine(_DbTypedRunner()).run(_req())
+        assert out is not None
+        payload = analysis_payload(
+            out, question="net 为什么变化?", chart=None,
+            baseline_label="上期", datasource="demo",
+        )
+        json.dumps(payload)  # 契约:出口即 JSON,不得抛、不得依赖 default=
+        json.dumps(out.hops)  # 跳记录同样进 state(attribution_hops),一并钉
+
+        cells = [c for q in payload["evidence"]["queries"] for r in q["rows"] for c in r]
+        assert cells  # 证据行非空(否则本门空转)
+        assert not any(isinstance(c, (Decimal, date)) for c in cells)
+        assert any(isinstance(c, float) for c in cells)  # Decimal → 数字
+        # 日期维度的标签同样不能带 date 对象进 payload(表/树/系列同源)
+        assert "2024-02-01" in [r["dim"] for r in payload["table"]]
+
+    def test_record_rows_normalizes_cells(self):
+        rows = [[Decimal("1.5"), date(2024, 1, 31), None, True, "East"]]
+        assert _record_rows(rows, 10) == [[1.5, "2024-01-31", None, True, "East"]]
+        assert _record_rows([[1], [2], [3]], 2) == [[1], [2]]  # 截断仍在
