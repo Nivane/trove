@@ -130,3 +130,84 @@ class TestInitProgressCallback:
             progress=boom,
         )
         assert "Initialized" in summary
+
+
+class TestInitDraftModelTier:
+    """A3 收编点:init_kb 的起草调用(chunk 注解/合成示例/字段注记)实际传给
+    llm.chat 的 model 名 —— 配了 model_draft 全是它;没配 = 与改造前一致的
+    fast 档(此前直读 model_fast,node_models["kb_init"] 够不到)。"""
+
+    MOCK = ("tables:\n  - name: students\n"
+            "    description: student records\n"
+            "    columns:\n"
+            "      - name: grade\n"
+            "        type: int\n"
+            "        description: test score\n"
+            "        enums: []\n"
+            "    metrics: []\n")
+
+    async def _run(self, tmp_path, sqlite_registry, monkeypatch, config):
+        from trove.llm.gateway import LLMGateway
+        from trove.services.kb.init_pipeline import init_kb
+        from trove.services.kb.service import KbService
+
+        monkeypatch.setattr("trove.services.kb.init_pipeline.INIT_CHUNK_TABLES", 8)
+        kb = KbService(tmp_path / "proj")
+        seen: list[str] = []
+
+        class RecordingLLM:
+            """只记录 .chat 的 model;其余方法(embedding 等)直通内层网关。"""
+
+            def __init__(self, inner):
+                self._inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+            async def chat(self, model, messages, **kwargs):
+                seen.append(model)
+                return await self._inner.chat(model=model, messages=messages, **kwargs)
+
+        await init_kb(
+            kb, sqlite_registry,
+            llm=RecordingLLM(LLMGateway(mock_response=self.MOCK)),
+            config=config, datasource="test_db",
+        )
+        return seen
+
+    async def test_uses_draft_model_when_configured(
+            self, tmp_path, sqlite_registry, monkeypatch):
+        from trove.core.config import AgentConfig
+
+        seen = await self._run(
+            tmp_path, sqlite_registry, monkeypatch,
+            AgentConfig(target="mock/model", model_fast="fast/model",
+                        model_draft="draft/model"),
+        )
+        assert seen, "init 没有走 LLM —— 修测试,不要降断言"
+        assert set(seen) == {"draft/model"}
+
+    async def test_falls_back_to_fast_model_without_draft(
+            self, tmp_path, sqlite_registry, monkeypatch):
+        """model_draft 空 → model_fast(与改造前逐字节一致)。"""
+        from trove.core.config import AgentConfig
+
+        seen = await self._run(
+            tmp_path, sqlite_registry, monkeypatch,
+            AgentConfig(target="mock/model", model_fast="fast/model"),
+        )
+        assert seen
+        assert set(seen) == {"fast/model"}
+
+    async def test_node_models_kb_init_reaches_the_hole(
+            self, tmp_path, sqlite_registry, monkeypatch):
+        """黑洞修复证据:node_models["kb_init"] 从此可达(此前直读 model_fast)。"""
+        from trove.core.config import AgentConfig
+
+        seen = await self._run(
+            tmp_path, sqlite_registry, monkeypatch,
+            AgentConfig(target="mock/model", model_fast="fast/model",
+                        node_models={"kb_init": "pinned/model"}),
+        )
+        assert seen
+        assert set(seen) == {"pinned/model"}

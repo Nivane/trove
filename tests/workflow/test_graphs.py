@@ -2886,6 +2886,50 @@ class TestRouteIntentObservability:
         await node(make_state(question="What is the average loan amount?"))
         assert llm.model == "fast/model"
 
+    async def test_uses_draft_model_when_configured(self):
+        """A3 起草档:配置 model_draft 后意图分类走它。"""
+        from trove.workflow.graphs import make_route_intent
+
+        class IntentLLM:
+            def __init__(self):
+                self.model = None
+
+            async def chat(self, model, messages, **kwargs):
+                self.model = model
+                return "query"
+
+        llm = IntentLLM()
+        node = make_route_intent(
+            llm=llm,
+            config=AgentConfig(target="mock/model", model_fast="fast/model",
+                               model_draft="draft/model"),
+            catalog=None, kb=None, connectors=None,
+        )
+        await node(make_state(question="What is the average loan amount?"))
+        assert llm.model == "draft/model"
+
+    async def test_node_models_override_wins_over_draft(self):
+        """优先级链在站点上成立:node_models["intent"] 覆盖起草档。"""
+        from trove.workflow.graphs import make_route_intent
+
+        class IntentLLM:
+            def __init__(self):
+                self.model = None
+
+            async def chat(self, model, messages, **kwargs):
+                self.model = model
+                return "query"
+
+        llm = IntentLLM()
+        node = make_route_intent(
+            llm=llm,
+            config=AgentConfig(target="mock/model", model_draft="draft/model",
+                               node_models={"intent": "pinned/model"}),
+            catalog=None, kb=None, connectors=None,
+        )
+        await node(make_state(question="What is the average loan amount?"))
+        assert llm.model == "pinned/model"
+
     async def test_returns_llm_detail_and_intent_evidence(self):
         from trove.workflow.graphs import make_route_intent
 

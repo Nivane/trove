@@ -142,6 +142,29 @@ class TestSettingsApi:
         assert r2.status_code == 200
         assert api_app.state.config.semantic_layer_path == ""
 
+    async def test_put_draft_model_applies_and_may_clear(
+            self, client, api_app, tmp_path, settings_store):
+        """llm.draft_model 是 path 型(A3):可设可清 —— 与 str 型的区别就在
+        「允许空串」,因为空 = 关闭起草档 = 全收编点逐字节回落。"""
+        await _with_store(api_app, tmp_path, settings_store)
+        r = await client.put("/v1/admin/settings", json={"values": {
+            "llm.draft_model": "deepseek/deepseek-chat",
+        }})
+        assert r.status_code == 200
+        assert r.json()["values"]["llm.draft_model"] == "deepseek/deepseek-chat"
+        # 热应用到运行时 config,且 model_for_draft 当场改道
+        assert api_app.state.config.model_draft == "deepseek/deepseek-chat"
+        assert api_app.state.config.model_for_draft(
+            "kb_init", "standard") == "deepseek/deepseek-chat"
+        # 清空 = 关闭(该测试 app 的 target=mock/model,无 fast 档)
+        r2 = await client.put("/v1/admin/settings", json={"values": {
+            "llm.draft_model": "",
+        }})
+        assert r2.status_code == 200
+        assert api_app.state.config.model_draft == ""
+        assert api_app.state.config.model_for_draft(
+            "kb_init", "standard") == "mock/model"
+
     async def test_non_admin_forbidden(self, user_client):
         assert (await user_client.get("/v1/admin/settings")).status_code == 403
         assert (await user_client.put("/v1/admin/settings",

@@ -42,6 +42,7 @@ class RecordingLLM:
     def __init__(self, response=""):
         self.response = response
         self.calls: list[list[dict]] = []
+        self.models: list[str] = []
 
     def system_of(self, index=-1) -> str:
         msgs = self.calls[index]
@@ -49,14 +50,17 @@ class RecordingLLM:
 
     async def chat(self, model, messages, **kwargs):
         self.calls.append(messages)
+        self.models.append(model)
         return self.response
 
     async def chat_full(self, model, messages, tools=None, **kwargs):
         self.calls.append(messages)
+        self.models.append(model)
         return {"content": self.response, "tool_calls": []}
 
     async def chat_stream(self, model, messages, **kwargs):
         self.calls.append(messages)
+        self.models.append(model)
         yield self.response
 
 
@@ -373,6 +377,29 @@ async def test_chart_hook_injects_org_skill(tmp_path):
 
     assert llm.calls, "chart 没调到 LLM —— gate 条件不满足,补 state 字段"
     assert "ORG-METHOD-BODY" in llm.system_of()
+    # A3 回落证据:未配 model_draft → 图表判定模型与改造前逐字节一致(target)
+    assert llm.models[-1] == "m"
+
+
+async def test_chart_llm_uses_draft_model_when_configured(tmp_path):
+    """A3 收编点:配了 model_draft 后图表判定走起草档。"""
+    from trove.core.config import AgentConfig
+    from trove.workflow.nodes.chart import make_chart
+
+    llm = RecordingLLM(response="")
+    node = make_chart(
+        llm=llm,
+        config=AgentConfig(target="m", chart_llm=True, model_draft="draft/m"),
+        semantic_layer=None, skills=_org_skill(tmp_path, "chart"),
+    )
+    state = WorkflowState(
+        session_id="s1", question="各地区授信余额", lang="zh",
+        sql="SELECT region, balance FROM credit",
+        columns=["region", "balance"], rows=[["A", 5], ["B", 7]], row_count=2,
+    )
+    await node(state)
+
+    assert llm.models and set(llm.models) == {"draft/m"}
 
 
 #: 有节点级挂点测试的节点(**全仓范围**,不只是本文件)。新增 manifest

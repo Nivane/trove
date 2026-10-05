@@ -454,6 +454,67 @@ class TestPerNodeModel:
         assert cfg.model_for_node("query_sketch", "complex") == "openai/gpt-4o-mini"
 
 
+class TestDraftModelTier:
+    """起草档(A3):model_draft 缺省/YAML 加载/回落链/兼容安全带。"""
+
+    #: 覆盖面尽量宽:全部收编节点 + 一个未收编节点 + 空串 + 大小写变体,
+    #: 复杂度含未知档 —— 安全带要在**全格**成立,不是抽查几格。
+    NODES = ["query_sketch", "reflect", "kb_init", "refuse", "preference_extract",
+             "intent", "intent_followup", "chart", "gen_sql", "", "KB_INIT", "unknown"]
+    COMPLEXITIES = ["simple", "standard", "complex", "weird"]
+
+    def test_model_draft_default_empty(self):
+        """代码默认关(空串):未配置部署全部收编点逐字节回落。"""
+        assert AgentConfig().model_draft == ""
+
+    def test_model_draft_loaded_from_yaml(self, tmp_path):
+        conf = tmp_path / "agent.yml"
+        conf.write_text(
+            "agent:\n  target: mock/target\n  model_fast: mock/fast\n"
+            "  model_draft: mock/draft\n",
+            encoding="utf-8",
+        )
+        cfg = ConfigLoader.load_agent_config(str(conf))
+        assert cfg.model_draft == "mock/draft"
+
+    @pytest.mark.parametrize("kwargs", [
+        {},                                                          # 全空 → gpt-4o
+        {"target": "mock/target"},
+        {"target": "mock/target", "model_fast": "mock/fast"},
+        {"target": "mock/target", "model_fast": "mock/fast",
+         "node_models": {"reflect": "pinned/r", "kb_init": "pinned/k"}},
+    ])
+    def test_seatbelt_empty_draft_equals_model_for_node(self, kwargs):
+        """兼容安全带:model_draft="" 时两函数**全格逐字节相同**。
+
+        这是 A3 的核心承诺 —— 未配起草档的部署(默认)在全部收编点看到
+        model 名与改造前一致,不靠人肉核对,靠这条表驱动断言。
+        """
+        cfg = AgentConfig(**kwargs)
+        assert cfg.model_draft == ""
+        for node in self.NODES:
+            for complexity in self.COMPLEXITIES:
+                assert cfg.model_for_draft(node, complexity) == cfg.model_for_node(
+                    node, complexity), (node, complexity)
+
+    def test_draft_wins_over_complexity_tier(self):
+        cfg = AgentConfig(target="mock/target", model_fast="mock/fast",
+                          model_draft="mock/draft")
+        assert cfg.model_for_draft("kb_init", "standard") == "mock/draft"
+        assert cfg.model_for_draft("kb_init", "complex") == "mock/draft"
+        assert cfg.model_for_draft("", "simple") == "mock/draft"
+
+    def test_node_models_still_win_over_draft(self):
+        """优先级链:node_models[node] → model_draft → 复杂度分档。"""
+        cfg = AgentConfig(target="mock/target", model_draft="mock/draft",
+                          node_models={"chart": "pinned/model"})
+        assert cfg.model_for_draft("chart", "complex") == "pinned/model"
+        # 大小写不敏感(与 model_for_node 同规)
+        assert cfg.model_for_draft("CHART", "standard") == "pinned/model"
+        # 未钉节点 → 起草档
+        assert cfg.model_for_draft("kb_init", "standard") == "mock/draft"
+
+
 class TestGenSqlSoftRounds:
     def test_code_default_is_off(self):
         """代码默认关(0):库嵌入方与测试零行为变化,本仓走 conf 写 5。"""

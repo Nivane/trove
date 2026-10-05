@@ -886,7 +886,7 @@ def make_refuse(
         try:
             draft = await draft_refusal_extension(
                 llm,
-                config.model_for_node("refuse", state.complexity) if config else "openai/gpt-4o",
+                config.model_for_draft("refuse", state.complexity) if config else "openai/gpt-4o",
                 question,
                 plan,
                 model,

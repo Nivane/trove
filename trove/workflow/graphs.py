@@ -1544,8 +1544,10 @@ def make_route_intent(
         llm_detail: dict[str, Any] | None = None
         llm_error = ""
         if llm is not None:
-            # 意图分类是琐碎判别任务,走 fast 档(未配置 fast → 回退 target)
-            model = (config.model_fast or config.target) if config else "openai/gpt-4o"
+            # 意图分类是琐碎判别任务,固定走 fast 档(起草档配了则优先)。
+            # complexity 固定 "simple" —— 与改造前直读 model_fast 逐字节一致,
+            # 不被 state.complexity 分档影响(判别任务不需要复杂度分级)。
+            model = config.model_for_draft("intent", "simple") if config else "openai/gpt-4o"
             intent_prompt = render("intent/system", lang=state.lang)
             start = time.monotonic()
             try:
@@ -1644,7 +1646,8 @@ def make_route_intent(
 
     async def _rewrite_followup(question: str, state: WorkflowState) -> str:
         """LLM 用历史补全省略式追问;失败/无进展由调用方兜底。"""
-        model = (config.model_fast or config.target) if config else "openai/gpt-4o"
+        # 追问改写同为琐碎判别任务,与意图分类同款固定 fast 档(见上)。
+        model = config.model_for_draft("intent_followup", "simple") if config else "openai/gpt-4o"
         prompt = render(
             "intent/followup_rewrite",
             lang=state.lang,

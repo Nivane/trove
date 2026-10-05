@@ -5,6 +5,13 @@ agent:
   # 快速档模型: simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型
   # (复杂度分级 grade_complexity 驱动;complex 仍走 target)。留空 = 不分档。
   model_fast: deepseek/deepseek-chat
+  # 起草档模型(A3):「起草/判定类」结构化短输出调用的统一便宜档 ——
+  # KB 建档注解与合成示例(kb_init)、拒绝扩展草稿(refuse)、会话偏好抽取
+  # (preference_extract)、意图判别/追问改写(intent/intent_followup)、
+  # 图表判定(chart)走此模型(推理模型在这里白烧 reasoning tokens 且挤占
+  # max_tokens)。node_models 按节点覆盖仍最高优先。留空 = 关闭:上述调用
+  # 逐字节回落改造前行为(model_fast/target 直读)。
+  # model_draft: deepseek/deepseek-chat
   # 每节点模型覆盖(按节点名,优先于复杂度分档选模):query_sketch/gen_sql/reflect/
   # insights/conclusion/semantics/refuse/analyze_error。典型配置:query_sketch 用
   # 便宜模型、reflect 用强模型。空 = 不覆盖。
