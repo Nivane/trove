@@ -110,7 +110,7 @@ BANNER_HTML = """<!doctype html>
         <img src="__SHOT_URI__" alt="">
       </div>
     </div>
-    <span class="float">分析过程 · 13 步 · 11.0s · 校验 OK</span>
+    <span class="float">分析过程 · 13 步 · 9.4s · 校验 OK</span>
   </div>
 </body>
 </html>

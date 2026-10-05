@@ -1,13 +1,13 @@
 {
-  "generatedAt": "2026-10-04T02:57:16.000Z",
-  "frontendCommit": "739f753",
-  "baseUrl": "http://localhost:5173",
+  "generatedAt": "2026-10-05T14:54:49.000Z",
+  "frontendCommit": "a6a7c60",
+  "baseUrl": "http://localhost:5174",
   "viewport": {
     "width": 1440,
     "height": 900
   },
   "deviceScaleFactor": 2,
-  "resizeWidth": 1624,
+  "resizeWidth": null,
   "shots": [
     {
       "name": "user-login",
@@ -16,9 +16,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 70631
+      "width": 2880,
+      "height": 1800,
+      "bytes": 131223
     },
     {
       "name": "user-chat-empty",
@@ -27,9 +27,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 124799
+      "width": 2880,
+      "height": 1800,
+      "bytes": 120484
     },
     {
       "name": "user-topic-select",
@@ -38,9 +38,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 174275
+      "width": 2880,
+      "height": 1800,
+      "bytes": 174011
     },
     {
       "name": "user-chat-answer",
@@ -49,9 +49,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 202024
+      "width": 2880,
+      "height": 1800,
+      "bytes": 216478
     },
     {
       "name": "user-chat-chart",
@@ -60,9 +60,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 224326
+      "width": 2880,
+      "height": 1800,
+      "bytes": 230989
     },
     {
       "name": "user-chat-evidence",
@@ -71,9 +71,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 334411
+      "width": 2880,
+      "height": 1800,
+      "bytes": 377770
     },
     {
       "name": "user-chat-analysis",
@@ -82,9 +82,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 278883
+      "width": 2880,
+      "height": 1800,
+      "bytes": 358607
     },
     {
       "name": "user-chat-attribution",
@@ -93,9 +93,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 298073
+      "width": 2880,
+      "height": 1800,
+      "bytes": 220208
     },
     {
       "name": "user-chat-feedback",
@@ -104,9 +104,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 247010
+      "width": 2880,
+      "height": 1800,
+      "bytes": 257684
     },
     {
       "name": "user-sessions-search",
@@ -115,9 +115,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 126552
+      "width": 2880,
+      "height": 1800,
+      "bytes": 115010
     },
     {
       "name": "user-session-menu",
@@ -126,9 +126,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 130124
+      "width": 2880,
+      "height": 1800,
+      "bytes": 134906
     },
     {
       "name": "admin-overview",
@@ -137,9 +137,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 357536
+      "width": 2880,
+      "height": 1800,
+      "bytes": 420866
     },
     {
       "name": "admin-todos",
@@ -148,9 +148,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 377103
+      "width": 2880,
+      "height": 1800,
+      "bytes": 464935
     },
     {
       "name": "admin-datasources",
@@ -159,9 +159,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 154538
+      "width": 2880,
+      "height": 1800,
+      "bytes": 195879
     },
     {
       "name": "admin-ds-create",
@@ -170,9 +170,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 202953
+      "width": 2880,
+      "height": 1800,
+      "bytes": 244975
     },
     {
       "name": "admin-kb-pending",
@@ -181,9 +181,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 304938
+      "width": 2880,
+      "height": 1800,
+      "bytes": 368784
     },
     {
       "name": "admin-kb-assets",
@@ -192,9 +192,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 247335
+      "width": 2880,
+      "height": 1800,
+      "bytes": 287072
     },
     {
       "name": "admin-semantic",
@@ -203,9 +203,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 218701
+      "width": 2880,
+      "height": 1800,
+      "bytes": 250841
     },
     {
       "name": "admin-semantic-detail",
@@ -214,9 +214,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 280192
+      "width": 2880,
+      "height": 1800,
+      "bytes": 387287
     },
     {
       "name": "admin-semantic-draft",
@@ -225,9 +225,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 285020
+      "width": 2880,
+      "height": 1800,
+      "bytes": 400619
     },
     {
       "name": "admin-jobs",
@@ -236,9 +236,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 195558
+      "width": 2880,
+      "height": 1800,
+      "bytes": 238728
     },
     {
       "name": "admin-jobs-history",
@@ -247,9 +247,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 165746
+      "width": 2880,
+      "height": 1800,
+      "bytes": 225201
     },
     {
       "name": "admin-subs",
@@ -258,9 +258,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 304821
+      "width": 2880,
+      "height": 1800,
+      "bytes": 372632
     },
     {
       "name": "admin-decisions",
@@ -269,9 +269,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 255647
+      "width": 2880,
+      "height": 1800,
+      "bytes": 320179
     },
     {
       "name": "admin-actions",
@@ -280,9 +280,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 206424
+      "width": 2880,
+      "height": 1800,
+      "bytes": 221480
     },
     {
       "name": "admin-verdict-history",
@@ -291,9 +291,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 296787
+      "width": 2880,
+      "height": 1800,
+      "bytes": 364448
     },
     {
       "name": "admin-skills-table",
@@ -302,9 +302,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 367549
+      "width": 2880,
+      "height": 1800,
+      "bytes": 416649
     },
     {
       "name": "admin-skills",
@@ -313,9 +313,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 327287
+      "width": 2880,
+      "height": 1800,
+      "bytes": 353969
     },
     {
       "name": "admin-users",
@@ -324,9 +324,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 208932
+      "width": 2880,
+      "height": 1800,
+      "bytes": 239470
     },
     {
       "name": "admin-user-drawer",
@@ -335,9 +335,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 265306
+      "width": 2880,
+      "height": 1800,
+      "bytes": 314676
     },
     {
       "name": "admin-audit",
@@ -346,9 +346,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 287858
+      "width": 2880,
+      "height": 1800,
+      "bytes": 291481
     },
     {
       "name": "admin-settings",
@@ -357,9 +357,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 203244
+      "width": 2880,
+      "height": 1800,
+      "bytes": 221857
     },
     {
       "name": "admin-model",
@@ -368,9 +368,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 184161
+      "width": 2880,
+      "height": 1800,
+      "bytes": 255834
     },
     {
       "name": "admin-ops",
@@ -379,9 +379,9 @@
         "width": 2880,
         "height": 1800
       },
-      "width": 1624,
-      "height": 1015,
-      "bytes": 352089
+      "width": 2880,
+      "height": 1800,
+      "bytes": 367296
     }
   ]
 }

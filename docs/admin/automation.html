@@ -47,22 +47,22 @@
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-jobs.png" alt="定时任务列表：两条任务（间隔 1440 分钟 / Cron 0 9 * * 1），告警表达式列显示决策规则 loan-high，最近一次列显示告警/成功与行数，动作列有立即运行与运行历史">
-        <span class="pin" style="--x:26.3%;--y:14.5%">1</span>
-        <span class="pin" style="--x:27.0%;--y:25.0%">2</span>
-        <span class="pin" style="--x:35.0%;--y:26.1%">3</span>
-        <span class="pin" style="--x:64.5%;--y:25.5%">4</span>
-        <span class="pin" style="--x:71.9%;--y:25.5%">5</span>
-        <span class="pin" style="--x:92.7%;--y:25.5%">6</span>
+        <img src="../assets/shots/admin-jobs.png" alt="定时任务列表：两条任务（间隔 1440 分钟 / Cron 0 9 * * 1），告警表达式列显示决策规则 loan-high，最近一次列显示告警/成功与行数，动作列有立即运行、运行历史、订阅与编辑、删除">
+        <span class="pin" style="--x:55.5%;--y:24.4%">1</span>
+        <span class="pin" style="--x:24.2%;--y:35.4%">2</span>
+        <span class="pin" style="--x:33.1%;--y:35.7%">3</span>
+        <span class="pin" style="--x:59.3%;--y:34.6%">4</span>
+        <span class="pin" style="--x:69.7%;--y:34.6%">5</span>
+        <span class="pin" style="--x:80.0%;--y:33.9%">6</span>
       </div>
       <figcaption>图 1 · 定时任务列表。两条任务分别演示两种调度（间隔与 Cron）与两种求值（无告警 vs 决策规则告警）。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>新建定时任务</strong>——打开创建对话框：名称、问题（自然语言，与用户端同一个提问框同等地位）、数据源、调度方式与告警配置。</li>
         <li><span class="n">2</span><strong>名称 + 问题</strong>——任务名下面一行就是它会去问的问题，也是运行历史里一眼能对上的标签。</li>
-        <li><span class="n">3</span><strong>调度方式与调度</strong>——<strong>间隔</strong>（分钟数，如 1440 = 每天一次）或 <strong>Cron</strong>（五段表达式，如 <code>0 9 * * 1</code> = 每周一 09:00）。行尾的开关可随时停用/启用任务，停用后「下次运行」列会标出「停用」。</li>
+        <li><span class="n">3</span><strong>调度方式与调度</strong>——<strong>间隔</strong>（分钟数，如 1440 = 每天一次）或 <strong>Cron</strong>（五段表达式，如 <code>0 9 * * 1</code> = 每周一 09:00）。表格更右侧还有「下次运行」与启停开关两列——列多时横向滚动可见；开关停用后，「下次运行」列会标出「停用」。</li>
         <li><span class="n">4</span><strong>告警表达式列</strong>——两种求值路径在这里区分：显示<strong>决策规则</strong>徽标 + 规则名（如 <code>loan-high</code>）表示该任务改由决策引擎确定性求值（零 LLM，问题仅作标签，普通告警表达式不再生效）；没有规则的任务则显示告警表达式本身（形如 <code>row_count &gt;= 5</code> / <code>value &gt; 1000</code> / <code>col:amount &lt; 10</code> / <code>no_rows</code> / <code>verdict == OK</code>）。没有告警的任务显示 <code>—</code>（图中第二条）。</li>
         <li><span class="n">5</span><strong>最近一次</strong>——最近一回运行的状态章（成功 / 告警 / 失败）与返回行数。状态是<strong>告警</strong>意味着任务跑成功了、但命中了告警条件——不是失败。</li>
-        <li><span class="n">6</span><strong>动作列</strong>——立即运行（不用等调度，当场执行一次并记入历史，改完配置最常用的验证动作）、运行历史（见<a href="#runs">下一节</a>）、编辑、删除。</li>
+        <li><span class="n">6</span><strong>动作列</strong>——立即运行（不用等调度，当场执行一次并记入历史，改完配置最常用的验证动作）、运行历史（见<a href="#runs">下一节</a>）、订阅（把每期/告警报告订给团队成员，见<a href="#subs">报告订阅</a>）、编辑、删除。</li>
       </ol>
     </figure>
 
@@ -89,19 +89,19 @@
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-jobs-history.png" alt="运行历史对话框：一行运行记录，列为时间、状态（告警）、行数（1）、告警表达式（alert sent）、运行 ID（loan-high）">
+        <img src="../assets/shots/admin-jobs-history.png" alt="运行历史对话框：五行运行记录，列为时间、状态（告警）、行数（1）、告警表达式（两次 alert sent、三次 —）与运行 ID（loan-high）">
         <span class="pin" style="--x:31.3%;--y:30.5%">1</span>
         <span class="pin" style="--x:42.1%;--y:30.5%">2</span>
         <span class="pin" style="--x:47.1%;--y:30.5%">3</span>
-        <span class="pin" style="--x:55.4%;--y:30.5%">4</span>
+        <span class="pin" style="--x:53.2%;--y:30.5%">4</span>
         <span class="pin" style="--x:66.6%;--y:30.5%">5</span>
       </div>
-      <figcaption>图 2 · 运行历史。这一行是「贷款总额基线巡检」的一次运行：决策规则判定触发，告警已发出。</figcaption>
+      <figcaption>图 2 · 运行历史（任务「贷款总额基线巡检」）。五行里只有两次真的推出了告警（alert sent）；22:37 连跑的三次落在冷却窗口内，告警列如实留「—」——没发就是没发。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>时间</strong>——该次运行的开始时刻。</li>
         <li><span class="n">2</span><strong>状态</strong>——成功 / 告警 / 失败。三种状态互斥且穷尽：告警是「正常跑完但命中条件」，失败是「没跑成」。</li>
         <li><span class="n">3</span><strong>行数</strong>——本次查询返回的行数。</li>
-        <li><span class="n">4</span><strong>告警是否发出</strong>——<code>alert sent</code> 表示这次运行真的推送了告警（受冷却时间约束，冷却期内重复命中不会反复轰炸）。</li>
+        <li><span class="n">4</span><strong>告警表达式</strong>列在历史里回答的是「告警发出去没有」——<code>alert sent</code> = 真推送了；<code>—</code> = 没发（没触发、冷却期内被去重、推送失败都会是「—」，图中前三条即冷却去重）。</li>
         <li><span class="n">5</span><strong>运行 ID</strong>——本次运行的判定标识。决策规则任务显示规则 id（图中 <code>loan-high</code>），普通任务显示执行标识；对不上号时用它去<a href="#decisions">决策规则</a>页查。</li>
       </ol>
     </figure>
@@ -119,9 +119,9 @@
       <div class="shot-frame">
         <img src="../assets/shots/admin-subs.png" alt="任务的「报告订阅」抽屉：添加订阅（用户名 / 模式 / 通道）、两条生效订阅（docs-user 仅告警、docs-guide 每期，可启停 / 编辑 / 删除）与投递记录表">
         <span class="pin" style="--x:65.9%;--y:14.3%">1</span>
-        <span class="pin" style="--x:61.6%;--y:30.5%">2</span>
+        <span class="pin" style="--x:66.1%;--y:30.1%">2</span>
         <span class="pin" style="--x:91.7%;--y:30.5%">3</span>
-        <span class="pin" style="--x:70.2%;--y:43.1%">4</span>
+        <span class="pin" style="--x:75.1%;--y:52.2%">4</span>
       </div>
       <figcaption>图 3 · 订阅抽屉（任务「贷款总额基线巡检」）。上半是订阅名单，下半是每次投递的台账。</figcaption>
       <ol class="shot-legend">
@@ -178,11 +178,11 @@
     <figure class="shot">
       <div class="shot-frame">
         <img src="../assets/shots/admin-decisions.png" alt="决策规则页打开「编辑规则文件」对话框：顶部数据源切到 demo，对话框内是 decisions.yml 原文（version、rules、loan-high 的 subject/baseline/conditions 与 _meta），底部取消与保存按钮">
-        <span class="pin" style="--x:77.0%;--y:4.7%">1</span>
-        <span class="pin" style="--x:93.1%;--y:4.7%">2</span>
+        <span class="pin" style="--x:75.9%;--y:12.6%">1</span>
+        <span class="pin" style="--x:93.2%;--y:12.6%">2</span>
         <span class="pin" style="--x:49.0%;--y:27.1%">3</span>
         <span class="pin" style="--x:30.0%;--y:45.0%">4</span>
-        <span class="pin" style="--x:73.3%;--y:78.7%">5</span>
+        <span class="pin" style="--x:72.7%;--y:80.4%">5</span>
         <span class="pin" style="--x:87.0%;--y:26.2%">6</span>
       </div>
       <figcaption>图 4 · 编辑规则文件。规则文件按数据源分开——顶部先选源，再编辑该源的 <code>decisions.yml</code> 原文。</figcaption>
@@ -215,15 +215,15 @@
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-skills-table.png" alt="方法论技能列表：内置技能三行（required(注入) 档，生效节点 query_sketch/analyze_error/gen_sql），组织技能两行（available(按需) 档，一个已确认一个待确认；待确认行带确认/拒绝/预览按钮）">
-        <span class="pin" style="--x:94.6%;--y:3.9%">1</span>
-        <span class="pin" style="--x:29.5%;--y:20.2%">2</span>
-        <span class="pin" style="--x:57.8%;--y:20.2%">3</span>
-        <span class="pin" style="--x:69.6%;--y:20.2%">4</span>
-        <span class="pin" style="--x:75.1%;--y:91.4%">5</span>
-        <span class="pin" style="--x:83.0%;--y:91.4%">6</span>
+        <img src="../assets/shots/admin-skills-table.png" alt="方法论技能列表：内置技能（required(注入) 档）与组织技能（available(按需) 档，一个已确认一个待确认）混排；待确认行带确认/拒绝/预览按钮，首条内置技能滚动在表头下方">
+        <span class="pin" style="--x:94.9%;--y:27.1%">1</span>
+        <span class="pin" style="--x:22.4%;--y:47.1%">2</span>
+        <span class="pin" style="--x:59.0%;--y:46.3%">3</span>
+        <span class="pin" style="--x:69.3%;--y:46.3%">4</span>
+        <span class="pin" style="--x:75.8%;--y:88.9%">5</span>
+        <span class="pin" style="--x:82.8%;--y:88.9%">6</span>
       </div>
-      <figcaption>图 5 · 方法论技能列表。页头还有「新建草稿」与「LLM 草拟」两个入口（本图滚动后不可见）。</figcaption>
+      <figcaption>图 5 · 方法论技能列表。页头右上两个起草入口：「新建草稿」手工写、「LLM 草稿」由模型起草，都落待确认；列表上滚了一屏，第一条内置技能藏在表头下方。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>总数章</strong>——当前技能数与卡片标题同排；列表把内置与组织技能混排，靠「内置」章区分。</li>
         <li><span class="n">2</span><strong>内置章</strong>——随代码发布的技能（只读，不提供确认/拒绝动作）。组织技能没有这个章，可被管理端处置。</li>

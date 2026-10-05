@@ -1,0 +1,23 @@
+version: 1
+rules:
+- id: loan-high
+  name: 贷款总额高于基线
+  severity: warning
+  owner_role: 风控
+  subject:
+    metrics:
+    - total Loan amount
+  baseline:
+    kind: literal
+    value: 100000.0
+  conditions:
+  - delta > 0
+  action:
+    template: loan-baseline-alert
+    autonomy: propose
+_meta:
+  format: 1
+  generator: decisions
+  trove: 0.1.0
+  digest: sha256:d18d69cff2296db3e0efd2d1138b6fe0e28edae222bee4f8d599c0ff062eec92
+  generated_at: '2026-09-27T08:32:24.226023+00:00'

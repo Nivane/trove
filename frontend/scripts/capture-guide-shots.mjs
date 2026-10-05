@@ -13,7 +13,7 @@
  *   TROVE_SHOT_ADMIN_PASS  admin-side password    (default: same as PASS)
  *   TROVE_SHOT_OUT         output dir             (default ../docs/assets/shots)
  *   TROVE_SHOT_ONLY        comma-separated shot names to run (dev iteration)
- *   TROVE_SHOT_W           downsample width       (default 1624; 0 = keep @2x)
+ *   TROVE_SHOT_W           downsample width       (default 0 = keep @2x, HD)
  *
  * User-side shots are taken as a non-admin account (the seeded sessions and
  * their feedback live there); admin shots log in as an admin. Every run
@@ -50,10 +50,12 @@ if (!PASS) {
 
 const VIEWPORT = { width: 1440, height: 900 }
 const SCALE = 2
-// Shots are captured @2x (crisp on retina) then downsampled to 2x the docs
-// page's 812px reading column — the largest size the site ever displays, so
-// nothing is visibly lost while the committed bitmaps stay in a sane budget.
-const RESIZE_W = Number(process.env.TROVE_SHOT_W ?? 1624)
+// HD by default: keep the native @2x capture (2880×1800) — 3.5× the pixels of
+// the docs page's 812px reading column at DPR 2, so zooming into UI text
+// stays legible (the earlier 1624px downsample was exactly DPR2-at-812: sharp
+// at rest, soft the moment anyone leans in). Set TROVE_SHOT_W=1624 to get the
+// smaller bitmaps back if the repo weight ever matters more than the detail.
+const RESIZE_W = Number(process.env.TROVE_SHOT_W ?? 0)
 
 // ── Interaction helpers ────────────────────────────────────────────────────
 // Sessions seeded for the docs capture: the flagship one is the Chinese
@@ -149,11 +151,15 @@ const SHOTS = [
     // and waits for the run to finish with its timeline still on screen.
     before: async (page) => {
       await page.click('.new-session-btn:has-text("新建会话")')
+      await page.fill('.composer-input', '贷款金额最高是多少?')
+      await page.click('.send-btn')
+      // The panel toggle only renders once the session has turns (v-if on
+      // chat.turns.length), and the panel is default-closed — so send first,
+      // then open it, or the run's step timeline is never on screen.
+      await page.locator('.analysis-toggle').waitFor()
       if ((await page.locator('.analysis-panel.open').count()) === 0) {
         await page.click('.analysis-toggle')
       }
-      await page.fill('.composer-input', '贷款金额最高是多少?')
-      await page.click('.send-btn')
     },
     wait: '.analysis-status.status-done',
     timeout: 180000,
@@ -374,7 +380,9 @@ const SHOTS = [
       // The demo datasource is the one with a rule file; switching reloads.
       await page.click('.el-select.ds-select')
       await page.locator('.el-select-dropdown__item:has-text("demo")').last().click()
-      await page.locator('.view-actions .el-button--primary').click()
+      // header actions moved into PageHeader's .ph-actions slot (the old
+      // .view-actions wrapper is gone); primary button there = 编辑规则文件
+      await page.locator('.ph-actions .el-button--primary').click()
     },
     wait: '.el-textarea.decisions-yaml',
     settle: 800,

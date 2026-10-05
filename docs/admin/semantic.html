@@ -41,11 +41,11 @@
     <figure class="shot">
       <div class="shot-frame">
         <img src="../assets/shots/admin-semantic.png" alt="语义模型工作台：摘要行、五项 KPI、问题面板（校验问题与漂移）、指标/数据集/字段/待审批四个 tab 与资产表">
-        <span class="pin" style="--x:84.5%;--y:7.4%">1</span>
-        <span class="pin" style="--x:36.9%;--y:16.7%">2</span>
-        <span class="pin" style="--x:28.3%;--y:24.2%">3</span>
-        <span class="pin" style="--x:25.4%;--y:44.8%">4</span>
-        <span class="pin" style="--x:24.5%;--y:83.6%">5</span>
+        <span class="pin" style="--x:84.5%;--y:12.8%">1</span>
+        <span class="pin" style="--x:34.5%;--y:21.8%">2</span>
+        <span class="pin" style="--x:58.5%;--y:29.8%">3</span>
+        <span class="pin" style="--x:21.9%;--y:41.8%">4</span>
+        <span class="pin" style="--x:22.7%;--y:88.3%">5</span>
       </div>
       <figcaption>图 1 · 语义模型工作台（financial）。摘要行里的「漂移检测 刚刚」是这次会话刚跑过检测的结果——检测状态永远显式。</figcaption>
       <ol class="shot-legend">
@@ -63,16 +63,16 @@
       <div class="shot-frame">
         <img src="../assets/shots/admin-semantic-detail.png" alt="指标详情抽屉：定义、表达式（可编辑）、锚定数据集、被谁用、历史提交记录与删除按钮">
         <span class="pin" style="--x:77.6%;--y:25.1%">1</span>
-        <span class="pin" style="--x:64.9%;--y:33.6%">2</span>
-        <span class="pin" style="--x:77.6%;--y:43.2%">3</span>
-        <span class="pin" style="--x:61.9%;--y:51.5%">4</span>
+        <span class="pin" style="--x:61.5%;--y:33.3%">2</span>
+        <span class="pin" style="--x:79.0%;--y:43.8%">3</span>
+        <span class="pin" style="--x:61.9%;--y:55.0%">4</span>
         <span class="pin" style="--x:96.9%;--y:98.0%">5</span>
       </div>
       <figcaption>图 2 · 指标「average Account balance after the transaction」的详情抽屉。判断一条指标能不能动，先读这张档案。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>表达式</strong>——指标的计算式（<code>AVG(trans.balance)</code>），可一键复制；「编辑」进入图 3 的编辑器。</li>
         <li><span class="n">2</span><strong>锚定数据集</strong>——这条指标声明依赖哪个数据集（<code>trans</code>）。编译器据此决定 join 范围；锚定错了，生成的 SQL 会整体走偏。</li>
-        <li><span class="n">3</span><strong>被谁用</strong>——引用它的示例 / 教训等资产。注意边界提示：「依据漂移影响面快照 + 模型内声明，<strong>可能不完整</strong>」——不确定的地方不装确定。</li>
+        <li><span class="n">3</span><strong>被谁用</strong>——引用它的示例 / 教训等资产；暂无引用时显示空态「未发现引用」（图中即是）。注意边界提示：「依据:漂移影响面快照 + 模型内声明，<strong>可能不完整</strong>」——不确定的地方不装确定。</li>
         <li><span class="n">4</span><strong>历史</strong>——每次改动的提交记录（短哈希、变更类型与标题、提交人、时间）。谁在什么时候改的、改的是什么，从 git 视角可追。</li>
         <li><span class="n">5</span><strong>删除</strong>——危险动作，删除同样先落草稿、经审批才生效；引用它的资产会在「被谁用」里暴露出来，删之前先看这里。</li>
       </ol>

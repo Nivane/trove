@@ -1,0 +1,2057 @@
+semantic_model:
+- name: financial
+  datasets:
+  - name: account
+    source: financial.account
+    primary_key:
+    - account_id
+    fields:
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - account number
+      description: the id of the account
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - branch district
+      description: location of branch
+    - name: frequency
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: frequency
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        POPLATEK MESICNE: monthly issuance
+        POPLATEK TYDNE: weekly issuance
+        POPLATEK PO OBRATU: issuance after transaction
+      ai_context:
+        synonyms:
+        - statement frequency
+        - transaction frequency
+      description: frequency of the acount
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - creation date
+        - account opening date
+      description: the creation date of the account
+  - name: card
+    source: financial.card
+    primary_key:
+    - card_id
+    fields:
+    - name: card_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: card_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - card number
+      description: id number of credit card
+    - name: disp_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: disp_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - disposition id
+      description: disposition id
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        gold: high-level credit card
+        classic: standard class of credit card
+        junior: junior class of credit card
+      ai_context:
+        synonyms:
+        - card category
+        - card tier
+      description: type of credit card
+    - name: issued
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: issued
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - issue date
+        - card issue date
+      description: the date when the credit card issued
+  - name: client
+    source: financial.client
+    primary_key:
+    - client_id
+    fields:
+    - name: client_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: client_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - customer id
+      description: the unique number
+    - name: gender
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: gender
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        F: female
+        M: male
+      ai_context:
+        synonyms:
+        - sex
+      description: gender of the client
+    - name: birth_date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: birth_date
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - date of birth
+        - dob
+      description: birth date
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - residence district
+      description: location of branch
+  - name: disp
+    source: financial.disp
+    primary_key:
+    - disp_id
+    fields:
+    - name: disp_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: disp_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - disposition id
+      description: unique number of identifying this row of record
+    - name: client_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: client_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - customer id
+      description: id number of client
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - account number
+      description: id number of account
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        OWNER: owner
+        DISPONENT: authorized user
+      ai_context:
+        synonyms:
+        - relationship type
+        - access type
+      description: type of disposition
+  - name: district
+    source: financial.district
+    primary_key:
+    - district_id
+    fields:
+    - name: district_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: district_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - region id
+      description: location of branch
+    - name: A2
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A2
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - district name
+      description: district_name
+      values:
+      - Benesov
+      - Beroun
+      - Blansko
+      - Breclav
+      - Brno - mesto
+      - Brno - venkov
+      - Bruntal
+      - Ceska Lipa
+      - Ceske Budejovice
+      - Cesky Krumlov
+      - Cheb
+      - Chomutov
+      - Chrudim
+      - Decin
+      - Domazlice
+      - Frydek - Mistek
+      - Havlickuv Brod
+      - Hl.m. Praha
+      - Hodonin
+      - Hradec Kralove
+      - Jablonec n. Nisou
+      - Jesenik
+      - Jicin
+      - Jihlava
+      - Jindrichuv Hradec
+      - Karlovy Vary
+      - Karvina
+      - Kladno
+      - Klatovy
+      - Kolin
+      - Kromeriz
+      - Kutna Hora
+      - Liberec
+      - Litomerice
+      - Louny
+      - Melnik
+      - Mlada Boleslav
+      - Most
+      - Nachod
+      - Novy Jicin
+      - Nymburk
+      - Olomouc
+      - Opava
+      - Ostrava - mesto
+      - Pardubice
+      - Pelhrimov
+      - Pisek
+      - Plzen - jih
+      - Plzen - mesto
+      - Plzen - sever
+      - Prachatice
+      - Praha - vychod
+      - Praha - zapad
+      - Prerov
+      - Pribram
+      - Prostejov
+      - Rakovnik
+      - Rokycany
+      - Rychnov nad Kneznou
+      - Semily
+      - Sokolov
+      - Strakonice
+      - Sumperk
+      - Svitavy
+      - Tabor
+      - Tachov
+      - Teplice
+      - Trebic
+      - Trutnov
+      - Uherske Hradiste
+      - Usti nad Labem
+      - Usti nad Orlici
+      - Vsetin
+      - Vyskov
+      - Zdar nad Sazavou
+      - Zlin
+      - Znojmo
+    - name: A3
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A3
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        Prague: Prague
+        central Bohemia: central Bohemia
+        south Bohemia: south Bohemia
+        west Bohemia: west Bohemia
+        north Bohemia: north Bohemia
+        east Bohemia: east Bohemia
+        south Moravia: south Moravia
+        north Moravia: north Moravia
+      ai_context:
+        synonyms:
+        - region
+        - area
+      description: region
+    - name: A4
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A4
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - population
+      description: population of the district
+    - name: A5
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A5
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - households count
+      description: municipality < district < region
+      values:
+      - '0'
+      - '10'
+      - '101'
+      - '11'
+      - '139'
+      - '15'
+      - '151'
+      - '17'
+      - '21'
+      - '22'
+      - '24'
+      - '25'
+      - '28'
+      - '29'
+      - '31'
+      - '32'
+      - '34'
+      - '35'
+      - '37'
+      - '38'
+      - '4'
+      - '41'
+      - '48'
+      - '49'
+      - '5'
+      - '50'
+      - '52'
+      - '55'
+      - '59'
+      - '60'
+      - '61'
+      - '63'
+      - '65'
+      - '66'
+      - '67'
+      - '69'
+      - '71'
+      - '73'
+      - '74'
+      - '75'
+      - '77'
+      - '8'
+      - '80'
+      - '83'
+      - '84'
+      - '85'
+      - '87'
+      - '88'
+      - '9'
+      - '94'
+      - '95'
+      - '98'
+      - '99'
+    - name: A6
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A6
+      datatype: String
+      semantic_role: dimension
+      ai_context:
+        synonyms:
+        - enterprise count
+      description: municipality < district < region
+      values:
+      - '0'
+      - '10'
+      - '11'
+      - '12'
+      - '13'
+      - '14'
+      - '15'
+      - '16'
+      - '17'
+      - '18'
+      - '19'
+      - '2'
+      - '20'
+      - '21'
+      - '22'
+      - '23'
+      - '24'
+      - '25'
+      - '26'
+      - '27'
+      - '28'
+      - '29'
+      - '30'
+      - '32'
+      - '33'
+      - '35'
+      - '36'
+      - '37'
+      - '4'
+      - '40'
+      - '41'
+      - '42'
+      - '49'
+      - '50'
+      - '70'
+      - '8'
+    - name: A7
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A7
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        '0': '0'
+        '6': '6'
+        '4': '4'
+        '1': '1'
+        '7': '7'
+        '9': '9'
+        '10': '10'
+        '2': '2'
+        '3': '3'
+        '5': '5'
+        '8': '8'
+        '18': '18'
+        '14': '14'
+        '20': '20'
+        '13': '13'
+        '11': '11'
+        '12': '12'
+      ai_context:
+        synonyms:
+        - crime count
+      description: municipality < district < region
+    - name: A8
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A8
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - unemployment rate
+      description: municipality < district < region
+    - name: A9
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A9
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - entrepreneur count
+      description: number of entrepreneurs in the district
+    - name: A10
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A10
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - avg salary
+      description: ratio of urban inhabitants
+    - name: A11
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A11
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - avg salary deviation
+      description: average salary
+    - name: A12
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A12
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - avg house price
+      description: unemployment rate 1995
+    - name: A13
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A13
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - avg house price deviation
+      description: unemployment rate 1996
+    - name: A14
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A14
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - avg rent
+      description: no. of entrepreneurs per 1000 inhabitants
+    - name: A15
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A15
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - avg rent deviation
+      description: no. of committed crimes 1995
+    - name: A16
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: A16
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - unemployment deviation
+      description: no. of committed crimes 1996
+  - name: loan
+    source: financial.loan
+    primary_key:
+    - loan_id
+    fields:
+    - name: loan_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: loan_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - loan identifier
+      description: the id number identifying the loan data
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - account identifier
+      description: the id number identifying the account
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - loan start date
+      description: the date when the loan is approved
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - loan amount
+      description: approved amount
+    - name: duration
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: duration
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - loan term
+      description: loan duration
+    - name: payments
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: payments
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - monthly payment
+      description: monthly payments
+    - name: status
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: status
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        A: contract finished, no problems
+        B: contract finished, loan not paid
+        D: running contract, client in debt
+        C: running contract, OK so far
+      ai_context:
+        synonyms:
+        - repayment state
+        - loan state
+      description: repayment status
+  - name: order
+    source: financial.order
+    primary_key:
+    - order_id
+    fields:
+    - name: order_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: order_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - order identifier
+      description: identifying the unique order
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - account identifier
+      description: id number of account
+    - name: bank_to
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: bank_to
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        YZ: bank YZ
+        ST: bank ST
+        QR: bank QR
+        WX: bank WX
+        CD: bank CD
+        AB: bank AB
+        UV: bank UV
+        GH: bank GH
+        IJ: bank IJ
+        KL: bank KL
+        EF: bank EF
+        MN: bank MN
+        OP: bank OP
+      ai_context:
+        synonyms:
+        - destination bank
+        - recipient bank
+      description: bank of the recipient
+    - name: account_to
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_to
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - destination account
+        - recipient account
+      description: account of the recipient
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Float
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - order amount
+      description: debited amount
+    - name: k_symbol
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: k_symbol
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        SIPO: household payment
+        UVER: loan payment
+        POJISTNE: insurance payment
+        LEASING: leasing payment
+      ai_context:
+        synonyms:
+        - payment purpose
+        - transaction category
+      description: purpose of the payment
+  - name: trans
+    source: financial.trans
+    primary_key:
+    - trans_id
+    fields:
+    - name: trans_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: trans_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - transaction identifier
+      description: transaction id
+    - name: account_id
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account_id
+      datatype: Integer
+      semantic_role: identifier
+      ai_context:
+        synonyms:
+        - account identifier
+      description: identifier of the account involved in the transaction
+    - name: date
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: date
+      datatype: Date
+      semantic_role: time
+      ai_context:
+        synonyms:
+        - transaction date
+      description: date of transaction
+    - name: type
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: type
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        PRIJEM: credit
+        VYDAJ: withdrawal
+        VYBER: withdrawal
+      ai_context:
+        synonyms:
+        - transaction type
+      description: +/- transaction
+    - name: operation
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: operation
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        VKLAD: credit in cash
+        PREVOD Z UCTU: collection from another bank
+        PREVOD NA UCET: remittance to another bank
+        VYBER: withdrawal in cash
+        VYBER KARTOU: credit card withdrawal
+      ai_context:
+        synonyms:
+        - transaction operation
+      description: mode of transaction
+    - name: amount
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: amount
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - transaction amount
+      description: amount of money
+    - name: balance
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: balance
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - account balance
+      description: balance after transaction
+    - name: k_symbol
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: k_symbol
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        SIPO: household
+        SLUZBY: payment for statement
+        UVER: loan payment
+        POJISTNE: insurrance payment
+        DUCHOD: old-age pension
+        UROK: interest credited
+        SANKC. UROK: sanction interest if negative balance
+      ai_context:
+        synonyms:
+        - transaction purpose
+        - transaction category
+      description: purpose or category of the transaction
+    - name: bank
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: bank
+      datatype: String
+      semantic_role: enum
+      enum_display:
+        AB: bank AB
+        YZ: bank YZ
+        ST: bank ST
+        QR: bank QR
+        WX: bank WX
+        CD: bank CD
+        UV: bank UV
+        KL: bank KL
+        GH: bank GH
+        OP: bank OP
+        IJ: bank IJ
+        EF: bank EF
+        MN: bank MN
+      ai_context:
+        synonyms:
+        - counterparty bank
+      description: bank code of the counterparty
+    - name: account
+      expression:
+        dialects:
+        - dialect: ANSI_SQL
+          expression: account
+      datatype: Integer
+      semantic_role: measure
+      ai_context:
+        synonyms:
+        - counterparty account
+      description: account number of the counterparty
+  relationships:
+  - name: account_to_district
+    from: account
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    cardinality: 1:N
+  - name: card_to_disp
+    from: card
+    to: disp
+    from_columns:
+    - disp_id
+    to_columns:
+    - disp_id
+    cardinality: 1:N
+  - name: client_to_district
+    from: client
+    to: district
+    from_columns:
+    - district_id
+    to_columns:
+    - district_id
+    cardinality: 1:N
+  - name: disp_to_client
+    from: disp
+    to: client
+    from_columns:
+    - client_id
+    to_columns:
+    - client_id
+    cardinality: 1:N
+  - name: disp_to_account
+    from: disp
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: loan_to_account
+    from: loan
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: order_to_account
+    from: order
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  - name: trans_to_account
+    from: trans
+    to: account
+    from_columns:
+    - account_id
+    to_columns:
+    - account_id
+    cardinality: 1:N
+  metrics:
+  - name: number of account records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(account.account_id)
+    description: total number of records in the account table
+    ai_context:
+      synonyms:
+      - account count
+  - name: average year of Date the account was created
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM account.date))
+    description: average year of Date the account was created
+    ai_context:
+      synonyms:
+      - Date the account was created average year
+  - name: share of account records where Frequency of account statements or transactions,
+      stored as all-caps codes is monthly issuance
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN account.frequency = 'POPLATEK MESICNE' THEN
+          1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of account records where Frequency of account statements
+      or transactions, stored as all-caps codes is monthly issuance
+    ai_context:
+      synonyms:
+      - percentage of account records where Frequency of account statements or transactions,
+        stored as all-caps codes is monthly issuance
+      - monthly issuance account record share
+  - name: share of account records where Frequency of account statements or transactions,
+      stored as all-caps codes is weekly issuance
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN account.frequency = 'POPLATEK TYDNE' THEN 1
+          ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of account records where Frequency of account statements
+      or transactions, stored as all-caps codes is weekly issuance
+    ai_context:
+      synonyms:
+      - percentage of account records where Frequency of account statements or transactions,
+        stored as all-caps codes is weekly issuance
+      - weekly issuance account record share
+  - name: share of account records where Frequency of account statements or transactions,
+      stored as all-caps codes is issuance after each transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN account.frequency = 'POPLATEK PO OBRATU' THEN
+          1 ELSE 0 END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of account records where Frequency of account statements
+      or transactions, stored as all-caps codes is issuance after each transaction
+    ai_context:
+      synonyms:
+      - percentage of account records where Frequency of account statements or transactions,
+        stored as all-caps codes is issuance after each transaction
+      - issuance after each transaction account record share
+  - name: number of card records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(card.card_id)
+    description: total number of records in the card table
+    ai_context:
+      synonyms:
+      - card count
+  - name: average year of Date the card was issued
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM card.issued))
+    description: average year of Date the card was issued
+    ai_context:
+      synonyms:
+      - Date the card was issued average year
+  - name: share of card records where Type of card, stored as lowercase text is gold
+      card
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN card.type = 'gold' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of card records where Type of card, stored as lowercase
+      text is gold card
+    ai_context:
+      synonyms:
+      - percentage of card records where Type of card, stored as lowercase text is
+        gold card
+      - gold card card record share
+  - name: share of card records where Type of card, stored as lowercase text is classic
+      card
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN card.type = 'classic' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of card records where Type of card, stored as lowercase
+      text is classic card
+    ai_context:
+      synonyms:
+      - percentage of card records where Type of card, stored as lowercase text is
+        classic card
+      - classic card card record share
+  - name: share of card records where Type of card, stored as lowercase text is junior
+      card
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN card.type = 'junior' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of card records where Type of card, stored as lowercase
+      text is junior card
+    ai_context:
+      synonyms:
+      - percentage of card records where Type of card, stored as lowercase text is
+        junior card
+      - junior card card record share
+  - name: number of client records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(client.client_id)
+    description: total number of records in the client table
+    ai_context:
+      synonyms:
+      - client count
+  - name: average year of Client's birth date
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM client.birth_date))
+    description: average year of Client's birth date
+    ai_context:
+      synonyms:
+      - Client's birth date average year
+  - name: share of client records where Gender of the client, stored as single capital
+      letter is female
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN client.gender = 'F' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of client records where Gender of the client, stored as
+      single capital letter is female
+    ai_context:
+      synonyms:
+      - percentage of client records where Gender of the client, stored as single
+        capital letter is female
+      - female client record share
+  - name: share of client records where Gender of the client, stored as single capital
+      letter is male
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN client.gender = 'M' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of client records where Gender of the client, stored as
+      single capital letter is male
+    ai_context:
+      synonyms:
+      - percentage of client records where Gender of the client, stored as single
+        capital letter is male
+      - male client record share
+  - name: number of disp records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(disp.disp_id)
+    description: total number of records in the disp table
+    ai_context:
+      synonyms:
+      - disp count
+  - name: share of disp records where Type of disposition, stored as all-caps codes
+      is account owner
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN disp.type = 'OWNER' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of disp records where Type of disposition, stored as all-caps
+      codes is account owner
+    ai_context:
+      synonyms:
+      - percentage of disp records where Type of disposition, stored as all-caps codes
+        is account owner
+      - account owner disp record share
+  - name: share of disp records where Type of disposition, stored as all-caps codes
+      is account user with limited rights
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN disp.type = 'DISPONENT' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of disp records where Type of disposition, stored as all-caps
+      codes is account user with limited rights
+    ai_context:
+      synonyms:
+      - percentage of disp records where Type of disposition, stored as all-caps codes
+        is account user with limited rights
+      - account user with limited rights disp record share
+  - name: number of district records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(district.district_id)
+    description: total number of records in the district table
+    ai_context:
+      synonyms:
+      - district count
+  - name: total Number of municipalities with population above 10000
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A8)
+    description: sum of Number of municipalities with population above 10000 over
+      all records
+    ai_context:
+      synonyms:
+      - sum of Number of municipalities with population above 10000
+  - name: average Number of municipalities with population above 10000
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A8)
+    description: average Number of municipalities with population above 10000 over
+      all records
+    ai_context:
+      synonyms:
+      - avg Number of municipalities with population above 10000
+  - name: total Number of cities
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A9)
+    description: sum of Number of cities over all records
+    ai_context:
+      synonyms:
+      - sum of Number of cities
+  - name: average Number of cities
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A9)
+    description: average Number of cities over all records
+    ai_context:
+      synonyms:
+      - avg Number of cities
+  - name: average Ratio of urban inhabitants
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A10)
+    description: average Ratio of urban inhabitants over all records
+    ai_context:
+      synonyms:
+      - avg Ratio of urban inhabitants
+  - name: total salary in the district
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A11)
+    description: sum of Average salary in the district over all records
+    ai_context:
+      synonyms:
+      - sum of salary in the district
+  - name: average salary in the district
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A11)
+    description: average Average salary in the district over all records
+    ai_context:
+      synonyms:
+      - avg salary in the district
+  - name: average Unemployment rate in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A12)
+    description: average Unemployment rate in 1995 over all records
+    ai_context:
+      synonyms:
+      - avg Unemployment rate in 1995
+  - name: average Unemployment rate in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A13)
+    description: average Unemployment rate in 1996 over all records
+    ai_context:
+      synonyms:
+      - avg Unemployment rate in 1996
+  - name: average Number of entrepreneurs per 1000 inhabitants
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A14)
+    description: average Number of entrepreneurs per 1000 inhabitants over all records
+    ai_context:
+      synonyms:
+      - avg Number of entrepreneurs per 1000 inhabitants
+  - name: total Number of crimes committed in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A15)
+    description: sum of Number of crimes committed in 1995 over all records
+    ai_context:
+      synonyms:
+      - sum of Number of crimes committed in 1995
+  - name: average Number of crimes committed in 1995
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A15)
+    description: average Number of crimes committed in 1995 over all records
+    ai_context:
+      synonyms:
+      - avg Number of crimes committed in 1995
+  - name: total Number of crimes committed in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(district.A16)
+    description: sum of Number of crimes committed in 1996 over all records
+    ai_context:
+      synonyms:
+      - sum of Number of crimes committed in 1996
+  - name: average Number of crimes committed in 1996
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(district.A16)
+    description: average Number of crimes committed in 1996 over all records
+    ai_context:
+      synonyms:
+      - avg Number of crimes committed in 1996
+  - name: share of district records where Region or area name of the district is Prague
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'Prague' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is Prague
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        Prague
+      - Prague district record share
+  - name: share of district records where Region or area name of the district is central
+      Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'central Bohemia' THEN 1 ELSE
+          0 END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is central Bohemia
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        central Bohemia
+      - central Bohemia district record share
+  - name: share of district records where Region or area name of the district is south
+      Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'south Bohemia' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is south Bohemia
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        south Bohemia
+      - south Bohemia district record share
+  - name: share of district records where Region or area name of the district is west
+      Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'west Bohemia' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of district records where Region or area name of the district
+      is west Bohemia
+    ai_context:
+      synonyms:
+      - percentage of district records where Region or area name of the district is
+        west Bohemia
+      - west Bohemia district record share
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is Prague
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'Prague' THEN district.A8 ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is Prague
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is Prague
+      - Prague share of Number of municipalities with population above 10000
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is central Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'central Bohemia' THEN district.A8
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is central
+      Bohemia
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is central Bohemia
+      - central Bohemia share of Number of municipalities with population above 10000
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is south Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'south Bohemia' THEN district.A8
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is south Bohemia
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is south Bohemia
+      - south Bohemia share of Number of municipalities with population above 10000
+  - name: share of Number of municipalities with population above 10000 where Region
+      or area name of the district is west Bohemia
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN district.A3 = 'west Bohemia' THEN district.A8
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(district.A8), 0)
+    description: percentage of Number of municipalities with population above 10000
+      contributed by records where Region or area name of the district is west Bohemia
+    ai_context:
+      synonyms:
+      - percentage of Number of municipalities with population above 10000 where Region
+        or area name of the district is west Bohemia
+      - west Bohemia share of Number of municipalities with population above 10000
+  - name: number of loan records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(loan.loan_id)
+    description: total number of records in the loan table
+    ai_context:
+      synonyms:
+      - loan count
+  - name: average year of Date the loan was granted
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM loan.date))
+    description: average year of Date the loan was granted
+    ai_context:
+      synonyms:
+      - Date the loan was granted average year
+  - name: total Loan amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.amount)
+    description: sum of Loan amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - sum of Loan amount in monetary units
+  - name: average Loan amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.amount)
+    description: average Loan amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - avg Loan amount in monetary units
+  - name: total Loan duration in months
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.duration)
+    description: sum of Loan duration in months over all records
+    ai_context:
+      synonyms:
+      - sum of Loan duration in months
+  - name: average Loan duration in months
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.duration)
+    description: average Loan duration in months over all records
+    ai_context:
+      synonyms:
+      - avg Loan duration in months
+  - name: total Monthly payment amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(loan.payments)
+    description: sum of Monthly payment amount over all records
+    ai_context:
+      synonyms:
+      - sum of Monthly payment amount
+  - name: average Monthly payment amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(loan.payments)
+    description: average Monthly payment amount over all records
+    ai_context:
+      synonyms:
+      - avg Monthly payment amount
+  - name: share of loan records where Loan status code (A, B, D) is A
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'A' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is A
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is A
+      - A loan record share
+  - name: share of loan records where Loan status code (A, B, D) is B
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'B' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is B
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is B
+      - B loan record share
+  - name: share of loan records where Loan status code (A, B, D) is D
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'D' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is D
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is D
+      - D loan record share
+  - name: share of loan records where Loan status code (A, B, D) is C
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'C' THEN 1 ELSE 0 END) AS DOUBLE)
+          * 100.0 / COUNT(*)
+    description: percentage of loan records where Loan status code (A, B, D) is C
+    ai_context:
+      synonyms:
+      - percentage of loan records where Loan status code (A, B, D) is C
+      - C loan record share
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is A
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'A' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is A
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is A
+      - A share of Loan amount in monetary units
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is B
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'B' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is B
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is B
+      - B share of Loan amount in monetary units
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is D
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'D' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is D
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is D
+      - D share of Loan amount in monetary units
+  - name: share of Loan amount in monetary units where Loan status code (A, B, D)
+      is C
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN loan.status = 'C' THEN loan.amount ELSE 0 END)
+          AS DOUBLE) * 100.0 / NULLIF(SUM(loan.amount), 0)
+    description: percentage of Loan amount in monetary units contributed by records
+      where Loan status code (A, B, D) is C
+    ai_context:
+      synonyms:
+      - percentage of Loan amount in monetary units where Loan status code (A, B,
+        D) is C
+      - C share of Loan amount in monetary units
+  - name: number of order records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT("order".order_id)
+    description: total number of records in the order table
+    ai_context:
+      synonyms:
+      - order count
+  - name: total Order amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM("order".amount)
+    description: sum of Order amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - sum of Order amount in monetary units
+  - name: average Order amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG("order".amount)
+    description: average Order amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - avg Order amount in monetary units
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is SIPO
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is SIPO
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is SIPO
+      - SIPO order record share
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is UVER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'UVER' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is UVER
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is UVER
+      - UVER order record share
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is POJISTNE
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is POJISTNE
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is POJISTNE
+      - POJISTNE order record share
+  - name: share of order records where Payment purpose code (all caps, may be empty)
+      is LEASING
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN 1 ELSE 0
+          END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of order records where Payment purpose code (all caps,
+      may be empty) is LEASING
+    ai_context:
+      synonyms:
+      - percentage of order records where Payment purpose code (all caps, may be empty)
+        is LEASING
+      - LEASING order record share
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is SIPO
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'SIPO' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is SIPO
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is SIPO
+      - SIPO share of Order amount in monetary units
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is UVER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'UVER' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is UVER
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is UVER
+      - UVER share of Order amount in monetary units
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is POJISTNE
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'POJISTNE' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is POJISTNE
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is POJISTNE
+      - POJISTNE share of Order amount in monetary units
+  - name: share of Order amount in monetary units where Payment purpose code (all
+      caps, may be empty) is LEASING
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN "order".k_symbol = 'LEASING' THEN "order".amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM("order".amount), 0)
+    description: percentage of Order amount in monetary units contributed by records
+      where Payment purpose code (all caps, may be empty) is LEASING
+    ai_context:
+      synonyms:
+      - percentage of Order amount in monetary units where Payment purpose code (all
+        caps, may be empty) is LEASING
+      - LEASING share of Order amount in monetary units
+  - name: number of trans records
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: COUNT(trans.trans_id)
+    description: total number of records in the trans table
+    ai_context:
+      synonyms:
+      - trans count
+  - name: average year of Date of the transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(EXTRACT(YEAR FROM trans.date))
+    description: average year of Date of the transaction
+    ai_context:
+      synonyms:
+      - Date of the transaction average year
+  - name: total Transaction amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(trans.amount)
+    description: sum of Transaction amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - sum of Transaction amount in monetary units
+  - name: average Transaction amount in monetary units
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(trans.amount)
+    description: average Transaction amount in monetary units over all records
+    ai_context:
+      synonyms:
+      - avg Transaction amount in monetary units
+  - name: total Account balance after the transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: SUM(trans.balance)
+    description: sum of Account balance after the transaction over all records
+    ai_context:
+      synonyms:
+      - sum of Account balance after the transaction
+  - name: average Account balance after the transaction
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: AVG(trans.balance)
+    description: average Account balance after the transaction over all records
+    ai_context:
+      synonyms:
+      - avg Account balance after the transaction
+  - name: share of trans records where Transaction type (PRIJEM, VYDAJ, VYBER) is
+      PRIJEM
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.type = 'PRIJEM' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
+      VYBER) is PRIJEM
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction type (PRIJEM, VYDAJ, VYBER)
+        is PRIJEM
+      - PRIJEM trans record share
+  - name: share of trans records where Transaction type (PRIJEM, VYDAJ, VYBER) is
+      VYDAJ
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYDAJ' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
+      VYBER) is VYDAJ
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction type (PRIJEM, VYDAJ, VYBER)
+        is VYDAJ
+      - VYDAJ trans record share
+  - name: share of trans records where Transaction type (PRIJEM, VYDAJ, VYBER) is
+      VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYBER' THEN 1 ELSE 0 END) AS
+          DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction type (PRIJEM, VYDAJ,
+      VYBER) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction type (PRIJEM, VYDAJ, VYBER)
+        is VYBER
+      - VYBER trans record share
+  - name: share of Transaction amount in monetary units where Transaction type (PRIJEM,
+      VYDAJ, VYBER) is PRIJEM
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.type = 'PRIJEM' THEN trans.amount ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction type (PRIJEM, VYDAJ, VYBER) is PRIJEM
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction type
+        (PRIJEM, VYDAJ, VYBER) is PRIJEM
+      - PRIJEM share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction type (PRIJEM,
+      VYDAJ, VYBER) is VYDAJ
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYDAJ' THEN trans.amount ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction type (PRIJEM, VYDAJ, VYBER) is VYDAJ
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction type
+        (PRIJEM, VYDAJ, VYBER) is VYDAJ
+      - VYDAJ share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction type (PRIJEM,
+      VYDAJ, VYBER) is VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.type = 'VYBER' THEN trans.amount ELSE
+          0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction type (PRIJEM, VYDAJ, VYBER) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction type
+        (PRIJEM, VYDAJ, VYBER) is VYBER
+      - VYBER share of Transaction amount in monetary units
+  - name: share of trans records where Transaction operation description (all caps,
+      may be NULL) is VKLAD
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VKLAD' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction operation description
+      (all caps, may be NULL) is VKLAD
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction operation description (all caps,
+        may be NULL) is VKLAD
+      - VKLAD trans record share
+  - name: share of trans records where Transaction operation description (all caps,
+      may be NULL) is VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER' THEN 1 ELSE 0 END)
+          AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction operation description
+      (all caps, may be NULL) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction operation description (all caps,
+        may be NULL) is VYBER
+      - VYBER trans record share
+  - name: share of trans records where Transaction operation description (all caps,
+      may be NULL) is VYBER KARTOU
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN 1 ELSE
+          0 END) AS DOUBLE) * 100.0 / COUNT(*)
+    description: percentage of trans records where Transaction operation description
+      (all caps, may be NULL) is VYBER KARTOU
+    ai_context:
+      synonyms:
+      - percentage of trans records where Transaction operation description (all caps,
+        may be NULL) is VYBER KARTOU
+      - VYBER KARTOU trans record share
+  - name: share of Transaction amount in monetary units where Transaction operation
+      description (all caps, may be NULL) is VKLAD
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VKLAD' THEN trans.amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction operation description (all caps, may be NULL) is VKLAD
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction operation
+        description (all caps, may be NULL) is VKLAD
+      - VKLAD share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction operation
+      description (all caps, may be NULL) is VYBER
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER' THEN trans.amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction operation description (all caps, may be NULL) is VYBER
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction operation
+        description (all caps, may be NULL) is VYBER
+      - VYBER share of Transaction amount in monetary units
+  - name: share of Transaction amount in monetary units where Transaction operation
+      description (all caps, may be NULL) is VYBER KARTOU
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: CAST(SUM(CASE WHEN trans.operation = 'VYBER KARTOU' THEN trans.amount
+          ELSE 0 END) AS DOUBLE) * 100.0 / NULLIF(SUM(trans.amount), 0)
+    description: percentage of Transaction amount in monetary units contributed by
+      records where Transaction operation description (all caps, may be NULL) is VYBER
+      KARTOU
+    ai_context:
+      synonyms:
+      - percentage of Transaction amount in monetary units where Transaction operation
+        description (all caps, may be NULL) is VYBER KARTOU
+      - VYBER KARTOU share of Transaction amount in monetary units
+  - name: max_loan_amount
+    expression:
+      dialects:
+      - dialect: ANSI_SQL
+        expression: MAX(loan.amount)
+    ai_context:
+      synonyms:
+      - 最高的贷款金额
+    description: 所有贷款记录中金额的最大值
+  # 业务主题域(2026-10-03 声明):选域提问时,数据集锚定收敛到该域声明的
+  # datasets 内;域不存在/过期 → 显式拒绝,不回落全量。生效作用域 =
+  # 此处 datasets ∩ 模型现有数据集;只收敛锚定、不裁剪 join 路径;
+  # 域间允许重叠(共享维度表)。
+  topics:
+  - name: Loans
+    description: Loan amounts, durations and statuses, viewed by account, client
+      and region.
+    synonyms:
+    - loan
+    - loans
+    - 贷款
+    - 信贷
+    datasets:
+    - loan
+    - account
+    - client
+    - district
+    examples:
+    - What is the average loan amount?
+    - Which region has the highest average loan amount?
+    - How many loans are in each status?
+  - name: Transactions
+    description: Account transactions and outgoing orders, viewed by account,
+      client and region.
+    synonyms:
+    - transaction
+    - transactions
+    - transfer
+    - 交易
+    - 转账
+    datasets:
+    - trans
+    - order
+    - account
+    - client
+    - district
+    examples:
+    - How many transactions were made in 1996?
+    - What is the total transaction amount by account?
+    - How many orders were sent to each bank?
+  - name: Cards
+    description: Card types and issuance, and the clients holding them.
+    synonyms:
+    - card
+    - cards
+    - 银行卡
+    datasets:
+    - card
+    - client
+    examples:
+    - How many clients have a gold card?
+    - Which card type was issued the most?
+  - name: Customers
+    description: Customer demographics and district-level statistics.
+    synonyms:
+    - customer
+    - customers
+    - client
+    - district
+    - 客户
+    - 地区
+    datasets:
+    - client
+    - district
+    examples:
+    - How many clients are there by gender?
+    - What is the average salary in each district?
+    - What is the unemployment rate in 1995?
+version: 0.2.0.dev0

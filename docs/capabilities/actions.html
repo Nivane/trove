@@ -498,18 +498,18 @@ flowchart LR
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-actions.png" alt="管理台「行动」页的提案页签：待办计数（未闭环 / 待批准 / 已驳回）、状态过滤、一条待批准提案（loan-high → loan-baseline-alert，风险中）与行尾的批准 / 拒绝 / 详情">
-        <span class="pin" style="--x:26.2%;--y:23.0%">1</span>
-        <span class="pin" style="--x:85.3%;--y:30.4%">2</span>
+        <img src="../assets/shots/admin-actions.png" alt="管理台「行动」页的提案页签：待办计数（未闭环 1 · 待批准 1）、状态过滤、一条待批准提案（loan-high → loan-baseline-alert，风险中）与行尾的批准 / 拒绝 / 详情">
+        <span class="pin" style="--x:23.0%;--y:23.0%">1</span>
+        <span class="pin" style="--x:91.4%;--y:30.2%">2</span>
         <span class="pin" style="--x:26.5%;--y:35.9%">3</span>
         <span class="pin" style="--x:84.7%;--y:45.9%">4</span>
       </div>
       <figcaption>图 2 · 提案页签。一条 <code>loan-high</code> 触发生成的提案在等拍板——批准之前，任何东西都不会离开系统。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>两个页签</strong>——模板（响应资产）与提案（待处置队列）。</li>
-        <li><span class="n">2</span><strong>待办计数</strong>——提案按处置阶段分堆：未闭环 / 待批准 / 已驳回。</li>
+        <li><span class="n">2</span><strong>待办计数</strong>——「未闭环」是待批准 / 已批准 / 失败三态的并集；其余状态各自有计数时才多一枚（图中即「未闭环 1 · 待批准 1」，没有已驳回就看不到它）。</li>
         <li><span class="n">3</span><strong>状态过滤与冻结提示</strong>——按阶段筛选；旁注重申「载荷在创建时冻结」：批准外送的就是抽屉里看到的那一份。</li>
-        <li><span class="n">4</span><strong>一条提案</strong>——规则 → 模板 → 风险 → 数据源 → 创建时间 → 有效期，行尾是本阶段可用的动作（批准 / 拒绝 / 详情）；批准之后才会出现「外送」等后续动作。</li>
+        <li><span class="n">4</span><strong>一条提案</strong>——规则 → 模板 → 风险 → 数据源 → 创建时间（更右侧还有有效期至 / 尝试 / 错误，表格放不下时横向滚动可见），行尾是本阶段可用的动作（批准 / 拒绝 / 详情）；批准之后才会出现「外送」等后续动作。</li>
       </ol>
     </figure>
 

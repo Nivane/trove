@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Trove 管理台总览：健康横幅、六项 KPI（每个都是入口）、失败分布、数据源健康表、待办队列（八类来源）、接入向导与最近事件。">
+<meta name="description" content="Trove 管理台总览：健康横幅、六项 KPI（每个都是入口）、数据源健康表、待办队列（十一类来源）、接入向导与最近事件；失败分布仅在窗口内有失败时出现。">
 <title>管理台总览 · Trove 文档</title>
 <link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="icon" href="../favicon.ico" sizes="32x32">
@@ -40,24 +40,24 @@
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-overview.png" alt="管理台总览：健康横幅、六项 KPI、失败分布、数据源健康表、待办队列与接入向导">
-        <span class="pin" style="--x:59.1%;--y:19.6%">1</span>
-        <span class="pin" style="--x:48.0%;--y:30.3%">2</span>
+        <img src="../assets/shots/admin-overview.png" alt="管理台总览：健康横幅、六项 KPI、数据源健康表、待办队列与接入向导">
+        <span class="pin" style="--x:59.1%;--y:24.9%">1</span>
+        <span class="pin" style="--x:48.0%;--y:35.4%">2</span>
         <span class="pin" style="--x:33.6%;--y:38.5%">3</span>
         <span class="pin" style="--x:59.1%;--y:56.2%">4</span>
         <span class="pin" style="--x:30.8%;--y:79.0%">5</span>
         <span class="pin" style="--x:80.0%;--y:78.8%">6</span>
-        <span class="pin" style="--x:87.9%;--y:7.5%">7</span>
+        <span class="pin" style="--x:87.9%;--y:13.3%">7</span>
       </div>
       <figcaption>图 1 · 总览全貌。标题下方一行小字「数据截至 … · 聚合耗时 …」是这张快照的新鲜度声明——它不假装自己是实时的。</figcaption>
       <ol class="shot-legend">
         <li><span class="n">1</span><strong>健康横幅</strong>——全平台一句话结论（全部可达 / 有源不可达 / 探测未完成），附带存储、当前模型、数据源可达数、只读自检结果。判定直接来自 <code>/v1/health</code>，与探针口径一致。</li>
         <li><span class="n">2</span><strong>KPI 行</strong>——待办总数 / 问答量 / 成功率 / 失败任务 / 被拒资产 / 漂移。<strong>每个数字都可点</strong>：待办滚到本页待办队列，问答量与成功率进质量运营台，失败任务进任务页的错误过滤，被拒资产进知识库资产页，漂移进数据源页。</li>
-        <li><span class="n">3</span><strong>失败分布</strong>——近窗口内的失败按类别归类（如 UNKNOWN）。注意标注「近似：按审计 error 文本归类」——它是启发式统计，不是精确分类。</li>
+        <li><span class="n">3</span><strong>失败分布（条件出现）</strong>——近窗口内的失败按类别归类（如 UNKNOWN），标注「近似：按审计 error 文本归类」——它是启发式统计，不是精确分类。窗口内没有失败时这块<strong>整体不渲染</strong>（图中失败任务为 0，即如此）；用量数据取不到时它会退回成一条说明行，不拿 0 冒充。</li>
         <li><span class="n">4</span><strong>数据源健康表</strong>——每个数据源的连接、KB 初始化、资产构成（entity / lesson / metric / table / template / term）、只读自检、打开的漂移条目。「只读自检」验的是连接是否真的不可写——可写会标红提示。</li>
-        <li><span class="n">5</span><strong>待办队列</strong>——八类来源的待处理合计，逐项可跳（见<a href="#todos">下一节</a>）。</li>
+        <li><span class="n">5</span><strong>待办队列</strong>——十一类来源的待处理合计，逐项可跳（见<a href="#todos">下一节</a>）。</li>
         <li><span class="n">6</span><strong>接入向导</strong>——注册数据源 → 初始化知识库 → 授权用户，三步各自读现有状态，未完成的给出直达按钮。</li>
-        <li><span class="n">7</span><strong>时间窗口与刷新</strong>——<code>24h / 7d / 30d</code> 切换统计窗口（问答量、成功率、失败分布随之变化），刷新按钮重新聚合。窗口切换会带进 KPI 的跳转链接，明细页看到的是同一个窗口。</li>
+        <li><span class="n">7</span><strong>时间窗口与刷新</strong>——<code>24h / 7d / 30d</code> 切换统计窗口（问答量、成功率随之变化，失败分布出现时也随窗口重算），刷新按钮重新聚合。窗口切换会带进 KPI 的跳转链接，明细页看到的是同一个窗口。</li>
       </ol>
     </figure>
 
@@ -71,25 +71,26 @@
       </p>
     </div>
 
-    <h2 id="todos">待办队列：八类来源，一个入口</h2>
+    <h2 id="todos">待办队列：十一类来源，一个入口</h2>
 
     <p>
       队列把散在各页的待处理事项聚成一处，这样「今天该做什么」不用翻六个页面。
-      八类来源：<strong>KB 教训</strong>、<strong>KB 示例</strong>、<strong>语义草稿</strong>、<strong>技能草稿</strong>、
-      <strong>记忆偏好草稿</strong>、<strong>漂移条目</strong>、<strong>失败任务</strong>、<strong>待授权用户</strong>。
+      十一类来源：<strong>KB 教训</strong>、<strong>KB 示例</strong>、<strong>语义草稿</strong>、<strong>技能草稿</strong>、
+      <strong>记忆偏好草稿</strong>、<strong>漂移条目</strong>、<strong>行动模板</strong>、<strong>行动提案</strong>、
+      <strong>失败任务</strong>、<strong>待授权用户</strong>、<strong>未初始化数据源</strong>。
     </p>
 
     <figure class="shot">
       <div class="shot-frame">
-        <img src="../assets/shots/admin-todos.png" alt="总览下半屏：待办队列八类来源、每项的去处理按钮、接入向导与最近事件">
-        <span class="pin" style="--x:29.3%;--y:48.3%">1</span>
-        <span class="pin" style="--x:59.1%;--y:56.2%">2</span>
+        <img src="../assets/shots/admin-todos.png" alt="总览下半屏：待办队列十一类来源、每项的去处理按钮、接入向导与最近事件">
+        <span class="pin" style="--x:24.6%;--y:34.7%">1</span>
+        <span class="pin" style="--x:58.4%;--y:58.5%">2</span>
         <span class="pin" style="--x:72.6%;--y:48.3%">3</span>
         <span class="pin" style="--x:72.6%;--y:80.6%">4</span>
       </div>
       <figcaption>图 2 · 待办队列与接入向导。队列里每项都带一眼能读的证据摘要（如示例的具体问句、草稿的指标名），不必点进去才知道是什么。</figcaption>
       <ol class="shot-legend">
-        <li><span class="n">1</span><strong>队列汇总</strong>——「共 8 类来源 · 合计 N」。数量为 0 的类目也在列（图中记忆偏好草稿、漂移条目等），0 是信息：它说明这一类当前干净。</li>
+        <li><span class="n">1</span><strong>队列汇总</strong>——「共 11 类来源 · 合计 24」。数量为 0 的类目也在列（图中记忆偏好草稿、漂移条目、失败任务等），0 是信息：它说明这一类当前干净。</li>
         <li><span class="n">2</span><strong>去处理</strong>——跳到该类目的落地页。无落地页的类目（如「未装配」的子系统）会如实标注，而不是给一个点不动的按钮。</li>
         <li><span class="n">3</span><strong>接入向导</strong>——新数据源上线的三步检查单，读的是现有状态而非流程进度：注册了几个、初始化了几个、还有几个用户待授权。</li>
         <li><span class="n">4</span><strong>最近事件</strong>——最近 10 条审计记录（登录、执行等），点「审计 →」进完整审计页。</li>

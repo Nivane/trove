@@ -12,13 +12,19 @@
  *                                            financial KB answers with a chart)
  *   TROVE_GIF_FRAMES    frame scratch dir    (default $TMPDIR/trove-gif-frames)
  *   TROVE_GIF_OUT       output GIF           (default <repo>/assets/demo.gif)
+ *   TROVE_GIF_CLEANUP   "1" → delete the session the run created afterwards
+ *                                            (for the docs capture instance,
+ *                                            where re-records must be idempotent)
  *
  * Notes:
  * - The question must be answerable by the *live* KB: a run that ends in a
  *   clarification or an error card exits non-zero instead of assembling a GIF
  *   that would misrepresent the product (TROVE_GIF_FORCE=1 overrides).
- * - The session the run creates is left in place on purpose — deleting the
- *   user's session history is not this script's business.
+ * - The analysis panel is default-closed and documents only the *live* run
+ *   (a restored session shows none of its steps), so the recorder opens it
+ *   right after sending — the README caption promises the steps unfolding.
+ * - By default the session the run creates is left in place on purpose —
+ *   deleting the user's session history is not this script's business.
  * - Requires Pillow on the python3 it invokes: `python3 -m pip install pillow`.
  */
 import { execFileSync } from 'node:child_process'
@@ -44,7 +50,7 @@ const OUT = path.resolve(process.env.TROVE_GIF_OUT || path.join(REPO, 'assets/de
 
 const VIEWPORT = { width: 1440, height: 900 }
 const SCALE = 2
-const CADENCE = 800
+const CADENCE = 600
 const RUN_CAP_MS = 480_000
 const MAX_FRAMES = 420
 const TAIL_MS = 3200
@@ -138,6 +144,18 @@ await page.waitForTimeout(400)
 await page.click('.send-btn')
 sent = true
 
+// Open the analysis panel so the run's step timeline is on screen. The
+// toggle only renders once the session has a turn (send first), and the
+// panel is default-closed — mirrors capture-guide-shots.mjs.
+try {
+  await page.locator('.analysis-toggle').waitFor({ timeout: 5000 })
+  if ((await page.locator('.analysis-panel.open').count()) === 0) {
+    await page.click('.analysis-toggle')
+  }
+} catch {
+  console.error('analysis panel toggle never appeared — recording without it')
+}
+
 await captureLoop
 
 const fin = await page.evaluate(() => {
@@ -152,6 +170,21 @@ writeFileSync(path.join(FRAMES, 'times.json'), JSON.stringify(shots))
 console.log(
   `captured ${shots.length} frames over ${((Date.now() - t0) / 1000).toFixed(1)}s — answer: ${fin.answerHead}`,
 )
+
+if (process.env.TROVE_GIF_CLEANUP === '1') {
+  // Delete the session this run just created so a re-record starts clean
+  // (the docs capture instance keeps re-shoots idempotent).
+  await page.evaluate(async () => {
+    const sid = localStorage.getItem('trove_ui_session')
+    const token = localStorage.getItem('trove_auth_token')
+    if (!sid) return
+    await fetch(`/v1/sessions/${sid}`, {
+      method: 'DELETE',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  })
+}
+
 await browser.close()
 
 if ((fin.errorCard || fin.clarify) && process.env.TROVE_GIF_FORCE !== '1') {

@@ -1,0 +1,264 @@
+# 文档截图 / README GIF 的隔离演示实例配置（示例）。
+#
+# 用法：把本文件复制到实例目录（例如 /tmp/trove-shots/agent.shots.yml），
+# 改掉下面的 home 路径，然后**在实例目录里**启动：
+#
+#   cd /tmp/trove-shots && uv run --project <repo> trove serve --port 8000 \
+#       --config /tmp/trove-shots/agent.shots.yml
+#
+# 配套脚本：scripts/seed_guide_instance.py（灌入截图所需的会话/用户/任务/
+# 判定与提案状态）→ frontend/scripts/capture-guide-shots.mjs（截图）→
+# frontend/scripts/record-readme-gif.mjs（README GIF）。
+# 种子快照：scripts/guide_snapshot/（冻结的 KB YAML + 状态日志；恢复到全新
+# 实例见其 README——会话/记忆库是实例私有状态，不入库）。
+#
+# 纪律：home 必须指向**独立目录**，绝不能让实例写进你日常的 ~/.trove；
+# 本文件不含任何密钥（模型 key 走环境变量或 ~/.trove/conf）。
+# 内容取自 conf/agent.yml，仅两处实例专属改动（已标注「截图实例」）。
+agent:
+  # —— 截图实例：独立 home（实例的 KB/记忆/会话都落在这里，不碰 ~/.trove）——
+  home: /tmp/trove-shots/home
+  # DeepSeek 的 OpenAI 兼容 API，litellm 原生支持
+  target: deepseek/deepseek-reasoner
+  # 快速档模型: simple/standard 复杂度查询的生成/裁决/语义/洞察走此模型
+  # (复杂度分级 grade_complexity 驱动;complex 仍走 target)。留空 = 不分档。
+  model_fast: deepseek/deepseek-chat
+  # 起草档模型(A3):「起草/判定类」结构化短输出调用的统一便宜档 ——
+  # KB 建档注解与合成示例(kb_init)、拒绝扩展草稿(refuse)、会话偏好抽取
+  # (preference_extract)、意图判别/追问改写(intent/intent_followup)、
+  # 图表判定(chart)走此模型(推理模型在这里白烧 reasoning tokens 且挤占
+  # max_tokens)。node_models 按节点覆盖仍最高优先。留空 = 关闭:上述调用
+  # 逐字节回落改造前行为(model_fast/target 直读)。
+  # model_draft: deepseek/deepseek-chat
+  # 每节点模型覆盖(按节点名,优先于复杂度分档选模):query_sketch/gen_sql/reflect/
+  # insights/conclusion/semantics/refuse/analyze_error。典型配置:query_sketch 用
+  # 便宜模型、reflect 用强模型。空 = 不覆盖。
+  # node_models:
+  #   query_sketch: deepseek/deepseek-chat
+  #   reflect: deepseek/deepseek-reasoner
+  # 生成 agent 循环的**软**轮预算(绝对轮号;0/负 = 关):到该轮起每轮追加
+  # 一条"收尾"提示,引导模型尽快 finish(模型仍可继续,提示不置 guard_hit)。
+  # 硬护栏 max_rounds=8 不变;基线长尾(均值 9.8 轮)主要靠软提示收口降本。
+  gen_sql_soft_rounds: 5
+  # EXPLAIN 行数估算守卫(默认开):每次最终执行前 EXPLAIN 估算最重算子行数,
+  # 三档处置——est ≤ explain_max_rows 放行;超软限打回 gen_sql 加 LIMIT/收窄;
+  # 超 explain_hard_max_rows 硬限直接拒绝(不烧 LLM 重生成循环)。fail-open
+  # (方言不可解析/EXPLAIN 失败 → 放行)。防分析 agent 误跑超大扫描/笛卡尔积。
+  # explain_row_guard: true
+  # explain_max_rows: 50000000
+  # explain_hard_max_rows: 1000000000
+  # 交互语言: zh(默认) / en — 整个交互过程(提示词、答案、轨迹)统一使用该语言,
+  # 不按问题的中英文自动检测
+  language: zh
+  # 时间解析:确定性规则解析相对时间表达(zh/en),未命中静默透传
+  date_parser: true
+  # 生成 SQL 后 LLM 说明语义(输出与 HITL 确认时展示)
+  explain_semantics: true
+  # 执行前人工确认(LangGraph interrupt,需 persistence/checkpointer;
+  # REPL/CLI/serve 均已接 resume)。当前默认关:每次自动执行,不再打断。
+  hitl: false
+  # 执行后 LLM 基于结果生成洞察
+  insights: true
+  # 执行后 LLM 用一句话生成结论摘要,置于回答开头(结论前置)
+  conclusion: true
+  # 图表 LLM 判定:让 LLM 决定是否画图 + 图表类型 + 维度/度量列(单次
+  # plot_chart 工具调用,失败回退确定性推断)。false = 纯启发式(infer_chart)。
+  chart_llm: true
+  # 业务级归因/根因分析:为什么类问题("为什么营收下降"/"哪个地区贡献最大")
+  # 的多跳下钻——当前期 vs 基期对比 + 维度贡献率 + 瀑布图。
+  # 仅归因意图命中时触发,普通取数不经过。narrative 走 node_models.attribution
+  # 覆盖,缺省回落 model_fast(与 insights 一致)。
+  # attribution:
+  #   enabled: true
+  #   max_hops: 2
+  #   max_dimensions: 3
+  #   probe_dimensions: true   # 数据驱动维度预选(≥2 维时按 Σ|delta| 选主拆维度)
+  #   ratio_decomposition: true  # 比率指标 shift-share 分解(本征/结构/交叉)
+  # 分析服务扩展预算(驱动器树 + 块序列;B8 接线):
+  #   series_grain 留空(默认)= 块序列阶段整体关闭 —— 老路径逐字节不变。
+  #   非空时归因节点额外发 1 条 time_grain 查询取历史块分布(噪声带/稳健 z),
+  #   答案出「噪声带」段、前端分析卡出对应节;不足 8 块的分布退化为 degraded
+  #   并如实标注(块数不够 ≠ 没有结论,但带只作参考)。
+  # analysis:
+  #   driver_tree: true
+  #   max_components: 4
+  #   max_queries: 12
+  #   series_grain: ""         # day | week | month;"" = 关闭
+  #   block_lookback: 12       # 回看的历史块数上限
+  # 精确问题结果缓存(进程内存):归一化后完全相同的问句直接返回上次验证通过的
+  # SQL+结果,0 LLM 调用。命中时跳过 HITL 确认——该 SQL 首次运行已人工确认过。
+  # 数据新鲜度由 TTL(300s)+ datasource 隔离保证。false = 关闭。
+  result_cache: true
+  # 答案级置信度披露(默认开):回答里给一个整数百分比 + 证据摘要,来源枚举
+  # 移入折叠区。纯函数,零 LLM、零网络。false = 完整回退到枚举披露形态
+  # (不是什么都不显示)——它是「数字诱导过度信任」被观测到时的急停开关。
+  confidence_score: true
+  # 多任务拆解 LLM 判断层:规则正则未命中但"疑似多步"(长问句/弱提示词)时,
+  # 花一次 fast 调用判断是否拆解。false = 纯正则门控(单问题零 LLM,但
+  # "各行业贷款TOP3的银行及其坏账率"这类隐式多步不会被识别)。
+  decompose_llm_judge: true
+  # 负载削减:
+  #   fast_path: 确定性模板快径(单表/单聚合模板命中即直接产出 SQL,
+  #              跳过 query_sketch + 生成 + 裁决)。默认开。
+  #   reflect_skip: validate 确定性规则全过时跳过 reflect 的 LLM 裁决——
+  #                 simple(仅低复杂度题,默认)/ standard(再跳 standard,
+  #                 修正轮强制 standard 复杂度,成功轮也受益)/ all/ off。
+  #                 例外:权威编译产物(逐字复现契约)不受复杂度档限制,
+  #                 规则全过即跳过(判据读不到 → 照常判)。
+  # fast_path: true
+  reflect_skip: standard
+  # 上下文预算覆盖(按复杂度分档 simple/standard/complex 的 token 上限;
+  # 空 = 用内置默认 1500/2500/4000 与 schema 900/1800/3500)。
+  # 200k/1m 窗口下可按模型窗口比例放大——只放大可选块预算并不能自动把
+  # 大窗口用起来(历史/多轮/schema 全量才是大窗口的主战场),请谨慎。
+  # context_budget_tokens: {simple: 1500, standard: 2500, complex: 8000}
+  # schema_budget_tokens: {simple: 900, standard: 1800, complex: 6000}
+  # API 限流(进程内,按 user;0 = 关闭):每分钟请求数 / 每日请求配额。
+  # 防单用户耗尽 LLM 成本;管理端设置页可热更新,即时生效。
+  # api_rate_per_minute: 30
+  # api_daily_quota: 300
+  # OSSIE 语义层目录(相对项目根,按 datasource 名取子目录 .trove/semantic/<datasource>/):
+  # 实时渲染 metric 定义 + AI Context 进 schema_context,并作为 term 源参与检索。
+  # 仅作补充源——唯一真源 = 数据源的 KB semantics.yml(/kb init 生成 + 人审)。
+  # 空 = 关闭。
+  # semantic_layer_path: .trove/semantic
+  # 语义优先(Phase B):语义模型是生成主视角与可答边界——gen_sql/query_sketch 以
+  # 语义视角为主,未覆盖查询拒绝 + 反问扩展模型(LLM 草拟 draft → 管理端确认
+  # → 重答),无语义模型的数据源拒绝并提示先 /kb init。catalog 枚举工具
+  # (search_values / lookup_schema / explain_plan) 在 standard/complex 档注册、
+  # 档内由 catalog 发现工具按需解锁,且限 analyst/admin 角色;agent 可触达物理
+  # schema 作值确认 / 结构懒加载 / 执行计划辅助(不替代语义边界判定)。
+  #
+  # 这里**没有** semantic_first 开关:旧裸表路径已从查询图删除,写 false 也没有
+  # 实现可走。原先那个 `semantic_first: true` 键已删除——它没有任何读取点,改它
+  # 不改变任何行为,留着就是一条会说谎的配置。
+  # KB 语义文件 git 版本管理(语义即代码):KB YAML 写操作(init/learn/草稿
+  # 确认·驳回·自动应用/lesson 确认/删除)后自动 commit,git log 即审计历史,
+  # git diff/revert 即评审/回滚。best-effort:KB 不在 git 工作树内/无变更/
+  # 失败 → 静默跳过,绝不影响写入。false = 关闭(不产生任何提交)。
+  git_kb: true
+  # Langfuse 可观测性（凭证在 .env: LANGFUSE_PUBLIC_KEY / SECRET_KEY / HOST）
+  observability:
+    tracing:
+      enabled: true
+  # 会话保留策略(配额清理):每用户会话数超限时删最旧。
+  # 0 = 关闭对应机制;periodic 需 schedule daemon 或 serve 长驻才生效。
+  # serve 与 daemon 建议单实例运行(双进程并发 sweep 由 SQLite 锁+幂等兜底,最坏多删一次)。
+  retention:
+    max_sessions_per_user: 100
+    active_grace_min: 10
+    max_checkpoints_per_thread: 50
+    sweep_interval_hours: 24
+  # 定时任务调度 tick 轮询间隔(秒);serve 内置后台 tick 执行到期 job。
+  # <=0 = 关闭内置调度(此时需另起 `trove-cli schedule --daemon`)。注意:
+  # 内置 tick 与 CLI daemon 二选一,别同时跑(会双跑到期 job)。
+  scheduler_poll_seconds: 30
+  # ── 统一内部存储(StorageBackend 抽象)──
+  # Trove 自身状态(会话/任务/用户事实/记忆/认证/设置/作业/血缘/检索日志/
+  # checkpointer)默认走 SQLite(内存/本地);生产 PostgreSQL 通过环境变量
+  # TROVE_STORAGE_URL=postgresql://... 启用(所有内部 store + AsyncPostgresSaver
+  # 落同一实例)。业务数据源适配器不在此抽象内——用户自己的数据库照常连接。
+  # storage:
+  #   url: postgresql://user:pass@host:5432/trove   # 或环境变量 TROVE_STORAGE_URL
+  # ── 统一记忆子系统(记忆深度版)──
+  # 情景记忆(episodic):跨会话过去查询(question→SQL→verdict→修正要点)自动
+  # 入库,gen_sql 检索并注入(成功 SQL 是最强 few-shot 锚,失败+修正防重犯)。
+  # 观测回流:成功查询自动草拟 pending 参考示例;修正/失败沉淀 pending 教训
+  # (都需 admin 确认才进检索——自动内容永不污染人工 KB)。
+  # 偏好自动提取:会话压缩时 LLM 抽取用户口径/偏好,高置信直入 user_facts,
+  # 低置信落 pending 草稿(管理端确认)。
+  # 自动晋升(promotion: false 默认关):教训置信度过阈值(多轮复用/好评)自动确认。
+  # 画像(profile_boost: false 默认关):每用户每源正确率/失败模式,可选注入。
+  # 生命周期:agent.yml 的 memory.retention_days 控制各层过期清理(serve 周期
+  # sweep 自动跑);schema_drift_check 对比 live schema 与 KB schema_notes。
+  memory:
+    enabled: true
+    episodes: true
+    auto_examples: true
+    auto_preferences: true
+    promotion: false
+    promotion_threshold: 0.8
+    profile_boost: false
+    schema_drift_check: true
+    # retention_days: 各层过期天数(None/缺省 = 不清理)
+    #   episodes: 180
+    #   preferences: 90
+    #   facts: 180
+    #   retrieval_log: 90
+  # ── 行动层(提案 → 审批 → 外送;整层默认关)──
+  # enabled 是唯一总开关:false(默认)= 整层拒绝外送(预演 dry_run 仍可用);
+  # 一条能往外发消息的链路,不能靠"配置不在"顺手打开。
+  # action:
+  #   enabled: false
+  #   channels:                  # 目标通道: 名字 → url / secret? / kind?
+  #     ops-alerts:
+  #       url: https://hooks.example.com/services/XXX
+  #       kind: slack            # generic(默认,payload 原样) | slack | feishu | dingtalk | wecom
+  #   approval_ttl_hours: 72     # 提案审批时限,过期由 serve 周期任务清收
+  #   max_payload_bytes: 8192    # 渲染后载荷上限
+  #   max_attempts: 3            # 同一提案的外送尝试上限(失败后显式 retry)
+  #   # ── 护栏(B5;默认全关 = 与旧行为逐字节一致)──
+  #   max_risk: high             # 允许外送的提案风险上限 low/medium/high(high = 不设限)
+  #   rate_limit: 0              # 同通道每分钟外送尝试上限(0 = 不设限)
+  #   retry_backoff_base_s: 0    # 失败自动重试的首个等待秒数(0 = 不自动重试)
+  #   retry_backoff_factor: 2.0  # 指数退避倍增
+  #   retry_backoff_max_s: 3600  # 退避上限(秒)
+  #   重试时点由 (attempts, 最近一次真实投递时刻) 纯派生,零新列、可复算;
+  #   4xx/配置错(含 kind 不认识)不自动重试 —— 同一份错配置重试一万次还是它。
+  #   # ── 闭环验收(B7;默认 0 = 不测量,老路径逐字节不变)──
+  #   outcome_after_days: 0      # 外送满 N 天后做效果测量(测量的"开始看"时点;
+  #                              # 测量窗口永远是规则自己的期间,由 verifier 重算)。
+  #                              # >0 时测量腿挂到小时级周期 sweep 上(刻度是天,
+  #                              # 不占 30 秒 tick;enabled=false 也照跑 —— 测量是只读,
+  #                              # 外送关掉后已出去的那批更需要验收)。
+
+  # —— 截图实例：行动层打开 ——
+  # admin-actions 截图要展示「判定命中 → 待批提案」,而提案的创建路径
+  # (ActionService.propose_from_verdict)在 enabled=false 时直接返回 None。
+  # 只开 propose 面:外送(dispatch)仍会因未配置通道而响亮失败,截图不做外送。
+  action:
+    enabled: true
+    approval_ttl_hours: 72
+
+# ── 执行前授权门(设计 §7.2)──
+# 三道依次是 A1 主体存在 → A2 数据源在 grants 内 → A3 SQL 引用的表在语义层
+# 声明内。**A1/A2 恒拒,没有开关**;这里显式写出的是 A3 的档位,与代码默认
+# (AuthzConfig.table_enforcement)一致 —— 写出来是为了让「闸门宽度」在配置
+# 面上看得见,不是改变它。
+#
+# 2026-10 默认从 warn 切到 enforce:切换依据是静态核验 —— 用 A3 同源基准
+# (rls.declared_tables)对三份 KB 的全部快径示例 SQL(demo 211 / financial
+# 197 / mysql_fin 242,共 650 条)逐条 SQLGlot 比对,违规 0 条。按语义模型走
+# 的查询本来就都在声明内,403 面等于零。
+#
+# **回退阀**:存量部署若确有声明外的查询(绕开语义层直摸物理表),把
+# table_enforcement 显式改回 warn 即回到「放行但记下被挡的表」的观察档。
+authz:
+  table_enforcement: enforce
+  # 执行路径缺主体 = 拒绝(I2)。供不接语义层的嵌入场景显式关掉整层;
+  # 生产恒为 true——「缺主体就放行」的档位不存在。
+  require_principal: true
+
+# ── 离线评测回归门(**默认开**)──
+# 与其余能力的「默认关」相反,理由是成本与阻断性不同:本门跑在 CI/离线,
+# 零 LLM 零网络零数据库,误判的代价只是 CI 变红重跑一次。**零成本的门
+# 没有理由默认关** —— 默认关的门等于没有门,那正是 G1 的现状。
+#
+# 本开关是唯一的开关:.github/workflows/eval-gate.yml 每次 push/PR 都触发,
+# 读到这里为 false 就整体跳过。不再需要仓库级 TROVE_RUN_EVAL_GATE=1。
+#
+# 真库 A/B(eval_bird,要 LLM)仍留手动 workflow_dispatch,不进自动路径。
+#
+# 基线产物见 eval/baseline/:questions.jsonl(固定问题集,32 题)+
+# results.jsonl(基线判定,32/32)+ scorecard.json(**钉住的指标快照**,
+# 门判定的一侧;由 replay.scorecard_metrics 统一生成,勿手改)。三者要
+# 一起动:改了基线就要重钉 scorecard,否则门会红—— 这个红是对的,
+# 锚点换了门就该重新表态。字段覆盖(tokens/elapsed_ms/… )由
+# eval_baseline.py check --require-fields 在补录后升级为硬门。
+eval:
+  gate_enabled: true
+  questions_path: eval/baseline/questions.jsonl
+  baseline_path: eval/baseline/results.jsonl
+  min_n: 10
+  # 容差覆盖(同 eval_gate --tol,metric=val;空 = gate 内置默认)
+  tolerances: {}

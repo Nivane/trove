@@ -1,0 +1,112 @@
+lessons:
+- pattern: '[SQL_003] SQLite execution error: near "你好！😊": syntax error'
+  note: '[SQL_003] SQLite execution error: near "你好！😊": syntax error'
+  sql_snippet: '你好！😊
+
+
+    您发送的是问候语（"你好"），还没有提供具体的查询问题，因此我无法生成对应的 SQL 查询。
+
+
+    请告诉我您想从这些表中查询什么内容，例如：
+
+
+    - "列出所有客户的 ID 和出生日期"
+
+    - "每个账户的平均交易金额是多少？"
+
+    - "哪个地区的失业率（A12）最低？"
+
+    - "有多少笔贷款的状态是 ''A''？"
+
+
+    我会根据您的自然语言问题生成准确的 SQL 查询。请提供具体问题，谢谢！'
+  confirmed: false
+- pattern: '[DS_001] SQL rejected: could not parse statement'
+  note: '[DS_001] SQL rejected: could not parse statement'
+  sql_snippet: '"nihao" is a greeting (Chinese for "hello"), not a database question.
+    It does not ask for any data, filter, aggregation, or output from the schema,
+    so there is no meaningful SQL query to generate.
+
+
+    Pe'
+  confirmed: false
+- pattern: '[DS_001] Trove is read-only: SQL could not be parsed (rejected as unsafe)'
+  note: '[DS_001] Trove is read-only: SQL could not be parsed (rejected as unsafe)'
+  sql_snippet: "SELECT COUNT(*) AS male_customers\nFROM client c\nJOIN district d\
+    \ ON c.district_id = d.district_id\nWHERE c.gender = 'M'\n  AND d.A3 = 'central\
+    \ Bohemia'\n  AND d.A11 > 8000"
+  confirmed: false
+- pattern: '[DS_001] Trove is read-only: SQL could not be parsed (rejected as unsafe)'
+  note: '[DS_001] Trove is read-only: SQL could not be parsed (rejected as unsafe)'
+  sql_snippet: "SELECT COUNT(client.client_id) AS count\nFROM client\nJOIN district\
+    \ ON client.district_id = district.district_id\nWHERE client.gender = 'M'\n  AND\
+    \ district.A3 = 'central Bohemia'\n  AND district.A11 > 8000"
+  confirmed: false
+- pattern: '[DS_001] Trove is read-only: SQL could not be parsed (rejected as unsafe)'
+  note: '[DS_001] Trove is read-only: SQL could not be parsed (rejected as unsafe)'
+  sql_snippet: "SELECT COUNT(client.client_id) AS count\nFROM client\nJOIN district\
+    \ ON client.district_id = district.district_id\nWHERE client.gender = 'M'\n  AND\
+    \ district.A3 = 'central Bohemia'\n  AND district.A11 > 8000"
+  confirmed: false
+- pattern: 'Candidate SQL variants returned different results (2 groups, votes [1,
+    1]): primary [SELECT SUBSTR(loan.date, 1, 2) AS y'
+  note: 'Candidate SQL variants returned different results (2 groups, votes [1, 1]):
+    primary [SELECT SUBSTR(loan.date, 1, 2) AS year, COUNT(*) AS count FROM loan GROUP
+    BY SUBSTR(loan.date, 1, 2)] → [96, 2; 97,'
+  sql_snippet: SELECT SUBSTR(loan.date, 1, 2) AS year, COUNT(*) AS count FROM loan
+    GROUP BY SUBSTR(loan.date, 1, 2)
+  confirmed: false
+- pattern: 'Candidate SQL variants returned different results (2 groups, votes [1,
+    1]): primary [SELECT SUBSTR(loan.date, 1, 2) AS y'
+  note: 'Candidate SQL variants returned different results (2 groups, votes [1, 1]):
+    primary [SELECT SUBSTR(loan.date, 1, 2) AS year, COUNT(*) AS count FROM loan GROUP
+    BY SUBSTR(loan.date, 1, 2)] → [96, 2; 97,'
+  sql_snippet: SELECT SUBSTR(loan.date, 1, 2) AS year, COUNT(*) AS count FROM loan
+    GROUP BY SUBSTR(loan.date, 1, 2)
+  confirmed: false
+- question: 每年发放的贷款笔数
+  note: "## Answer\n\n**Question**: 每年发放的贷款笔数\n\n### Generated SQL\n\n```sql\nSELECT\n\
+    \  SUBSTRING(date, 1, 2) AS year,\n  COUNT(*) AS loan_count\nFROM loan\nGROUP\
+    \ BY\n  SUBSTRING(date, 1, 2)\n```\n\n### Semantics\n\n这个查询统计的是每年发放的贷款笔数。它从贷款记录表中提取每笔贷款的发放年份，然后按年份分组，计算每个年份的贷款总笔数。结果会显示两列：一列是年份（如“21”代表2021年），另一列是该年发放的贷款数量。这样你就能直观地看到各年贷款业务量的变化趋势。\n\
+    \n### Results (2 rows)\n\n| year | loan_count |\n| --- | --- |\n| 96 | 2 |\n|\
+    \ 97 | 1 |\n\n**Chart**: 每年发放的贷款笔数\n```\n96  ████████████████████████ 2\n97  ████████████\
+    \ 1\n```\n\n\n---\n*Execution time: 0ms*\n\n### Insights\n\n- 1996年发放了2笔贷款，1997年发放了1笔贷款，两年合计仅3笔。\n\
+    - 贷款发放量从1996年到1997年下降了50%，减少1笔。\n- 数据仅覆盖两年，且每年笔数极少，无法反映显著趋势，需更多年份数据支撑决策。"
+  sql_snippet: 'SELECT substr(date, 1, 2) AS year, COUNT(*) AS loan_count
+
+    FROM loan
+
+    GROUP BY substr(date, 1, 2)'
+  upvotes: 3
+  downvotes: 1
+  confirmed: false
+- pattern: '[ERR:COMPILE_DRIFT] The generated SQL does not reproduce the authoritative
+    compiled SQL (semantic-first deterministic ch'
+  note: '[ERR:COMPILE_DRIFT] The generated SQL does not reproduce the authoritative
+    compiled SQL (semantic-first deterministic channel). Regenerate it byte-for-byte
+    from the compiled SQL in the plan:
+
+    ```sql
+
+    SE'
+  sql_snippet: 'SELECT district.A2, loan.date, AVG(loan.amount)
+
+    FROM loan
+
+    JOIN account ON loan.account_id = account.account_id
+
+    JOIN district ON account.district_id = district.district_id
+
+    WHERE substr(loan.date,1,2) I'
+  confidence: 0.5
+  source: correction
+  evidence: 'question: Compare the average loan amount between 1993 and 1997 for each
+    district, including the year-over-year change'
+  confirmed: false
+  created_at: '2026-09-12T03:55:01.210061+00:00'
+_meta:
+  format: 1
+  generator: memory
+  trove: 0.1.0
+  digest: sha256:046c97302aba96e356683c9226667fcc1c2b8ca867f9eaf0389b907e8c70a750
+  generated_at: '2026-09-12T03:55:01.213870+00:00'

@@ -6,8 +6,9 @@
 <frames-dir> must hold f*.png (in capture order) + times.json (capture
 timestamps, written by the recorder). The pipeline:
 
-- downscale every frame to the GIF's display size (default 960×600 — GitHub
-  renders README images at ~880px, so anything larger is bytes for nothing)
+- downscale every frame to the GIF's display size (default 1440×900 — the
+  recorder's native CSS-pixel size, so the GIF stays sharp on retina displays
+  where GitHub renders the README image at 880 CSS px ≈ 1760 device px)
 - drop frames whose pixels did not change beyond --eps and fold their elapsed
   time into the previous frame's duration — that is what turns the model's
   "thinking" pauses into natural holds instead of dead frames
@@ -30,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('frames_dir', help='directory with f*.png + times.json')
     p.add_argument('out', help='output .gif path')
-    p.add_argument('--target', default='960x600', help='output size WxH (default 960x600)')
+    p.add_argument('--target', default='1440x900', help='output size WxH (default 1440x900, the recorder native size)')
     p.add_argument('--eps', type=int, default=4, help='per-channel diff (0-255) below which a pixel counts as unchanged')
     p.add_argument('--dur-min-ms', type=int, default=110)
     p.add_argument('--dur-max-ms', type=int, default=650)

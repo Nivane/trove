@@ -1,0 +1,12 @@
+{
+  "jobs": {
+    "每周贷款金额巡检": "75b0e0c3b5ae",
+    "贷款总额基线巡检": "5448503fb312"
+  },
+  "state": {
+    "sessions": 4,
+    "pending_examples": 4,
+    "lessons": 0,
+    "proposals": 1
+  }
+}
