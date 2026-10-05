@@ -233,20 +233,20 @@ flowchart TB
       解析不了（<code>unresolvable</code>）、裸名被<strong>字段遮蔽</strong>
       （编译器「字段优先」会把裸名当维度投影，值变成分组列）、结果带
       <code>GROUP BY</code>（维度混入）。按解析后的度量名去重——编译器投影按度量名去重，
-      同名会少列、位置映射会错位（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L606">engine.py:606 <span class="ref-line">预检</span></a>）。</li>
+      同名会少列、位置映射会错位（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L619">engine.py:619 <span class="ref-line">预检</span></a>）。</li>
       <li><strong>组合路径：每期一条多度量 SQL</strong>——所有存活组件合成一次查询、两期各一次
       （<code>metrics=[...]</code> 一次投影多列）。这决定成本上界：<strong>树是 O(期数) 条 SQL，不是 O(组件数)</strong>
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L723">engine.py:723 <span class="ref-line">组合路径</span></a>）。</li>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L736">engine.py:736 <span class="ref-line">组合路径</span></a>）。</li>
       <li><strong>组合编译失败 → 逐候选回退</strong>——回退也逐条数预算，超预算的候选截断记账，
-      宁缺勿错（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L735">engine.py:735 <span class="ref-line">回退路径</span></a>）。</li>
+      宁缺勿错（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L748">engine.py:748 <span class="ref-line">回退路径</span></a>）。</li>
       <li><strong>预算不足 → 只留骨架</strong>+<code>degraded{"stage":"driver_tree","reason":"query_budget_exceeded"}</code>——
       树骨架仍有信息（结构、表达式、可分解性），数值缺位如实说
-      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L686">engine.py:686 <span class="ref-line">预算门</span></a>）。</li>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L699">engine.py:699 <span class="ref-line">预算门</span></a>）。</li>
     </ol>
 
     <p>
       预算由 <code>AnalysisLimits</code> 装配
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L268">engine.py:268 <span class="ref-line">AnalysisLimits</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L281">engine.py:281 <span class="ref-line">AnalysisLimits</span></a>：
       <code>max_dimensions=3</code>、<code>max_hops=2</code>、<code>max_components=4</code>、
       <code>max_queries=12</code>、<code>tree_max_depth=5</code>；
       每个阶段用 <code>QueryLedger</code>
@@ -281,7 +281,7 @@ flowchart LR
 
     <p>
       树根的值有一个刻意的优先级
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L670">engine.py:670 <span class="ref-line">_finish</span></a>：
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L683">engine.py:683 <span class="ref-line">_finish</span></a>：
       <strong>优先用主跳（hop0）的官方口径</strong>——树卡头条的数字必须与页面头条一致，
       哪怕树的查询自己算出的根值有细微差别（过滤条件构造路径不同）。
       hop0 没跑成时才回落到树查询自己的值（<code>value_source="tree_query"</code>），
@@ -305,7 +305,7 @@ agent:
 
     <p>
       结果落到 <code>state.analysis</code>（结构化 payload，<code>version=1</code>，
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1204">engine.py:1204 <span class="ref-line">analysis_payload</span></a>），
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1217">engine.py:1217 <span class="ref-line">analysis_payload</span></a>），
       与旧的 <code>state.attribution</code> <strong>双写</strong>兼容
       （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L460">attribution.py:460 <span class="ref-line">双写</span></a>）——
       归因节点本体已瘦身为适配器（<code>make_attribution</code> 签名不变，
@@ -316,9 +316,9 @@ agent:
     <p>
       决策侧还有一个复用点：规则触发后的「为什么变了」，由
       <code>_analysis_bridge</code>
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L1052">service.py:1052 <span class="ref-line">_analysis_bridge</span></a>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L1046">service.py:1046 <span class="ref-line">_analysis_bridge</span></a>
       调同一套引擎出「首要驱动」一行（
-      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/bridge.py#L143">bridge.py:143 <span class="ref-line">run_bridge</span></a>），
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/bridge.py#L144">bridge.py:144 <span class="ref-line">run_bridge</span></a>），
       失败只记 <code>degraded</code>、绝不影响判定本身——判定与叙事是两条独立的路
       （见<a href="decision-engine.html">判定内核</a>）。
       前端瀑布图由 <code>render.py</code> 的
@@ -403,7 +403,7 @@ agent:
     <div class="doc-pager" data-pager></div>
 
     <div class="doc-foot">
-      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <span>本页源码锚点的基准提交：<code>anchor-base: ee49d21</code></span>
       <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
       <a href="../index.html">文档首页</a>
     </div>
