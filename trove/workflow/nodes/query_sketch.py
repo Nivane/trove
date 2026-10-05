@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import replace
 from typing import Any
 
@@ -189,24 +189,32 @@ def _typed_plan(response: str) -> PlanQuery | None:
 
 
 def validate_plan(
-    plan: dict[str, Any] | None, schema: dict[str, set[str]] | None,
+    plan: dict[str, Any] | None,
+    schema: dict[str, set[str]] | None,
+    metrics: Collection[str] | None = None,
 ) -> list[str]:
     """校验计划引用的表/列真实存在(层1,确定性,零 LLM)。
 
     schema: 小写表名 → 小写列名集合(来自 connectors.get_schema())。
     表达式(含括号)、通配符 *、空字段跳过——只有直接列引用需要核实。
+    metrics: 语义模型声明的度量名(大小写不敏感)。answer_columns 里的
+    **裸度量名是编译器的合法投影形态**(compiler「裸度量名兜底」显式支持:
+    字段解析不中即按声明度量内联,不必写 aggregation)——把它们当物理列
+    核实会把一份编译器吃得下的计划误判为幻觉列。conditions 不放行:度量
+    名出现在过滤条件里没有消费方,仍按幻觉拦。
     返回错误列表(空 = 合法)。plan 或 schema 不可用 → 无法校验,返回空。
     """
     if not plan or not schema:
         return []
     errors: list[str] = []
     table_map = schema
+    metric_names = {str(m).strip().lower() for m in (metrics or ()) if str(m).strip()}
     tables = [str(t) for t in (plan.get("tables") or [])]
     for t in tables:
         if t.lower() not in table_map:
             errors.append(f"table '{t}' not in schema")
 
-    def check_field(field: Any, where: str) -> None:
+    def check_field(field: Any, where: str, *, allow_metric: bool = False) -> None:
         f = str(field or "").strip()
         if not f or f == "*" or "(" in f:
             return
@@ -217,6 +225,8 @@ def validate_plan(
             elif col.lower() not in table_map[tbl.lower()]:
                 errors.append(f"{where}: column '{col}' not in table '{tbl}'")
             return
+        if allow_metric and f.lower() in metric_names:
+            return
         if not tables:
             errors.append(f"{where}: column '{f}' referenced but plan lists no tables")
         elif not any(
@@ -226,7 +236,7 @@ def validate_plan(
             errors.append(f"{where}: column '{f}' not found in planned tables")
 
     for ac in plan.get("answer_columns") or []:
-        check_field(ac, "answer_columns")
+        check_field(ac, "answer_columns", allow_metric=True)
     for c in plan.get("conditions") or []:
         if isinstance(c, dict):
             check_field(c.get("field"), "conditions")
@@ -1838,6 +1848,13 @@ def make_query_sketch(
             }
             return response
 
+        # 声明的度量名(校验豁免名单):answer_columns 里的裸度量名是编译器
+        # 支持的投影形态,不是幻觉列。取一次,两次校验共用。
+        metric_names: list[str] = []
+        if semantic_layer is not None:
+            _model = semantic_layer.model()
+            if _model is not None:
+                metric_names = [m.name for m in _model.metrics]
         try:
             # 层1(plan 落地校验):引用的表/列必须真实存在;失败带修正
             # 自修正一次,仍失败则丢弃 plan(gen_sql 无 plan 照常生成,
@@ -1846,7 +1863,7 @@ def make_query_sketch(
             plan_query = _typed_plan(raw)
             plan_json = plan_query.to_dict() if plan_query is not None else None
             plan = _render_plan(plan_json, state.lang) if plan_query is not None else _prose(raw)
-            errors = validate_plan(plan_json, schema_map)
+            errors = validate_plan(plan_json, schema_map, metrics=metric_names)
             if errors:
                 fix_correction = (
                     base_correction
@@ -1860,7 +1877,7 @@ def make_query_sketch(
                     _render_plan(plan_json, state.lang)
                     if plan_query is not None else _prose(raw)
                 )
-                errors = validate_plan(plan_json, schema_map)
+                errors = validate_plan(plan_json, schema_map, metrics=metric_names)
             if errors:
                 logger.info("Plan dropped after validation: %s", "; ".join(errors))
                 update: dict[str, Any] = {

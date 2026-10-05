@@ -4195,6 +4195,31 @@ class TestPlanValidation:
         plan = {"tables": ["LOAN"], "answer_columns": ["Account_ID"]}
         assert validate_plan(plan, self.SCHEMA) == []
 
+    def test_declared_metric_in_answer_columns_passes(self):
+        """裸度量名进 answer_columns 是编译器支持的投影形态,不是幻觉列。
+
+        编译器「裸度量名兜底」显式支持派生度量名直接出现在 answer_columns
+        (无 aggregation 字段)——校验把它当物理列核实,会把编译器吃得下的
+        计划误判为幻觉列而整份丢弃(归因题因此丢 attribution 块)。
+        """
+        from trove.workflow.nodes.query_sketch import validate_plan
+        plan = {
+            "tables": ["loan"],
+            "aggregation": "max_loan_amount",
+            "answer_columns": ["loan.status", "max_loan_amount"],
+        }
+        errors = validate_plan(plan, self.SCHEMA, metrics=["max_loan_amount"])
+        assert errors == []
+        # 大小写不敏感,且条件位置不放行(条件里的度量名没有消费方)。
+        assert validate_plan(
+            {"tables": ["loan"], "answer_columns": ["Max_Loan_Amount"]},
+            self.SCHEMA, metrics=["max_loan_amount"],
+        ) == []
+        cond = {"tables": ["loan"], "conditions": [{"field": "max_loan_amount"}]}
+        assert validate_plan(cond, self.SCHEMA, metrics=["max_loan_amount"])
+        # 不传 metrics(老调用形态)→ 行为逐字节不变:同一份计划仍然被拦。
+        assert validate_plan(plan, self.SCHEMA)
+
     def test_no_schema_or_no_plan_skips(self):
         from trove.workflow.nodes.query_sketch import validate_plan
         assert validate_plan(None, self.SCHEMA) == []
@@ -4316,6 +4341,48 @@ class TestPlanValidation:
         assert update["plan_validation"]["status"] == "dropped"
         assert any("ghost" in e for e in update["plan_validation"]["errors"])
         assert llm.calls == 2  # 自修正一次后仍无效才丢弃
+
+    async def test_node_accepts_declared_metric_answer_column(self):
+        """归因题实测形态:answer_columns 带裸度量名 → 不再被误判丢弃。
+
+        2026-10-05 实测:模型对「为什么不同贷款状态的最大贷款金额差异这么大?」
+        输出 answer_columns ["loan.status", "max_loan_amount"] + attribution
+        块;校验把 max_loan_amount 当幻觉列,自修正一轮后整份丢弃 → 归因节点
+        因 attribution_plan 缺席静默跳过(卡片不渲染)。声明的度量名进豁免
+        名单后:一轮即过,plan_json 携带 attribution 块进状态。
+        """
+        from trove.workflow.nodes.query_sketch import make_query_sketch
+        import types
+
+        class LLM:
+            def __init__(self):
+                self.calls = 0
+
+            async def chat(self, model, messages, **kwargs):
+                self.calls += 1
+                return (
+                    '{"tables": ["loan"], "aggregation": "max_loan_amount", '
+                    '"answer_columns": ["loan.status", "max_loan_amount"], '
+                    '"attribution": {"target_metric": "max_loan_amount", '
+                    '"dimensions": ["loan.status"], "baseline": "share", '
+                    '"depth": 1}}'
+                )
+
+        class _Semantic:
+            def model(self):
+                return types.SimpleNamespace(
+                    metrics=[types.SimpleNamespace(name="max_loan_amount")],
+                )
+
+        llm = LLM()
+        node = make_query_sketch(
+            llm, AgentConfig(target="m"), agentic=False,
+            connectors=self._connectors(), semantic_layer=_Semantic(),
+        )
+        update = await node(make_state())
+        assert llm.calls == 1  # 一轮即过,不再走自修正
+        assert update["plan_validation"]["status"] == "ok"
+        assert update["plan_json"]["attribution"]["target_metric"] == "max_loan_amount"
 
     async def test_node_self_retries_then_accepts_fixed_plan(self):
         """修正轮产出合法计划 → 采纳并携带 plan_json。"""
