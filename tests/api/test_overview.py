@@ -30,6 +30,8 @@ _TODO_KINDS = [
     "kb_lesson", "kb_example", "semantic_draft", "skill_draft",
     "memory_preference", "drift", "action_template", "action_proposal",
     "job_failed", "user_nogrant",
+    # 运营待办(非审批,A1 追加在末尾)——已注册但语义模型没建的数据源。
+    "datasource_uninitialized",
 ]
 
 
@@ -103,7 +105,7 @@ class TestOverviewShape:
         assert rows[0]["drift_open"] == 0
         assert rows[0]["drift_count_exact"] is True
 
-        # todos:10 类固定顺序;未装配来源 → count 0 / available false
+        # todos:11 类固定顺序;未装配来源 → count 0 / available false
         todos = body["todos"]
         assert [i["kind"] for i in todos["items"]] == _TODO_KINDS
         by_kind = _by_kind(body)
@@ -116,7 +118,13 @@ class TestOverviewShape:
             assert by_kind[kind]["count"] == 0
             assert by_kind[kind]["available"] is False
             assert by_kind[kind]["count_exact"] is True
-        assert todos["total"] == nogrant_total
+        # 未建档数据源(A1):KB 事实在(items={}) → 逐源判定;test_db 没建档 → 计数 1
+        uninit = by_kind["datasource_uninitialized"]
+        assert uninit["count"] == 1
+        assert uninit["samples"] == ["test_db"]
+        assert uninit["available"] is True
+        assert uninit["count_exact"] is True
+        assert todos["total"] == nogrant_total + 1
         assert todos["count_exact"] is True
 
         # wizard:三步全读既有字段
@@ -143,6 +151,38 @@ class TestOverviewShape:
         # 示例没有 pending 标记 → 不虚报
         assert by_kind["kb_example"]["count"] == 0
         assert body["wizard"]["kb_initialized"] == 1
+
+
+class TestDatasourceUninitializedTodo:
+    """A1 新待办腿:已注册但语义模型没建的数据源(从 kb 事实读时派生,零新状态)。
+
+    「查不成的绿是假绿」:KB 腿读不到 → 条目降级(count=None),绝不洗成 0。
+    """
+
+    async def test_initialized_datasource_not_counted(self, client, api_app, api_kb):
+        r = await client.get("/v1/admin/overview")
+        assert r.status_code == 200, r.text
+        uninit = _by_kind(r.json())["datasource_uninitialized"]
+        assert uninit["count"] == 0
+        assert uninit["samples"] == []
+        assert uninit["available"] is True
+        assert uninit["count_exact"] is True
+        assert uninit["href"] == "/admin/datasources"
+
+    async def test_kb_unassembled_leg_degrades_not_zero(self, client, api_app):
+        api_app.state.kb = None
+        r = await client.get("/v1/admin/overview")
+        assert r.status_code == 200, r.text
+        uninit = _by_kind(r.json())["datasource_uninitialized"]
+        assert uninit["count"] is None       # 读不到 ≠ 0 个未建档
+        assert uninit["available"] is False
+        assert uninit["count_exact"] is False
+        assert uninit["note"] == "degraded"
+
+    async def test_is_ops_todo_not_approval(self):
+        """运维待办,不是待批 —— 批量审批界面不得把它当审批项。"""
+        assert "datasource_uninitialized" not in overview.APPROVAL_TODO_KINDS
+        assert overview._TODO_HREFS["datasource_uninitialized"] == "/admin/datasources"
 
 
 class TestOverviewUsage:

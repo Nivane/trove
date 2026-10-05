@@ -2519,6 +2519,11 @@ class SessionManager:
             "confidence_evidence": final.confidence_evidence,
             "error": final.error,
             "error_info": final.error_info,
+            # 拒绝轮的结构化产出(reason/draft/next_actions…)。与 error_info
+            # 同层同因:步骤卡会被有界裁剪(MAX_COLLECTED_STEPS),历史轮
+            # 若只剩 steps 里的 refusal,裁掉后动作块就没了 —— 拒绝出口
+            # 必须活在与答案同在的 summary 里。非拒绝轮为 None(三态)。
+            "refusal": final.refusal,
             "kb_hits": final.kb_hits,
             "semantics": final.semantics,
             "insights": final.insights,

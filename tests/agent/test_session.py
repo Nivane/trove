@@ -1733,6 +1733,34 @@ class TestQueryAudit:
         # 审计写失败被吞,查询链路不受影响
 
 
+class TestRefusalInSummary:
+    """A1:拒绝出口活在 summary 里,不依赖 steps。
+
+    历史回放(``restoreTurns``)读 ``meta.summary``,而步骤卡是有界裁剪的
+    (``MAX_COLLECTED_STEPS``)—— 拒绝轮若只剩 steps 里的 refusal,裁掉后
+    动作块就没了。与 ``error_info`` 同层同因。
+    """
+
+    def test_summary_carries_refusal_whole(self):
+        from trove.agent.session import SessionManager
+        from trove.workflow.state import WorkflowState
+
+        refusal = {
+            "reason": "no_model", "question": "q", "datasource": "demo",
+            "message": "请管理员先 /kb init",
+            "next_actions": [{
+                "id": "datasource_init", "kind": "datasource_init",
+                "label": "去初始化语义模型", "href": "/admin/kb?ds=demo",
+                "admin_only": True,
+            }],
+        }
+        state = WorkflowState(session_id="s1", question="q", refusal=refusal)
+        assert SessionManager._state_summary(state)["refusal"] == refusal
+        # 非拒绝轮 = None(三态:「没有拒绝」不冒充空 dict)
+        plain = WorkflowState(session_id="s1", question="q")
+        assert SessionManager._state_summary(plain)["refusal"] is None
+
+
 class TestConfidenceInSummary:
     """SSE / 历史回放 / runlog 读的都是 ``_state_summary`` —— 落在这里,
     三个消费方一次全有(设计 §6.3)。

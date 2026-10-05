@@ -204,6 +204,11 @@
         </div>
         <MarkdownView v-if="view.text" :source="view.text" />
       </template>
+      <!-- refuse:拒绝文案 + 一键出口(A1;后端给全 label/深链,只渲染) -->
+      <template v-else-if="node === 'refuse'">
+        <MarkdownView v-if="view.text" :source="view.text" />
+        <NextActions :actions="refuseActions" />
+      </template>
       <MarkdownView v-else-if="view.text" :source="view.text" />
       <div v-else-if="view.contextUsage?.length" class="kv-line">
         <span class="k">{{ t('contextUsage', ui.lang) }}</span>
@@ -226,6 +231,7 @@
 import { computed } from 'vue'
 import { LoaderCircle } from 'lucide-vue-next'
 import MarkdownView from './MarkdownView.vue'
+import NextActions from './NextActions.vue'
 import SqlBlock from './SqlBlock.vue'
 import { useUiStore } from '../../stores/ui'
 import {
@@ -247,6 +253,7 @@ import {
   fmtMs,
 } from '../../utils/steps'
 import type { StepCard as StepCardType } from '../../stores/chat'
+import type { NextActionInfo } from '../../api/types'
 import { t } from '../../i18n'
 
 const props = defineProps<{
@@ -266,6 +273,11 @@ const displayLabel = computed(
 )
 const payload = computed(() => props.card.payload)
 const view = computed(() => extractStep(props.card.payload))
+// refuse 步骤的出口:refusal 是自由字典,next_actions 缺席 = 没有出口
+// (主题域拒绝就是这样) —— 不替它编一个。
+const refuseActions = computed(
+  () => (view.value.refusal?.next_actions as NextActionInfo[] | undefined) ?? [],
+)
 const attempt = computed(() => props.attempt ?? 0)
 const elapsedMs = computed(() => {
   if (!payload.value) return null

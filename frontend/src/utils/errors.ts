@@ -5,7 +5,7 @@
 // machine detail (raw text / node / error_class). The frontend renders THAT;
 // it never parses the error markdown and never re-classifies the failure.
 
-import type { DoneSummary, ErrorInfo } from '../api/types'
+import type { DoneSummary, ErrorInfo, NextActionInfo } from '../api/types'
 import { stepLabel } from './steps'
 
 export interface ErrorCardModel {
@@ -14,6 +14,8 @@ export interface ErrorCardModel {
   suggestion: string
   /** 权限/凭据类失败不可重试 —— 前端据此隐藏「重试」。 */
   retryable: boolean
+  /** 一键出口(后端给的深链;空 = 这类失败没有真实管理端落点)。 */
+  actions: NextActionInfo[]
   /** 折叠区(管理员默认可见):原文 + 归属节点 + 错误类别。 */
   detail: {
     raw: string
@@ -56,6 +58,10 @@ export function errorCard(
       explanation: info.explanation || '',
       suggestion: info.suggestion || '',
       retryable: info.retryable !== false,
+      // 深链由后端给;这里只做形状过滤(缺 href/label 的条目渲染不出按钮)。
+      actions: Array.isArray(info.actions)
+        ? info.actions.filter((a) => !!a?.href && !!a?.label)
+        : [],
       detail: {
         raw: info.detail?.raw ?? source?.error ?? '',
         node,
@@ -76,6 +82,7 @@ export function errorCard(
     explanation: raw,
     suggestion: copy.suggestion,
     retryable: true,
+    actions: [],
     detail: {
       raw: source?.error ?? '',
       node: '',
