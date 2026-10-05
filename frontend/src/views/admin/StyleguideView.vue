@@ -19,8 +19,12 @@ import StatePanel from '../../components/base/StatePanel.vue'
 import KpiTile from '../../components/base/KpiTile.vue'
 import ConfirmDialog from '../../components/base/ConfirmDialog.vue'
 import DetailDrawer from '../../components/base/DetailDrawer.vue'
+import VerifyStrip from '../../components/chat/VerifyStrip.vue'
+import StepCard from '../../components/chat/StepCard.vue'
+import MarkdownView from '../../components/chat/MarkdownView.vue'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
+import { barWidthPx } from '../../utils/steps'
 
 const ui = useUiStore()
 
@@ -93,6 +97,30 @@ const miniRows = computed(() => [
   { name: 'loan', rows: 682 },
   { name: 'account', rows: 4500 },
 ])
+
+/* ── answer card (验证条 + 计时条):样例是一条走满六段的成功链 ── */
+const sgSteps = [
+  { node: 'route_intent', payload: { node: 'route_intent', elapsed_ms: 2400 } },
+  { node: 'schema_linking', payload: { node: 'schema_linking', elapsed_ms: 3100 } },
+  { node: 'query_sketch', payload: { node: 'query_sketch', elapsed_ms: 900 } },
+  { node: 'gen_sql', payload: { node: 'gen_sql', elapsed_ms: 3400, sql: 'SELECT ...' } },
+  { node: 'execute_sql', payload: { node: 'execute_sql', elapsed_ms: 1800, row_count: 12 } },
+  { node: 'validate', payload: { node: 'validate', elapsed_ms: 300, rules_passed: true } },
+  { node: 'reflect', payload: { node: 'reflect', elapsed_ms: 700, verdict: 'OK', retry_count: 0 } },
+  { node: 'output', payload: { node: 'output', elapsed_ms: 500 } },
+]
+const sgSummary = { verdict: 'OK' }
+const sgMaxMs = 3400
+const sgBars = sgSteps.map((s) => barWidthPx(s.payload.elapsed_ms, sgMaxMs))
+const sgConclusion = [
+  '### 结论',
+  '',
+  '贷款金额最高的是 590,820。',
+  '',
+  '### 洞察',
+  '',
+  '- 贷款集中在少数几个地区。',
+].join('\n')
 
 /* ── density: read both registers from the live cascade ──────────────── */
 const pageEl = ref<HTMLElement | null>(null)
@@ -356,6 +384,28 @@ const palette = computed(() => [
       </DetailDrawer>
     </section>
 
+    <!-- ── Answer card: verify strip + conclusion + step timing bars ── -->
+    <section class="sg-card">
+      <h2 class="sg-card-title">{{ t('sgVerifyTitle', ui.lang) }}</h2>
+      <p class="sg-card-note">{{ t('sgVerifyDesc', ui.lang) }}</p>
+      <VerifyStrip :steps="sgSteps" :summary="sgSummary" />
+      <div class="sg-answer">
+        <MarkdownView hero :source="sgConclusion" />
+      </div>
+      <div class="sg-stepbars">
+        <div class="step-group-head">
+          <span>{{ t('sgStepBars', ui.lang) }}</span>
+          <span class="cnt">3</span>
+        </div>
+        <StepCard
+          v-for="(s, k) in sgSteps.slice(3, 6)"
+          :key="k"
+          :card="s"
+          :bar="sgBars[k + 3]"
+        />
+      </div>
+    </section>
+
     <!-- ── PageHeader (specimen copy; never fights document.title) ── -->
     <section class="sg-card">
       <h2 class="sg-card-title">PageHeader</h2>
@@ -575,5 +625,16 @@ const palette = computed(() => [
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   line-height: var(--lh-relaxed);
+}
+
+/* answer-card specimen: 卡片里让答案/步骤各占一块,互不贴边 */
+.sg-answer {
+  padding: var(--sp-1) 0;
+}
+.sg-stepbars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-width: 320px; /* 面板真实宽度,计时条比例才是所见即所得 */
 }
 </style>

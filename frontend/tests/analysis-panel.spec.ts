@@ -95,6 +95,38 @@ describe('AnalysisPanel — 历史轮步骤与空态', () => {
     expect(view.find('.analysis-empty-turn').exists()).toBe(false)
   })
 
+  it('步骤按工段分组：组头带步数与组内耗时，计时条长 ∝ 耗时', async () => {
+    const steps = [
+      stepCardFromEvent({ node: 'route_intent', seq: 1, elapsed_ms: 2000 } as StepPayload),
+      stepCardFromEvent({ node: 'gen_sql', seq: 2, elapsed_ms: 4000 } as StepPayload),
+      stepCardFromEvent({ node: 'execute_sql', seq: 3, elapsed_ms: 1000 } as StepPayload),
+      stepCardFromEvent({ node: 'validate', seq: 4, elapsed_ms: 1000 } as StepPayload),
+    ]
+    const view = await mountPanel(makeTurn({ steps }))
+    const heads = view.findAll('.step-group-head')
+    expect(heads.map((h) => h.text())).toEqual([
+      'Understand1 · 2.0s',
+      'Generate1 · 4.0s',
+      'Execute & verify2 · 2.0s',
+    ])
+    // 最长步骤（4.0s）满槽 44px，其余按比例、最短 3px
+    const bars = view.findAll('.step-bar')
+    expect(bars.map((b) => (b.element as HTMLElement).style.width)).toEqual([
+      '22px',
+      '44px',
+      '11px',
+      '11px',
+    ])
+  })
+
+  it('只有一组时不加组头（单组标题是噪声）', async () => {
+    const view = await mountPanel(
+      makeTurn({ steps: [stepCardFromEvent({ node: 'gen_sql', seq: 1 } as StepPayload)] }),
+    )
+    expect(view.findAll('.step-group-head')).toHaveLength(0)
+    expect(view.findAll('.step-wrap')).toHaveLength(1)
+  })
+
   it('无当前轮 → 仍是整面板空态', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

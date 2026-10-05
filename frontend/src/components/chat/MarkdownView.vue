@@ -47,7 +47,7 @@ import DataTable from './DataTable.vue'
 import SqlBlock from './SqlBlock.vue'
 import type { MaskingReport } from '../../utils/masking'
 import { tokenize } from '../../utils/blocks'
-import { renderMarkdown, stripAsciiChart } from '../../utils/markdown'
+import { enhanceConclusionHtml, renderMarkdown, stripAsciiChart } from '../../utils/markdown'
 
 const props = defineProps<{
   source: string
@@ -55,12 +55,16 @@ const props = defineProps<{
   resultRows?: unknown[][] | null
   /** 字段级脱敏报告:表头据此标出被改写的列(P6)。 */
   masking?: MaskingReport | null
+  /** 答案卡专用:结论当主角(结论标题压灰 + 首段放大 + 数字 hero)。
+   *  只由主答案的 MarkdownView 开启,步骤卡片等从不开。 */
+  hero?: boolean
 }>()
 
 const cleaned = computed(() => stripAsciiChart(props.source || ''))
 const blocks = computed(() => tokenize(cleaned.value))
 
 function renderMd(text: string): string {
-  return renderMarkdown(text)
+  const html = renderMarkdown(text)
+  return props.hero ? enhanceConclusionHtml(html) : html
 }
 </script>

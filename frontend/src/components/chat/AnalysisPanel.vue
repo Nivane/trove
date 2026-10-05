@@ -74,13 +74,29 @@
           </template>
         </div>
 
-        <!-- ── Completed steps timeline ── -->
+        <!-- ── Completed steps timeline：按工段分组（理解 / 生成 /
+             执行与验证 / 交付），组头带步数与组内耗时；只有一组时不
+             加组头（单组标题是噪声）。计时条长 ∝ 耗时。 ── -->
         <div
-          v-for="(step, j) in currentTurn.steps"
-          :key="j"
-          class="step-wrap"
+          v-for="g in groups"
+          :key="g.items[0]?.index ?? 0"
+          class="step-group"
         >
-          <StepCard :card="step" :attempt="stepAttempt(j)" />
+          <div v-if="groups.length > 1" class="step-group-head">
+            <span>{{ g.label }}</span>
+            <span class="cnt">{{ groupMeta(g) }}</span>
+          </div>
+          <div
+            v-for="it in g.items"
+            :key="it.index"
+            class="step-wrap"
+          >
+            <StepCard
+              :card="it.step"
+              :attempt="stepAttempt(it.index)"
+              :bar="barFor(it.index)"
+            />
+          </div>
         </div>
 
         <!-- ── In-flight nodes (begin events not yet resolved) ── -->
@@ -93,6 +109,7 @@
             :card="{ node: ls.node, label: ls.label, payload: { node: ls.node } }"
             status="running"
             :live-ms="Math.max(0, now - ls.startedAt)"
+            :bar="null"
           />
         </div>
 
@@ -131,7 +148,15 @@ import StepCard from './StepCard.vue'
 import { useChatStore } from '../../stores/chat'
 import { useUiStore } from '../../stores/ui'
 import { t } from '../../i18n'
-import { stepLabel, fmtMs } from '../../utils/steps'
+import {
+  barWidthPx,
+  fmtMs,
+  groupElapsedMs,
+  groupSteps,
+  stepLabel,
+} from '../../utils/steps'
+import type { StepGroupBucket } from '../../utils/steps'
+import type { StepCard as StepCardType } from '../../stores/chat'
 import { errorCard } from '../../utils/errors'
 
 const chat = useChatStore()
@@ -263,6 +288,33 @@ const emptyStepsNote = computed(() => {
   if (!turn || turn.status === 'streaming') return false
   return !turn.steps.length && !turn.live?.length && !turn.thoughts.length
 })
+
+/** 工段分组（顺序固定；只有一组时不加组头）。 */
+const groups = computed(() =>
+  groupSteps(currentTurn.value?.steps ?? [], ui.lang),
+)
+
+/** 组头右端：步数（+ 组内耗时，有耗时才写）。 */
+function groupMeta(g: StepGroupBucket<StepCardType>): string {
+  const ms = groupElapsedMs(g.items.map((it) => it.step))
+  return ms == null ? String(g.items.length) : `${g.items.length} · ${fmtMs(ms)}`
+}
+
+/** 计时条刻度：本轮耗时最长的步骤占满槽。 */
+const maxStepMs = computed(() => {
+  let max = 0
+  for (const s of currentTurn.value?.steps ?? []) {
+    const ms = (s.payload as { elapsed_ms?: unknown } | undefined)?.elapsed_ms
+    if (typeof ms === 'number' && ms > max) max = ms
+  }
+  return max
+})
+
+function barFor(j: number): number | null {
+  const ms = (currentTurn.value?.steps[j]?.payload as { elapsed_ms?: unknown } | undefined)
+    ?.elapsed_ms
+  return barWidthPx(ms, maxStepMs.value)
+}
 
 function stepAttempt(j: number): number {
   const t = currentTurn.value
