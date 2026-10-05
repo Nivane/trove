@@ -76,6 +76,27 @@ def test_spine_year_bound():
     assert "WHERE n < 1095" in sql
 
 
+def test_spine_bigquery_uses_generate_array_not_recursion():
+    """BigQuery 的 ``WITH RECURSIVE`` 有 **500 次迭代**硬上限 —— spine 可以到
+    几百年(``_SPINE_MAX_DAYS`` 40000 天),递归形态在三年跨度上就会直接失败。
+    ``UNNEST(GENERATE_ARRAY(0, n))`` 是它的无界等价物。
+
+    这条同时钉住整条 BigQuery 形状:序列来源、日期加法(``DATE 'x' + n``)、
+    分桶(``date_trunc(date, MONTH)`` —— 参数顺序与 duckdb 相反、MONTH 是
+    关键字)。任何一处吃回退都是语法错,而不是风格差异。
+    """
+    result = SemanticCompiler(_spine_model()).compile_detailed(
+        _time_plan(("1994-01-01", "1994-03-31")), ["loan"],
+        force_dialect="bigquery",
+    )
+    assert not isinstance(result, CompileMiss)
+    sql = result.sql
+    # 90 天 → 0..89,无界序列
+    assert "SELECT n FROM UNNEST(GENERATE_ARRAY(0, 89)) AS n" in sql
+    assert "date_trunc((DATE '1994-01-01' + n), MONTH)" in sql
+    assert "WITH RECURSIVE" not in sql
+
+
 def test_spine_fill_previous():
     result = _compile(_time_plan(("1994-01-01", "1994-02-28")),
                       model=_spine_model(fill="previous"))

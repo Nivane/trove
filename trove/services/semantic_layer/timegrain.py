@@ -1,10 +1,12 @@
 """Dialect-aware time-grain bucketing for the semantic compiler.
 
-``date_trunc`` 在四方言下的等价表达式(编译进投影 + GROUP BY):
-sqlite/mysql 产 TEXT 标签(同年内字典序 = 时间序),duckdb/clickhouse 产
-DATE 值;标签在同年内可排序,跨年不做 ORDER BY 保证(文档注明)。
+``date_trunc`` 在各方言下的等价表达式(编译进投影 + GROUP BY):
+sqlite/mysql 产 TEXT 标签(同年内字典序 = 时间序),duckdb/clickhouse/bigquery
+产日期值;标签在同年内可排序,跨年不做 ORDER BY 保证(文档注明)。
 未知方言回退 duckdb 式 ``date_trunc('grain', expr)``(postgres 兼容,
-最常见默认)。
+最常见默认)—— **bigquery 绝不能吃这个回退**:GoogleSQL 的
+``DATE_TRUNC(date_expression, date_part)`` 参数顺序相反、date_part 是
+不带引号的关键字,照 duckdb 形状发出去是语法错,所以它有自己的一张表。
 """
 
 from __future__ import annotations
@@ -40,12 +42,25 @@ _CLICKHOUSE = {
     "day": "toStartOfDay({e})",
 }
 
+# GoogleSQL:``DATE_TRUNC(date_expression, date_part)`` —— 参数顺序与
+# duckdb/postgres 相反,date_part 是**关键字**不是字符串。week 用 ISOWEEK
+# (周一开头,与 duckdb 的 'week' 对齐;用 WEEK 会变成周日开头,跟其它
+# 方言对不上)。
+_BIGQUERY = {
+    "year": "date_trunc({e}, YEAR)",
+    "quarter": "date_trunc({e}, QUARTER)",
+    "month": "date_trunc({e}, MONTH)",
+    "week": "date_trunc({e}, ISOWEEK)",
+    "day": "date_trunc({e}, DAY)",
+}
+
 _TABLES = {
     "sqlite": _SQLITE,
     "mysql": _MYSQL,
     "doris": _MYSQL,  # Doris 兼容 MySQL 日期函数
     "duckdb": _DUCKDB,
     "clickhouse": _CLICKHOUSE,
+    "bigquery": _BIGQUERY,
 }
 
 
@@ -71,6 +86,13 @@ def _series(dialect: str, count: int) -> str:
     """生成 0..count-1 整数序列的子查询(各方言等价物)。"""
     if dialect == "clickhouse":
         return f"SELECT number AS n FROM numbers({int(count)})"
+    if dialect == "bigquery":
+        # BigQuery 的 WITH RECURSIVE 有 **500 次迭代**的硬上限 —— 这个 spine
+        # 可以到 _SPINE_MAX_DAYS 天(几百年,远大于 500),递归形态会在三年
+        # 跨度上就直接失败。GENERATE_ARRAY + UNNEST 是它的无界等价物。
+        return (
+            f"SELECT n FROM UNNEST(GENERATE_ARRAY(0, {int(count) - 1})) AS n"
+        )
     if dialect in ("postgres", "duckdb"):
         return f"SELECT generate_series(0, {int(count) - 1}) AS n"
     # sqlite / mysql / doris:递归 CTE 在派生表内合法
@@ -90,7 +112,8 @@ def _date_add(dialect: str, lo: str, n_expr: str) -> str:
         return f"DATE_ADD(DATE('{lo}'), INTERVAL {n_expr} DAY)"
     if d == "sqlite":
         return f"date('{lo}', '+' || {n_expr} || ' days')"
-    return f"(DATE '{lo}' + {n_expr})"  # postgres / duckdb
+    # postgres / duckdb / bigquery:DATE + INT64 = DATE(GoogleSQL 同形)
+    return f"(DATE '{lo}' + {n_expr})"
 
 
 def time_spine_periods(lo: str, hi: str, grain: str, dialect: str) -> str | None:

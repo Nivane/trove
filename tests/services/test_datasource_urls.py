@@ -190,6 +190,69 @@ class TestParseDatasourceUrl:
         with pytest.raises(DatasourceError):
             parse_datasource_url(url)
 
+    # ── 云仓形状(bigquery):项目 + 一段 path(dataset)+ query 参数 ──
+
+    def test_bigquery_full(self):
+        cfg = parse_datasource_url(
+            "bigquery://my-project/analytics"
+            "?location=EU&service_account_file=/keys/gcp.json"
+        )
+        assert cfg.type == "bigquery"
+        assert cfg.name == "my-project.analytics"
+        assert cfg.connection_params == {
+            "project": "my-project",
+            "dataset": "analytics",
+            "location": "EU",
+            "service_account_file": "/keys/gcp.json",
+        }
+        assert cfg.vector_backend == "sqlite"   # 云仓旁挂不了 pgvector
+        assert cfg.default is True
+
+    def test_bigquery_bare_form(self):
+        """最简形态:没有 location / 凭据文件 —— 缺省交给客户端(ADC)。"""
+        cfg = parse_datasource_url("bigquery://my-project/analytics")
+        assert cfg.connection_params == {
+            "project": "my-project", "dataset": "analytics",
+        }
+
+    def test_bigquery_project_keeps_its_case(self):
+        """``urlparse().hostname`` 会把 netloc **折成小写** —— 与雪花取账号同一条:
+        项目从**原始 netloc** 取(剥 userinfo、只做百分号解码),大小写原样保留。"""
+        cfg = parse_datasource_url("bigquery://My-Project/analytics")
+        assert cfg.connection_params["project"] == "My-Project"
+
+    def test_bigquery_no_default_port_entry(self):
+        """云仓不进 ``DEFAULT_PORTS``(那张表是「host 形状」的注册表)。"""
+        from trove.services.datasource.urls import CLOUD_SCHEMES, DEFAULT_PORTS
+
+        assert "bigquery" in CLOUD_SCHEMES
+        assert "bigquery" not in DEFAULT_PORTS
+
+    def test_bigquery_name_carries_the_dataset(self):
+        """同一个项目里两个 dataset 是两个可查单元 —— 只拿项目名当名字,第二个
+        注册会撞上管理端的「已存在」。"""
+        a = parse_datasource_url("bigquery://proj/analytics")
+        b = parse_datasource_url("bigquery://proj/reporting")
+        assert a.name == "proj.analytics"
+        assert b.name == "proj.reporting"
+
+    def test_bigquery_userinfo_is_refused_not_dropped(self):
+        """user:password **不是** BigQuery 的认证机制 —— 一组无效凭据出现在
+        连接串里必须响亮地失败,不能静默丢掉装没看见(凭据只认
+        service_account_file 或 ADC)。"""
+        with pytest.raises(DatasourceError, match="not a BigQuery auth mechanism"):
+            parse_datasource_url("bigquery://user:pass@my-project/analytics")
+
+    @pytest.mark.parametrize("url", [
+        "bigquery://my-project",          # 少 dataset
+        "bigquery://my-project/a/b",      # 多一段
+        "bigquery://my-project/",         # 空 dataset 名
+        "bigquery:///analytics",          # 没项目
+    ])
+    def test_bigquery_bad_shapes_are_refused(self, url):
+        with pytest.raises(DatasourceError):
+            parse_datasource_url(url)
+
     def test_unknown_scheme_raises(self):
         with pytest.raises(DatasourceError):
             parse_datasource_url("oracle://x@host/db")
@@ -248,3 +311,28 @@ class TestBuildUrl:
         )
         with pytest.raises(DatasourceError):
             build_url(cfg)
+
+    @pytest.mark.parametrize("url", [
+        "bigquery://my-project/analytics",
+        "bigquery://My-Project/analytics",
+        "bigquery://my-project/analytics?location=US",
+        "bigquery://my-project/analytics"
+        "?location=US&service_account_file=/keys/gcp.json",
+    ])
+    def test_bigquery_round_trips_byte_for_byte(self, url):
+        assert build_url(parse_datasource_url(url)) == url
+
+    def test_the_bigquery_identity_is_refused_when_incomplete(self):
+        """项目/dataset 是连接身份的一部分 —— 拼不出来就报错,不产出一个少了
+        半截的连接串。"""
+        from trove.core.types import DatasourceConfig
+
+        for params in (
+            {"project": "", "dataset": "analytics"},
+            {"project": "my-project", "dataset": ""},
+        ):
+            cfg = DatasourceConfig(
+                name="broken", type="bigquery", connection_params=params,
+            )
+            with pytest.raises(DatasourceError):
+                build_url(cfg)

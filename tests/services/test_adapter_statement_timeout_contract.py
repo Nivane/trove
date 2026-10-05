@@ -36,7 +36,7 @@ from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 from trove.services.datasource.registry import _ADAPTER_REGISTRY
 
 #: 今天的预期矩阵。True 的四个各有**验证过**的机制(见各自声明处的注释);
-#: False 的三个是**刻意的**,变化必须由这条测试逼一次回答。
+#: False 的四个是**刻意的**,变化必须由这条测试逼一次回答。
 _DECLARED = {
     "mysql": True,       # SET SESSION max_execution_time / max_statement_time(MariaDB)
     "postgres": True,    # 连接参数 options=-c statement_timeout=<ms>
@@ -45,6 +45,8 @@ _DECLARED = {
     "sqlite": False,     # 进程内引擎,无可保护的服务端对象
     "duckdb": False,     # 同上,且没有等价的会话级设置
     "doris": False,      # 会话超时语句语义未在本仓验证(收窄 MySQL 的 True)
+    "bigquery": False,   # 无会话/连接级时长机制;逐 job 的 job_timeout_ms 是另一条
+                         # 通道且服务端语义未验证 —— 一个字都不发(收窄的诚实版)
 }
 
 

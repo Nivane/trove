@@ -1,4 +1,4 @@
-"""Dialect-aware time-grain bucketing: 4 dialects × 5 grains 精确字符串。"""
+"""Dialect-aware time-grain bucketing: 各方言 × 5 grains 精确字符串。"""
 import pytest
 
 from trove.services.semantic_layer.timegrain import date_trunc
@@ -61,6 +61,20 @@ def test_duckdb(grain, expected):
 ])
 def test_clickhouse(grain, expected):
     assert date_trunc(E, grain, "clickhouse") == expected
+
+
+@pytest.mark.parametrize("grain,expected", [
+    # GoogleSQL 参数顺序与 duckdb 相反、date_part 是不带引号的关键字 ——
+    # 吃 duckdb 回退是**语法错**,所以它有自己的一张表。
+    ("year", "date_trunc(loan.date, YEAR)"),
+    ("quarter", "date_trunc(loan.date, QUARTER)"),
+    ("month", "date_trunc(loan.date, MONTH)"),
+    # ISO 周(周一开头),与 duckdb 的 'week' 对齐;WEEK 会变周日开头
+    ("week", "date_trunc(loan.date, ISOWEEK)"),
+    ("day", "date_trunc(loan.date, DAY)"),
+])
+def test_bigquery(grain, expected):
+    assert date_trunc(E, grain, "bigquery") == expected
 
 
 @pytest.mark.parametrize("grain", ["year", "quarter", "month", "week", "day"])

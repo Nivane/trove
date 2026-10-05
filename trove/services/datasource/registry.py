@@ -47,7 +47,7 @@ def register_adapter(dialect: str, adapter_cls: type[DatabaseAdapter]) -> None:
 
     新增一个数据源 = 实现 ``DatabaseAdapter`` 的适配器类,然后在
     ``trove/services/datasource/adapters/`` 里新增模块,并在本文件末尾
-    （或插件入口）调一次本函数——内置的 7 个方言走的就是同一条路径,
+    （或插件入口）调一次本函数——内置的 8 个方言走的就是同一条路径,
     没有任何"内部第二条注册路径"。同方言重复注册 = 覆盖（幂等,便于
     测试与插件替换）。
 
@@ -395,9 +395,20 @@ class ConnectorRegistry:
         applied here, not in the adapter). Milliseconds, no row data.
         Deliberately bypasses the result cache (plans are cheap and the
         key space is the same as execute's).
+
+        Dialects that cannot produce a plan (``supports_explain=False``,
+        e.g. BigQuery's GoogleSQL) are refused here with a clear error —
+        「不支持」与「执行失败」对调用方是两件事,不能靠发一条必然报错的
+        SQL 让它们长得一样。
         """
         adapter = await self.get(datasource)
         self._guard_read_only(sql, adapter.dialect(), self._allowed_tables.get(adapter.name))
+        if not (await adapter.get_capabilities()).supports_explain:
+            raise DatasourceError(
+                message=f"EXPLAIN is not supported for the "
+                        f"{adapter.dialect()!r} dialect "
+                        f"(the adapter declares supports_explain=False)",
+            )
         prefix = "EXPLAIN QUERY PLAN" if adapter.dialect() == "sqlite" else "EXPLAIN"
         return await adapter.execute(f"{prefix} {sql}")
 
@@ -490,7 +501,7 @@ class ConnectorRegistry:
 # ── Built-in dialects: self-registration ──────────────────
 # 「新增一个数据源」的落地样板:实现 DatabaseAdapter → 在这里 import +
 # register_adapter 一行(外部插件在任何入口调 register_adapter 等价)。
-# import 刻意放在文件末尾:让「注册机制 + 它注册的 7 个内置项」同处一段,
+# import 刻意放在文件末尾:让「注册机制 + 它注册的 8 个内置项」同处一段,
 # 中间的注册表/执行代码看不到它们。适配器模块各自惰性 import 驱动,所以
 # 这里 import 不需要装可选 extras(per-file E402 见 pyproject 注释)。
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
@@ -500,6 +511,7 @@ from trove.services.datasource.adapters.postgres import PostgresAdapter
 from trove.services.datasource.adapters.clickhouse import ClickHouseAdapter
 from trove.services.datasource.adapters.duckdb import DuckDBAdapter
 from trove.services.datasource.adapters.snowflake import SnowflakeAdapter
+from trove.services.datasource.adapters.bigquery import BigQueryAdapter
 
 register_adapter("sqlite", SQLiteAdapter)
 register_adapter("mysql", MySQLAdapter)
@@ -508,3 +520,4 @@ register_adapter("postgres", PostgresAdapter)
 register_adapter("clickhouse", ClickHouseAdapter)
 register_adapter("duckdb", DuckDBAdapter)
 register_adapter("snowflake", SnowflakeAdapter)
+register_adapter("bigquery", BigQueryAdapter)

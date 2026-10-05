@@ -65,6 +65,13 @@ clickhouse = [
 snowflake = [
     "snowflake-connector-python>=4.0",
 ]
+# BigQuery 的客户端同样是**同步**的(无 asyncio 变体)—— 适配器用
+# ``asyncio.to_thread`` 包住整个调用。floor 挑近代 3.x:本适配器只走长期
+# 稳定的接口(client.query / job.result / job.cancel / 元数据 API),
+# floor 是"不给自己找远古版本麻烦",不是某个 API 的硬要求。
+bigquery = [
+    "google-cloud-bigquery>=3.20",
+]
 # 本地 dense embedder(bge-m3)与 cross-encoder 精排(bge-reranker):拉入
 # FlagEmbedding(torch),离线、无需 LLM 凭证;不装则退化为 API embedder +
 # 无精排(默认档),功能不受影响。

@@ -22,6 +22,7 @@ export function dsTypeLabel(type: string): string {
     clickhouse: 'ClickHouse',
     duckdb: 'DuckDB',
     snowflake: 'Snowflake',
+    bigquery: 'BigQuery',
   }
   return labels[type] ?? type
 }
