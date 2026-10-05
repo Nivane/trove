@@ -2971,3 +2971,155 @@ button:disabled {
   font-family: var(--font-mono);
   color: var(--text-secondary);
 }
+/* ── Appended 2026-10（答案卡视觉升级：验证条 / 步骤分组 / 计时条 / 结论主角）──
+   A 打底（安静精密）+ B 的「已验证」印章收成一行 + C 的计时条进面板展开态。
+   只新增类、不改既有选择器；颜色全部走 tokens（对比度门禁的既有配对），
+   字号最小 --fs-2xs = 12px（字号门禁下限）。 */
+
+/* 验证条：答案上方六段骨架（走一段亮一段）+ 右端印章按钮。 */
+.verify-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: var(--sp-2) 0 var(--sp-1);
+}
+.vwrap {
+  display: inline-flex;
+  align-items: center;
+}
+.vseg {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-2xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+.vseg .d {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--border-default);
+  flex: none;
+}
+.vseg.lit {
+  color: var(--text-secondary);
+}
+.vseg.lit .d {
+  background: var(--accent-graphic);
+}
+.vlink {
+  width: 20px;
+  height: 1px;
+  margin: 0 var(--sp-2);
+  background: var(--border-subtle);
+  flex: none;
+}
+.vok {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  font-family: inherit;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.vok:hover {
+  background: var(--surface-hover);
+}
+.vok.tone-ok {
+  color: var(--ok-text);
+}
+.vok.tone-warn {
+  color: var(--warn-text);
+}
+.vok.tone-neutral {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.vok-rework {
+  font-weight: 500;
+  color: var(--text-tertiary);
+}
+.vok-rework.hit {
+  color: var(--warn-text);
+}
+
+/* 分析面板：工段分组头（连续同段并组；回退重来会再开一组，时序不丢）。 */
+.step-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.step-group + .step-group {
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+}
+.step-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.step-group-head .cnt {
+  margin-left: auto;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 计时条：固定槽宽对齐步骤名，条长 ∝ 耗时（最短 3px 由 barWidthPx 保证）；
+   有槽的步骤不再画圆点（条本身就是前导标记），运行中的除外——脉冲点
+   是「正在跑」的唯一动效。 */
+.step-bar-slot {
+  flex: none;
+  width: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.step-bar {
+  height: 6px;
+  border-radius: 2px;
+  background: var(--accent-graphic);
+  flex: none;
+}
+.step-card.has-bar:not(.status-running) .step-dot {
+  display: none;
+}
+.step-card.status-error.has-bar .step-bar {
+  background: var(--danger);
+}
+
+/* 结论当主角：只作用于 hero 渲染（MarkdownView hero prop）打上
+   concl-label / concl / hero-num 的地方；认不出结论标题就没有这些类。 */
+.markdown-body h3.concl-label {
+  margin: 0.4em 0 0.2em;
+  font-size: var(--fs-2xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+.markdown-body p.concl {
+  margin: 0.15em 0 0.9em;
+  font-size: var(--fs-lg);
+  line-height: 1.55;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.markdown-body p.concl .hero-num {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}

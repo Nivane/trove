@@ -735,3 +735,214 @@ export function fmtMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return ''
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
+
+/* ── 验证条 / 分析面板分组（2026-10 答案卡视觉升级）──────────────
+   答案卡的 6 段验证条（骨架走到哪一段）与分析面板的 4 组工序共用一张
+   节点→阶段映射。两者都是纯映射：不认识的节点归 null / 'other' ——
+   绝不硬塞进某一段（宁少亮一段，不虚报工序走过）。
+   阶段名/组名沿用 stepLabel 的做法在本地写死 zh/en（管线术语，不进
+   产品文案 i18n 表）。 */
+
+export type VerifyStage = 'route' | 'link' | 'plan' | 'gen' | 'exec' | 'verify'
+
+/** 验证条六段的固定顺序。 */
+export const VERIFY_STAGE_ORDER: readonly VerifyStage[] = [
+  'route',
+  'link',
+  'plan',
+  'gen',
+  'exec',
+  'verify',
+]
+
+const _STAGE_OF_NODE: Record<string, VerifyStage> = {
+  route_intent: 'route',
+  parse_date: 'route',
+  schema_linking: 'link',
+  query_sketch: 'plan',
+  fast_match: 'gen',
+  gen_sql: 'gen',
+  gen_retrieve: 'gen',
+  gen_assemble: 'gen',
+  gen_generate: 'gen',
+  select: 'gen',
+  semantics: 'gen',
+  execute_sql: 'exec',
+  validate: 'verify',
+  masking: 'verify',
+  reflect: 'verify',
+  analyze_error: 'verify',
+  restore: 'verify',
+}
+
+export function stageOf(node: string): VerifyStage | null {
+  return _STAGE_OF_NODE[node] ?? null
+}
+
+const _STAGE_LABEL: Record<VerifyStage, string> = {
+  route: '路由',
+  link: '关联',
+  plan: '计划',
+  gen: '生成',
+  exec: '执行',
+  verify: '校验',
+}
+const _STAGE_LABEL_EN: Record<VerifyStage, string> = {
+  route: 'Route',
+  link: 'Link',
+  plan: 'Plan',
+  gen: 'Generate',
+  exec: 'Execute',
+  verify: 'Verify',
+}
+
+export function stageLabel(stage: VerifyStage, lang: string): string {
+  return (lang === 'zh' ? _STAGE_LABEL : _STAGE_LABEL_EN)[stage]
+}
+
+/** 这轮步骤走到了哪些阶段（按步骤序列取集合）。 */
+export function verifyStages(steps: { node: string }[]): Set<VerifyStage> {
+  const out = new Set<VerifyStage>()
+  for (const s of steps) {
+    const st = stageOf(s.node)
+    if (st) out.add(st)
+  }
+  return out
+}
+
+/** 验证条只在真正走数的一轮出现：生成/执行/校验至少亮一段
+ *  （元数据、拒绝、闲聊等轮不套这条骨架）。 */
+export function isDataRound(steps: { node: string }[]): boolean {
+  const lit = verifyStages(steps)
+  return lit.has('gen') || lit.has('exec') || lit.has('verify')
+}
+
+/** 修正轮数 = 各反思步骤里 retry_count 的最大值（生成回合被回退重来的
+ *  次数，工作流自己的口径）。没有反思步骤 → null（印章不写这句）。 */
+export function correctionRounds(
+  steps: { node: string; payload?: Record<string, unknown> }[],
+): number | null {
+  let seen = false
+  let max = 0
+  for (const s of steps) {
+    if (s.node !== 'reflect') continue
+    seen = true
+    const rc = s.payload?.retry_count
+    if (typeof rc === 'number' && rc > max) max = rc
+  }
+  return seen ? max : null
+}
+
+export type StepGroup = 'understand' | 'generate' | 'verify' | 'deliver' | 'other'
+
+export const STEP_GROUP_ORDER: readonly StepGroup[] = [
+  'understand',
+  'generate',
+  'verify',
+  'deliver',
+  'other',
+]
+
+const _GROUP_OF_NODE: Record<string, StepGroup> = {
+  route_intent: 'understand',
+  parse_date: 'understand',
+  schema_linking: 'understand',
+  query_sketch: 'understand',
+  fast_match: 'generate',
+  gen_sql: 'generate',
+  gen_retrieve: 'generate',
+  gen_assemble: 'generate',
+  gen_generate: 'generate',
+  select: 'generate',
+  semantics: 'generate',
+  // 人工确认是执行前的闸门，归执行段（它卡在 semantics 与 execute 之间，
+  // 组内保持原顺序即可还原真实时序）。
+  hitl: 'verify',
+  execute_sql: 'verify',
+  validate: 'verify',
+  masking: 'verify',
+  reflect: 'verify',
+  analyze_error: 'verify',
+  restore: 'verify',
+  insights: 'deliver',
+  chart: 'deliver',
+  conclusion: 'deliver',
+  output: 'deliver',
+  answer_metadata: 'deliver',
+  metadata_check: 'deliver',
+}
+
+export function groupOf(node: string): StepGroup {
+  return _GROUP_OF_NODE[node] ?? 'other'
+}
+
+const _GROUP_LABEL: Record<StepGroup, string> = {
+  understand: '理解',
+  generate: '生成',
+  verify: '执行与验证',
+  deliver: '交付',
+  other: '其他',
+}
+const _GROUP_LABEL_EN: Record<StepGroup, string> = {
+  understand: 'Understand',
+  generate: 'Generate',
+  verify: 'Execute & verify',
+  deliver: 'Deliver',
+  other: 'Other',
+}
+
+export function stepGroupLabel(group: StepGroup, lang: string): string {
+  return (lang === 'zh' ? _GROUP_LABEL : _GROUP_LABEL_EN)[group]
+}
+
+export interface StepGroupBucket<T> {
+  group: StepGroup
+  label: string
+  items: { step: T; index: number }[]
+}
+
+/** 步骤按工段分组：**连续同段**并入同组，时序不丢 —— 回退重来会再开
+ *  一个「生成」组（「生成→执行与验证→生成→…」正是重试环本身的形状，
+ *  按段全量归桶会把重试的交错抹平）。'other' 兜底段照常参与。 */
+export function groupSteps<T extends { node: string }>(
+  steps: T[],
+  lang: string,
+): StepGroupBucket<T>[] {
+  const out: StepGroupBucket<T>[] = []
+  steps.forEach((step, index) => {
+    const g = groupOf(step.node)
+    const last = out[out.length - 1]
+    if (last && last.group === g) last.items.push({ step, index })
+    else out.push({ group: g, label: stepGroupLabel(g, lang), items: [{ step, index }] })
+  })
+  return out
+}
+
+/** 组内耗时合计（只计带 elapsed_ms 的步骤；一个都没有 → null，组头不写）。 */
+export function groupElapsedMs(
+  steps: { payload?: Record<string, unknown> }[],
+): number | null {
+  let total = 0
+  let seen = false
+  for (const s of steps) {
+    const ms = s.payload?.elapsed_ms
+    if (typeof ms === 'number' && ms >= 0) {
+      total += ms
+      seen = true
+    }
+  }
+  return seen ? total : null
+}
+
+/** 计时条宽（px）：与耗时成正比，最短 3px（极短步骤也看得见）。
+ *  没有可依据的刻度（maxMs 为 0/缺失）→ null，不画。 */
+export function barWidthPx(
+  ms: unknown,
+  maxMs: number,
+  slotPx = 44,
+): number | null {
+  if (typeof ms !== 'number' || ms < 0) return null
+  if (!(maxMs > 0)) return null
+  const w = Math.round((ms / maxMs) * slotPx)
+  return Math.max(3, Math.min(slotPx, w))
+}

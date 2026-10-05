@@ -155,6 +155,22 @@
                   {{ maskLabel(turn.summary?.masking_applied) }}
                 </span>
               </div>
+              <!-- 验证条（答案卡视觉升级）：六段骨架走一段亮一段，右端
+                   「已验证」印章。只在真正走数的一轮出现（生成/执行/校验
+                   至少亮一段），点印章展开工序面板。历史截断时的计数带 +
+                   由组件按 truncated 自行处理。 -->
+              <VerifyStrip
+                v-if="
+                  turn.status === 'done' &&
+                  turn.summary &&
+                  turn.steps.length &&
+                  isDataRound(turn.steps)
+                "
+                :steps="turn.steps"
+                :summary="turn.summary"
+                :truncated="!!turn.stepsTruncated"
+                @open="openAnalysis"
+              />
               <div
                 v-if="(turn.answer || turn.synthesis) && !cards[i]"
                 class="answer"
@@ -164,6 +180,7 @@
                 :source="turn.answer || turn.synthesis || ''"
                 :result-rows="turn.summary?.rows ?? null"
                 :masking="turn.summary?.masking_applied ?? null"
+                hero
               />
                 <span
                   v-if="turn.status === 'streaming'"
@@ -350,6 +367,7 @@ import HitlCard from '../components/chat/HitlCard.vue'
 import MarkdownView from '../components/chat/MarkdownView.vue'
 import NextActions from '../components/chat/NextActions.vue'
 import ProvenanceStrip from '../components/chat/ProvenanceStrip.vue'
+import VerifyStrip from '../components/chat/VerifyStrip.vue'
 import { maskingBadge } from '../utils/masking'
 import type { MaskingReport } from '../utils/masking'
 import Composer from '../components/chat/Composer.vue'
@@ -360,6 +378,7 @@ import { router } from '../router'
 import { t } from '../i18n'
 import { copyText, dsTypeLabel } from '../utils/format'
 import { errorCard } from '../utils/errors'
+import { isDataRound } from '../utils/steps'
 import type { Turn } from '../stores/chat'
 
 const chat = useChatStore()
@@ -409,6 +428,11 @@ function showReceipt(i: number, vote: 1 | -1) {
 }
 
 const analysisToggleTitle = computed(() => t('analysisToggle', ui.lang))
+
+/** 点验证条印章：面板已开就什么都不做（不把「看工序」读成「收起」）。 */
+function openAnalysis() {
+  if (!ui.analysisOpen) ui.toggleAnalysis()
+}
 
 // 失败轮次的错误卡片:后端给结构化 error_info 就照它渲染,没给(老会话)
 // 退回脚手架文案 —— 两者都不解析错误 markdown。
