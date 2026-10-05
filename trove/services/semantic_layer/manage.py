@@ -824,8 +824,14 @@ class SemanticManager:
         self, datasource: str, kind: str, action: str, name: str,
         payload: dict[str, Any] | None = None, note: str = "",
         actor: str = "",
+        conflict: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """建 pending 草稿(semantic_drafts.yml)。不碰 semantics.yml。"""
+        """建 pending 草稿(semantic_drafts.yml)。不碰 semantics.yml。
+
+        ``conflict``(可选 ``{code, message}``):草稿与现有模型有确定性冲突、
+        但冲突可人工修正时,内容照落 pending,带注解标记——``confirm_draft``
+        会拒绝确认它(drafts()/detail() 自动透出注解,零额外读取路径)。
+        """
         self._check_datasource(datasource)
         if kind not in _KINDS:
             raise ValueError(f"kind 必须为 {sorted(_KINDS)} 之一")
@@ -845,6 +851,11 @@ class SemanticManager:
             "status": "pending",
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
+        if conflict:
+            entry["conflict"] = {
+                "code": str(conflict.get("code") or ""),
+                "message": str(conflict.get("message") or ""),
+            }
         path = self._drafts_path(datasource)
         data = _load_yaml(path)
         drafts = list(data.get("drafts", []) if isinstance(data, dict) else [])
@@ -884,6 +895,13 @@ class SemanticManager:
         draft, path = self._find_draft(datasource, draft_id)
         if draft.get("status") != "pending":
             raise ValueError(f"草稿 {draft_id} 已 {draft.get('status')}")
+        if draft.get("conflict"):
+            # 落库时已判定与现有模型冲突(重名/表达式/数据集引用):确认是
+            # 快捷入口,不是绕过校验的后门——先修正再新建,不在这里放行。
+            raise ValueError(
+                "该草稿与现有模型冲突,不能直接确认"
+                f"({(draft.get('conflict') or {}).get('message') or '见草稿注解'})"
+                "——请以它为蓝本修正后新建")
         semantics = self._semantics_path(datasource)
         data = _load_yaml(semantics) if semantics.exists() else {}
         try:

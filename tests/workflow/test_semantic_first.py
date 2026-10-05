@@ -490,9 +490,12 @@ class TestQuerySketchSemanticFirst:
         # plan 文本带骨架提示块 + 未覆盖组件清单
         assert "Compiled skeleton (authoritative" in out["plan"]
         assert "enum_value_unresolved: loan.status" in out["plan"]
-        # 未覆盖组件结构化记录(学习/归因)
+        # 未覆盖组件结构化记录(学习/归因):值类缺口带第三键 `value`
+        # (提问字面量)——候选生成拿它做过证据门控(A2 ②);两键老形状
+        # 只在无值缺口出现。
         assert out["compile_misses"] == [
-            {"reason": "enum_value_unresolved", "component": "loan.status"}]
+            {"reason": "enum_value_unresolved", "component": "loan.status",
+             "value": "Z"}]
 
     async def test_query_sketch_soft_miss_filter_field_partial(self):
         """未声明过滤字段 → 软 MISS 骨架,同样不拒绝。"""

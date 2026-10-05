@@ -2895,17 +2895,24 @@ class SemanticCompiler:
         res = self.compile_detailed(plan, matched, force_dialect)
         return res if isinstance(res, CompileResult) else None
 
-    def _record_soft(self, reason: str, component: str) -> None:
+    def _record_soft(self, reason: str, component: str, value: object = None) -> None:
         """记录一条软 MISS(词表/值/口径缺失),跳过该组件继续编译。
 
         组件必须属于 SOFT_MISS_REASONS——硬 MISS 走 return 路径不经过这里,
         归类错误会在 eval 归因与 refuse 路由中被发现。同 (reason, component)
-        去重:aggregation 与 answer_columns 可能命中同一候选,骨架提示块
-        与 miss_parts 不应重复罗列同一缺口。
+        去重(值类缺口附 `value` 第三键——提问里的原始字面量,给候选生成做
+        证据;目前仅 enum_value_unresolved 两处发射点带值,首个值胜出去重,
+        同缺口二次命中不再追加):aggregation 与 answer_columns 可能命中
+        同一候选,骨架提示块与 miss_parts 不应重复罗列同一缺口。`value`
+        只收字符串(非字符串就地 str 化;无值的缺口不传)。
         """
-        entry = {"reason": reason, "component": component}
-        if entry not in self._soft_misses:
-            self._soft_misses.append(entry)
+        if any(m["reason"] == reason and m["component"] == component
+               for m in self._soft_misses):
+            return
+        entry: dict[str, Any] = {"reason": reason, "component": component}
+        if value is not None:
+            entry["value"] = value if isinstance(value, str) else str(value)
+        self._soft_misses.append(entry)
 
     def compile_detailed(
         self,
@@ -3205,7 +3212,7 @@ class SemanticCompiler:
                 normalized = _normalize_enum_value(
                     value, resolved[1].enum_display, resolved[1].value_aliases)
                 if normalized is None:
-                    self._record_soft("enum_value_unresolved", field_ref)
+                    self._record_soft("enum_value_unresolved", field_ref, value)
                     continue
                 value = normalized
             if soft_agg_keys:
@@ -3246,7 +3253,8 @@ class SemanticCompiler:
                 self._record_soft("missing_filter_value", field_ref or metric_ref)
                 continue
             if _looks_like_expression_value(value):
-                self._record_soft("expression_filter_value", field_ref or metric_ref)
+                self._record_soft(
+                    "expression_filter_value", field_ref or metric_ref)
                 continue
             if metric_ref:
                 # 名字精确匹配 → 表达式形态唯一对账(0470 型:计划用
@@ -3275,7 +3283,7 @@ class SemanticCompiler:
                 normalized_h = _normalize_enum_value(
                     value, resolved_h[1].enum_display, resolved_h[1].value_aliases)
                 if normalized_h is None:
-                    self._record_soft("enum_value_unresolved", field_ref)
+                    self._record_soft("enum_value_unresolved", field_ref, value)
                     continue
                 value = normalized_h
             filters.append((resolved_h[0], resolved_h[1], op, value))

@@ -154,8 +154,12 @@ class TestUncoveredRefusal:
         ))
         assert "直接回复" not in non_admin["clarification_question"]
 
-    async def test_refusal_same_name_conflict_no_write(self, kb):
-        """与现有模型同名 → 冲突,不写库,文案提示人工补充。"""
+    async def test_refusal_same_name_conflict_lands_annotated(self, kb):
+        """与现有模型同名 → 冲突可人工修正 → 内容落 pending 带注解,但不能直接确认。
+
+        行为变更(A2):冲突草稿不再直接丢弃——收件箱里看得见、以蓝本新建
+        修正;``confirm_draft`` 的守卫拦住确认(注解草稿确认=把重复定义写进模型)。
+        """
         from trove.services.semantic_layer.manage import SemanticManager
         conflict_yaml = METRIC_DRAFT_YAML.replace("avg_loan_amount", "number of loan records")
         node = make_refuse(
@@ -170,7 +174,20 @@ class TestUncoveredRefusal:
                               "answer_columns": ["COUNT(loan.loan_id)"]}},
         ))
         assert out["refusal"]["conflict"] is True
-        assert not SemanticManager(kb).drafts("demo")["pending"]
+        assert out["refusal"]["conflict_info"] == {
+            "code": "name_declared",
+            "message": "指标「number of loan records」已声明",
+            "landed": True,
+        }
+        manager = SemanticManager(kb)
+        pending = manager.drafts("demo")["pending"]
+        assert len(pending) == 1
+        assert pending[0]["conflict"]["code"] == "name_declared"
+        with pytest.raises(ValueError, match="不能直接确认"):
+            await manager.confirm_draft("demo", pending[0]["id"])
+        # 驳回不受守卫影响(注解草稿的唯一合法终态之一)
+        rejected = await manager.reject_draft("demo", pending[0]["id"])
+        assert rejected["status"] == "rejected"
 
     async def test_refusal_same_expression_conflict_no_write(self, kb):
         """表达式去重:草稿指标与既有指标同表达式签名(不同名)→ 冲突,不写库。
@@ -222,6 +239,54 @@ class TestUncoveredRefusal:
         # 上游契约不变:refusal["reason"] 仍是原始 reason,供机器匹配/聚合
         assert out["refusal"]["reason"] == "uncovered"
 
+    async def test_refusal_relationship_miss_names_the_tables(self, kb):
+        """关系类缺口 → 文案说出「涉及哪两张表」+ 声明指引(A2 ③ 可读化)。
+
+        修前:reason 被包装成 "uncovered (unknown_cardinality: …)",_MISS_COPY
+        的 first-colon 查表永远查不中,整表退化成泛化说法——表名从没进过用户文案。
+        """
+        node = make_refuse(
+            ScriptedLLM(["not yaml at all"]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={
+                "reason": "uncovered", "question": "q",
+                "plan": {"aggregation": "SUM(loan.amount)"},
+                "compile_miss": {"reason": "unknown_cardinality",
+                                 "component": "loan, account"},
+            },
+        ))
+        msg = out["clarification_question"]
+        assert "loan, account" in msg
+        assert "基数未声明" in msg
+        assert "关联" in msg
+        assert "unknown_cardinality" not in msg
+
+    async def test_refusal_internal_diagnostic_never_leaks_to_copy(self, kb):
+        """component 是内部诊断串的 reason(ambiguous_join_path 的显式通道
+        变体)→ 模板没有 {c},内部英文不泄漏;具体原因按 code 不进文案。"""
+        node = make_refuse(
+            ScriptedLLM(["not yaml at all"]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={
+                "reason": "uncovered", "question": "q",
+                "plan": {"aggregation": "SUM(loan.amount)"},
+                "compile_miss": {
+                    "reason": "ambiguous_join_path",
+                    "component": "explicit joins reference undeclared edges"},
+            },
+        ))
+        msg = out["clarification_question"]
+        assert "explicit joins" not in msg
+        assert "ambiguous_join_path" not in msg
+
     async def test_refusal_copy_free_of_model_internals(self, kb):
         """面向用户的文案不得出现 YAML 内部键(kind= / expression= / name=)。"""
         node = make_refuse(
@@ -242,7 +307,8 @@ class TestUncoveredRefusal:
         assert "语义模型" in msg and "管理端" in msg
 
     async def test_conflict_copy_explains_without_yaml_keys(self, kb):
-        """冲突路径同样说人话:草稿未写入 + 冲突原因 + 去哪补。"""
+        """冲突路径同样说人话:具体冲突原因 + 已放入待审收件箱(不能直接确认),
+        YAML 内部键不泄漏。"""
         bad = METRIC_DRAFT_YAML.replace("AVG(loan.amount)", "AVG(loan.amount")
         node = make_refuse(
             ScriptedLLM([bad]),
@@ -258,10 +324,13 @@ class TestUncoveredRefusal:
         assert out["refusal"]["conflict"] is True
         for leak in ("kind=", "expression=", "name="):
             assert leak not in msg, msg
-        assert "未写入" in msg or "没有写入" in msg
+        # 冲突原因按 code 说人话(不是笼统的「重名/表达式/数据集」三选一列表)
+        assert "无法解析" in msg
+        assert "不能直接确认" in msg
+        assert "待审" in msg
 
     async def test_refusal_unparseable_expr_conflict(self, kb):
-        """表达式不可解析 → 冲突,不写库。"""
+        """表达式不可解析 → 可人工修正的冲突 → 内容落 pending 带注解。"""
         from trove.services.semantic_layer.manage import SemanticManager
         bad = METRIC_DRAFT_YAML.replace("AVG(loan.amount)", "AVG(loan.amount")
         node = make_refuse(
@@ -274,10 +343,13 @@ class TestUncoveredRefusal:
             refusal={"reason": "uncovered", "question": "q", "plan": {}},
         ))
         assert out["refusal"]["conflict"] is True
-        assert not SemanticManager(kb).drafts("demo")["pending"]
+        pending = SemanticManager(kb).drafts("demo")["pending"]
+        assert len(pending) == 1
+        assert pending[0]["conflict"]["code"] == "expr_unparseable"
+        assert out["refusal"]["conflict_info"]["landed"] is True
 
     async def test_refusal_undeclared_dataset_conflict(self, kb):
-        """metric 引用未声明数据集 → 冲突,不写库。"""
+        """metric 引用未声明数据集 → 可人工修正的冲突 → 内容落 pending 带注解。"""
         from trove.services.semantic_layer.manage import SemanticManager
         bad = METRIC_DRAFT_YAML.replace("datasets: [loan]", "datasets: [ghost]")
         node = make_refuse(
@@ -290,7 +362,9 @@ class TestUncoveredRefusal:
             refusal={"reason": "uncovered", "question": "q", "plan": {}},
         ))
         assert out["refusal"]["conflict"] is True
-        assert not SemanticManager(kb).drafts("demo")["pending"]
+        pending = SemanticManager(kb).drafts("demo")["pending"]
+        assert len(pending) == 1
+        assert pending[0]["conflict"]["code"] == "dataset_undeclared"
 
     async def test_refusal_unparseable_llm_output_no_write(self, kb):
         """LLM 输出无法解析 → 无草稿,仍产出「缺少声明」文案,不写库。"""
@@ -1103,11 +1177,45 @@ class TestNextActions:
         assert refusal["conflict"] is True  # 旧契约保持 bool
         action = refusal["next_actions"][0]
         assert action["kind"] == "new_from_draft"
-        # 蓝本新建走新建表单(不是 pending 页签 —— 这份草稿没落库)
-        assert action["href"] == "/admin/semantic?ds=demo"
+        # 注解草稿已落收件箱 → 深链落在 pending 页签(确认被守卫拦住,
+        # 唯一修正路径是蓝本新建;草稿不在收件箱时就不带页签)
+        assert action["href"] == "/admin/semantic?ds=demo&tab=pending"
         assert action["payload"]["draft_name"] == "number of loan records"
         assert action["payload"]["expression"] == "AVG(loan.amount)"
         assert action["payload"]["datasets"] == ["loan"]
+        assert action["payload"]["conflict_code"] == "name_declared"
+        assert action["payload"]["conflict_message"]
+
+    async def test_agg_duplicate_refusal_has_no_action(self, kb):
+        """同口径指标已存在 → 不是缺声明(补不了),不给管理端动作、不落草稿。
+
+        落草稿=诱导确认一条必然重复的指标;补救是换问法(把年份/枚举值
+        当过滤条件),文案直接把已覆盖的指标名说出来。
+        """
+        from trove.services.semantic_layer.manage import SemanticManager
+        dedup_yaml = METRIC_DRAFT_YAML.replace(
+            "avg_loan_amount", "loan_count_in_2020").replace(
+            "AVG(loan.amount)", "COUNT(loan.loan_id)")
+        node = make_refuse(
+            ScriptedLLM([dedup_yaml]),
+            AgentConfig(target="mock/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        out = await node(make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "2020年发放了多少笔贷款?",
+                     "plan": {"aggregation": "COUNT(loan.loan_id)",
+                              "answer_columns": ["COUNT(loan.loan_id)"]}},
+        ))
+        refusal = out["refusal"]
+        assert refusal["conflict"] is True
+        assert refusal["conflict_info"]["code"] == "agg_duplicate"
+        assert refusal["conflict_info"]["landed"] is False
+        assert refusal["next_actions"] == []
+        assert not SemanticManager(kb).drafts("demo")["pending"]
+        # 文案说清是「已被既有指标覆盖」而不是「缺声明」,并给指标名
+        assert "number of loan records" in refusal["message"]
+        assert "筛选条件" in refusal["message"]
 
     async def test_undraftable_refusal_opens_workbench(self, kb):
         node = make_refuse(

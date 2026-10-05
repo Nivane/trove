@@ -67,6 +67,9 @@ export interface RefusalInfo {
   message?: string
   /** 真冲突 = true;保持 bool(附注信息走兄弟键,不改变这个键的类型)。 */
   conflict?: boolean
+  /** 冲突分因(仅 conflict=true 时出现):code 封闭集,message 是中文
+   *  诊断(管理员视野),landed = 内容是否照落 pending 待审。 */
+  conflict_info?: { code?: string; message?: string; landed?: boolean } | null
   draft?: Record<string, unknown> | null
   draft_entry?: Record<string, unknown> | null
   next_actions?: NextActionInfo[]
@@ -636,6 +639,10 @@ export interface SemanticDraft {
   status?: 'pending' | 'applied' | 'rejected' | string
   created_at?: string
   payload?: Record<string, unknown> | null
+  /** 冲突注解(A2):创建时写入表示这条草稿与现有模型冲突,确认被服务端
+   *  拒绝、按钮也前置禁用;message 是服务端中文诊断(逐字展示,数据不是
+   *  文案)。缺席/null = 普通草稿。 */
+  conflict?: { code?: string; message?: string } | null
   /** detail 端点逐条附上(create/confirm/reject 响应不带)。 */
   diff?: SemanticDraftDiff
 }

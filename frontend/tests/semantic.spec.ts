@@ -791,6 +791,130 @@ describe('SemanticView', () => {
     expect(bodyText()).not.toContain('Failed to load the semantic model')
   })
 
+  // ── A2: blueprint deep links + conflicted drafts ──────────────
+  // 冲突草稿不能确认(服务端守卫 + 按钮前置禁用),出路是「以此为蓝本
+  // 新建」:抽屉按钮走 payload,拒绝卡深链走 bp_* 查询参数 —— 两条路汇进
+  // 同一个预填器。参数只活一次导航(消费即从 URL 清掉)。
+
+  it('bp_* deep link opens the prefilled dialog and drops the params from the URL', async () => {
+    mockApi()
+    await mountView(
+      '/admin/semantic?ds=demo&tab=pending&bp_draft_kind=metric&bp_draft_name=avg_amount' +
+        '&bp_expression=AVG(loan.amount)&bp_datasets=loan&bp_conflict_message=' +
+        encodeURIComponent('指标「avg_amount」已声明'),
+    )
+    await settle()
+
+    // prefilled dialog: name + expression + the conflict diagnostic
+    expect(dialogInput().value).toBe('avg_amount')
+    expect(dialogTextarea().value).toBe('AVG(loan.amount)')
+    expect(bodyText()).toContain('Prefilled from the draft')
+    expect(bodyText()).toContain('指标「avg_amount」已声明')
+
+    // consumed exactly once: bp_* gone from the URL, unrelated keys survive
+    const q = router.currentRoute.value.query
+    expect(q.bp_draft_kind).toBeUndefined()
+    expect(q.bp_expression).toBeUndefined()
+    expect(q.ds).toBe('demo')
+    expect(q.tab).toBe('pending')
+
+    // and the prefill reaches the payload actually drafted
+    findButton(document.body, 'Create draft').click()
+    await settle()
+    const posts = calls('/v1/admin/semantic/demo/drafts')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]).toMatchObject({ kind: 'metric', name: 'avg_amount' })
+    expect(posts[0].payload).toMatchObject({
+      expression: 'AVG(loan.amount)',
+      datasets: ['loan'],
+    })
+  })
+
+  it('a field blueprint splits dataset.field and drafts under that dataset', async () => {
+    mockApi()
+    await mountView(
+      '/admin/semantic?ds=demo&bp_draft_kind=field&bp_draft_name=loan.grade&bp_expression=grade',
+    )
+    await settle()
+    expect(dialogInput().value).toBe('grade')
+    findButton(document.body, 'Create draft').click()
+    await settle()
+    const posts = calls('/v1/admin/semantic/demo/drafts')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]).toMatchObject({ kind: 'field', name: 'loan.grade' })
+    expect((posts[0].payload as Record<string, unknown>).expression).toBe('grade')
+  })
+
+  it('a dotless field blueprint never guesses a dataset — the guard blocks instead', async () => {
+    mockApi()
+    await mountView('/admin/semantic?ds=demo&bp_draft_kind=field&bp_draft_name=grade')
+    await settle()
+    expect(dialogInput().value).toBe('grade')
+    findButton(document.body, 'Create draft').click()
+    await settle()
+    expect(calls('/v1/admin/semantic/demo/drafts')).toHaveLength(0)
+  })
+
+  it('bp_draft_id deep link opens the draft drawer (the confirm exit)', async () => {
+    mockApi()
+    await mountView(
+      '/admin/semantic?ds=demo&tab=pending&bp_draft_kind=metric&bp_draft_name=avg_salary&bp_draft_id=d1',
+    )
+    await settle()
+    expect(drawer().textContent).toContain('Draft · avg_salary')
+    expect(router.currentRoute.value.query.bp_draft_id).toBeUndefined()
+    expect(router.currentRoute.value.query.draft).toBe('d1')
+  })
+
+  it('a conflicted draft: pill, banner, confirm pre-disabled, blueprint button prefills', async () => {
+    mockApi()
+    DETAIL.drafts.pending.push({
+      id: 'd3',
+      kind: 'metric',
+      action: 'upsert',
+      name: 'avg_loan_amount',
+      note: 'refuse-conflict:name_declared:how much is an average loan?',
+      created_at: '2026-10-05T08:00:00Z',
+      payload: { expression: 'AVG(loan.amount)', datasets: ['loan'] },
+      conflict: { code: 'name_declared', message: '指标「avg_loan_amount」已声明' },
+    })
+    const view = await mountView('/admin/semantic?ds=demo&tab=pending')
+    await settle()
+
+    const row = rowByText(view, 'avg_loan_amount')
+    expect(row.text()).toContain('Conflict')
+
+    await row.trigger('click')
+    await settle()
+    const panel = drawer()
+    expect(panel.textContent).toContain('Conflict')
+    expect(panel.textContent).toContain('指标「avg_loan_amount」已声明')
+    // the draft validates fine — the disabled Confirm is purely the
+    // conflict guard (server refuses it too), not a validation failure
+    expect(panel.textContent).toContain('Validation passed')
+    expect(findButton(panel, 'Confirm').disabled).toBe(true)
+
+    findButton(panel, 'Create from this draft').click()
+    await settle()
+    expect(dialogInput().value).toBe('avg_loan_amount')
+    expect(dialogTextarea().value).toBe('AVG(loan.amount)')
+    expect(bodyText()).toContain('Prefilled from the draft')
+  })
+
+  it('a non-conflicted draft keeps its plain confirm (no pill, button enabled)', async () => {
+    mockApi()
+    const view = await mountView('/admin/semantic?ds=demo&tab=pending')
+    await settle()
+
+    expect(rowByText(view, 'avg_salary').text()).not.toContain('Conflict')
+    await rowByText(view, 'avg_salary').trigger('click')
+    await settle()
+    const panel = drawer()
+    expect(panel.querySelector('.sem-bad-draft')).toBeNull()
+    expect(findButton(panel, 'Confirm').disabled).toBe(false)
+    expect(panel.textContent).not.toContain('Create from this draft')
+  })
+
   it('filtered-empty names the state and clears filters in one click', async () => {
     mockApi()
     const view = await mountView('/admin/semantic?ds=demo&q=zzz-no-match')

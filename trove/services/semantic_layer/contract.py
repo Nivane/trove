@@ -319,10 +319,15 @@ def _decode_gaps(raw: Any) -> tuple[dict[str, str], ...] | None:
     for item in raw:
         if not isinstance(item, dict):
             return None
-        out.append({
+        entry = {
             "reason": str(item.get("reason") or ""),
             "component": str(item.get("component") or ""),
-        })
+        }
+        # 值类缺口第三键(提问里的原始字面量,候选生成做证据)。缺席容忍
+        # ——老 wire(两键)解码结果与今天逐字节相同。
+        if item.get("value") is not None:
+            entry["value"] = str(item["value"])
+        out.append(entry)
     return tuple(out)
 
 

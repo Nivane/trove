@@ -18,14 +18,18 @@
     compiler the chat path uses before a draft is created;
   - drafts are shown as a server-computed diff, validated before applying;
   - bulk approve/reject goes through the batch endpoint and renders
-    per-item failures with a retry.
+    per-item failures with a retry;
+  - conflicted drafts (A2) carry a server annotation: they render as such,
+    confirm is pre-disabled (the server refuses them too), and "create from
+    this draft" — in the drawer, or via the refusal card's bp_* deep link —
+    opens the matching dialog prefilled with the draft's own content.
 
   All copy comes from i18n (`sem*` keys); server strings (lint messages,
   diff rows) are transcribed verbatim — they are data, not UI copy.
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ChevronDown, Copy, Plus, RefreshCw, Search, TriangleAlert } from 'lucide-vue-next'
 import type {
   DatasourceInfo,
@@ -70,6 +74,7 @@ interface AuditEntry {
 
 const ui = useUiStore()
 const router = useRouter()
+const route = useRoute()
 
 const PAGE_SIZE = 25
 
@@ -1231,6 +1236,7 @@ const metricForm = reactive({
 function openMetricDialog() {
   menuOpen.value = false
   metricIssues.value = []
+  blueprintNote.value = '' // a plain open is never a blueprint prefill
   Object.assign(metricForm, { name: '', expression: '', synonyms: '', datasets: [], definition: '', note: '' })
   metricOpen.value = true
 }
@@ -1281,6 +1287,7 @@ const ROLE_OPTIONS = ['identifier', 'measure', 'dimension', 'enum', 'time'] as c
 function openFieldDialog() {
   menuOpen.value = false
   fieldIssues.value = []
+  blueprintNote.value = '' // a plain open is never a blueprint prefill
   Object.assign(fieldForm, {
     dataset: datasetNames.value[0] ?? '',
     name: '',
@@ -1325,6 +1332,144 @@ async function saveField() {
     fieldBusy.value = false
   }
 }
+
+/* ── blueprint prefill (A2) ───────────────────────────────────────
+   A conflicted draft cannot be confirmed, so the refusal card offers
+   "create from this draft": the backend carries the draft's content in
+   the action's `payload`, NextActions relays it mechanically as bp_*
+   query params, and this page owns the meaning of every key. The params
+   live exactly one navigation — the dialog opens prefilled and the keys
+   are dropped from the URL immediately, so a refresh or a back-button
+   never replays a half-consumed state. */
+
+interface Blueprint {
+  kind: string
+  name: string
+  expression: string
+  datasets: string[]
+  synonyms: string[]
+  definition: string
+  datatype: string
+  /** Conflict diagnostic (server text, transcribed verbatim — data, not copy). */
+  note: string
+  /** confirm_draft deep link: open the draft drawer instead of a dialog. */
+  draftId: string
+}
+
+const blueprintNote = ref('')
+
+function bpParam(key: string): string {
+  const raw = route.query[`bp_${key}`]
+  return Array.isArray(raw) ? String(raw[raw.length - 1] ?? '') : raw == null ? '' : String(raw)
+}
+
+/** Lists travel comma-joined (NextActions joins arrays the same way). */
+function bpList(key: string): string[] {
+  return bpParam(key).split(',').filter(Boolean)
+}
+
+function clearBlueprintParams() {
+  const next = { ...route.query }
+  let dirty = false
+  for (const key of Object.keys(next)) {
+    if (key.startsWith('bp_')) {
+      delete next[key]
+      dirty = true
+    }
+  }
+  // Best effort, like useListQuery's own writes: a dropped navigation
+  // must never break the page.
+  if (dirty) {
+    void Promise.resolve(router.replace({ query: next, hash: route.hash })).catch(() => {})
+  }
+}
+
+function applyBlueprint(bp: Blueprint) {
+  if (bp.draftId) {
+    values.draft = bp.draftId
+    return
+  }
+  if (bp.kind === 'metric') {
+    openMetricDialog()
+    metricForm.name = bp.name
+    metricForm.expression = bp.expression
+    metricForm.datasets = [...bp.datasets]
+    metricForm.synonyms = bp.synonyms.join(', ')
+    metricForm.definition = bp.definition
+  } else if (bp.kind === 'field') {
+    openFieldDialog()
+    const dot = bp.name.lastIndexOf('.')
+    if (dot > 0) {
+      fieldForm.dataset = bp.name.slice(0, dot)
+      fieldForm.name = bp.name.slice(dot + 1)
+    } else {
+      // The name is not dataset.field (one of the conflict causes): never
+      // guess a dataset — leave the select empty so the admin picks one.
+      fieldForm.dataset = ''
+      fieldForm.name = bp.name
+    }
+    fieldForm.expression = bp.expression
+    fieldForm.datatype = bp.datatype
+    fieldForm.synonyms = bp.synonyms.join(', ')
+    fieldForm.description = bp.definition
+  } else {
+    return // unknown kind: nothing to prefill (params still get cleared)
+  }
+  blueprintNote.value = bp.note
+}
+
+/** The URL half: refuse → next_actions → bp_* (kind/name/expression/
+ *  datasets/conflict_message; the richer draft payload fields — synonyms,
+ *  definition, datatype — only exist on the in-console drawer path). */
+function consumeBlueprint() {
+  const kind = bpParam('draft_kind')
+  const draftId = bpParam('draft_id')
+  if (!kind && !draftId) return
+  applyBlueprint({
+    kind,
+    name: bpParam('draft_name'),
+    expression: bpParam('expression'),
+    datasets: bpList('datasets'),
+    synonyms: bpList('synonyms'),
+    definition: bpParam('definition'),
+    datatype: bpParam('datatype'),
+    note: bpParam('conflict_message'),
+    draftId,
+  })
+  clearBlueprintParams()
+}
+
+/** The in-console half: the draft drawer's own "create from this draft". */
+function blueprintFromDraft() {
+  const d = draftSel.value
+  if (!d) return
+  const p = (d.payload ?? {}) as Record<string, unknown>
+  const str = (v: unknown) => (v == null ? '' : String(v))
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(String) : [])
+  const bp: Blueprint = {
+    kind: str(d.kind),
+    name: d.name,
+    expression: str(p.expression),
+    datasets: list(p.datasets),
+    synonyms: list(p.synonyms),
+    definition: str(p.definition ?? p.description),
+    datatype: str(p.datatype),
+    note: str(d.conflict?.message),
+    draftId: '',
+  }
+  applyBlueprint(bp)
+  values.draft = '' // close the drawer; the prefilled dialog is the next step
+}
+
+// Consume when the page has a loaded model (dataset names, drawer rows)
+// and bp_* keys are present. Idempotent: consuming clears the keys.
+watch(
+  () => [detail.value, route.query.bp_draft_kind, route.query.bp_draft_id] as const,
+  () => {
+    if (detail.value) consumeBlueprint()
+  },
+  { immediate: true },
+)
 
 const datasetOpen = ref(false)
 const datasetIssues = ref<SemanticIssueItem[]>([])
@@ -1910,6 +2055,9 @@ const pageTitle = computed(() =>
               </template>
               <template #cell-name="{ row }">
                 <span class="asset-name">{{ (row as SemanticDraft).name }}</span>
+                <span v-if="(row as SemanticDraft).conflict" class="pill pill-danger">
+                  {{ t('semDraftConflict', ui.lang) }}
+                </span>
               </template>
               <template #cell-note="{ row }">
                 <span class="cell-muted">{{ trunc((row as SemanticDraft).note ?? '', 32) || '—' }}</span>
@@ -2189,6 +2337,11 @@ const pageTitle = computed(() =>
         </div>
         <p v-if="draftSel.note" class="sem-block-text">{{ draftSel.note }}</p>
 
+        <div v-if="draftSel.conflict" class="sem-bad-draft" role="alert">
+          <strong>{{ t('semDraftConflict', ui.lang) }}</strong>
+          <p>{{ draftSel.conflict.message || t('semDraftConflictHint', ui.lang) }}</p>
+        </div>
+
         <div class="sem-check-result" role="status">
           <span v-if="draftChecking" class="cell-muted">{{ t('semLoading', ui.lang) }}</span>
           <span v-else-if="draftCheckError" class="pill pill-danger">{{ t('semValidateFailed', ui.lang) }}</span>
@@ -2231,8 +2384,21 @@ const pageTitle = computed(() =>
       </div>
 
       <template #footer>
-        <el-button size="small" :disabled="draftChecking || !draftCheck?.ok" @click="applyDraft">
+        <el-button
+          size="small"
+          :disabled="draftChecking || !draftCheck?.ok || !!draftSel?.conflict"
+          @click="applyDraft"
+        >
           {{ t('semConfirmDraft', ui.lang) }}
+        </el-button>
+        <el-button
+          v-if="draftSel?.conflict"
+          size="small"
+          type="primary"
+          plain
+          @click="blueprintFromDraft"
+        >
+          {{ t('semDraftFromBlueprint', ui.lang) }}
         </el-button>
         <el-button
           size="small"
@@ -2274,6 +2440,9 @@ const pageTitle = computed(() =>
       :close-on-click-modal="false"
     >
       <el-form label-position="top" @submit.prevent="saveMetric">
+        <p v-if="blueprintNote" class="sem-blueprint-note" role="status">
+          {{ t('semBlueprintPrefill', ui.lang, blueprintNote) }}
+        </p>
         <el-form-item :label="t('semName', ui.lang)" :error="fieldErrorOf(metricIssues, 'name')">
           <el-input v-model="metricForm.name" />
         </el-form-item>
@@ -2327,6 +2496,9 @@ const pageTitle = computed(() =>
       :close-on-click-modal="false"
     >
       <el-form label-position="top" @submit.prevent="saveField">
+        <p v-if="blueprintNote" class="sem-blueprint-note" role="status">
+          {{ t('semBlueprintPrefill', ui.lang, blueprintNote) }}
+        </p>
         <el-form-item :label="t('semDatasetForField', ui.lang)" :error="fieldErrorOf(fieldIssues, 'name')">
           <el-select v-model="fieldForm.dataset" filterable class="sem-dialog-select">
             <el-option v-for="d in datasetNames" :key="d" :value="d" :label="d" />
@@ -3053,6 +3225,20 @@ const pageTitle = computed(() =>
   background: var(--danger-bg);
   font-size: var(--fs-xs);
   color: var(--danger-text);
+}
+.sem-bad-draft p {
+  margin: var(--sp-1) 0 0;
+}
+/* blueprint prefill: context, not an error — why this form is prefilled */
+.sem-blueprint-note {
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--warn, var(--accent));
+  border-radius: var(--r-sm);
+  background: var(--surface-muted);
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
 }
 .sem-diff {
   border: 1px solid var(--border-subtle);
