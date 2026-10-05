@@ -52,6 +52,7 @@
 /* 暗色令牌。首页(index.html)在 <html> 上写死 data-theme="dark"——整页定格
    暗色（海报式落地页）；其余页不写，跟随系统偏好（即上面的 @media 块）。 */
 :root[data-theme="dark"] {
+  color-scheme: dark; /* 滚动条/表单控件也跟着暗——深色页上一条亮滚动条就是「没暗透」 */
   --canvas: #09090b;
   --raised: #131316;
   --muted: #1c1c21;
