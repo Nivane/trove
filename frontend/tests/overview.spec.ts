@@ -6,7 +6,7 @@
  * real router, so what the assertions pin is the page's own behaviour:
  *
  *   · normal render — banner first, six KPIs that are entry points, the
- *     datasource table, the eight-kind todo queue, wizard and events;
+ *     datasource table, the eleven-kind todo queue, wizard and events;
  *   · degraded render — a block the aggregate could not fetch keeps its own
  *     error face, an inexact count renders as ≥ N, and null never becomes 0;
  *   · URL protocol — win lives in the query (invalid values self-heal),
@@ -79,7 +79,7 @@ function healthy(): OverviewPayload {
       count_exact: true,
     },
     todos: {
-      total: 318,
+      total: 319,
       count_exact: false,
       items: [
         {
@@ -137,6 +137,24 @@ function healthy(): OverviewPayload {
           note: 'capped',
         },
         {
+          kind: 'action_template',
+          count: 0,
+          count_exact: true,
+          available: true,
+          samples: [],
+          href: '/admin/actions?tab=templates',
+          note: '',
+        },
+        {
+          kind: 'action_proposal',
+          count: 0,
+          count_exact: true,
+          available: true,
+          samples: [],
+          href: '/admin/actions?tab=proposals&status=open',
+          note: '',
+        },
+        {
           kind: 'job_failed',
           count: 2,
           count_exact: true,
@@ -152,6 +170,15 @@ function healthy(): OverviewPayload {
           available: true,
           samples: [],
           href: '/admin/users?status=nogrant',
+          note: '',
+        },
+        {
+          kind: 'datasource_uninitialized',
+          count: 1,
+          count_exact: true,
+          available: true,
+          samples: ['wh'],
+          href: '/admin/datasources',
           note: '',
         },
       ],
@@ -368,8 +395,8 @@ describe('OverviewView', () => {
 
     // six KPI tiles, each carrying its own count discipline
     expect(view.findAll('.kpi-tile')).toHaveLength(6)
-    expect(kpiTile(view, 'Pending items').text()).toContain('≥ 318')
-    expect(kpiTile(view, 'Pending items').text()).toContain('across all eight sources')
+    expect(kpiTile(view, 'Pending items').text()).toContain('≥ 319')
+    expect(kpiTile(view, 'Pending items').text()).toContain('11 sources total')
     expect(kpiTile(view, 'Questions').text()).toContain('120')
     expect(kpiTile(view, 'Questions').text()).toContain('last 24h')
     expect(kpiTile(view, 'Success rate').text()).toContain('92.5%')
@@ -392,15 +419,23 @@ describe('OverviewView', () => {
     expect(demoRow.text()).toContain('12 lessons · 40 examples')
     expect(demoRow.text()).toContain('verified')
 
-    // todo queue: eight kinds, ≥ N for capped, an explicit no-page chip
+    // todo queue: all eleven kinds, ≥ N for capped, an explicit no-page chip
     const tq = view.findAll('.tq-row')
-    expect(tq).toHaveLength(8)
+    expect(tq).toHaveLength(11)
+    // every server kind must land on a label + icon — a kind missing from
+    // TodoQueue's maps renders a blank row (the regression this pins)
+    const labels = tq.map((r) => r.find('.tq-label').text())
+    expect(labels.every((l) => l.trim().length > 0)).toBe(true)
+    expect(labels).toContain('Action templates')
+    expect(labels).toContain('Action proposals')
+    expect(labels).toContain('Uninitialized datasources')
+    expect(view.findAll('.tq-row .tq-icon svg')).toHaveLength(11)
     const examples = tq.find((r) => r.text().includes('KB examples'))!
     expect(examples.text()).toContain('≥ 280')
     expect(examples.text()).toContain('capped')
     const memPref = tq.find((r) => r.text().includes('Memory preference drafts'))!
     expect(memPref.text()).toContain('no page yet')
-    expect(view.find('#todos').text()).toContain('≥ 318')
+    expect(view.find('#todos').text()).toContain('≥ 319')
 
     // wizard step 3 is the one still open, and links to its filter
     expect(hrefs(view)).toContain('/admin/users?status=nogrant')

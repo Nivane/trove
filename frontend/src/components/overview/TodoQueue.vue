@@ -1,5 +1,9 @@
 <!--
-  TodoQueue — the eight todo sources in one card (设计稿 §2「待办队列」).
+  TodoQueue — every todo source in one card (设计稿 §2「待办队列」).
+
+  The kind set mirrors the server's `_TODO_HREFS` (审批八类 + 运维三类) — a kind
+  without a label/icon here renders as a blank row, so both maps stay exhaustive
+  over `OverviewTodoKind` (the compiler enforces it).
 
   Every number here was fanned out server-side once; this component only
   renders it. Two honesty rules from the design doc are implemented here:
@@ -19,10 +23,13 @@ import {
   BookOpen,
   BookOpenCheck,
   Brain,
+  ClipboardCheck,
   Clock,
+  DatabaseZap,
   FileText,
   Layers3,
   Radar,
+  Send,
   UserX,
 } from 'lucide-vue-next'
 import { t } from '../../i18n'
@@ -42,8 +49,11 @@ const KIND_LABEL: Record<OverviewTodoKind, keyof typeof import('../../i18n').mes
   skill_draft: 'ovTodoSkillDraft',
   memory_preference: 'ovTodoMemoryPref',
   drift: 'ovTodoDrift',
+  action_template: 'ovTodoActionTemplate',
+  action_proposal: 'ovTodoActionProposal',
   job_failed: 'ovTodoJobFailed',
   user_nogrant: 'ovTodoUserNogrant',
+  datasource_uninitialized: 'ovTodoDatasourceUninit',
 }
 
 const KIND_ICON: Record<OverviewTodoKind, Component> = {
@@ -53,8 +63,11 @@ const KIND_ICON: Record<OverviewTodoKind, Component> = {
   skill_draft: BookOpenCheck,
   memory_preference: Brain,
   drift: Radar,
+  action_template: ClipboardCheck,
+  action_proposal: Send,
   job_failed: Clock,
   user_nogrant: UserX,
+  datasource_uninitialized: DatabaseZap,
 }
 
 /** `≥ N` for inexact counts, `—` for a count nobody could produce. */

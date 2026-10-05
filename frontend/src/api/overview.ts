@@ -62,6 +62,9 @@ export interface OverviewUsage {
   count_exact: boolean
 }
 
+/** 待办队列的全部 kinds —— 与后端 overview `_TODO_HREFS` 一一对应（11 类：
+ * 审批八类 + 运维三类）。少一个,队列里那一行就没有标签与图标（渲染空行）,
+ * 所以这张联合类型是**契约**而非视图偏好。 */
 export type OverviewTodoKind =
   | 'kb_lesson'
   | 'kb_example'
@@ -69,8 +72,11 @@ export type OverviewTodoKind =
   | 'skill_draft'
   | 'memory_preference'
   | 'drift'
+  | 'action_template'
+  | 'action_proposal'
   | 'job_failed'
   | 'user_nogrant'
+  | 'datasource_uninitialized'
 
 export interface OverviewTodoItem {
   kind: OverviewTodoKind

@@ -257,7 +257,7 @@
       </section>
 
       <div class="ov-cols">
-        <!-- todo queue: eight sources, one total -->
+        <!-- todo queue: all sources, one total -->
         <section id="todos" class="ov-card" tabindex="-1">
           <header class="ov-card-head">
             <div>
@@ -681,7 +681,7 @@ const kpiTiles = computed<KpiTileSpec[]>(() => {
       key: 'todos',
       label: t('ovKpiTodos', ui.lang),
       value: todos ? fmtCount(todos.total, todos.count_exact) : '—',
-      sub: todos ? t('ovKpiTodosSub', ui.lang) : t('ovKpiNoData', ui.lang),
+      sub: todos ? t('ovKpiTodosSub', ui.lang, todos.items.length) : t('ovKpiNoData', ui.lang),
       anchor: 'todos',
     },
     {
