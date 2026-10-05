@@ -2040,6 +2040,14 @@ export const messages = {
     topicScopeTables: '{n} 张表',
     topicStarters: '从这里开始问',
     jobTopicHint: '只答该主题域声明的数据范围;不限定则答整个数据源。域不存在或已失效在保存时会被拒绝。',
+    verifyStripVerified: '已验证',
+    verifyStripSteps: '{n} 道工序',
+    verifyStripRework: '反思 {n} 轮修正',
+    verifyStripOpen: '展开工序面板',
+    sgVerifyTitle: '答案卡：验证条 + 步骤计时条',
+    sgVerifyDesc:
+      '答案上方的六段骨架条（路由·关联·计划·生成·执行·校验）走一段亮一段，右端是「已验证」印章——只有 verdict=OK 才盖章；工序数取自本轮步骤，历史被截断时带 +。计时条用在分析面板展开态：长度与耗时成正比，最短 3px。',
+    sgStepBars: '步骤计时条',
   },
   en: {
     brand: 'Trove',
@@ -4127,6 +4135,14 @@ export const messages = {
     topicScopeTables: '{n} tables',
     topicStarters: 'Start with one of these',
     jobTopicHint: 'Answers are scoped to the domain’s declared datasets; unrestricted answers across the whole datasource. An unknown or expired domain is rejected on save.',
+    verifyStripVerified: 'Verified',
+    verifyStripSteps: '{n} steps',
+    verifyStripRework: '{n} rework round(s)',
+    verifyStripOpen: 'Open step panel',
+    sgVerifyTitle: 'Answer card: verify strip + step timing bars',
+    sgVerifyDesc:
+      'Six hairline segments above the answer (Route · Link · Plan · Generate · Execute · Verify) light up as the pipeline reaches them; the right end carries the “Verified” seal — stamped only when verdict=OK. The step count comes from this turn’s steps, with a + when history was truncated. Timing bars live in the analysis panel’s expanded state: length is proportional to elapsed time, 3px minimum.',
+    sgStepBars: 'Step timing bars',
   },
 }
 

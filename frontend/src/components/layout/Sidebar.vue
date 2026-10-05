@@ -55,7 +55,9 @@
               <span v-if="s.pinned" class="session-pin" :title="t('pinSession', ui.lang)">
                 <Pin :size="11" />
               </span>
-              <span class="session-title">{{ title(s) }}</span>
+              <!-- 全文入 DOM（单行省略交给 CSS），悬停 native tooltip 显全文；
+                   JS 截断会把 24 字之后的都切掉、hover 也补不回来。 -->
+              <span class="session-title" :title="fullTitle(s)">{{ fullTitle(s) }}</span>
             </template>
             <span class="session-more" @click.stop="openMenu(s, $event)"><MoreVertical :size="13" /></span>
             <span class="session-del" @click.stop="remove(s.session_id)"><X :size="12" /></span>
@@ -523,6 +525,12 @@ async function onProfileCmd(cmd: string) {
 function title(s: SessionRow): string {
   if (s.title && s.title.trim()) return trunc(s.title.trim(), 24)
   return trunc(s.session_id.slice(0, 8), 16)
+}
+
+/** 会话列表用：不截断（单行省略由 CSS 负责），hover tooltip 显全文。 */
+function fullTitle(s: SessionRow): string {
+  if (s.title && s.title.trim()) return s.title.trim()
+  return s.session_id.slice(0, 8)
 }
 
 /** Scroll near the bottom → load the next page (下拉加载). */

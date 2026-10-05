@@ -1,0 +1,41 @@
+/* 品牌字体（自托管）—— Familjen Grotesk（拉丁/数字）+ IBM Plex Mono（数据）
+ *
+ * 为什么自托管而不是外链 Google Fonts：企业部署常在内网/离线环境，
+ * 外链失败会静默回退系统字——品牌感恰恰死得无声无息。文件很小
+ * （latin 子集共约 39KB），与文档站同源同族，界面与文档一套笔迹。
+ *
+ * 两个家族都只声明 latin 子集（unicode-range 限定）：中文由系统字栈接管
+ * （PingFang SC / 微软雅黑），这里只负责拉丁字母与数字——数字是主角
+ * （金额、耗时、run id），配 tabular-nums 纵向对齐。
+ * 许可：SIL OFL 1.1，见同目录 OFL-FamiljenGrotesk.txt / OFL-IBMPlexMono.txt。
+ */
+@font-face {
+  font-family: "Familjen Grotesk";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("../fonts/familjen-grotesk-latin-var.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}

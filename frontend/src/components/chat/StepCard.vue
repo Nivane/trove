@@ -1,6 +1,15 @@
 <template>
-  <details class="step-card" :class="[`node-${cssNode}`, `status-${status}`]" :open="status !== 'done'">
+  <details
+    class="step-card"
+    :class="[`node-${cssNode}`, `status-${status}`, { 'has-bar': bar !== undefined }]"
+    :open="status !== 'done'"
+  >
     <summary>
+      <!-- 计时条槽（分析面板展开态）：固定槽宽对齐步骤名，条长∝耗时。
+           undefined = 不占槽（非面板场景）；null = 空槽（无耗时可依）。 -->
+      <span v-if="bar !== undefined" class="step-bar-slot" aria-hidden="true">
+        <span v-if="bar !== null" class="step-bar" :style="{ width: `${bar}px` }" />
+      </span>
       <span class="step-dot" />
       <span class="step-node">{{ displayLabel }}</span>
       <span v-if="view.fastPath" class="chip chip-fast">{{ t('fastPathChip', ui.lang) }}</span>
@@ -262,6 +271,9 @@ const props = defineProps<{
   attempt?: number
   /** Live elapsed (ms) shown on a running/error step. */
   liveMs?: number | null
+  /** 计时条宽（px）。undefined = 不画槽（步骤卡默认）；null = 画空槽
+   *  （对齐用，没有可依据的耗时）；数字 = 实条。 */
+  bar?: number | null
 }>()
 const ui = useUiStore()
 

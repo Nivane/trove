@@ -14,6 +14,15 @@ import {
   blockLabel,
   ruleLabel,
   fmtTokens,
+  stageOf,
+  stageLabel,
+  verifyStages,
+  isDataRound,
+  correctionRounds,
+  groupOf,
+  groupSteps,
+  groupElapsedMs,
+  barWidthPx,
 } from '../src/utils/steps'
 
 describe('step payload extraction (backend `step` events carry detail.{...})', () => {
@@ -207,5 +216,119 @@ describe('analysis panel labels', () => {
     expect(ruleLabel('F4-a', 'zh')).toBe('排序')
     expect(ruleLabel('count-multirow', 'zh')).toBe('计数形状')
     expect(ruleLabel('weird-rule', 'zh')).toBe('weird-rule')
+  })
+})
+
+/* ── 验证条 / 工段分组 / 计时条（答案卡视觉升级）────────────── */
+
+const step = (
+  node: string,
+  ms?: number,
+  extra: Record<string, unknown> = {},
+): { node: string; payload: Record<string, unknown> } => ({
+  node,
+  payload: { node, ...(ms != null ? { elapsed_ms: ms } : {}), ...extra },
+})
+
+describe('验证条（六段骨架）', () => {
+  it('stageOf：认识的节点映射到六段，不认识（hitl / answer_*）归 null', () => {
+    expect(stageOf('route_intent')).toBe('route')
+    expect(stageOf('parse_date')).toBe('route')
+    expect(stageOf('schema_linking')).toBe('link')
+    expect(stageOf('query_sketch')).toBe('plan')
+    expect(stageOf('gen_generate')).toBe('gen')
+    expect(stageOf('semantics')).toBe('gen')
+    expect(stageOf('execute_sql')).toBe('exec')
+    expect(stageOf('reflect')).toBe('verify')
+    expect(stageOf('hitl')).toBeNull()
+    expect(stageOf('answer_chitchat')).toBeNull()
+  })
+
+  it('stageLabel 中英双写', () => {
+    expect(stageLabel('verify', 'zh')).toBe('校验')
+    expect(stageLabel('verify', 'en')).toBe('Verify')
+  })
+
+  it('verifyStages 取集合；isDataRound 只认走数链（生成/执行/校验亮过）', () => {
+    const lit = verifyStages([
+      step('route_intent'),
+      step('gen_sql'),
+      step('validate'),
+    ])
+    expect([...lit].sort()).toEqual(['gen', 'route', 'verify'])
+    expect(isDataRound([step('route_intent'), step('gen_sql')])).toBe(true)
+    // 元数据 / 拒绝 / 闲聊轮不套这条骨架
+    expect(isDataRound([step('answer_metadata'), step('metadata_check')])).toBe(false)
+    expect(isDataRound([step('refuse')])).toBe(false)
+    expect(isDataRound([])).toBe(false)
+  })
+
+  it('correctionRounds：取反思步骤 retry_count 的最大值；没跑过反思 → null', () => {
+    expect(correctionRounds([step('gen_sql', 10)])).toBeNull()
+    expect(correctionRounds([step('reflect', 5, { retry_count: 0 })])).toBe(0)
+    expect(
+      correctionRounds([
+        step('reflect', 5, { retry_count: 0 }),
+        step('reflect', 5, { retry_count: 1 }),
+      ]),
+    ).toBe(1)
+  })
+})
+
+describe('工段分组（分析面板）', () => {
+  it('连续同段并组；回退重来再开一个「生成」组 —— 时序不丢', () => {
+    const steps = [
+      step('route_intent'),
+      step('schema_linking'),
+      step('gen_sql'),
+      step('execute_sql'),
+      step('validate'),
+      step('reflect'),
+      // 反思判定重来 → 第二轮生成 / 执行
+      step('gen_sql'),
+      step('execute_sql'),
+      step('output'),
+    ]
+    const groups = groupSteps(steps, 'zh')
+    expect(groups.map((g) => g.group)).toEqual([
+      'understand',
+      'generate',
+      'verify',
+      'generate',
+      'verify',
+      'deliver',
+    ])
+    // 组内保留全局下标（attempt 计数与计时条取值都靠它）
+    expect(groups[2].items.map((it) => it.index)).toEqual([3, 4, 5])
+    expect(groups[0].label).toBe('理解')
+    expect(groups[0].items.map((it) => it.index)).toEqual([0, 1])
+  })
+
+  it('组名中英双写；未映射节点归 other（不硬塞进四段）', () => {
+    expect(groupOf('answer_chitchat')).toBe('other')
+    expect(groupOf('hitl')).toBe('verify')
+    expect(groupSteps([step('output')], 'en')[0].label).toBe('Deliver')
+  })
+
+  it('groupElapsedMs：只计带 elapsed_ms 的步骤；一个都没有 → null（组头不写）', () => {
+    expect(groupElapsedMs([step('gen_sql', 1200), step('validate', 300)])).toBe(1500)
+    expect(groupElapsedMs([step('gen_sql'), step('validate')])).toBeNull()
+    expect(groupElapsedMs([])).toBeNull()
+  })
+})
+
+describe('计时条（barWidthPx）', () => {
+  it('长 ∝ 耗时：最长占满槽，最短 3px，超过槽被夹住', () => {
+    expect(barWidthPx(1000, 1000, 44)).toBe(44)
+    expect(barWidthPx(500, 1000, 44)).toBe(22)
+    expect(barWidthPx(1, 1000, 44)).toBe(3)
+    expect(barWidthPx(5000, 1000, 44)).toBe(44)
+  })
+
+  it('没有可依据的刻度 / 耗时 → null（不画条）', () => {
+    expect(barWidthPx(undefined, 1000)).toBeNull()
+    expect(barWidthPx('120' as unknown, 1000)).toBeNull()
+    expect(barWidthPx(100, 0)).toBeNull()
+    expect(barWidthPx(-5, 1000)).toBeNull()
   })
 })
