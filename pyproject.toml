@@ -58,6 +58,13 @@ doris = [
 clickhouse = [
     "clickhouse-connect>=1.7.1",
 ]
+# floor 4.0 不是随手写的:适配器靠 ``execute(_statement_params={"requestId": …})``
+# 注入取消用的 requestId(终止路径按它打 abort),3.x 的驱动不认这个注入、
+# 会另生成 id —— 在 3.x 上跑会表现为「abort 被服务端拒 → 终止永远失败」
+# (诚实但无用)。
+snowflake = [
+    "snowflake-connector-python>=4.0",
+]
 # 本地 dense embedder(bge-m3)与 cross-encoder 精排(bge-reranker):拉入
 # FlagEmbedding(torch),离线、无需 LLM 凭证;不装则退化为 API embedder +
 # 无精排(默认档),功能不受影响。

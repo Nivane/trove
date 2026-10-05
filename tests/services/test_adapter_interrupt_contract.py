@@ -27,7 +27,7 @@ class TestTheDeclarationMatchesTheCode:
             )
 
     def test_every_registered_dialect_can_be_terminated(self):
-        """今天六个方言**都**能终止 —— 与设计 §7.3 的矩阵有一处不一致:
+        """今天注册的方言**都**能终止 —— 与设计 §7.3 的矩阵有一处不一致:
         矩阵把 SQLite / DuckDB 写成「不支持(进程内,asyncio cancel 已足够)」,
         而存量代码里两者都实现了真正的跨线程取消。
 

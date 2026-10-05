@@ -1,6 +1,6 @@
 """适配器侧的画像契约(执行画像设计 §8.2 B / §9.2)。
 
-设计 §8.2 否掉了「统一查 information_schema」——六个方言差异太大(ClickHouse 走
+设计 §8.2 否掉了「统一查 information_schema」——七个方言差异太大(ClickHouse 走
 ``system.tables``、Doris 走 ``SHOW PARTITIONS``、SQLite 根本没有),统一 SQL 会退化
 成「支持最小的那个」。选的是**逐 adapter 实现 + ``capabilities`` 显式声明**。
 
@@ -29,6 +29,7 @@ from trove.services.datasource.adapters.doris import DorisAdapter
 from trove.services.datasource.adapters.duckdb import DuckDBAdapter
 from trove.services.datasource.adapters.mysql import MySQLAdapter
 from trove.services.datasource.adapters.postgres import PostgresAdapter
+from trove.services.datasource.adapters.snowflake import SnowflakeAdapter
 from trove.services.datasource.adapters.sqlite import SQLiteAdapter
 
 
@@ -84,7 +85,7 @@ class TestBaseContract:
     async def test_default_implementation_reuses_get_schema(self):
         """不做方言查询也能给出画像 —— 行数在 ``get_schema`` 里早就有了。
 
-        六个适配器全都填了 ``row_count_estimate``,所以第 2 档今天就能覆盖全部
+        七个适配器全都填了 ``row_count_estimate``,所以第 2 档今天就能覆盖全部
         方言,不需要为它新写任何 SQL。
         """
         adapter = _StubAdapter([_table("a", 100), _table("b", 200)])
@@ -127,7 +128,7 @@ class TestBaseContract:
 
 
 class TestAdapterCapabilityMatrix:
-    """六个适配器各自声明什么 —— **矩阵是显式的,不是推出来的**。
+    """七个适配器各自声明什么 —— **矩阵是显式的,不是推出来的**。
 
     这既是能力矩阵本身,也是防回归:新加适配器忘了声明时,这里会红。
 
@@ -143,6 +144,10 @@ class TestAdapterCapabilityMatrix:
         PostgresAdapter: {"row_count", "bytes", "last_analyzed"},
         MySQLAdapter: {"row_count", "bytes", "last_modified"},
         DorisAdapter: {"row_count"},
+        # 雪花的 bytes / last_modified 没有可验证的对等口径(存储计费另算、
+        # 元数据变更时间不是数据截止)—— 只声明 ROW_COUNT(视图为 NULL,
+        # 归一成「没有依据」)。
+        SnowflakeAdapter: {"row_count"},
         ClickHouseAdapter: {
             "row_count", "bytes", "partition_column",
             "partition_count", "latest_partition",
@@ -152,7 +157,7 @@ class TestAdapterCapabilityMatrix:
     @pytest.mark.parametrize(
         "adapter_cls",
         [SQLiteAdapter, PostgresAdapter, MySQLAdapter, DorisAdapter,
-         ClickHouseAdapter, DuckDBAdapter],
+         ClickHouseAdapter, DuckDBAdapter, SnowflakeAdapter],
     )
     def test_every_adapter_declares_its_schema_backed_fields(self, adapter_cls):
         caps = adapter_cls.profile_capabilities

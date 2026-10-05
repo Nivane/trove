@@ -3,7 +3,7 @@
 import pytest
 
 from trove.core.errors import DatasourceError
-from trove.services.datasource.urls import parse_datasource_url
+from trove.services.datasource.urls import build_url, parse_datasource_url
 
 
 class TestParseDatasourceUrl:
@@ -119,6 +119,77 @@ class TestParseDatasourceUrl:
         cfg = parse_datasource_url("duckdb://:memory:")
         assert cfg.connection_params == {"path": ":memory:"}
 
+    # ── 云仓形状(snowflake):账号 + 两段 path + query 参数 ──────
+
+    def test_snowflake_full(self):
+        cfg = parse_datasource_url(
+            "snowflake://trove_user:s3cr3t@xy12345/FIN/PUBLIC"
+            "?warehouse=COMPUTE_WH&role=ANALYST&private_key_file=/keys/trove.p8"
+        )
+        assert cfg.type == "snowflake"
+        assert cfg.name == "FIN.PUBLIC"
+        assert cfg.connection_params == {
+            "account": "xy12345",
+            "user": "trove_user",
+            "password": "s3cr3t",
+            "database": "FIN",
+            "schema": "PUBLIC",
+            "warehouse": "COMPUTE_WH",
+            "role": "ANALYST",
+            "private_key_file": "/keys/trove.p8",
+        }
+        assert cfg.vector_backend == "sqlite"   # 云仓旁挂不了 pgvector
+        assert cfg.default is True
+
+    def test_snowflake_bare_form(self):
+        """最简形态:没账号密码、没 warehouse/role —— 缺省交给驱动。"""
+        cfg = parse_datasource_url("snowflake://acct/DB/S")
+        assert cfg.connection_params == {
+            "account": "acct", "user": "", "password": "",
+            "database": "DB", "schema": "S",
+        }
+
+    def test_snowflake_account_keeps_its_case(self):
+        """``urlparse().hostname`` 会把 netloc **折成小写** —— 账号名会就此变脸。
+
+        账号从**原始 netloc** 取(剥 userinfo、只做百分号解码),大小写原样保留。
+        """
+        cfg = parse_datasource_url("snowflake://user@MyOrg-Acct/DB/S")
+        assert cfg.connection_params["account"] == "MyOrg-Acct"
+
+    def test_snowflake_credentials_are_percent_decoded(self):
+        cfg = parse_datasource_url("snowflake://u%40corp:p%3Aw%2Fd@acct/DB/S")
+        assert cfg.connection_params["user"] == "u@corp"
+        assert cfg.connection_params["password"] == "p:w/d"
+
+    def test_snowflake_no_default_port_entry(self):
+        """云仓不进 ``DEFAULT_PORTS``:那张表是「host 形状」的注册表,进去就会
+        让 host 形状的解析路径接住一个它读不懂的连接串(netloc 不是主机名)。
+        """
+        from trove.services.datasource.urls import CLOUD_SCHEMES, DEFAULT_PORTS
+
+        assert "snowflake" in CLOUD_SCHEMES
+        assert "snowflake" not in DEFAULT_PORTS
+
+    def test_snowflake_name_carries_the_schema(self):
+        """同一个库里两个模式是两个可查单元 —— 只拿库名当名字,第二个注册会
+        撞上管理端的「已存在」。"""
+        a = parse_datasource_url("snowflake://acct/FIN/PUBLIC")
+        b = parse_datasource_url("snowflake://acct/FIN/REPORTING")
+        assert a.name == "FIN.PUBLIC"
+        assert b.name == "FIN.REPORTING"
+
+    @pytest.mark.parametrize("url", [
+        "snowflake://acct/DB",            # 少一段(模式没给)
+        "snowflake://acct/DB/S/EXTRA",    # 多一段
+        "snowflake://acct//S",            # 空库名
+        "snowflake://acct/DB/",           # 空模式名
+        "snowflake:///DB/S",              # 没账号
+    ])
+    def test_snowflake_bad_shapes_are_refused(self, url):
+        with pytest.raises(DatasourceError):
+            parse_datasource_url(url)
+
     def test_unknown_scheme_raises(self):
         with pytest.raises(DatasourceError):
             parse_datasource_url("oracle://x@host/db")
@@ -130,3 +201,50 @@ class TestParseDatasourceUrl:
     def test_invalid_port_raises(self):
         with pytest.raises(DatasourceError):
             parse_datasource_url("mysql://root@127.0.0.1:notaport/db")
+
+
+class TestBuildUrl:
+    """反向构造(管理端编辑对话框的预填 + 详情接口的 ``url`` 字段)。
+
+    往返必须**逐字节**稳定:一次 parse→build 就换个拼法的话,对话框每次打开
+    都会显示一个与上次不同的连接串(还可能是无效的那个)。
+    """
+
+    @pytest.mark.parametrize("url", [
+        "mysql://root:root@127.0.0.1:3306/apboa",
+        "postgres://trove:secret@pg:5432/trove",
+        "clickhouse://default:pass@127.0.0.1:8123/events",
+        "doris://root:root@127.0.0.1:9030/apboa",
+        "sqlite:///tmp/data.db",
+        "duckdb://:memory:",
+    ])
+    def test_the_existing_schemes_round_trip_unchanged(self, url):
+        """老 scheme 的往返**逐字节不变** —— 云仓分支不许碰到它们。"""
+        assert build_url(parse_datasource_url(url)) == url
+
+    @pytest.mark.parametrize("url", [
+        "snowflake://acct/DB/S",
+        "snowflake://trove_user:s3cr3t@xy12345/FIN/PUBLIC",
+        "snowflake://user@MyOrg-Acct/DB/S",
+        "snowflake://acct/FIN/PUBLIC?warehouse=COMPUTE_WH",
+        "snowflake://acct/FIN/PUBLIC"
+        "?warehouse=COMPUTE_WH&role=ANALYST&private_key_file=/keys/trove.p8",
+    ])
+    def test_snowflake_round_trips_byte_for_byte(self, url):
+        assert build_url(parse_datasource_url(url)) == url
+
+    def test_snowflake_credentials_come_back_encoded(self):
+        cfg = parse_datasource_url("snowflake://u%40corp:p%3Aw%2Fd@acct/DB/S")
+        assert build_url(cfg) == "snowflake://u%40corp:p%3Aw%2Fd@acct/DB/S"
+
+    def test_a_missing_identity_is_refused(self):
+        """账号/库/模式是连接身份的一部分 —— 拼不出来就**报错**,不产出一个
+        少了半截的连接串(那会让编辑对话框预填一条无效 URL)。"""
+        from trove.core.types import DatasourceConfig
+
+        cfg = DatasourceConfig(
+            name="broken", type="snowflake",
+            connection_params={"account": "", "database": "DB", "schema": "S"},
+        )
+        with pytest.raises(DatasourceError):
+            build_url(cfg)

@@ -1,7 +1,7 @@
 """超时/取消后的**主动终止**(设计 §7.3 / §10 / I4)。
 
 为什么单独成模块 —— 因为终止这件事在存量代码里**已经发生了,只是没人看得见**:
-``DatabaseAdapter.interrupt()`` 早已存在(六个方言里四个实现了它),各适配器在
+``DatabaseAdapter.interrupt()`` 早已存在(注册的方言如今都实现了它),各适配器在
 ``execute()`` 的 ``except asyncio.CancelledError`` 里已经调它,而
 ``asyncio.wait_for`` 超时时取消的正是那个协程。也就是说 ``timeout_ms`` 一到,
 **kill 其实已经发出去了** —— 但 ``interrupt()`` 返回 None、异常吞进
