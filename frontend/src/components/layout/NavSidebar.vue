@@ -28,9 +28,13 @@ const groups = computed(() => navGroupsFor(auth.user?.role))
 <template>
   <aside class="sidebar admin-sidebar" :class="{ rail: props.collapsed }">
     <div class="brand" :class="{ 'brand-rail': props.collapsed }">
-      <span class="brand-mark"
+      <router-link
+        class="brand-mark"
+        to="/admin"
+        :title="t('backHome', ui.lang)"
+        :aria-label="t('backHome', ui.lang)"
         ><BrandMark :size="props.collapsed ? 20 : 24"
-      /></span>
+      /></router-link>
     </div>
 
     <nav class="admin-nav" :aria-label="t('adminNavLabel', ui.lang)">

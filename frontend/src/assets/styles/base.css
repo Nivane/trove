@@ -293,6 +293,12 @@ button:disabled {
   display: grid;
   place-items: center;
   font-size: var(--fs-sm);
+  /* 品牌标是回首页的链接：去掉链接默认下划线，hover 给一点可点的提示 */
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+.brand-mark:hover {
+  opacity: 0.75;
 }
 @keyframes brand-in {
   from {

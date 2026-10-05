@@ -398,6 +398,13 @@ describe('ConsoleShell — 既有页零改动地落在壳里', () => {
     expect(view.find('.page-stub').exists()).toBe(false)
   })
 
+  it('品牌标是回控制台首页的链接（/admin）', async () => {
+    await mountShell('/admin/kb')
+    const brand = document.querySelector('a.brand-mark')
+    expect(brand).not.toBeNull()
+    expect(brand?.getAttribute('href')).toBe('/admin')
+  })
+
   it('K3：当前项 aria-current="page"，父项不做全亮', async () => {
     await mountShell('/admin')
     expect(navLink('/admin')?.getAttribute('aria-current')).toBe('page')

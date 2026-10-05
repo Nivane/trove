@@ -5,7 +5,12 @@
   >
     <template v-if="ui.sidebarOpen">
       <div class="brand">
-        <span class="brand-mark"><BrandMark :size="24" /></span>
+        <router-link
+          class="brand-mark"
+          to="/"
+          :title="t('backHome', ui.lang)"
+          :aria-label="t('backHome', ui.lang)"
+        ><BrandMark :size="24" /></router-link>
         <button
           class="topbar-btn sidebar-toggle-btn"
           :title="t('toggleSidebar', ui.lang)"
