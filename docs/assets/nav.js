@@ -56,6 +56,19 @@
       ]
     },
     {
+      group: "设计深潜",
+      items: [
+        { href: "engineering/semantic-compiler.html", text: "语义编译边界" },
+        { href: "engineering/decomposition.html", text: "分解数学与驱动器树" },
+        { href: "engineering/statistics.html", text: "统计与噪声带" },
+        { href: "engineering/decision-engine.html", text: "判定内核" },
+        { href: "engineering/causal-whatif.html", text: "因果与模拟" },
+        { href: "engineering/closed-loop.html", text: "闭环与契约" },
+        { href: "engineering/action-safety.html", text: "行动安全架构" },
+        { href: "engineering/extension-governance.html", text: "扩展与治理" }
+      ]
+    },
+    {
       group: "数据能力",
       items: [
         { href: "capabilities/data.html", text: "数据能力总览" },
@@ -178,6 +191,21 @@
     // 从窄屏转到宽屏时补开；宽屏转窄屏交给用户自己折叠，不强关
     if (wide.addEventListener) wide.addEventListener("change", syncFold);
     else if (wide.addListener) wide.addListener(syncFold);
+
+    // 左栏是独立滚动容器：切页后新页面的左栏从顶部开始，当前项（可能在
+    // 列表很下方，比如「LLM 网关」）落在可视区外，读者得先自己往下滚才
+    // 找得到自己在哪。载入时把它滚到视野中央（宽屏才有滚动几何；窄屏
+    // 折叠态 rect 判定自然跳过）。用 rect 而不是 offsetTop：窄屏下
+    // .doc-nav 不是定位祖先，offsetTop 会相对 body。
+    var cur = host.querySelector("a.is-current");
+    if (cur) {
+      var hRect = host.getBoundingClientRect();
+      var cRect = cur.getBoundingClientRect();
+      if (cRect.top < hRect.top + 8 || cRect.bottom > hRect.bottom - 8) {
+        host.scrollTop +=
+          cRect.top - hRect.top - host.clientHeight / 2 + cRect.height / 2;
+      }
+    }
   }
 
   // ── 上下页 ───────────────────────────────────────────────

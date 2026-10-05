@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 语义编译边界：分级逃生梯——覆盖内出权威 SQL、软 MISS 出 PartialCompile 骨架交生成补齐、硬 MISS 拒绝并反问扩展模型、无语义模型整体拒绝；骨架保真与照抄两把校验尺，以及 LLM 草稿的 A/B 确定性验证门。">
+<title>语义编译边界 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>语义编译边界
+      </div>
+      <h1>语义编译边界</h1>
+      <p class="lede">
+        语义优先的系统里，每条问题都要先经过语义模型编译。核心设计问题是：
+        <strong>模型没覆盖到的地方怎么办</strong>——全有全无地拒绝，等于把「开箱即用」的旧毛病
+        换个地方长出来；无声放行，等于放弃语义边界。Trove 的答案是
+        <strong>分级逃生梯</strong>：能编译的部分权威化、缺的部分交给生成通道带着契约补齐、
+        结构性错误响亮拒绝并<strong>反问着把模型长大</strong>。这页讲四级梯子的分界线、
+        两把校验尺，以及「AI 起草、确定性验证、按档入库」的扩展闭环。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">边界不是一条线，是一架梯子</h2>
+
+    <p>
+      语义模型（<code>semantics.yml</code>）是生成的主视角与<strong>可答边界</strong>。
+      但「边界」有两种画法：一条线（在模型里就编译、不在就拒绝）和一架梯子
+      （按缺口性质分级：能保真的保真，能补齐的补齐，真错的才拒绝）。
+      线上方案的失败模式被 Trove 的早期版本实测过：一条没有「月均余额」声明的数据源，
+      对「上个月月均余额多少」的回答不该是拒绝——那是<strong>词表缺口</strong>，
+      不是能力缺口。
+    </p>
+
+    <p>
+      于是编译器的返回值本身就是一架梯子
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1340">compiler.py:1340 <span class="ref-line">CompileResult</span></a>
+      /
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1374">compiler.py:1374 <span class="ref-line">PartialCompile</span></a>
+      /
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1361">compiler.py:1361 <span class="ref-line">CompileMiss</span></a>，
+      三种类型、四条出口：
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    Q["query_sketch: 按语义模型编译计划"] --&gt; C{"编译结果"}
+    C --&gt;|"覆盖内"| OK["CompileResult<br/>权威 SQL 骨架注入 plan"]
+    C --&gt;|"软 MISS"| P["PartialCompile<br/>可解析部分权威化<br/>未解析组件记 compile_misses"]
+    C --&gt;|"硬 MISS"| M["CompileMiss<br/>触发 refuse 出口"]
+    OK --&gt; EXEC["execute_sql<br/>compiled_sql_matches · 照抄校验"]
+    P --&gt; GEN["gen_sql 按 plan 补齐未解析组件"]
+    GEN --&gt; EXEC2["execute_sql<br/>skeleton_preserved · 骨架保真校验"]
+    M --&gt; REF["refuse: 拒绝 + 反问扩展模型"]
+    M --&gt;|"模型整体缺失"| INIT["引导先建模 /kb init"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 四条出口。编译产物不同，执行侧用的校验尺也不同——partial 走骨架保真，compiled 走照抄。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>出口</th><th>触发条件</th><th>交付语义</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>权威编译</strong></td>
+            <td>计划落在模型覆盖内</td>
+            <td>编译器拼出完整 SQL 骨架注入 plan，生成通道以它为规格</td>
+          </tr>
+          <tr>
+            <td><strong>PartialCompile 骨架</strong></td>
+            <td><strong>软 MISS</strong>：词表/值/口径未声明（未声明 metric/字段/枚举值/时间分桶）</td>
+            <td>可解析部分<strong>权威化</strong>（join/过滤/分组），未解析组件交 gen_sql 按 plan 文本补齐——回答照常交付</td>
+          </tr>
+          <tr>
+            <td><strong>拒绝 + 反问</strong></td>
+            <td><strong>硬 MISS</strong>：结构性错误——fan-out、join 二义、未覆盖表、坏派生定义（环/超深/未解析）</td>
+            <td>不生成查询；同时 LLM 起草一份最小扩展声明，走确认流程后<strong>重答</strong></td>
+          </tr>
+          <tr>
+            <td><strong>整体拒绝</strong></td>
+            <td>数据源根本没有语义模型</td>
+            <td>明确提示先 <code>/kb init</code>——没有模型就没有边界可谈</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="miss">硬与软：闭集分类，未知按硬处理</h2>
+
+    <p>
+      分级不是模糊判断，是<strong>闭集分类</strong>：
+      <code>MISS_REASONS</code> 列举全部 34 种编译缺口
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1396">compiler.py:1396 <span class="ref-line">MISS_REASONS</span></a>，
+      再劈成两半——<code>HARD_MISS_REASONS</code> 13 种
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1437">compiler.py:1437 <span class="ref-line">HARD_MISS_REASONS</span></a>、
+      <code>SOFT_MISS_REASONS</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1456">compiler.py:1456 <span class="ref-line">SOFT_MISS_REASONS</span></a>。
+      分界判据是「<strong>跳过这个组件继续编译，产出还安全吗</strong>」：
+    </p>
+
+    <ul>
+      <li><strong>硬</strong>——放行会产出行倍增/笛卡尔积/引用未覆盖表/坏定义的 SQL。
+      这是一类 SQL 级的错误：查询看起来能跑，结果是错的。必须拒绝并把缺口暴露给用户。</li>
+      <li><strong>软</strong>——组件不在声明词表里，但<strong>跳过它</strong>继续编译是安全的：
+      骨架的 join/过滤/分组仍然权威，未解析部分由生成通道补，再由骨架保真校验、
+      rules 链、版本回归三层兜底。</li>
+    </ul>
+
+    <p>
+      分类表的维护纪律写在源码注释里：<strong>新增 MISS 分支时必须归入其中一边</strong>——
+      该集合是路由判定的唯一权威。而 <code>is_hard_miss</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/compiler.py#L1483">compiler.py:1483 <span class="ref-line">is_hard_miss</span></a>
+      对<strong>未知 reason 默认返回硬</strong>——宁可拒绝，不冒险产错 SQL；
+      漏分类会被 eval 归因暴露，而放行过的错误 SQL 不会自己浮出来。
+    </p>
+
+    <h2 id="partial">骨架保真：partial 与 compiled 的两把尺</h2>
+
+    <p>
+      骨架权威化的关键问题是<strong>下游是否真的照骨架走</strong>。execute_sql 对两条通道用两把不同的尺
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L177">execute_sql.py:177 <span class="ref-line">skeleton_preserved</span></a>
+      /
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/execute_sql.py#L179">execute_sql.py:179 <span class="ref-line">compiled_sql_matches</span></a>）：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th><code>compiled_sql_matches</code>｜照抄校验</th><th><code>skeleton_preserved</code>｜骨架保真</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>用在</td>
+            <td>完整编译（<code>CompileResult</code>）</td>
+            <td>软 MISS 骨架（<code>PartialCompile</code>）</td>
+          </tr>
+          <tr>
+            <td>比什么</td>
+            <td>编译期抽好的<strong>结果形状签名</strong>：聚合/过滤值/投影宽度/表/投影与过滤的列身份</td>
+            <td>join 边、WHERE 条件、分组宽度——<strong>投影列不参与比较</strong>（LLM 需要补未解析组件）</td>
+          </tr>
+          <tr>
+            <td>容忍什么</td>
+            <td>别名、格式、大小写、<code>COUNT(*)</code> vs <code>COUNT(col)</code>、裸列 vs 限定列（语义等价）</td>
+            <td>join 顺序、分桶表达式方言差异</td>
+          </tr>
+          <tr>
+            <td>打回的边界</td>
+            <td>生成 SQL <strong>解析不了也打回</strong>——它连是不是查询都定不下来，不能算保真（此前这种情况静默放行，是 A1 收口的 fail-open）</td>
+            <td>骨架的退化形态（计划本身只可部分解析）会放松 WHERE 比对——把「计划文本恰好能解析的部分」冻成权威，会把生成侧的正确改写打回</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两把尺共用一个工程判断：<strong>校验读契约，不反推 SQL</strong>。
+      编译器在编译期就把结果形状抽成纯 JSON 契约（join 边/过滤/分组宽度 +
+      缺口列表）随 state 走（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L188">state.py:188 <span class="ref-line">contract</span></a>），
+      校验节点直接读字段——不再拿 <code>compiled_sql</code> 用 AST 反推回结构。
+      骨架的覆盖情况也在 state 上留下痕迹：<code>compile_partial</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L180">state.py:180 <span class="ref-line">compile_partial</span></a>
+      与 <code>compile_misses</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L181">state.py:181 <span class="ref-line">compile_misses</span></a>
+      （未覆盖组件 <code>[{reason, component}]</code>）——它们既是执行侧的判据，也是学习侧的输入（见下）。
+    </p>
+
+    <h2 id="refuse">拒绝：不是死胡同，是模型的生长期</h2>
+
+    <p>
+      硬 MISS 出口在 refuse 节点
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L68">refuse.py:68 <span class="ref-line">_no_model_message</span></a>）：
+      每条拒绝都随一份<strong>一键下一步</strong>（<code>next_actions</code>，形状统一为
+      <code>[{id, kind, label, href, admin_only, payload?}]</code>，后端给全双语 label、
+      前端只渲染不分类）。数据源整体没模型时，这一出口直接给 <code>/kb init</code> 引导，
+      管理端待办里对应 <code>datasource_uninitialized</code> 一类
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/overview.py#L102">overview.py:102 <span class="ref-line">todo kind</span></a>）。
+    </p>
+
+    <p>
+      拒绝的同一节点还做第二件事：<strong>起草扩展</strong>。LLM 根据缺口草拟一份
+      <strong>最小补充声明</strong>（字段或指标）
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/semantic_draft.py#L229">semantic_draft.py:229 <span class="ref-line">draft_refusal_extension</span></a>，
+      但草稿能不能落、能不能免确认，全部由<strong>确定性门</strong>说了算：
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    MISS["硬 MISS 原因"] --&gt; DRAFT["LLM 草拟最小扩展声明<br/>（字段 / 指标，不出表达式新语义）"]
+    DRAFT --&gt; CONF{"确定性冲突检测<br/>同名 / 表达式不可解析 / 数据集未声明"}
+    CONF --&gt;|"agg_duplicate 已有同口径"| TIP["不落库<br/>引导换问法加过滤条件"]
+    CONF --&gt;|"可人工修正的冲突"| PEND["落 pending 收件箱<br/>管理员修正后新建"]
+    CONF --&gt;|"无冲突"| GATE{"A / B 档确定性验证门"}
+    GATE --&gt;|"A 档: 字段在物理表中确认存在"| AUTO["自动入库（跳过 pending）<br/>同轮路由回重答"]
+    GATE --&gt;|"B 档: 机械聚合 + 完整编译 + 真实执行过 shape"| AUTO
+    GATE --&gt;|"任一不过"| PEND
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 2 · 扩展草稿的确认梯。免人工的唯一通道是确定性验证门；其余一律 pending 等管理员。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      三道门的细节，每道都在拦一类具体错误：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>门</th><th>位置</th><th>拦什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>确定性冲突检测</strong></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L421">refuse.py:421 <span class="ref-line">_detect_conflict</span></a>，code 闭集：同名/表达式不可解析/数据集未声明/…</td>
+            <td>草稿与现有模型冲突分两类：<em>可人工修正</em>的（重名、表达式错）照落 pending 待审；<strong>agg_duplicate</strong>（已有同聚合签名指标）既不落库也不给建档动作——落一条必然重复的指标是诱导管理员确认错误，补救是换问法加过滤条件</td>
+          </tr>
+          <tr>
+            <td><strong>A 档：物理列字段</strong></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L500">refuse.py:500 <span class="ref-line">_physical_column_field</span></a></td>
+            <td>字段名在<strong>物理表</strong>里确认存在（读连接器 catalog，零 LLM）——「这个列真的存在」是结构事实，不需要人再背书一次</td>
+          </tr>
+          <tr>
+            <td><strong>B 档：机械聚合指标</strong></td>
+            <td><a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L551">refuse.py:551 <span class="ref-line">_mechanical_metric_ok</span></a></td>
+            <td>四步全过才免人工：①表达式是<strong>单个值无关机械聚合</strong>（<code>count/sum/avg</code>，白名单 <code>_MECHANICAL_AGGS</code>，带 CASE/WHERE/FILTER/子查询 = 值被写死，不算）；②单数据集、表可达、引用列存在（超大表跳过真实执行退回人工）；③草稿指标并入<strong>模型副本</strong>走权威编译器——<strong>完整编译</strong>（软 MISS 骨架不算）+ guardrail；④真实执行权威 SQL、过 rules 的 shape 链（单行单列标量）。任一不过 → pending 走人工</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      免确认入库后，<code>auto_confirmed</code> 标记让图<strong>同轮路由回重答</strong>——
+      用户感知是「系统补充了声明，正在重新回答」而不是一次拒绝
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L936">refuse.py:936 <span class="ref-line">A/B 判定</span></a>）。
+      防打转的护栏是 <code>AUTO_CONFIRM_MAX_ROUNDS = 2</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/refuse.py#L541">refuse.py:541 <span class="ref-line">单问上限</span></a>：
+      同一问题连续补两个字段还编译不过，就停止自动、回退人工——自动确认是省人工的便道，
+      不是绕过评审的暗门。
+    </p>
+
+    <h2 id="inbox">软 MISS 的生长方向：候选收件箱</h2>
+
+    <p>
+      软 MISS 的语义是「回答照常交付，但计划里有用例模型<strong>没声明</strong>的组件」——
+      这正是语义层该生长的地方。候选收件箱
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/candidates.py#L1">candidates.py <span class="ref-line">模块头</span></a>
+      把这些缺口翻译成 pending 语义草稿，落进管理端待办。三条硬约束值得逐条看：
+    </p>
+
+    <ul>
+      <li><strong>零 LLM</strong>——捕获跑在每次查询的收尾路径上
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/session.py#L1930">session.py:1930 <span class="ref-line">_capture_candidates</span></a>），
+      所有翻译只是对 <code>compile_misses</code> 的确定性改写。</li>
+      <li><strong>只落 pending</strong>——只写 <code>semantic_drafts.yml</code>，不碰
+      <code>semantics.yml</code>：自动内容绝不绕过管理员确认（与记忆子系统的
+      auto-write 同一条纪律）。</li>
+      <li><strong>只针对模型里没有的声明</strong>——已声明的名字一律跳过：候选若诱导管理员
+      确认出一条重复/错误的声明，比没有候选更糟。</li>
+    </ul>
+
+    <p>
+      证据门槛同样是分类型的，各有各的「硬」：字段类只收<strong>解析失败</strong>的理由
+      （未声明字段/时间字段未声明/分析分区列未解析——「模型里缺这个声明」就是缺口本身）；
+      指标类只收 <code>no_metric_match</code>，计划给的聚合表达式原文即权威定义，可原样落为
+      expression；值类别（<code>enum_value_unresolved</code>）<strong>仅当字段带实测取值
+      且提问字面量命中其一</strong>才落别名——命中即「库里确实这么存」；
+      不命中/未探测一律不猜（机器无法从翻译缺口推出目标码，自映射会把错字面量
+      冻结进骨架）。单轮捕获上限 <code>MAX_CANDIDATES_PER_RUN = 3</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/semantic_layer/candidates.py#L50">candidates.py:50 <span class="ref-line">单轮上限</span></a>——
+      一个多缺口计划不许把收件箱刷屏。
+    </p>
+
+    <h2 id="source">向用户披露：答案来源四档</h2>
+
+    <p>
+      编译梯子的每一级对应一种答案来源，披露装置把它们显示成四档
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/answer_source.py#L27">answer_source.py:27 <span class="ref-line">AnswerSource</span></a>：
+      <code>certified</code>（复用已认证模板）/ <code>reused</code>（复用 KB 资产，未认证）/
+      <code>compiled</code>（编译器产物）/ <code>generated</code>（LLM 生成，含编译失败回退与软 MISS 骨架）。
+      拆成四档而不是三档的原因写在模块头：<strong>「机制」与「有没有人背书」是两个维度</strong>——
+      压成一档会把「根本没进过模型的 SQL」说成「LLM 生成」。
+      判定只有一份
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/agent/answer_source.py#L94">answer_source.py:94 <span class="ref-line">resolve</span></a>
+      （答案渲染、SSE、评测归因、台账落账共用一个入口），方向刻意不对称：
+      <strong>判定不出的一律 GENERATED</strong>——把编译器产物标低，用户少得一点信息；
+      把模型编的标高，用户得到一个不该有的信任。同类纪律还有快径的治理门：
+      <code>fast_match</code> 的第五道门只放行 <code>status == "certified"</code> 的模板
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/fast_match.py#L19">fast_match.py:19 <span class="ref-line">治理门</span></a>）。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+    <ul>
+      <li><strong>用户侧</strong>——什么都不用做：覆盖内直接答；软 MISS 照常答（答案来源标
+      <code>generated</code>）；硬 MISS 得到一条带一键下一步的拒绝；A/B 档自动确认时看到
+      「已自动补充声明，正在重新回答」。见<a href="../user/ask.html#attribution">提问与读懂答案</a>。</li>
+      <li><strong>管理员侧</strong>——待办收件箱（<code>/v1/admin/todos</code>）集中处理
+      semantic_draft 条目：确认（立即生效并重答）或拒绝。快速路径是「以草稿为蓝本新建」。</li>
+      <li><strong>建模侧</strong>——数据源第一次接入必须 <code>/kb init</code>；之后模型随使用生长：
+      硬 MISS 带出大缺口，软 MISS 的候选收件箱带出小缺口。</li>
+    </ul>
+
+    <p>
+      编译决策的观测字段（<code>compiled</code> / <code>compile_partial</code> /
+      <code>compile_misses</code> / <code>contract</code>）恒写在 state 上
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/state.py#L173">state.py:173 <span class="ref-line">compiled_sql</span></a>）——
+      eval 归因按 <code>path: compiled|llm</code> 分账，学习回路（
+      <a href="closed-loop.html">闭环与契约</a>）也读同一份缺口记录。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>分级逃生梯而非一条边界线</td>
+            <td>「不在模型里就拒绝」的简单叙事</td>
+            <td>词表缺口占真实提问的多数；全有全无会让语义优先退化成「建模不完备就不能用」。梯子把「能不能安全跳过」当成真正的判据</td>
+          </tr>
+          <tr>
+            <td>软 MISS 骨架交由生成补齐</td>
+            <td>未解析组件的确定性（那部分由 LLM 补）</td>
+            <td>保真校验（骨架保真 + rules 链 + 版本回归）三层兜底把风险压在「结构被改」上；跳过组件本身是安全的</td>
+          </tr>
+          <tr>
+            <td>未知 MISS 原因按硬处理</td>
+            <td>新分支漏分类时的「宽容」</td>
+            <td>方向不对称：错拒一次可以靠 eval 归因发现并修；放行一条会产错结果的 SQL，没人会回头查</td>
+          </tr>
+          <tr>
+            <td>编译期抽契约（纯 JSON）而不是校验时反推</td>
+            <td>一份契约字段的维护成本</td>
+            <td>反推要把 SQL 重新解析回结构，各节点各推一次迟早推歪；契约随 state 走，校验方与编译方看的是同一份事实</td>
+          </tr>
+          <tr>
+            <td>A/B 免确认是<strong>白名单式</strong>的（物理列 / 机械聚合）</td>
+            <td>「AI 草稿大多是对的，都自动确认」的吞吐</td>
+            <td>免人工的资格按<strong>可确定性验证</strong>发：列存在与否、单值无关聚合能否跑出标量，都是机器能证的事实；派生/比率/复杂口径仍走人工——那才是语义风险所在</td>
+          </tr>
+          <tr>
+            <td>agg_duplicate 连 pending 都不落</td>
+            <td>「先收进收件箱再说」的省事</td>
+            <td>落一条必然重复的指标是<strong>诱导管理员确认错误</strong>；正确补救是换问法（加过滤条件），不是补声明——收件箱的工作量也是资产，不能被噪声淹没</td>
+          </tr>
+          <tr>
+            <td>值类别别名只在「实测命中」时落</td>
+            <td>对未探测值的推断</td>
+            <td>自映射会把错字面量冻结进骨架，聚合题 0 行过滤没有守卫兜底——静默算错比拒绝更糟</td>
+          </tr>
+          <tr>
+            <td>来源四档 + 判定不出倒向 GENERATED</td>
+            <td>更漂亮的「编译占比」数字</td>
+            <td>披露装置的资产是它说的话可信；虚报一次，四档一起作废</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>边界既守得住又长得出。</strong>硬 MISS 拒错 SQL、软 MISS 不停答、候选收件箱把每次缺口变成一次生长机会——语义优先不再是「建模不全就不可用」。</li>
+      <li><strong>免确认的资格由机器证明，不由模型自评。</strong>A/B 档四步验证全过才跳过人工，其余一律 pending——「快」与「稳」的分界是可复算的事实。</li>
+      <li><strong>校验读契约，不猜结构。</strong>骨架保真与照抄校验共用编译期抽出的形状契约；生成通道的偏离在<strong>执行之前</strong>被打回。</li>
+      <li><strong>放行与拒绝都有记账。</strong><code>compile_misses</code> 进 state、进 eval 归因、进收件箱——每一级梯子的行为都能回答「为什么走了这条路」。</li>
+      <li><strong>来源披露与编译梯子同构。</strong>答案来源四档把梯子的每一级翻译成用户语言，且保守方向一致——宁可标低，不标高。</li>
+    </ul>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>语义模型的形状、编译出的 SQL 长什么样</td><td><a href="../capabilities/semantic.html">语义层</a></td></tr>
+          <tr><td>骨架交出去之后：生成、校验、反思回滚的闭环</td><td><a href="closed-loop.html">闭环与契约</a></td></tr>
+          <tr><td>判定规则也用同一套「安全由构造保证」的表达语言</td><td><a href="decision-engine.html">判定内核</a></td></tr>
+          <tr><td>KB 的治理与写入纪律</td><td><a href="../capabilities/kb.html">知识库</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

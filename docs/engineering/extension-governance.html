@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 扩展与治理：适配器注册通电的单一入口、组织资产的统一治理形状（pending→确认→版本化→回滚）、trove validate 干跑校验的退出码契约、扩展面总开关的停用语义、以及 RunTracer 单点落盘的运行证据。">
+<title>扩展与治理 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>扩展与治理
+      </div>
+      <h1>扩展与治理</h1>
+      <p class="lede">
+        Trove 的扩展面很多：数据源适配器、组织技能、判定规则、行动模板、语义模型、
+        MCP 工具面。它们有两个共同的工程问题——<strong>扩展点真的通电了吗</strong>
+        （函数存在但零调用方，是历史上真实发生过的），以及
+        <strong>组织资产谁说了算</strong>（自动生成的草稿绝不自己生效）。
+        这页讲一条注册路径、一套统一的治理形状、一个能进 CI 的干跑校验、
+        一个语义明确的停用开关，以及每次运行留下的那两份证据。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">扩展点的两种死法</h2>
+
+    <p>
+      一个扩展点可以死于两件事：<strong>没通电</strong>——接口做好了、文档写了，
+      但没有任何一处代码真的走它（注册表空着，扩展者照着文档接上却发现不生效）；
+      <strong>两条路</strong>——内置走一条内部捷径、外部走公开入口，两条路迟早行为分叉，
+      而分叉只会在扩展者那边暴露。Trove 的适配器注册表两种情况都经历过，
+      所以现在的形态被刻意收窄成一句话：
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">单一注册路径</span>
+      <div>
+        <p>
+          <code>register_adapter(dialect, cls)</code>
+          <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L45">registry.py:45 <span class="ref-line">register_adapter</span></a>
+          是<strong>唯一</strong>入口：内置的 6 个方言在模块末尾走同一函数自我注册
+          <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/datasource/registry.py#L503">registry.py:503 <span class="ref-line">内置自我注册</span></a>——
+          没有任何「内部第二条注册路径」。新增数据源 = 实现 <code>DatabaseAdapter</code> + 调一次这个函数。
+          文件末尾还留着注释掉的一行 <code># register_adapter("snowflake", SnowflakeAdapter)</code> 作为样例——
+          这是仓库里少见的「以未实现示例当文档」的写法，但它比任何文档都接近真实接法。
+        </p>
+      </div>
+    </div>
+
+    <h2 id="shape">统一治理形状：草稿不自证</h2>
+
+    <p>
+      组织资产（技能、判定规则、行动模板、语义模型的草稿）全部走同一个生命周期：
+      自动生成的内容落 <strong>pending</strong>，管理员确认后才进入消费面，
+      拒绝是终态；每次变更进 git，可查历史、可回滚。这不是四个系统的四套规矩，
+      是同一条纪律在四个面上的实例：
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    DRAFT["自动草稿（LLM 起草 / 学习回路 / 候选收件箱）"] --&gt; PENDING["pending<br/>不进消费面 · 不进提示词"]
+    HUMAN["管理员手写"] --&gt; PENDING
+    PENDING --&gt;|"confirm"| LIVE["confirmed<br/>下一问即生效（消费点每问现读，无缓存）"]
+    PENDING --&gt;|"reject"| DEAD["rejected（终态）"]
+    LIVE --&gt; GIT["GitVersioning 提交<br/>scoped: git add -- 仅具名路径"]
+    GIT --&gt; HIST["历史 / 回滚"]
+    HIST --&gt;|"rollback sha"| LIVE
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 组织资产的生命周期。自动内容永不自确认；每一次确认、拒绝、回滚都是一条 git 提交，回滚本身也留下一条提交。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      三个实现细节让这条链是真的：
+    </p>
+
+    <ul>
+      <li><strong>字段闭集校验</strong>——技能草稿的输入字段是闭集
+      （<code>_CREATE_INPUT_FIELDS</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/skills/service.py#L107">service.py:107 <span class="ref-line">字段闭集</span></a>），
+      未知键响亮报错。此前 frontmatter 字段是「死常量」：未知键经 YAML 往返
+      静默消失——作者以为写了，系统当没看见。</li>
+      <li><strong>版本上界守卫</strong>——<code>decisions.yml</code> 声明版本，读到
+      <strong>比本代码更新</strong>的版本直接拒绝
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/rules.py#L484">rules.py:484 <span class="ref-line">version 守卫</span></a>）：
+      旧代码读新文件不会报错，它只会<strong>静默丢掉不认识的字段</strong>，
+      再保存一次就把它们抹掉了。宁可不读，不悄悄损坏。</li>
+      <li><strong>scoped 提交</strong>——版本化只 stage <strong>具名路径</strong>
+      （<code>git add -- &lt;path&gt;</code>，绝不用裸 <code>git add</code>）
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/kb/git_versioning.py#L86">git_versioning.py:86 <span class="ref-line">scoped add</span></a>——
+      一次资产变更的提交里不会混进工作区里恰好存在的别的改动。
+      回滚也走同一条路：<code>git checkout --source &lt;sha&gt; -- &lt;files&gt;</code> 恢复
+      工作区后<strong>再提交一条 rollback</strong>——历史是 append-only 的，
+      回滚不改写历史，只记录「回到了哪」。</li>
+    </ul>
+
+    <p>
+      同样的形状在三个管理面重复出现：技能（draft / llm-draft / confirm / reject /
+      tier / body / history / rollback，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/skills.py#L211">skills.py:211 <span class="ref-line">history</span></a>）、
+      语义模型草稿（drafts / confirm / reject / history / rollback，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/semantic.py#L193">semantic.py:193 <span class="ref-line">history</span></a>）、
+      行动模板（confirm / reject，
+      <a href="action-safety.html">行动安全架构</a>）。
+      学习回路（<a href="closed-loop.html">闭环与契约</a>）的产物也全部落在这一形状里——
+      自动内容从不为自己背书。
+    </p>
+
+    <h2 id="validate">干跑校验：一条能进 CI 的退出码契约</h2>
+
+    <p>
+      治理不能只靠事后审计。所有扩展面有一场<strong>零 LLM 的干跑校验</strong>：
+      <code>trove validate</code>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L44">validate_cmds.py:44 <span class="ref-line">main_validate</span></a>）
+      把 KB、规则、技能全部试编译一遍，退出码就是判定：
+      <strong>0 clean · 1 有硬错误（<code>--strict</code> 下警告也算）· 2 用法/环境错误</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L9">validate_cmds.py:9 <span class="ref-line">退出码契约</span></a>。
+      这让「资产是否健康」成了一个可以挂在提交前/CI 里的布尔量，
+      而不是管理员肉眼巡检。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>开关</th><th>作用</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>--datasource demo</code></td><td>只体检一个数据源</td></tr>
+          <tr><td><code>--json</code></td><td>机器可读整份报告（CI 消费）</td></tr>
+          <tr><td><code>--strict</code></td><td>警告也视为失败（退出码 1）</td></tr>
+          <tr><td><code>--live</code></td><td>额外连数据源：枚举缺口探测 + <strong>真方言编译</strong>——静态检查证明不了的，交给真实连接证明（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L925">service.py:925 <span class="ref-line">run_validate</span></a>）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      同一套校验在 REPL 里是 <code>/validate [--live]</code>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/cli/commands/validate_cmds.py#L67">validate_cmds.py:67 <span class="ref-line">/validate</span></a>，不出退出码），
+      技能面单独有一层检查（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/validate/service.py#L492">service.py:492 <span class="ref-line">_check_skills</span></a>）——
+      包括 validator 型技能的断言规格（结果域变量的闭集校验，
+      见<a href="decision-engine.html">判定内核</a>）。
+    </p>
+
+    <h2 id="switch">停用开关：停消费面，不停写入面</h2>
+
+    <p>
+      扩展面治理有一个总开关 <code>agent.extensions.org_extensions_enabled</code>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/core/config.py#L361">config.py:361 <span class="ref-line">ExtensionsConfig</span></a>，
+      默认全开）。它停用的是<strong>组织扩展这一层</strong>的消费面：组织技能的注入与
+      <code>load_skill</code> 广告、validator 断言、决策规则的<strong>执行</strong>。
+      两条边界写死在文档字符串里：
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    SW["org_extensions_enabled = false"] --&gt; STOP1["停：组织技能注入与 load_skill 广告"]
+    SW --&gt; STOP2["停：validator 断言（结果域）"]
+    SW --&gt; STOP3["停：决策规则的执行（DecisionService 评估入口）"]
+    SW -.-&gt; KEEP1["不动：code skills（trove/prompts/skills/）"]
+    SW -.-&gt; KEEP2["不动：KB / few-shots / 语义模型"]
+    SW -.-&gt; KEEP3["不动：写入面——照常起草 / 确认 / 编辑"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 2 · 总开关的作用边界。产品默认（随代码发布的方法论）不是组织资产，一个开关不许顺手把它们也停了——否则「停用」与「功能破坏」就分不清了。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      配套的一条<strong>响度纪律</strong>值得单独说
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L281">service.py:281 <span class="ref-line">_org_enabled</span></a>）：
+      停用期间，定时决策任务<strong>报错</strong>（「已停用」），绝不静默按零规则通过——
+      一个安静跑着的健康态和一个被关掉的判定，从运行记录上看必须不一样。
+      这是全仓同一哲学的另一处实例：<a href="decision-engine.html#error">失败要响亮</a>，
+      沉默是最难排查的状态。
+    </p>
+
+    <h2 id="trace">运行证据：一次 run 留下什么</h2>
+
+    <p>
+      治理的另一半是<strong>可回溯</strong>。每次运行收尾在唯一一个写入点落盘
+      （<code>RunTracer.finish</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/runlog.py#L278">runlog.py:278 <span class="ref-line">finish</span></a>），
+      产出与 <code>&lt;run_id&gt;.log</code> 成对的结构化清单
+      <code>&lt;run_id&gt;.assembly.json</code>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/tracing/assembly.py#L35">assembly.py:35 <span class="ref-line">ASSEMBLY_SUFFIX</span></a>）：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>节</th><th>回答</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>blocks</code></td><td>进了生成提示词的上下文块逐块逐项的成本与截断（few_shots / rules / … / plan / skill_injections）——「这一问为什么带上了/没带上这条规则」</td></tr>
+          <tr><td><code>tools</code></td><td>生成阶段工具注册表的每个工具（name / level / roles / lazy / activated / calls）——工具级治理的观测面</td></tr>
+          <tr><td><code>verdicts</code></td><td>确定性判定（validator_hits / rule_hits / fast_path_hit）——这一步回答过哪些确定性检查</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两个设计约束让它可用而不添乱：数据全部来自<strong>既有产物</strong>
+      （装配时已算过的同一份 token 计数、state 上的既有字段），不做二次计算；
+      字段名一次定死、缺失一律降级为空值——<strong>观测物绝不允许因为自身形状问题
+      打断或影响一次查询</strong>。工具这一侧还有配套的治理维度：
+      <code>ToolSpec</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/llm/agent_loop.py#L199">agent_loop.py:199 <span class="ref-line">ToolSpec</span></a>
+      上 <code>roles</code> 是<strong>可见性门</strong>（谁能看到这个工具），
+      <code>level</code> 是纯<strong>分类</strong>（core / catalog，它从不决定可见性，
+      只被运行记录消费）——门与分类分开，工具面才有可审计的授权模型。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+<pre><code># 提交前 / CI：全量干跑（零 LLM 零网络）
+trove validate                     # 退出码 0/1/2 即判定
+trove validate --json | jq .       # 机器可读
+trove validate --live --datasource demo   # 连真源：枚举缺口 + 真方言编译
+
+# REPL 内
+/validate [--live]</code></pre>
+
+<pre><code># conf/agent.yml —— 扩展面总开关（管理端可配）
+agent:
+  extensions:
+    org_extensions_enabled: true   # false = 停组织扩展消费面（写入面照常）</code></pre>
+
+    <p>
+      管理端对应面：技能治理（草稿/确认/档位/正文/历史/回滚）在
+      <a href="../capabilities/skills.html">技能</a>，
+      语义模型草稿与回滚在 <a href="../capabilities/semantic.html">语义层</a>，
+      判定规则在 <a href="../capabilities/decisions.html">判定规则</a>，
+      行动模板在 <a href="action-safety.html">行动安全架构</a>。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>单一注册路径（内置也走 register_adapter）</td>
+            <td>内部捷径的启动便利</td>
+            <td>两条路迟早分叉，而分叉只会在扩展者那边暴露；函数存在但零调用方的历史教训就来自捷径</td>
+          </tr>
+          <tr>
+            <td>草稿一律 pending，自动内容不自证</td>
+            <td>「AI 起草大多对，自动生效」的吞吐</td>
+            <td>组织方法论是人工资产；一次错误自动注入污染的是所有后续回答。免确认的资格只发给能确定性验证的档（见语义编译边界的 A/B 门）</td>
+          </tr>
+          <tr>
+            <td>版本上界守卫（新版本文件直接拒读）</td>
+            <td>「尽量读，认得的字段先用」的宽容</td>
+            <td>旧代码读新文件不报错，只会静默丢字段、再保存时抹掉——这种损坏无声且不可逆</td>
+          </tr>
+          <tr>
+            <td>scoped 提交 + 回滚也留提交</td>
+            <td>裸 <code>git add</code> 的顺手</td>
+            <td>提交必须对应「这一次资产变更」，历史才可审计；回滚不改写历史，审计线永远 append-only</td>
+          </tr>
+          <tr>
+            <td>干跑校验做进 CLI 退出码</td>
+            <td>纯 UI 的巡检体验</td>
+            <td>退出码让资产健康成为 CI 可挂的布尔量；<code>--live</code> 补上静态检查证明不了的真方言编译</td>
+          </tr>
+          <tr>
+            <td>总开关只停组织层，且停消费不停写入</td>
+            <td>「一键全停」的简洁语义</td>
+            <td>产品默认不是组织资产；停用期照常起草、重开后即刻生效，停用是治理动作而不是破坏动作</td>
+          </tr>
+          <tr>
+            <td>观测 dump 单点、纯既有产物、失败降级为空值</td>
+            <td>更丰富的运行中实时观测</td>
+            <td>观测物不得影响被观测对象；一次 run 一份清单，写入点唯一才不会有半个状态</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>扩展者与内置走同一条路。</strong>适配器、技能、规则的扩展入口就是内置实现用的入口——文档与代码之间没有第三条路可以分叉。</li>
+      <li><strong>治理形状统一，学习成本一次。</strong>四个资产面同一套 pending→确认→历史→回滚；管理端的操作肌肉记忆可以跨面迁移。</li>
+      <li><strong>健康量可进 CI。</strong><code>trove validate</code> 的 0/1/2 退出码 + <code>--json</code> + <code>--live</code>，让「资产没坏」在合并前就被证明。</li>
+      <li><strong>停用语义诚实。</strong>开关停的是消费面、写入面照常、产品默认不动；被停用的判定任务报错而不是静默通过。</li>
+      <li><strong>每次运行都可回答「用了什么」。</strong><code>.assembly.json</code> 把上下文块成本、工具激活、确定性判定三个治理面落成同一份 run 级证据。</li>
+    </ul>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>组织技能的两个注入层与 validator 执行层</td><td><a href="../capabilities/skills.html">技能</a></td></tr>
+          <tr><td>判定规则文件与条件语言</td><td><a href="decision-engine.html">判定内核</a></td></tr>
+          <tr><td>自动内容的确认门在记忆子系统里怎么用</td><td><a href="../capabilities/memory.html">记忆</a></td></tr>
+          <tr><td>行动模板的治理（与技能同门）</td><td><a href="action-safety.html">行动安全架构</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

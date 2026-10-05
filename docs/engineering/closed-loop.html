@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 闭环与契约：行动外送 N 天后的效果验收（ITS + 可选 DiD、三层结局、只由行动前块建的噪声带）、verifier 的可注入契约、按规则版本分桶的质量回评、字节稳定的质量报告，以及主动扫描如何把发现变回判定规则。">
+<title>闭环与契约 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>闭环与契约
+      </div>
+      <h1>闭环与契约</h1>
+      <p class="lede">
+        <a href="decision-engine.html">判定</a>触发了、<a href="action-safety.html">行动</a>也外送了——然后呢？
+        审计线如果止于「已发出」，产品就只是告警器。这页讲<strong>回来的路</strong>：
+        送出 N 天之后把那条度量测一次（<strong>效果验收</strong>），按规则<strong>版本</strong>分桶回评
+        「判得准不准」，出一份<strong>字节稳定</strong>的质量报告；以及主动扫描怎样把
+        「没人报的异常」变回判定规则草稿——让环闭回起点。全程复用同一条
+        <a href="statistics.html">噪声带</a>与同一个 <a href="causal-whatif.html">2×2</a>——
+        「判定说超带」与「验收说超带」，是同一句话。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">闭环缺的是最后一段</h2>
+
+    <p>
+      没有验收的告警系统，连自己准不准都不知道：触发率 100% 的规则可能在报噪音，
+      一条从未触发过的规则可能口径早就烂了。回评需要三样以前没有的东西——
+      一次<strong>诚实的测量</strong>（不是「跟以前不一样」，而是「超出噪声带了吗」）、
+      一个<strong>时间的时钟</strong>（行动当天就测，测到的是行动前的数）、和一个
+      <strong>版本账本</strong>（规则被改过之后，旧判定不能算到新口径头上）。
+      这页的四个模块各自解决一样，全部纯派生、零 LLM。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    V["判定 verdict<br/>（含触发日与规则版本）"] --&gt; P["提案 → 审批 → 外送"]
+    P --&gt; W["N 天后的小时级 sweep<br/>measure_due"]
+    W --&gt; M["verifier（包外执行面）<br/>ITS + 可选 DiD 净效应"]
+    M --&gt; O["outcome 行<br/>超带 / 无变化 / 判不了"]
+    O --&gt; S["回评分桶<br/>（rule_id, rule_rev）"]
+    S --&gt; R["质量报告 / 全局面"]
+    D["主动扫描<br/>扫描发现 → 规则草稿"] --&gt; V
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 闭环：扫描把发现变成规则草稿（人确认），规则判定触发行动，行动外送后由验收测回效果，回评分桶统计「判得准不准」——四个环节共用同一套噪声带口径。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <h2 id="outcome">验收：三层结局，没有第四种</h2>
+
+    <p>
+      效果测量的核心是一个纯函数
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L131">effect.py:131 <span class="ref-line">measure_effect</span></a>：
+      把行动前历史块与行动后水平放在一起，给出 ITS（中断时间序列）核心量——
+      中心量一律取 <strong>median</strong>（与噪声带 center 同口径：「行动后水平」恰恰是要抗单点的那一侧），
+      跨零/超带判定用与判定侧<strong>同一个稳健 z 阈值</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L46">effect.py:46 <span class="ref-line">EFFECT_K</span></a>。
+    </p>
+
+    <p>
+      结局是三层的，<strong>没有第四种</strong>：<code>outside_band = True</code>（行动后超出行动前噪声带）/
+      <code>False</code>（<strong>无可辨识变化</strong>）/ <code>None</code>（判不了，原因单列 <code>degraded</code>）。
+      <code>False</code> 不是失败——它是最诚实也最有价值的一档：「这次行动没动到数」是一个<strong>结论</strong>；
+      而「可能动了、但 n 不够/带退化」绝不冒充 <code>False</code>，与判定侧「算不出 ≠ 在带内」是同一条纪律。
+    </p>
+
+    <p>
+      还有一条安静但决定成败的选择：<strong>带只由行动前的块构成</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L76">effect.py:76 <span class="ref-line">interrupted_design</span></a>。
+      把行动后的点混进分布会自我稀释——那正是「行动有效」的假阳性来源，与扫描侧的历史块纪律同款。
+      规则声明了 <code>causal.control</code> 且对照帧取得到时，净效应按同一个 2×2 附加
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L161">effect.py:161 <span class="ref-line">attribute_effect</span></a>：
+      <code>method</code> 升为 <code>"its+did"</code>——方法名描述的是<strong>最强的那层主张</strong>，
+      <code>delta</code>/<code>pct</code> 仍来自 ITS，两者不是同一件事，方法名把她们分开；
+      对照取不到 → <code>causal: "unavailable"</code> + 原因，ITS 结论原样保留（对照不可用是验收侧最常见的形态，不是错误）。
+    </p>
+
+    <h2 id="contracts">verifier 契约：能力从外面给</h2>
+
+    <p>
+      测量要读业务库，但行动包（<a href="action-safety.html">行动安全架构</a>）的姿态是结构性的——
+      构造签名不收连接器、整包不 import 数据源。所以执行面留在<strong>包外</strong>：
+      <code>ActionService</code> 以可注入 callable 的形式接收 verifier
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/outcome.py#L98">outcome.py:98 <span class="ref-line">make_verifier</span></a>，
+      与 <code>ActionDispatcher</code> 的 transport 是同款姿态——能力从外面给，包本身够不到。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>契约</th><th>含义</th><th>为什么这样定</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>async (proposal) -&gt; dict | None</code></td>
+            <td><code>None</code> = 「还不能测」：规则的测量期还没滚过行动日，跳过、下次再试、不写行</td>
+            <td>与「测了」严格区分——安静跳过与安静失败长得一样，是最危险的混淆</td>
+          </tr>
+          <tr>
+            <td><code>dict</code> 带 <code>error</code> 键</td>
+            <td>一次<strong>响亮的失败</strong>：规则被删/被停用、窗口不可解析、编译 MISS、查询失败、组不可解析……落成 error outcome，一行，不重试</td>
+            <td>闭环断了必须看得见，不能像「还没到期」一样安静</td>
+          </tr>
+          <tr>
+            <td>异常</td>
+            <td>未预期故障，同样被接成 error outcome</td>
+            <td>一次测量失败 = 一行 error，不是崩</td>
+          </tr>
+          <tr>
+            <td>窗口按规则的时钟重算</td>
+            <td>与触发它的判定用<strong>同一套</strong> period 语义（grain 对齐 / same_phase / 过滤口径），复用 <code>DecisionService</code> 的同一批解析 helper</td>
+            <td>测量与判定读到不同口径的数字，正是闭环验收最不能出的错——同一批 helper 是结构性保证</td>
+          </tr>
+          <tr>
+            <td>期必须滚过行动日</td>
+            <td><code>window_end &gt; 行动日</code> 才测；否则返回 <code>None</code></td>
+            <td>行动当天就在期内的测量，测的是「行动前的数」，不是效果</td>
+          </tr>
+          <tr>
+            <td>只测<strong>点名的那一组</strong></td>
+            <td>提案创建时把消息点名的那一组钉进 <code>evidence_refs["group"]</code>，验收读它不重算；per_dimension 规则取不到组 → <code>group_unresolved</code> error</td>
+            <td>重算会读到<strong>现在</strong>的证据，而验收要的是<strong>当时</strong>点的那一组；拿别的总体冒充被点名的组，是这一层最不能出的错</td>
+          </tr>
+          <tr>
+            <td>一次测量，一个结局</td>
+            <td>不是重试循环；verifier 恢复后<strong>不回填</strong></td>
+            <td>回填时窗口已经滚走，填出来的会是另一份测量（测的是另一个期间）——拿它冒充当初的验收结果，是这一层最不能出的错</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      测量记录里还带着两个给审计看的数：<code>exposure_days</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/outcome.py#L77">outcome.py:77 <span class="ref-line">_exposure_days</span></a>
+      （测量期对行动的实际暴露天数——一个 10 月 5 日发出的行动，在「上个月」这种窗口下最早 10 月 31 日之后才被覆盖：
+      31 天里 26 天在行动之后，读者看得见这个数，就看得见测量滞后有多少是「期间还没滚完」）；
+      以及 <code>rule_rev</code> 与 <code>rule_rev_judged</code> 两个版本——
+      前者是<strong>测量所依据的</strong>规则内容，后者是判定当时那一版，两者不同说明规则在丈量之前被改过。
+    </p>
+
+    <h2 id="driver">驱动：四道门，各有各的语义</h2>
+
+    <p>
+      到期测量由 <code>measure_due</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/service.py#L486">service.py:486 <span class="ref-line">measure_due</span></a>
+      驱动。默认档全关（<code>outcome_after_days &lt;= 0</code> 立即返回 0、不查库——未配置的部署逐字节不变）；
+      刻度是<strong>天</strong>（测量是 N 天语义），所以挂在小时级的 sweep 腿上，不是 30 秒的 job tick。四道门：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>门</th><th>行为</th><th>语义</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>未到 <code>outcome_after_days</code></td><td>跳过，<strong>不算已测</strong></td><td>到期后那次 sweep 会再看到它——「还没到时候」≠「测了」</td></tr>
+          <tr><td>verifier 返回 <code>None</code></td><td>跳过、不写行</td><td>测量期没滚过行动日（verifier 的语义，不是失败）</td></tr>
+          <tr><td>verifier 缺席或抛异常</td><td><strong>落一行 error outcome</strong>，不重试</td><td>闭环断了必须看得见——不能像「还没到期」一样安静</td></tr>
+          <tr><td><code>enabled</code></td><td><strong>不是门</strong></td><td>测量是读（只读查询 + 自己的账本），不是外送——关掉外送之后，已经出去的那批更需要验收</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      结果落在 <code>outcomes</code> 表
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/action/store.py#L150">store.py:150 <span class="ref-line">_OUTCOMES_SQL</span></a>
+      （store 迁移 v2 加的；<code>outside_band</code> 列用 0/1/NULL 三态存储——
+      <code>0</code> 绝不是「没测到」，读侧对此有严格落位约定）。
+    </p>
+
+    <h2 id="scoring">回评：按规则版本分桶</h2>
+
+    <p>
+      质量回评是一个纯派生报告
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/score.py#L109">score.py:109 <span class="ref-line">score_history</span></a>，
+      分桶键 = <code>(rule_id, rule_rev)</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/score.py#L40">score.py:40 <span class="ref-line">bucket_key</span></a>。
+      这是 <a href="decision-engine.html">digest 与 rev 之分</a> 的延续：digest 是整份 decisions.yml 的字节 sha256，
+      编辑 B 规则会让 A 规则的历史整段错位；<strong>rev 是单条规则的内容版本——改 A 才开 A 的新桶</strong>。
+      更老的 verdict 没有 rev → 落 <code>rev_unknown</code> 桶（不猜、不丢：没有版本信息的判定，仍然是一段可以被看的历史）。
+    </p>
+
+    <p>
+      三个口径上的坚持：
+    </p>
+
+    <ul>
+      <li><strong>纯派生，绝不写回。</strong>质量是<strong>读出来的视图</strong>，不是一张会漂移的表——
+      判定记录不可变，把质量算好存回去的设计会让同一段历史在不同时刻给出不同的数。</li>
+      <li><strong>两类健康分开计。</strong>判定健康（ok/alert/error 计数）与行动效果（effective/no_effect/unverifiable/errors）
+      分开——一条全是 error 的规则（判定「判不了」）与一条判了但从没动到数的规则，
+      是两种完全不同的问题，把比率混在一起会把两者都盖住。</li>
+      <li><strong>比率只在分母够时给。</strong><code>effective_rate</code> 的分母是<strong>判得出来</strong>的测量
+      （有效 + 无变化），<code>unverifiable</code> 不进分母；<code>decided &lt; MIN_EFFECTS</code>（3）→ 比率 <code>None</code> +
+      <code>insufficient</code> 原因（<code>few_verdicts</code> / <code>few_effects</code> / <code>no_effects</code>）。
+      3 次行动里的 2 次有效不是「67% 有效率」，它是「样本不足，别读比率」；总览
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/score.py#L178">score.py:178 <span class="ref-line">rollup</span></a>
+      走同一道门——总览行不该比桶更敢说话。</li>
+    </ul>
+
+    <h2 id="report">报告：同一份数字，逐字节可复算</h2>
+
+    <p>
+      呈现层是三个纯函数
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/eval/quality_report.py#L48">quality_report.py:48 <span class="ref-line">build_report</span></a>：
+      <code>build_report</code>（单源）/ <code>fleet_report</code>（全局面）/ <code>render_markdown</code>（markdown 呈现）。
+      口径的<strong>唯一权威在 score.py</strong>——呈现层不重写任何指标，只做包装与措辞；
+      两个出口各算一遍的后果不是「重复」，是<strong>漂移</strong>：同一段历史在两个地方给出两个有效率，
+      比没有报告更糟（与离线回归门 <code>eval/gate.py</code> 的教训同款）。
+      <code>generated_at</code> 由调用方给、缺省空串，同一输入 → 逐字节同一输出（dict 键序固定）。
+    </p>
+
+    <p>
+      两处措辞纪律：跨源汇总<strong>只给总量</strong>——同名规则在两个数据源是两条规则，
+      把两个源的 <code>revenue_drop</code> 拼成一条「历史」会造出一段从未存在过的历史（per-rule 比率只在各自桶里）；
+      比率算不出时渲染成「—」而不是 0%——「样本不足」不许被折成任何百分比。
+      admin 面上：<code>GET /v1/admin/decisions/quality</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L552">decisions.py:552 <span class="ref-line">decision_quality</span></a>
+      给单源分桶明细，<code>GET /v1/admin/quality/overview</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/quality.py#L435">quality.py:435 <span class="ref-line">admin_quality_overview</span></a>
+      给逐源 fleet 报告，提案级效果在 <code>GET /v1/admin/actions/proposals/{id}/outcomes</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/actions.py#L190">actions.py:190 <span class="ref-line">get_action_outcomes</span></a>。
+    </p>
+
+    <h2 id="scan">主动扫描：把发现变回规则</h2>
+
+    <p>
+      环的另一半起点是<strong>没人报的异常</strong>。主动扫描按 <code>ScanSpec</code>（metric × dim 单元列表）
+      定期跑一遍：每个单元<strong>至多一条 SQL</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/scanner.py#L117">scanner.py:117 <span class="ref-line">scan_unit</span></a>
+      ——一条查询同时取回「历史块 + 当期窗口」，标签切分决定谁进带、谁是当期；
+      判据与判定侧完全同款（history-only 的带、稳健 z、<code>k</code> 默认 3.5）。
+      发现分两类 <code>FINDING_KINDS = ("anomaly", "unverifiable")</code>：
+      「超带」是发现，「判不了」也是发现——<strong>算不出的单元恰好一行 <code>unverifiable</code>，从不静默少一行</strong>；
+      截断（<code>top_k</code>）只截 <code>anomaly</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/scanner.py#L249">scanner.py:249 <span class="ref-line">cap_findings</span></a>——
+      截掉的是「还不值得人看」的，不是「说不清」的。
+      一条容易写错的边界在这里被写死：<strong>缺失 ≠ 0</strong>——当期无行可能是数据未到/未落，
+      不是「掉到零」的证据（<code>no_current_block</code> 记账，不产发现）。
+    </p>
+
+    <p>
+      发现的出口是<strong>判定规则草稿</strong>（人确认后成为规则）：扫描→草稿→规则→判定→行动→验收，
+      环从这里闭回起点。规格在<strong>写时校验</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/scanner.py#L89">scanner.py:89 <span class="ref-line">spec_issues</span></a>：
+      度量/维度/时间字段/锚定数据集逐条解析——没有时间字段的度量从来给不出块，
+      注定每次 tick 都只产 <code>unverifiable</code> 的规格不该被写进任务（错误在创建时说得清，在运行记录里说不清）。
+    </p>
+
+    <p>
+      扫描的 <code>hypotheses</code> 档（默认关）多了第二层：让 LLM 就发现<strong>起草候选假设</strong>
+      （「假设华东下滑 ≥10% 由车贷逾期引起」这类可检验陈述），但<strong>裁决是纯函数</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/scan/hypotheses.py#L266">hypotheses.py:266 <span class="ref-line">_adjudicate</span></a>：
+      取当期与基期两个数，按声明方向与最小幅度判 <code>supported</code> / <code>refuted</code> /
+      <code>unverifiable</code>（判不了说判不了——基期为 0 且声明了最小幅度时，方向还能看但幅度不可比，
+      不硬判）/ <code>no_data</code>。起草是 LLM 的活（<code>parse_candidates</code> 解析 + 引用校验门槛），
+      裁决是确定性的活——<strong>每条假设恰好一行 outcome，输入序保持不变</strong>。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+<pre><code># conf/agent.yml（或管理端设置）
+action:
+  outcome_after_days: 14      # 外送满 14 天才测；0 = 关闭（默认）
+scan:
+  hypotheses: false           # 假设起草档（默认关）
+  max_queries: 12             # 扫描每轮的查询预算
+  k: 3.5                      # 与判定同一条带</code></pre>
+
+    <p>
+      扫描作为定时任务运行（job 带 <code>scan_spec</code> 段；任务类型优先级
+      <code>decision_rule &gt; scan_spec &gt; 自然语言管线</code>），报告落在 run 证据里
+      （<code>ScanReport</code>：发现 / 判不了 / 截断数 / 草稿 / 预算 / 证据 SQL 全文）。
+      验收不需要新配置以外的操作——到期自动测、自动回评分桶；出错自动进 admin 待办。
+      管理端操作与判定历史界面见<a href="../capabilities/decisions.html">判定规则</a>与
+      <a href="../capabilities/actions.html">行动提案</a>。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>一次测量，一个结局，不回填</td>
+            <td>verifier 修好后把历史缺口补上</td>
+            <td>回填时窗口已滚走，填出来的是另一个期间的测量——冒充当初的验收结果是这一层最不能出的错</td>
+          </tr>
+          <tr>
+            <td>error 行不重试</td>
+            <td>自动恢复的测量</td>
+            <td>测量不是重试循环；一行 error 让断链看得见，比悄悄重试到「成功」更诚实</td>
+          </tr>
+          <tr>
+            <td>按 <code>rule_rev</code> 分桶（非 digest）</td>
+            <td>「一个规则一个桶」的简单分桶</td>
+            <td>编辑 B 规则不该让 A 的判定史错位；改过口径的规则，旧判定不能算到新账上</td>
+          </tr>
+          <tr>
+            <td><code>MIN_EFFECTS = 3</code> 比率门</td>
+            <td>样本很少时也给一个「有效率」</td>
+            <td>1/1 不是 100%；伪精度比没有数字更糟。不足时给原因（<code>few_effects</code>…）而不是给 0</td>
+          </tr>
+          <tr>
+            <td>报告纯派生、不写回</td>
+            <td>预计算好的质量表和它的查询速度</td>
+            <td>同一段历史在任何时刻重算都逐字节相同——可复算是这层的意义本身</td>
+          </tr>
+          <tr>
+            <td>enabled 不是测量门</td>
+            <td>「关了外送就一切停」的直觉</td>
+            <td>测量是读不是写；关掉外送之后，已经出去的那批更需要验收</td>
+          </tr>
+          <tr>
+            <td>截断只截 anomaly</td>
+            <td>发现列表的整齐（全部 top_k）</td>
+            <td>「判不了」的数量由扫描单元数（metric × dim）封顶，保留它才是「判不了要看得见」的兑现</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>同一把尺子量两次。</strong>验收的超带判定与判定/扫描共用同一条带与同一个稳健 z 阈值；净效应用同一个 2×2——「判定说超带」与「验收说超带」不可能对不上。</li>
+      <li><strong>三层结局全诚实。</strong>超带 / 无变化 / 判不了，三态严格区分；「没动到数」是有价值的结论，「判不了」有原因清单，绝不互相冒充。</li>
+      <li><strong>闭环断裂可见。</strong>verifier 缺席、异常、组解析不了——全部落 error outcome 并进待办；回填不存在，测量滞后有 <code>exposure_days</code> 记账。</li>
+      <li><strong>版本账本干净。</strong>回评按 <code>rule_rev</code> 分桶、测量记 <code>rule_rev_judged</code>——规则改过之后，新旧口径的数字不会混进同一个比率。</li>
+      <li><strong>可复算、零 LLM。</strong>验收、评分、报告全是纯函数；报告的每个字节都能从存储的判定与测量记录重算出来。</li>
+      <li><strong>扫描与判定同源。</strong>主动发现的判据就是判定的判据——发现可以直接起草成规则，环闭回起点，不需要两套口径之间的翻译。</li>
+    </ul>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>噪声带本身的统计器械</td><td><a href="statistics.html">统计与噪声带</a></td></tr>
+          <tr><td>因果升级梯与 what-if（验收侧复用同一个 2×2）</td><td><a href="causal-whatif.html">因果与模拟</a></td></tr>
+          <tr><td>提案、审批、外送与只读姿态</td><td><a href="action-safety.html">行动安全架构</a></td></tr>
+          <tr><td>验收与质量的管理端操作</td><td><a href="../capabilities/actions.html#effect">行动提案 · 效果</a></td></tr>
+          <tr><td>主动扫描的完整字段与任务配置</td><td><a href="../capabilities/decisions.html#scan">判定规则 · 扫描</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

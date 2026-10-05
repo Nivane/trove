@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 分解数学与驱动器树：加性贡献、比率 shift-share 三效应的精确恒等式、表达式树分解的 decomposable 诚实性（乘除链不许硬拆）、残差入 payload、零查询预检与查询预算记账。">
+<title>分解数学与驱动器树 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>分解数学与驱动器树
+      </div>
+      <h1>分解数学与驱动器树</h1>
+      <p class="lede">
+        「为什么这个数变了」是分析的第一问。分解就是把总变化拆给各维度、各组件——
+        这件事有两种败法：<strong>拆得不诚实</strong>（子项之和并不等于父项，却摆出一副恒等式的样子）
+        与<strong>拆得没边</strong>（每条分支一趟查询，成本爆炸）。
+        这页讲 Trove 的两道纪律：分解要么<strong>精确</strong>（恒等式成立），要么
+        <strong>如实标注</strong>（残差入 payload、不可分解就不声称）；
+        取数编排每一步都有<strong>预算与记账</strong>，降级永远说出口。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">两种败法，两道纪律</h2>
+
+    <p>
+      一个「哪些地区贡献了贷款余额下降」的问题，机器可以给出三种答案：
+      数字对但无法复算、数字漂亮但恒等式不成立、数字对且能被任何人在纸面上验证。
+      只有第三种值得相信——分解数学是<strong>纯函数</strong>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L1">decompose.py <span class="ref-line">模块头</span></a>：
+      零 LLM、零 I/O、无时间依赖），任何一份分解都可以拿原始数字手工复算——
+      这是它敢作为证据链一环的前提。
+    </p>
+
+    <p>
+      驱动器树则回答更结构化的一问：「净利息收入」本身是不是可以拆成
+      「利息收入 − 利息支出」，各组件又变了多少？这在数学上只是沿表达式树的一次
+      <strong>加法</strong>——但表达式树里混着乘法与除法时，这个加法<strong>不成立</strong>。
+      本页的两道纪律就来自这两处：恒等式能证的才声称，查询能数清的才去发。
+    </p>
+
+    <h2 id="math">分解数学：加性、比率、占比</h2>
+
+    <p>
+      三种分解，都是纯函数（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L36">decompose.py:36 <span class="ref-line">contribution</span></a> /
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L71">decompose.py:71 <span class="ref-line">shift_share</span></a> /
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L123">decompose.py:123 <span class="ref-line">ratio_share</span></a>）：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>形态</th><th>前提</th><th>数学</th><th>细节上的诚实</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>加性贡献</strong><br/><code>contribution</code></td>
+            <td>指标可加（求和类），有基期与本期</td>
+            <td><code>delta_i = cur_i − base_i</code>；<code>contribution_i = delta_i / Σ|delta_i|</code>（带符号）</td>
+            <td>全无变化（<code>Σ|Δ| = 0</code>）时退化为<strong>占比归因</strong>（<code>cur_i / Σcur</code>），而不是除零或全零——「没变」也是一句要说清的话</td>
+          </tr>
+          <tr>
+            <td><strong>比率 shift-share</strong><br/><code>shift_share</code></td>
+            <td>指标是比率 <code>R = N/D</code>（AVG、率类），且能从语义模型拿到分子/分母</td>
+            <td><code>ΔR</code> 精确拆成三效应：<br/><code>within = Σ w_b·(r_c − r_b)</code>（本征）<br/><code>composition = Σ (w_c − w_b)·r_b</code>（结构）<br/><code>interaction = Σ (w_c − w_b)·(r_c − r_b)</code>（交叉）</td>
+            <td>三效应之和<strong>逐项精确等于 ΔR</strong>（每组的 contribution = 三项和）——这是一条可验证的恒等式，不是近似；比率变了到底是「各地区的率都变了」还是「结构从低率区挪到高率区」，三效应分开回答</td>
+          </tr>
+          <tr>
+            <td><strong>比率单期占比</strong><br/><code>ratio_share</code></td>
+            <td>比率指标但<strong>无基期</strong>（只给了一个期）</td>
+            <td>贡献 = 分子份额 <code>n_i / N</code></td>
+            <td>三效应字段如实填 <code>0.0</code> 而不是伪装成小效应——「没有基期，无变化可拆」在结构里看得见</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      两个容易被忽略的工程细节，都是为了<strong>跨进程可复现</strong>：
+      维度并集用保序去重（<code>dict.fromkeys</code>）——集合迭代序随
+      <code>PYTHONHASHSEED</code> 变化，而浮点求和的次序影响末位比特；
+      排序用<strong>双键</strong>（<code>|contribution|</code> 降序，并列按维度名升序）——
+      单键排序的并列次序会退到插入序。同一份数据、两个进程，输出逐字节一致。
+    </p>
+
+    <h2 id="tree">驱动器树：沿表达式树拆组件</h2>
+
+    <p>
+      语义模型里的 metric 表达式本身就是一棵树（<code>SUM(x)</code>、<code>a+b</code>、
+      <code>n/d</code>、<code>AVG(x)</code>、以及指向别的 metric 的裸标识符）。
+      驱动器树把这棵树<strong>解析成组件骨架</strong>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/expr_tree.py#L91">expr_tree.py:91 <span class="ref-line">metric_components</span></a>，纯函数不取数），
+      再给「能单独取到值」的组件各取两期值。骨架构建的判定表：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>表达式形状</th><th>节点</th><th>可分解？</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>AVG(x)</code></td>
+            <td><code>ratio</code>，子节点 <code>SUM(x)</code> / <code>COUNT(x)</code></td>
+            <td><code>false</code></td>
+            <td>平均值之比可拆成分子分母两个<strong>可取值</strong>的分量（<a href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/expr_tree.py#L123" class="ref">expr_tree.py:123</a>），但父项的变化量并不等于两者变化量之和——子组件有用，恒等式不成立</td>
+          </tr>
+          <tr>
+            <td><code>a / b</code>、<code>SafeDivide(a, b)</code></td>
+            <td><code>ratio</code></td>
+            <td><code>false</code></td>
+            <td>同上：比率链上子项之和 ≠ 父变化量，<strong>不许硬拆</strong></td>
+          </tr>
+          <tr>
+            <td><code>a + b</code>、<code>a − b</code></td>
+            <td><code>derived</code></td>
+            <td><code>true</code></td>
+            <td>加法链上 Δ 精确相加——唯一可以声称恒等式的链</td>
+          </tr>
+          <tr>
+            <td><code>a * b</code></td>
+            <td><code>derived</code></td>
+            <td><code>false</code></td>
+            <td>乘法下 Δ(ab) = aΔb + bΔa + ΔaΔb——展开就会引入交叉项，宁可不拆</td>
+          </tr>
+          <tr>
+            <td>裸标识符（metric 名）</td>
+            <td>递归展开被引用 metric 的表达式</td>
+            <td>随展开结果</td>
+            <td>深度上限 5（<code>note="depth"</code>）；命名环（metric 互引）在该引用处截停标 <code>note="cycle"</code>（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/expr_tree.py#L146">expr_tree.py:146 <span class="ref-line">Column 分支</span></a>）</td>
+          </tr>
+          <tr>
+            <td>解析失败 / 超长 / 未知形状</td>
+            <td>叶子 + <code>note</code></td>
+            <td>—</td>
+            <td>根自身仍可执行；<code>unparseable</code> / <code>too_large</code> / <code>unresolved</code> 如实标注，不是静默丢弃</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    EXPR["metric 表达式<br/>sqlglot 解析"] --&gt; KIND{"顶层形状?"}
+    KIND --&gt;|"AVG(x)"| RAT1["ratio · decomposable=false<br/>子: SUM(x) / COUNT(x)"]
+    KIND --&gt;|"a / b · SafeDivide"| RAT2["ratio · decomposable=false<br/>子: 递归 a, b"]
+    KIND --&gt;|"a + b · a − b"| ADD["derived · decomposable=true<br/>子: 递归 a, b"]
+    KIND --&gt;|"a * b"| MUL["derived · decomposable=false<br/>子: 递归 a, b"]
+    KIND --&gt;|"裸标识符 = metric 名"| REF["递归展开被引用 metric<br/>环停 cycle / 深度停 depth"]
+    KIND --&gt;|"聚合函数 · 解析不了"| LEAF["叶子（自身可执行）<br/>note 标注原因"]
+    ADD --&gt; COLLECT["collect_components<br/>preorder · 去重 · max_components 截断"]
+    RAT1 --&gt; COLLECT
+    RAT2 --&gt; COLLECT
+    MUL --&gt; COLLECT
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 表达式 → 组件树骨架。只有加/减链标 decomposable=true；乘除链的子组件仍然收集（比率根的分子分母有用），但恒等式不声称。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      组件收集
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/expr_tree.py#L165">expr_tree.py:165 <span class="ref-line">collect_components</span></a>
+      只收「<code>candidate</code> 非空」的节点——它们才是能单独取到值的；
+      <strong>不可分解节点的子组件照样收集</strong>：比率根的分子/分母就是这种情况，
+      父不可加，子各自有值仍然有用。超出 <code>max_components</code> 的部分截断并计数——
+      截断本身也会进 <code>degraded</code> 记账。
+    </p>
+
+    <h2 id="residual">残差：宁可不拆，不造恒等式</h2>
+
+    <p>
+      树组装完成时做一次<strong>诚实性判定</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L175">decompose.py:175 <span class="ref-line">residual</span></a>：
+      <code>residual = Δparent − ΣΔchildren</code>，<code>exact=True</code>
+      当且仅当残差在浮点容差内为零（<code>_EXACT_TOL = 1e-9</code>，误差只来自浮点表示）。
+      加减链上这个值精确为零——这是恒等式成立的证明；
+      乘除链上不为零——残差<strong>如实写进 payload</strong>。
+    </p>
+
+    <p>
+      减法链还有一个专门的修正
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/decompose.py#L163">decompose.py:163 <span class="ref-line">signed_children</span></a>：
+      <code>Δ(a − b) = Δa − Δb</code>——直接对子 delta 求和会把减法链误判出残差，
+      所以第二项取负。这是「分解正确性」与「分解诚实性」互相支撑的一处小结构：
+      符号错了会产生假残差，假残差会让真恒等式看起来不可信。
+    </p>
+
+    <div class="callout note">
+      <span class="callout-tag">这是算术，不是因果</span>
+      <div>
+        <p>
+          分解完全发生在<strong>算术层</strong>：它说「结构效应占了变化的大部分」，
+          不说「挪动结构会带来这个变化」。后者要过实验设计（对照、平行趋势、安慰剂）——
+          那是<a href="causal-whatif.html">因果与模拟</a>的升级梯，两处共用同一套分解数学，
+          但声称的强度完全不同。
+        </p>
+      </div>
+    </div>
+
+    <h2 id="budget">取数编排：零查询预检与预算记账</h2>
+
+    <p>
+      <code>AnalysisEngine</code> 是分析包里<strong>唯一有 I/O 的地方</strong>
+      （执行器从外面注入；姿态守卫测试断言这个包不 import 数据源注册表）。
+      驱动器树的取数编排把「可能出错的钱」都花在了明处：
+    </p>
+
+    <ol>
+      <li><strong>预检只编译不执行（零查询成本）</strong>——逐候选独立编译，把三类取不到值的候选剔除：
+      解析不了（<code>unresolvable</code>）、裸名被<strong>字段遮蔽</strong>
+      （编译器「字段优先」会把裸名当维度投影，值变成分组列）、结果带
+      <code>GROUP BY</code>（维度混入）。按解析后的度量名去重——编译器投影按度量名去重，
+      同名会少列、位置映射会错位（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L606">engine.py:606 <span class="ref-line">预检</span></a>）。</li>
+      <li><strong>组合路径：每期一条多度量 SQL</strong>——所有存活组件合成一次查询、两期各一次
+      （<code>metrics=[...]</code> 一次投影多列）。这决定成本上界：<strong>树是 O(期数) 条 SQL，不是 O(组件数)</strong>
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L723">engine.py:723 <span class="ref-line">组合路径</span></a>）。</li>
+      <li><strong>组合编译失败 → 逐候选回退</strong>——回退也逐条数预算，超预算的候选截断记账，
+      宁缺勿错（<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L735">engine.py:735 <span class="ref-line">回退路径</span></a>）。</li>
+      <li><strong>预算不足 → 只留骨架</strong>+<code>degraded{"stage":"driver_tree","reason":"query_budget_exceeded"}</code>——
+      树骨架仍有信息（结构、表达式、可分解性），数值缺位如实说
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L686">engine.py:686 <span class="ref-line">预算门</span></a>）。</li>
+    </ol>
+
+    <p>
+      预算由 <code>AnalysisLimits</code> 装配
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L268">engine.py:268 <span class="ref-line">AnalysisLimits</span></a>：
+      <code>max_dimensions=3</code>、<code>max_hops=2</code>、<code>max_components=4</code>、
+      <code>max_queries=12</code>、<code>tree_max_depth=5</code>；
+      每个阶段用 <code>QueryLedger</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/budget.py#L21">budget.py:21 <span class="ref-line">QueryLedger</span></a>
+      记账（<code>can()</code> / <code>record()</code> / <code>yield_()</code>）。
+      注意 <code>total_query_budget=None</code> 时<strong>上限不生效、只记账</strong>——
+      「老路径不受预算约束」这个事实从不可见变成<strong>可观测</strong>；上限只在显式设置时生效（新阶段、决策桥），
+      让路永远记账、绝不静默。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    TREE["组件树骨架<br/>（纯函数·零查询）"] --&gt; PRE["预检·只编译不执行<br/>剔除: 解析不了 / 字段遮蔽 / GROUP BY"]
+    PRE --&gt; BUD{"预算够吗?"}
+    BUD --&gt;|"不够"| SKEL["只留骨架<br/>degraded: query_budget_exceeded"]
+    BUD --&gt;|"够"| COMB["组合编译<br/>每期一条多度量 SQL"]
+    COMB --&gt;|"编译失败（交互）"| FALL["逐候选回退<br/>逐条数预算·超则截断记账"]
+    COMB --&gt;|"成功"| RUN["执行两期<br/>purpose=driver_tree"]
+    FALL --&gt; RUN
+    RUN --&gt; MARK["_mark_tree<br/>子项求和 · 残差判定"]
+    SKEL --&gt; FIN["_finish<br/>根值优先 hop0 官方口径"]
+    MARK --&gt; FIN
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 2 · 驱动器树取数编排。预检零查询成本；组合路径两步（两期各一条 SQL）；一切让路都记 degraded。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      树根的值有一个刻意的优先级
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L670">engine.py:670 <span class="ref-line">_finish</span></a>：
+      <strong>优先用主跳（hop0）的官方口径</strong>——树卡头条的数字必须与页面头条一致，
+      哪怕树的查询自己算出的根值有细微差别（过滤条件构造路径不同）。
+      hop0 没跑成时才回落到树查询自己的值（<code>value_source="tree_query"</code>），
+      再缺则 <code>"none"</code>——<strong>不拿 0.0 顶替</strong>，数字缺位在结构里看得见。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+    <p>
+      驱动器树默认开（存量行为即默认值），预算在 <code>conf/agent.yml</code> 可调：
+    </p>
+
+<pre><code># conf/agent.yml
+agent:
+  analysis:
+    driver_tree: true        # false = 只出维度分解表
+    max_components: 4        # 树里可执行组件数上限（超出截断 + degraded）
+    max_queries: 12          # 树阶段双期查询预算（超出 → 骨架 + degraded）
+    series_grain: ""         # 块序列粒度 day/week/month；留空 = 序列阶段关闭
+    block_lookback: 12       # 序列回看历史块数（不足 MIN_BLOCKS 退化并标注）</code></pre>
+
+    <p>
+      结果落到 <code>state.analysis</code>（结构化 payload，<code>version=1</code>，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/engine.py#L1204">engine.py:1204 <span class="ref-line">analysis_payload</span></a>），
+      与旧的 <code>state.attribution</code> <strong>双写</strong>兼容
+      （<a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L460">attribution.py:460 <span class="ref-line">双写</span></a>）——
+      归因节点本体已瘦身为适配器（<code>make_attribution</code> 签名不变，
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/workflow/nodes/attribution.py#L192">attribution.py:192 <span class="ref-line">make_attribution</span></a>），
+      数学升格成服务后有了三个调用方：图内节点、前端分析卡、决策桥。
+    </p>
+
+    <p>
+      决策侧还有一个复用点：规则触发后的「为什么变了」，由
+      <code>_analysis_bridge</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/service.py#L1052">service.py:1052 <span class="ref-line">_analysis_bridge</span></a>
+      调同一套引擎出「首要驱动」一行（
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/bridge.py#L143">bridge.py:143 <span class="ref-line">run_bridge</span></a>），
+      失败只记 <code>degraded</code>、绝不影响判定本身——判定与叙事是两条独立的路
+      （见<a href="decision-engine.html">判定内核</a>）。
+      前端瀑布图由 <code>render.py</code> 的
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/render.py#L12">render.py:12 <span class="ref-line">waterfall_chart</span></a> /
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/render.py#L44">render.py:44 <span class="ref-line">ratio_waterfall_chart</span></a>
+      出图，界面见<a href="../user/ask.html#attribution">归因分析卡</a>。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>乘除链 <code>decomposable=false</code>，不硬拆</td>
+            <td>「每层都能拆到底」的完整树观感</td>
+            <td>硬拆乘法要引入交叉项管理，任何一处近似都会让「残差不为零」的树看起来像 bug。宁可不拆，不造恒等式——子组件（分子/分母）仍然收集，有用性保留了</td>
+          </tr>
+          <tr>
+            <td>残差入 payload 而不是丢弃</td>
+            <td>更干净的输出形状</td>
+            <td>残差是唯一能向读者证明「这条链上恒等式成立/不成立」的字段；丢掉它，<code>exact</code> 就没有验证依据</td>
+          </tr>
+          <tr>
+            <td>预检只编译不执行</td>
+            <td>少一次编译往返就完事的写法</td>
+            <td>字段遮蔽这类坑只有编译结果能看出来；编译零查询成本，把错误发生在「花钱」之前</td>
+          </tr>
+          <tr>
+            <td>组合路径 + 逐候选回退的两层结构</td>
+            <td>统一走逐候选的简单实现</td>
+            <td>组合让树成本降到 O(期数)，回退只在组合编译失败（度量间交互）时触发——常见路径便宜，罕见路径正确</td>
+          </tr>
+          <tr>
+            <td>树根值优先 hop0 口径</td>
+            <td>树内部数值的自洽性</td>
+            <td>卡片头条与树根不一致是用户最先发现的不信任源；官方口径只有一个</td>
+          </tr>
+          <tr>
+            <td><code>total_query_budget=None</code> 只记账不设限</td>
+            <td>全局硬预算的简单叙事</td>
+            <td>老路径必须逐字节不变；让路永远记账让「不受约束」可见，上限只在新阶段（决策桥）显式生效</td>
+          </tr>
+          <tr>
+            <td>保序并集 + 双键排序</td>
+            <td>更简洁的集合/单键写法</td>
+            <td>分解结果进证据链与缓存，跨进程逐字节一致是硬要求；哈希序与插入序都不能泄漏进输出</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>每个数字可手工复算。</strong>分解数学是纯函数（零 LLM、零 I/O、无时间依赖），给定输入必然给定输出——归因结论是证据，不是叙事。</li>
+      <li><strong>恒等式是判定出来的，不是声称的。</strong><code>residual.exact</code> 逐树判定；比率的 shift-share 三效应之和精确等于 ΔR。</li>
+      <li><strong>成本有上界。</strong>每期一条多度量 SQL 是组合路径的常态；预检零查询；预算截断记账——驱动器树不会把一次提问变成十几趟查询。</li>
+      <li><strong>降级永远说出口。</strong><code>degraded[]</code> 逐条记 stage 与 reason，<code>partial</code> 如实置位；没有静默的缺失值。</li>
+      <li><strong>一份数学三个消费者。</strong>图内归因节点、前端分析卡、决策桥共用同一引擎与同一套预算纪律——行为漂移不可能，因为只有一份实现。</li>
+    </ul>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>分解之外的因果主张：对照、平行趋势、反事实</td><td><a href="causal-whatif.html">因果与模拟</a></td></tr>
+          <tr><td>噪声带与「变了多少才算变了」</td><td><a href="statistics.html">统计与噪声带</a></td></tr>
+          <tr><td>驱动这些分析的是哪条判定、条件怎么写</td><td><a href="decision-engine.html">判定内核</a></td></tr>
+          <tr><td>分析卡与瀑布图在界面上的样子</td><td><a href="../user/ask.html#attribution">归因分析卡</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>

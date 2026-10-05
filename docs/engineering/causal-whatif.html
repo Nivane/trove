@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Trove 因果与模拟：条件式升级梯（L1 确定性分解 → L2 差中差 → L3 合成对照），为什么默认不主张因果、placebo 前窗是唯一噪声来源、为什么不做权重优化器，以及 what-if 如何用同一条内核在假想数字上重判。">
+<title>因果与模拟 · Trove 文档</title>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="icon" href="../favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="../apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;450;500;600&display=swap">
+<link rel="stylesheet" href="../assets/docs.css">
+<script src="../assets/nav.js" defer></script>
+</head>
+<body>
+
+<div class="doc-shell">
+
+  <aside class="doc-nav" data-nav></aside>
+
+  <main class="doc-col">
+
+    <div class="doc-head">
+      <div class="crumbs">
+        <a href="../index.html">首页</a><span class="sep">/</span>设计深潜<span class="sep">/</span>因果与模拟
+      </div>
+      <h1>因果与模拟</h1>
+      <p class="lede">
+        <a href="decision-engine.html">判定内核</a>回答「变化超出<a href="statistics.html">噪声带</a>了吗」，
+        不回答「为什么」。归因给出的是<strong>确定性分解</strong>——那是描述，不是因果主张：
+        说「华东贡献了 −92%」，不等于说「是华东导致了变化」。这页讲两件事：
+        <strong>因果升级梯</strong>（默认停在描述层，条件逐条实测全部满足才升级到能给出反事实估计的设计），
+        以及 <strong>what-if</strong>（同一条判定内核在假想数字上的重判）。
+        全部纯函数，零 LLM；因果<strong>绝不改变触发判定</strong>——它是附录，不是前置。
+      </p>
+    </div>
+
+    <nav class="doc-toc" data-toc></nav>
+
+    <h2 id="problem">描述不是因果主张</h2>
+
+    <p>
+      「本月放款额跌了 12%，华东贡献了其中 92%」——这句话是恒等式分解，
+      在任何意义上都成立，也<strong>完全没说</strong>「是华东引起了下跌」。
+      可能华东只是体量大（同样的跌幅自然贡献最多），也可能两地同跌而华东只是先跌。
+      把分解当原因用，是数据产品最常见的越界。
+    </p>
+
+    <p>
+      因果升级梯要做的，是把「从描述走到反事实估计」变成一条<strong>有条件的梯子</strong>：
+      默认停在 L1（只做确定性分解）；只有当清单上的条件<strong>逐条可判定且全部满足</strong>，
+      才升级到 L2 差中差（DiD）或 L3 合成对照。三条铁律贯穿全篇：
+      ① 条件满足才升级，不满足<strong>诚实降级</strong>回 L1；
+      ② 算不出 ≠ 平行（检验做不出就不升级，与「算不出 ≠ 在带内」同一条纪律）；
+      ③ 每条结论都带<strong>非空的假设清单</strong>，「无法由数据检验」的条目写出来而不是省略。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart TB
+    T["触发（已超出噪声带）"] --&gt; C{"条件清单逐条实测"}
+    C --&gt;|"任一未过"| L1["L1 确定性分解<br/>描述，不主张因果<br/>unmet 各带实测值 / 阈值"]
+    C --&gt;|"C1–C5 全过"| L2["L2 差中差 DiD<br/>ATT =（T_post−T_pre）−（C_post−C_pre）"]
+    L2 --&gt;|"mode=auto 且 C6 供体拟合通过"| L3["L3 合成对照<br/>等权供体 · 比值外推"]
+    L2 --&gt;|"C6 未过"| S2["诚实停在 L2<br/>unmet 写明卡在哪"]
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 1 · 升级梯：不满足条件时不是「条件不足」一句话，而是逐条给出实测值与阈值——「差多少才算过」是审计的一部分。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <h2 id="ladder">条件清单：每一条都带实测值与阈值</h2>
+
+    <p>
+      升级判定是一个纯函数
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L305">causal.py:305 <span class="ref-line">ladder_decision</span></a>：
+      所有条件在调用前已被实测，函数只做「过/不过」的折叠。不过时返回 <code>unmet</code> 清单，
+      每条 <code>{condition, reason, measured, threshold}</code>——
+      例如 <code>C1: insufficient_blocks（实测 5 / 阈值 8）</code>。
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>条件</th><th>要求</th><th>不过时的 reason 举例</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>C4</code> 块对齐</td><td>声明了 <code>seasonal</code>、有时间字段、块规格可规划、前窗有值（结构性，先于一切取数）</td><td><code>no_seasonal</code> / <code>no_pre_block</code></td></tr>
+          <tr><td><code>C1</code> 稳定基线</td><td>历史有值块数 ≥ <code>MIN_BLOCKS</code>（8）</td><td><code>insufficient_blocks</code>（带实测与阈值）</td></tr>
+          <tr><td><code>C2</code> 对照可构造</td><td>对照组序列 pre/post 齐备</td><td><code>control_unavailable</code> / <code>control_data_missing</code></td></tr>
+          <tr><td><code>C5</code> 预算</td><td>因果阶段两条取数的额度（让路时记账）</td><td><code>query_budget_exceeded</code></td></tr>
+          <tr><td><code>C3</code> 前窗平行</td><td>placebo：<code>max|did| ≤ tolerance × scale</code></td><td><code>placebo_unverifiable</code> / <code>placebo_not_parallel</code>（带 max|did| 与阈值）</td></tr>
+          <tr><td><code>C6</code> 供体拟合</td><td>仅 <code>mode=auto</code>：合成对照前窗 index 偏差 ≤ tolerance——只挡 L3</td><td><code>fit_too_poor</code> / <code>treated_unidentified</code>（带拟合偏差与容差）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      条件之间存在<strong>取数顺序</strong>，顺序即记账顺序：C4/C1 不过（块都建不出来或太少）时
+      <strong>不花第二条 SQL</strong>；预算不够时两条都不花、让路记账。
+      代价上界因此是明确的：至多 2 条取数（处置组一条 + 对照帧一条），两条都成功才记账。
+    </p>
+
+    <p>
+      还有一条容易被当成装饰、实际是审计核心的要求：<strong>假设清单永远非空</strong>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L379">causal.py:379 <span class="ref-line">assumptions_for</span></a>。
+      每条假设附 <code>checked</code>：<code>True</code> = 在本级被检验且通过；
+      <code>None</code> = 数据无法检验——<strong>写出来而不是省略</strong>。
+      比如 L2/L3 都有的「对照单元未受同一干预影响（数据无法检验）」，
+      它永远以 <code>checked=None</code> 出现在结论旁边。「无法检验」本身就是审计事实。
+    </p>
+
+    <h2 id="placebo">placebo 前窗：唯一不发明分布的噪声来源</h2>
+
+    <p>
+      DiD 的全部输入是四个数：<code>ATT = (T_post − T_pre) − (C_post − C_pre)</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/analysis/effect.py#L59">effect.py:59 <span class="ref-line">did_2x2</span></a>。
+      四个数没有残差自由度——教科书的模型标准误在这里无从谈起。Trove 的做法是：
+      <strong>只承认一种噪声</strong>，即前窗上反复做 placebo（把历史相邻块对假装成
+      「干预前/后」做同样的 2×2）得到的漂移散布
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L119">causal.py:119 <span class="ref-line">placebo_pairs</span></a>。
+      四值齐备才算一对，缺值的块<strong>跳过而不是补零</strong>——补出来的对会稀释
+      散布，而散布正是唯一噪声来源；少一对只是少一个样本，补一个假的却会污染全部结论。
+    </p>
+
+    <p>
+      由此得到两件东西，措辞都经过刻意收紧：
+    </p>
+
+    <ul>
+      <li><code>did_se</code>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L188">causal.py:188 <span class="ref-line">did_se</span></a> =
+        placebo 漂移的标准差（≥2 对，<code>ddof=1</code>），源码明标
+        <strong>「非模型标准误」</strong>——它是漂移散布的粗噪声估计，不是一个假装有理论的量；</li>
+      <li><code>crosses_zero</code>
+        <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L202">causal.py:202 <span class="ref-line">crosses_zero</span></a> 用
+        <strong>±2·se 的朴素带</strong>判断效应是否跨零，<strong>不冒充置信区间</strong>；
+        se 缺失 → <code>None</code>（判不了），绝不返回 <code>False</code> 装「不跨零」。</li>
+    </ul>
+
+    <p>
+      平行检验本身也是三态的
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L151">causal.py:151 <span class="ref-line">parallel_trends</span></a>：
+      <code>scale</code>（取 <code>max(|T_pre|, |C_pre|)</code>）为 0 或缺失 → <code>zero_scale</code>；
+      一对都没有 → <code>no_placebo_pairs</code>；<code>placebo=None</code>（检验整体做不出）→
+      梯子直接停住，reason <code>placebo_unverifiable</code>。<strong>算不出 ≠ 平行</strong>——
+      这和统计侧「算不出 ≠ 在带内」是同一条纪律换了个场景。检验不过时，
+      返回体带着 <code>max_abs_did</code> 与 <code>threshold</code>，「差多少才算过」照例可见。
+    </p>
+
+    <h2 id="synthetic">L3 合成对照：无优化器版</h2>
+
+    <p>
+      没有现成对照组时，用「未受干预的同维单元」合成一个
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L213">causal.py:213 <span class="ref-line">donor_counterfactual</span></a>。
+      四步全部手算：① 前窗 index 拟合——各块按前窗均值归一化，
+      <code>fit = max_j |T_j/T̄ − D_j/D̄| ≤ tolerance</code> 才准升级；
+      ② 反事实——<code>cf_post = T̄ × (D_post/D̄)</code>（供体当期的整体变动率外推到处理组）；
+      ③ 效应——<code>effect = T_post − cf_post</code>；
+      ④ 数据不齐的供体进 <code>skipped</code> 不参与，一个供体都不剩 → <code>no_donors</code> 不升级。
+    </p>
+
+    <p>
+      这是<strong>刻意的最简可解释版</strong>：等权供体平均 + 比值外推，没有权重求解。
+      合成对照的经典做法（权重优化器）需要数值优化，超出「零第三方依赖、可复算」的
+      边界——verdict 是不可编辑的审计记录，反事实估计必须能从证据里的数字<strong>复算出
+      同一结果</strong>，优化器的收敛细节做不到这一点。
+    </p>
+
+    <p>
+      供体池的构造在取数侧完成，有一处「过滤手术」值得单说
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal_source.py#L80">causal_source.py:80 <span class="ref-line">donor_plan</span></a>：
+      处理组的身份就写在 subject 的等值过滤里（<code>region=华东</code>）。
+      按维分组取对照帧时必须<strong>摘掉钉在对照维上的等值过滤</strong>——
+      不摘，分组结果只剩处理组自己一行，对照与供体池都不存在；
+      摘掉后对照组 = <code>control.value</code> 那一行，供体池 = 其余行，
+      并<strong>排除被 subject 钉住的处理组标签</strong>（供体受同一干预，合成对照就不成立）。
+      一颗钉子都没有（处理组 = 整个总体）→ <code>treated_unidentified</code>：
+      此时任何供体都是处理组的子集，L3 诚实不可用。
+    </p>
+
+    <h2 id="whatif">what-if：同一条内核，同一份数字</h2>
+
+    <p>
+      「如果华东再降 10%，这条规则会响吗」——模拟的第一纪律是<strong>零查询</strong>：
+      数据来源只有两条，重放最近一条 verdict 的 <code>evidence.rows</code>
+      （判定当时到底在哪些数字上判的），或调用方直接给的 maps。
+      绝不为了「如果…会怎样」去查业务库——<strong>再取一份数字，判的就不是同一个东西了</strong>；
+      模拟的价值在于同一条内核（<code>judge</code>）在同一份数字上重跑。
+    </p>
+
+    <figure class="diagram" data-diagram="pending">
+      <div class="diagram-canvas">
+<pre class="mermaid">
+flowchart LR
+    V["最近一条 verdict<br/>evidence.rows"] --&gt; S["场景解析 parse_scenario<br/>pct / abs / set · 未知键报错"]
+    S --&gt; A["假想数字 apply_adjustments<br/>unapplied 记账"]
+    V --&gt; J1["judge（原数字）"]
+    A --&gt; J2["judge（假想数字）"]
+    J1 --&gt; F["flip：none / fired / cleared"]
+    J2 --&gt; F
+</pre>
+      </div>
+      <figcaption>
+        <span class="cap-rendered">图 2 · 模拟 = 同一个 judge 跑两遍；差异只有输入数字，以及每一条没模拟到的调整的记账。</span>
+        <span class="cap-source">上面这段以<strong>源码</strong>显示：图渲染库没加载起来（离线、CDN 被拦或浏览器禁用了 JavaScript 时会这样）。这段 Mermaid 文本本身就说明了上面那些框与连线。</span>
+      </figcaption>
+    </figure>
+
+    <p>
+      另外两条纪律与升级梯同源：
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>纪律</th><th>在哪体现</th><th>为什么</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>没模拟到的要写出来</strong></td>
+            <td><code>unapplied</code> 带原因：<code>unknown_dim</code>（点名了重放数据里没有的组）/ <code>missing_value</code>（该侧本来没值，pct/abs 算不动；<code>set</code> 例外）</td>
+            <td>少模拟了两项的结论与完整结论，在输出上必须可分辨，否则「模拟过了」与「模拟的是别的场景」长得一样</td>
+          </tr>
+          <tr>
+            <td><strong>不装能算</strong></td>
+            <td><code>simulate_tree</code>：非加性节点（比率/乘法/均值）标 <code>not_modeled</code>，父级一起不可算；<code>total=None</code> 是合法且有信息量的结果</td>
+            <td>子项变化量之和 ≠ 父变化量时，给一个数就是造恒等式——与分解侧 <code>decomposable</code> 纪律同源</td>
+          </tr>
+          <tr>
+            <td><strong>带位只重放不重算</strong></td>
+            <td>verdict 行卡上带着当时的 <code>confidence</code>/<code>gated</code> 原样参与两次判定；响应以 <code>degraded</code> 明说 <code>replayed_not_recomputed</code>（有带位）或 <code>not_simulated</code>（没有）</td>
+            <td>假想数字没有历史带可站；「模拟里触发」不许被读成「带也确认了」</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      还有一个安静的选择：没有带位数据时（调用方模式、或老 verdict 没记），
+      <code>require_gate</code> <strong>不施加</strong>——假装带没确认会把所有组判成「不触发」，
+      读起来像「这条规则永远不响」，比不给模拟更糟。此时翻转是<strong>条件级</strong>的，
+      <code>degraded</code> 立刻说明。场景解析本身是闭集校验
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/whatif.py#L54">whatif.py:54 <span class="ref-line">parse_scenario</span></a>：
+      未知键、未知 field/mode、非数值 value 全部在解析期抛 <code>WhatIfError</code> 并列出合法键——
+      静默忽略一条调整，会让「模拟过了」与「模拟的是别的场景」看起来一样。
+    </p>
+
+    <h2 id="usage">怎么用</h2>
+
+    <p>
+      在规则里声明 <code>causal</code>（schema v4）。前置：规则必须有 <code>seasonal</code>
+      （块规格，因果复用同一套块语义），且 subject 用等值过滤把处理组钉到维值粒度：
+    </p>
+
+<pre><code>seasonal:                     # 因果的块规格（复用噪声带声明）
+  grain: month
+  lookback: 12
+causal:
+  mode: auto                  # auto = L2 过后再试 L3；did = 只到 L2
+  control:                    # 恰一种形态，解析期强制
+    dim: region               # 形态一：对照 = 该维取 value 的那一行
+    value: 华北                #        供体池 = 该维其余取值
+  # filters:                  # 形态二：窄口径序列（供体池不存在，L3 不可用）
+  #   - {field: product, op: "=", value: 车贷}
+  placebo_blocks: 4           # 前窗相邻块对（k 对需要 k+1 个块）
+  tolerance: 0.1              # 相对容差（相对前窗水平量级）</code></pre>
+
+    <p>
+      触发后的证据里随之多出 <code>causal</code> 节：<code>rung</code>（L1/L2/L3）、
+      <code>unmet</code>、<code>assumptions</code>、<code>treated</code> / <code>control</code>（含各自 SQL）、
+      <code>placebo</code>、<code>synthetic</code>、<code>degraded</code>——全部进 verdict 审计行。
+      通知缀由
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L425">causal.py:425 <span class="ref-line">causal_line</span></a>
+      生成，<strong>仅 L2/L3 且有效应</strong>时缀上（L1 拒绝主张的效应不上通知）：
+      「净效应：+1,234.00（DiD·区间不跨零）」——<code>crosses_zero</code> 为 None 时后缀是
+      「噪声估计不足」，限定语
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/services/decision/causal.py#L80">causal.py:80 <span class="ref-line">CAUSAL_NOTE</span></a>
+      （「条件式反事实估计，不是实验结论；不进入触发判定」）在证据节里。
+    </p>
+
+    <p>
+      what-if 走管理端 API <code>POST /v1/admin/decisions/{rule_id}/simulate</code>
+      <a class="ref" href="https://github.com/Nivane/trove/blob/main/trove/api/routers/decisions.py#L429">decisions.py:429 <span class="ref-line">simulate</span></a>：
+      body 传 <code>scenario</code>（<code>[{dim, field, mode, value}, …]</code>，空数组 = 只重放），
+      响应含 <code>before</code>/<code>after</code> 两次判定、<code>applied</code>/<code>unapplied</code>、
+      <code>flip</code> 与一句话摘要。模拟不写进判定历史——推测性评估不污染审计线。
+    </p>
+
+    <h2 id="tradeoffs">取舍</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>选择</th><th>放弃了什么</th><th>为什么值得</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>默认停在 L1，不主张因果</td>
+            <td>「自动给出原因」的产品话术</td>
+            <td>把分解当原因用是这一层最不能出的错。宁可大多数时候只给描述——描述至少是真的</td>
+          </tr>
+          <tr>
+            <td>2×2 手算 + placebo 漂移当唯一噪声</td>
+            <td>模型标准误、置信区间的完整话术</td>
+            <td>四个数没有残差自由度，标准误无从谈起。±2·se 朴素带 + 明标「非模型标准误」，不发明分布</td>
+          </tr>
+          <tr>
+            <td>等权供体平均（无优化器）</td>
+            <td>更贴合的权重合成、更好的拟合优度</td>
+            <td>零依赖 + 可复算：verdict 必须能从证据数字复算出同一结果，数值优化做不到这一点</td>
+          </tr>
+          <tr>
+            <td>算不出 ≠ 平行</td>
+            <td>「检验没过但看起来还行」时照常升级</td>
+            <td>少升级优于假升级。检验做不出与检验不过，是两种诚实的停法</td>
+          </tr>
+          <tr>
+            <td>假设清单永远非空，含「无法检验」</td>
+            <td>更「干净」的结论呈现</td>
+            <td>「对照未受同一干预影响」永远无法由数据检验——但读者必须看到它，而不是被省略掉</td>
+          </tr>
+          <tr>
+            <td>what-if 零查询</td>
+            <td>对任意假设重新取数、模拟更大胆的场景</td>
+            <td>判的必须是同一份数字；场景越不出格，结论越可信。unapplied 如实记账替代静默丢失</td>
+          </tr>
+          <tr>
+            <td>取数顺序即记账顺序</td>
+            <td>「先把两条都查了再判断」的简单写法</td>
+            <td>结构性条件不过就不花第二条 SQL——预算纪律让因果阶段（附录）永远拖不垮正文</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="advantages">优势在哪</h2>
+
+    <ul>
+      <li><strong>条件式、可审计。</strong>每条 unmet 带实测值与阈值，「卡在哪、差多少才算过」一眼可见——不是一句「条件不足」。</li>
+      <li><strong>同一把尺子。</strong>升级梯的 2×2 与效果验收（<a href="closed-loop.html">闭环与契约</a>）的净效应估计是<strong>字面同一份实现</strong>（<code>effect.py</code>）——「判定看到的净效应」与「验收算出的净效应」不可能对不上。</li>
+      <li><strong>诚实降级链。</strong>编译 MISS、SQL 报错、数据不足、预算让路——全部只进 <code>degraded</code>，绝不上抛、绝不改 <code>triggered</code>；附录永远是附录。</li>
+      <li><strong>可复算、零依赖。</strong>反事实估计只用手算公式与 stdlib；模拟从证据重放——两件事都不需要再碰数据库，也不需要相信第二次计算结果。</li>
+      <li><strong>假设显式化。</strong>每级结论都带假设清单，可检验的附实测细节，不可检验的以 <code>checked=None</code> 出现——审计看得到「我们站在什么上面」。</li>
+    </ul>
+
+    <h2 id="next">继续读</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>想了解</th><th>去哪</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>条件 DSL、三值逻辑、预算与审计行</td><td><a href="decision-engine.html">判定内核</a></td></tr>
+          <tr><td>噪声带本身：块、稳健统计、位置分数</td><td><a href="statistics.html">统计与噪声带</a></td></tr>
+          <tr><td>行动之后数字动了没有——验收侧怎样复用同一份 2×2</td><td><a href="closed-loop.html">闭环与契约</a></td></tr>
+          <tr><td>管理端模拟与判定历史操作</td><td><a href="../capabilities/decisions.html">判定规则</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="doc-pager" data-pager></div>
+
+    <div class="doc-foot">
+      <span>本页源码锚点的基准提交：<code>anchor-base: 9689fd9</code></span>
+      <a href="https://github.com/Nivane/trove">GitHub 仓库</a>
+      <a href="../index.html">文档首页</a>
+    </div>
+
+  </main>
+</div>
+
+<noscript>
+  <p style="max-width:760px;margin:24px auto;padding:0 24px">
+    文档导航需要 JavaScript。你也可以直接前往
+    <a href="../index.html">Trove 文档首页</a>，或到
+    <a href="https://github.com/Nivane/trove">GitHub 仓库</a>阅读源码。
+  </p>
+</noscript>
+
+<script type="module" src="../assets/diagram.js"></script>
+
+</body>
+</html>
