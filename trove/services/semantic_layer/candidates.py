@@ -18,15 +18,19 @@
    候选若诱导管理员确认出一个错误/重复的声明,比没有候选更糟
    (草稿无编辑端点,pending 要么确认要么拒绝)。
 
-证据门槛(为什么只收这两类 reason):
+证据门槛(为什么只收这些 reason):
 
 - 字段类 = ``_resolve_field`` **解析失败**的理由(未声明字段/时间字段
   未声明/分析分区列未解析)——「模型里缺这个声明」就是缺口本身;
-  值类(enum_value_unresolved 等)字段已解析,缺的是值词表,而
-  component 只带 field_ref 不带值,确定性补不出来 → 不产生候选。
 - 指标类 = ``no_metric_match``:计划给了聚合候选但没匹配上声明度量。
   表达式的原文就是权威定义(编译器的对账就是按表达式/签名做的),
   可原样落为 metric 的 expression。
+- 值类 = ``enum_value_unresolved`` **仅当字段带实测取值**(``Field.values``,
+  probe 的结构事实)且提问字面量命中其一:命中即"库里确实这么存",
+  落 ``value_aliases`` 别名的证据是硬的。**不命中/未探测一律不猜**——
+  主导失败模式是翻译缺口(用户说「男性/月结」,库里存 ``M/monthly``),
+  机器无法从缺口中推出目标码;自映射(``{V: [V]}``)会把错字面量冻结进
+  骨架,聚合题的 0 行过滤没有守卫兜底,静默算错比拒绝更糟。
 
 锚定规则(保守,宁缺勿错):只收**全列表限定**的引用 ——
 ``dataset.field`` 形式的字段 ref、全部列都带表前缀且锚定唯一已声明
@@ -46,8 +50,9 @@ logger = logging.getLogger(__name__)
 MAX_CANDIDATES_PER_RUN = 3
 
 # 「字段解析失败」类软 MISS 理由 → field 候选。字段已解析的值/口径类
-# 理由(enum_value_unresolved / time_field_not_temporal / missing_filter_value
-# / expression_filter_value)刻意不在列:缺口不在声明,或在值域,见模块头。
+# 理由(time_field_not_temporal / missing_filter_value /
+# expression_filter_value)刻意不在列:缺口不在声明,或在值域——值域里
+# 只有 enum_value_unresolved 走下面的证据门控 _value_spec。
 _FIELD_REASONS = frozenset({
     "unresolved_filter_field",
     "unresolved_answer_column",
@@ -58,6 +63,10 @@ _FIELD_REASONS = frozenset({
 
 # 指标候选理由:聚合候选有签名但未匹配声明度量。
 _METRIC_REASON = "no_metric_match"
+
+# 值候选理由:字段已解析、值词表归一失败。值拿得到(``miss["value"]``,
+# 编译器第三键),但落候选必须过实测取值证据门槛(见 _value_spec)。
+_VALUE_REASONS = frozenset({"enum_value_unresolved"})
 
 
 def _column_ref(text: str) -> tuple[str, str] | None:
@@ -147,6 +156,57 @@ def _field_spec(reason: str, component: str, model: Any) -> dict[str, Any] | Non
     }
 
 
+def _value_spec(component: str, value: str, model: Any) -> dict[str, Any] | None:
+    """值类缺口(字段 ref + 提问字面量)→ field 候选;证据不足 → None。
+
+    证据门槛:字段的实测取值(``Field.values``,probe 的结构事实)里存在
+    与提问字面量大小写无关的相等项 —— 命中即"库里确实这么存",落一条
+    ``value_aliases[stored] += [stored]`` 让该字面量今后可被归一。合并
+    必须全量(baseline 别名 + 新条目):``_apply_field`` 的 payload 是
+    整体替换,不是增量。
+
+    未命中/字段未探测(``values`` 空)→ None:翻译缺口(用户说「男性」,
+    库里存 ``M``)的目标码机器推不出,自映射会把错字面量冻结进骨架
+    (聚合题 0 行过滤没有守卫兜底)——不猜,见模块头。
+    """
+    ref = _column_ref(component)
+    if ref is None:
+        return None
+    ds_name, field_name = ref
+    ds = next(
+        (d for d in model.datasets if d.name.lower() == ds_name.lower()), None)
+    if ds is None:
+        return None
+    fld = next(
+        (f for f in ds.fields if f.name.lower() == field_name.lower()), None)
+    if fld is None:
+        return None  # 字段未声明:缺口在声明,归 _field_spec 那条路
+    probe = str(value or "").strip()
+    if not probe:
+        return None
+    stored = next(
+        (str(v) for v in (fld.values or [])
+         if str(v).strip().lower() == probe.lower()),
+        None,
+    )
+    if stored is None or not stored.strip():
+        return None
+    merged = {
+        str(code): [str(a) for a in (labels or [])]
+        for code, labels in (fld.value_aliases or {}).items()
+    }
+    aliases = merged.setdefault(stored, [])
+    if not any(a.strip().lower() == stored.lower() for a in aliases):
+        aliases.append(stored)
+    return {
+        "kind": "field",
+        "name": f"{ds.name}.{fld.name}",
+        "payload": {"expression": fld.expression, "value_aliases": merged},
+        "reason": "enum_value_unresolved",
+        "evidence": f"{ds.name}.{fld.name}={stored}",
+    }
+
+
 def candidate_specs(misses: list[Any], model: Any) -> list[dict[str, Any]]:
     """软 MISS 列表 + 当前模型 → 候选规格(纯函数,零 IO;metric 优先)。
 
@@ -170,6 +230,13 @@ def candidate_specs(misses: list[Any], model: Any) -> list[dict[str, Any]]:
             bucket = metrics
         elif reason in _FIELD_REASONS:
             spec = _field_spec(reason, component, model)
+            bucket = fields
+        elif reason in _VALUE_REASONS:
+            # 值类只在 miss 带第三键(提问字面量)时才有证据可用;
+            # 两键老 miss(值缺席)→ 逐字节与今天相同:不产生候选。
+            if miss.get("value") is None:
+                continue
+            spec = _value_spec(component, str(miss.get("value")), model)
             bucket = fields
         else:
             continue
@@ -224,11 +291,13 @@ async def capture_candidates(
             break
         if (spec["kind"], spec["name"]) in pending:
             continue
+        evidence = str(spec.get("evidence") or "")
+        note_head = f"{evidence}:" if evidence else ""
         try:
             entry = await manager.create_draft(
                 datasource, spec["kind"], "upsert", spec["name"],
                 payload=spec["payload"],
-                note=f"auto:{spec['reason']}:{str(question or '')[:100]}",
+                note=f"auto:{spec['reason']}:{note_head}{str(question or '')[:100]}",
             )
         except Exception as e:
             logger.warning(

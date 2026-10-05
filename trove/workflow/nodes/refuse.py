@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -90,8 +91,14 @@ _MISS_COPY: dict[str, tuple[str, str]] = {
     "invalid_op": ("比较操作符对应的口径", "the comparison operator's definition"),
     "having_metric_unknown": ("筛选条件用到的指标(如 {c})", "the metric used by a filter (e.g. {c})"),
     "having_without_aggregation": ("筛选条件所依赖的分组口径", "the grouping behind a filter"),
-    "unknown_cardinality": ("表之间的关联关系(基数未声明)", "how the tables relate (cardinality undeclared)"),
-    "fan_out": ("表之间的聚合口径(直接联表会重复计数)", "the aggregation path between tables (a plain join double-counts)"),
+    # 关系类缺口(component = 计划涉及的表名,", ".join):把「涉及哪些表」说出来
+    # + 声明指引——A5 报表单列「因关系未声明被拒」的另一半(用户侧可读化)。
+    # 注意:只有 component 恒为表名的 reason 才配 {c};ambiguous_join_path 的
+    # component 有的是表名、有的是内部诊断串(explicit joins …),加了会泄漏。
+    "unknown_cardinality": (
+        "表 {c} 之间的关联关系(基数未声明——请在语义模型里声明这两张表如何关联)",
+        "how the tables ({c}) relate (cardinality undeclared — declare the relationship in the semantic model)"),
+    "fan_out": ("表 {c} 之间的聚合口径(直接联表会重复计数)", "the aggregation path between the tables ({c}) (a plain join double-counts)"),
     "unreachable_table": ("问题涉及的表(与已声明模型不连通)", "the table involved (it is not linked to the declared model)"),
     "table_not_allowed": ("该数据源授权范围外的表", "a table outside this datasource's authorized scope"),
     "ambiguous_join_path": ("表之间唯一的关联路径(存在多条)", "a single join path between the tables (several exist)"),
@@ -200,11 +207,15 @@ def _draft_what(lang: str, draft: dict[str, Any]) -> str:
 
 
 def _uncovered_message(lang: str, reason: str, draft: dict[str, Any] | None,
-                       conflict: bool = False) -> str:
+                       conflict: "Conflict | None" = None,
+                       landed: bool = False) -> str:
     """缺声明的用户文案:说清缺什么、你能做什么。
 
     ``reason`` 可以是编译分因 slug 或 ``slug: component``(refuse 节点拼的),
     一律翻译成人话;YAML 内部键(kind= / expression=)不进用户视野。
+
+    冲突三态:可修正且已落待审(``landed``)→ 收件箱修正;同口径指标
+    已存在(agg_duplicate)→ 换问法;其余冲突 → 未写入,人工补充。
     """
     slug, _, component = reason.partition(":")
     component = component.strip()
@@ -249,19 +260,52 @@ def _uncovered_message(lang: str, reason: str, draft: dict[str, Any] | None,
         )
     body = "\n".join(lines)
 
-    if conflict:
+    if conflict is not None and conflict.code == "agg_duplicate":
+        covered = conflict.name or _draft_name(draft)
+        return L(
+            lang,
+            f"当前语义模型缺少回答这个问题所需的声明：{what}——"
+            f"不过系统识别到它已由现有指标「{covered}」覆盖(同一计算方式)。\n"
+            f"{body}\n"
+            "如果问题里带年份/枚举等条件,请把它们作为筛选条件重新提问"
+            "（例：「2020 年的 …」）,不要按值新建指标。",
+            f"The semantic model is missing the declaration this question "
+            f"needs: {what} — but an existing metric \"{covered}\" already "
+            "covers the same computation.\n"
+            f"{body}\n"
+            "If the question carries a year/enum condition, re-ask with it as "
+            "a filter (e.g. \"... in 2020\") instead of creating a per-value "
+            "metric.",
+        )
+    if conflict is not None and landed:
         return L(
             lang,
             f"当前语义模型缺少回答这个问题所需的声明：{what}。\n"
-            "系统尝试自动起草了一份补充声明，但它与现有模型冲突"
-            "（重名 / 表达式无法解析 / 引用了未声明的数据集），因此没有写入：\n"
+            "系统已自动起草一份补充声明并与现有模型核对,发现一处冲突"
+            f"（{_conflict_phrase(lang, conflict)}）,不能直接确认——"
+            "草稿已放入待审收件箱,请管理员以它为蓝本修正后新建:\n"
+            f"{body}\n",
+            f"The semantic model is missing the declaration this question "
+            f"needs: {what}.\n"
+            "A draft declaration was prepared and checked against the current "
+            f"model; it has one conflict ({_conflict_phrase(lang, conflict)}) "
+            "and cannot be confirmed directly. It was placed in the review "
+            "inbox — an admin can fix it via \"create from this draft\":\n"
+            f"{body}\n",
+        )
+    if conflict is not None:
+        return L(
+            lang,
+            f"当前语义模型缺少回答这个问题所需的声明：{what}。\n"
+            "系统尝试自动起草了一份补充声明,但它与现有模型冲突"
+            f"（{_conflict_phrase(lang, conflict)}）,因此没有写入:\n"
             f"{body}\n"
-            "请管理员在管理端手动补充，然后重新提问。",
+            "请管理员在管理端手动补充,然后重新提问。",
             f"The semantic model is missing the declaration this question "
             f"needs: {what}.\n"
             "A draft declaration was attempted but conflicts with the current "
-            "model (duplicate name / unparseable expression / undeclared "
-            "dataset), so it was not written:\n"
+            f"model ({_conflict_phrase(lang, conflict)}), so it was not "
+            "written:\n"
             f"{body}\n"
             "Ask an admin to add it manually, then ask again.",
         )
@@ -334,27 +378,71 @@ def _expr_ok(expr: str) -> bool:
     return not isinstance(tree, exp.Alias)
 
 
-def _detect_conflict(model, draft: dict[str, Any]) -> str:
+@dataclass(frozen=True)
+class Conflict:
+    """草稿与现有模型的确定性冲突。
+
+    ``code`` 是机器可读分因(报表/文案映射用);``message`` 是中文诊断
+    (日志、草稿注解、管理员视野——**不进用户文案**,用户文案按 code 走
+    ``_CONFLICT_COPY`` 双语映射)。``landable``:冲突可人工修正(重名 /
+    表达式不可解析 / 数据集引用错)→ 内容照落 pending 待审;
+    不可修正类(名称缺失 / 未知类型)只展示不落库。
+    """
+
+    code: str
+    message: str
+    landable: bool = False
+    #: 冲突涉及的既有资产名(agg_duplicate 的既有指标名;文案插值用)。
+    name: str = ""
+
+
+# 冲突 code → 用户可见短语(双语)。**不暴露 message 原文**:它是中文诊断,
+# 英文界面会漏 zh;code 是封闭集,漏了退回泛化说法。
+_CONFLICT_COPY: dict[str, tuple[str, str]] = {
+    "expr_unparseable": ("声明的计算方式无法解析", "the proposed expression does not parse"),
+    "name_declared": ("名称与现有声明重名", "the name duplicates an existing declaration"),
+    "dataset_undeclared": ("引用了未声明的数据集", "it references an undeclared dataset"),
+    "field_dataset_undeclared": ("它所在的数据集未声明", "its dataset is not declared"),
+    "field_declared": ("该字段已声明", "the field is already declared"),
+    "name_missing": ("缺少名称", "it has no name"),
+    "field_name_form": ("字段名不是 dataset.field 形式", "the field name is not in dataset.field form"),
+    "agg_duplicate": ("已有同口径指标", "an equivalent metric already exists"),
+    "unknown_kind": ("草稿类型未知", "the draft kind is unknown"),
+}
+
+
+def _conflict_phrase(lang: str, conflict: "Conflict") -> str:
+    pair = _CONFLICT_COPY.get(conflict.code)
+    if pair is None:
+        return L(lang, "与现有模型冲突", "it conflicts with the current model")
+    return L(lang, pair[0], pair[1])
+
+
+def _detect_conflict(model, draft: dict[str, Any]) -> Conflict | None:
     """确定性冲突检测:同名定义 / 表达式不可解析 / 数据集未声明。
 
-    返回冲突原因(空 = 无冲突,可写库)。
+    返回 ``None`` = 无冲突可写库。code 封闭集见 ``_CONFLICT_COPY``;
+    ``agg_duplicate`` 是"已有同聚合签名指标"——同名不同名的都算,
+    落草稿=诱导确认一条必然重复的指标,所以既不落库也不给建档动作
+    (补救是换问法加过滤条件,不是补声明)。
     """
     kind = draft.get("kind")
     expr = str(draft.get("expression") or "").strip()
     if not _expr_ok(expr):
-        return "表达式不可解析"
+        return Conflict("expr_unparseable", "表达式不可解析", landable=True)
     declared_datasets = {d.name for d in model.datasets} if model is not None else set()
     declared_metrics = {m.name for m in model.metrics} if model is not None else set()
     if kind == "metric":
         name = str(draft.get("name") or "").strip()
         if not name:
-            return "指标名缺失"
+            return Conflict("name_missing", "指标名缺失")
         if name in declared_metrics:
-            return f"指标「{name}」已声明"
+            return Conflict("name_declared", f"指标「{name}」已声明", landable=True)
         refs = draft.get("datasets") or []
         if refs and any(d not in declared_datasets for d in refs):
             bad = [d for d in refs if d not in declared_datasets]
-            return f"引用了未声明的数据集 {bad}"
+            return Conflict(
+                "dataset_undeclared", f"引用了未声明的数据集 {bad}", landable=True)
         # 表达式去重:草稿指标与已有指标聚合签名兼容(如 COUNT(loan.loan_id)
         # 与既有 loan_count 系列)→ 视为重复定义。年份/枚举值应是过滤条件,
         # 不是指标本体——拒绝把「loan_count_in_2020」这类按值拆分的指标入库。
@@ -368,24 +456,26 @@ def _detect_conflict(model, draft: dict[str, Any]) -> str:
                 for m in model.metrics:
                     m_sig = _agg_signature(m.expression)
                     if m_sig is not None and _sig_compatible(draft_sig, m_sig):
-                        return (
-                            f"已有同表达式指标「{m.name}」"
-                            f"({m.expression})——时间/枚举等过滤值应是查询条件,"
-                            "请勿按值新建指标"
-                        )
-        return ""
+                        return Conflict(
+                            "agg_duplicate",
+                            f"已有同表达式指标「{m.name}」({m.expression})"
+                            "——时间/枚举等过滤值应是查询条件,请勿按值新建指标",
+                            name=str(m.name))
+        return None
     if kind == "field":
         name = str(draft.get("name") or "").strip()
         ds_name, sep, field_name = name.partition(".")
         if not sep:
-            return "字段名必须是 dataset.field 形式"
+            return Conflict("field_name_form", "字段名必须是 dataset.field 形式")
         if ds_name not in declared_datasets:
-            return f"数据集「{ds_name}」未声明"
+            return Conflict(
+                "field_dataset_undeclared", f"数据集「{ds_name}」未声明", landable=True)
         ds = next(d for d in model.datasets if d.name == ds_name)
         if any(f.name == field_name for f in ds.fields):
-            return f"字段「{name}」已声明"
-        return ""
-    return "未知的草稿类型"
+            return Conflict(
+                "field_declared", f"字段「{name}」已声明", landable=True)
+        return None
+    return Conflict("unknown_kind", "未知的草稿类型")
 
 
 def _payload_for(kind: str, draft: dict[str, Any]) -> dict[str, Any]:
@@ -617,9 +707,11 @@ def _semantic_url(datasource: str, *, tab: str = "") -> str:
     return "/admin/semantic" + (f"?{'&'.join(parts)}" if parts else "")
 
 
-def _blueprint_payload(draft: dict[str, Any]) -> dict[str, Any]:
+def _blueprint_payload(draft: dict[str, Any],
+                       conflict: "Conflict | None" = None) -> dict[str, Any]:
     """冲突草稿的蓝本内容:前端「以此为蓝本新建」预填用(值原样透传,
-    都是已经展示在拒绝文案里的字段,没有新的暴露面)。"""
+    都是已经展示在拒绝文案里的字段,没有新的暴露面)。``conflict`` 带上
+    分因 code/中文诊断,对话框展示"为什么不能直接确认"。"""
     out: dict[str, Any] = {
         "draft_kind": str(draft.get("kind") or ""),
         "draft_name": str(draft.get("name") or ""),
@@ -627,6 +719,10 @@ def _blueprint_payload(draft: dict[str, Any]) -> dict[str, Any]:
     }
     if draft.get("datasets"):
         out["datasets"] = list(draft["datasets"])
+    if conflict is not None:
+        out["conflict_code"] = conflict.code
+        if conflict.message:
+            out["conflict_message"] = conflict.message
     return out
 
 
@@ -643,29 +739,37 @@ def _no_model_actions(lang: str, datasource: str) -> list[dict[str, Any]]:
 
 def _draft_actions(
     lang: str, datasource: str, *,
-    draft: dict[str, Any] | None, conflict: bool, entry: dict[str, Any] | None,
+    draft: dict[str, Any] | None, conflict: "Conflict | None",
+    entry: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """编译 MISS 拒绝的四态出口(与 refusal 的 draft/conflict/entry 对齐):
+    """编译 MISS 拒绝的出口(与 refusal 的 draft/conflict/entry 对齐):
 
-      draft=None        → 起草就没成,工作台是唯一去处
-      conflict=True     → 草稿没写库,给「蓝本新建」(内容随 payload 预填)
-      entry=None        → 草稿只展示了、没落库(无 kb/数据源上下文)→ 同上
-      entry≠None        → 草稿已落 pending 收件箱 → 确认(确认后重答)
+      draft=None                → 起草就没成,工作台是唯一去处
+      agg_duplicate             → 不是缺声明(是已有同口径指标)→ 无控制台动作
+                                  (补救=换问法,文案已说清)
+      conflict(其余)            → 不能直接确认(落了待审也只可作蓝本)→
+                                  「以这份草稿为蓝本新建」(内容随 payload 预填;
+                                  草稿在收件箱时深链带 tab=pending)
+      entry=None                → 草稿只展示了、没落库(无 kb/数据源上下文)→ 同上
+      entry≠None                → 草稿已落 pending 收件箱 → 确认(确认后重答)
 
     A/B 档自动确认成功走的是**早退分支**(refusal=None,路由回重答),
     不在这里——没有需要人做的一步,就不该给动作。
     """
     ds = str(datasource or "")
-    if draft is None or (entry is None and not conflict):
+    if draft is not None and conflict is not None:
+        if conflict.code == "agg_duplicate":
+            return []
+        return [_admin_action(
+            lang, "new_from_draft",
+            _semantic_url(ds, tab="pending") if entry is not None else _semantic_url(ds),
+            "以这份草稿为蓝本新建", "Create from this draft",
+            payload=_blueprint_payload(draft, conflict),
+        )]
+    if draft is None or entry is None:
         return [_admin_action(
             lang, "open_semantic", _semantic_url(ds),
             "去语义工作台补充声明", "Add the declaration in the semantic workbench",
-        )]
-    if conflict:
-        return [_admin_action(
-            lang, "new_from_draft", _semantic_url(ds),
-            "以这份草稿为蓝本新建", "Create from this draft",
-            payload=_blueprint_payload(draft),
         )]
     payload: dict[str, Any] = {
         "draft_kind": str(draft.get("kind") or ""),
@@ -754,13 +858,18 @@ def make_refuse(
         # 文案,管理端知道具体缺哪个声明(metric/字段/join),而不是笼统
         # 「uncovered」。返回的 refusal["reason"] 保持原始值(上游契约/
         # 机器匹配不变),派生 detail 只进 message。
+        #
+        # 文案的 reason **直接用分因 slug**(不是 "uncovered (slug: …)" 的
+        # 包装形)——_MISS_COPY 表按 slug 查短语,包装形在 first-colon 切分
+        # 后就查不中、整表退化成泛化说法(A2 修正;关系类缺口因此才说得出
+        # 「涉及哪两张表」:_MISS_COPY 的 {c} 由 component 插值)。
         reason_detail = reason
         cm = refusal.get("compile_miss") or {}
         if isinstance(cm, dict) and cm.get("reason"):
             detail = str(cm["reason"])
             if cm.get("component"):
                 detail = f"{detail}: {cm['component']}"
-            reason_detail = f"{reason} ({detail})"
+            reason_detail = detail
         question = str(refusal.get("question") or state.question)
         plan = refusal.get("plan")
         model = None
@@ -773,7 +882,7 @@ def make_refuse(
                 model = None
 
         draft = None
-        conflict = ""
+        conflict: Conflict | None = None
         try:
             draft = await draft_refusal_extension(
                 llm,
@@ -791,7 +900,33 @@ def make_refuse(
 
         entry = None
         auto_confirmed = False
-        if draft is not None and not conflict:
+        conflict_landed = False
+        if draft is not None and conflict is not None and conflict.landable:
+            # 可人工修正的冲突(重名/表达式/数据集引用)→ 内容照落 pending,
+            # 带 conflict 注解:收件箱里看得见、确认被守卫拦住、以蓝本新建
+            # 是唯一修正路径。落库失败不连坐——照旧走"只展示"通道。
+            kind = draft.get("kind")
+            name = str(draft.get("name") or "").strip()
+            datasource = state.datasource or ""
+            if kb is not None and datasource and kind in ("metric", "field") and name:
+                from trove.services.semantic_layer.manage import SemanticManager
+                manager = SemanticManager(kb)
+                try:
+                    entry = await manager.create_draft(
+                        datasource, kind, "upsert", name,
+                        payload=_payload_for(kind, draft),
+                        note=f"refuse-conflict:{conflict.code}:{question[:120]}",
+                        conflict={
+                            "code": conflict.code,
+                            "message": conflict.message,
+                        },
+                    )
+                    conflict_landed = True
+                except Exception as e:
+                    logger.warning("Conflicted draft write failed (%s): %s",
+                                   state.datasource, e)
+                    entry = None
+        if draft is not None and conflict is None:
             kind = draft.get("kind")
             name = str(draft.get("name") or "").strip()
             datasource = state.datasource or ""
@@ -869,13 +1004,16 @@ def make_refuse(
                 **_HYGIENE,
             }
 
-        if draft is not None and conflict:
-            message = _uncovered_message(state.lang, reason_detail, draft, conflict=True)
+        if draft is not None and conflict is not None:
+            message = _uncovered_message(
+                state.lang, reason_detail, draft,
+                conflict=conflict, landed=conflict_landed)
         else:
             shown = draft if draft is not None else None
             message = _uncovered_message(state.lang, reason_detail, shown)
-        # 管理员在对话中即可确认(无需离开会话);非管理员提示走管理端
-        if state.is_admin and draft is not None and not conflict:
+        # 管理员在对话中即可确认(无需离开会话);非管理员提示走管理端。
+        # 冲突草稿例外:确认被 manage 的守卫拦住,提示=死按钮,不给。
+        if state.is_admin and draft is not None and conflict is None:
             message += L(
                 state.lang,
                 "\n（管理员：直接回复「确认」即可在对话中采纳该草稿并立即重答。）",
@@ -888,14 +1026,22 @@ def make_refuse(
             "question": question,
             "datasource": state.datasource or "",
             "draft": draft,
-            "conflict": bool(conflict),
+            "conflict": conflict is not None,
             "draft_entry": entry,
             "message": message,
             "next_actions": _draft_actions(
                 state.lang, state.datasource or "",
-                draft=draft, conflict=bool(conflict), entry=entry,
+                draft=draft, conflict=conflict, entry=entry,
             ),
         }
+        # 冲突结构化信息(``conflict`` 保持 bool 兼容老消费方,新信息走兄弟键;
+        # 无冲突时不带这个键——拒绝 dict 的既有形状逐字节不变)。
+        if conflict is not None:
+            refusal_out["conflict_info"] = {
+                "code": conflict.code,
+                "message": conflict.message,
+                "landed": conflict_landed,
+            }
         # 结构化分因随终态拒绝一起交付:拒绝是这条链的**终态产物**(wire 上
         # 走 mcp/session 的 refusal 字段),它得能自己说清缺的是哪种声明 ——
         # 上一跳写了 compile_miss,这里重建 dict 时丢掉 = 诊断只活在日志里。

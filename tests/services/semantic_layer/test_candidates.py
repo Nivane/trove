@@ -145,8 +145,8 @@ class TestCandidateSpecs:
 
     def test_non_candidate_reasons_and_empty_components_ignored(self):
         model = _model()
-        # 字段已解析的值类缺口(enum_value_unresolved)不在候选域:
-        # component 只带 field_ref 不带值,确定性补不出 value_aliases。
+        # 两键枚举缺口(无 value 第三键)不产生候选:老形状输入 → 候选集
+        # 与今天逐字节相同(值类候选另有 TestValueCandidates,证据门控)。
         for miss in (
             {"reason": "enum_value_unresolved", "component": "loan.status"},
             {"reason": "invalid_op", "component": "="},
@@ -167,6 +167,91 @@ class TestCandidateSpecs:
         assert candidate_specs(
             [{"reason": "no_metric_match", "component": "AVG(loan.amount)"}],
             None) == []
+
+
+def _model_with_values(values: list[str] | None, aliases: dict | None = None):
+    """status 字段带实测取值(probe 结构事实)+ 可选既有值别名。"""
+    doc = _doc()
+    status = doc["semantic_model"][0]["datasets"][0]["fields"][2]
+    if values is not None:
+        status["values"] = values
+    if aliases is not None:
+        status.setdefault("ai_context", {})["value_aliases"] = aliases
+    return parse_ossie(yaml.safe_dump(doc, allow_unicode=True))
+
+
+class TestValueCandidates:
+    """值类缺口候选(enum_value_unresolved + 第三键 value):证据门控。
+
+    唯一可以落候选的情形 = 提问字面量与**实测取值**大小写无关地相等
+    (库里确实这么存)。翻译缺口(男性/月结 → M/monthly)机器定不了目标码
+    ——自映射会把错字面量冻结进骨架,聚合题的 0 行过滤没守卫兜底 → 不猜。
+    """
+
+    def test_value_hit_lands_alias_candidate(self):
+        specs = candidate_specs(
+            [{"reason": "enum_value_unresolved", "component": "loan.status",
+              "value": "Z"}],
+            _model_with_values(["A", "B", "Z"]))
+        assert specs == [{
+            "kind": "field", "name": "loan.status",
+            "payload": {"expression": "status", "value_aliases": {"Z": ["Z"]}},
+            "reason": "enum_value_unresolved",
+            "evidence": "loan.status=Z",
+        }]
+
+    def test_value_match_is_case_insensitive_stored_spelling_wins(self):
+        specs = candidate_specs(
+            [{"reason": "enum_value_unresolved", "component": "loan.status",
+              "value": " z "}],
+            _model_with_values(["A", "Z"]))
+        assert specs[0]["payload"]["value_aliases"] == {"Z": ["Z"]}
+
+    def test_value_misses_without_probe_evidence_skipped(self):
+        # 值不在实测取值里(翻译缺口)= 主导失败模式:不产生候选
+        assert candidate_specs(
+            [{"reason": "enum_value_unresolved", "component": "loan.status",
+              "value": "男性"}],
+            _model_with_values(["M", "F"])) == []
+        # 未探测(values 缺席)= 没有证据:同样不猜
+        assert candidate_specs(
+            [{"reason": "enum_value_unresolved", "component": "loan.status",
+              "value": "Z"}],
+            _model_with_values(None)) == []
+
+    def test_value_merges_existing_aliases_not_replaces(self):
+        """payload 整体替换 —— 既有别名必须全量并入,否则确认即丢失。"""
+        specs = candidate_specs(
+            [{"reason": "enum_value_unresolved", "component": "loan.status",
+              "value": "Z"}],
+            _model_with_values(["A", "Z"], aliases={"A": ["active"]}))
+        assert specs[0]["payload"]["value_aliases"] == {
+            "A": ["active"], "Z": ["Z"]}
+
+    def test_value_alias_deduped_when_already_declared(self):
+        specs = candidate_specs(
+            [{"reason": "enum_value_unresolved", "component": "loan.status",
+              "value": "z"}],
+            _model_with_values(["Z"], aliases={"Z": ["z"]}))
+        assert specs[0]["payload"]["value_aliases"] == {"Z": ["z"]}
+
+    def test_value_junk_is_never_echoed(self):
+        """提问字面量当不可信输入:只有命中实测取值的输入才进 payload,
+        且落进去的是**探测到的存储写法**(probe 已净化),不是用户原文。"""
+        for junk in ("Z\n- evil: yaml", "Z'", "Z" * 500, "", "  "):
+            assert candidate_specs(
+                [{"reason": "enum_value_unresolved", "component": "loan.status",
+                  "value": junk}],
+                _model_with_values(["A", "B"])) == [], repr(junk)
+
+    def test_value_spec_deduped_against_field_gap_same_name(self):
+        """同一字段的声明缺口与值缺口同轮出现 → (kind, name) 去重只留一条。"""
+        specs = candidate_specs([
+            {"reason": "unresolved_filter_field", "component": "loan.grade"},
+            {"reason": "enum_value_unresolved", "component": "loan.status",
+             "value": "Z"},
+        ], _model_with_values(["Z"]))
+        assert [s["name"] for s in specs] == ["loan.grade", "loan.status"]
 
 
 # ── 落库(真实 KB 目录) ──────────────────────────────────

@@ -102,6 +102,29 @@ class TestWireTransport:
         contract = self._sample()
         assert contract_from_wire(contract_to_wire(contract)) == contract
 
+    def test_round_trip_preserves_value_gap_third_key(self):
+        """值类缺口的第三键 ``value`` 过 wire 往返不丢。
+
+        ``_decode_gaps`` 是**硬重建**两键的实现(A2 ② 的改键点):
+        漏了第三键这里会静默掉键,而 gaps == miss_parts 是别处的
+        等值断言——静默丢键不会被任何形状错误暴露。
+        """
+        contract = PlanContract(
+            skeleton_sql="SELECT 1",
+            partial=True,
+            gaps=({"reason": "enum_value_unresolved",
+                   "component": "loan.status", "value": "Z"},),
+        )
+        decoded = contract_from_wire(contract_to_wire(contract))
+        assert decoded == contract
+        assert decoded.gaps[0]["value"] == "Z"
+
+    def test_two_key_gaps_stay_two_key_after_round_trip(self):
+        """老 wire(两键 gap)解码逐字节不变:不凭空长出 ``value`` 键。"""
+        decoded = contract_from_wire(contract_to_wire(self._sample()))
+        assert decoded is not None
+        assert all("value" not in g for g in decoded.gaps)
+
     def test_round_trip_through_the_real_checkpointer_serde(self):
         """经 langgraph 的 JsonPlusSerializer(与仓库 saver 同一实现)往返。
 
