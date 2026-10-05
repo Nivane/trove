@@ -26,6 +26,9 @@ SETTINGS_SCHEMA: dict[str, tuple[str, str, Any]] = {
     # LLM
     "llm.default_model": ("target", "str", None),
     "llm.fast_model": ("model_fast", "str", None),
+    # 起草档(A3):起草/判定类结构化短输出调用的便宜档;path 型=允许清空
+    # (空 = 关闭,全调用回落 model_for_node 行为)
+    "llm.draft_model": ("model_draft", "path", None),
     "llm.providers": ("providers", "providers", None),
     # General
     "app.language": ("language", "enum", ALLOWED_LANGUAGES),

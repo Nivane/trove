@@ -1102,6 +1102,56 @@ class TestCompaction:
         assert "Summary:" in captured["messages"][0]["content"]
 
 
+class TestPreferenceExtractionModel:
+    """A3 收编点:压缩后的偏好抽取实际传给 memory.extract_preferences 的 model。"""
+
+    async def _manager(self, tmp_home, config):
+        from trove.agent.session import SessionManager
+        from trove.storage.session_store import SessionStore
+
+        class FakeMemory:
+            enabled = True
+
+            def __init__(self):
+                self.models: list[str] = []
+
+            async def extract_preferences(self, scope, conversation, model=None, lang=None):
+                self.models.append(model)
+
+        class FakeConnectors:
+            default_name = "demo"
+
+        memory = FakeMemory()
+        manager = SessionManager(
+            config=config,
+            session_store=SessionStore(home_dir=str(tmp_home)),
+            graphs={}, llm_gateway=None,
+            connectors=FakeConnectors(), memory=memory,
+        )
+        return manager, memory
+
+    async def test_uses_draft_model_when_configured(self, tmp_home):
+        from trove.core.config import AgentConfig
+
+        manager, memory = await self._manager(
+            tmp_home, AgentConfig(home=str(tmp_home), target="mock/target",
+                                  model_draft="draft/model"))
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager._extract_preferences_on_compact(session, "user: q\nassistant: a")
+        assert memory.models == ["draft/model"]
+
+    async def test_falls_back_to_target_without_draft(self, tmp_home):
+        """complexity 固定 "complex" → 不落 fast 档 = 与改造前直读 target 一致。"""
+        from trove.core.config import AgentConfig
+
+        manager, memory = await self._manager(
+            tmp_home, AgentConfig(home=str(tmp_home), target="mock/target",
+                                  model_fast="fast/model"))
+        session = await manager.start_session(project_cwd="/tmp/p")
+        await manager._extract_preferences_on_compact(session, "user: q\nassistant: a")
+        assert memory.models == ["mock/target"]
+
+
 class TestTokenUsage:
     def test_get_context_usage(self, session_manager):
         session = type("S", (), {})()

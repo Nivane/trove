@@ -449,7 +449,10 @@ class SessionManager:
             await self._memory.extract_preferences(
                 MemoryScope(datasource=datasource, user_id=session.user_id or "local"),
                 conversation,
-                model=self.config.target or "openai/gpt-4o",
+                # 偏好抽取产 pending 资产 = 起草档职责(A3)。complexity 固定
+                # "complex" = 不落 fast 档:未配 model_draft 时与改造前直读
+                # target 逐字节一致,配了则走便宜档。
+                model=self.config.model_for_draft("preference_extract", "complex"),
                 lang=self.config.language,
             )
         except Exception as e:

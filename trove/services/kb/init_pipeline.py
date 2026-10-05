@@ -416,10 +416,13 @@ async def init_kb(kb, registry, llm, config, datasource, *,
             f"Pass overwrite=true to re-initialize.",
             datasource=datasource,
         )
-    # 起草类任务用快速模型(如 deepseek-chat,无 CoT):推理模型的 reasoning
-    # tokens 计入计费且挤占 max_tokens,正文被截断——注解起草/合成示例这类
-    # 结构化文本产出不需要推理模型,model_fast 更快更省。未配置则回退 target。
-    model = (config.model_fast if config else "") or (config.target if config else "") or "openai/gpt-4o"
+    # 起草类任务走**起草档**(A3):model_draft 配置了就用它,否则回落
+    # model_fast(如 deepseek-chat,无 CoT)——推理模型的 reasoning tokens
+    # 计入计费且挤占 max_tokens,正文被截断;注解起草/合成示例这类结构化
+    # 文本产出不需要推理模型,更快更省。未配置则与改造前逐字节一致
+    # (model_fast or target);node_models["kb_init"] 从此可达(此前直读
+    # model_fast,按节点覆盖打不到这里 = 隐形配置黑洞)。
+    model = config.model_for_draft("kb_init", "standard") if config else "openai/gpt-4o"
     docs_tables = load_docs_tables(Path(docs)) if docs else {}
     probed: dict = {}
     try:

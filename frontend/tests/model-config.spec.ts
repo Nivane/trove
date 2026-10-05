@@ -23,6 +23,7 @@ const MASK = '__trove_masked_key__'
 const baseValues = {
   'llm.default_model': 'deepseek/deepseek-reasoner',
   'llm.fast_model': 'deepseek/deepseek-chat',
+  'llm.draft_model': '',
   'llm.providers': [
     {
       name: 'deepseek',
@@ -48,8 +49,8 @@ const baseValues = {
 let wrapper: VueWrapper | null = null
 let router: Router
 
-async function mountView() {
-  ;(apiGet as any).mockResolvedValue({ values: baseValues, mask: MASK })
+async function mountView(values: Record<string, unknown> = baseValues) {
+  ;(apiGet as any).mockResolvedValue({ values, mask: MASK })
   router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -150,5 +151,47 @@ describe('ModelConfigView', () => {
     }[]
     expect(providers[0].name).toBe('deepseek')
     expect(providers[0].litellm_params.api_key).toBe(MASK)
+  })
+
+  it('sends and clears llm.draft_model — empty is a value, not an omission', async () => {
+    // 起草档(A3)是 path 型:清空 = 关闭,必须把空串**发出去**(diff 里
+    // '' vs 旧值 ≠ 相同 → 照发);服务端 coerce path 型才允许收空串。
+    const view = await mountView({
+      ...baseValues,
+      'llm.draft_model': 'deepseek/deepseek-chat',
+    })
+    await view.vm.$nextTick()
+    ;(apiPut as any).mockResolvedValue({ values: baseValues })
+
+    const draftInput = view.find('input[placeholder="留空 = 关闭(回落快速/默认模型)"]')
+    expect((draftInput.element as HTMLInputElement).value).toBe('deepseek/deepseek-chat')
+    await draftInput.setValue('')
+    await flushPromises()
+
+    await view.find('.card-actions .el-button--primary').trigger('click')
+    await flushPromises()
+
+    expect(apiPut).toHaveBeenCalledTimes(1)
+    const payload = (apiPut as any).mock.calls[0][1] as { values: Record<string, unknown> }
+    expect(payload.values['llm.draft_model']).toBe('')
+  })
+
+  it('is not sent when untouched', async () => {
+    const view = await mountView()
+    await view.vm.$nextTick()
+    ;(apiPut as any).mockResolvedValue({ values: baseValues })
+
+    const defaultInput = view
+      .findAll('input')
+      .find(
+        (i) => (i.element as HTMLInputElement).value === 'deepseek/deepseek-reasoner',
+      )
+    await defaultInput!.setValue('deepseek/deepseek-v3')
+    await flushPromises()
+    await view.find('.card-actions .el-button--primary').trigger('click')
+    await flushPromises()
+
+    const payload = (apiPut as any).mock.calls[0][1] as { values: Record<string, unknown> }
+    expect(payload.values['llm.draft_model']).toBeUndefined()
   })
 })

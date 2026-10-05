@@ -875,6 +875,10 @@ export const messages = {
     defaultModel: '默认模型',
     fastModel: '快速模型',
     fastModelHint: '留空 = 简单查询也用默认模型(不区分档位)',
+    draftModel: '起草模型',
+    draftModelPlaceholder: '留空 = 关闭(回落快速/默认模型)',
+    draftModelHint:
+      'KB 建档注解、拒绝扩展草稿、偏好抽取、意图判别、图表判定等「结构化短输出」调用走此模型；留空 = 关闭，逐字节回落改造前行为',
     providers: '模型服务商 (Providers)',
     addProvider: '添加服务商',
     removeProvider: '删除服务商',
@@ -2890,6 +2894,10 @@ export const messages = {
     fastModel: 'Fast model',
     fastModelHint:
       'Leave empty to use the default model for simple queries too',
+    draftModel: 'Drafting model',
+    draftModelPlaceholder: 'Empty = off (falls back to fast/default)',
+    draftModelHint:
+      'Structured short-output calls — KB init annotations, refusal extension drafts, preference extraction, intent classification, chart judgement — use this model; leave empty to turn it off and fall back to the pre-existing behaviour byte-for-byte',
     providers: 'Providers',
     addProvider: 'Add provider',
     removeProvider: 'Remove provider',

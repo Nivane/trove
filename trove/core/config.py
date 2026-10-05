@@ -398,6 +398,12 @@ class AgentConfig:
     home: str = "~/.trove"
     target: str = ""  # default model e.g. "openai/gpt-4o"
     model_fast: str = ""  # 快速档模型: simple/standard 复杂度走此模型(未配置 = 不分档,全走 target)
+    # 起草档模型(A3):「起草/判定类」调用的统一便宜档 —— KB 建档注解与合成示例、
+    # 拒绝扩展草稿、会话偏好抽取、意图判别/追问改写、图表判定这些**结构化短输出**
+    # 调用走此模型(推理模型在这里是浪费,长思维链还会挤占 max_tokens)。空 = 关闭,
+    # 全部调用逐字节回落今天行为(兼容安全带 = 与 model_for_node 逐格相同的表驱动
+    # 断言)。node_models 仍最高优先 —— 降级不静默改变已按节点配置的部署。
+    model_draft: str = ""
     # 每节点模型覆盖(按节点名,如 query_sketch/gen_sql/reflect/insights):优先于复杂度
     # 分档选模——query_sketch 用便宜模型、reflect 用强模型的典型配置。空 = 不覆盖。
     node_models: dict[str, str] = field(default_factory=dict)
@@ -515,6 +521,20 @@ class AgentConfig:
             if pinned:
                 return pinned
         return self.model_for(complexity)
+
+    def model_for_draft(self, node: str, complexity: str) -> str:
+        """起草档选模: ``node_models[node]`` → ``model_draft`` → 复杂度分档。
+
+        「起草/判定类」调用(结构化短输出的辅助 LLM)的统一入口。回落链与
+        ``model_for_node`` 同形,只在中间多插一档 ``model_draft``——因此
+        ``model_draft=""``(默认)时本函数与 ``model_for_node`` **逐格相同**,
+        未配置部署行为逐字节不变(表驱动测试钉死这一等价)。
+        """
+        if node:
+            pinned = self.node_models.get(node) or self.node_models.get(node.lower())
+            if pinned:
+                return pinned
+        return self.model_draft or self.model_for(complexity)
 
 
 @dataclass
@@ -853,6 +873,7 @@ class ConfigLoader:
             home=agent_section.get("home", "~/.trove"),
             target=agent_section.get("target", ""),
             model_fast=agent_section.get("model_fast", ""),
+            model_draft=agent_section.get("model_draft", ""),
             node_models={
                 str(k).lower(): str(v)
                 for k, v in (agent_section.get("node_models", {}) or {}).items()

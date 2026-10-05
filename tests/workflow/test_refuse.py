@@ -59,9 +59,11 @@ class ScriptedLLM:
     def __init__(self, responses):
         self._responses = iter(responses)
         self.calls = 0
+        self.models: list[str] = []
 
     async def chat(self, model, messages, **kwargs):
         self.calls += 1
+        self.models.append(model)
         return next(self._responses)
 
 
@@ -106,6 +108,39 @@ class TestNoModelRefusal:
         node = make_refuse(ScriptedLLM([]), AgentConfig(target="mock/model"), kb=kb)
         await node(make_state(no_model=True, datasource="demo"))
         assert not SemanticManager(kb).drafts("demo")["pending"]
+
+
+class TestRefuseDraftModelTier:
+    """A3 收编点:拒绝扩展草稿实际传给 llm.chat 的 model 名。"""
+
+    def _state(self):
+        return make_state(
+            datasource="demo",
+            refusal={"reason": "uncovered", "question": "平均贷款金额是多少?",
+                     "plan": {"aggregation": "AVG(loan.amount)",
+                              "answer_columns": ["AVG(loan.amount)"]}},
+        )
+
+    async def test_draft_model_used_when_configured(self, kb):
+        llm = ScriptedLLM([METRIC_DRAFT_YAML])
+        node = make_refuse(
+            llm,
+            AgentConfig(target="mock/target", model_fast="fast/model",
+                        model_draft="draft/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        await node(self._state())
+        assert llm.models == ["draft/model"]
+
+    async def test_falls_back_to_complexity_tier_without_draft(self, kb):
+        """model_draft 空 → 与改造前 model_for_node 同结果(standard 档 → fast)。"""
+        llm = ScriptedLLM([METRIC_DRAFT_YAML])
+        node = make_refuse(
+            llm, AgentConfig(target="mock/target", model_fast="fast/model"),
+            kb=kb, semantic_layer=FakeProvider(_demo_model()),
+        )
+        await node(self._state())
+        assert llm.models == ["fast/model"]
 
 
 class TestUncoveredRefusal:

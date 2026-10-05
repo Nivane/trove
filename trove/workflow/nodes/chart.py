@@ -117,7 +117,9 @@ async def _llm_chart(
         state.columns, state.rows,
         hints=hints, title=state.question,
     )
-    model = config.model_for_node("chart", state.complexity)
+    # 图表判定 = 起草/判定档职责(A3);未配 model_draft 时与 model_for_node
+    # 同参同果(逐字节回落)。
+    model = config.model_for_draft("chart", state.complexity)
     rows, rows_note = _rows_preview(state)
     user_prompt = render(
         "chart/user",

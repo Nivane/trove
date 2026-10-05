@@ -46,6 +46,16 @@
               />
               <div class="form-hint">{{ t('fastModelHint', ui.lang) }}</div>
             </el-form-item>
+            <el-form-item :label="t('draftModel', ui.lang)">
+              <el-input
+                v-model="form.draft_model"
+                class="mono-input"
+                :placeholder="t('draftModelPlaceholder', ui.lang)"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <div class="form-hint">{{ t('draftModelHint', ui.lang) }}</div>
+            </el-form-item>
           </el-form>
 
           <div class="providers-block">
@@ -121,12 +131,14 @@ type ProviderRow = {
 interface FormShape {
   default_model: string
   fast_model: string
+  draft_model: string
   providers: ProviderRow[]
 }
 
 const form = reactive<FormShape>({
   default_model: '',
   fast_model: '',
+  draft_model: '',
   providers: [],
 })
 
@@ -136,6 +148,7 @@ function snapshotOf(f: FormShape): Record<string, unknown> {
   return {
     'llm.default_model': f.default_model,
     'llm.fast_model': f.fast_model,
+    'llm.draft_model': f.draft_model,
     'llm.providers': f.providers,
   }
 }
@@ -152,6 +165,7 @@ async function load() {
     mask.value = body.mask
     form.default_model = String(v['llm.default_model'] ?? '')
     form.fast_model = String(v['llm.fast_model'] ?? '')
+    form.draft_model = String(v['llm.draft_model'] ?? '')
     form.providers = ((v['llm.providers'] as ProviderRow[] | undefined) ?? []).map(
       (p) => {
         const { api_key, ...rest } = p.litellm_params ?? {}
