@@ -414,6 +414,12 @@ const bulkLastAction = ref<'confirm' | 'reject'>('confirm')
  * 不进批量分组的类别:漂移(裁定要看 live schema 对比)与行动两类
  * (审批闸在行动页,本页只有深链)。按 kind 名排除而不是读 `actionable.batch`
  * —— 后者是后端的**能力声明**,这里是本页的**呈现决策**,两者的测试面不同。
+ *
+ * A6 起行动页有了自己的批量端点(approve/reject,每行带 payload/证据/
+ * 原问题预览),本页的 `action_proposal` 仍**不进**本页分组:通用 runBulk
+ * 只会逐条打单目标端点,而行动提案在本页没有单条端点可走(点了报错)。
+ * 批行动的正确入口 = 下方深链到行动页;后端 `actionable.batch` 也维持
+ * false(见 governance.py `_action_proposal_item`),两边值一致但各自声明。
  */
 const BULK_EXCLUDED = new Set(['drift', 'action_template', 'action_proposal'])
 

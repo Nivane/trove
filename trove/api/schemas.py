@@ -622,6 +622,20 @@ class ActionDecision(BaseModel):
     comment: str = ""
 
 
+class ActionBatchRequest(BaseModel):
+    """POST /v1/admin/actions/proposals/batch body —— 批量审批。
+
+    ``decision`` 故意是裸 ``str`` 而不是 ``Literal``:允许动词集由路由校验,
+    非法值报 400 并把允许值清单写进 detail —— ``Literal`` 会让 pydantic
+    抢先抛 422,文案里没有"允许哪些"。逐条独立(一条失败不影响其余),
+    ``comment`` 落到每条审计明细。
+    """
+
+    ids: list[str] = Field(min_length=1)
+    decision: str
+    comment: str = ""
+
+
 class PresetApplyRequest(BaseModel):
     """POST /v1/admin/presets/{name}/apply body — 套用到哪个数据源。
 

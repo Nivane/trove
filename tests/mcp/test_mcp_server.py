@@ -562,14 +562,20 @@ async def _seed_mcp_proposal(service, *, datasource="test_db", digest="d1"):
 
 
 async def test_proposals_surface_registers_read_only_verbs(mcp_actions):
-    """工具清单里**没有任何审批动词** —— 机器不能投票(设计边界,逐字钉)。"""
+    """工具清单里**没有任何审批动词** —— 机器不能投票(设计边界,逐字钉)。
+
+    ``batch`` 也在禁列:A6 给管理端加了批量审批端点,批量是"人少点几次
+    鼠标"的减负,不是给机器开的一条投票捷径 —— 机器通道一个动词都不许
+    跟着长。
+    """
     from trove.mcp.server import build_mcp_server
 
     server = build_mcp_server(mcp_actions.components)
     names = {t.name for t in await server.list_tools()}
     assert {"list_proposals", "fetch_proposal", "ack_proposal"} <= names
     assert not any(
-        v in n for n in names for v in ("approve", "reject", "dispatch")
+        v in n for n in names
+        for v in ("approve", "reject", "dispatch", "batch")
     ), f"机器通道混进了审批动词: {sorted(names)}"
 
     uris = {str(r.uri) for r in await server.list_resources()}

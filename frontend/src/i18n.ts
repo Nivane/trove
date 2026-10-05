@@ -1872,6 +1872,17 @@ export const messages = {
     actionsEffectsUndecided: '判不了',
     actionsEffectsFailed: '测量失败',
     actionsEffectsMethod: '方法',
+    // ── A6 批量审批 ──
+    actionsBatchSelected: '已选 {n} 条待批',
+    actionsBatchApprove: '批量批准',
+    actionsBatchReject: '批量驳回',
+    actionsBatchClear: '清除选择',
+    actionsBatchHint:
+      '批量只放行批准与驳回,且逐条独立执行 —— 一条失败不影响其余。下方按选中项逐条列出将生效的载荷与证据;这就是"批"之前要看过的东西',
+    actionsBatchHighRisk: '选中项含 {n} 条高风险 —— 请逐条核对后勾选确认',
+    actionsBatchHighRiskAck: '我已逐条查看上述高风险载荷',
+    actionsBatchPartial: '部分失败',
+    actionsBatchRetry: '重试',
     // ── P6-W4 ──
     styleguideTitle: '设计系统样式指南',
     styleguideDesc: '基础六件 × 状态矩阵：全部用真身组件与设计令牌演示，不另造平行组件。',
@@ -3927,6 +3938,17 @@ export const messages = {
     actionsEffectsUndecided: 'Undecidable',
     actionsEffectsFailed: 'Measurement failed',
     actionsEffectsMethod: 'Method',
+    // ── A6 batch approval ──
+    actionsBatchSelected: '{n} pending selected',
+    actionsBatchApprove: 'Approve selected',
+    actionsBatchReject: 'Reject selected',
+    actionsBatchClear: 'Clear selection',
+    actionsBatchHint:
+      'Batching only allows approve and reject, and each item runs independently — one failure never blocks the rest. Every selected item\'s payload and evidence is listed below; this is what "batch" means by having looked at it',
+    actionsBatchHighRisk: '{n} high-risk item(s) selected — review each, then tick to confirm',
+    actionsBatchHighRiskAck: 'I have reviewed the high-risk payloads above, one by one',
+    actionsBatchPartial: 'Partial failures',
+    actionsBatchRetry: 'Retry',
     // ── P6-W4 ──
     styleguideTitle: 'Design system styleguide',
     styleguideDesc:

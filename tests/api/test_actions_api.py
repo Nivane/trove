@@ -11,13 +11,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from trove.services.action.dispatcher import ActionDispatcher
-from trove.services.action.models import Outcome
+from trove.services.action.models import ActionProposal, Outcome
+from trove.services.action.propose import ProposalError
 from trove.services.action.service import ActionService
 from trove.services.action.store import ActionStore
 from trove.services.action.templates import ActionTemplateService
@@ -97,9 +99,19 @@ def _template_body(name="notify-ops", **over):
     return body
 
 
-async def _seed_proposal(env):
-    return await env.service.propose_from_verdict(
-        rule=_rule(), outcome=_outcome(), datasource="demo")
+async def _seed_proposal(env, *, digest="d1", ttl_hours=None):
+    """造一条待批提案。去重键含 ``rule_digest`` —— 想要多条就换 digest;
+    ``ttl_hours`` 临时改审批时限(造"已过期"的一条)。"""
+    if ttl_hours is None:
+        return await env.service.propose_from_verdict(
+            rule=_rule(), outcome=_outcome(digest=digest), datasource="demo")
+    prev = env.service.approval_ttl_hours
+    env.service.approval_ttl_hours = ttl_hours
+    try:
+        return await env.service.propose_from_verdict(
+            rule=_rule(), outcome=_outcome(digest=digest), datasource="demo")
+    finally:
+        env.service.approval_ttl_hours = prev
 
 
 def _advance(env, *, hours: int) -> None:
@@ -436,6 +448,172 @@ class TestProposalLifecycle:
         r = await client.get(f"/v1/admin/actions/proposals/{p.id}")
         assert r.json()["proposal"]["status"] == "expired", \
             "迟到的 approve 顺手把状态翻成 expired,不留一个可批的假象"
+
+
+# ── 批量审批(A6)─────────────────────────────────────────
+
+class TestBatchDecide:
+    """批量 = 少点几次鼠标,不是放宽判定:逐条走单条的同一对 approve/reject
+    (条件更新闸因此对批量同样生效),逐条审计,动词闭集与 id 上限是**整批**
+    前置门(400,绝不半执行)。"""
+
+    async def _ready(self, client) -> None:
+        await client.post("/v1/admin/actions/templates",
+                          json=_template_body())
+        await client.post("/v1/admin/actions/templates/notify-ops/confirm")
+
+    async def test_mixed_batch_reports_each_item_no_contagion(
+            self, client, actions_env):
+        """可批 × 2 / 已批过 / 已过期 / 幽灵 id —— 五条各得其所,结果与入参
+        逐位对应;一条失败不影响其余,失败的提案状态不被碰。"""
+        await self._ready(client)
+        env = actions_env
+        p_ok1 = await _seed_proposal(env, digest="d1")
+        p_ok2 = await _seed_proposal(env, digest="d2")
+        p_decided = await _seed_proposal(env, digest="d3")
+        await client.post(
+            f"/v1/admin/actions/proposals/{p_decided.id}/approve", json={})
+        p_expired = await _seed_proposal(env, digest="d4", ttl_hours=1)
+
+        _advance(env, hours=2)  # 只让 1h TTL 的那条过期(其余 72h)
+
+        r = await client.post(
+            "/v1/admin/actions/proposals/batch",
+            json={"ids": [p_ok1.id, p_ok2.id, p_decided.id, p_expired.id,
+                          "p-ghost"],
+                  "decision": "approve", "comment": "batch go"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["applied"] == 2 and body["failed"] == 3
+        assert [x["id"] for x in body["results"]] == [
+            p_ok1.id, p_ok2.id, p_decided.id, p_expired.id, "p-ghost"]
+        assert [x["ok"] for x in body["results"]] == [
+            True, True, False, False, False]
+        assert [x.get("status") for x in body["results"][:2]] == [
+            "approved", "approved"]
+        errs = [x["error"] for x in body["results"][2:]]
+        assert "not 'pending'" in errs[0], "已批过:状态门拒绝"
+        assert "expired" in errs[1], "已过期:懒判的过期分支拒绝"
+        assert "not found" in errs[2], "幽灵 id:逐条报,不是整批 404"
+
+        assert (await env.store.get_proposal(p_ok1.id)).status == "approved"
+        assert (await env.store.get_proposal(p_ok2.id)).status == "approved"
+        assert (await env.store.get_proposal(p_decided.id)).status == "approved", \
+            "批里的失败条目不得回写别人的状态"
+        assert (await env.store.get_proposal(p_expired.id)).status == "expired", \
+            "迟到的批准顺手把状态翻成 expired(与单条同款懒判)"
+
+        # append-only 的决定轨迹:成功的两条各一行,失败的三条**零行**
+        for p in (p_ok1, p_ok2):
+            rows = await env.store.list_approvals(p.id)
+            assert [a.action for a in rows] == ["approve"]
+            assert rows[0].comment == "batch go" and rows[0].user_id == "admin"
+        assert await env.store.list_approvals(p_expired.id) == []
+        assert [a.action for a in await env.store.list_approvals(p_decided.id)] \
+            == ["approve"], "批量没给已批过的再加一行"
+
+    async def test_batch_reject_moves_all_and_records_the_comment(
+            self, client, actions_env):
+        await self._ready(client)
+        p1 = await _seed_proposal(actions_env, digest="r1")
+        p2 = await _seed_proposal(actions_env, digest="r2")
+        r = await client.post(
+            "/v1/admin/actions/proposals/batch",
+            json={"ids": [p1.id, p2.id], "decision": "reject",
+                  "comment": "campaign paused"})
+        assert r.status_code == 200, r.text
+        assert r.json()["applied"] == 2 and r.json()["failed"] == 0
+        for p in (p1, p2):
+            fresh = await actions_env.store.get_proposal(p.id)
+            assert fresh.status == "rejected"
+            (a,) = await actions_env.store.list_approvals(p.id)
+            assert a.action == "reject" and a.comment == "campaign paused"
+
+    async def test_batch_verbs_are_approve_and_reject_only(
+            self, client, actions_env):
+        """dispatch 是唯一有外部副作用的动词(批量外送 = 一键群发)——
+        整批 400,绝不逐条半执行;空 id 由 schema 挡(422)。"""
+        await self._ready(client)
+        p = await _seed_proposal(actions_env)
+        for verb in ("dispatch", "cancel", "retry", "dry_run", "ack"):
+            r = await client.post(
+                "/v1/admin/actions/proposals/batch",
+                json={"ids": [p.id], "decision": verb})
+            assert r.status_code == 400, (verb, r.text)
+            assert "approve, reject" in r.json()["detail"]
+        r = await client.post(
+            "/v1/admin/actions/proposals/batch",
+            json={"ids": [], "decision": "approve"})
+        assert r.status_code == 422
+        assert actions_env.sent == [], "整批拒绝必须真的什么都没发"
+        assert (await actions_env.store.get_proposal(p.id)).status == "pending"
+
+    async def test_over_limit_is_400_and_applies_nothing(
+            self, client, actions_env):
+        """超限不截断:一条真提案打头 + 200 个假 id = 201 > 200 → 整批 400,
+        那条真提案碰都没碰(截断 + 部分执行会让"少批的"和"没批的"一样安静)。"""
+        await self._ready(client)
+        p = await _seed_proposal(actions_env)
+        ids = [p.id] + [f"p-{i}" for i in range(200)]
+        r = await client.post(
+            "/v1/admin/actions/proposals/batch",
+            json={"ids": ids, "decision": "approve"})
+        assert r.status_code == 400, r.text
+        assert "nothing was applied" in r.json()["detail"]
+        assert (await actions_env.store.get_proposal(p.id)).status == "pending"
+        assert await actions_env.store.list_approvals(p.id) == []
+
+    async def test_batch_audit_rows_are_per_item_and_flagged(
+            self, client, actions_env, auth_service):
+        """逐条审计:成功 200 / 失败 400,明细带 ``batch: True`` 与单条端点
+        的痕迹区分;失败条目的原因留在审计里(批量结果里失败是数据不是异常,
+        不落审计它就在审计面上消失)。"""
+        await self._ready(client)
+        p_ok = await _seed_proposal(actions_env, digest="a1")
+        p_bad = await _seed_proposal(actions_env, digest="a2")
+        await client.post(
+            f"/v1/admin/actions/proposals/{p_bad.id}/approve", json={})
+
+        r = await client.post(
+            "/v1/admin/actions/proposals/batch",
+            json={"ids": [p_ok.id, p_bad.id], "decision": "approve",
+                  "comment": "sweep"})
+        assert r.status_code == 200
+
+        rows = await auth_service.list_audit(action="action.proposal.approve")
+        assert len(rows) == 3, "单条 1 行 + 批量 2 行"
+        singles = [x for x in rows if not x["details"].get("batch")]
+        batches = [x for x in rows if x["details"].get("batch")]
+        assert len(singles) == 1 and singles[0]["details"]["proposal_id"] == p_bad.id
+        assert len(batches) == 2
+        by_id = {x["details"]["proposal_id"]: x for x in batches}
+        assert by_id[p_ok.id]["status"] == 200
+        assert by_id[p_ok.id]["details"]["status"] == "approved"
+        assert by_id[p_ok.id]["details"]["comment"] == "sweep"
+        assert by_id[p_bad.id]["status"] == 400
+        assert "not 'pending'" in by_id[p_bad.id]["details"]["error"]
+
+    async def test_concurrent_approve_second_loses_without_a_phantom_row(
+            self, client, actions_env):
+        """并发回归(本批最重要的一条):两个 approve 同时到一个 pending
+        提案 —— 恰好一个成功,输的抛 ``ProposalError`` 而不是把赢家的决定
+        静默覆盖;且输的那次**不留决定行**(approvals 是只增的审批轨迹,
+        一条没生效的决定写进去就是永不消失的假记录)。"""
+        await self._ready(client)
+        p = await _seed_proposal(actions_env)
+        results = await asyncio.gather(
+            actions_env.service.approve(p.id, "admin-a", "first"),
+            actions_env.service.approve(p.id, "admin-b", "second"),
+            return_exceptions=True)
+        oks = [r for r in results if isinstance(r, ActionProposal)]
+        errs = [r for r in results if isinstance(r, ProposalError)]
+        assert len(oks) == 1 and len(errs) == 1, results
+        assert oks[0].status == "approved"
+
+        assert (await actions_env.store.get_proposal(p.id)).status == "approved"
+        approvals = await actions_env.store.list_approvals(p.id)
+        assert len(approvals) == 1, "输掉的那次不得留下决定行"
+        assert approvals[0].comment in ("first", "second")
 
 
 # ── 闭环验收的读取面(B7)──────────────────────────────────

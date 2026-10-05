@@ -7,7 +7,9 @@
  *   · 决策请求永远带 `{comment}`(后端 body 可选,但驳回理由只能从这里进
  *     审批轨迹);
  *   · 驳回必须非空理由(客户端拦一道,不然轨迹里只剩一条无理由的终态);
- *   · 载荷冻结:详情抽屉展示的就是 proposals.payload 本身。
+ *   · 载荷冻结:详情抽屉展示的就是 proposals.payload 本身;
+ *   · 批量(可勾选=可批)只放行 pending 行、逐条预览载荷/证据、高风险要显式
+ *     勾选确认 —— 批量是"少点几次",不是"不看你批的是什么"。
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -393,6 +395,258 @@ describe('ActionsView — proposals', () => {
     expect(text).toContain('admin') // 审批轨迹
     expect(text).toContain('ops-alerts') // 回执
     expect(text).toContain('200')
+  })
+})
+
+describe('ActionsView — batch decisions (A6)', () => {
+  /**
+   * 行序 [p1, p2, p4, p3]:
+   *   p1 medium / p2 high(富载荷+多个证据键)/ p4 medium,p3 已批不可勾选。
+   * 预览类用例避开 p2 —— 选中高风险行会(正确地)卡住提交闸,那是另一条钉。
+   */
+  function mockBatchList() {
+    ;(apiGet as any).mockImplementation(async (url: string) => {
+      if (url.includes('status=pending')) {
+        return {
+          proposals: [
+            proposal({ id: 'p1', status: 'pending', risk: 'medium' }),
+            proposal({
+              id: 'p2',
+              status: 'pending',
+              risk: 'high',
+              rationale: 'Cash runway below floor',
+              payload: { rule: 'runway', days_left: 21, nested: { a: 1 } },
+              evidence_refs: { rule_rev: 'rev-2', run_id: 9, extra: 'x' },
+            }),
+            proposal({
+              id: 'p4',
+              status: 'pending',
+              risk: 'medium',
+              payload: { rule: 'refund-spike' },
+              evidence_refs: { job_id: 'job-9' },
+            }),
+          ],
+          counts: { pending: 3, approved: 1, failed: 0 },
+          enabled: true,
+        }
+      }
+      if (url.includes('status=approved')) {
+        return {
+          proposals: [proposal({ id: 'p3', status: 'approved' })],
+          counts: { pending: 3, approved: 1, failed: 0 },
+          enabled: true,
+        }
+      }
+      return {
+        proposals: [],
+        counts: { pending: 3, approved: 1, failed: 0 },
+        enabled: true,
+      }
+    })
+  }
+
+  function rowBoxes(): HTMLInputElement[] {
+    return Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        '.el-table__body-wrapper input[type="checkbox"]',
+      ),
+    )
+  }
+
+  /** 可见的 teleport 浮层(隐藏的 el-overlay 留在 DOM 里,不算)。 */
+  function visibleOverlays(): HTMLElement[] {
+    return Array.from(document.querySelectorAll<HTMLElement>('.el-overlay')).filter(
+      (o) => !o.style.display.includes('none'),
+    )
+  }
+
+  it('gates selection to pending rows and batch-approves the checked set in one request', async () => {
+    mockBatchList()
+    ;(apiPost as any).mockResolvedValue({
+      results: [
+        { id: 'p1', ok: true, error: null, status: 'approved' },
+        { id: 'p2', ok: true, error: null, status: 'approved' },
+      ],
+      applied: 2,
+      failed: 0,
+    })
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+
+    const boxes = rowBoxes()
+    expect(boxes).toHaveLength(4)
+    expect(boxes[3].disabled).toBe(true) // 已批行不可勾选 = 不可批
+    boxes[0].click() // p1
+    await flushPromises()
+    boxes[2].click() // p4
+    await flushPromises()
+    expect(bodyText()).toContain('2 pending selected')
+
+    findButton(view.element, 'Approve selected').click()
+    await flushPromises()
+
+    // 批量对话框 = 逐条预览:批的是看过的载荷与证据,不是一排 id。
+    const text = bodyText()
+    expect(text).toContain('Approve × 2')
+    expect(text).toContain('rule=revenue-drop · message=delta -12%')
+    expect(text).toContain('run_id: 7')
+    expect(text).toContain('rule=refund-spike')
+    expect(text).toContain('job_id: job-9')
+
+    dialogButton('Approve').click()
+    await flushPromises()
+
+    expect(apiPost).toHaveBeenCalledTimes(1)
+    expect(apiPost).toHaveBeenCalledWith('/v1/admin/actions/proposals/batch', {
+      ids: ['p1', 'p4'],
+      decision: 'approve',
+      comment: '',
+    })
+    // 全部成功:无失败面板、选中清空(批量栏随之消失)。
+    expect(document.querySelector('.actions-partial')).toBeNull()
+    expect(document.querySelector('.actions-bulk-bar')).toBeNull()
+  })
+
+  it('select-all only sweeps the rows that can actually be batched', async () => {
+    mockBatchList()
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+
+    const head = document.querySelector(
+      '.el-table__header-wrapper input[type="checkbox"]',
+    ) as HTMLInputElement
+    expect(head).toBeTruthy()
+    head.click()
+    // 表头的全选在 EP 里带 10ms 防抖(store/helper.mjs),flushPromises 不等它。
+    await new Promise((r) => setTimeout(r, 30))
+    await flushPromises()
+    expect(bodyText()).toContain('3 pending selected') // 已批的 p3 没被带上
+
+    findButton(view.element, 'Clear selection').click()
+    await flushPromises()
+    expect(document.querySelector('.actions-bulk-bar')).toBeNull()
+  })
+
+  it('keeps a partial failure as a retryable page panel and retries only the failed row', async () => {
+    mockBatchList()
+    let attempt = 0
+    ;(apiPost as any).mockImplementation(async () => {
+      attempt += 1
+      if (attempt === 1) {
+        return {
+          results: [
+            { id: 'p1', ok: true, error: null, status: 'approved' },
+            { id: 'p4', ok: false, error: "proposal p4 is no longer 'pending'" },
+          ],
+          applied: 1,
+          failed: 1,
+        }
+      }
+      return {
+        results: [{ id: 'p4', ok: true, error: null, status: 'approved' }],
+        applied: 1,
+        failed: 0,
+      }
+    })
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    rowBoxes()[0].click() // p1
+    await flushPromises()
+    rowBoxes()[2].click() // p4
+    await flushPromises()
+
+    findButton(view.element, 'Approve selected').click()
+    await flushPromises()
+    dialogButton('Approve').click()
+    await flushPromises()
+
+    // 部分失败:对话框关闭(原因落到页面级面板),失败行保持选中待重试。
+    const text = bodyText()
+    expect(text).toContain('Partial failures')
+    expect(text).toContain("proposal p4 is no longer 'pending'")
+    expect(text).toContain('1 pending selected')
+    expect(
+      visibleOverlays().filter((o) => (o.textContent ?? '').includes('Approve × 2')),
+    ).toHaveLength(0)
+
+    findButton(document.querySelector('.actions-partial')!, 'Retry').click()
+    await flushPromises()
+
+    expect((apiPost as any).mock.calls[1][0]).toBe('/v1/admin/actions/proposals/batch')
+    expect((apiPost as any).mock.calls[1][1]).toEqual({
+      ids: ['p4'],
+      decision: 'approve',
+      comment: '',
+    })
+    // 重试成功:面板消失、选中清空。
+    expect(document.querySelector('.actions-partial')).toBeNull()
+    expect(document.querySelector('.actions-bulk-bar')).toBeNull()
+  })
+
+  it('requires an explicit per-row ack before a batch containing high-risk rows can submit', async () => {
+    mockBatchList()
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    rowBoxes()[1].click() // p2 = high risk
+    await flushPromises()
+    expect(bodyText()).toContain('1 pending selected')
+
+    findButton(view.element, 'Approve selected').click()
+    await flushPromises()
+    // 富载荷的摘要形状:嵌套折叠成 {…},证据先摆锚点再报余量。
+    const text = bodyText()
+    expect(text).toContain('1 high-risk item(s) selected')
+    expect(text).toContain('rule=runway · days_left=21 · nested={…}')
+    expect(text).toContain('rule_rev: rev-2 · run_id: 9 · +1')
+    expect(text).toContain('Cash runway below floor')
+    expect(dialogButton('Approve').disabled).toBe(true)
+
+    const ack = document.querySelector(
+      '.actions-batch-risk input[type="checkbox"]',
+    ) as HTMLInputElement
+    expect(ack).toBeTruthy()
+    ack.click()
+    await flushPromises()
+    expect(dialogButton('Approve').disabled).toBe(false)
+  })
+
+  it('requires a reason before a batch rejection goes out', async () => {
+    mockBatchList()
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    rowBoxes()[0].click()
+    await flushPromises()
+
+    findButton(view.element, 'Reject selected').click()
+    await flushPromises()
+    expect(bodyText()).toContain('Reject × 1')
+    expect(dialogButton('Reject').disabled).toBe(true)
+
+    const textarea = document.querySelector('.el-dialog textarea') as HTMLTextAreaElement
+    textarea.value = 'not our caliber'
+    textarea.dispatchEvent(new Event('input'))
+    await flushPromises()
+    expect(dialogButton('Reject').disabled).toBe(false)
+  })
+
+  it('keeps the dialog open with the server reason when the whole batch is refused', async () => {
+    mockBatchList()
+    ;(apiPost as any).mockRejectedValue(
+      new Error('too many ids: 201 > 200 (nothing was applied)'),
+    )
+    const view = await mountView('/admin/actions?tab=proposals&status=open')
+    rowBoxes()[0].click() // p1
+    await flushPromises()
+    rowBoxes()[2].click() // p4 —— 全 medium,过得了高风险闸
+    await flushPromises()
+    findButton(view.element, 'Approve selected').click()
+    await flushPromises()
+
+    dialogButton('Approve').click()
+    await flushPromises()
+
+    // 整批 400:对话框留在原地把原因说清楚,一条也没动(选中原样)。
+    expect(bodyText()).toContain('too many ids: 201 > 200 (nothing was applied)')
+    expect(document.querySelector('.actions-partial')).toBeNull()
+    expect(
+      visibleOverlays().filter((o) => (o.textContent ?? '').includes('Approve × 2')),
+    ).toHaveLength(1)
+    expect(bodyText()).toContain('2 pending selected')
   })
 })
 

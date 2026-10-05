@@ -109,6 +109,13 @@ _DRY_RUNNABLE = ("pending", "approved", "failed")
 #: ever ran.
 _ACKABLE = ("approved", "dispatched", "delivered")
 
+#: 允许成批执行的动词。**只有这两个** —— 批量是"少点几次鼠标",不是"放宽
+#: 判定":dispatch 是唯一有外部副作用的动词,成批外送 = 一键群发,与
+#: "批准 = 逐条看过载荷"的治理立场正面冲突;cancel/retry 是纠错,一次一条
+#: 才是人在看。路由层还有一道同值校验(400 列出允许值),这里是给绕过路由
+#: 的调用方留的纵深防御。
+BATCH_DECISIONS = ("approve", "reject")
+
 
 def _num(value: Any) -> float | None:
     """宽容数值化(``None`` / 非数 / bool → None;不抛)。"""
@@ -189,15 +196,29 @@ class ActionService:
         self, p: ActionProposal, status: str, user_id: str, action: str,
         comment: str = "", **fields: Any,
     ) -> ActionProposal:
-        """Record the human decision, then move the status (one audit row each)."""
+        """Move the status **under a conditional guard**, then record the decision.
+
+        顺序是承重的:先做条件更新(``expect_status=p.status`` —— p 是调用方
+        读到的那个状态),成功后才写 approvals 行。读-改-写之间若有并发方
+        先动了状态(另一个管理员的决定、过期清扫),条件更新 rowcount=0 抛
+        ``ProposalError``,**不落决定行** —— 一条没生效的"决定"记进 append-only
+        的审批轨迹,是一条永不消失的假记录;反过来慢一步的写没有发生的痕迹,
+        正是想要的。
+
+        ``dispatch`` 的成功/失败转移也走这里。注意这把闸管的是**状态转移**:
+        两个并发 dispatch 仍会各发一次 POST(闸在写状态那一刻才拦),但后到
+        的那个拿到异常,而不是静默改写赢家的 ``dispatched_at``/``attempts``
+        —— 两次投递的回执行都在案,竞态响亮;要连 POST 都只发一次得先占
+        状态再外送(新增中间态),超出本闸的范围。
+        """
         now = self._now().isoformat(timespec="seconds")
+        await self.store.update_proposal(
+            p.id, expect_status=p.status, status=status,
+            decided_at=fields.pop("decided_at", now), **fields)
         await self.store.add_approval(Approval(
             proposal_id=p.id, user_id=str(user_id or ""), action=action,
             comment=str(comment or ""), created_at=now,
         ))
-        await self.store.update_proposal(
-            p.id, status=status,
-            decided_at=fields.pop("decided_at", now), **fields)
         fresh = await self.store.get_proposal(p.id)
         return fresh or p
 
@@ -305,10 +326,14 @@ class ActionService:
                 "pending proposal can be approved")
         if self._is_expired(p):
             # The sweep may not have run yet; approving past the deadline is
-            # the one outcome an expiry exists to prevent.
+            # the one outcome an expiry exists to prevent. 这步也上条件闸:
+            # 过期是**状态转移**,不是可以盖在任何状态上的注记 —— 若并发方
+            # 刚做了决定,这次过期落库必须失败,而不是把 approved/rejected
+            # 覆盖成 expired(条件不满足时 update_proposal 抛的错同样响亮,
+            # 且细节上更准:它不再"可批"是因为状态已变,不只是因为过期)。
             now = self._now().isoformat(timespec="seconds")
             await self.store.update_proposal(
-                p.id, status="expired", decided_at=now)
+                p.id, expect_status=p.status, status="expired", decided_at=now)
             raise ProposalError(
                 f"proposal {p.id} expired at {p.expires_at} and can no longer "
                 "be approved")
@@ -335,6 +360,60 @@ class ActionService:
                 "proposal can be cancelled (a dispatched one has left the "
                 "building)")
         return await self._decide(p, "cancelled", user_id, "cancel", comment)
+
+    async def decide_batch(
+        self, ids: list[str], decision: str, user_id: str, comment: str = "",
+    ) -> dict[str, Any]:
+        """对一批提案逐条做出同一个决定;一条的失败不连坐其余。
+
+        形状照语义草稿批量端点(``semantic.py`` ``batch_semantic_drafts``):
+        ``{results: [{id, ok, error}], applied, failed}``,成功条目的 ``error``
+        是 ``None``、失败是字符串。``results`` 与入参 ``ids`` **逐位对应**,
+        重复 id 不预去重(第二次自然失败在"已是终态",如实报告两条结果)——
+        去重会让结果行数与调用方发来的 id 数对不上,而调用方要靠它对齐
+        每一行。
+
+        为什么逐条而不是一把梭:每条决定都是**独立的一次人工判断**,各自的
+        状态门(已过期 / 已被并发改走 / 幽灵 id)在这里各失败各的;批量是
+        "少点几次鼠标",不是"放宽判定"。走的是与单条**同一对** ``approve``/
+        ``reject``,条件更新闸(``expect_status``)因此对批量路径同样生效 ——
+        两个管理员同时批同一张单子,后到的那个在这里拿到失败,而不是把
+        先到者的决定静默覆盖。
+
+        只放行 :data:`BATCH_DECISIONS`;非法动词是**整批**拒绝(抛
+        ``ProposalError``),不是逐条失败 —— 动词错了是调用错误,不该
+        产生半批结果。
+        """
+        if decision not in BATCH_DECISIONS:
+            raise ProposalError(
+                f"decision {decision!r} cannot be applied in a batch — "
+                f"allowed: {', '.join(BATCH_DECISIONS)}")
+        fn = self.approve if decision == "approve" else self.reject
+        results: list[dict[str, Any]] = []
+        for pid in ids:
+            try:
+                p = await fn(str(pid), user_id, comment)
+            except KeyError as e:
+                results.append({"id": str(pid), "ok": False, "error": str(e)})
+            except ProposalError as e:
+                # 预期内的控制流(状态已变/已过期/不可批),逐条如实汇报。
+                results.append({"id": str(pid), "ok": False, "error": str(e)})
+            except Exception as e:  # noqa: BLE001 — 单条意外不掀整批
+                logger.exception(
+                    "action batch %s failed unexpectedly for %s", decision, pid)
+                results.append({
+                    "id": str(pid), "ok": False,
+                    "error": f"{type(e).__name__}: {e}"})
+            else:
+                # ``status`` 供路由逐条审计用(与单条端点审计同字段)。
+                results.append({
+                    "id": str(pid), "ok": True, "error": None,
+                    "status": p.status})
+        applied = sum(1 for r in results if r["ok"])
+        failed = len(results) - applied
+        logger.info("action batch %s: %d applied, %d failed (comment=%r)",
+                    decision, applied, failed, comment[:60])
+        return {"results": results, "applied": applied, "failed": failed}
 
     # ── dispatch / retry / ack ───────────────────────────
 

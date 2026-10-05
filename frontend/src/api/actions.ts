@@ -53,6 +53,13 @@ export const ACTION_DECISIONS = [
 ] as const
 export type ActionDecision = (typeof ACTION_DECISIONS)[number]
 
+/**
+ * 可批量执行的动词(闭集,与后端 `service.BATCH_DECISIONS` 一致)—— 只有
+ * 这两个:dispatch 有外部副作用(批量 = 一键群发),cancel/retry 是纠错。
+ */
+export const ACTION_BATCH_DECISIONS = ['approve', 'reject'] as const
+export type ActionBatchDecision = (typeof ACTION_BATCH_DECISIONS)[number]
+
 export const ACTION_PROPOSALS_LIMIT = 200
 
 /* ── 形状 ─────────────────────────────────────────────── */
@@ -292,6 +299,40 @@ export async function decideActionProposal(
     `/v1/admin/actions/proposals/${encodeURIComponent(id)}/${decision}`,
     { comment },
   )
+}
+
+/** 批量结果条目:与入参 ids **逐位对应**。 */
+export interface ActionBatchResultItem {
+  id: string
+  ok: boolean
+  /** 契约口径:成功是 null,失败是原因文本。 */
+  error: string | null
+  /** 仅成功条目带 —— 落到的状态(approved / rejected)。 */
+  status?: string
+}
+
+export interface ActionBatchResult {
+  results: ActionBatchResultItem[]
+  applied: number
+  failed: number
+}
+
+/**
+ * 批量审批(A6):逐条独立 —— 一条失败不影响其余,成败在 results 里与入参
+ * ids 逐位对应。整批前置门(动词非 approve/reject、id 超后端上限)由后端
+ * 400 整体拒绝(绝不半执行),所以这里"抛错"只意味着整批没跑;逐条结果
+ * 永不抛。
+ */
+export async function batchDecideActionProposals(
+  ids: string[],
+  decision: ActionBatchDecision,
+  comment = '',
+): Promise<ActionBatchResult> {
+  return apiPost('/v1/admin/actions/proposals/batch', {
+    ids,
+    decision,
+    comment,
+  })
 }
 
 /* ── 展示口径(与页面同一处)──────────────────────────── */

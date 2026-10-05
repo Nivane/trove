@@ -294,6 +294,13 @@ def _action_proposal_item(e: dict) -> dict:
         created_at=_str_or_none(e.get("created_at")),
         # 审批要读渲染后的 payload 与证据(行动页抽屉),就地批准会让
         # 「批准」变成不看你批的是什么;失败重试同理。
+        # A6 起行动页有了批量端点(approve/reject),但**这里**仍维持
+        # batch=False:收件箱的批量按钮走的是通用 runBulk → 逐条调用单目标
+        # 端点,而 action_proposal 没有可走的单条 URL 形状 —— 打开这个位
+        # 只会得到一个点了报错的批量按钮。收件箱继续深链到行动页去批(那里
+        # 每行有 payload/证据/原问题预览)。测试面不同:这条位由
+        # tests/api/test_governance_todos.py 钉住;前端 GovernanceView 的
+        # BULK_EXCLUDED 是它自己的呈现决策,两边值故意各自声明。
         confirm=False, reject=False, batch=False,
         edit_url="/admin/actions?tab=proposals",
     )
